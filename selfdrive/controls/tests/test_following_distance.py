@@ -12,11 +12,13 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
+  STOPPED_LEAD_BUFFER,
   get_approach_follow_distance,
   get_approach_runway_blend,
   get_desired_follow_distance,
   get_lead_danger_distance,
   get_safe_obstacle_distance,
+  get_stopped_lead_buffer,
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
 )
@@ -47,6 +49,12 @@ def test_stop_distance_buffer_fades_with_speed():
   buffers = [stop_distance_buffer(speed) for speed in buffer_speeds]
   assert buffers[0] == pytest.approx(STOP_DISTANCE)
   assert buffers[0] > buffers[1] > buffers[2] > buffers[3] > STOP_DISTANCE_MIN - 1e-6
+
+
+def test_stopped_lead_buffer_only_applies_near_stop():
+  assert get_stopped_lead_buffer(0.0, 0.0) == pytest.approx(0.0)
+  assert get_stopped_lead_buffer(1.0, 0.0) == pytest.approx(STOPPED_LEAD_BUFFER)
+  assert get_stopped_lead_buffer(1.0, 3.0) == pytest.approx(0.0)
 
 
 @pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])
@@ -155,3 +163,9 @@ def test_closing_lead_bleeds_off_speed_late_in_approach():
   assert np.any(late_approach)
   assert np.max(closing_speed[late_approach]) < 1.5
   assert output[-1, 6] == pytest.approx(get_desired_follow_distance(20.0, 20.0, t_follow), abs=4.0)
+
+
+def test_stopped_car_approach_settles_near_stop_gap():
+  output = run_lead_closing_simulation(v_ego=20.0, v_lead=0.0, initial_distance_lead=90.0, t_end=20.0)
+
+  assert output[-1, 6] == pytest.approx(5.75, abs=0.5)

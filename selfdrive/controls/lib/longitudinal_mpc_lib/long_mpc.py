@@ -58,6 +58,9 @@ COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
 STOP_DISTANCE_FADE_V = 3.0
 STOP_DISTANCE_MIN = 2.0
+STOPPED_LEAD_BUFFER = 1.75
+STOPPED_LEAD_V_EGO_BP = [0.0, 0.5, 1.5]
+STOPPED_LEAD_V_LEAD_BP = [0.0, 1.0, 2.0]
 APPROACH_BRAKE = 3.0
 APPROACH_MIN_GAP_BUFFER = 2.0
 APPROACH_DECEL_BLEND_BP = [0.5, 2.0]
@@ -97,6 +100,12 @@ def get_stop_distance_buffer(v_ego):
   # Preserve the full stopped gap at low speed, but keep a smaller floor at speed.
   fade = (STOP_DISTANCE_FADE_V**2) / (v_ego**2 + STOP_DISTANCE_FADE_V**2)
   return STOP_DISTANCE_MIN + (STOP_DISTANCE - STOP_DISTANCE_MIN) * fade
+
+
+def get_stopped_lead_buffer(v_ego, v_lead):
+  ego_blend = np.interp(v_ego, STOPPED_LEAD_V_EGO_BP, [0.0, 1.0, 1.0])
+  lead_blend = np.interp(v_lead, STOPPED_LEAD_V_LEAD_BP, [1.0, 1.0, 0.0])
+  return STOPPED_LEAD_BUFFER * ego_blend * lead_blend
 
 
 def get_safe_obstacle_distance(v_ego, t_follow):
@@ -362,8 +371,8 @@ class LongitudinalMpc:
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
     # and then treat that as a stopped car/obstacle at this new distance.
-    lead_0_obstacle = lead_xv_0[:, 0] + get_stopped_equivalence_factor(lead_xv_0[:, 1])
-    lead_1_obstacle = lead_xv_1[:, 0] + get_stopped_equivalence_factor(lead_xv_1[:, 1])
+    lead_0_obstacle = lead_xv_0[:, 0] + get_stopped_equivalence_factor(lead_xv_0[:, 1]) - get_stopped_lead_buffer(v_ego, lead_xv_0[:, 1])
+    lead_1_obstacle = lead_xv_1[:, 0] + get_stopped_equivalence_factor(lead_xv_1[:, 1]) - get_stopped_lead_buffer(v_ego, lead_xv_1[:, 1])
     lead_0_desired_gap = get_approach_follow_distance(v_ego, lead_xv_0[:, 1], t_follow, lead_0_a)
     lead_1_desired_gap = get_approach_follow_distance(v_ego, lead_xv_1[:, 1], t_follow, lead_1_a)
     lead_0_cost_obstacle_soft = lead_xv_0[:, 0] + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_0_desired_gap, 0.0, 1e8)
