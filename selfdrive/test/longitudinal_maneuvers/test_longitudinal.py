@@ -1,4 +1,5 @@
 import itertools
+import numpy as np
 from openpilot.common.parameterized import parameterized_class
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
@@ -191,6 +192,51 @@ def create_maneuvers(kwargs):
       )
     )
   return maneuvers
+
+
+def evaluate_maneuver_output(maneuver):
+  valid, output = maneuver.evaluate()
+  assert valid
+  return output
+
+
+def test_lead_creep_then_stop_does_not_launch_from_gap_noise():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "lead creeps then stops",
+      duration=20.0,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=STOP_DISTANCE,
+      speed_lead_values=[0.0, 0.0, 0.8, 0.0, 0.0],
+      breakpoints=[0.0, 10.0, 10.3, 10.6, 20.0],
+    )
+  )
+
+  assert np.max(output[:, 3]) < 0.25
+  assert output[-1, 6] > STOP_DISTANCE - 0.75
+
+
+def test_lead_departure_creeps_once_gap_opens():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "lead departs from stop",
+      duration=20.0,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=STOP_DISTANCE,
+      speed_lead_values=[0.0, 0.0, 1.5, 1.5],
+      breakpoints=[0.0, 10.0, 11.0, 20.0],
+    )
+  )
+
+  gap_opening = output[:, 6] - STOP_DISTANCE
+  departure_idx = np.argmax(gap_opening >= 0.5)
+  assert gap_opening[departure_idx] >= 0.5
+
+  response_window = (output[:, 0] >= output[departure_idx, 0]) & (output[:, 0] <= output[departure_idx, 0] + 2.0)
+  assert np.max(output[response_window, 5]) > 0.05
+  assert np.max(output[response_window, 3]) > 0.1
 
 
 @parameterized_class(("e2e", "force_decel"), itertools.product([True, False], repeat=2))

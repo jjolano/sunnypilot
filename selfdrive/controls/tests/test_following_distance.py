@@ -9,6 +9,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
   APPROACH_MIN_GAP_BUFFER,
   COMFORT_BRAKE,
+  LEAD_DEPARTURE_RELAXATION_MAX,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
@@ -16,6 +17,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_approach_follow_distance,
   get_approach_runway_blend,
   get_desired_follow_distance,
+  get_lead_departure_relaxation,
   get_lead_danger_distance,
   get_safe_obstacle_distance,
   get_stopped_lead_buffer,
@@ -55,6 +57,27 @@ def test_stopped_lead_buffer_only_applies_near_stop():
   assert get_stopped_lead_buffer(0.0, 0.0) == pytest.approx(0.0)
   assert get_stopped_lead_buffer(1.0, 0.0) == pytest.approx(STOPPED_LEAD_BUFFER)
   assert get_stopped_lead_buffer(1.0, 3.0) == pytest.approx(0.0)
+
+
+def test_lead_departure_relaxation_requires_gap_growth_and_pullaway():
+  assert get_lead_departure_relaxation(0.0, 0.5, 1.0) == pytest.approx(0.0)
+  assert get_lead_departure_relaxation(0.0, 1.5, 0.2) == pytest.approx(0.0)
+  assert get_lead_departure_relaxation(0.6, 0.7, 1.0) == pytest.approx(0.0)
+
+
+def test_lead_departure_relaxation_grows_with_confirmed_departure():
+  mild_departure = get_lead_departure_relaxation(0.0, 0.9, 0.6)
+  strong_departure = get_lead_departure_relaxation(0.0, 2.0, 1.0)
+
+  assert 0.0 < mild_departure < strong_departure <= LEAD_DEPARTURE_RELAXATION_MAX
+
+
+def test_lead_departure_relaxation_fades_out_as_ego_starts_creeping():
+  stopped_relaxation = get_lead_departure_relaxation(0.0, 2.0, 1.0)
+  creeping_relaxation = get_lead_departure_relaxation(0.8, 2.0, 1.0)
+
+  assert 0.0 < creeping_relaxation < stopped_relaxation
+  assert get_lead_departure_relaxation(1.0, 2.0, 1.0) == pytest.approx(0.0)
 
 
 @pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])

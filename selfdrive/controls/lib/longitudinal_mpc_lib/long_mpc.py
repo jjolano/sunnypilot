@@ -61,6 +61,12 @@ STOP_DISTANCE_MIN = 2.0
 STOPPED_LEAD_BUFFER = 1.75
 STOPPED_LEAD_V_EGO_BP = [0.0, 0.5, 1.5]
 STOPPED_LEAD_V_LEAD_BP = [0.0, 1.0, 2.0]
+LEAD_DEPARTURE_RELAXATION_MAX = 2.0
+LEAD_DEPARTURE_ARM_V_EGO = 0.1
+LEAD_DEPARTURE_V_EGO_BP = [0.0, 1.0]
+LEAD_DEPARTURE_V_LEAD_BP = [0.6, 2.0]
+LEAD_DEPARTURE_V_REL_BP = [0.2, 1.0]
+LEAD_DEPARTURE_GAP_OPENING_BP = [0.3, 1.0]
 APPROACH_BRAKE = 3.0
 APPROACH_MIN_GAP_BUFFER = 2.0
 APPROACH_DECEL_BLEND_BP = [0.5, 2.0]
@@ -106,6 +112,18 @@ def get_stopped_lead_buffer(v_ego, v_lead):
   ego_blend = np.interp(v_ego, STOPPED_LEAD_V_EGO_BP, [0.0, 1.0, 1.0])
   lead_blend = np.interp(v_lead, STOPPED_LEAD_V_LEAD_BP, [1.0, 1.0, 0.0])
   return STOPPED_LEAD_BUFFER * ego_blend * lead_blend
+
+
+def get_lead_departure_relaxation_blend(v_ego, v_lead, gap_opening):
+  ego_blend = np.interp(v_ego, LEAD_DEPARTURE_V_EGO_BP, [1.0, 0.0])
+  lead_blend = np.interp(v_lead, LEAD_DEPARTURE_V_LEAD_BP, [0.0, 1.0])
+  relative_blend = np.interp(v_lead - v_ego, LEAD_DEPARTURE_V_REL_BP, [0.0, 1.0])
+  gap_blend = np.interp(gap_opening, LEAD_DEPARTURE_GAP_OPENING_BP, [0.0, 1.0])
+  return ego_blend * min(lead_blend, relative_blend, gap_blend)
+
+
+def get_lead_departure_relaxation(v_ego, v_lead, gap_opening):
+  return LEAD_DEPARTURE_RELAXATION_MAX * get_lead_departure_relaxation_blend(v_ego, v_lead, gap_opening)
 
 
 def get_safe_obstacle_distance(v_ego, t_follow):
@@ -293,6 +311,7 @@ class LongitudinalMpc:
     self.time_linearization = 0.0
     self.time_integrator = 0.0
     self.x0 = np.zeros(X_DIM)
+    self.lead_departure_anchors = np.full(2, np.nan)
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights):
@@ -357,6 +376,28 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv, a_lead
 
+  def get_lead_departure_state(self, lead_idx, lead):
+    v_ego = self.x0[1]
+    if lead is None or not lead.status:
+      self.lead_departure_anchors[lead_idx] = np.nan
+      return False, 0.0, 0.0
+
+    d_rel = float(lead.dRel)
+    if v_ego >= LEAD_DEPARTURE_V_EGO_BP[-1]:
+      self.lead_departure_anchors[lead_idx] = np.nan
+      return False, 0.0, 0.0
+
+    if not np.isfinite(self.lead_departure_anchors[lead_idx]):
+      if v_ego <= LEAD_DEPARTURE_ARM_V_EGO:
+        self.lead_departure_anchors[lead_idx] = d_rel
+      return np.isfinite(self.lead_departure_anchors[lead_idx]), 0.0, 0.0
+
+    self.lead_departure_anchors[lead_idx] = min(self.lead_departure_anchors[lead_idx], d_rel)
+
+    gap_opening = max(0.0, d_rel - self.lead_departure_anchors[lead_idx])
+    blend = get_lead_departure_relaxation_blend(v_ego, float(lead.vLeadK), gap_opening)
+    return True, blend, LEAD_DEPARTURE_RELAXATION_MAX * blend
+
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
@@ -371,12 +412,25 @@ class LongitudinalMpc:
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
     # and then treat that as a stopped car/obstacle at this new distance.
-    lead_0_obstacle = lead_xv_0[:, 0] + get_stopped_equivalence_factor(lead_xv_0[:, 1]) - get_stopped_lead_buffer(v_ego, lead_xv_0[:, 1])
-    lead_1_obstacle = lead_xv_1[:, 0] + get_stopped_equivalence_factor(lead_xv_1[:, 1]) - get_stopped_lead_buffer(v_ego, lead_xv_1[:, 1])
+    lead_0_departure_armed, lead_0_departure_blend, lead_0_departure_relaxation = self.get_lead_departure_state(0, radarstate.leadOne)
+    lead_1_departure_armed, lead_1_departure_blend, lead_1_departure_relaxation = self.get_lead_departure_state(1, radarstate.leadTwo)
+    lead_0_hard_v = lead_xv_0[:, 1] if not lead_0_departure_armed else lead_0_departure_blend * lead_xv_0[:, 1]
+    lead_1_hard_v = lead_xv_1[:, 1] if not lead_1_departure_armed else lead_1_departure_blend * lead_xv_1[:, 1]
+    lead_0_stopped_buffer = get_stopped_lead_buffer(v_ego, lead_xv_0[:, 1])
+    lead_1_stopped_buffer = get_stopped_lead_buffer(v_ego, lead_xv_1[:, 1])
+    if lead_0_departure_armed:
+      lead_0_stopped_buffer *= lead_0_departure_blend
+    if lead_1_departure_armed:
+      lead_1_stopped_buffer *= lead_1_departure_blend
+    lead_0_obstacle = lead_xv_0[:, 0] + get_stopped_equivalence_factor(lead_0_hard_v) - lead_0_stopped_buffer
+    lead_1_obstacle = lead_xv_1[:, 0] + get_stopped_equivalence_factor(lead_1_hard_v) - lead_1_stopped_buffer
     lead_0_desired_gap = get_approach_follow_distance(v_ego, lead_xv_0[:, 1], t_follow, lead_0_a)
     lead_1_desired_gap = get_approach_follow_distance(v_ego, lead_xv_1[:, 1], t_follow, lead_1_a)
     lead_0_cost_obstacle_soft = lead_xv_0[:, 0] + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_0_desired_gap, 0.0, 1e8)
     lead_1_cost_obstacle_soft = lead_xv_1[:, 0] + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_1_desired_gap, 0.0, 1e8)
+    # Only bias the preferred gap once the lead has both opened real space and clearly pulled away.
+    lead_0_cost_obstacle_soft += lead_0_departure_relaxation
+    lead_1_cost_obstacle_soft += lead_1_departure_relaxation
     lead_0_runway_blend = get_approach_runway_blend(lead_xv_0[0, 0], v_ego, lead_xv_0[0, 1], t_follow)
     lead_1_runway_blend = get_approach_runway_blend(lead_xv_1[0, 0], v_ego, lead_xv_1[0, 1], t_follow)
     lead_0_cost_obstacle = lead_0_obstacle + lead_0_runway_blend * (lead_0_cost_obstacle_soft - lead_0_obstacle)
