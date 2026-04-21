@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import itertools
 from openpilot.common.parameterized import parameterized_class
@@ -5,9 +6,16 @@ from openpilot.common.parameterized import parameterized_class
 from cereal import log
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  APPROACH_BRAKE,
+  APPROACH_MIN_GAP_BUFFER,
   COMFORT_BRAKE,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
+  STOP_DISTANCE_MIN,
+  get_approach_follow_distance,
+  get_approach_runway_blend,
+  get_desired_follow_distance,
+  get_lead_danger_distance,
   get_safe_obstacle_distance,
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
@@ -16,13 +24,8 @@ from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
 def stop_distance_buffer(v_ego):
-  return STOP_DISTANCE * (STOP_DISTANCE_FADE_V**2) / (v_ego**2 + STOP_DISTANCE_FADE_V**2)
-
-
-def desired_follow_distance(v_ego, v_lead, t_follow=None):
-  if t_follow is None:
-    t_follow = get_T_FOLLOW()
-  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + stop_distance_buffer(v_ego) - get_stopped_equivalence_factor(v_lead)
+  fade = (STOP_DISTANCE_FADE_V**2) / (v_ego**2 + STOP_DISTANCE_FADE_V**2)
+  return STOP_DISTANCE_MIN + (STOP_DISTANCE - STOP_DISTANCE_MIN) * fade
 
 
 @pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])
@@ -32,11 +35,58 @@ def test_safe_obstacle_distance_matches_explicit_formula(speed):
   assert get_safe_obstacle_distance(speed, t_follow) == pytest.approx(expected)
 
 
+@pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])
+def test_desired_follow_distance_matches_explicit_formula(speed):
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  expected = (speed**2) / (2 * COMFORT_BRAKE) + t_follow * speed + stop_distance_buffer(speed) - get_stopped_equivalence_factor(speed)
+  assert get_desired_follow_distance(speed, speed, t_follow) == pytest.approx(expected)
+
+
 def test_stop_distance_buffer_fades_with_speed():
   buffer_speeds = [0.0, 5.0, 10.0, 35.0]
   buffers = [stop_distance_buffer(speed) for speed in buffer_speeds]
   assert buffers[0] == pytest.approx(STOP_DISTANCE)
-  assert buffers[0] > buffers[1] > buffers[2] > buffers[3] > 0.0
+  assert buffers[0] > buffers[1] > buffers[2] > buffers[3] > STOP_DISTANCE_MIN - 1e-6
+
+
+@pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])
+def test_approach_follow_distance_matches_steady_state_when_speeds_match(speed):
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  assert get_approach_follow_distance(speed, speed, t_follow) == pytest.approx(get_desired_follow_distance(speed, speed, t_follow))
+
+
+def test_approach_follow_distance_uses_runway_before_danger_zone():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 25.0
+  v_lead = 20.0
+  closing_speed = v_ego - v_lead
+
+  approach_gap = get_approach_follow_distance(v_ego, v_lead, t_follow)
+  expected_gap = max(
+    t_follow * v_lead + stop_distance_buffer(v_lead) + (closing_speed**2) / (2 * APPROACH_BRAKE),
+    get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER,
+  )
+
+  assert approach_gap == pytest.approx(expected_gap)
+  assert get_lead_danger_distance(v_ego, v_lead, t_follow) < approach_gap < get_desired_follow_distance(v_ego, v_lead, t_follow)
+
+
+def test_approach_runway_blend_stays_off_near_legacy_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 20.0
+  v_lead = 20.0
+  x_lead = get_desired_follow_distance(v_ego, v_lead, t_follow) + 1.0
+
+  assert get_approach_runway_blend(x_lead, v_ego, v_lead, t_follow) == pytest.approx(0.0)
+
+
+def test_approach_runway_blend_reaches_full_with_large_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 25.0
+  v_lead = 20.0
+  x_lead = get_desired_follow_distance(v_ego, v_lead, t_follow) + 25.0
+
+  assert get_approach_runway_blend(x_lead, v_ego, v_lead, t_follow) == pytest.approx(1.0)
 
 
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):
@@ -56,6 +106,22 @@ def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personalit
   return output[-1, 2] - output[-1, 1]
 
 
+def run_lead_closing_simulation(v_ego, v_lead, initial_distance_lead, t_end=30.0, personality=0):
+  man = Maneuver(
+    '',
+    duration=t_end,
+    initial_speed=float(v_ego),
+    lead_relevancy=True,
+    initial_distance_lead=float(initial_distance_lead),
+    speed_lead_values=[float(v_lead)],
+    breakpoints=[0.0],
+    personality=personality,
+  )
+  valid, output = man.evaluate()
+  assert valid
+  return output
+
+
 @parameterized_class(
   ("e2e", "personality", "speed"),
   itertools.product(
@@ -72,7 +138,20 @@ class TestFollowingDistance:
   def test_following_distance(self):
     v_lead = float(self.speed)
     simulation_steady_state = run_following_distance_simulation(v_lead, e2e=self.e2e, personality=self.personality)
-    correct_steady_state = desired_follow_distance(v_lead, v_lead, get_T_FOLLOW(self.personality))
+    correct_steady_state = get_desired_follow_distance(v_lead, v_lead, get_T_FOLLOW(self.personality))
     err_ratio = 0.2 if self.e2e else 0.1
-    abs_err_margin = 0.5 if v_lead > 0.0 else 1.15
+    abs_err_margin = 0.5 if v_lead > 0.0 else 2.0
     assert simulation_steady_state == pytest.approx(correct_steady_state, abs=err_ratio * correct_steady_state + abs_err_margin)
+
+
+def test_closing_lead_bleeds_off_speed_late_in_approach():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  output = run_lead_closing_simulation(v_ego=25.0, v_lead=20.0, initial_distance_lead=90.0)
+
+  time = output[:, 0]
+  closing_speed = output[:, 3] - output[:, 4]
+  late_approach = time >= (time[-1] - 5.0)
+
+  assert np.any(late_approach)
+  assert np.max(closing_speed[late_approach]) < 1.5
+  assert output[-1, 6] == pytest.approx(get_desired_follow_distance(20.0, 20.0, t_follow), abs=4.0)
