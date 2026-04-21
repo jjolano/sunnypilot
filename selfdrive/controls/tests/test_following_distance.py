@@ -4,14 +4,40 @@ from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
 
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  COMFORT_BRAKE,
+  STOP_DISTANCE,
+  STOP_DISTANCE_FADE_V,
+  get_safe_obstacle_distance,
+  get_stopped_equivalence_factor,
+  get_T_FOLLOW,
+)
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
+
+
+def stop_distance_buffer(v_ego):
+  return STOP_DISTANCE * (STOP_DISTANCE_FADE_V**2) / (v_ego**2 + STOP_DISTANCE_FADE_V**2)
 
 
 def desired_follow_distance(v_ego, v_lead, t_follow=None):
   if t_follow is None:
     t_follow = get_T_FOLLOW()
-  return get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
+  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + stop_distance_buffer(v_ego) - get_stopped_equivalence_factor(v_lead)
+
+
+@pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])
+def test_safe_obstacle_distance_matches_explicit_formula(speed):
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  expected = (speed**2) / (2 * COMFORT_BRAKE) + t_follow * speed + stop_distance_buffer(speed)
+  assert get_safe_obstacle_distance(speed, t_follow) == pytest.approx(expected)
+
+
+def test_stop_distance_buffer_fades_with_speed():
+  buffer_speeds = [0.0, 5.0, 10.0, 35.0]
+  buffers = [stop_distance_buffer(speed) for speed in buffer_speeds]
+  assert buffers[0] == pytest.approx(STOP_DISTANCE)
+  assert buffers[0] > buffers[1] > buffers[2] > buffers[3] > 0.0
+
 
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):
   man = Maneuver(
@@ -21,21 +47,27 @@ def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personalit
     lead_relevancy=True,
     initial_distance_lead=100,
     speed_lead_values=[v_lead],
-    breakpoints=[0.],
+    breakpoints=[0.0],
     e2e=e2e,
     personality=personality,
   )
   valid, output = man.evaluate()
   assert valid
-  return output[-1,2] - output[-1,1]
+  return output[-1, 2] - output[-1, 1]
 
 
-@parameterized_class(("e2e", "personality", "speed"), itertools.product(
-                      [True, False], # e2e
-                      [log.LongitudinalPersonality.relaxed, # personality
-                       log.LongitudinalPersonality.standard,
-                       log.LongitudinalPersonality.aggressive],
-                      [0,10,35])) # speed
+@parameterized_class(
+  ("e2e", "personality", "speed"),
+  itertools.product(
+    [True, False],  # e2e
+    [
+      log.LongitudinalPersonality.relaxed,  # personality
+      log.LongitudinalPersonality.standard,
+      log.LongitudinalPersonality.aggressive,
+    ],
+    [0, 10, 35],
+  ),
+)  # speed
 class TestFollowingDistance:
   def test_following_distance(self):
     v_lead = float(self.speed)
