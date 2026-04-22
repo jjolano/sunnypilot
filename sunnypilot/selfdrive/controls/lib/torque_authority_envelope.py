@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import IntEnum
 
 
 START_TORQUE_THRESHOLD = 0.015
@@ -33,11 +33,11 @@ def sign(val: float) -> float:
   return 1.0 if val > 0.0 else (-1.0 if val < 0.0 else 0.0)
 
 
-class Phase(Enum):
-  IDLE = auto()
-  RAMP_IN = auto()
-  HOLD = auto()
-  TAPER_OUT = auto()
+class Phase(IntEnum):
+  IDLE = 0
+  RAMP_IN = 1
+  HOLD = 2
+  TAPER_OUT = 3
 
 
 @dataclass
@@ -62,9 +62,11 @@ class EnvelopeInputs:
 class EnvelopeResult:
   output_torque: float
   phase: str
+  phase_id: int
   phase_gain: float
   authority_floor: float
   disturbance_bias: float
+  nominal_torque: float
   learning_frozen: bool
 
 
@@ -121,9 +123,11 @@ class TorqueAuthorityEnvelope:
     return EnvelopeResult(
       output_torque=output_torque,
       phase=self.phase.name,
+      phase_id=int(self.phase),
       phase_gain=self.phase_gain,
       authority_floor=authority_floor,
       disturbance_bias=self.disturbance_bias,
+      nominal_torque=inputs.nominal_torque,
       learning_frozen=learning_frozen,
     )
 

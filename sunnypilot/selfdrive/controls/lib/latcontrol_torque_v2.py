@@ -24,6 +24,13 @@ LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 FRICTION_THRESHOLD = 0.3
 VERSION = 2
 
+V2_PHASE_MAP = {
+  0: log.ControlsState.LateralTorqueState.V2Phase.idle,
+  1: log.ControlsState.LateralTorqueState.V2Phase.rampIn,
+  2: log.ControlsState.LateralTorqueState.V2Phase.hold,
+  3: log.ControlsState.LateralTorqueState.V2Phase.taperOut,
+}
+
 
 class LatControlTorque(LatControl):
   def __init__(self, CP, CP_SP, CI, dt):
@@ -145,6 +152,12 @@ class LatControlTorque(LatControl):
     pid_log.actualLateralAccel = float(measurement)
     pid_log.desiredLateralAccel = float(setpoint)
     pid_log.desiredLateralJerk = float(desired_lateral_jerk)
+    pid_log.v2Phase = V2_PHASE_MAP[envelope_result.phase_id]
+    pid_log.v2PhaseGain = float(envelope_result.phase_gain)
+    pid_log.v2AuthorityFloor = float(envelope_result.authority_floor)
+    pid_log.v2DisturbanceBias = float(envelope_result.disturbance_bias)
+    pid_log.v2NominalOutput = float(-envelope_result.nominal_torque)
+    pid_log.v2LearningFrozen = bool(envelope_result.learning_frozen)
     pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
 
     return -output_torque, 0.0, pid_log

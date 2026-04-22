@@ -34,8 +34,10 @@ def test_ramp_hold_and_taper():
   result = prime_hold(envelope)
 
   assert result.phase == "HOLD"
+  assert result.phase_id == 2
   assert result.phase_gain == 1.0
   assert result.output_torque > 0.0
+  assert result.nominal_torque > 0.0
 
   taper_seen = False
   for _ in range(40):
@@ -48,6 +50,7 @@ def test_ramp_hold_and_taper():
 
   assert taper_seen
   assert result.phase == "IDLE"
+  assert result.phase_id == 0
   assert result.phase_gain == 0.0
 
 

@@ -847,6 +847,20 @@ struct ControlsState @0x97ff69c53601abf1 {
     desiredLateralAccel @10 :Float32;
     desiredLateralJerk @11 :Float32;
     version @12 :Int32;
+
+    enum V2Phase @0xbcbf1a4ab8dc1ba9 {
+      idle @0;
+      rampIn @1;
+      hold @2;
+      taperOut @3;
+    }
+
+    v2Phase @13 :V2Phase;
+    v2PhaseGain @14 :Float32;
+    v2AuthorityFloor @15 :Float32;
+    v2DisturbanceBias @16 :Float32;
+    v2NominalOutput @17 :Float32;
+    v2LearningFrozen @18 :Bool;
    }
 
   struct LateralAngleState {
