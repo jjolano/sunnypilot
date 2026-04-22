@@ -81,7 +81,7 @@ def test_learning_state_survives_reengagement():
   assert not fresh_controller.authority_envelope.buckets
 
 
-def test_v2_logging_fields_are_populated():
+def test_adaptive_torque_logging_fields_are_populated():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
 
   CS = car.CarState.new_message()
@@ -97,7 +97,10 @@ def test_v2_logging_fields_are_populated():
 
   assert lac_log is not None
   assert lac_log.version == 2
-  assert lac_log.v2Phase == log.ControlsState.LateralTorqueState.V2Phase.hold
-  assert lac_log.v2PhaseGain == 1.0
-  assert lac_log.v2AuthorityFloor > 0.0
-  assert lac_log.v2NominalOutput != 0.0
+  adaptive_log = lac_log.adaptiveTorqueState
+  assert adaptive_log.active
+  assert adaptive_log.phase == log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.hold
+  assert adaptive_log.phaseGain == 1.0
+  assert adaptive_log.nominalOutput != 0.0
+  assert not adaptive_log.releaseActive
+  assert abs(lac_log.output - (adaptive_log.nominalOutput + adaptive_log.assistOutput + adaptive_log.biasOutput)) < 1e-6

@@ -68,9 +68,13 @@ class EnvelopeResult:
   phase: str
   phase_id: int
   phase_gain: float
+  assist_torque: float
+  bias_torque: float
   authority_floor: float
   disturbance_bias: float
   nominal_torque: float
+  release_active: bool
+  response_deficit: float
   learning_frozen: bool
 
 
@@ -125,15 +129,21 @@ class TorqueAuthorityEnvelope:
     if inputs.active and self.sign_latch != 0.0 and self.phase != Phase.IDLE and not override_release:
       floor_torque = self.phase_gain * applied_floor
       output_torque = self.sign_latch * max(abs(command_core), floor_torque)
+    assist_torque = output_torque - command_core
+    release_active = override_release or self.phase == Phase.TAPER_OUT
 
     return EnvelopeResult(
       output_torque=output_torque,
       phase=self.phase.name,
       phase_id=int(self.phase),
       phase_gain=self.phase_gain,
+      assist_torque=assist_torque,
+      bias_torque=self.disturbance_bias,
       authority_floor=applied_floor,
       disturbance_bias=self.disturbance_bias,
       nominal_torque=inputs.nominal_torque,
+      release_active=release_active,
+      response_deficit=inputs.tracking_torque_error,
       learning_frozen=learning_frozen,
     )
 

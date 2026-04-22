@@ -24,11 +24,11 @@ LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 FRICTION_THRESHOLD = 0.3
 VERSION = 2
 
-V2_PHASE_MAP = {
-  0: log.ControlsState.LateralTorqueState.V2Phase.idle,
-  1: log.ControlsState.LateralTorqueState.V2Phase.rampIn,
-  2: log.ControlsState.LateralTorqueState.V2Phase.hold,
-  3: log.ControlsState.LateralTorqueState.V2Phase.taperOut,
+ADAPTIVE_PHASE_MAP = {
+  0: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.idle,
+  1: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.engage,
+  2: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.hold,
+  3: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.release,
 }
 
 
@@ -152,12 +152,18 @@ class LatControlTorque(LatControl):
     pid_log.actualLateralAccel = float(measurement)
     pid_log.desiredLateralAccel = float(setpoint)
     pid_log.desiredLateralJerk = float(desired_lateral_jerk)
-    pid_log.v2Phase = V2_PHASE_MAP[envelope_result.phase_id]
-    pid_log.v2PhaseGain = float(envelope_result.phase_gain)
-    pid_log.v2AuthorityFloor = float(envelope_result.authority_floor)
-    pid_log.v2DisturbanceBias = float(envelope_result.disturbance_bias)
-    pid_log.v2NominalOutput = float(-envelope_result.nominal_torque)
-    pid_log.v2LearningFrozen = bool(envelope_result.learning_frozen)
+    adaptive_log = pid_log.init('adaptiveTorqueState')
+    adaptive_log.active = bool(
+      active and (envelope_result.phase_id != 0 or abs(envelope_result.assist_torque) > 1e-3 or abs(envelope_result.bias_torque) > 1e-3)
+    )
+    adaptive_log.phase = ADAPTIVE_PHASE_MAP[envelope_result.phase_id]
+    adaptive_log.releaseActive = bool(envelope_result.release_active)
+    adaptive_log.phaseGain = float(envelope_result.phase_gain)
+    adaptive_log.nominalOutput = float(-envelope_result.nominal_torque)
+    adaptive_log.assistOutput = float(-envelope_result.assist_torque)
+    adaptive_log.biasOutput = float(-envelope_result.bias_torque)
+    adaptive_log.responseDeficit = float(envelope_result.response_deficit)
+    adaptive_log.learningFrozen = bool(envelope_result.learning_frozen)
     pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
 
     return -output_torque, 0.0, pid_log

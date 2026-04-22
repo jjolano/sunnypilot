@@ -848,19 +848,27 @@ struct ControlsState @0x97ff69c53601abf1 {
     desiredLateralJerk @11 :Float32;
     version @12 :Int32;
 
-    enum V2Phase @0xbcbf1a4ab8dc1ba9 {
-      idle @0;
-      rampIn @1;
-      hold @2;
-      taperOut @3;
+    struct AdaptiveTorqueState {
+      active @0 :Bool;
+
+      enum Phase @0xdd0ab28a74b46aa1 {
+        idle @0;
+        engage @1;
+        hold @2;
+        release @3;
+      }
+
+      phase @1 :Phase;
+      releaseActive @2 :Bool;
+      phaseGain @3 :Float32;
+      nominalOutput @4 :Float32;
+      assistOutput @5 :Float32;
+      biasOutput @6 :Float32;
+      responseDeficit @7 :Float32;
+      learningFrozen @8 :Bool;
     }
 
-    v2Phase @13 :V2Phase;
-    v2PhaseGain @14 :Float32;
-    v2AuthorityFloor @15 :Float32;
-    v2DisturbanceBias @16 :Float32;
-    v2NominalOutput @17 :Float32;
-    v2LearningFrozen @18 :Bool;
+    adaptiveTorqueState @13 :AdaptiveTorqueState;
    }
 
   struct LateralAngleState {

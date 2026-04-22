@@ -37,7 +37,9 @@ def test_ramp_hold_and_taper():
   assert result.phase_id == 2
   assert result.phase_gain == 1.0
   assert result.output_torque > 0.0
+  assert not result.release_active
   assert result.nominal_torque > 0.0
+  assert result.response_deficit == 0.0
 
   taper_seen = False
   for _ in range(40):
@@ -52,6 +54,7 @@ def test_ramp_hold_and_taper():
   assert result.phase == "IDLE"
   assert result.phase_id == 0
   assert result.phase_gain == 0.0
+  assert not result.release_active
 
 
 def test_disturbance_bias_builds_and_decays():
@@ -64,6 +67,7 @@ def test_disturbance_bias_builds_and_decays():
     )
 
   assert result.disturbance_bias > 0.0
+  assert result.bias_torque > 0.0
   biased = result.disturbance_bias
 
   for _ in range(120):
@@ -115,6 +119,8 @@ def test_override_low_demand_releases_envelope_quickly():
   assert result.phase == "TAPER_OUT"
   assert result.phase_gain <= 0.25
   assert result.authority_floor == 0.0
+  assert result.release_active
+  assert abs(result.assist_torque) < 1e-9
   assert abs(result.output_torque) < 0.02
 
 
@@ -137,3 +143,5 @@ def test_override_sign_conflict_releases_envelope():
   assert result.phase == "TAPER_OUT"
   assert result.phase_gain <= 0.25
   assert result.authority_floor == 0.0
+  assert result.release_active
+  assert abs(result.assist_torque) < 1e-9
