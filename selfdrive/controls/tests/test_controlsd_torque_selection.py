@@ -7,9 +7,10 @@ from opendbc.car.toyota.values import CAR as TOYOTA
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.helpers import convert_to_capnp
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque as LatControlTorqueV1
-from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
+from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorque as LatControlTorqueV3
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
 params_pyx.Params = object
@@ -17,6 +18,26 @@ params_pyx.ParamKeyFlag = object
 params_pyx.ParamKeyType = object
 params_pyx.UnknownKeyName = RuntimeError
 sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
+
+msgq = types.ModuleType("msgq")
+msgq.fake_event_handle = object()
+msgq.drain_sock_raw = lambda *args, **kwargs: []
+msgq.MultiplePublishersError = RuntimeError
+msgq.IpcError = RuntimeError
+msgq.Context = object
+msgq.Poller = object
+msgq.SubSocket = object
+msgq.PubSocket = object
+msgq.SocketEventHandle = object
+msgq.toggle_fake_events = lambda *args, **kwargs: None
+msgq.set_fake_prefix = lambda *args, **kwargs: None
+msgq.get_fake_prefix = lambda *args, **kwargs: ""
+msgq.delete_fake_prefix = lambda *args, **kwargs: None
+msgq.wait_for_one_event = lambda *args, **kwargs: None
+msgq.pub_sock = lambda *args, **kwargs: None
+msgq.sub_sock = lambda *args, **kwargs: None
+msgq.context = None
+sys.modules.setdefault("msgq", msgq)
 
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 
@@ -38,8 +59,8 @@ def get_test_context():
   CarInterface = interfaces[car_name]
   CP = CarInterface.get_non_essential_params(car_name)
   CP_SP = CarInterface.get_non_essential_params_sp(CP, car_name)
+  CP_SP.neuralNetworkLateralControl.model.path = MOCK_MODEL_PATH
   CI = CarInterface(CP, CP_SP)
-  sunnypilot_interfaces.setup_interfaces(CI)
   return CP, convert_to_capnp(CP_SP), CI
 
 
@@ -73,6 +94,10 @@ def test_torque_controller_selection_variants():
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, b"2.0"))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert isinstance(selected, LatControlTorqueV2)
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 3.0))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV3)
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 1.0))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
