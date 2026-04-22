@@ -15,12 +15,19 @@ from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
 from openpilot.selfdrive.locationd.helpers import Pose
 from openpilot.common.mock.generators import generate_livePose
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
 
 
 class TestLatControl:
-
-  @parameterized.expand([(HONDA.HONDA_CIVIC, LatControlPID), (TOYOTA.TOYOTA_RAV4, LatControlTorque),
-                         (NISSAN.NISSAN_LEAF, LatControlAngle), (GM.CHEVROLET_BOLT_EUV, LatControlTorque)])
+  @parameterized.expand(
+    [
+      (HONDA.HONDA_CIVIC, LatControlPID),
+      (TOYOTA.TOYOTA_RAV4, LatControlTorque),
+      (TOYOTA.TOYOTA_RAV4, LatControlTorqueV2),
+      (NISSAN.NISSAN_LEAF, LatControlAngle),
+      (GM.CHEVROLET_BOLT_EUV, LatControlTorque),
+    ]
+  )
   def test_saturation(self, car_name, controller):
     CarInterface = interfaces[car_name]
     CP = CarInterface.get_non_essential_params(car_name)

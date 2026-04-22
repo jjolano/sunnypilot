@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+
 import time
 
 import cereal.messaging as messaging
@@ -17,6 +18,7 @@ from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
 
 
 class ControlsExt(ModelStateBase):
@@ -36,16 +38,33 @@ class ControlsExt(ModelStateBase):
 
   def initialize_lateral_control(self, lac, CI, dt):
     enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
-    torque_versions = self.params.get("TorqueControlTune")
+    torque_version = self.normalize_torque_tune_version(self.params.get("TorqueControlTune"))
     if not enforce_torque_control:
       if self.CP.lateralTuning.which() == 'torque':
         return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)  # FIXME-SP: revert when upstream fixes tuning issues with v1
       return lac
 
-    if torque_versions == 0.0:  # v0
+    if torque_version == 0.0:
       return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)
-    else:
-      return lac
+    if torque_version == 2.0:
+      return LatControlTorqueV2(self.CP, self.CP_SP, CI, dt)
+    return lac
+
+  @staticmethod
+  def normalize_torque_tune_version(value) -> float | None:
+    if value is None:
+      return None
+
+    if isinstance(value, (int, float)):
+      return float(value)
+
+    if isinstance(value, bytes):
+      value = value.decode()
+
+    try:
+      return float(value)
+    except (TypeError, ValueError):
+      return None
 
   def get_params_sp(self, sm: messaging.SubMaster) -> None:
     if time.monotonic() - self._param_update_time > PARAMS_UPDATE_PERIOD:
