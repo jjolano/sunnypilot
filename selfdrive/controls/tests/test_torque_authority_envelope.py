@@ -94,3 +94,46 @@ def test_bump_freezes_learning():
 
   assert result.learning_frozen
   assert next(iter(envelope.buckets.values())).authority_floor == authority_floor
+
+
+def test_override_low_demand_releases_envelope_quickly():
+  envelope = TorqueAuthorityEnvelope(0.01)
+  prime_hold(envelope)
+
+  result = envelope.update(
+    make_inputs(
+      steering_pressed=True,
+      nominal_torque=0.005,
+      desired_lateral_accel=0.05,
+      actual_lateral_accel=0.02,
+      desired_lateral_jerk=0.05,
+      actual_lateral_jerk=0.05,
+      lookahead_lateral_jerk=0.05,
+    )
+  )
+
+  assert result.phase == "TAPER_OUT"
+  assert result.phase_gain <= 0.25
+  assert result.authority_floor == 0.0
+  assert abs(result.output_torque) < 0.02
+
+
+def test_override_sign_conflict_releases_envelope():
+  envelope = TorqueAuthorityEnvelope(0.01)
+  prime_hold(envelope)
+
+  result = envelope.update(
+    make_inputs(
+      steering_pressed=True,
+      nominal_torque=0.08,
+      desired_lateral_accel=0.25,
+      actual_lateral_accel=-0.25,
+      desired_lateral_jerk=0.1,
+      actual_lateral_jerk=-0.2,
+      lookahead_lateral_jerk=0.05,
+    )
+  )
+
+  assert result.phase == "TAPER_OUT"
+  assert result.phase_gain <= 0.25
+  assert result.authority_floor == 0.0

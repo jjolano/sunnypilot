@@ -23,6 +23,10 @@ FLOOR_LEARN_UP_RATE = 0.08
 FLOOR_LEARN_DOWN_RATE = 0.02
 BIAS_LEARN_RATE = 0.3
 BIAS_DECAY_RATE = 0.04
+OVERRIDE_RELEASE_DEMAND_THRESHOLD = 0.2
+OVERRIDE_RELEASE_SIGN_THRESHOLD = 0.1
+OVERRIDE_RELEASE_PHASE_GAIN = 0.25
+OVERRIDE_BIAS_DECAY_RATE = 0.12
 
 
 def clamp(val: float, lower: float, upper: float) -> float:
@@ -97,11 +101,12 @@ class TorqueAuthorityEnvelope:
 
     nominal_sign = sign(inputs.nominal_torque)
     self._update_sign_tracking(nominal_sign)
+    override_release = self._override_release_requested(inputs)
 
     if self._is_bump_disturbance(inputs):
       self.freeze_timer = BUMP_FREEZE_TIME
 
-    self._advance_phase(inputs, nominal_sign)
+    self._advance_phase(inputs, nominal_sign, override_release)
 
     learning_frozen = self._learning_frozen(inputs, nominal_sign)
     bucket = self._get_bucket(inputs)
@@ -112,12 +117,13 @@ class TorqueAuthorityEnvelope:
       bucket.last_used_frame = self.frame
       authority_floor = bucket.authority_floor
 
-    self._update_disturbance_bias(inputs, learning_frozen)
+    self._update_disturbance_bias(inputs, learning_frozen, override_release)
 
     command_core = inputs.nominal_torque + self.disturbance_bias
     output_torque = command_core
-    if inputs.active and self.sign_latch != 0.0 and self.phase != Phase.IDLE:
-      floor_torque = self.phase_gain * authority_floor
+    applied_floor = 0.0 if override_release else authority_floor
+    if inputs.active and self.sign_latch != 0.0 and self.phase != Phase.IDLE and not override_release:
+      floor_torque = self.phase_gain * applied_floor
       output_torque = self.sign_latch * max(abs(command_core), floor_torque)
 
     return EnvelopeResult(
@@ -125,7 +131,7 @@ class TorqueAuthorityEnvelope:
       phase=self.phase.name,
       phase_id=int(self.phase),
       phase_gain=self.phase_gain,
-      authority_floor=authority_floor,
+      authority_floor=applied_floor,
       disturbance_bias=self.disturbance_bias,
       nominal_torque=inputs.nominal_torque,
       learning_frozen=learning_frozen,
@@ -142,11 +148,17 @@ class TorqueAuthorityEnvelope:
       self.last_nonzero_sign = nominal_sign
       self.sign_stable_frames = 1
 
-  def _advance_phase(self, inputs: EnvelopeInputs, nominal_sign: float) -> None:
+  def _advance_phase(self, inputs: EnvelopeInputs, nominal_sign: float, override_release: bool) -> None:
     if not inputs.active:
       self.phase = Phase.IDLE
       self.phase_gain = 0.0
       self.sign_latch = 0.0
+      return
+
+    if override_release:
+      if self.phase != Phase.IDLE:
+        self.phase = Phase.TAPER_OUT
+        self.phase_gain = min(self.phase_gain, OVERRIDE_RELEASE_PHASE_GAIN)
       return
 
     start_ready = self._start_ready(inputs, nominal_sign)
@@ -228,6 +240,18 @@ class TorqueAuthorityEnvelope:
       or sign_unstable
     )
 
+  def _override_release_requested(self, inputs: EnvelopeInputs) -> bool:
+    if not inputs.steering_pressed:
+      return False
+
+    low_demand = abs(inputs.desired_lateral_accel) < OVERRIDE_RELEASE_DEMAND_THRESHOLD
+    sign_conflict = (
+      abs(inputs.desired_lateral_accel) > OVERRIDE_RELEASE_SIGN_THRESHOLD
+      and abs(inputs.actual_lateral_accel) > OVERRIDE_RELEASE_SIGN_THRESHOLD
+      and sign(inputs.desired_lateral_accel) != sign(inputs.actual_lateral_accel)
+    )
+    return low_demand or sign_conflict
+
   def _update_authority_floor(self, bucket: BucketState, inputs: EnvelopeInputs) -> None:
     command_abs = abs(inputs.nominal_torque + self.disturbance_bias)
     if command_abs < START_TORQUE_THRESHOLD:
@@ -245,7 +269,11 @@ class TorqueAuthorityEnvelope:
       bucket.authority_floor = self._approach(bucket.authority_floor, target_floor, FLOOR_LEARN_UP_RATE * 0.5, FLOOR_LEARN_DOWN_RATE)
       bucket.confidence = min(1.0, bucket.confidence + self.dt)
 
-  def _update_disturbance_bias(self, inputs: EnvelopeInputs, learning_frozen: bool) -> None:
+  def _update_disturbance_bias(self, inputs: EnvelopeInputs, learning_frozen: bool, override_release: bool) -> None:
+    if override_release:
+      self.disturbance_bias = self._approach(self.disturbance_bias, 0.0, OVERRIDE_BIAS_DECAY_RATE, OVERRIDE_BIAS_DECAY_RATE)
+      return
+
     should_adapt = (
       self.phase == Phase.HOLD
       and not learning_frozen
