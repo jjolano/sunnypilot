@@ -8,6 +8,9 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 LAUNCH_ENVELOPE_MIN_ACCEL = 0.15
 LAUNCH_ENVELOPE_MAX_ACCEL = 0.35
+LAUNCH_BREAKAWAY_ACCEL = 0.4
+LAUNCH_BREAKAWAY_TIME = 0.25
+LAUNCH_BREAKAWAY_V_EGO = 0.2
 LAUNCH_ENVELOPE_TIME_BP = [0.0, 0.5]
 LAUNCH_ENVELOPE_V_EGO_BP = [0.0, 0.6]
 
@@ -50,14 +53,22 @@ def long_control_state_trans(CP, CP_SP, active, long_control_state, v_ego, shoul
 
 
 def get_launch_envelope_blend(v_ego, launch_elapsed):
+  taper_elapsed = max(launch_elapsed - LAUNCH_BREAKAWAY_TIME, 0.0)
   speed_blend = np.interp(v_ego, LAUNCH_ENVELOPE_V_EGO_BP, [1.0, 0.0])
-  time_blend = np.interp(launch_elapsed, LAUNCH_ENVELOPE_TIME_BP, [1.0, 0.0])
+  time_blend = np.interp(taper_elapsed, LAUNCH_ENVELOPE_TIME_BP, [1.0, 0.0])
   return min(speed_blend, time_blend)
+
+
+def launch_breakaway_active(v_ego, launch_elapsed):
+  return v_ego < LAUNCH_BREAKAWAY_V_EGO and launch_elapsed < LAUNCH_BREAKAWAY_TIME
 
 
 def apply_launch_envelope(output_accel, accel_limits, v_ego, launch_elapsed):
   if output_accel <= 0.0:
     return float(output_accel)
+
+  if launch_breakaway_active(v_ego, launch_elapsed):
+    return float(np.clip(LAUNCH_BREAKAWAY_ACCEL, 0.0, accel_limits[1]))
 
   blend = get_launch_envelope_blend(v_ego, launch_elapsed)
   if blend <= 0.0:

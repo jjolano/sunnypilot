@@ -1,12 +1,16 @@
 import pytest
 from cereal import car, custom
 from openpilot.selfdrive.controls.lib.longcontrol import (
+  LAUNCH_BREAKAWAY_ACCEL,
+  LAUNCH_BREAKAWAY_TIME,
+  LAUNCH_BREAKAWAY_V_EGO,
   LAUNCH_ENVELOPE_MAX_ACCEL,
   LAUNCH_ENVELOPE_MIN_ACCEL,
   LongControl,
   LongCtrlState,
   apply_launch_envelope,
   get_launch_envelope_blend,
+  launch_breakaway_active,
   long_control_state_trans,
 )
 
@@ -82,16 +86,25 @@ def make_car_state(v_ego=0.0, a_ego=0.0, brake_pressed=False, cruise_standstill=
 
 def test_launch_envelope_blend_fades_by_time_and_speed():
   assert get_launch_envelope_blend(0.0, 0.0) == pytest.approx(1.0)
-  assert 0.0 < get_launch_envelope_blend(0.3, 0.25) < 1.0
+  assert get_launch_envelope_blend(0.0, LAUNCH_BREAKAWAY_TIME) == pytest.approx(1.0)
+  assert 0.0 < get_launch_envelope_blend(0.3, LAUNCH_BREAKAWAY_TIME + 0.25) < 1.0
   assert get_launch_envelope_blend(0.7, 0.0) == pytest.approx(0.0)
-  assert get_launch_envelope_blend(0.0, 0.6) == pytest.approx(0.0)
+  assert get_launch_envelope_blend(0.0, LAUNCH_BREAKAWAY_TIME + 0.6) == pytest.approx(0.0)
+
+
+def test_launch_breakaway_only_applies_at_very_low_speed_for_short_time():
+  assert launch_breakaway_active(0.0, 0.0)
+  assert launch_breakaway_active(LAUNCH_BREAKAWAY_V_EGO - 1e-3, LAUNCH_BREAKAWAY_TIME - 1e-3)
+  assert not launch_breakaway_active(LAUNCH_BREAKAWAY_V_EGO, 0.0)
+  assert not launch_breakaway_active(0.0, LAUNCH_BREAKAWAY_TIME)
 
 
 def test_apply_launch_envelope_only_shapes_positive_accel():
   accel_limits = (-3.0, 2.0)
   assert apply_launch_envelope(-0.2, accel_limits, 0.0, 0.0) == pytest.approx(-0.2)
   assert apply_launch_envelope(0.0, accel_limits, 0.0, 0.0) == pytest.approx(0.0)
-  assert apply_launch_envelope(1.0, accel_limits, 0.0, 0.0) == pytest.approx(LAUNCH_ENVELOPE_MAX_ACCEL)
+  assert apply_launch_envelope(0.1, accel_limits, 0.0, 0.0) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
+  assert apply_launch_envelope(1.0, accel_limits, 0.0, LAUNCH_BREAKAWAY_TIME) == pytest.approx(LAUNCH_ENVELOPE_MAX_ACCEL)
 
 
 def test_pid_launch_arms_and_caps_after_stop():
@@ -104,8 +117,7 @@ def test_pid_launch_arms_and_caps_after_stop():
 
   assert loc.long_control_state == LongCtrlState.pid
   assert loc.launch_envelope_active
-  assert output_accel >= LAUNCH_ENVELOPE_MIN_ACCEL
-  assert output_accel == pytest.approx(LAUNCH_ENVELOPE_MAX_ACCEL)
+  assert output_accel == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
 
 
 def test_starting_state_launch_arms_and_caps_after_stop():
@@ -118,8 +130,17 @@ def test_starting_state_launch_arms_and_caps_after_stop():
 
   assert loc.long_control_state == LongCtrlState.starting
   assert loc.launch_envelope_active
-  assert output_accel >= LAUNCH_ENVELOPE_MIN_ACCEL
-  assert output_accel == pytest.approx(LAUNCH_ENVELOPE_MAX_ACCEL)
+  assert output_accel == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
+
+
+def test_launch_envelope_hands_off_from_breakaway_to_taper():
+  accel_limits = (-3.0, 2.0)
+  breakaway_accel = apply_launch_envelope(0.2, accel_limits, 0.0, 0.0)
+  taper_accel = apply_launch_envelope(1.0, accel_limits, 0.0, LAUNCH_BREAKAWAY_TIME)
+
+  assert breakaway_accel == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
+  assert taper_accel == pytest.approx(LAUNCH_ENVELOPE_MAX_ACCEL)
+  assert taper_accel > LAUNCH_ENVELOPE_MIN_ACCEL
 
 
 def test_launch_envelope_cancels_when_stop_returns():
