@@ -7,6 +7,7 @@ from cereal import log
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
+  APPROACH_BRAKE_MIN,
   APPROACH_MIN_GAP_BUFFER,
   COMFORT_BRAKE,
   LEAD_DEPARTURE_RELAXATION_MAX,
@@ -14,6 +15,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
   STOPPED_LEAD_BUFFER,
+  get_approach_brake,
   get_approach_follow_distance,
   get_approach_runway_blend,
   get_desired_follow_distance,
@@ -80,6 +82,19 @@ def test_lead_departure_relaxation_fades_out_as_ego_starts_creeping():
   assert get_lead_departure_relaxation(1.0, 2.0, 1.0) == pytest.approx(0.0)
 
 
+def test_approach_brake_stays_stock_for_small_closure():
+  assert get_approach_brake(0.0) == pytest.approx(APPROACH_BRAKE)
+  assert get_approach_brake(1.5) == pytest.approx(APPROACH_BRAKE)
+
+
+def test_approach_brake_ramps_down_for_stronger_closure():
+  moderate_closure_brake = get_approach_brake(3.0)
+  strong_closure_brake = get_approach_brake(5.0)
+
+  assert APPROACH_BRAKE_MIN <= strong_closure_brake < moderate_closure_brake < APPROACH_BRAKE
+  assert strong_closure_brake == pytest.approx(APPROACH_BRAKE_MIN)
+
+
 @pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])
 def test_approach_follow_distance_matches_steady_state_when_speeds_match(speed):
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
@@ -94,7 +109,7 @@ def test_approach_follow_distance_uses_runway_before_danger_zone():
 
   approach_gap = get_approach_follow_distance(v_ego, v_lead, t_follow)
   expected_gap = max(
-    t_follow * v_lead + stop_distance_buffer(v_lead) + (closing_speed**2) / (2 * APPROACH_BRAKE),
+    t_follow * v_lead + stop_distance_buffer(v_lead) + (closing_speed**2) / (2 * get_approach_brake(closing_speed)),
     get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER,
   )
 

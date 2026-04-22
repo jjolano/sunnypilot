@@ -68,6 +68,8 @@ LEAD_DEPARTURE_V_LEAD_BP = [0.6, 2.0]
 LEAD_DEPARTURE_V_REL_BP = [0.2, 1.0]
 LEAD_DEPARTURE_GAP_OPENING_BP = [0.3, 1.0]
 APPROACH_BRAKE = 3.0
+APPROACH_BRAKE_MIN = 2.5
+APPROACH_BRAKE_CLOSING_BP = [1.5, 5.0]
 APPROACH_MIN_GAP_BUFFER = 2.0
 APPROACH_DECEL_BLEND_BP = [0.5, 2.0]
 APPROACH_RUNWAY_BLEND_BP = [5.0, 20.0]
@@ -142,7 +144,7 @@ def get_approach_follow_distance(v_ego, v_lead, t_follow, a_lead=0.0):
   approach_speed = np.minimum(v_ego, v_lead)
   closing_speed = np.clip(v_ego - v_lead, 0.0, 1e8)
   base_gap = t_follow * approach_speed + get_stop_distance_buffer(approach_speed)
-  closing_gap = (closing_speed**2) / (2 * APPROACH_BRAKE)
+  closing_gap = (closing_speed**2) / (2 * get_approach_brake(closing_speed))
   approach_gap = base_gap + closing_gap
   decel_blend = np.interp(np.clip(-a_lead, 0.0, APPROACH_DECEL_BLEND_BP[-1]), APPROACH_DECEL_BLEND_BP, [0.0, 1.0])
   approach_gap = (1.0 - decel_blend) * approach_gap + decel_blend * get_desired_follow_distance(v_ego, v_lead, t_follow)
@@ -154,6 +156,10 @@ def get_approach_runway_blend(x_lead, v_ego, v_lead, t_follow):
   legacy_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
   runway = x_lead - legacy_gap
   return np.interp(runway, APPROACH_RUNWAY_BLEND_BP, [0.0, 1.0])
+
+
+def get_approach_brake(closing_speed):
+  return np.interp(closing_speed, APPROACH_BRAKE_CLOSING_BP, [APPROACH_BRAKE, APPROACH_BRAKE_MIN])
 
 
 def gen_long_model():
