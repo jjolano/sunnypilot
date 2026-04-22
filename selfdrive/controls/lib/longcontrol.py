@@ -9,7 +9,9 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 LAUNCH_ENVELOPE_MIN_ACCEL = 0.15
 LAUNCH_ENVELOPE_MAX_ACCEL = 0.35
 LAUNCH_BREAKAWAY_ACCEL = 0.4
-LAUNCH_BREAKAWAY_TIME = 0.25
+LAUNCH_BREAKAWAY_MIN_TIME = 0.25
+LAUNCH_BREAKAWAY_MAX_TIME = 0.6
+LAUNCH_BREAKAWAY_A_EGO = 0.05
 LAUNCH_BREAKAWAY_V_EGO = 0.2
 LAUNCH_ENVELOPE_TIME_BP = [0.0, 0.5]
 LAUNCH_ENVELOPE_V_EGO_BP = [0.0, 0.6]
@@ -53,22 +55,20 @@ def long_control_state_trans(CP, CP_SP, active, long_control_state, v_ego, shoul
 
 
 def get_launch_envelope_blend(v_ego, launch_elapsed):
-  taper_elapsed = max(launch_elapsed - LAUNCH_BREAKAWAY_TIME, 0.0)
   speed_blend = np.interp(v_ego, LAUNCH_ENVELOPE_V_EGO_BP, [1.0, 0.0])
-  time_blend = np.interp(taper_elapsed, LAUNCH_ENVELOPE_TIME_BP, [1.0, 0.0])
+  time_blend = np.interp(launch_elapsed, LAUNCH_ENVELOPE_TIME_BP, [1.0, 0.0])
   return min(speed_blend, time_blend)
 
 
-def launch_breakaway_active(v_ego, launch_elapsed):
-  return v_ego < LAUNCH_BREAKAWAY_V_EGO and launch_elapsed < LAUNCH_BREAKAWAY_TIME
+def launch_breakaway_active(v_ego, a_ego, launch_elapsed):
+  if v_ego >= LAUNCH_BREAKAWAY_V_EGO or launch_elapsed >= LAUNCH_BREAKAWAY_MAX_TIME:
+    return False
+  return launch_elapsed < LAUNCH_BREAKAWAY_MIN_TIME or a_ego < LAUNCH_BREAKAWAY_A_EGO
 
 
 def apply_launch_envelope(output_accel, accel_limits, v_ego, launch_elapsed):
   if output_accel <= 0.0:
     return float(output_accel)
-
-  if launch_breakaway_active(v_ego, launch_elapsed):
-    return float(np.clip(LAUNCH_BREAKAWAY_ACCEL, 0.0, accel_limits[1]))
 
   blend = get_launch_envelope_blend(v_ego, launch_elapsed)
   if blend <= 0.0:
@@ -87,11 +87,15 @@ class LongControl:
     self.pid = PIDController((CP.longitudinalTuning.kpBP, CP.longitudinalTuning.kpV), (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV), rate=1 / DT_CTRL)
     self.last_output_accel = 0.0
     self.launch_envelope_active = False
-    self.launch_elapsed = 0.0
+    self.launch_breakaway_elapsed = 0.0
+    self.launch_taper_elapsed = 0.0
+    self.launch_breakaway_done = False
 
   def reset_launch_envelope(self):
     self.launch_envelope_active = False
-    self.launch_elapsed = 0.0
+    self.launch_breakaway_elapsed = 0.0
+    self.launch_taper_elapsed = 0.0
+    self.launch_breakaway_done = False
 
   def reset(self):
     self.pid.reset()
@@ -110,7 +114,9 @@ class LongControl:
       self.reset_launch_envelope()
     elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and not should_stop:
       self.launch_envelope_active = True
-      self.launch_elapsed = 0.0
+      self.launch_breakaway_elapsed = 0.0
+      self.launch_taper_elapsed = 0.0
+      self.launch_breakaway_done = False
 
     if self.long_control_state == LongCtrlState.off:
       self.reset()
@@ -132,11 +138,16 @@ class LongControl:
       output_accel = self.pid.update(error, speed=CS.vEgo, feedforward=a_target)
 
     if self.launch_envelope_active:
-      output_accel = apply_launch_envelope(output_accel, accel_limits, CS.vEgo, self.launch_elapsed)
-      if get_launch_envelope_blend(CS.vEgo, self.launch_elapsed) <= 0.0:
-        self.reset_launch_envelope()
+      if not self.launch_breakaway_done and launch_breakaway_active(CS.vEgo, CS.aEgo, self.launch_breakaway_elapsed):
+        output_accel = float(np.clip(LAUNCH_BREAKAWAY_ACCEL, 0.0, accel_limits[1]))
+        self.launch_breakaway_elapsed += DT_CTRL
       else:
-        self.launch_elapsed += DT_CTRL
+        self.launch_breakaway_done = True
+        output_accel = apply_launch_envelope(output_accel, accel_limits, CS.vEgo, self.launch_taper_elapsed)
+        if get_launch_envelope_blend(CS.vEgo, self.launch_taper_elapsed) <= 0.0:
+          self.reset_launch_envelope()
+        else:
+          self.launch_taper_elapsed += DT_CTRL
 
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel
