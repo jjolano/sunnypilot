@@ -9,8 +9,9 @@ from openpilot.common.realtime import DT_CTRL
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
-LANE_CHANGE_DURATION = 4.0
-BLEND_DURATION = 0.5
+LANE_CHANGE_DURATION = 4.75
+ENTRY_BLEND_DURATION = 0.75
+EXIT_BLEND_DURATION = 0.5
 MIN_LANE_LINE_PROB = 0.6
 SOFT_FALLBACK_LANE_LINE_PROB = 0.45
 MIN_LANE_WIDTH = 3.0
@@ -134,7 +135,8 @@ class LaneChangeSCurveController:
     )
 
   def _approach(self, current: float, target: float) -> float:
-    step = self.dt / BLEND_DURATION
+    duration = ENTRY_BLEND_DURATION if target > current else EXIT_BLEND_DURATION
+    step = self.dt / duration
     if current < target:
       return min(current + step, target)
     return max(current - step, target)

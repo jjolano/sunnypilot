@@ -2,7 +2,7 @@ import pytest
 
 from cereal import log
 from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.controls.lib.lane_change_s_curve import BLEND_DURATION, LANE_CHANGE_DURATION, LaneChangeSCurveController, LaneChangeSCurveInputs
+from openpilot.selfdrive.controls.lib.lane_change_s_curve import EXIT_BLEND_DURATION, LANE_CHANGE_DURATION, LaneChangeSCurveController, LaneChangeSCurveInputs
 
 
 LaneChangeState = log.LaneChangeState
@@ -54,11 +54,21 @@ def test_lane_change_blends_back_after_profile_completion():
   controller = LaneChangeSCurveController()
   inputs = make_inputs()
 
-  results = run_steps(controller, inputs, LANE_CHANGE_DURATION + BLEND_DURATION + 0.5)
+  results = run_steps(controller, inputs, LANE_CHANGE_DURATION + EXIT_BLEND_DURATION + 0.5)
 
   assert results[0].desired_curvature == pytest.approx(inputs.model_curvature)
   assert results[-1].blend == pytest.approx(0.0)
   assert results[-1].desired_curvature == pytest.approx(inputs.model_curvature)
+
+
+def test_peak_highway_curvature_is_less_aggressive():
+  controller = LaneChangeSCurveController()
+  inputs = make_inputs()
+
+  results = run_steps(controller, inputs, LANE_CHANGE_DURATION)
+  peak_curvature = max(abs(result.desired_curvature - inputs.model_curvature) for result in results)
+
+  assert peak_curvature < 0.0011
 
 
 def test_soft_fallback_blends_back_to_model_curvature():
@@ -69,7 +79,7 @@ def test_soft_fallback_blends_back_to_model_curvature():
   assert engaged[-1].blend > 0.8
 
   fallback_inputs = make_inputs(lane_line_probs=(0.0, 0.2, 0.2, 0.0))
-  fallback_results = run_steps(controller, fallback_inputs, BLEND_DURATION + 0.2)
+  fallback_results = run_steps(controller, fallback_inputs, EXIT_BLEND_DURATION + 0.2)
 
   assert fallback_results[0].soft_fallback
   assert 0.0 < fallback_results[0].blend < engaged[-1].blend
