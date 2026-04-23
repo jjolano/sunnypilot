@@ -61,6 +61,9 @@ STOP_DISTANCE_MIN = 2.0
 STOPPED_LEAD_BUFFER = 1.75
 STOPPED_LEAD_V_EGO_BP = [0.0, 0.5, 1.5]
 STOPPED_LEAD_V_LEAD_BP = [0.0, 1.0, 2.0]
+LEAD_STOP_GAP_TAPER_MAX = 1.0
+LEAD_STOP_GAP_TAPER_V_EGO_BP = [0.0, 1.5]
+LEAD_STOP_GAP_TAPER_V_LEAD_BP = [0.0, 0.6, 2.0]
 LEAD_DEPARTURE_RELAXATION_MAX = 2.0
 LEAD_DEPARTURE_ARM_V_EGO = 0.1
 LEAD_DEPARTURE_V_EGO_BP = [0.0, 1.0]
@@ -114,6 +117,12 @@ def get_stopped_lead_buffer(v_ego, v_lead):
   ego_blend = np.interp(v_ego, STOPPED_LEAD_V_EGO_BP, [0.0, 1.0, 1.0])
   lead_blend = np.interp(v_lead, STOPPED_LEAD_V_LEAD_BP, [1.0, 1.0, 0.0])
   return STOPPED_LEAD_BUFFER * ego_blend * lead_blend
+
+
+def get_lead_stop_gap_taper(v_ego, v_lead):
+  ego_blend = np.interp(v_ego, LEAD_STOP_GAP_TAPER_V_EGO_BP, [1.0, 0.0])
+  lead_blend = np.interp(v_lead, LEAD_STOP_GAP_TAPER_V_LEAD_BP, [0.0, 0.5, 1.0])
+  return LEAD_STOP_GAP_TAPER_MAX * ego_blend * lead_blend
 
 
 def get_lead_departure_relaxation_blend(v_ego, v_lead, gap_opening):
@@ -431,16 +440,18 @@ class LongitudinalMpc:
     lead_1_hard_v = lead_xv_1[:, 1] if not lead_1_departure_armed else lead_1_departure_blend * lead_xv_1[:, 1]
     lead_0_stopped_buffer = get_stopped_lead_buffer(v_ego, lead_xv_0[:, 1])
     lead_1_stopped_buffer = get_stopped_lead_buffer(v_ego, lead_xv_1[:, 1])
+    lead_0_stop_gap_taper = get_lead_stop_gap_taper(v_ego, lead_xv_0[:, 1])
+    lead_1_stop_gap_taper = get_lead_stop_gap_taper(v_ego, lead_xv_1[:, 1])
     if lead_0_departure_armed:
       lead_0_stopped_buffer *= lead_0_departure_blend
     if lead_1_departure_armed:
       lead_1_stopped_buffer *= lead_1_departure_blend
-    lead_0_obstacle = lead_xv_0[:, 0] + get_stopped_equivalence_factor(lead_0_hard_v) - lead_0_stopped_buffer
-    lead_1_obstacle = lead_xv_1[:, 0] + get_stopped_equivalence_factor(lead_1_hard_v) - lead_1_stopped_buffer
+    lead_0_obstacle = lead_xv_0[:, 0] + get_stopped_equivalence_factor(lead_0_hard_v) - lead_0_stopped_buffer + lead_0_stop_gap_taper
+    lead_1_obstacle = lead_xv_1[:, 0] + get_stopped_equivalence_factor(lead_1_hard_v) - lead_1_stopped_buffer + lead_1_stop_gap_taper
     lead_0_desired_gap = get_approach_follow_distance(v_ego, lead_xv_0[:, 1], t_follow, lead_0_a)
     lead_1_desired_gap = get_approach_follow_distance(v_ego, lead_xv_1[:, 1], t_follow, lead_1_a)
-    lead_0_cost_obstacle_soft = lead_xv_0[:, 0] + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_0_desired_gap, 0.0, 1e8)
-    lead_1_cost_obstacle_soft = lead_xv_1[:, 0] + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_1_desired_gap, 0.0, 1e8)
+    lead_0_cost_obstacle_soft = lead_xv_0[:, 0] + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_0_desired_gap, 0.0, 1e8) + lead_0_stop_gap_taper
+    lead_1_cost_obstacle_soft = lead_xv_1[:, 0] + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_1_desired_gap, 0.0, 1e8) + lead_1_stop_gap_taper
     # Only bias the preferred gap once the lead has both opened real space and clearly pulled away.
     lead_0_cost_obstacle_soft += lead_0_departure_relaxation
     lead_1_cost_obstacle_soft += lead_1_departure_relaxation

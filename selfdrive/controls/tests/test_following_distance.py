@@ -11,6 +11,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_MIN_GAP_BUFFER,
   COMFORT_BRAKE,
   LEAD_DEPARTURE_RELAXATION_MAX,
+  LEAD_STOP_GAP_TAPER_MAX,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
@@ -22,6 +23,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_departure_available_runway,
   get_lead_departure_relaxation,
   get_lead_danger_distance,
+  get_lead_stop_gap_taper,
   get_safe_obstacle_distance,
   get_stopped_lead_buffer,
   get_stopped_equivalence_factor,
@@ -60,6 +62,13 @@ def test_stopped_lead_buffer_only_applies_near_stop():
   assert get_stopped_lead_buffer(0.0, 0.0) == pytest.approx(0.0)
   assert get_stopped_lead_buffer(1.0, 0.0) == pytest.approx(STOPPED_LEAD_BUFFER)
   assert get_stopped_lead_buffer(1.0, 3.0) == pytest.approx(0.0)
+
+
+def test_lead_stop_gap_taper_only_applies_for_low_speed_moving_leads():
+  assert get_lead_stop_gap_taper(0.0, 0.0) == pytest.approx(0.0)
+  assert 0.0 < get_lead_stop_gap_taper(0.0, 0.8) < LEAD_STOP_GAP_TAPER_MAX
+  assert get_lead_stop_gap_taper(0.0, 2.0) == pytest.approx(LEAD_STOP_GAP_TAPER_MAX)
+  assert get_lead_stop_gap_taper(1.5, 2.0) == pytest.approx(0.0)
 
 
 def test_lead_departure_relaxation_requires_gap_growth_and_pullaway():
