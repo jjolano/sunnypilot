@@ -82,6 +82,13 @@ APPROACH_ENGAGE_DISTANCE_BP = [25.0, 80.0]
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
+LEAD_GAP_COMFORT_MIN_V_EGO = 2.0
+LEAD_GAP_COMFORT_LIGHT_DECEL = 0.5
+LEAD_GAP_COMFORT_DANGER_HEADROOM = 1.5
+LEAD_GAP_COMFORT_CLOSING_ENTER = 0.05
+LEAD_GAP_COMFORT_CLOSING_EXIT = 0.15
+LEAD_GAP_COMFORT_OPENING_CLOSING_BP = [-0.3, 0.0]
+LEAD_GAP_COMFORT_HORIZON_BP = [0.0, 1.5, 3.0]
 
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
@@ -155,6 +162,29 @@ def get_desired_follow_distance(v_ego, v_lead, t_follow):
 
 def get_lead_danger_distance(v_ego, v_lead, t_follow):
   return LEAD_DANGER_FACTOR * get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
+
+
+def get_lead_gap_comfort_floor(v_ego, v_lead, t_follow):
+  return get_lead_danger_distance(v_ego, v_lead, t_follow) + LEAD_GAP_COMFORT_DANGER_HEADROOM
+
+
+def get_lead_gap_comfort_recovery_blend(d_rel, comfort_floor, desired_gap):
+  if desired_gap <= comfort_floor:
+    return 0.0
+  return float(np.interp(d_rel, [comfort_floor, desired_gap], [0.0, 1.0]))
+
+
+def get_lead_gap_comfort_a_min(v_ego, v_lead, d_rel, t_follow, closing_threshold=0.0):
+  closing_speed = v_ego - v_lead
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  if v_ego < LEAD_GAP_COMFORT_MIN_V_EGO or closing_speed > closing_threshold or desired_gap <= comfort_floor or not comfort_floor < d_rel < desired_gap:
+    return ACCEL_MIN
+
+  recovery_blend = get_lead_gap_comfort_recovery_blend(d_rel, comfort_floor, desired_gap)
+  opening_blend = float(np.interp(closing_speed, LEAD_GAP_COMFORT_OPENING_CLOSING_BP, [1.0, 0.0]))
+  light_brake_cap = -LEAD_GAP_COMFORT_LIGHT_DECEL * (1.0 - recovery_blend)
+  return float(np.clip((1.0 - opening_blend) * light_brake_cap, ACCEL_MIN, 0.0))
 
 
 def get_approach_follow_distance(v_ego, v_lead, t_follow, a_lead=0.0):
@@ -342,6 +372,7 @@ class LongitudinalMpc:
     self.time_integrator = 0.0
     self.x0 = np.zeros(X_DIM)
     self.lead_departure_anchors = np.full(2, np.nan)
+    self.lead_gap_comfort_active = np.zeros(2, dtype=bool)
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights):
@@ -430,6 +461,20 @@ class LongitudinalMpc:
     blend = get_lead_departure_relaxation_blend(v_ego, float(lead.vLeadK), available_runway)
     return True, blend, LEAD_DEPARTURE_RELAXATION_MAX * blend
 
+  def get_lead_gap_comfort_state(self, lead_idx, lead, t_follow):
+    if lead is None or not lead.status:
+      self.lead_gap_comfort_active[lead_idx] = False
+      return np.full(N + 1, ACCEL_MIN)
+
+    closing_threshold = LEAD_GAP_COMFORT_CLOSING_EXIT if self.lead_gap_comfort_active[lead_idx] else LEAD_GAP_COMFORT_CLOSING_ENTER
+    comfort_a_min = get_lead_gap_comfort_a_min(self.x0[1], float(lead.vLeadK), float(lead.dRel), t_follow, closing_threshold=closing_threshold)
+    self.lead_gap_comfort_active[lead_idx] = comfort_a_min > ACCEL_MIN
+    if not self.lead_gap_comfort_active[lead_idx]:
+      return np.full(N + 1, ACCEL_MIN)
+
+    comfort_horizon_blend = np.interp(T_IDXS, LEAD_GAP_COMFORT_HORIZON_BP, [1.0, 1.0, 0.0])
+    return ACCEL_MIN + comfort_horizon_blend * (comfort_a_min - ACCEL_MIN)
+
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
@@ -446,6 +491,8 @@ class LongitudinalMpc:
     # and then treat that as a stopped car/obstacle at this new distance.
     lead_0_departure_armed, lead_0_departure_blend, lead_0_departure_relaxation = self.get_lead_departure_state(0, radarstate.leadOne)
     lead_1_departure_armed, lead_1_departure_blend, lead_1_departure_relaxation = self.get_lead_departure_state(1, radarstate.leadTwo)
+    lead_0_gap_comfort_a_min = self.get_lead_gap_comfort_state(0, radarstate.leadOne, t_follow)
+    lead_1_gap_comfort_a_min = self.get_lead_gap_comfort_state(1, radarstate.leadTwo, t_follow)
     lead_0_hard_v = lead_xv_0[:, 1] if not lead_0_departure_armed else lead_0_departure_blend * lead_xv_0[:, 1]
     lead_1_hard_v = lead_xv_1[:, 1] if not lead_1_departure_armed else lead_1_departure_blend * lead_xv_1[:, 1]
     lead_0_stopped_buffer = get_stopped_lead_buffer(v_ego, lead_xv_0[:, 1])
@@ -490,7 +537,10 @@ class LongitudinalMpc:
       self.solver.set(i, "yref", self.yref[i])
     self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
 
+    dominant_obstacle = np.argmin(x_obstacles, axis=1)
     self.params[:, 0] = ACCEL_MIN
+    self.params[dominant_obstacle == 0, 0] = lead_0_gap_comfort_a_min[dominant_obstacle == 0]
+    self.params[dominant_obstacle == 1, 0] = lead_1_gap_comfort_a_min[dominant_obstacle == 1]
     self.params[:, 1] = ACCEL_MAX
     self.params[:, 2] = np.min(x_obstacles, axis=1)
     self.params[:, 3] = np.copy(self.a_prev)

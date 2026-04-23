@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import itertools
+from opendbc.car.interfaces import ACCEL_MIN
 from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
@@ -13,6 +14,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_DEPARTURE_RELAXATION_MAX,
   APPROACH_ENGAGE_OFFSET_MAX,
   LEAD_STOP_GAP_TAPER_MAX,
+  LEAD_GAP_COMFORT_LIGHT_DECEL,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
@@ -22,6 +24,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_approach_follow_distance,
   get_approach_runway_blend,
   get_desired_follow_distance,
+  get_lead_gap_comfort_a_min,
+  get_lead_gap_comfort_floor,
+  get_lead_gap_comfort_recovery_blend,
   get_lead_departure_available_runway,
   get_lead_departure_relaxation,
   get_lead_danger_distance,
@@ -171,6 +176,57 @@ def test_approach_engage_offset_grows_for_large_closing_runway_cases():
   strong_offset = get_approach_engage_offset(20.0, 80.0, 0.0, t_follow)
 
   assert 0.0 < mild_offset < strong_offset <= APPROACH_ENGAGE_OFFSET_MAX
+
+
+def test_lead_gap_comfort_uses_light_brake_for_steady_under_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 20.0
+  v_lead = 20.0
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = 0.5 * (comfort_floor + desired_gap)
+
+  comfort_a_min = get_lead_gap_comfort_a_min(v_ego, v_lead, d_rel, t_follow)
+
+  assert -LEAD_GAP_COMFORT_LIGHT_DECEL <= comfort_a_min < 0.0
+
+
+def test_lead_gap_comfort_prefers_coast_for_pullaway_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 20.0
+  v_lead = 20.5
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = 0.5 * (comfort_floor + desired_gap)
+
+  assert get_lead_gap_comfort_a_min(v_ego, v_lead, d_rel, t_follow) == pytest.approx(0.0)
+
+
+def test_lead_gap_comfort_tapers_toward_coast_as_gap_recovers():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 20.0
+  v_lead = 20.0
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  early_gap = comfort_floor + 0.2
+  late_gap = desired_gap - 0.2
+
+  early_a_min = get_lead_gap_comfort_a_min(v_ego, v_lead, early_gap, t_follow)
+  late_a_min = get_lead_gap_comfort_a_min(v_ego, v_lead, late_gap, t_follow)
+
+  assert early_a_min < late_a_min < 0.0
+  assert get_lead_gap_comfort_recovery_blend(late_gap, comfort_floor, desired_gap) > get_lead_gap_comfort_recovery_blend(early_gap, comfort_floor, desired_gap)
+
+
+def test_lead_gap_comfort_disables_near_danger_or_real_closure():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 20.0
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_ego, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_ego, t_follow)
+  d_rel = 0.5 * (comfort_floor + desired_gap)
+
+  assert get_lead_gap_comfort_a_min(v_ego, v_ego - 1.0, d_rel, t_follow) == pytest.approx(ACCEL_MIN)
+  assert get_lead_gap_comfort_a_min(v_ego, v_ego, comfort_floor - 0.1, t_follow) == pytest.approx(ACCEL_MIN)
 
 
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):

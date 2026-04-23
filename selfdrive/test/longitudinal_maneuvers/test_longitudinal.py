@@ -2,7 +2,12 @@ import itertools
 import numpy as np
 from openpilot.common.parameterized import parameterized_class
 
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  STOP_DISTANCE,
+  get_desired_follow_distance,
+  get_lead_gap_comfort_floor,
+  get_T_FOLLOW,
+)
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
@@ -200,6 +205,26 @@ def evaluate_maneuver_output(maneuver):
   return output
 
 
+def run_under_gap_cut_in_simulation(v_ego, v_lead, duration=10.0):
+  t_follow = get_T_FOLLOW()
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  initial_distance_lead = 0.5 * (comfort_floor + desired_gap)
+  return evaluate_maneuver_output(
+    Maneuver(
+      "under-gap cut-in",
+      duration=duration,
+      initial_speed=v_ego,
+      lead_relevancy=True,
+      initial_distance_lead=initial_distance_lead,
+      speed_lead_values=[v_lead, v_lead, v_lead],
+      prob_lead_values=[0.0, 0.0, 1.0],
+      cruise_values=[v_ego, v_ego, v_ego],
+      breakpoints=[0.0, 2.0, 2.01],
+    )
+  )
+
+
 def test_lead_creep_then_stop_does_not_launch_from_gap_noise():
   output = evaluate_maneuver_output(
     Maneuver(
@@ -258,6 +283,39 @@ def test_lead_creep_uses_extra_stopped_gap():
   assert np.max(output[response_window, 5]) > 0.05
   assert np.max(output[response_window, 3]) > 0.1
   assert np.min(output[response_window, 6]) > STOP_DISTANCE
+
+
+def test_equal_speed_under_gap_cut_in_uses_only_light_brake():
+  output = run_under_gap_cut_in_simulation(20.0, 20.0)
+
+  response_window = (output[:, 0] >= 2.0) & (output[:, 0] <= 4.0)
+  recovery_window = output[:, 0] >= 6.0
+  initial_gap = output[np.argmax(output[:, 0] >= 2.0), 6]
+
+  assert np.min(output[response_window, 5]) < -0.05
+  assert np.min(output[response_window, 5]) > -0.7
+  assert np.min(output[recovery_window, 5]) > np.min(output[response_window, 5])
+  assert output[-1, 6] > initial_gap
+
+
+def test_pullaway_under_gap_cut_in_prefers_coast():
+  output = run_under_gap_cut_in_simulation(20.0, 20.5)
+
+  response_window = (output[:, 0] >= 2.0) & (output[:, 0] <= 4.0)
+  initial_gap = output[np.argmax(output[:, 0] >= 2.0), 6]
+
+  assert np.min(output[response_window, 5]) > -0.2
+  assert output[-1, 6] > initial_gap
+
+
+def test_closing_under_gap_cut_in_still_brakes_normally():
+  steady_output = run_under_gap_cut_in_simulation(20.0, 20.0)
+  output = run_under_gap_cut_in_simulation(20.0, 18.0)
+
+  response_window = (output[:, 0] >= 2.0) & (output[:, 0] <= 4.0)
+  steady_response_window = (steady_output[:, 0] >= 2.0) & (steady_output[:, 0] <= 4.0)
+
+  assert np.min(output[response_window, 5]) < np.min(steady_output[steady_response_window, 5]) - 0.2
 
 
 @parameterized_class(("e2e", "force_decel"), itertools.product([True, False], repeat=2))
