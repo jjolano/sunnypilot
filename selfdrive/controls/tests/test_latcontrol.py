@@ -1,3 +1,6 @@
+import sys
+import types
+
 from openpilot.common.parameterized import parameterized
 
 from cereal import car, log
@@ -8,6 +11,47 @@ from opendbc.car.nissan.values import CAR as NISSAN
 from opendbc.car.gm.values import CAR as GM
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.realtime import DT_CTRL
+
+params_pyx = types.ModuleType("openpilot.common.params_pyx")
+
+
+class FakeParams:
+  def get_bool(self, _key: str) -> bool:
+    return False
+
+  def remove(self, _key: str) -> None:
+    pass
+
+  def get(self, _key: str, *_args, **_kwargs):
+    return None
+
+
+params_pyx.Params = FakeParams
+params_pyx.ParamKeyFlag = object
+params_pyx.ParamKeyType = object
+params_pyx.UnknownKeyName = RuntimeError
+sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
+
+msgq = types.ModuleType("msgq")
+msgq.fake_event_handle = object()
+msgq.drain_sock_raw = lambda *args, **kwargs: []
+msgq.MultiplePublishersError = RuntimeError
+msgq.IpcError = RuntimeError
+msgq.Context = object
+msgq.Poller = object
+msgq.SubSocket = object
+msgq.PubSocket = object
+msgq.SocketEventHandle = object
+msgq.toggle_fake_events = lambda *args, **kwargs: None
+msgq.set_fake_prefix = lambda *args, **kwargs: None
+msgq.get_fake_prefix = lambda *args, **kwargs: ""
+msgq.delete_fake_prefix = lambda *args, **kwargs: None
+msgq.wait_for_one_event = lambda *args, **kwargs: None
+msgq.pub_sock = lambda *args, **kwargs: None
+msgq.sub_sock = lambda *args, **kwargs: None
+msgq.context = None
+sys.modules.setdefault("msgq", msgq)
+
 from openpilot.selfdrive.car.helpers import convert_to_capnp
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
@@ -16,6 +60,7 @@ from openpilot.selfdrive.locationd.helpers import Pose
 from openpilot.common.mock.generators import generate_livePose
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorque as LatControlTorqueV4
 
 
 class TestLatControl:
@@ -24,6 +69,7 @@ class TestLatControl:
       (HONDA.HONDA_CIVIC, LatControlPID),
       (TOYOTA.TOYOTA_RAV4, LatControlTorque),
       (TOYOTA.TOYOTA_RAV4, LatControlTorqueV2),
+      (TOYOTA.TOYOTA_RAV4, LatControlTorqueV4),
       (NISSAN.NISSAN_LEAF, LatControlAngle),
       (GM.CHEVROLET_BOLT_EUV, LatControlTorque),
     ]

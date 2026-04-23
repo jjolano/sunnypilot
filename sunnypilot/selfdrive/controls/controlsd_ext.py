@@ -20,6 +20,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import Bl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorque as LatControlTorqueV3
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorque as LatControlTorqueV4
 
 
 class ControlsExt(ModelStateBase):
@@ -51,6 +52,8 @@ class ControlsExt(ModelStateBase):
       return LatControlTorqueV2(self.CP, self.CP_SP, CI, dt)
     if torque_version == 3.0:
       return LatControlTorqueV3(self.CP, self.CP_SP, CI, dt)
+    if torque_version == 4.0:
+      return LatControlTorqueV4(self.CP, self.CP_SP, CI, dt)
     return lac
 
   @staticmethod
