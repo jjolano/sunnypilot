@@ -24,6 +24,11 @@ LP_FILTER_CUTOFF_HZ = 1.2
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 FRICTION_THRESHOLD = 0.3
 VERSION = 3
+LOW_SPEED_UNWIND_VEGO = 8.0
+LOW_SPEED_UNWIND_SETPOINT = 0.2
+LOW_SPEED_UNWIND_MARGIN = 0.08
+LOW_SPEED_UNWIND_JERK = 0.5
+LOW_SPEED_UNWIND_GAIN_SPEED = 8.0
 
 ADAPTIVE_PHASE_MAP = {
   0: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.idle,
@@ -31,6 +36,10 @@ ADAPTIVE_PHASE_MAP = {
   2: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.hold,
   3: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.release,
 }
+
+
+def sign(value: float) -> float:
+  return 1.0 if value > 0.0 else (-1.0 if value < 0.0 else 0.0)
 
 
 class LatControlTorque(LatControl):
@@ -85,7 +94,17 @@ class LatControlTorque(LatControl):
 
     setpoint = effective_lat_delay * desired_lateral_jerk + expected_lateral_accel
     error = setpoint - measurement
-    ff = gravity_adjusted_future_lateral_accel
+    same_sign_unwind = (
+      CS.vEgo < LOW_SPEED_UNWIND_VEGO
+      and abs(setpoint) < LOW_SPEED_UNWIND_SETPOINT
+      and abs(desired_lateral_jerk) > LOW_SPEED_UNWIND_JERK
+      and sign(setpoint) != 0.0
+      and sign(measurement) == sign(setpoint)
+      and abs(measurement) > abs(setpoint) + LOW_SPEED_UNWIND_MARGIN
+      and desired_lateral_jerk * setpoint < 0.0
+    )
+
+    ff = setpoint if same_sign_unwind else gravity_adjusted_future_lateral_accel
     ff -= self.torque_params.latAccelOffset
     ff += get_friction(error, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
 
@@ -95,8 +114,11 @@ class LatControlTorque(LatControl):
       self.pid.reset()
     else:
       pid_log.error = float(error)
-      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
-      output_lataccel = self.pid.update(pid_log.error, -measurement_rate, feedforward=ff, speed=CS.vEgo, freeze_integrator=freeze_integrator)
+      if same_sign_unwind:
+        self.pid.i *= 0.5
+      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5 or same_sign_unwind
+      control_speed = max(CS.vEgo, LOW_SPEED_UNWIND_GAIN_SPEED) if same_sign_unwind else CS.vEgo
+      output_lataccel = self.pid.update(pid_log.error, -measurement_rate, feedforward=ff, speed=control_speed, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
 
       pid_log, output_torque = self.extension.update(

@@ -89,3 +89,25 @@ def test_v3_release_on_override():
   _, _, lac_log = controller.update(True, CS, VM, params, False, 2e-5, pose, False, 0.2)
   assert lac_log.adaptiveTorqueState.releaseActive
   assert lac_log.adaptiveTorqueState.phase == log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.release
+
+
+def test_v3_softens_low_speed_same_sign_unwind():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 5.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -30.0
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  for _ in range(60):
+    controller.update(True, CS, VM, params, False, 0.02, pose, False, 0.2)
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.002, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert lac_log.error < 0.0
+  assert lac_log.desiredLateralAccel < lac_log.actualLateralAccel
+  assert adaptive_log.nominalOutput < 0.95
+  assert lac_log.output < 0.9
