@@ -128,6 +128,11 @@ def get_lead_departure_relaxation(v_ego, v_lead, gap_opening):
   return LEAD_DEPARTURE_RELAXATION_MAX * get_lead_departure_relaxation_blend(v_ego, v_lead, gap_opening)
 
 
+def get_lead_departure_available_runway(v_ego, d_rel, gap_opening):
+  stopped_gap_excess = max(0.0, d_rel - get_stop_distance_buffer(v_ego))
+  return max(gap_opening, stopped_gap_excess)
+
+
 def get_safe_obstacle_distance(v_ego, t_follow):
   return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + get_stop_distance_buffer(v_ego)
 
@@ -401,7 +406,9 @@ class LongitudinalMpc:
     self.lead_departure_anchors[lead_idx] = min(self.lead_departure_anchors[lead_idx], d_rel)
 
     gap_opening = max(0.0, d_rel - self.lead_departure_anchors[lead_idx])
-    blend = get_lead_departure_relaxation_blend(v_ego, float(lead.vLeadK), gap_opening)
+    # If we're already parked long behind the lead, use that extra runway to start creeping with it.
+    available_runway = get_lead_departure_available_runway(v_ego, d_rel, gap_opening)
+    blend = get_lead_departure_relaxation_blend(v_ego, float(lead.vLeadK), available_runway)
     return True, blend, LEAD_DEPARTURE_RELAXATION_MAX * blend
 
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):

@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_approach_follow_distance,
   get_approach_runway_blend,
   get_desired_follow_distance,
+  get_lead_departure_available_runway,
   get_lead_departure_relaxation,
   get_lead_danger_distance,
   get_safe_obstacle_distance,
@@ -65,6 +66,18 @@ def test_lead_departure_relaxation_requires_gap_growth_and_pullaway():
   assert get_lead_departure_relaxation(0.0, 0.5, 1.0) == pytest.approx(0.0)
   assert get_lead_departure_relaxation(0.0, 1.5, 0.2) == pytest.approx(0.0)
   assert get_lead_departure_relaxation(0.6, 0.7, 1.0) == pytest.approx(0.0)
+
+
+def test_lead_departure_runway_uses_extra_stopped_gap():
+  assert get_lead_departure_available_runway(0.0, STOP_DISTANCE - 0.1, 0.0) == pytest.approx(0.0)
+  assert get_lead_departure_available_runway(0.0, STOP_DISTANCE + 0.6, 0.0) == pytest.approx(0.6)
+
+
+def test_lead_departure_relaxation_can_use_extra_stopped_gap():
+  runway = get_lead_departure_available_runway(0.0, STOP_DISTANCE + 0.6, 0.0)
+
+  assert get_lead_departure_relaxation(0.0, 0.5, runway) == pytest.approx(0.0)
+  assert 0.0 < get_lead_departure_relaxation(0.0, 0.9, runway) < LEAD_DEPARTURE_RELAXATION_MAX
 
 
 def test_lead_departure_relaxation_grows_with_confirmed_departure():

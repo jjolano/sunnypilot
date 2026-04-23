@@ -239,6 +239,27 @@ def test_lead_departure_creeps_once_gap_opens():
   assert np.max(output[response_window, 3]) > 0.1
 
 
+def test_lead_creep_uses_extra_stopped_gap():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "lead creeps while over stopped gap",
+      duration=20.0,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=STOP_DISTANCE + 1.0,
+      speed_lead_values=[0.0, 0.0, 0.8, 0.8],
+      breakpoints=[0.0, 10.0, 10.5, 20.0],
+    )
+  )
+
+  lead_roll_idx = np.argmax(output[:, 4] >= 0.3)
+  response_window = (output[:, 0] >= output[lead_roll_idx, 0]) & (output[:, 0] <= output[lead_roll_idx, 0] + 1.0)
+
+  assert np.max(output[response_window, 5]) > 0.05
+  assert np.max(output[response_window, 3]) > 0.1
+  assert np.min(output[response_window, 6]) > STOP_DISTANCE
+
+
 @parameterized_class(("e2e", "force_decel"), itertools.product([True, False], repeat=2))
 class TestLongitudinalControl:
   e2e: bool
