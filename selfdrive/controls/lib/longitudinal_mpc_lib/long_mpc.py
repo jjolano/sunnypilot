@@ -76,6 +76,9 @@ APPROACH_BRAKE_CLOSING_BP = [1.5, 5.0]
 APPROACH_MIN_GAP_BUFFER = 2.0
 APPROACH_DECEL_BLEND_BP = [0.5, 2.0]
 APPROACH_RUNWAY_BLEND_BP = [5.0, 20.0]
+APPROACH_ENGAGE_OFFSET_MAX = 8.0
+APPROACH_ENGAGE_CLOSING_BP = [3.0, 12.0]
+APPROACH_ENGAGE_DISTANCE_BP = [25.0, 80.0]
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
@@ -170,6 +173,13 @@ def get_approach_runway_blend(x_lead, v_ego, v_lead, t_follow):
   legacy_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
   runway = x_lead - legacy_gap
   return np.interp(runway, APPROACH_RUNWAY_BLEND_BP, [0.0, 1.0])
+
+
+def get_approach_engage_offset(v_ego, x_lead, v_lead, t_follow):
+  closing_speed = np.clip(v_ego - v_lead, 0.0, 1e8)
+  speed_blend = np.interp(closing_speed, APPROACH_ENGAGE_CLOSING_BP, [0.0, 1.0])
+  distance_blend = np.interp(x_lead, APPROACH_ENGAGE_DISTANCE_BP, [0.0, 1.0])
+  return APPROACH_ENGAGE_OFFSET_MAX * min(speed_blend, distance_blend)
 
 
 def get_approach_brake(closing_speed):
@@ -452,6 +462,8 @@ class LongitudinalMpc:
     lead_1_desired_gap = get_approach_follow_distance(v_ego, lead_xv_1[:, 1], t_follow, lead_1_a)
     lead_0_cost_obstacle_soft = lead_xv_0[:, 0] + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_0_desired_gap, 0.0, 1e8) + lead_0_stop_gap_taper
     lead_1_cost_obstacle_soft = lead_xv_1[:, 0] + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_1_desired_gap, 0.0, 1e8) + lead_1_stop_gap_taper
+    lead_0_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_xv_0[0, 0], lead_xv_0[0, 1], t_follow)
+    lead_1_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_xv_1[0, 0], lead_xv_1[0, 1], t_follow)
     # Only bias the preferred gap once the lead has both opened real space and clearly pulled away.
     lead_0_cost_obstacle_soft += lead_0_departure_relaxation
     lead_1_cost_obstacle_soft += lead_1_departure_relaxation

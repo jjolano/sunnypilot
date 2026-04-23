@@ -11,12 +11,14 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_MIN_GAP_BUFFER,
   COMFORT_BRAKE,
   LEAD_DEPARTURE_RELAXATION_MAX,
+  APPROACH_ENGAGE_OFFSET_MAX,
   LEAD_STOP_GAP_TAPER_MAX,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
   STOPPED_LEAD_BUFFER,
   get_approach_brake,
+  get_approach_engage_offset,
   get_approach_follow_distance,
   get_approach_runway_blend,
   get_desired_follow_distance,
@@ -155,6 +157,20 @@ def test_approach_runway_blend_reaches_full_with_large_runway():
   x_lead = get_desired_follow_distance(v_ego, v_lead, t_follow) + 25.0
 
   assert get_approach_runway_blend(x_lead, v_ego, v_lead, t_follow) == pytest.approx(1.0)
+
+
+def test_approach_engage_offset_stays_off_without_closure_or_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  assert get_approach_engage_offset(20.0, 40.0, 20.0, t_follow) == pytest.approx(0.0)
+  assert get_approach_engage_offset(20.0, 20.0, 15.0, t_follow) == pytest.approx(0.0)
+
+
+def test_approach_engage_offset_grows_for_large_closing_runway_cases():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  mild_offset = get_approach_engage_offset(20.0, 45.0, 15.0, t_follow)
+  strong_offset = get_approach_engage_offset(20.0, 80.0, 0.0, t_follow)
+
+  assert 0.0 < mild_offset < strong_offset <= APPROACH_ENGAGE_OFFSET_MAX
 
 
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):
