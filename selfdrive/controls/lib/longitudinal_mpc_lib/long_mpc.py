@@ -6,6 +6,7 @@ from cereal import log
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.swaglog import cloudlog
+
 # WARNING: imports outside of constants will not trigger a rebuild
 from openpilot.selfdrive.modeld.constants import index_function
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
@@ -32,14 +33,14 @@ COST_E_DIM = 5
 COST_DIM = COST_E_DIM + 1
 CONSTR_DIM = 4
 
-X_EGO_OBSTACLE_COST = 3.
-X_EGO_COST = 0.
-V_EGO_COST = 0.
-A_EGO_COST = 0.
-J_EGO_COST = 5.
-A_CHANGE_COST = 200.
-DANGER_ZONE_COST = 100.
-CRASH_DISTANCE = .25
+X_EGO_OBSTACLE_COST = 3.0
+X_EGO_COST = 0.0
+V_EGO_COST = 0.0
+A_EGO_COST = 0.0
+J_EGO_COST = 5.0
+A_CHANGE_COST = 200.0
+DANGER_ZONE_COST = 100.0
+CRASH_DISTANCE = 0.25
 LEAD_DANGER_FACTOR = 0.75
 LIMIT_COST = 1e6
 ACADOS_SOLVER_TYPE = 'SQP_RTI'
@@ -48,43 +49,191 @@ ACADOS_SOLVER_TYPE = 'SQP_RTI'
 # much better convergence of the MPC with low iterations
 N = 12
 MAX_T = 10.0
-T_IDXS_LST = [index_function(idx, max_val=MAX_T, max_idx=N) for idx in range(N+1)]
+T_IDXS_LST = [index_function(idx, max_val=MAX_T, max_idx=N) for idx in range(N + 1)]
 
 T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
-T_DIFFS = np.diff(T_IDXS, prepend=[0.])
+T_DIFFS = np.diff(T_IDXS, prepend=[0.0])
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
+STOP_DISTANCE_FADE_V = 3.0
+STOP_DISTANCE_MIN = 2.0
+STOPPED_LEAD_BUFFER = 1.75
+STOPPED_LEAD_V_EGO_BP = [0.0, 0.5, 1.5]
+STOPPED_LEAD_V_LEAD_BP = [0.0, 1.0, 2.0]
+LEAD_STOP_GAP_TAPER_MAX = 1.0
+LEAD_STOP_GAP_TAPER_V_EGO_BP = [0.0, 1.5]
+LEAD_STOP_GAP_TAPER_V_LEAD_BP = [0.0, 0.6, 2.0]
+LEAD_STOP_GAP_EXCESS_OFFSET_MAX = 4.0
+LEAD_STOP_GAP_EXCESS_V_EGO_BP = [0.0, 1.5]
+LEAD_STOP_GAP_EXCESS_BP = [1.0, 5.0]
+LEAD_DEPARTURE_RELAXATION_MAX = 2.0
+LEAD_DEPARTURE_ARM_V_EGO = 0.1
+LEAD_DEPARTURE_V_EGO_BP = [0.0, 1.0]
+LEAD_DEPARTURE_V_LEAD_BP = [0.6, 2.0]
+LEAD_DEPARTURE_V_REL_BP = [0.2, 1.0]
+LEAD_DEPARTURE_GAP_OPENING_BP = [0.3, 1.0]
+APPROACH_BRAKE = 3.0
+APPROACH_BRAKE_MIN = 2.5
+APPROACH_BRAKE_CLOSING_BP = [1.5, 5.0]
+APPROACH_MIN_GAP_BUFFER = 2.0
+APPROACH_DECEL_BLEND_BP = [0.5, 2.0]
+APPROACH_STOP_RUNWAY_DECEL_BP = [0.3, 1.0]
+APPROACH_RUNWAY_BLEND_BP = [5.0, 20.0]
+APPROACH_ENGAGE_OFFSET_MAX = 8.0
+APPROACH_ENGAGE_CLOSING_BP = [3.0, 12.0]
+APPROACH_ENGAGE_RUNWAY_BP = [25.0, 80.0]
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
+LEAD_GAP_COMFORT_MIN_V_EGO = 2.0
+LEAD_GAP_COMFORT_LIGHT_DECEL = 0.5
+LEAD_GAP_COMFORT_DANGER_HEADROOM = 1.5
+LEAD_GAP_COMFORT_CLOSING_ENTER = 0.05
+LEAD_GAP_COMFORT_CLOSING_EXIT = 0.15
+LEAD_GAP_COMFORT_OPENING_CLOSING_BP = [-0.3, 0.0]
+LEAD_GAP_COMFORT_HORIZON_BP = [0.0, 1.5, 3.0]
+
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
-  if personality==log.LongitudinalPersonality.relaxed:
+  if personality == log.LongitudinalPersonality.relaxed:
     return 1.0
-  elif personality==log.LongitudinalPersonality.standard:
+  elif personality == log.LongitudinalPersonality.standard:
     return 1.0
-  elif personality==log.LongitudinalPersonality.aggressive:
+  elif personality == log.LongitudinalPersonality.aggressive:
     return 0.5
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
 
 def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
-  if personality==log.LongitudinalPersonality.relaxed:
+  if personality == log.LongitudinalPersonality.relaxed:
     return 1.75
-  elif personality==log.LongitudinalPersonality.standard:
+  elif personality == log.LongitudinalPersonality.standard:
     return 1.45
-  elif personality==log.LongitudinalPersonality.aggressive:
+  elif personality == log.LongitudinalPersonality.aggressive:
     return 1.25
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
+
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
+
+def get_stop_distance_buffer(v_ego):
+  # Preserve the full stopped gap at low speed, but keep a smaller floor at speed.
+  fade = (STOP_DISTANCE_FADE_V**2) / (v_ego**2 + STOP_DISTANCE_FADE_V**2)
+  return STOP_DISTANCE_MIN + (STOP_DISTANCE - STOP_DISTANCE_MIN) * fade
+
+
+def get_stopped_lead_buffer(v_ego, v_lead):
+  ego_blend = np.interp(v_ego, STOPPED_LEAD_V_EGO_BP, [0.0, 1.0, 1.0])
+  lead_blend = np.interp(v_lead, STOPPED_LEAD_V_LEAD_BP, [1.0, 1.0, 0.0])
+  return STOPPED_LEAD_BUFFER * ego_blend * lead_blend
+
+
+def get_lead_stop_gap_taper(v_ego, v_lead):
+  ego_blend = np.interp(v_ego, LEAD_STOP_GAP_TAPER_V_EGO_BP, [1.0, 0.0])
+  lead_blend = np.interp(v_lead, LEAD_STOP_GAP_TAPER_V_LEAD_BP, [0.0, 0.5, 1.0])
+  return LEAD_STOP_GAP_TAPER_MAX * ego_blend * lead_blend
+
+
+def get_lead_stop_gap_excess_offset(v_ego, d_rel):
+  gap_excess = np.maximum(0.0, d_rel - get_stop_distance_buffer(v_ego))
+  ego_blend = np.interp(v_ego, LEAD_STOP_GAP_EXCESS_V_EGO_BP, [1.0, 0.0])
+  excess_blend = np.interp(gap_excess, LEAD_STOP_GAP_EXCESS_BP, [0.0, 1.0])
+  return LEAD_STOP_GAP_EXCESS_OFFSET_MAX * ego_blend * excess_blend
+
+
+def get_lead_departure_relaxation_blend(v_ego, v_lead, gap_opening):
+  ego_blend = np.interp(v_ego, LEAD_DEPARTURE_V_EGO_BP, [1.0, 0.0])
+  lead_blend = np.interp(v_lead, LEAD_DEPARTURE_V_LEAD_BP, [0.0, 1.0])
+  relative_blend = np.interp(v_lead - v_ego, LEAD_DEPARTURE_V_REL_BP, [0.0, 1.0])
+  gap_blend = np.interp(gap_opening, LEAD_DEPARTURE_GAP_OPENING_BP, [0.0, 1.0])
+  return ego_blend * min(lead_blend, relative_blend, gap_blend)
+
+
+def get_lead_departure_relaxation(v_ego, v_lead, gap_opening):
+  return LEAD_DEPARTURE_RELAXATION_MAX * get_lead_departure_relaxation_blend(v_ego, v_lead, gap_opening)
+
+
+def get_lead_departure_available_runway(v_ego, d_rel, gap_opening):
+  stopped_gap_excess = max(0.0, d_rel - get_stop_distance_buffer(v_ego))
+  return max(gap_opening, stopped_gap_excess)
+
+
 def get_safe_obstacle_distance(v_ego, t_follow):
-  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + STOP_DISTANCE
+  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + get_stop_distance_buffer(v_ego)
+
+
+def get_desired_follow_distance(v_ego, v_lead, t_follow):
+  return get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
+
+
+def get_lead_danger_distance(v_ego, v_lead, t_follow):
+  return LEAD_DANGER_FACTOR * get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
+
+
+def get_lead_gap_comfort_floor(v_ego, v_lead, t_follow):
+  return get_lead_danger_distance(v_ego, v_lead, t_follow) + LEAD_GAP_COMFORT_DANGER_HEADROOM
+
+
+def get_lead_gap_comfort_recovery_blend(d_rel, comfort_floor, desired_gap):
+  if desired_gap <= comfort_floor:
+    return 0.0
+  return float(np.interp(d_rel, [comfort_floor, desired_gap], [0.0, 1.0]))
+
+
+def get_lead_gap_comfort_a_min(v_ego, v_lead, d_rel, t_follow, closing_threshold=0.0):
+  closing_speed = v_ego - v_lead
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  if v_ego < LEAD_GAP_COMFORT_MIN_V_EGO or closing_speed > closing_threshold or desired_gap <= comfort_floor or not comfort_floor < d_rel < desired_gap:
+    return ACCEL_MIN
+
+  recovery_blend = get_lead_gap_comfort_recovery_blend(d_rel, comfort_floor, desired_gap)
+  opening_blend = float(np.interp(closing_speed, LEAD_GAP_COMFORT_OPENING_CLOSING_BP, [1.0, 0.0]))
+  light_brake_cap = -LEAD_GAP_COMFORT_LIGHT_DECEL * (1.0 - recovery_blend)
+  return float(np.clip((1.0 - opening_blend) * light_brake_cap, ACCEL_MIN, 0.0))
+
+
+def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
+  legacy_runway = x_lead - get_desired_follow_distance(v_ego, v_lead, t_follow)
+  stop_runway = x_lead + get_stopped_equivalence_factor(v_lead) - get_stop_distance_buffer(0.0)
+  slowing_blend = np.interp(np.clip(-a_lead, 0.0, APPROACH_STOP_RUNWAY_DECEL_BP[-1]), APPROACH_STOP_RUNWAY_DECEL_BP, [0.0, 1.0])
+  return np.clip((1.0 - slowing_blend) * legacy_runway + slowing_blend * stop_runway, 0.0, 1e8)
+
+
+def get_approach_follow_distance(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
+  approach_speed = np.minimum(v_ego, v_lead)
+  closing_speed = np.clip(v_ego - v_lead, 0.0, 1e8)
+  base_gap = t_follow * approach_speed + get_stop_distance_buffer(approach_speed)
+  closing_gap = (closing_speed**2) / (2 * get_approach_brake(closing_speed))
+  approach_gap = base_gap + closing_gap
+  decel_blend = np.interp(np.clip(-a_lead, 0.0, APPROACH_DECEL_BLEND_BP[-1]), APPROACH_DECEL_BLEND_BP, [0.0, 1.0])
+  decel_blend *= 1.0 - np.interp(get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead), APPROACH_RUNWAY_BLEND_BP, [0.0, 1.0])
+  approach_gap = (1.0 - decel_blend) * approach_gap + decel_blend * get_desired_follow_distance(v_ego, v_lead, t_follow)
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0)
+  return np.maximum(approach_gap, min_gap)
+
+
+def get_approach_runway_blend(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
+  runway = get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead)
+  return np.interp(runway, APPROACH_RUNWAY_BLEND_BP, [0.0, 1.0])
+
+
+def get_approach_engage_offset(v_ego, x_lead, v_lead, t_follow, a_lead=0.0):
+  closing_speed = np.clip(v_ego - v_lead, 0.0, 1e8)
+  runway = get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead)
+  speed_blend = np.interp(closing_speed, APPROACH_ENGAGE_CLOSING_BP, [0.0, 1.0])
+  runway_blend = np.interp(runway, APPROACH_ENGAGE_RUNWAY_BP, [0.0, 1.0])
+  return APPROACH_ENGAGE_OFFSET_MAX * min(speed_blend, runway_blend)
+
+
+def get_approach_brake(closing_speed):
+  return np.interp(closing_speed, APPROACH_BRAKE_CLOSING_BP, [APPROACH_BRAKE, APPROACH_BRAKE_MIN])
+
 
 def gen_long_model():
   model = AcadosModel()
@@ -119,6 +268,7 @@ def gen_long_model():
   model.f_expl_expr = f_expl
   return model
 
+
 def gen_long_ocp():
   ocp = AcadosOcp()
   ocp.model = gen_long_model()
@@ -147,8 +297,8 @@ def gen_long_ocp():
   lead_t_follow = ocp.model.p[4]
   lead_danger_factor = ocp.model.p[5]
 
-  ocp.cost.yref = np.zeros((COST_DIM, ))
-  ocp.cost.yref_e = np.zeros((COST_E_DIM, ))
+  ocp.cost.yref = np.zeros((COST_DIM,))
+  ocp.cost.yref_e = np.zeros((COST_E_DIM,))
 
   desired_dist_comfort = get_safe_obstacle_distance(v_ego, lead_t_follow)
 
@@ -156,28 +306,19 @@ def gen_long_ocp():
   # from an obstacle at every timestep. This obstacle can be a lead car
   # or other object. In e2e mode we can use x_position targets as a cost
   # instead.
-  costs = [((x_obstacle - x_ego) - (desired_dist_comfort)) / (v_ego + 10.),
-           x_ego,
-           v_ego,
-           a_ego,
-           a_ego - a_prev,
-           j_ego]
+  costs = [((x_obstacle - x_ego) - desired_dist_comfort) / (v_ego + 10.0), x_ego, v_ego, a_ego, a_ego - a_prev, j_ego]
   ocp.model.cost_y_expr = vertcat(*costs)
   ocp.model.cost_y_expr_e = vertcat(*costs[:-1])
 
   # Constraints on speed, acceleration and desired distance to
   # the obstacle, which is treated as a slack constraint so it
   # behaves like an asymmetrical cost.
-  constraints = vertcat(v_ego,
-                        (a_ego - a_min),
-                        (a_max - a_ego),
-                        ((x_obstacle - x_ego) - lead_danger_factor * (desired_dist_comfort)) / (v_ego + 10.))
+  constraints = vertcat(v_ego, (a_ego - a_min), (a_max - a_ego), ((x_obstacle - x_ego) - lead_danger_factor * desired_dist_comfort) / (v_ego + 10.0))
   ocp.model.con_h_expr = constraints
 
   x0 = np.zeros(X_DIM)
   ocp.constraints.x0 = x0
   ocp.parameter_values = np.array([-1.2, 1.2, 0.0, 0.0, get_T_FOLLOW(), LEAD_DANGER_FACTOR])
-
 
   # We put all constraint cost weights to 0 and only set them at runtime
   cost_weights = np.zeros(CONSTR_DIM)
@@ -187,7 +328,7 @@ def gen_long_ocp():
   ocp.cost.zu = cost_weights
 
   ocp.constraints.lh = np.zeros(CONSTR_DIM)
-  ocp.constraints.uh = 1e4*np.ones(CONSTR_DIM)
+  ocp.constraints.uh = 1e4 * np.ones(CONSTR_DIM)
   ocp.constraints.idxsh = np.arange(CONSTR_DIM)
 
   # The HPIPM solver can give decent solutions even when it is stopped early
@@ -223,20 +364,20 @@ class LongitudinalMpc:
   def reset(self):
     self.solver.reset()
 
-    self.x_sol = np.zeros((N+1, X_DIM))
+    self.x_sol = np.zeros((N + 1, X_DIM))
     self.u_sol = np.zeros((N, 1))
-    self.v_solution = np.zeros(N+1)
-    self.a_solution = np.zeros(N+1)
+    self.v_solution = np.zeros(N + 1)
+    self.a_solution = np.zeros(N + 1)
     self.j_solution = np.zeros(N)
     self.a_prev = np.array(self.a_solution)
-    self.yref = np.zeros((N+1, COST_DIM))
+    self.yref = np.zeros((N + 1, COST_DIM))
 
     for i in range(N):
       self.solver.cost_set(i, "yref", self.yref[i])
     self.solver.cost_set(N, "yref", self.yref[N][:COST_E_DIM])
 
-    self.params = np.zeros((N+1, PARAM_DIM))
-    for i in range(N+1):
+    self.params = np.zeros((N + 1, PARAM_DIM))
+    for i in range(N + 1):
       self.solver.set(i, 'x', np.zeros(X_DIM))
 
     self.last_cloudlog_t = 0
@@ -249,6 +390,8 @@ class LongitudinalMpc:
     self.time_linearization = 0.0
     self.time_integrator = 0.0
     self.x0 = np.zeros(X_DIM)
+    self.lead_departure_anchors = np.full(2, np.nan)
+    self.lead_gap_comfort_active = np.zeros(2, dtype=bool)
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights):
@@ -256,7 +399,7 @@ class LongitudinalMpc:
     for i in range(N):
       # TODO don't hardcode A_CHANGE_COST idx
       # reduce the cost on (a-a_prev) later in the horizon.
-      W[4,4] = cost_weights[4] * np.interp(T_IDXS[i], [0.0, 1.0, 2.0], [1.0, 1.0, 0.0])
+      W[4, 4] = cost_weights[4] * np.interp(T_IDXS[i], [0.0, 1.0, 2.0], [1.0, 1.0, 0.0])
       self.solver.cost_set(i, 'W', W)
     # Setting the slice without the copy make the array not contiguous,
     # causing issues with the C interface.
@@ -278,13 +421,13 @@ class LongitudinalMpc:
     v_prev = self.x0[1]
     self.x0[1] = v
     self.x0[2] = a
-    if abs(v_prev - v) > 2.:  # probably only helps if v < v_prev
-      for i in range(N+1):
+    if abs(v_prev - v) > 2.0:  # probably only helps if v < v_prev
+      for i in range(N + 1):
         self.solver.set(i, 'x', self.x0)
 
   @staticmethod
   def extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau):
-    a_lead_traj = a_lead * np.exp(-a_lead_tau * (T_IDXS**2)/2.)
+    a_lead_traj = a_lead * np.exp(-a_lead_tau * (T_IDXS**2) / 2.0)
     v_lead_traj = np.clip(v_lead + np.cumsum(T_DIFFS * a_lead_traj), 0.0, 1e8)
     x_lead_traj = x_lead + np.cumsum(T_DIFFS * v_lead_traj)
     lead_xv = np.column_stack((x_lead_traj, v_lead_traj))
@@ -309,56 +452,144 @@ class LongitudinalMpc:
     min_x_lead = MIN_X_LEAD_FACTOR * (v_ego + v_lead) * (v_ego - v_lead) / (-ACCEL_MIN * 2)
     x_lead = np.clip(x_lead, min_x_lead, 1e8)
     v_lead = np.clip(v_lead, 0.0, 1e8)
-    a_lead = np.clip(a_lead, -10., 5.)
+    a_lead = np.clip(a_lead, -10.0, 5.0)
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
-    return lead_xv
+    return lead_xv, a_lead
+
+  def get_lead_departure_state(self, lead_idx, lead):
+    v_ego = self.x0[1]
+    if lead is None or not lead.status:
+      self.lead_departure_anchors[lead_idx] = np.nan
+      return False, 0.0, 0.0
+
+    d_rel = float(lead.dRel)
+    if v_ego >= LEAD_DEPARTURE_V_EGO_BP[-1]:
+      self.lead_departure_anchors[lead_idx] = np.nan
+      return False, 0.0, 0.0
+
+    if not np.isfinite(self.lead_departure_anchors[lead_idx]):
+      if v_ego <= LEAD_DEPARTURE_ARM_V_EGO:
+        self.lead_departure_anchors[lead_idx] = d_rel
+      return np.isfinite(self.lead_departure_anchors[lead_idx]), 0.0, 0.0
+
+    self.lead_departure_anchors[lead_idx] = min(self.lead_departure_anchors[lead_idx], d_rel)
+
+    gap_opening = max(0.0, d_rel - self.lead_departure_anchors[lead_idx])
+    # If we're already parked long behind the lead, use that extra runway to start creeping with it.
+    available_runway = get_lead_departure_available_runway(v_ego, d_rel, gap_opening)
+    blend = get_lead_departure_relaxation_blend(v_ego, float(lead.vLeadK), available_runway)
+    return True, blend, LEAD_DEPARTURE_RELAXATION_MAX * blend
+
+  def get_lead_gap_comfort_state(self, lead_idx, lead, t_follow):
+    if lead is None or not lead.status:
+      self.lead_gap_comfort_active[lead_idx] = False
+      return np.full(N + 1, ACCEL_MIN)
+
+    closing_threshold = LEAD_GAP_COMFORT_CLOSING_EXIT if self.lead_gap_comfort_active[lead_idx] else LEAD_GAP_COMFORT_CLOSING_ENTER
+    comfort_a_min = get_lead_gap_comfort_a_min(self.x0[1], float(lead.vLeadK), float(lead.dRel), t_follow, closing_threshold=closing_threshold)
+    self.lead_gap_comfort_active[lead_idx] = comfort_a_min > ACCEL_MIN
+    if not self.lead_gap_comfort_active[lead_idx]:
+      return np.full(N + 1, ACCEL_MIN)
+
+    comfort_horizon_blend = np.interp(T_IDXS, LEAD_GAP_COMFORT_HORIZON_BP, [1.0, 1.0, 0.0])
+    return ACCEL_MIN + comfort_horizon_blend * (comfort_a_min - ACCEL_MIN)
 
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
 
-    lead_xv_0 = self.process_lead(radarstate.leadOne)
-    lead_xv_1 = self.process_lead(radarstate.leadTwo)
+    if not np.isfinite(v_cruise):
+      v_cruise = 0.0
+
+    lead_xv_0, lead_0_a = self.process_lead(radarstate.leadOne)
+    lead_xv_1, lead_1_a = self.process_lead(radarstate.leadTwo)
 
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
     # and then treat that as a stopped car/obstacle at this new distance.
-    lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
-    lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
+    lead_0_departure_armed, lead_0_departure_blend, lead_0_departure_relaxation = self.get_lead_departure_state(0, radarstate.leadOne)
+    lead_1_departure_armed, lead_1_departure_blend, lead_1_departure_relaxation = self.get_lead_departure_state(1, radarstate.leadTwo)
+    lead_0_gap_comfort_a_min = self.get_lead_gap_comfort_state(0, radarstate.leadOne, t_follow)
+    lead_1_gap_comfort_a_min = self.get_lead_gap_comfort_state(1, radarstate.leadTwo, t_follow)
+    lead_0_hard_v = lead_xv_0[:, 1] if not lead_0_departure_armed else lead_0_departure_blend * lead_xv_0[:, 1]
+    lead_1_hard_v = lead_xv_1[:, 1] if not lead_1_departure_armed else lead_1_departure_blend * lead_xv_1[:, 1]
+    lead_0_stopped_buffer = get_stopped_lead_buffer(v_ego, lead_xv_0[:, 1])
+    lead_1_stopped_buffer = get_stopped_lead_buffer(v_ego, lead_xv_1[:, 1])
+    lead_0_stop_gap_taper = get_lead_stop_gap_taper(v_ego, lead_xv_0[:, 1])
+    lead_1_stop_gap_taper = get_lead_stop_gap_taper(v_ego, lead_xv_1[:, 1])
+    lead_0_stop_gap_excess_offset = get_lead_stop_gap_excess_offset(v_ego, lead_xv_0[:, 0])
+    lead_1_stop_gap_excess_offset = get_lead_stop_gap_excess_offset(v_ego, lead_xv_1[:, 0])
+    if lead_0_departure_armed:
+      lead_0_stopped_buffer *= lead_0_departure_blend
+    if lead_1_departure_armed:
+      lead_1_stopped_buffer *= lead_1_departure_blend
+    lead_0_obstacle = (
+      lead_xv_0[:, 0] + get_stopped_equivalence_factor(lead_0_hard_v) - lead_0_stopped_buffer + lead_0_stop_gap_taper + lead_0_stop_gap_excess_offset
+    )
+    lead_1_obstacle = (
+      lead_xv_1[:, 0] + get_stopped_equivalence_factor(lead_1_hard_v) - lead_1_stopped_buffer + lead_1_stop_gap_taper + lead_1_stop_gap_excess_offset
+    )
+    lead_0_desired_gap = get_approach_follow_distance(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], t_follow, lead_0_a)
+    lead_1_desired_gap = get_approach_follow_distance(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], t_follow, lead_1_a)
+    lead_0_cost_obstacle_soft = (
+      lead_xv_0[:, 0]
+      + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_0_desired_gap, 0.0, 1e8)
+      + lead_0_stop_gap_taper
+      + lead_0_stop_gap_excess_offset
+    )
+    lead_1_cost_obstacle_soft = (
+      lead_xv_1[:, 0]
+      + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_1_desired_gap, 0.0, 1e8)
+      + lead_1_stop_gap_taper
+      + lead_1_stop_gap_excess_offset
+    )
+    lead_0_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_xv_0[0, 0], lead_xv_0[0, 1], t_follow, lead_0_a)
+    lead_1_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_xv_1[0, 0], lead_xv_1[0, 1], t_follow, lead_1_a)
+    # Only bias the preferred gap once the lead has both opened real space and clearly pulled away.
+    lead_0_cost_obstacle_soft += lead_0_departure_relaxation
+    lead_1_cost_obstacle_soft += lead_1_departure_relaxation
+    lead_0_runway_blend = get_approach_runway_blend(lead_xv_0[0, 0], v_ego, lead_xv_0[0, 1], t_follow, lead_0_a)
+    lead_1_runway_blend = get_approach_runway_blend(lead_xv_1[0, 0], v_ego, lead_xv_1[0, 1], t_follow, lead_1_a)
+    lead_0_cost_obstacle = lead_0_obstacle + lead_0_runway_blend * (lead_0_cost_obstacle_soft - lead_0_obstacle)
+    lead_1_cost_obstacle = lead_1_obstacle + lead_1_runway_blend * (lead_1_cost_obstacle_soft - lead_1_obstacle)
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.
     v_lower = v_ego + (T_IDXS * CRUISE_MIN_ACCEL * 1.05)
     # TODO does this make sense when max_a is negative?
     v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
-    v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
+    v_cruise_clipped = np.clip(v_cruise * np.ones(N + 1), v_lower, v_upper)
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
 
+    cost_obstacles = np.column_stack([lead_0_cost_obstacle, lead_1_cost_obstacle, cruise_obstacle])
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
-    self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]
+    self.source = MPC_SOURCES[np.argmin(cost_obstacles[0])]
 
-    self.yref[:,:] = 0.0
+    self.yref[:, :] = 0.0
+    self.yref[:, 0] = (np.min(x_obstacles, axis=1) - np.min(cost_obstacles, axis=1)) / (v_ego + 10.0)
     for i in range(N):
       self.solver.set(i, "yref", self.yref[i])
     self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
 
-    self.params[:,0] = ACCEL_MIN
-    self.params[:,1] = ACCEL_MAX
-    self.params[:,2] = np.min(x_obstacles, axis=1)
-    self.params[:,3] = np.copy(self.a_prev)
-    self.params[:,4] = t_follow
-    self.params[:,5] = LEAD_DANGER_FACTOR
+    dominant_obstacle = np.argmin(x_obstacles, axis=1)
+    self.params[:, 0] = ACCEL_MIN
+    self.params[dominant_obstacle == 0, 0] = lead_0_gap_comfort_a_min[dominant_obstacle == 0]
+    self.params[dominant_obstacle == 1, 0] = lead_1_gap_comfort_a_min[dominant_obstacle == 1]
+    self.params[:, 1] = ACCEL_MAX
+    self.params[:, 2] = np.min(x_obstacles, axis=1)
+    self.params[:, 3] = np.copy(self.a_prev)
+    self.params[:, 4] = t_follow
+    self.params[:, 5] = LEAD_DANGER_FACTOR
 
     self.run()
-    if (np.any(lead_xv_0[FCW_IDXS,0] - self.x_sol[FCW_IDXS,0] < CRASH_DISTANCE) and
-            radarstate.leadOne.modelProb > 0.9):
+    if np.any(lead_xv_0[FCW_IDXS, 0] - self.x_sol[FCW_IDXS, 0] < CRASH_DISTANCE) and radarstate.leadOne.modelProb > 0.9:
       self.crash_cnt += 1
     else:
       self.crash_cnt = 0
 
   def run(self):
-    for i in range(N+1):
+    for i in range(N + 1):
       self.solver.set(i, 'p', self.params[i])
     self.solver.constraints_set(0, "lbx", self.x0)
     self.solver.constraints_set(0, "ubx", self.x0)
@@ -369,14 +600,14 @@ class LongitudinalMpc:
     self.time_linearization = float(self.solver.get_stats('time_lin')[0])
     self.time_integrator = float(self.solver.get_stats('time_sim')[0])
 
-    for i in range(N+1):
+    for i in range(N + 1):
       self.x_sol[i] = self.solver.get(i, 'x')
     for i in range(N):
       self.u_sol[i] = self.solver.get(i, 'u')
 
-    self.v_solution = self.x_sol[:,1]
-    self.a_solution = self.x_sol[:,2]
-    self.j_solution = self.u_sol[:,0]
+    self.v_solution = self.x_sol[:, 1]
+    self.a_solution = self.x_sol[:, 2]
+    self.j_solution = self.u_sol[:, 0]
 
     self.a_prev = np.interp(T_IDXS + self.dt, T_IDXS, self.a_solution)
 
