@@ -285,6 +285,24 @@ def test_lead_creep_uses_extra_stopped_gap():
   assert np.min(output[response_window, 6]) > STOP_DISTANCE
 
 
+def test_stationary_lead_over_stopped_gap_creeps_toward_target_gap():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "stationary lead while over stopped gap",
+      duration=20.0,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=STOP_DISTANCE + 1.0,
+      speed_lead_values=[0.0, 0.0],
+      breakpoints=[0.0, 20.0],
+    )
+  )
+
+  early_window = output[:, 0] <= 3.0
+  assert np.max(output[early_window, 3]) > 0.1
+  assert output[-1, 6] > STOP_DISTANCE - 0.25
+
+
 def test_equal_speed_under_gap_cut_in_uses_only_light_brake():
   output = run_under_gap_cut_in_simulation(20.0, 20.0)
 
