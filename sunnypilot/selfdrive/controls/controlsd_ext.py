@@ -21,6 +21,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import Lat
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorque as LatControlTorqueV3
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorque as LatControlTorqueV4
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v5 import LatControlTorque as LatControlTorqueV5
 
 
 class ControlsExt(ModelStateBase):
@@ -54,6 +55,8 @@ class ControlsExt(ModelStateBase):
       return LatControlTorqueV3(self.CP, self.CP_SP, CI, dt)
     if torque_version == 4.0:
       return LatControlTorqueV4(self.CP, self.CP_SP, CI, dt)
+    if torque_version == 5.0:
+      return LatControlTorqueV5(self.CP, self.CP_SP, CI, dt)
     return lac
 
   @staticmethod
