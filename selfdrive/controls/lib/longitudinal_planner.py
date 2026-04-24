@@ -9,7 +9,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -25,6 +25,19 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 ENGAGE_STOP_BOOTSTRAP_TIME = 0.75
 ENGAGE_STOP_BOOTSTRAP_MIN_SPEED = 5.0
 ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL = -1.0
+CREEP_TO_STOP_GAP_ARM_EXCESS = 0.5
+CREEP_TO_STOP_GAP_STOP_EXCESS = 0.05
+CREEP_TO_STOP_GAP_MAX_V_EGO_ARM = 0.3
+CREEP_TO_STOP_GAP_MAX_V_EGO = 1.0
+CREEP_TO_STOP_GAP_MAX_EXCESS = 10.0
+CREEP_TO_STOP_GAP_MIN_LEAD_SPEED = -0.3
+CREEP_TO_STOP_GAP_MIN_MODEL_PROB = 0.5
+CREEP_TO_STOP_GAP_SPEED_MAX = 0.75
+CREEP_TO_STOP_GAP_SPEED_BP = [CREEP_TO_STOP_GAP_STOP_EXCESS, 1.0, 5.0]
+CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.25, CREEP_TO_STOP_GAP_SPEED_MAX]
+CREEP_TO_STOP_GAP_ACCEL_GAIN = 0.8
+CREEP_TO_STOP_GAP_ACCEL_MIN = -0.25
+CREEP_TO_STOP_GAP_ACCEL_MAX = 0.18
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -64,6 +77,23 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   return [a_target[0], min(a_target[1], a_x_allowed)]
 
 
+def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_pressed=False, gas_pressed=False, force_slow_decel=False):
+  gap_excess = d_rel - STOP_DISTANCE
+  blocked = brake_pressed or gas_pressed or force_slow_decel or model_prob < CREEP_TO_STOP_GAP_MIN_MODEL_PROB
+  blocked = blocked or v_lead < CREEP_TO_STOP_GAP_MIN_LEAD_SPEED or v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO
+  blocked = blocked or gap_excess <= 0.0 or gap_excess > CREEP_TO_STOP_GAP_MAX_EXCESS
+  if blocked:
+    return False, 0.0
+
+  should_arm = gap_excess >= CREEP_TO_STOP_GAP_ARM_EXCESS and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM
+  if not active and not should_arm:
+    return False, 0.0
+
+  target_speed = float(np.interp(gap_excess, CREEP_TO_STOP_GAP_SPEED_BP, CREEP_TO_STOP_GAP_SPEED_V))
+  accel = np.clip((target_speed - v_ego) * CREEP_TO_STOP_GAP_ACCEL_GAIN, CREEP_TO_STOP_GAP_ACCEL_MIN, CREEP_TO_STOP_GAP_ACCEL_MAX)
+  return True, float(accel)
+
+
 class LongitudinalPlanner(LongitudinalPlannerSP):
   def __init__(self, CP, CP_SP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
@@ -80,6 +110,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.engage_stop_bootstrap_timer = 0.0
     self.output_a_target = 0.0
     self.output_should_stop = False
+    self.creep_to_stop_gap_active = False
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -208,6 +239,22 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.output_should_stop = self.output_should_stop or output_should_stop_e2e
       if output_a_target_e2e < output_a_target_mpc:
         self.mpc.source = LongitudinalPlanSource.e2e
+
+    lead_one = sm['radarState'].leadOne
+    self.creep_to_stop_gap_active, creep_a_target = get_creep_to_stop_gap_accel(
+      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
+      self.creep_to_stop_gap_active and not reset_state,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+      force_slow_decel=force_slow_decel or reset_state,
+    ) if lead_one.status else (False, 0.0)
+    if self.creep_to_stop_gap_active:
+      if creep_a_target >= 0.0:
+        output_a_target = max(output_a_target, creep_a_target)
+      else:
+        output_a_target = min(output_a_target, creep_a_target)
+      output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MAX)
+      self.output_should_stop = creep_a_target <= 0.0 and v_ego < self.CP.vEgoStopping
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

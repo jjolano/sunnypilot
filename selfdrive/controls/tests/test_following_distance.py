@@ -39,6 +39,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
 )
+from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+  CREEP_TO_STOP_GAP_ACCEL_MAX,
+  CREEP_TO_STOP_GAP_ACCEL_MIN,
+  CREEP_TO_STOP_GAP_MAX_EXCESS,
+  get_creep_to_stop_gap_accel,
+)
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
@@ -86,6 +92,33 @@ def test_lead_stop_gap_excess_offset_requires_extra_runway():
   assert 0.0 < get_lead_stop_gap_excess_offset(0.0, STOP_DISTANCE + 2.0) < LEAD_STOP_GAP_EXCESS_OFFSET_MAX
   assert get_lead_stop_gap_excess_offset(0.0, STOP_DISTANCE + 5.0) == pytest.approx(LEAD_STOP_GAP_EXCESS_OFFSET_MAX)
   assert get_lead_stop_gap_excess_offset(1.5, STOP_DISTANCE + 5.0) == pytest.approx(0.0)
+
+
+def test_creep_to_stop_gap_release_arms_and_tapers_to_target_gap():
+  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, 0.0, 1.0, False)
+  assert active
+  assert 0.0 < accel <= CREEP_TO_STOP_GAP_ACCEL_MAX
+
+  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.5, 0.0, 1.0, active)
+  assert active
+  assert 0.0 < accel < CREEP_TO_STOP_GAP_ACCEL_MAX
+
+  active, accel = get_creep_to_stop_gap_accel(0.2, STOP_DISTANCE + 0.3, 0.0, 1.0, active)
+  assert active
+  assert CREEP_TO_STOP_GAP_ACCEL_MIN < accel < 0.0
+
+  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE, 0.0, 1.0, active)
+  assert not active
+  assert accel == pytest.approx(0.0)
+
+
+def test_creep_to_stop_gap_release_requires_confirmed_safe_lead():
+  assert not get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, 0.0, 0.4, False)[0]
+  assert not get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, -0.4, 1.0, False)[0]
+  assert not get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, 0.0, 1.0, False, brake_pressed=True)[0]
+  assert not get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, 0.0, 1.0, False, gas_pressed=True)[0]
+  assert not get_creep_to_stop_gap_accel(0.4, STOP_DISTANCE + 1.0, 0.0, 1.0, False)[0]
+  assert not get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + CREEP_TO_STOP_GAP_MAX_EXCESS + 0.1, 0.0, 1.0, False)[0]
 
 
 def test_lead_departure_relaxation_requires_gap_growth_and_pullaway():
