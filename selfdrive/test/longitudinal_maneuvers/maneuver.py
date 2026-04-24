@@ -21,6 +21,8 @@ class Maneuver:
     self.prob_throttle_values = kwargs.get("prob_throttle_values", [1.0 for i in range(len(self.breakpoints))])
     self.cruise_values = kwargs.get("cruise_values", [50.0 for i in range(len(self.breakpoints))])
     self.pitch_values = kwargs.get("pitch_values", [0.0 for i in range(len(self.breakpoints))])
+    self.model_desired_accel_values = kwargs.get("model_desired_accel_values", None)
+    self.model_should_stop_values = kwargs.get("model_should_stop_values", [False for i in range(len(self.breakpoints))])
 
     self.only_lead2 = kwargs.get("only_lead2", False)
     self.only_radar = kwargs.get("only_radar", False)
@@ -61,8 +63,13 @@ class Maneuver:
       cruise = np.interp(plant.current_time, self.breakpoints, self.cruise_values)
       pitch = np.interp(plant.current_time, self.breakpoints, self.pitch_values)
       prob_throttle = np.interp(plant.current_time, self.breakpoints, self.prob_throttle_values)
+      model_desired_accel = (
+        None if self.model_desired_accel_values is None else np.interp(plant.current_time, self.breakpoints, self.model_desired_accel_values)
+      )
+      model_should_stop = bool(np.interp(plant.current_time, self.breakpoints, self.model_should_stop_values) > 0.5)
       log = plant.step(speed_lead, prob_lead, cruise, pitch, prob_throttle, lead_y_rel,
-                       v_lead2=speed_lead2, prob_lead2=prob_lead2, lead2_y_rel=lead2_y_rel)
+                       v_lead2=speed_lead2, prob_lead2=prob_lead2, lead2_y_rel=lead2_y_rel,
+                       model_desired_accel=model_desired_accel, model_should_stop=model_should_stop)
 
       d_rel = log['distance_lead'] - log['distance'] if self.lead_relevancy else 200.
       d_rel2 = log['distance_lead2'] - log['distance'] if self.lead2_relevancy else 200.
@@ -81,7 +88,7 @@ class Maneuver:
                             lead_y_rel,
                             d_rel2]))
 
-      if d_rel < .4 and (self.only_radar or prob_lead > 0.5):
+      if d_rel < 0.4 and (self.only_radar or prob_lead > 0.5):
         print("Crashed!!!!")
         valid = False
       if d_rel2 < .4 and prob_lead2 > 0.5:
@@ -99,7 +106,6 @@ class Maneuver:
     if self.force_decel and log['speed'] > 1e-1 and log['acceleration'] > -0.04:
       print('Not stopping with force decel')
       valid = False
-
 
     print("maneuver end", valid)
     return valid, np.array(logs)

@@ -19,7 +19,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
-A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
+A_CRUISE_MAX_BP = [0.0, 10.0, 25.0, 40.0]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
@@ -71,16 +71,33 @@ STOPPED_LEAD_GAP_FILL_SPEED_V = [CREEP_TO_STOP_GAP_SPEED_MAX, 1.2, STOPPED_LEAD_
 STOPPED_LEAD_GAP_FILL_ACCEL_GAIN = 0.6
 STOPPED_LEAD_GAP_FILL_ACCEL_MAX = 0.35
 STOPPED_LEAD_GAP_FILL_ACCEL_MIN = -0.25
+ENGAGE_STOP_BOOTSTRAP_TIME = 0.75
+ENGAGE_STOP_BOOTSTRAP_MIN_SPEED = 5.0
+ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL = -1.0
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
-_A_TOTAL_MAX_BP = [20., 40.]
+_A_TOTAL_MAX_BP = [20.0, 40.0]
+
 
 def get_max_accel(v_ego):
   return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
 
+
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
+
+
+def has_valid_radar_lead(radar_state):
+  return radar_state.leadOne.status or radar_state.leadTwo.status
+
+
+def should_run_engage_stop_bootstrap(timer, v_ego, radar_state, model_msg):
+  if timer <= 0.0 or v_ego < ENGAGE_STOP_BOOTSTRAP_MIN_SPEED or has_valid_radar_lead(radar_state):
+    return False
+
+  return bool(model_msg.action.shouldStop or model_msg.action.desiredAcceleration <= ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL)
+
 
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   """
@@ -90,8 +107,8 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   # FIXME: This function to calculate lateral accel is incorrect and should use the VehicleModel
   # The lookup table for turns should also be updated if we do this
   a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
-  a_y = v_ego ** 2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
-  a_x_allowed = math.sqrt(max(a_total_max ** 2 - a_y ** 2, 0.))
+  a_y = v_ego**2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
+  a_x_allowed = math.sqrt(max(a_total_max**2 - a_y**2, 0.0))
 
   return [a_target[0], min(a_target[1], a_x_allowed)]
 
@@ -272,6 +289,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
+    self.prev_reset_state = True
+    self.engage_stop_bootstrap_timer = 0.0
     self.output_a_target = 0.0
     self.output_should_stop = False
     self.creep_to_stop_gap_active = False
@@ -283,9 +302,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
   @staticmethod
   def parse_model(model_msg):
-    if (len(model_msg.position.x) == ModelConstants.IDX_N and
-      len(model_msg.velocity.x) == ModelConstants.IDX_N and
-      len(model_msg.acceleration.x) == ModelConstants.IDX_N):
+    if (
+      len(model_msg.position.x) == ModelConstants.IDX_N
+      and len(model_msg.velocity.x) == ModelConstants.IDX_N
+      and len(model_msg.acceleration.x) == ModelConstants.IDX_N
+    ):
       x = np.interp(T_IDXS_MPC, ModelConstants.T_IDXS, model_msg.position.x)
       v = np.interp(T_IDXS_MPC, ModelConstants.T_IDXS, model_msg.velocity.x)
       a = np.interp(T_IDXS_MPC, ModelConstants.T_IDXS, model_msg.acceleration.x)
@@ -322,6 +343,14 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # PCM cruise speed may be updated a few cycles later, check if initialized
     reset_state = reset_state or not v_cruise_initialized
 
+    if reset_state:
+      self.engage_stop_bootstrap_timer = 0.0
+    elif self.prev_reset_state:
+      self.engage_stop_bootstrap_timer = ENGAGE_STOP_BOOTSTRAP_TIME
+    else:
+      self.engage_stop_bootstrap_timer = max(0.0, self.engage_stop_bootstrap_timer - self.dt)
+    self.prev_reset_state = reset_state
+
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
@@ -342,13 +371,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     if not self.allow_throttle:
       clipped_accel_coast = max(accel_coast, accel_clip[0])
-      clipped_accel_coast_interp = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED*2], [accel_clip[1], clipped_accel_coast])
+      clipped_accel_coast_interp = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED * 2], [accel_clip[1], clipped_accel_coast])
       accel_clip[1] = min(accel_clip[1], clipped_accel_coast_interp)
 
     # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist
     v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired, v_cruise)
 
     if force_slow_decel:
+      v_cruise = 0.0
+
+    engage_stop_bootstrap_active = should_run_engage_stop_bootstrap(self.engage_stop_bootstrap_timer, v_ego, sm['radarState'], sm['modelV2'])
+    if engage_stop_bootstrap_active:
       v_cruise = 0.0
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
@@ -369,9 +402,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_desired = float(np.interp(self.dt, CONTROL_N_T_IDX, self.a_desired_trajectory))
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.a_desired + a_prev) / 2.0
 
-    action_t =  self.CP.longitudinalActuatorDelay + DT_MDL
-    output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan(self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX,
-                                                                        action_t=action_t, vEgoStopping=self.CP.vEgoStopping)
+    action_t = self.CP.longitudinalActuatorDelay + DT_MDL
+    output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan(
+      self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX, action_t=action_t, vEgoStopping=self.CP.vEgoStopping
+    )
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
@@ -448,6 +482,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     ):
       output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
       self.output_should_stop = True
+
+    if engage_stop_bootstrap_active:
+      output_a_target = min(output_a_target, output_a_target_e2e)
+      self.output_should_stop = self.output_should_stop or output_should_stop_e2e
+      if output_a_target_e2e < output_a_target_mpc:
+        self.mpc.source = LongitudinalPlanSource.e2e
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

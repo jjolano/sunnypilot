@@ -694,3 +694,27 @@ class TestLongitudinalControl:
         print(maneuver.title, f'in {"e2e" if maneuver.e2e else "acc"} mode')
         valid, _ = maneuver.evaluate()
         assert valid
+
+
+def test_engage_bootstrap_brakes_for_model_stop_threat_before_radar_lead():
+  maneuver = Maneuver(
+    'engage approaching stopped lead before radar lock',
+    duration=8.0,
+    initial_speed=14.0,
+    lead_relevancy=True,
+    initial_distance_lead=55.0,
+    speed_lead_values=[0.0, 0.0, 0.0],
+    prob_lead_values=[0.0, 0.0, 1.0],
+    cruise_values=[20.0, 20.0, 20.0],
+    model_desired_accel_values=[-1.8, -1.8, -1.8],
+    breakpoints=[0.0, 0.5, 0.51],
+    e2e=False,
+  )
+
+  valid, output = maneuver.evaluate()
+
+  assert valid
+  early_idx = int(np.argmin(np.abs(output[:, 0] - 0.3)))
+  lead_idx = int(np.argmin(np.abs(output[:, 0] - 0.55)))
+  assert output[early_idx, 5] < -0.5
+  assert output[lead_idx, 3] < output[0, 3] - 0.2
