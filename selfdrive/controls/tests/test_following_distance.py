@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 import itertools
-from opendbc.car.interfaces import ACCEL_MIN
+from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
@@ -16,6 +16,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_STOP_GAP_EXCESS_OFFSET_MAX,
   LEAD_STOP_GAP_TAPER_MAX,
   LEAD_GAP_COMFORT_LIGHT_DECEL,
+  LEAD_TRANSITION_PERSISTENCE,
+  LEAD_TRANSITION_Y_REL_CONFIRM,
+  LEAD_TRANSITION_Y_REL_SOFT,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
@@ -34,6 +37,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_danger_distance,
   get_lead_stop_gap_excess_offset,
   get_lead_stop_gap_taper,
+  get_lead_transition_accel_max,
+  get_lead_transition_cost_obstacle,
+  get_lead_transition_lateral_blend,
+  get_lead_transition_release_target,
   get_safe_obstacle_distance,
   get_stopped_lead_buffer,
   get_stopped_equivalence_factor,
@@ -152,6 +159,36 @@ def test_lead_departure_relaxation_fades_out_as_ego_starts_creeping():
 
   assert 0.0 < creeping_relaxation < stopped_relaxation
   assert get_lead_departure_relaxation(1.0, 2.0, 1.0) == pytest.approx(0.0)
+
+
+def test_lead_transition_release_requires_lateral_exit_and_persistence():
+  assert get_lead_transition_lateral_blend(LEAD_TRANSITION_Y_REL_SOFT - 0.1) == pytest.approx(0.0)
+  assert get_lead_transition_release_target(LEAD_TRANSITION_Y_REL_CONFIRM, 0.0) == pytest.approx(0.0)
+
+  partial_release = get_lead_transition_release_target(
+    0.5 * (LEAD_TRANSITION_Y_REL_SOFT + LEAD_TRANSITION_Y_REL_CONFIRM),
+    0.5 * LEAD_TRANSITION_PERSISTENCE,
+  )
+  assert 0.0 < partial_release < 1.0
+  assert get_lead_transition_release_target(LEAD_TRANSITION_Y_REL_CONFIRM, LEAD_TRANSITION_PERSISTENCE) == pytest.approx(1.0)
+
+
+def test_lead_transition_soft_release_only_moves_toward_cruise():
+  lead_obstacle = np.array([20.0, 25.0])
+  cruise_obstacle = np.array([30.0, 23.0])
+
+  released = get_lead_transition_cost_obstacle(lead_obstacle, cruise_obstacle, 0.5)
+
+  assert released[0] == pytest.approx(25.0)
+  assert released[1] == pytest.approx(25.0)
+
+
+def test_lead_transition_guard_caps_near_term_positive_accel():
+  assert np.all(get_lead_transition_accel_max(0.0) == ACCEL_MAX)
+
+  guarded_accel_max = get_lead_transition_accel_max(0.55)
+  assert guarded_accel_max[0] == pytest.approx(0.0)
+  assert np.max(guarded_accel_max) == pytest.approx(ACCEL_MAX)
 
 
 def test_approach_brake_stays_stock_for_small_closure():
