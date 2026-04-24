@@ -84,8 +84,8 @@ def test_lead_stop_gap_taper_only_applies_for_low_speed_moving_leads():
 def test_lead_stop_gap_excess_offset_requires_extra_runway():
   assert get_lead_stop_gap_excess_offset(0.0, STOP_DISTANCE + 0.9) == pytest.approx(0.0)
   assert 0.0 < get_lead_stop_gap_excess_offset(0.0, STOP_DISTANCE + 2.0) < LEAD_STOP_GAP_EXCESS_OFFSET_MAX
-  assert get_lead_stop_gap_excess_offset(0.0, STOP_DISTANCE + 4.0) == pytest.approx(LEAD_STOP_GAP_EXCESS_OFFSET_MAX)
-  assert get_lead_stop_gap_excess_offset(1.5, STOP_DISTANCE + 4.0) == pytest.approx(0.0)
+  assert get_lead_stop_gap_excess_offset(0.0, STOP_DISTANCE + 5.0) == pytest.approx(LEAD_STOP_GAP_EXCESS_OFFSET_MAX)
+  assert get_lead_stop_gap_excess_offset(1.5, STOP_DISTANCE + 5.0) == pytest.approx(0.0)
 
 
 def test_lead_departure_relaxation_requires_gap_growth_and_pullaway():

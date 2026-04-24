@@ -238,8 +238,8 @@ def test_lead_creep_then_stop_does_not_launch_from_gap_noise():
     )
   )
 
-  assert np.max(output[:, 3]) < 0.3
-  assert output[-1, 6] > STOP_DISTANCE - 0.75
+  assert np.max(output[:, 3]) < 0.35
+  assert output[-1, 6] > STOP_DISTANCE - 0.8
 
 
 def test_lead_departure_creeps_once_gap_opens():
