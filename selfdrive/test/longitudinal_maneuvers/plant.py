@@ -14,7 +14,7 @@ from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 class Plant:
   messaging_initialized = False
 
-  def __init__(self, lead_relevancy=False, speed=0.0, distance_lead=2.0,
+  def __init__(self, lead_relevancy=False, lead2_relevancy=False, speed=0.0, distance_lead=2.0, distance_lead2=200.0,
                enabled=True, only_lead2=False, only_radar=False, e2e=False, personality=0, force_decel=False):
     self.rate = 1. / DT_MDL
 
@@ -27,6 +27,7 @@ class Plant:
       Plant.messaging_initialized = True
 
     self.v_lead_prev = 0.0
+    self.v_lead2_prev = 0.0
 
     self.distance = 0.
     self.speed = speed
@@ -35,7 +36,9 @@ class Plant:
 
     # lead car
     self.lead_relevancy = lead_relevancy
+    self.lead2_relevancy = lead2_relevancy
     self.distance_lead = distance_lead
+    self.distance_lead2 = distance_lead2
     self.enabled = enabled
     self.only_lead2 = only_lead2
     self.only_radar = only_radar
@@ -59,7 +62,8 @@ class Plant:
   def current_time(self):
     return float(self.rk.frame) / self.rate
 
-  def step(self, v_lead=0.0, prob_lead=1.0, v_cruise=50., pitch=0.0, prob_throttle=1.0):
+  def step(self, v_lead=0.0, prob_lead=1.0, v_cruise=50., pitch=0.0, prob_throttle=1.0, lead_y_rel=0.0,
+           v_lead2=0.0, prob_lead2=0.0, lead2_y_rel=0.0):
     # ******** publish a fake model going straight and fake calibration ********
     # note that this is worst case for MPC, since model will delay long mpc by one time step
     radar = messaging.new_message('radarState')
@@ -73,7 +77,9 @@ class Plant:
     live_map_data_sp = messaging.new_message('liveMapDataSP')
     gps_data = messaging.new_message('gpsLocation')
     a_lead = (v_lead - self.v_lead_prev)/self.ts
+    a_lead2 = (v_lead2 - self.v_lead2_prev)/self.ts
     self.v_lead_prev = v_lead
+    self.v_lead2_prev = v_lead2
 
     if self.lead_relevancy:
       d_rel = np.maximum(0., self.distance_lead - self.distance)
@@ -92,7 +98,7 @@ class Plant:
 
     lead = log.RadarState.LeadData.new_message()
     lead.dRel = float(d_rel)
-    lead.yRel = 0.0
+    lead.yRel = float(lead_y_rel)
     lead.vRel = float(v_rel)
     lead.aRel = float(a_lead - self.acceleration)
     lead.vLead = float(v_lead)
@@ -104,7 +110,24 @@ class Plant:
     lead.modelProb = float(prob_lead)
     if not self.only_lead2:
       radar.radarState.leadOne = lead
-    radar.radarState.leadTwo = lead
+
+    if self.lead2_relevancy:
+      d_rel2 = np.maximum(0., self.distance_lead2 - self.distance)
+      v_rel2 = v_lead2 - self.speed
+      lead2 = log.RadarState.LeadData.new_message()
+      lead2.dRel = float(d_rel2)
+      lead2.yRel = float(lead2_y_rel)
+      lead2.vRel = float(v_rel2)
+      lead2.aRel = float(a_lead2 - self.acceleration)
+      lead2.vLead = float(v_lead2)
+      lead2.vLeadK = float(v_lead2)
+      lead2.aLeadK = float(a_lead2)
+      lead2.aLeadTau = float(_LEAD_ACCEL_TAU)
+      lead2.status = bool(prob_lead2 > .5)
+      lead2.modelProb = float(prob_lead2)
+      radar.radarState.leadTwo = lead2
+    else:
+      radar.radarState.leadTwo = lead
 
     # Simulate model predicting slightly faster speed
     # this is to ensure lead policy is effective when model
@@ -148,6 +171,7 @@ class Plant:
     self.should_stop = self.planner.output_should_stop
     fcw = self.planner.fcw
     self.distance_lead = self.distance_lead + v_lead * self.ts
+    self.distance_lead2 = self.distance_lead2 + v_lead2 * self.ts
 
     # ******** run the car ********
     #print(self.distance, speed)
@@ -179,6 +203,8 @@ class Plant:
       "acceleration": self.acceleration,
       "should_stop": self.should_stop,
       "distance_lead": self.distance_lead,
+      "distance_lead2": self.distance_lead2,
+      "lead_y_rel": lead_y_rel,
       "fcw": fcw,
     }
 

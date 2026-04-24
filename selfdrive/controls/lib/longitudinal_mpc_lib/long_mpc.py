@@ -150,6 +150,17 @@ LEAD_ACCEL_RECOVERY_ACCEL_BP = [LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL, 0.8]
 LEAD_ACCEL_RECOVERY_OPENING_BP = [0.2, 1.2]
 LEAD_ACCEL_RECOVERY_GAP_MARGIN = 1.0
 LEAD_ACCEL_RECOVERY_ACCEL_MAX = 0.35
+LEAD_TRANSITION_Y_REL_SOFT = 1.2
+LEAD_TRANSITION_Y_REL_CONFIRM = 1.8
+LEAD_TRANSITION_Y_REL_RESET = 0.9
+LEAD_TRANSITION_Y_REL_RATE_MIN = 0.02
+LEAD_TRANSITION_PERSISTENCE = 0.3
+LEAD_TRANSITION_RELEASE_TIME = 0.75
+LEAD_TRANSITION_GUARD_TIME = 0.55
+LEAD_TRANSITION_GUARD_FADE_TIME = 0.35
+LEAD_TRANSITION_GUARD_ACCEL_MAX = 0.0
+LEAD_TRANSITION_GUARD_ARM_BLEND = 0.8
+LEAD_TRANSITION_TRACK_UNKNOWN = -2
 
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
@@ -269,6 +280,30 @@ def get_lead_accel_recovery_a_min(v_ego, v_lead, d_rel, a_lead, t_follow):
   opening_blend = float(np.interp(v_lead - v_ego, LEAD_ACCEL_RECOVERY_OPENING_BP, [0.0, 1.0]))
   accel_blend = float(np.interp(a_lead, LEAD_ACCEL_RECOVERY_ACCEL_BP, [0.0, 1.0]))
   return LEAD_ACCEL_RECOVERY_ACCEL_MAX * min(gap_blend, opening_blend, accel_blend)
+
+
+def get_lead_transition_lateral_blend(y_rel):
+  return float(np.interp(abs(y_rel), [LEAD_TRANSITION_Y_REL_SOFT, LEAD_TRANSITION_Y_REL_CONFIRM], [0.0, 1.0]))
+
+
+def get_lead_transition_timer_blend(exit_timer):
+  return float(np.interp(exit_timer, [0.0, LEAD_TRANSITION_PERSISTENCE], [0.0, 1.0]))
+
+
+def get_lead_transition_release_target(y_rel, exit_timer):
+  return get_lead_transition_lateral_blend(y_rel) * get_lead_transition_timer_blend(exit_timer)
+
+
+def get_lead_transition_cost_obstacle(cost_obstacle, cruise_obstacle, release_blend):
+  if release_blend <= 0.0:
+    return cost_obstacle
+  return cost_obstacle + release_blend * np.maximum(0.0, cruise_obstacle - cost_obstacle)
+
+
+def get_lead_transition_accel_max(guard_timer):
+  if guard_timer <= 0.0:
+    return np.full(N + 1, ACCEL_MAX)
+  return np.interp(T_IDXS, [guard_timer, guard_timer + LEAD_TRANSITION_GUARD_FADE_TIME], [LEAD_TRANSITION_GUARD_ACCEL_MAX, ACCEL_MAX])
 
 
 def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
@@ -667,6 +702,13 @@ class LongitudinalMpc:
     self.lead_departure_anchors = np.full(2, np.nan)
     self.lead_gap_comfort_active = np.zeros(2, dtype=bool)
     self.lead_surge_decel_memories = np.zeros(2)
+    self.lead_transition_track_ids = np.full(2, LEAD_TRANSITION_TRACK_UNKNOWN, dtype=int)
+    self.lead_transition_prev_y_rel = np.full(2, np.nan)
+    self.lead_transition_exit_timers = np.zeros(2)
+    self.lead_transition_release_blends = np.zeros(2)
+    self.lead_transition_guard_timers = np.zeros(2)
+    self.lead_transition_guard_latched = np.zeros(2, dtype=bool)
+    self.lead_transition_was_status = np.zeros(2, dtype=bool)
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights, accel_match_costs=None):
@@ -783,6 +825,64 @@ class LongitudinalMpc:
     self.lead_surge_decel_memories[lead_idx] = max(memory, min(max(-float(lead.aLeadK), 0.0), LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX))
     return self.lead_surge_decel_memories[lead_idx]
 
+
+  def reset_lead_transition_state(self, lead_idx, guard_timer=0.0):
+    self.lead_transition_track_ids[lead_idx] = LEAD_TRANSITION_TRACK_UNKNOWN
+    self.lead_transition_prev_y_rel[lead_idx] = np.nan
+    self.lead_transition_exit_timers[lead_idx] = 0.0
+    self.lead_transition_release_blends[lead_idx] = 0.0
+    self.lead_transition_guard_timers[lead_idx] = guard_timer
+    self.lead_transition_guard_latched[lead_idx] = False
+    self.lead_transition_was_status[lead_idx] = False
+
+  def update_lead_transition_state(self, lead_idx, lead):
+    self.lead_transition_guard_timers[lead_idx] = max(0.0, self.lead_transition_guard_timers[lead_idx] - self.dt)
+
+    if lead is None or not lead.status:
+      if self.lead_transition_was_status[lead_idx] and self.lead_transition_release_blends[lead_idx] > 0.05:
+        self.lead_transition_guard_timers[lead_idx] = max(self.lead_transition_guard_timers[lead_idx], LEAD_TRANSITION_GUARD_TIME)
+      self.reset_lead_transition_state(lead_idx, guard_timer=self.lead_transition_guard_timers[lead_idx])
+      return 0.0
+
+    track_id = int(lead.radarTrackId)
+    if not self.lead_transition_was_status[lead_idx] or (
+      track_id >= 0 and self.lead_transition_track_ids[lead_idx] >= 0 and track_id != self.lead_transition_track_ids[lead_idx]
+    ):
+      self.reset_lead_transition_state(lead_idx, guard_timer=self.lead_transition_guard_timers[lead_idx])
+
+    y_rel = float(lead.yRel)
+    abs_y_rel = abs(y_rel)
+    prev_abs_y_rel = (
+      abs(self.lead_transition_prev_y_rel[lead_idx]) if np.isfinite(self.lead_transition_prev_y_rel[lead_idx]) else abs_y_rel
+    )
+    moving_out = abs_y_rel > prev_abs_y_rel + LEAD_TRANSITION_Y_REL_RATE_MIN
+    possible_exit = abs_y_rel >= LEAD_TRANSITION_Y_REL_SOFT and (
+      moving_out or self.lead_transition_exit_timers[lead_idx] > 0.0 or abs_y_rel >= LEAD_TRANSITION_Y_REL_CONFIRM
+    )
+
+    if possible_exit:
+      self.lead_transition_exit_timers[lead_idx] = min(LEAD_TRANSITION_PERSISTENCE, self.lead_transition_exit_timers[lead_idx] + self.dt)
+    else:
+      self.lead_transition_exit_timers[lead_idx] = max(0.0, self.lead_transition_exit_timers[lead_idx] - self.dt)
+
+    target_blend = get_lead_transition_release_target(y_rel, self.lead_transition_exit_timers[lead_idx])
+    blend_step = self.dt / LEAD_TRANSITION_RELEASE_TIME
+    if target_blend > self.lead_transition_release_blends[lead_idx]:
+      self.lead_transition_release_blends[lead_idx] = min(target_blend, self.lead_transition_release_blends[lead_idx] + blend_step)
+    else:
+      self.lead_transition_release_blends[lead_idx] = max(target_blend, self.lead_transition_release_blends[lead_idx] - 2.0 * blend_step)
+
+    if target_blend >= LEAD_TRANSITION_GUARD_ARM_BLEND and not self.lead_transition_guard_latched[lead_idx]:
+      self.lead_transition_guard_timers[lead_idx] = max(self.lead_transition_guard_timers[lead_idx], LEAD_TRANSITION_GUARD_TIME)
+      self.lead_transition_guard_latched[lead_idx] = True
+    elif self.lead_transition_release_blends[lead_idx] <= 0.01 and abs_y_rel < LEAD_TRANSITION_Y_REL_RESET:
+      self.lead_transition_guard_latched[lead_idx] = False
+
+    self.lead_transition_track_ids[lead_idx] = track_id
+    self.lead_transition_prev_y_rel[lead_idx] = y_rel
+    self.lead_transition_was_status[lead_idx] = True
+    return self.lead_transition_release_blends[lead_idx]
+
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
@@ -793,6 +893,8 @@ class LongitudinalMpc:
 
     lead_0_surge_decel_memory = self.update_lead_surge_decel_memory(0, radarstate.leadOne)
     lead_1_surge_decel_memory = self.update_lead_surge_decel_memory(1, radarstate.leadTwo)
+    lead_0_transition_release = self.update_lead_transition_state(0, radarstate.leadOne)
+    lead_1_transition_release = self.update_lead_transition_state(1, radarstate.leadTwo)
     lead_xv_0, lead_0_a, lead_0_a_traj = self.process_lead(radarstate.leadOne)
     lead_xv_1, lead_1_a, lead_1_a_traj = self.process_lead(radarstate.leadTwo)
 
@@ -858,6 +960,8 @@ class LongitudinalMpc:
     v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N + 1), v_lower, v_upper)
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
+    lead_0_cost_obstacle = get_lead_transition_cost_obstacle(lead_0_cost_obstacle, cruise_obstacle, lead_0_transition_release)
+    lead_1_cost_obstacle = get_lead_transition_cost_obstacle(lead_1_cost_obstacle, cruise_obstacle, lead_1_transition_release)
 
     cost_obstacles = np.column_stack([lead_0_cost_obstacle, lead_1_cost_obstacle, cruise_obstacle])
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
@@ -919,6 +1023,7 @@ class LongitudinalMpc:
     self.params[dominant_obstacle == 1, 0] = lead_1_gap_comfort_a_min[dominant_obstacle == 1]
     self.params[:, 1] = ACCEL_MAX
     self.params[:, 1] = np.minimum(self.params[:, 1], np.minimum(lead_0_crawl_accel_max, lead_1_crawl_accel_max))
+    self.params[:, 1] = np.minimum(self.params[:, 1], get_lead_transition_accel_max(max(self.lead_transition_guard_timers)))
     self.params[:, 2] = np.min(x_obstacles, axis=1)
     self.params[:, 3] = np.copy(self.a_prev)
     self.params[:, 4] = t_follow
