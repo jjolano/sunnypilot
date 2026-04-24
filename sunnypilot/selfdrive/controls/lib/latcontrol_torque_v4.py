@@ -10,13 +10,14 @@ from openpilot.common.pid import PIDController
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_residual_adapter import ResidualAdapterInputs, TorqueResidualAdapter
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
 
 
 KP = 1.0
 KI = 0.2
 KD = 0.0
 INTERP_SPEEDS = [1, 1.5, 2.0, 3.0, 5, 7.5, 10, 15, 30]
+# Keep V4's base feel aligned with the proven V3 controller.
 KP_INTERP = [165, 90, 52, 26, 9.0, 5.5, 3.5, 2.0, KP]
 
 LP_FILTER_CUTOFF_HZ = 1.2
@@ -56,7 +57,7 @@ class LatControlTorque(LatControl):
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
-    self.residual_adapter = TorqueResidualAdapter(self.dt)
+    self.response_assist = TorqueGuardedResponseAssist(self.dt)
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -146,8 +147,8 @@ class LatControlTorque(LatControl):
     saturated = self.steer_max - abs(output_torque) < 1e-3
     tracking_torque_error = error / max(float(self.torque_params.latAccelFactor), 1e-3)
     lane_change_active = bool(self.extension.model_valid and self.extension.model_v2.meta.laneChangeState != log.LaneChangeState.off)
-    residual_result = self.residual_adapter.update(
-      ResidualAdapterInputs(
+    assist_result = self.response_assist.update(
+      GuardedResponseAssistInputs(
         active=active,
         v_ego=CS.vEgo,
         steering_pressed=CS.steeringPressed,
@@ -167,7 +168,7 @@ class LatControlTorque(LatControl):
         same_sign_unwind=same_sign_unwind,
       )
     )
-    output_torque = residual_result.output_torque if active else 0.0
+    output_torque = assist_result.output_torque if active else 0.0
 
     pid_log.p = float(self.pid.p)
     pid_log.i = float(self.pid.i)
@@ -178,17 +179,15 @@ class LatControlTorque(LatControl):
     pid_log.desiredLateralAccel = float(setpoint)
     pid_log.desiredLateralJerk = float(desired_lateral_jerk)
     adaptive_log = pid_log.init('adaptiveTorqueState')
-    adaptive_log.active = bool(
-      active and (residual_result.phase_id != 0 or abs(residual_result.assist_torque) > 1e-3 or abs(residual_result.bias_torque) > 1e-3)
-    )
-    adaptive_log.phase = ADAPTIVE_PHASE_MAP[residual_result.phase_id]
-    adaptive_log.releaseActive = bool(residual_result.release_active)
-    adaptive_log.phaseGain = float(residual_result.phase_gain)
-    adaptive_log.nominalOutput = float(-residual_result.nominal_torque)
-    adaptive_log.assistOutput = float(-residual_result.assist_torque)
-    adaptive_log.biasOutput = float(-residual_result.bias_torque)
-    adaptive_log.responseDeficit = float(residual_result.response_deficit)
-    adaptive_log.learningFrozen = bool(residual_result.learning_frozen)
+    adaptive_log.active = bool(active and (assist_result.phase_id != 0 or abs(assist_result.assist_torque) > 1e-3 or abs(assist_result.bias_torque) > 1e-3))
+    adaptive_log.phase = ADAPTIVE_PHASE_MAP[assist_result.phase_id]
+    adaptive_log.releaseActive = bool(assist_result.release_active)
+    adaptive_log.phaseGain = float(assist_result.phase_gain)
+    adaptive_log.nominalOutput = float(-assist_result.nominal_torque)
+    adaptive_log.assistOutput = float(-assist_result.assist_torque)
+    adaptive_log.biasOutput = float(-assist_result.bias_torque)
+    adaptive_log.responseDeficit = float(assist_result.response_deficit)
+    adaptive_log.learningFrozen = bool(assist_result.learning_frozen)
     pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
 
     return -output_torque, 0.0, pid_log

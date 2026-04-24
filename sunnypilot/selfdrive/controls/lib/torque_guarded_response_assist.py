@@ -1,0 +1,243 @@
+from dataclasses import dataclass
+from enum import IntEnum
+
+import numpy as np
+
+
+RESPONSE_DEFICIT_THRESHOLD = 0.04
+STEADY_HOLD_LAT_ACCEL_THRESHOLD = 0.12
+STEADY_HOLD_JERK_THRESHOLD = 0.35
+LOW_DEMAND_CURVATURE_THRESHOLD = 0.02
+PLANNED_UNWIND_JERK_THRESHOLD = 0.2
+ASSIST_GAIN = 1.6
+ASSIST_BUILD_RATE = 0.8
+ASSIST_DECAY_RATE = 1.6
+BIAS_TARGET_GAIN = 0.6
+BIAS_BUILD_RATE = 0.18
+BIAS_DECAY_RATE = 0.08
+RELEASE_DECAY_RATE = 0.24
+UNWIND_TRIM_RATE = 1.2
+SIGN_THRESHOLD = 0.05
+MIN_VEGO = 4.0
+BUMP_JERK_THRESHOLD = 2.0
+BUMP_LOOKAHEAD_DELTA_THRESHOLD = 1.4
+FREEZE_TIME = 0.30
+ASSIST_CAP_BP = [0.0, 5.0, 10.0, 20.0, 30.0]
+ASSIST_CAP_V = [0.04, 0.06, 0.10, 0.14, 0.18]
+BIAS_CAP_BP = [0.0, 5.0, 10.0, 20.0, 30.0]
+BIAS_CAP_V = [0.02, 0.03, 0.05, 0.07, 0.08]
+LANE_CHANGE_ASSIST_SCALE = 0.75
+LANE_CHANGE_BIAS_SCALE = 0.6
+ACTIVE_RELEASE_THRESHOLD = 1e-4
+
+
+def clamp(value: float, lower: float, upper: float) -> float:
+  return max(lower, min(upper, value))
+
+
+def sign(value: float) -> float:
+  return 1.0 if value > 0.0 else (-1.0 if value < 0.0 else 0.0)
+
+
+class Phase(IntEnum):
+  IDLE = 0
+  ASSIST = 1
+  HOLD = 2
+  RELEASE = 3
+
+
+@dataclass
+class GuardedResponseAssistInputs:
+  active: bool
+  v_ego: float
+  steering_pressed: bool
+  steer_limited_by_safety: bool
+  curvature_limited: bool
+  saturated: bool
+  max_output: float
+  nominal_torque: float
+  desired_lateral_accel: float
+  actual_lateral_accel: float
+  desired_lateral_jerk: float
+  actual_lateral_jerk: float
+  lookahead_lateral_jerk: float
+  desired_curvature: float
+  tracking_torque_error: float
+  lane_change_active: bool
+  same_sign_unwind: bool
+
+
+@dataclass
+class GuardedResponseAssistResult:
+  output_torque: float
+  phase: str
+  phase_id: int
+  phase_gain: float
+  assist_torque: float
+  bias_torque: float
+  nominal_torque: float
+  release_active: bool
+  response_deficit: float
+  learning_frozen: bool
+
+
+class TorqueGuardedResponseAssist:
+  def __init__(self, dt: float):
+    self.dt = dt
+    self.phase = Phase.IDLE
+    self.assist_torque = 0.0
+    self.bias_torque = 0.0
+    self.freeze_timer = 0.0
+
+  def update(self, inputs: GuardedResponseAssistInputs) -> GuardedResponseAssistResult:
+    self.freeze_timer = max(0.0, self.freeze_timer - self.dt)
+    if self._is_bump_disturbance(inputs):
+      self.freeze_timer = FREEZE_TIME
+
+    response_deficit = inputs.tracking_torque_error
+    nominal_sign = sign(inputs.nominal_torque)
+    desired_sign = sign(inputs.desired_lateral_accel)
+    actual_sign = sign(inputs.actual_lateral_accel)
+    sign_conflict = desired_sign != 0.0 and actual_sign != 0.0 and desired_sign != actual_sign and abs(inputs.actual_lateral_accel) > SIGN_THRESHOLD
+    low_demand = self._low_demand(inputs)
+    residual_active = abs(self.assist_torque) > ACTIVE_RELEASE_THRESHOLD or abs(self.bias_torque) > ACTIVE_RELEASE_THRESHOLD
+    planned_unwind = (
+      abs(inputs.lookahead_lateral_jerk) < PLANNED_UNWIND_JERK_THRESHOLD
+      and abs(inputs.desired_lateral_jerk) < PLANNED_UNWIND_JERK_THRESHOLD
+      and low_demand
+    )
+    release_active = bool(inputs.steering_pressed or sign_conflict or (planned_unwind and residual_active))
+    same_sign_hold = desired_sign != 0.0 and (actual_sign == 0.0 or desired_sign == actual_sign)
+    shared_learning_frozen = bool(
+      self.freeze_timer > 0.0
+      or inputs.v_ego < MIN_VEGO
+      or inputs.steering_pressed
+      or inputs.steer_limited_by_safety
+      or inputs.curvature_limited
+    )
+    max_assist = self._get_speed_cap(inputs.v_ego, ASSIST_CAP_BP, ASSIST_CAP_V, inputs.lane_change_active, LANE_CHANGE_ASSIST_SCALE)
+    max_bias = self._get_speed_cap(inputs.v_ego, BIAS_CAP_BP, BIAS_CAP_V, inputs.lane_change_active, LANE_CHANGE_BIAS_SCALE)
+
+    if not inputs.active:
+      self.phase = Phase.IDLE
+      self.assist_torque = self._approach(self.assist_torque, 0.0, RELEASE_DECAY_RATE)
+      self.bias_torque = self._approach(self.bias_torque, 0.0, RELEASE_DECAY_RATE)
+      return self._result(inputs.nominal_torque, response_deficit, False, False, inputs.max_output, max_assist, max_bias)
+
+    if release_active:
+      self.phase = Phase.RELEASE
+      self.assist_torque = self._approach(self.assist_torque, 0.0, RELEASE_DECAY_RATE)
+      self.bias_torque = self._approach(self.bias_torque, 0.0, RELEASE_DECAY_RATE)
+      return self._result(inputs.nominal_torque, response_deficit, True, shared_learning_frozen, inputs.max_output, max_assist, max_bias)
+
+    learning_frozen = shared_learning_frozen
+    if inputs.same_sign_unwind:
+      self.phase = Phase.HOLD
+      self.assist_torque = self._approach(self.assist_torque, 0.0, ASSIST_DECAY_RATE)
+      target_bias = 0.0
+      if nominal_sign != 0.0 and not shared_learning_frozen:
+        trim_magnitude = min(max_bias, abs(response_deficit) * BIAS_TARGET_GAIN)
+        target_bias = -nominal_sign * trim_magnitude if trim_magnitude > ACTIVE_RELEASE_THRESHOLD else 0.0
+      self.bias_torque = self._approach(self.bias_torque, target_bias, UNWIND_TRIM_RATE)
+      return self._result(inputs.nominal_torque, response_deficit, False, learning_frozen, inputs.max_output, max_assist, max_bias)
+
+    assist_deficit = nominal_sign * response_deficit
+    assist_allowed = (
+      nominal_sign != 0.0
+      and not shared_learning_frozen
+      and not inputs.saturated
+      and same_sign_hold
+      and not low_demand
+    )
+    assist_learning_blocked = bool(
+      nominal_sign != 0.0 and not shared_learning_frozen and inputs.saturated and same_sign_hold and not low_demand and assist_deficit > RESPONSE_DEFICIT_THRESHOLD
+    )
+    learning_frozen = learning_frozen or assist_learning_blocked
+
+    if assist_allowed and assist_deficit > RESPONSE_DEFICIT_THRESHOLD:
+      target_assist = nominal_sign * min(max_assist, ASSIST_GAIN * (assist_deficit - RESPONSE_DEFICIT_THRESHOLD))
+      self.phase = Phase.ASSIST
+      self.assist_torque = self._approach(self.assist_torque, target_assist, ASSIST_BUILD_RATE)
+    else:
+      self.assist_torque = self._approach(self.assist_torque, 0.0, ASSIST_DECAY_RATE)
+      if same_sign_hold and not low_demand and abs(inputs.desired_lateral_accel) >= STEADY_HOLD_LAT_ACCEL_THRESHOLD:
+        self.phase = Phase.HOLD
+      else:
+        self.phase = Phase.IDLE
+
+    bias_learning_blocked = False
+    if self.phase == Phase.HOLD and same_sign_hold and not low_demand and not shared_learning_frozen and abs(inputs.desired_lateral_jerk) < STEADY_HOLD_JERK_THRESHOLD:
+      target_bias = clamp(response_deficit * BIAS_TARGET_GAIN, -max_bias, max_bias)
+      blocked_bias_direction = nominal_sign != 0.0 and sign(target_bias) == nominal_sign and abs(target_bias) > ACTIVE_RELEASE_THRESHOLD
+      bias_learning_blocked = bool(inputs.saturated and blocked_bias_direction)
+      if not bias_learning_blocked:
+        self.bias_torque = self._approach(self.bias_torque, target_bias, BIAS_BUILD_RATE)
+    else:
+      self.bias_torque = self._approach(self.bias_torque, 0.0, BIAS_DECAY_RATE)
+    learning_frozen = learning_frozen or bias_learning_blocked
+
+    return self._result(inputs.nominal_torque, response_deficit, False, learning_frozen, inputs.max_output, max_assist, max_bias)
+
+  @staticmethod
+  def _low_demand(inputs: GuardedResponseAssistInputs) -> bool:
+    return (
+      abs(inputs.desired_lateral_accel) < STEADY_HOLD_LAT_ACCEL_THRESHOLD
+      and abs(inputs.desired_lateral_jerk) < STEADY_HOLD_JERK_THRESHOLD
+      and abs(inputs.lookahead_lateral_jerk) < STEADY_HOLD_JERK_THRESHOLD
+      and abs(inputs.desired_curvature) < LOW_DEMAND_CURVATURE_THRESHOLD
+    )
+
+  @staticmethod
+  def _get_speed_cap(v_ego: float, breakpoints: list[float], values: list[float], lane_change_active: bool, lane_change_scale: float) -> float:
+    cap = float(np.interp(v_ego, breakpoints, values))
+    return cap * lane_change_scale if lane_change_active else cap
+
+  @staticmethod
+  def _is_bump_disturbance(inputs: GuardedResponseAssistInputs) -> bool:
+    jerk_delta = abs(inputs.actual_lateral_jerk - inputs.lookahead_lateral_jerk)
+    return (
+      abs(inputs.actual_lateral_jerk) > BUMP_JERK_THRESHOLD
+      and jerk_delta > BUMP_LOOKAHEAD_DELTA_THRESHOLD
+      and abs(inputs.desired_lateral_jerk) < BUMP_JERK_THRESHOLD
+    )
+
+  def _result(
+    self,
+    nominal_torque: float,
+    response_deficit: float,
+    release_active: bool,
+    learning_frozen: bool,
+    max_output: float,
+    max_assist: float,
+    max_bias: float,
+  ) -> GuardedResponseAssistResult:
+    unclamped_output = nominal_torque + self.assist_torque + self.bias_torque
+    output_torque = clamp(unclamped_output, -max_output, max_output)
+    clipped_delta = output_torque - unclamped_output
+    applied_assist = self.assist_torque + clipped_delta
+    phase_gain = self._phase_gain(applied_assist, max_assist, max_bias)
+    return GuardedResponseAssistResult(
+      output_torque=output_torque,
+      phase=self.phase.name,
+      phase_id=int(self.phase),
+      phase_gain=phase_gain,
+      assist_torque=applied_assist,
+      bias_torque=self.bias_torque,
+      nominal_torque=nominal_torque,
+      release_active=release_active or self.phase == Phase.RELEASE,
+      response_deficit=response_deficit,
+      learning_frozen=learning_frozen,
+    )
+
+  def _phase_gain(self, assist_torque: float, max_assist: float, max_bias: float) -> float:
+    if self.phase == Phase.IDLE:
+      return 0.0
+    if self.phase == Phase.HOLD:
+      return 1.0
+    basis = max_assist if self.phase == Phase.ASSIST else max(max_assist, max_bias)
+    magnitude = abs(assist_torque if self.phase == Phase.ASSIST else assist_torque + self.bias_torque)
+    return clamp(magnitude / max(basis, 1e-3), 0.0, 1.0)
+
+  def _approach(self, current: float, target: float, rate: float) -> float:
+    max_step = rate * self.dt
+    return current + clamp(target - current, -max_step, max_step)
