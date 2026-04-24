@@ -81,6 +81,38 @@ def test_release_on_override():
   assert result.release_active
 
 
+def test_low_demand_without_residual_stays_idle():
+  adapter = TorqueResidualAdapter(0.01)
+  result = adapter.update(
+    make_inputs(desired_lateral_accel=0.05, actual_lateral_accel=0.03, desired_lateral_jerk=0.05, lookahead_lateral_jerk=0.05, desired_curvature=0.005)
+  )
+
+  assert result.phase == "IDLE"
+  assert not result.release_active
+
+
+def test_saturated_over_response_can_build_negative_bias():
+  adapter = TorqueResidualAdapter(0.01)
+  result = None
+  for _ in range(80):
+    result = adapter.update(
+      make_inputs(
+        nominal_torque=1.0,
+        saturated=True,
+        desired_lateral_accel=0.8,
+        actual_lateral_accel=1.0,
+        desired_lateral_jerk=0.05,
+        lookahead_lateral_jerk=0.05,
+        tracking_torque_error=-0.08,
+      )
+    )
+
+  assert result is not None
+  assert result.bias_torque < 0.0
+  assert result.output_torque < 1.0
+  assert not result.learning_frozen
+
+
 def test_output_clamps_and_lane_changes_scale_assist():
   normal = TorqueResidualAdapter(0.01)
   lane_change = TorqueResidualAdapter(0.01)
@@ -98,3 +130,15 @@ def test_output_clamps_and_lane_changes_scale_assist():
   assert normal_result is not None and lane_change_result is not None and clamped_result is not None
   assert lane_change_result.assist_torque < normal_result.assist_torque
   assert abs(clamped_result.output_torque - 0.25) < 1e-6
+
+
+def test_saturated_under_response_does_not_add_same_direction_residual():
+  adapter = TorqueResidualAdapter(0.01)
+  result = None
+  for _ in range(40):
+    result = adapter.update(make_inputs(nominal_torque=1.0, saturated=True, tracking_torque_error=0.12))
+
+  assert result is not None
+  assert abs(result.assist_torque) < 1e-6
+  assert abs(result.bias_torque) < 1e-6
+  assert result.learning_frozen

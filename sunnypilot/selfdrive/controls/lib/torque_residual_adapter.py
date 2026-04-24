@@ -10,7 +10,7 @@ STEADY_HOLD_JERK_THRESHOLD = 0.35
 LOW_DEMAND_CURVATURE_THRESHOLD = 0.02
 PLANNED_UNWIND_JERK_THRESHOLD = 0.2
 SIGN_THRESHOLD = 0.05
-MIN_VEGO = 5.0
+MIN_VEGO = 4.0
 BUMP_JERK_THRESHOLD = 2.0
 BUMP_LOOKAHEAD_DELTA_THRESHOLD = 1.4
 FREEZE_TIME = 0.30
@@ -28,6 +28,7 @@ BIAS_CAP_BP = [0.0, 5.0, 10.0, 20.0, 30.0]
 BIAS_CAP_V = [0.02, 0.03, 0.05, 0.07, 0.08]
 LANE_CHANGE_ASSIST_SCALE = 0.75
 LANE_CHANGE_BIAS_SCALE = 0.6
+ACTIVE_RELEASE_THRESHOLD = 1e-4
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
@@ -112,21 +113,15 @@ class TorqueResidualAdapter:
     planned_unwind = (
       abs(inputs.lookahead_lateral_jerk) < PLANNED_UNWIND_JERK_THRESHOLD and abs(inputs.desired_lateral_jerk) < PLANNED_UNWIND_JERK_THRESHOLD and low_demand
     )
-    release_active = bool(inputs.steering_pressed or sign_conflict or planned_unwind)
-    stable_sign = nominal_sign != 0.0 and desired_sign != 0.0 and nominal_sign == desired_sign
+    residual_active = abs(self.assist_torque) > ACTIVE_RELEASE_THRESHOLD or abs(self.bias_torque) > ACTIVE_RELEASE_THRESHOLD
+    release_active = bool(inputs.steering_pressed or sign_conflict or (planned_unwind and residual_active))
+    nominal_aligned = nominal_sign != 0.0 and desired_sign != 0.0 and nominal_sign == desired_sign
     same_sign_response = desired_sign != 0.0 and (actual_sign == 0.0 or desired_sign == actual_sign)
-    learning_frozen = bool(
-      self.freeze_timer > 0.0
-      or inputs.v_ego < MIN_VEGO
-      or inputs.steering_pressed
-      or inputs.steer_limited_by_safety
-      or inputs.curvature_limited
-      or inputs.saturated
-      or not stable_sign
+    shared_learning_frozen = bool(
+      self.freeze_timer > 0.0 or inputs.v_ego < MIN_VEGO or inputs.steering_pressed or inputs.steer_limited_by_safety or inputs.curvature_limited
     )
     stable_hold = bool(
       same_sign_response
-      and stable_sign
       and not low_demand
       and abs(inputs.desired_lateral_accel) >= STEADY_HOLD_LAT_ACCEL_THRESHOLD
       and abs(inputs.desired_lateral_jerk) < STEADY_HOLD_JERK_THRESHOLD
@@ -143,15 +138,27 @@ class TorqueResidualAdapter:
       self.bias_torque = self._approach(self.bias_torque, 0.0, RELEASE_DECAY_RATE)
       return self._result(inputs.nominal_torque, response_deficit, False, False, inputs.max_output, max_assist, max_bias)
 
-    if bucket is not None and stable_hold and not learning_frozen:
+    bias_learning_blocked = False
+    if bucket is not None and stable_hold and not release_active and not shared_learning_frozen:
       target_bias = clamp(inputs.tracking_torque_error * BIAS_TARGET_GAIN, -max_bias, max_bias)
-      bucket.bias_torque = self._approach(bucket.bias_torque, target_bias, BIAS_BUILD_RATE)
+      same_direction_bias = nominal_sign != 0.0 and sign(target_bias) == nominal_sign and abs(target_bias) > ACTIVE_RELEASE_THRESHOLD
+      bias_learning_blocked = bool(inputs.saturated and same_direction_bias)
+      if not bias_learning_blocked:
+        bucket.bias_torque = self._approach(bucket.bias_torque, target_bias, BIAS_BUILD_RATE)
     elif bucket is not None and release_active:
       bucket.bias_torque = self._approach(bucket.bias_torque, 0.0, RELEASE_DECAY_RATE)
 
     assist_deficit = nominal_sign * response_deficit
-    assist_allowed = nominal_sign != 0.0 and same_sign_response and not low_demand and not release_active and not learning_frozen
-    if assist_allowed and assist_deficit > RESPONSE_DEFICIT_THRESHOLD:
+    assist_requested = (
+      nominal_aligned
+      and same_sign_response
+      and not low_demand
+      and not release_active
+      and not shared_learning_frozen
+      and assist_deficit > RESPONSE_DEFICIT_THRESHOLD
+    )
+    assist_learning_blocked = bool(assist_requested and inputs.saturated)
+    if assist_requested and not assist_learning_blocked:
       target_assist = nominal_sign * min(max_assist, ASSIST_GAIN * (assist_deficit - RESPONSE_DEFICIT_THRESHOLD))
       self.assist_torque = self._approach(self.assist_torque, target_assist, ASSIST_BUILD_RATE)
     else:
@@ -161,8 +168,13 @@ class TorqueResidualAdapter:
     target_applied_bias = 0.0
     if bucket is not None and same_sign_response and not low_demand and not release_active:
       target_applied_bias = clamp(bucket.bias_torque, -max_bias, max_bias)
+      blocked_bias_direction = nominal_sign != 0.0 and sign(target_applied_bias) == nominal_sign and abs(target_applied_bias) > ACTIVE_RELEASE_THRESHOLD
+      if inputs.saturated and blocked_bias_direction:
+        target_applied_bias = 0.0
     bias_rate = RELEASE_DECAY_RATE if release_active else BIAS_APPLY_RATE
     self.bias_torque = self._approach(self.bias_torque, target_applied_bias, bias_rate)
+
+    learning_frozen = shared_learning_frozen or bias_learning_blocked or assist_learning_blocked
 
     if release_active:
       self.phase = Phase.RELEASE

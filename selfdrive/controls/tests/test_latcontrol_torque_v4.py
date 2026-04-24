@@ -95,7 +95,7 @@ def test_v4_reports_learning_frozen_at_low_speed():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
 
   CS = car.CarState.new_message()
-  CS.vEgo = 4.0
+  CS.vEgo = 3.5
   CS.steeringPressed = False
   params = log.LiveParametersData.new_message()
 
