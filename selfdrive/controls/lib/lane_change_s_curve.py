@@ -9,8 +9,8 @@ from openpilot.common.realtime import DT_CTRL
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
-LANE_CHANGE_DURATION = 4.75
-ENTRY_BLEND_DURATION = 0.75
+LANE_CHANGE_DURATION = 5.5
+ENTRY_BLEND_DURATION = 1.0
 EXIT_BLEND_DURATION = 0.5
 MIN_LANE_LINE_PROB = 0.6
 SOFT_FALLBACK_LANE_LINE_PROB = 0.45
@@ -113,8 +113,13 @@ class LaneChangeSCurveController:
 
   def _scripted_curvature(self, v_ego: float) -> float:
     progress = min(max(self.elapsed / LANE_CHANGE_DURATION, 0.0), 1.0)
-    # The quintic derivative keeps curvature demand at zero at both ends of the maneuver.
-    accel_scale = 60.0 * progress - 180.0 * progress * progress + 120.0 * progress * progress * progress
+    # A minimum-jerk septic profile softens the onset by driving lateral jerk to zero at both ends.
+    accel_scale = (
+      420.0 * progress * progress
+      - 1680.0 * progress * progress * progress
+      + 2100.0 * progress * progress * progress * progress
+      - 840.0 * progress * progress * progress * progress * progress
+    )
     direction_sign = -1.0 if self.direction == LaneChangeDirection.left else 1.0
     lateral_accel = direction_sign * self.lane_width * accel_scale / (LANE_CHANGE_DURATION**2)
     curvature_offset = lateral_accel / max(v_ego, MIN_VEGO) ** 2

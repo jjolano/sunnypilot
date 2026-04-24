@@ -61,14 +61,14 @@ def test_lane_change_blends_back_after_profile_completion():
   assert results[-1].desired_curvature == pytest.approx(inputs.model_curvature)
 
 
-def test_peak_highway_curvature_is_less_aggressive():
+def test_peak_highway_curvature_is_smoother():
   controller = LaneChangeSCurveController()
   inputs = make_inputs()
 
   results = run_steps(controller, inputs, LANE_CHANGE_DURATION)
   peak_curvature = max(abs(result.desired_curvature - inputs.model_curvature) for result in results)
 
-  assert peak_curvature < 0.0011
+  assert peak_curvature < 0.001
 
 
 def test_soft_fallback_blends_back_to_model_curvature():
