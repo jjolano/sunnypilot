@@ -9,16 +9,17 @@ from cereal import log
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
   APPROACH_BRAKE_MIN,
+  APPROACH_ENGAGE_OFFSET_MAX,
   APPROACH_MIN_GAP_BUFFER,
   COMFORT_BRAKE,
   LEAD_DEPARTURE_RELAXATION_MAX,
-  APPROACH_ENGAGE_OFFSET_MAX,
   LEAD_STOP_GAP_TAPER_MAX,
   LEAD_GAP_COMFORT_LIGHT_DECEL,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
   STOPPED_LEAD_BUFFER,
+  get_approach_available_runway,
   get_approach_brake,
   get_approach_engage_offset,
   get_approach_follow_distance,
@@ -127,7 +128,8 @@ def test_approach_brake_ramps_down_for_stronger_closure():
 @pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])
 def test_approach_follow_distance_matches_steady_state_when_speeds_match(speed):
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
-  assert get_approach_follow_distance(speed, speed, t_follow) == pytest.approx(get_desired_follow_distance(speed, speed, t_follow))
+  x_lead = get_desired_follow_distance(speed, speed, t_follow)
+  assert get_approach_follow_distance(x_lead, speed, speed, t_follow) == pytest.approx(get_desired_follow_distance(speed, speed, t_follow))
 
 
 def test_approach_follow_distance_uses_runway_before_danger_zone():
@@ -135,8 +137,9 @@ def test_approach_follow_distance_uses_runway_before_danger_zone():
   v_ego = 25.0
   v_lead = 20.0
   closing_speed = v_ego - v_lead
+  x_lead = get_desired_follow_distance(v_ego, v_lead, t_follow) + 25.0
 
-  approach_gap = get_approach_follow_distance(v_ego, v_lead, t_follow)
+  approach_gap = get_approach_follow_distance(x_lead, v_ego, v_lead, t_follow)
   expected_gap = max(
     t_follow * v_lead + stop_distance_buffer(v_lead) + (closing_speed**2) / (2 * get_approach_brake(closing_speed)),
     get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER,
@@ -164,6 +167,22 @@ def test_approach_runway_blend_reaches_full_with_large_runway():
   assert get_approach_runway_blend(x_lead, v_ego, v_lead, t_follow) == pytest.approx(1.0)
 
 
+def test_approach_available_runway_uses_stop_distance_for_slowing_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  steady_runway = get_approach_available_runway(40.0, 20.0, 15.0, t_follow, a_lead=0.0)
+  slowing_runway = get_approach_available_runway(40.0, 20.0, 15.0, t_follow, a_lead=-1.0)
+
+  assert steady_runway == pytest.approx(max(40.0 - get_desired_follow_distance(20.0, 15.0, t_follow), 0.0))
+  assert slowing_runway == pytest.approx(40.0 + get_stopped_equivalence_factor(15.0) - STOP_DISTANCE)
+  assert slowing_runway > steady_runway
+
+
+def test_approach_runway_blend_uses_stop_runway_for_slowing_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  assert get_approach_runway_blend(40.0, 20.0, 15.0, t_follow, a_lead=0.0) == pytest.approx(0.0)
+  assert get_approach_runway_blend(40.0, 20.0, 15.0, t_follow, a_lead=-1.0) == pytest.approx(1.0)
+
+
 def test_approach_engage_offset_stays_off_without_closure_or_runway():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   assert get_approach_engage_offset(20.0, 40.0, 20.0, t_follow) == pytest.approx(0.0)
@@ -172,8 +191,8 @@ def test_approach_engage_offset_stays_off_without_closure_or_runway():
 
 def test_approach_engage_offset_grows_for_large_closing_runway_cases():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
-  mild_offset = get_approach_engage_offset(20.0, 45.0, 15.0, t_follow)
-  strong_offset = get_approach_engage_offset(20.0, 80.0, 0.0, t_follow)
+  mild_offset = get_approach_engage_offset(20.0, 70.0, 15.0, t_follow, a_lead=-0.5)
+  strong_offset = get_approach_engage_offset(20.0, 80.0, 0.0, t_follow, a_lead=-1.0)
 
   assert 0.0 < mild_offset < strong_offset <= APPROACH_ENGAGE_OFFSET_MAX
 
