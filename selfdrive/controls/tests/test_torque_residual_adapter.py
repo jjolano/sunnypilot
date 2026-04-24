@@ -19,6 +19,7 @@ def make_inputs(**overrides):
     "desired_curvature": 0.03,
     "tracking_torque_error": 0.12,
     "lane_change_active": False,
+    "same_sign_unwind": False,
   }
   values.update(overrides)
   return ResidualAdapterInputs(**values)
@@ -111,6 +112,50 @@ def test_saturated_over_response_can_build_negative_bias():
   assert result.bias_torque < 0.0
   assert result.output_torque < 1.0
   assert not result.learning_frozen
+
+
+def test_same_sign_unwind_trims_over_response():
+  adapter = TorqueResidualAdapter(0.01)
+  result = adapter.update(
+    make_inputs(
+      v_ego=5.0,
+      nominal_torque=0.9,
+      desired_lateral_accel=0.05,
+      actual_lateral_accel=0.35,
+      desired_lateral_jerk=0.6,
+      lookahead_lateral_jerk=0.0,
+      tracking_torque_error=-0.08,
+      same_sign_unwind=True,
+    )
+  )
+
+  assert result.phase == "HOLD"
+  assert result.assist_torque <= 0.0
+  assert result.bias_torque < 0.0
+  assert result.output_torque < result.nominal_torque
+  assert not result.release_active
+
+
+def test_same_sign_unwind_blocks_same_direction_residual():
+  adapter = TorqueResidualAdapter(0.01)
+  prime_hold(adapter)
+
+  result = adapter.update(
+    make_inputs(
+      v_ego=5.0,
+      nominal_torque=0.9,
+      desired_lateral_accel=0.05,
+      actual_lateral_accel=0.35,
+      desired_lateral_jerk=0.6,
+      lookahead_lateral_jerk=0.0,
+      tracking_torque_error=0.08,
+      same_sign_unwind=True,
+    )
+  )
+
+  assert result.assist_torque <= 0.0
+  assert result.bias_torque <= 0.0
+  assert result.output_torque <= result.nominal_torque
 
 
 def test_output_clamps_and_lane_changes_scale_assist():

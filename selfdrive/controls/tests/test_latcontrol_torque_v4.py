@@ -107,3 +107,27 @@ def test_v4_reports_learning_frozen_at_low_speed():
   assert lac_log is not None
   assert lac_log.version == 4
   assert lac_log.adaptiveTorqueState.learningFrozen
+
+
+def test_v4_softens_low_speed_same_sign_unwind():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 5.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -30.0
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  for _ in range(60):
+    controller.update(True, CS, VM, params, False, 0.02, pose, False, 0.2)
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.002, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert lac_log.error < 0.0
+  assert lac_log.desiredLateralAccel < lac_log.actualLateralAccel
+  assert adaptive_log.assistOutput <= 0.0
+  assert adaptive_log.biasOutput < 0.0
+  assert adaptive_log.nominalOutput < 0.95
+  assert lac_log.output < 0.9

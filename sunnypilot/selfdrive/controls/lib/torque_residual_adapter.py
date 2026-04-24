@@ -21,6 +21,7 @@ BIAS_TARGET_GAIN = 0.55
 BIAS_BUILD_RATE = 0.18
 BIAS_DECAY_RATE = 0.08
 BIAS_APPLY_RATE = 0.24
+UNWIND_TRIM_RATE = 1.2
 RELEASE_DECAY_RATE = 0.24
 ASSIST_CAP_BP = [0.0, 5.0, 10.0, 20.0, 30.0]
 ASSIST_CAP_V = [0.04, 0.06, 0.10, 0.14, 0.18]
@@ -64,6 +65,7 @@ class ResidualAdapterInputs:
   desired_curvature: float
   tracking_torque_error: float
   lane_change_active: bool
+  same_sign_unwind: bool
 
 
 @dataclass
@@ -131,6 +133,7 @@ class TorqueResidualAdapter:
     max_assist = self._get_speed_cap(inputs.v_ego, ASSIST_CAP_BP, ASSIST_CAP_V, inputs.lane_change_active, LANE_CHANGE_ASSIST_SCALE)
     max_bias = self._get_speed_cap(inputs.v_ego, BIAS_CAP_BP, BIAS_CAP_V, inputs.lane_change_active, LANE_CHANGE_BIAS_SCALE)
     bucket = self._get_context(inputs, desired_sign if desired_sign != 0.0 else nominal_sign)
+    unwind_trim_target = self._get_unwind_trim_target(inputs, response_deficit, nominal_sign, max_bias) if not shared_learning_frozen else 0.0
 
     if not inputs.active:
       self.phase = Phase.IDLE
@@ -153,6 +156,7 @@ class TorqueResidualAdapter:
       nominal_aligned
       and same_sign_response
       and not low_demand
+      and not inputs.same_sign_unwind
       and not release_active
       and not shared_learning_frozen
       and assist_deficit > RESPONSE_DEFICIT_THRESHOLD
@@ -166,12 +170,16 @@ class TorqueResidualAdapter:
       self.assist_torque = self._approach(self.assist_torque, 0.0, decay_rate)
 
     target_applied_bias = 0.0
-    if bucket is not None and same_sign_response and not low_demand and not release_active:
+    if unwind_trim_target != 0.0:
+      if nominal_sign != 0.0 and sign(self.bias_torque) == nominal_sign:
+        self.bias_torque = 0.0
+      target_applied_bias = unwind_trim_target
+    elif bucket is not None and same_sign_response and not low_demand and not release_active:
       target_applied_bias = clamp(bucket.bias_torque, -max_bias, max_bias)
       blocked_bias_direction = nominal_sign != 0.0 and sign(target_applied_bias) == nominal_sign and abs(target_applied_bias) > ACTIVE_RELEASE_THRESHOLD
       if inputs.saturated and blocked_bias_direction:
         target_applied_bias = 0.0
-    bias_rate = RELEASE_DECAY_RATE if release_active else BIAS_APPLY_RATE
+    bias_rate = RELEASE_DECAY_RATE if release_active else (UNWIND_TRIM_RATE if unwind_trim_target != 0.0 else BIAS_APPLY_RATE)
     self.bias_torque = self._approach(self.bias_torque, target_applied_bias, bias_rate)
 
     learning_frozen = shared_learning_frozen or bias_learning_blocked or assist_learning_blocked
@@ -241,6 +249,14 @@ class TorqueResidualAdapter:
   def _get_speed_cap(v_ego: float, breakpoints: list[float], values: list[float], lane_change_active: bool, lane_change_scale: float) -> float:
     cap = float(np.interp(v_ego, breakpoints, values))
     return cap * lane_change_scale if lane_change_active else cap
+
+  @staticmethod
+  def _get_unwind_trim_target(inputs: ResidualAdapterInputs, response_deficit: float, nominal_sign: float, max_bias: float) -> float:
+    if not inputs.same_sign_unwind or nominal_sign == 0.0:
+      return 0.0
+
+    trim_magnitude = min(max_bias, abs(response_deficit) * BIAS_TARGET_GAIN)
+    return -nominal_sign * trim_magnitude if trim_magnitude > ACTIVE_RELEASE_THRESHOLD else 0.0
 
   @staticmethod
   def _is_bump_disturbance(inputs: ResidualAdapterInputs) -> bool:

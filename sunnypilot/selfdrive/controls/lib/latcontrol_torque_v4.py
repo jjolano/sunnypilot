@@ -164,6 +164,7 @@ class LatControlTorque(LatControl):
         desired_curvature=desired_curvature,
         tracking_torque_error=tracking_torque_error,
         lane_change_active=lane_change_active,
+        same_sign_unwind=same_sign_unwind,
       )
     )
     output_torque = residual_result.output_torque if active else 0.0
