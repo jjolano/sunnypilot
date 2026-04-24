@@ -1,6 +1,13 @@
 import sys
 import types
 
+params_pyx = types.ModuleType("openpilot.common.params_pyx")
+params_pyx.Params = object
+params_pyx.ParamKeyFlag = object
+params_pyx.ParamKeyType = object
+params_pyx.UnknownKeyName = RuntimeError
+sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
+
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.toyota.values import CAR as TOYOTA
 
@@ -12,13 +19,6 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import Lat
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorque as LatControlTorqueV3
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorque as LatControlTorqueV4
-
-params_pyx = types.ModuleType("openpilot.common.params_pyx")
-params_pyx.Params = object
-params_pyx.ParamKeyFlag = object
-params_pyx.ParamKeyType = object
-params_pyx.UnknownKeyName = RuntimeError
-sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
 
 msgq = types.ModuleType("msgq")
 msgq.fake_event_handle = object()

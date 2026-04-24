@@ -1,4 +1,8 @@
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import (
+  GuardedResponseAssistInputs,
+  GuardedResponseReason,
+  TorqueGuardedResponseAssist,
+)
 
 
 def make_inputs(**overrides):
@@ -36,6 +40,8 @@ def test_assist_builds_for_same_sign_response_deficit():
   assert result.assist_torque > 0.0
   assert not result.release_active
   assert not result.learning_frozen
+  assert result.freeze_reason == 0
+  assert result.block_reason == 0
 
 
 def test_release_on_override():
@@ -49,6 +55,9 @@ def test_release_on_override():
   assert result.phase == "RELEASE"
   assert result.release_active
   assert abs(result.assist_torque) < 0.14
+  assert result.freeze_reason & GuardedResponseReason.STEERING_PRESSED
+  assert result.block_reason & GuardedResponseReason.RELEASE
+  assert result.block_reason & GuardedResponseReason.STEERING_PRESSED
 
 
 def test_bump_disturbance_freezes_learning():
@@ -56,6 +65,8 @@ def test_bump_disturbance_freezes_learning():
   result = assist.update(make_inputs(actual_lateral_jerk=3.0, lookahead_lateral_jerk=0.0, desired_lateral_jerk=0.0))
 
   assert result.learning_frozen
+  assert result.freeze_reason & GuardedResponseReason.BUMP
+  assert result.block_reason & GuardedResponseReason.BUMP
   assert abs(result.assist_torque) < 1e-6
 
 
@@ -67,6 +78,8 @@ def test_saturated_under_response_does_not_add_same_direction_assist():
 
   assert result is not None
   assert result.learning_frozen
+  assert result.freeze_reason & GuardedResponseReason.SATURATED
+  assert result.block_reason & GuardedResponseReason.SATURATED
   assert abs(result.assist_torque) < 1e-6
   assert abs(result.bias_torque) < 1e-6
 
@@ -83,6 +96,7 @@ def test_lane_change_scales_assist_lower():
   assert normal_result is not None
   assert lane_change_result is not None
   assert lane_change_result.assist_torque < normal_result.assist_torque
+  assert lane_change_result.block_reason & GuardedResponseReason.LANE_CHANGE
 
 
 def test_same_sign_unwind_trims_opposite_nominal():
@@ -105,3 +119,12 @@ def test_same_sign_unwind_trims_opposite_nominal():
   assert result.bias_torque < 0.0
   assert result.output_torque < result.nominal_torque
   assert not result.release_active
+  assert result.block_reason & GuardedResponseReason.SAME_SIGN_UNWIND
+
+
+def test_inactive_reports_block_reason():
+  assist = TorqueGuardedResponseAssist(0.01)
+  result = assist.update(make_inputs(active=False))
+
+  assert result.block_reason & GuardedResponseReason.INACTIVE
+  assert result.freeze_reason == 0

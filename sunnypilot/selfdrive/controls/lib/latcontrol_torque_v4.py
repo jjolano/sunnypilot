@@ -188,6 +188,8 @@ class LatControlTorque(LatControl):
     adaptive_log.biasOutput = float(-assist_result.bias_torque)
     adaptive_log.responseDeficit = float(assist_result.response_deficit)
     adaptive_log.learningFrozen = bool(assist_result.learning_frozen)
+    adaptive_log.freezeReason = int(assist_result.freeze_reason)
+    adaptive_log.blockReason = int(assist_result.block_reason)
     pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
 
     return -output_torque, 0.0, pid_log

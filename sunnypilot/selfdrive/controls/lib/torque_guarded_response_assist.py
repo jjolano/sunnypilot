@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 
 import numpy as np
 
@@ -46,6 +46,26 @@ class Phase(IntEnum):
   RELEASE = 3
 
 
+class GuardedResponseReason(IntFlag):
+  NONE = 0
+  INACTIVE = 1 << 0
+  BUMP = 1 << 1
+  LOW_SPEED = 1 << 2
+  STEERING_PRESSED = 1 << 3
+  STEER_LIMITED = 1 << 4
+  CURVATURE_LIMITED = 1 << 5
+  SATURATED = 1 << 6
+  SIGN_CONFLICT = 1 << 7
+  LOW_DEMAND = 1 << 8
+  SAME_SIGN_UNWIND = 1 << 9
+  LANE_CHANGE = 1 << 10
+  NO_NOMINAL = 1 << 11
+  SIGN_MISMATCH = 1 << 12
+  BELOW_DEFICIT = 1 << 13
+  HIGH_JERK = 1 << 14
+  RELEASE = 1 << 15
+
+
 @dataclass
 class GuardedResponseAssistInputs:
   active: bool
@@ -79,6 +99,8 @@ class GuardedResponseAssistResult:
   release_active: bool
   response_deficit: float
   learning_frozen: bool
+  freeze_reason: int
+  block_reason: int
 
 
 class TorqueGuardedResponseAssist:
@@ -108,13 +130,8 @@ class TorqueGuardedResponseAssist:
     )
     release_active = bool(inputs.steering_pressed or sign_conflict or (planned_unwind and residual_active))
     same_sign_hold = desired_sign != 0.0 and (actual_sign == 0.0 or desired_sign == actual_sign)
-    shared_learning_frozen = bool(
-      self.freeze_timer > 0.0
-      or inputs.v_ego < MIN_VEGO
-      or inputs.steering_pressed
-      or inputs.steer_limited_by_safety
-      or inputs.curvature_limited
-    )
+    freeze_reason = self._freeze_reason(inputs)
+    shared_learning_frozen = freeze_reason != GuardedResponseReason.NONE
     max_assist = self._get_speed_cap(inputs.v_ego, ASSIST_CAP_BP, ASSIST_CAP_V, inputs.lane_change_active, LANE_CHANGE_ASSIST_SCALE)
     max_bias = self._get_speed_cap(inputs.v_ego, BIAS_CAP_BP, BIAS_CAP_V, inputs.lane_change_active, LANE_CHANGE_BIAS_SCALE)
 
@@ -122,13 +139,23 @@ class TorqueGuardedResponseAssist:
       self.phase = Phase.IDLE
       self.assist_torque = self._approach(self.assist_torque, 0.0, RELEASE_DECAY_RATE)
       self.bias_torque = self._approach(self.bias_torque, 0.0, RELEASE_DECAY_RATE)
-      return self._result(inputs.nominal_torque, response_deficit, False, False, inputs.max_output, max_assist, max_bias)
+      return self._result(inputs.nominal_torque, response_deficit, False, False, GuardedResponseReason.NONE, GuardedResponseReason.INACTIVE,
+                          inputs.max_output, max_assist, max_bias)
 
     if release_active:
+      block_reason = freeze_reason | GuardedResponseReason.RELEASE
+      if inputs.steering_pressed:
+        block_reason |= GuardedResponseReason.STEERING_PRESSED
+      if sign_conflict:
+        block_reason |= GuardedResponseReason.SIGN_CONFLICT
+      if planned_unwind and residual_active:
+        block_reason |= GuardedResponseReason.LOW_DEMAND
+
       self.phase = Phase.RELEASE
       self.assist_torque = self._approach(self.assist_torque, 0.0, RELEASE_DECAY_RATE)
       self.bias_torque = self._approach(self.bias_torque, 0.0, RELEASE_DECAY_RATE)
-      return self._result(inputs.nominal_torque, response_deficit, True, shared_learning_frozen, inputs.max_output, max_assist, max_bias)
+      return self._result(inputs.nominal_torque, response_deficit, True, shared_learning_frozen, freeze_reason, block_reason,
+                          inputs.max_output, max_assist, max_bias)
 
     learning_frozen = shared_learning_frozen
     if inputs.same_sign_unwind:
@@ -139,9 +166,12 @@ class TorqueGuardedResponseAssist:
         trim_magnitude = min(max_bias, abs(response_deficit) * BIAS_TARGET_GAIN)
         target_bias = -nominal_sign * trim_magnitude if trim_magnitude > ACTIVE_RELEASE_THRESHOLD else 0.0
       self.bias_torque = self._approach(self.bias_torque, target_bias, UNWIND_TRIM_RATE)
-      return self._result(inputs.nominal_torque, response_deficit, False, learning_frozen, inputs.max_output, max_assist, max_bias)
+      block_reason = freeze_reason | GuardedResponseReason.SAME_SIGN_UNWIND
+      return self._result(inputs.nominal_torque, response_deficit, False, learning_frozen, freeze_reason, block_reason,
+                          inputs.max_output, max_assist, max_bias)
 
     assist_deficit = nominal_sign * response_deficit
+    assist_block_reason = self._assist_block_reason(inputs, nominal_sign, same_sign_hold, low_demand, assist_deficit, freeze_reason)
     assist_allowed = (
       nominal_sign != 0.0
       and not shared_learning_frozen
@@ -152,6 +182,8 @@ class TorqueGuardedResponseAssist:
     assist_learning_blocked = bool(
       nominal_sign != 0.0 and not shared_learning_frozen and inputs.saturated and same_sign_hold and not low_demand and assist_deficit > RESPONSE_DEFICIT_THRESHOLD
     )
+    if assist_learning_blocked:
+      freeze_reason |= GuardedResponseReason.SATURATED
     learning_frozen = learning_frozen or assist_learning_blocked
 
     if assist_allowed and assist_deficit > RESPONSE_DEFICIT_THRESHOLD:
@@ -166,6 +198,7 @@ class TorqueGuardedResponseAssist:
         self.phase = Phase.IDLE
 
     bias_learning_blocked = False
+    bias_block_reason = self._bias_block_reason(inputs, nominal_sign, same_sign_hold, low_demand, freeze_reason)
     if self.phase == Phase.HOLD and same_sign_hold and not low_demand and not shared_learning_frozen and abs(inputs.desired_lateral_jerk) < STEADY_HOLD_JERK_THRESHOLD:
       target_bias = clamp(response_deficit * BIAS_TARGET_GAIN, -max_bias, max_bias)
       blocked_bias_direction = nominal_sign != 0.0 and sign(target_bias) == nominal_sign and abs(target_bias) > ACTIVE_RELEASE_THRESHOLD
@@ -174,9 +207,12 @@ class TorqueGuardedResponseAssist:
         self.bias_torque = self._approach(self.bias_torque, target_bias, BIAS_BUILD_RATE)
     else:
       self.bias_torque = self._approach(self.bias_torque, 0.0, BIAS_DECAY_RATE)
+    if bias_learning_blocked:
+      freeze_reason |= GuardedResponseReason.SATURATED
     learning_frozen = learning_frozen or bias_learning_blocked
 
-    return self._result(inputs.nominal_torque, response_deficit, False, learning_frozen, inputs.max_output, max_assist, max_bias)
+    return self._result(inputs.nominal_torque, response_deficit, False, learning_frozen, freeze_reason, assist_block_reason | bias_block_reason,
+                        inputs.max_output, max_assist, max_bias)
 
   @staticmethod
   def _low_demand(inputs: GuardedResponseAssistInputs) -> bool:
@@ -201,12 +237,64 @@ class TorqueGuardedResponseAssist:
       and abs(inputs.desired_lateral_jerk) < BUMP_JERK_THRESHOLD
     )
 
+  def _freeze_reason(self, inputs: GuardedResponseAssistInputs) -> GuardedResponseReason:
+    reason = GuardedResponseReason.NONE
+    if self.freeze_timer > 0.0:
+      reason |= GuardedResponseReason.BUMP
+    if inputs.v_ego < MIN_VEGO:
+      reason |= GuardedResponseReason.LOW_SPEED
+    if inputs.steering_pressed:
+      reason |= GuardedResponseReason.STEERING_PRESSED
+    if inputs.steer_limited_by_safety:
+      reason |= GuardedResponseReason.STEER_LIMITED
+    if inputs.curvature_limited:
+      reason |= GuardedResponseReason.CURVATURE_LIMITED
+    return reason
+
+  @staticmethod
+  def _assist_block_reason(inputs: GuardedResponseAssistInputs, nominal_sign: float, same_sign_hold: bool, low_demand: bool,
+                           assist_deficit: float, freeze_reason: GuardedResponseReason) -> GuardedResponseReason:
+    reason = freeze_reason
+    if inputs.lane_change_active:
+      reason |= GuardedResponseReason.LANE_CHANGE
+    if nominal_sign == 0.0:
+      reason |= GuardedResponseReason.NO_NOMINAL
+    if inputs.saturated:
+      reason |= GuardedResponseReason.SATURATED
+    if not same_sign_hold:
+      reason |= GuardedResponseReason.SIGN_MISMATCH
+    if low_demand:
+      reason |= GuardedResponseReason.LOW_DEMAND
+    if assist_deficit <= RESPONSE_DEFICIT_THRESHOLD:
+      reason |= GuardedResponseReason.BELOW_DEFICIT
+    return reason
+
+  @staticmethod
+  def _bias_block_reason(inputs: GuardedResponseAssistInputs, nominal_sign: float, same_sign_hold: bool, low_demand: bool,
+                         freeze_reason: GuardedResponseReason) -> GuardedResponseReason:
+    reason = freeze_reason
+    if inputs.lane_change_active:
+      reason |= GuardedResponseReason.LANE_CHANGE
+    if nominal_sign == 0.0:
+      reason |= GuardedResponseReason.NO_NOMINAL
+    if inputs.saturated:
+      reason |= GuardedResponseReason.SATURATED
+    if not same_sign_hold:
+      reason |= GuardedResponseReason.SIGN_MISMATCH
+    if low_demand:
+      reason |= GuardedResponseReason.LOW_DEMAND
+    if abs(inputs.desired_lateral_jerk) >= STEADY_HOLD_JERK_THRESHOLD:
+      reason |= GuardedResponseReason.HIGH_JERK
+    return reason
+
   def _result(
     self,
     nominal_torque: float,
     response_deficit: float,
     release_active: bool,
     learning_frozen: bool,
+    freeze_reason: GuardedResponseReason,
+    block_reason: GuardedResponseReason,
     max_output: float,
     max_assist: float,
     max_bias: float,
@@ -227,6 +315,8 @@ class TorqueGuardedResponseAssist:
       release_active=release_active or self.phase == Phase.RELEASE,
       response_deficit=response_deficit,
       learning_frozen=learning_frozen,
+      freeze_reason=int(freeze_reason),
+      block_reason=int(block_reason),
     )
 
   def _phase_gain(self, assist_torque: float, max_assist: float, max_bias: float) -> float:
