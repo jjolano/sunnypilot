@@ -13,6 +13,7 @@ LAUNCH_BREAKAWAY_MIN_TIME = 0.25
 LAUNCH_BREAKAWAY_MAX_TIME = 0.6
 LAUNCH_BREAKAWAY_A_EGO = 0.05
 LAUNCH_BREAKAWAY_V_EGO = 0.2
+LAUNCH_SHOULD_STOP_HOLD_TIME = 0.25
 LAUNCH_ENVELOPE_TIME_BP = [0.0, 0.5]
 LAUNCH_ENVELOPE_V_EGO_BP = [0.0, 0.6]
 
@@ -66,6 +67,10 @@ def launch_breakaway_active(v_ego, a_ego, launch_elapsed):
   return launch_elapsed < LAUNCH_BREAKAWAY_MIN_TIME or a_ego < LAUNCH_BREAKAWAY_A_EGO
 
 
+def launch_should_stop_hold_active(v_ego, brake_pressed, launch_elapsed):
+  return not brake_pressed and v_ego < LAUNCH_BREAKAWAY_V_EGO and launch_elapsed < LAUNCH_SHOULD_STOP_HOLD_TIME
+
+
 def apply_launch_envelope(output_accel, accel_limits, v_ego, launch_elapsed):
   if output_accel <= 0.0:
     return float(output_accel)
@@ -106,13 +111,16 @@ class LongControl:
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
 
+    effective_should_stop = should_stop and not (
+      self.launch_envelope_active and launch_should_stop_hold_active(CS.vEgo, CS.brakePressed, self.launch_breakaway_elapsed)
+    )
     prev_state = self.long_control_state
     self.long_control_state = long_control_state_trans(
-      self.CP, self.CP_SP, active, self.long_control_state, CS.vEgo, should_stop, CS.brakePressed, CS.cruiseState.standstill
+      self.CP, self.CP_SP, active, self.long_control_state, CS.vEgo, effective_should_stop, CS.brakePressed, CS.cruiseState.standstill
     )
     if not active or CS.brakePressed or self.long_control_state in (LongCtrlState.off, LongCtrlState.stopping):
       self.reset_launch_envelope()
-    elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and not should_stop:
+    elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and not effective_should_stop:
       self.launch_envelope_active = True
       self.launch_breakaway_elapsed = 0.0
       self.launch_taper_elapsed = 0.0
