@@ -381,6 +381,30 @@ def test_rolling_lead_stop_does_not_stage_at_reserve_gap():
   assert abs(first_stop_gap - output[-1, 6]) < 0.2
 
 
+def test_lead_acceleration_after_slowdown_resumes_accel_promptly():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "lead resumes after slowdown",
+      duration=18.0,
+      initial_speed=16.0,
+      lead_relevancy=True,
+      initial_distance_lead=45.0,
+      speed_lead_values=[16.0, 16.0, 3.0, 3.0, 7.0, 10.0, 10.0],
+      cruise_values=[20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0],
+      breakpoints=[0.0, 2.0, 10.0, 10.5, 12.0, 14.0, 18.0],
+    )
+  )
+
+  opening = (output[:, 0] >= 10.5) & (output[:, 4] - output[:, 3] > 0.8)
+  recovery_idx = np.argmax(opening)
+  assert opening[recovery_idx]
+
+  response_window = (output[:, 0] >= output[recovery_idx, 0]) & (output[:, 0] <= output[recovery_idx, 0] + 1.0)
+  assert np.min(output[response_window, 5]) > 0.0
+  assert np.max(output[response_window, 5]) > 0.3
+  assert np.min(output[:, 6]) > STOP_DISTANCE
+
+
 def test_equal_speed_under_gap_cut_in_uses_only_light_brake():
   output = run_under_gap_cut_in_simulation(20.0, 20.0)
 

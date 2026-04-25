@@ -11,6 +11,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW, get_lead_accel_recovery_a_min
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
@@ -262,6 +263,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       creep_accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX if creep_a_target > CREEP_TO_STOP_GAP_ACCEL_MAX else CREEP_TO_STOP_GAP_ACCEL_MAX
       output_a_target = min(output_a_target, creep_accel_max)
       self.output_should_stop = creep_a_target <= 0.0 and v_ego < self.CP.vEgoStopping
+
+    if lead_one.status and not self.output_should_stop and not reset_state:
+      recovery_a_min = get_lead_accel_recovery_a_min(
+        v_ego, float(lead_one.vLeadK), float(lead_one.dRel), float(lead_one.aLeadK), get_T_FOLLOW(sm['selfdriveState'].personality)
+      )
+      output_a_target = max(output_a_target, recovery_a_min)
 
     if lead_one.status and should_hold_creep_to_stop_gap(v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK)):
       output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)

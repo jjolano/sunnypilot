@@ -108,6 +108,12 @@ LEAD_GAP_COMFORT_CLOSING_ENTER = 0.05
 LEAD_GAP_COMFORT_CLOSING_EXIT = 0.15
 LEAD_GAP_COMFORT_OPENING_CLOSING_BP = [-0.3, 0.0]
 LEAD_GAP_COMFORT_HORIZON_BP = [0.0, 1.5, 3.0]
+LEAD_ACCEL_RECOVERY_MIN_V_EGO = 1.0
+LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL = 0.2
+LEAD_ACCEL_RECOVERY_ACCEL_BP = [LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL, 0.8]
+LEAD_ACCEL_RECOVERY_OPENING_BP = [0.2, 1.2]
+LEAD_ACCEL_RECOVERY_GAP_MARGIN = 1.0
+LEAD_ACCEL_RECOVERY_ACCEL_MAX = 0.35
 
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
@@ -211,6 +217,22 @@ def get_lead_gap_comfort_a_min(v_ego, v_lead, d_rel, t_follow, closing_threshold
   opening_blend = float(np.interp(closing_speed, LEAD_GAP_COMFORT_OPENING_CLOSING_BP, [1.0, 0.0]))
   light_brake_cap = -LEAD_GAP_COMFORT_LIGHT_DECEL * (1.0 - recovery_blend)
   return float(np.clip((1.0 - opening_blend) * light_brake_cap, ACCEL_MIN, 0.0))
+
+
+def get_lead_accel_recovery_a_min(v_ego, v_lead, d_rel, a_lead, t_follow):
+  if v_ego < LEAD_ACCEL_RECOVERY_MIN_V_EGO or d_rel <= STOP_DISTANCE or a_lead < LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL or v_lead <= v_ego:
+    return ACCEL_MIN
+
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  if d_rel <= comfort_floor:
+    return ACCEL_MIN
+
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  full_recovery_gap = max(comfort_floor, desired_gap) + LEAD_ACCEL_RECOVERY_GAP_MARGIN
+  gap_blend = float(np.interp(d_rel, [comfort_floor, full_recovery_gap], [0.0, 1.0]))
+  opening_blend = float(np.interp(v_lead - v_ego, LEAD_ACCEL_RECOVERY_OPENING_BP, [0.0, 1.0]))
+  accel_blend = float(np.interp(a_lead, LEAD_ACCEL_RECOVERY_ACCEL_BP, [0.0, 1.0]))
+  return LEAD_ACCEL_RECOVERY_ACCEL_MAX * min(gap_blend, opening_blend, accel_blend)
 
 
 def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
