@@ -16,6 +16,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND,
   LEAD_ACCEL_MATCH_DECEL_CAP,
   LEAD_ACCEL_MATCH_DECEL_TARGET_BLEND,
+  LEAD_ACCEL_RECOVERY_ACCEL_MAX,
   MOVING_LEAD_STOP_RESERVE_MAX,
   LEAD_STOP_GAP_EXCESS_OFFSET_MAX,
   LEAD_STOP_GAP_TAPER_MAX,
@@ -35,6 +36,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_desired_follow_distance,
   get_lead_accel_match_margin,
   get_lead_accel_match_target,
+  get_lead_accel_recovery_a_min,
   get_lead_gap_comfort_a_min,
   get_lead_gap_comfort_floor,
   get_lead_gap_comfort_recovery_blend,
@@ -441,6 +443,20 @@ def test_lead_gap_comfort_disables_near_danger_or_real_closure():
 
   assert get_lead_gap_comfort_a_min(v_ego, v_ego - 1.0, d_rel, t_follow) == pytest.approx(ACCEL_MIN)
   assert get_lead_gap_comfort_a_min(v_ego, v_ego, comfort_floor - 0.1, t_follow) == pytest.approx(ACCEL_MIN)
+
+
+def test_lead_accel_recovery_allows_accel_when_lead_pulls_away():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  recovery_a_min = get_lead_accel_recovery_a_min(2.2, 4.2, 15.0, 0.9, t_follow)
+
+  assert 0.0 < recovery_a_min <= LEAD_ACCEL_RECOVERY_ACCEL_MAX
+
+
+def test_lead_accel_recovery_requires_safe_opening_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  assert get_lead_accel_recovery_a_min(2.2, 4.2, 5.0, 0.9, t_follow) == pytest.approx(ACCEL_MIN)
+  assert get_lead_accel_recovery_a_min(2.2, 2.0, 15.0, 0.9, t_follow) == pytest.approx(ACCEL_MIN)
+  assert get_lead_accel_recovery_a_min(2.2, 4.2, 15.0, 0.1, t_follow) == pytest.approx(ACCEL_MIN)
 
 
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):

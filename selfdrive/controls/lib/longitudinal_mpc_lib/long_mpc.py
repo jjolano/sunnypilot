@@ -119,6 +119,12 @@ LEAD_TRANSITION_GUARD_FADE_TIME = 0.35
 LEAD_TRANSITION_GUARD_ACCEL_MAX = 0.0
 LEAD_TRANSITION_GUARD_ARM_BLEND = 0.8
 LEAD_TRANSITION_TRACK_UNKNOWN = -2
+LEAD_ACCEL_RECOVERY_MIN_V_EGO = 1.0
+LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL = 0.2
+LEAD_ACCEL_RECOVERY_ACCEL_BP = [LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL, 0.8]
+LEAD_ACCEL_RECOVERY_OPENING_BP = [0.2, 1.2]
+LEAD_ACCEL_RECOVERY_GAP_MARGIN = 1.0
+LEAD_ACCEL_RECOVERY_ACCEL_MAX = 0.35
 
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
@@ -246,6 +252,22 @@ def get_lead_transition_accel_max(guard_timer):
   if guard_timer <= 0.0:
     return np.full(N + 1, ACCEL_MAX)
   return np.interp(T_IDXS, [guard_timer, guard_timer + LEAD_TRANSITION_GUARD_FADE_TIME], [LEAD_TRANSITION_GUARD_ACCEL_MAX, ACCEL_MAX])
+
+
+def get_lead_accel_recovery_a_min(v_ego, v_lead, d_rel, a_lead, t_follow):
+  if v_ego < LEAD_ACCEL_RECOVERY_MIN_V_EGO or d_rel <= STOP_DISTANCE or a_lead < LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL or v_lead <= v_ego:
+    return ACCEL_MIN
+
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  if d_rel <= comfort_floor:
+    return ACCEL_MIN
+
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  full_recovery_gap = max(comfort_floor, desired_gap) + LEAD_ACCEL_RECOVERY_GAP_MARGIN
+  gap_blend = float(np.interp(d_rel, [comfort_floor, full_recovery_gap], [0.0, 1.0]))
+  opening_blend = float(np.interp(v_lead - v_ego, LEAD_ACCEL_RECOVERY_OPENING_BP, [0.0, 1.0]))
+  accel_blend = float(np.interp(a_lead, LEAD_ACCEL_RECOVERY_ACCEL_BP, [0.0, 1.0]))
+  return LEAD_ACCEL_RECOVERY_ACCEL_MAX * min(gap_blend, opening_blend, accel_blend)
 
 
 def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
