@@ -297,8 +297,7 @@ def get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead):
   lead_blend = np.interp(v_lead, MOVING_LEAD_STOP_RESERVE_V_LEAD_BP, [0.0, 1.0])
   closing_blend = np.interp(closing_speed, MOVING_LEAD_STOP_RESERVE_CLOSING_BP, [0.0, 1.0])
   decel_blend = np.interp(np.clip(-a_lead, 0.0, MOVING_LEAD_STOP_RESERVE_DECEL_BP[-1]), MOVING_LEAD_STOP_RESERVE_DECEL_BP, [0.0, 1.0])
-  stopped_blend = np.interp(v_lead, [0.0, 0.5], [1.0, 0.0])
-  reserve_blend = np.maximum(lead_blend * decel_blend, stopped_blend)
+  reserve_blend = lead_blend * decel_blend
   return MOVING_LEAD_STOP_RESERVE_MAX * ego_blend * closing_blend * reserve_blend
 
 

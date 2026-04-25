@@ -224,7 +224,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         output_a_target = max(output_a_target, creep_a_target)
       else:
         output_a_target = min(output_a_target, creep_a_target)
-      output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MAX)
+      creep_accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX if creep_a_target > CREEP_TO_STOP_GAP_ACCEL_MAX else CREEP_TO_STOP_GAP_ACCEL_MAX
+      output_a_target = min(output_a_target, creep_accel_max)
       self.output_should_stop = creep_a_target <= 0.0 and v_ego < self.CP.vEgoStopping
 
     if lead_one.status and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO and float(lead_one.vLeadK) < CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED and float(lead_one.aLeadK) <= 0.05:
