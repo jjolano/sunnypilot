@@ -303,6 +303,24 @@ def test_confirmed_pullaway_uses_uncapped_creep_accel():
   assert np.min(output[response_window, 6]) > STOP_DISTANCE
 
 
+def test_predicted_pullaway_releases_before_measured_speed_threshold():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "lead accelerates from short stopped gap",
+      duration=16.0,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=STOP_DISTANCE + 0.35,
+      speed_lead_values=[0.0, 0.0, 1.0, 2.0, 2.0],
+      breakpoints=[0.0, 10.0, 11.0, 13.0, 16.0],
+    )
+  )
+
+  early_pullaway = (output[:, 0] >= 10.0) & (output[:, 4] < 0.25)
+  assert np.max(output[early_pullaway, 5]) >= 0.25
+  assert np.min(output[:, 6]) > STOP_DISTANCE
+
+
 def test_lead_creep_uses_extra_stopped_gap():
   output = evaluate_maneuver_output(
     Maneuver(

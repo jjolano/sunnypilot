@@ -43,6 +43,11 @@ CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED = 0.25
 CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = 0.5
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.35
+CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.25
+CREEP_TO_STOP_GAP_PREDICT_T = 0.8
+CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED = 0.35
+CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL = 0.25
+CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING = 0.2
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -82,7 +87,17 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   return [a_target[0], min(a_target[1], a_x_allowed)]
 
 
-def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_pressed=False, gas_pressed=False, force_slow_decel=False):
+def get_predicted_lead_pullaway(v_lead, a_lead, a_lead_tau, horizon=CREEP_TO_STOP_GAP_PREDICT_T):
+  steps = 4
+  ts = np.linspace(horizon / steps, horizon, steps)
+  dt = horizon / steps
+  a_traj = a_lead * np.exp(-max(a_lead_tau, 0.0) * (ts**2) / 2.0)
+  v_traj = np.clip(v_lead + np.cumsum(dt * a_traj), 0.0, 1e8)
+  return float(v_traj[-1]), float(np.sum(dt * v_traj))
+
+
+def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_pressed=False, gas_pressed=False,
+                                force_slow_decel=False, a_lead=0.0, a_lead_tau=0.0):
   gap_excess = d_rel - STOP_DISTANCE
   blocked = brake_pressed or gas_pressed or force_slow_decel or model_prob < CREEP_TO_STOP_GAP_MIN_MODEL_PROB
   blocked = blocked or v_lead < CREEP_TO_STOP_GAP_MIN_LEAD_SPEED or v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO
@@ -90,18 +105,27 @@ def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_
   if blocked:
     return False, 0.0
 
+  predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(v_lead, a_lead, a_lead_tau)
   lead_pullaway = v_lead >= CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED
+  predicted_pullaway = (
+    a_lead >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL and
+    predicted_v_lead >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED and
+    predicted_gap_opening >= CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING and
+    gap_excess + predicted_gap_opening >= CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS
+  )
   should_arm = gap_excess >= CREEP_TO_STOP_GAP_ARM_EXCESS and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM
-  should_arm = should_arm or (lead_pullaway and gap_excess >= CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS)
+  should_arm = should_arm or (lead_pullaway and gap_excess >= CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS) or predicted_pullaway
   if not active and not should_arm:
     return False, 0.0
 
   target_speed = float(np.interp(gap_excess, CREEP_TO_STOP_GAP_SPEED_BP, CREEP_TO_STOP_GAP_SPEED_V))
   accel_max = CREEP_TO_STOP_GAP_ACCEL_MAX
-  if lead_pullaway:
-    target_speed = max(target_speed, min(v_lead, CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX))
+  if lead_pullaway or predicted_pullaway:
+    target_speed = max(target_speed, min(max(v_lead, predicted_v_lead), CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX))
     accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
   accel = np.clip((target_speed - v_ego) * CREEP_TO_STOP_GAP_ACCEL_GAIN, CREEP_TO_STOP_GAP_ACCEL_MIN, accel_max)
+  if (lead_pullaway or predicted_pullaway) and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM and accel > 0.0:
+    accel = max(accel, min(CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN, accel_max))
   return True, float(accel)
 
 
@@ -267,6 +291,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       brake_pressed=sm['carState'].brakePressed,
       gas_pressed=sm['carState'].gasPressed,
       force_slow_decel=force_slow_decel or reset_state,
+      a_lead=float(lead_one.aLeadK),
+      a_lead_tau=float(lead_one.aLeadTau),
     ) if lead_one.status else (False, 0.0)
     if self.creep_to_stop_gap_active:
       if creep_a_target >= 0.0:
