@@ -868,6 +868,11 @@ struct ControlsState @0x97ff69c53601abf1 {
       learningFrozen @8 :Bool;
       freezeReason @9 :UInt32;  # Bitmask: why adaptive learning is frozen this frame.
       blockReason @10 :UInt32;  # Bitmask: why assist/bias is blocked, reduced, or releasing.
+      shapingActive @11 :Bool;
+      shapingReason @12 :UInt32;
+      shapingConfidence @13 :Float32;
+      unshapedOutput @14 :Float32;
+      outputCap @15 :Float32;
     }
 
     adaptiveTorqueState @13 :AdaptiveTorqueState;

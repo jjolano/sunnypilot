@@ -70,6 +70,12 @@ def test_v3_logging_fields_are_populated():
   adaptive_log = lac_log.adaptiveTorqueState
   assert adaptive_log.active
   assert adaptive_log.nominalOutput != 0.0
+  assert adaptive_log.freezeReason == 0
+  assert adaptive_log.shapingActive is False
+  assert adaptive_log.shapingReason == 0
+  assert adaptive_log.shapingConfidence == 0.0
+  assert adaptive_log.unshapedOutput == lac_log.output
+  assert adaptive_log.outputCap == 1.0
   assert abs(lac_log.output - (adaptive_log.nominalOutput + adaptive_log.assistOutput + adaptive_log.biasOutput)) < 1e-6
 
 
@@ -89,6 +95,9 @@ def test_v3_release_on_override():
   _, _, lac_log = controller.update(True, CS, VM, params, False, 2e-5, pose, False, 0.2)
   assert lac_log.adaptiveTorqueState.releaseActive
   assert lac_log.adaptiveTorqueState.phase == log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.release
+  assert lac_log.adaptiveTorqueState.freezeReason != 0
+  assert lac_log.adaptiveTorqueState.blockReason != 0
+  assert not lac_log.adaptiveTorqueState.shapingActive
 
 
 def test_v3_softens_low_speed_same_sign_unwind():
@@ -111,3 +120,23 @@ def test_v3_softens_low_speed_same_sign_unwind():
   assert lac_log.desiredLateralAccel < lac_log.actualLateralAccel
   assert adaptive_log.nominalOutput < 0.95
   assert lac_log.output < 0.9
+
+
+def test_v3_reports_learning_frozen_at_low_speed():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 3.5
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  lac_log = None
+  for _ in range(20):
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-4, pose, False, 0.2)
+
+  assert lac_log is not None
+  assert lac_log.version == 3
+  assert lac_log.adaptiveTorqueState.learningFrozen
+  assert lac_log.adaptiveTorqueState.freezeReason != 0
+  assert not lac_log.adaptiveTorqueState.shapingActive

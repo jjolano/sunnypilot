@@ -11,6 +11,7 @@ from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.helpers import convert_to_capnp
 from openpilot.selfdrive.locationd.helpers import Measurement, Pose
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShapingReason
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
 
@@ -71,7 +72,12 @@ def test_v4_logging_fields_are_populated():
   assert adaptive_log.active
   assert adaptive_log.nominalOutput != 0.0
   assert adaptive_log.freezeReason == 0
-  assert abs(lac_log.output - (adaptive_log.nominalOutput + adaptive_log.assistOutput + adaptive_log.biasOutput)) < 1e-6
+  assert not adaptive_log.shapingActive
+  assert adaptive_log.shapingReason == 0
+  assert adaptive_log.shapingConfidence == 0.0
+  assert adaptive_log.outputCap == 1.0
+  assert abs(adaptive_log.unshapedOutput - (adaptive_log.nominalOutput + adaptive_log.assistOutput + adaptive_log.biasOutput)) < 1e-6
+  assert adaptive_log.unshapedOutput == lac_log.output
 
 
 def test_v4_release_on_override():
@@ -92,6 +98,11 @@ def test_v4_release_on_override():
   assert lac_log.adaptiveTorqueState.phase == log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.release
   assert lac_log.adaptiveTorqueState.freezeReason != 0
   assert lac_log.adaptiveTorqueState.blockReason != 0
+  assert lac_log.adaptiveTorqueState.shapingActive
+  assert lac_log.adaptiveTorqueState.shapingReason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert lac_log.adaptiveTorqueState.shapingReason & ConservativeOutputShapingReason.RELEASE
+  assert abs(lac_log.adaptiveTorqueState.outputCap - 0.8) < 1e-6
+  assert abs(lac_log.output) <= abs(lac_log.adaptiveTorqueState.unshapedOutput)
 
 
 def test_v4_reports_learning_frozen_at_low_speed():
@@ -135,3 +146,42 @@ def test_v4_softens_low_speed_same_sign_unwind():
   assert adaptive_log.biasOutput < 0.0
   assert adaptive_log.nominalOutput < 0.95
   assert lac_log.output < 0.9
+  assert abs(lac_log.output) <= abs(adaptive_log.unshapedOutput)
+
+
+def test_v4_shapes_sign_conflict():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 15.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = 12.0
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.001, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.shapingActive
+  assert adaptive_log.shapingReason & ConservativeOutputShapingReason.SIGN_CONFLICT
+  assert abs(adaptive_log.outputCap - 0.8) < 1e-6
+  assert abs(lac_log.output) <= abs(adaptive_log.unshapedOutput)
+
+
+def test_v4_shapes_near_iso_accel_margin():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 30.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -14.0
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.004, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.shapingActive
+  assert adaptive_log.shapingReason & ConservativeOutputShapingReason.NEAR_ISO_ACCEL
+  assert adaptive_log.outputCap <= 0.9
+  assert abs(lac_log.output) <= abs(adaptive_log.unshapedOutput)
