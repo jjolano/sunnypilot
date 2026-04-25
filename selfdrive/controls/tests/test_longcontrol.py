@@ -105,10 +105,11 @@ def test_launch_breakaway_holds_until_response_or_timeout():
 
 
 def test_launch_should_stop_hold_only_applies_immediately_after_release():
-  assert launch_should_stop_hold_active(0.0, False, 0.0)
-  assert not launch_should_stop_hold_active(LAUNCH_BREAKAWAY_V_EGO, False, 0.0)
-  assert not launch_should_stop_hold_active(0.0, True, 0.0)
-  assert not launch_should_stop_hold_active(0.0, False, LAUNCH_SHOULD_STOP_HOLD_TIME)
+  assert launch_should_stop_hold_active(0.0, False, 0.0, LAUNCH_ENVELOPE_MIN_ACCEL)
+  assert not launch_should_stop_hold_active(LAUNCH_BREAKAWAY_V_EGO, False, 0.0, LAUNCH_ENVELOPE_MIN_ACCEL)
+  assert not launch_should_stop_hold_active(0.0, True, 0.0, LAUNCH_ENVELOPE_MIN_ACCEL)
+  assert not launch_should_stop_hold_active(0.0, False, LAUNCH_SHOULD_STOP_HOLD_TIME, LAUNCH_ENVELOPE_MIN_ACCEL)
+  assert not launch_should_stop_hold_active(0.0, False, 0.0, LAUNCH_ENVELOPE_MIN_ACCEL - 1e-3)
 
 
 def test_apply_launch_envelope_only_shapes_positive_accel():
@@ -205,7 +206,7 @@ def test_should_stop_reassertion_is_ignored_during_launch_hold():
   loc.long_control_state = LongCtrlState.stopping
 
   loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=1.0, should_stop=False, accel_limits=(-3.0, 2.0))
-  output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=0.05, should_stop=True, accel_limits=(-3.0, 2.0))
+  output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=LAUNCH_ENVELOPE_MIN_ACCEL, should_stop=True, accel_limits=(-3.0, 2.0))
 
   assert loc.long_control_state == LongCtrlState.pid
   assert loc.launch_envelope_active
