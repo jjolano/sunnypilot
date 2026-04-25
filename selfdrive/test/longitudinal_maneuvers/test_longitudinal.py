@@ -264,6 +264,27 @@ def test_lead_departure_creeps_once_gap_opens():
   assert np.max(output[response_window, 3]) > 0.25
 
 
+def test_confirmed_pullaway_uses_uncapped_creep_accel():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "lead pulls away from short stopped gap",
+      duration=16.0,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=STOP_DISTANCE + 0.6,
+      speed_lead_values=[0.0, 0.0, 1.8, 4.0, 4.0],
+      breakpoints=[0.0, 10.0, 11.0, 13.0, 16.0],
+    )
+  )
+
+  pullaway_idx = np.argmax(output[:, 4] >= 1.5)
+  assert output[pullaway_idx, 4] >= 1.5
+
+  response_window = (output[:, 0] >= output[pullaway_idx, 0]) & (output[:, 0] <= output[pullaway_idx, 0] + 1.0)
+  assert np.max(output[response_window, 5]) > 0.25
+  assert np.min(output[response_window, 6]) > STOP_DISTANCE
+
+
 def test_lead_creep_uses_extra_stopped_gap():
   output = evaluate_maneuver_output(
     Maneuver(
@@ -301,6 +322,28 @@ def test_stationary_lead_over_stopped_gap_creeps_toward_target_gap():
   early_window = output[:, 0] <= 3.0
   assert np.max(output[early_window, 3]) > 0.1
   assert output[-1, 6] > STOP_DISTANCE - 0.25
+
+
+def test_rolling_lead_stop_does_not_stage_at_reserve_gap():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "rolling lead stop",
+      duration=25.0,
+      initial_speed=5.0,
+      lead_relevancy=True,
+      initial_distance_lead=18.0,
+      speed_lead_values=[5.0, 5.0, 0.0, 0.0],
+      cruise_values=[5.0, 5.0, 5.0, 5.0],
+      breakpoints=[0.0, 2.0, 10.0, 25.0],
+    )
+  )
+
+  stopped_idxs = np.where(output[:, 3] < 0.03)[0]
+  assert len(stopped_idxs) > 0
+
+  first_stop_gap = output[stopped_idxs[0], 6]
+  assert first_stop_gap < STOP_DISTANCE + 0.5
+  assert abs(first_stop_gap - output[-1, 6]) < 0.2
 
 
 def test_equal_speed_under_gap_cut_in_uses_only_light_brake():
