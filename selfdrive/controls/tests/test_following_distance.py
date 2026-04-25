@@ -60,7 +60,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_HOLD_EXCESS,
   CREEP_TO_STOP_GAP_MAX_EXCESS,
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX,
+  CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN,
+  CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING,
   get_creep_to_stop_gap_accel,
+  get_predicted_lead_pullaway,
   should_hold_creep_to_stop_gap,
 )
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
@@ -137,6 +140,24 @@ def test_creep_to_stop_gap_uses_stronger_accel_for_confirmed_pullaway():
   assert CREEP_TO_STOP_GAP_ACCEL_MAX < accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
+def test_creep_to_stop_gap_uses_predicted_pullaway_before_speed_threshold():
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, STOP_DISTANCE + 0.35, 0.05, 1.0, False, a_lead=1.0, a_lead_tau=0.0
+  )
+
+  assert active
+  assert CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+
+
+def test_creep_to_stop_gap_prediction_requires_clear_gap_opening():
+  predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(0.0, 0.1, 0.0)
+  active, _ = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.35, 0.0, 1.0, False, a_lead=0.1, a_lead_tau=0.0)
+
+  assert predicted_v_lead > 0.0
+  assert predicted_gap_opening < CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING
+  assert not active
+
+
 def test_creep_to_stop_gap_release_requires_confirmed_safe_lead():
   assert not get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, 0.0, 0.4, False)[0]
   assert not get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, -0.4, 1.0, False)[0]
@@ -144,6 +165,7 @@ def test_creep_to_stop_gap_release_requires_confirmed_safe_lead():
   assert not get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, 0.0, 1.0, False, gas_pressed=True)[0]
   assert not get_creep_to_stop_gap_accel(0.4, STOP_DISTANCE + 1.0, 0.0, 1.0, False)[0]
   assert not get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + CREEP_TO_STOP_GAP_MAX_EXCESS + 0.1, 0.0, 1.0, False)[0]
+  assert not get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE, 0.0, 1.0, False, a_lead=1.0, a_lead_tau=0.0)[0]
 
 
 def test_creep_to_stop_gap_hold_covers_near_target_gap_only():
