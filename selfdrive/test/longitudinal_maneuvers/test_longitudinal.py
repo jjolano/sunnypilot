@@ -324,6 +324,23 @@ def test_stationary_lead_over_stopped_gap_creeps_toward_target_gap():
   assert output[-1, 6] > STOP_DISTANCE - 0.25
 
 
+def test_near_target_stopped_lead_hold_does_not_roll_through_gap():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "stationary lead near stopped gap",
+      duration=8.0,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=STOP_DISTANCE + 0.3,
+      speed_lead_values=[0.0, 0.0],
+      breakpoints=[0.0, 8.0],
+    )
+  )
+
+  assert np.max(output[:, 3]) < 0.03
+  assert np.min(output[:, 6]) > STOP_DISTANCE + 0.2
+
+
 def test_rolling_lead_stop_does_not_stage_at_reserve_gap():
   output = evaluate_maneuver_output(
     Maneuver(

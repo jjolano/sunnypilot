@@ -35,7 +35,7 @@ CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.25, CREEP_TO_STOP_GAP_SPEED_MAX]
 CREEP_TO_STOP_GAP_ACCEL_GAIN = 0.8
 CREEP_TO_STOP_GAP_ACCEL_MIN = -0.25
 CREEP_TO_STOP_GAP_ACCEL_MAX = 0.18
-CREEP_TO_STOP_GAP_HOLD_EXCESS = 0.1
+CREEP_TO_STOP_GAP_HOLD_EXCESS = 0.3
 CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED = 0.25
 CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = 0.5
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
@@ -86,6 +86,15 @@ def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_
     accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
   accel = np.clip((target_speed - v_ego) * CREEP_TO_STOP_GAP_ACCEL_GAIN, CREEP_TO_STOP_GAP_ACCEL_MIN, accel_max)
   return True, float(accel)
+
+
+def should_hold_creep_to_stop_gap(v_ego, d_rel, v_lead, a_lead):
+  return (
+    v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO and
+    v_lead < CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED and
+    a_lead <= 0.05 and
+    d_rel <= STOP_DISTANCE + CREEP_TO_STOP_GAP_HOLD_EXCESS
+  )
 
 
 class LongitudinalPlanner(LongitudinalPlannerSP):
@@ -228,10 +237,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = min(output_a_target, creep_accel_max)
       self.output_should_stop = creep_a_target <= 0.0 and v_ego < self.CP.vEgoStopping
 
-    if lead_one.status and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO and float(lead_one.vLeadK) < CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED and float(lead_one.aLeadK) <= 0.05:
-      if float(lead_one.dRel) <= STOP_DISTANCE + CREEP_TO_STOP_GAP_HOLD_EXCESS:
-        output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
-        self.output_should_stop = True
+    if lead_one.status and should_hold_creep_to_stop_gap(v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK)):
+      output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
+      self.output_should_stop = True
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
