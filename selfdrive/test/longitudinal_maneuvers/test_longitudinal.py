@@ -353,7 +353,6 @@ def test_closing_under_gap_cut_in_still_brakes_normally():
 
   assert np.min(output[response_window, 5]) < np.min(steady_output[steady_response_window, 5]) - 0.2
 
-
 def test_lateral_lead_exit_releases_after_short_guard():
   output = run_lateral_exit_simulation([0.0, 0.0, 2.2, 2.2], [0.0, 2.0, 2.5, 8.0])
 
@@ -400,6 +399,31 @@ def test_lateral_lead_exit_hands_off_to_revealed_stopped_lead():
   assert np.max(output[(output[:, 0] >= 2.5) & (output[:, 0] <= 2.9), 5]) <= 0.1
   assert np.min(output[reveal_window, 5]) < -1.0
   assert np.min(output[reveal_window, 8]) > 4.0
+
+
+def test_accelerating_lead_under_time_gap_allows_tapered_accel():
+  v_ego = 15.0
+  t_follow = get_T_FOLLOW()
+  target_gap = get_desired_follow_distance(v_ego, v_ego, t_follow)
+  initial_distance_lead = 0.5 * (STOP_DISTANCE + target_gap)
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "accelerating lead under time gap",
+      duration=12.0,
+      initial_speed=v_ego,
+      lead_relevancy=True,
+      initial_distance_lead=initial_distance_lead,
+      speed_lead_values=[15.0, 15.0, 18.0, 18.0],
+      cruise_values=[20.0, 20.0, 20.0, 20.0],
+      breakpoints=[0.0, 2.0, 5.0, 12.0],
+    )
+  )
+
+  lead_accel_window = (output[:, 0] >= 2.0) & (output[:, 0] <= 5.0)
+
+  assert np.max(output[lead_accel_window, 5]) > 0.2
+  assert np.min(output[lead_accel_window, 6]) > STOP_DISTANCE
+  assert output[-1, 6] > initial_distance_lead
 
 
 @parameterized_class(("e2e", "force_decel"), itertools.product([True, False], repeat=2))
