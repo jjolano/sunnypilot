@@ -13,6 +13,7 @@ from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.lane_change_s_curve import LaneChangeSCurveController, LaneChangeSCurveInputs
+from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
@@ -69,6 +70,7 @@ class Controls(ControlsExt):
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.lane_change_s_curve = LaneChangeSCurveController(DT_CTRL)
+    self.model_path_processor = ModelPathProcessor()
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -159,9 +161,26 @@ class Controls(ControlsExt):
     # Reset desired curvature to current to avoid violating the limits on engage
     if self.sm.valid['lateralManeuverPlan']:
       self.lane_change_s_curve.reset()
+      self.model_path_processor.reset()
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
-      model_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+      path_result = self.model_path_processor.update(
+        ModelPathProcessorInputs(
+          lat_active=CC.latActive,
+          v_ego=CS.vEgo,
+          desired_curvature=model_v2.action.desiredCurvature,
+          measured_curvature=self.curvature,
+          previous_desired_curvature=self.desired_curvature,
+          position_x=tuple(model_v2.position.x),
+          position_y=tuple(model_v2.position.y),
+          position_y_std=tuple(model_v2.position.yStd),
+          orientation_z=tuple(model_v2.orientation.z),
+          orientation_rate_z=tuple(model_v2.orientationRate.z),
+          lane_line_probs=tuple(model_v2.laneLineProbs),
+          frame_drop_perc=model_v2.frameDropPerc,
+        )
+      )
+      model_desired_curvature = path_result.desired_curvature if CC.latActive else self.curvature
       left_lane_y0 = model_v2.laneLines[1].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[1].y) else None
       right_lane_y0 = model_v2.laneLines[2].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[2].y) else None
       lane_change_result = self.lane_change_s_curve.update(
@@ -180,7 +199,7 @@ class Controls(ControlsExt):
           right_lane_y0=right_lane_y0,
         )
       )
-      new_desired_curvature = lane_change_result.desired_curvature
+      new_desired_curvature = lane_change_result.desired_curvature if CC.latActive else self.curvature
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
