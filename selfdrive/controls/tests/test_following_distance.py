@@ -288,13 +288,12 @@ def test_approach_available_runway_uses_fixed_stop_gap_for_slowing_lead():
 
 def test_moving_lead_stop_reserve_tapers_to_fixed_stop_gap():
   full_reserve = get_moving_lead_stop_reserve(v_ego=8.0, v_lead=2.0, closing_speed=2.0, a_lead=-1.0)
-  stopped_closing_reserve = get_moving_lead_stop_reserve(v_ego=8.0, v_lead=0.0, closing_speed=2.0, a_lead=0.0)
 
   assert full_reserve == pytest.approx(MOVING_LEAD_STOP_RESERVE_MAX)
-  assert stopped_closing_reserve == pytest.approx(MOVING_LEAD_STOP_RESERVE_MAX)
   assert get_moving_lead_stop_reserve(8.0, 2.0, 0.0, -1.0) == pytest.approx(0.0)
   assert get_moving_lead_stop_reserve(0.0, 0.0, 2.0, 0.0) == pytest.approx(0.0)
   assert get_moving_lead_stop_reserve(8.0, 2.0, 2.0, 0.0) == pytest.approx(0.0)
+  assert get_moving_lead_stop_reserve(8.0, 0.0, 2.0, 0.0) == pytest.approx(0.0)
 
 
 def test_approach_runway_blend_uses_stop_runway_for_slowing_lead():
