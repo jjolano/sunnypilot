@@ -278,8 +278,8 @@ def test_lead_departure_creeps_once_gap_opens():
   assert gap_opening[departure_idx] >= 0.5
 
   response_window = (output[:, 0] >= output[departure_idx, 0]) & (output[:, 0] <= output[departure_idx, 0] + 2.0)
-  assert np.max(output[response_window, 5]) > 0.05
-  assert np.max(output[response_window, 3]) > 0.1
+  assert np.max(output[response_window, 5]) > 0.25
+  assert np.max(output[response_window, 3]) > 0.25
 
 
 def test_lead_creep_uses_extra_stopped_gap():
