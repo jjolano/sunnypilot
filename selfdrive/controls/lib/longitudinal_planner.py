@@ -2,6 +2,7 @@
 import math
 import numpy as np
 
+from cereal import custom
 import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
@@ -83,6 +84,10 @@ E2E_STOP_APPROACH_SHORTAGE_BP = [0.15, 0.5]
 E2E_STOP_APPROACH_DECEL_BP = [0.35, 1.15]
 E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND = 0.65
 E2E_STOP_APPROACH_DECEL_MAX = 1.2
+CRUISE_COAST_FLAT_OVERSPEED = 0.45  # ~1 mph
+CRUISE_COAST_DOWNHILL_OVERSPEED = 1.35  # ~3 mph
+CRUISE_COAST_DOWNHILL_ACCEL = 0.25
+CRUISE_COAST_RECOVERY_OVERSPEED = 0.9  # ~2 mph from coast back to normal decel
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -133,6 +138,33 @@ def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force
   required_decel = E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND * v_ego**2 / (2.0 * max(endpoint_x, E2E_STOP_APPROACH_MIN_ENDPOINT))
   target_decel = min(max(shortage_decel, required_decel), E2E_STOP_APPROACH_DECEL_MAX)
   return -target_decel
+
+
+def get_cruise_coast_overspeed_leeway(accel_coast):
+  return float(np.interp(accel_coast, [0.0, CRUISE_COAST_DOWNHILL_ACCEL],
+                         [CRUISE_COAST_FLAT_OVERSPEED, CRUISE_COAST_DOWNHILL_OVERSPEED]))
+
+
+def apply_cruise_coast_overspeed(v_ego, v_cruise, accel_coast, a_target):
+  overspeed = v_ego - v_cruise
+  if overspeed <= 0.0:
+    return a_target
+
+  leeway = get_cruise_coast_overspeed_leeway(accel_coast)
+  recovery_blend = float(np.clip((overspeed - leeway) / CRUISE_COAST_RECOVERY_OVERSPEED, 0.0, 1.0))
+  coast_target = (1.0 - recovery_blend) * accel_coast + recovery_blend * a_target
+  return max(a_target, coast_target)
+
+
+def should_apply_cruise_coast_overspeed(reset_state, force_slow_decel, e2e_active, has_lead, should_stop, source):
+  return bool(
+    not reset_state
+    and not force_slow_decel
+    and not e2e_active
+    and not has_lead
+    and not should_stop
+    and source == custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
+  )
 
 
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
@@ -363,8 +395,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
+      cruise_coast_accel = accel_coast
     else:
       accel_coast = ACCEL_MAX
+      cruise_coast_accel = 0.0
 
     v_ego = sm['carState'].vEgo
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
@@ -535,6 +569,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.output_should_stop = self.output_should_stop or output_should_stop_e2e
       if output_a_target_e2e < output_a_target_mpc:
         self.mpc.source = LongitudinalPlanSource.e2e
+
+    has_lead = sm['radarState'].leadOne.status or sm['radarState'].leadTwo.status
+    if should_apply_cruise_coast_overspeed(
+      reset_state, force_slow_decel, e2e_active, has_lead, self.output_should_stop, self.source
+    ):
+      output_a_target = apply_cruise_coast_overspeed(v_ego, v_cruise, cruise_coast_accel, output_a_target)
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
