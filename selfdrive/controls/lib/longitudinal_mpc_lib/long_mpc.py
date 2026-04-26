@@ -83,6 +83,12 @@ APPROACH_RUNWAY_BLEND_BP = [5.0, 20.0]
 APPROACH_ENGAGE_OFFSET_MAX = 8.0
 APPROACH_ENGAGE_CLOSING_BP = [3.0, 12.0]
 APPROACH_ENGAGE_RUNWAY_BP = [25.0, 80.0]
+LEAD_STOP_RUNWAY_V_EGO_BP = [2.0, 5.0]
+LEAD_STOP_RUNWAY_V_LEAD_BP = [0.2, 1.0]
+LEAD_STOP_RUNWAY_DECEL_BP = [0.1, 0.6]
+LEAD_STOP_RUNWAY_MOVING_V_LEAD_BP = [0.1, 1.5]
+LEAD_STOP_RUNWAY_BRAKE = 0.6
+LEAD_STOP_RUNWAY_STOPPED_BUFFER_FADE = 0.25
 MOVING_LEAD_STOP_RESERVE_MAX = 2.0
 MOVING_LEAD_STOP_RESERVE_V_EGO_BP = [0.2, 3.0]
 MOVING_LEAD_STOP_RESERVE_V_LEAD_BP = [0.1, 1.5]
@@ -279,6 +285,21 @@ def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
   return np.clip((1.0 - slowing_blend) * legacy_runway + slowing_blend * stop_runway, 0.0, 1e8)
 
 
+def get_lead_stop_runway_blend(v_ego, v_lead, a_lead):
+  low_speed_blend = np.interp(v_ego, LEAD_STOP_RUNWAY_V_EGO_BP, [1.0, 0.0])
+  stopped_blend = np.interp(v_lead, LEAD_STOP_RUNWAY_V_LEAD_BP, [1.0, 0.0])
+  moving_blend = np.interp(v_lead, LEAD_STOP_RUNWAY_MOVING_V_LEAD_BP, [0.0, 1.0])
+  slowing_blend = np.interp(np.clip(-a_lead, 0.0, LEAD_STOP_RUNWAY_DECEL_BP[-1]), LEAD_STOP_RUNWAY_DECEL_BP, [0.0, 1.0])
+  return low_speed_blend * np.maximum(stopped_blend, moving_blend * slowing_blend)
+
+
+def get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead):
+  moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
+  ego_stop_distance = v_ego**2 / (2 * LEAD_STOP_RUNWAY_BRAKE)
+  lead_stop_distance = get_stopped_equivalence_factor(v_lead)
+  return np.maximum(STOP_DISTANCE, STOP_DISTANCE + moving_stop_reserve + ego_stop_distance - lead_stop_distance)
+
+
 def get_approach_follow_distance(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
   approach_speed = np.minimum(v_ego, v_lead)
   closing_speed = np.clip(v_ego - v_lead, 0.0, 1e8)
@@ -290,12 +311,15 @@ def get_approach_follow_distance(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
   decel_blend *= 1.0 - np.interp(get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead), APPROACH_RUNWAY_BLEND_BP, [0.0, 1.0])
   approach_gap = (1.0 - decel_blend) * approach_gap + decel_blend * (get_desired_follow_distance(v_ego, v_lead, t_follow) + moving_stop_reserve)
   min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0)
-  return np.maximum(approach_gap, min_gap)
+  normal_gap = np.maximum(approach_gap, min_gap)
+  stop_runway_blend = get_lead_stop_runway_blend(v_ego, v_lead, a_lead)
+  stop_runway_gap = get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead)
+  return (1.0 - stop_runway_blend) * normal_gap + stop_runway_blend * stop_runway_gap
 
 
 def get_approach_runway_blend(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
   runway = get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead)
-  return np.interp(runway, APPROACH_RUNWAY_BLEND_BP, [0.0, 1.0])
+  return np.maximum(np.interp(runway, APPROACH_RUNWAY_BLEND_BP, [0.0, 1.0]), get_lead_stop_runway_blend(v_ego, v_lead, a_lead))
 
 
 def get_approach_engage_offset(v_ego, x_lead, v_lead, t_follow, a_lead=0.0):
@@ -725,6 +749,8 @@ class LongitudinalMpc:
       lead_0_stopped_buffer *= lead_0_departure_blend
     if lead_1_departure_armed:
       lead_1_stopped_buffer *= lead_1_departure_blend
+    lead_0_stopped_buffer *= 1.0 - LEAD_STOP_RUNWAY_STOPPED_BUFFER_FADE * get_lead_stop_runway_blend(v_ego, lead_xv_0[:, 1], lead_0_a_traj)
+    lead_1_stopped_buffer *= 1.0 - LEAD_STOP_RUNWAY_STOPPED_BUFFER_FADE * get_lead_stop_runway_blend(v_ego, lead_xv_1[:, 1], lead_1_a_traj)
     lead_0_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_xv_0[:, 1], np.maximum(v_ego - lead_xv_0[:, 1], 0.0), lead_0_a_traj)
     lead_1_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_xv_1[:, 1], np.maximum(v_ego - lead_xv_1[:, 1], 0.0), lead_1_a_traj)
     lead_0_obstacle = (
