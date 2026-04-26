@@ -2,7 +2,7 @@
 import math
 from numbers import Number
 
-from cereal import car, log
+from cereal import car, custom, log
 import cereal.messaging as messaging
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
@@ -27,6 +27,7 @@ from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
+TurnDirection = custom.ModelDataV2SP.TurnDirection
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
@@ -49,6 +50,7 @@ class Controls(ControlsExt):
         'liveParameters',
         'liveTorqueParameters',
         'modelV2',
+        'modelDataV2SP',
         'selfdriveState',
         'liveCalibration',
         'livePose',
@@ -164,6 +166,14 @@ class Controls(ControlsExt):
       self.lane_change_s_curve.reset()
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
+      turn_curvature_sign = 0
+      if model_v2.meta.laneChangeState == LaneChangeState.off and self.sm.valid['modelDataV2SP']:
+        turn_direction = self.sm['modelDataV2SP'].laneTurnDirection
+        if turn_direction == TurnDirection.turnRight:
+          turn_curvature_sign = 1
+        elif turn_direction == TurnDirection.turnLeft:
+          turn_curvature_sign = -1
+
       path_result = self.model_path_processor.update(
         ModelPathProcessorInputs(
           lat_active=CC.latActive,
@@ -177,6 +187,7 @@ class Controls(ControlsExt):
           orientation_z=tuple(model_v2.orientation.z),
           orientation_rate_z=tuple(model_v2.orientationRate.z),
           lane_line_probs=tuple(model_v2.laneLineProbs),
+          turn_curvature_sign=turn_curvature_sign,
           frame_drop_perc=model_v2.frameDropPerc,
         )
       )
