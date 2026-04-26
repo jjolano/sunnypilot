@@ -457,6 +457,12 @@ struct LiveMapDataSP @0xf416ec09499d9d19 {
   trafficControlAheadValid @15 :Bool;
   trafficControlAhead @16 :Text;
   trafficControlAheadDistance @17 :Float32;
+  lanesValid @18 :Bool;
+  lanes @19 :UInt8;
+  lanesAheadValid @20 :Bool;
+  lanesAhead @21 :UInt8;
+  lanesAheadDistance @22 :Float32;
+  roadContext @23 :Text;
 }
 
 struct ModelDataV2SP @0xa1680744031fdb2d {

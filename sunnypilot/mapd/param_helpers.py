@@ -46,3 +46,14 @@ def mapd_section_float(section: Mapping[str, Any], key: str, default: float | No
     return float(value)
   except (TypeError, ValueError):
     return default
+
+
+def mapd_section_int(section: Mapping[str, Any], key: str, default: int = 0) -> int:
+  value = section.get(key)
+  if value is None or value == "":
+    return default
+
+  try:
+    return int(value)
+  except (TypeError, ValueError):
+    return default

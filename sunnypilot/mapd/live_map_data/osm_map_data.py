@@ -11,7 +11,7 @@ import platform
 from cereal import log
 from openpilot.common.params import Params
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData
-from openpilot.sunnypilot.mapd.param_helpers import get_mapd_json, mapd_section_float
+from openpilot.sunnypilot.mapd.param_helpers import get_mapd_json, mapd_section_float, mapd_section_int
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
 
@@ -46,6 +46,44 @@ class OsmMapData(BaseMapData):
 
   def get_current_road_name(self) -> str:
     return str(self.mem_params.get("RoadName") or "")
+
+  @staticmethod
+  def _lanes_from_value(value) -> int:
+    if isinstance(value, dict):
+      lanes = mapd_section_int(value, "lanes")
+    else:
+      try:
+        lanes = int(value or 0)
+      except (TypeError, ValueError):
+        lanes = 0
+
+    return lanes if 0 < lanes <= 255 else 0
+
+  def get_current_lanes(self) -> int:
+    return self._lanes_from_value(get_mapd_json(self.mem_params, "MapLanes"))
+
+  def get_next_lanes_and_distance(self) -> tuple[int, float]:
+    next_lanes_section = get_mapd_json(self.mem_params, "NextMapLanes") or {}
+    if not isinstance(next_lanes_section, dict):
+      return 0, 0.0
+
+    lanes = self._lanes_from_value(next_lanes_section)
+    if lanes <= 0:
+      return 0, 0.0
+
+    return lanes, self._distance_to_section_start(next_lanes_section)
+
+  def get_road_context(self) -> str:
+    try:
+      context = self.mem_params.get("MapRoadContext")
+    except Exception:
+      return ""
+
+    if isinstance(context, bytes):
+      context = context.decode("utf-8", errors="ignore")
+
+    context = str(context or "").strip().lower()
+    return context if context in ("freeway", "city", "unknown") else ""
 
   def _distance_to_section_start(self, section: dict) -> float:
     distance = mapd_section_float(section, 'distance', None)

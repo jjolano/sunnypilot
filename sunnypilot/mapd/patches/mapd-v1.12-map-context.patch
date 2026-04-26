@@ -1,0 +1,131 @@
+diff --git a/mapd.go b/mapd.go
+index 22abec5..1d179e5 100644
+--- a/mapd.go
++++ b/mapd.go
+@@ -49,6 +49,15 @@ type AdvisoryLimit struct {
+ 	Speedlimit     float64 `json:"speedlimit"`
+ }
+ 
++type NextLanes struct {
++	StartLatitude  float64 `json:"start_latitude"`
++	StartLongitude float64 `json:"start_longitude"`
++	EndLatitude    float64 `json:"end_latitude"`
++	EndLongitude   float64 `json:"end_longitude"`
++	Lanes          uint8   `json:"lanes"`
++	Distance       float64 `json:"distance"`
++}
++
+ type Hazard struct {
+ 	StartLatitude  float64 `json:"start_latitude"`
+ 	StartLongitude float64 `json:"start_longitude"`
+@@ -217,6 +226,57 @@ func calculateWayDistance(way Way) (float64, error) {
+ 	return totalDistance, nil
+ }
+ 
++func roadContextString(context RoadContext) string {
++	switch context {
++	case CONTEXT_FREEWAY:
++		return "freeway"
++	case CONTEXT_CITY:
++		return "city"
++	default:
++		return "unknown"
++	}
++}
++
++func currentRoadContext(state *State) string {
++	if !state.CurrentWay.Way.HasNodes() {
++		return ""
++	}
++	return roadContextString(determineRoadContext(state.CurrentWay.Way, state.Position))
++}
++
++func calculateNextLanes(state *State, currentLanes uint8) NextLanes {
++	cumulativeDistance := 0.0
++	if state.CurrentWay.Way.HasNodes() {
++		distToEnd, err := DistanceToEndOfWay(state.Position, state.CurrentWay.Way, state.CurrentWay.OnWay.IsForward)
++		if err == nil && distToEnd > 0 {
++			cumulativeDistance = distToEnd
++		}
++	}
++
++	for _, nextWay := range state.NextWays {
++		nextLanes := nextWay.Way.Lanes()
++		if nextLanes > 0 && nextLanes != currentLanes {
++			return NextLanes{
++				StartLatitude:  nextWay.StartPosition.Latitude(),
++				StartLongitude: nextWay.StartPosition.Longitude(),
++				EndLatitude:    nextWay.EndPosition.Latitude(),
++				EndLongitude:   nextWay.EndPosition.Longitude(),
++				Lanes:          nextLanes,
++				Distance:       cumulativeDistance,
++			}
++		}
++
++		if nextWay.Way.HasNodes() {
++			wayDistance, err := calculateWayDistance(nextWay.Way)
++			if err == nil {
++				cumulativeDistance += wayDistance
++			}
++		}
++	}
++
++	return NextLanes{}
++}
++
+ func coordinateMatches(latA float64, lonA float64, latB float64, lonB float64) bool {
+ 	return latA == latB && lonA == lonB
+ }
+@@ -452,6 +512,15 @@ func loop(state *State) {
+ 		err = PutParam(MAP_ADVISORY_LIMIT, data)
+ 		logwe(errors.Wrap(err, "could not write advisory speed limit"))
+ 
++		currentLanes := state.CurrentWay.Way.Lanes()
++		data, err = json.Marshal(currentLanes)
++		logde(errors.Wrap(err, "could not marshal lanes"))
++		err = PutParam(MAP_LANES, data)
++		logwe(errors.Wrap(err, "could not write lanes"))
++
++		err = PutParam(MAP_ROAD_CONTEXT, []byte(currentRoadContext(state)))
++		logwe(errors.Wrap(err, "could not write road context"))
++
+ 		hazard, err := state.CurrentWay.Way.Hazard()
+ 		logde(errors.Wrap(err, "could not read current way hazard"))
+ 		data, err = json.Marshal(Hazard{
+@@ -505,6 +574,12 @@ func loop(state *State) {
+ 		err = PutParam(NEXT_MAP_TRAFFIC_CONTROL, data)
+ 		logwe(errors.Wrap(err, "could not write next traffic control"))
+ 
++		nextLanes := calculateNextLanes(state, state.CurrentWay.Way.Lanes())
++		data, err = json.Marshal(nextLanes)
++		logde(errors.Wrap(err, "could not marshal next lanes"))
++		err = PutParam(NEXT_MAP_LANES, data)
++		logwe(errors.Wrap(err, "could not write next lanes"))
++
+ 		if len(state.NextWays) > 0 || state.CurrentWay.Way.HasNodes() {
+ 			currentMaxSpeed := state.CurrentWay.Way.MaxSpeed()
+ 			if state.CurrentWay.OnWay.IsForward && state.CurrentWay.Way.MaxSpeedForward() > 0 {
+diff --git a/params.go b/params.go
+index 34a7775..c3a1841 100644
+--- a/params.go
++++ b/params.go
+@@ -22,6 +22,9 @@ var (
+ 	ROAD_NAME                 = ParamPath("RoadName", true)
+ 	MAP_HAZARD                = ParamPath("MapHazard", true)
+ 	NEXT_MAP_HAZARD           = ParamPath("NextMapHazard", true)
++	MAP_LANES                 = ParamPath("MapLanes", true)
++	NEXT_MAP_LANES            = ParamPath("NextMapLanes", true)
++	MAP_ROAD_CONTEXT          = ParamPath("MapRoadContext", true)
+ 	MAP_TRAFFIC_CONTROL       = ParamPath("MapTrafficControl", true)
+ 	NEXT_MAP_TRAFFIC_CONTROL  = ParamPath("NextMapTrafficControl", true)
+ 	MAP_SPEED_LIMIT           = ParamPath("MapSpeedLimit", true)
+@@ -80,6 +83,9 @@ func ResetParams() {
+ 	_ = PutParam(ROAD_NAME, empty_data)
+ 	_ = PutParam(MAP_HAZARD, empty_object)
+ 	_ = PutParam(NEXT_MAP_HAZARD, empty_object)
++	_ = PutParam(MAP_LANES, zero)
++	_ = PutParam(NEXT_MAP_LANES, empty_object)
++	_ = PutParam(MAP_ROAD_CONTEXT, empty_data)
+ 	_ = PutParam(MAP_TRAFFIC_CONTROL, empty_object)
+ 	_ = PutParam(NEXT_MAP_TRAFFIC_CONTROL, empty_object)
+ 	_ = PutParam(MAP_SPEED_LIMIT, zero)
