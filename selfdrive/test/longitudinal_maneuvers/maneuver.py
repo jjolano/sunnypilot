@@ -6,15 +6,24 @@ class Maneuver:
   def __init__(self, title, duration, **kwargs):
     # Was tempted to make a builder class
     self.distance_lead = kwargs.get("initial_distance_lead", 200.0)
+    self.distance_lead2 = kwargs.get("initial_distance_lead2", 200.0)
     self.speed = kwargs.get("initial_speed", 0.0)
     self.lead_relevancy = kwargs.get("lead_relevancy", 0)
+    self.lead2_relevancy = kwargs.get("lead2_relevancy", False)
 
     self.breakpoints = kwargs.get("breakpoints", [0.0, duration])
     self.speed_lead_values = kwargs.get("speed_lead_values", [0.0 for i in range(len(self.breakpoints))])
+    self.speed_lead2_values = kwargs.get("speed_lead2_values", [0.0 for i in range(len(self.breakpoints))])
+    self.lead_y_rel_values = kwargs.get("lead_y_rel_values", [0.0 for i in range(len(self.breakpoints))])
+    self.lead2_y_rel_values = kwargs.get("lead2_y_rel_values", [0.0 for i in range(len(self.breakpoints))])
     self.prob_lead_values = kwargs.get("prob_lead_values", [1.0 for i in range(len(self.breakpoints))])
+    self.prob_lead2_values = kwargs.get("prob_lead2_values", [0.0 for i in range(len(self.breakpoints))])
     self.prob_throttle_values = kwargs.get("prob_throttle_values", [1.0 for i in range(len(self.breakpoints))])
     self.cruise_values = kwargs.get("cruise_values", [50.0 for i in range(len(self.breakpoints))])
     self.pitch_values = kwargs.get("pitch_values", [0.0 for i in range(len(self.breakpoints))])
+    self.model_desired_accel_values = kwargs.get("model_desired_accel_values", None)
+    self.model_position_x_values = kwargs.get("model_position_x_values", None)
+    self.model_should_stop_values = kwargs.get("model_should_stop_values", [False for i in range(len(self.breakpoints))])
 
     self.only_lead2 = kwargs.get("only_lead2", False)
     self.only_radar = kwargs.get("only_radar", False)
@@ -31,8 +40,10 @@ class Maneuver:
   def evaluate(self):
     plant = Plant(
       lead_relevancy=self.lead_relevancy,
+      lead2_relevancy=self.lead2_relevancy,
       speed=self.speed,
       distance_lead=self.distance_lead,
+      distance_lead2=self.distance_lead2,
       enabled=self.enabled,
       only_lead2=self.only_lead2,
       only_radar=self.only_radar,
@@ -45,29 +56,52 @@ class Maneuver:
     logs = []
     while plant.current_time < self.duration:
       speed_lead = np.interp(plant.current_time, self.breakpoints, self.speed_lead_values)
+      speed_lead2 = np.interp(plant.current_time, self.breakpoints, self.speed_lead2_values)
+      lead_y_rel = np.interp(plant.current_time, self.breakpoints, self.lead_y_rel_values)
+      lead2_y_rel = np.interp(plant.current_time, self.breakpoints, self.lead2_y_rel_values)
       prob_lead = np.interp(plant.current_time, self.breakpoints, self.prob_lead_values)
+      prob_lead2 = np.interp(plant.current_time, self.breakpoints, self.prob_lead2_values)
       cruise = np.interp(plant.current_time, self.breakpoints, self.cruise_values)
       pitch = np.interp(plant.current_time, self.breakpoints, self.pitch_values)
       prob_throttle = np.interp(plant.current_time, self.breakpoints, self.prob_throttle_values)
-      log = plant.step(speed_lead, prob_lead, cruise, pitch, prob_throttle)
+      model_desired_accel = (
+        None if self.model_desired_accel_values is None else np.interp(plant.current_time, self.breakpoints, self.model_desired_accel_values)
+      )
+      model_position_x = (
+        None if self.model_position_x_values is None else np.interp(plant.current_time, self.breakpoints, self.model_position_x_values)
+      )
+      model_should_stop = bool(np.interp(plant.current_time, self.breakpoints, self.model_should_stop_values) > 0.5)
+      log = plant.step(
+        speed_lead, prob_lead, cruise, pitch, prob_throttle, lead_y_rel,
+        model_desired_accel, model_should_stop, model_position_x,
+        v_lead2=speed_lead2, prob_lead2=prob_lead2, lead2_y_rel=lead2_y_rel,
+      )
 
-      d_rel = log['distance_lead'] - log['distance'] if self.lead_relevancy else 200.
-      v_rel = speed_lead - log['speed'] if self.lead_relevancy else 0.
+      d_rel = log['distance_lead'] - log['distance'] if self.lead_relevancy else 200.0
+      d_rel2 = log['distance_lead2'] - log['distance'] if self.lead2_relevancy else 200.0
+      v_rel = speed_lead - log['speed'] if self.lead_relevancy else 0.0
       log['d_rel'] = d_rel
+      log['d_rel2'] = d_rel2
       log['v_rel'] = v_rel
+      log['lead_y_rel'] = lead_y_rel
       logs.append(np.array([plant.current_time,
                             log['distance'],
                             log['distance_lead'],
                             log['speed'],
                             speed_lead,
                             log['acceleration'],
-                            log['d_rel']]))
+                            log['d_rel'],
+                            lead_y_rel,
+                            d_rel2]))
 
-      if d_rel < .4 and (self.only_radar or prob_lead > 0.5):
+      if d_rel < 0.4 and (self.only_radar or prob_lead > 0.5):
         print("Crashed!!!!")
         valid = False
+      if d_rel2 < 0.4 and prob_lead2 > 0.5:
+        print("Crashed into lead2!!!!")
+        valid = False
 
-      if self.ensure_start and log['v_rel'] > 0 and log['acceleration'] < 1e-3:
+      if self.ensure_start and log['speed'] < 0.5 and log['v_rel'] > 0.1 and log['acceleration'] < 1e-3:
         print('LongitudinalPlanner not starting!')
         valid = False
 
@@ -78,7 +112,6 @@ class Maneuver:
     if self.force_decel and log['speed'] > 1e-1 and log['acceleration'] > -0.04:
       print('Not stopping with force decel')
       valid = False
-
 
     print("maneuver end", valid)
     return valid, np.array(logs)
