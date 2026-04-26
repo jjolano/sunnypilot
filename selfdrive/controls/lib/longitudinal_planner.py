@@ -49,6 +49,11 @@ CREEP_TO_STOP_GAP_PREDICT_T = 0.8
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED = 0.35
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL = 0.25
 CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING = 0.2
+CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_PROB = 0.75
+CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_DIST_ERROR = 1.5
+CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_ERROR = 1.0
+CREEP_TO_STOP_GAP_MODEL_LEAD_HORIZON = 2.0
+CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET = 1.52
 E2E_STOP_APPROACH_MIN_V_EGO = 3.0
 E2E_STOP_APPROACH_MAX_MODEL_ACCEL = 0.2
 E2E_STOP_APPROACH_MIN_ENDPOINT = 5.0
@@ -133,23 +138,73 @@ def get_predicted_lead_pullaway(v_lead, a_lead, a_lead_tau, horizon=CREEP_TO_STO
   return float(v_traj[-1]), float(np.sum(dt * v_traj))
 
 
-def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_pressed=False, gas_pressed=False,
-                                force_slow_decel=False, a_lead=0.0, a_lead_tau=0.0):
-  gap_excess = d_rel - STOP_DISTANCE
-  blocked = brake_pressed or gas_pressed or force_slow_decel or model_prob < CREEP_TO_STOP_GAP_MIN_MODEL_PROB
-  blocked = blocked or v_lead < CREEP_TO_STOP_GAP_MIN_LEAD_SPEED or v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO
-  blocked = blocked or gap_excess <= 0.0 or gap_excess > CREEP_TO_STOP_GAP_MAX_EXCESS
-  if blocked:
-    return False, 0.0
-
-  predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(v_lead, a_lead, a_lead_tau)
-  lead_pullaway = v_lead >= CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED
-  predicted_pullaway = (
-    a_lead >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL and
+def has_predicted_lead_pullaway(gap_excess, predicted_v_lead, predicted_gap_opening):
+  return (
     predicted_v_lead >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED and
     predicted_gap_opening >= CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING and
     gap_excess + predicted_gap_opening >= CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS
   )
+
+
+def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_GAP_MODEL_LEAD_HORIZON):
+  if v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO_ARM or not getattr(radar_lead, "status", False):
+    return 0.0, 0.0
+
+  leads_v3 = getattr(model_msg, "leadsV3", [])
+  if len(leads_v3) == 0:
+    return 0.0, 0.0
+
+  lead_msg = leads_v3[0]
+  if float(getattr(lead_msg, "prob", 0.0)) < CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_PROB:
+    return 0.0, 0.0
+  if float(getattr(radar_lead, "modelProb", getattr(lead_msg, "prob", 0.0))) < CREEP_TO_STOP_GAP_MIN_MODEL_PROB:
+    return 0.0, 0.0
+
+  ts = np.asarray(getattr(lead_msg, "t", []), dtype=float)
+  xs = np.asarray(getattr(lead_msg, "x", []), dtype=float)
+  vs = np.asarray(getattr(lead_msg, "v", []), dtype=float)
+  if ts.ndim != 1 or xs.ndim != 1 or vs.ndim != 1 or ts.size == 0 or ts.size != xs.size or ts.size != vs.size:
+    return 0.0, 0.0
+  if not np.all(np.isfinite(ts)) or not np.all(np.isfinite(xs)) or not np.all(np.isfinite(vs)):
+    return 0.0, 0.0
+  if ts[0] > 0.05 or ts[-1] < horizon or np.any(np.diff(ts) <= 0.0):
+    return 0.0, 0.0
+
+  d_rel = float(getattr(radar_lead, "dRel", 0.0))
+  model_d_rel_now = float(xs[0] - CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET)
+  if abs(model_d_rel_now - d_rel) > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_DIST_ERROR:
+    return 0.0, 0.0
+  radar_v_lead = float(getattr(radar_lead, "vLeadK", getattr(radar_lead, "vLead", 0.0)))
+  if abs(float(vs[0]) - radar_v_lead) > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_ERROR:
+    return 0.0, 0.0
+
+  model_d_rel_horizon = float(np.interp(horizon, ts, xs) - CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET)
+  predicted_v_lead = float(np.interp(horizon, ts, vs))
+  predicted_gap_opening = max(0.0, model_d_rel_horizon - d_rel)
+  return predicted_v_lead, predicted_gap_opening
+
+
+def creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False):
+  gap_excess = d_rel - STOP_DISTANCE
+  blocked = brake_pressed or gas_pressed or force_slow_decel or model_prob < CREEP_TO_STOP_GAP_MIN_MODEL_PROB
+  blocked = blocked or v_lead < CREEP_TO_STOP_GAP_MIN_LEAD_SPEED or v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO
+  return blocked or gap_excess <= 0.0 or gap_excess > CREEP_TO_STOP_GAP_MAX_EXCESS
+
+
+def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_pressed=False, gas_pressed=False,
+                                force_slow_decel=False, a_lead=0.0, a_lead_tau=0.0,
+                                model_predicted_v_lead=0.0, model_predicted_gap_opening=0.0):
+  gap_excess = d_rel - STOP_DISTANCE
+  if creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed, gas_pressed, force_slow_decel):
+    return False, 0.0
+
+  radar_predicted_v_lead, radar_predicted_gap_opening = get_predicted_lead_pullaway(v_lead, a_lead, a_lead_tau)
+  lead_pullaway = v_lead >= CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED
+  radar_predicted_pullaway = a_lead >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL and has_predicted_lead_pullaway(
+    gap_excess, radar_predicted_v_lead, radar_predicted_gap_opening
+  )
+  model_predicted_pullaway = has_predicted_lead_pullaway(gap_excess, model_predicted_v_lead, model_predicted_gap_opening)
+  predicted_pullaway = radar_predicted_pullaway or model_predicted_pullaway
   should_arm = gap_excess >= CREEP_TO_STOP_GAP_ARM_EXCESS and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM
   should_arm = should_arm or (lead_pullaway and gap_excess >= CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS) or predicted_pullaway
   if not active and not should_arm:
@@ -158,6 +213,10 @@ def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_
   target_speed = float(np.interp(gap_excess, CREEP_TO_STOP_GAP_SPEED_BP, CREEP_TO_STOP_GAP_SPEED_V))
   accel_max = CREEP_TO_STOP_GAP_ACCEL_MAX
   if lead_pullaway or predicted_pullaway:
+    predicted_v_lead = max(
+      radar_predicted_v_lead if radar_predicted_pullaway else 0.0,
+      model_predicted_v_lead if model_predicted_pullaway else 0.0,
+    )
     target_speed = max(target_speed, min(max(v_lead, predicted_v_lead), CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX))
     accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
   accel = np.clip((target_speed - v_ego) * CREEP_TO_STOP_GAP_ACCEL_GAIN, CREEP_TO_STOP_GAP_ACCEL_MIN, accel_max)
@@ -166,8 +225,9 @@ def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_
   return True, float(accel)
 
 
-def should_hold_creep_to_stop_gap(v_ego, d_rel, v_lead, a_lead):
+def should_hold_creep_to_stop_gap(v_ego, d_rel, v_lead, a_lead, predicted_pullaway=False):
   return (
+    not predicted_pullaway and
     v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO and
     v_lead < CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED and
     a_lead <= 0.05 and
@@ -333,6 +393,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.mpc.source = LongitudinalPlanSource.e2e
 
     lead_one = sm['radarState'].leadOne
+    model_predicted_v_lead, model_predicted_gap_opening = (
+      get_model_lead_pullaway(sm['modelV2'], lead_one, v_ego) if lead_one.status else (0.0, 0.0)
+    )
     self.creep_to_stop_gap_active, creep_a_target = get_creep_to_stop_gap_accel(
       v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
       self.creep_to_stop_gap_active and not reset_state,
@@ -341,6 +404,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       force_slow_decel=force_slow_decel or reset_state,
       a_lead=float(lead_one.aLeadK),
       a_lead_tau=float(lead_one.aLeadTau),
+      model_predicted_v_lead=model_predicted_v_lead,
+      model_predicted_gap_opening=model_predicted_gap_opening,
     ) if lead_one.status else (False, 0.0)
     if self.creep_to_stop_gap_active:
       if creep_a_target >= 0.0:
@@ -357,7 +422,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       )
       output_a_target = max(output_a_target, recovery_a_min)
 
-    if lead_one.status and should_hold_creep_to_stop_gap(v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK)):
+    model_predicted_pullaway = not creep_to_stop_gap_blocked(
+      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
+      sm['carState'].brakePressed, sm['carState'].gasPressed, force_slow_decel or reset_state,
+    ) and has_predicted_lead_pullaway(float(lead_one.dRel) - STOP_DISTANCE, model_predicted_v_lead, model_predicted_gap_opening)
+    if lead_one.status and should_hold_creep_to_stop_gap(
+      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), model_predicted_pullaway
+    ):
       output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
       self.output_should_stop = True
 

@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import itertools
+from types import SimpleNamespace
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.parameterized import parameterized_class
 
@@ -70,8 +71,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX,
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN,
   CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING,
+  CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET,
   get_creep_to_stop_gap_accel,
+  get_model_lead_pullaway,
   get_predicted_lead_pullaway,
+  has_predicted_lead_pullaway,
   should_hold_creep_to_stop_gap,
 )
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
@@ -80,6 +84,20 @@ from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 def stop_distance_buffer(v_ego):
   fade = (STOP_DISTANCE_FADE_V**2) / (v_ego**2 + STOP_DISTANCE_FADE_V**2)
   return STOP_DISTANCE_MIN + (STOP_DISTANCE - STOP_DISTANCE_MIN) * fade
+
+
+def make_model_msg_lead(d_rel=STOP_DISTANCE + 0.35, horizon_gap=0.5, horizon_v=0.8, prob=0.9):
+  x0 = d_rel + CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET
+  return SimpleNamespace(leadsV3=[SimpleNamespace(
+    prob=prob,
+    t=[0.0, 2.0],
+    x=[x0, x0 + horizon_gap],
+    v=[0.0, horizon_v],
+  )])
+
+
+def make_radar_lead(d_rel=STOP_DISTANCE + 0.35, status=True, model_prob=1.0, v_lead=0.0):
+  return SimpleNamespace(status=status, dRel=d_rel, modelProb=model_prob, vLeadK=v_lead)
 
 
 @pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])
@@ -157,6 +175,30 @@ def test_creep_to_stop_gap_uses_predicted_pullaway_before_speed_threshold():
   assert CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
+def test_creep_to_stop_gap_uses_model_lead_pullaway_prediction():
+  d_rel = STOP_DISTANCE + 0.35
+  model_v_lead, model_gap_opening = get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel), 0.0)
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, d_rel, 0.0, 1.0, False,
+    model_predicted_v_lead=model_v_lead,
+    model_predicted_gap_opening=model_gap_opening,
+  )
+
+  assert has_predicted_lead_pullaway(d_rel - STOP_DISTANCE, model_v_lead, model_gap_opening)
+  assert active
+  assert CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+
+
+def test_model_lead_pullaway_prediction_requires_confident_matching_lead():
+  d_rel = STOP_DISTANCE + 0.35
+
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel, prob=0.5), make_radar_lead(d_rel), 0.0) == (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, model_prob=0.4), 0.0) == (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel + 3.0), make_radar_lead(d_rel), 0.0) == (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, v_lead=2.0), 0.0) == (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel), 0.4) == (0.0, 0.0)
+
+
 def test_creep_to_stop_gap_prediction_requires_clear_gap_opening():
   predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(0.0, 0.1, 0.0)
   active, _ = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.35, 0.0, 1.0, False, a_lead=0.1, a_lead_tau=0.0)
@@ -181,6 +223,7 @@ def test_creep_to_stop_gap_hold_covers_near_target_gap_only():
   assert not should_hold_creep_to_stop_gap(0.1, STOP_DISTANCE + CREEP_TO_STOP_GAP_HOLD_EXCESS + 0.1, 0.0, 0.0)
   assert not should_hold_creep_to_stop_gap(0.1, STOP_DISTANCE + 0.3, 0.3, 0.0)
   assert not should_hold_creep_to_stop_gap(0.1, STOP_DISTANCE + 0.3, 0.0, 0.1)
+  assert not should_hold_creep_to_stop_gap(0.1, STOP_DISTANCE + 0.3, 0.0, 0.0, predicted_pullaway=True)
 
 
 def test_lead_departure_relaxation_requires_gap_growth_and_pullaway():
