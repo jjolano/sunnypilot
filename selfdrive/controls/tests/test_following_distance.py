@@ -65,6 +65,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN,
   CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING,
   CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET,
+  CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD,
+  CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_STD,
+  CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_STD,
   get_creep_to_stop_gap_accel,
   get_model_lead_pullaway,
   get_predicted_lead_pullaway,
@@ -79,18 +82,24 @@ def stop_distance_buffer(v_ego):
   return STOP_DISTANCE_MIN + (STOP_DISTANCE - STOP_DISTANCE_MIN) * fade
 
 
-def make_model_msg_lead(d_rel=STOP_DISTANCE + 0.35, horizon_gap=0.5, horizon_v=0.8, prob=0.9):
+def make_model_msg_lead(d_rel=STOP_DISTANCE + 0.35, horizon_gap=0.5, horizon_v=0.8, prob=0.9,
+                        y_rel=0.0, x_std=0.5, y_std=0.2, v_std=0.5,
+                        horizon_x_std=None, horizon_y_std=None, horizon_v_std=None):
   x0 = d_rel + CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET
   return SimpleNamespace(leadsV3=[SimpleNamespace(
     prob=prob,
     t=[0.0, 2.0],
     x=[x0, x0 + horizon_gap],
+    y=[-y_rel, -y_rel],
     v=[0.0, horizon_v],
+    xStd=[x_std, x_std if horizon_x_std is None else horizon_x_std],
+    yStd=[y_std, y_std if horizon_y_std is None else horizon_y_std],
+    vStd=[v_std, v_std if horizon_v_std is None else horizon_v_std],
   )])
 
 
-def make_radar_lead(d_rel=STOP_DISTANCE + 0.35, status=True, model_prob=1.0, v_lead=0.0):
-  return SimpleNamespace(status=status, dRel=d_rel, modelProb=model_prob, vLeadK=v_lead)
+def make_radar_lead(d_rel=STOP_DISTANCE + 0.35, status=True, model_prob=1.0, v_lead=0.0, y_rel=0.0):
+  return SimpleNamespace(status=status, dRel=d_rel, modelProb=model_prob, vLeadK=v_lead, yRel=y_rel)
 
 
 @pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])
@@ -190,6 +199,37 @@ def test_model_lead_pullaway_prediction_requires_confident_matching_lead():
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel + 3.0), make_radar_lead(d_rel), 0.0) == (0.0, 0.0)
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, v_lead=2.0), 0.0) == (0.0, 0.0)
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel), 0.4) == (0.0, 0.0)
+
+
+def test_model_lead_pullaway_prediction_requires_low_uncertainty():
+  d_rel = STOP_DISTANCE + 0.35
+
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, x_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, y_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, v_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, horizon_x_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, horizon_y_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, horizon_v_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+
+
+def test_model_lead_pullaway_prediction_requires_lateral_match():
+  d_rel = STOP_DISTANCE + 0.35
+
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel, y_rel=0.4), make_radar_lead(d_rel, y_rel=0.4), 0.0) != (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel, y_rel=1.0), make_radar_lead(d_rel, y_rel=0.0), 0.0) == (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, y_rel=np.nan), 0.0) == (0.0, 0.0)
 
 
 def test_creep_to_stop_gap_prediction_requires_clear_gap_opening():
