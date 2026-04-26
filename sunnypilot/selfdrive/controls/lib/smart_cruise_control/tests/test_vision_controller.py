@@ -17,6 +17,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import (
   SmartCruiseControlVision,
+  _CURRENT_LAT_ACC_BLEED_TH,
   _ENTERING_PRED_LAT_ACC_TH,
   _NO_OVERSHOOT_TIME_HORIZON,
 )
@@ -110,7 +111,7 @@ def generate_carState():
   return car_state
 
 
-def generate_controlsState(curvature=0.05):
+def generate_controlsState(curvature=0.0):
   controls_state = messaging.new_message('controlsState')
   controls_state.controlsState.curvature = float(curvature)
 
@@ -200,7 +201,7 @@ class TestSmartCruiseControlVision:
     assert self.scc_v.state == VisionState.turning
     assert self.scc_v.a_target == pytest.approx(0.15)
 
-  def test_turning_state_limits_high_lat_acc_decel(self):
+  def test_turning_state_applies_current_lat_acc_bleed(self):
     pred_lat_accels = _constant_pred_lat_accels(3.0)
     mdl = generate_modelV2()
     _set_predicted_lat_accels(mdl, pred_lat_accels)
@@ -214,7 +215,63 @@ class TestSmartCruiseControlVision:
       self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
 
     assert self.scc_v.state == VisionState.turning
-    assert self.scc_v.a_target == pytest.approx(-0.15)
+    assert self.scc_v.a_target == pytest.approx(-0.20)
+
+  def test_current_lat_acc_bleed_uses_measured_curve_without_prediction(self):
+    pred_lat_accels = _constant_pred_lat_accels(1.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    high_current_curvature = 3.0 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(high_current_curvature).controlsState
+
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.max_pred_lat_acc < _ENTERING_PRED_LAT_ACC_TH
+    assert self.scc_v.current_lat_acc == pytest.approx(3.0)
+    assert self.scc_v.state == VisionState.turning
+    assert self.scc_v.is_active
+    assert self.scc_v.a_target == pytest.approx(-0.20)
+    assert self.scc_v.output_v_target < v_ego
+
+  def test_current_lat_acc_bleed_is_inactive_below_threshold(self):
+    pred_lat_accels = _constant_pred_lat_accels(1.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    below_threshold_curvature = (_CURRENT_LAT_ACC_BLEED_TH - 0.05) / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(below_threshold_curvature).controlsState
+
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.current_lat_acc < _CURRENT_LAT_ACC_BLEED_TH
+    assert self.scc_v.state == VisionState.enabled
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_current_lat_acc_bleed_respects_longitudinal_override(self):
+    pred_lat_accels = _constant_pred_lat_accels(1.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    high_current_curvature = 3.2 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(high_current_curvature).controlsState
+
+    self.scc_v.update(self.sm, True, True, v_ego, 0.0, v_ego)
+    self.scc_v.update(self.sm, True, True, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.current_lat_acc > _CURRENT_LAT_ACC_BLEED_TH
+    assert self.scc_v.state == VisionState.overriding
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
 
   @pytest.mark.parametrize(
     "case, should_enter",
