@@ -22,7 +22,7 @@ class FakeResolver:
 class FakeSpeedLimitAssist:
   is_active = True
   output_v_target = 30.0
-  output_a_target = 0.0
+  output_a_target = -0.4
 
   def update(self, *args):
     pass
@@ -55,7 +55,8 @@ def test_speed_limit_auto_can_raise_planner_target_above_manual_cruise():
   })
 
   v_cruise = 20.0 * CV.KPH_TO_MS
-  v_target, _ = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=15.0, a_ego=0.0, v_cruise=v_cruise)
+  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=15.0, a_ego=0.0, v_cruise=v_cruise)
 
   assert v_target == FakeSpeedLimitAssist.output_v_target
+  assert a_target == FakeSpeedLimitAssist.output_a_target
   assert planner.source == LongitudinalPlanSource.speedLimitAssist

@@ -98,7 +98,6 @@ class SpeedLimitAssist:
     self._gap_button_frames = 0
     self._gap_button_long_press_consumed = False
 
-    # TODO-SP: SLA's own output_a_target for planner
     # Solution functions mapped to respective states
     self.acceleration_solutions = {
       SpeedLimitAssistState.disabled: self.get_current_acceleration_as_target,
@@ -135,9 +134,12 @@ class SpeedLimitAssist:
     # Fallback
     return V_CRUISE_UNSET
 
-  # TODO-SP: SLA's own output_a_target for planner
   def get_a_target_from_control(self) -> float:
-    return self.a_ego
+    if not self.auto_enabled or not self._has_speed_limit:
+      return self.a_ego
+
+    a_target = self.acceleration_solutions.get(self.state, self.get_current_acceleration_as_target)()
+    return float(max(LIMIT_MIN_ACC, min(LIMIT_MAX_ACC, a_target)))
 
   def update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:

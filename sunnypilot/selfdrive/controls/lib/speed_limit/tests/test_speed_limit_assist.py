@@ -20,8 +20,14 @@ from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import PCM_LONG_REQUIRED_MAX_SET_SPEED
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist, \
-  PRE_ACTIVE_GUARD_PERIOD, ACTIVE_STATES, DISTANCE_LONG_PRESS
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import (
+  ACTIVE_STATES,
+  DISTANCE_LONG_PRESS,
+  LIMIT_MAX_ACC,
+  LIMIT_MIN_ACC,
+  PRE_ACTIVE_GUARD_PERIOD,
+  SpeedLimitAssist,
+)
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 EventNameSP = custom.OnroadEventSP.EventName
@@ -158,6 +164,7 @@ class TestSpeedLimitAssist:
     assert self.sla.state == SpeedLimitAssistState.active
     assert self.sla.is_enabled and self.sla.is_active
     assert self.sla.output_v_target == SPEED_LIMITS['highway']
+    assert self.sla.output_a_target == LIMIT_MAX_ACC
 
   def test_gap_long_hold_toggles_auto_cruise(self):
     CS = car.CarState(cruiseState={"available": True})
@@ -270,7 +277,9 @@ class TestSpeedLimitAssist:
 
     self.sla.update(True, False, current_speed, 0, self.pcm_long_max_set_speed, target_speed, target_speed, True, distance, self.events_sp)
     assert self.sla.state == SpeedLimitAssistState.adapting
-    assert self.sla.output_v_target == target_speed  # TODO-SP: assert expected accel, need to enable self.acceleration_solutions
+    assert self.sla.output_v_target == target_speed
+    expected_accel = (target_speed ** 2 - current_speed ** 2) / (2. * distance)
+    assert self.sla.output_a_target == pytest.approx(max(LIMIT_MIN_ACC, expected_accel))
 
   def test_long_disengaged_to_disabled(self):
     self.initialize_active_state(self.pcm_long_max_set_speed)
