@@ -37,6 +37,14 @@ class FakeSmartCruiseControl:
     pass
 
 
+class FakeOsmTrafficControlPrior:
+  output_v_target = 255.0
+  output_a_target = 0.0
+
+  def update(self, *args):
+    pass
+
+
 class FakeSubMaster(dict):
   def __getitem__(self, key):
     return super().__getitem__(key)
@@ -47,6 +55,7 @@ def test_speed_limit_auto_can_raise_planner_target_above_manual_cruise():
   planner.scc = FakeSmartCruiseControl()
   planner.resolver = FakeResolver()
   planner.sla = FakeSpeedLimitAssist()
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
   planner.events_sp = SimpleNamespace()
 
   sm = FakeSubMaster({
