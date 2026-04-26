@@ -19,6 +19,7 @@ def make_inputs(**overrides) -> ModelPathProcessorInputs:
     "orientation_z": tuple(0.0 for _ in range(ModelConstants.IDX_N)),
     "orientation_rate_z": tuple(0.0 for _ in range(ModelConstants.IDX_N)),
     "lane_line_probs": (0.0, 0.9, 0.9, 0.0),
+    "turn_curvature_sign": 0,
     "frame_drop_perc": 0.0,
   }
   data.update(overrides)
@@ -92,6 +93,45 @@ def test_high_path_std_blends_toward_previous_desired():
   assert result.gated
   assert result.reason == "high_path_std"
   assert 0.001 < result.desired_curvature < 0.002
+
+
+def test_turn_intent_relaxes_same_sign_high_path_std():
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=0.004,
+    orientation_z=tuple(0.01 for _ in range(ModelConstants.IDX_N)),
+    position_y_std=tuple(1.4 for _ in range(ModelConstants.IDX_N)),
+    turn_curvature_sign=1,
+  ))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.quality == pytest.approx(1.0)
+  assert result.desired_curvature == pytest.approx(0.004)
+
+
+def test_turn_intent_opposite_sign_does_not_relax_high_path_std():
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=0.004,
+    orientation_z=tuple(0.01 for _ in range(ModelConstants.IDX_N)),
+    position_y_std=tuple(1.4 for _ in range(ModelConstants.IDX_N)),
+    turn_curvature_sign=-1,
+  ))
+
+  assert result.gated
+  assert result.reason == "high_path_std"
+  assert 0.001 < result.desired_curvature < 0.004
+
+
+def test_turn_intent_disagreement_does_not_relax_high_path_std():
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=0.004,
+    position_y_std=tuple(1.4 for _ in range(ModelConstants.IDX_N)),
+    turn_curvature_sign=1,
+  ))
+
+  assert result.gated
+  assert result.reason == "high_path_std"
+  assert 0.001 < result.desired_curvature < 0.004
 
 
 def test_path_curvature_disagreement_blends_toward_previous_desired():

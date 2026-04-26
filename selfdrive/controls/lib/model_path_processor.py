@@ -15,6 +15,9 @@ MAX_LAT_ACCEL_JUMP = 3.0
 MAX_HARD_LAT_ACCEL_JUMP = 5.0
 MAX_PATH_CURVATURE_DISAGREEMENT = 3.0
 MAX_PATH_Y_STD = 0.8
+TURN_INTENT_MAX_PATH_Y_STD = 1.8
+TURN_INTENT_MIN_CURVATURE = 0.002
+TURN_INTENT_MAX_PATH_CURVATURE_DISAGREEMENT = 0.75
 LOW_LANE_LINE_PROB = 0.35
 HIGH_FRAME_DROP_PERC = 20.0
 LOW_QUALITY_BLEND_THRESHOLD = 0.75
@@ -34,6 +37,7 @@ class ModelPathProcessorInputs:
   orientation_z: Sequence[float]
   orientation_rate_z: Sequence[float]
   lane_line_probs: Sequence[float]
+  turn_curvature_sign: int = 0
   frame_drop_perc: float = 0.0
 
 
@@ -65,7 +69,17 @@ class ModelPathProcessor:
     quality = 1.0
     reason = "ok"
 
-    path_std_quality = self._path_std_quality(inputs.position_y_std)
+    path_curvature = self._path_curvature(inputs.orientation_z, inputs.orientation_rate_z, inputs.v_ego)
+    path_disagreement = None
+    if path_curvature is not None:
+      path_disagreement = abs(desired_curvature - path_curvature) * max(inputs.v_ego, 1.0) ** 2
+
+    path_std_quality = self._path_std_quality(
+      inputs.position_y_std,
+      desired_curvature,
+      path_disagreement,
+      inputs.turn_curvature_sign,
+    )
     if path_std_quality < quality:
       quality = path_std_quality
       reason = "high_path_std"
@@ -79,10 +93,8 @@ class ModelPathProcessor:
       quality = min(quality, 0.85)
       reason = "frame_drop"
 
-    path_curvature = self._path_curvature(inputs.orientation_z, inputs.orientation_rate_z, inputs.v_ego)
-    if path_curvature is not None:
-      disagreement = abs(desired_curvature - path_curvature) * max(inputs.v_ego, 1.0) ** 2
-      if disagreement > MAX_PATH_CURVATURE_DISAGREEMENT:
+    if path_disagreement is not None:
+      if path_disagreement > MAX_PATH_CURVATURE_DISAGREEMENT:
         quality = min(quality, 0.65)
         reason = "path_disagreement"
 
@@ -121,14 +133,37 @@ class ModelPathProcessor:
     return bool(np.all(np.diff(x_vals) >= 0.0))
 
   @classmethod
-  def _path_std_quality(cls, position_y_std: Sequence[float]) -> float:
+  def _path_std_quality(
+    cls,
+    position_y_std: Sequence[float],
+    desired_curvature: float,
+    path_disagreement: float | None,
+    turn_curvature_sign: int,
+  ) -> float:
     y_std = cls._as_finite_array(position_y_std)
     if y_std is None:
       return 0.85
     max_y_std = float(np.max(y_std[:PATH_VALID_MIN_LEN]))
     if max_y_std <= MAX_PATH_Y_STD:
       return 1.0
+    if cls._turn_intent_allows_path_std(max_y_std, desired_curvature, path_disagreement, turn_curvature_sign):
+      return 1.0
     return float(np.interp(max_y_std, [MAX_PATH_Y_STD, MAX_PATH_Y_STD * 2.0], [0.7, 0.45]))
+
+  @staticmethod
+  def _turn_intent_allows_path_std(
+    max_y_std: float,
+    desired_curvature: float,
+    path_disagreement: float | None,
+    turn_curvature_sign: int,
+  ) -> bool:
+    if turn_curvature_sign == 0 or path_disagreement is None:
+      return False
+    if max_y_std > TURN_INTENT_MAX_PATH_Y_STD or abs(desired_curvature) < TURN_INTENT_MIN_CURVATURE:
+      return False
+    if desired_curvature * turn_curvature_sign <= 0.0:
+      return False
+    return path_disagreement <= TURN_INTENT_MAX_PATH_CURVATURE_DISAGREEMENT
 
   @staticmethod
   def _lane_quality(lane_line_probs: Sequence[float]) -> float:
