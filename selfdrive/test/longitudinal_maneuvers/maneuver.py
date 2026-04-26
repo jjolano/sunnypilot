@@ -22,6 +22,7 @@ class Maneuver:
     self.cruise_values = kwargs.get("cruise_values", [50.0 for i in range(len(self.breakpoints))])
     self.pitch_values = kwargs.get("pitch_values", [0.0 for i in range(len(self.breakpoints))])
     self.model_desired_accel_values = kwargs.get("model_desired_accel_values", None)
+    self.model_position_x_values = kwargs.get("model_position_x_values", None)
     self.model_should_stop_values = kwargs.get("model_should_stop_values", [False for i in range(len(self.breakpoints))])
 
     self.only_lead2 = kwargs.get("only_lead2", False)
@@ -66,10 +67,14 @@ class Maneuver:
       model_desired_accel = (
         None if self.model_desired_accel_values is None else np.interp(plant.current_time, self.breakpoints, self.model_desired_accel_values)
       )
+      model_position_x = (
+        None if self.model_position_x_values is None else np.interp(plant.current_time, self.breakpoints, self.model_position_x_values)
+      )
       model_should_stop = bool(np.interp(plant.current_time, self.breakpoints, self.model_should_stop_values) > 0.5)
       log = plant.step(speed_lead, prob_lead, cruise, pitch, prob_throttle, lead_y_rel,
                        v_lead2=speed_lead2, prob_lead2=prob_lead2, lead2_y_rel=lead2_y_rel,
-                       model_desired_accel=model_desired_accel, model_should_stop=model_should_stop)
+                       model_desired_accel=model_desired_accel, model_should_stop=model_should_stop,
+                       model_position_x=model_position_x)
 
       d_rel = log['distance_lead'] - log['distance'] if self.lead_relevancy else 200.
       d_rel2 = log['distance_lead2'] - log['distance'] if self.lead2_relevancy else 200.
