@@ -6,24 +6,30 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import pytest
+import json
 
 from openpilot.sunnypilot.mapd.live_map_data.osm_map_data import OsmMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
 
 class MockParams:
-  def __init__(self, next_speed_limit):
-    self.next_speed_limit = next_speed_limit
+  def __init__(self, values):
+    self.values = values
 
   def get(self, key):
-    if key == "NextMapSpeedLimit":
-      return self.next_speed_limit
-    return None
+    return self.values.get(key)
 
 
-def build_osm_map_data(next_speed_limit):
+def build_osm_map_data(next_speed_limit=None, map_hazard=None, next_map_hazard=None,
+                       map_traffic_control=None, next_map_traffic_control=None):
   osm_map_data = OsmMapData.__new__(OsmMapData)
-  osm_map_data.mem_params = MockParams(next_speed_limit)
+  osm_map_data.mem_params = MockParams({
+    "NextMapSpeedLimit": next_speed_limit,
+    "MapHazard": map_hazard,
+    "NextMapHazard": next_map_hazard,
+    "MapTrafficControl": map_traffic_control,
+    "NextMapTrafficControl": next_map_traffic_control,
+  })
   osm_map_data.last_position = Coordinate(0., 0.)
   return osm_map_data
 
@@ -42,6 +48,27 @@ def test_next_speed_limit_prefers_mapd_distance():
   assert next_distance == 123.0
 
 
+def test_next_speed_limit_accepts_json_string():
+  osm_map_data = build_osm_map_data(json.dumps({
+    "speedlimit": 20.0,
+    "distance": 123.0,
+  }))
+
+  next_speed_limit, next_distance = osm_map_data.get_next_speed_limit_and_distance()
+
+  assert next_speed_limit == 20.0
+  assert next_distance == 123.0
+
+
+def test_next_speed_limit_ignores_malformed_json():
+  osm_map_data = build_osm_map_data("not-json")
+
+  next_speed_limit, next_distance = osm_map_data.get_next_speed_limit_and_distance()
+
+  assert next_speed_limit == 0.0
+  assert next_distance == 0.0
+
+
 def test_next_speed_limit_falls_back_to_coordinate_distance():
   osm_map_data = build_osm_map_data({
     "speedlimit": 20.0,
@@ -53,3 +80,78 @@ def test_next_speed_limit_falls_back_to_coordinate_distance():
 
   assert next_speed_limit == 20.0
   assert next_distance == pytest.approx(Coordinate(0., 0.).distance_to(Coordinate(1., 0.)))
+
+
+def test_current_hazard_falls_back_to_coordinate_distance():
+  osm_map_data = build_osm_map_data(map_hazard=json.dumps({
+    "hazard": "animal_crossing",
+    "start_latitude": 1.0,
+    "start_longitude": 0.0,
+  }))
+
+  hazard, distance = osm_map_data.get_current_hazard_and_distance()
+
+  assert hazard == "animal_crossing"
+  assert distance == pytest.approx(Coordinate(0., 0.).distance_to(Coordinate(1., 0.)))
+
+
+def test_next_hazard_prefers_mapd_distance():
+  osm_map_data = build_osm_map_data(next_map_hazard=json.dumps({
+    "hazard": "curve",
+    "start_latitude": 1.0,
+    "start_longitude": 1.0,
+    "distance": 123.0,
+  }))
+
+  hazard, distance = osm_map_data.get_next_hazard_and_distance()
+
+  assert hazard == "curve"
+  assert distance == 123.0
+
+
+def test_hazard_ignores_malformed_json():
+  osm_map_data = build_osm_map_data(map_hazard="not-json")
+
+  hazard, distance = osm_map_data.get_current_hazard_and_distance()
+
+  assert hazard == ""
+  assert distance == 0.0
+
+
+def test_current_traffic_control_falls_back_to_coordinate_distance():
+  osm_map_data = build_osm_map_data(map_traffic_control=json.dumps({
+    "type": "stop_sign",
+    "start_latitude": 1.0,
+    "start_longitude": 0.0,
+  }))
+
+  control_type, distance = osm_map_data.get_current_traffic_control_and_distance()
+
+  assert control_type == "stop_sign"
+  assert distance == pytest.approx(Coordinate(0., 0.).distance_to(Coordinate(1., 0.)))
+
+
+def test_next_traffic_control_accepts_traffic_control_alias_and_distance():
+  osm_map_data = build_osm_map_data(next_map_traffic_control=json.dumps({
+    "traffic_control": "traffic_signal",
+    "start_latitude": 1.0,
+    "start_longitude": 1.0,
+    "distance": 123.0,
+  }))
+
+  control_type, distance = osm_map_data.get_next_traffic_control_and_distance()
+
+  assert control_type == "traffic_signal"
+  assert distance == 123.0
+
+
+def test_traffic_control_ignores_missing_type():
+  osm_map_data = build_osm_map_data(map_traffic_control=json.dumps({
+    "start_latitude": 1.0,
+    "start_longitude": 0.0,
+  }))
+
+  control_type, distance = osm_map_data.get_current_traffic_control_and_distance()
+
+  assert control_type == ""
+  assert distance == 0.0

@@ -290,6 +290,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     sccVision @1;
     sccMap @2;
     speedLimitAssist @3;
+    osmTrafficControl @4;
   }
 
   struct E2eAlerts {
@@ -444,6 +445,18 @@ struct LiveMapDataSP @0xf416ec09499d9d19 {
   speedLimitAhead @3 :Float32;
   speedLimitAheadDistance @4 :Float32;
   roadName @5 :Text;
+  hazardValid @6 :Bool;
+  hazard @7 :Text;
+  hazardDistance @8 :Float32;
+  hazardAheadValid @9 :Bool;
+  hazardAhead @10 :Text;
+  hazardAheadDistance @11 :Float32;
+  trafficControlValid @12 :Bool;
+  trafficControl @13 :Text;
+  trafficControlDistance @14 :Float32;
+  trafficControlAheadValid @15 :Bool;
+  trafficControlAhead @16 :Text;
+  trafficControlAheadDistance @17 :Float32;
 }
 
 struct ModelDataV2SP @0xa1680744031fdb2d {

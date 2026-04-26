@@ -1,0 +1,320 @@
+diff --git a/generate_offline.go b/generate_offline.go
+index b43a52f..a63ffd6 100644
+--- a/generate_offline.go
++++ b/generate_offline.go
+@@ -19,21 +19,42 @@ type TmpNode struct {
+ 	Latitude  float64
+ 	Longitude float64
+ }
++
++type TmpTrafficControl struct {
++	Type      string
++	Latitude  float64
++	Longitude float64
++}
++
+ type TmpWay struct {
+-	Name             string
+-	Ref              string
+-	Hazard           string
+-	MaxSpeed         float64
+-	MaxSpeedForward  float64
+-	MaxSpeedBackward float64
+-	MaxSpeedAdvisory float64
+-	Lanes            uint8
+-	MinLat           float64
+-	MinLon           float64
+-	MaxLat           float64
+-	MaxLon           float64
+-	OneWay           bool
+-	Nodes            []TmpNode
++	Name              string
++	Ref               string
++	Hazard            string
++	TrafficControl    string
++	TrafficControlLat float64
++	TrafficControlLon float64
++	MaxSpeed          float64
++	MaxSpeedForward   float64
++	MaxSpeedBackward  float64
++	MaxSpeedAdvisory  float64
++	Lanes             uint8
++	MinLat            float64
++	MinLon            float64
++	MaxLat            float64
++	MaxLon            float64
++	OneWay            bool
++	Nodes             []TmpNode
++}
++
++func TrafficControlType(tags map[string]string) string {
++	switch {
++	case tags["highway"] == "stop":
++		return "stop_sign"
++	case tags["highway"] == "traffic_signals" || tags["crossing"] == "traffic_signals":
++		return "traffic_signal"
++	default:
++		return ""
++	}
+ }
+ 
+ type Area struct {
+@@ -125,6 +146,7 @@ func GenerateOffline(minGenLat int, minGenLon int, maxGenLat int, maxGenLon int,
+ 	defer scanner.Close()
+ 
+ 	scannedWays := []TmpWay{}
++	trafficControlNodes := map[osm.NodeID]TmpTrafficControl{}
+ 	areas := GenerateAreas()
+ 	index := 0
+ 	allMinLat := float64(90)
+@@ -135,9 +157,18 @@ func GenerateOffline(minGenLat int, minGenLon int, maxGenLat int, maxGenLon int,
+ 	log.Info().Msg("Scanning Ways")
+ 	for scanner.Scan() {
+ 		var way *osm.Way
+-		switch o := scanner.Object(); o.(type) {
++		switch o := scanner.Object().(type) {
++		case *osm.Node:
++			tags := o.TagMap()
++			if controlType := TrafficControlType(tags); controlType != "" {
++				trafficControlNodes[o.ID] = TmpTrafficControl{
++					Type:      controlType,
++					Latitude:  o.Lat,
++					Longitude: o.Lon,
++				}
++			}
+ 		case *osm.Way:
+-			way = o.(*osm.Way)
++			way = o
+ 		default:
+ 			way = nil
+ 		}
+@@ -163,6 +194,13 @@ func GenerateOffline(minGenLat int, minGenLon int, maxGenLat int, maxGenLon int,
+ 			maxLat := float64(-90)
+ 			maxLon := float64(-180)
+ 			for i, n := range way.Nodes {
++				if tmpWay.TrafficControl == "" {
++					if trafficControl, ok := trafficControlNodes[n.ID]; ok {
++						tmpWay.TrafficControl = trafficControl.Type
++						tmpWay.TrafficControlLat = trafficControl.Latitude
++						tmpWay.TrafficControlLon = trafficControl.Longitude
++					}
++				}
+ 				if n.Lat < minLat {
+ 					minLat = n.Lat
+ 				}
+@@ -242,6 +280,10 @@ func GenerateOffline(minGenLat int, minGenLon int, maxGenLat int, maxGenLon int,
+ 			err = w.SetHazard(way.Hazard)
+ 			check(errors.Wrap(err, "could not set way hazard"))
++			err = w.SetTrafficControl(way.TrafficControl)
++			check(errors.Wrap(err, "could not set way traffic control"))
++			w.SetTrafficControlLat(way.TrafficControlLat)
++			w.SetTrafficControlLon(way.TrafficControlLon)
+ 			w.SetMaxSpeed(way.MaxSpeed)
+ 			w.SetMaxSpeedForward(way.MaxSpeedForward)
+ 			w.SetMaxSpeedBackward(way.MaxSpeedBackward)
+ 			w.SetAdvisorySpeed(way.MaxSpeedAdvisory)
+diff --git a/mapd.go b/mapd.go
+index ae9f4b5..22abec5 100644
+--- a/mapd.go
++++ b/mapd.go
+@@ -57,6 +57,15 @@ type Hazard struct {
+ 	Hazard         string  `json:"hazard"`
+ }
+ 
++type TrafficControl struct {
++	StartLatitude  float64 `json:"start_latitude"`
++	StartLongitude float64 `json:"start_longitude"`
++	EndLatitude    float64 `json:"end_latitude"`
++	EndLongitude   float64 `json:"end_longitude"`
++	Type           string  `json:"type"`
++	Distance       float64 `json:"distance"`
++}
++
+ func RoadName(way Way) string {
+ 	name, err := way.Name()
+ 	if err == nil {
+@@ -208,6 +217,122 @@ func calculateWayDistance(way Way) (float64, error) {
+ 	return totalDistance, nil
+ }
+ 
++func coordinateMatches(latA float64, lonA float64, latB float64, lonB float64) bool {
++	return latA == latB && lonA == lonB
++}
++
++func distanceToTrafficControl(from Position, way Way, isForward bool, targetLat float64, targetLon float64) (float64, bool) {
++	if DistanceToPoint(from.Latitude*TO_RADIANS, from.Longitude*TO_RADIANS, targetLat*TO_RADIANS, targetLon*TO_RADIANS) < 1.0 {
++		return 0.0, true
++	}
++
++	distanceResult, err := DistanceToWay(from, way)
++	if err != nil {
++		return 0.0, false
++	}
++
++	nodes, err := way.Nodes()
++	if err != nil || nodes.Len() == 0 {
++		return 0.0, false
++	}
++
++	start := distanceResult.LineEnd
++	if !isForward {
++		start = distanceResult.LineStart
++	}
++
++	lat := start.Latitude()
++	lon := start.Longitude()
++	distance := DistanceToPoint(from.Latitude*TO_RADIANS, from.Longitude*TO_RADIANS, lat*TO_RADIANS, lon*TO_RADIANS)
++	started := false
++
++	for i := 0; i < nodes.Len(); i++ {
++		index := i
++		if !isForward {
++			index = nodes.Len() - 1 - i
++		}
++
++		node := nodes.At(index)
++		nLat := node.Latitude()
++		nLon := node.Longitude()
++
++		if !started {
++			if !coordinateMatches(nLat, nLon, lat, lon) {
++				continue
++			}
++			started = true
++		}
++
++		if !coordinateMatches(nLat, nLon, lat, lon) {
++			distance += DistanceToPoint(lat*TO_RADIANS, lon*TO_RADIANS, nLat*TO_RADIANS, nLon*TO_RADIANS)
++			lat = nLat
++			lon = nLon
++		}
++
++		if coordinateMatches(nLat, nLon, targetLat, targetLon) {
++			return distance, true
++		}
++	}
++
++	return 0.0, false
++}
++
++func trafficControlForWay(way Way, from Position, fallback Coordinates, baseDistance float64, isForward bool) TrafficControl {
++	controlType, err := way.TrafficControl()
++	if err != nil || controlType == "" {
++		return TrafficControl{}
++	}
++
++	lat := way.TrafficControlLat()
++	lon := way.TrafficControlLon()
++	if lat == 0 && lon == 0 {
++		lat = fallback.Latitude()
++		lon = fallback.Longitude()
++	}
++
++	distance, ahead := distanceToTrafficControl(from, way, isForward, lat, lon)
++	if !ahead {
++		return TrafficControl{}
++	}
++	distance += baseDistance
++
++	return TrafficControl{
++		StartLatitude:  lat,
++		StartLongitude: lon,
++		EndLatitude:    lat,
++		EndLongitude:   lon,
++		Type:           controlType,
++		Distance:       distance,
++	}
++}
++
++func calculateNextTrafficControl(state *State) TrafficControl {
++	cumulativeDistance := 0.0
++	if state.CurrentWay.Way.HasNodes() {
++		distToEnd, err := DistanceToEndOfWay(state.Position, state.CurrentWay.Way, state.CurrentWay.OnWay.IsForward)
++		if err == nil && distToEnd > 0 {
++			cumulativeDistance = distToEnd
++		}
++	}
++
++	for _, nextWay := range state.NextWays {
++		from := Position{Latitude: nextWay.StartPosition.Latitude(), Longitude: nextWay.StartPosition.Longitude()}
++		trafficControl := trafficControlForWay(nextWay.Way, from, nextWay.StartPosition, cumulativeDistance, nextWay.IsForward)
++		if trafficControl.Type != "" {
++			return trafficControl
++		}
++
++		if nextWay.Way.HasNodes() {
++			wayDistance, err := calculateWayDistance(nextWay.Way)
++			if err == nil {
++				cumulativeDistance += wayDistance
++			}
++		}
++	}
++
++	return TrafficControl{}
++}
++
+ func loop(state *State) {
+ 	defer func() {
+ 		if err := recover(); err != nil {
+@@ -351,6 +476,12 @@ func loop(state *State) {
+ 		err = PutParam(MAP_ADVISORY_LIMIT, data)
+ 		logwe(errors.Wrap(err, "could not write advisory speed limit"))
+ 
++		trafficControl := trafficControlForWay(state.CurrentWay.Way, state.Position, state.CurrentWay.StartPosition, 0.0, state.CurrentWay.OnWay.IsForward)
++		data, err = json.Marshal(trafficControl)
++		logde(errors.Wrap(err, "could not marshal traffic control"))
++		err = PutParam(MAP_TRAFFIC_CONTROL, data)
++		logwe(errors.Wrap(err, "could not write traffic control"))
++
+ 		// ---------------- Next Data ---------------------
+ 
+ 		if len(state.NextWays) > 0 {
+@@ -368,6 +499,12 @@ func loop(state *State) {
+ 			logwe(errors.Wrap(err, "could not write next hazard"))
+ 		}
+ 
++		nextTrafficControl := calculateNextTrafficControl(state)
++		data, err = json.Marshal(nextTrafficControl)
++		logde(errors.Wrap(err, "could not marshal next traffic control"))
++		err = PutParam(NEXT_MAP_TRAFFIC_CONTROL, data)
++		logwe(errors.Wrap(err, "could not write next traffic control"))
++
+ 		if len(state.NextWays) > 0 || state.CurrentWay.Way.HasNodes() {
+ 			currentMaxSpeed := state.CurrentWay.Way.MaxSpeed()
+ 			if state.CurrentWay.OnWay.IsForward && state.CurrentWay.Way.MaxSpeedForward() > 0 {
+diff --git a/offline.capnp b/offline.capnp
+index b5abebd..2a5d347 100644
+--- a/offline.capnp
++++ b/offline.capnp
+@@ -18,6 +18,9 @@ struct Way {
+   oneWay @11 :Bool;
+   maxSpeedForward @12 :Float64;
+   maxSpeedBackward @13 :Float64;
++  trafficControl @14 :Text;
++  trafficControlLat @15 :Float64;
++  trafficControlLon @16 :Float64;
+ }
+ 
+ struct Coordinates {
+diff --git a/params.go b/params.go
+index dc63791..34a7775 100644
+--- a/params.go
++++ b/params.go
+@@ -22,6 +22,8 @@ var (
+ 	ROAD_NAME                 = ParamPath("RoadName", true)
+ 	MAP_HAZARD                = ParamPath("MapHazard", true)
+ 	NEXT_MAP_HAZARD           = ParamPath("NextMapHazard", true)
++	MAP_TRAFFIC_CONTROL       = ParamPath("MapTrafficControl", true)
++	NEXT_MAP_TRAFFIC_CONTROL  = ParamPath("NextMapTrafficControl", true)
+ 	MAP_SPEED_LIMIT           = ParamPath("MapSpeedLimit", true)
+ 	MAP_ADVISORY_LIMIT        = ParamPath("MapAdvisoryLimit", true)
+ 	NEXT_MAP_ADVISORY_LIMIT   = ParamPath("NextMapAdvisoryLimit", true)
+@@ -78,6 +80,8 @@ func ResetParams() {
+ 	_ = PutParam(ROAD_NAME, empty_data)
+ 	_ = PutParam(MAP_HAZARD, empty_object)
+ 	_ = PutParam(NEXT_MAP_HAZARD, empty_object)
++	_ = PutParam(MAP_TRAFFIC_CONTROL, empty_object)
++	_ = PutParam(NEXT_MAP_TRAFFIC_CONTROL, empty_object)
+ 	_ = PutParam(MAP_SPEED_LIMIT, zero)
+ 	_ = PutParam(MAP_ADVISORY_LIMIT, empty_object)
+ 	_ = PutParam(NEXT_MAP_ADVISORY_LIMIT, empty_object)

@@ -42,9 +42,29 @@ class BaseMapData(ABC):
   def get_current_road_name(self) -> str:
     pass
 
+  @abstractmethod
+  def get_current_hazard_and_distance(self) -> tuple[str, float]:
+    pass
+
+  @abstractmethod
+  def get_next_hazard_and_distance(self) -> tuple[str, float]:
+    pass
+
+  @abstractmethod
+  def get_current_traffic_control_and_distance(self) -> tuple[str, float]:
+    pass
+
+  @abstractmethod
+  def get_next_traffic_control_and_distance(self) -> tuple[str, float]:
+    pass
+
   def publish(self) -> None:
     speed_limit = self.get_current_speed_limit()
     next_speed_limit, next_speed_limit_distance = self.get_next_speed_limit_and_distance()
+    hazard, hazard_distance = self.get_current_hazard_and_distance()
+    hazard_ahead, hazard_ahead_distance = self.get_next_hazard_and_distance()
+    traffic_control, traffic_control_distance = self.get_current_traffic_control_and_distance()
+    traffic_control_ahead, traffic_control_ahead_distance = self.get_next_traffic_control_and_distance()
 
     mapd_sp_send = messaging.new_message('liveMapDataSP')
     mapd_sp_send.valid = self.sm['liveLocationKalman'].gpsOK
@@ -56,6 +76,18 @@ class BaseMapData(ABC):
     live_map_data.speedLimitAhead = next_speed_limit
     live_map_data.speedLimitAheadDistance = next_speed_limit_distance
     live_map_data.roadName = self.get_current_road_name()
+    live_map_data.hazardValid = bool(hazard)
+    live_map_data.hazard = hazard
+    live_map_data.hazardDistance = hazard_distance
+    live_map_data.hazardAheadValid = bool(hazard_ahead)
+    live_map_data.hazardAhead = hazard_ahead
+    live_map_data.hazardAheadDistance = hazard_ahead_distance
+    live_map_data.trafficControlValid = bool(traffic_control)
+    live_map_data.trafficControl = traffic_control
+    live_map_data.trafficControlDistance = traffic_control_distance
+    live_map_data.trafficControlAheadValid = bool(traffic_control_ahead)
+    live_map_data.trafficControlAhead = traffic_control_ahead
+    live_map_data.trafficControlAheadDistance = traffic_control_ahead_distance
 
     self.pm.send('liveMapDataSP', mapd_sp_send)
 
