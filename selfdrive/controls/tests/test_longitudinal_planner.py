@@ -1,6 +1,11 @@
 from types import SimpleNamespace
 
-from openpilot.selfdrive.controls.lib.longitudinal_planner import has_valid_radar_lead, should_run_engage_stop_bootstrap
+from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+  E2E_STOP_APPROACH_DECEL_MAX,
+  get_e2e_stop_approach_accel,
+  has_valid_radar_lead,
+  should_run_engage_stop_bootstrap,
+)
 
 
 def make_radar_state(lead_one=False, lead_two=False):
@@ -10,8 +15,11 @@ def make_radar_state(lead_one=False, lead_two=False):
   )
 
 
-def make_model_msg(desired_accel=0.0, should_stop=False):
-  return SimpleNamespace(action=SimpleNamespace(desiredAcceleration=desired_accel, shouldStop=should_stop))
+def make_model_msg(desired_accel=0.0, should_stop=False, endpoint_x=200.0):
+  return SimpleNamespace(
+    action=SimpleNamespace(desiredAcceleration=desired_accel, shouldStop=should_stop),
+    position=SimpleNamespace(x=[0.0, endpoint_x]),
+  )
 
 
 def test_has_valid_radar_lead_checks_both_tracks():
@@ -38,3 +46,28 @@ def test_engage_stop_bootstrap_activates_for_model_should_stop_without_lead():
 
 def test_engage_stop_bootstrap_ignores_weak_model_stop_signal():
   assert not should_run_engage_stop_bootstrap(0.5, 10.0, make_radar_state(), make_model_msg(desired_accel=-0.2))
+
+
+def test_e2e_stop_approach_brakes_for_short_no_lead_endpoint():
+  accel = get_e2e_stop_approach_accel(12.0, make_model_msg(endpoint_x=45.0), make_radar_state(), True)
+
+  assert -E2E_STOP_APPROACH_DECEL_MAX <= accel < -0.5
+
+
+def test_e2e_stop_approach_ignores_clear_endpoint():
+  assert get_e2e_stop_approach_accel(12.0, make_model_msg(endpoint_x=200.0), make_radar_state(), True) == 0.0
+
+
+def test_e2e_stop_approach_requires_no_lead_and_no_override():
+  model_msg = make_model_msg(endpoint_x=45.0)
+
+  assert get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(lead_one=True), True) == 0.0
+  assert get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), False) == 0.0
+  assert get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), True, brake_pressed=True) == 0.0
+  assert get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), True, gas_pressed=True) == 0.0
+
+
+def test_e2e_stop_approach_leaves_hard_model_stop_to_model():
+  accel = get_e2e_stop_approach_accel(12.0, make_model_msg(should_stop=True, endpoint_x=30.0), make_radar_state(), True)
+
+  assert accel == 0.0

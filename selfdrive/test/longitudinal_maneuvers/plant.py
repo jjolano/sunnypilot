@@ -66,7 +66,7 @@ class Plant:
 
   def step(
     self, v_lead=0.0, prob_lead=1.0, v_cruise=50.0, pitch=0.0, prob_throttle=1.0, lead_y_rel=0.0,
-    model_desired_accel=None, model_should_stop=False, v_lead2=0.0, prob_lead2=0.0, lead2_y_rel=0.0,
+    model_desired_accel=None, model_should_stop=False, model_position_x=None, v_lead2=0.0, prob_lead2=0.0, lead2_y_rel=0.0,
   ):
     # ******** publish a fake model going straight and fake calibration ********
     # note that this is worst case for MPC, since model will delay long mpc by one time step
@@ -137,7 +137,10 @@ class Plant:
     # this is to ensure lead policy is effective when model
     # does not predict slowdown in e2e mode
     position = log.XYZTData.new_message()
-    position.x = [float(x) for x in (self.speed + 0.5) * np.array(ModelConstants.T_IDXS)]
+    if model_position_x is None:
+      position.x = [float(x) for x in (self.speed + 0.5) * np.array(ModelConstants.T_IDXS)]
+    else:
+      position.x = [float(x) for x in np.linspace(0.0, model_position_x, len(ModelConstants.T_IDXS))]
     model.modelV2.position = position
     if model_desired_accel is None:
       model_desired_accel = self.acceleration + 0.1

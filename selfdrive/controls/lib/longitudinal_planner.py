@@ -49,6 +49,15 @@ CREEP_TO_STOP_GAP_PREDICT_T = 0.8
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED = 0.35
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL = 0.25
 CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING = 0.2
+E2E_STOP_APPROACH_MIN_V_EGO = 3.0
+E2E_STOP_APPROACH_MAX_MODEL_ACCEL = 0.2
+E2E_STOP_APPROACH_MIN_ENDPOINT = 5.0
+E2E_STOP_APPROACH_EXPECTED_DIST_BP = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 55.0, 60.0]
+E2E_STOP_APPROACH_EXPECTED_DIST_V = [32.0, 46.0, 64.0, 86.0, 108.0, 130.0, 145.0, 165.0]
+E2E_STOP_APPROACH_SHORTAGE_BP = [0.15, 0.5]
+E2E_STOP_APPROACH_DECEL_BP = [0.35, 1.15]
+E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND = 0.65
+E2E_STOP_APPROACH_DECEL_MAX = 1.2
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -72,6 +81,33 @@ def should_run_engage_stop_bootstrap(timer, v_ego, radar_state, model_msg):
     return False
 
   return bool(model_msg.action.shouldStop or model_msg.action.desiredAcceleration <= ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL)
+
+
+def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force_slow_decel=False,
+                                brake_pressed=False, gas_pressed=False):
+  blocked = not e2e_active or force_slow_decel or brake_pressed or gas_pressed
+  blocked = blocked or v_ego < E2E_STOP_APPROACH_MIN_V_EGO or has_valid_radar_lead(radar_state)
+  blocked = blocked or model_msg.action.shouldStop or model_msg.action.desiredAcceleration > E2E_STOP_APPROACH_MAX_MODEL_ACCEL
+  blocked = blocked or len(model_msg.position.x) == 0
+  if blocked:
+    return 0.0
+
+  endpoint_x = float(model_msg.position.x[-1])
+  if not np.isfinite(endpoint_x) or endpoint_x <= 0.0:
+    return 0.0
+
+  expected_distance = float(np.interp(v_ego * CV.MS_TO_KPH, E2E_STOP_APPROACH_EXPECTED_DIST_BP, E2E_STOP_APPROACH_EXPECTED_DIST_V))
+  if expected_distance <= 0.0:
+    return 0.0
+
+  shortage = max(0.0, expected_distance - endpoint_x) / expected_distance
+  if shortage <= E2E_STOP_APPROACH_SHORTAGE_BP[0]:
+    return 0.0
+
+  shortage_decel = float(np.interp(shortage, E2E_STOP_APPROACH_SHORTAGE_BP, E2E_STOP_APPROACH_DECEL_BP))
+  required_decel = E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND * v_ego**2 / (2.0 * max(endpoint_x, E2E_STOP_APPROACH_MIN_ENDPOINT))
+  target_decel = min(max(shortage_decel, required_decel), E2E_STOP_APPROACH_DECEL_MAX)
+  return -target_decel
 
 
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
@@ -270,7 +306,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    if self.is_e2e(sm):
+    e2e_active = self.is_e2e(sm)
+    if e2e_active:
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       if output_a_target < output_a_target_mpc:
@@ -284,6 +321,16 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.output_should_stop = self.output_should_stop or output_should_stop_e2e
       if output_a_target_e2e < output_a_target_mpc:
         self.mpc.source = LongitudinalPlanSource.e2e
+
+    e2e_stop_approach_a_target = get_e2e_stop_approach_accel(
+      v_ego, sm['modelV2'], sm['radarState'], e2e_active,
+      force_slow_decel=force_slow_decel or reset_state,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+    )
+    if e2e_stop_approach_a_target < 0.0 and e2e_stop_approach_a_target < output_a_target:
+      output_a_target = e2e_stop_approach_a_target
+      self.mpc.source = LongitudinalPlanSource.e2e
 
     lead_one = sm['radarState'].leadOne
     self.creep_to_stop_gap_active, creep_a_target = get_creep_to_stop_gap_accel(
