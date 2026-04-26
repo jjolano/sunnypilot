@@ -236,6 +236,22 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 5.),
   },
 
+  EventNameSP.speedLimitAutoCruiseEnabled: {
+    ET.WARNING: Alert(
+      "Speed limit auto cruise: ON",
+      "",
+      AlertStatus.normal, AlertSize.small,
+      Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 2.),
+  },
+
+  EventNameSP.speedLimitAutoCruiseDisabled: {
+    ET.WARNING: Alert(
+      "Speed limit auto cruise: OFF",
+      "",
+      AlertStatus.normal, AlertSize.small,
+      Priority.LOW, VisualAlert.none, AudibleAlert.none, 2.),
+  },
+
   EventNameSP.e2eChime: {
     ET.PERMANENT: Alert(
       "",

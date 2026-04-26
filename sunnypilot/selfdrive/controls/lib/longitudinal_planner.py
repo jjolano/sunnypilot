@@ -69,6 +69,9 @@ class LongitudinalPlannerSP:
       LongitudinalPlanSource.speedLimitAssist: (self.sla.output_v_target, self.sla.output_a_target),
     }
 
+    if self.sla.is_active:
+      targets.pop(LongitudinalPlanSource.cruise)
+
     self.source = min(targets, key=lambda k: targets[k][0])
     self.output_v_target, self.output_a_target = targets[self.source]
     return self.output_v_target, self.output_a_target
@@ -130,6 +133,7 @@ class LongitudinalPlannerSP:
     assist.state = self.sla.state
     assist.enabled = self.sla.is_enabled
     assist.active = self.sla.is_active
+    assist.autoCruiseEnabled = self.sla.auto_enabled
     assist.vTarget = float(self.sla.output_v_target)
     assist.aTarget = float(self.sla.output_a_target)
 

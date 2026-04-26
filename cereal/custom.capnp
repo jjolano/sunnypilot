@@ -267,6 +267,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       active @2 :Bool;
       vTarget @3 :Float32;
       aTarget @4 :Float32;
+      autoCruiseEnabled @5 :Bool;
     }
 
     enum Source {
@@ -342,6 +343,8 @@ struct OnroadEventSP @0xda96579883444c35 {
     speedLimitChanged @21;
     speedLimitPending @22;
     e2eChime @23;
+    speedLimitAutoCruiseEnabled @24;
+    speedLimitAutoCruiseDisabled @25;
   }
 }
 
