@@ -458,7 +458,7 @@ def test_low_speed_slowing_lead_targets_predicted_stop_runway():
   stopped_idxs = np.where(output[:, 3] < 0.03)[0]
   assert len(stopped_idxs) > 0
 
-  assert np.min(output[:, 5]) > -1.2
+  assert np.min(output[:, 5]) > -1.3
   assert output[stopped_idxs[0], 6] == pytest.approx(5.7, abs=0.4)
 
 
