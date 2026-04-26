@@ -11,7 +11,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from cereal import custom
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_ADAPT_ACC, LIMIT_MAX_MAP_DATA_AGE
 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver, ALL_SOURCES
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy
@@ -53,6 +53,25 @@ def setup_sm_mock(mocker: MockerFixture):
     'carState': car_state,
     'liveMapDataSP': live_map_data,
     'carStateSP': car_state_sp,
+    'gpsLocation': gps_data,
+  }[key]
+  return sm_mock
+
+
+def setup_map_sm_mock(mocker: MockerFixture, speed_limit: float, next_speed_limit: float, next_distance: float):
+  live_map_data = create_mock({
+    'speedLimit': speed_limit,
+    'speedLimitValid': speed_limit > 0.,
+    'speedLimitAhead': next_speed_limit,
+    'speedLimitAheadValid': next_speed_limit > 0.,
+    'speedLimitAheadDistance': next_distance,
+  }, mocker)
+  gps_data = create_mock({
+    'unixTimestampMillis': time.monotonic() * 1e3,
+  }, mocker)
+  sm_mock = mocker.MagicMock()
+  sm_mock.__getitem__.side_effect = lambda key: {
+    'liveMapDataSP': live_map_data,
     'gpsLocation': gps_data,
   }[key]
   return sm_mock
@@ -141,4 +160,44 @@ class TestSpeedLimitResolverValidation:
     sm_mock['gpsLocation'].unixTimestampMillis = (time.monotonic() - 2 * LIMIT_MAX_MAP_DATA_AGE) * 1e3
     resolver._get_from_map_data(sm_mock)
     assert resolver.limit_solutions[SpeedLimitSource.map] == 0.
+    assert resolver.distance_solutions[SpeedLimitSource.map] == 0.
+
+  def test_lower_next_map_limit_selected_inside_adapt_distance(self, resolver_class, mocker: MockerFixture):
+    v_ego = 30.0
+    speed_limit = 30.0
+    next_speed_limit = 20.0
+    adapt_distance = (next_speed_limit ** 2 - v_ego ** 2) / (2. * LIMIT_ADAPT_ACC)
+    sm_mock = setup_map_sm_mock(mocker, speed_limit, next_speed_limit, adapt_distance - 10.)
+
+    resolver = resolver_class()
+    resolver.v_ego = v_ego
+    resolver._get_from_map_data(sm_mock)
+
+    assert resolver.limit_solutions[SpeedLimitSource.map] == next_speed_limit
+    assert resolver.distance_solutions[SpeedLimitSource.map] == pytest.approx(adapt_distance - 10., abs=0.1)
+
+  def test_lower_next_map_limit_waits_until_adapt_distance(self, resolver_class, mocker: MockerFixture):
+    v_ego = 30.0
+    speed_limit = 30.0
+    next_speed_limit = 20.0
+    adapt_distance = (next_speed_limit ** 2 - v_ego ** 2) / (2. * LIMIT_ADAPT_ACC)
+    sm_mock = setup_map_sm_mock(mocker, speed_limit, next_speed_limit, adapt_distance + 10.)
+
+    resolver = resolver_class()
+    resolver.v_ego = v_ego
+    resolver._get_from_map_data(sm_mock)
+
+    assert resolver.limit_solutions[SpeedLimitSource.map] == speed_limit
+    assert resolver.distance_solutions[SpeedLimitSource.map] == 0.
+
+  def test_faster_next_map_limit_does_not_relax_current_limit(self, resolver_class, mocker: MockerFixture):
+    speed_limit = 20.0
+    next_speed_limit = 25.0
+    sm_mock = setup_map_sm_mock(mocker, speed_limit, next_speed_limit, 0.)
+
+    resolver = resolver_class()
+    resolver.v_ego = 30.0
+    resolver._get_from_map_data(sm_mock)
+
+    assert resolver.limit_solutions[SpeedLimitSource.map] == speed_limit
     assert resolver.distance_solutions[SpeedLimitSource.map] == 0.

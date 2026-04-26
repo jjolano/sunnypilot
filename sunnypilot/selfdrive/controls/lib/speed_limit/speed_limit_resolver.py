@@ -132,6 +132,12 @@ class SpeedLimitResolver:
 
     self._calculate_map_data_limits(sm, speed_limit, next_speed_limit)
 
+  @staticmethod
+  def _calculate_lower_limit_adapt_distance(v_ego: float, speed_limit: float) -> float:
+    if not 0. < speed_limit < v_ego:
+      return 0.
+    return max(0., (speed_limit ** 2 - v_ego ** 2) / (2. * LIMIT_ADAPT_ACC))
+
   def _calculate_map_data_limits(self, sm: messaging.SubMaster, speed_limit: float, next_speed_limit: float) -> None:
     gps_data = sm[self._gps_location_service]
     map_data = sm['liveMapDataSP']
@@ -142,14 +148,19 @@ class SpeedLimitResolver:
     self.limit_solutions[SpeedLimitSource.map] = speed_limit
     self.distance_solutions[SpeedLimitSource.map] = 0.
 
-    # FIXME-SP: this is not working as expected
-    if 0. < next_speed_limit < self.v_ego:
-      adapt_time = (next_speed_limit - self.v_ego) / LIMIT_ADAPT_ACC
-      adapt_distance = self.v_ego * adapt_time + 0.5 * LIMIT_ADAPT_ACC * adapt_time ** 2
+    if next_speed_limit <= 0.:
+      return
 
-      if distance_to_speed_limit_ahead <= adapt_distance:
-        self.limit_solutions[SpeedLimitSource.map] = next_speed_limit
-        self.distance_solutions[SpeedLimitSource.map] = distance_to_speed_limit_ahead
+    # Only pre-adapt for a lower upcoming map limit. Avoid relaxing the current
+    # map limit early when the next segment is faster but ego is still above it.
+    if speed_limit > 0. and next_speed_limit >= speed_limit:
+      return
+
+    adapt_distance = self._calculate_lower_limit_adapt_distance(self.v_ego, next_speed_limit)
+
+    if distance_to_speed_limit_ahead <= adapt_distance:
+      self.limit_solutions[SpeedLimitSource.map] = next_speed_limit
+      self.distance_solutions[SpeedLimitSource.map] = distance_to_speed_limit_ahead
 
   def _get_source_solution_according_to_policy(self) -> custom.LongitudinalPlanSP.SpeedLimit.Source:
     sources_for_policy = self._policy_to_sources_map[self.policy]

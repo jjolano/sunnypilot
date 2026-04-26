@@ -52,9 +52,9 @@ class OsmMapData(BaseMapData):
     next_speed_limit = next_speed_limit_section.get('speedlimit', 0.0)
     next_speed_limit_latitude = next_speed_limit_section.get('latitude')
     next_speed_limit_longitude = next_speed_limit_section.get('longitude')
-    next_speed_limit_distance = 0.0
+    next_speed_limit_distance = float(next_speed_limit_section.get('distance') or 0.0)
 
-    if next_speed_limit_latitude and next_speed_limit_longitude:
+    if next_speed_limit_distance <= 0.0 and next_speed_limit_latitude is not None and next_speed_limit_longitude is not None:
       next_speed_limit_coordinates = Coordinate(next_speed_limit_latitude, next_speed_limit_longitude)
       next_speed_limit_distance = (self.last_position or Coordinate(0, 0)).distance_to(next_speed_limit_coordinates)
 
