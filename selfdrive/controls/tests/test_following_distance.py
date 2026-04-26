@@ -21,6 +21,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_STOP_GAP_EXCESS_OFFSET_MAX,
   LEAD_STOP_GAP_TAPER_MAX,
   LEAD_GAP_COMFORT_LIGHT_DECEL,
+  LEAD_STOP_RUNWAY_BRAKE,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
@@ -40,6 +41,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_departure_available_runway,
   get_lead_departure_relaxation,
   get_lead_danger_distance,
+  get_lead_stop_runway_blend,
+  get_lead_stop_runway_gap,
   get_lead_stop_gap_excess_offset,
   get_lead_stop_gap_taper,
   get_lead_time_gap_target,
@@ -296,6 +299,34 @@ def test_approach_runway_blend_uses_stop_runway_for_slowing_lead():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   assert get_approach_runway_blend(40.0, 20.0, 15.0, t_follow, a_lead=0.0) == pytest.approx(0.0)
   assert get_approach_runway_blend(40.0, 20.0, 15.0, t_follow, a_lead=-1.0) == pytest.approx(1.0)
+
+
+def test_low_speed_stopped_lead_uses_stop_runway_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 2.0
+  runway_gap = STOP_DISTANCE + v_ego**2 / (2 * LEAD_STOP_RUNWAY_BRAKE)
+
+  assert get_lead_stop_runway_blend(v_ego, 0.0, 0.0) == pytest.approx(1.0)
+  assert get_lead_stop_runway_gap(v_ego, 0.0, v_ego, 0.0) == pytest.approx(runway_gap)
+  assert get_approach_follow_distance(12.0, v_ego, 0.0, t_follow, a_lead=0.0) == pytest.approx(runway_gap)
+
+
+def test_low_speed_slowing_lead_runway_accounts_for_lead_stop_point():
+  v_ego = 3.0
+  v_lead = 1.0
+  a_lead = -0.8
+  closing_speed = v_ego - v_lead
+  reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
+  expected_gap = STOP_DISTANCE + reserve + v_ego**2 / (2 * LEAD_STOP_RUNWAY_BRAKE) - get_stopped_equivalence_factor(v_lead)
+
+  assert get_lead_stop_runway_blend(v_ego, v_lead, a_lead) > 0.0
+  assert get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead) == pytest.approx(max(STOP_DISTANCE, expected_gap))
+
+
+def test_stop_runway_blend_stays_off_at_higher_speed():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  assert get_lead_stop_runway_blend(8.0, 0.0, 0.0) == pytest.approx(0.0)
+  assert get_approach_runway_blend(12.0, 8.0, 0.0, t_follow, a_lead=0.0) == pytest.approx(0.0)
 
 
 def test_lead_accel_match_tapers_positive_accel_under_time_gap():
