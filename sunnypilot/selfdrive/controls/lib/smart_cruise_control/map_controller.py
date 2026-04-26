@@ -1,6 +1,8 @@
 import math
 import platform
 
+import numpy as np
+
 from cereal import custom
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
@@ -30,6 +32,10 @@ TARGET_OFFSET = 1.0  # seconds - This controls how soon before the curve you rea
 MAX_MAP_SPEED = V_CRUISE_UNSET * CV.KPH_TO_MS
 ADVISORY_LIMIT_KEYS = ("MapAdvisorySpeedLimit", "MapAdvisoryLimit")
 NEXT_ADVISORY_LIMIT_KEYS = ("NextMapAdvisorySpeedLimit", "NextMapAdvisoryLimit")
+MODEL_CURVE_DISTANCE_WINDOW = 20.0  # m, match map target points to nearby model path samples.
+MODEL_CURVE_MIN_LAT_ACCEL = 1.3  # m/s^2, ignore weak/noisy curvature predictions.
+MODEL_CURVE_TARGET_LAT_ACCEL = 2.0  # m/s^2, same comfort target used by SCC vision.
+MODEL_CURVE_MIN_SPEED = 1.0  # m/s, avoid unstable curvature estimates at near-zero speed.
 
 
 def velocities_from_param(param: str, params: Params):
@@ -111,6 +117,7 @@ class SmartCruiseControlMap:
     self.v_cruise = 0
     self.target_lat = 0.0
     self.target_lon = 0.0
+    self.target_prediction_advanced = False
     self.frame = -1
 
     self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
@@ -129,7 +136,7 @@ class SmartCruiseControlMap:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self.params.get_bool("SmartCruiseControlMap")
 
-  def update_calculations(self) -> None:
+  def update_calculations(self, model_msg=None) -> None:
     self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
     self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
 
@@ -139,50 +146,56 @@ class SmartCruiseControlMap:
     forward_points, forward_distances = self._forward_target_velocity_distances()
 
     # find velocities that we are within the distance we need to adjust for
-    valid_velocities = self._advisory_targets()
+    valid_velocities = self._advisory_targets(model_msg)
     for i in range(len(forward_points)):
       target_velocity = forward_points[i]
       tlat = target_velocity["latitude"]
       tlon = target_velocity["longitude"]
-      tv = target_velocity["velocity"]
+      tv = float(target_velocity["velocity"])
       if tv > self.v_ego:
         continue
 
       d = forward_distances[i]
 
-      if self._target_in_range(tv, d):
-        valid_velocities.append((float(tv), tlat, tlon))
+      in_range, prediction_advanced = self._target_range_state(tv, d, model_msg)
+      if in_range:
+        valid_velocities.append((float(tv), tlat, tlon, prediction_advanced))
 
     # Find the smallest velocity we need to adjust for
     min_v = 100.0
     target_lat = 0.0
     target_lon = 0.0
-    for tv, lat, lon in valid_velocities:
+    target_prediction_advanced = False
+    for tv, lat, lon, prediction_advanced in valid_velocities:
       if tv < min_v:
         min_v = tv
         target_lat = lat
         target_lon = lon
+        target_prediction_advanced = prediction_advanced
 
     if self.v_target < min_v and not (self.target_lat == 0 and self.target_lon == 0):
-      for i in range(len(forward_points)):
-        target_velocity = forward_points[i]
-        tlat = target_velocity["latitude"]
-        tlon = target_velocity["longitude"]
-        tv = target_velocity["velocity"]
-        if tv > self.v_ego:
-          continue
+      if not self.target_prediction_advanced:
+        for i in range(len(forward_points)):
+          target_velocity = forward_points[i]
+          tlat = target_velocity["latitude"]
+          tlon = target_velocity["longitude"]
+          tv = float(target_velocity["velocity"])
+          if tv > self.v_ego:
+            continue
 
-        if tlat == self.target_lat and tlon == self.target_lon and tv == self.v_target:
-          return
+          if tlat == self.target_lat and tlon == self.target_lon and tv == self.v_target:
+            return
 
       # not found so let's reset
       self.v_target = 0.0
       self.target_lat = 0.0
       self.target_lon = 0.0
+      self.target_prediction_advanced = False
 
     self.v_target = min_v
     self.target_lat = target_lat
     self.target_lon = target_lon
+    self.target_prediction_advanced = target_prediction_advanced
 
   def _forward_target_velocity_distances(self) -> tuple[list[dict], list[float]]:
     if not self.target_velocities:
@@ -246,6 +259,57 @@ class SmartCruiseControlMap:
     control_distance = self._target_control_distance(target_v)
     return control_distance is not None and distance < control_distance
 
+  def _target_range_state(self, target_v: float, distance: float, model_msg) -> tuple[bool, bool]:
+    if self._target_in_range(target_v, distance):
+      return True, False
+
+    control_target_v = self._prediction_control_target(target_v, distance, model_msg)
+    prediction_advanced = control_target_v < target_v and self._target_in_range(control_target_v, distance)
+    return prediction_advanced, prediction_advanced
+
+  @staticmethod
+  def _prediction_curve_target(model_msg, distance: float) -> float | None:
+    if model_msg is None:
+      return None
+
+    positions = np.asarray(getattr(getattr(model_msg, "position", None), "x", []), dtype=float)
+    velocities = np.asarray(getattr(getattr(model_msg, "velocity", None), "x", []), dtype=float)
+    yaw_rates = np.abs(np.asarray(getattr(getattr(model_msg, "orientationRate", None), "z", []), dtype=float))
+    if positions.ndim != 1 or positions.size == 0 or positions.size != velocities.size or positions.size != yaw_rates.size:
+      return None
+    if not np.all(np.isfinite(positions)) or not np.all(np.isfinite(velocities)) or not np.all(np.isfinite(yaw_rates)):
+      return None
+    if distance > positions[-1] + MODEL_CURVE_DISTANCE_WINDOW:
+      return None
+
+    if distance <= MODEL_CURVE_DISTANCE_WINDOW:
+      sample_mask = positions <= distance + MODEL_CURVE_DISTANCE_WINDOW
+    else:
+      sample_mask = np.abs(positions - distance) <= MODEL_CURVE_DISTANCE_WINDOW
+    sample_mask &= velocities >= MODEL_CURVE_MIN_SPEED
+    if not np.any(sample_mask):
+      return None
+
+    sample_velocities = velocities[sample_mask]
+    sample_yaw_rates = yaw_rates[sample_mask]
+    sample_lat_accels = sample_yaw_rates * sample_velocities
+    if float(np.max(sample_lat_accels)) < MODEL_CURVE_MIN_LAT_ACCEL:
+      return None
+
+    curvatures = sample_yaw_rates / sample_velocities
+    valid_curvatures = curvatures[curvatures > 1e-6]
+    if valid_curvatures.size == 0:
+      return None
+
+    return float(np.sqrt(MODEL_CURVE_TARGET_LAT_ACCEL / np.max(valid_curvatures)))
+
+  @classmethod
+  def _prediction_control_target(cls, target_v: float, distance: float, model_msg) -> float:
+    prediction_target = cls._prediction_curve_target(model_msg, distance)
+    if prediction_target is None:
+      return target_v
+    return max(MIN_V, min(target_v, prediction_target))
+
   @staticmethod
   def _advisory_target(section) -> tuple[float, float, float] | None:
     if not isinstance(section, dict):
@@ -275,19 +339,23 @@ class SmartCruiseControlMap:
     return distance_to_point(self.last_position.latitude * TO_RADIANS, self.last_position.longitude * TO_RADIANS,
                              lat * TO_RADIANS, lon * TO_RADIANS)
 
-  def _advisory_targets(self) -> list[tuple[float, float, float]]:
+  def _advisory_targets(self, model_msg=None) -> list[tuple[float, float, float, bool]]:
     targets = []
 
     current_advisory = get_first_mapd_json(self.mem_params, ADVISORY_LIMIT_KEYS)
     current_target = self._advisory_target(current_advisory)
-    if current_target is not None and self._target_in_range(current_target[0], 0.):
-      targets.append(current_target)
+    if current_target is not None:
+      in_range, prediction_advanced = self._target_range_state(current_target[0], 0., model_msg)
+      if in_range:
+        targets.append((*current_target, prediction_advanced))
 
     next_advisory = get_first_mapd_json(self.mem_params, NEXT_ADVISORY_LIMIT_KEYS)
     next_target = self._advisory_target(next_advisory)
     next_distance = self._distance_to_advisory_start(next_advisory)
-    if next_target is not None and next_distance is not None and self._target_in_range(next_target[0], next_distance):
-      targets.append(next_target)
+    if next_target is not None and next_distance is not None:
+      in_range, prediction_advanced = self._target_range_state(next_target[0], next_distance, model_msg)
+      if in_range:
+        targets.append((*next_target, prediction_advanced))
 
     return targets
 
@@ -331,7 +399,7 @@ class SmartCruiseControlMap:
 
     return enabled, active
 
-  def update(self, long_enabled: bool, long_override: bool, v_ego, a_ego, v_cruise) -> None:
+  def update(self, long_enabled: bool, long_override: bool, v_ego, a_ego, v_cruise, model_msg=None) -> None:
     self.long_enabled = long_enabled
     self.long_override = long_override
     self.v_ego = v_ego
@@ -339,7 +407,7 @@ class SmartCruiseControlMap:
     self.v_cruise = v_cruise
 
     self.update_params()
-    self.update_calculations()
+    self.update_calculations(model_msg)
 
     self.is_enabled, self.is_active = self._update_state_machine()
 

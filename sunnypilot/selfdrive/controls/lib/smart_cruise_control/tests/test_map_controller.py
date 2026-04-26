@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,9 +14,26 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot.navd.helpers import Coordinate
-from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import SmartCruiseControlMap, point_distance, velocities_from_param
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import (
+  R,
+  TO_DEGREES,
+  SmartCruiseControlMap,
+  point_distance,
+  velocities_from_param,
+)
 
 MapState = VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
+
+
+def make_model_prediction(distance: float, yaw_rate: float, speed: float = 25.0):
+  positions = [0.0, max(0.0, distance - 10.0), distance, distance + 10.0]
+  velocities = [speed for _ in positions]
+  yaw_rates = [0.0, yaw_rate, yaw_rate, 0.0]
+  return SimpleNamespace(
+    position=SimpleNamespace(x=positions),
+    velocity=SimpleNamespace(x=velocities),
+    orientationRate=SimpleNamespace(z=yaw_rates),
+  )
 
 
 class MockParams:
@@ -175,3 +193,47 @@ class TestSmartCruiseControlMap:
 
     assert self.scc_m.state == VisionState.enabled
     assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_model_curve_prediction_can_advance_map_target(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    target_v = 20.0
+    distance = self.scc_m._target_control_distance(target_v) + 5.0
+    assert not self.scc_m._target_in_range(target_v, distance)
+
+    target_lon = distance / R * TO_DEGREES
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": target_lon, "velocity": target_v},
+    ]))
+    model_msg = make_model_prediction(distance, yaw_rate=0.22)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0, model_msg)
+
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == target_v
+
+  def test_model_advanced_map_target_releases_when_prediction_drops(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    target_v = 20.0
+    distance = self.scc_m._target_control_distance(target_v) + 5.0
+    target_lon = distance / R * TO_DEGREES
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": target_lon, "velocity": target_v},
+    ]))
+    model_msg = make_model_prediction(distance, yaw_rate=0.22)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0, model_msg)
+    assert self.scc_m.state == VisionState.turning
+
+    self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_model_curve_prediction_does_not_relax_map_target(self):
+    model_msg = make_model_prediction(distance=50.0, yaw_rate=0.02)
+
+    assert self.scc_m._prediction_control_target(15.0, 50.0, model_msg) == 15.0
