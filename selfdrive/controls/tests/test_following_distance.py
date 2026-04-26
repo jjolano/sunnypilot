@@ -41,8 +41,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_departure_available_runway,
   get_lead_departure_relaxation,
   get_lead_danger_distance,
+  get_lead_stop_runway_preference,
+  get_lead_stop_runway_required_decel,
   get_lead_stop_runway_blend,
   get_lead_stop_runway_gap,
+  get_lead_stop_runway_urgency,
   get_lead_stop_gap_excess_offset,
   get_lead_stop_gap_taper,
   get_lead_time_gap_target,
@@ -307,6 +310,7 @@ def test_low_speed_stopped_lead_uses_stop_runway_gap():
   runway_gap = STOP_DISTANCE + v_ego**2 / (2 * LEAD_STOP_RUNWAY_BRAKE)
 
   assert get_lead_stop_runway_blend(v_ego, 0.0, 0.0) == pytest.approx(1.0)
+  assert get_lead_stop_runway_preference(12.0, v_ego, 0.0, t_follow, 0.0) == pytest.approx(1.0)
   assert get_lead_stop_runway_gap(v_ego, 0.0, v_ego, 0.0) == pytest.approx(runway_gap)
   assert get_approach_follow_distance(12.0, v_ego, 0.0, t_follow, a_lead=0.0) == pytest.approx(runway_gap)
 
@@ -321,6 +325,26 @@ def test_low_speed_slowing_lead_runway_accounts_for_lead_stop_point():
 
   assert get_lead_stop_runway_blend(v_ego, v_lead, a_lead) > 0.0
   assert get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead) == pytest.approx(max(STOP_DISTANCE, expected_gap))
+
+
+def test_stop_runway_preference_fades_for_urgent_short_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  hot_preference = get_lead_stop_runway_preference(8.0, 2.0, 0.0, t_follow, 0.0)
+  controlled_preference = get_lead_stop_runway_preference(8.0, 0.4, 0.0, t_follow, 0.0)
+  comfortable_preference = get_lead_stop_runway_preference(12.0, 2.0, 0.0, t_follow, 0.0)
+
+  assert get_lead_stop_runway_required_decel(8.0, 2.0, 0.0, 2.0, 0.0) > LEAD_STOP_RUNWAY_BRAKE
+  assert hot_preference < controlled_preference <= comfortable_preference
+  assert comfortable_preference == pytest.approx(1.0)
+
+
+def test_stop_runway_urgency_blends_back_as_closing_stabilizes():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  hot_urgency = get_lead_stop_runway_urgency(8.0, 2.0, 0.0, t_follow, 0.0)
+  controlled_urgency = get_lead_stop_runway_urgency(8.0, 0.4, 0.0, t_follow, 0.0)
+
+  assert hot_urgency > controlled_urgency
+  assert controlled_urgency < 1.0
 
 
 def test_stop_runway_blend_stays_off_at_higher_speed():
