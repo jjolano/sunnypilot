@@ -1,5 +1,6 @@
 import itertools
 import numpy as np
+import pytest
 from openpilot.common.parameterized import parameterized_class
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
@@ -416,6 +417,49 @@ def test_rolling_lead_stop_does_not_stage_at_reserve_gap():
   first_stop_gap = output[stopped_idxs[0], 6]
   assert first_stop_gap < STOP_DISTANCE + 0.5
   assert abs(first_stop_gap - output[-1, 6]) < 0.2
+
+
+def test_low_speed_stopped_lead_targets_stop_runway():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "low-speed stopped lead final approach",
+      duration=12.0,
+      initial_speed=2.0,
+      lead_relevancy=True,
+      initial_distance_lead=12.0,
+      speed_lead_values=[0.0, 0.0],
+      cruise_values=[5.0, 5.0],
+      breakpoints=[0.0, 12.0],
+    )
+  )
+
+  early_window = output[:, 0] <= 1.0
+  stopped_idxs = np.where(output[:, 3] < 0.03)[0]
+  assert len(stopped_idxs) > 0
+
+  assert np.min(output[early_window, 5]) > -0.35
+  assert output[stopped_idxs[0], 6] == pytest.approx(5.9, abs=0.4)
+
+
+def test_low_speed_slowing_lead_targets_predicted_stop_runway():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "low-speed slowing lead final approach",
+      duration=15.0,
+      initial_speed=4.0,
+      lead_relevancy=True,
+      initial_distance_lead=18.0,
+      speed_lead_values=[3.0, 3.0, 0.0, 0.0],
+      cruise_values=[5.0, 5.0, 5.0, 5.0],
+      breakpoints=[0.0, 1.0, 6.0, 15.0],
+    )
+  )
+
+  stopped_idxs = np.where(output[:, 3] < 0.03)[0]
+  assert len(stopped_idxs) > 0
+
+  assert np.min(output[:, 5]) > -1.2
+  assert output[stopped_idxs[0], 6] == pytest.approx(5.7, abs=0.4)
 
 
 def test_lead_acceleration_after_slowdown_resumes_accel_promptly():
