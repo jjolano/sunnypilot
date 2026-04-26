@@ -14,7 +14,8 @@ HIGH_OUTPUT_FRACTION = 0.70
 NORMAL_CAP = 1.00
 LOW_SPEED_STEER_LIMITED_CAP = 0.92
 BUMP_CAP = 0.90
-NEAR_ISO_ACCEL_CAP = 0.90
+NEAR_ISO_ACCEL_CAP = 0.85
+OVER_ISO_ACCEL_CAP = 0.80
 OVER_RESPONSE_CAP = 0.85
 SIGN_CONFLICT_CAP = 0.80
 OVERRIDE_RELEASE_CAP = 0.80
@@ -106,7 +107,8 @@ class TorqueConservativeOutputShaper:
                                                    ConservativeOutputShapingReason.OVER_RESPONSE)
     if output_reinforces_actual and actual_abs > ISO_ACCEL_MARGIN:
       iso_confidence = clamp((actual_abs - ISO_ACCEL_MARGIN) / max(ISO_LATERAL_ACCEL - ISO_ACCEL_MARGIN, 1e-3), 0.0, 1.0)
-      output_cap, confidence, reason = self._apply(output_cap, confidence, reason, NEAR_ISO_ACCEL_CAP, iso_confidence,
+      iso_cap = OVER_ISO_ACCEL_CAP if actual_abs > ISO_LATERAL_ACCEL else NEAR_ISO_ACCEL_CAP
+      output_cap, confidence, reason = self._apply(output_cap, confidence, reason, iso_cap, iso_confidence,
                                                    ConservativeOutputShapingReason.NEAR_ISO_ACCEL)
     if bump_response:
       bump_confidence = clamp(max(abs(inputs.actual_lateral_jerk) - BUMP_JERK_THRESHOLD,

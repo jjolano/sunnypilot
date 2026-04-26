@@ -94,11 +94,26 @@ def test_near_iso_accel_caps_output():
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.NEAR_ISO_ACCEL
-  assert result.output_cap == 0.9
+  assert result.output_cap == 0.85
+
+
+def test_over_iso_accel_caps_output_more_strictly():
+  result = assert_cap_only(make_inputs(desired_lateral_accel=2.9, actual_lateral_accel=3.1))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.NEAR_ISO_ACCEL
+  assert result.output_cap == 0.8
 
 
 def test_near_iso_accel_does_not_cap_corrective_output():
   result = assert_cap_only(make_inputs(unshaped_output=-0.5, desired_lateral_accel=2.75, actual_lateral_accel=2.8))
+
+  assert not result.active
+  assert result.output_torque == result.unshaped_output
+
+
+def test_over_iso_accel_does_not_cap_corrective_output():
+  result = assert_cap_only(make_inputs(unshaped_output=-0.5, desired_lateral_accel=2.9, actual_lateral_accel=3.1))
 
   assert not result.active
   assert result.output_torque == result.unshaped_output
