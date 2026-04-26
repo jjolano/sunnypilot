@@ -52,6 +52,11 @@ CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING = 0.2
 CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_PROB = 0.75
 CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_DIST_ERROR = 1.5
 CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_ERROR = 1.0
+CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD = 2.0
+CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_STD = 1.0
+CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_STD = 2.0
+CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_Y_ERROR = 0.75
+CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_ERROR = 1.25
 CREEP_TO_STOP_GAP_MODEL_LEAD_HORIZON = 2.0
 CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET = 1.52
 E2E_STOP_APPROACH_MIN_V_EGO = 3.0
@@ -162,19 +167,46 @@ def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_
 
   ts = np.asarray(getattr(lead_msg, "t", []), dtype=float)
   xs = np.asarray(getattr(lead_msg, "x", []), dtype=float)
+  ys = np.asarray(getattr(lead_msg, "y", []), dtype=float)
   vs = np.asarray(getattr(lead_msg, "v", []), dtype=float)
-  if ts.ndim != 1 or xs.ndim != 1 or vs.ndim != 1 or ts.size == 0 or ts.size != xs.size or ts.size != vs.size:
+  x_stds = np.asarray(getattr(lead_msg, "xStd", []), dtype=float)
+  y_stds = np.asarray(getattr(lead_msg, "yStd", []), dtype=float)
+  v_stds = np.asarray(getattr(lead_msg, "vStd", []), dtype=float)
+  if any(values.ndim != 1 for values in (ts, xs, ys, vs, x_stds, y_stds, v_stds)):
     return 0.0, 0.0
-  if not np.all(np.isfinite(ts)) or not np.all(np.isfinite(xs)) or not np.all(np.isfinite(vs)):
+  if ts.size == 0 or any(values.size != ts.size for values in (xs, ys, vs, x_stds, y_stds, v_stds)):
+    return 0.0, 0.0
+  if any(not np.all(np.isfinite(values)) for values in (ts, xs, ys, vs, x_stds, y_stds, v_stds)):
     return 0.0, 0.0
   if ts[0] > 0.05 or ts[-1] < horizon or np.any(np.diff(ts) <= 0.0):
     return 0.0, 0.0
 
+  horizon_mask = ts <= horizon
+  x_std = max(float(np.max(x_stds[horizon_mask])), float(np.interp(horizon, ts, x_stds)))
+  y_std = max(float(np.max(y_stds[horizon_mask])), float(np.interp(horizon, ts, y_stds)))
+  v_std = max(float(np.max(v_stds[horizon_mask])), float(np.interp(horizon, ts, v_stds)))
+  if x_std > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD or y_std > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_STD:
+    return 0.0, 0.0
+  if v_std > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_STD:
+    return 0.0, 0.0
+
   d_rel = float(getattr(radar_lead, "dRel", 0.0))
+  if not np.isfinite(d_rel):
+    return 0.0, 0.0
   model_d_rel_now = float(xs[0] - CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET)
   if abs(model_d_rel_now - d_rel) > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_DIST_ERROR:
     return 0.0, 0.0
+  radar_y_rel = float(getattr(radar_lead, "yRel", 0.0))
+  if not np.isfinite(radar_y_rel):
+    return 0.0, 0.0
+  model_y_rel_now = float(-ys[0])
+  max_y_error = min(CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_ERROR,
+                    max(CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_Y_ERROR, 2.0 * float(y_std)))
+  if abs(model_y_rel_now - radar_y_rel) > max_y_error:
+    return 0.0, 0.0
   radar_v_lead = float(getattr(radar_lead, "vLeadK", getattr(radar_lead, "vLead", 0.0)))
+  if not np.isfinite(radar_v_lead):
+    return 0.0, 0.0
   if abs(float(vs[0]) - radar_v_lead) > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_ERROR:
     return 0.0, 0.0
 
