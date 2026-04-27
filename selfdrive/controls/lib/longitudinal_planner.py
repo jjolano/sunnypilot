@@ -90,7 +90,7 @@ def apply_cruise_coast_overspeed(v_ego, v_cruise, accel_coast, a_target):
   leeway = get_cruise_coast_overspeed_leeway(accel_coast)
   recovery_blend = float(np.clip((overspeed - leeway) / CRUISE_COAST_RECOVERY_OVERSPEED, 0.0, 1.0))
   coast_target = (1.0 - recovery_blend) * accel_coast + recovery_blend * a_target
-  return max(a_target, coast_target)
+  return min(0.0, max(a_target, coast_target))
 
 
 def should_apply_cruise_coast_overspeed(reset_state, force_slow_decel, e2e_active, has_lead, should_stop, source):
