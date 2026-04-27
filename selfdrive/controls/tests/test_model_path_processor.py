@@ -67,6 +67,14 @@ def test_repeated_invalid_path_frames_continue_toward_measured_curvature():
   assert abs(second.desired_curvature - 0.001) < abs(first.desired_curvature - 0.001)
 
 
+def test_degenerate_finite_path_decays_toward_measured_curvature():
+  result = ModelPathProcessor().update(make_inputs(position_x=tuple(0.0 for _ in range(ModelConstants.IDX_N))))
+
+  assert result.gated
+  assert result.reason == "invalid_path"
+  assert 0.0005 < result.desired_curvature < 0.001
+
+
 def test_nonfinite_path_sample_decays_toward_measured_curvature():
   position_y = [0.0 for _ in range(ModelConstants.IDX_N)]
   position_y[5] = math.inf
