@@ -12,6 +12,10 @@ def msg(kind, t_s, **payload):
   return FakeMsg(kind=kind, logMonoTime=int(t_s * 1e9), **{kind: SimpleNamespace(**payload)})
 
 
+def raw_msg(kind, t_s, payload):
+  return FakeMsg(kind=kind, logMonoTime=int(t_s * 1e9), **{kind: payload})
+
+
 def test_select_event_time_uses_latest_bookmark_without_requested_time():
   msgs = [msg("carState", 0.0), msg("userBookmark", 5.0), msg("userBookmark", 9.0)]
 
@@ -34,3 +38,15 @@ def test_summarize_window_tracks_planner_and_lead_changes():
   assert "leadOne status: True" in rendered
   assert "plan source: lead0" in rendered
   assert "aTarget" in rendered
+
+
+def test_summarize_window_reads_list_shaped_onroad_events():
+  msgs = [
+    msg("carState", 0.0, vEgo=10.0),
+    raw_msg("onroadEvents", 1.0, [SimpleNamespace(name="fcw")]),
+  ]
+
+  summary = summarize_window(msgs, 1.0, 1.0, 1.0)
+  rendered = render_summary(summary)
+
+  assert "events: fcw" in rendered

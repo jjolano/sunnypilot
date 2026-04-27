@@ -178,7 +178,14 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       if should_stop is not None:
         add_change(t, "modelV2.action.shouldStop", bool(should_stop), "model", f"model shouldStop: {bool(should_stop)}")
     elif typ == "onroadEvents":
-      names = _event_names(safe_get(payload, "events", []))
+      events = safe_get(payload, "events")
+      if events is None and not isinstance(payload, str | bytes):
+        try:
+          iter(payload)
+          events = payload
+        except TypeError:
+          events = []
+      names = _event_names(events or [])
       add_change(t, "onroadEvents.events", tuple(names), "event", "events: " + ", ".join(names) if names else "events cleared")
 
   return EventWindowSummary(event_time_s, start_s, end_s, timeline, _build_stats(samples))
