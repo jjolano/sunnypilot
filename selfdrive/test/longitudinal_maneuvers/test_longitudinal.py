@@ -443,6 +443,44 @@ def test_low_speed_slowing_lead_targets_predicted_stop_runway():
   assert output[stopped_idxs[0], 6] == pytest.approx(5.7, abs=0.4)
 
 
+def test_crawl_stop_go_limits_accel_surge():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "crawl stop-go lead",
+      duration=30.0,
+      initial_speed=5.0,
+      lead_relevancy=True,
+      initial_distance_lead=14.0,
+      speed_lead_values=[5.0, 5.0, 0.0, 0.0, 3.0, 3.0, 0.0, 0.0, 4.0, 4.0],
+      cruise_values=[8.0] * 10,
+      breakpoints=[0.0, 2.0, 10.0, 13.0, 15.0, 18.0, 22.0, 24.0, 26.0, 30.0],
+    )
+  )
+
+  assert np.max(output[:, 5]) < 0.85
+  assert np.min(output[:, 5]) > -1.3
+  assert np.min(output[:, 6]) > STOP_DISTANCE - 1.0
+
+
+def test_crawl_opening_lead_uses_gentle_accel():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "crawl opening lead",
+      duration=12.0,
+      initial_speed=2.5,
+      lead_relevancy=True,
+      initial_distance_lead=10.0,
+      speed_lead_values=[2.5, 2.5, 5.0, 5.0],
+      cruise_values=[8.0, 8.0, 8.0, 8.0],
+      breakpoints=[0.0, 2.0, 5.0, 12.0],
+    )
+  )
+
+  opening_window = (output[:, 0] >= 2.0) & (output[:, 0] <= 7.0)
+  assert np.max(output[opening_window, 5]) < 0.7
+  assert np.min(output[:, 6]) > STOP_DISTANCE
+
+
 def test_lead_acceleration_after_slowdown_resumes_accel_promptly():
   output = evaluate_maneuver_output(
     Maneuver(
