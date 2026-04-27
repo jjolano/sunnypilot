@@ -36,6 +36,9 @@ SPEED_LIMIT_CHANGED_HOLD_PERIOD = 1  # secs. Time to wait after speed limit chan
 
 LIMIT_MIN_ACC = -1.5  # m/s^2 Maximum deceleration allowed for limit controllers to provide.
 LIMIT_MAX_ACC = 1.0   # m/s^2 Maximum acceleration allowed for limit controllers to provide while active.
+LIMIT_ACCEL_EGO_MARGIN = 0.6  # m/s^2 Keep SLA's planner seed near the measured acceleration.
+LIMIT_ACCEL_RATE_UP = 1.0     # m/s^3 Maximum positive target acceleration rate.
+LIMIT_ACCEL_RATE_DOWN = 1.5   # m/s^3 Maximum negative target acceleration rate.
 LIMIT_MIN_SPEED = 8.33  # m/s, Minimum speed limit to provide as solution on limit controllers.
 LIMIT_SPEED_OFFSET_TH = -1.  # m/s Maximum offset between speed limit and current speed for adapting state.
 V_CRUISE_UNSET = 255.
@@ -139,7 +142,22 @@ class SpeedLimitAssist:
       return self.a_ego
 
     a_target = self.acceleration_solutions.get(self.state, self.get_current_acceleration_as_target)()
-    return float(max(LIMIT_MIN_ACC, min(LIMIT_MAX_ACC, a_target)))
+    return self.get_limited_target_acceleration(a_target)
+
+  def get_limited_target_acceleration(self, a_target: float) -> float:
+    a_target = float(max(LIMIT_MIN_ACC, min(LIMIT_MAX_ACC, a_target)))
+    a_target = float(max(self.a_ego - LIMIT_ACCEL_EGO_MARGIN, min(self.a_ego + LIMIT_ACCEL_EGO_MARGIN, a_target)))
+
+    if self._state_prev not in ACTIVE_STATES or not self.long_enabled_prev:
+      prev_target = float(max(LIMIT_MIN_ACC, min(LIMIT_MAX_ACC, self.a_ego)))
+    else:
+      prev_target = self.output_a_target
+      if abs(prev_target - self.a_ego) > LIMIT_ACCEL_EGO_MARGIN:
+        prev_target = float(max(LIMIT_MIN_ACC, min(LIMIT_MAX_ACC, self.a_ego)))
+
+    rate = LIMIT_ACCEL_RATE_UP if a_target > prev_target else LIMIT_ACCEL_RATE_DOWN
+    step = rate * DT_MDL
+    return float(max(prev_target - step, min(prev_target + step, a_target)))
 
   def update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
