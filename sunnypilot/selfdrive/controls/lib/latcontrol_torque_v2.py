@@ -10,19 +10,26 @@ from openpilot.common.pid import PIDController
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_authority_envelope import EnvelopeInputs, TorqueAuthorityEnvelope
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperInputs, TorqueConservativeOutputShaper
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
 
 
 KP = 1.0
-KI = 0.3
+KI = 0.2
 KD = 0.0
 INTERP_SPEEDS = [1, 1.5, 2.0, 3.0, 5, 7.5, 10, 15, 30]
-KP_INTERP = [250, 120, 65, 30, 11.5, 5.5, 3.5, 2.0, KP]
+# V2 is now the retained selector for the tested conservative torque controller.
+KP_INTERP = [165, 90, 52, 26, 9.0, 5.5, 3.5, 2.0, KP]
 
 LP_FILTER_CUTOFF_HZ = 1.2
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 FRICTION_THRESHOLD = 0.3
 VERSION = 2
+LOW_SPEED_UNWIND_VEGO = 8.0
+LOW_SPEED_UNWIND_SETPOINT = 0.2
+LOW_SPEED_UNWIND_MARGIN = 0.08
+LOW_SPEED_UNWIND_JERK = 0.5
+LOW_SPEED_UNWIND_GAIN_SPEED = 8.0
 
 ADAPTIVE_PHASE_MAP = {
   0: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.idle,
@@ -30,6 +37,10 @@ ADAPTIVE_PHASE_MAP = {
   2: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.hold,
   3: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.release,
 }
+
+
+def sign(value: float) -> float:
+  return 1.0 if value > 0.0 else (-1.0 if value < 0.0 else 0.0)
 
 
 class LatControlTorque(LatControl):
@@ -47,7 +58,8 @@ class LatControlTorque(LatControl):
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
-    self.authority_envelope = TorqueAuthorityEnvelope(self.dt)
+    self.response_assist = TorqueGuardedResponseAssist(self.dt)
+    self.output_shaper = TorqueConservativeOutputShaper(self.dt)
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -84,7 +96,17 @@ class LatControlTorque(LatControl):
 
     setpoint = effective_lat_delay * desired_lateral_jerk + expected_lateral_accel
     error = setpoint - measurement
-    ff = gravity_adjusted_future_lateral_accel
+    same_sign_unwind = (
+      CS.vEgo < LOW_SPEED_UNWIND_VEGO
+      and abs(setpoint) < LOW_SPEED_UNWIND_SETPOINT
+      and abs(desired_lateral_jerk) > LOW_SPEED_UNWIND_JERK
+      and sign(setpoint) != 0.0
+      and sign(measurement) == sign(setpoint)
+      and abs(measurement) > abs(setpoint) + LOW_SPEED_UNWIND_MARGIN
+      and desired_lateral_jerk * setpoint < 0.0
+    )
+
+    ff = setpoint if same_sign_unwind else gravity_adjusted_future_lateral_accel
     ff -= self.torque_params.latAccelOffset
     ff += get_friction(error, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
 
@@ -94,8 +116,11 @@ class LatControlTorque(LatControl):
       self.pid.reset()
     else:
       pid_log.error = float(error)
-      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
-      output_lataccel = self.pid.update(pid_log.error, -measurement_rate, feedforward=ff, speed=CS.vEgo, freeze_integrator=freeze_integrator)
+      if same_sign_unwind:
+        self.pid.i *= 0.5
+      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5 or same_sign_unwind
+      control_speed = max(CS.vEgo, LOW_SPEED_UNWIND_GAIN_SPEED) if same_sign_unwind else CS.vEgo
+      output_lataccel = self.pid.update(pid_log.error, -measurement_rate, feedforward=ff, speed=control_speed, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
 
       pid_log, output_torque = self.extension.update(
@@ -121,29 +146,48 @@ class LatControlTorque(LatControl):
 
       pid_log.active = True
 
-    lane_change_active = bool(self.extension.model_valid and self.extension.model_v2.meta.laneChangeState != log.LaneChangeState.off)
     saturated = self.steer_max - abs(output_torque) < 1e-3
     tracking_torque_error = error / max(float(self.torque_params.latAccelFactor), 1e-3)
-    envelope_result = self.authority_envelope.update(
-      EnvelopeInputs(
+    lane_change_active = bool(self.extension.model_valid and self.extension.model_v2.meta.laneChangeState != log.LaneChangeState.off)
+    assist_result = self.response_assist.update(
+      GuardedResponseAssistInputs(
         active=active,
         v_ego=CS.vEgo,
         steering_pressed=CS.steeringPressed,
         steer_limited_by_safety=steer_limited_by_safety,
         curvature_limited=curvature_limited,
         saturated=saturated,
+        max_output=self.steer_max,
         nominal_torque=output_torque,
         desired_lateral_accel=setpoint,
         actual_lateral_accel=measurement,
         desired_lateral_jerk=desired_lateral_jerk,
         actual_lateral_jerk=self.extension.actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
+        desired_curvature=desired_curvature,
         tracking_torque_error=tracking_torque_error,
         lane_change_active=lane_change_active,
-        max_output=self.steer_max,
+        same_sign_unwind=same_sign_unwind,
       )
     )
-    output_torque = envelope_result.output_torque if active else 0.0
+    output_torque = assist_result.output_torque if active else 0.0
+    shaping_result = self.output_shaper.update(
+      ConservativeOutputShaperInputs(
+        active=active,
+        v_ego=CS.vEgo,
+        steering_pressed=CS.steeringPressed,
+        steer_limited_by_safety=steer_limited_by_safety,
+        release_active=assist_result.release_active,
+        max_output=self.steer_max,
+        unshaped_output=output_torque,
+        desired_lateral_accel=setpoint,
+        actual_lateral_accel=measurement,
+        desired_lateral_jerk=desired_lateral_jerk,
+        actual_lateral_jerk=self.extension.actual_lateral_jerk,
+        lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
+      )
+    )
+    output_torque = shaping_result.output_torque
 
     pid_log.p = float(self.pid.p)
     pid_log.i = float(self.pid.i)
@@ -154,17 +198,22 @@ class LatControlTorque(LatControl):
     pid_log.desiredLateralAccel = float(setpoint)
     pid_log.desiredLateralJerk = float(desired_lateral_jerk)
     adaptive_log = pid_log.init('adaptiveTorqueState')
-    adaptive_log.active = bool(
-      active and (envelope_result.phase_id != 0 or abs(envelope_result.assist_torque) > 1e-3 or abs(envelope_result.bias_torque) > 1e-3)
-    )
-    adaptive_log.phase = ADAPTIVE_PHASE_MAP[envelope_result.phase_id]
-    adaptive_log.releaseActive = bool(envelope_result.release_active)
-    adaptive_log.phaseGain = float(envelope_result.phase_gain)
-    adaptive_log.nominalOutput = float(-envelope_result.nominal_torque)
-    adaptive_log.assistOutput = float(-envelope_result.assist_torque)
-    adaptive_log.biasOutput = float(-envelope_result.bias_torque)
-    adaptive_log.responseDeficit = float(envelope_result.response_deficit)
-    adaptive_log.learningFrozen = bool(envelope_result.learning_frozen)
+    adaptive_log.active = bool(active and (shaping_result.active or assist_result.phase_id != 0 or abs(assist_result.assist_torque) > 1e-3 or abs(assist_result.bias_torque) > 1e-3))
+    adaptive_log.phase = ADAPTIVE_PHASE_MAP[assist_result.phase_id]
+    adaptive_log.releaseActive = bool(assist_result.release_active)
+    adaptive_log.phaseGain = float(assist_result.phase_gain)
+    adaptive_log.nominalOutput = float(-assist_result.nominal_torque)
+    adaptive_log.assistOutput = float(-assist_result.assist_torque)
+    adaptive_log.biasOutput = float(-assist_result.bias_torque)
+    adaptive_log.responseDeficit = float(assist_result.response_deficit)
+    adaptive_log.learningFrozen = bool(assist_result.learning_frozen)
+    adaptive_log.freezeReason = int(assist_result.freeze_reason)
+    adaptive_log.blockReason = int(assist_result.block_reason)
+    adaptive_log.shapingActive = bool(shaping_result.active)
+    adaptive_log.shapingReason = int(shaping_result.reason)
+    adaptive_log.shapingConfidence = float(shaping_result.confidence)
+    adaptive_log.unshapedOutput = float(-shaping_result.unshaped_output)
+    adaptive_log.outputCap = float(shaping_result.output_cap)
     pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
 
     return -output_torque, 0.0, pid_log

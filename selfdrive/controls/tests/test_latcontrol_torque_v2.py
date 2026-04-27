@@ -11,6 +11,7 @@ from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.helpers import convert_to_capnp
 from openpilot.selfdrive.locationd.helpers import Measurement, Pose
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShapingReason
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
 
@@ -52,36 +53,7 @@ def make_pose():
   return Pose(Measurement(zeros, zeros), Measurement(zeros, zeros), Measurement(zeros, zeros), Measurement(zeros, zeros))
 
 
-def test_learning_state_survives_reengagement():
-  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
-
-  CS = car.CarState.new_message()
-  CS.vEgo = 30
-  CS.steeringPressed = False
-  params = log.LiveParametersData.new_message()
-
-  pose = make_pose()
-
-  for _ in range(90):
-    controller.update(True, CS, VM, params, False, 3e-4, pose, False, 0.2)
-
-  assert controller.authority_envelope.buckets
-  saved_floors = {key: bucket.authority_floor for key, bucket in controller.authority_envelope.buckets.items()}
-
-  for _ in range(40):
-    controller.update(False, CS, VM, params, False, 0.0, pose, False, 0.2)
-
-  assert controller.authority_envelope.phase.name == "IDLE"
-
-  controller.update(True, CS, VM, params, False, 3e-4, pose, False, 0.2)
-  current_floors = {key: bucket.authority_floor for key, bucket in controller.authority_envelope.buckets.items()}
-  assert current_floors == saved_floors
-
-  fresh_controller, _ = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
-  assert not fresh_controller.authority_envelope.buckets
-
-
-def test_adaptive_torque_logging_fields_are_populated():
+def test_v2_logging_fields_are_populated():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
 
   CS = car.CarState.new_message()
@@ -90,7 +62,6 @@ def test_adaptive_torque_logging_fields_are_populated():
   params = log.LiveParametersData.new_message()
 
   pose = make_pose()
-
   lac_log = None
   for _ in range(80):
     _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-4, pose, False, 0.2)
@@ -99,8 +70,118 @@ def test_adaptive_torque_logging_fields_are_populated():
   assert lac_log.version == 2
   adaptive_log = lac_log.adaptiveTorqueState
   assert adaptive_log.active
-  assert adaptive_log.phase == log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.hold
-  assert adaptive_log.phaseGain == 1.0
   assert adaptive_log.nominalOutput != 0.0
-  assert not adaptive_log.releaseActive
-  assert abs(lac_log.output - (adaptive_log.nominalOutput + adaptive_log.assistOutput + adaptive_log.biasOutput)) < 1e-6
+  assert adaptive_log.freezeReason == 0
+  assert not adaptive_log.shapingActive
+  assert adaptive_log.shapingReason == 0
+  assert adaptive_log.shapingConfidence == 0.0
+  assert adaptive_log.outputCap == 1.0
+  assert abs(adaptive_log.unshapedOutput - (adaptive_log.nominalOutput + adaptive_log.assistOutput + adaptive_log.biasOutput)) < 1e-6
+  assert adaptive_log.unshapedOutput == lac_log.output
+
+
+def test_v2_release_on_override():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 6
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  for _ in range(40):
+    controller.update(True, CS, VM, params, False, 2e-4, pose, False, 0.2)
+
+  CS.steeringPressed = True
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 2e-5, pose, False, 0.2)
+  assert lac_log.adaptiveTorqueState.releaseActive
+  assert lac_log.adaptiveTorqueState.phase == log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.release
+  assert lac_log.adaptiveTorqueState.freezeReason != 0
+  assert lac_log.adaptiveTorqueState.blockReason != 0
+  assert lac_log.adaptiveTorqueState.shapingActive
+  assert lac_log.adaptiveTorqueState.shapingReason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert lac_log.adaptiveTorqueState.shapingReason & ConservativeOutputShapingReason.RELEASE
+  assert abs(lac_log.adaptiveTorqueState.outputCap - 0.8) < 1e-6
+  assert abs(lac_log.output) <= abs(lac_log.adaptiveTorqueState.unshapedOutput)
+
+
+def test_v2_reports_learning_frozen_at_low_speed():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 3.5
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  lac_log = None
+  for _ in range(20):
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-4, pose, False, 0.2)
+
+  assert lac_log is not None
+  assert lac_log.version == 2
+  assert lac_log.adaptiveTorqueState.learningFrozen
+  assert lac_log.adaptiveTorqueState.freezeReason != 0
+
+
+def test_v2_softens_low_speed_same_sign_unwind():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 5.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -30.0
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  for _ in range(60):
+    controller.update(True, CS, VM, params, False, 0.02, pose, False, 0.2)
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.002, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert lac_log.error < 0.0
+  assert lac_log.desiredLateralAccel < lac_log.actualLateralAccel
+  assert adaptive_log.assistOutput <= 0.0
+  assert adaptive_log.biasOutput < 0.0
+  assert adaptive_log.nominalOutput < 0.95
+  assert lac_log.output < 0.9
+  assert abs(lac_log.output) <= abs(adaptive_log.unshapedOutput)
+
+
+def test_v2_shapes_sign_conflict():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 15.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = 12.0
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.001, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.shapingActive
+  assert adaptive_log.shapingReason & ConservativeOutputShapingReason.SIGN_CONFLICT
+  assert abs(adaptive_log.outputCap - 0.8) < 1e-6
+  assert abs(lac_log.output) <= abs(adaptive_log.unshapedOutput)
+
+
+def test_v2_shapes_near_iso_accel_margin():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 30.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -14.0
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.004, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.shapingActive
+  assert adaptive_log.shapingReason & ConservativeOutputShapingReason.NEAR_ISO_ACCEL
+  assert adaptive_log.outputCap <= 0.9
+  assert abs(lac_log.output) <= abs(adaptive_log.unshapedOutput)

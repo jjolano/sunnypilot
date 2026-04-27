@@ -17,8 +17,6 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque 
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorque as LatControlTorqueV3
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorque as LatControlTorqueV4
 
 msgq = types.ModuleType("msgq")
 msgq.fake_event_handle = object()
@@ -47,12 +45,16 @@ class FakeParams:
   def __init__(self, enforce: bool, tune=None):
     self.enforce = enforce
     self.tune = tune
+    self.writes = {}
 
   def get_bool(self, key: str) -> bool:
     return self.enforce if key == "EnforceTorqueControl" else False
 
   def get(self, key: str, *args, **kwargs):
     return self.tune if key == "TorqueControlTune" else None
+
+  def put(self, key: str, value) -> None:
+    self.writes[key] = value
 
 
 def get_test_context():
@@ -95,14 +97,21 @@ def test_torque_controller_selection_variants():
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, b"2.0"))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert isinstance(selected, LatControlTorqueV2)
+  assert hasattr(selected, "output_shaper")
 
-  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 3.0))
+  params = FakeParams(True, 3.0)
+  controls_ext = make_controls_ext(CP, CP_SP, params)
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
-  assert isinstance(selected, LatControlTorqueV3)
+  assert isinstance(selected, LatControlTorqueV2)
+  assert hasattr(selected, "output_shaper")
+  assert params.writes["TorqueControlTune"] == "2.0"
 
-  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 4.0))
+  params = FakeParams(True, 4.0)
+  controls_ext = make_controls_ext(CP, CP_SP, params)
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
-  assert isinstance(selected, LatControlTorqueV4)
+  assert isinstance(selected, LatControlTorqueV2)
+  assert hasattr(selected, "output_shaper")
+  assert params.writes["TorqueControlTune"] == "2.0"
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 1.0))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)

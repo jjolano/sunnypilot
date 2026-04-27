@@ -137,8 +137,9 @@ class TorqueGuardedResponseAssist:
 
     if not inputs.active:
       self.phase = Phase.IDLE
-      self.assist_torque = self._approach(self.assist_torque, 0.0, RELEASE_DECAY_RATE)
-      self.bias_torque = self._approach(self.bias_torque, 0.0, RELEASE_DECAY_RATE)
+      self.assist_torque = 0.0
+      self.bias_torque = 0.0
+      self.freeze_timer = 0.0
       return self._result(inputs.nominal_torque, response_deficit, False, False, GuardedResponseReason.NONE, GuardedResponseReason.INACTIVE,
                           inputs.max_output, max_assist, max_bias)
 

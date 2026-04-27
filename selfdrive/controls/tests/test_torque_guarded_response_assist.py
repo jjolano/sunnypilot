@@ -128,3 +128,31 @@ def test_inactive_reports_block_reason():
 
   assert result.block_reason & GuardedResponseReason.INACTIVE
   assert result.freeze_reason == 0
+
+
+def test_inactive_clears_stored_assist_and_bias():
+  assist = TorqueGuardedResponseAssist(0.01)
+  for _ in range(40):
+    result = assist.update(make_inputs())
+
+  assert result.assist_torque > 0.0
+
+  result = assist.update(make_inputs(active=False))
+
+  assert result.block_reason & GuardedResponseReason.INACTIVE
+  assert result.assist_torque == 0.0
+  assert result.bias_torque == 0.0
+  assert assist.assist_torque == 0.0
+  assert assist.bias_torque == 0.0
+
+
+def test_inactive_clears_freeze_timer():
+  assist = TorqueGuardedResponseAssist(0.01)
+
+  inactive = assist.update(make_inputs(active=False, actual_lateral_jerk=3.0, lookahead_lateral_jerk=0.0, desired_lateral_jerk=0.0))
+  resumed = assist.update(make_inputs(actual_lateral_jerk=0.0, lookahead_lateral_jerk=0.0, desired_lateral_jerk=0.0))
+
+  assert inactive.block_reason & GuardedResponseReason.INACTIVE
+  assert not inactive.learning_frozen
+  assert not resumed.learning_frozen
+  assert resumed.freeze_reason == 0
