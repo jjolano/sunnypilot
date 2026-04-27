@@ -92,6 +92,17 @@ LEAD_STOP_RUNWAY_URGENCY_DECEL_BP = [LEAD_STOP_RUNWAY_BRAKE, 2.0]
 LEAD_STOP_RUNWAY_URGENCY_CLOSING_BP = [0.5, 2.0]
 LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN = 2.0
 LEAD_STOP_RUNWAY_STOPPED_BUFFER_FADE = 0.25
+LEAD_CRAWL_V_EGO_BP = [6.0, 8.0]
+LEAD_CRAWL_V_LEAD_BP = [0.2, 1.0]
+LEAD_CRAWL_GAP_BP = [STOP_DISTANCE + 0.3, STOP_DISTANCE + 4.0, 20.0, 25.0]
+LEAD_CRAWL_OPENING_BP = [0.2, 1.2]
+LEAD_CRAWL_CLOSING_BP = [0.1, 1.0]
+LEAD_CRAWL_DECEL_BP = [0.1, 1.0]
+LEAD_CRAWL_REQUIRED_DECEL_BP = [0.15, LEAD_STOP_RUNWAY_BRAKE]
+LEAD_CRAWL_ACCEL_MAX = 0.6
+LEAD_CRAWL_ACCEL_LIMIT = 0.75
+LEAD_CRAWL_BRAKE_MAX = 0.75
+LEAD_CRAWL_COST = 1.2
 MOVING_LEAD_STOP_RESERVE_MAX = 2.0
 MOVING_LEAD_STOP_RESERVE_V_EGO_BP = [0.2, 3.0]
 MOVING_LEAD_STOP_RESERVE_V_LEAD_BP = [0.1, 1.5]
@@ -291,6 +302,50 @@ def get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead):
   ego_stop_distance = v_ego**2 / (2 * LEAD_STOP_RUNWAY_BRAKE)
   lead_stop_distance = get_stopped_equivalence_factor(v_lead)
   return np.maximum(STOP_DISTANCE, STOP_DISTANCE + moving_stop_reserve + ego_stop_distance - lead_stop_distance)
+
+
+def get_lead_crawl_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
+  x_lead = np.asarray(x_lead, dtype=float)
+  v_lead = np.asarray(v_lead, dtype=float)
+  a_lead = np.asarray(a_lead, dtype=float)
+  closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  opening_speed = np.maximum(v_lead - v_ego, 0.0)
+  speed_blend = np.interp(v_ego, LEAD_CRAWL_V_EGO_BP, [1.0, 0.0])
+  moving_blend = np.interp(v_lead, LEAD_CRAWL_V_LEAD_BP, [0.0, 1.0])
+  gap_blend = np.interp(x_lead, LEAD_CRAWL_GAP_BP, [0.0, 1.0, 1.0, 0.0])
+  urgency_blend = 1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead)
+  crawl_blend = speed_blend * moving_blend * gap_blend * urgency_blend
+  if np.all(crawl_blend <= 0.0):
+    return np.zeros_like(x_lead), np.zeros_like(x_lead)
+
+  required_decel = get_lead_stop_runway_required_decel(x_lead, v_ego, v_lead, closing_speed, a_lead)
+  lead_decel_blend = np.interp(np.clip(-a_lead, 0.0, LEAD_CRAWL_DECEL_BP[-1]), LEAD_CRAWL_DECEL_BP, [0.0, 1.0])
+  closing_blend = np.interp(closing_speed, LEAD_CRAWL_CLOSING_BP, [0.0, 1.0])
+  required_decel_blend = np.interp(required_decel, LEAD_CRAWL_REQUIRED_DECEL_BP, [0.0, 1.0])
+  opening_blend = np.interp(opening_speed, LEAD_CRAWL_OPENING_BP, [0.0, 1.0])
+  brake_blend = np.maximum.reduce([lead_decel_blend, closing_blend, required_decel_blend * np.maximum(lead_decel_blend, closing_blend)])
+  lead_accel_blend = np.interp(np.clip(a_lead, 0.0, LEAD_ACCEL_RECOVERY_ACCEL_BP[-1]), LEAD_ACCEL_RECOVERY_ACCEL_BP, [0.0, 1.0])
+  accel_blend = np.minimum(opening_blend, np.maximum(opening_blend * 0.5, lead_accel_blend))
+
+  accel_target = LEAD_CRAWL_ACCEL_MAX * accel_blend
+  brake_target = LEAD_CRAWL_BRAKE_MAX * brake_blend
+  target = np.clip(accel_target - brake_target, -LEAD_CRAWL_BRAKE_MAX, LEAD_CRAWL_ACCEL_MAX)
+  cost = LEAD_CRAWL_COST * crawl_blend * np.maximum(brake_blend, accel_blend)
+  return target, cost
+
+
+def get_lead_crawl_accel_max(x_lead, v_ego, v_lead, a_lead, t_follow):
+  x_lead = np.asarray(x_lead, dtype=float)
+  v_lead = np.asarray(v_lead, dtype=float)
+  a_lead = np.asarray(a_lead, dtype=float)
+  opening_speed = np.maximum(v_lead - v_ego, 0.0)
+  speed_blend = np.interp(v_ego, LEAD_CRAWL_V_EGO_BP, [1.0, 0.0])
+  moving_blend = np.interp(v_lead, LEAD_CRAWL_V_LEAD_BP, [0.0, 1.0])
+  gap_blend = np.interp(x_lead, LEAD_CRAWL_GAP_BP, [0.0, 1.0, 1.0, 0.0])
+  urgency_blend = 1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead)
+  opening_blend = np.interp(opening_speed, LEAD_CRAWL_OPENING_BP, [0.0, 1.0])
+  limit_blend = speed_blend * moving_blend * gap_blend * urgency_blend * opening_blend
+  return ACCEL_MAX - limit_blend * (ACCEL_MAX - LEAD_CRAWL_ACCEL_LIMIT)
 
 
 def get_approach_follow_distance(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
@@ -732,6 +787,14 @@ class LongitudinalMpc:
       lead_0_accel_targets[i], lead_0_accel_costs[i] = get_lead_accel_match_target(lead_xv_0[i, 1], lead_xv_0[i, 0], lead_0_a_traj[i], t_follow, v_ego)
       lead_1_accel_targets[i], lead_1_accel_costs[i] = get_lead_accel_match_target(lead_xv_1[i, 1], lead_xv_1[i, 0], lead_1_a_traj[i], t_follow, v_ego)
 
+    lead_0_crawl_targets, lead_0_crawl_costs = get_lead_crawl_comfort_target(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow)
+    lead_1_crawl_targets, lead_1_crawl_costs = get_lead_crawl_comfort_target(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow)
+    lead_0_crawl_accel_max = get_lead_crawl_accel_max(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow)
+    lead_1_crawl_accel_max = get_lead_crawl_accel_max(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow)
+    lead_0_crawl_selected = lead_0_crawl_costs >= lead_1_crawl_costs
+    crawl_targets = np.where(lead_0_crawl_selected, lead_0_crawl_targets, lead_1_crawl_targets)
+    crawl_costs = np.where(lead_0_crawl_selected, lead_0_crawl_costs, lead_1_crawl_costs)
+
     accel_match_targets = np.zeros(N + 1)
     accel_match_costs = np.zeros(N + 1)
     lead_0_dominant = dominant_obstacle == 0
@@ -740,6 +803,15 @@ class LongitudinalMpc:
     accel_match_targets[lead_1_dominant] = lead_1_accel_targets[lead_1_dominant]
     accel_match_costs[lead_0_dominant] = lead_0_accel_costs[lead_0_dominant]
     accel_match_costs[lead_1_dominant] = lead_1_accel_costs[lead_1_dominant]
+    combined_accel_costs = accel_match_costs + crawl_costs
+    combined_accel_targets = np.divide(
+      accel_match_targets * accel_match_costs + crawl_targets * crawl_costs,
+      combined_accel_costs,
+      out=np.zeros(N + 1),
+      where=combined_accel_costs > 0.0,
+    )
+    accel_match_targets = combined_accel_targets
+    accel_match_costs = combined_accel_costs
     self.set_cost_weights(self.cost_weights, self.constraint_cost_weights, accel_match_costs)
 
     self.yref[:, :] = 0.0
@@ -753,6 +825,7 @@ class LongitudinalMpc:
     self.params[dominant_obstacle == 0, 0] = lead_0_gap_comfort_a_min[dominant_obstacle == 0]
     self.params[dominant_obstacle == 1, 0] = lead_1_gap_comfort_a_min[dominant_obstacle == 1]
     self.params[:, 1] = ACCEL_MAX
+    self.params[:, 1] = np.minimum(self.params[:, 1], np.minimum(lead_0_crawl_accel_max, lead_1_crawl_accel_max))
     self.params[:, 2] = np.min(x_obstacles, axis=1)
     self.params[:, 3] = np.copy(self.a_prev)
     self.params[:, 4] = t_follow

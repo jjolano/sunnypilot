@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import itertools
 from types import SimpleNamespace
-from opendbc.car.interfaces import ACCEL_MIN
+from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
@@ -22,6 +22,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_STOP_GAP_EXCESS_OFFSET_MAX,
   LEAD_STOP_GAP_TAPER_MAX,
   LEAD_GAP_COMFORT_LIGHT_DECEL,
+  LEAD_CRAWL_ACCEL_MAX,
+  LEAD_CRAWL_ACCEL_LIMIT,
+  LEAD_CRAWL_BRAKE_MAX,
   LEAD_STOP_RUNWAY_BRAKE,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
@@ -42,6 +45,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_departure_available_runway,
   get_lead_departure_relaxation,
   get_lead_danger_distance,
+  get_lead_crawl_accel_max,
+  get_lead_crawl_comfort_target,
   get_lead_stop_runway_preference,
   get_lead_stop_runway_required_decel,
   get_lead_stop_runway_blend,
@@ -434,6 +439,55 @@ def test_stop_runway_blend_stays_off_at_higher_speed():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   assert get_lead_stop_runway_blend(8.0, 0.0, 0.0) == pytest.approx(0.0)
   assert get_approach_runway_blend(12.0, 8.0, 0.0, t_follow, a_lead=0.0) == pytest.approx(0.0)
+
+
+def test_crawl_comfort_uses_mild_brake_for_non_urgent_slowing_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(12.0, 4.0, 3.2, -0.4, t_follow)
+
+  assert -LEAD_CRAWL_BRAKE_MAX <= target < -0.1
+  assert cost > 0.0
+
+
+def test_crawl_comfort_fades_out_for_urgent_short_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(7.0, 4.0, 0.0, -1.0, t_follow)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_crawl_comfort_stays_off_for_stopped_lead_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(12.0, 2.0, 0.0, 0.0, t_follow)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_crawl_comfort_uses_gentle_accel_for_opening_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(12.0, 3.0, 4.2, 0.3, t_follow)
+
+  assert 0.0 < target <= LEAD_CRAWL_ACCEL_MAX
+  assert cost > 0.0
+
+
+def test_crawl_comfort_disables_outside_crawl_band():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  _, high_speed_cost = get_lead_crawl_comfort_target(12.0, 9.0, 8.0, -0.4, t_follow)
+  _, far_gap_cost = get_lead_crawl_comfort_target(30.0, 3.0, 4.0, 0.3, t_follow)
+
+  assert high_speed_cost == pytest.approx(0.0)
+  assert far_gap_cost == pytest.approx(0.0)
+
+
+def test_crawl_accel_limit_only_applies_to_opening_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  assert get_lead_crawl_accel_max(12.0, 3.0, 4.5, 0.3, t_follow) == pytest.approx(LEAD_CRAWL_ACCEL_LIMIT)
+  assert get_lead_crawl_accel_max(12.0, 3.0, 3.0, 0.0, t_follow) == pytest.approx(ACCEL_MAX)
+  assert get_lead_crawl_accel_max(30.0, 3.0, 4.5, 0.3, t_follow) == pytest.approx(ACCEL_MAX)
 
 
 def test_lead_accel_match_tapers_positive_accel_under_time_gap():
