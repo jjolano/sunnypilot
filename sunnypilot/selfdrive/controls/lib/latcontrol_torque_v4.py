@@ -59,7 +59,7 @@ class LatControlTorque(LatControl):
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
     self.response_assist = TorqueGuardedResponseAssist(self.dt)
-    self.output_shaper = TorqueConservativeOutputShaper()
+    self.output_shaper = TorqueConservativeOutputShaper(self.dt)
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
