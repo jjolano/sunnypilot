@@ -27,6 +27,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_CRAWL_BRAKE_MAX,
   LEAD_STOP_RUNWAY_BRAKE,
   LEAD_TRANSITION_PERSISTENCE,
+  LEAD_TRANSITION_GUARD_FADE_TIME,
   LEAD_TRANSITION_Y_REL_CONFIRM,
   LEAD_TRANSITION_Y_REL_SOFT,
   STOP_DISTANCE,
@@ -58,8 +59,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_stop_gap_excess_offset,
   get_lead_stop_gap_taper,
   get_lead_transition_accel_max,
+  get_lead_transition_adjusted_accel,
   get_lead_transition_cost_obstacle,
   get_lead_transition_lateral_blend,
+  get_lead_transition_obstacle_release,
   get_lead_transition_release_target,
   get_lead_time_gap_target,
   get_moving_lead_stop_reserve,
@@ -332,6 +335,21 @@ def test_lead_transition_guard_caps_near_term_positive_accel():
   guarded_accel_max = get_lead_transition_accel_max(0.55)
   assert guarded_accel_max[0] == pytest.approx(0.0)
   assert np.max(guarded_accel_max) == pytest.approx(ACCEL_MAX)
+
+
+def test_lead_transition_obstacle_release_waits_for_guard():
+  assert get_lead_transition_obstacle_release(1.0, LEAD_TRANSITION_GUARD_FADE_TIME) == pytest.approx(0.0)
+  assert get_lead_transition_obstacle_release(1.0, 0.0) == pytest.approx(1.0)
+
+
+def test_lead_transition_adjusted_accel_only_suppresses_decel():
+  assert get_lead_transition_adjusted_accel(-2.0, 0.0) == pytest.approx(-2.0)
+  assert get_lead_transition_adjusted_accel(-2.0, 0.5) == pytest.approx(-1.0)
+  assert get_lead_transition_adjusted_accel(-2.0, 1.0) == pytest.approx(0.0)
+  assert get_lead_transition_adjusted_accel(0.5, 1.0) == pytest.approx(0.5)
+
+  adjusted = get_lead_transition_adjusted_accel(np.array([-2.0, 0.5]), 0.5)
+  assert adjusted.tolist() == pytest.approx([-1.0, 0.5])
 
 
 def test_approach_brake_stays_stock_for_small_closure():
