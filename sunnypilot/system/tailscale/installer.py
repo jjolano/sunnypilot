@@ -140,9 +140,13 @@ def download_and_install(version: str, params: Params | None = None) -> bool:
   if params is None:
     params = Params()
 
-  ensure_directories()
-  dest_dir = version_dir(version)
+  try:
+    dest_dir = version_dir(version)
+  except ValueError:
+    _set_install_state(params, "error:invalid version")
+    return False
 
+  ensure_directories()
   _set_install_state(params, "downloading", "0")
 
   # Use a temporary directory for atomic install

@@ -6,6 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import os
+import re
 
 # --- Storage layout (all under /data/tailscale/) ---
 TAILSCALE_ROOT = "/data/tailscale"
@@ -20,6 +21,13 @@ TAILSCALE_CURRENT_LINK = os.path.join(TAILSCALE_BIN_DIR, "current")
 # --- Download URLs ---
 TAILSCALE_STABLE_BASE = "https://pkgs.tailscale.com/stable"
 TAILSCALE_MANIFEST_URL = f"{TAILSCALE_STABLE_BASE}/?mode=json"
+TAILSCALE_VERSION_RE = re.compile(r"[0-9]+(?:\.[0-9]+){1,3}")
+
+
+def _validate_version(version: str) -> str:
+  if not TAILSCALE_VERSION_RE.fullmatch(version):
+    raise ValueError(f"unsafe Tailscale version: {version!r}")
+  return version
 
 
 def tailscale_bin() -> str:
@@ -34,6 +42,7 @@ def tailscaled_bin() -> str:
 
 def tarball_url(version: str) -> str:
   """Download URL for a specific Tailscale stable tarball (arm64)."""
+  version = _validate_version(version)
   return f"{TAILSCALE_STABLE_BASE}/tailscale_{version}_arm64.tgz"
 
 
@@ -44,7 +53,11 @@ def checksum_url(version: str) -> str:
 
 def version_dir(version: str) -> str:
   """Versioned install directory for a given release."""
-  return os.path.join(TAILSCALE_BIN_DIR, version)
+  version = _validate_version(version)
+  path = os.path.realpath(os.path.join(TAILSCALE_BIN_DIR, version))
+  if os.path.commonpath([os.path.realpath(TAILSCALE_BIN_DIR), path]) != os.path.realpath(TAILSCALE_BIN_DIR):
+    raise ValueError(f"unsafe Tailscale version path: {version!r}")
+  return path
 
 
 def is_installed() -> bool:

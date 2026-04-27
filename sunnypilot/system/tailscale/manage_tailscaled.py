@@ -9,6 +9,7 @@ See the LICENSE.md file in the root directory for more details.
 import json
 import os
 import select
+import shlex
 import subprocess
 import time
 
@@ -32,6 +33,41 @@ INSTALL_CHECK_INTERVAL = 30  # seconds between install-request checks when not i
 VERSION_CHECK_INTERVAL = 3600  # seconds between latest-version checks
 
 
+def _decode_json_objects(buffer: str) -> tuple[list[dict], str]:
+  decoder = json.JSONDecoder()
+  objects = []
+  idx = 0
+  while idx < len(buffer):
+    while idx < len(buffer) and buffer[idx].isspace():
+      idx += 1
+    if idx >= len(buffer):
+      return objects, ""
+    try:
+      data, end = decoder.raw_decode(buffer, idx)
+    except json.JSONDecodeError:
+      return objects, buffer[idx:]
+    if isinstance(data, dict):
+      objects.append(data)
+    idx = end
+  return objects, ""
+
+
+def _stale_tailscaled_pids(pgrep_output: str) -> list[str]:
+  pids = []
+  for line in pgrep_output.splitlines():
+    parts = line.strip().split(maxsplit=1)
+    if len(parts) != 2:
+      continue
+    pid, cmdline = parts
+    try:
+      argv = shlex.split(cmdline)
+    except ValueError:
+      continue
+    if argv and argv[0] == tailscaled_bin() and f"--socket={TAILSCALE_SOCKET}" in argv[1:]:
+      pids.append(pid)
+  return pids
+
+
 class TailscaleDaemon:
   """Manages the tailscaled subprocess and handles param-driven commands."""
 
@@ -47,26 +83,30 @@ class TailscaleDaemon:
     """Kill any orphaned tailscaled processes (e.g. from a previous daemon crash)."""
     try:
       result = subprocess.run(
-        ["pgrep", "-f", "tailscaled.*--socket="],
+        ["pgrep", "-af", "tailscaled.*--socket="],
         capture_output=True,
         text=True,
         timeout=5,
       )
       if result.returncode == 0 and result.stdout.strip():
-        pids = result.stdout.strip().split()
+        pids = _stale_tailscaled_pids(result.stdout)
+        if not pids:
+          return
         cloudlog.warning(f"tailscale: killing stale tailscaled processes: {pids}")
         subprocess.run(["sudo", "-n", "kill"] + pids, timeout=5)
         time.sleep(1)
         # Force kill any survivors
         result2 = subprocess.run(
-          ["pgrep", "-f", "tailscaled.*--socket="],
+          ["pgrep", "-af", "tailscaled.*--socket="],
           capture_output=True,
           text=True,
           timeout=5,
         )
         if result2.returncode == 0 and result2.stdout.strip():
-          subprocess.run(["sudo", "-n", "kill", "-9"] + result2.stdout.strip().split(), timeout=5)
-          time.sleep(1)
+          survivor_pids = _stale_tailscaled_pids(result2.stdout)
+          if survivor_pids:
+            subprocess.run(["sudo", "-n", "kill", "-9"] + survivor_pids, timeout=5)
+            time.sleep(1)
     except Exception:
       cloudlog.exception("tailscale: failed to kill stale tailscaled")
 
@@ -203,7 +243,6 @@ class TailscaleDaemon:
       auth_url_found = False
       deadline = time.monotonic() + 120
       buf = ""
-      brace_depth = 0
 
       while proc.poll() is None and time.monotonic() < deadline:
         ready, _, _ = select.select([proc.stdout], [], [], 2.0)
@@ -221,33 +260,24 @@ class TailscaleDaemon:
         text = chunk.decode("utf-8", errors="replace")
         buf += text
 
-        # Track brace depth to detect complete JSON objects
-        for ch in text:
-          if ch == "{":
-            brace_depth += 1
-          elif ch == "}":
-            brace_depth -= 1
+        objects, buf = _decode_json_objects(buf)
+        login_complete = False
+        for data in objects:
+          auth_url = data.get("AuthURL", "")
+          if auth_url and not auth_url_found:
+            self.params.put("TailscaleAuthURL", auth_url)
+            auth_url_found = True
+            cloudlog.info(f"tailscale: auth URL received, length={len(auth_url)}")
 
-        # When braces balance, we have a complete JSON object
-        if brace_depth == 0 and buf.strip():
-          try:
-            data = json.loads(buf.strip())
-            buf = ""
-
-            auth_url = data.get("AuthURL", "")
-            if auth_url and not auth_url_found:
-              self.params.put("TailscaleAuthURL", auth_url)
-              auth_url_found = True
-              cloudlog.info(f"tailscale: auth URL received, length={len(auth_url)}")
-
-            backend_state = data.get("BackendState", "")
-            if backend_state:
-              self.params.put("TailscaleState", backend_state)
-              if backend_state == "Running":
-                cloudlog.info("tailscale: login completed, state=Running")
-                break
-          except json.JSONDecodeError:
-            cloudlog.debug("tailscale: partial JSON in buffer, continuing to read")
+          backend_state = data.get("BackendState", "")
+          if backend_state:
+            self.params.put("TailscaleState", backend_state)
+            if backend_state == "Running":
+              cloudlog.info("tailscale: login completed, state=Running")
+              login_complete = True
+              break
+        if login_complete:
+          break
 
       # Clean up the login subprocess
       if proc.poll() is None:
@@ -312,6 +342,9 @@ class TailscaleDaemon:
 
   def _check_latest_version(self) -> None:
     """Periodically check for the latest Tailscale version."""
+    if not self.params.get_bool("EnableTailscale") and not is_installed():
+      return
+
     now = time.monotonic()
     if now - self._last_version_check < VERSION_CHECK_INTERVAL:
       return

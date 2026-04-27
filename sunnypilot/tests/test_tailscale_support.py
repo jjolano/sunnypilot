@@ -12,6 +12,7 @@ import subprocess
 import tarfile
 import tempfile
 
+import pytest
 from pytest_mock import MockerFixture
 
 from openpilot.sunnypilot.system.tailscale import (
@@ -31,7 +32,7 @@ from openpilot.sunnypilot.system.tailscale.installer import (
   _verify_checksum,
   fetch_latest_version,
 )
-from openpilot.sunnypilot.system.tailscale.manage_tailscaled import TailscaleDaemon
+from openpilot.sunnypilot.system.tailscale.manage_tailscaled import TailscaleDaemon, VERSION_CHECK_INTERVAL, _decode_json_objects, _stale_tailscaled_pids
 
 
 class FakeParams:
@@ -46,6 +47,9 @@ class FakeParams:
 
   def get(self, key):
     return self.values.get(key, "")
+
+  def get_bool(self, key):
+    return bool(self.values.get(key, False))
 
   def remove(self, key):
     self.values.pop(key, None)
@@ -74,6 +78,11 @@ class TestTailscaleConstants:
     d = version_dir("1.96.4")
     assert d.endswith("/1.96.4")
     assert d.startswith(TAILSCALE_ROOT)
+
+  @pytest.mark.parametrize("version", ["", "../1.96.4", "1.96.4/evil", ".current", "1.96.4\n"])
+  def test_version_dir_rejects_unsafe_versions(self, version):
+    with pytest.raises(ValueError):
+      version_dir(version)
 
   def test_tarball_url(self):
     url = tarball_url("1.96.4")
@@ -179,6 +188,16 @@ class TestTailscaleInstaller:
     version = fetch_latest_version()
     assert version is None
 
+  def test_download_and_install_rejects_unsafe_version_before_network(self, mocker: MockerFixture):
+    params = FakeParams()
+    download = mocker.patch("openpilot.sunnypilot.system.tailscale.installer._download_with_retry")
+
+    from openpilot.sunnypilot.system.tailscale.installer import download_and_install
+
+    assert not download_and_install("../1.96.4", params)
+    assert params.values["TailscaleInstallState"] == "error:invalid version"
+    download.assert_not_called()
+
   def test_login_subprocess_does_not_pipe_stderr(self, mocker: MockerFixture):
     fake_proc = mocker.MagicMock()
     fake_proc.stdout.fileno.return_value = 0
@@ -193,6 +212,34 @@ class TestTailscaleInstaller:
     daemon._handle_login()
 
     assert popen.call_args.kwargs["stderr"] is subprocess.DEVNULL
+
+  def test_decode_json_objects_handles_multiple_objects_and_partial_tail(self):
+    objects, remaining = _decode_json_objects('{"AuthURL":"https://login"}\n{"BackendState":"Running"}{"partial"')
+
+    assert objects == [{"AuthURL": "https://login"}, {"BackendState": "Running"}]
+    assert remaining == '{"partial"'
+
+  def test_stale_tailscaled_pids_match_managed_socket_and_binary_only(self):
+    output = "\n".join([
+      f"123 {tailscaled_bin()} --socket={TAILSCALE_SOCKET} --tun=userspace-networking",
+      f"456 /usr/bin/tailscaled --socket={TAILSCALE_SOCKET}",
+      "789 /usr/bin/tailscaled --socket=/tmp/other.sock",
+      f"999 {tailscaled_bin()} --socket={TAILSCALE_SOCKET}.bak",
+      f"321 /bin/echo {tailscaled_bin()} --socket={TAILSCALE_SOCKET}",
+    ])
+
+    assert _stale_tailscaled_pids(output) == ["123"]
+
+  def test_check_latest_version_skips_network_when_disabled_and_not_installed(self, mocker: MockerFixture):
+    daemon = TailscaleDaemon.__new__(TailscaleDaemon)
+    daemon.params = FakeParams()
+    daemon._last_version_check = -VERSION_CHECK_INTERVAL
+    fetch = mocker.patch("openpilot.sunnypilot.system.tailscale.manage_tailscaled.fetch_latest_version")
+    mocker.patch("openpilot.sunnypilot.system.tailscale.manage_tailscaled.is_installed", return_value=False)
+
+    daemon._check_latest_version()
+
+    fetch.assert_not_called()
 
 
 class TestTailscalePairingDialog:
