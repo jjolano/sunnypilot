@@ -159,8 +159,8 @@ def test_mapd_v2_compat_params_write_path_and_advisory_data():
   assert json.loads(data.mem_params.values["MapTargetVelocities"]) == [
     {"latitude": 1.0, "longitude": 2.0, "velocity": 14.0},
   ]
-  assert json.loads(data.mem_params.values["MapAdvisoryLimit"]) == {"speedlimit": 12.0, "distance": 0.0}
-  assert json.loads(data.mem_params.values["NextMapAdvisoryLimit"]) == {"speedlimit": 10.0, "distance": 60.0}
+  assert data.mem_params.values["MapAdvisoryLimit"] == {"speedlimit": 12.0, "distance": 0.0}
+  assert data.mem_params.values["NextMapAdvisoryLimit"] == {"speedlimit": 10.0, "distance": 60.0}
 
 
 def test_mapd_v2_updates_legacy_last_gps_position_for_map_distance_users():

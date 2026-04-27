@@ -129,14 +129,14 @@ class MapdV2MapData(BaseMapData):
     self.mem_params.put("MapTargetVelocities", json.dumps(target_velocities))
 
     advisory_speed = _float(_getattr_or_default(self.mapd_out, "advisorySpeed"))
-    self.mem_params.put("MapAdvisoryLimit", json.dumps({"speedlimit": advisory_speed, "distance": 0.0} if advisory_speed > 0.0 else {}))
+    self.mem_params.put("MapAdvisoryLimit", {"speedlimit": advisory_speed, "distance": 0.0} if advisory_speed > 0.0 else {})
 
     next_advisory_speed = _float(_getattr_or_default(self.mapd_out, "nextAdvisorySpeed"))
     next_advisory_distance = max(0.0, _float(_getattr_or_default(self.mapd_out, "nextAdvisorySpeedDistance")))
-    self.mem_params.put("NextMapAdvisoryLimit", json.dumps({
+    self.mem_params.put("NextMapAdvisoryLimit", {
       "speedlimit": next_advisory_speed,
       "distance": next_advisory_distance,
-    } if next_advisory_speed > 0.0 else {}))
+    } if next_advisory_speed > 0.0 else {})
 
   def _write_last_gps_position(self) -> None:
     location = self.sm['liveLocationKalman']
