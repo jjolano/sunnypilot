@@ -19,8 +19,12 @@ def test_flat_overspeed_prefers_coast_before_braking():
   assert apply_cruise_coast_overspeed(20.3, 20.0, -0.3, -1.0) == pytest.approx(-0.3)
 
 
-def test_downhill_overspeed_uses_relaxed_leeway():
-  assert apply_cruise_coast_overspeed(21.2, 20.0, 0.25, -1.0) == pytest.approx(0.25)
+def test_downhill_overspeed_uses_neutral_coast_not_positive_accel():
+  assert apply_cruise_coast_overspeed(21.2, 20.0, 0.25, -1.0) == pytest.approx(0.0)
+
+
+def test_overspeed_never_adds_positive_accel():
+  assert apply_cruise_coast_overspeed(20.3, 20.0, -0.3, 0.2) == pytest.approx(0.0)
 
 
 def test_large_overspeed_returns_to_normal_decel():
@@ -30,7 +34,7 @@ def test_large_overspeed_returns_to_normal_decel():
 def test_recovery_blends_back_to_normal_decel():
   accel = apply_cruise_coast_overspeed(21.8, 20.0, 0.25, -1.0)
 
-  assert -1.0 < accel < 0.25
+  assert -1.0 < accel <= 0.0
 
 
 def test_cruise_coast_does_not_add_decel_below_set_speed():
