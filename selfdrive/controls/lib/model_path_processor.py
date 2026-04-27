@@ -22,6 +22,7 @@ LOW_LANE_LINE_PROB = 0.35
 HIGH_FRAME_DROP_PERC = 20.0
 LOW_QUALITY_BLEND_THRESHOLD = 0.75
 LOW_QUALITY_BLEND_MIN_ALPHA = 0.4
+HARD_INVALID_FALLBACK_MEASURED_ALPHA = 0.25
 
 
 @dataclass
@@ -55,15 +56,16 @@ class ModelPathProcessor:
 
   def update(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult:
     fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
+    hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
     if not inputs.lat_active:
       self.reset()
       return ModelPathProcessorResult(float(inputs.measured_curvature), 0.0, True, "inactive")
 
     if not math.isfinite(inputs.desired_curvature):
-      return ModelPathProcessorResult(fallback_curvature, 0.0, True, "nonfinite_curvature")
+      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature")
 
     if not self._valid_core_path(inputs.position_x, inputs.position_y):
-      return ModelPathProcessorResult(fallback_curvature, 0.0, True, "invalid_path")
+      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path")
 
     desired_curvature = float(inputs.desired_curvature)
     quality = 1.0
@@ -115,6 +117,16 @@ class ModelPathProcessor:
       return float(previous_desired_curvature)
     if math.isfinite(measured_curvature):
       return float(measured_curvature)
+    return 0.0
+
+  @classmethod
+  def _hard_invalid_fallback_curvature(cls, previous_desired_curvature: float, measured_curvature: float) -> float:
+    if math.isfinite(previous_desired_curvature) and math.isfinite(measured_curvature):
+      return cls._blend(float(previous_desired_curvature), float(measured_curvature), HARD_INVALID_FALLBACK_MEASURED_ALPHA)
+    if math.isfinite(measured_curvature):
+      return float(measured_curvature)
+    if math.isfinite(previous_desired_curvature):
+      return float(previous_desired_curvature)
     return 0.0
 
   @staticmethod

@@ -43,23 +43,31 @@ def test_inactive_returns_measured_curvature():
   assert result.desired_curvature == pytest.approx(0.0005)
 
 
-def test_nonfinite_curvature_falls_back_to_previous_desired():
+def test_nonfinite_curvature_decays_toward_measured_curvature():
   result = ModelPathProcessor().update(make_inputs(desired_curvature=math.nan))
 
   assert result.gated
   assert result.reason == "nonfinite_curvature"
-  assert result.desired_curvature == pytest.approx(0.001)
+  assert 0.0005 < result.desired_curvature < 0.001
 
 
-def test_missing_path_falls_back_to_previous_desired():
+def test_missing_path_decays_toward_measured_curvature():
   result = ModelPathProcessor().update(make_inputs(position_x=(0.0, 1.0), position_y=(0.0, 0.1)))
 
   assert result.gated
   assert result.reason == "invalid_path"
-  assert result.desired_curvature == pytest.approx(0.001)
+  assert 0.0005 < result.desired_curvature < 0.001
 
 
-def test_nonfinite_path_sample_falls_back_to_previous_desired():
+def test_repeated_invalid_path_frames_continue_toward_measured_curvature():
+  processor = ModelPathProcessor()
+  first = processor.update(make_inputs(position_x=(0.0, 1.0), position_y=(0.0, 0.1), previous_desired_curvature=0.004, measured_curvature=0.001))
+  second = processor.update(make_inputs(position_x=(0.0, 1.0), position_y=(0.0, 0.1), previous_desired_curvature=first.desired_curvature, measured_curvature=0.001))
+
+  assert abs(second.desired_curvature - 0.001) < abs(first.desired_curvature - 0.001)
+
+
+def test_nonfinite_path_sample_decays_toward_measured_curvature():
   position_y = [0.0 for _ in range(ModelConstants.IDX_N)]
   position_y[5] = math.inf
 
@@ -67,7 +75,7 @@ def test_nonfinite_path_sample_falls_back_to_previous_desired():
 
   assert result.gated
   assert result.reason == "invalid_path"
-  assert result.desired_curvature == pytest.approx(0.001)
+  assert 0.0005 < result.desired_curvature < 0.001
 
 
 def test_implausible_curvature_jump_is_held():
