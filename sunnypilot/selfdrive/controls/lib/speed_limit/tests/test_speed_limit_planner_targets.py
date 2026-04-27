@@ -14,9 +14,10 @@ class FakeResolver:
   speed_limit_valid = True
   speed_limit_last_valid = False
   distance = 0.0
+  coast_accel = None
 
-  def update(self, v_ego, sm):
-    pass
+  def update(self, v_ego, sm, coast_accel=None):
+    self.coast_accel = coast_accel
 
 
 class FakeSpeedLimitAssist:
@@ -69,3 +70,24 @@ def test_speed_limit_auto_can_raise_planner_target_above_manual_cruise():
   assert v_target == FakeSpeedLimitAssist.output_v_target
   assert a_target == FakeSpeedLimitAssist.output_a_target
   assert planner.source == LongitudinalPlanSource.speedLimitAssist
+
+
+def test_speed_limit_resolver_receives_coast_accel():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = FakeSpeedLimitAssist()
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vCruiseCluster=20.0),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+  })
+
+  coast_accel = -0.3
+  v_cruise = 20.0 * CV.KPH_TO_MS
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=15.0, a_ego=0.0, v_cruise=v_cruise,
+                                       coast_accel=coast_accel)
+
+  assert planner.resolver.coast_accel == coast_accel

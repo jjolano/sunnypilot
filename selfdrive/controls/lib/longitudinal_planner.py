@@ -16,6 +16,10 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_comfort import (
+  apply_speed_limit_comfort_accel,
+  should_apply_speed_limit_comfort_accel,
+)
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -91,8 +95,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
+      speed_limit_coast_accel = accel_coast
     else:
       accel_coast = ACCEL_MAX
+      speed_limit_coast_accel = 0.0
 
     v_ego = sm['carState'].vEgo
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
@@ -131,7 +137,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       accel_clip[1] = min(accel_clip[1], clipped_accel_coast_interp)
 
     # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist
-    v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired, v_cruise)
+    v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired,
+                                                                    v_cruise, coast_accel=speed_limit_coast_accel)
 
     if force_slow_decel:
       v_cruise = 0.0
@@ -160,7 +167,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    if self.is_e2e(sm):
+    e2e_active = self.is_e2e(sm)
+    if e2e_active:
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       if output_a_target < output_a_target_mpc:
@@ -168,6 +176,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     else:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+
+    has_lead = sm['radarState'].leadOne.status or sm['radarState'].leadTwo.status
+    if should_apply_speed_limit_comfort_accel(reset_state, force_slow_decel, e2e_active, has_lead,
+                                              self.output_should_stop, self.source):
+      output_a_target = apply_speed_limit_comfort_accel(v_ego, v_cruise, speed_limit_coast_accel, output_a_target)
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

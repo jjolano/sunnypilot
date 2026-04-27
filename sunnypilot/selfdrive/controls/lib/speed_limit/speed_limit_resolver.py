@@ -13,7 +13,12 @@ from openpilot.common.gps import get_gps_location_service
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD, get_sanitize_int_param
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE, LIMIT_ADAPT_ACC
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import (
+  LIMIT_ADAPT_ACC,
+  LIMIT_COAST_APPROACH_MARGIN_S,
+  LIMIT_COAST_MIN_DECEL,
+  LIMIT_MAX_MAP_DATA_AGE,
+)
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy, OffsetType
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
@@ -73,6 +78,7 @@ class SpeedLimitResolver:
     self.speed_limit_final = 0.
     self.speed_limit_final_last = 0.
     self.speed_limit_offset = 0.
+    self.coast_accel: float | None = None
 
   def update_speed_limit_states(self) -> None:
     self.speed_limit_final = self.speed_limit + self.speed_limit_offset
@@ -132,6 +138,12 @@ class SpeedLimitResolver:
 
     self._calculate_map_data_limits(sm, speed_limit, next_speed_limit)
 
+  @staticmethod
+  def _calculate_lower_limit_adapt_distance(v_ego: float, speed_limit: float, accel: float) -> float:
+    if not 0. < speed_limit < v_ego or accel >= 0.:
+      return 0.
+    return max(0., (speed_limit ** 2 - v_ego ** 2) / (2. * accel))
+
   def _calculate_map_data_limits(self, sm: messaging.SubMaster, speed_limit: float, next_speed_limit: float) -> None:
     gps_data = sm[self._gps_location_service]
     map_data = sm['liveMapDataSP']
@@ -142,10 +154,13 @@ class SpeedLimitResolver:
     self.limit_solutions[SpeedLimitSource.map] = speed_limit
     self.distance_solutions[SpeedLimitSource.map] = 0.
 
-    # FIXME-SP: this is not working as expected
     if 0. < next_speed_limit < self.v_ego:
-      adapt_time = (next_speed_limit - self.v_ego) / LIMIT_ADAPT_ACC
-      adapt_distance = self.v_ego * adapt_time + 0.5 * LIMIT_ADAPT_ACC * adapt_time ** 2
+      coast_accel = self.coast_accel if self.coast_accel is not None else 0.
+      coast_available = coast_accel < LIMIT_COAST_MIN_DECEL
+      adapt_accel = coast_accel if coast_available else LIMIT_ADAPT_ACC
+      adapt_distance = self._calculate_lower_limit_adapt_distance(self.v_ego, next_speed_limit, adapt_accel)
+      if coast_available:
+        adapt_distance += self.v_ego * LIMIT_COAST_APPROACH_MARGIN_S
 
       if distance_to_speed_limit_ahead <= adapt_distance:
         self.limit_solutions[SpeedLimitSource.map] = next_speed_limit
@@ -178,8 +193,9 @@ class SpeedLimitResolver:
 
     return speed_limit, distance, source
 
-  def update(self, v_ego: float, sm: messaging.SubMaster) -> None:
+  def update(self, v_ego: float, sm: messaging.SubMaster, coast_accel: float | None = None) -> None:
     self.v_ego = v_ego
+    self.coast_accel = coast_accel
     self.update_params()
 
     self.speed_limit, self.distance, self.source = self._resolve_limit_sources(sm)

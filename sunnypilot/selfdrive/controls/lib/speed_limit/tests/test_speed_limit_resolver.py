@@ -58,6 +58,29 @@ def setup_sm_mock(mocker: MockerFixture):
   return sm_mock
 
 
+def setup_map_sm_mock(mocker: MockerFixture, speed_limit: float, next_speed_limit: float, next_distance: float):
+  car_state_sp = create_mock({
+    'speedLimit': 0.,
+  }, mocker)
+  live_map_data = create_mock({
+    'speedLimit': speed_limit,
+    'speedLimitValid': speed_limit > 0.,
+    'speedLimitAhead': next_speed_limit,
+    'speedLimitAheadValid': next_speed_limit > 0.,
+    'speedLimitAheadDistance': next_distance,
+  }, mocker)
+  gps_data = create_mock({
+    'unixTimestampMillis': time.monotonic() * 1e3,
+  }, mocker)
+  sm_mock = mocker.MagicMock()
+  sm_mock.__getitem__.side_effect = lambda key: {
+    'carStateSP': car_state_sp,
+    'liveMapDataSP': live_map_data,
+    'gpsLocation': gps_data,
+  }[key]
+  return sm_mock
+
+
 parametrized_policies = pytest.mark.parametrize(
   "policy, sm_key, function_key", [
     (Policy.car_state_only, 'carStateSP', SpeedLimitSource.car),
@@ -142,3 +165,35 @@ class TestSpeedLimitResolverValidation:
     resolver._get_from_map_data(sm_mock)
     assert resolver.limit_solutions[SpeedLimitSource.map] == 0.
     assert resolver.distance_solutions[SpeedLimitSource.map] == 0.
+
+  def test_lower_next_map_limit_selected_inside_coast_distance(self, resolver_class, mocker: MockerFixture):
+    v_ego = 30.0
+    speed_limit = 30.0
+    next_speed_limit = 20.0
+    coast_accel = -0.3
+    coast_distance = (next_speed_limit ** 2 - v_ego ** 2) / (2. * coast_accel)
+    sm_mock = setup_map_sm_mock(mocker, speed_limit, next_speed_limit, coast_distance + v_ego * 2.0 - 1.0)
+
+    resolver = resolver_class()
+    resolver.policy = Policy.map_data_only
+    resolver.update(v_ego, sm_mock, coast_accel=coast_accel)
+
+    assert resolver.speed_limit == next_speed_limit
+    assert resolver.distance == pytest.approx(coast_distance + v_ego * 2.0 - 1.0, abs=0.1)
+    assert resolver.source == SpeedLimitSource.map
+
+  def test_lower_next_map_limit_waits_until_coast_distance(self, resolver_class, mocker: MockerFixture):
+    v_ego = 30.0
+    speed_limit = 30.0
+    next_speed_limit = 20.0
+    coast_accel = -0.3
+    coast_distance = (next_speed_limit ** 2 - v_ego ** 2) / (2. * coast_accel)
+    sm_mock = setup_map_sm_mock(mocker, speed_limit, next_speed_limit, coast_distance + v_ego * 2.0 + 1.0)
+
+    resolver = resolver_class()
+    resolver.policy = Policy.map_data_only
+    resolver.update(v_ego, sm_mock, coast_accel=coast_accel)
+
+    assert resolver.speed_limit == speed_limit
+    assert resolver.distance == 0.
+    assert resolver.source == SpeedLimitSource.map

@@ -43,7 +43,8 @@ class LongitudinalPlannerSP:
 
     return experimental_mode and self.dec.mode() == "blended"
 
-  def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
+  def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float,
+                     coast_accel: float | None = None) -> tuple[float, float]:
     CS = sm['carState']
     v_cruise_cluster_kph = min(CS.vCruiseCluster, V_CRUISE_MAX)
     v_cruise_cluster = v_cruise_cluster_kph * CV.KPH_TO_MS
@@ -55,7 +56,7 @@ class LongitudinalPlannerSP:
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
 
     # Speed Limit Resolver
-    self.resolver.update(v_ego, sm)
+    self.resolver.update(v_ego, sm, coast_accel=coast_accel)
 
     # Speed Limit Assist
     has_speed_limit = self.resolver.speed_limit_valid or self.resolver.speed_limit_last_valid
