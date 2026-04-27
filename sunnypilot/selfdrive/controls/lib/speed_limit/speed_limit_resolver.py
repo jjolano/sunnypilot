@@ -154,17 +154,24 @@ class SpeedLimitResolver:
     self.limit_solutions[SpeedLimitSource.map] = speed_limit
     self.distance_solutions[SpeedLimitSource.map] = 0.
 
-    if 0. < next_speed_limit < self.v_ego:
-      coast_accel = self.coast_accel if self.coast_accel is not None else 0.
-      coast_available = coast_accel < LIMIT_COAST_MIN_DECEL
-      adapt_accel = coast_accel if coast_available else LIMIT_ADAPT_ACC
-      adapt_distance = self._calculate_lower_limit_adapt_distance(self.v_ego, next_speed_limit, adapt_accel)
-      if coast_available:
-        adapt_distance += self.v_ego * LIMIT_COAST_APPROACH_MARGIN_S
+    if next_speed_limit <= 0.:
+      return
 
-      if distance_to_speed_limit_ahead <= adapt_distance:
-        self.limit_solutions[SpeedLimitSource.map] = next_speed_limit
-        self.distance_solutions[SpeedLimitSource.map] = distance_to_speed_limit_ahead
+    # Only pre-adapt for a lower upcoming map limit. Avoid relaxing the current
+    # map limit early when the next segment is faster but ego is still above it.
+    if speed_limit > 0. and next_speed_limit >= speed_limit:
+      return
+
+    coast_accel = self.coast_accel if self.coast_accel is not None else 0.
+    coast_available = coast_accel < LIMIT_COAST_MIN_DECEL
+    adapt_accel = coast_accel if coast_available else LIMIT_ADAPT_ACC
+    adapt_distance = self._calculate_lower_limit_adapt_distance(self.v_ego, next_speed_limit, adapt_accel)
+    if coast_available:
+      adapt_distance += self.v_ego * LIMIT_COAST_APPROACH_MARGIN_S
+
+    if distance_to_speed_limit_ahead <= adapt_distance:
+      self.limit_solutions[SpeedLimitSource.map] = next_speed_limit
+      self.distance_solutions[SpeedLimitSource.map] = distance_to_speed_limit_ahead
 
   def _get_source_solution_according_to_policy(self) -> custom.LongitudinalPlanSP.SpeedLimit.Source:
     sources_for_policy = self._policy_to_sources_map[self.policy]

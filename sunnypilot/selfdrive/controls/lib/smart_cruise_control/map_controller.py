@@ -1,12 +1,15 @@
-import json
 import math
 import platform
 
+import numpy as np
+
 from cereal import custom
+from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
+from openpilot.sunnypilot.mapd.param_helpers import get_first_mapd_json, get_mapd_json, mapd_section_float
 from openpilot.sunnypilot.navd.helpers import coordinate_from_param, Coordinate
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
@@ -21,24 +24,47 @@ TO_DEGREES = 180 / math.pi
 TARGET_JERK = -0.6  # m/s^3 There's some jounce limits that are not consistent so we're fudging this some
 TARGET_ACCEL = -1.2  # m/s^2 should match up with the long planner limit
 TARGET_OFFSET = 1.0  # seconds - This controls how soon before the curve you reach the target velocity. It also helps
-                     # reach the target velocity when inaccuracies in the distance modeling logic would cause overshoot.
-                     # The value is multiplied against the target velocity to determine the additional distance. This is
-                     # done to keep the distance calculations consistent but results in the offset actually being less
-                     # time than specified depending on how much of a speed differential there is between v_ego and the
-                     # target velocity.
+                      # reach the target velocity when inaccuracies in the distance modeling logic would cause overshoot.
+                      # The value is multiplied against the target velocity to determine the additional distance. This is
+                      # done to keep the distance calculations consistent but results in the offset actually being less
+                      # time than specified depending on how much of a speed differential there is between v_ego and the
+                      # target velocity.
+MAX_MAP_SPEED = V_CRUISE_UNSET * CV.KPH_TO_MS
+ADVISORY_LIMIT_KEYS = ("MapAdvisorySpeedLimit", "MapAdvisoryLimit")
+NEXT_ADVISORY_LIMIT_KEYS = ("NextMapAdvisorySpeedLimit", "NextMapAdvisoryLimit")
+MODEL_CURVE_DISTANCE_WINDOW = 20.0  # m, match map target points to nearby model path samples.
+MODEL_CURVE_MIN_LAT_ACCEL = 1.3  # m/s^2, ignore weak/noisy curvature predictions.
+MODEL_CURVE_TARGET_LAT_ACCEL = 2.0  # m/s^2, same comfort target used by SCC vision.
+MODEL_CURVE_MIN_SPEED = 1.0  # m/s, avoid unstable curvature estimates at near-zero speed.
 
 
 def velocities_from_param(param: str, params: Params):
   if params is None:
     params = Params()
 
-  json_str = params.get(param)
-  if json_str is None:
-    return None
+  velocities = get_mapd_json(params, param)
+  if not isinstance(velocities, list):
+    return []
 
-  velocities = json.loads(json_str)
+  valid_velocities = []
+  for target_velocity in velocities:
+    if not isinstance(target_velocity, dict):
+      continue
 
-  return velocities
+    tlat = mapd_section_float(target_velocity, "latitude", None)
+    tlon = mapd_section_float(target_velocity, "longitude", None)
+    tv = mapd_section_float(target_velocity, "velocity", None)
+
+    if tlat is None or tlon is None or not valid_map_speed(tv):
+      continue
+
+    valid_velocities.append({"latitude": tlat, "longitude": tlon, "velocity": tv})
+
+  return valid_velocities
+
+
+def valid_map_speed(speed: float | None) -> bool:
+  return speed is not None and 0. < speed < MAX_MAP_SPEED
 
 
 def calculate_accel(t, target_jerk, a_ego):
@@ -62,6 +88,15 @@ def distance_to_point(ax, ay, bx, by):
   return R * c  # in meters
 
 
+def point_distance(a: Coordinate, b: Coordinate) -> float:
+  return distance_to_point(a.latitude * TO_RADIANS, a.longitude * TO_RADIANS,
+                           b.latitude * TO_RADIANS, b.longitude * TO_RADIANS)
+
+
+def target_velocity_coordinate(target_velocity: dict) -> Coordinate:
+  return Coordinate(target_velocity["latitude"], target_velocity["longitude"])
+
+
 class SmartCruiseControlMap:
   v_target: float = 0
   a_target: float = 0.
@@ -82,6 +117,7 @@ class SmartCruiseControlMap:
     self.v_cruise = 0
     self.target_lat = 0.0
     self.target_lon = 0.0
+    self.target_prediction_advanced = False
     self.frame = -1
 
     self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
@@ -100,108 +136,228 @@ class SmartCruiseControlMap:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self.params.get_bool("SmartCruiseControlMap")
 
-  def update_calculations(self) -> None:
+  def update_calculations(self, model_msg=None) -> None:
     self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
-    lat = self.last_position.latitude
-    lon = self.last_position.longitude
-
     self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
 
     if self.last_position is None or self.target_velocities is None:
       return
 
-    min_dist = 1000
-    min_idx = 0
-    distances = []
-
-    # find our location in the path
-    for i in range(len(self.target_velocities)):
-      target_velocity = self.target_velocities[i]
-      tlat = target_velocity["latitude"]
-      tlon = target_velocity["longitude"]
-      d = distance_to_point(lat * TO_RADIANS, lon * TO_RADIANS, tlat * TO_RADIANS, tlon * TO_RADIANS)
-      distances.append(d)
-      if d < min_dist:
-        min_dist = d
-        min_idx = i
-
-    # only look at values from our current position forward
-    forward_points = self.target_velocities[min_idx:]
-    forward_distances = distances[min_idx:]
+    forward_points, forward_distances = self._forward_target_velocity_distances()
 
     # find velocities that we are within the distance we need to adjust for
-    valid_velocities = []
+    valid_velocities = self._advisory_targets(model_msg)
     for i in range(len(forward_points)):
       target_velocity = forward_points[i]
       tlat = target_velocity["latitude"]
       tlon = target_velocity["longitude"]
-      tv = target_velocity["velocity"]
+      tv = float(target_velocity["velocity"])
       if tv > self.v_ego:
         continue
 
       d = forward_distances[i]
 
-      a_diff = (self.a_ego - TARGET_ACCEL)
-      accel_t = abs(a_diff / TARGET_JERK)
-      min_accel_v = calculate_velocity(accel_t, TARGET_JERK, self.a_ego, self.v_ego)
-
-      max_d = 0
-      if tv > min_accel_v:
-        # calculate time needed based on target jerk
-        a = 0.5 * TARGET_JERK
-        b = self.a_ego
-        c = self.v_ego - tv
-        t_a = -1 * ((b**2 - 4 * a * c) ** 0.5 + b) / 2 * a
-        t_b = ((b**2 - 4 * a * c) ** 0.5 - b) / 2 * a
-        if not isinstance(t_a, complex) and t_a > 0:
-          t = t_a
-        else:
-          t = t_b
-        if isinstance(t, complex):
-          continue
-
-        max_d = max_d + calculate_distance(t, TARGET_JERK, self.a_ego, self.v_ego)
-      else:
-        t = accel_t
-        max_d = calculate_distance(t, TARGET_JERK, self.a_ego, self.v_ego)
-
-        # calculate additional time needed based on target accel
-        t = abs((min_accel_v - tv) / TARGET_ACCEL)
-        max_d += calculate_distance(t, 0, TARGET_ACCEL, min_accel_v)
-
-      if d < max_d + tv * TARGET_OFFSET:
-        valid_velocities.append((float(tv), tlat, tlon))
+      in_range, prediction_advanced = self._target_range_state(tv, d, model_msg)
+      if in_range:
+        valid_velocities.append((float(tv), tlat, tlon, prediction_advanced))
 
     # Find the smallest velocity we need to adjust for
     min_v = 100.0
     target_lat = 0.0
     target_lon = 0.0
-    for tv, lat, lon in valid_velocities:
+    target_prediction_advanced = False
+    for tv, lat, lon, prediction_advanced in valid_velocities:
       if tv < min_v:
         min_v = tv
         target_lat = lat
         target_lon = lon
+        target_prediction_advanced = prediction_advanced
 
     if self.v_target < min_v and not (self.target_lat == 0 and self.target_lon == 0):
-      for i in range(len(forward_points)):
-        target_velocity = forward_points[i]
-        tlat = target_velocity["latitude"]
-        tlon = target_velocity["longitude"]
-        tv = target_velocity["velocity"]
-        if tv > self.v_ego:
-          continue
+      if not self.target_prediction_advanced:
+        for i in range(len(forward_points)):
+          target_velocity = forward_points[i]
+          tlat = target_velocity["latitude"]
+          tlon = target_velocity["longitude"]
+          tv = float(target_velocity["velocity"])
+          if tv > self.v_ego:
+            continue
 
-        if tlat == self.target_lat and tlon == self.target_lon and tv == self.v_target:
-          return
+          if tlat == self.target_lat and tlon == self.target_lon and tv == self.v_target:
+            return
 
       # not found so let's reset
       self.v_target = 0.0
       self.target_lat = 0.0
       self.target_lon = 0.0
+      self.target_prediction_advanced = False
 
     self.v_target = min_v
     self.target_lat = target_lat
     self.target_lon = target_lon
+    self.target_prediction_advanced = target_prediction_advanced
+
+  def _forward_target_velocity_distances(self) -> tuple[list[dict], list[float]]:
+    if not self.target_velocities:
+      return [], []
+
+    min_idx = 0
+    min_dist = float("inf")
+    for i, target_velocity in enumerate(self.target_velocities):
+      d = point_distance(self.last_position, target_velocity_coordinate(target_velocity))
+      if d < min_dist:
+        min_dist = d
+        min_idx = i
+
+    forward_points = self.target_velocities[min_idx:]
+    forward_distances = []
+    last_position = self.last_position
+    distance = 0.0
+    for target_velocity in forward_points:
+      current_position = target_velocity_coordinate(target_velocity)
+      distance += point_distance(last_position, current_position)
+      forward_distances.append(distance)
+      last_position = current_position
+
+    return forward_points, forward_distances
+
+  def _target_control_distance(self, target_v: float) -> float | None:
+    if target_v > self.v_ego:
+      return None
+
+    a_diff = (self.a_ego - TARGET_ACCEL)
+    accel_t = abs(a_diff / TARGET_JERK)
+    min_accel_v = calculate_velocity(accel_t, TARGET_JERK, self.a_ego, self.v_ego)
+
+    max_d = 0.
+    if target_v > min_accel_v:
+      # calculate time needed based on target jerk
+      a = 0.5 * TARGET_JERK
+      b = self.a_ego
+      c = self.v_ego - target_v
+      discriminant = b**2 - 4 * a * c
+      if discriminant < 0:
+        return None
+      t_a = -1 * (discriminant ** 0.5 + b) / 2 * a
+      t_b = (discriminant ** 0.5 - b) / 2 * a
+      t = t_a if t_a > 0 else t_b
+      if t <= 0:
+        return None
+
+      max_d = max_d + calculate_distance(t, TARGET_JERK, self.a_ego, self.v_ego)
+    else:
+      t = accel_t
+      max_d = calculate_distance(t, TARGET_JERK, self.a_ego, self.v_ego)
+
+      # calculate additional time needed based on target accel
+      t = abs((min_accel_v - target_v) / TARGET_ACCEL)
+      max_d += calculate_distance(t, 0, TARGET_ACCEL, min_accel_v)
+
+    return max_d + target_v * TARGET_OFFSET
+
+  def _target_in_range(self, target_v: float, distance: float) -> bool:
+    control_distance = self._target_control_distance(target_v)
+    return control_distance is not None and distance < control_distance
+
+  def _target_range_state(self, target_v: float, distance: float, model_msg) -> tuple[bool, bool]:
+    if self._target_in_range(target_v, distance):
+      return True, False
+
+    control_target_v = self._prediction_control_target(target_v, distance, model_msg)
+    prediction_advanced = control_target_v < target_v and self._target_in_range(control_target_v, distance)
+    return prediction_advanced, prediction_advanced
+
+  @staticmethod
+  def _prediction_curve_target(model_msg, distance: float) -> float | None:
+    if model_msg is None:
+      return None
+
+    positions = np.asarray(getattr(getattr(model_msg, "position", None), "x", []), dtype=float)
+    velocities = np.asarray(getattr(getattr(model_msg, "velocity", None), "x", []), dtype=float)
+    yaw_rates = np.abs(np.asarray(getattr(getattr(model_msg, "orientationRate", None), "z", []), dtype=float))
+    if positions.ndim != 1 or positions.size == 0 or positions.size != velocities.size or positions.size != yaw_rates.size:
+      return None
+    if not np.all(np.isfinite(positions)) or not np.all(np.isfinite(velocities)) or not np.all(np.isfinite(yaw_rates)):
+      return None
+    if distance > positions[-1] + MODEL_CURVE_DISTANCE_WINDOW:
+      return None
+
+    if distance <= MODEL_CURVE_DISTANCE_WINDOW:
+      sample_mask = positions <= distance + MODEL_CURVE_DISTANCE_WINDOW
+    else:
+      sample_mask = np.abs(positions - distance) <= MODEL_CURVE_DISTANCE_WINDOW
+    sample_mask &= velocities >= MODEL_CURVE_MIN_SPEED
+    if not np.any(sample_mask):
+      return None
+
+    sample_velocities = velocities[sample_mask]
+    sample_yaw_rates = yaw_rates[sample_mask]
+    sample_lat_accels = sample_yaw_rates * sample_velocities
+    if float(np.max(sample_lat_accels)) < MODEL_CURVE_MIN_LAT_ACCEL:
+      return None
+
+    curvatures = sample_yaw_rates / sample_velocities
+    valid_curvatures = curvatures[curvatures > 1e-6]
+    if valid_curvatures.size == 0:
+      return None
+
+    return float(np.sqrt(MODEL_CURVE_TARGET_LAT_ACCEL / np.max(valid_curvatures)))
+
+  @classmethod
+  def _prediction_control_target(cls, target_v: float, distance: float, model_msg) -> float:
+    prediction_target = cls._prediction_curve_target(model_msg, distance)
+    if prediction_target is None:
+      return target_v
+    return max(MIN_V, min(target_v, prediction_target))
+
+  @staticmethod
+  def _advisory_target(section) -> tuple[float, float, float] | None:
+    if not isinstance(section, dict):
+      return None
+
+    target_v = mapd_section_float(section, "speedlimit", None)
+    if not valid_map_speed(target_v):
+      return None
+
+    lat = mapd_section_float(section, "start_latitude", 0.)
+    lon = mapd_section_float(section, "start_longitude", 0.)
+    return float(target_v), float(lat or 0.), float(lon or 0.)
+
+  def _distance_to_advisory_start(self, section) -> float | None:
+    if not isinstance(section, dict):
+      return None
+
+    distance = mapd_section_float(section, "distance", None)
+    if distance is not None:
+      return max(0., distance)
+
+    lat = mapd_section_float(section, "start_latitude", None)
+    lon = mapd_section_float(section, "start_longitude", None)
+    if lat is None or lon is None:
+      return None
+
+    return distance_to_point(self.last_position.latitude * TO_RADIANS, self.last_position.longitude * TO_RADIANS,
+                             lat * TO_RADIANS, lon * TO_RADIANS)
+
+  def _advisory_targets(self, model_msg=None) -> list[tuple[float, float, float, bool]]:
+    targets = []
+
+    current_advisory = get_first_mapd_json(self.mem_params, ADVISORY_LIMIT_KEYS)
+    current_target = self._advisory_target(current_advisory)
+    if current_target is not None:
+      in_range, prediction_advanced = self._target_range_state(current_target[0], 0., model_msg)
+      if in_range:
+        targets.append((*current_target, prediction_advanced))
+
+    next_advisory = get_first_mapd_json(self.mem_params, NEXT_ADVISORY_LIMIT_KEYS)
+    next_target = self._advisory_target(next_advisory)
+    next_distance = self._distance_to_advisory_start(next_advisory)
+    if next_target is not None and next_distance is not None:
+      in_range, prediction_advanced = self._target_range_state(next_target[0], next_distance, model_msg)
+      if in_range:
+        targets.append((*next_target, prediction_advanced))
+
+    return targets
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, TURNING
@@ -243,7 +399,7 @@ class SmartCruiseControlMap:
 
     return enabled, active
 
-  def update(self, long_enabled: bool, long_override: bool, v_ego, a_ego, v_cruise) -> None:
+  def update(self, long_enabled: bool, long_override: bool, v_ego, a_ego, v_cruise, model_msg=None) -> None:
     self.long_enabled = long_enabled
     self.long_override = long_override
     self.v_ego = v_ego
@@ -251,7 +407,7 @@ class SmartCruiseControlMap:
     self.v_cruise = v_cruise
 
     self.update_params()
-    self.update_calculations()
+    self.update_calculations(model_msg)
 
     self.is_enabled, self.is_active = self._update_state_machine()
 

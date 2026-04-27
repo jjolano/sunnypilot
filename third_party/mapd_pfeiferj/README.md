@@ -1,2 +1,2 @@
-# MAPD implementation by pfeiferj
-https://github.com/pfeiferj/openpilot-mapd/releases/
+# mapd implementation by pfeiferj
+https://github.com/pfeiferj/mapd/releases/
