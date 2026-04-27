@@ -28,23 +28,29 @@ index b43a52f..a63ffd6 100644
 -	MaxLon           float64
 -	OneWay           bool
 -	Nodes            []TmpNode
-+	Name              string
-+	Ref               string
-+	Hazard            string
-+	TrafficControl    string
-+	TrafficControlLat float64
-+	TrafficControlLon float64
-+	MaxSpeed          float64
-+	MaxSpeedForward   float64
-+	MaxSpeedBackward  float64
-+	MaxSpeedAdvisory  float64
-+	Lanes             uint8
-+	MinLat            float64
-+	MinLon            float64
-+	MaxLat            float64
-+	MaxLon            float64
-+	OneWay            bool
-+	Nodes             []TmpNode
++	Name                      string
++	Ref                       string
++	Hazard                    string
++	TrafficControl            string
++	TrafficControlLat         float64
++	TrafficControlLon         float64
++	TrafficControlForward     string
++	TrafficControlForwardLat  float64
++	TrafficControlForwardLon  float64
++	TrafficControlBackward    string
++	TrafficControlBackwardLat float64
++	TrafficControlBackwardLon float64
++	MaxSpeed                  float64
++	MaxSpeedForward           float64
++	MaxSpeedBackward          float64
++	MaxSpeedAdvisory          float64
++	Lanes                     uint8
++	MinLat                    float64
++	MinLon                    float64
++	MaxLat                    float64
++	MaxLon                    float64
++	OneWay                    bool
++	Nodes                     []TmpNode
 +}
 +
 +func TrafficControlType(tags map[string]string) string {
@@ -92,12 +98,20 @@ index b43a52f..a63ffd6 100644
  			maxLat := float64(-90)
  			maxLon := float64(-180)
  			for i, n := range way.Nodes {
-+				if tmpWay.TrafficControl == "" {
-+					if trafficControl, ok := trafficControlNodes[n.ID]; ok {
++				if trafficControl, ok := trafficControlNodes[n.ID]; ok {
++					if tmpWay.TrafficControl == "" {
 +						tmpWay.TrafficControl = trafficControl.Type
 +						tmpWay.TrafficControlLat = trafficControl.Latitude
 +						tmpWay.TrafficControlLon = trafficControl.Longitude
 +					}
++					if tmpWay.TrafficControlForward == "" {
++						tmpWay.TrafficControlForward = trafficControl.Type
++						tmpWay.TrafficControlForwardLat = trafficControl.Latitude
++						tmpWay.TrafficControlForwardLon = trafficControl.Longitude
++					}
++					tmpWay.TrafficControlBackward = trafficControl.Type
++					tmpWay.TrafficControlBackwardLat = trafficControl.Latitude
++					tmpWay.TrafficControlBackwardLon = trafficControl.Longitude
 +				}
  				if n.Lat < minLat {
  					minLat = n.Lat
@@ -109,6 +123,14 @@ index b43a52f..a63ffd6 100644
 +			check(errors.Wrap(err, "could not set way traffic control"))
 +			w.SetTrafficControlLat(way.TrafficControlLat)
 +			w.SetTrafficControlLon(way.TrafficControlLon)
++			err = w.SetTrafficControlForward(way.TrafficControlForward)
++			check(errors.Wrap(err, "could not set way forward traffic control"))
++			w.SetTrafficControlForwardLat(way.TrafficControlForwardLat)
++			w.SetTrafficControlForwardLon(way.TrafficControlForwardLon)
++			err = w.SetTrafficControlBackward(way.TrafficControlBackward)
++			check(errors.Wrap(err, "could not set way backward traffic control"))
++			w.SetTrafficControlBackwardLat(way.TrafficControlBackwardLat)
++			w.SetTrafficControlBackwardLon(way.TrafficControlBackwardLon)
  			w.SetMaxSpeed(way.MaxSpeed)
  			w.SetMaxSpeedForward(way.MaxSpeedForward)
  			w.SetMaxSpeedBackward(way.MaxSpeedBackward)
@@ -197,14 +219,32 @@ index ae9f4b5..22abec5 100644
 +	return 0.0, false
 +}
 +
-+func trafficControlForWay(way Way, from Position, fallback Coordinates, baseDistance float64, isForward bool) TrafficControl {
++func trafficControlForDirection(way Way, isForward bool) (string, float64, float64) {
++	if isForward {
++		controlType, err := way.TrafficControlForward()
++		if err == nil && controlType != "" {
++			return controlType, way.TrafficControlForwardLat(), way.TrafficControlForwardLon()
++		}
++	} else {
++		controlType, err := way.TrafficControlBackward()
++		if err == nil && controlType != "" {
++			return controlType, way.TrafficControlBackwardLat(), way.TrafficControlBackwardLon()
++		}
++	}
++
 +	controlType, err := way.TrafficControl()
 +	if err != nil || controlType == "" {
++		return "", 0.0, 0.0
++	}
++	return controlType, way.TrafficControlLat(), way.TrafficControlLon()
++}
++
++func trafficControlForWay(way Way, from Position, fallback Coordinates, baseDistance float64, isForward bool) TrafficControl {
++	controlType, lat, lon := trafficControlForDirection(way, isForward)
++	if controlType == "" {
 +		return TrafficControl{}
 +	}
 +
-+	lat := way.TrafficControlLat()
-+	lon := way.TrafficControlLon()
 +	if lat == 0 && lon == 0 {
 +		lat = fallback.Latitude()
 +		lon = fallback.Longitude()
@@ -293,6 +333,12 @@ index b5abebd..2a5d347 100644
 +  trafficControl @14 :Text;
 +  trafficControlLat @15 :Float64;
 +  trafficControlLon @16 :Float64;
++  trafficControlForward @17 :Text;
++  trafficControlForwardLat @18 :Float64;
++  trafficControlForwardLon @19 :Float64;
++  trafficControlBackward @20 :Text;
++  trafficControlBackwardLat @21 :Float64;
++  trafficControlBackwardLon @22 :Float64;
  }
  
  struct Coordinates {

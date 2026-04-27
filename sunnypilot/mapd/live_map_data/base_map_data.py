@@ -16,10 +16,10 @@ MAX_SPEED_LIMIT = V_CRUISE_UNSET * CV.KPH_TO_MS
 
 
 class BaseMapData(ABC):
-  def __init__(self):
+  def __init__(self, extra_services: list[str] | None = None):
     self.params = Params()
 
-    self.sm = messaging.SubMaster(['liveLocationKalman'])
+    self.sm = messaging.SubMaster(['liveLocationKalman', *(extra_services or [])])
     self.pm = messaging.PubMaster(['liveMapDataSP'])
 
     self.localizer_valid = False

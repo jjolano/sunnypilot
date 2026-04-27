@@ -243,6 +243,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"MapLanes", {CLEAR_ON_ONROAD_TRANSITION, INT, "0"}},
     {"MapRoadContext", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"MapTrafficControl", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapdSettings", {PERSISTENT, JSON}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
     {"NextMapAdvisoryLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
