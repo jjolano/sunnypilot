@@ -13,6 +13,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import (
   LongControl,
   LongCtrlState,
   apply_launch_envelope,
+  get_launch_breakaway_accel,
   get_launch_envelope_blend,
   launch_breakaway_active,
   launch_should_stop_hold_active,
@@ -112,6 +113,15 @@ def test_launch_should_stop_hold_only_applies_immediately_after_release():
   assert not launch_should_stop_hold_active(0.0, False, 0.0, LAUNCH_ENVELOPE_MIN_ACCEL - 1e-3)
 
 
+def test_launch_breakaway_accel_scales_with_target_accel():
+  accel_limits = (-3.0, 2.0)
+
+  mild_launch = get_launch_breakaway_accel(0.18, accel_limits)
+  assert LAUNCH_ENVELOPE_MIN_ACCEL < mild_launch < LAUNCH_BREAKAWAY_ACCEL
+  assert get_launch_breakaway_accel(1.0, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
+  assert get_launch_breakaway_accel(1.0, (-3.0, 0.25)) == pytest.approx(0.25)
+
+
 def test_apply_launch_envelope_only_shapes_positive_accel():
   accel_limits = (-3.0, 2.0)
   assert apply_launch_envelope(-0.2, accel_limits, 0.0, 0.0) == pytest.approx(-0.2)
@@ -125,12 +135,13 @@ def test_pid_launch_arms_and_caps_after_stop():
   loc = LongControl(CP, CP_SP)
   loc.long_control_state = LongCtrlState.stopping
 
-  output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=1.0, should_stop=False, accel_limits=(-3.0, 2.0))
+  a_target = 1.0
+  output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=a_target, should_stop=False, accel_limits=(-3.0, 2.0))
 
   assert loc.long_control_state == LongCtrlState.pid
   assert loc.launch_envelope_active
   assert not loc.launch_breakaway_done
-  assert output_accel == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(a_target, (-3.0, 2.0)))
 
 
 def test_starting_state_launch_arms_and_caps_after_stop():
@@ -139,12 +150,13 @@ def test_starting_state_launch_arms_and_caps_after_stop():
   loc = LongControl(CP, CP_SP)
   loc.long_control_state = LongCtrlState.stopping
 
-  output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=0.2, should_stop=False, accel_limits=(-3.0, 2.0))
+  a_target = 0.2
+  output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=a_target, should_stop=False, accel_limits=(-3.0, 2.0))
 
   assert loc.long_control_state == LongCtrlState.starting
   assert loc.launch_envelope_active
   assert not loc.launch_breakaway_done
-  assert output_accel == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(a_target, (-3.0, 2.0)))
 
 
 def test_breakaway_holds_until_response_then_hands_off_to_taper():
@@ -154,14 +166,15 @@ def test_breakaway_holds_until_response_then_hands_off_to_taper():
   loc.long_control_state = LongCtrlState.stopping
   accel_limits = (-3.0, 2.0)
 
-  output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=1.0, should_stop=False, accel_limits=accel_limits)
+  a_target = 1.0
+  output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=a_target, should_stop=False, accel_limits=accel_limits)
   assert output_accel == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
 
   for _ in range(int(LAUNCH_BREAKAWAY_MIN_TIME / DT_CTRL) + 1):
-    output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=1.0, should_stop=False, accel_limits=accel_limits)
+    output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=a_target, should_stop=False, accel_limits=accel_limits)
   assert output_accel == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
 
-  taper_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.1), a_target=1.0, should_stop=False, accel_limits=accel_limits)
+  taper_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.1), a_target=a_target, should_stop=False, accel_limits=accel_limits)
 
   assert loc.launch_breakaway_done
   assert taper_accel == pytest.approx(LAUNCH_ENVELOPE_MAX_ACCEL)
@@ -210,7 +223,7 @@ def test_should_stop_reassertion_is_ignored_during_launch_hold():
 
   assert loc.long_control_state == LongCtrlState.pid
   assert loc.launch_envelope_active
-  assert output_accel == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL, (-3.0, 2.0)))
 
 
 def test_should_stop_reassertion_returns_after_launch_hold():

@@ -16,6 +16,8 @@ LAUNCH_BREAKAWAY_V_EGO = 0.2
 LAUNCH_SHOULD_STOP_HOLD_TIME = 0.25
 LAUNCH_ENVELOPE_TIME_BP = [0.0, 0.5]
 LAUNCH_ENVELOPE_V_EGO_BP = [0.0, 0.6]
+LAUNCH_BREAKAWAY_TARGET_BP = [LAUNCH_ENVELOPE_MIN_ACCEL, LAUNCH_ENVELOPE_MAX_ACCEL]
+LAUNCH_BREAKAWAY_ACCEL_BP = [LAUNCH_ENVELOPE_MIN_ACCEL, LAUNCH_BREAKAWAY_ACCEL]
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
@@ -65,6 +67,11 @@ def launch_breakaway_active(v_ego, a_ego, launch_elapsed):
   if v_ego >= LAUNCH_BREAKAWAY_V_EGO or launch_elapsed >= LAUNCH_BREAKAWAY_MAX_TIME:
     return False
   return launch_elapsed < LAUNCH_BREAKAWAY_MIN_TIME or a_ego < LAUNCH_BREAKAWAY_A_EGO
+
+
+def get_launch_breakaway_accel(a_target, accel_limits):
+  breakaway_accel = np.interp(max(a_target, 0.0), LAUNCH_BREAKAWAY_TARGET_BP, LAUNCH_BREAKAWAY_ACCEL_BP)
+  return float(np.clip(breakaway_accel, 0.0, accel_limits[1]))
 
 
 def launch_should_stop_hold_active(v_ego, brake_pressed, launch_elapsed, a_target):
@@ -147,7 +154,7 @@ class LongControl:
 
     if self.launch_envelope_active:
       if not self.launch_breakaway_done and launch_breakaway_active(CS.vEgo, CS.aEgo, self.launch_breakaway_elapsed):
-        output_accel = float(np.clip(LAUNCH_BREAKAWAY_ACCEL, 0.0, accel_limits[1]))
+        output_accel = get_launch_breakaway_accel(a_target, accel_limits)
         self.launch_breakaway_elapsed += DT_CTRL
       else:
         self.launch_breakaway_done = True
