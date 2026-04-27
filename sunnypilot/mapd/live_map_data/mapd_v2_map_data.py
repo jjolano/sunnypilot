@@ -9,6 +9,14 @@ from openpilot.sunnypilot.navd.helpers import Coordinate
 
 
 ROAD_CONTEXT_BY_VALUE = ("freeway", "city", "unknown")
+TRAFFIC_CONTROL_HAZARDS = {
+  "stop",
+  "stop_sign",
+  "traffic_light",
+  "traffic_lights",
+  "traffic_signal",
+  "traffic_signals",
+}
 
 
 def _getattr_or_default(msg, name: str, default=None):
@@ -47,6 +55,12 @@ def _road_context_name(context) -> str:
     name = str(context or "").split(".")[-1].strip().lower()
 
   return name if name in ROAD_CONTEXT_BY_VALUE else ""
+
+
+def _traffic_control_hazard(hazard) -> str:
+  hazard_text = _text(hazard)
+  normalized = hazard_text.strip().lower().replace("-", "_").replace(" ", "_")
+  return hazard_text if normalized in TRAFFIC_CONTROL_HAZARDS else ""
 
 
 class MapdV2MapData(BaseMapData):
@@ -97,10 +111,11 @@ class MapdV2MapData(BaseMapData):
             max(0.0, _float(_getattr_or_default(self.mapd_out, "nextHazardDistance"))))
 
   def get_current_traffic_control_and_distance(self) -> tuple[str, float]:
-    return "", 0.0
+    return _traffic_control_hazard(_getattr_or_default(self.mapd_out, "hazard")), 0.0
 
   def get_next_traffic_control_and_distance(self) -> tuple[str, float]:
-    return "", 0.0
+    traffic_control = _traffic_control_hazard(_getattr_or_default(self.mapd_out, "nextHazard"))
+    return traffic_control, max(0.0, _float(_getattr_or_default(self.mapd_out, "nextHazardDistance"))) if traffic_control else 0.0
 
   def _write_map_compat_params(self) -> None:
     target_velocities = []

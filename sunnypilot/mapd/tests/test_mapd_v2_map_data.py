@@ -133,6 +133,20 @@ def test_mapd_v2_publish_populates_supported_live_map_fields():
   assert not live_map_data.trafficControlAheadValid
 
 
+def test_mapd_v2_publish_exposes_supported_hazards_as_traffic_controls():
+  data = build_map_data(make_mapd_out(hazard="stop_sign", nextHazard="traffic_signal", nextHazardDistance=35.0))
+
+  data.publish()
+
+  live_map_data = data.pm.messages[0][1].liveMapDataSP
+  assert live_map_data.trafficControlValid
+  assert live_map_data.trafficControl == "stop_sign"
+  assert live_map_data.trafficControlDistance == pytest.approx(0.0)
+  assert live_map_data.trafficControlAheadValid
+  assert live_map_data.trafficControlAhead == "traffic_signal"
+  assert live_map_data.trafficControlAheadDistance == pytest.approx(35.0)
+
+
 def test_mapd_v2_compat_params_write_path_and_advisory_data():
   path = [
     SimpleNamespace(latitude=1.0, longitude=2.0, targetVelocity=14.0),
