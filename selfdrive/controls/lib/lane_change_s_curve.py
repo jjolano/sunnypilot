@@ -131,7 +131,7 @@ class LaneChangeSCurveController:
     direction_matches = (inputs.left_blinker and inputs.lane_change_direction == LaneChangeDirection.left) or (
       inputs.right_blinker and inputs.lane_change_direction == LaneChangeDirection.right
     )
-    return not inputs.lat_active or inputs.steering_pressed or not one_blinker or not direction_matches
+    return not inputs.lat_active or not one_blinker or not direction_matches
 
   @staticmethod
   def _lane_change_active(inputs: LaneChangeSCurveInputs) -> bool:
