@@ -102,16 +102,32 @@ def test_early_finishing_blends_back_to_model_curvature():
   assert finishing_results[-1].desired_curvature == pytest.approx(finishing_inputs.model_curvature)
 
 
-def test_hard_abort_resets_immediately():
+@pytest.mark.parametrize("abort_overrides", [
+  {"lat_active": False},
+  {"left_blinker": False, "right_blinker": False},
+  {"left_blinker": True, "right_blinker": True},
+  {"left_blinker": False, "right_blinker": True, "lane_change_direction": LaneChangeDirection.left},
+])
+def test_hard_abort_resets_immediately(abort_overrides):
   controller = LaneChangeSCurveController()
   inputs = make_inputs()
   run_steps(controller, inputs, 1.0)
 
-  result = controller.update(make_inputs(steering_pressed=True))
+  abort_inputs = make_inputs(model_curvature=0.0003, **abort_overrides)
+  result = controller.update(abort_inputs)
 
   assert result.blend == pytest.approx(0.0)
   assert not result.active
-  assert result.desired_curvature == pytest.approx(inputs.model_curvature)
+  assert result.desired_curvature == pytest.approx(abort_inputs.model_curvature)
+
+
+def test_manual_torque_start_does_not_abort_scripted_lane_change():
+  controller = LaneChangeSCurveController()
+
+  result = controller.update(make_inputs(steering_pressed=True))
+
+  assert result.blend > 0.0
+  assert result.active
 
 
 def test_ineligible_entry_stays_model_driven():
