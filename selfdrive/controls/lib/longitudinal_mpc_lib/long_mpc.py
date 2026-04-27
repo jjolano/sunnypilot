@@ -103,6 +103,17 @@ LEAD_CRAWL_ACCEL_MAX = 0.6
 LEAD_CRAWL_ACCEL_LIMIT = 0.75
 LEAD_CRAWL_BRAKE_MAX = 0.75
 LEAD_CRAWL_COST = 1.2
+LEAD_SURGE_DAMPING_V_EGO_BP = [0.5, 1.5, 6.0, 8.0]
+LEAD_SURGE_DAMPING_V_LEAD_BP = [0.5, 1.0]
+LEAD_SURGE_DAMPING_GAP_EXCESS_BP = [0.3, 2.0]
+LEAD_SURGE_DAMPING_OPENING_BP = [0.2, 1.2]
+LEAD_SURGE_DAMPING_DECEL_BP = [0.2, 0.8]
+LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX = 1.0
+LEAD_SURGE_DAMPING_DECEL_MEMORY_TIME = 2.0
+LEAD_SURGE_DAMPING_CLEAR_PULLAWAY_SPEED = 2.0
+LEAD_SURGE_DAMPING_CLEAR_PULLAWAY_ACCEL = 0.6
+LEAD_SURGE_DAMPING_ACCEL_MAX = 0.25
+LEAD_SURGE_DAMPING_COST = 0.6
 LEAD_STOP_APPROACH_V_EGO_BP = [4.0, 8.0]
 LEAD_STOP_APPROACH_V_LEAD_BP = [0.3, 1.0]
 LEAD_STOP_APPROACH_REQUIRED_DECEL_BP = [0.6, 1.4]
@@ -351,6 +362,42 @@ def get_lead_crawl_accel_max(x_lead, v_ego, v_lead, a_lead, t_follow):
   opening_blend = np.interp(opening_speed, LEAD_CRAWL_OPENING_BP, [0.0, 1.0])
   limit_blend = speed_blend * moving_blend * gap_blend * urgency_blend * opening_blend
   return ACCEL_MAX - limit_blend * (ACCEL_MAX - LEAD_CRAWL_ACCEL_LIMIT)
+
+
+def get_lead_surge_damping_target(x_lead, v_ego, v_lead, a_lead, t_follow, decel_memory):
+  x_lead = np.asarray(x_lead, dtype=float)
+  v_lead = np.asarray(v_lead, dtype=float)
+  a_lead = np.asarray(a_lead, dtype=float)
+  opening_speed = np.maximum(v_lead - v_ego, 0.0)
+  gap_excess = x_lead - get_desired_follow_distance(v_ego, v_lead, t_follow)
+
+  speed_blend = np.interp(v_ego, LEAD_SURGE_DAMPING_V_EGO_BP, [0.0, 1.0, 1.0, 0.0])
+  moving_blend = np.interp(v_lead, LEAD_SURGE_DAMPING_V_LEAD_BP, [0.0, 1.0])
+  gap_blend = np.interp(gap_excess, LEAD_SURGE_DAMPING_GAP_EXCESS_BP, [0.0, 1.0])
+  opening_blend = np.interp(opening_speed, LEAD_SURGE_DAMPING_OPENING_BP, [0.0, 1.0])
+  decel_blend = np.interp(np.clip(decel_memory, 0.0, LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX), LEAD_SURGE_DAMPING_DECEL_BP, [0.0, 1.0])
+  urgency_blend = 1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead)
+  clear_pullaway_blend = np.where(
+    (opening_speed >= LEAD_SURGE_DAMPING_CLEAR_PULLAWAY_SPEED) | (a_lead >= LEAD_SURGE_DAMPING_CLEAR_PULLAWAY_ACCEL),
+    0.0,
+    1.0,
+  )
+  damping_blend = speed_blend * moving_blend * gap_blend * opening_blend * decel_blend * urgency_blend * clear_pullaway_blend
+  cost = LEAD_SURGE_DAMPING_COST * damping_blend
+  target = np.where(cost > 0.0, LEAD_SURGE_DAMPING_ACCEL_MAX, 0.0)
+  return target, cost
+
+
+def get_selected_lead_targets(lead_0_targets, lead_1_targets, lead_0_costs, lead_1_costs, dominant_obstacle):
+  targets = np.zeros_like(lead_0_targets)
+  costs = np.zeros_like(lead_0_costs)
+  lead_0_dominant = dominant_obstacle == 0
+  lead_1_dominant = dominant_obstacle == 1
+  targets[lead_0_dominant] = lead_0_targets[lead_0_dominant]
+  targets[lead_1_dominant] = lead_1_targets[lead_1_dominant]
+  costs[lead_0_dominant] = lead_0_costs[lead_0_dominant]
+  costs[lead_1_dominant] = lead_1_costs[lead_1_dominant]
+  return targets, costs
 
 
 def get_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
@@ -619,6 +666,7 @@ class LongitudinalMpc:
     self.x0 = np.zeros(X_DIM)
     self.lead_departure_anchors = np.full(2, np.nan)
     self.lead_gap_comfort_active = np.zeros(2, dtype=bool)
+    self.lead_surge_decel_memories = np.zeros(2)
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights, accel_match_costs=None):
@@ -725,6 +773,16 @@ class LongitudinalMpc:
     comfort_horizon_blend = np.interp(T_IDXS, LEAD_GAP_COMFORT_HORIZON_BP, [1.0, 1.0, 0.0])
     return ACCEL_MIN + comfort_horizon_blend * (comfort_a_min - ACCEL_MIN)
 
+  def update_lead_surge_decel_memory(self, lead_idx, lead):
+    if lead is None or not lead.status:
+      self.lead_surge_decel_memories[lead_idx] = 0.0
+      return 0.0
+
+    decay = LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX * self.dt / LEAD_SURGE_DAMPING_DECEL_MEMORY_TIME
+    memory = max(0.0, self.lead_surge_decel_memories[lead_idx] - decay)
+    self.lead_surge_decel_memories[lead_idx] = max(memory, min(max(-float(lead.aLeadK), 0.0), LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX))
+    return self.lead_surge_decel_memories[lead_idx]
+
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
@@ -733,6 +791,8 @@ class LongitudinalMpc:
     if not np.isfinite(v_cruise):
       v_cruise = 0.0
 
+    lead_0_surge_decel_memory = self.update_lead_surge_decel_memory(0, radarstate.leadOne)
+    lead_1_surge_decel_memory = self.update_lead_surge_decel_memory(1, radarstate.leadTwo)
     lead_xv_0, lead_0_a, lead_0_a_traj = self.process_lead(radarstate.leadOne)
     lead_xv_1, lead_1_a, lead_1_a_traj = self.process_lead(radarstate.leadTwo)
 
@@ -818,24 +878,27 @@ class LongitudinalMpc:
     lead_1_crawl_accel_max = get_lead_crawl_accel_max(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow)
     lead_0_stop_targets, lead_0_stop_costs = get_lead_stop_approach_comfort_target(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow)
     lead_1_stop_targets, lead_1_stop_costs = get_lead_stop_approach_comfort_target(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow)
+    lead_0_surge_targets, lead_0_surge_costs = get_lead_surge_damping_target(
+      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow, lead_0_surge_decel_memory
+    )
+    lead_1_surge_targets, lead_1_surge_costs = get_lead_surge_damping_target(
+      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow, lead_1_surge_decel_memory
+    )
     lead_0_crawl_selected = lead_0_crawl_costs >= lead_1_crawl_costs
     crawl_targets = np.where(lead_0_crawl_selected, lead_0_crawl_targets, lead_1_crawl_targets)
     crawl_costs = np.where(lead_0_crawl_selected, lead_0_crawl_costs, lead_1_crawl_costs)
     lead_0_stop_selected = lead_0_stop_costs >= lead_1_stop_costs
     stop_targets = np.where(lead_0_stop_selected, lead_0_stop_targets, lead_1_stop_targets)
     stop_costs = np.where(lead_0_stop_selected, lead_0_stop_costs, lead_1_stop_costs)
-
-    accel_match_targets = np.zeros(N + 1)
-    accel_match_costs = np.zeros(N + 1)
-    lead_0_dominant = dominant_obstacle == 0
-    lead_1_dominant = dominant_obstacle == 1
-    accel_match_targets[lead_0_dominant] = lead_0_accel_targets[lead_0_dominant]
-    accel_match_targets[lead_1_dominant] = lead_1_accel_targets[lead_1_dominant]
-    accel_match_costs[lead_0_dominant] = lead_0_accel_costs[lead_0_dominant]
-    accel_match_costs[lead_1_dominant] = lead_1_accel_costs[lead_1_dominant]
-    combined_accel_costs = accel_match_costs + crawl_costs + stop_costs
+    accel_match_targets, accel_match_costs = get_selected_lead_targets(
+      lead_0_accel_targets, lead_1_accel_targets, lead_0_accel_costs, lead_1_accel_costs, dominant_obstacle
+    )
+    surge_targets, surge_costs = get_selected_lead_targets(
+      lead_0_surge_targets, lead_1_surge_targets, lead_0_surge_costs, lead_1_surge_costs, dominant_obstacle
+    )
+    combined_accel_costs = accel_match_costs + crawl_costs + stop_costs + surge_costs
     combined_accel_targets = np.divide(
-      accel_match_targets * accel_match_costs + crawl_targets * crawl_costs + stop_targets * stop_costs,
+      accel_match_targets * accel_match_costs + crawl_targets * crawl_costs + stop_targets * stop_costs + surge_targets * surge_costs,
       combined_accel_costs,
       out=np.zeros(N + 1),
       where=combined_accel_costs > 0.0,

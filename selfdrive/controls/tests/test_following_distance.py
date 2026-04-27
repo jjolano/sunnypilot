@@ -25,6 +25,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_CRAWL_ACCEL_MAX,
   LEAD_CRAWL_ACCEL_LIMIT,
   LEAD_CRAWL_BRAKE_MAX,
+  LEAD_SURGE_DAMPING_ACCEL_MAX,
+  LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX,
   LEAD_STOP_APPROACH_DECEL_CAP,
   LEAD_STOP_RUNWAY_BRAKE,
   STOP_DISTANCE,
@@ -48,6 +50,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_danger_distance,
   get_lead_crawl_accel_max,
   get_lead_crawl_comfort_target,
+  get_lead_surge_damping_target,
   get_lead_stop_approach_comfort_target,
   get_lead_stop_runway_preference,
   get_lead_stop_runway_required_decel,
@@ -59,9 +62,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_time_gap_target,
   get_moving_lead_stop_reserve,
   get_safe_obstacle_distance,
+  get_selected_lead_targets,
   get_stopped_lead_buffer,
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
+  LongitudinalMpc,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_ACCEL_MAX,
@@ -520,6 +525,70 @@ def test_crawl_accel_limit_only_applies_to_opening_lead():
   assert get_lead_crawl_accel_max(12.0, 3.0, 4.5, 0.3, t_follow) == pytest.approx(LEAD_CRAWL_ACCEL_LIMIT)
   assert get_lead_crawl_accel_max(12.0, 3.0, 3.0, 0.0, t_follow) == pytest.approx(ACCEL_MAX)
   assert get_lead_crawl_accel_max(30.0, 3.0, 4.5, 0.3, t_follow) == pytest.approx(ACCEL_MAX)
+
+
+def test_surge_damping_stays_off_for_steady_crawl():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_surge_damping_target(12.0, 3.0, 3.2, 0.0, t_follow, decel_memory=0.0)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_surge_damping_softens_post_decel_opening_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_surge_damping_target(12.0, 3.0, 3.7, 0.2, t_follow, decel_memory=0.8)
+
+  assert 0.0 < target <= LEAD_SURGE_DAMPING_ACCEL_MAX
+  assert target < LEAD_CRAWL_ACCEL_MAX
+  assert cost > 0.0
+
+
+def test_surge_damping_blocks_standstill_and_short_gaps():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  desired_gap = get_desired_follow_distance(3.0, 3.7, t_follow)
+
+  _, standstill_cost = get_lead_surge_damping_target(12.0, 0.0, 1.5, 0.3, t_follow, decel_memory=0.8)
+  _, short_gap_cost = get_lead_surge_damping_target(desired_gap - 0.2, 3.0, 3.7, 0.3, t_follow, decel_memory=0.8)
+
+  assert standstill_cost == pytest.approx(0.0)
+  assert short_gap_cost == pytest.approx(0.0)
+
+
+def test_surge_damping_exits_for_clear_pullaway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_surge_damping_target(14.0, 3.0, 5.5, 0.8, t_follow, decel_memory=0.8)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_surge_damping_decel_memory_decays_and_resets():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, aLeadK=-0.8)
+
+  assert mpc.update_lead_surge_decel_memory(0, lead) == pytest.approx(0.8)
+
+  lead.aLeadK = 0.0
+  decayed_memory = mpc.update_lead_surge_decel_memory(0, lead)
+
+  assert 0.0 < decayed_memory < 0.8
+  assert mpc.update_lead_surge_decel_memory(0, SimpleNamespace(status=False)) == pytest.approx(0.0)
+  assert mpc.lead_surge_decel_memories[0] == pytest.approx(0.0)
+  assert mpc.update_lead_surge_decel_memory(1, SimpleNamespace(status=True, aLeadK=-2.0)) == pytest.approx(LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX)
+
+
+def test_selected_lead_targets_ignore_non_dominant_lead():
+  lead_0_targets = np.array([0.0, 0.0, 0.0])
+  lead_1_targets = np.array([LEAD_SURGE_DAMPING_ACCEL_MAX, LEAD_SURGE_DAMPING_ACCEL_MAX, LEAD_SURGE_DAMPING_ACCEL_MAX])
+  lead_0_costs = np.array([0.0, 0.0, 0.0])
+  lead_1_costs = np.array([0.6, 0.6, 0.6])
+  dominant_obstacle = np.array([0, 2, 0])
+
+  targets, costs = get_selected_lead_targets(lead_0_targets, lead_1_targets, lead_0_costs, lead_1_costs, dominant_obstacle)
+
+  assert targets.tolist() == pytest.approx([0.0, 0.0, 0.0])
+  assert costs.tolist() == pytest.approx([0.0, 0.0, 0.0])
 
 
 def test_stop_approach_comfort_targets_moderate_stopped_lead_brake():

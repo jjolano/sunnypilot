@@ -484,6 +484,28 @@ def test_crawl_opening_lead_uses_gentle_accel():
   assert np.min(output[:, 6]) > STOP_DISTANCE
 
 
+def test_steady_crawl_does_not_hang_back():
+  crawl_speed = 3.0
+  initial_distance_lead = get_desired_follow_distance(crawl_speed, crawl_speed, get_T_FOLLOW())
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "steady crawl lead",
+      duration=16.0,
+      initial_speed=crawl_speed,
+      lead_relevancy=True,
+      initial_distance_lead=initial_distance_lead,
+      speed_lead_values=[crawl_speed, crawl_speed],
+      cruise_values=[6.0, 6.0],
+      breakpoints=[0.0, 16.0],
+    )
+  )
+
+  settled_window = output[:, 0] >= 8.0
+  assert np.mean(output[settled_window, 3]) == pytest.approx(crawl_speed, abs=0.25)
+  assert output[-1, 6] == pytest.approx(initial_distance_lead, abs=0.8)
+  assert np.max(output[settled_window, 6]) < initial_distance_lead + 0.8
+
+
 def test_lead_acceleration_after_slowdown_resumes_accel_promptly():
   output = evaluate_maneuver_output(
     Maneuver(
