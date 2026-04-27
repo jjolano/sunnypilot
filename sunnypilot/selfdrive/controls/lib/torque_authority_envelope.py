@@ -60,6 +60,7 @@ class EnvelopeInputs:
   lookahead_lateral_jerk: float
   tracking_torque_error: float
   lane_change_active: bool
+  max_output: float = 1.0
 
 
 @dataclass
@@ -129,6 +130,8 @@ class TorqueAuthorityEnvelope:
     if inputs.active and self.sign_latch != 0.0 and self.phase != Phase.IDLE and not override_release:
       floor_torque = self.phase_gain * applied_floor
       output_torque = self.sign_latch * max(abs(command_core), floor_torque)
+    output_limit = max(abs(inputs.max_output), 0.0)
+    output_torque = clamp(output_torque, -output_limit, output_limit)
     assist_torque = output_torque - command_core
     release_active = override_release or self.phase == Phase.TAPER_OUT
 

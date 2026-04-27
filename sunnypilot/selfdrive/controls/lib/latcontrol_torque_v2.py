@@ -140,6 +140,7 @@ class LatControlTorque(LatControl):
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
         tracking_torque_error=tracking_torque_error,
         lane_change_active=lane_change_active,
+        max_output=self.steer_max,
       )
     )
     output_torque = envelope_result.output_torque if active else 0.0

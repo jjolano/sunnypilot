@@ -87,6 +87,26 @@ def test_disturbance_bias_builds_and_decays():
   assert result.disturbance_bias < biased
 
 
+def test_output_torque_is_clamped_to_max_output():
+  envelope = TorqueAuthorityEnvelope(0.01)
+  result = None
+  for _ in range(150):
+    result = envelope.update(
+      make_inputs(
+        max_output=1.0,
+        nominal_torque=0.98,
+        desired_lateral_jerk=0.0,
+        actual_lateral_jerk=0.0,
+        lookahead_lateral_jerk=0.0,
+        actual_lateral_accel=0.2,
+        tracking_torque_error=0.06,
+      )
+    )
+
+  assert result.disturbance_bias > 0.0
+  assert result.output_torque <= 1.0
+
+
 def test_bump_freezes_learning():
   envelope = TorqueAuthorityEnvelope(0.01)
   prime_hold(envelope)
