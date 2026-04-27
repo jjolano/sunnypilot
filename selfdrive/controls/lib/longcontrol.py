@@ -70,6 +70,8 @@ def launch_breakaway_active(v_ego, a_ego, launch_elapsed):
 
 
 def get_launch_breakaway_accel(a_target, accel_limits):
+  if a_target < LAUNCH_ENVELOPE_MIN_ACCEL:
+    return 0.0
   breakaway_accel = np.interp(max(a_target, 0.0), LAUNCH_BREAKAWAY_TARGET_BP, LAUNCH_BREAKAWAY_ACCEL_BP)
   return float(np.clip(breakaway_accel, 0.0, accel_limits[1]))
 
@@ -127,7 +129,7 @@ class LongControl:
     )
     if not active or CS.brakePressed or self.long_control_state in (LongCtrlState.off, LongCtrlState.stopping):
       self.reset_launch_envelope()
-    elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and not effective_should_stop:
+    elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and not effective_should_stop and a_target >= LAUNCH_ENVELOPE_MIN_ACCEL:
       self.launch_envelope_active = True
       self.launch_breakaway_elapsed = 0.0
       self.launch_taper_elapsed = 0.0
@@ -145,7 +147,7 @@ class LongControl:
       self.pid.reset()
 
     elif self.long_control_state == LongCtrlState.starting:
-      output_accel = self.CP.startAccel
+      output_accel = self.CP.startAccel if a_target >= LAUNCH_ENVELOPE_MIN_ACCEL else a_target
       self.pid.reset()
 
     else:  # LongCtrlState.pid
@@ -153,7 +155,9 @@ class LongControl:
       output_accel = self.pid.update(error, speed=CS.vEgo, feedforward=a_target)
 
     if self.launch_envelope_active:
-      if not self.launch_breakaway_done and launch_breakaway_active(CS.vEgo, CS.aEgo, self.launch_breakaway_elapsed):
+      if a_target < LAUNCH_ENVELOPE_MIN_ACCEL:
+        self.reset_launch_envelope()
+      elif not self.launch_breakaway_done and launch_breakaway_active(CS.vEgo, CS.aEgo, self.launch_breakaway_elapsed):
         output_accel = get_launch_breakaway_accel(a_target, accel_limits)
         self.launch_breakaway_elapsed += DT_CTRL
       else:
