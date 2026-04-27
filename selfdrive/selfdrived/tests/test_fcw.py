@@ -60,6 +60,24 @@ def test_model_fcw_is_suppressed_when_op_is_already_braking_hard_on_confirmed_le
   )
 
 
+def test_model_fcw_is_suppressed_for_selected_lead_two_without_lead_one():
+  radar_state = make_radar_state(lead_two=make_lead(status=True, model_prob=0.98))
+  longitudinal_plan = make_longitudinal_plan(source=LEAD1_SOURCE, has_lead=False, a_target=-2.5)
+  car_state = make_car_state(a_ego=-2.0)
+
+  assert should_suppress_model_fcw(
+    True,
+    True,
+    car_state.aEgo,
+    longitudinal_plan.aTarget,
+    longitudinal_plan.hasLead,
+    longitudinal_plan.longitudinalPlanSource,
+    LEAD0_SOURCE,
+    LEAD1_SOURCE,
+    radar_state,
+  )
+
+
 def test_model_fcw_is_not_suppressed_without_a_confirmed_lead():
   radar_state = make_radar_state(lead_one=make_lead(status=True, model_prob=0.6))
   longitudinal_plan = make_longitudinal_plan(source=LEAD0_SOURCE, has_lead=True, a_target=-2.5)
