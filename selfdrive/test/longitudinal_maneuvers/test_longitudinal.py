@@ -244,6 +244,25 @@ def run_lateral_exit_simulation(lead_y_rel_values, breakpoints, duration=8.0):
   )
 
 
+def run_lateral_exit_slowing_simulation(lead_y_rel_values, duration=5.5):
+  initial_speed = 15.0
+  breakpoints = [0.0, 2.0, 2.6, 3.8, 9.0]
+  initial_distance_lead = get_desired_follow_distance(initial_speed, initial_speed, get_T_FOLLOW()) + 30.0
+  return evaluate_maneuver_output(
+    Maneuver(
+      "slowing lead after lateral exit",
+      duration=duration,
+      initial_speed=initial_speed,
+      lead_relevancy=True,
+      initial_distance_lead=initial_distance_lead,
+      speed_lead_values=[initial_speed, initial_speed, initial_speed, 8.0, 8.0],
+      lead_y_rel_values=lead_y_rel_values,
+      cruise_values=[22.0 for _ in breakpoints],
+      breakpoints=breakpoints,
+    )
+  )
+
+
 def test_lead_creep_then_stop_does_not_launch_from_gap_noise():
   output = evaluate_maneuver_output(
     Maneuver(
@@ -651,6 +670,17 @@ def test_lateral_lead_exit_hands_off_to_revealed_stopped_lead():
   assert np.max(output[(output[:, 0] >= 2.5) & (output[:, 0] <= 2.9), 5]) <= 0.1
   assert np.min(output[reveal_window, 5]) < -1.0
   assert np.min(output[reveal_window, 8]) > 4.0
+
+def test_lateral_exited_slowing_lead_does_not_force_hard_brake():
+  exiting_output = run_lateral_exit_slowing_simulation([0.0, 0.0, 2.2, 2.2, 2.2])
+  in_path_output = run_lateral_exit_slowing_simulation([0.0, 0.0, 0.0, 0.0, 0.0])
+
+  release_window = (exiting_output[:, 0] >= 3.8) & (exiting_output[:, 0] <= 5.5)
+  in_path_window = (in_path_output[:, 0] >= 3.8) & (in_path_output[:, 0] <= 5.5)
+
+  assert np.min(exiting_output[release_window, 5]) > -0.8
+  assert np.min(in_path_output[in_path_window, 5]) < -1.5
+  assert np.min(exiting_output[release_window, 5]) > np.min(in_path_output[in_path_window, 5]) + 1.0
 
 
 @parameterized_class(("e2e", "force_decel"), itertools.product([True, False], repeat=2))

@@ -306,6 +306,16 @@ def get_lead_transition_accel_max(guard_timer):
   return np.interp(T_IDXS, [guard_timer, guard_timer + LEAD_TRANSITION_GUARD_FADE_TIME], [LEAD_TRANSITION_GUARD_ACCEL_MAX, ACCEL_MAX])
 
 
+def get_lead_transition_obstacle_release(release_blend, guard_timer):
+  guard_blend = float(np.interp(guard_timer, [0.0, LEAD_TRANSITION_GUARD_FADE_TIME], [0.0, 1.0]))
+  return release_blend * (1.0 - guard_blend)
+
+
+def get_lead_transition_adjusted_accel(a_lead, release_blend):
+  adjusted_accel = np.where(a_lead < 0.0, a_lead * (1.0 - release_blend), a_lead)
+  return float(adjusted_accel) if np.ndim(adjusted_accel) == 0 else adjusted_accel
+
+
 def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
   legacy_runway = x_lead - get_desired_follow_distance(v_ego, v_lead, t_follow)
   closing_speed = np.maximum(v_ego - v_lead, 0.0)
@@ -775,7 +785,7 @@ class LongitudinalMpc:
     v_lead = np.clip(v_lead, 0.0, 1e8)
     a_lead = np.clip(a_lead, -10.0, 5.0)
     lead_xv, a_lead_traj = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
-    return lead_xv, a_lead, a_lead_traj
+    return lead_xv, a_lead, a_lead_tau, a_lead_traj
 
   def get_lead_departure_state(self, lead_idx, lead):
     v_ego = self.x0[1]
@@ -895,8 +905,17 @@ class LongitudinalMpc:
     lead_1_surge_decel_memory = self.update_lead_surge_decel_memory(1, radarstate.leadTwo)
     lead_0_transition_release = self.update_lead_transition_state(0, radarstate.leadOne)
     lead_1_transition_release = self.update_lead_transition_state(1, radarstate.leadTwo)
-    lead_xv_0, lead_0_a, lead_0_a_traj = self.process_lead(radarstate.leadOne)
-    lead_xv_1, lead_1_a, lead_1_a_traj = self.process_lead(radarstate.leadTwo)
+
+    lead_xv_0, lead_0_a, lead_0_a_tau, lead_0_a_traj = self.process_lead(radarstate.leadOne)
+    lead_xv_1, lead_1_a, lead_1_a_tau, lead_1_a_traj = self.process_lead(radarstate.leadTwo)
+    lead_0_brake_a = get_lead_transition_adjusted_accel(lead_0_a, lead_0_transition_release)
+    lead_1_brake_a = get_lead_transition_adjusted_accel(lead_1_a, lead_1_transition_release)
+    lead_brake_xv_0, lead_0_brake_a_traj = lead_xv_0, lead_0_a_traj
+    lead_brake_xv_1, lead_1_brake_a_traj = lead_xv_1, lead_1_a_traj
+    if lead_0_brake_a != lead_0_a:
+      lead_brake_xv_0, lead_0_brake_a_traj = self.extrapolate_lead(lead_xv_0[0, 0], lead_xv_0[0, 1], lead_0_brake_a, lead_0_a_tau)
+    if lead_1_brake_a != lead_1_a:
+      lead_brake_xv_1, lead_1_brake_a_traj = self.extrapolate_lead(lead_xv_1[0, 0], lead_xv_1[0, 1], lead_1_brake_a, lead_1_a_tau)
 
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
@@ -917,10 +936,10 @@ class LongitudinalMpc:
       lead_0_stopped_buffer *= lead_0_departure_blend
     if lead_1_departure_armed:
       lead_1_stopped_buffer *= lead_1_departure_blend
-    lead_0_stopped_buffer *= 1.0 - LEAD_STOP_RUNWAY_STOPPED_BUFFER_FADE * get_lead_stop_runway_preference(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], t_follow, lead_0_a_traj)
-    lead_1_stopped_buffer *= 1.0 - LEAD_STOP_RUNWAY_STOPPED_BUFFER_FADE * get_lead_stop_runway_preference(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], t_follow, lead_1_a_traj)
-    lead_0_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_xv_0[:, 1], np.maximum(v_ego - lead_xv_0[:, 1], 0.0), lead_0_a_traj)
-    lead_1_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_xv_1[:, 1], np.maximum(v_ego - lead_xv_1[:, 1], 0.0), lead_1_a_traj)
+    lead_0_stopped_buffer *= 1.0 - LEAD_STOP_RUNWAY_STOPPED_BUFFER_FADE * get_lead_stop_runway_preference(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], t_follow, lead_0_brake_a_traj)
+    lead_1_stopped_buffer *= 1.0 - LEAD_STOP_RUNWAY_STOPPED_BUFFER_FADE * get_lead_stop_runway_preference(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], t_follow, lead_1_brake_a_traj)
+    lead_0_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_brake_xv_0[:, 1], np.maximum(v_ego - lead_brake_xv_0[:, 1], 0.0), lead_0_brake_a_traj)
+    lead_1_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_brake_xv_1[:, 1], np.maximum(v_ego - lead_brake_xv_1[:, 1], 0.0), lead_1_brake_a_traj)
     lead_0_obstacle = (
       lead_xv_0[:, 0] + get_stopped_equivalence_factor(lead_0_hard_v) - lead_0_stopped_buffer - lead_0_moving_stop_reserve
       + lead_0_stop_gap_taper + lead_0_stop_gap_excess_offset
@@ -929,27 +948,27 @@ class LongitudinalMpc:
       lead_xv_1[:, 0] + get_stopped_equivalence_factor(lead_1_hard_v) - lead_1_stopped_buffer - lead_1_moving_stop_reserve
       + lead_1_stop_gap_taper + lead_1_stop_gap_excess_offset
     )
-    lead_0_desired_gap = get_approach_follow_distance(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], t_follow, lead_0_a)
-    lead_1_desired_gap = get_approach_follow_distance(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], t_follow, lead_1_a)
+    lead_0_desired_gap = get_approach_follow_distance(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], t_follow, lead_0_brake_a)
+    lead_1_desired_gap = get_approach_follow_distance(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], t_follow, lead_1_brake_a)
     lead_0_cost_obstacle_soft = (
-      lead_xv_0[:, 0]
+      lead_brake_xv_0[:, 0]
       + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_0_desired_gap, 0.0, 1e8)
       + lead_0_stop_gap_taper
       + lead_0_stop_gap_excess_offset
     )
     lead_1_cost_obstacle_soft = (
-      lead_xv_1[:, 0]
+      lead_brake_xv_1[:, 0]
       + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_1_desired_gap, 0.0, 1e8)
       + lead_1_stop_gap_taper
       + lead_1_stop_gap_excess_offset
     )
-    lead_0_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_xv_0[0, 0], lead_xv_0[0, 1], t_follow, lead_0_a)
-    lead_1_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_xv_1[0, 0], lead_xv_1[0, 1], t_follow, lead_1_a)
+    lead_0_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_brake_xv_0[0, 0], lead_brake_xv_0[0, 1], t_follow, lead_0_brake_a)
+    lead_1_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_brake_xv_1[0, 0], lead_brake_xv_1[0, 1], t_follow, lead_1_brake_a)
     # Only bias the preferred gap once the lead has both opened real space and clearly pulled away.
     lead_0_cost_obstacle_soft += lead_0_departure_relaxation
     lead_1_cost_obstacle_soft += lead_1_departure_relaxation
-    lead_0_runway_blend = get_approach_runway_blend(lead_xv_0[0, 0], v_ego, lead_xv_0[0, 1], t_follow, lead_0_a)
-    lead_1_runway_blend = get_approach_runway_blend(lead_xv_1[0, 0], v_ego, lead_xv_1[0, 1], t_follow, lead_1_a)
+    lead_0_runway_blend = get_approach_runway_blend(lead_brake_xv_0[0, 0], v_ego, lead_brake_xv_0[0, 1], t_follow, lead_0_brake_a)
+    lead_1_runway_blend = get_approach_runway_blend(lead_brake_xv_1[0, 0], v_ego, lead_brake_xv_1[0, 1], t_follow, lead_1_brake_a)
     lead_0_cost_obstacle = lead_0_obstacle + lead_0_runway_blend * (lead_0_cost_obstacle_soft - lead_0_obstacle)
     lead_1_cost_obstacle = lead_1_obstacle + lead_1_runway_blend * (lead_1_cost_obstacle_soft - lead_1_obstacle)
 
@@ -962,9 +981,13 @@ class LongitudinalMpc:
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
     lead_0_cost_obstacle = get_lead_transition_cost_obstacle(lead_0_cost_obstacle, cruise_obstacle, lead_0_transition_release)
     lead_1_cost_obstacle = get_lead_transition_cost_obstacle(lead_1_cost_obstacle, cruise_obstacle, lead_1_transition_release)
+    lead_0_obstacle_release = get_lead_transition_obstacle_release(lead_0_transition_release, self.lead_transition_guard_timers[0])
+    lead_1_obstacle_release = get_lead_transition_obstacle_release(lead_1_transition_release, self.lead_transition_guard_timers[1])
+    lead_0_mpc_obstacle = get_lead_transition_cost_obstacle(lead_0_obstacle, cruise_obstacle, lead_0_obstacle_release)
+    lead_1_mpc_obstacle = get_lead_transition_cost_obstacle(lead_1_obstacle, cruise_obstacle, lead_1_obstacle_release)
 
     cost_obstacles = np.column_stack([lead_0_cost_obstacle, lead_1_cost_obstacle, cruise_obstacle])
-    x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
+    x_obstacles = np.column_stack([lead_0_mpc_obstacle, lead_1_mpc_obstacle, cruise_obstacle])
     self.source = MPC_SOURCES[np.argmin(cost_obstacles[0])]
     dominant_obstacle = np.argmin(x_obstacles, axis=1)
 
@@ -973,20 +996,20 @@ class LongitudinalMpc:
     lead_0_accel_costs = np.zeros(N + 1)
     lead_1_accel_costs = np.zeros(N + 1)
     for i in range(N + 1):
-      lead_0_accel_targets[i], lead_0_accel_costs[i] = get_lead_accel_match_target(lead_xv_0[i, 1], lead_xv_0[i, 0], lead_0_a_traj[i], t_follow, v_ego)
-      lead_1_accel_targets[i], lead_1_accel_costs[i] = get_lead_accel_match_target(lead_xv_1[i, 1], lead_xv_1[i, 0], lead_1_a_traj[i], t_follow, v_ego)
+      lead_0_accel_targets[i], lead_0_accel_costs[i] = get_lead_accel_match_target(lead_brake_xv_0[i, 1], lead_brake_xv_0[i, 0], lead_0_brake_a_traj[i], t_follow, v_ego)
+      lead_1_accel_targets[i], lead_1_accel_costs[i] = get_lead_accel_match_target(lead_brake_xv_1[i, 1], lead_brake_xv_1[i, 0], lead_1_brake_a_traj[i], t_follow, v_ego)
 
-    lead_0_crawl_targets, lead_0_crawl_costs = get_lead_crawl_comfort_target(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow)
-    lead_1_crawl_targets, lead_1_crawl_costs = get_lead_crawl_comfort_target(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow)
-    lead_0_crawl_accel_max = get_lead_crawl_accel_max(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow)
-    lead_1_crawl_accel_max = get_lead_crawl_accel_max(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow)
-    lead_0_stop_targets, lead_0_stop_costs = get_lead_stop_approach_comfort_target(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow)
-    lead_1_stop_targets, lead_1_stop_costs = get_lead_stop_approach_comfort_target(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow)
+    lead_0_crawl_targets, lead_0_crawl_costs = get_lead_crawl_comfort_target(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow)
+    lead_1_crawl_targets, lead_1_crawl_costs = get_lead_crawl_comfort_target(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow)
+    lead_0_crawl_accel_max = get_lead_crawl_accel_max(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow)
+    lead_1_crawl_accel_max = get_lead_crawl_accel_max(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow)
+    lead_0_stop_targets, lead_0_stop_costs = get_lead_stop_approach_comfort_target(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow)
+    lead_1_stop_targets, lead_1_stop_costs = get_lead_stop_approach_comfort_target(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow)
     lead_0_surge_targets, lead_0_surge_costs = get_lead_surge_damping_target(
-      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow, lead_0_surge_decel_memory
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow, lead_0_surge_decel_memory
     )
     lead_1_surge_targets, lead_1_surge_costs = get_lead_surge_damping_target(
-      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow, lead_1_surge_decel_memory
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow, lead_1_surge_decel_memory
     )
     lead_0_crawl_selected = lead_0_crawl_costs >= lead_1_crawl_costs
     crawl_targets = np.where(lead_0_crawl_selected, lead_0_crawl_targets, lead_1_crawl_targets)
