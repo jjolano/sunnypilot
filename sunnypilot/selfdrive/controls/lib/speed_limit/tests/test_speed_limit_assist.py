@@ -102,6 +102,8 @@ class TestSpeedLimitAssist:
     self.sla.last_valid_speed_limit_offsetted = 0.
     self.sla._distance = 0.
     self.sla.auto_enabled = False
+    self.sla.long_override = False
+    self.sla.long_override_prev = False
     self.sla._auto_toggle_pending = False
     self.sla._manual_cruise_button_pressed = False
     self.events_sp.clear()
@@ -306,6 +308,26 @@ class TestSpeedLimitAssist:
 
     assert first_target == pytest.approx(LIMIT_ACCEL_RATE_UP * DT_MDL)
     assert self.sla.output_a_target == pytest.approx(2.0 * LIMIT_ACCEL_RATE_UP * DT_MDL)
+
+  def test_long_override_suspends_auto_cruise_targets_without_disabling_session(self):
+    self.initialize_active_state(self.pcm_long_max_set_speed)
+
+    self.sla.update(True, True, SPEED_LIMITS['city'], 0.1, self.pcm_long_max_set_speed, SPEED_LIMITS['highway'],
+                    SPEED_LIMITS['highway'], True, 0, self.events_sp)
+
+    assert self.sla.auto_enabled
+    assert self.sla.state == SpeedLimitAssistState.inactive
+    assert not self.sla.is_enabled and not self.sla.is_active
+    assert self.sla.output_v_target == V_CRUISE_UNSET
+    assert self.sla.output_a_target == pytest.approx(0.1)
+
+    self.sla.update(True, False, SPEED_LIMITS['city'], 0.0, self.pcm_long_max_set_speed, SPEED_LIMITS['highway'],
+                    SPEED_LIMITS['highway'], True, 0, self.events_sp)
+
+    assert self.sla.auto_enabled
+    assert self.sla.state == SpeedLimitAssistState.active
+    assert self.sla.output_v_target == SPEED_LIMITS['highway']
+    assert EventNameSP.speedLimitActive not in self.events_sp.names
 
   def test_long_disengaged_to_disabled(self):
     self.initialize_active_state(self.pcm_long_max_set_speed)

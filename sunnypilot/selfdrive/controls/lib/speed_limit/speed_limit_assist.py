@@ -68,6 +68,8 @@ class SpeedLimitAssist:
     self.enabled = self.params.get("SpeedLimitMode", return_default=True) == Mode.assist
     self.long_enabled = False
     self.long_enabled_prev = False
+    self.long_override = False
+    self.long_override_prev = False
     self.is_enabled = False
     self.is_active = False
     self.auto_enabled = False
@@ -131,14 +133,14 @@ class SpeedLimitAssist:
     events_sp.add(EventNameSP.speedLimitActive)
 
   def get_v_target_from_control(self) -> float:
-    if self.auto_enabled and self._has_speed_limit:
+    if self.auto_enabled and not self.long_override and self._has_speed_limit:
       return self._speed_limit_final_last
 
     # Fallback
     return V_CRUISE_UNSET
 
   def get_a_target_from_control(self) -> float:
-    if not self.auto_enabled or not self._has_speed_limit:
+    if not self.auto_enabled or self.long_override or not self._has_speed_limit:
       return self.a_ego
 
     a_target = self.acceleration_solutions.get(self.state, self.get_current_acceleration_as_target)()
@@ -280,6 +282,8 @@ class SpeedLimitAssist:
     if not self.long_enabled or not self.enabled:
       self.state = SpeedLimitAssistState.disabled
     elif not self.auto_enabled:
+      self.state = SpeedLimitAssistState.inactive
+    elif self.long_override:
       self.state = SpeedLimitAssistState.inactive
     else:
       self._update_confirmed_state()
@@ -433,7 +437,8 @@ class SpeedLimitAssist:
 
     if self.is_active:
       if self._state_prev not in ACTIVE_STATES:
-        self.update_active_event(events_sp)
+        if not self.long_override_prev:
+          self.update_active_event(events_sp)
 
       # only notify if we acquire a valid speed limit
       # do not check has_speed_limit here
@@ -446,6 +451,8 @@ class SpeedLimitAssist:
   def update(self, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float, v_cruise_cluster: float, speed_limit: float,
              speed_limit_final_last: float, has_speed_limit: bool, distance: float, events_sp: EventsSP) -> None:
     self.long_enabled = long_enabled
+    self.long_override_prev = self.long_override
+    self.long_override = long_override
     self.v_ego = v_ego
     self.a_ego = a_ego
 
