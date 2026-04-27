@@ -425,6 +425,27 @@ def test_low_speed_slowing_lead_targets_predicted_stop_runway():
   assert output[stopped_idxs[0], 6] == pytest.approx(5.7, abs=0.4)
 
 
+def test_stopped_lead_approach_uses_earlier_moderate_brake():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "moderate-speed stopped lead approach",
+      duration=30.0,
+      initial_speed=16.0,
+      lead_relevancy=True,
+      initial_distance_lead=90.0,
+      speed_lead_values=[0.0, 0.0],
+      cruise_values=[20.0, 20.0],
+      breakpoints=[0.0, 30.0],
+    )
+  )
+
+  stopped_idxs = np.where(output[:, 3] < 0.03)[0]
+  assert len(stopped_idxs) > 0
+
+  assert np.min(output[:, 5]) > -2.2
+  assert output[stopped_idxs[0], 6] == pytest.approx(5.8, abs=0.4)
+
+
 def test_crawl_stop_go_limits_accel_surge():
   output = evaluate_maneuver_output(
     Maneuver(

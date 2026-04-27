@@ -56,6 +56,21 @@ CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_Y_ERROR = 0.75
 CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_ERROR = 1.25
 CREEP_TO_STOP_GAP_MODEL_LEAD_HORIZON = 2.0
 CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET = 1.52
+STOPPED_LEAD_GAP_FILL_ARM_TIME = 8.0
+STOPPED_LEAD_GAP_FILL_ARM_MAX_V_EGO = 0.3
+STOPPED_LEAD_GAP_FILL_ARM_MAX_GAP_EXCESS = 0.6
+STOPPED_LEAD_GAP_FILL_ARM_MAX_LEAD_SPEED = 0.25
+STOPPED_LEAD_GAP_FILL_MIN_EXCESS = CREEP_TO_STOP_GAP_MAX_EXCESS
+STOPPED_LEAD_GAP_FILL_MAX_EXCESS = 35.0
+STOPPED_LEAD_GAP_FILL_MAX_V_EGO = 2.5
+STOPPED_LEAD_GAP_FILL_MAX_LEAD_SPEED = 1.0
+STOPPED_LEAD_GAP_FILL_MIN_MODEL_PROB = 0.75
+STOPPED_LEAD_GAP_FILL_SPEED_MAX = 1.5
+STOPPED_LEAD_GAP_FILL_SPEED_BP = [STOPPED_LEAD_GAP_FILL_MIN_EXCESS, 20.0, STOPPED_LEAD_GAP_FILL_MAX_EXCESS]
+STOPPED_LEAD_GAP_FILL_SPEED_V = [CREEP_TO_STOP_GAP_SPEED_MAX, 1.2, STOPPED_LEAD_GAP_FILL_SPEED_MAX]
+STOPPED_LEAD_GAP_FILL_ACCEL_GAIN = 0.6
+STOPPED_LEAD_GAP_FILL_ACCEL_MAX = 0.35
+STOPPED_LEAD_GAP_FILL_ACCEL_MIN = -0.25
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -214,6 +229,37 @@ def should_hold_creep_to_stop_gap(v_ego, d_rel, v_lead, a_lead, predicted_pullaw
   )
 
 
+def should_arm_stopped_lead_gap_fill(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False):
+  gap_excess = d_rel - STOP_DISTANCE
+  return (
+    not brake_pressed and not gas_pressed and not force_slow_decel and
+    model_prob >= CREEP_TO_STOP_GAP_MIN_MODEL_PROB and
+    v_ego < STOPPED_LEAD_GAP_FILL_ARM_MAX_V_EGO and
+    abs(v_lead) <= STOPPED_LEAD_GAP_FILL_ARM_MAX_LEAD_SPEED and
+    0.0 <= gap_excess <= STOPPED_LEAD_GAP_FILL_ARM_MAX_GAP_EXCESS
+  )
+
+
+def get_stopped_lead_gap_fill_accel(v_ego, d_rel, v_lead, model_prob, armed, brake_pressed=False, gas_pressed=False, force_slow_decel=False):
+  gap_excess = d_rel - STOP_DISTANCE
+  blocked = (
+    not armed or brake_pressed or gas_pressed or force_slow_decel or
+    model_prob < STOPPED_LEAD_GAP_FILL_MIN_MODEL_PROB or
+    v_ego >= STOPPED_LEAD_GAP_FILL_MAX_V_EGO or
+    v_lead < CREEP_TO_STOP_GAP_MIN_LEAD_SPEED or
+    v_lead > STOPPED_LEAD_GAP_FILL_MAX_LEAD_SPEED or
+    gap_excess <= STOPPED_LEAD_GAP_FILL_MIN_EXCESS or
+    gap_excess > STOPPED_LEAD_GAP_FILL_MAX_EXCESS
+  )
+  if blocked:
+    return False, 0.0
+
+  target_speed = float(np.interp(gap_excess, STOPPED_LEAD_GAP_FILL_SPEED_BP, STOPPED_LEAD_GAP_FILL_SPEED_V))
+  accel = np.clip((target_speed - v_ego) * STOPPED_LEAD_GAP_FILL_ACCEL_GAIN,
+                  STOPPED_LEAD_GAP_FILL_ACCEL_MIN, STOPPED_LEAD_GAP_FILL_ACCEL_MAX)
+  return True, float(accel)
+
+
 class LongitudinalPlanner(LongitudinalPlannerSP):
   def __init__(self, CP, CP_SP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
@@ -229,6 +275,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.output_a_target = 0.0
     self.output_should_stop = False
     self.creep_to_stop_gap_active = False
+    self.stopped_lead_gap_fill_timer = 0.0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -338,6 +385,16 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.output_should_stop = output_should_stop_mpc
 
     lead_one = sm['radarState'].leadOne
+    if lead_one.status and should_arm_stopped_lead_gap_fill(
+      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+      force_slow_decel=force_slow_decel or reset_state,
+    ):
+      self.stopped_lead_gap_fill_timer = STOPPED_LEAD_GAP_FILL_ARM_TIME
+    else:
+      self.stopped_lead_gap_fill_timer = max(0.0, self.stopped_lead_gap_fill_timer - self.dt)
+
     model_predicted_v_lead, model_predicted_gap_opening = (
       get_model_lead_pullaway(sm['modelV2'], lead_one, v_ego) if lead_one.status else (0.0, 0.0)
     )
@@ -360,6 +417,21 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       creep_accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX if creep_a_target > CREEP_TO_STOP_GAP_ACCEL_MAX else CREEP_TO_STOP_GAP_ACCEL_MAX
       output_a_target = min(output_a_target, creep_accel_max)
       self.output_should_stop = creep_a_target <= 0.0 and v_ego < self.CP.vEgoStopping
+
+    gap_fill_active, gap_fill_a_target = get_stopped_lead_gap_fill_accel(
+      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
+      lead_one.status and self.stopped_lead_gap_fill_timer > 0.0,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+      force_slow_decel=force_slow_decel or reset_state,
+    ) if lead_one.status else (False, 0.0)
+    if gap_fill_active:
+      if gap_fill_a_target >= 0.0:
+        output_a_target = max(output_a_target, gap_fill_a_target)
+      else:
+        output_a_target = min(output_a_target, gap_fill_a_target)
+      output_a_target = min(output_a_target, STOPPED_LEAD_GAP_FILL_ACCEL_MAX)
+      self.output_should_stop = gap_fill_a_target <= 0.0 and v_ego < self.CP.vEgoStopping
 
     if lead_one.status and not self.output_should_stop and not reset_state:
       recovery_a_min = get_lead_accel_recovery_a_min(
