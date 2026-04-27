@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import itertools
+from types import SimpleNamespace
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.parameterized import parameterized_class
 
@@ -21,6 +22,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_STOP_GAP_EXCESS_OFFSET_MAX,
   LEAD_STOP_GAP_TAPER_MAX,
   LEAD_GAP_COMFORT_LIGHT_DECEL,
+  LEAD_CRAWL_ACCEL_MAX,
+  LEAD_CRAWL_ACCEL_LIMIT,
+  LEAD_CRAWL_BRAKE_MAX,
   LEAD_STOP_RUNWAY_BRAKE,
   LEAD_TRANSITION_PERSISTENCE,
   LEAD_TRANSITION_Y_REL_CONFIRM,
@@ -44,6 +48,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_departure_available_runway,
   get_lead_departure_relaxation,
   get_lead_danger_distance,
+  get_lead_crawl_accel_max,
+  get_lead_crawl_comfort_target,
   get_lead_stop_runway_preference,
   get_lead_stop_runway_required_decel,
   get_lead_stop_runway_blend,
@@ -70,8 +76,14 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX,
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN,
   CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING,
+  CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET,
+  CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD,
+  CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_STD,
+  CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_STD,
   get_creep_to_stop_gap_accel,
+  get_model_lead_pullaway,
   get_predicted_lead_pullaway,
+  has_predicted_lead_pullaway,
   should_hold_creep_to_stop_gap,
 )
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
@@ -80,6 +92,26 @@ from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 def stop_distance_buffer(v_ego):
   fade = (STOP_DISTANCE_FADE_V**2) / (v_ego**2 + STOP_DISTANCE_FADE_V**2)
   return STOP_DISTANCE_MIN + (STOP_DISTANCE - STOP_DISTANCE_MIN) * fade
+
+
+def make_model_msg_lead(d_rel=STOP_DISTANCE + 0.35, horizon_gap=0.5, horizon_v=0.8, prob=0.9,
+                        y_rel=0.0, x_std=0.5, y_std=0.2, v_std=0.5,
+                        horizon_x_std=None, horizon_y_std=None, horizon_v_std=None):
+  x0 = d_rel + CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET
+  return SimpleNamespace(leadsV3=[SimpleNamespace(
+    prob=prob,
+    t=[0.0, 2.0],
+    x=[x0, x0 + horizon_gap],
+    y=[-y_rel, -y_rel],
+    v=[0.0, horizon_v],
+    xStd=[x_std, x_std if horizon_x_std is None else horizon_x_std],
+    yStd=[y_std, y_std if horizon_y_std is None else horizon_y_std],
+    vStd=[v_std, v_std if horizon_v_std is None else horizon_v_std],
+  )])
+
+
+def make_radar_lead(d_rel=STOP_DISTANCE + 0.35, status=True, model_prob=1.0, v_lead=0.0, y_rel=0.0):
+  return SimpleNamespace(status=status, dRel=d_rel, modelProb=model_prob, vLeadK=v_lead, yRel=y_rel)
 
 
 @pytest.mark.parametrize("speed", [0.0, 5.0, 10.0, 35.0])
@@ -157,6 +189,61 @@ def test_creep_to_stop_gap_uses_predicted_pullaway_before_speed_threshold():
   assert CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
+def test_creep_to_stop_gap_uses_model_lead_pullaway_prediction():
+  d_rel = STOP_DISTANCE + 0.35
+  model_v_lead, model_gap_opening = get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel), 0.0)
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, d_rel, 0.0, 1.0, False,
+    model_predicted_v_lead=model_v_lead,
+    model_predicted_gap_opening=model_gap_opening,
+  )
+
+  assert has_predicted_lead_pullaway(d_rel - STOP_DISTANCE, model_v_lead, model_gap_opening)
+  assert active
+  assert CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+
+
+def test_model_lead_pullaway_prediction_requires_confident_matching_lead():
+  d_rel = STOP_DISTANCE + 0.35
+
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel, prob=0.5), make_radar_lead(d_rel), 0.0) == (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, model_prob=0.4), 0.0) == (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel + 3.0), make_radar_lead(d_rel), 0.0) == (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, v_lead=2.0), 0.0) == (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel), 0.4) == (0.0, 0.0)
+
+
+def test_model_lead_pullaway_prediction_requires_low_uncertainty():
+  d_rel = STOP_DISTANCE + 0.35
+
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, x_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, y_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, v_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, horizon_x_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, horizon_y_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+  assert get_model_lead_pullaway(
+    make_model_msg_lead(d_rel, horizon_v_std=CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_STD + 0.1), make_radar_lead(d_rel), 0.0
+  ) == (0.0, 0.0)
+
+
+def test_model_lead_pullaway_prediction_requires_lateral_match():
+  d_rel = STOP_DISTANCE + 0.35
+
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel, y_rel=0.4), make_radar_lead(d_rel, y_rel=0.4), 0.0) != (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel, y_rel=1.0), make_radar_lead(d_rel, y_rel=0.0), 0.0) == (0.0, 0.0)
+  assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, y_rel=np.nan), 0.0) == (0.0, 0.0)
+
+
 def test_creep_to_stop_gap_prediction_requires_clear_gap_opening():
   predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(0.0, 0.1, 0.0)
   active, _ = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.35, 0.0, 1.0, False, a_lead=0.1, a_lead_tau=0.0)
@@ -181,6 +268,7 @@ def test_creep_to_stop_gap_hold_covers_near_target_gap_only():
   assert not should_hold_creep_to_stop_gap(0.1, STOP_DISTANCE + CREEP_TO_STOP_GAP_HOLD_EXCESS + 0.1, 0.0, 0.0)
   assert not should_hold_creep_to_stop_gap(0.1, STOP_DISTANCE + 0.3, 0.3, 0.0)
   assert not should_hold_creep_to_stop_gap(0.1, STOP_DISTANCE + 0.3, 0.0, 0.1)
+  assert not should_hold_creep_to_stop_gap(0.1, STOP_DISTANCE + 0.3, 0.0, 0.0, predicted_pullaway=True)
 
 
 def test_lead_departure_relaxation_requires_gap_growth_and_pullaway():
@@ -388,6 +476,55 @@ def test_stop_runway_blend_stays_off_at_higher_speed():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   assert get_lead_stop_runway_blend(8.0, 0.0, 0.0) == pytest.approx(0.0)
   assert get_approach_runway_blend(12.0, 8.0, 0.0, t_follow, a_lead=0.0) == pytest.approx(0.0)
+
+
+def test_crawl_comfort_uses_mild_brake_for_non_urgent_slowing_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(12.0, 4.0, 3.2, -0.4, t_follow)
+
+  assert -LEAD_CRAWL_BRAKE_MAX <= target < -0.1
+  assert cost > 0.0
+
+
+def test_crawl_comfort_fades_out_for_urgent_short_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(7.0, 4.0, 0.0, -1.0, t_follow)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_crawl_comfort_stays_off_for_stopped_lead_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(12.0, 2.0, 0.0, 0.0, t_follow)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_crawl_comfort_uses_gentle_accel_for_opening_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(12.0, 3.0, 4.2, 0.3, t_follow)
+
+  assert 0.0 < target <= LEAD_CRAWL_ACCEL_MAX
+  assert cost > 0.0
+
+
+def test_crawl_comfort_disables_outside_crawl_band():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  _, high_speed_cost = get_lead_crawl_comfort_target(12.0, 9.0, 8.0, -0.4, t_follow)
+  _, far_gap_cost = get_lead_crawl_comfort_target(30.0, 3.0, 4.0, 0.3, t_follow)
+
+  assert high_speed_cost == pytest.approx(0.0)
+  assert far_gap_cost == pytest.approx(0.0)
+
+
+def test_crawl_accel_limit_only_applies_to_opening_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  assert get_lead_crawl_accel_max(12.0, 3.0, 4.5, 0.3, t_follow) == pytest.approx(LEAD_CRAWL_ACCEL_LIMIT)
+  assert get_lead_crawl_accel_max(12.0, 3.0, 3.0, 0.0, t_follow) == pytest.approx(ACCEL_MAX)
+  assert get_lead_crawl_accel_max(30.0, 3.0, 4.5, 0.3, t_follow) == pytest.approx(ACCEL_MAX)
 
 
 def test_lead_accel_match_tapers_positive_accel_under_time_gap():
