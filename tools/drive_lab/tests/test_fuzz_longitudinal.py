@@ -63,6 +63,15 @@ def test_evaluate_invariants_catches_collision_and_nan():
   assert [f.check for f in failures] == ["finite"]
 
 
+def test_evaluate_invariants_reports_malformed_output_shape():
+  output = np.zeros((2, 6))
+
+  failures = evaluate_invariants(True, output)
+
+  assert [f.check for f in failures] == ["output"]
+  assert "expected maneuver output" in failures[0].detail
+
+
 def test_render_maneuver_snippet_contains_replayable_fields():
   scenario = generate_scenarios(seed=1, cases=1)[0]
 

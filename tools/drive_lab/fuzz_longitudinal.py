@@ -66,6 +66,8 @@ def evaluate_invariants(valid: bool, output: np.ndarray, max_normal_jerk: float 
     failures.append(ScenarioFailure("valid", "maneuver reported invalid"))
   if output.size == 0:
     return [*failures, ScenarioFailure("output", "maneuver produced no output")]
+  if output.ndim != 2 or output.shape[1] < 7:
+    return [*failures, ScenarioFailure("output", f"expected maneuver output with at least 7 columns, got shape {output.shape}")]
   if not np.all(np.isfinite(output)):
     failures.append(ScenarioFailure("finite", "output contains NaN or infinite values"))
     return failures

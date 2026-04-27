@@ -22,6 +22,13 @@ def test_select_event_time_uses_latest_bookmark_without_requested_time():
   assert select_event_time(msgs, nearest_bookmark=True) == 9.0
 
 
+def test_select_event_time_handles_unsorted_bookmarks():
+  msgs = [msg("userBookmark", 9.0), msg("carState", 0.0), msg("userBookmark", 5.0)]
+
+  assert select_event_time(msgs, nearest_bookmark=True) == 9.0
+  assert select_event_time(msgs, requested_time_s=4.8, nearest_bookmark=True) == 5.0
+
+
 def test_summarize_window_tracks_planner_and_lead_changes():
   msgs = [
     msg("carState", 0.0, vEgo=10.0, vCruise=50.0, brakePressed=False, gasPressed=False, standstill=False),

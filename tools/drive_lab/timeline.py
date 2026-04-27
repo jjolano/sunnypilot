@@ -77,9 +77,10 @@ def select_event_time(msgs: list[Any], requested_time_s: float | None = None, ne
   if not msgs:
     raise ValueError("no log messages supplied")
 
-  base_mono_time = int(getattr(msgs[0], "logMonoTime", 0))
+  ordered_msgs = sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
+  base_mono_time = int(getattr(ordered_msgs[0], "logMonoTime", 0))
   if nearest_bookmark:
-    bookmark_times = find_bookmark_times(msgs, base_mono_time)
+    bookmark_times = find_bookmark_times(ordered_msgs, base_mono_time)
     if not bookmark_times:
       raise ValueError("no userBookmark messages found in supplied logs")
     if requested_time_s is None:
