@@ -22,6 +22,14 @@ class FakeParams:
     self.values.pop(key, None)
 
 
+class FakePubMaster:
+  def __init__(self):
+    self.messages = []
+
+  def send(self, service, msg):
+    self.messages.append((service, msg))
+
+
 def make_mapd_out(**overrides):
   values = {
     "roadName": "Main St",
@@ -59,6 +67,7 @@ def make_mapd_extended(**overrides):
 
 def make_location(**overrides):
   values = {
+    "gpsOK": True,
     "status": log.LiveLocationKalman.Status.valid,
     "positionGeodetic": SimpleNamespace(valid=True, value=[39.0, -84.0, 0.0]),
     "calibratedOrientationNED": SimpleNamespace(value=[0.0, 0.0, 0.5]),
@@ -76,6 +85,7 @@ def build_map_data(mapd_out=None, mapd_extended=None):
   }
   data.params = FakeParams()
   data.mem_params = FakeParams()
+  data.pm = FakePubMaster()
   data.last_position = None
   data.last_bearing = None
   data.localizer_valid = False
@@ -96,6 +106,31 @@ def test_mapd_v2_getters_populate_live_map_fields():
   assert data.get_road_context() == "freeway"
   assert data.get_current_traffic_control_and_distance() == ("", 0.0)
   assert data.get_next_traffic_control_and_distance() == ("", 0.0)
+
+
+def test_mapd_v2_publish_populates_supported_live_map_fields():
+  data = build_map_data()
+
+  data.publish()
+
+  assert data.pm.messages[0][0] == "liveMapDataSP"
+  live_map_data = data.pm.messages[0][1].liveMapDataSP
+  assert live_map_data.speedLimitValid
+  assert live_map_data.speedLimit == pytest.approx(22.0)
+  assert live_map_data.speedLimitAheadValid
+  assert live_map_data.speedLimitAhead == pytest.approx(15.0)
+  assert live_map_data.speedLimitAheadDistance == pytest.approx(120.0)
+  assert live_map_data.roadName == "Main St"
+  assert live_map_data.hazardValid
+  assert live_map_data.hazard == "animal_crossing"
+  assert live_map_data.hazardAheadValid
+  assert live_map_data.hazardAhead == "curve"
+  assert live_map_data.hazardAheadDistance == pytest.approx(80.0)
+  assert live_map_data.lanesValid
+  assert live_map_data.lanes == 3
+  assert live_map_data.roadContext == "freeway"
+  assert not live_map_data.trafficControlValid
+  assert not live_map_data.trafficControlAheadValid
 
 
 def test_mapd_v2_compat_params_write_path_and_advisory_data():
