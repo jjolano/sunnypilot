@@ -197,7 +197,7 @@ class TailscaleDaemon:
     ]
 
     try:
-      proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
       self._login_proc = proc
 
       auth_url_found = False
@@ -257,10 +257,6 @@ class TailscaleDaemon:
         except subprocess.TimeoutExpired:
           proc.kill()
           proc.wait(timeout=5)
-
-      stderr_output = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
-      if proc.returncode and proc.returncode != 0 and stderr_output:
-        self.params.put("TailscaleLastError", stderr_output.strip()[:500])
 
       if not auth_url_found and not self.params.get("TailscaleAuthURL"):
         cloudlog.warning("tailscale: login flow completed without receiving auth URL")

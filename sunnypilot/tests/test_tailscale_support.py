@@ -6,7 +6,10 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import hashlib
+import io
 import os
+import subprocess
+import tarfile
 import tempfile
 
 from pytest_mock import MockerFixture
@@ -24,9 +27,34 @@ from openpilot.sunnypilot.system.tailscale import (
   version_dir,
 )
 from openpilot.sunnypilot.system.tailscale.installer import (
+  _extract_tailscale_binaries,
   _verify_checksum,
   fetch_latest_version,
 )
+from openpilot.sunnypilot.system.tailscale.manage_tailscaled import TailscaleDaemon
+
+
+class FakeParams:
+  def __init__(self):
+    self.values = {}
+
+  def put(self, key, value):
+    self.values[key] = value
+
+  def put_bool(self, key, value):
+    self.values[key] = bool(value)
+
+  def get(self, key):
+    return self.values.get(key, "")
+
+  def remove(self, key):
+    self.values.pop(key, None)
+
+
+def add_tar_file(tar: tarfile.TarFile, name: str, data: bytes) -> None:
+  info = tarfile.TarInfo(name)
+  info.size = len(data)
+  tar.addfile(info, io.BytesIO(data))
 
 
 class TestTailscaleConstants:
@@ -63,6 +91,35 @@ class TestTailscaleConstants:
 
 class TestTailscaleInstaller:
   """Test installer helper functions."""
+
+  def test_extract_tailscale_binaries_writes_only_controlled_paths(self):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tarball_path = os.path.join(tmp_dir, "tailscale.tgz")
+      staging_dir = os.path.join(tmp_dir, "staged")
+      os.makedirs(staging_dir)
+
+      with tarfile.open(tarball_path, "w:gz") as tar:
+        add_tar_file(tar, "tailscale_1.96.4_arm64/tailscale", b"tailscale-bin")
+        add_tar_file(tar, "tailscale_1.96.4_arm64/tailscaled", b"tailscaled-bin")
+
+      assert _extract_tailscale_binaries(tarball_path, staging_dir)
+      with open(os.path.join(staging_dir, "tailscale"), "rb") as f:
+        assert f.read() == b"tailscale-bin"
+      with open(os.path.join(staging_dir, "tailscaled"), "rb") as f:
+        assert f.read() == b"tailscaled-bin"
+
+  def test_extract_tailscale_binaries_rejects_traversal_member(self):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tarball_path = os.path.join(tmp_dir, "tailscale.tgz")
+      staging_dir = os.path.join(tmp_dir, "staged")
+      os.makedirs(staging_dir)
+
+      with tarfile.open(tarball_path, "w:gz") as tar:
+        add_tar_file(tar, "../tailscale", b"bad")
+        add_tar_file(tar, "tailscale_1.96.4_arm64/tailscaled", b"tailscaled-bin")
+
+      assert not _extract_tailscale_binaries(tarball_path, staging_dir)
+      assert not os.path.exists(os.path.join(staging_dir, "tailscale"))
 
   def test_verify_checksum_valid(self):
     content = b"hello tailscale"
@@ -121,6 +178,37 @@ class TestTailscaleInstaller:
     mocker.patch("openpilot.sunnypilot.system.tailscale.installer.requests.get", side_effect=Exception("network error"))
     version = fetch_latest_version()
     assert version is None
+
+  def test_login_subprocess_does_not_pipe_stderr(self, mocker: MockerFixture):
+    fake_proc = mocker.MagicMock()
+    fake_proc.stdout.fileno.return_value = 0
+    fake_proc.stderr = None
+    fake_proc.poll.return_value = 1
+    fake_proc.returncode = 1
+    popen = mocker.patch("openpilot.sunnypilot.system.tailscale.manage_tailscaled.subprocess.Popen", return_value=fake_proc)
+
+    daemon = TailscaleDaemon.__new__(TailscaleDaemon)
+    daemon.params = FakeParams()
+    daemon._login_proc = None
+    daemon._handle_login()
+
+    assert popen.call_args.kwargs["stderr"] is subprocess.DEVNULL
+
+
+class TestTailscalePairingDialog:
+  def test_hide_event_clears_auth_url(self):
+    from openpilot.system.ui.sunnypilot.widgets.tailscale_pairing_dialog import TailscalePairingDialog
+
+    params = FakeParams()
+    params.put("TailscaleAuthURL", "https://login.tailscale.com/a/abc123")
+    dialog = TailscalePairingDialog.__new__(TailscalePairingDialog)
+    dialog.params = params
+    dialog._children = []
+    dialog.qr_texture = None
+
+    dialog.hide_event()
+
+    assert params.get("TailscaleAuthURL") == ""
 
 
 class TestTailscaleStatusParsing:

@@ -46,6 +46,13 @@ class TailscalePairingDialog(PairingDialog):
     if not auth_url and not self._auth_url:
       gui_app.pop_widget()
 
+  def hide_event(self):
+    try:
+      self.params.remove("TailscaleAuthURL")
+    except Exception:
+      cloudlog.exception("tailscale: failed to clear auth URL on dialog close")
+    PairingDialog.hide_event(self)
+
   def _render(self, rect: rl.Rectangle) -> int:
     rl.clear_background(rl.Color(224, 224, 224, 255))
 

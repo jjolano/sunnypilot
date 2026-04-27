@@ -101,6 +101,36 @@ def _make_executable(path: str) -> None:
   os.chmod(path, current | stat.S_IEXEC)
 
 
+def _is_safe_tar_member_path(path: str) -> bool:
+  parts = path.split("/")
+  return not os.path.isabs(path) and ".." not in parts
+
+
+def _extract_tailscale_binaries(tarball_path: str, staging_dir: str) -> bool:
+  """Extract only the Tailscale binaries into controlled staging paths."""
+  expected = {"tailscale", "tailscaled"}
+  extracted = set()
+
+  with tarfile.open(tarball_path, "r:gz") as tar:
+    for member in tar.getmembers():
+      basename = os.path.basename(member.name)
+      if basename not in expected:
+        continue
+      if not member.isfile() or not _is_safe_tar_member_path(member.name) or basename in extracted:
+        return False
+
+      src = tar.extractfile(member)
+      if src is None:
+        return False
+      dst = os.path.join(staging_dir, basename)
+      with src, open(dst, "wb") as f:
+        shutil.copyfileobj(src, f)
+      _make_executable(dst)
+      extracted.add(basename)
+
+  return extracted == expected
+
+
 def download_and_install(version: str, params: Params | None = None) -> bool:
   """Download, verify, and install a specific Tailscale version.
 
@@ -142,32 +172,12 @@ def download_and_install(version: str, params: Params | None = None) -> bool:
 
     # 3. Extract binaries
     _set_install_state(params, "extracting")
-    extract_dir = os.path.join(tmp_dir, "extract")
-    os.makedirs(extract_dir)
-
-    with tarfile.open(tarball_path, "r:gz") as tar:
-      # Only extract the two binaries we need
-      members = []
-      for member in tar.getmembers():
-        basename = os.path.basename(member.name)
-        if basename in ("tailscale", "tailscaled") and member.isfile():
-          members.append(member)
-
-      if len(members) < 2:
-        _set_install_state(params, "error:binaries not found in tarball")
-        return False
-
-      tar.extractall(path=extract_dir, members=members)
-
-    # 4. Move binaries to versioned directory
     staging_dir = os.path.join(tmp_dir, "staged")
     os.makedirs(staging_dir)
 
-    for member in members:
-      src = os.path.join(extract_dir, member.name)
-      dst = os.path.join(staging_dir, os.path.basename(member.name))
-      shutil.move(src, dst)
-      _make_executable(dst)
+    if not _extract_tailscale_binaries(tarball_path, staging_dir):
+      _set_install_state(params, "error:binaries not found in tarball")
+      return False
 
     # Atomic rename into place
     if os.path.exists(dest_dir):
