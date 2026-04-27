@@ -11,6 +11,7 @@ TurnDirection = custom.ModelDataV2SP.TurnDirection
 
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.0
+LANE_CHANGE_TIMER_EPS = 1e-6
 
 DESIRES = {
   LaneChangeDirection.none: {
@@ -118,7 +119,7 @@ class DesireHelper:
         self.lane_change_ll_prob = max(self.lane_change_ll_prob - 2 * DT_MDL, 0.0)
 
         model_lane_change_complete = lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01
-        scripted_lane_change_complete = self.lane_change_timer >= LANE_CHANGE_DURATION
+        scripted_lane_change_complete = self.lane_change_timer >= LANE_CHANGE_DURATION - LANE_CHANGE_TIMER_EPS
         if model_lane_change_complete or scripted_lane_change_complete:
           self.lane_change_state = LaneChangeState.laneChangeFinishing
           self.lane_change_reinit = False
