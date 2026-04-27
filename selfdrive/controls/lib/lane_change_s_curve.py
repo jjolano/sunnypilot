@@ -78,13 +78,14 @@ class LaneChangeSCurveController:
     if not self.soft_fallback and self._should_soft_fallback(inputs):
       self.soft_fallback = True
 
-    target_blend = 1.0 if not self.soft_fallback and self.elapsed < LANE_CHANGE_DURATION else 0.0
+    finishing = inputs.lane_change_state == LaneChangeState.laneChangeFinishing
+    target_blend = 1.0 if not finishing and not self.soft_fallback and self.elapsed < LANE_CHANGE_DURATION else 0.0
     self.blend = self._approach(self.blend, target_blend)
 
     scripted_curvature = self._scripted_curvature(inputs.v_ego)
     desired_curvature = inputs.model_curvature + self.blend * (scripted_curvature - inputs.model_curvature)
 
-    if not self.soft_fallback and self.elapsed < LANE_CHANGE_DURATION:
+    if not finishing and not self.soft_fallback and self.elapsed < LANE_CHANGE_DURATION:
       self.elapsed = min(self.elapsed + self.dt, LANE_CHANGE_DURATION)
 
     return LaneChangeSCurveResult(desired_curvature, self.blend, self.blend > 1e-3, self.soft_fallback)

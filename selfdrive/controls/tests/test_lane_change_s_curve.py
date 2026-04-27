@@ -87,6 +87,21 @@ def test_soft_fallback_blends_back_to_model_curvature():
   assert fallback_results[-1].desired_curvature == pytest.approx(fallback_inputs.model_curvature)
 
 
+def test_early_finishing_blends_back_to_model_curvature():
+  controller = LaneChangeSCurveController()
+  inputs = make_inputs()
+
+  engaged = run_steps(controller, inputs, 1.0)
+  assert engaged[-1].blend > 0.8
+
+  finishing_inputs = make_inputs(lane_change_state=LaneChangeState.laneChangeFinishing, model_curvature=0.0003)
+  finishing_results = run_steps(controller, finishing_inputs, EXIT_BLEND_DURATION + 0.2)
+
+  assert finishing_results[0].blend < engaged[-1].blend
+  assert finishing_results[-1].blend == pytest.approx(0.0)
+  assert finishing_results[-1].desired_curvature == pytest.approx(finishing_inputs.model_curvature)
+
+
 def test_hard_abort_resets_immediately():
   controller = LaneChangeSCurveController()
   inputs = make_inputs()
