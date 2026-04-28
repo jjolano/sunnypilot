@@ -35,9 +35,9 @@ PRE_ACTIVE_GUARD_PERIOD = {
 SPEED_LIMIT_CHANGED_HOLD_PERIOD = 1  # secs. Time to wait after speed limit change before switching to preActive.
 
 LIMIT_MIN_ACC = -1.5  # m/s^2 Maximum deceleration allowed for limit controllers to provide.
-LIMIT_MAX_ACC = 1.0   # m/s^2 Maximum acceleration allowed for limit controllers to provide while active.
+LIMIT_MAX_ACC = 0.7   # m/s^2 Maximum acceleration allowed for limit controllers to provide while active.
 LIMIT_ACCEL_EGO_MARGIN = 0.6  # m/s^2 Keep SLA's planner seed near the measured acceleration.
-LIMIT_ACCEL_RATE_UP = 1.0     # m/s^3 Maximum positive target acceleration rate.
+LIMIT_ACCEL_RATE_UP = 0.6     # m/s^3 Maximum positive target acceleration rate.
 LIMIT_ACCEL_RATE_DOWN = 1.5   # m/s^3 Maximum negative target acceleration rate.
 LIMIT_MIN_SPEED = 8.33  # m/s, Minimum speed limit to provide as solution on limit controllers.
 LIMIT_SPEED_OFFSET_TH = -1.  # m/s Maximum offset between speed limit and current speed for adapting state.

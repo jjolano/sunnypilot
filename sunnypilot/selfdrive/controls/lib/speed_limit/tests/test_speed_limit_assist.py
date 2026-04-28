@@ -309,6 +309,25 @@ class TestSpeedLimitAssist:
     assert first_target == pytest.approx(LIMIT_ACCEL_RATE_UP * DT_MDL)
     assert self.sla.output_a_target == pytest.approx(2.0 * LIMIT_ACCEL_RATE_UP * DT_MDL)
 
+  def test_active_accel_target_uses_comfort_ramp_rate(self):
+    self.initialize_active_state(self.pcm_long_max_set_speed)
+
+    self.sla.update(True, False, SPEED_LIMITS['city'], 0.0, self.pcm_long_max_set_speed, SPEED_LIMITS['highway'],
+                    SPEED_LIMITS['highway'], True, 0, self.events_sp)
+
+    assert self.sla.output_a_target == pytest.approx(0.6 * DT_MDL)
+
+  def test_active_accel_target_saturates_at_comfort_cap(self):
+    self.initialize_active_state(self.pcm_long_max_set_speed)
+    a_ego = 0.0
+
+    for _ in range(80):
+      self.sla.update(True, False, SPEED_LIMITS['city'], a_ego, self.pcm_long_max_set_speed, SPEED_LIMITS['freeway'],
+                      SPEED_LIMITS['freeway'], True, 0, self.events_sp)
+      a_ego = self.sla.output_a_target
+
+    assert self.sla.output_a_target == pytest.approx(0.7)
+
   def test_long_override_suspends_auto_cruise_targets_without_disabling_session(self):
     self.initialize_active_state(self.pcm_long_max_set_speed)
 
