@@ -32,6 +32,9 @@ LOW_SPEED_UNWIND_JERK = 0.5
 LOW_SPEED_UNWIND_GAIN_SPEED = 8.0
 MEASUREMENT_SMOOTHER_MIN_VEGO = 5.0
 MEASUREMENT_SMOOTHER_CORRECTION_GAIN = 0.35
+MEASUREMENT_SMOOTHER_MAX_PREDICTIVE_JERK = 5.0
+MEASUREMENT_SMOOTHER_IMPLAUSIBLE_JERK = 80.0
+MEASUREMENT_SMOOTHER_MAX_RAW_ERROR = 1.0
 
 ADAPTIVE_PHASE_MAP = {
   0: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.idle,
@@ -46,7 +49,7 @@ def sign(value: float) -> float:
 
 
 class LateralAccelMeasurementSmoother:
-  """Condition Toyota's 50 Hz angle-derived measurement for the 100 Hz control loop."""
+  """Condition angle-derived lateral acceleration for the 100 Hz control loop."""
 
   def __init__(self, dt: float, min_v_ego: float = MEASUREMENT_SMOOTHER_MIN_VEGO,
                correction_gain: float = MEASUREMENT_SMOOTHER_CORRECTION_GAIN):
@@ -54,16 +57,23 @@ class LateralAccelMeasurementSmoother:
     self.min_v_ego = min_v_ego
     self.correction_gain = correction_gain
     self.initialized = False
+    self.was_reset = False
     self.value = 0.0
 
   def reset(self, raw_lateral_accel: float) -> float:
     self.initialized = False
+    self.was_reset = True
     self.value = raw_lateral_accel
     return raw_lateral_accel
 
   def update(self, active: bool, v_ego: float, steering_pressed: bool, raw_lateral_accel: float,
              actual_lateral_jerk: float) -> float:
+    self.was_reset = False
+    if not math.isfinite(raw_lateral_accel):
+      return self.reset(0.0)
     if not active or steering_pressed or v_ego < self.min_v_ego:
+      return self.reset(raw_lateral_accel)
+    if not math.isfinite(actual_lateral_jerk) or abs(actual_lateral_jerk) > MEASUREMENT_SMOOTHER_IMPLAUSIBLE_JERK:
       return self.reset(raw_lateral_accel)
 
     if not self.initialized:
@@ -71,8 +81,12 @@ class LateralAccelMeasurementSmoother:
       self.value = raw_lateral_accel
       return raw_lateral_accel
 
-    predicted = self.value + actual_lateral_jerk * self.dt
+    bounded_jerk = float(np.clip(actual_lateral_jerk, -MEASUREMENT_SMOOTHER_MAX_PREDICTIVE_JERK,
+                                 MEASUREMENT_SMOOTHER_MAX_PREDICTIVE_JERK))
+    predicted = self.value + bounded_jerk * self.dt
     self.value = predicted + self.correction_gain * (raw_lateral_accel - predicted)
+    self.value = float(np.clip(self.value, raw_lateral_accel - MEASUREMENT_SMOOTHER_MAX_RAW_ERROR,
+                               raw_lateral_accel + MEASUREMENT_SMOOTHER_MAX_RAW_ERROR))
     return self.value
 
 
@@ -127,7 +141,11 @@ class LatControlTorque(LatControl):
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation
     desired_lateral_jerk = (future_desired_lateral_accel - expected_lateral_accel) / effective_lat_delay
 
-    measurement_rate = self.measurement_rate_filter.update((measurement - self.previous_measurement) / self.dt)
+    if self.measurement_smoother.was_reset:
+      self.measurement_rate_filter.x = 0.0
+      measurement_rate = 0.0
+    else:
+      measurement_rate = self.measurement_rate_filter.update((measurement - self.previous_measurement) / self.dt)
     self.previous_measurement = measurement
 
     setpoint = effective_lat_delay * desired_lateral_jerk + expected_lateral_accel
@@ -145,6 +163,17 @@ class LatControlTorque(LatControl):
     ff = setpoint if same_sign_unwind else gravity_adjusted_future_lateral_accel
     ff -= self.torque_params.latAccelOffset
     ff += get_friction(error, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
+
+    setpoint_sign = sign(setpoint)
+    raw_sign = sign(raw_measurement)
+    measurement_sign = sign(measurement)
+    raw_sign_conflict = setpoint_sign != 0.0 and raw_sign != 0.0 and raw_sign != setpoint_sign
+    measurement_sign_conflict = setpoint_sign != 0.0 and measurement_sign != 0.0 and measurement_sign != setpoint_sign
+    shaping_measurement = measurement
+    if raw_sign_conflict and not measurement_sign_conflict:
+      shaping_measurement = raw_measurement
+    elif raw_sign_conflict == measurement_sign_conflict and abs(raw_measurement) > abs(measurement):
+      shaping_measurement = raw_measurement
 
     output_torque = 0.0
     if not active:
@@ -217,7 +246,7 @@ class LatControlTorque(LatControl):
         max_output=self.steer_max,
         unshaped_output=output_torque,
         desired_lateral_accel=setpoint,
-        actual_lateral_accel=measurement,
+        actual_lateral_accel=shaping_measurement,
         desired_lateral_jerk=desired_lateral_jerk,
         actual_lateral_jerk=raw_actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,

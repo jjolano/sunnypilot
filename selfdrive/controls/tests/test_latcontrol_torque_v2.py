@@ -4,6 +4,7 @@ import types
 
 from cereal import car, log
 from opendbc.car.car_helpers import interfaces
+from opendbc.car.gm.values import CAR as GM
 from opendbc.car.toyota.values import CAR as TOYOTA
 from opendbc.car.vehicle_model import VehicleModel
 
@@ -108,6 +109,83 @@ def test_measurement_smoother_resets_on_override():
   assert resumed_value == 0.5
 
 
+def test_measurement_smoother_resets_when_inactive():
+  smoother = latcontrol_torque_v2.LateralAccelMeasurementSmoother(DT_CTRL)
+
+  smoother.update(True, 20.0, False, 0.0, -1.0)
+  smoother.update(True, 20.0, False, 0.0, -1.0)
+
+  reset_value = smoother.update(False, 20.0, False, 0.5, -10.0)
+  resumed_value = smoother.update(True, 20.0, False, 0.5, -10.0)
+
+  assert reset_value == 0.5
+  assert resumed_value == 0.5
+
+
+def test_measurement_smoother_resets_at_low_speed():
+  smoother = latcontrol_torque_v2.LateralAccelMeasurementSmoother(DT_CTRL)
+
+  smoother.update(True, 20.0, False, 0.0, -1.0)
+  smoother.update(True, 20.0, False, 0.0, -1.0)
+
+  reset_value = smoother.update(True, 4.0, False, 0.5, -10.0)
+  resumed_value = smoother.update(True, 20.0, False, 0.5, -10.0)
+
+  assert reset_value == 0.5
+  assert resumed_value == 0.5
+
+
+def test_measurement_smoother_resets_on_non_finite_raw_measurement():
+  smoother = latcontrol_torque_v2.LateralAccelMeasurementSmoother(DT_CTRL)
+
+  smoother.update(True, 20.0, False, 0.0, 1.0)
+  reset_value = smoother.update(True, 20.0, False, float("nan"), 1.0)
+  resumed_value = smoother.update(True, 20.0, False, 0.5, 1.0)
+
+  assert reset_value == 0.0
+  assert resumed_value == 0.5
+
+
+def test_measurement_smoother_clamps_prediction_from_large_rate():
+  smoother = latcontrol_torque_v2.LateralAccelMeasurementSmoother(DT_CTRL)
+
+  smoother.update(True, 20.0, False, 0.0, 20.0)
+  predicted = smoother.update(True, 20.0, False, 0.0, 20.0)
+
+  assert 0.0 < predicted <= 0.04
+
+
+def test_measurement_smoother_resets_after_implausible_rate_spike():
+  smoother = latcontrol_torque_v2.LateralAccelMeasurementSmoother(DT_CTRL)
+
+  smoother.update(True, 20.0, False, 0.0, 1.0)
+  reset_value = smoother.update(True, 20.0, False, 0.5, 500.0)
+  resumed_value = smoother.update(True, 20.0, False, 0.5, 1.0)
+
+  assert reset_value == 0.5
+  assert resumed_value == 0.5
+
+
+def test_measurement_smoother_resets_on_non_finite_rate():
+  smoother = latcontrol_torque_v2.LateralAccelMeasurementSmoother(DT_CTRL)
+
+  smoother.update(True, 20.0, False, 0.0, 1.0)
+  reset_value = smoother.update(True, 20.0, False, 0.5, float("nan"))
+  resumed_value = smoother.update(True, 20.0, False, 0.5, 1.0)
+
+  assert reset_value == 0.5
+  assert resumed_value == 0.5
+
+
+def test_measurement_smoother_limits_lag_from_raw_measurement():
+  smoother = latcontrol_torque_v2.LateralAccelMeasurementSmoother(DT_CTRL)
+
+  smoother.update(True, 20.0, False, 0.0, 0.0)
+  jumped = smoother.update(True, 20.0, False, 3.0, 0.0)
+
+  assert 2.0 <= jumped < 3.0
+
+
 def test_v2_conditions_measurement_between_held_angle_updates():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
 
@@ -123,6 +201,45 @@ def test_v2_conditions_measurement_between_held_angle_updates():
   _, _, second_log = controller.update(True, CS, VM, params, False, 0.0, pose, False, 0.2)
 
   assert second_log.actualLateralAccel < first_log.actualLateralAccel - 0.001
+
+
+def test_v2_measurement_smoother_smoke_on_non_toyota_torque_platform():
+  controller, VM = get_controller(GM.CHEVROLET_BOLT_EUV)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = 5.0
+  CS.steeringRateDeg = 25.0
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  lac_log = None
+  for _ in range(3):
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 0.001, pose, False, 0.2)
+
+  assert lac_log is not None
+  assert lac_log.version == 2
+  assert np.isfinite(lac_log.actualLateralAccel)
+
+
+def test_v2_resets_measurement_rate_filter_on_smoother_reset():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  controller.update(True, CS, VM, params, False, 0.0, pose, False, 0.2)
+
+  CS.steeringAngleDeg = -14.0
+  CS.steeringPressed = True
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0, pose, False, 0.2)
+
+  assert controller.measurement_rate_filter.x == 0.0
+  assert abs(controller.previous_measurement - lac_log.actualLateralAccel) < 1e-6
 
 
 def test_v2_logging_fields_are_populated():
@@ -257,6 +374,27 @@ def test_v2_shapes_near_iso_accel_margin():
   assert adaptive_log.shapingReason & ConservativeOutputShapingReason.NEAR_ISO_ACCEL
   assert adaptive_log.outputCap <= 0.9
   assert abs(lac_log.output) <= abs(adaptive_log.unshapedOutput)
+
+
+def test_v2_shapes_near_iso_accel_when_raw_measurement_jumps_ahead_of_smoother():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 30.0
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  controller.update(True, CS, VM, params, False, 0.004, pose, False, 0.2)
+
+  CS.steeringAngleDeg = -14.0
+  CS.steeringRateDeg = 0.0
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.004, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.shapingActive
+  assert adaptive_log.shapingReason & ConservativeOutputShapingReason.NEAR_ISO_ACCEL
+  assert adaptive_log.outputCap <= 0.9
 
 
 def test_v2_bump_shaping_uses_raw_steering_rate_when_model_lookahead_is_zero():
