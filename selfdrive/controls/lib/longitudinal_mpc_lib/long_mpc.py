@@ -127,7 +127,7 @@ MOVING_LEAD_STOP_RESERVE_DECEL_BP = [0.05, 0.5]
 LEAD_ACCEL_MATCH_COST = 2.0
 LEAD_ACCEL_MATCH_MIN_ABS_ACCEL = 0.05
 LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND = 0.25
-LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS = 0.4
+LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS = 1.0
 LEAD_ACCEL_MATCH_DECEL_TARGET_BLEND = 0.65
 LEAD_ACCEL_MATCH_DECEL_NEAR_STOP_BLEND = 0.35
 LEAD_ACCEL_MATCH_DECEL_CLOSING_BP = [0.3, 2.0]
@@ -165,11 +165,11 @@ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
 
 def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
   if personality == log.LongitudinalPersonality.relaxed:
-    return 1.75
+    return 1.85
   elif personality == log.LongitudinalPersonality.standard:
-    return 1.45
+    return 1.55
   elif personality == log.LongitudinalPersonality.aggressive:
-    return 1.25
+    return 1.30
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
@@ -490,9 +490,10 @@ def get_lead_accel_match_blend(v_lead, d_rel, a_lead, t_follow, v_ego=None):
 
   if d_rel <= target_gap:
     if a_lead > 0.0:
-      if d_rel < STOP_DISTANCE + LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS:
+      positive_match_gap = STOP_DISTANCE + LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS
+      if d_rel < positive_match_gap:
         return 0.0
-      return float(np.interp(d_rel, [STOP_DISTANCE, target_gap], [LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND, 1.0]))
+      return float(np.interp(d_rel, [positive_match_gap, target_gap], [LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND, 1.0]))
     return 1.0
 
   return float(np.interp(d_rel, [target_gap, target_gap + margin], [1.0, 0.0]))

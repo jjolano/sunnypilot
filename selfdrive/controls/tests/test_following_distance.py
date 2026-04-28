@@ -133,6 +133,12 @@ def test_desired_follow_distance_matches_explicit_formula(speed):
   assert get_desired_follow_distance(speed, speed, t_follow) == pytest.approx(expected)
 
 
+def test_comfort_biased_follow_times():
+  assert get_T_FOLLOW(log.LongitudinalPersonality.relaxed) == pytest.approx(1.85)
+  assert get_T_FOLLOW(log.LongitudinalPersonality.standard) == pytest.approx(1.55)
+  assert get_T_FOLLOW(log.LongitudinalPersonality.aggressive) == pytest.approx(1.30)
+
+
 def test_stop_distance_buffer_fades_with_speed():
   buffer_speeds = [0.0, 5.0, 10.0, 35.0]
   buffers = [stop_distance_buffer(speed) for speed in buffer_speeds]
@@ -183,6 +189,20 @@ def test_creep_to_stop_gap_uses_stronger_accel_for_confirmed_pullaway():
 
   assert active
   assert CREEP_TO_STOP_GAP_ACCEL_MAX < accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+
+
+def test_creep_to_stop_gap_uses_soft_release_before_pullaway():
+  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.6, 0.1, 1.0, False)
+
+  assert active
+  assert 0.0 < accel <= 0.10
+
+
+def test_creep_to_stop_gap_smooths_confirmed_pullaway_step():
+  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, 0.8, 1.0, False)
+
+  assert active
+  assert 0.15 <= accel <= 0.30
 
 
 def test_creep_to_stop_gap_uses_predicted_pullaway_before_speed_threshold():
@@ -614,13 +634,21 @@ def test_lead_accel_match_tapers_positive_accel_under_time_gap():
   a_lead = 1.0
   target_gap = get_lead_time_gap_target(v_lead, t_follow)
 
-  near_stop_target, near_stop_cost = get_lead_accel_match_target(v_lead, STOP_DISTANCE + 0.5, a_lead, t_follow)
+  near_stop_target, near_stop_cost = get_lead_accel_match_target(v_lead, STOP_DISTANCE + 1.2, a_lead, t_follow)
   mid_gap_target, mid_gap_cost = get_lead_accel_match_target(v_lead, 0.5 * (STOP_DISTANCE + target_gap), a_lead, t_follow)
   target_gap_target, target_gap_cost = get_lead_accel_match_target(v_lead, target_gap, a_lead, t_follow)
 
   assert 0.0 < near_stop_target < mid_gap_target < target_gap_target <= a_lead
   assert near_stop_target == pytest.approx(a_lead * LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND, abs=0.05)
   assert 0.0 < near_stop_cost < mid_gap_cost < target_gap_cost
+
+
+def test_lead_accel_match_waits_for_extra_gap_before_positive_match():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_accel_match_target(v_lead=1.0, d_rel=STOP_DISTANCE + 0.6, a_lead=0.6, t_follow=t_follow, v_ego=0.8)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
 
 
 def test_lead_accel_match_fades_far_decelerating_leads():
