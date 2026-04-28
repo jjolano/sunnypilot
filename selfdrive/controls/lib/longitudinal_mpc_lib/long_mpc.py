@@ -480,6 +480,10 @@ def get_lead_accel_match_blend(v_lead, d_rel, a_lead, t_follow, v_ego=None):
   reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
   target_gap = get_lead_time_gap_target(v_lead, t_follow) + reserve
   margin = get_lead_accel_match_margin(target_gap)
+  positive_match_gap = STOP_DISTANCE + LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS
+  if a_lead > 0.0 and d_rel < positive_match_gap:
+    return 0.0
+
   if a_lead < 0.0:
     closing_blend = float(np.interp(closing_speed, LEAD_ACCEL_MATCH_DECEL_CLOSING_BP, [0.0, 1.0]))
     if d_rel <= target_gap:
@@ -490,9 +494,6 @@ def get_lead_accel_match_blend(v_lead, d_rel, a_lead, t_follow, v_ego=None):
 
   if d_rel <= target_gap:
     if a_lead > 0.0:
-      positive_match_gap = STOP_DISTANCE + LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS
-      if d_rel < positive_match_gap:
-        return 0.0
       return float(np.interp(d_rel, [positive_match_gap, target_gap], [LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND, 1.0]))
     return 1.0
 

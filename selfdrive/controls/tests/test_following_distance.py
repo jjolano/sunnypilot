@@ -643,9 +643,10 @@ def test_lead_accel_match_tapers_positive_accel_under_time_gap():
   assert 0.0 < near_stop_cost < mid_gap_cost < target_gap_cost
 
 
-def test_lead_accel_match_waits_for_extra_gap_before_positive_match():
+@pytest.mark.parametrize("v_lead", [0.0, 1.0])
+def test_lead_accel_match_waits_for_extra_gap_before_positive_match(v_lead):
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
-  target, cost = get_lead_accel_match_target(v_lead=1.0, d_rel=STOP_DISTANCE + 0.6, a_lead=0.6, t_follow=t_follow, v_ego=0.8)
+  target, cost = get_lead_accel_match_target(v_lead=v_lead, d_rel=STOP_DISTANCE + 0.6, a_lead=0.6, t_follow=t_follow, v_ego=max(0.0, v_lead - 0.2))
 
   assert target == pytest.approx(0.0)
   assert cost == pytest.approx(0.0)
