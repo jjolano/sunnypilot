@@ -34,7 +34,9 @@ params_pyx.ParamKeyType = object
 params_pyx.UnknownKeyName = RuntimeError
 sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
 
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque
+from openpilot.sunnypilot.selfdrive.controls.lib import latcontrol_torque_v2
+
+LatControlTorque = latcontrol_torque_v2.LatControlTorque
 
 
 def get_controller(car_name):
@@ -68,6 +70,59 @@ def make_flat_model_v2():
   model_v2.acceleration = acceleration
 
   return model_v2
+
+
+def test_measurement_smoother_predicts_between_held_angle_updates():
+  smoother = latcontrol_torque_v2.LateralAccelMeasurementSmoother(DT_CTRL)
+
+  first = smoother.update(True, 20.0, False, 0.0, -1.0)
+  second = smoother.update(True, 20.0, False, 0.0, -1.0)
+
+  assert first == 0.0
+  assert second < -0.005
+  assert second > -0.02
+
+
+def test_measurement_smoother_softens_raw_angle_jump_after_hold():
+  smoother = latcontrol_torque_v2.LateralAccelMeasurementSmoother(DT_CTRL)
+
+  first = smoother.update(True, 20.0, False, 0.0, -1.0)
+  held = smoother.update(True, 20.0, False, 0.0, -1.0)
+  jumped = smoother.update(True, 20.0, False, -0.02, -1.0)
+
+  assert held < first
+  assert jumped < held
+  assert abs(jumped - held) < 0.02
+
+
+def test_measurement_smoother_resets_on_override():
+  smoother = latcontrol_torque_v2.LateralAccelMeasurementSmoother(DT_CTRL)
+
+  smoother.update(True, 20.0, False, 0.0, -1.0)
+  smoother.update(True, 20.0, False, 0.0, -1.0)
+
+  reset_value = smoother.update(True, 20.0, True, 0.5, -10.0)
+  resumed_value = smoother.update(True, 20.0, False, 0.5, -10.0)
+
+  assert reset_value == 0.5
+  assert resumed_value == 0.5
+
+
+def test_v2_conditions_measurement_between_held_angle_updates():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = 10.0
+  CS.steeringRateDeg = 20.0
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  _, _, first_log = controller.update(True, CS, VM, params, False, 0.0, pose, False, 0.2)
+  _, _, second_log = controller.update(True, CS, VM, params, False, 0.0, pose, False, 0.2)
+
+  assert second_log.actualLateralAccel < first_log.actualLateralAccel - 0.001
 
 
 def test_v2_logging_fields_are_populated():

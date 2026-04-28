@@ -30,6 +30,8 @@ LOW_SPEED_UNWIND_SETPOINT = 0.2
 LOW_SPEED_UNWIND_MARGIN = 0.08
 LOW_SPEED_UNWIND_JERK = 0.5
 LOW_SPEED_UNWIND_GAIN_SPEED = 8.0
+MEASUREMENT_SMOOTHER_MIN_VEGO = 5.0
+MEASUREMENT_SMOOTHER_CORRECTION_GAIN = 0.35
 
 ADAPTIVE_PHASE_MAP = {
   0: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.idle,
@@ -41,6 +43,37 @@ ADAPTIVE_PHASE_MAP = {
 
 def sign(value: float) -> float:
   return 1.0 if value > 0.0 else (-1.0 if value < 0.0 else 0.0)
+
+
+class LateralAccelMeasurementSmoother:
+  """Condition Toyota's 50 Hz angle-derived measurement for the 100 Hz control loop."""
+
+  def __init__(self, dt: float, min_v_ego: float = MEASUREMENT_SMOOTHER_MIN_VEGO,
+               correction_gain: float = MEASUREMENT_SMOOTHER_CORRECTION_GAIN):
+    self.dt = dt
+    self.min_v_ego = min_v_ego
+    self.correction_gain = correction_gain
+    self.initialized = False
+    self.value = 0.0
+
+  def reset(self, raw_lateral_accel: float) -> float:
+    self.initialized = False
+    self.value = raw_lateral_accel
+    return raw_lateral_accel
+
+  def update(self, active: bool, v_ego: float, steering_pressed: bool, raw_lateral_accel: float,
+             actual_lateral_jerk: float) -> float:
+    if not active or steering_pressed or v_ego < self.min_v_ego:
+      return self.reset(raw_lateral_accel)
+
+    if not self.initialized:
+      self.initialized = True
+      self.value = raw_lateral_accel
+      return raw_lateral_accel
+
+    predicted = self.value + actual_lateral_jerk * self.dt
+    self.value = predicted + self.correction_gain * (raw_lateral_accel - predicted)
+    return self.value
 
 
 class LatControlTorque(LatControl):
@@ -56,6 +89,7 @@ class LatControlTorque(LatControl):
     self.lat_accel_request_buffer = deque([0.0] * self.lat_accel_request_buffer_len, maxlen=self.lat_accel_request_buffer_len)
     self.previous_measurement = 0.0
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
+    self.measurement_smoother = LateralAccelMeasurementSmoother(self.dt)
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
     self.response_assist = TorqueGuardedResponseAssist(self.dt)
@@ -78,11 +112,12 @@ class LatControlTorque(LatControl):
     pid_log.version = VERSION
 
     measured_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)
-    measurement = measured_curvature * CS.vEgo**2
+    raw_measurement = measured_curvature * CS.vEgo**2
     roll_compensation = params.roll * ACCELERATION_DUE_TO_GRAVITY
     curvature_deadzone = abs(VM.calc_curvature(math.radians(self.steering_angle_deadzone_deg), CS.vEgo, 0.0))
     lateral_accel_deadzone = curvature_deadzone * CS.vEgo**2
     raw_actual_lateral_jerk = -VM.calc_curvature(math.radians(CS.steeringRateDeg), CS.vEgo, 0.0) * CS.vEgo**2
+    measurement = self.measurement_smoother.update(active, CS.vEgo, CS.steeringPressed, raw_measurement, raw_actual_lateral_jerk)
 
     future_desired_lateral_accel = desired_curvature * CS.vEgo**2
     self.lat_accel_request_buffer.append(future_desired_lateral_accel)
