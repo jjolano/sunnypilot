@@ -132,6 +132,38 @@ class TestSmartCruiseControlMap:
     assert self.scc_m.state == VisionState.turning
     assert self.scc_m.output_v_target == 15.0
 
+  def test_current_advisory_speed_limit_ignores_large_slowdown_without_model_curve(self):
+    self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "end_latitude": 0.0,
+      "end_longitude": 0.001,
+      "speedlimit": 15.0,
+    }))
+    model_msg = make_model_prediction(distance=20.0, yaw_rate=0.02)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0, model_msg)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_current_advisory_speed_limit_allows_model_confirmed_curve(self):
+    self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "end_latitude": 0.0,
+      "end_longitude": 0.001,
+      "speedlimit": 15.0,
+    }))
+    model_msg = make_model_prediction(distance=20.0, yaw_rate=0.22)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0, model_msg)
+
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == 15.0
+
   def test_current_advisory_limit_alias_controls_scc_map_target(self):
     self.mem_params.put("MapAdvisoryLimit", json.dumps({
       "start_latitude": 0.0,

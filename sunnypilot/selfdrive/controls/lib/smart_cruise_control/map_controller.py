@@ -36,6 +36,8 @@ MODEL_CURVE_DISTANCE_WINDOW = 20.0  # m, match map target points to nearby model
 MODEL_CURVE_MIN_LAT_ACCEL = 1.3  # m/s^2, ignore weak/noisy curvature predictions.
 MODEL_CURVE_TARGET_LAT_ACCEL = 2.0  # m/s^2, same comfort target used by SCC vision.
 MODEL_CURVE_MIN_SPEED = 1.0  # m/s, avoid unstable curvature estimates at near-zero speed.
+MODEL_CURVE_OVERSLOWDOWN_DELTA = 5.0  # m/s, require model confirmation for large map slowdowns.
+MODEL_CURVE_OVERSLOWDOWN_MARGIN = 2.0  # m/s, allow small map/model target mismatch.
 
 
 def velocities_from_param(param: str, params: Params):
@@ -260,12 +262,34 @@ class SmartCruiseControlMap:
     return control_distance is not None and distance < control_distance
 
   def _target_range_state(self, target_v: float, distance: float, model_msg) -> tuple[bool, bool]:
+    if not self._model_confirms_large_slowdown(self.v_ego, target_v, distance, model_msg):
+      return False, False
+
     if self._target_in_range(target_v, distance):
       return True, False
 
     control_target_v = self._prediction_control_target(target_v, distance, model_msg)
     prediction_advanced = control_target_v < target_v and self._target_in_range(control_target_v, distance)
     return prediction_advanced, prediction_advanced
+
+  @staticmethod
+  def _model_covers_distance(model_msg, distance: float) -> bool:
+    if model_msg is None:
+      return False
+
+    positions = np.asarray(getattr(getattr(model_msg, "position", None), "x", []), dtype=float)
+    return positions.ndim == 1 and positions.size > 0 and np.all(np.isfinite(positions)) and distance <= positions[-1] + MODEL_CURVE_DISTANCE_WINDOW
+
+  @classmethod
+  def _model_confirms_large_slowdown(cls, v_ego: float, target_v: float, distance: float, model_msg) -> bool:
+    if model_msg is None or v_ego - target_v <= MODEL_CURVE_OVERSLOWDOWN_DELTA:
+      return True
+
+    if not cls._model_covers_distance(model_msg, distance):
+      return True
+
+    prediction_target = cls._prediction_curve_target(model_msg, distance)
+    return prediction_target is not None and prediction_target <= target_v + MODEL_CURVE_OVERSLOWDOWN_MARGIN
 
   @staticmethod
   def _prediction_curve_target(model_msg, distance: float) -> float | None:
