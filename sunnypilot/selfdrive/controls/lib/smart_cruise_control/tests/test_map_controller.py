@@ -210,6 +210,26 @@ class TestSmartCruiseControlMap:
     assert self.scc_m.state == VisionState.turning
     assert self.scc_m.output_v_target == 15.0
 
+  def test_next_advisory_speed_limit_uses_map_when_model_horizon_does_not_cover_target(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    distance = self.scc_m._target_control_distance(15.0) - 1.0
+    self.mem_params.put("NextMapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "end_latitude": 0.0,
+      "end_longitude": 0.001,
+      "speedlimit": 15.0,
+      "distance": distance,
+    }))
+    model_msg = make_model_prediction(distance=5.0, yaw_rate=0.02)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0, model_msg)
+
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == 15.0
+
   def test_next_advisory_speed_limit_waits_until_adapt_distance(self):
     self.mem_params.put("NextMapAdvisorySpeedLimit", json.dumps({
       "start_latitude": 0.0,
@@ -222,6 +242,22 @@ class TestSmartCruiseControlMap:
 
     for _ in range(2):
       self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_target_velocity_ignores_large_slowdown_without_model_curve(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    distance = self.scc_m._target_control_distance(15.0) - 1.0
+    target_lon = distance / R * TO_DEGREES
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": target_lon, "velocity": 15.0},
+    ]))
+    model_msg = make_model_prediction(distance=distance, yaw_rate=0.02)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0, model_msg)
 
     assert self.scc_m.state == VisionState.enabled
     assert self.scc_m.output_v_target == V_CRUISE_UNSET
