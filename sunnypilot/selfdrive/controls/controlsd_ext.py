@@ -38,7 +38,7 @@ class ControlsExt(ModelStateBase):
 
   def initialize_lateral_control(self, lac, CI, dt):
     enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
-    torque_version = self.normalize_torque_tune_version(self.params.get("TorqueControlTune"))
+    torque_version = self.normalize_torque_tune_version(self.params.get("TorqueControlTune", return_default=True))
     if torque_version in (3.0, 4.0):
       self.params.put("TorqueControlTune", "2.0")
       torque_version = 2.0

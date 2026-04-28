@@ -10,6 +10,7 @@ from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.helpers import convert_to_capnp
 from openpilot.selfdrive.locationd.helpers import Measurement, Pose
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShapingReason
 
@@ -51,6 +52,22 @@ def get_controller(car_name):
 def make_pose():
   zeros = np.zeros(3)
   return Pose(Measurement(zeros, zeros), Measurement(zeros, zeros), Measurement(zeros, zeros), Measurement(zeros, zeros))
+
+
+def make_flat_model_v2():
+  model_v2 = log.ModelDataV2.new_message()
+  zeros = [0.0 for _ in ModelConstants.T_IDXS]
+
+  orientation = log.XYZTData.new_message()
+  orientation.x = zeros
+  orientation.y = zeros
+  model_v2.orientation = orientation
+
+  acceleration = log.XYZTData.new_message()
+  acceleration.y = zeros
+  model_v2.acceleration = acceleration
+
+  return model_v2
 
 
 def test_v2_logging_fields_are_populated():
@@ -185,3 +202,22 @@ def test_v2_shapes_near_iso_accel_margin():
   assert adaptive_log.shapingReason & ConservativeOutputShapingReason.NEAR_ISO_ACCEL
   assert adaptive_log.outputCap <= 0.9
   assert abs(lac_log.output) <= abs(adaptive_log.unshapedOutput)
+
+
+def test_v2_bump_shaping_uses_raw_steering_rate_when_model_lookahead_is_zero():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 15.0
+  CS.steeringPressed = False
+  CS.steeringRateDeg = 300.0
+  params = log.LiveParametersData.new_message()
+
+  controller.extension.update_model_v2(make_flat_model_v2())
+
+  pose = make_pose()
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-4, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.shapingActive
+  assert adaptive_log.shapingReason & ConservativeOutputShapingReason.BUMP

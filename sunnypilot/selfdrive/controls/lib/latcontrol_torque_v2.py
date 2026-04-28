@@ -82,6 +82,7 @@ class LatControlTorque(LatControl):
     roll_compensation = params.roll * ACCELERATION_DUE_TO_GRAVITY
     curvature_deadzone = abs(VM.calc_curvature(math.radians(self.steering_angle_deadzone_deg), CS.vEgo, 0.0))
     lateral_accel_deadzone = curvature_deadzone * CS.vEgo**2
+    raw_actual_lateral_jerk = -VM.calc_curvature(math.radians(CS.steeringRateDeg), CS.vEgo, 0.0) * CS.vEgo**2
 
     future_desired_lateral_accel = desired_curvature * CS.vEgo**2
     self.lat_accel_request_buffer.append(future_desired_lateral_accel)
@@ -162,7 +163,7 @@ class LatControlTorque(LatControl):
         desired_lateral_accel=setpoint,
         actual_lateral_accel=measurement,
         desired_lateral_jerk=desired_lateral_jerk,
-        actual_lateral_jerk=self.extension.actual_lateral_jerk,
+        actual_lateral_jerk=raw_actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
         desired_curvature=desired_curvature,
         tracking_torque_error=tracking_torque_error,
@@ -183,7 +184,7 @@ class LatControlTorque(LatControl):
         desired_lateral_accel=setpoint,
         actual_lateral_accel=measurement,
         desired_lateral_jerk=desired_lateral_jerk,
-        actual_lateral_jerk=self.extension.actual_lateral_jerk,
+        actual_lateral_jerk=raw_actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
       )
     )

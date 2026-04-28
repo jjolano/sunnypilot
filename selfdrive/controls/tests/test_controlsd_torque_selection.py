@@ -42,16 +42,21 @@ from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 
 
 class FakeParams:
-  def __init__(self, enforce: bool, tune=None):
+  def __init__(self, enforce: bool, tune=None, default_tune=2.0):
     self.enforce = enforce
     self.tune = tune
+    self.default_tune = default_tune
     self.writes = {}
 
   def get_bool(self, key: str) -> bool:
     return self.enforce if key == "EnforceTorqueControl" else False
 
   def get(self, key: str, *args, **kwargs):
-    return self.tune if key == "TorqueControlTune" else None
+    if key != "TorqueControlTune":
+      return None
+    if self.tune is None and kwargs.get("return_default", False):
+      return self.default_tune
+    return self.tune
 
   def put(self, key: str, value) -> None:
     self.writes[key] = value
@@ -119,4 +124,5 @@ def test_torque_controller_selection_variants():
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, None))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
-  assert selected is lac
+  assert isinstance(selected, LatControlTorqueV2)
+  assert hasattr(selected, "output_shaper")
