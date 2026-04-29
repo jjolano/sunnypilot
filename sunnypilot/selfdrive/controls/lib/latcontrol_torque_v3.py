@@ -27,6 +27,8 @@ LP_FILTER_CUTOFF_HZ = 1.2
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 FRICTION_THRESHOLD = 0.3
 VERSION = 3
+LEARNED_MODEL_MIN_CONFIDENCE = 0.95
+LEARNED_MODEL_MIN_COVERAGE = 0.5
 LOW_SPEED_UNWIND_VEGO = 8.0
 LOW_SPEED_UNWIND_SETPOINT = 0.2
 LOW_SPEED_UNWIND_MARGIN = 0.08
@@ -143,6 +145,13 @@ class LatControlTorque(LatControl):
 
   def update_limits(self):
     self.pid.set_limits(self.lateral_accel_from_torque(self.steer_max, self.torque_params), self.lateral_accel_from_torque(-self.steer_max, self.torque_params))
+
+  def learned_model_ready(self, estimator_result) -> bool:
+    return (
+      estimator_result.confidence >= LEARNED_MODEL_MIN_CONFIDENCE
+      and estimator_result.positive_coverage >= LEARNED_MODEL_MIN_COVERAGE
+      and estimator_result.negative_coverage >= LEARNED_MODEL_MIN_COVERAGE
+    )
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
     if self.native_torque and self.extension.update_override_torque_params(self.torque_params):
@@ -281,7 +290,7 @@ class LatControlTorque(LatControl):
         model_age=self.model_age,
       )
     )
-    if estimator_result.confidence >= 0.4 and self.model_adapter.update_learned_params(estimator_result.params, estimator_result.confidence):
+    if self.learned_model_ready(estimator_result) and self.model_adapter.update_learned_params(estimator_result.params, estimator_result.confidence):
       self.model_adapter.set_residual(estimator_result.residual_error / max(float(estimator_result.params.lat_accel_factor), 1e-3))
     authority_state = self.authority_manager.update(
       self.model_adapter.mode,

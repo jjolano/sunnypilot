@@ -113,6 +113,23 @@ def test_v3_synthetic_pid_origin_starts_limited():
   assert np.isclose(lac_log.adaptiveTorqueState.authorityScale, 0.45)
 
 
+def test_v3_one_sided_synthetic_learning_does_not_activate_learned_mode():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2, force_pid=True)
+  controller.estimator.state.confidence = 0.96
+  controller.estimator.state.positive_coverage = 0.9
+  controller.estimator.state.negative_coverage = 0.0
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  params = log.LiveParametersData.new_message()
+
+  for _ in range(3):
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-4, make_pose(), False, 0.2)
+
+    assert lac_log.adaptiveTorqueState.sampleAccepted
+    assert lac_log.adaptiveTorqueState.modelMode == TorqueModelMode.synthetic
+    assert lac_log.adaptiveTorqueState.authorityBand != AuthorityBand.full
+
+
 def test_v3_smoke_on_gm_nonlinear_native_torque_platform():
   controller, VM = get_controller(GM.CHEVROLET_BOLT_EUV)
   CS = car.CarState.new_message()
