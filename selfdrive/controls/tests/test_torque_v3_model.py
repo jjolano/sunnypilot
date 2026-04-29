@@ -61,6 +61,7 @@ def test_learned_model_can_apply_bounded_residual():
 
   assert adapter.mode == TorqueModelMode.learned
   assert math.isclose(adapter.torque_from_lateral_accel(0.8), 0.48, rel_tol=1e-6)
+  assert math.isclose(adapter.lateral_accel_from_torque(adapter.torque_from_lateral_accel(0.8)), 0.8, rel_tol=1e-6)
 
 
 def test_invalid_learned_params_keep_previous_safe_model():
