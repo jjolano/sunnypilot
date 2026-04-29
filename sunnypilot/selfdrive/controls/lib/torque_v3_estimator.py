@@ -11,6 +11,7 @@ MIN_LEARNING_VEGO = 5.0
 MAX_MODEL_AGE = 0.25
 MAX_PLAUSIBLE_JERK = 8.0
 MIN_COMMAND_TORQUE = 0.05
+MAX_RESIDUAL_SPIKE = 0.8
 CONFIDENCE_BUILD_RATE = 0.015
 CONFIDENCE_DECAY_RATE = 0.25
 PARAM_UPDATE_RATE = 0.04
@@ -32,6 +33,7 @@ class EstimatorRejectReason(IntFlag):
   HIGH_JERK = 1 << 8
   SIGN_CONFLICT = 1 << 9
   STALE_MODEL = 1 << 10
+  RESIDUAL_SPIKE = 1 << 11
 
 
 @dataclass
@@ -142,12 +144,15 @@ class AdaptiveTorqueEstimator:
     command_sign = _sign(observation.commanded_torque)
     actual_sign = _sign(observation.actual_lateral_accel)
     desired_sign = _sign(observation.desired_lateral_accel)
-    if command_sign != 0 and actual_sign != 0 and desired_sign != 0 and actual_sign != desired_sign:
+    if command_sign != 0 and actual_sign != 0 and desired_sign != 0 and len({command_sign, actual_sign, desired_sign}) > 1:
       reason |= EstimatorRejectReason.SIGN_CONFLICT
+    expected = observation.commanded_torque * self.state.params.lat_accel_factor + self.state.params.lat_accel_offset
+    if abs(observation.actual_lateral_accel - expected) > MAX_RESIDUAL_SPIKE:
+      reason |= EstimatorRejectReason.RESIDUAL_SPIKE
     return reason
 
   def _decay_confidence(self, reason: EstimatorRejectReason) -> None:
-    decay = CONFIDENCE_DECAY_RATE if reason & (EstimatorRejectReason.SIGN_CONFLICT | EstimatorRejectReason.STEER_LIMITED | EstimatorRejectReason.SATURATED) else CONFIDENCE_BUILD_RATE
+    decay = CONFIDENCE_DECAY_RATE if reason & (EstimatorRejectReason.SIGN_CONFLICT | EstimatorRejectReason.STEER_LIMITED | EstimatorRejectReason.SATURATED | EstimatorRejectReason.RESIDUAL_SPIKE) else CONFIDENCE_BUILD_RATE
     self.state.confidence = max(0.0, self.state.confidence - decay)
 
   def _result(self, accepted: bool, reject_reason: EstimatorRejectReason) -> EstimatorResult:

@@ -66,3 +66,26 @@ def test_residual_spike_demotes_confidence():
   assert not result.sample_accepted
   assert result.reject_reason & EstimatorRejectReason.SIGN_CONFLICT
   assert result.confidence < before
+
+
+def test_estimator_rejects_command_desired_sign_conflict():
+  estimator = AdaptiveTorqueEstimator(dt=0.01)
+
+  result = estimator.update(make_observation(commanded_torque=0.25, desired_lateral_accel=-0.65, actual_lateral_accel=-0.60))
+
+  assert not result.sample_accepted
+  assert result.reject_reason & EstimatorRejectReason.SIGN_CONFLICT
+
+
+def test_same_sign_residual_spike_demotes_confidence_without_sign_conflict():
+  estimator = AdaptiveTorqueEstimator(dt=0.01)
+  for _ in range(40):
+    estimator.update(make_observation())
+  before = estimator.state.confidence
+
+  result = estimator.update(make_observation(actual_lateral_accel=1.8))
+
+  assert not result.sample_accepted
+  assert result.reject_reason & EstimatorRejectReason.RESIDUAL_SPIKE
+  assert not result.reject_reason & EstimatorRejectReason.SIGN_CONFLICT
+  assert result.confidence < before
