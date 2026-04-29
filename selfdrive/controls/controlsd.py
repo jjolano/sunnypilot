@@ -86,18 +86,24 @@ class Controls(ControlsExt):
     steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
     self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
 
-    # Update Torque Params
-    if self.CP.lateralTuning.which() == 'torque':
+    update_live_torque_params = getattr(self.LaC, "update_live_torque_params", None)
+    if update_live_torque_params is not None:
       torque_params = self.sm['liveTorqueParameters']
       if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
-        self.LaC.update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
-                                           torque_params.frictionCoefficientFiltered)
+        update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
+                                  torque_params.frictionCoefficientFiltered)
 
-        self.LaC.extension.update_limits()
+    update_model_v2 = getattr(self.LaC, "update_model_v2", None)
+    if update_model_v2 is None and hasattr(self.LaC, "extension"):
+      update_model_v2 = getattr(self.LaC.extension, "update_model_v2", None)
+    if update_model_v2 is not None:
+      update_model_v2(self.sm['modelV2'])
 
-      self.LaC.extension.update_model_v2(self.sm['modelV2'])
-
-      self.LaC.extension.update_lateral_lag(self.lat_delay)
+    update_lateral_lag = getattr(self.LaC, "update_lateral_lag", None)
+    if update_lateral_lag is None and hasattr(self.LaC, "extension"):
+      update_lateral_lag = getattr(self.LaC.extension, "update_lateral_lag", None)
+    if update_lateral_lag is not None:
+      update_lateral_lag(self.lat_delay)
 
     long_plan = self.sm['longitudinalPlan']
     model_v2 = self.sm['modelV2']
@@ -215,12 +221,12 @@ class Controls(ControlsExt):
     cs.forceDecel = bool((self.sm['driverMonitoringState'].awarenessStatus < 0.) or
                          (self.sm['selfdriveState'].state == State.softDisabling))
 
-    lat_tuning = self.CP.lateralTuning.which()
+    lat_control_state = getattr(self.LaC, 'CONTROL_STATE', self.CP.lateralTuning.which())
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
       cs.lateralControlState.angleState = lac_log
-    elif lat_tuning == 'pid':
+    elif lat_control_state == 'pid':
       cs.lateralControlState.pidState = lac_log
-    elif lat_tuning == 'torque':
+    elif lat_control_state == 'torque':
       cs.lateralControlState.torqueState = lac_log
 
     self.pm.send('controlsState', dat)

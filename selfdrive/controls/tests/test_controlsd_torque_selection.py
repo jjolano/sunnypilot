@@ -13,10 +13,12 @@ from opendbc.car.toyota.values import CAR as TOYOTA
 
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.helpers import convert_to_capnp
+from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque as LatControlTorqueV1
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
 
 msgq = types.ModuleType("msgq")
 msgq.fake_event_handle = object()
@@ -38,6 +40,7 @@ msgq.sub_sock = lambda *args, **kwargs: None
 msgq.context = None
 sys.modules.setdefault("msgq", msgq)
 
+import openpilot.sunnypilot.selfdrive.controls.controlsd_ext as controlsd_ext
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 
 
@@ -107,9 +110,8 @@ def test_torque_controller_selection_variants():
   params = FakeParams(True, 3.0)
   controls_ext = make_controls_ext(CP, CP_SP, params)
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
-  assert isinstance(selected, LatControlTorqueV2)
-  assert hasattr(selected, "output_shaper")
-  assert params.writes["TorqueControlTune"] == "2.0"
+  assert isinstance(selected, LatControlTorqueV3)
+  assert "TorqueControlTune" not in params.writes
 
   params = FakeParams(True, 4.0)
   controls_ext = make_controls_ext(CP, CP_SP, params)
@@ -126,3 +128,43 @@ def test_torque_controller_selection_variants():
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert isinstance(selected, LatControlTorqueV2)
   assert hasattr(selected, "output_shaper")
+
+
+def test_pid_origin_non_angle_controller_can_select_v3():
+  CP, CP_SP, CI = get_test_context()
+  CP.lateralTuning.init('pid')
+  CP.lateralTuning.pid.kpBP = [0.0]
+  CP.lateralTuning.pid.kpV = [0.1]
+  CP.lateralTuning.pid.kiBP = [0.0]
+  CP.lateralTuning.pid.kiV = [0.01]
+  CP.lateralTuning.pid.kf = 0.00006
+  lac = LatControlPID(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 3.0))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV3)
+  assert selected.native_torque is False
+
+
+def test_get_params_sp_updates_lat_delay_for_selected_torque_controller(monkeypatch):
+  class FakeBlinkerPauseLateral:
+    def get_params(self):
+      pass
+
+  class FakeLiveDelay:
+    lateralDelay = 0.42
+
+  class FakeTorqueController:
+    CONTROL_STATE = "torque"
+
+  CP, CP_SP, _CI = get_test_context()
+  CP.lateralTuning.init('pid')
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(False))
+  controls_ext._param_update_time = 0.0
+  controls_ext.blinker_pause_lateral = FakeBlinkerPauseLateral()
+  controls_ext.LaC = FakeTorqueController()
+  monkeypatch.setattr(controlsd_ext, "get_lat_delay", lambda _params, lateral_delay: lateral_delay + 0.1)
+
+  controls_ext.get_params_sp({"liveDelay": FakeLiveDelay()})
+
+  assert controls_ext.lat_delay == 0.52

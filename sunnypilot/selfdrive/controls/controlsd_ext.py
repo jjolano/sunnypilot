@@ -19,6 +19,7 @@ from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
 
 
 class ControlsExt(ModelStateBase):
@@ -39,7 +40,7 @@ class ControlsExt(ModelStateBase):
   def initialize_lateral_control(self, lac, CI, dt):
     enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
     torque_version = self.normalize_torque_tune_version(self.params.get("TorqueControlTune", return_default=True))
-    if torque_version in (3.0, 4.0):
+    if torque_version == 4.0:
       self.params.put("TorqueControlTune", "2.0")
       torque_version = 2.0
     if not enforce_torque_control:
@@ -47,10 +48,15 @@ class ControlsExt(ModelStateBase):
         return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)  # FIXME-SP: revert when upstream fixes tuning issues with v1
       return lac
 
+    if self.CP.steerControlType == structs.CarParams.SteerControlType.angle:
+      return lac
+
     if torque_version == 0.0:
       return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)
-    if torque_version in (2.0, 3.0, 4.0):
+    if torque_version == 2.0:
       return LatControlTorqueV2(self.CP, self.CP_SP, CI, dt)
+    if torque_version == 3.0:
+      return LatControlTorqueV3(self.CP, self.CP_SP, CI, dt)
     return lac
 
   @staticmethod
@@ -73,7 +79,9 @@ class ControlsExt(ModelStateBase):
     if time.monotonic() - self._param_update_time > PARAMS_UPDATE_PERIOD:
       self.blinker_pause_lateral.get_params()
 
-      if self.CP.lateralTuning.which() == 'torque':
+      lac = getattr(self, "LaC", None)
+      lat_control_state = getattr(lac, "CONTROL_STATE", self.CP.lateralTuning.which())
+      if lat_control_state == 'torque':
         self.lat_delay = get_lat_delay(self.params, sm["liveDelay"].lateralDelay)
 
       self._param_update_time = time.monotonic()
