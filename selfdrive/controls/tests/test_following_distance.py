@@ -90,6 +90,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   has_predicted_lead_pullaway,
   should_arm_stopped_lead_gap_fill,
   should_hold_creep_to_stop_gap,
+  should_release_creep_stop_hold,
 )
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
@@ -196,6 +197,16 @@ def test_creep_to_stop_gap_uses_soft_release_before_pullaway():
 
   assert active
   assert 0.0 < accel <= 0.10
+
+
+def test_creep_stop_hold_release_hysteresis_blocks_crawl_chatter():
+  assert should_hold_creep_to_stop_gap(0.0, STOP_DISTANCE + 0.2, 0.0, 0.0, release_active=False)
+  assert not should_release_creep_stop_hold(False, 0.0, STOP_DISTANCE + 0.2, 0.0, 0.0)
+
+  assert should_release_creep_stop_hold(False, 0.0, STOP_DISTANCE + 0.5, 0.1, 0.0)
+  assert not should_hold_creep_to_stop_gap(0.0, STOP_DISTANCE + 0.25, 0.0, 0.0, release_active=True)
+  assert should_release_creep_stop_hold(True, 0.2, STOP_DISTANCE + 0.25, 0.0, 0.0)
+  assert not should_release_creep_stop_hold(True, 0.2, STOP_DISTANCE + 0.15, 0.0, 0.0)
 
 
 def test_creep_to_stop_gap_smooths_confirmed_pullaway_step():
