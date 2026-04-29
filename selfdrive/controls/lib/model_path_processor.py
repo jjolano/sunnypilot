@@ -56,16 +56,16 @@ class ModelPathProcessor:
     pass
 
   def update(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult:
-    fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
-    hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
     if not inputs.lat_active:
       self.reset()
       return ModelPathProcessorResult(float(inputs.measured_curvature), 0.0, True, "inactive")
 
     if not math.isfinite(inputs.desired_curvature):
+      hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature")
 
     if not self._valid_core_path(inputs.position_x, inputs.position_y):
+      hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path")
 
     desired_curvature = float(inputs.desired_curvature)
@@ -104,6 +104,7 @@ class ModelPathProcessor:
         quality = min(quality, 0.65)
         reason = "path_disagreement"
 
+    fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
     jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
     if jump_result is not None:
       return jump_result

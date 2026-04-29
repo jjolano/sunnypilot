@@ -43,12 +43,43 @@ def test_inactive_returns_measured_curvature():
   assert result.desired_curvature == pytest.approx(0.0005)
 
 
+def test_inactive_does_not_compute_unused_fallbacks(monkeypatch):
+  monkeypatch.setattr(ModelPathProcessor, "_fallback_curvature", staticmethod(lambda *_: pytest.fail("soft fallback should not be computed")))
+  monkeypatch.setattr(ModelPathProcessor, "_hard_invalid_fallback_curvature", classmethod(lambda *_: pytest.fail("hard fallback should not be computed")))
+
+  result = ModelPathProcessor().update(make_inputs(lat_active=False))
+
+  assert result.gated
+  assert result.reason == "inactive"
+  assert result.desired_curvature == pytest.approx(0.0005)
+
+
 def test_nonfinite_curvature_decays_toward_measured_curvature():
   result = ModelPathProcessor().update(make_inputs(desired_curvature=math.nan))
 
   assert result.gated
   assert result.reason == "nonfinite_curvature"
   assert 0.0005 < result.desired_curvature < 0.001
+
+
+def test_nonfinite_curvature_does_not_compute_soft_fallback(monkeypatch):
+  monkeypatch.setattr(ModelPathProcessor, "_fallback_curvature", staticmethod(lambda *_: pytest.fail("soft fallback should not be computed")))
+
+  result = ModelPathProcessor().update(make_inputs(desired_curvature=math.nan))
+
+  assert result.gated
+  assert result.reason == "nonfinite_curvature"
+  assert 0.0005 < result.desired_curvature < 0.001
+
+
+def test_good_path_does_not_compute_hard_invalid_fallback(monkeypatch):
+  monkeypatch.setattr(ModelPathProcessor, "_hard_invalid_fallback_curvature", classmethod(lambda *_: pytest.fail("hard fallback should not be computed")))
+
+  result = ModelPathProcessor().update(make_inputs())
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.desired_curvature == pytest.approx(0.002)
 
 
 def test_missing_path_decays_toward_measured_curvature():
