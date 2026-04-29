@@ -40,7 +40,7 @@ class TorqueV3SafetyEnvelope:
     self.output_shaper = TorqueConservativeOutputShaper(dt)
 
   def update(self, inputs: TorqueV3SafetyInputs) -> TorqueV3SafetyResult:
-    authority_cap = max(0.0, min(float(inputs.authority_scale), 1.0)) * min(abs(inputs.unshaped_output), max(inputs.max_output, 0.0))
+    authority_cap = max(0.0, min(float(inputs.authority_scale), 1.0)) * max(inputs.max_output, 0.0)
     authority_limited_output = float(np.clip(inputs.unshaped_output, -authority_cap, authority_cap))
     authority_limited = abs(authority_limited_output) < abs(inputs.unshaped_output) - 1e-6
     shaping_result = self.output_shaper.update(

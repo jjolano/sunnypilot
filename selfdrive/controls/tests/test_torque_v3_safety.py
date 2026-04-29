@@ -26,10 +26,20 @@ def make_inputs(**overrides):
 def test_authority_scale_caps_unshaped_output():
   envelope = TorqueV3SafetyEnvelope(dt=0.01)
 
-  result = envelope.update(make_inputs(unshaped_output=0.8, authority_scale=0.5))
+  result = envelope.update(make_inputs(unshaped_output=0.8, max_output=1.0, authority_scale=0.5))
 
-  assert result.output_torque == 0.4
+  assert result.output_torque == 0.5
   assert result.authority_limited
+  assert result.authority_cap == 0.5
+
+
+def test_authority_scale_does_not_distort_low_command():
+  envelope = TorqueV3SafetyEnvelope(dt=0.01)
+  result = envelope.update(make_inputs(unshaped_output=0.2, max_output=1.0, authority_scale=0.5))
+
+  assert result.output_torque == 0.2
+  assert not result.authority_limited
+  assert result.authority_cap == 0.5
 
 
 def test_full_authority_does_not_cap_clean_output():
@@ -42,8 +52,11 @@ def test_full_authority_does_not_cap_clean_output():
 
 def test_v2_shaping_still_applies_after_authority_cap():
   envelope = TorqueV3SafetyEnvelope(dt=0.01)
-  result = envelope.update(make_inputs(unshaped_output=0.8, authority_scale=1.0, steering_pressed=True, release_active=True))
+  result = envelope.update(make_inputs(unshaped_output=0.8, max_output=1.0, authority_scale=0.5, steering_pressed=True, release_active=True))
 
   assert result.shaping_result.active
   assert result.shaping_result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
-  assert abs(result.output_torque) <= 0.64
+  assert result.authority_limited
+  assert result.authority_cap == 0.5
+  assert result.shaping_result.unshaped_output == 0.5
+  assert result.output_torque == 0.4
