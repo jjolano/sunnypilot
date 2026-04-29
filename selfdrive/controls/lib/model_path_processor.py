@@ -72,6 +72,9 @@ class ModelPathProcessor:
     quality = 1.0
     reason = "ok"
 
+    if inputs.turn_curvature_sign != 0 and desired_curvature * inputs.turn_curvature_sign < 0.0:
+      return ModelPathProcessorResult(0.0, 0.5, True, "turn_opposite_curvature")
+
     path_curvature = self._path_curvature(inputs.orientation_z, inputs.orientation_rate_z, inputs.v_ego)
     path_disagreement = None
     if path_curvature is not None:

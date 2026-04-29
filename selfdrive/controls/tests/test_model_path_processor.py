@@ -114,6 +114,53 @@ def test_low_lane_confidence_degrades_quality_without_hard_gate():
   assert result.desired_curvature == pytest.approx(0.002)
 
 
+@pytest.mark.parametrize(
+  ("desired_curvature", "turn_curvature_sign"),
+  [
+    (-0.004, 1),
+    (0.004, -1),
+  ],
+)
+def test_turn_intent_suppresses_opposite_sign_curvature(desired_curvature, turn_curvature_sign):
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=desired_curvature,
+    turn_curvature_sign=turn_curvature_sign,
+  ))
+
+  assert result.gated
+  assert result.reason == "turn_opposite_curvature"
+  assert result.desired_curvature == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+  ("desired_curvature", "turn_curvature_sign"),
+  [
+    (0.004, 1),
+    (-0.004, -1),
+  ],
+)
+def test_turn_intent_allows_same_sign_curvature(desired_curvature, turn_curvature_sign):
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=desired_curvature,
+    turn_curvature_sign=turn_curvature_sign,
+  ))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.desired_curvature == pytest.approx(desired_curvature)
+
+
+def test_no_turn_intent_allows_opposite_direction_curvature():
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=-0.004,
+    turn_curvature_sign=0,
+  ))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.desired_curvature == pytest.approx(-0.004)
+
+
 def test_high_path_std_blends_toward_previous_desired():
   result = ModelPathProcessor().update(make_inputs(position_y_std=tuple(1.4 for _ in range(ModelConstants.IDX_N))))
 
@@ -136,7 +183,7 @@ def test_turn_intent_relaxes_same_sign_high_path_std():
   assert result.desired_curvature == pytest.approx(0.004)
 
 
-def test_turn_intent_opposite_sign_does_not_relax_high_path_std():
+def test_turn_intent_suppresses_opposite_sign_before_path_std_blending():
   result = ModelPathProcessor().update(make_inputs(
     desired_curvature=0.004,
     orientation_z=tuple(0.01 for _ in range(ModelConstants.IDX_N)),
@@ -145,8 +192,8 @@ def test_turn_intent_opposite_sign_does_not_relax_high_path_std():
   ))
 
   assert result.gated
-  assert result.reason == "high_path_std"
-  assert 0.001 < result.desired_curvature < 0.004
+  assert result.reason == "turn_opposite_curvature"
+  assert result.desired_curvature == pytest.approx(0.0)
 
 
 def test_turn_intent_disagreement_does_not_relax_high_path_std():
