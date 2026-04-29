@@ -363,7 +363,8 @@ class LatControlTorque(LatControl):
     adaptive_log.residualError = float(estimator_result.residual_error)
     adaptive_log.sampleAccepted = bool(estimator_result.sample_accepted)
     adaptive_log.sampleRejectReason = int(estimator_result.reject_reason)
-    pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
+    pid_log.saturated = bool(self._check_saturation(safety_result.authority_limited or self.steer_max - abs(output_torque) < 1e-3, CS,
+                                                     steer_limited_by_safety, curvature_limited))
     self.model_age += self.dt
 
     return -output_torque, 0.0, pid_log

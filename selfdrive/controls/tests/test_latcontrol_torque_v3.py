@@ -188,6 +188,19 @@ def test_v3_direct_extension_model_update_resets_model_age_for_estimator():
   assert not lac_log.adaptiveTorqueState.sampleRejectReason & EstimatorRejectReason.STALE_MODEL
 
 
+def test_v3_authority_limited_output_counts_as_controller_saturation():
+  controller, VM = get_controller(TOYOTA.TOYOTA_RAV4)
+  CS = car.CarState.new_message()
+  CS.vEgo = 30.0
+  params = log.LiveParametersData.new_message()
+
+  for _ in range(1000):
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 1.0, make_pose(), False, 0.2)
+
+  assert lac_log.adaptiveTorqueState.authorityScale < 1.0
+  assert lac_log.saturated
+
+
 def test_v3_smoke_on_gm_nonlinear_native_torque_platform():
   controller, VM = get_controller(GM.CHEVROLET_BOLT_EUV)
   CS = car.CarState.new_message()
