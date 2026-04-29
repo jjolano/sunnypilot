@@ -36,7 +36,9 @@ from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.helpers import convert_to_capnp
 from openpilot.selfdrive.locationd.helpers import Measurement, Pose
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import EstimatorRejectReason
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityBand
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelMode
 
@@ -84,6 +86,22 @@ def get_controller(car_name, force_pid=False):
 def make_pose():
   zeros = np.zeros(3)
   return Pose(Measurement(zeros, zeros), Measurement(zeros, zeros), Measurement(zeros, zeros), Measurement(zeros, zeros))
+
+
+def make_flat_model_v2():
+  model_v2 = log.ModelDataV2.new_message()
+  zeros = [0.0 for _ in ModelConstants.T_IDXS]
+
+  orientation = log.XYZTData.new_message()
+  orientation.x = zeros
+  orientation.y = zeros
+  model_v2.orientation = orientation
+
+  acceleration = log.XYZTData.new_message()
+  acceleration.y = zeros
+  model_v2.acceleration = acceleration
+
+  return model_v2
 
 
 def test_v3_controller_alias_matches_controller_symbol():
@@ -154,6 +172,20 @@ def test_v3_learned_activation_refreshes_active_torque_params_and_pid_limits():
   assert controller.pid.pos_limit != previous_pos_limit
   assert np.isclose(controller.pid.pos_limit, controller.lateral_accel_from_torque(controller.steer_max, controller.torque_params))
   assert np.isclose(controller.pid.neg_limit, controller.lateral_accel_from_torque(-controller.steer_max, controller.torque_params))
+
+
+def test_v3_direct_extension_model_update_resets_model_age_for_estimator():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2, force_pid=True)
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  params = log.LiveParametersData.new_message()
+  model_v2 = make_flat_model_v2()
+
+  for _ in range(30):
+    controller.extension.update_model_v2(model_v2)
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-4, make_pose(), False, 0.2)
+
+  assert not lac_log.adaptiveTorqueState.sampleRejectReason & EstimatorRejectReason.STALE_MODEL
 
 
 def test_v3_smoke_on_gm_nonlinear_native_torque_platform():

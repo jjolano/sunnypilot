@@ -120,6 +120,8 @@ class LatControlTorque(LatControl):
     self.measurement_smoother = LateralAccelMeasurementSmoother(self.dt)
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
+    self._extension_update_model_v2 = self.extension.update_model_v2
+    self.extension.update_model_v2 = self.update_model_v2
     self.response_assist = TorqueGuardedResponseAssist(self.dt)
     self.estimator = AdaptiveTorqueEstimator(self.dt)
     self.authority_manager = AuthorityManager()
@@ -128,7 +130,7 @@ class LatControlTorque(LatControl):
     self.model_age = 0.0
 
   def update_model_v2(self, model_v2):
-    self.extension.update_model_v2(model_v2)
+    self._extension_update_model_v2(model_v2)
     self.model_age = 0.0
 
   def update_lateral_lag(self, lag):
