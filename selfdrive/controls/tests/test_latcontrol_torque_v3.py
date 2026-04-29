@@ -127,11 +127,28 @@ def test_v3_native_torque_starts_near_full_authority():
   CS.vEgo = 20.0
   params = log.LiveParametersData.new_message()
 
-  _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-4, make_pose(), False, 0.2)
+  assert np.isclose(controller.estimator.state.confidence, 0.8)
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0, make_pose(), False, 0.2)
 
   assert lac_log.adaptiveTorqueState.modelMode == TorqueModelMode.native
   assert lac_log.adaptiveTorqueState.authorityBand == AuthorityBand.near_full
   assert np.isclose(lac_log.adaptiveTorqueState.authorityScale, 0.85)
+
+
+def test_v3_native_faulting_frame_demotes_authority_telemetry():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  CS.steeringAngleDeg = 5.0
+  params = log.LiveParametersData.new_message()
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.001, make_pose(), False, 0.2)
+
+  assert lac_log.adaptiveTorqueState.sampleRejectReason & EstimatorRejectReason.SIGN_CONFLICT
+  assert lac_log.adaptiveTorqueState.authorityBand == AuthorityBand.limited
+  assert np.isclose(lac_log.adaptiveTorqueState.authorityScale, 0.45)
+  assert lac_log.adaptiveTorqueState.fallbackActive
 
 
 def test_v3_synthetic_pid_origin_starts_limited():
