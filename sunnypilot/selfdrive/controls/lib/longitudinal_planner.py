@@ -22,6 +22,35 @@ DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimen
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
 
+def _select_lower_target(selected_source, selected_v_target, selected_a_target, candidate_source, candidate):
+  candidate_v_target, candidate_a_target = candidate
+  if candidate_v_target < selected_v_target:
+    return candidate_source, candidate_v_target, candidate_a_target
+  return selected_source, selected_v_target, selected_a_target
+
+
+def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control):
+  if speed_limit_active:
+    selected_source = LongitudinalPlanSource.sccVision
+    selected_v_target, selected_a_target = scc_vision
+  else:
+    selected_source = LongitudinalPlanSource.cruise
+    selected_v_target, selected_a_target = cruise
+    selected_source, selected_v_target, selected_a_target = _select_lower_target(
+      selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccVision, scc_vision
+    )
+
+  selected_source, selected_v_target, selected_a_target = _select_lower_target(
+    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccMap, scc_map
+  )
+  selected_source, selected_v_target, selected_a_target = _select_lower_target(
+    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.speedLimitAssist, speed_limit_assist
+  )
+  return _select_lower_target(
+    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.osmTrafficControl, osm_traffic_control
+  )
+
+
 class LongitudinalPlannerSP:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
     self.events_sp = EventsSP()
@@ -67,20 +96,14 @@ class LongitudinalPlannerSP:
 
     self.osm_traffic_control_prior.update(sm, long_enabled, long_override, v_ego, a_ego)
 
-    targets = {
-      LongitudinalPlanSource.cruise: (v_cruise, a_ego),
-      LongitudinalPlanSource.sccVision: (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
-      LongitudinalPlanSource.sccMap: (self.scc.map.output_v_target, self.scc.map.output_a_target),
-      LongitudinalPlanSource.speedLimitAssist: (self.sla.output_v_target, self.sla.output_a_target),
-      LongitudinalPlanSource.osmTrafficControl: (self.osm_traffic_control_prior.output_v_target,
-                                                self.osm_traffic_control_prior.output_a_target),
-    }
-
-    if self.sla.is_active:
-      targets.pop(LongitudinalPlanSource.cruise)
-
-    self.source = min(targets, key=lambda k: targets[k][0])
-    self.output_v_target, self.output_a_target = targets[self.source]
+    self.source, self.output_v_target, self.output_a_target = select_lowest_longitudinal_target(
+      self.sla.is_active,
+      (v_cruise, a_ego),
+      (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
+      (self.scc.map.output_v_target, self.scc.map.output_a_target),
+      (self.sla.output_v_target, self.sla.output_a_target),
+      (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
+    )
     return self.output_v_target, self.output_a_target
 
   def update(self, sm: messaging.SubMaster) -> None:

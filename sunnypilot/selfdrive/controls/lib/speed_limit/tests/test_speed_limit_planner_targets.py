@@ -2,10 +2,56 @@ from types import SimpleNamespace
 
 from cereal import custom
 from openpilot.common.constants import CV
+import openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner as longitudinal_planner
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
 
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
+
+
+def test_target_selection_tie_prefers_cruise_when_speed_limit_auto_inactive():
+  source, v_target, a_target = longitudinal_planner.select_lowest_longitudinal_target(
+    speed_limit_active=False,
+    cruise=(20.0, 0.1),
+    scc_vision=(20.0, 0.2),
+    scc_map=(20.0, 0.3),
+    speed_limit_assist=(20.0, 0.4),
+    osm_traffic_control=(20.0, 0.5),
+  )
+
+  assert source == LongitudinalPlanSource.cruise
+  assert v_target == 20.0
+  assert a_target == 0.1
+
+
+def test_target_selection_tie_excludes_cruise_when_speed_limit_auto_active():
+  source, v_target, a_target = longitudinal_planner.select_lowest_longitudinal_target(
+    speed_limit_active=True,
+    cruise=(20.0, 0.1),
+    scc_vision=(20.0, 0.2),
+    scc_map=(20.0, 0.3),
+    speed_limit_assist=(20.0, 0.4),
+    osm_traffic_control=(20.0, 0.5),
+  )
+
+  assert source == LongitudinalPlanSource.sccVision
+  assert v_target == 20.0
+  assert a_target == 0.2
+
+
+def test_target_selection_keeps_lowest_non_cruise_candidate():
+  source, v_target, a_target = longitudinal_planner.select_lowest_longitudinal_target(
+    speed_limit_active=True,
+    cruise=(15.0, 0.1),
+    scc_vision=(20.0, 0.2),
+    scc_map=(18.0, 0.3),
+    speed_limit_assist=(19.0, 0.4),
+    osm_traffic_control=(17.0, 0.5),
+  )
+
+  assert source == LongitudinalPlanSource.osmTrafficControl
+  assert v_target == 17.0
+  assert a_target == 0.5
 
 
 class FakeResolver:

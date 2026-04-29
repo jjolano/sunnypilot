@@ -219,12 +219,13 @@ class SpeedLimitAssist:
     self.speed_limit_final_last_conv = round(self._speed_limit_final_last * speed_conv)
     self.v_cruise_cluster_conv = round(self.v_cruise_cluster * speed_conv)
 
-    cst_low, cst_high = PCM_LONG_REQUIRED_MAX_SET_SPEED[self.is_metric]
-    pcm_long_required_max = cst_low if self._has_speed_limit and self.speed_limit_final_last_conv < CONFIRM_SPEED_THRESHOLD[self.is_metric] else \
-                            cst_high
-    pcm_long_required_max_set_speed_conv = round(pcm_long_required_max * speed_conv)
-
-    self.target_set_speed_conv = pcm_long_required_max_set_speed_conv if self.pcm_op_long else self.speed_limit_final_last_conv
+    if self.pcm_op_long:
+      cst_low, cst_high = PCM_LONG_REQUIRED_MAX_SET_SPEED[self.is_metric]
+      pcm_long_required_max = cst_low if self._has_speed_limit and self.speed_limit_final_last_conv < CONFIRM_SPEED_THRESHOLD[self.is_metric] else \
+                              cst_high
+      self.target_set_speed_conv = round(pcm_long_required_max * speed_conv)
+    else:
+      self.target_set_speed_conv = self.speed_limit_final_last_conv
 
   @property
   def apply_confirm_speed_threshold(self) -> bool:

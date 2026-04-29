@@ -184,6 +184,24 @@ class TestSpeedLimitAssist:
     assert self.sla.auto_enabled
     assert self.sla.state == SpeedLimitAssistState.active
 
+  def test_non_pcm_update_calculations_skips_pcm_set_speed_lookup(self, monkeypatch):
+    class PcmSetSpeedLookup:
+      def __getitem__(self, _key):
+        pytest.fail("non-PCM speed-limit assist should not read PCM set-speed limits")
+
+    self.sla.pcm_op_long = False
+    self.sla.is_metric = False
+    self.sla._has_speed_limit = True
+    self.sla._speed_limit_final_last = SPEED_LIMITS['highway']
+    monkeypatch.setattr(
+      "openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist.PCM_LONG_REQUIRED_MAX_SET_SPEED",
+      PcmSetSpeedLookup(),
+    )
+
+    self.sla.update_calculations(SPEED_LIMITS['city'])
+
+    assert self.sla.target_set_speed_conv == round(SPEED_LIMITS['highway'] * CV.MS_TO_MPH)
+
   def test_auto_disabled_suppresses_preactive_prompt(self):
     for _ in range(int(PRE_ACTIVE_GUARD_PERIOD[self.sla.pcm_op_long] / DT_MDL)):
       self.sla.update(True, False, SPEED_LIMITS['city'], 0, SPEED_LIMITS['highway'], SPEED_LIMITS['city'], SPEED_LIMITS['city'], True, 0, self.events_sp)
