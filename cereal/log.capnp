@@ -873,6 +873,18 @@ struct ControlsState @0x97ff69c53601abf1 {
       shapingConfidence @13 :Float32;
       unshapedOutput @14 :Float32;
       outputCap @15 :Float32;
+      modelMode @16 :UInt8;
+      modelConfidence @17 :Float32;
+      authorityBand @18 :UInt8;
+      authorityScale @19 :Float32;
+      fallbackActive @20 :Bool;
+      learnedLatAccelFactor @21 :Float32;
+      learnedFriction @22 :Float32;
+      learnedLatAccelOffset @23 :Float32;
+      learnedResponseDelay @24 :Float32;
+      residualError @25 :Float32;
+      sampleAccepted @26 :Bool;
+      sampleRejectReason @27 :UInt32;
     }
 
     adaptiveTorqueState @13 :AdaptiveTorqueState;
