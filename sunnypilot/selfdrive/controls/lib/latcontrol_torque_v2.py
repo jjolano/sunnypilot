@@ -236,6 +236,7 @@ class LatControlTorque(LatControl):
       )
     )
     output_torque = assist_result.output_torque if active else 0.0
+    same_sign_unwind_release = same_sign_unwind and sign(measurement) != 0.0 and sign(-output_torque) == sign(measurement)
     shaping_result = self.output_shaper.update(
       ConservativeOutputShaperInputs(
         active=active,
@@ -250,6 +251,7 @@ class LatControlTorque(LatControl):
         desired_lateral_jerk=desired_lateral_jerk,
         actual_lateral_jerk=raw_actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
+        same_sign_unwind_release=same_sign_unwind_release,
       )
     )
     output_torque = shaping_result.output_torque

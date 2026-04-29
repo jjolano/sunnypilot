@@ -23,6 +23,7 @@ OVER_ISO_ACCEL_CAP = 0.80
 OVER_RESPONSE_CAP = 0.85
 SIGN_CONFLICT_CAP = 0.80
 OVERRIDE_RELEASE_CAP = 0.80
+SAME_SIGN_UNWIND_CAP = 0.30
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
@@ -43,6 +44,7 @@ class ConservativeOutputShapingReason(IntFlag):
   BUMP = 1 << 5
   LOW_SPEED_STEER_LIMITED = 1 << 6
   OUTPUT_RATE_LIMITED = 1 << 7
+  SAME_SIGN_UNWIND = 1 << 8
 
 
 @dataclass
@@ -59,6 +61,7 @@ class ConservativeOutputShaperInputs:
   desired_lateral_jerk: float
   actual_lateral_jerk: float
   lookahead_lateral_jerk: float
+  same_sign_unwind_release: bool
 
 
 @dataclass
@@ -106,6 +109,7 @@ class TorqueConservativeOutputShaper:
     )
     high_output = abs(inputs.unshaped_output) > max(inputs.max_output, 1e-3) * HIGH_OUTPUT_FRACTION
     low_speed_steer_limited = inputs.v_ego < LOW_SPEED_THRESHOLD and inputs.steer_limited_by_safety and high_output
+    same_sign_unwind_release = inputs.same_sign_unwind_release
 
     if inputs.steering_pressed:
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, OVERRIDE_RELEASE_CAP, 1.0,
@@ -113,6 +117,9 @@ class TorqueConservativeOutputShaper:
     if inputs.release_active:
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, OVERRIDE_RELEASE_CAP, 1.0,
                                                    ConservativeOutputShapingReason.RELEASE)
+    if same_sign_unwind_release:
+      output_cap, confidence, reason = self._apply(output_cap, confidence, reason, SAME_SIGN_UNWIND_CAP, 1.0,
+                                                   ConservativeOutputShapingReason.SAME_SIGN_UNWIND)
     if sign_conflict:
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, SIGN_CONFLICT_CAP, 1.0,
                                                    ConservativeOutputShapingReason.SIGN_CONFLICT)
@@ -137,6 +144,7 @@ class TorqueConservativeOutputShaper:
                                                    ConservativeOutputShapingReason.LOW_SPEED_STEER_LIMITED)
 
     base_active = reason != ConservativeOutputShapingReason.NONE and output_cap < NORMAL_CAP
+    same_sign_unwind_shaping = bool(reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND)
     recently_shaped = self._recent_shaping_time > 0.0
     shaped_output = inputs.unshaped_output * output_cap if base_active else inputs.unshaped_output
     if abs(shaped_output) > abs(inputs.unshaped_output):
@@ -147,7 +155,7 @@ class TorqueConservativeOutputShaper:
       confidence = max(confidence, 1.0)
       output_cap = min(output_cap, abs(shaped_output) / max(abs(inputs.unshaped_output), 1e-6))
 
-    if base_active:
+    if base_active and not same_sign_unwind_shaping:
       self._recent_shaping_time = OUTPUT_RATE_RECOVERY_WINDOW
     else:
       self._recent_shaping_time = max(0.0, self._recent_shaping_time - self.dt)

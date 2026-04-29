@@ -14,6 +14,7 @@ from openpilot.selfdrive.locationd.helpers import Measurement, Pose
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShapingReason
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseReason
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
 
@@ -333,9 +334,38 @@ def test_v2_softens_low_speed_same_sign_unwind():
   assert lac_log.desiredLateralAccel < lac_log.actualLateralAccel
   assert adaptive_log.assistOutput <= 0.0
   assert adaptive_log.biasOutput < 0.0
+  assert adaptive_log.shapingActive
+  assert adaptive_log.shapingReason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert abs(lac_log.output) < abs(adaptive_log.unshapedOutput)
   assert adaptive_log.nominalOutput < 0.95
   assert lac_log.output < 0.9
   assert abs(lac_log.output) <= abs(adaptive_log.unshapedOutput)
+
+
+def test_v2_same_sign_unwind_release_uses_smoothed_measurement_sign():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 5.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -30.0
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  for _ in range(60):
+    controller.update(True, CS, VM, params, False, 0.02, pose, False, 0.2)
+
+  CS.steeringAngleDeg = 10.0
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.002, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert lac_log.desiredLateralAccel < lac_log.actualLateralAccel
+  assert adaptive_log.blockReason & GuardedResponseReason.SAME_SIGN_UNWIND
+  assert adaptive_log.shapingActive
+  assert adaptive_log.shapingReason & ConservativeOutputShapingReason.SIGN_CONFLICT
+  assert adaptive_log.shapingReason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert abs(adaptive_log.outputCap - 0.3) < 1e-6
+  assert abs(lac_log.output) < abs(adaptive_log.unshapedOutput) * 0.5
 
 
 def test_v2_shapes_sign_conflict():

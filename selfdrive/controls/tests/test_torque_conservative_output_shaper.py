@@ -19,6 +19,7 @@ def make_inputs(**overrides):
     "desired_lateral_jerk": 0.2,
     "actual_lateral_jerk": 0.05,
     "lookahead_lateral_jerk": 0.2,
+    "same_sign_unwind_release": False,
   }
   values.update(overrides)
   return ConservativeOutputShaperInputs(**values)
@@ -141,6 +142,75 @@ def test_low_speed_steer_limited_high_output_caps_output():
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.LOW_SPEED_STEER_LIMITED
   assert result.output_cap == 0.92
+
+
+def test_same_sign_unwind_release_clamps_output_toward_zero():
+  result = assert_cap_only(
+    make_inputs(
+      v_ego=5.0,
+      same_sign_unwind_release=True,
+      unshaped_output=0.6,
+      desired_lateral_accel=0.05,
+      actual_lateral_accel=0.35,
+      desired_lateral_jerk=-0.8,
+      lookahead_lateral_jerk=-0.4,
+    )
+  )
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert result.output_cap == 0.3
+  assert result.output_torque == 0.18
+
+
+def test_same_sign_unwind_does_not_clamp_when_release_flag_is_clear():
+  result = assert_cap_only(
+    make_inputs(
+      v_ego=5.0,
+      same_sign_unwind_release=False,
+      unshaped_output=-0.6,
+      desired_lateral_accel=0.05,
+      actual_lateral_accel=0.35,
+      desired_lateral_jerk=-0.8,
+      lookahead_lateral_jerk=-0.4,
+    )
+  )
+
+  assert not result.active
+  assert result.reason == 0
+  assert result.output_cap == 1.0
+  assert result.output_torque == result.unshaped_output
+
+
+def test_same_sign_unwind_cap_does_not_rate_limit_next_corrective_output():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(
+    make_inputs(
+      v_ego=5.0,
+      same_sign_unwind_release=True,
+      unshaped_output=0.6,
+      desired_lateral_accel=0.05,
+      actual_lateral_accel=0.35,
+      desired_lateral_jerk=-0.8,
+      lookahead_lateral_jerk=-0.4,
+    )
+  )
+
+  result = shaper.update(
+    make_inputs(
+      v_ego=5.0,
+      same_sign_unwind_release=False,
+      unshaped_output=-0.6,
+      desired_lateral_accel=0.05,
+      actual_lateral_accel=0.35,
+      desired_lateral_jerk=-0.8,
+      lookahead_lateral_jerk=-0.4,
+    )
+  )
+
+  assert not result.active
+  assert result.reason == 0
+  assert result.output_torque == result.unshaped_output
 
 
 def test_strongest_cap_wins_when_multiple_reasons_apply():
