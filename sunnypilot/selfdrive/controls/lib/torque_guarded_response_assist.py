@@ -21,6 +21,18 @@ CURVE_EXIT_MAX_LOOKAHEAD_JERK = 0.05
 CURVE_EXIT_ASSIST_GAIN = 0.8
 CURVE_EXIT_ASSIST_CAP_SCALE = 0.4
 CURVE_EXIT_ASSIST_BUILD_RATE = 0.4
+CURVE_PREPOSITION_RESPONSE_DEFICIT_THRESHOLD = 0.02
+CURVE_PREPOSITION_MIN_LAT_ACCEL = 0.8
+CURVE_PREPOSITION_MIN_CURVATURE = 0.02
+CURVE_PREPOSITION_MIN_UNDER_RESPONSE = 0.2
+CURVE_PREPOSITION_MIN_DESIRED_JERK = 0.25
+CURVE_PREPOSITION_MIN_JERK_DEFICIT = 0.25
+CURVE_PREPOSITION_MIN_OUTPUT_FRACTION = 0.55
+CURVE_PREPOSITION_MAX_OUTPUT_FRACTION = 0.9
+CURVE_PREPOSITION_ASSIST_DEFICIT_GAIN = 0.5
+CURVE_PREPOSITION_ASSIST_JERK_GAIN = 0.02
+CURVE_PREPOSITION_ASSIST_CAP_SCALE = 0.35
+CURVE_PREPOSITION_ASSIST_BUILD_RATE = 0.35
 BIAS_TARGET_GAIN = 0.6
 BIAS_BUILD_RATE = 0.18
 BIAS_DECAY_RATE = 0.08
@@ -197,7 +209,11 @@ class TorqueGuardedResponseAssist:
     learning_frozen = learning_frozen or assist_learning_blocked
 
     curve_exit_under_response = assist_allowed and self._is_curve_exit_under_response(inputs, nominal_sign, desired_sign, same_sign_hold, assist_deficit)
+    curve_preposition_under_response = assist_allowed and self._is_curve_preposition_under_response(inputs, nominal_sign, desired_sign,
+                                                                                                     same_sign_hold, assist_deficit)
     if curve_exit_under_response:
+      assist_block_reason &= ~GuardedResponseReason.BELOW_DEFICIT
+    if curve_preposition_under_response:
       assist_block_reason &= ~GuardedResponseReason.BELOW_DEFICIT
 
     target_assist = 0.0
@@ -210,6 +226,17 @@ class TorqueGuardedResponseAssist:
       if abs(curve_exit_target) > abs(target_assist):
         target_assist = curve_exit_target
         assist_build_rate = CURVE_EXIT_ASSIST_BUILD_RATE
+    if curve_preposition_under_response:
+      curve_preposition_max_assist = max_assist * CURVE_PREPOSITION_ASSIST_CAP_SCALE
+      jerk_deficit = desired_sign * (inputs.desired_lateral_jerk - inputs.actual_lateral_jerk)
+      curve_preposition_target = nominal_sign * min(
+        curve_preposition_max_assist,
+        CURVE_PREPOSITION_ASSIST_DEFICIT_GAIN * (assist_deficit - CURVE_PREPOSITION_RESPONSE_DEFICIT_THRESHOLD)
+        + CURVE_PREPOSITION_ASSIST_JERK_GAIN * jerk_deficit,
+      )
+      if abs(curve_preposition_target) > abs(target_assist):
+        target_assist = curve_preposition_target
+        assist_build_rate = CURVE_PREPOSITION_ASSIST_BUILD_RATE
 
     if abs(target_assist) > ACTIVE_RELEASE_THRESHOLD:
       self.phase = Phase.ASSIST
@@ -274,6 +301,26 @@ class TorqueGuardedResponseAssist:
       and under_response > CURVE_EXIT_MIN_UNDER_RESPONSE
       and desired_sign * inputs.desired_lateral_jerk < -CURVE_EXIT_MIN_UNWIND_JERK
       and desired_sign * inputs.lookahead_lateral_jerk <= CURVE_EXIT_MAX_LOOKAHEAD_JERK
+    )
+
+  @staticmethod
+  def _is_curve_preposition_under_response(inputs: GuardedResponseAssistInputs, nominal_sign: float, desired_sign: float,
+                                           same_sign_hold: bool, assist_deficit: float) -> bool:
+    under_response = desired_sign * (inputs.desired_lateral_accel - inputs.actual_lateral_accel)
+    desired_jerk = desired_sign * inputs.desired_lateral_jerk
+    jerk_deficit = desired_sign * (inputs.desired_lateral_jerk - inputs.actual_lateral_jerk)
+    output_fraction = abs(inputs.nominal_torque) / max(inputs.max_output, 1e-3)
+    return (
+      same_sign_hold
+      and not inputs.lane_change_active
+      and nominal_sign == desired_sign
+      and assist_deficit > CURVE_PREPOSITION_RESPONSE_DEFICIT_THRESHOLD
+      and abs(inputs.desired_lateral_accel) >= CURVE_PREPOSITION_MIN_LAT_ACCEL
+      and abs(inputs.desired_curvature) >= CURVE_PREPOSITION_MIN_CURVATURE
+      and under_response > CURVE_PREPOSITION_MIN_UNDER_RESPONSE
+      and desired_jerk > CURVE_PREPOSITION_MIN_DESIRED_JERK
+      and jerk_deficit > CURVE_PREPOSITION_MIN_JERK_DEFICIT
+      and CURVE_PREPOSITION_MIN_OUTPUT_FRACTION <= output_fraction < CURVE_PREPOSITION_MAX_OUTPUT_FRACTION
     )
 
   def _freeze_reason(self, inputs: GuardedResponseAssistInputs) -> GuardedResponseReason:
