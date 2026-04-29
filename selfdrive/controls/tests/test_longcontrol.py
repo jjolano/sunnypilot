@@ -269,6 +269,33 @@ def test_breakaway_holds_until_response_then_hands_off_to_taper():
   assert taper_accel > LAUNCH_ENVELOPE_MIN_ACCEL
 
 
+def test_taper_update_reuses_launch_blend_for_cap_and_reset(monkeypatch):
+  CP = make_car_params(startingState=False)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+  accel_limits = (-3.0, 2.0)
+  a_target = 1.0
+
+  loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=a_target, should_stop=False, accel_limits=accel_limits)
+  for _ in range(int(LAUNCH_BREAKAWAY_MIN_TIME / DT_CTRL) + 1):
+    loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=a_target, should_stop=False, accel_limits=accel_limits)
+
+  calls = 0
+
+  def counted_blend(v_ego, launch_elapsed):
+    nonlocal calls
+    calls += 1
+    return get_launch_envelope_blend(v_ego, launch_elapsed)
+
+  monkeypatch.setattr("openpilot.selfdrive.controls.lib.longcontrol.get_launch_envelope_blend", counted_blend)
+
+  taper_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.1), a_target=a_target, should_stop=False, accel_limits=accel_limits)
+
+  assert calls == 1
+  assert taper_accel == pytest.approx(LAUNCH_ENVELOPE_MAX_ACCEL)
+
+
 def test_breakaway_times_out_when_response_never_arrives():
   CP = make_car_params(startingState=False)
   CP_SP = custom.CarParamsSP.new_message()

@@ -81,11 +81,12 @@ def launch_should_stop_hold_active(v_ego, brake_pressed, launch_elapsed, a_targe
   return not brake_pressed and a_target >= LAUNCH_ENVELOPE_MIN_ACCEL and v_ego < LAUNCH_BREAKAWAY_V_EGO and launch_elapsed < LAUNCH_SHOULD_STOP_HOLD_TIME
 
 
-def apply_launch_envelope(output_accel, accel_limits, v_ego, launch_elapsed):
+def apply_launch_envelope(output_accel, accel_limits, v_ego, launch_elapsed, blend=None):
   if output_accel <= 0.0:
     return float(output_accel)
 
-  blend = get_launch_envelope_blend(v_ego, launch_elapsed)
+  if blend is None:
+    blend = get_launch_envelope_blend(v_ego, launch_elapsed)
   if blend <= 0.0:
     return float(output_accel)
 
@@ -163,8 +164,9 @@ class LongControl:
         self.launch_breakaway_elapsed += DT_CTRL
       else:
         self.launch_breakaway_done = True
-        output_accel = apply_launch_envelope(output_accel, accel_limits, CS.vEgo, self.launch_taper_elapsed)
-        if get_launch_envelope_blend(CS.vEgo, self.launch_taper_elapsed) <= 0.0:
+        launch_blend = get_launch_envelope_blend(CS.vEgo, self.launch_taper_elapsed)
+        output_accel = apply_launch_envelope(output_accel, accel_limits, CS.vEgo, self.launch_taper_elapsed, launch_blend)
+        if launch_blend <= 0.0:
           self.reset_launch_envelope()
         else:
           self.launch_taper_elapsed += DT_CTRL
