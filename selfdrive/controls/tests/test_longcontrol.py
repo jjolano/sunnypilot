@@ -121,8 +121,19 @@ def test_launch_breakaway_accel_scales_with_target_accel():
   assert get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL - 1e-3, accel_limits) == pytest.approx(0.0)
   mild_launch = get_launch_breakaway_accel(0.18, accel_limits)
   assert LAUNCH_ENVELOPE_MIN_ACCEL < mild_launch < LAUNCH_BREAKAWAY_ACCEL
+  assert get_launch_breakaway_accel(0.35, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
   assert get_launch_breakaway_accel(1.0, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
   assert get_launch_breakaway_accel(1.0, (-3.0, 0.25)) == pytest.approx(0.25)
+
+
+def test_clear_runway_launch_allows_stronger_breakaway_and_faster_ramp_out():
+  accel_limits = (-3.0, 2.0)
+
+  assert LAUNCH_BREAKAWAY_ACCEL >= 0.55
+  assert LAUNCH_ENVELOPE_MAX_ACCEL >= 0.55
+  assert get_launch_breakaway_accel(1.0, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
+  assert apply_launch_envelope(1.0, accel_limits, 0.0, 0.0) == pytest.approx(LAUNCH_ENVELOPE_MAX_ACCEL)
+  assert get_launch_envelope_blend(0.0, 0.4) == pytest.approx(0.0)
 
 
 def test_apply_launch_envelope_only_shapes_positive_accel():
@@ -270,7 +281,7 @@ def test_breakaway_times_out_when_response_never_arrives():
     output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=1.0, should_stop=False, accel_limits=accel_limits)
 
   assert loc.launch_breakaway_done
-  assert LAUNCH_ENVELOPE_MAX_ACCEL <= output_accel < LAUNCH_BREAKAWAY_ACCEL
+  assert LAUNCH_ENVELOPE_MAX_ACCEL <= output_accel <= 1.0
 
 
 def test_launch_envelope_cancels_when_stop_returns():
