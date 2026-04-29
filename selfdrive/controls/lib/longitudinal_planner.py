@@ -131,6 +131,16 @@ def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_
   if float(getattr(radar_lead, "modelProb", getattr(lead_msg, "prob", 0.0))) < CREEP_TO_STOP_GAP_MIN_MODEL_PROB:
     return 0.0, 0.0
 
+  d_rel = float(getattr(radar_lead, "dRel", 0.0))
+  if not np.isfinite(d_rel):
+    return 0.0, 0.0
+  radar_y_rel = float(getattr(radar_lead, "yRel", 0.0))
+  if not np.isfinite(radar_y_rel):
+    return 0.0, 0.0
+  radar_v_lead = float(getattr(radar_lead, "vLeadK", getattr(radar_lead, "vLead", 0.0)))
+  if not np.isfinite(radar_v_lead):
+    return 0.0, 0.0
+
   ts = np.asarray(getattr(lead_msg, "t", []), dtype=float)
   xs = np.asarray(getattr(lead_msg, "x", []), dtype=float)
   ys = np.asarray(getattr(lead_msg, "y", []), dtype=float)
@@ -156,22 +166,13 @@ def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_
   if v_std > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_STD:
     return 0.0, 0.0
 
-  d_rel = float(getattr(radar_lead, "dRel", 0.0))
-  if not np.isfinite(d_rel):
-    return 0.0, 0.0
   model_d_rel_now = float(xs[0] - CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET)
   if abs(model_d_rel_now - d_rel) > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_DIST_ERROR:
-    return 0.0, 0.0
-  radar_y_rel = float(getattr(radar_lead, "yRel", 0.0))
-  if not np.isfinite(radar_y_rel):
     return 0.0, 0.0
   model_y_rel_now = float(-ys[0])
   max_y_error = min(CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_ERROR,
                     max(CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_Y_ERROR, 2.0 * float(y_std)))
   if abs(model_y_rel_now - radar_y_rel) > max_y_error:
-    return 0.0, 0.0
-  radar_v_lead = float(getattr(radar_lead, "vLeadK", getattr(radar_lead, "vLead", 0.0)))
-  if not np.isfinite(radar_v_lead):
     return 0.0, 0.0
   if abs(float(vs[0]) - radar_v_lead) > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_ERROR:
     return 0.0, 0.0

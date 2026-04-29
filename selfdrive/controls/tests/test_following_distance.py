@@ -41,6 +41,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_desired_follow_distance,
   get_lead_accel_match_margin,
   get_lead_accel_match_target,
+  get_lead_accel_match_targets,
   get_lead_accel_recovery_a_min,
   get_lead_gap_comfort_a_min,
   get_lead_gap_comfort_floor,
@@ -67,7 +68,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
   LongitudinalMpc,
+  N,
 )
+from openpilot.selfdrive.controls.lib import longitudinal_planner
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_ACCEL_MAX,
   CREEP_TO_STOP_GAP_ACCEL_MIN,
@@ -247,6 +250,21 @@ def test_model_lead_pullaway_prediction_requires_confident_matching_lead():
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel + 3.0), make_radar_lead(d_rel), 0.0) == (0.0, 0.0)
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, v_lead=2.0), 0.0) == (0.0, 0.0)
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel), 0.4) == (0.0, 0.0)
+
+
+def test_model_lead_pullaway_skips_model_arrays_for_invalid_radar_distance(monkeypatch):
+  calls = 0
+  base_asarray = np.asarray
+
+  def counting_asarray(*args, **kwargs):
+    nonlocal calls
+    calls += 1
+    return base_asarray(*args, **kwargs)
+
+  monkeypatch.setattr(longitudinal_planner.np, "asarray", counting_asarray)
+
+  assert get_model_lead_pullaway(make_model_msg_lead(), make_radar_lead(d_rel=np.nan), 0.0) == (0.0, 0.0)
+  assert calls == 0
 
 
 def test_model_lead_pullaway_prediction_requires_low_uncertainty():
@@ -652,6 +670,52 @@ def test_lead_accel_match_tapers_positive_accel_under_time_gap():
   assert 0.0 < near_stop_target < mid_gap_target < target_gap_target <= a_lead
   assert near_stop_target == pytest.approx(a_lead * LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND, abs=0.05)
   assert 0.0 < near_stop_cost < mid_gap_cost < target_gap_cost
+
+
+def test_vectorized_lead_accel_match_matches_scalar_targets():
+  v_leads = np.array([0.0, 0.5, 1.5, 4.0, 8.0, 12.0])
+  d_rels = np.array([STOP_DISTANCE - 0.1, STOP_DISTANCE + 0.7, STOP_DISTANCE + 2.0, 14.0, 32.0, 80.0])
+  a_leads = np.array([0.0, 0.6, -0.8, -2.0, 0.9, -0.4])
+  v_ego = 10.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  targets, costs = get_lead_accel_match_targets(v_leads, d_rels, a_leads, t_follow, v_ego)
+  expected = [get_lead_accel_match_target(v_lead, d_rel, a_lead, t_follow, v_ego)
+              for v_lead, d_rel, a_lead in zip(v_leads, d_rels, a_leads, strict=True)]
+
+  np.testing.assert_allclose(targets, [target for target, _ in expected], rtol=0.0, atol=1e-12)
+  np.testing.assert_allclose(costs, [cost for _, cost in expected], rtol=0.0, atol=1e-12)
+
+
+class FakeMpcSolver:
+  def __init__(self):
+    self.cost_sets = []
+
+  def cost_set(self, *args):
+    self.cost_sets.append(args)
+
+
+def test_mpc_cost_weights_skip_identical_solver_writes():
+  mpc = LongitudinalMpc.__new__(LongitudinalMpc)
+  mpc.solver = FakeMpcSolver()
+  mpc._last_set_weights_key = None
+  mpc._last_cost_weight_key = None
+  mpc._last_accel_match_costs = None
+
+  mpc.set_weights(True, log.LongitudinalPersonality.standard)
+  first_write_count = len(mpc.solver.cost_sets)
+
+  mpc.set_weights(True, log.LongitudinalPersonality.standard)
+
+  assert len(mpc.solver.cost_sets) == first_write_count
+
+  accel_costs = np.zeros(N + 1)
+  mpc.set_cost_weights(mpc.cost_weights, mpc.constraint_cost_weights, accel_costs)
+  dynamic_write_count = len(mpc.solver.cost_sets)
+
+  mpc.set_cost_weights(mpc.cost_weights, mpc.constraint_cost_weights, accel_costs.copy())
+
+  assert len(mpc.solver.cost_sets) == dynamic_write_count
 
 
 @pytest.mark.parametrize("v_lead", [0.0, 1.0])
