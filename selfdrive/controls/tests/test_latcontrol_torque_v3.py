@@ -134,6 +134,27 @@ def test_v3_one_sided_synthetic_learning_does_not_activate_learned_mode():
     assert lac_log.adaptiveTorqueState.authorityBand != AuthorityBand.full
 
 
+def test_v3_learned_activation_refreshes_active_torque_params_and_pid_limits():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2, force_pid=True)
+  controller.estimator.state.params.lat_accel_factor = 1.0
+  controller.estimator.state.confidence = 0.96
+  controller.estimator.state.positive_coverage = 0.6
+  controller.estimator.state.negative_coverage = 0.6
+  previous_pos_limit = controller.pid.pos_limit
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  params = log.LiveParametersData.new_message()
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-4, make_pose(), False, 0.2)
+
+  assert lac_log.adaptiveTorqueState.modelMode == TorqueModelMode.learned
+  assert controller.torque_params is controller.model_adapter.params
+  assert controller.torque_params.latAccelFactor != 2.5
+  assert controller.pid.pos_limit != previous_pos_limit
+  assert np.isclose(controller.pid.pos_limit, controller.lateral_accel_from_torque(controller.steer_max, controller.torque_params))
+  assert np.isclose(controller.pid.neg_limit, controller.lateral_accel_from_torque(-controller.steer_max, controller.torque_params))
+
+
 def test_v3_smoke_on_gm_nonlinear_native_torque_platform():
   controller, VM = get_controller(GM.CHEVROLET_BOLT_EUV)
   CS = car.CarState.new_message()
