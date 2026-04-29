@@ -46,6 +46,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_desired_follow_distance,
   get_lead_accel_match_margin,
   get_lead_accel_match_target,
+  get_lead_accel_match_targets,
   get_lead_accel_recovery_a_min,
   get_lead_gap_comfort_a_min,
   get_lead_gap_comfort_floor,
@@ -78,7 +79,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
   LongitudinalMpc,
+  N,
 )
+from openpilot.selfdrive.controls.lib import longitudinal_planner
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_ACCEL_MAX,
   CREEP_TO_STOP_GAP_ACCEL_MIN,
@@ -101,6 +104,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   has_predicted_lead_pullaway,
   should_arm_stopped_lead_gap_fill,
   should_hold_creep_to_stop_gap,
+  should_release_creep_stop_hold,
 )
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
@@ -142,6 +146,12 @@ def test_desired_follow_distance_matches_explicit_formula(speed):
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   expected = (speed**2) / (2 * COMFORT_BRAKE) + t_follow * speed + stop_distance_buffer(speed) - get_stopped_equivalence_factor(speed)
   assert get_desired_follow_distance(speed, speed, t_follow) == pytest.approx(expected)
+
+
+def test_comfort_biased_follow_times():
+  assert get_T_FOLLOW(log.LongitudinalPersonality.relaxed) == pytest.approx(1.85)
+  assert get_T_FOLLOW(log.LongitudinalPersonality.standard) == pytest.approx(1.55)
+  assert get_T_FOLLOW(log.LongitudinalPersonality.aggressive) == pytest.approx(1.30)
 
 
 def test_stop_distance_buffer_fades_with_speed():
@@ -196,6 +206,30 @@ def test_creep_to_stop_gap_uses_stronger_accel_for_confirmed_pullaway():
   assert CREEP_TO_STOP_GAP_ACCEL_MAX < accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
+def test_creep_to_stop_gap_uses_soft_release_before_pullaway():
+  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.6, 0.1, 1.0, False)
+
+  assert active
+  assert 0.0 < accel <= 0.10
+
+
+def test_creep_stop_hold_release_hysteresis_blocks_crawl_chatter():
+  assert should_hold_creep_to_stop_gap(0.0, STOP_DISTANCE + 0.2, 0.0, 0.0, release_active=False)
+  assert not should_release_creep_stop_hold(False, 0.0, STOP_DISTANCE + 0.2, 0.0, 0.0)
+
+  assert should_release_creep_stop_hold(False, 0.0, STOP_DISTANCE + 0.5, 0.1, 0.0)
+  assert not should_hold_creep_to_stop_gap(0.0, STOP_DISTANCE + 0.25, 0.0, 0.0, release_active=True)
+  assert should_release_creep_stop_hold(True, 0.2, STOP_DISTANCE + 0.25, 0.0, 0.0)
+  assert not should_release_creep_stop_hold(True, 0.2, STOP_DISTANCE + 0.15, 0.0, 0.0)
+
+
+def test_creep_to_stop_gap_smooths_confirmed_pullaway_step():
+  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, 0.8, 1.0, False)
+
+  assert active
+  assert 0.15 <= accel <= 0.30
+
+
 def test_creep_to_stop_gap_uses_predicted_pullaway_before_speed_threshold():
   active, accel = get_creep_to_stop_gap_accel(
     0.0, STOP_DISTANCE + 0.35, 0.05, 1.0, False, a_lead=1.0, a_lead_tau=0.0
@@ -227,6 +261,21 @@ def test_model_lead_pullaway_prediction_requires_confident_matching_lead():
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel + 3.0), make_radar_lead(d_rel), 0.0) == (0.0, 0.0)
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, v_lead=2.0), 0.0) == (0.0, 0.0)
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel), 0.4) == (0.0, 0.0)
+
+
+def test_model_lead_pullaway_skips_model_arrays_for_invalid_radar_distance(monkeypatch):
+  calls = 0
+  base_asarray = np.asarray
+
+  def counting_asarray(*args, **kwargs):
+    nonlocal calls
+    calls += 1
+    return base_asarray(*args, **kwargs)
+
+  monkeypatch.setattr(longitudinal_planner.np, "asarray", counting_asarray)
+
+  assert get_model_lead_pullaway(make_model_msg_lead(), make_radar_lead(d_rel=np.nan), 0.0) == (0.0, 0.0)
+  assert calls == 0
 
 
 def test_model_lead_pullaway_prediction_requires_low_uncertainty():
@@ -701,13 +750,68 @@ def test_lead_accel_match_tapers_positive_accel_under_time_gap():
   a_lead = 1.0
   target_gap = get_lead_time_gap_target(v_lead, t_follow)
 
-  near_stop_target, near_stop_cost = get_lead_accel_match_target(v_lead, STOP_DISTANCE + 0.5, a_lead, t_follow)
+  near_stop_target, near_stop_cost = get_lead_accel_match_target(v_lead, STOP_DISTANCE + 1.2, a_lead, t_follow)
   mid_gap_target, mid_gap_cost = get_lead_accel_match_target(v_lead, 0.5 * (STOP_DISTANCE + target_gap), a_lead, t_follow)
   target_gap_target, target_gap_cost = get_lead_accel_match_target(v_lead, target_gap, a_lead, t_follow)
 
   assert 0.0 < near_stop_target < mid_gap_target < target_gap_target <= a_lead
   assert near_stop_target == pytest.approx(a_lead * LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND, abs=0.05)
   assert 0.0 < near_stop_cost < mid_gap_cost < target_gap_cost
+
+
+def test_vectorized_lead_accel_match_matches_scalar_targets():
+  v_leads = np.array([0.0, 0.5, 1.5, 4.0, 8.0, 12.0])
+  d_rels = np.array([STOP_DISTANCE - 0.1, STOP_DISTANCE + 0.7, STOP_DISTANCE + 2.0, 14.0, 32.0, 80.0])
+  a_leads = np.array([0.0, 0.6, -0.8, -2.0, 0.9, -0.4])
+  v_ego = 10.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  targets, costs = get_lead_accel_match_targets(v_leads, d_rels, a_leads, t_follow, v_ego)
+  expected = [get_lead_accel_match_target(v_lead, d_rel, a_lead, t_follow, v_ego)
+              for v_lead, d_rel, a_lead in zip(v_leads, d_rels, a_leads, strict=True)]
+
+  np.testing.assert_allclose(targets, [target for target, _ in expected], rtol=0.0, atol=1e-12)
+  np.testing.assert_allclose(costs, [cost for _, cost in expected], rtol=0.0, atol=1e-12)
+
+
+class FakeMpcSolver:
+  def __init__(self):
+    self.cost_sets = []
+
+  def cost_set(self, *args):
+    self.cost_sets.append(args)
+
+
+def test_mpc_cost_weights_skip_identical_solver_writes():
+  mpc = LongitudinalMpc.__new__(LongitudinalMpc)
+  mpc.solver = FakeMpcSolver()
+  mpc._last_set_weights_key = None
+  mpc._last_cost_weight_key = None
+  mpc._last_accel_match_costs = None
+
+  mpc.set_weights(True, log.LongitudinalPersonality.standard)
+  first_write_count = len(mpc.solver.cost_sets)
+
+  mpc.set_weights(True, log.LongitudinalPersonality.standard)
+
+  assert len(mpc.solver.cost_sets) == first_write_count
+
+  accel_costs = np.zeros(N + 1)
+  mpc.set_cost_weights(mpc.cost_weights, mpc.constraint_cost_weights, accel_costs)
+  dynamic_write_count = len(mpc.solver.cost_sets)
+
+  mpc.set_cost_weights(mpc.cost_weights, mpc.constraint_cost_weights, accel_costs.copy())
+
+  assert len(mpc.solver.cost_sets) == dynamic_write_count
+
+
+@pytest.mark.parametrize("v_lead", [0.0, 1.0])
+def test_lead_accel_match_waits_for_extra_gap_before_positive_match(v_lead):
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_accel_match_target(v_lead=v_lead, d_rel=STOP_DISTANCE + 0.6, a_lead=0.6, t_follow=t_follow, v_ego=max(0.0, v_lead - 0.2))
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
 
 
 def test_lead_accel_match_fades_far_decelerating_leads():
@@ -726,6 +830,19 @@ def test_lead_accel_match_fades_far_decelerating_leads():
   assert near_cost > 0.0
   assert far_target == pytest.approx(0.0)
   assert far_cost == pytest.approx(0.0)
+
+
+def test_lead_accel_match_anticipates_steady_following_lead_brake():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 20.0
+  v_lead = 20.0
+  a_lead = -1.0
+  target_gap = get_lead_time_gap_target(v_lead, t_follow)
+
+  accel_target, cost = get_lead_accel_match_target(v_lead, target_gap, a_lead, t_follow, v_ego)
+
+  assert -LEAD_ACCEL_MATCH_DECEL_CAP <= accel_target < -0.15
+  assert cost > 0.0
 
 
 def test_lead_accel_match_caps_soft_decel_target():

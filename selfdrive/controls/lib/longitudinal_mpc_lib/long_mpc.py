@@ -127,10 +127,11 @@ MOVING_LEAD_STOP_RESERVE_DECEL_BP = [0.05, 0.5]
 LEAD_ACCEL_MATCH_COST = 2.0
 LEAD_ACCEL_MATCH_MIN_ABS_ACCEL = 0.05
 LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND = 0.25
-LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS = 0.4
+LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS = 1.0
 LEAD_ACCEL_MATCH_DECEL_TARGET_BLEND = 0.65
 LEAD_ACCEL_MATCH_DECEL_NEAR_STOP_BLEND = 0.35
 LEAD_ACCEL_MATCH_DECEL_CLOSING_BP = [0.3, 2.0]
+LEAD_ACCEL_MATCH_DECEL_ANTICIPATION_TIME = 1.0
 LEAD_ACCEL_MATCH_DECEL_CAP = 1.2
 LEAD_ACCEL_MATCH_GAP_MARGIN = 10.0
 LEAD_ACCEL_MATCH_GAP_MARGIN_FACTOR = 0.5
@@ -176,11 +177,11 @@ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
 
 def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
   if personality == log.LongitudinalPersonality.relaxed:
-    return 1.75
+    return 1.85
   elif personality == log.LongitudinalPersonality.standard:
-    return 1.45
+    return 1.55
   elif personality == log.LongitudinalPersonality.aggressive:
-    return 1.25
+    return 1.30
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
@@ -528,11 +529,19 @@ def get_lead_accel_match_blend(v_lead, d_rel, a_lead, t_follow, v_ego=None):
 
   v_ego = v_lead if v_ego is None else v_ego
   closing_speed = max(v_ego - v_lead, 0.0)
-  reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
+  decel_closing_speed = closing_speed
+  if a_lead < 0.0:
+    anticipated_closing_speed = -a_lead * LEAD_ACCEL_MATCH_DECEL_ANTICIPATION_TIME
+    decel_closing_speed = max(closing_speed, min(anticipated_closing_speed, LEAD_ACCEL_MATCH_DECEL_CLOSING_BP[-1]))
+  reserve = get_moving_lead_stop_reserve(v_ego, v_lead, decel_closing_speed, a_lead)
   target_gap = get_lead_time_gap_target(v_lead, t_follow) + reserve
   margin = get_lead_accel_match_margin(target_gap)
+  positive_match_gap = STOP_DISTANCE + LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS
+  if a_lead > 0.0 and d_rel < positive_match_gap:
+    return 0.0
+
   if a_lead < 0.0:
-    closing_blend = float(np.interp(closing_speed, LEAD_ACCEL_MATCH_DECEL_CLOSING_BP, [0.0, 1.0]))
+    closing_blend = float(np.interp(decel_closing_speed, LEAD_ACCEL_MATCH_DECEL_CLOSING_BP, [0.0, 1.0]))
     if d_rel <= target_gap:
       distance_blend = float(np.interp(d_rel, [STOP_DISTANCE, target_gap], [LEAD_ACCEL_MATCH_DECEL_NEAR_STOP_BLEND, LEAD_ACCEL_MATCH_DECEL_TARGET_BLEND]))
     else:
@@ -541,9 +550,7 @@ def get_lead_accel_match_blend(v_lead, d_rel, a_lead, t_follow, v_ego=None):
 
   if d_rel <= target_gap:
     if a_lead > 0.0:
-      if d_rel < STOP_DISTANCE + LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS:
-        return 0.0
-      return float(np.interp(d_rel, [STOP_DISTANCE, target_gap], [LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND, 1.0]))
+      return float(np.interp(d_rel, [positive_match_gap, target_gap], [LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND, 1.0]))
     return 1.0
 
   return float(np.interp(d_rel, [target_gap, target_gap + margin], [1.0, 0.0]))
@@ -558,6 +565,56 @@ def get_lead_accel_match_target(v_lead, d_rel, a_lead, t_follow, v_ego=None):
   if a_lead < 0.0:
     accel_target = max(accel_target, -LEAD_ACCEL_MATCH_DECEL_CAP)
   return accel_target, LEAD_ACCEL_MATCH_COST * blend
+
+
+def _interp_linear_clipped(x, x0, x1, y0, y1):
+  blend = np.clip((x - x0) / np.maximum(x1 - x0, 1e-9), 0.0, 1.0)
+  return y0 + blend * (y1 - y0)
+
+
+def get_lead_accel_match_targets(v_lead, d_rel, a_lead, t_follow, v_ego=None):
+  v_lead = np.asarray(v_lead, dtype=float)
+  d_rel = np.asarray(d_rel, dtype=float)
+  a_lead = np.asarray(a_lead, dtype=float)
+  v_ego_values = v_lead if v_ego is None else np.asarray(v_ego, dtype=float)
+
+  closing_speed = np.maximum(v_ego_values - v_lead, 0.0)
+  anticipated_closing_speed = -a_lead * LEAD_ACCEL_MATCH_DECEL_ANTICIPATION_TIME
+  decel_closing_speed = np.where(
+    a_lead < 0.0,
+    np.maximum(closing_speed, np.minimum(anticipated_closing_speed, LEAD_ACCEL_MATCH_DECEL_CLOSING_BP[-1])),
+    closing_speed,
+  )
+  reserve = get_moving_lead_stop_reserve(v_ego_values, v_lead, decel_closing_speed, a_lead)
+  target_gap = np.maximum(STOP_DISTANCE, get_desired_follow_distance(v_lead, v_lead, t_follow)) + reserve
+  margin = np.maximum(LEAD_ACCEL_MATCH_GAP_MARGIN, LEAD_ACCEL_MATCH_GAP_MARGIN_FACTOR * target_gap)
+  positive_match_gap = STOP_DISTANCE + LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS
+
+  blend = np.zeros_like(v_lead, dtype=float)
+  active = (d_rel > STOP_DISTANCE) & (np.abs(a_lead) >= LEAD_ACCEL_MATCH_MIN_ABS_ACCEL)
+
+  decel_mask = active & (a_lead < 0.0)
+  if np.any(decel_mask):
+    closing_blend = np.interp(decel_closing_speed, LEAD_ACCEL_MATCH_DECEL_CLOSING_BP, [0.0, 1.0])
+    near_stop_blend = _interp_linear_clipped(d_rel, STOP_DISTANCE, target_gap,
+                                             LEAD_ACCEL_MATCH_DECEL_NEAR_STOP_BLEND, LEAD_ACCEL_MATCH_DECEL_TARGET_BLEND)
+    far_blend = _interp_linear_clipped(d_rel, target_gap, target_gap + margin,
+                                       LEAD_ACCEL_MATCH_DECEL_TARGET_BLEND, 0.0)
+    distance_blend = np.where(d_rel <= target_gap, near_stop_blend, far_blend)
+    blend = np.where(decel_mask, distance_blend * closing_blend, blend)
+
+  positive_mask = active & (a_lead > 0.0) & (d_rel >= positive_match_gap)
+  if np.any(positive_mask):
+    near_blend = _interp_linear_clipped(d_rel, positive_match_gap, target_gap,
+                                        LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND, 1.0)
+    far_blend = _interp_linear_clipped(d_rel, target_gap, target_gap + margin, 1.0, 0.0)
+    distance_blend = np.where(d_rel <= target_gap, near_blend, far_blend)
+    blend = np.where(positive_mask, distance_blend, blend)
+
+  accel_targets = np.clip(a_lead * blend, ACCEL_MIN, ACCEL_MAX)
+  accel_targets = np.where(a_lead < 0.0, np.maximum(accel_targets, -LEAD_ACCEL_MATCH_DECEL_CAP), accel_targets)
+  accel_targets = np.where(blend > 0.0, accel_targets, 0.0)
+  return accel_targets, LEAD_ACCEL_MATCH_COST * blend
 
 
 def gen_long_model():
@@ -725,33 +782,54 @@ class LongitudinalMpc:
     self.lead_transition_guard_timers = np.zeros(2)
     self.lead_transition_guard_latched = np.zeros(2, dtype=bool)
     self.lead_transition_was_status = np.zeros(2, dtype=bool)
+    self._last_set_weights_key = None
+    self._last_cost_weight_key = None
+    self._last_accel_match_costs = None
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights, accel_match_costs=None):
+    accel_match_costs_array = None if accel_match_costs is None else np.asarray(accel_match_costs, dtype=float)
+    cost_weight_key = (tuple(cost_weights), tuple(constraint_cost_weights))
+    if (
+      self._last_cost_weight_key == cost_weight_key and
+      (
+        (accel_match_costs_array is None and self._last_accel_match_costs is None) or
+        (accel_match_costs_array is not None and self._last_accel_match_costs is not None and np.array_equal(accel_match_costs_array, self._last_accel_match_costs))
+      )
+    ):
+      return
+
     W = np.asfortranarray(np.diag(cost_weights))
     for i in range(N):
       # TODO don't hardcode A_CHANGE_COST idx
       # reduce the cost on (a-a_prev) later in the horizon.
       W[4, 4] = cost_weights[4] * np.interp(T_IDXS[i], [0.0, 1.0, 2.0], [1.0, 1.0, 0.0])
-      if accel_match_costs is not None:
-        W[3, 3] = accel_match_costs[i]
+      if accel_match_costs_array is not None:
+        W[3, 3] = accel_match_costs_array[i]
       self.solver.cost_set(i, 'W', W)
     # Setting the slice without the copy make the array not contiguous,
     # causing issues with the C interface.
-    if accel_match_costs is not None:
-      W[3, 3] = accel_match_costs[N]
+    if accel_match_costs_array is not None:
+      W[3, 3] = accel_match_costs_array[N]
     self.solver.cost_set(N, 'W', np.copy(W[:COST_E_DIM, :COST_E_DIM]))
 
     # Set L2 slack cost on lower bound constraints
     Zl = np.array(constraint_cost_weights)
     for i in range(N):
       self.solver.cost_set(i, 'Zl', Zl)
+    self._last_cost_weight_key = cost_weight_key
+    self._last_accel_match_costs = None if accel_match_costs_array is None else np.array(accel_match_costs_array, copy=True)
 
   def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
+    set_weights_key = (bool(prev_accel_constraint), str(personality))
+    if self._last_set_weights_key == set_weights_key:
+      return
+
     jerk_factor = get_jerk_factor(personality)
     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
     self.cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
     self.constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
+    self._last_set_weights_key = set_weights_key
     self.set_cost_weights(self.cost_weights, self.constraint_cost_weights)
 
   def set_cur_state(self, v, a):
@@ -998,13 +1076,12 @@ class LongitudinalMpc:
     self.source = MPC_SOURCES[np.argmin(cost_obstacles[0])]
     dominant_obstacle = np.argmin(x_obstacles, axis=1)
 
-    lead_0_accel_targets = np.zeros(N + 1)
-    lead_1_accel_targets = np.zeros(N + 1)
-    lead_0_accel_costs = np.zeros(N + 1)
-    lead_1_accel_costs = np.zeros(N + 1)
-    for i in range(N + 1):
-      lead_0_accel_targets[i], lead_0_accel_costs[i] = get_lead_accel_match_target(lead_brake_xv_0[i, 1], lead_brake_xv_0[i, 0], lead_0_brake_a_traj[i], t_follow, v_ego)
-      lead_1_accel_targets[i], lead_1_accel_costs[i] = get_lead_accel_match_target(lead_brake_xv_1[i, 1], lead_brake_xv_1[i, 0], lead_1_brake_a_traj[i], t_follow, v_ego)
+    lead_0_accel_targets, lead_0_accel_costs = get_lead_accel_match_targets(
+      lead_brake_xv_0[:, 1], lead_brake_xv_0[:, 0], lead_0_brake_a_traj, t_follow, v_ego
+    )
+    lead_1_accel_targets, lead_1_accel_costs = get_lead_accel_match_targets(
+      lead_brake_xv_1[:, 1], lead_brake_xv_1[:, 0], lead_1_brake_a_traj, t_follow, v_ego
+    )
 
     lead_0_crawl_targets, lead_0_crawl_costs = get_lead_crawl_comfort_target(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow)
     lead_1_crawl_targets, lead_1_crawl_costs = get_lead_crawl_comfort_target(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow)
