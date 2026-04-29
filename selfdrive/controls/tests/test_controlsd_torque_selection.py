@@ -206,6 +206,38 @@ def test_update_lateral_controller_inputs_refreshes_extension_limits_after_live_
   assert controls.LaC.extension.updated_limits is True
 
 
+def test_update_lateral_controller_inputs_updates_model_only_when_fresh():
+  class FakeTorqueParams:
+    useParams = False
+
+  class FakeSubMaster(dict):
+    def __init__(self):
+      super().__init__(liveTorqueParameters=FakeTorqueParams(), modelV2=object())
+      self.updated = {'modelV2': False}
+
+    def all_checks(self, _services):
+      return False
+
+  class FakeController:
+    def __init__(self):
+      self.model_updates = 0
+
+    def update_model_v2(self, _model_v2):
+      self.model_updates += 1
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  controls.sm = FakeSubMaster()
+  controls.lat_delay = 0.2
+
+  controls.update_lateral_controller_inputs()
+  assert controls.LaC.model_updates == 0
+
+  controls.sm.updated['modelV2'] = True
+  controls.update_lateral_controller_inputs()
+  assert controls.LaC.model_updates == 1
+
+
 def test_get_params_sp_updates_lat_delay_for_selected_torque_controller(monkeypatch):
   class FakeBlinkerPauseLateral:
     def get_params(self):

@@ -121,6 +121,19 @@ def test_v3_native_torque_controller_logs_model_state():
   assert lac_log.adaptiveTorqueState.authorityScale > 0.0
 
 
+def test_v3_native_torque_starts_near_full_authority():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  params = log.LiveParametersData.new_message()
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-4, make_pose(), False, 0.2)
+
+  assert lac_log.adaptiveTorqueState.modelMode == TorqueModelMode.native
+  assert lac_log.adaptiveTorqueState.authorityBand == AuthorityBand.near_full
+  assert np.isclose(lac_log.adaptiveTorqueState.authorityScale, 0.85)
+
+
 def test_v3_synthetic_pid_origin_starts_limited():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2, force_pid=True)
   CS = car.CarState.new_message()
@@ -199,6 +212,19 @@ def test_v3_authority_limited_output_counts_as_controller_saturation():
 
   assert lac_log.adaptiveTorqueState.authorityScale < 1.0
   assert lac_log.saturated
+
+
+def test_v3_authority_limited_frame_rejects_estimator_sample():
+  controller, VM = get_controller(TOYOTA.TOYOTA_RAV4)
+  CS = car.CarState.new_message()
+  CS.vEgo = 30.0
+  params = log.LiveParametersData.new_message()
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 1.0, make_pose(), False, 0.2)
+
+  assert lac_log.adaptiveTorqueState.authorityScale < 1.0
+  assert not lac_log.adaptiveTorqueState.sampleAccepted
+  assert lac_log.adaptiveTorqueState.sampleRejectReason & EstimatorRejectReason.SATURATED
 
 
 def test_v3_smoke_on_gm_nonlinear_native_torque_platform():

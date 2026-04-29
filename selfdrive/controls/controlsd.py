@@ -164,7 +164,7 @@ class Controls(ControlsExt):
     update_model_v2 = getattr(self.LaC, "update_model_v2", None)
     if update_model_v2 is None and hasattr(self.LaC, "extension"):
       update_model_v2 = getattr(self.LaC.extension, "update_model_v2", None)
-    if update_model_v2 is not None:
+    if update_model_v2 is not None and self.sm.updated['modelV2']:
       update_model_v2(self.sm['modelV2'])
 
     update_lateral_lag = getattr(self.LaC, "update_lateral_lag", None)

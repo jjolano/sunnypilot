@@ -12,7 +12,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityManager
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import AdaptiveTorqueEstimator, TorqueObservation
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import AdaptiveTorqueEstimator, EstimatorRejectReason, TorqueObservation
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelAdapter
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_safety import TorqueV3SafetyEnvelope, TorqueV3SafetyInputs
 
@@ -276,33 +276,13 @@ class LatControlTorque(LatControl):
     )
     output_torque = assist_result.output_torque if active else 0.0
     saturated = self.steer_max - abs(output_torque) < 1e-3
-    estimator_result = self.estimator.update(
-      TorqueObservation(
-        active=active,
-        v_ego=CS.vEgo,
-        steering_pressed=CS.steeringPressed,
-        steer_limited_by_safety=steer_limited_by_safety,
-        curvature_limited=curvature_limited,
-        saturated=saturated,
-        commanded_torque=output_torque,
-        desired_lateral_accel=setpoint,
-        actual_lateral_accel=measurement,
-        actual_lateral_jerk=raw_actual_lateral_jerk,
-        roll_compensation=roll_compensation,
-        model_age=self.model_age,
-      )
-    )
-    if self.learned_model_ready(estimator_result) and self.model_adapter.update_learned_params(estimator_result.params, estimator_result.confidence):
-      self.torque_params = self.model_adapter.params
-      self.extension.torque_params = self.torque_params
-      self.model_adapter.set_residual(estimator_result.residual_error / max(float(estimator_result.params.lat_accel_factor), 1e-3))
-      self.update_limits()
+    authority_confidence = max(self.estimator.state.confidence, self.model_adapter.confidence)
     authority_state = self.authority_manager.update(
       self.model_adapter.mode,
-      estimator_result.confidence,
-      estimator_result.positive_coverage,
-      estimator_result.negative_coverage,
-      estimator_result.reject_reason,
+      authority_confidence,
+      self.estimator.state.positive_coverage,
+      self.estimator.state.negative_coverage,
+      EstimatorRejectReason.NONE,
     )
     same_sign_unwind_release = same_sign_unwind and sign(measurement) != 0.0 and sign(-output_torque) == sign(measurement)
     safety_result = self.safety_envelope.update(
@@ -325,6 +305,27 @@ class LatControlTorque(LatControl):
     )
     shaping_result = safety_result.shaping_result
     output_torque = safety_result.output_torque
+    estimator_result = self.estimator.update(
+      TorqueObservation(
+        active=active,
+        v_ego=CS.vEgo,
+        steering_pressed=CS.steeringPressed,
+        steer_limited_by_safety=steer_limited_by_safety,
+        curvature_limited=curvature_limited,
+        saturated=saturated or safety_result.authority_limited or shaping_result.active,
+        commanded_torque=output_torque,
+        desired_lateral_accel=setpoint,
+        actual_lateral_accel=measurement,
+        actual_lateral_jerk=raw_actual_lateral_jerk,
+        roll_compensation=roll_compensation,
+        model_age=self.model_age,
+      )
+    )
+    if self.learned_model_ready(estimator_result) and self.model_adapter.update_learned_params(estimator_result.params, estimator_result.confidence):
+      self.torque_params = self.model_adapter.params
+      self.extension.torque_params = self.torque_params
+      self.model_adapter.set_residual(estimator_result.residual_error / max(float(estimator_result.params.lat_accel_factor), 1e-3))
+      self.update_limits()
 
     pid_log.p = float(self.pid.p)
     pid_log.i = float(self.pid.i)
