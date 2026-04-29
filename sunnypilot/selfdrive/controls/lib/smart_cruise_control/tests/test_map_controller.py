@@ -13,6 +13,7 @@ from cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import map_controller
 from openpilot.sunnypilot.navd.helpers import Coordinate
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import (
   R,
@@ -98,6 +99,43 @@ class TestSmartCruiseControlMap:
     self.mem_params.put("MapTargetVelocities", "not-json")
 
     assert velocities_from_param("MapTargetVelocities", self.mem_params) == []
+
+  def test_update_calculations_reuses_cached_target_velocity_parse(self, monkeypatch):
+    calls = 0
+    base_velocities_from_param = velocities_from_param
+
+    def counting_velocities_from_param(param, params):
+      nonlocal calls
+      calls += 1
+      return base_velocities_from_param(param, params)
+
+    monkeypatch.setattr(map_controller, "velocities_from_param", counting_velocities_from_param)
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": 0.001, "velocity": 15.0},
+    ]))
+
+    self.scc_m.update_calculations()
+    self.scc_m.update_calculations()
+
+    assert calls == 1
+
+  def test_update_calculations_reuses_cached_advisory_parse(self, monkeypatch):
+    calls = 0
+    base_get_first_mapd_json = map_controller.get_first_mapd_json
+
+    def counting_get_first_mapd_json(params, keys):
+      nonlocal calls
+      calls += 1
+      return base_get_first_mapd_json(params, keys)
+
+    monkeypatch.setattr(map_controller, "get_first_mapd_json", counting_get_first_mapd_json)
+    self.mem_params.put("MapAdvisoryLimit", json.dumps({"speedlimit": 15.0, "distance": 0.0}))
+    self.mem_params.put("NextMapAdvisoryLimit", json.dumps({"speedlimit": 14.0, "distance": 10.0}))
+
+    self.scc_m.update_calculations()
+    self.scc_m.update_calculations()
+
+    assert calls == 2
 
   def test_forward_target_velocity_distances_follow_ordered_path(self):
     first = Coordinate(0.0, 0.001)

@@ -11,11 +11,13 @@ from openpilot.sunnypilot.mapd.live_map_data.mapd_v2_map_data import MapdV2MapDa
 class FakeParams:
   def __init__(self):
     self.values = {}
+    self.put_counts = {}
 
   def get(self, key):
     return self.values.get(key)
 
   def put(self, key, value):
+    self.put_counts[key] = self.put_counts.get(key, 0) + 1
     self.values[key] = value
 
   def remove(self, key):
@@ -161,6 +163,28 @@ def test_mapd_v2_compat_params_write_path_and_advisory_data():
   ]
   assert data.mem_params.values["MapAdvisoryLimit"] == {"speedlimit": 12.0, "distance": 0.0}
   assert data.mem_params.values["NextMapAdvisoryLimit"] == {"speedlimit": 10.0, "distance": 60.0}
+
+
+def test_mapd_v2_update_location_skips_unchanged_legacy_param_writes():
+  path = [SimpleNamespace(latitude=1.0, longitude=2.0, targetVelocity=14.0)]
+  progress = SimpleNamespace(
+    active=True,
+    cancelled=False,
+    totalFiles=10,
+    downloadedFiles=4,
+    locations=["nation.US"],
+    locationDetails=[SimpleNamespace(location="nation.US", totalFiles=10, downloadedFiles=4)],
+  )
+  data = build_map_data(mapd_extended=make_mapd_extended(path=path, downloadProgress=progress))
+
+  data.update_location()
+  mem_counts = dict(data.mem_params.put_counts)
+  param_counts = dict(data.params.put_counts)
+
+  data.update_location()
+
+  assert data.mem_params.put_counts == mem_counts
+  assert data.params.put_counts == param_counts
 
 
 def test_mapd_v2_updates_legacy_last_gps_position_for_map_distance_users():

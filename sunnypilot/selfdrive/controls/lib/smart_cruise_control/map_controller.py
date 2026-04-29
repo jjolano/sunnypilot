@@ -38,6 +38,7 @@ MODEL_CURVE_TARGET_LAT_ACCEL = 2.0  # m/s^2, same comfort target used by SCC vis
 MODEL_CURVE_MIN_SPEED = 1.0  # m/s, avoid unstable curvature estimates at near-zero speed.
 MODEL_CURVE_OVERSLOWDOWN_DELTA = 5.0  # m/s, require model confirmation for large map slowdowns.
 MODEL_CURVE_OVERSLOWDOWN_MARGIN = 2.0  # m/s, allow small map/model target mismatch.
+PARAM_CACHE_MISS = object()
 
 
 def velocities_from_param(param: str, params: Params):
@@ -121,9 +122,14 @@ class SmartCruiseControlMap:
     self.target_lon = 0.0
     self.target_prediction_advanced = False
     self.frame = -1
+    self._last_position_raw = PARAM_CACHE_MISS
+    self._target_velocities_raw = PARAM_CACHE_MISS
+    self._advisory_raw_cache = {}
+    self._advisory_value_cache = {}
 
-    self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
-    self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
+    self.last_position = Coordinate(0.0, 0.0)
+    self.target_velocities = []
+    self._update_cached_map_params()
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
@@ -138,9 +144,26 @@ class SmartCruiseControlMap:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self.params.get_bool("SmartCruiseControlMap")
 
+  def _update_cached_map_params(self) -> None:
+    last_position_raw = self.mem_params.get("LastGPSPosition")
+    if last_position_raw != self._last_position_raw:
+      self._last_position_raw = last_position_raw
+      self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
+
+    target_velocities_raw = self.mem_params.get("MapTargetVelocities")
+    if target_velocities_raw != self._target_velocities_raw:
+      self._target_velocities_raw = target_velocities_raw
+      self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
+
+  def _cached_first_mapd_json(self, keys: tuple[str, ...]):
+    raw_values = tuple(self.mem_params.get(key) for key in keys)
+    if raw_values != self._advisory_raw_cache.get(keys, PARAM_CACHE_MISS):
+      self._advisory_raw_cache[keys] = raw_values
+      self._advisory_value_cache[keys] = get_first_mapd_json(self.mem_params, keys)
+    return self._advisory_value_cache.get(keys)
+
   def update_calculations(self, model_msg=None) -> None:
-    self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
-    self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
+    self._update_cached_map_params()
 
     if self.last_position is None or self.target_velocities is None:
       return
@@ -366,14 +389,14 @@ class SmartCruiseControlMap:
   def _advisory_targets(self, model_msg=None) -> list[tuple[float, float, float, bool]]:
     targets = []
 
-    current_advisory = get_first_mapd_json(self.mem_params, ADVISORY_LIMIT_KEYS)
+    current_advisory = self._cached_first_mapd_json(ADVISORY_LIMIT_KEYS)
     current_target = self._advisory_target(current_advisory)
     if current_target is not None:
       in_range, prediction_advanced = self._target_range_state(current_target[0], 0., model_msg)
       if in_range:
         targets.append((*current_target, prediction_advanced))
 
-    next_advisory = get_first_mapd_json(self.mem_params, NEXT_ADVISORY_LIMIT_KEYS)
+    next_advisory = self._cached_first_mapd_json(NEXT_ADVISORY_LIMIT_KEYS)
     next_target = self._advisory_target(next_advisory)
     next_distance = self._distance_to_advisory_start(next_advisory)
     if next_target is not None and next_distance is not None:

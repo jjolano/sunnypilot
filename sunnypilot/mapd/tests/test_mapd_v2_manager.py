@@ -1,3 +1,4 @@
+from openpilot.sunnypilot.mapd import mapd_manager
 from openpilot.sunnypilot.mapd.mapd_manager import build_mapd_download_paths, request_refresh_osm_location_data
 
 
@@ -10,6 +11,9 @@ class FakeParams:
 
   def put_bool(self, key, value):
     self.values[key] = bool(value)
+
+  def get_bool(self, key):
+    return bool(self.values.get(key, False))
 
 
 class FakePubMaster:
@@ -48,3 +52,16 @@ def test_request_refresh_osm_location_data_marks_json_download_paths(monkeypatch
   assert fake_mem_params.values["OSMDownloadLocations"] == {"paths": ["us_state.OH"], "pending": True}
   assert fake_pm.messages[0][0] == "mapdIn"
   assert fake_pm.messages[0][1].mapdIn.str == "us_state.OH"
+
+
+def test_osm_update_alert_skips_cleanup_scan_when_osm_local_disabled(monkeypatch):
+  fake_params = FakeParams()
+  fake_params.values["OsmLocal"] = False
+  monkeypatch.setattr(mapd_manager, "params", fake_params)
+
+  def fail_if_scanned():
+    raise AssertionError("cleanup scan should not run when OsmLocal is disabled")
+
+  monkeypatch.setattr(mapd_manager, "get_files_for_cleanup", fail_if_scanned)
+
+  assert not mapd_manager.osm_update_required_alert_enabled()

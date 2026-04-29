@@ -70,6 +70,14 @@ class MapdV2MapData(BaseMapData):
     self._download_progress_started = False
     self.mem_params.remove("OSMDownloadLocations")
 
+  @staticmethod
+  def _put_if_changed(params, key: str, value) -> None:
+    current = params.get(key)
+    if isinstance(current, bytes) and isinstance(value, str):
+      current = current.decode("utf-8", errors="ignore")
+    if current != value:
+      params.put(key, value)
+
   @property
   def mapd_out(self):
     return self.sm["mapdOut"]
@@ -126,14 +134,14 @@ class MapdV2MapData(BaseMapData):
       if target_velocity > 0.0:
         target_velocities.append({"latitude": latitude, "longitude": longitude, "velocity": target_velocity})
 
-    self.mem_params.put("MapTargetVelocities", json.dumps(target_velocities))
+    self._put_if_changed(self.mem_params, "MapTargetVelocities", json.dumps(target_velocities))
 
     advisory_speed = _float(_getattr_or_default(self.mapd_out, "advisorySpeed"))
-    self.mem_params.put("MapAdvisoryLimit", {"speedlimit": advisory_speed, "distance": 0.0} if advisory_speed > 0.0 else {})
+    self._put_if_changed(self.mem_params, "MapAdvisoryLimit", {"speedlimit": advisory_speed, "distance": 0.0} if advisory_speed > 0.0 else {})
 
     next_advisory_speed = _float(_getattr_or_default(self.mapd_out, "nextAdvisorySpeed"))
     next_advisory_distance = max(0.0, _float(_getattr_or_default(self.mapd_out, "nextAdvisorySpeedDistance")))
-    self.mem_params.put("NextMapAdvisoryLimit", {
+    self._put_if_changed(self.mem_params, "NextMapAdvisoryLimit", {
       "speedlimit": next_advisory_speed,
       "distance": next_advisory_distance,
     } if next_advisory_speed > 0.0 else {})
@@ -156,7 +164,7 @@ class MapdV2MapData(BaseMapData):
     if self.last_bearing is not None:
       position["bearing"] = self.last_bearing
 
-    self.mem_params.put("LastGPSPosition", json.dumps(position))
+    self._put_if_changed(self.mem_params, "LastGPSPosition", json.dumps(position))
 
   def _download_marker_pending(self) -> bool:
     marker = self.mem_params.get("OSMDownloadLocations")
@@ -171,7 +179,7 @@ class MapdV2MapData(BaseMapData):
     locations = [_text(location) for location in (_getattr_or_default(progress, "locations", []) or []) if _text(location)]
     if active:
       self._download_progress_started = True
-      self.mem_params.put("OSMDownloadLocations", {"paths": locations, "active": True})
+      self._put_if_changed(self.mem_params, "OSMDownloadLocations", {"paths": locations, "active": True})
     else:
       total_files = _int(_getattr_or_default(progress, "totalFiles"))
       cancelled = bool(_getattr_or_default(progress, "cancelled", False))
@@ -189,7 +197,7 @@ class MapdV2MapData(BaseMapData):
         "location_downloaded_files": _int(_getattr_or_default(detail, "downloadedFiles")),
       }
 
-    self.params.put("OSMDownloadProgress", {
+    self._put_if_changed(self.params, "OSMDownloadProgress", {
       "active": active,
       "cancelled": bool(_getattr_or_default(progress, "cancelled", False)),
       "total_files": _int(_getattr_or_default(progress, "totalFiles")),
