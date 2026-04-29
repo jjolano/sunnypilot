@@ -885,6 +885,9 @@ struct ControlsState @0x97ff69c53601abf1 {
       residualError @25 :Float32;
       sampleAccepted @26 :Bool;
       sampleRejectReason @27 :UInt32;
+      disturbanceState @28 :UInt8;  # 0 none, 1 suspected, 2 active.
+      disturbanceReason @29 :UInt32;  # TorqueDisturbanceReason bitmask.
+      disturbanceConfidence @30 :Float32;
     }
 
     adaptiveTorqueState @13 :AdaptiveTorqueState;

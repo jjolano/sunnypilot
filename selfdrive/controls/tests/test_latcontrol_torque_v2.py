@@ -14,6 +14,7 @@ from openpilot.selfdrive.locationd.helpers import Measurement, Pose
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShapingReason
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import TorqueDisturbanceReason, TorqueDisturbanceState
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseReason
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
@@ -270,6 +271,23 @@ def test_v2_logging_fields_are_populated():
   assert adaptive_log.unshapedOutput == lac_log.output
 
 
+def test_v2_disturbance_telemetry_clean_when_tracking_cleanly():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+
+  pose = make_pose()
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.disturbanceState == TorqueDisturbanceState.NONE
+  assert adaptive_log.disturbanceReason == TorqueDisturbanceReason.NONE
+  assert adaptive_log.disturbanceConfidence == 0.0
+
+
 def test_v2_release_on_override():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
 
@@ -385,6 +403,9 @@ def test_v2_shapes_sign_conflict():
   assert adaptive_log.shapingReason & ConservativeOutputShapingReason.SIGN_CONFLICT
   assert abs(adaptive_log.outputCap - 0.8) < 1e-6
   assert abs(lac_log.output) <= abs(adaptive_log.unshapedOutput)
+  assert adaptive_log.disturbanceState == TorqueDisturbanceState.ACTIVE
+  assert adaptive_log.disturbanceReason & TorqueDisturbanceReason.SIGN_CONFLICT
+  assert adaptive_log.disturbanceConfidence == 1.0
 
 
 def test_v2_shapes_near_iso_accel_margin():
@@ -444,3 +465,6 @@ def test_v2_bump_shaping_uses_raw_steering_rate_when_model_lookahead_is_zero():
 
   assert adaptive_log.shapingActive
   assert adaptive_log.shapingReason & ConservativeOutputShapingReason.BUMP
+  assert adaptive_log.disturbanceState == TorqueDisturbanceState.ACTIVE
+  assert adaptive_log.disturbanceReason & TorqueDisturbanceReason.BUMP_JERK
+  assert adaptive_log.disturbanceConfidence > 0.0

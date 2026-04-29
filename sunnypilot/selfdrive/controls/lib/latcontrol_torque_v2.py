@@ -11,6 +11,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperInputs, TorqueConservativeOutputShaper
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import TorqueDisturbanceInputs, classify_torque_disturbance
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
 
 
@@ -254,6 +255,26 @@ class LatControlTorque(LatControl):
         same_sign_unwind_release=same_sign_unwind_release,
       )
     )
+    disturbance_result = classify_torque_disturbance(
+      TorqueDisturbanceInputs(
+        active=active,
+        v_ego=CS.vEgo,
+        steering_pressed=CS.steeringPressed,
+        steer_limited_by_safety=steer_limited_by_safety,
+        curvature_limited=curvature_limited,
+        saturated=saturated or self.steer_max - abs(shaping_result.unshaped_output) < 1e-3,
+        desired_lateral_accel=setpoint,
+        actual_lateral_accel=shaping_measurement,
+        desired_lateral_jerk=desired_lateral_jerk,
+        actual_lateral_jerk=raw_actual_lateral_jerk,
+        lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
+        output_torque=shaping_result.unshaped_output,
+        response_deficit=assist_result.response_deficit,
+        same_sign_unwind=same_sign_unwind,
+        measurement_reset=self.measurement_smoother.was_reset,
+        measurement_valid=math.isfinite(raw_measurement) and math.isfinite(raw_actual_lateral_jerk) and math.isfinite(measurement),
+      )
+    )
     output_torque = shaping_result.output_torque
 
     pid_log.p = float(self.pid.p)
@@ -281,6 +302,9 @@ class LatControlTorque(LatControl):
     adaptive_log.shapingConfidence = float(shaping_result.confidence)
     adaptive_log.unshapedOutput = float(-shaping_result.unshaped_output)
     adaptive_log.outputCap = float(shaping_result.output_cap)
+    adaptive_log.disturbanceState = int(disturbance_result.state)
+    adaptive_log.disturbanceReason = int(disturbance_result.reason)
+    adaptive_log.disturbanceConfidence = float(disturbance_result.confidence)
     pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
 
     return -output_torque, 0.0, pid_log
