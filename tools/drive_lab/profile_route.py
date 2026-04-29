@@ -19,7 +19,7 @@ def main() -> None:
 
   read_mode = ReadMode.QLOG if args.qlog else ReadMode.AUTO
   msgs = list(LogReader(args.route, default_mode=read_mode, sort_by_time=True))
-  profile = build_longitudinal_profile(msgs, source=args.route)
+  profile = build_longitudinal_profile(msgs, source=args.route, already_sorted=True)
   if args.output:
     save_profile(profile, args.output)
   print(json.dumps(profile.to_dict(), indent=2) if args.json else render_profile(profile))

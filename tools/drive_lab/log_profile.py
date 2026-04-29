@@ -47,8 +47,8 @@ class LongitudinalProfile:
     )
 
 
-def build_longitudinal_profile(msgs: list[Any], source: str = "unknown") -> LongitudinalProfile:
-  msgs = sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
+def build_longitudinal_profile(msgs: list[Any], source: str = "unknown", already_sorted: bool = False) -> LongitudinalProfile:
+  msgs = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
   car_state_by_time: list[tuple[float, float, bool]] = []
   ego_speeds: list[float] = []
   cruise_speeds: list[float] = []
@@ -141,7 +141,25 @@ def render_profile(profile: LongitudinalProfile) -> str:
 def _nearest_car_state(samples: list[tuple[float, float, bool]], t: float) -> tuple[float, bool]:
   if not samples:
     return 0.0, False
-  best = min(samples, key=lambda item: abs(item[0] - t))
+
+  lo = 0
+  hi = len(samples)
+  while lo < hi:
+    mid = (lo + hi) // 2
+    if samples[mid][0] < t:
+      lo = mid + 1
+    else:
+      hi = mid
+
+  if lo == 0:
+    best = samples[0]
+  elif lo == len(samples):
+    best = samples[-1]
+  else:
+    before = samples[lo - 1]
+    after = samples[lo]
+    best = before if abs(before[0] - t) <= abs(after[0] - t) else after
+
   if abs(best[0] - t) > 0.5:
     return 0.0, False
   return best[1], best[2]
