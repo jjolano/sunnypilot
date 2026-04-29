@@ -149,6 +149,7 @@ def test_v3_learned_activation_refreshes_active_torque_params_and_pid_limits():
 
   assert lac_log.adaptiveTorqueState.modelMode == TorqueModelMode.learned
   assert controller.torque_params is controller.model_adapter.params
+  assert controller.extension.torque_params is controller.torque_params
   assert controller.torque_params.latAccelFactor != 2.5
   assert controller.pid.pos_limit != previous_pos_limit
   assert np.isclose(controller.pid.pos_limit, controller.lateral_accel_from_torque(controller.steer_max, controller.torque_params))

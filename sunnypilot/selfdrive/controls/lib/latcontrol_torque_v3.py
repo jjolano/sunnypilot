@@ -292,6 +292,7 @@ class LatControlTorque(LatControl):
     )
     if self.learned_model_ready(estimator_result) and self.model_adapter.update_learned_params(estimator_result.params, estimator_result.confidence):
       self.torque_params = self.model_adapter.params
+      self.extension.torque_params = self.torque_params
       self.model_adapter.set_residual(estimator_result.residual_error / max(float(estimator_result.params.lat_accel_factor), 1e-3))
       self.update_limits()
     authority_state = self.authority_manager.update(
