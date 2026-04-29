@@ -40,7 +40,16 @@ msgq.sub_sock = lambda *args, **kwargs: None
 msgq.context = None
 sys.modules.setdefault("msgq", msgq)
 
+visionipc = types.ModuleType("msgq.visionipc")
+visionipc.VisionBuf = object
+visionipc.VisionIpcClient = object
+visionipc.VisionIpcServer = object
+visionipc.VisionStreamType = object
+visionipc.get_endpoint_name = lambda *args, **kwargs: ""
+sys.modules.setdefault("msgq.visionipc", visionipc)
+
 import openpilot.sunnypilot.selfdrive.controls.controlsd_ext as controlsd_ext
+from openpilot.selfdrive.controls.controlsd import Controls
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 
 
@@ -81,6 +90,18 @@ def make_controls_ext(CP, CP_SP, params):
   controls_ext.CP_SP = CP_SP.as_reader()
   controls_ext.params = params
   return controls_ext
+
+
+def make_pid_origin_controller():
+  CP, CP_SP, CI = get_test_context()
+  CP.lateralTuning.init('pid')
+  CP.lateralTuning.pid.kpBP = [0.0]
+  CP.lateralTuning.pid.kpV = [0.1]
+  CP.lateralTuning.pid.kiBP = [0.0]
+  CP.lateralTuning.pid.kiV = [0.01]
+  CP.lateralTuning.pid.kf = 0.00006
+  lac = LatControlPID(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+  return CP, CP_SP, CI, lac
 
 
 def test_normalize_torque_tune_version():
@@ -131,19 +152,58 @@ def test_torque_controller_selection_variants():
 
 
 def test_pid_origin_non_angle_controller_can_select_v3():
-  CP, CP_SP, CI = get_test_context()
-  CP.lateralTuning.init('pid')
-  CP.lateralTuning.pid.kpBP = [0.0]
-  CP.lateralTuning.pid.kpV = [0.1]
-  CP.lateralTuning.pid.kiBP = [0.0]
-  CP.lateralTuning.pid.kiV = [0.01]
-  CP.lateralTuning.pid.kf = 0.00006
-  lac = LatControlPID(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 3.0))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert isinstance(selected, LatControlTorqueV3)
   assert selected.native_torque is False
+
+
+def test_pid_origin_non_angle_controller_keeps_original_lac_for_non_v3_tunes():
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
+
+  for tune in (None, 2.0, 0.0):
+    controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, tune))
+    selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+    assert selected is lac
+
+
+def test_update_lateral_controller_inputs_refreshes_extension_limits_after_live_torque_params():
+  class FakeTorqueParams:
+    useParams = True
+    latAccelFactorFiltered = 1.0
+    latAccelOffsetFiltered = 2.0
+    frictionCoefficientFiltered = 3.0
+
+  class FakeSubMaster(dict):
+    def all_checks(self, services):
+      return services == ['liveTorqueParameters']
+
+  class FakeExtension:
+    def __init__(self):
+      self.updated_limits = False
+
+    def update_limits(self):
+      self.updated_limits = True
+
+  class FakeController:
+    def __init__(self):
+      self.extension = FakeExtension()
+      self.live_torque_params = None
+
+    def update_live_torque_params(self, *params):
+      self.live_torque_params = params
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  controls.sm = FakeSubMaster(liveTorqueParameters=FakeTorqueParams(), modelV2=object())
+  controls.lat_delay = 0.2
+
+  controls.update_lateral_controller_inputs()
+
+  assert controls.LaC.live_torque_params == (1.0, 2.0, 3.0)
+  assert controls.LaC.extension.updated_limits is True
 
 
 def test_get_params_sp_updates_lat_delay_for_selected_torque_controller(monkeypatch):

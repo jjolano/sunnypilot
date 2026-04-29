@@ -86,24 +86,7 @@ class Controls(ControlsExt):
     steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
     self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
 
-    update_live_torque_params = getattr(self.LaC, "update_live_torque_params", None)
-    if update_live_torque_params is not None:
-      torque_params = self.sm['liveTorqueParameters']
-      if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
-        update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
-                                  torque_params.frictionCoefficientFiltered)
-
-    update_model_v2 = getattr(self.LaC, "update_model_v2", None)
-    if update_model_v2 is None and hasattr(self.LaC, "extension"):
-      update_model_v2 = getattr(self.LaC.extension, "update_model_v2", None)
-    if update_model_v2 is not None:
-      update_model_v2(self.sm['modelV2'])
-
-    update_lateral_lag = getattr(self.LaC, "update_lateral_lag", None)
-    if update_lateral_lag is None and hasattr(self.LaC, "extension"):
-      update_lateral_lag = getattr(self.LaC.extension, "update_lateral_lag", None)
-    if update_lateral_lag is not None:
-      update_lateral_lag(self.lat_delay)
+    self.update_lateral_controller_inputs()
 
     long_plan = self.sm['longitudinalPlan']
     model_v2 = self.sm['modelV2']
@@ -165,6 +148,30 @@ class Controls(ControlsExt):
         setattr(actuators, p, 0.0)
 
     return CC, lac_log
+
+  def update_lateral_controller_inputs(self):
+    update_live_torque_params = getattr(self.LaC, "update_live_torque_params", None)
+    if update_live_torque_params is not None:
+      torque_params = self.sm['liveTorqueParameters']
+      if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
+        update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
+                                  torque_params.frictionCoefficientFiltered)
+        if hasattr(self.LaC, "extension"):
+          update_limits = getattr(self.LaC.extension, "update_limits", None)
+          if update_limits is not None:
+            update_limits()
+
+    update_model_v2 = getattr(self.LaC, "update_model_v2", None)
+    if update_model_v2 is None and hasattr(self.LaC, "extension"):
+      update_model_v2 = getattr(self.LaC.extension, "update_model_v2", None)
+    if update_model_v2 is not None:
+      update_model_v2(self.sm['modelV2'])
+
+    update_lateral_lag = getattr(self.LaC, "update_lateral_lag", None)
+    if update_lateral_lag is None and hasattr(self.LaC, "extension"):
+      update_lateral_lag = getattr(self.LaC.extension, "update_lateral_lag", None)
+    if update_lateral_lag is not None:
+      update_lateral_lag(self.lat_delay)
 
   def publish(self, CC, lac_log):
     CS = self.sm['carState']

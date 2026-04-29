@@ -40,15 +40,21 @@ class ControlsExt(ModelStateBase):
   def initialize_lateral_control(self, lac, CI, dt):
     enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
     torque_version = self.normalize_torque_tune_version(self.params.get("TorqueControlTune", return_default=True))
+    native_torque = self.CP.lateralTuning.which() == 'torque'
     if torque_version == 4.0:
       self.params.put("TorqueControlTune", "2.0")
       torque_version = 2.0
     if not enforce_torque_control:
-      if self.CP.lateralTuning.which() == 'torque':
+      if native_torque:
         return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)  # FIXME-SP: revert when upstream fixes tuning issues with v1
       return lac
 
     if self.CP.steerControlType == structs.CarParams.SteerControlType.angle:
+      return lac
+
+    if not native_torque:
+      if torque_version == 3.0:
+        return LatControlTorqueV3(self.CP, self.CP_SP, CI, dt)
       return lac
 
     if torque_version == 0.0:
