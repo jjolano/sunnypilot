@@ -362,3 +362,6 @@ class LatControlTorque(LatControl):
     self.model_age += self.dt
 
     return -output_torque, 0.0, pid_log
+
+
+LatControlTorqueV3 = LatControlTorque

@@ -60,7 +60,7 @@ params_pyx.ParamKeyType = object
 params_pyx.UnknownKeyName = RuntimeError
 sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
 
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorque
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorque, LatControlTorqueV3
 
 
 def get_controller(car_name, force_pid=False):
@@ -84,6 +84,10 @@ def get_controller(car_name, force_pid=False):
 def make_pose():
   zeros = np.zeros(3)
   return Pose(Measurement(zeros, zeros), Measurement(zeros, zeros), Measurement(zeros, zeros), Measurement(zeros, zeros))
+
+
+def test_v3_controller_alias_matches_controller_symbol():
+  assert LatControlTorqueV3 is LatControlTorque
 
 
 def test_v3_native_torque_controller_logs_model_state():
