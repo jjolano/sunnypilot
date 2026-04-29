@@ -306,6 +306,12 @@ def get_lead_transition_accel_max(guard_timer):
   return np.interp(T_IDXS, [guard_timer, guard_timer + LEAD_TRANSITION_GUARD_FADE_TIME], [LEAD_TRANSITION_GUARD_ACCEL_MAX, ACCEL_MAX])
 
 
+def apply_lead_transition_accel_guard(accel_max, guard_timer):
+  if guard_timer > 0.0:
+    accel_max[:] = np.minimum(accel_max, get_lead_transition_accel_max(guard_timer))
+  return accel_max
+
+
 def get_lead_transition_obstacle_release(release_blend, guard_timer):
   guard_blend = float(np.interp(guard_timer, [0.0, LEAD_TRANSITION_GUARD_FADE_TIME], [0.0, 1.0]))
   return release_blend * (1.0 - guard_blend)
@@ -1047,7 +1053,7 @@ class LongitudinalMpc:
     self.params[dominant_obstacle == 1, 0] = lead_1_gap_comfort_a_min[dominant_obstacle == 1]
     self.params[:, 1] = ACCEL_MAX
     self.params[:, 1] = np.minimum(self.params[:, 1], np.minimum(lead_0_crawl_accel_max, lead_1_crawl_accel_max))
-    self.params[:, 1] = np.minimum(self.params[:, 1], get_lead_transition_accel_max(max(self.lead_transition_guard_timers)))
+    apply_lead_transition_accel_guard(self.params[:, 1], max(self.lead_transition_guard_timers))
     self.params[:, 2] = np.min(x_obstacles, axis=1)
     self.params[:, 3] = np.copy(self.a_prev)
     self.params[:, 4] = t_follow

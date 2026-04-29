@@ -7,6 +7,7 @@ from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
 
+import openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc as long_mpc
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
   APPROACH_BRAKE_MIN,
@@ -391,6 +392,18 @@ def test_lead_transition_guard_caps_near_term_positive_accel():
   guarded_accel_max = get_lead_transition_accel_max(0.55)
   assert guarded_accel_max[0] == pytest.approx(0.0)
   assert np.max(guarded_accel_max) == pytest.approx(ACCEL_MAX)
+
+
+def test_lead_transition_guard_skips_accel_cap_generation_when_inactive(monkeypatch):
+  def fail_guard_generation(_guard_timer):
+    pytest.fail("inactive transition guard should not generate an accel cap")
+
+  monkeypatch.setattr(long_mpc, "get_lead_transition_accel_max", fail_guard_generation)
+  accel_max = np.array([ACCEL_MAX, ACCEL_MAX - 0.1])
+
+  long_mpc.apply_lead_transition_accel_guard(accel_max, 0.0)
+
+  assert accel_max.tolist() == pytest.approx([ACCEL_MAX, ACCEL_MAX - 0.1])
 
 
 def test_lead_transition_obstacle_release_waits_for_guard():
