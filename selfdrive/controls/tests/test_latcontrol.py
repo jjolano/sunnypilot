@@ -60,6 +60,7 @@ from openpilot.selfdrive.locationd.helpers import Pose
 from openpilot.common.mock.generators import generate_livePose
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorque as LatControlTorqueV3
 
 
 class TestLatControl:
@@ -68,6 +69,7 @@ class TestLatControl:
       (HONDA.HONDA_CIVIC, LatControlPID),
       (TOYOTA.TOYOTA_RAV4, LatControlTorque),
       (TOYOTA.TOYOTA_RAV4, LatControlTorqueV2),
+      (TOYOTA.TOYOTA_RAV4, LatControlTorqueV3),
       (NISSAN.NISSAN_LEAF, LatControlAngle),
       (GM.CHEVROLET_BOLT_EUV, LatControlTorque),
     ]
