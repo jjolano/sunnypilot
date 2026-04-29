@@ -131,6 +131,7 @@ LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS = 1.0
 LEAD_ACCEL_MATCH_DECEL_TARGET_BLEND = 0.65
 LEAD_ACCEL_MATCH_DECEL_NEAR_STOP_BLEND = 0.35
 LEAD_ACCEL_MATCH_DECEL_CLOSING_BP = [0.3, 2.0]
+LEAD_ACCEL_MATCH_DECEL_ANTICIPATION_TIME = 1.0
 LEAD_ACCEL_MATCH_DECEL_CAP = 1.2
 LEAD_ACCEL_MATCH_GAP_MARGIN = 10.0
 LEAD_ACCEL_MATCH_GAP_MARGIN_FACTOR = 0.5
@@ -477,7 +478,11 @@ def get_lead_accel_match_blend(v_lead, d_rel, a_lead, t_follow, v_ego=None):
 
   v_ego = v_lead if v_ego is None else v_ego
   closing_speed = max(v_ego - v_lead, 0.0)
-  reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
+  decel_closing_speed = closing_speed
+  if a_lead < 0.0:
+    anticipated_closing_speed = -a_lead * LEAD_ACCEL_MATCH_DECEL_ANTICIPATION_TIME
+    decel_closing_speed = max(closing_speed, min(anticipated_closing_speed, LEAD_ACCEL_MATCH_DECEL_CLOSING_BP[-1]))
+  reserve = get_moving_lead_stop_reserve(v_ego, v_lead, decel_closing_speed, a_lead)
   target_gap = get_lead_time_gap_target(v_lead, t_follow) + reserve
   margin = get_lead_accel_match_margin(target_gap)
   positive_match_gap = STOP_DISTANCE + LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS
@@ -485,7 +490,7 @@ def get_lead_accel_match_blend(v_lead, d_rel, a_lead, t_follow, v_ego=None):
     return 0.0
 
   if a_lead < 0.0:
-    closing_blend = float(np.interp(closing_speed, LEAD_ACCEL_MATCH_DECEL_CLOSING_BP, [0.0, 1.0]))
+    closing_blend = float(np.interp(decel_closing_speed, LEAD_ACCEL_MATCH_DECEL_CLOSING_BP, [0.0, 1.0]))
     if d_rel <= target_gap:
       distance_blend = float(np.interp(d_rel, [STOP_DISTANCE, target_gap], [LEAD_ACCEL_MATCH_DECEL_NEAR_STOP_BLEND, LEAD_ACCEL_MATCH_DECEL_TARGET_BLEND]))
     else:

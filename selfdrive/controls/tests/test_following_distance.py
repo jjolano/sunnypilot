@@ -681,6 +681,19 @@ def test_lead_accel_match_fades_far_decelerating_leads():
   assert far_cost == pytest.approx(0.0)
 
 
+def test_lead_accel_match_anticipates_steady_following_lead_brake():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 20.0
+  v_lead = 20.0
+  a_lead = -1.0
+  target_gap = get_lead_time_gap_target(v_lead, t_follow)
+
+  accel_target, cost = get_lead_accel_match_target(v_lead, target_gap, a_lead, t_follow, v_ego)
+
+  assert -LEAD_ACCEL_MATCH_DECEL_CAP <= accel_target < -0.15
+  assert cost > 0.0
+
+
 def test_lead_accel_match_caps_soft_decel_target():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   v_ego = 15.0
