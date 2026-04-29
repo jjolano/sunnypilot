@@ -38,8 +38,10 @@ from openpilot.sunnypilot.system.tailscale.manage_tailscaled import TailscaleDae
 class FakeParams:
   def __init__(self):
     self.values = {}
+    self.put_counts = {}
 
   def put(self, key, value):
+    self.put_counts[key] = self.put_counts.get(key, 0) + 1
     self.values[key] = value
 
   def put_bool(self, key, value):
@@ -240,6 +242,23 @@ class TestTailscaleInstaller:
     daemon._check_latest_version()
 
     fetch.assert_not_called()
+
+  def test_publish_status_writes_final_state_once_and_skips_unchanged(self):
+    daemon = TailscaleDaemon.__new__(TailscaleDaemon)
+    daemon.params = FakeParams()
+    status = {
+      "BackendState": "Running",
+      "Self": {"TailscaleIPs": ["100.64.0.1"]},
+    }
+
+    daemon._publish_status(status)
+
+    assert daemon.params.values["TailscaleState"] == "Running:100.64.0.1"
+    assert daemon.params.put_counts["TailscaleState"] == 1
+
+    daemon._publish_status(status)
+
+    assert daemon.params.put_counts["TailscaleState"] == 1
 
 
 class TestTailscalePairingDialog:

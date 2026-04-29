@@ -195,22 +195,21 @@ class TailscaleDaemon:
   def _publish_status(self, status: dict) -> None:
     """Write relevant status fields to params."""
     backend_state = status.get("BackendState", "Unknown")
-    self.params.put("TailscaleState", backend_state)
+
+    state_value = backend_state
+    self_status = status.get("Self", {})
+    tailscale_ips = self_status.get("TailscaleIPs", [])
+    if backend_state == "Running" and tailscale_ips:
+      state_value = f"Running:{', '.join(tailscale_ips)}"
+
+    if (self.params.get("TailscaleState") or "") != state_value:
+      self.params.put("TailscaleState", state_value)
 
     # Clear auth URL when no longer needed
     if backend_state == "Running":
       auth_url = self.params.get("TailscaleAuthURL") or ""
       if auth_url:
         self.params.remove("TailscaleAuthURL")
-
-    # Publish Tailscale IP for display in the UI
-    self_status = status.get("Self", {})
-    tailscale_ips = self_status.get("TailscaleIPs", [])
-    if tailscale_ips:
-      ip_str = ", ".join(tailscale_ips)
-      current = self.params.get("TailscaleState") or ""
-      if backend_state == "Running" and ip_str not in current:
-        self.params.put("TailscaleState", f"Running:{ip_str}")
 
   # --- Command handlers ---
 
