@@ -12,7 +12,7 @@ from openpilot.common.swaglog import cloudlog
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
-from openpilot.selfdrive.controls.lib.lane_change_s_curve import LaneChangeSCurveController, LaneChangeSCurveInputs
+from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LaneChangePathShaper, LaneChangePathShaperInputs
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
@@ -51,7 +51,7 @@ class Controls(ControlsExt):
     self.steer_limited_by_safety = False
     self.curvature = 0.0
     self.desired_curvature = 0.0
-    self.lane_change_s_curve = LaneChangeSCurveController(DT_CTRL)
+    self.lane_change_path_shaper = LaneChangePathShaper(DT_CTRL)
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -138,14 +138,14 @@ class Controls(ControlsExt):
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
     if self.sm.valid['lateralManeuverPlan']:
-      self.lane_change_s_curve.reset()
+      self.lane_change_path_shaper.reset()
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       model_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
       left_lane_y0 = model_v2.laneLines[1].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[1].y) else None
       right_lane_y0 = model_v2.laneLines[2].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[2].y) else None
-      lane_change_result = self.lane_change_s_curve.update(
-        LaneChangeSCurveInputs(
+      lane_change_result = self.lane_change_path_shaper.update(
+        LaneChangePathShaperInputs(
           lat_active=CC.latActive,
           v_ego=CS.vEgo,
           left_blinker=CS.leftBlinker,

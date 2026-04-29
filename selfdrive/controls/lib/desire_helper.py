@@ -1,7 +1,7 @@
 from cereal import log, custom
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.controls.lib.lane_change_s_curve import LANE_CHANGE_DURATION
+from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LANE_CHANGE_DURATION
 from openpilot.sunnypilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeController, AutoLaneChangeMode
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_turn_desire import LaneTurnController
 
@@ -119,8 +119,8 @@ class DesireHelper:
         self.lane_change_ll_prob = max(self.lane_change_ll_prob - 2 * DT_MDL, 0.0)
 
         model_lane_change_complete = lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01
-        scripted_lane_change_complete = self.lane_change_timer >= LANE_CHANGE_DURATION - LANE_CHANGE_TIMER_EPS
-        if model_lane_change_complete or scripted_lane_change_complete:
+        shaped_lane_change_complete = self.lane_change_timer >= LANE_CHANGE_DURATION - LANE_CHANGE_TIMER_EPS
+        if model_lane_change_complete or shaped_lane_change_complete:
           self.lane_change_state = LaneChangeState.laneChangeFinishing
           self.lane_change_reinit = False
 

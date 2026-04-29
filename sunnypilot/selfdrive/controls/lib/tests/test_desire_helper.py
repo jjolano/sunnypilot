@@ -3,7 +3,7 @@ import math
 from cereal import log
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper, LaneChangeDirection, LaneChangeState
-from openpilot.selfdrive.controls.lib.lane_change_s_curve import LANE_CHANGE_DURATION
+from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LANE_CHANGE_DURATION
 
 
 class DummyCarState:
@@ -18,7 +18,7 @@ class DummyCarState:
     self.brakePressed = False
 
 
-def test_scripted_lane_change_completes_from_elapsed_progress():
+def test_path_shaped_lane_change_completes_from_elapsed_progress():
   dh = DesireHelper()
   dh.lane_change_state = LaneChangeState.laneChangeStarting
   dh.lane_change_direction = LaneChangeDirection.left

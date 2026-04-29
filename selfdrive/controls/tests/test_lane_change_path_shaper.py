@@ -2,14 +2,14 @@ import pytest
 
 from cereal import log
 from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.controls.lib.lane_change_s_curve import EXIT_BLEND_DURATION, LANE_CHANGE_DURATION, LaneChangeSCurveController, LaneChangeSCurveInputs
+from openpilot.selfdrive.controls.lib.lane_change_path_shaper import EXIT_BLEND_DURATION, LANE_CHANGE_DURATION, LaneChangePathShaper, LaneChangePathShaperInputs
 
 
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
 
-def make_inputs(**overrides) -> LaneChangeSCurveInputs:
+def make_inputs(**overrides) -> LaneChangePathShaperInputs:
   data = {
     "lat_active": True,
     "v_ego": 30.0,
@@ -25,17 +25,17 @@ def make_inputs(**overrides) -> LaneChangeSCurveInputs:
     "right_lane_y0": 1.8,
   }
   data.update(overrides)
-  return LaneChangeSCurveInputs(**data)
+  return LaneChangePathShaperInputs(**data)
 
 
-def run_steps(controller: LaneChangeSCurveController, inputs: LaneChangeSCurveInputs, duration: float):
+def run_steps(controller: LaneChangePathShaper, inputs: LaneChangePathShaperInputs, duration: float):
   steps = int(duration / DT_CTRL)
   return [controller.update(inputs) for _ in range(steps)]
 
 
 def test_lane_change_profile_is_symmetric():
-  left_controller = LaneChangeSCurveController()
-  right_controller = LaneChangeSCurveController()
+  left_controller = LaneChangePathShaper()
+  right_controller = LaneChangePathShaper()
 
   left_inputs = make_inputs()
   right_inputs = make_inputs(left_blinker=False, right_blinker=True, lane_change_direction=LaneChangeDirection.right)
@@ -51,7 +51,7 @@ def test_lane_change_profile_is_symmetric():
 
 
 def test_lane_change_blends_back_after_profile_completion():
-  controller = LaneChangeSCurveController()
+  controller = LaneChangePathShaper()
   inputs = make_inputs()
 
   results = run_steps(controller, inputs, LANE_CHANGE_DURATION + EXIT_BLEND_DURATION + 0.5)
@@ -62,7 +62,7 @@ def test_lane_change_blends_back_after_profile_completion():
 
 
 def test_peak_highway_curvature_is_smoother():
-  controller = LaneChangeSCurveController()
+  controller = LaneChangePathShaper()
   inputs = make_inputs()
 
   results = run_steps(controller, inputs, LANE_CHANGE_DURATION)
@@ -71,8 +71,18 @@ def test_peak_highway_curvature_is_smoother():
   assert peak_curvature < 0.001
 
 
+def test_same_direction_model_curvature_remains_primary():
+  controller = LaneChangePathShaper()
+  inputs = make_inputs(model_curvature=-0.0012)
+
+  result = run_steps(controller, inputs, 1.0)[-1]
+
+  assert result.active
+  assert result.desired_curvature == pytest.approx(inputs.model_curvature)
+
+
 def test_soft_fallback_blends_back_to_model_curvature():
-  controller = LaneChangeSCurveController()
+  controller = LaneChangePathShaper()
   inputs = make_inputs()
 
   engaged = run_steps(controller, inputs, 1.0)
@@ -88,7 +98,7 @@ def test_soft_fallback_blends_back_to_model_curvature():
 
 
 def test_early_finishing_blends_back_to_model_curvature():
-  controller = LaneChangeSCurveController()
+  controller = LaneChangePathShaper()
   inputs = make_inputs()
 
   engaged = run_steps(controller, inputs, 1.0)
@@ -109,7 +119,7 @@ def test_early_finishing_blends_back_to_model_curvature():
   {"left_blinker": False, "right_blinker": True, "lane_change_direction": LaneChangeDirection.left},
 ])
 def test_hard_abort_resets_immediately(abort_overrides):
-  controller = LaneChangeSCurveController()
+  controller = LaneChangePathShaper()
   inputs = make_inputs()
   run_steps(controller, inputs, 1.0)
 
@@ -121,8 +131,8 @@ def test_hard_abort_resets_immediately(abort_overrides):
   assert result.desired_curvature == pytest.approx(abort_inputs.model_curvature)
 
 
-def test_manual_torque_start_does_not_abort_scripted_lane_change():
-  controller = LaneChangeSCurveController()
+def test_manual_torque_start_does_not_abort_path_shaping():
+  controller = LaneChangePathShaper()
 
   result = controller.update(make_inputs(steering_pressed=True))
 
@@ -131,7 +141,7 @@ def test_manual_torque_start_does_not_abort_scripted_lane_change():
 
 
 def test_ineligible_entry_stays_model_driven():
-  controller = LaneChangeSCurveController()
+  controller = LaneChangePathShaper()
   result = controller.update(make_inputs(prev_desired_curvature=0.002))
   assert result.blend == pytest.approx(0.0)
   assert result.desired_curvature == pytest.approx(0.0)
