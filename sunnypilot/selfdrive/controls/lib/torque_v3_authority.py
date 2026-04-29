@@ -25,7 +25,13 @@ FAULT_REASONS = (
   | EstimatorRejectReason.SATURATED
   | EstimatorRejectReason.NON_FINITE
   | EstimatorRejectReason.HIGH_JERK
+  | EstimatorRejectReason.STALE_MODEL
+  | EstimatorRejectReason.RESIDUAL_SPIKE
 )
+
+
+def authority_fault_active(reject_reason: EstimatorRejectReason) -> bool:
+  return bool(reject_reason & FAULT_REASONS)
 
 
 class AuthorityManager:
@@ -34,7 +40,7 @@ class AuthorityManager:
 
   def update(self, mode: TorqueModelMode, confidence: float, positive_coverage: float, negative_coverage: float,
              reject_reason: EstimatorRejectReason) -> AuthorityState:
-    if reject_reason & FAULT_REASONS:
+    if authority_fault_active(reject_reason):
       self.state = AuthorityState(AuthorityBand.limited, 0.45, True)
       return self.state
 

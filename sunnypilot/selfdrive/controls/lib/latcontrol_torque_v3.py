@@ -11,7 +11,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityManager
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityManager, authority_fault_active
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import AdaptiveTorqueEstimator, EstimatorRejectReason, TorqueObservation
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelAdapter, TorqueModelParams
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_safety import TorqueV3SafetyEnvelope, TorqueV3SafetyInputs
@@ -162,6 +162,11 @@ class LatControlTorque(LatControl):
       and estimator_result.negative_coverage >= LEARNED_MODEL_MIN_COVERAGE
     )
 
+  def authority_confidence(self, confidence: float, reject_reason: EstimatorRejectReason) -> float:
+    if self.native_torque and not authority_fault_active(reject_reason):
+      return max(float(confidence), float(self.model_adapter.confidence))
+    return float(confidence)
+
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
     if self.native_torque and self.extension.update_override_torque_params(self.torque_params):
       self.update_limits()
@@ -285,7 +290,7 @@ class LatControlTorque(LatControl):
     saturated = self.steer_max - abs(output_torque) < 1e-3
     authority_state = self.authority_manager.update(
       self.model_adapter.mode,
-      self.estimator.state.confidence,
+      self.authority_confidence(self.estimator.state.confidence, EstimatorRejectReason.NONE),
       self.estimator.state.positive_coverage,
       self.estimator.state.negative_coverage,
       EstimatorRejectReason.NONE,
@@ -332,9 +337,10 @@ class LatControlTorque(LatControl):
       self.extension.torque_params = self.torque_params
       self.model_adapter.set_residual(estimator_result.residual_error / max(float(estimator_result.params.lat_accel_factor), 1e-3))
       self.update_limits()
+    authority_confidence = self.authority_confidence(estimator_result.confidence, estimator_result.reject_reason)
     authority_state = self.authority_manager.update(
       self.model_adapter.mode,
-      estimator_result.confidence,
+      authority_confidence,
       estimator_result.positive_coverage,
       estimator_result.negative_coverage,
       estimator_result.reject_reason,
@@ -372,7 +378,7 @@ class LatControlTorque(LatControl):
     adaptive_log.unshapedOutput = float(-shaping_result.unshaped_output)
     adaptive_log.outputCap = float(shaping_result.output_cap)
     adaptive_log.modelMode = int(self.model_adapter.mode)
-    adaptive_log.modelConfidence = float(estimator_result.confidence)
+    adaptive_log.modelConfidence = float(authority_confidence)
     adaptive_log.authorityBand = int(authority_state.band)
     adaptive_log.authorityScale = float(authority_state.scale)
     adaptive_log.fallbackActive = bool(authority_state.fallback_active)

@@ -43,3 +43,17 @@ def test_fault_demotes_authority_immediately():
 
   assert state.band == AuthorityBand.limited
   assert state.scale == 0.45
+
+
+def test_residual_and_stale_faults_demote_authority_immediately():
+  for reject_reason in (EstimatorRejectReason.RESIDUAL_SPIKE, EstimatorRejectReason.STALE_MODEL):
+    manager = AuthorityManager()
+    manager.update(TorqueModelMode.learned, confidence=0.96, positive_coverage=0.7, negative_coverage=0.7,
+                   reject_reason=EstimatorRejectReason.NONE)
+
+    state = manager.update(TorqueModelMode.learned, confidence=0.96, positive_coverage=0.7, negative_coverage=0.7,
+                           reject_reason=reject_reason)
+
+    assert state.band == AuthorityBand.limited
+    assert state.scale == 0.45
+    assert state.fallback_active

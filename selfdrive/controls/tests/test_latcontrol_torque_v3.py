@@ -38,7 +38,7 @@ from openpilot.selfdrive.car.helpers import convert_to_capnp
 from openpilot.selfdrive.locationd.helpers import Measurement, Pose
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import EstimatorRejectReason
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import EstimatorRejectReason, EstimatorResult
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityBand
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelMode
 
@@ -150,6 +150,55 @@ def test_v3_native_faulting_frame_demotes_authority_telemetry():
   assert np.isclose(lac_log.adaptiveTorqueState.authorityScale, 0.45)
   assert lac_log.adaptiveTorqueState.fallbackActive
   assert abs(lac_log.output) <= 0.45 + 1e-6
+
+
+def test_v3_native_low_command_frames_keep_near_full_authority():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  params = log.LiveParametersData.new_message()
+
+  for _ in range(10):
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0, make_pose(), False, 0.2)
+
+    assert lac_log.adaptiveTorqueState.sampleRejectReason & EstimatorRejectReason.LOW_COMMAND
+
+  assert lac_log.adaptiveTorqueState.modelMode == TorqueModelMode.native
+  assert lac_log.adaptiveTorqueState.authorityBand == AuthorityBand.near_full
+  assert np.isclose(lac_log.adaptiveTorqueState.authorityScale, 0.85)
+
+
+def test_v3_residual_and_stale_fault_frames_cap_output_to_limited_authority():
+  for reject_reason in (EstimatorRejectReason.RESIDUAL_SPIKE, EstimatorRejectReason.STALE_MODEL):
+    controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+    CS = car.CarState.new_message()
+    CS.vEgo = 30.0
+    params = log.LiveParametersData.new_message()
+
+    def reject_update(_observation, reject_reason=reject_reason):
+      return EstimatorResult(
+        params=controller.estimator.state.params,
+        confidence=0.96,
+        positive_coverage=0.7,
+        negative_coverage=0.7,
+        residual_error=0.0,
+        response_delay=0.2,
+        sample_accepted=False,
+        reject_reason=reject_reason,
+      )
+
+    controller.estimator.state.confidence = 0.96
+    controller.estimator.state.positive_coverage = 0.7
+    controller.estimator.state.negative_coverage = 0.7
+    controller.estimator.update = reject_update
+
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 0.003, make_pose(), False, 0.2)
+
+    assert lac_log.adaptiveTorqueState.sampleRejectReason & reject_reason
+    assert lac_log.adaptiveTorqueState.authorityBand == AuthorityBand.limited
+    assert np.isclose(lac_log.adaptiveTorqueState.authorityScale, 0.45)
+    assert lac_log.adaptiveTorqueState.fallbackActive
+    assert abs(lac_log.output) <= 0.45 + 1e-6
 
 
 def test_v3_synthetic_pid_origin_starts_limited():
