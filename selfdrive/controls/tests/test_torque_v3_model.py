@@ -38,6 +38,13 @@ def test_native_model_uses_callbacks():
   assert math.isclose(adapter.lateral_accel_from_torque(torque), 0.65, rel_tol=1e-6)
 
 
+def test_lateral_accel_from_torque_clamps_normalized_torque_input():
+  adapter = TorqueModelAdapter.synthetic()
+
+  assert math.isclose(adapter.lateral_accel_from_torque(2.0), 2.5, rel_tol=1e-6)
+  assert math.isclose(adapter.lateral_accel_from_torque(-2.0), -2.5, rel_tol=1e-6)
+
+
 def test_learned_model_can_apply_bounded_residual():
   adapter = TorqueModelAdapter.synthetic()
   adapter.update_learned_params(TorqueModelParams(lat_accel_factor=2.0, lat_accel_offset=0.0, friction=0.1), confidence=0.8)

@@ -110,7 +110,7 @@ class TorqueModelAdapter:
   def lateral_accel_from_torque(self, torque: float) -> float:
     if not _finite(torque):
       return 0.0
-    lat_accel = self._lateral_accel_from_torque(float(torque), self.params)
+    lat_accel = self._lateral_accel_from_torque(float(np.clip(torque, -1.0, 1.0)), self.params)
     return float(lat_accel) if _finite(lat_accel) else 0.0
 
   def update_learned_params(self, params: TorqueModelParams, confidence: float) -> bool:
