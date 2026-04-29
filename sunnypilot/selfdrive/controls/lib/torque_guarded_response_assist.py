@@ -12,6 +12,15 @@ PLANNED_UNWIND_JERK_THRESHOLD = 0.2
 ASSIST_GAIN = 1.6
 ASSIST_BUILD_RATE = 0.8
 ASSIST_DECAY_RATE = 1.6
+CURVE_EXIT_RESPONSE_DEFICIT_THRESHOLD = 0.02
+CURVE_EXIT_MIN_LAT_ACCEL = 0.6
+CURVE_EXIT_MIN_CURVATURE = 0.02
+CURVE_EXIT_MIN_UNDER_RESPONSE = 0.18
+CURVE_EXIT_MIN_UNWIND_JERK = 0.15
+CURVE_EXIT_MAX_LOOKAHEAD_JERK = 0.05
+CURVE_EXIT_ASSIST_GAIN = 0.8
+CURVE_EXIT_ASSIST_CAP_SCALE = 0.4
+CURVE_EXIT_ASSIST_BUILD_RATE = 0.4
 BIAS_TARGET_GAIN = 0.6
 BIAS_BUILD_RATE = 0.18
 BIAS_DECAY_RATE = 0.08
@@ -187,10 +196,24 @@ class TorqueGuardedResponseAssist:
       freeze_reason |= GuardedResponseReason.SATURATED
     learning_frozen = learning_frozen or assist_learning_blocked
 
+    curve_exit_under_response = assist_allowed and self._is_curve_exit_under_response(inputs, nominal_sign, desired_sign, same_sign_hold, assist_deficit)
+    if curve_exit_under_response:
+      assist_block_reason &= ~GuardedResponseReason.BELOW_DEFICIT
+
+    target_assist = 0.0
+    assist_build_rate = ASSIST_BUILD_RATE
     if assist_allowed and assist_deficit > RESPONSE_DEFICIT_THRESHOLD:
       target_assist = nominal_sign * min(max_assist, ASSIST_GAIN * (assist_deficit - RESPONSE_DEFICIT_THRESHOLD))
+    if curve_exit_under_response:
+      curve_exit_max_assist = max_assist * CURVE_EXIT_ASSIST_CAP_SCALE
+      curve_exit_target = nominal_sign * min(curve_exit_max_assist, CURVE_EXIT_ASSIST_GAIN * (assist_deficit - CURVE_EXIT_RESPONSE_DEFICIT_THRESHOLD))
+      if abs(curve_exit_target) > abs(target_assist):
+        target_assist = curve_exit_target
+        assist_build_rate = CURVE_EXIT_ASSIST_BUILD_RATE
+
+    if abs(target_assist) > ACTIVE_RELEASE_THRESHOLD:
       self.phase = Phase.ASSIST
-      self.assist_torque = self._approach(self.assist_torque, target_assist, ASSIST_BUILD_RATE)
+      self.assist_torque = self._approach(self.assist_torque, target_assist, assist_build_rate)
     else:
       self.assist_torque = self._approach(self.assist_torque, 0.0, ASSIST_DECAY_RATE)
       if same_sign_hold and not low_demand and abs(inputs.desired_lateral_accel) >= STEADY_HOLD_LAT_ACCEL_THRESHOLD:
@@ -236,6 +259,21 @@ class TorqueGuardedResponseAssist:
       abs(inputs.actual_lateral_jerk) > BUMP_JERK_THRESHOLD
       and jerk_delta > BUMP_LOOKAHEAD_DELTA_THRESHOLD
       and abs(inputs.desired_lateral_jerk) < BUMP_JERK_THRESHOLD
+    )
+
+  @staticmethod
+  def _is_curve_exit_under_response(inputs: GuardedResponseAssistInputs, nominal_sign: float, desired_sign: float,
+                                    same_sign_hold: bool, assist_deficit: float) -> bool:
+    under_response = desired_sign * (inputs.desired_lateral_accel - inputs.actual_lateral_accel)
+    return (
+      same_sign_hold
+      and nominal_sign == desired_sign
+      and assist_deficit > CURVE_EXIT_RESPONSE_DEFICIT_THRESHOLD
+      and abs(inputs.desired_lateral_accel) >= CURVE_EXIT_MIN_LAT_ACCEL
+      and abs(inputs.desired_curvature) >= CURVE_EXIT_MIN_CURVATURE
+      and under_response > CURVE_EXIT_MIN_UNDER_RESPONSE
+      and desired_sign * inputs.desired_lateral_jerk < -CURVE_EXIT_MIN_UNWIND_JERK
+      and desired_sign * inputs.lookahead_lateral_jerk <= CURVE_EXIT_MAX_LOOKAHEAD_JERK
     )
 
   def _freeze_reason(self, inputs: GuardedResponseAssistInputs) -> GuardedResponseReason:

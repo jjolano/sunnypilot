@@ -44,6 +44,104 @@ def test_assist_builds_for_same_sign_response_deficit():
   assert result.block_reason == 0
 
 
+def test_curve_exit_under_response_adds_conservative_positive_assist():
+  assist = TorqueGuardedResponseAssist(0.01)
+  result = None
+  for _ in range(40):
+    result = assist.update(
+      make_inputs(
+        nominal_torque=0.35,
+        desired_lateral_accel=1.0,
+        actual_lateral_accel=0.68,
+        desired_lateral_jerk=-0.45,
+        lookahead_lateral_jerk=-0.10,
+        desired_curvature=0.035,
+        tracking_torque_error=0.03,
+      )
+    )
+
+  assert result is not None
+  assert result.phase == "ASSIST"
+  assert 0.0 < result.assist_torque <= 0.04
+  assert result.bias_torque == 0.0
+  assert not result.learning_frozen
+  assert result.freeze_reason == 0
+
+
+def test_curve_exit_under_response_adds_conservative_negative_assist():
+  assist = TorqueGuardedResponseAssist(0.01)
+  result = None
+  for _ in range(40):
+    result = assist.update(
+      make_inputs(
+        nominal_torque=-0.35,
+        desired_lateral_accel=-1.0,
+        actual_lateral_accel=-0.68,
+        desired_lateral_jerk=0.45,
+        lookahead_lateral_jerk=0.10,
+        desired_curvature=-0.035,
+        tracking_torque_error=-0.03,
+      )
+    )
+
+  assert result is not None
+  assert result.phase == "ASSIST"
+  assert -0.04 <= result.assist_torque < 0.0
+  assert result.bias_torque == 0.0
+  assert not result.learning_frozen
+  assert result.freeze_reason == 0
+
+
+def test_curve_exit_assist_does_not_trigger_on_turn_in():
+  assist = TorqueGuardedResponseAssist(0.01)
+  result = None
+  for _ in range(40):
+    result = assist.update(
+      make_inputs(
+        nominal_torque=0.35,
+        desired_lateral_accel=1.0,
+        actual_lateral_accel=0.68,
+        desired_lateral_jerk=0.45,
+        lookahead_lateral_jerk=0.10,
+        desired_curvature=0.035,
+        tracking_torque_error=0.03,
+      )
+    )
+
+  assert result is not None
+  assert result.assist_torque == 0.0
+  assert result.bias_torque == 0.0
+
+
+def test_curve_exit_assist_respects_existing_limit_blocks():
+  for blocked_input in (
+    {"saturated": True},
+    {"steer_limited_by_safety": True},
+    {"curvature_limited": True},
+    {"steering_pressed": True},
+    {"actual_lateral_accel": -0.68},
+    {"actual_lateral_jerk": 3.0},
+    {"v_ego": 3.5},
+  ):
+    assist = TorqueGuardedResponseAssist(0.01)
+    curve_exit_input = {
+      "nominal_torque": 0.35,
+      "desired_lateral_accel": 1.0,
+      "actual_lateral_accel": 0.68,
+      "desired_lateral_jerk": -0.45,
+      "lookahead_lateral_jerk": -0.10,
+      "desired_curvature": 0.035,
+      "tracking_torque_error": 0.08,
+      **blocked_input,
+    }
+    result = None
+    for _ in range(40):
+      result = assist.update(make_inputs(**curve_exit_input))
+
+    assert result is not None
+    assert abs(result.assist_torque) < 1e-6
+
+
 def test_release_on_override():
   assist = TorqueGuardedResponseAssist(0.01)
   for _ in range(40):
