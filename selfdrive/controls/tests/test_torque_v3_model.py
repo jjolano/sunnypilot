@@ -45,6 +45,15 @@ def test_lateral_accel_from_torque_clamps_normalized_torque_input():
   assert math.isclose(adapter.lateral_accel_from_torque(-2.0), -2.5, rel_tol=1e-6)
 
 
+def test_non_finite_inputs_return_zero():
+  adapter = TorqueModelAdapter.synthetic()
+
+  assert adapter.torque_from_lateral_accel(float('nan')) == 0.0
+  assert adapter.torque_from_lateral_accel(float('inf')) == 0.0
+  assert adapter.lateral_accel_from_torque(float('nan')) == 0.0
+  assert adapter.lateral_accel_from_torque(float('inf')) == 0.0
+
+
 def test_learned_model_can_apply_bounded_residual():
   adapter = TorqueModelAdapter.synthetic()
   adapter.update_learned_params(TorqueModelParams(lat_accel_factor=2.0, lat_accel_offset=0.0, friction=0.1), confidence=0.8)
