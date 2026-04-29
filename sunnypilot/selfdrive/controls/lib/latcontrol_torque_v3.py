@@ -339,6 +339,12 @@ class LatControlTorque(LatControl):
       estimator_result.negative_coverage,
       estimator_result.reject_reason,
     )
+    same_frame_authority_limited = False
+    if authority_state.scale < safety_result.authority_cap / max(self.steer_max, 1e-6):
+      authority_cap = max(0.0, min(float(authority_state.scale), 1.0)) * self.steer_max
+      recapped_output_torque = float(np.clip(output_torque, -authority_cap, authority_cap))
+      same_frame_authority_limited = abs(recapped_output_torque) < abs(output_torque) - 1e-6
+      output_torque = recapped_output_torque
 
     pid_log.p = float(self.pid.p)
     pid_log.i = float(self.pid.i)
@@ -377,7 +383,7 @@ class LatControlTorque(LatControl):
     adaptive_log.residualError = float(estimator_result.residual_error)
     adaptive_log.sampleAccepted = bool(estimator_result.sample_accepted)
     adaptive_log.sampleRejectReason = int(estimator_result.reject_reason)
-    pid_log.saturated = bool(self._check_saturation(safety_result.authority_limited or self.steer_max - abs(output_torque) < 1e-3, CS,
+    pid_log.saturated = bool(self._check_saturation(safety_result.authority_limited or same_frame_authority_limited or self.steer_max - abs(output_torque) < 1e-3, CS,
                                                      steer_limited_by_safety, curvature_limited))
     self.model_age += self.dt
 

@@ -149,6 +149,7 @@ def test_v3_native_faulting_frame_demotes_authority_telemetry():
   assert lac_log.adaptiveTorqueState.authorityBand == AuthorityBand.limited
   assert np.isclose(lac_log.adaptiveTorqueState.authorityScale, 0.45)
   assert lac_log.adaptiveTorqueState.fallbackActive
+  assert abs(lac_log.output) <= 0.45 + 1e-6
 
 
 def test_v3_synthetic_pid_origin_starts_limited():
