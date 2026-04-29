@@ -143,7 +143,8 @@ class ModelPathProcessor:
     y_vals = cls._as_finite_array(position_y)
     if x_vals is None or y_vals is None or x_vals.size != y_vals.size or x_vals.size < PATH_VALID_MIN_LEN:
       return False
-    return bool(np.all(np.diff(x_vals) >= 0.0) and x_vals[-1] - x_vals[0] >= PATH_VALID_MIN_X_SPAN)
+    core_x_vals = x_vals[:PATH_VALID_MIN_LEN]
+    return bool(np.all(np.diff(core_x_vals) >= 0.0) and core_x_vals[-1] - core_x_vals[0] >= PATH_VALID_MIN_X_SPAN)
 
   @classmethod
   def _path_std_quality(

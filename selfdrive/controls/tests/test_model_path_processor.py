@@ -75,6 +75,17 @@ def test_degenerate_finite_path_decays_toward_measured_curvature():
   assert 0.0005 < result.desired_curvature < 0.001
 
 
+def test_far_horizon_foldback_with_valid_core_path_passes_curvature_unchanged():
+  position_x = list(range(ModelConstants.IDX_N))
+  position_x[-1] = position_x[-2] - 1
+
+  result = ModelPathProcessor().update(make_inputs(position_x=tuple(position_x)))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.desired_curvature == pytest.approx(0.002)
+
+
 def test_nonfinite_path_sample_decays_toward_measured_curvature():
   position_y = [0.0 for _ in range(ModelConstants.IDX_N)]
   position_y[5] = math.inf
