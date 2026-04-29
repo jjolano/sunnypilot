@@ -150,12 +150,12 @@ LEAD_ACCEL_RECOVERY_ACCEL_BP = [LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL, 0.8]
 LEAD_ACCEL_RECOVERY_OPENING_BP = [0.2, 1.2]
 LEAD_ACCEL_RECOVERY_GAP_MARGIN = 1.0
 LEAD_ACCEL_RECOVERY_ACCEL_MAX = 0.35
-LEAD_TRANSITION_Y_REL_SOFT = 1.2
-LEAD_TRANSITION_Y_REL_CONFIRM = 1.8
+LEAD_TRANSITION_Y_REL_SOFT = 1.0
+LEAD_TRANSITION_Y_REL_CONFIRM = 1.6
 LEAD_TRANSITION_Y_REL_RESET = 0.9
 LEAD_TRANSITION_Y_REL_RATE_MIN = 0.02
-LEAD_TRANSITION_PERSISTENCE = 0.3
-LEAD_TRANSITION_RELEASE_TIME = 0.75
+LEAD_TRANSITION_PERSISTENCE = 0.2
+LEAD_TRANSITION_RELEASE_TIME = 0.5
 LEAD_TRANSITION_GUARD_TIME = 0.55
 LEAD_TRANSITION_GUARD_FADE_TIME = 0.35
 LEAD_TRANSITION_GUARD_ACCEL_MAX = 0.0
@@ -855,13 +855,14 @@ class LongitudinalMpc:
       return 0.0
 
     track_id = int(lead.radarTrackId)
-    if not self.lead_transition_was_status[lead_idx] or (
-      track_id >= 0 and self.lead_transition_track_ids[lead_idx] >= 0 and track_id != self.lead_transition_track_ids[lead_idx]
-    ):
-      self.reset_lead_transition_state(lead_idx, guard_timer=self.lead_transition_guard_timers[lead_idx])
-
     y_rel = float(lead.yRel)
     abs_y_rel = abs(y_rel)
+    prev_y_rel = self.lead_transition_prev_y_rel[lead_idx]
+    track_changed = track_id >= 0 and self.lead_transition_track_ids[lead_idx] >= 0 and track_id != self.lead_transition_track_ids[lead_idx]
+    lateral_exit_churn = track_changed and np.isfinite(prev_y_rel) and abs(prev_y_rel) >= LEAD_TRANSITION_Y_REL_SOFT and abs_y_rel >= LEAD_TRANSITION_Y_REL_SOFT
+    if not self.lead_transition_was_status[lead_idx] or (track_changed and not lateral_exit_churn):
+      self.reset_lead_transition_state(lead_idx, guard_timer=self.lead_transition_guard_timers[lead_idx])
+
     prev_abs_y_rel = (
       abs(self.lead_transition_prev_y_rel[lead_idx]) if np.isfinite(self.lead_transition_prev_y_rel[lead_idx]) else abs_y_rel
     )

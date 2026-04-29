@@ -356,6 +356,25 @@ def test_lead_transition_release_requires_lateral_exit_and_persistence():
   assert get_lead_transition_release_target(LEAD_TRANSITION_Y_REL_CONFIRM, LEAD_TRANSITION_PERSISTENCE) == pytest.approx(1.0)
 
 
+def test_lead_transition_releases_turning_lead_before_long_persistence():
+  assert get_lead_transition_release_target(1.6, 0.2) == pytest.approx(1.0)
+
+
+def test_lead_transition_preserves_release_through_lateral_track_churn():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, radarTrackId=10, yRel=LEAD_TRANSITION_Y_REL_CONFIRM)
+
+  mpc.update_lead_transition_state(0, lead)
+  release_before_churn = mpc.update_lead_transition_state(0, lead)
+  lead.radarTrackId = 11
+  release_after_churn = mpc.update_lead_transition_state(0, lead)
+  guard_timer_after_churn = mpc.lead_transition_guard_timers[0]
+
+  assert release_after_churn >= release_before_churn
+  assert guard_timer_after_churn > 0.0
+  assert get_lead_transition_obstacle_release(release_after_churn, guard_timer_after_churn) < release_after_churn
+
+
 def test_lead_transition_soft_release_only_moves_toward_cruise():
   lead_obstacle = np.array([20.0, 25.0])
   cruise_obstacle = np.array([30.0, 23.0])
