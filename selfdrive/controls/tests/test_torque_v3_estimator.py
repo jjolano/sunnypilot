@@ -89,3 +89,13 @@ def test_same_sign_residual_spike_demotes_confidence_without_sign_conflict():
   assert result.reject_reason & EstimatorRejectReason.RESIDUAL_SPIKE
   assert not result.reject_reason & EstimatorRejectReason.SIGN_CONFLICT
   assert result.confidence < before
+
+
+def test_result_params_are_snapshot_not_live_state():
+  estimator = AdaptiveTorqueEstimator(dt=0.01)
+
+  first = estimator.update(make_observation())
+  first_factor = first.params.lat_accel_factor
+  estimator.update(make_observation(commanded_torque=0.25, actual_lateral_accel=0.30, desired_lateral_accel=0.30))
+
+  assert first.params.lat_accel_factor == first_factor

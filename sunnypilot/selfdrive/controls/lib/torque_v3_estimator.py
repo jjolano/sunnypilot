@@ -156,8 +156,13 @@ class AdaptiveTorqueEstimator:
     self.state.confidence = max(0.0, self.state.confidence - decay)
 
   def _result(self, accepted: bool, reject_reason: EstimatorRejectReason) -> EstimatorResult:
+    params = TorqueModelParams(
+      self.state.params.lat_accel_factor,
+      self.state.params.lat_accel_offset,
+      self.state.params.friction,
+    )
     return EstimatorResult(
-      params=self.state.params,
+      params=params,
       confidence=self.state.confidence,
       positive_coverage=self.state.positive_coverage,
       negative_coverage=self.state.negative_coverage,
