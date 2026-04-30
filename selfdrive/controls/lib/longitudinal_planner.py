@@ -2,6 +2,7 @@
 import math
 import numpy as np
 
+from cereal import log
 import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
@@ -75,6 +76,10 @@ STOPPED_LEAD_GAP_FILL_SPEED_V = [CREEP_TO_STOP_GAP_SPEED_MAX, 1.2, STOPPED_LEAD_
 STOPPED_LEAD_GAP_FILL_ACCEL_GAIN = 0.6
 STOPPED_LEAD_GAP_FILL_ACCEL_MAX = 0.35
 STOPPED_LEAD_GAP_FILL_ACCEL_MIN = -0.25
+LEAD_LOSS_E2E_GUARD_TIME = 3.0
+LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR = -0.45
+LEAD_LOSS_E2E_GUARD_MIN_D_REL = 45.0
+LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB = 0.8
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -85,6 +90,39 @@ def get_max_accel(v_ego):
 
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
+
+
+def has_valid_radar_lead(radar_state):
+  return radar_state.leadOne.status or radar_state.leadTwo.status
+
+
+def is_lane_change_active(model_msg):
+  return model_msg.meta.laneChangeState != log.LaneChangeState.off
+
+
+def update_lead_loss_e2e_guard_timer(timer, dt, previous_lead_status, previous_d_rel, previous_model_prob,
+                                    current_has_lead, lane_change_active, reset_state=False, force_slow_decel=False,
+                                    brake_pressed=False, gas_pressed=False):
+  blocked = reset_state or force_slow_decel or brake_pressed or gas_pressed or current_has_lead
+  if blocked:
+    return 0.0
+
+  lost_far_confirmed_lead = (
+    previous_lead_status and
+    previous_d_rel >= LEAD_LOSS_E2E_GUARD_MIN_D_REL and
+    previous_model_prob >= LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB
+  )
+  if lost_far_confirmed_lead and lane_change_active:
+    return LEAD_LOSS_E2E_GUARD_TIME
+
+  return max(0.0, timer - dt)
+
+
+def apply_lead_loss_e2e_guard_accel(e2e_accel, e2e_should_stop, timer, has_lead):
+  if timer <= 0.0 or has_lead or e2e_should_stop:
+    return e2e_accel
+  return max(e2e_accel, LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
+
 
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   """
@@ -295,6 +333,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.creep_to_stop_gap_active = False
     self.creep_stop_hold_released = False
     self.stopped_lead_gap_fill_timer = 0.0
+    self.lead_loss_e2e_guard_timer = 0.0
+    self.previous_lead_loss_status = False
+    self.previous_lead_loss_d_rel = 0.0
+    self.previous_lead_loss_model_prob = 0.0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -370,6 +412,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if force_slow_decel:
       v_cruise = 0.0
 
+    lead_one = sm['radarState'].leadOne
+    has_radar_lead = has_valid_radar_lead(sm['radarState'])
+    self.lead_loss_e2e_guard_timer = update_lead_loss_e2e_guard_timer(
+      self.lead_loss_e2e_guard_timer, self.dt,
+      self.previous_lead_loss_status, self.previous_lead_loss_d_rel, self.previous_lead_loss_model_prob,
+      has_radar_lead, is_lane_change_active(sm['modelV2']),
+      reset_state=reset_state,
+      force_slow_decel=force_slow_decel,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+    )
+
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality)
@@ -395,6 +449,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
     if self.is_e2e(sm):
+      output_a_target_e2e = apply_lead_loss_e2e_guard_accel(
+        output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, has_radar_lead
+      )
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       if output_a_target < output_a_target_mpc:
@@ -403,7 +460,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
-    lead_one = sm['radarState'].leadOne
     if lead_one.status and should_arm_stopped_lead_gap_fill(
       v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
       brake_pressed=sm['carState'].brakePressed,
@@ -473,6 +529,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     ):
       output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
       self.output_should_stop = True
+
+    self.previous_lead_loss_status = bool(lead_one.status)
+    self.previous_lead_loss_d_rel = float(lead_one.dRel) if lead_one.status else 0.0
+    self.previous_lead_loss_model_prob = float(lead_one.modelProb) if lead_one.status else 0.0
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

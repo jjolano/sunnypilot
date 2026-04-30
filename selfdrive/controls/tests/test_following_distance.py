@@ -936,6 +936,25 @@ def test_lead_accel_recovery_requires_safe_opening_gap():
   assert get_lead_accel_recovery_a_min(2.2, 4.2, 15.0, 0.1, t_follow) == pytest.approx(ACCEL_MIN)
 
 
+def test_lead_loss_e2e_guard_arms_when_far_lead_disappears_during_lane_change():
+  timer = longitudinal_planner.update_lead_loss_e2e_guard_timer(
+    0.0, 0.05, True, 63.0, 0.95, False, True,
+    reset_state=False, force_slow_decel=False, brake_pressed=False, gas_pressed=False,
+  )
+
+  assert timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
+
+
+def test_lead_loss_e2e_guard_limits_only_no_lead_non_stop_model_decel():
+  guarded = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, False)
+  stop_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, True, 1.0, False)
+  lead_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, True)
+
+  assert guarded == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
+  assert stop_decel == pytest.approx(-1.2)
+  assert lead_decel == pytest.approx(-1.2)
+
+
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):
   man = Maneuver(
     '',
