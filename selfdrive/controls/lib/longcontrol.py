@@ -121,9 +121,10 @@ class LongControl:
     """Update longitudinal control. This updates the state machine and runs a PID loop"""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
+    launch_a_target = max(a_target, LAUNCH_ENVELOPE_MIN_ACCEL) if a_target >= 0.0 else a_target
 
     effective_should_stop = should_stop and not (
-      self.launch_envelope_active and launch_should_stop_hold_active(CS.vEgo, CS.brakePressed, self.launch_breakaway_elapsed, a_target)
+      self.launch_envelope_active and launch_should_stop_hold_active(CS.vEgo, CS.brakePressed, self.launch_breakaway_elapsed, launch_a_target)
     )
     prev_state = self.long_control_state
     self.long_control_state = long_control_state_trans(
@@ -131,7 +132,7 @@ class LongControl:
     )
     if not active or CS.brakePressed or self.long_control_state in (LongCtrlState.off, LongCtrlState.stopping):
       self.reset_launch_envelope()
-    elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and not effective_should_stop and a_target >= LAUNCH_ENVELOPE_MIN_ACCEL:
+    elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and not effective_should_stop and a_target >= 0.0:
       self.launch_envelope_active = True
       self.launch_breakaway_elapsed = 0.0
       self.launch_taper_elapsed = 0.0
@@ -157,10 +158,10 @@ class LongControl:
       output_accel = self.pid.update(error, speed=CS.vEgo, feedforward=a_target)
 
     if self.launch_envelope_active:
-      if a_target < LAUNCH_ENVELOPE_MIN_ACCEL:
+      if a_target < 0.0:
         self.reset_launch_envelope()
       elif not self.launch_breakaway_done and launch_breakaway_active(CS.vEgo, CS.aEgo, self.launch_breakaway_elapsed):
-        output_accel = get_launch_breakaway_accel(a_target, accel_limits)
+        output_accel = get_launch_breakaway_accel(launch_a_target, accel_limits)
         self.launch_breakaway_elapsed += DT_CTRL
       else:
         self.launch_breakaway_done = True

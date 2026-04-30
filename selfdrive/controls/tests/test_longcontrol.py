@@ -158,8 +158,8 @@ def test_pid_launch_arms_and_caps_after_stop():
   assert output_accel == pytest.approx(get_launch_breakaway_accel(a_target, (-3.0, 2.0)))
 
 
-@pytest.mark.parametrize("a_target", [0.0, -0.2, LAUNCH_ENVELOPE_MIN_ACCEL - 1e-3])
-def test_pid_launch_does_not_arm_without_positive_target(a_target):
+@pytest.mark.parametrize("a_target", [0.0, LAUNCH_ENVELOPE_MIN_ACCEL - 1e-3])
+def test_pid_launch_uses_minimum_breakaway_for_non_negative_target(a_target):
   CP = make_car_params(startingState=False)
   CP_SP = custom.CarParamsSP.new_message()
   loc = LongControl(CP, CP_SP)
@@ -168,9 +168,22 @@ def test_pid_launch_does_not_arm_without_positive_target(a_target):
   output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=a_target, should_stop=False, accel_limits=(-3.0, 2.0))
 
   assert loc.long_control_state == LongCtrlState.pid
+  assert loc.launch_envelope_active
+  assert not loc.launch_breakaway_done
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL, (-3.0, 2.0)))
+
+
+def test_pid_launch_does_not_arm_for_negative_target():
+  CP = make_car_params(startingState=False)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+
+  output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=-0.2, should_stop=False, accel_limits=(-3.0, 2.0))
+
+  assert loc.long_control_state == LongCtrlState.pid
   assert not loc.launch_envelope_active
-  if a_target <= 0.0:
-    assert output_accel <= 0.0
+  assert output_accel < 0.0
 
 
 def test_active_launch_cancels_when_target_drops_non_positive():
@@ -203,21 +216,34 @@ def test_starting_state_launch_arms_and_caps_after_stop():
   assert output_accel == pytest.approx(get_launch_breakaway_accel(a_target, (-3.0, 2.0)))
 
 
-@pytest.mark.parametrize("a_target", [0.0, -0.2])
-def test_starting_state_launch_does_not_command_start_accel_without_positive_target(a_target):
+def test_starting_state_launch_uses_minimum_breakaway_for_neutral_target():
   CP = make_car_params(startingState=True, startAccel=1.0)
   CP_SP = custom.CarParamsSP.new_message()
   loc = LongControl(CP, CP_SP)
   loc.long_control_state = LongCtrlState.stopping
 
-  output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=a_target, should_stop=False, accel_limits=(-3.0, 2.0))
+  output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=0.0, should_stop=False, accel_limits=(-3.0, 2.0))
+
+  assert loc.long_control_state == LongCtrlState.starting
+  assert loc.launch_envelope_active
+  assert not loc.launch_breakaway_done
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL, (-3.0, 2.0)))
+
+
+def test_starting_state_launch_does_not_command_start_accel_for_negative_target():
+  CP = make_car_params(startingState=True, startAccel=1.0)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+
+  output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=-0.2, should_stop=False, accel_limits=(-3.0, 2.0))
 
   assert loc.long_control_state == LongCtrlState.starting
   assert not loc.launch_envelope_active
-  assert output_accel <= 0.0
+  assert output_accel < 0.0
 
 
-def test_starting_state_below_launch_threshold_uses_planner_target():
+def test_starting_state_below_launch_threshold_uses_minimum_breakaway():
   CP = make_car_params(startingState=True, startAccel=1.0)
   CP_SP = custom.CarParamsSP.new_message()
   loc = LongControl(CP, CP_SP)
@@ -227,8 +253,9 @@ def test_starting_state_below_launch_threshold_uses_planner_target():
   output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=a_target, should_stop=False, accel_limits=(-3.0, 2.0))
 
   assert loc.long_control_state == LongCtrlState.starting
-  assert not loc.launch_envelope_active
-  assert output_accel == pytest.approx(a_target)
+  assert loc.launch_envelope_active
+  assert not loc.launch_breakaway_done
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL, (-3.0, 2.0)))
 
 
 def test_starting_state_active_launch_cancels_when_target_drops_non_positive():
@@ -311,7 +338,7 @@ def test_breakaway_times_out_when_response_never_arrives():
   assert LAUNCH_ENVELOPE_MAX_ACCEL <= output_accel <= 1.0
 
 
-def test_launch_envelope_cancels_when_stop_returns():
+def test_launch_envelope_cancels_when_negative_stop_returns():
   CP = make_car_params(startingState=False)
   CP_SP = custom.CarParamsSP.new_message()
   loc = LongControl(CP, CP_SP)
@@ -320,7 +347,7 @@ def test_launch_envelope_cancels_when_stop_returns():
   loc.update(True, make_car_state(v_ego=0.0), a_target=1.0, should_stop=False, accel_limits=(-3.0, 2.0))
   assert loc.launch_envelope_active
 
-  output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=0.0, should_stop=True, accel_limits=(-3.0, 2.0))
+  output_accel = loc.update(True, make_car_state(v_ego=0.0), a_target=-0.2, should_stop=True, accel_limits=(-3.0, 2.0))
 
   assert loc.long_control_state == LongCtrlState.stopping
   assert not loc.launch_envelope_active
@@ -335,6 +362,20 @@ def test_should_stop_reassertion_is_ignored_during_launch_hold():
 
   loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=1.0, should_stop=False, accel_limits=(-3.0, 2.0))
   output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=LAUNCH_ENVELOPE_MIN_ACCEL, should_stop=True, accel_limits=(-3.0, 2.0))
+
+  assert loc.long_control_state == LongCtrlState.pid
+  assert loc.launch_envelope_active
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL, (-3.0, 2.0)))
+
+
+def test_neutral_should_stop_reassertion_is_ignored_during_launch_hold():
+  CP = make_car_params(startingState=False)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+
+  loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=0.0, should_stop=False, accel_limits=(-3.0, 2.0))
+  output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=0.0, should_stop=True, accel_limits=(-3.0, 2.0))
 
   assert loc.long_control_state == LongCtrlState.pid
   assert loc.launch_envelope_active
