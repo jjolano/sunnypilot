@@ -11,6 +11,7 @@ MIN_LEARNING_VEGO = 5.0
 MAX_MODEL_AGE = 0.25
 MAX_PLAUSIBLE_JERK = 8.0
 MIN_COMMAND_TORQUE = 0.05
+SIGN_CONFLICT_LATERAL_ACCEL_THRESHOLD = 0.05
 MAX_RESIDUAL_SPIKE = 0.8
 CONFIDENCE_BUILD_RATE = 0.015
 CONFIDENCE_DECAY_RATE = 0.25
@@ -78,8 +79,8 @@ def _finite(*values: float) -> bool:
   return all(math.isfinite(float(value)) for value in values)
 
 
-def _sign(value: float) -> int:
-  return 1 if value > 0.0 else (-1 if value < 0.0 else 0)
+def _sign(value: float, threshold: float = 0.0) -> int:
+  return 1 if value > threshold else (-1 if value < -threshold else 0)
 
 
 class AdaptiveTorqueEstimator:
@@ -141,9 +142,9 @@ class AdaptiveTorqueEstimator:
       reason |= EstimatorRejectReason.HIGH_JERK
     if observation.model_age > MAX_MODEL_AGE:
       reason |= EstimatorRejectReason.STALE_MODEL
-    command_sign = _sign(observation.commanded_torque)
-    actual_sign = _sign(observation.actual_lateral_accel)
-    desired_sign = _sign(observation.desired_lateral_accel)
+    command_sign = _sign(observation.commanded_torque, MIN_COMMAND_TORQUE)
+    actual_sign = _sign(observation.actual_lateral_accel, SIGN_CONFLICT_LATERAL_ACCEL_THRESHOLD)
+    desired_sign = _sign(observation.desired_lateral_accel, SIGN_CONFLICT_LATERAL_ACCEL_THRESHOLD)
     if command_sign != 0 and actual_sign != 0 and desired_sign != 0 and len({command_sign, actual_sign, desired_sign}) > 1:
       reason |= EstimatorRejectReason.SIGN_CONFLICT
     expected = observation.commanded_torque * self.state.params.lat_accel_factor + self.state.params.lat_accel_offset
@@ -152,7 +153,9 @@ class AdaptiveTorqueEstimator:
     return reason
 
   def _decay_confidence(self, reason: EstimatorRejectReason) -> None:
-    decay = CONFIDENCE_DECAY_RATE if reason & (EstimatorRejectReason.SIGN_CONFLICT | EstimatorRejectReason.STEER_LIMITED | EstimatorRejectReason.SATURATED | EstimatorRejectReason.RESIDUAL_SPIKE) else CONFIDENCE_BUILD_RATE
+    clipping_limited = bool(reason & (EstimatorRejectReason.STEER_LIMITED | EstimatorRejectReason.SATURATED))
+    fast_decay = bool(reason & EstimatorRejectReason.SIGN_CONFLICT) or bool(reason & EstimatorRejectReason.RESIDUAL_SPIKE and not clipping_limited)
+    decay = CONFIDENCE_DECAY_RATE if fast_decay else CONFIDENCE_BUILD_RATE
     self.state.confidence = max(0.0, self.state.confidence - decay)
 
   def _result(self, accepted: bool, reject_reason: EstimatorRejectReason) -> EstimatorResult:

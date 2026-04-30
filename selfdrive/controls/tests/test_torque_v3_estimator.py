@@ -1,5 +1,8 @@
+import pytest
+
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import (
   AdaptiveTorqueEstimator,
+  CONFIDENCE_BUILD_RATE,
   EstimatorRejectReason,
   TorqueObservation,
 )
@@ -77,6 +80,14 @@ def test_estimator_rejects_command_desired_sign_conflict():
   assert result.reject_reason & EstimatorRejectReason.SIGN_CONFLICT
 
 
+def test_estimator_ignores_tiny_lateral_sign_conflict():
+  estimator = AdaptiveTorqueEstimator(dt=0.01)
+
+  result = estimator.update(make_observation(commanded_torque=0.25, desired_lateral_accel=0.04, actual_lateral_accel=-0.04))
+
+  assert not result.reject_reason & EstimatorRejectReason.SIGN_CONFLICT
+
+
 def test_same_sign_residual_spike_demotes_confidence_without_sign_conflict():
   estimator = AdaptiveTorqueEstimator(dt=0.01)
   for _ in range(40):
@@ -89,6 +100,20 @@ def test_same_sign_residual_spike_demotes_confidence_without_sign_conflict():
   assert result.reject_reason & EstimatorRejectReason.RESIDUAL_SPIKE
   assert not result.reject_reason & EstimatorRejectReason.SIGN_CONFLICT
   assert result.confidence < before
+
+
+def test_clipped_residual_spike_uses_slow_confidence_decay():
+  estimator = AdaptiveTorqueEstimator(dt=0.01)
+  for _ in range(40):
+    estimator.update(make_observation())
+  before = estimator.state.confidence
+
+  result = estimator.update(make_observation(steer_limited_by_safety=True, actual_lateral_accel=1.8))
+
+  assert not result.sample_accepted
+  assert result.reject_reason & EstimatorRejectReason.STEER_LIMITED
+  assert result.reject_reason & EstimatorRejectReason.RESIDUAL_SPIKE
+  assert result.confidence == pytest.approx(before - CONFIDENCE_BUILD_RATE)
 
 
 def test_result_params_are_snapshot_not_live_state():

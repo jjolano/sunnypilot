@@ -19,19 +19,18 @@ class AuthorityState:
   fallback_active: bool
 
 
-FAULT_REASONS = (
+CLIPPING_REASONS = EstimatorRejectReason.STEER_LIMITED | EstimatorRejectReason.SATURATED
+HARD_FAULT_REASONS = (
   EstimatorRejectReason.SIGN_CONFLICT
-  | EstimatorRejectReason.STEER_LIMITED
-  | EstimatorRejectReason.SATURATED
   | EstimatorRejectReason.NON_FINITE
   | EstimatorRejectReason.HIGH_JERK
   | EstimatorRejectReason.STALE_MODEL
-  | EstimatorRejectReason.RESIDUAL_SPIKE
 )
 
 
 def authority_fault_active(reject_reason: EstimatorRejectReason) -> bool:
-  return bool(reject_reason & FAULT_REASONS)
+  residual_fault = bool(reject_reason & EstimatorRejectReason.RESIDUAL_SPIKE and not reject_reason & CLIPPING_REASONS)
+  return bool(reject_reason & HARD_FAULT_REASONS or residual_fault)
 
 
 class AuthorityManager:
