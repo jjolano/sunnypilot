@@ -2,7 +2,7 @@ import pytest
 
 from cereal import log
 from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.controls.lib.lane_change_path_shaper import EXIT_BLEND_DURATION, LANE_CHANGE_DURATION, LaneChangePathShaper, LaneChangePathShaperInputs
+from openpilot.selfdrive.controls.lib.lane_change_path_shaper import ENTRY_BLEND_DURATION, EXIT_BLEND_DURATION, LANE_CHANGE_DURATION, LaneChangePathShaper, LaneChangePathShaperInputs
 
 
 LaneChangeState = log.LaneChangeState
@@ -81,11 +81,30 @@ def test_same_direction_model_curvature_remains_primary():
   assert result.desired_curvature == pytest.approx(inputs.model_curvature)
 
 
+def test_initial_turn_in_authority_is_limited_and_symmetric():
+  left_controller = LaneChangePathShaper()
+  right_controller = LaneChangePathShaper()
+
+  left_inputs = make_inputs()
+  right_inputs = make_inputs(left_blinker=False, right_blinker=True, lane_change_direction=LaneChangeDirection.right)
+
+  left_result = run_steps(left_controller, left_inputs, 1.0)[-1]
+  right_result = run_steps(right_controller, right_inputs, 1.0)[-1]
+
+  left_delta = left_result.desired_curvature - left_inputs.model_curvature
+  right_delta = right_result.desired_curvature - right_inputs.model_curvature
+  assert left_delta < 0.0
+  assert right_delta > 0.0
+  assert abs(left_delta) < 0.00035
+  assert abs(right_delta) < 0.00035
+  assert left_delta == pytest.approx(-right_delta, rel=1e-6)
+
+
 def test_soft_fallback_blends_back_to_model_curvature():
   controller = LaneChangePathShaper()
   inputs = make_inputs()
 
-  engaged = run_steps(controller, inputs, 1.0)
+  engaged = run_steps(controller, inputs, ENTRY_BLEND_DURATION + 0.1)
   assert engaged[-1].blend > 0.8
 
   fallback_inputs = make_inputs(lane_line_probs=(0.0, 0.2, 0.2, 0.0))
@@ -101,7 +120,7 @@ def test_early_finishing_blends_back_to_model_curvature():
   controller = LaneChangePathShaper()
   inputs = make_inputs()
 
-  engaged = run_steps(controller, inputs, 1.0)
+  engaged = run_steps(controller, inputs, ENTRY_BLEND_DURATION + 0.1)
   assert engaged[-1].blend > 0.8
 
   finishing_inputs = make_inputs(lane_change_state=LaneChangeState.laneChangeFinishing, model_curvature=0.0003)
