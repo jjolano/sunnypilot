@@ -327,6 +327,66 @@ def test_lane_change_scales_assist_lower():
   assert lane_change_result.block_reason & GuardedResponseReason.LANE_CHANGE
 
 
+def test_hold_bias_does_not_build_inward_during_over_response():
+  assist = TorqueGuardedResponseAssist(0.01)
+  result = None
+  for _ in range(40):
+    result = assist.update(
+      make_inputs(
+        nominal_torque=0.2,
+        desired_lateral_accel=0.8,
+        actual_lateral_accel=1.05,
+        desired_lateral_jerk=0.0,
+        lookahead_lateral_jerk=0.0,
+        tracking_torque_error=0.02,
+      )
+    )
+
+  assert result is not None
+  assert result.phase == "HOLD"
+  assert result.bias_torque == 0.0
+
+
+def test_hold_bias_does_not_build_negative_inward_during_over_response():
+  assist = TorqueGuardedResponseAssist(0.01)
+  result = None
+  for _ in range(40):
+    result = assist.update(
+      make_inputs(
+        nominal_torque=-0.2,
+        desired_lateral_accel=-0.8,
+        actual_lateral_accel=-1.05,
+        desired_lateral_jerk=0.0,
+        lookahead_lateral_jerk=0.0,
+        tracking_torque_error=-0.02,
+      )
+    )
+
+  assert result is not None
+  assert result.phase == "HOLD"
+  assert result.bias_torque == 0.0
+
+
+def test_hold_bias_still_builds_for_clear_under_response():
+  assist = TorqueGuardedResponseAssist(0.01)
+  result = None
+  for _ in range(40):
+    result = assist.update(
+      make_inputs(
+        nominal_torque=0.2,
+        desired_lateral_accel=0.8,
+        actual_lateral_accel=0.55,
+        desired_lateral_jerk=0.0,
+        lookahead_lateral_jerk=0.0,
+        tracking_torque_error=0.02,
+      )
+    )
+
+  assert result is not None
+  assert result.phase == "HOLD"
+  assert result.bias_torque > 0.0
+
+
 def test_same_sign_unwind_trims_opposite_nominal():
   assist = TorqueGuardedResponseAssist(0.01)
   result = assist.update(

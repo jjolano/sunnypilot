@@ -5,6 +5,7 @@ import numpy as np
 
 
 RESPONSE_DEFICIT_THRESHOLD = 0.04
+OVER_RESPONSE_BIAS_MARGIN = 0.12
 STEADY_HOLD_LAT_ACCEL_THRESHOLD = 0.12
 STEADY_HOLD_JERK_THRESHOLD = 0.35
 LOW_DEMAND_CURVATURE_THRESHOLD = 0.02
@@ -142,6 +143,11 @@ class TorqueGuardedResponseAssist:
     desired_sign = sign(inputs.desired_lateral_accel)
     actual_sign = sign(inputs.actual_lateral_accel)
     sign_conflict = desired_sign != 0.0 and actual_sign != 0.0 and desired_sign != actual_sign and abs(inputs.actual_lateral_accel) > SIGN_THRESHOLD
+    over_response = (
+      desired_sign != 0.0
+      and actual_sign == desired_sign
+      and desired_sign * (inputs.actual_lateral_accel - inputs.desired_lateral_accel) > OVER_RESPONSE_BIAS_MARGIN
+    )
     low_demand = self._low_demand(inputs)
     residual_active = abs(self.assist_torque) > ACTIVE_RELEASE_THRESHOLD or abs(self.bias_torque) > ACTIVE_RELEASE_THRESHOLD
     planned_unwind = (
@@ -202,7 +208,12 @@ class TorqueGuardedResponseAssist:
       and not low_demand
     )
     assist_learning_blocked = bool(
-      nominal_sign != 0.0 and not shared_learning_frozen and inputs.saturated and same_sign_hold and not low_demand and assist_deficit > RESPONSE_DEFICIT_THRESHOLD
+      nominal_sign != 0.0
+      and not shared_learning_frozen
+      and inputs.saturated
+      and same_sign_hold
+      and not low_demand
+      and assist_deficit > RESPONSE_DEFICIT_THRESHOLD
     )
     if assist_learning_blocked:
       freeze_reason |= GuardedResponseReason.SATURATED
@@ -250,11 +261,20 @@ class TorqueGuardedResponseAssist:
 
     bias_learning_blocked = False
     bias_block_reason = self._bias_block_reason(inputs, nominal_sign, same_sign_hold, low_demand, freeze_reason)
-    if self.phase == Phase.HOLD and same_sign_hold and not low_demand and not shared_learning_frozen and abs(inputs.desired_lateral_jerk) < STEADY_HOLD_JERK_THRESHOLD:
+    if (
+      self.phase == Phase.HOLD
+      and same_sign_hold
+      and not low_demand
+      and not shared_learning_frozen
+      and abs(inputs.desired_lateral_jerk) < STEADY_HOLD_JERK_THRESHOLD
+    ):
       target_bias = clamp(response_deficit * BIAS_TARGET_GAIN, -max_bias, max_bias)
       blocked_bias_direction = nominal_sign != 0.0 and sign(target_bias) == nominal_sign and abs(target_bias) > ACTIVE_RELEASE_THRESHOLD
       bias_learning_blocked = bool(inputs.saturated and blocked_bias_direction)
-      if not bias_learning_blocked:
+      inward_over_response_bias = over_response and sign(target_bias) == desired_sign and abs(target_bias) > ACTIVE_RELEASE_THRESHOLD
+      if inward_over_response_bias:
+        self.bias_torque = self._approach(self.bias_torque, 0.0, BIAS_DECAY_RATE)
+      elif not bias_learning_blocked:
         self.bias_torque = self._approach(self.bias_torque, target_bias, BIAS_BUILD_RATE)
     else:
       self.bias_torque = self._approach(self.bias_torque, 0.0, BIAS_DECAY_RATE)

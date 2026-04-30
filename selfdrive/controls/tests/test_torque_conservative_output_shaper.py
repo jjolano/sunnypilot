@@ -213,20 +213,68 @@ def test_bump_response_caps_output():
 
 
 def test_low_speed_steer_limited_high_output_caps_output():
-  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, unshaped_output=0.8))
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.LOW_SPEED_STEER_LIMITED
   assert result.output_cap == 0.92
 
 
+def test_low_speed_steer_limited_does_not_cap_clear_under_response_catchup():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.4))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.LOW_SPEED_STEER_LIMITED
+  assert result.output_cap == 1.0
+  assert result.output_torque == result.unshaped_output
+
+
+def test_low_speed_steer_limited_does_not_rate_limit_clear_under_response_after_soft_cap():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, unshaped_output=0.8,
+                            desired_lateral_accel=0.8, actual_lateral_accel=0.72))
+
+  result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, unshaped_output=1.0,
+                                     desired_lateral_accel=0.8, actual_lateral_accel=0.4))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert result.output_torque == result.unshaped_output
+
+
 def test_steering_rate_comfort_caps_reinforcing_output():
-  result = assert_cap_only(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8))
+  result = assert_cap_only(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
   assert 0.8 <= result.output_cap < 1.0
   assert 0.0 < result.output_torque < result.unshaped_output
+
+
+def test_steering_rate_comfort_does_not_cap_clear_under_response_catchup():
+  result = assert_cap_only(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.4))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
+  assert result.output_cap == 1.0
+  assert result.output_torque == result.unshaped_output
+
+
+def test_steering_rate_comfort_does_not_rate_limit_clear_under_response_after_soft_cap():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8,
+                            desired_lateral_accel=0.8, actual_lateral_accel=0.72))
+
+  result = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=1.0,
+                                     desired_lateral_accel=0.8, actual_lateral_accel=0.4))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert result.output_torque == result.unshaped_output
 
 
 def test_steering_rate_comfort_does_not_cap_corrective_output():
@@ -247,9 +295,11 @@ def test_steering_rate_comfort_ignores_low_steering_rate():
 
 def test_steering_rate_comfort_slews_reinforcing_output_growth():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  first = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.2))
+  first = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.2,
+                                    desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
-  result = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8))
+  result = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8,
+                                     desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
@@ -261,7 +311,8 @@ def test_steering_rate_comfort_slews_first_reinforcing_growth_after_clean_tracki
   shaper = TorqueConservativeOutputShaper(dt=0.01)
   first = shaper.update(make_inputs(steering_rate_deg=0.0, unshaped_output=0.2))
 
-  result = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8))
+  result = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8,
+                                     desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
@@ -281,7 +332,8 @@ def test_steering_rate_comfort_does_not_rate_limit_next_opposing_output():
 
 
 def test_actuator_lag_comfort_caps_low_speed_reinforcing_output_more_than_steering_rate_comfort():
-  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
@@ -291,7 +343,8 @@ def test_actuator_lag_comfort_caps_low_speed_reinforcing_output_more_than_steeri
 
 
 def test_actuator_lag_comfort_uses_moderate_cap_at_mid_speed():
-  result = assert_cap_only(make_inputs(v_ego=10.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+  result = assert_cap_only(make_inputs(v_ego=10.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
@@ -299,7 +352,8 @@ def test_actuator_lag_comfort_uses_moderate_cap_at_mid_speed():
 
 
 def test_actuator_lag_comfort_stays_mild_at_high_speed():
-  result = assert_cap_only(make_inputs(v_ego=20.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+  result = assert_cap_only(make_inputs(v_ego=20.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
@@ -314,6 +368,15 @@ def test_actuator_lag_comfort_does_not_cap_opposing_output():
   assert result.output_torque == result.unshaped_output
 
 
+def test_actuator_lag_comfort_does_not_cap_clear_under_response_catchup():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.4))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert result.output_torque == result.unshaped_output
+
+
 def test_actuator_lag_comfort_ignores_low_steering_rate():
   result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=5.0, unshaped_output=0.8))
 
@@ -322,9 +385,11 @@ def test_actuator_lag_comfort_ignores_low_steering_rate():
 
 def test_actuator_lag_comfort_slews_reinforcing_growth_more_than_steering_rate_comfort():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  first = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.2))
+  first = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.2,
+                                    desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
-  result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+  result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8,
+                                     desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
@@ -337,6 +402,19 @@ def test_actuator_lag_comfort_does_not_rate_limit_next_opposing_output():
   shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
 
   result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=-0.8))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert result.output_torque == result.unshaped_output
+
+
+def test_actuator_lag_comfort_does_not_rate_limit_clear_under_response_after_soft_cap():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8,
+                            desired_lateral_accel=0.8, actual_lateral_accel=0.72))
+
+  result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=1.0,
+                                     desired_lateral_accel=0.8, actual_lateral_accel=0.4))
 
   assert not result.active
   assert not result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
@@ -499,6 +577,26 @@ def test_near_iso_corrective_output_is_not_rate_limited_after_cap():
 
   assert not result.active
   assert result.output_torque == result.unshaped_output
+
+
+def test_recent_hard_shaping_rate_limits_clear_under_response_recovery():
+  hard_shaping_cases = (
+    {"release_active": True},
+    {"desired_lateral_accel": 0.4, "actual_lateral_accel": -0.2},
+    {"actual_lateral_jerk": 3.0, "lookahead_lateral_jerk": 0.0, "desired_lateral_jerk": 0.0},
+    {"desired_lateral_accel": 2.75, "actual_lateral_accel": 2.8},
+    {"desired_lateral_accel": 0.4, "actual_lateral_accel": 0.8},
+  )
+  for previous_inputs in hard_shaping_cases:
+    shaper = TorqueConservativeOutputShaper(dt=0.01)
+    capped = shaper.update(make_inputs(unshaped_output=0.8, **previous_inputs))
+
+    result = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.8, actual_lateral_accel=0.4))
+
+    assert capped.active
+    assert result.active
+    assert result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+    assert 0.0 < result.output_torque < result.unshaped_output
 
 
 def test_sign_flip_after_cap_does_not_hold_old_opposite_torque():
