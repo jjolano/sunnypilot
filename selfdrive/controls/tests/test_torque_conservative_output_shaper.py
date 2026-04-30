@@ -280,6 +280,92 @@ def test_steering_rate_comfort_does_not_rate_limit_next_opposing_output():
   assert result.output_torque == result.unshaped_output
 
 
+def test_actuator_lag_comfort_caps_low_speed_reinforcing_output_more_than_steering_rate_comfort():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
+  assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert result.output_cap <= 0.55
+  assert result.output_torque <= 0.44 + 1e-6
+
+
+def test_actuator_lag_comfort_uses_moderate_cap_at_mid_speed():
+  result = assert_cap_only(make_inputs(v_ego=10.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert 0.55 < result.output_cap <= 0.70
+
+
+def test_actuator_lag_comfort_stays_mild_at_high_speed():
+  result = assert_cap_only(make_inputs(v_ego=20.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert 0.75 <= result.output_cap <= 0.85
+
+
+def test_actuator_lag_comfort_does_not_cap_opposing_output():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=-0.8))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert result.output_torque == result.unshaped_output
+
+
+def test_actuator_lag_comfort_ignores_low_steering_rate():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=5.0, unshaped_output=0.8))
+
+  assert not result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+
+
+def test_actuator_lag_comfort_slews_reinforcing_growth_more_than_steering_rate_comfort():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  first = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.2))
+
+  result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert 0.0 < result.output_torque - first.output_torque <= 0.0035 + 1e-6
+
+
+def test_actuator_lag_comfort_does_not_rate_limit_next_opposing_output():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+
+  result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=-0.8))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert result.output_torque == result.unshaped_output
+
+
+def test_recent_actuator_lag_comfort_does_not_rate_limit_next_low_rate_opposing_output():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+
+  result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=5.0, unshaped_output=-0.8))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert result.output_torque == result.unshaped_output
+
+
+def test_actuator_lag_comfort_does_not_reduce_driver_override_cap():
+  result = assert_cap_only(
+    make_inputs(v_ego=5.0, steering_pressed=True, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=1.0)
+  )
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert not result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert result.output_cap == 0.8
+  assert result.output_torque == 0.8
+
+
 def test_same_sign_unwind_release_clamps_output_toward_zero():
   result = assert_cap_only(
     make_inputs(
