@@ -80,7 +80,26 @@ def test_over_response_caps_output():
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.OVER_RESPONSE
+  assert 0.65 < result.output_cap < 0.85
+  assert result.output_torque == result.unshaped_output * result.output_cap
+
+
+def test_mild_over_response_keeps_existing_cap():
+  result = assert_cap_only(make_inputs(desired_lateral_accel=0.8, actual_lateral_accel=1.02))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.OVER_RESPONSE
   assert result.output_cap == 0.85
+
+
+def test_severe_over_response_caps_output_more_strictly():
+  result = assert_cap_only(make_inputs(desired_lateral_accel=2.5, actual_lateral_accel=3.3, unshaped_output=1.0))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.OVER_RESPONSE
+  assert result.reason & ConservativeOutputShapingReason.NEAR_ISO_ACCEL
+  assert result.output_cap == 0.45
+  assert result.output_torque == 0.45
 
 
 def test_over_response_does_not_cap_corrective_output():
@@ -88,6 +107,61 @@ def test_over_response_does_not_cap_corrective_output():
 
   assert not result.active
   assert result.output_torque == result.unshaped_output
+
+
+def test_over_response_cap_does_not_rate_limit_next_corrective_output():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
+
+  result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
+
+  assert not result.active
+  assert result.output_torque == result.unshaped_output
+
+
+def test_over_response_cap_allows_next_corrective_output_after_over_response_clears():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
+
+  result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
+
+  assert not result.active
+  assert result.output_torque == result.unshaped_output
+
+
+def test_recent_over_response_does_not_bypass_rate_limit_on_near_zero_actual_accel():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
+
+  result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=0.4, actual_lateral_accel=0.01))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert result.output_torque == -0.04
+
+
+def test_recent_over_response_bypass_expires_during_zero_output_frames():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
+  for _ in range(50):
+    shaper.update(make_inputs(unshaped_output=0.0, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
+  shaper.update(make_inputs(unshaped_output=1.0, steering_pressed=True, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
+
+  result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert result.output_torque == -0.04
+
+
+def test_driver_override_keeps_release_cap_during_over_response():
+  result = assert_cap_only(make_inputs(steering_pressed=True, desired_lateral_accel=2.5, actual_lateral_accel=3.3, unshaped_output=1.0))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert result.reason & ConservativeOutputShapingReason.OVER_RESPONSE
+  assert result.output_cap == 0.8
+  assert result.output_torque == 0.8
 
 
 def test_near_iso_accel_caps_output():
@@ -125,7 +199,8 @@ def test_negative_output_keeps_sign_when_capped():
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.OVER_RESPONSE
-  assert result.output_torque == -0.425
+  assert result.output_cap < 0.85
+  assert result.output_torque == result.unshaped_output * result.output_cap
 
 
 def test_bump_response_caps_output():
