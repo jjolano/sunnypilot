@@ -312,6 +312,8 @@ class LatControlTorque(LatControl):
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
         same_sign_unwind_release=same_sign_unwind_release,
         authority_scale=authority_state.scale,
+        # The shaper sees pre-actuator torque; the actuator command is negated on return.
+        steering_rate_deg=-CS.steeringRateDeg,
       )
     )
     shaping_result = safety_result.shaping_result

@@ -16,6 +16,9 @@ HIGH_OUTPUT_FRACTION = 0.70
 OUTPUT_RATE_RECOVERY_WINDOW = 0.40
 OUTPUT_RECOVERY_RATE = 2.50
 OUTPUT_SIGN_TRANSITION_RATE = 4.00
+STEERING_RATE_COMFORT_START = 15.0
+STEERING_RATE_COMFORT_FULL = 80.0
+STEERING_RATE_COMFORT_RATE = 0.75
 DEFAULT_DT = 0.01
 
 NORMAL_CAP = 1.00
@@ -29,6 +32,7 @@ OVER_RESPONSE_SEVERE_CAP = 0.45
 SIGN_CONFLICT_CAP = 0.80
 OVERRIDE_RELEASE_CAP = 0.80
 SAME_SIGN_UNWIND_CAP = 0.30
+STEERING_RATE_COMFORT_MIN_CAP = 0.80
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
@@ -50,6 +54,7 @@ class ConservativeOutputShapingReason(IntFlag):
   LOW_SPEED_STEER_LIMITED = 1 << 6
   OUTPUT_RATE_LIMITED = 1 << 7
   SAME_SIGN_UNWIND = 1 << 8
+  STEERING_RATE_COMFORT = 1 << 9
 
 
 @dataclass
@@ -67,6 +72,7 @@ class ConservativeOutputShaperInputs:
   actual_lateral_jerk: float
   lookahead_lateral_jerk: float
   same_sign_unwind_release: bool
+  steering_rate_deg: float = 0.0
 
 
 @dataclass
@@ -106,6 +112,9 @@ class TorqueConservativeOutputShaper:
     actual_abs = abs(inputs.actual_lateral_accel)
     desired_abs = abs(inputs.desired_lateral_accel)
     output_reinforces_actual = output_sign != 0.0 and output_sign == actual_sign
+    steering_rate_sign = sign(inputs.steering_rate_deg)
+    steering_rate_abs = abs(inputs.steering_rate_deg)
+    output_reinforces_steering_rate = output_sign != 0.0 and steering_rate_sign != 0.0 and output_sign == steering_rate_sign
     sign_conflict = desired_sign != 0.0 and actual_sign != 0.0 and desired_sign != actual_sign and actual_abs > SIGN_THRESHOLD
     over_response = desired_sign != 0.0 and desired_sign == actual_sign and output_reinforces_actual and actual_abs > desired_abs + OVER_RESPONSE_MARGIN
     jerk_delta = abs(inputs.actual_lateral_jerk - inputs.lookahead_lateral_jerk)
@@ -151,16 +160,27 @@ class TorqueConservativeOutputShaper:
       steer_limit_confidence = clamp((output_fraction - HIGH_OUTPUT_FRACTION) / max(1.0 - HIGH_OUTPUT_FRACTION, 1e-3), 0.0, 1.0)
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, LOW_SPEED_STEER_LIMITED_CAP, steer_limit_confidence,
                                                    ConservativeOutputShapingReason.LOW_SPEED_STEER_LIMITED)
+    if output_reinforces_steering_rate and steering_rate_abs > STEERING_RATE_COMFORT_START:
+      steering_rate_confidence = clamp(
+        (steering_rate_abs - STEERING_RATE_COMFORT_START) / max(STEERING_RATE_COMFORT_FULL - STEERING_RATE_COMFORT_START, 1e-3),
+        0.0,
+        1.0,
+      )
+      steering_rate_cap = NORMAL_CAP + steering_rate_confidence * (STEERING_RATE_COMFORT_MIN_CAP - NORMAL_CAP)
+      output_cap, confidence, reason = self._apply(output_cap, confidence, reason, steering_rate_cap, steering_rate_confidence,
+                                                   ConservativeOutputShapingReason.STEERING_RATE_COMFORT)
 
     base_active = reason != ConservativeOutputShapingReason.NONE and output_cap < NORMAL_CAP
     same_sign_unwind_shaping = bool(reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND)
     over_response_shaping = bool(reason & ConservativeOutputShapingReason.OVER_RESPONSE)
+    steering_rate_comfort_shaping = bool(reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT)
     recently_shaped = self._recent_shaping_time > 0.0
     recently_over_response = self._recent_over_response_time > 0.0
     shaped_output = inputs.unshaped_output * output_cap if base_active else inputs.unshaped_output
     if abs(shaped_output) > abs(inputs.unshaped_output):
       shaped_output = inputs.unshaped_output
-    shaped_output, rate_limited = self._apply_output_rate_limit(inputs, shaped_output, recently_shaped, recently_over_response)
+    shaped_output, rate_limited = self._apply_output_rate_limit(inputs, shaped_output, recently_shaped, recently_over_response,
+                                                               steering_rate_comfort_shaping)
     if rate_limited:
       reason |= ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
       confidence = max(confidence, 1.0)
@@ -180,8 +200,9 @@ class TorqueConservativeOutputShaper:
     return self._result(shaped_output, inputs.unshaped_output, active, reason, confidence if active else 0.0, output_cap)
 
   def _apply_output_rate_limit(self, inputs: ConservativeOutputShaperInputs, target_output: float,
-                               recently_shaped: bool, recently_over_response: bool) -> tuple[float, bool]:
-    if self._previous_output is None or not recently_shaped or abs(target_output) < 1e-6:
+                               recently_shaped: bool, recently_over_response: bool,
+                               steering_rate_comfort_shaping: bool) -> tuple[float, bool]:
+    if self._previous_output is None or (not recently_shaped and not steering_rate_comfort_shaping) or abs(target_output) < 1e-6:
       return target_output, False
 
     target_sign = sign(target_output)
@@ -191,6 +212,12 @@ class TorqueConservativeOutputShaper:
     actual_abs = abs(inputs.actual_lateral_accel)
     actual_sign = sign(inputs.actual_lateral_accel)
     desired_sign = sign(inputs.desired_lateral_accel)
+    steering_rate_sign = sign(inputs.steering_rate_deg)
+    steering_rate_abs = abs(inputs.steering_rate_deg)
+    opposes_steering_rate = (
+      target_sign != 0.0 and steering_rate_sign != 0.0 and target_sign != steering_rate_sign
+      and steering_rate_abs > STEERING_RATE_COMFORT_START
+    )
     corrective_near_iso = (
       target_sign != 0.0 and actual_sign != 0.0 and target_sign != actual_sign
       and actual_abs > ISO_ACCEL_MARGIN
@@ -204,7 +231,7 @@ class TorqueConservativeOutputShaper:
       recently_over_response and target_sign != 0.0 and actual_sign != 0.0 and target_sign != actual_sign
       and actual_abs > SIGN_THRESHOLD
     )
-    if corrective_near_iso or corrective_over_response or corrective_recent_over_response:
+    if corrective_near_iso or corrective_over_response or corrective_recent_over_response or opposes_steering_rate:
       return target_output, False
 
     if target_sign != 0.0 and previous_sign != 0.0 and target_sign != previous_sign:
@@ -215,7 +242,9 @@ class TorqueConservativeOutputShaper:
     if target_abs <= previous_abs:
       return target_output, False
 
-    limited_abs = min(target_abs, previous_abs + OUTPUT_RECOVERY_RATE * self.dt)
+    reinforces_steering_rate = target_sign != 0.0 and steering_rate_sign != 0.0 and target_sign == steering_rate_sign
+    recovery_rate = STEERING_RATE_COMFORT_RATE if steering_rate_comfort_shaping and reinforces_steering_rate else OUTPUT_RECOVERY_RATE
+    limited_abs = min(target_abs, previous_abs + recovery_rate * self.dt)
     limited_output = target_sign * limited_abs
     return limited_output, limited_abs < target_abs
 

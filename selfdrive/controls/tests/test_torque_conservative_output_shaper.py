@@ -20,6 +20,7 @@ def make_inputs(**overrides):
     "actual_lateral_jerk": 0.05,
     "lookahead_lateral_jerk": 0.2,
     "same_sign_unwind_release": False,
+    "steering_rate_deg": 0.0,
   }
   values.update(overrides)
   return ConservativeOutputShaperInputs(**values)
@@ -217,6 +218,66 @@ def test_low_speed_steer_limited_high_output_caps_output():
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.LOW_SPEED_STEER_LIMITED
   assert result.output_cap == 0.92
+
+
+def test_steering_rate_comfort_caps_reinforcing_output():
+  result = assert_cap_only(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
+  assert 0.8 <= result.output_cap < 1.0
+  assert 0.0 < result.output_torque < result.unshaped_output
+
+
+def test_steering_rate_comfort_does_not_cap_corrective_output():
+  result = assert_cap_only(make_inputs(steering_rate_deg=40.0, unshaped_output=-0.8))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
+  assert result.output_torque == result.unshaped_output
+
+
+def test_steering_rate_comfort_ignores_low_steering_rate():
+  result = assert_cap_only(make_inputs(steering_rate_deg=5.0, unshaped_output=0.8))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
+  assert result.output_torque == result.unshaped_output
+
+
+def test_steering_rate_comfort_slews_reinforcing_output_growth():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  first = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.2))
+
+  result = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
+  assert result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert 0.0 < result.output_torque - first.output_torque <= 0.0075 + 1e-6
+
+
+def test_steering_rate_comfort_slews_first_reinforcing_growth_after_clean_tracking():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  first = shaper.update(make_inputs(steering_rate_deg=0.0, unshaped_output=0.2))
+
+  result = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
+  assert result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert 0.0 < result.output_torque - first.output_torque <= 0.0075 + 1e-6
+
+
+def test_steering_rate_comfort_does_not_rate_limit_next_opposing_output():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8))
+
+  result = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=-0.8))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert result.output_torque == result.unshaped_output
 
 
 def test_same_sign_unwind_release_clamps_output_toward_zero():

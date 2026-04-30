@@ -253,6 +253,8 @@ class LatControlTorque(LatControl):
         actual_lateral_jerk=raw_actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
         same_sign_unwind_release=same_sign_unwind_release,
+        # The shaper sees pre-actuator torque; the actuator command is negated on return.
+        steering_rate_deg=-CS.steeringRateDeg,
       )
     )
     disturbance_result = classify_torque_disturbance(

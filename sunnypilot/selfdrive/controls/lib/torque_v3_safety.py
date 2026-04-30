@@ -25,6 +25,7 @@ class TorqueV3SafetyInputs:
   lookahead_lateral_jerk: float
   same_sign_unwind_release: bool
   authority_scale: float
+  steering_rate_deg: float = 0.0
 
 
 @dataclass
@@ -58,6 +59,7 @@ class TorqueV3SafetyEnvelope:
         actual_lateral_jerk=inputs.actual_lateral_jerk,
         lookahead_lateral_jerk=inputs.lookahead_lateral_jerk,
         same_sign_unwind_release=inputs.same_sign_unwind_release,
+        steering_rate_deg=inputs.steering_rate_deg,
       )
     )
     return TorqueV3SafetyResult(
