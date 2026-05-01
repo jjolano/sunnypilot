@@ -123,6 +123,10 @@ def update_osm_db(pm: messaging.PubMaster) -> None:
     request_refresh_osm_location_data(pm, filtered_nations, filtered_states)
 
 
+def osm_update_required_alert_enabled() -> bool:
+  return params.get_bool("OsmLocal") and bool(get_files_for_cleanup())
+
+
 def main_thread():
   update_installed_version(VERSION, params)
   config_realtime_process([0, 1, 2, 3], 5)
@@ -140,7 +144,7 @@ def main_thread():
     cloudlog.exception(f"mapd: failed to make {Paths.mapd_root()}")
 
   while True:
-    show_alert = get_files_for_cleanup() and params.get_bool("OsmLocal")
+    show_alert = osm_update_required_alert_enabled()
     set_offroad_alert("Offroad_OSMUpdateRequired", show_alert, "This alert will be cleared when new maps are downloaded.")
 
     update_osm_db(pm)

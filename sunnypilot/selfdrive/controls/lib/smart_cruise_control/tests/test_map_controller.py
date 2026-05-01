@@ -13,6 +13,7 @@ from cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import map_controller
 from openpilot.sunnypilot.navd.helpers import Coordinate
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import (
   R,
@@ -99,6 +100,43 @@ class TestSmartCruiseControlMap:
 
     assert velocities_from_param("MapTargetVelocities", self.mem_params) == []
 
+  def test_update_calculations_reuses_cached_target_velocity_parse(self, monkeypatch):
+    calls = 0
+    base_velocities_from_param = velocities_from_param
+
+    def counting_velocities_from_param(param, params):
+      nonlocal calls
+      calls += 1
+      return base_velocities_from_param(param, params)
+
+    monkeypatch.setattr(map_controller, "velocities_from_param", counting_velocities_from_param)
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": 0.001, "velocity": 15.0},
+    ]))
+
+    self.scc_m.update_calculations()
+    self.scc_m.update_calculations()
+
+    assert calls == 1
+
+  def test_update_calculations_reuses_cached_advisory_parse(self, monkeypatch):
+    calls = 0
+    base_get_first_mapd_json = map_controller.get_first_mapd_json
+
+    def counting_get_first_mapd_json(params, keys):
+      nonlocal calls
+      calls += 1
+      return base_get_first_mapd_json(params, keys)
+
+    monkeypatch.setattr(map_controller, "get_first_mapd_json", counting_get_first_mapd_json)
+    self.mem_params.put("MapAdvisoryLimit", json.dumps({"speedlimit": 15.0, "distance": 0.0}))
+    self.mem_params.put("NextMapAdvisoryLimit", json.dumps({"speedlimit": 14.0, "distance": 10.0}))
+
+    self.scc_m.update_calculations()
+    self.scc_m.update_calculations()
+
+    assert calls == 2
+
   def test_forward_target_velocity_distances_follow_ordered_path(self):
     first = Coordinate(0.0, 0.001)
     second = Coordinate(0.001, 0.001)
@@ -128,6 +166,38 @@ class TestSmartCruiseControlMap:
 
     for _ in range(2):
       self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == 15.0
+
+  def test_current_advisory_speed_limit_ignores_large_slowdown_without_model_curve(self):
+    self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "end_latitude": 0.0,
+      "end_longitude": 0.001,
+      "speedlimit": 15.0,
+    }))
+    model_msg = make_model_prediction(distance=20.0, yaw_rate=0.02)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0, model_msg)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_current_advisory_speed_limit_allows_model_confirmed_curve(self):
+    self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "end_latitude": 0.0,
+      "end_longitude": 0.001,
+      "speedlimit": 15.0,
+    }))
+    model_msg = make_model_prediction(distance=20.0, yaw_rate=0.22)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0, model_msg)
 
     assert self.scc_m.state == VisionState.turning
     assert self.scc_m.output_v_target == 15.0
@@ -178,6 +248,26 @@ class TestSmartCruiseControlMap:
     assert self.scc_m.state == VisionState.turning
     assert self.scc_m.output_v_target == 15.0
 
+  def test_next_advisory_speed_limit_uses_map_when_model_horizon_does_not_cover_target(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    distance = self.scc_m._target_control_distance(15.0) - 1.0
+    self.mem_params.put("NextMapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "end_latitude": 0.0,
+      "end_longitude": 0.001,
+      "speedlimit": 15.0,
+      "distance": distance,
+    }))
+    model_msg = make_model_prediction(distance=5.0, yaw_rate=0.02)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0, model_msg)
+
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == 15.0
+
   def test_next_advisory_speed_limit_waits_until_adapt_distance(self):
     self.mem_params.put("NextMapAdvisorySpeedLimit", json.dumps({
       "start_latitude": 0.0,
@@ -190,6 +280,22 @@ class TestSmartCruiseControlMap:
 
     for _ in range(2):
       self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_target_velocity_ignores_large_slowdown_without_model_curve(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    distance = self.scc_m._target_control_distance(15.0) - 1.0
+    target_lon = distance / R * TO_DEGREES
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": target_lon, "velocity": 15.0},
+    ]))
+    model_msg = make_model_prediction(distance=distance, yaw_rate=0.02)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0, model_msg)
 
     assert self.scc_m.state == VisionState.enabled
     assert self.scc_m.output_v_target == V_CRUISE_UNSET
