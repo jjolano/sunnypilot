@@ -62,6 +62,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_stop_gap_excess_offset,
   get_lead_stop_gap_taper,
   get_lead_time_gap_target,
+  get_moving_lead_stop_approach_comfort_target,
   get_moving_lead_stop_reserve,
   get_safe_obstacle_distance,
   get_selected_lead_targets,
@@ -362,14 +363,14 @@ def test_creep_to_stop_gap_uses_firmer_floor_for_initial_pullaway():
   assert 0.30 <= accel <= STOPPED_LEAD_GAP_FILL_ACCEL_MAX
 
 
-def test_creep_to_stop_gap_actively_creeps_before_ten_meter_gap():
+def test_creep_to_stop_gap_actively_creeps_before_four_meter_excess():
   active, accel = get_creep_to_stop_gap_accel(0.1, STOP_DISTANCE + 3.5, 0.8, 1.0, True)
 
   assert active
   assert accel > 0.0
 
 
-def test_creep_to_stop_gap_stops_chasing_after_ten_meter_gap():
+def test_creep_to_stop_gap_stops_chasing_after_four_meter_excess():
   active, accel = get_creep_to_stop_gap_accel(0.1, STOP_DISTANCE + 4.5, 0.8, 1.0, True)
 
   assert not active
@@ -529,6 +530,16 @@ def test_stopped_lead_gap_fill_arms_from_close_stopped_lead_only():
 
 def test_stopped_lead_gap_fill_creeps_to_new_far_stopped_lead():
   active, accel = get_stopped_lead_gap_fill_accel(0.0, STOP_DISTANCE + STOPPED_LEAD_GAP_FILL_MIN_EXCESS + 5.0, 0.0, 1.0, True)
+
+  assert active
+  assert 0.0 < accel <= STOPPED_LEAD_GAP_FILL_ACCEL_MAX
+
+
+def test_stopped_lead_gap_fill_starts_after_near_pullaway_window():
+  assert STOPPED_LEAD_GAP_FILL_MIN_EXCESS == CREEP_TO_STOP_GAP_MAX_EXCESS
+  assert not get_stopped_lead_gap_fill_accel(0.0, STOP_DISTANCE + STOPPED_LEAD_GAP_FILL_MIN_EXCESS, 0.0, 1.0, True)[0]
+
+  active, accel = get_stopped_lead_gap_fill_accel(0.0, STOP_DISTANCE + STOPPED_LEAD_GAP_FILL_MIN_EXCESS + 0.1, 0.0, 1.0, True)
 
   assert active
   assert 0.0 < accel <= STOPPED_LEAD_GAP_FILL_ACCEL_MAX
@@ -979,6 +990,34 @@ def test_moving_stop_approach_comfort_requires_confirmed_threat():
   assert opening_cost == pytest.approx(0.0)
   assert stopped_target == pytest.approx(0.0)
   assert stopped_cost == pytest.approx(0.0)
+
+
+def test_far_hard_braking_lead_uses_runway_instead_of_early_hard_brake():
+  v_ego = 18.0
+  v_lead = 10.0
+  d_rel = 86.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_closer_hard_braking_lead_still_gets_comfort_brake_target():
+  v_ego = 18.0
+  v_lead = 10.0
+  d_rel = 65.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert -long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP <= target < 0.0
+  assert cost > 0.0
 
 
 def test_lead_accel_match_tapers_positive_accel_under_time_gap():

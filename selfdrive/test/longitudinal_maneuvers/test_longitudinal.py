@@ -469,6 +469,44 @@ def test_confirmed_moving_lead_stop_brakes_before_runway_collapse():
   assert output[stopped_idxs[0], 6] > STOP_DISTANCE - 1.0
 
 
+def test_far_hard_braking_lead_keeps_runway_coast_preference():
+  breakpoints = [0.0, 1.0, 2.0, 6.0]
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "far hard-braking lead with sufficient stop runway",
+      duration=6.0,
+      initial_speed=18.0,
+      lead_relevancy=True,
+      initial_distance_lead=90.0,
+      speed_lead_values=[18.0, 14.0, 10.0, 10.0],
+      cruise_values=[25.0 for _ in breakpoints],
+      breakpoints=breakpoints,
+    )
+  )
+
+  response_window = (output[:, 0] >= 1.0) & (output[:, 0] <= 4.0)
+  assert np.min(output[response_window, 5]) > -1.0
+
+
+def test_closer_hard_braking_lead_still_brakes_with_limited_runway():
+  breakpoints = [0.0, 1.0, 2.0, 6.0]
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "closer hard-braking lead with limited stop runway",
+      duration=6.0,
+      initial_speed=18.0,
+      lead_relevancy=True,
+      initial_distance_lead=70.0,
+      speed_lead_values=[18.0, 14.0, 10.0, 10.0],
+      cruise_values=[25.0 for _ in breakpoints],
+      breakpoints=breakpoints,
+    )
+  )
+
+  response_window = (output[:, 0] >= 1.0) & (output[:, 0] <= 4.0)
+  assert np.min(output[response_window, 5]) < -1.2
+
+
 def test_crawl_stop_go_limits_accel_surge():
   output = evaluate_maneuver_output(
     Maneuver(

@@ -126,6 +126,7 @@ MOVING_LEAD_STOP_APPROACH_V_LEAD_BP = [1.0, 3.0, 18.0, 22.0]
 MOVING_LEAD_STOP_APPROACH_DECEL_BP = [0.5, 1.0]
 MOVING_LEAD_STOP_APPROACH_CLOSING_BP = [0.5, 2.0]
 MOVING_LEAD_STOP_APPROACH_REQUIRED_DECEL_BP = [0.35, 1.2]
+MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP = [0.0, 10.0]
 MOVING_LEAD_STOP_APPROACH_DECEL_BLEND = 0.75
 MOVING_LEAD_STOP_APPROACH_DECEL_MIN = 0.4
 MOVING_LEAD_STOP_APPROACH_DECEL_CAP = 1.8
@@ -477,7 +478,9 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0)
   danger_margin = x_lead - min_gap
   danger_blend = 1.0 - closing_blend * np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [1.0, 0.0])
-  comfort_blend = speed_blend * moving_blend * lead_decel_blend * closing_blend * required_decel_blend * danger_blend
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  runway_need_blend = 1.0 - np.interp(x_lead - desired_gap, MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP, [0.0, 1.0])
+  comfort_blend = speed_blend * moving_blend * lead_decel_blend * closing_blend * required_decel_blend * danger_blend * runway_need_blend
   if np.all(comfort_blend <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
 
