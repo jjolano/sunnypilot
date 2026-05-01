@@ -14,7 +14,7 @@ LAUNCH_BREAKAWAY_MIN_TIME = 0.25
 LAUNCH_BREAKAWAY_MAX_TIME = 0.6
 LAUNCH_BREAKAWAY_A_EGO = 0.05
 LAUNCH_BREAKAWAY_V_EGO = 0.2
-LAUNCH_SHOULD_STOP_HOLD_TIME = 0.25
+LAUNCH_SHOULD_STOP_HOLD_TIME = LAUNCH_BREAKAWAY_MAX_TIME
 LAUNCH_ENVELOPE_TIME_BP = [0.0, 0.35]
 LAUNCH_ENVELOPE_V_EGO_BP = [0.0, 0.6]
 LAUNCH_BREAKAWAY_TARGET_BP = [LAUNCH_ENVELOPE_MIN_ACCEL, LAUNCH_BREAKAWAY_TARGET_ACCEL]
@@ -77,8 +77,9 @@ def get_launch_breakaway_accel(a_target, accel_limits):
   return float(np.clip(breakaway_accel, 0.0, accel_limits[1]))
 
 
-def launch_should_stop_hold_active(v_ego, brake_pressed, launch_elapsed, a_target):
-  return not brake_pressed and a_target >= LAUNCH_ENVELOPE_MIN_ACCEL and v_ego < LAUNCH_BREAKAWAY_V_EGO and launch_elapsed < LAUNCH_SHOULD_STOP_HOLD_TIME
+def launch_should_stop_hold_active(v_ego, a_ego, brake_pressed, launch_elapsed, a_target):
+  return not brake_pressed and a_target >= LAUNCH_ENVELOPE_MIN_ACCEL and v_ego < LAUNCH_BREAKAWAY_V_EGO and \
+    a_ego < LAUNCH_BREAKAWAY_A_EGO and launch_elapsed < LAUNCH_SHOULD_STOP_HOLD_TIME
 
 
 def apply_launch_envelope(output_accel, accel_limits, v_ego, launch_elapsed, blend=None):
@@ -124,7 +125,7 @@ class LongControl:
     launch_a_target = max(a_target, LAUNCH_ENVELOPE_MIN_ACCEL) if a_target >= 0.0 else a_target
 
     effective_should_stop = should_stop and not (
-      self.launch_envelope_active and launch_should_stop_hold_active(CS.vEgo, CS.brakePressed, self.launch_breakaway_elapsed, launch_a_target)
+      self.launch_envelope_active and launch_should_stop_hold_active(CS.vEgo, CS.aEgo, CS.brakePressed, self.launch_breakaway_elapsed, launch_a_target)
     )
     prev_state = self.long_control_state
     self.long_control_state = long_control_state_trans(
