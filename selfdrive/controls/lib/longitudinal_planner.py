@@ -2,7 +2,7 @@
 import math
 import numpy as np
 
-from cereal import custom
+from cereal import custom, log
 import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
@@ -33,16 +33,20 @@ CREEP_TO_STOP_GAP_MIN_LEAD_SPEED = -0.3
 CREEP_TO_STOP_GAP_MIN_MODEL_PROB = 0.5
 CREEP_TO_STOP_GAP_SPEED_MAX = 0.75
 CREEP_TO_STOP_GAP_SPEED_BP = [CREEP_TO_STOP_GAP_STOP_EXCESS, 1.0, 5.0]
-CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.25, CREEP_TO_STOP_GAP_SPEED_MAX]
+CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.18, CREEP_TO_STOP_GAP_SPEED_MAX]
 CREEP_TO_STOP_GAP_ACCEL_GAIN = 0.8
 CREEP_TO_STOP_GAP_ACCEL_MIN = -0.25
 CREEP_TO_STOP_GAP_ACCEL_MAX = 0.18
 CREEP_TO_STOP_GAP_HOLD_EXCESS = 0.3
+CREEP_TO_STOP_GAP_REHOLD_EXCESS = 0.2
+CREEP_TO_STOP_GAP_HOLD_RELEASE_EXCESS = 0.45
+CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_SPEED = 0.05
+CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_ACCEL = 0.15
 CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED = 0.25
 CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = 0.5
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
-CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.35
-CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.25
+CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.30
+CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.20
 CREEP_TO_STOP_GAP_PREDICT_T = 0.8
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED = 0.35
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL = 0.25
@@ -88,6 +92,10 @@ CRUISE_COAST_FLAT_OVERSPEED = 0.45  # ~1 mph
 CRUISE_COAST_DOWNHILL_OVERSPEED = 1.35  # ~3 mph
 CRUISE_COAST_DOWNHILL_ACCEL = 0.25
 CRUISE_COAST_RECOVERY_OVERSPEED = 0.9  # ~2 mph from coast back to normal decel
+LEAD_LOSS_E2E_GUARD_TIME = 3.0
+LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR = -0.45
+LEAD_LOSS_E2E_GUARD_MIN_D_REL = 45.0
+LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB = 0.8
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -167,6 +175,34 @@ def should_apply_cruise_coast_overspeed(reset_state, force_slow_decel, e2e_activ
   )
 
 
+def is_lane_change_active(model_msg):
+  return model_msg.meta.laneChangeState != log.LaneChangeState.off
+
+
+def update_lead_loss_e2e_guard_timer(timer, dt, previous_lead_status, previous_d_rel, previous_model_prob,
+                                    current_has_lead, lane_change_active, reset_state=False, force_slow_decel=False,
+                                    brake_pressed=False, gas_pressed=False):
+  blocked = reset_state or force_slow_decel or brake_pressed or gas_pressed or current_has_lead
+  if blocked:
+    return 0.0
+
+  lost_far_confirmed_lead = (
+    previous_lead_status and
+    previous_d_rel >= LEAD_LOSS_E2E_GUARD_MIN_D_REL and
+    previous_model_prob >= LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB
+  )
+  if lost_far_confirmed_lead and lane_change_active:
+    return LEAD_LOSS_E2E_GUARD_TIME
+
+  return max(0.0, timer - dt)
+
+
+def apply_lead_loss_e2e_guard_accel(e2e_accel, e2e_should_stop, timer, has_lead):
+  if timer <= 0.0 or has_lead or e2e_should_stop:
+    return e2e_accel
+  return max(e2e_accel, LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
+
+
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   """
   This function returns a limited long acceleration allowed, depending on the existing lateral acceleration
@@ -212,6 +248,16 @@ def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_
   if float(getattr(radar_lead, "modelProb", getattr(lead_msg, "prob", 0.0))) < CREEP_TO_STOP_GAP_MIN_MODEL_PROB:
     return 0.0, 0.0
 
+  d_rel = float(getattr(radar_lead, "dRel", 0.0))
+  if not np.isfinite(d_rel):
+    return 0.0, 0.0
+  radar_y_rel = float(getattr(radar_lead, "yRel", 0.0))
+  if not np.isfinite(radar_y_rel):
+    return 0.0, 0.0
+  radar_v_lead = float(getattr(radar_lead, "vLeadK", getattr(radar_lead, "vLead", 0.0)))
+  if not np.isfinite(radar_v_lead):
+    return 0.0, 0.0
+
   ts = np.asarray(getattr(lead_msg, "t", []), dtype=float)
   xs = np.asarray(getattr(lead_msg, "x", []), dtype=float)
   ys = np.asarray(getattr(lead_msg, "y", []), dtype=float)
@@ -237,22 +283,13 @@ def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_
   if v_std > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_STD:
     return 0.0, 0.0
 
-  d_rel = float(getattr(radar_lead, "dRel", 0.0))
-  if not np.isfinite(d_rel):
-    return 0.0, 0.0
   model_d_rel_now = float(xs[0] - CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET)
   if abs(model_d_rel_now - d_rel) > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_DIST_ERROR:
-    return 0.0, 0.0
-  radar_y_rel = float(getattr(radar_lead, "yRel", 0.0))
-  if not np.isfinite(radar_y_rel):
     return 0.0, 0.0
   model_y_rel_now = float(-ys[0])
   max_y_error = min(CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_ERROR,
                     max(CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_Y_ERROR, 2.0 * float(y_std)))
   if abs(model_y_rel_now - radar_y_rel) > max_y_error:
-    return 0.0, 0.0
-  radar_v_lead = float(getattr(radar_lead, "vLeadK", getattr(radar_lead, "vLead", 0.0)))
-  if not np.isfinite(radar_v_lead):
     return 0.0, 0.0
   if abs(float(vs[0]) - radar_v_lead) > CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_V_ERROR:
     return 0.0, 0.0
@@ -304,7 +341,20 @@ def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_
   return True, float(accel)
 
 
-def should_hold_creep_to_stop_gap(v_ego, d_rel, v_lead, a_lead, predicted_pullaway=False):
+def should_release_creep_stop_hold(release_active, v_ego, d_rel, v_lead, a_lead, predicted_pullaway=False):
+  if v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO or d_rel <= STOP_DISTANCE + CREEP_TO_STOP_GAP_REHOLD_EXCESS:
+    return False
+  if release_active:
+    return True
+  return (
+    d_rel >= STOP_DISTANCE + CREEP_TO_STOP_GAP_HOLD_RELEASE_EXCESS and
+    (predicted_pullaway or v_lead >= CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_SPEED or a_lead >= CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_ACCEL)
+  )
+
+
+def should_hold_creep_to_stop_gap(v_ego, d_rel, v_lead, a_lead, predicted_pullaway=False, release_active=False):
+  if should_release_creep_stop_hold(release_active, v_ego, d_rel, v_lead, a_lead, predicted_pullaway):
+    return False
   return (
     not predicted_pullaway and
     v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO and
@@ -362,7 +412,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.output_a_target = 0.0
     self.output_should_stop = False
     self.creep_to_stop_gap_active = False
+    self.creep_stop_hold_released = False
     self.stopped_lead_gap_fill_timer = 0.0
+    self.lead_loss_e2e_guard_timer = 0.0
+    self.previous_lead_loss_status = False
+    self.previous_lead_loss_d_rel = 0.0
+    self.previous_lead_loss_model_prob = 0.0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -450,9 +505,21 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if force_slow_decel:
       v_cruise = 0.0
 
+    lead_one = sm['radarState'].leadOne
+    has_radar_lead = has_valid_radar_lead(sm['radarState'])
     engage_stop_bootstrap_active = should_run_engage_stop_bootstrap(self.engage_stop_bootstrap_timer, v_ego, sm['radarState'], sm['modelV2'])
     if engage_stop_bootstrap_active:
       v_cruise = 0.0
+
+    self.lead_loss_e2e_guard_timer = update_lead_loss_e2e_guard_timer(
+      self.lead_loss_e2e_guard_timer, self.dt,
+      self.previous_lead_loss_status, self.previous_lead_loss_d_rel, self.previous_lead_loss_model_prob,
+      has_radar_lead, is_lane_change_active(sm['modelV2']),
+      reset_state=reset_state,
+      force_slow_decel=force_slow_decel,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+    )
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
@@ -481,6 +548,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     e2e_active = self.is_e2e(sm)
     if e2e_active:
+      output_a_target_e2e = apply_lead_loss_e2e_guard_accel(
+        output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, has_radar_lead
+      )
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       if output_a_target < output_a_target_mpc:
@@ -499,7 +569,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = e2e_stop_approach_a_target
       self.mpc.source = LongitudinalPlanSource.e2e
 
-    lead_one = sm['radarState'].leadOne
     if lead_one.status and should_arm_stopped_lead_gap_fill(
       v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
       brake_pressed=sm['carState'].brakePressed,
@@ -558,8 +627,14 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
       sm['carState'].brakePressed, sm['carState'].gasPressed, force_slow_decel or reset_state,
     ) and has_predicted_lead_pullaway(float(lead_one.dRel) - STOP_DISTANCE, model_predicted_v_lead, model_predicted_gap_opening)
+    if lead_one.status and not sm['carState'].brakePressed and not sm['carState'].gasPressed and not force_slow_decel and not reset_state:
+      self.creep_stop_hold_released = should_release_creep_stop_hold(
+        self.creep_stop_hold_released, v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), model_predicted_pullaway
+      )
+    else:
+      self.creep_stop_hold_released = False
     if lead_one.status and should_hold_creep_to_stop_gap(
-      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), model_predicted_pullaway
+      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), model_predicted_pullaway, self.creep_stop_hold_released
     ):
       output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
       self.output_should_stop = True
@@ -575,6 +650,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       reset_state, force_slow_decel, e2e_active, has_lead, self.output_should_stop, self.source
     ):
       output_a_target = apply_cruise_coast_overspeed(v_ego, v_cruise, cruise_coast_accel, output_a_target)
+
+    self.previous_lead_loss_status = bool(lead_one.status)
+    self.previous_lead_loss_d_rel = float(lead_one.dRel) if lead_one.status else 0.0
+    self.previous_lead_loss_model_prob = float(lead_one.modelProb) if lead_one.status else 0.0
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
