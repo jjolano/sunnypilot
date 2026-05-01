@@ -97,7 +97,7 @@ class FakeSubMaster(dict):
     return super().__getitem__(key)
 
 
-def test_speed_limit_auto_can_raise_planner_target_above_manual_cruise():
+def test_speed_limit_auto_uses_manual_cruise_source_without_acceleration_seed():
   planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
   planner.scc = FakeSmartCruiseControl()
   planner.resolver = FakeResolver()
@@ -111,11 +111,12 @@ def test_speed_limit_auto_can_raise_planner_target_above_manual_cruise():
   })
 
   v_cruise = 20.0 * CV.KPH_TO_MS
-  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=15.0, a_ego=0.0, v_cruise=v_cruise)
+  a_ego = 0.2
+  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=15.0, a_ego=a_ego, v_cruise=v_cruise)
 
   assert v_target == FakeSpeedLimitAssist.output_v_target
-  assert a_target == FakeSpeedLimitAssist.output_a_target
-  assert planner.source == LongitudinalPlanSource.speedLimitAssist
+  assert a_target == a_ego
+  assert planner.source == LongitudinalPlanSource.cruise
 
 
 def test_speed_limit_resolver_receives_coast_accel():

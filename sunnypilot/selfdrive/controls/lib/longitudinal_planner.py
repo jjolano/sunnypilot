@@ -101,9 +101,11 @@ class LongitudinalPlannerSP:
       (v_cruise, a_ego),
       (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
       (self.scc.map.output_v_target, self.scc.map.output_a_target),
-      (self.sla.output_v_target, self.sla.output_a_target),
+      (self.sla.output_v_target, a_ego),
       (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
     )
+    if self.source == LongitudinalPlanSource.speedLimitAssist:
+      self.source = LongitudinalPlanSource.cruise
     return self.output_v_target, self.output_a_target
 
   def update(self, sm: messaging.SubMaster) -> None:
