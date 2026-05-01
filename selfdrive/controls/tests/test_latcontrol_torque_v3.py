@@ -1,3 +1,6 @@
+import math
+import pytest
+
 from cereal import log
 
 
@@ -62,7 +65,10 @@ params_pyx.ParamKeyType = object
 params_pyx.UnknownKeyName = RuntimeError
 sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
 
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorque, LatControlTorqueV3
+from openpilot.sunnypilot.selfdrive.controls.lib import latcontrol_torque_v3
+
+LatControlTorque = latcontrol_torque_v3.LatControlTorque
+LatControlTorqueV3 = latcontrol_torque_v3.LatControlTorqueV3
 
 
 def get_controller(car_name, force_pid=False):
@@ -121,6 +127,79 @@ def test_v3_native_torque_controller_logs_model_state():
   assert lac_log.adaptiveTorqueState.authorityScale > 0.0
 
 
+def test_v3_attenuates_nominal_output_before_assist(monkeypatch):
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -12.0
+  CS.steeringRateDeg = 0.0
+  params = log.LiveParametersData.new_message()
+  raw_measurement = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll) * CS.vEgo**2
+  desired_curvature = (raw_measurement - 0.3) / CS.vEgo**2
+  captured = {}
+
+  def fake_attenuate(nominal_torque, desired_lateral_accel, actual_lateral_accel):
+    captured["nominal_torque"] = nominal_torque
+    captured["desired_lateral_accel"] = desired_lateral_accel
+    captured["actual_lateral_accel"] = actual_lateral_accel
+    captured["attenuated_torque"] = nominal_torque * 0.25
+    return captured["attenuated_torque"]
+
+  monkeypatch.setattr(latcontrol_torque_v3, "attenuate_same_direction_over_response", fake_attenuate, raising=False)
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, desired_curvature, make_pose(), False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert captured["actual_lateral_accel"] > captured["desired_lateral_accel"] + 0.12
+  assert captured["nominal_torque"] > 0.0
+  assert adaptive_log.nominalOutput == pytest.approx(-captured["attenuated_torque"])
+
+
+def test_v3_fallback_preserves_attenuated_nominal_output(monkeypatch):
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -12.0
+  CS.steeringRateDeg = 0.0
+  params = log.LiveParametersData.new_message()
+  raw_measurement = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll) * CS.vEgo**2
+  desired_curvature = (raw_measurement - 0.3) / CS.vEgo**2
+  captured = {}
+
+  def fake_attenuate(nominal_torque, desired_lateral_accel, actual_lateral_accel):
+    captured["nominal_torque"] = nominal_torque
+    captured["desired_lateral_accel"] = desired_lateral_accel
+    captured["actual_lateral_accel"] = actual_lateral_accel
+    captured["attenuated_torque"] = nominal_torque * 0.25
+    return captured["attenuated_torque"]
+
+  def reject_update(_observation):
+    return EstimatorResult(
+      params=controller.estimator.state.params,
+      confidence=0.96,
+      positive_coverage=0.7,
+      negative_coverage=0.7,
+      residual_error=0.0,
+      response_delay=0.2,
+      sample_accepted=False,
+      reject_reason=EstimatorRejectReason.RESIDUAL_SPIKE,
+    )
+
+  monkeypatch.setattr(latcontrol_torque_v3, "attenuate_same_direction_over_response", fake_attenuate, raising=False)
+  controller.estimator.update = reject_update
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, desired_curvature, make_pose(), False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.fallbackActive
+  assert adaptive_log.authorityBand == AuthorityBand.limited
+  assert adaptive_log.nominalOutput == pytest.approx(-captured["attenuated_torque"])
+  assert abs(lac_log.output) < abs(captured["nominal_torque"])
+  assert abs(lac_log.output) <= abs(captured["attenuated_torque"]) + 1e-6
+
+
 def test_v3_native_torque_starts_near_full_authority():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
   CS = car.CarState.new_message()
@@ -174,10 +253,11 @@ def test_v3_residual_and_stale_fault_frames_cap_output_to_limited_authority():
     CS = car.CarState.new_message()
     CS.vEgo = 30.0
     params = log.LiveParametersData.new_message()
+    estimator_params = controller.estimator.state.params
 
-    def reject_update(_observation, reject_reason=reject_reason):
+    def reject_update(_observation, reject_reason=reject_reason, estimator_params=estimator_params):
       return EstimatorResult(
-        params=controller.estimator.state.params,
+        params=estimator_params,
         confidence=0.96,
         positive_coverage=0.7,
         negative_coverage=0.7,

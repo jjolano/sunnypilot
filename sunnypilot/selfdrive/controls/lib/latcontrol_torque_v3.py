@@ -11,6 +11,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_over_response_attenuator import attenuate_same_direction_over_response
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityManager, authority_fault_active
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import AdaptiveTorqueEstimator, EstimatorRejectReason, TorqueObservation
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelAdapter, TorqueModelParams
@@ -260,6 +261,7 @@ class LatControlTorque(LatControl):
         output_torque,
       )
 
+      output_torque = attenuate_same_direction_over_response(output_torque, setpoint, measurement)
       pid_log.active = True
 
     saturated = self.steer_max - abs(output_torque) < 1e-3
@@ -363,7 +365,10 @@ class LatControlTorque(LatControl):
     pid_log.desiredLateralAccel = float(setpoint)
     pid_log.desiredLateralJerk = float(desired_lateral_jerk)
     adaptive_log = pid_log.init('adaptiveTorqueState')
-    adaptive_log.active = bool(active and (shaping_result.active or assist_result.phase_id != 0 or abs(assist_result.assist_torque) > 1e-3 or abs(assist_result.bias_torque) > 1e-3))
+    adaptive_active = active and (
+      shaping_result.active or assist_result.phase_id != 0 or abs(assist_result.assist_torque) > 1e-3 or abs(assist_result.bias_torque) > 1e-3
+    )
+    adaptive_log.active = bool(adaptive_active)
     adaptive_log.phase = ADAPTIVE_PHASE_MAP[assist_result.phase_id]
     adaptive_log.releaseActive = bool(assist_result.release_active)
     adaptive_log.phaseGain = float(assist_result.phase_gain)
@@ -391,8 +396,8 @@ class LatControlTorque(LatControl):
     adaptive_log.residualError = float(estimator_result.residual_error)
     adaptive_log.sampleAccepted = bool(estimator_result.sample_accepted)
     adaptive_log.sampleRejectReason = int(estimator_result.reject_reason)
-    pid_log.saturated = bool(self._check_saturation(safety_result.authority_limited or same_frame_authority_limited or self.steer_max - abs(output_torque) < 1e-3, CS,
-                                                     steer_limited_by_safety, curvature_limited))
+    saturation_check = safety_result.authority_limited or same_frame_authority_limited or self.steer_max - abs(output_torque) < 1e-3
+    pid_log.saturated = bool(self._check_saturation(saturation_check, CS, steer_limited_by_safety, curvature_limited))
     self.model_age += self.dt
 
     return -output_torque, 0.0, pid_log

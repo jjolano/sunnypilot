@@ -13,6 +13,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import La
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperInputs, TorqueConservativeOutputShaper
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import TorqueDisturbanceInputs, classify_torque_disturbance
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_over_response_attenuator import attenuate_same_direction_over_response
 
 
 KP = 1.0
@@ -210,6 +211,7 @@ class LatControlTorque(LatControl):
         output_torque,
       )
 
+      output_torque = attenuate_same_direction_over_response(output_torque, setpoint, measurement)
       pid_log.active = True
 
     saturated = self.steer_max - abs(output_torque) < 1e-3
@@ -288,7 +290,10 @@ class LatControlTorque(LatControl):
     pid_log.desiredLateralAccel = float(setpoint)
     pid_log.desiredLateralJerk = float(desired_lateral_jerk)
     adaptive_log = pid_log.init('adaptiveTorqueState')
-    adaptive_log.active = bool(active and (shaping_result.active or assist_result.phase_id != 0 or abs(assist_result.assist_torque) > 1e-3 or abs(assist_result.bias_torque) > 1e-3))
+    adaptive_active = active and (
+      shaping_result.active or assist_result.phase_id != 0 or abs(assist_result.assist_torque) > 1e-3 or abs(assist_result.bias_torque) > 1e-3
+    )
+    adaptive_log.active = bool(adaptive_active)
     adaptive_log.phase = ADAPTIVE_PHASE_MAP[assist_result.phase_id]
     adaptive_log.releaseActive = bool(assist_result.release_active)
     adaptive_log.phaseGain = float(assist_result.phase_gain)

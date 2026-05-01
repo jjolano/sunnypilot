@@ -1,4 +1,6 @@
+import math
 import numpy as np
+import pytest
 import sys
 import types
 
@@ -269,6 +271,36 @@ def test_v2_logging_fields_are_populated():
   assert adaptive_log.outputCap == 1.0
   assert abs(adaptive_log.unshapedOutput - (adaptive_log.nominalOutput + adaptive_log.assistOutput + adaptive_log.biasOutput)) < 1e-6
   assert adaptive_log.unshapedOutput == lac_log.output
+
+
+def test_v2_attenuates_nominal_output_before_assist(monkeypatch):
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -12.0
+  CS.steeringRateDeg = 0.0
+  params = log.LiveParametersData.new_message()
+  raw_measurement = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll) * CS.vEgo**2
+  desired_curvature = (raw_measurement - 0.3) / CS.vEgo**2
+  captured = {}
+
+  def fake_attenuate(nominal_torque, desired_lateral_accel, actual_lateral_accel):
+    captured["nominal_torque"] = nominal_torque
+    captured["desired_lateral_accel"] = desired_lateral_accel
+    captured["actual_lateral_accel"] = actual_lateral_accel
+    captured["attenuated_torque"] = nominal_torque * 0.25
+    return captured["attenuated_torque"]
+
+  monkeypatch.setattr(latcontrol_torque_v2, "attenuate_same_direction_over_response", fake_attenuate, raising=False)
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, desired_curvature, make_pose(), False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert captured["actual_lateral_accel"] > captured["desired_lateral_accel"] + 0.12
+  assert captured["nominal_torque"] > 0.0
+  assert adaptive_log.nominalOutput == pytest.approx(-captured["attenuated_torque"])
 
 
 def test_v2_disturbance_telemetry_clean_when_tracking_cleanly():
