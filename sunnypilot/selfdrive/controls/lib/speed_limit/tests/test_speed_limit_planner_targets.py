@@ -24,7 +24,7 @@ def test_target_selection_tie_prefers_cruise_when_speed_limit_auto_inactive():
   assert a_target == 0.1
 
 
-def test_target_selection_tie_excludes_cruise_when_speed_limit_auto_active():
+def test_target_selection_tie_prefers_cruise_when_speed_limit_auto_active():
   source, v_target, a_target = longitudinal_planner.select_lowest_longitudinal_target(
     speed_limit_active=True,
     cruise=(20.0, 0.1),
@@ -34,9 +34,24 @@ def test_target_selection_tie_excludes_cruise_when_speed_limit_auto_active():
     osm_traffic_control=(20.0, 0.5),
   )
 
-  assert source == LongitudinalPlanSource.sccVision
+  assert source == LongitudinalPlanSource.cruise
   assert v_target == 20.0
-  assert a_target == 0.2
+  assert a_target == 0.4
+
+
+def test_speed_limit_auto_tie_uses_manual_cruise_acceleration_seed():
+  source, v_target, a_target = longitudinal_planner.select_lowest_longitudinal_target(
+    speed_limit_active=True,
+    cruise=(15.0, 0.1),
+    scc_vision=(20.0, -0.5),
+    scc_map=(255.0, 0.0),
+    speed_limit_assist=(20.0, 0.1),
+    osm_traffic_control=(255.0, 0.0),
+  )
+
+  assert source == LongitudinalPlanSource.cruise
+  assert v_target == 20.0
+  assert a_target == 0.1
 
 
 def test_target_selection_keeps_lowest_non_cruise_candidate():

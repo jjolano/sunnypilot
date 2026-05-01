@@ -30,22 +30,23 @@ def _select_lower_target(selected_source, selected_v_target, selected_a_target, 
 
 
 def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control):
+  selected_source = LongitudinalPlanSource.cruise
   if speed_limit_active:
-    selected_source = LongitudinalPlanSource.sccVision
-    selected_v_target, selected_a_target = scc_vision
+    selected_v_target, selected_a_target = speed_limit_assist
   else:
-    selected_source = LongitudinalPlanSource.cruise
     selected_v_target, selected_a_target = cruise
-    selected_source, selected_v_target, selected_a_target = _select_lower_target(
-      selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccVision, scc_vision
-    )
+
+  selected_source, selected_v_target, selected_a_target = _select_lower_target(
+    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccVision, scc_vision
+  )
 
   selected_source, selected_v_target, selected_a_target = _select_lower_target(
     selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccMap, scc_map
   )
-  selected_source, selected_v_target, selected_a_target = _select_lower_target(
-    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.speedLimitAssist, speed_limit_assist
-  )
+  if not speed_limit_active:
+    selected_source, selected_v_target, selected_a_target = _select_lower_target(
+      selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.speedLimitAssist, speed_limit_assist
+    )
   return _select_lower_target(
     selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.osmTrafficControl, osm_traffic_control
   )
@@ -104,8 +105,6 @@ class LongitudinalPlannerSP:
       (self.sla.output_v_target, a_ego),
       (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
     )
-    if self.source == LongitudinalPlanSource.speedLimitAssist:
-      self.source = LongitudinalPlanSource.cruise
     return self.output_v_target, self.output_a_target
 
   def update(self, sm: messaging.SubMaster) -> None:
