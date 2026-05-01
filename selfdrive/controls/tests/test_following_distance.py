@@ -140,7 +140,7 @@ def patch_planner_sp(monkeypatch):
   monkeypatch.setattr(
     longitudinal_planner.LongitudinalPlannerSP,
     "update_targets",
-    lambda _planner, _sm, _v_ego, a_ego, v_cruise: (v_cruise, a_ego),
+    lambda _planner, _sm, _v_ego, a_ego, v_cruise, **_kwargs: (v_cruise, a_ego),
   )
 
 
