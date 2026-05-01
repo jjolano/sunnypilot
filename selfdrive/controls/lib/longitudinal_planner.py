@@ -2,7 +2,7 @@
 import math
 import numpy as np
 
-from cereal import log
+from cereal import custom, log
 import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
@@ -45,8 +45,8 @@ CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_ACCEL = 0.15
 CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED = 0.25
 CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = 0.5
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
-CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.30
-CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.20
+CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.45
+CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.30
 CREEP_TO_STOP_GAP_PREDICT_T = 0.8
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED = 0.35
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL = 0.25
@@ -562,12 +562,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     ) if lead_one.status else (False, 0.0)
     if self.creep_to_stop_gap_active:
       if creep_a_target >= 0.0:
-        output_a_target = max(output_a_target, creep_a_target)
+        if not self.output_should_stop:
+          output_a_target = max(output_a_target, creep_a_target)
       else:
         output_a_target = min(output_a_target, creep_a_target)
       creep_accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX if creep_a_target > CREEP_TO_STOP_GAP_ACCEL_MAX else CREEP_TO_STOP_GAP_ACCEL_MAX
       output_a_target = min(output_a_target, creep_accel_max)
-      self.output_should_stop = creep_a_target <= 0.0 and v_ego < self.CP.vEgoStopping
+      self.output_should_stop = self.output_should_stop or (creep_a_target <= 0.0 and v_ego < self.CP.vEgoStopping)
 
     gap_fill_active, gap_fill_a_target = get_stopped_lead_gap_fill_accel(
       v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
@@ -578,13 +579,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     ) if lead_one.status else (False, 0.0)
     if gap_fill_active:
       if gap_fill_a_target >= 0.0:
-        output_a_target = max(output_a_target, gap_fill_a_target)
+        if not self.output_should_stop:
+          output_a_target = max(output_a_target, gap_fill_a_target)
       else:
         output_a_target = min(output_a_target, gap_fill_a_target)
       output_a_target = min(output_a_target, STOPPED_LEAD_GAP_FILL_ACCEL_MAX)
-      self.output_should_stop = gap_fill_a_target <= 0.0 and v_ego < self.CP.vEgoStopping
+      self.output_should_stop = self.output_should_stop or (gap_fill_a_target <= 0.0 and v_ego < self.CP.vEgoStopping)
 
-    if lead_one.status and not self.output_should_stop and not reset_state:
+    if lead_one.status and not self.output_should_stop and not reset_state and self.mpc.source != LongitudinalPlanSource.e2e and \
+       self.source == custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise:
       recovery_a_min = get_lead_accel_recovery_a_min(
         v_ego, float(lead_one.vLeadK), float(lead_one.dRel), float(lead_one.aLeadK), get_T_FOLLOW(sm['selfdriveState'].personality)
       )
