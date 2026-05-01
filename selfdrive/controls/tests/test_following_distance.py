@@ -5,10 +5,9 @@ from types import SimpleNamespace
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.parameterized import parameterized_class
 
-from cereal import log
+from cereal import custom, log
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
 
-import openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc as long_mpc
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
   APPROACH_BRAKE_MIN,
@@ -107,6 +106,162 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   should_release_creep_stop_hold,
 )
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
+
+
+class FakeVelocityFilter:
+  def __init__(self, x):
+    self.x = x
+
+  def update(self, v_ego):
+    return v_ego
+
+
+class FakeMpc:
+  def __init__(self):
+    self.source = long_mpc.LongitudinalPlanSource.cruise
+    self.crash_cnt = 0
+    self.solve_time = 0.0
+    self.v_solution = np.zeros(N + 1)
+    self.a_solution = np.zeros(N + 1)
+    self.j_solution = np.zeros(N)
+
+  def set_weights(self, *args, **kwargs):
+    pass
+
+  def set_cur_state(self, *args):
+    pass
+
+  def update(self, *args, **kwargs):
+    pass
+
+
+def patch_planner_sp(monkeypatch):
+  monkeypatch.setattr(longitudinal_planner.LongitudinalPlannerSP, "update", lambda _planner, _sm: None)
+  monkeypatch.setattr(
+    longitudinal_planner.LongitudinalPlannerSP,
+    "update_targets",
+    lambda _planner, _sm, _v_ego, a_ego, v_cruise: (v_cruise, a_ego),
+  )
+
+
+def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
+  planner = longitudinal_planner.LongitudinalPlanner.__new__(longitudinal_planner.LongitudinalPlanner)
+  planner.CP = SimpleNamespace(
+    openpilotLongitudinalControl=True,
+    steerRatio=15.0,
+    wheelbase=2.7,
+    longitudinalActuatorDelay=0.0,
+    vEgoStopping=0.5,
+  )
+  planner.mpc = FakeMpc()
+  planner.fcw = False
+  planner.dt = longitudinal_planner.DT_MDL
+  planner.allow_throttle = True
+  planner.a_desired = 0.0
+  planner.v_desired_filter = FakeVelocityFilter(v_ego)
+  planner.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
+  planner.output_a_target = 0.0
+  planner.output_should_stop = False
+  planner.creep_to_stop_gap_active = False
+  planner.creep_stop_hold_released = False
+  planner.stopped_lead_gap_fill_timer = gap_fill_timer
+  planner.lead_loss_e2e_guard_timer = 0.0
+  planner.previous_lead_loss_status = False
+  planner.previous_lead_loss_d_rel = 0.0
+  planner.previous_lead_loss_model_prob = 0.0
+  planner.dec = SimpleNamespace(active=lambda: False)
+  planner.source = custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
+  return planner
+
+
+def make_model_action(desired_accel=-1.0, should_stop=True):
+  return SimpleNamespace(
+    action=SimpleNamespace(desiredAcceleration=desired_accel, shouldStop=should_stop),
+    position=SimpleNamespace(x=[]),
+    velocity=SimpleNamespace(x=[]),
+    acceleration=SimpleNamespace(x=[]),
+    meta=SimpleNamespace(disengagePredictions=SimpleNamespace(gasPressProbs=[0.0, 1.0]), laneChangeState=log.LaneChangeState.off),
+    leadsV3=[],
+  )
+
+
+def make_planner_sm(v_ego, lead, desired_accel=-1.0, should_stop=True):
+  return {
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False), orientationNED=[0.0, 0.0, 0.0]),
+    'carState': SimpleNamespace(
+      vEgo=v_ego,
+      vCruise=30.0,
+      vCruiseCluster=30.0,
+      standstill=v_ego < 0.01,
+      steeringAngleDeg=0.0,
+      aEgo=0.0,
+      brakePressed=False,
+      gasPressed=False,
+    ),
+    'controlsState': SimpleNamespace(longControlState=longitudinal_planner.LongCtrlState.pid, forceDecel=False),
+    'selfdriveState': SimpleNamespace(enabled=True, experimentalMode=True, personality=log.LongitudinalPersonality.standard),
+    'liveParameters': SimpleNamespace(angleOffsetDeg=0.0),
+    'modelV2': make_model_action(desired_accel, should_stop),
+    'radarState': SimpleNamespace(leadOne=lead, leadTwo=SimpleNamespace(status=False)),
+  }
+
+
+def test_e2e_should_stop_survives_positive_creep_pullaway(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=0.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=STOP_DISTANCE + 0.6,
+    vLeadK=0.8,
+    modelProb=1.0,
+    aLeadK=0.0,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.0, lead, desired_accel=-1.0, should_stop=True))
+
+  assert planner.output_should_stop
+  assert planner.output_a_target < 0.0
+
+
+def test_e2e_should_stop_survives_positive_gap_fill(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=STOP_DISTANCE + STOPPED_LEAD_GAP_FILL_MIN_EXCESS + 5.0,
+    vLeadK=0.0,
+    modelProb=1.0,
+    aLeadK=0.0,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.0, lead, desired_accel=-1.0, should_stop=True))
+
+  assert planner.output_should_stop
+  assert planner.output_a_target < 0.0
+
+
+def test_e2e_decel_survives_lead_accel_recovery(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=2.2)
+  planner.mpc.v_solution = np.full(N + 1, 2.2)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=15.0,
+    vLeadK=4.2,
+    modelProb=1.0,
+    aLeadK=0.9,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(2.2, lead, desired_accel=-0.8, should_stop=False))
+
+  assert planner.mpc.source == long_mpc.LongitudinalPlanSource.e2e
+  assert planner.output_a_target == pytest.approx(-0.8)
 
 
 def stop_distance_buffer(v_ego):
