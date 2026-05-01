@@ -6,6 +6,7 @@ from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
@@ -472,6 +473,82 @@ def test_moving_lead_stop_reserve_tapers_to_fixed_stop_gap():
   assert get_moving_lead_stop_reserve(8.0, 0.0, 2.0, 0.0) == pytest.approx(0.0)
 
 
+def test_slow_moving_lead_runway_relaxation_reaches_one_meter_for_controlled_roll():
+  relaxation_fn = getattr(long_mpc, "get_slow_moving_lead_runway_relaxation", None)
+  assert relaxation_fn is not None
+
+  relaxation = relaxation_fn(v_ego=3.0, v_lead=1.0, closing_speed=0.4, a_lead=-0.8)
+
+  assert relaxation == pytest.approx(1.0)
+
+
+def test_slow_moving_lead_runway_relaxation_stays_off_for_stopped_and_fast_leads():
+  relaxation_fn = getattr(long_mpc, "get_slow_moving_lead_runway_relaxation", None)
+  assert relaxation_fn is not None
+
+  assert relaxation_fn(v_ego=3.0, v_lead=0.0, closing_speed=0.4, a_lead=-0.8) == pytest.approx(0.0)
+  assert relaxation_fn(v_ego=12.0, v_lead=8.0, closing_speed=0.4, a_lead=-0.8) == pytest.approx(0.0)
+
+
+def test_slow_moving_lead_runway_relaxation_fades_for_urgent_closure():
+  relaxation_fn = getattr(long_mpc, "get_slow_moving_lead_runway_relaxation", None)
+  assert relaxation_fn is not None
+
+  assert relaxation_fn(v_ego=6.0, v_lead=1.0, closing_speed=5.0, a_lead=-0.8) == pytest.approx(0.0)
+
+
+def test_slow_moving_lead_runway_relaxation_is_vectorized_and_bounded(monkeypatch):
+  monkeypatch.setattr(long_mpc, "SLOW_MOVING_LEAD_RUNWAY_RELAXATION_MAX", 2.0)
+
+  relaxations = long_mpc.get_slow_moving_lead_runway_relaxation(
+    v_ego=np.array([3.0, 3.0, 6.0, 12.0]),
+    v_lead=np.array([0.0, 1.0, 1.0, 8.0]),
+    closing_speed=np.array([0.4, 0.4, 5.0, 0.4]),
+    a_lead=np.array([-0.8, -0.8, -0.8, -0.8]),
+  )
+
+  np.testing.assert_allclose(relaxations, [0.0, 1.0, 0.0, 0.0])
+
+
+def test_stop_runway_blend_normalizes_to_capped_relaxation(monkeypatch):
+  monkeypatch.setattr(long_mpc, "SLOW_MOVING_LEAD_RUNWAY_RELAXATION_MAX", 2.0)
+
+  blend = get_lead_stop_runway_blend(v_ego=1.0, v_lead=2.0, a_lead=0.0, closing_speed=0.0)
+
+  assert blend == pytest.approx(1.0)
+
+
+def test_steady_slow_moving_lead_gets_stop_runway_preference():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 3.0
+  v_lead = 1.0
+  x_lead = 12.0
+
+  preference = get_lead_stop_runway_preference(x_lead, v_ego, v_lead, t_follow, a_lead=0.0)
+
+  assert preference > 0.0
+
+
+def test_low_speed_slowing_lead_runway_can_use_one_meter_relaxed_floor():
+  v_ego = 0.5
+  v_lead = 1.1
+  a_lead = -0.8
+  closing_speed = 0.0
+
+  assert get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead) == pytest.approx(STOP_DISTANCE - 1.0)
+
+
+def test_urgent_slow_moving_lead_runway_keeps_full_stop_floor_and_decel():
+  x_lead = 7.0
+  v_ego = 5.0
+  v_lead = 1.0
+  a_lead = -0.8
+  closing_speed = v_ego - v_lead
+
+  assert get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead) >= STOP_DISTANCE
+  assert get_lead_stop_runway_required_decel(x_lead, v_ego, v_lead, closing_speed, a_lead) > LEAD_STOP_RUNWAY_BRAKE
+
+
 def test_approach_runway_blend_uses_stop_runway_for_slowing_lead():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   assert get_approach_runway_blend(40.0, 20.0, 15.0, t_follow, a_lead=0.0) == pytest.approx(0.0)
@@ -495,10 +572,12 @@ def test_low_speed_slowing_lead_runway_accounts_for_lead_stop_point():
   a_lead = -0.8
   closing_speed = v_ego - v_lead
   reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
-  expected_gap = STOP_DISTANCE + reserve + v_ego**2 / (2 * LEAD_STOP_RUNWAY_BRAKE) - get_stopped_equivalence_factor(v_lead)
+  relaxation = long_mpc.get_slow_moving_lead_runway_relaxation(v_ego, v_lead, closing_speed, a_lead)
+  stop_floor = STOP_DISTANCE - relaxation
+  expected_gap = stop_floor + reserve + v_ego**2 / (2 * LEAD_STOP_RUNWAY_BRAKE) - get_stopped_equivalence_factor(v_lead)
 
   assert get_lead_stop_runway_blend(v_ego, v_lead, a_lead) > 0.0
-  assert get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead) == pytest.approx(max(STOP_DISTANCE, expected_gap))
+  assert get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead) == pytest.approx(max(stop_floor, expected_gap))
 
 
 def test_stop_runway_preference_fades_for_urgent_short_runway():

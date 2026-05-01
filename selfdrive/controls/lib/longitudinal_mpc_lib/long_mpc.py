@@ -124,6 +124,12 @@ MOVING_LEAD_STOP_RESERVE_V_EGO_BP = [0.2, 3.0]
 MOVING_LEAD_STOP_RESERVE_V_LEAD_BP = [0.1, 1.5]
 MOVING_LEAD_STOP_RESERVE_CLOSING_BP = [0.1, 1.5]
 MOVING_LEAD_STOP_RESERVE_DECEL_BP = [0.05, 0.5]
+SLOW_MOVING_LEAD_RUNWAY_RELAXATION_MAX = 1.0
+SLOW_MOVING_LEAD_RUNWAY_RELAXATION_CAP = 1.0
+SLOW_MOVING_LEAD_RUNWAY_RELAXATION_V_EGO_BP = [0.1, 0.5]
+SLOW_MOVING_LEAD_RUNWAY_RELAXATION_V_LEAD_BP = [0.1, 0.8, 2.5, 4.0]
+SLOW_MOVING_LEAD_RUNWAY_RELAXATION_CLOSING_BP = [1.0, 3.0]
+SLOW_MOVING_LEAD_RUNWAY_RELAXATION_DECEL_BP = [0.0, 0.5]
 LEAD_ACCEL_MATCH_COST = 2.0
 LEAD_ACCEL_MATCH_MIN_ABS_ACCEL = 0.05
 LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND = 0.25
@@ -276,22 +282,37 @@ def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
   legacy_runway = x_lead - get_desired_follow_distance(v_ego, v_lead, t_follow)
   closing_speed = np.maximum(v_ego - v_lead, 0.0)
   moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
-  stop_runway = x_lead + get_stopped_equivalence_factor(v_lead) - STOP_DISTANCE - moving_stop_reserve
+  relaxation = get_slow_moving_lead_runway_relaxation(v_ego, v_lead, closing_speed, a_lead)
+  stop_runway = x_lead + get_stopped_equivalence_factor(v_lead) - (STOP_DISTANCE - relaxation) - moving_stop_reserve
   slowing_blend = np.interp(np.clip(-a_lead, 0.0, APPROACH_STOP_RUNWAY_DECEL_BP[-1]), APPROACH_STOP_RUNWAY_DECEL_BP, [0.0, 1.0])
   return np.clip((1.0 - slowing_blend) * legacy_runway + slowing_blend * stop_runway, 0.0, 1e8)
 
 
-def get_lead_stop_runway_blend(v_ego, v_lead, a_lead):
+def get_lead_stop_runway_blend(v_ego, v_lead, a_lead, closing_speed=None):
+  closing_speed = np.maximum(v_ego - v_lead, 0.0) if closing_speed is None else closing_speed
   low_speed_blend = np.interp(v_ego, LEAD_STOP_RUNWAY_V_EGO_BP, [1.0, 0.0])
   stopped_blend = np.interp(v_lead, LEAD_STOP_RUNWAY_V_LEAD_BP, [1.0, 0.0])
   moving_blend = np.interp(v_lead, LEAD_STOP_RUNWAY_MOVING_V_LEAD_BP, [0.0, 1.0])
   slowing_blend = np.interp(np.clip(-a_lead, 0.0, LEAD_STOP_RUNWAY_DECEL_BP[-1]), LEAD_STOP_RUNWAY_DECEL_BP, [0.0, 1.0])
-  return low_speed_blend * np.maximum(stopped_blend, moving_blend * slowing_blend)
+  relaxation_norm = max(min(SLOW_MOVING_LEAD_RUNWAY_RELAXATION_MAX, SLOW_MOVING_LEAD_RUNWAY_RELAXATION_CAP), 1e-6)
+  relaxation_blend = get_slow_moving_lead_runway_relaxation(v_ego, v_lead, closing_speed, a_lead) / relaxation_norm
+  return low_speed_blend * np.maximum(stopped_blend, moving_blend * np.maximum(slowing_blend, relaxation_blend))
+
+
+def get_slow_moving_lead_runway_relaxation(v_ego, v_lead, closing_speed, a_lead):
+  ego_blend = np.interp(v_ego, SLOW_MOVING_LEAD_RUNWAY_RELAXATION_V_EGO_BP, [0.0, 1.0])
+  lead_blend = np.interp(v_lead, SLOW_MOVING_LEAD_RUNWAY_RELAXATION_V_LEAD_BP, [0.0, 1.0, 1.0, 0.0])
+  controlled_closure_blend = 1.0 - np.interp(closing_speed, SLOW_MOVING_LEAD_RUNWAY_RELAXATION_CLOSING_BP, [0.0, 1.0])
+  lead_decel_blend = np.interp(np.clip(-a_lead, 0.0, SLOW_MOVING_LEAD_RUNWAY_RELAXATION_DECEL_BP[-1]),
+                               SLOW_MOVING_LEAD_RUNWAY_RELAXATION_DECEL_BP, [0.5, 1.0])
+  relaxation = SLOW_MOVING_LEAD_RUNWAY_RELAXATION_MAX * ego_blend * lead_blend * controlled_closure_blend * lead_decel_blend
+  return np.clip(relaxation, 0.0, SLOW_MOVING_LEAD_RUNWAY_RELAXATION_CAP)
 
 
 def get_lead_stop_runway_available(x_lead, v_ego, v_lead, closing_speed, a_lead):
   moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
-  return np.maximum(0.0, x_lead + get_stopped_equivalence_factor(v_lead) - STOP_DISTANCE - moving_stop_reserve)
+  relaxation = get_slow_moving_lead_runway_relaxation(v_ego, v_lead, closing_speed, a_lead)
+  return np.maximum(0.0, x_lead + get_stopped_equivalence_factor(v_lead) - (STOP_DISTANCE - relaxation) - moving_stop_reserve)
 
 
 def get_lead_stop_runway_required_decel(x_lead, v_ego, v_lead, closing_speed, a_lead):
@@ -311,14 +332,17 @@ def get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead):
 
 
 def get_lead_stop_runway_preference(x_lead, v_ego, v_lead, t_follow, a_lead):
-  return get_lead_stop_runway_blend(v_ego, v_lead, a_lead) * (1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead))
+  closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  return get_lead_stop_runway_blend(v_ego, v_lead, a_lead, closing_speed) * (1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead))
 
 
 def get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead):
   moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
+  relaxation = get_slow_moving_lead_runway_relaxation(v_ego, v_lead, closing_speed, a_lead)
+  stop_floor = STOP_DISTANCE - relaxation
   ego_stop_distance = v_ego**2 / (2 * LEAD_STOP_RUNWAY_BRAKE)
   lead_stop_distance = get_stopped_equivalence_factor(v_lead)
-  return np.maximum(STOP_DISTANCE, STOP_DISTANCE + moving_stop_reserve + ego_stop_distance - lead_stop_distance)
+  return np.maximum(stop_floor, stop_floor + moving_stop_reserve + ego_stop_distance - lead_stop_distance)
 
 
 def get_lead_crawl_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
