@@ -43,7 +43,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import EstimatorRejectReason, EstimatorResult
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityBand
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelMode
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelMode, TorqueModelParams
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
 
@@ -332,6 +332,26 @@ def test_v3_learned_activation_refreshes_active_torque_params_and_pid_limits():
   assert controller.pid.pos_limit != previous_pos_limit
   assert np.isclose(controller.pid.pos_limit, controller.lateral_accel_from_torque(controller.steer_max, controller.torque_params))
   assert np.isclose(controller.pid.neg_limit, controller.lateral_accel_from_torque(-controller.steer_max, controller.torque_params))
+
+
+def test_v3_live_torque_update_does_not_mutate_learned_params():
+  controller, _ = get_controller(TOYOTA.TOYOTA_RAV4)
+  learned_params = TorqueModelParams(1.1, 0.2, 0.05)
+  assert controller.model_adapter.update_learned_params(learned_params, 0.96)
+  controller.torque_params = controller.model_adapter.params
+  controller.extension.torque_params = controller.torque_params
+  controller.update_limits()
+  previous_pos_limit = controller.pid.pos_limit
+
+  controller.update_live_torque_params(4.0, 0.9, 0.8)
+
+  assert controller.model_adapter.mode == TorqueModelMode.learned
+  assert controller.torque_params is controller.model_adapter.params
+  assert controller.extension.torque_params is controller.torque_params
+  assert controller.torque_params.latAccelFactor == pytest.approx(1.1)
+  assert controller.torque_params.latAccelOffset == pytest.approx(0.2)
+  assert controller.torque_params.friction == pytest.approx(0.05)
+  assert controller.pid.pos_limit == pytest.approx(previous_pos_limit)
 
 
 def test_v3_direct_extension_model_update_resets_model_age_for_estimator():

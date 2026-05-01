@@ -14,7 +14,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist 
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_over_response_attenuator import attenuate_same_direction_over_response
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityManager, authority_fault_active
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import AdaptiveTorqueEstimator, EstimatorRejectReason, TorqueObservation
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelAdapter, TorqueModelParams
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelAdapter, TorqueModelMode, TorqueModelParams
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_safety import TorqueV3SafetyEnvelope, TorqueV3SafetyInputs
 
 
@@ -146,7 +146,7 @@ class LatControlTorque(LatControl):
     self.extension.update_lateral_lag(self.lat_delay)
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
-    if not self.native_torque:
+    if not self.native_torque or self.model_adapter.mode != TorqueModelMode.native:
       return
     self.torque_params.latAccelFactor = latAccelFactor
     self.torque_params.latAccelOffset = latAccelOffset
