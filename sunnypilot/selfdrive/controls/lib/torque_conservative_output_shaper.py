@@ -83,6 +83,8 @@ class ConservativeOutputShaperInputs:
   lookahead_lateral_jerk: float
   same_sign_unwind_release: bool
   steering_rate_deg: float = 0.0
+  steer_limit_same_direction: bool = True
+  steer_limit_unwind: bool = False
 
 
 @dataclass
@@ -139,9 +141,10 @@ class TorqueConservativeOutputShaper:
       and abs(inputs.desired_lateral_jerk) < BUMP_JERK_THRESHOLD
     )
     high_output = abs(inputs.unshaped_output) > max(inputs.max_output, 1e-3) * HIGH_OUTPUT_FRACTION
-    low_speed_steer_limited = inputs.v_ego < LOW_SPEED_THRESHOLD and inputs.steer_limited_by_safety and high_output and not output_opposes_steering_rate
+    same_direction_steer_limited = inputs.steer_limited_by_safety and inputs.steer_limit_same_direction and not inputs.steer_limit_unwind
+    low_speed_steer_limited = inputs.v_ego < LOW_SPEED_THRESHOLD and same_direction_steer_limited and high_output and not output_opposes_steering_rate
     actuator_lag_comfort = (
-      not inputs.steering_pressed and inputs.steer_limited_by_safety
+      not inputs.steering_pressed and same_direction_steer_limited
       and output_reinforces_steering_rate and steering_rate_abs > ACTUATOR_LAG_COMFORT_START
     )
     same_sign_unwind_release = inputs.same_sign_unwind_release

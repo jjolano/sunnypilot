@@ -15,9 +15,10 @@ from openpilot.selfdrive.car.helpers import convert_to_capnp
 from openpilot.selfdrive.locationd.helpers import Measurement, Pose
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShapingReason
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperResult, ConservativeOutputShapingReason
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import TorqueDisturbanceReason, TorqueDisturbanceState
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseReason
+from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import SteeringActuatorFeedback, SteeringLimitReason
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
 
@@ -500,3 +501,34 @@ def test_v2_bump_shaping_uses_raw_steering_rate_when_model_lookahead_is_zero():
   assert adaptive_log.disturbanceState == TorqueDisturbanceState.ACTIVE
   assert adaptive_log.disturbanceReason & TorqueDisturbanceReason.BUMP_JERK
   assert adaptive_log.disturbanceConfidence > 0.0
+
+
+def test_v2_signed_steer_limit_allows_clear_unwind_from_actuator_lag_cap():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 5.0
+  CS.steeringPressed = False
+  CS.steeringRateDeg = 40.0
+  params = log.LiveParametersData.new_message()
+  pose = make_pose()
+
+  class SpyShaper:
+    def __init__(self):
+      self.inputs = None
+
+    def update(self, inputs):
+      self.inputs = inputs
+      return ConservativeOutputShaperResult(inputs.unshaped_output, False, 0, 0.0, inputs.unshaped_output, 1.0)
+
+  spy = SpyShaper()
+  controller.output_shaper = spy
+
+  controller.set_steering_actuator_feedback(
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, 0.7, 0.45, 0.25, False, True)
+  )
+  controller.update(True, CS, VM, params, True, 0.005, pose, False, 0.2)
+
+  assert spy.inputs is not None
+  assert not spy.inputs.steer_limit_same_direction
+  assert spy.inputs.steer_limit_unwind

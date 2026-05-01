@@ -13,6 +13,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import La
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperInputs, TorqueConservativeOutputShaper
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import TorqueDisturbanceInputs, classify_torque_disturbance
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
+from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_direction
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_over_response_attenuator import attenuate_same_direction_over_response
 
 
@@ -240,6 +241,8 @@ class LatControlTorque(LatControl):
     )
     output_torque = assist_result.output_torque if active else 0.0
     same_sign_unwind_release = same_sign_unwind and sign(measurement) != 0.0 and sign(-output_torque) == sign(measurement)
+    steer_limit_feedback = self.steering_actuator_feedback
+    steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
     shaping_result = self.output_shaper.update(
       ConservativeOutputShaperInputs(
         active=active,
@@ -257,6 +260,8 @@ class LatControlTorque(LatControl):
         same_sign_unwind_release=same_sign_unwind_release,
         # The shaper sees pre-actuator torque; the actuator command is negated on return.
         steering_rate_deg=-CS.steeringRateDeg,
+        steer_limit_same_direction=steer_limit_same_direction if steer_limit_feedback.valid else True,
+        steer_limit_unwind=steer_limit_unwind if steer_limit_feedback.valid else False,
       )
     )
     disturbance_result = classify_torque_disturbance(

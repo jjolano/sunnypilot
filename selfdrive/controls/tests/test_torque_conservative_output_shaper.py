@@ -21,6 +21,8 @@ def make_inputs(**overrides):
     "lookahead_lateral_jerk": 0.2,
     "same_sign_unwind_release": False,
     "steering_rate_deg": 0.0,
+    "steer_limit_same_direction": True,
+    "steer_limit_unwind": False,
   }
   values.update(overrides)
   return ConservativeOutputShaperInputs(**values)
@@ -340,6 +342,25 @@ def test_actuator_lag_comfort_caps_low_speed_reinforcing_output_more_than_steeri
   assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
   assert result.output_cap <= 0.55
   assert result.output_torque <= 0.44 + 1e-6
+
+
+def test_actuator_lag_comfort_uses_signed_same_direction_limit():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steer_limit_unwind=False, steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert result.output_cap <= 0.55
+
+
+def test_actuator_lag_comfort_allows_signed_unwind():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=False,
+                                       steer_limit_unwind=True, steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72))
+
+  assert not result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert result.output_cap > 0.55
 
 
 def test_actuator_lag_comfort_uses_moderate_cap_at_mid_speed():

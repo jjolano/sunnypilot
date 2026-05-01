@@ -44,6 +44,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import EstimatorRejectReason, EstimatorResult
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityBand
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelMode, TorqueModelParams
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperResult
+from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import SteeringActuatorFeedback, SteeringLimitReason
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
 
@@ -112,6 +114,37 @@ def make_flat_model_v2():
 
 def test_v3_controller_alias_matches_controller_symbol():
   assert LatControlTorqueV3 is LatControlTorque
+
+
+def test_v3_signed_steer_limit_reaches_safety_shaper():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 5.0
+  CS.steeringPressed = False
+  CS.steeringRateDeg = 40.0
+  params = log.LiveParametersData.new_message()
+  pose = make_pose()
+
+  class SpyShaper:
+    def __init__(self):
+      self.inputs = None
+
+    def update(self, inputs):
+      self.inputs = inputs
+      return ConservativeOutputShaperResult(inputs.unshaped_output, False, 0, 0.0, inputs.unshaped_output, 1.0)
+
+  spy = SpyShaper()
+  controller.safety_envelope.output_shaper = spy
+  controller.set_steering_actuator_feedback(
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, 0.7, 0.45, 0.25, False, True)
+  )
+
+  controller.update(True, CS, VM, params, True, 0.005, pose, False, 0.2)
+
+  assert spy.inputs is not None
+  assert not spy.inputs.steer_limit_same_direction
+  assert spy.inputs.steer_limit_unwind
 
 
 def test_v3_native_torque_controller_logs_model_state():

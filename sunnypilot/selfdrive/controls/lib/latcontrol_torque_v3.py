@@ -16,6 +16,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import Auth
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import AdaptiveTorqueEstimator, EstimatorRejectReason, TorqueObservation
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelAdapter, TorqueModelMode, TorqueModelParams
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_safety import TorqueV3SafetyEnvelope, TorqueV3SafetyInputs
+from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_direction
 
 
 KP = 1.0
@@ -298,6 +299,8 @@ class LatControlTorque(LatControl):
       EstimatorRejectReason.NONE,
     )
     same_sign_unwind_release = same_sign_unwind and sign(measurement) != 0.0 and sign(-output_torque) == sign(measurement)
+    steer_limit_feedback = self.steering_actuator_feedback
+    steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
     safety_result = self.safety_envelope.update(
       TorqueV3SafetyInputs(
         active=active,
@@ -316,6 +319,8 @@ class LatControlTorque(LatControl):
         authority_scale=authority_state.scale,
         # The shaper sees pre-actuator torque; the actuator command is negated on return.
         steering_rate_deg=-CS.steeringRateDeg,
+        steer_limit_same_direction=steer_limit_same_direction if steer_limit_feedback.valid else True,
+        steer_limit_unwind=steer_limit_unwind if steer_limit_feedback.valid else False,
       )
     )
     shaping_result = safety_result.shaping_result
