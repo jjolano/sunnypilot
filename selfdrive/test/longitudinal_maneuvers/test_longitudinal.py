@@ -488,6 +488,26 @@ def test_crawl_stop_go_limits_accel_surge():
   assert np.min(output[:, 6]) > STOP_DISTANCE - 1.0
 
 
+def test_creeping_lead_opens_gap_after_regular_stop_distance():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "creeping lead opens gap after stop",
+      duration=20.0,
+      initial_speed=2.5,
+      lead_relevancy=True,
+      initial_distance_lead=12.0,
+      speed_lead_values=[0.0, 0.0, 0.8, 0.8],
+      cruise_values=[5.0, 5.0, 5.0, 5.0],
+      breakpoints=[0.0, 8.0, 10.0, 20.0],
+    )
+  )
+
+  lead_creep_window = output[:, 0] >= 10.0
+  assert np.min(output[:, 6]) > STOP_DISTANCE - 0.5
+  assert np.max(output[lead_creep_window, 3]) > 0.1
+  assert output[-1, 6] <= STOP_DISTANCE + 4.5
+
+
 def test_crawl_opening_lead_uses_gentle_accel():
   output = evaluate_maneuver_output(
     Maneuver(

@@ -347,11 +347,33 @@ def test_creep_to_stop_gap_uses_stronger_accel_for_confirmed_pullaway():
   assert 0.40 <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
+def test_creep_to_stop_gap_confirmed_pullaway_can_match_no_lead_launch_cap():
+  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.7, 1.2, 1.0, False)
+
+  assert active
+  assert CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX == pytest.approx(0.55)
+  assert accel == pytest.approx(CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX)
+
+
 def test_creep_to_stop_gap_uses_firmer_floor_for_initial_pullaway():
   active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.6, 0.25, 1.0, False)
 
   assert active
-  assert 0.30 <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+  assert 0.30 <= accel <= STOPPED_LEAD_GAP_FILL_ACCEL_MAX
+
+
+def test_creep_to_stop_gap_actively_creeps_before_ten_meter_gap():
+  active, accel = get_creep_to_stop_gap_accel(0.1, STOP_DISTANCE + 3.5, 0.8, 1.0, True)
+
+  assert active
+  assert accel > 0.0
+
+
+def test_creep_to_stop_gap_stops_chasing_after_ten_meter_gap():
+  active, accel = get_creep_to_stop_gap_accel(0.1, STOP_DISTANCE + 4.5, 0.8, 1.0, True)
+
+  assert not active
+  assert accel == pytest.approx(0.0)
 
 
 def test_creep_to_stop_gap_uses_soft_release_before_pullaway():
@@ -375,7 +397,19 @@ def test_creep_to_stop_gap_smooths_confirmed_pullaway_step():
   active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, 0.8, 1.0, False)
 
   assert active
-  assert 0.30 <= accel <= 0.45
+  assert 0.30 <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+
+
+def test_creep_to_stop_gap_exits_stopped_gap_window_after_four_meter_excess():
+  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 4.0, 1.2, 1.0, False)
+
+  assert active
+  assert accel == pytest.approx(CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX)
+
+  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 4.01, 1.2, 1.0, False)
+
+  assert not active
+  assert accel == pytest.approx(0.0)
 
 
 def test_creep_to_stop_gap_uses_predicted_pullaway_before_speed_threshold():
@@ -764,11 +798,27 @@ def test_stop_runway_blend_stays_off_at_higher_speed():
   assert get_approach_runway_blend(12.0, 8.0, 0.0, t_follow, a_lead=0.0) == pytest.approx(0.0)
 
 
-def test_crawl_comfort_uses_mild_brake_for_non_urgent_slowing_lead():
+def test_crawl_comfort_stays_off_above_regular_stop_gap():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   target, cost = get_lead_crawl_comfort_target(12.0, 4.0, 3.2, -0.4, t_follow)
 
-  assert -LEAD_CRAWL_BRAKE_MAX <= target < -0.1
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_crawl_comfort_does_not_stage_closing_slowing_lead_at_ten_meters():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(STOP_DISTANCE + 4.0, 3.0, 1.0, -1.0, t_follow)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_crawl_comfort_still_brakes_near_regular_stop_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(STOP_DISTANCE + 0.6, 1.5, 0.6, -0.5, t_follow)
+
+  assert -LEAD_CRAWL_BRAKE_MAX <= target < 0.0
   assert cost > 0.0
 
 
@@ -790,10 +840,18 @@ def test_crawl_comfort_stays_off_for_stopped_lead_runway():
 
 def test_crawl_comfort_uses_gentle_accel_for_opening_lead():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
-  target, cost = get_lead_crawl_comfort_target(12.0, 3.0, 4.2, 0.3, t_follow)
+  target, cost = get_lead_crawl_comfort_target(STOP_DISTANCE + 3.5, 3.0, 4.2, 0.3, t_follow)
 
   assert 0.0 < target <= LEAD_CRAWL_ACCEL_MAX
   assert cost > 0.0
+
+
+def test_crawl_comfort_stops_chasing_opening_lead_after_ten_meters():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_crawl_comfort_target(STOP_DISTANCE + 4.5, 0.0, 1.0, 0.2, t_follow)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
 
 
 def test_crawl_comfort_disables_outside_crawl_band():
@@ -808,6 +866,7 @@ def test_crawl_comfort_disables_outside_crawl_band():
 def test_crawl_accel_limit_only_applies_to_opening_lead():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
 
+  assert get_lead_crawl_accel_max(STOP_DISTANCE + 4.0, 3.0, 4.5, 0.3, t_follow) == pytest.approx(LEAD_CRAWL_ACCEL_LIMIT)
   assert get_lead_crawl_accel_max(12.0, 3.0, 4.5, 0.3, t_follow) == pytest.approx(LEAD_CRAWL_ACCEL_LIMIT)
   assert get_lead_crawl_accel_max(12.0, 3.0, 3.0, 0.0, t_follow) == pytest.approx(ACCEL_MAX)
   assert get_lead_crawl_accel_max(30.0, 3.0, 4.5, 0.3, t_follow) == pytest.approx(ACCEL_MAX)
