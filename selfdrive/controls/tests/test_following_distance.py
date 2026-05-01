@@ -160,6 +160,8 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.a_desired = 0.0
   planner.v_desired_filter = FakeVelocityFilter(v_ego)
   planner.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
+  planner.prev_reset_state = False
+  planner.engage_stop_bootstrap_timer = 0.0
   planner.output_a_target = 0.0
   planner.output_should_stop = False
   planner.creep_to_stop_gap_active = False
