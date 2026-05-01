@@ -502,6 +502,29 @@ def test_stopped_lead_approach_uses_earlier_moderate_brake():
   assert output[stopped_idxs[0], 6] == pytest.approx(5.8, abs=0.4)
 
 
+def test_confirmed_moving_lead_stop_brakes_before_runway_collapse():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "confirmed moving lead stop",
+      duration=24.0,
+      initial_speed=18.0,
+      lead_relevancy=True,
+      initial_distance_lead=55.0,
+      speed_lead_values=[18.0, 18.0, 0.0, 0.0],
+      cruise_values=[20.0, 20.0, 20.0, 20.0],
+      breakpoints=[0.0, 2.0, 20.0, 24.0],
+    )
+  )
+
+  confirmed_decel_window = (output[:, 0] >= 3.0) & (output[:, 0] <= 5.0)
+  stopped_idxs = np.where(output[:, 3] < 0.03)[0]
+  assert len(stopped_idxs) > 0
+
+  assert np.max(output[confirmed_decel_window, 5]) < 0.2
+  assert np.min(output[:, 5]) > -2.0
+  assert output[stopped_idxs[0], 6] > STOP_DISTANCE - 1.0
+
+
 def test_crawl_stop_go_limits_accel_surge():
   output = evaluate_maneuver_output(
     Maneuver(
