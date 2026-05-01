@@ -15,6 +15,7 @@ import tempfile
 import pytest
 from pytest_mock import MockerFixture
 
+from openpilot.common.params import ParamKeyFlag, Params
 from openpilot.sunnypilot.system.tailscale import (
   TAILSCALE_CURRENT_LINK,
   TAILSCALE_ROOT,
@@ -65,6 +66,20 @@ def add_tar_file(tar: tarfile.TarFile, name: str, data: bytes) -> None:
 
 class TestTailscaleConstants:
   """Verify path helpers and URL builders produce correct strings."""
+
+  def test_tailscaled_pid_survives_manager_start_clear(self):
+    params = Params()
+    try:
+      params.put("TailscaledPid", 123)
+      params.put("TailscaleState", "Running")
+
+      params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
+
+      assert params.get("TailscaledPid") == 123
+      assert params.get("TailscaleState") is None
+    finally:
+      params.remove("TailscaledPid")
+      params.remove("TailscaleState")
 
   def test_paths_under_data_tailscale(self):
     assert TAILSCALE_ROOT == "/data/tailscale"

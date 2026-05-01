@@ -279,7 +279,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // Tailscale VPN
     {"EnableTailscale", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"TailscaledPid", {CLEAR_ON_MANAGER_START, INT}},
+    {"TailscaledPid", {PERSISTENT, INT}},
     {"TailscaleState", {CLEAR_ON_MANAGER_START, STRING}},
     {"TailscaleAuthURL", {CLEAR_ON_MANAGER_START | DONT_LOG, STRING}},
     {"TailscaleLastError", {CLEAR_ON_MANAGER_START, STRING}},
