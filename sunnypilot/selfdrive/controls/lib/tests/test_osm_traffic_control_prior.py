@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.controls.lib.osm_traffic_control_prior import (
   OsmTrafficControlPrior,
@@ -89,6 +91,24 @@ def test_traffic_control_prior_accepts_current_traffic_signal_alias():
   assert prior.active
   assert prior.control_type == "traffic_signals"
   assert prior.output_v_target == TRAFFIC_CONTROL_CAUTION_SPEED
+
+
+def test_traffic_control_prior_prefers_nearer_current_control_over_far_ahead_control():
+  prior = OsmTrafficControlPrior()
+  map_data = SimpleNamespace(
+    trafficControlAheadValid=True,
+    trafficControlAhead="traffic_light",
+    trafficControlAheadDistance=120.0,
+    trafficControlValid=True,
+    trafficControl="stop_sign",
+    trafficControlDistance=30.0,
+  )
+
+  prior.update(make_sm(map_data, make_model(stop_distance=32.0)), True, False, 15.0, 0.0)
+
+  assert prior.active
+  assert prior.control_type == "stop_sign"
+  assert prior.distance == pytest.approx(30.0)
 
 
 def test_traffic_control_prior_ignores_unsupported_control_type():

@@ -73,10 +73,15 @@ class OsmTrafficControlPrior:
        getattr(map_data, "trafficControlDistance", 0.0)),
     )
 
+    supported_candidates = []
     for valid, control_type, distance in candidates:
       normalized = normalize_traffic_control(control_type)
       if valid and normalized in SUPPORTED_TRAFFIC_CONTROLS:
-        return normalized, max(0.0, float(distance))
+        supported_candidates.append((max(0.0, float(distance)), normalized))
+
+    if supported_candidates:
+      distance, normalized = min(supported_candidates, key=lambda candidate: candidate[0])
+      return normalized, distance
 
     return "", 0.0
 
