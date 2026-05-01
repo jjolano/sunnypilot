@@ -401,6 +401,14 @@ class LatControlTorque(LatControl):
     adaptive_log.residualError = float(estimator_result.residual_error)
     adaptive_log.sampleAccepted = bool(estimator_result.sample_accepted)
     adaptive_log.sampleRejectReason = int(estimator_result.reject_reason)
+    adaptive_log.steerLimitValid = bool(steer_limit_feedback.valid)
+    adaptive_log.steerLimitLimited = bool(steer_limit_feedback.limited)
+    adaptive_log.steerLimitReason = int(steer_limit_feedback.reason)
+    adaptive_log.steerLimitRequested = float(steer_limit_feedback.requested)
+    adaptive_log.steerLimitApplied = float(steer_limit_feedback.applied)
+    adaptive_log.steerLimitError = float(steer_limit_feedback.error)
+    adaptive_log.steerLimitSameDirection = bool(steer_limit_same_direction)
+    adaptive_log.steerLimitUnwind = bool(steer_limit_unwind)
     saturation_check = safety_result.authority_limited or same_frame_authority_limited or self.steer_max - abs(output_torque) < 1e-3
     pid_log.saturated = bool(self._check_saturation(saturation_check, CS, steer_limited_by_safety, curvature_limited))
     self.model_age += self.dt

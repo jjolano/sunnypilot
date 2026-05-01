@@ -888,6 +888,14 @@ struct ControlsState @0x97ff69c53601abf1 {
       disturbanceState @28 :UInt8;  # 0 none, 1 suspected, 2 active.
       disturbanceReason @29 :UInt32;  # TorqueDisturbanceReason bitmask.
       disturbanceConfidence @30 :Float32;
+      steerLimitValid @31 :Bool;
+      steerLimitLimited @32 :Bool;
+      steerLimitReason @33 :UInt32;  # SteeringLimitReason bitmask.
+      steerLimitRequested @34 :Float32;
+      steerLimitApplied @35 :Float32;
+      steerLimitError @36 :Float32;
+      steerLimitSameDirection @37 :Bool;
+      steerLimitUnwind @38 :Bool;
     }
 
     adaptiveTorqueState @13 :AdaptiveTorqueState;

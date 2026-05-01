@@ -532,3 +532,28 @@ def test_v2_signed_steer_limit_allows_clear_unwind_from_actuator_lag_cap():
   assert spy.inputs is not None
   assert not spy.inputs.steer_limit_same_direction
   assert spy.inputs.steer_limit_unwind
+
+
+def test_v2_logs_signed_steer_limit_feedback():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 5.0
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+  pose = make_pose()
+
+  controller.set_steering_actuator_feedback(
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, 0.7, 0.45, 0.25, False, True)
+  )
+  _, _, lac_log = controller.update(True, CS, VM, params, True, 0.005, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.steerLimitValid
+  assert adaptive_log.steerLimitLimited
+  assert adaptive_log.steerLimitReason == SteeringLimitReason.ACTUATOR_MISMATCH
+  assert adaptive_log.steerLimitRequested == pytest.approx(0.7)
+  assert adaptive_log.steerLimitApplied == pytest.approx(0.45)
+  assert adaptive_log.steerLimitError == pytest.approx(0.25)
+  assert not adaptive_log.steerLimitSameDirection
+  assert adaptive_log.steerLimitUnwind
