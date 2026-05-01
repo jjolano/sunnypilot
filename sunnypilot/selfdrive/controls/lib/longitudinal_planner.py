@@ -32,7 +32,8 @@ def _select_lower_target(selected_source, selected_v_target, selected_a_target, 
 def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control):
   selected_source = LongitudinalPlanSource.cruise
   if speed_limit_active:
-    selected_v_target, selected_a_target = speed_limit_assist
+    selected_v_target = speed_limit_assist[0]
+    selected_a_target = cruise[1]
   else:
     selected_v_target, selected_a_target = cruise
 
@@ -93,7 +94,8 @@ class LongitudinalPlannerSP:
     # Speed Limit Assist
     has_speed_limit = self.resolver.speed_limit_valid or self.resolver.speed_limit_last_valid
     self.sla.update(long_enabled, long_override, v_ego, a_ego, v_cruise_cluster, self.resolver.speed_limit,
-                    self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp)
+                    self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp,
+                    coast_accel=coast_accel)
 
     self.osm_traffic_control_prior.update(sm, long_enabled, long_override, v_ego, a_ego)
 

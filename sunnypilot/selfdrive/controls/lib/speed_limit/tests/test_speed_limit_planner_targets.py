@@ -36,7 +36,7 @@ def test_target_selection_tie_prefers_cruise_when_speed_limit_auto_active():
 
   assert source == LongitudinalPlanSource.cruise
   assert v_target == 20.0
-  assert a_target == 0.4
+  assert a_target == 0.1
 
 
 def test_speed_limit_auto_tie_uses_manual_cruise_acceleration_seed():
@@ -86,7 +86,7 @@ class FakeSpeedLimitAssist:
   output_v_target = 30.0
   output_a_target = -0.4
 
-  def update(self, *args):
+  def update(self, *args, **kwargs):
     pass
 
 

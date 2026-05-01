@@ -18,10 +18,6 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_comfort import (
-  apply_speed_limit_comfort_accel,
-  should_apply_speed_limit_comfort_accel,
-)
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0.0, 10.0, 25.0, 40.0]
@@ -660,10 +656,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       reset_state, force_slow_decel, e2e_active, has_lead, self.output_should_stop, self.source
     ):
       output_a_target = apply_cruise_coast_overspeed(v_ego, v_cruise, cruise_coast_accel, output_a_target)
-    if should_apply_speed_limit_comfort_accel(reset_state, force_slow_decel, e2e_active, has_lead,
-                                              self.output_should_stop, self.source):
-      output_a_target = apply_speed_limit_comfort_accel(v_ego, v_cruise, speed_limit_coast_accel, output_a_target)
-
     self.previous_lead_loss_status = bool(lead_one.status)
     self.previous_lead_loss_d_rel = float(lead_one.dRel) if lead_one.status else 0.0
     self.previous_lead_loss_model_prob = float(lead_one.modelProb) if lead_one.status else 0.0

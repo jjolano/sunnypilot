@@ -4,24 +4,27 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import math
 import time
 
 from cereal import custom, car
 from openpilot.common.params import Params
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
-from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import PCM_LONG_REQUIRED_MAX_SET_SPEED, CONFIRM_SPEED_THRESHOLD
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import (
+  CONFIRM_SPEED_THRESHOLD,
+  LIMIT_ADAPT_ACC,
+  LIMIT_COAST_MIN_DECEL,
+  PCM_LONG_REQUIRED_MAX_SET_SPEED,
+)
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import compare_cluster_target, set_speed_limit_assist_availability
 
 ButtonType = car.CarState.ButtonEvent.Type
 EventNameSP = custom.OnroadEventSP.EventName
 SpeedLimitAssistState = custom.LongitudinalPlanSP.SpeedLimit.AssistState
-SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 
 ACTIVE_STATES = (SpeedLimitAssistState.active, SpeedLimitAssistState.adapting)
 ENABLED_STATES = (SpeedLimitAssistState.preActive, SpeedLimitAssistState.pending, *ACTIVE_STATES)
@@ -32,15 +35,10 @@ PRE_ACTIVE_GUARD_PERIOD = {
   True: 15,
   False: 5,
 }
-SPEED_LIMIT_CHANGED_HOLD_PERIOD = 1  # secs. Time to wait after speed limit change before switching to preActive.
 
-LIMIT_MIN_ACC = -1.5  # m/s^2 Maximum deceleration allowed for limit controllers to provide.
-LIMIT_MAX_ACC = 0.7   # m/s^2 Maximum acceleration allowed for limit controllers to provide while active.
-LIMIT_ACCEL_EGO_MARGIN = 0.6  # m/s^2 Keep SLA's planner seed near the measured acceleration.
-LIMIT_ACCEL_RATE_UP = 0.6     # m/s^3 Maximum positive target acceleration rate.
-LIMIT_ACCEL_RATE_DOWN = 1.5   # m/s^3 Maximum negative target acceleration rate.
 LIMIT_MIN_SPEED = 8.33  # m/s, Minimum speed limit to provide as solution on limit controllers.
 LIMIT_SPEED_OFFSET_TH = -1.  # m/s Maximum offset between speed limit and current speed for adapting state.
+SPEED_LIMIT_SETPOINT_ACCEL_UP = 0.4  # m/s^2 Maximum speed-limit setpoint ramp-up rate.
 V_CRUISE_UNSET = 255.
 
 CRUISE_BUTTONS_PLUS = (ButtonType.accelCruise, ButtonType.resumeCruise)
@@ -87,6 +85,7 @@ class SpeedLimitAssist:
     self._has_speed_limit = False
     self._speed_limit = 0.
     self._speed_limit_final_last = 0.
+    self.coast_accel: float | None = None
     self.speed_limit_prev = 0.
     self.speed_limit_final_last_conv = 0
     self.prev_speed_limit_final_last_conv = 0
@@ -102,16 +101,6 @@ class SpeedLimitAssist:
     self._manual_cruise_button_pressed = False
     self._gap_button_frames = 0
     self._gap_button_long_press_consumed = False
-
-    # Solution functions mapped to respective states
-    self.acceleration_solutions = {
-      SpeedLimitAssistState.disabled: self.get_current_acceleration_as_target,
-      SpeedLimitAssistState.inactive: self.get_current_acceleration_as_target,
-      SpeedLimitAssistState.preActive: self.get_current_acceleration_as_target,
-      SpeedLimitAssistState.pending: self.get_current_acceleration_as_target,
-      SpeedLimitAssistState.adapting: self.get_adapting_state_target_acceleration,
-      SpeedLimitAssistState.active: self.get_active_state_target_acceleration,
-    }
 
   @property
   def speed_limit_changed(self) -> bool:
@@ -134,32 +123,42 @@ class SpeedLimitAssist:
 
   def get_v_target_from_control(self) -> float:
     if self.auto_enabled and not self.long_override and self._has_speed_limit:
-      return self._speed_limit_final_last
+      return self.get_speed_limit_setpoint()
 
     # Fallback
     return V_CRUISE_UNSET
 
-  def get_a_target_from_control(self) -> float:
-    if not self.auto_enabled or self.long_override or not self._has_speed_limit:
+  def get_a_target_from_control(self, previous_v_target: float) -> float:
+    if self.output_v_target == V_CRUISE_UNSET or previous_v_target == V_CRUISE_UNSET:
       return self.a_ego
 
-    a_target = self.acceleration_solutions.get(self.state, self.get_current_acceleration_as_target)()
-    return self.get_limited_target_acceleration(a_target)
+    return (self.output_v_target - previous_v_target) / DT_MDL
 
-  def get_limited_target_acceleration(self, a_target: float) -> float:
-    a_target = float(max(LIMIT_MIN_ACC, min(LIMIT_MAX_ACC, a_target)))
-    a_target = float(max(self.a_ego - LIMIT_ACCEL_EGO_MARGIN, min(self.a_ego + LIMIT_ACCEL_EGO_MARGIN, a_target)))
+  def get_previous_setpoint(self) -> float:
+    if self.output_v_target != V_CRUISE_UNSET and self.output_v_target > 0.:
+      return self.output_v_target
+    if self.v_cruise_cluster > 0.:
+      return self.v_cruise_cluster
+    return self._speed_limit_final_last
 
-    if self._state_prev not in ACTIVE_STATES or not self.long_enabled_prev:
-      prev_target = float(max(LIMIT_MIN_ACC, min(LIMIT_MAX_ACC, self.a_ego)))
-    else:
-      prev_target = self.output_a_target
-      if abs(prev_target - self.a_ego) > LIMIT_ACCEL_EGO_MARGIN:
-        prev_target = float(max(LIMIT_MIN_ACC, min(LIMIT_MAX_ACC, self.a_ego)))
+  def get_setpoint_ramp_accel(self) -> float:
+    if self.coast_accel is not None and self.coast_accel < LIMIT_COAST_MIN_DECEL:
+      return abs(self.coast_accel)
+    return abs(LIMIT_ADAPT_ACC)
 
-    rate = LIMIT_ACCEL_RATE_UP if a_target > prev_target else LIMIT_ACCEL_RATE_DOWN
-    step = rate * DT_MDL
-    return float(max(prev_target - step, min(prev_target + step, a_target)))
+  def get_speed_limit_setpoint(self) -> float:
+    target = self._speed_limit_final_last
+    previous_target = self.get_previous_setpoint()
+
+    if target > previous_target:
+      return min(target, previous_target + SPEED_LIMIT_SETPOINT_ACCEL_UP * DT_MDL)
+
+    if self._distance <= 0.:
+      return target
+
+    ramp_accel = self.get_setpoint_ramp_accel()
+    profile_target = math.sqrt(max(target * target, target * target + 2. * ramp_accel * self._distance))
+    return max(target, min(previous_target, profile_target))
 
   def update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
@@ -237,18 +236,6 @@ class SpeedLimitAssist:
     # - new speed limit >= CST: auto change
     # - new speed limit < CST: user confirmation required
     return bool(self.speed_limit_final_last_conv < CONFIRM_SPEED_THRESHOLD[self.is_metric])
-
-  def get_current_acceleration_as_target(self) -> float:
-    return self.a_ego
-
-  def get_adapting_state_target_acceleration(self) -> float:
-    if self._distance > 0:
-      return (self._speed_limit_final_last ** 2 - self.v_ego ** 2) / (2. * self._distance)
-
-    return self.v_offset / float(ModelConstants.T_IDXS[CONTROL_N])
-
-  def get_active_state_target_acceleration(self) -> float:
-    return self.v_offset / float(ModelConstants.T_IDXS[CONTROL_N])
 
   def _update_confirmed_state(self):
     if self._has_speed_limit:
@@ -450,7 +437,8 @@ class SpeedLimitAssist:
           self.update_active_event(events_sp)
 
   def update(self, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float, v_cruise_cluster: float, speed_limit: float,
-             speed_limit_final_last: float, has_speed_limit: bool, distance: float, events_sp: EventsSP) -> None:
+             speed_limit_final_last: float, has_speed_limit: bool, distance: float, events_sp: EventsSP,
+             coast_accel: float | None = None) -> None:
     self.long_enabled = long_enabled
     self.long_override_prev = self.long_override
     self.long_override = long_override
@@ -461,6 +449,7 @@ class SpeedLimitAssist:
     self._speed_limit = speed_limit
     self._speed_limit_final_last = speed_limit_final_last
     self._distance = distance
+    self.coast_accel = coast_accel
 
     self.update_params()
     self.update_calculations(v_cruise_cluster)
@@ -479,7 +468,8 @@ class SpeedLimitAssist:
     self.prev_v_cruise_cluster_conv = self.v_cruise_cluster_conv
     self.prev_speed_limit_final_last_conv = self.speed_limit_final_last_conv
 
+    previous_v_target = self.output_v_target
     self.output_v_target = self.get_v_target_from_control()
-    self.output_a_target = self.get_a_target_from_control()
+    self.output_a_target = self.get_a_target_from_control(previous_v_target)
 
     self.frame += 1
