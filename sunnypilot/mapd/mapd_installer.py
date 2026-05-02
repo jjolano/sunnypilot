@@ -22,8 +22,8 @@ from openpilot.system.version import is_prebuilt
 from openpilot.sunnypilot.mapd import MAPD_PATH, MAPD_BIN_DIR
 import openpilot.system.sentry as sentry
 
-VERSION = "v1.12.0"
-URL = f"https://github.com/pfeiferj/openpilot-mapd/releases/download/{VERSION}/mapd"
+VERSION = "v2.0.6"
+URL = f"https://github.com/pfeiferj/mapd/releases/download/{VERSION}/mapd"
 
 
 def update_installed_version(version: str, params: Params = None) -> None:
@@ -124,7 +124,7 @@ class MapdInstallManager:
         return
 
       if self.wait_for_internet_connection(return_on_failure=True):
-        self._spinner.update(f"Downloading pfeiferj's mapd [{self.get_installed_version()}] => [{VERSION}].")
+        self._spinner.update(f"Downloading mapd [{self.get_installed_version()}] => [{VERSION}].")
         time.sleep(0.1)
         self.check_and_download()
       self._spinner.close()

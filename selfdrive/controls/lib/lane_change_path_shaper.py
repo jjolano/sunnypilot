@@ -10,8 +10,9 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
 LANE_CHANGE_DURATION = 5.5
-ENTRY_BLEND_DURATION = 1.0
+ENTRY_BLEND_DURATION = 1.6
 EXIT_BLEND_DURATION = 0.5
+EARLY_TURN_IN_AUTHORITY_DURATION = 1.2
 MIN_LANE_LINE_PROB = 0.6
 SOFT_FALLBACK_LANE_LINE_PROB = 0.45
 MIN_LANE_WIDTH = 3.0
@@ -84,7 +85,8 @@ class LaneChangePathShaper:
 
     reference_curvature = self._reference_curvature(inputs.v_ego)
     shaped_curvature = self._model_primary_curvature(inputs.model_curvature, reference_curvature)
-    desired_curvature = inputs.model_curvature + self.blend * (shaped_curvature - inputs.model_curvature)
+    authority = self.blend * self._early_turn_in_authority()
+    desired_curvature = inputs.model_curvature + authority * (shaped_curvature - inputs.model_curvature)
 
     if not finishing and not self.soft_fallback and self.elapsed < LANE_CHANGE_DURATION:
       self.elapsed = min(self.elapsed + self.dt, LANE_CHANGE_DURATION)
@@ -133,6 +135,12 @@ class LaneChangePathShaper:
     if model_offset * reference_offset > 0.0 and abs(model_offset) >= abs(reference_offset):
       return model_curvature
     return reference_curvature
+
+  def _early_turn_in_authority(self) -> float:
+    if self.elapsed >= EARLY_TURN_IN_AUTHORITY_DURATION:
+      return 1.0
+    progress = min(max(self.elapsed / EARLY_TURN_IN_AUTHORITY_DURATION, 0.0), 1.0)
+    return progress * progress
 
   def _hard_abort(self, inputs: LaneChangePathShaperInputs) -> bool:
     one_blinker = inputs.left_blinker != inputs.right_blinker

@@ -21,13 +21,18 @@ from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LaneChangeP
 from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
-from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
+from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
+from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import (
+  SteeringActuatorFeedback,
+  SteeringActuatorRequest,
+  build_steering_actuator_feedback,
+)
 
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
@@ -35,6 +40,11 @@ LaneChangeDirection = log.LaneChangeDirection
 TurnDirection = custom.ModelDataV2SP.TurnDirection
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
+
+
+def compute_steering_actuator_feedback(previous_request, actuators_output, steer_control_type, lat_active=True):
+  return build_steering_actuator_feedback(previous_request, actuators_output, steer_control_type,
+                                          lat_active=lat_active)
 
 
 class Controls(ControlsExt):
@@ -56,6 +66,8 @@ class Controls(ControlsExt):
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
 
     self.steer_limited_by_safety = False
+    self.steering_actuator_feedback = SteeringActuatorFeedback.invalid()
+    self._previous_steering_actuator_request: SteeringActuatorRequest | None = None
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.lateral_accel_limit_no_roll = MAX_LATERAL_ACCEL_NO_ROLL
@@ -98,18 +110,7 @@ class Controls(ControlsExt):
     steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
     self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
 
-    # Update Torque Params
-    if self.CP.lateralTuning.which() == 'torque':
-      torque_params = self.sm['liveTorqueParameters']
-      if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
-        self.LaC.update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
-                                           torque_params.frictionCoefficientFiltered)
-
-        self.LaC.extension.update_limits()
-
-      self.LaC.extension.update_model_v2(self.sm['modelV2'])
-
-      self.LaC.extension.update_lateral_lag(self.lat_delay)
+    self.update_lateral_controller_inputs()
 
     long_plan = self.sm['longitudinalPlan']
     model_v2 = self.sm['modelV2']
@@ -223,11 +224,14 @@ class Controls(ControlsExt):
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
+    self.update_steering_actuator_feedback(CC.latActive, actuators)
+    self.LaC.set_steering_actuator_feedback(self.steering_actuator_feedback)
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
                                                        self.calibrated_pose, curvature_limited, lat_delay)
     actuators.torque = float(steer)
     actuators.steeringAngleDeg = float(steeringAngleDeg)
+    self._previous_steering_actuator_request = SteeringActuatorRequest.from_actuators(actuators)
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
       attr = getattr(actuators, p)
@@ -239,6 +243,42 @@ class Controls(ControlsExt):
         setattr(actuators, p, 0.0)
 
     return CC, lac_log
+
+  def update_steering_actuator_feedback(self, lat_active, actuators):
+    if not lat_active or not self.sm.valid['carOutput']:
+      self.steering_actuator_feedback = SteeringActuatorFeedback.invalid()
+    else:
+      self.steering_actuator_feedback = compute_steering_actuator_feedback(
+        self._previous_steering_actuator_request,
+        self.sm['carOutput'].actuatorsOutput,
+        self.CP.steerControlType,
+        lat_active=lat_active,
+      )
+    self.steer_limited_by_safety = self.steering_actuator_feedback.limited
+
+  def update_lateral_controller_inputs(self):
+    update_live_torque_params = getattr(self.LaC, "update_live_torque_params", None)
+    if update_live_torque_params is not None:
+      torque_params = self.sm['liveTorqueParameters']
+      if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
+        update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
+                                  torque_params.frictionCoefficientFiltered)
+        if hasattr(self.LaC, "extension"):
+          update_limits = getattr(self.LaC.extension, "update_limits", None)
+          if update_limits is not None:
+            update_limits()
+
+    update_model_v2 = getattr(self.LaC, "update_model_v2", None)
+    if update_model_v2 is None and hasattr(self.LaC, "extension"):
+      update_model_v2 = getattr(self.LaC.extension, "update_model_v2", None)
+    if update_model_v2 is not None and self.sm.updated['modelV2']:
+      update_model_v2(self.sm['modelV2'])
+
+    update_lateral_lag = getattr(self.LaC, "update_lateral_lag", None)
+    if update_lateral_lag is None and hasattr(self.LaC, "extension"):
+      update_lateral_lag = getattr(self.LaC.extension, "update_lateral_lag", None)
+    if update_lateral_lag is not None:
+      update_lateral_lag(self.lat_delay)
 
   def publish(self, CC, lac_log):
     CS = self.sm['carState']
@@ -268,14 +308,6 @@ class Controls(ControlsExt):
       hudControl.leftLaneDepart = self.sm['driverAssistance'].leftLaneDeparture
       hudControl.rightLaneDepart = self.sm['driverAssistance'].rightLaneDeparture
 
-    if self.get_lat_active(self.sm):
-      CO = self.sm['carOutput']
-      if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
-        self.steer_limited_by_safety = abs(CC.actuators.steeringAngleDeg - CO.actuatorsOutput.steeringAngleDeg) > \
-                                              STEER_ANGLE_SATURATION_THRESHOLD
-      else:
-        self.steer_limited_by_safety = abs(CC.actuators.torque - CO.actuatorsOutput.torque) > 1e-2
-
     # TODO: both controlsState and carControl valids should be set by
     #       sm.all_checks(), but this creates a circular dependency
 
@@ -295,12 +327,12 @@ class Controls(ControlsExt):
     cs.forceDecel = bool((self.sm['driverMonitoringState'].awarenessStatus < 0.) or
                          (self.sm['selfdriveState'].state == State.softDisabling))
 
-    lat_tuning = self.CP.lateralTuning.which()
+    lat_control_state = getattr(self.LaC, 'CONTROL_STATE', self.CP.lateralTuning.which())
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
       cs.lateralControlState.angleState = lac_log
-    elif lat_tuning == 'pid':
+    elif lat_control_state == 'pid':
       cs.lateralControlState.pidState = lac_log
-    elif lat_tuning == 'torque':
+    elif lat_control_state == 'torque':
       cs.lateralControlState.torqueState = lac_log
 
     self.pm.send('controlsState', dat)
