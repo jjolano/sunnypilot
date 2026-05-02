@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   E2E_STOP_APPROACH_DECEL_MAX,
   get_e2e_stop_approach_accel,
+  has_model_stop_context,
   has_valid_radar_lead,
   should_run_engage_stop_bootstrap,
 )
@@ -15,10 +16,11 @@ def make_radar_state(lead_one=False, lead_two=False):
   )
 
 
-def make_model_msg(desired_accel=0.0, should_stop=False, endpoint_x=200.0):
+def make_model_msg(desired_accel=0.0, should_stop=False, endpoint_x=200.0, positions=None, velocities=None):
   return SimpleNamespace(
     action=SimpleNamespace(desiredAcceleration=desired_accel, shouldStop=should_stop),
-    position=SimpleNamespace(x=[0.0, endpoint_x]),
+    position=SimpleNamespace(x=positions if positions is not None else [0.0, endpoint_x]),
+    velocity=SimpleNamespace(x=velocities or []),
   )
 
 
@@ -36,12 +38,23 @@ def test_engage_stop_bootstrap_requires_timer_speed_and_no_lead():
   assert not should_run_engage_stop_bootstrap(0.5, 10.0, make_radar_state(lead_one=True), model_msg)
 
 
-def test_engage_stop_bootstrap_activates_for_negative_model_accel_without_lead():
-  assert should_run_engage_stop_bootstrap(0.5, 10.0, make_radar_state(), make_model_msg(desired_accel=-1.5))
+def test_engage_stop_bootstrap_requires_stop_context_for_negative_model_accel():
+  assert not should_run_engage_stop_bootstrap(0.5, 10.0, make_radar_state(), make_model_msg(desired_accel=-1.5))
+
+
+def test_engage_stop_bootstrap_activates_for_negative_model_accel_with_stop_endpoint():
+  model_msg = make_model_msg(desired_accel=-1.5, positions=[0.0, 12.0, 20.0], velocities=[10.0, 4.0, 0.5])
+
+  assert should_run_engage_stop_bootstrap(0.5, 10.0, make_radar_state(), model_msg)
 
 
 def test_engage_stop_bootstrap_activates_for_model_should_stop_without_lead():
   assert should_run_engage_stop_bootstrap(0.5, 10.0, make_radar_state(), make_model_msg(should_stop=True))
+
+
+def test_engage_stop_bootstrap_model_stop_context_uses_low_predicted_velocity():
+  assert has_model_stop_context(make_model_msg(positions=[0.0, 20.0], velocities=[10.0, 0.5]))
+  assert not has_model_stop_context(make_model_msg(positions=[0.0, 20.0], velocities=[10.0, 5.0]))
 
 
 def test_engage_stop_bootstrap_ignores_weak_model_stop_signal():

@@ -12,7 +12,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW, get_lead_accel_recovery_a_min
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW, get_lead_accel_recovery_a_min, get_lead_stop_presentation_distance
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
@@ -28,7 +28,8 @@ CREEP_TO_STOP_GAP_ARM_EXCESS = 0.5
 CREEP_TO_STOP_GAP_STOP_EXCESS = 0.05
 CREEP_TO_STOP_GAP_MAX_V_EGO_ARM = 0.3
 CREEP_TO_STOP_GAP_MAX_V_EGO = 1.0
-CREEP_TO_STOP_GAP_MAX_EXCESS = 10.0
+# Treat pullaway creep as a near stopped-gap behavior; farther leads return to normal MPC handling.
+CREEP_TO_STOP_GAP_MAX_EXCESS = 4.0
 CREEP_TO_STOP_GAP_MIN_LEAD_SPEED = -0.3
 CREEP_TO_STOP_GAP_MIN_MODEL_PROB = 0.5
 CREEP_TO_STOP_GAP_SPEED_MAX = 0.75
@@ -45,7 +46,7 @@ CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_ACCEL = 0.15
 CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED = 0.25
 CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = 0.5
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
-CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.45
+CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.55
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.30
 CREEP_TO_STOP_GAP_PREDICT_T = 0.8
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED = 0.35
@@ -65,6 +66,7 @@ STOPPED_LEAD_GAP_FILL_ARM_TIME = 8.0
 STOPPED_LEAD_GAP_FILL_ARM_MAX_V_EGO = 0.3
 STOPPED_LEAD_GAP_FILL_ARM_MAX_GAP_EXCESS = 0.6
 STOPPED_LEAD_GAP_FILL_ARM_MAX_LEAD_SPEED = 0.25
+# Start stopped-lead gap fill once near pullaway creep stops chasing the lead.
 STOPPED_LEAD_GAP_FILL_MIN_EXCESS = CREEP_TO_STOP_GAP_MAX_EXCESS
 STOPPED_LEAD_GAP_FILL_MAX_EXCESS = 35.0
 STOPPED_LEAD_GAP_FILL_MAX_V_EGO = 2.5
@@ -88,10 +90,13 @@ E2E_STOP_APPROACH_SHORTAGE_BP = [0.15, 0.5]
 E2E_STOP_APPROACH_DECEL_BP = [0.35, 1.15]
 E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND = 0.65
 E2E_STOP_APPROACH_DECEL_MAX = 1.2
+ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED = 1.0
 LEAD_LOSS_E2E_GUARD_TIME = 3.0
 LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR = -0.45
 LEAD_LOSS_E2E_GUARD_MIN_D_REL = 45.0
 LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB = 0.8
+STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_D_REL_DELTA = 3.0
+STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_V_LEAD_DELTA = 1.0
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -110,11 +115,23 @@ def has_valid_radar_lead(radar_state):
   return radar_state.leadOne.status or radar_state.leadTwo.status
 
 
+def has_model_stop_context(model_msg):
+  if model_msg.action.shouldStop:
+    return True
+
+  positions = list(getattr(model_msg.position, "x", []))
+  velocities = list(getattr(model_msg.velocity, "x", []))
+  return any(x > 0.0 and v <= ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED for x, v in zip(positions, velocities, strict=False))
+
+
 def should_run_engage_stop_bootstrap(timer, v_ego, radar_state, model_msg):
   if timer <= 0.0 or v_ego < ENGAGE_STOP_BOOTSTRAP_MIN_SPEED or has_valid_radar_lead(radar_state):
     return False
 
-  return bool(model_msg.action.shouldStop or model_msg.action.desiredAcceleration <= ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL)
+  return bool(
+    model_msg.action.shouldStop or
+    (model_msg.action.desiredAcceleration <= ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL and has_model_stop_context(model_msg))
+  )
 
 
 def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force_slow_decel=False,
@@ -271,8 +288,10 @@ def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_
   return predicted_v_lead, predicted_gap_opening
 
 
-def creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False):
-  gap_excess = d_rel - STOP_DISTANCE
+def creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False,
+                              a_lead=0.0):
+  stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
+  gap_excess = d_rel - stop_target
   blocked = brake_pressed or gas_pressed or force_slow_decel or model_prob < CREEP_TO_STOP_GAP_MIN_MODEL_PROB
   blocked = blocked or v_lead < CREEP_TO_STOP_GAP_MIN_LEAD_SPEED or v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO
   return blocked or gap_excess <= 0.0 or gap_excess > CREEP_TO_STOP_GAP_MAX_EXCESS
@@ -281,8 +300,9 @@ def creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed=Fa
 def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_pressed=False, gas_pressed=False,
                                 force_slow_decel=False, a_lead=0.0, a_lead_tau=0.0,
                                 model_predicted_v_lead=0.0, model_predicted_gap_opening=0.0):
-  gap_excess = d_rel - STOP_DISTANCE
-  if creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed, gas_pressed, force_slow_decel):
+  stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
+  gap_excess = d_rel - stop_target
+  if creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed, gas_pressed, force_slow_decel, a_lead):
     return False, 0.0
 
   radar_predicted_v_lead, radar_predicted_gap_opening = get_predicted_lead_pullaway(v_lead, a_lead, a_lead_tau)
@@ -312,31 +332,35 @@ def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_
   return True, float(accel)
 
 
-def should_release_creep_stop_hold(release_active, v_ego, d_rel, v_lead, a_lead, predicted_pullaway=False):
-  if v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO or d_rel <= STOP_DISTANCE + CREEP_TO_STOP_GAP_REHOLD_EXCESS:
+def should_release_creep_stop_hold(release_active, v_ego, d_rel, v_lead, a_lead, predicted_pullaway=False, model_prob=1.0):
+  stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
+  if v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO or d_rel <= stop_target + CREEP_TO_STOP_GAP_REHOLD_EXCESS:
     return False
   if release_active:
     return True
   return (
-    d_rel >= STOP_DISTANCE + CREEP_TO_STOP_GAP_HOLD_RELEASE_EXCESS and
+    d_rel >= stop_target + CREEP_TO_STOP_GAP_HOLD_RELEASE_EXCESS and
     (predicted_pullaway or v_lead >= CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_SPEED or a_lead >= CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_ACCEL)
   )
 
 
-def should_hold_creep_to_stop_gap(v_ego, d_rel, v_lead, a_lead, predicted_pullaway=False, release_active=False):
-  if should_release_creep_stop_hold(release_active, v_ego, d_rel, v_lead, a_lead, predicted_pullaway):
+def should_hold_creep_to_stop_gap(v_ego, d_rel, v_lead, a_lead, predicted_pullaway=False, release_active=False, model_prob=1.0):
+  if should_release_creep_stop_hold(release_active, v_ego, d_rel, v_lead, a_lead, predicted_pullaway, model_prob):
     return False
+  stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
   return (
     not predicted_pullaway and
     v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO and
     v_lead < CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED and
     a_lead <= 0.05 and
-    d_rel <= STOP_DISTANCE + CREEP_TO_STOP_GAP_HOLD_EXCESS
+    d_rel <= stop_target + CREEP_TO_STOP_GAP_HOLD_EXCESS
   )
 
 
-def should_arm_stopped_lead_gap_fill(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False):
-  gap_excess = d_rel - STOP_DISTANCE
+def should_arm_stopped_lead_gap_fill(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False,
+                                     a_lead=0.0):
+  stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
+  gap_excess = d_rel - stop_target
   return (
     not brake_pressed and not gas_pressed and not force_slow_decel and
     model_prob >= CREEP_TO_STOP_GAP_MIN_MODEL_PROB and
@@ -346,8 +370,10 @@ def should_arm_stopped_lead_gap_fill(v_ego, d_rel, v_lead, model_prob, brake_pre
   )
 
 
-def get_stopped_lead_gap_fill_accel(v_ego, d_rel, v_lead, model_prob, armed, brake_pressed=False, gas_pressed=False, force_slow_decel=False):
-  gap_excess = d_rel - STOP_DISTANCE
+def get_stopped_lead_gap_fill_accel(v_ego, d_rel, v_lead, model_prob, armed, brake_pressed=False, gas_pressed=False, force_slow_decel=False,
+                                    a_lead=0.0):
+  stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
+  gap_excess = d_rel - stop_target
   blocked = (
     not armed or brake_pressed or gas_pressed or force_slow_decel or
     model_prob < STOPPED_LEAD_GAP_FILL_MIN_MODEL_PROB or
@@ -364,6 +390,17 @@ def get_stopped_lead_gap_fill_accel(v_ego, d_rel, v_lead, model_prob, armed, bra
   accel = np.clip((target_speed - v_ego) * STOPPED_LEAD_GAP_FILL_ACCEL_GAIN,
                   STOPPED_LEAD_GAP_FILL_ACCEL_MIN, STOPPED_LEAD_GAP_FILL_ACCEL_MAX)
   return True, float(accel)
+
+
+def stopped_lead_gap_fill_lead_continuous(track_id, prev_track_id, d_rel, prev_d_rel, v_lead, prev_v_lead):
+  if prev_track_id == -2:
+    return False
+  if track_id >= 0 and prev_track_id >= 0 and track_id != prev_track_id:
+    return False
+  return bool(
+    abs(d_rel - prev_d_rel) <= STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_D_REL_DELTA and
+    abs(v_lead - prev_v_lead) <= STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_V_LEAD_DELTA
+  )
 
 
 class LongitudinalPlanner(LongitudinalPlannerSP):
@@ -389,6 +426,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.previous_lead_loss_status = False
     self.previous_lead_loss_d_rel = 0.0
     self.previous_lead_loss_model_prob = 0.0
+    self.stopped_lead_gap_fill_track_id = -2
+    self.stopped_lead_gap_fill_d_rel = 0.0
+    self.stopped_lead_gap_fill_v_lead = 0.0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -538,15 +578,32 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = e2e_stop_approach_a_target
       self.mpc.source = LongitudinalPlanSource.e2e
 
+    lead_track_id = int(getattr(lead_one, "radarTrackId", -2)) if lead_one.status else -2
+    lead_d_rel = float(lead_one.dRel) if lead_one.status else 0.0
+    lead_v_lead = float(lead_one.vLeadK) if lead_one.status else 0.0
     if lead_one.status and should_arm_stopped_lead_gap_fill(
-      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
+      v_ego, lead_d_rel, lead_v_lead, float(lead_one.modelProb),
       brake_pressed=sm['carState'].brakePressed,
       gas_pressed=sm['carState'].gasPressed,
       force_slow_decel=force_slow_decel or reset_state,
+      a_lead=float(lead_one.aLeadK),
     ):
       self.stopped_lead_gap_fill_timer = STOPPED_LEAD_GAP_FILL_ARM_TIME
+      self.stopped_lead_gap_fill_track_id = lead_track_id
+      self.stopped_lead_gap_fill_d_rel = lead_d_rel
+      self.stopped_lead_gap_fill_v_lead = lead_v_lead
+    elif not (lead_one.status and stopped_lead_gap_fill_lead_continuous(
+      lead_track_id, self.stopped_lead_gap_fill_track_id, lead_d_rel, self.stopped_lead_gap_fill_d_rel,
+      lead_v_lead, self.stopped_lead_gap_fill_v_lead,
+    )):
+      self.stopped_lead_gap_fill_timer = 0.0
+      self.stopped_lead_gap_fill_track_id = -2
+      self.stopped_lead_gap_fill_d_rel = 0.0
+      self.stopped_lead_gap_fill_v_lead = 0.0
     else:
       self.stopped_lead_gap_fill_timer = max(0.0, self.stopped_lead_gap_fill_timer - self.dt)
+      self.stopped_lead_gap_fill_d_rel = lead_d_rel
+      self.stopped_lead_gap_fill_v_lead = lead_v_lead
 
     model_predicted_v_lead, model_predicted_gap_opening = (
       get_model_lead_pullaway(sm['modelV2'], lead_one, v_ego) if lead_one.status else (0.0, 0.0)
@@ -578,6 +635,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       brake_pressed=sm['carState'].brakePressed,
       gas_pressed=sm['carState'].gasPressed,
       force_slow_decel=force_slow_decel or reset_state,
+      a_lead=float(lead_one.aLeadK),
     ) if lead_one.status else (False, 0.0)
     if gap_fill_active:
       if gap_fill_a_target >= 0.0:
@@ -598,15 +656,21 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     model_predicted_pullaway = not creep_to_stop_gap_blocked(
       v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
       sm['carState'].brakePressed, sm['carState'].gasPressed, force_slow_decel or reset_state,
-    ) and has_predicted_lead_pullaway(float(lead_one.dRel) - STOP_DISTANCE, model_predicted_v_lead, model_predicted_gap_opening)
+      float(lead_one.aLeadK),
+    ) and has_predicted_lead_pullaway(
+      float(lead_one.dRel) - get_lead_stop_presentation_distance(v_ego, float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.modelProb)),
+      model_predicted_v_lead, model_predicted_gap_opening,
+    )
     if lead_one.status and not sm['carState'].brakePressed and not sm['carState'].gasPressed and not force_slow_decel and not reset_state:
       self.creep_stop_hold_released = should_release_creep_stop_hold(
-        self.creep_stop_hold_released, v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), model_predicted_pullaway
+        self.creep_stop_hold_released, v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK),
+        model_predicted_pullaway, float(lead_one.modelProb),
       )
     else:
       self.creep_stop_hold_released = False
     if lead_one.status and should_hold_creep_to_stop_gap(
-      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), model_predicted_pullaway, self.creep_stop_hold_released
+      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), model_predicted_pullaway,
+      self.creep_stop_hold_released, float(lead_one.modelProb),
     ):
       output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
       self.output_should_stop = True
