@@ -15,6 +15,8 @@ LAUNCH_BREAKAWAY_MAX_TIME = 0.6
 LAUNCH_BREAKAWAY_A_EGO = 0.05
 LAUNCH_BREAKAWAY_V_EGO = 0.2
 LAUNCH_SHOULD_STOP_HOLD_TIME = LAUNCH_BREAKAWAY_MAX_TIME
+SOFT_STOP_ACCEL = -0.8
+SOFT_STOP_V_EGO = 0.05
 LAUNCH_ENVELOPE_TIME_BP = [0.0, 0.35]
 LAUNCH_ENVELOPE_V_EGO_BP = [0.0, 0.6]
 LAUNCH_BREAKAWAY_TARGET_BP = [LAUNCH_ENVELOPE_MIN_ACCEL, LAUNCH_BREAKAWAY_TARGET_ACCEL]
@@ -78,7 +80,7 @@ def get_launch_breakaway_accel(a_target, accel_limits):
 
 
 def launch_should_stop_hold_active(v_ego, a_ego, brake_pressed, launch_elapsed, a_target):
-  return not brake_pressed and a_target >= LAUNCH_ENVELOPE_MIN_ACCEL and v_ego < LAUNCH_BREAKAWAY_V_EGO and \
+  return not brake_pressed and a_target > LAUNCH_ENVELOPE_MIN_ACCEL and v_ego < LAUNCH_BREAKAWAY_V_EGO and \
     a_ego < LAUNCH_BREAKAWAY_A_EGO and launch_elapsed < LAUNCH_SHOULD_STOP_HOLD_TIME
 
 
@@ -145,9 +147,14 @@ class LongControl:
 
     elif self.long_control_state == LongCtrlState.stopping:
       output_accel = self.last_output_accel
-      if output_accel > self.CP.stopAccel:
+      stop_accel = self.CP.stopAccel
+      if CS.vEgo > SOFT_STOP_V_EGO and not CS.cruiseState.standstill:
+        stop_accel = max(stop_accel, SOFT_STOP_ACCEL)
+      if output_accel <= stop_accel:
+        output_accel = stop_accel
+      else:
         output_accel = min(output_accel, 0.0)
-        output_accel -= self.CP.stoppingDecelRate * DT_CTRL
+        output_accel = max(output_accel - self.CP.stoppingDecelRate * DT_CTRL, stop_accel)
       self.pid.reset()
 
     elif self.long_control_state == LongCtrlState.starting:
