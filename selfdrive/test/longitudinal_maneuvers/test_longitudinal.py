@@ -1,12 +1,14 @@
 import itertools
 import numpy as np
 import pytest
+from cereal import log
 from openpilot.common.parameterized import parameterized_class
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   STOP_DISTANCE,
   get_desired_follow_distance,
   get_lead_gap_comfort_floor,
+  get_lead_stop_presentation_distance,
   get_T_FOLLOW,
 )
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
@@ -303,6 +305,7 @@ def test_lead_departure_creeps_once_gap_opens():
 
 
 def test_confirmed_pullaway_uses_uncapped_creep_accel():
+  presentation_distance = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
   output = evaluate_maneuver_output(
     Maneuver(
       "lead pulls away from short stopped gap",
@@ -320,10 +323,11 @@ def test_confirmed_pullaway_uses_uncapped_creep_accel():
 
   response_window = (output[:, 0] >= output[pullaway_idx, 0]) & (output[:, 0] <= output[pullaway_idx, 0] + 1.0)
   assert np.max(output[response_window, 5]) > 0.25
-  assert np.min(output[response_window, 6]) > STOP_DISTANCE
+  assert np.min(output[response_window, 6]) > presentation_distance
 
 
 def test_predicted_pullaway_releases_before_measured_speed_threshold():
+  presentation_distance = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
   output = evaluate_maneuver_output(
     Maneuver(
       "lead accelerates from short stopped gap",
@@ -338,10 +342,11 @@ def test_predicted_pullaway_releases_before_measured_speed_threshold():
 
   early_pullaway = (output[:, 0] >= 10.0) & (output[:, 4] < 0.25)
   assert np.max(output[early_pullaway, 5]) >= 0.25
-  assert np.min(output[:, 6]) > STOP_DISTANCE
+  assert np.min(output[:, 6]) > presentation_distance
 
 
 def test_lead_creep_uses_extra_stopped_gap():
+  presentation_distance = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
   output = evaluate_maneuver_output(
     Maneuver(
       "lead creeps while over stopped gap",
@@ -359,10 +364,11 @@ def test_lead_creep_uses_extra_stopped_gap():
 
   assert np.max(output[response_window, 5]) > 0.05
   assert np.max(output[response_window, 3]) > 0.1
-  assert np.min(output[response_window, 6]) > STOP_DISTANCE
+  assert np.min(output[response_window, 6]) > presentation_distance
 
 
 def test_stationary_lead_over_stopped_gap_creeps_toward_target_gap():
+  presentation_distance = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
   output = evaluate_maneuver_output(
     Maneuver(
       "stationary lead while over stopped gap",
@@ -377,24 +383,25 @@ def test_stationary_lead_over_stopped_gap_creeps_toward_target_gap():
 
   early_window = output[:, 0] <= 3.0
   assert np.max(output[early_window, 3]) > 0.1
-  assert output[-1, 6] > STOP_DISTANCE - 0.25
+  assert output[-1, 6] > presentation_distance - 0.25
 
 
 def test_near_target_stopped_lead_hold_does_not_roll_through_gap():
+  presentation_distance = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
   output = evaluate_maneuver_output(
     Maneuver(
       "stationary lead near stopped gap",
       duration=8.0,
       initial_speed=0.0,
       lead_relevancy=True,
-      initial_distance_lead=STOP_DISTANCE + 0.3,
+      initial_distance_lead=presentation_distance + 0.3,
       speed_lead_values=[0.0, 0.0],
       breakpoints=[0.0, 8.0],
     )
   )
 
   assert np.max(output[:, 3]) < 0.03
-  assert np.min(output[:, 6]) > STOP_DISTANCE + 0.2
+  assert np.min(output[:, 6]) > presentation_distance + 0.2
 
 
 def test_rolling_lead_stop_does_not_stage_at_reserve_gap():
@@ -438,7 +445,7 @@ def test_low_speed_stopped_lead_targets_stop_runway():
   assert len(stopped_idxs) > 0
 
   assert np.min(output[early_window, 5]) > -0.35
-  assert output[stopped_idxs[0], 6] == pytest.approx(5.9, abs=0.4)
+  assert output[stopped_idxs[0], 6] == pytest.approx(5.3, abs=0.4)
 
 
 def test_low_speed_slowing_lead_targets_predicted_stop_runway():
@@ -480,7 +487,7 @@ def test_stopped_lead_approach_uses_earlier_moderate_brake():
   assert len(stopped_idxs) > 0
 
   assert np.min(output[:, 5]) > -2.2
-  assert output[stopped_idxs[0], 6] == pytest.approx(5.8, abs=0.4)
+  assert output[stopped_idxs[0], 6] == pytest.approx(5.3, abs=0.4)
 
 
 def test_confirmed_moving_lead_stop_brakes_before_runway_collapse():
@@ -506,6 +513,44 @@ def test_confirmed_moving_lead_stop_brakes_before_runway_collapse():
   assert output[stopped_idxs[0], 6] > STOP_DISTANCE - 1.0
 
 
+def test_far_hard_braking_lead_keeps_runway_coast_preference():
+  breakpoints = [0.0, 1.0, 2.0, 6.0]
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "far hard-braking lead with sufficient stop runway",
+      duration=6.0,
+      initial_speed=18.0,
+      lead_relevancy=True,
+      initial_distance_lead=90.0,
+      speed_lead_values=[18.0, 14.0, 10.0, 10.0],
+      cruise_values=[25.0 for _ in breakpoints],
+      breakpoints=breakpoints,
+    )
+  )
+
+  response_window = (output[:, 0] >= 1.0) & (output[:, 0] <= 4.0)
+  assert np.min(output[response_window, 5]) > -1.0
+
+
+def test_closer_hard_braking_lead_still_brakes_with_limited_runway():
+  breakpoints = [0.0, 1.0, 2.0, 6.0]
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "closer hard-braking lead with limited stop runway",
+      duration=6.0,
+      initial_speed=18.0,
+      lead_relevancy=True,
+      initial_distance_lead=70.0,
+      speed_lead_values=[18.0, 14.0, 10.0, 10.0],
+      cruise_values=[25.0 for _ in breakpoints],
+      breakpoints=breakpoints,
+    )
+  )
+
+  response_window = (output[:, 0] >= 1.0) & (output[:, 0] <= 4.0)
+  assert np.min(output[response_window, 5]) < -1.2
+
+
 def test_crawl_stop_go_limits_accel_surge():
   output = evaluate_maneuver_output(
     Maneuver(
@@ -523,6 +568,26 @@ def test_crawl_stop_go_limits_accel_surge():
   assert np.max(output[:, 5]) < 0.85
   assert np.min(output[:, 5]) > -1.3
   assert np.min(output[:, 6]) > STOP_DISTANCE - 1.0
+
+
+def test_creeping_lead_opens_gap_after_regular_stop_distance():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "creeping lead opens gap after stop",
+      duration=20.0,
+      initial_speed=2.5,
+      lead_relevancy=True,
+      initial_distance_lead=12.0,
+      speed_lead_values=[0.0, 0.0, 0.8, 0.8],
+      cruise_values=[5.0, 5.0, 5.0, 5.0],
+      breakpoints=[0.0, 8.0, 10.0, 20.0],
+    )
+  )
+
+  lead_creep_window = output[:, 0] >= 10.0
+  assert np.min(output[:, 6]) > STOP_DISTANCE - 0.5
+  assert np.max(output[lead_creep_window, 3]) > 0.1
+  assert output[-1, 6] <= STOP_DISTANCE + 4.5
 
 
 def test_crawl_opening_lead_uses_gentle_accel():
@@ -546,7 +611,8 @@ def test_crawl_opening_lead_uses_gentle_accel():
 
 def test_steady_crawl_does_not_hang_back():
   crawl_speed = 3.0
-  initial_distance_lead = get_desired_follow_distance(crawl_speed, crawl_speed, get_T_FOLLOW())
+  personality = log.LongitudinalPersonality.standard
+  initial_distance_lead = get_desired_follow_distance(crawl_speed, crawl_speed, get_T_FOLLOW(personality))
   output = evaluate_maneuver_output(
     Maneuver(
       "steady crawl lead",
@@ -554,6 +620,7 @@ def test_steady_crawl_does_not_hang_back():
       initial_speed=crawl_speed,
       lead_relevancy=True,
       initial_distance_lead=initial_distance_lead,
+      personality=personality,
       speed_lead_values=[crawl_speed, crawl_speed],
       cruise_values=[6.0, 6.0],
       breakpoints=[0.0, 16.0],
@@ -689,10 +756,11 @@ def test_lateral_lead_exit_hands_off_to_revealed_stopped_lead():
   )
 
   reveal_window = (output[:, 0] >= 2.7) & (output[:, 0] <= 5.0)
+  handoff_window = (output[:, 0] >= 2.7) & (output[:, 0] < 5.0)
 
   assert np.max(output[(output[:, 0] >= 2.5) & (output[:, 0] <= 2.9), 5]) <= 0.1
   assert np.min(output[reveal_window, 5]) < -1.0
-  assert np.min(output[reveal_window, 8]) > 4.0
+  assert np.min(output[handoff_window, 8]) > 4.0
 
 def test_lateral_exited_slowing_lead_does_not_force_hard_brake():
   exiting_output = run_lateral_exit_slowing_simulation([0.0, 0.0, 2.2, 2.2, 2.2])
