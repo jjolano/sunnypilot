@@ -56,6 +56,11 @@ FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.0])
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
+LEAD_STOP_PRESENTATION_DISTANCE = 5.0
+LEAD_STOP_PRESENTATION_CONFIDENCE_MIN = 0.75
+LEAD_STOP_PRESENTATION_V_EGO_BP = [0.0, 3.0]
+LEAD_STOP_PRESENTATION_V_LEAD_BP = [0.2, 1.0]
+LEAD_STOP_PRESENTATION_DECEL_BP = [0.0, 0.6]
 STOP_DISTANCE_FADE_V = 3.0
 STOP_DISTANCE_MIN = 2.0
 STOPPED_LEAD_BUFFER = 1.75
@@ -199,6 +204,16 @@ def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
 
+def get_lead_stop_presentation_distance(v_ego, v_lead, a_lead=0.0, model_prob=1.0):
+  confidence_blend = np.interp(model_prob, [LEAD_STOP_PRESENTATION_CONFIDENCE_MIN, 1.0], [0.0, 1.0])
+  ego_blend = 1.0 - np.interp(v_ego, LEAD_STOP_PRESENTATION_V_EGO_BP, [0.0, 1.0])
+  stopped_blend = 1.0 - np.interp(v_lead, LEAD_STOP_PRESENTATION_V_LEAD_BP, [0.0, 1.0])
+  decel_blend = 1.0 - np.interp(np.clip(-a_lead, 0.0, LEAD_STOP_PRESENTATION_DECEL_BP[-1]),
+                                LEAD_STOP_PRESENTATION_DECEL_BP, [0.0, 1.0])
+  presentation_blend = confidence_blend * ego_blend * stopped_blend * decel_blend
+  return STOP_DISTANCE - presentation_blend * (STOP_DISTANCE - LEAD_STOP_PRESENTATION_DISTANCE)
+
+
 def get_stop_distance_buffer(v_ego):
   # Preserve the full stopped gap at low speed, but keep a smaller floor at speed.
   fade = (STOP_DISTANCE_FADE_V**2) / (v_ego**2 + STOP_DISTANCE_FADE_V**2)
@@ -297,7 +312,8 @@ def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
   closing_speed = np.maximum(v_ego - v_lead, 0.0)
   moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
   relaxation = get_slow_moving_lead_runway_relaxation(v_ego, v_lead, closing_speed, a_lead)
-  stop_runway = x_lead + get_stopped_equivalence_factor(v_lead) - (STOP_DISTANCE - relaxation) - moving_stop_reserve
+  stop_floor = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead) - relaxation
+  stop_runway = x_lead + get_stopped_equivalence_factor(v_lead) - stop_floor - moving_stop_reserve
   slowing_blend = np.interp(np.clip(-a_lead, 0.0, APPROACH_STOP_RUNWAY_DECEL_BP[-1]), APPROACH_STOP_RUNWAY_DECEL_BP, [0.0, 1.0])
   return np.clip((1.0 - slowing_blend) * legacy_runway + slowing_blend * stop_runway, 0.0, 1e8)
 
@@ -326,7 +342,8 @@ def get_slow_moving_lead_runway_relaxation(v_ego, v_lead, closing_speed, a_lead)
 def get_lead_stop_runway_available(x_lead, v_ego, v_lead, closing_speed, a_lead):
   moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
   relaxation = get_slow_moving_lead_runway_relaxation(v_ego, v_lead, closing_speed, a_lead)
-  return np.maximum(0.0, x_lead + get_stopped_equivalence_factor(v_lead) - (STOP_DISTANCE - relaxation) - moving_stop_reserve)
+  stop_floor = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead) - relaxation
+  return np.maximum(0.0, x_lead + get_stopped_equivalence_factor(v_lead) - stop_floor - moving_stop_reserve)
 
 
 def get_lead_stop_runway_required_decel(x_lead, v_ego, v_lead, closing_speed, a_lead):
@@ -353,7 +370,7 @@ def get_lead_stop_runway_preference(x_lead, v_ego, v_lead, t_follow, a_lead):
 def get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead):
   moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
   relaxation = get_slow_moving_lead_runway_relaxation(v_ego, v_lead, closing_speed, a_lead)
-  stop_floor = STOP_DISTANCE - relaxation
+  stop_floor = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead) - relaxation
   ego_stop_distance = v_ego**2 / (2 * LEAD_STOP_RUNWAY_BRAKE)
   lead_stop_distance = get_stopped_equivalence_factor(v_lead)
   return np.maximum(stop_floor, stop_floor + moving_stop_reserve + ego_stop_distance - lead_stop_distance)
