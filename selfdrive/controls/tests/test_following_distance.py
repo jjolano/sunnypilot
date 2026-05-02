@@ -575,17 +575,56 @@ def test_lead_transition_releases_turning_lead_before_long_persistence():
 
 def test_lead_transition_preserves_release_through_lateral_track_churn():
   mpc = LongitudinalMpc(dt=0.1)
-  lead = SimpleNamespace(status=True, radarTrackId=10, yRel=LEAD_TRANSITION_Y_REL_CONFIRM)
+  lead = SimpleNamespace(status=True, radarTrackId=10, yRel=LEAD_TRANSITION_Y_REL_CONFIRM, dRel=20.0, vLeadK=8.0)
 
   mpc.update_lead_transition_state(0, lead)
   release_before_churn = mpc.update_lead_transition_state(0, lead)
   lead.radarTrackId = 11
+  lead.dRel = 20.3
+  lead.vLeadK = 8.2
   release_after_churn = mpc.update_lead_transition_state(0, lead)
   guard_timer_after_churn = mpc.lead_transition_guard_timers[0]
 
   assert release_after_churn >= release_before_churn
   assert guard_timer_after_churn > 0.0
   assert get_lead_transition_obstacle_release(release_after_churn, guard_timer_after_churn) < release_after_churn
+
+
+def test_lead_transition_resets_release_on_opposite_side_track_churn():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, radarTrackId=10, yRel=LEAD_TRANSITION_Y_REL_CONFIRM, dRel=20.0, vLeadK=8.0)
+
+  mpc.update_lead_transition_state(0, lead)
+  release_before_churn = mpc.update_lead_transition_state(0, lead)
+  lead.radarTrackId = 11
+  lead.yRel = -LEAD_TRANSITION_Y_REL_CONFIRM
+  lead.dRel = 20.2
+  lead.vLeadK = 8.1
+  release_after_churn = mpc.update_lead_transition_state(0, lead)
+
+  assert release_after_churn < release_before_churn
+
+
+def test_lead_transition_resets_release_on_discontinuous_track_churn():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, radarTrackId=10, yRel=LEAD_TRANSITION_Y_REL_CONFIRM, dRel=20.0, vLeadK=8.0)
+
+  mpc.update_lead_transition_state(0, lead)
+  release_before_churn = mpc.update_lead_transition_state(0, lead)
+  lead.radarTrackId = 11
+  lead.dRel = 35.0
+  release_after_churn = mpc.update_lead_transition_state(0, lead)
+
+  assert release_after_churn < release_before_churn
+
+
+def test_lead_transition_fcw_counting_ignores_released_lead():
+  should_count = getattr(long_mpc, "should_count_lead_transition_fcw", None)
+
+  assert should_count is not None
+  assert should_count(0.95, 0.0)
+  assert not should_count(0.95, 1.0)
+  assert not should_count(0.5, 0.0)
 
 
 def test_lead_transition_soft_release_only_moves_toward_cruise():

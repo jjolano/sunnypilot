@@ -178,6 +178,8 @@ LEAD_TRANSITION_GUARD_ACCEL_MAX = 0.0
 LEAD_TRANSITION_GUARD_OUTPUT_DELAY = 0.15
 LEAD_TRANSITION_GUARD_ARM_BLEND = 0.8
 LEAD_TRANSITION_TRACK_UNKNOWN = -2
+LEAD_TRANSITION_CHURN_MAX_D_REL_DELTA = 5.0
+LEAD_TRANSITION_CHURN_MAX_V_LEAD_DELTA = 5.0
 
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
@@ -338,6 +340,23 @@ def get_lead_transition_obstacle_release(release_blend, guard_timer):
 def get_lead_transition_adjusted_accel(a_lead, release_blend):
   adjusted_accel = np.where(a_lead < 0.0, a_lead * (1.0 - release_blend), a_lead)
   return float(adjusted_accel) if np.ndim(adjusted_accel) == 0 else adjusted_accel
+
+
+def should_preserve_lead_transition_churn(prev_y_rel, y_rel, prev_d_rel, d_rel, prev_v_lead, v_lead):
+  if not all(np.isfinite(value) for value in (prev_y_rel, y_rel, prev_d_rel, d_rel, prev_v_lead, v_lead)):
+    return False
+
+  return bool(
+    np.sign(prev_y_rel) == np.sign(y_rel) and
+    abs(prev_y_rel) >= LEAD_TRANSITION_Y_REL_SOFT and
+    abs(y_rel) >= LEAD_TRANSITION_Y_REL_SOFT and
+    abs(d_rel - prev_d_rel) <= LEAD_TRANSITION_CHURN_MAX_D_REL_DELTA and
+    abs(v_lead - prev_v_lead) <= LEAD_TRANSITION_CHURN_MAX_V_LEAD_DELTA
+  )
+
+
+def should_count_lead_transition_fcw(model_prob, transition_release):
+  return bool(model_prob > 0.9 and transition_release <= 0.01)
 
 
 def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
@@ -837,6 +856,8 @@ class LongitudinalMpc:
     self.lead_surge_decel_memories = np.zeros(2)
     self.lead_transition_track_ids = np.full(2, LEAD_TRANSITION_TRACK_UNKNOWN, dtype=int)
     self.lead_transition_prev_y_rel = np.full(2, np.nan)
+    self.lead_transition_prev_d_rel = np.full(2, np.nan)
+    self.lead_transition_prev_v_lead = np.full(2, np.nan)
     self.lead_transition_exit_timers = np.zeros(2)
     self.lead_transition_release_blends = np.zeros(2)
     self.lead_transition_guard_timers = np.zeros(2)
@@ -986,6 +1007,8 @@ class LongitudinalMpc:
   def reset_lead_transition_state(self, lead_idx, guard_timer=0.0):
     self.lead_transition_track_ids[lead_idx] = LEAD_TRANSITION_TRACK_UNKNOWN
     self.lead_transition_prev_y_rel[lead_idx] = np.nan
+    self.lead_transition_prev_d_rel[lead_idx] = np.nan
+    self.lead_transition_prev_v_lead[lead_idx] = np.nan
     self.lead_transition_exit_timers[lead_idx] = 0.0
     self.lead_transition_release_blends[lead_idx] = 0.0
     self.lead_transition_guard_timers[lead_idx] = guard_timer
@@ -1005,8 +1028,12 @@ class LongitudinalMpc:
     y_rel = float(lead.yRel)
     abs_y_rel = abs(y_rel)
     prev_y_rel = self.lead_transition_prev_y_rel[lead_idx]
+    d_rel = float(lead.dRel)
+    v_lead = float(lead.vLeadK)
     track_changed = track_id >= 0 and self.lead_transition_track_ids[lead_idx] >= 0 and track_id != self.lead_transition_track_ids[lead_idx]
-    lateral_exit_churn = track_changed and np.isfinite(prev_y_rel) and abs(prev_y_rel) >= LEAD_TRANSITION_Y_REL_SOFT and abs_y_rel >= LEAD_TRANSITION_Y_REL_SOFT
+    lateral_exit_churn = track_changed and should_preserve_lead_transition_churn(
+      prev_y_rel, y_rel, self.lead_transition_prev_d_rel[lead_idx], d_rel, self.lead_transition_prev_v_lead[lead_idx], v_lead
+    )
     if not self.lead_transition_was_status[lead_idx] or (track_changed and not lateral_exit_churn):
       self.reset_lead_transition_state(lead_idx, guard_timer=self.lead_transition_guard_timers[lead_idx])
 
@@ -1038,6 +1065,8 @@ class LongitudinalMpc:
 
     self.lead_transition_track_ids[lead_idx] = track_id
     self.lead_transition_prev_y_rel[lead_idx] = y_rel
+    self.lead_transition_prev_d_rel[lead_idx] = d_rel
+    self.lead_transition_prev_v_lead[lead_idx] = v_lead
     self.lead_transition_was_status[lead_idx] = True
     return self.lead_transition_release_blends[lead_idx]
 
@@ -1214,7 +1243,8 @@ class LongitudinalMpc:
     self.params[:, 5] = LEAD_DANGER_FACTOR
 
     self.run()
-    if np.any(lead_xv_0[FCW_IDXS, 0] - self.x_sol[FCW_IDXS, 0] < CRASH_DISTANCE) and radarstate.leadOne.modelProb > 0.9:
+    if np.any(lead_xv_0[FCW_IDXS, 0] - self.x_sol[FCW_IDXS, 0] < CRASH_DISTANCE) and \
+       should_count_lead_transition_fcw(radarstate.leadOne.modelProb, lead_0_obstacle_release):
       self.crash_cnt += 1
     else:
       self.crash_cnt = 0
