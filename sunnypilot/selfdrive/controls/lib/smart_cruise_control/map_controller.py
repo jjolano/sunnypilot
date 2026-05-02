@@ -39,6 +39,7 @@ MODEL_CURVE_MIN_SPEED = 1.0  # m/s, avoid unstable curvature estimates at near-z
 MODEL_CURVE_OVERSLOWDOWN_DELTA = 5.0  # m/s, require model confirmation for large map slowdowns.
 MODEL_CURVE_OVERSLOWDOWN_MARGIN = 2.0  # m/s, allow small map/model target mismatch.
 PARAM_CACHE_MISS = object()
+VALID_TRUE_VALUES = ("1", "true", "True", b"1", b"true", b"True")
 
 
 def velocities_from_param(param: str, params: Params):
@@ -155,6 +156,17 @@ class SmartCruiseControlMap:
       self._target_velocities_raw = target_velocities_raw
       self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
 
+  def _map_params_valid(self) -> bool:
+    gps_valid = self.mem_params.get("LastGPSPositionValid")
+    velocities_valid = self.mem_params.get("MapTargetVelocitiesValid")
+    return (gps_valid in (None, *VALID_TRUE_VALUES)) and (velocities_valid in (None, *VALID_TRUE_VALUES))
+
+  def _clear_map_target(self) -> None:
+    self.v_target = 0.0
+    self.target_lat = 0.0
+    self.target_lon = 0.0
+    self.target_prediction_advanced = False
+
   def _cached_first_mapd_json(self, keys: tuple[str, ...]):
     raw_values = tuple(self.mem_params.get(key) for key in keys)
     if raw_values != self._advisory_raw_cache.get(keys, PARAM_CACHE_MISS):
@@ -164,6 +176,10 @@ class SmartCruiseControlMap:
 
   def update_calculations(self, model_msg=None) -> None:
     self._update_cached_map_params()
+
+    if not self._map_params_valid():
+      self._clear_map_target()
+      return
 
     if self.last_position is None or self.target_velocities is None:
       return
@@ -212,10 +228,7 @@ class SmartCruiseControlMap:
             return
 
       # not found so let's reset
-      self.v_target = 0.0
-      self.target_lat = 0.0
-      self.target_lon = 0.0
-      self.target_prediction_advanced = False
+      self._clear_map_target()
 
     self.v_target = min_v
     self.target_lat = target_lat

@@ -65,6 +65,16 @@ def test_traffic_control_prior_uses_model_confirmed_stop_sign_as_caution_target(
   assert TRAFFIC_CONTROL_MIN_ACCEL <= prior.output_a_target < 0.0
 
 
+def test_traffic_control_prior_stays_active_at_caution_speed_with_stop_context():
+  prior = OsmTrafficControlPrior()
+
+  prior.update(make_sm(make_map_data(distance=10.0), make_model(stop_distance=12.0)), True, False, TRAFFIC_CONTROL_CAUTION_SPEED, 0.0)
+
+  assert prior.active
+  assert prior.output_v_target == TRAFFIC_CONTROL_CAUTION_SPEED
+  assert prior.output_a_target <= 0.0
+
+
 def test_traffic_control_prior_ignores_misaligned_model_stop():
   prior = OsmTrafficControlPrior()
 

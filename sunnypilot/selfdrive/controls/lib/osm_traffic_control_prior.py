@@ -95,7 +95,7 @@ class OsmTrafficControlPrior:
   def update(self, sm, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float) -> None:
     self._reset(a_ego)
 
-    if not long_enabled or long_override or v_ego <= TRAFFIC_CONTROL_CAUTION_SPEED or v_ego > TRAFFIC_CONTROL_MAX_EGO_SPEED:
+    if not long_enabled or long_override or v_ego > TRAFFIC_CONTROL_MAX_EGO_SPEED:
       return
 
     control_type, map_distance = self._traffic_control_candidate(sm["liveMapDataSP"])
@@ -104,6 +104,8 @@ class OsmTrafficControlPrior:
 
     stop_distance = model_stop_distance(sm["modelV2"])
     if stop_distance is None or not model_stop_matches_map_distance(stop_distance, map_distance):
+      return
+    if v_ego < TRAFFIC_CONTROL_CAUTION_SPEED and stop_distance > TRAFFIC_CONTROL_MAX_DISTANCE:
       return
 
     target_v = TRAFFIC_CONTROL_CAUTION_SPEED

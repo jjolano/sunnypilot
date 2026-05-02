@@ -16,7 +16,7 @@ def parse_mapd_json(value: Any) -> Any | None:
     except json.JSONDecodeError:
       return None
 
-  if isinstance(value, (dict, list)):
+  if isinstance(value, (dict, list, int, float)):
     return value
 
   return None
