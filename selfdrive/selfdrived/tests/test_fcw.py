@@ -8,8 +8,8 @@ LEAD1_SOURCE = "lead1"
 CRUISE_SOURCE = "cruise"
 
 
-def make_lead(*, status=False, model_prob=0.0):
-  return SimpleNamespace(status=status, modelProb=model_prob)
+def make_lead(*, status=False, model_prob=0.0, d_rel=20.0):
+  return SimpleNamespace(status=status, modelProb=model_prob, dRel=d_rel)
 
 
 def make_radar_state(*, lead_one=None, lead_two=None):
@@ -60,12 +60,30 @@ def test_model_fcw_is_suppressed_when_op_is_already_braking_hard_on_confirmed_le
   )
 
 
-def test_model_fcw_is_suppressed_for_selected_lead_two_without_lead_one():
+def test_model_fcw_is_not_suppressed_when_plan_has_no_lead():
   radar_state = make_radar_state(lead_two=make_lead(status=True, model_prob=0.98))
   longitudinal_plan = make_longitudinal_plan(source=LEAD1_SOURCE, has_lead=False, a_target=-2.5)
   car_state = make_car_state(a_ego=-2.0)
 
-  assert should_suppress_model_fcw(
+  assert not should_suppress_model_fcw(
+    True,
+    True,
+    car_state.aEgo,
+    longitudinal_plan.aTarget,
+    longitudinal_plan.hasLead,
+    longitudinal_plan.longitudinalPlanSource,
+    LEAD0_SOURCE,
+    LEAD1_SOURCE,
+    radar_state,
+  )
+
+
+def test_model_fcw_is_not_suppressed_for_far_selected_lead():
+  radar_state = make_radar_state(lead_one=make_lead(status=True, model_prob=0.98, d_rel=80.0))
+  longitudinal_plan = make_longitudinal_plan(source=LEAD0_SOURCE, has_lead=True, a_target=-2.5)
+  car_state = make_car_state(a_ego=-2.0)
+
+  assert not should_suppress_model_fcw(
     True,
     True,
     car_state.aEgo,
