@@ -79,6 +79,7 @@ STOPPED_LEAD_GAP_FILL_ACCEL_MIN = -0.25
 ENGAGE_STOP_BOOTSTRAP_TIME = 0.75
 ENGAGE_STOP_BOOTSTRAP_MIN_SPEED = 5.0
 ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL = -1.0
+ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED = 1.0
 LEAD_LOSS_E2E_GUARD_TIME = 3.0
 LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR = -0.45
 LEAD_LOSS_E2E_GUARD_MIN_D_REL = 45.0
@@ -101,11 +102,23 @@ def has_valid_radar_lead(radar_state):
   return radar_state.leadOne.status or radar_state.leadTwo.status
 
 
+def has_model_stop_context(model_msg):
+  if model_msg.action.shouldStop:
+    return True
+
+  positions = list(getattr(model_msg.position, "x", []))
+  velocities = list(getattr(model_msg.velocity, "x", []))
+  return any(x > 0.0 and v <= ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED for x, v in zip(positions, velocities, strict=False))
+
+
 def should_run_engage_stop_bootstrap(timer, v_ego, radar_state, model_msg):
   if timer <= 0.0 or v_ego < ENGAGE_STOP_BOOTSTRAP_MIN_SPEED or has_valid_radar_lead(radar_state):
     return False
 
-  return bool(model_msg.action.shouldStop or model_msg.action.desiredAcceleration <= ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL)
+  return bool(
+    model_msg.action.shouldStop or
+    (model_msg.action.desiredAcceleration <= ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL and has_model_stop_context(model_msg))
+  )
 
 
 def is_lane_change_active(model_msg):
