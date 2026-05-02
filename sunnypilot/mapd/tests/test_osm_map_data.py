@@ -167,6 +167,12 @@ def test_current_lanes_accepts_numeric_param():
   assert osm_map_data.get_current_lanes() == 3
 
 
+def test_current_lanes_accepts_int_param_value():
+  osm_map_data = build_osm_map_data(map_lanes=3)
+
+  assert osm_map_data.get_current_lanes() == 3
+
+
 def test_current_lanes_ignores_invalid_param():
   osm_map_data = build_osm_map_data(map_lanes="not-json")
 

@@ -67,6 +67,8 @@ class TestSmartCruiseControlMap:
     self.mem_params.put("MapAdvisoryLimit", "{}")
     self.mem_params.put("NextMapAdvisorySpeedLimit", "{}")
     self.mem_params.put("NextMapAdvisoryLimit", "{}")
+    self.mem_params.put("LastGPSPositionValid", "1")
+    self.mem_params.put("MapTargetVelocitiesValid", "1")
 
   def test_initial_state(self):
     assert self.scc_m.state == VisionState.disabled
@@ -136,6 +138,23 @@ class TestSmartCruiseControlMap:
     self.scc_m.update_calculations()
 
     assert calls == 2
+
+  def test_stale_map_params_clear_active_target(self):
+    self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "speedlimit": 15.0,
+    }))
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+    assert self.scc_m.state == VisionState.turning
+
+    self.mem_params.put("LastGPSPositionValid", "0")
+    self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
 
   def test_forward_target_velocity_distances_follow_ordered_path(self):
     first = Coordinate(0.0, 0.001)
