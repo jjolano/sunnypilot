@@ -1288,6 +1288,14 @@
         "label": "Default"
       },
       {
+        "value": 3.0,
+        "label": "v3.0"
+      },
+      {
+        "value": 2.0,
+        "label": "v2.0"
+      },
+      {
         "value": 1.0,
         "label": "v1.0"
       },

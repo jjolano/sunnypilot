@@ -1,6 +1,7 @@
 import numpy as np
 from abc import abstractmethod, ABC
 from openpilot.selfdrive.locationd.helpers import Pose
+from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import SteeringActuatorFeedback
 
 
 class LatControl(ABC):
@@ -12,6 +13,7 @@ class LatControl(ABC):
 
     # we define the steer torque scale as [-1.0...1.0]
     self.steer_max = 1.0
+    self.steering_actuator_feedback = SteeringActuatorFeedback.invalid()
 
   @abstractmethod
   def update(self, active: bool, CS, VM, params, steer_limited_by_safety: bool, desired_curvature: float, calibrated_pose: Pose,
@@ -20,6 +22,9 @@ class LatControl(ABC):
 
   def reset(self):
     self.sat_time = 0.
+
+  def set_steering_actuator_feedback(self, feedback: SteeringActuatorFeedback):
+    self.steering_actuator_feedback = feedback
 
   def _check_saturation(self, saturated, CS, steer_limited_by_safety, curvature_limited):
     # Saturated only if control output is not being limited by car torque/angle rate limits
