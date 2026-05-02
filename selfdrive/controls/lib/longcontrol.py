@@ -80,7 +80,7 @@ def get_launch_breakaway_accel(a_target, accel_limits):
 
 
 def launch_should_stop_hold_active(v_ego, a_ego, brake_pressed, launch_elapsed, a_target):
-  return not brake_pressed and a_target >= LAUNCH_ENVELOPE_MIN_ACCEL and v_ego < LAUNCH_BREAKAWAY_V_EGO and \
+  return not brake_pressed and a_target > LAUNCH_ENVELOPE_MIN_ACCEL and v_ego < LAUNCH_BREAKAWAY_V_EGO and \
     a_ego < LAUNCH_BREAKAWAY_A_EGO and launch_elapsed < LAUNCH_SHOULD_STOP_HOLD_TIME
 
 
