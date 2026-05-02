@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+
 import numpy as np
 
 import cereal.messaging as messaging
@@ -27,30 +28,34 @@ _TURNING_LAT_ACC_TH = 1.6  # Lat Acc threshold to trigger turning state.
 _LEAVING_LAT_ACC_TH = 1.3  # Lat Acc threshold to trigger leaving turn state.
 _FINISH_LAT_ACC_TH = 1.1  # Lat Acc threshold to trigger the end of the turn cycle.
 
-_A_LAT_REG_MAX = 2.  # Maximum lateral acceleration
+_A_LAT_REG_MAX = 2.0  # Maximum lateral acceleration
+_CURRENT_LAT_ACC_TARGET = 2.8  # Conservative current-curve target for driver-assisted sharp turns.
+_CURRENT_LAT_ACC_BLEED_TH = 2.8
 
-_NO_OVERSHOOT_TIME_HORIZON = 4.  # s. Time to use for velocity desired based on a_target when not overshooting.
+_NO_OVERSHOOT_TIME_HORIZON = 2.5  # s. Time to use for velocity desired based on a_target when not overshooting.
 
 # Lookup table for the minimum smooth deceleration during the ENTERING state
 # depending on the actual maximum absolute lateral acceleration predicted on the turn ahead.
-_ENTERING_SMOOTH_DECEL_V = [-0.2, -1.]  # min decel value allowed on ENTERING state
-_ENTERING_SMOOTH_DECEL_BP = [1.3, 3.]  # absolute value of lat acc ahead
+_ENTERING_SMOOTH_DECEL_V = [-0.15, -0.7]  # min decel value allowed on ENTERING state
+_ENTERING_SMOOTH_DECEL_BP = [1.3, 3.0]  # absolute value of lat acc ahead
 
 # Lookup table for the acceleration for the TURNING state
 # depending on the current lateral acceleration of the vehicle.
-_TURNING_ACC_V = [0.5, 0., -0.4]  # acc value
-_TURNING_ACC_BP = [1.5, 2.3, 3.]  # absolute value of current lat acc
+_TURNING_ACC_V = [0.5, 0.15, -0.15]  # acc value
+_TURNING_ACC_BP = [1.5, 2.3, 3.0]  # absolute value of current lat acc
+_CURRENT_LAT_ACC_BLEED_V = [-0.05, -0.20, -0.40]
+_CURRENT_LAT_ACC_BLEED_BP = [2.8, 3.0, 3.4]
 
 _LEAVING_ACC = 0.5  # Conformable acceleration to regain speed while leaving a turn.
 
 
 class SmartCruiseControlVision:
   v_target: float = 0
-  a_target: float = 0.
-  v_ego: float = 0.
-  a_ego: float = 0.
+  a_target: float = 0.0
+  v_ego: float = 0.0
+  a_ego: float = 0.0
   output_v_target: float = V_CRUISE_UNSET
-  output_a_target: float = 0.
+  output_a_target: float = 0.0
 
   def __init__(self):
     self.params = Params()
@@ -60,11 +65,13 @@ class SmartCruiseControlVision:
     self.is_enabled = False
     self.is_active = False
     self.enabled = self.params.get_bool("SmartCruiseControlVision")
-    self.v_cruise_setpoint = 0.
+    self.v_cruise_setpoint = 0.0
 
     self.state = VisionState.disabled
-    self.current_lat_acc = 0.
-    self.max_pred_lat_acc = 0.
+    self.current_lat_acc = 0.0
+    self.current_curvature = 0.0
+    self.current_lat_acc_bleed = False
+    self.max_pred_lat_acc = 0.0
 
   def get_a_target_from_control(self) -> float:
     return self.a_target
@@ -86,7 +93,9 @@ class SmartCruiseControlVision:
       rate_plan = np.array(np.abs(sm['modelV2'].orientationRate.z))
       vel_plan = np.array(sm['modelV2'].velocity.x)
 
-      self.current_lat_acc = self.v_ego ** 2 * abs(sm['controlsState'].curvature)
+      self.current_curvature = abs(sm['controlsState'].curvature)
+      self.current_lat_acc = self.v_ego**2 * self.current_curvature
+      self.current_lat_acc_bleed = self.current_lat_acc >= _CURRENT_LAT_ACC_BLEED_TH
 
       # get the maximum lat accel from the model
       predicted_lat_accels = rate_plan * vel_plan
@@ -98,6 +107,8 @@ class SmartCruiseControlVision:
 
       # Get the target velocity for the maximum curve
       self.v_target = (_A_LAT_REG_MAX / max_curve) ** 0.5
+      if self.current_lat_acc_bleed and self.current_curvature > 1e-6:
+        self.v_target = min(self.v_target, (_CURRENT_LAT_ACC_TARGET / self.current_curvature) ** 0.5)
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, ENTERING, TURNING, LEAVING, OVERRIDING
@@ -117,6 +128,9 @@ class SmartCruiseControlVision:
           # If significant lateral acceleration is predicted ahead, then move to Entering turn state.
           elif self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
             self.state = VisionState.entering
+          # If the current measured curve is already near the lateral limit, start shedding speed even if prediction missed it.
+          elif self.current_lat_acc_bleed:
+            self.state = VisionState.turning
 
         # OVERRIDING
         elif self.state == VisionState.overriding:
@@ -181,10 +195,12 @@ class SmartCruiseControlVision:
     else:
       raise NotImplementedError(f"SCC-V state not supported: {self.state}")
 
+    if self.current_lat_acc_bleed:
+      a_target = min(a_target, np.interp(self.current_lat_acc, _CURRENT_LAT_ACC_BLEED_BP, _CURRENT_LAT_ACC_BLEED_V))
+
     return a_target
 
-  def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float,
-             v_cruise_setpoint: float) -> None:
+  def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float, v_cruise_setpoint: float) -> None:
     self.long_enabled = long_enabled
     self.long_override = long_override
     self.v_ego = v_ego

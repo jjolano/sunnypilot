@@ -5,6 +5,8 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 LIMIT_ADAPT_ACC = -1.  # m/s^2 Ideal acceleration for the adapting (braking) phase when approaching speed limits.
+LIMIT_COAST_APPROACH_MARGIN_S = 2.0  # s Start coast-only speed-limit approaches slightly early.
+LIMIT_COAST_MIN_DECEL = -0.05  # m/s^2 Minimum coast decel before using coast-based approach distance.
 LIMIT_MAX_MAP_DATA_AGE = 10.  # s Maximum time to hold to map data, then consider it invalid inside limits controllers.
 
 # Speed Limit Assist constants

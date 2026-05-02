@@ -236,10 +236,22 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
 
     // mapd
-    {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
+    {"MapAdvisoryLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapCurvatures", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapHazard", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapLanes", {CLEAR_ON_ONROAD_TRANSITION, INT, "0"}},
+    {"MapRoadContext", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    {"MapTrafficControl", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapdSettings", {PERSISTENT, JSON}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
+    {"NextMapAdvisoryLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"NextMapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"NextMapHazard", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"NextMapLanes", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"NextMapTrafficControl", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
     {"OsmDbUpdatesCheck", {CLEAR_ON_MANAGER_START, BOOL}},  // mapd database update happens with device ON, reset on boot
     {"OSMDownloadBounds", {PERSISTENT, STRING}},

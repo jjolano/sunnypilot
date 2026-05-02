@@ -12,6 +12,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
+from openpilot.sunnypilot.selfdrive.controls.lib.osm_traffic_control_prior import OsmTrafficControlPrior
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
@@ -21,12 +22,45 @@ DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimen
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
 
+def _select_lower_target(selected_source, selected_v_target, selected_a_target, candidate_source, candidate):
+  candidate_v_target, candidate_a_target = candidate
+  if candidate_v_target < selected_v_target:
+    return candidate_source, candidate_v_target, candidate_a_target
+  return selected_source, selected_v_target, selected_a_target
+
+
+def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control):
+  if speed_limit_active:
+    selected_source = LongitudinalPlanSource.speedLimitAssist
+    selected_v_target = speed_limit_assist[0]
+    selected_a_target = cruise[1]
+  else:
+    selected_source = LongitudinalPlanSource.cruise
+    selected_v_target, selected_a_target = cruise
+
+  selected_source, selected_v_target, selected_a_target = _select_lower_target(
+    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccVision, scc_vision
+  )
+
+  selected_source, selected_v_target, selected_a_target = _select_lower_target(
+    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccMap, scc_map
+  )
+  if not speed_limit_active:
+    selected_source, selected_v_target, selected_a_target = _select_lower_target(
+      selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.speedLimitAssist, speed_limit_assist
+    )
+  return _select_lower_target(
+    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.osmTrafficControl, osm_traffic_control
+  )
+
+
 class LongitudinalPlannerSP:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
     self.events_sp = EventsSP()
     self.resolver = SpeedLimitResolver()
     self.dec = DynamicExperimentalController(CP, mpc)
     self.scc = SmartCruiseControl()
+    self.osm_traffic_control_prior = OsmTrafficControlPrior()
     self.resolver = SpeedLimitResolver()
     self.sla = SpeedLimitAssist(CP, CP_SP)
     self.generation = int(model_bundle.generation) if (model_bundle := get_active_bundle()) else None
@@ -43,7 +77,8 @@ class LongitudinalPlannerSP:
 
     return experimental_mode and self.dec.mode() == "blended"
 
-  def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
+  def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float,
+                     coast_accel: float | None = None) -> tuple[float, float]:
     CS = sm['carState']
     v_cruise_cluster_kph = min(CS.vCruiseCluster, V_CRUISE_MAX)
     v_cruise_cluster = v_cruise_cluster_kph * CV.KPH_TO_MS
@@ -55,22 +90,24 @@ class LongitudinalPlannerSP:
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
 
     # Speed Limit Resolver
-    self.resolver.update(v_ego, sm)
+    self.resolver.update(v_ego, sm, coast_accel=coast_accel)
 
     # Speed Limit Assist
     has_speed_limit = self.resolver.speed_limit_valid or self.resolver.speed_limit_last_valid
     self.sla.update(long_enabled, long_override, v_ego, a_ego, v_cruise_cluster, self.resolver.speed_limit,
-                    self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp)
+                    self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp,
+                    coast_accel=coast_accel)
 
-    targets = {
-      LongitudinalPlanSource.cruise: (v_cruise, a_ego),
-      LongitudinalPlanSource.sccVision: (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
-      LongitudinalPlanSource.sccMap: (self.scc.map.output_v_target, self.scc.map.output_a_target),
-      LongitudinalPlanSource.speedLimitAssist: (self.sla.output_v_target, self.sla.output_a_target),
-    }
+    self.osm_traffic_control_prior.update(sm, long_enabled, long_override, v_ego, a_ego)
 
-    self.source = min(targets, key=lambda k: targets[k][0])
-    self.output_v_target, self.output_a_target = targets[self.source]
+    self.source, self.output_v_target, self.output_a_target = select_lowest_longitudinal_target(
+      self.sla.is_active,
+      (v_cruise, a_ego),
+      (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
+      (self.scc.map.output_v_target, self.scc.map.output_a_target),
+      (self.sla.output_v_target, a_ego),
+      (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
+    )
     return self.output_v_target, self.output_a_target
 
   def update(self, sm: messaging.SubMaster) -> None:
@@ -130,6 +167,7 @@ class LongitudinalPlannerSP:
     assist.state = self.sla.state
     assist.enabled = self.sla.is_enabled
     assist.active = self.sla.is_active
+    assist.autoCruiseEnabled = self.sla.auto_enabled
     assist.vTarget = float(self.sla.output_v_target)
     assist.aTarget = float(self.sla.output_a_target)
 

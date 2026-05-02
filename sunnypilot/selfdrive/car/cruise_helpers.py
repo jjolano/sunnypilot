@@ -5,12 +5,10 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
-from cereal import car, custom
+from cereal import car
 from opendbc.car import structs
-from openpilot.common.params import Params
 
 ButtonType = car.CarState.ButtonEvent.Type
-EventNameSP = custom.OnroadEventSP.EventName
 
 DISTANCE_LONG_PRESS = 50
 
@@ -18,7 +16,6 @@ DISTANCE_LONG_PRESS = 50
 class CruiseHelper:
   def __init__(self, CP: structs.CarParams):
     self.CP = CP
-    self.params = Params()
 
     self.button_frame_counts = {ButtonType.gapAdjustCruise: 0}
     self._experimental_mode = False
@@ -29,8 +26,9 @@ class CruiseHelper:
       if CS.cruiseState.available:
         self.update_button_frame_counts(CS)
 
-        # toggle experimental mode once on distance button hold
-        self.update_experimental_mode(events, experimental_mode)
+        # speed-limit auto cruise owns the distance-button long hold; consume it here
+        # so releasing the button does not also cycle driving personality.
+        self.update_distance_long_press()
 
   def update_button_frame_counts(self, CS) -> None:
     for button in self.button_frame_counts:
@@ -42,9 +40,6 @@ class CruiseHelper:
       if button in self.button_frame_counts:
         self.button_frame_counts[button] = int(button_event.pressed)
 
-  def update_experimental_mode(self, events, experimental_mode) -> None:
+  def update_distance_long_press(self) -> None:
     if self.button_frame_counts[ButtonType.gapAdjustCruise] >= DISTANCE_LONG_PRESS and not self.experimental_mode_switched:
-      self._experimental_mode = not experimental_mode
-      self.params.put_bool_nonblocking("ExperimentalMode", self._experimental_mode)
-      events.add(EventNameSP.experimentalModeSwitched)
       self.experimental_mode_switched = True
