@@ -54,6 +54,18 @@ def test_e2e_stop_approach_brakes_for_short_no_lead_endpoint():
   assert -E2E_STOP_APPROACH_DECEL_MAX <= accel < -0.5
 
 
+def test_e2e_stop_approach_ignores_endpoint_with_sufficient_runway():
+  accel = get_e2e_stop_approach_accel(12.0, make_model_msg(endpoint_x=70.0), make_radar_state(), True)
+
+  assert accel == 0.0
+
+
+def test_e2e_stop_approach_brakes_before_high_speed_max_decel_boundary():
+  accel = get_e2e_stop_approach_accel(60.0 / 3.6, make_model_msg(endpoint_x=112.0), make_radar_state(), True)
+
+  assert -E2E_STOP_APPROACH_DECEL_MAX <= accel < -0.5
+
+
 def test_e2e_stop_approach_ignores_clear_endpoint():
   assert get_e2e_stop_approach_accel(12.0, make_model_msg(endpoint_x=200.0), make_radar_state(), True) == 0.0
 

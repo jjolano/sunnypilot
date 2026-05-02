@@ -225,6 +225,25 @@ def test_no_lead_e2e_stop_approach_brakes_before_model_peak():
   assert np.min(output[early_window, 5]) < -0.5
 
 
+def test_no_lead_e2e_stop_approach_does_not_brake_with_sufficient_runway():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "no-lead e2e stop approach with sufficient runway",
+      duration=4.0,
+      initial_speed=12.0,
+      lead_relevancy=False,
+      e2e=True,
+      model_position_x_values=[70.0, 70.0],
+      model_desired_accel_values=[0.0, 0.0],
+      cruise_values=[20.0, 20.0],
+      breakpoints=[0.0, 4.0],
+    )
+  )
+
+  early_window = output[:, 0] <= 1.0
+  assert np.min(output[early_window, 5]) > -0.2
+
+
 def run_under_gap_cut_in_simulation(v_ego, v_lead, duration=10.0):
   t_follow = get_T_FOLLOW()
   comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)

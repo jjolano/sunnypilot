@@ -83,7 +83,7 @@ E2E_STOP_APPROACH_MIN_V_EGO = 3.0
 E2E_STOP_APPROACH_MAX_MODEL_ACCEL = 0.2
 E2E_STOP_APPROACH_MIN_ENDPOINT = 5.0
 E2E_STOP_APPROACH_EXPECTED_DIST_BP = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 55.0, 60.0]
-E2E_STOP_APPROACH_EXPECTED_DIST_V = [32.0, 46.0, 64.0, 86.0, 108.0, 130.0, 145.0, 165.0]
+E2E_STOP_APPROACH_EXPECTED_DIST_V = [8.0, 18.0, 30.0, 48.0, 68.0, 88.0, 104.0, 122.0]
 E2E_STOP_APPROACH_SHORTAGE_BP = [0.15, 0.5]
 E2E_STOP_APPROACH_DECEL_BP = [0.35, 1.15]
 E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND = 0.65
@@ -131,6 +131,8 @@ def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force
     return 0.0
 
   expected_distance = float(np.interp(v_ego * CV.MS_TO_KPH, E2E_STOP_APPROACH_EXPECTED_DIST_BP, E2E_STOP_APPROACH_EXPECTED_DIST_V))
+  max_decel_distance = v_ego**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX * (1.0 - E2E_STOP_APPROACH_SHORTAGE_BP[0]))
+  expected_distance = max(expected_distance, max_decel_distance)
   if expected_distance <= 0.0:
     return 0.0
 
