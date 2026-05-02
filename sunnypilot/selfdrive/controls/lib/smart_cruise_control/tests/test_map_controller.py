@@ -76,6 +76,10 @@ class TestSmartCruiseControlMap:
     assert self.scc_m.output_v_target == V_CRUISE_UNSET
     assert self.scc_m.output_a_target == 0.
 
+  def test_validity_params_are_registered(self):
+    assert self.params.get("LastGPSPositionValid") is None
+    assert self.params.get("MapTargetVelocitiesValid") is None
+
   def test_system_disabled(self):
     self.params.put_bool("SmartCruiseControlMap", False)
     self.scc_m.enabled = self.params.get_bool("SmartCruiseControlMap")
