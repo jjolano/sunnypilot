@@ -78,6 +78,8 @@ STOPPED_LEAD_GAP_FILL_SPEED_V = [CREEP_TO_STOP_GAP_SPEED_MAX, 1.2, STOPPED_LEAD_
 STOPPED_LEAD_GAP_FILL_ACCEL_GAIN = 0.6
 STOPPED_LEAD_GAP_FILL_ACCEL_MAX = 0.35
 STOPPED_LEAD_GAP_FILL_ACCEL_MIN = -0.25
+STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_D_REL_DELTA = 3.0
+STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_V_LEAD_DELTA = 1.0
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -290,6 +292,17 @@ def get_stopped_lead_gap_fill_accel(v_ego, d_rel, v_lead, model_prob, armed, bra
   return True, float(accel)
 
 
+def stopped_lead_gap_fill_lead_continuous(track_id, prev_track_id, d_rel, prev_d_rel, v_lead, prev_v_lead):
+  if prev_track_id == -2:
+    return False
+  if track_id >= 0 and prev_track_id >= 0 and track_id != prev_track_id:
+    return False
+  return bool(
+    abs(d_rel - prev_d_rel) <= STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_D_REL_DELTA and
+    abs(v_lead - prev_v_lead) <= STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_V_LEAD_DELTA
+  )
+
+
 class LongitudinalPlanner(LongitudinalPlannerSP):
   def __init__(self, CP, CP_SP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
@@ -307,6 +320,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.creep_to_stop_gap_active = False
     self.creep_stop_hold_released = False
     self.stopped_lead_gap_fill_timer = 0.0
+    self.stopped_lead_gap_fill_track_id = -2
+    self.stopped_lead_gap_fill_d_rel = 0.0
+    self.stopped_lead_gap_fill_v_lead = 0.0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -416,16 +432,32 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.output_should_stop = output_should_stop_mpc
 
     lead_one = sm['radarState'].leadOne
+    lead_track_id = int(getattr(lead_one, "radarTrackId", -2)) if lead_one.status else -2
+    lead_d_rel = float(lead_one.dRel) if lead_one.status else 0.0
+    lead_v_lead = float(lead_one.vLeadK) if lead_one.status else 0.0
     if lead_one.status and should_arm_stopped_lead_gap_fill(
-      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
+      v_ego, lead_d_rel, lead_v_lead, float(lead_one.modelProb),
       brake_pressed=sm['carState'].brakePressed,
       gas_pressed=sm['carState'].gasPressed,
       force_slow_decel=force_slow_decel or reset_state,
       a_lead=float(lead_one.aLeadK),
     ):
       self.stopped_lead_gap_fill_timer = STOPPED_LEAD_GAP_FILL_ARM_TIME
+      self.stopped_lead_gap_fill_track_id = lead_track_id
+      self.stopped_lead_gap_fill_d_rel = lead_d_rel
+      self.stopped_lead_gap_fill_v_lead = lead_v_lead
+    elif not (lead_one.status and stopped_lead_gap_fill_lead_continuous(
+      lead_track_id, self.stopped_lead_gap_fill_track_id, lead_d_rel, self.stopped_lead_gap_fill_d_rel,
+      lead_v_lead, self.stopped_lead_gap_fill_v_lead,
+    )):
+      self.stopped_lead_gap_fill_timer = 0.0
+      self.stopped_lead_gap_fill_track_id = -2
+      self.stopped_lead_gap_fill_d_rel = 0.0
+      self.stopped_lead_gap_fill_v_lead = 0.0
     else:
       self.stopped_lead_gap_fill_timer = max(0.0, self.stopped_lead_gap_fill_timer - self.dt)
+      self.stopped_lead_gap_fill_d_rel = lead_d_rel
+      self.stopped_lead_gap_fill_v_lead = lead_v_lead
 
     model_predicted_v_lead, model_predicted_gap_opening = (
       get_model_lead_pullaway(sm['modelV2'], lead_one, v_ego) if lead_one.status else (0.0, 0.0)

@@ -157,6 +157,9 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.creep_to_stop_gap_active = False
   planner.creep_stop_hold_released = False
   planner.stopped_lead_gap_fill_timer = gap_fill_timer
+  planner.stopped_lead_gap_fill_track_id = -2
+  planner.stopped_lead_gap_fill_d_rel = 0.0
+  planner.stopped_lead_gap_fill_v_lead = 0.0
   planner.dec = SimpleNamespace(active=lambda: False)
   planner.source = custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
   return planner
@@ -250,6 +253,40 @@ def test_e2e_decel_survives_lead_accel_recovery(monkeypatch):
 
   assert planner.mpc.source == long_mpc.LongitudinalPlanSource.e2e
   assert planner.output_a_target == pytest.approx(-0.8)
+
+
+def test_stopped_lead_gap_fill_resets_for_discontinuous_lead(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=0.0)
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
+  close_lead = SimpleNamespace(
+    status=True,
+    radarTrackId=1,
+    dRel=stop_target + 0.2,
+    vLeadK=0.0,
+    modelProb=1.0,
+    aLeadK=0.0,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+  far_lead = SimpleNamespace(
+    status=True,
+    radarTrackId=2,
+    dRel=stop_target + STOPPED_LEAD_GAP_FILL_MIN_EXCESS + 5.0,
+    vLeadK=0.0,
+    modelProb=1.0,
+    aLeadK=0.0,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.0, close_lead, desired_accel=0.0, should_stop=False))
+  assert planner.stopped_lead_gap_fill_timer > 0.0
+
+  planner.update(make_planner_sm(0.0, far_lead, desired_accel=0.0, should_stop=False))
+
+  assert planner.stopped_lead_gap_fill_timer == pytest.approx(0.0)
+  assert planner.output_a_target <= 0.0
 
 
 def stop_distance_buffer(v_ego):
