@@ -137,6 +137,11 @@ MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP = [0.0, 10.0]
 MOVING_LEAD_STOP_APPROACH_DECEL_BLEND = 0.75
 MOVING_LEAD_STOP_APPROACH_DECEL_MIN = 0.4
 MOVING_LEAD_STOP_APPROACH_DECEL_CAP = 1.8
+MOVING_LEAD_STOP_APPROACH_CUSHION_FACTOR = 0.75
+MOVING_LEAD_STOP_APPROACH_LIGHT_CUSHION_FRACTION = 0.35
+MOVING_LEAD_STOP_APPROACH_FULL_CUSHION_FRACTION = 0.75
+MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX = 0.65
+MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP = [2.3, 2.8]
 MOVING_LEAD_STOP_APPROACH_COST = 25.0
 MOVING_LEAD_STOP_RESERVE_MAX = 2.5
 MOVING_LEAD_STOP_RESERVE_V_EGO_BP = [0.2, 3.0]
@@ -553,6 +558,22 @@ def get_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follo
   return target, cost
 
 
+def get_moving_lead_stop_approach_gap_deficit_blend(d_rel, v_lead, t_follow, target_gap):
+  cushion = MOVING_LEAD_STOP_APPROACH_CUSHION_FACTOR * t_follow * np.maximum(v_lead, 0.0)
+  gap_deficit = np.maximum(target_gap - d_rel, 0.0)
+  cushion_used = np.divide(
+    gap_deficit,
+    np.maximum(cushion, 1e-3),
+    out=np.zeros_like(gap_deficit, dtype=float),
+    where=cushion > 0.0,
+  ).clip(0.0, 1.0)
+  return np.interp(
+    cushion_used,
+    [MOVING_LEAD_STOP_APPROACH_LIGHT_CUSHION_FRACTION, MOVING_LEAD_STOP_APPROACH_FULL_CUSHION_FRACTION],
+    [0.0, 1.0],
+  )
+
+
 def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
   x_lead = np.asarray(x_lead, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
@@ -578,8 +599,12 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   if np.all(comfort_blend <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
 
-  target_decel = np.clip(MOVING_LEAD_STOP_APPROACH_DECEL_BLEND * required_decel,
-                         MOVING_LEAD_STOP_APPROACH_DECEL_MIN, MOVING_LEAD_STOP_APPROACH_DECEL_CAP)
+  full_decel = np.clip(MOVING_LEAD_STOP_APPROACH_DECEL_BLEND * required_decel,
+                       MOVING_LEAD_STOP_APPROACH_DECEL_MIN, MOVING_LEAD_STOP_APPROACH_DECEL_CAP)
+  light_decel = np.minimum(full_decel, MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX)
+  gap_deficit_blend = get_moving_lead_stop_approach_gap_deficit_blend(x_lead, v_lead, t_follow, desired_gap)
+  gap_deficit_blend = np.maximum(gap_deficit_blend, np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP, [0.0, 1.0]))
+  target_decel = light_decel + gap_deficit_blend * (full_decel - light_decel)
   return -target_decel, MOVING_LEAD_STOP_APPROACH_COST * comfort_blend
 
 
