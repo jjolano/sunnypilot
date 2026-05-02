@@ -12,6 +12,8 @@ MAX_VEL_ERR = 5.0  # m/s
 # EU guidelines
 MAX_LATERAL_JERK = 5.0  # m/s^3
 MAX_LATERAL_ACCEL_NO_ROLL = 3.0  # m/s^2
+MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL = 5.0  # m/s^2
+LATERAL_ACCEL_DRIVER_GAS_DECAY_SECONDS = 1.25
 
 
 def clamp(val, min_val, max_val):
@@ -22,21 +24,54 @@ def smooth_value(val, prev_val, tau, dt=DT_MDL):
   alpha = 1 - np.exp(-dt/tau) if tau > 0 else 1
   return alpha * val + (1 - alpha) * prev_val
 
-def clip_curvature(v_ego, prev_curvature, new_curvature, roll) -> tuple[float, bool]:
+
+def update_lateral_accel_limit(current_limit, manual_gas_override, lat_active, brake_pressed, steering_pressed,
+                               dt=DT_CTRL, default_lateral_accel_limited=False):
+  if not lat_active or brake_pressed or steering_pressed or not np.isfinite(current_limit):
+    return MAX_LATERAL_ACCEL_NO_ROLL
+  if manual_gas_override or default_lateral_accel_limited:
+    return MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL
+
+  decay_rate = (MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL - MAX_LATERAL_ACCEL_NO_ROLL) / LATERAL_ACCEL_DRIVER_GAS_DECAY_SECONDS
+  return float(np.clip(current_limit - decay_rate * max(dt, 0.0),
+                       MAX_LATERAL_ACCEL_NO_ROLL,
+                       MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL))
+
+
+def should_latch_lateral_accel_burst(default_lateral_accel_limited, lat_active, brake_pressed, steering_pressed,
+                                     manual_gas_override=False):
+  return bool(default_lateral_accel_limited and lat_active and not brake_pressed and not steering_pressed and not manual_gas_override)
+
+
+def is_default_lateral_accel_limited(v_ego, curvature, roll):
+  v_ego = max(v_ego, MIN_SPEED)
+  roll_compensation = roll * ACCELERATION_DUE_TO_GRAVITY
+  max_lat_accel = MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
+  min_lat_accel = -MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
+  lat_accel = curvature * v_ego ** 2
+  return lat_accel < min_lat_accel or lat_accel > max_lat_accel
+
+
+def clip_curvature(v_ego, prev_curvature, new_curvature, roll, lateral_accel_limit=MAX_LATERAL_ACCEL_NO_ROLL) -> tuple[float, bool, bool]:
   # This function respects ISO lateral jerk and acceleration limits + a max curvature
   v_ego = max(v_ego, MIN_SPEED)
   max_curvature_rate = MAX_LATERAL_JERK / (v_ego ** 2)  # inexact calculation, check https://github.com/commaai/openpilot/pull/24755
   new_curvature = np.clip(new_curvature,
                           prev_curvature - max_curvature_rate * DT_CTRL,
                           prev_curvature + max_curvature_rate * DT_CTRL)
+  default_lateral_accel_limited = is_default_lateral_accel_limited(v_ego, new_curvature, roll)
+
+  if not np.isfinite(lateral_accel_limit):
+    lateral_accel_limit = MAX_LATERAL_ACCEL_NO_ROLL
+  lateral_accel_limit = float(np.clip(lateral_accel_limit, 0.0, MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL))
 
   roll_compensation = roll * ACCELERATION_DUE_TO_GRAVITY
-  max_lat_accel = MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
-  min_lat_accel = -MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
+  max_lat_accel = lateral_accel_limit + roll_compensation
+  min_lat_accel = -lateral_accel_limit + roll_compensation
   new_curvature, limited_accel = clamp(new_curvature, min_lat_accel / v_ego ** 2, max_lat_accel / v_ego ** 2)
 
   new_curvature, limited_max_curv = clamp(new_curvature, -MAX_CURVATURE, MAX_CURVATURE)
-  return float(new_curvature), limited_accel or limited_max_curv
+  return float(new_curvature), limited_accel or limited_max_curv, bool(default_lateral_accel_limited)
 
 
 def get_accel_from_plan(speeds, accels, t_idxs, action_t=DT_MDL, vEgoStopping=0.3):

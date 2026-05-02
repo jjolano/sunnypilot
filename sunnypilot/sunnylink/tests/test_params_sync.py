@@ -4,12 +4,12 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+
 import json
 import os
 import pytest
 
-from openpilot.common.params import Params
-from openpilot.sunnypilot.sunnylink.athena.sunnylinkd import METADATA_PATH
+METADATA_PATH = os.path.join(os.path.dirname(__file__), "..", "params_metadata.json")
 
 
 def test_metadata_json_exists():
@@ -58,6 +58,8 @@ def test_all_params_have_metadata():
   There should be no parameters in Params() that are missing from the metadata file.
   If this fails, run 'python3 sunnypilot/sunnylink/tools/update_params_metadata.py'.
   """
+  from openpilot.common.params import Params
+
   params = Params()
   all_keys = [k.decode('utf-8') for k in params.all_keys()]
 
@@ -85,6 +87,8 @@ def test_metadata_keys_exist_in_params():
   There should be no keys in the metadata file that are not present in Params().
   This prints a warning rather than failing, as it's less critical than missing metadata.
   """
+  from openpilot.common.params import Params
+
   params = Params()
   all_keys = {k.decode('utf-8') for k in params.all_keys()}
 
@@ -115,8 +119,7 @@ def test_no_default_titles():
 
   if default_title_keys:
     pytest.fail(
-      f"The following parameters have default titles (title == key): {default_title_keys}. "
-      + "Please update 'params_metadata.json' with descriptive titles."
+      f"The following parameters have default titles (title == key): {default_title_keys}. " + "Please update 'params_metadata.json' with descriptive titles."
     )
 
 
@@ -218,7 +221,7 @@ def test_torque_control_tune_versions_in_sync():
   from openpilot.common.basedir import BASEDIR
 
   versions_json_path = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "controls", "lib", "latcontrol_torque_versions.json")
-  sync_script_path = "python3 sunnypilot/sunnylink/tools/sync_torque_versions.py"
+  sync_script_path = "python3 sunnypilot/sunnylink/tools/update_params_metadata.py"
 
   # Load both files
   with open(METADATA_PATH) as f:
@@ -275,10 +278,11 @@ def test_torque_control_tune_versions_in_sync():
   # Check that all versions are represented
   missing_versions = expected_version_keys - actual_version_keys
   if missing_versions:
-    pytest.fail(f"The following versions are missing from TorqueControlTune options: {missing_versions}. " +
-                f"Please run '{sync_script_path}' to sync.")
+    pytest.fail(f"The following versions are missing from TorqueControlTune options: {missing_versions}. " + f"Please run '{sync_script_path}' to sync.")
 
   extra_versions = actual_version_keys - expected_version_keys
   if extra_versions:
-    pytest.fail("The following versions in TorqueControlTune options are not in latcontrol_torque_versions.json: " +
-                f"{extra_versions}. Please run '{sync_script_path}' to sync.")
+    pytest.fail(
+      "The following versions in TorqueControlTune options are not in latcontrol_torque_versions.json: "
+      + f"{extra_versions}. Please run '{sync_script_path}' to sync."
+    )

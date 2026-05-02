@@ -85,6 +85,7 @@ build/
 # agents
 .claude/
 .context/
+docs/superpowers/
 PLAN.md
 TASK.md
 CLAUDE.md

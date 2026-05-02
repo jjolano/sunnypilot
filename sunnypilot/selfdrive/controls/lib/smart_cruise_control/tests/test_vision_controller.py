@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+
 import numpy as np
 import pytest
 
@@ -14,7 +15,12 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
-from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import SmartCruiseControlVision, _ENTERING_PRED_LAT_ACC_TH
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import (
+  SmartCruiseControlVision,
+  _CURRENT_LAT_ACC_BLEED_TH,
+  _ENTERING_PRED_LAT_ACC_TH,
+  _NO_OVERSHOOT_TIME_HORIZON,
+)
 
 VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
 
@@ -59,6 +65,15 @@ def _build_single_spike_filtered(n: int, base: float = 1.0) -> np.ndarray:
   return arr
 
 
+def _constant_pred_lat_accels(value: float) -> np.ndarray:
+  return np.full(len(ModelConstants.T_IDXS), np.float32(value), dtype=np.float32)
+
+
+def _set_predicted_lat_accels(model, pred_lat_accels: np.ndarray) -> None:
+  model.modelV2.velocity.x = [1.0 for _ in range(len(pred_lat_accels))]
+  model.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
+
+
 def generate_modelV2():
   model = messaging.new_message('modelV2')
   position = log.XYZTData.new_message()
@@ -96,15 +111,14 @@ def generate_carState():
   return car_state
 
 
-def generate_controlsState():
+def generate_controlsState(curvature=0.0):
   controls_state = messaging.new_message('controlsState')
-  controls_state.controlsState.curvature = 0.05
+  controls_state.controlsState.curvature = float(curvature)
 
   return controls_state
 
 
 class TestSmartCruiseControlVision:
-
   def setup_method(self):
     self.params = Params()
     self.reset_params()
@@ -122,26 +136,142 @@ class TestSmartCruiseControlVision:
     assert self.scc_v.state == VisionState.disabled
     assert not self.scc_v.is_active
     assert self.scc_v.output_v_target == V_CRUISE_UNSET
-    assert self.scc_v.output_a_target == 0.
+    assert self.scc_v.output_a_target == 0.0
 
   def test_system_disabled(self):
     self.params.put_bool("SmartCruiseControlVision", False)
     self.scc_v.enabled = self.params.get_bool("SmartCruiseControlVision")
 
-    for _ in range(int(10. / DT_MDL)):
-      self.scc_v.update(self.sm, True, False, 0., 0., 0.)
+    for _ in range(int(10.0 / DT_MDL)):
+      self.scc_v.update(self.sm, True, False, 0.0, 0.0, 0.0)
     assert self.scc_v.state == VisionState.disabled
     assert not self.scc_v.is_active
 
   def test_disabled(self):
-    for _ in range(int(10. / DT_MDL)):
-      self.scc_v.update(self.sm, False, False, 0., 0., 0.)
+    for _ in range(int(10.0 / DT_MDL)):
+      self.scc_v.update(self.sm, False, False, 0.0, 0.0, 0.0)
     assert self.scc_v.state == VisionState.disabled
 
   def test_transition_disabled_to_enabled(self):
-    for _ in range(int(10. / DT_MDL)):
-      self.scc_v.update(self.sm, True, False, 0., 0., 0.)
+    for _ in range(int(10.0 / DT_MDL)):
+      self.scc_v.update(self.sm, True, False, 0.0, 0.0, 0.0)
     assert self.scc_v.state == VisionState.enabled
+
+  def test_stays_inactive_below_min_speed_even_with_high_predicted_lat_acc(self):
+    pred_lat_accels = _constant_pred_lat_accels(3.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V - 0.1)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.enabled
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_entering_state_uses_gentler_target_speed_bias(self):
+    pred_lat_accels = _constant_pred_lat_accels(3.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.entering
+    assert self.scc_v.a_target == pytest.approx(-0.7)
+    assert self.scc_v.v_target - self.scc_v.output_v_target == pytest.approx(0.7 * _NO_OVERSHOOT_TIME_HORIZON)
+
+  def test_turning_state_keeps_positive_accel_in_moderate_turn(self):
+    pred_lat_accels = _constant_pred_lat_accels(2.3)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    moderate_curvature = 2.3 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(moderate_curvature).controlsState
+
+    for _ in range(3):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.turning
+    assert self.scc_v.a_target == pytest.approx(0.15)
+
+  def test_turning_state_applies_current_lat_acc_bleed(self):
+    pred_lat_accels = _constant_pred_lat_accels(3.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    high_curvature = 3.0 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(high_curvature).controlsState
+
+    for _ in range(3):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.turning
+    assert self.scc_v.a_target == pytest.approx(-0.20)
+
+  def test_current_lat_acc_bleed_uses_measured_curve_without_prediction(self):
+    pred_lat_accels = _constant_pred_lat_accels(1.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    high_current_curvature = 3.0 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(high_current_curvature).controlsState
+
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.max_pred_lat_acc < _ENTERING_PRED_LAT_ACC_TH
+    assert self.scc_v.current_lat_acc == pytest.approx(3.0)
+    assert self.scc_v.state == VisionState.turning
+    assert self.scc_v.is_active
+    assert self.scc_v.a_target == pytest.approx(-0.20)
+    assert self.scc_v.output_v_target < v_ego
+
+  def test_current_lat_acc_bleed_is_inactive_below_threshold(self):
+    pred_lat_accels = _constant_pred_lat_accels(1.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    below_threshold_curvature = (_CURRENT_LAT_ACC_BLEED_TH - 0.05) / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(below_threshold_curvature).controlsState
+
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.current_lat_acc < _CURRENT_LAT_ACC_BLEED_TH
+    assert self.scc_v.state == VisionState.enabled
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_current_lat_acc_bleed_respects_longitudinal_override(self):
+    pred_lat_accels = _constant_pred_lat_accels(1.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    high_current_curvature = 3.2 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(high_current_curvature).controlsState
+
+    self.scc_v.update(self.sm, True, True, v_ego, 0.0, v_ego)
+    self.scc_v.update(self.sm, True, True, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.current_lat_acc > _CURRENT_LAT_ACC_BLEED_TH
+    assert self.scc_v.state == VisionState.overriding
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
 
   @pytest.mark.parametrize(
     "case, should_enter",
@@ -181,8 +311,7 @@ class TestSmartCruiseControlVision:
     # Override model predictions so:
     # predicted_lat_accels = abs(orientationRate.z) * velocity.x == pred_lat_accels
     mdl = generate_modelV2()
-    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
-    mdl.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
     self.sm["modelV2"] = mdl.modelV2
 
     v_ego = float(MIN_V + 5.0)

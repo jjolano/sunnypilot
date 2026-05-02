@@ -1,6 +1,7 @@
 from cereal import log, custom
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LANE_CHANGE_DURATION
 from openpilot.sunnypilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeController, AutoLaneChangeMode
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_turn_desire import LaneTurnController
 
@@ -9,7 +10,8 @@ LaneChangeDirection = log.LaneChangeDirection
 TurnDirection = custom.ModelDataV2SP.TurnDirection
 
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
-LANE_CHANGE_TIME_MAX = 10.
+LANE_CHANGE_TIME_MAX = 10.0
+LANE_CHANGE_TIMER_EPS = 1e-6
 
 DESIRES = {
   LaneChangeDirection.none: {
@@ -45,6 +47,7 @@ class DesireHelper:
     self.lane_change_direction = LaneChangeDirection.none
     self.lane_change_timer = 0.0
     self.lane_change_ll_prob = 1.0
+    self.lane_change_reinit = False
     self.keep_pulse_timer = 0.0
     self.prev_one_blinker = False
     self.desire = log.Desire.none
@@ -61,41 +64,52 @@ class DesireHelper:
     self.lane_turn_controller.update_params()
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
+    current_lane_change_direction = self.get_lane_change_direction(carstate) if one_blinker else LaneChangeDirection.none
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
 
     # Lane turn controller update
-    self.lane_turn_controller.update_lane_turn(blindspot_left=carstate.leftBlindspot, blindspot_right=carstate.rightBlindspot,
-                                               left_blinker=carstate.leftBlinker, right_blinker=carstate.rightBlinker, v_ego=v_ego)
+    self.lane_turn_controller.update_lane_turn(
+      blindspot_left=carstate.leftBlindspot,
+      blindspot_right=carstate.rightBlindspot,
+      left_blinker=carstate.leftBlinker,
+      right_blinker=carstate.rightBlinker,
+      v_ego=v_ego,
+    )
     self.lane_turn_direction = self.lane_turn_controller.get_turn_direction()
 
     if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX or self.alc.lane_change_set_timer == AutoLaneChangeMode.OFF:
       self.lane_change_state = LaneChangeState.off
       self.lane_change_direction = LaneChangeDirection.none
+      self.lane_change_reinit = False
     else:
       # LaneChangeState.off
       if self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
         self.lane_change_state = LaneChangeState.preLaneChange
         self.lane_change_ll_prob = 1.0
+        self.lane_change_reinit = False
         # Initialize lane change direction to prevent UI alert flicker
-        self.lane_change_direction = self.get_lane_change_direction(carstate)
+        self.lane_change_direction = current_lane_change_direction
 
       # LaneChangeState.preLaneChange
       elif self.lane_change_state == LaneChangeState.preLaneChange:
         # Update lane change direction
-        self.lane_change_direction = self.get_lane_change_direction(carstate)
+        self.lane_change_direction = current_lane_change_direction
 
-        torque_applied = carstate.steeringPressed and \
-                         ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
-                          (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
+        torque_applied = carstate.steeringPressed and (
+          (carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left)
+          or (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right)
+        )
 
-        blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
-                              (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
+        blindspot_detected = (carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or (
+          carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right
+        )
 
         self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
         if not one_blinker or below_lane_change_speed:
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
+          self.lane_change_reinit = False
         elif (torque_applied or self.alc.auto_lane_change_allowed) and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
 
@@ -104,21 +118,28 @@ class DesireHelper:
         # fade out over .5s
         self.lane_change_ll_prob = max(self.lane_change_ll_prob - 2 * DT_MDL, 0.0)
 
-        # 98% certainty
-        if lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01:
+        model_lane_change_complete = lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01
+        shaped_lane_change_complete = self.lane_change_timer >= LANE_CHANGE_DURATION - LANE_CHANGE_TIMER_EPS
+        if model_lane_change_complete or shaped_lane_change_complete:
           self.lane_change_state = LaneChangeState.laneChangeFinishing
+          self.lane_change_reinit = False
 
       # LaneChangeState.laneChangeFinishing
       elif self.lane_change_state == LaneChangeState.laneChangeFinishing:
+        fresh_lane_change_request = one_blinker and (not self.prev_one_blinker or current_lane_change_direction != self.lane_change_direction)
+        self.lane_change_reinit = self.lane_change_reinit or fresh_lane_change_request
+
         # fade in laneline over 1s
         self.lane_change_ll_prob = min(self.lane_change_ll_prob + DT_MDL, 1.0)
 
         if self.lane_change_ll_prob > 0.99:
-          self.lane_change_direction = LaneChangeDirection.none
-          if one_blinker:
+          if self.lane_change_reinit and one_blinker:
             self.lane_change_state = LaneChangeState.preLaneChange
+            self.lane_change_direction = current_lane_change_direction
           else:
             self.lane_change_state = LaneChangeState.off
+            self.lane_change_direction = LaneChangeDirection.none
+          self.lane_change_reinit = False
 
     if self.lane_change_state in (LaneChangeState.off, LaneChangeState.preLaneChange):
       self.lane_change_timer = 0.0

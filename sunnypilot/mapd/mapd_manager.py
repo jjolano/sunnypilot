@@ -5,18 +5,18 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-import json
 import platform
 import os
 import glob
 import shutil
 from datetime import datetime
 
+from cereal import custom, messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
-from openpilot.sunnypilot.mapd.live_map_data.osm_map_data import OsmMapData
+from openpilot.sunnypilot.mapd.live_map_data.mapd_v2_map_data import MapdV2MapData
 from openpilot.system.hardware.hw import Paths
 from openpilot.sunnypilot.mapd import MAPD_PATH
 from openpilot.sunnypilot.mapd.mapd_installer import VERSION, update_installed_version
@@ -55,17 +55,34 @@ def cleanup_old_osm_data(files_to_remove: list[str]) -> None:
       shutil.rmtree(file, ignore_errors=False)
 
 
-def request_refresh_osm_location_data(nations: list[str], states: list[str] | None = None) -> None:
+def build_mapd_download_paths(nations: list[str], states: list[str] | None = None) -> list[str]:
+  states = [state for state in (states or []) if state and state.lower() != "all"]
+  download_paths = [f"us_state.{state}" for state in states]
+  for nation in nations:
+    if not nation:
+      continue
+    if nation == "US" and states:
+      continue
+    else:
+      download_paths.append(f"nation.{nation}")
+  return download_paths
+
+
+def request_refresh_osm_location_data(pm: messaging.PubMaster, nations: list[str], states: list[str] | None = None) -> None:
+  download_paths = build_mapd_download_paths(nations, states)
+  if not download_paths:
+    return
+
   params.put("OsmDownloadedDate", str(datetime.now().timestamp()))
   params.put_bool("OsmDbUpdatesCheck", False)
+  download_request = ",".join(download_paths)
+  print(f"Downloading maps for {download_request}")
+  mem_params.put("OSMDownloadLocations", {"paths": download_paths, "pending": True})
 
-  osm_download_locations = {
-    "nations": nations,
-    "states": states or []
-  }
-
-  print(f"Downloading maps for {json.dumps(osm_download_locations)}")
-  mem_params.put("OSMDownloadLocations", osm_download_locations)
+  msg = messaging.new_message('mapdIn')
+  msg.mapdIn.type = custom.MapdInputType.download
+  msg.mapdIn.str = download_request
+  pm.send('mapdIn', msg)
 
 
 def filter_nations_and_states(nations: list[str], states: list[str] | None = None) -> tuple[list[str], list[str]]:
@@ -97,19 +114,17 @@ def filter_nations_and_states(nations: list[str], states: list[str] | None = Non
   return nations, states or []
 
 
-def update_osm_db() -> None:
+def update_osm_db(pm: messaging.PubMaster) -> None:
   if params.get_bool("OsmDbUpdatesCheck"):
     cleanup_old_osm_data(get_files_for_cleanup())
     country = params.get("OsmLocationName", return_default=True)
     state = params.get("OsmStateName", return_default=True)
     filtered_nations, filtered_states = filter_nations_and_states([country], [state])
-    request_refresh_osm_location_data(filtered_nations, filtered_states)
+    request_refresh_osm_location_data(pm, filtered_nations, filtered_states)
 
-  if not mem_params.get("OSMDownloadBounds"):
-    mem_params.put("OSMDownloadBounds", "")
 
-  if not mem_params.get("LastGPSPosition"):
-    mem_params.put("LastGPSPosition", "{}")
+def osm_update_required_alert_enabled() -> bool:
+  return params.get_bool("OsmLocal") and bool(get_files_for_cleanup())
 
 
 def main_thread():
@@ -117,7 +132,8 @@ def main_thread():
   config_realtime_process([0, 1, 2, 3], 5)
 
   rk = Ratekeeper(1, print_delay_threshold=None)
-  live_map_sp = OsmMapData()
+  pm = messaging.PubMaster(['mapdIn'])
+  live_map_sp = MapdV2MapData()
 
   # Create folder needed for OSM
   try:
@@ -128,10 +144,10 @@ def main_thread():
     cloudlog.exception(f"mapd: failed to make {Paths.mapd_root()}")
 
   while True:
-    show_alert = get_files_for_cleanup() and params.get_bool("OsmLocal")
+    show_alert = osm_update_required_alert_enabled()
     set_offroad_alert("Offroad_OSMUpdateRequired", show_alert, "This alert will be cleared when new maps are downloaded.")
 
-    update_osm_db()
+    update_osm_db(pm)
     live_map_sp.tick()
     rk.keep_time()
 
