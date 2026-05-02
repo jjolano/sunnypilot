@@ -11,7 +11,7 @@ from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
-from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
+from openpilot.selfdrive.controls.lib.drive_helpers import MAX_LATERAL_ACCEL_NO_ROLL, clip_curvature, update_lateral_accel_limit
 from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LaneChangePathShaper, LaneChangePathShaperInputs
 from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
@@ -53,6 +53,7 @@ class Controls(ControlsExt):
     self.steer_limited_by_safety = False
     self.curvature = 0.0
     self.desired_curvature = 0.0
+    self.lateral_accel_limit_no_roll = MAX_LATERAL_ACCEL_NO_ROLL
     self.lane_change_path_shaper = LaneChangePathShaper(DT_CTRL)
     self.model_path_processor = ModelPathProcessor()
 
@@ -190,7 +191,21 @@ class Controls(ControlsExt):
         )
       )
       new_desired_curvature = lane_change_result.desired_curvature if CC.latActive else self.curvature
-    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
+    manual_gas_lateral_accel_override = CS.gasPressed and not CC.longActive
+    self.lateral_accel_limit_no_roll = update_lateral_accel_limit(
+      self.lateral_accel_limit_no_roll,
+      manual_gas_lateral_accel_override,
+      CC.latActive,
+      CS.brakePressed,
+      CS.steeringPressed,
+    )
+    self.desired_curvature, curvature_limited = clip_curvature(
+      CS.vEgo,
+      self.desired_curvature,
+      new_desired_curvature,
+      lp.roll,
+      self.lateral_accel_limit_no_roll,
+    )
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature

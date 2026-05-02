@@ -12,6 +12,8 @@ MAX_VEL_ERR = 5.0  # m/s
 # EU guidelines
 MAX_LATERAL_JERK = 5.0  # m/s^3
 MAX_LATERAL_ACCEL_NO_ROLL = 3.0  # m/s^2
+MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL = 5.0  # m/s^2
+LATERAL_ACCEL_DRIVER_GAS_DECAY_SECONDS = 1.25
 
 
 def clamp(val, min_val, max_val):
@@ -22,7 +24,20 @@ def smooth_value(val, prev_val, tau, dt=DT_MDL):
   alpha = 1 - np.exp(-dt/tau) if tau > 0 else 1
   return alpha * val + (1 - alpha) * prev_val
 
-def clip_curvature(v_ego, prev_curvature, new_curvature, roll) -> tuple[float, bool]:
+
+def update_lateral_accel_limit(current_limit, manual_gas_override, lat_active, brake_pressed, steering_pressed, dt=DT_CTRL):
+  if not lat_active or brake_pressed or steering_pressed or not np.isfinite(current_limit):
+    return MAX_LATERAL_ACCEL_NO_ROLL
+  if manual_gas_override:
+    return MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL
+
+  decay_rate = (MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL - MAX_LATERAL_ACCEL_NO_ROLL) / LATERAL_ACCEL_DRIVER_GAS_DECAY_SECONDS
+  return float(np.clip(current_limit - decay_rate * max(dt, 0.0),
+                       MAX_LATERAL_ACCEL_NO_ROLL,
+                       MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL))
+
+
+def clip_curvature(v_ego, prev_curvature, new_curvature, roll, lateral_accel_limit=MAX_LATERAL_ACCEL_NO_ROLL) -> tuple[float, bool]:
   # This function respects ISO lateral jerk and acceleration limits + a max curvature
   v_ego = max(v_ego, MIN_SPEED)
   max_curvature_rate = MAX_LATERAL_JERK / (v_ego ** 2)  # inexact calculation, check https://github.com/commaai/openpilot/pull/24755
@@ -30,9 +45,13 @@ def clip_curvature(v_ego, prev_curvature, new_curvature, roll) -> tuple[float, b
                           prev_curvature - max_curvature_rate * DT_CTRL,
                           prev_curvature + max_curvature_rate * DT_CTRL)
 
+  if not np.isfinite(lateral_accel_limit):
+    lateral_accel_limit = MAX_LATERAL_ACCEL_NO_ROLL
+  lateral_accel_limit = float(np.clip(lateral_accel_limit, 0.0, MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL))
+
   roll_compensation = roll * ACCELERATION_DUE_TO_GRAVITY
-  max_lat_accel = MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
-  min_lat_accel = -MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
+  max_lat_accel = lateral_accel_limit + roll_compensation
+  min_lat_accel = -lateral_accel_limit + roll_compensation
   new_curvature, limited_accel = clamp(new_curvature, min_lat_accel / v_ego ** 2, max_lat_accel / v_ego ** 2)
 
   new_curvature, limited_max_curv = clamp(new_curvature, -MAX_CURVATURE, MAX_CURVATURE)
