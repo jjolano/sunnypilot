@@ -78,6 +78,20 @@ def make_flat_model_v2():
   return model_v2
 
 
+class FlatNNTorqueModel:
+  friction_override = False
+
+  def evaluate(self, _input_array):
+    return 0.0
+
+
+def enable_flat_nnlc(controller):
+  controller.extension.enabled = True
+  controller.extension.has_nn_model = True
+  controller.extension.model = FlatNNTorqueModel()
+  controller.extension.update_model_v2(make_flat_model_v2())
+
+
 def test_v2_uses_crawl_speed_for_low_speed_pid_gain():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
   CS = car.CarState.new_message()
@@ -87,6 +101,18 @@ def test_v2_uses_crawl_speed_for_low_speed_pid_gain():
   controller.update(True, CS, VM, params, False, 0.0, make_pose(), False, 0.2)
 
   assert controller.pid.speed == pytest.approx(3.0)
+
+
+def test_v2_nnlc_uses_crawl_speed_for_low_speed_pid_gain():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  enable_flat_nnlc(controller)
+  CS = car.CarState.new_message()
+  CS.vEgo = 1.0
+  params = log.LiveParametersData.new_message()
+
+  controller.update(True, CS, VM, params, False, 0.0, make_pose(), False, 0.2)
+
+  assert controller.extension._pid.speed == pytest.approx(3.0)
 
 
 def test_measurement_smoother_predicts_between_held_angle_updates():
@@ -543,6 +569,27 @@ def test_v2_signed_steer_limit_allows_clear_unwind_from_actuator_lag_cap():
   assert spy.inputs is not None
   assert not spy.inputs.steer_limit_same_direction
   assert spy.inputs.steer_limit_unwind
+
+
+def test_v2_signed_unwind_steer_limit_does_not_freeze_response_assist():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 5.0
+  CS.steeringPressed = False
+  CS.steeringRateDeg = 40.0
+  params = log.LiveParametersData.new_message()
+  pose = make_pose()
+
+  controller.set_steering_actuator_feedback(
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, 0.7, 0.45, 0.25, False, True)
+  )
+  _, _, lac_log = controller.update(True, CS, VM, params, True, 0.005, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.steerLimitUnwind
+  assert not adaptive_log.freezeReason & GuardedResponseReason.STEER_LIMITED
+  assert not adaptive_log.blockReason & GuardedResponseReason.STEER_LIMITED
 
 
 def test_v2_logs_signed_steer_limit_feedback():

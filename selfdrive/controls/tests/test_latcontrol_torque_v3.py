@@ -45,6 +45,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import Esti
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityBand
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelMode, TorqueModelParams
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperResult
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseReason
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import SteeringActuatorFeedback, SteeringLimitReason
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
@@ -112,6 +113,20 @@ def make_flat_model_v2():
   return model_v2
 
 
+class FlatNNTorqueModel:
+  friction_override = False
+
+  def evaluate(self, _input_array):
+    return 0.0
+
+
+def enable_flat_nnlc(controller):
+  controller.extension.enabled = True
+  controller.extension.has_nn_model = True
+  controller.extension.model = FlatNNTorqueModel()
+  controller.extension.update_model_v2(make_flat_model_v2())
+
+
 def test_v3_uses_crawl_speed_for_low_speed_pid_gain():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
   CS = car.CarState.new_message()
@@ -121,6 +136,18 @@ def test_v3_uses_crawl_speed_for_low_speed_pid_gain():
   controller.update(True, CS, VM, params, False, 0.0, make_pose(), False, 0.2)
 
   assert controller.pid.speed == pytest.approx(3.0)
+
+
+def test_v3_nnlc_uses_crawl_speed_for_low_speed_pid_gain():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  enable_flat_nnlc(controller)
+  CS = car.CarState.new_message()
+  CS.vEgo = 1.0
+  params = log.LiveParametersData.new_message()
+
+  controller.update(True, CS, VM, params, False, 0.0, make_pose(), False, 0.2)
+
+  assert controller.extension._pid.speed == pytest.approx(3.0)
 
 
 def test_v3_controller_alias_matches_controller_symbol():
@@ -181,6 +208,28 @@ def test_v3_logs_signed_steer_limit_feedback():
   assert adaptive_log.steerLimitError == pytest.approx(0.25)
   assert not adaptive_log.steerLimitSameDirection
   assert adaptive_log.steerLimitUnwind
+
+
+def test_v3_signed_unwind_steer_limit_does_not_freeze_response_assist_but_rejects_estimator_sample():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 5.0
+  CS.steeringPressed = False
+  CS.steeringRateDeg = 40.0
+  params = log.LiveParametersData.new_message()
+  pose = make_pose()
+
+  controller.set_steering_actuator_feedback(
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, 0.7, 0.45, 0.25, False, True)
+  )
+  _, _, lac_log = controller.update(True, CS, VM, params, True, 0.005, pose, False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert adaptive_log.steerLimitUnwind
+  assert not adaptive_log.freezeReason & GuardedResponseReason.STEER_LIMITED
+  assert not adaptive_log.blockReason & GuardedResponseReason.STEER_LIMITED
+  assert adaptive_log.sampleRejectReason & EstimatorRejectReason.STEER_LIMITED
 
 
 def test_v3_native_torque_controller_logs_model_state():

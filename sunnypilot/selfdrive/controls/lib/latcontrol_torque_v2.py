@@ -14,6 +14,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shap
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import TorqueDisturbanceInputs, classify_torque_disturbance
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_direction
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_low_speed import low_speed_pid_gain_speed
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_over_response_attenuator import attenuate_same_direction_over_response
 
 
@@ -33,7 +34,6 @@ LOW_SPEED_UNWIND_SETPOINT = 0.2
 LOW_SPEED_UNWIND_MARGIN = 0.08
 LOW_SPEED_UNWIND_JERK = 0.5
 LOW_SPEED_UNWIND_GAIN_SPEED = 8.0
-LOW_SPEED_PID_GAIN_FLOOR = 3.0
 MEASUREMENT_SMOOTHER_MIN_VEGO = 5.0
 MEASUREMENT_SMOOTHER_CORRECTION_GAIN = 0.35
 MEASUREMENT_SMOOTHER_MAX_PREDICTIVE_JERK = 5.0
@@ -188,7 +188,7 @@ class LatControlTorque(LatControl):
       if same_sign_unwind:
         self.pid.i *= 0.5
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5 or same_sign_unwind
-      control_speed = max(CS.vEgo, LOW_SPEED_UNWIND_GAIN_SPEED if same_sign_unwind else LOW_SPEED_PID_GAIN_FLOOR)
+      control_speed = low_speed_pid_gain_speed(CS.vEgo, LOW_SPEED_UNWIND_GAIN_SPEED if same_sign_unwind else None)
       output_lataccel = self.pid.update(pid_log.error, -measurement_rate, feedforward=ff, speed=control_speed, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
 
@@ -219,12 +219,15 @@ class LatControlTorque(LatControl):
     saturated = self.steer_max - abs(output_torque) < 1e-3
     tracking_torque_error = error / max(float(self.torque_params.latAccelFactor), 1e-3)
     lane_change_active = bool(self.extension.model_valid and self.extension.model_v2.meta.laneChangeState != log.LaneChangeState.off)
+    steer_limit_feedback = self.steering_actuator_feedback
+    steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
+    response_steer_limited = steer_limited_by_safety and (steer_limit_same_direction if steer_limit_feedback.valid else True)
     assist_result = self.response_assist.update(
       GuardedResponseAssistInputs(
         active=active,
         v_ego=CS.vEgo,
         steering_pressed=CS.steeringPressed,
-        steer_limited_by_safety=steer_limited_by_safety,
+        steer_limited_by_safety=response_steer_limited,
         curvature_limited=curvature_limited,
         saturated=saturated,
         max_output=self.steer_max,
@@ -242,7 +245,6 @@ class LatControlTorque(LatControl):
     )
     output_torque = assist_result.output_torque if active else 0.0
     same_sign_unwind_release = same_sign_unwind and sign(measurement) != 0.0 and sign(-output_torque) == sign(measurement)
-    steer_limit_feedback = self.steering_actuator_feedback
     steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
     shaping_result = self.output_shaper.update(
       ConservativeOutputShaperInputs(

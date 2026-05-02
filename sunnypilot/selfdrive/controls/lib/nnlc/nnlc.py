@@ -17,6 +17,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_base import LatControlTorqueExtBase, sign
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.model import NNTorqueModel
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_low_speed import low_speed_pid_gain_speed
 
 LOW_SPEED_X = [0, 10, 20, 30]
 LOW_SPEED_Y = [12, 3, 1, 0]
@@ -87,9 +88,9 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
   def update_output_torque(self, CS):
     freeze_integrator = self._steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
     self._output_torque = self._pid.update(self._pid_log.error,
-                                           feedforward=self._ff,
-                                           speed=CS.vEgo,
-                                           freeze_integrator=freeze_integrator)
+                                            feedforward=self._ff,
+                                            speed=low_speed_pid_gain_speed(CS.vEgo),
+                                            freeze_integrator=freeze_integrator)
 
   def update_neural_network_feedforward(self, CS, params, calibrated_pose) -> None:
     if not self._nnlc_enabled:
