@@ -125,13 +125,15 @@ MOVING_LEAD_STOP_APPROACH_V_EGO_BP = [4.0, 12.0]
 MOVING_LEAD_STOP_APPROACH_V_LEAD_BP = [1.0, 3.0, 18.0, 22.0]
 MOVING_LEAD_STOP_APPROACH_DECEL_BP = [0.5, 1.0]
 MOVING_LEAD_STOP_APPROACH_CLOSING_BP = [0.5, 2.0]
+MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_BP = [0.5, 2.0, 4.0]
+MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_V = [0.0, 1.0, 0.0]
 MOVING_LEAD_STOP_APPROACH_REQUIRED_DECEL_BP = [0.35, 1.2]
 MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP = [0.0, 10.0]
 MOVING_LEAD_STOP_APPROACH_DECEL_BLEND = 0.75
 MOVING_LEAD_STOP_APPROACH_DECEL_MIN = 0.4
 MOVING_LEAD_STOP_APPROACH_DECEL_CAP = 1.8
 MOVING_LEAD_STOP_APPROACH_COST = 25.0
-MOVING_LEAD_STOP_RESERVE_MAX = 2.0
+MOVING_LEAD_STOP_RESERVE_MAX = 2.5
 MOVING_LEAD_STOP_RESERVE_V_EGO_BP = [0.2, 3.0]
 MOVING_LEAD_STOP_RESERVE_V_LEAD_BP = [0.1, 1.5]
 MOVING_LEAD_STOP_RESERVE_CLOSING_BP = [0.1, 1.5]
@@ -480,6 +482,9 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   danger_blend = 1.0 - closing_blend * np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [1.0, 0.0])
   desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
   runway_need_blend = 1.0 - np.interp(x_lead - desired_gap, MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP, [0.0, 1.0])
+  anticipatory_runway_blend = lead_decel_blend * np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_BP,
+                                                           MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_V)
+  runway_need_blend = np.maximum(runway_need_blend, anticipatory_runway_blend)
   comfort_blend = speed_blend * moving_blend * lead_decel_blend * closing_blend * required_decel_blend * danger_blend * runway_need_blend
   if np.all(comfort_blend <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
@@ -1047,9 +1052,9 @@ class LongitudinalMpc:
     accel_match_targets, accel_match_costs = get_selected_lead_targets(
       lead_0_accel_targets, lead_1_accel_targets, lead_0_accel_costs, lead_1_accel_costs, dominant_obstacle
     )
-    moving_stop_targets, moving_stop_costs = get_selected_lead_targets(
-      lead_0_moving_stop_targets, lead_1_moving_stop_targets, lead_0_moving_stop_costs, lead_1_moving_stop_costs, dominant_obstacle
-    )
+    lead_0_moving_stop_selected = lead_0_moving_stop_costs >= lead_1_moving_stop_costs
+    moving_stop_targets = np.where(lead_0_moving_stop_selected, lead_0_moving_stop_targets, lead_1_moving_stop_targets)
+    moving_stop_costs = np.where(lead_0_moving_stop_selected, lead_0_moving_stop_costs, lead_1_moving_stop_costs)
     surge_targets, surge_costs = get_selected_lead_targets(
       lead_0_surge_targets, lead_1_surge_targets, lead_0_surge_costs, lead_1_surge_costs, dominant_obstacle
     )

@@ -1006,6 +1006,20 @@ def test_far_hard_braking_lead_uses_runway_instead_of_early_hard_brake():
   assert cost == pytest.approx(0.0)
 
 
+def test_moving_stop_approach_anticipates_confirmed_low_closure():
+  v_ego = 19.2
+  v_lead = 17.0
+  d_rel = 53.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert target < -0.4
+  assert cost > 0.0
+
+
 def test_closer_hard_braking_lead_still_gets_comfort_brake_target():
   v_ego = 18.0
   v_lead = 10.0
