@@ -32,6 +32,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_STOP_RUNWAY_BRAKE,
   LEAD_TRANSITION_PERSISTENCE,
   LEAD_TRANSITION_GUARD_FADE_TIME,
+  LEAD_TRANSITION_GUARD_OUTPUT_DELAY,
   LEAD_TRANSITION_Y_REL_CONFIRM,
   LEAD_TRANSITION_Y_REL_SOFT,
   STOP_DISTANCE,
@@ -603,6 +604,13 @@ def test_lead_transition_guard_caps_near_term_positive_accel():
   guarded_accel_max = get_lead_transition_accel_max(0.55)
   assert guarded_accel_max[0] == pytest.approx(0.0)
   assert np.max(guarded_accel_max) == pytest.approx(ACCEL_MAX)
+
+
+def test_lead_transition_guard_covers_output_delay_horizon():
+  guarded_accel_max = get_lead_transition_accel_max(0.1)
+  delayed_horizon_idx = int(np.argmax(long_mpc.T_IDXS >= LEAD_TRANSITION_GUARD_OUTPUT_DELAY))
+
+  assert guarded_accel_max[delayed_horizon_idx] < 0.2
 
 
 def test_lead_transition_guard_skips_accel_cap_generation_when_inactive(monkeypatch):

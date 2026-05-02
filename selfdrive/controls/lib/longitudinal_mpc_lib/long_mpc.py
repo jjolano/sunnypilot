@@ -175,6 +175,7 @@ LEAD_TRANSITION_RELEASE_TIME = 0.5
 LEAD_TRANSITION_GUARD_TIME = 0.55
 LEAD_TRANSITION_GUARD_FADE_TIME = 0.35
 LEAD_TRANSITION_GUARD_ACCEL_MAX = 0.0
+LEAD_TRANSITION_GUARD_OUTPUT_DELAY = 0.15
 LEAD_TRANSITION_GUARD_ARM_BLEND = 0.8
 LEAD_TRANSITION_TRACK_UNKNOWN = -2
 
@@ -319,6 +320,7 @@ def get_lead_transition_cost_obstacle(cost_obstacle, cruise_obstacle, release_bl
 def get_lead_transition_accel_max(guard_timer):
   if guard_timer <= 0.0:
     return np.full(N + 1, ACCEL_MAX)
+  guard_timer += LEAD_TRANSITION_GUARD_OUTPUT_DELAY
   return np.interp(T_IDXS, [guard_timer, guard_timer + LEAD_TRANSITION_GUARD_FADE_TIME], [LEAD_TRANSITION_GUARD_ACCEL_MAX, ACCEL_MAX])
 
 

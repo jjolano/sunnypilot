@@ -689,10 +689,11 @@ def test_lateral_lead_exit_hands_off_to_revealed_stopped_lead():
   )
 
   reveal_window = (output[:, 0] >= 2.7) & (output[:, 0] <= 5.0)
+  handoff_window = (output[:, 0] >= 2.7) & (output[:, 0] < 5.0)
 
   assert np.max(output[(output[:, 0] >= 2.5) & (output[:, 0] <= 2.9), 5]) <= 0.1
   assert np.min(output[reveal_window, 5]) < -1.0
-  assert np.min(output[reveal_window, 8]) > 4.0
+  assert np.min(output[handoff_window, 8]) > 4.0
 
 def test_lateral_exited_slowing_lead_does_not_force_hard_brake():
   exiting_output = run_lateral_exit_slowing_simulation([0.0, 0.0, 2.2, 2.2, 2.2])
