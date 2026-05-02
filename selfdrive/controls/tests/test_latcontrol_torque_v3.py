@@ -112,6 +112,17 @@ def make_flat_model_v2():
   return model_v2
 
 
+def test_v3_uses_crawl_speed_for_low_speed_pid_gain():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  CS = car.CarState.new_message()
+  CS.vEgo = 1.0
+  params = log.LiveParametersData.new_message()
+
+  controller.update(True, CS, VM, params, False, 0.0, make_pose(), False, 0.2)
+
+  assert controller.pid.speed == pytest.approx(3.0)
+
+
 def test_v3_controller_alias_matches_controller_symbol():
   assert LatControlTorqueV3 is LatControlTorque
 

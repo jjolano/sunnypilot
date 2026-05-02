@@ -36,6 +36,7 @@ LOW_SPEED_UNWIND_SETPOINT = 0.2
 LOW_SPEED_UNWIND_MARGIN = 0.08
 LOW_SPEED_UNWIND_JERK = 0.5
 LOW_SPEED_UNWIND_GAIN_SPEED = 8.0
+LOW_SPEED_PID_GAIN_FLOOR = 3.0
 MEASUREMENT_SMOOTHER_MIN_VEGO = 5.0
 MEASUREMENT_SMOOTHER_CORRECTION_GAIN = 0.35
 MEASUREMENT_SMOOTHER_MAX_PREDICTIVE_JERK = 5.0
@@ -235,7 +236,7 @@ class LatControlTorque(LatControl):
       if same_sign_unwind:
         self.pid.i *= 0.5
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5 or same_sign_unwind
-      control_speed = max(CS.vEgo, LOW_SPEED_UNWIND_GAIN_SPEED) if same_sign_unwind else CS.vEgo
+      control_speed = max(CS.vEgo, LOW_SPEED_UNWIND_GAIN_SPEED if same_sign_unwind else LOW_SPEED_PID_GAIN_FLOOR)
       output_lataccel = self.pid.update(pid_log.error, -measurement_rate, feedforward=ff, speed=control_speed, freeze_integrator=freeze_integrator)
       baseline_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
       learned_torque = self.model_adapter.torque_from_lateral_accel(output_lataccel)
