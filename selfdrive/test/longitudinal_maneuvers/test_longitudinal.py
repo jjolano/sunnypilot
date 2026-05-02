@@ -1,6 +1,7 @@
 import itertools
 import numpy as np
 import pytest
+from cereal import log
 from openpilot.common.parameterized import parameterized_class
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
@@ -567,7 +568,8 @@ def test_crawl_opening_lead_uses_gentle_accel():
 
 def test_steady_crawl_does_not_hang_back():
   crawl_speed = 3.0
-  initial_distance_lead = get_desired_follow_distance(crawl_speed, crawl_speed, get_T_FOLLOW())
+  personality = log.LongitudinalPersonality.standard
+  initial_distance_lead = get_desired_follow_distance(crawl_speed, crawl_speed, get_T_FOLLOW(personality))
   output = evaluate_maneuver_output(
     Maneuver(
       "steady crawl lead",
@@ -575,6 +577,7 @@ def test_steady_crawl_does_not_hang_back():
       initial_speed=crawl_speed,
       lead_relevancy=True,
       initial_distance_lead=initial_distance_lead,
+      personality=personality,
       speed_lead_values=[crawl_speed, crawl_speed],
       cruise_values=[6.0, 6.0],
       breakpoints=[0.0, 16.0],
