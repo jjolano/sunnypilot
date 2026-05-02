@@ -90,6 +90,69 @@ def make_car_state(v_ego=0.0, a_ego=0.0, brake_pressed=False, cruise_standstill=
   return CS
 
 
+def test_stopping_softens_stop_accel_while_still_rolling():
+  CP = make_car_params(stopAccel=-2.0)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -0.799
+
+  output_accel = loc.update(True, make_car_state(v_ego=0.2), a_target=-0.2, should_stop=True, accel_limits=(-3.0, 2.0))
+
+  assert loc.long_control_state == LongCtrlState.stopping
+  assert output_accel == pytest.approx(-0.8)
+
+
+def test_stopping_preserves_gentler_platform_stop_accel_while_rolling():
+  CP = make_car_params(stopAccel=-0.55)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -0.549
+
+  output_accel = loc.update(True, make_car_state(v_ego=0.2), a_target=-0.2, should_stop=True, accel_limits=(-3.0, 2.0))
+
+  assert output_accel == pytest.approx(-0.55)
+
+
+def test_stopping_allows_full_stop_accel_after_standstill_confirmed():
+  CP = make_car_params(stopAccel=-2.0)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -0.799
+
+  output_accel = loc.update(True, make_car_state(v_ego=0.2, cruise_standstill=True), a_target=-0.2, should_stop=True, accel_limits=(-3.0, 2.0))
+
+  assert output_accel == pytest.approx(-0.799 - CP.stoppingDecelRate * DT_CTRL)
+  assert output_accel < -0.8
+
+
+def test_stopping_allows_full_stop_accel_at_near_zero_speed():
+  CP = make_car_params(stopAccel=-2.0)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -0.799
+
+  output_accel = loc.update(True, make_car_state(v_ego=0.03), a_target=-0.2, should_stop=True, accel_limits=(-3.0, 2.0))
+
+  assert output_accel == pytest.approx(-0.799 - CP.stoppingDecelRate * DT_CTRL)
+  assert output_accel < -0.8
+
+
+def test_stopping_recovers_to_soft_stop_accel_if_standstill_signal_drops():
+  CP = make_car_params(stopAccel=-2.0)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -1.0
+
+  output_accel = loc.update(True, make_car_state(v_ego=0.2), a_target=-0.2, should_stop=True, accel_limits=(-3.0, 2.0))
+
+  assert output_accel == pytest.approx(-0.8)
+
+
 def test_launch_envelope_blend_fades_by_time_and_speed():
   assert get_launch_envelope_blend(0.0, 0.0) == pytest.approx(1.0)
   assert 0.0 < get_launch_envelope_blend(0.3, 0.25) < 1.0
