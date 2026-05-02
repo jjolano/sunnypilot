@@ -30,11 +30,12 @@ def _select_lower_target(selected_source, selected_v_target, selected_a_target, 
 
 
 def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control):
-  selected_source = LongitudinalPlanSource.cruise
   if speed_limit_active:
+    selected_source = LongitudinalPlanSource.speedLimitAssist
     selected_v_target = speed_limit_assist[0]
     selected_a_target = cruise[1]
   else:
+    selected_source = LongitudinalPlanSource.cruise
     selected_v_target, selected_a_target = cruise
 
   selected_source, selected_v_target, selected_a_target = _select_lower_target(

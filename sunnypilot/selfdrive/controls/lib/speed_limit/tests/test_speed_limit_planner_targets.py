@@ -24,7 +24,7 @@ def test_target_selection_tie_prefers_cruise_when_speed_limit_auto_inactive():
   assert a_target == 0.1
 
 
-def test_target_selection_tie_prefers_cruise_when_speed_limit_auto_active():
+def test_target_selection_tie_prefers_speed_limit_source_when_auto_active():
   source, v_target, a_target = longitudinal_planner.select_lowest_longitudinal_target(
     speed_limit_active=True,
     cruise=(20.0, 0.1),
@@ -34,7 +34,7 @@ def test_target_selection_tie_prefers_cruise_when_speed_limit_auto_active():
     osm_traffic_control=(20.0, 0.5),
   )
 
-  assert source == LongitudinalPlanSource.cruise
+  assert source == LongitudinalPlanSource.speedLimitAssist
   assert v_target == 20.0
   assert a_target == 0.1
 
@@ -49,7 +49,7 @@ def test_speed_limit_auto_tie_uses_manual_cruise_acceleration_seed():
     osm_traffic_control=(255.0, 0.0),
   )
 
-  assert source == LongitudinalPlanSource.cruise
+  assert source == LongitudinalPlanSource.speedLimitAssist
   assert v_target == 20.0
   assert a_target == 0.1
 
@@ -112,7 +112,7 @@ class FakeSubMaster(dict):
     return super().__getitem__(key)
 
 
-def test_speed_limit_auto_uses_manual_cruise_source_without_acceleration_seed():
+def test_speed_limit_auto_uses_assist_source_without_acceleration_seed():
   planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
   planner.scc = FakeSmartCruiseControl()
   planner.resolver = FakeResolver()
@@ -131,7 +131,7 @@ def test_speed_limit_auto_uses_manual_cruise_source_without_acceleration_seed():
 
   assert v_target == FakeSpeedLimitAssist.output_v_target
   assert a_target == a_ego
-  assert planner.source == LongitudinalPlanSource.cruise
+  assert planner.source == LongitudinalPlanSource.speedLimitAssist
 
 
 def test_speed_limit_resolver_receives_coast_accel():
