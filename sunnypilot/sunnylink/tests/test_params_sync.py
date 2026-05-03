@@ -204,6 +204,11 @@ def test_known_params_metadata():
   assert acc_long["max"] == 10
   assert acc_long["step"] == 1
 
+  decision_layer = metadata.get("LongitudinalDecisionLayer")
+  assert decision_layer is not None
+  assert decision_layer["title"] == "Longitudinal Decision Layer"
+  assert "experimental" in decision_layer["description"].lower()
+
 
 def test_torque_control_tune_versions_in_sync():
   """
