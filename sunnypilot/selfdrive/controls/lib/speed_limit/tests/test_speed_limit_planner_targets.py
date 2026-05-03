@@ -136,6 +136,28 @@ def test_speed_limit_auto_uses_assist_source_without_acceleration_seed():
   assert planner.source == LongitudinalPlanSource.speedLimitAssist
 
 
+def test_speed_limit_decision_candidate_uses_acceleration_seed():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = FakeSpeedLimitAssist()
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vCruiseCluster=20.0),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+  })
+
+  a_ego = 0.2
+  v_cruise = 20.0 * CV.KPH_TO_MS
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=15.0, a_ego=a_ego, v_cruise=v_cruise)
+
+  speed_limit_candidate = next(candidate for candidate in planner.decision_candidates_sp
+                               if candidate.source == DecisionSource.SPEED_LIMIT)
+  assert speed_limit_candidate.a_target == a_ego
+
+
 def test_speed_limit_resolver_receives_coast_accel():
   planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
   planner.scc = FakeSmartCruiseControl()

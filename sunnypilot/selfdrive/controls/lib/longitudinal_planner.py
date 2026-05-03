@@ -166,7 +166,7 @@ class LongitudinalPlannerSP:
       self.scc.vision.is_active,
       (self.scc.map.output_v_target, self.scc.map.output_a_target),
       self.scc.map.is_active,
-      (self.sla.output_v_target, self.sla.output_a_target),
+      (self.sla.output_v_target, a_ego),
       (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
       self.osm_traffic_control_prior.active,
     )
