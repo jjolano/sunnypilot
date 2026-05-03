@@ -193,6 +193,31 @@ def test_speed_limit_decision_candidate_uses_acceleration_seed():
   assert speed_limit_candidate.a_target == a_ego
 
 
+def test_speed_limit_decision_candidate_uses_governed_speedup_target():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = FakeSpeedLimitAssist()
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vCruiseCluster=20.0),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+  })
+
+  v_ego = 15.0
+  a_ego = 0.2
+  v_cruise = 20.0 * CV.KPH_TO_MS
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=v_ego, a_ego=a_ego, v_cruise=v_cruise)
+
+  expected = v_ego + longitudinal_planner.SPEED_LIMIT_SPEED_UP_ACCEL_CAP * longitudinal_planner.SPEED_LIMIT_SPEED_UP_LOOKAHEAD
+  speed_limit_candidate = next(candidate for candidate in planner.decision_candidates_sp
+                               if candidate.source == DecisionSource.SPEED_LIMIT)
+  assert speed_limit_candidate.v_target == pytest.approx(expected)
+  assert speed_limit_candidate.v_target < FakeSpeedLimitAssist.output_v_target
+
+
 def test_speed_limit_resolver_receives_coast_accel():
   planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
   planner.scc = FakeSmartCruiseControl()
