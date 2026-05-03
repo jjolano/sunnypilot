@@ -7,6 +7,7 @@ from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   build_route_profile,
   classify_style,
   percentile_range,
+  summarize_manual_style,
 )
 
 
@@ -102,3 +103,40 @@ def test_route_profile_ignores_stopped_samples_for_manual_moving_count():
 
   assert not profile.include
   assert profile.manual_moving_samples == 6
+
+
+def test_manual_style_summary_separates_lead_and_clear_launches():
+  samples = [
+    sample(0.0, 0.5, 1.4, gas=True, lead=True, d_rel=4.0),
+    sample(1.0, 3.0, 0.8, gas=True, lead=True, d_rel=4.5),
+    sample(2.0, 6.0, 0.4, gas=False, lead=True, d_rel=5.0),
+    sample(10.0, 0.3, 1.8, gas=True, lead=False),
+    sample(11.0, 4.0, 1.0, gas=True, lead=False),
+    sample(12.0, 7.0, 0.2, gas=False, lead=False),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_launch_count == 1
+  assert summary.clear_launch_count == 1
+  assert summary.lead_launch_mean_accel.low == summary.lead_launch_mean_accel.high == 1.1
+  assert summary.clear_launch_peak_accel.low == summary.clear_launch_peak_accel.high == 1.8
+
+
+def test_manual_style_summary_counts_stop_approaches_and_coast():
+  samples = [
+    sample(0.0, 10.0, -0.6, brake=True, lead=True, d_rel=12.0, v_rel=-1.0),
+    sample(1.0, 6.0, -0.4, brake=True, lead=True, d_rel=10.0, v_rel=-0.5),
+    sample(2.0, 0.5, -0.1, brake=False, lead=True, d_rel=8.0, v_rel=0.0),
+    sample(10.0, 14.0, -0.3, gas=False, brake=False),
+    sample(11.0, 15.0, -0.4, gas=False, brake=False),
+    sample(12.0, 16.0, -0.2, gas=True, brake=False),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_stop_count == 1
+  assert summary.clear_stop_count == 0
+  assert summary.stop_mean_accel.low == summary.stop_mean_accel.high == -0.5
+  assert summary.coast_accel.low == -0.4
+  assert summary.coast_accel.high == -0.3

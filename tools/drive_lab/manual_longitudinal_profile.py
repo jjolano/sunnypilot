@@ -51,6 +51,24 @@ class RouteProfile:
   include: bool
 
 
+@dataclass(frozen=True)
+class ManualStyleSummary:
+  sample_count: int
+  accel: ProfileRange
+  lead_launch_count: int
+  clear_launch_count: int
+  lead_launch_mean_accel: ProfileRange
+  clear_launch_mean_accel: ProfileRange
+  lead_launch_peak_accel: ProfileRange
+  clear_launch_peak_accel: ProfileRange
+  lead_stop_count: int
+  clear_stop_count: int
+  stop_mean_accel: ProfileRange
+  stop_peak_decel: ProfileRange
+  coast_accel: ProfileRange
+  style: str
+
+
 def manual_moving_samples(samples: Iterable[ManualSample]) -> list[ManualSample]:
   return [sample for sample in samples if not sample.active and sample.v_ego > 1.0]
 
@@ -63,6 +81,73 @@ def build_route_profile(route: str, samples: Iterable[ManualSample], min_manual_
   moving_count = len(manual_moving_samples(sample_list))
   include = moving_count >= min_manual_moving_samples and active_ratio <= max_active_ratio
   return RouteProfile(route, len(sample_list), moving_count, active_ratio, include)
+
+
+def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummary:
+  ordered = sorted((sample for sample in samples if not sample.active), key=lambda sample: sample.t)
+  launches = _pedal_episodes(ordered, pedal="gas_pressed")
+  stops = _pedal_episodes(ordered, pedal="brake_pressed")
+  launch_candidates = [episode for episode in launches if episode["v0"] < 1.5 and episode["v1"] > 5.0 and episode["duration"] > 1.0]
+  stop_candidates = [episode for episode in stops if episode["v0"] > 5.0 and episode["v1"] < 1.0 and episode["duration"] > 1.0]
+  lead_launches = [episode for episode in launch_candidates if episode["lead"]]
+  clear_launches = [episode for episode in launch_candidates if not episode["lead"]]
+  lead_stops = [episode for episode in stop_candidates if episode["lead"]]
+  clear_stops = [episode for episode in stop_candidates if not episode["lead"]]
+  coast_samples = [sample for sample in ordered if not sample.gas_pressed and not sample.brake_pressed and sample.v_ego >= 7.0]
+
+  accel = percentile_range([sample.a_ego for sample in ordered], 10.0, 90.0)
+  lead_launch_mean = percentile_range([episode["mean_accel"] for episode in lead_launches], 50.0, 90.0)
+  clear_launch_mean = percentile_range([episode["mean_accel"] for episode in clear_launches], 50.0, 90.0)
+  stop_mean = percentile_range([episode["mean_accel"] for episode in stop_candidates], 10.0, 50.0)
+  coast = percentile_range([sample.a_ego for sample in coast_samples], 0.0, 100.0)
+  style = classify_style(accel, lead_launch_mean, stop_mean, coast)
+
+  return ManualStyleSummary(
+    sample_count=len(ordered),
+    accel=accel,
+    lead_launch_count=len(lead_launches),
+    clear_launch_count=len(clear_launches),
+    lead_launch_mean_accel=lead_launch_mean,
+    clear_launch_mean_accel=clear_launch_mean,
+    lead_launch_peak_accel=percentile_range([episode["peak_accel"] for episode in lead_launches], 50.0, 90.0),
+    clear_launch_peak_accel=percentile_range([episode["peak_accel"] for episode in clear_launches], 50.0, 90.0),
+    lead_stop_count=len(lead_stops),
+    clear_stop_count=len(clear_stops),
+    stop_mean_accel=stop_mean,
+    stop_peak_decel=percentile_range([episode["peak_decel"] for episode in stop_candidates], 10.0, 50.0),
+    coast_accel=coast,
+    style=style,
+  )
+
+
+def _pedal_episodes(samples: list[ManualSample], pedal: str) -> list[dict[str, float | bool]]:
+  episodes: list[dict[str, float | bool]] = []
+  current: list[ManualSample] = []
+  for sample in samples:
+    pressed = bool(getattr(sample, pedal))
+    if pressed:
+      current.append(sample)
+      continue
+    if current:
+      episodes.append(_episode_summary(current, end_sample=sample))
+      current = []
+  if current:
+    episodes.append(_episode_summary(current))
+  return episodes
+
+
+def _episode_summary(samples: list[ManualSample], end_sample: ManualSample | None = None) -> dict[str, float | bool]:
+  accels = [sample.a_ego for sample in samples]
+  end_sample = end_sample or samples[-1]
+  return {
+    "v0": samples[0].v_ego,
+    "v1": end_sample.v_ego,
+    "duration": max(0.0, end_sample.t - samples[0].t),
+    "lead": bool(samples[0].lead_status),
+    "mean_accel": sum(accels) / len(accels),
+    "peak_accel": max(accels),
+    "peak_decel": min(accels),
+  }
 
 
 def clean_finite(values: Iterable[float]) -> list[float]:
