@@ -118,8 +118,10 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
   }
   last_values: dict[str, Any] = {}
   attribution_facts: dict[str, Any] = {
+    "event_time_s": event_time_s,
     "planner_sources": [],
     "sp_sources": [],
+    "sp_samples": [],
     "lead_present": False,
     "lead_braking": False,
     "lead_times": [],
@@ -204,6 +206,13 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       add_change(t, "longitudinalPlanSP.source", source, "sunnypilot", f"SP source: {source}")
       if source != "unknown":
         attribution_facts["sp_sources"].append(source)
+      sp_sample = {
+        "time_s": t,
+        "source": source,
+        "speed_limit_active": False,
+        "scc_map_active": False,
+        "scc_vision_active": False,
+      }
       for path, label, fact_key in (
         ("smartCruiseControl.vision.active", "SCC vision active", "scc_vision_active"),
         ("smartCruiseControl.map.active", "SCC map active", "scc_map_active"),
@@ -216,6 +225,9 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
           add_change(t, f"longitudinalPlanSP.{path}", active, "sunnypilot", f"{label}: {active}")
           if fact_key is not None and active:
             attribution_facts[fact_key] = True
+          if fact_key is not None:
+            sp_sample[fact_key] = active
+      attribution_facts["sp_samples"].append(sp_sample)
     elif typ == "modelV2":
       desired_accel = safe_get(payload, "action.desiredAcceleration")
       if _finite_number(desired_accel):
@@ -269,18 +281,19 @@ def render_summary(summary: EventWindowSummary) -> str:
 
 def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
   evidence = _attribution_evidence(facts)
-  sp_source_cause = _sp_source_cause(facts["sp_sources"])
+  sp_sample = _nearest_sp_sample(facts["sp_samples"], facts["event_time_s"])
+  sp_source_cause = _sp_source_cause(sp_sample)
   if _has_lead_source(facts["planner_sources"]) or facts["lead_braking"] or _has_correlated_lead_braking(facts):
     cause = "lead"
   elif facts["model_action_should_stop"] or facts["plan_model_should_stop"]:
     cause = "model_stop"
   elif sp_source_cause is not None:
     cause = sp_source_cause
-  elif facts["speed_limit_active"]:
+  elif sp_sample is not None and sp_sample["speed_limit_active"]:
     cause = "speed_limit"
-  elif facts["scc_map_active"]:
+  elif sp_sample is not None and sp_sample["scc_map_active"]:
     cause = "scc_map"
-  elif facts["scc_vision_active"]:
+  elif sp_sample is not None and sp_sample["scc_vision_active"]:
     cause = "scc_vision"
   elif facts["planner_sources"] or facts["sp_sources"]:
     cause = "planner_source"
@@ -322,16 +335,23 @@ def _is_model_stop_source(source: str) -> bool:
   return source.lower() in ("model", "e2e")
 
 
-def _sp_source_cause(sources: list[str]) -> str | None:
-  for source in sources:
-    normalized = source.lower().replace("_", "").replace("-", "")
-    if normalized in ("speedlimit", "speedlimitassist"):
-      return "speed_limit"
-    if normalized in ("sccmap", "map"):
-      return "scc_map"
-    if normalized in ("sccvision", "vision"):
-      return "scc_vision"
+def _sp_source_cause(sample: dict[str, Any] | None) -> str | None:
+  if sample is None:
+    return None
+  normalized = str(sample["source"]).lower().replace("_", "").replace("-", "")
+  if normalized in ("speedlimit", "speedlimitassist"):
+    return "speed_limit"
+  if normalized in ("sccmap", "map"):
+    return "scc_map"
+  if normalized in ("sccvision", "vision"):
+    return "scc_vision"
   return None
+
+
+def _nearest_sp_sample(samples: list[dict[str, Any]], event_time_s: float) -> dict[str, Any] | None:
+  if not samples:
+    return None
+  return min(samples, key=lambda sample: (abs(float(sample["time_s"]) - event_time_s), float(sample["time_s"]) > event_time_s))
 
 
 def _is_braking(a_targets: list[float]) -> bool:
