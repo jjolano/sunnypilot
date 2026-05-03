@@ -193,7 +193,9 @@ def test_manual_style_summary_includes_lead_crawl_bins():
 def test_manual_style_summary_lead_crawl_bins_are_low_speed_only():
   samples = [
     crawl_sample(0.0, 2.5, v=0.3, a=0.10, lead_v=0.2, gas=True),
-    crawl_sample(1.0, 2.5, v=4.0, a=0.10, lead_v=4.2, gas=True),
+    crawl_sample(1.0, 2.5, v=4.0, a=0.10, lead_v=0.2, gas=True),
+    crawl_sample(2.0, 2.5, v=0.3, a=0.10, lead_v=4.2, gas=True),
+    crawl_sample(3.0, 2.5, v=4.0, a=0.10, lead_v=4.2, gas=True),
   ]
 
   summary = summarize_manual_style(samples)

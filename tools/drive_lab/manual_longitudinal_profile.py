@@ -320,7 +320,7 @@ def _lead_crawl_sample_details(samples: list[ManualSample]) -> list[tuple[Manual
     v_lead = _lead_speed(sample)
     if gap_excess is None or v_lead is None:
       continue
-    if sample.v_ego > LEAD_CRAWL_MAX_SPEED and v_lead > LEAD_CRAWL_MAX_SPEED:
+    if sample.v_ego > LEAD_CRAWL_MAX_SPEED or v_lead > LEAD_CRAWL_MAX_SPEED:
       continue
     details.append((sample, gap_excess, v_lead))
   return details

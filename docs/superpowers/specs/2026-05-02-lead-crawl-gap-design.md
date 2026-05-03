@@ -35,7 +35,7 @@ Included samples:
 
 - Manual or inactive control samples from included mostly-manual routes.
 - Confirmed `leadOne` with finite `d_rel`.
-- Low-speed crawl context, roughly `v_ego <= 2.5 m/s` or `v_lead <= 2.5 m/s`.
+- Low-speed crawl context where both ego and lead speeds are roughly `<= 2.5 m/s`.
 - Finite `gap_excess` computed from the stop target.
 
 Profile buckets:

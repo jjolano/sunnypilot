@@ -215,6 +215,8 @@ git commit -m "drive-lab: compute lead crawl gap excess"
 - Modify: `tools/drive_lab/manual_longitudinal_profile.py`
 - Modify: `tools/drive_lab/tests/test_manual_longitudinal_profile.py`
 
+Lead crawl buckets are limited to low-speed crawl context where both ego speed and lead speed are `<= 2.5 m/s`; mixed-speed approaches are stop-approach samples, not crawl samples.
+
 - [ ] **Step 1: Write the failing bucket tests**
 
 Add these tests after the gap-excess tests:
@@ -320,7 +322,7 @@ def _lead_crawl_sample_details(samples: list[ManualSample]) -> list[tuple[Manual
     v_lead = _lead_speed(sample)
     if gap_excess is None or v_lead is None:
       continue
-    if sample.v_ego > LEAD_CRAWL_MAX_SPEED and v_lead > LEAD_CRAWL_MAX_SPEED:
+    if sample.v_ego > LEAD_CRAWL_MAX_SPEED or v_lead > LEAD_CRAWL_MAX_SPEED:
       continue
     details.append((sample, gap_excess, v_lead))
   return details
