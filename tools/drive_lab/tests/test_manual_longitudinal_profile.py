@@ -11,9 +11,9 @@ from openpilot.tools.drive_lab.manual_longitudinal_profile import (
 )
 
 
-def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0, v_rel=0.0):
+def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0, v_rel=0.0, route="route-a"):
   return ManualSample(
-    route="route-a",
+    route=route,
     t=t,
     v_ego=v,
     a_ego=a,
@@ -138,5 +138,37 @@ def test_manual_style_summary_counts_stop_approaches_and_coast():
   assert summary.lead_stop_count == 1
   assert summary.clear_stop_count == 0
   assert summary.stop_mean_accel.low == summary.stop_mean_accel.high == -0.5
-  assert summary.coast_accel.low == -0.4
-  assert summary.coast_accel.high == -0.3
+  assert round(summary.coast_accel.low, 2) == -0.35
+  assert round(summary.coast_accel.high, 2) == -0.31
+
+
+def test_manual_style_summary_coast_outlier_does_not_dominate_classification():
+  samples = [
+    sample(0.0, 0.5, 0.8, gas=True, lead=True, d_rel=4.0),
+    sample(1.1, 3.0, 0.8, gas=True, lead=True, d_rel=4.5),
+    sample(2.2, 6.0, 0.2, gas=False, lead=True, d_rel=5.0),
+    sample(10.0, 10.0, -0.7, brake=True, lead=True, d_rel=12.0, v_rel=-1.0),
+    sample(11.1, 5.0, -0.5, brake=True, lead=True, d_rel=10.0, v_rel=-0.5),
+    sample(12.2, 0.5, -0.2, brake=False, lead=True, d_rel=8.0, v_rel=0.0),
+  ]
+  samples += [sample(20.0 + i, 12.0, 0.8, gas=True) for i in range(8)]
+  samples += [sample(40.0 + i, 12.0, -0.7, brake=True) for i in range(8)]
+  samples += [sample(60.0 + i, 12.0, -0.3, gas=False, brake=False) for i in range(20)]
+  samples.append(sample(90.0, 12.0, 5.0, gas=False, brake=False))
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.coast_accel.low == summary.coast_accel.high == -0.3
+  assert summary.style == "smooth_assertive"
+
+
+def test_manual_style_summary_does_not_merge_pedal_episodes_across_routes():
+  samples = [
+    sample(0.0, 0.5, 1.4, gas=True, route="route-a"),
+    sample(0.5, 4.0, 1.0, gas=True, route="route-b"),
+    sample(2.0, 6.0, 0.4, gas=False, route="route-b"),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.clear_launch_count == 0

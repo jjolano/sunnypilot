@@ -84,7 +84,7 @@ def build_route_profile(route: str, samples: Iterable[ManualSample], min_manual_
 
 
 def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummary:
-  ordered = sorted((sample for sample in samples if not sample.active), key=lambda sample: sample.t)
+  ordered = sorted((sample for sample in samples if not sample.active), key=lambda sample: (sample.route, sample.t))
   launches = _pedal_episodes(ordered, pedal="gas_pressed")
   stops = _pedal_episodes(ordered, pedal="brake_pressed")
   launch_candidates = [episode for episode in launches if episode["v0"] < 1.5 and episode["v1"] > 5.0 and episode["duration"] > 1.0]
@@ -99,7 +99,7 @@ def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummar
   lead_launch_mean = percentile_range([episode["mean_accel"] for episode in lead_launches], 50.0, 90.0)
   clear_launch_mean = percentile_range([episode["mean_accel"] for episode in clear_launches], 50.0, 90.0)
   stop_mean = percentile_range([episode["mean_accel"] for episode in stop_candidates], 10.0, 50.0)
-  coast = percentile_range([sample.a_ego for sample in coast_samples], 0.0, 100.0)
+  coast = percentile_range([sample.a_ego for sample in coast_samples], 50.0, 90.0)
   style = classify_style(accel, lead_launch_mean, stop_mean, coast)
 
   return ManualStyleSummary(
@@ -123,10 +123,15 @@ def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummar
 def _pedal_episodes(samples: list[ManualSample], pedal: str) -> list[dict[str, float | bool]]:
   episodes: list[dict[str, float | bool]] = []
   current: list[ManualSample] = []
+  current_route: str | None = None
   for sample in samples:
+    if current and sample.route != current_route:
+      episodes.append(_episode_summary(current))
+      current = []
     pressed = bool(getattr(sample, pedal))
     if pressed:
       current.append(sample)
+      current_route = sample.route
       continue
     if current:
       episodes.append(_episode_summary(current, end_sample=sample))
