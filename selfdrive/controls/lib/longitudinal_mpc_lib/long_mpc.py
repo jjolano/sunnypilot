@@ -581,10 +581,10 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   danger_margin = x_lead - min_gap
   danger_blend = 1.0 - closing_blend * np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [1.0, 0.0])
   desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
-  runway_need_blend = 1.0 - np.interp(x_lead - desired_gap, MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP, [0.0, 1.0])
+  gap_runway_need_blend = 1.0 - np.interp(x_lead - desired_gap, MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP, [0.0, 1.0])
   anticipatory_runway_blend = lead_decel_blend * np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_BP,
                                                            MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_V)
-  runway_need_blend = np.maximum(runway_need_blend, anticipatory_runway_blend)
+  runway_need_blend = np.maximum(gap_runway_need_blend, anticipatory_runway_blend)
   comfort_blend = speed_blend * moving_blend * lead_decel_blend * closing_blend * required_decel_blend * danger_blend * runway_need_blend
   if np.all(comfort_blend <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
@@ -596,8 +596,11 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   urgent_closing_blend = np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP, [0.0, 1.0])
   urgent_required_blend = np.interp(required_decel, [LEAD_STOP_RUNWAY_BRAKE, MOVING_LEAD_STOP_APPROACH_DECEL_CAP], [0.0, 1.0])
   urgent_danger_blend = np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [1.0, 0.0])
+  hard_braking_blend = np.interp(-a_lead, [2.0, 3.0], [0.0, 1.0])
+  required_runway_blend = urgent_required_blend * hard_braking_blend * gap_runway_need_blend
   moderated_blend = np.maximum(gap_deficit_blend * danger_blend, urgent_closing_blend * urgent_required_blend * urgent_danger_blend)
-  runway_critical_blend = np.maximum(gap_deficit_blend, urgent_closing_blend)
+  moderated_blend = np.maximum(moderated_blend, required_runway_blend)
+  runway_critical_blend = np.maximum(np.maximum(gap_deficit_blend, urgent_closing_blend), required_runway_blend)
   low_speed_route_blend = (1.0 - np.interp(v_ego, [11.5, 12.5], [0.0, 1.0])) * np.interp(-a_lead, [1.2, 1.6], [0.0, 1.0])
   low_speed_route_blend *= np.interp(danger_margin, [0.25 * LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN, 0.5 * LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [0.0, 1.0])
   gap_deficit_blend = (1.0 - low_speed_route_blend) * runway_critical_blend + low_speed_route_blend * moderated_blend
