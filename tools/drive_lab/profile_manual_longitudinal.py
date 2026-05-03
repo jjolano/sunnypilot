@@ -43,7 +43,7 @@ def main() -> None:
     with open(args.output, "w") as f:
       json.dump(payload, f, indent=2)
       f.write("\n")
-  print(json.dumps(payload, indent=2) if args.json else render_manual_style_summary(summary))
+  print(json.dumps(payload, indent=2) if args.json else render_manual_style_summary(summary, route_profiles))
 
 
 def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample]:

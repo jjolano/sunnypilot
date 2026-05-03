@@ -175,6 +175,55 @@ def test_manual_style_summary_does_not_merge_pedal_episodes_across_routes():
   assert summary.clear_launch_count == 0
 
 
+def test_manual_style_summary_accel_ignores_stopped_idle_samples():
+  samples = [sample(float(i), 0.0, 0.0) for i in range(100)]
+  samples += [sample(100.0 + i, 12.0, accel) for i, accel in enumerate([-0.8, -0.4, 0.0, 0.4, 0.8])]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.sample_count == 5
+  assert summary.accel.low == -0.64
+  assert round(summary.accel.high, 2) == 0.64
+
+
+def test_manual_style_summary_includes_speed_and_following_bins():
+  samples = [
+    sample(0.0, 5.0, 0.5, gas=True, lead=True, d_rel=10.0, v_rel=-1.0),
+    sample(1.0, 6.0, -0.5, brake=True, lead=True, d_rel=12.0, v_rel=-2.0),
+    sample(2.0, 8.0, -0.3, gas=False, brake=False, lead=True, d_rel=16.0, v_rel=-1.0),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.speed_bins[0].label == "3-7 m/s"
+  assert summary.speed_bins[0].sample_count == 2
+  assert summary.speed_bins[0].gas_ratio == 0.5
+  assert summary.speed_bins[0].brake_ratio == 0.5
+  assert summary.following_bins[0].label == "3-7 m/s"
+  assert summary.following_bins[0].sample_count == 2
+  assert summary.following_bins[0].closing_ratio == 1.0
+
+
+def test_manual_style_summary_uses_clear_launch_for_classification_when_no_lead_launches():
+  samples = [
+    sample(0.0, 0.5, 0.8, gas=True),
+    sample(1.1, 3.0, 0.8, gas=True),
+    sample(2.2, 6.0, 0.2, gas=False),
+    sample(10.0, 10.0, -0.7, brake=True),
+    sample(11.1, 5.0, -0.5, brake=True),
+    sample(12.2, 0.5, -0.2, brake=False),
+  ]
+  samples += [sample(14.0 + i, 12.0, 0.8, gas=True) for i in range(8)]
+  samples += [sample(16.0 + i, 12.0, -0.7, brake=True) for i in range(8)]
+  samples += [sample(20.0 + i, 12.0, -0.3, gas=False, brake=False) for i in range(20)]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_launch_count == 0
+  assert summary.clear_launch_count == 1
+  assert summary.style == "smooth_assertive"
+
+
 def test_render_manual_style_summary_includes_core_values():
   summary = summarize_manual_style([
     sample(0.0, 0.5, 1.2, gas=True, lead=True, d_rel=4.0),
@@ -192,3 +241,5 @@ def test_render_manual_style_summary_includes_core_values():
   assert "lead launches:" in text
   assert "stop approaches:" in text
   assert "coast accel:" in text
+  assert "Speed bins:" in text
+  assert "Following bins:" in text
