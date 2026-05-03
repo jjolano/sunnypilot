@@ -1,7 +1,5 @@
 import math
 
-import pytest
-
 from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   CandidateRole,
   DecisionSource,
