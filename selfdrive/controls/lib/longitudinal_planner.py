@@ -63,6 +63,7 @@ CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = CREEP_TO_STOP_GAP_START_EXCESS
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.55
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.30
+CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP = 7.5 * DT_MDL
 CREEP_TO_STOP_GAP_PREDICT_T = 0.8
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED = 0.35
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL = 0.25
@@ -520,6 +521,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       cruise_coast_accel = 0.0
 
     v_ego = sm['carState'].vEgo
+    prev_output_a_target = self.output_a_target
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
     v_cruise_initialized = sm['carState'].vCruise != V_CRUISE_UNSET
@@ -664,6 +666,26 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     model_predicted_v_lead, model_predicted_gap_opening = (
       get_model_lead_pullaway(sm['modelV2'], lead_one, v_ego) if lead_one.status else (0.0, 0.0)
     )
+    lead_gap_excess = float(lead_one.dRel) - get_lead_stop_presentation_distance(
+      v_ego, float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.modelProb)
+    ) if lead_one.status else 0.0
+    radar_predicted_v_lead, radar_predicted_gap_opening = (
+      get_predicted_lead_pullaway(float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.aLeadTau)) if lead_one.status else (0.0, 0.0)
+    )
+    radar_predicted_pullaway = lead_one.status and float(lead_one.aLeadK) >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL and has_predicted_lead_pullaway(
+      lead_gap_excess, radar_predicted_v_lead, radar_predicted_gap_opening
+    )
+    model_predicted_pullaway = lead_one.status and not creep_to_stop_gap_blocked(
+      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
+      sm['carState'].brakePressed, sm['carState'].gasPressed, force_slow_decel or reset_state,
+      float(lead_one.aLeadK),
+    ) and has_predicted_lead_pullaway(
+      lead_gap_excess, model_predicted_v_lead, model_predicted_gap_opening,
+    )
+    creep_pullaway_release = lead_one.status and (
+      float(lead_one.vLeadK) >= CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED or radar_predicted_pullaway or model_predicted_pullaway
+    )
+    prev_creep_to_stop_gap_active = self.creep_to_stop_gap_active
     self.creep_to_stop_gap_active, creep_a_target = get_creep_to_stop_gap_accel(
       v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
       self.creep_to_stop_gap_active and not reset_state,
@@ -677,13 +699,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     ) if lead_one.status else (False, 0.0)
     if self.creep_to_stop_gap_active:
       if creep_a_target >= 0.0:
-        if not self.output_should_stop:
+        if not self.output_should_stop or creep_pullaway_release:
           output_a_target = max(output_a_target, creep_a_target)
+          self.output_should_stop = self.output_should_stop and not creep_pullaway_release
       else:
         output_a_target = min(output_a_target, creep_a_target)
       creep_accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX if creep_a_target > CREEP_TO_STOP_GAP_ACCEL_MAX else CREEP_TO_STOP_GAP_ACCEL_MAX
       output_a_target = min(output_a_target, creep_accel_max)
       self.output_should_stop = self.output_should_stop or (creep_a_target <= 0.0 and v_ego < self.CP.vEgoStopping)
+    limit_creep_pullaway_accel_step = creep_pullaway_release and (prev_creep_to_stop_gap_active or self.creep_to_stop_gap_active)
 
     gap_fill_active, gap_fill_a_target = get_stopped_lead_gap_fill_accel(
       v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
@@ -709,14 +733,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       )
       output_a_target = max(output_a_target, recovery_a_min)
 
-    model_predicted_pullaway = not creep_to_stop_gap_blocked(
-      v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.modelProb),
-      sm['carState'].brakePressed, sm['carState'].gasPressed, force_slow_decel or reset_state,
-      float(lead_one.aLeadK),
-    ) and has_predicted_lead_pullaway(
-      float(lead_one.dRel) - get_lead_stop_presentation_distance(v_ego, float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.modelProb)),
-      model_predicted_v_lead, model_predicted_gap_opening,
-    )
     if lead_one.status and not sm['carState'].brakePressed and not sm['carState'].gasPressed and not force_slow_decel and not reset_state:
       self.creep_stop_hold_released = should_release_creep_stop_hold(
         self.creep_stop_hold_released, v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK),
@@ -784,6 +800,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
+    if limit_creep_pullaway_accel_step:
+      output_a_target = min(output_a_target, prev_output_a_target + CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP)
+      if output_a_target >= 0.0:
+        output_a_target = max(output_a_target, prev_output_a_target - CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
 
