@@ -569,6 +569,8 @@ def test_v2_signed_steer_limit_allows_clear_unwind_from_actuator_lag_cap():
   assert spy.inputs is not None
   assert not spy.inputs.steer_limit_same_direction
   assert spy.inputs.steer_limit_unwind
+  assert spy.inputs.steer_limit_requested_output == pytest.approx(-0.7)
+  assert spy.inputs.steer_limit_applied_output == pytest.approx(-0.45)
 
 
 def test_v2_signed_unwind_steer_limit_does_not_freeze_response_assist():

@@ -1,3 +1,5 @@
+import pytest
+
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import (
   ConservativeOutputShaperInputs,
   ConservativeOutputShapingReason,
@@ -440,6 +442,119 @@ def test_actuator_lag_comfort_does_not_rate_limit_clear_under_response_after_sof
   assert not result.active
   assert not result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
   assert result.output_torque == result.unshaped_output
+
+
+def test_stale_actuator_reversal_caps_low_speed_reversing_output():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=-0.25))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+  assert result.output_cap == 0.35
+  assert result.output_torque == pytest.approx(0.28)
+
+
+def test_stale_actuator_reversal_caps_negative_low_speed_reversing_output():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steering_rate_deg=-40.0, unshaped_output=-0.8,
+                                       desired_lateral_accel=-0.8, actual_lateral_accel=-0.72,
+                                       steer_limit_requested_output=-0.8, steer_limit_applied_output=0.25))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+  assert result.output_cap == 0.35
+  assert result.output_torque == pytest.approx(-0.28)
+
+
+def test_stale_actuator_reversal_clears_when_applied_output_near_zero():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=-0.02))
+
+  assert result.active
+  assert not result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+  assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert result.output_cap > 0.35
+
+
+def test_stale_actuator_reversal_caps_even_when_tracking_under_responds():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.4,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=-0.25))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+  assert result.output_cap == 0.35
+
+
+def test_stale_actuator_reversal_keeps_high_speed_actuator_lag_cap():
+  result = assert_cap_only(make_inputs(v_ego=20.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=-0.25))
+
+  assert result.active
+  assert not result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+  assert result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert 0.75 <= result.output_cap <= 0.85
+
+
+def test_stale_actuator_reversal_slews_growth_more_slowly():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  first = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                    steering_rate_deg=40.0, unshaped_output=0.1,
+                                    desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                    steer_limit_requested_output=0.1, steer_limit_applied_output=-0.25))
+
+  result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                     steering_rate_deg=40.0, unshaped_output=0.8,
+                                     desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                     steer_limit_requested_output=0.8, steer_limit_applied_output=-0.25))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+  assert result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert 0.0 < result.output_torque - first.output_torque <= 0.002 + 1e-6
+
+
+def test_stale_actuator_reversal_slews_without_steering_rate_comfort():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  first = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                    steering_rate_deg=0.0, unshaped_output=0.1,
+                                    desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                    steer_limit_requested_output=0.1, steer_limit_applied_output=-0.25))
+
+  result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                     steering_rate_deg=0.0, unshaped_output=0.8,
+                                     desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                     steer_limit_requested_output=0.8, steer_limit_applied_output=-0.25))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+  assert result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert 0.0 < result.output_torque - first.output_torque <= 0.002 + 1e-6
+
+
+def test_stale_actuator_reversal_slews_under_response_catchup():
+  shaper = TorqueConservativeOutputShaper(dt=0.01)
+  first = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                    steering_rate_deg=40.0, unshaped_output=0.1,
+                                    desired_lateral_accel=0.8, actual_lateral_accel=0.4,
+                                    steer_limit_requested_output=0.1, steer_limit_applied_output=-0.25))
+
+  result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                     steering_rate_deg=40.0, unshaped_output=0.8,
+                                     desired_lateral_accel=0.8, actual_lateral_accel=0.4,
+                                     steer_limit_requested_output=0.8, steer_limit_applied_output=-0.25))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+  assert result.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert 0.0 < result.output_torque - first.output_torque <= 0.002 + 1e-6
 
 
 def test_recent_actuator_lag_comfort_does_not_rate_limit_next_low_rate_opposing_output():
