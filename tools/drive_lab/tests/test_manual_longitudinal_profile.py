@@ -1,9 +1,26 @@
 from openpilot.tools.drive_lab.manual_longitudinal_profile import (
+  ManualSample,
   ProfileRange,
   SmoothAssertiveEnvelope,
+  build_route_profile,
   classify_style,
   percentile_range,
 )
+
+
+def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0, v_rel=0.0):
+  return ManualSample(
+    route="route-a",
+    t=t,
+    v_ego=v,
+    a_ego=a,
+    active=active,
+    gas_pressed=gas,
+    brake_pressed=brake,
+    lead_status=lead,
+    lead_d_rel=d_rel,
+    lead_v_rel=v_rel,
+  )
 
 
 def test_percentile_range_uses_requested_percentiles():
@@ -34,3 +51,34 @@ def test_classifies_unknown_when_profile_is_too_aggressive():
   )
 
   assert style == "unknown"
+
+
+def test_route_profile_includes_mostly_manual_route():
+  samples = [sample(float(i), 8.0, 0.1, active=False) for i in range(20)]
+  samples += [sample(20.0, 8.0, 0.1, active=True)]
+
+  profile = build_route_profile("route-a", samples, min_manual_moving_samples=10, max_active_ratio=0.25)
+
+  assert profile.include
+  assert profile.manual_moving_samples == 20
+  assert profile.active_ratio == 1 / 21
+
+
+def test_route_profile_excludes_routes_with_too_much_active_control():
+  samples = [sample(float(i), 8.0, 0.1, active=False) for i in range(10)]
+  samples += [sample(float(i + 10), 8.0, 0.1, active=True) for i in range(10)]
+
+  profile = build_route_profile("route-a", samples, min_manual_moving_samples=5, max_active_ratio=0.25)
+
+  assert not profile.include
+  assert profile.active_ratio == 0.5
+
+
+def test_route_profile_ignores_stopped_samples_for_manual_moving_count():
+  samples = [sample(float(i), 0.2, 0.0, active=False) for i in range(20)]
+  samples += [sample(float(i + 20), 6.0, 0.1, active=False) for i in range(6)]
+
+  profile = build_route_profile("route-a", samples, min_manual_moving_samples=10, max_active_ratio=0.25)
+
+  assert not profile.include
+  assert profile.manual_moving_samples == 6
