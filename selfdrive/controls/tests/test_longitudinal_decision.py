@@ -419,3 +419,38 @@ def test_core_candidate_builder_adds_cruise_coast_comfort_candidate():
   coast = next(candidate for candidate in candidates if candidate.source == DecisionSource.CRUISE_COAST)
   assert coast.role == CandidateRole.COMFORT_SHAPING
   assert coast.a_target == -0.2
+
+
+def test_driver_intent_wins_over_low_confidence_cut_in():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 27.0, 0.1, 1.0, 0.1, "driver_set_speed")
+  cut_in = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 20.0, -0.6, 0.3, 0.8, "low_confidence_cut_in")
+
+  decision = arbiter.decide([cruise, cut_in])
+
+  assert decision.winner == DecisionSource.CRUISE
+  assert (DecisionSource.LEAD_MPC, "low_confidence") in decision.suppressed
+
+
+def test_osm_caution_does_not_override_confirmed_lead():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, 0.1, 1.0, 0.1, "driver_set_speed")
+  osm = make_candidate(DecisionSource.OSM_TRAFFIC_CONTROL, CandidateRole.ADVISORY_CAP, 8.33, -0.4, 0.8, 0.5, "map_caution")
+  lead = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 15.0, -0.7, 0.9, 0.8, "confirmed_lead")
+
+  decision = arbiter.decide([cruise, osm, lead])
+
+  assert decision.winner == DecisionSource.LEAD_MPC
+  assert (DecisionSource.OSM_TRAFFIC_CONTROL, "physical_hazard_active") in decision.suppressed
+
+
+def test_confident_curve_can_limit_overspeed_when_no_hazard():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 30.0, -0.1, 1.0, 0.1, "driver_set_speed")
+  curve = make_candidate(DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 18.0, -0.5, 0.85, 0.6, "confident_vision_curve")
+  coast = make_candidate(DecisionSource.CRUISE_COAST, CandidateRole.COMFORT_SHAPING, 30.0, 0.0, 0.8, 0.2, "harmless_overspeed")
+
+  decision = arbiter.decide([cruise, curve, coast])
+
+  assert decision.winner == DecisionSource.SCC_VISION
+  assert decision.a_target == -0.5
