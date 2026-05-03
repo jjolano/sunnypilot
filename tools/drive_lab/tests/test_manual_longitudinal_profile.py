@@ -157,23 +157,27 @@ def test_lead_crawl_gap_excess_ignores_missing_confirmed_lead():
 
 def test_manual_style_summary_includes_lead_crawl_bins():
   samples = [
-    crawl_sample(0.0, 2.5, v=0.3, a=0.10, lead_v=0.2, gas=True),
-    crawl_sample(1.0, 2.1, v=0.4, a=0.05, lead_v=0.1),
-    crawl_sample(2.0, 1.5, v=0.5, a=-0.10, lead_v=0.2, brake=True),
-    crawl_sample(3.0, 0.5, v=0.2, a=-0.20, lead_v=0.0, brake=True),
-    crawl_sample(4.0, -0.2, v=0.1, a=-0.30, lead_v=0.0, brake=True),
+    crawl_sample(0.0, 2.0, v=0.4, a=0.10, lead_v=0.2, gas=True),
+    crawl_sample(1.0, 1.0, v=0.5, a=-0.10, lead_v=0.2, brake=True),
+    crawl_sample(2.0, 0.0, v=0.2, a=-0.20, lead_v=0.0, brake=True),
+    crawl_sample(3.0, -0.2, v=0.1, a=-0.30, lead_v=0.0, brake=True),
     crawl_sample(5.0, 3.0, v=4.0, a=0.20, lead_v=4.0, gas=True),
   ]
 
   summary = summarize_manual_style(samples)
   bins = {bucket.label: bucket for bucket in summary.lead_crawl_bins}
 
-  assert bins["open_to_crawl"].sample_count == 2
-  assert bins["open_to_crawl"].gas_ratio == 0.5
-  assert bins["open_to_crawl"].coast_ratio == 0.5
+  assert bins["open_to_crawl"].sample_count == 1
   assert bins["crawl_to_follow"].sample_count == 1
   assert bins["soft_stop"].sample_count == 1
   assert bins["inside_stop_target"].sample_count == 1
+  assert bins["open_to_crawl"].gap_excess.low == bins["open_to_crawl"].gap_excess.high == 2.0
+  assert bins["crawl_to_follow"].gap_excess.low == bins["crawl_to_follow"].gap_excess.high == 1.0
+  assert bins["soft_stop"].gap_excess.low == bins["soft_stop"].gap_excess.high == 0.0
+  assert bins["inside_stop_target"].gap_excess.low < 0.0
+  assert bins["open_to_crawl"].closing_ratio == 1.0
+  assert bins["open_to_crawl"].closing_speed.low > 0.0
+  assert bins["open_to_crawl"].closing_speed.high > 0.0
   assert "open_to_crawl" in {bucket.label for bucket in summary.lead_crawl_bins}
 
 
