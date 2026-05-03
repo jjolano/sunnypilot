@@ -60,3 +60,18 @@ def test_v2_shaping_still_applies_after_authority_cap():
   assert result.authority_cap == 0.5
   assert result.shaping_result.unshaped_output == 0.5
   assert result.output_torque == 0.4
+
+
+def test_stale_actuator_reversal_shaping_applies_after_authority_cap():
+  envelope = TorqueV3SafetyEnvelope(dt=0.01)
+
+  result = envelope.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steering_rate_deg=40.0, unshaped_output=0.8, authority_scale=0.5,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=-0.25))
+
+  assert result.authority_limited
+  assert result.authority_cap == 0.5
+  assert result.shaping_result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+  assert result.shaping_result.output_cap == 0.35
+  assert result.output_torque == 0.175
