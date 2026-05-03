@@ -265,6 +265,8 @@ class LatControlTorque(LatControl):
         steering_rate_deg=-CS.steeringRateDeg,
         steer_limit_same_direction=steer_limit_same_direction if steer_limit_feedback.valid else True,
         steer_limit_unwind=steer_limit_unwind if steer_limit_feedback.valid else False,
+        steer_limit_requested_output=-steer_limit_feedback.requested if steer_limit_feedback.valid else 0.0,
+        steer_limit_applied_output=-steer_limit_feedback.applied if steer_limit_feedback.valid else 0.0,
       )
     )
     disturbance_result = classify_torque_disturbance(

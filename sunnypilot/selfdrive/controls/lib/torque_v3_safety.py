@@ -28,6 +28,8 @@ class TorqueV3SafetyInputs:
   steering_rate_deg: float = 0.0
   steer_limit_same_direction: bool = True
   steer_limit_unwind: bool = False
+  steer_limit_requested_output: float = 0.0
+  steer_limit_applied_output: float = 0.0
 
 
 @dataclass
@@ -64,6 +66,8 @@ class TorqueV3SafetyEnvelope:
         steering_rate_deg=inputs.steering_rate_deg,
         steer_limit_same_direction=inputs.steer_limit_same_direction,
         steer_limit_unwind=inputs.steer_limit_unwind,
+        steer_limit_requested_output=inputs.steer_limit_requested_output,
+        steer_limit_applied_output=inputs.steer_limit_applied_output,
       )
     )
     return TorqueV3SafetyResult(
