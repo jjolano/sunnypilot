@@ -152,6 +152,7 @@ class LongitudinalArbiter:
           candidate for candidate in valid
           if candidate.role == CandidateRole.COMFORT_SHAPING
           and candidate.confidence >= COMFORT_CONFIDENCE_MIN
+          and candidate.v_target <= driver.v_target
           and candidate.a_target > driver.a_target
         ]
         winner = max(comfort, key=lambda candidate: candidate.a_target) if comfort else driver
