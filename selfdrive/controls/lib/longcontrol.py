@@ -135,7 +135,8 @@ class LongControl:
     )
     if not active or CS.brakePressed or self.long_control_state in (LongCtrlState.off, LongCtrlState.stopping):
       self.reset_launch_envelope()
-    elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and not effective_should_stop and a_target >= 0.0:
+    elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and \
+         not effective_should_stop and a_target >= 0.0:
       self.launch_envelope_active = True
       self.launch_breakaway_elapsed = 0.0
       self.launch_taper_elapsed = 0.0
@@ -174,6 +175,7 @@ class LongControl:
       else:
         self.launch_breakaway_done = True
         launch_blend = get_launch_envelope_blend(CS.vEgo, self.launch_taper_elapsed)
+        output_accel = max(output_accel, LAUNCH_ENVELOPE_MIN_ACCEL * launch_blend)
         output_accel = apply_launch_envelope(output_accel, accel_limits, CS.vEgo, self.launch_taper_elapsed, launch_blend)
         if launch_blend <= 0.0:
           self.reset_launch_envelope()
