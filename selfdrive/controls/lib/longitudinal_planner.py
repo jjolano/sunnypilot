@@ -14,6 +14,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   LongitudinalArbiter,
   build_core_longitudinal_candidates,
+  get_active_lead_confidence,
   resolve_longitudinal_decision,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
@@ -739,7 +740,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     legacy_a_target = float(output_a_target)
     legacy_should_stop = bool(self.output_should_stop)
-    lead_confidence = float(getattr(lead_one, "modelProb", 0.0)) if lead_one.status else 0.0
+    lead_confidence = get_active_lead_confidence(sm['radarState'].leadOne, sm['radarState'].leadTwo)
     self.longitudinal_decision_candidates = list(getattr(self, "decision_candidates_sp", [])) + build_core_longitudinal_candidates(
       has_lead=has_lead,
       lead_confidence=lead_confidence,

@@ -200,6 +200,13 @@ def resolve_longitudinal_decision(enabled: bool, candidates: list[LongitudinalCa
   return decision
 
 
+def get_active_lead_confidence(*leads: Any) -> float:
+  return max(
+    (float(getattr(lead, "modelProb", 1.0)) for lead in leads if getattr(lead, "status", False)),
+    default=0.0,
+  )
+
+
 def build_core_longitudinal_candidates(has_lead: bool, lead_confidence: float, v_cruise: float, a_cruise: float,
                                        output_a_target_mpc: float, output_should_stop_mpc: bool,
                                        e2e_active: bool, output_a_target_e2e: float, output_should_stop_e2e: bool,

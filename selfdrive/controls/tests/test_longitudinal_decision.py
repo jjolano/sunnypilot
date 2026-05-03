@@ -1,4 +1,5 @@
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   LongitudinalArbiter,
   LongitudinalCandidate,
   build_core_longitudinal_candidates,
+  get_active_lead_confidence,
   resolve_longitudinal_decision,
 )
 
@@ -312,6 +314,20 @@ def test_core_candidate_builder_preserves_low_lead_confidence():
 
   lead = next(candidate for candidate in candidates if candidate.source == DecisionSource.LEAD_MPC)
   assert lead.confidence == pytest.approx(0.2)
+
+
+def test_active_lead_confidence_uses_highest_active_model_probability():
+  lead_one = SimpleNamespace(status=False, modelProb=0.95)
+  lead_two = SimpleNamespace(status=True, modelProb=0.82)
+
+  assert get_active_lead_confidence(lead_one, lead_two) == pytest.approx(0.82)
+
+
+def test_active_lead_confidence_treats_missing_model_probability_as_confirmed():
+  lead_one = SimpleNamespace(status=True, modelProb=0.2)
+  lead_two = SimpleNamespace(status=True)
+
+  assert get_active_lead_confidence(lead_one, lead_two) == pytest.approx(1.0)
 
 
 def test_core_candidate_builder_adds_e2e_stop_candidate_for_active_stop():
