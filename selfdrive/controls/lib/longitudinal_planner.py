@@ -10,7 +10,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, STOP_DISTANCE
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW, get_lead_accel_recovery_a_min, get_lead_stop_presentation_distance
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
@@ -24,7 +24,9 @@ A_CRUISE_MAX_BP = [0.0, 10.0, 25.0, 40.0]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
-CREEP_TO_STOP_GAP_ARM_EXCESS = 0.5
+CREEP_TO_STOP_GAP_START_EXCESS = 2.0
+CREEP_TO_STOP_GAP_FOLLOW_EXCESS = 1.0
+CREEP_TO_STOP_GAP_ARM_EXCESS = CREEP_TO_STOP_GAP_START_EXCESS
 CREEP_TO_STOP_GAP_STOP_EXCESS = 0.05
 CREEP_TO_STOP_GAP_MAX_V_EGO_ARM = 0.3
 CREEP_TO_STOP_GAP_MAX_V_EGO = 1.0
@@ -33,18 +35,23 @@ CREEP_TO_STOP_GAP_MAX_EXCESS = 4.0
 CREEP_TO_STOP_GAP_MIN_LEAD_SPEED = -0.3
 CREEP_TO_STOP_GAP_MIN_MODEL_PROB = 0.5
 CREEP_TO_STOP_GAP_SPEED_MAX = 0.75
-CREEP_TO_STOP_GAP_SPEED_BP = [CREEP_TO_STOP_GAP_STOP_EXCESS, 1.0, 5.0]
-CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.18, CREEP_TO_STOP_GAP_SPEED_MAX]
+CREEP_TO_STOP_GAP_SPEED_BP = [
+  CREEP_TO_STOP_GAP_STOP_EXCESS,
+  CREEP_TO_STOP_GAP_FOLLOW_EXCESS,
+  CREEP_TO_STOP_GAP_START_EXCESS,
+  CREEP_TO_STOP_GAP_MAX_EXCESS,
+]
+CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.18, 0.30, CREEP_TO_STOP_GAP_SPEED_MAX]
 CREEP_TO_STOP_GAP_ACCEL_GAIN = 0.8
 CREEP_TO_STOP_GAP_ACCEL_MIN = -0.25
 CREEP_TO_STOP_GAP_ACCEL_MAX = 0.18
 CREEP_TO_STOP_GAP_HOLD_EXCESS = 0.3
 CREEP_TO_STOP_GAP_REHOLD_EXCESS = 0.2
-CREEP_TO_STOP_GAP_HOLD_RELEASE_EXCESS = 0.45
+CREEP_TO_STOP_GAP_HOLD_RELEASE_EXCESS = CREEP_TO_STOP_GAP_START_EXCESS
 CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_SPEED = 0.05
 CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_ACCEL = 0.15
 CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED = 0.25
-CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = 0.5
+CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = CREEP_TO_STOP_GAP_START_EXCESS
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.55
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.30
