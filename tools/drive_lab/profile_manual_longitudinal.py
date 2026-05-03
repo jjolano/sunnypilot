@@ -53,6 +53,9 @@ def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample
   lead_status = False
   lead_d_rel = None
   lead_v_rel = None
+  lead_v_lead = None
+  lead_a_lead = None
+  lead_model_prob = None
   samples: list[ManualSample] = []
   for msg in msgs:
     typ = msg_type(msg)
@@ -64,6 +67,9 @@ def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample
       lead_status = bool(safe_get(lead, "status", False))
       lead_d_rel = _finite_or_none(safe_get(lead, "dRel"))
       lead_v_rel = _finite_or_none(safe_get(lead, "vRel"))
+      lead_v_lead = _finite_or_none(safe_get(lead, "vLeadK"))
+      lead_a_lead = _finite_or_none(safe_get(lead, "aLeadK"))
+      lead_model_prob = _finite_or_none(safe_get(lead, "modelProb"))
     elif typ == "carState":
       v_ego = _finite_or_none(safe_get(payload, "vEgo"))
       a_ego = _finite_or_none(safe_get(payload, "aEgo"))
@@ -80,6 +86,9 @@ def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample
         lead_status=lead_status,
         lead_d_rel=lead_d_rel,
         lead_v_rel=lead_v_rel,
+        lead_v_lead=lead_v_lead,
+        lead_a_lead=lead_a_lead,
+        lead_model_prob=lead_model_prob,
       ))
   return samples
 

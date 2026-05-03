@@ -1,3 +1,5 @@
+from dataclasses import asdict
+
 import numpy as np
 import pytest
 
@@ -414,3 +416,21 @@ def test_render_manual_style_summary_includes_core_values():
   assert "coast accel:" in text
   assert "Speed bins:" in text
   assert "Following bins:" in text
+
+
+def test_render_manual_style_summary_includes_lead_crawl_sections():
+  summary = summarize_manual_style([
+    crawl_sample(0.0, 2.4, v=0.2, a=0.10, lead_v=0.3, gas=True),
+    crawl_sample(1.0, 1.5, v=0.4, a=0.00, lead_v=0.2),
+    crawl_sample(2.0, 0.9, v=0.3, a=-0.10, lead_v=0.0, brake=True),
+    crawl_sample(3.0, 0.0, v=0.0, a=-0.10, lead_v=0.0, brake=True),
+  ])
+
+  text = render_manual_style_summary(summary)
+  payload = asdict(summary)
+
+  assert "Lead crawl bins:" in text
+  assert "open_to_crawl" in text
+  assert "Lead crawl episodes:" in text
+  assert payload["lead_crawl_bins"][0]["label"] == "open_to_crawl"
+  assert payload["lead_crawl_episodes"][0]["label"] == "crawl_to_follow"

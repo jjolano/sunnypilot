@@ -282,6 +282,14 @@ def render_manual_style_summary(summary: ManualStyleSummary, route_profiles: Ite
   lines.extend(_render_following_bin(following_bin) for following_bin in summary.following_bins)
   if not summary.following_bins:
     lines.append("  none")
+  lines.append("Lead crawl bins:")
+  lines.extend(_render_lead_crawl_bin(crawl_bin) for crawl_bin in summary.lead_crawl_bins)
+  if not summary.lead_crawl_bins:
+    lines.append("  none")
+  lines.append("Lead crawl episodes:")
+  lines.extend(_render_lead_crawl_episode(episode) for episode in summary.lead_crawl_episodes)
+  if not summary.lead_crawl_episodes:
+    lines.append("  none")
   return "\n".join(lines)
 
 
@@ -459,6 +467,29 @@ def _render_following_bin(following_bin: FollowingBinSummary) -> str:
     + f"distance {following_bin.distance.low:.1f} to {following_bin.distance.high:.1f} m, "
     + f"time gap {following_bin.time_gap.low:.1f} to {following_bin.time_gap.high:.1f}s, "
     + f"closing time {following_bin.closing_time.low:.1f} to {following_bin.closing_time.high:.1f}s"
+  )
+
+
+def _render_lead_crawl_bin(crawl_bin: LeadCrawlBucketSummary) -> str:
+  return (
+    f"  {crawl_bin.label}: samples {crawl_bin.sample_count}, gas {crawl_bin.gas_ratio:.1%}, "
+    + f"brake {crawl_bin.brake_ratio:.1%}, coast {crawl_bin.coast_ratio:.1%}, "
+    + f"gap excess {crawl_bin.gap_excess.low:.2f} to {crawl_bin.gap_excess.high:.2f} m, "
+    + f"ego {crawl_bin.ego_speed.low:.2f} to {crawl_bin.ego_speed.high:.2f} m/s, "
+    + f"lead {crawl_bin.lead_speed.low:.2f} to {crawl_bin.lead_speed.high:.2f} m/s, "
+    + f"relative {crawl_bin.relative_speed.low:.2f} to {crawl_bin.relative_speed.high:.2f} m/s, "
+    + f"accel {crawl_bin.accel.low:.3f} to {crawl_bin.accel.high:.3f} m/s^2, "
+    + f"closing {crawl_bin.closing_ratio:.1%}"
+  )
+
+
+def _render_lead_crawl_episode(episode: LeadCrawlEpisodeSummary) -> str:
+  return (
+    f"  {episode.label}: count {episode.count}, duration {episode.duration.low:.1f} to {episode.duration.high:.1f}s, "
+    + f"start gap {episode.start_gap_excess.low:.2f} to {episode.start_gap_excess.high:.2f} m, "
+    + f"end gap {episode.end_gap_excess.low:.2f} to {episode.end_gap_excess.high:.2f} m, "
+    + f"min gap {episode.min_gap_excess.low:.2f} to {episode.min_gap_excess.high:.2f} m, "
+    + f"mean accel {episode.mean_accel.low:.3f} to {episode.mean_accel.high:.3f} m/s^2"
   )
 
 
