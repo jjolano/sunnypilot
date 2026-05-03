@@ -202,6 +202,14 @@ LEAD_TRANSITION_GUARD_ARM_BLEND = 0.8
 LEAD_TRANSITION_TRACK_UNKNOWN = -2
 LEAD_TRANSITION_CHURN_MAX_D_REL_DELTA = 5.0
 LEAD_TRANSITION_CHURN_MAX_V_LEAD_DELTA = 5.0
+SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP = 0.15
+SHORT_GAP_PULLAWAY_RESPONSE_FULL_GAP = 1.0
+SHORT_GAP_PULLAWAY_RESPONSE_MAX_CLOSING = 0.5
+SHORT_GAP_PULLAWAY_RESPONSE_MIN_LEAD_ACCEL = 0.5
+SHORT_GAP_PULLAWAY_RESPONSE_ACCEL_MAX_RELAXED = 0.35
+SHORT_GAP_PULLAWAY_RESPONSE_ACCEL_MAX_STANDARD = 0.45
+SHORT_GAP_PULLAWAY_RESPONSE_ACCEL_MAX_AGGRESSIVE = 0.55
+SHORT_GAP_PULLAWAY_RESPONSE_COST = 1.4
 
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
@@ -391,6 +399,43 @@ def should_count_lead_transition_fcw(model_prob, transition_release):
   return bool(model_prob > 0.9 and transition_release <= 0.01)
 
 
+def get_short_gap_pullaway_response_accel_max(t_follow):
+  return float(np.interp(
+    t_follow,
+    [get_T_FOLLOW(log.LongitudinalPersonality.aggressive), get_T_FOLLOW(log.LongitudinalPersonality.standard),
+     get_T_FOLLOW(log.LongitudinalPersonality.relaxed)],
+    [SHORT_GAP_PULLAWAY_RESPONSE_ACCEL_MAX_AGGRESSIVE, SHORT_GAP_PULLAWAY_RESPONSE_ACCEL_MAX_STANDARD,
+     SHORT_GAP_PULLAWAY_RESPONSE_ACCEL_MAX_RELAXED],
+  ))
+
+
+def get_short_gap_pullaway_response_target(v_ego, v_lead, d_rel, a_lead, t_follow, model_prob=1.0, blocked=False):
+  presentation_distance = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
+  cushion = np.asarray(d_rel, dtype=float) - presentation_distance
+  closing_speed = np.asarray(v_ego, dtype=float) - np.asarray(v_lead, dtype=float)
+
+  active = (
+    (cushion > SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP) &
+    (np.asarray(d_rel, dtype=float) < STOP_DISTANCE) &
+    (closing_speed <= SHORT_GAP_PULLAWAY_RESPONSE_MAX_CLOSING) &
+    (np.asarray(a_lead, dtype=float) >= SHORT_GAP_PULLAWAY_RESPONSE_MIN_LEAD_ACCEL) &
+    ~np.asarray(blocked, dtype=bool)
+  )
+  if np.all(~active):
+    return np.zeros_like(cushion), np.zeros_like(cushion)
+
+  gap_blend = np.interp(cushion, [SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP, SHORT_GAP_PULLAWAY_RESPONSE_FULL_GAP], [0.0, 1.0])
+  closing_blend = 1.0 - np.interp(closing_speed, [0.0, SHORT_GAP_PULLAWAY_RESPONSE_MAX_CLOSING], [0.0, 1.0])
+  accel_blend = np.interp(np.asarray(a_lead, dtype=float), [SHORT_GAP_PULLAWAY_RESPONSE_MIN_LEAD_ACCEL, 1.0], [0.0, 1.0])
+  response_blend = np.clip(gap_blend, 0.0, 1.0) * np.clip(closing_blend, 0.0, 1.0) * np.clip(accel_blend, 0.0, 1.0)
+  accel_max = get_short_gap_pullaway_response_accel_max(t_follow)
+  target = np.where(active, accel_max * response_blend, 0.0)
+  cost = np.where(active, SHORT_GAP_PULLAWAY_RESPONSE_COST * response_blend, 0.0)
+  if np.ndim(target) == 0:
+    return float(target), float(cost)
+  return target, cost
+
+
 def get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow):
   d_rel = np.asarray(d_rel, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
@@ -492,7 +537,7 @@ def get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead):
   return np.maximum(stop_floor, stop_floor + moving_stop_reserve + ego_stop_distance - lead_stop_distance)
 
 
-def get_lead_crawl_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
+def get_lead_crawl_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow, block_short_gap_pullaway_response=False, model_prob=1.0):
   x_lead = np.asarray(x_lead, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
   a_lead = np.asarray(a_lead, dtype=float)
@@ -504,7 +549,10 @@ def get_lead_crawl_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
   brake_gap_blend = 1.0 - np.interp(x_lead, LEAD_CRAWL_BRAKE_GAP_BP, [0.0, 0.0, 1.0])
   urgency_blend = 1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead)
   crawl_blend = speed_blend * moving_blend * gap_blend * urgency_blend
-  if np.all(crawl_blend <= 0.0):
+  short_gap_target, short_gap_cost = get_short_gap_pullaway_response_target(
+    v_ego, v_lead, x_lead, a_lead, t_follow, model_prob=model_prob, blocked=block_short_gap_pullaway_response,
+  )
+  if np.all(crawl_blend <= 0.0) and np.all(short_gap_cost <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
 
   required_decel = get_lead_stop_runway_required_decel(x_lead, v_ego, v_lead, closing_speed, a_lead)
@@ -523,7 +571,8 @@ def get_lead_crawl_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
   accel_target = LEAD_CRAWL_ACCEL_MAX * accel_blend
   brake_target = LEAD_CRAWL_BRAKE_MAX * brake_blend
   target = np.clip(accel_target - brake_target, -LEAD_CRAWL_BRAKE_MAX, LEAD_CRAWL_ACCEL_MAX)
-  cost = LEAD_CRAWL_COST * crawl_blend * np.maximum(brake_blend, accel_blend)
+  target = np.where(short_gap_cost > 0.0, np.maximum(target, short_gap_target), target)
+  cost = np.maximum(LEAD_CRAWL_COST * crawl_blend * np.maximum(brake_blend, accel_blend), short_gap_cost)
   return target, cost
 
 
@@ -780,7 +829,7 @@ def _interp_linear_clipped(x, x0, x1, y0, y1):
   return y0 + blend * (y1 - y0)
 
 
-def get_lead_accel_match_targets(v_lead, d_rel, a_lead, t_follow, v_ego=None):
+def get_lead_accel_match_targets(v_lead, d_rel, a_lead, t_follow, v_ego=None, block_short_gap_pullaway_response=False, model_prob=1.0):
   v_lead = np.asarray(v_lead, dtype=float)
   d_rel = np.asarray(d_rel, dtype=float)
   a_lead = np.asarray(a_lead, dtype=float)
@@ -822,6 +871,13 @@ def get_lead_accel_match_targets(v_lead, d_rel, a_lead, t_follow, v_ego=None):
   accel_targets = np.clip(a_lead * blend, ACCEL_MIN, ACCEL_MAX)
   accel_targets = np.where(a_lead < 0.0, np.maximum(accel_targets, -LEAD_ACCEL_MATCH_DECEL_CAP), accel_targets)
   accel_targets = np.where(blend > 0.0, accel_targets, 0.0)
+  if v_ego is not None:
+    short_gap_targets, short_gap_costs = get_short_gap_pullaway_response_target(
+      v_ego_values, v_lead, d_rel, a_lead, t_follow, model_prob=model_prob, blocked=block_short_gap_pullaway_response,
+    )
+    short_gap_active = short_gap_costs > 0.0
+    accel_targets = np.where(short_gap_active, np.maximum(accel_targets, short_gap_targets), accel_targets)
+    blend = np.where(short_gap_active, np.maximum(blend, short_gap_costs / LEAD_ACCEL_MATCH_COST), blend)
   return accel_targets, LEAD_ACCEL_MATCH_COST * blend
 
 
@@ -1132,7 +1188,6 @@ class LongitudinalMpc:
     self.lead_surge_decel_memories[lead_idx] = max(memory, min(max(-float(lead.aLeadK), 0.0), LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX))
     return self.lead_surge_decel_memories[lead_idx]
 
-
   def reset_lead_transition_state(self, lead_idx, guard_timer=0.0):
     self.lead_transition_track_ids[lead_idx] = LEAD_TRANSITION_TRACK_UNKNOWN
     self.lead_transition_prev_y_rel[lead_idx] = np.nan
@@ -1199,7 +1254,7 @@ class LongitudinalMpc:
     self.lead_transition_was_status[lead_idx] = True
     return self.lead_transition_release_blends[lead_idx]
 
-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
+  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, block_short_gap_pullaway_response=False):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
@@ -1301,11 +1356,15 @@ class LongitudinalMpc:
     self.source = MPC_SOURCES[np.argmin(cost_obstacles[0])]
     dominant_obstacle = np.argmin(x_obstacles, axis=1)
 
+    lead_0_model_prob = float(radarstate.leadOne.modelProb) if radarstate.leadOne.status else 1.0
+    lead_1_model_prob = float(radarstate.leadTwo.modelProb) if radarstate.leadTwo.status else 1.0
     lead_0_accel_targets, lead_0_accel_costs = get_lead_accel_match_targets(
-      lead_brake_xv_0[:, 1], lead_brake_xv_0[:, 0], lead_0_brake_a_traj, t_follow, v_ego
+      lead_brake_xv_0[:, 1], lead_brake_xv_0[:, 0], lead_0_brake_a_traj, t_follow, v_ego,
+      block_short_gap_pullaway_response, lead_0_model_prob,
     )
     lead_1_accel_targets, lead_1_accel_costs = get_lead_accel_match_targets(
-      lead_brake_xv_1[:, 1], lead_brake_xv_1[:, 0], lead_1_brake_a_traj, t_follow, v_ego
+      lead_brake_xv_1[:, 1], lead_brake_xv_1[:, 0], lead_1_brake_a_traj, t_follow, v_ego,
+      block_short_gap_pullaway_response, lead_1_model_prob,
     )
     lead_0_closing_cushion_targets, lead_0_closing_cushion_costs = get_moving_lead_closing_cushion_target(
       lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], t_follow
@@ -1314,8 +1373,14 @@ class LongitudinalMpc:
       lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], t_follow
     )
 
-    lead_0_crawl_targets, lead_0_crawl_costs = get_lead_crawl_comfort_target(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow)
-    lead_1_crawl_targets, lead_1_crawl_costs = get_lead_crawl_comfort_target(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow)
+    lead_0_crawl_targets, lead_0_crawl_costs = get_lead_crawl_comfort_target(
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow,
+      block_short_gap_pullaway_response, lead_0_model_prob,
+    )
+    lead_1_crawl_targets, lead_1_crawl_costs = get_lead_crawl_comfort_target(
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow,
+      block_short_gap_pullaway_response, lead_1_model_prob,
+    )
     lead_0_crawl_accel_max = get_lead_crawl_accel_max(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow)
     lead_1_crawl_accel_max = get_lead_crawl_accel_max(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow)
     lead_0_stop_targets, lead_0_stop_costs = get_lead_stop_approach_comfort_target(
