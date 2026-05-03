@@ -49,6 +49,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_gap_comfort_a_min,
   get_lead_gap_comfort_floor,
   get_lead_gap_comfort_recovery_blend,
+  get_combined_accel_target,
   get_lead_departure_available_runway,
   get_lead_departure_relaxation,
   get_lead_danger_distance,
@@ -1088,6 +1089,32 @@ def test_selected_lead_targets_ignore_non_dominant_lead():
 
   assert targets.tolist() == pytest.approx([0.0, 0.0, 0.0])
   assert costs.tolist() == pytest.approx([0.0, 0.0, 0.0])
+
+
+def test_combined_accel_target_uses_closing_cushion_for_dominant_lead_only():
+  accel_match_targets = np.array([0.0, 0.0, 0.0])
+  accel_match_costs = np.array([0.0, 0.0, 0.0])
+  lead_0_closing_cushion_targets = np.array([-0.4, -0.4, -0.4])
+  lead_1_closing_cushion_targets = np.array([-0.1, -0.1, -0.1])
+  lead_0_closing_cushion_costs = np.array([2.0, 2.0, 2.0])
+  lead_1_closing_cushion_costs = np.array([8.0, 8.0, 8.0])
+  zero_targets = np.zeros(3)
+  zero_costs = np.zeros(3)
+  dominant_obstacle = np.array([0, 1, 2])
+
+  targets, costs = get_combined_accel_target(
+    accel_match_targets, accel_match_costs,
+    lead_0_closing_cushion_targets, lead_1_closing_cushion_targets,
+    lead_0_closing_cushion_costs, lead_1_closing_cushion_costs,
+    dominant_obstacle,
+    zero_targets, zero_costs,
+    zero_targets, zero_costs,
+    zero_targets, zero_costs,
+    zero_targets, zero_costs,
+  )
+
+  np.testing.assert_allclose(targets, [-0.4, -0.1, 0.0], rtol=0.0, atol=1e-12)
+  np.testing.assert_allclose(costs, [2.0, 8.0, 0.0], rtol=0.0, atol=1e-12)
 
 
 def test_stop_approach_comfort_targets_moderate_stopped_lead_brake():

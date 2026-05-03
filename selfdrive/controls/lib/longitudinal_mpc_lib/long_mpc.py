@@ -505,6 +505,29 @@ def get_selected_lead_targets(lead_0_targets, lead_1_targets, lead_0_costs, lead
   return targets, costs
 
 
+def get_combined_accel_target(accel_match_targets, accel_match_costs,
+                              lead_0_closing_cushion_targets, lead_1_closing_cushion_targets,
+                              lead_0_closing_cushion_costs, lead_1_closing_cushion_costs,
+                              dominant_obstacle,
+                              crawl_targets, crawl_costs,
+                              stop_targets, stop_costs,
+                              moving_stop_targets, moving_stop_costs,
+                              surge_targets, surge_costs):
+  closing_cushion_targets, closing_cushion_costs = get_selected_lead_targets(
+    lead_0_closing_cushion_targets, lead_1_closing_cushion_targets,
+    lead_0_closing_cushion_costs, lead_1_closing_cushion_costs, dominant_obstacle
+  )
+  combined_accel_costs = accel_match_costs + closing_cushion_costs + crawl_costs + stop_costs + moving_stop_costs + surge_costs
+  combined_accel_targets = np.divide(
+    accel_match_targets * accel_match_costs + closing_cushion_targets * closing_cushion_costs + crawl_targets * crawl_costs +
+    stop_targets * stop_costs + moving_stop_targets * moving_stop_costs + surge_targets * surge_costs,
+    combined_accel_costs,
+    out=np.zeros_like(combined_accel_costs),
+    where=combined_accel_costs > 0.0,
+  )
+  return combined_accel_targets, combined_accel_costs
+
+
 def get_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
   x_lead = np.asarray(x_lead, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
@@ -1139,23 +1162,21 @@ class LongitudinalMpc:
     accel_match_targets, accel_match_costs = get_selected_lead_targets(
       lead_0_accel_targets, lead_1_accel_targets, lead_0_accel_costs, lead_1_accel_costs, dominant_obstacle
     )
-    closing_cushion_targets, closing_cushion_costs = get_selected_lead_targets(
-      lead_0_closing_cushion_targets, lead_1_closing_cushion_targets,
-      lead_0_closing_cushion_costs, lead_1_closing_cushion_costs, dominant_obstacle
-    )
     lead_0_moving_stop_selected = lead_0_moving_stop_costs >= lead_1_moving_stop_costs
     moving_stop_targets = np.where(lead_0_moving_stop_selected, lead_0_moving_stop_targets, lead_1_moving_stop_targets)
     moving_stop_costs = np.where(lead_0_moving_stop_selected, lead_0_moving_stop_costs, lead_1_moving_stop_costs)
     surge_targets, surge_costs = get_selected_lead_targets(
       lead_0_surge_targets, lead_1_surge_targets, lead_0_surge_costs, lead_1_surge_costs, dominant_obstacle
     )
-    combined_accel_costs = accel_match_costs + closing_cushion_costs + crawl_costs + stop_costs + moving_stop_costs + surge_costs
-    combined_accel_targets = np.divide(
-      accel_match_targets * accel_match_costs + closing_cushion_targets * closing_cushion_costs + crawl_targets * crawl_costs +
-      stop_targets * stop_costs + moving_stop_targets * moving_stop_costs + surge_targets * surge_costs,
-      combined_accel_costs,
-      out=np.zeros(N + 1),
-      where=combined_accel_costs > 0.0,
+    combined_accel_targets, combined_accel_costs = get_combined_accel_target(
+      accel_match_targets, accel_match_costs,
+      lead_0_closing_cushion_targets, lead_1_closing_cushion_targets,
+      lead_0_closing_cushion_costs, lead_1_closing_cushion_costs,
+      dominant_obstacle,
+      crawl_targets, crawl_costs,
+      stop_targets, stop_costs,
+      moving_stop_targets, moving_stop_costs,
+      surge_targets, surge_costs,
     )
     accel_match_targets = combined_accel_targets
     accel_match_costs = combined_accel_costs
