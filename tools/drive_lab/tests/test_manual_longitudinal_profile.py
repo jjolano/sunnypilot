@@ -7,6 +7,7 @@ from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   build_route_profile,
   classify_style,
   percentile_range,
+  render_manual_style_summary,
   summarize_manual_style,
 )
 
@@ -172,3 +173,22 @@ def test_manual_style_summary_does_not_merge_pedal_episodes_across_routes():
   summary = summarize_manual_style(samples)
 
   assert summary.clear_launch_count == 0
+
+
+def test_render_manual_style_summary_includes_core_values():
+  summary = summarize_manual_style([
+    sample(0.0, 0.5, 1.2, gas=True, lead=True, d_rel=4.0),
+    sample(1.0, 5.5, 0.7, gas=False, lead=True, d_rel=5.0),
+    sample(10.0, 10.0, -0.4, brake=True, lead=True, d_rel=12.0, v_rel=-0.8),
+    sample(11.0, 0.5, -0.2, brake=False, lead=True, d_rel=8.0, v_rel=0.0),
+    sample(20.0, 12.0, -0.3, gas=False, brake=False),
+    sample(21.0, 13.0, -0.2, gas=False, brake=False),
+  ])
+
+  text = render_manual_style_summary(summary)
+
+  assert "Manual longitudinal style" in text
+  assert "style:" in text
+  assert "lead launches:" in text
+  assert "stop approaches:" in text
+  assert "coast accel:" in text

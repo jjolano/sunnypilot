@@ -120,6 +120,34 @@ def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummar
   )
 
 
+def render_manual_style_summary(summary: ManualStyleSummary) -> str:
+  lead_launch_line = (
+    f"lead launches: {summary.lead_launch_count} mean {summary.lead_launch_mean_accel.low:.3f} to "
+    + f"{summary.lead_launch_mean_accel.high:.3f} m/s^2 peak {summary.lead_launch_peak_accel.low:.3f} to "
+    + f"{summary.lead_launch_peak_accel.high:.3f} m/s^2"
+  )
+  clear_launch_line = (
+    f"clear launches: {summary.clear_launch_count} mean {summary.clear_launch_mean_accel.low:.3f} to "
+    + f"{summary.clear_launch_mean_accel.high:.3f} m/s^2 peak {summary.clear_launch_peak_accel.low:.3f} to "
+    + f"{summary.clear_launch_peak_accel.high:.3f} m/s^2"
+  )
+  stop_approach_line = (
+    f"stop approaches: {summary.lead_stop_count + summary.clear_stop_count} mean {summary.stop_mean_accel.low:.3f} to "
+    + f"{summary.stop_mean_accel.high:.3f} m/s^2 peak {summary.stop_peak_decel.low:.3f} to "
+    + f"{summary.stop_peak_decel.high:.3f} m/s^2"
+  )
+  return "\n".join([
+    "Manual longitudinal style",
+    f"style: {summary.style}",
+    f"samples: {summary.sample_count}",
+    f"accel p10-p90: {summary.accel.low:.3f} to {summary.accel.high:.3f} m/s^2",
+    lead_launch_line,
+    clear_launch_line,
+    stop_approach_line,
+    f"coast accel: {summary.coast_accel.low:.3f} to {summary.coast_accel.high:.3f} m/s^2",
+  ])
+
+
 def _pedal_episodes(samples: list[ManualSample], pedal: str) -> list[dict[str, float | bool]]:
   episodes: list[dict[str, float | bool]] = []
   current: list[ManualSample] = []
