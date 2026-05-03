@@ -103,6 +103,17 @@ def test_arbiter_missing_driver_intent_uses_internal_fallback():
   assert decision.suppressed == ()
 
 
+def test_arbiter_physical_hazard_without_driver_intent_uses_internal_fallback():
+  lead = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 15.0, -0.8, 1.0, 1.0, "confirmed_lead")
+
+  decision = LongitudinalArbiter().decide([lead])
+
+  assert decision.enabled
+  assert decision.winner == DecisionSource.LEGACY_FALLBACK
+  assert decision.v_target == 0.0
+  assert decision.a_target == 0.0
+
+
 def test_confirmed_physical_hazard_overrides_speed_limit_advisory():
   arbiter = LongitudinalArbiter()
   cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 27.0, 0.1, 1.0, 0.1, "driver_set_speed")

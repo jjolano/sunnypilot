@@ -119,6 +119,15 @@ class LongitudinalArbiter:
         urgency=0.0,
         active_reason="missing_driver_intent",
       )
+      return LongitudinalDecision(
+        enabled=True,
+        winner=driver.source,
+        v_target=driver.v_target,
+        a_target=driver.a_target,
+        should_stop=driver.should_stop,
+        candidates=tuple(valid),
+        suppressed=tuple(dict.fromkeys(suppressed)),
+      )
 
     physical = [
       candidate for candidate in valid
