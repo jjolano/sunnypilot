@@ -148,6 +148,13 @@ MOVING_LEAD_STOP_RESERVE_V_EGO_BP = [0.2, 3.0]
 MOVING_LEAD_STOP_RESERVE_V_LEAD_BP = [0.1, 1.5]
 MOVING_LEAD_STOP_RESERVE_CLOSING_BP = [0.1, 1.5]
 MOVING_LEAD_STOP_RESERVE_DECEL_BP = [0.05, 0.5]
+MOVING_LEAD_CLOSING_CUSHION_V_EGO_BP = [7.0, 13.0]
+MOVING_LEAD_CLOSING_CUSHION_V_LEAD_BP = [2.0, 4.0]
+MOVING_LEAD_CLOSING_CUSHION_CLOSING_BP = [0.3, 2.0, 3.5]
+MOVING_LEAD_CLOSING_CUSHION_GAP_EXCESS_BP = [0.0, 6.0]
+MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN = -0.15
+MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX = 0.55
+MOVING_LEAD_CLOSING_CUSHION_COST = 1.5
 SLOW_MOVING_LEAD_RUNWAY_RELAXATION_MAX = 1.0
 SLOW_MOVING_LEAD_RUNWAY_RELAXATION_CAP = 1.0
 SLOW_MOVING_LEAD_RUNWAY_RELAXATION_V_EGO_BP = [0.1, 0.5]
@@ -310,6 +317,37 @@ def get_lead_accel_recovery_a_min(v_ego, v_lead, d_rel, a_lead, t_follow):
   opening_blend = float(np.interp(v_lead - v_ego, LEAD_ACCEL_RECOVERY_OPENING_BP, [0.0, 1.0]))
   accel_blend = float(np.interp(a_lead, LEAD_ACCEL_RECOVERY_ACCEL_BP, [0.0, 1.0]))
   return LEAD_ACCEL_RECOVERY_ACCEL_MAX * min(gap_blend, opening_blend, accel_blend)
+
+
+def get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow):
+  d_rel = np.asarray(d_rel, dtype=float)
+  v_lead = np.asarray(v_lead, dtype=float)
+  closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  cushion_range = np.maximum(desired_gap - comfort_floor, 1e-3)
+  cushion_used = np.clip((desired_gap - d_rel) / cushion_range, 0.0, 1.0)
+
+  speed_blend = np.interp(v_ego, MOVING_LEAD_CLOSING_CUSHION_V_EGO_BP, [0.0, 1.0])
+  moving_blend = np.interp(v_lead, MOVING_LEAD_CLOSING_CUSHION_V_LEAD_BP, [0.0, 1.0])
+  closing_blend = np.interp(closing_speed, MOVING_LEAD_CLOSING_CUSHION_CLOSING_BP, [0.0, 1.0, 0.0])
+  gap_blend = np.where(
+    d_rel > desired_gap,
+    1.0 - np.interp(d_rel - desired_gap, MOVING_LEAD_CLOSING_CUSHION_GAP_EXCESS_BP, [0.0, 1.0]),
+    1.0,
+  )
+  safety_blend = np.interp(d_rel - comfort_floor, [0.0, APPROACH_MIN_GAP_BUFFER], [0.0, 1.0])
+  cushion_blend = speed_blend * moving_blend * closing_blend * gap_blend * safety_blend
+  if np.all(cushion_blend <= 0.0):
+    return np.zeros_like(d_rel), np.zeros_like(d_rel)
+
+  coast_target = MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
+  decel_target = -MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX
+  coast_blend = np.clip(cushion_used / 0.25, 0.0, 1.0)
+  decel_blend = np.clip((cushion_used - 0.25) / 0.75, 0.0, 1.0)
+  target = coast_blend * coast_target + decel_blend * (decel_target - coast_target)
+  cost = MOVING_LEAD_CLOSING_CUSHION_COST * cushion_blend * np.maximum(0.25, cushion_used)
+  return target, cost
 
 
 def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):

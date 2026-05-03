@@ -28,6 +28,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_CRAWL_BRAKE_MAX,
   LEAD_SURGE_DAMPING_ACCEL_MAX,
   LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX,
+  MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN,
+  MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX,
   LEAD_STOP_APPROACH_DECEL_CAP,
   LEAD_STOP_RUNWAY_BRAKE,
   STOP_DISTANCE,
@@ -63,6 +65,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_stop_gap_excess_offset,
   get_lead_stop_gap_taper,
   get_lead_time_gap_target,
+  get_moving_lead_closing_cushion_target,
   get_moving_lead_stop_approach_comfort_target,
   get_moving_lead_stop_reserve,
   get_safe_obstacle_distance,
@@ -1313,6 +1316,57 @@ def test_lead_accel_match_caps_soft_decel_target():
   accel_target, _ = get_lead_accel_match_target(v_lead, target_gap, -4.0, t_follow, v_ego)
 
   assert accel_target == pytest.approx(-LEAD_ACCEL_MATCH_DECEL_CAP)
+
+
+def test_moving_lead_closing_cushion_prefers_coast_before_target_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 20.0
+  target_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = target_gap - 0.25 * (target_gap - get_lead_gap_comfort_floor(v_ego, v_lead, t_follow))
+
+  target, cost = get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow)
+
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN <= target <= 0.0
+  assert cost > 0.0
+
+
+def test_moving_lead_closing_cushion_adds_light_decel_as_cushion_is_used():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 20.0
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  target_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  early_gap = target_gap - 0.2 * (target_gap - comfort_floor)
+  late_gap = comfort_floor + 0.2 * (target_gap - comfort_floor)
+
+  early_target, early_cost = get_moving_lead_closing_cushion_target(early_gap, v_ego, v_lead, t_follow)
+  late_target, late_cost = get_moving_lead_closing_cushion_target(late_gap, v_ego, v_lead, t_follow)
+
+  assert -MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX <= late_target < early_target <= 0.0
+  assert late_cost >= early_cost > 0.0
+
+
+def test_moving_lead_closing_cushion_stays_off_when_far_opening_or_urgent():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 20.0
+  target_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+
+  far_target, far_cost = get_moving_lead_closing_cushion_target(target_gap + 8.0, v_ego, v_lead, t_follow)
+  opening_target, opening_cost = get_moving_lead_closing_cushion_target(target_gap - 1.0, v_ego, v_ego + 0.5, t_follow)
+  urgent_target, urgent_cost = get_moving_lead_closing_cushion_target(comfort_floor - 0.1, v_ego, v_lead, t_follow)
+  stopped_target, stopped_cost = get_moving_lead_closing_cushion_target(20.0, 8.0, 0.2, t_follow)
+
+  assert far_target == pytest.approx(0.0)
+  assert far_cost == pytest.approx(0.0)
+  assert opening_target == pytest.approx(0.0)
+  assert opening_cost == pytest.approx(0.0)
+  assert urgent_target == pytest.approx(0.0)
+  assert urgent_cost == pytest.approx(0.0)
+  assert stopped_target == pytest.approx(0.0)
+  assert stopped_cost == pytest.approx(0.0)
 
 
 def test_approach_engage_offset_stays_off_without_closure_or_runway():
