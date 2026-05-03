@@ -281,7 +281,7 @@ def render_summary(summary: EventWindowSummary) -> str:
 
 def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
   evidence = _attribution_evidence(facts)
-  sp_sample = _nearest_sp_sample(facts["sp_samples"], facts["event_time_s"])
+  sp_sample = _event_local_sp_sample(facts["sp_samples"], facts["event_time_s"])
   sp_source_cause = _sp_source_cause(sp_sample)
   if _has_lead_source(facts["planner_sources"]) or facts["lead_braking"] or _has_correlated_lead_braking(facts):
     cause = "lead"
@@ -348,10 +348,13 @@ def _sp_source_cause(sample: dict[str, Any] | None) -> str | None:
   return None
 
 
-def _nearest_sp_sample(samples: list[dict[str, Any]], event_time_s: float) -> dict[str, Any] | None:
+def _event_local_sp_sample(samples: list[dict[str, Any]], event_time_s: float) -> dict[str, Any] | None:
   if not samples:
     return None
-  return min(samples, key=lambda sample: (abs(float(sample["time_s"]) - event_time_s), float(sample["time_s"]) > event_time_s))
+  prior_samples = [sample for sample in samples if float(sample["time_s"]) <= event_time_s]
+  if prior_samples:
+    return max(prior_samples, key=lambda sample: float(sample["time_s"]))
+  return min(samples, key=lambda sample: float(sample["time_s"]))
 
 
 def _is_braking(a_targets: list[float]) -> bool:

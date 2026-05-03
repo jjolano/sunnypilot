@@ -271,6 +271,32 @@ def test_summarize_window_uses_event_time_sp_active_fallback_after_transition():
   assert "SCC vision active" in rendered
 
 
+def test_summarize_window_prefers_pre_event_sp_source_over_closer_future_sample():
+  msgs = [
+    msg("carState", 0.0, vEgo=15.0, brakePressed=False, gasPressed=False),
+    msg(
+      "longitudinalPlanSP",
+      0.8,
+      longitudinalPlanSource="sccMap",
+      speedLimit=SimpleNamespace(assist=SimpleNamespace(active=False, autoCruiseEnabled=False)),
+      smartCruiseControl=SimpleNamespace(map=SimpleNamespace(active=True), vision=SimpleNamespace(active=False)),
+    ),
+    msg(
+      "longitudinalPlanSP",
+      1.1,
+      longitudinalPlanSource="speedLimitAssist",
+      speedLimit=SimpleNamespace(assist=SimpleNamespace(active=True, autoCruiseEnabled=False)),
+      smartCruiseControl=SimpleNamespace(map=SimpleNamespace(active=False), vision=SimpleNamespace(active=False)),
+    ),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: scc_map" in rendered
+  assert "SP source sccMap" in rendered
+  assert "SP source speedLimitAssist" in rendered
+
+
 def test_summarize_window_does_not_attribute_cruise_plan_should_stop_to_model_stop():
   msgs = [
     msg("carState", 0.0, vEgo=8.0, brakePressed=False, gasPressed=False),
