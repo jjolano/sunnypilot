@@ -122,6 +122,21 @@ def test_summarize_window_ignores_post_event_driver_brake_when_prior_car_state_i
   assert "planner source cruise" in rendered
 
 
+def test_summarize_window_ignores_future_driver_brake_without_prior_car_state():
+  msgs = [
+    msg("userBookmark", 0.0),
+    msg("radarState", 0.5, leadOne=SimpleNamespace(status=True, dRel=20.0, vRel=-3.0)),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-1.0),
+    msg("carState", 1.1, vEgo=12.0, brakePressed=True, gasPressed=False),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: lead" in rendered
+  assert "driver brake pressed" not in rendered
+  assert "planner source lead0" in rendered
+
+
 def test_summarize_window_attributes_planner_source_with_lead_but_no_braking():
   msgs = [
     msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),

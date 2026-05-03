@@ -287,7 +287,7 @@ def render_summary(summary: EventWindowSummary) -> str:
 
 def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
   evidence = _attribution_evidence(facts)
-  driver_sample = _event_local_sample(facts["driver_samples"], facts["event_time_s"])
+  driver_sample = _event_prior_sample(facts["driver_samples"], facts["event_time_s"])
   sp_sample = _event_local_sp_sample(facts["sp_samples"], facts["event_time_s"])
   sp_source_cause = _sp_source_cause(sp_sample)
   if driver_sample is not None and (driver_sample["brake"] or driver_sample["gas"]):
@@ -315,7 +315,7 @@ def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
 
 def _attribution_evidence(facts: dict[str, Any]) -> list[str]:
   evidence: list[str] = []
-  driver_sample = _event_local_sample(facts["driver_samples"], facts["event_time_s"])
+  driver_sample = _event_prior_sample(facts["driver_samples"], facts["event_time_s"])
   if driver_sample is not None and driver_sample["brake"]:
     evidence.append("driver brake pressed")
   if driver_sample is not None and driver_sample["gas"]:
@@ -373,6 +373,13 @@ def _event_local_sample(samples: list[dict[str, Any]], event_time_s: float) -> d
   if prior_samples:
     return max(prior_samples, key=lambda sample: float(sample["time_s"]))
   return min(samples, key=lambda sample: float(sample["time_s"]))
+
+
+def _event_prior_sample(samples: list[dict[str, Any]], event_time_s: float) -> dict[str, Any] | None:
+  prior_samples = [sample for sample in samples if float(sample["time_s"]) <= event_time_s]
+  if prior_samples:
+    return max(prior_samples, key=lambda sample: float(sample["time_s"]))
+  return None
 
 
 def _is_braking(a_targets: list[float]) -> bool:
