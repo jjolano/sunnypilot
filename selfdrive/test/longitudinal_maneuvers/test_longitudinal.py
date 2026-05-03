@@ -208,6 +208,12 @@ def evaluate_maneuver_output(maneuver):
   return output
 
 
+def get_max_abs_jerk(output):
+  accel_delta = np.diff(output[:, 5])
+  dt = np.diff(output[:, 0])
+  return float(np.max(np.abs(accel_delta / dt)))
+
+
 def run_under_gap_cut_in_simulation(v_ego, v_lead, duration=10.0):
   t_follow = get_T_FOLLOW()
   comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
@@ -343,6 +349,75 @@ def test_predicted_pullaway_releases_before_measured_speed_threshold():
   early_pullaway = (output[:, 0] >= 10.0) & (output[:, 4] < 0.25)
   assert np.max(output[early_pullaway, 5]) >= 0.25
   assert np.min(output[:, 6]) > presentation_distance
+
+
+def test_predicted_pullaway_overrides_stale_stop_hold():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "drive-lab lead pullaway invalid-start regression",
+      duration=14.724671770299322,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=6.463,
+      speed_lead_values=[0.0, 0.0, 1.326, 1.326],
+      cruise_values=[10.954, 10.954, 10.954, 10.954],
+      breakpoints=[0.0, 5.825, 6.825, 18.0],
+    )
+  )
+
+  pullaway_window = (output[:, 0] >= 5.825) & (output[:, 0] <= 6.5)
+  assert np.max(output[pullaway_window, 5]) >= 0.25
+
+
+def test_predicted_pullaway_limits_planner_accel_jerk():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "drive-lab lead pullaway jerk regression",
+      duration=16.686120831358956,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=4.829,
+      speed_lead_values=[0.0, 0.0, 2.972, 2.972],
+      cruise_values=[5.198, 5.198, 5.198, 5.198],
+      breakpoints=[0.0, 6.258, 7.258, 18.0],
+    )
+  )
+
+  assert get_max_abs_jerk(output) <= 8.0
+
+
+def test_predicted_pullaway_limits_initial_release_jerk():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "drive-lab lead pullaway initial release regression",
+      duration=16.41461093597187,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=6.935,
+      speed_lead_values=[0.0, 0.0, 2.918, 2.918],
+      cruise_values=[6.864, 6.864, 6.864, 6.864],
+      breakpoints=[0.0, 6.037, 7.037, 18.0],
+    )
+  )
+
+  assert get_max_abs_jerk(output) <= 8.0
+
+
+def test_green_light_pullaway_limits_planner_accel_jerk():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "drive-lab green light pullaway jerk regression",
+      duration=20.0,
+      initial_speed=0.0,
+      lead_relevancy=True,
+      initial_distance_lead=11.0,
+      speed_lead_values=[0.0, 0.0, 5.0, 12.0],
+      cruise_values=[15.0, 15.0, 15.0, 15.0],
+      breakpoints=[0.0, 5.0, 8.0, 20.0],
+    )
+  )
+
+  assert get_max_abs_jerk(output) <= 8.0
 
 
 def test_lead_creep_uses_extra_stopped_gap():
