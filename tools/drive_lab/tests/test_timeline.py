@@ -118,6 +118,45 @@ def test_summarize_window_attributes_plan_should_stop():
   assert "planner source e2e" in rendered
 
 
+def test_summarize_window_attributes_speed_limit_assist_when_active():
+  msgs = [
+    msg("carState", 0.0, vEgo=15.0, brakePressed=False, gasPressed=False),
+    msg(
+      "longitudinalPlanSP",
+      1.0,
+      longitudinalPlanSource="speedLimit",
+      speedLimit=SimpleNamespace(assist=SimpleNamespace(active=True, autoCruiseEnabled=False)),
+      smartCruiseControl=SimpleNamespace(map=SimpleNamespace(active=False), vision=SimpleNamespace(active=False)),
+    ),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: speed_limit" in rendered
+  assert "SP source speedLimit" in rendered
+  assert "speed-limit assist active" in rendered
+
+
+def test_summarize_window_attributes_scc_map_before_scc_vision():
+  msgs = [
+    msg("carState", 0.0, vEgo=15.0, brakePressed=False, gasPressed=False),
+    msg(
+      "longitudinalPlanSP",
+      1.0,
+      longitudinalPlanSource="smartCruiseControl",
+      speedLimit=SimpleNamespace(assist=SimpleNamespace(active=False, autoCruiseEnabled=False)),
+      smartCruiseControl=SimpleNamespace(map=SimpleNamespace(active=True), vision=SimpleNamespace(active=True)),
+    ),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: scc_map" in rendered
+  assert "SP source smartCruiseControl" in rendered
+  assert "SCC map active" in rendered
+  assert "SCC vision active" in rendered
+
+
 def test_summarize_window_does_not_attribute_cruise_plan_should_stop_to_model_stop():
   msgs = [
     msg("carState", 0.0, vEgo=8.0, brakePressed=False, gasPressed=False),

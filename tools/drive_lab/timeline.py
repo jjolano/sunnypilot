@@ -119,6 +119,7 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
   last_values: dict[str, Any] = {}
   attribution_facts: dict[str, Any] = {
     "planner_sources": [],
+    "sp_sources": [],
     "lead_present": False,
     "lead_braking": False,
     "lead_times": [],
@@ -127,6 +128,9 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
     "a_targets": [],
     "model_action_should_stop": False,
     "plan_model_should_stop": False,
+    "speed_limit_active": False,
+    "scc_map_active": False,
+    "scc_vision_active": False,
   }
   lead_active = False
 
@@ -198,15 +202,20 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
     elif typ == "longitudinalPlanSP":
       source = format_enum(safe_get(payload, "longitudinalPlanSource"))
       add_change(t, "longitudinalPlanSP.source", source, "sunnypilot", f"SP source: {source}")
-      for path, label in (
-        ("smartCruiseControl.vision.active", "SCC vision active"),
-        ("smartCruiseControl.map.active", "SCC map active"),
-        ("speedLimit.assist.active", "speed-limit assist active"),
-        ("speedLimit.assist.autoCruiseEnabled", "speed-limit auto-cruise enabled"),
+      if source != "unknown":
+        attribution_facts["sp_sources"].append(source)
+      for path, label, fact_key in (
+        ("smartCruiseControl.vision.active", "SCC vision active", "scc_vision_active"),
+        ("smartCruiseControl.map.active", "SCC map active", "scc_map_active"),
+        ("speedLimit.assist.active", "speed-limit assist active", "speed_limit_active"),
+        ("speedLimit.assist.autoCruiseEnabled", "speed-limit auto-cruise enabled", None),
       ):
         value = safe_get(payload, path)
         if value is not None:
-          add_change(t, f"longitudinalPlanSP.{path}", bool(value), "sunnypilot", f"{label}: {bool(value)}")
+          active = bool(value)
+          add_change(t, f"longitudinalPlanSP.{path}", active, "sunnypilot", f"{label}: {active}")
+          if fact_key is not None and active:
+            attribution_facts[fact_key] = True
     elif typ == "modelV2":
       desired_accel = safe_get(payload, "action.desiredAcceleration")
       if _finite_number(desired_accel):
@@ -264,7 +273,13 @@ def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
     cause = "lead"
   elif facts["model_action_should_stop"] or facts["plan_model_should_stop"]:
     cause = "model_stop"
-  elif facts["planner_sources"]:
+  elif facts["speed_limit_active"]:
+    cause = "speed_limit"
+  elif facts["scc_map_active"]:
+    cause = "scc_map"
+  elif facts["scc_vision_active"]:
+    cause = "scc_vision"
+  elif facts["planner_sources"] or facts["sp_sources"]:
     cause = "planner_source"
   else:
     cause = "unknown"
@@ -277,12 +292,20 @@ def _attribution_evidence(facts: dict[str, Any]) -> list[str]:
   evidence: list[str] = []
   for source in _unique_ordered(facts["planner_sources"]):
     evidence.append(f"planner source {source}")
+  for source in _unique_ordered(facts["sp_sources"]):
+    evidence.append(f"SP source {source}")
   if facts["lead_gaps"]:
     evidence.append(f"lead gap min {min(facts['lead_gaps']):.3f} m")
   if facts["model_action_should_stop"]:
     evidence.append("model action shouldStop true")
   if facts["plan_model_should_stop"]:
     evidence.append("plan shouldStop true")
+  if facts["speed_limit_active"]:
+    evidence.append("speed-limit assist active")
+  if facts["scc_map_active"]:
+    evidence.append("SCC map active")
+  if facts["scc_vision_active"]:
+    evidence.append("SCC vision active")
   if facts["a_targets"]:
     evidence.append(f"aTarget min {min(facts['a_targets']):.3f} m/s^2")
   return evidence
