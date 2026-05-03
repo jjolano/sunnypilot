@@ -520,6 +520,19 @@ def test_creep_to_stop_gap_uses_predicted_pullaway_before_speed_threshold():
   assert 0.40 <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
+def test_creep_to_stop_gap_predicts_pullaway_before_full_start_excess():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.05, 1.0, 1.0)
+  predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(0.05, 1.0, 0.0)
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target + 0.35, 0.05, 1.0, False, a_lead=1.0, a_lead_tau=0.0
+  )
+
+  assert predicted_v_lead >= 0.35
+  assert predicted_gap_opening >= CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING
+  assert active
+  assert accel >= longitudinal_planner.CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN
+
+
 def test_creep_to_stop_gap_uses_model_lead_pullaway_prediction():
   stop_target = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
   d_rel = stop_target + CREEP_TO_STOP_GAP_START_EXCESS - 0.5
