@@ -125,6 +125,8 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
     "braking_times": [],
     "lead_gaps": [],
     "a_targets": [],
+    "model_should_stop": False,
+    "plan_should_stop": False,
   }
   lead_active = False
 
@@ -177,6 +179,8 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       add_change(t, "longitudinalPlan.source", source, "planner", f"plan source: {source}")
       should_stop = bool(safe_get(payload, "shouldStop", False))
       add_change(t, "longitudinalPlan.shouldStop", should_stop, "planner", f"shouldStop: {should_stop}")
+      if should_stop:
+        attribution_facts["plan_should_stop"] = True
       fcw = bool(safe_get(payload, "fcw", False))
       add_change(t, "longitudinalPlan.fcw", fcw, "planner", f"fcw: {fcw}")
       a_target = safe_get(payload, "aTarget")
@@ -210,6 +214,8 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       should_stop = safe_get(payload, "action.shouldStop")
       if should_stop is not None:
         add_change(t, "modelV2.action.shouldStop", bool(should_stop), "model", f"model shouldStop: {bool(should_stop)}")
+      if bool(should_stop):
+        attribution_facts["model_should_stop"] = True
     elif typ == "onroadEvents":
       events = safe_get(payload, "events")
       if events is None and not isinstance(payload, str | bytes):
@@ -256,6 +262,8 @@ def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
   evidence = _attribution_evidence(facts)
   if _has_lead_source(facts["planner_sources"]) or facts["lead_braking"] or _has_correlated_lead_braking(facts):
     cause = "lead"
+  elif facts["model_should_stop"] or facts["plan_should_stop"]:
+    cause = "model_stop"
   elif facts["planner_sources"]:
     cause = "planner_source"
   else:
@@ -271,6 +279,8 @@ def _attribution_evidence(facts: dict[str, Any]) -> list[str]:
     evidence.append(f"planner source {source}")
   if facts["lead_gaps"]:
     evidence.append(f"lead gap min {min(facts['lead_gaps']):.3f} m")
+  if facts["model_should_stop"] or facts["plan_should_stop"]:
+    evidence.append("model shouldStop true")
   if facts["a_targets"]:
     evidence.append(f"aTarget min {min(facts['a_targets']):.3f} m/s^2")
   return evidence

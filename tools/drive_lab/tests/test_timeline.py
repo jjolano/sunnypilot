@@ -91,6 +91,33 @@ def test_summarize_window_attributes_planner_source_with_lead_but_no_braking():
   assert "planner source cruise" in rendered
 
 
+def test_summarize_window_attributes_model_action_stop():
+  msgs = [
+    msg("carState", 0.0, vEgo=8.0, brakePressed=False, gasPressed=False),
+    msg("modelV2", 1.0, action=SimpleNamespace(desiredAcceleration=-1.2, shouldStop=True)),
+    msg("longitudinalPlan", 1.2, longitudinalPlanSource="model", shouldStop=False, fcw=False, aTarget=-1.0),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: model_stop" in rendered
+  assert "model shouldStop true" in rendered
+  assert "planner source model" in rendered
+
+
+def test_summarize_window_attributes_plan_should_stop():
+  msgs = [
+    msg("carState", 0.0, vEgo=8.0, brakePressed=False, gasPressed=False),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="e2e", shouldStop=True, fcw=False, aTarget=-1.0),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: model_stop" in rendered
+  assert "model shouldStop true" in rendered
+  assert "planner source e2e" in rendered
+
+
 def test_summarize_window_attributes_same_time_radar_lead_braking_after_plan():
   msgs = [
     msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
