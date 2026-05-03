@@ -290,4 +290,18 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TorqueParamsOverrideEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TorqueParamsOverrideFriction", {PERSISTENT | BACKUP, FLOAT, "0.1"}},
     {"TorqueParamsOverrideLatAccelFactor", {PERSISTENT | BACKUP, FLOAT, "2.5"}},
+
+    // Tailscale VPN
+    {"EnableTailscale", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"TailscaledPid", {PERSISTENT, INT}},
+    {"TailscaleState", {CLEAR_ON_MANAGER_START, STRING}},
+    {"TailscaleAuthURL", {CLEAR_ON_MANAGER_START | DONT_LOG, STRING}},
+    {"TailscaleLastError", {CLEAR_ON_MANAGER_START, STRING}},
+    {"TailscaleLoginRequested", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    {"TailscaleLogoutRequested", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    {"TailscaleInstallRequested", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    {"TailscaleInstallState", {CLEAR_ON_MANAGER_START, STRING}},
+    {"TailscaleInstallProgress", {CLEAR_ON_MANAGER_START, STRING}},
+    {"TailscaleInstalledVersion", {PERSISTENT, STRING}},
+    {"TailscaleLatestVersion", {PERSISTENT, STRING}},
 };
