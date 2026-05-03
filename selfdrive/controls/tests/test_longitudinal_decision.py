@@ -92,7 +92,15 @@ def test_arbiter_defaults_to_driver_intent():
   assert decision.enabled
   assert decision.winner == DecisionSource.CRUISE
   assert decision.a_target == 0.2
-  assert decision.suppressed == []
+  assert decision.suppressed == ()
+
+
+def test_arbiter_missing_driver_intent_uses_internal_fallback():
+  decision = LongitudinalArbiter().decide([])
+
+  assert decision.enabled
+  assert decision.winner == DecisionSource.LEGACY_FALLBACK
+  assert decision.suppressed == ()
 
 
 def test_confirmed_physical_hazard_overrides_speed_limit_advisory():
@@ -177,3 +185,21 @@ def test_resolver_falls_back_when_decision_exceeds_accel_limits():
   assert not decision.enabled
   assert decision.winner == DecisionSource.LEGACY_FALLBACK
   assert decision.fallback_reason == "decision_outside_accel_limits"
+
+
+def test_resolver_falls_back_when_driver_intent_is_missing():
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[],
+    fallback_v_target=25.0,
+    fallback_a_target=-0.4,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=LongitudinalArbiter(),
+  )
+
+  assert not decision.enabled
+  assert decision.winner == DecisionSource.LEGACY_FALLBACK
+  assert decision.v_target == 25.0
+  assert decision.a_target == -0.4
+  assert decision.fallback_reason == "missing_driver_intent"

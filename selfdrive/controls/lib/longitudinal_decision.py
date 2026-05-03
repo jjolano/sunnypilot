@@ -82,7 +82,7 @@ class LongitudinalDecision:
   a_target: float
   should_stop: bool
   candidates: tuple[LongitudinalCandidate, ...] = ()
-  suppressed: list[tuple[DecisionSource, str]] = field(default_factory=list)
+  suppressed: tuple[tuple[DecisionSource, str], ...] = ()
   fallback_reason: str = ""
 
   def inside_accel_limits(self, accel_limits: tuple[float, float]) -> bool:
@@ -163,7 +163,7 @@ class LongitudinalArbiter:
       a_target=winner.a_target,
       should_stop=winner.should_stop,
       candidates=tuple(valid),
-      suppressed=list(dict.fromkeys(suppressed)),
+      suppressed=tuple(dict.fromkeys(suppressed)),
     )
 
 
@@ -180,6 +180,8 @@ def resolve_longitudinal_decision(enabled: bool, candidates: list[LongitudinalCa
 
   if not math.isfinite(decision.v_target) or not math.isfinite(decision.a_target):
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "decision_non_finite")
+  if decision.winner == DecisionSource.LEGACY_FALLBACK:
+    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "missing_driver_intent")
   if not decision.inside_accel_limits(accel_limits):
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "decision_outside_accel_limits")
 
