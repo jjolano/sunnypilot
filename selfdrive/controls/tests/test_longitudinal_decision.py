@@ -170,11 +170,12 @@ def test_resolver_returns_legacy_fallback_when_toggle_disabled():
 
 
 def test_resolver_falls_back_when_decision_exceeds_accel_limits():
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, 0.2, 1.0, 0.1, "driver_set_speed")
   bad = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 15.0, -5.0, 1.0, 1.0, "bad_decel")
 
   decision = resolve_longitudinal_decision(
     enabled=True,
-    candidates=[bad],
+    candidates=[cruise, bad],
     fallback_v_target=25.0,
     fallback_a_target=-0.4,
     fallback_should_stop=False,
@@ -191,6 +192,26 @@ def test_resolver_falls_back_when_driver_intent_is_missing():
   decision = resolve_longitudinal_decision(
     enabled=True,
     candidates=[],
+    fallback_v_target=25.0,
+    fallback_a_target=-0.4,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=LongitudinalArbiter(),
+  )
+
+  assert not decision.enabled
+  assert decision.winner == DecisionSource.LEGACY_FALLBACK
+  assert decision.v_target == 25.0
+  assert decision.a_target == -0.4
+  assert decision.fallback_reason == "missing_driver_intent"
+
+
+def test_resolver_falls_back_when_physical_hazard_has_no_driver_intent():
+  lead = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 15.0, -0.8, 1.0, 1.0, "confirmed_lead")
+
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[lead],
     fallback_v_target=25.0,
     fallback_a_target=-0.4,
     fallback_should_stop=False,

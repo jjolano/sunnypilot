@@ -172,6 +172,8 @@ def resolve_longitudinal_decision(enabled: bool, candidates: list[LongitudinalCa
                                   accel_limits: tuple[float, float], arbiter: LongitudinalArbiter) -> LongitudinalDecision:
   if not enabled:
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "feature_flag_disabled")
+  if not any(candidate.valid and candidate.role == CandidateRole.DRIVER_INTENT for candidate in candidates):
+    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "missing_driver_intent")
 
   try:
     decision = arbiter.decide(candidates)
