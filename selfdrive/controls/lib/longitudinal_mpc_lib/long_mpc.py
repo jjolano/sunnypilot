@@ -595,8 +595,8 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   gap_deficit_blend = get_moving_lead_stop_approach_gap_deficit_blend(x_lead, v_lead, t_follow, desired_gap)
   urgent_closing_blend = np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP, [0.0, 1.0])
   urgent_required_blend = np.interp(required_decel, [LEAD_STOP_RUNWAY_BRAKE, MOVING_LEAD_STOP_APPROACH_DECEL_CAP], [0.0, 1.0])
-  gap_deficit_blend = np.maximum(gap_deficit_blend, urgent_closing_blend * urgent_required_blend)
-  gap_deficit_blend *= danger_blend
+  urgent_danger_blend = np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [1.0, 0.0])
+  gap_deficit_blend = np.maximum(gap_deficit_blend * danger_blend, urgent_closing_blend * urgent_required_blend * urgent_danger_blend)
   target_decel = light_decel + gap_deficit_blend * (full_decel - light_decel)
   return -target_decel, MOVING_LEAD_STOP_APPROACH_COST * comfort_blend
 
