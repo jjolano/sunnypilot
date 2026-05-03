@@ -77,10 +77,12 @@ from openpilot.selfdrive.controls.lib import longitudinal_planner
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_ACCEL_MAX,
   CREEP_TO_STOP_GAP_ACCEL_MIN,
+  CREEP_TO_STOP_GAP_FOLLOW_EXCESS,
   CREEP_TO_STOP_GAP_HOLD_EXCESS,
   CREEP_TO_STOP_GAP_MAX_EXCESS,
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX,
   CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING,
+  CREEP_TO_STOP_GAP_START_EXCESS,
   CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET,
   CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD,
   CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_STD,
@@ -376,41 +378,57 @@ def test_lead_stop_gap_excess_offset_requires_extra_runway():
   assert get_lead_stop_gap_excess_offset(1.5, STOP_DISTANCE + 5.0) == pytest.approx(0.0)
 
 
-def test_creep_to_stop_gap_release_arms_and_tapers_to_target_gap():
+def test_creep_to_stop_gap_release_waits_for_profile_start_and_tapers_to_target_gap():
   stop_target = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
-  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target + 1.0, 0.0, 1.0, False)
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS - 0.1, 0.0, 1.0, False
+  )
+  assert not active
+  assert accel == pytest.approx(0.0)
+
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 0.0, 1.0, False
+  )
   assert active
   assert 0.0 < accel <= CREEP_TO_STOP_GAP_ACCEL_MAX
 
-  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target + 0.5, 0.0, 1.0, active)
+  active, follow_accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target + CREEP_TO_STOP_GAP_FOLLOW_EXCESS, 0.0, 1.0, active
+  )
   assert active
-  assert 0.0 < accel < CREEP_TO_STOP_GAP_ACCEL_MAX
+  assert 0.0 < follow_accel < accel
 
-  active, accel = get_creep_to_stop_gap_accel(0.2, stop_target + 0.3, 0.0, 1.0, active)
+  active, soft_stop_accel = get_creep_to_stop_gap_accel(0.2, stop_target + 0.3, 0.0, 1.0, active)
   assert active
-  assert CREEP_TO_STOP_GAP_ACCEL_MIN < accel < 0.0
+  assert CREEP_TO_STOP_GAP_ACCEL_MIN < soft_stop_accel < 0.0
 
   active, accel = get_creep_to_stop_gap_accel(0.0, stop_target, 0.0, 1.0, active)
   assert not active
   assert accel == pytest.approx(0.0)
 
 
-def test_creep_to_stop_gap_uses_adaptive_stopped_target():
-  active, accel = get_creep_to_stop_gap_accel(0.0, 5.6, 0.0, 1.0, False)
+def test_creep_to_stop_gap_uses_adaptive_stopped_target_profile_start():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 0.0, 1.0, False
+  )
 
+  assert stop_target < STOP_DISTANCE
   assert active
   assert 0.0 < accel <= CREEP_TO_STOP_GAP_ACCEL_MAX
 
 
 def test_creep_to_stop_gap_uses_stronger_accel_for_confirmed_pullaway():
-  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.6, 0.8, 1.0, False)
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.8, 0.0, 1.0)
+  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 0.8, 1.0, False)
 
   assert active
   assert 0.40 <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
 def test_creep_to_stop_gap_confirmed_pullaway_can_match_no_lead_launch_cap():
-  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.7, 1.2, 1.0, False)
+  stop_target = get_lead_stop_presentation_distance(0.0, 1.2, 0.0, 1.0)
+  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 1.2, 1.0, False)
 
   assert active
   assert CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX == pytest.approx(0.55)
@@ -418,7 +436,8 @@ def test_creep_to_stop_gap_confirmed_pullaway_can_match_no_lead_launch_cap():
 
 
 def test_creep_to_stop_gap_uses_firmer_floor_for_initial_pullaway():
-  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 0.6, 0.25, 1.0, False)
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.25, 0.0, 1.0)
+  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 0.25, 1.0, False)
 
   assert active
   assert 0.30 <= accel <= STOPPED_LEAD_GAP_FILL_ACCEL_MAX
@@ -438,9 +457,12 @@ def test_creep_to_stop_gap_stops_chasing_after_four_meter_excess():
   assert accel == pytest.approx(0.0)
 
 
-def test_creep_to_stop_gap_uses_soft_release_before_pullaway():
+def test_creep_to_stop_gap_uses_soft_release_inside_final_meter():
   stop_target = get_lead_stop_presentation_distance(0.0, 0.1, 0.0, 1.0)
-  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target + 0.6, 0.1, 1.0, False)
+  active, _ = get_creep_to_stop_gap_accel(
+    0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 0.1, 1.0, False
+  )
+  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target + 0.6, 0.1, 1.0, active)
 
   assert active
   assert 0.0 < accel <= 0.10
@@ -451,10 +473,11 @@ def test_creep_stop_hold_release_hysteresis_blocks_crawl_chatter():
   assert should_hold_creep_to_stop_gap(0.0, stop_target + 0.2, 0.0, 0.0, release_active=False)
   assert not should_release_creep_stop_hold(False, 0.0, stop_target + 0.2, 0.0, 0.0)
 
-  assert should_release_creep_stop_hold(False, 0.0, stop_target + 0.5, 0.1, 0.0)
-  assert not should_hold_creep_to_stop_gap(0.0, stop_target + 0.25, 0.0, 0.0, release_active=True)
+  assert not should_release_creep_stop_hold(False, 0.0, stop_target + 0.5, 0.1, 0.0)
+  assert should_release_creep_stop_hold(False, 0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 0.1, 0.0)
+  assert not should_hold_creep_to_stop_gap(0.0, stop_target + CREEP_TO_STOP_GAP_FOLLOW_EXCESS, 0.0, 0.0, release_active=True)
   slow_roll_target = get_lead_stop_presentation_distance(0.2, 0.0, 0.0, 1.0)
-  assert should_release_creep_stop_hold(True, 0.2, slow_roll_target + 0.25, 0.0, 0.0)
+  assert should_release_creep_stop_hold(True, 0.2, slow_roll_target + CREEP_TO_STOP_GAP_FOLLOW_EXCESS, 0.0, 0.0)
   assert not should_release_creep_stop_hold(True, 0.2, slow_roll_target + 0.15, 0.0, 0.0)
 
 
@@ -464,7 +487,8 @@ def test_creep_stop_hold_uses_stop_distance_for_uncertain_lead():
 
 
 def test_creep_to_stop_gap_smooths_confirmed_pullaway_step():
-  active, accel = get_creep_to_stop_gap_accel(0.0, STOP_DISTANCE + 1.0, 0.8, 1.0, False)
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.8, 0.0, 1.0)
+  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 0.8, 1.0, False)
 
   assert active
   assert 0.30 <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
@@ -483,8 +507,9 @@ def test_creep_to_stop_gap_exits_stopped_gap_window_after_four_meter_excess():
 
 
 def test_creep_to_stop_gap_uses_predicted_pullaway_before_speed_threshold():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.05, 1.0, 1.0)
   active, accel = get_creep_to_stop_gap_accel(
-    0.0, STOP_DISTANCE + 0.35, 0.05, 1.0, False, a_lead=1.0, a_lead_tau=0.0
+    0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 0.05, 1.0, False, a_lead=1.0, a_lead_tau=0.0
   )
 
   assert active
@@ -492,7 +517,8 @@ def test_creep_to_stop_gap_uses_predicted_pullaway_before_speed_threshold():
 
 
 def test_creep_to_stop_gap_uses_model_lead_pullaway_prediction():
-  d_rel = STOP_DISTANCE + 0.35
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
+  d_rel = stop_target + CREEP_TO_STOP_GAP_START_EXCESS - 0.5
   model_v_lead, model_gap_opening = get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel), 0.0)
   active, accel = get_creep_to_stop_gap_accel(
     0.0, d_rel, 0.0, 1.0, False,
@@ -500,9 +526,30 @@ def test_creep_to_stop_gap_uses_model_lead_pullaway_prediction():
     model_predicted_gap_opening=model_gap_opening,
   )
 
-  assert has_predicted_lead_pullaway(d_rel - STOP_DISTANCE, model_v_lead, model_gap_opening)
+  assert has_predicted_lead_pullaway(d_rel - stop_target, model_v_lead, model_gap_opening)
   assert active
   assert 0.40 <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+
+
+def test_creep_to_stop_gap_transitions_to_normal_following_after_pullaway_window():
+  stop_target = get_lead_stop_presentation_distance(0.0, 1.2, 0.6, 1.0)
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 1.2, 1.0, False, a_lead=0.6
+  )
+  assert active
+  assert accel > 0.0
+
+  active, accel = get_creep_to_stop_gap_accel(
+    1.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS + 0.5, 1.8, 1.0, active, a_lead=0.6
+  )
+  assert not active
+  assert accel == pytest.approx(0.0)
+
+  active, accel = get_creep_to_stop_gap_accel(
+    0.2, stop_target + CREEP_TO_STOP_GAP_MAX_EXCESS + 0.1, 1.8, 1.0, True, a_lead=0.6
+  )
+  assert not active
+  assert accel == pytest.approx(0.0)
 
 
 def test_model_lead_pullaway_prediction_requires_confident_matching_lead():
