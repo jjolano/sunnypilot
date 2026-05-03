@@ -121,6 +121,8 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
     "planner_sources": [],
     "lead_present": False,
     "lead_braking": False,
+    "lead_times": [],
+    "braking_times": [],
     "lead_gaps": [],
     "a_targets": [],
   }
@@ -163,6 +165,7 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       v_rel = safe_get(lead, "vRel")
       if lead_status:
         attribution_facts["lead_present"] = True
+        attribution_facts["lead_times"].append(t)
       if lead_status and _finite_number(d_rel):
         attribution_facts["lead_gaps"].append(float(d_rel))
       if lead_status and _finite_number(d_rel):
@@ -184,6 +187,8 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
         attribution_facts["a_targets"].append(a_target_float)
         if lead_active and _is_braking([a_target_float]):
           attribution_facts["lead_braking"] = True
+        if _is_braking([a_target_float]):
+          attribution_facts["braking_times"].append(t)
       if _finite_number(a_target):
         samples["aTarget"].append(float(a_target))
     elif typ == "longitudinalPlanSP":
@@ -249,13 +254,14 @@ def render_summary(summary: EventWindowSummary) -> str:
 
 def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
   evidence = _attribution_evidence(facts)
-  if _has_lead_source(facts["planner_sources"]) or facts["lead_braking"]:
+  if _has_lead_source(facts["planner_sources"]) or facts["lead_braking"] or _has_correlated_lead_braking(facts):
     cause = "lead"
   elif facts["planner_sources"]:
     cause = "planner_source"
   else:
     cause = "unknown"
-    evidence = ["no longitudinal attribution signals found"]
+    if not evidence:
+      evidence = ["no longitudinal attribution signals found"]
   return EventAttribution(cause, evidence)
 
 
@@ -276,6 +282,12 @@ def _has_lead_source(sources: list[str]) -> bool:
 
 def _is_braking(a_targets: list[float]) -> bool:
   return bool(a_targets) and min(a_targets) < -0.05
+
+
+def _has_correlated_lead_braking(facts: dict[str, Any]) -> bool:
+  lead_times = facts["lead_times"]
+  braking_times = facts["braking_times"]
+  return any(lead_t == braking_t for lead_t in lead_times for braking_t in braking_times)
 
 
 def _unique_ordered(values: list[str]) -> list[str]:
