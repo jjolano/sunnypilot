@@ -13,6 +13,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   LongitudinalArbiter,
+  apply_longitudinal_decision_output,
   build_core_longitudinal_candidates,
   get_active_lead_confidence,
   resolve_longitudinal_decision,
@@ -765,8 +766,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       arbiter=self.longitudinal_arbiter,
     )
     if self.longitudinal_decision.enabled:
-      output_a_target = self.longitudinal_decision.a_target
-      self.output_should_stop = self.longitudinal_decision.should_stop
+      output_a_target, self.output_should_stop = apply_longitudinal_decision_output(
+        self.longitudinal_decision, legacy_a_target, legacy_should_stop
+      )
 
     self.previous_lead_loss_status = bool(lead_one.status)
     self.previous_lead_loss_d_rel = float(lead_one.dRel) if lead_one.status else 0.0

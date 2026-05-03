@@ -207,6 +207,29 @@ def get_active_lead_confidence(*leads: Any) -> float:
   )
 
 
+def apply_longitudinal_decision_output(decision: LongitudinalDecision, legacy_a_target: float,
+                                       legacy_should_stop: bool) -> tuple[float, bool]:
+  legacy_should_stop = bool(legacy_should_stop)
+  if not decision.enabled or decision.winner in (DecisionSource.LEGACY_FALLBACK, DecisionSource.CRUISE):
+    return float(legacy_a_target), legacy_should_stop
+
+  if decision.winner in (DecisionSource.LEAD_MPC, DecisionSource.E2E_STOP, DecisionSource.STOP_LAUNCH):
+    return float(legacy_a_target), legacy_should_stop or decision.should_stop
+
+  if decision.winner in (
+    DecisionSource.SPEED_LIMIT,
+    DecisionSource.SCC_VISION,
+    DecisionSource.SCC_MAP,
+    DecisionSource.OSM_TRAFFIC_CONTROL,
+  ):
+    return min(float(decision.a_target), float(legacy_a_target)), legacy_should_stop or decision.should_stop
+
+  if decision.winner == DecisionSource.CRUISE_COAST:
+    return float(decision.a_target), legacy_should_stop or decision.should_stop
+
+  return float(legacy_a_target), legacy_should_stop
+
+
 def build_core_longitudinal_candidates(has_lead: bool, lead_confidence: float, v_cruise: float, a_cruise: float,
                                        output_a_target_mpc: float, output_should_stop_mpc: bool,
                                        e2e_active: bool, output_a_target_e2e: float, output_should_stop_e2e: bool,

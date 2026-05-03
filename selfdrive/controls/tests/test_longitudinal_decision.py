@@ -8,6 +8,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   DecisionSource,
   LongitudinalArbiter,
   LongitudinalCandidate,
+  LongitudinalDecision,
+  apply_longitudinal_decision_output,
   build_core_longitudinal_candidates,
   get_active_lead_confidence,
   resolve_longitudinal_decision,
@@ -84,6 +86,16 @@ def make_candidate(source, role, v_target, a_target, confidence, urgency, reason
     confidence=confidence,
     urgency=urgency,
     active_reason=reason,
+    should_stop=should_stop,
+  )
+
+
+def make_decision(winner, a_target, should_stop=False, enabled=True):
+  return LongitudinalDecision(
+    enabled=enabled,
+    winner=winner,
+    v_target=25.0,
+    a_target=a_target,
     should_stop=should_stop,
   )
 
@@ -272,6 +284,42 @@ def test_enabled_resolver_keeps_candidate_telemetry():
   assert decision.winner == DecisionSource.SPEED_LIMIT
   assert [candidate.source for candidate in decision.candidates] == [DecisionSource.CRUISE, DecisionSource.SPEED_LIMIT]
   assert decision.fallback_reason == ""
+
+
+def test_apply_decision_output_cruise_winner_preserves_legacy_accel():
+  decision = make_decision(DecisionSource.CRUISE, a_target=0.4, should_stop=False)
+
+  a_target, should_stop = apply_longitudinal_decision_output(decision, legacy_a_target=-0.3, legacy_should_stop=True)
+
+  assert a_target == pytest.approx(-0.3)
+  assert should_stop
+
+
+def test_apply_decision_output_lead_winner_preserves_legacy_accel_and_stop():
+  decision = make_decision(DecisionSource.LEAD_MPC, a_target=-0.2, should_stop=False)
+
+  a_target, should_stop = apply_longitudinal_decision_output(decision, legacy_a_target=-0.8, legacy_should_stop=True)
+
+  assert a_target == pytest.approx(-0.8)
+  assert should_stop
+
+
+def test_apply_decision_output_advisory_cannot_relax_stronger_legacy_braking():
+  decision = make_decision(DecisionSource.SPEED_LIMIT, a_target=-0.2, should_stop=False)
+
+  a_target, should_stop = apply_longitudinal_decision_output(decision, legacy_a_target=-0.7, legacy_should_stop=False)
+
+  assert a_target == pytest.approx(-0.7)
+  assert not should_stop
+
+
+def test_apply_decision_output_cruise_coast_can_relax_legacy_braking():
+  decision = make_decision(DecisionSource.CRUISE_COAST, a_target=-0.2, should_stop=False)
+
+  a_target, should_stop = apply_longitudinal_decision_output(decision, legacy_a_target=-0.8, legacy_should_stop=False)
+
+  assert a_target == pytest.approx(-0.2)
+  assert not should_stop
 
 
 def test_core_candidate_builder_adds_confirmed_lead_candidate():
