@@ -159,6 +159,10 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
     vEgoStopping=0.5,
   )
   planner.mpc = FakeMpc()
+  planner.params = SimpleNamespace(get_bool=lambda _key: False)
+  planner.longitudinal_arbiter = longitudinal_planner.LongitudinalArbiter()
+  planner.longitudinal_decision = None
+  planner.longitudinal_decision_candidates = []
   planner.fcw = False
   planner.dt = longitudinal_planner.DT_MDL
   planner.allow_throttle = True
