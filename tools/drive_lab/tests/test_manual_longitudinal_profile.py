@@ -218,6 +218,37 @@ def test_manual_style_summary_lead_crawl_closing_threshold_is_strict():
   assert open_to_crawl.closing_speed.high == pytest.approx(0.2)
 
 
+def test_manual_style_summary_extracts_lead_crawl_and_soft_stop_episodes():
+  samples = [
+    crawl_sample(0.0, 2.4, v=0.2, a=0.10, lead_v=0.3),
+    crawl_sample(1.0, 1.6, v=0.4, a=0.05, lead_v=0.2),
+    crawl_sample(2.0, 0.9, v=0.3, a=-0.10, lead_v=0.0),
+    crawl_sample(3.0, 0.4, v=0.2, a=-0.20, lead_v=0.0),
+    crawl_sample(4.0, 0.0, v=0.0, a=-0.10, lead_v=0.0),
+  ]
+
+  summary = summarize_manual_style(samples)
+  episodes = {episode.label: episode for episode in summary.lead_crawl_episodes}
+
+  assert episodes["crawl_to_follow"].count == 1
+  assert episodes["crawl_to_follow"].start_gap_excess.low == pytest.approx(2.4)
+  assert episodes["crawl_to_follow"].end_gap_excess.high == pytest.approx(0.9)
+  assert episodes["soft_stop"].count == 1
+  assert episodes["soft_stop"].min_gap_excess.low == pytest.approx(0.0)
+
+
+def test_manual_style_summary_does_not_merge_crawl_episodes_across_routes():
+  samples = [
+    crawl_sample(0.0, 2.4, route="route-a"),
+    crawl_sample(1.0, 1.6, route="route-b"),
+    crawl_sample(2.0, 0.9, route="route-b"),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_crawl_episodes == []
+
+
 def test_manual_style_summary_separates_lead_and_clear_launches():
   samples = [
     sample(0.0, 0.5, 1.4, gas=True, lead=True, d_rel=4.0),

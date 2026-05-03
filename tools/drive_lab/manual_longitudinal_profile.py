@@ -93,6 +93,17 @@ class LeadCrawlBucketSummary:
 
 
 @dataclass(frozen=True)
+class LeadCrawlEpisodeSummary:
+  label: str
+  count: int
+  duration: ProfileRange
+  start_gap_excess: ProfileRange
+  end_gap_excess: ProfileRange
+  min_gap_excess: ProfileRange
+  mean_accel: ProfileRange
+
+
+@dataclass(frozen=True)
 class ManualStyleSummary:
   sample_count: int
   accel: ProfileRange
@@ -110,6 +121,7 @@ class ManualStyleSummary:
   speed_bins: list[SpeedBinSummary]
   following_bins: list[FollowingBinSummary]
   lead_crawl_bins: list[LeadCrawlBucketSummary]
+  lead_crawl_episodes: list[LeadCrawlEpisodeSummary]
   style: str
 
 
@@ -226,6 +238,7 @@ def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummar
     speed_bins=_summarize_speed_bins(moving),
     following_bins=_summarize_following_bins(moving),
     lead_crawl_bins=_summarize_lead_crawl_bins(ordered),
+    lead_crawl_episodes=_summarize_lead_crawl_episodes(ordered),
     style=style,
   )
 
@@ -349,6 +362,63 @@ def _summarize_lead_crawl_bins(samples: list[ManualSample]) -> list[LeadCrawlBuc
       closing_speed=percentile_range([sample.v_ego - v_lead for sample, _, v_lead in closing], 10.0, 90.0),
     ))
   return summaries
+
+
+def _summarize_lead_crawl_episodes(samples: list[ManualSample]) -> list[LeadCrawlEpisodeSummary]:
+  details = sorted(_lead_crawl_sample_details(samples), key=lambda item: (item[0].route, item[0].t))
+  crawl_episodes = _extract_gap_closure_episodes(details, "crawl_to_follow", start_min=2.0, end_max=1.0)
+  soft_stop_episodes = _extract_gap_closure_episodes(details, "soft_stop", start_min=1.0, end_max=0.05, start_max=1.0)
+  summaries = []
+  for label, episodes in (("crawl_to_follow", crawl_episodes), ("soft_stop", soft_stop_episodes)):
+    if not episodes:
+      continue
+    summaries.append(LeadCrawlEpisodeSummary(
+      label=label,
+      count=len(episodes),
+      duration=percentile_range([episode["duration"] for episode in episodes], 50.0, 90.0),
+      start_gap_excess=percentile_range([episode["start_gap_excess"] for episode in episodes], 50.0, 90.0),
+      end_gap_excess=percentile_range([episode["end_gap_excess"] for episode in episodes], 50.0, 90.0),
+      min_gap_excess=percentile_range([episode["min_gap_excess"] for episode in episodes], 10.0, 50.0),
+      mean_accel=percentile_range([episode["mean_accel"] for episode in episodes], 50.0, 90.0),
+    ))
+  return summaries
+
+
+def _extract_gap_closure_episodes(details: list[tuple[ManualSample, float, float]], label: str, start_min: float,
+                                  end_max: float, start_max: float | None = None) -> list[dict[str, float]]:
+  episodes: list[dict[str, float]] = []
+  current: list[tuple[ManualSample, float, float]] = []
+  current_route: str | None = None
+  for detail in details:
+    sample, gap_excess, _ = detail
+    route_changed = current and sample.route != current_route
+    if route_changed:
+      current = []
+    can_start = gap_excess >= start_min if start_max is None else start_min >= gap_excess >= end_max
+    if not current and can_start:
+      current = [detail]
+      current_route = sample.route
+      continue
+    if not current:
+      continue
+    current.append(detail)
+    if gap_excess <= end_max:
+      episodes.append(_gap_closure_episode_summary(current))
+      current = []
+      current_route = None
+  return episodes
+
+
+def _gap_closure_episode_summary(details: list[tuple[ManualSample, float, float]]) -> dict[str, float]:
+  samples = [sample for sample, _, _ in details]
+  gaps = [gap_excess for _, gap_excess, _ in details]
+  return {
+    "duration": max(0.0, samples[-1].t - samples[0].t),
+    "start_gap_excess": gaps[0],
+    "end_gap_excess": gaps[-1],
+    "min_gap_excess": min(gaps),
+    "mean_accel": sum(sample.a_ego for sample in samples) / len(samples),
+  }
 
 
 def _ratio(count: int, total: int) -> float:
