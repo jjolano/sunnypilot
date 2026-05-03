@@ -249,6 +249,18 @@ def test_manual_style_summary_does_not_merge_crawl_episodes_across_routes():
   assert summary.lead_crawl_episodes == []
 
 
+def test_manual_style_summary_breaks_crawl_episodes_on_invalid_intervening_samples():
+  samples = [
+    crawl_sample(0.0, 2.4, v=0.2, lead_v=0.2),
+    crawl_sample(1.0, 1.6, v=3.0, lead_v=0.2),
+    crawl_sample(2.0, 0.9, v=0.3, lead_v=0.0),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_crawl_episodes == []
+
+
 def test_manual_style_summary_separates_lead_and_clear_launches():
   samples = [
     sample(0.0, 0.5, 1.4, gas=True, lead=True, d_rel=4.0),

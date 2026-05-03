@@ -329,14 +329,21 @@ def _summarize_following_bins(samples: list[ManualSample]) -> list[FollowingBinS
 def _lead_crawl_sample_details(samples: list[ManualSample]) -> list[tuple[ManualSample, float, float]]:
   details: list[tuple[ManualSample, float, float]] = []
   for sample in samples:
-    gap_excess = lead_crawl_gap_excess(sample)
-    v_lead = _lead_speed(sample)
-    if gap_excess is None or v_lead is None:
+    detail = _lead_crawl_sample_detail(sample)
+    if detail is None:
       continue
-    if sample.v_ego > LEAD_CRAWL_MAX_SPEED or v_lead > LEAD_CRAWL_MAX_SPEED:
-      continue
-    details.append((sample, gap_excess, v_lead))
+    details.append(detail)
   return details
+
+
+def _lead_crawl_sample_detail(sample: ManualSample) -> tuple[ManualSample, float, float] | None:
+  gap_excess = lead_crawl_gap_excess(sample)
+  v_lead = _lead_speed(sample)
+  if gap_excess is None or v_lead is None:
+    return None
+  if sample.v_ego > LEAD_CRAWL_MAX_SPEED or v_lead > LEAD_CRAWL_MAX_SPEED:
+    return None
+  return sample, gap_excess, v_lead
 
 
 def _summarize_lead_crawl_bins(samples: list[ManualSample]) -> list[LeadCrawlBucketSummary]:
@@ -365,9 +372,9 @@ def _summarize_lead_crawl_bins(samples: list[ManualSample]) -> list[LeadCrawlBuc
 
 
 def _summarize_lead_crawl_episodes(samples: list[ManualSample]) -> list[LeadCrawlEpisodeSummary]:
-  details = sorted(_lead_crawl_sample_details(samples), key=lambda item: (item[0].route, item[0].t))
-  crawl_episodes = _extract_gap_closure_episodes(details, "crawl_to_follow", start_min=2.0, end_max=1.0)
-  soft_stop_episodes = _extract_gap_closure_episodes(details, "soft_stop", start_min=1.0, end_max=0.05, start_max=1.0)
+  ordered = sorted(samples, key=lambda sample: (sample.route, sample.t))
+  crawl_episodes = _extract_gap_closure_episodes(ordered, "crawl_to_follow", start_min=2.0, end_max=1.0)
+  soft_stop_episodes = _extract_gap_closure_episodes(ordered, "soft_stop", start_min=1.0, end_max=0.05, start_max=1.0)
   summaries = []
   for label, episodes in (("crawl_to_follow", crawl_episodes), ("soft_stop", soft_stop_episodes)):
     if not episodes:
@@ -384,16 +391,20 @@ def _summarize_lead_crawl_episodes(samples: list[ManualSample]) -> list[LeadCraw
   return summaries
 
 
-def _extract_gap_closure_episodes(details: list[tuple[ManualSample, float, float]], label: str, start_min: float,
+def _extract_gap_closure_episodes(samples: list[ManualSample], label: str, start_min: float,
                                   end_max: float, start_max: float | None = None) -> list[dict[str, float]]:
   episodes: list[dict[str, float]] = []
   current: list[tuple[ManualSample, float, float]] = []
   current_route: str | None = None
-  for detail in details:
-    sample, gap_excess, _ = detail
+  for sample in samples:
     route_changed = current and sample.route != current_route
-    if route_changed:
+    detail = _lead_crawl_sample_detail(sample)
+    if detail is None or route_changed:
       current = []
+      current_route = None
+      if detail is None:
+        continue
+    sample, gap_excess, _ = detail
     can_start = gap_excess >= start_min if start_max is None else start_min >= gap_excess >= end_max
     if not current and can_start:
       current = [detail]
