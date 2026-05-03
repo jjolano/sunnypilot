@@ -47,6 +47,43 @@ def test_summarize_window_tracks_planner_and_lead_changes():
   assert "aTarget" in rendered
 
 
+def test_summarize_window_attributes_lead_braking():
+  msgs = [
+    msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("radarState", 1.0, leadOne=SimpleNamespace(status=True, dRel=24.8, vRel=-2.0)),
+    msg("longitudinalPlan", 1.5, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-0.8),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "Attribution:" in rendered
+  assert "likely cause: lead" in rendered
+  assert "planner source lead0" in rendered
+  assert "lead gap min 24.800 m" in rendered
+  assert "aTarget min -0.800 m/s^2" in rendered
+
+
+def test_summarize_window_attributes_planner_source_fallback():
+  msgs = [
+    msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.1),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: planner_source" in rendered
+  assert "planner source cruise" in rendered
+
+
+def test_summarize_window_attributes_unknown_when_no_longitudinal_signals():
+  msgs = [msg("carState", 0.0, vEgo=8.0, brakePressed=False, gasPressed=False)]
+
+  rendered = render_summary(summarize_window(msgs, 0.0, 1.0, 1.0))
+
+  assert "likely cause: unknown" in rendered
+  assert "no longitudinal attribution signals found" in rendered
+
+
 def test_summarize_window_reads_list_shaped_onroad_events():
   msgs = [
     msg("carState", 0.0, vEgo=10.0),

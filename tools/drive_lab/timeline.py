@@ -22,11 +22,18 @@ class SignalStats:
 
 
 @dataclass(frozen=True)
+class EventAttribution:
+  likely_cause: str
+  evidence: list[str]
+
+
+@dataclass(frozen=True)
 class EventWindowSummary:
   event_time_s: float
   start_time_s: float
   end_time_s: float
   timeline: list[TimelineEvent]
+  attribution: EventAttribution
   stats: list[SignalStats]
 
 
@@ -110,6 +117,12 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
     "lead.vRel": [],
   }
   last_values: dict[str, Any] = {}
+  attribution_facts: dict[str, Any] = {
+    "planner_sources": [],
+    "lead_present": False,
+    "lead_gaps": [],
+    "a_targets": [],
+  }
 
   def add_change(t: float, key: str, value: Any, category: str, detail: str) -> None:
     previous = last_values.get(key, object())
@@ -145,6 +158,10 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       add_change(t, "radarState.leadOne.status", lead_status, "lead", f"leadOne status: {lead_status}")
       d_rel = safe_get(lead, "dRel")
       v_rel = safe_get(lead, "vRel")
+      if lead_status:
+        attribution_facts["lead_present"] = True
+      if lead_status and _finite_number(d_rel):
+        attribution_facts["lead_gaps"].append(float(d_rel))
       if lead_status and _finite_number(d_rel):
         samples["lead.dRel"].append(float(d_rel))
       if lead_status and _finite_number(v_rel):
@@ -157,6 +174,10 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       fcw = bool(safe_get(payload, "fcw", False))
       add_change(t, "longitudinalPlan.fcw", fcw, "planner", f"fcw: {fcw}")
       a_target = safe_get(payload, "aTarget")
+      if source != "unknown":
+        attribution_facts["planner_sources"].append(source)
+      if _finite_number(a_target):
+        attribution_facts["a_targets"].append(float(a_target))
       if _finite_number(a_target):
         samples["aTarget"].append(float(a_target))
     elif typ == "longitudinalPlanSP":
@@ -189,7 +210,7 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       names = _event_names(events or [])
       add_change(t, "onroadEvents.events", tuple(names), "event", "events: " + ", ".join(names) if names else "events cleared")
 
-  return EventWindowSummary(event_time_s, start_s, end_s, timeline, _build_stats(samples))
+  return EventWindowSummary(event_time_s, start_s, end_s, timeline, _build_attribution(attribution_facts), _build_stats(samples))
 
 
 def render_summary(summary: EventWindowSummary) -> str:
@@ -206,12 +227,59 @@ def render_summary(summary: EventWindowSummary) -> str:
     lines.append("  no notable state changes found")
 
   lines.append("")
+  lines.append("Attribution:")
+  lines.append(f"  likely cause: {summary.attribution.likely_cause}")
+  for item in summary.attribution.evidence:
+    lines.append(f"  evidence: {item}")
+
+  lines.append("")
   lines.append("Signal stats:")
   for stat in summary.stats:
     if stat.minimum is None or stat.maximum is None or stat.final is None:
       continue
     lines.append(f"  {stat.name:12s} min {stat.minimum:8.3f}  max {stat.maximum:8.3f}  final {stat.final:8.3f}")
   return "\n".join(lines)
+
+
+def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
+  evidence = _attribution_evidence(facts)
+  if _has_lead_source(facts["planner_sources"]) or (facts["lead_present"] and _is_braking(facts["a_targets"])):
+    cause = "lead"
+  elif facts["planner_sources"]:
+    cause = "planner_source"
+  else:
+    cause = "unknown"
+    evidence = ["no longitudinal attribution signals found"]
+  return EventAttribution(cause, evidence)
+
+
+def _attribution_evidence(facts: dict[str, Any]) -> list[str]:
+  evidence: list[str] = []
+  for source in _unique_ordered(facts["planner_sources"]):
+    evidence.append(f"planner source {source}")
+  if facts["lead_gaps"]:
+    evidence.append(f"lead gap min {min(facts['lead_gaps']):.3f} m")
+  if facts["a_targets"]:
+    evidence.append(f"aTarget min {min(facts['a_targets']):.3f} m/s^2")
+  return evidence
+
+
+def _has_lead_source(sources: list[str]) -> bool:
+  return any(source.lower().startswith("lead") for source in sources)
+
+
+def _is_braking(a_targets: list[float]) -> bool:
+  return bool(a_targets) and min(a_targets) < -0.05
+
+
+def _unique_ordered(values: list[str]) -> list[str]:
+  seen = set()
+  unique = []
+  for value in values:
+    if value not in seen:
+      seen.add(value)
+      unique.append(value)
+  return unique
 
 
 def _build_stats(samples: dict[str, list[float]]) -> list[SignalStats]:
