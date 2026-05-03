@@ -269,10 +269,13 @@ def render_summary(summary: EventWindowSummary) -> str:
 
 def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
   evidence = _attribution_evidence(facts)
+  sp_source_cause = _sp_source_cause(facts["sp_sources"])
   if _has_lead_source(facts["planner_sources"]) or facts["lead_braking"] or _has_correlated_lead_braking(facts):
     cause = "lead"
   elif facts["model_action_should_stop"] or facts["plan_model_should_stop"]:
     cause = "model_stop"
+  elif sp_source_cause is not None:
+    cause = sp_source_cause
   elif facts["speed_limit_active"]:
     cause = "speed_limit"
   elif facts["scc_map_active"]:
@@ -317,6 +320,18 @@ def _has_lead_source(sources: list[str]) -> bool:
 
 def _is_model_stop_source(source: str) -> bool:
   return source.lower() in ("model", "e2e")
+
+
+def _sp_source_cause(sources: list[str]) -> str | None:
+  for source in sources:
+    normalized = source.lower().replace("_", "").replace("-", "")
+    if normalized in ("speedlimit", "speedlimitassist"):
+      return "speed_limit"
+    if normalized in ("sccmap", "map"):
+      return "scc_map"
+    if normalized in ("sccvision", "vision"):
+      return "scc_vision"
+  return None
 
 
 def _is_braking(a_targets: list[float]) -> bool:
