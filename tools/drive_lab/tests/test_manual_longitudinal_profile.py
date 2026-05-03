@@ -1,18 +1,33 @@
-import numpy as np
+from dataclasses import asdict
+import sys
+from types import ModuleType
 
+import numpy as np
+import pytest
+
+acados_stub = ModuleType("acados_ocp_solver_pyx")
+acados_stub.AcadosOcpSolverCython = object
+sys.modules.setdefault(
+  "openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.c_generated_code.acados_ocp_solver_pyx",
+  acados_stub,
+)
+
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_stop_presentation_distance
 from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   ManualSample,
   ProfileRange,
   SmoothAssertiveEnvelope,
   build_route_profile,
   classify_style,
+  lead_crawl_gap_excess,
   percentile_range,
   render_manual_style_summary,
   summarize_manual_style,
 )
 
 
-def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0, v_rel=0.0, route="route-a"):
+def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0, v_rel=0.0,
+           route="route-a", lead_v=None, lead_a=0.0, model_prob=1.0):
   return ManualSample(
     route=route,
     t=t,
@@ -24,6 +39,28 @@ def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0,
     lead_status=lead,
     lead_d_rel=d_rel,
     lead_v_rel=v_rel,
+    lead_v_lead=lead_v,
+    lead_a_lead=lead_a,
+    lead_model_prob=model_prob,
+  )
+
+
+def crawl_sample(t, gap_excess, v=0.3, a=0.0, lead_v=0.2, lead_a=0.0, model_prob=1.0,
+                 gas=False, brake=False, route="route-a"):
+  stop_target = get_lead_stop_presentation_distance(v, lead_v, lead_a, model_prob)
+  return sample(
+    t=t,
+    v=v,
+    a=a,
+    gas=gas,
+    brake=brake,
+    lead=True,
+    d_rel=stop_target + gap_excess,
+    v_rel=lead_v - v,
+    route=route,
+    lead_v=lead_v,
+    lead_a=lead_a,
+    model_prob=model_prob,
   )
 
 
@@ -104,6 +141,27 @@ def test_route_profile_ignores_stopped_samples_for_manual_moving_count():
 
   assert not profile.include
   assert profile.manual_moving_samples == 6
+
+
+def test_lead_crawl_gap_excess_uses_stop_presentation_distance():
+  crawl = crawl_sample(0.0, gap_excess=2.0, v=0.25, lead_v=0.15, lead_a=-0.05, model_prob=0.9)
+
+  assert lead_crawl_gap_excess(crawl) == pytest.approx(2.0)
+
+
+def test_lead_crawl_gap_excess_falls_back_to_relative_speed():
+  stop_target = get_lead_stop_presentation_distance(0.3, 0.1, 0.0, 1.0)
+  crawl = sample(0.0, 0.3, 0.0, lead=True, d_rel=stop_target + 1.0, v_rel=-0.2, lead_v=None)
+
+  assert lead_crawl_gap_excess(crawl) == pytest.approx(1.0)
+
+
+def test_lead_crawl_gap_excess_ignores_missing_confirmed_lead():
+  no_lead = sample(0.0, 0.3, 0.0, lead=False, d_rel=10.0, v_rel=0.0)
+  missing_distance = sample(1.0, 0.3, 0.0, lead=True, d_rel=None, v_rel=0.0)
+
+  assert lead_crawl_gap_excess(no_lead) is None
+  assert lead_crawl_gap_excess(missing_distance) is None
 
 
 def test_manual_style_summary_separates_lead_and_clear_launches():

@@ -6,6 +6,8 @@ from math import isfinite
 
 import numpy as np
 
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_stop_presentation_distance
+
 
 @dataclass(frozen=True)
 class ProfileRange:
@@ -40,6 +42,9 @@ class ManualSample:
   lead_status: bool
   lead_d_rel: float | None = None
   lead_v_rel: float | None = None
+  lead_v_lead: float | None = None
+  lead_a_lead: float | None = None
+  lead_model_prob: float | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,32 @@ _SPEED_BINS = (
 
 def manual_moving_samples(samples: Iterable[ManualSample]) -> list[ManualSample]:
   return [sample for sample in samples if not sample.active and sample.v_ego > 1.0]
+
+
+def _lead_speed(sample: ManualSample) -> float | None:
+  if sample.lead_v_lead is not None:
+    return sample.lead_v_lead
+  if sample.lead_v_rel is not None:
+    return sample.v_ego + sample.lead_v_rel
+  return None
+
+
+def _lead_accel(sample: ManualSample) -> float:
+  return sample.lead_a_lead or 0.0
+
+
+def _lead_model_prob(sample: ManualSample) -> float:
+  return sample.lead_model_prob if sample.lead_model_prob is not None else 1.0
+
+
+def lead_crawl_gap_excess(sample: ManualSample) -> float | None:
+  if not sample.lead_status or sample.lead_d_rel is None:
+    return None
+  v_lead = _lead_speed(sample)
+  if v_lead is None:
+    return None
+  stop_target = get_lead_stop_presentation_distance(sample.v_ego, v_lead, _lead_accel(sample), _lead_model_prob(sample))
+  return float(sample.lead_d_rel - stop_target)
 
 
 def build_route_profile(route: str, samples: Iterable[ManualSample], min_manual_moving_samples: int = 1200,
