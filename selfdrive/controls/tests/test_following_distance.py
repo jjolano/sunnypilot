@@ -676,9 +676,9 @@ def test_creep_to_stop_gap_release_requires_confirmed_safe_lead():
   assert not get_creep_to_stop_gap_accel(0.0, stop_target, 0.0, 1.0, False, a_lead=1.0, a_lead_tau=0.0)[0]
 
 
-def test_creep_to_stop_gap_hold_covers_near_target_gap_only():
+def test_creep_to_stop_gap_hold_covers_low_speed_settle_distance():
   stop_target = get_lead_stop_presentation_distance(0.1, 0.0, 0.0, 1.0)
-  assert should_hold_creep_to_stop_gap(0.1, stop_target + 0.3, 0.0, 0.0)
+  assert should_hold_creep_to_stop_gap(0.1, stop_target + 0.34, 0.0, 0.0)
   assert not should_hold_creep_to_stop_gap(0.1, stop_target + CREEP_TO_STOP_GAP_HOLD_EXCESS + 0.1, 0.0, 0.0)
   assert not should_hold_creep_to_stop_gap(0.1, stop_target + 0.3, 0.3, 0.0)
   assert not should_hold_creep_to_stop_gap(0.1, stop_target + 0.3, 0.0, 0.1)
