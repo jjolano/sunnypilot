@@ -63,6 +63,49 @@ def test_summarize_window_attributes_lead_braking():
   assert "aTarget min -0.800 m/s^2" in rendered
 
 
+def test_summarize_window_attributes_active_radar_lead_braking():
+  msgs = [
+    msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("radarState", 0.8, leadOne=SimpleNamespace(status=True, dRel=18.4, vRel=-1.0)),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=-0.4),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: lead" in rendered
+  assert "planner source cruise" in rendered
+  assert "lead gap min 18.400 m" in rendered
+  assert "aTarget min -0.400 m/s^2" in rendered
+
+
+def test_summarize_window_attributes_planner_source_with_lead_but_no_braking():
+  msgs = [
+    msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("radarState", 0.8, leadOne=SimpleNamespace(status=True, dRel=18.4, vRel=-1.0)),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: planner_source" in rendered
+  assert "planner source cruise" in rendered
+
+
+def test_summarize_window_does_not_attribute_stale_lead_to_later_braking():
+  msgs = [
+    msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("radarState", 0.2, leadOne=SimpleNamespace(status=True, dRel=18.4, vRel=-1.0)),
+    msg("radarState", 0.8, leadOne=SimpleNamespace(status=False, dRel=200.0, vRel=0.0)),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=-0.4),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: planner_source" in rendered
+  assert "planner source cruise" in rendered
+  assert "aTarget min -0.400 m/s^2" in rendered
+
+
 def test_summarize_window_attributes_planner_source_fallback():
   msgs = [
     msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),

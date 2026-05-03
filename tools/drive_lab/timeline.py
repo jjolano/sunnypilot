@@ -120,9 +120,11 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
   attribution_facts: dict[str, Any] = {
     "planner_sources": [],
     "lead_present": False,
+    "lead_braking": False,
     "lead_gaps": [],
     "a_targets": [],
   }
+  lead_active = False
 
   def add_change(t: float, key: str, value: Any, category: str, detail: str) -> None:
     previous = last_values.get(key, object())
@@ -155,6 +157,7 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne")
       lead_status = bool(safe_get(lead, "status", False))
+      lead_active = lead_status
       add_change(t, "radarState.leadOne.status", lead_status, "lead", f"leadOne status: {lead_status}")
       d_rel = safe_get(lead, "dRel")
       v_rel = safe_get(lead, "vRel")
@@ -177,7 +180,10 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       if source != "unknown":
         attribution_facts["planner_sources"].append(source)
       if _finite_number(a_target):
-        attribution_facts["a_targets"].append(float(a_target))
+        a_target_float = float(a_target)
+        attribution_facts["a_targets"].append(a_target_float)
+        if lead_active and _is_braking([a_target_float]):
+          attribution_facts["lead_braking"] = True
       if _finite_number(a_target):
         samples["aTarget"].append(float(a_target))
     elif typ == "longitudinalPlanSP":
@@ -243,7 +249,7 @@ def render_summary(summary: EventWindowSummary) -> str:
 
 def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
   evidence = _attribution_evidence(facts)
-  if _has_lead_source(facts["planner_sources"]) or (facts["lead_present"] and _is_braking(facts["a_targets"])):
+  if _has_lead_source(facts["planner_sources"]) or facts["lead_braking"]:
     cause = "lead"
   elif facts["planner_sources"]:
     cause = "planner_source"
