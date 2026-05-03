@@ -12,7 +12,9 @@ from typing import Any
 
 import numpy as np
 
+from openpilot.tools.drive_lab.metrics import ScenarioFailure, evaluate_maneuver_output
 from openpilot.tools.drive_lab.log_profile import LongitudinalProfile, load_profile
+from openpilot.tools.drive_lab.scenario_spec import ScenarioSpec
 
 
 @dataclass(frozen=True)
@@ -22,12 +24,6 @@ class Scenario:
   title: str
   duration: float
   kwargs: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class ScenarioFailure:
-  check: str
-  detail: str
 
 
 @dataclass(frozen=True)
@@ -187,35 +183,7 @@ def generate_udacity_acc_scenarios(mode: str = "comfort") -> list[Scenario]:
 
 
 def evaluate_invariants(valid: bool, output: np.ndarray, max_normal_jerk: float = 8.0) -> list[ScenarioFailure]:
-  failures = []
-  if not valid:
-    failures.append(ScenarioFailure("valid", "maneuver reported invalid"))
-  if output.size == 0:
-    return [*failures, ScenarioFailure("output", "maneuver produced no output")]
-  if output.ndim != 2 or output.shape[1] < 7:
-    return [*failures, ScenarioFailure("output", f"expected maneuver output with at least 7 columns, got shape {output.shape}")]
-  if not np.all(np.isfinite(output)):
-    failures.append(ScenarioFailure("finite", "output contains NaN or infinite values"))
-    return failures
-
-  time_s = output[:, 0]
-  speed = output[:, 3]
-  accel = output[:, 5]
-  d_rel = output[:, 6]
-
-  if np.min(speed) < -1e-3:
-    failures.append(ScenarioFailure("speed", f"negative speed {np.min(speed):.3f} m/s"))
-  if np.min(d_rel) < 0.4:
-    failures.append(ScenarioFailure("collision", f"minimum lead gap {np.min(d_rel):.3f} m"))
-  if len(accel) > 2:
-    dt = np.diff(time_s)
-    valid_dt = dt > 1e-6
-    if np.any(valid_dt):
-      jerk = np.diff(accel)[valid_dt] / dt[valid_dt]
-      max_abs_jerk = float(np.max(np.abs(jerk)))
-      if max_abs_jerk > max_normal_jerk:
-        failures.append(ScenarioFailure("jerk", f"maximum absolute jerk {max_abs_jerk:.3f} m/s^3"))
-  return failures
+  return evaluate_maneuver_output("legacy", valid, output, max_normal_jerk).failures
 
 
 def run_scenario(scenario: Scenario, max_normal_jerk: float = 8.0) -> ScenarioResult:
@@ -233,14 +201,32 @@ def render_maneuver_snippet(scenario: Scenario) -> str:
   return f"# mode: {scenario.mode}\nManeuver(\n    {scenario.title!r},\n    duration={scenario.duration!r},\n{kwargs}\n)"
 
 
-def scenario_to_dict(scenario: Scenario) -> dict[str, Any]:
-  return {
+def scenario_to_spec(scenario: Scenario, source: str = "generated", seed: int | None = None, index: int | None = None) -> ScenarioSpec:
+  return ScenarioSpec.from_maneuver_kwargs(
+    kind=scenario.kind,
+    title=scenario.title,
+    mode=scenario.mode,
+    duration=scenario.duration,
+    kwargs=scenario.kwargs,
+    source=source,
+    seed=seed,
+    index=index,
+  )
+
+
+def scenario_to_dict(scenario: Scenario, source: str | None = None, seed: int | None = None, index: int | None = None) -> dict[str, Any]:
+  payload = {
     "mode": scenario.mode,
     "kind": scenario.kind,
     "title": scenario.title,
     "duration": scenario.duration,
     "kwargs": scenario.kwargs,
   }
+  if source is not None:
+    spec = scenario_to_spec(scenario, source=source, seed=seed, index=index)
+    payload["scenarioId"] = spec.scenario_id
+    payload["spec"] = spec.to_dict()
+  return payload
 
 
 def main() -> None:
@@ -265,7 +251,15 @@ def main() -> None:
     else generate_scenarios(args.seed, args.cases, args.mode, profile)
   )
   if args.list_only:
-    payload = [scenario_to_dict(s) for s in scenarios]
+    payload = [
+      scenario_to_dict(
+        scenario,
+        source=args.preset,
+        seed=args.seed if args.preset == "fuzz" else None,
+        index=idx,
+      )
+      for idx, scenario in enumerate(scenarios)
+    ]
     print(json.dumps(payload, indent=2) if args.json else "\n\n".join(render_maneuver_snippet(s) for s in scenarios))
     return
 

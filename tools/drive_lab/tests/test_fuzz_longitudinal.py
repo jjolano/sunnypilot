@@ -5,7 +5,13 @@ import sys
 import numpy as np
 
 from openpilot.tools.drive_lab import fuzz_longitudinal
-from openpilot.tools.drive_lab.fuzz_longitudinal import evaluate_invariants, generate_scenarios, generate_udacity_acc_scenarios, render_maneuver_snippet
+from openpilot.tools.drive_lab.fuzz_longitudinal import (
+  evaluate_invariants,
+  generate_scenarios,
+  generate_udacity_acc_scenarios,
+  render_maneuver_snippet,
+  scenario_to_spec,
+)
 from openpilot.tools.drive_lab.log_profile import LongitudinalProfile, ProfileRange
 
 
@@ -124,3 +130,29 @@ def test_render_maneuver_snippet_contains_replayable_fields():
   assert "Maneuver(" in snippet
   assert "duration=" in snippet
   assert "initial_speed" in snippet
+
+
+def test_scenario_to_spec_preserves_fuzzer_context():
+  scenario = generate_scenarios(seed=1, cases=1, mode="comfort")[0]
+
+  spec = scenario_to_spec(scenario, source="fuzz", seed=1, index=0)
+
+  assert spec.scenario_id == f"fuzz:comfort:{scenario.kind}:1:0"
+  assert spec.kind == scenario.kind
+  assert spec.title == scenario.title
+  assert spec.mode == scenario.mode
+  assert spec.duration == scenario.duration
+  assert spec.maneuver_kwargs == scenario.kwargs
+
+
+def test_scenario_to_dict_can_include_spec_metadata():
+  scenario = generate_scenarios(seed=1, cases=1, mode="comfort")[0]
+
+  payload = fuzz_longitudinal.scenario_to_dict(scenario, source="fuzz", seed=1, index=0)
+
+  assert payload["mode"] == scenario.mode
+  assert payload["kind"] == scenario.kind
+  assert payload["kwargs"] == scenario.kwargs
+  assert payload["scenarioId"] == f"fuzz:comfort:{scenario.kind}:1:0"
+  assert payload["spec"]["events"] == [scenario.kind]
+  assert payload["spec"]["oracle"]["checks"] == ["valid", "finite", "speed", "collision", "jerk"]
