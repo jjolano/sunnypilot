@@ -14,13 +14,15 @@ from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimen
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
 from openpilot.sunnypilot.selfdrive.controls.lib.osm_traffic_control_prior import OsmTrafficControlPrior
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist, V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
+SPEED_LIMIT_SPEED_UP_ACCEL_CAP = 0.30  # m/s^2, conservative target shaping to avoid downshifts.
+SPEED_LIMIT_SPEED_UP_LOOKAHEAD = 1.5  # s, keep SLA speed-up targets close to ego speed.
 
 
 def _select_lower_target(selected_source, selected_v_target, selected_a_target, candidate_source, candidate):
@@ -28,6 +30,13 @@ def _select_lower_target(selected_source, selected_v_target, selected_a_target, 
   if candidate_v_target < selected_v_target:
     return candidate_source, candidate_v_target, candidate_a_target
   return selected_source, selected_v_target, selected_a_target
+
+
+def apply_speed_limit_speedup_governor(speed_limit_active: bool, v_ego: float, v_target: float) -> float:
+  if not speed_limit_active or v_target == V_CRUISE_UNSET or v_target <= v_ego:
+    return v_target
+
+  return min(v_target, v_ego + SPEED_LIMIT_SPEED_UP_ACCEL_CAP * SPEED_LIMIT_SPEED_UP_LOOKAHEAD)
 
 
 def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control):
@@ -158,6 +167,10 @@ class LongitudinalPlannerSP:
                     coast_accel=coast_accel)
 
     self.osm_traffic_control_prior.update(sm, long_enabled, long_override, v_ego, a_ego)
+    speed_limit_assist_target = (
+      apply_speed_limit_speedup_governor(self.sla.is_active, v_ego, self.sla.output_v_target),
+      a_ego,
+    )
 
     self.decision_candidates_sp = build_sp_longitudinal_candidates(
       self.sla.is_active,
@@ -176,7 +189,7 @@ class LongitudinalPlannerSP:
       (v_cruise, a_ego),
       (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
       (self.scc.map.output_v_target, self.scc.map.output_a_target),
-      (self.sla.output_v_target, a_ego),
+      speed_limit_assist_target,
       (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
     )
     return self.output_v_target, self.output_a_target

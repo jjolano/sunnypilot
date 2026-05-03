@@ -38,6 +38,7 @@ class ScenarioResult:
 
 
 REALISM_MODES = ("comfort", "emergency", "adversarial")
+SCENARIO_PRESETS = ("fuzz", "udacity-acc")
 MODE_DEFAULT_JERK = {
   "comfort": 8.0,
   "emergency": 12.0,
@@ -58,6 +59,131 @@ def generate_scenarios(seed: int, cases: int, mode: str = "comfort", profile: Lo
     _cruise_coast,
   ]
   return [rng.choice(generators)(rng, idx, mode, profile) for idx in range(cases)]
+
+
+def generate_udacity_acc_scenarios(mode: str = "comfort") -> list[Scenario]:
+  """Return native Drive Lab scenarios inspired by Udacity's archived ACC challenge cases."""
+  if mode not in REALISM_MODES:
+    raise ValueError(f"unknown mode {mode!r}; expected one of {REALISM_MODES}")
+
+  return [
+    Scenario(
+      mode,
+      "udacity_acc_cruise_speed_step",
+      "udacity acc inspired cruise speed step",
+      30.0,
+      {
+        "initial_speed": 17.881,
+        "lead_relevancy": False,
+        "cruise_values": [17.881, 17.881, 22.352, 22.352],
+        "breakpoints": [0.0, 10.0, 10.01, 30.0],
+      },
+    ),
+    Scenario(
+      mode,
+      "udacity_acc_grade_change",
+      "udacity acc inspired uphill grade change",
+      25.0,
+      {
+        "initial_speed": 8.941,
+        "lead_relevancy": False,
+        "cruise_values": [8.941, 8.941, 8.941, 8.941],
+        "pitch_values": [0.0, 0.0, 0.08, 0.08],
+        "breakpoints": [0.0, 10.0, 11.0, 25.0],
+      },
+    ),
+    Scenario(
+      mode,
+      "udacity_acc_slower_lead",
+      "udacity acc inspired slower lead approach",
+      30.0,
+      {
+        "initial_speed": 26.822,
+        "lead_relevancy": True,
+        "initial_distance_lead": 100.0,
+        "speed_lead_values": [17.881, 17.881],
+        "prob_lead_values": [1.0, 1.0],
+        "cruise_values": [26.822, 26.822],
+        "breakpoints": [0.0, 30.0],
+      },
+    ),
+    Scenario(
+      mode,
+      "udacity_acc_stopped_lead",
+      "udacity acc inspired stopped lead approach",
+      30.0,
+      {
+        "initial_speed": 17.881,
+        "lead_relevancy": True,
+        "initial_distance_lead": 150.0,
+        "speed_lead_values": [0.0, 0.0],
+        "prob_lead_values": [1.0, 1.0],
+        "cruise_values": [17.881, 17.881],
+        "breakpoints": [0.0, 30.0],
+      },
+    ),
+    Scenario(
+      mode,
+      "udacity_acc_lead_decel_to_stop",
+      "udacity acc inspired lead decel to stop",
+      45.0,
+      {
+        "initial_speed": 20.0,
+        "lead_relevancy": True,
+        "initial_distance_lead": 45.0,
+        "speed_lead_values": [20.0, 20.0, 0.0, 0.0],
+        "prob_lead_values": [1.0, 1.0, 1.0, 1.0],
+        "cruise_values": [20.0, 20.0, 20.0, 20.0],
+        "breakpoints": [0.0, 10.0, 30.0, 45.0],
+      },
+    ),
+    Scenario(
+      mode,
+      "udacity_acc_oscillating_lead",
+      "udacity acc inspired oscillating lead speed",
+      25.0,
+      {
+        "initial_speed": 30.0,
+        "lead_relevancy": True,
+        "initial_distance_lead": 55.0,
+        "speed_lead_values": [30.0, 30.0, 29.0, 31.0, 29.0, 31.0, 29.0],
+        "prob_lead_values": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        "cruise_values": [30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0],
+        "breakpoints": [0.0, 6.0, 8.0, 12.0, 16.0, 20.0, 24.0],
+      },
+    ),
+    Scenario(
+      mode,
+      "udacity_acc_stop_and_go",
+      "udacity acc inspired stop and go lead",
+      60.0,
+      {
+        "initial_speed": 0.0,
+        "lead_relevancy": True,
+        "initial_distance_lead": 20.0,
+        "speed_lead_values": [10.0, 0.0, 0.0, 10.0, 0.0, 0.0],
+        "prob_lead_values": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        "cruise_values": [15.0, 15.0, 15.0, 15.0, 15.0, 15.0],
+        "breakpoints": [0.0, 10.0, 20.0, 30.0, 40.0, 50.0],
+      },
+    ),
+    Scenario(
+      mode,
+      "udacity_acc_green_light_launch",
+      "udacity acc inspired green light lead launch",
+      20.0,
+      {
+        "initial_speed": 0.0,
+        "lead_relevancy": True,
+        "initial_distance_lead": 11.0,
+        "speed_lead_values": [0.0, 0.0, 5.0, 12.0],
+        "prob_lead_values": [1.0, 1.0, 1.0, 1.0],
+        "cruise_values": [15.0, 15.0, 15.0, 15.0],
+        "breakpoints": [0.0, 5.0, 8.0, 20.0],
+        "ensure_start": True,
+      },
+    ),
+  ]
 
 
 def evaluate_invariants(valid: bool, output: np.ndarray, max_normal_jerk: float = 8.0) -> list[ScenarioFailure]:
@@ -122,6 +248,9 @@ def main() -> None:
   parser.add_argument("--seed", type=int, default=1)
   parser.add_argument("--cases", type=int, default=100)
   parser.add_argument("--mode", choices=REALISM_MODES, default="comfort", help="Scenario realism profile")
+  parser.add_argument(
+    "--preset", choices=SCENARIO_PRESETS, default="fuzz", help="Scenario source: seeded fuzzing or fixed Udacity ACC-inspired cases"
+  )
   parser.add_argument("--profile", help="Optional JSON profile from profile_route.py to bias generated ranges")
   parser.add_argument("--max-normal-jerk", type=float, help="Override the mode's jerk threshold")
   parser.add_argument("--max-failures", type=int, default=10)
@@ -130,7 +259,11 @@ def main() -> None:
   args = parser.parse_args()
 
   profile = load_profile(args.profile) if args.profile else None
-  scenarios = generate_scenarios(args.seed, args.cases, args.mode, profile)
+  scenarios = (
+    generate_udacity_acc_scenarios(args.mode)
+    if args.preset == "udacity-acc"
+    else generate_scenarios(args.seed, args.cases, args.mode, profile)
+  )
   if args.list_only:
     payload = [scenario_to_dict(s) for s in scenarios]
     print(json.dumps(payload, indent=2) if args.json else "\n\n".join(render_maneuver_snippet(s) for s in scenarios))

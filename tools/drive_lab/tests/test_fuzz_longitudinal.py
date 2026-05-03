@@ -1,6 +1,11 @@
+import contextlib
+import io
+import sys
+
 import numpy as np
 
-from openpilot.tools.drive_lab.fuzz_longitudinal import evaluate_invariants, generate_scenarios, render_maneuver_snippet
+from openpilot.tools.drive_lab import fuzz_longitudinal
+from openpilot.tools.drive_lab.fuzz_longitudinal import evaluate_invariants, generate_scenarios, generate_udacity_acc_scenarios, render_maneuver_snippet
 from openpilot.tools.drive_lab.log_profile import LongitudinalProfile, ProfileRange
 
 
@@ -50,6 +55,45 @@ def test_profile_biases_generated_ranges():
   for scenario in pullaways:
     assert 5.0 <= scenario.kwargs["initial_distance_lead"] <= 6.0
     assert 1.5 <= scenario.kwargs["speed_lead_values"][2] <= 2.0
+
+
+def test_udacity_acc_scenarios_cover_legacy_drive_lab_cases():
+  scenarios = generate_udacity_acc_scenarios()
+
+  assert len(scenarios) == 8
+  assert {scenario.kind for scenario in scenarios} == {
+    "udacity_acc_cruise_speed_step",
+    "udacity_acc_grade_change",
+    "udacity_acc_slower_lead",
+    "udacity_acc_stopped_lead",
+    "udacity_acc_lead_decel_to_stop",
+    "udacity_acc_oscillating_lead",
+    "udacity_acc_stop_and_go",
+    "udacity_acc_green_light_launch",
+  }
+  for scenario in scenarios:
+    assert scenario.mode == "comfort"
+    assert scenario.title.startswith("udacity acc inspired")
+    assert scenario.duration > 0.0
+    assert scenario.kwargs["breakpoints"] == sorted(scenario.kwargs["breakpoints"])
+    for key, value in scenario.kwargs.items():
+      if key.endswith("_values"):
+        assert len(value) == len(scenario.kwargs["breakpoints"])
+
+
+def test_main_lists_udacity_acc_preset():
+  stdout = io.StringIO()
+  previous_argv = sys.argv
+  try:
+    sys.argv = ["fuzz_longitudinal.py", "--preset", "udacity-acc", "--list-only"]
+    with contextlib.redirect_stdout(stdout):
+      fuzz_longitudinal.main()
+  finally:
+    sys.argv = previous_argv
+
+  output = stdout.getvalue()
+  assert "udacity acc inspired green light lead launch" in output
+  assert "fuzz stopped lead approach" not in output
 
 
 def test_evaluate_invariants_catches_collision_and_nan():

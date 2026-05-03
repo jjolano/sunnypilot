@@ -28,6 +28,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_CRAWL_BRAKE_MAX,
   LEAD_SURGE_DAMPING_ACCEL_MAX,
   LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX,
+  MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN,
+  MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX,
   LEAD_STOP_APPROACH_DECEL_CAP,
   LEAD_STOP_RUNWAY_BRAKE,
   LEAD_TRANSITION_PERSISTENCE,
@@ -52,6 +54,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_gap_comfort_a_min,
   get_lead_gap_comfort_floor,
   get_lead_gap_comfort_recovery_blend,
+  get_combined_accel_target,
   get_lead_departure_available_runway,
   get_lead_departure_relaxation,
   get_lead_danger_distance,
@@ -68,6 +71,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_stop_gap_excess_offset,
   get_lead_stop_gap_taper,
   get_lead_time_gap_target,
+  get_moving_lead_closing_cushion_target,
   get_moving_lead_stop_approach_comfort_target,
   get_moving_lead_stop_reserve,
   get_lead_transition_accel_max,
@@ -536,6 +540,19 @@ def test_creep_to_stop_gap_uses_predicted_pullaway_before_speed_threshold():
 
   assert active
   assert 0.40 <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+
+
+def test_creep_to_stop_gap_predicts_pullaway_before_full_start_excess():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.05, 1.0, 1.0)
+  predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(0.05, 1.0, 0.0)
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target + 0.35, 0.05, 1.0, False, a_lead=1.0, a_lead_tau=0.0
+  )
+
+  assert predicted_v_lead >= 0.35
+  assert predicted_gap_opening >= CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING
+  assert active
+  assert accel >= longitudinal_planner.CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN
 
 
 def test_creep_to_stop_gap_uses_model_lead_pullaway_prediction():
@@ -1231,6 +1248,32 @@ def test_selected_lead_targets_ignore_non_dominant_lead():
   assert costs.tolist() == pytest.approx([0.0, 0.0, 0.0])
 
 
+def test_combined_accel_target_uses_closing_cushion_for_dominant_lead_only():
+  accel_match_targets = np.array([0.0, 0.0, 0.0])
+  accel_match_costs = np.array([0.0, 0.0, 0.0])
+  lead_0_closing_cushion_targets = np.array([-0.4, -0.4, -0.4])
+  lead_1_closing_cushion_targets = np.array([-0.1, -0.1, -0.1])
+  lead_0_closing_cushion_costs = np.array([2.0, 2.0, 2.0])
+  lead_1_closing_cushion_costs = np.array([8.0, 8.0, 8.0])
+  zero_targets = np.zeros(3)
+  zero_costs = np.zeros(3)
+  dominant_obstacle = np.array([0, 1, 2])
+
+  targets, costs = get_combined_accel_target(
+    accel_match_targets, accel_match_costs,
+    lead_0_closing_cushion_targets, lead_1_closing_cushion_targets,
+    lead_0_closing_cushion_costs, lead_1_closing_cushion_costs,
+    dominant_obstacle,
+    zero_targets, zero_costs,
+    zero_targets, zero_costs,
+    zero_targets, zero_costs,
+    zero_targets, zero_costs,
+  )
+
+  np.testing.assert_allclose(targets, [-0.4, -0.1, 0.0], rtol=0.0, atol=1e-12)
+  np.testing.assert_allclose(costs, [2.0, 8.0, 0.0], rtol=0.0, atol=1e-12)
+
+
 def test_stop_approach_comfort_targets_moderate_stopped_lead_brake():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   target, cost = get_lead_stop_approach_comfort_target(40.0, 10.0, 0.0, 0.0, t_follow)
@@ -1301,6 +1344,88 @@ def test_moving_stop_approach_anticipates_confirmed_low_closure():
 
   assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow)
   assert target < -0.4
+  assert cost > 0.0
+
+
+def test_route_like_slowing_moving_lead_prefers_moderate_decel():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  target, cost = get_moving_lead_stop_approach_comfort_target(22.0, 11.2, 8.0, -1.68, t_follow)
+
+  assert -1.5 < target < -0.3
+  assert cost > 0.0
+
+
+def test_hard_braking_moving_lead_keeps_stronger_target_when_close():
+  v_ego = 18.0
+  v_lead = 10.0
+  d_rel = 65.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert -long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP <= target < -1.0
+  assert cost > 0.0
+
+
+def test_hard_braking_moving_lead_keeps_stronger_target_near_danger_boundary():
+  v_ego = 18.0
+  v_lead = 10.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+  d_rel = min_gap + 0.5
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < -1.0
+  assert cost > 0.0
+
+
+def test_low_speed_hard_braking_moving_lead_keeps_stronger_target_near_danger_boundary():
+  v_ego = 10.0
+  v_lead = 8.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+  d_rel = min_gap + 0.5
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < -1.0
+  assert cost > 0.0
+
+
+def test_low_speed_hard_braking_moving_lead_keeps_stronger_target_with_runway_margin():
+  v_ego = 10.0
+  v_lead = 8.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+  d_rel = min_gap + 5.0
+  closing_speed = max(v_ego - v_lead, 0.0)
+  required_decel = get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert required_decel > long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP
+  assert -long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP <= target < -1.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_keeps_stronger_target_for_fast_runway_critical_lead():
+  v_ego = 18.6
+  v_lead = 15.0
+  d_rel = 47.7
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert target < -1.4
   assert cost > 0.0
 
 
@@ -1457,6 +1582,76 @@ def test_lead_accel_match_caps_soft_decel_target():
   accel_target, _ = get_lead_accel_match_target(v_lead, target_gap, -4.0, t_follow, v_ego)
 
   assert accel_target == pytest.approx(-LEAD_ACCEL_MATCH_DECEL_CAP)
+
+
+def test_moving_lead_closing_cushion_prefers_coast_before_target_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 20.0
+  target_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = target_gap - 0.25 * (target_gap - get_lead_gap_comfort_floor(v_ego, v_lead, t_follow))
+
+  target, cost = get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow)
+
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN <= target <= 0.0
+  assert cost > 0.0
+
+
+def test_moving_lead_closing_cushion_adds_light_decel_as_cushion_is_used():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 20.0
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  target_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  early_gap = target_gap - 0.2 * (target_gap - comfort_floor)
+  late_gap = comfort_floor + 0.2 * (target_gap - comfort_floor)
+
+  early_target, early_cost = get_moving_lead_closing_cushion_target(early_gap, v_ego, v_lead, t_follow)
+  late_target, late_cost = get_moving_lead_closing_cushion_target(late_gap, v_ego, v_lead, t_follow)
+
+  assert -MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX <= late_target < early_target <= 0.0
+  assert late_cost >= early_cost > 0.0
+
+
+def test_moving_lead_closing_cushion_stays_off_when_far_opening_or_urgent():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 20.0
+  target_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+
+  far_target, far_cost = get_moving_lead_closing_cushion_target(target_gap + 8.0, v_ego, v_lead, t_follow)
+  opening_target, opening_cost = get_moving_lead_closing_cushion_target(target_gap - 1.0, v_ego, v_ego + 0.5, t_follow)
+  urgent_target, urgent_cost = get_moving_lead_closing_cushion_target(comfort_floor - 0.1, v_ego, v_lead, t_follow)
+  stopped_target, stopped_cost = get_moving_lead_closing_cushion_target(20.0, 8.0, 0.2, t_follow)
+
+  assert far_target == pytest.approx(0.0)
+  assert far_cost == pytest.approx(0.0)
+  assert opening_target == pytest.approx(0.0)
+  assert opening_cost == pytest.approx(0.0)
+  assert urgent_target == pytest.approx(0.0)
+  assert urgent_cost == pytest.approx(0.0)
+  assert stopped_target == pytest.approx(0.0)
+  assert stopped_cost == pytest.approx(0.0)
+
+
+def test_vectorized_moving_lead_closing_cushion_matches_scalar_targets():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_leads = np.array([20.0, 20.0, 22.5, 0.3])
+  d_rels = np.array([
+    get_desired_follow_distance(v_ego, 20.0, t_follow) - 1.0,
+    get_lead_gap_comfort_floor(v_ego, 20.0, t_follow) + 1.0,
+    get_desired_follow_distance(v_ego, 22.5, t_follow) - 1.0,
+    20.0,
+  ])
+
+  targets, costs = get_moving_lead_closing_cushion_target(d_rels, v_ego, v_leads, t_follow)
+  expected = [get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow)
+              for d_rel, v_lead in zip(d_rels, v_leads, strict=True)]
+
+  np.testing.assert_allclose(targets, [target for target, _ in expected], rtol=0.0, atol=1e-12)
+  np.testing.assert_allclose(costs, [cost for _, cost in expected], rtol=0.0, atol=1e-12)
 
 
 def test_approach_engage_offset_stays_off_without_closure_or_runway():
