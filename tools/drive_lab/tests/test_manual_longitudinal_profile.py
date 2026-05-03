@@ -171,6 +171,15 @@ def test_manual_style_summary_includes_lead_crawl_bins():
   assert bins["crawl_to_follow"].sample_count == 1
   assert bins["soft_stop"].sample_count == 1
   assert bins["inside_stop_target"].sample_count == 1
+  assert bins["open_to_crawl"].gas_ratio == 1.0
+  assert bins["open_to_crawl"].brake_ratio == 0.0
+  assert bins["open_to_crawl"].coast_ratio == 0.0
+  assert bins["crawl_to_follow"].gas_ratio == 0.0
+  assert bins["crawl_to_follow"].brake_ratio == 1.0
+  assert bins["crawl_to_follow"].coast_ratio == 0.0
+  assert bins["soft_stop"].gas_ratio == 0.0
+  assert bins["soft_stop"].brake_ratio == 1.0
+  assert bins["soft_stop"].coast_ratio == 0.0
   assert bins["open_to_crawl"].gap_excess.low == bins["open_to_crawl"].gap_excess.high == 2.0
   assert bins["crawl_to_follow"].gap_excess.low == bins["crawl_to_follow"].gap_excess.high == 1.0
   assert bins["soft_stop"].gap_excess.low == bins["soft_stop"].gap_excess.high == 0.0
@@ -191,6 +200,20 @@ def test_manual_style_summary_lead_crawl_bins_are_low_speed_only():
 
   assert summary.lead_crawl_bins[0].label == "open_to_crawl"
   assert summary.lead_crawl_bins[0].sample_count == 1
+
+
+def test_manual_style_summary_lead_crawl_closing_threshold_is_strict():
+  samples = [
+    crawl_sample(0.0, 2.5, v=0.3, a=0.0, lead_v=0.2),
+    crawl_sample(1.0, 2.6, v=0.4, a=0.0, lead_v=0.2),
+  ]
+
+  summary = summarize_manual_style(samples)
+  open_to_crawl = next(bucket for bucket in summary.lead_crawl_bins if bucket.label == "open_to_crawl")
+
+  assert open_to_crawl.closing_ratio == 0.5
+  assert open_to_crawl.closing_speed.low == pytest.approx(0.2)
+  assert open_to_crawl.closing_speed.high == pytest.approx(0.2)
 
 
 def test_manual_style_summary_separates_lead_and_clear_launches():
