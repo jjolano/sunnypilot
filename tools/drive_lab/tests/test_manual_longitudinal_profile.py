@@ -143,6 +143,22 @@ def test_manual_style_summary_counts_stop_approaches_and_coast():
   assert round(summary.coast_accel.high, 2) == -0.31
 
 
+def test_manual_style_summary_stop_mean_ignores_stopped_brake_hold_samples():
+  samples = [
+    sample(0.0, 10.0, -0.6, brake=True, lead=True, d_rel=12.0, v_rel=-1.0),
+    sample(1.0, 5.0, -0.4, brake=True, lead=True, d_rel=10.0, v_rel=-0.5),
+    sample(2.0, 0.5, 0.0, brake=True, lead=True, d_rel=8.0, v_rel=0.0),
+  ]
+  samples += [sample(3.0 + i, 0.0, 0.0, brake=True, lead=True, d_rel=8.0, v_rel=0.0) for i in range(20)]
+  samples.append(sample(24.0, 0.0, 0.0, brake=False, lead=True, d_rel=8.0, v_rel=0.0))
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_stop_count == 1
+  assert summary.stop_mean_accel.low == summary.stop_mean_accel.high == -0.5
+  assert summary.stop_peak_decel.low == summary.stop_peak_decel.high == -0.6
+
+
 def test_manual_style_summary_coast_outlier_does_not_dominate_classification():
   samples = [
     sample(0.0, 0.5, 0.8, gas=True, lead=True, d_rel=4.0),

@@ -275,9 +275,10 @@ def _pedal_episodes(samples: list[ManualSample], pedal: str) -> list[dict[str, f
   episodes: list[dict[str, float | bool]] = []
   current: list[ManualSample] = []
   current_route: str | None = None
+  trim_stopped_accel = pedal == "brake_pressed"
   for sample in samples:
     if current and sample.route != current_route:
-      episodes.append(_episode_summary(current))
+      episodes.append(_episode_summary(current, trim_stopped_accel=trim_stopped_accel))
       current = []
     pressed = bool(getattr(sample, pedal))
     if pressed:
@@ -285,15 +286,17 @@ def _pedal_episodes(samples: list[ManualSample], pedal: str) -> list[dict[str, f
       current_route = sample.route
       continue
     if current:
-      episodes.append(_episode_summary(current, end_sample=sample))
+      episodes.append(_episode_summary(current, end_sample=sample, trim_stopped_accel=trim_stopped_accel))
       current = []
   if current:
-    episodes.append(_episode_summary(current))
+    episodes.append(_episode_summary(current, trim_stopped_accel=trim_stopped_accel))
   return episodes
 
 
-def _episode_summary(samples: list[ManualSample], end_sample: ManualSample | None = None) -> dict[str, float | bool]:
-  accels = [sample.a_ego for sample in samples]
+def _episode_summary(samples: list[ManualSample], end_sample: ManualSample | None = None,
+                     trim_stopped_accel: bool = False) -> dict[str, float | bool]:
+  accel_samples = [sample for sample in samples if not trim_stopped_accel or sample.v_ego > 1.0] or samples
+  accels = [sample.a_ego for sample in accel_samples]
   end_sample = end_sample or samples[-1]
   return {
     "v0": samples[0].v_ego,
