@@ -26,6 +26,8 @@ ACTUATOR_LAG_COMFORT_LOW_SPEED = 8.0
 ACTUATOR_LAG_COMFORT_MID_SPEED = 15.0
 ACTUATOR_LAG_COMFORT_HIGH_SPEED = 25.0
 STALE_ACTUATOR_REVERSAL_THRESHOLD = 0.05
+SAFETY_LIMITED_RAMP_ERROR_THRESHOLD = 0.10
+SAFETY_LIMITED_RAMP_FOLLOW_MARGIN = 0.15
 DEFAULT_DT = 0.01
 
 NORMAL_CAP = 1.00
@@ -69,6 +71,7 @@ class ConservativeOutputShapingReason(IntFlag):
   STEERING_RATE_COMFORT = 1 << 9
   ACTUATOR_LAG_COMFORT = 1 << 10
   STALE_ACTUATOR_REVERSAL = 1 << 11
+  SAFETY_LIMITED_RAMP = 1 << 12
 
 
 @dataclass
@@ -154,6 +157,7 @@ class TorqueConservativeOutputShaper:
       and output_reinforces_steering_rate and steering_rate_abs > ACTUATOR_LAG_COMFORT_START
     )
     stale_actuator_reversal = self._stale_actuator_reversal(inputs, output_sign)
+    safety_limited_ramp_cap = self._safety_limited_ramp_cap(inputs, output_sign, actual_sign) if not stale_actuator_reversal else NORMAL_CAP
     same_sign_unwind_release = inputs.same_sign_unwind_release
     clear_under_response_catchup = (
       desired_sign != 0.0
@@ -220,6 +224,9 @@ class TorqueConservativeOutputShaper:
     if stale_actuator_reversal:
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, STALE_ACTUATOR_REVERSAL_CAP, 1.0,
                                                    ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL)
+    if safety_limited_ramp_cap < NORMAL_CAP:
+      output_cap, confidence, reason = self._apply(output_cap, confidence, reason, safety_limited_ramp_cap, 1.0,
+                                                   ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP)
 
     base_active = reason != ConservativeOutputShapingReason.NONE and output_cap < NORMAL_CAP
     same_sign_unwind_shaping = bool(reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND)
@@ -352,6 +359,27 @@ class TorqueConservativeOutputShaper:
       and applied_sign == -output_sign
       and abs(inputs.steer_limit_applied_output) > STALE_ACTUATOR_REVERSAL_THRESHOLD
     )
+
+  @staticmethod
+  def _safety_limited_ramp_cap(inputs: ConservativeOutputShaperInputs, output_sign: float, actual_sign: float) -> float:
+    requested_sign = sign(inputs.steer_limit_requested_output)
+    applied_sign = sign(inputs.steer_limit_applied_output)
+    actuator_error = abs(inputs.steer_limit_requested_output - inputs.steer_limit_applied_output)
+    if not (
+      inputs.steer_limited_by_safety
+      and inputs.steer_limit_same_direction
+      and not inputs.steer_limit_unwind
+      and not inputs.steering_pressed
+      and output_sign != 0.0
+      and actual_sign == output_sign
+      and requested_sign == output_sign
+      and applied_sign in (0.0, output_sign)
+      and actuator_error > SAFETY_LIMITED_RAMP_ERROR_THRESHOLD
+    ):
+      return NORMAL_CAP
+
+    applied_follow_cap = abs(inputs.steer_limit_applied_output) + SAFETY_LIMITED_RAMP_FOLLOW_MARGIN
+    return clamp(applied_follow_cap / max(abs(inputs.unshaped_output), 1e-6), 0.0, NORMAL_CAP)
 
   @staticmethod
   def _apply(output_cap: float, confidence: float, reason: ConservativeOutputShapingReason, cap: float, reason_confidence: float,
