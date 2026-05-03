@@ -77,6 +77,22 @@ class FollowingBinSummary:
 
 
 @dataclass(frozen=True)
+class LeadCrawlBucketSummary:
+  label: str
+  sample_count: int
+  gas_ratio: float
+  brake_ratio: float
+  coast_ratio: float
+  gap_excess: ProfileRange
+  ego_speed: ProfileRange
+  lead_speed: ProfileRange
+  relative_speed: ProfileRange
+  accel: ProfileRange
+  closing_ratio: float
+  closing_speed: ProfileRange
+
+
+@dataclass(frozen=True)
 class ManualStyleSummary:
   sample_count: int
   accel: ProfileRange
@@ -93,6 +109,7 @@ class ManualStyleSummary:
   coast_accel: ProfileRange
   speed_bins: list[SpeedBinSummary]
   following_bins: list[FollowingBinSummary]
+  lead_crawl_bins: list[LeadCrawlBucketSummary]
   style: str
 
 
@@ -102,6 +119,14 @@ _SPEED_BINS = (
   ("7-13 m/s", 7.0, 13.0),
   ("13-20 m/s", 13.0, 20.0),
   ("20+ m/s", 20.0, float("inf")),
+)
+LEAD_CRAWL_MAX_SPEED = 2.5
+LEAD_CRAWL_CLOSING_THRESHOLD = -0.1
+_LEAD_CRAWL_BUCKETS = (
+  ("open_to_crawl", 2.0, float("inf")),
+  ("crawl_to_follow", 1.0, 2.0),
+  ("soft_stop", 0.0, 1.0),
+  ("inside_stop_target", -float("inf"), 0.0),
 )
 
 STOP_DISTANCE = 6.0
@@ -200,6 +225,7 @@ def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummar
     coast_accel=coast,
     speed_bins=_summarize_speed_bins(moving),
     following_bins=_summarize_following_bins(moving),
+    lead_crawl_bins=_summarize_lead_crawl_bins(ordered),
     style=style,
   )
 
@@ -283,6 +309,44 @@ def _summarize_following_bins(samples: list[ManualSample]) -> list[FollowingBinS
         for sample in closing_samples
         if sample.lead_d_rel is not None
       ], 10.0, 90.0),
+    ))
+  return summaries
+
+
+def _lead_crawl_sample_details(samples: list[ManualSample]) -> list[tuple[ManualSample, float, float]]:
+  details: list[tuple[ManualSample, float, float]] = []
+  for sample in samples:
+    gap_excess = lead_crawl_gap_excess(sample)
+    v_lead = _lead_speed(sample)
+    if gap_excess is None or v_lead is None:
+      continue
+    if sample.v_ego > LEAD_CRAWL_MAX_SPEED and v_lead > LEAD_CRAWL_MAX_SPEED:
+      continue
+    details.append((sample, gap_excess, v_lead))
+  return details
+
+
+def _summarize_lead_crawl_bins(samples: list[ManualSample]) -> list[LeadCrawlBucketSummary]:
+  summaries: list[LeadCrawlBucketSummary] = []
+  details = _lead_crawl_sample_details(samples)
+  for label, low, high in _LEAD_CRAWL_BUCKETS:
+    bucket = [(sample, gap_excess, v_lead) for sample, gap_excess, v_lead in details if low <= gap_excess < high]
+    if not bucket:
+      continue
+    closing = [(sample, gap_excess, v_lead) for sample, gap_excess, v_lead in bucket if v_lead - sample.v_ego < LEAD_CRAWL_CLOSING_THRESHOLD]
+    summaries.append(LeadCrawlBucketSummary(
+      label=label,
+      sample_count=len(bucket),
+      gas_ratio=_ratio(sum(1 for sample, _, _ in bucket if sample.gas_pressed), len(bucket)),
+      brake_ratio=_ratio(sum(1 for sample, _, _ in bucket if sample.brake_pressed), len(bucket)),
+      coast_ratio=_ratio(sum(1 for sample, _, _ in bucket if not sample.gas_pressed and not sample.brake_pressed), len(bucket)),
+      gap_excess=percentile_range([gap_excess for _, gap_excess, _ in bucket], 10.0, 90.0),
+      ego_speed=percentile_range([sample.v_ego for sample, _, _ in bucket], 10.0, 90.0),
+      lead_speed=percentile_range([v_lead for _, _, v_lead in bucket], 10.0, 90.0),
+      relative_speed=percentile_range([v_lead - sample.v_ego for sample, _, v_lead in bucket], 10.0, 90.0),
+      accel=percentile_range([sample.a_ego for sample, _, _ in bucket], 10.0, 90.0),
+      closing_ratio=_ratio(len(closing), len(bucket)),
+      closing_speed=percentile_range([sample.v_ego - v_lead for sample, _, v_lead in closing], 10.0, 90.0),
     ))
   return summaries
 

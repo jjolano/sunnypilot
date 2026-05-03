@@ -155,6 +155,40 @@ def test_lead_crawl_gap_excess_ignores_missing_confirmed_lead():
   assert lead_crawl_gap_excess(missing_speed) is None
 
 
+def test_manual_style_summary_includes_lead_crawl_bins():
+  samples = [
+    crawl_sample(0.0, 2.5, v=0.3, a=0.10, lead_v=0.2, gas=True),
+    crawl_sample(1.0, 2.1, v=0.4, a=0.05, lead_v=0.1),
+    crawl_sample(2.0, 1.5, v=0.5, a=-0.10, lead_v=0.2, brake=True),
+    crawl_sample(3.0, 0.5, v=0.2, a=-0.20, lead_v=0.0, brake=True),
+    crawl_sample(4.0, -0.2, v=0.1, a=-0.30, lead_v=0.0, brake=True),
+    crawl_sample(5.0, 3.0, v=4.0, a=0.20, lead_v=4.0, gas=True),
+  ]
+
+  summary = summarize_manual_style(samples)
+  bins = {bucket.label: bucket for bucket in summary.lead_crawl_bins}
+
+  assert bins["open_to_crawl"].sample_count == 2
+  assert bins["open_to_crawl"].gas_ratio == 0.5
+  assert bins["open_to_crawl"].coast_ratio == 0.5
+  assert bins["crawl_to_follow"].sample_count == 1
+  assert bins["soft_stop"].sample_count == 1
+  assert bins["inside_stop_target"].sample_count == 1
+  assert "open_to_crawl" in {bucket.label for bucket in summary.lead_crawl_bins}
+
+
+def test_manual_style_summary_lead_crawl_bins_are_low_speed_only():
+  samples = [
+    crawl_sample(0.0, 2.5, v=0.3, a=0.10, lead_v=0.2, gas=True),
+    crawl_sample(1.0, 2.5, v=4.0, a=0.10, lead_v=4.2, gas=True),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_crawl_bins[0].label == "open_to_crawl"
+  assert summary.lead_crawl_bins[0].sample_count == 1
+
+
 def test_manual_style_summary_separates_lead_and_clear_launches():
   samples = [
     sample(0.0, 0.5, 1.4, gas=True, lead=True, d_rel=4.0),
