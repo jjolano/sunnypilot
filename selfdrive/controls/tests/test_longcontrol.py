@@ -360,6 +360,32 @@ def test_breakaway_holds_until_response_then_hands_off_to_taper():
   assert taper_accel > LAUNCH_ENVELOPE_MIN_ACCEL
 
 
+@pytest.mark.parametrize("a_target", [0.0, 0.05])
+def test_breakaway_handoff_preserves_minimum_accel_for_neutral_target(a_target):
+  CP = make_car_params(startingState=False)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+  accel_limits = (-3.0, 2.0)
+
+  output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=a_target, should_stop=False, accel_limits=accel_limits)
+  assert output_accel == pytest.approx(LAUNCH_ENVELOPE_MIN_ACCEL)
+
+  for _ in range(int(LAUNCH_BREAKAWAY_MIN_TIME / DT_CTRL) + 1):
+    output_accel = loc.update(True, make_car_state(v_ego=0.05, a_ego=LAUNCH_ENVELOPE_MIN_ACCEL), a_target=a_target,
+                              should_stop=False, accel_limits=accel_limits)
+
+  assert loc.launch_breakaway_done
+  handoff_accel = output_accel
+  assert handoff_accel > 0.0
+
+  for _ in range(8):
+    output_accel = loc.update(True, make_car_state(v_ego=0.05, a_ego=LAUNCH_ENVELOPE_MIN_ACCEL), a_target=a_target,
+                              should_stop=False, accel_limits=accel_limits)
+
+  assert handoff_accel > output_accel > 0.0
+
+
 def test_taper_update_reuses_launch_blend_for_cap_and_reset(monkeypatch):
   CP = make_car_params(startingState=False)
   CP_SP = custom.CarParamsSP.new_message()

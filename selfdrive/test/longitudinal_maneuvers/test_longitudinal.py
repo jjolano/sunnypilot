@@ -389,6 +389,26 @@ def test_predicted_pullaway_releases_before_measured_speed_threshold():
   assert np.min(output[:, 6]) > presentation_distance
 
 
+def test_short_gap_pullaway_uses_stop_distance_cushion():
+  presentation_distance = get_lead_stop_presentation_distance(0.4, 0.2, 0.8, 1.0)
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "short gap pullaway uses stop cushion",
+      duration=12.0,
+      initial_speed=0.4,
+      lead_relevancy=True,
+      initial_distance_lead=0.5 * (presentation_distance + STOP_DISTANCE),
+      speed_lead_values=[0.2, 0.2, 1.2, 2.5, 2.5],
+      cruise_values=[5.0, 5.0, 5.0, 5.0, 5.0],
+      breakpoints=[0.0, 2.0, 3.0, 5.0, 12.0],
+    )
+  )
+
+  pullaway_window = (output[:, 0] >= 2.0) & (output[:, 0] <= 3.5)
+  assert np.max(output[pullaway_window, 5]) > 0.15
+  assert np.min(output[:, 6]) > presentation_distance - 0.2
+
+
 def test_predicted_pullaway_overrides_stale_stop_hold():
   output = evaluate_maneuver_output(
     Maneuver(
