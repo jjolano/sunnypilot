@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from cereal import custom
 from openpilot.common.constants import CV
 import openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner as longitudinal_planner
@@ -69,6 +71,37 @@ def test_target_selection_keeps_lowest_non_cruise_candidate():
   assert a_target == 0.5
 
 
+def test_speed_limit_speedup_governor_caps_active_target_above_ego():
+  v_ego = 25.0
+  raw_target = 35.0
+
+  governed = longitudinal_planner.apply_speed_limit_speedup_governor(
+    speed_limit_active=True,
+    v_ego=v_ego,
+    v_target=raw_target,
+  )
+
+  expected = v_ego + longitudinal_planner.SPEED_LIMIT_SPEED_UP_ACCEL_CAP * longitudinal_planner.SPEED_LIMIT_SPEED_UP_LOOKAHEAD
+  assert governed == pytest.approx(expected)
+  assert governed < raw_target
+
+
+def test_speed_limit_speedup_governor_preserves_lower_target():
+  assert longitudinal_planner.apply_speed_limit_speedup_governor(
+    speed_limit_active=True,
+    v_ego=30.0,
+    v_target=25.0,
+  ) == pytest.approx(25.0)
+
+
+def test_speed_limit_speedup_governor_preserves_inactive_target():
+  assert longitudinal_planner.apply_speed_limit_speedup_governor(
+    speed_limit_active=False,
+    v_ego=25.0,
+    v_target=35.0,
+  ) == pytest.approx(35.0)
+
+
 class FakeResolver:
   speed_limit = 30.0
   speed_limit_final_last = 30.0
@@ -127,9 +160,11 @@ def test_speed_limit_auto_uses_assist_source_without_acceleration_seed():
 
   v_cruise = 20.0 * CV.KPH_TO_MS
   a_ego = 0.2
-  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=15.0, a_ego=a_ego, v_cruise=v_cruise)
+  v_ego = 15.0
+  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=v_ego, a_ego=a_ego, v_cruise=v_cruise)
 
-  assert v_target == FakeSpeedLimitAssist.output_v_target
+  expected = v_ego + longitudinal_planner.SPEED_LIMIT_SPEED_UP_ACCEL_CAP * longitudinal_planner.SPEED_LIMIT_SPEED_UP_LOOKAHEAD
+  assert v_target == pytest.approx(expected)
   assert a_target == a_ego
   assert planner.source == LongitudinalPlanSource.speedLimitAssist
 
