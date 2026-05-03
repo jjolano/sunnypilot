@@ -1190,6 +1190,28 @@ def test_moving_stop_approach_anticipates_confirmed_low_closure():
   assert cost > 0.0
 
 
+def test_route_like_slowing_moving_lead_prefers_moderate_decel():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  target, cost = get_moving_lead_stop_approach_comfort_target(22.0, 11.2, 8.0, -1.68, t_follow)
+
+  assert -1.5 < target < -0.3
+  assert cost > 0.0
+
+
+def test_hard_braking_moving_lead_keeps_stronger_target_when_close():
+  v_ego = 18.0
+  v_lead = 10.0
+  d_rel = 65.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert -long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP <= target < -1.0
+  assert cost > 0.0
+
+
 def test_moving_stop_approach_uses_light_decel_before_vlead_cushion_is_used():
   v_ego = 19.2
   v_lead = 17.0
