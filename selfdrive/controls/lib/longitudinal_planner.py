@@ -7,10 +7,16 @@ import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, STOP_DISTANCE
+from openpilot.selfdrive.controls.lib.longitudinal_decision import (
+  LongitudinalArbiter,
+  build_core_longitudinal_candidates,
+  resolve_longitudinal_decision,
+)
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW, get_lead_accel_recovery_a_min, get_lead_stop_presentation_distance
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
@@ -438,6 +444,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
   def __init__(self, CP, CP_SP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
     self.mpc = LongitudinalMpc(dt=dt)
+    self.params = Params()
+    self.longitudinal_arbiter = LongitudinalArbiter()
+    self.longitudinal_decision = None
+    self.longitudinal_decision_candidates = []
     LongitudinalPlannerSP.__init__(self, self.CP, CP_SP, self.mpc)
     self.fcw = False
     self.dt = dt
@@ -718,10 +728,45 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         self.mpc.source = LongitudinalPlanSource.e2e
 
     has_lead = sm['radarState'].leadOne.status or sm['radarState'].leadTwo.status
+    cruise_coast_applied = False
+    cruise_coast_a_target = output_a_target
     if should_apply_cruise_coast_overspeed(
       reset_state, force_slow_decel, e2e_active, has_lead, self.output_should_stop, self.source
     ):
-      output_a_target = apply_cruise_coast_overspeed(v_ego, v_cruise, cruise_coast_accel, output_a_target)
+      cruise_coast_a_target = apply_cruise_coast_overspeed(v_ego, v_cruise, cruise_coast_accel, output_a_target)
+      cruise_coast_applied = cruise_coast_a_target != output_a_target
+      output_a_target = cruise_coast_a_target
+
+    legacy_a_target = float(output_a_target)
+    legacy_should_stop = bool(self.output_should_stop)
+    lead_confidence = float(getattr(lead_one, "modelProb", 0.0)) if lead_one.status else 0.0
+    self.longitudinal_decision_candidates = list(getattr(self, "decision_candidates_sp", [])) + build_core_longitudinal_candidates(
+      has_lead=has_lead,
+      lead_confidence=lead_confidence,
+      v_cruise=v_cruise,
+      a_cruise=self.a_desired,
+      output_a_target_mpc=output_a_target_mpc,
+      output_should_stop_mpc=output_should_stop_mpc,
+      e2e_active=e2e_active,
+      output_a_target_e2e=output_a_target_e2e,
+      output_should_stop_e2e=output_should_stop_e2e,
+      e2e_stop_approach_a_target=e2e_stop_approach_a_target,
+      cruise_coast_applied=cruise_coast_applied,
+      cruise_coast_a_target=cruise_coast_a_target,
+    )
+    self.longitudinal_decision = resolve_longitudinal_decision(
+      enabled=self.params.get_bool("LongitudinalDecisionLayer"),
+      candidates=self.longitudinal_decision_candidates,
+      fallback_v_target=v_cruise,
+      fallback_a_target=legacy_a_target,
+      fallback_should_stop=legacy_should_stop,
+      accel_limits=(accel_clip[0], accel_clip[1]),
+      arbiter=self.longitudinal_arbiter,
+    )
+    if self.longitudinal_decision.enabled:
+      output_a_target = self.longitudinal_decision.a_target
+      self.output_should_stop = self.longitudinal_decision.should_stop
+
     self.previous_lead_loss_status = bool(lead_one.status)
     self.previous_lead_loss_d_rel = float(lead_one.dRel) if lead_one.status else 0.0
     self.previous_lead_loss_model_prob = float(lead_one.modelProb) if lead_one.status else 0.0
