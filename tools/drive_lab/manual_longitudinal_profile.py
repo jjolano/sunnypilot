@@ -6,8 +6,6 @@ from math import isfinite
 
 import numpy as np
 
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_stop_presentation_distance
-
 
 @dataclass(frozen=True)
 class ProfileRange:
@@ -106,9 +104,26 @@ _SPEED_BINS = (
   ("20+ m/s", 20.0, float("inf")),
 )
 
+STOP_DISTANCE = 6.0
+LEAD_STOP_PRESENTATION_DISTANCE = 5.0
+LEAD_STOP_PRESENTATION_CONFIDENCE_MIN = 0.75
+LEAD_STOP_PRESENTATION_V_EGO_BP = [0.0, 3.0]
+LEAD_STOP_PRESENTATION_V_LEAD_BP = [0.2, 1.0]
+LEAD_STOP_PRESENTATION_DECEL_BP = [0.0, 0.6]
+
 
 def manual_moving_samples(samples: Iterable[ManualSample]) -> list[ManualSample]:
   return [sample for sample in samples if not sample.active and sample.v_ego > 1.0]
+
+
+def lead_stop_presentation_distance(v_ego, v_lead, a_lead=0.0, model_prob=1.0):
+  confidence_blend = np.interp(model_prob, [LEAD_STOP_PRESENTATION_CONFIDENCE_MIN, 1.0], [0.0, 1.0])
+  ego_blend = 1.0 - np.interp(v_ego, LEAD_STOP_PRESENTATION_V_EGO_BP, [0.0, 1.0])
+  stopped_blend = 1.0 - np.interp(v_lead, LEAD_STOP_PRESENTATION_V_LEAD_BP, [0.0, 1.0])
+  decel_blend = 1.0 - np.interp(np.clip(-a_lead, 0.0, LEAD_STOP_PRESENTATION_DECEL_BP[-1]),
+                                LEAD_STOP_PRESENTATION_DECEL_BP, [0.0, 1.0])
+  presentation_blend = confidence_blend * ego_blend * stopped_blend * decel_blend
+  return STOP_DISTANCE - presentation_blend * (STOP_DISTANCE - LEAD_STOP_PRESENTATION_DISTANCE)
 
 
 def _lead_speed(sample: ManualSample) -> float | None:
@@ -133,7 +148,7 @@ def lead_crawl_gap_excess(sample: ManualSample) -> float | None:
   v_lead = _lead_speed(sample)
   if v_lead is None:
     return None
-  stop_target = get_lead_stop_presentation_distance(sample.v_ego, v_lead, _lead_accel(sample), _lead_model_prob(sample))
+  stop_target = lead_stop_presentation_distance(sample.v_ego, v_lead, _lead_accel(sample), _lead_model_prob(sample))
   return float(sample.lead_d_rel - stop_target)
 
 

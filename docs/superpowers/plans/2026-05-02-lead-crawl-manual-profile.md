@@ -38,12 +38,9 @@ The design also defines live stopped-lead crawl behavior. That is a separate bra
 Update the test imports at the top of `tools/drive_lab/tests/test_manual_longitudinal_profile.py`:
 
 ```python
-from dataclasses import asdict
-
 import numpy as np
 import pytest
 
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_stop_presentation_distance
 from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   ManualSample,
   ProfileRange,
@@ -51,6 +48,7 @@ from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   build_route_profile,
   classify_style,
   lead_crawl_gap_excess,
+  lead_stop_presentation_distance,
   percentile_range,
   render_manual_style_summary,
   summarize_manual_style,
@@ -81,7 +79,7 @@ def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0,
 
 def crawl_sample(t, gap_excess, v=0.3, a=0.0, lead_v=0.2, lead_a=0.0, model_prob=1.0,
                  gas=False, brake=False, route="route-a"):
-  stop_target = get_lead_stop_presentation_distance(v, lead_v, lead_a, model_prob)
+  stop_target = lead_stop_presentation_distance(v, lead_v, lead_a, model_prob)
   return sample(
     t=t,
     v=v,
@@ -108,7 +106,7 @@ def test_lead_crawl_gap_excess_uses_stop_presentation_distance():
 
 
 def test_lead_crawl_gap_excess_falls_back_to_relative_speed():
-  stop_target = get_lead_stop_presentation_distance(0.3, 0.1, 0.0, 1.0)
+  stop_target = lead_stop_presentation_distance(0.3, 0.1, 0.0, 1.0)
   crawl = sample(0.0, 0.3, 0.0, lead=True, d_rel=stop_target + 1.0, v_rel=-0.2, lead_v=None)
 
   assert lead_crawl_gap_excess(crawl) == pytest.approx(1.0)
@@ -134,10 +132,25 @@ Expected: FAIL because `lead_crawl_gap_excess` and the new `ManualSample` fields
 
 - [ ] **Step 3: Implement the minimal helper**
 
-In `tools/drive_lab/manual_longitudinal_profile.py`, add this import below the NumPy import:
+In `tools/drive_lab/manual_longitudinal_profile.py`, add a local lightweight helper that mirrors the current stop-presentation formula without importing `long_mpc`, since that module imports generated ACADOS code that is not available in isolated Drive Lab worktrees:
 
 ```python
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_stop_presentation_distance
+STOP_DISTANCE = 6.0
+LEAD_STOP_PRESENTATION_DISTANCE = 5.0
+LEAD_STOP_PRESENTATION_CONFIDENCE_MIN = 0.75
+LEAD_STOP_PRESENTATION_V_EGO_BP = [0.0, 3.0]
+LEAD_STOP_PRESENTATION_V_LEAD_BP = [0.2, 1.0]
+LEAD_STOP_PRESENTATION_DECEL_BP = [0.0, 0.6]
+
+
+def lead_stop_presentation_distance(v_ego, v_lead, a_lead=0.0, model_prob=1.0):
+  confidence_blend = np.interp(model_prob, [LEAD_STOP_PRESENTATION_CONFIDENCE_MIN, 1.0], [0.0, 1.0])
+  ego_blend = 1.0 - np.interp(v_ego, LEAD_STOP_PRESENTATION_V_EGO_BP, [0.0, 1.0])
+  stopped_blend = 1.0 - np.interp(v_lead, LEAD_STOP_PRESENTATION_V_LEAD_BP, [0.0, 1.0])
+  decel_blend = 1.0 - np.interp(np.clip(-a_lead, 0.0, LEAD_STOP_PRESENTATION_DECEL_BP[-1]),
+                                LEAD_STOP_PRESENTATION_DECEL_BP, [0.0, 1.0])
+  presentation_blend = confidence_blend * ego_blend * stopped_blend * decel_blend
+  return STOP_DISTANCE - presentation_blend * (STOP_DISTANCE - LEAD_STOP_PRESENTATION_DISTANCE)
 ```
 
 Extend `ManualSample` with these fields after `lead_v_rel`:
@@ -173,7 +186,7 @@ def lead_crawl_gap_excess(sample: ManualSample) -> float | None:
   v_lead = _lead_speed(sample)
   if v_lead is None:
     return None
-  stop_target = get_lead_stop_presentation_distance(sample.v_ego, v_lead, _lead_accel(sample), _lead_model_prob(sample))
+  stop_target = lead_stop_presentation_distance(sample.v_ego, v_lead, _lead_accel(sample), _lead_model_prob(sample))
   return float(sample.lead_d_rel - stop_target)
 ```
 

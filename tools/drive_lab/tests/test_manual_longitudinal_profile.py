@@ -1,18 +1,6 @@
-from dataclasses import asdict
-import sys
-from types import ModuleType
-
 import numpy as np
 import pytest
 
-acados_stub = ModuleType("acados_ocp_solver_pyx")
-acados_stub.AcadosOcpSolverCython = object
-sys.modules.setdefault(
-  "openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.c_generated_code.acados_ocp_solver_pyx",
-  acados_stub,
-)
-
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_stop_presentation_distance
 from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   ManualSample,
   ProfileRange,
@@ -20,6 +8,7 @@ from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   build_route_profile,
   classify_style,
   lead_crawl_gap_excess,
+  lead_stop_presentation_distance,
   percentile_range,
   render_manual_style_summary,
   summarize_manual_style,
@@ -47,7 +36,7 @@ def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0,
 
 def crawl_sample(t, gap_excess, v=0.3, a=0.0, lead_v=0.2, lead_a=0.0, model_prob=1.0,
                  gas=False, brake=False, route="route-a"):
-  stop_target = get_lead_stop_presentation_distance(v, lead_v, lead_a, model_prob)
+  stop_target = lead_stop_presentation_distance(v, lead_v, lead_a, model_prob)
   return sample(
     t=t,
     v=v,
@@ -150,7 +139,7 @@ def test_lead_crawl_gap_excess_uses_stop_presentation_distance():
 
 
 def test_lead_crawl_gap_excess_falls_back_to_relative_speed():
-  stop_target = get_lead_stop_presentation_distance(0.3, 0.1, 0.0, 1.0)
+  stop_target = lead_stop_presentation_distance(0.3, 0.1, 0.0, 1.0)
   crawl = sample(0.0, 0.3, 0.0, lead=True, d_rel=stop_target + 1.0, v_rel=-0.2, lead_v=None)
 
   assert lead_crawl_gap_excess(crawl) == pytest.approx(1.0)
