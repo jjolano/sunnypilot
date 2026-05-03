@@ -431,6 +431,7 @@ def test_render_manual_style_summary_includes_lead_crawl_sections():
 
   assert "Lead crawl bins:" in text
   assert "open_to_crawl" in text
+  assert "closing speed" in text
   assert "Lead crawl episodes:" in text
   assert payload["lead_crawl_bins"][0]["label"] == "open_to_crawl"
   assert payload["lead_crawl_episodes"][0]["label"] == "crawl_to_follow"

@@ -479,7 +479,8 @@ def _render_lead_crawl_bin(crawl_bin: LeadCrawlBucketSummary) -> str:
     + f"lead {crawl_bin.lead_speed.low:.2f} to {crawl_bin.lead_speed.high:.2f} m/s, "
     + f"relative {crawl_bin.relative_speed.low:.2f} to {crawl_bin.relative_speed.high:.2f} m/s, "
     + f"accel {crawl_bin.accel.low:.3f} to {crawl_bin.accel.high:.3f} m/s^2, "
-    + f"closing {crawl_bin.closing_ratio:.1%}"
+    + f"closing {crawl_bin.closing_ratio:.1%}, "
+    + f"closing speed {crawl_bin.closing_speed.low:.2f} to {crawl_bin.closing_speed.high:.2f} m/s"
   )
 
 
