@@ -9,6 +9,7 @@ from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
+from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -54,6 +55,63 @@ def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, sc
   )
 
 
+def build_sp_longitudinal_candidates(speed_limit_active, cruise, scc_vision, scc_vision_active, scc_map, scc_map_active,
+                                     speed_limit_assist, osm_traffic_control, osm_traffic_control_active):
+  cruise_v, cruise_a = cruise
+  candidates = [LongitudinalCandidate(
+    source=DecisionSource.CRUISE,
+    role=CandidateRole.DRIVER_INTENT,
+    v_target=cruise_v,
+    a_target=cruise_a,
+    confidence=1.0,
+    urgency=0.1,
+    active_reason="driver_cruise_target",
+  )]
+
+  if speed_limit_active:
+    candidates.append(LongitudinalCandidate(
+      source=DecisionSource.SPEED_LIMIT,
+      role=CandidateRole.ADVISORY_CAP,
+      v_target=speed_limit_assist[0],
+      a_target=speed_limit_assist[1],
+      confidence=0.85,
+      urgency=0.35,
+      active_reason="speed_limit_assist_active",
+    ))
+  if scc_vision_active:
+    candidates.append(LongitudinalCandidate(
+      source=DecisionSource.SCC_VISION,
+      role=CandidateRole.ADVISORY_CAP,
+      v_target=scc_vision[0],
+      a_target=scc_vision[1],
+      confidence=0.80,
+      urgency=0.45,
+      active_reason="confident_vision_curve",
+    ))
+  if scc_map_active:
+    candidates.append(LongitudinalCandidate(
+      source=DecisionSource.SCC_MAP,
+      role=CandidateRole.ADVISORY_CAP,
+      v_target=scc_map[0],
+      a_target=scc_map[1],
+      confidence=0.80,
+      urgency=0.40,
+      active_reason="confident_map_curve",
+    ))
+  if osm_traffic_control_active:
+    candidates.append(LongitudinalCandidate(
+      source=DecisionSource.OSM_TRAFFIC_CONTROL,
+      role=CandidateRole.ADVISORY_CAP,
+      v_target=osm_traffic_control[0],
+      a_target=osm_traffic_control[1],
+      confidence=0.75,
+      urgency=0.55,
+      active_reason="model_confirmed_map_caution",
+    ))
+
+  return candidates
+
+
 class LongitudinalPlannerSP:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
     self.events_sp = EventsSP()
@@ -69,6 +127,7 @@ class LongitudinalPlannerSP:
 
     self.output_v_target = 0.
     self.output_a_target = 0.
+    self.decision_candidates_sp = []
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -99,6 +158,18 @@ class LongitudinalPlannerSP:
                     coast_accel=coast_accel)
 
     self.osm_traffic_control_prior.update(sm, long_enabled, long_override, v_ego, a_ego)
+
+    self.decision_candidates_sp = build_sp_longitudinal_candidates(
+      self.sla.is_active,
+      (v_cruise, a_ego),
+      (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
+      self.scc.vision.is_active,
+      (self.scc.map.output_v_target, self.scc.map.output_a_target),
+      self.scc.map.is_active,
+      (self.sla.output_v_target, self.sla.output_a_target),
+      (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
+      self.osm_traffic_control_prior.active,
+    )
 
     self.source, self.output_v_target, self.output_a_target = select_lowest_longitudinal_target(
       self.sla.is_active,

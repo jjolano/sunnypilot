@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from cereal import custom
 from openpilot.common.constants import CV
+from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource
 import openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner as longitudinal_planner
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
@@ -92,8 +93,8 @@ class FakeSpeedLimitAssist:
 
 class FakeSmartCruiseControl:
   def __init__(self):
-    self.vision = SimpleNamespace(output_v_target=255.0, output_a_target=0.0)
-    self.map = SimpleNamespace(output_v_target=255.0, output_a_target=0.0)
+    self.vision = SimpleNamespace(output_v_target=255.0, output_a_target=0.0, is_active=False)
+    self.map = SimpleNamespace(output_v_target=255.0, output_a_target=0.0, is_active=False)
 
   def update(self, sm, long_enabled, long_override, v_ego, a_ego, v_cruise):
     pass
@@ -102,6 +103,7 @@ class FakeSmartCruiseControl:
 class FakeOsmTrafficControlPrior:
   output_v_target = 255.0
   output_a_target = 0.0
+  active = False
 
   def update(self, *args):
     pass
@@ -153,3 +155,43 @@ def test_speed_limit_resolver_receives_coast_accel():
                                        coast_accel=coast_accel)
 
   assert planner.resolver.coast_accel == coast_accel
+
+
+def test_sp_candidate_builder_includes_cruise_and_active_advisories():
+  candidates = longitudinal_planner.build_sp_longitudinal_candidates(
+    speed_limit_active=True,
+    cruise=(25.0, 0.1),
+    scc_vision=(22.0, -0.2),
+    scc_vision_active=True,
+    scc_map=(24.0, -0.1),
+    scc_map_active=False,
+    speed_limit_assist=(20.0, -0.3),
+    osm_traffic_control=(18.0, -0.4),
+    osm_traffic_control_active=True,
+  )
+
+  assert [candidate.source for candidate in candidates] == [
+    DecisionSource.CRUISE,
+    DecisionSource.SPEED_LIMIT,
+    DecisionSource.SCC_VISION,
+    DecisionSource.OSM_TRAFFIC_CONTROL,
+  ]
+  assert all(candidate.valid for candidate in candidates)
+  assert candidates[0].role == CandidateRole.DRIVER_INTENT
+  assert all(candidate.role == CandidateRole.ADVISORY_CAP for candidate in candidates[1:])
+
+
+def test_sp_candidate_builder_skips_inactive_advisories():
+  candidates = longitudinal_planner.build_sp_longitudinal_candidates(
+    speed_limit_active=False,
+    cruise=(25.0, 0.1),
+    scc_vision=(22.0, -0.2),
+    scc_vision_active=False,
+    scc_map=(24.0, -0.1),
+    scc_map_active=False,
+    speed_limit_assist=(20.0, -0.3),
+    osm_traffic_control=(18.0, -0.4),
+    osm_traffic_control_active=False,
+  )
+
+  assert [candidate.source for candidate in candidates] == [DecisionSource.CRUISE]
