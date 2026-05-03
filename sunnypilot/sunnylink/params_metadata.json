@@ -1323,6 +1323,54 @@
     "title": "Sunnylinkd Pid",
     "description": ""
   },
+  "EnableTailscale": {
+    "title": "Enable Tailscale",
+    "description": ""
+  },
+  "TailscaledPid": {
+    "title": "Tailscaled Pid",
+    "description": ""
+  },
+  "TailscaleAuthURL": {
+    "title": "Tailscale Auth URL",
+    "description": ""
+  },
+  "TailscaleInstallProgress": {
+    "title": "Tailscale Install Progress",
+    "description": ""
+  },
+  "TailscaleInstallRequested": {
+    "title": "Tailscale Install Requested",
+    "description": ""
+  },
+  "TailscaleInstallState": {
+    "title": "Tailscale Install State",
+    "description": ""
+  },
+  "TailscaleInstalledVersion": {
+    "title": "Tailscale Installed Version",
+    "description": ""
+  },
+  "TailscaleLastError": {
+    "title": "Tailscale Last Error",
+    "description": ""
+  },
+  "TailscaleLatestVersion": {
+    "title": "Tailscale Latest Version",
+    "description": ""
+  },
+  "TailscaleLoginRequested": {
+    "title": "Tailscale Login Requested",
+    "description": ""
+  },
+  "TailscaleLogoutRequested": {
+    "title": "Tailscale Logout Requested",
+    "description": ""
+  },
+  "TailscaleState": {
+    "title": "Tailscale State",
+    "description": ""
+  },
   "TermsVersion": {
     "title": "Terms Version",
     "description": ""
