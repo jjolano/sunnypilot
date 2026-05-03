@@ -67,3 +67,120 @@ class LongitudinalCandidate:
   @property
   def valid(self) -> bool:
     return self.invalid_reason == ""
+
+
+PHYSICAL_CONFIDENCE_MIN = 0.55
+ADVISORY_CONFIDENCE_MIN = 0.75
+COMFORT_CONFIDENCE_MIN = 0.50
+
+
+@dataclass(frozen=True)
+class LongitudinalDecision:
+  enabled: bool
+  winner: DecisionSource
+  v_target: float
+  a_target: float
+  should_stop: bool
+  candidates: tuple[LongitudinalCandidate, ...] = ()
+  suppressed: list[tuple[DecisionSource, str]] = field(default_factory=list)
+  fallback_reason: str = ""
+
+  def inside_accel_limits(self, accel_limits: tuple[float, float]) -> bool:
+    lo, hi = accel_limits
+    return math.isfinite(self.a_target) and lo <= self.a_target <= hi
+
+
+def _fallback_decision(v_target: float, a_target: float, should_stop: bool, reason: str) -> LongitudinalDecision:
+  return LongitudinalDecision(
+    enabled=False,
+    winner=DecisionSource.LEGACY_FALLBACK,
+    v_target=float(v_target),
+    a_target=float(a_target),
+    should_stop=bool(should_stop),
+    fallback_reason=reason,
+  )
+
+
+class LongitudinalArbiter:
+  def decide(self, candidates: list[LongitudinalCandidate] | tuple[LongitudinalCandidate, ...]) -> LongitudinalDecision:
+    valid = [candidate for candidate in candidates if candidate.valid]
+    suppressed: list[tuple[DecisionSource, str]] = [
+      (candidate.source, candidate.invalid_reason) for candidate in candidates if not candidate.valid
+    ]
+
+    driver = next((candidate for candidate in valid if candidate.role == CandidateRole.DRIVER_INTENT), None)
+    if driver is None:
+      driver = LongitudinalCandidate(
+        source=DecisionSource.LEGACY_FALLBACK,
+        role=CandidateRole.FALLBACK,
+        v_target=0.0,
+        a_target=0.0,
+        confidence=1.0,
+        urgency=0.0,
+        active_reason="missing_driver_intent",
+      )
+
+    physical = [
+      candidate for candidate in valid
+      if candidate.role == CandidateRole.PHYSICAL_HAZARD and candidate.confidence >= PHYSICAL_CONFIDENCE_MIN
+    ]
+    low_confidence = [
+      candidate for candidate in valid
+      if candidate.role in (CandidateRole.PHYSICAL_HAZARD, CandidateRole.ADVISORY_CAP)
+      and candidate.confidence < (PHYSICAL_CONFIDENCE_MIN if candidate.role == CandidateRole.PHYSICAL_HAZARD else ADVISORY_CONFIDENCE_MIN)
+    ]
+    suppressed.extend((candidate.source, "low_confidence") for candidate in low_confidence)
+
+    if physical:
+      winner = min(physical, key=lambda candidate: (candidate.a_target, candidate.v_target))
+      suppressed.extend(
+        (candidate.source, "physical_hazard_active") for candidate in valid
+        if candidate is not winner and candidate.role != CandidateRole.PHYSICAL_HAZARD
+      )
+    else:
+      advisory = [
+        candidate for candidate in valid
+        if candidate.role == CandidateRole.ADVISORY_CAP
+        and candidate.confidence >= ADVISORY_CONFIDENCE_MIN
+        and candidate.v_target < driver.v_target
+      ]
+      if advisory:
+        winner = min(advisory, key=lambda candidate: (candidate.v_target, candidate.a_target))
+        suppressed.extend((candidate.source, "higher_advisory_target") for candidate in advisory if candidate is not winner)
+      else:
+        comfort = [
+          candidate for candidate in valid
+          if candidate.role == CandidateRole.COMFORT_SHAPING
+          and candidate.confidence >= COMFORT_CONFIDENCE_MIN
+          and candidate.a_target > driver.a_target
+        ]
+        winner = max(comfort, key=lambda candidate: candidate.a_target) if comfort else driver
+
+    return LongitudinalDecision(
+      enabled=True,
+      winner=winner.source,
+      v_target=winner.v_target,
+      a_target=winner.a_target,
+      should_stop=winner.should_stop,
+      candidates=tuple(valid),
+      suppressed=list(dict.fromkeys(suppressed)),
+    )
+
+
+def resolve_longitudinal_decision(enabled: bool, candidates: list[LongitudinalCandidate] | tuple[LongitudinalCandidate, ...],
+                                  fallback_v_target: float, fallback_a_target: float, fallback_should_stop: bool,
+                                  accel_limits: tuple[float, float], arbiter: LongitudinalArbiter) -> LongitudinalDecision:
+  if not enabled:
+    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "feature_flag_disabled")
+
+  try:
+    decision = arbiter.decide(candidates)
+  except Exception:
+    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "arbiter_exception")
+
+  if not math.isfinite(decision.v_target) or not math.isfinite(decision.a_target):
+    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "decision_non_finite")
+  if not decision.inside_accel_limits(accel_limits):
+    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "decision_outside_accel_limits")
+
+  return decision
