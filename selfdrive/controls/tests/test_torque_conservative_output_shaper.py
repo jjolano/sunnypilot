@@ -557,6 +557,58 @@ def test_stale_actuator_reversal_slews_under_response_catchup():
   assert 0.0 < result.output_torque - first.output_torque <= 0.002 + 1e-6
 
 
+def test_same_direction_safety_limit_follows_applied_output():
+  result = assert_cap_only(make_inputs(steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=1.0, desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.2))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert result.output_cap == pytest.approx(0.35)
+  assert result.output_torque == pytest.approx(0.35)
+
+
+def test_same_direction_safety_limit_caps_under_response_catchup():
+  result = assert_cap_only(make_inputs(steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=1.0, desired_lateral_accel=0.8, actual_lateral_accel=0.4,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.2))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert result.output_cap == pytest.approx(0.35)
+  assert result.output_torque == pytest.approx(0.35)
+
+
+def test_same_direction_safety_limit_does_not_cap_unwind():
+  result = assert_cap_only(make_inputs(steer_limited_by_safety=True, steer_limit_same_direction=False, steer_limit_unwind=True,
+                                       unshaped_output=1.0, desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.2))
+
+  assert not result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert result.output_torque == result.unshaped_output
+
+
+def test_same_direction_safety_limit_does_not_cap_corrective_output():
+  result = assert_cap_only(make_inputs(steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=-1.0, desired_lateral_accel=0.4, actual_lateral_accel=0.8,
+                                       steer_limit_requested_output=-1.0, steer_limit_applied_output=-0.2))
+
+  assert not result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert result.output_torque == result.unshaped_output
+
+
+def test_same_direction_safety_limit_keeps_stale_reversal_cap():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steering_rate_deg=40.0, unshaped_output=0.8,
+                                       desired_lateral_accel=0.8, actual_lateral_accel=0.72,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=-0.25))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+  assert not result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert result.output_cap == 0.35
+
+
 def test_recent_actuator_lag_comfort_does_not_rate_limit_next_low_rate_opposing_output():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
   shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
