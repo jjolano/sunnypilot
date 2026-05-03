@@ -1,10 +1,13 @@
 import math
 
+import pytest
+
 from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   CandidateRole,
   DecisionSource,
   LongitudinalArbiter,
   LongitudinalCandidate,
+  build_core_longitudinal_candidates,
   resolve_longitudinal_decision,
 )
 
@@ -247,3 +250,68 @@ def test_resolver_falls_back_when_physical_hazard_has_no_driver_intent():
   assert decision.v_target == 25.0
   assert decision.a_target == -0.4
   assert decision.fallback_reason == "missing_driver_intent"
+
+
+def test_core_candidate_builder_adds_confirmed_lead_candidate():
+  candidates = build_core_longitudinal_candidates(
+    has_lead=True,
+    lead_confidence=0.82,
+    v_cruise=27.0,
+    a_cruise=0.1,
+    output_a_target_mpc=-0.7,
+    output_should_stop_mpc=False,
+    e2e_active=False,
+    output_a_target_e2e=0.0,
+    output_should_stop_e2e=False,
+    e2e_stop_approach_a_target=0.0,
+    cruise_coast_applied=False,
+    cruise_coast_a_target=0.0,
+  )
+
+  lead = next(candidate for candidate in candidates if candidate.source == DecisionSource.LEAD_MPC)
+  assert lead.role == CandidateRole.PHYSICAL_HAZARD
+  assert lead.confidence == pytest.approx(0.82)
+  assert lead.a_target == -0.7
+
+
+def test_core_candidate_builder_adds_e2e_stop_candidate_for_active_stop():
+  candidates = build_core_longitudinal_candidates(
+    has_lead=False,
+    lead_confidence=0.0,
+    v_cruise=27.0,
+    a_cruise=0.1,
+    output_a_target_mpc=0.0,
+    output_should_stop_mpc=False,
+    e2e_active=True,
+    output_a_target_e2e=-1.0,
+    output_should_stop_e2e=True,
+    e2e_stop_approach_a_target=0.0,
+    cruise_coast_applied=False,
+    cruise_coast_a_target=0.0,
+  )
+
+  e2e = next(candidate for candidate in candidates if candidate.source == DecisionSource.E2E_STOP)
+  assert e2e.role == CandidateRole.PHYSICAL_HAZARD
+  assert e2e.should_stop
+  assert e2e.confidence == pytest.approx(0.85)
+
+
+def test_core_candidate_builder_adds_cruise_coast_comfort_candidate():
+  candidates = build_core_longitudinal_candidates(
+    has_lead=False,
+    lead_confidence=0.0,
+    v_cruise=25.0,
+    a_cruise=-0.8,
+    output_a_target_mpc=-0.8,
+    output_should_stop_mpc=False,
+    e2e_active=False,
+    output_a_target_e2e=0.0,
+    output_should_stop_e2e=False,
+    e2e_stop_approach_a_target=0.0,
+    cruise_coast_applied=True,
+    cruise_coast_a_target=-0.2,
+  )
+
+  coast = next(candidate for candidate in candidates if candidate.source == DecisionSource.CRUISE_COAST)
+  assert coast.role == CandidateRole.COMFORT_SHAPING
+  assert coast.a_target == -0.2

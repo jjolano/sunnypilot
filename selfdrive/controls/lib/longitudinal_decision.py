@@ -198,3 +198,50 @@ def resolve_longitudinal_decision(enabled: bool, candidates: list[LongitudinalCa
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "decision_outside_accel_limits")
 
   return decision
+
+
+def build_core_longitudinal_candidates(has_lead: bool, lead_confidence: float, v_cruise: float, a_cruise: float,
+                                       output_a_target_mpc: float, output_should_stop_mpc: bool,
+                                       e2e_active: bool, output_a_target_e2e: float, output_should_stop_e2e: bool,
+                                       e2e_stop_approach_a_target: float,
+                                       cruise_coast_applied: bool, cruise_coast_a_target: float) -> list[LongitudinalCandidate]:
+  candidates: list[LongitudinalCandidate] = []
+
+  if has_lead:
+    candidates.append(LongitudinalCandidate(
+      source=DecisionSource.LEAD_MPC,
+      role=CandidateRole.PHYSICAL_HAZARD,
+      v_target=max(0.0, v_cruise),
+      a_target=output_a_target_mpc,
+      confidence=max(0.60, lead_confidence),
+      urgency=0.70 if output_a_target_mpc < -0.3 or output_should_stop_mpc else 0.45,
+      active_reason="confirmed_radar_lead",
+      should_stop=output_should_stop_mpc,
+    ))
+
+  if e2e_active or output_should_stop_e2e or e2e_stop_approach_a_target < 0.0:
+    e2e_accel = min(output_a_target_e2e, e2e_stop_approach_a_target) if e2e_stop_approach_a_target < 0.0 else output_a_target_e2e
+    candidates.append(LongitudinalCandidate(
+      source=DecisionSource.E2E_STOP,
+      role=CandidateRole.PHYSICAL_HAZARD,
+      v_target=max(0.0, v_cruise),
+      a_target=e2e_accel,
+      confidence=0.85 if output_should_stop_e2e else 0.65,
+      urgency=0.80 if output_should_stop_e2e else 0.55,
+      active_reason="model_stop_or_slowdown",
+      should_stop=output_should_stop_e2e,
+    ))
+
+  if cruise_coast_applied:
+    candidates.append(LongitudinalCandidate(
+      source=DecisionSource.CRUISE_COAST,
+      role=CandidateRole.COMFORT_SHAPING,
+      v_target=max(0.0, v_cruise),
+      a_target=cruise_coast_a_target,
+      confidence=0.80,
+      urgency=0.20,
+      active_reason="context_efficient_overspeed_coast",
+      debug={"legacy_cruise_accel": float(a_cruise)},
+    ))
+
+  return candidates
