@@ -274,6 +274,26 @@ def test_core_candidate_builder_adds_confirmed_lead_candidate():
   assert lead.a_target == -0.7
 
 
+def test_core_candidate_builder_preserves_low_lead_confidence():
+  candidates = build_core_longitudinal_candidates(
+    has_lead=True,
+    lead_confidence=0.2,
+    v_cruise=27.0,
+    a_cruise=0.1,
+    output_a_target_mpc=-0.7,
+    output_should_stop_mpc=False,
+    e2e_active=False,
+    output_a_target_e2e=0.0,
+    output_should_stop_e2e=False,
+    e2e_stop_approach_a_target=0.0,
+    cruise_coast_applied=False,
+    cruise_coast_a_target=0.0,
+  )
+
+  lead = next(candidate for candidate in candidates if candidate.source == DecisionSource.LEAD_MPC)
+  assert lead.confidence == pytest.approx(0.2)
+
+
 def test_core_candidate_builder_adds_e2e_stop_candidate_for_active_stop():
   candidates = build_core_longitudinal_candidates(
     has_lead=False,

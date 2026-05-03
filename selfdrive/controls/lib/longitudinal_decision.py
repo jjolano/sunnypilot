@@ -213,7 +213,7 @@ def build_core_longitudinal_candidates(has_lead: bool, lead_confidence: float, v
       role=CandidateRole.PHYSICAL_HAZARD,
       v_target=max(0.0, v_cruise),
       a_target=output_a_target_mpc,
-      confidence=max(0.60, lead_confidence),
+      confidence=lead_confidence,
       urgency=0.70 if output_a_target_mpc < -0.3 or output_should_stop_mpc else 0.45,
       active_reason="confirmed_radar_lead",
       should_stop=output_should_stop_mpc,
