@@ -80,7 +80,7 @@ def test_summarize_window_attributes_active_radar_lead_braking():
 
 def test_summarize_window_attributes_driver_override_before_planner_sources():
   msgs = [
-    msg("carState", 0.0, vEgo=12.0, brakePressed=True, gasPressed=False),
+    msg("carState", 1.0, vEgo=12.0, brakePressed=True, gasPressed=False),
     msg("radarState", 0.5, leadOne=SimpleNamespace(status=True, dRel=20.0, vRel=-3.0)),
     msg("longitudinalPlan", 1.0, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-1.0),
   ]
@@ -90,6 +90,36 @@ def test_summarize_window_attributes_driver_override_before_planner_sources():
   assert "likely cause: driver" in rendered
   assert "driver brake pressed" in rendered
   assert "planner source lead0" in rendered
+
+
+def test_summarize_window_ignores_stale_driver_brake_before_event_local_car_state():
+  msgs = [
+    msg("carState", 0.1, vEgo=12.0, brakePressed=True, gasPressed=False),
+    msg("radarState", 0.5, leadOne=SimpleNamespace(status=True, dRel=20.0, vRel=-3.0)),
+    msg("carState", 1.0, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-1.0),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: lead" in rendered
+  assert "driver brake pressed" not in rendered
+  assert "planner source lead0" in rendered
+
+
+def test_summarize_window_ignores_post_event_driver_brake_when_prior_car_state_is_clear():
+  msgs = [
+    msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("carState", 0.8, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.1),
+    msg("carState", 1.1, vEgo=12.0, brakePressed=True, gasPressed=False),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: planner_source" in rendered
+  assert "driver brake pressed" not in rendered
+  assert "planner source cruise" in rendered
 
 
 def test_summarize_window_attributes_planner_source_with_lead_but_no_braking():

@@ -124,8 +124,7 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
     "sp_samples": [],
     "lead_present": False,
     "lead_braking": False,
-    "driver_brake": False,
-    "driver_gas": False,
+    "driver_samples": [],
     "lead_times": [],
     "braking_times": [],
     "lead_gaps": [],
@@ -161,10 +160,11 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       for field, label in (("brakePressed", "brake pressed"), ("gasPressed", "gas pressed"), ("standstill", "standstill")):
         value = bool(safe_get(payload, field, False))
         add_change(t, f"carState.{field}", value, "car", f"{label}: {value}")
-      if bool(safe_get(payload, "brakePressed", False)):
-        attribution_facts["driver_brake"] = True
-      if bool(safe_get(payload, "gasPressed", False)):
-        attribution_facts["driver_gas"] = True
+      attribution_facts["driver_samples"].append({
+        "time_s": t,
+        "brake": bool(safe_get(payload, "brakePressed", False)),
+        "gas": bool(safe_get(payload, "gasPressed", False)),
+      })
     elif typ == "selfdriveState":
       for field in ("enabled", "active", "experimentalMode", "personality"):
         value = safe_get(payload, field)
@@ -287,9 +287,10 @@ def render_summary(summary: EventWindowSummary) -> str:
 
 def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
   evidence = _attribution_evidence(facts)
+  driver_sample = _event_local_sample(facts["driver_samples"], facts["event_time_s"])
   sp_sample = _event_local_sp_sample(facts["sp_samples"], facts["event_time_s"])
   sp_source_cause = _sp_source_cause(sp_sample)
-  if facts["driver_brake"] or facts["driver_gas"]:
+  if driver_sample is not None and (driver_sample["brake"] or driver_sample["gas"]):
     cause = "driver"
   elif _has_lead_source(facts["planner_sources"]) or facts["lead_braking"] or _has_correlated_lead_braking(facts):
     cause = "lead"
@@ -314,9 +315,10 @@ def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
 
 def _attribution_evidence(facts: dict[str, Any]) -> list[str]:
   evidence: list[str] = []
-  if facts["driver_brake"]:
+  driver_sample = _event_local_sample(facts["driver_samples"], facts["event_time_s"])
+  if driver_sample is not None and driver_sample["brake"]:
     evidence.append("driver brake pressed")
-  if facts["driver_gas"]:
+  if driver_sample is not None and driver_sample["gas"]:
     evidence.append("driver gas pressed")
   for source in _unique_ordered(facts["planner_sources"]):
     evidence.append(f"planner source {source}")
@@ -361,6 +363,10 @@ def _sp_source_cause(sample: dict[str, Any] | None) -> str | None:
 
 
 def _event_local_sp_sample(samples: list[dict[str, Any]], event_time_s: float) -> dict[str, Any] | None:
+  return _event_local_sample(samples, event_time_s)
+
+
+def _event_local_sample(samples: list[dict[str, Any]], event_time_s: float) -> dict[str, Any] | None:
   if not samples:
     return None
   prior_samples = [sample for sample in samples if float(sample["time_s"]) <= event_time_s]
