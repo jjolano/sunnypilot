@@ -66,7 +66,15 @@ def build_route_profile(route: str, samples: Iterable[ManualSample], min_manual_
 
 
 def clean_finite(values: Iterable[float]) -> list[float]:
-  return [float(value) for value in values if isinstance(value, int | float) and isfinite(float(value))]
+  clean = []
+  for value in values:
+    try:
+      numeric_value = float(value)
+    except (TypeError, ValueError):
+      continue
+    if isfinite(numeric_value):
+      clean.append(numeric_value)
+  return clean
 
 
 def percentile_range(values: Iterable[float], low_pct: float, high_pct: float) -> ProfileRange:

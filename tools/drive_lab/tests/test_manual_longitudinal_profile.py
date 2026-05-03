@@ -1,3 +1,5 @@
+import numpy as np
+
 from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   ManualSample,
   ProfileRange,
@@ -27,6 +29,24 @@ def test_percentile_range_uses_requested_percentiles():
   result = percentile_range([0.0, 1.0, 2.0, 3.0, 4.0], low_pct=25.0, high_pct=75.0)
 
   assert result == ProfileRange(low=1.0, high=3.0)
+
+
+def test_percentile_range_accepts_numpy_float_scalars():
+  result = percentile_range([np.float32(1.0), np.float32(2.0), np.float32(3.0)], 0.0, 100.0)
+
+  assert result == ProfileRange(1.0, 3.0)
+
+
+def test_percentile_range_accepts_numpy_int_scalars():
+  result = percentile_range([np.int64(1), np.int64(2), np.int64(3)], 0.0, 100.0)
+
+  assert result == ProfileRange(1.0, 3.0)
+
+
+def test_percentile_range_ignores_non_finite_values():
+  result = percentile_range([float("nan"), 1.0, float("inf"), 3.0], 0.0, 100.0)
+
+  assert result == ProfileRange(1.0, 3.0)
 
 
 def test_classifies_smooth_assertive_profile_inside_envelope():
