@@ -1226,6 +1226,20 @@ def test_hard_braking_moving_lead_keeps_stronger_target_near_danger_boundary():
   assert cost > 0.0
 
 
+def test_low_speed_hard_braking_moving_lead_keeps_stronger_target_near_danger_boundary():
+  v_ego = 10.0
+  v_lead = 8.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+  d_rel = min_gap + 0.5
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < -1.0
+  assert cost > 0.0
+
+
 def test_moving_stop_approach_keeps_stronger_target_for_fast_runway_critical_lead():
   v_ego = 18.6
   v_lead = 15.0
