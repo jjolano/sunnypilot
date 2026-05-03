@@ -1369,6 +1369,25 @@ def test_moving_lead_closing_cushion_stays_off_when_far_opening_or_urgent():
   assert stopped_cost == pytest.approx(0.0)
 
 
+def test_vectorized_moving_lead_closing_cushion_matches_scalar_targets():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_leads = np.array([20.0, 20.0, 22.5, 0.3])
+  d_rels = np.array([
+    get_desired_follow_distance(v_ego, 20.0, t_follow) - 1.0,
+    get_lead_gap_comfort_floor(v_ego, 20.0, t_follow) + 1.0,
+    get_desired_follow_distance(v_ego, 22.5, t_follow) - 1.0,
+    20.0,
+  ])
+
+  targets, costs = get_moving_lead_closing_cushion_target(d_rels, v_ego, v_leads, t_follow)
+  expected = [get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow)
+              for d_rel, v_lead in zip(d_rels, v_leads, strict=True)]
+
+  np.testing.assert_allclose(targets, [target for target, _ in expected], rtol=0.0, atol=1e-12)
+  np.testing.assert_allclose(costs, [cost for _, cost in expected], rtol=0.0, atol=1e-12)
+
+
 def test_approach_engage_offset_stays_off_without_closure_or_runway():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   assert get_approach_engage_offset(20.0, 40.0, 20.0, t_follow) == pytest.approx(0.0)
