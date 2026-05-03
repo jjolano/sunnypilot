@@ -37,12 +37,13 @@ def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0,
 
 
 def crawl_sample(t, gap_excess, v=0.3, a=0.0, lead_v=0.2, lead_a=0.0, model_prob=1.0,
-                 gas=False, brake=False, route="route-a"):
+                 gas=False, brake=False, route="route-a", active=False):
   stop_target = lead_stop_presentation_distance(v, lead_v, lead_a, model_prob)
   return sample(
     t=t,
     v=v,
     a=a,
+    active=active,
     gas=gas,
     brake=brake,
     lead=True,
@@ -255,6 +256,18 @@ def test_manual_style_summary_breaks_crawl_episodes_on_invalid_intervening_sampl
   samples = [
     crawl_sample(0.0, 2.4, v=0.2, lead_v=0.2),
     crawl_sample(1.0, 1.6, v=3.0, lead_v=0.2),
+    crawl_sample(2.0, 0.9, v=0.3, lead_v=0.0),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_crawl_episodes == []
+
+
+def test_manual_style_summary_breaks_crawl_episodes_on_active_intervening_samples():
+  samples = [
+    crawl_sample(0.0, 2.4, v=0.2, lead_v=0.2),
+    crawl_sample(1.0, 1.6, v=0.2, lead_v=0.2, active=True),
     crawl_sample(2.0, 0.9, v=0.3, lead_v=0.0),
   ]
 

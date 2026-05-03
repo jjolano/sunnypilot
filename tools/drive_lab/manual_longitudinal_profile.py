@@ -201,7 +201,8 @@ def build_route_profile(route: str, samples: Iterable[ManualSample], min_manual_
 
 
 def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummary:
-  ordered = sorted((sample for sample in samples if not sample.active), key=lambda sample: (sample.route, sample.t))
+  ordered_all = sorted(samples, key=lambda sample: (sample.route, sample.t))
+  ordered = [sample for sample in ordered_all if not sample.active]
   moving = manual_moving_samples(ordered)
   launches = _pedal_episodes(ordered, pedal="gas_pressed")
   stops = _pedal_episodes(ordered, pedal="brake_pressed")
@@ -238,7 +239,7 @@ def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummar
     speed_bins=_summarize_speed_bins(moving),
     following_bins=_summarize_following_bins(moving),
     lead_crawl_bins=_summarize_lead_crawl_bins(ordered),
-    lead_crawl_episodes=_summarize_lead_crawl_episodes(ordered),
+    lead_crawl_episodes=_summarize_lead_crawl_episodes(ordered_all),
     style=style,
   )
 
@@ -345,6 +346,8 @@ def _lead_crawl_sample_details(samples: list[ManualSample]) -> list[tuple[Manual
 
 
 def _lead_crawl_sample_detail(sample: ManualSample) -> tuple[ManualSample, float, float] | None:
+  if sample.active:
+    return None
   gap_excess = lead_crawl_gap_excess(sample)
   v_lead = _lead_speed(sample)
   if gap_excess is None or v_lead is None:
