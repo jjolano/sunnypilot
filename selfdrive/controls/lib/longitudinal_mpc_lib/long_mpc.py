@@ -148,6 +148,13 @@ MOVING_LEAD_STOP_RESERVE_V_EGO_BP = [0.2, 3.0]
 MOVING_LEAD_STOP_RESERVE_V_LEAD_BP = [0.1, 1.5]
 MOVING_LEAD_STOP_RESERVE_CLOSING_BP = [0.1, 1.5]
 MOVING_LEAD_STOP_RESERVE_DECEL_BP = [0.05, 0.5]
+MOVING_LEAD_CLOSING_CUSHION_V_EGO_BP = [7.0, 13.0]
+MOVING_LEAD_CLOSING_CUSHION_V_LEAD_BP = [2.0, 4.0]
+MOVING_LEAD_CLOSING_CUSHION_CLOSING_BP = [0.3, 2.0, 3.5]
+MOVING_LEAD_CLOSING_CUSHION_GAP_EXCESS_BP = [0.0, 6.0]
+MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN = -0.15
+MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX = 0.55
+MOVING_LEAD_CLOSING_CUSHION_COST = 1.5
 SLOW_MOVING_LEAD_RUNWAY_RELAXATION_MAX = 1.0
 SLOW_MOVING_LEAD_RUNWAY_RELAXATION_CAP = 1.0
 SLOW_MOVING_LEAD_RUNWAY_RELAXATION_V_EGO_BP = [0.1, 0.5]
@@ -384,6 +391,38 @@ def should_count_lead_transition_fcw(model_prob, transition_release):
   return bool(model_prob > 0.9 and transition_release <= 0.01)
 
 
+def get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow):
+  d_rel = np.asarray(d_rel, dtype=float)
+  v_lead = np.asarray(v_lead, dtype=float)
+  closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  cushion_range = np.maximum(desired_gap - comfort_floor, 1e-3)
+  cushion_used = np.clip((desired_gap - d_rel) / cushion_range, 0.0, 1.0)
+
+  speed_blend = np.interp(v_ego, MOVING_LEAD_CLOSING_CUSHION_V_EGO_BP, [0.0, 1.0])
+  moving_blend = np.interp(v_lead, MOVING_LEAD_CLOSING_CUSHION_V_LEAD_BP, [0.0, 1.0])
+  closing_blend = np.interp(closing_speed, MOVING_LEAD_CLOSING_CUSHION_CLOSING_BP, [0.0, 1.0, 0.0])
+  gap_blend = np.where(
+    d_rel > desired_gap,
+    1.0 - np.interp(d_rel - desired_gap, MOVING_LEAD_CLOSING_CUSHION_GAP_EXCESS_BP, [0.0, 1.0]),
+    1.0,
+  )
+  safety_blend = np.interp(d_rel - comfort_floor, [0.0, APPROACH_MIN_GAP_BUFFER], [0.0, 1.0])
+  cushion_blend = speed_blend * moving_blend * closing_blend * gap_blend * safety_blend
+  if np.all(cushion_blend <= 0.0):
+    return np.zeros_like(d_rel), np.zeros_like(d_rel)
+
+  coast_target = MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
+  decel_target = -MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX
+  coast_blend = np.clip(cushion_used / 0.25, 0.0, 1.0)
+  decel_blend = np.clip((cushion_used - 0.25) / 0.75, 0.0, 1.0)
+  target = coast_blend * coast_target + decel_blend * (decel_target - coast_target)
+  target = np.where(cushion_blend > 0.0, target, 0.0)
+  cost = MOVING_LEAD_CLOSING_CUSHION_COST * cushion_blend * np.maximum(0.25, cushion_used)
+  return target, cost
+
+
 def get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
   legacy_runway = x_lead - get_desired_follow_distance(v_ego, v_lead, t_follow)
   closing_speed = np.maximum(v_ego - v_lead, 0.0)
@@ -538,6 +577,29 @@ def get_selected_lead_targets(lead_0_targets, lead_1_targets, lead_0_costs, lead
   return targets, costs
 
 
+def get_combined_accel_target(accel_match_targets, accel_match_costs,
+                              lead_0_closing_cushion_targets, lead_1_closing_cushion_targets,
+                              lead_0_closing_cushion_costs, lead_1_closing_cushion_costs,
+                              dominant_obstacle,
+                              crawl_targets, crawl_costs,
+                              stop_targets, stop_costs,
+                              moving_stop_targets, moving_stop_costs,
+                              surge_targets, surge_costs):
+  closing_cushion_targets, closing_cushion_costs = get_selected_lead_targets(
+    lead_0_closing_cushion_targets, lead_1_closing_cushion_targets,
+    lead_0_closing_cushion_costs, lead_1_closing_cushion_costs, dominant_obstacle
+  )
+  combined_accel_costs = accel_match_costs + closing_cushion_costs + crawl_costs + stop_costs + moving_stop_costs + surge_costs
+  combined_accel_targets = np.divide(
+    accel_match_targets * accel_match_costs + closing_cushion_targets * closing_cushion_costs + crawl_targets * crawl_costs +
+    stop_targets * stop_costs + moving_stop_targets * moving_stop_costs + surge_targets * surge_costs,
+    combined_accel_costs,
+    out=np.zeros_like(combined_accel_costs),
+    where=combined_accel_costs > 0.0,
+  )
+  return combined_accel_targets, combined_accel_costs
+
+
 def get_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
   x_lead = np.asarray(x_lead, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
@@ -591,10 +653,10 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   danger_margin = x_lead - min_gap
   danger_blend = 1.0 - closing_blend * np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [1.0, 0.0])
   desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
-  runway_need_blend = 1.0 - np.interp(x_lead - desired_gap, MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP, [0.0, 1.0])
+  gap_runway_need_blend = 1.0 - np.interp(x_lead - desired_gap, MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP, [0.0, 1.0])
   anticipatory_runway_blend = lead_decel_blend * np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_BP,
                                                            MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_V)
-  runway_need_blend = np.maximum(runway_need_blend, anticipatory_runway_blend)
+  runway_need_blend = np.maximum(gap_runway_need_blend, anticipatory_runway_blend)
   comfort_blend = speed_blend * moving_blend * lead_decel_blend * closing_blend * required_decel_blend * danger_blend * runway_need_blend
   if np.all(comfort_blend <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
@@ -603,7 +665,17 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
                        MOVING_LEAD_STOP_APPROACH_DECEL_MIN, MOVING_LEAD_STOP_APPROACH_DECEL_CAP)
   light_decel = np.minimum(full_decel, MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX)
   gap_deficit_blend = get_moving_lead_stop_approach_gap_deficit_blend(x_lead, v_lead, t_follow, desired_gap)
-  gap_deficit_blend = np.maximum(gap_deficit_blend, np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP, [0.0, 1.0]))
+  urgent_closing_blend = np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP, [0.0, 1.0])
+  urgent_required_blend = np.interp(required_decel, [LEAD_STOP_RUNWAY_BRAKE, MOVING_LEAD_STOP_APPROACH_DECEL_CAP], [0.0, 1.0])
+  urgent_danger_blend = np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [1.0, 0.0])
+  hard_braking_blend = np.interp(-a_lead, [2.0, 3.0], [0.0, 1.0])
+  required_runway_blend = urgent_required_blend * hard_braking_blend * gap_runway_need_blend
+  moderated_blend = np.maximum(gap_deficit_blend * danger_blend, urgent_closing_blend * urgent_required_blend * urgent_danger_blend)
+  moderated_blend = np.maximum(moderated_blend, required_runway_blend)
+  runway_critical_blend = np.maximum(np.maximum(gap_deficit_blend, urgent_closing_blend), required_runway_blend)
+  low_speed_route_blend = (1.0 - np.interp(v_ego, [11.5, 12.5], [0.0, 1.0])) * np.interp(-a_lead, [1.2, 1.6], [0.0, 1.0])
+  low_speed_route_blend *= np.interp(danger_margin, [0.25 * LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN, 0.5 * LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [0.0, 1.0])
+  gap_deficit_blend = (1.0 - low_speed_route_blend) * runway_critical_blend + low_speed_route_blend * moderated_blend
   target_decel = light_decel + gap_deficit_blend * (full_decel - light_decel)
   return -target_decel, MOVING_LEAD_STOP_APPROACH_COST * comfort_blend
 
@@ -1235,13 +1307,23 @@ class LongitudinalMpc:
     lead_1_accel_targets, lead_1_accel_costs = get_lead_accel_match_targets(
       lead_brake_xv_1[:, 1], lead_brake_xv_1[:, 0], lead_1_brake_a_traj, t_follow, v_ego
     )
+    lead_0_closing_cushion_targets, lead_0_closing_cushion_costs = get_moving_lead_closing_cushion_target(
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], t_follow
+    )
+    lead_1_closing_cushion_targets, lead_1_closing_cushion_costs = get_moving_lead_closing_cushion_target(
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], t_follow
+    )
 
     lead_0_crawl_targets, lead_0_crawl_costs = get_lead_crawl_comfort_target(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow)
     lead_1_crawl_targets, lead_1_crawl_costs = get_lead_crawl_comfort_target(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow)
     lead_0_crawl_accel_max = get_lead_crawl_accel_max(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow)
     lead_1_crawl_accel_max = get_lead_crawl_accel_max(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow)
-    lead_0_stop_targets, lead_0_stop_costs = get_lead_stop_approach_comfort_target(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow)
-    lead_1_stop_targets, lead_1_stop_costs = get_lead_stop_approach_comfort_target(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow)
+    lead_0_stop_targets, lead_0_stop_costs = get_lead_stop_approach_comfort_target(
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow
+    )
+    lead_1_stop_targets, lead_1_stop_costs = get_lead_stop_approach_comfort_target(
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow
+    )
     lead_0_moving_stop_targets, lead_0_moving_stop_costs = get_moving_lead_stop_approach_comfort_target(
       lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow
     )
@@ -1269,13 +1351,15 @@ class LongitudinalMpc:
     surge_targets, surge_costs = get_selected_lead_targets(
       lead_0_surge_targets, lead_1_surge_targets, lead_0_surge_costs, lead_1_surge_costs, dominant_obstacle
     )
-    combined_accel_costs = accel_match_costs + crawl_costs + stop_costs + moving_stop_costs + surge_costs
-    combined_accel_targets = np.divide(
-      accel_match_targets * accel_match_costs + crawl_targets * crawl_costs + stop_targets * stop_costs +
-      moving_stop_targets * moving_stop_costs + surge_targets * surge_costs,
-      combined_accel_costs,
-      out=np.zeros(N + 1),
-      where=combined_accel_costs > 0.0,
+    combined_accel_targets, combined_accel_costs = get_combined_accel_target(
+      accel_match_targets, accel_match_costs,
+      lead_0_closing_cushion_targets, lead_1_closing_cushion_targets,
+      lead_0_closing_cushion_costs, lead_1_closing_cushion_costs,
+      dominant_obstacle,
+      crawl_targets, crawl_costs,
+      stop_targets, stop_costs,
+      moving_stop_targets, moving_stop_costs,
+      surge_targets, surge_costs,
     )
     accel_match_targets = combined_accel_targets
     accel_match_costs = combined_accel_costs
