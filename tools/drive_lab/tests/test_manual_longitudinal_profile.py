@@ -148,9 +148,11 @@ def test_lead_crawl_gap_excess_falls_back_to_relative_speed():
 def test_lead_crawl_gap_excess_ignores_missing_confirmed_lead():
   no_lead = sample(0.0, 0.3, 0.0, lead=False, d_rel=10.0, v_rel=0.0)
   missing_distance = sample(1.0, 0.3, 0.0, lead=True, d_rel=None, v_rel=0.0)
+  missing_speed = sample(2.0, 0.3, 0.0, lead=True, d_rel=8.0, v_rel=None, lead_v=None)
 
   assert lead_crawl_gap_excess(no_lead) is None
   assert lead_crawl_gap_excess(missing_distance) is None
+  assert lead_crawl_gap_excess(missing_speed) is None
 
 
 def test_manual_style_summary_separates_lead_and_clear_launches():
