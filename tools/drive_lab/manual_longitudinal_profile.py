@@ -40,6 +40,9 @@ class ManualSample:
   lead_status: bool
   lead_d_rel: float | None = None
   lead_v_rel: float | None = None
+  lead_v_lead: float | None = None
+  lead_a_lead: float | None = None
+  lead_model_prob: float | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,33 @@ class FollowingBinSummary:
 
 
 @dataclass(frozen=True)
+class LeadCrawlBucketSummary:
+  label: str
+  sample_count: int
+  gas_ratio: float
+  brake_ratio: float
+  coast_ratio: float
+  gap_excess: ProfileRange
+  ego_speed: ProfileRange
+  lead_speed: ProfileRange
+  relative_speed: ProfileRange
+  accel: ProfileRange
+  closing_ratio: float
+  closing_speed: ProfileRange
+
+
+@dataclass(frozen=True)
+class LeadCrawlEpisodeSummary:
+  label: str
+  count: int
+  duration: ProfileRange
+  start_gap_excess: ProfileRange
+  end_gap_excess: ProfileRange
+  min_gap_excess: ProfileRange
+  mean_accel: ProfileRange
+
+
+@dataclass(frozen=True)
 class ManualStyleSummary:
   sample_count: int
   accel: ProfileRange
@@ -90,6 +120,8 @@ class ManualStyleSummary:
   coast_accel: ProfileRange
   speed_bins: list[SpeedBinSummary]
   following_bins: list[FollowingBinSummary]
+  lead_crawl_bins: list[LeadCrawlBucketSummary]
+  lead_crawl_episodes: list[LeadCrawlEpisodeSummary]
   style: str
 
 
@@ -100,10 +132,61 @@ _SPEED_BINS = (
   ("13-20 m/s", 13.0, 20.0),
   ("20+ m/s", 20.0, float("inf")),
 )
+LEAD_CRAWL_MAX_SPEED = 2.5
+LEAD_CRAWL_CLOSING_THRESHOLD = -0.1
+_LEAD_CRAWL_BUCKETS = (
+  ("open_to_crawl", 2.0, float("inf")),
+  ("crawl_to_follow", 1.0, 2.0),
+  ("soft_stop", 0.0, 1.0),
+  ("inside_stop_target", -float("inf"), 0.0),
+)
+
+STOP_DISTANCE = 6.0
+LEAD_STOP_PRESENTATION_DISTANCE = 5.0
+LEAD_STOP_PRESENTATION_CONFIDENCE_MIN = 0.75
+LEAD_STOP_PRESENTATION_V_EGO_BP = [0.0, 3.0]
+LEAD_STOP_PRESENTATION_V_LEAD_BP = [0.2, 1.0]
+LEAD_STOP_PRESENTATION_DECEL_BP = [0.0, 0.6]
 
 
 def manual_moving_samples(samples: Iterable[ManualSample]) -> list[ManualSample]:
   return [sample for sample in samples if not sample.active and sample.v_ego > 1.0]
+
+
+def lead_stop_presentation_distance(v_ego, v_lead, a_lead=0.0, model_prob=1.0):
+  confidence_blend = np.interp(model_prob, [LEAD_STOP_PRESENTATION_CONFIDENCE_MIN, 1.0], [0.0, 1.0])
+  ego_blend = 1.0 - np.interp(v_ego, LEAD_STOP_PRESENTATION_V_EGO_BP, [0.0, 1.0])
+  stopped_blend = 1.0 - np.interp(v_lead, LEAD_STOP_PRESENTATION_V_LEAD_BP, [0.0, 1.0])
+  decel_blend = 1.0 - np.interp(np.clip(-a_lead, 0.0, LEAD_STOP_PRESENTATION_DECEL_BP[-1]),
+                                LEAD_STOP_PRESENTATION_DECEL_BP, [0.0, 1.0])
+  presentation_blend = confidence_blend * ego_blend * stopped_blend * decel_blend
+  return STOP_DISTANCE - presentation_blend * (STOP_DISTANCE - LEAD_STOP_PRESENTATION_DISTANCE)
+
+
+def _lead_speed(sample: ManualSample) -> float | None:
+  if sample.lead_v_lead is not None:
+    return sample.lead_v_lead
+  if sample.lead_v_rel is not None:
+    return sample.v_ego + sample.lead_v_rel
+  return None
+
+
+def _lead_accel(sample: ManualSample) -> float:
+  return sample.lead_a_lead or 0.0
+
+
+def _lead_model_prob(sample: ManualSample) -> float:
+  return sample.lead_model_prob if sample.lead_model_prob is not None else 1.0
+
+
+def lead_crawl_gap_excess(sample: ManualSample) -> float | None:
+  if not sample.lead_status or sample.lead_d_rel is None:
+    return None
+  v_lead = _lead_speed(sample)
+  if v_lead is None:
+    return None
+  stop_target = lead_stop_presentation_distance(sample.v_ego, v_lead, _lead_accel(sample), _lead_model_prob(sample))
+  return float(sample.lead_d_rel - stop_target)
 
 
 def build_route_profile(route: str, samples: Iterable[ManualSample], min_manual_moving_samples: int = 1200,
@@ -118,7 +201,8 @@ def build_route_profile(route: str, samples: Iterable[ManualSample], min_manual_
 
 
 def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummary:
-  ordered = sorted((sample for sample in samples if not sample.active), key=lambda sample: (sample.route, sample.t))
+  ordered_all = sorted(samples, key=lambda sample: (sample.route, sample.t))
+  ordered = [sample for sample in ordered_all if not sample.active]
   moving = manual_moving_samples(ordered)
   launches = _pedal_episodes(ordered, pedal="gas_pressed")
   stops = _pedal_episodes(ordered, pedal="brake_pressed")
@@ -154,6 +238,8 @@ def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummar
     coast_accel=coast,
     speed_bins=_summarize_speed_bins(moving),
     following_bins=_summarize_following_bins(moving),
+    lead_crawl_bins=_summarize_lead_crawl_bins(ordered),
+    lead_crawl_episodes=_summarize_lead_crawl_episodes(ordered_all),
     style=style,
   )
 
@@ -196,6 +282,14 @@ def render_manual_style_summary(summary: ManualStyleSummary, route_profiles: Ite
   lines.append("Following bins:")
   lines.extend(_render_following_bin(following_bin) for following_bin in summary.following_bins)
   if not summary.following_bins:
+    lines.append("  none")
+  lines.append("Lead crawl bins:")
+  lines.extend(_render_lead_crawl_bin(crawl_bin) for crawl_bin in summary.lead_crawl_bins)
+  if not summary.lead_crawl_bins:
+    lines.append("  none")
+  lines.append("Lead crawl episodes:")
+  lines.extend(_render_lead_crawl_episode(episode) for episode in summary.lead_crawl_episodes)
+  if not summary.lead_crawl_episodes:
     lines.append("  none")
   return "\n".join(lines)
 
@@ -241,6 +335,114 @@ def _summarize_following_bins(samples: list[ManualSample]) -> list[FollowingBinS
   return summaries
 
 
+def _lead_crawl_sample_details(samples: list[ManualSample]) -> list[tuple[ManualSample, float, float]]:
+  details: list[tuple[ManualSample, float, float]] = []
+  for sample in samples:
+    detail = _lead_crawl_sample_detail(sample)
+    if detail is None:
+      continue
+    details.append(detail)
+  return details
+
+
+def _lead_crawl_sample_detail(sample: ManualSample) -> tuple[ManualSample, float, float] | None:
+  if sample.active:
+    return None
+  gap_excess = lead_crawl_gap_excess(sample)
+  v_lead = _lead_speed(sample)
+  if gap_excess is None or v_lead is None:
+    return None
+  if sample.v_ego > LEAD_CRAWL_MAX_SPEED or v_lead > LEAD_CRAWL_MAX_SPEED:
+    return None
+  return sample, gap_excess, v_lead
+
+
+def _summarize_lead_crawl_bins(samples: list[ManualSample]) -> list[LeadCrawlBucketSummary]:
+  summaries: list[LeadCrawlBucketSummary] = []
+  details = _lead_crawl_sample_details(samples)
+  for label, low, high in _LEAD_CRAWL_BUCKETS:
+    bucket = [(sample, gap_excess, v_lead) for sample, gap_excess, v_lead in details if low <= gap_excess < high]
+    if not bucket:
+      continue
+    closing = [(sample, gap_excess, v_lead) for sample, gap_excess, v_lead in bucket if v_lead - sample.v_ego < LEAD_CRAWL_CLOSING_THRESHOLD]
+    summaries.append(LeadCrawlBucketSummary(
+      label=label,
+      sample_count=len(bucket),
+      gas_ratio=_ratio(sum(1 for sample, _, _ in bucket if sample.gas_pressed), len(bucket)),
+      brake_ratio=_ratio(sum(1 for sample, _, _ in bucket if sample.brake_pressed), len(bucket)),
+      coast_ratio=_ratio(sum(1 for sample, _, _ in bucket if not sample.gas_pressed and not sample.brake_pressed), len(bucket)),
+      gap_excess=percentile_range([gap_excess for _, gap_excess, _ in bucket], 10.0, 90.0),
+      ego_speed=percentile_range([sample.v_ego for sample, _, _ in bucket], 10.0, 90.0),
+      lead_speed=percentile_range([v_lead for _, _, v_lead in bucket], 10.0, 90.0),
+      relative_speed=percentile_range([v_lead - sample.v_ego for sample, _, v_lead in bucket], 10.0, 90.0),
+      accel=percentile_range([sample.a_ego for sample, _, _ in bucket], 10.0, 90.0),
+      closing_ratio=_ratio(len(closing), len(bucket)),
+      closing_speed=percentile_range([sample.v_ego - v_lead for sample, _, v_lead in closing], 10.0, 90.0),
+    ))
+  return summaries
+
+
+def _summarize_lead_crawl_episodes(samples: list[ManualSample]) -> list[LeadCrawlEpisodeSummary]:
+  ordered = sorted(samples, key=lambda sample: (sample.route, sample.t))
+  crawl_episodes = _extract_gap_closure_episodes(ordered, "crawl_to_follow", start_min=2.0, end_max=1.0)
+  soft_stop_episodes = _extract_gap_closure_episodes(ordered, "soft_stop", start_min=1.0, end_max=0.05, start_max=1.0)
+  summaries = []
+  for label, episodes in (("crawl_to_follow", crawl_episodes), ("soft_stop", soft_stop_episodes)):
+    if not episodes:
+      continue
+    summaries.append(LeadCrawlEpisodeSummary(
+      label=label,
+      count=len(episodes),
+      duration=percentile_range([episode["duration"] for episode in episodes], 50.0, 90.0),
+      start_gap_excess=percentile_range([episode["start_gap_excess"] for episode in episodes], 50.0, 90.0),
+      end_gap_excess=percentile_range([episode["end_gap_excess"] for episode in episodes], 50.0, 90.0),
+      min_gap_excess=percentile_range([episode["min_gap_excess"] for episode in episodes], 10.0, 50.0),
+      mean_accel=percentile_range([episode["mean_accel"] for episode in episodes], 50.0, 90.0),
+    ))
+  return summaries
+
+
+def _extract_gap_closure_episodes(samples: list[ManualSample], label: str, start_min: float,
+                                  end_max: float, start_max: float | None = None) -> list[dict[str, float]]:
+  episodes: list[dict[str, float]] = []
+  current: list[tuple[ManualSample, float, float]] = []
+  current_route: str | None = None
+  for sample in samples:
+    route_changed = current and sample.route != current_route
+    detail = _lead_crawl_sample_detail(sample)
+    if detail is None or route_changed:
+      current = []
+      current_route = None
+      if detail is None:
+        continue
+    sample, gap_excess, _ = detail
+    can_start = gap_excess >= start_min if start_max is None else start_min >= gap_excess >= end_max
+    if not current and can_start:
+      current = [detail]
+      current_route = sample.route
+      continue
+    if not current:
+      continue
+    current.append(detail)
+    if gap_excess <= end_max:
+      episodes.append(_gap_closure_episode_summary(current))
+      current = []
+      current_route = None
+  return episodes
+
+
+def _gap_closure_episode_summary(details: list[tuple[ManualSample, float, float]]) -> dict[str, float]:
+  samples = [sample for sample, _, _ in details]
+  gaps = [gap_excess for _, gap_excess, _ in details]
+  return {
+    "duration": max(0.0, samples[-1].t - samples[0].t),
+    "start_gap_excess": gaps[0],
+    "end_gap_excess": gaps[-1],
+    "min_gap_excess": min(gaps),
+    "mean_accel": sum(sample.a_ego for sample in samples) / len(samples),
+  }
+
+
 def _ratio(count: int, total: int) -> float:
   return count / total if total else 0.0
 
@@ -268,6 +470,30 @@ def _render_following_bin(following_bin: FollowingBinSummary) -> str:
     + f"distance {following_bin.distance.low:.1f} to {following_bin.distance.high:.1f} m, "
     + f"time gap {following_bin.time_gap.low:.1f} to {following_bin.time_gap.high:.1f}s, "
     + f"closing time {following_bin.closing_time.low:.1f} to {following_bin.closing_time.high:.1f}s"
+  )
+
+
+def _render_lead_crawl_bin(crawl_bin: LeadCrawlBucketSummary) -> str:
+  return (
+    f"  {crawl_bin.label}: samples {crawl_bin.sample_count}, gas {crawl_bin.gas_ratio:.1%}, "
+    + f"brake {crawl_bin.brake_ratio:.1%}, coast {crawl_bin.coast_ratio:.1%}, "
+    + f"gap excess {crawl_bin.gap_excess.low:.2f} to {crawl_bin.gap_excess.high:.2f} m, "
+    + f"ego {crawl_bin.ego_speed.low:.2f} to {crawl_bin.ego_speed.high:.2f} m/s, "
+    + f"lead {crawl_bin.lead_speed.low:.2f} to {crawl_bin.lead_speed.high:.2f} m/s, "
+    + f"relative {crawl_bin.relative_speed.low:.2f} to {crawl_bin.relative_speed.high:.2f} m/s, "
+    + f"accel {crawl_bin.accel.low:.3f} to {crawl_bin.accel.high:.3f} m/s^2, "
+    + f"closing {crawl_bin.closing_ratio:.1%}, "
+    + f"closing speed {crawl_bin.closing_speed.low:.2f} to {crawl_bin.closing_speed.high:.2f} m/s"
+  )
+
+
+def _render_lead_crawl_episode(episode: LeadCrawlEpisodeSummary) -> str:
+  return (
+    f"  {episode.label}: count {episode.count}, duration {episode.duration.low:.1f} to {episode.duration.high:.1f}s, "
+    + f"start gap {episode.start_gap_excess.low:.2f} to {episode.start_gap_excess.high:.2f} m, "
+    + f"end gap {episode.end_gap_excess.low:.2f} to {episode.end_gap_excess.high:.2f} m, "
+    + f"min gap {episode.min_gap_excess.low:.2f} to {episode.min_gap_excess.high:.2f} m, "
+    + f"mean accel {episode.mean_accel.low:.3f} to {episode.mean_accel.high:.3f} m/s^2"
   )
 
 

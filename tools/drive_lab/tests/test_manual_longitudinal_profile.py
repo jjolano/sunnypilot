@@ -1,4 +1,7 @@
+from dataclasses import asdict
+
 import numpy as np
+import pytest
 
 from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   ManualSample,
@@ -6,13 +9,16 @@ from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   SmoothAssertiveEnvelope,
   build_route_profile,
   classify_style,
+  lead_crawl_gap_excess,
+  lead_stop_presentation_distance,
   percentile_range,
   render_manual_style_summary,
   summarize_manual_style,
 )
 
 
-def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0, v_rel=0.0, route="route-a"):
+def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0, v_rel=0.0,
+           route="route-a", lead_v=None, lead_a=0.0, model_prob=1.0):
   return ManualSample(
     route=route,
     t=t,
@@ -24,6 +30,29 @@ def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0,
     lead_status=lead,
     lead_d_rel=d_rel,
     lead_v_rel=v_rel,
+    lead_v_lead=lead_v,
+    lead_a_lead=lead_a,
+    lead_model_prob=model_prob,
+  )
+
+
+def crawl_sample(t, gap_excess, v=0.3, a=0.0, lead_v=0.2, lead_a=0.0, model_prob=1.0,
+                 gas=False, brake=False, route="route-a", active=False):
+  stop_target = lead_stop_presentation_distance(v, lead_v, lead_a, model_prob)
+  return sample(
+    t=t,
+    v=v,
+    a=a,
+    active=active,
+    gas=gas,
+    brake=brake,
+    lead=True,
+    d_rel=stop_target + gap_excess,
+    v_rel=lead_v - v,
+    route=route,
+    lead_v=lead_v,
+    lead_a=lead_a,
+    model_prob=model_prob,
   )
 
 
@@ -104,6 +133,147 @@ def test_route_profile_ignores_stopped_samples_for_manual_moving_count():
 
   assert not profile.include
   assert profile.manual_moving_samples == 6
+
+
+def test_lead_crawl_gap_excess_uses_stop_presentation_distance():
+  crawl = crawl_sample(0.0, gap_excess=2.0, v=0.25, lead_v=0.15, lead_a=-0.05, model_prob=0.9)
+
+  assert lead_crawl_gap_excess(crawl) == pytest.approx(2.0)
+
+
+def test_lead_crawl_gap_excess_falls_back_to_relative_speed():
+  stop_target = lead_stop_presentation_distance(0.3, 0.1, 0.0, 1.0)
+  crawl = sample(0.0, 0.3, 0.0, lead=True, d_rel=stop_target + 1.0, v_rel=-0.2, lead_v=None)
+
+  assert lead_crawl_gap_excess(crawl) == pytest.approx(1.0)
+
+
+def test_lead_crawl_gap_excess_ignores_missing_confirmed_lead():
+  no_lead = sample(0.0, 0.3, 0.0, lead=False, d_rel=10.0, v_rel=0.0)
+  missing_distance = sample(1.0, 0.3, 0.0, lead=True, d_rel=None, v_rel=0.0)
+  missing_speed = sample(2.0, 0.3, 0.0, lead=True, d_rel=8.0, v_rel=None, lead_v=None)
+
+  assert lead_crawl_gap_excess(no_lead) is None
+  assert lead_crawl_gap_excess(missing_distance) is None
+  assert lead_crawl_gap_excess(missing_speed) is None
+
+
+def test_manual_style_summary_includes_lead_crawl_bins():
+  samples = [
+    crawl_sample(0.0, 2.0, v=0.4, a=0.10, lead_v=0.2, gas=True),
+    crawl_sample(1.0, 1.0, v=0.5, a=-0.10, lead_v=0.2, brake=True),
+    crawl_sample(2.0, 0.0, v=0.2, a=-0.20, lead_v=0.0, brake=True),
+    crawl_sample(3.0, -0.2, v=0.1, a=-0.30, lead_v=0.0, brake=True),
+    crawl_sample(5.0, 3.0, v=4.0, a=0.20, lead_v=4.0, gas=True),
+  ]
+
+  summary = summarize_manual_style(samples)
+  bins = {bucket.label: bucket for bucket in summary.lead_crawl_bins}
+
+  assert bins["open_to_crawl"].sample_count == 1
+  assert bins["crawl_to_follow"].sample_count == 1
+  assert bins["soft_stop"].sample_count == 1
+  assert bins["inside_stop_target"].sample_count == 1
+  assert bins["open_to_crawl"].gas_ratio == 1.0
+  assert bins["open_to_crawl"].brake_ratio == 0.0
+  assert bins["open_to_crawl"].coast_ratio == 0.0
+  assert bins["crawl_to_follow"].gas_ratio == 0.0
+  assert bins["crawl_to_follow"].brake_ratio == 1.0
+  assert bins["crawl_to_follow"].coast_ratio == 0.0
+  assert bins["soft_stop"].gas_ratio == 0.0
+  assert bins["soft_stop"].brake_ratio == 1.0
+  assert bins["soft_stop"].coast_ratio == 0.0
+  assert bins["open_to_crawl"].gap_excess.low == bins["open_to_crawl"].gap_excess.high == 2.0
+  assert bins["crawl_to_follow"].gap_excess.low == bins["crawl_to_follow"].gap_excess.high == 1.0
+  assert bins["soft_stop"].gap_excess.low == bins["soft_stop"].gap_excess.high == 0.0
+  assert bins["inside_stop_target"].gap_excess.low < 0.0
+  assert bins["open_to_crawl"].closing_ratio == 1.0
+  assert bins["open_to_crawl"].closing_speed.low > 0.0
+  assert bins["open_to_crawl"].closing_speed.high > 0.0
+  assert "open_to_crawl" in {bucket.label for bucket in summary.lead_crawl_bins}
+
+
+def test_manual_style_summary_lead_crawl_bins_are_low_speed_only():
+  samples = [
+    crawl_sample(0.0, 2.5, v=0.3, a=0.10, lead_v=0.2, gas=True),
+    crawl_sample(1.0, 2.5, v=4.0, a=0.10, lead_v=0.2, gas=True),
+    crawl_sample(2.0, 2.5, v=0.3, a=0.10, lead_v=4.2, gas=True),
+    crawl_sample(3.0, 2.5, v=4.0, a=0.10, lead_v=4.2, gas=True),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_crawl_bins[0].label == "open_to_crawl"
+  assert summary.lead_crawl_bins[0].sample_count == 1
+
+
+def test_manual_style_summary_lead_crawl_closing_threshold_is_strict():
+  samples = [
+    crawl_sample(0.0, 2.5, v=0.3, a=0.0, lead_v=0.2),
+    crawl_sample(1.0, 2.6, v=0.4, a=0.0, lead_v=0.2),
+  ]
+
+  summary = summarize_manual_style(samples)
+  open_to_crawl = next(bucket for bucket in summary.lead_crawl_bins if bucket.label == "open_to_crawl")
+
+  assert open_to_crawl.closing_ratio == 0.5
+  assert open_to_crawl.closing_speed.low == pytest.approx(0.2)
+  assert open_to_crawl.closing_speed.high == pytest.approx(0.2)
+
+
+def test_manual_style_summary_extracts_lead_crawl_and_soft_stop_episodes():
+  samples = [
+    crawl_sample(0.0, 2.4, v=0.2, a=0.10, lead_v=0.3),
+    crawl_sample(1.0, 1.6, v=0.4, a=0.05, lead_v=0.2),
+    crawl_sample(2.0, 0.9, v=0.3, a=-0.10, lead_v=0.0),
+    crawl_sample(3.0, 0.4, v=0.2, a=-0.20, lead_v=0.0),
+    crawl_sample(4.0, 0.0, v=0.0, a=-0.10, lead_v=0.0),
+  ]
+
+  summary = summarize_manual_style(samples)
+  episodes = {episode.label: episode for episode in summary.lead_crawl_episodes}
+
+  assert episodes["crawl_to_follow"].count == 1
+  assert episodes["crawl_to_follow"].start_gap_excess.low == pytest.approx(2.4)
+  assert episodes["crawl_to_follow"].end_gap_excess.high == pytest.approx(0.9)
+  assert episodes["soft_stop"].count == 1
+  assert episodes["soft_stop"].min_gap_excess.low == pytest.approx(0.0)
+
+
+def test_manual_style_summary_does_not_merge_crawl_episodes_across_routes():
+  samples = [
+    crawl_sample(0.0, 2.4, route="route-a"),
+    crawl_sample(1.0, 1.6, route="route-b"),
+    crawl_sample(2.0, 0.9, route="route-b"),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_crawl_episodes == []
+
+
+def test_manual_style_summary_breaks_crawl_episodes_on_invalid_intervening_samples():
+  samples = [
+    crawl_sample(0.0, 2.4, v=0.2, lead_v=0.2),
+    crawl_sample(1.0, 1.6, v=3.0, lead_v=0.2),
+    crawl_sample(2.0, 0.9, v=0.3, lead_v=0.0),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_crawl_episodes == []
+
+
+def test_manual_style_summary_breaks_crawl_episodes_on_active_intervening_samples():
+  samples = [
+    crawl_sample(0.0, 2.4, v=0.2, lead_v=0.2),
+    crawl_sample(1.0, 1.6, v=0.2, lead_v=0.2, active=True),
+    crawl_sample(2.0, 0.9, v=0.3, lead_v=0.0),
+  ]
+
+  summary = summarize_manual_style(samples)
+
+  assert summary.lead_crawl_episodes == []
 
 
 def test_manual_style_summary_separates_lead_and_clear_launches():
@@ -259,3 +429,22 @@ def test_render_manual_style_summary_includes_core_values():
   assert "coast accel:" in text
   assert "Speed bins:" in text
   assert "Following bins:" in text
+
+
+def test_render_manual_style_summary_includes_lead_crawl_sections():
+  summary = summarize_manual_style([
+    crawl_sample(0.0, 2.4, v=0.2, a=0.10, lead_v=0.3, gas=True),
+    crawl_sample(1.0, 1.5, v=0.4, a=0.00, lead_v=0.2),
+    crawl_sample(2.0, 0.9, v=0.3, a=-0.10, lead_v=0.0, brake=True),
+    crawl_sample(3.0, 0.0, v=0.0, a=-0.10, lead_v=0.0, brake=True),
+  ])
+
+  text = render_manual_style_summary(summary)
+  payload = asdict(summary)
+
+  assert "Lead crawl bins:" in text
+  assert "open_to_crawl" in text
+  assert "closing speed" in text
+  assert "Lead crawl episodes:" in text
+  assert payload["lead_crawl_bins"][0]["label"] == "open_to_crawl"
+  assert payload["lead_crawl_episodes"][0]["label"] == "crawl_to_follow"
