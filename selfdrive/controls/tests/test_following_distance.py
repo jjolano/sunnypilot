@@ -1226,6 +1226,20 @@ def test_hard_braking_moving_lead_keeps_stronger_target_near_danger_boundary():
   assert cost > 0.0
 
 
+def test_moving_stop_approach_keeps_stronger_target_for_fast_runway_critical_lead():
+  v_ego = 18.6
+  v_lead = 15.0
+  d_rel = 47.7
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert target < -1.4
+  assert cost > 0.0
+
+
 def test_moving_stop_approach_uses_light_decel_before_vlead_cushion_is_used():
   v_ego = 19.2
   v_lead = 17.0
