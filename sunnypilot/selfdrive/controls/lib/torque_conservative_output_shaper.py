@@ -25,6 +25,7 @@ ACTUATOR_LAG_COMFORT_RATE = 0.35
 ACTUATOR_LAG_COMFORT_LOW_SPEED = 8.0
 ACTUATOR_LAG_COMFORT_MID_SPEED = 15.0
 ACTUATOR_LAG_COMFORT_HIGH_SPEED = 25.0
+STALE_ACTUATOR_REVERSAL_THRESHOLD = 0.05
 DEFAULT_DT = 0.01
 
 NORMAL_CAP = 1.00
@@ -42,6 +43,8 @@ STEERING_RATE_COMFORT_MIN_CAP = 0.80
 ACTUATOR_LAG_COMFORT_LOW_SPEED_CAP = 0.55
 ACTUATOR_LAG_COMFORT_MID_SPEED_CAP = 0.70
 ACTUATOR_LAG_COMFORT_HIGH_SPEED_CAP = 0.85
+STALE_ACTUATOR_REVERSAL_CAP = 0.35
+STALE_ACTUATOR_REVERSAL_RATE = 0.20
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
@@ -65,6 +68,7 @@ class ConservativeOutputShapingReason(IntFlag):
   SAME_SIGN_UNWIND = 1 << 8
   STEERING_RATE_COMFORT = 1 << 9
   ACTUATOR_LAG_COMFORT = 1 << 10
+  STALE_ACTUATOR_REVERSAL = 1 << 11
 
 
 @dataclass
@@ -85,6 +89,8 @@ class ConservativeOutputShaperInputs:
   steering_rate_deg: float = 0.0
   steer_limit_same_direction: bool = True
   steer_limit_unwind: bool = False
+  steer_limit_requested_output: float = 0.0
+  steer_limit_applied_output: float = 0.0
 
 
 @dataclass
@@ -147,6 +153,7 @@ class TorqueConservativeOutputShaper:
       not inputs.steering_pressed and same_direction_steer_limited
       and output_reinforces_steering_rate and steering_rate_abs > ACTUATOR_LAG_COMFORT_START
     )
+    stale_actuator_reversal = self._stale_actuator_reversal(inputs, output_sign)
     same_sign_unwind_release = inputs.same_sign_unwind_release
     clear_under_response_catchup = (
       desired_sign != 0.0
@@ -209,7 +216,10 @@ class TorqueConservativeOutputShaper:
         1.0,
       )
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, self._actuator_lag_comfort_cap(inputs.v_ego),
-                                                   actuator_lag_confidence, ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT)
+                                                    actuator_lag_confidence, ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT)
+    if stale_actuator_reversal:
+      output_cap, confidence, reason = self._apply(output_cap, confidence, reason, STALE_ACTUATOR_REVERSAL_CAP, 1.0,
+                                                   ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL)
 
     base_active = reason != ConservativeOutputShapingReason.NONE and output_cap < NORMAL_CAP
     same_sign_unwind_shaping = bool(reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND)
@@ -224,6 +234,7 @@ class TorqueConservativeOutputShaper:
     ))
     steering_rate_comfort_shaping = bool(reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT)
     actuator_lag_comfort_shaping = bool(reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT)
+    stale_actuator_reversal_shaping = bool(reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL)
     recently_shaped = self._recent_shaping_time > 0.0
     recently_hard_shaped = self._recent_hard_shaping_time > 0.0
     recently_over_response = self._recent_over_response_time > 0.0
@@ -233,8 +244,8 @@ class TorqueConservativeOutputShaper:
       shaped_output = inputs.unshaped_output
     shaped_output, rate_limited = self._apply_output_rate_limit(inputs, shaped_output, recently_shaped, recently_over_response,
                                                                 steering_rate_comfort_shaping, actuator_lag_comfort_shaping,
-                                                                recently_actuator_lag_comfort, clear_under_response_catchup,
-                                                                recently_hard_shaped)
+                                                                stale_actuator_reversal_shaping, recently_actuator_lag_comfort,
+                                                                clear_under_response_catchup, recently_hard_shaped)
     if rate_limited:
       reason |= ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
       confidence = max(confidence, 1.0)
@@ -264,11 +275,11 @@ class TorqueConservativeOutputShaper:
   def _apply_output_rate_limit(self, inputs: ConservativeOutputShaperInputs, target_output: float,
                                recently_shaped: bool, recently_over_response: bool,
                                steering_rate_comfort_shaping: bool, actuator_lag_comfort_shaping: bool,
-                               recently_actuator_lag_comfort: bool, clear_under_response_catchup: bool,
-                               recently_hard_shaped: bool) -> tuple[float, bool]:
+                               stale_actuator_reversal_shaping: bool, recently_actuator_lag_comfort: bool,
+                               clear_under_response_catchup: bool, recently_hard_shaped: bool) -> tuple[float, bool]:
     if (
       self._previous_output is None
-      or (not recently_shaped and not steering_rate_comfort_shaping and not actuator_lag_comfort_shaping)
+      or (not recently_shaped and not steering_rate_comfort_shaping and not actuator_lag_comfort_shaping and not stale_actuator_reversal_shaping)
       or abs(target_output) < 1e-6
     ):
       return target_output, False
@@ -277,7 +288,7 @@ class TorqueConservativeOutputShaper:
     previous_sign = sign(self._previous_output)
     target_abs = abs(target_output)
     previous_abs = abs(self._previous_output)
-    if clear_under_response_catchup and not recently_hard_shaped:
+    if clear_under_response_catchup and not recently_hard_shaped and not stale_actuator_reversal_shaping:
       return target_output, False
 
     actual_abs = abs(inputs.actual_lateral_accel)
@@ -314,7 +325,9 @@ class TorqueConservativeOutputShaper:
       return target_output, False
 
     reinforces_steering_rate = target_sign != 0.0 and steering_rate_sign != 0.0 and target_sign == steering_rate_sign
-    if actuator_lag_comfort_shaping and reinforces_steering_rate:
+    if stale_actuator_reversal_shaping:
+      recovery_rate = STALE_ACTUATOR_REVERSAL_RATE
+    elif actuator_lag_comfort_shaping and reinforces_steering_rate:
       recovery_rate = ACTUATOR_LAG_COMFORT_RATE
     elif steering_rate_comfort_shaping and reinforces_steering_rate:
       recovery_rate = STEERING_RATE_COMFORT_RATE
@@ -323,6 +336,22 @@ class TorqueConservativeOutputShaper:
     limited_abs = min(target_abs, previous_abs + recovery_rate * self.dt)
     limited_output = target_sign * limited_abs
     return limited_output, limited_abs < target_abs
+
+  @staticmethod
+  def _stale_actuator_reversal(inputs: ConservativeOutputShaperInputs, output_sign: float) -> bool:
+    requested_sign = sign(inputs.steer_limit_requested_output)
+    applied_sign = sign(inputs.steer_limit_applied_output)
+    return (
+      inputs.steer_limited_by_safety
+      and inputs.v_ego < ACTUATOR_LAG_COMFORT_MID_SPEED
+      and inputs.steer_limit_same_direction
+      and not inputs.steer_limit_unwind
+      and not inputs.steering_pressed
+      and output_sign != 0.0
+      and requested_sign == output_sign
+      and applied_sign == -output_sign
+      and abs(inputs.steer_limit_applied_output) > STALE_ACTUATOR_REVERSAL_THRESHOLD
+    )
 
   @staticmethod
   def _apply(output_cap: float, confidence: float, reason: ConservativeOutputShapingReason, cap: float, reason_confidence: float,
