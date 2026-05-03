@@ -54,7 +54,7 @@ def test_summarize_window_attributes_lead_braking():
     msg("longitudinalPlan", 1.5, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-0.8),
   ]
 
-  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+  rendered = render_summary(summarize_window(msgs, 1.5, 1.0, 1.0))
 
   assert "Attribution:" in rendered
   assert "likely cause: lead" in rendered
@@ -397,6 +397,118 @@ def test_summarize_window_does_not_attribute_stale_lead_to_later_braking():
   assert "likely cause: planner_source" in rendered
   assert "planner source cruise" in rendered
   assert "aTarget min -0.400 m/s^2" in rendered
+
+
+def test_summarize_window_uses_event_time_plan_source_over_stale_lead_source():
+  msgs = [
+    msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("longitudinalPlan", 0.4, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-0.8),
+    msg("radarState", 0.8, leadOne=SimpleNamespace(status=False, dRel=200.0, vRel=0.0)),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: planner_source" in rendered
+  assert "planner source lead0" in rendered
+  assert "planner source cruise" in rendered
+
+
+def test_summarize_window_uses_event_time_plan_source_over_future_lead_source():
+  msgs = [
+    msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
+    msg("longitudinalPlan", 1.2, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-0.8),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: planner_source" in rendered
+  assert "planner source cruise" in rendered
+  assert "planner source lead0" in rendered
+
+
+def test_summarize_window_uses_event_time_plan_braking_over_future_lead_braking():
+  msgs = [
+    msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
+    msg("radarState", 0.8, leadOne=SimpleNamespace(status=True, dRel=18.4, vRel=-1.0)),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
+    msg("longitudinalPlan", 1.2, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-0.8),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: planner_source" in rendered
+  assert "lead gap min 18.400 m" in rendered
+  assert "aTarget min -0.800 m/s^2" in rendered
+
+
+def test_summarize_window_uses_event_time_model_action_over_stale_model_stop():
+  msgs = [
+    msg("carState", 0.0, vEgo=8.0, brakePressed=False, gasPressed=False),
+    msg("modelV2", 0.4, action=SimpleNamespace(desiredAcceleration=-1.2, shouldStop=True)),
+    msg(
+      "longitudinalPlanSP",
+      0.9,
+      longitudinalPlanSource="sccMap",
+      smartCruiseControl=SimpleNamespace(map=SimpleNamespace(active=True), vision=SimpleNamespace(active=False)),
+    ),
+    msg("modelV2", 1.0, action=SimpleNamespace(desiredAcceleration=0.0, shouldStop=False)),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: scc_map" in rendered
+  assert "model action shouldStop true" in rendered
+
+
+def test_summarize_window_uses_event_time_plan_stop_over_stale_model_plan_stop():
+  msgs = [
+    msg("carState", 0.0, vEgo=8.0, brakePressed=False, gasPressed=False),
+    msg("longitudinalPlan", 0.4, longitudinalPlanSource="e2e", shouldStop=True, fcw=False, aTarget=-1.0),
+    msg("longitudinalPlanSP", 0.9, longitudinalPlanSource="speedLimitAssist", speedLimit=SimpleNamespace(assist=SimpleNamespace(active=True))),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: speed_limit" in rendered
+  assert "plan shouldStop true" in rendered
+
+
+def test_summarize_window_uses_event_time_model_action_over_future_model_stop():
+  msgs = [
+    msg("carState", 0.0, vEgo=8.0, brakePressed=False, gasPressed=False),
+    msg(
+      "longitudinalPlanSP",
+      0.9,
+      longitudinalPlanSource="sccVision",
+      smartCruiseControl=SimpleNamespace(vision=SimpleNamespace(active=True), map=SimpleNamespace(active=False)),
+    ),
+    msg("modelV2", 1.0, action=SimpleNamespace(desiredAcceleration=0.0, shouldStop=False)),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
+    msg("modelV2", 1.2, action=SimpleNamespace(desiredAcceleration=-1.2, shouldStop=True)),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: scc_vision" in rendered
+  assert "model action shouldStop true" in rendered
+
+
+def test_summarize_window_uses_event_time_plan_stop_over_future_model_plan_stop():
+  msgs = [
+    msg("carState", 0.0, vEgo=8.0, brakePressed=False, gasPressed=False),
+    msg("longitudinalPlanSP", 0.9, longitudinalPlanSource="speedLimitAssist", speedLimit=SimpleNamespace(assist=SimpleNamespace(active=True))),
+    msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
+    msg("longitudinalPlan", 1.2, longitudinalPlanSource="model", shouldStop=True, fcw=False, aTarget=-1.0),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "likely cause: speed_limit" in rendered
+  assert "plan shouldStop true" in rendered
 
 
 def test_summarize_window_attributes_planner_source_fallback():

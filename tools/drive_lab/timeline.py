@@ -120,10 +120,13 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
   attribution_facts: dict[str, Any] = {
     "event_time_s": event_time_s,
     "planner_sources": [],
+    "plan_samples": [],
     "sp_sources": [],
     "sp_samples": [],
+    "model_action_samples": [],
     "lead_present": False,
     "lead_braking": False,
+    "lead_samples": [],
     "driver_samples": [],
     "lead_times": [],
     "braking_times": [],
@@ -180,6 +183,7 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       if lead_status:
         attribution_facts["lead_present"] = True
         attribution_facts["lead_times"].append(t)
+      attribution_facts["lead_samples"].append({"time_s": t, "status": lead_status})
       if lead_status and _finite_number(d_rel):
         attribution_facts["lead_gaps"].append(float(d_rel))
       if lead_status and _finite_number(d_rel):
@@ -198,8 +202,15 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       a_target = safe_get(payload, "aTarget")
       if source != "unknown":
         attribution_facts["planner_sources"].append(source)
+      plan_sample = {
+        "time_s": t,
+        "source": source,
+        "should_stop": should_stop,
+        "a_target": None,
+      }
       if _finite_number(a_target):
         a_target_float = float(a_target)
+        plan_sample["a_target"] = a_target_float
         attribution_facts["a_targets"].append(a_target_float)
         if lead_active and _is_braking([a_target_float]):
           attribution_facts["lead_braking"] = True
@@ -207,6 +218,7 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
           attribution_facts["braking_times"].append(t)
       if _finite_number(a_target):
         samples["aTarget"].append(float(a_target))
+      attribution_facts["plan_samples"].append(plan_sample)
     elif typ == "longitudinalPlanSP":
       source = format_enum(safe_get(payload, "longitudinalPlanSource"))
       add_change(t, "longitudinalPlanSP.source", source, "sunnypilot", f"SP source: {source}")
@@ -241,6 +253,7 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
       should_stop = safe_get(payload, "action.shouldStop")
       if should_stop is not None:
         add_change(t, "modelV2.action.shouldStop", bool(should_stop), "model", f"model shouldStop: {bool(should_stop)}")
+        attribution_facts["model_action_samples"].append({"time_s": t, "should_stop": bool(should_stop)})
       if bool(should_stop):
         attribution_facts["model_action_should_stop"] = True
     elif typ == "onroadEvents":
@@ -288,13 +301,15 @@ def render_summary(summary: EventWindowSummary) -> str:
 def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
   evidence = _attribution_evidence(facts)
   driver_sample = _event_prior_sample(facts["driver_samples"], facts["event_time_s"])
+  plan_sample = _event_prior_sample(facts["plan_samples"], facts["event_time_s"])
+  model_action_sample = _event_prior_sample(facts["model_action_samples"], facts["event_time_s"])
   sp_sample = _event_local_sp_sample(facts["sp_samples"], facts["event_time_s"])
   sp_source_cause = _sp_source_cause(sp_sample)
   if driver_sample is not None and (driver_sample["brake"] or driver_sample["gas"]):
     cause = "driver"
-  elif _has_lead_source(facts["planner_sources"]) or facts["lead_braking"] or _has_correlated_lead_braking(facts):
+  elif (plan_sample is not None and _has_lead_source([plan_sample["source"]])) or _has_event_local_lead_braking(plan_sample, facts):
     cause = "lead"
-  elif facts["model_action_should_stop"] or facts["plan_model_should_stop"]:
+  elif (model_action_sample is not None and model_action_sample["should_stop"]) or _plan_sample_is_model_stop(plan_sample):
     cause = "model_stop"
   elif sp_source_cause is not None:
     cause = sp_source_cause
@@ -304,7 +319,7 @@ def _build_attribution(facts: dict[str, Any]) -> EventAttribution:
     cause = "scc_map"
   elif sp_sample is not None and sp_sample["scc_vision_active"]:
     cause = "scc_vision"
-  elif facts["planner_sources"] or facts["sp_sources"]:
+  elif (plan_sample is not None and plan_sample["source"] != "unknown") or facts["sp_sources"]:
     cause = "planner_source"
   else:
     cause = "unknown"
@@ -349,6 +364,10 @@ def _is_model_stop_source(source: str) -> bool:
   return source.lower() in ("model", "e2e")
 
 
+def _plan_sample_is_model_stop(sample: dict[str, Any] | None) -> bool:
+  return sample is not None and bool(sample["should_stop"]) and _is_model_stop_source(sample["source"])
+
+
 def _sp_source_cause(sample: dict[str, Any] | None) -> str | None:
   if sample is None:
     return None
@@ -384,6 +403,14 @@ def _event_prior_sample(samples: list[dict[str, Any]], event_time_s: float) -> d
 
 def _is_braking(a_targets: list[float]) -> bool:
   return bool(a_targets) and min(a_targets) < -0.05
+
+
+def _has_event_local_lead_braking(plan_sample: dict[str, Any] | None, facts: dict[str, Any]) -> bool:
+  if plan_sample is None or not _finite_number(plan_sample["a_target"]) or not _is_braking([float(plan_sample["a_target"])]):
+    return False
+
+  lead_sample = _event_prior_sample(facts["lead_samples"], facts["event_time_s"])
+  return (lead_sample is not None and lead_sample["status"]) or _has_correlated_lead_braking(facts)
 
 
 def _has_correlated_lead_braking(facts: dict[str, Any]) -> bool:
