@@ -30,7 +30,7 @@ _FINISH_LAT_ACC_TH = 1.1  # Lat Acc threshold to trigger the end of the turn cyc
 
 _A_LAT_REG_MAX = 2.0  # Maximum lateral acceleration
 _IN_TURN_LAT_ACC_TARGET = 3.0  # ISO 11270 lateral accel budget for confirmed turns.
-_IN_TURN_LAT_ACC_RAMP_RATE = 0.5  # m/s^2 per second. Gradually spend the in-turn budget.
+_IN_TURN_LAT_ACC_RAMP_RATE = 2.0  # m/s^2 per second. Reach the in-turn budget in about 0.5s.
 _CURRENT_LAT_ACC_BLEED_TH = 2.8
 _UPCOMING_PRED_LAT_ACC_MARGIN = 0.4  # Treat stronger predicted accel as the next bend, not the current curve.
 

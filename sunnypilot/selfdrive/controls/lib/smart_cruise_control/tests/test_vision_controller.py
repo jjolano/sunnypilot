@@ -289,6 +289,28 @@ class TestSmartCruiseControlVision:
     assert self.scc_v.state == VisionState.turning
     assert self.scc_v.output_v_target > v_ego
 
+  def test_confirmed_turn_reaches_iso_lateral_accel_budget_after_half_second(self):
+    pred_lat_accels = _constant_pred_lat_accels(2.6)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    iso_compliant_curvature = 2.6 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(iso_compliant_curvature).controlsState
+
+    for _ in range(3):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.state == VisionState.turning
+    assert self.scc_v.in_turn_lat_acc_budget < 3.0
+
+    for _ in range(int(round(0.5 / DT_MDL))):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.in_turn_lat_acc_budget == pytest.approx(3.0)
+    assert self.scc_v.output_v_target > v_ego
+
   def test_current_lat_acc_bleed_keeps_speed_target_below_current_speed_after_budget_ramp(self):
     pred_lat_accels = _constant_pred_lat_accels(2.8)
     mdl = generate_modelV2()
