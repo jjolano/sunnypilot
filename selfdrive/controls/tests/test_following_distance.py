@@ -91,6 +91,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_MAX_EXCESS,
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX,
   CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING,
+  CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED,
   CREEP_TO_STOP_GAP_START_EXCESS,
   CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET,
   CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD,
@@ -656,6 +657,26 @@ def test_model_lead_pullaway_prediction_requires_lateral_match():
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel, y_rel=0.4), make_radar_lead(d_rel, y_rel=0.4), 0.0) != (0.0, 0.0)
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel, y_rel=1.0), make_radar_lead(d_rel, y_rel=0.0), 0.0) == (0.0, 0.0)
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, y_rel=np.nan), 0.0) == (0.0, 0.0)
+
+
+def test_predicted_pullaway_arms_at_small_gap_excess_for_strong_pullaway():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
+  gap_excess = 0.1
+  d_rel = stop_target + gap_excess
+  v_lead = 0.0
+  a_lead = 0.8
+  a_lead_tau = 0.0
+
+  predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(v_lead, a_lead, a_lead_tau)
+  assert predicted_v_lead >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED
+  assert predicted_gap_opening >= CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING
+
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, d_rel, v_lead, 1.0, False, a_lead=a_lead, a_lead_tau=a_lead_tau,
+  )
+
+  assert active
+  assert accel >= longitudinal_planner.CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN
 
 
 def test_creep_to_stop_gap_prediction_requires_clear_gap_opening():
