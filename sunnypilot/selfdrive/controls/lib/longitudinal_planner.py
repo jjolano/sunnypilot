@@ -23,6 +23,8 @@ DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimen
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 SPEED_LIMIT_SPEED_UP_ACCEL_CAP = 0.30  # m/s^2, conservative target shaping to avoid downshifts.
 SPEED_LIMIT_SPEED_UP_LOOKAHEAD = 1.5  # s, keep SLA speed-up targets close to ego speed.
+SPEED_LIMIT_HANDOFF_EXIT_MARGIN = 0.25  # m/s, near enough to manual cruise to return to cruise.
+SPEED_LIMIT_HANDOFF_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating during handoff.
 
 
 def _select_lower_target(selected_source, selected_v_target, selected_a_target, candidate_source, candidate):
@@ -137,6 +139,8 @@ class LongitudinalPlannerSP:
     self.output_v_target = 0.
     self.output_a_target = 0.
     self.decision_candidates_sp = []
+    self._speed_limit_handoff_active = False
+    self._speed_limit_active_prev = False
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -144,6 +148,27 @@ class LongitudinalPlannerSP:
       return experimental_mode
 
     return experimental_mode and self.dec.mode() == "blended"
+
+  def _update_speed_limit_handoff(self, long_enabled: bool, long_override: bool, v_ego: float, v_cruise: float) -> bool:
+    has_limit_target = (self.resolver.speed_limit_valid or self.resolver.speed_limit_last_valid) and \
+                       self.resolver.speed_limit_final_last > 0. and \
+                       self.resolver.speed_limit_final_last != V_CRUISE_UNSET
+    manual_cruise_below_limit = v_cruise < self.resolver.speed_limit_final_last
+    above_manual_cruise = v_ego > v_cruise + SPEED_LIMIT_HANDOFF_EXIT_MARGIN
+
+    if self.sla.is_active:
+      self._speed_limit_handoff_active = False
+    elif (self._speed_limit_active_prev and long_enabled and not long_override and has_limit_target and
+          manual_cruise_below_limit and above_manual_cruise):
+      self._speed_limit_handoff_active = True
+    elif not long_enabled or long_override or not has_limit_target or not manual_cruise_below_limit or not above_manual_cruise:
+      self._speed_limit_handoff_active = False
+
+    self._speed_limit_active_prev = self.sla.is_active
+    return self._speed_limit_handoff_active
+
+  def _speed_limit_handoff_target(self, v_ego: float, a_ego: float) -> tuple[float, float]:
+    return min(v_ego, self.resolver.speed_limit_final_last), min(a_ego, SPEED_LIMIT_HANDOFF_A_TARGET_MAX)
 
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float,
                      coast_accel: float | None = None) -> tuple[float, float]:
@@ -167,14 +192,18 @@ class LongitudinalPlannerSP:
                     coast_accel=coast_accel)
 
     self.osm_traffic_control_prior.update(sm, long_enabled, long_override, v_ego, a_ego)
-    speed_limit_assist_target = (
+
+    speed_limit_handoff_active = self._update_speed_limit_handoff(long_enabled, long_override, v_ego, v_cruise)
+    speed_limit_active = self.sla.is_active or speed_limit_handoff_active
+    speed_limit_assist_target = self._speed_limit_handoff_target(v_ego, a_ego) if speed_limit_handoff_active else (
       apply_speed_limit_speedup_governor(self.sla.is_active, v_ego, self.sla.output_v_target),
       a_ego,
     )
+    cruise_target = (v_cruise, min(a_ego, SPEED_LIMIT_HANDOFF_A_TARGET_MAX)) if speed_limit_handoff_active else (v_cruise, a_ego)
 
     self.decision_candidates_sp = build_sp_longitudinal_candidates(
-      self.sla.is_active,
-      (v_cruise, a_ego),
+      speed_limit_active,
+      cruise_target,
       (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
       self.scc.vision.is_active,
       (self.scc.map.output_v_target, self.scc.map.output_a_target),
@@ -185,8 +214,8 @@ class LongitudinalPlannerSP:
     )
 
     self.source, self.output_v_target, self.output_a_target = select_lowest_longitudinal_target(
-      self.sla.is_active,
-      (v_cruise, a_ego),
+      speed_limit_active,
+      cruise_target,
       (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
       (self.scc.map.output_v_target, self.scc.map.output_a_target),
       speed_limit_assist_target,

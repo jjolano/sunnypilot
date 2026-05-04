@@ -124,6 +124,24 @@ class FakeSpeedLimitAssist:
     pass
 
 
+class SequenceSpeedLimitAssist:
+  def __init__(self, active_sequence, target_sequence=None):
+    self.active_sequence = list(active_sequence)
+    self.target_sequence = list(target_sequence or [30.0] * len(self.active_sequence))
+    self.output_v_target = self.target_sequence[0]
+    self.output_a_target = -0.4
+    self.is_active = self.active_sequence[0]
+    self.auto_enabled = self.is_active
+    self.update_count = 0
+
+  def update(self, *args, **kwargs):
+    index = min(self.update_count, len(self.active_sequence) - 1)
+    self.is_active = self.active_sequence[index]
+    self.auto_enabled = self.is_active
+    self.output_v_target = self.target_sequence[min(index, len(self.target_sequence) - 1)]
+    self.update_count += 1
+
+
 class FakeSmartCruiseControl:
   def __init__(self):
     self.vision = SimpleNamespace(output_v_target=255.0, output_a_target=0.0, is_active=False)
@@ -216,6 +234,178 @@ def test_speed_limit_decision_candidate_uses_governed_speedup_target():
                                if candidate.source == DecisionSource.SPEED_LIMIT)
   assert speed_limit_candidate.v_target == pytest.approx(expected)
   assert speed_limit_candidate.v_target < FakeSpeedLimitAssist.output_v_target
+
+
+def test_speed_limit_auto_disable_handoff_coasts_to_limit_before_manual_cruise_snap():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = SequenceSpeedLimitAssist(active_sequence=[True, False], target_sequence=[30.0, 255.0])
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+  planner.source = LongitudinalPlanSource.cruise
+  planner._speed_limit_handoff_active = False
+  planner._speed_limit_active_prev = False
+
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vCruiseCluster=67.0),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+  })
+
+  v_ego = 21.0
+  a_ego = 0.2
+  manual_cruise = 18.61
+
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=v_ego, a_ego=a_ego, v_cruise=manual_cruise)
+  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=v_ego, a_ego=a_ego, v_cruise=manual_cruise)
+
+  assert planner.source == LongitudinalPlanSource.speedLimitAssist
+  assert v_target == pytest.approx(v_ego)
+  assert a_target <= 0.0
+  assert v_target > manual_cruise
+
+
+def test_speed_limit_handoff_decision_candidate_uses_handoff_target():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = SequenceSpeedLimitAssist(active_sequence=[True, False], target_sequence=[30.0, 255.0])
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+  planner.source = LongitudinalPlanSource.cruise
+  planner._speed_limit_handoff_active = False
+  planner._speed_limit_active_prev = False
+
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vCruiseCluster=67.0),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+  })
+
+  v_ego = 21.0
+  manual_cruise = 18.61
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=v_ego, a_ego=0.2, v_cruise=manual_cruise)
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=v_ego, a_ego=0.2, v_cruise=manual_cruise)
+
+  cruise_candidate = next(candidate for candidate in planner.decision_candidates_sp
+                          if candidate.source == DecisionSource.CRUISE)
+  speed_limit_candidate = next(candidate for candidate in planner.decision_candidates_sp
+                               if candidate.source == DecisionSource.SPEED_LIMIT)
+  assert cruise_candidate.v_target == pytest.approx(manual_cruise)
+  assert cruise_candidate.a_target <= 0.0
+  assert speed_limit_candidate.v_target == pytest.approx(v_ego)
+  assert speed_limit_candidate.a_target <= 0.0
+
+
+def test_speed_limit_handoff_uses_limit_target_when_ego_is_above_limit():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = SequenceSpeedLimitAssist(active_sequence=[True, False], target_sequence=[30.0, 255.0])
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+  planner.source = LongitudinalPlanSource.cruise
+  planner._speed_limit_handoff_active = False
+  planner._speed_limit_active_prev = False
+
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vCruiseCluster=67.0),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+  })
+
+  manual_cruise = 18.61
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=manual_cruise)
+  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=manual_cruise)
+
+  assert planner.source == LongitudinalPlanSource.speedLimitAssist
+  assert v_target == pytest.approx(30.0)
+  assert a_target <= 0.0
+
+
+def test_speed_limit_handoff_exits_near_manual_cruise_target():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = SequenceSpeedLimitAssist(active_sequence=[True, False, False, False], target_sequence=[30.0, 255.0, 255.0, 255.0])
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+  planner.source = LongitudinalPlanSource.cruise
+  planner._speed_limit_handoff_active = False
+  planner._speed_limit_active_prev = False
+
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vCruiseCluster=67.0),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+  })
+
+  manual_cruise = 18.61
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=21.0, a_ego=0.2, v_cruise=manual_cruise)
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=21.0, a_ego=0.2, v_cruise=manual_cruise)
+  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=20.0, a_ego=0.1, v_cruise=manual_cruise)
+
+  assert planner.source == LongitudinalPlanSource.speedLimitAssist
+  assert v_target == pytest.approx(20.0)
+  assert a_target <= 0.0
+
+  v_target, _ = LongitudinalPlannerSP.update_targets(
+    planner,
+    sm,
+    v_ego=manual_cruise + longitudinal_planner.SPEED_LIMIT_HANDOFF_EXIT_MARGIN,
+    a_ego=0.0,
+    v_cruise=manual_cruise,
+  )
+
+  assert planner.source == LongitudinalPlanSource.cruise
+  assert v_target == pytest.approx(manual_cruise)
+
+
+def test_speed_limit_handoff_exits_when_manual_cruise_reaches_limit_target():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = SequenceSpeedLimitAssist(active_sequence=[True, False, False], target_sequence=[30.0, 255.0, 255.0])
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+  planner.source = LongitudinalPlanSource.cruise
+  planner._speed_limit_handoff_active = False
+  planner._speed_limit_active_prev = False
+
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vCruiseCluster=67.0),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+  })
+
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=18.61)
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=18.61)
+  v_target, _ = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.0, v_cruise=30.0)
+
+  assert planner.source == LongitudinalPlanSource.cruise
+  assert v_target == pytest.approx(30.0)
+
+
+def test_speed_limit_handoff_allows_lower_scc_candidate():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.scc.vision.output_v_target = 20.0
+  planner.scc.vision.output_a_target = -0.6
+  planner.resolver = FakeResolver()
+  planner.sla = SequenceSpeedLimitAssist(active_sequence=[True, False], target_sequence=[30.0, 255.0])
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+  planner.source = LongitudinalPlanSource.cruise
+  planner._speed_limit_handoff_active = False
+  planner._speed_limit_active_prev = False
+
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vCruiseCluster=67.0),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+  })
+
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=18.61)
+  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=18.61)
+
+  assert planner.source == LongitudinalPlanSource.sccVision
+  assert v_target == pytest.approx(20.0)
+  assert a_target == pytest.approx(-0.6)
 
 
 def test_speed_limit_resolver_receives_coast_accel():
