@@ -893,6 +893,7 @@ def test_engage_bootstrap_brakes_for_model_stop_threat_before_radar_lead():
     prob_lead_values=[0.0, 0.0, 1.0],
     cruise_values=[20.0, 20.0, 20.0],
     model_desired_accel_values=[-1.8, -1.8, -1.8],
+    model_should_stop_values=[True, True, True],
     breakpoints=[0.0, 0.5, 0.51],
     e2e=False,
   )
