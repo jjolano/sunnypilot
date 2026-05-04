@@ -10,6 +10,7 @@ from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority
 from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
+from opendbc.car.toyota.values import CAR as TOYOTA
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
@@ -32,11 +33,38 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
+TOYOTA_EPS_HIGH_RATE_DEG = 100.0
+TOYOTA_EPS_HIGH_RATE_FRAMES = 15
+TOYOTA_EPS_HIGH_RATE_CUT_FRAMES = 2
+TOYOTA_EPS_HIGH_RATE_FINGERPRINTS = frozenset(platform.value for platform in TOYOTA)
 
 
 def compute_steering_actuator_feedback(previous_request, actuators_output, steer_control_type, lat_active=True):
   return build_steering_actuator_feedback(previous_request, actuators_output, steer_control_type,
                                           lat_active=lat_active)
+
+
+def apply_toyota_eps_high_rate_guard(CP, CC, CS, high_rate_frames, cut_frames):
+  toyota_torque_control = CP.carFingerprint in TOYOTA_EPS_HIGH_RATE_FINGERPRINTS and \
+                          CP.steerControlType == car.CarParams.SteerControlType.torque
+  if not toyota_torque_control or not CC.latActive or CS.steerFaultTemporary or CS.steerFaultPermanent:
+    return 0, 0
+
+  if cut_frames > 0:
+    CC.latActive = False
+    CC.actuators.torque = 0.0
+    return 0, cut_frames - 1
+
+  if abs(CS.steeringRateDeg) < TOYOTA_EPS_HIGH_RATE_DEG:
+    return 0, 0
+
+  high_rate_frames += 1
+  if high_rate_frames < TOYOTA_EPS_HIGH_RATE_FRAMES:
+    return high_rate_frames, 0
+
+  CC.latActive = False
+  CC.actuators.torque = 0.0
+  return 0, TOYOTA_EPS_HIGH_RATE_CUT_FRAMES - 1
 
 
 class Controls(ControlsExt):
@@ -58,6 +86,8 @@ class Controls(ControlsExt):
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
 
     self.steer_limited_by_safety = False
+    self.toyota_eps_high_rate_frames = 0
+    self.toyota_eps_cut_frames = 0
     self.steering_actuator_feedback = SteeringActuatorFeedback.invalid()
     self._previous_steering_actuator_request: SteeringActuatorRequest | None = None
     self.curvature = 0.0
@@ -151,6 +181,9 @@ class Controls(ControlsExt):
                                                        self.calibrated_pose, curvature_limited, lat_delay)
     actuators.torque = float(steer)
     actuators.steeringAngleDeg = float(steeringAngleDeg)
+    self.toyota_eps_high_rate_frames, self.toyota_eps_cut_frames = apply_toyota_eps_high_rate_guard(
+      self.CP, CC, CS, self.toyota_eps_high_rate_frames, self.toyota_eps_cut_frames
+    )
     self._previous_steering_actuator_request = SteeringActuatorRequest.from_actuators(actuators)
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
