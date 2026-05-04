@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   E2E_STOP_APPROACH_DECEL_MAX,
+  get_e2e_runway_comfort_accel,
   get_e2e_stop_approach_accel,
   has_model_stop_context,
   has_valid_radar_lead,
@@ -96,3 +97,109 @@ def test_e2e_stop_approach_leaves_hard_model_stop_to_model():
   accel = get_e2e_stop_approach_accel(12.0, make_model_msg(should_stop=True, endpoint_x=30.0), make_radar_state(), True)
 
   assert accel == 0.0
+
+
+def test_e2e_runway_comfort_caps_long_runway_raw_model_braking():
+  accel = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-1.2,
+    coast_accel=-0.25,
+    model_msg=make_model_msg(desired_accel=-1.2, should_stop=False, endpoint_x=145.0),
+    e2e_active=True,
+    prev_output_a_target=-0.2,
+  )
+
+  assert accel == -0.2175
+
+
+def test_e2e_runway_comfort_allows_short_runway_model_braking():
+  accel = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-1.2,
+    coast_accel=-0.25,
+    model_msg=make_model_msg(desired_accel=-1.2, should_stop=False, endpoint_x=55.0),
+    e2e_active=True,
+    prev_output_a_target=-0.2,
+  )
+
+  assert accel == -1.2
+
+
+def test_e2e_runway_comfort_leaves_model_stop_untouched():
+  accel = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-1.2,
+    coast_accel=-0.25,
+    model_msg=make_model_msg(desired_accel=-1.2, should_stop=True, endpoint_x=145.0),
+    e2e_active=True,
+    prev_output_a_target=-0.2,
+  )
+
+  assert accel == -1.2
+
+
+def test_e2e_runway_comfort_leaves_stop_context_bootstrap_untouched():
+  accel = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-1.2,
+    coast_accel=-0.25,
+    model_msg=make_model_msg(
+      desired_accel=-1.2,
+      should_stop=False,
+      endpoint_x=145.0,
+      positions=[0.0, 35.0, 60.0],
+      velocities=[17.0, 5.0, 0.5],
+    ),
+    e2e_active=True,
+    prev_output_a_target=-0.2,
+    engage_stop_bootstrap_active=True,
+  )
+
+  assert accel == -1.2
+
+
+def test_e2e_runway_comfort_leaves_driver_override_untouched():
+  model_msg = make_model_msg(desired_accel=-1.2, should_stop=False, endpoint_x=145.0)
+
+  assert get_e2e_runway_comfort_accel(17.2, -1.2, -0.25, model_msg, True, -0.2, gas_pressed=True) == -1.2
+  assert get_e2e_runway_comfort_accel(17.2, -1.2, -0.25, model_msg, True, -0.2, brake_pressed=True) == -1.2
+  assert get_e2e_runway_comfort_accel(17.2, -1.2, -0.25, model_msg, True, -0.2, reset_state=True) == -1.2
+  assert get_e2e_runway_comfort_accel(17.2, -1.2, -0.25, model_msg, True, -0.2, force_slow_decel=True) == -1.2
+
+
+def test_e2e_runway_comfort_leaves_radar_lead_untouched():
+  model_msg = make_model_msg(desired_accel=-1.2, should_stop=False, endpoint_x=145.0)
+
+  accel = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-1.2,
+    coast_accel=-0.25,
+    model_msg=model_msg,
+    e2e_active=True,
+    prev_output_a_target=-0.2,
+    has_radar_lead=True,
+  )
+
+  assert accel == -1.2
+
+
+def test_e2e_runway_comfort_limits_negative_ramp():
+  accel = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-0.8,
+    coast_accel=-0.25,
+    model_msg=make_model_msg(desired_accel=-0.8, should_stop=False, endpoint_x=90.0),
+    e2e_active=True,
+    prev_output_a_target=-0.2,
+  )
+
+  assert accel == -0.2175
+
+
+def test_e2e_runway_comfort_does_not_block_stop_approach_shortage_braking():
+  model_msg = make_model_msg(desired_accel=-0.4, should_stop=False, endpoint_x=45.0)
+  governed = get_e2e_runway_comfort_accel(12.0, -0.4, -0.25, model_msg, True, -0.2)
+  shortage_accel = get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), True)
+
+  assert shortage_accel < governed
+  assert shortage_accel < -0.5
