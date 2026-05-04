@@ -189,7 +189,7 @@ def test_speed_limit_auto_uses_assist_source_without_acceleration_seed():
   assert planner.source == LongitudinalPlanSource.speedLimitAssist
 
 
-def test_speed_limit_decision_candidate_uses_acceleration_seed():
+def test_active_speed_limit_decision_driver_uses_acceleration_seed():
   planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
   planner.scc = FakeSmartCruiseControl()
   planner.resolver = FakeResolver()
@@ -206,12 +206,12 @@ def test_speed_limit_decision_candidate_uses_acceleration_seed():
   v_cruise = 20.0 * CV.KPH_TO_MS
   LongitudinalPlannerSP.update_targets(planner, sm, v_ego=15.0, a_ego=a_ego, v_cruise=v_cruise)
 
-  speed_limit_candidate = next(candidate for candidate in planner.decision_candidates_sp
-                               if candidate.source == DecisionSource.SPEED_LIMIT)
-  assert speed_limit_candidate.a_target == a_ego
+  cruise_candidate = next(candidate for candidate in planner.decision_candidates_sp
+                          if candidate.source == DecisionSource.CRUISE)
+  assert cruise_candidate.a_target == a_ego
 
 
-def test_speed_limit_decision_candidate_uses_governed_speedup_target():
+def test_active_speed_limit_decision_driver_uses_governed_speedup_target():
   planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
   planner.scc = FakeSmartCruiseControl()
   planner.resolver = FakeResolver()
@@ -230,10 +230,37 @@ def test_speed_limit_decision_candidate_uses_governed_speedup_target():
   LongitudinalPlannerSP.update_targets(planner, sm, v_ego=v_ego, a_ego=a_ego, v_cruise=v_cruise)
 
   expected = v_ego + longitudinal_planner.SPEED_LIMIT_SPEED_UP_ACCEL_CAP * longitudinal_planner.SPEED_LIMIT_SPEED_UP_LOOKAHEAD
-  speed_limit_candidate = next(candidate for candidate in planner.decision_candidates_sp
-                               if candidate.source == DecisionSource.SPEED_LIMIT)
-  assert speed_limit_candidate.v_target == pytest.approx(expected)
-  assert speed_limit_candidate.v_target < FakeSpeedLimitAssist.output_v_target
+  cruise_candidate = next(candidate for candidate in planner.decision_candidates_sp
+                          if candidate.source == DecisionSource.CRUISE)
+  assert cruise_candidate.v_target == pytest.approx(expected)
+  assert cruise_candidate.v_target < FakeSpeedLimitAssist.output_v_target
+
+
+def test_active_speed_limit_above_manual_cruise_is_decision_driver_intent():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = FakeSpeedLimitAssist()
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vCruiseCluster=20.0),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+  })
+
+  v_ego = 15.0
+  manual_cruise = 20.0 * CV.KPH_TO_MS
+  LongitudinalPlannerSP.update_targets(planner, sm, v_ego=v_ego, a_ego=0.2, v_cruise=manual_cruise)
+
+  expected = v_ego + longitudinal_planner.SPEED_LIMIT_SPEED_UP_ACCEL_CAP * longitudinal_planner.SPEED_LIMIT_SPEED_UP_LOOKAHEAD
+  cruise_candidate = next(candidate for candidate in planner.decision_candidates_sp
+                          if candidate.source == DecisionSource.CRUISE)
+  speed_limit_candidates = [candidate for candidate in planner.decision_candidates_sp
+                            if candidate.source == DecisionSource.SPEED_LIMIT]
+  assert cruise_candidate.v_target == pytest.approx(expected)
+  assert cruise_candidate.role == CandidateRole.DRIVER_INTENT
+  assert speed_limit_candidates == []
 
 
 def test_speed_limit_auto_disable_handoff_coasts_to_limit_before_manual_cruise_snap():
@@ -288,12 +315,11 @@ def test_speed_limit_handoff_decision_candidate_uses_handoff_target():
 
   cruise_candidate = next(candidate for candidate in planner.decision_candidates_sp
                           if candidate.source == DecisionSource.CRUISE)
-  speed_limit_candidate = next(candidate for candidate in planner.decision_candidates_sp
-                               if candidate.source == DecisionSource.SPEED_LIMIT)
-  assert cruise_candidate.v_target == pytest.approx(manual_cruise)
+  speed_limit_candidates = [candidate for candidate in planner.decision_candidates_sp
+                            if candidate.source == DecisionSource.SPEED_LIMIT]
+  assert cruise_candidate.v_target == pytest.approx(v_ego)
   assert cruise_candidate.a_target <= 0.0
-  assert speed_limit_candidate.v_target == pytest.approx(v_ego)
-  assert speed_limit_candidate.a_target <= 0.0
+  assert speed_limit_candidates == []
 
 
 def test_speed_limit_handoff_uses_limit_target_when_ego_is_above_limit():

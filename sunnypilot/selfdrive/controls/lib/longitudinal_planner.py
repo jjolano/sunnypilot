@@ -200,10 +200,12 @@ class LongitudinalPlannerSP:
       a_ego,
     )
     cruise_target = (v_cruise, min(a_ego, SPEED_LIMIT_HANDOFF_A_TARGET_MAX)) if speed_limit_handoff_active else (v_cruise, a_ego)
+    decision_cruise_target = speed_limit_assist_target if speed_limit_active else cruise_target
+    decision_speed_limit_active = False  # Active SLA is represented as effective driver intent below.
 
     self.decision_candidates_sp = build_sp_longitudinal_candidates(
-      speed_limit_active,
-      cruise_target,
+      decision_speed_limit_active,
+      decision_cruise_target,
       (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
       self.scc.vision.is_active,
       (self.scc.map.output_v_target, self.scc.map.output_a_target),
