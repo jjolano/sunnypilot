@@ -718,7 +718,8 @@ def test_creeping_lead_opens_gap_after_regular_stop_distance():
   )
 
   lead_creep_window = output[:, 0] >= 10.0
-  assert np.min(output[:, 6]) > STOP_DISTANCE - 0.5
+  presentation_floor = get_lead_stop_presentation_distance(output[:, 3], output[:, 4], 0.0, 1.0)
+  assert np.min(output[:, 6] - presentation_floor) > -0.3
   assert np.max(output[lead_creep_window, 3]) > 0.1
   assert output[-1, 6] <= STOP_DISTANCE + 4.5
 
@@ -931,6 +932,7 @@ def test_engage_bootstrap_brakes_for_model_stop_threat_before_radar_lead():
     prob_lead_values=[0.0, 0.0, 1.0],
     cruise_values=[20.0, 20.0, 20.0],
     model_desired_accel_values=[-1.8, -1.8, -1.8],
+    model_should_stop_values=[True, True, True],
     breakpoints=[0.0, 0.5, 0.51],
     e2e=False,
   )
