@@ -29,8 +29,10 @@ _LEAVING_LAT_ACC_TH = 1.3  # Lat Acc threshold to trigger leaving turn state.
 _FINISH_LAT_ACC_TH = 1.1  # Lat Acc threshold to trigger the end of the turn cycle.
 
 _A_LAT_REG_MAX = 2.0  # Maximum lateral acceleration
-_CURRENT_LAT_ACC_TARGET = 2.8  # Conservative current-curve target for driver-assisted sharp turns.
+_IN_TURN_LAT_ACC_TARGET = 3.0  # ISO 11270 lateral accel budget for confirmed turns.
+_IN_TURN_LAT_ACC_RAMP_RATE = 0.5  # m/s^2 per second. Gradually spend the in-turn budget.
 _CURRENT_LAT_ACC_BLEED_TH = 2.8
+_UPCOMING_PRED_LAT_ACC_MARGIN = 0.4  # Treat stronger predicted accel as the next bend, not the current curve.
 
 _NO_OVERSHOOT_TIME_HORIZON = 2.5  # s. Time to use for velocity desired based on a_target when not overshooting.
 
@@ -72,6 +74,7 @@ class SmartCruiseControlVision:
     self.current_curvature = 0.0
     self.current_lat_acc_bleed = False
     self.max_pred_lat_acc = 0.0
+    self.in_turn_lat_acc_budget = _A_LAT_REG_MAX
 
   def get_a_target_from_control(self) -> float:
     return self.a_target
@@ -101,14 +104,37 @@ class SmartCruiseControlVision:
       predicted_lat_accels = rate_plan * vel_plan
       self.max_pred_lat_acc = np.percentile(predicted_lat_accels, 97)
 
-      # get the maximum curve based on the current velocity
-      v_ego = max(self.v_ego, 0.1)  # ensure a value greater than 0 for calculations
-      max_curve = self.max_pred_lat_acc / (v_ego**2)
+  def _speed_for_lateral_accel(self, lateral_accel: float, curvature: float) -> float:
+    if curvature <= 1e-6:
+      return V_CRUISE_UNSET
+    return (lateral_accel / curvature) ** 0.5
 
-      # Get the target velocity for the maximum curve
-      self.v_target = (_A_LAT_REG_MAX / max_curve) ** 0.5
-      if self.current_lat_acc_bleed and self.current_curvature > 1e-6:
-        self.v_target = min(self.v_target, (_CURRENT_LAT_ACC_TARGET / self.current_curvature) ** 0.5)
+  def _update_in_turn_lat_acc_budget(self) -> None:
+    if self.state == VisionState.turning:
+      self.in_turn_lat_acc_budget = min(_IN_TURN_LAT_ACC_TARGET,
+                                        self.in_turn_lat_acc_budget + _IN_TURN_LAT_ACC_RAMP_RATE * DT_MDL)
+    elif self.state == VisionState.leaving and self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
+      self.in_turn_lat_acc_budget = max(self.in_turn_lat_acc_budget, _A_LAT_REG_MAX)
+    else:
+      self.in_turn_lat_acc_budget = _A_LAT_REG_MAX
+
+  def _update_v_target(self) -> None:
+    v_ego = max(self.v_ego, 0.1)  # ensure a value greater than 0 for calculations
+    predicted_curve = self.max_pred_lat_acc / (v_ego**2)
+    predicted_v_target = self._speed_for_lateral_accel(_A_LAT_REG_MAX, predicted_curve)
+
+    if self.state == VisionState.turning and self.current_curvature > 1e-6:
+      current_v_target = self._speed_for_lateral_accel(self.in_turn_lat_acc_budget, self.current_curvature)
+      if self.current_lat_acc_bleed:
+        current_v_target = min(current_v_target, self._speed_for_lateral_accel(_CURRENT_LAT_ACC_BLEED_TH, self.current_curvature))
+      if self.max_pred_lat_acc > self.current_lat_acc + _UPCOMING_PRED_LAT_ACC_MARGIN:
+        self.v_target = min(current_v_target, predicted_v_target)
+      else:
+        self.v_target = current_v_target
+    elif self.state == VisionState.leaving and self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
+      self.v_target = min(predicted_v_target, self.v_ego)
+    else:
+      self.v_target = predicted_v_target
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, ENTERING, TURNING, LEAVING, OVERRIDING
@@ -192,6 +218,8 @@ class SmartCruiseControlVision:
     elif self.state == VisionState.leaving:
       # When leaving, we provide a comfortable acceleration to regain speed.
       a_target = _LEAVING_ACC
+      if self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
+        a_target = min(0.0, np.interp(self.max_pred_lat_acc, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V))
     else:
       raise NotImplementedError(f"SCC-V state not supported: {self.state}")
 
@@ -211,6 +239,8 @@ class SmartCruiseControlVision:
     self._update_calculations(sm)
 
     self.is_enabled, self.is_active = self._update_state_machine()
+    self._update_in_turn_lat_acc_budget()
+    self._update_v_target()
     self.a_target = self._update_solution()
 
     self.output_v_target = self.get_v_target_from_control()

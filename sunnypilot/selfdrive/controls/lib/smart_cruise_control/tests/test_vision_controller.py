@@ -273,6 +273,80 @@ class TestSmartCruiseControlVision:
     assert not self.scc_v.is_active
     assert self.scc_v.output_v_target == V_CRUISE_UNSET
 
+  def test_confirmed_turn_gradually_uses_iso_lateral_accel_budget(self):
+    pred_lat_accels = _constant_pred_lat_accels(2.6)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    iso_compliant_curvature = 2.6 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(iso_compliant_curvature).controlsState
+
+    for _ in range(int(3.0 / DT_MDL)):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.state == VisionState.turning
+    assert self.scc_v.output_v_target > v_ego
+
+  def test_current_lat_acc_bleed_keeps_speed_target_below_current_speed_after_budget_ramp(self):
+    pred_lat_accels = _constant_pred_lat_accels(2.8)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    bleed_curvature = (_CURRENT_LAT_ACC_BLEED_TH + 0.05) / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(bleed_curvature).controlsState
+
+    for _ in range(int(3.0 / DT_MDL)):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.state == VisionState.turning
+    assert self.scc_v.current_lat_acc_bleed
+    assert self.scc_v.output_v_target < v_ego
+
+  def test_leaving_state_does_not_accelerate_into_imminent_next_curve(self):
+    pred_lat_accels = _constant_pred_lat_accels(2.2)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    turning_curvature = 2.0 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(turning_curvature).controlsState
+    for _ in range(3):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    winding_gap_curvature = 1.2 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(winding_gap_curvature).controlsState
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.state == VisionState.leaving
+    assert self.scc_v.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH
+    assert self.scc_v.a_target <= 0.0
+    assert self.scc_v.output_v_target <= v_ego
+
+  def test_leaving_state_does_not_speed_up_for_modest_imminent_next_curve(self):
+    pred_lat_accels = _constant_pred_lat_accels(1.35)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    turning_curvature = 2.0 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(turning_curvature).controlsState
+    for _ in range(3):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    winding_gap_curvature = 1.2 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(winding_gap_curvature).controlsState
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.state == VisionState.leaving
+    assert self.scc_v.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH
+    assert self.scc_v.output_v_target <= v_ego
+
   @pytest.mark.parametrize(
     "case, should_enter",
     [
