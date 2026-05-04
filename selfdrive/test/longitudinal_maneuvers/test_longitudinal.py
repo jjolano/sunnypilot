@@ -643,7 +643,8 @@ def test_creeping_lead_opens_gap_after_regular_stop_distance():
   )
 
   lead_creep_window = output[:, 0] >= 10.0
-  assert np.min(output[:, 6]) > STOP_DISTANCE - 0.5
+  presentation_floor = get_lead_stop_presentation_distance(output[:, 3], output[:, 4], 0.0, 1.0)
+  assert np.min(output[:, 6] - presentation_floor) > -0.3
   assert np.max(output[lead_creep_window, 3]) > 0.1
   assert output[-1, 6] <= STOP_DISTANCE + 4.5
 
