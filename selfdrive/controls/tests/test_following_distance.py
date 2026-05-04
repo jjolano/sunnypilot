@@ -41,6 +41,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
   STOPPED_LEAD_BUFFER,
+  SOURCE_HYSTERESIS_MARGIN,
+  apply_source_hysteresis,
   get_approach_available_runway,
   get_approach_brake,
   get_approach_engage_offset,
@@ -1913,6 +1915,84 @@ def test_lead_loss_e2e_guard_limits_only_no_lead_non_stop_model_decel():
   assert guarded == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
   assert stop_decel == pytest.approx(-1.2)
   assert lead_decel == pytest.approx(-1.2)
+
+
+class TestSourceHysteresis:
+  def test_keeps_current_source_when_within_margin(self):
+    obstacles = np.array([10.0, 11.0, 20.0])
+    current_idx = 1
+    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
+    assert result == 1
+
+  def test_switches_when_new_source_better_by_margin(self):
+    obstacles = np.array([10.0, 12.0, 20.0])
+    current_idx = 1
+    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
+    assert result == 0
+
+  def test_switches_when_current_source_much_worse(self):
+    obstacles = np.array([10.0, 25.0, 20.0])
+    current_idx = 1
+    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
+    assert result == 0
+
+  def test_sticks_with_best_when_already_best(self):
+    obstacles = np.array([10.0, 12.0, 20.0])
+    current_idx = 0
+    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
+    assert result == 0
+
+  def test_zero_margin_behaves_like_argmin(self):
+    obstacles = np.array([10.0, 11.0, 20.0])
+    current_idx = 1
+    result = apply_source_hysteresis(obstacles, current_idx, 0.0)
+    assert result == 0
+
+  def test_vectorized_keeps_current_per_timestep(self):
+    obstacles = np.array([
+      [10.0, 12.0, 20.0],
+      [15.0, 10.0, 20.0],
+    ])
+    current = np.array([1, 1])
+    result = apply_source_hysteresis(obstacles, current, SOURCE_HYSTERESIS_MARGIN)
+    assert result[0] == 0
+    assert result[1] == 1
+
+  def test_vectorized_switches_only_where_margin_exceeded(self):
+    obstacles = np.array([
+      [10.0, 11.0, 20.0],
+      [10.0, 12.0, 20.0],
+    ])
+    current = np.array([1, 1])
+    result = apply_source_hysteresis(obstacles, current, SOURCE_HYSTERESIS_MARGIN)
+    assert result[0] == 1
+    assert result[1] == 0
+
+  def test_margin_between_lead0_and_cruise(self):
+    obstacles = np.array([10.0, 20.0, 11.0])
+    current_idx = 2
+    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
+    assert result == 2  # 11.0 - 10.0 = 1.0 < 1.2 margin, stays on cruise
+
+  def test_stays_with_cruise_when_lead0_within_margin(self):
+    obstacles = np.array([10.0, 20.0, 10.8])
+    current_idx = 2
+    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
+    assert result == 2
+
+  def test_lead_transition_respects_margin(self):
+    """Simulate lead flicker: lead0 appears at 10.5m while cruise is at 10.0m."""
+    obstacles = np.array([10.5, 20.0, 10.0])
+    current_idx = 2  # cruise
+    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
+    assert result == 2  # stay on cruise, lead0 is only 0.5m better
+
+  def test_lead_disappearance_respects_margin(self):
+    """Simulate lead flicker: lead0 is current but cruise is now 0.5m better."""
+    obstacles = np.array([10.0, 20.0, 10.5])
+    current_idx = 0  # lead0
+    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
+    assert result == 0  # stay on lead0, cruise is only 0.5m better
 
 
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):

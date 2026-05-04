@@ -202,6 +202,7 @@ LEAD_TRANSITION_GUARD_ARM_BLEND = 0.8
 LEAD_TRANSITION_TRACK_UNKNOWN = -2
 LEAD_TRANSITION_CHURN_MAX_D_REL_DELTA = 5.0
 LEAD_TRANSITION_CHURN_MAX_V_LEAD_DELTA = 5.0
+SOURCE_HYSTERESIS_MARGIN = 1.2
 SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP = 0.15
 SHORT_GAP_PULLAWAY_RESPONSE_FULL_GAP = 1.0
 SHORT_GAP_PULLAWAY_RESPONSE_MAX_CLOSING = 0.5
@@ -612,6 +613,33 @@ def get_lead_surge_damping_target(x_lead, v_ego, v_lead, a_lead, t_follow, decel
   cost = LEAD_SURGE_DAMPING_COST * damping_blend
   target = np.where(cost > 0.0, LEAD_SURGE_DAMPING_ACCEL_MAX, 0.0)
   return target, cost
+
+
+def apply_source_hysteresis(obstacles, current_idx, margin):
+  """
+  Apply hysteresis to source/obstacle selection to prevent rapid switching
+  between lead0, lead1, and cruise sources.
+
+  obstacles: array of shape (n_sources,) for scalar or (n_timesteps, n_sources) for vectorized
+  current_idx: int or array of current source indices
+  margin: float, minimum obstacle distance advantage required before switching
+
+  Returns: new source index (int or array)
+  """
+  obstacles = np.asarray(obstacles)
+  if obstacles.ndim == 1:
+    best_idx = int(np.argmin(obstacles))
+    best_obstacle = obstacles[best_idx]
+    current_obstacle = obstacles[current_idx]
+    if current_obstacle - best_obstacle > margin:
+      return best_idx
+    return int(current_idx)
+  else:
+    best_idx = np.argmin(obstacles, axis=1)
+    best_obstacle = np.min(obstacles, axis=1)
+    current_obstacle = obstacles[np.arange(len(current_idx)), current_idx]
+    switch = current_obstacle - best_obstacle > margin
+    return np.where(switch, best_idx, current_idx).astype(int)
 
 
 def get_selected_lead_targets(lead_0_targets, lead_1_targets, lead_0_costs, lead_1_costs, dominant_obstacle):
@@ -1051,6 +1079,7 @@ class LongitudinalMpc:
     self._last_set_weights_key = None
     self._last_cost_weight_key = None
     self._last_accel_match_costs = None
+    self.prev_dominant_obstacle = None
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights, accel_match_costs=None):
@@ -1353,8 +1382,17 @@ class LongitudinalMpc:
 
     cost_obstacles = np.column_stack([lead_0_cost_obstacle, lead_1_cost_obstacle, cruise_obstacle])
     x_obstacles = np.column_stack([lead_0_mpc_obstacle, lead_1_mpc_obstacle, cruise_obstacle])
-    self.source = MPC_SOURCES[np.argmin(cost_obstacles[0])]
-    dominant_obstacle = np.argmin(x_obstacles, axis=1)
+
+    # Apply hysteresis to source selection to prevent rapid switching
+    source_idx = MPC_SOURCES.index(self.source) if self.source in MPC_SOURCES else 2
+    source_idx = apply_source_hysteresis(cost_obstacles[0], source_idx, SOURCE_HYSTERESIS_MARGIN)
+    self.source = MPC_SOURCES[source_idx]
+
+    # Apply hysteresis to dominant obstacle for comfort target switching
+    if self.prev_dominant_obstacle is None:
+      self.prev_dominant_obstacle = np.argmin(x_obstacles, axis=1)
+    dominant_obstacle = apply_source_hysteresis(x_obstacles, self.prev_dominant_obstacle, SOURCE_HYSTERESIS_MARGIN)
+    self.prev_dominant_obstacle = np.copy(dominant_obstacle)
 
     lead_0_model_prob = float(radarstate.leadOne.modelProb) if radarstate.leadOne.status else 1.0
     lead_1_model_prob = float(radarstate.leadTwo.modelProb) if radarstate.leadTwo.status else 1.0
@@ -1401,16 +1439,21 @@ class LongitudinalMpc:
     lead_1_surge_targets, lead_1_surge_costs = get_lead_surge_damping_target(
       lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow, lead_1_surge_decel_memory
     )
-    lead_0_crawl_selected = lead_0_crawl_costs >= lead_1_crawl_costs
+    # Use hysteretic dominant obstacle for all comfort lead selection.
+    # When cruise is dominant, fall back to the closer lead for lead-only targets.
+    lead_dominant = np.where(dominant_obstacle == 2,
+                              np.argmin(cost_obstacles[:, :2], axis=1),
+                              dominant_obstacle)
+    lead_0_crawl_selected = lead_dominant == 0
     crawl_targets = np.where(lead_0_crawl_selected, lead_0_crawl_targets, lead_1_crawl_targets)
     crawl_costs = np.where(lead_0_crawl_selected, lead_0_crawl_costs, lead_1_crawl_costs)
-    lead_0_stop_selected = lead_0_stop_costs >= lead_1_stop_costs
+    lead_0_stop_selected = lead_dominant == 0
     stop_targets = np.where(lead_0_stop_selected, lead_0_stop_targets, lead_1_stop_targets)
     stop_costs = np.where(lead_0_stop_selected, lead_0_stop_costs, lead_1_stop_costs)
     accel_match_targets, accel_match_costs = get_selected_lead_targets(
       lead_0_accel_targets, lead_1_accel_targets, lead_0_accel_costs, lead_1_accel_costs, dominant_obstacle
     )
-    lead_0_moving_stop_selected = lead_0_moving_stop_costs >= lead_1_moving_stop_costs
+    lead_0_moving_stop_selected = lead_dominant == 0
     moving_stop_targets = np.where(lead_0_moving_stop_selected, lead_0_moving_stop_targets, lead_1_moving_stop_targets)
     moving_stop_costs = np.where(lead_0_moving_stop_selected, lead_0_moving_stop_costs, lead_1_moving_stop_costs)
     surge_targets, surge_costs = get_selected_lead_targets(
