@@ -111,6 +111,13 @@ CRUISE_COAST_FLAT_OVERSPEED = 0.45  # ~1 mph
 CRUISE_COAST_DOWNHILL_OVERSPEED = 1.35  # ~3 mph
 CRUISE_COAST_DOWNHILL_ACCEL = 0.25
 CRUISE_COAST_RECOVERY_OVERSPEED = 0.9  # ~2 mph from coast back to normal decel
+E2E_RUNWAY_COMFORT_MIN_V_EGO = 3.0
+E2E_RUNWAY_COMFORT_MIN_ENDPOINT = 1.0
+E2E_RUNWAY_COMFORT_COAST_MARGIN = 0.12
+E2E_RUNWAY_COMFORT_LIGHT_DECEL = 0.45
+E2E_RUNWAY_COMFORT_DECEL_BLEND_BP = [1.2, 2.0]
+E2E_RUNWAY_COMFORT_RUNWAY_BLEND_BP = [0.5, 1.0]
+E2E_RUNWAY_COMFORT_NEGATIVE_RAMP_RATE = 0.35
 ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED = 1.0
 LEAD_LOSS_E2E_GUARD_TIME = 3.0
 LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR = -0.45
@@ -209,6 +216,44 @@ def should_apply_cruise_coast_overspeed(reset_state, force_slow_decel, e2e_activ
     and not should_stop
     and source == custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
   )
+
+
+def get_e2e_runway_comfort_accel(v_ego, raw_e2e_accel, coast_accel, model_msg, e2e_active, prev_output_a_target,
+                                 reset_state=False, force_slow_decel=False, brake_pressed=False, gas_pressed=False,
+                                 engage_stop_bootstrap_active=False, has_radar_lead=False, dt=DT_MDL):
+  blocked = not e2e_active or reset_state or force_slow_decel or brake_pressed or gas_pressed
+  blocked = blocked or engage_stop_bootstrap_active or has_radar_lead
+  blocked = blocked or model_msg.action.shouldStop or v_ego < E2E_RUNWAY_COMFORT_MIN_V_EGO
+  blocked = blocked or raw_e2e_accel >= coast_accel or len(model_msg.position.x) == 0
+  if blocked:
+    return raw_e2e_accel
+
+  endpoint_x = float(model_msg.position.x[-1])
+  if not np.isfinite(endpoint_x) or endpoint_x <= E2E_RUNWAY_COMFORT_MIN_ENDPOINT:
+    return raw_e2e_accel
+
+  expected_distance = float(np.interp(v_ego * CV.MS_TO_KPH, E2E_STOP_APPROACH_EXPECTED_DIST_BP, E2E_STOP_APPROACH_EXPECTED_DIST_V))
+  max_decel_distance = v_ego**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX * (1.0 - E2E_STOP_APPROACH_SHORTAGE_BP[0]))
+  expected_distance = max(expected_distance, max_decel_distance)
+  if expected_distance <= 0.0:
+    return raw_e2e_accel
+
+  required_decel = v_ego**2 / (2.0 * endpoint_x)
+  runway_ratio = endpoint_x / expected_distance
+  urgency_blend = float(np.interp(required_decel, E2E_RUNWAY_COMFORT_DECEL_BLEND_BP, [0.0, 1.0]))
+  runway_blend = float(np.interp(runway_ratio, E2E_RUNWAY_COMFORT_RUNWAY_BLEND_BP, [1.0, 0.0]))
+  blend = max(urgency_blend, runway_blend)
+  if blend >= 1.0:
+    return raw_e2e_accel
+
+  light_decel_cap = min(coast_accel - E2E_RUNWAY_COMFORT_COAST_MARGIN, -E2E_RUNWAY_COMFORT_LIGHT_DECEL)
+  comfort_cap = (1.0 - blend) * light_decel_cap + blend * raw_e2e_accel
+  governed_accel = max(raw_e2e_accel, comfort_cap)
+
+  max_negative_step = E2E_RUNWAY_COMFORT_NEGATIVE_RAMP_RATE * max(dt, 0.0)
+  if np.isfinite(prev_output_a_target):
+    governed_accel = max(governed_accel, prev_output_a_target - max_negative_step)
+  return governed_accel
 
 
 def is_lane_change_active(model_msg):
@@ -615,8 +660,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     )
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
-
     e2e_active = self.is_e2e(sm)
+    output_a_target_e2e = get_e2e_runway_comfort_accel(
+      v_ego, output_a_target_e2e, accel_coast, sm['modelV2'], e2e_active, prev_output_a_target,
+      reset_state=reset_state,
+      force_slow_decel=force_slow_decel,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+      engage_stop_bootstrap_active=engage_stop_bootstrap_active,
+      has_radar_lead=has_radar_lead,
+      dt=self.dt,
+    )
+
     if e2e_active:
       output_a_target_e2e = apply_lead_loss_e2e_guard_accel(
         output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, has_radar_lead
