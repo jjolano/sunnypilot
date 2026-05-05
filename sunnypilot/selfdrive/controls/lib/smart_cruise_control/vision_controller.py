@@ -12,6 +12,7 @@ from cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
@@ -30,7 +31,7 @@ _FINISH_LAT_ACC_TH = 1.1  # Lat Acc threshold to trigger the end of the turn cyc
 
 _A_LAT_REG_MAX = 2.0  # Maximum lateral acceleration
 _IN_TURN_LAT_ACC_TARGET = 3.0  # ISO 11270 lateral accel budget for confirmed turns.
-_IN_TURN_LAT_ACC_RAMP_RATE = 0.5  # m/s^2 per second. Gradually spend the in-turn budget.
+_IN_TURN_LAT_ACC_RAMP_RATE = 2.0  # m/s^2 per second. Reach the in-turn budget in about 0.5s.
 _CURRENT_LAT_ACC_BLEED_TH = 2.8
 _UPCOMING_PRED_LAT_ACC_MARGIN = 0.4  # Treat stronger predicted accel as the next bend, not the current curve.
 
@@ -74,6 +75,8 @@ class SmartCruiseControlVision:
     self.current_curvature = 0.0
     self.current_lat_acc_bleed = False
     self.max_pred_lat_acc = 0.0
+    self.predicted_turn_time = 0.0
+    self.entering_v_target_valid = False
     self.in_turn_lat_acc_budget = _A_LAT_REG_MAX
 
   def get_a_target_from_control(self) -> float:
@@ -81,6 +84,8 @@ class SmartCruiseControlVision:
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
+      if self.state == VisionState.entering and self.entering_v_target_valid:
+        return max(self.v_target, MIN_V)
       return max(self.v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
 
     return V_CRUISE_UNSET
@@ -103,6 +108,8 @@ class SmartCruiseControlVision:
       # get the maximum lat accel from the model
       predicted_lat_accels = rate_plan * vel_plan
       self.max_pred_lat_acc = np.percentile(predicted_lat_accels, 97)
+      turn_idxs = np.nonzero(predicted_lat_accels >= _TURNING_LAT_ACC_TH)[0]
+      self.predicted_turn_time = float(ModelConstants.T_IDXS[int(turn_idxs[0])]) if len(turn_idxs) > 0 else 0.0
 
   def _speed_for_lateral_accel(self, lateral_accel: float, curvature: float) -> float:
     if curvature <= 1e-6:
@@ -119,11 +126,20 @@ class SmartCruiseControlVision:
       self.in_turn_lat_acc_budget = _A_LAT_REG_MAX
 
   def _update_v_target(self) -> None:
+    self.entering_v_target_valid = False
     v_ego = max(self.v_ego, 0.1)  # ensure a value greater than 0 for calculations
     predicted_curve = self.max_pred_lat_acc / (v_ego**2)
     predicted_v_target = self._speed_for_lateral_accel(_A_LAT_REG_MAX, predicted_curve)
 
-    if self.state == VisionState.turning and self.current_curvature > 1e-6:
+    if self.state == VisionState.entering and self.predicted_turn_time > DT_MDL and predicted_curve > 1e-6:
+      entering_decel = self._entering_smooth_decel()
+      conservative_v_target = self._speed_for_lateral_accel(_A_LAT_REG_MAX, predicted_curve)
+      iso_v_target = min(self._speed_for_lateral_accel(_IN_TURN_LAT_ACC_TARGET, predicted_curve), self.v_ego)
+      reachable_v_target = self.v_ego + entering_decel * self.predicted_turn_time
+
+      self.v_target = float(np.clip(reachable_v_target, conservative_v_target, iso_v_target))
+      self.entering_v_target_valid = True
+    elif self.state == VisionState.turning and self.current_curvature > 1e-6:
       current_v_target = self._speed_for_lateral_accel(self.in_turn_lat_acc_budget, self.current_curvature)
       if self.current_lat_acc_bleed:
         current_v_target = min(current_v_target, self._speed_for_lateral_accel(_CURRENT_LAT_ACC_BLEED_TH, self.current_curvature))
@@ -135,6 +151,9 @@ class SmartCruiseControlVision:
       self.v_target = min(predicted_v_target, self.v_ego)
     else:
       self.v_target = predicted_v_target
+
+  def _entering_smooth_decel(self) -> float:
+    return float(np.interp(self.max_pred_lat_acc, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V))
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, ENTERING, TURNING, LEAVING, OVERRIDING
@@ -209,7 +228,9 @@ class SmartCruiseControlVision:
     # ENTERING
     elif self.state == VisionState.entering:
       # when not overshooting, target a smooth deceleration in preparation for a sharp turn to come.
-      a_target = np.interp(self.max_pred_lat_acc, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V)
+      a_target = self._entering_smooth_decel()
+      if self.entering_v_target_valid:
+        a_target = max((self.v_target - self.v_ego) / self.predicted_turn_time, a_target)
     # TURNING
     elif self.state == VisionState.turning:
       # When turning, we provide a target acceleration that is comfortable for the lateral acceleration felt.
