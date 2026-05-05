@@ -124,20 +124,21 @@ class LongControl:
     self.pid.reset()
     self.reset_launch_envelope()
 
-  def update(self, active, CS, a_target, should_stop, accel_limits):
+  def update(self, active, CS, a_target, should_stop, accel_limits, has_lead=False):
     """Update longitudinal control. This updates the state machine and runs a PID loop"""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
     launch_a_target = max(a_target, LAUNCH_ENVELOPE_MIN_ACCEL) if a_target >= 0.0 else a_target
 
     effective_should_stop = should_stop and not (
-      self.launch_envelope_active and launch_should_stop_hold_active(CS.vEgo, CS.aEgo, CS.brakePressed, self.launch_breakaway_elapsed, launch_a_target)
+      not has_lead and self.launch_envelope_active and
+      launch_should_stop_hold_active(CS.vEgo, CS.aEgo, CS.brakePressed, self.launch_breakaway_elapsed, launch_a_target)
     )
     prev_state = self.long_control_state
     self.long_control_state = long_control_state_trans(
       self.CP, self.CP_SP, active, self.long_control_state, CS.vEgo, effective_should_stop, CS.brakePressed, CS.cruiseState.standstill
     )
-    if not active or CS.brakePressed or self.long_control_state in (LongCtrlState.off, LongCtrlState.stopping):
+    if not active or CS.brakePressed or has_lead or self.long_control_state in (LongCtrlState.off, LongCtrlState.stopping):
       self.reset_launch_envelope()
     elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and \
          not effective_should_stop and a_target >= 0.0:
@@ -163,7 +164,7 @@ class LongControl:
       self.pid.reset()
 
     elif self.long_control_state == LongCtrlState.starting:
-      output_accel = self.CP.startAccel if a_target >= LAUNCH_ENVELOPE_MIN_ACCEL else a_target
+      output_accel = a_target if has_lead or a_target < LAUNCH_ENVELOPE_MIN_ACCEL else self.CP.startAccel
       self.pid.reset()
 
     else:  # LongCtrlState.pid

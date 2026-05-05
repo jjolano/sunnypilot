@@ -909,11 +909,17 @@ def get_lead_accel_match_targets(v_lead, d_rel, a_lead, t_follow, v_ego=None, bl
   target_gap = np.maximum(STOP_DISTANCE, get_desired_follow_distance(v_lead, v_lead, t_follow)) + reserve
   margin = np.maximum(LEAD_ACCEL_MATCH_GAP_MARGIN, LEAD_ACCEL_MATCH_GAP_MARGIN_FACTOR * target_gap)
   positive_match_gap = STOP_DISTANCE + LEAD_ACCEL_MATCH_MIN_POSITIVE_GAP_EXCESS
+  positive_floor = positive_match_gap
+  if v_ego is not None:
+    presentation_distance = get_lead_stop_presentation_distance(v_ego_values, v_lead, a_lead, model_prob)
+    positive_floor = np.minimum(positive_match_gap, presentation_distance + SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP)
+  blocked = np.asarray(block_short_gap_pullaway_response, dtype=bool)
 
   blend = np.zeros_like(v_lead, dtype=float)
-  active = (d_rel > STOP_DISTANCE) & (np.abs(a_lead) >= LEAD_ACCEL_MATCH_MIN_ABS_ACCEL)
+  decel_active = (d_rel > STOP_DISTANCE) & (np.abs(a_lead) >= LEAD_ACCEL_MATCH_MIN_ABS_ACCEL)
+  positive_active = (d_rel > positive_floor) & (np.abs(a_lead) >= LEAD_ACCEL_MATCH_MIN_ABS_ACCEL)
 
-  decel_mask = active & (a_lead < 0.0)
+  decel_mask = decel_active & (a_lead < 0.0)
   if np.any(decel_mask):
     closing_blend = np.interp(decel_closing_speed, LEAD_ACCEL_MATCH_DECEL_CLOSING_BP, [0.0, 1.0])
     near_stop_blend = _interp_linear_clipped(d_rel, STOP_DISTANCE, target_gap,
@@ -923,13 +929,14 @@ def get_lead_accel_match_targets(v_lead, d_rel, a_lead, t_follow, v_ego=None, bl
     distance_blend = np.where(d_rel <= target_gap, near_stop_blend, far_blend)
     blend = np.where(decel_mask, distance_blend * closing_blend, blend)
 
-  positive_mask = active & (a_lead > 0.0) & (d_rel >= positive_match_gap)
+  positive_mask = positive_active & (a_lead > 0.0) & ~blocked
   if np.any(positive_mask):
-    near_blend = _interp_linear_clipped(d_rel, positive_match_gap, target_gap,
+    near_blend = _interp_linear_clipped(d_rel, positive_floor, target_gap,
                                         LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND, 1.0)
     far_blend = _interp_linear_clipped(d_rel, target_gap, target_gap + margin, 1.0, 0.0)
     distance_blend = np.where(d_rel <= target_gap, near_blend, far_blend)
-    blend = np.where(positive_mask, distance_blend, blend)
+    closing_blend = 1.0 - np.interp(closing_speed, [0.0, SHORT_GAP_PULLAWAY_RESPONSE_MAX_CLOSING], [0.0, 1.0])
+    blend = np.where(positive_mask, distance_blend * closing_blend, blend)
 
   accel_targets = np.clip(a_lead * blend, ACCEL_MIN, ACCEL_MAX)
   accel_targets = np.where(a_lead < 0.0, np.maximum(accel_targets, -LEAD_ACCEL_MATCH_DECEL_CAP), accel_targets)
