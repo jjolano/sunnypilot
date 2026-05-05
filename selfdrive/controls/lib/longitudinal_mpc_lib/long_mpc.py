@@ -678,11 +678,21 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
 
   pre_target = x_lead > desired_gap
   pre_target_threshold = get_pre_target_runway_decel_threshold(t_follow)
-  pre_target_brake_blend = np.interp(
+  pre_target_safety_threshold = max(
+    MOVING_LEAD_STOP_APPROACH_DECEL_CAP,
+    pre_target_threshold + 2.0 * PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH,
+  )
+  runway_safety_blend = np.interp(
     required_decel,
-    [pre_target_threshold, pre_target_threshold + PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH],
+    [pre_target_safety_threshold, pre_target_safety_threshold + PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH],
     [0.0, 1.0],
   )
+  danger_safety_blend = closing_blend * np.interp(
+    danger_margin,
+    [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN],
+    [1.0, 0.0],
+  )
+  pre_target_brake_blend = np.maximum(runway_safety_blend, danger_safety_blend)
   coast_limited_target = np.maximum(target, MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
   target = np.where(
     pre_target,

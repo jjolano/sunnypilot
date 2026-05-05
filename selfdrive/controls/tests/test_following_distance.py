@@ -1328,7 +1328,7 @@ def test_moving_stop_approach_caps_pre_target_to_coast_without_runway_urgency():
   assert cost > 0.0
 
 
-def test_moving_stop_approach_allows_pre_target_brake_when_runway_is_urgent():
+def test_moving_stop_approach_coast_guards_pre_target_until_safety_threshold():
   v_ego = 15.0
   v_lead = 12.0
   a_lead = -0.8
@@ -1339,15 +1339,20 @@ def test_moving_stop_approach_allows_pre_target_brake_when_runway_is_urgent():
 
   required_decel = get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead)
   threshold = get_pre_target_runway_decel_threshold(t_follow)
+  safety_threshold = max(
+    long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP,
+    threshold + 2.0 * long_mpc.PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH,
+  )
   target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
 
   assert d_rel > desired_gap
   assert required_decel > threshold
-  assert target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
+  assert required_decel < safety_threshold
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN <= target <= 0.0
   assert cost > 0.0
 
 
-def test_moving_stop_approach_anticipates_confirmed_low_closure():
+def test_moving_stop_approach_pre_target_coast_guard_for_route_like_closure():
   v_ego = 19.2
   v_lead = 17.0
   d_rel = 53.0
@@ -1357,7 +1362,25 @@ def test_moving_stop_approach_anticipates_confirmed_low_closure():
   target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
 
   assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow)
-  assert target < -0.4
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN <= target <= 0.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_pre_target_safety_brakes_for_urgent_runway():
+  v_ego = 18.0
+  v_lead = 10.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = desired_gap + 1.0
+  closing_speed = max(v_ego - v_lead, 0.0)
+  required_decel = get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel > desired_gap
+  assert required_decel > long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP
+  assert target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
   assert cost > 0.0
 
 
