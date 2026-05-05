@@ -261,8 +261,8 @@ def is_lane_change_active(model_msg):
 
 
 def update_lead_loss_e2e_guard_timer(timer, dt, previous_lead_status, previous_d_rel, previous_model_prob,
-                                    current_has_lead, lane_change_active, reset_state=False, force_slow_decel=False,
-                                    brake_pressed=False, gas_pressed=False):
+                                     current_has_lead, lane_change_active, reset_state=False, force_slow_decel=False,
+                                     brake_pressed=False, gas_pressed=False):
   blocked = reset_state or force_slow_decel or brake_pressed or gas_pressed or current_has_lead
   if blocked:
     return 0.0
@@ -276,6 +276,16 @@ def update_lead_loss_e2e_guard_timer(timer, dt, previous_lead_status, previous_d
     return LEAD_LOSS_E2E_GUARD_TIME
 
   return max(0.0, timer - dt)
+
+
+def get_lead_loss_e2e_guard_lead(radar_state):
+  return max(
+    (lead for lead in (radar_state.leadOne, radar_state.leadTwo)
+     if getattr(lead, "status", False) and float(getattr(lead, "dRel", 0.0)) >= LEAD_LOSS_E2E_GUARD_MIN_D_REL and
+     float(getattr(lead, "modelProb", 0.0)) >= LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB),
+    key=lambda lead: float(lead.dRel),
+    default=None,
+  )
 
 
 def apply_lead_loss_e2e_guard_accel(e2e_accel, e2e_should_stop, timer, has_lead):
@@ -633,6 +643,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     lead_one = sm['radarState'].leadOne
     has_radar_lead = has_valid_radar_lead(sm['radarState'])
+    lead_loss_guard_lead = get_lead_loss_e2e_guard_lead(sm['radarState'])
     engage_stop_bootstrap_active = should_run_engage_stop_bootstrap(self.engage_stop_bootstrap_timer, v_ego, sm['radarState'], sm['modelV2'])
     if engage_stop_bootstrap_active:
       v_cruise = 0.0
@@ -640,7 +651,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.lead_loss_e2e_guard_timer = update_lead_loss_e2e_guard_timer(
       self.lead_loss_e2e_guard_timer, self.dt,
       self.previous_lead_loss_status, self.previous_lead_loss_d_rel, self.previous_lead_loss_model_prob,
-      has_radar_lead, is_lane_change_active(sm['modelV2']),
+      lead_loss_guard_lead is not None, is_lane_change_active(sm['modelV2']),
       reset_state=reset_state,
       force_slow_decel=force_slow_decel,
       brake_pressed=sm['carState'].brakePressed,
@@ -687,7 +698,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     )
     if e2e_active:
       output_a_target_e2e = apply_lead_loss_e2e_guard_accel(
-        output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, has_radar_lead
+        output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, lead_loss_guard_lead is not None
       )
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
@@ -866,9 +877,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         self.longitudinal_decision, legacy_a_target, legacy_should_stop
       )
 
-    self.previous_lead_loss_status = bool(lead_one.status)
-    self.previous_lead_loss_d_rel = float(lead_one.dRel) if lead_one.status else 0.0
-    self.previous_lead_loss_model_prob = float(lead_one.modelProb) if lead_one.status else 0.0
+    lead_loss_snapshot_lead = lead_loss_guard_lead
+    self.previous_lead_loss_status = lead_loss_snapshot_lead is not None
+    self.previous_lead_loss_d_rel = float(lead_loss_snapshot_lead.dRel) if lead_loss_snapshot_lead is not None else 0.0
+    self.previous_lead_loss_model_prob = float(lead_loss_snapshot_lead.modelProb) if lead_loss_snapshot_lead is not None else 0.0
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
@@ -893,7 +905,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     longitudinalPlan.accels = self.a_desired_trajectory.tolist()
     longitudinalPlan.jerks = self.j_desired_trajectory.tolist()
 
-    longitudinalPlan.hasLead = sm['radarState'].leadOne.status
+    longitudinalPlan.hasLead = has_valid_radar_lead(sm['radarState'])
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
     longitudinalPlan.fcw = self.fcw
 
