@@ -422,6 +422,18 @@ def should_count_lead_transition_fcw(model_prob, transition_release):
   return bool(model_prob > 0.9 and transition_release <= 0.01)
 
 
+def should_count_mpc_fcw_crash(lead_xv_0, lead_xv_1, x_sol, lead_0_model_prob, lead_1_model_prob,
+                               lead_0_obstacle_release, lead_1_obstacle_release):
+  return any(
+    np.any(lead_xv[FCW_IDXS, 0] - x_sol[FCW_IDXS, 0] < CRASH_DISTANCE) and
+    should_count_lead_transition_fcw(model_prob, obstacle_release)
+    for lead_xv, model_prob, obstacle_release in (
+      (lead_xv_0, lead_0_model_prob, lead_0_obstacle_release),
+      (lead_xv_1, lead_1_model_prob, lead_1_obstacle_release),
+    )
+  )
+
+
 def get_short_gap_pullaway_response_accel_max(t_follow):
   return float(np.interp(
     t_follow,
@@ -1570,8 +1582,9 @@ class LongitudinalMpc:
     self.params[:, 5] = LEAD_DANGER_FACTOR
 
     self.run()
-    if np.any(lead_xv_0[FCW_IDXS, 0] - self.x_sol[FCW_IDXS, 0] < CRASH_DISTANCE) and \
-       should_count_lead_transition_fcw(radarstate.leadOne.modelProb, lead_0_obstacle_release):
+    if should_count_mpc_fcw_crash(
+      lead_xv_0, lead_xv_1, self.x_sol, lead_0_model_prob, lead_1_model_prob, lead_0_obstacle_release, lead_1_obstacle_release,
+    ):
       self.crash_cnt += 1
     else:
       self.crash_cnt = 0
