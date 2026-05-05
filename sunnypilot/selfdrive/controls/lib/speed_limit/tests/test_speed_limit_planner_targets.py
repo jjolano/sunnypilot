@@ -165,7 +165,7 @@ class FakeSubMaster(dict):
     return super().__getitem__(key)
 
 
-def make_sm(v_cruise_cluster=20.0, lead_status=False, d_rel=100.0, v_rel=0.0,
+def make_sm(v_cruise_cluster=20.0, lead_status=False, d_rel=100.0, v_rel=0.0, y_rel=0.0,
             gas_pressed=False, brake_pressed=False):
   return FakeSubMaster({
     'carState': SimpleNamespace(
@@ -174,7 +174,7 @@ def make_sm(v_cruise_cluster=20.0, lead_status=False, d_rel=100.0, v_rel=0.0,
       brakePressed=brake_pressed,
     ),
     'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
-    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=lead_status, dRel=d_rel, vRel=v_rel)),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=lead_status, dRel=d_rel, vRel=v_rel, yRel=y_rel)),
   })
 
 
@@ -247,6 +247,7 @@ def test_lead_speedup_guard_allows_far_lead():
     lead_status=True,
     d_rel=60.0,
     v_rel=-1.4,
+    y_rel=0.0,
     gas_pressed=False,
     brake_pressed=False,
   )
@@ -258,6 +259,7 @@ def test_lead_speedup_guard_allows_opening_lead():
     lead_status=True,
     d_rel=20.0,
     v_rel=0.2,
+    y_rel=0.0,
     gas_pressed=False,
     brake_pressed=False,
   )
@@ -269,6 +271,7 @@ def test_lead_speedup_guard_allows_driver_gas_override():
     lead_status=True,
     d_rel=20.0,
     v_rel=-1.4,
+    y_rel=0.0,
     gas_pressed=True,
     brake_pressed=False,
   )
@@ -337,6 +340,18 @@ def test_active_speed_limit_above_manual_cruise_is_decision_driver_intent():
   assert cruise_candidate.v_target == pytest.approx(expected)
   assert cruise_candidate.role == CandidateRole.DRIVER_INTENT
   assert speed_limit_candidates == []
+
+
+def test_lead_speedup_guard_allows_lateral_exit_lead():
+  assert not longitudinal_planner.should_block_lead_speedup(
+    v_ego=15.0,
+    lead_status=True,
+    d_rel=20.0,
+    v_rel=-1.4,
+    y_rel=longitudinal_planner.LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL,
+    gas_pressed=False,
+    brake_pressed=False,
+  )
 
 
 def test_speed_limit_auto_disable_handoff_coasts_to_limit_before_manual_cruise_snap():

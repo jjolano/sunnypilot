@@ -33,6 +33,7 @@ LEAD_SPEEDUP_GUARD_TIME_GAP = 2.2  # s, match the observed uncomfortable closing
 LEAD_SPEEDUP_GUARD_MIN_DISTANCE = 25.0  # m, low-speed floor for close-lead gating.
 LEAD_SPEEDUP_GUARD_CLOSING_V_REL = -0.2  # m/s, ignore noise around matched speed.
 LEAD_SPEEDUP_GUARD_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating into the lead.
+LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL = 1.6
 
 
 def _select_lower_target(selected_source, selected_v_target, selected_a_target, candidate_source, candidate):
@@ -49,9 +50,11 @@ def apply_speed_limit_speedup_governor(speed_limit_active: bool, v_ego: float, v
   return min(v_target, v_ego + SPEED_LIMIT_SPEED_UP_ACCEL_CAP * SPEED_LIMIT_SPEED_UP_LOOKAHEAD)
 
 
-def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_rel: float,
+def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_rel: float, y_rel: float,
                               gas_pressed: bool, brake_pressed: bool) -> bool:
   if not lead_status or gas_pressed or brake_pressed:
+    return False
+  if abs(y_rel) >= LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL:
     return False
   if v_rel > LEAD_SPEEDUP_GUARD_CLOSING_V_REL:
     return False
@@ -279,6 +282,7 @@ class LongitudinalPlannerSP:
       bool(lead_one.status),
       float(lead_one.dRel),
       float(lead_one.vRel),
+      float(lead_one.yRel),
       bool(CS.gasPressed),
       bool(CS.brakePressed),
     )
