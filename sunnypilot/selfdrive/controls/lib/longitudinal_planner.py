@@ -24,6 +24,10 @@ SPEED_LIMIT_SPEED_UP_ACCEL_CAP = 0.30  # m/s^2, conservative target shaping to a
 SPEED_LIMIT_SPEED_UP_LOOKAHEAD = 1.5  # s, keep SLA speed-up targets close to ego speed.
 SPEED_LIMIT_HANDOFF_EXIT_MARGIN = 0.25  # m/s, near enough to manual cruise to return to cruise.
 SPEED_LIMIT_HANDOFF_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating during handoff.
+LEAD_SPEEDUP_GUARD_TIME_GAP = 2.2  # s, match the observed uncomfortable closing window.
+LEAD_SPEEDUP_GUARD_MIN_DISTANCE = 25.0  # m, low-speed floor for close-lead gating.
+LEAD_SPEEDUP_GUARD_CLOSING_V_REL = -0.2  # m/s, ignore noise around matched speed.
+LEAD_SPEEDUP_GUARD_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating into the lead.
 
 
 def _select_lower_target(selected_source, selected_v_target, selected_a_target, candidate_source, candidate):
@@ -38,6 +42,25 @@ def apply_speed_limit_speedup_governor(speed_limit_active: bool, v_ego: float, v
     return v_target
 
   return min(v_target, v_ego + SPEED_LIMIT_SPEED_UP_ACCEL_CAP * SPEED_LIMIT_SPEED_UP_LOOKAHEAD)
+
+
+def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_rel: float,
+                              gas_pressed: bool, brake_pressed: bool) -> bool:
+  if not lead_status or gas_pressed or brake_pressed:
+    return False
+  if v_rel > LEAD_SPEEDUP_GUARD_CLOSING_V_REL:
+    return False
+
+  close_distance = max(LEAD_SPEEDUP_GUARD_MIN_DISTANCE, v_ego * LEAD_SPEEDUP_GUARD_TIME_GAP)
+  return d_rel < close_distance
+
+
+def apply_lead_speedup_guard(active: bool, v_ego: float, target: tuple[float, float]) -> tuple[float, float]:
+  if not active:
+    return target
+
+  v_target, a_target = target
+  return min(v_target, v_ego), min(a_target, LEAD_SPEEDUP_GUARD_A_TARGET_MAX)
 
 
 def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control):
@@ -141,6 +164,17 @@ class LongitudinalPlannerSP:
       a_ego,
     )
     cruise_target = (v_cruise, min(a_ego, SPEED_LIMIT_HANDOFF_A_TARGET_MAX)) if speed_limit_handoff_active else (v_cruise, a_ego)
+    lead_one = sm['radarState'].leadOne
+    lead_speedup_guard_active = should_block_lead_speedup(
+      v_ego,
+      bool(lead_one.status),
+      float(lead_one.dRel),
+      float(lead_one.vRel),
+      bool(CS.gasPressed),
+      bool(CS.brakePressed),
+    )
+    speed_limit_assist_target = apply_lead_speedup_guard(lead_speedup_guard_active, v_ego, speed_limit_assist_target)
+    cruise_target = apply_lead_speedup_guard(lead_speedup_guard_active, v_ego, cruise_target)
 
     self.source, self.output_v_target, self.output_a_target = select_lowest_longitudinal_target(
       speed_limit_active,
