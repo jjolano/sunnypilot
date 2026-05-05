@@ -28,6 +28,10 @@ ACTUATOR_LAG_COMFORT_HIGH_SPEED = 25.0
 STALE_ACTUATOR_REVERSAL_THRESHOLD = 0.05
 SAFETY_LIMITED_RAMP_ERROR_THRESHOLD = 0.10
 SAFETY_LIMITED_RAMP_FOLLOW_MARGIN = 0.15
+HIGH_SPEED_ACTUATOR_LAG_UNWIND_SPEED = 16.0
+HIGH_SPEED_ACTUATOR_LAG_UNWIND_MARGIN = 0.15
+HIGH_SPEED_ACTUATOR_LAG_UNWIND_GAP = 0.25
+HIGH_SPEED_ACTUATOR_LAG_UNWIND_CAP = 0.70
 DEFAULT_DT = 0.01
 
 NORMAL_CAP = 1.00
@@ -72,6 +76,7 @@ class ConservativeOutputShapingReason(IntFlag):
   ACTUATOR_LAG_COMFORT = 1 << 10
   STALE_ACTUATOR_REVERSAL = 1 << 11
   SAFETY_LIMITED_RAMP = 1 << 12
+  HIGH_SPEED_ACTUATOR_LAG_UNWIND = 1 << 13
 
 
 @dataclass
@@ -227,6 +232,19 @@ class TorqueConservativeOutputShaper:
     if safety_limited_ramp_cap < NORMAL_CAP:
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, safety_limited_ramp_cap, 1.0,
                                                    ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP)
+    high_speed_actuator_lag_unwind = (
+      inputs.v_ego >= HIGH_SPEED_ACTUATOR_LAG_UNWIND_SPEED
+      and not inputs.steering_pressed
+      and inputs.steer_limited_by_safety
+      and inputs.steer_limit_same_direction
+      and not inputs.steer_limit_unwind
+      and output_reinforces_actual
+      and actual_abs > desired_abs + HIGH_SPEED_ACTUATOR_LAG_UNWIND_MARGIN
+      and abs(inputs.steer_limit_requested_output - inputs.steer_limit_applied_output) > HIGH_SPEED_ACTUATOR_LAG_UNWIND_GAP
+    )
+    if high_speed_actuator_lag_unwind:
+      output_cap, confidence, reason = self._apply(output_cap, confidence, reason, HIGH_SPEED_ACTUATOR_LAG_UNWIND_CAP, 1.0,
+                                                   ConservativeOutputShapingReason.HIGH_SPEED_ACTUATOR_LAG_UNWIND)
 
     base_active = reason != ConservativeOutputShapingReason.NONE and output_cap < NORMAL_CAP
     same_sign_unwind_shaping = bool(reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND)
@@ -238,6 +256,7 @@ class TorqueConservativeOutputShaper:
       | ConservativeOutputShapingReason.OVER_RESPONSE
       | ConservativeOutputShapingReason.NEAR_ISO_ACCEL
       | ConservativeOutputShapingReason.BUMP
+      | ConservativeOutputShapingReason.HIGH_SPEED_ACTUATOR_LAG_UNWIND
     ))
     steering_rate_comfort_shaping = bool(reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT)
     actuator_lag_comfort_shaping = bool(reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT)

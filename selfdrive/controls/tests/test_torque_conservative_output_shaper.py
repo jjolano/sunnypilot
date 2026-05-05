@@ -701,6 +701,87 @@ def test_same_sign_unwind_cap_does_not_rate_limit_next_corrective_output():
   assert result.output_torque == result.unshaped_output
 
 
+def test_high_speed_actuator_lag_unwind_caps_output():
+  result = assert_cap_only(make_inputs(
+    v_ego=20.0,
+    desired_lateral_accel=0.4,
+    actual_lateral_accel=0.8,
+    steer_limited_by_safety=True,
+    steer_limit_same_direction=True,
+    steer_limit_unwind=False,
+    steer_limit_requested_output=0.5,
+    steer_limit_applied_output=-0.1,
+  ))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.HIGH_SPEED_ACTUATOR_LAG_UNWIND
+  assert result.output_cap == 0.70
+  assert result.output_torque == pytest.approx(0.35)
+
+
+def test_high_speed_actuator_lag_unwind_does_not_trigger_below_speed():
+  result = assert_cap_only(make_inputs(
+    v_ego=15.0,
+    desired_lateral_accel=0.4,
+    actual_lateral_accel=0.8,
+    steer_limited_by_safety=True,
+    steer_limit_same_direction=True,
+    steer_limit_unwind=False,
+    steer_limit_requested_output=0.5,
+    steer_limit_applied_output=0.1,
+  ))
+
+  assert not result.reason & ConservativeOutputShapingReason.HIGH_SPEED_ACTUATOR_LAG_UNWIND
+
+
+def test_high_speed_actuator_lag_unwind_does_not_trigger_without_gap():
+  result = assert_cap_only(make_inputs(
+    v_ego=20.0,
+    desired_lateral_accel=0.4,
+    actual_lateral_accel=0.8,
+    steer_limited_by_safety=True,
+    steer_limit_same_direction=True,
+    steer_limit_unwind=False,
+    steer_limit_requested_output=0.5,
+    steer_limit_applied_output=0.35,
+  ))
+
+  assert not result.reason & ConservativeOutputShapingReason.HIGH_SPEED_ACTUATOR_LAG_UNWIND
+
+
+def test_high_speed_actuator_lag_unwind_does_not_trigger_on_unwind():
+  result = assert_cap_only(make_inputs(
+    v_ego=20.0,
+    desired_lateral_accel=0.4,
+    actual_lateral_accel=0.8,
+    steer_limited_by_safety=True,
+    steer_limit_same_direction=False,
+    steer_limit_unwind=True,
+    steer_limit_requested_output=0.5,
+    steer_limit_applied_output=0.1,
+  ))
+
+  assert not result.reason & ConservativeOutputShapingReason.HIGH_SPEED_ACTUATOR_LAG_UNWIND
+
+
+def test_high_speed_actuator_lag_unwind_does_not_cap_corrective_output():
+  result = assert_cap_only(make_inputs(
+    v_ego=20.0,
+    unshaped_output=-0.5,
+    desired_lateral_accel=0.4,
+    actual_lateral_accel=0.8,
+    steer_limited_by_safety=True,
+    steer_limit_same_direction=True,
+    steer_limit_unwind=False,
+    steer_limit_requested_output=-0.5,
+    steer_limit_applied_output=-0.1,
+  ))
+
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.HIGH_SPEED_ACTUATOR_LAG_UNWIND
+  assert result.output_torque == result.unshaped_output
+
+
 def test_strongest_cap_wins_when_multiple_reasons_apply():
   result = assert_cap_only(
     make_inputs(steering_pressed=True, desired_lateral_accel=0.4, actual_lateral_accel=-0.3, actual_lateral_jerk=3.0, lookahead_lateral_jerk=0.0)
