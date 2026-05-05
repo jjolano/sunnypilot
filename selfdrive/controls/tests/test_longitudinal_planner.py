@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
+import numpy as np
+
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   E2E_STOP_APPROACH_DECEL_MAX,
+  LongitudinalPlanner,
   get_e2e_runway_comfort_accel,
   get_e2e_stop_approach_accel,
   has_model_stop_context,
@@ -25,10 +28,41 @@ def make_model_msg(desired_accel=0.0, should_stop=False, endpoint_x=200.0, posit
   )
 
 
+class FakeSubMaster(dict):
+  logMonoTime = {'modelV2': 1.0}
+
+  def all_checks(self, service_list):
+    return True
+
+
 def test_has_valid_radar_lead_checks_both_tracks():
   assert not has_valid_radar_lead(make_radar_state())
   assert has_valid_radar_lead(make_radar_state(lead_one=True))
   assert has_valid_radar_lead(make_radar_state(lead_two=True))
+
+
+def test_publish_has_lead_checks_both_tracks(monkeypatch):
+  planner = LongitudinalPlanner.__new__(LongitudinalPlanner)
+  planner.mpc = SimpleNamespace(solve_time=0.0, source="lead1")
+  planner.v_desired_trajectory = np.zeros(3)
+  planner.a_desired_trajectory = np.zeros(3)
+  planner.j_desired_trajectory = np.zeros(2)
+  planner.fcw = False
+  planner.output_a_target = 0.0
+  planner.output_should_stop = False
+  planner.allow_throttle = True
+  planner.publish_longitudinal_plan_sp = lambda _sm, _pm: None
+  sm = FakeSubMaster({
+    'radarState': make_radar_state(lead_two=True),
+  })
+  plan_send = SimpleNamespace(logMonoTime=2_000_000_000, longitudinalPlan=SimpleNamespace())
+  pm = SimpleNamespace(sent=None, send=lambda _service, msg: setattr(pm, "sent", msg))
+
+  monkeypatch.setattr("openpilot.selfdrive.controls.lib.longitudinal_planner.messaging.new_message", lambda _service: plan_send)
+
+  planner.publish(sm, pm)
+
+  assert pm.sent.longitudinalPlan.hasLead
 
 
 def test_engage_stop_bootstrap_requires_timer_speed_and_no_lead():

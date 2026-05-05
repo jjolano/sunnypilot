@@ -942,6 +942,17 @@ def test_lead_transition_fcw_counting_ignores_released_lead():
   assert not should_count(0.5, 0.0)
 
 
+def test_mpc_fcw_crash_counting_checks_lead_one_and_lead_two():
+  should_count = getattr(long_mpc, "should_count_mpc_fcw_crash", None)
+  x_sol = np.zeros((N + 1, 3))
+  lead_0_xv = np.column_stack([np.full(N + 1, 100.0), np.zeros(N + 1)])
+  lead_1_xv = np.column_stack([np.full(N + 1, long_mpc.CRASH_DISTANCE * 0.5), np.zeros(N + 1)])
+
+  assert should_count is not None
+  assert should_count(lead_0_xv, lead_1_xv, x_sol, 0.2, 0.95, 0.0, 0.0)
+  assert not should_count(lead_0_xv, lead_1_xv, x_sol, 0.2, 0.95, 0.0, 1.0)
+
+
 def test_lead_transition_soft_release_only_moves_toward_cruise():
   lead_obstacle = np.array([20.0, 25.0])
   cruise_obstacle = np.array([30.0, 23.0])
