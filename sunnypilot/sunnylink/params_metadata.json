@@ -658,6 +658,18 @@
       }
     ]
   },
+  "LongLearnedCDrag": {
+    "title": "Learned Drag Coefficient",
+    "description": ""
+  },
+  "LongLearnedKForce": {
+    "title": "Learned Drivetrain Gain",
+    "description": ""
+  },
+  "LongLearnedMassDragToggle": {
+    "title": "Learn Mass & Drag",
+    "description": "Live-learns vehicle mass and aerodynamic drag to improve acceleration and braking accuracy."
+  },
   "LongitudinalDecisionLayer": {
     "title": "Longitudinal Decision Layer",
     "description": "Enable the experimental longitudinal decision layer. When enabled, sunnypilot arbitrates cruise, lead, e2e, speed-limit, SCC, OSM, and coast candidates through a unified policy with legacy fallback."
