@@ -502,7 +502,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    if self.is_e2e(sm):
+    e2e_active = self.is_e2e(sm)
+    if e2e_active:
       output_a_target_e2e = apply_lead_loss_e2e_guard_accel(
         output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, has_radar_lead
       )
@@ -577,7 +578,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     ) if lead_one.status else (False, 0.0)
     if self.creep_to_stop_gap_active:
       if creep_a_target >= 0.0:
-        if not self.output_should_stop or creep_pullaway_release:
+        if not self.output_should_stop or creep_pullaway_release or not (e2e_active and output_should_stop_e2e):
           output_a_target = max(output_a_target, creep_a_target)
           self.output_should_stop = self.output_should_stop and not creep_pullaway_release
       else:
@@ -619,7 +620,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       )
     else:
       self.creep_stop_hold_released = False
-    if lead_one.status and should_hold_creep_to_stop_gap(
+    if lead_one.status and not (self.creep_to_stop_gap_active and creep_a_target > 0.0) and should_hold_creep_to_stop_gap(
       v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), model_predicted_pullaway,
       self.creep_stop_hold_released, float(lead_one.modelProb),
     ):
