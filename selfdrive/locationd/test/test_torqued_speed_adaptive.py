@@ -35,11 +35,28 @@ def test_speed_aware_buckets_valid_percent():
     rowsize=3
   )
   for _ in range(10):
-    buckets.add_point(0.0, 1.0, 5.0)
-    buckets.add_point(0.0, 1.0, 15.0)
+    for steer in (-0.4, 0.0, 0.4):
+      buckets.add_point(steer, 1.0, 5.0)
+      buckets.add_point(steer, 1.0, 15.0)
 
   assert buckets.is_calculable()
   assert buckets.is_valid()
+
+
+def test_speed_aware_buckets_sparse_points_are_not_valid():
+  buckets = SpeedAwareTorqueBuckets(
+    x_bounds=[(-0.5, -0.3), (-0.3, 0.3), (0.3, 0.5)],
+    speed_bp=[0, 10, 20],
+    min_points=np.array([1, 1, 1]),
+    min_points_total=2,
+    points_per_bucket=100,
+    rowsize=3
+  )
+  for _ in range(10):
+    buckets.add_point(0.0, 1.0, 5.0)
+
+  assert not buckets.is_calculable()
+  assert not buckets.is_valid()
 
 
 def test_speed_aware_get_points():

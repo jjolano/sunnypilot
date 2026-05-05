@@ -624,6 +624,10 @@
     "title": "Self-Tune",
     "description": "Enables self-tune for Torque lateral control"
   },
+  "LiveTorqueSpeedAdaptiveApplyToggle": {
+    "title": "Apply Speed-Adaptive Self-Tune",
+    "description": "Applies learned speed-adaptive torque parameters to lateral control. Keep disabled for shadow-mode learning."
+  },
   "LiveTorqueSpeedAdaptiveParams": {
     "title": "Speed-Adaptive Torque Parameters",
     "description": ""
@@ -666,9 +670,17 @@
     "title": "Learned Drivetrain Gain",
     "description": ""
   },
+  "LongLearnedMassDragApplyToggle": {
+    "title": "Apply Learned Mass & Drag",
+    "description": "Applies learned mass and drag compensation to longitudinal control. Keep disabled for shadow-mode learning."
+  },
   "LongLearnedMassDragToggle": {
     "title": "Learn Mass & Drag",
     "description": "Live-learns vehicle mass and aerodynamic drag to improve acceleration and braking accuracy."
+  },
+  "LongLearnedResponseCurveApplyToggle": {
+    "title": "Apply Learned Response Curve",
+    "description": "Applies learned brake/gas response curve corrections to longitudinal feedforward. Keep disabled for shadow-mode learning."
   },
   "LongLearnedResponseCurveToggle": {
     "title": "Learn Response Curve",

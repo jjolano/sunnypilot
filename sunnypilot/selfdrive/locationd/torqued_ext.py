@@ -66,10 +66,10 @@ class SpeedAwareTorqueBuckets:
     return self.buckets[self._bucket_idx(v_ego)]
 
   def is_calculable(self):
-    return any(len(b) > 0 for b in self.buckets.values())
+    return any(b.is_calculable() for b in self.buckets.values())
 
   def is_valid(self):
-    return any(len(b) >= b.min_points_total for b in self.buckets.values())
+    return any(b.is_valid() for b in self.buckets.values())
 
   def get_points(self, n=None):
     all_pts = []
@@ -124,13 +124,11 @@ class TorqueEstimatorExt:
     self._init_speed_buckets()
 
   def _init_speed_buckets(self):
-    from openpilot.selfdrive.locationd.helpers import PointBuckets
     from openpilot.selfdrive.locationd.torqued import STEER_BUCKET_BOUNDS, POINTS_PER_BUCKET
-    min_pts = RELAXED_MIN_BUCKET_POINTS / (10 if hasattr(self, 'decimated') and self.decimated else 1)
     self.speed_buckets = SpeedAwareTorqueBuckets(
       x_bounds=STEER_BUCKET_BOUNDS,
       speed_bp=SPEED_BUCKET_BP,
-      min_points=min_pts,
+      min_points=self.min_bucket_points,
       min_points_total=self.min_points_total,
       points_per_bucket=POINTS_PER_BUCKET,
       rowsize=3
@@ -147,7 +145,7 @@ class TorqueEstimatorExt:
     result = {}
     for idx, label in enumerate(SPEED_BUCKET_LABELS):
       bucket = self.speed_buckets.buckets[idx]
-      if not bucket.is_calculable():
+      if not bucket.is_valid():
         continue
       points = bucket.get_points(self.fit_points)
       try:
@@ -155,6 +153,10 @@ class TorqueEstimatorExt:
         slope, offset = -v.T[0:2, 2] / v.T[2, 2]
         _, spread = np.matmul(points[:, [0, 2]], slope2rot(slope)).T
         friction_coeff = np.std(spread) * FRICTION_FACTOR
+        if any(not np.isfinite(val) for val in (slope, offset, friction_coeff)):
+          continue
+        slope = np.clip(slope, self.min_lataccel_factor, self.max_lataccel_factor)
+        friction_coeff = np.clip(friction_coeff, self.min_friction, self.max_friction)
         result[label] = (float(slope), float(offset), float(friction_coeff))
       except np.linalg.LinAlgError:
         continue

@@ -10,7 +10,7 @@ import numpy as np
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
-from openpilot.common.params import Params
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
@@ -150,7 +150,10 @@ class LongitudinalPlannerSP:
   def _init_mass_drag(self):
     self.mass_drag_estimator = RLSDynamicsEstimator()
     self._params = Params()
-    self.mass_drag_enabled = self._params.get_bool("LongLearnedMassDragToggle")
+    try:
+      self.mass_drag_enabled = self._params.get_bool("LongLearnedMassDragToggle")
+    except UnknownKeyName:
+      self.mass_drag_enabled = False
     self.last_mass_drag_write = 0
 
   def update_mass_drag(self, sm):
@@ -162,13 +165,21 @@ class LongitudinalPlannerSP:
     a_ego = sm['carState'].aEgo
     lead = sm['radarState'].leadOne
     roll = sm['liveParameters'].roll
-    a_cmd = self.mpc.a_solution[0] if len(self.mpc.a_solution) > 0 else 0.0
+    pitch = sm['carControl'].orientationNED[1] if len(sm['carControl'].orientationNED) == 3 else 0.0
+    a_cmd = getattr(self, "output_a_target", self.mpc.a_solution[0] if len(self.mpc.a_solution) > 0 else 0.0)
 
     clean = (
+      sm['carControl'].enabled and
       v_ego > 10.0 and
       not lead.status and
+      not sm['carState'].brakePressed and
+      not sm['carState'].gasPressed and
+      sm['controlsState'].longControlState != 0 and
       abs(roll) < np.radians(1.0) and
-      abs(a_ego - a_cmd) < 1.0
+      abs(pitch) < np.radians(1.0) and
+      abs(a_ego - a_cmd) < 1.0 and
+      (abs(a_cmd) > 0.05 or abs(a_ego) > 0.05) and
+      all(np.isfinite(val) for val in (v_ego, a_ego, a_cmd, roll, pitch))
     )
 
     if clean:

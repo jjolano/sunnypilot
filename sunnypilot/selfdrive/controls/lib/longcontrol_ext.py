@@ -4,6 +4,7 @@ from cereal import car
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import UnknownKeyName
 from openpilot.common.realtime import DT_CTRL
+from openpilot.sunnypilot.selfdrive.controls.lib.long_learned_mass_drag import CDRAG_MAX, CDRAG_MIN, KF_MAX, KF_MIN
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
@@ -11,6 +12,7 @@ ACCEL_BUCKET_BP = [-4.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 4.0]
 MIN_BUCKET_SAMPLES = 10
 MAX_OFFSET = 0.5
 FILTER_DECAY = 100
+MAX_DRAG_COMPENSATION = 0.5
 
 
 class ResponseCurveLearner:
@@ -21,14 +23,21 @@ class ResponseCurveLearner:
     self._valid = {i: False for i in range(len(ACCEL_BUCKET_BP))}
 
   def _bucket_idx(self, a_cmd):
+    if a_cmd < ACCEL_BUCKET_BP[0]:
+      return 0
     for i in range(len(ACCEL_BUCKET_BP) - 1):
       if ACCEL_BUCKET_BP[i] <= a_cmd < ACCEL_BUCKET_BP[i + 1]:
         return i
     return len(ACCEL_BUCKET_BP) - 1
 
+  def _bucket_center(self, idx):
+    if idx < len(ACCEL_BUCKET_BP) - 1:
+      return (ACCEL_BUCKET_BP[idx] + ACCEL_BUCKET_BP[idx + 1]) / 2.0
+    return ACCEL_BUCKET_BP[-1]
+
   def update(self, a_cmd, a_ego):
     idx = self._bucket_idx(a_cmd)
-    offset = a_ego - a_cmd
+    offset = a_cmd - a_ego
     if not np.isfinite(offset):
       return
     self.buckets[idx].append(offset)
@@ -62,7 +71,7 @@ class ResponseCurveLearner:
     centers = []
     offsets = []
     for i in valid_indices:
-      centers.append(float(np.mean(self.cmd_buckets[i])))
+      centers.append(float(np.mean(self.cmd_buckets[i])) if self.cmd_buckets[i] else self._bucket_center(i))
       offsets.append(float(self.filtered_offsets[i].x))
 
     return float(np.interp(a_cmd, centers, offsets))
@@ -71,7 +80,8 @@ class ResponseCurveLearner:
     data = {}
     for i in range(len(ACCEL_BUCKET_BP)):
       if self._valid[i]:
-        data[i] = float(self.filtered_offsets[i].x)
+        center = float(np.mean(self.cmd_buckets[i])) if self.cmd_buckets[i] else self._bucket_center(i)
+        data[i] = (float(self.filtered_offsets[i].x), center)
     return str(data)
 
   def deserialize(self, s):
@@ -83,7 +93,14 @@ class ResponseCurveLearner:
       for i, val in data.items():
         i = int(i)
         if 0 <= i < len(ACCEL_BUCKET_BP):
-          self.filtered_offsets[i].x = float(val)
+          if isinstance(val, (tuple, list)):
+            offset, center = float(val[0]), float(val[1])
+          else:
+            offset, center = float(val), self._bucket_center(i)
+          if not np.isfinite(offset) or not np.isfinite(center):
+            continue
+          self.filtered_offsets[i].x = np.clip(offset, -MAX_OFFSET, MAX_OFFSET)
+          self.cmd_buckets[i] = [center]
           self._valid[i] = True
     except Exception:
       pass
@@ -99,34 +116,48 @@ class LongControlExt:
       self.mass_drag_enabled = self._params.get_bool("LongLearnedMassDragToggle")
     except UnknownKeyName:
       self.mass_drag_enabled = False
+    try:
+      self.mass_drag_apply_enabled = self._params.get_bool("LongLearnedMassDragApplyToggle")
+    except UnknownKeyName:
+      self.mass_drag_apply_enabled = False
     self.k_force = 1.0
     self.c_drag = 0.0
     try:
       self.response_curve_enabled = self._params.get_bool("LongLearnedResponseCurveToggle")
     except UnknownKeyName:
       self.response_curve_enabled = False
+    try:
+      self.response_curve_apply_enabled = self._params.get_bool("LongLearnedResponseCurveApplyToggle")
+    except UnknownKeyName:
+      self.response_curve_apply_enabled = False
     self.response_learner = ResponseCurveLearner()
     # Restore cached offsets
-    cached = self._params.get("LongLearnedResponseOffsets")
+    try:
+      cached = self._params.get("LongLearnedResponseOffsets")
+    except UnknownKeyName:
+      cached = None
     if cached:
       self.response_learner.deserialize(cached)
     self._response_learn_count = 0
 
   def adjust_output(self, output_accel, CS, a_target):
-    if not self.mass_drag_enabled:
+    if not self.mass_drag_apply_enabled:
       return output_accel
 
-    self.k_force = float(self._params.get("LongLearnedKForce", return_default=True))
-    self.c_drag = float(self._params.get("LongLearnedCDrag", return_default=True))
+    try:
+      self.k_force = float(self._params.get("LongLearnedKForce", return_default=True))
+      self.c_drag = float(self._params.get("LongLearnedCDrag", return_default=True))
+    except (TypeError, ValueError, UnknownKeyName):
+      return output_accel
 
-    if 0.5 <= self.k_force <= 2.0 and self.k_force != 1.0:
-      drag_term = self.c_drag * CS.vEgo ** 2
+    if KF_MIN <= self.k_force <= KF_MAX and CDRAG_MIN <= self.c_drag <= CDRAG_MAX and np.isfinite(self.k_force) and np.isfinite(self.c_drag):
+      drag_term = np.clip(self.c_drag * CS.vEgo ** 2, 0.0, MAX_DRAG_COMPENSATION)
       output_accel = (output_accel + drag_term) / self.k_force
 
     return float(output_accel)
 
   def get_response_offset(self, a_target):
-    if not self.response_curve_enabled:
+    if not self.response_curve_apply_enabled:
       return 0.0
     return self.response_learner.lookup_offset(a_target)
 

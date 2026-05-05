@@ -236,9 +236,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneTurnValue", {PERSISTENT | BACKUP, FLOAT, "19.0"}},
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"LongLearnedMassDragToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"LongLearnedMassDragApplyToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LongLearnedKForce", {PERSISTENT, FLOAT, "1.0"}},
     {"LongLearnedCDrag", {PERSISTENT, FLOAT, "0.0"}},
     {"LongLearnedResponseCurveToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"LongLearnedResponseCurveApplyToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LongLearnedResponseOffsets", {PERSISTENT, STRING, ""}},
 
     // mapd
@@ -292,6 +294,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"EnforceTorqueControl", {PERSISTENT | BACKUP, BOOL}},
     {"LiveTorqueParamsToggle", {PERSISTENT | BACKUP , BOOL}},
     {"LiveTorqueParamsRelaxedToggle", {PERSISTENT | BACKUP , BOOL}},
+    {"LiveTorqueSpeedAdaptiveApplyToggle", {PERSISTENT | BACKUP , BOOL, "0"}},
     {"LiveTorqueSpeedAdaptiveParams", {PERSISTENT, STRING, ""}},
     {"LiveTorqueSpeedAdaptiveToggle", {PERSISTENT | BACKUP , BOOL, "0"}},
     {"TorqueControlTune", {PERSISTENT | BACKUP, FLOAT, "2.0"}},

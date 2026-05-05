@@ -7,6 +7,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longcontrol_ext import Response
 
 def test_bucket_routing():
   learner = ResponseCurveLearner()
+  assert learner._bucket_idx(-5.0) == 0
   assert learner._bucket_idx(-3.0) == 0
   assert learner._bucket_idx(-0.3) == 3
   assert learner._bucket_idx(0.0) == 4
@@ -17,9 +18,9 @@ def test_bucket_routing():
 
 def test_update_and_lookup():
   learner = ResponseCurveLearner()
-  # Bucket 6 is [1.0, 2.0); add points with offset +0.3
+  # Bucket 6 is [1.0, 2.0); actual is too low, so learned correction should be positive.
   for _ in range(20):
-    learner.update(1.5, 1.5 + 0.3)
+    learner.update(1.5, 1.5 - 0.3)
 
   assert learner.is_bucket_valid(6)
   offset = learner.lookup_offset(1.5)
@@ -28,16 +29,16 @@ def test_update_and_lookup():
 
 def test_interpolation():
   learner = ResponseCurveLearner()
-  # Bucket 5: [0.5, 1.0) -> offset -0.2
+  # Bucket 5: [0.5, 1.0) -> correction +0.2
   for _ in range(20):
     learner.update(0.7, 0.7 - 0.2)
-  # Bucket 7: [2.0, 4.0) -> offset +0.4
+  # Bucket 7: [2.0, 4.0) -> correction -0.4
   for _ in range(20):
     learner.update(3.0, 3.0 + 0.4)
 
   # Interpolate between 0.7 and 3.0 at 1.5
   offset = learner.lookup_offset(1.5)
-  expected = np.interp(1.5, [0.7, 3.0], [-0.2, 0.4])
+  expected = np.interp(1.5, [0.7, 3.0], [0.2, -0.4])
   assert abs(offset - expected) < 0.1
 
 
@@ -48,3 +49,17 @@ def test_sanity_clamp():
 
   offset = learner.lookup_offset(1.0)
   assert offset <= 0.5
+
+
+def test_deserialize_restores_interpolation_centers():
+  learner = ResponseCurveLearner()
+  for _ in range(20):
+    learner.update(0.7, 0.7 - 0.2)
+    learner.update(3.0, 3.0 + 0.4)
+
+  restored = ResponseCurveLearner()
+  restored.deserialize(learner.serialize())
+
+  offset = restored.lookup_offset(1.5)
+  assert np.isfinite(offset)
+  assert abs(offset - learner.lookup_offset(1.5)) < 1e-6

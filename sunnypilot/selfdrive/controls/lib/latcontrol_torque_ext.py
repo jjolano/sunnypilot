@@ -9,6 +9,7 @@ import ast
 
 import numpy as np
 
+from openpilot.common.params import UnknownKeyName
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.nnlc import NeuralNetworkLateralControl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_override import LatControlTorqueExtOverride
 
@@ -19,6 +20,8 @@ class LatControlTorqueExt(NeuralNetworkLateralControl, LatControlTorqueExtOverri
     LatControlTorqueExtOverride.__init__(self, CP)
     self.last_v_ego = 0.0
     self.speed_aware_params = None
+    self.speed_adaptive_apply_enabled = False
+    self.nominal_lat_accel_factor = float(CP.lateralTuning.torque.latAccelFactor) if CP.lateralTuning.which() == 'torque' else 0.0
 
   def update(self, CS, VM, pid, params, ff, pid_log, setpoint, measurement, calibrated_pose, roll_compensation,
              desired_lateral_accel, actual_lateral_accel, lateral_accel_deadzone, gravity_adjusted_lateral_accel,
@@ -45,12 +48,17 @@ class LatControlTorqueExt(NeuralNetworkLateralControl, LatControlTorqueExtOverri
     return self._pid_log, self._output_torque
 
   def update_speed_aware_params(self, params_str):
+    try:
+      self.speed_adaptive_apply_enabled = self.params.get_bool("LiveTorqueSpeedAdaptiveApplyToggle")
+    except UnknownKeyName:
+      self.speed_adaptive_apply_enabled = False
+
     if not params_str:
       self.speed_aware_params = None
       return
     try:
       self.speed_aware_params = ast.literal_eval(params_str)
-    except (ValueError, SyntaxError):
+    except (TypeError, ValueError, SyntaxError):
       self.speed_aware_params = None
 
   def _interpolate_speed_factor(self, v_ego):
@@ -61,7 +69,8 @@ class LatControlTorqueExt(NeuralNetworkLateralControl, LatControlTorqueExtOverri
     labels = ["0_10", "10_20", "20_30", "30_40", "40_plus"]
     for label in labels:
       if label in self.speed_aware_params:
-        factors.append(self.speed_aware_params[label][0])  # latAccelFactor
+        factor = float(self.speed_aware_params[label][0])  # latAccelFactor
+        factors.append(factor if np.isfinite(factor) else None)
       else:
         factors.append(None)
 
@@ -72,12 +81,19 @@ class LatControlTorqueExt(NeuralNetworkLateralControl, LatControlTorqueExtOverri
       return valid[0][1]
     return float(np.interp(v_ego, [b for b, _ in valid], [f for _, f in valid]))
 
+  def _valid_speed_factor(self, factor):
+    if factor is None or not np.isfinite(factor) or factor <= 0.0:
+      return False
+    if self.nominal_lat_accel_factor <= 0.0:
+      return False
+    return 0.5 * self.nominal_lat_accel_factor <= factor <= 2.0 * self.nominal_lat_accel_factor
+
   def update_override_torque_params(self, torque_params) -> bool:
     overridden = LatControlTorqueExtOverride.update_override_torque_params(self, torque_params)
 
-    if getattr(self, 'speed_aware_params', None) is not None:
+    if self.speed_adaptive_apply_enabled and getattr(self, 'speed_aware_params', None) is not None:
       factor = self._interpolate_speed_factor(self.last_v_ego)
-      if factor is not None:
+      if self._valid_speed_factor(factor):
         torque_params.latAccelFactor = factor
         return True
 
