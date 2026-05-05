@@ -163,6 +163,19 @@ class FakeSubMaster(dict):
     return super().__getitem__(key)
 
 
+def make_sm(v_cruise_cluster=20.0, lead_status=False, d_rel=100.0, v_rel=0.0,
+            gas_pressed=False, brake_pressed=False):
+  return FakeSubMaster({
+    'carState': SimpleNamespace(
+      vCruiseCluster=v_cruise_cluster,
+      gasPressed=gas_pressed,
+      brakePressed=brake_pressed,
+    ),
+    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=lead_status, dRel=d_rel, vRel=v_rel)),
+  })
+
+
 def test_speed_limit_auto_uses_assist_source_without_acceleration_seed():
   planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
   planner.scc = FakeSmartCruiseControl()
@@ -171,10 +184,7 @@ def test_speed_limit_auto_uses_assist_source_without_acceleration_seed():
   planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
   planner.events_sp = SimpleNamespace()
 
-  sm = FakeSubMaster({
-    'carState': SimpleNamespace(vCruiseCluster=20.0),
-    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
-  })
+  sm = make_sm(v_cruise_cluster=20.0)
 
   v_cruise = 20.0 * CV.KPH_TO_MS
   a_ego = 0.2
@@ -185,6 +195,81 @@ def test_speed_limit_auto_uses_assist_source_without_acceleration_seed():
   assert v_target == pytest.approx(expected)
   assert a_target == a_ego
   assert planner.source == LongitudinalPlanSource.speedLimitAssist
+
+
+def test_speed_limit_auto_speedup_blocked_by_close_closing_lead():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = FakeSpeedLimitAssist()
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+  planner.source = LongitudinalPlanSource.cruise
+  planner._speed_limit_handoff_active = False
+  planner._speed_limit_active_prev = False
+
+  sm = make_sm(v_cruise_cluster=20.0, lead_status=True, d_rel=20.0, v_rel=-1.4)
+
+  v_ego = 15.0
+  v_cruise = 20.0 * CV.KPH_TO_MS
+  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=v_ego, a_ego=0.2, v_cruise=v_cruise)
+
+  assert planner.source == LongitudinalPlanSource.speedLimitAssist
+  assert v_target == pytest.approx(v_ego)
+  assert a_target <= 0.0
+
+
+def test_cruise_speedup_blocked_by_close_closing_lead():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.scc = FakeSmartCruiseControl()
+  planner.resolver = FakeResolver()
+  planner.sla = SequenceSpeedLimitAssist(active_sequence=[False], target_sequence=[255.0])
+  planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
+  planner.events_sp = SimpleNamespace()
+  planner.source = LongitudinalPlanSource.cruise
+  planner._speed_limit_handoff_active = False
+  planner._speed_limit_active_prev = False
+
+  sm = make_sm(v_cruise_cluster=67.0, lead_status=True, d_rel=20.0, v_rel=-1.4)
+
+  v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=15.0, a_ego=0.2, v_cruise=18.61)
+
+  assert planner.source == LongitudinalPlanSource.cruise
+  assert v_target == pytest.approx(15.0)
+  assert a_target <= 0.0
+
+
+def test_lead_speedup_guard_allows_far_lead():
+  assert not longitudinal_planner.should_block_lead_speedup(
+    v_ego=15.0,
+    lead_status=True,
+    d_rel=60.0,
+    v_rel=-1.4,
+    gas_pressed=False,
+    brake_pressed=False,
+  )
+
+
+def test_lead_speedup_guard_allows_opening_lead():
+  assert not longitudinal_planner.should_block_lead_speedup(
+    v_ego=15.0,
+    lead_status=True,
+    d_rel=20.0,
+    v_rel=0.2,
+    gas_pressed=False,
+    brake_pressed=False,
+  )
+
+
+def test_lead_speedup_guard_allows_driver_gas_override():
+  assert not longitudinal_planner.should_block_lead_speedup(
+    v_ego=15.0,
+    lead_status=True,
+    d_rel=20.0,
+    v_rel=-1.4,
+    gas_pressed=True,
+    brake_pressed=False,
+  )
 
 
 def test_speed_limit_auto_disable_handoff_coasts_to_limit_before_manual_cruise_snap():
@@ -198,10 +283,7 @@ def test_speed_limit_auto_disable_handoff_coasts_to_limit_before_manual_cruise_s
   planner._speed_limit_handoff_active = False
   planner._speed_limit_active_prev = False
 
-  sm = FakeSubMaster({
-    'carState': SimpleNamespace(vCruiseCluster=67.0),
-    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
-  })
+  sm = make_sm(v_cruise_cluster=67.0)
 
   v_ego = 21.0
   a_ego = 0.2
@@ -227,10 +309,7 @@ def test_speed_limit_handoff_uses_limit_target_when_ego_is_above_limit():
   planner._speed_limit_handoff_active = False
   planner._speed_limit_active_prev = False
 
-  sm = FakeSubMaster({
-    'carState': SimpleNamespace(vCruiseCluster=67.0),
-    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
-  })
+  sm = make_sm(v_cruise_cluster=67.0)
 
   manual_cruise = 18.61
   LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=manual_cruise)
@@ -252,10 +331,7 @@ def test_speed_limit_handoff_exits_near_manual_cruise_target():
   planner._speed_limit_handoff_active = False
   planner._speed_limit_active_prev = False
 
-  sm = FakeSubMaster({
-    'carState': SimpleNamespace(vCruiseCluster=67.0),
-    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
-  })
+  sm = make_sm(v_cruise_cluster=67.0)
 
   manual_cruise = 18.61
   LongitudinalPlannerSP.update_targets(planner, sm, v_ego=21.0, a_ego=0.2, v_cruise=manual_cruise)
@@ -289,10 +365,7 @@ def test_speed_limit_handoff_exits_when_manual_cruise_reaches_limit_target():
   planner._speed_limit_handoff_active = False
   planner._speed_limit_active_prev = False
 
-  sm = FakeSubMaster({
-    'carState': SimpleNamespace(vCruiseCluster=67.0),
-    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
-  })
+  sm = make_sm(v_cruise_cluster=67.0)
 
   LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=18.61)
   LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=18.61)
@@ -315,10 +388,7 @@ def test_speed_limit_handoff_allows_lower_scc_candidate():
   planner._speed_limit_handoff_active = False
   planner._speed_limit_active_prev = False
 
-  sm = FakeSubMaster({
-    'carState': SimpleNamespace(vCruiseCluster=67.0),
-    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
-  })
+  sm = make_sm(v_cruise_cluster=67.0)
 
   LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=18.61)
   v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=31.0, a_ego=0.2, v_cruise=18.61)
@@ -336,10 +406,7 @@ def test_speed_limit_resolver_receives_coast_accel():
   planner.osm_traffic_control_prior = FakeOsmTrafficControlPrior()
   planner.events_sp = SimpleNamespace()
 
-  sm = FakeSubMaster({
-    'carState': SimpleNamespace(vCruiseCluster=20.0),
-    'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
-  })
+  sm = make_sm(v_cruise_cluster=20.0)
 
   coast_accel = -0.3
   v_cruise = 20.0 * CV.KPH_TO_MS
