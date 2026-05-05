@@ -199,9 +199,9 @@ class SmartCruiseControlMap:
 
       d = forward_distances[i]
 
-      in_range, prediction_advanced = self._target_range_state(tv, d, model_msg)
+      in_range, prediction_advanced, control_tv = self._target_range_state(tv, d, model_msg)
       if in_range:
-        valid_velocities.append((float(tv), tlat, tlon, prediction_advanced))
+        valid_velocities.append((float(control_tv), tlat, tlon, prediction_advanced))
 
     # Find the smallest velocity we need to adjust for
     min_v = 100.0
@@ -225,7 +225,9 @@ class SmartCruiseControlMap:
           if tv > self.v_ego:
             continue
 
-          if tlat == self.target_lat and tlon == self.target_lon and tv == self.v_target:
+          d = forward_distances[i]
+          if (tlat == self.target_lat and tlon == self.target_lon and tv == self.v_target and
+              self._model_confirms_large_slowdown(self.v_ego, tv, d, model_msg)):
             return
 
       # not found so let's reset
@@ -298,16 +300,19 @@ class SmartCruiseControlMap:
     control_distance = self._target_control_distance(target_v)
     return control_distance is not None and distance < control_distance
 
-  def _target_range_state(self, target_v: float, distance: float, model_msg) -> tuple[bool, bool]:
+  def _target_range_state(self, target_v: float, distance: float, model_msg) -> tuple[bool, bool, float]:
     if not self._model_confirms_large_slowdown(self.v_ego, target_v, distance, model_msg):
-      return False, False
+      soft_target = self._soft_model_confirmed_target(self.v_ego, target_v, distance, model_msg)
+      if soft_target is not None and self._target_in_range(soft_target, distance):
+        return True, True, soft_target
+      return False, False, target_v
 
     if self._target_in_range(target_v, distance):
-      return True, False
+      return True, False, target_v
 
     control_target_v = self._prediction_control_target(target_v, distance, model_msg)
     prediction_advanced = control_target_v < target_v and self._target_in_range(control_target_v, distance)
-    return prediction_advanced, prediction_advanced
+    return prediction_advanced, prediction_advanced, target_v
 
   @staticmethod
   def _model_covers_distance(model_msg, distance: float) -> bool:
@@ -331,6 +336,18 @@ class SmartCruiseControlMap:
 
     prediction_target = cls._prediction_curve_target(model_msg, distance)
     return prediction_target is not None and prediction_target <= target_v + MODEL_CURVE_OVERSLOWDOWN_MARGIN
+
+  @classmethod
+  def _soft_model_confirmed_target(cls, v_ego: float, target_v: float, distance: float, model_msg) -> float | None:
+    if model_msg is None or not cls._model_covers_distance(model_msg, distance):
+      return None
+
+    prediction_target = cls._prediction_curve_target(model_msg, distance)
+    if prediction_target is None:
+      return None
+
+    soft_target = max(target_v, min(v_ego, prediction_target))
+    return soft_target if soft_target < v_ego else None
 
   @staticmethod
   def _prediction_curve_target(model_msg, distance: float) -> float | None:
@@ -410,17 +427,17 @@ class SmartCruiseControlMap:
     current_advisory = self._cached_first_mapd_json(ADVISORY_LIMIT_KEYS)
     current_target = self._advisory_target(current_advisory)
     if current_target is not None:
-      in_range, prediction_advanced = self._target_range_state(current_target[0], 0., model_msg)
+      in_range, prediction_advanced, control_target_v = self._target_range_state(current_target[0], 0., model_msg)
       if in_range:
-        targets.append((*current_target, prediction_advanced))
+        targets.append((control_target_v, current_target[1], current_target[2], prediction_advanced))
 
     next_advisory = self._cached_first_mapd_json(NEXT_ADVISORY_LIMIT_KEYS)
     next_target = self._advisory_target(next_advisory)
     next_distance = self._distance_to_advisory_start(next_advisory)
     if next_target is not None and next_distance is not None:
-      in_range, prediction_advanced = self._target_range_state(next_target[0], next_distance, model_msg)
+      in_range, prediction_advanced, control_target_v = self._target_range_state(next_target[0], next_distance, model_msg)
       if in_range:
-        targets.append((*next_target, prediction_advanced))
+        targets.append((control_target_v, next_target[1], next_target[2], prediction_advanced))
 
     return targets
 
