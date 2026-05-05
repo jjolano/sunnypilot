@@ -12,7 +12,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW, get_lead_accel_recovery_a_min, get_lead_stop_presentation_distance
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE, get_T_FOLLOW, get_lead_accel_recovery_a_min, get_lead_stop_presentation_distance
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
@@ -282,6 +282,8 @@ def should_release_creep_stop_hold(release_active, v_ego, d_rel, v_lead, a_lead,
   stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
   if v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO or d_rel <= stop_target + CREEP_TO_STOP_GAP_REHOLD_EXCESS:
     return False
+  if should_hold_stopped_lead_micro_creep(v_ego, d_rel, v_lead, a_lead, predicted_pullaway):
+    return False
   if release_active:
     return True
   return (
@@ -290,9 +292,21 @@ def should_release_creep_stop_hold(release_active, v_ego, d_rel, v_lead, a_lead,
   )
 
 
+def should_hold_stopped_lead_micro_creep(v_ego, d_rel, v_lead, a_lead, predicted_pullaway=False):
+  return (
+    not predicted_pullaway and
+    v_ego < CREEP_TO_STOP_GAP_STOP_EXCESS and
+    v_lead < CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED and
+    a_lead <= 0.05 and
+    d_rel <= STOP_DISTANCE + CREEP_TO_STOP_GAP_FOLLOW_EXCESS
+  )
+
+
 def should_hold_creep_to_stop_gap(v_ego, d_rel, v_lead, a_lead, predicted_pullaway=False, release_active=False, model_prob=1.0):
   if should_release_creep_stop_hold(release_active, v_ego, d_rel, v_lead, a_lead, predicted_pullaway, model_prob):
     return False
+  if should_hold_stopped_lead_micro_creep(v_ego, d_rel, v_lead, a_lead, predicted_pullaway):
+    return True
   stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
   return (
     not predicted_pullaway and
@@ -569,7 +583,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       else:
         output_a_target = min(output_a_target, creep_a_target)
       creep_accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX if creep_a_target > CREEP_TO_STOP_GAP_ACCEL_MAX else CREEP_TO_STOP_GAP_ACCEL_MAX
-      output_a_target = min(output_a_target, creep_accel_max)
+      if not (creep_pullaway_release and lead_gap_excess >= CREEP_TO_STOP_GAP_START_EXCESS):
+        output_a_target = min(output_a_target, creep_accel_max)
       self.output_should_stop = self.output_should_stop or (creep_a_target <= 0.0 and v_ego < self.CP.vEgoStopping)
     limit_creep_pullaway_accel_step = creep_pullaway_release and (prev_creep_to_stop_gap_active or self.creep_to_stop_gap_active)
 
