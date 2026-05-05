@@ -17,8 +17,10 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import (
   SmartCruiseControlVision,
+  _A_LAT_REG_MAX,
   _CURRENT_LAT_ACC_BLEED_TH,
   _ENTERING_PRED_LAT_ACC_TH,
+  _IN_TURN_LAT_ACC_TARGET,
   _NO_OVERSHOOT_TIME_HORIZON,
 )
 
@@ -67,6 +69,13 @@ def _build_single_spike_filtered(n: int, base: float = 1.0) -> np.ndarray:
 
 def _constant_pred_lat_accels(value: float) -> np.ndarray:
   return np.full(len(ModelConstants.T_IDXS), np.float32(value), dtype=np.float32)
+
+
+def _pred_lat_accels_crossing_at(crossing_time: float, value: float = 3.0) -> tuple[np.ndarray, float]:
+  crossing_idx = next(i for i, t in enumerate(ModelConstants.T_IDXS) if t >= crossing_time)
+  pred_lat_accels = np.full(len(ModelConstants.T_IDXS), np.float32(1.0), dtype=np.float32)
+  pred_lat_accels[crossing_idx:] = np.float32(value)
+  return pred_lat_accels, float(ModelConstants.T_IDXS[crossing_idx])
 
 
 def _set_predicted_lat_accels(model, pred_lat_accels: np.ndarray) -> None:
@@ -184,6 +193,46 @@ class TestSmartCruiseControlVision:
     assert self.scc_v.state == VisionState.entering
     assert self.scc_v.a_target == pytest.approx(-0.7)
     assert self.scc_v.v_target - self.scc_v.output_v_target == pytest.approx(0.7 * _NO_OVERSHOOT_TIME_HORIZON)
+
+  def test_entering_decel_reaches_conservative_target_when_turn_is_far(self):
+    pred_lat_accels, turn_time = _pred_lat_accels_crossing_at(4.5, value=3.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 10.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    predicted_curve = 3.0 / (v_ego**2)
+    conservative_v_target = (_A_LAT_REG_MAX / predicted_curve) ** 0.5
+
+    assert self.scc_v.state == VisionState.entering
+    assert self.scc_v.predicted_turn_time == pytest.approx(turn_time)
+    assert self.scc_v.output_v_target == pytest.approx(conservative_v_target)
+    assert self.scc_v.a_target == pytest.approx((conservative_v_target - v_ego) / turn_time)
+    assert -0.7 < self.scc_v.a_target < 0.0
+
+  def test_entering_decel_blends_toward_iso_target_when_turn_is_close(self):
+    pred_lat_accels, turn_time = _pred_lat_accels_crossing_at(1.0, value=3.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 10.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    predicted_curve = 3.0 / (v_ego**2)
+    conservative_v_target = (_A_LAT_REG_MAX / predicted_curve) ** 0.5
+    iso_v_target = min((_IN_TURN_LAT_ACC_TARGET / predicted_curve) ** 0.5, v_ego)
+    reachable_v_target = v_ego - 0.7 * turn_time
+
+    assert self.scc_v.state == VisionState.entering
+    assert self.scc_v.predicted_turn_time == pytest.approx(turn_time)
+    assert self.scc_v.output_v_target == pytest.approx(reachable_v_target)
+    assert conservative_v_target < self.scc_v.output_v_target < iso_v_target
+    assert self.scc_v.a_target == pytest.approx(-0.7)
 
   def test_turning_state_keeps_positive_accel_in_moderate_turn(self):
     pred_lat_accels = _constant_pred_lat_accels(2.3)
