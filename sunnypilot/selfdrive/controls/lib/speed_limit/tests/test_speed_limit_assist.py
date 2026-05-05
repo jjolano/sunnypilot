@@ -6,6 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import pytest
+from types import SimpleNamespace
 
 from cereal import car, custom
 from opendbc.car.car_helpers import interfaces
@@ -27,6 +28,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist 
   SPEED_LIMIT_SETPOINT_ACCEL_UP,
   SpeedLimitAssist,
 )
+from openpilot.sunnypilot.selfdrive.selfdrived import events as events_sp_module
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 EventNameSP = custom.OnroadEventSP.EventName
@@ -42,6 +44,27 @@ SPEED_LIMITS = {
 }
 
 DEFAULT_CAR = TOYOTA.TOYOTA_RAV4_TSS2
+
+
+class FakeSubMaster(dict):
+  pass
+
+
+@pytest.mark.parametrize("metric", [True, False])
+def test_speed_limit_pre_active_alert_compares_cluster_speed_as_kph(metric, monkeypatch):
+  monkeypatch.setattr(events_sp_module, "IS_MICI", True)
+  cp = SimpleNamespace(openpilotLongitudinalControl=False, pcmCruise=False)
+  cs = SimpleNamespace(vCruiseCluster=50.0)
+  sm = FakeSubMaster({
+    'controlsState': SimpleNamespace(vCruiseDEPRECATED=0.0),
+    'longitudinalPlanSP': SimpleNamespace(
+      speedLimit=SimpleNamespace(resolver=SimpleNamespace(speedLimitFinalLast=60.0 * CV.KPH_TO_MS)),
+    ),
+  })
+
+  alert = events_sp_module.speed_limit_pre_active_alert(cp, cs, sm, metric, 0, None)
+
+  assert alert.alert_text_1 == "Press + to confirm speed limit"
 
 
 @pytest.fixture
