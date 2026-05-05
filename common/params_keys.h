@@ -287,6 +287,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"EnforceTorqueControl", {PERSISTENT | BACKUP, BOOL}},
     {"LiveTorqueParamsToggle", {PERSISTENT | BACKUP , BOOL}},
     {"LiveTorqueParamsRelaxedToggle", {PERSISTENT | BACKUP , BOOL}},
+    {"LiveTorqueSpeedAdaptiveParams", {PERSISTENT, STRING, ""}},
+    {"LiveTorqueSpeedAdaptiveToggle", {PERSISTENT | BACKUP , BOOL, "0"}},
     {"TorqueControlTune", {PERSISTENT | BACKUP, FLOAT, "2.0"}},
     {"TorqueParamsOverrideEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TorqueParamsOverrideFriction", {PERSISTENT | BACKUP, FLOAT, "0.1"}},

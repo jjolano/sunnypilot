@@ -624,6 +624,14 @@
     "title": "Self-Tune",
     "description": "Enables self-tune for Torque lateral control"
   },
+  "LiveTorqueSpeedAdaptiveParams": {
+    "title": "Speed-Adaptive Torque Parameters",
+    "description": ""
+  },
+  "LiveTorqueSpeedAdaptiveToggle": {
+    "title": "Speed-Adaptive Self-Tune",
+    "description": "Learn separate torque parameters for different speed ranges. Improves steering accuracy across low and high speeds."
+  },
   "LocationFilterInitialState": {
     "title": "Location Filter Initial State",
     "description": ""
