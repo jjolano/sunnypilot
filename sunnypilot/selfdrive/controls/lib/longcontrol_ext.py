@@ -1,7 +1,10 @@
 import numpy as np
 
+from cereal import car
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_CTRL
+
+LongCtrlState = car.CarControl.Actuators.LongControlState
 
 ACCEL_BUCKET_BP = [-4.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 4.0]
 MIN_BUCKET_SAMPLES = 10
@@ -94,6 +97,13 @@ class LongControlExt:
     self.mass_drag_enabled = self._params.get_bool("LongLearnedMassDragToggle")
     self.k_force = 1.0
     self.c_drag = 0.0
+    self.response_curve_enabled = self._params.get_bool("LongLearnedResponseCurveToggle")
+    self.response_learner = ResponseCurveLearner()
+    # Restore cached offsets
+    cached = self._params.get("LongLearnedResponseOffsets")
+    if cached:
+      self.response_learner.deserialize(cached)
+    self._response_learn_count = 0
 
   def adjust_output(self, output_accel, CS, a_target):
     if not self.mass_drag_enabled:
@@ -107,3 +117,22 @@ class LongControlExt:
       output_accel = (output_accel + drag_term) / self.k_force
 
     return float(output_accel)
+
+  def get_response_offset(self, a_target):
+    if not self.response_curve_enabled:
+      return 0.0
+    return self.response_learner.lookup_offset(a_target)
+
+  def learn_response(self, a_target, a_ego, long_control_state, saturated):
+    if not self.response_curve_enabled:
+      return
+    if long_control_state != LongCtrlState.pid:
+      return
+    if saturated:
+      return
+    if abs(a_ego - a_target) >= 1.0:
+      return
+    self.response_learner.update(a_target, a_ego)
+    self._response_learn_count += 1
+    if self._response_learn_count % 500 == 0:
+      self._params.put_nonblocking("LongLearnedResponseOffsets", self.response_learner.serialize())
