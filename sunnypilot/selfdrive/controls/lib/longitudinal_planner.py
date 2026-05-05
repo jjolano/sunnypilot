@@ -157,7 +157,7 @@ class LongitudinalPlannerSP:
     self.last_mass_drag_write = 0
 
   def update_mass_drag(self, sm):
-    if not self.mass_drag_enabled:
+    if not getattr(self, "mass_drag_enabled", False):
       return
 
     # Clean window conditions
