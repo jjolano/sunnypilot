@@ -239,9 +239,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LongLearnedMassDragApplyToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LongLearnedKForce", {PERSISTENT, FLOAT, "1.0"}},
     {"LongLearnedCDrag", {PERSISTENT, FLOAT, "0.0"}},
-    {"LongLearnedResponseCurveToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"LongLearnedResponseCurveApplyToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"LongLearnedResponseOffsets", {PERSISTENT, STRING, ""}},
 
     // mapd
     {"MapAdvisoryLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},

@@ -10,9 +10,8 @@ sunnypilot currently has three live-learning subsystems:
 These work well for global/static parameters but do not adapt to:
 - **Speed-dependent steering dynamics** (rack assist, tire slip angles)
 - **Changing vehicle mass / aero drag** (cargo, passengers, roof boxes, headwinds)
-- **Non-linear brake/gas response curves** (pedal mapping, temperature, wear)
 
-This spec adds three new extension-based live learners to address these gaps.
+This spec adds two active extension-based live learners to address these gaps.
 
 ---
 
@@ -96,35 +95,9 @@ a_ego ≈ (k_force * a_cmd) - c_drag * v_ego² - c_roll
 
 ---
 
-## 5. Sub-Project 3: Brake/Gas Response Curve Learning
+## 5. Removed: Brake/Gas Response Curve Learning
 
-### 5.1 Problem
-The `output_accel` → `a_ego` mapping is non-linear and car-specific. Current `feedforward = a_target` assumes a 1:1 mapping, causing under/overshoot at different accel magnitudes.
-
-### 5.2 Design
-
-**Data Collection** (`sunnypilot/selfdrive/controls/lib/longcontrol_ext.py`):
-- Bucket `a_cmd` vs `a_ego` (delayed by `CP.longitudinalActuatorDelay` + `DT_CTRL`)
-- Bucket bounds: `[-4.0, -2.0, -1.0, -0.5, 0, 0.5, 1.0, 2.0, 4.0]` m/s²
-- Only collect when:
-  - `long_control_state == pid`
-  - Not actuator-saturated
-  - `abs(a_ego - a_target) < 1.0` (steady-ish)
-
-**Estimation**:
-- Per-bucket mean offset: `offset = mean(a_ego - a_cmd)`
-- First-order filter smoothing (decay = 100)
-
-**Consumption**:
-- Apply inverse mapping to feedforward:
-  ```
-  ff = a_target + lookup_offset(a_target)
-  ```
-- Clamp total correction to `±0.5 m/s²` per bucket to prevent instability.
-
-### 5.3 Params / UI
-- `LongLearnedResponseCurveToggle` (bool, persistent)
-- `LongLearnedResponseOffsets` (JSON blob or comma-separated floats)
+Brake/gas response-curve learning was removed from the active design. The control path now keeps `feedforward = a_target`, and no response-curve params, UI toggles, or learned offset cache are retained.
 
 ---
 

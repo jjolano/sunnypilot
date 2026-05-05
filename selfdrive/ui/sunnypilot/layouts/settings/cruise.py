@@ -102,24 +102,12 @@ class CruiseLayout(Widget):
       description=tr("Applies learned mass and drag compensation to longitudinal control. Keep disabled for shadow-mode learning."),
       param="LongLearnedMassDragApplyToggle")
 
-    self.long_learned_response_curve_toggle = toggle_item_sp(
-      title=tr("Learn Response Curve"),
-      description=tr("Learns the non-linear relationship between requested and actual acceleration to improve pedal response."),
-      param="LongLearnedResponseCurveToggle")
-
-    self.long_learned_response_curve_apply_toggle = toggle_item_sp(
-      title=tr("Apply Learned Response Curve"),
-      description=tr("Applies learned brake/gas response curve corrections to longitudinal feedforward. Keep disabled for shadow-mode learning."),
-      param="LongLearnedResponseCurveApplyToggle")
-
     items = [
       self.icbm_toggle,
       self.dec_toggle,
       self.longitudinal_decision_layer_toggle,
       self.long_learned_mass_drag_toggle,
       self.long_learned_mass_drag_apply_toggle,
-      self.long_learned_response_curve_toggle,
-      self.long_learned_response_curve_apply_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
       self.custom_acc_toggle,
@@ -179,8 +167,6 @@ class CruiseLayout(Widget):
         long_learning_enabled = has_long and ui_state.is_offroad()
         self.long_learned_mass_drag_toggle.action_item.set_enabled(long_learning_enabled)
         self.long_learned_mass_drag_apply_toggle.action_item.set_enabled(long_learning_enabled)
-        self.long_learned_response_curve_toggle.action_item.set_enabled(long_learning_enabled)
-        self.long_learned_response_curve_apply_toggle.action_item.set_enabled(long_learning_enabled)
         self.scc_v_toggle.action_item.set_enabled(True)
         self.scc_m_toggle.action_item.set_enabled(True)
       else:
@@ -194,8 +180,6 @@ class CruiseLayout(Widget):
         self.longitudinal_decision_layer_toggle.action_item.set_enabled(False)
         self.long_learned_mass_drag_toggle.action_item.set_enabled(False)
         self.long_learned_mass_drag_apply_toggle.action_item.set_enabled(False)
-        self.long_learned_response_curve_toggle.action_item.set_enabled(False)
-        self.long_learned_response_curve_apply_toggle.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)
 
@@ -205,8 +189,6 @@ class CruiseLayout(Widget):
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
       self.long_learned_mass_drag_toggle.action_item.set_enabled(False)
       self.long_learned_mass_drag_apply_toggle.action_item.set_enabled(False)
-      self.long_learned_response_curve_toggle.action_item.set_enabled(False)
-      self.long_learned_response_curve_apply_toggle.action_item.set_enabled(False)
 
     show_custom_acc_desc = False
 

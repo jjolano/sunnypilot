@@ -169,7 +169,7 @@ class LongControl:
 
     else:  # LongCtrlState.pid
       error = a_target - CS.aEgo
-      ff = a_target + self.extension.get_response_offset(a_target)
+      ff = a_target
       output_accel = self.pid.update(error, speed=CS.vEgo, feedforward=ff)
       output_accel = self.extension.adjust_output(output_accel, CS, a_target)
 
@@ -188,9 +188,6 @@ class LongControl:
           self.reset_launch_envelope()
         else:
           self.launch_taper_elapsed += DT_CTRL
-
-    saturated = output_accel <= accel_limits[0] or output_accel >= accel_limits[1]
-    self.extension.learn_response(a_target, CS.aEgo, self.long_control_state, saturated or self.launch_envelope_active)
 
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel

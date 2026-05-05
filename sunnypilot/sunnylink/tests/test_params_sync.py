@@ -10,6 +10,11 @@ import os
 import pytest
 
 METADATA_PATH = os.path.join(os.path.dirname(__file__), "..", "params_metadata.json")
+REMOVED_RESPONSE_CURVE_PARAMS = (
+  "LongLearnedResponseCurveToggle",
+  "LongLearnedResponseCurveApplyToggle",
+  "LongLearnedResponseOffsets",
+)
 
 
 def test_metadata_json_exists():
@@ -208,6 +213,14 @@ def test_known_params_metadata():
   assert decision_layer is not None
   assert decision_layer["title"] == "Longitudinal Decision Layer"
   assert "experimental" in decision_layer["description"].lower()
+
+
+def test_response_curve_learning_metadata_is_removed():
+  with open(METADATA_PATH) as f:
+    metadata = json.load(f)
+
+  for param in REMOVED_RESPONSE_CURVE_PARAMS:
+    assert param not in metadata
 
 
 def test_torque_control_tune_versions_in_sync():
