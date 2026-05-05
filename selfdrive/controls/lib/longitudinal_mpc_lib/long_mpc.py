@@ -142,6 +142,8 @@ MOVING_LEAD_STOP_APPROACH_LIGHT_CUSHION_FRACTION = 0.35
 MOVING_LEAD_STOP_APPROACH_FULL_CUSHION_FRACTION = 0.75
 MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX = 0.65
 MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP = [2.3, 2.8]
+MOVING_LEAD_STOP_APPROACH_PRE_TARGET_MARGIN_BP = [4.0, 8.0]
+MOVING_LEAD_STOP_APPROACH_COAST_RECOVERY_GAP_BP = [0.0, 0.25, 0.5]
 MOVING_LEAD_STOP_APPROACH_COST = 25.0
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED = 0.8
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_STANDARD = 1.0
@@ -778,16 +780,50 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
 
   pre_target = x_lead > desired_gap
   pre_target_threshold = get_pre_target_runway_decel_threshold(t_follow)
-  pre_target_brake_blend = np.interp(
+  pre_target_safety_threshold = max(
+    MOVING_LEAD_STOP_APPROACH_DECEL_CAP,
+    pre_target_threshold + 2.0 * PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH,
+  )
+  runway_safety_blend = np.interp(
+    required_decel,
+    [pre_target_safety_threshold, pre_target_safety_threshold + PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH],
+    [0.0, 1.0],
+  )
+  danger_safety_blend = closing_blend * np.interp(
+    danger_margin,
+    [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN],
+    [1.0, 0.0],
+  )
+  pre_target_margin = np.maximum(x_lead - desired_gap, 0.0)
+  pre_target_margin_brake_blend = 1.0 - np.interp(
+    pre_target_margin,
+    MOVING_LEAD_STOP_APPROACH_PRE_TARGET_MARGIN_BP,
+    [0.0, 1.0],
+  )
+  pre_target_margin_brake_blend *= np.interp(
     required_decel,
     [pre_target_threshold, pre_target_threshold + PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH],
     [0.0, 1.0],
   )
+  pre_target_margin_brake_blend = np.where(pre_target, pre_target_margin_brake_blend, 0.0)
+  pre_target_brake_blend = np.maximum.reduce([runway_safety_blend, danger_safety_blend, pre_target_margin_brake_blend])
   coast_limited_target = np.maximum(target, MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
+  near_desired_recovery_blend = np.interp(
+    desired_gap - x_lead,
+    MOVING_LEAD_STOP_APPROACH_COAST_RECOVERY_GAP_BP,
+    [0.0, 1.0, 0.0],
+  )
+  near_desired_recovery_blend *= 1.0 - np.interp(
+    closing_speed,
+    MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP,
+    [0.0, 1.0],
+  )
+  near_desired_recovery_blend *= 1.0 - required_runway_blend
+  near_desired_recovery_blend *= 1.0 - pre_target_brake_blend
   target = np.where(
     pre_target,
     coast_limited_target + pre_target_brake_blend * (target - coast_limited_target),
-    target,
+    target + near_desired_recovery_blend * (coast_limited_target - target),
   )
   return target, MOVING_LEAD_STOP_APPROACH_COST * comfort_blend
 
