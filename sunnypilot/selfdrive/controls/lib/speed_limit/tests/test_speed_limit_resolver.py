@@ -46,7 +46,7 @@ def setup_sm_mock(mocker: MockerFixture):
     'speedLimitAheadDistance': 0.,
   }, mocker)
   gps_data = create_mock({
-    'unixTimestampMillis': time.monotonic() * 1e3,
+    'unixTimestampMillis': time.time() * 1e3,
   }, mocker)
   sm_mock = mocker.MagicMock()
   sm_mock.__getitem__.side_effect = lambda key: {
@@ -70,7 +70,7 @@ def setup_map_sm_mock(mocker: MockerFixture, speed_limit: float, next_speed_limi
     'speedLimitAheadDistance': next_distance,
   }, mocker)
   gps_data = create_mock({
-    'unixTimestampMillis': time.monotonic() * 1e3,
+    'unixTimestampMillis': time.time() * 1e3,
   }, mocker)
   sm_mock = mocker.MagicMock()
   sm_mock.__getitem__.side_effect = lambda key: {
@@ -161,7 +161,7 @@ class TestSpeedLimitResolverValidation:
     resolver = resolver_class()
     resolver.policy = policy
     sm_mock = mocker.MagicMock()
-    sm_mock['gpsLocation'].unixTimestampMillis = (time.monotonic() - 2 * LIMIT_MAX_MAP_DATA_AGE) * 1e3
+    sm_mock['gpsLocation'].unixTimestampMillis = (time.time() - 2 * LIMIT_MAX_MAP_DATA_AGE) * 1e3
     resolver._get_from_map_data(sm_mock)
     assert resolver.limit_solutions[SpeedLimitSource.map] == 0.
     assert resolver.distance_solutions[SpeedLimitSource.map] == 0.
@@ -198,12 +198,42 @@ class TestSpeedLimitResolverValidation:
     assert resolver.distance == 0.
     assert resolver.source == SpeedLimitSource.map
 
+  def test_old_epoch_map_data_ignored(self, resolver_class, mocker: MockerFixture, monkeypatch):
+    now = 1_700_000_000.0
+    monkeypatch.setattr(time, "time", lambda: now)
+    resolver = resolver_class()
+    resolver.v_ego = 0.0
+    sm_mock = setup_map_sm_mock(mocker, 30.0, 0.0, 0.0)
+    sm_mock['gpsLocation'].unixTimestampMillis = (now - 2 * LIMIT_MAX_MAP_DATA_AGE) * 1e3
+
+    resolver._get_from_map_data(sm_mock)
+
+    assert resolver.limit_solutions[SpeedLimitSource.map] == 0.
+    assert resolver.distance_solutions[SpeedLimitSource.map] == 0.
+
   def test_lower_next_map_limit_selected_inside_adapt_distance(self, resolver_class, mocker: MockerFixture):
     v_ego = 30.0
     speed_limit = 30.0
     next_speed_limit = 20.0
     adapt_distance = (next_speed_limit ** 2 - v_ego ** 2) / (2. * LIMIT_ADAPT_ACC)
     sm_mock = setup_map_sm_mock(mocker, speed_limit, next_speed_limit, adapt_distance - 10.)
+
+    resolver = resolver_class()
+    resolver.v_ego = v_ego
+    resolver._get_from_map_data(sm_mock)
+
+    assert resolver.limit_solutions[SpeedLimitSource.map] == next_speed_limit
+    assert resolver.distance_solutions[SpeedLimitSource.map] == pytest.approx(adapt_distance - 10., abs=0.1)
+
+  def test_lower_next_map_limit_uses_epoch_timestamp_distance(self, resolver_class, mocker: MockerFixture, monkeypatch):
+    now = 1_700_000_000.0
+    monkeypatch.setattr(time, "time", lambda: now)
+    v_ego = 30.0
+    speed_limit = 30.0
+    next_speed_limit = 20.0
+    adapt_distance = (next_speed_limit ** 2 - v_ego ** 2) / (2. * LIMIT_ADAPT_ACC)
+    sm_mock = setup_map_sm_mock(mocker, speed_limit, next_speed_limit, adapt_distance - 10.)
+    sm_mock['gpsLocation'].unixTimestampMillis = now * 1e3
 
     resolver = resolver_class()
     resolver.v_ego = v_ego

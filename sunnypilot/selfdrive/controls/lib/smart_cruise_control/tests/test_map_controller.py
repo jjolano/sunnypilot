@@ -76,6 +76,20 @@ class TestSmartCruiseControlMap:
     assert self.scc_m.output_v_target == V_CRUISE_UNSET
     assert self.scc_m.output_a_target == 0.
 
+  def test_target_control_distance_uses_full_quadratic_denominator(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    target_v = 24.0
+    a = 0.5 * map_controller.TARGET_JERK
+    b = self.scc_m.a_ego
+    c = self.scc_m.v_ego - target_v
+    expected_t = (-b - (b**2 - 4 * a * c) ** 0.5) / (2 * a)
+    expected_distance = map_controller.calculate_distance(
+      expected_t, map_controller.TARGET_JERK, self.scc_m.a_ego, self.scc_m.v_ego,
+    ) + target_v * map_controller.TARGET_OFFSET
+
+    assert self.scc_m._target_control_distance(target_v) == pytest.approx(expected_distance)
+
   def test_validity_params_are_registered(self):
     assert self.params.get("LastGPSPositionValid") is None
     assert self.params.get("MapTargetVelocitiesValid") is None
