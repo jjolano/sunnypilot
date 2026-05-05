@@ -58,6 +58,11 @@ class TorqueSettingsLayout(Widget):
       description=lambda: tr("Less strict settings when using Self-Tune. This allows torqued to be more " +
                              "forgiving when learning values."),
     )
+    self._speed_adaptive_toggle = toggle_item_sp(
+      param="LiveTorqueSpeedAdaptiveToggle",
+      title=lambda: tr("Speed-Adaptive Self-Tune"),
+      description=lambda: tr("Learns separate torque parameters for different speed ranges to improve steering accuracy across all speeds."),
+    )
     self._custom_tune_toggle = toggle_item_sp(
       param="CustomTorqueParams",
       title=lambda: tr("Enable Custom Tuning"),
@@ -98,6 +103,7 @@ class TorqueSettingsLayout(Widget):
       self._torque_control_versions,
       self._self_tune_toggle,
       self._relaxed_tune_toggle,
+      self._speed_adaptive_toggle,
       self._custom_tune_toggle,
       self._torque_prams_override_toggle,
       self._torque_lat_accel_factor,
@@ -112,6 +118,7 @@ class TorqueSettingsLayout(Widget):
       self._relaxed_tune_toggle.action_item.set_state(False)
     self._self_tune_toggle.action_item.set_enabled(ui_state.is_offroad())
     self._relaxed_tune_toggle.action_item.set_enabled(ui_state.is_offroad() and self._self_tune_toggle.action_item.get_state())
+    self._speed_adaptive_toggle.action_item.set_enabled(ui_state.is_offroad())
     self._custom_tune_toggle.action_item.set_enabled(ui_state.is_offroad())
     custom_tune_enabled = self._custom_tune_toggle.action_item.get_state()
     self._torque_prams_override_toggle.set_visible(custom_tune_enabled)
