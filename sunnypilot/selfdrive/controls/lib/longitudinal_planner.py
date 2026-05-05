@@ -5,9 +5,12 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+import numpy as np
+
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
@@ -18,6 +21,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
+from openpilot.sunnypilot.selfdrive.controls.lib.long_learned_mass_drag import RLSDynamicsEstimator
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
@@ -141,6 +145,41 @@ class LongitudinalPlannerSP:
     self.decision_candidates_sp = []
     self._speed_limit_handoff_active = False
     self._speed_limit_active_prev = False
+    self._init_mass_drag()
+
+  def _init_mass_drag(self):
+    self.mass_drag_estimator = RLSDynamicsEstimator()
+    self._params = Params()
+    self.mass_drag_enabled = self._params.get_bool("LongLearnedMassDragToggle")
+    self.last_mass_drag_write = 0
+
+  def update_mass_drag(self, sm):
+    if not self.mass_drag_enabled:
+      return
+
+    # Clean window conditions
+    v_ego = sm['carState'].vEgo
+    a_ego = sm['carState'].aEgo
+    lead = sm['radarState'].leadOne
+    roll = sm['liveParameters'].roll
+    a_cmd = self.mpc.a_solution[0] if len(self.mpc.a_solution) > 0 else 0.0
+
+    clean = (
+      v_ego > 10.0 and
+      not lead.status and
+      abs(roll) < np.radians(1.0) and
+      abs(a_ego - a_cmd) < 1.0
+    )
+
+    if clean:
+      self.mass_drag_estimator.update(v_ego, a_cmd, a_ego)
+      if self.mass_drag_estimator.is_valid():
+        k_force, c_drag = self.mass_drag_estimator.get_params()
+        # Write to params every 10 seconds
+        if sm.logMonoTime['carState'] * 1e-9 - self.last_mass_drag_write > 10.0:
+          self._params.put_nonblocking("LongLearnedKForce", str(k_force))
+          self._params.put_nonblocking("LongLearnedCDrag", str(c_drag))
+          self.last_mass_drag_write = sm.logMonoTime['carState'] * 1e-9
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
