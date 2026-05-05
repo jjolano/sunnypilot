@@ -37,6 +37,7 @@ MODEL_CURVE_MIN_LAT_ACCEL = 1.3  # m/s^2, ignore weak/noisy curvature prediction
 MODEL_CURVE_TARGET_LAT_ACCEL = 2.0  # m/s^2, same comfort target used by SCC vision.
 MODEL_CURVE_MIN_SPEED = 1.0  # m/s, avoid unstable curvature estimates at near-zero speed.
 MODEL_CURVE_OVERSLOWDOWN_DELTA = 5.0  # m/s, require model confirmation for large map slowdowns.
+MODEL_CURVE_OVERSLOWDOWN_RATIO = 0.8  # fraction of v_ego, require model confirmation for relative map slowdowns.
 MODEL_CURVE_OVERSLOWDOWN_MARGIN = 2.0  # m/s, allow small map/model target mismatch.
 PARAM_CACHE_MISS = object()
 VALID_TRUE_VALUES = ("1", "true", "True", b"1", b"true", b"True")
@@ -318,7 +319,11 @@ class SmartCruiseControlMap:
 
   @classmethod
   def _model_confirms_large_slowdown(cls, v_ego: float, target_v: float, distance: float, model_msg) -> bool:
-    if model_msg is None or v_ego - target_v <= MODEL_CURVE_OVERSLOWDOWN_DELTA:
+    slowdown_requires_confirmation = (
+      v_ego - target_v > MODEL_CURVE_OVERSLOWDOWN_DELTA or
+      target_v < v_ego * MODEL_CURVE_OVERSLOWDOWN_RATIO
+    )
+    if model_msg is None or not slowdown_requires_confirmation:
       return True
 
     if not cls._model_covers_distance(model_msg, distance):
