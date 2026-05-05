@@ -670,6 +670,14 @@
     "title": "Learn Mass & Drag",
     "description": "Live-learns vehicle mass and aerodynamic drag to improve acceleration and braking accuracy."
   },
+  "LongLearnedResponseCurveToggle": {
+    "title": "Learn Response Curve",
+    "description": "Learns the non-linear relationship between requested and actual acceleration to improve pedal response."
+  },
+  "LongLearnedResponseOffsets": {
+    "title": "Learned Response Offsets",
+    "description": ""
+  },
   "LongitudinalDecisionLayer": {
     "title": "Longitudinal Decision Layer",
     "description": "Enable the experimental longitudinal decision layer. When enabled, sunnypilot arbitrates cruise, lead, e2e, speed-limit, SCC, OSM, and coast candidates through a unified policy with legacy fallback."
