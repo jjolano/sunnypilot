@@ -225,6 +225,37 @@ class TestSmartCruiseControlMap:
     assert self.scc_m.state == VisionState.turning
     assert self.scc_m.output_v_target == 15.0
 
+  def test_current_advisory_uses_model_intermediate_when_full_map_target_unconfirmed(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    target_v = 13.0
+    model_target_v = 18.0
+    yaw_rate = self.scc_m.v_ego * map_controller.MODEL_CURVE_TARGET_LAT_ACCEL / model_target_v**2
+    self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "end_latitude": 0.0,
+      "end_longitude": 0.001,
+      "speedlimit": target_v,
+    }))
+    model_msg = make_model_prediction(distance=0.0, yaw_rate=yaw_rate, speed=self.scc_m.v_ego)
+    expected_target = self.scc_m._prediction_curve_target(model_msg, 0.0)
+
+    assert expected_target is not None
+    assert target_v < expected_target < self.scc_m.v_ego
+
+    for _ in range(2):
+      self.scc_m.update(True, False, self.scc_m.v_ego, 0.0, 30.0, model_msg)
+
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == pytest.approx(expected_target)
+
+    weak_model_msg = make_model_prediction(distance=0.0, yaw_rate=0.02, speed=self.scc_m.v_ego)
+    self.scc_m.update(True, False, self.scc_m.v_ego, 0.0, 30.0, weak_model_msg)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
   def test_current_advisory_limit_alias_controls_scc_map_target(self):
     self.mem_params.put("MapAdvisoryLimit", json.dumps({
       "start_latitude": 0.0,
@@ -336,6 +367,78 @@ class TestSmartCruiseControlMap:
 
     for _ in range(2):
       self.scc_m.update(True, False, self.scc_m.v_ego, 0.0, 18.61, model_msg)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_target_velocity_uses_model_intermediate_when_full_map_target_unconfirmed(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    target_v = 13.0
+    model_target_v = 18.0
+    yaw_rate = self.scc_m.v_ego * map_controller.MODEL_CURVE_TARGET_LAT_ACCEL / model_target_v**2
+    distance = self.scc_m._target_control_distance(model_target_v) - 1.0
+    target_lon = distance / R * TO_DEGREES
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": target_lon, "velocity": target_v},
+    ]))
+    model_msg = make_model_prediction(distance=distance, yaw_rate=yaw_rate, speed=self.scc_m.v_ego)
+    expected_target = self.scc_m._prediction_curve_target(model_msg, distance)
+
+    assert expected_target is not None
+    assert target_v < expected_target < self.scc_m.v_ego
+    assert expected_target > target_v + map_controller.MODEL_CURVE_OVERSLOWDOWN_MARGIN
+
+    for _ in range(2):
+      self.scc_m.update(True, False, self.scc_m.v_ego, 0.0, 30.0, model_msg)
+
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == pytest.approx(expected_target)
+
+  def test_model_intermediate_target_releases_when_prediction_drops(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    target_v = 13.0
+    model_target_v = 18.0
+    yaw_rate = self.scc_m.v_ego * map_controller.MODEL_CURVE_TARGET_LAT_ACCEL / model_target_v**2
+    distance = self.scc_m._target_control_distance(model_target_v) - 1.0
+    target_lon = distance / R * TO_DEGREES
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": target_lon, "velocity": target_v},
+    ]))
+    model_msg = make_model_prediction(distance=distance, yaw_rate=yaw_rate, speed=self.scc_m.v_ego)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, self.scc_m.v_ego, 0.0, 30.0, model_msg)
+    assert self.scc_m.state == VisionState.turning
+    assert target_v < self.scc_m.output_v_target < self.scc_m.v_ego
+
+    weak_model_msg = make_model_prediction(distance=distance, yaw_rate=0.02, speed=self.scc_m.v_ego)
+    self.scc_m.update(True, False, self.scc_m.v_ego, 0.0, 30.0, weak_model_msg)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_full_model_confirmed_target_releases_when_prediction_drops(self):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    target_v = 13.0
+    model_target_v = 14.0
+    yaw_rate = self.scc_m.v_ego * map_controller.MODEL_CURVE_TARGET_LAT_ACCEL / model_target_v**2
+    distance = self.scc_m._target_control_distance(target_v) - 1.0
+    target_lon = distance / R * TO_DEGREES
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": target_lon, "velocity": target_v},
+    ]))
+    model_msg = make_model_prediction(distance=distance, yaw_rate=yaw_rate, speed=self.scc_m.v_ego)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, self.scc_m.v_ego, 0.0, 30.0, model_msg)
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == target_v
+
+    weak_model_msg = make_model_prediction(distance=distance, yaw_rate=0.02, speed=self.scc_m.v_ego)
+    self.scc_m.update(True, False, self.scc_m.v_ego, 0.0, 30.0, weak_model_msg)
 
     assert self.scc_m.state == VisionState.enabled
     assert self.scc_m.output_v_target == V_CRUISE_UNSET
