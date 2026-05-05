@@ -594,6 +594,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       v_cruise = 0.0
 
     lead_one = sm['radarState'].leadOne
+    has_radar_lead = has_valid_radar_lead(sm['radarState'])
     lead_loss_guard_lead = get_lead_loss_e2e_guard_lead(sm['radarState'])
     engage_stop_bootstrap_active = should_run_engage_stop_bootstrap(self.engage_stop_bootstrap_timer, v_ego, sm['radarState'], sm['modelV2'])
     if engage_stop_bootstrap_active:
