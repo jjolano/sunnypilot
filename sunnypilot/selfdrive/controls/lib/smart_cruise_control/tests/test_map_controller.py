@@ -323,6 +323,23 @@ class TestSmartCruiseControlMap:
     assert self.scc_m.state == VisionState.enabled
     assert self.scc_m.output_v_target == V_CRUISE_UNSET
 
+  def test_target_velocity_ignores_relative_slowdown_without_model_curve(self):
+    self.scc_m.v_ego = 16.0
+    self.scc_m.a_ego = 0.0
+    target_v = 12.24
+    distance = self.scc_m._target_control_distance(target_v) - 1.0
+    target_lon = distance / R * TO_DEGREES
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": target_lon, "velocity": target_v},
+    ]))
+    model_msg = make_model_prediction(distance=distance, yaw_rate=0.02, speed=self.scc_m.v_ego)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, self.scc_m.v_ego, 0.0, 18.61, model_msg)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
   def test_model_curve_prediction_can_advance_map_target(self):
     self.scc_m.v_ego = 25.0
     self.scc_m.a_ego = 0.0
