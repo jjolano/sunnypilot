@@ -2,6 +2,7 @@ import numpy as np
 
 from cereal import car
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.params import UnknownKeyName
 from openpilot.common.realtime import DT_CTRL
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
@@ -94,10 +95,16 @@ class LongControlExt:
     self.CP = CP
     self.CP_SP = CP_SP
     self._params = Params()
-    self.mass_drag_enabled = self._params.get_bool("LongLearnedMassDragToggle")
+    try:
+      self.mass_drag_enabled = self._params.get_bool("LongLearnedMassDragToggle")
+    except UnknownKeyName:
+      self.mass_drag_enabled = False
     self.k_force = 1.0
     self.c_drag = 0.0
-    self.response_curve_enabled = self._params.get_bool("LongLearnedResponseCurveToggle")
+    try:
+      self.response_curve_enabled = self._params.get_bool("LongLearnedResponseCurveToggle")
+    except UnknownKeyName:
+      self.response_curve_enabled = False
     self.response_learner = ResponseCurveLearner()
     # Restore cached offsets
     cached = self._params.get("LongLearnedResponseOffsets")
