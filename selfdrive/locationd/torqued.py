@@ -207,7 +207,7 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         lateral_acc = (vego * yaw_rate) - (np.sin(roll) * ACCELERATION_DUE_TO_GRAVITY).item()
         if all(lat_active) and not any(steer_override) and (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
           if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
-            self.filtered_points.add_point(steer, lateral_acc)
+            self.add_filtered_point(steer, lateral_acc, vego)
 
           if self.track_all_points:
             self.all_torque_points.append([steer, lateral_acc])
@@ -249,6 +249,10 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.maxResets = self.resets
     return msg
 
+  def add_filtered_point(self, steer, lateral_acc, v_ego):
+    self.filtered_points.add_point(steer, lateral_acc)
+    TorqueEstimatorExt.add_speed_aware_point(self, steer, lateral_acc, v_ego)
+
 
 def main(demo=False):
   config_realtime_process([0, 1, 2, 3], 5)
@@ -279,6 +283,11 @@ def main(demo=False):
     if sm.frame % 240 == 0:
       msg = estimator.get_msg(valid=sm.all_checks(), with_points=True)
       params.put_nonblocking("LiveTorqueParameters", msg.to_bytes())
+
+    if estimator.speed_adaptive_enabled and sm.frame % 240 == 0:
+      speed_params = estimator.estimate_speed_aware_params()
+      if speed_params:
+        params.put_nonblocking("LiveTorqueSpeedAdaptiveParams", str(speed_params))
 
 
 if __name__ == "__main__":
