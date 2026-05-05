@@ -11,12 +11,79 @@ from cereal import car
 
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.locationd.helpers import PointBuckets
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 
 RELAXED_MIN_BUCKET_POINTS = np.array([1, 200, 300, 500, 500, 300, 200, 1])
 
+
+class _TorqueBuckets(PointBuckets):
+  def add_point(self, x, y):
+    for bound_min, bound_max in self.x_bounds:
+      if (x >= bound_min) and (x < bound_max):
+        self.buckets[(bound_min, bound_max)].append([x, 1.0, y])
+        break
+
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda']
 
+
+
+class SpeedAwareTorqueBuckets:
+  def __init__(self, x_bounds, speed_bp, min_points, min_points_total, points_per_bucket, rowsize=3):
+    self.x_bounds = x_bounds
+    self.speed_bp = list(speed_bp)
+    self.min_points = min_points
+    self.min_points_total = min_points_total
+    self.points_per_bucket = points_per_bucket
+    self.rowsize = rowsize
+    self.buckets = {}
+    self._init_buckets()
+
+  def _init_buckets(self):
+    for i in range(len(self.speed_bp)):
+      self.buckets[i] = _TorqueBuckets(
+        x_bounds=self.x_bounds,
+        min_points=self.min_points,
+        min_points_total=self.min_points_total,
+        points_per_bucket=self.points_per_bucket,
+        rowsize=self.rowsize
+      )
+
+  def _bucket_idx(self, v_ego):
+    for i in range(len(self.speed_bp) - 1):
+      if self.speed_bp[i] <= v_ego < self.speed_bp[i + 1]:
+        return i
+    return len(self.speed_bp) - 1
+
+  def add_point(self, x, y, v_ego):
+    idx = self._bucket_idx(v_ego)
+    self.buckets[idx].add_point(x, y)
+
+  def buckets_for_speed(self, v_ego):
+    return self.buckets[self._bucket_idx(v_ego)]
+
+  def is_calculable(self):
+    return any(len(b) > 0 for b in self.buckets.values())
+
+  def is_valid(self):
+    return any(len(b) >= b.min_points_total for b in self.buckets.values())
+
+  def get_points(self, n=None):
+    all_pts = []
+    for b in self.buckets.values():
+      pts = b.get_points(n)
+      if len(pts) > 0:
+        all_pts.append(pts)
+    if not all_pts:
+      return np.empty((0, self.rowsize))
+    return np.vstack(all_pts)
+
+  def get_valid_percent(self):
+    vals = [b.get_valid_percent() for b in self.buckets.values() if b.is_calculable()]
+    return float(np.mean(vals)) if vals else 0.0
+
+  def total_points(self):
+    return sum(len(b) for b in self.buckets.values())
 
 
 class TorqueEstimatorExt:
