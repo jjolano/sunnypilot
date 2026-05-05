@@ -89,6 +89,10 @@ class ControlsExt(ModelStateBase):
       lat_control_state = getattr(lac, "CONTROL_STATE", self.CP.lateralTuning.which())
       if lat_control_state == 'torque':
         self.lat_delay = get_lat_delay(self.params, sm["liveDelay"].lateralDelay)
+        if self.CP.lateralTuning.which() == 'torque':
+          speed_aware_params = self.params.get("LiveTorqueSpeedAdaptiveParams")
+          if hasattr(self, 'LaC') and self.LaC is not None:
+            self.LaC.extension.update_speed_aware_params(speed_aware_params)
 
       self._param_update_time = time.monotonic()
 
