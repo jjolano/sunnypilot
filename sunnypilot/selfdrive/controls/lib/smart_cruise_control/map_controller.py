@@ -279,8 +279,8 @@ class SmartCruiseControlMap:
       discriminant = b**2 - 4 * a * c
       if discriminant < 0:
         return None
-      t_a = -1 * (discriminant ** 0.5 + b) / 2 * a
-      t_b = (discriminant ** 0.5 - b) / 2 * a
+      t_a = -1 * (discriminant ** 0.5 + b) / (2 * a)
+      t_b = (discriminant ** 0.5 - b) / (2 * a)
       t = t_a if t_a > 0 else t_b
       if t <= 0:
         return None

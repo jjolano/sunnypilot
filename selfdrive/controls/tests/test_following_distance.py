@@ -209,7 +209,8 @@ def make_model_action(desired_accel=-1.0, should_stop=True):
   )
 
 
-def make_planner_sm(v_ego, lead, desired_accel=-1.0, should_stop=True, brake_pressed=False, gas_pressed=False, force_slow_decel=False):
+def make_planner_sm(v_ego, lead, desired_accel=-1.0, should_stop=True, brake_pressed=False, gas_pressed=False,
+                    force_slow_decel=False, lead_two=None):
   return {
     'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False), orientationNED=[0.0, 0.0, 0.0]),
     'carState': SimpleNamespace(
@@ -226,7 +227,7 @@ def make_planner_sm(v_ego, lead, desired_accel=-1.0, should_stop=True, brake_pre
     'selfdriveState': SimpleNamespace(enabled=True, experimentalMode=True, personality=log.LongitudinalPersonality.standard),
     'liveParameters': SimpleNamespace(angleOffsetDeg=0.0),
     'modelV2': make_model_action(desired_accel, should_stop),
-    'radarState': SimpleNamespace(leadOne=lead, leadTwo=SimpleNamespace(status=False)),
+    'radarState': SimpleNamespace(leadOne=lead, leadTwo=lead_two or SimpleNamespace(status=False)),
   }
 
 
@@ -940,6 +941,17 @@ def test_lead_transition_fcw_counting_ignores_released_lead():
   assert should_count(0.95, 0.0)
   assert not should_count(0.95, 1.0)
   assert not should_count(0.5, 0.0)
+
+
+def test_mpc_fcw_crash_counting_checks_lead_one_and_lead_two():
+  should_count = getattr(long_mpc, "should_count_mpc_fcw_crash", None)
+  x_sol = np.zeros((N + 1, 3))
+  lead_0_xv = np.column_stack([np.full(N + 1, 100.0), np.zeros(N + 1)])
+  lead_1_xv = np.column_stack([np.full(N + 1, long_mpc.CRASH_DISTANCE * 0.5), np.zeros(N + 1)])
+
+  assert should_count is not None
+  assert should_count(lead_0_xv, lead_1_xv, x_sol, 0.2, 0.95, 0.0, 0.0)
+  assert not should_count(lead_0_xv, lead_1_xv, x_sol, 0.2, 0.95, 0.0, 1.0)
 
 
 def test_lead_transition_soft_release_only_moves_toward_cruise():
@@ -2136,6 +2148,59 @@ def test_lead_loss_e2e_guard_arms_when_far_lead_disappears_during_lane_change():
   )
 
   assert timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
+
+
+def test_lead_loss_e2e_guard_tracks_far_confirmed_lead_two(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(status=False)
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+
+  assert planner.previous_lead_loss_status
+  assert planner.previous_lead_loss_d_rel == pytest.approx(63.0)
+  assert planner.previous_lead_loss_model_prob == pytest.approx(0.95)
+
+
+def test_lead_loss_e2e_guard_prefers_far_confirmed_lead_over_farther_unconfirmed_lead(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(
+    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
+  )
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+
+  assert planner.previous_lead_loss_status
+  assert planner.previous_lead_loss_d_rel == pytest.approx(63.0)
+  assert planner.previous_lead_loss_model_prob == pytest.approx(0.95)
+
+
+def test_lead_loss_e2e_guard_arms_when_confirmed_lead_two_disappears_and_unconfirmed_lead_remains(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(
+    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
+  )
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+  sm = make_planner_sm(
+    20.0, lead_one, desired_accel=-1.2, should_stop=False, lead_two=SimpleNamespace(status=False),
+  )
+  sm['modelV2'].meta.laneChangeState = log.LaneChangeState.laneChangeStarting
+
+  planner.update(sm)
+
+  assert planner.lead_loss_e2e_guard_timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
 
 
 def test_lead_loss_e2e_guard_limits_only_no_lead_non_stop_model_decel():
