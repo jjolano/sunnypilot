@@ -143,6 +143,10 @@ MOVING_LEAD_STOP_APPROACH_FULL_CUSHION_FRACTION = 0.75
 MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX = 0.65
 MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP = [2.3, 2.8]
 MOVING_LEAD_STOP_APPROACH_COST = 25.0
+PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED = 0.8
+PRE_TARGET_RUNWAY_DECEL_THRESHOLD_STANDARD = 1.0
+PRE_TARGET_RUNWAY_DECEL_THRESHOLD_AGGRESSIVE = 1.3
+PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH = 0.4
 MOVING_LEAD_STOP_RESERVE_MAX = 2.5
 MOVING_LEAD_STOP_RESERVE_V_EGO_BP = [0.2, 3.0]
 MOVING_LEAD_STOP_RESERVE_V_LEAD_BP = [0.1, 1.5]
@@ -233,6 +237,22 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
     return 1.30
   else:
     raise NotImplementedError("Longitudinal personality not supported")
+
+
+def get_pre_target_runway_decel_threshold(t_follow):
+  return float(np.interp(
+    t_follow,
+    [
+      get_T_FOLLOW(log.LongitudinalPersonality.aggressive),
+      get_T_FOLLOW(log.LongitudinalPersonality.standard),
+      get_T_FOLLOW(log.LongitudinalPersonality.relaxed),
+    ],
+    [
+      PRE_TARGET_RUNWAY_DECEL_THRESHOLD_AGGRESSIVE,
+      PRE_TARGET_RUNWAY_DECEL_THRESHOLD_STANDARD,
+      PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED,
+    ],
+  ))
 
 
 def get_stopped_equivalence_factor(v_lead):
@@ -754,7 +774,22 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   low_speed_route_blend *= np.interp(danger_margin, [0.25 * LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN, 0.5 * LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [0.0, 1.0])
   gap_deficit_blend = (1.0 - low_speed_route_blend) * runway_critical_blend + low_speed_route_blend * moderated_blend
   target_decel = light_decel + gap_deficit_blend * (full_decel - light_decel)
-  return -target_decel, MOVING_LEAD_STOP_APPROACH_COST * comfort_blend
+  target = -target_decel
+
+  pre_target = x_lead > desired_gap
+  pre_target_threshold = get_pre_target_runway_decel_threshold(t_follow)
+  pre_target_brake_blend = np.interp(
+    required_decel,
+    [pre_target_threshold, pre_target_threshold + PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH],
+    [0.0, 1.0],
+  )
+  coast_limited_target = np.maximum(target, MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
+  target = np.where(
+    pre_target,
+    coast_limited_target + pre_target_brake_blend * (target - coast_limited_target),
+    target,
+  )
+  return target, MOVING_LEAD_STOP_APPROACH_COST * comfort_blend
 
 
 def get_approach_follow_distance(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):

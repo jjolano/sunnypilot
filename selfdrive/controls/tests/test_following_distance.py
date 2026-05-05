@@ -19,6 +19,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_ACCEL_MATCH_DECEL_CAP,
   LEAD_ACCEL_MATCH_DECEL_TARGET_BLEND,
   LEAD_ACCEL_RECOVERY_ACCEL_MAX,
+  PRE_TARGET_RUNWAY_DECEL_THRESHOLD_AGGRESSIVE,
+  PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED,
+  PRE_TARGET_RUNWAY_DECEL_THRESHOLD_STANDARD,
   MOVING_LEAD_STOP_RESERVE_MAX,
   LEAD_STOP_GAP_EXCESS_OFFSET_MAX,
   LEAD_STOP_GAP_TAPER_MAX,
@@ -83,6 +86,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_transition_lateral_blend,
   get_lead_transition_obstacle_release,
   get_lead_transition_release_target,
+  get_pre_target_runway_decel_threshold,
   get_safe_obstacle_distance,
   get_selected_lead_targets,
   get_stopped_lead_buffer,
@@ -100,6 +104,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_MAX_EXCESS,
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX,
   CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING,
+  CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED,
   CREEP_TO_STOP_GAP_START_EXCESS,
   CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET,
   CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_X_STD,
@@ -669,6 +674,26 @@ def test_model_lead_pullaway_prediction_requires_lateral_match():
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel, y_rel=0.4), make_radar_lead(d_rel, y_rel=0.4), 0.0) != (0.0, 0.0)
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel, y_rel=1.0), make_radar_lead(d_rel, y_rel=0.0), 0.0) == (0.0, 0.0)
   assert get_model_lead_pullaway(make_model_msg_lead(d_rel), make_radar_lead(d_rel, y_rel=np.nan), 0.0) == (0.0, 0.0)
+
+
+def test_predicted_pullaway_arms_at_small_gap_excess_for_strong_pullaway():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
+  gap_excess = 0.1
+  d_rel = stop_target + gap_excess
+  v_lead = 0.0
+  a_lead = 0.8
+  a_lead_tau = 0.0
+
+  predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(v_lead, a_lead, a_lead_tau)
+  assert predicted_v_lead >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED
+  assert predicted_gap_opening >= CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING
+
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, d_rel, v_lead, 1.0, False, a_lead=a_lead, a_lead_tau=a_lead_tau,
+  )
+
+  assert active
+  assert accel >= longitudinal_planner.CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN
 
 
 def test_creep_to_stop_gap_prediction_requires_clear_gap_opening():
@@ -1355,6 +1380,55 @@ def test_far_hard_braking_lead_uses_runway_instead_of_early_hard_brake():
   assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow)
   assert target == pytest.approx(0.0)
   assert cost == pytest.approx(0.0)
+
+
+def test_pre_target_runway_thresholds_follow_personality():
+  relaxed_threshold = get_pre_target_runway_decel_threshold(get_T_FOLLOW(log.LongitudinalPersonality.relaxed))
+  standard_threshold = get_pre_target_runway_decel_threshold(get_T_FOLLOW(log.LongitudinalPersonality.standard))
+  aggressive_threshold = get_pre_target_runway_decel_threshold(get_T_FOLLOW(log.LongitudinalPersonality.aggressive))
+
+  assert relaxed_threshold == pytest.approx(PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED)
+  assert standard_threshold == pytest.approx(PRE_TARGET_RUNWAY_DECEL_THRESHOLD_STANDARD)
+  assert aggressive_threshold == pytest.approx(PRE_TARGET_RUNWAY_DECEL_THRESHOLD_AGGRESSIVE)
+  assert relaxed_threshold < standard_threshold < aggressive_threshold
+
+
+def test_moving_stop_approach_caps_pre_target_to_coast_without_runway_urgency():
+  v_ego = 15.0
+  v_lead = 12.0
+  a_lead = -0.8
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = desired_gap + 40.0
+  closing_speed = max(v_ego - v_lead, 0.0)
+
+  required_decel = get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead)
+  threshold = get_pre_target_runway_decel_threshold(t_follow)
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel > desired_gap
+  assert required_decel < threshold
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN <= target <= 0.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_allows_pre_target_brake_when_runway_is_urgent():
+  v_ego = 15.0
+  v_lead = 12.0
+  a_lead = -0.8
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = desired_gap + 15.0
+  closing_speed = max(v_ego - v_lead, 0.0)
+
+  required_decel = get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead)
+  threshold = get_pre_target_runway_decel_threshold(t_follow)
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel > desired_gap
+  assert required_decel > threshold
+  assert target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
+  assert cost > 0.0
 
 
 def test_moving_stop_approach_anticipates_confirmed_low_closure():
