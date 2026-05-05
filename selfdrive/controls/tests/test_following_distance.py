@@ -1466,6 +1466,62 @@ def test_moving_stop_approach_keeps_stronger_target_for_fast_runway_critical_lea
   assert cost > 0.0
 
 
+def test_moving_stop_approach_blends_to_coast_near_desired_gap():
+  v_ego = 19.2
+  v_lead = 17.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = desired_gap - 0.25
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < desired_gap
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 1e-6 <= target <= 0.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_recovery_is_continuous_around_desired_gap():
+  v_ego = 19.2
+  v_lead = 17.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+
+  below_target, _ = get_moving_lead_stop_approach_comfort_target(desired_gap - 0.001, v_ego, v_lead, a_lead, t_follow)
+  above_target, _ = get_moving_lead_stop_approach_comfort_target(desired_gap + 0.001, v_ego, v_lead, a_lead, t_follow)
+
+  assert abs(float(above_target - below_target)) < 0.1
+
+
+def test_moving_stop_approach_near_desired_gap_brakes_for_hard_braking_lead():
+  v_ego = 19.2
+  v_lead = 17.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = desired_gap - 0.25
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 0.5
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_pre_target_near_desired_gap_brakes_for_hard_braking_lead():
+  v_ego = 19.2
+  v_lead = 17.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = desired_gap + 0.001
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 0.5
+  assert cost > 0.0
+
+
 def test_moving_stop_approach_uses_light_decel_before_vlead_cushion_is_used():
   v_ego = 19.2
   v_lead = 17.0
