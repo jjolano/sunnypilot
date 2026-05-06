@@ -6,10 +6,13 @@ import numpy as np
 
 from openpilot.tools.drive_lab import fuzz_longitudinal
 from openpilot.tools.drive_lab.fuzz_longitudinal import (
+  Scenario,
+  evaluate_lead_pullaway_start,
   evaluate_invariants,
   generate_scenarios,
   generate_udacity_acc_scenarios,
   render_maneuver_snippet,
+  scenario_maneuver_kwargs,
   scenario_to_spec,
 )
 from openpilot.tools.drive_lab.log_profile import LongitudinalProfile, ProfileRange
@@ -120,6 +123,47 @@ def test_evaluate_invariants_reports_malformed_output_shape():
 
   assert [f.check for f in failures] == ["output"]
   assert "expected maneuver output" in failures[0].detail
+
+
+def test_lead_pullaway_start_check_accepts_started_then_settled_follow():
+  output = np.array([
+    [5.8, 0.0, 6.4, 0.00, 0.0, 0.00, 6.4],
+    [6.0, 0.0, 6.5, 0.10, 0.5, 0.55, 6.5],
+    [7.0, 0.5, 7.4, 0.60, 1.3, 0.55, 6.9],
+    [12.5, 6.8, 13.8, 1.29, 1.3, -0.07, 7.0],
+  ])
+
+  assert evaluate_lead_pullaway_start(output) == []
+
+
+def test_lead_pullaway_start_check_flags_never_starting():
+  output = np.array([
+    [0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 6.0],
+    [1.0, 0.0, 7.0, 0.0, 1.0, 0.0, 7.0],
+    [2.0, 0.0, 8.0, 0.0, 1.0, 0.0, 8.0],
+  ])
+
+  failures = evaluate_lead_pullaway_start(output)
+
+  assert [failure.check for failure in failures] == ["launch"]
+
+
+def test_lead_pullaway_fuzzer_uses_bounded_start_oracle_instead_of_legacy_ensure_start():
+  scenario = Scenario(
+    "comfort",
+    "lead_pullaway",
+    "lead pullaway",
+    10.0,
+    {
+      "lead_relevancy": True,
+      "ensure_start": True,
+      "initial_speed": 0.0,
+    },
+  )
+
+  kwargs = scenario_maneuver_kwargs(scenario)
+
+  assert kwargs["ensure_start"] is False
 
 
 def test_render_maneuver_snippet_contains_replayable_fields():
