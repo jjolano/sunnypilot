@@ -208,6 +208,9 @@ LEAD_TRANSITION_GUARD_ARM_BLEND = 0.8
 LEAD_TRANSITION_TRACK_UNKNOWN = -2
 LEAD_TRANSITION_CHURN_MAX_D_REL_DELTA = 5.0
 LEAD_TRANSITION_CHURN_MAX_V_LEAD_DELTA = 5.0
+LEAD_TRANSITION_THREAT_MODEL_PROB_MIN = 0.75
+LEAD_TRANSITION_THREAT_CLOSING_MIN = 1.0
+LEAD_TRANSITION_THREAT_DECEL_MIN = 0.4
 SOURCE_HYSTERESIS_MARGIN = 1.2
 SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP = 0.15
 SHORT_GAP_PULLAWAY_RESPONSE_FULL_GAP = 1.0
@@ -1332,6 +1335,7 @@ class LongitudinalMpc:
       abs(self.lead_transition_prev_y_rel[lead_idx]) if np.isfinite(self.lead_transition_prev_y_rel[lead_idx]) else abs_y_rel
     )
     moving_out = abs_y_rel > prev_abs_y_rel + LEAD_TRANSITION_Y_REL_RATE_MIN
+    returning_to_path = abs_y_rel + LEAD_TRANSITION_Y_REL_RATE_MIN < prev_abs_y_rel
     possible_exit = abs_y_rel >= LEAD_TRANSITION_Y_REL_SOFT and (
       moving_out or self.lead_transition_exit_timers[lead_idx] > 0.0 or abs_y_rel >= LEAD_TRANSITION_Y_REL_CONFIRM
     )
@@ -1342,6 +1346,18 @@ class LongitudinalMpc:
       self.lead_transition_exit_timers[lead_idx] = max(0.0, self.lead_transition_exit_timers[lead_idx] - self.dt)
 
     target_blend = get_lead_transition_release_target(y_rel, self.lead_transition_exit_timers[lead_idx])
+    v_ego = float(self.x0[1])
+    closing_speed = v_ego - v_lead
+    required_decel = max(closing_speed, 0.0)**2 / (2.0 * max(d_rel - STOP_DISTANCE, 0.1))
+    model_prob = float(getattr(lead, "modelProb", 1.0))
+    closing_threat = (
+      model_prob >= LEAD_TRANSITION_THREAT_MODEL_PROB_MIN and
+      closing_speed >= LEAD_TRANSITION_THREAT_CLOSING_MIN and
+      required_decel >= LEAD_TRANSITION_THREAT_DECEL_MIN
+    )
+    if closing_threat and (returning_to_path or abs_y_rel < LEAD_TRANSITION_Y_REL_CONFIRM):
+      target_blend = 0.0
+
     blend_step = self.dt / LEAD_TRANSITION_RELEASE_TIME
     if target_blend > self.lead_transition_release_blends[lead_idx]:
       self.lead_transition_release_blends[lead_idx] = min(target_blend, self.lead_transition_release_blends[lead_idx] + blend_step)
