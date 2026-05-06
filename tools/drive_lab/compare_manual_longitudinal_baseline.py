@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import contextlib
+import io
+
+from openpilot.tools.drive_lab.fuzz_longitudinal import (
+  REALISM_MODES,
+  SCENARIO_PRESETS,
+  generate_scenarios,
+  generate_udacity_acc_scenarios,
+  scenario_maneuver_kwargs,
+)
+from openpilot.tools.drive_lab.log_profile import load_profile
+from openpilot.tools.drive_lab.manual_longitudinal_baseline import (
+  ScenarioComparison,
+  compare_scenario_output,
+  render_behavior_outline,
+  render_comparison_table,
+)
+
+
+def main() -> None:
+  parser = argparse.ArgumentParser(description="Compare synthetic longitudinal scenarios with manual-style baseline envelopes.")
+  parser.add_argument("--seed", type=int, default=1)
+  parser.add_argument("--cases", type=int, default=25)
+  parser.add_argument("--mode", choices=REALISM_MODES, default="comfort")
+  parser.add_argument("--preset", choices=SCENARIO_PRESETS, default="fuzz")
+  parser.add_argument("--profile", help="Optional JSON profile from profile_route.py to bias generated ranges")
+  parser.add_argument("--strict", action="store_true", help="Exit non-zero when any baseline comparison fails")
+  args = parser.parse_args()
+
+  profile = load_profile(args.profile) if args.profile else None
+  scenarios = (
+    generate_udacity_acc_scenarios(args.mode)
+    if args.preset == "udacity-acc"
+    else generate_scenarios(args.seed, args.cases, args.mode, profile)
+  )
+  results = [evaluate_scenario(scenario) for scenario in scenarios]
+  print(render_report(results, args.seed, args.mode, args.preset))
+  if args.strict and any(not result.passed for result in results):
+    raise SystemExit(1)
+
+
+def evaluate_scenario(scenario) -> ScenarioComparison:
+  from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
+
+  maneuver = Maneuver(scenario.title, scenario.duration, **scenario_maneuver_kwargs(scenario))
+  with contextlib.redirect_stdout(io.StringIO()):
+    valid, output = maneuver.evaluate()
+  return ScenarioComparison(scenario.title, scenario.kind, bool(valid), compare_scenario_output(scenario.kind, output))
+
+
+def render_report(results: list[ScenarioComparison], seed: int, mode: str, preset: str) -> str:
+  failed = sum(1 for result in results if not result.passed)
+  lines = [
+    "Drive Lab manual longitudinal baseline",
+    f"seed={seed} mode={mode} preset={preset} scenarios={len(results)} failures={failed}",
+    "",
+    "Behavior outline",
+    render_behavior_outline(),
+    "",
+    "Current vs expected",
+  ]
+  for result in results:
+    status = "pass" if result.passed else "fail"
+    valid = "valid" if result.valid else "invalid"
+    lines.extend([
+      "",
+      f"Scenario: {result.title} [{result.kind}] {status} ({valid})",
+      render_comparison_table(result.comparisons),
+    ])
+  return "\n".join(lines)
+
+
+if __name__ == "__main__":
+  main()
