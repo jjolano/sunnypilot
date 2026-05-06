@@ -38,7 +38,6 @@ PRE_ACTIVE_GUARD_PERIOD = {
 
 LIMIT_MIN_SPEED = 8.33  # m/s, Minimum speed limit to provide as solution on limit controllers.
 LIMIT_SPEED_OFFSET_TH = -1.  # m/s Maximum offset between speed limit and current speed for adapting state.
-SPEED_LIMIT_SETPOINT_ACCEL_UP = 0.4  # m/s^2 Maximum speed-limit setpoint ramp-up rate.
 V_CRUISE_UNSET = 255.
 
 CRUISE_BUTTONS_PLUS = (ButtonType.accelCruise, ButtonType.resumeCruise)
@@ -131,6 +130,8 @@ class SpeedLimitAssist:
   def get_a_target_from_control(self, previous_v_target: float) -> float:
     if self.output_v_target == V_CRUISE_UNSET or previous_v_target == V_CRUISE_UNSET:
       return self.a_ego
+    if self.output_v_target > previous_v_target:
+      return self.a_ego
 
     return (self.output_v_target - previous_v_target) / DT_MDL
 
@@ -151,7 +152,7 @@ class SpeedLimitAssist:
     previous_target = self.get_previous_setpoint()
 
     if target > previous_target:
-      return min(target, previous_target + SPEED_LIMIT_SETPOINT_ACCEL_UP * DT_MDL)
+      return target
 
     if self._distance <= 0.:
       return target
