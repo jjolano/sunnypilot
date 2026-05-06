@@ -40,6 +40,9 @@ MODE_DEFAULT_JERK = {
   "emergency": 12.0,
   "adversarial": 100.0,
 }
+LEAD_PULLAWAY_MOVING_SPEED = 0.5
+LEAD_PULLAWAY_STARTED_SPEED = 0.2
+LEAD_PULLAWAY_STARTED_ACCEL = 0.1
 
 
 def generate_scenarios(seed: int, cases: int, mode: str = "comfort", profile: LongitudinalProfile | None = None) -> list[Scenario]:
@@ -186,13 +189,42 @@ def evaluate_invariants(valid: bool, output: np.ndarray, max_normal_jerk: float 
   return evaluate_maneuver_output("legacy", valid, output, max_normal_jerk).failures
 
 
+def evaluate_lead_pullaway_start(output: np.ndarray) -> list[ScenarioFailure]:
+  if output.ndim != 2 or output.shape[1] < 6 or output.size == 0:
+    return []
+
+  time_s = output[:, 0]
+  speed = output[:, 3]
+  lead_speed = output[:, 4]
+  accel = output[:, 5]
+  lead_moving = lead_speed > LEAD_PULLAWAY_MOVING_SPEED
+  if not np.any(lead_moving):
+    return []
+
+  lead_move_time = float(time_s[int(np.flatnonzero(lead_moving)[0])])
+  after_lead_moves = time_s >= lead_move_time
+  started = np.any(speed[after_lead_moves] > LEAD_PULLAWAY_STARTED_SPEED) or np.any(accel[after_lead_moves] > LEAD_PULLAWAY_STARTED_ACCEL)
+  if started:
+    return []
+  return [ScenarioFailure("launch", "lead moved but ego never started")]
+
+
+def scenario_maneuver_kwargs(scenario: Scenario) -> dict[str, Any]:
+  kwargs = dict(scenario.kwargs)
+  if scenario.kind == "lead_pullaway":
+    kwargs["ensure_start"] = False
+  return kwargs
+
+
 def run_scenario(scenario: Scenario, max_normal_jerk: float = 8.0) -> ScenarioResult:
   from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
-  maneuver = Maneuver(scenario.title, scenario.duration, **scenario.kwargs)
+  maneuver = Maneuver(scenario.title, scenario.duration, **scenario_maneuver_kwargs(scenario))
   with contextlib.redirect_stdout(io.StringIO()):
     valid, output = maneuver.evaluate()
   failures = evaluate_invariants(valid, output, max_normal_jerk)
+  if scenario.kind == "lead_pullaway":
+    failures.extend(evaluate_lead_pullaway_start(output))
   return ScenarioResult(scenario, valid and not failures, failures)
 
 
