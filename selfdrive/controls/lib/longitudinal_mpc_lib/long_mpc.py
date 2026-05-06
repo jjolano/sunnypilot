@@ -161,6 +161,19 @@ MOVING_LEAD_CLOSING_CUSHION_GAP_EXCESS_BP = [0.0, 6.0]
 MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN = -0.15
 MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX = 0.55
 MOVING_LEAD_CLOSING_CUSHION_COST = 1.5
+PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP = [8.0, 25.0]
+PROGRESSIVE_LEAD_APPROACH_MIN_V_EGO = 4.0
+PROGRESSIVE_LEAD_APPROACH_MIN_V_LEAD = 3.0
+PROGRESSIVE_LEAD_APPROACH_FAR_FLOOR_FRACTION = 0.75
+PROGRESSIVE_LEAD_APPROACH_CLOSING_BP = [0.5, 2.0]
+PROGRESSIVE_LEAD_HARD_RELAXATION_RUNWAY_BP = [5.0, 25.0]
+PROGRESSIVE_LEAD_HARD_RELAXATION_CLOSING_GUARD_BP = [4.0, 6.0]
+PROGRESSIVE_LEAD_HARD_RELAXATION_DECEL_BP = [0.05, 0.3]
+LEAD_CHASE_ACCEL_BP = [0.25, 0.9]
+LEAD_CHASE_OPENING_BP = [0.0, 1.0]
+LEAD_CHASE_CLOSING_GUARD_BP = [2.0, 4.0]
+LEAD_CHASE_CLOSING_FLOOR_FRACTION = 0.75
+LEAD_CHASE_OPENING_FLOOR_FRACTION = 0.50
 SLOW_MOVING_LEAD_RUNWAY_RELAXATION_MAX = 1.0
 SLOW_MOVING_LEAD_RUNWAY_RELAXATION_CAP = 1.0
 SLOW_MOVING_LEAD_RUNWAY_RELAXATION_V_EGO_BP = [0.1, 0.5]
@@ -487,6 +500,70 @@ def get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead):
   return np.maximum(stop_floor, stop_floor + moving_stop_reserve + ego_stop_distance - lead_stop_distance)
 
 
+def get_lead_chase_target_gap(v_ego, v_lead, a_lead, t_follow, normal_gap=None):
+  v_lead = np.asarray(v_lead, dtype=float)
+  a_lead = np.asarray(a_lead, dtype=float)
+  normal_gap = get_desired_follow_distance(v_ego, v_lead, t_follow) if normal_gap is None else np.asarray(normal_gap, dtype=float)
+  closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  opening_speed = np.maximum(v_lead - v_ego, 0.0)
+
+  accel_blend = np.interp(np.clip(a_lead, 0.0, LEAD_CHASE_ACCEL_BP[-1]), LEAD_CHASE_ACCEL_BP, [0.0, 1.0])
+  closing_guard = 1.0 - np.interp(closing_speed, LEAD_CHASE_CLOSING_GUARD_BP, [0.0, 1.0])
+  opening_blend = np.interp(opening_speed, LEAD_CHASE_OPENING_BP, [0.0, 1.0])
+  floor_fraction = (
+    LEAD_CHASE_CLOSING_FLOOR_FRACTION +
+    opening_blend * (LEAD_CHASE_OPENING_FLOOR_FRACTION - LEAD_CHASE_CLOSING_FLOOR_FRACTION)
+  )
+  safety_floor = np.maximum(
+    STOP_DISTANCE,
+    get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0),
+  )
+  chase_floor = np.maximum(safety_floor, floor_fraction * normal_gap)
+  chase_blend = accel_blend * closing_guard
+  return normal_gap - chase_blend * (normal_gap - chase_floor)
+
+
+def get_progressive_lead_approach_gap(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
+  x_lead = np.asarray(x_lead, dtype=float)
+  v_lead = np.asarray(v_lead, dtype=float)
+  closing_speed = np.clip(v_ego - v_lead, 0.0, 1e8)
+  approach_speed = np.minimum(v_ego, v_lead)
+  steady_gap = t_follow * approach_speed + get_stop_distance_buffer(approach_speed)
+  speed_blend = np.interp(v_ego, [PROGRESSIVE_LEAD_APPROACH_MIN_V_EGO, PROGRESSIVE_LEAD_APPROACH_MIN_V_EGO + 2.0], [0.0, 1.0])
+  moving_blend = np.interp(v_lead, [PROGRESSIVE_LEAD_APPROACH_MIN_V_LEAD, PROGRESSIVE_LEAD_APPROACH_MIN_V_LEAD + 2.0], [0.0, 1.0])
+  closing_blend = np.interp(closing_speed, PROGRESSIVE_LEAD_APPROACH_CLOSING_BP, [0.0, 1.0])
+  runway_margin = np.maximum(x_lead - steady_gap, 0.0)
+  late_ramp_blend = 1.0 - np.interp(runway_margin, PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP, [0.0, 1.0])
+  progressive_floor = np.maximum(STOP_DISTANCE, PROGRESSIVE_LEAD_APPROACH_FAR_FLOOR_FRACTION * steady_gap)
+  chase_gap = get_lead_chase_target_gap(v_ego, v_lead, a_lead, t_follow, normal_gap=steady_gap)
+  far_target_gap = np.minimum(progressive_floor + late_ramp_blend * (steady_gap - progressive_floor), chase_gap)
+  steady_gap = steady_gap + closing_blend * (far_target_gap - steady_gap)
+  closing_gap = (closing_speed**2) / (2 * get_approach_brake(closing_speed))
+
+  lead_decel_blend = np.interp(np.clip(-np.asarray(a_lead, dtype=float), 0.0, APPROACH_DECEL_BLEND_BP[-1]), APPROACH_DECEL_BLEND_BP, [0.0, 1.0])
+  ramp_blend = np.maximum(late_ramp_blend, lead_decel_blend)
+  return steady_gap + speed_blend * moving_blend * ramp_blend * closing_gap
+
+
+def get_progressive_lead_hard_obstacle_relaxation(x_lead, v_ego, v_lead, a_lead, t_follow, target_gap=None):
+  x_lead = np.asarray(x_lead, dtype=float)
+  v_lead = np.asarray(v_lead, dtype=float)
+  a_lead = np.asarray(a_lead, dtype=float)
+  target_gap = get_progressive_lead_approach_gap(x_lead, v_ego, v_lead, t_follow, a_lead) if target_gap is None else np.asarray(target_gap, dtype=float)
+  hard_gap = get_lead_danger_distance(v_ego, v_lead, t_follow)
+
+  speed_blend = np.interp(v_ego, [PROGRESSIVE_LEAD_APPROACH_MIN_V_EGO, PROGRESSIVE_LEAD_APPROACH_MIN_V_EGO + 2.0], [0.0, 1.0])
+  moving_blend = np.interp(v_lead, [PROGRESSIVE_LEAD_APPROACH_MIN_V_LEAD, PROGRESSIVE_LEAD_APPROACH_MIN_V_LEAD + 2.0], [0.0, 1.0])
+  closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  closing_blend = np.interp(closing_speed, PROGRESSIVE_LEAD_APPROACH_CLOSING_BP, [0.0, 1.0])
+  closing_guard = 1.0 - np.interp(closing_speed, PROGRESSIVE_LEAD_HARD_RELAXATION_CLOSING_GUARD_BP, [0.0, 1.0])
+  decel_guard = 1.0 - np.interp(np.clip(-a_lead, 0.0, PROGRESSIVE_LEAD_HARD_RELAXATION_DECEL_BP[-1]),
+                                PROGRESSIVE_LEAD_HARD_RELAXATION_DECEL_BP, [0.0, 1.0])
+  runway_blend = np.interp(x_lead - hard_gap, PROGRESSIVE_LEAD_HARD_RELAXATION_RUNWAY_BP, [0.0, 1.0])
+  relaxation = np.maximum(hard_gap - target_gap, 0.0)
+  return relaxation * speed_blend * moving_blend * closing_blend * closing_guard * decel_guard * runway_blend
+
+
 def get_lead_crawl_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow, block_short_gap_pullaway_response=False, model_prob=1.0):
   x_lead = np.asarray(x_lead, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
@@ -729,17 +806,19 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
 
 
 def get_approach_follow_distance(x_lead, v_ego, v_lead, t_follow, a_lead=0.0):
-  approach_speed = np.minimum(v_ego, v_lead)
   closing_speed = np.clip(v_ego - v_lead, 0.0, 1e8)
   moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, v_lead, closing_speed, a_lead)
-  base_gap = t_follow * approach_speed + get_stop_distance_buffer(approach_speed)
-  closing_gap = (closing_speed**2) / (2 * get_approach_brake(closing_speed))
-  approach_gap = base_gap + closing_gap
+  approach_gap = get_progressive_lead_approach_gap(x_lead, v_ego, v_lead, t_follow, a_lead)
   decel_blend = np.interp(np.clip(-a_lead, 0.0, APPROACH_DECEL_BLEND_BP[-1]), APPROACH_DECEL_BLEND_BP, [0.0, 1.0])
   decel_blend *= 1.0 - np.interp(get_approach_available_runway(x_lead, v_ego, v_lead, t_follow, a_lead), APPROACH_RUNWAY_BLEND_BP, [0.0, 1.0])
   approach_gap = (1.0 - decel_blend) * approach_gap + decel_blend * (get_desired_follow_distance(v_ego, v_lead, t_follow) + moving_stop_reserve)
   min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0)
-  normal_gap = np.maximum(approach_gap, min_gap)
+  min_gap_runway = np.maximum(x_lead - min_gap, 0.0)
+  min_gap_blend = 1.0 - np.interp(min_gap_runway, PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP, [0.0, 1.0])
+  min_gap_decel_blend = np.interp(np.clip(-a_lead, 0.0, PROGRESSIVE_LEAD_HARD_RELAXATION_DECEL_BP[-1]),
+                                  PROGRESSIVE_LEAD_HARD_RELAXATION_DECEL_BP, [0.0, 1.0])
+  min_gap_blend = np.maximum(min_gap_blend, min_gap_decel_blend)
+  normal_gap = np.maximum(approach_gap, approach_gap + min_gap_blend * (min_gap - approach_gap))
   stop_runway_blend = get_lead_stop_runway_preference(x_lead, v_ego, v_lead, t_follow, a_lead)
   stop_runway_gap = get_lead_stop_runway_gap(v_ego, v_lead, closing_speed, a_lead)
   return (1.0 - stop_runway_blend) * normal_gap + stop_runway_blend * stop_runway_gap
@@ -1225,16 +1304,22 @@ class LongitudinalMpc:
     )
     lead_0_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_xv_0[:, 1], np.maximum(v_ego - lead_xv_0[:, 1], 0.0), lead_0_a_traj)
     lead_1_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_xv_1[:, 1], np.maximum(v_ego - lead_xv_1[:, 1], 0.0), lead_1_a_traj)
+    lead_0_desired_gap = get_approach_follow_distance(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], t_follow, lead_0_a)
+    lead_1_desired_gap = get_approach_follow_distance(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], t_follow, lead_1_a)
+    lead_0_hard_relaxation = get_progressive_lead_hard_obstacle_relaxation(
+      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow, target_gap=lead_0_desired_gap,
+    )
+    lead_1_hard_relaxation = get_progressive_lead_hard_obstacle_relaxation(
+      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow, target_gap=lead_1_desired_gap,
+    )
     lead_0_obstacle = (
       lead_xv_0[:, 0] + get_stopped_equivalence_factor(lead_0_hard_v) - lead_0_stopped_buffer - lead_0_moving_stop_reserve
-      + lead_0_stop_gap_taper + lead_0_stop_gap_excess_offset
+      + lead_0_stop_gap_taper + lead_0_stop_gap_excess_offset + lead_0_hard_relaxation
     )
     lead_1_obstacle = (
       lead_xv_1[:, 0] + get_stopped_equivalence_factor(lead_1_hard_v) - lead_1_stopped_buffer - lead_1_moving_stop_reserve
-      + lead_1_stop_gap_taper + lead_1_stop_gap_excess_offset
+      + lead_1_stop_gap_taper + lead_1_stop_gap_excess_offset + lead_1_hard_relaxation
     )
-    lead_0_desired_gap = get_approach_follow_distance(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], t_follow, lead_0_a)
-    lead_1_desired_gap = get_approach_follow_distance(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], t_follow, lead_1_a)
     lead_0_cost_obstacle_soft = (
       lead_xv_0[:, 0]
       + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_0_desired_gap, 0.0, 1e8)

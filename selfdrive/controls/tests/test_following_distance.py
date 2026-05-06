@@ -31,8 +31,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_CRAWL_BRAKE_MAX,
   LEAD_SURGE_DAMPING_ACCEL_MAX,
   LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX,
+  LEAD_CHASE_CLOSING_FLOOR_FRACTION,
+  LEAD_CHASE_OPENING_FLOOR_FRACTION,
   MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN,
   MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX,
+  PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP,
   LEAD_STOP_APPROACH_DECEL_CAP,
   LEAD_STOP_RUNWAY_BRAKE,
   STOP_DISTANCE,
@@ -66,13 +69,16 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_stop_runway_blend,
   get_lead_stop_runway_gap,
   get_lead_stop_runway_urgency,
+  get_lead_chase_target_gap,
   get_lead_stop_presentation_distance,
   get_lead_stop_gap_excess_offset,
   get_lead_stop_gap_taper,
+  get_progressive_lead_hard_obstacle_relaxation,
   get_lead_time_gap_target,
   get_moving_lead_closing_cushion_target,
   get_moving_lead_stop_approach_comfort_target,
   get_moving_lead_stop_reserve,
+  get_progressive_lead_approach_gap,
   get_pre_target_runway_decel_threshold,
   get_safe_obstacle_distance,
   get_selected_lead_targets,
@@ -877,17 +883,13 @@ def test_approach_follow_distance_uses_runway_before_danger_zone():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   v_ego = 25.0
   v_lead = 20.0
-  closing_speed = v_ego - v_lead
   x_lead = get_desired_follow_distance(v_ego, v_lead, t_follow) + 25.0
 
   approach_gap = get_approach_follow_distance(x_lead, v_ego, v_lead, t_follow)
-  expected_gap = max(
-    t_follow * v_lead + stop_distance_buffer(v_lead) + (closing_speed**2) / (2 * get_approach_brake(closing_speed)),
-    get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER,
-  )
+  expected_gap = get_progressive_lead_approach_gap(x_lead, v_ego, v_lead, t_follow)
 
   assert approach_gap == pytest.approx(expected_gap)
-  assert get_lead_danger_distance(v_ego, v_lead, t_follow) < approach_gap < get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert STOP_DISTANCE < approach_gap < get_desired_follow_distance(v_ego, v_lead, t_follow)
 
 
 def test_approach_runway_blend_stays_off_near_legacy_gap():
@@ -1349,6 +1351,39 @@ def test_moving_stop_approach_coast_guards_pre_target_until_safety_threshold():
   assert required_decel > threshold
   assert required_decel < safety_threshold
   assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN <= target <= 0.0
+  assert cost > 0.0
+
+
+def test_decelerating_lead_inside_normal_gap_does_not_recover_to_normal_gap():
+  v_ego = 18.0
+  v_lead = 10.0
+  a_lead = -2.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  normal_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = 0.85 * normal_gap
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+
+  target_gap = get_approach_follow_distance(d_rel, v_ego, v_lead, t_follow, a_lead)
+
+  assert d_rel < normal_gap
+  assert min_gap <= target_gap < d_rel
+
+
+def test_decelerating_lead_inside_normal_gap_allows_late_but_safe_stop():
+  v_ego = 13.0
+  v_lead = 8.0
+  a_lead = -0.8
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  normal_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = 0.9 * normal_gap
+  closing_speed = max(v_ego - v_lead, 0.0)
+  required_decel = get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < normal_gap
+  assert required_decel > 0.0
+  assert -long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP <= target < 0.0
   assert cost > 0.0
 
 
@@ -1922,6 +1957,112 @@ def test_approach_engage_offset_grows_for_large_closing_runway_cases():
   assert 0.0 < mild_offset < strong_offset <= APPROACH_ENGAGE_OFFSET_MAX
 
 
+def test_progressive_lead_approach_keeps_closing_gap_off_until_mid_approach():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  v_ego = 25.0
+  v_lead = 20.0
+  steady_gap = t_follow * v_lead + long_mpc.get_stop_distance_buffer(v_lead)
+  closing_gap = ((v_ego - v_lead) ** 2) / (2 * get_approach_brake(v_ego - v_lead))
+  far_gap = steady_gap + PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP[-1] + 20.0
+  mid_gap = steady_gap + 0.5 * sum(PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP)
+  close_gap = steady_gap + PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP[0] * 0.5
+
+  far_target = get_progressive_lead_approach_gap(far_gap, v_ego, v_lead, t_follow, a_lead=0.0)
+  mid_target = get_progressive_lead_approach_gap(mid_gap, v_ego, v_lead, t_follow, a_lead=0.0)
+  close_target = get_progressive_lead_approach_gap(close_gap, v_ego, v_lead, t_follow, a_lead=0.0)
+
+  assert far_target == pytest.approx(0.75 * steady_gap)
+  assert far_target < mid_target < steady_gap + closing_gap
+  assert close_target == pytest.approx(steady_gap + closing_gap)
+
+
+def test_lead_chase_target_uses_75_percent_floor_while_still_closing():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  v_ego = 18.5
+  v_lead = 18.0
+  normal_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+
+  chase_gap = get_lead_chase_target_gap(v_ego, v_lead, a_lead=1.0, t_follow=t_follow)
+
+  assert chase_gap == pytest.approx(LEAD_CHASE_CLOSING_FLOOR_FRACTION * normal_gap)
+
+
+def test_lead_chase_target_uses_50_percent_floor_when_gap_is_opening():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  v_ego = 18.0
+  v_lead = 19.5
+  normal_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+
+  chase_gap = get_lead_chase_target_gap(v_ego, v_lead, a_lead=1.0, t_follow=t_follow)
+
+  assert chase_gap == pytest.approx(LEAD_CHASE_OPENING_FLOOR_FRACTION * normal_gap)
+
+
+def test_lead_chase_target_stays_normal_for_high_closing_speed():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  v_ego = 23.0
+  v_lead = 18.0
+  normal_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+
+  chase_gap = get_lead_chase_target_gap(v_ego, v_lead, a_lead=1.0, t_follow=t_follow)
+
+  assert chase_gap == pytest.approx(normal_gap)
+
+
+def test_lead_chase_target_stays_normal_for_decelerating_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
+  v_ego = 18.0
+  v_lead = 19.5
+  normal_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+
+  chase_gap = get_lead_chase_target_gap(v_ego, v_lead, a_lead=-0.5, t_follow=t_follow)
+
+  assert chase_gap == pytest.approx(normal_gap)
+
+
+def test_progressive_lead_hard_obstacle_relaxes_stable_far_moving_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 25.0
+  v_lead = 20.0
+  d_rel = 90.0
+  target_gap = get_progressive_lead_approach_gap(d_rel, v_ego, v_lead, t_follow, a_lead=0.0)
+  hard_gap = get_lead_danger_distance(v_ego, v_lead, t_follow)
+
+  relaxation = get_progressive_lead_hard_obstacle_relaxation(d_rel, v_ego, v_lead, a_lead=0.0, t_follow=t_follow, target_gap=target_gap)
+
+  assert relaxation > 0.0
+  assert relaxation < hard_gap - target_gap
+
+
+def test_progressive_lead_hard_obstacle_relaxation_stays_off_for_decelerating_close_or_fast_closing_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 25.0
+  v_lead = 20.0
+  hard_gap = get_lead_danger_distance(v_ego, v_lead, t_follow)
+
+  decel_relaxation = get_progressive_lead_hard_obstacle_relaxation(90.0, v_ego, v_lead, a_lead=-0.5, t_follow=t_follow)
+  close_relaxation = get_progressive_lead_hard_obstacle_relaxation(hard_gap + 2.0, v_ego, v_lead, a_lead=0.0, t_follow=t_follow)
+  fast_closing_relaxation = get_progressive_lead_hard_obstacle_relaxation(100.0, 26.822, 17.881, a_lead=0.0, t_follow=t_follow)
+
+  assert decel_relaxation == pytest.approx(0.0)
+  assert close_relaxation == pytest.approx(0.0)
+  assert fast_closing_relaxation == pytest.approx(0.0)
+
+
+def test_progressive_lead_approach_stays_normal_for_speed_matched_far_lead():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 18.0
+  v_lead = 18.0
+  d_rel = 55.0
+  steady_gap = t_follow * v_lead + long_mpc.get_stop_distance_buffer(v_lead)
+
+  target_gap = get_progressive_lead_approach_gap(d_rel, v_ego, v_lead, t_follow, a_lead=0.0)
+  relaxation = get_progressive_lead_hard_obstacle_relaxation(d_rel, v_ego, v_lead, a_lead=0.0, t_follow=t_follow, target_gap=target_gap)
+
+  assert target_gap == pytest.approx(steady_gap)
+  assert relaxation == pytest.approx(0.0)
+
+
 def test_lead_gap_comfort_uses_light_brake_for_steady_under_gap():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   v_ego = 20.0
@@ -2042,17 +2183,24 @@ class TestFollowingDistance:
     assert simulation_steady_state == pytest.approx(correct_steady_state, abs=err_ratio * correct_steady_state + abs_err_margin)
 
 
-def test_closing_lead_bleeds_off_speed_late_in_approach():
+def test_closing_lead_uses_later_progressive_decel_shape():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   output = run_lead_closing_simulation(v_ego=25.0, v_lead=20.0, initial_distance_lead=90.0)
 
   time = output[:, 0]
+  accel = output[:, 5]
+  d_rel = output[:, 6]
   closing_speed = output[:, 3] - output[:, 4]
+  early = time <= 5.0
+  mid = (time >= 8.0) & (time <= 18.0)
   late_approach = time >= (time[-1] - 5.0)
 
+  assert np.min(accel[early]) > -0.9
+  assert np.min(accel[mid]) < np.min(accel[early])
   assert np.any(late_approach)
   assert np.max(closing_speed[late_approach]) < 1.5
   assert output[-1, 6] == pytest.approx(get_desired_follow_distance(20.0, 20.0, t_follow), abs=4.0)
+  assert d_rel[0] > d_rel[-1]
 
 
 def test_stopped_car_approach_settles_near_stop_gap():
