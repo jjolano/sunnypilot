@@ -21,8 +21,6 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
-SPEED_LIMIT_SPEED_UP_ACCEL_CAP = 0.30  # m/s^2, conservative target shaping to avoid downshifts.
-SPEED_LIMIT_SPEED_UP_LOOKAHEAD = 1.5  # s, keep SLA speed-up targets close to ego speed.
 SPEED_LIMIT_HANDOFF_EXIT_MARGIN = 0.25  # m/s, near enough to manual cruise to return to cruise.
 SPEED_LIMIT_HANDOFF_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating during handoff.
 LEAD_SPEEDUP_GUARD_TIME_GAP = 2.2  # s, match the observed uncomfortable closing window.
@@ -37,13 +35,6 @@ def _select_lower_target(selected_source, selected_v_target, selected_a_target, 
   if candidate_v_target < selected_v_target:
     return candidate_source, candidate_v_target, candidate_a_target
   return selected_source, selected_v_target, selected_a_target
-
-
-def apply_speed_limit_speedup_governor(speed_limit_active: bool, v_ego: float, v_target: float) -> float:
-  if not speed_limit_active or v_target == V_CRUISE_UNSET or v_target <= v_ego:
-    return v_target
-
-  return min(v_target, v_ego + SPEED_LIMIT_SPEED_UP_ACCEL_CAP * SPEED_LIMIT_SPEED_UP_LOOKAHEAD)
 
 
 def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_rel: float, y_rel: float,
@@ -222,7 +213,7 @@ class LongitudinalPlannerSP:
     speed_limit_handoff_active = self._update_speed_limit_handoff(long_enabled, long_override, v_ego, v_cruise)
     speed_limit_active = self.sla.is_active or speed_limit_handoff_active
     speed_limit_assist_target = self._speed_limit_handoff_target(v_ego, a_ego) if speed_limit_handoff_active else (
-      apply_speed_limit_speedup_governor(self.sla.is_active, v_ego, self.sla.output_v_target),
+      self.sla.output_v_target,
       a_ego,
     )
     cruise_target = (v_cruise, min(a_ego, SPEED_LIMIT_HANDOFF_A_TARGET_MAX)) if speed_limit_handoff_active else (v_cruise, a_ego)
