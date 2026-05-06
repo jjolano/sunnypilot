@@ -52,46 +52,9 @@ A single global `latAccelFactor` is inaccurate across the speed range. EPS assis
 
 ---
 
-## 4. Sub-Project 2: Longitudinal Mass & Aero Drag Learning
+## 4. Removed: Longitudinal Mass & Aero Drag Learning
 
-### 4.1 Problem
-`CP.mass` is static. Real-world mass changes (passengers, cargo) and drag changes (roof boxes, headwinds) cause feedforward errors, leading to sluggish acceleration or overshoot.
-
-### 4.2 Design
-
-**Physics Model**:
-```
-a_ego ≈ (k_force * a_cmd) - c_drag * v_ego² - c_roll
-```
-- `k_force` — effective drivetrain gain (absorbs mass and gear ratio)
-- `c_drag` — aero drag coefficient (CdA / effective_mass)
-- `c_roll` — rolling resistance / mass (assumed known or learned separately)
-
-**Data Collection** (`sunnypilot/selfdrive/controls/lib/longitudinal_planner_ext.py`):
-- Collect `(v_ego, a_cmd, a_ego)` during clean windows:
-  - No lead car (`leadOne.status == False`)
-  - Flat road (`abs(roll) < 1°`)
-  - Low lateral accel (`|a_y| < 0.5 m/s²`)
-  - `abs(a_cmd) > 0.1` or steady coasting for `> 2s`
-
-**Estimation**:
-- **Recursive Least Squares (RLS)** with forgetting factor λ = 0.995
-- State vector: `[k_force, c_drag]`
-- Sanity bounds: `0.5 ≤ k_force ≤ 2.0`, `c_drag ≥ 0`
-- Reset on NaN or out-of-bounds
-
-**Consumption** (`sunnypilot/selfdrive/controls/lib/longcontrol_ext.py`):
-- Adjust feedforward:
-  ```
-  ff_adjusted = a_target / k_force_learned
-  ```
-- Optionally subtract estimated drag from setpoint for MPC.
-
-### 4.3 Params / UI
-- `LongLearnedMassDragToggle` (bool, persistent)
-- `LongLearnedKForce` (float, persistent)
-- `LongLearnedCDrag` (float, persistent)
-- Developer UI overlay showing learned vs nominal mass/drag
+Mass/drag learning was removed from the active design. The RLS estimator, long-control feedforward compensation, UI toggles, params, metadata, and tests are no longer retained because the learned drag term was not expected to be stable enough for control use.
 
 ---
 
@@ -123,10 +86,10 @@ carState, carOutput, livePose, liveDelay
         │                                        ▼
         │                              latcontrol_torque.py + _ext
         │
-        ├──► longitudinal_planner.py + _ext ──► learned mass/drag
-        │                                            │
-        │                                            ▼
-        └──► longcontrol.py + _ext ◄────────── response curve
+        └──► longitudinal_planner.py
+                                                     │
+                                                     ▼
+                                                longcontrol.py
                               │
                               ▼
                          carControl.actuators
@@ -136,17 +99,17 @@ carState, carOutput, livePose, liveDelay
 
 ## 8. Implementation Order
 
-1. **Speed-Dependent Torque** — smallest change; reuses existing torqued infrastructure
-2. **Response Curve** — isolated to longcontrol; easiest to validate
-3. **Mass & Drag** — most complex; depends on clean data window logic
+1. **Speed-Dependent Torque** — retained; reuses existing torqued infrastructure
+2. **Response Curve** — removed from the active design
+3. **Mass & Drag** — removed from the active design
 
 ---
 
 ## 9. Testing Plan
 
-- **Unit tests:** Mock `carState`/`carOutput`, verify RLS/bucket regression converges
-- **Process replay:** Add learned params to replay baselines
-- **Shadow logging:** Collect learned vs actual for 1000+ km before enabling override
+- **Unit tests:** Verify speed-bucket torque learning and removed longitudinal learners stay absent
+- **Process replay:** Validate retained learned params against replay baselines
+- **Shadow logging:** Collect retained speed-aware torque learning before enabling apply paths
 
 ---
 
@@ -156,12 +119,9 @@ carState, carOutput, livePose, liveDelay
 |------|--------|
 | `sunnypilot/selfdrive/locationd/torqued_ext.py` | Extend for speed buckets |
 | `sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext.py` | Consume speed-aware params |
-| `sunnypilot/selfdrive/controls/lib/longitudinal_planner_ext.py` | Add mass/drag RLS |
-| `sunnypilot/selfdrive/controls/lib/longcontrol_ext.py` | Add response curve + consume mass/drag |
-| `common/params_keys.h` | Add new param keys |
-| `sunnypilot/sunnylink/params_metadata.json` | Add descriptions |
-| `selfdrive/ui/sunnypilot/.../torque_settings.py` | Add toggle UI |
-| `selfdrive/ui/sunnypilot/.../device.py` or new settings page | Add longitudinal learner toggles |
+| `common/params_keys.h` | Keep retained speed-aware torque params only |
+| `sunnypilot/sunnylink/params_metadata.json` | Keep retained speed-aware torque metadata only |
+| `selfdrive/ui/sunnypilot/.../torque_settings.py` | Add retained torque learning toggle UI |
 
 ---
 

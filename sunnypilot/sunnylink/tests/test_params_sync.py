@@ -15,6 +15,12 @@ REMOVED_RESPONSE_CURVE_PARAMS = (
   "LongLearnedResponseCurveApplyToggle",
   "LongLearnedResponseOffsets",
 )
+REMOVED_MASS_DRAG_PARAMS = (
+  "LongLearnedMassDragToggle",
+  "LongLearnedMassDragApplyToggle",
+  "LongLearnedKForce",
+  "LongLearnedCDrag",
+)
 
 
 def test_metadata_json_exists():
@@ -220,6 +226,14 @@ def test_response_curve_learning_metadata_is_removed():
     metadata = json.load(f)
 
   for param in REMOVED_RESPONSE_CURVE_PARAMS:
+    assert param not in metadata
+
+
+def test_mass_drag_learning_metadata_is_removed():
+  with open(METADATA_PATH) as f:
+    metadata = json.load(f)
+
+  for param in REMOVED_MASS_DRAG_PARAMS:
     assert param not in metadata
 
 

@@ -662,22 +662,6 @@
       }
     ]
   },
-  "LongLearnedCDrag": {
-    "title": "Learned Drag Coefficient",
-    "description": ""
-  },
-  "LongLearnedKForce": {
-    "title": "Learned Drivetrain Gain",
-    "description": ""
-  },
-  "LongLearnedMassDragApplyToggle": {
-    "title": "Apply Learned Mass & Drag",
-    "description": "Applies learned mass and drag compensation to longitudinal control. Keep disabled for shadow-mode learning."
-  },
-  "LongLearnedMassDragToggle": {
-    "title": "Learn Mass & Drag",
-    "description": "Live-learns vehicle mass and aerodynamic drag to improve acceleration and braking accuracy."
-  },
   "LongitudinalDecisionLayer": {
     "title": "Longitudinal Decision Layer",
     "description": "Enable the experimental longitudinal decision layer. When enabled, sunnypilot arbitrates cruise, lead, e2e, speed-limit, SCC, OSM, and coast candidates through a unified policy with legacy fallback."

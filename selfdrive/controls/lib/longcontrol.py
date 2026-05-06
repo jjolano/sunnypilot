@@ -4,7 +4,6 @@ from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.sunnypilot.selfdrive.controls.lib.longcontrol_ext import LongControlExt
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 LAUNCH_ENVELOPE_MIN_ACCEL = 0.15
@@ -112,7 +111,6 @@ class LongControl:
     self.launch_breakaway_elapsed = 0.0
     self.launch_taper_elapsed = 0.0
     self.launch_breakaway_done = False
-    self.extension = LongControlExt(self, CP, CP_SP)
 
   def reset_launch_envelope(self):
     self.launch_envelope_active = False
@@ -171,7 +169,6 @@ class LongControl:
       error = a_target - CS.aEgo
       ff = a_target
       output_accel = self.pid.update(error, speed=CS.vEgo, feedforward=ff)
-      output_accel = self.extension.adjust_output(output_accel, CS, a_target)
 
     if self.launch_envelope_active:
       if a_target < 0.0:

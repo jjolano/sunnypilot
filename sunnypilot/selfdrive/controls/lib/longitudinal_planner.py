@@ -10,7 +10,6 @@ import numpy as np
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
-from openpilot.common.params import Params, UnknownKeyName
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
@@ -21,7 +20,6 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
-from openpilot.sunnypilot.selfdrive.controls.lib.long_learned_mass_drag import RLSDynamicsEstimator
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
@@ -164,52 +162,6 @@ class LongitudinalPlannerSP:
     self.decision_candidates_sp = []
     self._speed_limit_handoff_active = False
     self._speed_limit_active_prev = False
-    self._init_mass_drag()
-
-  def _init_mass_drag(self):
-    self.mass_drag_estimator = RLSDynamicsEstimator()
-    self._params = Params()
-    try:
-      self.mass_drag_enabled = self._params.get_bool("LongLearnedMassDragToggle")
-    except UnknownKeyName:
-      self.mass_drag_enabled = False
-    self.last_mass_drag_write = 0
-
-  def update_mass_drag(self, sm):
-    if not getattr(self, "mass_drag_enabled", False):
-      return
-
-    # Clean window conditions
-    v_ego = sm['carState'].vEgo
-    a_ego = sm['carState'].aEgo
-    lead = sm['radarState'].leadOne
-    roll = sm['liveParameters'].roll
-    pitch = sm['carControl'].orientationNED[1] if len(sm['carControl'].orientationNED) == 3 else 0.0
-    a_cmd = getattr(self, "output_a_target", self.mpc.a_solution[0] if len(self.mpc.a_solution) > 0 else 0.0)
-
-    clean = (
-      sm['carControl'].enabled and
-      v_ego > 10.0 and
-      not lead.status and
-      not sm['carState'].brakePressed and
-      not sm['carState'].gasPressed and
-      sm['controlsState'].longControlState != 0 and
-      abs(roll) < np.radians(1.0) and
-      abs(pitch) < np.radians(1.0) and
-      abs(a_ego - a_cmd) < 1.0 and
-      (abs(a_cmd) > 0.05 or abs(a_ego) > 0.05) and
-      all(np.isfinite(val) for val in (v_ego, a_ego, a_cmd, roll, pitch))
-    )
-
-    if clean:
-      self.mass_drag_estimator.update(v_ego, a_cmd, a_ego)
-      if self.mass_drag_estimator.is_valid():
-        k_force, c_drag = self.mass_drag_estimator.get_params()
-        # Write to params every 10 seconds
-        if sm.logMonoTime['carState'] * 1e-9 - self.last_mass_drag_write > 10.0:
-          self._params.put_nonblocking("LongLearnedKForce", k_force)
-          self._params.put_nonblocking("LongLearnedCDrag", c_drag)
-          self.last_mass_drag_write = sm.logMonoTime['carState'] * 1e-9
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode

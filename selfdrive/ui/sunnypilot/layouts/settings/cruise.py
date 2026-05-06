@@ -92,22 +92,10 @@ class CruiseLayout(Widget):
       description=tr("Use the new unified longitudinal arbitration layer. This is opt-in and falls back to current planner behavior if disabled or invalid."),
       param="LongitudinalDecisionLayer")
 
-    self.long_learned_mass_drag_toggle = toggle_item_sp(
-      title=tr("Learn Mass & Drag"),
-      description=tr("Live-learns vehicle mass and aerodynamic drag to improve acceleration and braking accuracy."),
-      param="LongLearnedMassDragToggle")
-
-    self.long_learned_mass_drag_apply_toggle = toggle_item_sp(
-      title=tr("Apply Learned Mass & Drag"),
-      description=tr("Applies learned mass and drag compensation to longitudinal control. Keep disabled for shadow-mode learning."),
-      param="LongLearnedMassDragApplyToggle")
-
     items = [
       self.icbm_toggle,
       self.dec_toggle,
       self.longitudinal_decision_layer_toggle,
-      self.long_learned_mass_drag_toggle,
-      self.long_learned_mass_drag_apply_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
       self.custom_acc_toggle,
@@ -164,9 +152,6 @@ class CruiseLayout(Widget):
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
         self.dec_toggle.action_item.set_enabled(has_long)
         self.longitudinal_decision_layer_toggle.action_item.set_enabled(has_long)
-        long_learning_enabled = has_long and ui_state.is_offroad()
-        self.long_learned_mass_drag_toggle.action_item.set_enabled(long_learning_enabled)
-        self.long_learned_mass_drag_apply_toggle.action_item.set_enabled(long_learning_enabled)
         self.scc_v_toggle.action_item.set_enabled(True)
         self.scc_m_toggle.action_item.set_enabled(True)
       else:
@@ -178,8 +163,6 @@ class CruiseLayout(Widget):
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.dec_toggle.action_item.set_enabled(False)
         self.longitudinal_decision_layer_toggle.action_item.set_enabled(False)
-        self.long_learned_mass_drag_toggle.action_item.set_enabled(False)
-        self.long_learned_mass_drag_apply_toggle.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)
 
@@ -187,8 +170,6 @@ class CruiseLayout(Widget):
       has_icbm = has_long = False
       self.icbm_toggle.action_item.set_enabled(False)
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
-      self.long_learned_mass_drag_toggle.action_item.set_enabled(False)
-      self.long_learned_mass_drag_apply_toggle.action_item.set_enabled(False)
 
     show_custom_acc_desc = False
 
