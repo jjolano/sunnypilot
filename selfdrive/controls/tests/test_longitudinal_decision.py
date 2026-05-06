@@ -1,6 +1,7 @@
 import math
 from types import SimpleNamespace
 
+from cereal import log
 import pytest
 
 from openpilot.selfdrive.controls.lib.longitudinal_decision import (
@@ -9,6 +10,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   LongitudinalArbiter,
   LongitudinalCandidate,
   LongitudinalDecision,
+  apply_personality_accel_comfort,
   apply_longitudinal_decision_output,
   build_core_longitudinal_candidates,
   get_active_lead_confidence,
@@ -295,6 +297,22 @@ def test_apply_decision_output_cruise_winner_preserves_legacy_accel():
   assert should_stop
 
 
+def test_apply_decision_output_cruise_winner_ignores_personality_comfort_context():
+  decision = make_decision(DecisionSource.CRUISE, a_target=0.6, should_stop=False)
+
+  a_target, should_stop = apply_longitudinal_decision_output(
+    decision,
+    legacy_a_target=0.6,
+    legacy_should_stop=False,
+    prev_a_target=0.0,
+    personality=log.LongitudinalPersonality.relaxed,
+    dt=0.05,
+  )
+
+  assert a_target == pytest.approx(0.6)
+  assert not should_stop
+
+
 def test_apply_decision_output_lead_winner_preserves_legacy_accel_and_stop():
   decision = make_decision(DecisionSource.LEAD_MPC, a_target=-0.2, should_stop=False)
 
@@ -320,6 +338,80 @@ def test_apply_decision_output_cruise_coast_can_relax_legacy_braking():
 
   assert a_target == pytest.approx(-0.2)
   assert not should_stop
+
+
+def test_apply_decision_output_can_apply_personality_comfort_context():
+  decision = make_decision(DecisionSource.CRUISE_COAST, a_target=0.6, should_stop=False)
+
+  a_target, should_stop = apply_longitudinal_decision_output(
+    decision,
+    legacy_a_target=0.0,
+    legacy_should_stop=False,
+    prev_a_target=0.0,
+    personality=log.LongitudinalPersonality.relaxed,
+    dt=0.05,
+  )
+
+  assert 0.0 < a_target < 0.6
+  assert not should_stop
+
+
+def test_apply_decision_output_can_disable_personality_comfort_context():
+  decision = make_decision(DecisionSource.CRUISE_COAST, a_target=0.6, should_stop=False)
+
+  a_target, should_stop = apply_longitudinal_decision_output(
+    decision,
+    legacy_a_target=0.0,
+    legacy_should_stop=False,
+    prev_a_target=0.0,
+    personality=log.LongitudinalPersonality.relaxed,
+    dt=0.05,
+    comfort_active=False,
+  )
+
+  assert a_target == pytest.approx(0.6)
+  assert not should_stop
+
+
+def test_personality_comfort_limits_positive_accel_rise_by_personality():
+  decision = make_decision(DecisionSource.CRUISE_COAST, a_target=0.6, should_stop=False)
+
+  relaxed = apply_personality_accel_comfort(decision, 0.6, prev_a_target=0.0, personality=log.LongitudinalPersonality.relaxed, dt=0.05)
+  standard = apply_personality_accel_comfort(decision, 0.6, prev_a_target=0.0, personality=log.LongitudinalPersonality.standard, dt=0.05)
+  aggressive = apply_personality_accel_comfort(decision, 0.6, prev_a_target=0.0, personality=log.LongitudinalPersonality.aggressive, dt=0.05)
+
+  assert 0.0 < relaxed < standard < aggressive < 0.6
+
+
+def test_personality_comfort_softens_only_mild_brake_onset():
+  decision = make_decision(DecisionSource.SPEED_LIMIT, a_target=-0.25, should_stop=False)
+
+  smoothed = apply_personality_accel_comfort(decision, -0.25, prev_a_target=0.1, personality=log.LongitudinalPersonality.relaxed, dt=0.05)
+
+  assert -0.25 < smoothed < 0.1
+
+
+def test_personality_comfort_bypasses_stop_and_hazard_braking():
+  stop_decision = make_decision(DecisionSource.E2E_STOP, a_target=-1.0, should_stop=True)
+  lead_decision = make_decision(DecisionSource.LEAD_MPC, a_target=-0.8, should_stop=False)
+
+  assert apply_personality_accel_comfort(
+    stop_decision, -1.0, prev_a_target=0.2, personality=log.LongitudinalPersonality.relaxed, dt=0.05,
+  ) == pytest.approx(-1.0)
+  assert apply_personality_accel_comfort(
+    lead_decision, -0.8, prev_a_target=0.2, personality=log.LongitudinalPersonality.relaxed, dt=0.05,
+  ) == pytest.approx(-0.8)
+
+
+def test_personality_comfort_bypasses_large_decel_delta_and_bad_previous_accel():
+  decision = make_decision(DecisionSource.SPEED_LIMIT, a_target=-0.9, should_stop=False)
+
+  assert apply_personality_accel_comfort(
+    decision, -0.9, prev_a_target=0.1, personality=log.LongitudinalPersonality.relaxed, dt=0.05,
+  ) == pytest.approx(-0.9)
+  assert apply_personality_accel_comfort(
+    decision, 0.4, prev_a_target=math.nan, personality=log.LongitudinalPersonality.relaxed, dt=0.05,
+  ) == pytest.approx(0.4)
 
 
 def test_core_candidate_builder_adds_confirmed_lead_candidate():
