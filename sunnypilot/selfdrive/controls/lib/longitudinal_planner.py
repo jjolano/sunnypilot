@@ -23,6 +23,8 @@ DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimen
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 SPEED_LIMIT_HANDOFF_EXIT_MARGIN = 0.25  # m/s, near enough to manual cruise to return to cruise.
 SPEED_LIMIT_HANDOFF_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating during handoff.
+SPEED_LIMIT_SPEED_UP_ACCEL_CAP = 0.8  # m/s^2, driver-intent candidate speed-up governor.
+SPEED_LIMIT_SPEED_UP_LOOKAHEAD = 2.0  # s, short candidate horizon for active speed-limit increases.
 LEAD_SPEEDUP_GUARD_TIME_GAP = 2.2  # s, match the observed uncomfortable closing window.
 LEAD_SPEEDUP_GUARD_MIN_DISTANCE = 25.0  # m, low-speed floor for close-lead gating.
 LEAD_SPEEDUP_GUARD_CLOSING_V_REL = -0.2  # m/s, ignore noise around matched speed.
@@ -230,6 +232,11 @@ class LongitudinalPlannerSP:
     speed_limit_assist_target = apply_lead_speedup_guard(lead_speedup_guard_active, v_ego, speed_limit_assist_target)
     cruise_target = apply_lead_speedup_guard(lead_speedup_guard_active, v_ego, cruise_target)
     decision_cruise_target = speed_limit_assist_target if speed_limit_active else cruise_target
+    if speed_limit_active:
+      decision_cruise_target = (
+        min(decision_cruise_target[0], v_ego + SPEED_LIMIT_SPEED_UP_ACCEL_CAP * SPEED_LIMIT_SPEED_UP_LOOKAHEAD),
+        decision_cruise_target[1],
+      )
     decision_speed_limit_active = False  # Active SLA is represented as effective driver intent below.
 
     self.decision_candidates_sp = build_sp_longitudinal_candidates(
