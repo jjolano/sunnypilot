@@ -797,13 +797,36 @@ def test_strongest_cap_wins_when_multiple_reasons_apply():
 def test_recovery_after_cap_ramps_upward():
   shaper = TorqueConservativeOutputShaper(dt=0.1)
   capped = shaper.update(make_inputs(steering_pressed=True))
-  recovered = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.2))
+  recovered = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.6))
 
   assert capped.output_torque == 0.4
   assert recovered.active
   assert recovered.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
   assert abs(recovered.output_torque - 0.65) < 1e-6
   assert abs(recovered.output_torque) <= abs(recovered.unshaped_output)
+
+
+def test_low_speed_recovery_after_driver_override_ramps_more_softly():
+  shaper = TorqueConservativeOutputShaper(dt=0.1)
+  capped = shaper.update(make_inputs(v_ego=5.0, steering_pressed=True))
+  recovered = shaper.update(make_inputs(v_ego=5.0, unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.6))
+
+  assert capped.output_torque == 0.4
+  assert recovered.active
+  assert recovered.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert abs(recovered.output_torque - 0.52) < 1e-6
+  assert abs(recovered.output_torque) <= abs(recovered.unshaped_output)
+
+
+def test_strong_under_response_bypasses_low_speed_recovery_ramp():
+  shaper = TorqueConservativeOutputShaper(dt=0.1)
+  shaper.update(make_inputs(v_ego=5.0, steering_pressed=True))
+
+  recovered = shaper.update(make_inputs(v_ego=5.0, unshaped_output=1.0, desired_lateral_accel=1.2, actual_lateral_accel=0.4))
+
+  assert not recovered.active
+  assert not recovered.reason & ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
+  assert recovered.output_torque == recovered.unshaped_output
 
 
 def test_lower_target_after_cap_applies_immediately():
