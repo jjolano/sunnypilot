@@ -12,7 +12,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.locationd.helpers import PointBuckets, ParameterEstimator, PoseCalibrator, Pose
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
-from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import TorqueEstimatorExt
+from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import TorqueEstimatorExt, format_speed_aware_params
 
 HISTORY = 5  # secs
 POINTS_PER_BUCKET = 1500
@@ -36,6 +36,25 @@ MIN_ENGAGE_BUFFER = 2  # secs
 
 VERSION = 1  # bump this to invalidate old parameter caches
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda', 'volkswagen']
+LIVE_TORQUE_SPEED_ADAPTIVE_PARAMS = "LiveTorqueSpeedAdaptiveParams"
+
+
+def cache_speed_aware_params(params, estimator):
+  speed_params = estimator.estimate_speed_aware_params()
+  payload = format_speed_aware_params(estimator.CP, speed_params) if speed_params else None
+  if payload is None:
+    params.remove(LIVE_TORQUE_SPEED_ADAPTIVE_PARAMS)
+    return
+
+  params.put_nonblocking(LIVE_TORQUE_SPEED_ADAPTIVE_PARAMS, str(payload))
+
+
+def update_speed_aware_param_cache(params, estimator):
+  if not estimator.speed_adaptive_enabled:
+    params.remove(LIVE_TORQUE_SPEED_ADAPTIVE_PARAMS)
+    return
+
+  cache_speed_aware_params(params, estimator)
 
 
 def slope2rot(slope):
@@ -284,10 +303,8 @@ def main(demo=False):
       msg = estimator.get_msg(valid=sm.all_checks(), with_points=True)
       params.put_nonblocking("LiveTorqueParameters", msg.to_bytes())
 
-    if estimator.speed_adaptive_enabled and sm.frame % 240 == 0:
-      speed_params = estimator.estimate_speed_aware_params()
-      if speed_params:
-        params.put_nonblocking("LiveTorqueSpeedAdaptiveParams", str(speed_params))
+    if sm.frame % 240 == 0:
+      update_speed_aware_param_cache(params, estimator)
 
 
 if __name__ == "__main__":

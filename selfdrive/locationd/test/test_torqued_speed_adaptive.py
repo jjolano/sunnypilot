@@ -2,8 +2,10 @@
 import numpy as np
 import pytest
 
+from cereal import car
 from openpilot.selfdrive.locationd.helpers import PointBuckets
-from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import SpeedAwareTorqueBuckets
+from openpilot.selfdrive.locationd.torqued import cache_speed_aware_params, update_speed_aware_param_cache
+from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import SPEED_AWARE_PARAMS_VERSION, SpeedAwareTorqueBuckets, format_speed_aware_params
 
 
 def test_speed_aware_buckets_routing():
@@ -74,3 +76,87 @@ def test_speed_aware_get_points():
   pts = buckets.get_points(10)
   assert len(pts) == 5
   assert pts.shape[1] == 3
+
+
+def make_cp(fingerprint="mock-car", lateral_tuning="torque"):
+  CP = car.CarParams.new_message()
+  CP.carFingerprint = fingerprint
+  CP.lateralTuning.init(lateral_tuning)
+  return CP
+
+
+def test_format_speed_aware_params_wraps_metadata():
+  CP = make_cp()
+  buckets = {"0_10": (1.2, 0.0, 0.1)}
+
+  payload = format_speed_aware_params(CP, buckets)
+
+  assert payload["version"] == SPEED_AWARE_PARAMS_VERSION
+  assert payload["carFingerprint"] == "mock-car"
+  assert payload["lateralTuning"] == "torque"
+  assert payload["torqueLatAccelFactor"] == pytest.approx(CP.lateralTuning.torque.latAccelFactor)
+  assert payload["torqueFriction"] == pytest.approx(CP.lateralTuning.torque.friction)
+  assert payload["buckets"] == buckets
+
+
+class FakeParams:
+  def __init__(self):
+    self.writes = {}
+    self.removed = []
+
+  def put_nonblocking(self, key, value):
+    self.writes[key] = value
+
+  def remove(self, key):
+    self.removed.append(key)
+
+
+class FakeEstimator:
+  def __init__(self, speed_params, lateral_tuning="torque", speed_adaptive_enabled=True):
+    self.CP = make_cp(lateral_tuning=lateral_tuning)
+    self.speed_params = speed_params
+    self.speed_adaptive_enabled = speed_adaptive_enabled
+    self.estimate_calls = 0
+
+  def estimate_speed_aware_params(self):
+    self.estimate_calls += 1
+    return self.speed_params
+
+
+def test_cache_speed_aware_params_writes_metadata_payload():
+  params = FakeParams()
+
+  cache_speed_aware_params(params, FakeEstimator({"0_10": (1.2, 0.0, 0.1)}))
+
+  assert "LiveTorqueSpeedAdaptiveParams" in params.writes
+  assert "version" in params.writes["LiveTorqueSpeedAdaptiveParams"]
+  assert not params.removed
+
+
+def test_cache_speed_aware_params_clears_empty_estimate():
+  params = FakeParams()
+
+  cache_speed_aware_params(params, FakeEstimator({}))
+
+  assert params.writes == {}
+  assert params.removed == ["LiveTorqueSpeedAdaptiveParams"]
+
+
+def test_cache_speed_aware_params_clears_non_torque_estimate():
+  params = FakeParams()
+
+  cache_speed_aware_params(params, FakeEstimator({"0_10": (1.2, 0.0, 0.1)}, lateral_tuning="pid"))
+
+  assert params.writes == {}
+  assert params.removed == ["LiveTorqueSpeedAdaptiveParams"]
+
+
+def test_update_speed_aware_param_cache_clears_when_learning_disabled():
+  params = FakeParams()
+  estimator = FakeEstimator({"0_10": (1.2, 0.0, 0.1)}, speed_adaptive_enabled=False)
+
+  update_speed_aware_param_cache(params, estimator)
+
+  assert estimator.estimate_calls == 0
+  assert params.writes == {}
+  assert params.removed == ["LiveTorqueSpeedAdaptiveParams"]

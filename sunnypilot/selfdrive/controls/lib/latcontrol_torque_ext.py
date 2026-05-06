@@ -12,6 +12,7 @@ import numpy as np
 from openpilot.common.params import UnknownKeyName
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.nnlc import NeuralNetworkLateralControl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_override import LatControlTorqueExtOverride
+from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import parse_speed_aware_params
 
 
 class LatControlTorqueExt(NeuralNetworkLateralControl, LatControlTorqueExtOverride):
@@ -21,6 +22,8 @@ class LatControlTorqueExt(NeuralNetworkLateralControl, LatControlTorqueExtOverri
     self.last_v_ego = 0.0
     self.speed_aware_params = None
     self.speed_adaptive_apply_enabled = False
+    self._speed_adaptive_base_factor = None
+    self._speed_adaptive_applied_factor = None
     self.nominal_lat_accel_factor = float(CP.lateralTuning.torque.latAccelFactor) if CP.lateralTuning.which() == 'torque' else 0.0
 
   def update(self, CS, VM, pid, params, ff, pid_log, setpoint, measurement, calibrated_pose, roll_compensation,
@@ -57,8 +60,10 @@ class LatControlTorqueExt(NeuralNetworkLateralControl, LatControlTorqueExtOverri
       self.speed_aware_params = None
       return
     try:
-      self.speed_aware_params = ast.literal_eval(params_str)
-    except (TypeError, ValueError, SyntaxError):
+      if isinstance(params_str, bytes):
+        params_str = params_str.decode("utf-8")
+      self.speed_aware_params = parse_speed_aware_params(self.CP, ast.literal_eval(params_str))
+    except (TypeError, UnicodeDecodeError, ValueError, SyntaxError):
       self.speed_aware_params = None
 
   def _interpolate_speed_factor(self, v_ego):
@@ -89,12 +94,28 @@ class LatControlTorqueExt(NeuralNetworkLateralControl, LatControlTorqueExtOverri
     return 0.5 * self.nominal_lat_accel_factor <= factor <= 2.0 * self.nominal_lat_accel_factor
 
   def update_override_torque_params(self, torque_params) -> bool:
+    restored_speed_adaptive = self._restore_speed_adaptive_base(torque_params)
     overridden = LatControlTorqueExtOverride.update_override_torque_params(self, torque_params)
 
     if self.speed_adaptive_apply_enabled and getattr(self, 'speed_aware_params', None) is not None:
       factor = self._interpolate_speed_factor(self.last_v_ego)
       if self._valid_speed_factor(factor):
+        self._speed_adaptive_base_factor = float(torque_params.latAccelFactor)
+        self._speed_adaptive_applied_factor = float(factor)
         torque_params.latAccelFactor = factor
         return True
 
-    return overridden
+    return overridden or restored_speed_adaptive
+
+  def _restore_speed_adaptive_base(self, torque_params) -> bool:
+    if self._speed_adaptive_applied_factor is None:
+      return False
+
+    restored = False
+    if np.isclose(torque_params.latAccelFactor, self._speed_adaptive_applied_factor):
+      torque_params.latAccelFactor = self._speed_adaptive_base_factor
+      restored = True
+
+    self._speed_adaptive_base_factor = None
+    self._speed_adaptive_applied_factor = None
+    return restored

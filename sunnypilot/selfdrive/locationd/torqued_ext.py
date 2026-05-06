@@ -18,6 +18,62 @@ RELAXED_MIN_BUCKET_POINTS = np.array([1, 200, 300, 500, 500, 300, 200, 1])
 
 SPEED_BUCKET_BP = [0, 10, 20, 30, 40]  # m/s
 SPEED_BUCKET_LABELS = ["0_10", "10_20", "20_30", "30_40", "40_plus"]
+SPEED_AWARE_PARAMS_VERSION = 1
+
+
+def _payload_float_matches(payload: dict, key: str, expected: float) -> bool:
+  try:
+    return bool(np.isclose(float(payload.get(key)), expected))
+  except (TypeError, ValueError):
+    return False
+
+
+def format_speed_aware_params(CP: car.CarParams, buckets: dict) -> dict | None:
+  if CP.lateralTuning.which() != 'torque':
+    return None
+  return {
+    "version": SPEED_AWARE_PARAMS_VERSION,
+    "carFingerprint": CP.carFingerprint,
+    "lateralTuning": CP.lateralTuning.which(),
+    "torqueLatAccelFactor": float(CP.lateralTuning.torque.latAccelFactor),
+    "torqueFriction": float(CP.lateralTuning.torque.friction),
+    "buckets": buckets,
+  }
+
+
+def parse_speed_aware_params(CP: car.CarParams, payload: dict) -> dict | None:
+  if CP.lateralTuning.which() != 'torque':
+    return None
+  if not isinstance(payload, dict):
+    return None
+  if payload.get("version") != SPEED_AWARE_PARAMS_VERSION:
+    return None
+  if payload.get("carFingerprint") != CP.carFingerprint:
+    return None
+  if payload.get("lateralTuning") != CP.lateralTuning.which():
+    return None
+  if not _payload_float_matches(payload, "torqueLatAccelFactor", float(CP.lateralTuning.torque.latAccelFactor)):
+    return None
+  if not _payload_float_matches(payload, "torqueFriction", float(CP.lateralTuning.torque.friction)):
+    return None
+
+  buckets = payload.get("buckets")
+  if not isinstance(buckets, dict):
+    return None
+
+  parsed_buckets = {}
+  for label, value in buckets.items():
+    if label not in SPEED_BUCKET_LABELS or not isinstance(value, (tuple, list)) or len(value) != 3:
+      return None
+    try:
+      bucket_values = tuple(float(v) for v in value)
+    except (TypeError, ValueError):
+      return None
+    if any(not np.isfinite(v) for v in bucket_values):
+      return None
+    parsed_buckets[label] = bucket_values
+
+  return parsed_buckets if parsed_buckets else None
 
 
 class _TorqueBuckets(PointBuckets):

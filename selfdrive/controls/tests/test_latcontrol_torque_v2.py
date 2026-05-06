@@ -617,3 +617,112 @@ def test_v2_logs_signed_steer_limit_feedback():
   assert adaptive_log.steerLimitError == pytest.approx(0.25)
   assert not adaptive_log.steerLimitSameDirection
   assert adaptive_log.steerLimitUnwind
+
+
+class SpeedAdaptiveApplyParams:
+  def __init__(self, enabled: bool):
+    self.enabled = enabled
+
+  def get_bool(self, key: str) -> bool:
+    return self.enabled if key == "LiveTorqueSpeedAdaptiveApplyToggle" else False
+
+
+def make_speed_adaptive_payload(controller, buckets, **overrides):
+  CP = controller.extension.CP
+  payload = {
+    "version": 1,
+    "carFingerprint": CP.carFingerprint,
+    "lateralTuning": CP.lateralTuning.which(),
+    "torqueLatAccelFactor": float(CP.lateralTuning.torque.latAccelFactor),
+    "torqueFriction": float(CP.lateralTuning.torque.friction),
+    "buckets": buckets,
+  }
+  payload.update(overrides)
+  return payload
+
+
+def apply_speed_adaptive_factor(controller, factor):
+  controller.extension.last_v_ego = 5.0
+  controller.extension.speed_adaptive_apply_enabled = True
+  controller.extension.speed_aware_params = {"0_10": (factor, 0.0, 0.0)}
+  assert controller.extension.update_override_torque_params(controller.torque_params)
+
+
+def test_v2_speed_adaptive_factor_restores_base_when_disabled():
+  controller, _ = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  base_factor = controller.torque_params.latAccelFactor
+  adaptive_factor = base_factor * 1.25
+
+  apply_speed_adaptive_factor(controller, adaptive_factor)
+  controller.extension.speed_adaptive_apply_enabled = False
+  restored = controller.extension.update_override_torque_params(controller.torque_params)
+
+  assert restored
+  assert controller.torque_params.latAccelFactor == pytest.approx(base_factor)
+
+
+def test_v2_speed_adaptive_factor_restores_base_when_params_invalid():
+  controller, _ = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  base_factor = controller.torque_params.latAccelFactor
+  adaptive_factor = base_factor * 1.25
+
+  apply_speed_adaptive_factor(controller, adaptive_factor)
+  controller.extension.speed_aware_params = {"0_10": (base_factor * 3.0, 0.0, 0.0)}
+  restored = controller.extension.update_override_torque_params(controller.torque_params)
+
+  assert restored
+  assert controller.torque_params.latAccelFactor == pytest.approx(base_factor)
+
+
+def test_speed_adaptive_params_reject_unversioned_payload():
+  controller, _ = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  controller.extension.params = SpeedAdaptiveApplyParams(True)
+  base_factor = controller.torque_params.latAccelFactor
+
+  controller.extension.update_speed_aware_params(str({"0_10": (base_factor * 1.1, 0.0, 0.0)}))
+
+  assert controller.extension.speed_aware_params is None
+
+
+def test_speed_adaptive_params_reject_wrong_car_payload():
+  controller, _ = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  controller.extension.params = SpeedAdaptiveApplyParams(True)
+  base_factor = controller.torque_params.latAccelFactor
+
+  payload = make_speed_adaptive_payload(controller, {"0_10": (base_factor * 1.1, 0.0, 0.0)}, carFingerprint="different-car")
+  controller.extension.update_speed_aware_params(str(payload))
+
+  assert controller.extension.speed_aware_params is None
+
+
+def test_speed_adaptive_params_reject_wrong_torque_tune_payload():
+  controller, _ = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  controller.extension.params = SpeedAdaptiveApplyParams(True)
+  base_factor = controller.torque_params.latAccelFactor
+
+  payload = make_speed_adaptive_payload(controller, {"0_10": (base_factor * 1.1, 0.0, 0.0)}, torqueLatAccelFactor=base_factor * 1.5)
+  controller.extension.update_speed_aware_params(str(payload))
+
+  assert controller.extension.speed_aware_params is None
+
+
+@pytest.mark.parametrize("bucket_value", [[], "bad", (math.nan, 0.0, 0.0), (1.0, 0.0)])
+def test_speed_adaptive_params_reject_malformed_bucket_values(bucket_value):
+  controller, _ = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  controller.extension.params = SpeedAdaptiveApplyParams(True)
+
+  payload = make_speed_adaptive_payload(controller, {"0_10": bucket_value})
+  controller.extension.update_speed_aware_params(str(payload))
+
+  assert controller.extension.speed_aware_params is None
+
+
+def test_speed_adaptive_params_accept_matching_metadata_payload():
+  controller, _ = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  controller.extension.params = SpeedAdaptiveApplyParams(True)
+  base_factor = controller.torque_params.latAccelFactor
+  buckets = {"0_10": (base_factor * 1.1, 0.0, 0.0)}
+
+  controller.extension.update_speed_aware_params(str(make_speed_adaptive_payload(controller, buckets)))
+
+  assert controller.extension.speed_aware_params == buckets
