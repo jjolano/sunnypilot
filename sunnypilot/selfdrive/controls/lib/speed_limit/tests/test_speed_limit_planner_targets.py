@@ -72,37 +72,6 @@ def test_target_selection_keeps_lowest_non_cruise_candidate():
   assert a_target == 0.5
 
 
-def test_speed_limit_speedup_governor_caps_active_target_above_ego():
-  v_ego = 25.0
-  raw_target = 35.0
-
-  governed = longitudinal_planner.apply_speed_limit_speedup_governor(
-    speed_limit_active=True,
-    v_ego=v_ego,
-    v_target=raw_target,
-  )
-
-  expected = v_ego + longitudinal_planner.SPEED_LIMIT_SPEED_UP_ACCEL_CAP * longitudinal_planner.SPEED_LIMIT_SPEED_UP_LOOKAHEAD
-  assert governed == pytest.approx(expected)
-  assert governed < raw_target
-
-
-def test_speed_limit_speedup_governor_preserves_lower_target():
-  assert longitudinal_planner.apply_speed_limit_speedup_governor(
-    speed_limit_active=True,
-    v_ego=30.0,
-    v_target=25.0,
-  ) == pytest.approx(25.0)
-
-
-def test_speed_limit_speedup_governor_preserves_inactive_target():
-  assert longitudinal_planner.apply_speed_limit_speedup_governor(
-    speed_limit_active=False,
-    v_ego=25.0,
-    v_target=35.0,
-  ) == pytest.approx(35.0)
-
-
 class FakeResolver:
   speed_limit = 30.0
   speed_limit_final_last = 30.0
@@ -178,7 +147,7 @@ def make_sm(v_cruise_cluster=20.0, lead_status=False, d_rel=100.0, v_rel=0.0, y_
   })
 
 
-def test_speed_limit_auto_uses_assist_source_without_acceleration_seed():
+def test_speed_limit_auto_uses_full_assist_target_like_manual_cruise():
   planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
   planner.scc = FakeSmartCruiseControl()
   planner.resolver = FakeResolver()
@@ -193,8 +162,7 @@ def test_speed_limit_auto_uses_assist_source_without_acceleration_seed():
   v_ego = 15.0
   v_target, a_target = LongitudinalPlannerSP.update_targets(planner, sm, v_ego=v_ego, a_ego=a_ego, v_cruise=v_cruise)
 
-  expected = v_ego + longitudinal_planner.SPEED_LIMIT_SPEED_UP_ACCEL_CAP * longitudinal_planner.SPEED_LIMIT_SPEED_UP_LOOKAHEAD
-  assert v_target == pytest.approx(expected)
+  assert v_target == pytest.approx(planner.sla.output_v_target)
   assert a_target == a_ego
   assert planner.source == LongitudinalPlanSource.speedLimitAssist
 
