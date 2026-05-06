@@ -1,8 +1,57 @@
 #!/usr/bin/env python3
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 from openpilot.sunnypilot.selfdrive.controls.lib.long_learned_mass_drag import RLSDynamicsEstimator
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+
+
+class FakeSubMaster(dict):
+  logMonoTime = {'carState': 11_000_000_000}
+
+
+class FakeMassDragEstimator:
+  def update(self, v_ego, a_cmd, a_ego):
+    pass
+
+  def is_valid(self):
+    return True
+
+  def get_params(self):
+    return 1.03, 0.001
+
+
+class TypedParamsRecorder:
+  def __init__(self):
+    self.writes = []
+
+  def put_nonblocking(self, key, value):
+    if key in ("LongLearnedKForce", "LongLearnedCDrag") and not isinstance(value, float):
+      raise TypeError(f"{key} must be written as float")
+    self.writes.append((key, value))
+
+
+def test_update_mass_drag_writes_float_params():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.mass_drag_enabled = True
+  planner.mass_drag_estimator = FakeMassDragEstimator()
+  planner._params = TypedParamsRecorder()
+  planner.last_mass_drag_write = 0.0
+  planner.output_a_target = 0.2
+  planner.mpc = SimpleNamespace(a_solution=[])
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vEgo=20.0, aEgo=0.25, brakePressed=False, gasPressed=False),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=False)),
+    'liveParameters': SimpleNamespace(roll=0.0),
+    'carControl': SimpleNamespace(enabled=True, orientationNED=[0.0, 0.0, 0.0]),
+    'controlsState': SimpleNamespace(longControlState=1),
+  })
+
+  planner.update_mass_drag(sm)
+
+  assert planner._params.writes == [("LongLearnedKForce", 1.03), ("LongLearnedCDrag", 0.001)]
 
 
 def test_rls_converges_to_known_params():

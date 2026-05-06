@@ -214,8 +214,8 @@ class LongitudinalPlannerSP:
         k_force, c_drag = self.mass_drag_estimator.get_params()
         # Write to params every 10 seconds
         if sm.logMonoTime['carState'] * 1e-9 - self.last_mass_drag_write > 10.0:
-          self._params.put_nonblocking("LongLearnedKForce", str(k_force))
-          self._params.put_nonblocking("LongLearnedCDrag", str(c_drag))
+          self._params.put_nonblocking("LongLearnedKForce", k_force)
+          self._params.put_nonblocking("LongLearnedCDrag", c_drag)
           self.last_mass_drag_write = sm.logMonoTime['carState'] * 1e-9
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
