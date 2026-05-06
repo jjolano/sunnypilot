@@ -309,6 +309,24 @@ def run_lateral_exit_slowing_simulation(lead_y_rel_values, duration=5.5):
   )
 
 
+def run_curved_lane_closing_lead_simulation():
+  initial_speed = 15.8
+  breakpoints = [0.0, 0.5, 1.0, 2.0, 3.0, 4.5, 8.0]
+  return evaluate_maneuver_output(
+    Maneuver(
+      "curved lane closing lead",
+      duration=8.0,
+      initial_speed=initial_speed,
+      lead_relevancy=True,
+      initial_distance_lead=36.5,
+      speed_lead_values=[14.9, 14.5, 13.5, 12.0, 10.0, 8.0, 8.0],
+      lead_y_rel_values=[-0.4, -0.8, -1.8, -2.2, -2.0, -1.2, -0.6],
+      cruise_values=[15.83 for _ in breakpoints],
+      breakpoints=breakpoints,
+    )
+  )
+
+
 def test_lead_creep_then_stop_does_not_launch_from_gap_noise():
   output = evaluate_maneuver_output(
     Maneuver(
@@ -906,6 +924,15 @@ def test_lateral_exited_slowing_lead_does_not_force_hard_brake():
   assert np.min(exiting_output[release_window, 5]) > -0.8
   assert np.min(in_path_output[in_path_window, 5]) < -1.5
   assert np.min(exiting_output[release_window, 5]) > np.min(in_path_output[in_path_window, 5]) + 1.0
+
+
+def test_curved_lane_closing_lead_keeps_stop_threat_braking():
+  output = run_curved_lane_closing_lead_simulation()
+
+  threat_window = (output[:, 0] >= 3.0) & (output[:, 0] <= 4.2)
+
+  assert np.min(output[threat_window, 5]) < -1.0
+  assert np.min(output[:, 6]) > STOP_DISTANCE - 0.3
 
 
 @parameterized_class(("e2e", "force_decel"), itertools.product([True, False], repeat=2))
