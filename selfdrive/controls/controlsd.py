@@ -128,6 +128,16 @@ class Controls(ControlsExt):
       device_pose = Pose.from_live_pose(self.sm['livePose'])
       self.calibrated_pose = self.pose_calibrator.build_calibrated_pose(device_pose)
 
+  def get_lateral_maneuver_curvature(self, lat_active: bool) -> float | None:
+    if not lat_active or not self.sm.all_checks(['lateralManeuverPlan']):
+      return None
+
+    desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature
+    if not math.isfinite(desired_curvature):
+      cloudlog.error(f"lateralManeuverPlan.desiredCurvature not finite {desired_curvature}")
+      return None
+    return float(desired_curvature)
+
   def state_control(self):
     CS = self.sm['carState']
 
@@ -178,10 +188,11 @@ class Controls(ControlsExt):
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
-    if self.sm.valid['lateralManeuverPlan']:
+    lateral_maneuver_curvature = self.get_lateral_maneuver_curvature(CC.latActive)
+    if lateral_maneuver_curvature is not None:
       self.lane_change_path_shaper.reset()
       self.model_path_processor.reset()
-      new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
+      new_desired_curvature = lateral_maneuver_curvature
     else:
       turn_curvature_sign = 0
       if model_v2.meta.laneChangeState == LaneChangeState.off and self.sm.valid['modelDataV2SP']:
