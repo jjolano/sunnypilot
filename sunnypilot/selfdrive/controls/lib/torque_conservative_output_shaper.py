@@ -17,6 +17,12 @@ HIGH_OUTPUT_FRACTION = 0.70
 OUTPUT_RATE_RECOVERY_WINDOW = 0.40
 OUTPUT_RECOVERY_RATE = 2.50
 OUTPUT_SIGN_TRANSITION_RATE = 4.00
+AUTHORITY_RECOVERY_LOW_SPEED = 8.0
+AUTHORITY_RECOVERY_MID_SPEED = 15.0
+AUTHORITY_RECOVERY_HIGH_SPEED = 25.0
+AUTHORITY_RECOVERY_LOW_SPEED_RATE = 1.20
+AUTHORITY_RECOVERY_HIGH_SPEED_RATE = 4.00
+AUTHORITY_RECOVERY_BYPASS_UNDER_RESPONSE = 0.50
 STEERING_RATE_COMFORT_START = 15.0
 STEERING_RATE_COMFORT_FULL = 80.0
 STEERING_RATE_COMFORT_RATE = 0.75
@@ -175,6 +181,10 @@ class TorqueConservativeOutputShaper:
       and not sign_conflict
       and not bump_response
     )
+    strong_under_response_catchup = (
+      clear_under_response_catchup
+      and desired_sign * (inputs.desired_lateral_accel - inputs.actual_lateral_accel) > AUTHORITY_RECOVERY_BYPASS_UNDER_RESPONSE
+    )
 
     if inputs.steering_pressed:
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, OVERRIDE_RELEASE_CAP, 1.0,
@@ -271,7 +281,8 @@ class TorqueConservativeOutputShaper:
     shaped_output, rate_limited = self._apply_output_rate_limit(inputs, shaped_output, recently_shaped, recently_over_response,
                                                                 steering_rate_comfort_shaping, actuator_lag_comfort_shaping,
                                                                 stale_actuator_reversal_shaping, recently_actuator_lag_comfort,
-                                                                clear_under_response_catchup, recently_hard_shaped)
+                                                                clear_under_response_catchup, recently_hard_shaped,
+                                                                strong_under_response_catchup)
     if rate_limited:
       reason |= ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
       confidence = max(confidence, 1.0)
@@ -302,7 +313,8 @@ class TorqueConservativeOutputShaper:
                                recently_shaped: bool, recently_over_response: bool,
                                steering_rate_comfort_shaping: bool, actuator_lag_comfort_shaping: bool,
                                stale_actuator_reversal_shaping: bool, recently_actuator_lag_comfort: bool,
-                               clear_under_response_catchup: bool, recently_hard_shaped: bool) -> tuple[float, bool]:
+                               clear_under_response_catchup: bool, recently_hard_shaped: bool,
+                               strong_under_response_catchup: bool) -> tuple[float, bool]:
     if (
       self._previous_output is None
       or (not recently_shaped and not steering_rate_comfort_shaping and not actuator_lag_comfort_shaping and not stale_actuator_reversal_shaping)
@@ -314,6 +326,8 @@ class TorqueConservativeOutputShaper:
     previous_sign = sign(self._previous_output)
     target_abs = abs(target_output)
     previous_abs = abs(self._previous_output)
+    if strong_under_response_catchup and not stale_actuator_reversal_shaping and target_sign == previous_sign:
+      return target_output, False
     if clear_under_response_catchup and not recently_hard_shaped and not stale_actuator_reversal_shaping:
       return target_output, False
 
@@ -357,6 +371,8 @@ class TorqueConservativeOutputShaper:
       recovery_rate = ACTUATOR_LAG_COMFORT_RATE
     elif steering_rate_comfort_shaping and reinforces_steering_rate:
       recovery_rate = STEERING_RATE_COMFORT_RATE
+    elif recently_hard_shaped:
+      recovery_rate = self._authority_recovery_rate(inputs.v_ego)
     else:
       recovery_rate = OUTPUT_RECOVERY_RATE
     limited_abs = min(target_abs, previous_abs + recovery_rate * self.dt)
@@ -433,6 +449,21 @@ class TorqueConservativeOutputShaper:
     span = ACTUATOR_LAG_COMFORT_HIGH_SPEED - ACTUATOR_LAG_COMFORT_MID_SPEED
     ratio = (v_ego - ACTUATOR_LAG_COMFORT_MID_SPEED) / max(span, 1e-3)
     return ACTUATOR_LAG_COMFORT_MID_SPEED_CAP + ratio * (ACTUATOR_LAG_COMFORT_HIGH_SPEED_CAP - ACTUATOR_LAG_COMFORT_MID_SPEED_CAP)
+
+  @staticmethod
+  def _authority_recovery_rate(v_ego: float) -> float:
+    if v_ego <= AUTHORITY_RECOVERY_LOW_SPEED:
+      return AUTHORITY_RECOVERY_LOW_SPEED_RATE
+    if v_ego <= AUTHORITY_RECOVERY_MID_SPEED:
+      span = AUTHORITY_RECOVERY_MID_SPEED - AUTHORITY_RECOVERY_LOW_SPEED
+      ratio = (v_ego - AUTHORITY_RECOVERY_LOW_SPEED) / max(span, 1e-3)
+      return AUTHORITY_RECOVERY_LOW_SPEED_RATE + ratio * (OUTPUT_RECOVERY_RATE - AUTHORITY_RECOVERY_LOW_SPEED_RATE)
+    if v_ego >= AUTHORITY_RECOVERY_HIGH_SPEED:
+      return AUTHORITY_RECOVERY_HIGH_SPEED_RATE
+
+    span = AUTHORITY_RECOVERY_HIGH_SPEED - AUTHORITY_RECOVERY_MID_SPEED
+    ratio = (v_ego - AUTHORITY_RECOVERY_MID_SPEED) / max(span, 1e-3)
+    return OUTPUT_RECOVERY_RATE + ratio * (AUTHORITY_RECOVERY_HIGH_SPEED_RATE - OUTPUT_RECOVERY_RATE)
 
   def _reset(self) -> None:
     self._previous_output = None
