@@ -25,7 +25,6 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist 
   ACTIVE_STATES,
   DISTANCE_LONG_PRESS,
   PRE_ACTIVE_GUARD_PERIOD,
-  SPEED_LIMIT_SETPOINT_ACCEL_UP,
   SpeedLimitAssist,
 )
 from openpilot.sunnypilot.selfdrive.selfdrived import events as events_sp_module
@@ -345,15 +344,15 @@ class TestSpeedLimitAssist:
 
     assert target_speed < self.sla.output_v_target < far_target
 
-  def test_higher_limit_setpoint_ramps_up_gently(self):
+  def test_higher_limit_setpoint_matches_limit_immediately(self):
     self.initialize_active_state(SPEED_LIMITS['city'])
     self.sla.output_v_target = SPEED_LIMITS['city']
 
     self.sla.update(True, False, SPEED_LIMITS['city'], 0.0, self.pcm_long_max_set_speed, SPEED_LIMITS['freeway'],
                     SPEED_LIMITS['freeway'], True, 0.0, self.events_sp)
 
-    assert self.sla.output_v_target == pytest.approx(SPEED_LIMITS['city'] + SPEED_LIMIT_SETPOINT_ACCEL_UP * DT_MDL)
-    assert self.sla.output_a_target == pytest.approx(SPEED_LIMIT_SETPOINT_ACCEL_UP)
+    assert self.sla.output_v_target == pytest.approx(SPEED_LIMITS['freeway'])
+    assert self.sla.output_a_target == pytest.approx(0.0)
 
   def test_diagnostic_accel_uses_current_accel_when_setpoint_starts_unset(self):
     self.initialize_active_state(self.pcm_long_max_set_speed)
@@ -364,15 +363,15 @@ class TestSpeedLimitAssist:
     assert self.sla.state == SpeedLimitAssistState.active
     assert self.sla.output_a_target == pytest.approx(-2.0)
 
-  def test_active_accel_target_reports_setpoint_delta(self):
+  def test_active_accel_target_uses_current_accel_on_higher_setpoint(self):
     self.initialize_active_state(self.pcm_long_max_set_speed)
     self.sla.output_v_target = SPEED_LIMITS['city']
 
     self.sla.update(True, False, SPEED_LIMITS['city'], 0.0, self.pcm_long_max_set_speed, SPEED_LIMITS['highway'],
                     SPEED_LIMITS['highway'], True, 0, self.events_sp)
 
-    assert self.sla.output_v_target == pytest.approx(SPEED_LIMITS['city'] + SPEED_LIMIT_SETPOINT_ACCEL_UP * DT_MDL)
-    assert self.sla.output_a_target == pytest.approx(SPEED_LIMIT_SETPOINT_ACCEL_UP)
+    assert self.sla.output_v_target == pytest.approx(SPEED_LIMITS['highway'])
+    assert self.sla.output_a_target == pytest.approx(0.0)
 
   def test_active_accel_target_is_current_accel_when_setpoint_starts_unset(self):
     self.initialize_active_state(self.pcm_long_max_set_speed)
@@ -382,15 +381,15 @@ class TestSpeedLimitAssist:
 
     assert self.sla.output_a_target == pytest.approx(0.0)
 
-  def test_higher_limit_setpoint_saturates_at_speed_limit(self):
+  def test_higher_limit_setpoint_reports_current_accel_when_reaching_limit(self):
     self.initialize_active_state(self.pcm_long_max_set_speed)
-    self.sla.output_v_target = SPEED_LIMITS['freeway'] - SPEED_LIMIT_SETPOINT_ACCEL_UP * DT_MDL * 0.5
+    self.sla.output_v_target = SPEED_LIMITS['city']
 
     self.sla.update(True, False, SPEED_LIMITS['city'], 0.0, self.pcm_long_max_set_speed, SPEED_LIMITS['freeway'],
                     SPEED_LIMITS['freeway'], True, 0, self.events_sp)
 
     assert self.sla.output_v_target == pytest.approx(SPEED_LIMITS['freeway'])
-    assert self.sla.output_a_target == pytest.approx(SPEED_LIMIT_SETPOINT_ACCEL_UP * 0.5)
+    assert self.sla.output_a_target == pytest.approx(0.0)
 
   def test_long_override_suspends_auto_cruise_targets_without_disabling_session(self):
     self.initialize_active_state(self.pcm_long_max_set_speed)
