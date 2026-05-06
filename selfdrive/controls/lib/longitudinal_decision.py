@@ -5,6 +5,8 @@ from enum import Enum
 import math
 from typing import Any
 
+from cereal import log
+
 
 class CandidateRole(Enum):
   DRIVER_INTENT = "driver_intent"
@@ -208,26 +210,85 @@ def get_active_lead_confidence(*leads: Any) -> float:
 
 
 def apply_longitudinal_decision_output(decision: LongitudinalDecision, legacy_a_target: float,
-                                       legacy_should_stop: bool) -> tuple[float, bool]:
+                                       legacy_should_stop: bool, prev_a_target: float | None = None,
+                                       personality: int = log.LongitudinalPersonality.standard,
+                                       dt: float = 0.0, comfort_active: bool = True) -> tuple[float, bool]:
   legacy_should_stop = bool(legacy_should_stop)
   if not decision.enabled or decision.winner in (DecisionSource.LEGACY_FALLBACK, DecisionSource.CRUISE):
-    return float(legacy_a_target), legacy_should_stop
-
-  if decision.winner in (DecisionSource.LEAD_MPC, DecisionSource.E2E_STOP, DecisionSource.STOP_LAUNCH):
-    return float(legacy_a_target), legacy_should_stop or decision.should_stop
-
-  if decision.winner in (
+    output_a_target = float(legacy_a_target)
+    output_should_stop = legacy_should_stop
+  elif decision.winner in (DecisionSource.LEAD_MPC, DecisionSource.E2E_STOP, DecisionSource.STOP_LAUNCH):
+    output_a_target = float(legacy_a_target)
+    output_should_stop = legacy_should_stop or decision.should_stop
+  elif decision.winner in (
     DecisionSource.SPEED_LIMIT,
     DecisionSource.SCC_VISION,
     DecisionSource.SCC_MAP,
     DecisionSource.OSM_TRAFFIC_CONTROL,
   ):
-    return min(float(decision.a_target), float(legacy_a_target)), legacy_should_stop or decision.should_stop
+    output_a_target = min(float(decision.a_target), float(legacy_a_target))
+    output_should_stop = legacy_should_stop or decision.should_stop
+  elif decision.winner == DecisionSource.CRUISE_COAST:
+    output_a_target = float(decision.a_target)
+    output_should_stop = legacy_should_stop or decision.should_stop
+  else:
+    output_a_target = float(legacy_a_target)
+    output_should_stop = legacy_should_stop
 
-  if decision.winner == DecisionSource.CRUISE_COAST:
-    return float(decision.a_target), legacy_should_stop or decision.should_stop
+  if comfort_active and not output_should_stop and prev_a_target is not None:
+    output_a_target = apply_personality_accel_comfort(decision, output_a_target, prev_a_target, personality, dt)
+  return output_a_target, output_should_stop
 
-  return float(legacy_a_target), legacy_should_stop
+
+ACCEL_COMFORT_POSITIVE_RATE = {
+  log.LongitudinalPersonality.relaxed: 1.2,
+  log.LongitudinalPersonality.standard: 2.0,
+  log.LongitudinalPersonality.aggressive: 4.0,
+}
+ACCEL_COMFORT_MILD_DECEL_RATE = {
+  log.LongitudinalPersonality.relaxed: 1.6,
+  log.LongitudinalPersonality.standard: 2.4,
+  log.LongitudinalPersonality.aggressive: 4.0,
+}
+ACCEL_COMFORT_URGENT_DECEL_DELTA = 0.6
+ACCEL_COMFORT_URGENT_DECEL_TARGET = -0.7
+ACCEL_COMFORT_BYPASS_SOURCES = frozenset((
+  DecisionSource.CRUISE,
+  DecisionSource.LEAD_MPC,
+  DecisionSource.E2E_STOP,
+  DecisionSource.STOP_LAUNCH,
+  DecisionSource.LEGACY_FALLBACK,
+))
+
+
+def _personality_rate(rates: dict[log.LongitudinalPersonality, float], personality: int) -> float:
+  return rates.get(personality, rates[log.LongitudinalPersonality.standard])
+
+
+def apply_personality_accel_comfort(decision: LongitudinalDecision, a_target: float, prev_a_target: float,
+                                   personality: int, dt: float) -> float:
+  a_target = float(a_target)
+  prev_a_target = float(prev_a_target)
+  if (
+    not decision.enabled
+    or decision.should_stop
+    or decision.winner in ACCEL_COMFORT_BYPASS_SOURCES
+    or not math.isfinite(a_target)
+    or not math.isfinite(prev_a_target)
+    or dt <= 0.0
+  ):
+    return a_target
+
+  delta = a_target - prev_a_target
+  if delta >= 0.0:
+    max_delta = _personality_rate(ACCEL_COMFORT_POSITIVE_RATE, personality) * dt
+    return min(a_target, prev_a_target + max_delta)
+
+  if delta <= -ACCEL_COMFORT_URGENT_DECEL_DELTA or a_target <= ACCEL_COMFORT_URGENT_DECEL_TARGET:
+    return a_target
+
+  max_delta = _personality_rate(ACCEL_COMFORT_MILD_DECEL_RATE, personality) * dt
+  return max(a_target, prev_a_target - max_delta)
 
 
 def build_core_longitudinal_candidates(has_lead: bool, lead_confidence: float, v_cruise: float, a_cruise: float,

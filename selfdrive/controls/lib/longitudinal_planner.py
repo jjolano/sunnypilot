@@ -32,6 +32,7 @@ A_CRUISE_MAX_BP = [0.0, 10.0, 25.0, 40.0]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
+DECISION_ACCEL_COMFORT_MIN_V_EGO = 1.0
 CREEP_TO_STOP_GAP_START_EXCESS = 2.0
 CREEP_TO_STOP_GAP_FOLLOW_EXCESS = 1.0
 CREEP_TO_STOP_GAP_ARM_EXCESS = CREEP_TO_STOP_GAP_START_EXCESS
@@ -873,8 +874,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       arbiter=self.longitudinal_arbiter,
     )
     if self.longitudinal_decision.enabled:
+      decision_accel_comfort_active = not (
+        reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed or
+        v_ego < DECISION_ACCEL_COMFORT_MIN_V_EGO or
+        sm['controlsState'].longControlState == LongCtrlState.starting or
+        limit_creep_pullaway_accel_step
+      )
       output_a_target, self.output_should_stop = apply_longitudinal_decision_output(
-        self.longitudinal_decision, legacy_a_target, legacy_should_stop
+        self.longitudinal_decision, legacy_a_target, legacy_should_stop,
+        prev_a_target=prev_output_a_target,
+        personality=sm['selfdriveState'].personality,
+        dt=self.dt,
+        comfort_active=decision_accel_comfort_active,
       )
 
     lead_loss_snapshot_lead = lead_loss_guard_lead
