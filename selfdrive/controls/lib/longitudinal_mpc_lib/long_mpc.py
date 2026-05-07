@@ -149,6 +149,10 @@ MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_DECEL = 0.65
 MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_EXCESS_BP = [0.0, 2.0]
 MOVING_LEAD_STOP_APPROACH_COAST_FIRST_EXCESS = 0.25
 MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP = [0.2, 0.8, 1.5, 2.0]
+MOVING_LEAD_STOP_APPROACH_DESIRED_TTC_FADE = 3.5
+MOVING_LEAD_STOP_APPROACH_DESIRED_TTC_MAX_BLEND = 0.5
+MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FULL = 1.0
+MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FADE = 2.0
 MOVING_LEAD_STOP_APPROACH_COST = 50.0
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED = 0.8
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_STANDARD = 1.0
@@ -835,6 +839,30 @@ def get_moving_lead_stop_approach_gap_deficit_blend(d_rel, v_lead, t_follow, tar
   )
 
 
+def get_moving_lead_stop_approach_ttc_gate(x_lead, v_ego, v_lead, t_follow):
+  x_lead = np.asarray(x_lead, dtype=float)
+  v_lead = np.asarray(v_lead, dtype=float)
+  closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  if np.all(closing_speed <= 0.0):
+    return np.zeros_like(x_lead)
+
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+  desired_ttc = np.maximum(x_lead - desired_gap, 0.0) / np.maximum(closing_speed, 1e-3)
+  danger_ttc = np.maximum(x_lead - min_gap, 0.0) / np.maximum(closing_speed, 1e-3)
+  desired_gate = MOVING_LEAD_STOP_APPROACH_DESIRED_TTC_MAX_BLEND * (1.0 - np.interp(
+    desired_ttc,
+    [0.0, MOVING_LEAD_STOP_APPROACH_DESIRED_TTC_FADE],
+    [0.0, 1.0],
+  ))
+  danger_gate = 1.0 - np.interp(
+    danger_ttc,
+    [MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FULL, MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FADE],
+    [0.0, 1.0],
+  )
+  return np.maximum(desired_gate, danger_gate)
+
+
 def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
   x_lead = np.asarray(x_lead, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
@@ -867,6 +895,9 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
     MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_EXCESS_BP,
     [0.0, 1.0],
   )
+  ttc_gate = get_moving_lead_stop_approach_ttc_gate(x_lead, v_ego, v_lead, t_follow)
+  excess_closing_blend *= ttc_gate
+  brake_excess_closing_blend *= ttc_gate
   soft_ramp_decel_blend = np.interp(
     np.clip(-a_lead, 0.0, MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP[-1]),
     MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP,
