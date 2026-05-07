@@ -931,7 +931,6 @@ struct ControlsState @0x97ff69c53601abf1 {
       pathDisagreement @9;
       curvatureJump @10;
       lateralManeuver @11;
-      mapCurvatureFallback @12;
     }
 
     active @0 :Bool;
@@ -941,7 +940,6 @@ struct ControlsState @0x97ff69c53601abf1 {
     rawDesiredCurvature @4 :Float32;
     processedDesiredCurvature @5 :Float32;
     holdFramesRemaining @6 :UInt8;
-    mapCurvatureUsed @7 :Bool;
   }
 
   deprecated :group {

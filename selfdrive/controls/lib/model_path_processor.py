@@ -28,10 +28,6 @@ HARD_INVALID_FALLBACK_MEASURED_ALPHA = 0.25
 SOFT_GATE_HOLD_FRAMES = 2
 SOFT_GATE_HOLD_QUALITY = 0.70
 SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "path_disagreement"))
-MAP_FALLBACK_REASONS = frozenset((*SOFT_GATE_REASONS, "invalid_path", "nonfinite_curvature"))
-MAP_FALLBACK_MIN_REFERENCE_CURVATURE = 2e-4
-MAP_FALLBACK_MAX_LAT_ACCEL = 2.5
-MAP_FALLBACK_MAX_LAT_ACCEL_JUMP = 1.5
 
 
 @dataclass
@@ -49,8 +45,6 @@ class ModelPathProcessorInputs:
   lane_line_probs: Sequence[float]
   turn_curvature_sign: int = 0
   frame_drop_perc: float = 0.0
-  map_curvature_enabled: bool = False
-  map_curvature: float | None = None
 
 
 @dataclass
@@ -60,7 +54,6 @@ class ModelPathProcessorResult:
   gated: bool
   reason: str
   hold_frames_remaining: int = 0
-  map_curvature_used: bool = False
 
 
 class ModelPathProcessor:
@@ -78,16 +71,10 @@ class ModelPathProcessor:
 
     if not math.isfinite(inputs.desired_curvature):
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
-      map_fallback = self._map_curvature_fallback(inputs, hard_invalid_fallback, "nonfinite_curvature")
-      if map_fallback is not None:
-        return map_fallback
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature")
 
     if not self._valid_core_path(inputs.position_x, inputs.position_y):
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
-      map_fallback = self._map_curvature_fallback(inputs, hard_invalid_fallback, "invalid_path")
-      if map_fallback is not None:
-        return map_fallback
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path")
 
     desired_curvature = float(inputs.desired_curvature)
@@ -134,9 +121,6 @@ class ModelPathProcessor:
     quality, reason, hold_frames_remaining = self._apply_soft_gate_hold(quality, reason)
 
     if quality < LOW_QUALITY_BLEND_THRESHOLD:
-      map_fallback = self._map_curvature_fallback(inputs, fallback_curvature, reason, hold_frames_remaining)
-      if map_fallback is not None:
-        return map_fallback
       alpha = float(np.interp(quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0]))
       desired_curvature = self._blend(fallback_curvature, desired_curvature, alpha)
       return ModelPathProcessorResult(desired_curvature, quality, True, reason, hold_frames_remaining)
@@ -163,39 +147,6 @@ class ModelPathProcessor:
     if math.isfinite(measured_curvature):
       return float(measured_curvature)
     return 0.0
-
-  @classmethod
-  def _map_curvature_fallback(
-    cls,
-    inputs: ModelPathProcessorInputs,
-    fallback_curvature: float,
-    blocked_reason: str,
-    hold_frames_remaining: int = 0,
-  ) -> ModelPathProcessorResult | None:
-    if blocked_reason not in MAP_FALLBACK_REASONS or not inputs.map_curvature_enabled:
-      return None
-    if inputs.map_curvature is None or not math.isfinite(inputs.map_curvature):
-      return None
-
-    map_curvature = float(inputs.map_curvature)
-    v_ego = max(float(inputs.v_ego), 1.0)
-    if abs(map_curvature) * v_ego ** 2 > MAP_FALLBACK_MAX_LAT_ACCEL:
-      return None
-    if math.isfinite(fallback_curvature) and abs(map_curvature - fallback_curvature) * v_ego ** 2 > MAP_FALLBACK_MAX_LAT_ACCEL_JUMP:
-      return None
-
-    reference_curvature = cls._map_fallback_reference_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
-    if reference_curvature is None or map_curvature * reference_curvature <= 0.0:
-      return None
-
-    return ModelPathProcessorResult(map_curvature, 0.65, True, "map_curvature_fallback", hold_frames_remaining, True)
-
-  @staticmethod
-  def _map_fallback_reference_curvature(previous_desired_curvature: float, measured_curvature: float) -> float | None:
-    for curvature in (previous_desired_curvature, measured_curvature):
-      if math.isfinite(curvature) and abs(curvature) >= MAP_FALLBACK_MIN_REFERENCE_CURVATURE:
-        return float(curvature)
-    return None
 
   @classmethod
   def _hard_invalid_fallback_curvature(cls, previous_desired_curvature: float, measured_curvature: float) -> float:
