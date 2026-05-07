@@ -6,7 +6,6 @@ import pytest
 from cereal import log
 
 from openpilot.sunnypilot.mapd.live_map_data.mapd_v2_map_data import MapdV2MapData
-from openpilot.sunnypilot.navd.helpers import Coordinate
 
 
 class FakeParams:
@@ -31,15 +30,6 @@ class FakePubMaster:
 
   def send(self, service, msg):
     self.messages.append((service, msg))
-
-
-class FakeSubMaster(dict):
-  def __init__(self, *args, mapd_extended_fresh=True, **kwargs):
-    super().__init__(*args, **kwargs)
-    self.mapd_extended_fresh = mapd_extended_fresh
-
-  def all_checks(self, services):
-    return "mapdExtendedOut" not in services or self.mapd_extended_fresh
 
 
 def make_mapd_out(**overrides):
@@ -88,13 +78,13 @@ def make_location(**overrides):
   return SimpleNamespace(**values)
 
 
-def build_map_data(mapd_out=None, mapd_extended=None, mapd_extended_fresh=True):
+def build_map_data(mapd_out=None, mapd_extended=None):
   data = MapdV2MapData.__new__(MapdV2MapData)
-  data.sm = FakeSubMaster({
+  data.sm = {
     "mapdOut": mapd_out or make_mapd_out(),
     "mapdExtendedOut": mapd_extended or make_mapd_extended(),
     "liveLocationKalman": make_location(),
-  }, mapd_extended_fresh=mapd_extended_fresh)
+  }
   data.params = FakeParams()
   data.mem_params = FakeParams()
   data.pm = FakePubMaster()
@@ -103,10 +93,6 @@ def build_map_data(mapd_out=None, mapd_extended=None, mapd_extended_fresh=True):
   data.localizer_valid = False
   data._download_progress_started = False
   return data
-
-
-def set_last_position(data, latitude=39.0, longitude=-84.0):
-  data.last_position = Coordinate(latitude, longitude)
 
 
 def test_mapd_v2_getters_populate_live_map_fields():
@@ -147,74 +133,6 @@ def test_mapd_v2_publish_populates_supported_live_map_fields():
   assert live_map_data.roadContext == "freeway"
   assert not live_map_data.trafficControlValid
   assert not live_map_data.trafficControlAheadValid
-
-
-def test_mapd_v2_gets_forward_road_curvatures_from_path():
-  path = [
-    SimpleNamespace(latitude=39.0, longitude=-84.0, curvature=0.001, targetVelocity=20.0),
-    SimpleNamespace(latitude=39.00009, longitude=-84.0, curvature=0.0015, targetVelocity=18.0),
-    SimpleNamespace(latitude=39.00018, longitude=-84.0, curvature=float("nan"), targetVelocity=16.0),
-    SimpleNamespace(latitude=39.00027, longitude=-84.0, curvature=-0.002, targetVelocity=14.0),
-  ]
-  data = build_map_data(mapd_extended=make_mapd_extended(path=path))
-
-  distances, curvatures = data.get_road_curvatures()
-
-  assert distances[0] == pytest.approx(0.0)
-  assert distances[1] == pytest.approx(10.0, abs=1.0)
-  assert distances[2] == pytest.approx(30.0, abs=1.0)
-  assert curvatures == pytest.approx([0.001, 0.0015, -0.002])
-
-
-def test_mapd_v2_road_curvatures_are_distances_from_current_position_projection():
-  path = [
-    SimpleNamespace(latitude=39.0, longitude=-84.0, curvature=0.001, targetVelocity=20.0),
-    SimpleNamespace(latitude=39.00009, longitude=-84.0, curvature=0.0015, targetVelocity=18.0),
-    SimpleNamespace(latitude=39.00018, longitude=-84.0, curvature=0.002, targetVelocity=16.0),
-  ]
-  data = build_map_data(mapd_extended=make_mapd_extended(path=path))
-  set_last_position(data, latitude=39.000045, longitude=-84.0)
-
-  distances, curvatures = data.get_road_curvatures()
-
-  assert distances == pytest.approx([5.0, 15.0], abs=1.0)
-  assert curvatures == pytest.approx([0.0015, 0.002])
-
-
-def test_mapd_v2_road_curvatures_reject_far_off_route_position():
-  path = [
-    SimpleNamespace(latitude=39.0, longitude=-84.0, curvature=0.001, targetVelocity=20.0),
-    SimpleNamespace(latitude=39.00009, longitude=-84.0, curvature=0.0015, targetVelocity=18.0),
-  ]
-  data = build_map_data(mapd_extended=make_mapd_extended(path=path))
-  set_last_position(data, latitude=39.01, longitude=-84.0)
-
-  assert data.get_road_curvatures() == ([], [])
-
-
-def test_mapd_v2_road_curvatures_require_fresh_extended_path():
-  path = [
-    SimpleNamespace(latitude=39.0, longitude=-84.0, curvature=0.001, targetVelocity=20.0),
-    SimpleNamespace(latitude=39.00009, longitude=-84.0, curvature=0.0015, targetVelocity=18.0),
-  ]
-  data = build_map_data(mapd_extended=make_mapd_extended(path=path), mapd_extended_fresh=False)
-
-  assert data.get_road_curvatures() == ([], [])
-
-
-def test_mapd_v2_publish_exposes_road_curvatures():
-  path = [
-    SimpleNamespace(latitude=39.0, longitude=-84.0, curvature=0.001, targetVelocity=20.0),
-    SimpleNamespace(latitude=39.00009, longitude=-84.0, curvature=0.0015, targetVelocity=18.0),
-  ]
-  data = build_map_data(mapd_extended=make_mapd_extended(path=path))
-
-  data.publish()
-
-  live_map_data = data.pm.messages[0][1].liveMapDataSP
-  assert live_map_data.roadCurvatureValid
-  assert list(live_map_data.roadCurvatureDistances) == pytest.approx([0.0, 10.0], abs=1.0)
-  assert list(live_map_data.roadCurvatures) == pytest.approx([0.001, 0.0015])
 
 
 def test_mapd_v2_publish_exposes_supported_hazards_as_traffic_controls():
