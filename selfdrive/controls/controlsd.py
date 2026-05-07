@@ -97,6 +97,9 @@ def map_curvature_at_model_horizon(live_map_data, v_ego: float, enabled: bool, a
 
   if not distances or len(distances) != len(curvatures):
     return None
+  v_ego = float(v_ego)
+  if not math.isfinite(v_ego):
+    return None
   if not math.isfinite(action_t) or action_t < 0.0:
     return None
   if not all(math.isfinite(d) and d >= 0.0 for d in distances) or not all(math.isfinite(c) for c in curvatures):
@@ -104,7 +107,7 @@ def map_curvature_at_model_horizon(live_map_data, v_ego: float, enabled: bool, a
   if any(next_distance < distance for distance, next_distance in zip(distances, distances[1:])):
     return None
 
-  target_distance = max(0.0, float(v_ego)) * action_t
+  target_distance = max(0.0, v_ego) * action_t
   if target_distance > distances[-1] + MAP_CURVATURE_DISTANCE_WINDOW:
     return None
   if target_distance <= distances[0]:

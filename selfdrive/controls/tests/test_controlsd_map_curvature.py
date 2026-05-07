@@ -43,6 +43,17 @@ def test_map_curvature_at_model_horizon_rejects_invalid_map_data():
   assert curvature is None
 
 
+@pytest.mark.parametrize("v_ego", [float("nan"), float("inf"), -float("inf")])
+def test_map_curvature_at_model_horizon_rejects_non_finite_speed(v_ego):
+  curvature = map_curvature_at_model_horizon(
+    make_live_map_data(),
+    v_ego=v_ego,
+    enabled=True,
+  )
+
+  assert curvature is None
+
+
 def test_map_curvature_at_model_horizon_rejects_mismatched_samples():
   curvature = map_curvature_at_model_horizon(
     make_live_map_data(roadCurvatureDistances=[0.0, 10.0], roadCurvatures=[0.0]),

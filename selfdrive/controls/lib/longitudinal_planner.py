@@ -5,9 +5,10 @@ import numpy as np
 from cereal import custom, log
 import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
@@ -295,7 +296,7 @@ def apply_lead_loss_e2e_guard_accel(e2e_accel, e2e_should_stop, timer, has_lead)
   return max(e2e_accel, LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
 
 
-def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
+def limit_accel_in_turns(v_ego, angle_steers, a_target, CP, control_calculation_hardening=False):
   """
   This function returns a limited long acceleration allowed, depending on the existing lateral acceleration
   this should avoid accelerating when losing the target in turns
@@ -303,7 +304,10 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   # FIXME: This function to calculate lateral accel is incorrect and should use the VehicleModel
   # The lookup table for turns should also be updated if we do this
   a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
-  a_y = v_ego**2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
+  if control_calculation_hardening:
+    a_y = v_ego**2 * VehicleModel(CP).calc_curvature(angle_steers * CV.DEG_TO_RAD, v_ego, 0.0)
+  else:
+    a_y = v_ego**2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
   a_x_allowed = math.sqrt(max(a_total_max**2 - a_y**2, 0.0))
 
   return [a_target[0], min(a_target[1], a_x_allowed)]
@@ -555,6 +559,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
+    try:
+      self.control_calculation_hardening = Params().get_bool("ControlCalculationHardening")
+    except UnknownKeyName:
+      self.control_calculation_hardening = False
 
   @staticmethod
   def parse_model(model_msg):
@@ -617,7 +625,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
     steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
-    accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
+    accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP, self.control_calculation_hardening)
 
     if reset_state:
       self.v_desired_filter.x = v_ego
