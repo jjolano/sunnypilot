@@ -73,6 +73,9 @@ class OsmMapData(BaseMapData):
 
     return lanes, self._distance_to_section_start(next_lanes_section)
 
+  def get_road_curvatures(self) -> tuple[list[float], list[float]]:
+    return [], []
+
   def get_road_context(self) -> str:
     try:
       context = self.mem_params.get("MapRoadContext")
