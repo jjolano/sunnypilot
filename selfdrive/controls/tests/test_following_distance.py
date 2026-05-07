@@ -1688,16 +1688,20 @@ def test_route_like_pre_target_slowing_lead_starts_brake_ramp_before_gap_collaps
   assert cost > 0.0
 
 
-def test_pre_target_soft_ramp_brakes_for_dangerous_closing_rate_before_gap_deficit():
+def test_pre_target_soft_ramp_stays_subtle_before_danger_ttc_threshold():
   v_ego = 16.0
   v_lead = 10.0
   a_lead = -1.0
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   d_rel = get_desired_follow_distance(v_ego, v_lead, t_follow) + 20.0
+  closing_speed = v_ego - v_lead
+  danger_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+  danger_ttc = (d_rel - danger_gap) / closing_speed
 
   target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
 
-  assert target < -0.3
+  assert danger_ttc > long_mpc.MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FULL
+  assert -0.3 <= target <= 0.0
   assert cost > 0.0
 
 
@@ -1750,6 +1754,41 @@ def test_pre_target_excess_closing_uses_light_brake_when_coast_is_insufficient()
 
   assert -long_mpc.MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX <= target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
   assert cost > 0.0
+
+
+def test_pre_target_excess_closing_stays_subtle_with_large_danger_ttc():
+  v_ego = 12.73
+  v_lead = 6.58
+  d_rel = 58.5
+  a_lead = -1.5
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  closing_speed = v_ego - v_lead
+  danger_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+  danger_ttc = (d_rel - danger_gap) / closing_speed
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert danger_ttc > 1.0
+  assert -0.3 <= target <= 0.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_ttc_gate_releases_at_one_second_danger_ttc():
+  v_ego = 16.0
+  v_lead = 8.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  closing_speed = v_ego - v_lead
+  danger_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+  large_margin_gap = get_desired_follow_distance(v_ego, v_lead, t_follow) + 20.0
+  one_second_danger_gap = danger_gap + closing_speed * long_mpc.MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FULL
+
+  gates = long_mpc.get_moving_lead_stop_approach_ttc_gate(
+    np.array([large_margin_gap, one_second_danger_gap]), v_ego, v_lead, t_follow,
+  )
+
+  assert 0.0 < gates[0] < long_mpc.MOVING_LEAD_STOP_APPROACH_DESIRED_TTC_MAX_BLEND
+  assert gates[1] == pytest.approx(1.0)
 
 
 def test_hard_braking_moving_lead_keeps_stronger_target_when_close():
