@@ -10,6 +10,7 @@ from openpilot.common.swaglog import cloudlog
 # WARNING: imports outside of constants will not trigger a rebuild
 from openpilot.selfdrive.modeld.constants import index_function
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
+from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceTracker, adjust_new_lead_accel
 
 if __name__ == '__main__':  # generating code
   from openpilot.third_party.acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
@@ -1236,6 +1237,8 @@ class LongitudinalMpc:
     self.lead_transition_guard_timers = np.zeros(2)
     self.lead_transition_guard_latched = np.zeros(2, dtype=bool)
     self.lead_transition_was_status = np.zeros(2, dtype=bool)
+    self.lead_confidence_trackers = [LeadConfidenceTracker(), LeadConfidenceTracker()]
+    self.lead_confidence_states = [tracker.update(None, 0.0) for tracker in self.lead_confidence_trackers]
     self._last_set_weights_key = None
     self._last_cost_weight_key = None
     self._last_accel_match_costs = None
@@ -1306,12 +1309,12 @@ class LongitudinalMpc:
     lead_xv = np.column_stack((x_lead_traj, v_lead_traj))
     return lead_xv, a_lead_traj
 
-  def process_lead(self, lead):
+  def process_lead(self, lead, lead_confidence=None):
     v_ego = self.x0[1]
     if lead is not None and lead.status:
       x_lead = lead.dRel
       v_lead = lead.vLead
-      a_lead = lead.aLeadK
+      a_lead = adjust_new_lead_accel(lead.aLeadK, lead_confidence) if lead_confidence is not None else lead.aLeadK
       a_lead_tau = lead.aLeadTau
     else:
       # Fake a fast lead car, so mpc can keep running in the same mode
@@ -1468,9 +1471,12 @@ class LongitudinalMpc:
     lead_1_surge_decel_memory = self.update_lead_surge_decel_memory(1, radarstate.leadTwo)
     lead_0_transition_release = self.update_lead_transition_state(0, radarstate.leadOne)
     lead_1_transition_release = self.update_lead_transition_state(1, radarstate.leadTwo)
+    lead_0_confidence = self.lead_confidence_trackers[0].update(radarstate.leadOne, self.dt)
+    lead_1_confidence = self.lead_confidence_trackers[1].update(radarstate.leadTwo, self.dt)
+    self.lead_confidence_states = [lead_0_confidence, lead_1_confidence]
 
-    lead_xv_0, lead_0_a, lead_0_a_tau, lead_0_a_traj = self.process_lead(radarstate.leadOne)
-    lead_xv_1, lead_1_a, lead_1_a_tau, lead_1_a_traj = self.process_lead(radarstate.leadTwo)
+    lead_xv_0, lead_0_a, lead_0_a_tau, lead_0_a_traj = self.process_lead(radarstate.leadOne, lead_0_confidence)
+    lead_xv_1, lead_1_a, lead_1_a_tau, lead_1_a_traj = self.process_lead(radarstate.leadTwo, lead_1_confidence)
     lead_0_brake_a = get_lead_transition_adjusted_accel(lead_0_a, lead_0_transition_release)
     lead_1_brake_a = get_lead_transition_adjusted_accel(lead_1_a, lead_1_transition_release)
     lead_brake_xv_0, lead_0_brake_a_traj = lead_xv_0, lead_0_a_traj
@@ -1664,7 +1670,14 @@ class LongitudinalMpc:
     self.params[dominant_obstacle == 1, 0] = lead_1_gap_comfort_a_min[dominant_obstacle == 1]
     self.params[:, 1] = ACCEL_MAX
     self.params[:, 1] = np.minimum(self.params[:, 1], np.minimum(lead_0_crawl_accel_max, lead_1_crawl_accel_max))
-    apply_lead_transition_accel_guard(self.params[:, 1], max(self.lead_transition_guard_timers))
+    lead_confidence_guard_timer = 0.0
+    if dominant_obstacle[0] == 0:
+      lead_confidence_guard_timer = lead_0_confidence.guard_timer
+    elif dominant_obstacle[0] == 1:
+      lead_confidence_guard_timer = lead_1_confidence.guard_timer
+    apply_lead_transition_accel_guard(
+      self.params[:, 1], max(max(self.lead_transition_guard_timers), lead_confidence_guard_timer)
+    )
     self.params[:, 2] = np.min(x_obstacles, axis=1)
     self.params[:, 3] = np.copy(self.a_prev)
     self.params[:, 4] = t_follow

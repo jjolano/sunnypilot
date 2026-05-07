@@ -7,6 +7,7 @@ from openpilot.common.parameterized import parameterized_class
 
 from cereal import custom, log
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
+from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceState
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
@@ -996,6 +997,58 @@ def test_lead_transition_adjusted_accel_only_suppresses_decel():
 
   adjusted = get_lead_transition_adjusted_accel(np.array([-2.0, 0.5]), 0.5)
   assert adjusted.tolist() == pytest.approx([-1.0, 0.5])
+
+
+def test_process_lead_suppresses_new_lead_positive_accel():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, dRel=30.0, vLead=15.0, vLeadK=15.0, aLeadK=1.0, aLeadTau=0.0)
+  confidence = LeadConfidenceState(status=True, accel_blend=0.0)
+
+  _, a_lead, _, a_lead_traj = mpc.process_lead(lead, confidence)
+
+  assert a_lead == pytest.approx(0.0)
+  assert np.all(a_lead_traj == pytest.approx(0.0))
+
+
+def test_process_lead_preserves_new_lead_negative_accel():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, dRel=30.0, vLead=15.0, vLeadK=15.0, aLeadK=-1.0, aLeadTau=0.0)
+  confidence = LeadConfidenceState(status=True, accel_blend=0.0)
+
+  _, a_lead, _, a_lead_traj = mpc.process_lead(lead, confidence)
+
+  assert a_lead == pytest.approx(-1.0)
+  assert np.all(a_lead_traj == pytest.approx(-1.0))
+
+
+def test_new_lead_confidence_guard_caps_near_term_accel(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=25.0, vLead=18.0, vLeadK=18.0,
+    aLeadK=0.8, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  radarstate = SimpleNamespace(leadOne=lead, leadTwo=SimpleNamespace(status=False))
+
+  mpc.update(radarstate, v_cruise=25.0)
+
+  assert mpc.params[0, 1] == pytest.approx(0.0)
+
+
+def test_non_dominant_lead_two_confidence_guard_does_not_cap_accel(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  far_lead = SimpleNamespace(
+    status=True, radarTrackId=43, yRel=0.0, dRel=150.0, vLead=20.0, vLeadK=20.0,
+    aLeadK=0.8, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  radarstate = SimpleNamespace(leadOne=SimpleNamespace(status=False), leadTwo=far_lead)
+
+  mpc.update(radarstate, v_cruise=25.0)
+
+  assert mpc.params[0, 1] > 0.5
 
 
 def test_approach_brake_stays_stock_for_small_closure():
