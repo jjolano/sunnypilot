@@ -55,7 +55,7 @@ T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.0])
 COMFORT_BRAKE = 2.5
-STOP_DISTANCE = 6.0
+STOP_DISTANCE = 5.0
 LEAD_STOP_PRESENTATION_DISTANCE = 5.0
 LEAD_STOP_PRESENTATION_CONFIDENCE_MIN = 0.75
 LEAD_STOP_PRESENTATION_V_EGO_BP = [0.0, 3.0]
@@ -146,6 +146,7 @@ MOVING_LEAD_STOP_APPROACH_PRE_TARGET_MARGIN_BP = [4.0, 8.0]
 MOVING_LEAD_STOP_APPROACH_COAST_RECOVERY_GAP_BP = [0.0, 0.25, 0.5]
 MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_DECEL = 0.65
 MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_EXCESS_BP = [0.0, 2.0]
+MOVING_LEAD_STOP_APPROACH_COAST_FIRST_EXCESS = 0.25
 MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP = [0.2, 0.8, 1.5, 2.0]
 MOVING_LEAD_STOP_APPROACH_COST = 50.0
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED = 0.8
@@ -379,12 +380,14 @@ def get_short_gap_pullaway_response_target(v_ego, v_lead, d_rel, a_lead, t_follo
   presentation_distance = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
   cushion = np.asarray(d_rel, dtype=float) - presentation_distance
   closing_speed = np.asarray(v_ego, dtype=float) - np.asarray(v_lead, dtype=float)
+  model_confirmed = np.asarray(model_prob, dtype=float) >= LEAD_STOP_PRESENTATION_CONFIDENCE_MIN
 
   active = (
     (cushion > SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP) &
-    (np.asarray(d_rel, dtype=float) < STOP_DISTANCE) &
+    (cushion < SHORT_GAP_PULLAWAY_RESPONSE_FULL_GAP) &
     (closing_speed <= SHORT_GAP_PULLAWAY_RESPONSE_MAX_CLOSING) &
     (np.asarray(a_lead, dtype=float) >= SHORT_GAP_PULLAWAY_RESPONSE_MIN_LEAD_ACCEL) &
+    model_confirmed &
     ~np.asarray(blocked, dtype=bool)
   )
   if np.all(~active):
@@ -573,12 +576,13 @@ def get_lead_crawl_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow, block
   a_lead = np.asarray(a_lead, dtype=float)
   closing_speed = np.maximum(v_ego - v_lead, 0.0)
   opening_speed = np.maximum(v_lead - v_ego, 0.0)
+  model_confirmed = np.asarray(model_prob, dtype=float) >= LEAD_STOP_PRESENTATION_CONFIDENCE_MIN
   speed_blend = np.interp(v_ego, LEAD_CRAWL_V_EGO_BP, [1.0, 0.0])
   moving_blend = np.interp(v_lead, LEAD_CRAWL_V_LEAD_BP, [0.0, 1.0])
   gap_blend = np.interp(x_lead, LEAD_CRAWL_GAP_BP, [0.0, 1.0, 0.0])
   brake_gap_blend = 1.0 - np.interp(x_lead, LEAD_CRAWL_BRAKE_GAP_BP, [0.0, 0.0, 1.0])
   urgency_blend = 1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead)
-  crawl_blend = speed_blend * moving_blend * gap_blend * urgency_blend
+  crawl_blend = speed_blend * moving_blend * gap_blend * urgency_blend * model_confirmed
   short_gap_target, short_gap_cost = get_short_gap_pullaway_response_target(
     v_ego, v_lead, x_lead, a_lead, t_follow, model_prob=model_prob, blocked=block_short_gap_pullaway_response,
   )
@@ -742,12 +746,18 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
     MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_EXCESS_BP,
     [0.0, 1.0],
   )
+  brake_excess_closing_blend = np.interp(
+    closing_speed - safe_closing_speed - MOVING_LEAD_STOP_APPROACH_COAST_FIRST_EXCESS,
+    MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_EXCESS_BP,
+    [0.0, 1.0],
+  )
   soft_ramp_decel_blend = np.interp(
     np.clip(-a_lead, 0.0, MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP[-1]),
     MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP,
     [0.0, 1.0, 1.0, 0.0],
   )
   soft_closing_ramp_blend = np.where(pre_target, excess_closing_blend * soft_ramp_decel_blend, 0.0)
+  soft_brake_ramp_blend = np.where(pre_target, brake_excess_closing_blend * soft_ramp_decel_blend, 0.0)
   active_lead_decel_blend = np.maximum(lead_decel_blend, np.where(soft_closing_ramp_blend > 0.0, soft_ramp_decel_blend, 0.0))
   gap_runway_need_blend = 1.0 - np.interp(x_lead - desired_gap, MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP, [0.0, 1.0])
   anticipatory_runway_blend = lead_decel_blend * np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_BP,
@@ -795,7 +805,7 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
     MOVING_LEAD_STOP_APPROACH_PRE_TARGET_MARGIN_BP,
     [0.0, 1.0],
   )
-  pre_target_margin_brake_blend = np.maximum(pre_target_margin_brake_blend, soft_closing_ramp_blend)
+  pre_target_margin_brake_blend = np.maximum(pre_target_margin_brake_blend, soft_brake_ramp_blend)
   pre_target_margin_brake_blend *= np.interp(
     required_decel,
     [pre_target_threshold, pre_target_threshold + PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH],
@@ -804,6 +814,9 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   pre_target_margin_brake_blend = np.where(pre_target, pre_target_margin_brake_blend, 0.0)
   pre_target_brake_blend = np.maximum.reduce([runway_safety_blend, danger_safety_blend, pre_target_margin_brake_blend])
   coast_limited_target = np.maximum(target, MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
+  pre_target_safety_blend = np.maximum.reduce([runway_safety_blend, danger_safety_blend, required_runway_blend])
+  pre_target_light_target = np.maximum(target, -MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX)
+  pre_target_target = pre_target_light_target + pre_target_safety_blend * (target - pre_target_light_target)
   near_desired_recovery_blend = np.interp(
     desired_gap - x_lead,
     MOVING_LEAD_STOP_APPROACH_COAST_RECOVERY_GAP_BP,
@@ -818,7 +831,7 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   near_desired_recovery_blend *= 1.0 - pre_target_brake_blend
   target = np.where(
     pre_target,
-    coast_limited_target + pre_target_brake_blend * (target - coast_limited_target),
+    coast_limited_target + pre_target_brake_blend * (pre_target_target - coast_limited_target),
     target + near_desired_recovery_blend * (coast_limited_target - target),
   )
   return target, MOVING_LEAD_STOP_APPROACH_COST * comfort_blend
@@ -946,7 +959,13 @@ def get_lead_accel_match_targets(v_lead, d_rel, a_lead, t_follow, v_ego=None, bl
   positive_floor = positive_match_gap
   if v_ego is not None:
     presentation_distance = get_lead_stop_presentation_distance(v_ego_values, v_lead, a_lead, model_prob)
-    positive_floor = np.minimum(positive_match_gap, presentation_distance + SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP)
+    model_confirmed = np.asarray(model_prob, dtype=float) >= LEAD_STOP_PRESENTATION_CONFIDENCE_MIN
+    low_speed_cushion = v_ego_values < LEAD_STOP_PRESENTATION_V_EGO_BP[-1]
+    positive_floor = np.where(
+      model_confirmed & low_speed_cushion,
+      np.minimum(positive_match_gap, presentation_distance + SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP),
+      positive_match_gap,
+    )
   blocked = np.asarray(block_short_gap_pullaway_response, dtype=bool)
 
   blend = np.zeros_like(v_lead, dtype=float)
