@@ -98,12 +98,21 @@ class SmartCruiseControlVision:
     if not self.long_enabled:
       return
     else:
-      rate_plan = np.array(np.abs(sm['modelV2'].orientationRate.z))
-      vel_plan = np.array(sm['modelV2'].velocity.x)
+      rate_plan = np.asarray(np.abs(sm['modelV2'].orientationRate.z), dtype=float)
+      vel_plan = np.asarray(sm['modelV2'].velocity.x, dtype=float)
 
       self.current_curvature = abs(sm['controlsState'].curvature)
       self.current_lat_acc = self.v_ego**2 * self.current_curvature
       self.current_lat_acc_bleed = self.current_lat_acc >= _CURRENT_LAT_ACC_BLEED_TH
+
+      valid_prediction = (
+        rate_plan.ndim == 1 and vel_plan.ndim == 1 and rate_plan.size > 0 and rate_plan.size == vel_plan.size and
+        np.all(np.isfinite(rate_plan)) and np.all(np.isfinite(vel_plan))
+      )
+      if not valid_prediction:
+        self.max_pred_lat_acc = 0.0
+        self.predicted_turn_time = 0.0
+        return
 
       # get the maximum lat accel from the model
       predicted_lat_accels = rate_plan * vel_plan
