@@ -14,9 +14,24 @@ from cereal import custom
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_ADAPT_ACC, LIMIT_COAST_APPROACH_MARGIN_S, LIMIT_MAX_MAP_DATA_AGE
 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver, ALL_SOURCES
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import OffsetType, Policy
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
+
+
+class RuntimeParams:
+  def __init__(self, values):
+    self.values = values
+    self.writes = {}
+
+  def get(self, key, return_default=False):
+    return self.values.get(key)
+
+  def get_bool(self, key):
+    return bool(self.values.get(key, False))
+
+  def put(self, key, value):
+    self.writes[key] = value
 
 
 def create_mock(properties, mocker: MockerFixture):
@@ -103,6 +118,53 @@ class TestSpeedLimitResolverValidation:
       if source in resolver.limit_solutions:
         assert resolver.limit_solutions[source] == 0.
         assert resolver.distance_solutions[source] == 0.
+
+  def test_update_params_sanitizes_runtime_policy_and_offset_type(self, resolver_class):
+    resolver = resolver_class()
+    resolver.frame = 0
+    resolver.params = RuntimeParams({
+      "SpeedLimitPolicy": Policy.max().value + 10,
+      "SpeedLimitOffsetType": OffsetType.max().value + 10,
+      "SpeedLimitValueOffset": 3,
+      "IsMetric": True,
+    })
+
+    resolver.update_params()
+
+    assert resolver.policy == Policy.max().value
+    assert resolver.offset_type == OffsetType.max().value
+    assert resolver.params.writes["SpeedLimitPolicy"] == Policy.max().value
+    assert resolver.params.writes["SpeedLimitOffsetType"] == OffsetType.max().value
+
+  def test_update_params_defaults_non_numeric_runtime_offset_value(self, resolver_class):
+    resolver = resolver_class()
+    resolver.frame = 0
+    resolver.params = RuntimeParams({
+      "SpeedLimitPolicy": Policy.combined.value,
+      "SpeedLimitOffsetType": OffsetType.fixed.value,
+      "SpeedLimitValueOffset": "bad",
+      "IsMetric": True,
+    })
+
+    resolver.update_params()
+
+    assert resolver.offset_value == pytest.approx(0.0)
+
+  @pytest.mark.parametrize("offset_value", ["nan", "inf", "-inf"])
+  def test_update_params_defaults_non_finite_runtime_offset_value(self, resolver_class, offset_value):
+    resolver = resolver_class()
+    resolver.frame = 0
+    resolver.params = RuntimeParams({
+      "SpeedLimitPolicy": Policy.combined.value,
+      "SpeedLimitOffsetType": OffsetType.fixed.value,
+      "SpeedLimitValueOffset": offset_value,
+      "IsMetric": True,
+    })
+
+    resolver.update_params()
+
+    assert resolver.offset_value == pytest.approx(0.0)
+    assert resolver._get_speed_limit_offset() == pytest.approx(0.0)
 
   @parametrized_policies
   def test_resolver(self, resolver_class, policy, sm_key, function_key, mocker: MockerFixture):
