@@ -17,6 +17,7 @@ TRAFFIC_CONTROL_HAZARDS = {
   "traffic_signal",
   "traffic_signals",
 }
+MAP_CURVATURE_MAX_ROUTE_DISTANCE = 20.0
 
 
 def _getattr_or_default(msg, name: str, default=None):
@@ -107,6 +108,96 @@ class MapdV2MapData(BaseMapData):
 
   def get_next_lanes_and_distance(self) -> tuple[int, float]:
     return 0, 0.0
+
+  @staticmethod
+  def _path_point_coordinate(point) -> Coordinate | None:
+    latitude = _float(_getattr_or_default(point, "latitude"), math.nan)
+    longitude = _float(_getattr_or_default(point, "longitude"), math.nan)
+    if not math.isfinite(latitude) or not math.isfinite(longitude):
+      return None
+    return Coordinate(latitude, longitude)
+
+  @staticmethod
+  def _segment_projection_fraction(start: Coordinate, end: Coordinate, position: Coordinate) -> float:
+    mean_lat = math.radians((start.latitude + end.latitude + position.latitude) / 3.0)
+    ab_x = (end.longitude - start.longitude) * math.cos(mean_lat)
+    ab_y = end.latitude - start.latitude
+    ap_x = (position.longitude - start.longitude) * math.cos(mean_lat)
+    ap_y = position.latitude - start.latitude
+    denom = ab_x * ab_x + ab_y * ab_y
+    if denom <= 0.0:
+      return 0.0
+    return max(0.0, min(1.0, (ap_x * ab_x + ap_y * ab_y) / denom))
+
+  @staticmethod
+  def _interpolate_coordinate(start: Coordinate, end: Coordinate, fraction: float) -> Coordinate:
+    return Coordinate(
+      start.latitude + (end.latitude - start.latitude) * fraction,
+      start.longitude + (end.longitude - start.longitude) * fraction,
+    )
+
+  @classmethod
+  def _project_position_on_path(cls, path_points: list[tuple[Coordinate, float]], position: Coordinate) -> tuple[float, float, list[float]] | None:
+    cumulative_distances = [0.0]
+    for i in range(1, len(path_points)):
+      cumulative_distances.append(cumulative_distances[-1] + path_points[i - 1][0].distance_to(path_points[i][0]))
+
+    if len(path_points) == 1:
+      return 0.0, position.distance_to(path_points[0][0]), cumulative_distances
+
+    closest_route_distance = 0.0
+    closest_distance = float("inf")
+    for i in range(len(path_points) - 1):
+      start = path_points[i][0]
+      end = path_points[i + 1][0]
+      segment_length = start.distance_to(end)
+      fraction = cls._segment_projection_fraction(start, end, position)
+      projected = cls._interpolate_coordinate(start, end, fraction)
+      distance_to_segment = position.distance_to(projected)
+      if distance_to_segment < closest_distance:
+        closest_distance = distance_to_segment
+        closest_route_distance = cumulative_distances[i] + segment_length * fraction
+
+    return closest_route_distance, closest_distance, cumulative_distances
+
+  def get_road_curvatures(self) -> tuple[list[float], list[float]]:
+    all_checks = getattr(self.sm, "all_checks", None)
+    if all_checks is not None and not all_checks(["mapdExtendedOut"]):
+      return [], []
+
+    path_points = []
+    for point in _getattr_or_default(self.mapd_extended_out, "path", []) or []:
+      coordinate = self._path_point_coordinate(point)
+      curvature = _float(_getattr_or_default(point, "curvature"), math.nan)
+      if coordinate is None or not math.isfinite(curvature):
+        continue
+      path_points.append((coordinate, curvature))
+
+    if not path_points:
+      return [], []
+
+    projection = self._project_position_on_path(path_points, self.last_position) if self.last_position is not None else None
+    if projection is None:
+      distances = [0.0]
+      curvatures = [float(path_points[0][1])]
+      for coordinate, curvature in path_points[1:]:
+        distances.append(distances[-1] + path_points[len(distances) - 1][0].distance_to(coordinate))
+        curvatures.append(float(curvature))
+      return distances, curvatures
+
+    current_route_distance, distance_from_route, cumulative_distances = projection
+    if distance_from_route > MAP_CURVATURE_MAX_ROUTE_DISTANCE:
+      return [], []
+
+    distances = []
+    curvatures = []
+    for i, (_, curvature) in enumerate(path_points):
+      distance = cumulative_distances[i] - current_route_distance
+      if distance >= 0.0:
+        distances.append(distance)
+        curvatures.append(float(curvature))
+
+    return distances, curvatures
 
   def get_road_context(self) -> str:
     return _road_context_name(_getattr_or_default(self.mapd_out, "roadContext"))
