@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import math
 import time
 
 import cereal.messaging as messaging
@@ -91,10 +92,26 @@ class SpeedLimitResolver:
 
   def update_params(self):
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      self.policy = self.params.get("SpeedLimitPolicy", return_default=True)
+      self.policy = get_sanitize_int_param(
+        "SpeedLimitPolicy",
+        Policy.min().value,
+        Policy.max().value,
+        self.params,
+      )
       self.is_metric = self.params.get_bool("IsMetric")
-      self.offset_type = self.params.get("SpeedLimitOffsetType", return_default=True)
+      self.offset_type = get_sanitize_int_param(
+        "SpeedLimitOffsetType",
+        OffsetType.min().value,
+        OffsetType.max().value,
+        self.params,
+      )
       self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
+      try:
+        self.offset_value = float(self.offset_value)
+      except (TypeError, ValueError):
+        self.offset_value = 0.0
+      if not math.isfinite(self.offset_value):
+        self.offset_value = 0.0
 
   def _get_speed_limit_offset(self) -> float:
     if self.offset_type == OffsetType.off:
