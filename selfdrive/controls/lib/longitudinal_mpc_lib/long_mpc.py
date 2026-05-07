@@ -10,6 +10,7 @@ from openpilot.common.swaglog import cloudlog
 # WARNING: imports outside of constants will not trigger a rebuild
 from openpilot.selfdrive.modeld.constants import index_function
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
+from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceTracker, adjust_new_lead_accel
 
 if __name__ == '__main__':  # generating code
   from openpilot.third_party.acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
@@ -144,7 +145,10 @@ MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX = 0.65
 MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP = [2.3, 2.8]
 MOVING_LEAD_STOP_APPROACH_PRE_TARGET_MARGIN_BP = [4.0, 8.0]
 MOVING_LEAD_STOP_APPROACH_COAST_RECOVERY_GAP_BP = [0.0, 0.25, 0.5]
-MOVING_LEAD_STOP_APPROACH_COST = 25.0
+MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_DECEL = 0.65
+MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_EXCESS_BP = [0.0, 2.0]
+MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP = [0.2, 0.8, 1.5, 2.0]
+MOVING_LEAD_STOP_APPROACH_COST = 50.0
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED = 0.8
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_STANDARD = 1.0
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_AGGRESSIVE = 1.3
@@ -831,12 +835,29 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0)
   danger_margin = x_lead - min_gap
   danger_blend = 1.0 - closing_blend * np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [1.0, 0.0])
+  danger_floor_blend = 0.25 * closing_blend * (1.0 - np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [0.0, 1.0]))
+  danger_blend = np.maximum(danger_blend, danger_floor_blend)
   desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  pre_target = x_lead > desired_gap
+  pre_target_margin = np.maximum(x_lead - desired_gap, 0.0)
+  safe_closing_speed = np.sqrt(2.0 * MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_DECEL * pre_target_margin)
+  excess_closing_blend = np.interp(
+    closing_speed - safe_closing_speed,
+    MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_EXCESS_BP,
+    [0.0, 1.0],
+  )
+  soft_ramp_decel_blend = np.interp(
+    np.clip(-a_lead, 0.0, MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP[-1]),
+    MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP,
+    [0.0, 1.0, 1.0, 0.0],
+  )
+  soft_closing_ramp_blend = np.where(pre_target, excess_closing_blend * soft_ramp_decel_blend, 0.0)
+  active_lead_decel_blend = np.maximum(lead_decel_blend, np.where(soft_closing_ramp_blend > 0.0, soft_ramp_decel_blend, 0.0))
   gap_runway_need_blend = 1.0 - np.interp(x_lead - desired_gap, MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP, [0.0, 1.0])
   anticipatory_runway_blend = lead_decel_blend * np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_BP,
                                                            MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_V)
-  runway_need_blend = np.maximum(gap_runway_need_blend, anticipatory_runway_blend)
-  comfort_blend = speed_blend * moving_blend * lead_decel_blend * closing_blend * required_decel_blend * danger_blend * runway_need_blend
+  runway_need_blend = np.maximum.reduce([gap_runway_need_blend, anticipatory_runway_blend, soft_closing_ramp_blend])
+  comfort_blend = speed_blend * moving_blend * active_lead_decel_blend * closing_blend * required_decel_blend * danger_blend * runway_need_blend
   if np.all(comfort_blend <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
 
@@ -858,7 +879,6 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   target_decel = light_decel + gap_deficit_blend * (full_decel - light_decel)
   target = -target_decel
 
-  pre_target = x_lead > desired_gap
   pre_target_threshold = get_pre_target_runway_decel_threshold(t_follow)
   pre_target_safety_threshold = max(
     MOVING_LEAD_STOP_APPROACH_DECEL_CAP,
@@ -874,12 +894,12 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
     [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN],
     [1.0, 0.0],
   )
-  pre_target_margin = np.maximum(x_lead - desired_gap, 0.0)
   pre_target_margin_brake_blend = 1.0 - np.interp(
     pre_target_margin,
     MOVING_LEAD_STOP_APPROACH_PRE_TARGET_MARGIN_BP,
     [0.0, 1.0],
   )
+  pre_target_margin_brake_blend = np.maximum(pre_target_margin_brake_blend, soft_closing_ramp_blend)
   pre_target_margin_brake_blend *= np.interp(
     required_decel,
     [pre_target_threshold, pre_target_threshold + PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH],
@@ -1236,6 +1256,8 @@ class LongitudinalMpc:
     self.lead_transition_guard_timers = np.zeros(2)
     self.lead_transition_guard_latched = np.zeros(2, dtype=bool)
     self.lead_transition_was_status = np.zeros(2, dtype=bool)
+    self.lead_confidence_trackers = [LeadConfidenceTracker(), LeadConfidenceTracker()]
+    self.lead_confidence_states = [tracker.update(None, 0.0) for tracker in self.lead_confidence_trackers]
     self._last_set_weights_key = None
     self._last_cost_weight_key = None
     self._last_accel_match_costs = None
@@ -1306,12 +1328,12 @@ class LongitudinalMpc:
     lead_xv = np.column_stack((x_lead_traj, v_lead_traj))
     return lead_xv, a_lead_traj
 
-  def process_lead(self, lead):
+  def process_lead(self, lead, lead_confidence=None):
     v_ego = self.x0[1]
     if lead is not None and lead.status:
       x_lead = lead.dRel
       v_lead = lead.vLead
-      a_lead = lead.aLeadK
+      a_lead = adjust_new_lead_accel(lead.aLeadK, lead_confidence) if lead_confidence is not None else lead.aLeadK
       a_lead_tau = lead.aLeadTau
     else:
       # Fake a fast lead car, so mpc can keep running in the same mode
@@ -1468,9 +1490,12 @@ class LongitudinalMpc:
     lead_1_surge_decel_memory = self.update_lead_surge_decel_memory(1, radarstate.leadTwo)
     lead_0_transition_release = self.update_lead_transition_state(0, radarstate.leadOne)
     lead_1_transition_release = self.update_lead_transition_state(1, radarstate.leadTwo)
+    lead_0_confidence = self.lead_confidence_trackers[0].update(radarstate.leadOne, self.dt)
+    lead_1_confidence = self.lead_confidence_trackers[1].update(radarstate.leadTwo, self.dt)
+    self.lead_confidence_states = [lead_0_confidence, lead_1_confidence]
 
-    lead_xv_0, lead_0_a, lead_0_a_tau, lead_0_a_traj = self.process_lead(radarstate.leadOne)
-    lead_xv_1, lead_1_a, lead_1_a_tau, lead_1_a_traj = self.process_lead(radarstate.leadTwo)
+    lead_xv_0, lead_0_a, lead_0_a_tau, lead_0_a_traj = self.process_lead(radarstate.leadOne, lead_0_confidence)
+    lead_xv_1, lead_1_a, lead_1_a_tau, lead_1_a_traj = self.process_lead(radarstate.leadTwo, lead_1_confidence)
     lead_0_brake_a = get_lead_transition_adjusted_accel(lead_0_a, lead_0_transition_release)
     lead_1_brake_a = get_lead_transition_adjusted_accel(lead_1_a, lead_1_transition_release)
     lead_brake_xv_0, lead_0_brake_a_traj = lead_xv_0, lead_0_a_traj
@@ -1664,7 +1689,14 @@ class LongitudinalMpc:
     self.params[dominant_obstacle == 1, 0] = lead_1_gap_comfort_a_min[dominant_obstacle == 1]
     self.params[:, 1] = ACCEL_MAX
     self.params[:, 1] = np.minimum(self.params[:, 1], np.minimum(lead_0_crawl_accel_max, lead_1_crawl_accel_max))
-    apply_lead_transition_accel_guard(self.params[:, 1], max(self.lead_transition_guard_timers))
+    lead_confidence_guard_timer = 0.0
+    if dominant_obstacle[0] == 0:
+      lead_confidence_guard_timer = lead_0_confidence.guard_timer
+    elif dominant_obstacle[0] == 1:
+      lead_confidence_guard_timer = lead_1_confidence.guard_timer
+    apply_lead_transition_accel_guard(
+      self.params[:, 1], max(max(self.lead_transition_guard_timers), lead_confidence_guard_timer)
+    )
     self.params[:, 2] = np.min(x_obstacles, axis=1)
     self.params[:, 3] = np.copy(self.a_prev)
     self.params[:, 4] = t_follow
