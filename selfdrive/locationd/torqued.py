@@ -33,8 +33,10 @@ LAT_ACC_THRESHOLD = 1
 STEER_BUCKET_BOUNDS = [(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5)]
 MIN_BUCKET_POINTS = np.array([100, 300, 500, 500, 500, 500, 300, 100])
 MIN_ENGAGE_BUFFER = 2  # secs
+ROLL_MIN, ROLL_MAX = np.radians(-10), np.radians(10)
+ROLL_STD_MAX = np.radians(1.5)
 
-VERSION = 1  # bump this to invalidate old parameter caches
+VERSION = 2  # bump this to invalidate old parameter caches
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda', 'volkswagen']
 LIVE_TORQUE_SPEED_ADAPTIVE_PARAMS = "LiveTorqueSpeedAdaptiveParams"
 
@@ -207,15 +209,17 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
       self.lag = get_lat_delay(self.params, msg.lateralDelay)
     # calculate lateral accel from past steering torque
     elif which == "livePose":
-      is_valid = msg.angularVelocityDevice.valid and msg.orientationNED.valid and msg.inputsOK and msg.sensorsOK and msg.posenetOK
+      raw_roll_std = float(msg.orientationNED.xStd)
+      device_pose = Pose.from_live_pose(msg)
+      calibrated_pose = self.calibrator.build_calibrated_pose(device_pose)
+      roll = calibrated_pose.orientation.roll
+      roll_valid = msg.orientationNED.valid and ROLL_MIN < roll < ROLL_MAX and 0.0 < raw_roll_std < ROLL_STD_MAX
+      is_valid = msg.angularVelocityDevice.valid and roll_valid and msg.inputsOK and msg.sensorsOK and msg.posenetOK
       if len(self.raw_points['steer_torque']) == self.hist_len and is_valid:
         t = msg.timestamp * 1e-9
-        device_pose = Pose.from_live_pose(msg)
-        calibrated_pose = self.calibrator.build_calibrated_pose(device_pose)
         angular_velocity_calibrated = calibrated_pose.angular_velocity
 
         yaw_rate = angular_velocity_calibrated.yaw
-        roll = device_pose.orientation.roll
         # check lat active up to now (without lag compensation)
         lat_active = np.interp(np.arange(t - MIN_ENGAGE_BUFFER, t + self.lag, DT_MDL),
                                self.raw_points['carControl_t'], self.raw_points['lat_active']).astype(bool)

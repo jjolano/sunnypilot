@@ -5,11 +5,14 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+import math
+
 import numpy as np
 import pytest
 
 import cereal.messaging as messaging
 from cereal import custom, log
+from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
@@ -83,6 +86,11 @@ def _set_predicted_lat_accels(model, pred_lat_accels: np.ndarray) -> None:
   model.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
 
 
+def _set_predicted_curvature_at_model_speed(model, curvature: float, model_speed: float) -> None:
+  model.modelV2.velocity.x = [float(model_speed) for _ in ModelConstants.T_IDXS]
+  model.modelV2.orientationRate.z = [float(curvature * model_speed) for _ in ModelConstants.T_IDXS]
+
+
 def generate_modelV2():
   model = messaging.new_message('modelV2')
   position = log.XYZTData.new_message()
@@ -127,6 +135,12 @@ def generate_controlsState(curvature=0.0):
   return controls_state
 
 
+def generate_liveParameters(roll=0.0):
+  live_parameters = log.LiveParametersData.new_message()
+  live_parameters.roll = float(roll)
+  return live_parameters
+
+
 class TestSmartCruiseControlVision:
   def setup_method(self):
     self.params = Params()
@@ -136,10 +150,16 @@ class TestSmartCruiseControlVision:
     mdl = generate_modelV2()
     cs = generate_carState()
     controls_state = generate_controlsState()
-    self.sm = {'modelV2': mdl.modelV2, 'carState': cs.carState, 'controlsState': controls_state.controlsState}
+    self.sm = {
+      'modelV2': mdl.modelV2,
+      'carState': cs.carState,
+      'controlsState': controls_state.controlsState,
+      'liveParameters': generate_liveParameters(),
+    }
 
   def reset_params(self):
     self.params.put_bool("SmartCruiseControlVision", True)
+    self.params.put_bool("AccurateLateralAccel", False)
 
   def test_initial_state(self):
     assert self.scc_v.state == VisionState.disabled
@@ -303,6 +323,39 @@ class TestSmartCruiseControlVision:
     assert self.scc_v.state == VisionState.enabled
     assert not self.scc_v.is_active
     assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_predicted_lat_accel_uses_model_speed_by_default(self):
+    mdl = generate_modelV2()
+    _set_predicted_curvature_at_model_speed(mdl, curvature=0.01, model_speed=10.0)
+    self.sm["modelV2"] = mdl.modelV2
+
+    self.scc_v.update(self.sm, True, False, 20.0, 0.0, 20.0)
+
+    assert self.scc_v.max_pred_lat_acc == pytest.approx(1.0)
+
+  def test_accurate_lateral_accel_prediction_uses_current_speed_curvature(self):
+    self.params.put_bool("AccurateLateralAccel", True)
+    self.scc_v = SmartCruiseControlVision()
+    mdl = generate_modelV2()
+    _set_predicted_curvature_at_model_speed(mdl, curvature=0.01, model_speed=10.0)
+    self.sm["modelV2"] = mdl.modelV2
+
+    self.scc_v.update(self.sm, True, False, 20.0, 0.0, 20.0)
+
+    assert self.scc_v.max_pred_lat_acc == pytest.approx(4.0)
+
+  def test_accurate_lateral_accel_current_turn_uses_exact_roll_compensation(self):
+    self.params.put_bool("AccurateLateralAccel", True)
+    self.scc_v = SmartCruiseControlVision()
+    v_ego = 20.0
+    roll = math.asin(2.0 / ACCELERATION_DUE_TO_GRAVITY)
+    self.sm["controlsState"] = generate_controlsState(3.0 / v_ego**2).controlsState
+    self.sm["liveParameters"] = generate_liveParameters(roll)
+
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.current_lat_acc == pytest.approx(1.0)
+    assert not self.scc_v.current_lat_acc_bleed
 
   def test_current_lat_acc_bleed_respects_longitudinal_override(self):
     pred_lat_accels = _constant_pred_lat_accels(1.0)

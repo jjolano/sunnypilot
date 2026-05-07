@@ -290,6 +290,7 @@ class Controls(ControlsExt):
       new_desired_curvature,
       lp.roll,
       self.lateral_accel_limit_no_roll,
+      accurate_lateral_accel=self.params.get_bool("AccurateLateralAccel"),
     )
     self.default_lateral_accel_limited = should_latch_lateral_accel_burst(
       default_lateral_accel_limited,

@@ -220,6 +220,22 @@ def test_known_params_metadata():
   assert decision_layer["title"] == "Longitudinal Decision Layer"
   assert "experimental" in decision_layer["description"].lower()
 
+  accurate_lateral_accel = metadata.get("AccurateLateralAccel")
+  assert accurate_lateral_accel is not None
+  assert accurate_lateral_accel["title"] == "Accurate Lateral Acceleration"
+  assert "experimental" in accurate_lateral_accel["description"].lower()
+
+
+def test_accurate_lateral_accel_param_is_opt_in():
+  from openpilot.common.params import Params
+
+  params = Params()
+  all_keys = {k.decode("utf-8") for k in params.all_keys()}
+
+  assert "AccurateLateralAccel" in all_keys
+  params.remove("AccurateLateralAccel")
+  assert not params.get_bool("AccurateLateralAccel")
+
 
 def test_response_curve_learning_metadata_is_removed():
   with open(METADATA_PATH) as f:

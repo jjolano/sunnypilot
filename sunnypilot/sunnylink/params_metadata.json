@@ -3,6 +3,10 @@
     "title": "AccessTokenIsNice",
     "description": ""
   },
+  "AccurateLateralAccel": {
+    "title": "Accurate Lateral Acceleration",
+    "description": "Experimental opt-in control path that uses curvature-based lateral acceleration and exact roll gravity compensation in lateral and turn-speed calculations. Keep disabled unless validating this behavior."
+  },
   "AdbEnabled": {
     "title": "Enable ADB",
     "description": ""

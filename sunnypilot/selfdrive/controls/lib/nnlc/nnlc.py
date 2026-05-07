@@ -32,6 +32,22 @@ def roll_pitch_adjust(roll, pitch):
   return roll * math.cos(pitch)
 
 
+def adjust_future_time_for_longitudinal_accel(future_time, v_ego, a_ego):
+  future_time = max(float(future_time), 0.0)
+  v_ego = max(float(v_ego), 1.0)
+  a_ego = float(a_ego)
+  if abs(a_ego) < 1e-6:
+    return future_time
+
+  target_distance = v_ego * future_time
+  discriminant = v_ego**2 + 2.0 * a_ego * target_distance
+  if discriminant <= 0.0:
+    return future_time
+
+  adjusted_time = (-v_ego + math.sqrt(discriminant)) / a_ego
+  return adjusted_time if math.isfinite(adjusted_time) and adjusted_time >= 0.0 else future_time
+
+
 class NeuralNetworkLateralControl(LatControlTorqueExtBase):
   def __init__(self, lac_torque, CP, CP_SP, CI):
     super().__init__(lac_torque, CP, CP_SP, CI)
@@ -113,7 +129,7 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
 
     # prepare past and future values
     # adjust future times to account for longitudinal acceleration
-    adjusted_future_times = [t + 0.5 * CS.aEgo * (t / max(CS.vEgo, 1.0)) for t in self.nn_future_times]
+    adjusted_future_times = [adjust_future_time_for_longitudinal_accel(t, CS.vEgo, CS.aEgo) for t in self.nn_future_times]
     past_rolls = [self.roll_deque[min(len(self.roll_deque) - 1, i)] for i in self.history_frame_offsets]
     future_rolls = [roll_pitch_adjust(np.interp(t, ModelConstants.T_IDXS, self.model_v2.orientation.x) + roll,
                                       np.interp(t, ModelConstants.T_IDXS, self.model_v2.orientation.y) + self.pitch_last) for t in

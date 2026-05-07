@@ -96,6 +96,11 @@ class SteeringLayout(Widget):
       title=lambda: tr("Neural Network Lateral Control (NNLC)"),
       description=""
     )
+    self._accurate_lateral_accel_toggle = toggle_item_sp(
+      param="AccurateLateralAccel",
+      title=lambda: tr("Accurate Lateral Acceleration (Experimental)"),
+      description=lambda: tr("Use curvature-based lateral acceleration and exact roll gravity compensation in lateral and turn-speed calculations."),
+    )
 
     items = [
       self._mads_toggle,
@@ -111,6 +116,7 @@ class SteeringLayout(Widget):
       self._torque_customization_button,
       LineSeparatorSP(40),
       self._nnlc_toggle,
+      self._accurate_lateral_accel_toggle,
     ]
     return items
 
@@ -145,6 +151,7 @@ class SteeringLayout(Widget):
     self._nnlc_toggle.action_item.set_enabled(ui_state.is_offroad() and torque_allowed and not enforce_torque_enabled)
     self._torque_control_toggle.action_item.set_enabled(ui_state.is_offroad() and torque_allowed and not nnlc_enabled)
     self._torque_customization_button.action_item.set_enabled(self._torque_control_toggle.action_item.get_state())
+    self._accurate_lateral_accel_toggle.action_item.set_enabled(ui_state.is_offroad())
 
   def _render(self, rect):
     if self._current_panel == PanelType.LANE_CHANGE:

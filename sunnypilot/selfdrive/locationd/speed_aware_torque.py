@@ -7,7 +7,7 @@ from openpilot.selfdrive.locationd.helpers import PointBuckets
 
 SPEED_BUCKET_BP = [0, 10, 20, 30, 40]  # m/s
 SPEED_BUCKET_LABELS = ["0_10", "10_20", "20_30", "30_40", "40_plus"]
-SPEED_AWARE_PARAMS_VERSION = 1
+SPEED_AWARE_PARAMS_VERSION = 2
 
 
 def _payload_float_matches(payload: dict, key: str, expected: float) -> bool:

@@ -1,6 +1,7 @@
 import numpy as np
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.realtime import DT_CTRL, DT_MDL
+from openpilot.selfdrive.controls.lib.lateral_accel import roll_lateral_accel
 
 MIN_SPEED = 1.0
 CONTROL_N = 17
@@ -43,29 +44,34 @@ def should_latch_lateral_accel_burst(default_lateral_accel_limited, lat_active, 
   return bool(default_lateral_accel_limited and lat_active and not brake_pressed and not steering_pressed and not manual_gas_override)
 
 
-def is_default_lateral_accel_limited(v_ego, curvature, roll):
+def _roll_compensation(roll, accurate_lateral_accel=False):
+  return roll_lateral_accel(roll) if accurate_lateral_accel else roll * ACCELERATION_DUE_TO_GRAVITY
+
+
+def is_default_lateral_accel_limited(v_ego, curvature, roll, accurate_lateral_accel=False):
   v_ego = max(v_ego, MIN_SPEED)
-  roll_compensation = roll * ACCELERATION_DUE_TO_GRAVITY
+  roll_compensation = _roll_compensation(roll, accurate_lateral_accel)
   max_lat_accel = MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
   min_lat_accel = -MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
   lat_accel = curvature * v_ego ** 2
   return lat_accel < min_lat_accel or lat_accel > max_lat_accel
 
 
-def clip_curvature(v_ego, prev_curvature, new_curvature, roll, lateral_accel_limit=MAX_LATERAL_ACCEL_NO_ROLL) -> tuple[float, bool, bool]:
+def clip_curvature(v_ego, prev_curvature, new_curvature, roll, lateral_accel_limit=MAX_LATERAL_ACCEL_NO_ROLL,
+                   accurate_lateral_accel=False) -> tuple[float, bool, bool]:
   # This function respects ISO lateral jerk and acceleration limits + a max curvature
   v_ego = max(v_ego, MIN_SPEED)
   max_curvature_rate = MAX_LATERAL_JERK / (v_ego ** 2)  # inexact calculation, check https://github.com/commaai/openpilot/pull/24755
   new_curvature = np.clip(new_curvature,
                           prev_curvature - max_curvature_rate * DT_CTRL,
                           prev_curvature + max_curvature_rate * DT_CTRL)
-  default_lateral_accel_limited = is_default_lateral_accel_limited(v_ego, new_curvature, roll)
+  default_lateral_accel_limited = is_default_lateral_accel_limited(v_ego, new_curvature, roll, accurate_lateral_accel)
 
   if not np.isfinite(lateral_accel_limit):
     lateral_accel_limit = MAX_LATERAL_ACCEL_NO_ROLL
   lateral_accel_limit = float(np.clip(lateral_accel_limit, 0.0, MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL))
 
-  roll_compensation = roll * ACCELERATION_DUE_TO_GRAVITY
+  roll_compensation = _roll_compensation(roll, accurate_lateral_accel)
   max_lat_accel = lateral_accel_limit + roll_compensation
   min_lat_accel = -lateral_accel_limit + roll_compensation
   new_curvature, limited_accel = clamp(new_curvature, min_lat_accel / v_ego ** 2, max_lat_accel / v_ego ** 2)

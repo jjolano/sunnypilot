@@ -5,6 +5,7 @@ import numpy as np
 from cereal import custom, log
 import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
@@ -22,6 +23,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import Longi
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE, get_T_FOLLOW, get_lead_accel_recovery_a_min, get_lead_stop_presentation_distance
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
+from openpilot.selfdrive.controls.lib.lateral_accel import lateral_accel_from_steering_angle
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
@@ -295,7 +297,7 @@ def apply_lead_loss_e2e_guard_accel(e2e_accel, e2e_should_stop, timer, has_lead)
   return max(e2e_accel, LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
 
 
-def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
+def limit_accel_in_turns(v_ego, angle_steers, a_target, CP, vehicle_model=None, roll=0.0, accurate_lateral_accel=False):
   """
   This function returns a limited long acceleration allowed, depending on the existing lateral acceleration
   this should avoid accelerating when losing the target in turns
@@ -303,7 +305,10 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   # FIXME: This function to calculate lateral accel is incorrect and should use the VehicleModel
   # The lookup table for turns should also be updated if we do this
   a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
-  a_y = v_ego**2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
+  if accurate_lateral_accel and vehicle_model is not None:
+    a_y = lateral_accel_from_steering_angle(v_ego, angle_steers * CV.DEG_TO_RAD, vehicle_model, roll)
+  else:
+    a_y = v_ego**2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
   a_x_allowed = math.sqrt(max(a_total_max**2 - a_y**2, 0.0))
 
   return [a_target[0], min(a_target[1], a_x_allowed)]
@@ -526,6 +531,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.CP = CP
     self.mpc = LongitudinalMpc(dt=dt)
     self.params = Params()
+    self.VM = VehicleModel(CP)
     self.longitudinal_arbiter = LongitudinalArbiter()
     self.longitudinal_decision = None
     self.longitudinal_decision_candidates = []
@@ -616,8 +622,14 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
     accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
-    steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
-    accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
+    live_params = sm['liveParameters']
+    steer_angle_without_offset = sm['carState'].steeringAngleDeg - live_params.angleOffsetDeg
+    accurate_lateral_accel = self.params.get_bool("AccurateLateralAccel")
+    if accurate_lateral_accel:
+      self.VM.update_params(max(live_params.stiffnessFactor, 0.1), max(live_params.steerRatio, 0.1))
+    accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP,
+                                      vehicle_model=self.VM, roll=live_params.roll,
+                                      accurate_lateral_accel=accurate_lateral_accel)
 
     if reset_state:
       self.v_desired_filter.x = v_ego

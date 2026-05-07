@@ -3,6 +3,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TORQUE_SETTINGS = REPO_ROOT / "selfdrive" / "ui" / "sunnypilot" / "layouts" / "settings" / "steering_sub_layouts" / "torque_settings.py"
+STEERING_SETTINGS = REPO_ROOT / "selfdrive" / "ui" / "sunnypilot" / "layouts" / "settings" / "steering.py"
 CRUISE_SETTINGS = REPO_ROOT / "selfdrive" / "ui" / "sunnypilot" / "layouts" / "settings" / "cruise.py"
 REMOVED_MASS_DRAG_PARAMS = (
   "LongLearnedMassDragToggle",
@@ -30,6 +31,12 @@ def test_lateral_live_learning_toggles_are_exposed_in_torque_settings():
 
   _assert_toggle_param(source, "LiveTorqueSpeedAdaptiveToggle")
   _assert_toggle_param(source, "LiveTorqueSpeedAdaptiveApplyToggle")
+
+
+def test_accurate_lateral_accel_toggle_is_exposed_in_steering_settings():
+  source = STEERING_SETTINGS.read_text(encoding="utf-8")
+
+  _assert_toggle_param(source, "AccurateLateralAccel")
 
 
 def test_mass_drag_learning_toggles_are_not_exposed_in_cruise_settings():

@@ -92,6 +92,7 @@ def test_format_speed_aware_params_wraps_metadata():
 
   payload = format_speed_aware_params(CP, buckets)
 
+  assert payload["version"] == 2
   assert payload["version"] == SPEED_AWARE_PARAMS_VERSION
   assert payload["carFingerprint"] == "mock-car"
   assert payload["lateralTuning"] == "torque"

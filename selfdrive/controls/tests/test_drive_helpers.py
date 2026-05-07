@@ -1,4 +1,7 @@
+import math
+
 import pytest
+from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 
 from openpilot.selfdrive.controls.lib.drive_helpers import (
   MAX_CURVATURE,
@@ -132,6 +135,28 @@ def test_clip_curvature_reports_default_saturation_even_when_burst_cap_allows_re
   assert clipped_curvature == pytest.approx(requested_curvature)
   assert not limited
   assert default_lateral_accel_limited
+
+
+def test_clip_curvature_preserves_legacy_linear_roll_compensation_by_default():
+  v_ego = 10.0
+  roll = 0.5
+  requested_curvature = 10.0 / v_ego**2
+
+  clipped_curvature, limited, _ = clip_curvature(v_ego, requested_curvature, requested_curvature, roll)
+
+  assert clipped_curvature == pytest.approx((MAX_LATERAL_ACCEL_NO_ROLL + roll * ACCELERATION_DUE_TO_GRAVITY) / v_ego**2)
+  assert limited
+
+
+def test_clip_curvature_accurate_lateral_accel_uses_exact_roll_compensation():
+  v_ego = 10.0
+  roll = 0.5
+  requested_curvature = 10.0 / v_ego**2
+
+  clipped_curvature, limited, _ = clip_curvature(v_ego, requested_curvature, requested_curvature, roll, accurate_lateral_accel=True)
+
+  assert clipped_curvature == pytest.approx((MAX_LATERAL_ACCEL_NO_ROLL + math.sin(roll) * ACCELERATION_DUE_TO_GRAVITY) / v_ego**2)
+  assert limited
 
 
 def test_lateral_accel_limit_enters_driver_gas_override():

@@ -1,5 +1,6 @@
 import numpy as np
-from cereal import car, messaging
+import pytest
+from cereal import car, log, messaging
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
 from opendbc.car import structs
 from opendbc.car.lateral import get_friction, FRICTION_THRESHOLD
@@ -50,7 +51,7 @@ def simulate_straight_road_msgs(est):
   lat_accels = TORQUE_TUNE.latAccelFactor * steer_torques
   for t, steer_torque, lat_accel in zip(ts, steer_torques, lat_accels, strict=True):
     carOutput.actuatorsOutput.torque = float(-steer_torque)
-    livePose.orientationNED = {'x': float(np.deg2rad(ROLL_BIAS_DEG)), 'valid': True}
+    livePose.orientationNED = {'x': float(np.deg2rad(ROLL_BIAS_DEG)), 'xStd': 0.001, 'valid': True}
     livePose.angularVelocityDevice = {'z': float(lat_accel / V_EGO), 'valid': True}
     livePose.inputsOK, livePose.sensorsOK, livePose.posenetOK = True, True, True
     livePose.timestamp = int(t * 1e9)
@@ -70,3 +71,68 @@ def test_straight_road_roll_bias():
   simulate_straight_road_msgs(est)
   msg = est.get_msg()
   assert (msg.liveTorqueParameters.latAccelOffsetRaw < -0.05) and np.isfinite(msg.liveTorqueParameters.latAccelOffsetRaw)
+
+def test_lateral_accel_uses_calibrated_roll_for_gravity_compensation():
+  est = TorqueEstimator(car.CarParams())
+  est.hist_len = 1
+  captured = []
+  est.add_filtered_point = lambda steer, lateral_acc, v_ego: captured.append((steer, lateral_acc, v_ego))
+
+  mount_roll = 0.05
+  t = 1.0
+  carControl = messaging.new_message('carControl').carControl
+  carOutput = messaging.new_message('carOutput').carOutput
+  carState = messaging.new_message('carState').carState
+  livePose = messaging.new_message('livePose').livePose
+
+  carControl.latActive = True
+  carOutput.actuatorsOutput.torque = -0.05
+  carState.vEgo = V_EGO
+  carState.steeringPressed = False
+  livePose.orientationNED = {'x': -mount_roll, 'xStd': 0.001, 'valid': True}
+  livePose.angularVelocityDevice = {'z': 0.0, 'zStd': 0.001, 'valid': True}
+  livePose.inputsOK, livePose.sensorsOK, livePose.posenetOK = True, True, True
+  livePose.timestamp = int(t * 1e9)
+
+  est.handle_log(0.0, 'liveCalibration', log.LiveCalibrationData(
+    rpyCalib=[mount_roll, 0.0, 0.0],
+    calStatus=log.LiveCalibrationData.Status.calibrated,
+  ))
+  for which, msg in (('carControl', carControl), ('carOutput', carOutput), ('carState', carState), ('livePose', livePose)):
+    est.handle_log(t, which, msg)
+
+  assert captured
+  assert captured[0][1] == pytest.approx(0.0, abs=1e-4)
+
+
+def test_lateral_accel_validates_calibrated_roll_not_raw_mount_roll():
+  est = TorqueEstimator(car.CarParams())
+  est.hist_len = 1
+  captured = []
+  est.add_filtered_point = lambda steer, lateral_acc, v_ego: captured.append((steer, lateral_acc, v_ego))
+
+  mount_roll = 0.2
+  t = 1.0
+  carControl = messaging.new_message('carControl').carControl
+  carOutput = messaging.new_message('carOutput').carOutput
+  carState = messaging.new_message('carState').carState
+  livePose = messaging.new_message('livePose').livePose
+
+  carControl.latActive = True
+  carOutput.actuatorsOutput.torque = -0.05
+  carState.vEgo = V_EGO
+  carState.steeringPressed = False
+  livePose.orientationNED = {'x': -mount_roll, 'xStd': 0.001, 'valid': True}
+  livePose.angularVelocityDevice = {'z': 0.0, 'zStd': 0.001, 'valid': True}
+  livePose.inputsOK, livePose.sensorsOK, livePose.posenetOK = True, True, True
+  livePose.timestamp = int(t * 1e9)
+
+  est.handle_log(0.0, 'liveCalibration', log.LiveCalibrationData(
+    rpyCalib=[mount_roll, 0.0, 0.0],
+    calStatus=log.LiveCalibrationData.Status.calibrated,
+  ))
+  for which, msg in (('carControl', carControl), ('carOutput', carOutput), ('carState', carState), ('livePose', livePose)):
+    est.handle_log(t, which, msg)
+
+  assert captured
+  assert captured[0][1] == pytest.approx(0.0, abs=1e-4)

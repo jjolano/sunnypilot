@@ -11,6 +11,7 @@ import cereal.messaging as messaging
 from cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.controls.lib.lateral_accel import lateral_accel_from_curvature
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
@@ -68,6 +69,7 @@ class SmartCruiseControlVision:
     self.is_enabled = False
     self.is_active = False
     self.enabled = self.params.get_bool("SmartCruiseControlVision")
+    self.accurate_lateral_accel = self.params.get_bool("AccurateLateralAccel")
     self.v_cruise_setpoint = 0.0
 
     self.state = VisionState.disabled
@@ -93,6 +95,7 @@ class SmartCruiseControlVision:
   def _update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self.params.get_bool("SmartCruiseControlVision")
+      self.accurate_lateral_accel = self.params.get_bool("AccurateLateralAccel")
 
   def _update_calculations(self, sm: messaging.SubMaster) -> None:
     if not self.long_enabled:
@@ -101,12 +104,24 @@ class SmartCruiseControlVision:
       rate_plan = np.array(np.abs(sm['modelV2'].orientationRate.z))
       vel_plan = np.array(sm['modelV2'].velocity.x)
 
-      self.current_curvature = abs(sm['controlsState'].curvature)
-      self.current_lat_acc = self.v_ego**2 * self.current_curvature
+      current_curvature = float(sm['controlsState'].curvature)
+      self.current_curvature = abs(current_curvature)
+      if self.accurate_lateral_accel:
+        try:
+          roll = float(sm['liveParameters'].roll)
+        except (KeyError, AttributeError):
+          roll = 0.0
+        self.current_lat_acc = abs(lateral_accel_from_curvature(self.v_ego, current_curvature, roll))
+      else:
+        self.current_lat_acc = self.v_ego**2 * self.current_curvature
       self.current_lat_acc_bleed = self.current_lat_acc >= _CURRENT_LAT_ACC_BLEED_TH
 
       # get the maximum lat accel from the model
-      predicted_lat_accels = rate_plan * vel_plan
+      if self.accurate_lateral_accel:
+        predicted_curvatures = rate_plan / np.clip(vel_plan, 0.1, np.inf)
+        predicted_lat_accels = predicted_curvatures * max(self.v_ego, 0.1) ** 2
+      else:
+        predicted_lat_accels = rate_plan * vel_plan
       self.max_pred_lat_acc = np.percentile(predicted_lat_accels, 97)
       turn_idxs = np.nonzero(predicted_lat_accels >= _TURNING_LAT_ACC_TH)[0]
       self.predicted_turn_time = float(ModelConstants.T_IDXS[int(turn_idxs[0])]) if len(turn_idxs) > 0 else 0.0

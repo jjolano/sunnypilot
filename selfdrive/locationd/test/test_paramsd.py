@@ -1,9 +1,12 @@
 import random
 import numpy as np
+import pytest
 
-from cereal import messaging
-from openpilot.selfdrive.locationd.paramsd import retrieve_initial_vehicle_params, migrate_cached_vehicle_params_if_needed
-from openpilot.selfdrive.locationd.models.car_kf import CarKalman
+from cereal import log, messaging
+from openpilot.selfdrive.locationd.helpers import PoseCalibrator
+from openpilot.selfdrive.locationd.paramsd import VehicleParamsLearner, retrieve_initial_vehicle_params, migrate_cached_vehicle_params_if_needed
+from openpilot.selfdrive.locationd.models.car_kf import CarKalman, States
+from openpilot.selfdrive.locationd.models.constants import ObservationKind
 from openpilot.selfdrive.locationd.test.test_locationd_scenarios import TEST_ROUTE
 from openpilot.selfdrive.test.process_replay.migration import migrate, migrate_carParams
 from openpilot.common.params import Params
@@ -36,7 +39,42 @@ class TestParamsd:
     np.testing.assert_allclose(sf, msg.liveParameters.stiffnessFactor)
     np.testing.assert_allclose(offset, msg.liveParameters.angleOffsetAverageDeg)
     np.testing.assert_equal(p_init.shape, CarKalman.P_initial.shape)
-    np.testing.assert_allclose(np.diagonal(p_init), msg.liveParameters.debugFilterState.std)
+    np.testing.assert_allclose(np.sqrt(np.diagonal(p_init)), msg.liveParameters.debugFilterState.std)
+
+  def test_observed_roll_uses_calibrated_pose_frame(self):
+    class FakeKF:
+      def __init__(self):
+        self.x = CarKalman.initial_x.copy()
+        self.observations = []
+
+      def predict_and_observe(self, _t, kind, value, *_args):
+        self.observations.append((kind, np.array(value, copy=True)))
+
+    learner = VehicleParamsLearner.__new__(VehicleParamsLearner)
+    learner.calibrator = PoseCalibrator()
+    learner.observed_yaw_rate = 0.0
+    learner.observed_roll = 0.0
+    learner.active = True
+    learner.kf = FakeKF()
+    learner.kf.x[States.STIFFNESS] = 1.0
+    learner.kf.x[States.STEER_RATIO] = 15.0
+
+    mount_roll = 0.05
+    learner.handle_log(0.0, "liveCalibration", log.LiveCalibrationData(
+      rpyCalib=[mount_roll, 0.0, 0.0],
+      calStatus=log.LiveCalibrationData.Status.calibrated,
+    ))
+    learner.handle_log(1.0, "livePose", log.LivePose(
+      timestamp=int(1e9),
+      orientationNED=log.LivePose.XYZMeasurement(x=-mount_roll, xStd=0.001, valid=True),
+      angularVelocityDevice=log.LivePose.XYZMeasurement(z=0.1, zStd=0.001, valid=True),
+      inputsOK=True,
+      posenetOK=True,
+      sensorsOK=True,
+    ))
+
+    observed_rolls = [float(value.item()) for kind, value in learner.kf.observations if kind == ObservationKind.ROAD_ROLL]
+    assert observed_rolls[-1] == pytest.approx(0.0, abs=1e-4)
 
   # TODO Remove this test after the support for old format is removed
   def test_read_saved_params_old_format(self):
