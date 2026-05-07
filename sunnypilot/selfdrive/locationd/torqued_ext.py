@@ -86,7 +86,6 @@ class _TorqueBuckets(PointBuckets):
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda']
 
 
-
 class SpeedAwareTorqueBuckets:
   def __init__(self, x_bounds, speed_bp, min_points, min_points_total, points_per_bucket, rowsize=3):
     self.x_bounds = x_bounds
