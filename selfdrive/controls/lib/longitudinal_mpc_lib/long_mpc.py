@@ -145,7 +145,10 @@ MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX = 0.65
 MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP = [2.3, 2.8]
 MOVING_LEAD_STOP_APPROACH_PRE_TARGET_MARGIN_BP = [4.0, 8.0]
 MOVING_LEAD_STOP_APPROACH_COAST_RECOVERY_GAP_BP = [0.0, 0.25, 0.5]
-MOVING_LEAD_STOP_APPROACH_COST = 25.0
+MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_DECEL = 0.65
+MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_EXCESS_BP = [0.0, 2.0]
+MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP = [0.2, 0.8, 1.5, 2.0]
+MOVING_LEAD_STOP_APPROACH_COST = 50.0
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED = 0.8
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_STANDARD = 1.0
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_AGGRESSIVE = 1.3
@@ -832,12 +835,29 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0)
   danger_margin = x_lead - min_gap
   danger_blend = 1.0 - closing_blend * np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [1.0, 0.0])
+  danger_floor_blend = 0.25 * closing_blend * (1.0 - np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [0.0, 1.0]))
+  danger_blend = np.maximum(danger_blend, danger_floor_blend)
   desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  pre_target = x_lead > desired_gap
+  pre_target_margin = np.maximum(x_lead - desired_gap, 0.0)
+  safe_closing_speed = np.sqrt(2.0 * MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_DECEL * pre_target_margin)
+  excess_closing_blend = np.interp(
+    closing_speed - safe_closing_speed,
+    MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_EXCESS_BP,
+    [0.0, 1.0],
+  )
+  soft_ramp_decel_blend = np.interp(
+    np.clip(-a_lead, 0.0, MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP[-1]),
+    MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP,
+    [0.0, 1.0, 1.0, 0.0],
+  )
+  soft_closing_ramp_blend = np.where(pre_target, excess_closing_blend * soft_ramp_decel_blend, 0.0)
+  active_lead_decel_blend = np.maximum(lead_decel_blend, np.where(soft_closing_ramp_blend > 0.0, soft_ramp_decel_blend, 0.0))
   gap_runway_need_blend = 1.0 - np.interp(x_lead - desired_gap, MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP, [0.0, 1.0])
   anticipatory_runway_blend = lead_decel_blend * np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_BP,
                                                            MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_V)
-  runway_need_blend = np.maximum(gap_runway_need_blend, anticipatory_runway_blend)
-  comfort_blend = speed_blend * moving_blend * lead_decel_blend * closing_blend * required_decel_blend * danger_blend * runway_need_blend
+  runway_need_blend = np.maximum.reduce([gap_runway_need_blend, anticipatory_runway_blend, soft_closing_ramp_blend])
+  comfort_blend = speed_blend * moving_blend * active_lead_decel_blend * closing_blend * required_decel_blend * danger_blend * runway_need_blend
   if np.all(comfort_blend <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
 
@@ -859,7 +879,6 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   target_decel = light_decel + gap_deficit_blend * (full_decel - light_decel)
   target = -target_decel
 
-  pre_target = x_lead > desired_gap
   pre_target_threshold = get_pre_target_runway_decel_threshold(t_follow)
   pre_target_safety_threshold = max(
     MOVING_LEAD_STOP_APPROACH_DECEL_CAP,
@@ -875,12 +894,12 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
     [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN],
     [1.0, 0.0],
   )
-  pre_target_margin = np.maximum(x_lead - desired_gap, 0.0)
   pre_target_margin_brake_blend = 1.0 - np.interp(
     pre_target_margin,
     MOVING_LEAD_STOP_APPROACH_PRE_TARGET_MARGIN_BP,
     [0.0, 1.0],
   )
+  pre_target_margin_brake_blend = np.maximum(pre_target_margin_brake_blend, soft_closing_ramp_blend)
   pre_target_margin_brake_blend *= np.interp(
     required_decel,
     [pre_target_threshold, pre_target_threshold + PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH],

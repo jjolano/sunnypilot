@@ -771,6 +771,27 @@ def test_lead_acceleration_after_slowdown_resumes_accel_promptly():
   assert np.min(output[:, 6]) > STOP_DISTANCE
 
 
+def test_route_like_slowing_lead_builds_brake_before_gap_collapse():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "route-like slowing lead approach",
+      duration=8.0,
+      initial_speed=15.93,
+      lead_relevancy=True,
+      initial_distance_lead=62.92,
+      speed_lead_values=[12.45, 12.25, 11.67, 11.32, 10.93, 10.69, 9.87, 9.25,
+                         8.54, 7.88, 7.03, 5.92, 4.80, 4.13, 3.55, 2.28],
+      cruise_values=[15.83] * 16,
+      breakpoints=[0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5,
+                   4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 8.0],
+    )
+  )
+
+  early_closing_window = (output[:, 0] >= 1.0) & (output[:, 0] <= 2.5)
+  assert np.min(output[early_closing_window, 5]) < -0.15
+  assert np.min(output[:, 6]) > STOP_DISTANCE - 1.0
+
+
 def test_equal_speed_under_gap_cut_in_uses_only_light_brake():
   output = run_under_gap_cut_in_simulation(20.0, 20.0)
 
