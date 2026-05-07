@@ -51,6 +51,10 @@ class BaseMapData(ABC):
     pass
 
   @abstractmethod
+  def get_road_curvatures(self) -> tuple[list[float], list[float]]:
+    pass
+
+  @abstractmethod
   def get_road_context(self) -> str:
     pass
 
@@ -79,6 +83,7 @@ class BaseMapData(ABC):
     traffic_control_ahead, traffic_control_ahead_distance = self.get_next_traffic_control_and_distance()
     lanes = self.get_current_lanes()
     lanes_ahead, lanes_ahead_distance = self.get_next_lanes_and_distance()
+    road_curvature_distances, road_curvatures = self.get_road_curvatures()
 
     mapd_sp_send = messaging.new_message('liveMapDataSP')
     mapd_sp_send.valid = self.sm['liveLocationKalman'].gpsOK
@@ -108,6 +113,9 @@ class BaseMapData(ABC):
     live_map_data.lanesAhead = min(255, max(0, lanes_ahead))
     live_map_data.lanesAheadDistance = lanes_ahead_distance
     live_map_data.roadContext = self.get_road_context()
+    live_map_data.roadCurvatureValid = bool(road_curvature_distances) and len(road_curvature_distances) == len(road_curvatures)
+    live_map_data.roadCurvatureDistances = road_curvature_distances
+    live_map_data.roadCurvatures = road_curvatures
 
     self.pm.send('liveMapDataSP', mapd_sp_send)
 
