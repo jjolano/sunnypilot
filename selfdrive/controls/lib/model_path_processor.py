@@ -10,6 +10,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 
 PATH_VALID_MIN_LEN = 17
 PATH_VALID_MIN_X_SPAN = 1.0
+MAX_CORE_PATH_Y_STEP = 1.0
 PATH_CURVATURE_ACTION_T = 0.25
 MIN_JUMP_CHECK_SPEED = 4.0
 MAX_LAT_ACCEL_JUMP = 3.0
@@ -24,6 +25,9 @@ HIGH_FRAME_DROP_PERC = 20.0
 LOW_QUALITY_BLEND_THRESHOLD = 0.75
 LOW_QUALITY_BLEND_MIN_ALPHA = 0.4
 HARD_INVALID_FALLBACK_MEASURED_ALPHA = 0.25
+SOFT_GATE_HOLD_FRAMES = 2
+SOFT_GATE_HOLD_QUALITY = 0.70
+SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "path_disagreement"))
 
 
 @dataclass
@@ -49,11 +53,16 @@ class ModelPathProcessorResult:
   quality: float
   gated: bool
   reason: str
+  hold_frames_remaining: int = 0
 
 
 class ModelPathProcessor:
+  def __init__(self) -> None:
+    self.reset()
+
   def reset(self) -> None:
-    pass
+    self._hold_frames_remaining = 0
+    self._hold_reason = "ok"
 
   def update(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult:
     if not inputs.lat_active:
@@ -96,7 +105,7 @@ class ModelPathProcessor:
       reason = "low_lane_confidence"
 
     if math.isfinite(inputs.frame_drop_perc) and inputs.frame_drop_perc > HIGH_FRAME_DROP_PERC:
-      quality = min(quality, 0.85)
+      quality = min(quality, SOFT_GATE_HOLD_QUALITY)
       reason = "frame_drop"
 
     if path_disagreement is not None:
@@ -109,12 +118,27 @@ class ModelPathProcessor:
     if jump_result is not None:
       return jump_result
 
+    quality, reason, hold_frames_remaining = self._apply_soft_gate_hold(quality, reason)
+
     if quality < LOW_QUALITY_BLEND_THRESHOLD:
       alpha = float(np.interp(quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0]))
       desired_curvature = self._blend(fallback_curvature, desired_curvature, alpha)
-      return ModelPathProcessorResult(desired_curvature, quality, True, reason)
+      return ModelPathProcessorResult(desired_curvature, quality, True, reason, hold_frames_remaining)
 
-    return ModelPathProcessorResult(desired_curvature, quality, False, reason)
+    return ModelPathProcessorResult(desired_curvature, quality, False, reason, hold_frames_remaining)
+
+  def _apply_soft_gate_hold(self, quality: float, reason: str) -> tuple[float, str, int]:
+    if reason in SOFT_GATE_REASONS and quality < LOW_QUALITY_BLEND_THRESHOLD:
+      self._hold_frames_remaining = SOFT_GATE_HOLD_FRAMES
+      self._hold_reason = reason
+      return quality, reason, self._hold_frames_remaining
+
+    if self._hold_frames_remaining > 0:
+      self._hold_frames_remaining -= 1
+      return min(quality, SOFT_GATE_HOLD_QUALITY), self._hold_reason, self._hold_frames_remaining
+
+    self._hold_reason = "ok"
+    return quality, reason, 0
 
   @staticmethod
   def _fallback_curvature(previous_desired_curvature: float, measured_curvature: float) -> float:
@@ -148,7 +172,12 @@ class ModelPathProcessor:
     if x_vals is None or y_vals is None or x_vals.size != y_vals.size or x_vals.size < PATH_VALID_MIN_LEN:
       return False
     core_x_vals = x_vals[:PATH_VALID_MIN_LEN]
-    return bool(np.all(np.diff(core_x_vals) >= 0.0) and core_x_vals[-1] - core_x_vals[0] >= PATH_VALID_MIN_X_SPAN)
+    core_y_vals = y_vals[:PATH_VALID_MIN_LEN]
+    return bool(
+      np.all(np.diff(core_x_vals) >= 0.0) and
+      core_x_vals[-1] - core_x_vals[0] >= PATH_VALID_MIN_X_SPAN and
+      np.max(np.abs(np.diff(core_y_vals))) <= MAX_CORE_PATH_Y_STEP
+    )
 
   @classmethod
   def _path_std_quality(
