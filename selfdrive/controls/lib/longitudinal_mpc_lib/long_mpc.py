@@ -1331,11 +1331,18 @@ class LongitudinalMpc:
   def process_lead(self, lead, lead_confidence=None):
     v_ego = self.x0[1]
     if lead is not None and lead.status:
-      x_lead = lead.dRel
-      v_lead = lead.vLead
-      a_lead = adjust_new_lead_accel(lead.aLeadK, lead_confidence) if lead_confidence is not None else lead.aLeadK
-      a_lead_tau = lead.aLeadTau
+      x_lead = float(lead.dRel)
+      v_lead = float(lead.vLead)
+      a_lead_raw = float(lead.aLeadK)
+      a_lead_tau = float(lead.aLeadTau)
+      valid_lead = all(np.isfinite(value) for value in (x_lead, v_lead, a_lead_raw, a_lead_tau))
+      if valid_lead:
+        a_lead = adjust_new_lead_accel(a_lead_raw, lead_confidence) if lead_confidence is not None else a_lead_raw
+        valid_lead = np.isfinite(a_lead)
     else:
+      valid_lead = False
+
+    if not valid_lead:
       # Fake a fast lead car, so mpc can keep running in the same mode
       x_lead = 50.0
       v_lead = v_ego + 10.0
