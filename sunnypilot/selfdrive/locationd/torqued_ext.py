@@ -76,16 +76,6 @@ def parse_speed_aware_params(CP: car.CarParams, payload: dict) -> dict | None:
   return parsed_buckets if parsed_buckets else None
 
 
-class _TorqueBuckets(PointBuckets):
-  def add_point(self, x, y):
-    for bound_min, bound_max in self.x_bounds:
-      if (x >= bound_min) and (x < bound_max):
-        self.buckets[(bound_min, bound_max)].append([x, 1.0, y])
-        break
-
-ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda']
-
-
 class SpeedAwareTorqueBuckets:
   def __init__(self, x_bounds, speed_bp, min_points, min_points_total, points_per_bucket, rowsize=3):
     self.x_bounds = x_bounds
@@ -142,6 +132,17 @@ class SpeedAwareTorqueBuckets:
 
   def total_points(self):
     return sum(len(b) for b in self.buckets.values())
+
+
+class _TorqueBuckets(PointBuckets):
+  def add_point(self, x, y):
+    for bound_min, bound_max in self.x_bounds:
+      if (x >= bound_min) and (x < bound_max):
+        self.buckets[(bound_min, bound_max)].append([x, 1.0, y])
+        break
+
+
+ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda']
 
 
 class TorqueEstimatorExt:
