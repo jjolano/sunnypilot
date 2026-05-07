@@ -1427,6 +1427,58 @@ def test_route_like_slowing_moving_lead_prefers_moderate_decel():
   assert cost > 0.0
 
 
+def test_route_like_pre_target_slowing_lead_starts_brake_ramp_before_gap_collapse():
+  v_ego = 15.95
+  v_lead = 11.67
+  d_rel = 59.08
+  a_lead = -0.59
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert target < -0.3
+  assert cost > 0.0
+
+
+def test_pre_target_soft_ramp_brakes_for_dangerous_closing_rate_before_gap_deficit():
+  v_ego = 16.0
+  v_lead = 10.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  d_rel = get_desired_follow_distance(v_ego, v_lead, t_follow) + 20.0
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < -0.3
+  assert cost > 0.0
+
+
+def test_pre_target_soft_ramp_starts_at_light_normal_lead_decel():
+  v_ego = 16.0
+  v_lead = 10.0
+  a_lead = -0.3
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  d_rel = get_desired_follow_distance(v_ego, v_lead, t_follow) + 20.0
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
+  assert cost > 0.0
+
+
+def test_pre_target_soft_ramp_stays_off_for_safe_closing_rate_with_runway():
+  v_ego = 16.0
+  v_lead = 14.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  d_rel = get_desired_follow_distance(v_ego, v_lead, t_follow) + 20.0
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN <= target <= 0.0
+
+
 def test_hard_braking_moving_lead_keeps_stronger_target_when_close():
   v_ego = 18.0
   v_lead = 10.0
@@ -1453,6 +1505,32 @@ def test_hard_braking_moving_lead_keeps_stronger_target_near_danger_boundary():
 
   assert target < -1.0
   assert cost > 0.0
+
+
+def test_moving_stop_approach_keeps_comfort_target_inside_danger_boundary():
+  v_ego = 16.0
+  v_lead = 8.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(min_gap - 0.5, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < -1.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_cost_is_continuous_around_danger_boundary():
+  v_ego = 16.0
+  v_lead = 8.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+
+  _, outside_cost = get_moving_lead_stop_approach_comfort_target(min_gap + 0.001, v_ego, v_lead, a_lead, t_follow)
+  _, inside_cost = get_moving_lead_stop_approach_comfort_target(min_gap - 0.001, v_ego, v_lead, a_lead, t_follow)
+
+  assert abs(float(outside_cost - inside_cost)) < 1.0
 
 
 def test_low_speed_hard_braking_moving_lead_keeps_stronger_target_near_danger_boundary():
