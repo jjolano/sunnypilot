@@ -5,6 +5,7 @@ import pytest
 from cereal import car
 from openpilot.selfdrive.locationd.helpers import PointBuckets
 from openpilot.selfdrive.locationd.torqued import cache_speed_aware_params, update_speed_aware_param_cache
+from openpilot.sunnypilot.selfdrive.locationd import torqued_ext
 from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import SPEED_AWARE_PARAMS_VERSION, SpeedAwareTorqueBuckets, format_speed_aware_params
 
 
@@ -109,6 +110,54 @@ class FakeParams:
 
   def remove(self, key):
     self.removed.append(key)
+
+
+class FakeBoolParams:
+  def __init__(self, values):
+    self.values = values
+
+  def get_bool(self, key):
+    return self.values.get(key, False)
+
+  def get(self, key, return_default=False):
+    values = {
+      "TorqueParamsOverrideLatAccelFactor": 200,
+      "TorqueParamsOverrideFriction": 10,
+    }
+    return values[key]
+
+
+def make_torque_ext(monkeypatch, *, custom_torque_params, torque_override_enabled):
+  params = FakeBoolParams({
+    "EnforceTorqueControl": True,
+    "LiveTorqueParamsToggle": True,
+    "LiveTorqueParamsRelaxedToggle": False,
+    "CustomTorqueParams": custom_torque_params,
+    "TorqueParamsOverrideEnabled": torque_override_enabled,
+    "LiveTorqueSpeedAdaptiveToggle": False,
+  })
+  monkeypatch.setattr(torqued_ext, "Params", lambda: params)
+
+  ext = torqued_ext.TorqueEstimatorExt(make_cp())
+  ext.min_points_total = 1
+  ext.initialize_custom_params()
+  return ext
+
+
+def test_torque_override_only_blocks_live_params_when_custom_torque_params_enabled(monkeypatch):
+  ext = make_torque_ext(monkeypatch, custom_torque_params=False, torque_override_enabled=True)
+
+  ext.update_use_params()
+
+  assert ext.use_params
+
+
+def test_torque_override_blocks_live_params_when_custom_torque_params_enabled(monkeypatch):
+  ext = make_torque_ext(monkeypatch, custom_torque_params=True, torque_override_enabled=True)
+
+  ext.update_use_params()
+
+  assert not ext.use_params
 
 
 class FakeEstimator:
