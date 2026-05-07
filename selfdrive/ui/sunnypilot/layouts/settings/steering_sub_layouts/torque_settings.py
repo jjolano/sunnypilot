@@ -46,6 +46,12 @@ class TorqueSettingsLayout(Widget):
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_torque_version_dialog,
     )
+    self._control_calculation_hardening_toggle = toggle_item_sp(
+      param="ControlCalculationHardening",
+      title=lambda: tr("Control Calculation Hardening (Experimental)"),
+      description=lambda: tr("Enables stricter validation for experimental control math paths. Keep this off unless " +
+                             "you are explicitly testing hardened control behavior."),
+    )
     self._self_tune_toggle = toggle_item_sp(
       param="LiveTorqueParamsToggle",
       title=lambda: tr("Self-Tune"),
@@ -96,6 +102,7 @@ class TorqueSettingsLayout(Widget):
 
     items = [
       self._torque_control_versions,
+      self._control_calculation_hardening_toggle,
       self._self_tune_toggle,
       self._relaxed_tune_toggle,
       self._custom_tune_toggle,
@@ -112,6 +119,7 @@ class TorqueSettingsLayout(Widget):
       self._relaxed_tune_toggle.action_item.set_state(False)
     self._self_tune_toggle.action_item.set_enabled(ui_state.is_offroad())
     self._relaxed_tune_toggle.action_item.set_enabled(ui_state.is_offroad() and self._self_tune_toggle.action_item.get_state())
+    self._control_calculation_hardening_toggle.action_item.set_enabled(ui_state.is_offroad())
     self._custom_tune_toggle.action_item.set_enabled(ui_state.is_offroad())
     custom_tune_enabled = self._custom_tune_toggle.action_item.get_state()
     self._torque_prams_override_toggle.set_visible(custom_tune_enabled)
