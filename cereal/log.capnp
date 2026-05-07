@@ -808,6 +808,7 @@ struct ControlsState @0x97ff69c53601abf1 {
   curvature @37 :Float32;  # path curvature from vehicle model
   desiredCurvature @61 :Float32;  # lag adjusted curvatures used by lateral controllers
   forceDecel @51 :Bool;
+  modelPathState @67 :ModelPathState;
 
   lateralControlState :union {
     pidState @53 :LateralPIDState;
@@ -914,6 +915,31 @@ struct ControlsState @0x97ff69c53601abf1 {
     steeringAngleDeg @1 :Float32;
     output @2 :Float32;
     saturated @3 :Bool;
+  }
+
+  struct ModelPathState {
+    enum Reason {
+      unknown @0;
+      ok @1;
+      inactive @2;
+      nonfiniteCurvature @3;
+      invalidPath @4;
+      turnOppositeCurvature @5;
+      highPathStd @6;
+      lowLaneConfidence @7;
+      frameDrop @8;
+      pathDisagreement @9;
+      curvatureJump @10;
+      lateralManeuver @11;
+    }
+
+    active @0 :Bool;
+    gated @1 :Bool;
+    quality @2 :Float32;
+    reason @3 :Reason;
+    rawDesiredCurvature @4 :Float32;
+    processedDesiredCurvature @5 :Float32;
+    holdFramesRemaining @6 :UInt8;
   }
 
   deprecated :group {

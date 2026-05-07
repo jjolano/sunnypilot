@@ -136,7 +136,7 @@ class LongControl:
     self.long_control_state = long_control_state_trans(
       self.CP, self.CP_SP, active, self.long_control_state, CS.vEgo, effective_should_stop, CS.brakePressed, CS.cruiseState.standstill
     )
-    if not active or CS.brakePressed or has_lead or self.long_control_state in (LongCtrlState.off, LongCtrlState.stopping):
+    if not active or CS.brakePressed or self.long_control_state in (LongCtrlState.off, LongCtrlState.stopping):
       self.reset_launch_envelope()
     elif prev_state == LongCtrlState.stopping and self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid) and \
          not effective_should_stop and a_target >= 0.0:

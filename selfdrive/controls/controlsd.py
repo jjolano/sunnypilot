@@ -19,7 +19,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import (
   update_lateral_accel_limit,
 )
 from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LaneChangePathShaper, LaneChangePathShaperInputs
-from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs
+from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs, ModelPathProcessorResult
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
@@ -45,6 +45,35 @@ TOYOTA_EPS_HIGH_RATE_DEG = 100.0
 TOYOTA_EPS_HIGH_RATE_FRAMES = 15
 TOYOTA_EPS_HIGH_RATE_CUT_FRAMES = 2
 TOYOTA_EPS_HIGH_RATE_FINGERPRINTS = frozenset(platform.value for platform in TOYOTA)
+MODEL_PATH_REASON_TO_CAPNP = {
+  "ok": log.ControlsState.ModelPathState.Reason.ok,
+  "inactive": log.ControlsState.ModelPathState.Reason.inactive,
+  "nonfinite_curvature": log.ControlsState.ModelPathState.Reason.nonfiniteCurvature,
+  "invalid_path": log.ControlsState.ModelPathState.Reason.invalidPath,
+  "turn_opposite_curvature": log.ControlsState.ModelPathState.Reason.turnOppositeCurvature,
+  "high_path_std": log.ControlsState.ModelPathState.Reason.highPathStd,
+  "low_lane_confidence": log.ControlsState.ModelPathState.Reason.lowLaneConfidence,
+  "frame_drop": log.ControlsState.ModelPathState.Reason.frameDrop,
+  "path_disagreement": log.ControlsState.ModelPathState.Reason.pathDisagreement,
+  "curvature_jump": log.ControlsState.ModelPathState.Reason.curvatureJump,
+  "lateral_maneuver": log.ControlsState.ModelPathState.Reason.lateralManeuver,
+}
+
+
+def model_path_reason_to_capnp(reason: str):
+  return MODEL_PATH_REASON_TO_CAPNP.get(reason, log.ControlsState.ModelPathState.Reason.unknown)
+
+
+def fill_model_path_state(model_path_state, model_path_result: ModelPathProcessorResult, raw_desired_curvature: float) -> None:
+  model_path_state.active = model_path_result.reason != "inactive"
+  model_path_state.gated = bool(model_path_result.gated)
+  model_path_state.quality = float(model_path_result.quality)
+  model_path_state.reason = model_path_reason_to_capnp(model_path_result.reason)
+  raw_desired_curvature = float(raw_desired_curvature)
+  processed_desired_curvature = float(model_path_result.desired_curvature)
+  model_path_state.rawDesiredCurvature = raw_desired_curvature if math.isfinite(raw_desired_curvature) else 0.0
+  model_path_state.processedDesiredCurvature = processed_desired_curvature if math.isfinite(processed_desired_curvature) else 0.0
+  model_path_state.holdFramesRemaining = max(0, min(255, int(model_path_result.hold_frames_remaining)))
 
 
 def compute_steering_actuator_feedback(previous_request, actuators_output, steer_control_type, lat_active=True):
@@ -104,6 +133,8 @@ class Controls(ControlsExt):
     self.default_lateral_accel_limited = False
     self.lane_change_path_shaper = LaneChangePathShaper(DT_CTRL)
     self.model_path_processor = ModelPathProcessor()
+    self.model_path_result = ModelPathProcessorResult(0.0, 0.0, True, "inactive")
+    self.model_path_raw_desired_curvature = 0.0
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -189,10 +220,13 @@ class Controls(ControlsExt):
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
     lateral_maneuver_curvature = self.get_lateral_maneuver_curvature(CC.latActive)
+    model_path_raw_curvature = float(model_v2.action.desiredCurvature)
     if lateral_maneuver_curvature is not None:
       self.lane_change_path_shaper.reset()
       self.model_path_processor.reset()
       new_desired_curvature = lateral_maneuver_curvature
+      self.model_path_result = ModelPathProcessorResult(lateral_maneuver_curvature, 0.0, True, "lateral_maneuver")
+      self.model_path_raw_desired_curvature = model_path_raw_curvature
     else:
       turn_curvature_sign = 0
       if model_v2.meta.laneChangeState == LaneChangeState.off and self.sm.valid['modelDataV2SP']:
@@ -219,6 +253,8 @@ class Controls(ControlsExt):
           frame_drop_perc=model_v2.frameDropPerc,
         )
       )
+      self.model_path_result = path_result
+      self.model_path_raw_desired_curvature = model_path_raw_curvature
       model_desired_curvature = path_result.desired_curvature if CC.latActive else self.curvature
       left_lane_y0 = model_v2.laneLines[1].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[1].y) else None
       right_lane_y0 = model_v2.laneLines[2].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[2].y) else None
@@ -370,6 +406,8 @@ class Controls(ControlsExt):
     cs.ufAccelCmd = float(self.LoC.pid.f)
     cs.forceDecel = bool((self.sm['driverMonitoringState'].awarenessStatus < 0.) or
                          (self.sm['selfdriveState'].state == State.softDisabling))
+
+    fill_model_path_state(cs.modelPathState, self.model_path_result, self.model_path_raw_desired_curvature)
 
     lat_control_state = getattr(self.LaC, 'CONTROL_STATE', self.CP.lateralTuning.which())
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
