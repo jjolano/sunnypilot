@@ -39,7 +39,10 @@ visionipc.VisionStreamType = object
 visionipc.get_endpoint_name = lambda *args, **kwargs: ""
 sys.modules.setdefault("msgq.visionipc", visionipc)
 
-from openpilot.selfdrive.controls.controlsd import Controls
+from cereal import log
+import cereal.messaging as messaging
+from openpilot.selfdrive.controls.controlsd import Controls, fill_model_path_state, model_path_reason_to_capnp
+from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessorResult
 
 
 class FakeLateralManeuverPlan:
@@ -86,3 +89,24 @@ def test_lateral_maneuver_curvature_ignores_plan_when_lateral_inactive():
   controls = make_controls(desired_curvature=0.0015, checks_ok=True)
 
   assert controls.get_lateral_maneuver_curvature(False) is None
+
+
+def test_model_path_reason_mapping_uses_controls_state_schema_enum():
+  assert model_path_reason_to_capnp("path_disagreement") == log.ControlsState.ModelPathState.Reason.pathDisagreement
+  assert model_path_reason_to_capnp("unexpected") == log.ControlsState.ModelPathState.Reason.unknown
+
+
+def test_fill_model_path_state_publishes_processed_path_debug_values():
+  msg = messaging.new_message('controlsState')
+  result = ModelPathProcessorResult(0.0015, 0.65, True, "path_disagreement", 1)
+
+  fill_model_path_state(msg.controlsState.modelPathState, result, 0.002)
+
+  state = msg.controlsState.modelPathState
+  assert state.active
+  assert state.gated
+  assert state.quality == pytest.approx(0.65)
+  assert state.reason == log.ControlsState.ModelPathState.Reason.pathDisagreement
+  assert state.rawDesiredCurvature == pytest.approx(0.002)
+  assert state.processedDesiredCurvature == pytest.approx(0.0015)
+  assert state.holdFramesRemaining == 1
