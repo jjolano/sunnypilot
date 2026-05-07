@@ -180,6 +180,8 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
     vEgoStopping=0.5,
   )
   planner.mpc = FakeMpc()
+  planner.VM = None
+  planner.control_calculation_hardening = False
   planner.fcw = False
   planner.dt = longitudinal_planner.DT_MDL
   planner.allow_throttle = True
@@ -230,7 +232,7 @@ def make_planner_sm(v_ego, lead, desired_accel=-1.0, should_stop=True, brake_pre
     ),
     'controlsState': SimpleNamespace(longControlState=longitudinal_planner.LongCtrlState.pid, forceDecel=force_slow_decel),
     'selfdriveState': SimpleNamespace(enabled=True, experimentalMode=True, personality=log.LongitudinalPersonality.standard),
-    'liveParameters': SimpleNamespace(angleOffsetDeg=0.0),
+    'liveParameters': SimpleNamespace(angleOffsetDeg=0.0, roll=0.0, stiffnessFactor=1.0, steerRatio=15.0),
     'modelV2': make_model_action(desired_accel, should_stop),
     'radarState': SimpleNamespace(leadOne=lead, leadTwo=lead_two or SimpleNamespace(status=False)),
   }
