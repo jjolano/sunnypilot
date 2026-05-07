@@ -43,6 +43,10 @@ PARAM_CACHE_MISS = object()
 VALID_TRUE_VALUES = ("1", "true", "True", b"1", b"true", b"True")
 
 
+def valid_map_coordinate(latitude: float | None, longitude: float | None) -> bool:
+  return latitude is not None and longitude is not None and math.isfinite(latitude) and math.isfinite(longitude)
+
+
 def velocities_from_param(param: str, params: Params):
   if params is None:
     params = Params()
@@ -60,7 +64,7 @@ def velocities_from_param(param: str, params: Params):
     tlon = mapd_section_float(target_velocity, "longitude", None)
     tv = mapd_section_float(target_velocity, "velocity", None)
 
-    if tlat is None or tlon is None or not valid_map_speed(tv):
+    if not valid_map_coordinate(tlat, tlon) or not valid_map_speed(tv):
       continue
 
     valid_velocities.append({"latitude": tlat, "longitude": tlon, "velocity": tv})
@@ -69,7 +73,7 @@ def velocities_from_param(param: str, params: Params):
 
 
 def valid_map_speed(speed: float | None) -> bool:
-  return speed is not None and 0. < speed < MAX_MAP_SPEED
+  return speed is not None and math.isfinite(speed) and 0. < speed < MAX_MAP_SPEED
 
 
 def calculate_accel(t, target_jerk, a_ego):
@@ -87,7 +91,11 @@ def calculate_distance(t, target_jerk, a_ego, v_ego):
 # points should be in radians
 # output is meters
 def distance_to_point(ax, ay, bx, by):
+  if not all(math.isfinite(value) for value in (ax, ay, bx, by)):
+    return float("inf")
+
   a = math.sin((bx-ax)/2)*math.sin((bx-ax)/2) + math.cos(ax) * math.cos(bx)*math.sin((by-ay)/2)*math.sin((by-ay)/2)
+  a = min(1.0, max(0.0, a))
   c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
   return R * c  # in meters
@@ -403,6 +411,8 @@ class SmartCruiseControlMap:
 
     lat = mapd_section_float(section, "start_latitude", 0.)
     lon = mapd_section_float(section, "start_longitude", 0.)
+    if not valid_map_coordinate(lat, lon):
+      return None
     return float(target_v), float(lat or 0.), float(lon or 0.)
 
   def _distance_to_advisory_start(self, section) -> float | None:
@@ -415,7 +425,7 @@ class SmartCruiseControlMap:
 
     lat = mapd_section_float(section, "start_latitude", None)
     lon = mapd_section_float(section, "start_longitude", None)
-    if lat is None or lon is None:
+    if not valid_map_coordinate(lat, lon):
       return None
 
     return distance_to_point(self.last_position.latitude * TO_RADIANS, self.last_position.longitude * TO_RADIANS,

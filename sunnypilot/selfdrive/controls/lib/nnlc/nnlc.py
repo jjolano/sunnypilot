@@ -37,6 +37,7 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
     super().__init__(lac_torque, CP, CP_SP, CI)
     self.params = Params()
     self.enabled = self.params.get_bool("NeuralNetworkLateralControl")
+    self.control_calculation_hardening = self.params.get_bool("ControlCalculationHardening")
     self.has_nn_model = CP_SP.neuralNetworkLateralControl.model.path != MOCK_MODEL_PATH
 
     # NN model takes current v_ego, lateral_accel, lat accel/jerk error, roll, and past/future/planned data
@@ -113,7 +114,10 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
 
     # prepare past and future values
     # adjust future times to account for longitudinal acceleration
-    adjusted_future_times = [t + 0.5 * CS.aEgo * (t / max(CS.vEgo, 1.0)) for t in self.nn_future_times]
+    if self.control_calculation_hardening:
+      adjusted_future_times = [t + 0.5 * CS.aEgo * (t ** 2 / max(CS.vEgo, 1.0)) for t in self.nn_future_times]
+    else:
+      adjusted_future_times = [t + 0.5 * CS.aEgo * (t / max(CS.vEgo, 1.0)) for t in self.nn_future_times]
     past_rolls = [self.roll_deque[min(len(self.roll_deque) - 1, i)] for i in self.history_frame_offsets]
     future_rolls = [roll_pitch_adjust(np.interp(t, ModelConstants.T_IDXS, self.model_v2.orientation.x) + roll,
                                       np.interp(t, ModelConstants.T_IDXS, self.model_v2.orientation.y) + self.pitch_last) for t in

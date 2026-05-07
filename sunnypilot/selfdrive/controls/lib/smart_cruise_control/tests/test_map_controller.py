@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_contro
   R,
   TO_DEGREES,
   SmartCruiseControlMap,
+  distance_to_point,
   point_distance,
   velocities_from_param,
 )
@@ -119,6 +121,33 @@ class TestSmartCruiseControlMap:
     self.mem_params.put("MapTargetVelocities", "not-json")
 
     assert velocities_from_param("MapTargetVelocities", self.mem_params) == []
+
+  def test_velocities_from_param_rejects_non_finite_coordinates(self):
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": float("inf"), "longitude": 0.001, "velocity": 15.0},
+      {"latitude": 0.0, "longitude": float("nan"), "velocity": 15.0},
+    ]))
+
+    assert velocities_from_param("MapTargetVelocities", self.mem_params) == []
+
+  def test_distance_to_point_returns_infinity_for_non_finite_inputs(self):
+    assert math.isinf(distance_to_point(0.0, 0.0, float("inf"), 0.0))
+
+  def test_distance_to_point_clamps_haversine_roundoff(self, monkeypatch):
+    monkeypatch.setattr(map_controller.math, "sin", lambda _value: 1.0)
+    monkeypatch.setattr(map_controller.math, "cos", lambda _value: 1.0)
+
+    assert distance_to_point(0.0, 0.0, 0.0, 0.0) == pytest.approx(math.pi * R)
+
+  def test_advisory_distance_rejects_non_finite_coordinates(self):
+    section = {"start_latitude": float("inf"), "start_longitude": 0.0}
+
+    assert self.scc_m._distance_to_advisory_start(section) is None
+
+  def test_advisory_target_rejects_non_finite_coordinates(self):
+    section = {"speedlimit": 15.0, "start_latitude": float("inf"), "start_longitude": 0.0}
+
+    assert self.scc_m._advisory_target(section) is None
 
   def test_update_calculations_reuses_cached_target_velocity_parse(self, monkeypatch):
     calls = 0
