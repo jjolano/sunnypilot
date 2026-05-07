@@ -109,6 +109,10 @@ class TestParams:
     assert len(keys) == len(set(keys))
     assert b"CarParams" in keys
 
+  def test_control_calculation_hardening_defaults_off(self):
+    assert b"ControlCalculationHardening" in Params().all_keys()
+    assert self.params.get("ControlCalculationHardening", return_default=True) is False
+
   def test_params_default_value(self):
     self.params.remove("LanguageSetting")
     self.params.remove("LongitudinalPersonality")

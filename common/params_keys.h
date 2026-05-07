@@ -199,6 +199,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ModelManager_ModelsCache", {PERSISTENT | BACKUP, JSON}},
 
     // Neural Network Lateral Control
+    {"ControlCalculationHardening", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"NeuralNetworkLateralControl", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // sunnylink params

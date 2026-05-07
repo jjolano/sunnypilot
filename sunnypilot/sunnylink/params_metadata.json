@@ -186,6 +186,10 @@
     "title": "Completed Training Version",
     "description": ""
   },
+  "ControlCalculationHardening": {
+    "title": "Control Calculation Hardening",
+    "description": "Enable experimental safer control math paths for validation."
+  },
   "ControlsReady": {
     "title": "Controls Ready",
     "description": ""
