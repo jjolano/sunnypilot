@@ -7,6 +7,7 @@ from openpilot.common.parameterized import parameterized_class
 
 from cereal import custom, log
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
+from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceState
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
@@ -1012,6 +1013,58 @@ def test_lead_transition_adjusted_accel_only_suppresses_decel():
   assert adjusted.tolist() == pytest.approx([-1.0, 0.5])
 
 
+def test_process_lead_suppresses_new_lead_positive_accel():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, dRel=30.0, vLead=15.0, vLeadK=15.0, aLeadK=1.0, aLeadTau=0.0)
+  confidence = LeadConfidenceState(status=True, accel_blend=0.0)
+
+  _, a_lead, _, a_lead_traj = mpc.process_lead(lead, confidence)
+
+  assert a_lead == pytest.approx(0.0)
+  assert np.all(a_lead_traj == pytest.approx(0.0))
+
+
+def test_process_lead_preserves_new_lead_negative_accel():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, dRel=30.0, vLead=15.0, vLeadK=15.0, aLeadK=-1.0, aLeadTau=0.0)
+  confidence = LeadConfidenceState(status=True, accel_blend=0.0)
+
+  _, a_lead, _, a_lead_traj = mpc.process_lead(lead, confidence)
+
+  assert a_lead == pytest.approx(-1.0)
+  assert np.all(a_lead_traj == pytest.approx(-1.0))
+
+
+def test_new_lead_confidence_guard_caps_near_term_accel(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=25.0, vLead=18.0, vLeadK=18.0,
+    aLeadK=0.8, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  radarstate = SimpleNamespace(leadOne=lead, leadTwo=SimpleNamespace(status=False))
+
+  mpc.update(radarstate, v_cruise=25.0)
+
+  assert mpc.params[0, 1] == pytest.approx(0.0)
+
+
+def test_non_dominant_lead_two_confidence_guard_does_not_cap_accel(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  far_lead = SimpleNamespace(
+    status=True, radarTrackId=43, yRel=0.0, dRel=150.0, vLead=20.0, vLeadK=20.0,
+    aLeadK=0.8, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  radarstate = SimpleNamespace(leadOne=SimpleNamespace(status=False), leadTwo=far_lead)
+
+  mpc.update(radarstate, v_cruise=25.0)
+
+  assert mpc.params[0, 1] > 0.5
+
+
 def test_approach_brake_stays_stock_for_small_closure():
   assert get_approach_brake(0.0) == pytest.approx(APPROACH_BRAKE)
   assert get_approach_brake(1.5) == pytest.approx(APPROACH_BRAKE)
@@ -1581,6 +1634,58 @@ def test_route_like_slowing_moving_lead_prefers_moderate_decel():
   assert cost > 0.0
 
 
+def test_route_like_pre_target_slowing_lead_starts_brake_ramp_before_gap_collapse():
+  v_ego = 15.95
+  v_lead = 11.67
+  d_rel = 59.08
+  a_lead = -0.59
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert target < -0.3
+  assert cost > 0.0
+
+
+def test_pre_target_soft_ramp_brakes_for_dangerous_closing_rate_before_gap_deficit():
+  v_ego = 16.0
+  v_lead = 10.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  d_rel = get_desired_follow_distance(v_ego, v_lead, t_follow) + 20.0
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < -0.3
+  assert cost > 0.0
+
+
+def test_pre_target_soft_ramp_starts_at_light_normal_lead_decel():
+  v_ego = 16.0
+  v_lead = 10.0
+  a_lead = -0.3
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  d_rel = get_desired_follow_distance(v_ego, v_lead, t_follow) + 20.0
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
+  assert cost > 0.0
+
+
+def test_pre_target_soft_ramp_stays_off_for_safe_closing_rate_with_runway():
+  v_ego = 16.0
+  v_lead = 14.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  d_rel = get_desired_follow_distance(v_ego, v_lead, t_follow) + 20.0
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN <= target <= 0.0
+
+
 def test_hard_braking_moving_lead_keeps_stronger_target_when_close():
   v_ego = 18.0
   v_lead = 10.0
@@ -1607,6 +1712,32 @@ def test_hard_braking_moving_lead_keeps_stronger_target_near_danger_boundary():
 
   assert target < -1.0
   assert cost > 0.0
+
+
+def test_moving_stop_approach_keeps_comfort_target_inside_danger_boundary():
+  v_ego = 16.0
+  v_lead = 8.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(min_gap - 0.5, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < -1.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_cost_is_continuous_around_danger_boundary():
+  v_ego = 16.0
+  v_lead = 8.0
+  a_lead = -1.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  min_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+
+  _, outside_cost = get_moving_lead_stop_approach_comfort_target(min_gap + 0.001, v_ego, v_lead, a_lead, t_follow)
+  _, inside_cost = get_moving_lead_stop_approach_comfort_target(min_gap - 0.001, v_ego, v_lead, a_lead, t_follow)
+
+  assert abs(float(outside_cost - inside_cost)) < 1.0
 
 
 def test_low_speed_hard_braking_moving_lead_keeps_stronger_target_near_danger_boundary():
