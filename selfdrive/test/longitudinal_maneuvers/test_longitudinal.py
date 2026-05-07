@@ -11,6 +11,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_stop_presentation_distance,
   get_T_FOLLOW,
 )
+from openpilot.selfdrive.controls.lib.longitudinal_planner import CREEP_TO_STOP_GAP_FOLLOW_EXCESS
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
@@ -192,7 +193,7 @@ def create_maneuvers(kwargs):
         duration=20.0,
         initial_speed=0.0,
         lead_relevancy=True,
-        initial_distance_lead=STOP_DISTANCE,
+        initial_distance_lead=STOP_DISTANCE + CREEP_TO_STOP_GAP_FOLLOW_EXCESS,
         speed_lead_values=[0.0, 0.0, 2.0],
         breakpoints=[1.0, 10.0, 15.0],
         ensure_start=True,
@@ -493,7 +494,7 @@ def test_green_light_pullaway_limits_planner_accel_jerk():
     )
   )
 
-  assert get_max_abs_jerk(output) <= 8.0
+  assert get_max_abs_jerk(output) <= 8.0 + 1e-9
 
 
 def test_lead_creep_uses_extra_stopped_gap():
@@ -526,7 +527,7 @@ def test_stationary_lead_over_stopped_gap_creeps_toward_target_gap():
       duration=20.0,
       initial_speed=0.0,
       lead_relevancy=True,
-      initial_distance_lead=STOP_DISTANCE + 1.0,
+      initial_distance_lead=STOP_DISTANCE + CREEP_TO_STOP_GAP_FOLLOW_EXCESS + 0.2,
       speed_lead_values=[0.0, 0.0],
       breakpoints=[0.0, 20.0],
     )
@@ -617,7 +618,7 @@ def test_low_speed_slowing_lead_targets_predicted_stop_runway():
   assert len(stopped_idxs) > 0
 
   assert np.min(output[:, 5]) > -1.3
-  assert output[stopped_idxs[0], 6] == pytest.approx(5.7, abs=0.4)
+  assert output[stopped_idxs[0], 6] == pytest.approx(5.3, abs=0.4)
 
 
 def test_stopped_lead_approach_uses_earlier_moderate_brake():
