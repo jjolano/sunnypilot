@@ -18,6 +18,10 @@ from openpilot.selfdrive.controls.lib.drive_helpers import (
   should_latch_lateral_accel_burst,
   update_lateral_accel_limit,
 )
+from openpilot.selfdrive.controls.lib.experimental_lateral_path_planner import (
+  ExperimentalLateralPathPlanner,
+  ExperimentalLateralPathPlannerInputs,
+)
 from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LaneChangePathShaper, LaneChangePathShaperInputs
 from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
@@ -104,6 +108,7 @@ class Controls(ControlsExt):
     self.default_lateral_accel_limited = False
     self.lane_change_path_shaper = LaneChangePathShaper(DT_CTRL)
     self.model_path_processor = ModelPathProcessor()
+    self.experimental_lateral_path_planner = ExperimentalLateralPathPlanner(DT_CTRL)
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -137,6 +142,43 @@ class Controls(ControlsExt):
       cloudlog.error(f"lateralManeuverPlan.desiredCurvature not finite {desired_curvature}")
       return None
     return float(desired_curvature)
+
+  @staticmethod
+  def _path_y0(path) -> float | None:
+    y_vals = getattr(path, "y", [])
+    if len(y_vals) == 0 or not math.isfinite(y_vals[0]):
+      return None
+    return float(y_vals[0])
+
+  def apply_experimental_lateral_path_planner(self, lat_active: bool, v_ego: float, model_v2,
+                                             baseline_curvature: float, lane_change_active: bool) -> float:
+    lane_lines = getattr(model_v2, "laneLines", ())
+    road_edges = getattr(model_v2, "roadEdges", ())
+    left_lane_y0 = self._path_y0(lane_lines[1]) if len(lane_lines) > 2 else None
+    right_lane_y0 = self._path_y0(lane_lines[2]) if len(lane_lines) > 2 else None
+    left_road_edge_y0 = self._path_y0(road_edges[0]) if len(road_edges) > 0 else None
+    right_road_edge_y0 = self._path_y0(road_edges[1]) if len(road_edges) > 1 else None
+
+    result = self.experimental_lateral_path_planner.update(
+      ExperimentalLateralPathPlannerInputs(
+        enabled=self.params.get_bool("ExperimentalLateralPathPlanner"),
+        lat_active=lat_active,
+        v_ego=v_ego,
+        baseline_curvature=baseline_curvature,
+        measured_curvature=self.curvature,
+        previous_desired_curvature=self.desired_curvature,
+        position_x=tuple(model_v2.position.x),
+        position_y=tuple(model_v2.position.y),
+        position_y_std=tuple(model_v2.position.yStd),
+        lane_line_probs=tuple(model_v2.laneLineProbs),
+        left_lane_y0=left_lane_y0,
+        right_lane_y0=right_lane_y0,
+        left_road_edge_y0=left_road_edge_y0,
+        right_road_edge_y0=right_road_edge_y0,
+        lane_change_active=lane_change_active,
+      )
+    )
+    return result.desired_curvature
 
   def state_control(self):
     CS = self.sm['carState']
@@ -192,6 +234,7 @@ class Controls(ControlsExt):
     if lateral_maneuver_curvature is not None:
       self.lane_change_path_shaper.reset()
       self.model_path_processor.reset()
+      self.experimental_lateral_path_planner.reset()
       new_desired_curvature = lateral_maneuver_curvature
     else:
       turn_curvature_sign = 0
@@ -220,6 +263,10 @@ class Controls(ControlsExt):
         )
       )
       model_desired_curvature = path_result.desired_curvature if CC.latActive else self.curvature
+      lane_change_active = model_v2.meta.laneChangeState in (LaneChangeState.laneChangeStarting, LaneChangeState.laneChangeFinishing)
+      model_desired_curvature = self.apply_experimental_lateral_path_planner(
+        CC.latActive, CS.vEgo, model_v2, model_desired_curvature, lane_change_active,
+      )
       left_lane_y0 = model_v2.laneLines[1].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[1].y) else None
       right_lane_y0 = model_v2.laneLines[2].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[2].y) else None
       lane_change_result = self.lane_change_path_shaper.update(
