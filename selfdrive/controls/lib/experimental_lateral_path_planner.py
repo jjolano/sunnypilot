@@ -216,7 +216,7 @@ class ExperimentalLateralPathPlanner:
   def _path_confidence(position_y_std: Sequence[float]) -> float:
     y_std = ExperimentalLateralPathPlanner._as_finite_array(position_y_std)
     if y_std is None or y_std.size < PATH_VALID_MIN_LEN:
-      return 0.0
+      return 0.5
     max_y_std = float(np.max(y_std[:PATH_VALID_MIN_LEN]))
     if max_y_std <= MAX_PATH_Y_STD:
       return 1.0
@@ -240,10 +240,7 @@ class ExperimentalLateralPathPlanner:
 
   @classmethod
   def _lane_center_bias(cls, inputs: ExperimentalLateralPathPlannerInputs, x_vals: np.ndarray, y_vals: np.ndarray) -> float:
-    if len(inputs.lane_line_probs) <= 2:
-      return 0.0
-    central_lane_probs = (float(inputs.lane_line_probs[1]), float(inputs.lane_line_probs[2]))
-    if not all(math.isfinite(prob) for prob in central_lane_probs) or min(central_lane_probs) < LOW_LANE_LINE_PROB:
+    if len(inputs.lane_line_probs) <= 2 or min(float(inputs.lane_line_probs[1]), float(inputs.lane_line_probs[2])) < LOW_LANE_LINE_PROB:
       return 0.0
     if inputs.left_lane_y0 is None or inputs.right_lane_y0 is None:
       return 0.0

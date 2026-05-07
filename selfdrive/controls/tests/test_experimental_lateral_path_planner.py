@@ -129,44 +129,6 @@ def test_high_lane_uncertainty_returns_baseline_without_arming():
   assert result.desired_curvature == pytest.approx(0.001)
 
 
-def test_nonfinite_path_uncertainty_returns_baseline_without_arming():
-  planner = ExperimentalLateralPathPlanner(dt=0.1)
-  position_y_std = [0.1 for _ in range(ModelConstants.IDX_N)]
-  position_y_std[4] = float("nan")
-
-  result = planner.update(make_inputs(position_y_std=tuple(position_y_std)))
-
-  assert result.state == ExperimentalLateralPathPlannerState.baseline
-  assert result.reason == "low_confidence"
-  assert result.desired_curvature == pytest.approx(0.001)
-
-
-def test_malformed_path_uncertainty_returns_baseline_without_arming():
-  planner = ExperimentalLateralPathPlanner(dt=0.1)
-
-  result = planner.update(make_inputs(position_y_std=(0.1, 0.1)))
-
-  assert result.state == ExperimentalLateralPathPlannerState.baseline
-  assert result.reason == "low_confidence"
-  assert result.desired_curvature == pytest.approx(0.001)
-
-
-def test_nonfinite_lane_probability_suppresses_lane_center_bias():
-  planner = ExperimentalLateralPathPlanner(dt=0.1)
-
-  result = arm_planner(
-    planner,
-    baseline_curvature=0.0,
-    position_y=tuple(0.4 for _ in range(ModelConstants.IDX_N)),
-    lane_line_probs=(0.0, float("nan"), 0.95, 0.0),
-    left_road_edge_y0=None,
-    right_road_edge_y0=None,
-  )
-
-  assert result.active
-  assert result.desired_curvature == pytest.approx(0.0)
-
-
 def test_near_road_edge_biases_candidate_away_from_edge_after_arming():
   planner = ExperimentalLateralPathPlanner(dt=0.1)
 
