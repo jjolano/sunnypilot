@@ -22,10 +22,8 @@ COOLDOWN_SECONDS = 0.6
 PATH_CURVATURE_BLEND = 0.25
 MAX_CANDIDATE_LAT_ACCEL_DELTA = 1.2
 LANE_CENTER_MAX_OFFSET = 0.35
-LANE_CENTER_MAX_LAT_ACCEL_BIAS = 0.25
 ROAD_EDGE_CLEARANCE = 0.8
 ROAD_EDGE_MAX_OFFSET = 0.45
-ROAD_EDGE_MAX_LAT_ACCEL_BIAS = 0.35
 MIN_BIAS_LOOKAHEAD = 12.0
 MAX_BIAS_LOOKAHEAD = 28.0
 
@@ -258,8 +256,7 @@ class ExperimentalLateralPathPlanner:
     lane_center_y0 = (inputs.left_lane_y0 + inputs.right_lane_y0) * 0.5
     lateral_offset = float(y_vals[0] - lane_center_y0)
     desired_shift = float(np.clip(-lateral_offset, -LANE_CENTER_MAX_OFFSET, LANE_CENTER_MAX_OFFSET))
-    return cls._limit_lat_accel_bias(cls._shift_to_curvature(desired_shift, inputs.v_ego, x_vals),
-                                     inputs.v_ego, LANE_CENTER_MAX_LAT_ACCEL_BIAS)
+    return cls._shift_to_curvature(desired_shift, inputs.v_ego, x_vals)
 
   @classmethod
   def _road_edge_bias(cls, inputs: ExperimentalLateralPathPlannerInputs, x_vals: np.ndarray, y_vals: np.ndarray) -> float:
@@ -274,8 +271,7 @@ class ExperimentalLateralPathPlanner:
       if 0.0 < right_clearance < ROAD_EDGE_CLEARANCE:
         desired_shift -= ROAD_EDGE_CLEARANCE - right_clearance
     desired_shift = float(np.clip(desired_shift, -ROAD_EDGE_MAX_OFFSET, ROAD_EDGE_MAX_OFFSET))
-    return cls._limit_lat_accel_bias(cls._shift_to_curvature(desired_shift, inputs.v_ego, x_vals),
-                                     inputs.v_ego, ROAD_EDGE_MAX_LAT_ACCEL_BIAS)
+    return cls._shift_to_curvature(desired_shift, inputs.v_ego, x_vals)
 
   @staticmethod
   def _shift_to_curvature(lateral_shift: float, v_ego: float, x_vals: np.ndarray) -> float:
@@ -291,12 +287,6 @@ class ExperimentalLateralPathPlanner:
     speed_sq = max(v_ego, MIN_ACTIVE_SPEED) ** 2
     max_delta = min(MAX_CANDIDATE_LAT_ACCEL_DELTA, MAX_LATERAL_ACCEL_NO_ROLL) / speed_sq
     return float(np.clip(candidate, baseline_curvature - max_delta, baseline_curvature + max_delta))
-
-  @staticmethod
-  def _limit_lat_accel_bias(curvature_bias: float, v_ego: float, max_lat_accel_bias: float) -> float:
-    speed_sq = max(v_ego, MIN_ACTIVE_SPEED) ** 2
-    max_curvature_bias = max_lat_accel_bias / speed_sq
-    return float(np.clip(curvature_bias, -max_curvature_bias, max_curvature_bias))
 
   @staticmethod
   def _blend(start: float, end: float, alpha: float) -> float:

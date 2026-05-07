@@ -167,26 +167,6 @@ def test_nonfinite_lane_probability_suppresses_lane_center_bias():
   assert result.desired_curvature == pytest.approx(0.0)
 
 
-def test_lane_center_bias_is_capped_to_subtle_lateral_accel():
-  planner = ExperimentalLateralPathPlanner(dt=0.1)
-  v_ego = 17.0
-
-  result = arm_planner(
-    planner,
-    v_ego=v_ego,
-    baseline_curvature=0.0,
-    measured_curvature=0.0,
-    previous_desired_curvature=0.0,
-    position_y=tuple(0.42 for _ in range(ModelConstants.IDX_N)),
-    left_road_edge_y0=None,
-    right_road_edge_y0=None,
-  )
-
-  assert result.active
-  assert result.reason == "ok"
-  assert abs(result.desired_curvature) * v_ego ** 2 <= 0.25 + 1e-9
-
-
 def test_near_road_edge_biases_candidate_away_from_edge_after_arming():
   planner = ExperimentalLateralPathPlanner(dt=0.1)
 
@@ -201,24 +181,3 @@ def test_near_road_edge_biases_candidate_away_from_edge_after_arming():
   assert result.active
   assert result.reason == "ok"
   assert result.desired_curvature < 0.0
-
-
-def test_road_edge_bias_is_capped_to_subtle_lateral_accel():
-  planner = ExperimentalLateralPathPlanner(dt=0.1)
-  v_ego = 20.0
-
-  result = arm_planner(
-    planner,
-    v_ego=v_ego,
-    baseline_curvature=0.0,
-    measured_curvature=0.0,
-    previous_desired_curvature=0.0,
-    position_y=tuple(1.3 for _ in range(ModelConstants.IDX_N)),
-    lane_line_probs=(0.0, 0.0, 0.0, 0.0),
-    left_road_edge_y0=-3.4,
-    right_road_edge_y0=1.7,
-  )
-
-  assert result.active
-  assert result.reason == "ok"
-  assert abs(result.desired_curvature) * v_ego ** 2 <= 0.35 + 1e-9
