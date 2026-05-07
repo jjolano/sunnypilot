@@ -632,10 +632,6 @@
     "title": "Location Filter Initial State",
     "description": ""
   },
-  "LateralMapCurvatureFallback": {
-    "title": "Lateral Map Curvature Fallback",
-    "description": "Use map road curvature as a guarded fallback when model path curvature is degraded. This will not blend map data into a healthy model path."
-  },
   "LongitudinalManeuverMode": {
     "title": "Longitudinal Maneuver Mode",
     "description": ""

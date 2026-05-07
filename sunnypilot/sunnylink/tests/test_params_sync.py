@@ -204,12 +204,6 @@ def test_known_params_metadata():
   assert acc_long["max"] == 10
   assert acc_long["step"] == 1
 
-  lateral_map_fallback = metadata.get("LateralMapCurvatureFallback")
-  assert lateral_map_fallback is not None
-  assert lateral_map_fallback["title"] == "Lateral Map Curvature Fallback"
-  assert "fallback" in lateral_map_fallback["description"].lower()
-
-
 def test_torque_control_tune_versions_in_sync():
   """
   Test that TorqueControlTune options in params_metadata.json match versions in latcontrol_torque_versions.json.
