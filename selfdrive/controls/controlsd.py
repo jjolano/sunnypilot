@@ -6,7 +6,7 @@ from cereal import car, custom, log
 import cereal.messaging as messaging
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
-from openpilot.common.realtime import config_realtime_process, DT_CTRL, DT_MDL, Priority, Ratekeeper
+from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority, Ratekeeper
 from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
@@ -19,12 +19,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import (
   update_lateral_accel_limit,
 )
 from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LaneChangePathShaper, LaneChangePathShaperInputs
-from openpilot.selfdrive.controls.lib.model_path_processor import (
-  ModelPathProcessor,
-  ModelPathProcessorInputs,
-  ModelPathProcessorResult,
-  PATH_CURVATURE_ACTION_T,
-)
+from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs, ModelPathProcessorResult
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
@@ -50,7 +45,6 @@ TOYOTA_EPS_HIGH_RATE_DEG = 100.0
 TOYOTA_EPS_HIGH_RATE_FRAMES = 15
 TOYOTA_EPS_HIGH_RATE_CUT_FRAMES = 2
 TOYOTA_EPS_HIGH_RATE_FINGERPRINTS = frozenset(platform.value for platform in TOYOTA)
-MAP_CURVATURE_DISTANCE_WINDOW = 5.0
 MODEL_PATH_REASON_TO_CAPNP = {
   "ok": log.ControlsState.ModelPathState.Reason.ok,
   "inactive": log.ControlsState.ModelPathState.Reason.inactive,
@@ -63,7 +57,6 @@ MODEL_PATH_REASON_TO_CAPNP = {
   "path_disagreement": log.ControlsState.ModelPathState.Reason.pathDisagreement,
   "curvature_jump": log.ControlsState.ModelPathState.Reason.curvatureJump,
   "lateral_maneuver": log.ControlsState.ModelPathState.Reason.lateralManeuver,
-  "map_curvature_fallback": log.ControlsState.ModelPathState.Reason.mapCurvatureFallback,
 }
 
 
@@ -81,47 +74,6 @@ def fill_model_path_state(model_path_state, model_path_result: ModelPathProcesso
   model_path_state.rawDesiredCurvature = raw_desired_curvature if math.isfinite(raw_desired_curvature) else 0.0
   model_path_state.processedDesiredCurvature = processed_desired_curvature if math.isfinite(processed_desired_curvature) else 0.0
   model_path_state.holdFramesRemaining = max(0, min(255, int(model_path_result.hold_frames_remaining)))
-  model_path_state.mapCurvatureUsed = bool(model_path_result.map_curvature_used)
-
-
-def map_curvature_at_model_horizon(live_map_data, v_ego: float, enabled: bool, action_t: float = PATH_CURVATURE_ACTION_T) -> float | None:
-  if not enabled or not getattr(live_map_data, "roadCurvatureValid", False):
-    return None
-
-  try:
-    distances = tuple(float(d) for d in live_map_data.roadCurvatureDistances)
-    curvatures = tuple(float(c) for c in live_map_data.roadCurvatures)
-    action_t = float(action_t)
-  except (AttributeError, TypeError, ValueError):
-    return None
-
-  if not distances or len(distances) != len(curvatures):
-    return None
-  v_ego = float(v_ego)
-  if not math.isfinite(v_ego):
-    return None
-  if not math.isfinite(action_t) or action_t < 0.0:
-    return None
-  if not all(math.isfinite(d) and d >= 0.0 for d in distances) or not all(math.isfinite(c) for c in curvatures):
-    return None
-  if any(next_distance < distance for distance, next_distance in zip(distances, distances[1:])):
-    return None
-
-  target_distance = max(0.0, v_ego) * action_t
-  if target_distance > distances[-1] + MAP_CURVATURE_DISTANCE_WINDOW:
-    return None
-  if target_distance <= distances[0]:
-    return curvatures[0]
-
-  for i in range(1, len(distances)):
-    if target_distance <= distances[i]:
-      span = distances[i] - distances[i - 1]
-      if span <= 0.0:
-        return curvatures[i]
-      alpha = (target_distance - distances[i - 1]) / span
-      return curvatures[i - 1] + alpha * (curvatures[i] - curvatures[i - 1])
-
-  return curvatures[-1]
 
 
 def compute_steering_actuator_feedback(previous_request, actuators_output, steer_control_type, lat_active=True):
@@ -165,9 +117,9 @@ class Controls(ControlsExt):
     self.CI = interfaces[self.CP.carFingerprint](self.CP, self.CP_SP)
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'modelDataV2SP', 'selfdriveState',
-                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                    'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay', 'liveMapDataSP'] + self.sm_services_ext,
-                                   poll='selfdriveState')
+                                   'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay'] + self.sm_services_ext,
+                                  poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
 
     self.steer_limited_by_safety = False
@@ -267,7 +219,6 @@ class Controls(ControlsExt):
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
-    lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
     lateral_maneuver_curvature = self.get_lateral_maneuver_curvature(CC.latActive)
     model_path_raw_curvature = float(model_v2.action.desiredCurvature)
     if lateral_maneuver_curvature is not None:
@@ -285,12 +236,6 @@ class Controls(ControlsExt):
         elif turn_direction == TurnDirection.turnLeft:
           turn_curvature_sign = -1
 
-      map_curvature = map_curvature_at_model_horizon(
-        self.sm['liveMapDataSP'],
-        CS.vEgo,
-        self.lateral_map_curvature_fallback_enabled and self.sm.all_checks(['liveMapDataSP']) and model_v2.meta.laneChangeState == LaneChangeState.off,
-        action_t=lat_delay + DT_MDL * 1.5,
-      )
       path_result = self.model_path_processor.update(
         ModelPathProcessorInputs(
           lat_active=CC.latActive,
@@ -306,8 +251,6 @@ class Controls(ControlsExt):
           lane_line_probs=tuple(model_v2.laneLineProbs),
           turn_curvature_sign=turn_curvature_sign,
           frame_drop_perc=model_v2.frameDropPerc,
-          map_curvature_enabled=map_curvature is not None,
-          map_curvature=map_curvature,
         )
       )
       self.model_path_result = path_result
@@ -355,6 +298,8 @@ class Controls(ControlsExt):
       CS.steeringPressed,
       manual_gas_lateral_accel_override,
     )
+    lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+
     actuators.curvature = self.desired_curvature
     self.update_steering_actuator_feedback(CC.latActive, actuators)
     self.LaC.set_steering_actuator_feedback(self.steering_actuator_feedback)

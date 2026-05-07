@@ -220,12 +220,6 @@ def test_known_params_metadata():
   assert decision_layer["title"] == "Longitudinal Decision Layer"
   assert "experimental" in decision_layer["description"].lower()
 
-  lateral_map_fallback = metadata.get("LateralMapCurvatureFallback")
-  assert lateral_map_fallback is not None
-  assert lateral_map_fallback["title"] == "Lateral Map Curvature Fallback"
-  assert "fallback" in lateral_map_fallback["description"].lower()
-
-
 def test_response_curve_learning_metadata_is_removed():
   with open(METADATA_PATH) as f:
     metadata = json.load(f)

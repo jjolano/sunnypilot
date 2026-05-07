@@ -466,9 +466,6 @@ struct LiveMapDataSP @0xf416ec09499d9d19 {
   lanesAhead @21 :UInt8;
   lanesAheadDistance @22 :Float32;
   roadContext @23 :Text;
-  roadCurvatureValid @24 :Bool;
-  roadCurvatureDistances @25 :List(Float32);
-  roadCurvatures @26 :List(Float32);
 }
 
 struct ModelDataV2SP @0xa1680744031fdb2d {
