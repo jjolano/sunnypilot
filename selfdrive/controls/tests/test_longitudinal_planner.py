@@ -1,14 +1,23 @@
 from types import SimpleNamespace
+import math
 
 import numpy as np
+import pytest
+from opendbc.car.car_helpers import interfaces
+from opendbc.car.toyota.values import CAR as TOYOTA
+from opendbc.car.vehicle_model import VehicleModel
+from openpilot.common.constants import CV
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   E2E_STOP_APPROACH_DECEL_MAX,
   LongitudinalPlanner,
+  _A_TOTAL_MAX_BP,
+  _A_TOTAL_MAX_V,
   get_e2e_runway_comfort_accel,
   get_e2e_stop_approach_accel,
   has_model_stop_context,
   has_valid_radar_lead,
+  limit_accel_in_turns,
   should_run_engage_stop_bootstrap,
 )
 
@@ -28,6 +37,10 @@ def make_model_msg(desired_accel=0.0, should_stop=False, endpoint_x=200.0, posit
   )
 
 
+def get_test_cp():
+  return interfaces[TOYOTA.TOYOTA_COROLLA_TSS2].get_non_essential_params(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+
 class FakeSubMaster(dict):
   logMonoTime = {'modelV2': 1.0}
 
@@ -39,6 +52,38 @@ def test_has_valid_radar_lead_checks_both_tracks():
   assert not has_valid_radar_lead(make_radar_state())
   assert has_valid_radar_lead(make_radar_state(lead_one=True))
   assert has_valid_radar_lead(make_radar_state(lead_two=True))
+
+
+def test_limit_accel_in_turns_defaults_to_legacy_kinematic_calculation():
+  CP = get_test_cp()
+  v_ego = 30.0
+  angle_steers = 5.0
+  a_target = [-1.0, 1.2]
+
+  limited = limit_accel_in_turns(v_ego, angle_steers, a_target, CP)
+
+  a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
+  legacy_a_y = v_ego**2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
+  expected_a_x_allowed = math.sqrt(max(a_total_max**2 - legacy_a_y**2, 0.0))
+  assert limited == pytest.approx([a_target[0], min(a_target[1], expected_a_x_allowed)])
+
+
+def test_limit_accel_in_turns_hardening_uses_vehicle_model_curvature():
+  CP = get_test_cp()
+  v_ego = 30.0
+  angle_steers = 5.0
+  a_target = [-1.0, 1.2]
+  VM = VehicleModel(CP)
+
+  try:
+    limited = limit_accel_in_turns(v_ego, angle_steers, a_target, CP, control_calculation_hardening=True)
+  except TypeError as exc:
+    pytest.fail(f"limit_accel_in_turns rejected hardening toggle: {exc!r}")
+
+  a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
+  vehicle_model_a_y = v_ego**2 * VM.calc_curvature(angle_steers * CV.DEG_TO_RAD, v_ego, 0.0)
+  expected_a_x_allowed = math.sqrt(max(a_total_max**2 - vehicle_model_a_y**2, 0.0))
+  assert limited == pytest.approx([a_target[0], min(a_target[1], expected_a_x_allowed)])
 
 
 def test_publish_has_lead_checks_both_tracks(monkeypatch):
