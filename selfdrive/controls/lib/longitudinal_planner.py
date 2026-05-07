@@ -8,7 +8,7 @@ from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
@@ -297,7 +297,8 @@ def apply_lead_loss_e2e_guard_accel(e2e_accel, e2e_should_stop, timer, has_lead)
   return max(e2e_accel, LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
 
 
-def limit_accel_in_turns(v_ego, angle_steers, a_target, CP, vehicle_model=None, roll=0.0, accurate_lateral_accel=False):
+def limit_accel_in_turns(v_ego, angle_steers, a_target, CP, control_calculation_hardening=False,
+                         vehicle_model=None, roll=0.0, accurate_lateral_accel=False):
   """
   This function returns a limited long acceleration allowed, depending on the existing lateral acceleration
   this should avoid accelerating when losing the target in turns
@@ -307,6 +308,8 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP, vehicle_model=None, 
   a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
   if accurate_lateral_accel and vehicle_model is not None:
     a_y = lateral_accel_from_steering_angle(v_ego, angle_steers * CV.DEG_TO_RAD, vehicle_model, roll)
+  elif control_calculation_hardening:
+    a_y = v_ego**2 * VehicleModel(CP).calc_curvature(angle_steers * CV.DEG_TO_RAD, v_ego, 0.0)
   else:
     a_y = v_ego**2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
   a_x_allowed = math.sqrt(max(a_total_max**2 - a_y**2, 0.0))
@@ -561,6 +564,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
+    try:
+      self.control_calculation_hardening = Params().get_bool("ControlCalculationHardening")
+    except UnknownKeyName:
+      self.control_calculation_hardening = False
 
   @staticmethod
   def parse_model(model_msg):
@@ -628,6 +635,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if accurate_lateral_accel:
       self.VM.update_params(max(live_params.stiffnessFactor, 0.1), max(live_params.steerRatio, 0.1))
     accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP,
+                                      control_calculation_hardening=self.control_calculation_hardening,
                                       vehicle_model=self.VM, roll=live_params.roll,
                                       accurate_lateral_accel=accurate_lateral_accel)
 

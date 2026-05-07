@@ -85,11 +85,33 @@ class FlatNNTorqueModel:
     return 0.0
 
 
+class CapturingNNTorqueModel:
+  friction_override = False
+
+  def __init__(self):
+    self.inputs = []
+
+  def evaluate(self, input_array):
+    self.inputs.append(list(input_array))
+    return 0.0
+
+
 def enable_flat_nnlc(controller):
   controller.extension.enabled = True
   controller.extension.has_nn_model = True
   controller.extension.model = FlatNNTorqueModel()
   controller.extension.update_model_v2(make_flat_model_v2())
+
+
+def enable_capturing_nnlc(controller, model_v2, hardening=False):
+  capturing_model = CapturingNNTorqueModel()
+  controller.extension.enabled = True
+  controller.extension.has_nn_model = True
+  controller.extension.model = capturing_model
+  controller.extension.control_calculation_hardening = hardening
+  controller.extension.update_lateral_lag(0.2)
+  controller.extension.update_model_v2(model_v2)
+  return capturing_model
 
 
 def test_v2_uses_crawl_speed_for_low_speed_pid_gain():
@@ -113,6 +135,68 @@ def test_v2_nnlc_uses_crawl_speed_for_low_speed_pid_gain():
   controller.update(True, CS, VM, params, False, 0.0, make_pose(), False, 0.2)
 
   assert controller.extension._pid.speed == pytest.approx(3.0)
+
+
+@pytest.mark.parametrize("acceleration_y", [
+  [],
+  [0.0, 0.0, 0.0, 0.0],
+  [float("nan")] + [0.0 for _ in ModelConstants.T_IDXS[1:]],
+])
+def test_nnlc_model_invalid_without_valid_lateral_acceleration_plan(acceleration_y):
+  controller, _ = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  model_v2 = make_flat_model_v2()
+  model_v2.acceleration.y = acceleration_y
+
+  controller.extension.update_model_v2(model_v2)
+
+  assert not controller.extension.model_valid
+
+
+@pytest.mark.parametrize("orientation_y", [
+  [],
+  [0.0, 0.0, 0.0, 0.0],
+  [float("nan")] + [0.0 for _ in ModelConstants.T_IDXS[1:]],
+])
+def test_nnlc_model_invalid_without_valid_orientation_y_plan(orientation_y):
+  controller, _ = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  model_v2 = make_flat_model_v2()
+  model_v2.orientation.y = orientation_y
+
+  controller.extension.update_model_v2(model_v2)
+
+  assert not controller.extension.model_valid
+
+
+def test_nnlc_future_time_defaults_to_legacy_linear_accel_adjustment():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  model_v2 = make_flat_model_v2()
+  model_v2.acceleration.y = [float(t) for t in ModelConstants.T_IDXS]
+  capturing_model = enable_capturing_nnlc(controller, model_v2, hardening=False)
+  CS = car.CarState.new_message()
+  CS.vEgo = 10.0
+  CS.aEgo = 2.0
+  params = log.LiveParametersData.new_message()
+
+  controller.update(True, CS, VM, params, False, 0.001, make_pose(), False, 0.2)
+
+  expected_future_times = [t + 0.5 * CS.aEgo * (t / CS.vEgo) for t in controller.extension.nn_future_times]
+  assert capturing_model.inputs[-1][7:11] == pytest.approx(expected_future_times)
+
+
+def test_nnlc_hardening_uses_distance_equivalent_future_time_adjustment():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  model_v2 = make_flat_model_v2()
+  model_v2.acceleration.y = [float(t) for t in ModelConstants.T_IDXS]
+  capturing_model = enable_capturing_nnlc(controller, model_v2, hardening=True)
+  CS = car.CarState.new_message()
+  CS.vEgo = 10.0
+  CS.aEgo = 2.0
+  params = log.LiveParametersData.new_message()
+
+  controller.update(True, CS, VM, params, False, 0.001, make_pose(), False, 0.2)
+
+  expected_future_times = [t + 0.5 * CS.aEgo * (t ** 2 / CS.vEgo) for t in controller.extension.nn_future_times]
+  assert capturing_model.inputs[-1][7:11] == pytest.approx(expected_future_times)
 
 
 def test_measurement_smoother_predicts_between_held_angle_updates():

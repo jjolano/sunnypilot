@@ -186,6 +186,28 @@ class TestSmartCruiseControlVision:
       self.scc_v.update(self.sm, True, False, 0.0, 0.0, 0.0)
     assert self.scc_v.state == VisionState.enabled
 
+  @pytest.mark.parametrize(
+    ("yaw_rates", "velocities"),
+    [
+      ([], []),
+      ([0.0, 0.1], [20.0]),
+      ([0.0, float("nan"), 0.1], [20.0, 20.0, 20.0]),
+      ([0.0, 0.1, 0.2], [20.0, float("inf"), 20.0]),
+    ],
+  )
+  def test_malformed_model_prediction_disables_predicted_turn(self, yaw_rates, velocities):
+    mdl = generate_modelV2()
+    mdl.modelV2.orientationRate.z = yaw_rates
+    mdl.modelV2.velocity.x = velocities
+    self.sm["modelV2"] = mdl.modelV2
+
+    self.scc_v.update(self.sm, True, False, float(MIN_V + 5.0), 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, float(MIN_V + 5.0), 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.enabled
+    assert self.scc_v.max_pred_lat_acc == pytest.approx(0.0)
+    assert self.scc_v.predicted_turn_time == pytest.approx(0.0)
+
   def test_stays_inactive_below_min_speed_even_with_high_predicted_lat_acc(self):
     pred_lat_accels = _constant_pred_lat_accels(3.0)
     mdl = generate_modelV2()

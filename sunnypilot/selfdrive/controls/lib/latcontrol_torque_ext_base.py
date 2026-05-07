@@ -46,6 +46,10 @@ def get_lookahead_value(future_vals, current_val):
   return min_val
 
 
+def valid_model_array(values):
+  return len(values) >= CONTROL_N and all(math.isfinite(values[i]) for i in range(CONTROL_N))
+
+
 class LatControlTorqueExtBase:
   def __init__(self, lac_torque, CP, CP_SP, CI):
     self.model_v2 = None
@@ -99,7 +103,12 @@ class LatControlTorqueExtBase:
 
   def update_model_v2(self, model_v2):
     self.model_v2 = model_v2
-    self.model_valid = self.model_v2 is not None and len(self.model_v2.orientation.x) >= CONTROL_N
+    self.model_valid = (
+      self.model_v2 is not None
+      and valid_model_array(self.model_v2.orientation.x)
+      and valid_model_array(self.model_v2.orientation.y)
+      and valid_model_array(self.model_v2.acceleration.y)
+    )
 
   def update_lateral_lag(self, lag):
     self.desired_lat_jerk_time = max(0.01, lag) + LATERAL_LAG_MOD
