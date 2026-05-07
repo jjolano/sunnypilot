@@ -787,10 +787,6 @@
     "title": "Neural Network Lateral Control",
     "description": ""
   },
-  "ExperimentalLateralPathPlanner": {
-    "title": "Experimental Lateral Path Planner",
-    "description": "Use the experimental lateral path-positioning planner. The planner falls back to the current model path when invalid."
-  },
   "NextMapSpeedLimit": {
     "title": "Next Map Speed Limit",
     "description": ""
