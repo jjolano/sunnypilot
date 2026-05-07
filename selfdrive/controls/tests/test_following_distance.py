@@ -1202,6 +1202,20 @@ def test_surge_damping_decel_memory_decays_and_resets():
   assert mpc.update_lead_surge_decel_memory(1, SimpleNamespace(status=True, aLeadK=-2.0)) == pytest.approx(LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX)
 
 
+@pytest.mark.parametrize("field", ["dRel", "vLead", "aLeadK", "aLeadTau"])
+def test_process_lead_ignores_non_finite_lead_fields(field):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(12.0, 0.0)
+  lead = SimpleNamespace(status=True, dRel=25.0, vLead=10.0, aLeadK=0.0, aLeadTau=0.3)
+  setattr(lead, field, float("nan"))
+
+  lead_xv, a_lead, a_lead_traj = mpc.process_lead(lead)
+
+  assert np.all(np.isfinite(lead_xv))
+  assert a_lead == pytest.approx(0.0)
+  assert np.all(a_lead_traj == pytest.approx(0.0))
+
+
 def test_selected_lead_targets_ignore_non_dominant_lead():
   lead_0_targets = np.array([0.0, 0.0, 0.0])
   lead_1_targets = np.array([LEAD_SURGE_DAMPING_ACCEL_MAX, LEAD_SURGE_DAMPING_ACCEL_MAX, LEAD_SURGE_DAMPING_ACCEL_MAX])
