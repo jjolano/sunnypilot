@@ -128,6 +128,17 @@ def test_nonfinite_path_sample_decays_toward_measured_curvature():
   assert 0.0005 < result.desired_curvature < 0.001
 
 
+def test_core_path_with_lateral_discontinuity_is_invalid():
+  position_y = [0.02 * i for i in range(ModelConstants.IDX_N)]
+  position_y[6] += 3.0
+
+  result = ModelPathProcessor().update(make_inputs(position_y=tuple(position_y)))
+
+  assert result.gated
+  assert result.reason == "invalid_path"
+  assert 0.0005 < result.desired_curvature < 0.001
+
+
 def test_implausible_curvature_jump_is_held():
   result = ModelPathProcessor().update(make_inputs(desired_curvature=0.03, previous_desired_curvature=0.0))
 
@@ -246,3 +257,48 @@ def test_path_curvature_disagreement_blends_toward_previous_desired():
   assert result.gated
   assert result.reason == "path_disagreement"
   assert 0.001 < result.desired_curvature < 0.002
+
+
+def test_path_disagreement_hold_prevents_single_frame_flapping():
+  processor = ModelPathProcessor()
+  orientation_z = tuple(0.05 for _ in range(ModelConstants.IDX_N))
+
+  gated = processor.update(make_inputs(orientation_z=orientation_z))
+  held_once = processor.update(make_inputs(previous_desired_curvature=gated.desired_curvature))
+  held_twice = processor.update(make_inputs(previous_desired_curvature=held_once.desired_curvature))
+  recovered = processor.update(make_inputs(previous_desired_curvature=held_twice.desired_curvature))
+
+  assert gated.gated
+  assert gated.reason == "path_disagreement"
+  assert gated.hold_frames_remaining == 2
+  assert held_once.gated
+  assert held_once.reason == "path_disagreement"
+  assert held_once.hold_frames_remaining == 1
+  assert held_twice.gated
+  assert held_twice.reason == "path_disagreement"
+  assert held_twice.hold_frames_remaining == 0
+  assert not recovered.gated
+  assert recovered.reason == "ok"
+  assert recovered.hold_frames_remaining == 0
+
+
+def test_frame_drop_gates_then_recovers_after_clean_hold():
+  processor = ModelPathProcessor()
+
+  gated = processor.update(make_inputs(frame_drop_perc=50.0))
+  held_once = processor.update(make_inputs(previous_desired_curvature=gated.desired_curvature))
+  held_twice = processor.update(make_inputs(previous_desired_curvature=held_once.desired_curvature))
+  recovered = processor.update(make_inputs(previous_desired_curvature=held_twice.desired_curvature))
+
+  assert gated.gated
+  assert gated.reason == "frame_drop"
+  assert gated.hold_frames_remaining == 2
+  assert held_once.gated
+  assert held_once.reason == "frame_drop"
+  assert held_once.hold_frames_remaining == 1
+  assert held_twice.gated
+  assert held_twice.reason == "frame_drop"
+  assert held_twice.hold_frames_remaining == 0
+  assert not recovered.gated
+  assert recovered.reason == "ok"
+  assert recovered.hold_frames_remaining == 0
