@@ -328,12 +328,13 @@ def test_low_lane_confidence_degrades_quality_without_hard_gate():
 def test_turn_intent_suppresses_opposite_sign_curvature(desired_curvature, turn_curvature_sign):
   result = ModelPathProcessor().update(make_inputs(
     desired_curvature=desired_curvature,
+    previous_desired_curvature=0.0015,
     turn_curvature_sign=turn_curvature_sign,
   ))
 
   assert result.gated
   assert result.reason == "turn_opposite_curvature"
-  assert result.desired_curvature == pytest.approx(0.0)
+  assert result.desired_curvature == pytest.approx(0.0015)
 
 
 @pytest.mark.parametrize(
@@ -397,7 +398,7 @@ def test_turn_intent_suppresses_opposite_sign_before_path_std_blending():
 
   assert result.gated
   assert result.reason == "turn_opposite_curvature"
-  assert result.desired_curvature == pytest.approx(0.0)
+  assert result.desired_curvature == pytest.approx(0.001)
 
 
 def test_turn_intent_disagreement_does_not_relax_high_path_std():
