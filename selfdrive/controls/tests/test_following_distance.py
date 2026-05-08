@@ -933,6 +933,77 @@ def test_lead_transition_releases_turning_lead_before_long_persistence():
   assert get_lead_transition_release_target(1.6, 0.2) == pytest.approx(1.0)
 
 
+def test_lead_transition_holds_close_confirmed_curve_lead_while_closing():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-1.8,
+    dRel=44.0,
+    vLeadK=21.5,
+    modelProb=1.0,
+  )
+
+  releases = [mpc.update_lead_transition_state(0, lead) for _ in range(5)]
+
+  assert max(releases) == pytest.approx(0.0)
+
+
+def test_lead_transition_releases_offset_lead_once_opening_gap():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-1.8,
+    dRel=44.0,
+    vLeadK=24.0,
+    modelProb=1.0,
+  )
+
+  releases = [mpc.update_lead_transition_state(0, lead) for _ in range(5)]
+
+  assert max(releases) > 0.0
+
+
+def test_lead_transition_releases_clear_lateral_exit_even_when_closing():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-2.2,
+    dRel=44.0,
+    vLeadK=21.5,
+    modelProb=1.0,
+  )
+
+  releases = [mpc.update_lead_transition_state(0, lead) for _ in range(5)]
+
+  assert max(releases) > 0.0
+
+
+def test_lead_transition_close_curve_hold_cancels_existing_release():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-2.2,
+    dRel=44.0,
+    vLeadK=21.5,
+    modelProb=1.0,
+  )
+  released = [mpc.update_lead_transition_state(0, lead) for _ in range(5)]
+
+  lead.yRel = -1.8
+  held_release = mpc.update_lead_transition_state(0, lead)
+
+  assert max(released) > 0.0
+  assert held_release == pytest.approx(0.0)
+
+
 def test_lead_transition_preserves_release_through_lateral_track_churn():
   mpc = LongitudinalMpc(dt=0.1)
   lead = SimpleNamespace(status=True, radarTrackId=10, yRel=LEAD_TRANSITION_Y_REL_CONFIRM, dRel=20.0, vLeadK=8.0)
@@ -2514,6 +2585,13 @@ def test_lead_accel_recovery_allows_accel_when_lead_pulls_away():
   recovery_a_min = get_lead_accel_recovery_a_min(2.2, 4.2, 15.0, 0.9, t_follow)
 
   assert 0.0 < recovery_a_min <= LEAD_ACCEL_RECOVERY_ACCEL_MAX
+
+
+def test_lead_accel_recovery_is_firm_for_confirmed_low_speed_pullaway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  recovery_a_min = get_lead_accel_recovery_a_min(1.03, 2.44, 7.7, 1.4, t_follow)
+
+  assert recovery_a_min >= 0.5
 
 
 def test_lead_accel_recovery_requires_safe_opening_gap():
