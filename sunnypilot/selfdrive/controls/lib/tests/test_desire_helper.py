@@ -18,7 +18,7 @@ class DummyCarState:
     self.brakePressed = False
 
 
-def test_path_shaped_lane_change_completes_from_elapsed_progress():
+def test_elapsed_path_shaper_time_does_not_complete_while_model_lane_change_remains_active():
   dh = DesireHelper()
   dh.lane_change_state = LaneChangeState.laneChangeStarting
   dh.lane_change_direction = LaneChangeDirection.left
@@ -28,7 +28,7 @@ def test_path_shaped_lane_change_completes_from_elapsed_progress():
   for _ in range(steps):
     dh.update(carstate, True, 1.0)
 
-  assert dh.lane_change_state == LaneChangeState.laneChangeFinishing
+  assert dh.lane_change_state == LaneChangeState.laneChangeStarting
   assert dh.desire == log.Desire.laneChangeLeft
 
 
