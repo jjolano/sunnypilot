@@ -281,6 +281,26 @@ def test_core_path_with_lateral_discontinuity_is_invalid():
   assert 0.0005 < result.desired_curvature < 0.001
 
 
+def test_curved_core_path_with_large_lateral_step_over_long_x_distance_passes():
+  position_x = [float(i) for i in range(ModelConstants.IDX_N)]
+  position_y = [0.04 * i for i in range(ModelConstants.IDX_N)]
+  position_x[16] = position_x[15] + 6.0
+  position_y[16] = position_y[15] + 1.8
+
+  result = ModelPathProcessor().update(make_inputs(
+    v_ego=21.0,
+    desired_curvature=0.006,
+    measured_curvature=0.004,
+    previous_desired_curvature=0.004,
+    position_x=tuple(position_x),
+    position_y=tuple(position_y),
+  ))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.desired_curvature == pytest.approx(0.006)
+
+
 def test_implausible_curvature_jump_is_held():
   result = ModelPathProcessor().update(make_inputs(desired_curvature=0.03, previous_desired_curvature=0.0))
 

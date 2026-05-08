@@ -11,7 +11,8 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 
 PATH_VALID_MIN_LEN = 17
 PATH_VALID_MIN_X_SPAN = 1.0
-MAX_CORE_PATH_Y_STEP = 1.0
+MIN_CORE_PATH_X_STEP = 1e-3
+MAX_CORE_PATH_LATERAL_SLOPE = 1.0
 PATH_CURVATURE_ACTION_T = 0.25
 MIN_JUMP_CHECK_SPEED = 4.0
 MAX_LAT_ACCEL_JUMP = 3.0
@@ -206,10 +207,12 @@ class ModelPathProcessor:
       return False
     core_x_vals = x_vals[:PATH_VALID_MIN_LEN]
     core_y_vals = y_vals[:PATH_VALID_MIN_LEN]
+    core_x_steps = np.diff(core_x_vals)
+    core_y_steps = np.diff(core_y_vals)
     return bool(
-      np.all(np.diff(core_x_vals) >= 0.0) and
+      np.all(core_x_steps >= MIN_CORE_PATH_X_STEP) and
       core_x_vals[-1] - core_x_vals[0] >= PATH_VALID_MIN_X_SPAN and
-      np.max(np.abs(np.diff(core_y_vals))) <= MAX_CORE_PATH_Y_STEP
+      np.max(np.abs(core_y_steps) / core_x_steps) <= MAX_CORE_PATH_LATERAL_SLOPE
     )
 
   @classmethod
