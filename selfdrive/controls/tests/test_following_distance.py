@@ -2584,6 +2584,13 @@ def test_lead_accel_recovery_allows_accel_when_lead_pulls_away():
   assert 0.0 < recovery_a_min <= LEAD_ACCEL_RECOVERY_ACCEL_MAX
 
 
+def test_lead_accel_recovery_is_firm_for_confirmed_low_speed_pullaway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  recovery_a_min = get_lead_accel_recovery_a_min(1.03, 2.44, 7.7, 1.4, t_follow)
+
+  assert recovery_a_min >= 0.5
+
+
 def test_lead_accel_recovery_requires_safe_opening_gap():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   assert get_lead_accel_recovery_a_min(2.2, 4.2, 5.0, 0.9, t_follow) == pytest.approx(ACCEL_MIN)
