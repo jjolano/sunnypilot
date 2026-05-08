@@ -247,6 +247,15 @@ class TestTailscaleInstaller:
 
     assert _stale_tailscaled_pids(output) == ["123"]
 
+  def test_stop_tailscaled_cleans_stale_processes_without_tracked_process(self, mocker: MockerFixture):
+    daemon = TailscaleDaemon.__new__(TailscaleDaemon)
+    daemon._tailscaled_proc = None
+    kill_stale = mocker.patch.object(daemon, "_kill_stale_tailscaled")
+
+    daemon._stop_tailscaled()
+
+    kill_stale.assert_called_once()
+
   def test_check_latest_version_skips_network_when_disabled_and_not_installed(self, mocker: MockerFixture):
     daemon = TailscaleDaemon.__new__(TailscaleDaemon)
     daemon.params = FakeParams()
