@@ -94,6 +94,7 @@ ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL = -1.0
 E2E_STOP_APPROACH_MIN_V_EGO = 3.0
 E2E_STOP_APPROACH_MAX_MODEL_ACCEL = 0.2
 E2E_STOP_APPROACH_MIN_ENDPOINT = 5.0
+E2E_STOP_APPROACH_PROTECTION_MIN_V_EGO = 2.0
 E2E_STOP_APPROACH_EXPECTED_DIST_BP = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 55.0, 60.0]
 E2E_STOP_APPROACH_EXPECTED_DIST_V = [8.0, 18.0, 30.0, 48.0, 68.0, 88.0, 104.0, 122.0]
 E2E_STOP_APPROACH_SHORTAGE_BP = [0.15, 0.5]
@@ -156,9 +157,11 @@ def should_run_engage_stop_bootstrap(timer, v_ego, radar_state, model_msg):
 
 
 def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force_slow_decel=False,
-                                brake_pressed=False, gas_pressed=False):
-  blocked = not e2e_active or force_slow_decel or brake_pressed or gas_pressed
-  blocked = blocked or v_ego < E2E_STOP_APPROACH_MIN_V_EGO or has_valid_radar_lead(radar_state)
+                                brake_pressed=False, gas_pressed=False, model_stop_protection_active=False):
+  protection_active = e2e_active or model_stop_protection_active
+  min_v_ego = E2E_STOP_APPROACH_PROTECTION_MIN_V_EGO if model_stop_protection_active else E2E_STOP_APPROACH_MIN_V_EGO
+  blocked = not protection_active or force_slow_decel or brake_pressed or gas_pressed
+  blocked = blocked or v_ego < min_v_ego or has_valid_radar_lead(radar_state)
   blocked = blocked or model_msg.action.shouldStop or model_msg.action.desiredAcceleration > E2E_STOP_APPROACH_MAX_MODEL_ACCEL
   blocked = blocked or len(model_msg.position.x) == 0
   if blocked:
@@ -696,11 +699,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
+    model_stop_protection_active = sm['selfdriveState'].experimentalMode and self.dec.active() and not e2e_active
     e2e_stop_approach_a_target = get_e2e_stop_approach_accel(
       v_ego, sm['modelV2'], sm['radarState'], e2e_active,
       force_slow_decel=force_slow_decel or reset_state,
       brake_pressed=sm['carState'].brakePressed,
       gas_pressed=sm['carState'].gasPressed,
+      model_stop_protection_active=model_stop_protection_active,
     )
     if e2e_stop_approach_a_target < 0.0 and e2e_stop_approach_a_target < output_a_target:
       output_a_target = e2e_stop_approach_a_target
