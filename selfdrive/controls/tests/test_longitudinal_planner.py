@@ -127,6 +127,30 @@ def test_e2e_stop_approach_requires_no_lead_and_no_override():
   assert get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), True, gas_pressed=True) == 0.0
 
 
+def test_e2e_stop_approach_protects_close_endpoint_during_dec_acc_transition():
+  accel = get_e2e_stop_approach_accel(
+    2.6,
+    make_model_msg(desired_accel=-1.19, endpoint_x=5.7),
+    make_radar_state(),
+    False,
+    model_stop_protection_active=True,
+  )
+
+  assert -E2E_STOP_APPROACH_DECEL_MAX <= accel < -0.5
+
+
+def test_e2e_stop_approach_protection_keeps_low_speed_floor():
+  accel = get_e2e_stop_approach_accel(
+    1.5,
+    make_model_msg(desired_accel=-1.19, endpoint_x=4.0),
+    make_radar_state(),
+    False,
+    model_stop_protection_active=True,
+  )
+
+  assert accel == 0.0
+
+
 def test_e2e_stop_approach_leaves_hard_model_stop_to_model():
   accel = get_e2e_stop_approach_accel(12.0, make_model_msg(should_stop=True, endpoint_x=30.0), make_radar_state(), True)
 
