@@ -152,6 +152,7 @@ class TailscaleDaemon:
   def _stop_tailscaled(self) -> None:
     """Stop the tailscaled subprocess if running. Uses sudo kill since tailscaled runs as root."""
     if self._tailscaled_proc is None:
+      self._kill_stale_tailscaled()
       return
 
     pid = self._tailscaled_proc.pid
