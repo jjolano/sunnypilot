@@ -84,12 +84,18 @@ class ModelPathProcessor:
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path")
 
     desired_curvature = float(inputs.desired_curvature)
+    fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
     quality = 1.0
     reason = "ok"
 
     if inputs.turn_curvature_sign != 0 and desired_curvature * inputs.turn_curvature_sign < 0.0:
       self._recovering_from_hard_invalid = False
-      return ModelPathProcessorResult(0.0, 0.5, True, "turn_opposite_curvature")
+      turn_fallback_curvature = self._turn_compatible_fallback_curvature(
+        inputs.previous_desired_curvature,
+        inputs.measured_curvature,
+        inputs.turn_curvature_sign,
+      )
+      return ModelPathProcessorResult(turn_fallback_curvature, 0.5, True, "turn_opposite_curvature")
 
     path_curvature = self._path_curvature(inputs.orientation_z, inputs.orientation_rate_z, inputs.v_ego)
     path_disagreement = None
@@ -120,7 +126,6 @@ class ModelPathProcessor:
         quality = min(quality, 0.65)
         reason = "path_disagreement"
 
-    fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
     jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
     if jump_result is not None:
       self._recovering_from_hard_invalid = False
@@ -179,6 +184,14 @@ class ModelPathProcessor:
     if math.isfinite(previous_desired_curvature):
       return float(previous_desired_curvature)
     if math.isfinite(measured_curvature):
+      return float(measured_curvature)
+    return 0.0
+
+  @staticmethod
+  def _turn_compatible_fallback_curvature(previous_desired_curvature: float, measured_curvature: float, turn_curvature_sign: int) -> float:
+    if math.isfinite(previous_desired_curvature) and previous_desired_curvature * turn_curvature_sign >= 0.0:
+      return float(previous_desired_curvature)
+    if math.isfinite(measured_curvature) and measured_curvature * turn_curvature_sign >= 0.0:
       return float(measured_curvature)
     return 0.0
 
