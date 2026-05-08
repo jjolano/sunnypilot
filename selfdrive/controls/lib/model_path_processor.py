@@ -4,6 +4,7 @@ from typing import Sequence
 
 import numpy as np
 
+from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.drive_helpers import get_curvature_from_plan
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
@@ -28,6 +29,7 @@ HARD_INVALID_FALLBACK_MEASURED_ALPHA = 0.25
 SOFT_GATE_HOLD_FRAMES = 2
 SOFT_GATE_HOLD_QUALITY = 0.70
 SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "path_disagreement"))
+HARD_INVALID_RECOVERY_LAT_JERK = 2.0
 
 
 @dataclass
@@ -63,6 +65,7 @@ class ModelPathProcessor:
   def reset(self) -> None:
     self._hold_frames_remaining = 0
     self._hold_reason = "ok"
+    self._recovering_from_hard_invalid = False
 
   def update(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult:
     if not inputs.lat_active:
@@ -70,10 +73,12 @@ class ModelPathProcessor:
       return ModelPathProcessorResult(float(inputs.measured_curvature), 0.0, True, "inactive")
 
     if not math.isfinite(inputs.desired_curvature):
+      self._recovering_from_hard_invalid = False
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature")
 
     if not self._valid_core_path(inputs.position_x, inputs.position_y):
+      self._recovering_from_hard_invalid = True
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path")
 
@@ -82,6 +87,7 @@ class ModelPathProcessor:
     reason = "ok"
 
     if inputs.turn_curvature_sign != 0 and desired_curvature * inputs.turn_curvature_sign < 0.0:
+      self._recovering_from_hard_invalid = False
       return ModelPathProcessorResult(0.0, 0.5, True, "turn_opposite_curvature")
 
     path_curvature = self._path_curvature(inputs.orientation_z, inputs.orientation_rate_z, inputs.v_ego)
@@ -116,14 +122,20 @@ class ModelPathProcessor:
     fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
     jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
     if jump_result is not None:
+      self._recovering_from_hard_invalid = False
       return jump_result
 
     quality, reason, hold_frames_remaining = self._apply_soft_gate_hold(quality, reason)
 
     if quality < LOW_QUALITY_BLEND_THRESHOLD:
+      self._recovering_from_hard_invalid = False
       alpha = float(np.interp(quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0]))
       desired_curvature = self._blend(fallback_curvature, desired_curvature, alpha)
       return ModelPathProcessorResult(desired_curvature, quality, True, reason, hold_frames_remaining)
+
+    recovery_result = self._limit_hard_invalid_recovery(inputs, desired_curvature)
+    if recovery_result is not None:
+      return recovery_result
 
     return ModelPathProcessorResult(desired_curvature, quality, False, reason, hold_frames_remaining)
 
@@ -139,6 +151,27 @@ class ModelPathProcessor:
 
     self._hold_reason = "ok"
     return quality, reason, 0
+
+  def _limit_hard_invalid_recovery(self, inputs: ModelPathProcessorInputs, desired_curvature: float) -> ModelPathProcessorResult | None:
+    if not self._recovering_from_hard_invalid:
+      return None
+
+    previous_desired_curvature = float(inputs.previous_desired_curvature)
+    if not math.isfinite(previous_desired_curvature):
+      self._recovering_from_hard_invalid = False
+      return None
+
+    if previous_desired_curvature * desired_curvature > 0.0 and abs(desired_curvature) >= abs(previous_desired_curvature):
+      return None
+
+    max_curvature_step = HARD_INVALID_RECOVERY_LAT_JERK * DT_CTRL / max(inputs.v_ego, 1.0) ** 2
+    curvature_delta = desired_curvature - previous_desired_curvature
+    if abs(curvature_delta) <= max_curvature_step:
+      self._recovering_from_hard_invalid = False
+      return None
+
+    limited_curvature = previous_desired_curvature + math.copysign(max_curvature_step, curvature_delta)
+    return ModelPathProcessorResult(float(limited_curvature), SOFT_GATE_HOLD_QUALITY, True, "invalid_path")
 
   @staticmethod
   def _fallback_curvature(previous_desired_curvature: float, measured_curvature: float) -> float:

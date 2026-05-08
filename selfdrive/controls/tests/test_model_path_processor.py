@@ -98,6 +98,148 @@ def test_repeated_invalid_path_frames_continue_toward_measured_curvature():
   assert abs(second.desired_curvature - 0.001) < abs(first.desired_curvature - 0.001)
 
 
+def test_invalid_path_recovery_limits_high_lat_curve_exit_release():
+  processor = ModelPathProcessor()
+  invalid = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0050,
+    measured_curvature=-0.0118,
+    previous_desired_curvature=-0.0118,
+    position_x=(0.0, 1.0),
+    position_y=(0.0, 0.1),
+  ))
+
+  recovered = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0042,
+    measured_curvature=-0.0117,
+    previous_desired_curvature=invalid.desired_curvature,
+  ))
+
+  assert invalid.gated
+  assert invalid.reason == "invalid_path"
+  assert recovered.gated
+  assert recovered.reason == "invalid_path"
+  assert recovered.desired_curvature < -0.0110
+
+
+def test_invalid_path_recovery_allows_higher_same_direction_curvature_demand():
+  processor = ModelPathProcessor()
+  invalid = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0050,
+    measured_curvature=-0.0118,
+    previous_desired_curvature=-0.0118,
+    position_x=(0.0, 1.0),
+    position_y=(0.0, 0.1),
+  ))
+
+  recovered = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0120,
+    measured_curvature=-0.0117,
+    previous_desired_curvature=invalid.desired_curvature,
+  ))
+
+  assert not recovered.gated
+  assert recovered.reason == "ok"
+  assert recovered.desired_curvature == pytest.approx(-0.0120)
+
+
+def test_invalid_path_recovery_still_limits_after_brief_higher_same_direction_demand():
+  processor = ModelPathProcessor()
+  invalid = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0050,
+    measured_curvature=-0.0118,
+    previous_desired_curvature=-0.0118,
+    position_x=(0.0, 1.0),
+    position_y=(0.0, 0.1),
+  ))
+  higher_demand = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0120,
+    measured_curvature=-0.0117,
+    previous_desired_curvature=invalid.desired_curvature,
+  ))
+
+  recovered = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0042,
+    measured_curvature=-0.0117,
+    previous_desired_curvature=higher_demand.desired_curvature,
+  ))
+
+  assert not higher_demand.gated
+  assert higher_demand.desired_curvature == pytest.approx(-0.0120)
+  assert recovered.gated
+  assert recovered.reason == "invalid_path"
+  assert recovered.desired_curvature < -0.0110
+
+
+def test_invalid_path_recovery_state_clears_after_soft_gate():
+  processor = ModelPathProcessor()
+  invalid = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0050,
+    measured_curvature=-0.0118,
+    previous_desired_curvature=-0.0118,
+    position_x=(0.0, 1.0),
+    position_y=(0.0, 0.1),
+  ))
+  soft_gate = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0042,
+    measured_curvature=-0.0117,
+    previous_desired_curvature=invalid.desired_curvature,
+    frame_drop_perc=50.0,
+  ))
+
+  recovered = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0120,
+    measured_curvature=-0.0117,
+    previous_desired_curvature=soft_gate.desired_curvature,
+  ))
+
+  assert soft_gate.gated
+  assert soft_gate.reason == "frame_drop"
+  assert recovered.gated
+  assert recovered.reason == "frame_drop"
+
+
+def test_invalid_path_recovery_state_clears_after_different_gate():
+  processor = ModelPathProcessor()
+  invalid = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0050,
+    measured_curvature=-0.0118,
+    previous_desired_curvature=-0.0118,
+    position_x=(0.0, 1.0),
+    position_y=(0.0, 0.1),
+  ))
+  opposite = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=0.0040,
+    measured_curvature=0.0,
+    previous_desired_curvature=invalid.desired_curvature,
+    turn_curvature_sign=-1,
+  ))
+
+  recovered = processor.update(make_inputs(
+    v_ego=15.5,
+    desired_curvature=-0.0120,
+    measured_curvature=0.0,
+    previous_desired_curvature=opposite.desired_curvature,
+  ))
+
+  assert opposite.gated
+  assert opposite.reason == "turn_opposite_curvature"
+  assert not recovered.gated
+  assert recovered.reason == "ok"
+  assert recovered.desired_curvature == pytest.approx(-0.0120)
+
+
 def test_degenerate_finite_path_decays_toward_measured_curvature():
   result = ModelPathProcessor().update(make_inputs(position_x=tuple(0.0 for _ in range(ModelConstants.IDX_N))))
 
