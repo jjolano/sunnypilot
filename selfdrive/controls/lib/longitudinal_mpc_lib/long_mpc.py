@@ -233,6 +233,10 @@ LEAD_TRANSITION_CHURN_MAX_V_LEAD_DELTA = 5.0
 LEAD_TRANSITION_THREAT_MODEL_PROB_MIN = 0.75
 LEAD_TRANSITION_THREAT_CLOSING_MIN = 1.0
 LEAD_TRANSITION_THREAT_DECEL_MIN = 0.4
+LEAD_TRANSITION_CLOSE_CURVE_HOLD_TIME_GAP = 2.2
+LEAD_TRANSITION_CLOSE_CURVE_HOLD_MIN_D_REL = 25.0
+LEAD_TRANSITION_CLOSE_CURVE_HOLD_CLOSING_MIN = 0.2
+LEAD_TRANSITION_CLOSE_CURVE_HOLD_MAX_Y_REL = 2.0
 SOURCE_HYSTERESIS_MARGIN = 1.2
 SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP = 0.15
 SHORT_GAP_PULLAWAY_RESPONSE_FULL_GAP = 1.0
@@ -428,6 +432,16 @@ def get_lead_transition_obstacle_release(release_blend, guard_timer):
 def get_lead_transition_adjusted_accel(a_lead, release_blend):
   adjusted_accel = np.where(a_lead < 0.0, a_lead * (1.0 - release_blend), a_lead)
   return float(adjusted_accel) if np.ndim(adjusted_accel) == 0 else adjusted_accel
+
+
+def should_hold_lead_transition_for_close_curve_lead(v_ego, d_rel, v_lead, y_rel, model_prob):
+  closing_speed = v_ego - v_lead
+  if abs(y_rel) >= LEAD_TRANSITION_CLOSE_CURVE_HOLD_MAX_Y_REL:
+    return False
+  if model_prob < LEAD_TRANSITION_THREAT_MODEL_PROB_MIN or closing_speed < LEAD_TRANSITION_CLOSE_CURVE_HOLD_CLOSING_MIN:
+    return False
+  close_distance = max(LEAD_TRANSITION_CLOSE_CURVE_HOLD_MIN_D_REL, v_ego * LEAD_TRANSITION_CLOSE_CURVE_HOLD_TIME_GAP)
+  return d_rel < close_distance
 
 
 def should_preserve_lead_transition_churn(prev_y_rel, y_rel, prev_d_rel, d_rel, prev_v_lead, v_lead):
@@ -1515,6 +1529,11 @@ class LongitudinalMpc:
     )
     if closing_threat and (returning_to_path or abs_y_rel < LEAD_TRANSITION_Y_REL_CONFIRM):
       target_blend = 0.0
+    close_curve_hold = should_hold_lead_transition_for_close_curve_lead(v_ego, d_rel, v_lead, y_rel, model_prob)
+    if close_curve_hold:
+      target_blend = 0.0
+      self.lead_transition_release_blends[lead_idx] = 0.0
+      self.lead_transition_guard_latched[lead_idx] = False
 
     blend_step = self.dt / LEAD_TRANSITION_RELEASE_TIME
     if target_blend > self.lead_transition_release_blends[lead_idx]:
