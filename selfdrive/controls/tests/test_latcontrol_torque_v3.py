@@ -44,7 +44,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_estimator import EstimatorRejectReason, EstimatorResult
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_authority import AuthorityBand
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_model import TorqueModelMode, TorqueModelParams
-from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperResult
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_v3_safety import TorqueV3SafetyResult
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperResult, ConservativeOutputShapingReason
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseReason
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import SteeringActuatorFeedback, SteeringLimitReason
 
@@ -347,6 +348,48 @@ def test_v3_native_faulting_frame_demotes_authority_telemetry():
   assert np.isclose(lac_log.adaptiveTorqueState.authorityScale, 0.45)
   assert lac_log.adaptiveTorqueState.fallbackActive
   assert abs(lac_log.output) <= 0.45 + 1e-6
+
+
+def test_v3_sign_conflict_shaping_does_not_create_estimator_saturation():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  params = log.LiveParametersData.new_message()
+  captured_observation = None
+
+  def safety_update(inputs):
+    shaping_result = ConservativeOutputShaperResult(
+      inputs.unshaped_output,
+      True,
+      ConservativeOutputShapingReason.SIGN_CONFLICT,
+      1.0,
+      inputs.unshaped_output,
+      0.8,
+    )
+    return TorqueV3SafetyResult(inputs.unshaped_output, False, 1.0, shaping_result)
+
+  def estimator_update(observation):
+    nonlocal captured_observation
+    captured_observation = observation
+    return EstimatorResult(
+      params=controller.estimator.state.params,
+      confidence=0.8,
+      positive_coverage=0.0,
+      negative_coverage=0.0,
+      residual_error=0.0,
+      response_delay=0.2,
+      sample_accepted=False,
+      reject_reason=EstimatorRejectReason.SIGN_CONFLICT | EstimatorRejectReason.STEER_LIMITED,
+    )
+
+  controller.safety_envelope.update = safety_update
+  controller.estimator.update = estimator_update
+
+  controller.update(True, CS, VM, params, True, 0.001, make_pose(), False, 0.2)
+
+  assert captured_observation is not None
+  assert captured_observation.steer_limited_by_safety
+  assert not captured_observation.saturated
 
 
 def test_v3_native_low_command_frames_keep_near_full_authority():
