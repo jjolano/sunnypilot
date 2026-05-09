@@ -2379,8 +2379,16 @@ def test_lead_accel_recovery_scales_cap_with_lead_accel():
   strong_recovery = get_lead_accel_recovery_a_min(2.2, 4.2, 30.0, 1.2, t_follow)
 
   assert mild_recovery == pytest.approx(0.8 * long_mpc.LEAD_ACCEL_RECOVERY_LEAD_ACCEL_FACTOR)
-  assert strong_recovery == pytest.approx(LEAD_ACCEL_RECOVERY_ACCEL_MAX)
+  assert strong_recovery == pytest.approx(1.2 * long_mpc.LEAD_ACCEL_RECOVERY_LEAD_ACCEL_FACTOR)
   assert strong_recovery > mild_recovery
+
+
+def test_lead_accel_recovery_reaches_cap_for_strong_pullaway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  recovery_a_min = get_lead_accel_recovery_a_min(2.8, 7.0, 21.0, 1.6, t_follow)
+
+  assert recovery_a_min == pytest.approx(LEAD_ACCEL_RECOVERY_ACCEL_MAX)
 
 
 def test_lead_accel_recovery_is_firm_for_confirmed_low_speed_pullaway():
