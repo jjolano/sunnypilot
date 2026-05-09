@@ -493,6 +493,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.mpc.update(
       sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
       block_short_gap_pullaway_response=sm['carState'].brakePressed or sm['carState'].gasPressed or force_slow_decel or reset_state,
+      model_msg=sm['modelV2'],
     )
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
