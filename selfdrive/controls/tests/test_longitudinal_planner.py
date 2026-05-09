@@ -3,10 +3,14 @@ from types import SimpleNamespace
 import numpy as np
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+  E2E_CLOSE_STOP_DECEL_MAX,
+  E2E_CLOSE_STOP_MIN_ROLLING_V,
   E2E_STOP_APPROACH_DECEL_MAX,
   LongitudinalPlanner,
+  get_e2e_close_stop_settle,
   get_e2e_runway_comfort_accel,
   get_e2e_stop_approach_accel,
+  get_model_stop_distance,
   has_model_stop_context,
   has_valid_radar_lead,
   should_run_engage_stop_bootstrap,
@@ -92,6 +96,12 @@ def test_engage_stop_bootstrap_model_stop_context_uses_low_predicted_velocity():
   assert not has_model_stop_context(make_model_msg(positions=[0.0, 20.0], velocities=[10.0, 5.0]))
 
 
+def test_model_stop_distance_uses_first_low_velocity_point():
+  model_msg = make_model_msg(positions=[0.0, 0.8, 3.0], velocities=[1.0, 0.2, 0.0])
+
+  assert get_model_stop_distance(model_msg) == 0.8
+
+
 def test_engage_stop_bootstrap_ignores_weak_model_stop_signal():
   assert not should_run_engage_stop_bootstrap(0.5, 10.0, make_radar_state(), make_model_msg(desired_accel=-0.2))
 
@@ -155,6 +165,56 @@ def test_e2e_stop_approach_leaves_hard_model_stop_to_model():
   accel = get_e2e_stop_approach_accel(12.0, make_model_msg(should_stop=True, endpoint_x=30.0), make_radar_state(), True)
 
   assert accel == 0.0
+
+
+def test_e2e_close_stop_settle_holds_decel_at_route_like_stop_line():
+  accel, should_stop, active = get_e2e_close_stop_settle(
+    0.44,
+    -0.26,
+    make_model_msg(desired_accel=-0.26, positions=[0.0, 0.01, 20.0], velocities=[1.0, 0.2, 2.0]),
+    make_radar_state(),
+    True,
+  )
+
+  assert active
+  assert should_stop
+  assert -E2E_CLOSE_STOP_DECEL_MAX <= accel < -0.3
+
+
+def test_e2e_close_stop_settle_keeps_stop_latch_below_rolling_speed():
+  accel, should_stop, active = get_e2e_close_stop_settle(
+    E2E_CLOSE_STOP_MIN_ROLLING_V - 0.01,
+    -0.05,
+    make_model_msg(desired_accel=-0.05, positions=[0.0, 0.1], velocities=[1.0, 0.0]),
+    make_radar_state(),
+    True,
+    active=True,
+  )
+
+  assert accel == -0.05
+  assert should_stop
+  assert active
+
+
+def test_e2e_close_stop_settle_requires_no_lead_e2e_and_no_override():
+  model_msg = make_model_msg(desired_accel=-0.2, positions=[0.0, 0.2], velocities=[1.0, 0.0])
+
+  assert get_e2e_close_stop_settle(0.5, -0.2, model_msg, make_radar_state(lead_one=True), True) == (-0.2, False, False)
+  assert get_e2e_close_stop_settle(0.5, -0.2, model_msg, make_radar_state(), False) == (-0.2, False, False)
+  assert get_e2e_close_stop_settle(0.5, -0.2, model_msg, make_radar_state(), True, brake_pressed=True) == (-0.2, False, False)
+  assert get_e2e_close_stop_settle(0.5, -0.2, model_msg, make_radar_state(), True, gas_pressed=True) == (-0.2, False, False)
+
+
+def test_e2e_close_stop_settle_ignores_positive_model_accel():
+  model_msg = make_model_msg(desired_accel=0.01, positions=[0.0, 0.2], velocities=[1.0, 0.0])
+
+  assert get_e2e_close_stop_settle(0.5, 0.01, model_msg, make_radar_state(), True) == (0.01, False, False)
+
+
+def test_e2e_close_stop_settle_releases_after_stop_distance_clears():
+  model_msg = make_model_msg(desired_accel=-0.2, positions=[0.0, 1.5], velocities=[1.0, 0.0])
+
+  assert get_e2e_close_stop_settle(0.5, -0.2, model_msg, make_radar_state(), True, active=True) == (-0.2, False, False)
 
 
 def test_e2e_runway_comfort_caps_long_runway_raw_model_braking():
