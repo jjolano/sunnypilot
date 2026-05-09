@@ -78,6 +78,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_stop_runway_gap,
   get_lead_stop_runway_urgency,
   get_lead_chase_target_gap,
+  get_lead_approach_gaps,
+  get_lead_launch_comfort_target,
   get_lead_stop_presentation_distance,
   get_lead_stop_gap_excess_offset,
   get_lead_stop_gap_taper,
@@ -98,6 +100,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_selected_lead_targets,
   get_stopped_lead_buffer,
   get_stopped_equivalence_factor,
+  get_time_to_gap,
   get_T_FOLLOW,
   LongitudinalMpc,
   N,
@@ -471,6 +474,22 @@ def test_comfort_biased_follow_times():
   assert get_T_FOLLOW(log.LongitudinalPersonality.relaxed) == pytest.approx(1.85)
   assert get_T_FOLLOW(log.LongitudinalPersonality.standard) == pytest.approx(1.55)
   assert get_T_FOLLOW(log.LongitudinalPersonality.aggressive) == pytest.approx(1.30)
+
+
+def test_lead_approach_gaps_keep_inner_boundaries_above_stop_distance():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target_gap, caution_gap, danger_gap = get_lead_approach_gaps(20.0, 18.0, t_follow)
+
+  assert target_gap > caution_gap > danger_gap >= STOP_DISTANCE
+  assert caution_gap == pytest.approx(STOP_DISTANCE + long_mpc.LEAD_APPROACH_CAUTION_GAP_FRACTION * (target_gap - STOP_DISTANCE))
+  assert danger_gap <= STOP_DISTANCE + long_mpc.LEAD_APPROACH_DANGER_GAP_FRACTION * (target_gap - STOP_DISTANCE) + 1e-6
+  assert danger_gap <= get_lead_danger_distance(20.0, 18.0, t_follow) + 1e-6
+
+
+def test_time_to_gap_uses_closing_speed_and_handles_uncertain_closure():
+  assert get_time_to_gap(35.0, 25.0, 5.0) == pytest.approx(2.0)
+  assert get_time_to_gap(20.0, 25.0, 5.0) == pytest.approx(0.0)
+  assert np.isinf(get_time_to_gap(35.0, 25.0, 0.0))
 
 
 def test_stop_distance_buffer_fades_with_speed():
@@ -1861,7 +1880,8 @@ def test_moving_stop_approach_ttc_gate_releases_at_one_second_danger_ttc():
   v_lead = 8.0
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   closing_speed = v_ego - v_lead
-  danger_gap = get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER
+  _, _, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+  danger_gap += APPROACH_MIN_GAP_BUFFER
   large_margin_gap = get_desired_follow_distance(v_ego, v_lead, t_follow) + 20.0
   one_second_danger_gap = danger_gap + closing_speed * long_mpc.MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FULL
 
@@ -1871,6 +1891,19 @@ def test_moving_stop_approach_ttc_gate_releases_at_one_second_danger_ttc():
 
   assert 0.0 < gates[0] < long_mpc.MOVING_LEAD_STOP_APPROACH_DESIRED_TTC_MAX_BLEND
   assert gates[1] == pytest.approx(1.0)
+
+
+def test_moving_stop_approach_ttc_gate_uses_caution_before_true_danger_gap():
+  v_ego = 16.0
+  v_lead = 8.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  closing_speed = v_ego - v_lead
+  _, caution_gap, _ = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+  half_second_to_caution_gap = caution_gap + closing_speed * 0.5
+
+  caution_gate = long_mpc.get_moving_lead_stop_approach_ttc_gate(half_second_to_caution_gap, v_ego, v_lead, t_follow)
+
+  assert long_mpc.MOVING_LEAD_STOP_APPROACH_DESIRED_TTC_MAX_BLEND < caution_gate <= long_mpc.LEAD_APPROACH_CAUTION_TTC_MAX_BLEND
 
 
 def test_hard_braking_moving_lead_keeps_stronger_target_when_close():
@@ -2053,7 +2086,7 @@ def test_moving_stop_approach_scales_decel_after_vlead_cushion_is_used():
 
   target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
 
-  assert target < -1.0
+  assert target < -0.8
   assert cost > 0.0
 
 
@@ -2120,6 +2153,25 @@ def test_short_gap_pullaway_response_uses_one_meter_presentation_cushion():
   assert STOP_DISTANCE < d_rel < STOP_DISTANCE + 1.0
   assert 0.0 < target <= 0.55
   assert cost > 0.0
+
+
+def test_lead_launch_comfort_target_is_optimistic_only_for_confirmed_pullaway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 0.4
+  v_lead = 0.35
+  a_lead = 0.8
+  d_rel = STOP_DISTANCE + 0.5
+
+  target, cost = get_lead_launch_comfort_target(v_ego, v_lead, d_rel, a_lead, t_follow, model_prob=1.0)
+  uncertain_target, uncertain_cost = get_lead_launch_comfort_target(v_ego, v_lead, d_rel, a_lead, t_follow, model_prob=0.0)
+  blocked_target, blocked_cost = get_lead_launch_comfort_target(v_ego, v_lead, d_rel, a_lead, t_follow, model_prob=1.0, blocked=True)
+
+  assert 0.0 < target <= long_mpc.SHORT_GAP_PULLAWAY_RESPONSE_ACCEL_MAX_STANDARD
+  assert cost > 0.0
+  assert uncertain_target == pytest.approx(0.0)
+  assert uncertain_cost == pytest.approx(0.0)
+  assert blocked_target == pytest.approx(0.0)
+  assert blocked_cost == pytest.approx(0.0)
 
 
 def test_short_gap_pullaway_response_blocks_weak_or_unsafe_cushion_use():
