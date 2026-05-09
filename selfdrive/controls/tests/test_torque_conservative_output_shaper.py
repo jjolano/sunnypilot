@@ -1,41 +1,47 @@
-import pytest
+from dataclasses import replace
+from math import isclose
 
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import (
   ConservativeOutputShaperInputs,
+  ConservativeOutputShaperResult,
   ConservativeOutputShapingReason,
+  SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FLOOR,
   TorqueConservativeOutputShaper,
 )
 
 
-def make_inputs(**overrides):
-  values = {
-    "active": True,
-    "v_ego": 15.0,
-    "steering_pressed": False,
-    "steer_limited_by_safety": False,
-    "release_active": False,
-    "max_output": 1.0,
-    "unshaped_output": 0.5,
-    "desired_lateral_accel": 0.8,
-    "actual_lateral_accel": 0.4,
-    "desired_lateral_jerk": 0.2,
-    "actual_lateral_jerk": 0.05,
-    "lookahead_lateral_jerk": 0.2,
-    "same_sign_unwind_release": False,
-    "steering_rate_deg": 0.0,
-    "steer_limit_same_direction": True,
-    "steer_limit_unwind": False,
-  }
-  values.update(overrides)
-  return ConservativeOutputShaperInputs(**values)
+def make_inputs(**overrides: object) -> ConservativeOutputShaperInputs:
+  default_inputs = ConservativeOutputShaperInputs(
+    active=True,
+    v_ego=15.0,
+    steering_pressed=False,
+    steer_limited_by_safety=False,
+    release_active=False,
+    max_output=1.0,
+    unshaped_output=0.5,
+    desired_lateral_accel=0.8,
+    actual_lateral_accel=0.4,
+    desired_lateral_jerk=0.2,
+    actual_lateral_jerk=0.05,
+    lookahead_lateral_jerk=0.2,
+    same_sign_unwind_release=False,
+    steering_rate_deg=0.0,
+    steer_limit_same_direction=True,
+    steer_limit_unwind=False,
+  )
+  return replace(default_inputs, **overrides)
 
 
-def assert_cap_only(inputs):
+def assert_cap_only(inputs: ConservativeOutputShaperInputs) -> ConservativeOutputShaperResult:
   result = TorqueConservativeOutputShaper().update(inputs)
 
   assert abs(result.output_torque) <= abs(inputs.unshaped_output)
   assert result.output_torque * inputs.unshaped_output >= 0.0
   return result
+
+
+def assert_close(actual: float, expected: float) -> None:
+  assert isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-9)
 
 
 def test_clean_under_response_is_not_shaped():
@@ -116,7 +122,7 @@ def test_over_response_does_not_cap_corrective_output():
 
 def test_over_response_cap_does_not_rate_limit_next_corrective_output():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
+  _ = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
 
   result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
 
@@ -126,7 +132,7 @@ def test_over_response_cap_does_not_rate_limit_next_corrective_output():
 
 def test_over_response_cap_allows_next_corrective_output_after_over_response_clears():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
+  _ = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
 
   result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
 
@@ -136,7 +142,7 @@ def test_over_response_cap_allows_next_corrective_output_after_over_response_cle
 
 def test_recent_over_response_does_not_bypass_rate_limit_on_near_zero_actual_accel():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
+  _ = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
 
   result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=0.4, actual_lateral_accel=0.01))
 
@@ -147,10 +153,10 @@ def test_recent_over_response_does_not_bypass_rate_limit_on_near_zero_actual_acc
 
 def test_recent_over_response_bypass_expires_during_zero_output_frames():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
+  _ = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
   for _ in range(50):
-    shaper.update(make_inputs(unshaped_output=0.0, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
-  shaper.update(make_inputs(unshaped_output=1.0, steering_pressed=True, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
+    _ = shaper.update(make_inputs(unshaped_output=0.0, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
+  _ = shaper.update(make_inputs(unshaped_output=1.0, steering_pressed=True, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
 
   result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
 
@@ -237,8 +243,8 @@ def test_low_speed_steer_limited_does_not_cap_clear_under_response_catchup():
 
 def test_low_speed_steer_limited_does_not_rate_limit_clear_under_response_after_soft_cap():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, unshaped_output=0.8,
-                            desired_lateral_accel=0.8, actual_lateral_accel=0.72))
+  _ = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, unshaped_output=0.8,
+                                desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, unshaped_output=1.0,
                                      desired_lateral_accel=0.8, actual_lateral_accel=0.4))
@@ -270,8 +276,8 @@ def test_steering_rate_comfort_does_not_cap_clear_under_response_catchup():
 
 def test_steering_rate_comfort_does_not_rate_limit_clear_under_response_after_soft_cap():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8,
-                            desired_lateral_accel=0.8, actual_lateral_accel=0.72))
+  _ = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8,
+                                desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   result = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=1.0,
                                      desired_lateral_accel=0.8, actual_lateral_accel=0.4))
@@ -326,7 +332,7 @@ def test_steering_rate_comfort_slews_first_reinforcing_growth_after_clean_tracki
 
 def test_steering_rate_comfort_does_not_rate_limit_next_opposing_output():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8))
+  _ = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=0.8))
 
   result = shaper.update(make_inputs(steering_rate_deg=40.0, unshaped_output=-0.8))
 
@@ -422,7 +428,7 @@ def test_actuator_lag_comfort_slews_reinforcing_growth_more_than_steering_rate_c
 
 def test_actuator_lag_comfort_does_not_rate_limit_next_opposing_output():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+  _ = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
 
   result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=-0.8))
 
@@ -433,8 +439,8 @@ def test_actuator_lag_comfort_does_not_rate_limit_next_opposing_output():
 
 def test_actuator_lag_comfort_does_not_rate_limit_clear_under_response_after_soft_cap():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8,
-                            desired_lateral_accel=0.8, actual_lateral_accel=0.72))
+  _ = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8,
+                                desired_lateral_accel=0.8, actual_lateral_accel=0.72))
 
   result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=1.0,
                                      desired_lateral_accel=0.8, actual_lateral_accel=0.4))
@@ -453,7 +459,7 @@ def test_stale_actuator_reversal_caps_low_speed_reversing_output():
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
   assert result.output_cap == 0.35
-  assert result.output_torque == pytest.approx(0.28)
+  assert_close(result.output_torque, 0.28)
 
 
 def test_stale_actuator_reversal_caps_negative_low_speed_reversing_output():
@@ -465,7 +471,7 @@ def test_stale_actuator_reversal_caps_negative_low_speed_reversing_output():
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
   assert result.output_cap == 0.35
-  assert result.output_torque == pytest.approx(-0.28)
+  assert_close(result.output_torque, -0.28)
 
 
 def test_stale_actuator_reversal_clears_when_applied_output_near_zero():
@@ -564,8 +570,8 @@ def test_same_direction_safety_limit_follows_applied_output():
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
-  assert result.output_cap == pytest.approx(0.35)
-  assert result.output_torque == pytest.approx(0.35)
+  assert_close(result.output_cap, 0.35)
+  assert_close(result.output_torque, 0.35)
 
 
 def test_same_direction_safety_limit_caps_under_response_catchup():
@@ -575,8 +581,130 @@ def test_same_direction_safety_limit_caps_under_response_catchup():
 
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
-  assert result.output_cap == pytest.approx(0.35)
-  assert result.output_torque == pytest.approx(0.35)
+  assert_close(result.output_cap, 0.35)
+  assert_close(result.output_torque, 0.35)
+
+
+def test_low_speed_safety_limit_under_response_uses_recovery_floor():
+  result = assert_cap_only(make_inputs(v_ego=3.5, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=1.0, desired_lateral_accel=1.21, actual_lateral_accel=0.81,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.2))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert_close(result.output_cap, SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FLOOR)
+  assert_close(result.output_torque, SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FLOOR)
+
+
+def test_low_speed_safety_limit_under_response_uses_recovery_floor_negative_output():
+  result = assert_cap_only(make_inputs(v_ego=3.5, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=-1.0, desired_lateral_accel=-1.21, actual_lateral_accel=-0.81,
+                                       steer_limit_requested_output=-1.0, steer_limit_applied_output=-0.2))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert_close(result.output_cap, SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FLOOR)
+  assert_close(result.output_torque, -SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FLOOR)
+
+
+def test_low_speed_safety_limit_under_response_floor_fades_out():
+  result = assert_cap_only(make_inputs(v_ego=12.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=1.0, desired_lateral_accel=1.21, actual_lateral_accel=0.81,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.06))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert_close(result.output_cap, 0.21)
+  assert_close(result.output_torque, 0.21)
+
+
+def test_low_speed_safety_limit_under_response_floor_requires_nonzero_applied_output():
+  result = assert_cap_only(make_inputs(v_ego=3.5, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=1.0, desired_lateral_accel=1.21, actual_lateral_accel=0.81,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.0))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert_close(result.output_cap, 0.15)
+  assert_close(result.output_torque, 0.15)
+
+
+def test_low_speed_safety_limit_under_response_floor_requires_nontrivial_applied_output():
+  result = assert_cap_only(make_inputs(v_ego=3.5, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=1.0, desired_lateral_accel=1.21, actual_lateral_accel=0.81,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.02))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert_close(result.output_cap, 0.17)
+  assert_close(result.output_torque, 0.17)
+
+
+def test_low_speed_safety_limit_under_response_floor_requires_same_sign_applied_output():
+  result = assert_cap_only(make_inputs(v_ego=3.5, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=1.0, desired_lateral_accel=1.21, actual_lateral_accel=0.81,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=-0.2))
+
+  assert not result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert result.reason & ConservativeOutputShapingReason.STALE_ACTUATOR_REVERSAL
+
+
+def test_low_speed_safety_limit_under_response_floor_preserves_release():
+  result = assert_cap_only(make_inputs(v_ego=3.5, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       release_active=True, unshaped_output=1.0,
+                                       desired_lateral_accel=1.21, actual_lateral_accel=0.81,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.2))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.RELEASE
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert_close(result.output_cap, 0.35)
+
+
+def test_low_speed_safety_limit_under_response_floor_preserves_same_sign_unwind_release():
+  result = assert_cap_only(make_inputs(v_ego=3.5, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       same_sign_unwind_release=True, unshaped_output=1.0,
+                                       desired_lateral_accel=1.21, actual_lateral_accel=0.81,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.2))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert result.output_cap == 0.3
+
+
+def test_low_speed_safety_limit_under_response_floor_preserves_driver_override():
+  result = assert_cap_only(make_inputs(v_ego=3.5, steering_pressed=True, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=1.0, desired_lateral_accel=1.21, actual_lateral_accel=0.81,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.2))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert not result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert result.output_cap == 0.8
+
+
+def test_low_speed_safety_limit_under_response_floor_preserves_near_iso_cap():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=1.0, desired_lateral_accel=2.9, actual_lateral_accel=2.7,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.06))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.NEAR_ISO_ACCEL
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert_close(result.output_cap, 0.21)
+
+
+def test_low_speed_safety_limit_under_response_floor_preserves_bump_cap():
+  result = assert_cap_only(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       unshaped_output=1.0, desired_lateral_accel=1.21, actual_lateral_accel=0.81,
+                                       desired_lateral_jerk=0.0, actual_lateral_jerk=3.0, lookahead_lateral_jerk=0.0,
+                                       steer_limit_requested_output=1.0, steer_limit_applied_output=0.06))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.BUMP
+  assert result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
+  assert_close(result.output_cap, 0.21)
 
 
 def test_same_direction_safety_limit_does_not_cap_unwind():
@@ -611,7 +739,7 @@ def test_same_direction_safety_limit_keeps_stale_reversal_cap():
 
 def test_recent_actuator_lag_comfort_does_not_rate_limit_next_low_rate_opposing_output():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
+  _ = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8))
 
   result = shaper.update(make_inputs(v_ego=5.0, steer_limited_by_safety=True, steering_rate_deg=5.0, unshaped_output=-0.8))
 
@@ -672,7 +800,7 @@ def test_same_sign_unwind_does_not_clamp_when_release_flag_is_clear():
 
 def test_same_sign_unwind_cap_does_not_rate_limit_next_corrective_output():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(
+  _ = shaper.update(
     make_inputs(
       v_ego=5.0,
       same_sign_unwind_release=True,
@@ -716,7 +844,7 @@ def test_high_speed_actuator_lag_unwind_caps_output():
   assert result.active
   assert result.reason & ConservativeOutputShapingReason.HIGH_SPEED_ACTUATOR_LAG_UNWIND
   assert result.output_cap == 0.70
-  assert result.output_torque == pytest.approx(0.35)
+  assert_close(result.output_torque, 0.35)
 
 
 def test_high_speed_actuator_lag_unwind_does_not_trigger_below_speed():
@@ -820,7 +948,7 @@ def test_low_speed_recovery_after_driver_override_ramps_more_softly():
 
 def test_strong_under_response_bypasses_low_speed_recovery_ramp():
   shaper = TorqueConservativeOutputShaper(dt=0.1)
-  shaper.update(make_inputs(v_ego=5.0, steering_pressed=True))
+  _ = shaper.update(make_inputs(v_ego=5.0, steering_pressed=True))
 
   recovered = shaper.update(make_inputs(v_ego=5.0, unshaped_output=1.0, desired_lateral_accel=1.2, actual_lateral_accel=0.4))
 
@@ -831,7 +959,7 @@ def test_strong_under_response_bypasses_low_speed_recovery_ramp():
 
 def test_lower_target_after_cap_applies_immediately():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(unshaped_output=1.0, steering_pressed=True))
+  _ = shaper.update(make_inputs(unshaped_output=1.0, steering_pressed=True))
   result = shaper.update(make_inputs(unshaped_output=0.3, desired_lateral_accel=0.4, actual_lateral_accel=0.2))
 
   assert not result.active
@@ -840,7 +968,7 @@ def test_lower_target_after_cap_applies_immediately():
 
 def test_driver_override_cap_applies_immediately_after_clean_tracking():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.2))
+  _ = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.2))
   result = shaper.update(make_inputs(unshaped_output=1.0, steering_pressed=True))
 
   assert result.active
@@ -851,7 +979,7 @@ def test_driver_override_cap_applies_immediately_after_clean_tracking():
 
 def test_near_iso_cap_applies_immediately_after_clean_tracking():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.2))
+  _ = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.2))
   result = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=2.75, actual_lateral_accel=2.8))
 
   assert result.active
@@ -862,7 +990,7 @@ def test_near_iso_cap_applies_immediately_after_clean_tracking():
 
 def test_near_iso_corrective_output_is_not_rate_limited_after_cap():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(
+  _ = shaper.update(
     make_inputs(unshaped_output=-0.5, steering_pressed=True, desired_lateral_accel=2.9, actual_lateral_accel=3.1)
   )
   result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=2.9, actual_lateral_accel=3.1))
@@ -893,7 +1021,7 @@ def test_recent_hard_shaping_rate_limits_clear_under_response_recovery():
 
 def test_sign_flip_after_cap_does_not_hold_old_opposite_torque():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  shaper.update(make_inputs(steering_pressed=True))
+  _ = shaper.update(make_inputs(steering_pressed=True))
   result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=-0.8, actual_lateral_accel=-0.2))
 
   assert result.active
@@ -905,9 +1033,9 @@ def test_sign_flip_after_cap_does_not_hold_old_opposite_torque():
 
 def test_output_rate_limit_expires_after_short_window():
   shaper = TorqueConservativeOutputShaper(dt=0.2)
-  shaper.update(make_inputs(steering_pressed=True))
-  shaper.update(make_inputs(unshaped_output=0.2, desired_lateral_accel=0.4, actual_lateral_accel=0.2))
-  shaper.update(make_inputs(unshaped_output=0.2, desired_lateral_accel=0.4, actual_lateral_accel=0.2))
+  _ = shaper.update(make_inputs(steering_pressed=True))
+  _ = shaper.update(make_inputs(unshaped_output=0.2, desired_lateral_accel=0.4, actual_lateral_accel=0.2))
+  _ = shaper.update(make_inputs(unshaped_output=0.2, desired_lateral_accel=0.4, actual_lateral_accel=0.2))
   result = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.2))
 
   assert not result.active
