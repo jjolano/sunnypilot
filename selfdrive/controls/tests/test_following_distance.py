@@ -2391,6 +2391,34 @@ def test_lead_accel_recovery_reaches_cap_for_strong_pullaway():
   assert recovery_a_min == pytest.approx(LEAD_ACCEL_RECOVERY_ACCEL_MAX)
 
 
+def test_lead_accel_recovery_uses_optimistic_target_gap_allowance():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 8.0
+  v_lead = 9.0
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = 0.5 * comfort_floor + 0.5 * desired_gap
+
+  recovery_a_min = get_lead_accel_recovery_a_min(v_ego, v_lead, d_rel, 1.2, t_follow)
+
+  assert comfort_floor < d_rel < desired_gap
+  assert recovery_a_min > 0.0
+
+
+def test_lead_accel_recovery_stays_off_below_optimistic_gap_allowance():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 8.0
+  v_lead = 9.0
+  comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = 0.9 * comfort_floor + 0.1 * desired_gap
+
+  recovery_a_min = get_lead_accel_recovery_a_min(v_ego, v_lead, d_rel, 1.2, t_follow)
+
+  assert comfort_floor < d_rel < desired_gap
+  assert recovery_a_min == pytest.approx(0.0)
+
+
 def test_lead_accel_recovery_is_firm_for_confirmed_low_speed_pullaway():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   recovery_a_min = get_lead_accel_recovery_a_min(1.03, 2.44, 7.7, 1.4, t_follow)
