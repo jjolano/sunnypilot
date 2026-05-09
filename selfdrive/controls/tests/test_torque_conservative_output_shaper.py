@@ -371,6 +371,88 @@ def test_actuator_lag_comfort_allows_signed_unwind():
   assert result.output_cap > 0.55
 
 
+def test_low_speed_corrective_unwind_bypasses_same_sign_actuator_lag_caps():
+  result = assert_cap_only(make_inputs(v_ego=7.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steer_limit_unwind=False, same_sign_unwind_release=True, steering_rate_deg=40.0,
+                                       unshaped_output=1.0, desired_lateral_accel=0.25, actual_lateral_accel=-0.25,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=0.23))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SIGN_CONFLICT
+  assert not result.reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert not result.reason & ConservativeOutputShapingReason.LOW_SPEED_STEER_LIMITED
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_RATE_COMFORT
+  assert not result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
+  assert_close(result.output_cap, 0.8)
+  assert_close(result.output_torque, 0.8)
+
+
+def test_low_speed_corrective_unwind_preserves_driver_override_cap():
+  result = assert_cap_only(make_inputs(v_ego=7.0, steering_pressed=True, steer_limited_by_safety=True,
+                                       steer_limit_same_direction=True, steer_limit_unwind=False,
+                                       same_sign_unwind_release=True, steering_rate_deg=40.0, unshaped_output=1.0,
+                                       desired_lateral_accel=0.25, actual_lateral_accel=-0.25,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=0.23))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert result.reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert_close(result.output_cap, 0.3)
+  assert_close(result.output_torque, 0.3)
+
+
+def test_low_speed_corrective_unwind_boundary_keeps_same_sign_unwind_cap():
+  result = assert_cap_only(make_inputs(v_ego=8.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steer_limit_unwind=False, same_sign_unwind_release=True, steering_rate_deg=40.0,
+                                       unshaped_output=1.0, desired_lateral_accel=0.25, actual_lateral_accel=-0.25,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=0.23))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert_close(result.output_cap, 0.3)
+  assert_close(result.output_torque, 0.3)
+
+
+def test_low_speed_corrective_unwind_preserves_release_cap():
+  result = assert_cap_only(make_inputs(v_ego=7.0, steer_limited_by_safety=True, release_active=True,
+                                       steer_limit_same_direction=True, steer_limit_unwind=False,
+                                       same_sign_unwind_release=True, steering_rate_deg=40.0, unshaped_output=1.0,
+                                       desired_lateral_accel=0.25, actual_lateral_accel=-0.25,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=0.23))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.RELEASE
+  assert result.reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert_close(result.output_cap, 0.3)
+  assert_close(result.output_torque, 0.3)
+
+
+def test_low_speed_corrective_unwind_preserves_bump_cap():
+  result = assert_cap_only(make_inputs(v_ego=7.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steer_limit_unwind=False, same_sign_unwind_release=True, steering_rate_deg=40.0,
+                                       unshaped_output=1.0, desired_lateral_accel=0.25, actual_lateral_accel=-0.25,
+                                       desired_lateral_jerk=0.0, actual_lateral_jerk=2.5, lookahead_lateral_jerk=0.0,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=0.23))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.BUMP
+  assert result.reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert_close(result.output_cap, 0.3)
+  assert_close(result.output_torque, 0.3)
+
+
+def test_low_speed_corrective_unwind_requires_below_iso_actual_accel():
+  result = assert_cap_only(make_inputs(v_ego=7.0, steer_limited_by_safety=True, steer_limit_same_direction=True,
+                                       steer_limit_unwind=False, same_sign_unwind_release=True, steering_rate_deg=40.0,
+                                       unshaped_output=1.0, desired_lateral_accel=0.25, actual_lateral_accel=-2.7,
+                                       steer_limit_requested_output=0.8, steer_limit_applied_output=0.23))
+
+  assert result.active
+  assert result.reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert_close(result.output_cap, 0.3)
+  assert_close(result.output_torque, 0.3)
+
+
 def test_actuator_lag_comfort_uses_moderate_cap_at_mid_speed():
   result = assert_cap_only(make_inputs(v_ego=10.0, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=0.8,
                                        desired_lateral_accel=0.8, actual_lateral_accel=0.72))
