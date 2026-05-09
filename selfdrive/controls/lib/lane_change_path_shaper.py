@@ -11,12 +11,14 @@ LaneChangeDirection = log.LaneChangeDirection
 
 LANE_CHANGE_DURATION = 5.5
 ENTRY_BLEND_DURATION = 1.6
-EXIT_BLEND_DURATION = 0.5
-EARLY_TURN_IN_AUTHORITY_DURATION = 1.2
+EXIT_BLEND_DURATION = 0.8
+EARLY_TURN_IN_AUTHORITY_DURATION = 1.8
 MIN_LANE_LINE_PROB = 0.6
 SOFT_FALLBACK_LANE_LINE_PROB = 0.45
 MIN_LANE_WIDTH = 3.0
 MAX_LANE_WIDTH = 4.0
+NOMINAL_LANE_WIDTH = 3.6
+LANE_WIDTH_GEOMETRY_WEIGHT = 0.6
 LANE_WIDTH_TOLERANCE = 0.8
 MAX_ENTRY_CURVATURE = 0.0015
 MIN_VEGO = 1.0
@@ -101,10 +103,11 @@ class LaneChangePathShaper:
     self.soft_fallback = False
 
     lane_width = self._lane_width(inputs, MIN_LANE_LINE_PROB)
-    self.planned = bool(lane_width is not None and math.isfinite(inputs.prev_desired_curvature) and abs(inputs.prev_desired_curvature) <= MAX_ENTRY_CURVATURE)
-    if self.planned:
+    self.planned = False
+    if lane_width is not None and math.isfinite(inputs.prev_desired_curvature) and abs(inputs.prev_desired_curvature) <= MAX_ENTRY_CURVATURE:
+      self.planned = True
       self.baseline_curvature = inputs.prev_desired_curvature
-      self.lane_width = lane_width
+      self.lane_width = self._smoothed_lane_width(lane_width)
     else:
       self.baseline_curvature = 0.0
       self.lane_width = 0.0
@@ -140,7 +143,11 @@ class LaneChangePathShaper:
     if self.elapsed >= EARLY_TURN_IN_AUTHORITY_DURATION:
       return 1.0
     progress = min(max(self.elapsed / EARLY_TURN_IN_AUTHORITY_DURATION, 0.0), 1.0)
-    return progress * progress
+    return progress * progress * progress * (10.0 + progress * (-15.0 + 6.0 * progress))
+
+  @staticmethod
+  def _smoothed_lane_width(lane_width: float) -> float:
+    return NOMINAL_LANE_WIDTH + LANE_WIDTH_GEOMETRY_WEIGHT * (lane_width - NOMINAL_LANE_WIDTH)
 
   def _hard_abort(self, inputs: LaneChangePathShaperInputs) -> bool:
     one_blinker = inputs.left_blinker != inputs.right_blinker

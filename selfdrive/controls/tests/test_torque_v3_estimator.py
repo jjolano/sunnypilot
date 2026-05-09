@@ -116,6 +116,35 @@ def test_clipped_residual_spike_uses_slow_confidence_decay():
   assert result.confidence == pytest.approx(before - CONFIDENCE_BUILD_RATE)
 
 
+def test_steer_limited_saturated_sign_conflict_uses_slow_confidence_decay():
+  estimator = AdaptiveTorqueEstimator(dt=0.01)
+  for _ in range(40):
+    estimator.update(make_observation())
+  before = estimator.state.confidence
+
+  result = estimator.update(make_observation(steer_limited_by_safety=True, saturated=True, actual_lateral_accel=-0.7))
+
+  assert not result.sample_accepted
+  assert result.reject_reason & EstimatorRejectReason.STEER_LIMITED
+  assert result.reject_reason & EstimatorRejectReason.SATURATED
+  assert result.reject_reason & EstimatorRejectReason.SIGN_CONFLICT
+  assert result.confidence == pytest.approx(before - CONFIDENCE_BUILD_RATE)
+
+
+def test_steer_limited_sign_conflict_without_saturation_uses_fast_confidence_decay():
+  estimator = AdaptiveTorqueEstimator(dt=0.01)
+  for _ in range(40):
+    estimator.update(make_observation())
+  before = estimator.state.confidence
+
+  result = estimator.update(make_observation(steer_limited_by_safety=True, actual_lateral_accel=-0.7))
+
+  assert not result.sample_accepted
+  assert result.reject_reason & EstimatorRejectReason.STEER_LIMITED
+  assert result.reject_reason & EstimatorRejectReason.SIGN_CONFLICT
+  assert result.confidence < before - CONFIDENCE_BUILD_RATE
+
+
 def test_result_params_are_snapshot_not_live_state():
   estimator = AdaptiveTorqueEstimator(dt=0.01)
 
