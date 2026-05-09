@@ -219,9 +219,10 @@ LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL = 0.2
 LEAD_ACCEL_RECOVERY_ACCEL_BP = [LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL, 0.8]
 LEAD_ACCEL_RECOVERY_OPENING_BP = [0.2, 1.2]
 LEAD_ACCEL_RECOVERY_GAP_MARGIN = 1.0
+LEAD_ACCEL_RECOVERY_OPTIMISTIC_GAP_FRACTION = 0.35
 LEAD_ACCEL_RECOVERY_ACCEL_BASE = 0.35
 LEAD_ACCEL_RECOVERY_LEAD_ACCEL_FACTOR = 0.80
-LEAD_ACCEL_RECOVERY_ACCEL_MAX = 0.80
+LEAD_ACCEL_RECOVERY_ACCEL_MAX = 1.20
 LEAD_TRANSITION_Y_REL_SOFT = 1.0
 LEAD_TRANSITION_Y_REL_CONFIRM = 1.6
 LEAD_TRANSITION_Y_REL_RESET = 0.9
@@ -415,10 +416,16 @@ def get_lead_accel_recovery_a_min(v_ego, v_lead, d_rel, a_lead, t_follow):
     return ACCEL_MIN
 
   desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
-  full_recovery_gap = max(comfort_floor, desired_gap) + LEAD_ACCEL_RECOVERY_GAP_MARGIN
-  gap_blend = float(np.interp(d_rel, [comfort_floor, full_recovery_gap], [0.0, 1.0]))
   opening_blend = float(np.interp(v_lead - v_ego, LEAD_ACCEL_RECOVERY_OPENING_BP, [0.0, 1.0]))
   accel_blend = float(np.interp(a_lead, LEAD_ACCEL_RECOVERY_ACCEL_BP, [0.0, 1.0]))
+  optimistic_blend = min(opening_blend, accel_blend)
+  gap_span = max(desired_gap - comfort_floor, 0.0)
+  optimistic_start_gap = comfort_floor + LEAD_ACCEL_RECOVERY_OPTIMISTIC_GAP_FRACTION * gap_span
+  conservative_full_gap = max(comfort_floor, desired_gap) + LEAD_ACCEL_RECOVERY_GAP_MARGIN
+  optimistic_full_gap = max(optimistic_start_gap + LEAD_ACCEL_RECOVERY_GAP_MARGIN, desired_gap)
+  start_gap = comfort_floor + optimistic_blend * (optimistic_start_gap - comfort_floor)
+  full_recovery_gap = conservative_full_gap + optimistic_blend * (optimistic_full_gap - conservative_full_gap)
+  gap_blend = float(np.interp(d_rel, [start_gap, full_recovery_gap], [0.0, 1.0]))
   recovery_cap = min(LEAD_ACCEL_RECOVERY_ACCEL_MAX, max(LEAD_ACCEL_RECOVERY_ACCEL_BASE, LEAD_ACCEL_RECOVERY_LEAD_ACCEL_FACTOR * a_lead))
   return recovery_cap * min(gap_blend, opening_blend, accel_blend)
 
@@ -462,6 +469,22 @@ def get_lead_transition_obstacle_release(release_blend, guard_timer):
 def get_lead_transition_adjusted_accel(a_lead, release_blend):
   adjusted_accel = np.where(a_lead < 0.0, a_lead * (1.0 - release_blend), a_lead)
   return float(adjusted_accel) if np.ndim(adjusted_accel) == 0 else adjusted_accel
+
+
+def get_lead_transition_path_relative_y(y_rel, d_rel, model_msg=None):
+  if model_msg is None:
+    return float(y_rel)
+
+  positions = np.asarray(getattr(getattr(model_msg, "position", None), "x", []), dtype=float)
+  path_y = np.asarray(getattr(getattr(model_msg, "position", None), "y", []), dtype=float)
+  if positions.ndim != 1 or path_y.ndim != 1 or positions.size < 2 or positions.size != path_y.size:
+    return float(y_rel)
+  if not np.isfinite(d_rel) or not np.all(np.isfinite(positions)) or not np.all(np.isfinite(path_y)):
+    return float(y_rel)
+  if d_rel < positions[0] or d_rel > positions[-1]:
+    return float(y_rel)
+
+  return float(y_rel - np.interp(d_rel, positions, path_y))
 
 
 def should_hold_lead_transition_for_close_curve_lead(v_ego, d_rel, v_lead, y_rel, model_prob):
@@ -1522,7 +1545,7 @@ class LongitudinalMpc:
     self.lead_transition_guard_latched[lead_idx] = False
     self.lead_transition_was_status[lead_idx] = False
 
-  def update_lead_transition_state(self, lead_idx, lead):
+  def update_lead_transition_state(self, lead_idx, lead, model_msg=None):
     self.lead_transition_guard_timers[lead_idx] = max(0.0, self.lead_transition_guard_timers[lead_idx] - self.dt)
 
     if lead is None or not lead.status:
@@ -1532,7 +1555,7 @@ class LongitudinalMpc:
       return 0.0
 
     track_id = int(lead.radarTrackId)
-    y_rel = float(lead.yRel)
+    y_rel = get_lead_transition_path_relative_y(float(lead.yRel), float(lead.dRel), model_msg)
     abs_y_rel = abs(y_rel)
     prev_y_rel = self.lead_transition_prev_y_rel[lead_idx]
     d_rel = float(lead.dRel)
@@ -1595,7 +1618,8 @@ class LongitudinalMpc:
     self.lead_transition_was_status[lead_idx] = True
     return self.lead_transition_release_blends[lead_idx]
 
-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, block_short_gap_pullaway_response=False):
+  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, block_short_gap_pullaway_response=False,
+             model_msg=None):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
@@ -1605,8 +1629,8 @@ class LongitudinalMpc:
 
     lead_0_surge_decel_memory = self.update_lead_surge_decel_memory(0, radarstate.leadOne)
     lead_1_surge_decel_memory = self.update_lead_surge_decel_memory(1, radarstate.leadTwo)
-    lead_0_transition_release = self.update_lead_transition_state(0, radarstate.leadOne)
-    lead_1_transition_release = self.update_lead_transition_state(1, radarstate.leadTwo)
+    lead_0_transition_release = self.update_lead_transition_state(0, radarstate.leadOne, model_msg)
+    lead_1_transition_release = self.update_lead_transition_state(1, radarstate.leadTwo, model_msg)
     lead_0_confidence = self.lead_confidence_trackers[0].update(radarstate.leadOne, self.dt)
     lead_1_confidence = self.lead_confidence_trackers[1].update(radarstate.leadTwo, self.dt)
     self.lead_confidence_states = [lead_0_confidence, lead_1_confidence]
