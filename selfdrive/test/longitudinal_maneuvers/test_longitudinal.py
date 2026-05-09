@@ -247,6 +247,28 @@ def test_no_lead_e2e_stop_approach_does_not_brake_with_sufficient_runway():
   assert np.min(output[early_window, 5]) > -0.2
 
 
+def test_no_lead_e2e_close_stop_settles_before_line():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "route-like no-lead e2e close stop settle",
+      duration=4.0,
+      initial_speed=0.99,
+      lead_relevancy=False,
+      e2e=True,
+      model_position_x_values=[0.95, 0.01, 0.0],
+      model_velocity_x_values=[0.2, 0.0, 0.0],
+      model_desired_accel_values=[-0.74, -0.26, -0.03],
+      model_should_stop_values=[False, False, True],
+      cruise_values=[20.0, 20.0, 20.0],
+      breakpoints=[0.0, 1.0, 4.0],
+    )
+  )
+
+  line_window = (0.7 <= output[:, 0]) & (output[:, 0] <= 1.2)
+  assert np.min(output[line_window, 5]) < -0.3
+  assert np.min(output[:, 3]) < 0.05
+
+
 def get_max_abs_jerk(output):
   accel_delta = np.diff(output[:, 5])
   dt = np.diff(output[:, 0])
