@@ -187,6 +187,22 @@ def test_manual_torque_start_does_not_abort_path_shaping():
   assert result.active
 
 
+def test_sustained_manual_torque_soft_fallbacks_path_shaping():
+  controller = LaneChangePathShaper()
+  inputs = make_inputs()
+
+  engaged = run_steps(controller, inputs, ENTRY_BLEND_DURATION + 0.1)
+  assert engaged[-1].blend > 0.8
+
+  override_inputs = make_inputs(steering_pressed=True, model_curvature=0.0003)
+  fallback_results = run_steps(controller, override_inputs, EXIT_BLEND_DURATION + 0.2)
+
+  assert fallback_results[0].soft_fallback
+  assert 0.0 < fallback_results[0].blend < engaged[-1].blend
+  assert fallback_results[-1].blend == pytest.approx(0.0)
+  assert fallback_results[-1].desired_curvature == pytest.approx(override_inputs.model_curvature)
+
+
 def test_ineligible_entry_stays_model_driven():
   controller = LaneChangePathShaper()
   result = controller.update(make_inputs(prev_desired_curvature=0.002))
