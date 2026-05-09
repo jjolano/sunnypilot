@@ -9,23 +9,34 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
 
-def make_inputs(**overrides) -> LaneChangePathShaperInputs:
-  data = {
-    "lat_active": True,
-    "v_ego": 30.0,
-    "left_blinker": True,
-    "right_blinker": False,
-    "steering_pressed": False,
-    "lane_change_state": LaneChangeState.laneChangeStarting,
-    "lane_change_direction": LaneChangeDirection.left,
-    "model_curvature": 0.0,
-    "prev_desired_curvature": 0.0,
-    "lane_line_probs": (0.0, 0.95, 0.96, 0.0),
-    "left_lane_y0": -1.8,
-    "right_lane_y0": 1.8,
-  }
-  data.update(overrides)
-  return LaneChangePathShaperInputs(**data)
+def make_inputs(
+  lat_active: bool = True,
+  v_ego: float = 30.0,
+  left_blinker: bool = True,
+  right_blinker: bool = False,
+  steering_pressed: bool = False,
+  lane_change_state: int = LaneChangeState.laneChangeStarting,
+  lane_change_direction: int = LaneChangeDirection.left,
+  model_curvature: float = 0.0,
+  prev_desired_curvature: float = 0.0,
+  lane_line_probs: tuple[float, float, float, float] = (0.0, 0.95, 0.96, 0.0),
+  left_lane_y0: float | None = -1.8,
+  right_lane_y0: float | None = 1.8,
+) -> LaneChangePathShaperInputs:
+  return LaneChangePathShaperInputs(
+    lat_active=lat_active,
+    v_ego=v_ego,
+    left_blinker=left_blinker,
+    right_blinker=right_blinker,
+    steering_pressed=steering_pressed,
+    lane_change_state=lane_change_state,
+    lane_change_direction=lane_change_direction,
+    model_curvature=model_curvature,
+    prev_desired_curvature=prev_desired_curvature,
+    lane_line_probs=lane_line_probs,
+    left_lane_y0=left_lane_y0,
+    right_lane_y0=right_lane_y0,
+  )
 
 
 def run_steps(controller: LaneChangePathShaper, inputs: LaneChangePathShaperInputs, duration: float):
@@ -95,9 +106,26 @@ def test_initial_turn_in_authority_is_limited_and_symmetric():
   right_delta = right_result.desired_curvature - right_inputs.model_curvature
   assert left_delta < 0.0
   assert right_delta > 0.0
-  assert abs(left_delta) < 0.00035
-  assert abs(right_delta) < 0.00035
+  assert abs(left_delta) < 0.0003
+  assert abs(right_delta) < 0.0003
   assert left_delta == pytest.approx(-right_delta, rel=1e-6)
+
+
+def test_lane_width_geometry_is_damped_toward_nominal():
+  narrow_controller = LaneChangePathShaper()
+  wide_controller = LaneChangePathShaper()
+
+  narrow_inputs = make_inputs(left_lane_y0=-1.5, right_lane_y0=1.5)
+  wide_inputs = make_inputs(left_lane_y0=-2.0, right_lane_y0=2.0)
+
+  narrow_result = run_steps(narrow_controller, narrow_inputs, 1.0)[-1]
+  wide_result = run_steps(wide_controller, wide_inputs, 1.0)[-1]
+
+  narrow_delta = abs(narrow_result.desired_curvature - narrow_inputs.model_curvature)
+  wide_delta = abs(wide_result.desired_curvature - wide_inputs.model_curvature)
+
+  assert wide_delta > narrow_delta
+  assert wide_delta / narrow_delta < 1.25
 
 
 def test_soft_fallback_blends_back_to_model_curvature():
