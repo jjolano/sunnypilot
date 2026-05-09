@@ -34,6 +34,10 @@ ACTUATOR_LAG_COMFORT_HIGH_SPEED = 25.0
 STALE_ACTUATOR_REVERSAL_THRESHOLD = 0.05
 SAFETY_LIMITED_RAMP_ERROR_THRESHOLD = 0.10
 SAFETY_LIMITED_RAMP_FOLLOW_MARGIN = 0.15
+SAFETY_LIMITED_RAMP_APPLIED_RECOVERY_THRESHOLD = 0.05
+SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FLOOR = 0.45
+SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FULL_SPEED = 9.0
+SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FADE_SPEED = 12.0
 HIGH_SPEED_ACTUATOR_LAG_UNWIND_SPEED = 16.0
 HIGH_SPEED_ACTUATOR_LAG_UNWIND_MARGIN = 0.15
 HIGH_SPEED_ACTUATOR_LAG_UNWIND_GAP = 0.25
@@ -119,12 +123,12 @@ class ConservativeOutputShaperResult:
 
 class TorqueConservativeOutputShaper:
   def __init__(self, dt: float = DEFAULT_DT):
-    self.dt = max(float(dt), 1e-3)
+    self.dt: float = max(float(dt), 1e-3)
     self._previous_output: float | None = None
-    self._recent_shaping_time = 0.0
-    self._recent_hard_shaping_time = 0.0
-    self._recent_over_response_time = 0.0
-    self._recent_actuator_lag_comfort_time = 0.0
+    self._recent_shaping_time: float = 0.0
+    self._recent_hard_shaping_time: float = 0.0
+    self._recent_over_response_time: float = 0.0
+    self._recent_actuator_lag_comfort_time: float = 0.0
 
   def update(self, inputs: ConservativeOutputShaperInputs) -> ConservativeOutputShaperResult:
     output_cap = NORMAL_CAP
@@ -414,7 +418,42 @@ class TorqueConservativeOutputShaper:
       return NORMAL_CAP
 
     applied_follow_cap = abs(inputs.steer_limit_applied_output) + SAFETY_LIMITED_RAMP_FOLLOW_MARGIN
-    return clamp(applied_follow_cap / max(abs(inputs.unshaped_output), 1e-6), 0.0, NORMAL_CAP)
+    cap = applied_follow_cap / max(abs(inputs.unshaped_output), 1e-6)
+    if TorqueConservativeOutputShaper._low_speed_under_response_recovery_allowed(inputs, output_sign, applied_sign):
+      cap = max(cap, TorqueConservativeOutputShaper._low_speed_under_response_cap_floor(inputs.v_ego))
+    return clamp(cap, 0.0, NORMAL_CAP)
+
+  @staticmethod
+  def _low_speed_under_response_recovery_allowed(inputs: ConservativeOutputShaperInputs, output_sign: float, applied_sign: float) -> bool:
+    desired_sign = sign(inputs.desired_lateral_accel)
+    if desired_sign == 0.0 or output_sign != desired_sign:
+      return False
+
+    under_response = desired_sign * (inputs.desired_lateral_accel - inputs.actual_lateral_accel)
+    jerk_delta = abs(inputs.actual_lateral_jerk - inputs.lookahead_lateral_jerk)
+    bump_response = (
+      abs(inputs.actual_lateral_jerk) > BUMP_JERK_THRESHOLD
+      and jerk_delta > BUMP_LOOKAHEAD_DELTA_THRESHOLD
+      and abs(inputs.desired_lateral_jerk) < BUMP_JERK_THRESHOLD
+    )
+    return (
+      inputs.v_ego < SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FADE_SPEED
+      and applied_sign == output_sign
+      and abs(inputs.steer_limit_applied_output) > SAFETY_LIMITED_RAMP_APPLIED_RECOVERY_THRESHOLD
+      and under_response > UNDER_RESPONSE_MARGIN
+      and abs(inputs.actual_lateral_accel) <= ISO_ACCEL_MARGIN
+      and not inputs.release_active
+      and not inputs.same_sign_unwind_release
+      and not bump_response
+    )
+
+  @staticmethod
+  def _low_speed_under_response_cap_floor(v_ego: float) -> float:
+    if v_ego <= SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FULL_SPEED:
+      return SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FLOOR
+    span = SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FADE_SPEED - SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FULL_SPEED
+    fade = (SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FADE_SPEED - v_ego) / max(span, 1e-3)
+    return SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FLOOR * clamp(fade, 0.0, 1.0)
 
   @staticmethod
   def _apply(output_cap: float, confidence: float, reason: ConservativeOutputShapingReason, cap: float, reason_confidence: float,
