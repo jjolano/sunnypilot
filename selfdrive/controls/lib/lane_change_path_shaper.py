@@ -72,13 +72,15 @@ class LaneChangePathShaper:
       self.reset()
       return LaneChangePathShaperResult(inputs.model_curvature, 0.0, False, False)
 
+    continuing_session = self.session_active and inputs.lane_change_direction == self.direction
     if not self.session_active or inputs.lane_change_direction != self.direction:
       self._start_session(inputs)
 
     if not self.planned:
       return LaneChangePathShaperResult(inputs.model_curvature, 0.0, False, False)
 
-    if not self.soft_fallback and self._should_soft_fallback(inputs):
+    driver_override = inputs.steering_pressed and continuing_session and self.elapsed > 0.0
+    if not self.soft_fallback and (driver_override or self._should_soft_fallback(inputs)):
       self.soft_fallback = True
 
     finishing = inputs.lane_change_state == LaneChangeState.laneChangeFinishing
