@@ -21,16 +21,17 @@ class AuthorityState:
 
 CLIPPING_REASONS = EstimatorRejectReason.STEER_LIMITED | EstimatorRejectReason.SATURATED
 HARD_FAULT_REASONS = (
-  EstimatorRejectReason.SIGN_CONFLICT
-  | EstimatorRejectReason.NON_FINITE
+  EstimatorRejectReason.NON_FINITE
   | EstimatorRejectReason.HIGH_JERK
   | EstimatorRejectReason.STALE_MODEL
 )
 
 
 def authority_fault_active(reject_reason: EstimatorRejectReason) -> bool:
+  clipped_steer_limit = bool(reject_reason & EstimatorRejectReason.STEER_LIMITED and reject_reason & EstimatorRejectReason.SATURATED)
+  sign_fault = bool(reject_reason & EstimatorRejectReason.SIGN_CONFLICT and not clipped_steer_limit)
   residual_fault = bool(reject_reason & EstimatorRejectReason.RESIDUAL_SPIKE and not reject_reason & CLIPPING_REASONS)
-  return bool(reject_reason & HARD_FAULT_REASONS or residual_fault)
+  return bool(reject_reason & HARD_FAULT_REASONS or sign_fault or residual_fault)
 
 
 class AuthorityManager:

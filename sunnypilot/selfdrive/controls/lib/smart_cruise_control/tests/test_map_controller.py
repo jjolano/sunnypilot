@@ -236,6 +236,22 @@ class TestSmartCruiseControlMap:
     assert self.scc_m.state == VisionState.turning
     assert self.scc_m.output_v_target == 15.0
 
+  def test_current_advisory_speed_limit_does_not_hold_negative_accel(self):
+    self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "end_latitude": 0.0,
+      "end_longitude": 0.001,
+      "speedlimit": 15.0,
+    }))
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, -0.65, 30.0)
+
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == 15.0
+    assert self.scc_m.output_a_target == 0.0
+
   def test_current_advisory_speed_limit_ignores_large_slowdown_without_model_curve(self):
     self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
       "start_latitude": 0.0,

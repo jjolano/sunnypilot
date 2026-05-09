@@ -10,6 +10,7 @@ from openpilot.common.pid import PIDController
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShapingReason
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_over_response_attenuator import attenuate_same_direction_over_response
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_low_speed import low_speed_pid_gain_speed
@@ -330,6 +331,8 @@ class LatControlTorque(LatControl):
     )
     shaping_result = safety_result.shaping_result
     output_torque = safety_result.output_torque
+    sign_conflict_shaping = bool(shaping_result.reason & ConservativeOutputShapingReason.SIGN_CONFLICT)
+    estimator_saturated = saturated or safety_result.authority_limited or (shaping_result.active and not sign_conflict_shaping)
     estimator_result = self.estimator.update(
       TorqueObservation(
         active=active,
@@ -337,7 +340,7 @@ class LatControlTorque(LatControl):
         steering_pressed=CS.steeringPressed,
         steer_limited_by_safety=steer_limited_by_safety,
         curvature_limited=curvature_limited,
-        saturated=saturated or safety_result.authority_limited or shaping_result.active,
+        saturated=estimator_saturated,
         commanded_torque=output_torque,
         desired_lateral_accel=setpoint,
         actual_lateral_accel=measurement,

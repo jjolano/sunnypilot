@@ -44,6 +44,33 @@ def test_clipping_rejects_do_not_demote_native_authority():
   assert not state.fallback_active
 
 
+def test_sign_conflict_during_steer_limited_saturation_does_not_force_fallback():
+  manager = AuthorityManager()
+  manager.update(TorqueModelMode.learned, confidence=0.96, positive_coverage=0.7, negative_coverage=0.7,
+                 reject_reason=EstimatorRejectReason.NONE)
+
+  state = manager.update(TorqueModelMode.learned, confidence=0.96, positive_coverage=0.7, negative_coverage=0.7,
+                         reject_reason=EstimatorRejectReason.SIGN_CONFLICT | EstimatorRejectReason.STEER_LIMITED |
+                                       EstimatorRejectReason.SATURATED)
+
+  assert state.band == AuthorityBand.full
+  assert state.scale == 1.0
+  assert not state.fallback_active
+
+
+def test_sign_conflict_with_steer_limit_only_still_faults():
+  manager = AuthorityManager()
+  manager.update(TorqueModelMode.learned, confidence=0.96, positive_coverage=0.7, negative_coverage=0.7,
+                 reject_reason=EstimatorRejectReason.NONE)
+
+  state = manager.update(TorqueModelMode.learned, confidence=0.96, positive_coverage=0.7, negative_coverage=0.7,
+                         reject_reason=EstimatorRejectReason.SIGN_CONFLICT | EstimatorRejectReason.STEER_LIMITED)
+
+  assert state.band == AuthorityBand.limited
+  assert state.scale == 0.45
+  assert state.fallback_active
+
+
 def test_fault_demotes_authority_immediately():
   manager = AuthorityManager()
   manager.update(TorqueModelMode.learned, confidence=0.96, positive_coverage=0.7, negative_coverage=0.7,
