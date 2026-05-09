@@ -154,7 +154,12 @@ class AdaptiveTorqueEstimator:
 
   def _decay_confidence(self, reason: EstimatorRejectReason) -> None:
     clipping_limited = bool(reason & (EstimatorRejectReason.STEER_LIMITED | EstimatorRejectReason.SATURATED))
-    fast_decay = bool(reason & EstimatorRejectReason.SIGN_CONFLICT) or bool(reason & EstimatorRejectReason.RESIDUAL_SPIKE and not clipping_limited)
+    sign_conflict_from_clipped_steer_limit = bool(
+      reason & EstimatorRejectReason.SIGN_CONFLICT and reason & EstimatorRejectReason.STEER_LIMITED and reason & EstimatorRejectReason.SATURATED
+    )
+    fast_decay = bool(reason & EstimatorRejectReason.SIGN_CONFLICT and not sign_conflict_from_clipped_steer_limit) or bool(
+      reason & EstimatorRejectReason.RESIDUAL_SPIKE and not clipping_limited
+    )
     decay = CONFIDENCE_DECAY_RATE if fast_decay else CONFIDENCE_BUILD_RATE
     self.state.confidence = max(0.0, self.state.confidence - decay)
 
