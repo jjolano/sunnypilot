@@ -359,7 +359,14 @@ class Controls(ControlsExt):
     if update_lateral_lag is None and hasattr(self.LaC, "extension"):
       update_lateral_lag = getattr(self.LaC.extension, "update_lateral_lag", None)
     if update_lateral_lag is not None:
-      update_lateral_lag(self.lat_delay)
+      try:
+        lat_delay = float(self.lat_delay)
+      except (TypeError, ValueError):
+        lat_delay = 0.2
+      if not math.isfinite(lat_delay):
+        lat_delay = 0.2
+      self.lat_delay = lat_delay
+      update_lateral_lag(lat_delay)
 
   def publish(self, CC, lac_log):
     CS = self.sm['carState']
