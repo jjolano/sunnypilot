@@ -93,6 +93,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_transition_cost_obstacle,
   get_lead_transition_lateral_blend,
   get_lead_transition_obstacle_release,
+  get_lead_transition_path_relative_y,
   get_lead_transition_release_target,
   get_progressive_lead_approach_gap,
   get_pre_target_runway_decel_threshold,
@@ -947,6 +948,49 @@ def test_lead_transition_release_requires_lateral_exit_and_persistence():
 
 def test_lead_transition_releases_turning_lead_before_long_persistence():
   assert get_lead_transition_release_target(1.6, 0.2) == pytest.approx(1.0)
+
+
+def test_lead_transition_uses_model_path_relative_offset():
+  model_msg = SimpleNamespace(position=SimpleNamespace(x=[0.0, 20.0, 40.0], y=[0.0, -1.0, -2.0]))
+
+  assert get_lead_transition_path_relative_y(-2.0, 40.0, model_msg) == pytest.approx(0.0)
+  assert get_lead_transition_path_relative_y(-3.8, 40.0, model_msg) == pytest.approx(-1.8)
+
+
+def test_lead_transition_holds_raw_offset_lead_on_model_curve_path():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-1.8,
+    dRel=44.0,
+    vLeadK=24.0,
+    modelProb=1.0,
+  )
+  model_msg = SimpleNamespace(position=SimpleNamespace(x=[0.0, 22.0, 44.0], y=[0.0, -0.9, -1.8]))
+
+  releases = [mpc.update_lead_transition_state(0, lead, model_msg) for _ in range(5)]
+
+  assert max(releases) == pytest.approx(0.0)
+
+
+def test_lead_transition_releases_lead_turning_off_model_curve_path():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-3.6,
+    dRel=44.0,
+    vLeadK=24.0,
+    modelProb=1.0,
+  )
+  model_msg = SimpleNamespace(position=SimpleNamespace(x=[0.0, 22.0, 44.0], y=[0.0, -0.9, -1.8]))
+
+  releases = [mpc.update_lead_transition_state(0, lead, model_msg) for _ in range(5)]
+
+  assert max(releases) > 0.0
 
 
 def test_lead_transition_holds_close_confirmed_curve_lead_while_closing():
