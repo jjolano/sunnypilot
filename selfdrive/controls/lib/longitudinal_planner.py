@@ -115,6 +115,13 @@ E2E_RUNWAY_COMFORT_LIGHT_DECEL = 0.45
 E2E_RUNWAY_COMFORT_DECEL_BLEND_BP = [1.2, 2.0]
 E2E_RUNWAY_COMFORT_RUNWAY_BLEND_BP = [0.5, 1.0]
 E2E_RUNWAY_COMFORT_NEGATIVE_RAMP_RATE = 0.35
+E2E_CLOSE_STOP_MAX_DIST = 1.0
+E2E_CLOSE_STOP_RELEASE_DIST = 1.0
+E2E_CLOSE_STOP_SHOULD_STOP_DIST = 0.4
+E2E_CLOSE_STOP_MIN_ROLLING_V = 0.25
+E2E_CLOSE_STOP_SHOULD_STOP_MAX_V = 1.0
+E2E_CLOSE_STOP_DECEL_BUFFER = 0.25
+E2E_CLOSE_STOP_DECEL_MAX = 0.8
 ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED = 1.0
 LEAD_LOSS_E2E_GUARD_TIME = 3.0
 LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR = -0.45
@@ -147,6 +154,15 @@ def has_model_stop_context(model_msg):
   positions = list(getattr(model_msg.position, "x", []))
   velocities = list(getattr(model_msg.velocity, "x", []))
   return any(x > 0.0 and v <= ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED for x, v in zip(positions, velocities, strict=False))
+
+
+def get_model_stop_distance(model_msg):
+  positions = list(getattr(model_msg.position, "x", []))
+  velocities = list(getattr(model_msg.velocity, "x", []))
+  for idx, (x, v) in enumerate(zip(positions, velocities, strict=False)):
+    if idx > 0 and x >= 0.0 and v <= ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED:
+      return float(x)
+  return None
 
 
 def should_run_engage_stop_bootstrap(timer, v_ego, radar_state, model_msg):
@@ -215,6 +231,31 @@ def should_apply_cruise_coast_overspeed(reset_state, force_slow_decel, e2e_activ
     and not should_stop
     and source == custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
   )
+
+
+def get_e2e_close_stop_settle(v_ego, raw_e2e_accel, model_msg, radar_state, e2e_active, active=False,
+                              force_slow_decel=False, brake_pressed=False, gas_pressed=False, reset_state=False):
+  blocked = not e2e_active or reset_state or force_slow_decel or brake_pressed or gas_pressed
+  blocked = blocked or has_valid_radar_lead(radar_state) or model_msg.action.desiredAcceleration > 0.0
+  if blocked:
+    return raw_e2e_accel, False, False
+
+  stop_distance = get_model_stop_distance(model_msg)
+  if stop_distance is None or not np.isfinite(stop_distance) or stop_distance < 0.0:
+    return raw_e2e_accel, False, False
+
+  if stop_distance > (E2E_CLOSE_STOP_RELEASE_DIST if active else E2E_CLOSE_STOP_MAX_DIST):
+    return raw_e2e_accel, False, False
+
+  should_stop = bool(model_msg.action.shouldStop or (
+    stop_distance <= E2E_CLOSE_STOP_SHOULD_STOP_DIST and v_ego <= E2E_CLOSE_STOP_SHOULD_STOP_MAX_V
+  ))
+  if v_ego < E2E_CLOSE_STOP_MIN_ROLLING_V:
+    return raw_e2e_accel, should_stop, should_stop
+
+  required_decel = v_ego**2 / (2.0 * max(stop_distance + E2E_CLOSE_STOP_DECEL_BUFFER, E2E_CLOSE_STOP_DECEL_BUFFER))
+  target_decel = min(required_decel, E2E_CLOSE_STOP_DECEL_MAX)
+  return min(raw_e2e_accel, -target_decel), should_stop, True
 
 
 def get_e2e_runway_comfort_accel(v_ego, raw_e2e_accel, coast_accel, model_msg, e2e_active, prev_output_a_target,
@@ -535,6 +576,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
     self.prev_reset_state = True
     self.engage_stop_bootstrap_timer = 0.0
+    self.e2e_close_stop_settle_active = False
     self.output_a_target = 0.0
     self.output_should_stop = False
     self.creep_to_stop_gap_active = False
@@ -691,6 +733,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       has_radar_lead=has_radar_lead,
       dt=self.dt,
     )
+    output_a_target_e2e, close_stop_should_stop, self.e2e_close_stop_settle_active = get_e2e_close_stop_settle(
+      v_ego, output_a_target_e2e, sm['modelV2'], sm['radarState'], e2e_active,
+      active=self.e2e_close_stop_settle_active,
+      reset_state=reset_state,
+      force_slow_decel=force_slow_decel,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+    )
+    output_should_stop_e2e = output_should_stop_e2e or close_stop_should_stop
     if e2e_active:
       output_a_target_e2e = apply_lead_loss_e2e_guard_accel(
         output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, lead_loss_guard_lead is not None
