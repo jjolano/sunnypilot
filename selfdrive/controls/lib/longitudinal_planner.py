@@ -66,6 +66,9 @@ CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = CREEP_TO_STOP_GAP_ARM_EXCESS
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.55
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.30
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN = 0.70
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX = 0.75
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS = CREEP_TO_STOP_GAP_STOP_EXCESS
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP = 8.0 * DT_MDL
 CREEP_TO_STOP_GAP_PREDICT_T = 0.8
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED = 0.35
@@ -690,6 +693,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.mpc.update(
       sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
       block_short_gap_pullaway_response=sm['carState'].brakePressed or sm['carState'].gasPressed or force_slow_decel or reset_state,
+      model_msg=sm['modelV2'],
     )
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
@@ -864,6 +868,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.output_should_stop = self.output_should_stop or output_should_stop_e2e
       if output_a_target_e2e < output_a_target_mpc:
         self.mpc.source = LongitudinalPlanSource.e2e
+
+    creep_pullaway_launch = lead_one.status and not self.output_should_stop and not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
+      not force_slow_decel and not reset_state and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM and \
+      float(lead_one.modelProb) >= CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_PROB and \
+      CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS <= lead_gap_excess <= CREEP_TO_STOP_GAP_MAX_EXCESS and \
+      self.creep_to_stop_gap_active and creep_a_target > 0.0 and creep_pullaway_release and \
+      (radar_predicted_pullaway or model_predicted_pullaway)
+    if creep_pullaway_launch:
+      output_a_target = min(
+        max(output_a_target, CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN),
+        CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX,
+      )
 
     has_lead = sm['radarState'].leadOne.status or sm['radarState'].leadTwo.status
     cruise_coast_applied = False
