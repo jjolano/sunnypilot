@@ -219,9 +219,10 @@ LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL = 0.2
 LEAD_ACCEL_RECOVERY_ACCEL_BP = [LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL, 0.8]
 LEAD_ACCEL_RECOVERY_OPENING_BP = [0.2, 1.2]
 LEAD_ACCEL_RECOVERY_GAP_MARGIN = 1.0
+LEAD_ACCEL_RECOVERY_OPTIMISTIC_GAP_FRACTION = 0.35
 LEAD_ACCEL_RECOVERY_ACCEL_BASE = 0.35
 LEAD_ACCEL_RECOVERY_LEAD_ACCEL_FACTOR = 0.80
-LEAD_ACCEL_RECOVERY_ACCEL_MAX = 0.80
+LEAD_ACCEL_RECOVERY_ACCEL_MAX = 1.20
 LEAD_TRANSITION_Y_REL_SOFT = 1.0
 LEAD_TRANSITION_Y_REL_CONFIRM = 1.6
 LEAD_TRANSITION_Y_REL_RESET = 0.9
@@ -415,10 +416,16 @@ def get_lead_accel_recovery_a_min(v_ego, v_lead, d_rel, a_lead, t_follow):
     return ACCEL_MIN
 
   desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
-  full_recovery_gap = max(comfort_floor, desired_gap) + LEAD_ACCEL_RECOVERY_GAP_MARGIN
-  gap_blend = float(np.interp(d_rel, [comfort_floor, full_recovery_gap], [0.0, 1.0]))
   opening_blend = float(np.interp(v_lead - v_ego, LEAD_ACCEL_RECOVERY_OPENING_BP, [0.0, 1.0]))
   accel_blend = float(np.interp(a_lead, LEAD_ACCEL_RECOVERY_ACCEL_BP, [0.0, 1.0]))
+  optimistic_blend = min(opening_blend, accel_blend)
+  gap_span = max(desired_gap - comfort_floor, 0.0)
+  optimistic_start_gap = comfort_floor + LEAD_ACCEL_RECOVERY_OPTIMISTIC_GAP_FRACTION * gap_span
+  conservative_full_gap = max(comfort_floor, desired_gap) + LEAD_ACCEL_RECOVERY_GAP_MARGIN
+  optimistic_full_gap = max(optimistic_start_gap + LEAD_ACCEL_RECOVERY_GAP_MARGIN, desired_gap)
+  start_gap = comfort_floor + optimistic_blend * (optimistic_start_gap - comfort_floor)
+  full_recovery_gap = conservative_full_gap + optimistic_blend * (optimistic_full_gap - conservative_full_gap)
+  gap_blend = float(np.interp(d_rel, [start_gap, full_recovery_gap], [0.0, 1.0]))
   recovery_cap = min(LEAD_ACCEL_RECOVERY_ACCEL_MAX, max(LEAD_ACCEL_RECOVERY_ACCEL_BASE, LEAD_ACCEL_RECOVERY_LEAD_ACCEL_FACTOR * a_lead))
   return recovery_cap * min(gap_blend, opening_blend, accel_blend)
 

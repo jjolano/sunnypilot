@@ -55,6 +55,9 @@ CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = CREEP_TO_STOP_GAP_ARM_EXCESS
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.55
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.30
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN = 0.70
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX = 0.75
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS = CREEP_TO_STOP_GAP_STOP_EXCESS
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP = 8.0 * DT_MDL
 CREEP_TO_STOP_GAP_PREDICT_T = 0.8
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED = 0.35
@@ -640,6 +643,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     ):
       output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
       self.output_should_stop = True
+
+    creep_pullaway_launch = lead_one.status and not self.output_should_stop and not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
+      not force_slow_decel and not reset_state and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM and \
+      float(lead_one.modelProb) >= CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_PROB and \
+      CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS <= lead_gap_excess <= CREEP_TO_STOP_GAP_MAX_EXCESS and \
+      self.creep_to_stop_gap_active and creep_a_target > 0.0 and creep_pullaway_release and \
+      (radar_predicted_pullaway or model_predicted_pullaway)
+    if creep_pullaway_launch:
+      output_a_target = min(
+        max(output_a_target, CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN),
+        CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX,
+      )
 
     lead_loss_snapshot_lead = lead_loss_guard_lead
     self.previous_lead_loss_status = lead_loss_snapshot_lead is not None
