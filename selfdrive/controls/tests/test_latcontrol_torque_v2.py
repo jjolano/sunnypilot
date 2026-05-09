@@ -20,6 +20,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shap
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import TorqueDisturbanceReason, TorqueDisturbanceState
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseReason
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import SteeringActuatorFeedback, SteeringLimitReason
+from openpilot.sunnypilot.selfdrive.locationd.speed_aware_torque import SPEED_AWARE_PARAMS_VERSION
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
 
@@ -717,7 +718,7 @@ class SpeedAdaptiveApplyParams:
 def make_speed_adaptive_payload(controller, buckets, **overrides):
   CP = controller.extension.CP
   payload = {
-    "version": 1,
+    "version": SPEED_AWARE_PARAMS_VERSION,
     "carFingerprint": CP.carFingerprint,
     "lateralTuning": CP.lateralTuning.which(),
     "torqueLatAccelFactor": float(CP.lateralTuning.torque.latAccelFactor),
