@@ -100,6 +100,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_HOLD_EXCESS,
   CREEP_TO_STOP_GAP_MAX_EXCESS,
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX,
+  CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN,
+  CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS,
   CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING,
   CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED,
   CREEP_TO_STOP_GAP_START_EXCESS,
@@ -311,6 +313,72 @@ def test_creep_pullaway_rate_limit_reaches_launch_floor_after_stop_hold(monkeypa
 
   assert planner.creep_to_stop_gap_active
   assert planner.output_a_target >= 0.15
+
+
+def test_creep_pullaway_launch_assist_boosts_confirmed_standstill_pullaway(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (0.0, False))
+  planner = make_planner_for_stop_preservation(v_ego=0.0)
+  planner.output_a_target = 0.45
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.55, 0.39, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + 0.20,
+    vLeadK=0.55,
+    modelProb=1.0,
+    aLeadK=0.39,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.0, lead, desired_accel=0.0, should_stop=False))
+
+  assert planner.creep_to_stop_gap_active
+  assert not planner.output_should_stop
+  assert planner.output_a_target >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
+
+
+def test_creep_pullaway_launch_assist_waits_for_safe_gap_excess(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (0.0, False))
+  planner = make_planner_for_stop_preservation(v_ego=0.0)
+  planner.output_a_target = 0.45
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.55, 0.39, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + 0.5 * CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS,
+    vLeadK=0.55,
+    modelProb=1.0,
+    aLeadK=0.39,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.0, lead, desired_accel=0.0, should_stop=False))
+
+  assert planner.output_a_target < CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
+
+
+@pytest.mark.parametrize("v_ego", [0.31, 1.0])
+def test_creep_pullaway_launch_assist_cancels_once_ego_is_moving(monkeypatch, v_ego):
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (0.0, False))
+  planner = make_planner_for_stop_preservation(v_ego=v_ego)
+  planner.output_a_target = 0.45
+  stop_target = get_lead_stop_presentation_distance(v_ego, 0.55, 0.39, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + 0.20,
+    vLeadK=0.55,
+    modelProb=1.0,
+    aLeadK=0.39,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(v_ego, lead, desired_accel=0.0, should_stop=False))
+
+  assert planner.output_a_target < CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
 
 
 def test_creep_pullaway_keeps_cap_for_weak_cushion(monkeypatch):
