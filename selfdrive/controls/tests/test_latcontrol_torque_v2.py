@@ -15,6 +15,7 @@ from openpilot.selfdrive.car.helpers import convert_to_capnp
 from openpilot.selfdrive.locationd.helpers import Measurement, Pose
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
+from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.nnlc import adjust_future_time_for_longitudinal_accel
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperResult, ConservativeOutputShapingReason
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import TorqueDisturbanceReason, TorqueDisturbanceState
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseReason
@@ -167,7 +168,7 @@ def test_nnlc_model_invalid_without_valid_orientation_y_plan(orientation_y):
   assert not controller.extension.model_valid
 
 
-def test_nnlc_future_time_defaults_to_legacy_linear_accel_adjustment():
+def test_nnlc_future_time_defaults_to_kinematic_accel_adjustment():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
   model_v2 = make_flat_model_v2()
   model_v2.acceleration.y = [float(t) for t in ModelConstants.T_IDXS]
@@ -179,11 +180,12 @@ def test_nnlc_future_time_defaults_to_legacy_linear_accel_adjustment():
 
   controller.update(True, CS, VM, params, False, 0.001, make_pose(), False, 0.2)
 
-  expected_future_times = [t + 0.5 * CS.aEgo * (t / CS.vEgo) for t in controller.extension.nn_future_times]
+  expected_future_times = [adjust_future_time_for_longitudinal_accel(t, CS.vEgo, CS.aEgo)
+                           for t in controller.extension.nn_future_times]
   assert capturing_model.inputs[-1][7:11] == pytest.approx(expected_future_times)
 
 
-def test_nnlc_hardening_uses_distance_equivalent_future_time_adjustment():
+def test_nnlc_hardening_uses_kinematic_accel_adjustment():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
   model_v2 = make_flat_model_v2()
   model_v2.acceleration.y = [float(t) for t in ModelConstants.T_IDXS]
@@ -195,7 +197,8 @@ def test_nnlc_hardening_uses_distance_equivalent_future_time_adjustment():
 
   controller.update(True, CS, VM, params, False, 0.001, make_pose(), False, 0.2)
 
-  expected_future_times = [t + 0.5 * CS.aEgo * (t ** 2 / CS.vEgo) for t in controller.extension.nn_future_times]
+  expected_future_times = [adjust_future_time_for_longitudinal_accel(t, CS.vEgo, CS.aEgo)
+                           for t in controller.extension.nn_future_times]
   assert capturing_model.inputs[-1][7:11] == pytest.approx(expected_future_times)
 
 
