@@ -129,7 +129,7 @@ class LongControl:
     launch_a_target = max(a_target, LAUNCH_ENVELOPE_MIN_ACCEL) if a_target >= 0.0 else a_target
 
     effective_should_stop = should_stop and not (
-      not has_lead and self.launch_envelope_active and
+      has_lead and self.launch_envelope_active and
       launch_should_stop_hold_active(CS.vEgo, CS.aEgo, CS.brakePressed, self.launch_breakaway_elapsed, launch_a_target)
     )
     prev_state = self.long_control_state

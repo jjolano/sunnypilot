@@ -255,6 +255,23 @@ def test_lead_launch_uses_breakaway_envelope_when_planner_releases():
   assert output_accel == pytest.approx(get_launch_breakaway_accel(a_target, (-3.0, 2.0)))
 
 
+def test_no_lead_launch_keeps_stop_when_should_stop_returns_during_active_envelope():
+  CP = make_car_params(startingState=False)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+
+  a_target = 0.2
+  loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=a_target, should_stop=False, accel_limits=(-3.0, 2.0))
+  assert loc.launch_envelope_active
+
+  output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=a_target, should_stop=True, accel_limits=(-3.0, 2.0))
+
+  assert loc.long_control_state == LongCtrlState.stopping
+  assert not loc.launch_envelope_active
+  assert output_accel <= 0.0
+
+
 def test_lead_launch_uses_minimum_breakaway_for_neutral_target():
   CP = make_car_params(startingState=False)
   CP_SP = custom.CarParamsSP.new_message()
@@ -543,14 +560,17 @@ def test_launch_envelope_cancels_when_negative_stop_returns():
   assert output_accel <= 0.0
 
 
-def test_positive_should_stop_reassertion_is_ignored_during_launch_hold():
+def test_lead_positive_should_stop_reassertion_is_ignored_during_launch_hold():
   CP = make_car_params(startingState=False)
   CP_SP = custom.CarParamsSP.new_message()
   loc = LongControl(CP, CP_SP)
   loc.long_control_state = LongCtrlState.stopping
 
-  loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=1.0, should_stop=False, accel_limits=(-3.0, 2.0))
-  output_accel = loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=LAUNCH_ENVELOPE_MIN_ACCEL + 1e-3, should_stop=True, accel_limits=(-3.0, 2.0))
+  loc.update(True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=1.0, should_stop=False, accel_limits=(-3.0, 2.0), has_lead=True)
+  output_accel = loc.update(
+    True, make_car_state(v_ego=0.0, a_ego=0.0), a_target=LAUNCH_ENVELOPE_MIN_ACCEL + 1e-3,
+    should_stop=True, accel_limits=(-3.0, 2.0), has_lead=True,
+  )
 
   assert loc.long_control_state == LongCtrlState.pid
   assert loc.launch_envelope_active
