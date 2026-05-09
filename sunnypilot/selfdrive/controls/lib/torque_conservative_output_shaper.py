@@ -185,6 +185,10 @@ class TorqueConservativeOutputShaper:
       and not sign_conflict
       and not bump_response
     )
+    corrective_unwind_catchup = self._low_speed_corrective_unwind_catchup(
+      inputs, output_sign, desired_sign, actual_sign, same_direction_steer_limited, high_output, bump_response
+    )
+    catchup_bypass = clear_under_response_catchup or corrective_unwind_catchup
     strong_under_response_catchup = (
       clear_under_response_catchup
       and desired_sign * (inputs.desired_lateral_accel - inputs.actual_lateral_accel) > AUTHORITY_RECOVERY_BYPASS_UNDER_RESPONSE
@@ -196,7 +200,7 @@ class TorqueConservativeOutputShaper:
     if inputs.release_active:
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, OVERRIDE_RELEASE_CAP, 1.0,
                                                    ConservativeOutputShapingReason.RELEASE)
-    if same_sign_unwind_release:
+    if same_sign_unwind_release and not corrective_unwind_catchup:
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, SAME_SIGN_UNWIND_CAP, 1.0,
                                                    ConservativeOutputShapingReason.SAME_SIGN_UNWIND)
     if sign_conflict:
@@ -218,12 +222,12 @@ class TorqueConservativeOutputShaper:
                                   jerk_delta - BUMP_LOOKAHEAD_DELTA_THRESHOLD) / BUMP_JERK_THRESHOLD, 0.0, 1.0)
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, BUMP_CAP, bump_confidence,
                                                    ConservativeOutputShapingReason.BUMP)
-    if low_speed_steer_limited and not clear_under_response_catchup:
+    if low_speed_steer_limited and not catchup_bypass:
       output_fraction = abs(inputs.unshaped_output) / max(inputs.max_output, 1e-3)
       steer_limit_confidence = clamp((output_fraction - HIGH_OUTPUT_FRACTION) / max(1.0 - HIGH_OUTPUT_FRACTION, 1e-3), 0.0, 1.0)
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, LOW_SPEED_STEER_LIMITED_CAP, steer_limit_confidence,
                                                    ConservativeOutputShapingReason.LOW_SPEED_STEER_LIMITED)
-    if output_reinforces_steering_rate and steering_rate_abs > STEERING_RATE_COMFORT_START and not clear_under_response_catchup:
+    if output_reinforces_steering_rate and steering_rate_abs > STEERING_RATE_COMFORT_START and not catchup_bypass:
       steering_rate_confidence = clamp(
         (steering_rate_abs - STEERING_RATE_COMFORT_START) / max(STEERING_RATE_COMFORT_FULL - STEERING_RATE_COMFORT_START, 1e-3),
         0.0,
@@ -232,7 +236,7 @@ class TorqueConservativeOutputShaper:
       steering_rate_cap = NORMAL_CAP + steering_rate_confidence * (STEERING_RATE_COMFORT_MIN_CAP - NORMAL_CAP)
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, steering_rate_cap, steering_rate_confidence,
                                                    ConservativeOutputShapingReason.STEERING_RATE_COMFORT)
-    if actuator_lag_comfort and not clear_under_response_catchup:
+    if actuator_lag_comfort and not catchup_bypass:
       actuator_lag_confidence = clamp(
         (steering_rate_abs - ACTUATOR_LAG_COMFORT_START) / max(STEERING_RATE_COMFORT_FULL - ACTUATOR_LAG_COMFORT_START, 1e-3),
         0.0,
@@ -285,7 +289,7 @@ class TorqueConservativeOutputShaper:
     shaped_output, rate_limited = self._apply_output_rate_limit(inputs, shaped_output, recently_shaped, recently_over_response,
                                                                 steering_rate_comfort_shaping, actuator_lag_comfort_shaping,
                                                                 stale_actuator_reversal_shaping, recently_actuator_lag_comfort,
-                                                                clear_under_response_catchup, recently_hard_shaped,
+                                                                catchup_bypass, recently_hard_shaped,
                                                                 strong_under_response_catchup)
     if rate_limited:
       reason |= ConservativeOutputShapingReason.OUTPUT_RATE_LIMITED
@@ -317,7 +321,7 @@ class TorqueConservativeOutputShaper:
                                recently_shaped: bool, recently_over_response: bool,
                                steering_rate_comfort_shaping: bool, actuator_lag_comfort_shaping: bool,
                                stale_actuator_reversal_shaping: bool, recently_actuator_lag_comfort: bool,
-                               clear_under_response_catchup: bool, recently_hard_shaped: bool,
+                               catchup_bypass: bool, recently_hard_shaped: bool,
                                strong_under_response_catchup: bool) -> tuple[float, bool]:
     if (
       self._previous_output is None
@@ -332,7 +336,7 @@ class TorqueConservativeOutputShaper:
     previous_abs = abs(self._previous_output)
     if strong_under_response_catchup and not stale_actuator_reversal_shaping and target_sign == previous_sign:
       return target_output, False
-    if clear_under_response_catchup and not recently_hard_shaped and not stale_actuator_reversal_shaping:
+    if catchup_bypass and not recently_hard_shaped and not stale_actuator_reversal_shaping:
       return target_output, False
 
     actual_abs = abs(inputs.actual_lateral_accel)
@@ -397,6 +401,34 @@ class TorqueConservativeOutputShaper:
       and requested_sign == output_sign
       and applied_sign == -output_sign
       and abs(inputs.steer_limit_applied_output) > STALE_ACTUATOR_REVERSAL_THRESHOLD
+    )
+
+  @staticmethod
+  def _low_speed_corrective_unwind_catchup(inputs: ConservativeOutputShaperInputs, output_sign: float, desired_sign: float,
+                                           actual_sign: float, same_direction_steer_limited: bool, high_output: bool,
+                                           bump_response: bool) -> bool:
+    # Only bypass comfort/unwind caps for the tight-turn catch-up case where the desired direction has crossed,
+    # actual lateral acceleration is still lagging on the old side, and the actuator is under-applying the requested torque.
+    requested_sign = sign(inputs.steer_limit_requested_output)
+    applied_sign = sign(inputs.steer_limit_applied_output)
+    actuator_error = abs(inputs.steer_limit_requested_output - inputs.steer_limit_applied_output)
+    under_response = desired_sign * (inputs.desired_lateral_accel - inputs.actual_lateral_accel)
+    return (
+      inputs.v_ego < LOW_SPEED_THRESHOLD
+      and same_direction_steer_limited
+      and high_output
+      and desired_sign != 0.0
+      and actual_sign != 0.0
+      and desired_sign != actual_sign
+      and output_sign == desired_sign
+      and requested_sign == output_sign
+      and applied_sign in (0.0, output_sign)
+      and actuator_error > SAFETY_LIMITED_RAMP_ERROR_THRESHOLD
+      and under_response > UNDER_RESPONSE_MARGIN
+      and abs(inputs.actual_lateral_accel) <= ISO_ACCEL_MARGIN
+      and not inputs.steering_pressed
+      and not inputs.release_active
+      and not bump_response
     )
 
   @staticmethod
