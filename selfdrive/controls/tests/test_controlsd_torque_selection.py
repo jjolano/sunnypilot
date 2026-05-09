@@ -238,6 +238,36 @@ def test_update_lateral_controller_inputs_updates_model_only_when_fresh():
   assert controls.LaC.model_updates == 1
 
 
+def test_update_lateral_controller_inputs_normalizes_cached_lat_delay():
+  class FakeTorqueParams:
+    useParams = False
+
+  class FakeSubMaster(dict):
+    def __init__(self):
+      super().__init__(liveTorqueParameters=FakeTorqueParams(), modelV2=object())
+      self.updated = {'modelV2': False}
+
+    def all_checks(self, _services):
+      return False
+
+  class FakeController:
+    def __init__(self):
+      self.lat_delay = None
+
+    def update_lateral_lag(self, lat_delay):
+      self.lat_delay = lat_delay
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  controls.sm = FakeSubMaster()
+  controls.lat_delay = b"0.2"
+
+  controls.update_lateral_controller_inputs()
+
+  assert controls.lat_delay == 0.2
+  assert controls.LaC.lat_delay == 0.2
+
+
 def test_get_params_sp_updates_lat_delay_for_selected_torque_controller(monkeypatch):
   class FakeBlinkerPauseLateral:
     def get_params(self):
