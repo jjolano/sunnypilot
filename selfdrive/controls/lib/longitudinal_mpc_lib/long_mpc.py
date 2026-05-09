@@ -219,7 +219,9 @@ LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL = 0.2
 LEAD_ACCEL_RECOVERY_ACCEL_BP = [LEAD_ACCEL_RECOVERY_MIN_LEAD_ACCEL, 0.8]
 LEAD_ACCEL_RECOVERY_OPENING_BP = [0.2, 1.2]
 LEAD_ACCEL_RECOVERY_GAP_MARGIN = 1.0
-LEAD_ACCEL_RECOVERY_ACCEL_MAX = 0.55
+LEAD_ACCEL_RECOVERY_ACCEL_BASE = 0.35
+LEAD_ACCEL_RECOVERY_LEAD_ACCEL_FACTOR = 0.80
+LEAD_ACCEL_RECOVERY_ACCEL_MAX = 0.80
 LEAD_TRANSITION_Y_REL_SOFT = 1.0
 LEAD_TRANSITION_Y_REL_CONFIRM = 1.6
 LEAD_TRANSITION_Y_REL_RESET = 0.9
@@ -417,7 +419,8 @@ def get_lead_accel_recovery_a_min(v_ego, v_lead, d_rel, a_lead, t_follow):
   gap_blend = float(np.interp(d_rel, [comfort_floor, full_recovery_gap], [0.0, 1.0]))
   opening_blend = float(np.interp(v_lead - v_ego, LEAD_ACCEL_RECOVERY_OPENING_BP, [0.0, 1.0]))
   accel_blend = float(np.interp(a_lead, LEAD_ACCEL_RECOVERY_ACCEL_BP, [0.0, 1.0]))
-  return LEAD_ACCEL_RECOVERY_ACCEL_MAX * min(gap_blend, opening_blend, accel_blend)
+  recovery_cap = min(LEAD_ACCEL_RECOVERY_ACCEL_MAX, max(LEAD_ACCEL_RECOVERY_ACCEL_BASE, LEAD_ACCEL_RECOVERY_LEAD_ACCEL_FACTOR * a_lead))
+  return recovery_cap * min(gap_blend, opening_blend, accel_blend)
 
 
 def get_lead_transition_lateral_blend(y_rel):
