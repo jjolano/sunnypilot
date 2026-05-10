@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+from opendbc.car.interfaces import ACCEL_MAX
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   E2E_CLOSE_STOP_DECEL_MAX,
@@ -8,7 +9,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   E2E_STOP_APPROACH_DECEL_MAX,
   LongitudinalPlanner,
   get_e2e_close_stop_settle,
+  get_max_accel,
   get_e2e_runway_comfort_accel,
+  get_e2e_runway_positive_accel_cap,
   get_e2e_stop_approach_accel,
   get_model_stop_distance,
   has_model_stop_context,
@@ -321,3 +324,84 @@ def test_e2e_runway_comfort_does_not_block_stop_approach_shortage_braking():
 
   assert shortage_accel < governed
   assert shortage_accel < -0.5
+
+
+def test_e2e_runway_positive_accel_cap_limits_short_runway_at_crawl():
+  cap = get_e2e_runway_positive_accel_cap(
+    0.5,
+    make_model_msg(desired_accel=1.0, should_stop=False, endpoint_x=2.0, positions=[0.0, 2.0], velocities=[0.5, 0.1]),
+    True,
+  )
+
+  assert 0.0 < cap < 1.0
+
+
+def test_e2e_runway_positive_accel_cap_caps_at_15m_crawl_example():
+  cap = get_e2e_runway_positive_accel_cap(
+    0.5,
+    make_model_msg(desired_accel=0.0, should_stop=False, endpoint_x=15.0, positions=[0.0, 15.0], velocities=[0.5, 0.1]),
+    True,
+  )
+
+  assert 0.0 < cap < get_max_accel(0.5)
+
+
+def test_e2e_runway_positive_accel_cap_supports_model_stop_protection():
+  cap = get_e2e_runway_positive_accel_cap(
+    0.5,
+    make_model_msg(desired_accel=0.0, should_stop=False, endpoint_x=15.0, positions=[0.0, 15.0], velocities=[0.5, 0.1]),
+    False,
+    model_stop_protection_active=True,
+  )
+
+  assert 0.0 < cap < get_max_accel(0.5)
+
+
+def test_e2e_runway_positive_accel_cap_is_no_op_for_long_runway():
+  cap = get_e2e_runway_positive_accel_cap(
+    0.5,
+    make_model_msg(desired_accel=1.0, should_stop=False, endpoint_x=40.0, positions=[0.0, 40.0], velocities=[0.5, 0.1]),
+    True,
+  )
+
+  assert cap == ACCEL_MAX
+
+
+def test_e2e_runway_positive_accel_cap_scales_with_runway_length():
+  short_cap = get_e2e_runway_positive_accel_cap(
+    0.5,
+    make_model_msg(desired_accel=1.0, should_stop=False, endpoint_x=2.0, positions=[0.0, 2.0], velocities=[0.5, 0.1]),
+    True,
+  )
+  mid_cap = get_e2e_runway_positive_accel_cap(
+    0.5,
+    make_model_msg(desired_accel=0.0, should_stop=False, endpoint_x=15.0, positions=[0.0, 15.0], velocities=[0.5, 0.1]),
+    True,
+  )
+  long_cap = get_e2e_runway_positive_accel_cap(
+    0.5,
+    make_model_msg(desired_accel=1.0, should_stop=False, endpoint_x=40.0, positions=[0.0, 40.0], velocities=[0.5, 0.1]),
+    True,
+  )
+
+  assert short_cap < mid_cap < long_cap == ACCEL_MAX
+
+
+def test_e2e_runway_positive_accel_cap_disables_on_override_and_reset():
+  model_msg = make_model_msg(desired_accel=1.0, should_stop=False, endpoint_x=2.0, positions=[0.0, 2.0], velocities=[0.5, 0.1])
+
+  assert get_e2e_runway_positive_accel_cap(0.5, model_msg, True, brake_pressed=True) == ACCEL_MAX
+  assert get_e2e_runway_positive_accel_cap(0.5, model_msg, True, gas_pressed=True) == ACCEL_MAX
+  assert get_e2e_runway_positive_accel_cap(0.5, model_msg, True, reset_state=True) == ACCEL_MAX
+  assert get_e2e_runway_positive_accel_cap(0.5, model_msg, True, force_slow_decel=True) == ACCEL_MAX
+  assert get_e2e_runway_positive_accel_cap(0.5, model_msg, True, engage_stop_bootstrap_active=True) == ACCEL_MAX
+  assert get_e2e_runway_positive_accel_cap(0.5, model_msg, True, has_radar_lead=True) == ACCEL_MAX
+  assert get_e2e_runway_positive_accel_cap(0.5, model_msg, False) == ACCEL_MAX
+
+
+def test_e2e_runway_positive_accel_cap_ignores_weak_model_signal_and_invalid_endpoint():
+  weak_model_msg = make_model_msg(desired_accel=0.0, should_stop=False, endpoint_x=2.0, positions=[0.0, 2.0], velocities=[0.5, 2.0])
+  invalid_endpoint_msg = make_model_msg(desired_accel=1.0, should_stop=False, endpoint_x=float('nan'), positions=[0.0, float('nan')], velocities=[0.5, 0.1])
+
+  assert get_e2e_runway_positive_accel_cap(0.5, weak_model_msg, True) == ACCEL_MAX
+  assert get_e2e_runway_positive_accel_cap(0.5, invalid_endpoint_msg, True) == ACCEL_MAX
