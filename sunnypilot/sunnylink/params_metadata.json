@@ -1226,6 +1226,10 @@
     "title": "Smart Cruise Control - Vision",
     "description": ""
   },
+  "SmoothedModelPathCurvature": {
+    "title": "Smoothed Model Path Curvature",
+    "description": "Use a speed-aware local model-path curvature estimate to reduce lateral jitter while preserving existing safety limits. Experimental and default off."
+  },
   "SnoozeUpdate": {
     "title": "Snooze Update",
     "description": ""

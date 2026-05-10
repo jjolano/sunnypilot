@@ -113,6 +113,10 @@ class TestParams:
     assert b"ControlCalculationHardening" in Params().all_keys()
     assert self.params.get("ControlCalculationHardening", return_default=True) is False
 
+  def test_smoothed_model_path_curvature_defaults_off(self):
+    assert b"SmoothedModelPathCurvature" in Params().all_keys()
+    assert self.params.get("SmoothedModelPathCurvature", return_default=True) is False
+
   def test_params_default_value(self):
     self.params.remove("LanguageSetting")
     self.params.remove("LongitudinalPersonality")
