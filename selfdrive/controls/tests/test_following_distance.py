@@ -43,6 +43,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_TRANSITION_GUARD_OUTPUT_DELAY,
   LEAD_TRANSITION_Y_REL_CONFIRM,
   LEAD_TRANSITION_Y_REL_SOFT,
+  NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN,
+  NEW_LEAD_CUT_IN_GUARD_REQUIRED_DECEL_MIN,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
@@ -75,6 +77,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_stop_runway_preference,
   get_lead_stop_runway_required_decel,
   get_lead_stop_runway_blend,
+  get_new_lead_cut_in_guard_timer,
   get_lead_stop_runway_gap,
   get_lead_stop_runway_urgency,
   get_lead_chase_target_gap,
@@ -1262,6 +1265,26 @@ def test_lead_transition_holds_raw_offset_lead_on_model_curve_path():
   assert max(releases) == pytest.approx(0.0)
 
 
+def test_new_lead_cut_in_guard_arms_for_far_closing_discontinuity():
+  lead = SimpleNamespace(status=True, dRel=90.0, vLeadK=8.0)
+  guard = LeadConfidenceState(status=True, new_lead=True, guard_timer=0.3)
+
+  assert get_new_lead_cut_in_guard_timer(20.0, lead, guard) == pytest.approx(0.3)
+
+
+def test_new_lead_cut_in_guard_ignores_matched_speed_and_low_required_decel():
+  guard = LeadConfidenceState(status=True, new_lead=True, guard_timer=0.3)
+  matched_speed_lead = SimpleNamespace(status=True, dRel=60.0, vLeadK=20.0)
+  gentle_far_lead = SimpleNamespace(
+    status=True,
+    dRel=250.0,
+    vLeadK=20.0 - NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN,
+  )
+
+  assert get_new_lead_cut_in_guard_timer(20.0, matched_speed_lead, guard) == pytest.approx(0.0)
+  assert get_new_lead_cut_in_guard_timer(20.0, gentle_far_lead, guard) == pytest.approx(0.0)
+
+
 def test_lead_transition_releases_lead_turning_off_model_curve_path():
   mpc = LongitudinalMpc(dt=0.1)
   mpc.x0[1] = 22.5
@@ -1563,6 +1586,29 @@ def test_non_dominant_lead_two_confidence_guard_does_not_cap_accel(monkeypatch):
   mpc.update(radarstate, v_cruise=25.0)
 
   assert mpc.params[0, 1] > 0.5
+
+
+def test_non_dominant_closing_cut_in_lead_caps_accel(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  primary_lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=25.0, vLead=18.0, vLeadK=18.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  cut_in_lead = SimpleNamespace(
+    status=True, radarTrackId=43, yRel=0.0, dRel=90.0, vLead=8.0, vLeadK=8.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  no_lead = SimpleNamespace(status=False)
+
+  for _ in range(6):
+    mpc.update(SimpleNamespace(leadOne=primary_lead, leadTwo=no_lead), v_cruise=25.0)
+  mpc.update(SimpleNamespace(leadOne=primary_lead, leadTwo=cut_in_lead), v_cruise=25.0)
+
+  assert mpc.lead_confidence_states[0].guard_timer == pytest.approx(0.0)
+  assert mpc.lead_confidence_states[1].guard_timer > 0.0
+  assert mpc.params[0, 1] == pytest.approx(0.0)
 
 
 def test_approach_brake_stays_stock_for_small_closure():

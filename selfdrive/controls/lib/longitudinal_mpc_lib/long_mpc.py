@@ -250,6 +250,8 @@ LEAD_TRANSITION_CLOSE_CURVE_HOLD_CLOSING_MIN = 0.2
 LEAD_TRANSITION_CLOSE_CURVE_HOLD_MAX_Y_REL = 2.0
 LEAD_TRANSITION_RETURNING_THREAT_HOLD_Y_REL = 2.0
 LEAD_TRANSITION_RETURNING_THREAT_RELEASE_Y_REL = 8.0
+NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN = 1.0
+NEW_LEAD_CUT_IN_GUARD_REQUIRED_DECEL_MIN = 0.25
 SOURCE_HYSTERESIS_MARGIN = 1.2
 SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP = 0.15
 SHORT_GAP_PULLAWAY_RESPONSE_FULL_GAP = 1.0
@@ -465,6 +467,25 @@ def apply_lead_transition_accel_guard(accel_max, guard_timer):
   if guard_timer > 0.0:
     accel_max[:] = np.minimum(accel_max, get_lead_transition_accel_max(guard_timer))
   return accel_max
+
+
+def get_new_lead_cut_in_guard_timer(v_ego, lead, lead_confidence):
+  if lead is None or not lead.status or lead_confidence.guard_timer <= 0.0:
+    return 0.0
+
+  d_rel = float(lead.dRel)
+  v_lead = float(lead.vLeadK)
+  if not np.isfinite(d_rel) or not np.isfinite(v_lead):
+    return 0.0
+
+  closing_speed = max(v_ego - v_lead, 0.0)
+  if closing_speed < NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN:
+    return 0.0
+
+  required_decel = closing_speed**2 / (2.0 * max(d_rel - STOP_DISTANCE, 0.1))
+  if required_decel < NEW_LEAD_CUT_IN_GUARD_REQUIRED_DECEL_MIN:
+    return 0.0
+  return lead_confidence.guard_timer
 
 
 def get_lead_transition_obstacle_release(release_blend, guard_timer):
@@ -1869,8 +1890,12 @@ class LongitudinalMpc:
       lead_confidence_guard_timer = lead_0_confidence.guard_timer
     elif dominant_obstacle[0] == 1:
       lead_confidence_guard_timer = lead_1_confidence.guard_timer
+    new_lead_cut_in_guard_timer = max(
+      get_new_lead_cut_in_guard_timer(v_ego, radarstate.leadOne, lead_0_confidence),
+      get_new_lead_cut_in_guard_timer(v_ego, radarstate.leadTwo, lead_1_confidence),
+    )
     apply_lead_transition_accel_guard(
-      self.params[:, 1], max(max(self.lead_transition_guard_timers), lead_confidence_guard_timer)
+      self.params[:, 1], max(max(self.lead_transition_guard_timers), lead_confidence_guard_timer, new_lead_cut_in_guard_timer)
     )
     self.params[:, 2] = np.min(x_obstacles, axis=1)
     self.params[:, 3] = np.copy(self.a_prev)
