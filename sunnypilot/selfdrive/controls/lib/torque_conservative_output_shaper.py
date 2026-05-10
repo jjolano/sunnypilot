@@ -42,6 +42,8 @@ HIGH_SPEED_ACTUATOR_LAG_UNWIND_SPEED = 16.0
 HIGH_SPEED_ACTUATOR_LAG_UNWIND_MARGIN = 0.15
 HIGH_SPEED_ACTUATOR_LAG_UNWIND_GAP = 0.25
 HIGH_SPEED_ACTUATOR_LAG_UNWIND_CAP = 0.70
+SAFETY_LIMITED_SIGN_HOLD_THRESHOLD = 0.35
+SAFETY_LIMITED_SIGN_HOLD_TIME = 0.12
 DEFAULT_DT = 0.01
 
 NORMAL_CAP = 1.00
@@ -87,6 +89,7 @@ class ConservativeOutputShapingReason(IntFlag):
   STALE_ACTUATOR_REVERSAL = 1 << 11
   SAFETY_LIMITED_RAMP = 1 << 12
   HIGH_SPEED_ACTUATOR_LAG_UNWIND = 1 << 13
+  SAFETY_LIMITED_SIGN_HOLD = 1 << 14
 
 
 @dataclass
@@ -129,6 +132,7 @@ class TorqueConservativeOutputShaper:
     self._recent_hard_shaping_time: float = 0.0
     self._recent_over_response_time: float = 0.0
     self._recent_actuator_lag_comfort_time: float = 0.0
+    self._recent_safety_limited_sign_hold_time: float = 0.0
 
   def update(self, inputs: ConservativeOutputShaperInputs) -> ConservativeOutputShaperResult:
     output_cap = NORMAL_CAP
@@ -144,11 +148,13 @@ class TorqueConservativeOutputShaper:
       self._recent_hard_shaping_time = max(0.0, self._recent_hard_shaping_time - self.dt)
       self._recent_over_response_time = max(0.0, self._recent_over_response_time - self.dt)
       self._recent_actuator_lag_comfort_time = max(0.0, self._recent_actuator_lag_comfort_time - self.dt)
+      self._recent_safety_limited_sign_hold_time = 0.0
       return self._result(inputs.unshaped_output, inputs.unshaped_output, False, reason, confidence, output_cap)
 
     desired_sign = sign(inputs.desired_lateral_accel)
     actual_sign = sign(inputs.actual_lateral_accel)
     output_sign = sign(inputs.unshaped_output)
+    previous_sign = sign(self._previous_output) if self._previous_output is not None else 0.0
     actual_abs = abs(inputs.actual_lateral_accel)
     desired_abs = abs(inputs.desired_lateral_accel)
     output_reinforces_actual = output_sign != 0.0 and output_sign == actual_sign
@@ -174,6 +180,24 @@ class TorqueConservativeOutputShaper:
     stale_actuator_reversal = self._stale_actuator_reversal(inputs, output_sign)
     safety_limited_ramp_cap = self._safety_limited_ramp_cap(inputs, output_sign, actual_sign) if not stale_actuator_reversal else NORMAL_CAP
     same_sign_unwind_release = inputs.same_sign_unwind_release
+    same_direction_sign_hold = (
+      inputs.steer_limited_by_safety
+      and inputs.steer_limit_same_direction
+      and not inputs.steer_limit_unwind
+      and not inputs.steering_pressed
+      and not inputs.release_active
+      and not same_sign_unwind_release
+    )
+    low_demand_sign_hold = same_direction_sign_hold and abs(inputs.desired_lateral_accel) <= SAFETY_LIMITED_SIGN_HOLD_THRESHOLD
+    recent_safety_limited_sign_hold = self._recent_safety_limited_sign_hold_time > 0.0 and low_demand_sign_hold
+    low_demand_safety_limited_reversal = (
+      low_demand_sign_hold
+      and self._previous_output is not None
+      and previous_sign != 0.0
+      and output_sign != 0.0
+      and output_sign != previous_sign
+    )
+    safety_limited_sign_hold = recent_safety_limited_sign_hold or low_demand_safety_limited_reversal
     clear_under_response_catchup = (
       desired_sign != 0.0
       and output_sign == desired_sign
@@ -250,6 +274,10 @@ class TorqueConservativeOutputShaper:
     if safety_limited_ramp_cap < NORMAL_CAP:
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, safety_limited_ramp_cap, 1.0,
                                                    ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP)
+    if safety_limited_sign_hold:
+      reason |= ConservativeOutputShapingReason.SAFETY_LIMITED_SIGN_HOLD
+      output_cap = 0.0
+      confidence = 1.0
     high_speed_actuator_lag_unwind = (
       inputs.v_ego >= HIGH_SPEED_ACTUATOR_LAG_UNWIND_SPEED
       and not inputs.steering_pressed
@@ -283,7 +311,7 @@ class TorqueConservativeOutputShaper:
     recently_hard_shaped = self._recent_hard_shaping_time > 0.0
     recently_over_response = self._recent_over_response_time > 0.0
     recently_actuator_lag_comfort = self._recent_actuator_lag_comfort_time > 0.0
-    shaped_output = inputs.unshaped_output * output_cap if base_active else inputs.unshaped_output
+    shaped_output = 0.0 if safety_limited_sign_hold else (inputs.unshaped_output * output_cap if base_active else inputs.unshaped_output)
     if abs(shaped_output) > abs(inputs.unshaped_output):
       shaped_output = inputs.unshaped_output
     shaped_output, rate_limited = self._apply_output_rate_limit(inputs, shaped_output, recently_shaped, recently_over_response,
@@ -312,6 +340,12 @@ class TorqueConservativeOutputShaper:
       self._recent_actuator_lag_comfort_time = OUTPUT_RATE_RECOVERY_WINDOW
     else:
       self._recent_actuator_lag_comfort_time = max(0.0, self._recent_actuator_lag_comfort_time - self.dt)
+    if low_demand_safety_limited_reversal:
+      self._recent_safety_limited_sign_hold_time = max(0.0, SAFETY_LIMITED_SIGN_HOLD_TIME - self.dt)
+    elif recent_safety_limited_sign_hold:
+      self._recent_safety_limited_sign_hold_time = max(0.0, self._recent_safety_limited_sign_hold_time - self.dt)
+    else:
+      self._recent_safety_limited_sign_hold_time = 0.0
 
     self._previous_output = shaped_output
     active = base_active or rate_limited
@@ -542,6 +576,7 @@ class TorqueConservativeOutputShaper:
     self._recent_hard_shaping_time = 0.0
     self._recent_over_response_time = 0.0
     self._recent_actuator_lag_comfort_time = 0.0
+    self._recent_safety_limited_sign_hold_time = 0.0
 
   @staticmethod
   def _result(output_torque: float, unshaped_output: float, active: bool, reason: ConservativeOutputShapingReason, confidence: float,
