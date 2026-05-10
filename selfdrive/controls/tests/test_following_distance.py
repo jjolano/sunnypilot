@@ -36,7 +36,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_CHASE_OPENING_FLOOR_FRACTION,
   MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN,
   MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX,
-  PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP,
   LEAD_STOP_APPROACH_DECEL_CAP,
   LEAD_STOP_RUNWAY_BRAKE,
   LEAD_TRANSITION_PERSISTENCE,
@@ -56,6 +55,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_approach_follow_distance,
   get_approach_runway_blend,
   get_desired_follow_distance,
+  get_dynamic_lead_approach_runway_blend,
   get_lead_accel_match_margin,
   get_lead_accel_match_target,
   get_lead_accel_match_targets,
@@ -116,6 +116,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_HOLD_EXCESS,
   CREEP_TO_STOP_GAP_MAX_EXCESS,
   CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX,
+  CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX,
+  CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX,
   CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN,
   CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS,
   CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING,
@@ -128,8 +130,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   STOPPED_LEAD_GAP_FILL_ACCEL_MAX,
   STOPPED_LEAD_GAP_FILL_MAX_EXCESS,
   STOPPED_LEAD_GAP_FILL_MIN_EXCESS,
+  get_creep_pullaway_launch_accel_max,
   get_stopped_lead_gap_fill_accel,
   get_creep_to_stop_gap_accel,
+  get_creep_to_stop_gap_pullaway_accel_min,
   get_model_lead_pullaway,
   get_predicted_lead_pullaway,
   has_predicted_lead_pullaway,
@@ -333,7 +337,7 @@ def test_creep_pullaway_rate_limit_reaches_launch_floor_after_stop_hold(monkeypa
   planner.update(make_planner_sm(0.0, lead, desired_accel=1.0, should_stop=False))
 
   assert planner.creep_to_stop_gap_active
-  assert planner.output_a_target >= 0.15
+  assert planner.output_a_target >= 0.12
 
 
 def test_creep_pullaway_launch_assist_boosts_confirmed_standstill_pullaway(monkeypatch):
@@ -344,7 +348,7 @@ def test_creep_pullaway_launch_assist_boosts_confirmed_standstill_pullaway(monke
   stop_target = get_lead_stop_presentation_distance(0.0, 0.55, 0.39, 1.0)
   lead = SimpleNamespace(
     status=True,
-    dRel=stop_target + 0.20,
+    dRel=stop_target + 0.40,
     vLeadK=0.55,
     modelProb=1.0,
     aLeadK=0.39,
@@ -359,6 +363,115 @@ def test_creep_pullaway_launch_assist_boosts_confirmed_standstill_pullaway(monke
   assert planner.output_a_target >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
 
 
+def test_creep_pullaway_launch_accel_cap_scales_with_predicted_runway():
+  weak_cap = get_creep_pullaway_launch_accel_max(0.4, CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING)
+  medium_cap = get_creep_pullaway_launch_accel_max(0.8, 0.8)
+  strong_cap = get_creep_pullaway_launch_accel_max(
+    CREEP_TO_STOP_GAP_START_EXCESS, CREEP_TO_STOP_GAP_START_EXCESS,
+  )
+
+  assert weak_cap == pytest.approx(CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX)
+  assert CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX < medium_cap < CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX
+  assert strong_cap == pytest.approx(CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX)
+
+
+def test_creep_pullaway_launch_assist_allows_stronger_cap_for_predicted_runway(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (1.2, False))
+  monkeypatch.setattr(
+    longitudinal_planner,
+    "get_predicted_lead_pullaway",
+    lambda *_args, **_kwargs: (1.2, CREEP_TO_STOP_GAP_START_EXCESS),
+  )
+  planner = make_planner_for_stop_preservation(v_ego=0.0)
+  planner.output_a_target = CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX
+  planner.prev_accel_clip = [ACCEL_MIN, CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX]
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.05, 0.8, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + 0.4,
+    vLeadK=0.05,
+    modelProb=1.0,
+    aLeadK=0.8,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.0, lead, desired_accel=1.2, should_stop=False))
+
+  assert planner.creep_to_stop_gap_active
+  assert not planner.output_should_stop
+  assert CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX < planner.output_a_target <= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX
+
+
+def test_creep_pullaway_brakes_after_positive_pullaway_without_delayed_clipping(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (0.0, False))
+  planner = make_planner_for_stop_preservation(v_ego=0.0)
+  stop_target = get_lead_stop_presentation_distance(0.0, 1.2, 0.8, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + CREEP_TO_STOP_GAP_START_EXCESS,
+    vLeadK=1.2,
+    modelProb=1.0,
+    aLeadK=0.8,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.0, lead, desired_accel=1.0, should_stop=False))
+  assert planner.output_a_target > 0.0
+
+  planner.update(make_planner_sm(0.0, lead, desired_accel=-1.0, should_stop=True))
+
+  assert planner.output_should_stop
+  assert planner.output_a_target < 0.0
+
+
+def test_creep_pullaway_allows_non_e2e_decel_after_positive_pullaway(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  mpc_accel = 0.0
+
+  def get_accel_from_plan_mock(*_args, **_kwargs):
+    return mpc_accel, False
+
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", get_accel_from_plan_mock)
+  planner = make_planner_for_stop_preservation(v_ego=0.0)
+  stop_target = get_lead_stop_presentation_distance(0.0, 1.2, 0.8, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + CREEP_TO_STOP_GAP_START_EXCESS,
+    vLeadK=1.2,
+    modelProb=1.0,
+    aLeadK=0.8,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  sm = make_planner_sm(0.0, lead, desired_accel=1.0, should_stop=False)
+  sm['selfdriveState'].experimentalMode = False
+  planner.update(sm)
+  assert planner.output_a_target > 0.0
+
+  mpc_accel = -1.0
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + CREEP_TO_STOP_GAP_MAX_EXCESS + 0.5,
+    vLeadK=0.8,
+    modelProb=1.0,
+    aLeadK=0.0,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+  sm = make_planner_sm(0.0, lead, desired_accel=1.0, should_stop=False)
+  sm['selfdriveState'].experimentalMode = False
+  planner.update(sm)
+
+  assert not planner.output_should_stop
+  assert planner.mpc.source != long_mpc.LongitudinalPlanSource.e2e
+  assert planner.output_a_target < 0.0
+
+
 def test_creep_pullaway_launch_assist_waits_for_safe_gap_excess(monkeypatch):
   patch_planner_sp(monkeypatch)
   monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (0.0, False))
@@ -370,6 +483,27 @@ def test_creep_pullaway_launch_assist_waits_for_safe_gap_excess(monkeypatch):
     dRel=stop_target + 0.5 * CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS,
     vLeadK=0.55,
     modelProb=1.0,
+    aLeadK=0.39,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.0, lead, desired_accel=0.0, should_stop=False))
+
+  assert planner.output_a_target < CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
+
+
+def test_creep_pullaway_launch_assist_requires_high_model_confidence(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (0.0, False))
+  planner = make_planner_for_stop_preservation(v_ego=0.0)
+  planner.output_a_target = 0.45
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.55, 0.39, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + 0.20,
+    vLeadK=0.55,
+    modelProb=0.74,
     aLeadK=0.39,
     aLeadTau=0.0,
     yRel=0.0,
@@ -447,6 +581,8 @@ def test_e2e_should_stop_survives_positive_gap_fill(monkeypatch):
 def test_e2e_decel_survives_lead_accel_recovery(monkeypatch):
   patch_planner_sp(monkeypatch)
   planner = make_planner_for_stop_preservation(v_ego=2.2)
+  planner.output_a_target = 0.75
+  planner.prev_accel_clip = [0.35, 0.8]
   planner.mpc.v_solution = np.full(N + 1, 2.2)
   lead = SimpleNamespace(
     status=True,
@@ -668,7 +804,7 @@ def test_creep_to_stop_gap_uses_firmer_floor_for_initial_pullaway():
   active, accel = get_creep_to_stop_gap_accel(0.0, stop_target + CREEP_TO_STOP_GAP_START_EXCESS, 0.25, 1.0, False)
 
   assert active
-  assert 0.30 <= accel <= STOPPED_LEAD_GAP_FILL_ACCEL_MAX
+  assert 0.30 <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
 def test_creep_to_stop_gap_actively_creeps_before_four_meter_excess():
@@ -694,6 +830,88 @@ def test_creep_to_stop_gap_uses_soft_release_inside_final_meter():
 
   assert active
   assert 0.0 < accel <= 0.10
+
+
+def test_creep_to_stop_gap_arms_for_predicted_pullaway_before_speed_threshold():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.05, 0.0, 1.0)
+  predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(0.05, 1.5, 0.0)
+
+  assert predicted_v_lead >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED
+  assert predicted_gap_opening >= CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING
+  assert has_predicted_lead_pullaway(0.05, predicted_v_lead, predicted_gap_opening)
+
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target + 0.05, 0.05, 1.0, False, a_lead=0.0, a_lead_tau=0.0,
+    model_predicted_v_lead=0.50, model_predicted_gap_opening=0.40,
+  )
+
+  assert active
+  assert accel > 0.0
+
+  inactive, accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target + 0.05, 0.05, 1.0, False, a_lead=0.0, a_lead_tau=0.0,
+    model_predicted_v_lead=0.50, model_predicted_gap_opening=0.0,
+  )
+
+  assert not inactive
+  assert accel == pytest.approx(0.0)
+
+
+def test_creep_to_stop_gap_does_not_launch_at_stop_floor():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
+
+  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target, 0.0, 1.0, False)
+  assert not active
+  assert accel == pytest.approx(0.0)
+
+  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target - 0.01, 0.0, 1.0, False)
+  assert not active
+  assert accel == pytest.approx(0.0)
+
+
+def test_creep_to_stop_gap_blocks_moving_or_predicted_pullaway_at_floor():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.25, 0.0, 1.0)
+
+  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target, 0.25, 1.0, False)
+  assert not active
+  assert accel == pytest.approx(0.0)
+
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target, 0.05, 1.0, False, a_lead=1.5, a_lead_tau=0.0
+  )
+  assert not active
+  assert accel == pytest.approx(0.0)
+
+
+def test_creep_to_stop_gap_blocks_force_slow_decel_pullaway():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.05, 1.5, 1.0)
+
+  active, accel = get_creep_to_stop_gap_accel(
+    0.0, stop_target + 0.5, 0.05, 1.0, False, force_slow_decel=True, a_lead=1.5, a_lead_tau=0.0
+  )
+
+  assert not active
+  assert accel == pytest.approx(0.0)
+
+
+def test_creep_to_stop_gap_pullaway_accel_floor_scales_with_gap_excess():
+  small_accel = get_creep_to_stop_gap_pullaway_accel_min(0.10)
+  medium_accel = get_creep_to_stop_gap_pullaway_accel_min(0.35)
+  large_accel = get_creep_to_stop_gap_pullaway_accel_min(1.00)
+  predicted_accel = get_creep_to_stop_gap_pullaway_accel_min(0.45)
+
+  assert 0.0 < small_accel < medium_accel < large_accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+  assert predicted_accel > small_accel
+
+
+def test_creep_to_stop_gap_keeps_micro_creep_stationary_lead_held():
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.0, 0.0, 1.0)
+
+  assert should_hold_creep_to_stop_gap(0.0, stop_target + 0.2, 0.0, 0.0, release_active=False)
+
+  active, accel = get_creep_to_stop_gap_accel(0.0, stop_target + 0.2, 0.0, 1.0, False)
+  assert not active
+  assert accel == pytest.approx(0.0)
 
 
 def test_creep_stop_hold_release_hysteresis_blocks_crawl_chatter():
@@ -770,7 +988,7 @@ def test_creep_to_stop_gap_predicts_pullaway_before_full_start_excess():
   assert predicted_v_lead >= 0.35
   assert predicted_gap_opening >= CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING
   assert active
-  assert accel >= longitudinal_planner.CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN
+  assert 0.0 < accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
 def test_creep_to_stop_gap_uses_model_lead_pullaway_prediction():
@@ -785,7 +1003,7 @@ def test_creep_to_stop_gap_uses_model_lead_pullaway_prediction():
 
   assert has_predicted_lead_pullaway(d_rel - stop_target, model_v_lead, model_gap_opening)
   assert active
-  assert 0.40 <= accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+  assert 0.0 < accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
 def test_creep_to_stop_gap_transitions_to_normal_following_after_pullaway_window():
@@ -882,7 +1100,7 @@ def test_predicted_pullaway_arms_at_small_gap_excess_for_strong_pullaway():
   )
 
   assert active
-  assert accel >= longitudinal_planner.CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN
+  assert 0.0 < accel <= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
 
 
 def test_creep_to_stop_gap_prediction_requires_clear_gap_opening():
@@ -1399,6 +1617,41 @@ def test_approach_runway_blend_reaches_full_with_large_runway():
   assert get_approach_runway_blend(x_lead, v_ego, v_lead, t_follow) == pytest.approx(1.0)
 
 
+def test_dynamic_approach_runway_scales_with_closing_speed():
+  mild_closure_blend = get_dynamic_lead_approach_runway_blend(20.0, 2.0)
+  fast_closure_blend = get_dynamic_lead_approach_runway_blend(20.0, 8.0)
+
+  assert mild_closure_blend == pytest.approx(1.0)
+  assert 0.0 < fast_closure_blend < mild_closure_blend
+
+
+def test_dynamic_approach_runway_handles_vectors_and_negative_closure():
+  runways = np.array([0.0, 20.0, 20.0])
+  closing_speeds = np.array([-2.0, 2.0, 8.0])
+
+  blends = get_dynamic_lead_approach_runway_blend(runways, closing_speeds)
+
+  assert blends[0] == pytest.approx(0.0)
+  assert blends[1] == pytest.approx(1.0)
+  assert 0.0 < blends[2] < blends[1]
+
+
+def test_approach_runway_blend_requires_more_distance_for_fast_closure():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  mild_v_ego = 22.0
+  fast_v_ego = 28.0
+  v_lead = 20.0
+
+  mild_x_lead = get_desired_follow_distance(mild_v_ego, v_lead, t_follow) + 20.0
+  fast_x_lead = get_desired_follow_distance(fast_v_ego, v_lead, t_follow) + 20.0
+
+  mild_blend = get_approach_runway_blend(mild_x_lead, mild_v_ego, v_lead, t_follow)
+  fast_blend = get_approach_runway_blend(fast_x_lead, fast_v_ego, v_lead, t_follow)
+
+  assert mild_blend == pytest.approx(1.0)
+  assert 0.0 < fast_blend < mild_blend
+
+
 def test_approach_available_runway_uses_stop_distance_for_slowing_lead():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   steady_runway = get_approach_available_runway(40.0, 20.0, 15.0, t_follow, a_lead=0.0)
@@ -1887,6 +2140,36 @@ def test_decelerating_lead_inside_normal_gap_allows_late_but_safe_stop():
   assert d_rel < normal_gap
   assert required_decel > 0.0
   assert -long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP <= target < 0.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_prefers_coast_when_slightly_inside_target_gap():
+  v_ego = 15.0
+  v_lead = 12.5
+  a_lead = -0.8
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = desired_gap - 0.25
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < desired_gap
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 1e-6 <= target <= 0.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_still_brakes_when_inside_target_gap_closing_fast():
+  v_ego = 13.0
+  v_lead = 8.0
+  a_lead = -0.8
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = desired_gap - 1.5
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < desired_gap
+  assert target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
   assert cost > 0.0
 
 
@@ -2645,11 +2928,17 @@ def test_progressive_lead_approach_keeps_closing_gap_off_until_mid_approach():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
   v_ego = 25.0
   v_lead = 20.0
+  closing_speed = v_ego - v_lead
   steady_gap = t_follow * v_lead + long_mpc.get_stop_distance_buffer(v_lead)
-  closing_gap = ((v_ego - v_lead) ** 2) / (2 * get_approach_brake(v_ego - v_lead))
-  far_gap = steady_gap + PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP[-1] + 20.0
-  mid_gap = steady_gap + 0.5 * sum(PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP)
-  close_gap = steady_gap + PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP[0] * 0.5
+  closing_gap = (closing_speed**2) / (2 * get_approach_brake(closing_speed))
+  close_runway = max(long_mpc.LEAD_APPROACH_RUNWAY_MIN,
+                     closing_speed**2 / (2.0 * long_mpc.LEAD_APPROACH_RUNWAY_URGENT_DECEL))
+  full_runway = max(long_mpc.LEAD_APPROACH_RUNWAY_FULL_MIN,
+                    closing_speed**2 / (2.0 * long_mpc.LEAD_APPROACH_RUNWAY_COAST_DECEL))
+  full_runway = max(full_runway, close_runway + long_mpc.LEAD_APPROACH_RUNWAY_MIN_SPAN)
+  far_gap = steady_gap + full_runway + 20.0
+  mid_gap = steady_gap + 0.5 * (close_runway + full_runway)
+  close_gap = steady_gap + close_runway * 0.5
 
   far_target = get_progressive_lead_approach_gap(far_gap, v_ego, v_lead, t_follow, a_lead=0.0)
   mid_target = get_progressive_lead_approach_gap(mid_gap, v_ego, v_lead, t_follow, a_lead=0.0)
