@@ -31,6 +31,13 @@ SOFT_GATE_HOLD_FRAMES = 2
 SOFT_GATE_HOLD_QUALITY = 0.70
 SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "path_disagreement"))
 HARD_INVALID_RECOVERY_LAT_JERK = 2.0
+SMOOTHED_CURVATURE_MIN_SPEED = 5.0
+SMOOTHED_CURVATURE_MIN_SAMPLES = 5
+SMOOTHED_CURVATURE_SPEED_BP = [5.0, 15.0, 30.0]
+SMOOTHED_CURVATURE_WINDOW_S = [0.28, 0.45, 0.65]
+SMOOTHED_CURVATURE_BLEND_ALPHA = [0.20, 0.35, 0.50]
+SMOOTHED_CURVATURE_MAX_LAT_ACCEL_DELTA = [0.20, 0.35, 0.50]
+SMOOTHED_CURVATURE_MAX_RAW_LAT_ACCEL_DISAGREEMENT = 1.25
 
 
 @dataclass
@@ -48,6 +55,8 @@ class ModelPathProcessorInputs:
   lane_line_probs: Sequence[float]
   turn_curvature_sign: int = 0
   frame_drop_perc: float = 0.0
+  smooth_model_path_curvature: bool = False
+  lane_change_active: bool = False
 
 
 @dataclass
@@ -138,6 +147,14 @@ class ModelPathProcessor:
       alpha = float(np.interp(quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0]))
       desired_curvature = self._blend(fallback_curvature, desired_curvature, alpha)
       return ModelPathProcessorResult(desired_curvature, quality, True, reason, hold_frames_remaining)
+
+    smoothed_curvature = self._smoothed_path_curvature(inputs, desired_curvature, quality)
+    if smoothed_curvature is not None:
+      desired_curvature = smoothed_curvature
+      jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
+      if jump_result is not None:
+        self._recovering_from_hard_invalid = False
+        return jump_result
 
     recovery_result = self._limit_hard_invalid_recovery(inputs, desired_curvature)
     if recovery_result is not None:
@@ -280,6 +297,71 @@ class ModelPathProcessor:
       return None
 
     return float(get_curvature_from_plan(yaws, yaw_rates, ModelConstants.T_IDXS, v_ego, PATH_CURVATURE_ACTION_T))
+
+  @classmethod
+  def _smoothed_path_curvature(
+    cls,
+    inputs: ModelPathProcessorInputs,
+    desired_curvature: float,
+    quality: float,
+  ) -> float | None:
+    if not inputs.smooth_model_path_curvature or inputs.lane_change_active:
+      return None
+
+    v_ego = float(inputs.v_ego)
+    if not math.isfinite(v_ego) or v_ego < SMOOTHED_CURVATURE_MIN_SPEED:
+      return None
+
+    yaws = cls._as_finite_array(inputs.orientation_z)
+    if yaws is None or yaws.size < PATH_VALID_MIN_LEN:
+      return None
+
+    t_idxs = np.asarray(ModelConstants.T_IDXS[:PATH_VALID_MIN_LEN], dtype=float)
+    yaws = yaws[:PATH_VALID_MIN_LEN]
+    sample_count = min(t_idxs.size, yaws.size)
+    if sample_count < SMOOTHED_CURVATURE_MIN_SAMPLES:
+      return None
+
+    t_idxs = t_idxs[:sample_count]
+    yaws = yaws[:sample_count]
+    window_s = float(np.interp(v_ego, SMOOTHED_CURVATURE_SPEED_BP, SMOOTHED_CURVATURE_WINDOW_S))
+    distance_from_action_t = np.abs(t_idxs - PATH_CURVATURE_ACTION_T)
+    sample_mask = distance_from_action_t <= window_s
+    if int(np.count_nonzero(sample_mask)) < SMOOTHED_CURVATURE_MIN_SAMPLES:
+      nearest_idxs = np.argsort(distance_from_action_t)[:SMOOTHED_CURVATURE_MIN_SAMPLES]
+      sample_mask = np.zeros(sample_count, dtype=bool)
+      sample_mask[nearest_idxs] = True
+
+    fit_t = t_idxs[sample_mask]
+    fit_yaws = yaws[sample_mask]
+    if fit_t.size < SMOOTHED_CURVATURE_MIN_SAMPLES or np.unique(fit_t).size < 3:
+      return None
+
+    weight_width = max(window_s * 0.5, 1e-3)
+    weights = np.exp(-0.5 * ((fit_t - PATH_CURVATURE_ACTION_T) / weight_width) ** 2)
+    coefficients = np.polyfit(fit_t, fit_yaws, deg=2, w=weights)
+    psi_target = float(np.polyval(coefficients, PATH_CURVATURE_ACTION_T))
+    psi_rate = float(np.polyval(np.polyder(coefficients), 0.0))
+    candidate_curvature = float(2.0 * (psi_target / (v_ego * PATH_CURVATURE_ACTION_T)) - psi_rate / v_ego)
+    if not math.isfinite(candidate_curvature):
+      return None
+
+    if inputs.turn_curvature_sign != 0 and candidate_curvature * inputs.turn_curvature_sign < 0.0:
+      return None
+
+    speed_sq = max(v_ego, 1.0) ** 2
+    candidate_delta_lat_accel = (candidate_curvature - desired_curvature) * speed_sq
+    if abs(candidate_delta_lat_accel) > SMOOTHED_CURVATURE_MAX_RAW_LAT_ACCEL_DISAGREEMENT:
+      return None
+
+    quality_alpha = float(np.interp(quality, [LOW_QUALITY_BLEND_THRESHOLD, 1.0], [0.0, 1.0]))
+    blend_alpha = float(np.interp(v_ego, SMOOTHED_CURVATURE_SPEED_BP, SMOOTHED_CURVATURE_BLEND_ALPHA)) * quality_alpha
+    max_delta_lat_accel = float(np.interp(v_ego, SMOOTHED_CURVATURE_SPEED_BP, SMOOTHED_CURVATURE_MAX_LAT_ACCEL_DELTA)) * quality_alpha
+    if blend_alpha <= 0.0 or max_delta_lat_accel <= 0.0:
+      return None
+
+    bounded_delta_lat_accel = float(np.clip(candidate_delta_lat_accel * blend_alpha, -max_delta_lat_accel, max_delta_lat_accel))
+    return desired_curvature + bounded_delta_lat_accel / speed_sq
 
   @classmethod
   def _limit_implausible_jump(cls, v_ego: float, desired_curvature: float, fallback_curvature: float) -> ModelPathProcessorResult | None:
