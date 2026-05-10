@@ -55,7 +55,8 @@ CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.55
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.30
 CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN = 0.70
-CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX = 0.75
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX = 0.75
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX = 1.20
 CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS = CREEP_TO_STOP_GAP_STOP_EXCESS
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP = 7.5 * DT_MDL
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP_MAX_V_EGO = 3.0
@@ -141,6 +142,25 @@ def get_creep_to_stop_gap_pullaway_accel_min(pullaway_excess):
     pullaway_excess,
     [0.0, CREEP_TO_STOP_GAP_FOLLOW_EXCESS, CREEP_TO_STOP_GAP_START_EXCESS],
     [0.0, CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN, CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX],
+  ))
+
+
+def get_creep_pullaway_launch_accel_max(lead_gap_excess, predicted_gap_opening):
+  lead_gap_excess = max(0.0, lead_gap_excess)
+  predicted_gap_opening = max(0.0, predicted_gap_opening)
+  runway_blend = np.interp(
+    lead_gap_excess + predicted_gap_opening,
+    [CREEP_TO_STOP_GAP_PREDICT_ARM_EXCESS, CREEP_TO_STOP_GAP_START_EXCESS],
+    [0.0, 1.0],
+  )
+  opening_blend = np.interp(
+    predicted_gap_opening,
+    [CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING, CREEP_TO_STOP_GAP_START_EXCESS],
+    [0.0, 1.0],
+  )
+  blend = min(runway_blend, opening_blend)
+  return float(CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX + blend * (
+    CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX - CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX
   ))
 
 
@@ -575,6 +595,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       recovery_a_min = get_lead_accel_recovery_a_min(
         v_ego, float(lead_one.vLeadK), float(lead_one.dRel), float(lead_one.aLeadK), get_T_FOLLOW(sm['selfdriveState'].personality)
       )
+      if v_ego < CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP_MAX_V_EGO:
+        recovery_a_min = min(recovery_a_min, CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX)
       output_a_target = max(output_a_target, recovery_a_min)
 
     if lead_one.status and not sm['carState'].brakePressed and not sm['carState'].gasPressed and not force_slow_decel and not reset_state:
@@ -598,9 +620,14 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.creep_to_stop_gap_active and creep_a_target > 0.0 and creep_pullaway_release and \
       (radar_predicted_pullaway or model_predicted_pullaway)
     if creep_pullaway_launch:
+      launch_predicted_gap_opening = max(
+        radar_predicted_gap_opening if radar_predicted_pullaway else 0.0,
+        model_predicted_gap_opening if model_predicted_pullaway else 0.0,
+      )
+      launch_accel_max = get_creep_pullaway_launch_accel_max(lead_gap_excess, launch_predicted_gap_opening)
       output_a_target = min(
         max(output_a_target, CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN),
-        CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX,
+        launch_accel_max,
       )
 
     for idx in range(2):
