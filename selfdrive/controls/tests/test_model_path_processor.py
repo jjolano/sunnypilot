@@ -1,4 +1,5 @@
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -6,24 +7,33 @@ from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProce
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 
-def make_inputs(**overrides) -> ModelPathProcessorInputs:
-  data = {
-    "lat_active": True,
-    "v_ego": 20.0,
-    "desired_curvature": 0.002,
-    "measured_curvature": 0.0005,
-    "previous_desired_curvature": 0.001,
-    "position_x": tuple(range(ModelConstants.IDX_N)),
-    "position_y": tuple(0.02 * i for i in range(ModelConstants.IDX_N)),
-    "position_y_std": tuple(0.1 for _ in range(ModelConstants.IDX_N)),
-    "orientation_z": tuple(0.0 for _ in range(ModelConstants.IDX_N)),
-    "orientation_rate_z": tuple(0.0 for _ in range(ModelConstants.IDX_N)),
-    "lane_line_probs": (0.0, 0.9, 0.9, 0.0),
-    "turn_curvature_sign": 0,
-    "frame_drop_perc": 0.0,
-  }
-  data.update(overrides)
-  return ModelPathProcessorInputs(**data)
+BASE_INPUTS = ModelPathProcessorInputs(
+  lat_active=True,
+  v_ego=20.0,
+  desired_curvature=0.002,
+  measured_curvature=0.0005,
+  previous_desired_curvature=0.001,
+  position_x=tuple(range(ModelConstants.IDX_N)),
+  position_y=tuple(0.02 * i for i in range(ModelConstants.IDX_N)),
+  position_y_std=tuple(0.1 for _ in range(ModelConstants.IDX_N)),
+  orientation_z=tuple(0.0 for _ in range(ModelConstants.IDX_N)),
+  orientation_rate_z=tuple(0.0 for _ in range(ModelConstants.IDX_N)),
+  lane_line_probs=(0.0, 0.9, 0.9, 0.0),
+  turn_curvature_sign=0,
+  frame_drop_perc=0.0,
+)
+
+
+def make_inputs(**overrides: object) -> ModelPathProcessorInputs:
+  return replace(BASE_INPUTS, **overrides)
+
+
+def constant_curvature_yaws(curvature: float, v_ego: float) -> tuple[float, ...]:
+  return tuple(float(v_ego * curvature * t) for t in ModelConstants.T_IDXS)
+
+
+def constant_curvature_yaw_rates(curvature: float, v_ego: float) -> tuple[float, ...]:
+  return tuple(float(v_ego * curvature) for _ in ModelConstants.T_IDXS)
 
 
 def test_good_path_passes_curvature_unchanged():
@@ -33,6 +43,89 @@ def test_good_path_passes_curvature_unchanged():
   assert result.reason == "ok"
   assert result.quality == pytest.approx(1.0)
   assert result.desired_curvature == pytest.approx(0.002)
+
+
+def test_smoothed_model_path_curvature_toggle_off_preserves_raw_curvature():
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=0.003,
+    orientation_z=constant_curvature_yaws(0.0, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.0, 20.0),
+  ))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.desired_curvature == pytest.approx(0.003)
+
+
+def test_smoothed_model_path_curvature_matches_constant_curvature_path():
+  curvature = 0.002
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=curvature,
+    previous_desired_curvature=curvature,
+    orientation_z=constant_curvature_yaws(curvature, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(curvature, 20.0),
+    smooth_model_path_curvature=True,
+  ))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.desired_curvature == pytest.approx(curvature)
+
+
+def test_smoothed_model_path_curvature_blends_toward_local_fit():
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=0.003,
+    previous_desired_curvature=0.002,
+    orientation_z=constant_curvature_yaws(0.0, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.0, 20.0),
+    smooth_model_path_curvature=True,
+  ))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert 0.002 <= result.desired_curvature < 0.003
+
+
+def test_smoothed_model_path_curvature_disables_at_low_speed():
+  result = ModelPathProcessor().update(make_inputs(
+    v_ego=3.0,
+    desired_curvature=0.003,
+    orientation_z=constant_curvature_yaws(0.0, 3.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.0, 3.0),
+    smooth_model_path_curvature=True,
+  ))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.desired_curvature == pytest.approx(0.003)
+
+
+def test_smoothed_model_path_curvature_disables_during_lane_change():
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=0.003,
+    orientation_z=constant_curvature_yaws(0.0, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.0, 20.0),
+    smooth_model_path_curvature=True,
+    lane_change_active=True,
+  ))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.desired_curvature == pytest.approx(0.003)
+
+
+def test_smoothed_model_path_curvature_rejects_large_raw_disagreement():
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=0.006,
+    previous_desired_curvature=0.005,
+    orientation_z=constant_curvature_yaws(0.0, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.0, 20.0),
+    smooth_model_path_curvature=True,
+  ))
+
+  assert not result.gated
+  assert result.reason == "ok"
+  assert result.desired_curvature == pytest.approx(0.006)
 
 
 def test_inactive_returns_measured_curvature():
