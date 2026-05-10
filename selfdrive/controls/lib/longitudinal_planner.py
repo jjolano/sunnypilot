@@ -51,14 +51,15 @@ CREEP_TO_STOP_GAP_HOLD_RELEASE_EXCESS = CREEP_TO_STOP_GAP_FOLLOW_EXCESS
 CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_SPEED = 0.05
 CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_ACCEL = 0.15
 CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED = 0.25
-CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS = CREEP_TO_STOP_GAP_ARM_EXCESS
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.55
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.30
 CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN = 0.70
-CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX = 0.75
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX = 0.75
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX = 1.20
 CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS = CREEP_TO_STOP_GAP_STOP_EXCESS
-CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP = 8.0 * DT_MDL
+CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP = 7.5 * DT_MDL
+CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP_MAX_V_EGO = 3.0
 CREEP_TO_STOP_GAP_PREDICT_T = 0.8
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_SPEED = 0.35
 CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL = 0.25
@@ -115,6 +116,9 @@ E2E_RUNWAY_COMFORT_LIGHT_DECEL = 0.45
 E2E_RUNWAY_COMFORT_DECEL_BLEND_BP = [1.2, 2.0]
 E2E_RUNWAY_COMFORT_RUNWAY_BLEND_BP = [0.5, 1.0]
 E2E_RUNWAY_COMFORT_NEGATIVE_RAMP_RATE = 0.35
+E2E_RUNWAY_POSITIVE_CAP_REF_ACCEL = 0.45
+E2E_RUNWAY_POSITIVE_CAP_PREVIEW_T = 6.0
+E2E_RUNWAY_POSITIVE_CAP_MAX_ENDPOINT_V = 1.0
 E2E_CLOSE_STOP_MAX_DIST = 1.0
 E2E_CLOSE_STOP_RELEASE_DIST = 1.0
 E2E_CLOSE_STOP_SHOULD_STOP_DIST = 0.4
@@ -185,7 +189,6 @@ def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force
   blocked = blocked or len(model_msg.position.x) == 0
   if blocked:
     return 0.0
-
   endpoint_x = float(model_msg.position.x[-1])
   if not np.isfinite(endpoint_x) or endpoint_x <= 0.0:
     return 0.0
@@ -296,6 +299,40 @@ def get_e2e_runway_comfort_accel(v_ego, raw_e2e_accel, coast_accel, model_msg, e
   return governed_accel
 
 
+def get_e2e_runway_positive_accel_cap(v_ego, model_msg, e2e_active, reset_state=False, force_slow_decel=False,
+                                      brake_pressed=False, gas_pressed=False, engage_stop_bootstrap_active=False,
+                                      has_radar_lead=False, model_stop_protection_active=False):
+  blocked = not (e2e_active or model_stop_protection_active) or reset_state or force_slow_decel or brake_pressed or gas_pressed
+  blocked = blocked or engage_stop_bootstrap_active or has_radar_lead or v_ego >= E2E_RUNWAY_COMFORT_MIN_V_EGO
+  blocked = blocked or len(model_msg.position.x) == 0 or len(model_msg.velocity.x) == 0
+  if blocked:
+    return ACCEL_MAX
+
+  endpoint_x = float(model_msg.position.x[-1])
+  endpoint_v = float(model_msg.velocity.x[-1])
+  if not np.isfinite(endpoint_x) or not np.isfinite(endpoint_v) or endpoint_x <= E2E_RUNWAY_COMFORT_MIN_ENDPOINT:
+    return ACCEL_MAX
+  if not model_msg.action.shouldStop and endpoint_v > E2E_RUNWAY_POSITIVE_CAP_MAX_ENDPOINT_V:
+    return ACCEL_MAX
+
+  preview_distance = v_ego * E2E_RUNWAY_POSITIVE_CAP_PREVIEW_T + 0.5 * E2E_RUNWAY_POSITIVE_CAP_REF_ACCEL * E2E_RUNWAY_POSITIVE_CAP_PREVIEW_T**2
+  preview_speed = v_ego + E2E_RUNWAY_POSITIVE_CAP_REF_ACCEL * E2E_RUNWAY_POSITIVE_CAP_PREVIEW_T
+  no_cap_runway = preview_distance + preview_speed**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX)
+  if no_cap_runway <= 0.0:
+    return ACCEL_MAX
+
+  usable_runway = max(0.0, endpoint_x - E2E_RUNWAY_COMFORT_MIN_ENDPOINT)
+  if usable_runway >= no_cap_runway:
+    return ACCEL_MAX
+
+  endpoint_stop_speed = math.sqrt(2.0 * E2E_STOP_APPROACH_DECEL_MAX * usable_runway)
+  if endpoint_v > endpoint_stop_speed:
+    return ACCEL_MAX
+
+  runway_ratio = usable_runway / no_cap_runway
+  return min(ACCEL_MAX, E2E_STOP_APPROACH_DECEL_MAX * runway_ratio)
+
+
 def is_lane_change_active(model_msg):
   return model_msg.meta.laneChangeState != log.LaneChangeState.off
 
@@ -363,6 +400,34 @@ def has_predicted_lead_pullaway(gap_excess, predicted_v_lead, predicted_gap_open
     predicted_gap_opening >= CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING and
     gap_excess + predicted_gap_opening >= CREEP_TO_STOP_GAP_PREDICT_ARM_EXCESS
   )
+
+
+def get_creep_to_stop_gap_pullaway_accel_min(pullaway_excess):
+  pullaway_excess = max(0.0, pullaway_excess)
+  return float(np.interp(
+    pullaway_excess,
+    [0.0, CREEP_TO_STOP_GAP_FOLLOW_EXCESS, CREEP_TO_STOP_GAP_START_EXCESS],
+    [0.0, CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN, CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX],
+  ))
+
+
+def get_creep_pullaway_launch_accel_max(lead_gap_excess, predicted_gap_opening):
+  lead_gap_excess = max(0.0, lead_gap_excess)
+  predicted_gap_opening = max(0.0, predicted_gap_opening)
+  runway_blend = np.interp(
+    lead_gap_excess + predicted_gap_opening,
+    [CREEP_TO_STOP_GAP_PREDICT_ARM_EXCESS, CREEP_TO_STOP_GAP_START_EXCESS],
+    [0.0, 1.0],
+  )
+  opening_blend = np.interp(
+    predicted_gap_opening,
+    [CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING, CREEP_TO_STOP_GAP_START_EXCESS],
+    [0.0, 1.0],
+  )
+  blend = min(runway_blend, opening_blend)
+  return float(CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX + blend * (
+    CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX - CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX
+  ))
 
 
 def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_GAP_MODEL_LEAD_HORIZON):
@@ -455,23 +520,26 @@ def get_creep_to_stop_gap_accel(v_ego, d_rel, v_lead, model_prob, active, brake_
   )
   model_predicted_pullaway = has_predicted_lead_pullaway(gap_excess, model_predicted_v_lead, model_predicted_gap_opening)
   predicted_pullaway = radar_predicted_pullaway or model_predicted_pullaway
+  pullaway_gap_excess = gap_excess + max(
+    radar_predicted_gap_opening if radar_predicted_pullaway else 0.0,
+    model_predicted_gap_opening if model_predicted_pullaway else 0.0,
+  )
   should_arm = gap_excess >= CREEP_TO_STOP_GAP_ARM_EXCESS and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM
-  should_arm = should_arm or (lead_pullaway and gap_excess >= CREEP_TO_STOP_GAP_PULLAWAY_ARM_EXCESS) or predicted_pullaway
+  if lead_pullaway or predicted_pullaway:
+    should_arm = should_arm or (
+      pullaway_gap_excess >= CREEP_TO_STOP_GAP_PREDICT_ARM_EXCESS and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM
+    )
   if not active and not should_arm:
     return False, 0.0
 
-  target_speed = float(np.interp(gap_excess, CREEP_TO_STOP_GAP_SPEED_BP, CREEP_TO_STOP_GAP_SPEED_V))
+  target_speed = float(np.interp(pullaway_gap_excess, CREEP_TO_STOP_GAP_SPEED_BP, CREEP_TO_STOP_GAP_SPEED_V))
   accel_max = CREEP_TO_STOP_GAP_ACCEL_MAX
   if lead_pullaway or predicted_pullaway:
-    predicted_v_lead = max(
-      radar_predicted_v_lead if radar_predicted_pullaway else 0.0,
-      model_predicted_v_lead if model_predicted_pullaway else 0.0,
-    )
-    target_speed = max(target_speed, min(max(v_lead, predicted_v_lead), CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX))
+    target_speed = min(target_speed, CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX)
     accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
   accel = np.clip((target_speed - v_ego) * CREEP_TO_STOP_GAP_ACCEL_GAIN, CREEP_TO_STOP_GAP_ACCEL_MIN, accel_max)
   if (lead_pullaway or predicted_pullaway) and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM and accel > 0.0:
-    accel = max(accel, min(CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN, accel_max))
+    accel = max(accel, min(get_creep_to_stop_gap_pullaway_accel_min(pullaway_gap_excess), accel_max))
   return True, float(accel)
 
 
@@ -758,6 +826,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.output_should_stop = output_should_stop_mpc
 
     model_stop_protection_active = sm['selfdriveState'].experimentalMode and self.dec.active() and not e2e_active
+    e2e_runway_positive_accel_cap = get_e2e_runway_positive_accel_cap(
+      v_ego, sm['modelV2'], e2e_active,
+      reset_state=reset_state,
+      force_slow_decel=force_slow_decel,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+      engage_stop_bootstrap_active=engage_stop_bootstrap_active,
+      has_radar_lead=has_radar_lead,
+      model_stop_protection_active=model_stop_protection_active,
+    )
+    output_a_target = min(output_a_target, e2e_runway_positive_accel_cap)
     e2e_stop_approach_a_target = get_e2e_stop_approach_accel(
       v_ego, sm['modelV2'], sm['radarState'], e2e_active,
       force_slow_decel=force_slow_decel or reset_state,
@@ -831,10 +910,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       model_predicted_gap_opening=model_predicted_gap_opening,
     ) if lead_one.status else (False, 0.0)
     if self.creep_to_stop_gap_active:
+      allow_creep_pullaway_release = creep_pullaway_release and not (e2e_active and output_should_stop_e2e)
       if creep_a_target >= 0.0:
-        if not self.output_should_stop or creep_pullaway_release or not (e2e_active and output_should_stop_e2e):
+        if not self.output_should_stop or allow_creep_pullaway_release or not (e2e_active and output_should_stop_e2e):
           output_a_target = max(output_a_target, creep_a_target)
-          self.output_should_stop = self.output_should_stop and not creep_pullaway_release
+          self.output_should_stop = self.output_should_stop and not allow_creep_pullaway_release
       else:
         output_a_target = min(output_a_target, creep_a_target)
       creep_accel_max = CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX if creep_a_target > CREEP_TO_STOP_GAP_ACCEL_MAX else CREEP_TO_STOP_GAP_ACCEL_MAX
@@ -865,6 +945,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       recovery_a_min = get_lead_accel_recovery_a_min(
         v_ego, float(lead_one.vLeadK), float(lead_one.dRel), float(lead_one.aLeadK), get_T_FOLLOW(sm['selfdriveState'].personality)
       )
+      if v_ego < CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP_MAX_V_EGO:
+        recovery_a_min = min(recovery_a_min, CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX)
       output_a_target = max(output_a_target, recovery_a_min)
 
     if lead_one.status and not sm['carState'].brakePressed and not sm['carState'].gasPressed and not force_slow_decel and not reset_state:
@@ -894,9 +976,14 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.creep_to_stop_gap_active and creep_a_target > 0.0 and creep_pullaway_release and \
       (radar_predicted_pullaway or model_predicted_pullaway)
     if creep_pullaway_launch:
+      launch_predicted_gap_opening = max(
+        radar_predicted_gap_opening if radar_predicted_pullaway else 0.0,
+        model_predicted_gap_opening if model_predicted_pullaway else 0.0,
+      )
+      launch_accel_max = get_creep_pullaway_launch_accel_max(lead_gap_excess, launch_predicted_gap_opening)
       output_a_target = min(
         max(output_a_target, CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN),
-        CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX,
+        launch_accel_max,
       )
 
     has_lead = sm['radarState'].leadOne.status or sm['radarState'].leadTwo.status
@@ -912,10 +999,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
-    if limit_creep_pullaway_accel_step:
-      output_a_target = min(output_a_target, prev_output_a_target + CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP)
-      if output_a_target >= 0.0:
+    if output_a_target < 0.0:
+      accel_clip[0] = min(accel_clip[0], output_a_target)
+    if self.output_should_stop or self.mpc.source == LongitudinalPlanSource.e2e:
+      accel_clip[0] = ACCEL_MIN
+    low_speed_pullaway_accel_step = lead_one.status and not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
+      not force_slow_decel and not reset_state and v_ego < CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP_MAX_V_EGO and \
+      (prev_output_a_target > 0.0 or output_a_target > 0.0)
+    if limit_creep_pullaway_accel_step or low_speed_pullaway_accel_step:
+      if output_a_target > -CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP and not self.output_should_stop:
         output_a_target = max(output_a_target, prev_output_a_target - CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP)
+      output_a_target = min(output_a_target, prev_output_a_target + CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
 
