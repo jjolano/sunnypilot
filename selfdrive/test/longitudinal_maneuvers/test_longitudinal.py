@@ -350,6 +350,26 @@ def run_curved_lane_closing_lead_simulation():
   )
 
 
+def run_far_offset_returning_lead_simulation():
+  breakpoints = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5,
+                 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 8.0]
+  return evaluate_maneuver_output(
+    Maneuver(
+      "far offset returning closing lead",
+      duration=8.0,
+      initial_speed=15.93,
+      lead_relevancy=True,
+      initial_distance_lead=68.7,
+      speed_lead_values=[12.45, 12.25, 11.67, 11.32, 10.93, 10.69, 9.87, 9.25,
+                         8.54, 7.88, 7.03, 5.92, 4.80, 4.13, 3.55, 2.28],
+      lead_y_rel_values=[8.1, 12.8, 11.5, 9.0, 6.6, 6.4, 4.9, 4.3,
+                         3.4, 1.9, 1.4, 0.6, 0.3, 0.3, 0.3, 0.3],
+      cruise_values=[15.83 for _ in breakpoints],
+      breakpoints=breakpoints,
+    )
+  )
+
+
 def test_lead_creep_then_stop_does_not_launch_from_gap_noise():
   output = evaluate_maneuver_output(
     Maneuver(
@@ -977,6 +997,19 @@ def test_curved_lane_closing_lead_keeps_stop_threat_braking():
 
   assert np.min(output[threat_window, 5]) < -1.0
   assert np.min(output[:, 6]) > STOP_DISTANCE - 0.3
+
+
+def test_far_offset_returning_lead_resumes_braking_before_gap_collapse():
+  output = run_far_offset_returning_lead_simulation()
+
+  far_offset_window = (output[:, 0] >= 2.0) & (output[:, 0] <= 3.5)
+  returning_window = (output[:, 0] >= 4.0) & (output[:, 0] <= 6.0)
+  near_path_window = output[:, 0] >= 6.0
+
+  assert np.min(output[far_offset_window, 5]) > -1.5
+  assert np.min(output[returning_window, 5]) < -1.0
+  assert np.min(output[near_path_window, 5]) < -1.5
+  assert np.min(output[:, 6]) > STOP_DISTANCE
 
 
 @parameterized_class(("e2e", "force_decel"), itertools.product([True, False], repeat=2))
