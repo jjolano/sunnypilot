@@ -29,6 +29,7 @@ class ControlsExt(ModelStateBase):
     self.params = params
     self._param_update_time: float = 0.0
     self.blinker_pause_lateral = BlinkerPauseLateral()
+    self.smoothed_model_path_curvature = params.get_bool("SmoothedModelPathCurvature")
 
     cloudlog.info("controlsd_ext is waiting for CarParamsSP")
     self.CP_SP = messaging.log_from_bytes(params.get("CarParamsSP", block=True), custom.CarParamsSP)
@@ -84,6 +85,7 @@ class ControlsExt(ModelStateBase):
   def get_params_sp(self, sm: messaging.SubMaster) -> None:
     if time.monotonic() - self._param_update_time > PARAMS_UPDATE_PERIOD:
       self.blinker_pause_lateral.get_params()
+      self.smoothed_model_path_curvature = self.params.get_bool("SmoothedModelPathCurvature")
 
       lac = getattr(self, "LaC", None)
       lat_control_state = getattr(lac, "CONTROL_STATE", self.CP.lateralTuning.which())

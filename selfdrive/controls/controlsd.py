@@ -251,6 +251,8 @@ class Controls(ControlsExt):
           lane_line_probs=tuple(model_v2.laneLineProbs),
           turn_curvature_sign=turn_curvature_sign,
           frame_drop_perc=model_v2.frameDropPerc,
+          smooth_model_path_curvature=self.smoothed_model_path_curvature,
+          lane_change_active=model_v2.meta.laneChangeState != LaneChangeState.off,
         )
       )
       self.model_path_result = path_result
