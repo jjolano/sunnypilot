@@ -95,6 +95,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_transition_obstacle_release,
   get_lead_transition_path_relative_y,
   get_lead_transition_release_target,
+  get_lead_transition_returning_threat_release_target,
   get_progressive_lead_approach_gap,
   get_pre_target_runway_decel_threshold,
   get_safe_obstacle_distance,
@@ -1076,6 +1077,62 @@ def test_lead_transition_holds_close_confirmed_curve_lead_while_closing():
   releases = [mpc.update_lead_transition_state(0, lead) for _ in range(5)]
 
   assert max(releases) == pytest.approx(0.0)
+
+
+def test_lead_transition_returning_threat_release_target_tapers_toward_path():
+  assert get_lead_transition_returning_threat_release_target(8.0) == pytest.approx(1.0)
+  assert get_lead_transition_returning_threat_release_target(5.0) == pytest.approx(0.5)
+  assert get_lead_transition_returning_threat_release_target(-5.0) == pytest.approx(0.5)
+  assert get_lead_transition_returning_threat_release_target(2.0) == pytest.approx(0.0)
+
+
+def test_lead_transition_preserves_far_offset_returning_lead_release_while_closing():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 15.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=10.0,
+    dRel=50.0,
+    vLeadK=5.0,
+    modelProb=1.0,
+  )
+
+  release_before_return = mpc.update_lead_transition_state(0, lead)
+  lead.yRel = 8.5
+  release_after_return = mpc.update_lead_transition_state(0, lead)
+
+  assert release_before_return > 0.0
+  assert release_after_return >= release_before_return
+
+
+def test_lead_transition_returning_threat_tapers_back_to_hold_near_path():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 15.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=12.8,
+    dRel=76.0,
+    vLeadK=5.5,
+    modelProb=1.0,
+  )
+
+  release_far = max(mpc.update_lead_transition_state(0, lead) for _ in range(5))
+  lead.yRel = 8.0
+  release_full = mpc.update_lead_transition_state(0, lead)
+  lead.yRel = 5.0
+  release_mid = mpc.update_lead_transition_state(0, lead)
+  lead.yRel = 2.0
+  release_near = mpc.update_lead_transition_state(0, lead)
+  lead.yRel = 0.3
+  release_in_path = mpc.update_lead_transition_state(0, lead)
+
+  assert release_far > 0.0
+  assert release_full >= release_far
+  assert 0.0 < release_mid < release_full
+  assert release_near < release_mid
+  assert release_in_path == pytest.approx(0.0)
 
 
 def test_lead_transition_releases_offset_lead_once_opening_gap():
