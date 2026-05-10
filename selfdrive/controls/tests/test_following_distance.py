@@ -35,7 +35,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_CHASE_OPENING_FLOOR_FRACTION,
   MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN,
   MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX,
-  PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP,
   LEAD_STOP_APPROACH_DECEL_CAP,
   LEAD_STOP_RUNWAY_BRAKE,
   STOP_DISTANCE,
@@ -48,6 +47,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_approach_follow_distance,
   get_approach_runway_blend,
   get_desired_follow_distance,
+  get_dynamic_lead_approach_runway_blend,
   get_lead_accel_match_margin,
   get_lead_accel_match_target,
   get_lead_accel_match_targets,
@@ -1208,6 +1208,41 @@ def test_approach_runway_blend_reaches_full_with_large_runway():
   assert get_approach_runway_blend(x_lead, v_ego, v_lead, t_follow) == pytest.approx(1.0)
 
 
+def test_dynamic_approach_runway_scales_with_closing_speed():
+  mild_closure_blend = get_dynamic_lead_approach_runway_blend(20.0, 2.0)
+  fast_closure_blend = get_dynamic_lead_approach_runway_blend(20.0, 8.0)
+
+  assert mild_closure_blend == pytest.approx(1.0)
+  assert 0.0 < fast_closure_blend < mild_closure_blend
+
+
+def test_dynamic_approach_runway_handles_vectors_and_negative_closure():
+  runways = np.array([0.0, 20.0, 20.0])
+  closing_speeds = np.array([-2.0, 2.0, 8.0])
+
+  blends = get_dynamic_lead_approach_runway_blend(runways, closing_speeds)
+
+  assert blends[0] == pytest.approx(0.0)
+  assert blends[1] == pytest.approx(1.0)
+  assert 0.0 < blends[2] < blends[1]
+
+
+def test_approach_runway_blend_requires_more_distance_for_fast_closure():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  mild_v_ego = 22.0
+  fast_v_ego = 28.0
+  v_lead = 20.0
+
+  mild_x_lead = get_desired_follow_distance(mild_v_ego, v_lead, t_follow) + 20.0
+  fast_x_lead = get_desired_follow_distance(fast_v_ego, v_lead, t_follow) + 20.0
+
+  mild_blend = get_approach_runway_blend(mild_x_lead, mild_v_ego, v_lead, t_follow)
+  fast_blend = get_approach_runway_blend(fast_x_lead, fast_v_ego, v_lead, t_follow)
+
+  assert mild_blend == pytest.approx(1.0)
+  assert 0.0 < fast_blend < mild_blend
+
+
 def test_approach_available_runway_uses_stop_distance_for_slowing_lead():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   steady_runway = get_approach_available_runway(40.0, 20.0, 15.0, t_follow, a_lead=0.0)
@@ -1696,6 +1731,36 @@ def test_decelerating_lead_inside_normal_gap_allows_late_but_safe_stop():
   assert d_rel < normal_gap
   assert required_decel > 0.0
   assert -long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP <= target < 0.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_prefers_coast_when_slightly_inside_target_gap():
+  v_ego = 15.0
+  v_lead = 12.5
+  a_lead = -0.8
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = desired_gap - 0.25
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < desired_gap
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 1e-6 <= target <= 0.0
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_still_brakes_when_inside_target_gap_closing_fast():
+  v_ego = 13.0
+  v_lead = 8.0
+  a_lead = -0.8
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
+  d_rel = desired_gap - 1.5
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel < desired_gap
+  assert target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
   assert cost > 0.0
 
 
@@ -2454,11 +2519,17 @@ def test_progressive_lead_approach_keeps_closing_gap_off_until_mid_approach():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
   v_ego = 25.0
   v_lead = 20.0
+  closing_speed = v_ego - v_lead
   steady_gap = t_follow * v_lead + long_mpc.get_stop_distance_buffer(v_lead)
-  closing_gap = ((v_ego - v_lead) ** 2) / (2 * get_approach_brake(v_ego - v_lead))
-  far_gap = steady_gap + PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP[-1] + 20.0
-  mid_gap = steady_gap + 0.5 * sum(PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP)
-  close_gap = steady_gap + PROGRESSIVE_LEAD_APPROACH_RUNWAY_BP[0] * 0.5
+  closing_gap = (closing_speed**2) / (2 * get_approach_brake(closing_speed))
+  close_runway = max(long_mpc.LEAD_APPROACH_RUNWAY_MIN,
+                     closing_speed**2 / (2.0 * long_mpc.LEAD_APPROACH_RUNWAY_URGENT_DECEL))
+  full_runway = max(long_mpc.LEAD_APPROACH_RUNWAY_FULL_MIN,
+                    closing_speed**2 / (2.0 * long_mpc.LEAD_APPROACH_RUNWAY_COAST_DECEL))
+  full_runway = max(full_runway, close_runway + long_mpc.LEAD_APPROACH_RUNWAY_MIN_SPAN)
+  far_gap = steady_gap + full_runway + 20.0
+  mid_gap = steady_gap + 0.5 * (close_runway + full_runway)
+  close_gap = steady_gap + close_runway * 0.5
 
   far_target = get_progressive_lead_approach_gap(far_gap, v_ego, v_lead, t_follow, a_lead=0.0)
   mid_target = get_progressive_lead_approach_gap(mid_gap, v_ego, v_lead, t_follow, a_lead=0.0)
