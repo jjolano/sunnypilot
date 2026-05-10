@@ -7,11 +7,11 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 LAUNCH_ENVELOPE_MIN_ACCEL = 0.15
-LAUNCH_ENVELOPE_MAX_ACCEL = 0.55
+LAUNCH_ENVELOPE_MAX_ACCEL = 0.60
 LAUNCH_BREAKAWAY_ACCEL = 0.70
 LAUNCH_BREAKAWAY_BASE_ACCEL = 0.65
 LAUNCH_BREAKAWAY_TARGET_ACCEL = 0.50
-LAUNCH_BREAKAWAY_BASE_TARGET_ACCEL = 0.35
+LAUNCH_BREAKAWAY_BASE_TARGET_ACCEL = 0.30
 LAUNCH_BREAKAWAY_MIN_TIME = 0.25
 LAUNCH_BREAKAWAY_MAX_TIME = 0.6
 LAUNCH_BREAKAWAY_A_EGO = 0.05
@@ -105,7 +105,7 @@ class LongControl:
     self.CP = CP
     self.CP_SP = CP_SP
     self.long_control_state = LongCtrlState.off
-    self.pid = PIDController((CP.longitudinalTuning.kpBP, CP.longitudinalTuning.kpV), (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV), rate=1 / DT_CTRL)
+    self.pid = PIDController((CP.longitudinalTuning.kpBP, CP.longitudinalTuning.kpV), (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV), rate=int(1 / DT_CTRL))
     self.last_output_accel = 0.0
     self.launch_envelope_active = False
     self.launch_breakaway_elapsed = 0.0
