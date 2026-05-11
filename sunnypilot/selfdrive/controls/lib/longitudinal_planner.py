@@ -32,6 +32,7 @@ LEAD_SPEEDUP_GUARD_MIN_DISTANCE = 25.0  # m, low-speed floor for close-lead gati
 LEAD_SPEEDUP_GUARD_CLOSING_V_REL = -0.2  # m/s, ignore noise around matched speed.
 LEAD_SPEEDUP_GUARD_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating into the lead.
 LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL = 1.6
+SOURCE_SELECTION_HYSTERESIS_V = 0.25
 
 
 def _select_lower_target(selected_source, selected_v_target, selected_a_target, candidate_source, candidate):
@@ -62,7 +63,8 @@ def apply_lead_speedup_guard(active: bool, v_ego: float, target: tuple[float, fl
   return min(v_target, v_ego), min(a_target, LEAD_SPEEDUP_GUARD_A_TARGET_MAX)
 
 
-def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control):
+def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control,
+                                      source_prev=None, v_target_prev=None):
   if speed_limit_active:
     selected_source = LongitudinalPlanSource.speedLimitAssist
     selected_v_target = speed_limit_assist[0]
@@ -82,9 +84,24 @@ def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, sc
     selected_source, selected_v_target, selected_a_target = _select_lower_target(
       selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.speedLimitAssist, speed_limit_assist
     )
-  return _select_lower_target(
+  selected_source, selected_v_target, selected_a_target = _select_lower_target(
     selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.osmTrafficControl, osm_traffic_control
   )
+
+  if source_prev is not None and v_target_prev is not None:
+    # Always allow switching to a more restrictive (slower) target for safety.
+    if selected_v_target < v_target_prev:
+      return selected_source, selected_v_target, selected_a_target
+
+    # Only switch to a less restrictive (faster) target if it's significantly faster
+    # OR if it's the same target but a different source (allows state machine transitions).
+    if selected_v_target > v_target_prev + SOURCE_SELECTION_HYSTERESIS_V or \
+       (abs(selected_v_target - v_target_prev) < 1e-4 and selected_source != source_prev):
+      return selected_source, selected_v_target, selected_a_target
+    else:
+      return source_prev, v_target_prev, selected_a_target
+
+  return selected_source, selected_v_target, selected_a_target
 
 
 def build_sp_longitudinal_candidates(speed_limit_active, cruise, scc_vision, scc_vision_active, scc_map, scc_map_active,
@@ -260,6 +277,8 @@ class LongitudinalPlannerSP:
       (self.scc.map.output_v_target, self.scc.map.output_a_target),
       speed_limit_assist_target,
       (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
+      source_prev=getattr(self, 'source', None),
+      v_target_prev=getattr(self, 'output_v_target', None),
     )
     return self.output_v_target, self.output_a_target
 

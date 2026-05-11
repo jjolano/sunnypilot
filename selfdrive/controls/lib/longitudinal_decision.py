@@ -272,7 +272,6 @@ def apply_personality_accel_comfort(decision: LongitudinalDecision, a_target: fl
   if (
     not decision.enabled
     or decision.should_stop
-    or decision.winner in ACCEL_COMFORT_BYPASS_SOURCES
     or not math.isfinite(a_target)
     or not math.isfinite(prev_a_target)
     or dt <= 0.0
