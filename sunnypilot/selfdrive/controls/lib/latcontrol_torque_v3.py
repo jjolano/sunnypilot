@@ -296,13 +296,7 @@ class LatControlTorque(LatControl):
     )
     output_torque = assist_result.output_torque if active else 0.0
     saturated = self.steer_max - abs(output_torque) < 1e-3
-    authority_state = self.authority_manager.update(
-      self.model_adapter.mode,
-      self.authority_confidence(self.estimator.state.confidence, EstimatorRejectReason.NONE),
-      self.estimator.state.positive_coverage,
-      self.estimator.state.negative_coverage,
-      EstimatorRejectReason.NONE,
-    )
+    authority_state = self.authority_manager.current_state()
     same_sign_unwind_release = same_sign_unwind and sign(measurement) != 0.0 and sign(-output_torque) == sign(measurement)
     steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
     safety_result = self.safety_envelope.update(

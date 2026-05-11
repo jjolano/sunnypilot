@@ -167,9 +167,15 @@ def test_e2e_stop_approach_ignores_endpoint_with_sufficient_runway():
 
 
 def test_e2e_stop_approach_brakes_before_high_speed_max_decel_boundary():
-  accel = get_e2e_stop_approach_accel(60.0 / 3.6, make_model_msg(endpoint_x=112.0), make_radar_state(), True)
+  accel = get_e2e_stop_approach_accel(60.0 / 3.6, make_model_msg(endpoint_x=90.0), make_radar_state(), True)
 
   assert -E2E_STOP_APPROACH_DECEL_MAX <= accel < -0.5
+
+
+def test_e2e_stop_approach_caps_route_like_peak_decel():
+  accel = get_e2e_stop_approach_accel(60.0 / 3.6, make_model_msg(endpoint_x=45.0), make_radar_state(), True)
+
+  assert math.isclose(accel, -E2E_STOP_APPROACH_DECEL_MAX)
 
 
 def test_e2e_stop_approach_ignores_clear_endpoint():
@@ -276,6 +282,19 @@ def test_e2e_runway_comfort_caps_long_runway_raw_model_braking():
   )
 
   assert accel == -0.2175
+
+
+def test_e2e_runway_comfort_prefers_coast_on_excessive_runway():
+  accel = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-1.2,
+    coast_accel=-0.25,
+    model_msg=make_model_msg(desired_accel=-1.2, should_stop=False, endpoint_x=145.0),
+    e2e_active=True,
+    prev_output_a_target=-0.5,
+  )
+
+  assert math.isclose(accel, -0.30)
 
 
 def test_e2e_runway_comfort_allows_short_runway_model_braking():
