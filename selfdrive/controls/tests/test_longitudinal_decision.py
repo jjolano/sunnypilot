@@ -297,7 +297,7 @@ def test_apply_decision_output_cruise_winner_preserves_legacy_accel():
   assert should_stop
 
 
-def test_apply_decision_output_cruise_winner_ignores_personality_comfort_context():
+def test_apply_decision_output_cruise_winner_respects_personality_comfort_context():
   decision = make_decision(DecisionSource.CRUISE, a_target=0.6, should_stop=False)
 
   a_target, should_stop = apply_longitudinal_decision_output(
@@ -309,7 +309,7 @@ def test_apply_decision_output_cruise_winner_ignores_personality_comfort_context
     dt=0.05,
   )
 
-  assert a_target == pytest.approx(0.6)
+  assert 0.0 < a_target < 0.6
   assert not should_stop
 
 
