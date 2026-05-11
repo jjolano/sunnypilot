@@ -467,9 +467,8 @@ class ModelPathProcessor:
     weight_width = max(window_s * 0.5, 1e-3)
     weights = np.exp(-0.5 * ((fit_t - PATH_CURVATURE_ACTION_T) / weight_width) ** 2)
     coefficients = np.polyfit(fit_t, fit_yaws, deg=2, w=weights)
-    psi_target = float(np.polyval(coefficients, PATH_CURVATURE_ACTION_T))
-    psi_rate = float(np.polyval(np.polyder(coefficients), 0.0))
-    candidate_curvature = float(2.0 * (psi_target / (v_ego * PATH_CURVATURE_ACTION_T)) - psi_rate / v_ego)
+    psi_dot_at_action = float(np.polyval(np.polyder(coefficients), PATH_CURVATURE_ACTION_T))
+    candidate_curvature = psi_dot_at_action / v_ego
     if not math.isfinite(candidate_curvature):
       return None
 
