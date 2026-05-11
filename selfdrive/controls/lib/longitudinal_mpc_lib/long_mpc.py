@@ -211,6 +211,8 @@ LEAD_ACCEL_MATCH_GAP_MARGIN_FACTOR = 0.5
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
+SOURCE_HYSTERESIS_TIME_GAP = 0.3
+SOURCE_HYSTERESIS_MIN = 1.5
 LEAD_GAP_COMFORT_MIN_V_EGO = 2.0
 LEAD_GAP_COMFORT_LIGHT_DECEL = 0.5
 LEAD_GAP_COMFORT_DANGER_HEADROOM = 1.5
@@ -252,7 +254,6 @@ LEAD_TRANSITION_RETURNING_THREAT_HOLD_Y_REL = 2.0
 LEAD_TRANSITION_RETURNING_THREAT_RELEASE_Y_REL = 8.0
 NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN = 1.0
 NEW_LEAD_CUT_IN_GUARD_REQUIRED_DECEL_MIN = 0.25
-SOURCE_HYSTERESIS_MARGIN = 1.2
 SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP = 0.15
 SHORT_GAP_PULLAWAY_RESPONSE_FULL_GAP = 1.0
 SHORT_GAP_PULLAWAY_RESPONSE_MAX_CLOSING = 0.5
@@ -592,6 +593,31 @@ def get_lead_launch_comfort_target(v_ego, v_lead, d_rel, a_lead, t_follow, model
   return get_short_gap_pullaway_response_target(v_ego, v_lead, d_rel, a_lead, t_follow, model_prob=model_prob, blocked=blocked)
 
 
+def get_source_hysteresis_margin(v_ego):
+  return max(SOURCE_HYSTERESIS_MIN, SOURCE_HYSTERESIS_TIME_GAP * v_ego)
+
+
+def apply_source_hysteresis(obstacles, current_idx, margin):
+  """Prevent rapid source switching by requiring a minimum obstacle advantage before changing.
+
+  obstacles: (n_sources,) for scalar source or (n_timesteps, n_sources) for dominant obstacle
+  current_idx: int or array of current source indices
+  margin: float, minimum obstacle distance advantage required before switching
+  """
+  obstacles = np.asarray(obstacles)
+  if obstacles.ndim == 1:
+    best_idx = int(np.argmin(obstacles))
+    if obstacles[current_idx] - obstacles[best_idx] > margin:
+      return best_idx
+    return int(current_idx)
+  else:
+    best_idx = np.argmin(obstacles, axis=1)
+    best = np.min(obstacles, axis=1)
+    current = obstacles[np.arange(len(current_idx)), current_idx]
+    switch = current - best > margin
+    return np.where(switch, best_idx, current_idx).astype(int)
+
+
 def get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow):
   d_rel = np.asarray(d_rel, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
@@ -849,32 +875,6 @@ def get_lead_surge_damping_target(x_lead, v_ego, v_lead, a_lead, t_follow, decel
   target = np.where(cost > 0.0, LEAD_SURGE_DAMPING_ACCEL_MAX, 0.0)
   return target, cost
 
-
-def apply_source_hysteresis(obstacles, current_idx, margin):
-  """
-  Apply hysteresis to source/obstacle selection to prevent rapid switching
-  between lead0, lead1, and cruise sources.
-
-  obstacles: array of shape (n_sources,) for scalar or (n_timesteps, n_sources) for vectorized
-  current_idx: int or array of current source indices
-  margin: float, minimum obstacle distance advantage required before switching
-
-  Returns: new source index (int or array)
-  """
-  obstacles = np.asarray(obstacles)
-  if obstacles.ndim == 1:
-    best_idx = int(np.argmin(obstacles))
-    best_obstacle = obstacles[best_idx]
-    current_obstacle = obstacles[current_idx]
-    if current_obstacle - best_obstacle > margin:
-      return best_idx
-    return int(current_idx)
-  else:
-    best_idx = np.argmin(obstacles, axis=1)
-    best_obstacle = np.min(obstacles, axis=1)
-    current_obstacle = obstacles[np.arange(len(current_idx)), current_idx]
-    switch = current_obstacle - best_obstacle > margin
-    return np.where(switch, best_idx, current_idx).astype(int)
 
 
 def get_selected_lead_targets(lead_0_targets, lead_1_targets, lead_0_costs, lead_1_costs, dominant_obstacle):
@@ -1439,6 +1439,7 @@ class LongitudinalMpc:
     self.lead_transition_was_status = np.zeros(2, dtype=bool)
     self.lead_confidence_trackers = [LeadConfidenceTracker(), LeadConfidenceTracker()]
     self.lead_confidence_states = [tracker.update(None, 0.0) for tracker in self.lead_confidence_trackers]
+    self.prev_dominant_obstacle = None
     self._last_set_weights_key = None
     self._last_cost_weight_key = None
     self._last_accel_match_costs = None
@@ -1783,15 +1784,16 @@ class LongitudinalMpc:
     cost_obstacles = np.column_stack([lead_0_cost_obstacle, lead_1_cost_obstacle, cruise_obstacle])
     x_obstacles = np.column_stack([lead_0_mpc_obstacle, lead_1_mpc_obstacle, cruise_obstacle])
 
-    # Apply hysteresis to source selection to prevent rapid switching
+    # Apply speed-proportional hysteresis to source selection to prevent rapid switching
+    margin = get_source_hysteresis_margin(v_ego)
     source_idx = MPC_SOURCES.index(self.source) if self.source in MPC_SOURCES else 2
-    source_idx = apply_source_hysteresis(cost_obstacles[0], source_idx, SOURCE_HYSTERESIS_MARGIN)
+    source_idx = apply_source_hysteresis(cost_obstacles[0], source_idx, margin)
     self.source = MPC_SOURCES[source_idx]
 
     # Apply hysteresis to dominant obstacle for comfort target switching
     if self.prev_dominant_obstacle is None:
       self.prev_dominant_obstacle = np.argmin(x_obstacles, axis=1)
-    dominant_obstacle = apply_source_hysteresis(x_obstacles, self.prev_dominant_obstacle, SOURCE_HYSTERESIS_MARGIN)
+    dominant_obstacle = apply_source_hysteresis(x_obstacles, self.prev_dominant_obstacle, margin)
     self.prev_dominant_obstacle = np.copy(dominant_obstacle)
 
     lead_0_model_prob = float(radarstate.leadOne.modelProb) if radarstate.leadOne.status else 1.0
