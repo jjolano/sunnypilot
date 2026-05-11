@@ -1886,16 +1886,25 @@ class LongitudinalMpc:
     self.params[:, 1] = ACCEL_MAX
     self.params[:, 1] = np.minimum(self.params[:, 1], np.minimum(lead_0_crawl_accel_max, lead_1_crawl_accel_max))
     lead_confidence_guard_timer = 0.0
+    lead_flicker_guard_timer = 0.0
     if dominant_obstacle[0] == 0:
       lead_confidence_guard_timer = lead_0_confidence.guard_timer
+      lead_flicker_guard_timer = lead_0_confidence.flicker_guard_timer
     elif dominant_obstacle[0] == 1:
       lead_confidence_guard_timer = lead_1_confidence.guard_timer
+      lead_flicker_guard_timer = lead_1_confidence.flicker_guard_timer
+    # Also apply flicker guard from either lead if closing speed is high,
+    # even when neither is the current dominant source (flicker may prevent
+    # the lead from ever becoming dominant).
+    if lead_flicker_guard_timer <= 0.0:
+      lead_flicker_guard_timer = max(lead_0_confidence.flicker_guard_timer, lead_1_confidence.flicker_guard_timer)
     new_lead_cut_in_guard_timer = max(
       get_new_lead_cut_in_guard_timer(v_ego, radarstate.leadOne, lead_0_confidence),
       get_new_lead_cut_in_guard_timer(v_ego, radarstate.leadTwo, lead_1_confidence),
     )
     apply_lead_transition_accel_guard(
-      self.params[:, 1], max(max(self.lead_transition_guard_timers), lead_confidence_guard_timer, new_lead_cut_in_guard_timer)
+      self.params[:, 1], max(max(self.lead_transition_guard_timers), lead_confidence_guard_timer,
+                             new_lead_cut_in_guard_timer, lead_flicker_guard_timer)
     )
     self.params[:, 2] = np.min(x_obstacles, axis=1)
     self.params[:, 3] = np.copy(self.a_prev)
