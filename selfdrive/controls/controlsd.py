@@ -74,6 +74,13 @@ def fill_model_path_state(model_path_state, model_path_result: ModelPathProcesso
   model_path_state.rawDesiredCurvature = raw_desired_curvature if math.isfinite(raw_desired_curvature) else 0.0
   model_path_state.processedDesiredCurvature = processed_desired_curvature if math.isfinite(processed_desired_curvature) else 0.0
   model_path_state.holdFramesRemaining = max(0, min(255, int(model_path_result.hold_frames_remaining)))
+  model_path_state.smoothingTauS = float(model_path_result.smoothing_tau_s) if math.isfinite(model_path_result.smoothing_tau_s) else 0.0
+  model_path_state.dampingAlpha = float(model_path_result.damping_alpha) if math.isfinite(model_path_result.damping_alpha) else 0.0
+  model_path_state.trustPenalty = float(model_path_result.trust_penalty) if math.isfinite(model_path_result.trust_penalty) else 0.0
+  model_path_state.spatialSmoothedCurvature = (
+    float(model_path_result.spatial_smoothed_curvature) if math.isfinite(model_path_result.spatial_smoothed_curvature) else 0.0
+  )
+  model_path_state.laneChangeFade = float(model_path_result.lane_change_fade) if math.isfinite(model_path_result.lane_change_fade) else 0.0
 
 
 def compute_steering_actuator_feedback(previous_request, actuators_output, steer_control_type, lat_active=True):
