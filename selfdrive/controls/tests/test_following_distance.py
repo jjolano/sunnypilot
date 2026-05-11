@@ -183,7 +183,7 @@ def patch_planner_sp(monkeypatch):
   monkeypatch.setattr(
     longitudinal_planner.LongitudinalPlannerSP,
     "update_targets",
-    lambda _planner, _sm, _v_ego, a_ego, v_cruise: (v_cruise, a_ego),
+    lambda _planner, _sm, _v_ego, a_ego, v_cruise, coast_accel=None: (v_cruise, a_ego),
   )
 
 
@@ -197,14 +197,22 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
     vEgoStopping=0.5,
   )
   planner.mpc = FakeMpc()
+  planner.params = SimpleNamespace(get_bool=lambda _key: False)
   planner.VM = None
   planner.control_calculation_hardening = False
+  planner.longitudinal_arbiter = longitudinal_planner.LongitudinalArbiter()
+  planner.longitudinal_decision = None
+  planner.longitudinal_decision_candidates = []
   planner.fcw = False
   planner.dt = longitudinal_planner.DT_MDL
   planner.allow_throttle = True
   planner.a_desired = 0.0
   planner.v_desired_filter = FakeVelocityFilter(v_ego)
   planner.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
+  # The fixture skips __init__ and models a steady-state engaged planner.
+  planner.prev_reset_state = False
+  planner.engage_stop_bootstrap_timer = 0.0
+  planner.e2e_close_stop_settle_active = False
   planner.output_a_target = 0.0
   planner.output_should_stop = False
   planner.creep_to_stop_gap_active = False
@@ -1485,6 +1493,17 @@ def test_lead_transition_fcw_counting_ignores_released_lead():
   assert should_count(0.95, 0.0)
   assert not should_count(0.95, 1.0)
   assert not should_count(0.5, 0.0)
+
+
+def test_mpc_fcw_crash_counting_checks_lead_one_and_lead_two():
+  should_count = getattr(long_mpc, "should_count_mpc_fcw_crash", None)
+  x_sol = np.zeros((N + 1, 3))
+  lead_0_xv = np.column_stack([np.full(N + 1, 100.0), np.zeros(N + 1)])
+  lead_1_xv = np.column_stack([np.full(N + 1, long_mpc.CRASH_DISTANCE * 0.5), np.zeros(N + 1)])
+
+  assert should_count is not None
+  assert should_count(lead_0_xv, lead_1_xv, x_sol, 0.2, 0.95, 0.0, 0.0)
+  assert not should_count(lead_0_xv, lead_1_xv, x_sol, 0.2, 0.95, 0.0, 1.0)
 
 
 def test_lead_transition_soft_release_only_moves_toward_cruise():
@@ -3276,6 +3295,85 @@ def test_lead_loss_e2e_guard_limits_only_no_lead_non_stop_model_decel():
   assert lead_decel == pytest.approx(-1.2)
 
 
+def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):
+  man = Maneuver(
+    '',
+    duration=t_end,
+    initial_speed=float(v_lead),
+    lead_relevancy=True,
+    initial_distance_lead=100,
+    speed_lead_values=[v_lead],
+    breakpoints=[0.0],
+    e2e=e2e,
+    personality=personality,
+  )
+
+  assert timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
+
+
+def test_lead_loss_e2e_guard_tracks_far_confirmed_lead_two(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(status=False)
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+
+  assert planner.previous_lead_loss_status
+  assert planner.previous_lead_loss_d_rel == pytest.approx(63.0)
+  assert planner.previous_lead_loss_model_prob == pytest.approx(0.95)
+
+
+def test_lead_loss_e2e_guard_prefers_far_confirmed_lead_over_farther_unconfirmed_lead(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(
+    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
+  )
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+
+  assert planner.previous_lead_loss_status
+  assert planner.previous_lead_loss_d_rel == pytest.approx(63.0)
+  assert planner.previous_lead_loss_model_prob == pytest.approx(0.95)
+
+
+def test_lead_loss_e2e_guard_arms_when_confirmed_lead_two_disappears_and_unconfirmed_lead_remains(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(
+    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
+  )
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+  sm = make_planner_sm(
+    20.0, lead_one, desired_accel=-1.2, should_stop=False, lead_two=SimpleNamespace(status=False),
+  )
+  sm['modelV2'].meta.laneChangeState = log.LaneChangeState.laneChangeStarting
+
+  planner.update(sm)
+
+  assert planner.lead_loss_e2e_guard_timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
+
+
+def test_lead_loss_e2e_guard_limits_only_no_lead_non_stop_model_decel():
+  guarded = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, False)
+  stop_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, True, 1.0, False)
+  lead_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, True)
+
+  assert guarded == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
+  assert stop_decel == pytest.approx(-1.2)
+  assert lead_decel == pytest.approx(-1.2)
+
+
 class TestFollowingDistance:
   def test_following_distance(self):
     v_lead = float(self.speed)
@@ -3387,23 +3485,40 @@ def test_source_hysteresis_prevents_boundary_oscillation():
 
 # === Danger Gap Tests ===
 
-def test_danger_gap_kinematic_matches():
+def test_get_lead_danger_distance_kinematic_limit():
   from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance, get_safe_obstacle_distance, get_stopped_equivalence_factor, LEAD_DANGER_FACTOR
-  v_ego = 10.0
-  v_lead = 10.0
+  v_ego = 5.0
+  v_lead = 5.0
   t_follow = 1.55
+  # At 5 m/s, kinematic gap is still positive and dominant
   expected = LEAD_DANGER_FACTOR * get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
   assert get_lead_danger_distance(v_ego, v_lead, t_follow) == pytest.approx(expected)
 
 
 def test_danger_gap_ttc_floor():
-  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance, LEAD_DANGER_TTC_THRESHOLD, STOP_DISTANCE_MIN
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance, LEAD_DANGER_TTC_BP, LEAD_DANGER_TTC_V, LEAD_DANGER_DISTANCE_FLOOR_BP, LEAD_DANGER_DISTANCE_FLOOR_V
   v_ego = 35.0
   v_lead = 34.0
   t_follow = 1.55
   # Kinematic gap goes negative here, so TTC floor should take over
-  ttc_gap = (1.0 * LEAD_DANGER_TTC_THRESHOLD) + STOP_DISTANCE_MIN
+  ttc_threshold = np.interp(v_ego, LEAD_DANGER_TTC_BP, LEAD_DANGER_TTC_V)
+  distance_floor = np.interp(v_ego, LEAD_DANGER_DISTANCE_FLOOR_BP, LEAD_DANGER_DISTANCE_FLOOR_V)
+  ttc_gap = (1.0 * ttc_threshold) + distance_floor
   assert get_lead_danger_distance(v_ego, v_lead, t_follow) == pytest.approx(ttc_gap)
+
+
+def test_danger_gap_scaling():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance
+  t_follow = 1.55
+  
+  # Low speed (2 m/s): kinematic is dominant (approx 5.98m)
+  gap_low = get_lead_danger_distance(2.0, 0.0, t_follow)
+  assert gap_low == pytest.approx(5.982692307692307)
+  
+  # High speed (35 m/s): TTC floor is dominant (10.0m)
+  # 2m/s closure * 2.0s TTC + 6.0m floor = 10.0m
+  gap_high = get_lead_danger_distance(35.0, 33.0, t_follow)
+  assert gap_high == pytest.approx(10.0)
 
 
 def test_danger_gap_a_lead_projection():

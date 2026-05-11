@@ -43,7 +43,10 @@ A_CHANGE_COST = 200.0
 DANGER_ZONE_COST = 100.0
 CRASH_DISTANCE = 0.25
 LEAD_DANGER_FACTOR = 0.75
-LEAD_DANGER_TTC_THRESHOLD = 2.0
+LEAD_DANGER_TTC_BP = [0.0, 20.0]
+LEAD_DANGER_TTC_V = [1.2, 2.0]
+LEAD_DANGER_DISTANCE_FLOOR_BP = [0.0, 30.0]
+LEAD_DANGER_DISTANCE_FLOOR_V = [2.0, 6.0]
 LIMIT_COST = 1e6
 ACADOS_SOLVER_TYPE = 'SQP_RTI'
 
@@ -376,8 +379,10 @@ def get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead=0.0):
   kinematic_danger_gap = LEAD_DANGER_FACTOR * get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(projected_v_lead)
 
   closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  ttc_threshold = np.interp(v_ego, LEAD_DANGER_TTC_BP, LEAD_DANGER_TTC_V)
+  distance_floor = np.interp(v_ego, LEAD_DANGER_DISTANCE_FLOOR_BP, LEAD_DANGER_DISTANCE_FLOOR_V)
   # TTC distance = closing speed * TTC threshold + minimal physical buffer
-  ttc_danger_gap = (closing_speed * LEAD_DANGER_TTC_THRESHOLD) + STOP_DISTANCE_MIN
+  ttc_danger_gap = (closing_speed * ttc_threshold) + distance_floor
 
   return np.maximum(kinematic_danger_gap, ttc_danger_gap)
 
@@ -560,6 +565,18 @@ def should_preserve_lead_transition_churn(prev_y_rel, y_rel, prev_d_rel, d_rel, 
 
 def should_count_lead_transition_fcw(model_prob, transition_release):
   return bool(model_prob > 0.9 and transition_release <= 0.01)
+
+
+def should_count_mpc_fcw_crash(lead_xv_0, lead_xv_1, x_sol, lead_0_model_prob, lead_1_model_prob,
+                               lead_0_obstacle_release, lead_1_obstacle_release):
+  return any(
+    np.any(lead_xv[FCW_IDXS, 0] - x_sol[FCW_IDXS, 0] < CRASH_DISTANCE) and
+    should_count_lead_transition_fcw(model_prob, obstacle_release)
+    for lead_xv, model_prob, obstacle_release in (
+      (lead_xv_0, lead_0_model_prob, lead_0_obstacle_release),
+      (lead_xv_1, lead_1_model_prob, lead_1_obstacle_release),
+    )
+  )
 
 
 def get_short_gap_pullaway_response_accel_max(t_follow):
@@ -1925,8 +1942,9 @@ class LongitudinalMpc:
     self.params[:, 5] = LEAD_DANGER_FACTOR
 
     self.run()
-    if np.any(lead_xv_0[FCW_IDXS, 0] - self.x_sol[FCW_IDXS, 0] < CRASH_DISTANCE) and \
-       should_count_lead_transition_fcw(radarstate.leadOne.modelProb, lead_0_obstacle_release):
+    if should_count_mpc_fcw_crash(
+      lead_xv_0, lead_xv_1, self.x_sol, lead_0_model_prob, lead_1_model_prob, lead_0_obstacle_release, lead_1_obstacle_release,
+    ):
       self.crash_cnt += 1
     else:
       self.crash_cnt = 0
