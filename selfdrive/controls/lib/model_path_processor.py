@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 import numpy as np
@@ -39,6 +39,22 @@ SMOOTHED_CURVATURE_BLEND_ALPHA = [0.20, 0.35, 0.50]
 SMOOTHED_CURVATURE_MAX_LAT_ACCEL_DELTA = [0.20, 0.35, 0.50]
 SMOOTHED_CURVATURE_MAX_RAW_LAT_ACCEL_DISAGREEMENT = 1.25
 
+# Temporal damping: tau (s) vs speed — larger tau at low speed (more smoothing).
+DAMPING_TAU_SPEED_BP = [5.0, 15.0, 30.0]
+DAMPING_TAU_S = [0.16, 0.10, 0.055]
+
+# Trust penalty after unstable frames (decay then bump on same frame when applicable).
+TRUST_DECAY = 0.92
+TRUST_BUMP = 0.38
+TRUST_BUMP_REASONS = frozenset({"invalid_path", "frame_drop", "path_disagreement"})
+
+# Soft hysteresis near zero curvature: scale spatial blend toward 1 as |kappa| increases.
+NEAR_ZERO_CURVATURE_BP = [0.0, 0.00045]
+NEAR_ZERO_BLEND_SCALE = [0.32, 1.0]
+
+# Lane change: fade (smoothed - raw) correction toward raw so LaneChangePathShaper does not see a step.
+LANE_CHANGE_OFFSET_FADE_S = 0.5
+
 
 @dataclass
 class ModelPathProcessorInputs:
@@ -66,6 +82,11 @@ class ModelPathProcessorResult:
   gated: bool
   reason: str
   hold_frames_remaining: int = 0
+  smoothing_tau_s: float = 0.0
+  damping_alpha: float = 0.0
+  trust_penalty: float = 0.0
+  spatial_smoothed_curvature: float = 0.0
+  lane_change_fade: float = 0.0
 
 
 class ModelPathProcessor:
@@ -76,21 +97,36 @@ class ModelPathProcessor:
     self._hold_frames_remaining = 0
     self._hold_reason = "ok"
     self._recovering_from_hard_invalid = False
+    self._trust_penalty = 0.0
+    self._temporal_smoothed_curvature: float | None = None
+    self._lane_change_fade: float | None = None
+    self._prev_lane_change_active = False
+    self._last_smoothing_tau_s = 0.0
+    self._last_damping_alpha = 0.0
+    self._last_spatial_curvature = 0.0
 
   def update(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult:
+    self._last_smoothing_tau_s = 0.0
+    self._last_damping_alpha = 0.0
+    self._last_spatial_curvature = 0.0
+    lc_fade_report = 0.0
+
     if not inputs.lat_active:
       self.reset()
       return ModelPathProcessorResult(float(inputs.measured_curvature), 0.0, True, "inactive")
 
+    self._trust_penalty *= TRUST_DECAY
+
     if not math.isfinite(inputs.desired_curvature):
       self._recovering_from_hard_invalid = False
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
-      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature")
+      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature", 0, trust_penalty=self._trust_penalty)
 
     if not self._valid_core_path(inputs.position_x, inputs.position_y):
       self._recovering_from_hard_invalid = True
+      self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
-      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path")
+      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path", 0, trust_penalty=self._trust_penalty)
 
     desired_curvature = float(inputs.desired_curvature)
     fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
@@ -104,7 +140,7 @@ class ModelPathProcessor:
         inputs.measured_curvature,
         inputs.turn_curvature_sign,
       )
-      return ModelPathProcessorResult(turn_fallback_curvature, 0.5, True, "turn_opposite_curvature")
+      return ModelPathProcessorResult(turn_fallback_curvature, 0.5, True, "turn_opposite_curvature", 0, trust_penalty=self._trust_penalty)
 
     path_curvature = self._path_curvature(inputs.orientation_z, inputs.orientation_rate_z, inputs.v_ego)
     path_disagreement = None
@@ -138,29 +174,119 @@ class ModelPathProcessor:
     jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
     if jump_result is not None:
       self._recovering_from_hard_invalid = False
-      return jump_result
+      return replace(jump_result, trust_penalty=self._trust_penalty)
 
     quality, reason, hold_frames_remaining = self._apply_soft_gate_hold(quality, reason)
+
+    if reason in TRUST_BUMP_REASONS:
+      self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
 
     if quality < LOW_QUALITY_BLEND_THRESHOLD:
       self._recovering_from_hard_invalid = False
       alpha = float(np.interp(quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0]))
       desired_curvature = self._blend(fallback_curvature, desired_curvature, alpha)
-      return ModelPathProcessorResult(desired_curvature, quality, True, reason, hold_frames_remaining)
+      return ModelPathProcessorResult(
+        desired_curvature, quality, True, reason, hold_frames_remaining, trust_penalty=self._trust_penalty,
+      )
 
-    smoothed_curvature = self._smoothed_path_curvature(inputs, desired_curvature, quality)
-    if smoothed_curvature is not None:
-      desired_curvature = smoothed_curvature
-      jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
-      if jump_result is not None:
-        self._recovering_from_hard_invalid = False
-        return jump_result
+    raw_base = desired_curvature
+    spatial_curvature: float | None = None
+    if inputs.smooth_model_path_curvature:
+      spatial_curvature = self._smoothed_path_curvature(inputs, raw_base, quality, self._trust_penalty)
+
+    if spatial_curvature is not None:
+      self._last_spatial_curvature = float(spatial_curvature)
+      after_spatial = float(spatial_curvature)
+    else:
+      after_spatial = raw_base
+      self._last_spatial_curvature = raw_base
+
+    tau_s, damp_alpha, damped = self._temporal_damp_curvature(inputs, after_spatial, bool(inputs.smooth_model_path_curvature))
+    self._last_smoothing_tau_s = tau_s
+    self._last_damping_alpha = damp_alpha
+
+    desired_curvature = damped
+
+    # Lane change: fade from fully smoothed (k=1) toward raw_base (k=0).
+    if inputs.smooth_model_path_curvature and inputs.lane_change_active:
+      if not self._prev_lane_change_active or self._lane_change_fade is None:
+        self._lane_change_fade = 1.0
+      fade = float(self._lane_change_fade)
+      lc_fade_report = fade
+      desired_curvature = float(raw_base + (damped - raw_base) * fade)
+      self._lane_change_fade = max(0.0, fade - DT_CTRL / LANE_CHANGE_OFFSET_FADE_S)
+    else:
+      self._lane_change_fade = None
+
+    self._prev_lane_change_active = bool(inputs.lane_change_active)
+
+    jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
+    if jump_result is not None:
+      self._recovering_from_hard_invalid = False
+      return ModelPathProcessorResult(
+        jump_result.desired_curvature,
+        jump_result.quality,
+        jump_result.gated,
+        jump_result.reason,
+        jump_result.hold_frames_remaining,
+        smoothing_tau_s=tau_s,
+        damping_alpha=damp_alpha,
+        trust_penalty=self._trust_penalty,
+        spatial_smoothed_curvature=self._last_spatial_curvature,
+        lane_change_fade=lc_fade_report,
+      )
 
     recovery_result = self._limit_hard_invalid_recovery(inputs, desired_curvature)
     if recovery_result is not None:
-      return recovery_result
+      return replace(
+        recovery_result,
+        smoothing_tau_s=tau_s,
+        damping_alpha=damp_alpha,
+        trust_penalty=self._trust_penalty,
+        spatial_smoothed_curvature=self._last_spatial_curvature,
+        lane_change_fade=lc_fade_report,
+      )
 
-    return ModelPathProcessorResult(desired_curvature, quality, False, reason, hold_frames_remaining)
+    return ModelPathProcessorResult(
+      desired_curvature,
+      quality,
+      False,
+      reason,
+      hold_frames_remaining,
+      smoothing_tau_s=tau_s,
+      damping_alpha=damp_alpha,
+      trust_penalty=self._trust_penalty,
+      spatial_smoothed_curvature=self._last_spatial_curvature,
+      lane_change_fade=lc_fade_report,
+    )
+
+  def _temporal_damp_curvature(
+    self,
+    inputs: ModelPathProcessorInputs,
+    target: float,
+    smoothing_enabled: bool,
+  ) -> tuple[float, float, float]:
+    if not smoothing_enabled:
+      self._temporal_smoothed_curvature = None
+      return 0.0, 0.0, float(target)
+
+    v_ego = float(inputs.v_ego)
+    if not math.isfinite(v_ego) or v_ego < SMOOTHED_CURVATURE_MIN_SPEED:
+      self._temporal_smoothed_curvature = None
+      return 0.0, 0.0, float(target)
+
+    tau_s = float(np.interp(v_ego, DAMPING_TAU_SPEED_BP, DAMPING_TAU_S))
+    tau_s = max(tau_s, 1e-4)
+    alpha = float(DT_CTRL / (DT_CTRL + tau_s))
+
+    if self._temporal_smoothed_curvature is None or not math.isfinite(self._temporal_smoothed_curvature):
+      self._temporal_smoothed_curvature = float(target)
+    else:
+      self._temporal_smoothed_curvature = float(
+        self._temporal_smoothed_curvature + alpha * (target - self._temporal_smoothed_curvature)
+      )
+
+    return tau_s, alpha, float(self._temporal_smoothed_curvature)
 
   def _apply_soft_gate_hold(self, quality: float, reason: str) -> tuple[float, str, int]:
     if reason in SOFT_GATE_REASONS and quality < LOW_QUALITY_BLEND_THRESHOLD:
@@ -304,8 +430,9 @@ class ModelPathProcessor:
     inputs: ModelPathProcessorInputs,
     desired_curvature: float,
     quality: float,
+    trust_penalty: float,
   ) -> float | None:
-    if not inputs.smooth_model_path_curvature or inputs.lane_change_active:
+    if not inputs.smooth_model_path_curvature:
       return None
 
     v_ego = float(inputs.v_ego)
@@ -356,6 +483,12 @@ class ModelPathProcessor:
 
     quality_alpha = float(np.interp(quality, [LOW_QUALITY_BLEND_THRESHOLD, 1.0], [0.0, 1.0]))
     blend_alpha = float(np.interp(v_ego, SMOOTHED_CURVATURE_SPEED_BP, SMOOTHED_CURVATURE_BLEND_ALPHA)) * quality_alpha
+    trust_scale = max(0.0, 1.0 - float(trust_penalty))
+    blend_alpha *= trust_scale
+
+    near_zero_scale = float(np.interp(abs(desired_curvature), NEAR_ZERO_CURVATURE_BP, NEAR_ZERO_BLEND_SCALE))
+    blend_alpha *= near_zero_scale
+
     max_delta_lat_accel = float(np.interp(v_ego, SMOOTHED_CURVATURE_SPEED_BP, SMOOTHED_CURVATURE_MAX_LAT_ACCEL_DELTA)) * quality_alpha
     if blend_alpha <= 0.0 or max_delta_lat_accel <= 0.0:
       return None

@@ -100,7 +100,7 @@ def test_smoothed_model_path_curvature_disables_at_low_speed():
   assert result.desired_curvature == pytest.approx(0.003)
 
 
-def test_smoothed_model_path_curvature_disables_during_lane_change():
+def test_smoothed_model_path_curvature_lane_change_starts_with_full_fade_and_smoothed_handover():
   result = ModelPathProcessor().update(make_inputs(
     desired_curvature=0.003,
     orientation_z=constant_curvature_yaws(0.0, 20.0),
@@ -111,7 +111,75 @@ def test_smoothed_model_path_curvature_disables_during_lane_change():
 
   assert not result.gated
   assert result.reason == "ok"
-  assert result.desired_curvature == pytest.approx(0.003)
+  assert result.lane_change_fade == pytest.approx(1.0)
+  assert 0.002 <= result.desired_curvature <= 0.003
+
+
+def test_lane_change_fade_decays_across_frames():
+  processor = ModelPathProcessor()
+  base = dict(
+    desired_curvature=0.003,
+    orientation_z=constant_curvature_yaws(0.0, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.0, 20.0),
+    smooth_model_path_curvature=True,
+    lane_change_active=True,
+  )
+  first = processor.update(make_inputs(**base))
+  assert first.lane_change_fade == pytest.approx(1.0)
+  second = processor.update(make_inputs(previous_desired_curvature=first.desired_curvature, **base))
+  assert second.lane_change_fade < first.lane_change_fade
+
+
+def test_smoothed_path_publishes_nonzero_damping_telemetry_when_active():
+  curvature = 0.002
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=curvature,
+    previous_desired_curvature=curvature,
+    orientation_z=constant_curvature_yaws(curvature, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(curvature, 20.0),
+    smooth_model_path_curvature=True,
+  ))
+  assert result.damping_alpha > 0.0
+  assert result.smoothing_tau_s > 0.0
+  assert result.lane_change_fade == pytest.approx(0.0)
+
+
+def test_frame_drop_bumps_trust_penalty_then_decays():
+  processor = ModelPathProcessor()
+  gated = processor.update(make_inputs(frame_drop_perc=50.0))
+  assert gated.trust_penalty > 0.25
+  trust = gated.trust_penalty
+  for _ in range(40):
+    gated = processor.update(make_inputs(previous_desired_curvature=gated.desired_curvature, frame_drop_perc=0.0))
+  assert gated.trust_penalty < trust * 0.5
+
+
+def test_near_zero_desired_curvature_softens_spatial_correction_vs_mid_curvature():
+  flat = dict(
+    orientation_z=constant_curvature_yaws(0.0, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.0, 20.0),
+    smooth_model_path_curvature=True,
+  )
+  hi_d, lo_d = 0.003, 0.00008
+  hi = ModelPathProcessor().update(make_inputs(desired_curvature=hi_d, previous_desired_curvature=0.002, **flat))
+  lo = ModelPathProcessor().update(make_inputs(desired_curvature=lo_d, previous_desired_curvature=0.00007, **flat))
+  hi_rel = abs(hi.spatial_smoothed_curvature - hi_d) / max(abs(hi_d), 1e-9)
+  lo_rel = abs(lo.spatial_smoothed_curvature - lo_d) / max(abs(lo_d), 1e-9)
+  assert lo_rel < hi_rel
+
+
+def test_temporal_damping_limits_single_frame_spike_in_smoothed_output():
+  processor = ModelPathProcessor()
+  stable = dict(
+    v_ego=20.0,
+    orientation_z=constant_curvature_yaws(0.002, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.002, 20.0),
+    smooth_model_path_curvature=True,
+  )
+  processor.update(make_inputs(desired_curvature=0.002, previous_desired_curvature=0.002, **stable))
+  spike = processor.update(make_inputs(desired_curvature=0.006, previous_desired_curvature=0.002, **stable))
+  assert spike.desired_curvature < 0.006
+  assert spike.desired_curvature > 0.002
 
 
 def test_smoothed_model_path_curvature_rejects_large_raw_disagreement():
