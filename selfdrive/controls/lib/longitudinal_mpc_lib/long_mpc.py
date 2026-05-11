@@ -342,10 +342,6 @@ def get_desired_follow_distance(v_ego, v_lead, t_follow):
 
 
 def get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead=0.0):
-  v_ego = np.asarray(v_ego, dtype=float)
-  v_lead = np.asarray(v_lead, dtype=float)
-  a_lead = np.asarray(a_lead, dtype=float)
-
   # Project v_lead forward by t_follow to react earlier to slowing leads
   # Only project braking (a_lead < 0) to avoid under-reacting to accelerating leads
   projected_a_lead = np.minimum(a_lead, 0.0)
@@ -498,8 +494,6 @@ def apply_source_hysteresis(obstacles, current_idx, margin):
 
 
 def get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow, a_lead=0.0):
-  d_rel = np.asarray(d_rel, dtype=float)
-  v_lead = np.asarray(v_lead, dtype=float)
   closing_speed = np.maximum(v_ego - v_lead, 0.0)
   comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow, a_lead)
   desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
@@ -614,7 +608,7 @@ def get_lead_chase_target_gap(v_ego, v_lead, a_lead, t_follow, normal_gap=None):
   )
   safety_floor = np.maximum(
     STOP_DISTANCE,
-    get_lead_danger_distance(v_ego, v_lead, t_follow) + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0),
+    get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead) + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0),
   )
   chase_floor = np.maximum(safety_floor, floor_fraction * normal_gap)
   chase_blend = accel_blend * closing_guard
@@ -1433,7 +1427,8 @@ class LongitudinalMpc:
       return np.full(N + 1, ACCEL_MIN)
 
     closing_threshold = LEAD_GAP_COMFORT_CLOSING_EXIT if self.lead_gap_comfort_active[lead_idx] else LEAD_GAP_COMFORT_CLOSING_ENTER
-    comfort_a_min = get_lead_gap_comfort_a_min(self.x0[1], float(lead.vLeadK), float(lead.dRel), t_follow, closing_threshold=closing_threshold)
+    comfort_a_min = get_lead_gap_comfort_a_min(self.x0[1], float(lead.vLeadK), float(lead.dRel), t_follow,
+                                              a_lead=float(lead.aLeadK), closing_threshold=closing_threshold)
     self.lead_gap_comfort_active[lead_idx] = comfort_a_min > ACCEL_MIN
     if not self.lead_gap_comfort_active[lead_idx]:
       return np.full(N + 1, ACCEL_MIN)
@@ -1561,10 +1556,10 @@ class LongitudinalMpc:
       lead_xv_1[:, 1], lead_xv_1[:, 0], lead_1_a_traj, t_follow, v_ego, block_short_gap_pullaway_response, lead_1_model_prob,
     )
     lead_0_closing_cushion_targets, lead_0_closing_cushion_costs = get_moving_lead_closing_cushion_target(
-      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], t_follow
+      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], t_follow, a_lead=lead_0_a_traj
     )
     lead_1_closing_cushion_targets, lead_1_closing_cushion_costs = get_moving_lead_closing_cushion_target(
-      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], t_follow
+      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], t_follow, a_lead=lead_1_a_traj
     )
 
     lead_0_crawl_targets, lead_0_crawl_costs = get_lead_crawl_comfort_target(
