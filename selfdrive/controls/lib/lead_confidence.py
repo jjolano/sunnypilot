@@ -11,6 +11,9 @@ NEW_LEAD_CONTINUITY_MAX_D_REL_DELTA = 5.0
 NEW_LEAD_CONTINUITY_MAX_V_LEAD_DELTA = 5.0
 NEW_LEAD_CONTINUITY_MAX_Y_REL_DELTA = 1.0
 NEW_LEAD_LATERAL_CHURN_Y_REL_MIN = 1.0
+LEAD_FLICKER_WINDOW = 3.0
+LEAD_FLICKER_COUNT_THRESHOLD = 3
+LEAD_FLICKER_GUARD_TIME = 1.0
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,7 @@ class LeadConfidenceState:
   age: float = 0.0
   accel_blend: float = 0.0
   guard_timer: float = 0.0
+  flicker_guard_timer: float = 0.0
   track_id: int = LEAD_CONFIDENCE_TRACK_UNKNOWN
   d_rel: float = 0.0
   v_lead: float = 0.0
@@ -87,6 +91,9 @@ class LeadConfidenceTracker:
     self.age = 0.0
     self.guard_timer = 0.0
     self.was_status = False
+    self._flicker_transitions: list[float] = []
+    self._flicker_guard_timer = 0.0
+    self._prev_status = False
 
   def _is_continuous(self, track_id, d_rel, v_lead, y_rel):
     same_radar_track = track_id >= 0 and self.track_id >= 0 and track_id == self.track_id
@@ -100,15 +107,28 @@ class LeadConfidenceTracker:
     motion_continuous = _lead_continuity(self.d_rel, d_rel, self.v_lead, v_lead, self.y_rel, y_rel)
     return motion_continuous and (same_radar_track or radarless_or_unknown or lateral_exit_churn)
 
+  def _update_flicker(self, status, dt):
+    self._flicker_guard_timer = max(0.0, self._flicker_guard_timer - dt)
+    if bool(status) != self._prev_status:
+      self._flicker_transitions.append(0.0)
+    self._prev_status = bool(status)
+    # Age all transition timestamps and prune expired ones
+    self._flicker_transitions = [t + dt for t in self._flicker_transitions if t + dt <= LEAD_FLICKER_WINDOW]
+    if len(self._flicker_transitions) >= LEAD_FLICKER_COUNT_THRESHOLD:
+      self._flicker_guard_timer = LEAD_FLICKER_GUARD_TIME
+
   def update(self, lead, dt):
     dt = max(_finite_float(dt), 0.0)
     self.guard_timer = max(0.0, self.guard_timer - dt)
 
-    if lead is None or not bool(getattr(lead, "status", False)):
+    current_status = lead is not None and bool(getattr(lead, "status", False))
+    self._update_flicker(current_status, dt)
+
+    if not current_status:
       self.was_status = False
       self.track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
       self.age = 0.0
-      return LeadConfidenceState(guard_timer=self.guard_timer)
+      return LeadConfidenceState(guard_timer=self.guard_timer, flicker_guard_timer=self._flicker_guard_timer)
 
     track_id, d_rel, v_lead, y_rel, radar, model_prob = _lead_values(lead)
     continuous = self.was_status and self._is_continuous(track_id, d_rel, v_lead, y_rel)
@@ -136,6 +156,7 @@ class LeadConfidenceTracker:
       age=self.age,
       accel_blend=accel_blend,
       guard_timer=self.guard_timer,
+      flicker_guard_timer=self._flicker_guard_timer,
       track_id=track_id,
       d_rel=d_rel,
       v_lead=v_lead,
