@@ -10,6 +10,7 @@ from openpilot.common.swaglog import cloudlog
 # WARNING: imports outside of constants will not trigger a rebuild
 from openpilot.selfdrive.modeld.constants import index_function
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
+from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceTracker, adjust_new_lead_accel
 
 if __name__ == '__main__':  # generating code
   from openpilot.third_party.acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
@@ -42,7 +43,10 @@ A_CHANGE_COST = 200.0
 DANGER_ZONE_COST = 100.0
 CRASH_DISTANCE = 0.25
 LEAD_DANGER_FACTOR = 0.75
-LEAD_DANGER_TTC_THRESHOLD = 2.0
+LEAD_DANGER_TTC_BP = [0.0, 20.0]
+LEAD_DANGER_TTC_V = [1.2, 2.0]
+LEAD_DANGER_DISTANCE_FLOOR_BP = [0.0, 30.0]
+LEAD_DANGER_DISTANCE_FLOOR_V = [2.0, 6.0]
 LIMIT_COST = 1e6
 ACADOS_SOLVER_TYPE = 'SQP_RTI'
 
@@ -229,6 +233,31 @@ LEAD_ACCEL_RECOVERY_OPTIMISTIC_GAP_FRACTION = 0.35
 LEAD_ACCEL_RECOVERY_ACCEL_BASE = 0.35
 LEAD_ACCEL_RECOVERY_LEAD_ACCEL_FACTOR = 0.80
 LEAD_ACCEL_RECOVERY_ACCEL_MAX = 1.20
+LEAD_TRANSITION_Y_REL_SOFT = 1.0
+LEAD_TRANSITION_Y_REL_CONFIRM = 1.6
+LEAD_TRANSITION_Y_REL_RESET = 0.9
+LEAD_TRANSITION_Y_REL_RATE_MIN = 0.02
+LEAD_TRANSITION_PERSISTENCE = 0.2
+LEAD_TRANSITION_RELEASE_TIME = 0.5
+LEAD_TRANSITION_GUARD_TIME = 0.55
+LEAD_TRANSITION_GUARD_FADE_TIME = 0.35
+LEAD_TRANSITION_GUARD_ACCEL_MAX = 0.0
+LEAD_TRANSITION_GUARD_OUTPUT_DELAY = 0.15
+LEAD_TRANSITION_GUARD_ARM_BLEND = 0.8
+LEAD_TRANSITION_TRACK_UNKNOWN = -2
+LEAD_TRANSITION_CHURN_MAX_D_REL_DELTA = 5.0
+LEAD_TRANSITION_CHURN_MAX_V_LEAD_DELTA = 5.0
+LEAD_TRANSITION_THREAT_MODEL_PROB_MIN = 0.75
+LEAD_TRANSITION_THREAT_CLOSING_MIN = 1.0
+LEAD_TRANSITION_THREAT_DECEL_MIN = 0.4
+LEAD_TRANSITION_CLOSE_CURVE_HOLD_TIME_GAP = 2.2
+LEAD_TRANSITION_CLOSE_CURVE_HOLD_MIN_D_REL = 25.0
+LEAD_TRANSITION_CLOSE_CURVE_HOLD_CLOSING_MIN = 0.2
+LEAD_TRANSITION_CLOSE_CURVE_HOLD_MAX_Y_REL = 2.0
+LEAD_TRANSITION_RETURNING_THREAT_HOLD_Y_REL = 2.0
+LEAD_TRANSITION_RETURNING_THREAT_RELEASE_Y_REL = 8.0
+NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN = 1.0
+NEW_LEAD_CUT_IN_GUARD_REQUIRED_DECEL_MIN = 0.25
 SHORT_GAP_PULLAWAY_RESPONSE_MIN_GAP = 0.15
 SHORT_GAP_PULLAWAY_RESPONSE_FULL_GAP = 1.0
 SHORT_GAP_PULLAWAY_RESPONSE_MAX_CLOSING = 0.5
@@ -350,8 +379,10 @@ def get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead=0.0):
   kinematic_danger_gap = LEAD_DANGER_FACTOR * get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(projected_v_lead)
 
   closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  ttc_threshold = np.interp(v_ego, LEAD_DANGER_TTC_BP, LEAD_DANGER_TTC_V)
+  distance_floor = np.interp(v_ego, LEAD_DANGER_DISTANCE_FLOOR_BP, LEAD_DANGER_DISTANCE_FLOOR_V)
   # TTC distance = closing speed * TTC threshold + minimal physical buffer
-  ttc_danger_gap = (closing_speed * LEAD_DANGER_TTC_THRESHOLD) + STOP_DISTANCE_MIN
+  ttc_danger_gap = (closing_speed * ttc_threshold) + distance_floor
 
   return np.maximum(kinematic_danger_gap, ttc_danger_gap)
 
@@ -423,6 +454,129 @@ def get_lead_accel_recovery_a_min(v_ego, v_lead, d_rel, a_lead, t_follow):
   gap_blend = float(np.interp(d_rel, [start_gap, full_recovery_gap], [0.0, 1.0]))
   recovery_cap = min(LEAD_ACCEL_RECOVERY_ACCEL_MAX, max(LEAD_ACCEL_RECOVERY_ACCEL_BASE, LEAD_ACCEL_RECOVERY_LEAD_ACCEL_FACTOR * a_lead))
   return recovery_cap * min(gap_blend, opening_blend, accel_blend)
+
+
+def get_lead_transition_lateral_blend(y_rel):
+  return float(np.interp(abs(y_rel), [LEAD_TRANSITION_Y_REL_SOFT, LEAD_TRANSITION_Y_REL_CONFIRM], [0.0, 1.0]))
+
+
+def get_lead_transition_timer_blend(exit_timer):
+  return float(np.interp(exit_timer, [0.0, LEAD_TRANSITION_PERSISTENCE], [0.0, 1.0]))
+
+
+def get_lead_transition_release_target(y_rel, exit_timer):
+  return get_lead_transition_lateral_blend(y_rel) * get_lead_transition_timer_blend(exit_timer)
+
+
+def get_lead_transition_cost_obstacle(cost_obstacle, cruise_obstacle, release_blend):
+  if release_blend <= 0.0:
+    return cost_obstacle
+  return cost_obstacle + release_blend * np.maximum(0.0, cruise_obstacle - cost_obstacle)
+
+
+def get_lead_transition_accel_max(guard_timer):
+  if guard_timer <= 0.0:
+    return np.full(N + 1, ACCEL_MAX)
+  guard_timer += LEAD_TRANSITION_GUARD_OUTPUT_DELAY
+  return np.interp(T_IDXS, [guard_timer, guard_timer + LEAD_TRANSITION_GUARD_FADE_TIME], [LEAD_TRANSITION_GUARD_ACCEL_MAX, ACCEL_MAX])
+
+
+def apply_lead_transition_accel_guard(accel_max, guard_timer):
+  if guard_timer > 0.0:
+    accel_max[:] = np.minimum(accel_max, get_lead_transition_accel_max(guard_timer))
+  return accel_max
+
+
+def get_new_lead_cut_in_guard_timer(v_ego, lead, lead_confidence):
+  if lead is None or not lead.status or lead_confidence.guard_timer <= 0.0:
+    return 0.0
+
+  d_rel = float(lead.dRel)
+  v_lead = float(lead.vLeadK)
+  if not np.isfinite(d_rel) or not np.isfinite(v_lead):
+    return 0.0
+
+  closing_speed = max(v_ego - v_lead, 0.0)
+  if closing_speed < NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN:
+    return 0.0
+
+  required_decel = closing_speed**2 / (2.0 * max(d_rel - STOP_DISTANCE, 0.1))
+  if required_decel < NEW_LEAD_CUT_IN_GUARD_REQUIRED_DECEL_MIN:
+    return 0.0
+  return lead_confidence.guard_timer
+
+
+def get_lead_transition_obstacle_release(release_blend, guard_timer):
+  guard_blend = float(np.interp(guard_timer, [0.0, LEAD_TRANSITION_GUARD_FADE_TIME], [0.0, 1.0]))
+  return release_blend * (1.0 - guard_blend)
+
+
+def get_lead_transition_adjusted_accel(a_lead, release_blend):
+  adjusted_accel = np.where(a_lead < 0.0, a_lead * (1.0 - release_blend), a_lead)
+  return float(adjusted_accel) if np.ndim(adjusted_accel) == 0 else adjusted_accel
+
+
+def get_lead_transition_path_relative_y(y_rel, d_rel, model_msg=None):
+  if model_msg is None:
+    return float(y_rel)
+
+  positions = np.asarray(getattr(getattr(model_msg, "position", None), "x", []), dtype=float)
+  path_y = np.asarray(getattr(getattr(model_msg, "position", None), "y", []), dtype=float)
+  if positions.ndim != 1 or path_y.ndim != 1 or positions.size < 2 or positions.size != path_y.size:
+    return float(y_rel)
+  if not np.isfinite(d_rel) or not np.all(np.isfinite(positions)) or not np.all(np.isfinite(path_y)):
+    return float(y_rel)
+  if d_rel < positions[0] or d_rel > positions[-1]:
+    return float(y_rel)
+
+  return float(y_rel - np.interp(d_rel, positions, path_y))
+
+
+def should_hold_lead_transition_for_close_curve_lead(v_ego, d_rel, v_lead, y_rel, model_prob):
+  closing_speed = v_ego - v_lead
+  if abs(y_rel) >= LEAD_TRANSITION_CLOSE_CURVE_HOLD_MAX_Y_REL:
+    return False
+  if model_prob < LEAD_TRANSITION_THREAT_MODEL_PROB_MIN or closing_speed < LEAD_TRANSITION_CLOSE_CURVE_HOLD_CLOSING_MIN:
+    return False
+  close_distance = max(LEAD_TRANSITION_CLOSE_CURVE_HOLD_MIN_D_REL, v_ego * LEAD_TRANSITION_CLOSE_CURVE_HOLD_TIME_GAP)
+  return d_rel < close_distance
+
+
+def get_lead_transition_returning_threat_release_target(y_rel):
+  return float(np.interp(
+    abs(y_rel),
+    [LEAD_TRANSITION_RETURNING_THREAT_HOLD_Y_REL, LEAD_TRANSITION_RETURNING_THREAT_RELEASE_Y_REL],
+    [0.0, 1.0],
+  ))
+
+
+def should_preserve_lead_transition_churn(prev_y_rel, y_rel, prev_d_rel, d_rel, prev_v_lead, v_lead):
+  if not all(np.isfinite(value) for value in (prev_y_rel, y_rel, prev_d_rel, d_rel, prev_v_lead, v_lead)):
+    return False
+
+  return bool(
+    np.sign(prev_y_rel) == np.sign(y_rel) and
+    abs(prev_y_rel) >= LEAD_TRANSITION_Y_REL_SOFT and
+    abs(y_rel) >= LEAD_TRANSITION_Y_REL_SOFT and
+    abs(d_rel - prev_d_rel) <= LEAD_TRANSITION_CHURN_MAX_D_REL_DELTA and
+    abs(v_lead - prev_v_lead) <= LEAD_TRANSITION_CHURN_MAX_V_LEAD_DELTA
+  )
+
+
+def should_count_lead_transition_fcw(model_prob, transition_release):
+  return bool(model_prob > 0.9 and transition_release <= 0.01)
+
+
+def should_count_mpc_fcw_crash(lead_xv_0, lead_xv_1, x_sol, lead_0_model_prob, lead_1_model_prob,
+                               lead_0_obstacle_release, lead_1_obstacle_release):
+  return any(
+    np.any(lead_xv[FCW_IDXS, 0] - x_sol[FCW_IDXS, 0] < CRASH_DISTANCE) and
+    should_count_lead_transition_fcw(model_prob, obstacle_release)
+    for lead_xv, model_prob, obstacle_release in (
+      (lead_xv_0, lead_0_model_prob, lead_0_obstacle_release),
+      (lead_xv_1, lead_1_model_prob, lead_1_obstacle_release),
+    )
+  )
 
 
 def get_short_gap_pullaway_response_accel_max(t_follow):
@@ -747,6 +901,7 @@ def get_lead_surge_damping_target(x_lead, v_ego, v_lead, a_lead, t_follow, decel
   cost = LEAD_SURGE_DAMPING_COST * damping_blend
   target = np.where(cost > 0.0, LEAD_SURGE_DAMPING_ACCEL_MAX, 0.0)
   return target, cost
+
 
 
 def get_selected_lead_targets(lead_0_targets, lead_1_targets, lead_0_costs, lead_1_costs, dominant_obstacle):
@@ -1300,10 +1455,22 @@ class LongitudinalMpc:
     self.lead_departure_anchors = np.full(2, np.nan)
     self.lead_gap_comfort_active = np.zeros(2, dtype=bool)
     self.lead_surge_decel_memories = np.zeros(2)
+    self.lead_transition_track_ids = np.full(2, LEAD_TRANSITION_TRACK_UNKNOWN, dtype=int)
+    self.lead_transition_prev_y_rel = np.full(2, np.nan)
+    self.lead_transition_prev_d_rel = np.full(2, np.nan)
+    self.lead_transition_prev_v_lead = np.full(2, np.nan)
+    self.lead_transition_exit_timers = np.zeros(2)
+    self.lead_transition_release_blends = np.zeros(2)
+    self.lead_transition_guard_timers = np.zeros(2)
+    self.lead_transition_guard_latched = np.zeros(2, dtype=bool)
+    self.lead_transition_was_status = np.zeros(2, dtype=bool)
+    self.lead_confidence_trackers = [LeadConfidenceTracker(), LeadConfidenceTracker()]
+    self.lead_confidence_states = [tracker.update(None, 0.0) for tracker in self.lead_confidence_trackers]
     self.prev_dominant_obstacle = None
     self._last_set_weights_key = None
     self._last_cost_weight_key = None
     self._last_accel_match_costs = None
+    self.prev_dominant_obstacle = None
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights, accel_match_costs=None):
@@ -1370,14 +1537,17 @@ class LongitudinalMpc:
     lead_xv = np.column_stack((x_lead_traj, v_lead_traj))
     return lead_xv, a_lead_traj
 
-  def process_lead(self, lead):
+  def process_lead(self, lead, lead_confidence=None):
     v_ego = self.x0[1]
     if lead is not None and lead.status:
       x_lead = float(lead.dRel)
       v_lead = float(lead.vLead)
-      a_lead = float(lead.aLeadK)
+      a_lead_raw = float(lead.aLeadK)
       a_lead_tau = float(lead.aLeadTau)
-      valid_lead = all(np.isfinite(value) for value in (x_lead, v_lead, a_lead, a_lead_tau))
+      valid_lead = all(np.isfinite(value) for value in (x_lead, v_lead, a_lead_raw, a_lead_tau))
+      if valid_lead:
+        a_lead = adjust_new_lead_accel(a_lead_raw, lead_confidence) if lead_confidence is not None else a_lead_raw
+        valid_lead = np.isfinite(a_lead)
     else:
       valid_lead = False
 
@@ -1395,7 +1565,7 @@ class LongitudinalMpc:
     v_lead = np.clip(v_lead, 0.0, 1e8)
     a_lead = np.clip(a_lead, -10.0, 5.0)
     lead_xv, a_lead_traj = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
-    return lead_xv, a_lead, a_lead_traj
+    return lead_xv, a_lead, a_lead_tau, a_lead_traj
 
   def get_lead_departure_state(self, lead_idx, lead):
     v_ego = self.x0[1]
@@ -1446,7 +1616,94 @@ class LongitudinalMpc:
     self.lead_surge_decel_memories[lead_idx] = max(memory, min(max(-float(lead.aLeadK), 0.0), LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX))
     return self.lead_surge_decel_memories[lead_idx]
 
-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, block_short_gap_pullaway_response=False):
+  def reset_lead_transition_state(self, lead_idx, guard_timer=0.0):
+    self.lead_transition_track_ids[lead_idx] = LEAD_TRANSITION_TRACK_UNKNOWN
+    self.lead_transition_prev_y_rel[lead_idx] = np.nan
+    self.lead_transition_prev_d_rel[lead_idx] = np.nan
+    self.lead_transition_prev_v_lead[lead_idx] = np.nan
+    self.lead_transition_exit_timers[lead_idx] = 0.0
+    self.lead_transition_release_blends[lead_idx] = 0.0
+    self.lead_transition_guard_timers[lead_idx] = guard_timer
+    self.lead_transition_guard_latched[lead_idx] = False
+    self.lead_transition_was_status[lead_idx] = False
+
+  def update_lead_transition_state(self, lead_idx, lead, model_msg=None):
+    self.lead_transition_guard_timers[lead_idx] = max(0.0, self.lead_transition_guard_timers[lead_idx] - self.dt)
+
+    if lead is None or not lead.status:
+      if self.lead_transition_was_status[lead_idx] and self.lead_transition_release_blends[lead_idx] > 0.05:
+        self.lead_transition_guard_timers[lead_idx] = max(self.lead_transition_guard_timers[lead_idx], LEAD_TRANSITION_GUARD_TIME)
+      self.reset_lead_transition_state(lead_idx, guard_timer=self.lead_transition_guard_timers[lead_idx])
+      return 0.0
+
+    track_id = int(lead.radarTrackId)
+    y_rel = get_lead_transition_path_relative_y(float(lead.yRel), float(lead.dRel), model_msg)
+    abs_y_rel = abs(y_rel)
+    prev_y_rel = self.lead_transition_prev_y_rel[lead_idx]
+    d_rel = float(lead.dRel)
+    v_lead = float(lead.vLeadK)
+    track_changed = track_id >= 0 and self.lead_transition_track_ids[lead_idx] >= 0 and track_id != self.lead_transition_track_ids[lead_idx]
+    lateral_exit_churn = track_changed and should_preserve_lead_transition_churn(
+      prev_y_rel, y_rel, self.lead_transition_prev_d_rel[lead_idx], d_rel, self.lead_transition_prev_v_lead[lead_idx], v_lead
+    )
+    if not self.lead_transition_was_status[lead_idx] or (track_changed and not lateral_exit_churn):
+      self.reset_lead_transition_state(lead_idx, guard_timer=self.lead_transition_guard_timers[lead_idx])
+
+    prev_abs_y_rel = (
+      abs(self.lead_transition_prev_y_rel[lead_idx]) if np.isfinite(self.lead_transition_prev_y_rel[lead_idx]) else abs_y_rel
+    )
+    moving_out = abs_y_rel > prev_abs_y_rel + LEAD_TRANSITION_Y_REL_RATE_MIN
+    returning_to_path = abs_y_rel + LEAD_TRANSITION_Y_REL_RATE_MIN < prev_abs_y_rel
+    possible_exit = abs_y_rel >= LEAD_TRANSITION_Y_REL_SOFT and (
+      moving_out or self.lead_transition_exit_timers[lead_idx] > 0.0 or abs_y_rel >= LEAD_TRANSITION_Y_REL_CONFIRM
+    )
+
+    if possible_exit:
+      self.lead_transition_exit_timers[lead_idx] = min(LEAD_TRANSITION_PERSISTENCE, self.lead_transition_exit_timers[lead_idx] + self.dt)
+    else:
+      self.lead_transition_exit_timers[lead_idx] = max(0.0, self.lead_transition_exit_timers[lead_idx] - self.dt)
+
+    target_blend = get_lead_transition_release_target(y_rel, self.lead_transition_exit_timers[lead_idx])
+    v_ego = float(self.x0[1])
+    closing_speed = v_ego - v_lead
+    required_decel = max(closing_speed, 0.0)**2 / (2.0 * max(d_rel - STOP_DISTANCE, 0.1))
+    model_prob = float(getattr(lead, "modelProb", 1.0))
+    closing_threat = (
+      model_prob >= LEAD_TRANSITION_THREAT_MODEL_PROB_MIN and
+      closing_speed >= LEAD_TRANSITION_THREAT_CLOSING_MIN and
+      required_decel >= LEAD_TRANSITION_THREAT_DECEL_MIN
+    )
+    if closing_threat and returning_to_path:
+      target_blend = min(target_blend, get_lead_transition_returning_threat_release_target(y_rel))
+    if closing_threat and abs_y_rel < LEAD_TRANSITION_Y_REL_CONFIRM:
+      target_blend = 0.0
+    close_curve_hold = should_hold_lead_transition_for_close_curve_lead(v_ego, d_rel, v_lead, y_rel, model_prob)
+    if close_curve_hold:
+      target_blend = 0.0
+      self.lead_transition_release_blends[lead_idx] = 0.0
+      self.lead_transition_guard_latched[lead_idx] = False
+
+    blend_step = self.dt / LEAD_TRANSITION_RELEASE_TIME
+    if target_blend > self.lead_transition_release_blends[lead_idx]:
+      self.lead_transition_release_blends[lead_idx] = min(target_blend, self.lead_transition_release_blends[lead_idx] + blend_step)
+    else:
+      self.lead_transition_release_blends[lead_idx] = max(target_blend, self.lead_transition_release_blends[lead_idx] - 2.0 * blend_step)
+
+    if target_blend >= LEAD_TRANSITION_GUARD_ARM_BLEND and not self.lead_transition_guard_latched[lead_idx]:
+      self.lead_transition_guard_timers[lead_idx] = max(self.lead_transition_guard_timers[lead_idx], LEAD_TRANSITION_GUARD_TIME)
+      self.lead_transition_guard_latched[lead_idx] = True
+    elif self.lead_transition_release_blends[lead_idx] <= 0.01 and abs_y_rel < LEAD_TRANSITION_Y_REL_RESET:
+      self.lead_transition_guard_latched[lead_idx] = False
+
+    self.lead_transition_track_ids[lead_idx] = track_id
+    self.lead_transition_prev_y_rel[lead_idx] = y_rel
+    self.lead_transition_prev_d_rel[lead_idx] = d_rel
+    self.lead_transition_prev_v_lead[lead_idx] = v_lead
+    self.lead_transition_was_status[lead_idx] = True
+    return self.lead_transition_release_blends[lead_idx]
+
+  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, block_short_gap_pullaway_response=False,
+             model_msg=None):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
@@ -1456,8 +1713,22 @@ class LongitudinalMpc:
 
     lead_0_surge_decel_memory = self.update_lead_surge_decel_memory(0, radarstate.leadOne)
     lead_1_surge_decel_memory = self.update_lead_surge_decel_memory(1, radarstate.leadTwo)
-    lead_xv_0, lead_0_a, lead_0_a_traj = self.process_lead(radarstate.leadOne)
-    lead_xv_1, lead_1_a, lead_1_a_traj = self.process_lead(radarstate.leadTwo)
+    lead_0_transition_release = self.update_lead_transition_state(0, radarstate.leadOne, model_msg)
+    lead_1_transition_release = self.update_lead_transition_state(1, radarstate.leadTwo, model_msg)
+    lead_0_confidence = self.lead_confidence_trackers[0].update(radarstate.leadOne, self.dt)
+    lead_1_confidence = self.lead_confidence_trackers[1].update(radarstate.leadTwo, self.dt)
+    self.lead_confidence_states = [lead_0_confidence, lead_1_confidence]
+
+    lead_xv_0, lead_0_a, lead_0_a_tau, lead_0_a_traj = self.process_lead(radarstate.leadOne, lead_0_confidence)
+    lead_xv_1, lead_1_a, lead_1_a_tau, lead_1_a_traj = self.process_lead(radarstate.leadTwo, lead_1_confidence)
+    lead_0_brake_a = get_lead_transition_adjusted_accel(lead_0_a, lead_0_transition_release)
+    lead_1_brake_a = get_lead_transition_adjusted_accel(lead_1_a, lead_1_transition_release)
+    lead_brake_xv_0, lead_0_brake_a_traj = lead_xv_0, lead_0_a_traj
+    lead_brake_xv_1, lead_1_brake_a_traj = lead_xv_1, lead_1_a_traj
+    if lead_0_brake_a != lead_0_a:
+      lead_brake_xv_0, lead_0_brake_a_traj = self.extrapolate_lead(lead_xv_0[0, 0], lead_xv_0[0, 1], lead_0_brake_a, lead_0_a_tau)
+    if lead_1_brake_a != lead_1_a:
+      lead_brake_xv_1, lead_1_brake_a_traj = self.extrapolate_lead(lead_xv_1[0, 0], lead_xv_1[0, 1], lead_1_brake_a, lead_1_a_tau)
 
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
@@ -1479,20 +1750,20 @@ class LongitudinalMpc:
     if lead_1_departure_armed:
       lead_1_stopped_buffer *= lead_1_departure_blend
     lead_0_stopped_buffer *= 1.0 - LEAD_STOP_RUNWAY_STOPPED_BUFFER_FADE * get_lead_stop_runway_preference(
-      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], t_follow, lead_0_a_traj
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], t_follow, lead_0_brake_a_traj
     )
     lead_1_stopped_buffer *= 1.0 - LEAD_STOP_RUNWAY_STOPPED_BUFFER_FADE * get_lead_stop_runway_preference(
-      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], t_follow, lead_1_a_traj
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], t_follow, lead_1_brake_a_traj
     )
-    lead_0_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_xv_0[:, 1], np.maximum(v_ego - lead_xv_0[:, 1], 0.0), lead_0_a_traj)
-    lead_1_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_xv_1[:, 1], np.maximum(v_ego - lead_xv_1[:, 1], 0.0), lead_1_a_traj)
-    lead_0_desired_gap = get_approach_follow_distance(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], t_follow, lead_0_a)
-    lead_1_desired_gap = get_approach_follow_distance(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], t_follow, lead_1_a)
+    lead_0_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_brake_xv_0[:, 1], np.maximum(v_ego - lead_brake_xv_0[:, 1], 0.0), lead_0_brake_a_traj)
+    lead_1_moving_stop_reserve = get_moving_lead_stop_reserve(v_ego, lead_brake_xv_1[:, 1], np.maximum(v_ego - lead_brake_xv_1[:, 1], 0.0), lead_1_brake_a_traj)
+    lead_0_desired_gap = get_approach_follow_distance(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], t_follow, lead_0_brake_a)
+    lead_1_desired_gap = get_approach_follow_distance(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], t_follow, lead_1_brake_a)
     lead_0_hard_relaxation = get_progressive_lead_hard_obstacle_relaxation(
-      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow, target_gap=lead_0_desired_gap,
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow, target_gap=lead_0_desired_gap,
     )
     lead_1_hard_relaxation = get_progressive_lead_hard_obstacle_relaxation(
-      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow, target_gap=lead_1_desired_gap,
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow, target_gap=lead_1_desired_gap,
     )
     lead_0_obstacle = (
       lead_xv_0[:, 0] + get_stopped_equivalence_factor(lead_0_hard_v) - lead_0_stopped_buffer - lead_0_moving_stop_reserve
@@ -1503,24 +1774,24 @@ class LongitudinalMpc:
       + lead_1_stop_gap_taper + lead_1_stop_gap_excess_offset + lead_1_hard_relaxation
     )
     lead_0_cost_obstacle_soft = (
-      lead_xv_0[:, 0]
+      lead_brake_xv_0[:, 0]
       + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_0_desired_gap, 0.0, 1e8)
       + lead_0_stop_gap_taper
       + lead_0_stop_gap_excess_offset
     )
     lead_1_cost_obstacle_soft = (
-      lead_xv_1[:, 0]
+      lead_brake_xv_1[:, 0]
       + np.clip(get_safe_obstacle_distance(v_ego, t_follow) - lead_1_desired_gap, 0.0, 1e8)
       + lead_1_stop_gap_taper
       + lead_1_stop_gap_excess_offset
     )
-    lead_0_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_xv_0[0, 0], lead_xv_0[0, 1], t_follow, lead_0_a)
-    lead_1_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_xv_1[0, 0], lead_xv_1[0, 1], t_follow, lead_1_a)
+    lead_0_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_brake_xv_0[0, 0], lead_brake_xv_0[0, 1], t_follow, lead_0_brake_a)
+    lead_1_cost_obstacle_soft -= get_approach_engage_offset(v_ego, lead_brake_xv_1[0, 0], lead_brake_xv_1[0, 1], t_follow, lead_1_brake_a)
     # Only bias the preferred gap once the lead has both opened real space and clearly pulled away.
     lead_0_cost_obstacle_soft += lead_0_departure_relaxation
     lead_1_cost_obstacle_soft += lead_1_departure_relaxation
-    lead_0_runway_blend = get_approach_runway_blend(lead_xv_0[0, 0], v_ego, lead_xv_0[0, 1], t_follow, lead_0_a)
-    lead_1_runway_blend = get_approach_runway_blend(lead_xv_1[0, 0], v_ego, lead_xv_1[0, 1], t_follow, lead_1_a)
+    lead_0_runway_blend = get_approach_runway_blend(lead_brake_xv_0[0, 0], v_ego, lead_brake_xv_0[0, 1], t_follow, lead_0_brake_a)
+    lead_1_runway_blend = get_approach_runway_blend(lead_brake_xv_1[0, 0], v_ego, lead_brake_xv_1[0, 1], t_follow, lead_1_brake_a)
     lead_0_cost_obstacle = lead_0_obstacle + lead_0_runway_blend * (lead_0_cost_obstacle_soft - lead_0_obstacle)
     lead_1_cost_obstacle = lead_1_obstacle + lead_1_runway_blend * (lead_1_cost_obstacle_soft - lead_1_obstacle)
 
@@ -1531,9 +1802,15 @@ class LongitudinalMpc:
     v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N + 1), v_lower, v_upper)
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
+    lead_0_cost_obstacle = get_lead_transition_cost_obstacle(lead_0_cost_obstacle, cruise_obstacle, lead_0_transition_release)
+    lead_1_cost_obstacle = get_lead_transition_cost_obstacle(lead_1_cost_obstacle, cruise_obstacle, lead_1_transition_release)
+    lead_0_obstacle_release = get_lead_transition_obstacle_release(lead_0_transition_release, self.lead_transition_guard_timers[0])
+    lead_1_obstacle_release = get_lead_transition_obstacle_release(lead_1_transition_release, self.lead_transition_guard_timers[1])
+    lead_0_mpc_obstacle = get_lead_transition_cost_obstacle(lead_0_obstacle, cruise_obstacle, lead_0_obstacle_release)
+    lead_1_mpc_obstacle = get_lead_transition_cost_obstacle(lead_1_obstacle, cruise_obstacle, lead_1_obstacle_release)
 
     cost_obstacles = np.column_stack([lead_0_cost_obstacle, lead_1_cost_obstacle, cruise_obstacle])
-    x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
+    x_obstacles = np.column_stack([lead_0_mpc_obstacle, lead_1_mpc_obstacle, cruise_obstacle])
 
     # Apply speed-proportional hysteresis to source selection to prevent rapid switching
     margin = get_source_hysteresis_margin(v_ego)
@@ -1550,50 +1827,63 @@ class LongitudinalMpc:
     lead_0_model_prob = float(radarstate.leadOne.modelProb) if radarstate.leadOne.status else 1.0
     lead_1_model_prob = float(radarstate.leadTwo.modelProb) if radarstate.leadTwo.status else 1.0
     lead_0_accel_targets, lead_0_accel_costs = get_lead_accel_match_targets(
-      lead_xv_0[:, 1], lead_xv_0[:, 0], lead_0_a_traj, t_follow, v_ego, block_short_gap_pullaway_response, lead_0_model_prob,
+      lead_brake_xv_0[:, 1], lead_brake_xv_0[:, 0], lead_0_brake_a_traj, t_follow, v_ego,
+      block_short_gap_pullaway_response, lead_0_model_prob,
     )
     lead_1_accel_targets, lead_1_accel_costs = get_lead_accel_match_targets(
-      lead_xv_1[:, 1], lead_xv_1[:, 0], lead_1_a_traj, t_follow, v_ego, block_short_gap_pullaway_response, lead_1_model_prob,
+      lead_brake_xv_1[:, 1], lead_brake_xv_1[:, 0], lead_1_brake_a_traj, t_follow, v_ego,
+      block_short_gap_pullaway_response, lead_1_model_prob,
     )
     lead_0_closing_cushion_targets, lead_0_closing_cushion_costs = get_moving_lead_closing_cushion_target(
-      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], t_follow, a_lead=lead_0_a_traj
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], t_follow, a_lead=lead_0_brake_a_traj
     )
     lead_1_closing_cushion_targets, lead_1_closing_cushion_costs = get_moving_lead_closing_cushion_target(
-      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], t_follow, a_lead=lead_1_a_traj
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], t_follow, a_lead=lead_1_brake_a_traj
     )
 
     lead_0_crawl_targets, lead_0_crawl_costs = get_lead_crawl_comfort_target(
-      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow, block_short_gap_pullaway_response, lead_0_model_prob,
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow,
+      block_short_gap_pullaway_response, lead_0_model_prob,
     )
     lead_1_crawl_targets, lead_1_crawl_costs = get_lead_crawl_comfort_target(
-      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow, block_short_gap_pullaway_response, lead_1_model_prob,
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow,
+      block_short_gap_pullaway_response, lead_1_model_prob,
     )
-    lead_0_crawl_accel_max = get_lead_crawl_accel_max(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow)
-    lead_1_crawl_accel_max = get_lead_crawl_accel_max(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow)
-    lead_0_stop_targets, lead_0_stop_costs = get_lead_stop_approach_comfort_target(lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow)
-    lead_1_stop_targets, lead_1_stop_costs = get_lead_stop_approach_comfort_target(lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow)
+    lead_0_crawl_accel_max = get_lead_crawl_accel_max(lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow)
+    lead_1_crawl_accel_max = get_lead_crawl_accel_max(lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow)
+    lead_0_stop_targets, lead_0_stop_costs = get_lead_stop_approach_comfort_target(
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow
+    )
+    lead_1_stop_targets, lead_1_stop_costs = get_lead_stop_approach_comfort_target(
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow
+    )
     lead_0_moving_stop_targets, lead_0_moving_stop_costs = get_moving_lead_stop_approach_comfort_target(
-      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow
     )
     lead_1_moving_stop_targets, lead_1_moving_stop_costs = get_moving_lead_stop_approach_comfort_target(
-      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow
     )
     lead_0_surge_targets, lead_0_surge_costs = get_lead_surge_damping_target(
-      lead_xv_0[:, 0], v_ego, lead_xv_0[:, 1], lead_0_a_traj, t_follow, lead_0_surge_decel_memory
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow, lead_0_surge_decel_memory
     )
     lead_1_surge_targets, lead_1_surge_costs = get_lead_surge_damping_target(
-      lead_xv_1[:, 0], v_ego, lead_xv_1[:, 1], lead_1_a_traj, t_follow, lead_1_surge_decel_memory
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow, lead_1_surge_decel_memory
     )
-    lead_0_crawl_selected = lead_0_crawl_costs >= lead_1_crawl_costs
+    # Use hysteretic dominant obstacle for all comfort lead selection.
+    # When cruise is dominant, fall back to the closer lead for lead-only targets.
+    lead_dominant = np.where(dominant_obstacle == 2,
+                              np.argmin(cost_obstacles[:, :2], axis=1),
+                              dominant_obstacle)
+    lead_0_crawl_selected = lead_dominant == 0
     crawl_targets = np.where(lead_0_crawl_selected, lead_0_crawl_targets, lead_1_crawl_targets)
     crawl_costs = np.where(lead_0_crawl_selected, lead_0_crawl_costs, lead_1_crawl_costs)
-    lead_0_stop_selected = lead_0_stop_costs >= lead_1_stop_costs
+    lead_0_stop_selected = lead_dominant == 0
     stop_targets = np.where(lead_0_stop_selected, lead_0_stop_targets, lead_1_stop_targets)
     stop_costs = np.where(lead_0_stop_selected, lead_0_stop_costs, lead_1_stop_costs)
     accel_match_targets, accel_match_costs = get_selected_lead_targets(
       lead_0_accel_targets, lead_1_accel_targets, lead_0_accel_costs, lead_1_accel_costs, dominant_obstacle
     )
-    lead_0_moving_stop_selected = lead_0_moving_stop_costs >= lead_1_moving_stop_costs
+    lead_0_moving_stop_selected = lead_dominant == 0
     moving_stop_targets = np.where(lead_0_moving_stop_selected, lead_0_moving_stop_targets, lead_1_moving_stop_targets)
     moving_stop_costs = np.where(lead_0_moving_stop_selected, lead_0_moving_stop_costs, lead_1_moving_stop_costs)
     surge_targets, surge_costs = get_selected_lead_targets(
@@ -1625,13 +1915,36 @@ class LongitudinalMpc:
     self.params[dominant_obstacle == 1, 0] = lead_1_gap_comfort_a_min[dominant_obstacle == 1]
     self.params[:, 1] = ACCEL_MAX
     self.params[:, 1] = np.minimum(self.params[:, 1], np.minimum(lead_0_crawl_accel_max, lead_1_crawl_accel_max))
+    lead_confidence_guard_timer = 0.0
+    lead_flicker_guard_timer = 0.0
+    if dominant_obstacle[0] == 0:
+      lead_confidence_guard_timer = lead_0_confidence.guard_timer
+      lead_flicker_guard_timer = lead_0_confidence.flicker_guard_timer
+    elif dominant_obstacle[0] == 1:
+      lead_confidence_guard_timer = lead_1_confidence.guard_timer
+      lead_flicker_guard_timer = lead_1_confidence.flicker_guard_timer
+    # Also apply flicker guard from either lead if closing speed is high,
+    # even when neither is the current dominant source (flicker may prevent
+    # the lead from ever becoming dominant).
+    if lead_flicker_guard_timer <= 0.0:
+      lead_flicker_guard_timer = max(lead_0_confidence.flicker_guard_timer, lead_1_confidence.flicker_guard_timer)
+    new_lead_cut_in_guard_timer = max(
+      get_new_lead_cut_in_guard_timer(v_ego, radarstate.leadOne, lead_0_confidence),
+      get_new_lead_cut_in_guard_timer(v_ego, radarstate.leadTwo, lead_1_confidence),
+    )
+    apply_lead_transition_accel_guard(
+      self.params[:, 1], max(max(self.lead_transition_guard_timers), lead_confidence_guard_timer,
+                             new_lead_cut_in_guard_timer, lead_flicker_guard_timer)
+    )
     self.params[:, 2] = np.min(x_obstacles, axis=1)
     self.params[:, 3] = np.copy(self.a_prev)
     self.params[:, 4] = t_follow
     self.params[:, 5] = LEAD_DANGER_FACTOR
 
     self.run()
-    if np.any(lead_xv_0[FCW_IDXS, 0] - self.x_sol[FCW_IDXS, 0] < CRASH_DISTANCE) and radarstate.leadOne.modelProb > 0.9:
+    if should_count_mpc_fcw_crash(
+      lead_xv_0, lead_xv_1, self.x_sol, lead_0_model_prob, lead_1_model_prob, lead_0_obstacle_release, lead_1_obstacle_release,
+    ):
       self.crash_cnt += 1
     else:
       self.crash_cnt = 0

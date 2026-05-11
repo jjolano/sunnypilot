@@ -7,6 +7,7 @@ from openpilot.common.parameterized import parameterized_class
 
 from cereal import custom, log
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
+from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceState
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
@@ -37,6 +38,13 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX,
   LEAD_STOP_APPROACH_DECEL_CAP,
   LEAD_STOP_RUNWAY_BRAKE,
+  LEAD_TRANSITION_PERSISTENCE,
+  LEAD_TRANSITION_GUARD_FADE_TIME,
+  LEAD_TRANSITION_GUARD_OUTPUT_DELAY,
+  LEAD_TRANSITION_Y_REL_CONFIRM,
+  LEAD_TRANSITION_Y_REL_SOFT,
+  NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN,
+  NEW_LEAD_CUT_IN_GUARD_REQUIRED_DECEL_MIN,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
@@ -71,6 +79,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_stop_runway_preference,
   get_lead_stop_runway_required_decel,
   get_lead_stop_runway_blend,
+  get_new_lead_cut_in_guard_timer,
   get_lead_stop_runway_gap,
   get_lead_stop_runway_urgency,
   get_lead_chase_target_gap,
@@ -84,6 +93,14 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_moving_lead_closing_cushion_target,
   get_moving_lead_stop_approach_comfort_target,
   get_moving_lead_stop_reserve,
+  get_lead_transition_accel_max,
+  get_lead_transition_adjusted_accel,
+  get_lead_transition_cost_obstacle,
+  get_lead_transition_lateral_blend,
+  get_lead_transition_obstacle_release,
+  get_lead_transition_path_relative_y,
+  get_lead_transition_release_target,
+  get_lead_transition_returning_threat_release_target,
   get_progressive_lead_approach_gap,
   get_pre_target_runway_decel_threshold,
   get_safe_obstacle_distance,
@@ -166,7 +183,7 @@ def patch_planner_sp(monkeypatch):
   monkeypatch.setattr(
     longitudinal_planner.LongitudinalPlannerSP,
     "update_targets",
-    lambda _planner, _sm, _v_ego, a_ego, v_cruise: (v_cruise, a_ego),
+    lambda _planner, _sm, _v_ego, a_ego, v_cruise, coast_accel=None: (v_cruise, a_ego),
   )
 
 
@@ -180,19 +197,31 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
     vEgoStopping=0.5,
   )
   planner.mpc = FakeMpc()
+  planner.params = SimpleNamespace(get_bool=lambda _key: False)
   planner.VM = None
   planner.control_calculation_hardening = False
+  planner.longitudinal_arbiter = longitudinal_planner.LongitudinalArbiter()
+  planner.longitudinal_decision = None
+  planner.longitudinal_decision_candidates = []
   planner.fcw = False
   planner.dt = longitudinal_planner.DT_MDL
   planner.allow_throttle = True
   planner.a_desired = 0.0
   planner.v_desired_filter = FakeVelocityFilter(v_ego)
   planner.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
+  # The fixture skips __init__ and models a steady-state engaged planner.
+  planner.prev_reset_state = False
+  planner.engage_stop_bootstrap_timer = 0.0
+  planner.e2e_close_stop_settle_active = False
   planner.output_a_target = 0.0
   planner.output_should_stop = False
   planner.creep_to_stop_gap_active = False
   planner.creep_stop_hold_released = False
   planner.stopped_lead_gap_fill_timer = gap_fill_timer
+  planner.lead_loss_e2e_guard_timer = 0.0
+  planner.previous_lead_loss_status = False
+  planner.previous_lead_loss_d_rel = 0.0
+  planner.previous_lead_loss_model_prob = 0.0
   planner.stopped_lead_gap_fill_track_id = -2
   planner.stopped_lead_gap_fill_d_rel = 0.0
   planner.stopped_lead_gap_fill_v_lead = 0.0
@@ -207,12 +236,13 @@ def make_model_action(desired_accel=-1.0, should_stop=True):
     position=SimpleNamespace(x=[]),
     velocity=SimpleNamespace(x=[]),
     acceleration=SimpleNamespace(x=[]),
-    meta=SimpleNamespace(disengagePredictions=SimpleNamespace(gasPressProbs=[0.0, 1.0])),
+    meta=SimpleNamespace(disengagePredictions=SimpleNamespace(gasPressProbs=[0.0, 1.0]), laneChangeState=log.LaneChangeState.off),
     leadsV3=[],
   )
 
 
-def make_planner_sm(v_ego, lead, desired_accel=-1.0, should_stop=True, brake_pressed=False, gas_pressed=False, force_slow_decel=False):
+def make_planner_sm(v_ego, lead, desired_accel=-1.0, should_stop=True, brake_pressed=False, gas_pressed=False,
+                    force_slow_decel=False, lead_two=None):
   return {
     'carControl': SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False), orientationNED=[0.0, 0.0, 0.0]),
     'carState': SimpleNamespace(
@@ -229,7 +259,7 @@ def make_planner_sm(v_ego, lead, desired_accel=-1.0, should_stop=True, brake_pre
     'selfdriveState': SimpleNamespace(enabled=True, experimentalMode=True, personality=log.LongitudinalPersonality.standard),
     'liveParameters': SimpleNamespace(angleOffsetDeg=0.0, roll=0.0, stiffnessFactor=1.0, steerRatio=15.0),
     'modelV2': make_model_action(desired_accel, should_stop),
-    'radarState': SimpleNamespace(leadOne=lead, leadTwo=SimpleNamespace(status=False)),
+    'radarState': SimpleNamespace(leadOne=lead, leadTwo=lead_two or SimpleNamespace(status=False)),
   }
 
 
@@ -1205,6 +1235,404 @@ def test_lead_departure_relaxation_fades_out_as_ego_starts_creeping():
   assert get_lead_departure_relaxation(1.0, 2.0, 1.0) == pytest.approx(0.0)
 
 
+def test_lead_transition_release_requires_lateral_exit_and_persistence():
+  assert get_lead_transition_lateral_blend(LEAD_TRANSITION_Y_REL_SOFT - 0.1) == pytest.approx(0.0)
+  assert get_lead_transition_release_target(LEAD_TRANSITION_Y_REL_CONFIRM, 0.0) == pytest.approx(0.0)
+
+  partial_release = get_lead_transition_release_target(
+    0.5 * (LEAD_TRANSITION_Y_REL_SOFT + LEAD_TRANSITION_Y_REL_CONFIRM),
+    0.5 * LEAD_TRANSITION_PERSISTENCE,
+  )
+  assert 0.0 < partial_release < 1.0
+  assert get_lead_transition_release_target(LEAD_TRANSITION_Y_REL_CONFIRM, LEAD_TRANSITION_PERSISTENCE) == pytest.approx(1.0)
+
+
+def test_lead_transition_releases_turning_lead_before_long_persistence():
+  assert get_lead_transition_release_target(1.6, 0.2) == pytest.approx(1.0)
+
+
+def test_lead_transition_uses_model_path_relative_offset():
+  model_msg = SimpleNamespace(position=SimpleNamespace(x=[0.0, 20.0, 40.0], y=[0.0, -1.0, -2.0]))
+
+  assert get_lead_transition_path_relative_y(-2.0, 40.0, model_msg) == pytest.approx(0.0)
+  assert get_lead_transition_path_relative_y(-3.8, 40.0, model_msg) == pytest.approx(-1.8)
+
+
+def test_lead_transition_holds_raw_offset_lead_on_model_curve_path():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-1.8,
+    dRel=44.0,
+    vLeadK=24.0,
+    modelProb=1.0,
+  )
+  model_msg = SimpleNamespace(position=SimpleNamespace(x=[0.0, 22.0, 44.0], y=[0.0, -0.9, -1.8]))
+
+  releases = [mpc.update_lead_transition_state(0, lead, model_msg) for _ in range(5)]
+
+  assert max(releases) == pytest.approx(0.0)
+
+
+def test_new_lead_cut_in_guard_arms_for_far_closing_discontinuity():
+  lead = SimpleNamespace(status=True, dRel=90.0, vLeadK=8.0)
+  guard = LeadConfidenceState(status=True, new_lead=True, guard_timer=0.3)
+
+  assert get_new_lead_cut_in_guard_timer(20.0, lead, guard) == pytest.approx(0.3)
+
+
+def test_new_lead_cut_in_guard_ignores_matched_speed_and_low_required_decel():
+  guard = LeadConfidenceState(status=True, new_lead=True, guard_timer=0.3)
+  matched_speed_lead = SimpleNamespace(status=True, dRel=60.0, vLeadK=20.0)
+  gentle_far_lead = SimpleNamespace(
+    status=True,
+    dRel=250.0,
+    vLeadK=20.0 - NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN,
+  )
+
+  assert get_new_lead_cut_in_guard_timer(20.0, matched_speed_lead, guard) == pytest.approx(0.0)
+  assert get_new_lead_cut_in_guard_timer(20.0, gentle_far_lead, guard) == pytest.approx(0.0)
+
+
+def test_lead_transition_releases_lead_turning_off_model_curve_path():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-3.6,
+    dRel=44.0,
+    vLeadK=24.0,
+    modelProb=1.0,
+  )
+  model_msg = SimpleNamespace(position=SimpleNamespace(x=[0.0, 22.0, 44.0], y=[0.0, -0.9, -1.8]))
+
+  releases = [mpc.update_lead_transition_state(0, lead, model_msg) for _ in range(5)]
+
+  assert max(releases) > 0.0
+
+
+def test_lead_transition_holds_close_confirmed_curve_lead_while_closing():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-1.8,
+    dRel=44.0,
+    vLeadK=21.5,
+    modelProb=1.0,
+  )
+
+  releases = [mpc.update_lead_transition_state(0, lead) for _ in range(5)]
+
+  assert max(releases) == pytest.approx(0.0)
+
+
+def test_lead_transition_returning_threat_release_target_tapers_toward_path():
+  assert get_lead_transition_returning_threat_release_target(8.0) == pytest.approx(1.0)
+  assert get_lead_transition_returning_threat_release_target(5.0) == pytest.approx(0.5)
+  assert get_lead_transition_returning_threat_release_target(-5.0) == pytest.approx(0.5)
+  assert get_lead_transition_returning_threat_release_target(2.0) == pytest.approx(0.0)
+
+
+def test_lead_transition_preserves_far_offset_returning_lead_release_while_closing():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 15.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=10.0,
+    dRel=50.0,
+    vLeadK=5.0,
+    modelProb=1.0,
+  )
+
+  release_before_return = mpc.update_lead_transition_state(0, lead)
+  lead.yRel = 8.5
+  release_after_return = mpc.update_lead_transition_state(0, lead)
+
+  assert release_before_return > 0.0
+  assert release_after_return >= release_before_return
+
+
+def test_lead_transition_returning_threat_tapers_back_to_hold_near_path():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 15.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=12.8,
+    dRel=76.0,
+    vLeadK=5.5,
+    modelProb=1.0,
+  )
+
+  release_far = max(mpc.update_lead_transition_state(0, lead) for _ in range(5))
+  lead.yRel = 8.0
+  release_full = mpc.update_lead_transition_state(0, lead)
+  lead.yRel = 5.0
+  release_mid = mpc.update_lead_transition_state(0, lead)
+  lead.yRel = 2.0
+  release_near = mpc.update_lead_transition_state(0, lead)
+  lead.yRel = 0.3
+  release_in_path = mpc.update_lead_transition_state(0, lead)
+
+  assert release_far > 0.0
+  assert release_full >= release_far
+  assert 0.0 < release_mid < release_full
+  assert release_near < release_mid
+  assert release_in_path == pytest.approx(0.0)
+
+
+def test_lead_transition_releases_offset_lead_once_opening_gap():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-1.8,
+    dRel=44.0,
+    vLeadK=24.0,
+    modelProb=1.0,
+  )
+
+  releases = [mpc.update_lead_transition_state(0, lead) for _ in range(5)]
+
+  assert max(releases) > 0.0
+
+
+def test_lead_transition_releases_clear_lateral_exit_even_when_closing():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-2.2,
+    dRel=44.0,
+    vLeadK=21.5,
+    modelProb=1.0,
+  )
+
+  releases = [mpc.update_lead_transition_state(0, lead) for _ in range(5)]
+
+  assert max(releases) > 0.0
+
+
+def test_lead_transition_close_curve_hold_cancels_existing_release():
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.x0[1] = 22.5
+  lead = SimpleNamespace(
+    status=True,
+    radarTrackId=10,
+    yRel=-2.2,
+    dRel=44.0,
+    vLeadK=21.5,
+    modelProb=1.0,
+  )
+  released = [mpc.update_lead_transition_state(0, lead) for _ in range(5)]
+
+  lead.yRel = -1.8
+  held_release = mpc.update_lead_transition_state(0, lead)
+
+  assert max(released) > 0.0
+  assert held_release == pytest.approx(0.0)
+
+
+def test_lead_transition_preserves_release_through_lateral_track_churn():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, radarTrackId=10, yRel=LEAD_TRANSITION_Y_REL_CONFIRM, dRel=20.0, vLeadK=8.0)
+
+  mpc.update_lead_transition_state(0, lead)
+  release_before_churn = mpc.update_lead_transition_state(0, lead)
+  lead.radarTrackId = 11
+  lead.dRel = 20.3
+  lead.vLeadK = 8.2
+  release_after_churn = mpc.update_lead_transition_state(0, lead)
+  guard_timer_after_churn = mpc.lead_transition_guard_timers[0]
+
+  assert release_after_churn >= release_before_churn
+  assert guard_timer_after_churn > 0.0
+  assert get_lead_transition_obstacle_release(release_after_churn, guard_timer_after_churn) < release_after_churn
+
+
+def test_lead_transition_resets_release_on_opposite_side_track_churn():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, radarTrackId=10, yRel=LEAD_TRANSITION_Y_REL_CONFIRM, dRel=20.0, vLeadK=8.0)
+
+  mpc.update_lead_transition_state(0, lead)
+  release_before_churn = mpc.update_lead_transition_state(0, lead)
+  lead.radarTrackId = 11
+  lead.yRel = -LEAD_TRANSITION_Y_REL_CONFIRM
+  lead.dRel = 20.2
+  lead.vLeadK = 8.1
+  release_after_churn = mpc.update_lead_transition_state(0, lead)
+
+  assert release_after_churn < release_before_churn
+
+
+def test_lead_transition_resets_release_on_discontinuous_track_churn():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, radarTrackId=10, yRel=LEAD_TRANSITION_Y_REL_CONFIRM, dRel=20.0, vLeadK=8.0)
+
+  mpc.update_lead_transition_state(0, lead)
+  release_before_churn = mpc.update_lead_transition_state(0, lead)
+  lead.radarTrackId = 11
+  lead.dRel = 35.0
+  release_after_churn = mpc.update_lead_transition_state(0, lead)
+
+  assert release_after_churn < release_before_churn
+
+
+def test_lead_transition_fcw_counting_ignores_released_lead():
+  should_count = getattr(long_mpc, "should_count_lead_transition_fcw", None)
+
+  assert should_count is not None
+  assert should_count(0.95, 0.0)
+  assert not should_count(0.95, 1.0)
+  assert not should_count(0.5, 0.0)
+
+
+def test_mpc_fcw_crash_counting_checks_lead_one_and_lead_two():
+  should_count = getattr(long_mpc, "should_count_mpc_fcw_crash", None)
+  x_sol = np.zeros((N + 1, 3))
+  lead_0_xv = np.column_stack([np.full(N + 1, 100.0), np.zeros(N + 1)])
+  lead_1_xv = np.column_stack([np.full(N + 1, long_mpc.CRASH_DISTANCE * 0.5), np.zeros(N + 1)])
+
+  assert should_count is not None
+  assert should_count(lead_0_xv, lead_1_xv, x_sol, 0.2, 0.95, 0.0, 0.0)
+  assert not should_count(lead_0_xv, lead_1_xv, x_sol, 0.2, 0.95, 0.0, 1.0)
+
+
+def test_lead_transition_soft_release_only_moves_toward_cruise():
+  lead_obstacle = np.array([20.0, 25.0])
+  cruise_obstacle = np.array([30.0, 23.0])
+
+  released = get_lead_transition_cost_obstacle(lead_obstacle, cruise_obstacle, 0.5)
+
+  assert released[0] == pytest.approx(25.0)
+  assert released[1] == pytest.approx(25.0)
+
+
+def test_lead_transition_guard_caps_near_term_positive_accel():
+  assert np.all(get_lead_transition_accel_max(0.0) == ACCEL_MAX)
+
+  guarded_accel_max = get_lead_transition_accel_max(0.55)
+  assert guarded_accel_max[0] == pytest.approx(0.0)
+  assert np.max(guarded_accel_max) == pytest.approx(ACCEL_MAX)
+
+
+def test_lead_transition_guard_covers_output_delay_horizon():
+  guarded_accel_max = get_lead_transition_accel_max(0.1)
+  delayed_horizon_idx = int(np.argmax(long_mpc.T_IDXS >= LEAD_TRANSITION_GUARD_OUTPUT_DELAY))
+
+  assert guarded_accel_max[delayed_horizon_idx] < 0.2
+
+
+def test_lead_transition_guard_skips_accel_cap_generation_when_inactive(monkeypatch):
+  def fail_guard_generation(_guard_timer):
+    pytest.fail("inactive transition guard should not generate an accel cap")
+
+  monkeypatch.setattr(long_mpc, "get_lead_transition_accel_max", fail_guard_generation)
+  accel_max = np.array([ACCEL_MAX, ACCEL_MAX - 0.1])
+
+  long_mpc.apply_lead_transition_accel_guard(accel_max, 0.0)
+
+  assert accel_max.tolist() == pytest.approx([ACCEL_MAX, ACCEL_MAX - 0.1])
+
+
+def test_lead_transition_obstacle_release_waits_for_guard():
+  assert get_lead_transition_obstacle_release(1.0, LEAD_TRANSITION_GUARD_FADE_TIME) == pytest.approx(0.0)
+  assert get_lead_transition_obstacle_release(1.0, 0.0) == pytest.approx(1.0)
+
+
+def test_lead_transition_adjusted_accel_only_suppresses_decel():
+  assert get_lead_transition_adjusted_accel(-2.0, 0.0) == pytest.approx(-2.0)
+  assert get_lead_transition_adjusted_accel(-2.0, 0.5) == pytest.approx(-1.0)
+  assert get_lead_transition_adjusted_accel(-2.0, 1.0) == pytest.approx(0.0)
+  assert get_lead_transition_adjusted_accel(0.5, 1.0) == pytest.approx(0.5)
+
+  adjusted = get_lead_transition_adjusted_accel(np.array([-2.0, 0.5]), 0.5)
+  assert adjusted.tolist() == pytest.approx([-1.0, 0.5])
+
+
+def test_process_lead_suppresses_new_lead_positive_accel():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, dRel=30.0, vLead=15.0, vLeadK=15.0, aLeadK=1.0, aLeadTau=0.0)
+  confidence = LeadConfidenceState(status=True, accel_blend=0.0)
+
+  _, a_lead, _, a_lead_traj = mpc.process_lead(lead, confidence)
+
+  assert a_lead == pytest.approx(0.0)
+  assert np.all(a_lead_traj == pytest.approx(0.0))
+
+
+def test_process_lead_preserves_new_lead_negative_accel():
+  mpc = LongitudinalMpc(dt=0.1)
+  lead = SimpleNamespace(status=True, dRel=30.0, vLead=15.0, vLeadK=15.0, aLeadK=-1.0, aLeadTau=0.0)
+  confidence = LeadConfidenceState(status=True, accel_blend=0.0)
+
+  _, a_lead, _, a_lead_traj = mpc.process_lead(lead, confidence)
+
+  assert a_lead == pytest.approx(-1.0)
+  assert np.all(a_lead_traj == pytest.approx(-1.0))
+
+
+def test_new_lead_confidence_guard_caps_near_term_accel(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=25.0, vLead=18.0, vLeadK=18.0,
+    aLeadK=0.8, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  radarstate = SimpleNamespace(leadOne=lead, leadTwo=SimpleNamespace(status=False))
+
+  mpc.update(radarstate, v_cruise=25.0)
+
+  assert mpc.params[0, 1] == pytest.approx(0.0)
+
+
+def test_non_dominant_lead_two_confidence_guard_does_not_cap_accel(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  far_lead = SimpleNamespace(
+    status=True, radarTrackId=43, yRel=0.0, dRel=150.0, vLead=20.0, vLeadK=20.0,
+    aLeadK=0.8, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  radarstate = SimpleNamespace(leadOne=SimpleNamespace(status=False), leadTwo=far_lead)
+
+  mpc.update(radarstate, v_cruise=25.0)
+
+  assert mpc.params[0, 1] > 0.5
+
+
+def test_non_dominant_closing_cut_in_lead_caps_accel(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  primary_lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=25.0, vLead=18.0, vLeadK=18.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  cut_in_lead = SimpleNamespace(
+    status=True, radarTrackId=43, yRel=0.0, dRel=90.0, vLead=8.0, vLeadK=8.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  no_lead = SimpleNamespace(status=False)
+
+  for _ in range(6):
+    mpc.update(SimpleNamespace(leadOne=primary_lead, leadTwo=no_lead), v_cruise=25.0)
+  mpc.update(SimpleNamespace(leadOne=primary_lead, leadTwo=cut_in_lead), v_cruise=25.0)
+
+  assert mpc.lead_confidence_states[0].guard_timer == pytest.approx(0.0)
+  assert mpc.lead_confidence_states[1].guard_timer > 0.0
+  assert mpc.params[0, 1] == pytest.approx(0.0)
+
+
 def test_approach_brake_stays_stock_for_small_closure():
   assert get_approach_brake(0.0) == pytest.approx(APPROACH_BRAKE)
   assert get_approach_brake(1.5) == pytest.approx(APPROACH_BRAKE)
@@ -1591,7 +2019,7 @@ def test_process_lead_ignores_non_finite_lead_fields(field):
   lead = SimpleNamespace(status=True, dRel=25.0, vLead=10.0, aLeadK=0.0, aLeadTau=0.3)
   setattr(lead, field, float("nan"))
 
-  lead_xv, a_lead, a_lead_traj = mpc.process_lead(lead)
+  lead_xv, a_lead, _, a_lead_traj = mpc.process_lead(lead)
 
   assert np.all(np.isfinite(lead_xv))
   assert a_lead == pytest.approx(0.0)
@@ -2795,6 +3223,78 @@ def test_lead_accel_recovery_requires_safe_opening_gap():
   assert get_lead_accel_recovery_a_min(2.2, 4.2, 15.0, 0.1, t_follow) == pytest.approx(ACCEL_MIN)
 
 
+def test_lead_loss_e2e_guard_arms_when_far_lead_disappears_during_lane_change():
+  timer = longitudinal_planner.update_lead_loss_e2e_guard_timer(
+    0.0, 0.05, True, 63.0, 0.95, False, True,
+    reset_state=False, force_slow_decel=False, brake_pressed=False, gas_pressed=False,
+  )
+
+  assert timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
+
+
+def test_lead_loss_e2e_guard_tracks_far_confirmed_lead_two(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(status=False)
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+
+  assert planner.previous_lead_loss_status
+  assert planner.previous_lead_loss_d_rel == pytest.approx(63.0)
+  assert planner.previous_lead_loss_model_prob == pytest.approx(0.95)
+
+
+def test_lead_loss_e2e_guard_prefers_far_confirmed_lead_over_farther_unconfirmed_lead(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(
+    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
+  )
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+
+  assert planner.previous_lead_loss_status
+  assert planner.previous_lead_loss_d_rel == pytest.approx(63.0)
+  assert planner.previous_lead_loss_model_prob == pytest.approx(0.95)
+
+
+def test_lead_loss_e2e_guard_arms_when_confirmed_lead_two_disappears_and_unconfirmed_lead_remains(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(
+    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
+  )
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+  sm = make_planner_sm(
+    20.0, lead_one, desired_accel=-1.2, should_stop=False, lead_two=SimpleNamespace(status=False),
+  )
+  sm['modelV2'].meta.laneChangeState = log.LaneChangeState.laneChangeStarting
+
+  planner.update(sm)
+
+  assert planner.lead_loss_e2e_guard_timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
+
+
+def test_lead_loss_e2e_guard_limits_only_no_lead_non_stop_model_decel():
+  guarded = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, False)
+  stop_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, True, 1.0, False)
+  lead_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, True)
+
+  assert guarded == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
+  assert stop_decel == pytest.approx(-1.2)
+  assert lead_decel == pytest.approx(-1.2)
+
+
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):
   man = Maneuver(
     '',
@@ -2951,23 +3451,40 @@ def test_source_hysteresis_prevents_boundary_oscillation():
 
 # === Danger Gap Tests ===
 
-def test_danger_gap_kinematic_matches():
+def test_get_lead_danger_distance_kinematic_limit():
   from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance, get_safe_obstacle_distance, get_stopped_equivalence_factor, LEAD_DANGER_FACTOR
-  v_ego = 10.0
-  v_lead = 10.0
+  v_ego = 5.0
+  v_lead = 5.0
   t_follow = 1.55
+  # At 5 m/s, kinematic gap is still positive and dominant
   expected = LEAD_DANGER_FACTOR * get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
   assert get_lead_danger_distance(v_ego, v_lead, t_follow) == pytest.approx(expected)
 
 
 def test_danger_gap_ttc_floor():
-  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance, LEAD_DANGER_TTC_THRESHOLD, STOP_DISTANCE_MIN
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance, LEAD_DANGER_TTC_BP, LEAD_DANGER_TTC_V, LEAD_DANGER_DISTANCE_FLOOR_BP, LEAD_DANGER_DISTANCE_FLOOR_V
   v_ego = 35.0
   v_lead = 34.0
   t_follow = 1.55
   # Kinematic gap goes negative here, so TTC floor should take over
-  ttc_gap = (1.0 * LEAD_DANGER_TTC_THRESHOLD) + STOP_DISTANCE_MIN
+  ttc_threshold = np.interp(v_ego, LEAD_DANGER_TTC_BP, LEAD_DANGER_TTC_V)
+  distance_floor = np.interp(v_ego, LEAD_DANGER_DISTANCE_FLOOR_BP, LEAD_DANGER_DISTANCE_FLOOR_V)
+  ttc_gap = (1.0 * ttc_threshold) + distance_floor
   assert get_lead_danger_distance(v_ego, v_lead, t_follow) == pytest.approx(ttc_gap)
+
+
+def test_danger_gap_scaling():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance
+  t_follow = 1.55
+  
+  # Low speed (2 m/s): kinematic is dominant (approx 5.98m)
+  gap_low = get_lead_danger_distance(2.0, 0.0, t_follow)
+  assert gap_low == pytest.approx(5.982692307692307)
+  
+  # High speed (35 m/s): TTC floor is dominant (10.0m)
+  # 2m/s closure * 2.0s TTC + 6.0m floor = 10.0m
+  gap_high = get_lead_danger_distance(35.0, 33.0, t_follow)
+  assert gap_high == pytest.approx(10.0)
 
 
 def test_danger_gap_a_lead_projection():
