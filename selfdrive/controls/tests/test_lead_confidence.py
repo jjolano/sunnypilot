@@ -6,6 +6,9 @@ from openpilot.selfdrive.controls.lib.lead_confidence import (
   LeadConfidenceTracker,
   NEW_LEAD_GUARD_TIME,
   NEW_LEAD_STABLE_TIME,
+  LEAD_FLICKER_COUNT_THRESHOLD,
+  LEAD_FLICKER_GUARD_TIME,
+  LEAD_FLICKER_WINDOW,
   adjust_new_lead_accel,
 )
 
@@ -110,3 +113,35 @@ def test_radarless_discontinuous_lead_resets_confidence():
   assert state.new_lead
   assert state.accel_blend == pytest.approx(0.0)
   assert state.guard_timer == pytest.approx(NEW_LEAD_GUARD_TIME)
+
+
+def test_lead_flicker_triggers_flicker_guard_and_decays():
+  tracker = LeadConfidenceTracker()
+  lead = make_lead()
+
+  # Trigger flicker by toggling status
+  for _ in range(LEAD_FLICKER_COUNT_THRESHOLD):
+    tracker.update(lead, dt=0.1)
+    state = tracker.update(None, dt=0.1)
+
+  assert state.flicker_guard_timer > 0.0
+  assert state.flicker_guard_timer <= LEAD_FLICKER_GUARD_TIME
+
+  # Verify decay
+  while state.flicker_guard_timer > 0.0:
+    state = tracker.update(None, dt=0.1)
+
+  assert state.flicker_guard_timer == pytest.approx(0.0)
+
+
+def test_normal_lead_acquisition_does_not_trigger_flicker_guard():
+  tracker = LeadConfidenceTracker()
+  lead = make_lead()
+
+  state = tracker.update(lead, dt=0.1)
+  assert state.flicker_guard_timer == pytest.approx(0.0)
+
+  # Maintain lead
+  for _ in range(10):
+    state = tracker.update(lead, dt=0.1)
+  assert state.flicker_guard_timer == pytest.approx(0.0)
