@@ -3383,3 +3383,43 @@ def test_source_hysteresis_prevents_boundary_oscillation():
   source = apply_source_hysteresis(obstacles, source, margin)
   assert source == 2  # stay on cruise, only 2m better < 5.7m margin
 
+
+
+# === Danger Gap Tests ===
+
+def test_danger_gap_kinematic_matches():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance, get_safe_obstacle_distance, get_stopped_equivalence_factor, LEAD_DANGER_FACTOR
+  v_ego = 10.0
+  v_lead = 10.0
+  t_follow = 1.55
+  expected = LEAD_DANGER_FACTOR * get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
+  assert get_lead_danger_distance(v_ego, v_lead, t_follow) == pytest.approx(expected)
+
+
+def test_danger_gap_ttc_floor():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance, LEAD_DANGER_TTC_THRESHOLD, STOP_DISTANCE_MIN
+  v_ego = 35.0
+  v_lead = 34.0
+  t_follow = 1.55
+  # Kinematic gap goes negative here, so TTC floor should take over
+  ttc_gap = (1.0 * LEAD_DANGER_TTC_THRESHOLD) + STOP_DISTANCE_MIN
+  assert get_lead_danger_distance(v_ego, v_lead, t_follow) == pytest.approx(ttc_gap)
+
+
+def test_danger_gap_a_lead_projection():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance
+  v_ego = 35.0
+  v_lead = 35.0
+  t_follow = 1.55
+  
+  # Base gap when lead is coasting/cruising
+  base_gap = get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead=0.0)
+  
+  # Gap when lead is braking should be larger (more dangerous)
+  braking_gap = get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead=-2.0)
+  assert braking_gap > base_gap
+  
+  # Gap when lead is accelerating should NOT shrink (we only project braking)
+  accel_gap = get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead=2.0)
+  assert accel_gap == pytest.approx(base_gap)
+
