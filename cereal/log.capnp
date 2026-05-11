@@ -940,6 +940,11 @@ struct ControlsState @0x97ff69c53601abf1 {
     rawDesiredCurvature @4 :Float32;
     processedDesiredCurvature @5 :Float32;
     holdFramesRemaining @6 :UInt8;
+    smoothingTauS @7 :Float32;
+    dampingAlpha @8 :Float32;
+    trustPenalty @9 :Float32;
+    spatialSmoothedCurvature @10 :Float32;
+    laneChangeFade @11 :Float32;
   }
 
   deprecated :group {

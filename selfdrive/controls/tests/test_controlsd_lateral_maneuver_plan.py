@@ -98,7 +98,18 @@ def test_model_path_reason_mapping_uses_controls_state_schema_enum():
 
 def test_fill_model_path_state_publishes_processed_path_debug_values():
   msg = messaging.new_message('controlsState')
-  result = ModelPathProcessorResult(0.0015, 0.65, True, "path_disagreement", 1)
+  result = ModelPathProcessorResult(
+    0.0015,
+    0.65,
+    True,
+    "path_disagreement",
+    1,
+    smoothing_tau_s=0.11,
+    damping_alpha=0.18,
+    trust_penalty=0.4,
+    spatial_smoothed_curvature=0.00155,
+    lane_change_fade=0.75,
+  )
 
   fill_model_path_state(msg.controlsState.modelPathState, result, 0.002)
 
@@ -110,3 +121,8 @@ def test_fill_model_path_state_publishes_processed_path_debug_values():
   assert state.rawDesiredCurvature == pytest.approx(0.002)
   assert state.processedDesiredCurvature == pytest.approx(0.0015)
   assert state.holdFramesRemaining == 1
+  assert state.smoothingTauS == pytest.approx(0.11)
+  assert state.dampingAlpha == pytest.approx(0.18)
+  assert state.trustPenalty == pytest.approx(0.4)
+  assert state.spatialSmoothedCurvature == pytest.approx(0.00155)
+  assert state.laneChangeFade == pytest.approx(0.75)
