@@ -41,6 +41,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
   STOPPED_LEAD_BUFFER,
+  SOURCE_HYSTERESIS_MIN,
+  SOURCE_HYSTERESIS_TIME_GAP,
+  MPC_SOURCES,
+  apply_source_hysteresis,
   get_approach_available_runway,
   get_approach_brake,
   get_approach_engage_offset,
@@ -84,6 +88,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_pre_target_runway_decel_threshold,
   get_safe_obstacle_distance,
   get_selected_lead_targets,
+  get_source_hysteresis_margin,
   get_stopped_lead_buffer,
   get_stopped_equivalence_factor,
   get_time_to_gap,
@@ -2870,3 +2875,75 @@ def test_stopped_car_approach_settles_near_stop_gap():
 
   presentation_distance = long_mpc.get_lead_stop_presentation_distance(v_ego=0.0, v_lead=0.0, a_lead=0.0, model_prob=1.0)
   assert output[-1, 6] == pytest.approx(presentation_distance, abs=0.5)
+
+
+# === Source hysteresis tests ===
+
+def test_source_hysteresis_margin_scales_with_speed():
+  assert get_source_hysteresis_margin(0.0) == pytest.approx(SOURCE_HYSTERESIS_MIN)
+  assert get_source_hysteresis_margin(3.0) == pytest.approx(SOURCE_HYSTERESIS_MIN)
+  assert get_source_hysteresis_margin(20.0) == pytest.approx(SOURCE_HYSTERESIS_TIME_GAP * 20.0)
+  assert get_source_hysteresis_margin(30.0) > get_source_hysteresis_margin(20.0)
+
+
+def test_source_hysteresis_scalar_stays_with_current_when_within_margin():
+  obstacles = np.array([10.0, 12.0, 11.0])  # best is 0, current is 2
+  result = apply_source_hysteresis(obstacles, 2, margin=2.0)
+  assert result == 2  # 11.0 - 10.0 = 1.0 < 2.0 margin, stay
+
+
+def test_source_hysteresis_scalar_switches_when_margin_exceeded():
+  obstacles = np.array([10.0, 12.0, 15.0])  # best is 0, current is 2
+  result = apply_source_hysteresis(obstacles, 2, margin=2.0)
+  assert result == 0  # 15.0 - 10.0 = 5.0 > 2.0 margin, switch
+
+
+def test_source_hysteresis_scalar_stays_with_current_best():
+  obstacles = np.array([10.0, 12.0, 15.0])
+  result = apply_source_hysteresis(obstacles, 0, margin=2.0)
+  assert result == 0  # already the best
+
+
+def test_source_hysteresis_vectorized_per_timestep():
+  obstacles = np.array([
+    [10.0, 12.0, 11.0],  # t=0: best=0, current=2, diff=1.0 < 2.0
+    [10.0, 12.0, 15.0],  # t=1: best=0, current=2, diff=5.0 > 2.0
+    [10.0, 12.0, 10.5],  # t=2: best=0, current=1, diff=1.5 < 2.0
+  ])
+  current_idx = np.array([2, 2, 1])
+  result = apply_source_hysteresis(obstacles, current_idx, margin=2.0)
+  assert result[0] == 2  # stay, within margin
+  assert result[1] == 0  # switch, exceeded margin
+  assert result[2] == 1  # stay, within margin
+
+
+def test_source_hysteresis_prevents_boundary_oscillation():
+  """Simulate the real scenario: lead obstacle crosses cruise obstacle back and forth."""
+  margin = get_source_hysteresis_margin(19.0)  # ~5.7m at 19 m/s
+
+  # Step 1: Start on cruise, lead becomes closer
+  source = 2  # cruise
+  obstacles = np.array([90.0, 200.0, 141.0])  # lead wins by 51m
+  source = apply_source_hysteresis(obstacles, source, margin)
+  assert source == 0  # switch to lead0
+
+  # Step 2: Gap opens, lead almost matches cruise
+  obstacles = np.array([139.0, 200.0, 141.0])  # lead is only 2m closer
+  source = apply_source_hysteresis(obstacles, source, margin)
+  assert source == 0  # stay on lead0, within margin
+
+  # Step 3: Gap opens more, lead exceeds cruise
+  obstacles = np.array([143.0, 200.0, 141.0])  # lead is now 2m farther
+  source = apply_source_hysteresis(obstacles, source, margin)
+  assert source == 0  # still stay on lead0! cruise only 2m better, < 5.7m margin
+
+  # Step 4: Gap opens significantly past margin
+  obstacles = np.array([150.0, 200.0, 141.0])  # lead 9m farther than cruise
+  source = apply_source_hysteresis(obstacles, source, margin)
+  assert source == 2  # NOW switch to cruise, 9m > 5.7m margin
+
+  # Step 5: Lead comes back slightly closer
+  obstacles = np.array([139.0, 200.0, 141.0])  # lead 2m closer than cruise
+  source = apply_source_hysteresis(obstacles, source, margin)
+  assert source == 2  # stay on cruise, only 2m better < 5.7m margin
+
