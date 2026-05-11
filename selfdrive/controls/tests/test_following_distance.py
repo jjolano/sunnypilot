@@ -43,11 +43,15 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_TRANSITION_GUARD_OUTPUT_DELAY,
   LEAD_TRANSITION_Y_REL_CONFIRM,
   LEAD_TRANSITION_Y_REL_SOFT,
+  NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN,
+  NEW_LEAD_CUT_IN_GUARD_REQUIRED_DECEL_MIN,
   STOP_DISTANCE,
   STOP_DISTANCE_FADE_V,
   STOP_DISTANCE_MIN,
   STOPPED_LEAD_BUFFER,
-  SOURCE_HYSTERESIS_MARGIN,
+  SOURCE_HYSTERESIS_MIN,
+  SOURCE_HYSTERESIS_TIME_GAP,
+  MPC_SOURCES,
   apply_source_hysteresis,
   get_approach_available_runway,
   get_approach_brake,
@@ -75,6 +79,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_stop_runway_preference,
   get_lead_stop_runway_required_decel,
   get_lead_stop_runway_blend,
+  get_new_lead_cut_in_guard_timer,
   get_lead_stop_runway_gap,
   get_lead_stop_runway_urgency,
   get_lead_chase_target_gap,
@@ -100,6 +105,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_pre_target_runway_decel_threshold,
   get_safe_obstacle_distance,
   get_selected_lead_targets,
+  get_source_hysteresis_margin,
   get_stopped_lead_buffer,
   get_stopped_equivalence_factor,
   get_time_to_gap,
@@ -191,8 +197,12 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
     vEgoStopping=0.5,
   )
   planner.mpc = FakeMpc()
+  planner.params = SimpleNamespace(get_bool=lambda _key: False)
   planner.VM = None
   planner.control_calculation_hardening = False
+  planner.longitudinal_arbiter = longitudinal_planner.LongitudinalArbiter()
+  planner.longitudinal_decision = None
+  planner.longitudinal_decision_candidates = []
   planner.fcw = False
   planner.dt = longitudinal_planner.DT_MDL
   planner.allow_throttle = True
@@ -1266,6 +1276,26 @@ def test_lead_transition_holds_raw_offset_lead_on_model_curve_path():
   assert max(releases) == pytest.approx(0.0)
 
 
+def test_new_lead_cut_in_guard_arms_for_far_closing_discontinuity():
+  lead = SimpleNamespace(status=True, dRel=90.0, vLeadK=8.0)
+  guard = LeadConfidenceState(status=True, new_lead=True, guard_timer=0.3)
+
+  assert get_new_lead_cut_in_guard_timer(20.0, lead, guard) == pytest.approx(0.3)
+
+
+def test_new_lead_cut_in_guard_ignores_matched_speed_and_low_required_decel():
+  guard = LeadConfidenceState(status=True, new_lead=True, guard_timer=0.3)
+  matched_speed_lead = SimpleNamespace(status=True, dRel=60.0, vLeadK=20.0)
+  gentle_far_lead = SimpleNamespace(
+    status=True,
+    dRel=250.0,
+    vLeadK=20.0 - NEW_LEAD_CUT_IN_GUARD_CLOSING_MIN,
+  )
+
+  assert get_new_lead_cut_in_guard_timer(20.0, matched_speed_lead, guard) == pytest.approx(0.0)
+  assert get_new_lead_cut_in_guard_timer(20.0, gentle_far_lead, guard) == pytest.approx(0.0)
+
+
 def test_lead_transition_releases_lead_turning_off_model_curve_path():
   mpc = LongitudinalMpc(dt=0.1)
   mpc.x0[1] = 22.5
@@ -1578,6 +1608,29 @@ def test_non_dominant_lead_two_confidence_guard_does_not_cap_accel(monkeypatch):
   mpc.update(radarstate, v_cruise=25.0)
 
   assert mpc.params[0, 1] > 0.5
+
+
+def test_non_dominant_closing_cut_in_lead_caps_accel(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  primary_lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=25.0, vLead=18.0, vLeadK=18.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  cut_in_lead = SimpleNamespace(
+    status=True, radarTrackId=43, yRel=0.0, dRel=90.0, vLead=8.0, vLeadK=8.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  no_lead = SimpleNamespace(status=False)
+
+  for _ in range(6):
+    mpc.update(SimpleNamespace(leadOne=primary_lead, leadTwo=no_lead), v_cruise=25.0)
+  mpc.update(SimpleNamespace(leadOne=primary_lead, leadTwo=cut_in_lead), v_cruise=25.0)
+
+  assert mpc.lead_confidence_states[0].guard_timer == pytest.approx(0.0)
+  assert mpc.lead_confidence_states[1].guard_timer > 0.0
+  assert mpc.params[0, 1] == pytest.approx(0.0)
 
 
 def test_approach_brake_stays_stock_for_small_closure():
@@ -3242,84 +3295,6 @@ def test_lead_loss_e2e_guard_limits_only_no_lead_non_stop_model_decel():
   assert lead_decel == pytest.approx(-1.2)
 
 
-class TestSourceHysteresis:
-  def test_keeps_current_source_when_within_margin(self):
-    obstacles = np.array([10.0, 11.0, 20.0])
-    current_idx = 1
-    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
-    assert result == 1
-
-  def test_switches_when_new_source_better_by_margin(self):
-    obstacles = np.array([10.0, 12.0, 20.0])
-    current_idx = 1
-    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
-    assert result == 0
-
-  def test_switches_when_current_source_much_worse(self):
-    obstacles = np.array([10.0, 25.0, 20.0])
-    current_idx = 1
-    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
-    assert result == 0
-
-  def test_sticks_with_best_when_already_best(self):
-    obstacles = np.array([10.0, 12.0, 20.0])
-    current_idx = 0
-    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
-    assert result == 0
-
-  def test_zero_margin_behaves_like_argmin(self):
-    obstacles = np.array([10.0, 11.0, 20.0])
-    current_idx = 1
-    result = apply_source_hysteresis(obstacles, current_idx, 0.0)
-    assert result == 0
-
-  def test_vectorized_keeps_current_per_timestep(self):
-    obstacles = np.array([
-      [10.0, 12.0, 20.0],
-      [15.0, 10.0, 20.0],
-    ])
-    current = np.array([1, 1])
-    result = apply_source_hysteresis(obstacles, current, SOURCE_HYSTERESIS_MARGIN)
-    assert result[0] == 0
-    assert result[1] == 1
-
-  def test_vectorized_switches_only_where_margin_exceeded(self):
-    obstacles = np.array([
-      [10.0, 11.0, 20.0],
-      [10.0, 12.0, 20.0],
-    ])
-    current = np.array([1, 1])
-    result = apply_source_hysteresis(obstacles, current, SOURCE_HYSTERESIS_MARGIN)
-    assert result[0] == 1
-    assert result[1] == 0
-
-  def test_margin_between_lead0_and_cruise(self):
-    obstacles = np.array([10.0, 20.0, 11.0])
-    current_idx = 2
-    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
-    assert result == 2  # 11.0 - 10.0 = 1.0 < 1.2 margin, stays on cruise
-
-  def test_stays_with_cruise_when_lead0_within_margin(self):
-    obstacles = np.array([10.0, 20.0, 10.8])
-    current_idx = 2
-    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
-    assert result == 2
-
-  def test_lead_transition_respects_margin(self):
-    """Simulate lead flicker: lead0 appears at 10.5m while cruise is at 10.0m."""
-    obstacles = np.array([10.5, 20.0, 10.0])
-    current_idx = 2  # cruise
-    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
-    assert result == 2  # stay on cruise, lead0 is only 0.5m better
-
-  def test_lead_disappearance_respects_margin(self):
-    """Simulate lead flicker: lead0 is current but cruise is now 0.5m better."""
-    obstacles = np.array([10.0, 20.0, 10.5])
-    current_idx = 0  # lead0
-    result = apply_source_hysteresis(obstacles, current_idx, SOURCE_HYSTERESIS_MARGIN)
-    assert result == 0  # stay on lead0, cruise is only 0.5m better
-
-
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):
   man = Maneuver(
     '',
@@ -3332,39 +3307,73 @@ def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personalit
     e2e=e2e,
     personality=personality,
   )
-  valid, output = man.evaluate()
-  assert valid
-  return output[-1, 2] - output[-1, 1]
+
+  assert timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
 
 
-def run_lead_closing_simulation(v_ego, v_lead, initial_distance_lead, t_end=30.0, personality=0):
-  man = Maneuver(
-    '',
-    duration=t_end,
-    initial_speed=float(v_ego),
-    lead_relevancy=True,
-    initial_distance_lead=float(initial_distance_lead),
-    speed_lead_values=[float(v_lead)],
-    breakpoints=[0.0],
-    personality=personality,
+def test_lead_loss_e2e_guard_tracks_far_confirmed_lead_two(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(status=False)
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+
+  assert planner.previous_lead_loss_status
+  assert planner.previous_lead_loss_d_rel == pytest.approx(63.0)
+  assert planner.previous_lead_loss_model_prob == pytest.approx(0.95)
+
+
+def test_lead_loss_e2e_guard_prefers_far_confirmed_lead_over_farther_unconfirmed_lead(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(
+    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
   )
-  valid, output = man.evaluate()
-  assert valid
-  return output
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+
+  assert planner.previous_lead_loss_status
+  assert planner.previous_lead_loss_d_rel == pytest.approx(63.0)
+  assert planner.previous_lead_loss_model_prob == pytest.approx(0.95)
 
 
-@parameterized_class(
-  ("e2e", "personality", "speed"),
-  itertools.product(
-    [True, False],  # e2e
-    [
-      log.LongitudinalPersonality.relaxed,  # personality
-      log.LongitudinalPersonality.standard,
-      log.LongitudinalPersonality.aggressive,
-    ],
-    [0, 10, 35],
-  ),
-)  # speed
+def test_lead_loss_e2e_guard_arms_when_confirmed_lead_two_disappears_and_unconfirmed_lead_remains(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(
+    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
+  )
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+  sm = make_planner_sm(
+    20.0, lead_one, desired_accel=-1.2, should_stop=False, lead_two=SimpleNamespace(status=False),
+  )
+  sm['modelV2'].meta.laneChangeState = log.LaneChangeState.laneChangeStarting
+
+  planner.update(sm)
+
+  assert planner.lead_loss_e2e_guard_timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
+
+
+def test_lead_loss_e2e_guard_limits_only_no_lead_non_stop_model_decel():
+  guarded = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, False)
+  stop_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, True, 1.0, False)
+  lead_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, True)
+
+  assert guarded == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
+  assert stop_decel == pytest.approx(-1.2)
+  assert lead_decel == pytest.approx(-1.2)
+
+
 class TestFollowingDistance:
   def test_following_distance(self):
     v_lead = float(self.speed)
@@ -3400,3 +3409,132 @@ def test_stopped_car_approach_settles_near_stop_gap():
 
   presentation_distance = long_mpc.get_lead_stop_presentation_distance(v_ego=0.0, v_lead=0.0, a_lead=0.0, model_prob=1.0)
   assert output[-1, 6] == pytest.approx(presentation_distance, abs=0.5)
+
+
+# === Source hysteresis tests ===
+
+def test_source_hysteresis_margin_scales_with_speed():
+  assert get_source_hysteresis_margin(0.0) == pytest.approx(SOURCE_HYSTERESIS_MIN)
+  assert get_source_hysteresis_margin(3.0) == pytest.approx(SOURCE_HYSTERESIS_MIN)
+  assert get_source_hysteresis_margin(20.0) == pytest.approx(SOURCE_HYSTERESIS_TIME_GAP * 20.0)
+  assert get_source_hysteresis_margin(30.0) > get_source_hysteresis_margin(20.0)
+
+
+def test_source_hysteresis_scalar_stays_with_current_when_within_margin():
+  obstacles = np.array([10.0, 12.0, 11.0])  # best is 0, current is 2
+  result = apply_source_hysteresis(obstacles, 2, margin=2.0)
+  assert result == 2  # 11.0 - 10.0 = 1.0 < 2.0 margin, stay
+
+
+def test_source_hysteresis_scalar_switches_when_margin_exceeded():
+  obstacles = np.array([10.0, 12.0, 15.0])  # best is 0, current is 2
+  result = apply_source_hysteresis(obstacles, 2, margin=2.0)
+  assert result == 0  # 15.0 - 10.0 = 5.0 > 2.0 margin, switch
+
+
+def test_source_hysteresis_scalar_stays_with_current_best():
+  obstacles = np.array([10.0, 12.0, 15.0])
+  result = apply_source_hysteresis(obstacles, 0, margin=2.0)
+  assert result == 0  # already the best
+
+
+def test_source_hysteresis_vectorized_per_timestep():
+  obstacles = np.array([
+    [10.0, 12.0, 11.0],  # t=0: best=0, current=2, diff=1.0 < 2.0
+    [10.0, 12.0, 15.0],  # t=1: best=0, current=2, diff=5.0 > 2.0
+    [10.0, 12.0, 10.5],  # t=2: best=0, current=1, diff=1.5 < 2.0
+  ])
+  current_idx = np.array([2, 2, 1])
+  result = apply_source_hysteresis(obstacles, current_idx, margin=2.0)
+  assert result[0] == 2  # stay, within margin
+  assert result[1] == 0  # switch, exceeded margin
+  assert result[2] == 1  # stay, within margin
+
+
+def test_source_hysteresis_prevents_boundary_oscillation():
+  """Simulate the real scenario: lead obstacle crosses cruise obstacle back and forth."""
+  margin = get_source_hysteresis_margin(19.0)  # ~5.7m at 19 m/s
+
+  # Step 1: Start on cruise, lead becomes closer
+  source = 2  # cruise
+  obstacles = np.array([90.0, 200.0, 141.0])  # lead wins by 51m
+  source = apply_source_hysteresis(obstacles, source, margin)
+  assert source == 0  # switch to lead0
+
+  # Step 2: Gap opens, lead almost matches cruise
+  obstacles = np.array([139.0, 200.0, 141.0])  # lead is only 2m closer
+  source = apply_source_hysteresis(obstacles, source, margin)
+  assert source == 0  # stay on lead0, within margin
+
+  # Step 3: Gap opens more, lead exceeds cruise
+  obstacles = np.array([143.0, 200.0, 141.0])  # lead is now 2m farther
+  source = apply_source_hysteresis(obstacles, source, margin)
+  assert source == 0  # still stay on lead0! cruise only 2m better, < 5.7m margin
+
+  # Step 4: Gap opens significantly past margin
+  obstacles = np.array([150.0, 200.0, 141.0])  # lead 9m farther than cruise
+  source = apply_source_hysteresis(obstacles, source, margin)
+  assert source == 2  # NOW switch to cruise, 9m > 5.7m margin
+
+  # Step 5: Lead comes back slightly closer
+  obstacles = np.array([139.0, 200.0, 141.0])  # lead 2m closer than cruise
+  source = apply_source_hysteresis(obstacles, source, margin)
+  assert source == 2  # stay on cruise, only 2m better < 5.7m margin
+
+
+
+# === Danger Gap Tests ===
+
+def test_get_lead_danger_distance_kinematic_limit():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance, get_safe_obstacle_distance, get_stopped_equivalence_factor, LEAD_DANGER_FACTOR
+  v_ego = 5.0
+  v_lead = 5.0
+  t_follow = 1.55
+  # At 5 m/s, kinematic gap is still positive and dominant
+  expected = LEAD_DANGER_FACTOR * get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
+  assert get_lead_danger_distance(v_ego, v_lead, t_follow) == pytest.approx(expected)
+
+
+def test_danger_gap_ttc_floor():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance, LEAD_DANGER_TTC_BP, LEAD_DANGER_TTC_V, LEAD_DANGER_DISTANCE_FLOOR_BP, LEAD_DANGER_DISTANCE_FLOOR_V
+  v_ego = 35.0
+  v_lead = 34.0
+  t_follow = 1.55
+  # Kinematic gap goes negative here, so TTC floor should take over
+  ttc_threshold = np.interp(v_ego, LEAD_DANGER_TTC_BP, LEAD_DANGER_TTC_V)
+  distance_floor = np.interp(v_ego, LEAD_DANGER_DISTANCE_FLOOR_BP, LEAD_DANGER_DISTANCE_FLOOR_V)
+  ttc_gap = (1.0 * ttc_threshold) + distance_floor
+  assert get_lead_danger_distance(v_ego, v_lead, t_follow) == pytest.approx(ttc_gap)
+
+
+def test_danger_gap_scaling():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance
+  t_follow = 1.55
+  
+  # Low speed (2 m/s): kinematic is dominant (approx 5.98m)
+  gap_low = get_lead_danger_distance(2.0, 0.0, t_follow)
+  assert gap_low == pytest.approx(5.982692307692307)
+  
+  # High speed (35 m/s): TTC floor is dominant (10.0m)
+  # 2m/s closure * 2.0s TTC + 6.0m floor = 10.0m
+  gap_high = get_lead_danger_distance(35.0, 33.0, t_follow)
+  assert gap_high == pytest.approx(10.0)
+
+
+def test_danger_gap_a_lead_projection():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_lead_danger_distance
+  v_ego = 35.0
+  v_lead = 35.0
+  t_follow = 1.55
+  
+  # Base gap when lead is coasting/cruising
+  base_gap = get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead=0.0)
+  
+  # Gap when lead is braking should be larger (more dangerous)
+  braking_gap = get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead=-2.0)
+  assert braking_gap > base_gap
+  
+  # Gap when lead is accelerating should NOT shrink (we only project braking)
+  accel_gap = get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead=2.0)
+  assert accel_gap == pytest.approx(base_gap)
+
