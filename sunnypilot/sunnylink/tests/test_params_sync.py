@@ -207,7 +207,8 @@ def test_known_params_metadata():
   decision_layer = metadata.get("LongitudinalDecisionLayer")
   assert decision_layer is not None
   assert decision_layer["title"] == "Longitudinal Decision Layer"
-  assert "experimental" in decision_layer["description"].lower()
+  assert "decision" in decision_layer["description"].lower()
+  assert "unified" in decision_layer["description"].lower()
 
 def test_torque_control_tune_versions_in_sync():
   """
