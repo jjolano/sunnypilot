@@ -442,6 +442,41 @@ def test_v3_residual_and_stale_fault_frames_cap_output_to_limited_authority():
     assert abs(lac_log.output) <= 0.45 + 1e-6
 
 
+def test_v3_alternating_fault_and_clean_estimator_frames_do_not_restore_full_output():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  CS = car.CarState.new_message()
+  CS.vEgo = 30.0
+  params = log.LiveParametersData.new_message()
+  estimator_params = controller.estimator.state.params
+  update_count = 0
+
+  def alternating_update(observation):
+    del observation
+    nonlocal update_count
+    update_count += 1
+    faulting = update_count % 2 == 1
+    return EstimatorResult(
+      params=estimator_params,
+      confidence=0.0 if faulting else 0.96,
+      positive_coverage=0.7,
+      negative_coverage=0.7,
+      residual_error=0.0,
+      response_delay=0.2,
+      sample_accepted=not faulting,
+      reject_reason=EstimatorRejectReason.RESIDUAL_SPIKE if faulting else EstimatorRejectReason.NONE,
+    )
+
+  controller.estimator.update = alternating_update
+
+  for _ in range(24):
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 0.003, make_pose(), False, 0.2)
+
+    assert lac_log.adaptiveTorqueState.authorityBand == AuthorityBand.limited
+    assert np.isclose(lac_log.adaptiveTorqueState.authorityScale, 0.45)
+    assert lac_log.adaptiveTorqueState.fallbackActive
+    assert abs(lac_log.output) <= 0.45 + 1e-6
+
+
 def test_v3_synthetic_pid_origin_starts_limited():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2, force_pid=True)
   CS = car.CarState.new_message()
