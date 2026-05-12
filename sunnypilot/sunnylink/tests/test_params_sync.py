@@ -218,7 +218,8 @@ def test_known_params_metadata():
   decision_layer = metadata.get("LongitudinalDecisionLayer")
   assert decision_layer is not None
   assert decision_layer["title"] == "Longitudinal Decision Layer"
-  assert "experimental" in decision_layer["description"].lower()
+  assert "decision" in decision_layer["description"].lower()
+  assert "unified" in decision_layer["description"].lower()
 
 def test_response_curve_learning_metadata_is_removed():
   with open(METADATA_PATH) as f:

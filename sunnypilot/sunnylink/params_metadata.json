@@ -668,7 +668,7 @@
   },
   "LongitudinalDecisionLayer": {
     "title": "Longitudinal Decision Layer",
-    "description": "Enable the experimental longitudinal decision layer. When enabled, sunnypilot arbitrates cruise, lead, e2e, speed-limit, SCC, OSM, and coast candidates through a unified policy with legacy fallback."
+    "description": "Enable the longitudinal decision layer. Arbitrates cruise, lead, e2e, speed-limit, SCC, OSM, and coast candidates through a unified policy with legacy fallback. Enabled by default."
   },
   "Mads": {
     "title": "MADS Enabled",
