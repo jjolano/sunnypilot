@@ -191,6 +191,18 @@ def test_comfort_candidate_cannot_raise_driver_target_speed():
   assert decision.a_target == -0.8
 
 
+def test_comfort_candidate_guarded_against_runaway_accel():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, -0.8, 1.0, 0.1, "driver_set_speed")
+  runaway = make_candidate(DecisionSource.CRUISE_COAST, CandidateRole.COMFORT_SHAPING, 25.0, 0.6, 0.8, 0.2, "buggy_overspeed")
+
+  decision = arbiter.decide([cruise, runaway])
+
+  assert decision.winner == DecisionSource.CRUISE
+  assert decision.a_target == -0.8
+  assert ("CRUISE_COAST", "comfort_accel_exceeds_margin") in set(decision.suppressed)
+
+
 def test_resolver_returns_legacy_fallback_when_toggle_disabled():
   cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, 0.2, 1.0, 0.1, "driver_set_speed")
 

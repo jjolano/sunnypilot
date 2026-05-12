@@ -74,6 +74,7 @@ class LongitudinalCandidate:
 PHYSICAL_CONFIDENCE_MIN = 0.55
 ADVISORY_CONFIDENCE_MIN = 0.75
 COMFORT_CONFIDENCE_MIN = 0.50
+COMFORT_MAX_DRIVER_ACCEL_MARGIN = 0.5
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,12 @@ class LongitudinalArbiter:
           and candidate.a_target > driver.a_target
         ]
         winner = max(comfort, key=lambda candidate: candidate.a_target) if comfort else driver
+
+    if winner is not driver and winner.role == CandidateRole.COMFORT_SHAPING:
+      max_allowed = driver.a_target + COMFORT_MAX_DRIVER_ACCEL_MARGIN
+      if winner.a_target > max_allowed:
+        suppressed.append((winner.source, "comfort_accel_exceeds_margin"))
+        winner = driver
 
     return LongitudinalDecision(
       enabled=True,
