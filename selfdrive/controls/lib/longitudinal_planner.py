@@ -111,6 +111,7 @@ CRUISE_COAST_FLAT_OVERSPEED = 0.45  # ~1 mph
 CRUISE_COAST_DOWNHILL_OVERSPEED = 1.35  # ~3 mph
 CRUISE_COAST_DOWNHILL_ACCEL = 0.25
 CRUISE_COAST_RECOVERY_OVERSPEED = 0.9  # ~2 mph from coast back to normal decel
+CRUISE_COAST_ANTICIPATORY_MARGIN = 0.9  # ~2 mph — begin coasting when approaching set speed on a downhill
 E2E_RUNWAY_COMFORT_MIN_V_EGO = 3.0
 E2E_RUNWAY_COMFORT_MIN_ENDPOINT = 1.0
 E2E_RUNWAY_COMFORT_COAST_MARGIN = 0.02
@@ -219,7 +220,11 @@ def get_cruise_coast_overspeed_leeway(accel_coast):
 def apply_cruise_coast_overspeed(v_ego, v_cruise, accel_coast, a_target):
   overspeed = v_ego - v_cruise
   if overspeed <= 0.0:
-    return a_target
+    underspeed_margin = v_cruise - v_ego
+    if underspeed_margin >= CRUISE_COAST_ANTICIPATORY_MARGIN or accel_coast <= 0.0:
+      return a_target
+    predictive_blend = 1.0 - underspeed_margin / CRUISE_COAST_ANTICIPATORY_MARGIN
+    return a_target + predictive_blend * (min(a_target, 0.0) - a_target)
 
   leeway = get_cruise_coast_overspeed_leeway(accel_coast)
   recovery_blend = float(np.clip((overspeed - leeway) / CRUISE_COAST_RECOVERY_OVERSPEED, 0.0, 1.0))
