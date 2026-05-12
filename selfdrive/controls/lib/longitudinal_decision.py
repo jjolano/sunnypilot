@@ -76,6 +76,20 @@ PHYSICAL_CONFIDENCE_MIN = 0.55
 ADVISORY_CONFIDENCE_MIN = 0.75
 COMFORT_CONFIDENCE_MIN = 0.50
 COMFORT_MAX_DRIVER_ACCEL_MARGIN = 0.5
+SOURCE_STABILITY_MAX_V_EGO = 2.5
+SOURCE_STABILITY_RELEASE_FRAMES = 3
+SOURCE_STABILITY_ACCEL_EPS = 1e-3
+SOURCE_STABILITY_SPEED_EPS = 1e-3
+SOURCE_STABILITY_HOLD_REASON = "source_stability_hold"
+SOURCE_STABILITY_HOLD_SOURCES = frozenset((
+  DecisionSource.LEAD_MPC,
+  DecisionSource.E2E_STOP,
+  DecisionSource.SPEED_LIMIT,
+  DecisionSource.SCC_VISION,
+  DecisionSource.SCC_MAP,
+  DecisionSource.OSM_TRAFFIC_CONTROL,
+  DecisionSource.STOP_LAUNCH,
+))
 
 
 @dataclass(frozen=True)
@@ -106,6 +120,10 @@ def _fallback_decision(v_target: float, a_target: float, should_stop: bool, reas
 
 
 class LongitudinalArbiter:
+  def __init__(self) -> None:
+    self._source_stability_decision: LongitudinalDecision | None = None
+    self._source_stability_release_frames: int = 0
+
   def decide(self, candidates: list[LongitudinalCandidate] | tuple[LongitudinalCandidate, ...]) -> LongitudinalDecision:
     valid = [candidate for candidate in candidates if candidate.valid]
     suppressed: list[tuple[DecisionSource, str]] = [
@@ -186,25 +204,94 @@ class LongitudinalArbiter:
       suppressed=tuple(dict.fromkeys(suppressed)),
     )
 
+  def reset_source_stability(self) -> None:
+    self._source_stability_decision = None
+    self._source_stability_release_frames = 0
+
+  def apply_source_stability(self, decision: LongitudinalDecision, v_ego: float | None) -> LongitudinalDecision:
+    if not _source_stability_active(v_ego):
+      self.reset_source_stability()
+      return decision
+
+    previous = self._source_stability_decision
+    if previous is None or not previous.enabled or previous.winner == DecisionSource.LEGACY_FALLBACK:
+      self._record_source_stability_decision(decision)
+      return decision
+    if decision.winner == previous.winner or previous.winner not in SOURCE_STABILITY_HOLD_SOURCES:
+      self._record_source_stability_decision(decision)
+      return decision
+    if _decision_more_restrictive(decision, previous):
+      self._record_source_stability_decision(decision)
+      return decision
+    if self._source_stability_release_frames <= 0:
+      self._record_source_stability_decision(decision)
+      return decision
+
+    self._source_stability_release_frames -= 1
+    held_suppressed = tuple(dict.fromkeys((*decision.suppressed, (decision.winner, SOURCE_STABILITY_HOLD_REASON))))
+    held = LongitudinalDecision(
+      enabled=True,
+      winner=previous.winner,
+      v_target=previous.v_target,
+      a_target=previous.a_target,
+      should_stop=previous.should_stop,
+      candidates=decision.candidates,
+      suppressed=held_suppressed,
+    )
+    self._source_stability_decision = held
+    return held
+
+  def _record_source_stability_decision(self, decision: LongitudinalDecision) -> None:
+    self._source_stability_decision = decision
+    self._source_stability_release_frames = SOURCE_STABILITY_RELEASE_FRAMES
+
+
+def _source_stability_active(v_ego: float | None) -> bool:
+  return v_ego is not None and math.isfinite(v_ego) and v_ego <= SOURCE_STABILITY_MAX_V_EGO
+
+
+def _decision_more_restrictive(decision: LongitudinalDecision, previous: LongitudinalDecision) -> bool:
+  return (
+    (decision.should_stop and not previous.should_stop) or
+    decision.a_target < previous.a_target - SOURCE_STABILITY_ACCEL_EPS or
+    decision.v_target < previous.v_target - SOURCE_STABILITY_SPEED_EPS
+  )
+
+
+def _decision_held_by_source_stability(decision: LongitudinalDecision) -> bool:
+  return any(reason == SOURCE_STABILITY_HOLD_REASON for _, reason in decision.suppressed)
+
 
 def resolve_longitudinal_decision(enabled: bool, candidates: list[LongitudinalCandidate] | tuple[LongitudinalCandidate, ...],
                                   fallback_v_target: float, fallback_a_target: float, fallback_should_stop: bool,
-                                  accel_limits: tuple[float, float], arbiter: LongitudinalArbiter) -> LongitudinalDecision:
+                                  accel_limits: tuple[float, float], arbiter: LongitudinalArbiter,
+                                  v_ego: float | None = None) -> LongitudinalDecision:
   if not enabled:
+    arbiter.reset_source_stability()
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "feature_flag_disabled")
   if not any(candidate.valid and candidate.role == CandidateRole.DRIVER_INTENT for candidate in candidates):
+    arbiter.reset_source_stability()
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "missing_driver_intent")
 
   try:
     decision = arbiter.decide(candidates)
   except Exception:
+    arbiter.reset_source_stability()
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "arbiter_exception")
 
   if not math.isfinite(decision.v_target) or not math.isfinite(decision.a_target):
+    arbiter.reset_source_stability()
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "decision_non_finite")
   if decision.winner == DecisionSource.LEGACY_FALLBACK:
+    arbiter.reset_source_stability()
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "missing_driver_intent")
   if not decision.inside_accel_limits(accel_limits):
+    arbiter.reset_source_stability()
+    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "decision_outside_accel_limits")
+
+  decision = arbiter.apply_source_stability(decision, v_ego)
+  if not decision.inside_accel_limits(accel_limits):
+    arbiter.reset_source_stability()
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "decision_outside_accel_limits")
 
   return decision
@@ -222,7 +309,14 @@ def apply_longitudinal_decision_output(decision: LongitudinalDecision, legacy_a_
                                        personality: int = log.LongitudinalPersonality.standard,
                                        dt: float = 0.0, comfort_active: bool = True) -> tuple[float, bool]:
   legacy_should_stop = bool(legacy_should_stop)
-  if not decision.enabled or decision.winner in (DecisionSource.LEGACY_FALLBACK, DecisionSource.CRUISE):
+  held_by_source_stability = _decision_held_by_source_stability(decision)
+  if not decision.enabled or decision.winner == DecisionSource.LEGACY_FALLBACK:
+    output_a_target = float(legacy_a_target)
+    output_should_stop = legacy_should_stop
+  elif held_by_source_stability:
+    output_a_target = min(float(decision.a_target), float(legacy_a_target))
+    output_should_stop = legacy_should_stop or decision.should_stop
+  elif decision.winner == DecisionSource.CRUISE:
     output_a_target = float(legacy_a_target)
     output_should_stop = legacy_should_stop
   elif decision.winner in (DecisionSource.LEAD_MPC, DecisionSource.E2E_STOP, DecisionSource.STOP_LAUNCH):
@@ -243,7 +337,7 @@ def apply_longitudinal_decision_output(decision: LongitudinalDecision, legacy_a_
     output_a_target = float(legacy_a_target)
     output_should_stop = legacy_should_stop
 
-  if comfort_active and not output_should_stop and prev_a_target is not None:
+  if comfort_active and not held_by_source_stability and not output_should_stop and prev_a_target is not None:
     output_a_target = apply_personality_accel_comfort(decision, output_a_target, prev_a_target, personality, dt)
   return output_a_target, output_should_stop
 

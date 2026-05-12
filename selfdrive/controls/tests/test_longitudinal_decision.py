@@ -10,6 +10,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   LongitudinalArbiter,
   LongitudinalCandidate,
   LongitudinalDecision,
+  SOURCE_STABILITY_RELEASE_FRAMES,
   apply_personality_accel_comfort,
   apply_longitudinal_decision_output,
   build_core_longitudinal_candidates,
@@ -298,6 +299,345 @@ def test_enabled_resolver_keeps_candidate_telemetry():
   assert decision.winner == DecisionSource.SPEED_LIMIT
   assert [candidate.source for candidate in decision.candidates] == [DecisionSource.CRUISE, DecisionSource.SPEED_LIMIT]
   assert decision.fallback_reason == ""
+
+
+def test_low_speed_source_stability_holds_recent_advisory_release():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  scc_vision = make_candidate(DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 3.0, -0.3, 0.8, 0.5, "vision_curve")
+
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, scc_vision],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+
+  assert decision.winner == DecisionSource.SCC_VISION
+
+  for _ in range(SOURCE_STABILITY_RELEASE_FRAMES):
+    decision = resolve_longitudinal_decision(
+      enabled=True,
+      candidates=[cruise],
+      fallback_v_target=5.0,
+      fallback_a_target=0.2,
+      fallback_should_stop=False,
+      accel_limits=(-1.2, 1.0),
+      arbiter=arbiter,
+      v_ego=0.4,
+    )
+
+    assert decision.winner == DecisionSource.SCC_VISION
+    assert decision.a_target == pytest.approx(-0.3)
+    assert (DecisionSource.CRUISE, "source_stability_hold") in decision.suppressed
+
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+
+  assert decision.winner == DecisionSource.CRUISE
+  assert decision.a_target == pytest.approx(0.2)
+
+
+def test_source_stability_none_v_ego_clears_seeded_low_speed_hold():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  scc_vision = make_candidate(DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 3.0, -0.3, 0.8, 0.5, "vision_curve")
+
+  first_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, scc_vision],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  held_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  reset_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=None,
+  )
+  next_low_speed_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+
+  assert first_decision.winner == DecisionSource.SCC_VISION
+  assert held_decision.winner == DecisionSource.SCC_VISION
+  assert (DecisionSource.CRUISE, "source_stability_hold") in held_decision.suppressed
+  assert reset_decision.winner == DecisionSource.CRUISE
+  assert next_low_speed_decision.winner == DecisionSource.CRUISE
+  assert not any(reason == "source_stability_hold" for _, reason in next_low_speed_decision.suppressed)
+
+
+def test_low_speed_source_stability_allows_immediate_safer_physical_hazard():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  scc_vision = make_candidate(DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 3.0, -0.3, 0.8, 0.5, "vision_curve")
+  lead = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 5.0, -0.8, 0.9, 0.8, "confirmed_lead")
+
+  first_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, scc_vision],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, lead],
+    fallback_v_target=5.0,
+    fallback_a_target=-0.8,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+
+  assert first_decision.winner == DecisionSource.SCC_VISION
+  assert decision.winner == DecisionSource.LEAD_MPC
+  assert decision.a_target == pytest.approx(-0.8)
+  assert (DecisionSource.LEAD_MPC, "source_stability_hold") not in decision.suppressed
+
+
+def test_low_speed_source_stability_allows_immediate_safer_advisory_cap():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  scc_vision = make_candidate(DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 3.0, -0.2, 0.8, 0.5, "vision_curve")
+  speed_limit = make_candidate(DecisionSource.SPEED_LIMIT, CandidateRole.ADVISORY_CAP, 2.0, -0.1, 0.9, 0.5, "lower_limit")
+
+  first_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, scc_vision],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, speed_limit],
+    fallback_v_target=5.0,
+    fallback_a_target=-0.1,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+
+  assert first_decision.winner == DecisionSource.SCC_VISION
+  assert decision.winner == DecisionSource.SPEED_LIMIT
+  assert decision.v_target == pytest.approx(2.0)
+
+
+def test_disabled_resolver_clears_source_stability_without_changing_fallback():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  scc_vision = make_candidate(DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 3.0, -0.3, 0.8, 0.5, "vision_curve")
+
+  first_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, scc_vision],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  disabled_decision = resolve_longitudinal_decision(
+    enabled=False,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.4,
+    fallback_should_stop=True,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  enabled_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+
+  assert first_decision.winner == DecisionSource.SCC_VISION
+  assert not disabled_decision.enabled
+  assert disabled_decision.winner == DecisionSource.LEGACY_FALLBACK
+  assert disabled_decision.a_target == pytest.approx(0.4)
+  assert disabled_decision.should_stop
+  assert disabled_decision.fallback_reason == "feature_flag_disabled"
+  assert enabled_decision.winner == DecisionSource.CRUISE
+
+
+def test_apply_decision_output_held_lead_release_uses_held_accel_conservatively():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  lead = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 5.0, -0.5, 0.9, 0.8, "confirmed_lead")
+
+  first_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, lead],
+    fallback_v_target=5.0,
+    fallback_a_target=-0.5,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  held_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+
+  release_a_target, release_should_stop = apply_longitudinal_decision_output(
+    held_decision, legacy_a_target=0.2, legacy_should_stop=False,
+  )
+  stronger_legacy_a_target, stronger_legacy_should_stop = apply_longitudinal_decision_output(
+    held_decision, legacy_a_target=-0.8, legacy_should_stop=False,
+  )
+
+  assert first_decision.winner == DecisionSource.LEAD_MPC
+  assert held_decision.winner == DecisionSource.LEAD_MPC
+  assert (DecisionSource.CRUISE, "source_stability_hold") in held_decision.suppressed
+  assert release_a_target == pytest.approx(-0.5)
+  assert not release_should_stop
+  assert stronger_legacy_a_target == pytest.approx(-0.8)
+  assert not stronger_legacy_should_stop
+
+
+def test_apply_decision_output_held_release_bypasses_comfort_smoothing():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  lead = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 5.0, -0.5, 0.9, 0.8, "confirmed_lead")
+
+  resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, lead],
+    fallback_v_target=5.0,
+    fallback_a_target=-0.5,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  held_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+
+  a_target, should_stop = apply_longitudinal_decision_output(
+    held_decision,
+    legacy_a_target=0.2,
+    legacy_should_stop=False,
+    prev_a_target=0.0,
+    personality=log.LongitudinalPersonality.standard,
+    dt=0.05,
+    comfort_active=True,
+  )
+
+  assert held_decision.winner == DecisionSource.LEAD_MPC
+  assert (DecisionSource.CRUISE, "source_stability_hold") in held_decision.suppressed
+  assert a_target == pytest.approx(-0.5)
+  assert not should_stop
+
+
+def test_apply_decision_output_held_e2e_release_uses_held_accel_conservatively():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  e2e = make_candidate(DecisionSource.E2E_STOP, CandidateRole.PHYSICAL_HAZARD, 5.0, -0.4, 0.85, 0.6, "model_stop")
+
+  first_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, e2e],
+    fallback_v_target=5.0,
+    fallback_a_target=-0.4,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  held_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+
+  release_a_target, release_should_stop = apply_longitudinal_decision_output(
+    held_decision, legacy_a_target=0.2, legacy_should_stop=False,
+  )
+  stronger_legacy_a_target, stronger_legacy_should_stop = apply_longitudinal_decision_output(
+    held_decision, legacy_a_target=-0.8, legacy_should_stop=False,
+  )
+
+  assert first_decision.winner == DecisionSource.E2E_STOP
+  assert held_decision.winner == DecisionSource.E2E_STOP
+  assert (DecisionSource.CRUISE, "source_stability_hold") in held_decision.suppressed
+  assert release_a_target == pytest.approx(-0.4)
+  assert not release_should_stop
+  assert stronger_legacy_a_target == pytest.approx(-0.8)
+  assert not stronger_legacy_should_stop
 
 
 def test_apply_decision_output_cruise_winner_preserves_legacy_accel():
