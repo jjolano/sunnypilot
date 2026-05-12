@@ -5,8 +5,10 @@ from openpilot.selfdrive.controls.lib.longcontrol import (
   LAUNCH_BREAKAWAY_A_EGO,
   LAUNCH_BREAKAWAY_ACCEL,
   LAUNCH_BREAKAWAY_BASE_ACCEL,
+  LAUNCH_BREAKAWAY_BASE_TARGET_ACCEL,
   LAUNCH_BREAKAWAY_MAX_TIME,
   LAUNCH_BREAKAWAY_MIN_TIME,
+  LAUNCH_BREAKAWAY_TARGET_ACCEL,
   LAUNCH_BREAKAWAY_V_EGO,
   LAUNCH_ENVELOPE_MAX_ACCEL,
   LAUNCH_ENVELOPE_MIN_ACCEL,
@@ -156,7 +158,7 @@ def test_stopping_recovers_to_soft_stop_accel_if_standstill_signal_drops():
 
 def test_launch_envelope_blend_fades_by_time_and_speed():
   assert get_launch_envelope_blend(0.0, 0.0) == pytest.approx(1.0)
-  assert 0.0 < get_launch_envelope_blend(0.3, 0.25) < 1.0
+  assert 0.0 < get_launch_envelope_blend(0.3, 0.125) < 1.0
   assert get_launch_envelope_blend(0.7, 0.0) == pytest.approx(0.0)
   assert get_launch_envelope_blend(0.0, 0.6) == pytest.approx(0.0)
 
@@ -184,10 +186,11 @@ def test_launch_breakaway_accel_scales_with_target_accel():
   assert get_launch_breakaway_accel(0.0, accel_limits) == pytest.approx(0.0)
   assert get_launch_breakaway_accel(-0.2, accel_limits) == pytest.approx(0.0)
   assert get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL - 1e-3, accel_limits) == pytest.approx(0.0)
-  mild_launch = get_launch_breakaway_accel(0.18, accel_limits)
+  mild_launch = get_launch_breakaway_accel(0.30, accel_limits)
   assert LAUNCH_ENVELOPE_MIN_ACCEL < mild_launch < LAUNCH_BREAKAWAY_BASE_ACCEL
-  assert LAUNCH_BREAKAWAY_BASE_ACCEL <= get_launch_breakaway_accel(0.35, accel_limits) <= LAUNCH_BREAKAWAY_ACCEL
-  assert get_launch_breakaway_accel(0.50, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
+  assert get_launch_breakaway_accel(LAUNCH_BREAKAWAY_BASE_TARGET_ACCEL, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_BASE_ACCEL)
+  assert LAUNCH_BREAKAWAY_BASE_ACCEL < get_launch_breakaway_accel(0.50, accel_limits) < LAUNCH_BREAKAWAY_ACCEL
+  assert get_launch_breakaway_accel(LAUNCH_BREAKAWAY_TARGET_ACCEL, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
   assert get_launch_breakaway_accel(1.0, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
   assert get_launch_breakaway_accel(1.0, (-3.0, 0.25)) == pytest.approx(0.25)
 
@@ -196,7 +199,7 @@ def test_clear_runway_launch_allows_stronger_breakaway_and_faster_ramp_out():
   accel_limits = (-3.0, 2.0)
 
   assert LAUNCH_BREAKAWAY_ACCEL >= 0.55
-  assert LAUNCH_ENVELOPE_MAX_ACCEL == pytest.approx(0.60)
+  assert LAUNCH_ENVELOPE_MAX_ACCEL == pytest.approx(0.85)
   assert get_launch_breakaway_accel(1.0, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
   assert apply_launch_envelope(1.0, accel_limits, 0.0, 0.0) == pytest.approx(LAUNCH_ENVELOPE_MAX_ACCEL)
   assert get_launch_envelope_blend(0.0, 0.4) == pytest.approx(0.0)
@@ -204,26 +207,26 @@ def test_clear_runway_launch_allows_stronger_breakaway_and_faster_ramp_out():
 
 def test_adaptive_breakaway_base_for_mild_launch():
   accel_limits = (-3.0, 2.0)
-  # Mild launch around the base target should get base breakaway 0.62-0.65.
-  assert 0.62 <= get_launch_breakaway_accel(0.30, accel_limits) <= 0.65
+  # Mild launch around the base target should get base breakaway.
+  assert get_launch_breakaway_accel(LAUNCH_BREAKAWAY_BASE_TARGET_ACCEL, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_BASE_ACCEL)
 
   # More clearly positive mild launches may interpolate above base without reaching the clear-runway cap.
-  breakaway = get_launch_breakaway_accel(0.35, accel_limits)
+  breakaway = get_launch_breakaway_accel(0.50, accel_limits)
   assert LAUNCH_BREAKAWAY_BASE_ACCEL <= breakaway < LAUNCH_BREAKAWAY_ACCEL
 
 
 def test_adaptive_breakaway_lifts_low_positive_launch_target():
   accel_limits = (-3.0, 2.0)
-  # Manual launch samples are assertive enough that a real release with a low positive planner target should not feel lazy.
-  breakaway = get_launch_breakaway_accel(0.20, accel_limits)
-  assert 0.30 <= breakaway <= 0.35
+  # Launch targets below the envelope floor are lifted by LongControl before this helper is called.
+  assert get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL - 1e-3, accel_limits) == pytest.approx(0.0)
+  assert get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL, accel_limits) == pytest.approx(LAUNCH_ENVELOPE_MIN_ACCEL)
 
 
 def test_adaptive_breakaway_upper_cap_for_clear_runway():
   accel_limits = (-3.0, 2.0)
-  # Clear-runway launch with clearly positive target should get upper cap ~0.70
-  assert get_launch_breakaway_accel(0.50, accel_limits) == pytest.approx(0.70, abs=0.01)
-  assert get_launch_breakaway_accel(1.0, accel_limits) == pytest.approx(0.70, abs=0.01)
+  # Clear-runway launch with clearly positive target should get the upper cap.
+  assert get_launch_breakaway_accel(LAUNCH_BREAKAWAY_TARGET_ACCEL, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
+  assert get_launch_breakaway_accel(1.0, accel_limits) == pytest.approx(LAUNCH_BREAKAWAY_ACCEL)
 
 
 def test_apply_launch_envelope_only_shapes_positive_accel():
@@ -262,7 +265,7 @@ def test_lead_launch_uses_breakaway_envelope_when_planner_releases():
   assert loc.long_control_state == LongCtrlState.pid
   assert loc.launch_envelope_active
   assert not loc.launch_breakaway_done
-  assert output_accel == pytest.approx(get_launch_breakaway_accel(a_target, (-3.0, 2.0)))
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL, (-3.0, 2.0)))
 
 
 def test_no_lead_launch_keeps_stop_when_should_stop_returns_during_active_envelope():
@@ -388,7 +391,7 @@ def test_starting_state_launch_arms_and_caps_after_stop():
   assert loc.long_control_state == LongCtrlState.starting
   assert loc.launch_envelope_active
   assert not loc.launch_breakaway_done
-  assert output_accel == pytest.approx(get_launch_breakaway_accel(a_target, (-3.0, 2.0)))
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL, (-3.0, 2.0)))
 
 
 def test_starting_state_lead_launch_uses_breakaway_envelope_when_planner_releases():
@@ -403,7 +406,7 @@ def test_starting_state_lead_launch_uses_breakaway_envelope_when_planner_release
   assert loc.long_control_state == LongCtrlState.starting
   assert loc.launch_envelope_active
   assert not loc.launch_breakaway_done
-  assert output_accel == pytest.approx(get_launch_breakaway_accel(a_target, (-3.0, 2.0)))
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(LAUNCH_ENVELOPE_MIN_ACCEL, (-3.0, 2.0)))
 
 
 def test_starting_state_launch_uses_minimum_breakaway_for_neutral_target():

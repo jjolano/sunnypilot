@@ -170,7 +170,7 @@ class LongitudinalArbiter:
         ]
         winner = max(comfort, key=lambda candidate: candidate.a_target) if comfort else driver
 
-    if winner is not driver and winner.role == CandidateRole.RELAXATION:
+    if winner is not driver and winner.role == CandidateRole.RELAXATION and winner.a_target > 0.0:
       max_allowed = driver.a_target + COMFORT_MAX_DRIVER_ACCEL_MARGIN
       if winner.a_target > max_allowed:
         suppressed.append((winner.source, "comfort_accel_exceeds_margin"))
@@ -269,7 +269,7 @@ ACCEL_COMFORT_BYPASS_SOURCES = frozenset((
 ))
 
 
-def _personality_rate(rates: dict[log.LongitudinalPersonality, float], personality: int) -> float:
+def _personality_rate(rates: dict[int, float], personality: int) -> float:
   return rates.get(personality, rates[log.LongitudinalPersonality.standard])
 
 

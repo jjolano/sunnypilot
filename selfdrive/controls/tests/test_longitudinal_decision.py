@@ -200,7 +200,7 @@ def test_relaxation_candidate_guarded_against_runaway_accel():
 
   assert decision.winner == DecisionSource.CRUISE
   assert decision.a_target == -0.8
-  assert ("CRUISE_COAST", "comfort_accel_exceeds_margin") in set(decision.suppressed)
+  assert (DecisionSource.CRUISE_COAST, "comfort_accel_exceeds_margin") in set(decision.suppressed)
 
 
 def test_resolver_returns_legacy_fallback_when_toggle_disabled():
