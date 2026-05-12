@@ -1053,6 +1053,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       cruise_coast_applied=cruise_coast_applied,
       cruise_coast_a_target=cruise_coast_a_target,
     )
+    source_stability_v_ego = None if (
+      reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed
+    ) else v_ego
     self.longitudinal_decision = resolve_longitudinal_decision(
       enabled=self.params.get_bool("LongitudinalDecisionLayer"),
       candidates=self.longitudinal_decision_candidates,
@@ -1061,6 +1064,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       fallback_should_stop=legacy_should_stop,
       accel_limits=(accel_clip[0], accel_clip[1]),
       arbiter=self.longitudinal_arbiter,
+      v_ego=source_stability_v_ego,
     )
     if self.longitudinal_decision.enabled:
       decision_accel_comfort_active = not (
