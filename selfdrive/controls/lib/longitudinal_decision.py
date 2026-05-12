@@ -12,6 +12,7 @@ class CandidateRole(Enum):
   DRIVER_INTENT = "driver_intent"
   PHYSICAL_HAZARD = "physical_hazard"
   ADVISORY_CAP = "advisory_cap"
+  RELAXATION = "relaxation"
   COMFORT_SHAPING = "comfort_shaping"
   FALLBACK = "fallback"
 
@@ -162,14 +163,14 @@ class LongitudinalArbiter:
       else:
         comfort = [
           candidate for candidate in valid
-          if candidate.role == CandidateRole.COMFORT_SHAPING
+          if candidate.role == CandidateRole.RELAXATION
           and candidate.confidence >= COMFORT_CONFIDENCE_MIN
           and candidate.v_target <= driver.v_target
           and candidate.a_target > driver.a_target
         ]
         winner = max(comfort, key=lambda candidate: candidate.a_target) if comfort else driver
 
-    if winner is not driver and winner.role == CandidateRole.COMFORT_SHAPING:
+    if winner is not driver and winner.role == CandidateRole.RELAXATION:
       max_allowed = driver.a_target + COMFORT_MAX_DRIVER_ACCEL_MARGIN
       if winner.a_target > max_allowed:
         suppressed.append((winner.source, "comfort_accel_exceeds_margin"))
@@ -332,7 +333,7 @@ def build_core_longitudinal_candidates(has_lead: bool, lead_confidence: float, v
   if cruise_coast_applied:
     candidates.append(LongitudinalCandidate(
       source=DecisionSource.CRUISE_COAST,
-      role=CandidateRole.COMFORT_SHAPING,
+      role=CandidateRole.RELAXATION,
       v_target=max(0.0, v_cruise),
       a_target=cruise_coast_a_target,
       confidence=0.80,
