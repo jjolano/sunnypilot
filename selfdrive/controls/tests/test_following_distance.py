@@ -1563,7 +1563,7 @@ def test_process_lead_suppresses_new_lead_positive_accel():
   lead = SimpleNamespace(status=True, dRel=30.0, vLead=15.0, vLeadK=15.0, aLeadK=1.0, aLeadTau=0.0)
   confidence = LeadConfidenceState(status=True, accel_blend=0.0)
 
-  _, a_lead, _, a_lead_traj = mpc.process_lead(lead, confidence)
+  _, a_lead, _, a_lead_traj = mpc.process_lead(lead, 0, confidence)
 
   assert a_lead == pytest.approx(0.0)
   assert np.all(a_lead_traj == pytest.approx(0.0))
@@ -1574,7 +1574,7 @@ def test_process_lead_preserves_new_lead_negative_accel():
   lead = SimpleNamespace(status=True, dRel=30.0, vLead=15.0, vLeadK=15.0, aLeadK=-1.0, aLeadTau=0.0)
   confidence = LeadConfidenceState(status=True, accel_blend=0.0)
 
-  _, a_lead, _, a_lead_traj = mpc.process_lead(lead, confidence)
+  _, a_lead, _, a_lead_traj = mpc.process_lead(lead, 0, confidence)
 
   assert a_lead == pytest.approx(-1.0)
   assert np.all(a_lead_traj == pytest.approx(-1.0))
@@ -2019,7 +2019,7 @@ def test_process_lead_ignores_non_finite_lead_fields(field):
   lead = SimpleNamespace(status=True, dRel=25.0, vLead=10.0, aLeadK=0.0, aLeadTau=0.3)
   setattr(lead, field, float("nan"))
 
-  lead_xv, a_lead, _, a_lead_traj = mpc.process_lead(lead)
+  lead_xv, a_lead, _, a_lead_traj = mpc.process_lead(lead, 0)
 
   assert np.all(np.isfinite(lead_xv))
   assert a_lead == pytest.approx(0.0)
@@ -3144,15 +3144,25 @@ def test_lead_gap_comfort_tapers_toward_coast_as_gap_recovers():
   assert get_lead_gap_comfort_recovery_blend(late_gap, comfort_floor, desired_gap) > get_lead_gap_comfort_recovery_blend(early_gap, comfort_floor, desired_gap)
 
 
-def test_lead_gap_comfort_disables_near_danger_or_real_closure():
+def test_lead_gap_comfort_smoothly_releases_below_floor():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   v_ego = 20.0
   comfort_floor = get_lead_gap_comfort_floor(v_ego, v_ego, t_follow)
   desired_gap = get_desired_follow_distance(v_ego, v_ego, t_follow)
+  danger_gap = get_lead_danger_distance(v_ego, v_ego, t_follow)
   d_rel = 0.5 * (comfort_floor + desired_gap)
 
-  assert get_lead_gap_comfort_a_min(v_ego, v_ego - 1.0, d_rel, t_follow) == pytest.approx(ACCEL_MIN)
-  assert get_lead_gap_comfort_a_min(v_ego, v_ego, comfort_floor - 0.1, t_follow) == pytest.approx(ACCEL_MIN)
+  # Closing fast with gap in comfort zone: should still apply light decel, not bail to ACCEL_MIN
+  closing_result = get_lead_gap_comfort_a_min(v_ego, v_ego - 1.0, d_rel, t_follow)
+  assert closing_result < 0.0
+  assert closing_result > ACCEL_MIN
+  # Just below comfort_floor: gradual release, not full ACCEL_MIN
+  below_floor_result = get_lead_gap_comfort_a_min(v_ego, v_ego, comfort_floor - 0.1, t_follow)
+  assert below_floor_result < 0.0
+  assert below_floor_result > ACCEL_MIN
+  # At danger_gap: fully released
+  danger_result = get_lead_gap_comfort_a_min(v_ego, v_ego, max(danger_gap - 0.01, 0.1), t_follow)
+  assert danger_result == pytest.approx(ACCEL_MIN)
 
 
 def test_lead_accel_recovery_allows_accel_when_lead_pulls_away():
