@@ -168,10 +168,10 @@ def test_low_confidence_advisory_is_suppressed_for_driver_intent():
   assert (DecisionSource.SCC_VISION, "low_confidence") in decision.suppressed
 
 
-def test_comfort_candidate_can_relax_accel_when_no_hazard_or_advisory():
+def test_relaxation_candidate_can_relax_accel_when_no_hazard_or_advisory():
   arbiter = LongitudinalArbiter()
   cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, -0.8, 1.0, 0.1, "driver_set_speed")
-  coast = make_candidate(DecisionSource.CRUISE_COAST, CandidateRole.COMFORT_SHAPING, 25.0, -0.2, 0.8, 0.2, "harmless_overspeed")
+  coast = make_candidate(DecisionSource.CRUISE_COAST, CandidateRole.RELAXATION, 25.0, -0.2, 0.8, 0.2, "harmless_overspeed")
 
   decision = arbiter.decide([cruise, coast])
 
@@ -179,16 +179,28 @@ def test_comfort_candidate_can_relax_accel_when_no_hazard_or_advisory():
   assert decision.a_target == -0.2
 
 
-def test_comfort_candidate_cannot_raise_driver_target_speed():
+def test_relaxation_candidate_cannot_raise_driver_target_speed():
   arbiter = LongitudinalArbiter()
   cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, -0.8, 1.0, 0.1, "driver_set_speed")
-  coast = make_candidate(DecisionSource.CRUISE_COAST, CandidateRole.COMFORT_SHAPING, 30.0, -0.2, 0.8, 0.2, "harmless_overspeed")
+  coast = make_candidate(DecisionSource.CRUISE_COAST, CandidateRole.RELAXATION, 30.0, -0.2, 0.8, 0.2, "harmless_overspeed")
 
   decision = arbiter.decide([cruise, coast])
 
   assert decision.winner == DecisionSource.CRUISE
   assert decision.v_target == 25.0
   assert decision.a_target == -0.8
+
+
+def test_relaxation_candidate_guarded_against_runaway_accel():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, -0.8, 1.0, 0.1, "driver_set_speed")
+  runaway = make_candidate(DecisionSource.CRUISE_COAST, CandidateRole.RELAXATION, 25.0, 0.6, 0.8, 0.2, "buggy_overspeed")
+
+  decision = arbiter.decide([cruise, runaway])
+
+  assert decision.winner == DecisionSource.CRUISE
+  assert decision.a_target == -0.8
+  assert ("CRUISE_COAST", "comfort_accel_exceeds_margin") in set(decision.suppressed)
 
 
 def test_resolver_returns_legacy_fallback_when_toggle_disabled():
@@ -509,7 +521,7 @@ def test_core_candidate_builder_adds_cruise_coast_comfort_candidate():
   )
 
   coast = next(candidate for candidate in candidates if candidate.source == DecisionSource.CRUISE_COAST)
-  assert coast.role == CandidateRole.COMFORT_SHAPING
+  assert coast.role == CandidateRole.RELAXATION
   assert coast.a_target == -0.2
 
 
@@ -540,7 +552,7 @@ def test_confident_curve_can_limit_overspeed_when_no_hazard():
   arbiter = LongitudinalArbiter()
   cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 30.0, -0.1, 1.0, 0.1, "driver_set_speed")
   curve = make_candidate(DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 18.0, -0.5, 0.85, 0.6, "confident_vision_curve")
-  coast = make_candidate(DecisionSource.CRUISE_COAST, CandidateRole.COMFORT_SHAPING, 30.0, 0.0, 0.8, 0.2, "harmless_overspeed")
+  coast = make_candidate(DecisionSource.CRUISE_COAST, CandidateRole.RELAXATION, 30.0, 0.0, 0.8, 0.2, "harmless_overspeed")
 
   decision = arbiter.decide([cruise, curve, coast])
 
