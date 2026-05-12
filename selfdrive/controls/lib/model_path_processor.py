@@ -135,6 +135,11 @@ class ModelPathProcessor:
       self._low_lane_confidence_frames = 0
       self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
+      hard_invalid_fallback = self._limit_low_speed_untrusted_curvature_step(
+        inputs.v_ego,
+        hard_invalid_fallback,
+        self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature),
+      )
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path", 0, trust_penalty=self._trust_penalty)
 
     desired_curvature = float(inputs.desired_curvature)

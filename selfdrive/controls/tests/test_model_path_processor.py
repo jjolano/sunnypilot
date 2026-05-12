@@ -561,6 +561,36 @@ def test_invalid_path_breaks_sustained_low_lane_confidence_streak():
   assert after_invalid.quality > LOW_QUALITY_BLEND_THRESHOLD
 
 
+def test_low_speed_invalid_path_after_low_lane_confidence_limits_curvature_step():
+  processor = ModelPathProcessor()
+  low_lane_inputs = dict(
+    v_ego=3.0,
+    desired_curvature=0.020,
+    measured_curvature=0.001,
+    previous_desired_curvature=0.001,
+    lane_line_probs=(0.0, 0.1, 0.2, 0.0),
+  )
+
+  first = processor.update(make_inputs(**low_lane_inputs))
+  second = processor.update(make_inputs(**{**low_lane_inputs, "previous_desired_curvature": first.desired_curvature}))
+  low_lane = processor.update(make_inputs(**{**low_lane_inputs, "previous_desired_curvature": second.desired_curvature}))
+  invalid = processor.update(make_inputs(
+    v_ego=3.0,
+    desired_curvature=0.020,
+    measured_curvature=-0.080,
+    previous_desired_curvature=low_lane.desired_curvature,
+    lane_line_probs=(0.0, 0.1, 0.2, 0.0),
+    position_x=(0.0, 1.0),
+    position_y=(0.0, 0.1),
+  ))
+
+  assert low_lane.gated
+  assert low_lane.reason == "low_lane_confidence"
+  assert invalid.gated
+  assert invalid.reason == "invalid_path"
+  assert invalid.desired_curvature == pytest.approx(low_lane.desired_curvature - LOW_SPEED_UNTRUSTED_CURVATURE_STEP)
+
+
 @pytest.mark.parametrize(
   ("desired_curvature", "turn_curvature_sign", "expected_curvature"),
   [
@@ -628,6 +658,31 @@ def test_high_path_std_blends_toward_previous_desired():
   assert result.gated
   assert result.reason == "high_path_std"
   assert 0.001 < result.desired_curvature < 0.002
+
+
+def test_low_speed_invalid_path_after_high_path_std_limits_curvature_step():
+  processor = ModelPathProcessor()
+  high_std = processor.update(make_inputs(
+    v_ego=3.0,
+    desired_curvature=0.020,
+    measured_curvature=0.040,
+    previous_desired_curvature=0.040,
+    position_y_std=tuple(1.4 for _ in range(ModelConstants.IDX_N)),
+  ))
+  invalid = processor.update(make_inputs(
+    v_ego=3.0,
+    desired_curvature=0.020,
+    measured_curvature=-0.080,
+    previous_desired_curvature=high_std.desired_curvature,
+    position_x=(0.0, 1.0),
+    position_y=(0.0, 0.1),
+  ))
+
+  assert high_std.gated
+  assert high_std.reason == "high_path_std"
+  assert invalid.gated
+  assert invalid.reason == "invalid_path"
+  assert invalid.desired_curvature == pytest.approx(high_std.desired_curvature - LOW_SPEED_UNTRUSTED_CURVATURE_STEP)
 
 
 def test_low_speed_high_path_std_hold_outlasts_high_speed_hold():
