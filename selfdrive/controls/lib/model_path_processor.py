@@ -23,13 +23,18 @@ TURN_INTENT_MAX_PATH_Y_STD = 1.8
 TURN_INTENT_MIN_CURVATURE = 0.002
 TURN_INTENT_MAX_PATH_CURVATURE_DISAGREEMENT = 0.75
 LOW_LANE_LINE_PROB = 0.35
+LOW_LANE_CONFIDENCE_SUSTAIN_FRAMES = 3
+LOW_LANE_CONFIDENCE_SUSTAINED_QUALITY = 0.65
 HIGH_FRAME_DROP_PERC = 20.0
 LOW_QUALITY_BLEND_THRESHOLD = 0.75
 LOW_QUALITY_BLEND_MIN_ALPHA = 0.4
 HARD_INVALID_FALLBACK_MEASURED_ALPHA = 0.25
 SOFT_GATE_HOLD_FRAMES = 2
+LOW_SPEED_SOFT_GATE_SPEED = 12.0
+LOW_SPEED_SOFT_GATE_MAX_EXTRA_FRAMES = 3
 SOFT_GATE_HOLD_QUALITY = 0.70
-SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "path_disagreement"))
+SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "path_disagreement", "low_lane_confidence"))
+LOW_SPEED_UNTRUSTED_CURVATURE_STEP = 0.0025
 HARD_INVALID_RECOVERY_LAT_JERK = 2.0
 SMOOTHED_CURVATURE_MIN_SPEED = 5.0
 SMOOTHED_CURVATURE_MIN_SAMPLES = 5
@@ -96,6 +101,8 @@ class ModelPathProcessor:
   def reset(self) -> None:
     self._hold_frames_remaining = 0
     self._hold_reason = "ok"
+    self._hold_quality: float = SOFT_GATE_HOLD_QUALITY
+    self._low_lane_confidence_frames: int = 0
     self._recovering_from_hard_invalid = False
     self._trust_penalty = 0.0
     self._temporal_smoothed_curvature: float | None = None
@@ -119,11 +126,13 @@ class ModelPathProcessor:
 
     if not math.isfinite(inputs.desired_curvature):
       self._recovering_from_hard_invalid = False
+      self._low_lane_confidence_frames = 0
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature", 0, trust_penalty=self._trust_penalty)
 
     if not self._valid_core_path(inputs.position_x, inputs.position_y):
       self._recovering_from_hard_invalid = True
+      self._low_lane_confidence_frames = 0
       self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path", 0, trust_penalty=self._trust_penalty)
@@ -157,7 +166,7 @@ class ModelPathProcessor:
       quality = path_std_quality
       reason = "high_path_std"
 
-    lane_quality = self._lane_quality(inputs.lane_line_probs)
+    lane_quality = self._lane_quality(inputs.lane_line_probs, inputs.v_ego)
     if lane_quality < quality:
       quality = lane_quality
       reason = "low_lane_confidence"
@@ -176,7 +185,7 @@ class ModelPathProcessor:
       self._recovering_from_hard_invalid = False
       return replace(jump_result, trust_penalty=self._trust_penalty)
 
-    quality, reason, hold_frames_remaining = self._apply_soft_gate_hold(quality, reason)
+    quality, reason, hold_frames_remaining = self._apply_soft_gate_hold(quality, reason, inputs.v_ego)
 
     if reason in TRUST_BUMP_REASONS:
       self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
@@ -185,6 +194,12 @@ class ModelPathProcessor:
       self._recovering_from_hard_invalid = False
       alpha = float(np.interp(quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0]))
       desired_curvature = self._blend(fallback_curvature, desired_curvature, alpha)
+      if reason in SOFT_GATE_REASONS:
+        desired_curvature = self._limit_low_speed_untrusted_curvature_step(
+          inputs.v_ego,
+          desired_curvature,
+          fallback_curvature,
+        )
       return ModelPathProcessorResult(
         desired_curvature, quality, True, reason, hold_frames_remaining, trust_penalty=self._trust_penalty,
       )
@@ -288,18 +303,50 @@ class ModelPathProcessor:
 
     return tau_s, alpha, float(self._temporal_smoothed_curvature)
 
-  def _apply_soft_gate_hold(self, quality: float, reason: str) -> tuple[float, str, int]:
+  def _apply_soft_gate_hold(self, quality: float, reason: str, v_ego: float) -> tuple[float, str, int]:
     if reason in SOFT_GATE_REASONS and quality < LOW_QUALITY_BLEND_THRESHOLD:
-      self._hold_frames_remaining = SOFT_GATE_HOLD_FRAMES
+      self._hold_frames_remaining = self._soft_gate_hold_frames(v_ego, quality)
       self._hold_reason = reason
+      self._hold_quality = self._soft_gate_hold_quality(v_ego, quality)
       return quality, reason, self._hold_frames_remaining
 
     if self._hold_frames_remaining > 0:
       self._hold_frames_remaining -= 1
-      return min(quality, SOFT_GATE_HOLD_QUALITY), self._hold_reason, self._hold_frames_remaining
+      return min(quality, self._hold_quality), self._hold_reason, self._hold_frames_remaining
 
     self._hold_reason = "ok"
+    self._hold_quality = SOFT_GATE_HOLD_QUALITY
     return quality, reason, 0
+
+  @staticmethod
+  def _soft_gate_hold_frames(v_ego: float, quality: float) -> int:
+    if not math.isfinite(v_ego) or v_ego >= LOW_SPEED_SOFT_GATE_SPEED:
+      return SOFT_GATE_HOLD_FRAMES
+
+    extra_frames = int(round(float(np.interp(
+      quality,
+      [0.0, LOW_QUALITY_BLEND_THRESHOLD],
+      [LOW_SPEED_SOFT_GATE_MAX_EXTRA_FRAMES, 1.0],
+    ))))
+    return SOFT_GATE_HOLD_FRAMES + max(1, extra_frames)
+
+  @staticmethod
+  def _soft_gate_hold_quality(v_ego: float, quality: float) -> float:
+    if not math.isfinite(v_ego) or v_ego >= LOW_SPEED_SOFT_GATE_SPEED:
+      return SOFT_GATE_HOLD_QUALITY
+    return min(SOFT_GATE_HOLD_QUALITY, quality)
+
+  @staticmethod
+  def _limit_low_speed_untrusted_curvature_step(v_ego: float, desired_curvature: float, fallback_curvature: float) -> float:
+    if not math.isfinite(v_ego) or v_ego >= LOW_SPEED_SOFT_GATE_SPEED:
+      return desired_curvature
+    if not math.isfinite(desired_curvature) or not math.isfinite(fallback_curvature):
+      return desired_curvature
+
+    curvature_delta = desired_curvature - fallback_curvature
+    if abs(curvature_delta) <= LOW_SPEED_UNTRUSTED_CURVATURE_STEP:
+      return desired_curvature
+    return fallback_curvature + math.copysign(LOW_SPEED_UNTRUSTED_CURVATURE_STEP, curvature_delta)
 
   def _limit_hard_invalid_recovery(self, inputs: ModelPathProcessorInputs, desired_curvature: float) -> ModelPathProcessorResult | None:
     if not self._recovering_from_hard_invalid:
@@ -404,16 +451,23 @@ class ModelPathProcessor:
       return False
     return path_disagreement <= TURN_INTENT_MAX_PATH_CURVATURE_DISAGREEMENT
 
-  @staticmethod
-  def _lane_quality(lane_line_probs: Sequence[float]) -> float:
+  def _lane_quality(self, lane_line_probs: Sequence[float], v_ego: float) -> float:
     if len(lane_line_probs) <= 2:
+      self._low_lane_confidence_frames = 0
       return 0.9
     central_prob = min(float(lane_line_probs[1]), float(lane_line_probs[2]))
     if not math.isfinite(central_prob):
+      self._low_lane_confidence_frames = 0
       return 0.85
     if central_prob >= LOW_LANE_LINE_PROB:
+      self._low_lane_confidence_frames = 0
       return 1.0
-    return float(np.interp(central_prob, [0.0, LOW_LANE_LINE_PROB], [0.85, 1.0]))
+    self._low_lane_confidence_frames += 1
+    quality = float(np.interp(central_prob, [0.0, LOW_LANE_LINE_PROB], [0.85, 1.0]))
+    low_speed = math.isfinite(v_ego) and v_ego < LOW_SPEED_SOFT_GATE_SPEED
+    if low_speed and self._low_lane_confidence_frames >= LOW_LANE_CONFIDENCE_SUSTAIN_FRAMES:
+      quality = min(quality, LOW_LANE_CONFIDENCE_SUSTAINED_QUALITY)
+    return quality
 
   @classmethod
   def _path_curvature(cls, orientation_z: Sequence[float], orientation_rate_z: Sequence[float], v_ego: float) -> float | None:

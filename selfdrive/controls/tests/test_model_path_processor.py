@@ -3,7 +3,13 @@ from dataclasses import replace
 
 import pytest
 
-from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs
+from openpilot.selfdrive.controls.lib.model_path_processor import (
+  LOW_QUALITY_BLEND_MIN_ALPHA,
+  LOW_QUALITY_BLEND_THRESHOLD,
+  LOW_SPEED_UNTRUSTED_CURVATURE_STEP,
+  ModelPathProcessor,
+  ModelPathProcessorInputs,
+)
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 
@@ -479,6 +485,82 @@ def test_low_lane_confidence_degrades_quality_without_hard_gate():
   assert result.desired_curvature == pytest.approx(0.002)
 
 
+def test_sustained_low_lane_confidence_eventually_blends_but_single_frame_does_not():
+  processor = ModelPathProcessor()
+  low_lane_inputs = dict(
+    v_ego=3.0,
+    desired_curvature=0.006,
+    measured_curvature=0.001,
+    previous_desired_curvature=0.001,
+    lane_line_probs=(0.0, 0.1, 0.2, 0.0),
+  )
+
+  first = processor.update(make_inputs(**low_lane_inputs))
+  second = processor.update(make_inputs(**low_lane_inputs))
+  sustained = processor.update(make_inputs(**low_lane_inputs))
+
+  assert not first.gated
+  assert first.reason == "low_lane_confidence"
+  assert first.quality > LOW_QUALITY_BLEND_THRESHOLD
+  assert first.desired_curvature == pytest.approx(0.006)
+  assert not second.gated
+  assert sustained.gated
+  assert sustained.reason == "low_lane_confidence"
+  assert sustained.quality < LOW_QUALITY_BLEND_THRESHOLD
+  assert 0.001 < sustained.desired_curvature < 0.006
+
+
+def test_high_speed_sustained_low_lane_confidence_does_not_soft_gate():
+  processor = ModelPathProcessor()
+  low_lane_inputs = dict(
+    v_ego=20.0,
+    desired_curvature=0.006,
+    measured_curvature=0.001,
+    previous_desired_curvature=0.001,
+    lane_line_probs=(0.0, 0.1, 0.2, 0.0),
+  )
+
+  first = processor.update(make_inputs(**low_lane_inputs))
+  second = processor.update(make_inputs(**low_lane_inputs))
+  third = processor.update(make_inputs(**low_lane_inputs))
+
+  assert not first.gated
+  assert not second.gated
+  assert not third.gated
+  assert third.reason == "low_lane_confidence"
+  assert third.quality > LOW_QUALITY_BLEND_THRESHOLD
+  assert third.desired_curvature == pytest.approx(0.006)
+
+
+def test_invalid_path_breaks_sustained_low_lane_confidence_streak():
+  processor = ModelPathProcessor()
+  low_lane_inputs = dict(
+    v_ego=3.0,
+    desired_curvature=0.006,
+    measured_curvature=0.001,
+    previous_desired_curvature=0.001,
+    lane_line_probs=(0.0, 0.1, 0.2, 0.0),
+  )
+
+  first = processor.update(make_inputs(**low_lane_inputs))
+  second = processor.update(make_inputs(**low_lane_inputs))
+  invalid = processor.update(make_inputs(
+    **low_lane_inputs,
+    position_x=(0.0, 1.0),
+    position_y=(0.0, 0.1),
+  ))
+  after_invalid_inputs = {**low_lane_inputs, "previous_desired_curvature": invalid.desired_curvature}
+  after_invalid = processor.update(make_inputs(**after_invalid_inputs))
+
+  assert not first.gated
+  assert not second.gated
+  assert invalid.gated
+  assert invalid.reason == "invalid_path"
+  assert not after_invalid.gated
+  assert after_invalid.reason == "low_lane_confidence"
+  assert after_invalid.quality > LOW_QUALITY_BLEND_THRESHOLD
+
+
 @pytest.mark.parametrize(
   ("desired_curvature", "turn_curvature_sign", "expected_curvature"),
   [
@@ -546,6 +628,48 @@ def test_high_path_std_blends_toward_previous_desired():
   assert result.gated
   assert result.reason == "high_path_std"
   assert 0.001 < result.desired_curvature < 0.002
+
+
+def test_low_speed_high_path_std_hold_outlasts_high_speed_hold():
+  position_y_std = tuple(1.4 for _ in range(ModelConstants.IDX_N))
+  high_speed_processor = ModelPathProcessor()
+  low_speed_processor = ModelPathProcessor()
+
+  high_speed_gated = high_speed_processor.update(make_inputs(v_ego=20.0, position_y_std=position_y_std))
+  high_speed_held_once = high_speed_processor.update(make_inputs(previous_desired_curvature=high_speed_gated.desired_curvature))
+  high_speed_held_twice = high_speed_processor.update(make_inputs(previous_desired_curvature=high_speed_held_once.desired_curvature))
+  high_speed_recovered = high_speed_processor.update(make_inputs(previous_desired_curvature=high_speed_held_twice.desired_curvature))
+
+  low_speed_gated = low_speed_processor.update(make_inputs(v_ego=3.0, position_y_std=position_y_std))
+  low_speed_held_once = low_speed_processor.update(make_inputs(v_ego=3.0, previous_desired_curvature=low_speed_gated.desired_curvature))
+  low_speed_held_twice = low_speed_processor.update(make_inputs(v_ego=3.0, previous_desired_curvature=low_speed_held_once.desired_curvature))
+
+  assert high_speed_gated.hold_frames_remaining == 2
+  assert low_speed_gated.hold_frames_remaining > high_speed_gated.hold_frames_remaining
+  assert not high_speed_recovered.gated
+  assert low_speed_held_twice.gated
+  assert low_speed_held_twice.reason == "high_path_std"
+
+
+def test_low_speed_low_quality_blend_limits_curvature_step_from_raw_target():
+  desired_curvature = 0.02
+  fallback_curvature = 0.0
+  result = ModelPathProcessor().update(make_inputs(
+    v_ego=3.0,
+    desired_curvature=desired_curvature,
+    measured_curvature=fallback_curvature,
+    previous_desired_curvature=fallback_curvature,
+    position_y_std=tuple(1.4 for _ in range(ModelConstants.IDX_N)),
+  ))
+
+  raw_blend_alpha = LOW_QUALITY_BLEND_MIN_ALPHA + (1.0 - LOW_QUALITY_BLEND_MIN_ALPHA) * result.quality / LOW_QUALITY_BLEND_THRESHOLD
+  raw_blended_target = fallback_curvature + raw_blend_alpha * (desired_curvature - fallback_curvature)
+
+  assert result.gated
+  assert result.reason == "high_path_std"
+  assert raw_blended_target > LOW_SPEED_UNTRUSTED_CURVATURE_STEP
+  assert result.desired_curvature == pytest.approx(LOW_SPEED_UNTRUSTED_CURVATURE_STEP)
+  assert result.desired_curvature < raw_blended_target
 
 
 def test_turn_intent_relaxes_same_sign_high_path_std():
