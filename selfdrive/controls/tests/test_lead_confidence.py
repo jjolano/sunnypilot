@@ -4,6 +4,8 @@ import pytest
 
 from openpilot.selfdrive.controls.lib.lead_confidence import (
   LeadConfidenceTracker,
+  LEAD_FLICKER_CLOSE_COUNT_THRESHOLD,
+  LEAD_FLICKER_CLOSE_GUARD_TIME,
   NEW_LEAD_GUARD_TIME,
   NEW_LEAD_STABLE_TIME,
   LEAD_FLICKER_COUNT_THRESHOLD,
@@ -120,6 +122,7 @@ def test_lead_flicker_triggers_flicker_guard_and_decays():
   lead = make_lead()
 
   # Trigger flicker by toggling status
+  state = tracker.update(None, dt=0.0)
   for _ in range(LEAD_FLICKER_COUNT_THRESHOLD):
     tracker.update(lead, dt=0.1)
     state = tracker.update(None, dt=0.1)
@@ -145,3 +148,33 @@ def test_normal_lead_acquisition_does_not_trigger_flicker_guard():
   for _ in range(10):
     state = tracker.update(lead, dt=0.1)
   assert state.flicker_guard_timer == pytest.approx(0.0)
+
+
+def test_close_stop_go_lead_flicker_triggers_guard_early():
+  tracker = LeadConfidenceTracker()
+  lead = make_lead(d_rel=9.0, v_lead=1.5)
+
+  state = tracker.update(None, dt=0.0)
+  for _ in range(LEAD_FLICKER_CLOSE_COUNT_THRESHOLD):
+    tracker.update(lead, dt=0.1)
+    state = tracker.update(None, dt=0.1)
+
+  assert state.flicker_guard_timer > LEAD_FLICKER_GUARD_TIME
+  assert state.flicker_guard_timer <= LEAD_FLICKER_CLOSE_GUARD_TIME
+
+
+def test_far_fast_lead_flicker_uses_normal_threshold():
+  tracker = LeadConfidenceTracker()
+  lead = make_lead(d_rel=35.0, v_lead=15.0)
+
+  tracker.update(lead, dt=0.1)
+  state = tracker.update(None, dt=0.1)
+
+  assert state.flicker_guard_timer == pytest.approx(0.0)
+
+  for _ in range(LEAD_FLICKER_COUNT_THRESHOLD):
+    tracker.update(lead, dt=0.1)
+    state = tracker.update(None, dt=0.1)
+
+  assert state.flicker_guard_timer > 0.0
+  assert state.flicker_guard_timer <= LEAD_FLICKER_GUARD_TIME
