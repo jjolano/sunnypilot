@@ -14,6 +14,10 @@ NEW_LEAD_LATERAL_CHURN_Y_REL_MIN = 1.0
 LEAD_FLICKER_WINDOW = 3.0
 LEAD_FLICKER_COUNT_THRESHOLD = 3
 LEAD_FLICKER_GUARD_TIME = 1.0
+LEAD_FLICKER_CLOSE_COUNT_THRESHOLD = 2
+LEAD_FLICKER_CLOSE_GUARD_TIME = 1.5
+LEAD_FLICKER_CLOSE_D_REL = 15.0
+LEAD_FLICKER_CLOSE_V_LEAD = 5.0
 
 
 @dataclass(frozen=True)
@@ -107,7 +111,7 @@ class LeadConfidenceTracker:
     motion_continuous = _lead_continuity(self.d_rel, d_rel, self.v_lead, v_lead, self.y_rel, y_rel)
     return motion_continuous and (same_radar_track or radarless_or_unknown or lateral_exit_churn)
 
-  def _update_flicker(self, status, dt):
+  def _update_flicker(self, status, dt, close_stop_go_context=False):
     self._flicker_guard_timer = max(0.0, self._flicker_guard_timer - dt)
     if bool(status) != self._prev_status:
       self._flicker_transitions.append(0.0)
@@ -115,14 +119,25 @@ class LeadConfidenceTracker:
     # Age all transition timestamps and prune expired ones
     self._flicker_transitions = [t + dt for t in self._flicker_transitions if t + dt <= LEAD_FLICKER_WINDOW]
     if len(self._flicker_transitions) >= LEAD_FLICKER_COUNT_THRESHOLD:
-      self._flicker_guard_timer = LEAD_FLICKER_GUARD_TIME
+      self._flicker_guard_timer = max(self._flicker_guard_timer, LEAD_FLICKER_GUARD_TIME)
+    if close_stop_go_context and len(self._flicker_transitions) >= LEAD_FLICKER_CLOSE_COUNT_THRESHOLD:
+      self._flicker_guard_timer = max(self._flicker_guard_timer, LEAD_FLICKER_CLOSE_GUARD_TIME)
+
+  def _close_stop_go_context(self, lead):
+    if lead is not None and bool(getattr(lead, "status", False)):
+      _track_id, d_rel, v_lead, _y_rel, _radar, _model_prob = _lead_values(lead)
+    else:
+      d_rel = self.d_rel
+      v_lead = self.v_lead
+    return 0.0 < d_rel <= LEAD_FLICKER_CLOSE_D_REL and 0.0 <= v_lead <= LEAD_FLICKER_CLOSE_V_LEAD
 
   def update(self, lead, dt):
     dt = max(_finite_float(dt), 0.0)
     self.guard_timer = max(0.0, self.guard_timer - dt)
 
     current_status = lead is not None and bool(getattr(lead, "status", False))
-    self._update_flicker(current_status, dt)
+    close_stop_go_context = self._close_stop_go_context(lead)
+    self._update_flicker(current_status, dt, close_stop_go_context)
 
     if not current_status:
       self.was_status = False
