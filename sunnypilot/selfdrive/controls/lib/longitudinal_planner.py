@@ -5,11 +5,13 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+from __future__ import annotations
+
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
-from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
+from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate, LongitudinalDecisionTelemetry
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -38,6 +40,40 @@ def _select_lower_target(selected_source, selected_v_target, selected_a_target, 
   if candidate_v_target < selected_v_target:
     return candidate_source, candidate_v_target, candidate_a_target
   return selected_source, selected_v_target, selected_a_target
+
+
+def _decision_source_name(source) -> str:
+  return source.value if isinstance(source, DecisionSource) else str(source or "")
+
+
+def publish_decision_layer_telemetry(longitudinalPlanSP, telemetry: LongitudinalDecisionTelemetry | None) -> None:
+  decisionLayer = longitudinalPlanSP.decisionLayer
+  decisionLayer.enabled = telemetry is not None
+  if telemetry is None:
+    decisionLayer.rawSource = ""
+    decisionLayer.rawReason = ""
+    decisionLayer.appliedReason = ""
+    decisionLayer.rawATarget = 0.0
+    decisionLayer.appliedATarget = 0.0
+    decisionLayer.legacyATarget = 0.0
+    decisionLayer.rawVTarget = 0.0
+    decisionLayer.accelDelta = 0.0
+    decisionLayer.rawShouldStop = False
+    decisionLayer.appliedShouldStop = False
+    decisionLayer.legacyShouldStop = False
+    return
+
+  decisionLayer.rawSource = _decision_source_name(telemetry.raw_source)
+  decisionLayer.rawReason = str(telemetry.raw_active_reason)
+  decisionLayer.appliedReason = str(telemetry.applied_reason)
+  decisionLayer.rawATarget = float(telemetry.raw_a_target)
+  decisionLayer.appliedATarget = float(telemetry.applied_a_target)
+  decisionLayer.legacyATarget = float(telemetry.legacy_a_target)
+  decisionLayer.rawVTarget = float(telemetry.raw_v_target)
+  decisionLayer.accelDelta = float(telemetry.accel_delta)
+  decisionLayer.rawShouldStop = bool(telemetry.raw_should_stop)
+  decisionLayer.appliedShouldStop = bool(telemetry.applied_should_stop)
+  decisionLayer.legacyShouldStop = bool(telemetry.legacy_should_stop)
 
 
 def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_rel: float, y_rel: float,
@@ -160,7 +196,7 @@ def build_sp_longitudinal_candidates(speed_limit_active, cruise, scc_vision, scc
 
 
 class LongitudinalPlannerSP:
-  def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
+  def __init__(self, CP: object, CP_SP: object, mpc):
     self.events_sp = EventsSP()
     self.resolver = SpeedLimitResolver()
     self.dec = DynamicExperimentalController(CP, mpc)
@@ -345,5 +381,7 @@ class LongitudinalPlannerSP:
     e2eAlerts = longitudinalPlanSP.e2eAlerts
     e2eAlerts.greenLightAlert = self.e2e_alerts_helper.green_light_alert
     e2eAlerts.leadDepartAlert = self.e2e_alerts_helper.lead_depart_alert
+
+    publish_decision_layer_telemetry(longitudinalPlanSP, getattr(self, "longitudinal_decision_telemetry", None))
 
     pm.send('longitudinalPlanSP', plan_sp_send)
