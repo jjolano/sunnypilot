@@ -150,7 +150,11 @@ MOVING_LEAD_STOP_APPROACH_CUSHION_FACTOR = 0.75
 MOVING_LEAD_STOP_APPROACH_LIGHT_CUSHION_FRACTION = 0.35
 MOVING_LEAD_STOP_APPROACH_FULL_CUSHION_FRACTION = 0.75
 MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX = 0.65
+MOVING_LEAD_STOP_APPROACH_COMFORT_DECEL_CAP = 1.5
 MOVING_LEAD_STOP_APPROACH_URGENT_CLOSING_BP = [2.3, 2.8]
+MOVING_LEAD_STOP_APPROACH_URGENT_BYPASS_CLOSING_BP = [5.0, 7.0]
+MOVING_LEAD_STOP_APPROACH_URGENT_BYPASS_REQUIRED_DECEL_BP = [2.6, 3.2]
+MOVING_LEAD_STOP_APPROACH_URGENT_BYPASS_DANGER_MARGIN_BP = [-2.0, 0.0]
 MOVING_LEAD_STOP_APPROACH_PRE_TARGET_MARGIN_BP = [4.0, 8.0]
 MOVING_LEAD_STOP_APPROACH_COAST_RECOVERY_GAP_BP = [0.0, 0.25, 3.0]
 MOVING_LEAD_STOP_APPROACH_COAST_RECOVERY_CLOSING_BP = [3.0, 6.0]
@@ -1153,12 +1157,24 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
     [0.0, 1.0],
   )
   near_desired_recovery_blend *= 1.0 - required_runway_blend
-  near_desired_recovery_blend *= 1.0 - pre_target_brake_blend
+  near_desired_recovery_block_blend = np.where(pre_target, pre_target_brake_blend, danger_safety_blend)
+  near_desired_recovery_blend *= 1.0 - near_desired_recovery_block_blend
   target = np.where(
     pre_target,
     coast_limited_target + pre_target_brake_blend * (pre_target_target - coast_limited_target),
     target + near_desired_recovery_blend * (coast_limited_target - target),
   )
+
+  urgent_bypass_blend = np.maximum.reduce([
+    np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_URGENT_BYPASS_CLOSING_BP, [0.0, 1.0]),
+    np.interp(required_decel, MOVING_LEAD_STOP_APPROACH_URGENT_BYPASS_REQUIRED_DECEL_BP, [0.0, 1.0]),
+    1.0 - np.interp(danger_margin, MOVING_LEAD_STOP_APPROACH_URGENT_BYPASS_DANGER_MARGIN_BP, [0.0, 1.0]),
+  ])
+  comfort_decel_cap = (
+    MOVING_LEAD_STOP_APPROACH_COMFORT_DECEL_CAP +
+    urgent_bypass_blend * (MOVING_LEAD_STOP_APPROACH_DECEL_CAP - MOVING_LEAD_STOP_APPROACH_COMFORT_DECEL_CAP)
+  )
+  target = np.maximum(target, -comfort_decel_cap)
   return target, MOVING_LEAD_STOP_APPROACH_COST * comfort_blend
 
 
@@ -1491,7 +1507,7 @@ class LongitudinalMpc:
     self.lead_gap_comfort_active = np.zeros(2, dtype=bool)
     self.lead_surge_decel_memories = np.zeros(2)
     self.lead_accel_filtered = np.zeros(2)
-    self.lead_accel_prev_track_ids = np.full(2, LEAD_TRANSITION_TRACK_UNKNOWN, dtype=int)
+    self.lead_accel_prev_track_ids = np.full(2, LEAD_TRANSITION_TRACK_UNKNOWN - 1, dtype=int)
     self.lead_transition_track_ids = np.full(2, LEAD_TRANSITION_TRACK_UNKNOWN, dtype=int)
     self.lead_transition_prev_y_rel = np.full(2, np.nan)
     self.lead_transition_prev_d_rel = np.full(2, np.nan)
