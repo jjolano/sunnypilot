@@ -1491,7 +1491,7 @@ class LongitudinalMpc:
     self.lead_gap_comfort_active = np.zeros(2, dtype=bool)
     self.lead_surge_decel_memories = np.zeros(2)
     self.lead_accel_filtered = np.zeros(2)
-    self.lead_accel_prev_track_ids = np.full(2, LEAD_TRANSITION_TRACK_UNKNOWN, dtype=int)
+    self.lead_accel_prev_track_ids = np.full(2, LEAD_TRANSITION_TRACK_UNKNOWN - 1, dtype=int)
     self.lead_transition_track_ids = np.full(2, LEAD_TRANSITION_TRACK_UNKNOWN, dtype=int)
     self.lead_transition_prev_y_rel = np.full(2, np.nan)
     self.lead_transition_prev_d_rel = np.full(2, np.nan)

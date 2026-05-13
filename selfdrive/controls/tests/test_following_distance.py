@@ -200,7 +200,8 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.params = SimpleNamespace(get_bool=lambda _key: False)
   planner.VM = None
   planner.control_calculation_hardening = False
-  planner.longitudinal_arbiter = longitudinal_planner.LongitudinalArbiter()
+  arbiter_cls = getattr(longitudinal_planner, "LongitudinalArbiter", None)
+  planner.longitudinal_arbiter = None if arbiter_cls is None else arbiter_cls()
   planner.longitudinal_decision = None
   planner.longitudinal_decision_candidates = []
   planner.fcw = False
