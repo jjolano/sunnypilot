@@ -35,6 +35,8 @@ LOW_SPEED_SOFT_GATE_MAX_EXTRA_FRAMES = 3
 SOFT_GATE_HOLD_QUALITY = 0.70
 SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "path_disagreement", "low_lane_confidence"))
 LOW_SPEED_UNTRUSTED_CURVATURE_STEP = 0.0025
+LOW_SPEED_CURVE_RETENTION_FRAMES = 12
+LOW_SPEED_CURVE_RETENTION_MIN_CURVATURE = 0.008
 HARD_INVALID_RECOVERY_LAT_JERK = 2.0
 SMOOTHED_CURVATURE_MIN_SPEED = 5.0
 SMOOTHED_CURVATURE_MIN_SAMPLES = 5
@@ -103,6 +105,8 @@ class ModelPathProcessor:
     self._hold_reason = "ok"
     self._hold_quality: float = SOFT_GATE_HOLD_QUALITY
     self._low_lane_confidence_frames: int = 0
+    self._retained_curve_curvature: float | None = None
+    self._retained_curve_frames: int = 0
     self._recovering_from_hard_invalid = False
     self._trust_penalty = 0.0
     self._temporal_smoothed_curvature: float | None = None
@@ -123,10 +127,12 @@ class ModelPathProcessor:
       return ModelPathProcessorResult(float(inputs.measured_curvature), 0.0, True, "inactive")
 
     self._trust_penalty *= TRUST_DECAY
+    self._age_retained_curve()
 
     if not math.isfinite(inputs.desired_curvature):
       self._recovering_from_hard_invalid = False
       self._low_lane_confidence_frames = 0
+      self._clear_retained_curve()
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature", 0, trust_penalty=self._trust_penalty)
 
@@ -134,7 +140,17 @@ class ModelPathProcessor:
       self._recovering_from_hard_invalid = True
       self._low_lane_confidence_frames = 0
       self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
-      hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
+      fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
+      retained_fallback = self._retained_curve_fallback(inputs, float(inputs.desired_curvature), fallback_curvature)
+      hard_invalid_fallback = retained_fallback if retained_fallback is not None else self._hard_invalid_fallback_curvature(
+        inputs.previous_desired_curvature,
+        inputs.measured_curvature,
+      )
+      hard_invalid_fallback = self._limit_low_speed_untrusted_curvature_step(
+        inputs.v_ego,
+        hard_invalid_fallback,
+        fallback_curvature,
+      )
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path", 0, trust_penalty=self._trust_penalty)
 
     desired_curvature = float(inputs.desired_curvature)
@@ -185,6 +201,8 @@ class ModelPathProcessor:
       self._recovering_from_hard_invalid = False
       return replace(jump_result, trust_penalty=self._trust_penalty)
 
+    self._refresh_retained_curve(inputs, desired_curvature, quality, reason, path_disagreement)
+
     quality, reason, hold_frames_remaining = self._apply_soft_gate_hold(quality, reason, inputs.v_ego)
 
     if reason in TRUST_BUMP_REASONS:
@@ -192,6 +210,9 @@ class ModelPathProcessor:
 
     if quality < LOW_QUALITY_BLEND_THRESHOLD:
       self._recovering_from_hard_invalid = False
+      retained_fallback = self._retained_curve_fallback(inputs, desired_curvature, fallback_curvature)
+      if retained_fallback is not None:
+        fallback_curvature = retained_fallback
       alpha = float(np.interp(quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0]))
       desired_curvature = self._blend(fallback_curvature, desired_curvature, alpha)
       if reason in SOFT_GATE_REASONS:
@@ -347,6 +368,94 @@ class ModelPathProcessor:
     if abs(curvature_delta) <= LOW_SPEED_UNTRUSTED_CURVATURE_STEP:
       return desired_curvature
     return fallback_curvature + math.copysign(LOW_SPEED_UNTRUSTED_CURVATURE_STEP, curvature_delta)
+
+  def _age_retained_curve(self) -> None:
+    if self._retained_curve_frames <= 0:
+      self._retained_curve_curvature = None
+      self._retained_curve_frames = 0
+      return
+    self._retained_curve_frames -= 1
+    if self._retained_curve_frames <= 0:
+      self._retained_curve_curvature = None
+
+  def _clear_retained_curve(self) -> None:
+    self._retained_curve_curvature = None
+    self._retained_curve_frames = 0
+
+  def _refresh_retained_curve(
+    self,
+    inputs: ModelPathProcessorInputs,
+    desired_curvature: float,
+    quality: float,
+    reason: str,
+    path_disagreement: float | None,
+  ) -> None:
+    if not self._low_speed_curve_retention_active(inputs.v_ego):
+      self._clear_retained_curve()
+      return
+    if reason not in ("ok", "low_lane_confidence") or quality < LOW_QUALITY_BLEND_THRESHOLD:
+      return
+    if path_disagreement is not None and path_disagreement > TURN_INTENT_MAX_PATH_CURVATURE_DISAGREEMENT:
+      return
+    if not self._curvature_is_plausible_for_retention(desired_curvature):
+      return
+    if not self._curvatures_compatible(desired_curvature, inputs.measured_curvature):
+      return
+    if not self._curvatures_close_for_retention(inputs.v_ego, desired_curvature, inputs.measured_curvature):
+      return
+
+    self._retained_curve_curvature = float(desired_curvature)
+    self._retained_curve_frames = LOW_SPEED_CURVE_RETENTION_FRAMES
+
+  def _retained_curve_fallback(
+    self,
+    inputs: ModelPathProcessorInputs,
+    desired_curvature: float,
+    fallback_curvature: float,
+  ) -> float | None:
+    retained_curvature = self._retained_curve_curvature
+    if retained_curvature is None or self._retained_curve_frames <= 0:
+      return None
+    if not self._low_speed_curve_retention_active(inputs.v_ego):
+      return None
+    if not self._curvature_is_plausible_for_retention(retained_curvature):
+      return None
+    if not self._curvatures_compatible(retained_curvature, desired_curvature):
+      return None
+    if not self._curvatures_compatible(retained_curvature, inputs.measured_curvature):
+      return None
+    if not self._curvatures_compatible(retained_curvature, fallback_curvature):
+      return None
+    if not self._curvatures_close_for_retention(inputs.v_ego, retained_curvature, desired_curvature):
+      return None
+    if not self._curvatures_close_for_retention(inputs.v_ego, retained_curvature, inputs.measured_curvature):
+      return None
+    if not self._curvatures_close_for_retention(inputs.v_ego, retained_curvature, fallback_curvature):
+      return None
+    return float(retained_curvature)
+
+  @staticmethod
+  def _low_speed_curve_retention_active(v_ego: float) -> bool:
+    return math.isfinite(v_ego) and v_ego < LOW_SPEED_SOFT_GATE_SPEED
+
+  @staticmethod
+  def _curvature_is_plausible_for_retention(curvature: float) -> bool:
+    return math.isfinite(curvature) and abs(curvature) >= LOW_SPEED_CURVE_RETENTION_MIN_CURVATURE
+
+  @staticmethod
+  def _curvatures_compatible(reference_curvature: float, candidate_curvature: float) -> bool:
+    if not math.isfinite(candidate_curvature):
+      return False
+    if abs(candidate_curvature) < LOW_SPEED_CURVE_RETENTION_MIN_CURVATURE:
+      return True
+    return reference_curvature * candidate_curvature > 0.0
+
+  @staticmethod
+  def _curvatures_close_for_retention(v_ego: float, reference_curvature: float, candidate_curvature: float) -> bool:
+    if not math.isfinite(v_ego) or not math.isfinite(reference_curvature) or not math.isfinite(candidate_curvature):
+      return False
+    lateral_accel_delta = abs(reference_curvature - candidate_curvature) * max(v_ego, 1.0) ** 2
+    return lateral_accel_delta <= MAX_LAT_ACCEL_JUMP
 
   def _limit_hard_invalid_recovery(self, inputs: ModelPathProcessorInputs, desired_curvature: float) -> ModelPathProcessorResult | None:
     if not self._recovering_from_hard_invalid:
