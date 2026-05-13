@@ -10,9 +10,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   LongitudinalArbiter,
   LongitudinalCandidate,
   LongitudinalDecision,
+  SOURCE_STABILITY_HOLD_REASON,
   SOURCE_STABILITY_RELEASE_FRAMES,
   apply_personality_accel_comfort,
   apply_longitudinal_decision_output,
+  apply_longitudinal_decision_output_with_telemetry,
   build_core_longitudinal_candidates,
   get_active_lead_confidence,
   resolve_longitudinal_decision,
@@ -93,13 +95,14 @@ def make_candidate(source, role, v_target, a_target, confidence, urgency, reason
   )
 
 
-def make_decision(winner, a_target, should_stop=False, enabled=True):
+def make_decision(winner, a_target, should_stop=False, enabled=True, active_reason=""):
   return LongitudinalDecision(
     enabled=enabled,
     winner=winner,
     v_target=25.0,
     a_target=a_target,
     should_stop=should_stop,
+    active_reason=active_reason,
   )
 
 
@@ -543,15 +546,24 @@ def test_apply_decision_output_held_lead_release_uses_held_accel_conservatively(
   release_a_target, release_should_stop = apply_longitudinal_decision_output(
     held_decision, legacy_a_target=0.2, legacy_should_stop=False,
   )
+  release_telemetry = apply_longitudinal_decision_output_with_telemetry(
+    held_decision, legacy_a_target=0.2, legacy_should_stop=False,
+  )
   stronger_legacy_a_target, stronger_legacy_should_stop = apply_longitudinal_decision_output(
     held_decision, legacy_a_target=-0.8, legacy_should_stop=False,
   )
 
   assert first_decision.winner == DecisionSource.LEAD_MPC
   assert held_decision.winner == DecisionSource.LEAD_MPC
-  assert (DecisionSource.CRUISE, "source_stability_hold") in held_decision.suppressed
+  assert (DecisionSource.CRUISE, SOURCE_STABILITY_HOLD_REASON) in held_decision.suppressed
   assert release_a_target == pytest.approx(-0.5)
   assert not release_should_stop
+  assert release_telemetry.raw_source == DecisionSource.LEAD_MPC
+  assert release_telemetry.raw_active_reason == "confirmed_lead"
+  assert release_telemetry.applied_a_target == pytest.approx(release_a_target)
+  assert release_telemetry.applied_should_stop == release_should_stop
+  assert release_telemetry.applied_reason == SOURCE_STABILITY_HOLD_REASON
+  assert release_telemetry.accel_delta == pytest.approx(0.0)
   assert stronger_legacy_a_target == pytest.approx(-0.8)
   assert not stronger_legacy_should_stop
 
@@ -675,12 +687,23 @@ def test_apply_decision_output_lead_winner_preserves_legacy_accel_and_stop():
 
 
 def test_apply_decision_output_advisory_cannot_relax_stronger_legacy_braking():
-  decision = make_decision(DecisionSource.SPEED_LIMIT, a_target=-0.2, should_stop=False)
+  decision = make_decision(DecisionSource.SPEED_LIMIT, a_target=-0.2, should_stop=False, active_reason="advisory_limit")
 
   a_target, should_stop = apply_longitudinal_decision_output(decision, legacy_a_target=-0.7, legacy_should_stop=False)
+  telemetry = apply_longitudinal_decision_output_with_telemetry(
+    decision, legacy_a_target=-0.7, legacy_should_stop=False,
+  )
 
   assert a_target == pytest.approx(-0.7)
   assert not should_stop
+  assert telemetry.raw_source == DecisionSource.SPEED_LIMIT
+  assert telemetry.raw_a_target == pytest.approx(-0.2)
+  assert telemetry.raw_active_reason == "advisory_limit"
+  assert telemetry.legacy_a_target == pytest.approx(-0.7)
+  assert telemetry.applied_a_target == pytest.approx(a_target)
+  assert telemetry.applied_should_stop == should_stop
+  assert telemetry.applied_reason == "advisory_min_legacy"
+  assert telemetry.accel_delta == pytest.approx(-0.5)
 
 
 def test_apply_decision_output_cruise_coast_can_relax_legacy_braking():

@@ -194,6 +194,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  decisionLayer @8 :DecisionLayer;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -297,6 +298,21 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   struct E2eAlerts {
     greenLightAlert @0 :Bool;
     leadDepartAlert @1 :Bool;
+  }
+
+  struct DecisionLayer {
+    enabled @0 :Bool;
+    rawSource @1 :Text;
+    rawReason @2 :Text;
+    appliedReason @3 :Text;
+    rawATarget @4 :Float32;
+    appliedATarget @5 :Float32;
+    legacyATarget @6 :Float32;
+    rawVTarget @7 :Float32;
+    accelDelta @8 :Float32;
+    rawShouldStop @9 :Bool;
+    appliedShouldStop @10 :Bool;
+    legacyShouldStop @11 :Bool;
   }
 }
 
