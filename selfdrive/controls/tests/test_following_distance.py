@@ -2277,7 +2277,7 @@ def test_moving_stop_approach_pre_target_safety_brakes_for_urgent_runway():
 def test_moving_stop_approach_urgent_cut_in_bypasses_comfort_decel_cap():
   v_ego = 18.0
   v_lead = 10.0
-  d_rel = 25.0
+  d_rel = 45.0
   a_lead = -3.0
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
 
