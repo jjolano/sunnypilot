@@ -276,6 +276,33 @@ def test_summarize_window_prefers_speed_limit_source_when_all_sp_flags_active():
   assert "SCC vision active" in rendered
 
 
+def test_summarize_window_reports_decision_layer_telemetry():
+  msgs = [
+    msg("carState", 0.0, vEgo=15.0, brakePressed=False, gasPressed=False),
+    msg(
+      "longitudinalPlanSP",
+      1.0,
+      longitudinalPlanSource="speedLimitAssist",
+      speedLimit=SimpleNamespace(assist=SimpleNamespace(active=False, autoCruiseEnabled=False)),
+      smartCruiseControl=SimpleNamespace(map=SimpleNamespace(active=False), vision=SimpleNamespace(active=False)),
+      decisionLayer=SimpleNamespace(
+        enabled=True,
+        rawSource="speed_limit",
+        rawReason="speed_limit_active",
+        appliedReason="advisory_min_legacy",
+        accelDelta=-0.3,
+      ),
+    ),
+  ]
+
+  rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
+
+  assert "decision layer active" in rendered
+  assert "decision raw source: speed_limit" in rendered
+  assert "decision applied reason: advisory_min_legacy" in rendered
+  assert "decision layer speed_limit -> advisory_min_legacy delta -0.300 m/s^2" in rendered
+
+
 def test_summarize_window_uses_event_time_sp_source_after_transition():
   msgs = [
     msg("carState", 0.0, vEgo=15.0, brakePressed=False, gasPressed=False),

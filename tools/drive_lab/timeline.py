@@ -60,7 +60,7 @@ def format_enum(value: Any) -> str:
 def msg_type(msg: Any) -> str:
   which = getattr(msg, "which", None)
   if callable(which):
-    return which()
+    return str(which())
   return str(which) if which is not None else "unknown"
 
 
@@ -137,6 +137,8 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
     "speed_limit_active": False,
     "scc_map_active": False,
     "scc_vision_active": False,
+    "decision_layer_active": False,
+    "decision_layer_samples": [],
   }
   lead_active = False
 
@@ -230,6 +232,7 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
         "speed_limit_active": False,
         "scc_map_active": False,
         "scc_vision_active": False,
+        "decision_layer_active": False,
       }
       for path, label, fact_key in (
         ("smartCruiseControl.vision.active", "SCC vision active", "scc_vision_active"),
@@ -245,6 +248,45 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
             attribution_facts[fact_key] = True
           if fact_key is not None:
             sp_sample[fact_key] = active
+      decision_layer = safe_get(payload, "decisionLayer")
+      decision_layer_enabled = bool(safe_get(decision_layer, "enabled", False))
+      if decision_layer is not None:
+        add_change(
+          t,
+          "longitudinalPlanSP.decisionLayer.enabled",
+          decision_layer_enabled,
+          "decision",
+          f"decision layer active: {decision_layer_enabled}",
+        )
+      if decision_layer_enabled:
+        raw_source = str(safe_get(decision_layer, "rawSource", ""))
+        raw_reason = str(safe_get(decision_layer, "rawReason", ""))
+        applied_reason = str(safe_get(decision_layer, "appliedReason", ""))
+        accel_delta = safe_get(decision_layer, "accelDelta")
+        sp_sample["decision_layer_active"] = True
+        attribution_facts["decision_layer_active"] = True
+        decision_layer_sample = {
+          "time_s": t,
+          "raw_source": raw_source,
+          "raw_reason": raw_reason,
+          "applied_reason": applied_reason,
+          "accel_delta": float(accel_delta) if _finite_number(accel_delta) else None,
+        }
+        attribution_facts["decision_layer_samples"].append(decision_layer_sample)
+        add_change(
+          t,
+          "longitudinalPlanSP.decisionLayer.rawSource",
+          raw_source,
+          "decision",
+          f"decision raw source: {raw_source}",
+        )
+        add_change(
+          t,
+          "longitudinalPlanSP.decisionLayer.appliedReason",
+          applied_reason,
+          "decision",
+          f"decision applied reason: {applied_reason}",
+        )
       attribution_facts["sp_samples"].append(sp_sample)
     elif typ == "modelV2":
       desired_accel = safe_get(payload, "action.desiredAcceleration")
@@ -351,9 +393,27 @@ def _attribution_evidence(facts: dict[str, Any]) -> list[str]:
     evidence.append("SCC map active")
   if facts["scc_vision_active"]:
     evidence.append("SCC vision active")
+  if facts["decision_layer_active"]:
+    evidence.append("decision layer active")
+  for sample in _unique_decision_layer_samples(facts["decision_layer_samples"]):
+    evidence.append(
+      f"decision layer {sample['raw_source']} -> {sample['applied_reason']}"
+      + (f" delta {sample['accel_delta']:.3f} m/s^2" if sample["accel_delta"] is not None else "")
+    )
   if facts["a_targets"]:
     evidence.append(f"aTarget min {min(facts['a_targets']):.3f} m/s^2")
   return evidence
+
+
+def _unique_decision_layer_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+  unique: list[dict[str, Any]] = []
+  seen: set[tuple[str, str, float | None]] = set()
+  for sample in samples:
+    key = (str(sample["raw_source"]), str(sample["applied_reason"]), sample["accel_delta"])
+    if key not in seen:
+      unique.append(sample)
+      seen.add(key)
+  return unique
 
 
 def _has_lead_source(sources: list[str]) -> bool:
