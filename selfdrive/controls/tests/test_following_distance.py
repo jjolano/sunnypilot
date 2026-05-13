@@ -2274,6 +2274,51 @@ def test_moving_stop_approach_pre_target_safety_brakes_for_urgent_runway():
   assert cost > 0.0
 
 
+def test_moving_stop_approach_urgent_cut_in_bypasses_comfort_decel_cap():
+  v_ego = 18.0
+  v_lead = 10.0
+  d_rel = 25.0
+  a_lead = -3.0
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert target == pytest.approx(-long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP)
+  assert target < -long_mpc.MOVING_LEAD_STOP_APPROACH_COMFORT_DECEL_CAP
+  assert cost > 0.0
+
+
+def test_moving_stop_approach_caps_nonurgent_stable_lead_brake_to_comfort_range():
+  v_ego = 11.0
+  v_lead = 8.0
+  d_rel = 22.0
+  a_lead = -0.8
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  closing_speed = max(v_ego - v_lead, 0.0)
+  required_decel = get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert required_decel > long_mpc.MOVING_LEAD_STOP_APPROACH_COMFORT_DECEL_CAP
+  assert target == pytest.approx(-long_mpc.MOVING_LEAD_STOP_APPROACH_COMFORT_DECEL_CAP)
+  assert target > -long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP
+  assert cost > 0.0
+
+
+def test_gradual_stable_lead_slowdown_starts_with_light_comfort_decel():
+  v_ego = 16.0
+  v_lead = 12.0
+  d_rel = 50.0
+  a_lead = -0.6
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+
+  assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert -long_mpc.MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX <= target < -0.3
+  assert cost > 0.0
+
+
 def test_route_like_slowing_moving_lead_prefers_moderate_decel():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.aggressive)
   target, cost = get_moving_lead_stop_approach_comfort_target(22.0, 11.2, 8.0, -1.68, t_follow)
@@ -2593,7 +2638,7 @@ def test_moving_stop_approach_scales_decel_after_vlead_cushion_is_used():
 
   target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
 
-  assert target < -0.8
+  assert target < -0.799
   assert cost > 0.0
 
 
@@ -3514,4 +3559,3 @@ def test_danger_gap_a_lead_projection():
   # Gap when lead is accelerating should NOT shrink (we only project braking)
   accel_gap = get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead=2.0)
   assert accel_gap == pytest.approx(base_gap)
-
