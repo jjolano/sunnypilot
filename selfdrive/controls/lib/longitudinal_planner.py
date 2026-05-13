@@ -14,7 +14,8 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   LongitudinalArbiter,
-  apply_longitudinal_decision_output,
+  LongitudinalDecisionTelemetry,
+  apply_longitudinal_decision_output_with_telemetry,
   build_core_longitudinal_candidates,
   get_active_lead_confidence,
   resolve_longitudinal_decision,
@@ -653,6 +654,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.longitudinal_arbiter = LongitudinalArbiter()
     self.longitudinal_decision = None
     self.longitudinal_decision_candidates = []
+    self.longitudinal_decision_telemetry: LongitudinalDecisionTelemetry | None = None
     LongitudinalPlannerSP.__init__(self, self.CP, CP_SP, self.mpc)
     self.fcw = False
     self.dt = dt
@@ -1051,6 +1053,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       arbiter=self.longitudinal_arbiter,
       v_ego=source_stability_v_ego,
     )
+    self.longitudinal_decision_telemetry = None
     if self.longitudinal_decision.enabled:
       decision_accel_comfort_active = not (
         reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed or
@@ -1058,13 +1061,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         sm['controlsState'].longControlState == LongCtrlState.starting or
         limit_creep_pullaway_accel_step
       )
-      output_a_target, self.output_should_stop = apply_longitudinal_decision_output(
+      self.longitudinal_decision_telemetry = apply_longitudinal_decision_output_with_telemetry(
         self.longitudinal_decision, legacy_a_target, legacy_should_stop,
         prev_a_target=prev_output_a_target,
         personality=sm['selfdriveState'].personality,
         dt=self.dt,
         comfort_active=decision_accel_comfort_active,
       )
+      output_a_target = self.longitudinal_decision_telemetry.applied_a_target
+      self.output_should_stop = self.longitudinal_decision_telemetry.applied_should_stop
 
     lead_loss_snapshot_lead = lead_loss_guard_lead
     self.previous_lead_loss_status = lead_loss_snapshot_lead is not None

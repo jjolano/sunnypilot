@@ -102,10 +102,26 @@ class LongitudinalDecision:
   candidates: tuple[LongitudinalCandidate, ...] = ()
   suppressed: tuple[tuple[DecisionSource, str], ...] = ()
   fallback_reason: str = ""
+  active_reason: str = ""
 
   def inside_accel_limits(self, accel_limits: tuple[float, float]) -> bool:
     lo, hi = accel_limits
     return math.isfinite(self.a_target) and lo <= self.a_target <= hi
+
+
+@dataclass(frozen=True)
+class LongitudinalDecisionTelemetry:
+  raw_source: DecisionSource
+  raw_v_target: float
+  raw_a_target: float
+  raw_should_stop: bool
+  raw_active_reason: str
+  legacy_a_target: float
+  legacy_should_stop: bool
+  applied_a_target: float
+  applied_should_stop: bool
+  applied_reason: str
+  accel_delta: float
 
 
 def _fallback_decision(v_target: float, a_target: float, should_stop: bool, reason: str) -> LongitudinalDecision:
@@ -116,6 +132,7 @@ def _fallback_decision(v_target: float, a_target: float, should_stop: bool, reas
     a_target=float(a_target),
     should_stop=bool(should_stop),
     fallback_reason=reason,
+    active_reason=reason,
   )
 
 
@@ -149,6 +166,7 @@ class LongitudinalArbiter:
         should_stop=driver.should_stop,
         candidates=tuple(valid),
         suppressed=tuple(dict.fromkeys(suppressed)),
+        active_reason=driver.active_reason,
       )
 
     physical = [
@@ -202,6 +220,7 @@ class LongitudinalArbiter:
       should_stop=winner.should_stop,
       candidates=tuple(valid),
       suppressed=tuple(dict.fromkeys(suppressed)),
+      active_reason=winner.active_reason,
     )
 
   def reset_source_stability(self) -> None:
@@ -237,6 +256,7 @@ class LongitudinalArbiter:
       should_stop=previous.should_stop,
       candidates=decision.candidates,
       suppressed=held_suppressed,
+      active_reason=previous.active_reason,
     )
     self._source_stability_decision = held
     return held
@@ -260,6 +280,10 @@ def _decision_more_restrictive(decision: LongitudinalDecision, previous: Longitu
 
 def _decision_held_by_source_stability(decision: LongitudinalDecision) -> bool:
   return any(reason == SOURCE_STABILITY_HOLD_REASON for _, reason in decision.suppressed)
+
+
+def _decision_raw_reason(decision: LongitudinalDecision) -> str:
+  return decision.active_reason or decision.fallback_reason or decision.winner.value
 
 
 def resolve_longitudinal_decision(enabled: bool, candidates: list[LongitudinalCandidate] | tuple[LongitudinalCandidate, ...],
@@ -308,38 +332,80 @@ def apply_longitudinal_decision_output(decision: LongitudinalDecision, legacy_a_
                                        legacy_should_stop: bool, prev_a_target: float | None = None,
                                        personality: int = log.LongitudinalPersonality.standard,
                                        dt: float = 0.0, comfort_active: bool = True) -> tuple[float, bool]:
+  telemetry = apply_longitudinal_decision_output_with_telemetry(
+    decision,
+    legacy_a_target,
+    legacy_should_stop,
+    prev_a_target=prev_a_target,
+    personality=personality,
+    dt=dt,
+    comfort_active=comfort_active,
+  )
+  return telemetry.applied_a_target, telemetry.applied_should_stop
+
+
+def apply_longitudinal_decision_output_with_telemetry(
+    decision: LongitudinalDecision, legacy_a_target: float,
+    legacy_should_stop: bool, prev_a_target: float | None = None,
+    personality: int = log.LongitudinalPersonality.standard,
+    dt: float = 0.0, comfort_active: bool = True) -> LongitudinalDecisionTelemetry:
+  legacy_a_target = float(legacy_a_target)
   legacy_should_stop = bool(legacy_should_stop)
   held_by_source_stability = _decision_held_by_source_stability(decision)
   if not decision.enabled or decision.winner == DecisionSource.LEGACY_FALLBACK:
-    output_a_target = float(legacy_a_target)
+    output_a_target = legacy_a_target
     output_should_stop = legacy_should_stop
+    applied_reason = decision.fallback_reason or "legacy_fallback"
   elif held_by_source_stability:
-    output_a_target = min(float(decision.a_target), float(legacy_a_target))
+    output_a_target = min(float(decision.a_target), legacy_a_target)
     output_should_stop = legacy_should_stop or decision.should_stop
+    applied_reason = SOURCE_STABILITY_HOLD_REASON
   elif decision.winner == DecisionSource.CRUISE:
-    output_a_target = float(legacy_a_target)
+    output_a_target = legacy_a_target
     output_should_stop = legacy_should_stop
+    applied_reason = "cruise_preserve_legacy"
   elif decision.winner in (DecisionSource.LEAD_MPC, DecisionSource.E2E_STOP, DecisionSource.STOP_LAUNCH):
-    output_a_target = float(legacy_a_target)
+    output_a_target = legacy_a_target
     output_should_stop = legacy_should_stop or decision.should_stop
+    applied_reason = "physical_hazard_preserve_legacy"
   elif decision.winner in (
     DecisionSource.SPEED_LIMIT,
     DecisionSource.SCC_VISION,
     DecisionSource.SCC_MAP,
     DecisionSource.OSM_TRAFFIC_CONTROL,
   ):
-    output_a_target = min(float(decision.a_target), float(legacy_a_target))
+    output_a_target = min(float(decision.a_target), legacy_a_target)
     output_should_stop = legacy_should_stop or decision.should_stop
+    applied_reason = "advisory_min_legacy"
   elif decision.winner == DecisionSource.CRUISE_COAST:
     output_a_target = float(decision.a_target)
     output_should_stop = legacy_should_stop or decision.should_stop
+    applied_reason = "cruise_coast_applied"
   else:
-    output_a_target = float(legacy_a_target)
+    output_a_target = legacy_a_target
     output_should_stop = legacy_should_stop
+    applied_reason = "unknown_preserve_legacy"
 
   if comfort_active and not held_by_source_stability and not output_should_stop and prev_a_target is not None:
+    pre_comfort_a_target = output_a_target
     output_a_target = apply_personality_accel_comfort(decision, output_a_target, prev_a_target, personality, dt)
-  return output_a_target, output_should_stop
+    if output_a_target != pre_comfort_a_target:
+      applied_reason = f"{applied_reason}+personality_comfort"
+
+  raw_a_target = float(decision.a_target)
+  return LongitudinalDecisionTelemetry(
+    raw_source=decision.winner,
+    raw_v_target=float(decision.v_target),
+    raw_a_target=raw_a_target,
+    raw_should_stop=bool(decision.should_stop),
+    raw_active_reason=_decision_raw_reason(decision),
+    legacy_a_target=legacy_a_target,
+    legacy_should_stop=legacy_should_stop,
+    applied_a_target=output_a_target,
+    applied_should_stop=output_should_stop,
+    applied_reason=applied_reason,
+    accel_delta=output_a_target - raw_a_target,
+  )
 
 
 ACCEL_COMFORT_POSITIVE_RATE = {
