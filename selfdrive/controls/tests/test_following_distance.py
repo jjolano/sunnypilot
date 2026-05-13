@@ -30,6 +30,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_CRAWL_ACCEL_MAX,
   LEAD_CRAWL_ACCEL_LIMIT,
   LEAD_CRAWL_BRAKE_MAX,
+  STOP_GO_CRAWL_ACCEL_MAX,
+  STOP_GO_CRAWL_TARGET_ACCEL_MAX,
   LEAD_SURGE_DAMPING_ACCEL_MAX,
   LEAD_SURGE_DAMPING_DECEL_MEMORY_MAX,
   LEAD_CHASE_CLOSING_FLOOR_FRACTION,
@@ -74,6 +76,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_lead_danger_distance,
   get_lead_crawl_accel_max,
   get_lead_crawl_comfort_target,
+  get_stop_go_crawl_context_blend,
   get_lead_surge_damping_target,
   get_lead_stop_approach_comfort_target,
   get_lead_stop_runway_preference,
@@ -1934,6 +1937,40 @@ def test_crawl_comfort_uses_gentle_accel_for_opening_lead():
 
   assert 0.0 < target <= LEAD_CRAWL_ACCEL_MAX
   assert cost > 0.0
+
+
+def test_stop_go_crawl_context_limits_hesitant_pullaway_accel():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  d_rel = STOP_DISTANCE + 3.5
+
+  context_blend = get_stop_go_crawl_context_blend(d_rel, 0.8, 1.1, 0.0, t_follow)
+  target, cost = get_lead_crawl_comfort_target(d_rel, 0.8, 1.1, 0.0, t_follow)
+  accel_max = get_lead_crawl_accel_max(d_rel, 0.8, 1.1, 0.0, t_follow)
+
+  assert context_blend > 0.0
+  assert 0.0 < target <= STOP_GO_CRAWL_TARGET_ACCEL_MAX
+  assert accel_max < LEAD_CRAWL_ACCEL_LIMIT
+  assert accel_max >= STOP_GO_CRAWL_ACCEL_MAX
+  assert cost > 0.0
+
+
+def test_stop_go_crawl_context_releases_for_clear_pullaway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  d_rel = STOP_DISTANCE + 3.5
+
+  context_blend = get_stop_go_crawl_context_blend(d_rel, 0.8, 2.4, 0.7, t_follow)
+  target, cost = get_lead_crawl_comfort_target(d_rel, 0.8, 2.4, 0.7, t_follow)
+
+  assert context_blend == pytest.approx(0.0)
+  assert target > STOP_GO_CRAWL_TARGET_ACCEL_MAX
+  assert target <= LEAD_CRAWL_ACCEL_MAX
+  assert cost > 0.0
+
+
+def test_stop_go_crawl_context_does_not_limit_urgent_closure():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  assert get_stop_go_crawl_context_blend(STOP_DISTANCE + 0.4, 4.0, 0.5, -1.0, t_follow) == pytest.approx(0.0)
 
 
 def test_crawl_comfort_stops_chasing_opening_lead_after_ten_meters():

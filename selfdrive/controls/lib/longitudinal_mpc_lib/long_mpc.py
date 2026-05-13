@@ -119,6 +119,14 @@ LEAD_CRAWL_ACCEL_MAX = 0.6
 LEAD_CRAWL_ACCEL_LIMIT = 0.75
 LEAD_CRAWL_BRAKE_MAX = 0.75
 LEAD_CRAWL_COST = 1.2
+STOP_GO_CRAWL_ACCEL_MAX = 0.35
+STOP_GO_CRAWL_TARGET_ACCEL_MAX = 0.25
+STOP_GO_CRAWL_V_EGO_BP = [1.0, 4.0]
+STOP_GO_CRAWL_V_LEAD_BP = [0.2, 1.0, 2.5, 3.5]
+STOP_GO_CRAWL_GAP_EXCESS_BP = [0.5, 2.0, 7.0, 10.0]
+STOP_GO_CRAWL_OPENING_PRESENT_BP = [0.05, 0.3]
+STOP_GO_CRAWL_OPENING_BP = [0.3, 1.0]
+STOP_GO_CRAWL_LEAD_ACCEL_RELEASE_BP = [0.1, 0.6]
 LEAD_SURGE_DAMPING_V_EGO_BP = [0.5, 1.5, 6.0, 8.0]
 LEAD_SURGE_DAMPING_V_LEAD_BP = [0.5, 1.0]
 LEAD_SURGE_DAMPING_GAP_EXCESS_BP = [0.3, 2.0]
@@ -864,6 +872,23 @@ def get_progressive_lead_hard_obstacle_relaxation(x_lead, v_ego, v_lead, a_lead,
   return relaxation * speed_blend * moving_blend * closing_blend * closing_guard * decel_guard * runway_blend
 
 
+def get_stop_go_crawl_context_blend(x_lead, v_ego, v_lead, a_lead, t_follow):
+  x_lead = np.asarray(x_lead, dtype=float)
+  v_lead = np.asarray(v_lead, dtype=float)
+  a_lead = np.asarray(a_lead, dtype=float)
+  opening_speed = np.maximum(v_lead - v_ego, 0.0)
+  gap_excess = x_lead - STOP_DISTANCE
+
+  ego_speed_blend = 1.0 - np.interp(v_ego, STOP_GO_CRAWL_V_EGO_BP, [0.0, 1.0])
+  lead_speed_blend = np.interp(v_lead, STOP_GO_CRAWL_V_LEAD_BP, [0.0, 1.0, 1.0, 0.0])
+  gap_blend = np.interp(gap_excess, STOP_GO_CRAWL_GAP_EXCESS_BP, [0.0, 1.0, 1.0, 0.0])
+  opening_present_blend = np.interp(opening_speed, STOP_GO_CRAWL_OPENING_PRESENT_BP, [0.0, 1.0])
+  opening_hesitation_blend = 1.0 - np.interp(opening_speed, STOP_GO_CRAWL_OPENING_BP, [0.0, 1.0])
+  lead_accel_release_blend = 1.0 - np.interp(np.maximum(a_lead, 0.0), STOP_GO_CRAWL_LEAD_ACCEL_RELEASE_BP, [0.0, 1.0])
+  urgency_blend = 1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead)
+  return ego_speed_blend * lead_speed_blend * gap_blend * opening_present_blend * opening_hesitation_blend * lead_accel_release_blend * urgency_blend
+
+
 def get_lead_crawl_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow, block_short_gap_pullaway_response=False, model_prob=1.0):
   x_lead = np.asarray(x_lead, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
@@ -896,7 +921,9 @@ def get_lead_crawl_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow, block
   lead_accel_blend = np.interp(np.clip(a_lead, 0.0, LEAD_ACCEL_RECOVERY_ACCEL_BP[-1]), LEAD_ACCEL_RECOVERY_ACCEL_BP, [0.0, 1.0])
   accel_blend = np.minimum(opening_blend, np.maximum(opening_blend * 0.5, lead_accel_blend))
 
-  accel_target = LEAD_CRAWL_ACCEL_MAX * accel_blend
+  stop_go_context_blend = get_stop_go_crawl_context_blend(x_lead, v_ego, v_lead, a_lead, t_follow)
+  accel_max = LEAD_CRAWL_ACCEL_MAX - stop_go_context_blend * (LEAD_CRAWL_ACCEL_MAX - STOP_GO_CRAWL_TARGET_ACCEL_MAX)
+  accel_target = accel_max * accel_blend
   brake_target = LEAD_CRAWL_BRAKE_MAX * brake_blend
   target = np.clip(accel_target - brake_target, -LEAD_CRAWL_BRAKE_MAX, LEAD_CRAWL_ACCEL_MAX)
   target = np.where(short_gap_cost > 0.0, np.maximum(target, short_gap_target), target)
@@ -915,7 +942,9 @@ def get_lead_crawl_accel_max(x_lead, v_ego, v_lead, a_lead, t_follow):
   urgency_blend = 1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead)
   opening_blend = np.interp(opening_speed, LEAD_CRAWL_OPENING_BP, [0.0, 1.0])
   limit_blend = speed_blend * moving_blend * gap_blend * urgency_blend * opening_blend
-  return ACCEL_MAX - limit_blend * (ACCEL_MAX - LEAD_CRAWL_ACCEL_LIMIT)
+  crawl_accel_max = ACCEL_MAX - limit_blend * (ACCEL_MAX - LEAD_CRAWL_ACCEL_LIMIT)
+  stop_go_context_blend = get_stop_go_crawl_context_blend(x_lead, v_ego, v_lead, a_lead, t_follow)
+  return crawl_accel_max - stop_go_context_blend * (crawl_accel_max - STOP_GO_CRAWL_ACCEL_MAX)
 
 
 def get_lead_surge_damping_target(x_lead, v_ego, v_lead, a_lead, t_follow, decel_memory):
