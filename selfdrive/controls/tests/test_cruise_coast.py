@@ -27,6 +27,13 @@ def test_overspeed_never_adds_positive_accel():
   assert apply_cruise_coast_overspeed(20.3, 20.0, -0.3, 0.2) == pytest.approx(0.0)
 
 
+def test_logged_surge_above_set_speed_is_not_commanded():
+  v_ego = 60.3 / 3.6
+  v_cruise = 57.0 / 3.6
+
+  assert apply_cruise_coast_overspeed(v_ego, v_cruise, -0.3, 0.6) == pytest.approx(0.0)
+
+
 def test_large_overspeed_returns_to_normal_decel():
   assert apply_cruise_coast_overspeed(22.5, 20.0, 0.25, -1.0) == pytest.approx(-1.0)
 
@@ -39,17 +46,19 @@ def test_recovery_blends_back_to_normal_decel():
 
 def test_cruise_coast_does_not_add_decel_below_set_speed():
   assert apply_cruise_coast_overspeed(19.5, 20.0, -0.3, 0.1) == pytest.approx(0.1)
+  assert apply_cruise_coast_overspeed(19.5, 20.0, 0.25, 0.1) == pytest.approx(0.1)
+  assert apply_cruise_coast_overspeed(19.5, 20.0, 0.25, -1.0) == pytest.approx(-1.0)
 
 
-def test_cruise_coast_gating_requires_plain_cruise_no_lead():
+def test_cruise_coast_gating_requires_plain_cruise():
   cruise = custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
   scc_vision = custom.LongitudinalPlanSP.LongitudinalPlanSource.sccVision
 
   assert should_apply_cruise_coast_overspeed(False, False, False, False, False, cruise)
+  assert should_apply_cruise_coast_overspeed(False, False, False, True, False, cruise)
   assert not should_apply_cruise_coast_overspeed(True, False, False, False, False, cruise)
   assert not should_apply_cruise_coast_overspeed(False, True, False, False, False, cruise)
   assert not should_apply_cruise_coast_overspeed(False, False, True, False, False, cruise)
-  assert not should_apply_cruise_coast_overspeed(False, False, False, True, False, cruise)
   assert not should_apply_cruise_coast_overspeed(False, False, False, False, True, cruise)
   assert not should_apply_cruise_coast_overspeed(
     False, False, False, False, False, scc_vision
