@@ -103,7 +103,7 @@ def main():
   pm = messaging.PubMaster(['longitudinalPlan', 'driverAssistance', 'longitudinalPlanSP'])
   sm = messaging.SubMaster(['carControl', 'carState', 'controlsState', 'liveParameters', 'radarState', 'modelV2', 'selfdriveState',
                             'liveMapDataSP', 'carStateSP', gps_location_service],
-                           poll='carState')
+                           poll='carState', ignore_avg_freq=['carState'])
   invalid_planner_check_signature = None
 
   while True:
