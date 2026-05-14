@@ -145,7 +145,7 @@ LEAD_STOP_APPROACH_DECEL_CAP = 1.2
 LEAD_STOP_APPROACH_COST = 10.0
 MOVING_LEAD_STOP_APPROACH_V_EGO_BP = [4.0, 12.0]
 MOVING_LEAD_STOP_APPROACH_V_LEAD_BP = [1.0, 3.0, 18.0, 22.0]
-MOVING_LEAD_STOP_APPROACH_DECEL_BP = [0.5, 1.0]
+MOVING_LEAD_STOP_APPROACH_DECEL_BP = [0.25, 0.9]
 MOVING_LEAD_STOP_APPROACH_CLOSING_BP = [0.5, 2.0]
 MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_BP = [0.5, 2.0, 4.0]
 MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_V = [0.0, 1.0, 0.0]
@@ -296,9 +296,9 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
   if personality == log.LongitudinalPersonality.relaxed:
     return 1.85
   elif personality == log.LongitudinalPersonality.standard:
-    return 1.42
+    return 1.55
   elif personality == log.LongitudinalPersonality.aggressive:
-    return 1.15
+    return 1.30
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 

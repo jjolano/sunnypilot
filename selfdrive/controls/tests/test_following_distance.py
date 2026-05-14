@@ -2364,6 +2364,33 @@ def test_route_like_slowing_moving_lead_prefers_moderate_decel():
   assert cost > 0.0
 
 
+def test_route_bookmark_mild_lead_decel_starts_before_gap_collapse():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_moving_lead_stop_approach_comfort_target(20.44, 12.01, 11.16, -0.34, t_follow)
+
+  assert target <= -long_mpc.MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX
+  assert cost > 0.0
+
+
+def test_mild_lead_decel_at_healthy_gap_only_coasts():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  d_rel = get_desired_follow_distance(12.0, 11.0, t_follow) + 25.0
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, 12.0, 11.0, -0.34, t_follow)
+
+  assert target == pytest.approx(long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
+  assert cost > 0.0
+
+
+def test_route_bookmark_late_closing_standard_brakes_before_hard_catchup():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_moving_lead_stop_approach_comfort_target(18.60, 11.88, 9.51, -1.39, t_follow)
+
+  assert target < -1.0
+  assert target > -long_mpc.MOVING_LEAD_STOP_APPROACH_DECEL_CAP
+  assert cost > 0.0
+
+
 def test_route_like_pre_target_slowing_lead_starts_brake_ramp_before_gap_collapse():
   v_ego = 15.95
   v_lead = 11.67
