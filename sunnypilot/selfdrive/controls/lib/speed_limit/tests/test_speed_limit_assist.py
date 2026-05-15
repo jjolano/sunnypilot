@@ -354,6 +354,17 @@ class TestSpeedLimitAssist:
     assert self.sla.output_v_target == pytest.approx(SPEED_LIMITS['freeway'])
     assert self.sla.output_a_target == pytest.approx(0.0)
 
+  def test_higher_limit_setpoint_clamped_to_set_cruise_when_car_cannot_change_set_speed(self):
+    self.sla.CP_SP.pcmCruiseSpeed = False
+    self.initialize_active_state(SPEED_LIMITS['city'])
+    self.sla.output_v_target = SPEED_LIMITS['city']
+
+    self.sla.update(True, False, SPEED_LIMITS['city'], 0.0, SPEED_LIMITS['city'], SPEED_LIMITS['freeway'],
+                    SPEED_LIMITS['freeway'], True, 0.0, self.events_sp)
+
+    assert self.sla.output_v_target == pytest.approx(SPEED_LIMITS['city'])
+    assert self.sla.output_a_target == pytest.approx(0.0)
+
   def test_diagnostic_accel_uses_current_accel_when_setpoint_starts_unset(self):
     self.initialize_active_state(self.pcm_long_max_set_speed)
 
