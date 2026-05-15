@@ -895,6 +895,32 @@ def test_lead_stop_approach_slew_allows_urgent_close_brake():
   assert target == pytest.approx(-1.8)
 
 
+def test_moving_lead_stop_approach_starts_mild_decel_before_desired_gap():
+  target, cost = get_moving_lead_stop_approach_comfort_target(
+    x_lead=80.0,
+    v_ego=15.7,
+    v_lead=11.5,
+    a_lead=-1.2,
+    t_follow=1.8,
+  )
+
+  assert -0.2 <= target <= -0.15
+  assert cost > 0.0
+
+
+def test_moving_lead_stop_approach_does_not_touch_already_stopped_lead():
+  target, cost = get_moving_lead_stop_approach_comfort_target(
+    x_lead=50.0,
+    v_ego=14.0,
+    v_lead=0.0,
+    a_lead=0.0,
+    t_follow=1.8,
+  )
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
 def test_creep_to_stop_gap_arms_for_predicted_pullaway_before_speed_threshold():
   stop_target = get_lead_stop_presentation_distance(0.0, 0.05, 0.0, 1.0)
   predicted_v_lead, predicted_gap_opening = get_predicted_lead_pullaway(0.05, 1.5, 0.0)

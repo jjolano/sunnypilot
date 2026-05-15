@@ -149,8 +149,10 @@ E2E_STOP_APPROACH_MIN_ENDPOINT = 5.0
 E2E_STOP_APPROACH_PROTECTION_MIN_V_EGO = 2.0
 E2E_STOP_APPROACH_EXPECTED_DIST_BP = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 55.0, 60.0]
 E2E_STOP_APPROACH_EXPECTED_DIST_V = [8.0, 18.0, 30.0, 43.0, 58.0, 74.0, 85.0, 96.0]
-E2E_STOP_APPROACH_SHORTAGE_BP = [0.15, 0.5]
-E2E_STOP_APPROACH_DECEL_BP = [0.35, 1.35]
+E2E_STOP_APPROACH_SHORTAGE_BP = [0.05, 0.5]
+E2E_STOP_APPROACH_DECEL_BP = [0.18, 1.35]
+E2E_STOP_APPROACH_MAX_DECEL_SHORTAGE = 0.15
+E2E_STOP_APPROACH_REQUIRED_DECEL_SHORTAGE_BP = [0.12, 0.3]
 E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND = 0.65
 E2E_STOP_APPROACH_DECEL_MAX = 1.5
 CRUISE_COAST_FLAT_OVERSPEED = 0.45  # ~1 mph
@@ -167,6 +169,7 @@ E2E_RUNWAY_COMFORT_NEGATIVE_RAMP_RATE = 0.35
 E2E_RUNWAY_POSITIVE_CAP_REF_ACCEL = 0.45
 E2E_RUNWAY_POSITIVE_CAP_PREVIEW_T = 6.0
 E2E_RUNWAY_POSITIVE_CAP_MAX_ENDPOINT_V = 1.0
+E2E_RUNWAY_FINAL_CRAWL_ACCEL_MAX = 0.08
 E2E_CLOSE_STOP_MAX_DIST = 1.0
 E2E_CLOSE_STOP_RELEASE_DIST = 1.0
 E2E_CLOSE_STOP_SHOULD_STOP_DIST = 0.4
@@ -238,7 +241,7 @@ def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force
     return 0.0
 
   expected_distance = float(np.interp(v_ego * CV.MS_TO_KPH, E2E_STOP_APPROACH_EXPECTED_DIST_BP, E2E_STOP_APPROACH_EXPECTED_DIST_V))
-  max_decel_distance = v_ego**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX * (1.0 - E2E_STOP_APPROACH_SHORTAGE_BP[0]))
+  max_decel_distance = v_ego**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX * (1.0 - E2E_STOP_APPROACH_MAX_DECEL_SHORTAGE))
   expected_distance = max(expected_distance, max_decel_distance)
   if expected_distance <= 0.0:
     return 0.0
@@ -248,7 +251,8 @@ def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force
     return 0.0
 
   shortage_decel = float(np.interp(shortage, E2E_STOP_APPROACH_SHORTAGE_BP, E2E_STOP_APPROACH_DECEL_BP))
-  required_decel = E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND * v_ego**2 / (2.0 * max(endpoint_x, E2E_STOP_APPROACH_MIN_ENDPOINT))
+  required_decel_blend = float(np.interp(shortage, E2E_STOP_APPROACH_REQUIRED_DECEL_SHORTAGE_BP, [0.0, 1.0]))
+  required_decel = required_decel_blend * E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND * v_ego**2 / (2.0 * max(endpoint_x, E2E_STOP_APPROACH_MIN_ENDPOINT))
   target_decel = min(max(shortage_decel, required_decel), E2E_STOP_APPROACH_DECEL_MAX)
   return -target_decel
 
@@ -322,7 +326,7 @@ def get_e2e_runway_comfort_accel(v_ego, raw_e2e_accel, coast_accel, model_msg, e
     return raw_e2e_accel
 
   expected_distance = float(np.interp(v_ego * CV.MS_TO_KPH, E2E_STOP_APPROACH_EXPECTED_DIST_BP, E2E_STOP_APPROACH_EXPECTED_DIST_V))
-  max_decel_distance = v_ego**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX * (1.0 - E2E_STOP_APPROACH_SHORTAGE_BP[0]))
+  max_decel_distance = v_ego**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX * (1.0 - E2E_STOP_APPROACH_MAX_DECEL_SHORTAGE))
   expected_distance = max(expected_distance, max_decel_distance)
   if expected_distance <= 0.0:
     return raw_e2e_accel
@@ -356,8 +360,10 @@ def get_e2e_runway_positive_accel_cap(v_ego, model_msg, e2e_active, reset_state=
 
   endpoint_x = float(model_msg.position.x[-1])
   endpoint_v = float(model_msg.velocity.x[-1])
-  if not np.isfinite(endpoint_x) or not np.isfinite(endpoint_v) or endpoint_x <= E2E_RUNWAY_COMFORT_MIN_ENDPOINT:
+  if not np.isfinite(endpoint_x) or not np.isfinite(endpoint_v) or endpoint_x < 0.0:
     return ACCEL_MAX
+  if endpoint_x <= E2E_RUNWAY_COMFORT_MIN_ENDPOINT:
+    return E2E_RUNWAY_FINAL_CRAWL_ACCEL_MAX if endpoint_v <= E2E_RUNWAY_POSITIVE_CAP_MAX_ENDPOINT_V else ACCEL_MAX
   if not model_msg.action.shouldStop and endpoint_v > E2E_RUNWAY_POSITIVE_CAP_MAX_ENDPOINT_V:
     return ACCEL_MAX
 
