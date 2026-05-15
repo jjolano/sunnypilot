@@ -8,6 +8,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   E2E_CLOSE_STOP_DECEL_MAX,
   E2E_CLOSE_STOP_MIN_ROLLING_V,
   E2E_STOP_APPROACH_DECEL_MAX,
+  E2E_RUNWAY_FINAL_CRAWL_ACCEL_MAX,
   LongitudinalPlanner,
   get_e2e_close_stop_settle,
   get_max_accel,
@@ -120,6 +121,12 @@ def test_e2e_stop_approach_ignores_endpoint_with_sufficient_runway():
   accel = get_e2e_stop_approach_accel(12.0, make_model_msg(endpoint_x=70.0), make_radar_state(), True)
 
   assert accel == 0.0
+
+
+def test_e2e_stop_approach_starts_mild_decel_for_route_like_runway():
+  accel = get_e2e_stop_approach_accel(15.7, make_model_msg(endpoint_x=84.0), make_radar_state(), True)
+
+  assert -0.5 < accel < -0.15
 
 
 def test_e2e_stop_approach_brakes_before_high_speed_max_decel_boundary():
@@ -354,6 +361,16 @@ def test_e2e_runway_positive_accel_cap_limits_short_runway_at_crawl():
   )
 
   assert 0.0 < cap < 1.0
+
+
+def test_e2e_runway_positive_accel_cap_limits_final_endpoint_crawl():
+  cap = get_e2e_runway_positive_accel_cap(
+    0.25,
+    make_model_msg(desired_accel=0.5, should_stop=True, endpoint_x=0.2, positions=[0.0, 0.2], velocities=[0.2, 0.0]),
+    True,
+  )
+
+  assert 0.0 < cap <= E2E_RUNWAY_FINAL_CRAWL_ACCEL_MAX
 
 
 def test_e2e_runway_positive_accel_cap_caps_at_15m_crawl_example():
