@@ -22,7 +22,17 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
 )
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE, get_T_FOLLOW, get_lead_accel_recovery_a_min, get_lead_stop_presentation_distance
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  STOP_DISTANCE,
+  LEAD_CRAWL_ACCEL_LIMIT,
+  get_T_FOLLOW,
+  get_lead_accel_recovery_a_min,
+  get_lead_approach_gaps,
+  get_lead_crawl_accel_max,
+  get_lead_stop_presentation_distance,
+  get_lead_stop_runway_required_decel,
+  get_moving_lead_stop_approach_comfort_target,
+)
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.controls.lib.lateral_accel import lateral_accel_from_steering_angle
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -57,6 +67,8 @@ CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.16, 0.30, CREEP_TO_STOP_GAP_SPEED_MAX]
 CREEP_TO_STOP_GAP_ACCEL_GAIN = 1.0
 CREEP_TO_STOP_GAP_ACCEL_MIN = -0.25
 CREEP_TO_STOP_GAP_ACCEL_MAX = 0.18
+CREEP_TO_STOP_GAP_HOLD_BUFFER = 0.5
+CREEP_TO_STOP_GAP_HOLD_DECEL_CAP = 1.8
 CREEP_TO_STOP_GAP_HOLD_EXCESS = 0.35
 CREEP_TO_STOP_GAP_REHOLD_EXCESS = 0.2
 CREEP_TO_STOP_GAP_HOLD_RELEASE_EXCESS = CREEP_TO_STOP_GAP_FOLLOW_EXCESS
@@ -87,6 +99,21 @@ CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_Y_ERROR = 0.75
 CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_ERROR = 1.25
 CREEP_TO_STOP_GAP_MODEL_LEAD_HORIZON = 2.0
 CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET = 1.52
+STOPPED_LEAD_STOP_GAP_GUARD_MAX_V_EGO = 25.0
+STOPPED_LEAD_STOP_GAP_GUARD_MAX_LEAD_SPEED = 0.15
+STOPPED_LEAD_STOP_GAP_GUARD_MAX_LEAD_ACCEL = 0.05
+STOPPED_LEAD_STOP_GAP_GUARD_EXCESS = 100.0
+STOPPED_LEAD_STOP_GAP_GUARD_TARGET_BUFFER = -0.75
+STOPPED_LEAD_STOP_GAP_GUARD_MIN_REQUIRED_DECEL = 0.1
+STOPPED_LEAD_STOP_GAP_GUARD_DECEL_CAP_BP = [4.0, 8.0]
+STOPPED_LEAD_STOP_GAP_GUARD_DECEL_CAP_V = [1.1, 2.0]
+MOVING_LEAD_STOP_GAP_GUARD_MIN_V_EGO = 6.0
+MOVING_LEAD_STOP_GAP_GUARD_MIN_V_LEAD = 0.5
+MOVING_LEAD_STOP_GAP_GUARD_MIN_LEAD_DECEL = 0.25
+MOVING_LEAD_STOP_GAP_GUARD_MIN_TARGET_DECEL = 0.4
+MOVING_LEAD_STOP_GAP_GUARD_MAX_Y_REL = 1.5
+MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP = 1.95
+MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL = 2.0
 LEAD_STOP_APPROACH_DECEL_SLEW_MIN_V_EGO = 3.0
 LEAD_STOP_APPROACH_DECEL_SLEW_MIN_LEAD_DECEL = 0.6
 LEAD_STOP_APPROACH_DECEL_SLEW_STOPPED_LEAD_V = 0.2
@@ -631,6 +658,58 @@ def should_hold_creep_to_stop_gap(v_ego, d_rel, v_lead, a_lead, predicted_pullaw
   )
 
 
+def get_creep_to_stop_gap_hold_accel(v_ego, d_rel):
+  if v_ego <= 0.0:
+    return 0.0
+  available_gap = max(d_rel - CREEP_TO_STOP_GAP_HOLD_BUFFER, 0.1)
+  required_decel = (v_ego**2) / (2.0 * available_gap)
+  return -min(CREEP_TO_STOP_GAP_HOLD_DECEL_CAP, required_decel)
+
+
+def get_stopped_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, model_prob):
+  stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
+  if (
+    model_prob < CREEP_TO_STOP_GAP_MIN_MODEL_PROB or
+    v_ego <= 0.0 or v_ego >= STOPPED_LEAD_STOP_GAP_GUARD_MAX_V_EGO or
+    abs(v_lead) > STOPPED_LEAD_STOP_GAP_GUARD_MAX_LEAD_SPEED or
+    a_lead > STOPPED_LEAD_STOP_GAP_GUARD_MAX_LEAD_ACCEL or
+    d_rel > stop_target + STOPPED_LEAD_STOP_GAP_GUARD_EXCESS
+  ):
+    return None
+
+  available_gap = max(d_rel - stop_target + STOPPED_LEAD_STOP_GAP_GUARD_TARGET_BUFFER, 0.1)
+  required_decel = (v_ego**2) / (2.0 * available_gap)
+  if required_decel < STOPPED_LEAD_STOP_GAP_GUARD_MIN_REQUIRED_DECEL:
+    return None
+  decel_cap = float(np.interp(v_ego, STOPPED_LEAD_STOP_GAP_GUARD_DECEL_CAP_BP, STOPPED_LEAD_STOP_GAP_GUARD_DECEL_CAP_V))
+  return -min(decel_cap, max(-CREEP_TO_STOP_GAP_ACCEL_MIN, required_decel))
+
+
+def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_follow):
+  if (
+    v_ego < MOVING_LEAD_STOP_GAP_GUARD_MIN_V_EGO or
+    v_lead < MOVING_LEAD_STOP_GAP_GUARD_MIN_V_LEAD or
+    v_lead >= v_ego or
+    a_lead > -MOVING_LEAD_STOP_GAP_GUARD_MIN_LEAD_DECEL or
+    abs(y_rel) > MOVING_LEAD_STOP_GAP_GUARD_MAX_Y_REL
+  ):
+    return None
+
+  _desired_gap, caution_gap, _danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+  if d_rel > caution_gap:
+    return None
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+  target = float(target)
+  if float(cost) <= 0.0 or target > -MOVING_LEAD_STOP_GAP_GUARD_MIN_TARGET_DECEL:
+    return None
+  closing_speed = max(v_ego - v_lead, 0.0)
+  required_decel = float(get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead))
+  decel_cap = -ACCEL_MIN if a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL else MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP
+  target = min(target, -min(decel_cap, required_decel))
+  return target
+
+
 def should_arm_stopped_lead_gap_fill(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False,
                                      a_lead=0.0):
   stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
@@ -1029,8 +1108,24 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), model_predicted_pullaway,
       self.creep_stop_hold_released, float(lead_one.modelProb),
     ):
-      output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
+      stop_gap_hold_a_target = min(CREEP_TO_STOP_GAP_ACCEL_MIN, get_creep_to_stop_gap_hold_accel(v_ego, float(lead_one.dRel)))
+      output_a_target = min(output_a_target, stop_gap_hold_a_target)
       self.output_should_stop = True
+
+    if lead_one.status:
+      stop_gap_guard_a_target = get_stopped_lead_stop_gap_guard_accel(
+        v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.modelProb),
+      )
+      if stop_gap_guard_a_target is not None:
+        output_a_target = min(output_a_target, stop_gap_guard_a_target)
+        self.output_should_stop = True
+
+      moving_stop_guard_a_target = get_moving_lead_stop_gap_guard_accel(
+        v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.yRel),
+        get_T_FOLLOW(sm['selfdriveState'].personality),
+      )
+      if moving_stop_guard_a_target is not None:
+        output_a_target = min(output_a_target, moving_stop_guard_a_target)
 
     if engage_stop_bootstrap_active:
       output_a_target = min(output_a_target, output_a_target_e2e)
@@ -1059,6 +1154,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         model_predicted_gap_opening if model_predicted_pullaway else 0.0,
       )
       launch_accel_max = get_creep_pullaway_launch_accel_max(lead_gap_excess, launch_predicted_gap_opening)
+      crawl_accel_max = get_lead_crawl_accel_max(
+        float(lead_one.dRel), v_ego, float(lead_one.vLeadK), float(lead_one.aLeadK), get_T_FOLLOW(sm['selfdriveState'].personality),
+      )
+      launch_accel_max = min(launch_accel_max, float(crawl_accel_max))
       output_a_target = min(
         max(output_a_target, CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN),
         launch_accel_max,
@@ -1122,6 +1221,14 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = self.longitudinal_decision_telemetry.applied_a_target
       self.output_should_stop = self.longitudinal_decision_telemetry.applied_should_stop
 
+    if lead_one.status:
+      moving_stop_guard_a_target = get_moving_lead_stop_gap_guard_accel(
+        v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.yRel),
+        get_T_FOLLOW(sm['selfdriveState'].personality),
+      )
+      if moving_stop_guard_a_target is not None:
+        output_a_target = min(output_a_target, moving_stop_guard_a_target)
+
     lead_loss_snapshot_lead = lead_loss_guard_lead
     self.previous_lead_loss_status = lead_loss_snapshot_lead is not None
     self.previous_lead_loss_d_rel = float(lead_loss_snapshot_lead.dRel) if lead_loss_snapshot_lead is not None else 0.0
@@ -1140,6 +1247,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       if output_a_target > -CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP and not self.output_should_stop:
         output_a_target = max(output_a_target, prev_output_a_target - CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP)
       output_a_target = min(output_a_target, prev_output_a_target + CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP)
+    if lead_one.status and not creep_pullaway_launch and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO and output_a_target > LEAD_CRAWL_ACCEL_LIMIT:
+      output_a_target = LEAD_CRAWL_ACCEL_LIMIT
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
 

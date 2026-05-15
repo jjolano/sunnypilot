@@ -1093,6 +1093,12 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   min_gap = danger_gap + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0)
   danger_margin = x_lead - min_gap
   danger_blend = 1.0 - closing_blend * np.interp(danger_margin, [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN], [1.0, 0.0])
+  danger_breach_blend = closing_blend * (1.0 - np.interp(
+    danger_margin,
+    [-LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN, 0.0],
+    [0.0, 1.0],
+  ))
+  danger_blend = np.maximum(danger_blend, danger_breach_blend)
   pre_target = x_lead > desired_gap
   pre_target_margin = np.maximum(x_lead - desired_gap, 0.0)
   safe_closing_speed = np.sqrt(2.0 * MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_DECEL * pre_target_margin)
