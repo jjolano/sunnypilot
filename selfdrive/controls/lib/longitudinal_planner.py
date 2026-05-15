@@ -41,7 +41,7 @@ CREEP_TO_STOP_GAP_SPEED_BP = [
   CREEP_TO_STOP_GAP_START_EXCESS,
   CREEP_TO_STOP_GAP_MAX_EXCESS,
 ]
-CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.18, 0.30, CREEP_TO_STOP_GAP_SPEED_MAX]
+CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.16, 0.30, CREEP_TO_STOP_GAP_SPEED_MAX]
 CREEP_TO_STOP_GAP_ACCEL_GAIN = 1.0
 CREEP_TO_STOP_GAP_ACCEL_MIN = -0.25
 CREEP_TO_STOP_GAP_ACCEL_MAX = 0.18
@@ -75,6 +75,15 @@ CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_Y_ERROR = 0.75
 CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_ERROR = 1.25
 CREEP_TO_STOP_GAP_MODEL_LEAD_HORIZON = 2.0
 CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET = 1.52
+LEAD_STOP_APPROACH_DECEL_SLEW_MIN_V_EGO = 3.0
+LEAD_STOP_APPROACH_DECEL_SLEW_MIN_LEAD_DECEL = 0.6
+LEAD_STOP_APPROACH_DECEL_SLEW_STOPPED_LEAD_V = 0.2
+LEAD_STOP_APPROACH_DECEL_SLEW_MIN_GAP_EXCESS = 10.0
+LEAD_STOP_APPROACH_DECEL_SLEW_MAX_JERK = 7.5
+LEAD_LOSS_E2E_GUARD_TIME = 3.0
+LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR = -0.45
+LEAD_LOSS_E2E_GUARD_MIN_D_REL = 45.0
+LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB = 0.8
 STOPPED_LEAD_GAP_FILL_ARM_TIME = 8.0
 STOPPED_LEAD_GAP_FILL_ARM_MAX_V_EGO = 0.3
 STOPPED_LEAD_GAP_FILL_ARM_MAX_GAP_EXCESS = 0.6
@@ -92,10 +101,6 @@ STOPPED_LEAD_GAP_FILL_SPEED_V = [CREEP_TO_STOP_GAP_SPEED_MAX, 1.2, STOPPED_LEAD_
 STOPPED_LEAD_GAP_FILL_ACCEL_GAIN = 0.6
 STOPPED_LEAD_GAP_FILL_ACCEL_MAX = 0.35
 STOPPED_LEAD_GAP_FILL_ACCEL_MIN = -0.25
-LEAD_LOSS_E2E_GUARD_TIME = 3.0
-LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR = -0.45
-LEAD_LOSS_E2E_GUARD_MIN_D_REL = 45.0
-LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB = 0.8
 STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_D_REL_DELTA = 3.0
 STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_V_LEAD_DELTA = 1.0
 
@@ -112,6 +117,13 @@ def get_coast_accel(pitch):
 
 def has_valid_radar_lead(radar_state):
   return radar_state.leadOne.status or radar_state.leadTwo.status
+
+
+def has_confirmed_radar_lead(radar_state):
+  return any(
+    getattr(lead, "status", False) and float(getattr(lead, "modelProb", 0.0)) >= LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB
+    for lead in (radar_state.leadOne, radar_state.leadTwo)
+  )
 
 
 def is_lane_change_active(model_msg):
@@ -275,6 +287,23 @@ def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_
   predicted_v_lead = float(np.interp(horizon, ts, vs))
   predicted_gap_opening = max(0.0, model_d_rel_horizon - d_rel)
   return predicted_v_lead, predicted_gap_opening
+
+
+def get_lead_stop_approach_slewed_accel(v_ego, d_rel, v_lead, a_lead, prev_a_target, a_target, dt):
+  stopped_lead_with_runway = (
+    v_lead <= LEAD_STOP_APPROACH_DECEL_SLEW_STOPPED_LEAD_V and
+    d_rel > STOP_DISTANCE + LEAD_STOP_APPROACH_DECEL_SLEW_MIN_GAP_EXCESS
+  )
+  hard_braking_lead = a_lead <= -LEAD_STOP_APPROACH_DECEL_SLEW_MIN_LEAD_DECEL
+  if (
+    v_ego < LEAD_STOP_APPROACH_DECEL_SLEW_MIN_V_EGO or
+    v_lead >= v_ego or
+    not (hard_braking_lead or stopped_lead_with_runway)
+  ):
+    return a_target
+
+  max_delta = LEAD_STOP_APPROACH_DECEL_SLEW_MAX_JERK * dt
+  return float(np.clip(a_target, prev_a_target - max_delta, prev_a_target + max_delta))
 
 
 def creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False,
@@ -513,10 +542,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     lead_one = sm['radarState'].leadOne
     lead_loss_guard_lead = get_lead_loss_e2e_guard_lead(sm['radarState'])
+    has_confirmed_lead = has_confirmed_radar_lead(sm['radarState'])
     self.lead_loss_e2e_guard_timer = update_lead_loss_e2e_guard_timer(
       self.lead_loss_e2e_guard_timer, self.dt,
       self.previous_lead_loss_status, self.previous_lead_loss_d_rel, self.previous_lead_loss_model_prob,
-      lead_loss_guard_lead is not None, is_lane_change_active(sm['modelV2']),
+      has_confirmed_lead, is_lane_change_active(sm['modelV2']),
       reset_state=reset_state,
       force_slow_decel=force_slow_decel,
       brake_pressed=sm['carState'].brakePressed,
@@ -554,7 +584,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     e2e_active = self.is_e2e(sm)
     if e2e_active:
       output_a_target_e2e = apply_lead_loss_e2e_guard_accel(
-        output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, lead_loss_guard_lead is not None
+        output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, has_confirmed_lead,
       )
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
@@ -680,6 +710,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     ):
       output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
       self.output_should_stop = True
+
+    if lead_one.status and not reset_state and not sm['carState'].brakePressed and not sm['carState'].gasPressed:
+      output_a_target = get_lead_stop_approach_slewed_accel(
+        v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), prev_output_a_target, output_a_target, self.dt,
+      )
+
+    self.previous_lead_loss_status = lead_loss_guard_lead is not None
+    self.previous_lead_loss_d_rel = float(lead_loss_guard_lead.dRel) if lead_loss_guard_lead is not None else 0.0
+    self.previous_lead_loss_model_prob = float(lead_loss_guard_lead.modelProb) if lead_loss_guard_lead is not None else 0.0
 
     creep_pullaway_launch = lead_one.status and not self.output_should_stop and not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
       not force_slow_decel and not reset_state and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM and \
