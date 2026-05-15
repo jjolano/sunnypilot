@@ -58,6 +58,8 @@ CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN = 0.70
 CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_BASE_MAX = 0.75
 CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX = 1.20
 CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS = CREEP_TO_STOP_GAP_STOP_EXCESS
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MAX_EXCESS = 8.0
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MIN_LEAD_ACCEL = 0.6
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP = 7.5 * DT_MDL
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP_MAX_V_EGO = 3.0
 CREEP_TO_STOP_GAP_PREDICT_T = 0.8
@@ -980,11 +982,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.previous_lead_loss_d_rel = float(lead_loss_guard_lead.dRel) if lead_loss_guard_lead is not None else 0.0
     self.previous_lead_loss_model_prob = float(lead_loss_guard_lead.modelProb) if lead_loss_guard_lead is not None else 0.0
 
+    continuing_creep_pullaway_launch = lead_one.status and prev_output_a_target >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN and \
+      v_ego < CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP_MAX_V_EGO and \
+      CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS <= lead_gap_excess <= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MAX_EXCESS and \
+      float(lead_one.aLeadK) >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MIN_LEAD_ACCEL and \
+      creep_pullaway_release and (radar_predicted_pullaway or model_predicted_pullaway)
     creep_pullaway_launch = lead_one.status and not self.output_should_stop and not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
-      not force_slow_decel and not reset_state and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM and \
+      not force_slow_decel and not reset_state and \
+      (v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM or continuing_creep_pullaway_launch) and \
       float(lead_one.modelProb) >= CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_PROB and \
-      CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS <= lead_gap_excess <= CREEP_TO_STOP_GAP_MAX_EXCESS and \
-      self.creep_to_stop_gap_active and creep_a_target > 0.0 and creep_pullaway_release and \
+      ((CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS <= lead_gap_excess <= CREEP_TO_STOP_GAP_MAX_EXCESS and
+        self.creep_to_stop_gap_active and creep_a_target > 0.0) or continuing_creep_pullaway_launch) and \
+      creep_pullaway_release and \
       (radar_predicted_pullaway or model_predicted_pullaway)
     if creep_pullaway_launch:
       launch_predicted_gap_opening = max(
