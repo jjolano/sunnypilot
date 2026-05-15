@@ -170,6 +170,11 @@ MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_DECEL = 0.65
 MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_EXCESS_BP = [0.0, 2.0]
 MOVING_LEAD_STOP_APPROACH_COAST_FIRST_EXCESS = 0.25
 MOVING_LEAD_STOP_APPROACH_SOFT_RAMP_LEAD_DECEL_BP = [0.2, 0.8, 1.5, 2.0]
+MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_LEAD_DECEL_BP = [0.4, 0.9, 1.5, 2.0]
+MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_LEAD_DECEL_V = [0.0, 1.0, 1.0, 0.0]
+MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_CLOSING_BP = [3.0, 5.0]
+MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_REQUIRED_BP = [0.9, 1.2]
+MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_MARGIN_BP = [20.0, 35.0]
 MOVING_LEAD_STOP_APPROACH_DESIRED_TTC_FADE = 3.5
 MOVING_LEAD_STOP_APPROACH_DESIRED_TTC_MAX_BLEND = 0.5
 LEAD_APPROACH_CAUTION_GAP_FRACTION = 0.75
@@ -1122,7 +1127,16 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   gap_runway_need_blend = 1.0 - np.interp(x_lead - desired_gap, MOVING_LEAD_STOP_APPROACH_GAP_EXCESS_BP, [0.0, 1.0])
   anticipatory_runway_blend = lead_decel_blend * np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_BP,
                                                            MOVING_LEAD_STOP_APPROACH_ANTICIPATORY_CLOSING_V)
-  runway_need_blend = np.maximum.reduce([gap_runway_need_blend, anticipatory_runway_blend, soft_closing_ramp_blend])
+  early_slowing_lead_blend = lead_decel_blend
+  early_slowing_lead_blend *= np.interp(
+    np.clip(-a_lead, 0.0, MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_LEAD_DECEL_BP[-1]),
+    MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_LEAD_DECEL_BP,
+    MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_LEAD_DECEL_V,
+  )
+  early_slowing_lead_blend *= np.interp(closing_speed, MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_CLOSING_BP, [0.0, 1.0])
+  early_slowing_lead_blend *= np.interp(required_decel, MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_REQUIRED_BP, [0.0, 1.0])
+  early_slowing_lead_blend *= 1.0 - np.interp(pre_target_margin, MOVING_LEAD_STOP_APPROACH_EARLY_DECEL_MARGIN_BP, [0.0, 1.0])
+  runway_need_blend = np.maximum.reduce([gap_runway_need_blend, anticipatory_runway_blend, soft_closing_ramp_blend, early_slowing_lead_blend])
   comfort_blend = speed_blend * moving_blend * active_lead_decel_blend * closing_blend * required_decel_blend * danger_blend * runway_need_blend
   if np.all(comfort_blend <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
