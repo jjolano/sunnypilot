@@ -225,6 +225,8 @@ LEAD_ACCEL_MATCH_DECEL_ANTICIPATION_TIME = 1.8
 LEAD_ACCEL_MATCH_DECEL_CAP = 1.6
 LEAD_ACCEL_MATCH_GAP_MARGIN = 10.0
 LEAD_ACCEL_MATCH_GAP_MARGIN_FACTOR = 0.5
+LEAD_ACCEL_MATCH_MOVING_POSITIVE_V_EGO_BP = [1.0, 4.0]
+LEAD_ACCEL_MATCH_MOVING_POSITIVE_ACCEL_MAX = 0.45
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
@@ -1263,6 +1265,11 @@ def get_lead_accel_match_margin(target_gap):
   return max(LEAD_ACCEL_MATCH_GAP_MARGIN, LEAD_ACCEL_MATCH_GAP_MARGIN_FACTOR * target_gap)
 
 
+def get_lead_accel_match_moving_positive_accel_max(v_ego):
+  return np.interp(v_ego, LEAD_ACCEL_MATCH_MOVING_POSITIVE_V_EGO_BP,
+                   [ACCEL_MAX, LEAD_ACCEL_MATCH_MOVING_POSITIVE_ACCEL_MAX])
+
+
 def get_lead_accel_match_blend(v_lead, d_rel, a_lead, t_follow, v_ego=None):
   if d_rel <= STOP_DISTANCE or abs(a_lead) < LEAD_ACCEL_MATCH_MIN_ABS_ACCEL:
     return 0.0
@@ -1302,6 +1309,8 @@ def get_lead_accel_match_target(v_lead, d_rel, a_lead, t_follow, v_ego=None):
     return 0.0, 0.0
 
   accel_target = float(np.clip(a_lead * blend, ACCEL_MIN, ACCEL_MAX))
+  if a_lead > 0.0 and v_ego is not None:
+    accel_target = min(accel_target, float(get_lead_accel_match_moving_positive_accel_max(v_ego)))
   if a_lead < 0.0:
     accel_target = max(accel_target, -LEAD_ACCEL_MATCH_DECEL_CAP)
   return accel_target, LEAD_ACCEL_MATCH_COST * blend
@@ -1365,6 +1374,9 @@ def get_lead_accel_match_targets(v_lead, d_rel, a_lead, t_follow, v_ego=None, bl
     blend = np.where(positive_mask, distance_blend * closing_blend, blend)
 
   accel_targets = np.clip(a_lead * blend, ACCEL_MIN, ACCEL_MAX)
+  if v_ego is not None:
+    positive_moving_cap = get_lead_accel_match_moving_positive_accel_max(v_ego_values)
+    accel_targets = np.where(a_lead > 0.0, np.minimum(accel_targets, positive_moving_cap), accel_targets)
   accel_targets = np.where(a_lead < 0.0, np.maximum(accel_targets, -LEAD_ACCEL_MATCH_DECEL_CAP), accel_targets)
   accel_targets = np.where(blend > 0.0, accel_targets, 0.0)
   if v_ego is not None:

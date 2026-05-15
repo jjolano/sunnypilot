@@ -2,7 +2,7 @@
 import math
 import numpy as np
 
-from cereal import custom
+from cereal import custom, log
 import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
@@ -41,7 +41,7 @@ CREEP_TO_STOP_GAP_SPEED_BP = [
   CREEP_TO_STOP_GAP_START_EXCESS,
   CREEP_TO_STOP_GAP_MAX_EXCESS,
 ]
-CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.18, 0.30, CREEP_TO_STOP_GAP_SPEED_MAX]
+CREEP_TO_STOP_GAP_SPEED_V = [0.0, 0.16, 0.30, CREEP_TO_STOP_GAP_SPEED_MAX]
 CREEP_TO_STOP_GAP_ACCEL_GAIN = 1.0
 CREEP_TO_STOP_GAP_ACCEL_MIN = -0.25
 CREEP_TO_STOP_GAP_ACCEL_MAX = 0.18
@@ -75,6 +75,15 @@ CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_Y_ERROR = 0.75
 CREEP_TO_STOP_GAP_MODEL_LEAD_MAX_Y_ERROR = 1.25
 CREEP_TO_STOP_GAP_MODEL_LEAD_HORIZON = 2.0
 CREEP_TO_STOP_GAP_MODEL_LEAD_CAMERA_OFFSET = 1.52
+LEAD_STOP_APPROACH_DECEL_SLEW_MIN_V_EGO = 3.0
+LEAD_STOP_APPROACH_DECEL_SLEW_MIN_LEAD_DECEL = 0.6
+LEAD_STOP_APPROACH_DECEL_SLEW_STOPPED_LEAD_V = 0.2
+LEAD_STOP_APPROACH_DECEL_SLEW_MIN_GAP_EXCESS = 10.0
+LEAD_STOP_APPROACH_DECEL_SLEW_MAX_JERK = 7.5
+LEAD_LOSS_E2E_GUARD_TIME = 3.0
+LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR = -0.45
+LEAD_LOSS_E2E_GUARD_MIN_D_REL = 45.0
+LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB = 0.8
 STOPPED_LEAD_GAP_FILL_ARM_TIME = 8.0
 STOPPED_LEAD_GAP_FILL_ARM_MAX_V_EGO = 0.3
 STOPPED_LEAD_GAP_FILL_ARM_MAX_GAP_EXCESS = 0.6
@@ -104,6 +113,56 @@ def get_max_accel(v_ego):
 
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
+
+
+def has_valid_radar_lead(radar_state):
+  return radar_state.leadOne.status or radar_state.leadTwo.status
+
+
+def has_confirmed_radar_lead(radar_state):
+  return any(
+    getattr(lead, "status", False) and float(getattr(lead, "modelProb", 0.0)) >= LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB
+    for lead in (radar_state.leadOne, radar_state.leadTwo)
+  )
+
+
+def is_lane_change_active(model_msg):
+  return model_msg.meta.laneChangeState != log.LaneChangeState.off
+
+
+def update_lead_loss_e2e_guard_timer(timer, dt, previous_lead_status, previous_d_rel, previous_model_prob,
+                                     current_has_lead, lane_change_active, reset_state=False, force_slow_decel=False,
+                                     brake_pressed=False, gas_pressed=False):
+  blocked = reset_state or force_slow_decel or brake_pressed or gas_pressed or current_has_lead
+  if blocked:
+    return 0.0
+
+  lost_far_confirmed_lead = (
+    previous_lead_status and
+    previous_d_rel >= LEAD_LOSS_E2E_GUARD_MIN_D_REL and
+    previous_model_prob >= LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB
+  )
+  if lost_far_confirmed_lead and lane_change_active:
+    return LEAD_LOSS_E2E_GUARD_TIME
+
+  return max(0.0, timer - dt)
+
+
+def get_lead_loss_e2e_guard_lead(radar_state):
+  return max(
+    (lead for lead in (radar_state.leadOne, radar_state.leadTwo)
+     if getattr(lead, "status", False) and float(getattr(lead, "dRel", 0.0)) >= LEAD_LOSS_E2E_GUARD_MIN_D_REL and
+     float(getattr(lead, "modelProb", 0.0)) >= LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB),
+    key=lambda lead: float(lead.dRel),
+    default=None,
+  )
+
+
+def apply_lead_loss_e2e_guard_accel(e2e_accel, e2e_should_stop, timer, has_lead):
+  if timer <= 0.0 or has_lead or e2e_should_stop:
+    return e2e_accel
+  return max(e2e_accel, LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
+
 
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   """
@@ -228,6 +287,23 @@ def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_
   predicted_v_lead = float(np.interp(horizon, ts, vs))
   predicted_gap_opening = max(0.0, model_d_rel_horizon - d_rel)
   return predicted_v_lead, predicted_gap_opening
+
+
+def get_lead_stop_approach_slewed_accel(v_ego, d_rel, v_lead, a_lead, prev_a_target, a_target, dt):
+  stopped_lead_with_runway = (
+    v_lead <= LEAD_STOP_APPROACH_DECEL_SLEW_STOPPED_LEAD_V and
+    d_rel > STOP_DISTANCE + LEAD_STOP_APPROACH_DECEL_SLEW_MIN_GAP_EXCESS
+  )
+  hard_braking_lead = a_lead <= -LEAD_STOP_APPROACH_DECEL_SLEW_MIN_LEAD_DECEL
+  if (
+    v_ego < LEAD_STOP_APPROACH_DECEL_SLEW_MIN_V_EGO or
+    v_lead >= v_ego or
+    not (hard_braking_lead or stopped_lead_with_runway)
+  ):
+    return a_target
+
+  max_delta = LEAD_STOP_APPROACH_DECEL_SLEW_MAX_JERK * dt
+  return float(np.clip(a_target, prev_a_target - max_delta, prev_a_target + max_delta))
 
 
 def creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False,
@@ -381,6 +457,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.creep_to_stop_gap_active = False
     self.creep_stop_hold_released = False
     self.stopped_lead_gap_fill_timer = 0.0
+    self.lead_loss_e2e_guard_timer = 0.0
+    self.previous_lead_loss_status = False
+    self.previous_lead_loss_d_rel = 0.0
+    self.previous_lead_loss_model_prob = 0.0
     self.stopped_lead_gap_fill_track_id = -2
     self.stopped_lead_gap_fill_d_rel = 0.0
     self.stopped_lead_gap_fill_v_lead = 0.0
@@ -460,6 +540,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if force_slow_decel:
       v_cruise = 0.0
 
+    lead_loss_guard_lead = get_lead_loss_e2e_guard_lead(sm['radarState'])
+    has_confirmed_lead = has_confirmed_radar_lead(sm['radarState'])
+    self.lead_loss_e2e_guard_timer = update_lead_loss_e2e_guard_timer(
+      self.lead_loss_e2e_guard_timer, self.dt,
+      self.previous_lead_loss_status, self.previous_lead_loss_d_rel, self.previous_lead_loss_model_prob,
+      has_confirmed_lead, is_lane_change_active(sm['modelV2']),
+      reset_state=reset_state,
+      force_slow_decel=force_slow_decel,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+    )
+
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     self.mpc.update(
@@ -489,6 +581,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     e2e_active = self.is_e2e(sm)
     if e2e_active:
+      output_a_target_e2e = apply_lead_loss_e2e_guard_accel(
+        output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, has_confirmed_lead,
+      )
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       if output_a_target < output_a_target_mpc:
@@ -614,6 +709,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     ):
       output_a_target = min(output_a_target, CREEP_TO_STOP_GAP_ACCEL_MIN)
       self.output_should_stop = True
+
+    if lead_one.status and not reset_state and not sm['carState'].brakePressed and not sm['carState'].gasPressed:
+      output_a_target = get_lead_stop_approach_slewed_accel(
+        v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), prev_output_a_target, output_a_target, self.dt,
+      )
+
+    self.previous_lead_loss_status = lead_loss_guard_lead is not None
+    self.previous_lead_loss_d_rel = float(lead_loss_guard_lead.dRel) if lead_loss_guard_lead is not None else 0.0
+    self.previous_lead_loss_model_prob = float(lead_loss_guard_lead.modelProb) if lead_loss_guard_lead is not None else 0.0
 
     creep_pullaway_launch = lead_one.status and not self.output_should_stop and not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
       not force_slow_decel and not reset_state and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM and \
