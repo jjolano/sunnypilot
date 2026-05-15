@@ -82,6 +82,38 @@ def test_candidate_records_debug_without_affecting_validity():
   assert candidate.debug == {"distance": 80.0}
 
 
+def test_candidate_rejects_non_finite_bounds():
+  candidate = LongitudinalCandidate(
+    source=DecisionSource.SPEED_LIMIT,
+    role=CandidateRole.ADVISORY_CAP,
+    v_target=15.0,
+    a_target=-0.2,
+    confidence=0.8,
+    urgency=0.4,
+    active_reason="advisory_limit",
+    comfort_bounds=(-1.0, math.inf),
+  )
+
+  assert not candidate.valid
+  assert candidate.invalid_reason == "non_finite_comfort_bounds"
+
+
+def test_candidate_rejects_inverted_bounds():
+  candidate = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.PHYSICAL_HAZARD,
+    v_target=10.0,
+    a_target=-0.8,
+    confidence=0.9,
+    urgency=0.8,
+    active_reason="confirmed_lead",
+    safety_bounds=(0.0, -1.0),
+  )
+
+  assert not candidate.valid
+  assert candidate.invalid_reason == "inverted_safety_bounds"
+
+
 def make_candidate(source, role, v_target, a_target, confidence, urgency, reason, should_stop=False):
   return LongitudinalCandidate(
     source=source,
@@ -126,6 +158,38 @@ def test_arbiter_missing_driver_intent_uses_internal_fallback():
   assert decision.suppressed == ()
 
 
+def test_arbiter_duplicate_driver_intent_uses_internal_fallback():
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  launch = make_candidate(DecisionSource.STOP_LAUNCH, CandidateRole.DRIVER_INTENT, 25.0, 0.1, 1.0, 0.2, "launch_target")
+
+  decision = LongitudinalArbiter().decide([cruise, launch])
+
+  assert decision.enabled
+  assert decision.winner == DecisionSource.LEGACY_FALLBACK
+  assert decision.fallback_reason == "duplicate_driver_intent"
+  assert (DecisionSource.CRUISE, "duplicate_driver_intent") in decision.suppressed
+  assert (DecisionSource.STOP_LAUNCH, "duplicate_driver_intent") in decision.suppressed
+
+
+def test_arbiter_suppresses_malformed_advisory_metadata():
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  malformed = LongitudinalCandidate(
+    source=DecisionSource.SPEED_LIMIT,
+    role=CandidateRole.ADVISORY_CAP,
+    v_target=20.0,
+    a_target=-0.3,
+    confidence=0.9,
+    urgency=0.4,
+    active_reason="advisory_limit",
+    comfort_bounds=(math.nan, None),
+  )
+
+  decision = LongitudinalArbiter().decide([cruise, malformed])
+
+  assert decision.winner == DecisionSource.CRUISE
+  assert (DecisionSource.SPEED_LIMIT, "non_finite_comfort_bounds") in decision.suppressed
+
+
 def test_arbiter_physical_hazard_without_driver_intent_uses_internal_fallback():
   lead = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 15.0, -0.8, 1.0, 1.0, "confirmed_lead")
 
@@ -150,6 +214,18 @@ def test_confirmed_physical_hazard_overrides_speed_limit_advisory():
   assert (DecisionSource.SPEED_LIMIT, "physical_hazard_active") in decision.suppressed
 
 
+def test_physical_hazard_tie_breaking_is_independent_of_candidate_order():
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 27.0, 0.1, 1.0, 0.1, "driver_set_speed")
+  lead = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 12.0, -0.8, 0.9, 0.7, "confirmed_lead")
+  e2e_stop = make_candidate(DecisionSource.E2E_STOP, CandidateRole.PHYSICAL_HAZARD, 12.0, -0.8, 0.9, 0.7, "model_stop")
+
+  first_decision = LongitudinalArbiter().decide([cruise, lead, e2e_stop])
+  reversed_decision = LongitudinalArbiter().decide([cruise, e2e_stop, lead])
+
+  assert first_decision.winner == DecisionSource.LEAD_MPC
+  assert reversed_decision.winner == DecisionSource.LEAD_MPC
+
+
 def test_high_confidence_advisory_cap_shapes_driver_intent_without_hazard():
   arbiter = LongitudinalArbiter()
   cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 27.0, 0.2, 1.0, 0.1, "driver_set_speed")
@@ -159,6 +235,18 @@ def test_high_confidence_advisory_cap_shapes_driver_intent_without_hazard():
 
   assert decision.winner == DecisionSource.SPEED_LIMIT
   assert decision.a_target == -0.3
+
+
+def test_advisory_tie_breaking_is_independent_of_candidate_order():
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 27.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  speed_limit = make_candidate(DecisionSource.SPEED_LIMIT, CandidateRole.ADVISORY_CAP, 18.0, -0.3, 0.9, 0.4, "speed_limit")
+  scc_vision = make_candidate(DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 18.0, -0.3, 0.9, 0.4, "vision_curve")
+
+  first_decision = LongitudinalArbiter().decide([cruise, speed_limit, scc_vision])
+  reversed_decision = LongitudinalArbiter().decide([cruise, scc_vision, speed_limit])
+
+  assert first_decision.winner == DecisionSource.SPEED_LIMIT
+  assert reversed_decision.winner == DecisionSource.SPEED_LIMIT
 
 
 def test_low_confidence_advisory_is_suppressed_for_driver_intent():
@@ -262,6 +350,27 @@ def test_resolver_falls_back_when_driver_intent_is_missing():
   assert decision.v_target == 25.0
   assert decision.a_target == -0.4
   assert decision.fallback_reason == "missing_driver_intent"
+
+
+def test_resolver_falls_back_when_driver_intent_is_duplicated():
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  launch = make_candidate(DecisionSource.STOP_LAUNCH, CandidateRole.DRIVER_INTENT, 25.0, 0.1, 1.0, 0.2, "launch_target")
+
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, launch],
+    fallback_v_target=25.0,
+    fallback_a_target=-0.4,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=LongitudinalArbiter(),
+  )
+
+  assert not decision.enabled
+  assert decision.winner == DecisionSource.LEGACY_FALLBACK
+  assert decision.v_target == 25.0
+  assert decision.a_target == -0.4
+  assert decision.fallback_reason == "duplicate_driver_intent"
 
 
 def test_resolver_falls_back_when_physical_hazard_has_no_driver_intent():

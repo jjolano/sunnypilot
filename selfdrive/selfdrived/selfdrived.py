@@ -410,9 +410,9 @@ class SelfdriveD(CruiseHelper):
         self.events.add(EventName.commIssue)
 
       logs = {
-        'invalid': [s for s, valid in self.sm.valid.items() if not valid],
-        'not_alive': [s for s, alive in self.sm.alive.items() if not alive],
-        'not_freq_ok': [s for s, freq_ok in self.sm.freq_ok.items() if not freq_ok],
+        'invalid': [s for s, valid in self.sm.valid.items() if not valid and s not in self.sm.ignore_valid],
+        'not_alive': [s for s, alive in self.sm.alive.items() if not alive and s not in self.sm.ignore_alive],
+        'not_freq_ok': [s for s, freq_ok in self.sm.freq_ok.items() if not freq_ok and self.sm._check_avg_freq(s)],
       }
       if logs != self.logged_comm_issue:
         cloudlog.event("commIssue", error=True, **logs)
