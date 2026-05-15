@@ -3535,73 +3535,39 @@ def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personalit
     e2e=e2e,
     personality=personality,
   )
-
-  assert timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
-
-
-def test_lead_loss_e2e_guard_tracks_far_confirmed_lead_two(monkeypatch):
-  patch_planner_sp(monkeypatch)
-  planner = make_planner_for_stop_preservation(v_ego=20.0)
-  lead_one = SimpleNamespace(status=False)
-  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
-
-  planner.update(make_planner_sm(
-    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
-  ))
-
-  assert planner.previous_lead_loss_status
-  assert planner.previous_lead_loss_d_rel == pytest.approx(63.0)
-  assert planner.previous_lead_loss_model_prob == pytest.approx(0.95)
+  valid, output = man.evaluate()
+  assert valid
+  return output[-1, 2] - output[-1, 1]
 
 
-def test_lead_loss_e2e_guard_prefers_far_confirmed_lead_over_farther_unconfirmed_lead(monkeypatch):
-  patch_planner_sp(monkeypatch)
-  planner = make_planner_for_stop_preservation(v_ego=20.0)
-  lead_one = SimpleNamespace(
-    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
+def run_lead_closing_simulation(v_ego, v_lead, initial_distance_lead, t_end=30.0, personality=0):
+  man = Maneuver(
+    '',
+    duration=t_end,
+    initial_speed=float(v_ego),
+    lead_relevancy=True,
+    initial_distance_lead=float(initial_distance_lead),
+    speed_lead_values=[float(v_lead)],
+    breakpoints=[0.0],
+    personality=personality,
   )
-  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
-
-  planner.update(make_planner_sm(
-    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
-  ))
-
-  assert planner.previous_lead_loss_status
-  assert planner.previous_lead_loss_d_rel == pytest.approx(63.0)
-  assert planner.previous_lead_loss_model_prob == pytest.approx(0.95)
+  valid, output = man.evaluate()
+  assert valid
+  return output
 
 
-def test_lead_loss_e2e_guard_arms_when_confirmed_lead_two_disappears_and_unconfirmed_lead_remains(monkeypatch):
-  patch_planner_sp(monkeypatch)
-  planner = make_planner_for_stop_preservation(v_ego=20.0)
-  lead_one = SimpleNamespace(
-    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
-  )
-  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
-
-  planner.update(make_planner_sm(
-    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
-  ))
-  sm = make_planner_sm(
-    20.0, lead_one, desired_accel=-1.2, should_stop=False, lead_two=SimpleNamespace(status=False),
-  )
-  sm['modelV2'].meta.laneChangeState = log.LaneChangeState.laneChangeStarting
-
-  planner.update(sm)
-
-  assert planner.lead_loss_e2e_guard_timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
-
-
-def test_lead_loss_e2e_guard_limits_only_no_lead_non_stop_model_decel():
-  guarded = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, False)
-  stop_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, True, 1.0, False)
-  lead_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, True)
-
-  assert guarded == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
-  assert stop_decel == pytest.approx(-1.2)
-  assert lead_decel == pytest.approx(-1.2)
-
-
+@parameterized_class(
+  ("e2e", "personality", "speed"),
+  itertools.product(
+    [True, False],
+    [
+      log.LongitudinalPersonality.relaxed,
+      log.LongitudinalPersonality.standard,
+      log.LongitudinalPersonality.aggressive,
+    ],
+    [0, 10, 35],
+  ),
+)
 class TestFollowingDistance:
   def test_following_distance(self):
     v_lead = float(self.speed)
