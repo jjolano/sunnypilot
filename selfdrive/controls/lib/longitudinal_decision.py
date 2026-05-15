@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import math
+from numbers import Real
 from typing import Any
 
 from cereal import log
@@ -28,6 +29,42 @@ class DecisionSource(Enum):
   CRUISE_COAST = "cruise_coast"
   STOP_LAUNCH = "stop_launch"
   LEGACY_FALLBACK = "legacy_fallback"
+
+
+DECISION_SOURCE_PRIORITY: dict[DecisionSource, int] = {
+  DecisionSource.CRUISE: 0,
+  DecisionSource.LEAD_MPC: 10,
+  DecisionSource.E2E_STOP: 20,
+  DecisionSource.OSM_TRAFFIC_CONTROL: 30,
+  DecisionSource.SPEED_LIMIT: 40,
+  DecisionSource.SCC_VISION: 50,
+  DecisionSource.SCC_MAP: 60,
+  DecisionSource.CRUISE_COAST: 70,
+  DecisionSource.STOP_LAUNCH: 80,
+  DecisionSource.LEGACY_FALLBACK: 90,
+}
+
+
+def _source_priority(source: DecisionSource) -> int:
+  return DECISION_SOURCE_PRIORITY[source]
+
+
+def _bounds_invalid_reason(name: str, bounds: object) -> str:
+  if not isinstance(bounds, tuple) or len(bounds) != 2:
+    return f"invalid_{name}_bounds"
+
+  lower, upper = bounds
+  for value in (lower, upper):
+    if value is None:
+      continue
+    if not isinstance(value, Real):
+      return f"invalid_{name}_bounds"
+    if not math.isfinite(float(value)):
+      return f"non_finite_{name}_bounds"
+
+  if lower is not None and upper is not None and float(lower) > float(upper):
+    return f"inverted_{name}_bounds"
+  return ""
 
 
 def _clamp01(value: float) -> float:
@@ -59,12 +96,20 @@ class LongitudinalCandidate:
 
   @property
   def invalid_reason(self) -> str:
+    if not isinstance(self.source, DecisionSource):
+      return "invalid_source"
+    if not isinstance(self.role, CandidateRole):
+      return "invalid_role"
     if not math.isfinite(self.v_target) or not math.isfinite(self.a_target):
       return "non_finite_target"
     if self.v_target < 0.0:
       return "negative_v_target"
     if not self.active_reason:
       return "missing_active_reason"
+    for name, bounds in (("comfort", self.comfort_bounds), ("safety", self.safety_bounds)):
+      bounds_reason = _bounds_invalid_reason(name, bounds)
+      if bounds_reason:
+        return bounds_reason
     return ""
 
   @property
@@ -136,6 +181,33 @@ def _fallback_decision(v_target: float, a_target: float, should_stop: bool, reas
   )
 
 
+def _internal_contract_fallback(valid: list[LongitudinalCandidate], suppressed: list[tuple[DecisionSource, str]],
+                                reason: str) -> LongitudinalDecision:
+  return LongitudinalDecision(
+    enabled=True,
+    winner=DecisionSource.LEGACY_FALLBACK,
+    v_target=0.0,
+    a_target=0.0,
+    should_stop=False,
+    candidates=tuple(valid),
+    suppressed=tuple(dict.fromkeys(suppressed)),
+    fallback_reason=reason,
+    active_reason=reason,
+  )
+
+
+def _driver_intent_contract_reason(candidates: list[LongitudinalCandidate] | tuple[LongitudinalCandidate, ...]) -> str:
+  valid_drivers = [
+    candidate for candidate in candidates
+    if candidate.valid and candidate.role == CandidateRole.DRIVER_INTENT
+  ]
+  if not valid_drivers:
+    return "missing_driver_intent"
+  if len(valid_drivers) > 1:
+    return "duplicate_driver_intent"
+  return ""
+
+
 class LongitudinalArbiter:
   def __init__(self) -> None:
     self._source_stability_decision: LongitudinalDecision | None = None
@@ -147,27 +219,16 @@ class LongitudinalArbiter:
       (candidate.source, candidate.invalid_reason) for candidate in candidates if not candidate.valid
     ]
 
-    driver = next((candidate for candidate in valid if candidate.role == CandidateRole.DRIVER_INTENT), None)
+    drivers = [candidate for candidate in valid if candidate.role == CandidateRole.DRIVER_INTENT]
+    driver = min(
+      drivers,
+      key=lambda candidate: (_source_priority(candidate.source), candidate.v_target, candidate.a_target),
+    ) if drivers else None
     if driver is None:
-      driver = LongitudinalCandidate(
-        source=DecisionSource.LEGACY_FALLBACK,
-        role=CandidateRole.FALLBACK,
-        v_target=0.0,
-        a_target=0.0,
-        confidence=1.0,
-        urgency=0.0,
-        active_reason="missing_driver_intent",
-      )
-      return LongitudinalDecision(
-        enabled=True,
-        winner=driver.source,
-        v_target=driver.v_target,
-        a_target=driver.a_target,
-        should_stop=driver.should_stop,
-        candidates=tuple(valid),
-        suppressed=tuple(dict.fromkeys(suppressed)),
-        active_reason=driver.active_reason,
-      )
+      return _internal_contract_fallback(valid, suppressed, "missing_driver_intent")
+    if len(drivers) > 1:
+      suppressed.extend((candidate.source, "duplicate_driver_intent") for candidate in drivers)
+      return _internal_contract_fallback(valid, suppressed, "duplicate_driver_intent")
 
     physical = [
       candidate for candidate in valid
@@ -181,7 +242,14 @@ class LongitudinalArbiter:
     suppressed.extend((candidate.source, "low_confidence") for candidate in low_confidence)
 
     if physical:
-      winner = min(physical, key=lambda candidate: (candidate.a_target, candidate.v_target))
+      winner = min(physical, key=lambda candidate: (
+        candidate.a_target,
+        candidate.v_target,
+        -candidate.confidence,
+        -candidate.urgency,
+        _source_priority(candidate.source),
+        candidate.active_reason,
+      ))
       suppressed.extend(
         (candidate.source, "physical_hazard_active") for candidate in valid
         if candidate is not winner and candidate.role != CandidateRole.PHYSICAL_HAZARD
@@ -194,7 +262,14 @@ class LongitudinalArbiter:
         and candidate.v_target < driver.v_target
       ]
       if advisory:
-        winner = min(advisory, key=lambda candidate: (candidate.v_target, candidate.a_target))
+        winner = min(advisory, key=lambda candidate: (
+          candidate.v_target,
+          candidate.a_target,
+          -candidate.confidence,
+          -candidate.urgency,
+          _source_priority(candidate.source),
+          candidate.active_reason,
+        ))
         suppressed.extend((candidate.source, "higher_advisory_target") for candidate in advisory if candidate is not winner)
       else:
         comfort = [
@@ -204,7 +279,14 @@ class LongitudinalArbiter:
           and candidate.v_target <= driver.v_target
           and candidate.a_target > driver.a_target
         ]
-        winner = max(comfort, key=lambda candidate: candidate.a_target) if comfort else driver
+        winner = min(comfort, key=lambda candidate: (
+          -candidate.a_target,
+          candidate.v_target,
+          -candidate.confidence,
+          -candidate.urgency,
+          _source_priority(candidate.source),
+          candidate.active_reason,
+        )) if comfort else driver
 
     if winner is not driver and winner.role == CandidateRole.RELAXATION and winner.a_target > 0.0:
       max_allowed = driver.a_target + COMFORT_MAX_DRIVER_ACCEL_MARGIN
@@ -293,9 +375,10 @@ def resolve_longitudinal_decision(enabled: bool, candidates: list[LongitudinalCa
   if not enabled:
     arbiter.reset_source_stability()
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "feature_flag_disabled")
-  if not any(candidate.valid and candidate.role == CandidateRole.DRIVER_INTENT for candidate in candidates):
+  contract_reason = _driver_intent_contract_reason(candidates)
+  if contract_reason:
     arbiter.reset_source_stability()
-    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "missing_driver_intent")
+    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, contract_reason)
 
   try:
     decision = arbiter.decide(candidates)
@@ -308,7 +391,8 @@ def resolve_longitudinal_decision(enabled: bool, candidates: list[LongitudinalCa
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "decision_non_finite")
   if decision.winner == DecisionSource.LEGACY_FALLBACK:
     arbiter.reset_source_stability()
-    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "missing_driver_intent")
+    contract_fallback_reason = decision.fallback_reason or decision.active_reason or "missing_driver_intent"
+    return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, contract_fallback_reason)
   if not decision.inside_accel_limits(accel_limits):
     arbiter.reset_source_stability()
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "decision_outside_accel_limits")
