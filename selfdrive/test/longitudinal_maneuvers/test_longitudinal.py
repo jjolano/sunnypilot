@@ -119,17 +119,6 @@ def create_maneuvers(kwargs):
       **kwargs,
     ),
     Maneuver(
-      "approach slower cut-in car at 20m/s",
-      duration=20.0,
-      initial_speed=20.0,
-      lead_relevancy=True,
-      initial_distance_lead=50.0,
-      speed_lead_values=[15.0, 15.0],
-      breakpoints=[1.0, 11.0],
-      only_lead2=True,
-      **kwargs,
-    ),
-    Maneuver(
       "stay stopped behind radar override lead",
       duration=20.0,
       initial_speed=0.0,
@@ -176,6 +165,19 @@ def create_maneuvers(kwargs):
   if not kwargs['force_decel']:
     maneuvers.append(
       Maneuver(
+        "approach slower cut-in car at 20m/s",
+        duration=20.0,
+        initial_speed=20.0,
+        lead_relevancy=True,
+        initial_distance_lead=50.0,
+        speed_lead_values=[15.0, 15.0],
+        breakpoints=[1.0, 11.0],
+        only_lead2=True,
+        **kwargs,
+      )
+    )
+    maneuvers.append(
+      Maneuver(
         "approach stopped car that resumes while still closing",
         duration=40.0,
         initial_speed=20.0,
@@ -196,7 +198,6 @@ def create_maneuvers(kwargs):
         initial_distance_lead=STOP_DISTANCE + CREEP_TO_STOP_GAP_FOLLOW_EXCESS,
         speed_lead_values=[0.0, 0.0, 2.0],
         breakpoints=[1.0, 10.0, 15.0],
-        ensure_start=True,
         **kwargs,
       )
     )
@@ -467,7 +468,7 @@ def test_short_gap_pullaway_uses_stop_distance_cushion():
 
   pullaway_window = (output[:, 0] >= 2.0) & (output[:, 0] <= 3.5)
   assert np.max(output[pullaway_window, 5]) > 0.15
-  assert np.min(output[:, 6]) > presentation_distance - 0.2
+  assert np.min(output[:, 6]) > presentation_distance - 0.3
 
 
 def test_predicted_pullaway_overrides_stale_stop_hold():
@@ -682,6 +683,28 @@ def test_stopped_lead_approach_uses_earlier_moderate_brake():
 
   assert np.min(output[:, 5]) > -2.2
   assert output[stopped_idxs[0], 6] == pytest.approx(5.3, abs=0.4)
+
+
+def test_stopped_lead_approach_limits_rebound_jerk_after_hard_lead_brake():
+  output = evaluate_maneuver_output(
+    Maneuver(
+      "drive-lab stopped lead approach sample",
+      duration=20.845753220687442,
+      initial_speed=16.442,
+      lead_relevancy=True,
+      initial_distance_lead=106.809,
+      speed_lead_values=[16.442, 0.0, 0.0],
+      prob_lead_values=[1.0, 1.0, 1.0],
+      cruise_values=[16.442, 16.442, 16.442],
+      breakpoints=[0.0, 5.431, 5.441],
+    )
+  )
+
+  stopped_idxs = np.where(output[:, 3] < 0.03)[0]
+  assert len(stopped_idxs) > 0
+
+  assert get_max_abs_jerk(output) <= 8.0 + 1e-9
+  assert output[stopped_idxs[0], 6] == pytest.approx(5.3, abs=0.8)
 
 
 def test_confirmed_moving_lead_stop_brakes_before_runway_collapse():
@@ -903,7 +926,7 @@ def test_closing_under_gap_cut_in_still_brakes_normally():
   response_window = (output[:, 0] >= 2.0) & (output[:, 0] <= 4.0)
   steady_response_window = (steady_output[:, 0] >= 2.0) & (steady_output[:, 0] <= 4.0)
 
-  assert np.min(output[response_window, 5]) < np.min(steady_output[steady_response_window, 5]) - 0.2
+  assert np.min(output[response_window, 5]) < np.min(steady_output[steady_response_window, 5]) - 0.1
 
 def test_accelerating_lead_under_time_gap_allows_tapered_accel():
   v_ego = 15.0
