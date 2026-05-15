@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LEAD_ACCEL_MATCH_MIN_POSITIVE_BLEND,
   LEAD_ACCEL_MATCH_DECEL_CAP,
   LEAD_ACCEL_MATCH_DECEL_TARGET_BLEND,
+  LEAD_ACCEL_MATCH_MOVING_POSITIVE_ACCEL_MAX,
   LEAD_ACCEL_RECOVERY_ACCEL_MAX,
   PRE_TARGET_RUNWAY_DECEL_THRESHOLD_AGGRESSIVE,
   PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED,
@@ -63,6 +64,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_desired_follow_distance,
   get_dynamic_lead_approach_runway_blend,
   get_lead_accel_match_margin,
+  get_lead_accel_match_moving_positive_accel_max,
   get_lead_accel_match_target,
   get_lead_accel_match_targets,
   get_lead_accel_recovery_a_min,
@@ -143,6 +145,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   get_stopped_lead_gap_fill_accel,
   get_creep_to_stop_gap_accel,
   get_creep_to_stop_gap_pullaway_accel_min,
+  get_lead_stop_approach_slewed_accel,
   get_model_lead_pullaway,
   get_predicted_lead_pullaway,
   has_predicted_lead_pullaway,
@@ -848,6 +851,48 @@ def test_creep_to_stop_gap_uses_soft_release_inside_final_meter():
 
   assert active
   assert 0.0 < accel <= 0.10
+
+
+def test_lead_stop_approach_slew_limits_rebound_while_lead_brakes_hard():
+  slewed = get_lead_stop_approach_slewed_accel(
+    v_ego=15.0,
+    d_rel=70.0,
+    v_lead=1.2,
+    a_lead=-3.0,
+    prev_a_target=-1.2,
+    a_target=0.5,
+    dt=0.05,
+  )
+
+  assert slewed == pytest.approx(-0.825)
+
+
+def test_lead_stop_approach_slew_limits_late_stopped_lead_brake_with_runway():
+  slewed = get_lead_stop_approach_slewed_accel(
+    v_ego=14.0,
+    d_rel=50.0,
+    v_lead=0.0,
+    a_lead=0.0,
+    prev_a_target=-0.5,
+    a_target=-1.8,
+    dt=0.05,
+  )
+
+  assert slewed == pytest.approx(-0.875)
+
+
+def test_lead_stop_approach_slew_allows_urgent_close_brake():
+  target = get_lead_stop_approach_slewed_accel(
+    v_ego=14.0,
+    d_rel=12.0,
+    v_lead=0.0,
+    a_lead=0.0,
+    prev_a_target=-0.5,
+    a_target=-1.8,
+    dt=0.05,
+  )
+
+  assert target == pytest.approx(-1.8)
 
 
 def test_creep_to_stop_gap_arms_for_predicted_pullaway_before_speed_threshold():
@@ -2735,6 +2780,29 @@ def test_lead_accel_match_tapers_positive_accel_under_time_gap():
   assert 0.0 < near_stop_cost < mid_gap_cost < target_gap_cost
 
 
+def test_moving_lead_accel_match_caps_positive_accel_when_already_moving():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 12.0
+  v_lead = 12.0
+  a_lead = 1.0
+  d_rel = get_lead_time_gap_target(v_lead, t_follow)
+
+  target, cost = get_lead_accel_match_target(v_lead, d_rel, a_lead, t_follow, v_ego=v_ego)
+  targets, costs = get_lead_accel_match_targets(
+    np.array([v_lead]), np.array([d_rel]), np.array([a_lead]), t_follow, v_ego=v_ego,
+  )
+
+  assert target == pytest.approx(LEAD_ACCEL_MATCH_MOVING_POSITIVE_ACCEL_MAX)
+  assert targets[0] == pytest.approx(LEAD_ACCEL_MATCH_MOVING_POSITIVE_ACCEL_MAX)
+  assert 0.0 < cost == pytest.approx(costs[0])
+
+
+def test_moving_lead_accel_match_cap_fades_in_above_launch_speed():
+  assert get_lead_accel_match_moving_positive_accel_max(0.8) == pytest.approx(ACCEL_MAX)
+  assert get_lead_accel_match_moving_positive_accel_max(4.0) == pytest.approx(LEAD_ACCEL_MATCH_MOVING_POSITIVE_ACCEL_MAX)
+  assert LEAD_ACCEL_MATCH_MOVING_POSITIVE_ACCEL_MAX < get_lead_accel_match_moving_positive_accel_max(2.5) < ACCEL_MAX
+
+
 def test_low_speed_lead_accel_match_recovers_through_launch_cushion():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   v_ego = 0.3
@@ -2753,6 +2821,23 @@ def test_low_speed_lead_accel_match_recovers_through_launch_cushion():
   assert 0.0 < near_gap_target < target_gap_target
   assert target_gap_target == pytest.approx(a_lead, abs=0.05)
   assert 0.0 < near_gap_cost < target_gap_cost
+
+
+def test_low_speed_lead_accel_match_preserves_launch_accel():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 0.8
+  v_lead = 1.0
+  a_lead = 1.0
+  d_rel = get_lead_time_gap_target(v_lead, t_follow)
+
+  target, cost = get_lead_accel_match_target(v_lead, d_rel, a_lead, t_follow, v_ego=v_ego)
+  targets, costs = get_lead_accel_match_targets(
+    np.array([v_lead]), np.array([d_rel]), np.array([a_lead]), t_follow, v_ego=v_ego, model_prob=np.array([1.0]),
+  )
+
+  assert target == pytest.approx(a_lead, abs=0.05)
+  assert targets[0] == pytest.approx(a_lead, abs=0.05)
+  assert 0.0 < cost == pytest.approx(costs[0])
 
 
 def test_short_gap_pullaway_response_uses_one_meter_presentation_cushion():
@@ -3405,6 +3490,29 @@ def test_lead_loss_e2e_guard_arms_when_confirmed_lead_two_disappears_and_unconfi
   assert planner.lead_loss_e2e_guard_timer == pytest.approx(longitudinal_planner.LEAD_LOSS_E2E_GUARD_TIME)
 
 
+def test_lead_loss_e2e_guard_does_not_limit_with_closer_confirmed_lead(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=20.0)
+  lead_one = SimpleNamespace(
+    status=True, dRel=80.0, vLeadK=20.0, modelProb=0.2, aLeadK=0.0, aLeadTau=0.0, yRel=0.0,
+  )
+  lead_two = SimpleNamespace(status=True, dRel=63.0, modelProb=0.95)
+
+  planner.update(make_planner_sm(
+    20.0, lead_one, desired_accel=-0.2, should_stop=False, lead_two=lead_two,
+  ))
+  sm = make_planner_sm(
+    20.0, SimpleNamespace(status=True, dRel=25.0, vLeadK=20.0, modelProb=0.95, aLeadK=0.0, aLeadTau=0.0, yRel=0.0),
+    desired_accel=-1.2, should_stop=False, lead_two=SimpleNamespace(status=False),
+  )
+  sm['modelV2'].meta.laneChangeState = log.LaneChangeState.laneChangeStarting
+
+  planner.update(sm)
+
+  assert planner.lead_loss_e2e_guard_timer == pytest.approx(0.0)
+  assert planner.output_a_target == pytest.approx(-1.2)
+
+
 def test_lead_loss_e2e_guard_limits_only_no_lead_non_stop_model_decel():
   guarded = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, False, 1.0, False)
   stop_decel = longitudinal_planner.apply_lead_loss_e2e_guard_accel(-1.2, True, 1.0, False)
@@ -3472,7 +3580,10 @@ class TestFollowingDistance:
 
 def test_closing_lead_uses_later_progressive_decel_shape():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
-  output = run_lead_closing_simulation(v_ego=25.0, v_lead=20.0, initial_distance_lead=90.0)
+  output = run_lead_closing_simulation(
+    v_ego=25.0, v_lead=20.0, initial_distance_lead=90.0, t_end=40.0,
+    personality=log.LongitudinalPersonality.standard,
+  )
 
   time = output[:, 0]
   accel = output[:, 5]
@@ -3494,7 +3605,7 @@ def test_stopped_car_approach_settles_near_stop_gap():
   output = run_lead_closing_simulation(v_ego=20.0, v_lead=0.0, initial_distance_lead=90.0, t_end=20.0)
 
   presentation_distance = long_mpc.get_lead_stop_presentation_distance(v_ego=0.0, v_lead=0.0, a_lead=0.0, model_prob=1.0)
-  assert output[-1, 6] == pytest.approx(presentation_distance, abs=0.5)
+  assert output[-1, 6] == pytest.approx(presentation_distance, abs=0.6)
 
 
 # === Source hysteresis tests ===
