@@ -33,6 +33,8 @@ TEMP_TAU = 5.   # 5s time constant
 DISCONNECT_TIMEOUT = 5.  # wait 5 seconds before going offroad after disconnect so you get an alert
 PANDA_STATES_TIMEOUT = round(1000 / SERVICE_LIST['pandaStates'].frequency * 1.5)  # 1.5x the expected pandaState frequency
 ONROAD_CYCLE_TIME = 1  # seconds to wait offroad after requesting an onroad cycle
+DEVICE_STATE_TIMING_WARN_S = 1.0
+DEVICE_STATE_TIMING_LOG_INTERVAL_S = 30.0
 
 ThermalBand = namedtuple("ThermalBand", ['min_temp', 'max_temp'])
 HardwareState = namedtuple("HardwareState", ['network_type', 'network_info', 'network_strength', 'network_stats',
@@ -205,6 +207,8 @@ def hardware_thread(end_event, hw_queue) -> None:
   uptime_offroad: float = params.get("UptimeOffroad", return_default=True)
   uptime_onroad: float = params.get("UptimeOnroad", return_default=True)
   last_uptime_ts: float = time.monotonic()
+  last_device_state_send_ts = time.monotonic()
+  last_device_state_timing_log_ts = 0.0
 
   HARDWARE.initialize_hardware()
   thermal_config = HARDWARE.get_thermal_config()
@@ -212,7 +216,9 @@ def hardware_thread(end_event, hw_queue) -> None:
   fan_controller = FanController(int(1./DT_HW))
 
   while not end_event.is_set():
+    cycle_start_ts = time.monotonic()
     sm.update(PANDA_STATES_TIMEOUT)
+    sm_update_ms = (time.monotonic() - cycle_start_ts) * 1000.
 
     pandaStates = sm['pandaStates']
     peripheralState = sm['peripheralState']
@@ -242,6 +248,15 @@ def hardware_thread(end_event, hw_queue) -> None:
     if (sm.frame % round(SERVICE_LIST['pandaStates'].frequency * DT_HW) != 0) and not ign_edge:
       continue
 
+    timing: dict[str, float] = {"sm_update_ms": sm_update_ms}
+    timing_mark_ts = time.monotonic()
+
+    def record_timing(name: str) -> None:
+      nonlocal timing_mark_ts
+      now = time.monotonic()
+      timing[name] = (now - timing_mark_ts) * 1000.
+      timing_mark_ts = now
+
     msg = messaging.new_message('deviceState', valid=True)
     msg.deviceState = thermal_config.get_msg()
     msg.deviceState.deviceType = HARDWARE.get_device_type()
@@ -268,6 +283,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     msg.deviceState.modemTempC = last_hw_state.modem_temps
 
     msg.deviceState.screenBrightnessPercent = HARDWARE.get_screen_brightness()
+    record_timing("device_state_inputs_ms")
 
     # this subset is only used for offroad
     temp_sources = [
@@ -296,6 +312,7 @@ def hardware_thread(end_event, hw_queue) -> None:
         thermal_status = list(THERMAL_BANDS.keys())[band_idx - 1]
       elif current_band.max_temp is not None and all_comp_temp > current_band.max_temp:
         thermal_status = list(THERMAL_BANDS.keys())[band_idx + 1]
+    record_timing("thermal_status_ms")
 
     # **** starting logic ****
 
@@ -340,6 +357,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     if show_alert:
       msg.deviceState.fanSpeedPercentDesired = 100
+    record_timing("startup_conditions_ms")
 
     # Handle offroad/onroad transition
     should_start = all(onroad_conditions.values())
@@ -386,6 +404,7 @@ def hardware_thread(end_event, hw_queue) -> None:
       started_ts = None
       if off_ts is None:
         off_ts = time.monotonic()
+    record_timing("transition_state_ms")
 
     # Offroad power monitoring
     voltage = None if peripheralState.pandaType == log.PandaState.PandaType.unknown else peripheralState.voltage
@@ -404,6 +423,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     som_power_draw = HARDWARE.get_som_power_draw()
     statlog.sample("som_power_draw", som_power_draw)
     msg.deviceState.somPowerDrawW = som_power_draw
+    record_timing("power_monitor_ms")
 
     # Check if we need to shut down
     if power_monitor.should_shutdown(onroad_conditions["ignition"], in_car, off_ts, started_seen):
@@ -418,7 +438,12 @@ def hardware_thread(end_event, hw_queue) -> None:
       msg.deviceState.lastAthenaPingTime = last_ping
 
     msg.deviceState.thermalStatus = thermal_status
+    now_ts = time.monotonic()
+    send_gap_ms = (now_ts - last_device_state_send_ts) * 1000.
+    timing["send_gap_ms"] = send_gap_ms
     pm.send("deviceState", msg)
+    last_device_state_send_ts = now_ts
+    record_timing("send_ms")
 
     # Log to statsd
     statlog.gauge("free_space_percent", msg.deviceState.freeSpacePercent)
@@ -470,6 +495,17 @@ def hardware_thread(end_event, hw_queue) -> None:
     if (count % int(60. / DT_HW)) == 0:
       params.put("UptimeOffroad", uptime_offroad)
       params.put("UptimeOnroad", uptime_onroad)
+    record_timing("post_send_stats_ms")
+
+    cycle_duration_s = time.monotonic() - cycle_start_ts
+    if (cycle_duration_s > DEVICE_STATE_TIMING_WARN_S or send_gap_ms > DEVICE_STATE_TIMING_WARN_S * 1000.) and \
+       (time.monotonic() - last_device_state_timing_log_ts) > DEVICE_STATE_TIMING_LOG_INTERVAL_S:
+      cloudlog.event("hardwared_deviceState_timing", error=True,
+                     loop_ms=round(cycle_duration_s * 1000., 1),
+                     timings={k: round(v, 1) for k, v in timing.items()},
+                     started=msg.deviceState.started,
+                     ignition=onroad_conditions["ignition"])
+      last_device_state_timing_log_ts = time.monotonic()
 
     count += 1
     should_start_prev = should_start
