@@ -152,14 +152,19 @@ class SpeedLimitAssist:
     previous_target = self.get_previous_setpoint()
 
     if target > previous_target:
-      return target
+      return self.clamp_to_set_cruise_if_needed(target)
 
     if self._distance <= 0.:
-      return target
+      return self.clamp_to_set_cruise_if_needed(target)
 
     ramp_accel = self.get_setpoint_ramp_accel()
     profile_target = math.sqrt(max(target * target, target * target + 2. * ramp_accel * self._distance))
-    return max(target, min(previous_target, profile_target))
+    return self.clamp_to_set_cruise_if_needed(max(target, min(previous_target, profile_target)))
+
+  def clamp_to_set_cruise_if_needed(self, target: float) -> float:
+    if not self.CP_SP.pcmCruiseSpeed and 0. < self.v_cruise_cluster < V_CRUISE_UNSET:
+      return min(target, self.v_cruise_cluster)
+    return target
 
   def update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
