@@ -227,6 +227,19 @@ def test_e2e_runway_comfort_prefers_coast_on_excessive_runway():
   assert math.isclose(accel, -0.30)
 
 
+def test_e2e_runway_comfort_caps_route_like_far_no_stop_decel():
+  accel = get_e2e_runway_comfort_accel(
+    v_ego=17.26,
+    raw_e2e_accel=-0.88,
+    coast_accel=-0.49,
+    model_msg=make_model_msg(desired_accel=-0.88, should_stop=False, endpoint_x=101.7),
+    e2e_active=True,
+    prev_output_a_target=-0.52,
+  )
+
+  assert math.isclose(accel, -0.51)
+
+
 def test_e2e_runway_comfort_allows_short_runway_model_braking():
   accel = get_e2e_runway_comfort_accel(
     v_ego=17.2,
