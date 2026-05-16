@@ -300,6 +300,7 @@ def get_e2e_runway_comfort_accel(v_ego, raw_e2e_accel, coast_accel, model_msg, e
     return raw_e2e_accel
 
   expected_distance = float(np.interp(v_ego * CV.MS_TO_KPH, E2E_STOP_APPROACH_EXPECTED_DIST_BP, E2E_STOP_APPROACH_EXPECTED_DIST_V))
+  model_expected_distance = expected_distance
   max_decel_distance = v_ego**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX * (1.0 - E2E_STOP_APPROACH_MAX_DECEL_SHORTAGE))
   expected_distance = max(expected_distance, max_decel_distance)
   if expected_distance <= 0.0:
@@ -308,7 +309,12 @@ def get_e2e_runway_comfort_accel(v_ego, raw_e2e_accel, coast_accel, model_msg, e
   required_decel = v_ego**2 / (2.0 * endpoint_x)
   runway_ratio = endpoint_x / expected_distance
   urgency_blend = float(np.interp(required_decel, E2E_RUNWAY_COMFORT_DECEL_BLEND_BP, [0.0, 1.0]))
+  has_model_expected_runway = endpoint_x >= model_expected_distance
+  if has_model_expected_runway:
+    urgency_blend = 0.0
   runway_blend = float(np.interp(runway_ratio, E2E_RUNWAY_COMFORT_RUNWAY_BLEND_BP, [1.0, 0.0]))
+  if has_model_expected_runway:
+    runway_blend = 0.0
   blend = max(urgency_blend, runway_blend)
   if blend >= 1.0:
     return raw_e2e_accel
