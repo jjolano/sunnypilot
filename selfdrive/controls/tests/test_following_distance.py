@@ -2322,6 +2322,14 @@ def test_stop_approach_comfort_targets_moderate_stopped_lead_brake():
   assert cost > 0.0
 
 
+def test_stop_approach_comfort_keeps_cost_for_route_like_critical_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  target, cost = get_lead_stop_approach_comfort_target(44.5, 12.52, -0.2, 0.04, t_follow)
+
+  assert target == pytest.approx(-LEAD_STOP_APPROACH_DECEL_CAP)
+  assert cost > 2.0
+
+
 def test_stop_approach_comfort_stays_off_for_moving_or_low_speed_leads():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   _, moving_cost = get_lead_stop_approach_comfort_target(40.0, 10.0, 2.0, 0.0, t_follow)

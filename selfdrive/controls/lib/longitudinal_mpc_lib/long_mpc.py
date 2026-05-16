@@ -143,6 +143,7 @@ LEAD_STOP_APPROACH_V_LEAD_BP = [0.3, 1.0]
 LEAD_STOP_APPROACH_REQUIRED_DECEL_BP = [0.6, 1.4]
 LEAD_STOP_APPROACH_DECEL_CAP = 1.2
 LEAD_STOP_APPROACH_COST = 10.0
+LEAD_STOP_APPROACH_URGENCY_COST_FLOOR = 0.25
 MOVING_LEAD_STOP_APPROACH_V_EGO_BP = [4.0, 12.0]
 MOVING_LEAD_STOP_APPROACH_V_LEAD_BP = [1.0, 3.0, 18.0, 22.0]
 MOVING_LEAD_STOP_APPROACH_DECEL_BP = [0.25, 0.9]
@@ -1025,6 +1026,10 @@ def get_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follo
   stopped_blend = np.interp(v_lead, LEAD_STOP_APPROACH_V_LEAD_BP, [1.0, 0.0])
   decel_blend = np.interp(required_decel, LEAD_STOP_APPROACH_REQUIRED_DECEL_BP, [0.0, 1.0])
   urgency_blend = 1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead)
+  urgency_blend = np.maximum(
+    urgency_blend,
+    LEAD_STOP_APPROACH_URGENCY_COST_FLOOR * speed_blend * stopped_blend * decel_blend,
+  )
   comfort_blend = speed_blend * stopped_blend * decel_blend * urgency_blend
   if np.all(comfort_blend <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
