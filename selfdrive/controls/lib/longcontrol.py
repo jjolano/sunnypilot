@@ -19,6 +19,7 @@ LAUNCH_BREAKAWAY_V_EGO = 0.2
 LAUNCH_SHOULD_STOP_HOLD_TIME = LAUNCH_BREAKAWAY_MAX_TIME
 SOFT_STOP_ACCEL = -0.8
 SOFT_STOP_V_EGO = 0.05
+STOPPING_TARGET_ACCEL_MIN_V_EGO = 1.0
 LAUNCH_ENVELOPE_TIME_BP = [0.0, 0.25]
 LAUNCH_ENVELOPE_V_EGO_BP = [0.0, 0.6]
 LAUNCH_BREAKAWAY_TARGET_BP = [LAUNCH_ENVELOPE_MIN_ACCEL, LAUNCH_BREAKAWAY_BASE_TARGET_ACCEL, LAUNCH_BREAKAWAY_TARGET_ACCEL]
@@ -154,6 +155,8 @@ class LongControl:
       stop_accel = self.CP.stopAccel
       if CS.vEgo > SOFT_STOP_V_EGO and not CS.cruiseState.standstill:
         stop_accel = max(stop_accel, SOFT_STOP_ACCEL)
+        if CS.vEgo > STOPPING_TARGET_ACCEL_MIN_V_EGO:
+          stop_accel = min(stop_accel, float(np.clip(a_target, accel_limits[0], accel_limits[1])))
       if output_accel <= stop_accel:
         output_accel = stop_accel
       else:
