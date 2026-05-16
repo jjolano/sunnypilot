@@ -28,6 +28,7 @@ KP_INTERP = [165, 90, 52, 26, 9.0, 5.5, 3.5, 2.0, KP]
 LP_FILTER_CUTOFF_HZ = 1.2
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 FRICTION_THRESHOLD = 0.3
+LOW_DEMAND_FRICTION_FULL_LAT_ACCEL = 0.35
 VERSION = 2
 LOW_SPEED_UNWIND_VEGO = 8.0
 LOW_SPEED_UNWIND_SETPOINT = 0.2
@@ -50,6 +51,11 @@ ADAPTIVE_PHASE_MAP = {
 
 def sign(value: float) -> float:
   return 1.0 if value > 0.0 else (-1.0 if value < 0.0 else 0.0)
+
+
+def low_demand_friction_scale(setpoint: float, measurement: float) -> float:
+  demand = max(abs(setpoint), abs(measurement))
+  return float(np.clip(demand / LOW_DEMAND_FRICTION_FULL_LAT_ACCEL, 0.0, 1.0))
 
 
 class LateralAccelMeasurementSmoother:
@@ -166,7 +172,8 @@ class LatControlTorque(LatControl):
 
     ff = setpoint if same_sign_unwind else gravity_adjusted_future_lateral_accel
     ff -= self.torque_params.latAccelOffset
-    ff += get_friction(error, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
+    friction_scale = low_demand_friction_scale(setpoint, measurement)
+    ff += get_friction(error * friction_scale, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params) * friction_scale
 
     setpoint_sign = sign(setpoint)
     raw_sign = sign(raw_measurement)
