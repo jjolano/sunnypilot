@@ -53,13 +53,16 @@ DAMPING_TAU_S = [0.16, 0.10, 0.055]
 # Additional damping for high-confidence, low-curvature straight-road model wander.
 STRAIGHT_DAMPING_MIN_SPEED = 8.0
 STRAIGHT_DAMPING_MIN_QUALITY = 0.95
-STRAIGHT_DAMPING_MAX_TARGET_LAT_ACCEL = 0.55
-STRAIGHT_DAMPING_MAX_MEASURED_LAT_ACCEL = 0.80
+STRAIGHT_DAMPING_MAX_TARGET_CURVATURE = 0.0022
+STRAIGHT_DAMPING_MAX_TARGET_LAT_ACCEL = 0.65
+STRAIGHT_DAMPING_MAX_MEASURED_LAT_ACCEL = 0.90
 STRAIGHT_DAMPING_SIGN_EPS = 1e-5
-STRAIGHT_DAMPING_BUILD = 0.35
-STRAIGHT_DAMPING_DECAY = 0.0002
-STRAIGHT_DAMPING_SAME_SIGN_DECAY = 0.004
-STRAIGHT_DAMPING_MAX_ATTENUATION = 0.75
+STRAIGHT_DAMPING_BUILD = 0.12
+STRAIGHT_DAMPING_DECAY_PER_S = 0.015
+STRAIGHT_DAMPING_SAME_SIGN_DECAY_PER_S = 0.025
+STRAIGHT_DAMPING_STABLE_RELEASE_DELAY_S = 2.0
+STRAIGHT_DAMPING_STABLE_RELEASE_PER_S = 0.70
+STRAIGHT_DAMPING_MAX_ATTENUATION = 0.45
 
 # Trust penalty after unstable frames (decay then bump on same frame when applicable).
 TRUST_DECAY = 0.92
@@ -123,8 +126,9 @@ class ModelPathProcessor:
     self._temporal_smoothed_curvature: float | None = None
     self._lane_change_fade: float | None = None
     self._prev_lane_change_active = False
-    self._straight_damping_attenuation = 0.0
-    self._straight_damping_prev_sign = 0
+    self._straight_damping_attenuation: float = 0.0
+    self._straight_damping_prev_sign: int = 0
+    self._straight_damping_same_sign_time: float = 0.0
     self._last_smoothing_tau_s = 0.0
     self._last_damping_alpha = 0.0
     self._last_spatial_curvature = 0.0
@@ -333,10 +337,13 @@ class ModelPathProcessor:
       self._reset_straight_damping()
       return 0.0, 0.0, float(target)
 
+    had_straight_damping_state = self._straight_damping_attenuation > 0.0 or self._straight_damping_prev_sign != 0
     if self._straight_damping_active(inputs, target, quality):
       target = self._straight_damped_curvature(float(target))
     else:
       self._reset_straight_damping()
+      if had_straight_damping_state:
+        self._temporal_smoothed_curvature = float(target)
 
     tau_s = float(np.interp(v_ego, DAMPING_TAU_SPEED_BP, DAMPING_TAU_S))
     tau_s = max(tau_s, 1e-4)
@@ -363,10 +370,16 @@ class ModelPathProcessor:
         STRAIGHT_DAMPING_MAX_ATTENUATION,
         self._straight_damping_attenuation + STRAIGHT_DAMPING_BUILD,
       )
+      self._straight_damping_same_sign_time = 0.0
     elif target_sign != 0 and self._straight_damping_prev_sign == target_sign:
-      self._straight_damping_attenuation = max(0.0, self._straight_damping_attenuation - STRAIGHT_DAMPING_SAME_SIGN_DECAY)
+      self._straight_damping_same_sign_time += DT_CTRL
+      same_sign_decay = STRAIGHT_DAMPING_SAME_SIGN_DECAY_PER_S
+      if self._straight_damping_same_sign_time > STRAIGHT_DAMPING_STABLE_RELEASE_DELAY_S:
+        same_sign_decay += STRAIGHT_DAMPING_STABLE_RELEASE_PER_S
+      self._straight_damping_attenuation = max(0.0, self._straight_damping_attenuation - same_sign_decay * DT_CTRL)
     else:
-      self._straight_damping_attenuation = max(0.0, self._straight_damping_attenuation - STRAIGHT_DAMPING_DECAY)
+      self._straight_damping_same_sign_time = 0.0
+      self._straight_damping_attenuation = max(0.0, self._straight_damping_attenuation - STRAIGHT_DAMPING_DECAY_PER_S * DT_CTRL)
 
     if target_sign != 0:
       self._straight_damping_prev_sign = target_sign
@@ -376,6 +389,7 @@ class ModelPathProcessor:
   def _reset_straight_damping(self) -> None:
     self._straight_damping_attenuation = 0.0
     self._straight_damping_prev_sign = 0
+    self._straight_damping_same_sign_time = 0.0
 
   @staticmethod
   def _straight_damping_active(inputs: ModelPathProcessorInputs, target: float, quality: float) -> bool:
@@ -385,7 +399,9 @@ class ModelPathProcessor:
       return False
     if not math.isfinite(inputs.v_ego) or inputs.v_ego < STRAIGHT_DAMPING_MIN_SPEED:
       return False
-    if not math.isfinite(target) or abs(target) * inputs.v_ego**2 > STRAIGHT_DAMPING_MAX_TARGET_LAT_ACCEL:
+    if not math.isfinite(target) or abs(target) > STRAIGHT_DAMPING_MAX_TARGET_CURVATURE:
+      return False
+    if abs(target) * inputs.v_ego**2 > STRAIGHT_DAMPING_MAX_TARGET_LAT_ACCEL:
       return False
     if not math.isfinite(inputs.measured_curvature) or abs(inputs.measured_curvature) * inputs.v_ego**2 > STRAIGHT_DAMPING_MAX_MEASURED_LAT_ACCEL:
       return False
