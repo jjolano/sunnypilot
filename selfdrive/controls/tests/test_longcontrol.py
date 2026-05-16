@@ -156,6 +156,31 @@ def test_stopping_recovers_to_soft_stop_accel_if_standstill_signal_drops():
   assert output_accel == pytest.approx(-0.8)
 
 
+def test_stopping_preserves_hard_planner_brake_while_rolling_fast():
+  CP = make_car_params(stopAccel=-2.0)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -3.5
+
+  output_accel = loc.update(True, make_car_state(v_ego=14.0), a_target=-3.4, should_stop=True, accel_limits=(-3.5, 2.0))
+
+  assert loc.long_control_state == LongCtrlState.stopping
+  assert output_accel == pytest.approx(-3.4)
+
+
+def test_stopping_clips_hard_planner_brake_to_accel_limit():
+  CP = make_car_params(stopAccel=-2.0)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -3.5
+
+  output_accel = loc.update(True, make_car_state(v_ego=14.0), a_target=-4.0, should_stop=True, accel_limits=(-3.0, 2.0))
+
+  assert output_accel == pytest.approx(-3.0)
+
+
 def test_launch_envelope_blend_fades_by_time_and_speed():
   assert get_launch_envelope_blend(0.0, 0.0) == pytest.approx(1.0)
   assert 0.0 < get_launch_envelope_blend(0.3, 0.125) < 1.0
