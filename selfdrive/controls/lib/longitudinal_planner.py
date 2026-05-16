@@ -333,6 +333,34 @@ def get_lead_stop_approach_slewed_accel(v_ego, d_rel, v_lead, a_lead, prev_a_tar
   return float(np.clip(a_target, prev_a_target - max_delta, prev_a_target + max_delta))
 
 
+def should_defer_e2e_to_stopped_lead_mpc(v_ego, lead, mpc_source, reset_state=False, force_slow_decel=False,
+                                         brake_pressed=False, gas_pressed=False):
+  if reset_state or force_slow_decel or brake_pressed or gas_pressed:
+    return False
+  if mpc_source not in (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1):
+    return False
+  if not getattr(lead, "status", False) or v_ego <= CREEP_TO_STOP_GAP_MAX_V_EGO:
+    return False
+
+  d_rel = float(getattr(lead, "dRel", 0.0))
+  v_lead = float(getattr(lead, "vLeadK", 0.0))
+  a_lead = float(getattr(lead, "aLeadK", 0.0))
+  model_prob = float(getattr(lead, "modelProb", 0.0))
+  if model_prob < STOPPED_LEAD_GAP_FILL_MIN_MODEL_PROB or v_lead > STOPPED_LEAD_GAP_FILL_MAX_LEAD_SPEED:
+    return False
+
+  stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
+  return d_rel > stop_target + CREEP_TO_STOP_GAP_HOLD_EXCESS
+
+
+def get_mpc_source_lead(radar_state, mpc_source):
+  if mpc_source == LongitudinalPlanSource.lead0:
+    return radar_state.leadOne
+  if mpc_source == LongitudinalPlanSource.lead1:
+    return radar_state.leadTwo
+  return None
+
+
 def creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False,
                               a_lead=0.0):
   stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
@@ -625,8 +653,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
+    lead_one = sm['radarState'].leadOne
     e2e_active = self.is_e2e(sm)
-    if e2e_active:
+    mpc_source_lead = get_mpc_source_lead(sm['radarState'], self.mpc.source)
+    defer_e2e_to_stopped_lead_mpc = e2e_active and should_defer_e2e_to_stopped_lead_mpc(
+      v_ego, mpc_source_lead, self.mpc.source,
+      reset_state=reset_state,
+      force_slow_decel=force_slow_decel,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+    )
+    if e2e_active and not defer_e2e_to_stopped_lead_mpc:
       output_a_target_e2e = apply_lead_loss_e2e_guard_accel(
         output_a_target_e2e, output_should_stop_e2e, self.lead_loss_e2e_guard_timer, has_confirmed_lead,
       )
