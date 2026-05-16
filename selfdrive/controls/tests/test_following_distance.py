@@ -141,6 +141,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   STOPPED_LEAD_GAP_FILL_ACCEL_MAX,
   STOPPED_LEAD_GAP_FILL_MAX_EXCESS,
   STOPPED_LEAD_GAP_FILL_MIN_EXCESS,
+  get_mpc_source_lead,
   get_creep_pullaway_launch_accel_max,
   get_stopped_lead_gap_fill_accel,
   get_creep_to_stop_gap_accel,
@@ -149,6 +150,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   get_model_lead_pullaway,
   get_predicted_lead_pullaway,
   has_predicted_lead_pullaway,
+  should_defer_e2e_to_stopped_lead_mpc,
   should_arm_stopped_lead_gap_fill,
   should_hold_creep_to_stop_gap,
   should_release_creep_stop_hold,
@@ -648,6 +650,115 @@ def test_e2e_decel_survives_lead_accel_recovery(monkeypatch):
 
   assert planner.mpc.source == long_mpc.LongitudinalPlanSource.e2e
   assert planner.output_a_target == pytest.approx(-0.8)
+
+
+def test_confirmed_stopped_lead_approach_keeps_lead_mpc_primary(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=5.0)
+  planner.mpc.source = long_mpc.LongitudinalPlanSource.lead0
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (-0.35, False))
+  lead = SimpleNamespace(
+    status=True,
+    dRel=get_lead_stop_presentation_distance(5.0, 0.0, 0.0, 1.0) + 6.0,
+    vLeadK=0.0,
+    modelProb=1.0,
+    aLeadK=0.0,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(5.0, lead, desired_accel=-1.2, should_stop=True))
+
+  assert should_defer_e2e_to_stopped_lead_mpc(5.0, lead, long_mpc.LongitudinalPlanSource.lead0)
+  assert planner.mpc.source == long_mpc.LongitudinalPlanSource.lead0
+  assert not planner.output_should_stop
+  assert planner.output_a_target == pytest.approx(-0.35)
+
+
+def test_confirmed_stopped_lead_approach_uses_selected_lead_two(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=5.0)
+  planner.mpc.source = long_mpc.LongitudinalPlanSource.lead1
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (-0.35, False))
+  moving_lead_one = SimpleNamespace(
+    status=True,
+    dRel=50.0,
+    vLeadK=6.0,
+    modelProb=1.0,
+    aLeadK=0.0,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+  stopped_lead_two = SimpleNamespace(
+    status=True,
+    dRel=get_lead_stop_presentation_distance(5.0, 0.0, 0.0, 1.0) + 6.0,
+    vLeadK=0.0,
+    modelProb=1.0,
+    aLeadK=0.0,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  radar_state = SimpleNamespace(leadOne=moving_lead_one, leadTwo=stopped_lead_two)
+  assert get_mpc_source_lead(radar_state, long_mpc.LongitudinalPlanSource.lead1) is stopped_lead_two
+  planner.update(make_planner_sm(5.0, moving_lead_one, desired_accel=-1.2, should_stop=True, lead_two=stopped_lead_two))
+
+  assert planner.mpc.source == long_mpc.LongitudinalPlanSource.lead1
+  assert not planner.output_should_stop
+  assert planner.output_a_target == pytest.approx(-0.35)
+
+
+@pytest.mark.parametrize(
+  "override_kwargs",
+  [
+    {"brake_pressed": True},
+    {"gas_pressed": True},
+    {"force_slow_decel": True},
+  ],
+)
+def test_confirmed_stopped_lead_approach_keeps_e2e_for_overrides(monkeypatch, override_kwargs):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=5.0)
+  planner.mpc.source = long_mpc.LongitudinalPlanSource.lead0
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (-0.35, False))
+  lead = SimpleNamespace(
+    status=True,
+    dRel=get_lead_stop_presentation_distance(5.0, 0.0, 0.0, 1.0) + 6.0,
+    vLeadK=0.0,
+    modelProb=1.0,
+    aLeadK=0.0,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(5.0, lead, desired_accel=-1.2, should_stop=True, **override_kwargs))
+
+  assert planner.mpc.source == long_mpc.LongitudinalPlanSource.e2e
+  assert planner.output_should_stop
+  assert planner.output_a_target == pytest.approx(-1.2)
+
+
+def test_confirmed_stopped_lead_approach_allows_e2e_without_lead_mpc(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  planner = make_planner_for_stop_preservation(v_ego=5.0)
+  planner.mpc.source = long_mpc.LongitudinalPlanSource.cruise
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (0.0, False))
+  lead = SimpleNamespace(
+    status=True,
+    dRel=get_lead_stop_presentation_distance(5.0, 0.0, 0.0, 1.0) + 6.0,
+    vLeadK=0.0,
+    modelProb=1.0,
+    aLeadK=0.0,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(5.0, lead, desired_accel=-1.2, should_stop=True))
+
+  assert not should_defer_e2e_to_stopped_lead_mpc(5.0, lead, long_mpc.LongitudinalPlanSource.cruise)
+  assert planner.mpc.source == long_mpc.LongitudinalPlanSource.e2e
+  assert planner.output_should_stop
+  assert planner.output_a_target == pytest.approx(-1.2)
 
 
 def test_stopped_lead_gap_fill_resets_for_discontinuous_lead(monkeypatch):
@@ -3614,15 +3725,15 @@ def run_lead_closing_simulation(v_ego, v_lead, initial_distance_lead, t_end=30.0
 @parameterized_class(
   ("e2e", "personality", "speed"),
   itertools.product(
-    [True, False],
+    [True, False],  # e2e
     [
-      log.LongitudinalPersonality.relaxed,
+      log.LongitudinalPersonality.relaxed,  # personality
       log.LongitudinalPersonality.standard,
       log.LongitudinalPersonality.aggressive,
     ],
     [0, 10, 35],
   ),
-)
+)  # speed
 class TestFollowingDistance:
   def test_following_distance(self):
     v_lead = float(self.speed)
