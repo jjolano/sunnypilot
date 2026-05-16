@@ -399,6 +399,39 @@ def test_v2_logging_fields_are_populated():
   assert adaptive_log.unshapedOutput == lac_log.output
 
 
+def test_v2_softens_low_demand_friction_driven_reversals():
+  controller, VM = get_controller(TOYOTA.TOYOTA_RAV4_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+  pose = make_pose()
+  logs = []
+  previous_angle = 0.0
+
+  for i in range(400):
+    t = i * DT_CTRL
+    CS.vEgo = 16.0 - 0.5 * t / 4.0
+    desired_lateral_accel = 0.08 * math.sin(2.0 * math.pi * 0.58 * t + 2.2) + 0.03 * math.sin(2.0 * math.pi * 1.1 * t)
+    steering_angle = 0.7 + 0.85 * math.sin(2.0 * math.pi * 0.65 * t) + 0.25 * math.sin(2.0 * math.pi * 1.4 * t + 1.0)
+    CS.steeringAngleDeg = steering_angle
+    CS.steeringRateDeg = (steering_angle - previous_angle) / DT_CTRL if i > 0 else 0.0
+    previous_angle = steering_angle
+
+    _, _, lac_log = controller.update(True, CS, VM, params, False, desired_lateral_accel / CS.vEgo**2, pose, False, 0.2)
+    logs.append(lac_log)
+
+  settled_logs = logs[50:]
+  desired_lateral_accel = np.array([lac_log.desiredLateralAccel for lac_log in settled_logs])
+  actual_lateral_accel = np.array([lac_log.actualLateralAccel for lac_log in settled_logs])
+  feedforward = np.array([lac_log.f for lac_log in settled_logs])
+  unshaped_output = np.array([lac_log.adaptiveTorqueState.unshapedOutput for lac_log in settled_logs])
+
+  assert max(np.max(np.abs(desired_lateral_accel)), np.max(np.abs(actual_lateral_accel))) < 0.2
+  assert np.ptp(feedforward) < 0.25
+  assert np.ptp(unshaped_output) < 0.45
+
+
 def test_v2_attenuates_nominal_output_before_assist(monkeypatch):
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
 
