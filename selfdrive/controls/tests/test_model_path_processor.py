@@ -153,8 +153,9 @@ def test_smoothed_path_publishes_nonzero_damping_telemetry_when_active():
 def test_smoothed_path_damps_high_confidence_straight_road_wander():
   processor = ModelPathProcessor()
   previous = 0.0
-  raw_outputs = []
-  damped_outputs = []
+  raw_outputs: list[float] = []
+  damped_outputs: list[float] = []
+  result = None
   for frame in range(160):
     desired_curvature = 0.0012 if (frame // 20) % 2 == 0 else -0.0012
     result = processor.update(make_inputs(
@@ -172,7 +173,32 @@ def test_smoothed_path_damps_high_confidence_straight_road_wander():
   raw_span = max(raw_outputs[40:]) - min(raw_outputs[40:])
   damped_span = max(damped_outputs[40:]) - min(damped_outputs[40:])
   assert damped_span < raw_span * 0.75
+  assert result is not None
   assert result.smoothing_tau_s < 1.0
+
+
+def test_smoothed_path_keeps_oscillation_confidence_between_slow_reversals():
+  processor = ModelPathProcessor()
+  previous = 0.0
+  raw_outputs: list[float] = []
+  damped_outputs: list[float] = []
+  for frame in range(520):
+    desired_curvature = 0.0012 if (frame // 65) % 2 == 0 else -0.0012
+    result = processor.update(make_inputs(
+      desired_curvature=desired_curvature,
+      measured_curvature=previous,
+      previous_desired_curvature=previous,
+      orientation_z=constant_curvature_yaws(desired_curvature, 20.0),
+      orientation_rate_z=constant_curvature_yaw_rates(desired_curvature, 20.0),
+      smooth_model_path_curvature=True,
+    ))
+    previous = result.desired_curvature
+    raw_outputs.append(desired_curvature)
+    damped_outputs.append(result.desired_curvature)
+
+  raw_span = max(raw_outputs[260:]) - min(raw_outputs[260:])
+  damped_span = max(damped_outputs[260:]) - min(damped_outputs[260:])
+  assert damped_span < raw_span * 0.9
 
 
 def prime_straight_damping(processor: ModelPathProcessor) -> float:
@@ -300,6 +326,35 @@ def test_smoothed_path_straight_road_damping_preserves_real_curve_entry():
 
   assert result.desired_curvature == pytest.approx(0.0035)
   assert result.smoothing_tau_s < 1.0
+
+
+def test_smoothed_path_straight_road_damping_bypasses_low_curvature_cap():
+  result = ModelPathProcessor().update(make_inputs(
+    desired_curvature=0.0024,
+    previous_desired_curvature=0.0,
+    orientation_z=constant_curvature_yaws(0.0024, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.0024, 20.0),
+    smooth_model_path_curvature=True,
+  ))
+
+  assert result.desired_curvature == pytest.approx(0.0024)
+  assert result.smoothing_tau_s < 1.0
+
+
+def test_smoothed_path_straight_road_damping_resets_on_high_measured_lateral_accel():
+  processor = ModelPathProcessor()
+  previous = prime_straight_damping(processor)
+
+  result = processor.update(make_inputs(
+    desired_curvature=0.0012,
+    measured_curvature=0.003,
+    previous_desired_curvature=previous,
+    orientation_z=constant_curvature_yaws(0.0012, 20.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.0012, 20.0),
+    smooth_model_path_curvature=True,
+  ))
+
+  assert result.desired_curvature > 0.0009
 
 
 def test_frame_drop_bumps_trust_penalty_then_decays():
