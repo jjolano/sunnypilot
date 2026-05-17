@@ -223,6 +223,7 @@ def test_known_params_metadata():
   stack_options = {option["value"] for option in longitudinal_stack["options"]}
   assert "sunnypilot-current" in stack_options
   assert "custom-recommended" in stack_options
+  assert "custom-2.0" in stack_options
 
   accurate_lateral_accel = metadata.get("AccurateLateralAccel")
   assert accurate_lateral_accel is not None

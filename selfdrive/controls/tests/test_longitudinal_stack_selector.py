@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_RECOMMENDED,
   CUSTOM_V1,
+  CUSTOM_V2,
   DEFAULT_STACK,
   SUNNYPILOT_CURRENT,
   load_stack_manifest,
@@ -28,6 +29,7 @@ def test_normalize_stack_value_defaults_to_sunnypilot_current():
   assert normalize_stack_value(None) == DEFAULT_STACK
   assert normalize_stack_value("") == DEFAULT_STACK
   assert normalize_stack_value(b"custom-1.0") == CUSTOM_V1
+  assert normalize_stack_value(b"custom-2.0") == CUSTOM_V2
 
 
 def test_unset_stack_resolves_to_sunnypilot_current():
@@ -78,12 +80,24 @@ def test_literal_available_custom_version_can_be_forced():
   assert resolution.fallback_reason == ""
 
 
+def test_literal_available_custom_v2_can_be_forced_without_promoting_recommended():
+  resolution = resolve_longitudinal_stack(CUSTOM_V2, make_cp(alphaLongitudinalAvailable=True))
+  recommended = resolve_longitudinal_stack(CUSTOM_RECOMMENDED, make_cp(alphaLongitudinalAvailable=True))
+
+  assert resolution.resolved_stack == CUSTOM_V2
+  assert resolution.custom_version == "2.0"
+  assert resolution.fallback_reason == ""
+  assert recommended.resolved_stack == SUNNYPILOT_CURRENT
+  assert recommended.fallback_reason == "custom_recommended_unresolved"
+
+
 def test_literal_unavailable_custom_version_falls_back_to_default():
   resolution = resolve_longitudinal_stack(CUSTOM_V1, make_cp())
 
   assert resolution.resolved_stack == SUNNYPILOT_CURRENT
   assert resolution.fallback_reason == "unavailable_stack"
   assert CUSTOM_V1 not in resolution.available_stacks
+  assert CUSTOM_V2 not in resolution.available_stacks
 
 
 def test_unknown_stack_falls_back_to_default():

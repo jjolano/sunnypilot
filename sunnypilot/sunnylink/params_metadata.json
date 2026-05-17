@@ -685,6 +685,10 @@
       {
         "value": "custom-1.0",
         "label": "Custom v1.0"
+      },
+      {
+        "value": "custom-2.0",
+        "label": "Custom v2.0"
       }
     ]
   },

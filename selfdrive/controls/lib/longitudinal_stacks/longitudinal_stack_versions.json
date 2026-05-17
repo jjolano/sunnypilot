@@ -14,6 +14,11 @@
       "label": "Custom v1.0",
       "family": "custom",
       "version": "1.0"
+    },
+    "custom-2.0": {
+      "label": "Custom v2.0",
+      "family": "custom",
+      "version": "2.0"
     }
   },
   "availability": {
@@ -24,6 +29,9 @@
       "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
     },
     "custom-1.0": {
+      "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
+    },
+    "custom-2.0": {
       "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
     }
   },

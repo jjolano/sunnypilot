@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import planner_state_to_stack_output
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v1 import CUSTOM_V1_CAP, CUSTOM_V1_FLOOR, CustomV1Candidate
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import is_custom_stack
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, SunnypilotLongitudinalMpc
@@ -1600,6 +1601,36 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       )
       if cruise_coast_candidate is not None:
         self.custom_v1_candidates.append(cruise_coast_candidate)
+    active_scc = getattr(self, "active_scc", self.scc)
+    active_sla = getattr(self, "active_sla", self.sla)
+    self.custom_v2_scene = CustomV2Scene(
+      v_ego=float(v_ego),
+      v_cruise=float(v_cruise),
+      a_ego=float(sm['carState'].aEgo),
+      accel_coast=float(cruise_coast_accel),
+      force_slow_decel=bool(force_slow_decel),
+      brake_pressed=bool(sm['carState'].brakePressed),
+      gas_pressed=bool(sm['carState'].gasPressed),
+      has_lead=bool(has_lead),
+      lead_v=float(lead_one.vLeadK) if lead_one.status else 0.0,
+      lead_v_rel=float(lead_one.vRel) if lead_one.status else 0.0,
+      lead_gap_excess=float(lead_gap_excess),
+      lead_opening_prediction=bool(radar_predicted_pullaway or model_predicted_pullaway),
+      lead_confirmed_pullaway=bool(creep_pullaway_release),
+      stop_threat=bool(custom_e2e_stop_approach_a_target < 0.0 or self.e2e_close_stop_settle_active or output_should_stop_e2e),
+      independent_stop_threat=bool(not lead_one.status and (custom_e2e_stop_approach_a_target < 0.0 or output_should_stop_e2e)),
+      model_should_stop=bool(output_should_stop_e2e),
+      model_stop_distance=get_model_stop_distance(sm['modelV2']),
+      model_desired_accel=float(output_a_target_e2e),
+      speed_limit_active=bool(getattr(active_sla, "is_active", False)),
+      speed_limit_v_target=float(getattr(active_sla, "output_v_target", 0.0)),
+      speed_limit_a_target=float(getattr(active_sla, "output_a_target", 0.0)),
+      curve_active=bool(getattr(active_scc.vision, "is_active", False) or getattr(active_scc.map, "is_active", False)),
+      curve_a_target=float(min(getattr(active_scc.vision, "output_a_target", 0.0), getattr(active_scc.map, "output_a_target", 0.0))),
+      map_caution_active=bool(getattr(self.osm_traffic_control_prior, "active", False)),
+      map_caution_confirmed=bool(getattr(self.osm_traffic_control_prior, "active", False)),
+      map_caution_a_target=float(getattr(self.osm_traffic_control_prior, "output_a_target", 0.0)),
+    )
     self.prev_accel_clip = accel_clip
     self.apply_longitudinal_stack_selection(sm, has_lead, tuple(accel_clip))
 

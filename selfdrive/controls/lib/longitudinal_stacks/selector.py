@@ -9,6 +9,7 @@ from typing import Any
 SUNNYPILOT_CURRENT = "sunnypilot-current"
 CUSTOM_RECOMMENDED = "custom-recommended"
 CUSTOM_V1 = "custom-1.0"
+CUSTOM_V2 = "custom-2.0"
 DEFAULT_STACK = SUNNYPILOT_CURRENT
 
 MANIFEST_PATH = Path(__file__).with_name("longitudinal_stack_versions.json")

@@ -332,7 +332,13 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       sunnypilotCurrent @1;
       customRecommended @2;
       customV1 @3;
+      customV2 @4;
     }
+
+    selectedIntent @9 :Text;
+    selectedReason @10 :Text;
+    rejectedIntents @11 :List(Text);
+    rejectedReasons @12 :List(Text);
   }
 }
 
@@ -383,6 +389,7 @@ struct OnroadEventSP @0xda96579883444c35 {
     speedLimitAutoCruiseEnabled @24;
     speedLimitAutoCruiseDisabled @25;
     customLongitudinalFallback @26;
+    customLongitudinalStackFault @27;
   }
 }
 

@@ -260,6 +260,11 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.MID, VisualAlert.none, AudibleAlert.none, 2.),
   },
 
+  EventNameSP.customLongitudinalStackFault: {
+    ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("Custom Longitudinal Stack Fault"),
+    ET.NO_ENTRY: NoEntryAlert("Custom Longitudinal Stack Fault"),
+  },
+
   EventNameSP.e2eChime: {
     ET.PERMANENT: Alert(
       "",

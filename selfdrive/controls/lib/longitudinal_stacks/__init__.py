@@ -7,6 +7,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v1 import (
   CustomV1Candidate,
   select_custom_v1_candidate,
 )
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
+  CUSTOM_V2_INTENTS,
+  CustomLongitudinalStackV2,
+  CustomV2Scene,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.fallback import (
   CustomStackFallbackWrapper,
   FallbackUpdateResult,
@@ -19,6 +24,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import (
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_RECOMMENDED,
   CUSTOM_V1,
+  CUSTOM_V2,
   DEFAULT_STACK,
   SUNNYPILOT_CURRENT,
   PlatformCapabilities,
@@ -34,7 +40,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_c
 __all__ = [
   "CUSTOM_RECOMMENDED",
   "CUSTOM_V1",
+  "CUSTOM_V2",
+  "CUSTOM_V2_INTENTS",
   "CustomLongitudinalStackV1",
+  "CustomLongitudinalStackV2",
+  "CustomV2Scene",
   "CustomV1Candidate",
   "CustomStackFallbackWrapper",
   "DEFAULT_STACK",
