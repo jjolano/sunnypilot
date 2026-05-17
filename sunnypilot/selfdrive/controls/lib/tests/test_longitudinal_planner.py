@@ -6,7 +6,7 @@ from cereal import messaging
 from cereal import custom
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_decision import DecisionSource, LongitudinalDecisionTelemetry
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v1 import CustomV1Candidate
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, SUNNYPILOT_CURRENT, StackResolution
@@ -402,7 +402,7 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
       custom_version="2.0" if resolved_stack == "custom-2.0" else "",
     )
     planner.custom_longitudinal_stack = None
-    planner.custom_v1_candidates = []
+    planner.planner_seed_candidates = []
     planner.longitudinal_stack_actuated_stack = "sunnypilot-current"
     planner.longitudinal_stack_fault_latched = False
     planner.longitudinal_stack_fault_reason = ""
@@ -441,9 +441,9 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
     self.assertEqual(planner.longitudinal_stack_selected_intent, "launch")
     self.assertEqual(planner.events_sp.names, [])
 
-  def test_custom_v2_uses_internal_v1_candidate_seed_without_public_v1_stack(self):
+  def test_custom_v2_uses_planner_seed_candidate_without_public_legacy_stack(self):
     planner = self.make_planner()
-    planner.custom_v1_candidates = [CustomV1Candidate("internal_stop", self.make_output(-0.7))]
+    planner.planner_seed_candidates = [PlannerSeedCandidate("internal_stop", self.make_output(-0.7))]
     planner.custom_v2_scene = CustomV2Scene(v_ego=10.0, v_cruise=10.0)
 
     planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=True, accel_limits=(-2.0, 2.0))
@@ -454,7 +454,7 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
 
   def test_custom_v2_planner_seed_preserves_internal_lead_stop_behavior(self):
     planner = self.make_planner()
-    planner.custom_v1_candidates = [CustomV1Candidate("internal_stop", self.make_output(-0.7, should_stop=True))]
+    planner.planner_seed_candidates = [PlannerSeedCandidate("internal_stop", self.make_output(-0.7, should_stop=True))]
     planner.custom_v2_scene = CustomV2Scene(
       v_ego=0.3, v_cruise=6.0, has_lead=True, lead_v=0.2, lead_confirmed_pullaway=True,
       stop_threat=True, model_should_stop=True, model_stop_distance=5.0, model_desired_accel=-1.0,

@@ -198,12 +198,12 @@ def patch_planner_sp(monkeypatch):
   )
 
 
-def test_custom_v1_accel_candidate_inherits_custom_mpc_trajectory():
+def test_planner_seed_accel_candidate_inherits_planner_seed_mpc_trajectory():
   custom_output = LongitudinalStackOutput(
     a_target=0.4,
     should_stop=False,
     has_lead=True,
-    source="custom_mpc",
+    source="planner_seed_mpc",
     allow_throttle=True,
     allow_brake=True,
     speeds=tuple(float(idx) for idx in range(longitudinal_planner.CONTROL_N)),
@@ -214,17 +214,17 @@ def test_custom_v1_accel_candidate_inherits_custom_mpc_trajectory():
     output_a_target=0.0,
     output_should_stop=False,
     allow_throttle=True,
-    custom_v1_candidate_base_output=custom_output,
+    planner_seed_candidate_base_output=custom_output,
   )
 
-  candidate = longitudinal_planner.build_custom_v1_accel_candidate(
+  candidate = longitudinal_planner.build_planner_seed_accel_candidate(
     planner, "stopped_lead_stop_gap_guard", -1.0, True, "stopped_lead_stop_gap_guard", (ACCEL_MIN, ACCEL_MAX),
   )
 
   assert candidate.output.speeds == custom_output.speeds
   assert candidate.output.accels == custom_output.accels
   assert candidate.output.jerks == custom_output.jerks
-  assert candidate.output.source == "custom_mpc"
+  assert candidate.output.source == "planner_seed_mpc"
   assert candidate.output.a_target == pytest.approx(-1.0)
 
 
@@ -270,7 +270,7 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.dec = SimpleNamespace(active=lambda: False)
   planner.source = custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
   planner.events_sp = SimpleNamespace(add=lambda _event: None)
-  planner.custom_v1_candidates = []
+  planner.planner_seed_candidates = []
   planner.custom_longitudinal_stack = None
   planner.longitudinal_stack_resolution = StackResolution(CUSTOM_V2, CUSTOM_V2, (CUSTOM_V2,), custom_version="2.0")
   planner.custom_v2_fault_latched = False

@@ -9,10 +9,10 @@ from opendbc.car.toyota.values import CAR as TOYOTA
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v1 import CUSTOM_V1_FLOOR
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
-  build_custom_v1_accel_candidate,
+  build_planner_seed_accel_candidate,
   E2E_CLOSE_STOP_DECEL_MAX,
   E2E_CLOSE_STOP_MIN_ROLLING_V,
   E2E_STOP_APPROACH_DECEL_MAX,
@@ -163,7 +163,7 @@ def test_engage_stop_bootstrap_custom_candidate_does_not_mutate_baseline_output(
     j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
   )
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "engage_stop_bootstrap", -1.2, has_lead=False, reason="engage_model_stop_bootstrap",
     accel_limits=(-2.0, 2.0), should_stop=True,
   )
@@ -172,7 +172,7 @@ def test_engage_stop_bootstrap_custom_candidate_does_not_mutate_baseline_output(
   assert candidate.name == "engage_stop_bootstrap"
   assert candidate.output.a_target == pytest.approx(-1.2)
   assert candidate.output.should_stop
-  assert candidate.output.debug["custom_v1_candidate_reason"] == "engage_model_stop_bootstrap"
+  assert candidate.output.debug["planner_seed_candidate_reason"] == "engage_model_stop_bootstrap"
   assert planner.output_a_target == pytest.approx(0.1)
   assert not planner.output_should_stop
 
@@ -211,28 +211,28 @@ def test_e2e_stop_approach_custom_candidate_does_not_mutate_baseline_output():
     j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
   )
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "e2e_stop_approach", -0.8, has_lead=False, reason="no_lead_model_stop_approach", accel_limits=(-2.0, 2.0),
   )
 
   assert candidate is not None
   assert candidate.name == "e2e_stop_approach"
   assert candidate.output.a_target == pytest.approx(-0.8)
-  assert candidate.output.debug["custom_v1_candidate_reason"] == "no_lead_model_stop_approach"
+  assert candidate.output.debug["planner_seed_candidate_reason"] == "no_lead_model_stop_approach"
   assert planner.output_a_target == pytest.approx(-0.2)
 
 
-def test_custom_v1_accel_candidate_skips_non_restrictive_target():
+def test_planner_seed_accel_candidate_skips_non_restrictive_target():
   planner = SimpleNamespace(output_a_target=-0.2)
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "e2e_stop_approach", -0.1, has_lead=False, reason="no_lead_model_stop_approach", accel_limits=(-2.0, 2.0),
   )
 
   assert candidate is None
 
 
-def test_custom_v1_accel_floor_candidate_can_relax_baseline_output():
+def test_planner_seed_accel_floor_candidate_can_relax_baseline_output():
   planner = SimpleNamespace(
     output_a_target=-1.0,
     output_should_stop=False,
@@ -245,30 +245,30 @@ def test_custom_v1_accel_floor_candidate_can_relax_baseline_output():
     j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
   )
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "cruise_coast", -0.3, has_lead=False, reason="plain_cruise_overspeed_coast",
-    accel_limits=(-2.0, 2.0), selection=CUSTOM_V1_FLOOR,
+    accel_limits=(-2.0, 2.0), selection=PLANNER_SEED_FLOOR,
   )
 
   assert candidate is not None
   assert candidate.name == "cruise_coast"
-  assert candidate.selection == CUSTOM_V1_FLOOR
+  assert candidate.selection == PLANNER_SEED_FLOOR
   assert candidate.output.a_target == pytest.approx(-0.3)
   assert planner.output_a_target == pytest.approx(-1.0)
 
 
-def test_custom_v1_accel_floor_candidate_skips_non_relaxing_target():
+def test_planner_seed_accel_floor_candidate_skips_non_relaxing_target():
   planner = SimpleNamespace(output_a_target=-0.2, output_should_stop=False)
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "cruise_coast", -0.4, has_lead=False, reason="plain_cruise_overspeed_coast",
-    accel_limits=(-2.0, 2.0), selection=CUSTOM_V1_FLOOR,
+    accel_limits=(-2.0, 2.0), selection=PLANNER_SEED_FLOOR,
   )
 
   assert candidate is None
 
 
-def test_custom_v1_accel_candidate_force_keeps_cap_available_for_floor_conflicts():
+def test_planner_seed_accel_candidate_force_keeps_cap_available_for_floor_conflicts():
   planner = SimpleNamespace(
     output_a_target=-0.2,
     output_should_stop=False,
@@ -281,7 +281,7 @@ def test_custom_v1_accel_candidate_force_keeps_cap_available_for_floor_conflicts
     j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
   )
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "creep_to_stop_gap_accel_cap", 0.18, has_lead=True,
     reason="creep_to_stop_gap_accel_cap", accel_limits=(-2.0, 2.0), force=True,
   )
@@ -291,7 +291,7 @@ def test_custom_v1_accel_candidate_force_keeps_cap_available_for_floor_conflicts
   assert planner.output_a_target == pytest.approx(-0.2)
 
 
-def test_custom_v1_accel_candidate_can_carry_stop_intent_without_accel_delta():
+def test_planner_seed_accel_candidate_can_carry_stop_intent_without_accel_delta():
   planner = SimpleNamespace(
     output_a_target=-0.2,
     output_should_stop=False,
@@ -304,7 +304,7 @@ def test_custom_v1_accel_candidate_can_carry_stop_intent_without_accel_delta():
     j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
   )
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "e2e_close_stop_settle", -0.2, has_lead=False, reason="no_lead_close_stop_settle",
     accel_limits=(-2.0, 2.0), should_stop=True,
   )
@@ -328,7 +328,7 @@ def test_moving_lead_stop_gap_guard_custom_candidate_does_not_mutate_baseline_ou
     j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
   )
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "moving_lead_stop_gap_guard", -0.7, has_lead=True, reason="moving_lead_stop_gap_guard", accel_limits=(-2.0, 2.0),
   )
 
@@ -336,7 +336,7 @@ def test_moving_lead_stop_gap_guard_custom_candidate_does_not_mutate_baseline_ou
   assert candidate.name == "moving_lead_stop_gap_guard"
   assert candidate.output.a_target == pytest.approx(-0.7)
   assert candidate.output.has_lead
-  assert candidate.output.debug["custom_v1_candidate_reason"] == "moving_lead_stop_gap_guard"
+  assert candidate.output.debug["planner_seed_candidate_reason"] == "moving_lead_stop_gap_guard"
   assert planner.output_a_target == pytest.approx(0.1)
 
 
@@ -353,7 +353,7 @@ def test_stopped_lead_stop_gap_guard_custom_candidate_carries_stop_intent_withou
     j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
   )
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "stopped_lead_stop_gap_guard", -0.8, has_lead=True, reason="stopped_lead_stop_gap_guard",
     accel_limits=(-2.0, 2.0), should_stop=True,
   )
@@ -363,7 +363,7 @@ def test_stopped_lead_stop_gap_guard_custom_candidate_carries_stop_intent_withou
   assert candidate.output.a_target == pytest.approx(-0.8)
   assert candidate.output.should_stop
   assert candidate.output.has_lead
-  assert candidate.output.debug["custom_v1_candidate_reason"] == "stopped_lead_stop_gap_guard"
+  assert candidate.output.debug["planner_seed_candidate_reason"] == "stopped_lead_stop_gap_guard"
   assert planner.output_a_target == pytest.approx(-0.1)
   assert not planner.output_should_stop
 
@@ -381,7 +381,7 @@ def test_stopped_lead_creep_hold_custom_candidate_carries_stop_intent_without_mu
     j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
   )
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "stopped_lead_creep_hold", -0.25, has_lead=True, reason="stopped_lead_creep_hold",
     accel_limits=(-2.0, 2.0), should_stop=True,
   )
@@ -391,7 +391,7 @@ def test_stopped_lead_creep_hold_custom_candidate_carries_stop_intent_without_mu
   assert candidate.output.a_target == pytest.approx(-0.25)
   assert candidate.output.should_stop
   assert candidate.output.has_lead
-  assert candidate.output.debug["custom_v1_candidate_reason"] == "stopped_lead_creep_hold"
+  assert candidate.output.debug["planner_seed_candidate_reason"] == "stopped_lead_creep_hold"
   assert planner.output_a_target == pytest.approx(0.0)
   assert not planner.output_should_stop
 
@@ -497,7 +497,7 @@ def test_e2e_close_stop_settle_custom_candidate_does_not_mutate_baseline_output(
     True,
   )
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "e2e_close_stop_settle", accel, has_lead=False, reason="no_lead_close_stop_settle",
     accel_limits=(-2.0, 2.0), should_stop=should_stop,
   )
@@ -701,7 +701,7 @@ def test_e2e_runway_positive_cap_custom_candidate_does_not_mutate_baseline_outpu
     j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
   )
 
-  candidate = build_custom_v1_accel_candidate(
+  candidate = build_planner_seed_accel_candidate(
     planner, "e2e_runway_positive_cap", 0.1, has_lead=False,
     reason="low_speed_model_runway_positive_cap", accel_limits=(-2.0, 2.0),
   )
@@ -709,7 +709,7 @@ def test_e2e_runway_positive_cap_custom_candidate_does_not_mutate_baseline_outpu
   assert candidate is not None
   assert candidate.name == "e2e_runway_positive_cap"
   assert candidate.output.a_target == pytest.approx(0.1)
-  assert candidate.output.debug["custom_v1_candidate_reason"] == "low_speed_model_runway_positive_cap"
+  assert candidate.output.debug["planner_seed_candidate_reason"] == "low_speed_model_runway_positive_cap"
   assert planner.output_a_target == pytest.approx(0.5)
 
 

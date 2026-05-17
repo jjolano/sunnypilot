@@ -1,5 +1,7 @@
 # Longitudinal Decision Layer Implementation Plan
 
+> Historical note: this implementation plan is superseded for decision-layer ownership by `CONTEXT.md` and `docs/adr/0001-longitudinal-planner-mpc-boundary.md`. The current decision is that the Longitudinal Decision Layer is planner-internal custom-stack arbitration, not a user-facing toggle or separately selectable mode.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a feature-flagged longitudinal decision layer that normalizes planner feature outputs into candidates, arbitrates them through explicit policy, exposes rich Python-side telemetry, and adds an opt-in UI toggle defaulting off.

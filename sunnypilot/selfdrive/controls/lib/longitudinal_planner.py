@@ -18,7 +18,7 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate, LongitudinalDecisionTelemetry
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import apply_stack_output_to_planner, planner_state_to_stack_output
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v1 import CustomV1Candidate, select_custom_v1_candidate
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate, select_planner_seed_candidate
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput, validate_stack_output
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_custom_longitudinal_stack
@@ -115,13 +115,13 @@ def stack_id_for_name(name: str) -> custom.LongitudinalPlanSP.Stack.StackId:
 
 
 def custom_v2_seed_output(planner: object, sunnypilot_output: LongitudinalStackOutput) -> LongitudinalStackOutput:
-  candidates = tuple(getattr(planner, "custom_v1_candidates", ()))
+  candidates = tuple(getattr(planner, "planner_seed_candidates", ()))
   if not candidates:
     debug = dict(sunnypilot_output.debug)
     debug["custom_v2_seed_context"] = "planner"
     return replace(sunnypilot_output, debug=debug)
 
-  selected = select_custom_v1_candidate((CustomV1Candidate(SUNNYPILOT_CURRENT, sunnypilot_output), *candidates))
+  selected = select_planner_seed_candidate((PlannerSeedCandidate(SUNNYPILOT_CURRENT, sunnypilot_output), *candidates))
   debug = dict(sunnypilot_output.debug)
   debug.update(selected.output.debug)
   debug["custom_v2_seed_context"] = "planner"

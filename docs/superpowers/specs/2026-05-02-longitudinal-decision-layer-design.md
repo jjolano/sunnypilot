@@ -1,5 +1,7 @@
 # Longitudinal Decision Layer Design
 
+> Historical note: this first implementation design is superseded for decision-layer ownership by `CONTEXT.md` and `docs/adr/0001-longitudinal-planner-mpc-boundary.md`. The current decision is that the Longitudinal Decision Layer is planner-internal custom-stack arbitration, not a user-facing toggle or separately selectable mode.
+
 ## Summary
 
 Longitudinal control has accumulated several branch-owned features that all shape speed or acceleration: lead following, lead transition handling, e2e stop approach, cruise coasting, launch, speed-limit assist, SCC vision/map control, OSM traffic-control priors, and FCW gating. The current architecture makes these features hard to reason about together because independent policies collapse into loose scalar targets early, then planner and MPC code apply more stateful overrides afterward.

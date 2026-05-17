@@ -1,5 +1,7 @@
 # Longitudinal Stack Selector Design
 
+> Historical note: this first-rollout design is superseded for stack-boundary language by `CONTEXT.md`, `docs/adr/2026-05-17-custom-longitudinal-v2-architecture.md`, `docs/adr/2026-05-17-custom-longitudinal-v2-telemetry.md`, and `docs/adr/0001-longitudinal-planner-mpc-boundary.md`. In particular, public v1 selection, runtime shadow fallback, and custom-stack lead-physics ownership are no longer current decisions.
+
 ## Summary
 
 Introduce a versioned longitudinal stack selector so this fork can choose between upstream sunnypilot behavior and a new custom longitudinal stack. The selector separates actuator takeover permission from stack implementation, gives `custom-*` a safe shadow fallback to `sunnypilot-current`, and creates durable telemetry so route analysis and future agents can understand which stack produced each command.

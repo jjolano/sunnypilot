@@ -81,7 +81,7 @@ def test_literal_available_custom_v2_can_be_forced_without_promoting_recommended
   assert recommended.fallback_reason == "custom_recommended_unresolved"
 
 
-def test_literal_removed_custom_v1_falls_back_to_default():
+def test_literal_removed_custom_1_0_falls_back_to_default():
   resolution = resolve_longitudinal_stack("custom-1.0", make_cp(alphaLongitudinalAvailable=True))
 
   assert resolution.resolved_stack == SUNNYPILOT_CURRENT
