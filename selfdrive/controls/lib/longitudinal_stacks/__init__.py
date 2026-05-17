@@ -2,19 +2,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import (
   apply_stack_output_to_planner,
   planner_state_to_stack_output,
 )
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v1 import (
-  CustomLongitudinalStackV1,
-  CustomV1Candidate,
-  select_custom_v1_candidate,
-)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   CUSTOM_V2_INTENTS,
   CustomLongitudinalStackV2,
   CustomV2Scene,
-)
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.fallback import (
-  CustomStackFallbackWrapper,
-  FallbackUpdateResult,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import (
   LongitudinalStackOutput,
@@ -23,7 +14,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import (
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_RECOMMENDED,
-  CUSTOM_V1,
   CUSTOM_V2,
   DEFAULT_STACK,
   SUNNYPILOT_CURRENT,
@@ -39,16 +29,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_c
 
 __all__ = [
   "CUSTOM_RECOMMENDED",
-  "CUSTOM_V1",
   "CUSTOM_V2",
   "CUSTOM_V2_INTENTS",
-  "CustomLongitudinalStackV1",
   "CustomLongitudinalStackV2",
   "CustomV2Scene",
-  "CustomV1Candidate",
-  "CustomStackFallbackWrapper",
   "DEFAULT_STACK",
-  "FallbackUpdateResult",
   "LongitudinalStackOutput",
   "SUNNYPILOT_CURRENT",
   "PlatformCapabilities",
@@ -62,6 +47,5 @@ __all__ = [
   "normalize_stack_value",
   "planner_state_to_stack_output",
   "resolve_longitudinal_stack",
-  "select_custom_v1_candidate",
   "validate_stack_output",
 ]

@@ -68,7 +68,7 @@ def test_has_valid_radar_lead_checks_both_tracks():
 
 def test_decision_layer_is_baked_into_custom_stacks_only():
   assert not should_enable_longitudinal_decision_layer(SimpleNamespace(resolved_stack="sunnypilot-current"))
-  assert should_enable_longitudinal_decision_layer(SimpleNamespace(resolved_stack="custom-1.0"))
+  assert should_enable_longitudinal_decision_layer(SimpleNamespace(resolved_stack="custom-2.0"))
   assert should_enable_longitudinal_decision_layer(SimpleNamespace(resolved_stack="custom-recommended"))
 
 

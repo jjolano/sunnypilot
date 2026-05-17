@@ -7,6 +7,8 @@ See the LICENSE.md file in the root directory for more details.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from cereal import messaging, custom
@@ -16,13 +18,12 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate, LongitudinalDecisionTelemetry
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import apply_stack_output_to_planner, planner_state_to_stack_output
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v1 import CustomV1Candidate, select_custom_v1_candidate
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.fallback import CustomStackFallbackWrapper
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput, validate_stack_output
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_custom_longitudinal_stack
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_RECOMMENDED,
-  CUSTOM_V1,
   CUSTOM_V2,
   SUNNYPILOT_CURRENT,
   StackResolution,
@@ -64,7 +65,6 @@ SOURCE_SELECTION_HYSTERESIS_V = 0.25
 STACK_ID_BY_NAME = {
   SUNNYPILOT_CURRENT: StackId.sunnypilotCurrent,
   CUSTOM_RECOMMENDED: StackId.customRecommended,
-  CUSTOM_V1: StackId.customV1,
   CUSTOM_V2: StackId.customV2,
 }
 
@@ -114,21 +114,33 @@ def stack_id_for_name(name: str) -> custom.LongitudinalPlanSP.Stack.StackId:
   return STACK_ID_BY_NAME.get(str(name or ""), StackId.unknown)
 
 
+def custom_v2_seed_output(planner: object, sunnypilot_output: LongitudinalStackOutput) -> LongitudinalStackOutput:
+  candidates = tuple(getattr(planner, "custom_v1_candidates", ()))
+  if not candidates:
+    debug = dict(sunnypilot_output.debug)
+    debug["custom_v2_seed_context"] = "planner"
+    return replace(sunnypilot_output, debug=debug)
+
+  selected = select_custom_v1_candidate((CustomV1Candidate(SUNNYPILOT_CURRENT, sunnypilot_output), *candidates))
+  debug = dict(sunnypilot_output.debug)
+  debug.update(selected.output.debug)
+  debug["custom_v2_seed_context"] = "planner"
+  debug["custom_v2_seed_candidate"] = selected.name
+  return replace(selected.output, debug=debug)
+
+
 def publish_stack_telemetry(longitudinalPlanSP, resolution: StackResolution, actuated_stack: str,
-                            actuated_a_target: float, shadow_stack: str = "", shadow_a_target: float = 0.0,
-                            fallback_latched: bool = False, fallback_reason: str | None = None,
+                            actuated_a_target: float, fault_latched: bool = False, fault_reason: str = "",
                             selected_intent: str = "", selected_reason: str = "",
                             rejected: tuple[tuple[str, str], ...] = ()) -> None:
   stack = longitudinalPlanSP.stack
   stack.requestedStack = stack_id_for_name(resolution.requested_stack)
   stack.resolvedStack = stack_id_for_name(resolution.resolved_stack)
   stack.actuatedStack = stack_id_for_name(actuated_stack)
-  stack.shadowStack = stack_id_for_name(shadow_stack)
   stack.customVersion = str(resolution.custom_version)
-  stack.fallbackLatched = bool(fallback_latched)
-  stack.fallbackReason = str(resolution.fallback_reason if fallback_reason is None else fallback_reason)
+  stack.faultLatched = bool(fault_latched)
+  stack.faultReason = str(fault_reason)
   stack.actuatedATarget = float(actuated_a_target)
-  stack.shadowATarget = float(shadow_a_target)
   stack.selectedIntent = str(selected_intent)
   stack.selectedReason = str(selected_reason)
   stack.rejectedIntents = [str(intent) for intent, _reason in rejected[:3]]
@@ -285,13 +297,10 @@ class LongitudinalPlannerSP:
     self.longitudinal_stack_resolution = resolve_longitudinal_stack(
       self.params.get("LongitudinalStack", return_default=True), self.CP, self.CP_SP
     )
-    self.longitudinal_stack_fallback = CustomStackFallbackWrapper(custom_stack=self.longitudinal_stack_resolution.resolved_stack)
     self.custom_longitudinal_stack = self._make_custom_longitudinal_stack(self.longitudinal_stack_resolution.resolved_stack)
     self.longitudinal_stack_actuated_stack = SUNNYPILOT_CURRENT
-    self.longitudinal_stack_shadow_stack = ""
-    self.longitudinal_stack_shadow_a_target = 0.0
-    self.longitudinal_stack_fallback_latched = False
-    self.longitudinal_stack_fallback_reason = ""
+    self.longitudinal_stack_fault_latched = False
+    self.longitudinal_stack_fault_reason = ""
     self.longitudinal_stack_selected_intent = ""
     self.longitudinal_stack_selected_reason = ""
     self.longitudinal_stack_rejected: tuple[tuple[str, str], ...] = ()
@@ -450,11 +459,6 @@ class LongitudinalPlannerSP:
     self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
 
-  def _custom_v1_stack_output(self, sunnypilot_output: LongitudinalStackOutput) -> LongitudinalStackOutput:
-    if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != CUSTOM_V1:
-      self.custom_longitudinal_stack = make_custom_longitudinal_stack(CUSTOM_V1)
-    return self.custom_longitudinal_stack.update(sunnypilot_output, candidates=getattr(self, "custom_v1_candidates", ()))
-
   def _custom_v2_stack_output(self, sunnypilot_output: LongitudinalStackOutput,
                               accel_limits: tuple[float | None, float | None]) -> LongitudinalStackOutput:
     if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != CUSTOM_V2:
@@ -465,10 +469,8 @@ class LongitudinalPlannerSP:
   def _set_custom_v2_fault(self, reason: str) -> None:
     self.custom_v2_fault_latched = True
     self.custom_v2_fault_reason = reason
-    self.longitudinal_stack_fallback_latched = True
-    self.longitudinal_stack_fallback_reason = reason
-    self.longitudinal_stack_shadow_stack = ""
-    self.longitudinal_stack_shadow_a_target = 0.0
+    self.longitudinal_stack_fault_latched = True
+    self.longitudinal_stack_fault_reason = reason
     self.events_sp.add(custom.OnroadEventSP.EventName.customLongitudinalStackFault)
 
   def _publish_custom_v2_policy_debug(self, output: LongitudinalStackOutput) -> None:
@@ -482,11 +484,10 @@ class LongitudinalPlannerSP:
   def apply_longitudinal_stack_selection(self, sm: messaging.SubMaster, has_lead: bool,
                                          accel_limits: tuple[float | None, float | None]) -> None:
     sunnypilot_output = planner_state_to_stack_output(self, has_lead, debug={"adapter": SUNNYPILOT_CURRENT})
+    custom_seed_output = sunnypilot_output
     self.longitudinal_stack_actuated_stack = SUNNYPILOT_CURRENT
-    self.longitudinal_stack_shadow_stack = ""
-    self.longitudinal_stack_shadow_a_target = 0.0
-    self.longitudinal_stack_fallback_latched = False
-    self.longitudinal_stack_fallback_reason = ""
+    self.longitudinal_stack_fault_latched = False
+    self.longitudinal_stack_fault_reason = ""
     self.longitudinal_stack_selected_intent = ""
     self.longitudinal_stack_selected_reason = ""
     self.longitudinal_stack_rejected = ()
@@ -494,18 +495,13 @@ class LongitudinalPlannerSP:
 
     resolved_stack = self.longitudinal_stack_resolution.resolved_stack
     if not is_custom_stack(resolved_stack):
-      self.longitudinal_stack_fallback.reset()
-      self.longitudinal_stack_fallback_reason = self.longitudinal_stack_resolution.fallback_reason
-      if resolved_stack != SUNNYPILOT_CURRENT:
-        self.longitudinal_stack_fallback_reason = self.longitudinal_stack_fallback_reason or "unimplemented_stack"
       return
 
     if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != resolved_stack:
       self.custom_longitudinal_stack = make_custom_longitudinal_stack(resolved_stack)
-    self.longitudinal_stack_fallback.custom_stack = resolved_stack
     if resolved_stack == CUSTOM_V2:
-      self.longitudinal_stack_fallback.reset()
       self.longitudinal_stack_actuated_stack = resolved_stack
+      custom_seed_output = custom_v2_seed_output(self, sunnypilot_output)
       if not bool(sm['selfdriveState'].enabled):
         self.custom_v2_fault_latched = False
         self.custom_v2_fault_reason = ""
@@ -514,7 +510,7 @@ class LongitudinalPlannerSP:
         self._set_custom_v2_fault(self.custom_v2_fault_reason)
         return
       try:
-        custom_v2_output = self._custom_v2_stack_output(sunnypilot_output, accel_limits)
+        custom_v2_output = self._custom_v2_stack_output(custom_seed_output, accel_limits)
       except Exception:
         self._set_custom_v2_fault("custom_exception")
         return
@@ -525,21 +521,6 @@ class LongitudinalPlannerSP:
       apply_stack_output_to_planner(self, custom_v2_output)
       self._publish_custom_v2_policy_debug(custom_v2_output)
       return
-
-    result = self.longitudinal_stack_fallback.update(
-      bool(sm['selfdriveState'].enabled),
-      lambda: self._custom_v1_stack_output(sunnypilot_output),
-      lambda: sunnypilot_output,
-      accel_limits=accel_limits,
-    )
-    apply_stack_output_to_planner(self, result.output)
-    self.longitudinal_stack_actuated_stack = result.actuated_stack
-    self.longitudinal_stack_shadow_stack = result.shadow_stack
-    self.longitudinal_stack_shadow_a_target = float(result.shadow_output.a_target) if result.shadow_output is not None else 0.0
-    self.longitudinal_stack_fallback_latched = result.fallback_latched
-    self.longitudinal_stack_fallback_reason = result.fallback_reason
-    if result.fallback_triggered:
-      self.events_sp.add(custom.OnroadEventSP.EventName.customLongitudinalFallback)
 
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
     plan_sp_send = messaging.new_message('longitudinalPlanSP')
@@ -611,10 +592,8 @@ class LongitudinalPlannerSP:
       getattr(self, "longitudinal_stack_resolution"),
       actuated_stack=getattr(self, "longitudinal_stack_actuated_stack", SUNNYPILOT_CURRENT),
       actuated_a_target=float(self.output_a_target),
-      shadow_stack=getattr(self, "longitudinal_stack_shadow_stack", ""),
-      shadow_a_target=float(getattr(self, "longitudinal_stack_shadow_a_target", 0.0)),
-      fallback_latched=bool(getattr(self, "longitudinal_stack_fallback_latched", False)),
-      fallback_reason=getattr(self, "longitudinal_stack_fallback_reason", ""),
+      fault_latched=bool(getattr(self, "longitudinal_stack_fault_latched", False)),
+      fault_reason=getattr(self, "longitudinal_stack_fault_reason", ""),
       selected_intent=getattr(self, "longitudinal_stack_selected_intent", ""),
       selected_reason=getattr(self, "longitudinal_stack_selected_reason", ""),
       rejected=getattr(self, "longitudinal_stack_rejected", ()),

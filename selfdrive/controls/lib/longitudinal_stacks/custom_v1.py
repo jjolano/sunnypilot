@@ -4,8 +4,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V1
 
+INTERNAL_CUSTOM_V1_STACK = "custom-v1-internal"
 CUSTOM_V1_CAP = "cap"
 CUSTOM_V1_FLOOR = "floor"
 POST_CAP_FLOOR_GROUPS = {"lead_stop_approach_slew", "low_speed_pullaway_accel_step"}
@@ -102,7 +102,7 @@ def _merge_stop_intent(selected: CustomV1Candidate, candidates: Iterable[CustomV
 
 
 class CustomLongitudinalStackV1:
-  stack_name = CUSTOM_V1
+  stack_name = INTERNAL_CUSTOM_V1_STACK
 
   def update(self, sunnypilot_output: LongitudinalStackOutput,
              candidates: Iterable[CustomV1Candidate] = ()) -> LongitudinalStackOutput:

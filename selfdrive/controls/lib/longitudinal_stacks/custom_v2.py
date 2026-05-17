@@ -162,9 +162,11 @@ class CustomLongitudinalStackV2:
     selected_reason = "sunnypilot_current_seed"
     should_stop = bool(output.should_stop)
     rejected: list[tuple[str, str]] = []
+    planner_seed = output.debug.get("custom_v2_seed_context") == "planner"
+    allow_v2_lead_progress = not (planner_seed and scene.has_lead)
 
-    stop_released_by_lead = lead_evidence_releases_stop(scene)
-    stop_active = scene.stop_threat and not stop_released_by_lead
+    stop_released_by_lead = allow_v2_lead_progress and lead_evidence_releases_stop(scene)
+    stop_active = scene.stop_threat and not stop_released_by_lead and allow_v2_lead_progress
     blocked = scene.force_slow_decel or scene.brake_pressed or scene.gas_pressed
 
     if scene.stop_threat and stop_released_by_lead:
@@ -173,7 +175,8 @@ class CustomLongitudinalStackV2:
 
     if not blocked and not stop_active:
       a_target, selected_intent, selected_reason = self._apply_progress_floors(
-        a_target, selected_intent, selected_reason, scene, accel_limits, rejected
+        a_target, selected_intent, selected_reason, scene, accel_limits, rejected,
+        allow_lead_progress=allow_v2_lead_progress,
       )
     elif blocked:
       rejected.append(("launch", "driver_or_force_blocked"))
@@ -213,8 +216,8 @@ class CustomLongitudinalStackV2:
     )
 
   def _apply_progress_floors(self, a_target: float, selected_intent: str, selected_reason: str,
-                             scene: CustomV2Scene, accel_limits: tuple[float | None, float | None],
-                             rejected: list[tuple[str, str]]) -> tuple[float, str, str]:
+                              scene: CustomV2Scene, accel_limits: tuple[float | None, float | None],
+                              rejected: list[tuple[str, str]], allow_lead_progress: bool = True) -> tuple[float, str, str]:
     cruise_a = _dynamic_cruise_coast_accel(scene, a_target)
     if cruise_a > a_target:
       a_target = cruise_a
@@ -235,19 +238,19 @@ class CustomLongitudinalStackV2:
       else:
         rejected.append(("launch", "model_stop_not_clear"))
 
-    if scene.has_lead and scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and lead_evidence_releases_stop(scene):
+    if allow_lead_progress and scene.has_lead and scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and lead_evidence_releases_stop(scene):
       a_target, selected_intent, selected_reason = _apply_floor(
         a_target, selected_intent, selected_reason, LEAD_PULLAWAY_ACCEL_MAX,
         "launch", "confirmed_lead_pullaway", accel_limits,
       )
 
-    gap_cap = excess_gap_accel_cap(scene)
+    gap_cap = excess_gap_accel_cap(scene) if allow_lead_progress else None
     if gap_cap is not None:
       a_target, selected_intent, selected_reason = _apply_floor(
         a_target, selected_intent, selected_reason, gap_cap,
         "lead_follow", "excess_gap_progress", accel_limits,
       )
-    elif scene.has_lead and scene.lead_gap_excess > EXCESS_GAP_MIN:
+    elif allow_lead_progress and scene.has_lead and scene.lead_gap_excess > EXCESS_GAP_MIN:
       rejected.append(("lead_follow", "closing_speed_guard"))
 
     return a_target, selected_intent, selected_reason

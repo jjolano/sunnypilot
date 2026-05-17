@@ -7,12 +7,12 @@ Add selectable `custom-2.0` as a full custom longitudinal stack that prioritizes
 ## Non-Goals
 
 - Do not change `custom-recommended` during the first selectable release.
-- Do not require `custom-1.0` parity.
+- Do not require parity with the removed v1 stack.
 - Do not let `sunnypilot-current` consume custom-only tuning or arbitration.
 
 ## Stack Selection
 
-- `LongitudinalStack` values are `sunnypilot-current`, `custom-recommended`, `custom-1.0`, and `custom-2.0`.
+- `LongitudinalStack` values are `sunnypilot-current`, `custom-recommended`, and `custom-2.0`.
 - Unset or unknown values resolve to `sunnypilot-current`.
 - Stack selection is latched and changes require an onroad cycle.
 - `AlphaLongitudinalEnabled` remains the gas/brake takeover gate.

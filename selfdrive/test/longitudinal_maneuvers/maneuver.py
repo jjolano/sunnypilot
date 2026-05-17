@@ -1,5 +1,5 @@
 import numpy as np
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V1
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2
 from openpilot.selfdrive.test.longitudinal_maneuvers.plant import Plant
 
 
@@ -35,7 +35,7 @@ class Maneuver:
     self.e2e = kwargs.get("e2e", False)
     self.personality = kwargs.get("personality", 0)
     self.force_decel = kwargs.get("force_decel", False)
-    self.longitudinal_stack = kwargs.get("longitudinal_stack", CUSTOM_V1)
+    self.longitudinal_stack = kwargs.get("longitudinal_stack", CUSTOM_V2)
 
     self.duration = duration
     self.title = title

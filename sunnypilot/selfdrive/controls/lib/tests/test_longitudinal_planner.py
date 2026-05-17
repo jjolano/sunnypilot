@@ -6,11 +6,10 @@ from cereal import messaging
 from cereal import custom
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_decision import DecisionSource, LongitudinalDecisionTelemetry
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.fallback import CustomStackFallbackWrapper
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v1 import CustomV1Candidate
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import StackResolution
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, SUNNYPILOT_CURRENT, StackResolution
 from openpilot.sunnypilot.selfdrive.controls.lib import longitudinal_planner as sp_longitudinal_planner
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
   LongitudinalPlannerSP,
@@ -103,7 +102,7 @@ def make_target_planner(resolved_stack: str):
   planner.longitudinal_stack_resolution = StackResolution(
     requested_stack=resolved_stack,
     resolved_stack=resolved_stack,
-    available_stacks=("sunnypilot-current", "custom-1.0"),
+    available_stacks=(SUNNYPILOT_CURRENT, CUSTOM_V2),
   )
   planner.events_sp = FakeEvents()
   planner.source = LongitudinalPlanSource.cruise
@@ -114,7 +113,7 @@ def make_target_planner(resolved_stack: str):
 
 class TestStackAwareTargetSelection(unittest.TestCase):
   def test_sunnypilot_current_uses_baseline_target_providers(self):
-    planner = make_target_planner("sunnypilot-current")
+    planner = make_target_planner(SUNNYPILOT_CURRENT)
     planner.scc = FakeStackSCC(vision=(8.0, -1.0, True))
     planner.resolver = FakeStackResolver(speed_limit=8.0, speed_limit_final_last=8.0)
     planner.sla = FakeStackSLA(target=(8.0, -1.0), active=True)
@@ -135,7 +134,7 @@ class TestStackAwareTargetSelection(unittest.TestCase):
     self.assertEqual(planner.sunnypilot_current_sla.update_count, 1)
 
   def test_sunnypilot_current_keeps_baseline_speed_limit_assist(self):
-    planner = make_target_planner("sunnypilot-current")
+    planner = make_target_planner(SUNNYPILOT_CURRENT)
     planner.scc = FakeStackSCC()
     planner.resolver = FakeStackResolver()
     planner.sla = FakeStackSLA()
@@ -151,7 +150,7 @@ class TestStackAwareTargetSelection(unittest.TestCase):
     self.assertEqual(a_target, -0.2)
 
   def test_sunnypilot_current_clears_custom_only_handoff_and_decision_candidates(self):
-    planner = make_target_planner("sunnypilot-current")
+    planner = make_target_planner(SUNNYPILOT_CURRENT)
     planner.scc = FakeStackSCC(vision=(8.0, -1.0, True), map_target=(7.0, -1.0, True))
     planner.resolver = FakeStackResolver(speed_limit=8.0, speed_limit_final_last=8.0)
     planner.sla = FakeStackSLA(target=(8.0, -1.0), active=True)
@@ -176,7 +175,7 @@ class TestStackAwareTargetSelection(unittest.TestCase):
     self.assertFalse(planner._speed_limit_active_prev)
 
   def test_custom_stack_uses_custom_target_providers(self):
-    planner = make_target_planner("custom-1.0")
+    planner = make_target_planner(CUSTOM_V2)
     planner.scc = FakeStackSCC(vision=(8.0, -1.0, True))
     planner.resolver = FakeStackResolver()
     planner.sla = FakeStackSLA()
@@ -331,42 +330,14 @@ class TestStackTelemetryPublish(unittest.TestCase):
     self.assertEqual(plan_sp.stack.requestedStack, StackId.sunnypilotCurrent)
     self.assertEqual(plan_sp.stack.resolvedStack, StackId.sunnypilotCurrent)
     self.assertEqual(plan_sp.stack.actuatedStack, StackId.sunnypilotCurrent)
-    self.assertEqual(plan_sp.stack.shadowStack, StackId.unknown)
     self.assertEqual(plan_sp.stack.customVersion, "")
-    self.assertFalse(plan_sp.stack.fallbackLatched)
-    self.assertEqual(plan_sp.stack.fallbackReason, "")
+    self.assertFalse(plan_sp.stack.faultLatched)
+    self.assertEqual(plan_sp.stack.faultReason, "")
     self.assertEqual(plan_sp.stack.actuatedATarget, -0.25)
-    self.assertEqual(plan_sp.stack.shadowATarget, 0.0)
     self.assertEqual(plan_sp.stack.selectedIntent, "")
     self.assertEqual(plan_sp.stack.selectedReason, "")
     self.assertEqual(plan_sp.stack.rejectedIntents, [])
     self.assertEqual(plan_sp.stack.rejectedReasons, [])
-
-  def test_publish_stack_telemetry_reports_custom_resolution_and_fallback_reason(self):
-    plan_sp = self.make_plan_sp()
-    resolution = StackResolution(
-      requested_stack="custom-recommended",
-      resolved_stack="custom-1.0",
-      available_stacks=("sunnypilot-current", "custom-recommended", "custom-1.0"),
-      recommended_stack="custom-1.0",
-      custom_version="1.0",
-      fallback_reason="runtime_contract_failure",
-    )
-
-    publish_stack_telemetry(
-      plan_sp, resolution, "sunnypilot-current", -0.1,
-      shadow_stack="custom-1.0", shadow_a_target=-0.3, fallback_latched=True,
-    )
-
-    self.assertEqual(plan_sp.stack.requestedStack, StackId.customRecommended)
-    self.assertEqual(plan_sp.stack.resolvedStack, StackId.customV1)
-    self.assertEqual(plan_sp.stack.actuatedStack, StackId.sunnypilotCurrent)
-    self.assertEqual(plan_sp.stack.shadowStack, StackId.customV1)
-    self.assertEqual(plan_sp.stack.customVersion, "1.0")
-    self.assertTrue(plan_sp.stack.fallbackLatched)
-    self.assertEqual(plan_sp.stack.fallbackReason, "runtime_contract_failure")
-    self.assertEqual(plan_sp.stack.actuatedATarget, -0.1)
-    self.assertEqual(plan_sp.stack.shadowATarget, -0.3)
 
   def test_publish_stack_telemetry_reports_custom_v2_policy_debug(self):
     plan_sp = self.make_plan_sp()
@@ -379,6 +350,7 @@ class TestStackTelemetryPublish(unittest.TestCase):
 
     publish_stack_telemetry(
       plan_sp, resolution, "custom-2.0", 0.2,
+      fault_latched=True, fault_reason="a_target_above_limits",
       selected_intent="launch", selected_reason="confirmed_lead_pullaway",
       rejected=(("stop_approach", "lead_pullaway_release"), ("speed_policy", "no_speed_reduction_needed")),
     )
@@ -386,6 +358,8 @@ class TestStackTelemetryPublish(unittest.TestCase):
     self.assertEqual(plan_sp.stack.resolvedStack, StackId.customV2)
     self.assertEqual(plan_sp.stack.actuatedStack, StackId.customV2)
     self.assertEqual(plan_sp.stack.customVersion, "2.0")
+    self.assertTrue(plan_sp.stack.faultLatched)
+    self.assertEqual(plan_sp.stack.faultReason, "a_target_above_limits")
     self.assertEqual(plan_sp.stack.selectedIntent, "launch")
     self.assertEqual(plan_sp.stack.selectedReason, "confirmed_lead_pullaway")
     self.assertEqual(plan_sp.stack.rejectedIntents, ["stop_approach", "speed_policy"])
@@ -396,20 +370,20 @@ class TestStackTelemetryPublish(unittest.TestCase):
     msg.longitudinalPlanSP.stack.requestedStack = StackId.sunnypilotCurrent
     msg.longitudinalPlanSP.stack.resolvedStack = StackId.sunnypilotCurrent
     msg.longitudinalPlanSP.stack.actuatedStack = StackId.sunnypilotCurrent
-    msg.longitudinalPlanSP.stack.fallbackReason = ""
+    msg.longitudinalPlanSP.stack.faultReason = ""
     msg.longitudinalPlanSP.stack.selectedIntent = "launch"
     msg.longitudinalPlanSP.stack.selectedReason = "no_lead_stop_clear"
     msg.longitudinalPlanSP.stack.rejectedIntents = ["stop_approach"]
     msg.longitudinalPlanSP.stack.rejectedReasons = ["lead_pullaway_release"]
 
     self.assertEqual(msg.longitudinalPlanSP.stack.requestedStack, StackId.sunnypilotCurrent)
-    self.assertEqual(msg.longitudinalPlanSP.stack.fallbackReason, "")
+    self.assertEqual(msg.longitudinalPlanSP.stack.faultReason, "")
     self.assertEqual(msg.longitudinalPlanSP.stack.selectedIntent, "launch")
     self.assertEqual(msg.longitudinalPlanSP.stack.rejectedIntents[0], "stop_approach")
 
 
 class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
-  def make_planner(self, resolved_stack="custom-1.0", fallback_reason=""):
+  def make_planner(self, resolved_stack="custom-2.0"):
     planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
     planner.output_a_target = -0.1
     planner.output_should_stop = False
@@ -421,22 +395,17 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
     planner.source = "cruise"
     planner.mpc = SimpleNamespace(source="cruise")
     planner.events_sp = FakeEvents()
-    custom_versions = {"custom-1.0": "1.0", "custom-2.0": "2.0"}
     planner.longitudinal_stack_resolution = StackResolution(
       requested_stack=resolved_stack,
       resolved_stack=resolved_stack,
       available_stacks=("sunnypilot-current", resolved_stack),
-      custom_version=custom_versions.get(resolved_stack, ""),
-      fallback_reason=fallback_reason,
+      custom_version="2.0" if resolved_stack == "custom-2.0" else "",
     )
-    planner.longitudinal_stack_fallback = CustomStackFallbackWrapper(custom_stack=resolved_stack)
     planner.custom_longitudinal_stack = None
     planner.custom_v1_candidates = []
     planner.longitudinal_stack_actuated_stack = "sunnypilot-current"
-    planner.longitudinal_stack_shadow_stack = ""
-    planner.longitudinal_stack_shadow_a_target = 0.0
-    planner.longitudinal_stack_fallback_latched = False
-    planner.longitudinal_stack_fallback_reason = ""
+    planner.longitudinal_stack_fault_latched = False
+    planner.longitudinal_stack_fault_reason = ""
     planner.longitudinal_stack_selected_intent = ""
     planner.longitudinal_stack_selected_reason = ""
     planner.longitudinal_stack_rejected = ()
@@ -447,10 +416,10 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
   def make_sm(self, enabled=True):
     return {"selfdriveState": SimpleNamespace(enabled=enabled)}
 
-  def make_output(self, a_target):
+  def make_output(self, a_target, should_stop=False):
     return LongitudinalStackOutput(
       a_target=a_target,
-      should_stop=False,
+      should_stop=should_stop,
       has_lead=False,
       source="custom",
       allow_throttle=True,
@@ -460,52 +429,42 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
       jerks=tuple(0.0 for _ in range(CONTROL_N)),
     )
 
-  def test_custom_selection_actuates_passthrough_custom_stack_without_behavior_change(self):
-    planner = self.make_planner()
-
-    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
-
-    self.assertEqual(planner.output_a_target, -0.1)
-    self.assertEqual(planner.longitudinal_stack_actuated_stack, "custom-1.0")
-    self.assertEqual(planner.longitudinal_stack_shadow_stack, "sunnypilot-current")
-    self.assertEqual(planner.longitudinal_stack_shadow_a_target, -0.1)
-    self.assertEqual(planner.custom_longitudinal_stack.stack_name, "custom-1.0")
-    self.assertFalse(planner.longitudinal_stack_fallback_latched)
-    self.assertEqual(planner.events_sp.names, [])
-
-  def test_custom_selection_actuates_more_restrictive_custom_candidate(self):
-    planner = self.make_planner()
-    planner.custom_v1_candidates = [CustomV1Candidate("cruise_coast", self.make_output(-0.4))]
-
-    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
-
-    self.assertEqual(planner.output_a_target, -0.4)
-    self.assertEqual(planner.longitudinal_stack_actuated_stack, "custom-1.0")
-    self.assertFalse(planner.longitudinal_stack_fallback_latched)
-
   def test_custom_v2_selection_actuates_fail_closed_stack_without_shadow(self):
-    planner = self.make_planner(resolved_stack="custom-2.0")
+    planner = self.make_planner()
     planner.custom_v2_scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, model_stop_distance=30.0, model_desired_accel=0.0)
 
     planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
 
     self.assertEqual(planner.output_a_target, 0.95)
     self.assertEqual(planner.longitudinal_stack_actuated_stack, "custom-2.0")
-    self.assertEqual(planner.longitudinal_stack_shadow_stack, "")
-    self.assertEqual(planner.longitudinal_stack_shadow_a_target, 0.0)
-    self.assertFalse(planner.longitudinal_stack_fallback_latched)
+    self.assertFalse(planner.longitudinal_stack_fault_latched)
     self.assertEqual(planner.longitudinal_stack_selected_intent, "launch")
     self.assertEqual(planner.events_sp.names, [])
 
-  def test_non_custom_selection_ignores_custom_candidates(self):
-    planner = self.make_planner(resolved_stack="sunnypilot-current")
-    planner.custom_v1_candidates = [CustomV1Candidate("cruise_coast", self.make_output(-0.4))]
+  def test_custom_v2_uses_internal_v1_candidate_seed_without_public_v1_stack(self):
+    planner = self.make_planner()
+    planner.custom_v1_candidates = [CustomV1Candidate("internal_stop", self.make_output(-0.7))]
+    planner.custom_v2_scene = CustomV2Scene(v_ego=10.0, v_cruise=10.0)
 
-    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=True, accel_limits=(-2.0, 2.0))
 
-    self.assertEqual(planner.output_a_target, -0.1)
-    self.assertEqual(planner.longitudinal_stack_actuated_stack, "sunnypilot-current")
-    self.assertFalse(planner.longitudinal_stack_fallback_latched)
+    self.assertEqual(planner.output_a_target, -0.7)
+    self.assertEqual(planner.longitudinal_stack_actuated_stack, "custom-2.0")
+    self.assertFalse(planner.longitudinal_stack_fault_latched)
+
+  def test_custom_v2_planner_seed_preserves_internal_lead_stop_behavior(self):
+    planner = self.make_planner()
+    planner.custom_v1_candidates = [CustomV1Candidate("internal_stop", self.make_output(-0.7, should_stop=True))]
+    planner.custom_v2_scene = CustomV2Scene(
+      v_ego=0.3, v_cruise=6.0, has_lead=True, lead_v=0.2, lead_confirmed_pullaway=True,
+      stop_threat=True, model_should_stop=True, model_stop_distance=5.0, model_desired_accel=-1.0,
+    )
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=True, accel_limits=(-2.0, 2.0))
+
+    self.assertEqual(planner.output_a_target, -0.7)
+    self.assertTrue(planner.output_should_stop)
+    self.assertEqual(planner.longitudinal_stack_actuated_stack, "custom-2.0")
 
   def test_non_custom_selection_uses_sunnypilot_current_without_wrapper(self):
     planner = self.make_planner(resolved_stack="sunnypilot-current")
@@ -514,75 +473,30 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
 
     self.assertEqual(planner.output_a_target, -0.1)
     self.assertEqual(planner.longitudinal_stack_actuated_stack, "sunnypilot-current")
-    self.assertFalse(planner.longitudinal_stack_fallback_latched)
+    self.assertFalse(planner.longitudinal_stack_fault_latched)
     self.assertEqual(planner.events_sp.names, [])
-
-  def test_selector_fallback_reason_is_preserved_for_non_custom_resolution(self):
-    planner = self.make_planner(resolved_stack="sunnypilot-current", fallback_reason="unknown_stack")
-
-    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
-
-    self.assertEqual(planner.output_a_target, -0.1)
-    self.assertEqual(planner.longitudinal_stack_actuated_stack, "sunnypilot-current")
-    self.assertEqual(planner.longitudinal_stack_fallback_reason, "unknown_stack")
-    self.assertFalse(planner.longitudinal_stack_fallback_latched)
-
-  def test_custom_selection_latches_fallback_and_emits_event_once(self):
-    planner = self.make_planner()
-    custom_calls = 0
-
-    def invalid_custom(_sunnypilot_output):
-      nonlocal custom_calls
-      custom_calls += 1
-      return self.make_output(3.0)
-
-    planner._custom_v1_stack_output = invalid_custom
-    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
-    first_events = list(planner.events_sp.names)
-    planner.events_sp.names.clear()
-    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
-
-    self.assertEqual(planner.output_a_target, -0.1)
-    self.assertEqual(planner.longitudinal_stack_actuated_stack, "sunnypilot-current")
-    self.assertTrue(planner.longitudinal_stack_fallback_latched)
-    self.assertEqual(planner.longitudinal_stack_fallback_reason, "a_target_above_limits")
-    self.assertEqual(first_events, [custom.OnroadEventSP.EventName.customLongitudinalFallback])
-    self.assertEqual(planner.events_sp.names, [])
-    self.assertEqual(custom_calls, 1)
 
   def test_custom_v2_invalid_output_requests_immediate_disable_without_baseline_fallback(self):
-    planner = self.make_planner(resolved_stack="custom-2.0")
+    planner = self.make_planner()
     planner._custom_v2_stack_output = lambda _sunnypilot_output, _accel_limits: self.make_output(3.0)
 
     planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
 
     self.assertEqual(planner.output_a_target, -0.1)
     self.assertEqual(planner.longitudinal_stack_actuated_stack, "custom-2.0")
-    self.assertEqual(planner.longitudinal_stack_shadow_stack, "")
-    self.assertTrue(planner.longitudinal_stack_fallback_latched)
-    self.assertEqual(planner.longitudinal_stack_fallback_reason, "a_target_above_limits")
+    self.assertTrue(planner.longitudinal_stack_fault_latched)
+    self.assertEqual(planner.longitudinal_stack_fault_reason, "a_target_above_limits")
     self.assertEqual(planner.events_sp.names, [custom.OnroadEventSP.EventName.customLongitudinalStackFault])
 
-  def test_custom_fallback_latch_resets_when_disabled(self):
-    planner = self.make_planner()
-    planner._custom_v1_stack_output = lambda _sunnypilot_output: self.make_output(3.0)
-    planner.apply_longitudinal_stack_selection(self.make_sm(enabled=True), has_lead=False, accel_limits=(-2.0, 2.0))
-
-    planner._custom_v1_stack_output = lambda sunnypilot_output: sunnypilot_output
-    planner.apply_longitudinal_stack_selection(self.make_sm(enabled=False), has_lead=False, accel_limits=(-2.0, 2.0))
-
-    self.assertFalse(planner.longitudinal_stack_fallback_latched)
-    self.assertEqual(planner.longitudinal_stack_actuated_stack, "sunnypilot-current")
-
   def test_custom_v2_fault_latch_resets_when_disabled(self):
-    planner = self.make_planner(resolved_stack="custom-2.0")
+    planner = self.make_planner()
     planner._custom_v2_stack_output = lambda _sunnypilot_output, _accel_limits: self.make_output(3.0)
     planner.apply_longitudinal_stack_selection(self.make_sm(enabled=True), has_lead=False, accel_limits=(-2.0, 2.0))
 
     planner.apply_longitudinal_stack_selection(self.make_sm(enabled=False), has_lead=False, accel_limits=(-2.0, 2.0))
 
     self.assertFalse(planner.custom_v2_fault_latched)
-    self.assertFalse(planner.longitudinal_stack_fallback_latched)
+    self.assertFalse(planner.longitudinal_stack_fault_latched)
 
 if __name__ == "__main__":
   unittest.main()

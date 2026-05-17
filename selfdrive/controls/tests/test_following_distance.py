@@ -120,9 +120,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   N,
 )
 from openpilot.selfdrive.controls.lib import longitudinal_planner
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.fallback import CustomStackFallbackWrapper
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V1, StackResolution
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, StackResolution
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_ACCEL_MAX,
   CREEP_TO_STOP_GAP_ACCEL_MIN,
@@ -273,8 +272,9 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.events_sp = SimpleNamespace(add=lambda _event: None)
   planner.custom_v1_candidates = []
   planner.custom_longitudinal_stack = None
-  planner.longitudinal_stack_resolution = StackResolution(CUSTOM_V1, CUSTOM_V1, (CUSTOM_V1,))
-  planner.longitudinal_stack_fallback = CustomStackFallbackWrapper(custom_stack=CUSTOM_V1)
+  planner.longitudinal_stack_resolution = StackResolution(CUSTOM_V2, CUSTOM_V2, (CUSTOM_V2,), custom_version="2.0")
+  planner.custom_v2_fault_latched = False
+  planner.custom_v2_fault_reason = ""
   return planner
 
 
@@ -3754,7 +3754,7 @@ def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personalit
     breakpoints=[0.0],
     e2e=e2e,
     personality=personality,
-    longitudinal_stack=CUSTOM_V1,
+    longitudinal_stack=CUSTOM_V2,
   )
   valid, output = man.evaluate()
   assert valid
@@ -3771,7 +3771,7 @@ def run_lead_closing_simulation(v_ego, v_lead, initial_distance_lead, t_end=30.0
     speed_lead_values=[float(v_lead)],
     breakpoints=[0.0],
     personality=personality,
-    longitudinal_stack=CUSTOM_V1,
+    longitudinal_stack=CUSTOM_V2,
   )
   valid, output = man.evaluate()
   assert valid

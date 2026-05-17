@@ -459,7 +459,7 @@ class SelfdriveD(CruiseHelper):
     # Check for FCW
     stock_long_is_braking = self.enabled and not self.CP.openpilotLongitudinalControl and CS.aEgo < -1.25
     custom_longitudinal_stack_actuated = (
-      self.sm.valid['longitudinalPlanSP'] and self.sm['longitudinalPlanSP'].stack.actuatedStack == StackId.customV1
+      self.sm.valid['longitudinalPlanSP'] and self.sm['longitudinalPlanSP'].stack.actuatedStack == StackId.customV2
     )
     op_long_is_braking_on_confirmed_lead = should_suppress_model_fcw(
       self.enabled,

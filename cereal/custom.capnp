@@ -320,25 +320,21 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     requestedStack @0 :StackId;
     resolvedStack @1 :StackId;
     actuatedStack @2 :StackId;
-    shadowStack @3 :StackId;
-    customVersion @4 :Text;
-    fallbackLatched @5 :Bool;
-    fallbackReason @6 :Text;
-    actuatedATarget @7 :Float32;
-    shadowATarget @8 :Float32;
+    customVersion @3 :Text;
+    faultLatched @4 :Bool;
+    faultReason @5 :Text;
+    actuatedATarget @6 :Float32;
+    selectedIntent @7 :Text;
+    selectedReason @8 :Text;
+    rejectedIntents @9 :List(Text);
+    rejectedReasons @10 :List(Text);
 
     enum StackId {
       unknown @0;
       sunnypilotCurrent @1;
       customRecommended @2;
-      customV1 @3;
-      customV2 @4;
+      customV2 @3;
     }
-
-    selectedIntent @9 :Text;
-    selectedReason @10 :Text;
-    rejectedIntents @11 :List(Text);
-    rejectedReasons @12 :List(Text);
   }
 }
 
@@ -388,8 +384,7 @@ struct OnroadEventSP @0xda96579883444c35 {
     e2eChime @23;
     speedLimitAutoCruiseEnabled @24;
     speedLimitAutoCruiseDisabled @25;
-    customLongitudinalFallback @26;
-    customLongitudinalStackFault @27;
+    customLongitudinalStackFault @26;
   }
 }
 

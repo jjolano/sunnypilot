@@ -252,14 +252,6 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlert.none, 2.),
   },
 
-  EventNameSP.customLongitudinalFallback: {
-    ET.WARNING: Alert(
-      "Custom Longitudinal Fallback",
-      "Using sunnypilot longitudinal",
-      AlertStatus.userPrompt, AlertSize.mid,
-      Priority.MID, VisualAlert.none, AudibleAlert.none, 2.),
-  },
-
   EventNameSP.customLongitudinalStackFault: {
     ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("Custom Longitudinal Stack Fault"),
     ET.NO_ENTRY: NoEntryAlert("Custom Longitudinal Stack Fault"),

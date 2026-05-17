@@ -8,7 +8,6 @@ from openpilot.common.realtime import Ratekeeper, DT_MDL
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.fallback import CustomStackFallbackWrapper
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import resolve_longitudinal_stack
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 
@@ -62,9 +61,6 @@ class Plant:
     self.planner = LongitudinalPlanner(CP, CP_SP, init_v=self.speed)
     if longitudinal_stack is not None:
       self.planner.longitudinal_stack_resolution = resolve_longitudinal_stack(longitudinal_stack, CP, CP_SP)
-      self.planner.longitudinal_stack_fallback = CustomStackFallbackWrapper(
-        custom_stack=self.planner.longitudinal_stack_resolution.resolved_stack,
-      )
       self.planner.custom_longitudinal_stack = self.planner._make_custom_longitudinal_stack(
         self.planner.longitudinal_stack_resolution.resolved_stack,
       )

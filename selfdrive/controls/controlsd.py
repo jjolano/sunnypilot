@@ -223,7 +223,7 @@ class Controls(ControlsExt):
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
-    custom_longitudinal_stack = self.sm.valid['longitudinalPlanSP'] and self.sm['longitudinalPlanSP'].stack.actuatedStack == StackId.customV1
+    custom_longitudinal_stack = self.sm.valid['longitudinalPlanSP'] and self.sm['longitudinalPlanSP'].stack.actuatedStack == StackId.customV2
     actuators.accel = float(self.LoC.update(
       CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits, long_plan.hasLead,
       custom_longitudinal_stack=custom_longitudinal_stack,
