@@ -19,7 +19,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate, LongitudinalDecisionTelemetry
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import apply_stack_output_to_planner, planner_state_to_stack_output
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate, select_planner_seed_candidate
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene, CustomV2SceneValidationError
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput, validate_stack_output
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_custom_longitudinal_stack
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
@@ -500,7 +500,6 @@ class LongitudinalPlannerSP:
     if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != resolved_stack:
       self.custom_longitudinal_stack = make_custom_longitudinal_stack(resolved_stack)
     if resolved_stack == CUSTOM_V2:
-      self.longitudinal_stack_actuated_stack = resolved_stack
       custom_seed_output = custom_v2_seed_output(self, sunnypilot_output)
       if not bool(sm['selfdriveState'].enabled):
         self.custom_v2_fault_latched = False
@@ -511,6 +510,9 @@ class LongitudinalPlannerSP:
         return
       try:
         custom_v2_output = self._custom_v2_stack_output(custom_seed_output, accel_limits)
+      except CustomV2SceneValidationError as error:
+        self._set_custom_v2_fault(error.reason)
+        return
       except Exception:
         self._set_custom_v2_fault("custom_exception")
         return
@@ -519,6 +521,7 @@ class LongitudinalPlannerSP:
         self._set_custom_v2_fault(validation.reason)
         return
       apply_stack_output_to_planner(self, custom_v2_output)
+      self.longitudinal_stack_actuated_stack = resolved_stack
       self._publish_custom_v2_policy_debug(custom_v2_output)
       return
 

@@ -219,6 +219,20 @@ def should_enable_longitudinal_decision_layer(stack_resolution) -> bool:
   return stack_resolution is None or is_custom_stack(getattr(stack_resolution, "resolved_stack", ""))
 
 
+def get_custom_v2_curve_scene_target(*controllers):
+  active_targets = []
+  for controller in controllers:
+    if not bool(getattr(controller, "is_active", False)):
+      continue
+    try:
+      target = float(getattr(controller, "output_a_target", 0.0))
+    except (TypeError, ValueError):
+      continue
+    if math.isfinite(target):
+      active_targets.append(target)
+  return bool(active_targets), float(min(active_targets, default=0.0))
+
+
 def get_model_stop_distance(model_msg):
   positions = list(getattr(model_msg.position, "x", []))
   velocities = list(getattr(model_msg.velocity, "x", []))
@@ -1606,6 +1620,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     active_scc_map = getattr(active_scc, "map", None)
     active_sla = getattr(self, "active_sla", None) or getattr(self, "sla", None)
     osm_traffic_control_prior = getattr(self, "osm_traffic_control_prior", None)
+    custom_v2_curve_active, custom_v2_curve_a_target = get_custom_v2_curve_scene_target(active_scc_vision, active_scc_map)
     self.custom_v2_scene = CustomV2Scene(
       v_ego=float(v_ego),
       v_cruise=float(v_cruise),
@@ -1628,8 +1643,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       speed_limit_active=bool(getattr(active_sla, "is_active", False)),
       speed_limit_v_target=float(getattr(active_sla, "output_v_target", 0.0)),
       speed_limit_a_target=float(getattr(active_sla, "output_a_target", 0.0)),
-      curve_active=bool(getattr(active_scc_vision, "is_active", False) or getattr(active_scc_map, "is_active", False)),
-      curve_a_target=float(min(getattr(active_scc_vision, "output_a_target", 0.0), getattr(active_scc_map, "output_a_target", 0.0))),
+      curve_active=custom_v2_curve_active,
+      curve_a_target=custom_v2_curve_a_target,
       map_caution_active=bool(getattr(osm_traffic_control_prior, "active", False)),
       map_caution_confirmed=bool(getattr(osm_traffic_control_prior, "active", False)),
       map_caution_a_target=float(getattr(osm_traffic_control_prior, "output_a_target", 0.0)),

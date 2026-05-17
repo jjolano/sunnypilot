@@ -20,6 +20,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   LongitudinalPlanner,
   _A_TOTAL_MAX_BP,
   _A_TOTAL_MAX_V,
+  get_custom_v2_curve_scene_target,
   get_e2e_close_stop_settle,
   get_max_accel,
   get_e2e_runway_comfort_accel,
@@ -32,6 +33,24 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   should_enable_longitudinal_decision_layer,
   should_run_engage_stop_bootstrap,
 )
+
+
+def test_custom_v2_curve_scene_target_uses_only_active_sources():
+  inactive_restrictive_vision = SimpleNamespace(is_active=False, output_a_target=-2.0)
+  active_map = SimpleNamespace(is_active=True, output_a_target=-0.4)
+  active_vision = SimpleNamespace(is_active=True, output_a_target=-0.7)
+  active_invalid = SimpleNamespace(is_active=True, output_a_target=float("nan"))
+
+  active, target = get_custom_v2_curve_scene_target(inactive_restrictive_vision, active_map)
+  both_active, both_target = get_custom_v2_curve_scene_target(active_vision, active_map)
+  invalid_active, invalid_target = get_custom_v2_curve_scene_target(active_invalid)
+
+  assert active
+  assert target == -0.4
+  assert both_active
+  assert both_target == -0.7
+  assert not invalid_active
+  assert invalid_target == 0.0
 
 
 def make_radar_state(lead_one=False, lead_two=False):

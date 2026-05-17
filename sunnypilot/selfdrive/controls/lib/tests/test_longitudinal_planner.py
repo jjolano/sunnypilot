@@ -416,17 +416,18 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
   def make_sm(self, enabled=True):
     return {"selfdriveState": SimpleNamespace(enabled=enabled)}
 
-  def make_output(self, a_target, should_stop=False):
+  def make_output(self, a_target, should_stop=False, has_lead=False, debug=None, speeds=None, accels=None, jerks=None):
     return LongitudinalStackOutput(
       a_target=a_target,
       should_stop=should_stop,
-      has_lead=False,
+      has_lead=has_lead,
       source="custom",
       allow_throttle=True,
       allow_brake=True,
-      speeds=tuple(10.0 for _ in range(CONTROL_N)),
-      accels=tuple(a_target for _ in range(CONTROL_N)),
-      jerks=tuple(0.0 for _ in range(CONTROL_N)),
+      speeds=tuple(10.0 for _ in range(CONTROL_N)) if speeds is None else speeds,
+      accels=tuple(a_target for _ in range(CONTROL_N)) if accels is None else accels,
+      jerks=tuple(0.0 for _ in range(CONTROL_N)) if jerks is None else jerks,
+      debug={} if debug is None else debug,
     )
 
   def test_custom_v2_selection_actuates_fail_closed_stack_without_shadow(self):
@@ -454,7 +455,16 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
 
   def test_custom_v2_planner_seed_preserves_internal_lead_stop_behavior(self):
     planner = self.make_planner()
-    planner.planner_seed_candidates = [PlannerSeedCandidate("internal_stop", self.make_output(-0.7, should_stop=True))]
+    speeds = tuple(float(idx) for idx in range(CONTROL_N))
+    accels = tuple(-0.7 + 0.01 * idx for idx in range(CONTROL_N))
+    jerks = tuple(-0.1 for _ in range(CONTROL_N))
+    planner.planner_seed_candidates = [PlannerSeedCandidate(
+      "internal_stop",
+      self.make_output(
+        -0.7, should_stop=True, has_lead=True, speeds=speeds, accels=accels, jerks=jerks,
+        debug={"planner_seed_candidate_reason": "stopped_lead_stop_gap_guard"},
+      ),
+    )]
     planner.custom_v2_scene = CustomV2Scene(
       v_ego=0.3, v_cruise=6.0, has_lead=True, lead_v=0.2, lead_confirmed_pullaway=True,
       stop_threat=True, model_should_stop=True, model_stop_distance=5.0, model_desired_accel=-1.0,
@@ -464,7 +474,12 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
 
     self.assertEqual(planner.output_a_target, -0.7)
     self.assertTrue(planner.output_should_stop)
+    self.assertEqual(tuple(planner.v_desired_trajectory), speeds)
+    self.assertEqual(tuple(planner.a_desired_trajectory), accels)
+    self.assertEqual(tuple(planner.j_desired_trajectory), jerks)
     self.assertEqual(planner.longitudinal_stack_actuated_stack, "custom-2.0")
+    self.assertEqual(planner.longitudinal_stack_selected_intent, "lead_follow")
+    self.assertEqual(planner.longitudinal_stack_selected_reason, "stopped_lead_stop_gap_guard")
 
   def test_non_custom_selection_uses_sunnypilot_current_without_wrapper(self):
     planner = self.make_planner(resolved_stack="sunnypilot-current")
@@ -483,9 +498,21 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
     planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
 
     self.assertEqual(planner.output_a_target, -0.1)
-    self.assertEqual(planner.longitudinal_stack_actuated_stack, "custom-2.0")
+    self.assertEqual(planner.longitudinal_stack_actuated_stack, "sunnypilot-current")
     self.assertTrue(planner.longitudinal_stack_fault_latched)
     self.assertEqual(planner.longitudinal_stack_fault_reason, "a_target_above_limits")
+    self.assertEqual(planner.events_sp.names, [custom.OnroadEventSP.EventName.customLongitudinalStackFault])
+
+  def test_custom_v2_invalid_scene_requests_immediate_disable_with_reason(self):
+    planner = self.make_planner()
+    planner.custom_v2_scene = CustomV2Scene(v_ego=float("nan"))
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
+
+    self.assertEqual(planner.output_a_target, -0.1)
+    self.assertEqual(planner.longitudinal_stack_actuated_stack, "sunnypilot-current")
+    self.assertTrue(planner.longitudinal_stack_fault_latched)
+    self.assertEqual(planner.longitudinal_stack_fault_reason, "invalid_scene_v_ego")
     self.assertEqual(planner.events_sp.names, [custom.OnroadEventSP.EventName.customLongitudinalStackFault])
 
   def test_custom_v2_fault_latch_resets_when_disabled(self):

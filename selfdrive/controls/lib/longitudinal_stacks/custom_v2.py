@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import math
+from numbers import Real
 from typing import Any
 
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
@@ -45,6 +46,43 @@ STOP_APPROACH_COMFORT_DECEL = -0.2
 STOP_APPROACH_DECEL_MIN = -1.5
 SAFETY_FORCE_SLOW_DECEL = -0.2
 SYNTH_TRAJECTORY_DT = 0.2
+POSITIVE_PROGRESS_JERK = 4.0
+NORMAL_NEGATIVE_RETREAT_JERK = -5.0
+A_TARGET_EPS = 1e-4
+
+STOP_APPROACH_SEED_REASONS = {
+  "engage_model_stop_bootstrap",
+  "no_lead_close_stop_settle",
+  "no_lead_model_runway_comfort",
+  "no_lead_model_stop_approach",
+  "low_speed_model_runway_positive_cap",
+}
+LEAD_FOLLOW_SEED_REASONS = {
+  "stopped_lead_stop_gap_guard",
+  "creep_to_stop_gap",
+  "creep_to_stop_gap_accel_cap",
+  "stopped_lead_gap_fill",
+  "stopped_lead_gap_fill_accel_cap",
+  "lead_crawl_accel_cap",
+  "stopped_lead_creep_hold",
+  "moving_lead_stop_gap_guard",
+  "lead_accel_recovery",
+  "lead_stop_approach_slew",
+  "lead_loss_e2e_guard",
+}
+LAUNCH_SEED_REASONS = {
+  "creep_pullaway_launch",
+  "creep_pullaway_launch_accel_cap",
+  "low_speed_pullaway_accel_step_floor",
+  "low_speed_pullaway_accel_step_cap",
+}
+DRIVER_CRUISE_SEED_REASONS = {"plain_cruise_overspeed_coast"}
+
+
+class CustomV2SceneValidationError(ValueError):
+  def __init__(self, reason: str):
+    self.reason = reason
+    super().__init__(reason)
 
 
 @dataclass(frozen=True)
@@ -84,6 +122,7 @@ class CustomV2Decision:
   selected_intent: str
   selected_reason: str
   rejected: tuple[tuple[str, str], ...]
+  limit_jerk: bool = True
 
 
 def dynamic_cruise_overspeed_leeway(accel_coast: float) -> float:
@@ -133,9 +172,12 @@ class CustomLongitudinalStackV2:
 
   def update(self, sunnypilot_output: LongitudinalStackOutput, scene: CustomV2Scene | None = None,
              accel_limits: tuple[float | None, float | None] = (None, None)) -> LongitudinalStackOutput:
-    scene = scene or CustomV2Scene()
+    scene = _validated_scene(scene or CustomV2Scene())
     decision = self._decide(sunnypilot_output, scene, accel_limits)
-    speeds, accels, jerks = _synth_trajectory(sunnypilot_output, scene, decision.a_target)
+    if _preserve_seed_trajectory(sunnypilot_output, decision):
+      speeds, accels, jerks = sunnypilot_output.speeds, sunnypilot_output.accels, sunnypilot_output.jerks
+    else:
+      speeds, accels, jerks = _synth_trajectory(sunnypilot_output, scene, decision.a_target, decision.limit_jerk)
     debug: dict[str, Any] = dict(sunnypilot_output.debug)
     debug.update({
       "custom_stack": self.stack_name,
@@ -158,25 +200,18 @@ class CustomLongitudinalStackV2:
   def _decide(self, output: LongitudinalStackOutput, scene: CustomV2Scene,
               accel_limits: tuple[float | None, float | None]) -> CustomV2Decision:
     a_target = _clip_to_limits(output.a_target, accel_limits)
-    selected_intent = "driver_cruise"
-    selected_reason = "sunnypilot_current_seed"
+    selected_intent, selected_reason = _classify_seed(output, scene)
     should_stop = bool(output.should_stop)
     rejected: list[tuple[str, str]] = []
-    planner_seed = output.debug.get("custom_v2_seed_context") == "planner"
-    allow_v2_lead_progress = not (planner_seed and scene.has_lead)
+    limit_jerk = True
 
-    stop_released_by_lead = allow_v2_lead_progress and lead_evidence_releases_stop(scene)
-    stop_active = scene.stop_threat and not stop_released_by_lead and allow_v2_lead_progress
+    stop_active = scene.stop_threat and not scene.has_lead
     blocked = scene.force_slow_decel or scene.brake_pressed or scene.gas_pressed
-
-    if scene.stop_threat and stop_released_by_lead:
-      should_stop = False
-      rejected.append(("stop_approach", "lead_pullaway_release"))
 
     if not blocked and not stop_active:
       a_target, selected_intent, selected_reason = self._apply_progress_floors(
         a_target, selected_intent, selected_reason, scene, accel_limits, rejected,
-        allow_lead_progress=allow_v2_lead_progress,
+        allow_lead_progress=False,
       )
     elif blocked:
       rejected.append(("launch", "driver_or_force_blocked"))
@@ -194,18 +229,20 @@ class CustomLongitudinalStackV2:
         selected_reason = "clear_margin_advisory_softening"
 
     if stop_active:
-      stop_a_target = _stop_approach_accel(scene, a_target)
+      stop_a_target, stop_reason, hard_stop = _stop_approach_accel(scene, a_target, accel_limits)
       if stop_a_target < a_target or scene.model_should_stop:
         a_target = stop_a_target
         should_stop = should_stop or scene.model_should_stop
         selected_intent = "stop_approach"
-        selected_reason = "comfort_early_stop_threat"
+        selected_reason = stop_reason
+        limit_jerk = not hard_stop
 
     if scene.force_slow_decel:
       a_target = min(a_target, SAFETY_FORCE_SLOW_DECEL)
       should_stop = True
       selected_intent = "safety_cap"
       selected_reason = "force_slow_decel"
+      limit_jerk = False
 
     return CustomV2Decision(
       a_target=_clip_to_limits(a_target, accel_limits),
@@ -213,6 +250,7 @@ class CustomLongitudinalStackV2:
       selected_intent=selected_intent,
       selected_reason=selected_reason,
       rejected=tuple(rejected),
+      limit_jerk=limit_jerk,
     )
 
   def _apply_progress_floors(self, a_target: float, selected_intent: str, selected_reason: str,
@@ -298,12 +336,20 @@ def _dynamic_cruise_coast_accel(scene: CustomV2Scene, a_target: float) -> float:
   return min(0.0, max(a_target, coast_target))
 
 
-def _stop_approach_accel(scene: CustomV2Scene, current_a_target: float) -> float:
+def _stop_approach_accel(scene: CustomV2Scene, current_a_target: float,
+                         accel_limits: tuple[float | None, float | None]) -> tuple[float, str, bool]:
   stop_a_target = min(current_a_target, scene.model_desired_accel, STOP_APPROACH_COMFORT_DECEL)
+  selected_reason = "comfort_early_stop_threat"
+  hard_stop = False
   if scene.model_stop_distance is not None and scene.model_stop_distance > 0.0:
     required = -(scene.v_ego ** 2) / (2.0 * max(scene.model_stop_distance, 1.0))
     stop_a_target = min(stop_a_target, required)
-  return max(STOP_APPROACH_DECEL_MIN, stop_a_target)
+    if scene.model_should_stop and required < STOP_APPROACH_DECEL_MIN:
+      selected_reason = "hard_model_stop_threat"
+      hard_stop = True
+  if hard_stop:
+    return _clip_to_limits(stop_a_target, accel_limits), selected_reason, True
+  return max(STOP_APPROACH_DECEL_MIN, stop_a_target), selected_reason, False
 
 
 def _comfort_relax_allowed(scene: CustomV2Scene) -> bool:
@@ -312,7 +358,8 @@ def _comfort_relax_allowed(scene: CustomV2Scene) -> bool:
     not scene.stop_threat and
     not scene.force_slow_decel and
     not scene.brake_pressed and
-    not scene.gas_pressed
+    not scene.gas_pressed and
+    not (scene.map_caution_active and scene.map_caution_confirmed)
   )
 
 
@@ -339,6 +386,71 @@ def _clip_to_limits(value: float, accel_limits: tuple[float | None, float | None
   return float(value)
 
 
+def _classify_seed(output: LongitudinalStackOutput, scene: CustomV2Scene) -> tuple[str, str]:
+  reason = str(output.debug.get("planner_seed_candidate_reason", ""))
+  if not reason:
+    return "driver_cruise", "sunnypilot_current_seed"
+  if reason == "planner_seed_mpc":
+    if scene.force_slow_decel:
+      return "safety_cap", reason
+    if output.has_lead or scene.has_lead or str(output.source) in {"lead0", "lead1"}:
+      return "lead_follow", reason
+    if output.should_stop:
+      return "stop_approach", reason
+    return "driver_cruise", reason
+  if reason in STOP_APPROACH_SEED_REASONS:
+    return "stop_approach", reason
+  if reason in LEAD_FOLLOW_SEED_REASONS:
+    return "lead_follow", reason
+  if reason in LAUNCH_SEED_REASONS:
+    return "launch", reason
+  if reason in DRIVER_CRUISE_SEED_REASONS:
+    return "driver_cruise", reason
+  return "driver_cruise", reason
+
+
+def _preserve_seed_trajectory(output: LongitudinalStackOutput, decision: CustomV2Decision) -> bool:
+  return math.isclose(float(output.a_target), float(decision.a_target), abs_tol=A_TARGET_EPS)
+
+
+def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
+  core_fields = (
+    "v_ego", "v_cruise", "a_ego", "accel_coast", "lead_v", "lead_v_rel", "lead_gap_excess", "model_desired_accel",
+  )
+  for field_name in core_fields:
+    if not _finite(getattr(scene, field_name)):
+      raise CustomV2SceneValidationError(f"invalid_scene_{field_name}")
+
+  if scene.model_stop_distance is not None and not _finite(scene.model_stop_distance):
+    raise CustomV2SceneValidationError("invalid_scene_model_stop_distance")
+
+  speed_limit_active = bool(scene.speed_limit_active)
+  if speed_limit_active and not (_finite(scene.speed_limit_v_target) and _finite(scene.speed_limit_a_target)):
+    speed_limit_active = False
+
+  curve_active = bool(scene.curve_active)
+  if curve_active and not _finite(scene.curve_a_target):
+    curve_active = False
+
+  map_caution_active = bool(scene.map_caution_active)
+  map_caution_confirmed = bool(scene.map_caution_confirmed)
+  if map_caution_active and not _finite(scene.map_caution_a_target):
+    map_caution_active = False
+    map_caution_confirmed = False
+
+  return replace(
+    scene,
+    speed_limit_active=speed_limit_active,
+    curve_active=curve_active,
+    map_caution_active=map_caution_active,
+    map_caution_confirmed=map_caution_confirmed,
+  )
+
+
+def _finite(value: object) -> bool:
+  return isinstance(value, Real) and math.isfinite(float(value))
+
+
 def _clip(value: float, lower: float, upper: float) -> float:
   return max(lower, min(upper, value))
 
@@ -351,13 +463,31 @@ def _interp(value: float, x0: float, x1: float, y0: float, y1: float) -> float:
 
 
 def _synth_trajectory(output: LongitudinalStackOutput, scene: CustomV2Scene,
-                      a_target: float) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
+                      a_target: float, limit_jerk: bool) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
   speeds_in = tuple(output.speeds)
   accels_in = tuple(output.accels)
   v0 = scene.v_ego if math.isfinite(scene.v_ego) and scene.v_ego >= 0.0 else (float(speeds_in[0]) if speeds_in else 0.0)
-  speeds = tuple(max(0.0, v0 + a_target * SYNTH_TRAJECTORY_DT * idx) for idx in range(CONTROL_N))
-  accels = tuple(float(a_target) for _ in range(CONTROL_N))
   prev_accel = float(accels_in[0]) if accels_in else float(a_target)
-  initial_jerk = (float(a_target) - prev_accel) / SYNTH_TRAJECTORY_DT
-  jerks = (initial_jerk, *tuple(0.0 for _ in range(CONTROL_N - 1)))
-  return speeds, accels, jerks
+  accels: list[float] = []
+  jerks: list[float] = []
+  current_accel = prev_accel
+  for _idx in range(CONTROL_N):
+    if limit_jerk:
+      delta = _clip(
+        float(a_target) - current_accel,
+        NORMAL_NEGATIVE_RETREAT_JERK * SYNTH_TRAJECTORY_DT,
+        POSITIVE_PROGRESS_JERK * SYNTH_TRAJECTORY_DT,
+      )
+      next_accel = current_accel + delta
+    else:
+      next_accel = float(a_target)
+    jerks.append((next_accel - current_accel) / SYNTH_TRAJECTORY_DT)
+    accels.append(next_accel)
+    current_accel = next_accel
+
+  speeds: list[float] = []
+  current_speed = max(0.0, v0)
+  for accel in accels:
+    speeds.append(current_speed)
+    current_speed = max(0.0, current_speed + accel * SYNTH_TRAJECTORY_DT)
+  return tuple(speeds), tuple(accels), tuple(jerks)
