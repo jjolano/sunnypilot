@@ -29,6 +29,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   has_model_stop_context,
   has_valid_radar_lead,
   limit_accel_in_turns,
+  should_enable_longitudinal_decision_layer,
   should_run_engage_stop_bootstrap,
 )
 
@@ -63,6 +64,12 @@ def test_has_valid_radar_lead_checks_both_tracks():
   assert not has_valid_radar_lead(make_radar_state())
   assert has_valid_radar_lead(make_radar_state(lead_one=True))
   assert has_valid_radar_lead(make_radar_state(lead_two=True))
+
+
+def test_decision_layer_is_baked_into_custom_stacks_only():
+  assert not should_enable_longitudinal_decision_layer(SimpleNamespace(resolved_stack="sunnypilot-current"))
+  assert should_enable_longitudinal_decision_layer(SimpleNamespace(resolved_stack="custom-1.0"))
+  assert should_enable_longitudinal_decision_layer(SimpleNamespace(resolved_stack="custom-recommended"))
 
 
 def test_limit_accel_in_turns_defaults_to_legacy_kinematic_calculation():

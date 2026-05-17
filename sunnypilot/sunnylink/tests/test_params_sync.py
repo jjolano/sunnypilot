@@ -215,11 +215,7 @@ def test_known_params_metadata():
   assert acc_long["max"] == 10
   assert acc_long["step"] == 1
 
-  decision_layer = metadata.get("LongitudinalDecisionLayer")
-  assert decision_layer is not None
-  assert decision_layer["title"] == "Longitudinal Decision Layer"
-  assert "decision" in decision_layer["description"].lower()
-  assert "unified" in decision_layer["description"].lower()
+  assert "LongitudinalDecisionLayer" not in metadata
 
   longitudinal_stack = metadata.get("LongitudinalStack")
   assert longitudinal_stack is not None

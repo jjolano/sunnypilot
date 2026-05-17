@@ -670,10 +670,6 @@
       }
     ]
   },
-  "LongitudinalDecisionLayer": {
-    "title": "Longitudinal Decision Layer",
-    "description": "Enable the longitudinal decision layer. Arbitrates cruise, lead, e2e, speed-limit, SCC, OSM, and coast candidates through a unified policy with legacy fallback. Enabled by default."
-  },
   "LongitudinalStack": {
     "title": "Longitudinal Stack",
     "description": "Selects which longitudinal control stack is used after sunnypilot longitudinal control is active. Default is sunnypilot-current; custom-recommended resolves per vehicle.",

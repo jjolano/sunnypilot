@@ -100,11 +100,6 @@ class CruiseLayout(Widget):
       description=tr("Enable toggle to allow the model to determine when to use sunnypilot ACC or sunnypilot End to End Longitudinal."),
       param="DynamicExperimentalControl")
 
-    self.longitudinal_decision_layer_toggle = toggle_item_sp(
-      title=tr("Longitudinal Decision Layer (Experimental)"),
-      description=tr("Use the new unified longitudinal arbitration layer. This is opt-in and falls back to current planner behavior if disabled or invalid."),
-      param="LongitudinalDecisionLayer")
-
     self.longitudinal_stack_item = ListItemSP(
       title=tr("Longitudinal Stack"),
       description=tr(LONG_STACK_DESCRIPTION),
@@ -115,7 +110,6 @@ class CruiseLayout(Widget):
     items = [
       self.icbm_toggle,
       self.dec_toggle,
-      self.longitudinal_decision_layer_toggle,
       self.longitudinal_stack_item,
       self.scc_v_toggle,
       self.scc_m_toggle,
@@ -172,19 +166,16 @@ class CruiseLayout(Widget):
       if has_long or has_icbm:
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
         self.dec_toggle.action_item.set_enabled(has_long)
-        self.longitudinal_decision_layer_toggle.action_item.set_enabled(has_long)
         self.longitudinal_stack_item.action_item.set_enabled(has_long and ui_state.is_offroad())
         self.scc_v_toggle.action_item.set_enabled(True)
         self.scc_m_toggle.action_item.set_enabled(True)
       else:
         ui_state.params.remove("CustomAccIncrementsEnabled")
         ui_state.params.remove("DynamicExperimentalControl")
-        ui_state.params.remove("LongitudinalDecisionLayer")
         ui_state.params.remove("SmartCruiseControlVision")
         ui_state.params.remove("SmartCruiseControlMap")
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.dec_toggle.action_item.set_enabled(False)
-        self.longitudinal_decision_layer_toggle.action_item.set_enabled(False)
         self.longitudinal_stack_item.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)

@@ -214,6 +214,10 @@ def has_model_stop_context(model_msg):
   return any(x > 0.0 and v <= ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED for x, v in zip(positions, velocities, strict=False))
 
 
+def should_enable_longitudinal_decision_layer(stack_resolution) -> bool:
+  return stack_resolution is None or is_custom_stack(getattr(stack_resolution, "resolved_stack", ""))
+
+
 def get_model_stop_distance(model_msg):
   positions = list(getattr(model_msg.position, "x", []))
   velocities = list(getattr(model_msg.velocity, "x", []))
@@ -1361,9 +1365,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     source_stability_v_ego = None if (
       reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed
     ) else v_ego
-    decision_layer_stack_enabled = stack_resolution is None or is_custom_stack(getattr(stack_resolution, "resolved_stack", ""))
     self.longitudinal_decision = resolve_longitudinal_decision(
-      enabled=self.params.get_bool("LongitudinalDecisionLayer") and decision_layer_stack_enabled,
+      enabled=should_enable_longitudinal_decision_layer(stack_resolution),
       candidates=self.longitudinal_decision_candidates,
       fallback_v_target=v_cruise,
       fallback_a_target=legacy_a_target,

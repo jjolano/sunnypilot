@@ -20,3 +20,10 @@ def test_longitudinal_stack_selector_is_offroad_gated_and_requests_cycle():
   assert "self.longitudinal_stack_item.action_item.set_enabled(has_long and ui_state.is_offroad())" in source
   assert "ui_state.params.put(\"LongitudinalStack\", selected_ref)" in source
   assert "ui_state.params.put_bool(\"OnroadCycleRequested\", True)" in source
+
+
+def test_decision_layer_is_not_user_toggle():
+  source = CRUISE_SETTINGS.read_text()
+
+  assert "LongitudinalDecisionLayer" not in source
+  assert "longitudinal_decision_layer_toggle" not in source
