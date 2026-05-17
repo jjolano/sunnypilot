@@ -53,8 +53,6 @@ class ControlsExt(ModelStateBase):
       return lac
 
     if not native_torque:
-      if torque_version == 3.0:
-        return LatControlTorqueV3(self.CP, self.CP_SP, CI, dt)
       return lac
 
     if torque_version == 0.0:

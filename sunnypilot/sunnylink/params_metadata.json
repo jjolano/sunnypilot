@@ -1389,7 +1389,7 @@
   },
   "TorqueControlTune": {
     "title": "Torque Control Tune Version",
-    "description": "Select the version of Torque Control Tune to use.",
+    "description": "Select the torque controller version. Default uses v2.0; v3.0 is experimental and only runs on native torque vehicles.",
     "options": [
       {
         "value": "",

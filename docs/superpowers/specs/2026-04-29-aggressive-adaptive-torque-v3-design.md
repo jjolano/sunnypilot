@@ -1,5 +1,9 @@
 # Aggressive Adaptive Torque V3 Design
 
+Status: superseded by `docs/adr/0001-redesign-torque-v3.md`
+
+This document describes the old universal adaptive Torque v3 direction. It is retained as historical context only; fresh Torque v3 is native-torque-only, follows processed curvature, and uses bounded session response-scale/trim learning instead of synthetic torque model authority.
+
 ## Summary
 
 Torque v3 is an opt-in lateral torque controller for every non-angle-control vehicle. It keeps the proven torque v2 safety envelope, but replaces v2's mostly fixed torque model with an adaptive model that can learn normalized torque response online. Native torque-tuned cars start from their existing car-interface torque conversion. PID or otherwise non-torque non-angle cars start from a conservative synthetic model, then earn authority as the online estimator proves stable behavior.
