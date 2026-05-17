@@ -26,6 +26,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist 
   DISTANCE_LONG_PRESS,
   PRE_ACTIVE_GUARD_PERIOD,
   SpeedLimitAssist,
+  SunnypilotCurrentSpeedLimitAssist,
 )
 from openpilot.sunnypilot.selfdrive.selfdrived import events as events_sp_module
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
@@ -453,3 +454,30 @@ class TestSpeedLimitAssist:
         assert self.sla.state == SpeedLimitAssistState.active
       elif initial_state in ACTIVE_STATES:
         assert self.sla.state in ACTIVE_STATES
+
+  def test_sunnypilot_current_activates_without_gap_long_hold(self):
+    current_sla = SunnypilotCurrentSpeedLimitAssist(self.sla.CP, self.sla.CP_SP)
+    v_cruise_cluster = self.pcm_long_max_set_speed if current_sla.pcm_op_long else SPEED_LIMITS['freeway']
+
+    for _ in range(int(1.0 / DT_MDL)):
+      current_sla.update(True, False, SPEED_LIMITS['freeway'], 0.0, v_cruise_cluster,
+                         SPEED_LIMITS['freeway'], SPEED_LIMITS['freeway'], True, 0.0, self.events_sp)
+
+    assert not current_sla.auto_enabled
+    assert current_sla.state in ACTIVE_STATES
+    assert current_sla.output_v_target == pytest.approx(SPEED_LIMITS['freeway'])
+
+  def test_sunnypilot_current_reports_current_accel_for_speed_limit_target(self):
+    current_sla = SunnypilotCurrentSpeedLimitAssist(self.sla.CP, self.sla.CP_SP)
+    current_sla.state = SpeedLimitAssistState.active
+    current_sla.long_enabled_prev = True
+    v_cruise_cluster = self.pcm_long_max_set_speed if current_sla.pcm_op_long else SPEED_LIMITS['freeway']
+    speed_conv = CV.MS_TO_KPH if current_sla.is_metric else CV.MS_TO_MPH
+    current_sla.prev_v_cruise_cluster_conv = round(v_cruise_cluster * speed_conv)
+
+    current_sla.update(True, False, SPEED_LIMITS['city'], -0.4, v_cruise_cluster,
+                       SPEED_LIMITS['freeway'], SPEED_LIMITS['freeway'], True, 100.0, self.events_sp)
+
+    assert current_sla.state in ACTIVE_STATES
+    assert current_sla.output_v_target == pytest.approx(SPEED_LIMITS['freeway'])
+    assert current_sla.output_a_target == pytest.approx(-0.4)

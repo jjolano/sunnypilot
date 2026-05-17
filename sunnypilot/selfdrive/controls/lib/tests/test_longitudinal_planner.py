@@ -149,6 +149,31 @@ class TestStackAwareTargetSelection(unittest.TestCase):
     self.assertEqual(v_target, 15.0)
     self.assertEqual(a_target, -0.2)
 
+  def test_sunnypilot_current_clears_custom_only_handoff_and_decision_candidates(self):
+    planner = make_target_planner("sunnypilot-current")
+    planner.scc = FakeStackSCC(vision=(8.0, -1.0, True), map_target=(7.0, -1.0, True))
+    planner.resolver = FakeStackResolver(speed_limit=8.0, speed_limit_final_last=8.0)
+    planner.sla = FakeStackSLA(target=(8.0, -1.0), active=True)
+    planner.osm_traffic_control_prior = FakeStackOsmPrior(target=(6.0, -1.0), active=True)
+    planner.sunnypilot_current_scc = FakeStackSCC(vision=(18.0, -0.1, True))
+    planner.sunnypilot_current_resolver = FakeStackResolver()
+    planner.sunnypilot_current_sla = FakeStackSLA()
+    planner.decision_candidates_sp = ["stale-custom-candidate"]
+    planner._speed_limit_handoff_active = True
+    planner._speed_limit_active_prev = True
+
+    v_target, a_target = LongitudinalPlannerSP.update_targets(planner, make_target_sm(), 12.0, 0.2, 20.0)
+
+    self.assertEqual(planner.source, LongitudinalPlanSource.sccVision)
+    self.assertEqual(v_target, 18.0)
+    self.assertEqual(a_target, -0.1)
+    self.assertEqual(planner.scc.update_count, 0)
+    self.assertEqual(planner.osm_traffic_control_prior.update_count, 0)
+    self.assertEqual(planner.sunnypilot_current_scc.update_count, 1)
+    self.assertEqual(planner.decision_candidates_sp, [])
+    self.assertFalse(planner._speed_limit_handoff_active)
+    self.assertFalse(planner._speed_limit_active_prev)
+
   def test_custom_stack_uses_custom_target_providers(self):
     planner = make_target_planner("custom-1.0")
     planner.scc = FakeStackSCC(vision=(8.0, -1.0, True))

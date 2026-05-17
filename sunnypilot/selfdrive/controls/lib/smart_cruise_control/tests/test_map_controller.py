@@ -20,8 +20,10 @@ from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_contro
   R,
   TO_DEGREES,
   SmartCruiseControlMap,
+  SunnypilotCurrentSmartCruiseControlMap,
   distance_to_point,
   point_distance,
+  sunnypilot_current_velocities_from_param,
   velocities_from_param,
 )
 
@@ -545,3 +547,43 @@ class TestSmartCruiseControlMap:
     model_msg = make_model_prediction(distance=50.0, yaw_rate=0.02)
 
     assert self.scc_m._prediction_control_target(15.0, 50.0, model_msg) == 15.0
+
+
+class TestSunnypilotCurrentSmartCruiseControlMap:
+  def setup_method(self):
+    self.params = Params()
+    self.mem_params = MockParams()
+    self.params.put_bool("SmartCruiseControlMap", True)
+    self.mem_params.put("LastGPSPosition", json.dumps({"latitude": 0.0, "longitude": 0.0}))
+    self.mem_params.put("MapTargetVelocities", "[]")
+    self.mem_params.put("MapAdvisorySpeedLimit", "{}")
+    self.mem_params.put("MapAdvisoryLimit", "{}")
+    self.scc_m = SunnypilotCurrentSmartCruiseControlMap()
+    self.scc_m.mem_params = self.mem_params
+
+  def test_current_map_uses_master_json_parser(self):
+    self.mem_params.put("MapTargetVelocities", "not-json")
+
+    with pytest.raises(json.JSONDecodeError):
+      sunnypilot_current_velocities_from_param("MapTargetVelocities", self.mem_params)
+
+  def test_current_map_holds_ego_accel_for_active_target(self):
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": 0.0, "velocity": 15.0},
+    ]))
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, -0.65, 30.0)
+
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == pytest.approx(15.0)
+    assert self.scc_m.output_a_target == pytest.approx(-0.65)
+
+  def test_current_map_ignores_osm_advisory_speed_params(self):
+    self.mem_params.put("MapAdvisoryLimit", json.dumps({"speedlimit": 15.0, "distance": 0.0}))
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET

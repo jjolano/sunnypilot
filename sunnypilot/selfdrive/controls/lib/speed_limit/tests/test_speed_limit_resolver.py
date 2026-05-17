@@ -13,7 +13,11 @@ from pytest_mock import MockerFixture
 from cereal import custom
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_ADAPT_ACC, LIMIT_COAST_APPROACH_MARGIN_S, LIMIT_MAX_MAP_DATA_AGE
 
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver, ALL_SOURCES
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import (
+  SpeedLimitResolver,
+  SunnypilotCurrentSpeedLimitResolver,
+  ALL_SOURCES,
+)
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import OffsetType, Policy
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
@@ -329,3 +333,48 @@ class TestSpeedLimitResolverValidation:
 
     assert resolver.limit_solutions[SpeedLimitSource.map] == speed_limit
     assert resolver.distance_solutions[SpeedLimitSource.map] == 0.
+
+
+class TestSunnypilotCurrentSpeedLimitResolver:
+  def setup_current_resolver(self):
+    resolver = SunnypilotCurrentSpeedLimitResolver()
+    resolver.params = RuntimeParams({
+      "SpeedLimitPolicy": Policy.map_data_only,
+      "SpeedLimitOffsetType": OffsetType.off,
+      "SpeedLimitValueOffset": 0,
+      "IsMetric": True,
+    })
+    resolver.frame = 0
+    return resolver
+
+  def test_lower_next_map_limit_uses_master_adapt_distance_without_coast_margin(self, mocker: MockerFixture, monkeypatch):
+    now = 12_345.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    v_ego = 30.0
+    speed_limit = 30.0
+    next_speed_limit = 20.0
+    adapt_distance = (next_speed_limit ** 2 - v_ego ** 2) / (2. * LIMIT_ADAPT_ACC)
+    sm_mock = setup_map_sm_mock(mocker, speed_limit, next_speed_limit, adapt_distance + 1.0)
+    sm_mock['gpsLocation'].unixTimestampMillis = now * 1e3
+
+    resolver = self.setup_current_resolver()
+    resolver.update(v_ego, sm_mock)
+
+    assert resolver.speed_limit == speed_limit
+    assert resolver.distance == 0.
+    assert resolver.source == SpeedLimitSource.map
+
+  def test_faster_next_map_limit_can_relax_current_limit(self, mocker: MockerFixture, monkeypatch):
+    now = 12_345.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    speed_limit = 20.0
+    next_speed_limit = 25.0
+    sm_mock = setup_map_sm_mock(mocker, speed_limit, next_speed_limit, 0.)
+    sm_mock['gpsLocation'].unixTimestampMillis = now * 1e3
+
+    resolver = self.setup_current_resolver()
+    resolver.update(30.0, sm_mock)
+
+    assert resolver.speed_limit == next_speed_limit
+    assert resolver.distance == 0.
+    assert resolver.source == SpeedLimitSource.map

@@ -20,11 +20,14 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import (
   SmartCruiseControlVision,
+  SunnypilotCurrentSmartCruiseControlVision,
   _A_LAT_REG_MAX,
   _CURRENT_LAT_ACC_BLEED_TH,
   _ENTERING_PRED_LAT_ACC_TH,
   _IN_TURN_LAT_ACC_TARGET,
   _NO_OVERSHOOT_TIME_HORIZON,
+  _SUNNYPILOT_CURRENT_A_LAT_REG_MAX,
+  _SUNNYPILOT_CURRENT_NO_OVERSHOOT_TIME_HORIZON,
 )
 
 VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
@@ -561,3 +564,70 @@ class TestSmartCruiseControlVision:
       assert self.scc_v.state == VisionState.enabled
 
   # TODO-SP: mock modelV2 data to test other states
+
+
+class TestSunnypilotCurrentSmartCruiseControlVision:
+  def setup_method(self):
+    self.params = Params()
+    self.params.put_bool("SmartCruiseControlVision", True)
+    self.params.put_bool("AccurateLateralAccel", False)
+    self.scc_v = SunnypilotCurrentSmartCruiseControlVision()
+
+    mdl = generate_modelV2()
+    cs = generate_carState()
+    controls_state = generate_controlsState()
+    self.sm = {
+      'modelV2': mdl.modelV2,
+      'carState': cs.carState,
+      'controlsState': controls_state.controlsState,
+      'liveParameters': generate_liveParameters(),
+    }
+
+  def test_entering_state_uses_master_decel_and_overshoot_horizon(self):
+    pred_lat_accels = _constant_pred_lat_accels(3.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    predicted_curve = 3.0 / (v_ego**2)
+    expected_v_target = (_SUNNYPILOT_CURRENT_A_LAT_REG_MAX / predicted_curve) ** 0.5
+
+    assert self.scc_v.state == VisionState.entering
+    assert self.scc_v.a_target == pytest.approx(-1.0)
+    assert self.scc_v.v_target == pytest.approx(expected_v_target)
+    assert self.scc_v.v_target - self.scc_v.output_v_target == pytest.approx(_SUNNYPILOT_CURRENT_NO_OVERSHOOT_TIME_HORIZON)
+
+  def test_current_curve_bleed_does_not_start_turn_without_prediction(self):
+    pred_lat_accels = _constant_pred_lat_accels(1.0)
+    mdl = generate_modelV2()
+    _set_predicted_lat_accels(mdl, pred_lat_accels)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    high_current_curvature = 3.0 / (v_ego**2)
+    self.sm["controlsState"] = generate_controlsState(high_current_curvature).controlsState
+
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.current_lat_acc == pytest.approx(3.0)
+    assert not self.scc_v.current_lat_acc_bleed
+    assert self.scc_v.state == VisionState.enabled
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_lateral_accel_uses_master_curvature_calculation_even_with_accurate_param(self):
+    self.params.put_bool("AccurateLateralAccel", True)
+    self.scc_v = SunnypilotCurrentSmartCruiseControlVision()
+    v_ego = 20.0
+    roll = math.asin(2.0 / ACCELERATION_DUE_TO_GRAVITY)
+    self.sm["controlsState"] = generate_controlsState(3.0 / v_ego**2).controlsState
+    self.sm["liveParameters"] = generate_liveParameters(roll)
+
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, v_ego)
+
+    assert self.scc_v.current_lat_acc == pytest.approx(3.0)
