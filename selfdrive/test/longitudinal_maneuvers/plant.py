@@ -8,6 +8,8 @@ from openpilot.common.realtime import Ratekeeper, DT_MDL
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.fallback import CustomStackFallbackWrapper
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import resolve_longitudinal_stack
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 
 
@@ -15,7 +17,8 @@ class Plant:
   messaging_initialized = False
 
   def __init__(self, lead_relevancy=False, lead2_relevancy=False, speed=0.0, distance_lead=2.0, distance_lead2=200.0,
-               enabled=True, only_lead2=False, only_radar=False, e2e=False, personality=0, force_decel=False):
+               enabled=True, only_lead2=False, only_radar=False, e2e=False, personality=0, force_decel=False,
+               longitudinal_stack=None):
     self.rate = 1. / DT_MDL
 
     if not Plant.messaging_initialized:
@@ -57,6 +60,14 @@ class Plant:
     CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
     CP_SP = CarInterface.get_non_essential_params_sp(CP, CAR.HONDA_CIVIC)
     self.planner = LongitudinalPlanner(CP, CP_SP, init_v=self.speed)
+    if longitudinal_stack is not None:
+      self.planner.longitudinal_stack_resolution = resolve_longitudinal_stack(longitudinal_stack, CP, CP_SP)
+      self.planner.longitudinal_stack_fallback = CustomStackFallbackWrapper(
+        custom_stack=self.planner.longitudinal_stack_resolution.resolved_stack,
+      )
+      self.planner.custom_longitudinal_stack = self.planner._make_custom_longitudinal_stack(
+        self.planner.longitudinal_stack_resolution.resolved_stack,
+      )
 
   @property
   def current_time(self):
@@ -156,6 +167,7 @@ class Plant:
     model.modelV2.meta.disengagePredictions.gasPressProbs = [float(prob_throttle) for _ in range(6)]
 
     control.controlsState.longControlState = LongCtrlState.pid if self.enabled else LongCtrlState.off
+    ss.selfdriveState.enabled = self.enabled
     ss.selfdriveState.experimentalMode = self.e2e
     ss.selfdriveState.personality = self.personality
     control.controlsState.forceDecel = self.force_decel

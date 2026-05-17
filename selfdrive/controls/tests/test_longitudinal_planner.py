@@ -8,8 +8,11 @@ from opendbc.car.interfaces import ACCEL_MAX
 from opendbc.car.toyota.values import CAR as TOYOTA
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.constants import CV
+from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v1 import CUSTOM_V1_FLOOR
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+  build_custom_v1_accel_candidate,
   E2E_CLOSE_STOP_DECEL_MAX,
   E2E_CLOSE_STOP_MIN_ROLLING_V,
   E2E_STOP_APPROACH_DECEL_MAX,
@@ -140,6 +143,33 @@ def test_engage_stop_bootstrap_activates_for_model_should_stop_without_lead():
   assert should_run_engage_stop_bootstrap(0.5, 10.0, make_radar_state(), make_model_msg(should_stop=True))
 
 
+def test_engage_stop_bootstrap_custom_candidate_does_not_mutate_baseline_output():
+  planner = SimpleNamespace(
+    output_a_target=0.1,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="cruise"),
+    v_desired_trajectory=tuple(10.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(0.1 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "engage_stop_bootstrap", -1.2, has_lead=False, reason="engage_model_stop_bootstrap",
+    accel_limits=(-2.0, 2.0), should_stop=True,
+  )
+
+  assert candidate is not None
+  assert candidate.name == "engage_stop_bootstrap"
+  assert candidate.output.a_target == pytest.approx(-1.2)
+  assert candidate.output.should_stop
+  assert candidate.output.debug["custom_v1_candidate_reason"] == "engage_model_stop_bootstrap"
+  assert planner.output_a_target == pytest.approx(0.1)
+  assert not planner.output_should_stop
+
+
 def test_engage_stop_bootstrap_model_stop_context_uses_low_predicted_velocity():
   assert has_model_stop_context(make_model_msg(positions=[0.0, 20.0], velocities=[10.0, 0.5]))
   assert not has_model_stop_context(make_model_msg(positions=[0.0, 20.0], velocities=[10.0, 5.0]))
@@ -159,6 +189,204 @@ def test_e2e_stop_approach_brakes_for_short_no_lead_endpoint():
   accel = get_e2e_stop_approach_accel(12.0, make_model_msg(endpoint_x=45.0), make_radar_state(), True)
 
   assert -E2E_STOP_APPROACH_DECEL_MAX <= accel < -0.5
+
+
+def test_e2e_stop_approach_custom_candidate_does_not_mutate_baseline_output():
+  planner = SimpleNamespace(
+    output_a_target=-0.2,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="cruise"),
+    v_desired_trajectory=tuple(10.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(-0.2 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "e2e_stop_approach", -0.8, has_lead=False, reason="no_lead_model_stop_approach", accel_limits=(-2.0, 2.0),
+  )
+
+  assert candidate is not None
+  assert candidate.name == "e2e_stop_approach"
+  assert candidate.output.a_target == pytest.approx(-0.8)
+  assert candidate.output.debug["custom_v1_candidate_reason"] == "no_lead_model_stop_approach"
+  assert planner.output_a_target == pytest.approx(-0.2)
+
+
+def test_custom_v1_accel_candidate_skips_non_restrictive_target():
+  planner = SimpleNamespace(output_a_target=-0.2)
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "e2e_stop_approach", -0.1, has_lead=False, reason="no_lead_model_stop_approach", accel_limits=(-2.0, 2.0),
+  )
+
+  assert candidate is None
+
+
+def test_custom_v1_accel_floor_candidate_can_relax_baseline_output():
+  planner = SimpleNamespace(
+    output_a_target=-1.0,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="cruise"),
+    v_desired_trajectory=tuple(10.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(-1.0 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "cruise_coast", -0.3, has_lead=False, reason="plain_cruise_overspeed_coast",
+    accel_limits=(-2.0, 2.0), selection=CUSTOM_V1_FLOOR,
+  )
+
+  assert candidate is not None
+  assert candidate.name == "cruise_coast"
+  assert candidate.selection == CUSTOM_V1_FLOOR
+  assert candidate.output.a_target == pytest.approx(-0.3)
+  assert planner.output_a_target == pytest.approx(-1.0)
+
+
+def test_custom_v1_accel_floor_candidate_skips_non_relaxing_target():
+  planner = SimpleNamespace(output_a_target=-0.2, output_should_stop=False)
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "cruise_coast", -0.4, has_lead=False, reason="plain_cruise_overspeed_coast",
+    accel_limits=(-2.0, 2.0), selection=CUSTOM_V1_FLOOR,
+  )
+
+  assert candidate is None
+
+
+def test_custom_v1_accel_candidate_force_keeps_cap_available_for_floor_conflicts():
+  planner = SimpleNamespace(
+    output_a_target=-0.2,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="lead0"),
+    v_desired_trajectory=tuple(10.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(-0.2 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "creep_to_stop_gap_accel_cap", 0.18, has_lead=True,
+    reason="creep_to_stop_gap_accel_cap", accel_limits=(-2.0, 2.0), force=True,
+  )
+
+  assert candidate is not None
+  assert candidate.output.a_target == pytest.approx(0.18)
+  assert planner.output_a_target == pytest.approx(-0.2)
+
+
+def test_custom_v1_accel_candidate_can_carry_stop_intent_without_accel_delta():
+  planner = SimpleNamespace(
+    output_a_target=-0.2,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="cruise"),
+    v_desired_trajectory=tuple(10.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(-0.2 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "e2e_close_stop_settle", -0.2, has_lead=False, reason="no_lead_close_stop_settle",
+    accel_limits=(-2.0, 2.0), should_stop=True,
+  )
+
+  assert candidate is not None
+  assert candidate.output.a_target == pytest.approx(-0.2)
+  assert candidate.output.should_stop
+  assert not planner.output_should_stop
+
+
+def test_moving_lead_stop_gap_guard_custom_candidate_does_not_mutate_baseline_output():
+  planner = SimpleNamespace(
+    output_a_target=0.1,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="lead0"),
+    v_desired_trajectory=tuple(10.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(0.1 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "moving_lead_stop_gap_guard", -0.7, has_lead=True, reason="moving_lead_stop_gap_guard", accel_limits=(-2.0, 2.0),
+  )
+
+  assert candidate is not None
+  assert candidate.name == "moving_lead_stop_gap_guard"
+  assert candidate.output.a_target == pytest.approx(-0.7)
+  assert candidate.output.has_lead
+  assert candidate.output.debug["custom_v1_candidate_reason"] == "moving_lead_stop_gap_guard"
+  assert planner.output_a_target == pytest.approx(0.1)
+
+
+def test_stopped_lead_stop_gap_guard_custom_candidate_carries_stop_intent_without_mutating_baseline():
+  planner = SimpleNamespace(
+    output_a_target=-0.1,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="lead0"),
+    v_desired_trajectory=tuple(10.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(-0.1 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "stopped_lead_stop_gap_guard", -0.8, has_lead=True, reason="stopped_lead_stop_gap_guard",
+    accel_limits=(-2.0, 2.0), should_stop=True,
+  )
+
+  assert candidate is not None
+  assert candidate.name == "stopped_lead_stop_gap_guard"
+  assert candidate.output.a_target == pytest.approx(-0.8)
+  assert candidate.output.should_stop
+  assert candidate.output.has_lead
+  assert candidate.output.debug["custom_v1_candidate_reason"] == "stopped_lead_stop_gap_guard"
+  assert planner.output_a_target == pytest.approx(-0.1)
+  assert not planner.output_should_stop
+
+
+def test_stopped_lead_creep_hold_custom_candidate_carries_stop_intent_without_mutating_baseline():
+  planner = SimpleNamespace(
+    output_a_target=0.0,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="lead0"),
+    v_desired_trajectory=tuple(10.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "stopped_lead_creep_hold", -0.25, has_lead=True, reason="stopped_lead_creep_hold",
+    accel_limits=(-2.0, 2.0), should_stop=True,
+  )
+
+  assert candidate is not None
+  assert candidate.name == "stopped_lead_creep_hold"
+  assert candidate.output.a_target == pytest.approx(-0.25)
+  assert candidate.output.should_stop
+  assert candidate.output.has_lead
+  assert candidate.output.debug["custom_v1_candidate_reason"] == "stopped_lead_creep_hold"
+  assert planner.output_a_target == pytest.approx(0.0)
+  assert not planner.output_should_stop
 
 
 def test_e2e_stop_approach_ignores_endpoint_with_sufficient_runway():
@@ -240,6 +468,39 @@ def test_e2e_close_stop_settle_holds_decel_at_route_like_stop_line():
   assert active
   assert should_stop
   assert -E2E_CLOSE_STOP_DECEL_MAX <= accel < -0.3
+
+
+def test_e2e_close_stop_settle_custom_candidate_does_not_mutate_baseline_output():
+  planner = SimpleNamespace(
+    output_a_target=-0.05,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="cruise"),
+    v_desired_trajectory=tuple(10.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(-0.05 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+  accel, should_stop, _active = get_e2e_close_stop_settle(
+    0.44,
+    -0.26,
+    make_model_msg(desired_accel=-0.26, positions=[0.0, 0.01, 20.0], velocities=[1.0, 0.2, 2.0]),
+    make_radar_state(),
+    True,
+  )
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "e2e_close_stop_settle", accel, has_lead=False, reason="no_lead_close_stop_settle",
+    accel_limits=(-2.0, 2.0), should_stop=should_stop,
+  )
+
+  assert candidate is not None
+  assert candidate.name == "e2e_close_stop_settle"
+  assert candidate.output.a_target < planner.output_a_target
+  assert candidate.output.should_stop
+  assert planner.output_a_target == pytest.approx(-0.05)
+  assert not planner.output_should_stop
 
 
 def test_e2e_close_stop_settle_keeps_stop_latch_below_rolling_speed():
@@ -418,6 +679,31 @@ def test_e2e_runway_positive_accel_cap_limits_short_runway_at_crawl():
   )
 
   assert 0.0 < cap < 1.0
+
+
+def test_e2e_runway_positive_cap_custom_candidate_does_not_mutate_baseline_output():
+  planner = SimpleNamespace(
+    output_a_target=0.5,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="cruise"),
+    v_desired_trajectory=tuple(10.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(0.5 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+
+  candidate = build_custom_v1_accel_candidate(
+    planner, "e2e_runway_positive_cap", 0.1, has_lead=False,
+    reason="low_speed_model_runway_positive_cap", accel_limits=(-2.0, 2.0),
+  )
+
+  assert candidate is not None
+  assert candidate.name == "e2e_runway_positive_cap"
+  assert candidate.output.a_target == pytest.approx(0.1)
+  assert candidate.output.debug["custom_v1_candidate_reason"] == "low_speed_model_runway_positive_cap"
+  assert planner.output_a_target == pytest.approx(0.5)
 
 
 def test_e2e_runway_positive_accel_cap_limits_final_endpoint_crawl():

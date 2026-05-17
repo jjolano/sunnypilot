@@ -2,7 +2,7 @@
 
 ## Summary
 
-Introduce a versioned longitudinal stack selector so this fork can choose between true upstream openpilot behavior, immediate upstream sunnypilot behavior, and a new custom longitudinal stack. The selector separates actuator takeover permission from stack implementation, gives `custom-*` a safe shadow fallback to `sunnypilot-current`, and creates durable telemetry so route analysis and future agents can understand which stack produced each command.
+Introduce a versioned longitudinal stack selector so this fork can choose between upstream sunnypilot behavior and a new custom longitudinal stack. The selector separates actuator takeover permission from stack implementation, gives `custom-*` a safe shadow fallback to `sunnypilot-current`, and creates durable telemetry so route analysis and future agents can understand which stack produced each command.
 
 This document is intentionally operational. Future implementation agents should treat it as the source of truth for the first rollout unless a later ADR/spec supersedes it.
 
@@ -11,7 +11,7 @@ This document is intentionally operational. Future implementation agents should 
 - Keep `AlphaLongitudinalEnabled` as the gas/brake takeover gate on alpha-long-capable cars.
 - Add one flat stack-selection param, tentatively `LongitudinalStack`.
 - Default/unset `LongitudinalStack` resolves to `sunnypilot-current`.
-- Supported user-facing stack families are `openpilot-current`, `sunnypilot-current`, and `custom-*`.
+- Supported user-facing stack families are `sunnypilot-current` and `custom-*`.
 - Expose custom versions, including `custom-recommended` and literal versions such as `custom-1.0`.
 - Store `custom-recommended` as a moving alias, not as a literal resolved version.
 - Resolve `custom-recommended` per platform, using a capability profile plus fingerprint overrides.
@@ -19,10 +19,9 @@ This document is intentionally operational. Future implementation agents should 
 - Allow users to force custom versions that are available but not recommended for their platform.
 - Hide or disable custom versions that are not available for the platform, except for deliberate developer/manual override paths.
 - Latch stack selection until restart/onroad cycle; do not hot-switch longitudinal stack while engaged.
-- `openpilot-current` is selectable only where true upstream openpilot longitudinal is valid. Factory/stock longitudinal remains `AlphaLongitudinalEnabled=false`.
-- `openpilot-current` must remain hidden/disabled until its adapter is implemented; requesting it manually should resolve safely to `sunnypilot-current`.
-- `openpilot-current` tracks the openpilot baseline as carried by sunnypilot upstream, not comma `master` directly.
-- `openpilot-current` and `sunnypilot-current` should use adapter wrappers around upstream-current code where possible; copy code only when a clean boundary cannot be exposed.
+- `sunnypilot-current` should match upstream sunnypilot longitudinal behavior and exclude this fork's retained longitudinal behavior changes.
+- Do not expose a separate `openpilot-current` option; upstream sunnypilot is the only baseline stack for this selector.
+- `sunnypilot-current` should use adapter wrappers around upstream-current code where possible; copy code only when a clean boundary cannot be exposed.
 - `custom-*` owns the whole normalized longitudinal stack: planner, target arbitration, stop/launch state, and accel-command controller.
 - `custom-*` stops at the normalized openpilot control boundary and does not own brand-specific CAN controllers, SCC button emulation, safety-param behavior, or platform message generation.
 - Build `custom-*` as a parallel stack, not as conditionals scattered through the current planner/controller.
@@ -45,9 +44,10 @@ The branch owns:
 - Stack selector manifest and platform resolution logic.
 - UI selector for stack/version choice.
 - Longitudinal stack interface types.
-- `openpilot-current` and `sunnypilot-current` adapters.
+- `sunnypilot-current` baseline adapter.
 - `custom-*` stack assembly and fallback wrapper.
 - `longitudinalPlanSP.stack` telemetry schema and publisher wiring.
+- `controlsd`/`LongControl` stack-actuation wiring needed to keep baseline controller behavior separate from custom controller behavior.
 - One-shot fallback alert event and tests.
 - Selector, fallback, and stack-contract tests.
 
@@ -60,7 +60,6 @@ Do not resolve cross-branch compatibility only on `custom`. If this branch chang
 Initial values:
 
 - unset or empty: `sunnypilot-current`
-- `openpilot-current`: true upstream openpilot longitudinal behavior as carried by sunnypilot upstream
 - `sunnypilot-current`: immediate upstream sunnypilot longitudinal behavior
 - `custom-recommended`: moving per-platform custom alias
 - `custom-1.0`: first custom stack version
@@ -129,16 +128,16 @@ Do not make brand-specific car controllers depend on stack internals. They shoul
 
 ## Baseline Stack Handling
 
-`openpilot-current` and `sunnypilot-current` are tracked baselines, not pinned historical snapshots.
+`sunnypilot-current` is a tracked baseline, not a pinned historical snapshot.
 
-Normal upstream sync may update the baseline behavior. The selector still provides value because it chooses between the current true-upstream baseline, the current sunnypilot-upstream baseline, and this fork's custom stack.
+Normal upstream sync may update the baseline behavior. The selector still provides value because it chooses between the current sunnypilot-upstream baseline and this fork's custom stack.
 
 Implementation guidance:
 
 - Prefer adapters around upstream-current code so normal upstream sync updates behavior naturally.
 - Keep adapter glue thin and easy to diff.
 - If code must be copied to preserve a boundary, include provenance comments with upstream source file and sync assumptions.
-- Add tests that prove `sunnypilot-current` bypasses this fork's custom retained longitudinal patches.
+- Add tests that prove `sunnypilot-current` bypasses this fork's retained longitudinal patches. Those behavior changes should migrate into `custom-v1` or later custom versions.
 
 ## Custom V1 Shape
 
@@ -223,10 +222,9 @@ struct Stack {
 
   enum StackId {
     unknown @0;
-    openpilotCurrent @1;
-    sunnypilotCurrent @2;
-    customRecommended @3;
-    customV1 @4;
+    sunnypilotCurrent @1;
+    customRecommended @2;
+    customV1 @3;
   }
 }
 ```
@@ -245,7 +243,6 @@ Recommended UI model:
 - A separate longitudinal stack/version selector appears only when longitudinal takeover is active or available.
 - The selector is disabled while onroad/engaged and changing it requests an onroad cycle/restart consistent with current longitudinal toggle behavior.
 - Show `sunnypilot-current` as the default baseline.
-- Show `openpilot-current` only when valid for the platform.
 - Show `Recommended` with resolved platform text.
 - Show available but not recommended custom versions under an experimental section.
 
@@ -277,20 +274,15 @@ Keep slices small enough for limited agent context windows.
 - Wrap current upstream sunnypilot behavior behind the interface.
 - Preserve existing actuated behavior for default/unset stack.
 
-6. `openpilot-current`
-- Add adapter for true upstream openpilot behavior where valid.
-- Disable option on unsupported platforms.
-- Add tests proving option visibility and selection behavior.
-
-7. Custom wrapper and fallback
+6. Custom wrapper and fallback
 - Add `custom-v1` shell using existing MPC as lower-level tool.
 - Run `sunnypilot-current` as shadow fallback.
 - Implement latch, fallback reason, telemetry, and one-shot event.
 - Add invalid-output and exception fallback tests.
 
-8. Custom migration
+7. Baseline isolation and custom migration
+- Ensure `sunnypilot-current` bypasses this fork's retained longitudinal behavior changes.
 - Move this fork's retained longitudinal behavior into `custom-v1` behind the interface.
-- Ensure `sunnypilot-current` bypasses custom retained behavior.
 - Add maneuver and Drive Lab route-comparison coverage before behavior tuning.
 
 ## Test Matrix
@@ -304,13 +296,13 @@ Minimum required coverage:
 - Unavailable stack/version is hidden or disabled in UI.
 - Stack selection is latched and not hot-switched while engaged.
 - `AlphaLongitudinalEnabled=false` keeps stock/factory longitudinal behavior where applicable.
-- `openpilot-current` is unavailable where upstream openpilot longitudinal is not valid.
+- `openpilot-current` is not a supported stack value and resolves safely to `sunnypilot-current` as an unknown stack.
 - `custom-*` invalid output falls back to `sunnypilot-current` for the same cycle.
 - Fallback latch persists across gas/brake override and temporary `longActive == false`.
 - Fallback latch resets after full disengagement/offroad/manager restart.
 - One-shot fallback alert fires once per latch trip.
 - `longitudinalPlanSP.stack` reports requested, resolved, actuated, shadow, fallback, and summary accel fields.
-- Default `sunnypilot-current` path does not actuate custom retained behavior after migration.
+- Default `sunnypilot-current` path does not actuate this fork's retained longitudinal behavior after migration.
 
 Affected test areas likely include:
 

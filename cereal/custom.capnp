@@ -329,10 +329,9 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
 
     enum StackId {
       unknown @0;
-      openpilotCurrent @1;
-      sunnypilotCurrent @2;
-      customRecommended @3;
-      customV1 @4;
+      sunnypilotCurrent @1;
+      customRecommended @2;
+      customV1 @3;
     }
   }
 }

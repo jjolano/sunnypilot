@@ -2,11 +2,6 @@
   "defaultStack": "sunnypilot-current",
   "customRecommendedFallback": "sunnypilot-current",
   "stacks": {
-    "openpilot-current": {
-      "label": "openpilot Current",
-      "family": "baseline",
-      "implemented": false
-    },
     "sunnypilot-current": {
       "label": "sunnypilot Current",
       "family": "baseline"
@@ -24,9 +19,6 @@
   "availability": {
     "sunnypilot-current": {
       "always": true
-    },
-    "openpilot-current": {
-      "requires": ["openpilotLongitudinalControl"]
     },
     "custom-recommended": {
       "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]

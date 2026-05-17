@@ -116,9 +116,13 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_time_to_gap,
   get_T_FOLLOW,
   LongitudinalMpc,
+  SunnypilotLongitudinalMpc,
   N,
 )
 from openpilot.selfdrive.controls.lib import longitudinal_planner
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.fallback import CustomStackFallbackWrapper
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V1, StackResolution
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CREEP_TO_STOP_GAP_ACCEL_MAX,
   CREEP_TO_STOP_GAP_ACCEL_MIN,
@@ -195,6 +199,36 @@ def patch_planner_sp(monkeypatch):
   )
 
 
+def test_custom_v1_accel_candidate_inherits_custom_mpc_trajectory():
+  custom_output = LongitudinalStackOutput(
+    a_target=0.4,
+    should_stop=False,
+    has_lead=True,
+    source="custom_mpc",
+    allow_throttle=True,
+    allow_brake=True,
+    speeds=tuple(float(idx) for idx in range(longitudinal_planner.CONTROL_N)),
+    accels=tuple(0.4 for _ in range(longitudinal_planner.CONTROL_N)),
+    jerks=tuple(0.1 for _ in range(longitudinal_planner.CONTROL_N)),
+  )
+  planner = SimpleNamespace(
+    output_a_target=0.0,
+    output_should_stop=False,
+    allow_throttle=True,
+    custom_v1_candidate_base_output=custom_output,
+  )
+
+  candidate = longitudinal_planner.build_custom_v1_accel_candidate(
+    planner, "stopped_lead_stop_gap_guard", -1.0, True, "stopped_lead_stop_gap_guard", (ACCEL_MIN, ACCEL_MAX),
+  )
+
+  assert candidate.output.speeds == custom_output.speeds
+  assert candidate.output.accels == custom_output.accels
+  assert candidate.output.jerks == custom_output.jerks
+  assert candidate.output.source == "custom_mpc"
+  assert candidate.output.a_target == pytest.approx(-1.0)
+
+
 def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner = longitudinal_planner.LongitudinalPlanner.__new__(longitudinal_planner.LongitudinalPlanner)
   planner.CP = SimpleNamespace(
@@ -236,6 +270,11 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.stopped_lead_gap_fill_v_lead = 0.0
   planner.dec = SimpleNamespace(active=lambda: False)
   planner.source = custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
+  planner.events_sp = SimpleNamespace(add=lambda _event: None)
+  planner.custom_v1_candidates = []
+  planner.custom_longitudinal_stack = None
+  planner.longitudinal_stack_resolution = StackResolution(CUSTOM_V1, CUSTOM_V1, (CUSTOM_V1,))
+  planner.longitudinal_stack_fallback = CustomStackFallbackWrapper(custom_stack=CUSTOM_V1)
   return planner
 
 
@@ -1808,6 +1847,21 @@ def test_new_lead_confidence_guard_caps_near_term_accel(monkeypatch):
   mpc.update(radarstate, v_cruise=25.0)
 
   assert mpc.params[0, 1] == pytest.approx(0.0)
+
+
+def test_sunnypilot_current_mpc_ignores_custom_new_lead_guard(monkeypatch):
+  mpc = SunnypilotLongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=25.0, vLead=18.0, vLeadK=18.0,
+    aLeadK=0.8, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  radarstate = SimpleNamespace(leadOne=lead, leadTwo=SimpleNamespace(status=False))
+
+  mpc.update(radarstate, v_cruise=25.0)
+
+  assert mpc.params[0, 1] == pytest.approx(ACCEL_MAX)
 
 
 def test_non_dominant_lead_two_confidence_guard_does_not_cap_accel(monkeypatch):
@@ -3700,6 +3754,7 @@ def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personalit
     breakpoints=[0.0],
     e2e=e2e,
     personality=personality,
+    longitudinal_stack=CUSTOM_V1,
   )
   valid, output = man.evaluate()
   assert valid
@@ -3716,6 +3771,7 @@ def run_lead_closing_simulation(v_ego, v_lead, initial_distance_lead, t_end=30.0
     speed_lead_values=[float(v_lead)],
     breakpoints=[0.0],
     personality=personality,
+    longitudinal_stack=CUSTOM_V1,
   )
   valid, output = man.evaluate()
   assert valid

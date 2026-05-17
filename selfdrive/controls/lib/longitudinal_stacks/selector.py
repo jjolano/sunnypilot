@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 
-OPENPILOT_CURRENT = "openpilot-current"
 SUNNYPILOT_CURRENT = "sunnypilot-current"
 CUSTOM_RECOMMENDED = "custom-recommended"
 CUSTOM_V1 = "custom-1.0"

@@ -683,10 +683,6 @@
         "label": "sunnypilot Current"
       },
       {
-        "value": "openpilot-current",
-        "label": "openpilot Current"
-      },
-      {
         "value": "custom-recommended",
         "label": "Custom Recommended"
       },

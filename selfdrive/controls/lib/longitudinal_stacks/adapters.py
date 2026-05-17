@@ -34,6 +34,7 @@ def apply_stack_output_to_planner(planner: object, output: LongitudinalStackOutp
   planner.output_should_stop = bool(output.should_stop)
   planner.allow_throttle = bool(output.allow_throttle)
   planner.fcw = bool(output.fcw)
+  planner.longitudinal_plan_source = output.source
   planner.v_desired_trajectory = np.asarray(output.speeds, dtype=float)
   planner.a_desired_trajectory = np.asarray(output.accels, dtype=float)
   planner.j_desired_trajectory = np.asarray(output.jerks, dtype=float)

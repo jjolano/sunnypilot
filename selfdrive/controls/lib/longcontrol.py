@@ -123,10 +123,41 @@ class LongControl:
     self.pid.reset()
     self.reset_launch_envelope()
 
-  def update(self, active, CS, a_target, should_stop, accel_limits, has_lead=False):
+  def _update_sunnypilot_current(self, active, CS, a_target, should_stop, accel_limits):
+    self.reset_launch_envelope()
+    self.long_control_state = long_control_state_trans(
+      self.CP, self.CP_SP, active, self.long_control_state, CS.vEgo, should_stop, CS.brakePressed, CS.cruiseState.standstill
+    )
+    if self.long_control_state == LongCtrlState.off:
+      self.reset()
+      output_accel = 0.0
+
+    elif self.long_control_state == LongCtrlState.stopping:
+      output_accel = self.last_output_accel
+      if output_accel > self.CP.stopAccel:
+        output_accel = min(output_accel, 0.0)
+        output_accel -= self.CP.stoppingDecelRate * DT_CTRL
+      self.pid.reset()
+
+    elif self.long_control_state == LongCtrlState.starting:
+      output_accel = self.CP.startAccel
+      self.pid.reset()
+
+    else:  # LongCtrlState.pid
+      error = a_target - CS.aEgo
+      ff = a_target
+      output_accel = self.pid.update(error, speed=CS.vEgo, feedforward=ff)
+
+    self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
+    return self.last_output_accel
+
+  def update(self, active, CS, a_target, should_stop, accel_limits, has_lead=False, custom_longitudinal_stack=True):
     """Update longitudinal control. This updates the state machine and runs a PID loop"""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
+    if not custom_longitudinal_stack:
+      return self._update_sunnypilot_current(active, CS, a_target, should_stop, accel_limits)
+
     launch_a_target = max(a_target, LAUNCH_ENVELOPE_MIN_ACCEL) if a_target >= 0.0 else a_target
 
     effective_should_stop = should_stop and not (

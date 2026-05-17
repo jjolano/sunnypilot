@@ -22,7 +22,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_c
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_RECOMMENDED,
   CUSTOM_V1,
-  OPENPILOT_CURRENT,
   SUNNYPILOT_CURRENT,
   StackResolution,
   is_custom_stack,
@@ -51,7 +50,6 @@ LEAD_SPEEDUP_GUARD_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating in
 LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL = 1.6
 SOURCE_SELECTION_HYSTERESIS_V = 0.25
 STACK_ID_BY_NAME = {
-  OPENPILOT_CURRENT: StackId.openpilotCurrent,
   SUNNYPILOT_CURRENT: StackId.sunnypilotCurrent,
   CUSTOM_RECOMMENDED: StackId.customRecommended,
   CUSTOM_V1: StackId.customV1,
@@ -386,7 +384,7 @@ class LongitudinalPlannerSP:
   def _custom_v1_stack_output(self, sunnypilot_output: LongitudinalStackOutput) -> LongitudinalStackOutput:
     if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != CUSTOM_V1:
       self.custom_longitudinal_stack = make_custom_longitudinal_stack(CUSTOM_V1)
-    return self.custom_longitudinal_stack.update(sunnypilot_output)
+    return self.custom_longitudinal_stack.update(sunnypilot_output, candidates=getattr(self, "custom_v1_candidates", ()))
 
   def apply_longitudinal_stack_selection(self, sm: messaging.SubMaster, has_lead: bool,
                                          accel_limits: tuple[float | None, float | None]) -> None:
@@ -396,6 +394,7 @@ class LongitudinalPlannerSP:
     self.longitudinal_stack_shadow_a_target = 0.0
     self.longitudinal_stack_fallback_latched = False
     self.longitudinal_stack_fallback_reason = ""
+    self.longitudinal_plan_source = sunnypilot_output.source
 
     resolved_stack = self.longitudinal_stack_resolution.resolved_stack
     if not is_custom_stack(resolved_stack):

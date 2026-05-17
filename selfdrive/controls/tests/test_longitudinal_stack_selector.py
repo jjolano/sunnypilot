@@ -4,7 +4,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_RECOMMENDED,
   CUSTOM_V1,
   DEFAULT_STACK,
-  OPENPILOT_CURRENT,
   SUNNYPILOT_CURRENT,
   load_stack_manifest,
   normalize_stack_value,
@@ -39,26 +38,12 @@ def test_unset_stack_resolves_to_sunnypilot_current():
   assert resolution.fallback_reason == ""
 
 
-def test_openpilot_current_is_hidden_until_adapter_is_implemented():
-  resolution = resolve_longitudinal_stack(OPENPILOT_CURRENT, make_cp(openpilotLongitudinalControl=True))
+def test_openpilot_current_is_not_a_supported_stack():
+  resolution = resolve_longitudinal_stack("openpilot-current", make_cp(openpilotLongitudinalControl=True))
 
   assert resolution.resolved_stack == SUNNYPILOT_CURRENT
-  assert resolution.fallback_reason == "unimplemented_stack"
-  assert OPENPILOT_CURRENT not in resolution.available_stacks
-
-
-def test_openpilot_current_requires_openpilot_longitudinal_control_when_implemented():
-  manifest = load_stack_manifest()
-  manifest["stacks"][OPENPILOT_CURRENT]["implemented"] = True
-
-  unavailable = resolve_longitudinal_stack(OPENPILOT_CURRENT, make_cp(alphaLongitudinalAvailable=True), manifest=manifest)
-  available = resolve_longitudinal_stack(OPENPILOT_CURRENT, make_cp(openpilotLongitudinalControl=True), manifest=manifest)
-
-  assert unavailable.resolved_stack == SUNNYPILOT_CURRENT
-  assert unavailable.fallback_reason == "unavailable_stack"
-  assert OPENPILOT_CURRENT not in unavailable.available_stacks
-  assert available.resolved_stack == OPENPILOT_CURRENT
-  assert OPENPILOT_CURRENT in available.available_stacks
+  assert resolution.fallback_reason == "unknown_stack"
+  assert "openpilot-current" not in resolution.available_stacks
 
 
 def test_custom_recommended_falls_back_to_sunnypilot_when_unresolved():

@@ -106,6 +106,38 @@ def test_stopping_softens_stop_accel_while_still_rolling():
   assert output_accel == pytest.approx(-0.8)
 
 
+def test_sunnypilot_current_stopping_matches_upstream_decel():
+  CP = make_car_params(stopAccel=-2.0)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -0.799
+
+  output_accel = loc.update(
+    True, make_car_state(v_ego=0.2), a_target=-0.2, should_stop=True, accel_limits=(-3.0, 2.0),
+    custom_longitudinal_stack=False,
+  )
+
+  assert loc.long_control_state == LongCtrlState.stopping
+  assert output_accel == pytest.approx(-0.799 - CP.stoppingDecelRate * DT_CTRL)
+
+
+def test_sunnypilot_current_starting_uses_platform_start_accel():
+  CP = make_car_params(startingState=True, startAccel=1.0)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+
+  output_accel = loc.update(
+    True, make_car_state(v_ego=0.0), a_target=0.2, should_stop=False, accel_limits=(-3.0, 2.0),
+    custom_longitudinal_stack=False,
+  )
+
+  assert loc.long_control_state == LongCtrlState.starting
+  assert not loc.launch_envelope_active
+  assert output_accel == pytest.approx(CP.startAccel)
+
+
 def test_stopping_preserves_gentler_platform_stop_accel_while_rolling():
   CP = make_car_params(stopAccel=-0.55)
   CP_SP = custom.CarParamsSP.new_message()
