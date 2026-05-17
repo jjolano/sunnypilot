@@ -897,6 +897,13 @@ struct ControlsState @0x97ff69c53601abf1 {
       steerLimitError @36 :Float32;
       steerLimitSameDirection @37 :Bool;
       steerLimitUnwind @38 :Bool;
+      rawTargetLateralAccel @39 :Float32;
+      delayLeadLateralAccel @40 :Float32;
+      feedbackCorrection @41 :Float32;
+      trimCorrection @42 :Float32;
+      learnerResponseScale @43 :Float32;
+      governorReason @44 :UInt32;
+      actualLateralJerk @45 :Float32;
     }
 
     adaptiveTorqueState @13 :AdaptiveTorqueState;
