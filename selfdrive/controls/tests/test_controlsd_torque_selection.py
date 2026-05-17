@@ -151,13 +151,12 @@ def test_torque_controller_selection_variants():
   assert hasattr(selected, "output_shaper")
 
 
-def test_pid_origin_non_angle_controller_can_select_v3():
+def test_pid_origin_non_angle_controller_keeps_original_lac_for_v3():
   CP, CP_SP, CI, lac = make_pid_origin_controller()
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 3.0))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
-  assert isinstance(selected, LatControlTorqueV3)
-  assert selected.native_torque is False
+  assert selected is lac
 
 
 def test_pid_origin_non_angle_controller_keeps_original_lac_for_non_v3_tunes():
