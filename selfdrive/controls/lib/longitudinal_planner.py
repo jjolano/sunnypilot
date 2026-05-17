@@ -1601,8 +1601,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       )
       if cruise_coast_candidate is not None:
         self.custom_v1_candidates.append(cruise_coast_candidate)
-    active_scc = getattr(self, "active_scc", self.scc)
-    active_sla = getattr(self, "active_sla", self.sla)
+    active_scc = getattr(self, "active_scc", None) or getattr(self, "scc", None)
+    active_scc_vision = getattr(active_scc, "vision", None)
+    active_scc_map = getattr(active_scc, "map", None)
+    active_sla = getattr(self, "active_sla", None) or getattr(self, "sla", None)
+    osm_traffic_control_prior = getattr(self, "osm_traffic_control_prior", None)
     self.custom_v2_scene = CustomV2Scene(
       v_ego=float(v_ego),
       v_cruise=float(v_cruise),
@@ -1613,7 +1616,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       gas_pressed=bool(sm['carState'].gasPressed),
       has_lead=bool(has_lead),
       lead_v=float(lead_one.vLeadK) if lead_one.status else 0.0,
-      lead_v_rel=float(lead_one.vRel) if lead_one.status else 0.0,
+      lead_v_rel=float(getattr(lead_one, "vRel", float(lead_one.vLeadK) - v_ego)) if lead_one.status else 0.0,
       lead_gap_excess=float(lead_gap_excess),
       lead_opening_prediction=bool(radar_predicted_pullaway or model_predicted_pullaway),
       lead_confirmed_pullaway=bool(creep_pullaway_release),
@@ -1625,11 +1628,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       speed_limit_active=bool(getattr(active_sla, "is_active", False)),
       speed_limit_v_target=float(getattr(active_sla, "output_v_target", 0.0)),
       speed_limit_a_target=float(getattr(active_sla, "output_a_target", 0.0)),
-      curve_active=bool(getattr(active_scc.vision, "is_active", False) or getattr(active_scc.map, "is_active", False)),
-      curve_a_target=float(min(getattr(active_scc.vision, "output_a_target", 0.0), getattr(active_scc.map, "output_a_target", 0.0))),
-      map_caution_active=bool(getattr(self.osm_traffic_control_prior, "active", False)),
-      map_caution_confirmed=bool(getattr(self.osm_traffic_control_prior, "active", False)),
-      map_caution_a_target=float(getattr(self.osm_traffic_control_prior, "output_a_target", 0.0)),
+      curve_active=bool(getattr(active_scc_vision, "is_active", False) or getattr(active_scc_map, "is_active", False)),
+      curve_a_target=float(min(getattr(active_scc_vision, "output_a_target", 0.0), getattr(active_scc_map, "output_a_target", 0.0))),
+      map_caution_active=bool(getattr(osm_traffic_control_prior, "active", False)),
+      map_caution_confirmed=bool(getattr(osm_traffic_control_prior, "active", False)),
+      map_caution_a_target=float(getattr(osm_traffic_control_prior, "output_a_target", 0.0)),
     )
     self.prev_accel_clip = accel_clip
     self.apply_longitudinal_stack_selection(sm, has_lead, tuple(accel_clip))
