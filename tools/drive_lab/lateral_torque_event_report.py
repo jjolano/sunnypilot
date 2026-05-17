@@ -84,6 +84,41 @@ class LateralTorqueEventReport:
 
 
 @dataclass(frozen=True)
+class LateralTorqueLagMetrics:
+  segment: str
+  sample_count: int
+  best_lag_s: float | None
+  desired_actual_corr: float | None
+  abs_error_mean: float
+  abs_error_p95: float
+  steering_rate_p95: float
+  output_reversals: int
+  steer_limited_percent: float
+  high_steering_rate_percent: float
+
+
+@dataclass(frozen=True)
+class LateralTorqueLagReport:
+  source: str
+  sample_count: int
+  duration_s: float
+  metrics: list[LateralTorqueLagMetrics]
+
+  def to_dict(self) -> dict[str, Any]:
+    return asdict(self)
+
+
+@dataclass(frozen=True)
+class LateralTorqueABReport:
+  baseline: LateralTorqueLagReport
+  candidate: LateralTorqueLagReport
+  deltas: dict[str, float | None]
+
+  def to_dict(self) -> dict[str, Any]:
+    return asdict(self)
+
+
+@dataclass(frozen=True)
 class _TorqueSample:
   t: float
   v_ego: float
@@ -104,6 +139,7 @@ class _TorqueSample:
   steer_limited: bool
   output_cap: float
   steer_limit_error: float
+  learner_confidence: float
 
 
 def build_lateral_torque_event_report(
@@ -159,6 +195,77 @@ def load_lateral_torque_event_report(path: str | Path) -> LateralTorqueEventRepo
   return LateralTorqueEventReport.from_dict(json.loads(Path(path).read_text()))
 
 
+def build_lateral_torque_lag_report(
+  msgs: list[Any],
+  source: str = "unknown",
+  already_sorted: bool = False,
+) -> LateralTorqueLagReport:
+  ordered_msgs = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
+  samples = _extract_torque_samples(ordered_msgs)
+  if not samples:
+    return LateralTorqueLagReport(source, 0, 0.0, [])
+  cols = _columns(samples)
+  base = _base_mask(cols)
+  desired_rate = _derivative(cols["t"], cols["desired_lateral_accel"])
+  curve = np.abs(cols["desired_lateral_accel"]) > 0.08
+  masks = {
+    "curve": base & curve,
+    "entry": base & curve & (desired_rate > 0.15),
+    "exit": base & curve & (desired_rate < -0.15),
+    "cold": base & curve & (cols["learner_confidence"] < 0.3),
+    "warm": base & curve & (cols["learner_confidence"] >= 0.6),
+  }
+  return LateralTorqueLagReport(
+    source=source,
+    sample_count=len(samples),
+    duration_s=float(cols["t"][-1] - cols["t"][0]) if len(samples) > 1 else 0.0,
+    metrics=[_lag_metrics(cols, name, mask) for name, mask in masks.items()],
+  )
+
+
+def build_lateral_torque_ab_report(
+  baseline_msgs: list[Any],
+  candidate_msgs: list[Any],
+  baseline_source: str = "baseline",
+  candidate_source: str = "candidate",
+  already_sorted: bool = False,
+) -> LateralTorqueABReport:
+  baseline = build_lateral_torque_lag_report(baseline_msgs, baseline_source, already_sorted)
+  candidate = build_lateral_torque_lag_report(candidate_msgs, candidate_source, already_sorted)
+  return LateralTorqueABReport(baseline, candidate, _lag_deltas(baseline, candidate))
+
+
+def render_lateral_torque_lag_report(report: LateralTorqueLagReport) -> str:
+  lines = [
+    f"Lateral torque lag report: {report.source}",
+    f"samples: {report.sample_count}",
+    f"duration: {report.duration_s:.1f} s",
+  ]
+  for metric in report.metrics:
+    lag = "n/a" if metric.best_lag_s is None else f"{metric.best_lag_s:.3f}s"
+    corr = "n/a" if metric.desired_actual_corr is None else f"{metric.desired_actual_corr:.3f}"
+    lines.append(
+      f"{metric.segment}: samples={metric.sample_count} lag={lag} corr={corr} "
+      f"err_mean={metric.abs_error_mean:.3f} err95={metric.abs_error_p95:.3f} "
+      f"rate95={metric.steering_rate_p95:.2f} out_flips={metric.output_reversals} "
+      f"limited={metric.steer_limited_percent:.1f}% high_rate={metric.high_steering_rate_percent:.1f}%"
+    )
+  return "\n".join(lines)
+
+
+def render_lateral_torque_ab_report(report: LateralTorqueABReport) -> str:
+  lines = [
+    "Lateral torque A/B report",
+    render_lateral_torque_lag_report(report.baseline),
+    render_lateral_torque_lag_report(report.candidate),
+    "Deltas candidate-baseline:",
+  ]
+  for key, value in sorted(report.deltas.items()):
+    rendered = "n/a" if value is None else f"{value:.3f}"
+    lines.append(f"{key}: {rendered}")
+  return "\n".join(lines)
+
+
 def _extract_torque_samples(msgs: list[Any]) -> list[_TorqueSample]:
   if not msgs:
     return []
@@ -200,6 +307,7 @@ def _extract_torque_samples(msgs: list[Any]) -> list[_TorqueSample]:
       steer_limited=bool(safe_get(adaptive, "steerLimitLimited", False)),
       output_cap=_finite_float(safe_get(adaptive, "outputCap"), 1.0),
       steer_limit_error=_finite_float(safe_get(adaptive, "steerLimitError")),
+      learner_confidence=_finite_float(safe_get(adaptive, "modelConfidence")),
     ))
   return samples
 
@@ -225,6 +333,7 @@ def _columns(samples: list[_TorqueSample]) -> dict[str, np.ndarray]:
     "steer_limited": np.array([float(sample.steer_limited) for sample in samples], dtype=float),
     "output_cap": np.array([sample.output_cap for sample in samples], dtype=float),
     "steer_limit_error": np.array([sample.steer_limit_error for sample in samples], dtype=float),
+    "learner_confidence": np.array([sample.learner_confidence for sample in samples], dtype=float),
   }
 
 
@@ -383,6 +492,78 @@ def _event_from_dict(data: dict[str, Any]) -> LateralTorqueEvent:
     steer_limit_error_pp=float(data.get("steer_limit_error_pp", data.get("steerLimitErrorPp", 0.0))),
     shaping_reason_counts={str(k): int(v) for k, v in data.get("shaping_reason_counts", data.get("shapingReasonCounts", {})).items()},
   )
+
+
+def _lag_metrics(cols: dict[str, np.ndarray], segment: str, idx: np.ndarray) -> LateralTorqueLagMetrics:
+  if int(np.sum(idx)) < 8:
+    return LateralTorqueLagMetrics(segment, int(np.sum(idx)), None, None, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
+  desired = cols["desired_lateral_accel"][idx]
+  actual = cols["actual_lateral_accel"][idx]
+  error = desired - actual
+  return LateralTorqueLagMetrics(
+    segment=segment,
+    sample_count=int(np.sum(idx)),
+    best_lag_s=_best_lag_s(cols["t"][idx], desired, actual),
+    desired_actual_corr=_correlation(desired, actual),
+    abs_error_mean=float(np.nanmean(np.abs(error[np.isfinite(error)]))) if np.any(np.isfinite(error)) else 0.0,
+    abs_error_p95=_p95_abs(error),
+    steering_rate_p95=_p95_abs(cols["steering_rate_deg"][idx]),
+    output_reversals=_sign_flip_count(cols["output"][idx] - _median(cols["output"][idx]), 0.01),
+    steer_limited_percent=_percent(cols["steer_limited"][idx] > 0.5),
+    high_steering_rate_percent=_percent(np.abs(cols["steering_rate_deg"][idx]) >= 80.0),
+  )
+
+
+def _lag_deltas(baseline: LateralTorqueLagReport, candidate: LateralTorqueLagReport) -> dict[str, float | None]:
+  baseline_by_segment = {metric.segment: metric for metric in baseline.metrics}
+  deltas: dict[str, float | None] = {}
+  for candidate_metric in candidate.metrics:
+    baseline_metric = baseline_by_segment.get(candidate_metric.segment)
+    if baseline_metric is None:
+      continue
+    prefix = candidate_metric.segment
+    deltas[f"{prefix}.best_lag_s"] = _delta(candidate_metric.best_lag_s, baseline_metric.best_lag_s)
+    deltas[f"{prefix}.abs_error_p95"] = candidate_metric.abs_error_p95 - baseline_metric.abs_error_p95
+    deltas[f"{prefix}.output_reversals"] = float(candidate_metric.output_reversals - baseline_metric.output_reversals)
+    deltas[f"{prefix}.steer_limited_percent"] = candidate_metric.steer_limited_percent - baseline_metric.steer_limited_percent
+    deltas[f"{prefix}.high_steering_rate_percent"] = candidate_metric.high_steering_rate_percent - baseline_metric.high_steering_rate_percent
+  return deltas
+
+
+def _delta(candidate: float | None, baseline: float | None) -> float | None:
+  if candidate is None or baseline is None:
+    return None
+  return candidate - baseline
+
+
+def _best_lag_s(t: np.ndarray, desired: np.ndarray, actual: np.ndarray, max_lag_s: float = 0.6) -> float | None:
+  ok = np.isfinite(t) & np.isfinite(desired) & np.isfinite(actual)
+  t = t[ok]
+  desired = desired[ok]
+  actual = actual[ok]
+  if t.size < 8 or np.nanstd(desired) < 1e-9 or np.nanstd(actual) < 1e-9:
+    return None
+  dt = float(np.nanmedian(np.diff(t))) if t.size > 1 else 0.0
+  if not np.isfinite(dt) or dt <= 1e-3:
+    return None
+  max_shift = max(1, int(max_lag_s / dt))
+  best_lag = 0.0
+  best_corr = -2.0
+  for shift in range(-max_shift, max_shift + 1):
+    if shift > 0:
+      a = desired[:-shift]
+      b = actual[shift:]
+    elif shift < 0:
+      a = desired[-shift:]
+      b = actual[:shift]
+    else:
+      a = desired
+      b = actual
+    corr = _correlation(a, b)
+    if corr is not None and corr > best_corr:
+      best_corr = corr
+      best_lag = shift * dt
+  return float(best_lag) if best_corr > -2.0 else None
 
 
 def _derivative(t: np.ndarray, y: np.ndarray) -> np.ndarray:
