@@ -227,3 +227,55 @@ class SpeedLimitResolver:
     self.update_speed_limit_states()
 
     self.frame += 1
+
+
+class SunnypilotCurrentSpeedLimitResolver(SpeedLimitResolver):
+  def update_params(self):
+    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+      self.policy = self.params.get("SpeedLimitPolicy", return_default=True)
+      self.is_metric = self.params.get_bool("IsMetric")
+      self.offset_type = self.params.get("SpeedLimitOffsetType", return_default=True)
+      self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
+
+  def _process_map_data(self, sm: messaging.SubMaster) -> None:
+    gps_data = sm[self._gps_location_service]
+    map_data = sm['liveMapDataSP']
+
+    gps_fix_age = time.monotonic() - gps_data.unixTimestampMillis * 1e-3
+    if gps_fix_age > LIMIT_MAX_MAP_DATA_AGE:
+      return
+
+    speed_limit = map_data.speedLimit if map_data.speedLimitValid else 0.
+    next_speed_limit = map_data.speedLimitAhead if map_data.speedLimitAheadValid else 0.
+
+    self._calculate_map_data_limits(sm, speed_limit, next_speed_limit)
+
+  def _calculate_map_data_limits(self, sm: messaging.SubMaster, speed_limit: float, next_speed_limit: float) -> None:
+    gps_data = sm[self._gps_location_service]
+    map_data = sm['liveMapDataSP']
+
+    distance_since_fix = self.v_ego * (time.monotonic() - gps_data.unixTimestampMillis * 1e-3)
+    distance_to_speed_limit_ahead = max(0., map_data.speedLimitAheadDistance - distance_since_fix)
+
+    self.limit_solutions[SpeedLimitSource.map] = speed_limit
+    self.distance_solutions[SpeedLimitSource.map] = 0.
+
+    if 0. < next_speed_limit < self.v_ego:
+      adapt_time = (next_speed_limit - self.v_ego) / LIMIT_ADAPT_ACC
+      adapt_distance = self.v_ego * adapt_time + 0.5 * LIMIT_ADAPT_ACC * adapt_time ** 2
+
+      if distance_to_speed_limit_ahead <= adapt_distance:
+        self.limit_solutions[SpeedLimitSource.map] = next_speed_limit
+        self.distance_solutions[SpeedLimitSource.map] = distance_to_speed_limit_ahead
+
+  def update(self, v_ego: float, sm: messaging.SubMaster) -> None:
+    self.v_ego = v_ego
+    self.coast_accel = None
+    self.update_params()
+
+    self.speed_limit, self.distance, self.source = self._resolve_limit_sources(sm)
+    self.speed_limit_offset = self._get_speed_limit_offset()
+
+    self.update_speed_limit_states()
+
+    self.frame += 1

@@ -11,6 +11,8 @@ from cereal import custom, car
 from openpilot.common.params import Params
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import (
@@ -477,5 +479,127 @@ class SpeedLimitAssist:
     previous_v_target = self.output_v_target
     self.output_v_target = self.get_v_target_from_control()
     self.output_a_target = self.get_a_target_from_control(previous_v_target)
+
+    self.frame += 1
+
+
+class SunnypilotCurrentSpeedLimitAssist(SpeedLimitAssist):
+  def __init__(self, CP: car.CarParams, CP_SP: custom.CarParamsSP):
+    super().__init__(CP, CP_SP)
+    self.acceleration_solutions = {
+      SpeedLimitAssistState.disabled: self.get_current_acceleration_as_target,
+      SpeedLimitAssistState.inactive: self.get_current_acceleration_as_target,
+      SpeedLimitAssistState.preActive: self.get_current_acceleration_as_target,
+      SpeedLimitAssistState.pending: self.get_current_acceleration_as_target,
+      SpeedLimitAssistState.adapting: self.get_adapting_state_target_acceleration,
+      SpeedLimitAssistState.active: self.get_active_state_target_acceleration,
+    }
+
+  def update_active_event(self, events_sp: EventsSP) -> None:
+    if self.v_cruise_cluster_below_confirm_speed_threshold:
+      events_sp.add(EventNameSP.speedLimitChanged)
+    else:
+      events_sp.add(EventNameSP.speedLimitActive)
+
+  def get_v_target_from_control(self) -> float:
+    if self._has_speed_limit:
+      if self.pcm_op_long and self.is_enabled:
+        return self._speed_limit_final_last
+      if not self.pcm_op_long and self.is_active:
+        return self._speed_limit_final_last
+
+    return V_CRUISE_UNSET
+
+  def get_a_target_from_control(self) -> float:
+    return self.a_ego
+
+  def update_car_state(self, CS: car.CarState) -> None:
+    now = time.monotonic()
+    self._last_carstate_ts = now
+
+    for b in CS.buttonEvents:
+      if not b.pressed:
+        if b.type in CRUISE_BUTTONS_PLUS:
+          self._plus_hold = max(self._plus_hold, now + CRUISE_BUTTON_CONFIRM_HOLD)
+        elif b.type in CRUISE_BUTTONS_MINUS:
+          self._minus_hold = max(self._minus_hold, now + CRUISE_BUTTON_CONFIRM_HOLD)
+
+  def update_calculations(self, v_cruise_cluster: float) -> None:
+    speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
+    self.v_cruise_cluster = v_cruise_cluster
+
+    self.v_offset = self._speed_limit_final_last - self.v_ego
+
+    self.speed_limit_final_last_conv = round(self._speed_limit_final_last * speed_conv)
+    self.v_cruise_cluster_conv = round(self.v_cruise_cluster * speed_conv)
+
+    cst_low, cst_high = PCM_LONG_REQUIRED_MAX_SET_SPEED[self.is_metric]
+    pcm_long_required_max = cst_low if self._has_speed_limit and self.speed_limit_final_last_conv < CONFIRM_SPEED_THRESHOLD[self.is_metric] else \
+                            cst_high
+    pcm_long_required_max_set_speed_conv = round(pcm_long_required_max * speed_conv)
+
+    self.target_set_speed_conv = pcm_long_required_max_set_speed_conv if self.pcm_op_long else self.speed_limit_final_last_conv
+
+  def get_current_acceleration_as_target(self) -> float:
+    return self.a_ego
+
+  def get_adapting_state_target_acceleration(self) -> float:
+    if self._distance > 0:
+      return (self._speed_limit_final_last ** 2 - self.v_ego ** 2) / (2. * self._distance)
+
+    return self.v_offset / float(ModelConstants.T_IDXS[CONTROL_N])
+
+  def get_active_state_target_acceleration(self) -> float:
+    return self.v_offset / float(ModelConstants.T_IDXS[CONTROL_N])
+
+  def update_events(self, events_sp: EventsSP) -> None:
+    if self.state == SpeedLimitAssistState.preActive:
+      events_sp.add(EventNameSP.speedLimitPreActive)
+
+    if self.state == SpeedLimitAssistState.pending and self._state_prev != SpeedLimitAssistState.pending:
+      events_sp.add(EventNameSP.speedLimitPending)
+
+    if self.is_active:
+      if self._state_prev not in ACTIVE_STATES:
+        self.update_active_event(events_sp)
+      elif self._speed_limit != self.speed_limit_prev:
+        if self.speed_limit_prev <= 0:
+          self.update_active_event(events_sp)
+        elif self.speed_limit_prev > 0 and self._speed_limit > 0:
+          self.update_active_event(events_sp)
+
+  def update(self, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float, v_cruise_cluster: float,
+             speed_limit: float, speed_limit_final_last: float, has_speed_limit: bool, distance: float,
+             events_sp: EventsSP, coast_accel: float | None = None) -> None:
+    self.long_enabled = long_enabled
+    self.v_ego = v_ego
+    self.a_ego = a_ego
+
+    self._has_speed_limit = has_speed_limit
+    self._speed_limit = speed_limit
+    self._speed_limit_final_last = speed_limit_final_last
+    self._distance = distance
+    self.coast_accel = coast_accel
+
+    self.update_params()
+    self.update_calculations(v_cruise_cluster)
+
+    self._state_prev = self.state
+    if self.pcm_op_long:
+      self.is_enabled, self.is_active = self.update_state_machine_pcm_op_long()
+    else:
+      self.is_enabled, self.is_active = self.update_state_machine_non_pcm_long()
+
+    self.update_events(events_sp)
+
+    self.speed_limit_prev = self._speed_limit
+    self.v_cruise_cluster_prev = self.v_cruise_cluster
+    self.long_enabled_prev = self.long_enabled
+    self.prev_target_set_speed_conv = self.target_set_speed_conv
+    self.prev_v_cruise_cluster_conv = self.v_cruise_cluster_conv
+    self.prev_speed_limit_final_last_conv = self.speed_limit_final_last_conv
+
+    self.output_v_target = self.get_v_target_from_control()
+    self.output_a_target = self.get_a_target_from_control()
 
     self.frame += 1

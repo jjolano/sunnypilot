@@ -32,6 +32,141 @@ class FakeEvents:
   def add(self, event):
     self.names.append(event)
 
+
+class FakeStackSCC:
+  def __init__(self, vision=(255.0, 0.0, False), map_target=(255.0, 0.0, False)):
+    self.vision = SimpleNamespace(
+      output_v_target=vision[0], output_a_target=vision[1], is_active=vision[2], state=0,
+      current_lat_acc=0.0, max_pred_lat_acc=0.0, is_enabled=vision[2],
+    )
+    self.map = SimpleNamespace(
+      output_v_target=map_target[0], output_a_target=map_target[1], is_active=map_target[2], state=0,
+      is_enabled=map_target[2],
+    )
+    self.update_count = 0
+
+  def update(self, *args):
+    self.update_count += 1
+
+
+class FakeStackResolver:
+  def __init__(self, speed_limit=0.0, speed_limit_final_last=0.0, distance=0.0):
+    self.speed_limit = speed_limit
+    self.speed_limit_last = speed_limit
+    self.speed_limit_final = speed_limit
+    self.speed_limit_final_last = speed_limit_final_last
+    self.speed_limit_valid = speed_limit > 0.0
+    self.speed_limit_last_valid = speed_limit_final_last > 0.0
+    self.speed_limit_offset = 0.0
+    self.distance = distance
+    self.source = 0
+    self.update_count = 0
+
+  def update(self, *args, **kwargs):
+    self.update_count += 1
+
+
+class FakeStackSLA:
+  def __init__(self, target=(255.0, 0.0), active=False):
+    self.output_v_target, self.output_a_target = target
+    self.is_active = active
+    self.is_enabled = active
+    self.auto_enabled = active
+    self.state = 0
+    self.update_count = 0
+
+  def update(self, *args, **kwargs):
+    self.update_count += 1
+
+
+class FakeStackOsmPrior:
+  def __init__(self, target=(255.0, 0.0), active=False):
+    self.output_v_target, self.output_a_target = target
+    self.active = active
+    self.update_count = 0
+
+  def update(self, *args):
+    self.update_count += 1
+
+
+def make_target_sm():
+  return {
+    "carState": SimpleNamespace(vCruiseCluster=72.0, gasPressed=False, brakePressed=False),
+    "carControl": SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+    "radarState": SimpleNamespace(leadOne=SimpleNamespace(status=False, dRel=100.0, vRel=0.0, yRel=0.0)),
+  }
+
+
+def make_target_planner(resolved_stack: str):
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.longitudinal_stack_resolution = StackResolution(
+    requested_stack=resolved_stack,
+    resolved_stack=resolved_stack,
+    available_stacks=("sunnypilot-current", "custom-1.0"),
+  )
+  planner.events_sp = FakeEvents()
+  planner.source = LongitudinalPlanSource.cruise
+  planner._speed_limit_handoff_active = False
+  planner._speed_limit_active_prev = False
+  return planner
+
+
+class TestStackAwareTargetSelection(unittest.TestCase):
+  def test_sunnypilot_current_uses_baseline_target_providers(self):
+    planner = make_target_planner("sunnypilot-current")
+    planner.scc = FakeStackSCC(vision=(8.0, -1.0, True))
+    planner.resolver = FakeStackResolver(speed_limit=8.0, speed_limit_final_last=8.0)
+    planner.sla = FakeStackSLA(target=(8.0, -1.0), active=True)
+    planner.osm_traffic_control_prior = FakeStackOsmPrior(target=(7.0, -1.0), active=True)
+    planner.sunnypilot_current_scc = FakeStackSCC()
+    planner.sunnypilot_current_resolver = FakeStackResolver()
+    planner.sunnypilot_current_sla = FakeStackSLA()
+
+    v_target, a_target = LongitudinalPlannerSP.update_targets(planner, make_target_sm(), 12.0, 0.2, 20.0)
+
+    self.assertEqual(planner.source, LongitudinalPlanSource.cruise)
+    self.assertEqual(v_target, 20.0)
+    self.assertEqual(a_target, 0.2)
+    self.assertEqual(planner.scc.update_count, 0)
+    self.assertEqual(planner.sla.update_count, 0)
+    self.assertEqual(planner.osm_traffic_control_prior.update_count, 0)
+    self.assertEqual(planner.sunnypilot_current_scc.update_count, 1)
+    self.assertEqual(planner.sunnypilot_current_sla.update_count, 1)
+
+  def test_sunnypilot_current_keeps_baseline_speed_limit_assist(self):
+    planner = make_target_planner("sunnypilot-current")
+    planner.scc = FakeStackSCC()
+    planner.resolver = FakeStackResolver()
+    planner.sla = FakeStackSLA()
+    planner.osm_traffic_control_prior = FakeStackOsmPrior()
+    planner.sunnypilot_current_scc = FakeStackSCC()
+    planner.sunnypilot_current_resolver = FakeStackResolver(speed_limit=15.0, speed_limit_final_last=15.0)
+    planner.sunnypilot_current_sla = FakeStackSLA(target=(15.0, -0.2), active=True)
+
+    v_target, a_target = LongitudinalPlannerSP.update_targets(planner, make_target_sm(), 12.0, 0.2, 20.0)
+
+    self.assertEqual(planner.source, LongitudinalPlanSource.speedLimitAssist)
+    self.assertEqual(v_target, 15.0)
+    self.assertEqual(a_target, -0.2)
+
+  def test_custom_stack_uses_custom_target_providers(self):
+    planner = make_target_planner("custom-1.0")
+    planner.scc = FakeStackSCC(vision=(8.0, -1.0, True))
+    planner.resolver = FakeStackResolver()
+    planner.sla = FakeStackSLA()
+    planner.osm_traffic_control_prior = FakeStackOsmPrior()
+    planner.sunnypilot_current_scc = FakeStackSCC()
+    planner.sunnypilot_current_resolver = FakeStackResolver()
+    planner.sunnypilot_current_sla = FakeStackSLA()
+
+    v_target, a_target = LongitudinalPlannerSP.update_targets(planner, make_target_sm(), 12.0, 0.2, 20.0)
+
+    self.assertEqual(planner.source, LongitudinalPlanSource.sccVision)
+    self.assertEqual(v_target, 8.0)
+    self.assertEqual(a_target, -1.0)
+    self.assertEqual(planner.scc.update_count, 1)
+    self.assertEqual(planner.sunnypilot_current_scc.update_count, 0)
+
 class TestLongitudinalPlannerHysteresis(unittest.TestCase):
   cruise: tuple[float, float] = (0.0, 0.0)
   scc_vision: tuple[float, float] = (0.0, 0.0)

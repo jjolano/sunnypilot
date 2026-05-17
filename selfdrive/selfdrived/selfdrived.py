@@ -48,6 +48,7 @@ ButtonType = car.CarState.ButtonEvent.Type
 SafetyModel = car.CarParams.SafetyModel
 TurnDirection = custom.ModelDataV2SP.TurnDirection
 LongitudinalPlanSource = log.LongitudinalPlan.LongitudinalPlanSource
+StackId = custom.LongitudinalPlanSP.Stack.StackId
 
 IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 
@@ -457,6 +458,9 @@ class SelfdriveD(CruiseHelper):
 
     # Check for FCW
     stock_long_is_braking = self.enabled and not self.CP.openpilotLongitudinalControl and CS.aEgo < -1.25
+    custom_longitudinal_stack_actuated = (
+      self.sm.valid['longitudinalPlanSP'] and self.sm['longitudinalPlanSP'].stack.actuatedStack == StackId.customV1
+    )
     op_long_is_braking_on_confirmed_lead = should_suppress_model_fcw(
       self.enabled,
       self.CP.openpilotLongitudinalControl,
@@ -467,6 +471,7 @@ class SelfdriveD(CruiseHelper):
       LongitudinalPlanSource.lead0,
       LongitudinalPlanSource.lead1,
       self.sm['radarState'],
+      custom_longitudinal_stack_actuated,
     )
     model_fcw = self.sm['modelV2'].meta.hardBrakePredicted and not CS.brakePressed and not stock_long_is_braking and not op_long_is_braking_on_confirmed_lead
     planner_fcw = self.sm['longitudinalPlan'].fcw and self.enabled

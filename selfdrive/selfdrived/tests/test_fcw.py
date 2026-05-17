@@ -126,3 +126,22 @@ def test_model_fcw_is_not_suppressed_for_cruise_source_or_mild_braking():
   assert not should_suppress_model_fcw(
     True, True, car_state.aEgo, mild_plan.aTarget, mild_plan.hasLead, mild_plan.longitudinalPlanSource, LEAD0_SOURCE, LEAD1_SOURCE, radar_state
   )
+
+
+def test_model_fcw_is_not_suppressed_when_custom_stack_not_actuated():
+  radar_state = make_radar_state(lead_one=make_lead(status=True, model_prob=0.98))
+  longitudinal_plan = make_longitudinal_plan(source=LEAD0_SOURCE, has_lead=True, a_target=-2.5)
+  car_state = make_car_state(a_ego=-2.0)
+
+  assert not should_suppress_model_fcw(
+    True,
+    True,
+    car_state.aEgo,
+    longitudinal_plan.aTarget,
+    longitudinal_plan.hasLead,
+    longitudinal_plan.longitudinalPlanSource,
+    LEAD0_SOURCE,
+    LEAD1_SOURCE,
+    radar_state,
+    custom_longitudinal_stack=False,
+  )

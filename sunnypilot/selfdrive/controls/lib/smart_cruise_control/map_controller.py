@@ -1,3 +1,4 @@
+import json
 import math
 import platform
 
@@ -70,6 +71,17 @@ def velocities_from_param(param: str, params: Params):
     valid_velocities.append({"latitude": tlat, "longitude": tlon, "velocity": tv})
 
   return valid_velocities
+
+
+def sunnypilot_current_velocities_from_param(param: str, params: Params):
+  if params is None:
+    params = Params()
+
+  json_str = params.get(param)
+  if json_str is None:
+    return None
+
+  return json.loads(json_str)
 
 
 def valid_map_speed(speed: float | None) -> bool:
@@ -500,6 +512,129 @@ class SmartCruiseControlMap:
 
     self.update_params()
     self.update_calculations(model_msg)
+
+    self.is_enabled, self.is_active = self._update_state_machine()
+
+    self.output_v_target = self.get_v_target_from_control()
+    self.output_a_target = self.get_a_target_from_control()
+
+    self.frame += 1
+
+
+class SunnypilotCurrentSmartCruiseControlMap(SmartCruiseControlMap):
+  def __init__(self):
+    super().__init__()
+    self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
+    self.target_velocities = sunnypilot_current_velocities_from_param("MapTargetVelocities", self.mem_params) or []
+
+  def get_a_target_from_control(self) -> float:
+    return self.a_ego
+
+  def update_calculations(self) -> None:
+    self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
+    lat = self.last_position.latitude
+    lon = self.last_position.longitude
+
+    self.target_velocities = sunnypilot_current_velocities_from_param("MapTargetVelocities", self.mem_params) or []
+
+    if self.last_position is None or self.target_velocities is None:
+      return
+
+    min_dist = 1000
+    min_idx = 0
+    distances = []
+
+    for i in range(len(self.target_velocities)):
+      target_velocity = self.target_velocities[i]
+      tlat = target_velocity["latitude"]
+      tlon = target_velocity["longitude"]
+      d = distance_to_point(lat * TO_RADIANS, lon * TO_RADIANS, tlat * TO_RADIANS, tlon * TO_RADIANS)
+      distances.append(d)
+      if d < min_dist:
+        min_dist = d
+        min_idx = i
+
+    forward_points = self.target_velocities[min_idx:]
+    forward_distances = distances[min_idx:]
+
+    valid_velocities = []
+    for i in range(len(forward_points)):
+      target_velocity = forward_points[i]
+      tlat = target_velocity["latitude"]
+      tlon = target_velocity["longitude"]
+      tv = target_velocity["velocity"]
+      if tv > self.v_ego:
+        continue
+
+      d = forward_distances[i]
+
+      a_diff = (self.a_ego - TARGET_ACCEL)
+      accel_t = abs(a_diff / TARGET_JERK)
+      min_accel_v = calculate_velocity(accel_t, TARGET_JERK, self.a_ego, self.v_ego)
+
+      max_d = 0
+      if tv > min_accel_v:
+        a = 0.5 * TARGET_JERK
+        b = self.a_ego
+        c = self.v_ego - tv
+        t_a = -1 * ((b**2 - 4 * a * c) ** 0.5 + b) / 2 * a
+        t_b = ((b**2 - 4 * a * c) ** 0.5 - b) / 2 * a
+        if not isinstance(t_a, complex) and t_a > 0:
+          t = t_a
+        else:
+          t = t_b
+        if isinstance(t, complex):
+          continue
+
+        max_d = max_d + calculate_distance(t, TARGET_JERK, self.a_ego, self.v_ego)
+      else:
+        t = accel_t
+        max_d = calculate_distance(t, TARGET_JERK, self.a_ego, self.v_ego)
+
+        t = abs((min_accel_v - tv) / TARGET_ACCEL)
+        max_d += calculate_distance(t, 0, TARGET_ACCEL, min_accel_v)
+
+      if d < max_d + tv * TARGET_OFFSET:
+        valid_velocities.append((float(tv), tlat, tlon))
+
+    min_v = 100.0
+    target_lat = 0.0
+    target_lon = 0.0
+    for tv, lat, lon in valid_velocities:
+      if tv < min_v:
+        min_v = tv
+        target_lat = lat
+        target_lon = lon
+
+    if self.v_target < min_v and not (self.target_lat == 0 and self.target_lon == 0):
+      for i in range(len(forward_points)):
+        target_velocity = forward_points[i]
+        tlat = target_velocity["latitude"]
+        tlon = target_velocity["longitude"]
+        tv = target_velocity["velocity"]
+        if tv > self.v_ego:
+          continue
+
+        if tlat == self.target_lat and tlon == self.target_lon and tv == self.v_target:
+          return
+
+      self.v_target = 0.0
+      self.target_lat = 0.0
+      self.target_lon = 0.0
+
+    self.v_target = min_v
+    self.target_lat = target_lat
+    self.target_lon = target_lon
+
+  def update(self, long_enabled: bool, long_override: bool, v_ego, a_ego, v_cruise) -> None:
+    self.long_enabled = long_enabled
+    self.long_override = long_override
+    self.v_ego = v_ego
+    self.a_ego = a_ego
+    self.v_cruise = v_cruise
+
+    self.update_params()
+    self.update_calculations()
 
     self.is_enabled, self.is_active = self._update_state_machine()
 

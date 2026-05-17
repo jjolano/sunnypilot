@@ -13,8 +13,11 @@ def get_fcw_active_lead(longitudinal_plan_source, lead0_source, lead1_source, ra
 
 
 def should_suppress_model_fcw(
-  enabled, openpilot_longitudinal_control, a_ego, a_target, longitudinal_plan_has_lead, longitudinal_plan_source, lead0_source, lead1_source, radar_state
+  enabled, openpilot_longitudinal_control, a_ego, a_target, longitudinal_plan_has_lead, longitudinal_plan_source,
+  lead0_source, lead1_source, radar_state, custom_longitudinal_stack=True,
 ):
+  if not custom_longitudinal_stack:
+    return False
   if not (enabled and openpilot_longitudinal_control):
     return False
   if not longitudinal_plan_has_lead:

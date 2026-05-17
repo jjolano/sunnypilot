@@ -52,6 +52,13 @@ _CURRENT_LAT_ACC_BLEED_BP = [2.8, 3.0, 3.4]
 
 _LEAVING_ACC = 0.5  # Conformable acceleration to regain speed while leaving a turn.
 
+_SUNNYPILOT_CURRENT_A_LAT_REG_MAX = 2.0
+_SUNNYPILOT_CURRENT_NO_OVERSHOOT_TIME_HORIZON = 4.0
+_SUNNYPILOT_CURRENT_ENTERING_SMOOTH_DECEL_V = [-0.2, -1.0]
+_SUNNYPILOT_CURRENT_ENTERING_SMOOTH_DECEL_BP = [1.3, 3.0]
+_SUNNYPILOT_CURRENT_TURNING_ACC_V = [0.5, 0.0, -0.4]
+_SUNNYPILOT_CURRENT_TURNING_ACC_BP = [1.5, 2.3, 3.0]
+
 
 class SmartCruiseControlVision:
   v_target: float = 0
@@ -286,6 +293,106 @@ class SmartCruiseControlVision:
     self.is_enabled, self.is_active = self._update_state_machine()
     self._update_in_turn_lat_acc_budget()
     self._update_v_target()
+    self.a_target = self._update_solution()
+
+    self.output_v_target = self.get_v_target_from_control()
+    self.output_a_target = self.get_a_target_from_control()
+
+    self.frame += 1
+
+
+class SunnypilotCurrentSmartCruiseControlVision(SmartCruiseControlVision):
+  def get_v_target_from_control(self) -> float:
+    if self.is_active:
+      return max(self.v_target, MIN_V) + self.a_target * _SUNNYPILOT_CURRENT_NO_OVERSHOOT_TIME_HORIZON
+
+    return V_CRUISE_UNSET
+
+  def _update_params(self) -> None:
+    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+      self.enabled = self.params.get_bool("SmartCruiseControlVision")
+
+  def _update_calculations(self, sm: messaging.SubMaster) -> None:
+    if not self.long_enabled:
+      return
+
+    rate_plan = np.array(np.abs(sm['modelV2'].orientationRate.z))
+    vel_plan = np.array(sm['modelV2'].velocity.x)
+
+    self.current_lat_acc = self.v_ego ** 2 * abs(sm['controlsState'].curvature)
+    self.current_lat_acc_bleed = False
+
+    predicted_lat_accels = rate_plan * vel_plan
+    self.max_pred_lat_acc = np.percentile(predicted_lat_accels, 97)
+
+    v_ego = max(self.v_ego, 0.1)
+    max_curve = self.max_pred_lat_acc / (v_ego**2)
+    self.v_target = (_SUNNYPILOT_CURRENT_A_LAT_REG_MAX / max_curve) ** 0.5
+
+  def _update_state_machine(self) -> tuple[bool, bool]:
+    if self.state != VisionState.disabled:
+      if not self.long_enabled or not self.enabled:
+        self.state = VisionState.disabled
+      elif self.long_override:
+        self.state = VisionState.overriding
+      else:
+        if self.state == VisionState.enabled:
+          if self.v_ego <= MIN_V:
+            pass
+          elif self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
+            self.state = VisionState.entering
+        elif self.state == VisionState.overriding:
+          if not self.long_override:
+            self.state = VisionState.enabled
+        elif self.state == VisionState.entering:
+          if self.current_lat_acc >= _TURNING_LAT_ACC_TH:
+            self.state = VisionState.turning
+          elif self.max_pred_lat_acc < _ABORT_ENTERING_PRED_LAT_ACC_TH:
+            self.state = VisionState.enabled
+        elif self.state == VisionState.turning:
+          if self.current_lat_acc <= _LEAVING_LAT_ACC_TH:
+            self.state = VisionState.leaving
+        elif self.state == VisionState.leaving:
+          if self.current_lat_acc >= _TURNING_LAT_ACC_TH:
+            self.state = VisionState.turning
+          elif self.current_lat_acc < _FINISH_LAT_ACC_TH:
+            self.state = VisionState.enabled
+    elif self.state == VisionState.disabled:
+      if self.long_enabled and self.enabled:
+        self.state = VisionState.overriding if self.long_override else VisionState.enabled
+
+    return self.state in ENABLED_STATES, self.state in ACTIVE_STATES
+
+  def _update_solution(self) -> float:
+    if self.state not in ACTIVE_STATES:
+      a_target = self.a_ego
+    elif self.state == VisionState.entering:
+      a_target = np.interp(
+        self.max_pred_lat_acc,
+        _SUNNYPILOT_CURRENT_ENTERING_SMOOTH_DECEL_BP,
+        _SUNNYPILOT_CURRENT_ENTERING_SMOOTH_DECEL_V,
+      )
+    elif self.state == VisionState.turning:
+      a_target = np.interp(self.current_lat_acc, _SUNNYPILOT_CURRENT_TURNING_ACC_BP, _SUNNYPILOT_CURRENT_TURNING_ACC_V)
+    elif self.state == VisionState.leaving:
+      a_target = _LEAVING_ACC
+    else:
+      raise NotImplementedError(f"SCC-V state not supported: {self.state}")
+
+    return a_target
+
+  def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float,
+             v_cruise_setpoint: float) -> None:
+    self.long_enabled = long_enabled
+    self.long_override = long_override
+    self.v_ego = v_ego
+    self.a_ego = a_ego
+    self.v_cruise_setpoint = v_cruise_setpoint
+
+    self._update_params()
+    self._update_calculations(sm)
+
+    self.is_enabled, self.is_active = self._update_state_machine()
     self.a_target = self._update_solution()
 
     self.output_v_target = self.get_v_target_from_control()

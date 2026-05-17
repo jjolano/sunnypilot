@@ -5,8 +5,14 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import cereal.messaging as messaging
-from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import SmartCruiseControlVision
-from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import SmartCruiseControlMap
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import (
+  SmartCruiseControlVision,
+  SunnypilotCurrentSmartCruiseControlVision,
+)
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import (
+  SmartCruiseControlMap,
+  SunnypilotCurrentSmartCruiseControlMap,
+)
 
 
 class SmartCruiseControl:
@@ -16,4 +22,14 @@ class SmartCruiseControl:
 
   def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float, v_cruise: float) -> None:
     self.map.update(long_enabled, long_override, v_ego, a_ego, v_cruise, sm['modelV2'])
+    self.vision.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
+
+
+class SunnypilotCurrentSmartCruiseControl:
+  def __init__(self):
+    self.vision = SunnypilotCurrentSmartCruiseControlVision()
+    self.map = SunnypilotCurrentSmartCruiseControlMap()
+
+  def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float, v_cruise: float) -> None:
+    self.map.update(long_enabled, long_override, v_ego, a_ego, v_cruise)
     self.vision.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)

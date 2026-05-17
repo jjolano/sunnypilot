@@ -1361,8 +1361,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     source_stability_v_ego = None if (
       reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed
     ) else v_ego
+    decision_layer_stack_enabled = stack_resolution is None or is_custom_stack(getattr(stack_resolution, "resolved_stack", ""))
     self.longitudinal_decision = resolve_longitudinal_decision(
-      enabled=self.params.get_bool("LongitudinalDecisionLayer"),
+      enabled=self.params.get_bool("LongitudinalDecisionLayer") and decision_layer_stack_enabled,
       candidates=self.longitudinal_decision_candidates,
       fallback_v_target=v_cruise,
       fallback_a_target=legacy_a_target,
