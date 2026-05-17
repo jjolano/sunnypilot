@@ -195,6 +195,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
   decisionLayer @8 :DecisionLayer;
+  stack @9 :Stack;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -314,6 +315,26 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     appliedShouldStop @10 :Bool;
     legacyShouldStop @11 :Bool;
   }
+
+  struct Stack {
+    requestedStack @0 :StackId;
+    resolvedStack @1 :StackId;
+    actuatedStack @2 :StackId;
+    shadowStack @3 :StackId;
+    customVersion @4 :Text;
+    fallbackLatched @5 :Bool;
+    fallbackReason @6 :Text;
+    actuatedATarget @7 :Float32;
+    shadowATarget @8 :Float32;
+
+    enum StackId {
+      unknown @0;
+      openpilotCurrent @1;
+      sunnypilotCurrent @2;
+      customRecommended @3;
+      customV1 @4;
+    }
+  }
 }
 
 struct OnroadEventSP @0xda96579883444c35 {
@@ -362,6 +383,7 @@ struct OnroadEventSP @0xda96579883444c35 {
     e2eChime @23;
     speedLimitAutoCruiseEnabled @24;
     speedLimitAutoCruiseDisabled @25;
+    customLongitudinalFallback @26;
   }
 }
 

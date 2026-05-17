@@ -12,8 +12,22 @@ import numpy as np
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate, LongitudinalDecisionTelemetry
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import apply_stack_output_to_planner, planner_state_to_stack_output
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.fallback import CustomStackFallbackWrapper
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_custom_longitudinal_stack
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
+  CUSTOM_RECOMMENDED,
+  CUSTOM_V1,
+  OPENPILOT_CURRENT,
+  SUNNYPILOT_CURRENT,
+  StackResolution,
+  is_custom_stack,
+  resolve_longitudinal_stack,
+)
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -25,6 +39,7 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
+StackId = custom.LongitudinalPlanSP.Stack.StackId
 SPEED_LIMIT_HANDOFF_EXIT_MARGIN = 0.25  # m/s, near enough to manual cruise to return to cruise.
 SPEED_LIMIT_HANDOFF_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating during handoff.
 SPEED_LIMIT_SPEED_UP_ACCEL_CAP = 0.8  # m/s^2, driver-intent candidate speed-up governor.
@@ -35,6 +50,12 @@ LEAD_SPEEDUP_GUARD_CLOSING_V_REL = -0.2  # m/s, ignore noise around matched spee
 LEAD_SPEEDUP_GUARD_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating into the lead.
 LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL = 1.6
 SOURCE_SELECTION_HYSTERESIS_V = 0.25
+STACK_ID_BY_NAME = {
+  OPENPILOT_CURRENT: StackId.openpilotCurrent,
+  SUNNYPILOT_CURRENT: StackId.sunnypilotCurrent,
+  CUSTOM_RECOMMENDED: StackId.customRecommended,
+  CUSTOM_V1: StackId.customV1,
+}
 
 
 def _select_lower_target(selected_source, selected_v_target, selected_a_target, candidate_source, candidate):
@@ -76,6 +97,25 @@ def publish_decision_layer_telemetry(longitudinalPlanSP, telemetry: Longitudinal
   decisionLayer.rawShouldStop = bool(telemetry.raw_should_stop)
   decisionLayer.appliedShouldStop = bool(telemetry.applied_should_stop)
   decisionLayer.legacyShouldStop = bool(telemetry.legacy_should_stop)
+
+
+def stack_id_for_name(name: str) -> custom.LongitudinalPlanSP.Stack.StackId:
+  return STACK_ID_BY_NAME.get(str(name or ""), StackId.unknown)
+
+
+def publish_stack_telemetry(longitudinalPlanSP, resolution: StackResolution, actuated_stack: str,
+                            actuated_a_target: float, shadow_stack: str = "", shadow_a_target: float = 0.0,
+                            fallback_latched: bool = False, fallback_reason: str | None = None) -> None:
+  stack = longitudinalPlanSP.stack
+  stack.requestedStack = stack_id_for_name(resolution.requested_stack)
+  stack.resolvedStack = stack_id_for_name(resolution.resolved_stack)
+  stack.actuatedStack = stack_id_for_name(actuated_stack)
+  stack.shadowStack = stack_id_for_name(shadow_stack)
+  stack.customVersion = str(resolution.custom_version)
+  stack.fallbackLatched = bool(fallback_latched)
+  stack.fallbackReason = str(resolution.fallback_reason if fallback_reason is None else fallback_reason)
+  stack.actuatedATarget = float(actuated_a_target)
+  stack.shadowATarget = float(shadow_a_target)
 
 
 def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_rel: float, y_rel: float,
@@ -199,6 +239,10 @@ def build_sp_longitudinal_candidates(speed_limit_active, cruise, scc_vision, scc
 
 class LongitudinalPlannerSP:
   def __init__(self, CP: object, CP_SP: object, mpc):
+    self.CP = CP
+    self.CP_SP = CP_SP
+    if not hasattr(self, "params"):
+      self.params = Params()
     self.events_sp = EventsSP()
     self.resolver = SpeedLimitResolver()
     self.dec = DynamicExperimentalController(CP, mpc)
@@ -215,6 +259,22 @@ class LongitudinalPlannerSP:
     self.decision_candidates_sp = []
     self._speed_limit_handoff_active = False
     self._speed_limit_active_prev = False
+    self.longitudinal_stack_resolution = resolve_longitudinal_stack(
+      self.params.get("LongitudinalStack", return_default=True), self.CP, self.CP_SP
+    )
+    self.longitudinal_stack_fallback = CustomStackFallbackWrapper(custom_stack=self.longitudinal_stack_resolution.resolved_stack)
+    self.custom_longitudinal_stack = self._make_custom_longitudinal_stack(self.longitudinal_stack_resolution.resolved_stack)
+    self.longitudinal_stack_actuated_stack = SUNNYPILOT_CURRENT
+    self.longitudinal_stack_shadow_stack = ""
+    self.longitudinal_stack_shadow_a_target = 0.0
+    self.longitudinal_stack_fallback_latched = False
+    self.longitudinal_stack_fallback_reason = ""
+
+  @staticmethod
+  def _make_custom_longitudinal_stack(stack_name: str):
+    if not is_custom_stack(stack_name):
+      return None
+    return make_custom_longitudinal_stack(stack_name)
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -323,6 +383,46 @@ class LongitudinalPlannerSP:
     self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
 
+  def _custom_v1_stack_output(self, sunnypilot_output: LongitudinalStackOutput) -> LongitudinalStackOutput:
+    if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != CUSTOM_V1:
+      self.custom_longitudinal_stack = make_custom_longitudinal_stack(CUSTOM_V1)
+    return self.custom_longitudinal_stack.update(sunnypilot_output)
+
+  def apply_longitudinal_stack_selection(self, sm: messaging.SubMaster, has_lead: bool,
+                                         accel_limits: tuple[float | None, float | None]) -> None:
+    sunnypilot_output = planner_state_to_stack_output(self, has_lead, debug={"adapter": SUNNYPILOT_CURRENT})
+    self.longitudinal_stack_actuated_stack = SUNNYPILOT_CURRENT
+    self.longitudinal_stack_shadow_stack = ""
+    self.longitudinal_stack_shadow_a_target = 0.0
+    self.longitudinal_stack_fallback_latched = False
+    self.longitudinal_stack_fallback_reason = ""
+
+    resolved_stack = self.longitudinal_stack_resolution.resolved_stack
+    if not is_custom_stack(resolved_stack):
+      self.longitudinal_stack_fallback.reset()
+      self.longitudinal_stack_fallback_reason = self.longitudinal_stack_resolution.fallback_reason
+      if resolved_stack != SUNNYPILOT_CURRENT:
+        self.longitudinal_stack_fallback_reason = self.longitudinal_stack_fallback_reason or "unimplemented_stack"
+      return
+
+    if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != resolved_stack:
+      self.custom_longitudinal_stack = make_custom_longitudinal_stack(resolved_stack)
+    self.longitudinal_stack_fallback.custom_stack = resolved_stack
+    result = self.longitudinal_stack_fallback.update(
+      bool(sm['selfdriveState'].enabled),
+      lambda: self._custom_v1_stack_output(sunnypilot_output),
+      lambda: sunnypilot_output,
+      accel_limits=accel_limits,
+    )
+    apply_stack_output_to_planner(self, result.output)
+    self.longitudinal_stack_actuated_stack = result.actuated_stack
+    self.longitudinal_stack_shadow_stack = result.shadow_stack
+    self.longitudinal_stack_shadow_a_target = float(result.shadow_output.a_target) if result.shadow_output is not None else 0.0
+    self.longitudinal_stack_fallback_latched = result.fallback_latched
+    self.longitudinal_stack_fallback_reason = result.fallback_reason
+    if result.fallback_triggered:
+      self.events_sp.add(custom.OnroadEventSP.EventName.customLongitudinalFallback)
+
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
     plan_sp_send = messaging.new_message('longitudinalPlanSP')
 
@@ -385,5 +485,15 @@ class LongitudinalPlannerSP:
     e2eAlerts.leadDepartAlert = self.e2e_alerts_helper.lead_depart_alert
 
     publish_decision_layer_telemetry(longitudinalPlanSP, getattr(self, "longitudinal_decision_telemetry", None))
+    publish_stack_telemetry(
+      longitudinalPlanSP,
+      getattr(self, "longitudinal_stack_resolution"),
+      actuated_stack=getattr(self, "longitudinal_stack_actuated_stack", SUNNYPILOT_CURRENT),
+      actuated_a_target=float(self.output_a_target),
+      shadow_stack=getattr(self, "longitudinal_stack_shadow_stack", ""),
+      shadow_a_target=float(getattr(self, "longitudinal_stack_shadow_a_target", 0.0)),
+      fallback_latched=bool(getattr(self, "longitudinal_stack_fallback_latched", False)),
+      fallback_reason=getattr(self, "longitudinal_stack_fallback_reason", ""),
+    )
 
     pm.send('longitudinalPlanSP', plan_sp_send)

@@ -252,6 +252,14 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlert.none, 2.),
   },
 
+  EventNameSP.customLongitudinalFallback: {
+    ET.WARNING: Alert(
+      "Custom Longitudinal Fallback",
+      "Using sunnypilot longitudinal",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.none, AudibleAlert.none, 2.),
+  },
+
   EventNameSP.e2eChime: {
     ET.PERMANENT: Alert(
       "",

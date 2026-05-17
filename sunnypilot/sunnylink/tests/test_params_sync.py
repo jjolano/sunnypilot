@@ -221,6 +221,13 @@ def test_known_params_metadata():
   assert "decision" in decision_layer["description"].lower()
   assert "unified" in decision_layer["description"].lower()
 
+  longitudinal_stack = metadata.get("LongitudinalStack")
+  assert longitudinal_stack is not None
+  assert longitudinal_stack["title"] == "Longitudinal Stack"
+  stack_options = {option["value"] for option in longitudinal_stack["options"]}
+  assert "sunnypilot-current" in stack_options
+  assert "custom-recommended" in stack_options
+
   accurate_lateral_accel = metadata.get("AccurateLateralAccel")
   assert accurate_lateral_accel is not None
   assert accurate_lateral_accel["title"] == "Accurate Lateral Acceleration"
@@ -335,3 +342,30 @@ def test_torque_control_tune_versions_in_sync():
       "The following versions in TorqueControlTune options are not in latcontrol_torque_versions.json: "
       + f"{extra_versions}. Please run '{sync_script_path}' to sync."
     )
+
+
+def test_longitudinal_stack_options_in_sync():
+  from openpilot.common.basedir import BASEDIR
+
+  versions_json_path = os.path.join(
+    BASEDIR, "selfdrive", "controls", "lib", "longitudinal_stacks", "longitudinal_stack_versions.json"
+  )
+
+  with open(METADATA_PATH) as f:
+    metadata = json.load(f)
+
+  with open(versions_json_path) as f:
+    versions = json.load(f)
+
+  stack_metadata = metadata.get("LongitudinalStack")
+  assert stack_metadata is not None
+  options = stack_metadata.get("options")
+  assert isinstance(options, list)
+
+  expected_values = set(versions.get("stacks", {}).keys())
+  actual_values = {option.get("value") for option in options}
+
+  assert expected_values == actual_values
+  for option in options:
+    value = option["value"]
+    assert option["label"] == versions["stacks"][value]["label"]
