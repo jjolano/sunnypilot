@@ -1,6 +1,8 @@
 import math
 import numpy as np
 from collections import deque
+from dataclasses import dataclass
+from enum import IntFlag
 
 from cereal import log
 from opendbc.car.lateral import get_friction
@@ -15,6 +17,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import Torqu
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_direction
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_low_speed import low_speed_pid_gain_speed
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_observation import TorqueObservation
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_over_response_attenuator import attenuate_same_direction_over_response
 
 
@@ -29,7 +32,8 @@ LP_FILTER_CUTOFF_HZ = 1.2
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 FRICTION_THRESHOLD = 0.3
 LOW_DEMAND_FRICTION_FULL_LAT_ACCEL = 0.35
-VERSION = 2
+VERSION_V2 = 2
+VERSION_V21 = 21
 LOW_SPEED_UNWIND_VEGO = 8.0
 LOW_SPEED_UNWIND_SETPOINT = 0.2
 LOW_SPEED_UNWIND_MARGIN = 0.08
@@ -40,6 +44,22 @@ MEASUREMENT_SMOOTHER_CORRECTION_GAIN = 0.35
 MEASUREMENT_SMOOTHER_MAX_PREDICTIVE_JERK = 5.0
 MEASUREMENT_SMOOTHER_IMPLAUSIBLE_JERK = 80.0
 MEASUREMENT_SMOOTHER_MAX_RAW_ERROR = 1.0
+
+V21_OUTPUT_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
+V21_OUTPUT_SLEW_RATE_V = [1.40, 2.00, 3.00, 4.20, 5.00, 5.60]
+V21_SIGN_CHANGE_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
+V21_SIGN_CHANGE_SLEW_RATE_V = [0.90, 1.20, 1.80, 2.40, 3.00, 3.40]
+V21_OVERRIDE_RELEASE_RATE = 6.0
+V21_SAME_DIRECTION_LIMIT_RATE = 1.3
+V21_SAME_DIRECTION_LIMIT_CAP = 0.85
+V21_HIGH_RATE_START_DEG = 80.0
+V21_HIGH_RATE_FULL_DEG = 100.0
+V21_HIGH_RATE_MIN_CAP = 0.62
+V21_HIGH_RATE_SLEW_SCALE = 0.70
+V21_UNDER_RESPONSE_MARGIN = 0.12
+V21_UNDER_RESPONSE_FULL_SPEED = 9.0
+V21_UNDER_RESPONSE_FADE_SPEED = 12.0
+V21_SIGN_THRESHOLD = 0.05
 
 ADAPTIVE_PHASE_MAP = {
   0: log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.idle,
@@ -53,9 +73,134 @@ def sign(value: float) -> float:
   return 1.0 if value > 0.0 else (-1.0 if value < 0.0 else 0.0)
 
 
+def approach(value: float, target: float, step: float) -> float:
+  if target > value:
+    return min(target, value + step)
+  return max(target, value - step)
+
+
 def low_demand_friction_scale(setpoint: float, measurement: float) -> float:
   demand = max(abs(setpoint), abs(measurement))
   return float(np.clip(demand / LOW_DEMAND_FRICTION_FULL_LAT_ACCEL, 0.0, 1.0))
+
+
+class RefinedOutputGovernorReason(IntFlag):
+  NONE = 0
+  CLIPPED = 1 << 0
+  SLEW_LIMITED = 1 << 1
+  SIGN_CHANGE_LIMITED = 1 << 2
+  DRIVER_OVERRIDE = 1 << 3
+  SAME_DIRECTION_LIMIT = 1 << 4
+  HIGH_STEERING_RATE = 1 << 5
+  INVALID = 1 << 6
+  UNDER_RESPONSE_FLOOR = 1 << 7
+
+
+@dataclass(frozen=True)
+class RefinedOutputGovernorInputs:
+  active: bool
+  v_ego: float
+  steering_pressed: bool
+  steering_rate_deg: float
+  same_direction_limit: bool
+  output_torque: float
+  max_output: float
+  desired_lateral_accel: float
+  actual_lateral_accel: float
+
+
+@dataclass(frozen=True)
+class RefinedOutputGovernorResult:
+  output_torque: float
+  active: bool
+  reason: RefinedOutputGovernorReason
+
+
+class TorqueV21RefinedOutputGovernor:
+  def __init__(self, dt: float):
+    self.dt = max(float(dt), 1e-3)
+    self.previous_output = 0.0
+
+  def reset(self) -> None:
+    self.previous_output = 0.0
+
+  def update(self, inputs: RefinedOutputGovernorInputs) -> RefinedOutputGovernorResult:
+    reason = RefinedOutputGovernorReason.NONE
+    if not inputs.active:
+      self.reset()
+      return RefinedOutputGovernorResult(0.0, False, reason)
+    if not self._finite(inputs.v_ego, inputs.steering_rate_deg, inputs.output_torque, inputs.max_output,
+                        inputs.desired_lateral_accel, inputs.actual_lateral_accel) or inputs.max_output <= 0.0:
+      self.reset()
+      return RefinedOutputGovernorResult(0.0, True, RefinedOutputGovernorReason.INVALID)
+
+    if inputs.steering_pressed:
+      output = approach(self.previous_output, 0.0, V21_OVERRIDE_RELEASE_RATE * self.dt)
+      self.previous_output = output
+      return RefinedOutputGovernorResult(output, abs(output - inputs.output_torque) > 1e-6,
+                                         RefinedOutputGovernorReason.DRIVER_OVERRIDE)
+
+    under_response_floor = self._under_response_floor(inputs)
+    if under_response_floor > 0.0:
+      reason |= RefinedOutputGovernorReason.UNDER_RESPONSE_FLOOR
+
+    output_cap = inputs.max_output
+    high_rate_blend = float(np.clip((abs(inputs.steering_rate_deg) - V21_HIGH_RATE_START_DEG) /
+                                    max(V21_HIGH_RATE_FULL_DEG - V21_HIGH_RATE_START_DEG, 1e-3), 0.0, 1.0))
+    if high_rate_blend > 0.0:
+      output_cap = min(output_cap, inputs.max_output * (1.0 + high_rate_blend * (V21_HIGH_RATE_MIN_CAP - 1.0)))
+      reason |= RefinedOutputGovernorReason.HIGH_STEERING_RATE
+    if inputs.same_direction_limit:
+      output_cap = min(output_cap, inputs.max_output * V21_SAME_DIRECTION_LIMIT_CAP)
+      reason |= RefinedOutputGovernorReason.SAME_DIRECTION_LIMIT
+    if under_response_floor > 0.0:
+      output_cap += under_response_floor * (inputs.max_output - output_cap)
+
+    clipped = float(np.clip(inputs.output_torque, -output_cap, output_cap))
+    if abs(clipped - inputs.output_torque) > 1e-6:
+      reason |= RefinedOutputGovernorReason.CLIPPED
+
+    previous_sign = sign(self.previous_output)
+    target_sign = sign(clipped)
+    sign_change = previous_sign != 0.0 and target_sign != 0.0 and previous_sign != target_sign
+    slew_rate = float(np.interp(inputs.v_ego, V21_SIGN_CHANGE_SLEW_RATE_BP, V21_SIGN_CHANGE_SLEW_RATE_V)) if sign_change else \
+      float(np.interp(inputs.v_ego, V21_OUTPUT_SLEW_RATE_BP, V21_OUTPUT_SLEW_RATE_V))
+    if sign_change:
+      reason |= RefinedOutputGovernorReason.SIGN_CHANGE_LIMITED
+    if high_rate_blend > 0.0:
+      slew_rate *= V21_HIGH_RATE_SLEW_SCALE
+    if inputs.same_direction_limit:
+      slew_rate = min(slew_rate, V21_SAME_DIRECTION_LIMIT_RATE)
+
+    target_decreases_same_direction = previous_sign != 0.0 and target_sign == previous_sign and abs(clipped) <= abs(self.previous_output)
+    limited = clipped if target_decreases_same_direction else approach(self.previous_output, clipped, slew_rate * self.dt)
+    output = limited + under_response_floor * (clipped - limited)
+    if abs(output - clipped) > 1e-6:
+      reason |= RefinedOutputGovernorReason.SLEW_LIMITED
+    self.previous_output = output
+    active = abs(output - inputs.output_torque) > 1e-6 or reason != RefinedOutputGovernorReason.NONE
+    return RefinedOutputGovernorResult(output, active, reason)
+
+  @staticmethod
+  def _finite(*values: float) -> bool:
+    return all(math.isfinite(float(value)) for value in values)
+
+  @staticmethod
+  def _under_response_floor(inputs: RefinedOutputGovernorInputs) -> float:
+    if inputs.v_ego >= V21_UNDER_RESPONSE_FADE_SPEED:
+      return 0.0
+    desired_sign = sign(inputs.desired_lateral_accel)
+    actual_sign = 0.0 if abs(inputs.actual_lateral_accel) <= V21_SIGN_THRESHOLD else sign(inputs.actual_lateral_accel)
+    output_sign = sign(inputs.output_torque)
+    under_response = desired_sign * (inputs.desired_lateral_accel - inputs.actual_lateral_accel)
+    same_sign_lag = desired_sign != 0.0 and output_sign == desired_sign and actual_sign in (0.0, desired_sign)
+    corrective_reversal = desired_sign != 0.0 and actual_sign != 0.0 and actual_sign != desired_sign and output_sign == desired_sign
+    if under_response <= V21_UNDER_RESPONSE_MARGIN or not (same_sign_lag or corrective_reversal):
+      return 0.0
+    if inputs.v_ego <= V21_UNDER_RESPONSE_FULL_SPEED:
+      return 1.0
+    span = V21_UNDER_RESPONSE_FADE_SPEED - V21_UNDER_RESPONSE_FULL_SPEED
+    return float(np.clip((V21_UNDER_RESPONSE_FADE_SPEED - inputs.v_ego) / max(span, 1e-3), 0.0, 1.0))
 
 
 class LateralAccelMeasurementSmoother:
@@ -101,6 +246,9 @@ class LateralAccelMeasurementSmoother:
 
 
 class LatControlTorque(LatControl):
+  CONTROLLER_VERSION = VERSION_V2
+  USE_REFINED_OUTPUT_GOVERNOR = False
+
   def __init__(self, CP, CP_SP, CI, dt):
     super().__init__(CP, CP_SP, CI, dt)
     self.torque_params = CP.lateralTuning.torque.as_builder()
@@ -118,6 +266,7 @@ class LatControlTorque(LatControl):
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
     self.response_assist = TorqueGuardedResponseAssist(self.dt)
     self.output_shaper = TorqueConservativeOutputShaper(self.dt)
+    self.refined_output_governor = TorqueV21RefinedOutputGovernor(self.dt) if self.USE_REFINED_OUTPUT_GOVERNOR else None
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -133,7 +282,7 @@ class LatControlTorque(LatControl):
       self.update_limits()
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
-    pid_log.version = VERSION
+    pid_log.version = self.CONTROLLER_VERSION
 
     measured_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)
     raw_measurement = measured_curvature * CS.vEgo**2
@@ -229,24 +378,37 @@ class LatControlTorque(LatControl):
     steer_limit_feedback = self.steering_actuator_feedback
     steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
     response_steer_limited = steer_limited_by_safety and (steer_limit_same_direction if steer_limit_feedback.valid else True)
+    torque_observation = TorqueObservation(
+      active=active,
+      v_ego=CS.vEgo,
+      steering_pressed=CS.steeringPressed,
+      steer_limited_by_safety=response_steer_limited,
+      curvature_limited=curvature_limited,
+      saturated=saturated,
+      lateral_maneuver=lane_change_active,
+      target_lateral_accel=setpoint,
+      target_lateral_accel_rate=desired_lateral_jerk,
+      actual_lateral_accel=measurement,
+      actual_lateral_jerk=raw_actual_lateral_jerk,
+    )
     assist_result = self.response_assist.update(
       GuardedResponseAssistInputs(
-        active=active,
-        v_ego=CS.vEgo,
-        steering_pressed=CS.steeringPressed,
-        steer_limited_by_safety=response_steer_limited,
-        curvature_limited=curvature_limited,
-        saturated=saturated,
+        active=torque_observation.active,
+        v_ego=torque_observation.v_ego,
+        steering_pressed=torque_observation.steering_pressed,
+        steer_limited_by_safety=torque_observation.steer_limited_by_safety,
+        curvature_limited=torque_observation.curvature_limited,
+        saturated=torque_observation.saturated,
         max_output=self.steer_max,
         nominal_torque=output_torque,
-        desired_lateral_accel=setpoint,
-        actual_lateral_accel=measurement,
-        desired_lateral_jerk=desired_lateral_jerk,
-        actual_lateral_jerk=raw_actual_lateral_jerk,
+        desired_lateral_accel=torque_observation.target_lateral_accel,
+        actual_lateral_accel=torque_observation.actual_lateral_accel,
+        desired_lateral_jerk=torque_observation.target_lateral_accel_rate,
+        actual_lateral_jerk=torque_observation.actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
         desired_curvature=desired_curvature,
         tracking_torque_error=tracking_torque_error,
-        lane_change_active=lane_change_active,
+        lane_change_active=torque_observation.lateral_maneuver,
         same_sign_unwind=same_sign_unwind,
       )
     )
@@ -255,17 +417,17 @@ class LatControlTorque(LatControl):
     steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
     shaping_result = self.output_shaper.update(
       ConservativeOutputShaperInputs(
-        active=active,
-        v_ego=CS.vEgo,
-        steering_pressed=CS.steeringPressed,
+        active=torque_observation.active,
+        v_ego=torque_observation.v_ego,
+        steering_pressed=torque_observation.steering_pressed,
         steer_limited_by_safety=steer_limited_by_safety,
         release_active=assist_result.release_active,
         max_output=self.steer_max,
         unshaped_output=output_torque,
-        desired_lateral_accel=setpoint,
+        desired_lateral_accel=torque_observation.target_lateral_accel,
         actual_lateral_accel=shaping_measurement,
-        desired_lateral_jerk=desired_lateral_jerk,
-        actual_lateral_jerk=raw_actual_lateral_jerk,
+        desired_lateral_jerk=torque_observation.target_lateral_accel_rate,
+        actual_lateral_jerk=torque_observation.actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
         same_sign_unwind_release=same_sign_unwind_release,
         # The shaper sees pre-actuator torque; the actuator command is negated on return.
@@ -278,16 +440,16 @@ class LatControlTorque(LatControl):
     )
     disturbance_result = classify_torque_disturbance(
       TorqueDisturbanceInputs(
-        active=active,
-        v_ego=CS.vEgo,
-        steering_pressed=CS.steeringPressed,
+        active=torque_observation.active,
+        v_ego=torque_observation.v_ego,
+        steering_pressed=torque_observation.steering_pressed,
         steer_limited_by_safety=steer_limited_by_safety,
-        curvature_limited=curvature_limited,
+        curvature_limited=torque_observation.curvature_limited,
         saturated=saturated or self.steer_max - abs(shaping_result.unshaped_output) < 1e-3,
-        desired_lateral_accel=setpoint,
+        desired_lateral_accel=torque_observation.target_lateral_accel,
         actual_lateral_accel=shaping_measurement,
-        desired_lateral_jerk=desired_lateral_jerk,
-        actual_lateral_jerk=raw_actual_lateral_jerk,
+        desired_lateral_jerk=torque_observation.target_lateral_accel_rate,
+        actual_lateral_jerk=torque_observation.actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
         output_torque=shaping_result.unshaped_output,
         response_deficit=assist_result.response_deficit,
@@ -297,6 +459,23 @@ class LatControlTorque(LatControl):
       )
     )
     output_torque = shaping_result.output_torque
+    governor_result = RefinedOutputGovernorResult(output_torque, False, RefinedOutputGovernorReason.NONE)
+    if self.refined_output_governor is not None:
+      governor_same_direction_limit = steer_limited_by_safety and (steer_limit_same_direction if steer_limit_feedback.valid else True) and not steer_limit_unwind
+      governor_result = self.refined_output_governor.update(
+        RefinedOutputGovernorInputs(
+          active=torque_observation.active,
+          v_ego=torque_observation.v_ego,
+          steering_pressed=torque_observation.steering_pressed,
+          steering_rate_deg=-CS.steeringRateDeg,
+          same_direction_limit=governor_same_direction_limit,
+          output_torque=output_torque,
+          max_output=self.steer_max,
+          desired_lateral_accel=torque_observation.target_lateral_accel,
+          actual_lateral_accel=shaping_measurement,
+        )
+      )
+      output_torque = governor_result.output_torque
 
     pid_log.p = float(self.pid.p)
     pid_log.i = float(self.pid.i)
@@ -308,7 +487,8 @@ class LatControlTorque(LatControl):
     pid_log.desiredLateralJerk = float(desired_lateral_jerk)
     adaptive_log = pid_log.init('adaptiveTorqueState')
     adaptive_active = active and (
-      shaping_result.active or assist_result.phase_id != 0 or abs(assist_result.assist_torque) > 1e-3 or abs(assist_result.bias_torque) > 1e-3
+      shaping_result.active or governor_result.active or assist_result.phase_id != 0
+      or abs(assist_result.assist_torque) > 1e-3 or abs(assist_result.bias_torque) > 1e-3
     )
     adaptive_log.active = bool(adaptive_active)
     adaptive_log.phase = ADAPTIVE_PHASE_MAP[assist_result.phase_id]
@@ -326,6 +506,7 @@ class LatControlTorque(LatControl):
     adaptive_log.shapingConfidence = float(shaping_result.confidence)
     adaptive_log.unshapedOutput = float(-shaping_result.unshaped_output)
     adaptive_log.outputCap = float(shaping_result.output_cap)
+    adaptive_log.governorReason = int(governor_result.reason)
     adaptive_log.disturbanceState = int(disturbance_result.state)
     adaptive_log.disturbanceReason = int(disturbance_result.reason)
     adaptive_log.disturbanceConfidence = float(disturbance_result.confidence)
@@ -340,3 +521,11 @@ class LatControlTorque(LatControl):
     pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
 
     return -output_torque, 0.0, pid_log
+
+
+class LatControlTorqueV21(LatControlTorque):
+  CONTROLLER_VERSION = VERSION_V21
+  USE_REFINED_OUTPUT_GOVERNOR = True
+
+
+LatControlTorqueV2 = LatControlTorque

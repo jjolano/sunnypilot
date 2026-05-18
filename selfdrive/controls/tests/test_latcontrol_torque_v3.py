@@ -14,6 +14,7 @@ from openpilot.selfdrive.car.helpers import convert_to_capnp
 from openpilot.selfdrive.locationd.helpers import Measurement, Pose
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import SteeringActuatorFeedback, SteeringLimitReason
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_observation import TorqueObservation, torque_direction
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
 
@@ -94,6 +95,27 @@ def test_v3_schema_fields_exist():
 
 def test_v3_controller_alias_matches_controller_symbol():
   assert LatControlTorqueV3 is LatControlTorque
+
+
+def test_torque_observation_captures_shared_finite_state():
+  observation = TorqueObservation(
+    active=True,
+    v_ego=12.0,
+    steering_pressed=False,
+    steer_limited_by_safety=False,
+    curvature_limited=False,
+    saturated=False,
+    lateral_maneuver=False,
+    target_lateral_accel=0.2,
+    target_lateral_accel_rate=0.1,
+    actual_lateral_accel=0.18,
+    actual_lateral_jerk=0.05,
+  )
+
+  assert observation.finite
+  assert torque_direction(0.2, 0.05) == 1
+  assert torque_direction(-0.2, 0.05) == -1
+  assert torque_direction(0.01, 0.05) == 0
 
 
 def test_v3_uses_shared_torque_extension_hook():
