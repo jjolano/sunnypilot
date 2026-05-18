@@ -365,6 +365,17 @@ class TestSpeedLimitAssist:
     assert self.sla.output_v_target == pytest.approx(SPEED_LIMITS['city'])
     assert self.sla.output_a_target == pytest.approx(0.0)
 
+  def test_offset_speed_limit_setpoint_does_not_exceed_set_cruise(self):
+    self.initialize_active_state(SPEED_LIMITS['city'])
+    self.sla.output_v_target = SPEED_LIMITS['city']
+
+    offset_target = SPEED_LIMITS['city'] + 2.0
+    self.sla.update(True, False, SPEED_LIMITS['city'], 0.0, SPEED_LIMITS['city'], SPEED_LIMITS['city'],
+                    offset_target, True, 0.0, self.events_sp)
+
+    assert self.sla.output_v_target == pytest.approx(SPEED_LIMITS['city'])
+    assert self.sla.output_a_target == pytest.approx(0.0)
+
   def test_diagnostic_accel_uses_current_accel_when_setpoint_starts_unset(self):
     self.initialize_active_state(self.pcm_long_max_set_speed)
 

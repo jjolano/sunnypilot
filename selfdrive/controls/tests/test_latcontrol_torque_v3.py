@@ -39,6 +39,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib import latcontrol_torque_v3
 
 LatControlTorque = latcontrol_torque_v3.LatControlTorque
 LatControlTorqueV3 = latcontrol_torque_v3.LatControlTorqueV3
+TorqueV3OutputGovernor = latcontrol_torque_v3.TorqueV3OutputGovernor
 V3GovernorReason = latcontrol_torque_v3.V3GovernorReason
 V3LearnerRejectReason = latcontrol_torque_v3.V3LearnerRejectReason
 
@@ -95,6 +96,30 @@ def test_v3_controller_alias_matches_controller_symbol():
   assert LatControlTorqueV3 is LatControlTorque
 
 
+def test_v3_uses_shared_torque_extension_hook():
+  controller, VM = get_controller()
+  CS = make_car_state(v_ego=20.0)
+  base_factor = controller.torque_params.latAccelFactor
+
+  class FakeExtension:
+    def __init__(self):
+      self.last_v_ego = 0.0
+      self.updated = False
+
+    def update_override_torque_params(self, torque_params):
+      self.updated = True
+      torque_params.latAccelFactor = base_factor * 1.1
+      return True
+
+  controller.extension = FakeExtension()
+
+  update(controller, VM, CS, 0.001)
+
+  assert controller.extension.updated
+  assert controller.extension.last_v_ego == pytest.approx(CS.vEgo)
+  assert controller.torque_params.latAccelFactor == pytest.approx(base_factor * 1.1)
+
+
 def test_v3_delay_leads_curve_entry_and_release():
   controller, VM = get_controller()
   CS = make_car_state(v_ego=20.0)
@@ -130,6 +155,25 @@ def test_v3_toyota_high_rate_governor_softens_rapid_steering():
   assert high_rate_log.adaptiveTorqueState.outputCap < normal_log.adaptiveTorqueState.outputCap
 
 
+def test_v3_governor_has_route_tracking_slew_headroom_at_city_speed():
+  governor = TorqueV3OutputGovernor(0.01)
+
+  result = governor.update(True, 10.0, False, 0.0, False, 1.0, 1.0)
+
+  assert result.reason & V3GovernorReason.SLEW_LIMITED
+  assert result.output_torque > 0.025
+
+
+def test_v3_governor_same_direction_limit_still_allows_response():
+  governor = TorqueV3OutputGovernor(0.01)
+
+  result = governor.update(True, 10.0, False, 0.0, True, 1.0, 1.0)
+
+  assert result.reason & V3GovernorReason.SAME_DIRECTION_LIMIT
+  assert result.output_cap < 1.0
+  assert result.output_torque > 0.01
+
+
 def test_v3_driver_override_releases_with_bounded_decay():
   controller, VM = get_controller()
   CS = make_car_state(v_ego=20.0)
@@ -146,7 +190,7 @@ def test_v3_driver_override_releases_with_bounded_decay():
   assert override_log.adaptiveTorqueState.sampleRejectReason & V3LearnerRejectReason.STEERING_PRESSED
 
 
-def test_v3_signed_same_direction_limit_caps_output_and_freezes_learning():
+def test_v3_signed_same_direction_limit_caps_output_and_reports_sample_rejection():
   controller, VM = get_controller()
   CS = make_car_state(v_ego=20.0)
   controller.set_steering_actuator_feedback(
@@ -159,19 +203,24 @@ def test_v3_signed_same_direction_limit_caps_output_and_freezes_learning():
   assert adaptive.governorReason & V3GovernorReason.SAME_DIRECTION_LIMIT
   assert adaptive.sampleRejectReason & V3LearnerRejectReason.STEER_LIMITED
   assert adaptive.outputCap < 1.0
+  assert not adaptive.learningFrozen
 
 
-def test_v3_session_learner_ramps_response_scale_from_clean_under_response():
+def test_v3_does_not_run_session_response_learning():
   controller, VM = get_controller()
   CS = make_car_state(v_ego=20.0)
+
+  assert not hasattr(controller, "learner")
 
   for _ in range(180):
     _, _, lac_log = update(controller, VM, CS, 0.001)
 
   adaptive = lac_log.adaptiveTorqueState
   assert adaptive.sampleAccepted
-  assert adaptive.modelConfidence > 0.3
-  assert adaptive.learnerResponseScale > 1.0
+  assert adaptive.modelConfidence == pytest.approx(0.0)
+  assert adaptive.learnerResponseScale == pytest.approx(1.0)
+  assert adaptive.authorityScale == pytest.approx(1.0)
+  assert adaptive.trimCorrection == pytest.approx(0.0)
 
 
 def test_v3_invalid_input_zeroes_output_and_logs_fault():
