@@ -111,6 +111,7 @@ ENGAGE_STOP_BOOTSTRAP_MODEL_ACCEL = -1.0
 E2E_STOP_APPROACH_MIN_V_EGO = 3.0
 E2E_STOP_APPROACH_MAX_MODEL_ACCEL = 0.2
 E2E_STOP_APPROACH_MIN_ENDPOINT = 5.0
+E2E_STOP_APPROACH_CRAWL_RESERVE = 2.0
 E2E_STOP_APPROACH_PROTECTION_MIN_V_EGO = 2.0
 E2E_STOP_APPROACH_EXPECTED_DIST_BP = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 55.0, 60.0]
 E2E_STOP_APPROACH_EXPECTED_DIST_V = [8.0, 18.0, 30.0, 43.0, 58.0, 74.0, 85.0, 96.0]
@@ -205,13 +206,18 @@ def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force
   if not np.isfinite(endpoint_x) or endpoint_x <= 0.0:
     return 0.0
 
+  approach_distance = endpoint_x
+  stop_distance = get_model_stop_distance(model_msg)
+  if stop_distance is not None and np.isfinite(stop_distance) and stop_distance > 0.0:
+    approach_distance = min(endpoint_x, max(E2E_STOP_APPROACH_MIN_ENDPOINT, stop_distance - E2E_STOP_APPROACH_CRAWL_RESERVE))
+
   expected_distance = float(np.interp(v_ego * CV.MS_TO_KPH, E2E_STOP_APPROACH_EXPECTED_DIST_BP, E2E_STOP_APPROACH_EXPECTED_DIST_V))
   max_decel_distance = v_ego**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX * (1.0 - E2E_STOP_APPROACH_MAX_DECEL_SHORTAGE))
   expected_distance = max(expected_distance, max_decel_distance)
   if expected_distance <= 0.0:
     return 0.0
 
-  shortage = max(0.0, expected_distance - endpoint_x) / expected_distance
+  shortage = max(0.0, expected_distance - approach_distance) / expected_distance
   if shortage <= E2E_STOP_APPROACH_SHORTAGE_BP[0]:
     return 0.0
 
