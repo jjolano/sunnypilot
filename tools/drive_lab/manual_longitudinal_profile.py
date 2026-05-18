@@ -43,6 +43,9 @@ class ManualSample:
   lead_v_lead: float | None = None
   lead_a_lead: float | None = None
   lead_model_prob: float | None = None
+  model_should_stop: bool = False
+  model_desired_accel: float | None = None
+  model_stop_distance: float | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,15 @@ class LeadCrawlEpisodeSummary:
 
 
 @dataclass(frozen=True)
+class StopApproachBucketSummary:
+  label: str
+  count: int
+  mean_accel: ProfileRange
+  peak_decel: ProfileRange
+  required_decel: ProfileRange
+
+
+@dataclass(frozen=True)
 class ManualStyleSummary:
   sample_count: int
   accel: ProfileRange
@@ -122,6 +134,7 @@ class ManualStyleSummary:
   following_bins: list[FollowingBinSummary]
   lead_crawl_bins: list[LeadCrawlBucketSummary]
   lead_crawl_episodes: list[LeadCrawlEpisodeSummary]
+  stop_approach_bins: list[StopApproachBucketSummary]
   style: str
 
 
@@ -134,6 +147,8 @@ _SPEED_BINS = (
 )
 LEAD_CRAWL_MAX_SPEED = 2.5
 LEAD_CRAWL_CLOSING_THRESHOLD = -0.1
+ROUTINE_STOP_REQUIRED_DECEL_MAX = 0.9
+URGENT_STOP_REQUIRED_DECEL_MIN = 1.2
 _LEAD_CRAWL_BUCKETS = (
   ("open_to_crawl", 2.0, float("inf")),
   ("crawl_to_follow", 1.0, 2.0),
@@ -212,15 +227,20 @@ def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummar
   clear_launches = [episode for episode in launch_candidates if not episode["lead"]]
   lead_stops = [episode for episode in stop_candidates if episode["lead"]]
   clear_stops = [episode for episode in stop_candidates if not episode["lead"]]
+  routine_stops = [episode for episode in stop_candidates if episode["stop_tier"] == "routine"]
+  urgent_stops = [episode for episode in stop_candidates if episode["stop_tier"] == "urgent"]
+  style_moving = [sample for sample in moving if not _sample_in_episodes(sample, urgent_stops)]
   coast_samples = [sample for sample in moving if not sample.gas_pressed and not sample.brake_pressed and sample.v_ego >= 7.0]
 
   accel = percentile_range([sample.a_ego for sample in moving], 10.0, 90.0)
+  style_accel = percentile_range([sample.a_ego for sample in style_moving], 10.0, 90.0)
   lead_launch_mean = percentile_range([episode["mean_accel"] for episode in lead_launches], 50.0, 90.0)
   clear_launch_mean = percentile_range([episode["mean_accel"] for episode in clear_launches], 50.0, 90.0)
   stop_mean = percentile_range([episode["mean_accel"] for episode in stop_candidates], 10.0, 50.0)
+  style_stop_mean = percentile_range([episode["mean_accel"] for episode in routine_stops], 10.0, 50.0) if routine_stops else stop_mean
   coast = percentile_range([sample.a_ego for sample in coast_samples], 50.0, 90.0)
   launch_mean = lead_launch_mean if lead_launches else clear_launch_mean
-  style = classify_style(accel, launch_mean, stop_mean, coast)
+  style = classify_style(style_accel, launch_mean, style_stop_mean, coast)
 
   return ManualStyleSummary(
     sample_count=len(moving),
@@ -240,6 +260,7 @@ def summarize_manual_style(samples: Iterable[ManualSample]) -> ManualStyleSummar
     following_bins=_summarize_following_bins(moving),
     lead_crawl_bins=_summarize_lead_crawl_bins(ordered),
     lead_crawl_episodes=_summarize_lead_crawl_episodes(ordered_all),
+    stop_approach_bins=_summarize_stop_approach_bins(stop_candidates),
     style=style,
   )
 
@@ -282,6 +303,10 @@ def render_manual_style_summary(summary: ManualStyleSummary, route_profiles: Ite
   lines.append("Following bins:")
   lines.extend(_render_following_bin(following_bin) for following_bin in summary.following_bins)
   if not summary.following_bins:
+    lines.append("  none")
+  lines.append("Stop approach tiers:")
+  lines.extend(_render_stop_approach_bin(stop_bin) for stop_bin in summary.stop_approach_bins)
+  if not summary.stop_approach_bins:
     lines.append("  none")
   lines.append("Lead crawl bins:")
   lines.extend(_render_lead_crawl_bin(crawl_bin) for crawl_bin in summary.lead_crawl_bins)
@@ -331,6 +356,32 @@ def _summarize_following_bins(samples: list[ManualSample]) -> list[FollowingBinS
         for sample in closing_samples
         if sample.lead_d_rel is not None
       ], 10.0, 90.0),
+    ))
+  return summaries
+
+
+def classify_stop_tier(required_decel: float | None) -> str:
+  if required_decel is None or not isfinite(required_decel):
+    return "ambiguous"
+  if required_decel <= ROUTINE_STOP_REQUIRED_DECEL_MAX:
+    return "routine"
+  if required_decel >= URGENT_STOP_REQUIRED_DECEL_MIN:
+    return "urgent"
+  return "ambiguous"
+
+
+def _summarize_stop_approach_bins(episodes: list[dict[str, float | bool]]) -> list[StopApproachBucketSummary]:
+  summaries: list[StopApproachBucketSummary] = []
+  for label in ("routine", "urgent", "ambiguous"):
+    bucket = [episode for episode in episodes if episode.get("stop_tier") == label]
+    if not bucket:
+      continue
+    summaries.append(StopApproachBucketSummary(
+      label=label,
+      count=len(bucket),
+      mean_accel=percentile_range([episode.get("mean_accel") for episode in bucket], 10.0, 50.0),
+      peak_decel=percentile_range([episode.get("peak_decel") for episode in bucket], 10.0, 50.0),
+      required_decel=percentile_range([episode.get("required_decel") for episode in bucket], 10.0, 90.0),
     ))
   return summaries
 
@@ -447,6 +498,17 @@ def _ratio(count: int, total: int) -> float:
   return count / total if total else 0.0
 
 
+def _sample_in_episodes(sample: ManualSample, episodes: list[dict[str, float | bool]]) -> bool:
+  for episode in episodes:
+    if episode.get("route") != sample.route:
+      continue
+    t0 = episode.get("t0")
+    t1 = episode.get("t1")
+    if isinstance(t0, int | float) and isinstance(t1, int | float) and t0 <= sample.t <= t1:
+      return True
+  return False
+
+
 def _render_route_profile(profile: RouteProfile) -> str:
   status = "include" if profile.include else "exclude"
   return (
@@ -470,6 +532,15 @@ def _render_following_bin(following_bin: FollowingBinSummary) -> str:
     + f"distance {following_bin.distance.low:.1f} to {following_bin.distance.high:.1f} m, "
     + f"time gap {following_bin.time_gap.low:.1f} to {following_bin.time_gap.high:.1f}s, "
     + f"closing time {following_bin.closing_time.low:.1f} to {following_bin.closing_time.high:.1f}s"
+  )
+
+
+def _render_stop_approach_bin(stop_bin: StopApproachBucketSummary) -> str:
+  return (
+    f"  {stop_bin.label}: count {stop_bin.count}, "
+    + f"mean {stop_bin.mean_accel.low:.3f} to {stop_bin.mean_accel.high:.3f} m/s^2, "
+    + f"peak {stop_bin.peak_decel.low:.3f} to {stop_bin.peak_decel.high:.3f} m/s^2, "
+    + f"required decel {stop_bin.required_decel.low:.3f} to {stop_bin.required_decel.high:.3f} m/s^2"
   )
 
 
@@ -524,7 +595,11 @@ def _episode_summary(samples: list[ManualSample], end_sample: ManualSample | Non
   accel_samples = [sample for sample in samples if not trim_stopped_accel or sample.v_ego > 1.0] or samples
   accels = [sample.a_ego for sample in accel_samples]
   end_sample = end_sample or samples[-1]
+  required_decel = _episode_required_stop_decel(samples)
   return {
+    "route": samples[0].route,
+    "t0": samples[0].t,
+    "t1": end_sample.t,
     "v0": samples[0].v_ego,
     "v1": end_sample.v_ego,
     "duration": max(0.0, end_sample.t - samples[0].t),
@@ -532,7 +607,28 @@ def _episode_summary(samples: list[ManualSample], end_sample: ManualSample | Non
     "mean_accel": sum(accels) / len(accels),
     "peak_accel": max(accels),
     "peak_decel": min(accels),
+    "required_decel": required_decel,
+    "stop_tier": classify_stop_tier(required_decel),
+    "model_should_stop": any(sample.model_should_stop for sample in samples),
   }
+
+
+def _episode_required_stop_decel(samples: list[ManualSample]) -> float | None:
+  if not samples:
+    return None
+  sample = samples[0]
+  stop_distance = _episode_stop_distance(sample)
+  if stop_distance is None or stop_distance <= 0.0 or sample.v_ego <= 0.0:
+    return None
+  return sample.v_ego ** 2 / (2.0 * max(stop_distance, 0.1))
+
+
+def _episode_stop_distance(sample: ManualSample) -> float | None:
+  if sample.model_stop_distance is not None and isfinite(sample.model_stop_distance) and sample.model_stop_distance > 0.0:
+    return float(sample.model_stop_distance)
+  if sample.lead_status and sample.lead_d_rel is not None and isfinite(sample.lead_d_rel) and sample.lead_d_rel > 0.0:
+    return max(float(sample.lead_d_rel) - STOP_DISTANCE, 0.1)
+  return None
 
 
 def clean_finite(values: Iterable[float]) -> list[float]:
