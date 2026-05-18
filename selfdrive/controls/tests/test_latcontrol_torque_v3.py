@@ -39,6 +39,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib import latcontrol_torque_v3
 
 LatControlTorque = latcontrol_torque_v3.LatControlTorque
 LatControlTorqueV3 = latcontrol_torque_v3.LatControlTorqueV3
+TorqueV3OutputGovernor = latcontrol_torque_v3.TorqueV3OutputGovernor
 V3GovernorReason = latcontrol_torque_v3.V3GovernorReason
 V3LearnerRejectReason = latcontrol_torque_v3.V3LearnerRejectReason
 
@@ -152,6 +153,25 @@ def test_v3_toyota_high_rate_governor_softens_rapid_steering():
   assert high_rate_log.adaptiveTorqueState.governorReason & V3GovernorReason.TOYOTA_HIGH_RATE
   assert abs(high_rate_log.output) < abs(normal_log.output)
   assert high_rate_log.adaptiveTorqueState.outputCap < normal_log.adaptiveTorqueState.outputCap
+
+
+def test_v3_governor_has_route_tracking_slew_headroom_at_city_speed():
+  governor = TorqueV3OutputGovernor(0.01)
+
+  result = governor.update(True, 10.0, False, 0.0, False, 1.0, 1.0)
+
+  assert result.reason & V3GovernorReason.SLEW_LIMITED
+  assert result.output_torque > 0.025
+
+
+def test_v3_governor_same_direction_limit_still_allows_response():
+  governor = TorqueV3OutputGovernor(0.01)
+
+  result = governor.update(True, 10.0, False, 0.0, True, 1.0, 1.0)
+
+  assert result.reason & V3GovernorReason.SAME_DIRECTION_LIMIT
+  assert result.output_cap < 1.0
+  assert result.output_torque > 0.01
 
 
 def test_v3_driver_override_releases_with_bounded_decay():
