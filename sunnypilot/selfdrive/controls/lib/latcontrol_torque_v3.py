@@ -11,6 +11,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_direction
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_observation import TorqueObservation, torque_direction
 
 
 VERSION = 3
@@ -132,26 +133,17 @@ class ResponseSampleUpdate:
 
 @dataclass
 class ResponseSample:
-  active: bool
-  steering_pressed: bool
-  same_direction_limit: bool
-  curvature_limited: bool
-  saturated: bool
-  lateral_maneuver: bool
-  v_ego: float
+  observation: TorqueObservation
   commanded_torque: float
-  target_lateral_accel: float
-  target_lateral_accel_rate: float
-  actual_lateral_accel: float
-  actual_lateral_jerk: float
 
 
 IDENTITY_RESPONSE_SAMPLE_CORRECTION = ResponseSampleCorrection(1.0, 0.0, 0.0)
 
 
 def evaluate_response_sample(sample: ResponseSample) -> ResponseSampleUpdate:
-  direction = _sign(sample.commanded_torque, LEARN_MIN_COMMAND)
-  target_direction = _sign(sample.target_lateral_accel, LEARN_SIGN_THRESHOLD)
+  observation = sample.observation
+  direction = torque_direction(sample.commanded_torque, LEARN_MIN_COMMAND)
+  target_direction = torque_direction(observation.target_lateral_accel, LEARN_SIGN_THRESHOLD)
   if direction == 0 and target_direction != 0:
     direction = target_direction
   if direction == 0:
@@ -159,35 +151,35 @@ def evaluate_response_sample(sample: ResponseSample) -> ResponseSampleUpdate:
 
   reject_reason = _sample_reject_reason(sample, direction)
   residual = (
-    sample.target_lateral_accel - sample.actual_lateral_accel
-    if _finite(sample.target_lateral_accel, sample.actual_lateral_accel) else 0.0
+    observation.target_lateral_accel - observation.actual_lateral_accel
+    if _finite(observation.target_lateral_accel, observation.actual_lateral_accel) else 0.0
   )
   return ResponseSampleUpdate(IDENTITY_RESPONSE_SAMPLE_CORRECTION, reject_reason == V3LearnerRejectReason.NONE, reject_reason, residual)
 
 
 def _sample_reject_reason(sample: ResponseSample, command_direction: int) -> V3LearnerRejectReason:
+  observation = sample.observation
   reason = V3LearnerRejectReason.NONE
-  if not sample.active:
+  if not observation.active:
     reason |= V3LearnerRejectReason.INACTIVE
-  if sample.steering_pressed:
+  if observation.steering_pressed:
     reason |= V3LearnerRejectReason.STEERING_PRESSED
-  if sample.same_direction_limit:
+  if observation.steer_limited_by_safety:
     reason |= V3LearnerRejectReason.STEER_LIMITED
-  if sample.curvature_limited:
+  if observation.curvature_limited:
     reason |= V3LearnerRejectReason.CURVATURE_LIMITED
-  if sample.saturated:
+  if observation.saturated:
     reason |= V3LearnerRejectReason.SATURATED
-  if sample.lateral_maneuver:
+  if observation.lateral_maneuver:
     reason |= V3LearnerRejectReason.LATERAL_MANEUVER
   if abs(sample.commanded_torque) < LEARN_MIN_COMMAND:
     reason |= V3LearnerRejectReason.LOW_COMMAND
-  if not _finite(sample.v_ego, sample.commanded_torque, sample.target_lateral_accel, sample.target_lateral_accel_rate,
-                 sample.actual_lateral_accel, sample.actual_lateral_jerk):
+  if not observation.finite or not _finite(sample.commanded_torque):
     reason |= V3LearnerRejectReason.NON_FINITE
-  if abs(sample.actual_lateral_jerk) > LEARN_MAX_JERK:
+  if abs(observation.actual_lateral_jerk) > LEARN_MAX_JERK:
     reason |= V3LearnerRejectReason.HIGH_JERK
-  target_sign = _sign(sample.target_lateral_accel, LEARN_SIGN_THRESHOLD)
-  actual_sign = _sign(sample.actual_lateral_accel, LEARN_SIGN_THRESHOLD)
+  target_sign = torque_direction(observation.target_lateral_accel, LEARN_SIGN_THRESHOLD)
+  actual_sign = torque_direction(observation.actual_lateral_accel, LEARN_SIGN_THRESHOLD)
   if target_sign != 0 and actual_sign != 0 and command_direction != 0 and len({target_sign, actual_sign, command_direction}) > 1:
     reason |= V3LearnerRejectReason.SIGN_CONFLICT
   return reason
@@ -405,18 +397,20 @@ class LatControlTorque(LatControl):
     delayed_target = self._delayed_target()
     response_sample = evaluate_response_sample(
       ResponseSample(
-        active=active and not invalid,
-        steering_pressed=CS.steeringPressed,
-        same_direction_limit=same_direction_limit,
-        curvature_limited=curvature_limited,
-        saturated=saturated,
-        lateral_maneuver=bool(getattr(CS, "leftBlinker", False) or getattr(CS, "rightBlinker", False)),
-        v_ego=CS.vEgo,
+        observation=TorqueObservation(
+          active=active and not invalid,
+          v_ego=CS.vEgo,
+          steering_pressed=CS.steeringPressed,
+          steer_limited_by_safety=same_direction_limit,
+          curvature_limited=curvature_limited,
+          saturated=saturated,
+          lateral_maneuver=bool(getattr(CS, "leftBlinker", False) or getattr(CS, "rightBlinker", False)),
+          target_lateral_accel=delayed_target,
+          target_lateral_accel_rate=target_lateral_accel_rate,
+          actual_lateral_accel=measurement,
+          actual_lateral_jerk=raw_actual_lateral_jerk,
+        ),
         commanded_torque=output_torque,
-        target_lateral_accel=delayed_target,
-        target_lateral_accel_rate=target_lateral_accel_rate,
-        actual_lateral_accel=measurement,
-        actual_lateral_jerk=raw_actual_lateral_jerk,
       )
     )
     if invalid:

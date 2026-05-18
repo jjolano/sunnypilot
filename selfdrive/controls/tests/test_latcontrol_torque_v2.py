@@ -45,6 +45,10 @@ sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
 from openpilot.sunnypilot.selfdrive.controls.lib import latcontrol_torque_v2
 
 LatControlTorque = latcontrol_torque_v2.LatControlTorque
+LatControlTorqueV21 = latcontrol_torque_v2.LatControlTorqueV21
+RefinedOutputGovernorInputs = latcontrol_torque_v2.RefinedOutputGovernorInputs
+RefinedOutputGovernorReason = latcontrol_torque_v2.RefinedOutputGovernorReason
+TorqueV21RefinedOutputGovernor = latcontrol_torque_v2.TorqueV21RefinedOutputGovernor
 
 
 def get_controller(car_name):
@@ -57,6 +61,34 @@ def get_controller(car_name):
   VM = VehicleModel(CP)
   controller = LatControlTorque(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
   return controller, VM
+
+
+def get_v21_controller(car_name):
+  CarInterface = interfaces[car_name]
+  CP = CarInterface.get_non_essential_params(car_name)
+  CP_SP = CarInterface.get_non_essential_params_sp(CP, car_name)
+  CP_SP.neuralNetworkLateralControl.model.path = MOCK_MODEL_PATH
+  CI = CarInterface(CP, CP_SP)
+  CP_SP = convert_to_capnp(CP_SP)
+  VM = VehicleModel(CP)
+  controller = LatControlTorqueV21(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+  return controller, VM
+
+
+def make_governor_inputs(**overrides):
+  values = {
+    "active": True,
+    "v_ego": 20.0,
+    "steering_pressed": False,
+    "steering_rate_deg": 0.0,
+    "same_direction_limit": False,
+    "output_torque": 1.0,
+    "max_output": 1.0,
+    "desired_lateral_accel": 0.0,
+    "actual_lateral_accel": 0.0,
+  }
+  values.update(overrides)
+  return RefinedOutputGovernorInputs(**values)
 
 
 def make_pose():
@@ -316,6 +348,80 @@ def test_measurement_smoother_limits_lag_from_raw_measurement():
   assert 2.0 <= jumped < 3.0
 
 
+def test_v21_refined_governor_slew_limits_when_no_under_response():
+  governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
+
+  result = governor.update(make_governor_inputs(v_ego=20.0, output_torque=1.0))
+
+  assert result.reason & RefinedOutputGovernorReason.SLEW_LIMITED
+  assert 0.0 < result.output_torque < 1.0
+
+
+def test_v21_under_response_floor_bypasses_slew_below_nine_mps():
+  governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
+
+  result = governor.update(make_governor_inputs(v_ego=5.0, output_torque=1.0, desired_lateral_accel=0.5, actual_lateral_accel=0.0))
+
+  assert result.reason & RefinedOutputGovernorReason.UNDER_RESPONSE_FLOOR
+  assert result.output_torque == pytest.approx(1.0)
+  assert not result.reason & RefinedOutputGovernorReason.SLEW_LIMITED
+
+
+def test_v21_under_response_floor_fades_between_nine_and_twelve_mps():
+  governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
+
+  faded = governor.update(make_governor_inputs(v_ego=10.5, output_torque=1.0, desired_lateral_accel=0.5, actual_lateral_accel=0.0))
+  governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
+  unprotected = governor.update(make_governor_inputs(v_ego=13.0, output_torque=1.0, desired_lateral_accel=0.5, actual_lateral_accel=0.0))
+
+  assert faded.reason & RefinedOutputGovernorReason.UNDER_RESPONSE_FLOOR
+  assert unprotected.reason & RefinedOutputGovernorReason.SLEW_LIMITED
+  assert unprotected.output_torque < faded.output_torque < 1.0
+
+
+def test_v21_under_response_floor_protects_low_speed_corrective_reversal():
+  governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
+  governor.previous_output = 0.7
+
+  result = governor.update(make_governor_inputs(v_ego=5.0, output_torque=-1.0, desired_lateral_accel=-0.5, actual_lateral_accel=0.2))
+
+  assert result.reason & RefinedOutputGovernorReason.SIGN_CHANGE_LIMITED
+  assert result.reason & RefinedOutputGovernorReason.UNDER_RESPONSE_FLOOR
+  assert result.output_torque == pytest.approx(-1.0)
+
+
+def test_v21_same_direction_limit_uses_soft_cap_without_floor():
+  governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
+  governor.previous_output = 0.9
+
+  result = governor.update(make_governor_inputs(same_direction_limit=True, output_torque=1.0))
+
+  assert result.reason & RefinedOutputGovernorReason.SAME_DIRECTION_LIMIT
+  assert result.reason & RefinedOutputGovernorReason.CLIPPED
+  assert result.output_torque == pytest.approx(0.85)
+
+
+def test_v21_high_rate_soft_cap_applies_outside_under_response_floor():
+  governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
+  governor.previous_output = 1.0
+
+  result = governor.update(make_governor_inputs(steering_rate_deg=100.0, output_torque=1.0))
+
+  assert result.reason & RefinedOutputGovernorReason.HIGH_STEERING_RATE
+  assert result.reason & RefinedOutputGovernorReason.CLIPPED
+  assert result.output_torque == pytest.approx(0.62)
+
+
+def test_v21_driver_override_uses_fast_bounded_release():
+  governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
+  governor.previous_output = 1.0
+
+  result = governor.update(make_governor_inputs(steering_pressed=True, output_torque=1.0))
+
+  assert result.reason & RefinedOutputGovernorReason.DRIVER_OVERRIDE
+  assert result.output_torque == pytest.approx(0.94)
+
+
 def test_v2_conditions_measurement_between_held_angle_updates():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
 
@@ -395,8 +501,26 @@ def test_v2_logging_fields_are_populated():
   assert adaptive_log.shapingReason == 0
   assert adaptive_log.shapingConfidence == 0.0
   assert adaptive_log.outputCap == 1.0
+  assert adaptive_log.governorReason == 0
   assert abs(adaptive_log.unshapedOutput - (adaptive_log.nominalOutput + adaptive_log.assistOutput + adaptive_log.biasOutput)) < 1e-6
   assert adaptive_log.unshapedOutput == lac_log.output
+
+
+def test_v21_logs_version_and_separate_governor_reason():
+  controller, VM = get_v21_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 20.0
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 0.001, make_pose(), False, 0.2)
+  adaptive_log = lac_log.adaptiveTorqueState
+
+  assert lac_log.version == 21
+  assert adaptive_log.governorReason & RefinedOutputGovernorReason.SLEW_LIMITED
+  assert adaptive_log.shapingReason == 0
+  assert abs(lac_log.output) < abs(adaptive_log.unshapedOutput)
 
 
 def test_v2_softens_low_demand_friction_driven_reversals():

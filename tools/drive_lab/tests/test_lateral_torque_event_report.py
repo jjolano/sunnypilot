@@ -43,10 +43,11 @@ def sample_msgs(t_s: float, output: float, *, unshaped: float | None = None, ste
                  right_blinker: bool = False, lane_change_state: str = "off", path_gated: bool = False,
                  path_reason: str = "ok", path_quality: float = 1.0, raw_curvature: float = 0.0,
                  processed_curvature: float = 0.0, desired_curvature: float = 0.0,
-                 include_model_path: bool = True):
+                 include_model_path: bool = True, torque_version: int = 2, governor_reason: int = 0):
   adaptive = SimpleNamespace(
     shapingActive=shaping_active,
     shapingReason=shaping_reason,
+    governorReason=governor_reason,
     unshapedOutput=output if unshaped is None else unshaped,
     outputCap=0.8 if shaping_active else 1.0,
     releaseActive=False,
@@ -56,6 +57,7 @@ def sample_msgs(t_s: float, output: float, *, unshaped: float | None = None, ste
   )
   torque_state = SimpleNamespace(
     active=True,
+    version=torque_version,
     output=output,
     desiredLateralAccel=desired_accel,
     actualLateralAccel=actual_accel,
@@ -130,6 +132,60 @@ def test_lateral_torque_event_report_classifies_shaping_or_actuator_limit():
   assert report.top_events
   assert report.top_events[0].likely_source == "safety_shaping_or_actuator_limit"
   assert report.top_events[0].shaping_reason_counts["STEERING_RATE_COMFORT"] > 0
+
+
+def test_lateral_torque_event_report_decodes_shaper_and_governor_reasons_separately():
+  msgs = []
+  for i in range(80):
+    t = i * 0.1
+    sign = 1.0 if (i // 2) % 2 == 0 else -1.0
+    msgs.extend(sample_msgs(
+      t,
+      output=0.16 * sign,
+      unshaped=0.22 * sign,
+      steering_angle=0.8 * sign,
+      shaping_reason=512,
+      governor_reason=(1 << 1) | (1 << 7),
+      shaping_active=True,
+      steer_limited=True,
+      torque_version=21,
+    ))
+
+  report = build_lateral_torque_event_report(msgs, source="synthetic", max_events=4)
+  rendered = render_lateral_torque_event_report(report)
+
+  assert report.top_events
+  event = report.top_events[0]
+  assert event.shaping_reason_counts["STEERING_RATE_COMFORT"] > 0
+  assert event.governor_reason_counts["SLEW_LIMITED"] > 0
+  assert event.governor_reason_counts["UNDER_RESPONSE_FLOOR"] > 0
+  assert "shaper_reasons=" in rendered
+  assert "governor_reasons=" in rendered
+
+
+def test_lateral_torque_event_report_decodes_v3_governor_reason_not_v2_shaper_reason():
+  msgs = []
+  for i in range(80):
+    t = i * 0.1
+    sign = 1.0 if (i // 2) % 2 == 0 else -1.0
+    msgs.extend(sample_msgs(
+      t,
+      output=0.16 * sign,
+      unshaped=0.22 * sign,
+      steering_angle=0.8 * sign,
+      shaping_reason=1 << 4,
+      governor_reason=1 << 4,
+      shaping_active=True,
+      steer_limited=True,
+      torque_version=3,
+    ))
+
+  report = build_lateral_torque_event_report(msgs, source="synthetic", max_events=4)
+
+  assert report.top_events
+  event = report.top_events[0]
+  assert "NEAR_ISO_ACCEL" not in event.shaping_reason_counts
+  assert event.governor_reason_counts["SAME_DIRECTION_LIMIT"] > 0
 
 
 def test_lateral_torque_event_report_filters_inactive_samples():
