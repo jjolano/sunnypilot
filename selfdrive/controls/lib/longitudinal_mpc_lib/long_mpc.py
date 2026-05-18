@@ -203,6 +203,14 @@ MOVING_LEAD_CLOSING_CUSHION_GAP_EXCESS_BP = [0.0, 6.0]
 MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN = -0.15
 MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX = 0.55
 MOVING_LEAD_CLOSING_CUSHION_COST = 1.5
+SLOWER_LEAD_APPROACH_TARGET_FRACTION_V_LEAD_BP = [1.0, 8.0]
+SLOWER_LEAD_APPROACH_TARGET_FRACTION_V = [0.55, 0.75]
+SLOWER_LEAD_APPROACH_CLOSING_BP = [0.5, 2.0]
+SLOWER_LEAD_APPROACH_REQUIRED_DECEL_BP = [0.25, 0.65]
+SLOWER_LEAD_APPROACH_TARGET_DECEL_BP = [0.25, 0.85]
+SLOWER_LEAD_APPROACH_RAW_BRAKE_REQUIRED_DECEL_BP = [1.0, 1.5]
+SLOWER_LEAD_APPROACH_RAW_BRAKE_TTC_BP = [3.0, 5.0]
+SLOWER_LEAD_APPROACH_COST = 1.0
 PROGRESSIVE_LEAD_APPROACH_MIN_V_EGO = 4.0
 PROGRESSIVE_LEAD_APPROACH_MIN_V_LEAD = 3.0
 PROGRESSIVE_LEAD_APPROACH_FAR_FLOOR_FRACTION = 0.75
@@ -704,8 +712,24 @@ def apply_source_hysteresis(obstacles, current_idx, margin):
     return np.where(switch, best_idx, current_idx).astype(int)
 
 
-def get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow, a_lead=0.0):
+def get_slower_lead_approach_target_gap(v_ego, v_lead, t_follow, a_lead=0.0):
+  desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
   closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  danger_floor = get_lead_danger_distance(v_ego, v_lead, t_follow, a_lead) + APPROACH_MIN_GAP_BUFFER * (closing_speed > 0.0)
+  target_fraction = np.interp(v_lead, SLOWER_LEAD_APPROACH_TARGET_FRACTION_V_LEAD_BP, SLOWER_LEAD_APPROACH_TARGET_FRACTION_V)
+  fraction_floor = target_fraction * desired_gap
+  stop_floor = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead)
+  bounded_gap = np.maximum.reduce([danger_floor, fraction_floor, stop_floor])
+  return np.minimum(desired_gap, bounded_gap)
+
+
+def get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow, a_lead=0.0, lead_stable=True,
+                                           comfort_brake_allowed=True):
+  d_rel = np.asarray(d_rel, dtype=float)
+  closing_speed = np.maximum(v_ego - v_lead, 0.0)
+  if not comfort_brake_allowed:
+    return np.zeros_like(d_rel), np.zeros_like(d_rel)
+
   comfort_floor = get_lead_gap_comfort_floor(v_ego, v_lead, t_follow, a_lead)
   desired_gap = get_desired_follow_distance(v_ego, v_lead, t_follow)
   cushion_range = np.maximum(desired_gap - comfort_floor, 1e-3)
@@ -721,16 +745,58 @@ def get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow, a_lea
   )
   safety_blend = np.interp(d_rel - comfort_floor, [0.0, APPROACH_MIN_GAP_BUFFER], [0.0, 1.0])
   cushion_blend = speed_blend * moving_blend * closing_blend * gap_blend * safety_blend
-  if np.all(cushion_blend <= 0.0):
-    return np.zeros_like(d_rel), np.zeros_like(d_rel)
 
   coast_target = MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
   decel_target = -MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX
   coast_blend = np.clip(cushion_used / 0.25, 0.0, 1.0)
   decel_blend = np.clip((cushion_used - 0.25) / 0.75, 0.0, 1.0)
-  target = coast_blend * coast_target + decel_blend * (decel_target - coast_target)
-  target = np.where(cushion_blend > 0.0, target, 0.0)
-  cost = MOVING_LEAD_CLOSING_CUSHION_COST * cushion_blend * np.maximum(0.25, cushion_used)
+  cushion_target = coast_blend * coast_target + decel_blend * (decel_target - coast_target)
+  cushion_target = np.where(cushion_blend > 0.0, cushion_target, 0.0)
+  cushion_cost = MOVING_LEAD_CLOSING_CUSHION_COST * cushion_blend * np.maximum(0.25, cushion_used)
+
+  bounded_target_gap = get_slower_lead_approach_target_gap(v_ego, v_lead, t_follow, a_lead)
+  slower_runway = d_rel - bounded_target_gap
+  slower_required_decel = np.divide(
+    closing_speed**2,
+    2.0 * np.maximum(slower_runway, 1e-3),
+    out=np.full_like(d_rel, 1e8, dtype=float),
+    where=slower_runway > 0.0,
+  )
+  slower_speed_blend = np.interp(v_ego, MOVING_LEAD_CLOSING_CUSHION_V_EGO_BP, [0.0, 1.0])
+  slower_moving_blend = np.interp(v_lead, MOVING_LEAD_CLOSING_CUSHION_V_LEAD_BP, [0.0, 1.0])
+  slower_closing_blend = np.interp(closing_speed, SLOWER_LEAD_APPROACH_CLOSING_BP, [0.0, 1.0])
+  slower_required_blend = np.interp(slower_required_decel, SLOWER_LEAD_APPROACH_REQUIRED_DECEL_BP, [0.0, 1.0])
+  slower_blend = (
+    slower_speed_blend * slower_moving_blend * slower_closing_blend * slower_required_blend *
+    (slower_runway > 0.0) * (d_rel > desired_gap)
+  )
+  slower_decel = np.interp(
+    slower_required_decel,
+    SLOWER_LEAD_APPROACH_TARGET_DECEL_BP,
+    [-coast_target, MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX],
+  )
+  slower_target = np.where(slower_blend > 0.0, -slower_decel, 0.0)
+  slower_cost = SLOWER_LEAD_APPROACH_COST * slower_blend * np.maximum(0.25, slower_required_blend)
+
+  use_slower_target = (slower_cost > 0.0) & ((cushion_cost <= 0.0) | (slower_target < cushion_target))
+  target = np.where(use_slower_target, slower_target, cushion_target)
+  cost = np.maximum(cushion_cost, slower_cost)
+
+  target_ttc = get_time_to_gap(d_rel, bounded_target_gap, closing_speed)
+  raw_required_blend = np.interp(
+    slower_required_decel,
+    SLOWER_LEAD_APPROACH_RAW_BRAKE_REQUIRED_DECEL_BP,
+    [0.0, 1.0],
+  )
+  raw_ttc_blend = 1.0 - np.interp(
+    target_ttc,
+    SLOWER_LEAD_APPROACH_RAW_BRAKE_TTC_BP,
+    [0.0, 1.0],
+  )
+  raw_brake_blend = raw_required_blend * raw_ttc_blend
+  brake_allowed_blend = np.where(np.asarray(lead_stable, dtype=bool), 1.0, raw_brake_blend)
+  target = np.where(target < coast_target, coast_target + brake_allowed_blend * (target - coast_target), target)
+  target = np.where(cost > 0.0, target, 0.0)
   return target, cost
 
 
@@ -1988,10 +2054,12 @@ class LongitudinalMpc:
       block_short_gap_pullaway_response, lead_1_model_prob,
     )
     lead_0_closing_cushion_targets, lead_0_closing_cushion_costs = get_moving_lead_closing_cushion_target(
-      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], t_follow, a_lead=lead_0_brake_a_traj
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], t_follow, a_lead=lead_0_brake_a_traj,
+      lead_stable=lead_0_confidence.stable, comfort_brake_allowed=not block_short_gap_pullaway_response,
     )
     lead_1_closing_cushion_targets, lead_1_closing_cushion_costs = get_moving_lead_closing_cushion_target(
-      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], t_follow, a_lead=lead_1_brake_a_traj
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], t_follow, a_lead=lead_1_brake_a_traj,
+      lead_stable=lead_1_confidence.stable, comfort_brake_allowed=not block_short_gap_pullaway_response,
     )
 
     lead_0_crawl_targets, lead_0_crawl_costs = get_lead_crawl_comfort_target(
