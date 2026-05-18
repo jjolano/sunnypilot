@@ -5,16 +5,19 @@ from typing import Callable, cast
 from cereal import messaging
 from cereal import custom
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
-from openpilot.selfdrive.controls.lib.longitudinal_decision import DecisionSource, LongitudinalDecisionTelemetry
+from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalDecisionTelemetry
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, SUNNYPILOT_CURRENT, StackResolution
 from openpilot.sunnypilot.selfdrive.controls.lib import longitudinal_planner as sp_longitudinal_planner
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
+  SignalProviderCandidate,
   LongitudinalPlannerSP,
   LongitudinalPlanSource,
   StackId,
+  build_sp_candidates_from_signal_providers,
+  build_sp_longitudinal_candidates,
   publish_stack_telemetry,
   select_lowest_longitudinal_target,
 )
@@ -505,6 +508,56 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
 
     self.assertFalse(planner.custom_v2_fault_latched)
     self.assertFalse(planner.longitudinal_stack_fault_latched)
+
+
+class TestSignalProviderCandidates(unittest.TestCase):
+  def test_provider_envelope_builds_only_active_decision_candidates(self):
+    candidates = build_sp_candidates_from_signal_providers((
+      SignalProviderCandidate(
+        source=DecisionSource.CRUISE,
+        role=CandidateRole.DRIVER_INTENT,
+        target=(25.0, 0.1),
+        active=True,
+        confidence=1.0,
+        urgency=0.1,
+        active_reason="driver_cruise_target",
+      ),
+      SignalProviderCandidate(
+        source=DecisionSource.SCC_VISION,
+        role=CandidateRole.ADVISORY_CAP,
+        target=(20.0, -0.3),
+        active=False,
+        confidence=0.8,
+        urgency=0.4,
+        active_reason="confident_vision_curve",
+      ),
+    ))
+
+    self.assertEqual([candidate.source for candidate in candidates], [DecisionSource.CRUISE])
+    self.assertEqual(candidates[0].role, CandidateRole.DRIVER_INTENT)
+
+  def test_sp_candidate_builder_keeps_provider_source_semantics(self):
+    candidates = build_sp_longitudinal_candidates(
+      speed_limit_active=True,
+      cruise=(25.0, 0.1),
+      scc_vision=(22.0, -0.2),
+      scc_vision_active=True,
+      scc_map=(24.0, -0.1),
+      scc_map_active=False,
+      speed_limit_assist=(20.0, -0.3),
+      osm_traffic_control=(18.0, -0.4),
+      osm_traffic_control_active=True,
+    )
+
+    self.assertEqual([
+      candidate.source for candidate in candidates
+    ], [
+      DecisionSource.CRUISE,
+      DecisionSource.SPEED_LIMIT,
+      DecisionSource.SCC_VISION,
+      DecisionSource.OSM_TRAFFIC_CONTROL,
+    ])
+    self.assertTrue(all(candidate.valid for candidate in candidates))
 
 if __name__ == "__main__":
   unittest.main()
