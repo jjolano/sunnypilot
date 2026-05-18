@@ -28,6 +28,22 @@ SHAPING_REASON_NAMES = {
   1 << 14: "SAFETY_LIMITED_SIGN_HOLD",
 }
 
+GOVERNOR_REASON_NAMES = {
+  1 << 0: "CLIPPED",
+  1 << 1: "SLEW_LIMITED",
+  1 << 2: "SIGN_CHANGE_LIMITED",
+  1 << 3: "DRIVER_OVERRIDE",
+  1 << 4: "SAME_DIRECTION_LIMIT",
+  1 << 5: "HIGH_STEERING_RATE",
+  1 << 6: "INVALID",
+  1 << 7: "UNDER_RESPONSE_FLOOR",
+}
+
+V3_GOVERNOR_REASON_NAMES = {
+  **GOVERNOR_REASON_NAMES,
+  1 << 5: "TOYOTA_HIGH_RATE",
+}
+
 LOW_SPEED_TIER_BOUNDS = ((0.0, 3.0), (3.0, 5.0), (5.0, 8.0), (8.0, 12.0))
 LOW_SPEED_REPORT_MAX_SPEED = LOW_SPEED_TIER_BOUNDS[-1][1]
 LOW_SPEED_TURN_MIN_LAT_ACCEL = 0.035
@@ -63,6 +79,7 @@ class LateralTorqueEvent:
   output_cap_median: float
   steer_limit_error_pp: float
   shaping_reason_counts: dict[str, int]
+  governor_reason_counts: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -178,8 +195,10 @@ class _TorqueSample:
   applied_torque: float
   desired_lateral_accel: float
   actual_lateral_accel: float
+  torque_version: int
   shaping_active: bool
   shaping_reason: int
+  governor_reason: int
   release_active: bool
   steer_limited: bool
   output_cap: float
@@ -227,14 +246,15 @@ def render_lateral_torque_event_report(report: LateralTorqueEventReport) -> str:
   if report.top_events:
     lines.append("Top events:")
     for event in report.top_events:
-      reasons = ",".join(f"{name}:{count}" for name, count in sorted(event.shaping_reason_counts.items())) or "none"
+      shaping_reasons = ",".join(f"{name}:{count}" for name, count in sorted(event.shaping_reason_counts.items())) or "none"
+      governor_reasons = ",".join(f"{name}:{count}" for name, count in sorted(event.governor_reason_counts.items())) or "none"
       lines.append(
         f"  {event.start_s:.1f}-{event.end_s:.1f}s source={event.likely_source} score={event.score:.2f} "
         f"steer_pp={event.steering_angle_pp:.3f}deg rate95={event.steering_rate_p95:.3f}deg/s "
         f"out_pp={event.output_pp:.3f} unshaped_pp={event.unshaped_output_pp:.3f} "
         f"out_flips={event.output_reversals} unshaped_flips={event.unshaped_output_reversals} "
         f"shaping={event.shaping_active_percent:.1f}% limited={event.steer_limited_percent:.1f}% "
-        f"reasons={reasons}"
+        f"shaper_reasons={shaping_reasons} governor_reasons={governor_reasons}"
       )
   return "\n".join(lines)
 
@@ -407,6 +427,12 @@ def _extract_torque_samples(msgs: list[Any]) -> list[_TorqueSample]:
     lateral_payload = safe_get(lateral_state, format_enum(lateral_state.which()) if lateral_state is not None and hasattr(lateral_state, "which") else "torqueState", lateral_state)
     adaptive = safe_get(lateral_payload, "adaptiveTorqueState")
     model_path_state = safe_get(payload, "modelPathState")
+    torque_version = int(safe_get(lateral_payload, "version", 0) or 0)
+    shaping_reason = int(safe_get(adaptive, "shapingReason", 0) or 0)
+    governor_reason = int(safe_get(adaptive, "governorReason", 0) or 0)
+    if torque_version == 3:
+      governor_reason = governor_reason or shaping_reason
+      shaping_reason = 0
     samples.append(_TorqueSample(
       t=msg_time_s(msg, base_mono_time),
       v_ego=_finite_float(safe_get(car_state, "vEgo")),
@@ -421,8 +447,10 @@ def _extract_torque_samples(msgs: list[Any]) -> list[_TorqueSample]:
       applied_torque=_finite_float(safe_get(car_output, "actuatorsOutput.torque")),
       desired_lateral_accel=_finite_float(safe_get(lateral_payload, "desiredLateralAccel")),
       actual_lateral_accel=_finite_float(safe_get(lateral_payload, "actualLateralAccel")),
+      torque_version=torque_version,
       shaping_active=bool(safe_get(adaptive, "shapingActive", False)),
-      shaping_reason=int(safe_get(adaptive, "shapingReason", 0) or 0),
+      shaping_reason=shaping_reason,
+      governor_reason=governor_reason,
       release_active=bool(safe_get(adaptive, "releaseActive", False)),
       steer_limited=bool(safe_get(adaptive, "steerLimitLimited", False)),
       output_cap=_finite_float(safe_get(adaptive, "outputCap"), 1.0),
@@ -455,8 +483,10 @@ def _columns(samples: list[_TorqueSample]) -> dict[str, np.ndarray]:
     "applied_torque": np.array([sample.applied_torque for sample in samples], dtype=float),
     "desired_lateral_accel": np.array([sample.desired_lateral_accel for sample in samples], dtype=float),
     "actual_lateral_accel": np.array([sample.actual_lateral_accel for sample in samples], dtype=float),
+    "torque_version": np.array([sample.torque_version for sample in samples], dtype=int),
     "shaping_active": np.array([float(sample.shaping_active) for sample in samples], dtype=float),
     "shaping_reason": np.array([sample.shaping_reason for sample in samples], dtype=int),
+    "governor_reason": np.array([sample.governor_reason for sample in samples], dtype=int),
     "release_active": np.array([float(sample.release_active) for sample in samples], dtype=float),
     "steer_limited": np.array([float(sample.steer_limited) for sample in samples], dtype=float),
     "output_cap": np.array([sample.output_cap for sample in samples], dtype=float),
@@ -509,7 +539,8 @@ def _fast_torque_events(cols: dict[str, np.ndarray]) -> list[LateralTorqueEvent]
 def _make_event(cols: dict[str, np.ndarray], idx: np.ndarray, score: float, output_reversals: int,
                 unshaped_reversals: int, applied_reversals: int, steering_rate_reversals: int,
                 desired_reversals: int, actual_reversals: int) -> LateralTorqueEvent:
-  reason_counts = _reason_counts(cols["shaping_reason"][idx])
+  shaping_reason_counts = _reason_counts(cols["shaping_reason"][idx], SHAPING_REASON_NAMES)
+  governor_reason_counts = _governor_reason_counts(cols["governor_reason"][idx], cols["torque_version"][idx])
   shaping_active_percent = _percent(cols["shaping_active"][idx] > 0.5)
   steer_limited_percent = _percent(cols["steer_limited"][idx] > 0.5)
   return LateralTorqueEvent(
@@ -538,7 +569,8 @@ def _make_event(cols: dict[str, np.ndarray], idx: np.ndarray, score: float, outp
     steer_limited_percent=steer_limited_percent,
     output_cap_median=_median(cols["output_cap"][idx]),
     steer_limit_error_pp=_percentile_span(cols["steer_limit_error"][idx]),
-    shaping_reason_counts=reason_counts,
+    shaping_reason_counts=shaping_reason_counts,
+    governor_reason_counts=governor_reason_counts,
   )
 
 
@@ -678,10 +710,20 @@ def _low_speed_tier_metrics(cols: dict[str, np.ndarray], segment: str, lower: fl
   )
 
 
-def _reason_counts(reasons: np.ndarray) -> dict[str, int]:
+def _reason_counts(reasons: np.ndarray, reason_names: dict[int, str]) -> dict[str, int]:
   counts: dict[str, int] = {}
   for reason in reasons.astype(int):
-    for bit, name in SHAPING_REASON_NAMES.items():
+    for bit, name in reason_names.items():
+      if reason & bit:
+        counts[name] = counts.get(name, 0) + 1
+  return counts
+
+
+def _governor_reason_counts(reasons: np.ndarray, versions: np.ndarray) -> dict[str, int]:
+  counts: dict[str, int] = {}
+  for reason, version in zip(reasons.astype(int), versions.astype(int), strict=False):
+    names = V3_GOVERNOR_REASON_NAMES if version == 3 else GOVERNOR_REASON_NAMES
+    for bit, name in names.items():
       if reason & bit:
         counts[name] = counts.get(name, 0) + 1
   return counts
@@ -743,6 +785,7 @@ def _event_from_dict(data: dict[str, Any]) -> LateralTorqueEvent:
     output_cap_median=float(data.get("output_cap_median", data.get("outputCapMedian", 0.0))),
     steer_limit_error_pp=float(data.get("steer_limit_error_pp", data.get("steerLimitErrorPp", 0.0))),
     shaping_reason_counts={str(k): int(v) for k, v in data.get("shaping_reason_counts", data.get("shapingReasonCounts", {})).items()},
+    governor_reason_counts={str(k): int(v) for k, v in data.get("governor_reason_counts", data.get("governorReasonCounts", {})).items()},
   )
 
 
