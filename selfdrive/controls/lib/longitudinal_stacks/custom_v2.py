@@ -5,11 +5,15 @@ import math
 from numbers import Real
 from typing import Any
 
+from cereal import log
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
   PLANNER_SEED_INTENT_DRIVER_CRUISE,
+  PLANNER_SEED_INTENT_LAUNCH,
+  PLANNER_SEED_INTENT_LEAD_FOLLOW,
   PLANNER_SEED_INTENT_SAFETY_CAP,
+  PLANNER_SEED_INTENT_STOP_APPROACH,
   PLANNER_SEED_MPC_REASON,
   planner_seed_intent_for_reason,
 )
@@ -58,6 +62,17 @@ SYNTH_TRAJECTORY_DT = 0.2
 POSITIVE_PROGRESS_JERK = 4.0
 NORMAL_NEGATIVE_RETREAT_JERK = -5.0
 A_TARGET_EPS = 1e-4
+LONGITUDINAL_PLAN_SOURCE = log.LongitudinalPlan.LongitudinalPlanSource
+LEAD_MPC_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_PLAN_SOURCE.lead1)}
+E2E_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.e2e)}
+LEAD_MPC_SEED_REASON = "lead_mpc_seed"
+E2E_SEED_REASON = "e2e_seed"
+PROGRESS_PRESERVING_INTENTS = {
+  PLANNER_SEED_INTENT_LAUNCH,
+  PLANNER_SEED_INTENT_LEAD_FOLLOW,
+  PLANNER_SEED_INTENT_SAFETY_CAP,
+  PLANNER_SEED_INTENT_STOP_APPROACH,
+}
 
 class CustomV2SceneValidationError(ValueError):
   def __init__(self, reason: str):
@@ -131,6 +146,8 @@ def lead_evidence_releases_stop(scene: CustomV2Scene) -> bool:
 def excess_gap_accel_cap(scene: CustomV2Scene) -> float | None:
   if not scene.has_lead or scene.lead_gap_excess <= EXCESS_GAP_MIN:
     return None
+  if scene.lead_v < LEAD_MOTION_MIN_V:
+    return None
 
   closing_speed = max(0.0, -scene.lead_v_rel)
   if closing_speed >= EXCESS_GAP_CLOSING_BLOCK and scene.lead_gap_excess < EXCESS_GAP_MAX:
@@ -200,11 +217,14 @@ class CustomLongitudinalStackV2:
     stop_active = scene.stop_threat and not scene.has_lead
     blocked = scene.force_slow_decel or scene.brake_pressed or scene.gas_pressed
 
-    if not blocked and not stop_active:
+    progress_floors_allowed = _progress_floors_allowed(selected_intent)
+    if not blocked and not stop_active and progress_floors_allowed:
       a_target, selected_intent, selected_reason = self._apply_progress_floors(
         a_target, selected_intent, selected_reason, scene, accel_limits, rejected,
         allow_lead_progress=not scene.stop_threat,
       )
+    elif not blocked and not stop_active:
+      rejected.append((selected_intent, "planner_seed_preserved"))
     elif blocked:
       rejected.append(("launch", "driver_or_force_blocked"))
 
@@ -268,13 +288,16 @@ class CustomLongitudinalStackV2:
       else:
         rejected.append(("launch", "model_stop_not_clear"))
 
-    if allow_lead_progress and scene.has_lead and scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and lead_evidence_releases_stop(scene):
+    lead_progress_allowed = allow_lead_progress and not (
+      scene.has_lead and a_target < 0.0 and scene.lead_v_rel >= 0.0
+    )
+    if lead_progress_allowed and scene.has_lead and scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and lead_evidence_releases_stop(scene):
       a_target, selected_intent, selected_reason = _apply_floor(
         a_target, selected_intent, selected_reason, LEAD_PULLAWAY_ACCEL_MAX,
         "launch", "confirmed_lead_pullaway", accel_limits,
       )
 
-    gap_cap = excess_gap_accel_cap(scene) if allow_lead_progress else None
+    gap_cap = excess_gap_accel_cap(scene) if lead_progress_allowed else None
     if gap_cap is not None:
       a_target, selected_intent, selected_reason = _apply_floor(
         a_target, selected_intent, selected_reason, gap_cap,
@@ -388,16 +411,36 @@ def _classify_seed(output: LongitudinalStackOutput, scene: CustomV2Scene) -> tup
     return seed_intent, seed_reason or seed_intent
 
   reason = str(output.debug.get("planner_seed_candidate_reason", ""))
-  if not reason:
-    return PLANNER_SEED_INTENT_DRIVER_CRUISE, "sunnypilot_current_seed"
-  if reason == PLANNER_SEED_MPC_REASON and scene.force_slow_decel:
-    return PLANNER_SEED_INTENT_SAFETY_CAP, reason
-  return planner_seed_intent_for_reason(
-    reason,
-    output.has_lead or scene.has_lead,
-    output.should_stop,
-    output.source,
-  ), reason
+  if reason:
+    if reason == PLANNER_SEED_MPC_REASON and scene.force_slow_decel:
+      return PLANNER_SEED_INTENT_SAFETY_CAP, reason
+    return planner_seed_intent_for_reason(
+      reason,
+      output.has_lead or scene.has_lead,
+      output.should_stop,
+      output.source,
+    ), reason
+  if _source_matches(output.source, E2E_SOURCE_VALUES, {"e2e"}):
+    return PLANNER_SEED_INTENT_STOP_APPROACH, E2E_SEED_REASON
+  if _source_matches(output.source, LEAD_MPC_SOURCE_VALUES, {"lead0", "lead1"}):
+    return PLANNER_SEED_INTENT_LEAD_FOLLOW, LEAD_MPC_SEED_REASON
+  return PLANNER_SEED_INTENT_DRIVER_CRUISE, "sunnypilot_current_seed"
+
+
+def _progress_floors_allowed(selected_intent: str) -> bool:
+  return selected_intent not in PROGRESS_PRESERVING_INTENTS
+
+
+def _source_matches(source: object, values: set[int], names: set[str]) -> bool:
+  if isinstance(source, Real):
+    return int(source) in values
+  source_name = str(source or "")
+  if source_name in names:
+    return True
+  try:
+    return int(source_name) in values
+  except ValueError:
+    return False
 
 
 def _preserve_seed_trajectory(output: LongitudinalStackOutput, decision: CustomV2Decision) -> bool:

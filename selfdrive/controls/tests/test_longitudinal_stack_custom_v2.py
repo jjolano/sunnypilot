@@ -1,5 +1,6 @@
 import pytest
 
+from cereal import log
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   COMFORT_RELAX_ACCEL_MIN,
@@ -20,12 +21,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import Longi
 
 
 def make_output(a_target=0.0, should_stop=False, has_lead=False, debug=None, speeds=None, accels=None, jerks=None,
-                seed_intent="", seed_reason=""):
+                seed_intent="", seed_reason="", source="cruise"):
   return LongitudinalStackOutput(
     a_target=a_target,
     should_stop=should_stop,
     has_lead=has_lead,
-    source="cruise",
+    source=source,
     allow_throttle=True,
     allow_brake=True,
     speeds=tuple(0.0 for _ in range(CONTROL_N)) if speeds is None else speeds,
@@ -94,6 +95,7 @@ def test_excess_gap_progress_softens_far_fast_lead_approach_braking():
     v_ego=15.5,
     v_cruise=16.7,
     has_lead=True,
+    lead_v=9.0,
     lead_v_rel=-6.5,
     lead_gap_excess=40.0,
   )
@@ -117,6 +119,22 @@ def test_excess_gap_progress_remains_blocked_for_close_closing_lead():
   output = CustomLongitudinalStackV2().update(make_output(-0.3, has_lead=True), scene, accel_limits=(-2.0, 2.0))
 
   assert output.a_target == -0.3
+  assert "closing_speed_guard" in output.debug["custom_v2_rejected_reasons"]
+
+
+def test_excess_gap_progress_ignores_stopped_lead():
+  scene = CustomV2Scene(
+    v_ego=0.0,
+    v_cruise=8.0,
+    has_lead=True,
+    lead_v=0.0,
+    lead_v_rel=0.0,
+    lead_gap_excess=9.0,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0, has_lead=True), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == 0.0
   assert "closing_speed_guard" in output.debug["custom_v2_rejected_reasons"]
 
 
@@ -163,6 +181,32 @@ def test_structured_planner_seed_classification_does_not_require_debug_reason():
   assert output.debug["custom_v2_selected_reason"] == "stopped_lead_stop_gap_guard"
 
 
+def test_planner_lead_seed_caps_are_not_relaxed_by_pullaway_progress():
+  seed = make_output(
+    0.55,
+    has_lead=True,
+    seed_intent="lead_follow",
+    seed_reason="lead_crawl_accel_cap",
+  )
+  scene = CustomV2Scene(
+    v_ego=0.8,
+    v_cruise=8.0,
+    has_lead=True,
+    lead_v=0.5,
+    lead_v_rel=-0.3,
+    lead_gap_excess=1.4,
+    lead_confirmed_pullaway=True,
+  )
+
+  output = CustomLongitudinalStackV2().update(seed, scene, accel_limits=(-2.0, 2.0))
+
+  assert lead_evidence_releases_stop(scene)
+  assert output.a_target == 0.55
+  assert output.debug["custom_v2_selected_intent"] == "lead_follow"
+  assert output.debug["custom_v2_selected_reason"] == "lead_crawl_accel_cap"
+  assert "planner_seed_preserved" in output.debug["custom_v2_rejected_reasons"]
+
+
 def test_planner_seed_mpc_classifies_by_context():
   output = CustomLongitudinalStackV2().update(
     make_output(-0.6, should_stop=False, has_lead=True, debug={"planner_seed_candidate_reason": "planner_seed_mpc"}),
@@ -172,6 +216,69 @@ def test_planner_seed_mpc_classifies_by_context():
 
   assert output.debug["custom_v2_selected_intent"] == "lead_follow"
   assert output.debug["custom_v2_selected_reason"] == "planner_seed_mpc"
+
+
+def test_lead_mpc_source_is_preserved_without_independent_progress():
+  output = CustomLongitudinalStackV2().update(
+    make_output(
+      -0.6,
+      has_lead=True,
+      source=log.LongitudinalPlan.LongitudinalPlanSource.lead0,
+    ),
+    CustomV2Scene(v_ego=10.0, v_cruise=12.0, has_lead=True, lead_gap_excess=10.0),
+    accel_limits=(-2.0, 2.0),
+  )
+
+  assert output.a_target == -0.6
+  assert output.debug["custom_v2_selected_intent"] == "lead_follow"
+  assert output.debug["custom_v2_selected_reason"] == "lead_mpc_seed"
+
+
+def test_e2e_source_decel_is_preserved_with_lead_pullaway_evidence():
+  scene = CustomV2Scene(
+    v_ego=2.2,
+    v_cruise=8.0,
+    has_lead=True,
+    lead_v=4.2,
+    lead_v_rel=2.0,
+    lead_gap_excess=10.0,
+    lead_opening_prediction=True,
+    lead_confirmed_pullaway=True,
+    model_desired_accel=-0.8,
+  )
+
+  output = CustomLongitudinalStackV2().update(
+    make_output(
+      -0.8,
+      has_lead=True,
+      source=log.LongitudinalPlan.LongitudinalPlanSource.e2e,
+    ),
+    scene,
+    accel_limits=(-2.0, 2.0),
+  )
+
+  assert lead_evidence_releases_stop(scene)
+  assert output.a_target == -0.8
+  assert output.debug["custom_v2_selected_intent"] == "stop_approach"
+  assert output.debug["custom_v2_selected_reason"] == "e2e_seed"
+
+
+def test_opening_lead_progress_preserves_planner_decel():
+  scene = CustomV2Scene(
+    v_ego=0.0,
+    v_cruise=8.0,
+    has_lead=True,
+    lead_v=0.8,
+    lead_v_rel=0.8,
+    lead_gap_excess=4.5,
+    lead_confirmed_pullaway=True,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(-1.0, has_lead=True), scene, accel_limits=(-2.0, 2.0))
+
+  assert lead_evidence_releases_stop(scene)
+  assert output.a_target == -1.0
+  assert "closing_speed_guard" in output.debug["custom_v2_rejected_reasons"]
 
 
 def test_speed_policy_is_coast_biased_for_speed_reductions():
