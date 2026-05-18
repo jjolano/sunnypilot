@@ -15,7 +15,7 @@ The baseline stack must remain isolated. SCC, SLA, and OSM behavior remain user-
 `custom-2.0` will live in `selfdrive/controls/lib/longitudinal_stacks/custom_v2.py` and own:
 
 - normalized-scene interpretation at the stack boundary
-- nine intent families: `driver_cruise`, `lead_follow`, `stop_approach`, `launch`, `speed_policy`, `curve_policy`, `map_caution`, `comfort_relax`, and `safety_cap`
+- ten intent families: `driver_cruise`, `lead_follow`, `stop_approach`, `launch`, `one_pedal`, `speed_policy`, `curve_policy`, `map_caution`, `comfort_relax`, and `safety_cap`
 - safety-first arbitration order: `safety_cap`, `stop_approach`, `lead_follow`, `launch`, advisory caps, `comfort_relax`, then `driver_cruise`
 - progress-core envelopes for no-lead launch, lead pullaway, excess-gap closing, and lead-loss recovery
 - fail-closed validation that requests immediate disable on invalid custom output

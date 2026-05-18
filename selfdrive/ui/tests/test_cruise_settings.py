@@ -14,6 +14,15 @@ def test_longitudinal_stack_selector_is_in_cruise_settings():
   assert "self.longitudinal_stack_item," in source
 
 
+def test_one_pedal_mode_is_custom_v2_gated():
+  source = CRUISE_SETTINGS.read_text()
+
+  assert "self.one_pedal_longitudinal_item = multiple_button_item_sp" in source
+  assert "OnePedalLongitudinalMode" in source
+  assert "resolution.resolved_stack == CUSTOM_V2" in source
+  assert "ui_state.params.put_bool(\"OnroadCycleRequested\", True)" in source
+
+
 def test_longitudinal_stack_selector_is_offroad_gated_and_requests_cycle():
   source = CRUISE_SETTINGS.read_text()
 

@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 import pytest
+from cereal import car
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.interfaces import ACCEL_MAX
 from opendbc.car.toyota.values import CAR as TOYOTA
@@ -30,10 +31,14 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   has_model_stop_context,
   has_valid_radar_lead,
   limit_accel_in_turns,
+  one_pedal_cruise_hold_requested,
   should_enable_longitudinal_decision_layer,
   should_run_engage_stop_bootstrap,
+  update_one_pedal_cruise_hold,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController, TRAJECTORY_SIZE
+
+ButtonType = car.CarState.ButtonEvent.Type
 
 
 def test_custom_v2_curve_scene_target_uses_only_active_sources():
@@ -52,6 +57,22 @@ def test_custom_v2_curve_scene_target_uses_only_active_sources():
   assert both_target == -0.7
   assert not invalid_active
   assert invalid_target == 0.0
+
+
+def test_one_pedal_cruise_hold_buttons_include_speed_adjustments():
+  assert one_pedal_cruise_hold_requested([SimpleNamespace(type=ButtonType.accelCruise)])
+  assert one_pedal_cruise_hold_requested([SimpleNamespace(type=ButtonType.decelCruise)])
+  assert one_pedal_cruise_hold_requested([SimpleNamespace(type=ButtonType.resumeCruise)])
+  assert one_pedal_cruise_hold_requested([SimpleNamespace(type=ButtonType.setCruise)])
+  assert not one_pedal_cruise_hold_requested([SimpleNamespace(type=ButtonType.cancel)])
+
+
+def test_one_pedal_cruise_hold_resets_on_pedal_or_disengage():
+  assert update_one_pedal_cruise_hold(False, [SimpleNamespace(type=ButtonType.accelCruise)], False, False, True)
+  assert update_one_pedal_cruise_hold(True, [], False, False, True)
+  assert not update_one_pedal_cruise_hold(True, [], True, False, True)
+  assert not update_one_pedal_cruise_hold(True, [], False, True, True)
+  assert not update_one_pedal_cruise_hold(True, [], False, False, False)
 
 
 def make_radar_state(lead_one=False, lead_two=False):

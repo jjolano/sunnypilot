@@ -3,7 +3,7 @@ from dataclasses import replace
 import math
 import numpy as np
 
-from cereal import custom, log
+from cereal import car, custom, log
 import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from opendbc.car.vehicle_model import VehicleModel
@@ -22,7 +22,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   resolve_longitudinal_decision,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import planner_state_to_stack_output
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene, ONE_PEDAL_MODE_OFF, ONE_PEDAL_MODES
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
   PLANNER_SEED_CAP,
@@ -55,8 +55,16 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import Lon
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0.0, 10.0, 25.0, 40.0]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
+ButtonType = car.CarState.ButtonEvent.Type
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
+ONE_PEDAL_LONGITUDINAL_MODE_PARAM = "OnePedalLongitudinalMode"
+ONE_PEDAL_CRUISE_HOLD_BUTTON_TYPES = frozenset((
+  ButtonType.accelCruise,
+  ButtonType.decelCruise,
+  ButtonType.resumeCruise,
+  ButtonType.setCruise,
+))
 DECISION_ACCEL_COMFORT_MIN_V_EGO = 1.0
 CREEP_TO_STOP_GAP_START_EXCESS = 1.2
 CREEP_TO_STOP_GAP_FOLLOW_EXCESS = 1.0
@@ -226,6 +234,24 @@ def has_model_stop_context(model_msg):
 
 def should_enable_longitudinal_decision_layer(stack_resolution) -> bool:
   return stack_resolution is None or is_custom_stack(getattr(stack_resolution, "resolved_stack", ""))
+
+
+def get_one_pedal_longitudinal_mode(params) -> int:
+  try:
+    mode = int(params.get(ONE_PEDAL_LONGITUDINAL_MODE_PARAM, return_default=True))
+  except (TypeError, ValueError, UnknownKeyName):
+    return ONE_PEDAL_MODE_OFF
+  return mode if mode in ONE_PEDAL_MODES else ONE_PEDAL_MODE_OFF
+
+
+def one_pedal_cruise_hold_requested(button_events) -> bool:
+  return any(getattr(event, "type", None) in ONE_PEDAL_CRUISE_HOLD_BUTTON_TYPES for event in button_events)
+
+
+def update_one_pedal_cruise_hold(active: bool, button_events, gas_pressed: bool, brake_pressed: bool, enabled: bool) -> bool:
+  if not enabled or gas_pressed or brake_pressed:
+    return False
+  return bool(active or one_pedal_cruise_hold_requested(button_events))
 
 
 def get_custom_v2_curve_scene_target(*controllers):
@@ -932,6 +958,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.longitudinal_decision_candidates = []
     self.longitudinal_decision_telemetry: LongitudinalDecisionTelemetry | None = None
     self.planner_seed_candidates = []
+    self.one_pedal_mode = get_one_pedal_longitudinal_mode(self.params)
+    self.one_pedal_cruise_hold_active = False
     LongitudinalPlannerSP.__init__(self, self.CP, CP_SP, self.mpc)
     self.fcw = False
     self.dt = dt
@@ -1011,6 +1039,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     reset_state = long_control_off if self.CP.openpilotLongitudinalControl else not sm['selfdriveState'].enabled
     # PCM cruise speed may be updated a few cycles later, check if initialized
     reset_state = reset_state or not v_cruise_initialized
+    self.one_pedal_cruise_hold_active = update_one_pedal_cruise_hold(
+      self.one_pedal_cruise_hold_active and self.one_pedal_mode != ONE_PEDAL_MODE_OFF,
+      sm['carState'].buttonEvents,
+      sm['carState'].gasPressed,
+      sm['carState'].brakePressed,
+      not reset_state and sm['selfdriveState'].enabled,
+    )
 
     if reset_state:
       self.engage_stop_bootstrap_timer = 0.0
@@ -1704,6 +1739,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       map_caution_active=bool(getattr(osm_traffic_control_prior, "active", False)),
       map_caution_confirmed=bool(getattr(osm_traffic_control_prior, "active", False)),
       map_caution_a_target=float(getattr(osm_traffic_control_prior, "output_a_target", 0.0)),
+      one_pedal_mode=int(getattr(self, "one_pedal_mode", ONE_PEDAL_MODE_OFF)),
+      one_pedal_cruise_hold=bool(getattr(self, "one_pedal_cruise_hold_active", False)),
     )
     self.prev_accel_clip = accel_clip
     self.apply_longitudinal_stack_selection(sm, has_lead, tuple(accel_clip))

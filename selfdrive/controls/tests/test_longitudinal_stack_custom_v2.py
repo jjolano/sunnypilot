@@ -11,6 +11,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   MPH_TO_MS,
   NORMAL_NEGATIVE_RETREAT_JERK,
   NO_LEAD_LAUNCH_ACCEL_MAX,
+  ONE_PEDAL_CREEP_ACCEL_MAX,
+  ONE_PEDAL_CREEP_TARGET_SPEED,
+  ONE_PEDAL_FULL_STOP_DECEL,
+  ONE_PEDAL_FULL_STOP_HOLD_SPEED,
+  ONE_PEDAL_MODE_CREEP,
+  ONE_PEDAL_MODE_FULL_STOP,
   POSITIVE_PROGRESS_JERK,
   SYNTH_TRAJECTORY_DT,
   dynamic_cruise_overspeed_leeway,
@@ -44,6 +50,7 @@ def test_custom_v2_intent_taxonomy_is_complete():
     "lead_follow",
     "stop_approach",
     "launch",
+    "one_pedal",
     "speed_policy",
     "curve_policy",
     "map_caution",
@@ -440,3 +447,116 @@ def test_normal_negative_v2_changes_are_jerk_limited():
   assert output.a_target == -0.25
   assert output.accels[0] == 0.8 + NORMAL_NEGATIVE_RETREAT_JERK * SYNTH_TRAJECTORY_DT
   assert output.jerks[0] == NORMAL_NEGATIVE_RETREAT_JERK
+
+
+def test_one_pedal_lift_off_coasts_instead_of_accelerating_to_cruise():
+  scene = CustomV2Scene(v_ego=12.0, v_cruise=20.0, one_pedal_mode=ONE_PEDAL_MODE_CREEP)
+
+  output = CustomLongitudinalStackV2().update(make_output(0.8), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == 0.0
+  assert not output.should_stop
+  assert output.debug["custom_v2_selected_intent"] == "one_pedal"
+  assert output.debug["custom_v2_selected_reason"] == "lift_off_coast"
+
+
+def test_one_pedal_ignores_no_hazard_advisory_braking():
+  scene = CustomV2Scene(
+    v_ego=22.0,
+    v_cruise=24.0,
+    speed_limit_active=True,
+    speed_limit_v_target=18.0,
+    speed_limit_a_target=-1.2,
+    curve_active=True,
+    curve_a_target=-0.8,
+    map_caution_active=True,
+    map_caution_confirmed=True,
+    map_caution_a_target=-1.0,
+    one_pedal_mode=ONE_PEDAL_MODE_CREEP,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.6), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == 0.0
+  assert output.debug["custom_v2_selected_intent"] == "one_pedal"
+  assert output.debug["custom_v2_selected_reason"] == "lift_off_coast"
+
+
+def test_one_pedal_preserves_physical_lead_mpc_braking():
+  output = CustomLongitudinalStackV2().update(
+    make_output(-0.7, has_lead=True, source=log.LongitudinalPlan.LongitudinalPlanSource.lead0),
+    CustomV2Scene(v_ego=14.0, v_cruise=20.0, has_lead=True, one_pedal_mode=ONE_PEDAL_MODE_CREEP),
+    accel_limits=(-2.0, 2.0),
+  )
+
+  assert output.a_target == -0.7
+  assert output.debug["custom_v2_selected_intent"] == "lead_follow"
+  assert "physical_hazard_preserved" in output.debug["custom_v2_rejected_reasons"]
+
+
+def test_one_pedal_does_not_create_lead_braking_for_nonhazard_lead():
+  scene = CustomV2Scene(v_ego=14.0, v_cruise=20.0, has_lead=True, lead_v=14.0, lead_v_rel=0.0, one_pedal_mode=ONE_PEDAL_MODE_CREEP)
+
+  output = CustomLongitudinalStackV2().update(make_output(0.5, has_lead=True), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == 0.0
+  assert output.debug["custom_v2_selected_intent"] == "one_pedal"
+  assert output.debug["custom_v2_selected_reason"] == "lift_off_coast"
+
+
+def test_one_pedal_creep_holds_crawl_with_clear_evidence():
+  scene = CustomV2Scene(
+    v_ego=0.8,
+    v_cruise=10.0,
+    model_stop_distance=30.0,
+    model_desired_accel=0.0,
+    one_pedal_mode=ONE_PEDAL_MODE_CREEP,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0), scene, accel_limits=(-2.0, 2.0))
+
+  assert 0.0 < output.a_target <= ONE_PEDAL_CREEP_ACCEL_MAX
+  assert output.a_target == (ONE_PEDAL_CREEP_TARGET_SPEED - scene.v_ego) * 0.5
+  assert output.debug["custom_v2_selected_intent"] == "one_pedal"
+  assert output.debug["custom_v2_selected_reason"] == "terminal_creep"
+
+
+def test_one_pedal_creep_from_standstill_requires_clear_evidence():
+  scene = CustomV2Scene(v_ego=0.0, v_cruise=10.0, model_stop_distance=10.0, model_desired_accel=0.0, one_pedal_mode=ONE_PEDAL_MODE_CREEP)
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == 0.0
+  assert output.debug["custom_v2_selected_reason"] == "lift_off_coast"
+  assert "terminal_creep_not_authorized" in output.debug["custom_v2_rejected_reasons"]
+
+
+def test_one_pedal_full_stop_gently_stops_and_holds_near_standstill():
+  rolling_scene = CustomV2Scene(v_ego=2.0, v_cruise=10.0, one_pedal_mode=ONE_PEDAL_MODE_FULL_STOP)
+  hold_scene = CustomV2Scene(v_ego=ONE_PEDAL_FULL_STOP_HOLD_SPEED, v_cruise=10.0, one_pedal_mode=ONE_PEDAL_MODE_FULL_STOP)
+
+  rolling_output = CustomLongitudinalStackV2().update(make_output(0.4), rolling_scene, accel_limits=(-2.0, 2.0))
+  hold_output = CustomLongitudinalStackV2().update(make_output(0.4), hold_scene, accel_limits=(-2.0, 2.0))
+
+  assert rolling_output.a_target == ONE_PEDAL_FULL_STOP_DECEL
+  assert not rolling_output.should_stop
+  assert hold_output.a_target == ONE_PEDAL_FULL_STOP_DECEL
+  assert hold_output.should_stop
+  assert hold_output.debug["custom_v2_selected_reason"] == "low_speed_terminal_stop"
+
+
+def test_one_pedal_cruise_hold_escape_uses_normal_custom_v2_policy():
+  scene = CustomV2Scene(
+    v_ego=0.2,
+    v_cruise=5.0,
+    model_stop_distance=30.0,
+    model_desired_accel=0.0,
+    one_pedal_mode=ONE_PEDAL_MODE_CREEP,
+    one_pedal_cruise_hold=True,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == NO_LEAD_LAUNCH_ACCEL_MAX
+  assert output.debug["custom_v2_selected_intent"] == "launch"
+  assert "temporary_cruise_hold" in output.debug["custom_v2_rejected_reasons"]

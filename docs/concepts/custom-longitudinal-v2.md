@@ -11,6 +11,7 @@ Add selectable `custom-2.0` as a full custom longitudinal stack that prioritizes
 - Do not let `sunnypilot-current` consume custom-only tuning or arbitration.
 - Do not change FCW/AEB policy as part of custom-v2 style tuning.
 - Do not add autonomous no-lead creep in ambiguous low-speed spaces.
+- Do not treat one-pedal mode as a follow-gap override or a parallel lead-physics model.
 
 ## Stack Selection
 
@@ -31,6 +32,7 @@ Add selectable `custom-2.0` as a full custom longitudinal stack that prioritizes
 - `map_caution`: model-confirmed OSM/mapd caution only; raw map-only stops and hazards do not affect control.
 - `comfort_relax`: small relax of advisory braking inside clear safety margins.
 - `driver_cruise`: driver set-speed tracking with dynamic downhill/coast leeway.
+- `one_pedal`: opt-in lift-off coast, terminal creep, and low-speed full-stop behavior where cruise is an acceleration ceiling.
 
 ## First-Release Tunings
 
@@ -66,6 +68,11 @@ Add selectable `custom-2.0` as a full custom longitudinal stack that prioritizes
 - OSM traffic-control prior `active` is treated as confirmed because that prior already requires model-distance confirmation. Raw map-only traffic-control or hazard cues are ignored for control.
 - Confirmed map caution is cap-only and does not set stop intent or get softened by comfort relax.
 - Driver brake/gas input blocks progress floors and comfort relax, while safety caps and conservative advisory caps may still apply.
+- One-pedal mode suppresses non-hazard progress floors and advisory braking unless Temporary Cruise Hold is active.
+- One-pedal Lift-Off Coast does not change Lead MPC follow-gap, danger-gap, TTC, stop-runway, FCW, or AEB behavior.
+- One-pedal Creep may hold a small crawl target once rolling or when existing clear evidence authorizes movement; it must not autonomously launch from ambiguous standstill.
+- One-pedal Full Stop may gently stop and hold below parking-lot speed without treating that terminal policy as Stop Approach evidence.
+- Any cruise speed adjustment button enters Temporary Cruise Hold, restoring normal custom-v2 cruise/advisory behavior until gas, brake, or disengagement.
 - New-lead and cut-in handling is severity-tiered: close or closing leads suppress progress immediately, while leads already opening the gap transition smoothly.
 - Slower Lead Approach remains `lead_follow`, not `stop_approach`; raw radar lead evidence may cap/coast, but routine braking needs stable lead evidence or severe closing runway/TTC evidence.
 - Low-confidence, flickering, or sensor-disagreed leads may suppress acceleration without custom hard braking unless Lead MPC or planner lead safety requires it.
@@ -84,6 +91,7 @@ If `custom-2.0` produces an invalid output or raises internally while enabled, l
 
 - Selector, UI, metadata, and schema tests cover `custom-2.0` exposure.
 - Unit tests cover intent names, personality scaling, progress-core caps, planner seed classification, trajectory preservation, stop tiers, launch gates, Stop Target Buffer boundaries, speed-policy coast bias, map-caution authority, driver-like curve caps, dynamic cruise leeway, scene validation, jerk limiting, and fail-closed behavior.
+- One-pedal unit tests cover lift-off coast, advisory suppression, physical hazard preservation, terminal creep, low-speed full stop, Temporary Cruise Hold, and button/pedal state transitions.
 - Drive Lab profiling should classify routine-vs-urgent stops by runway/required-decel evidence before route-derived stop comfort targets are changed.
 - Manual-vs-custom route analysis is primary for style tuning; minimal baseline-vs-custom checks remain necessary for regression detection.
 - Tests should assert scenario invariants rather than exact route-derived manual numbers.

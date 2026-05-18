@@ -48,6 +48,26 @@ _Avoid_: stack selector, policy toggle
 The latched choice of longitudinal stack for an onroad cycle.
 _Avoid_: live stack switch, mode toggle
 
+**One-Pedal Longitudinal**:
+A custom-2.0 mode where driver lift-off makes cruise speed an acceleration ceiling instead of a speed-hold target.
+_Avoid_: regen mode, follow-gap mode
+
+**Lift-Off Coast**:
+The one-pedal no-hazard policy that suppresses progress acceleration and commanded braking so the vehicle rolls down naturally.
+_Avoid_: Free Coast, brake-light-safe regen
+
+**Terminal Creep**:
+The one-pedal low-speed crawl policy that holds a small crawl target only when rolling or clear evidence authorizes movement.
+_Avoid_: launch, autonomous creep
+
+**Low-Speed Terminal Stop**:
+The one-pedal full-stop policy that gently stops and holds below parking-lot speed without declaring a stop hazard.
+_Avoid_: Stop Approach, model stop
+
+**Temporary Cruise Hold**:
+A driver-requested one-pedal escape state where normal custom-2.0 cruise and advisory behavior resumes until pedal input or disengagement.
+_Avoid_: disabling one-pedal, stack switch
+
 **Fail-closed**:
 Custom-stack fault handling that requests immediate disable instead of silently falling back to baseline output.
 _Avoid_: fallback, fail-open
@@ -162,6 +182,10 @@ _Avoid_: ignoring curves, lateral safety
 - A **Lead Speed-up Guard** is custom-stack behavior unless a separate baseline change is explicitly accepted.
 - **custom-2.0** is the only selectable **Custom Stack** until **custom-recommended** is promoted.
 - **custom-2.0** progress helpers express policy over confirmed evidence; they are not independent lead-physics authority.
+- **One-Pedal Longitudinal** is a **Custom Stack** mode inside **custom-2.0**, not a separate **Stack Selection** value.
+- **Lift-Off Coast** suppresses non-hazard **Progress Core** behavior and advisory braking; **Lead MPC** and confident stop evidence remain authoritative for physical hazards.
+- **Terminal Creep** and **Low-Speed Terminal Stop** are terminal one-pedal policies; they are not **Stop Approach** and do not change moving-follow target gaps.
+- **Temporary Cruise Hold** restores normal **custom-2.0** behavior without changing **Stack Selection**.
 - A **Promotion Gate** can change the **custom-recommended** alias without changing the default **sunnypilot-current** baseline.
 - **Standard Personality** anchors custom-2.0 behavior; other personalities may scale comfort and progress, but not **Safety Caps**.
 - **Routine Stop Comfort** and **Urgent Stop Capability** are separate: routine stops favor comfort, while urgent stops preserve strong braking capability.

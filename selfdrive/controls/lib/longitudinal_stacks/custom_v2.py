@@ -26,12 +26,18 @@ CUSTOM_V2_INTENTS = (
   "lead_follow",
   "stop_approach",
   "launch",
+  "one_pedal",
   "speed_policy",
   "curve_policy",
   "map_caution",
   "comfort_relax",
   "safety_cap",
 )
+
+ONE_PEDAL_MODE_OFF = 0
+ONE_PEDAL_MODE_CREEP = 1
+ONE_PEDAL_MODE_FULL_STOP = 2
+ONE_PEDAL_MODES = {ONE_PEDAL_MODE_OFF, ONE_PEDAL_MODE_CREEP, ONE_PEDAL_MODE_FULL_STOP}
 
 NO_LEAD_LAUNCH_ACCEL_MAX = 0.95
 LEAD_PULLAWAY_ACCEL_MAX = 1.20
@@ -58,6 +64,14 @@ CRUISE_LEEWAY_RECOVERY = 2.0 * MPH_TO_MS
 STOP_APPROACH_COMFORT_DECEL = -0.2
 STOP_APPROACH_DECEL_MIN = -1.5
 SAFETY_FORCE_SLOW_DECEL = -0.2
+ONE_PEDAL_LIFT_OFF_COAST_ACCEL = 0.0
+ONE_PEDAL_CREEP_TARGET_SPEED = 1.2
+ONE_PEDAL_CREEP_ACCEL_GAIN = 0.5
+ONE_PEDAL_CREEP_ACCEL_MAX = 0.35
+ONE_PEDAL_CREEP_ROLLING_MIN_SPEED = 0.05
+ONE_PEDAL_FULL_STOP_ARM_SPEED = 2.5
+ONE_PEDAL_FULL_STOP_DECEL = -0.3
+ONE_PEDAL_FULL_STOP_HOLD_SPEED = 0.3
 SYNTH_TRAJECTORY_DT = 0.2
 POSITIVE_PROGRESS_JERK = 4.0
 NORMAL_NEGATIVE_RETREAT_JERK = -5.0
@@ -108,6 +122,8 @@ class CustomV2Scene:
   map_caution_active: bool = False
   map_caution_confirmed: bool = False
   map_caution_a_target: float = 0.0
+  one_pedal_mode: int = ONE_PEDAL_MODE_OFF
+  one_pedal_cruise_hold: bool = False
 
 
 @dataclass(frozen=True)
@@ -195,6 +211,8 @@ class CustomLongitudinalStackV2:
       "custom_v2_rejected_intents": tuple(intent for intent, _reason in decision.rejected[:3]),
       "custom_v2_rejected_reasons": tuple(reason for _intent, reason in decision.rejected[:3]),
       "custom_v2_intents": CUSTOM_V2_INTENTS,
+      "custom_v2_one_pedal_mode": scene.one_pedal_mode,
+      "custom_v2_one_pedal_cruise_hold": scene.one_pedal_cruise_hold,
     })
     return replace(
       sunnypilot_output,
@@ -216,9 +234,21 @@ class CustomLongitudinalStackV2:
 
     stop_active = scene.stop_threat and not scene.has_lead
     blocked = scene.force_slow_decel or scene.brake_pressed or scene.gas_pressed
+    one_pedal_enabled = scene.one_pedal_mode != ONE_PEDAL_MODE_OFF
+    one_pedal_policy_active = one_pedal_enabled and not scene.one_pedal_cruise_hold
+
+    if one_pedal_enabled and scene.one_pedal_cruise_hold:
+      rejected.append(("one_pedal", "temporary_cruise_hold"))
 
     progress_floors_allowed = _progress_floors_allowed(selected_intent)
-    if not blocked and not stop_active and progress_floors_allowed:
+    if one_pedal_policy_active:
+      if not blocked and not stop_active:
+        a_target, should_stop, selected_intent, selected_reason, limit_jerk = self._apply_one_pedal_policy(
+          output, a_target, should_stop, selected_intent, selected_reason, scene, accel_limits, rejected,
+        )
+      elif blocked:
+        rejected.append(("one_pedal", "driver_or_force_blocked"))
+    elif not blocked and not stop_active and progress_floors_allowed:
       a_target, selected_intent, selected_reason = self._apply_progress_floors(
         a_target, selected_intent, selected_reason, scene, accel_limits, rejected,
         allow_lead_progress=not scene.stop_threat,
@@ -228,11 +258,12 @@ class CustomLongitudinalStackV2:
     elif blocked:
       rejected.append(("launch", "driver_or_force_blocked"))
 
-    a_target, selected_intent, selected_reason = self._apply_advisory_caps(
-      a_target, selected_intent, selected_reason, scene, rejected
-    )
+    if not one_pedal_policy_active:
+      a_target, selected_intent, selected_reason = self._apply_advisory_caps(
+        a_target, selected_intent, selected_reason, scene, rejected
+      )
 
-    if selected_intent in {"speed_policy", "curve_policy", "map_caution"} and _comfort_relax_allowed(scene):
+    if not one_pedal_policy_active and selected_intent in {"speed_policy", "curve_policy", "map_caution"} and _comfort_relax_allowed(scene):
       relaxed = max(a_target, COMFORT_RELAX_ACCEL_MIN)
       if relaxed > a_target:
         rejected.append((selected_intent, "comfort_relax_softened_advisory_decel"))
@@ -263,6 +294,43 @@ class CustomLongitudinalStackV2:
       selected_reason=selected_reason,
       rejected=tuple(rejected),
       limit_jerk=limit_jerk,
+    )
+
+  def _apply_one_pedal_policy(self, output: LongitudinalStackOutput, a_target: float, should_stop: bool,
+                              selected_intent: str, selected_reason: str, scene: CustomV2Scene,
+                              accel_limits: tuple[float | None, float | None],
+                              rejected: list[tuple[str, str]]) -> tuple[float, bool, str, str, bool]:
+    if _one_pedal_preserves_physical_braking(output, selected_intent, a_target, should_stop):
+      rejected.append(("one_pedal", "physical_hazard_preserved"))
+      return a_target, should_stop, selected_intent, selected_reason, True
+
+    if scene.one_pedal_mode == ONE_PEDAL_MODE_FULL_STOP and scene.v_ego <= ONE_PEDAL_FULL_STOP_ARM_SPEED:
+      return (
+        _clip_to_limits(ONE_PEDAL_FULL_STOP_DECEL, accel_limits),
+        should_stop or scene.v_ego <= ONE_PEDAL_FULL_STOP_HOLD_SPEED,
+        "one_pedal",
+        "low_speed_terminal_stop",
+        True,
+      )
+
+    if scene.one_pedal_mode == ONE_PEDAL_MODE_CREEP and _one_pedal_creep_allowed(scene):
+      return (
+        _clip_to_limits(_one_pedal_creep_accel(scene), accel_limits),
+        False,
+        "one_pedal",
+        "terminal_creep",
+        True,
+      )
+
+    if scene.one_pedal_mode == ONE_PEDAL_MODE_CREEP and scene.v_ego <= ONE_PEDAL_CREEP_TARGET_SPEED:
+      rejected.append(("one_pedal", "terminal_creep_not_authorized"))
+
+    return (
+      _clip_to_limits(ONE_PEDAL_LIFT_OFF_COAST_ACCEL, accel_limits),
+      False,
+      "one_pedal",
+      "lift_off_coast",
+      True,
     )
 
   def _apply_progress_floors(self, a_target: float, selected_intent: str, selected_reason: str,
@@ -379,6 +447,30 @@ def _comfort_relax_allowed(scene: CustomV2Scene) -> bool:
   )
 
 
+def _one_pedal_preserves_physical_braking(output: LongitudinalStackOutput, selected_intent: str,
+                                          a_target: float, should_stop: bool) -> bool:
+  return bool(
+    selected_intent in {PLANNER_SEED_INTENT_LEAD_FOLLOW, PLANNER_SEED_INTENT_STOP_APPROACH, PLANNER_SEED_INTENT_SAFETY_CAP} and
+    (a_target < 0.0 or should_stop or output.should_stop)
+  )
+
+
+def _one_pedal_creep_allowed(scene: CustomV2Scene) -> bool:
+  if scene.v_ego > ONE_PEDAL_CREEP_TARGET_SPEED:
+    return False
+  if scene.has_lead:
+    return lead_evidence_releases_stop(scene)
+  return scene.v_ego > ONE_PEDAL_CREEP_ROLLING_MIN_SPEED or no_lead_stop_clear(scene)
+
+
+def _one_pedal_creep_accel(scene: CustomV2Scene) -> float:
+  return _clip(
+    (ONE_PEDAL_CREEP_TARGET_SPEED - scene.v_ego) * ONE_PEDAL_CREEP_ACCEL_GAIN,
+    0.0,
+    ONE_PEDAL_CREEP_ACCEL_MAX,
+  )
+
+
 def _apply_floor(a_target: float, selected_intent: str, selected_reason: str, floor: float, intent: str, reason: str,
                  accel_limits: tuple[float | None, float | None]) -> tuple[float, str, str]:
   floor = _clip_to_limits(floor, accel_limits)
@@ -478,7 +570,17 @@ def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
     curve_active=curve_active,
     map_caution_active=map_caution_active,
     map_caution_confirmed=map_caution_confirmed,
+    one_pedal_mode=_validated_one_pedal_mode(scene.one_pedal_mode),
+    one_pedal_cruise_hold=bool(scene.one_pedal_cruise_hold),
   )
+
+
+def _validated_one_pedal_mode(value: object) -> int:
+  try:
+    mode = int(value)
+  except (TypeError, ValueError):
+    return ONE_PEDAL_MODE_OFF
+  return mode if mode in ONE_PEDAL_MODES else ONE_PEDAL_MODE_OFF
 
 
 def _finite(value: object) -> bool:

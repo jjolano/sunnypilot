@@ -225,6 +225,12 @@ def test_known_params_metadata():
   assert "custom-recommended" in stack_options
   assert "custom-2.0" in stack_options
 
+  one_pedal = metadata.get("OnePedalLongitudinalMode")
+  assert one_pedal is not None
+  assert one_pedal["title"] == "One Pedal Longitudinal"
+  one_pedal_options = {option["value"]: option["label"] for option in one_pedal["options"]}
+  assert one_pedal_options == {0: "Off", 1: "Creep", 2: "Full Stop"}
+
   accurate_lateral_accel = metadata.get("AccurateLateralAccel")
   assert accurate_lateral_accel is not None
   assert accurate_lateral_accel["title"] == "Accurate Lateral Acceleration"

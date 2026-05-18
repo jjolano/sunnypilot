@@ -7,6 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 from enum import IntEnum
 
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
+  CUSTOM_V2,
   CUSTOM_RECOMMENDED,
   StackCatalog,
   load_stack_manifest,
@@ -17,7 +18,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.sunnypilot.lib.utils import NoElideButtonAction
-from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, toggle_item_sp, option_item_sp, simple_button_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, toggle_item_sp, option_item_sp, simple_button_item_sp, multiple_button_item_sp
 from openpilot.system.ui.sunnypilot.widgets.tree_dialog import TreeOptionDialog, TreeFolder, TreeNode
 from openpilot.system.ui.widgets import Widget, DialogResult
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -40,6 +41,10 @@ ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on t
 LONG_STACK_DESCRIPTION = tr_noop("Select which longitudinal control stack runs after sunnypilot longitudinal control is active. " +
                                  "Changing this requires an onroad cycle.")
 LONG_STACK_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control to use the longitudinal stack selector.")
+ONE_PEDAL_DESCRIPTION = tr_noop("Treat the cruise speed as a ceiling in custom v2.0. Lift-off coasts unless physical lead or stop evidence requires braking. " +
+                                "Changing this requires an onroad cycle.")
+ONE_PEDAL_CUSTOM_V2_DESCRIPTION = tr_noop("Select custom v2.0 in Longitudinal Stack to use One Pedal Longitudinal.")
+ONE_PEDAL_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control and custom v2.0 to use One Pedal Longitudinal.")
 ONROAD_ONLY_DESCRIPTION = tr_noop("Start the vehicle to check vehicle compatibility.")
 
 
@@ -109,10 +114,20 @@ class CruiseLayout(Widget):
       callback=self._show_longitudinal_stack_dialog,
     )
 
+    self.one_pedal_longitudinal_item = multiple_button_item_sp(
+      title=tr("One Pedal Longitudinal"),
+      description=tr(ONE_PEDAL_DESCRIPTION),
+      buttons=[tr("Off"), tr("Creep"), tr("Full Stop")],
+      selected_index=int(ui_state.params.get("OnePedalLongitudinalMode", return_default=True)),
+      callback=self._on_one_pedal_mode_changed,
+      param="OnePedalLongitudinalMode",
+    )
+
     items = [
       self.icbm_toggle,
       self.dec_toggle,
       self.longitudinal_stack_item,
+      self.one_pedal_longitudinal_item,
       self.scc_v_toggle,
       self.scc_m_toggle,
       self.custom_acc_toggle,
@@ -133,6 +148,7 @@ class CruiseLayout(Widget):
     self._scroller.show_event()
     self.icbm_toggle.show_description(True)
     self.custom_acc_toggle.show_description(True)
+    self.one_pedal_longitudinal_item.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
     self._current_panel = panel
@@ -169,6 +185,7 @@ class CruiseLayout(Widget):
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
         self.dec_toggle.action_item.set_enabled(has_long)
         self.longitudinal_stack_item.action_item.set_enabled(has_long and ui_state.is_offroad())
+        self._update_one_pedal_item(has_long)
         self.scc_v_toggle.action_item.set_enabled(True)
         self.scc_m_toggle.action_item.set_enabled(True)
       else:
@@ -179,6 +196,7 @@ class CruiseLayout(Widget):
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.dec_toggle.action_item.set_enabled(False)
         self.longitudinal_stack_item.action_item.set_enabled(False)
+        self.one_pedal_longitudinal_item.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)
       self._update_longitudinal_stack_item(has_long)
@@ -189,6 +207,8 @@ class CruiseLayout(Widget):
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
       self.longitudinal_stack_item.action_item.set_enabled(False)
       self.longitudinal_stack_item.set_description(tr(ONROAD_ONLY_DESCRIPTION))
+      self.one_pedal_longitudinal_item.action_item.set_enabled(False)
+      self.one_pedal_longitudinal_item.set_description(tr(ONROAD_ONLY_DESCRIPTION))
 
     show_custom_acc_desc = False
 
@@ -218,6 +238,18 @@ class CruiseLayout(Widget):
     resolution = self._get_longitudinal_stack_resolution()
     self.longitudinal_stack_item.action_item.set_value(self._longitudinal_stack_label(resolution.requested_stack, resolution))
     self.longitudinal_stack_item.set_description(tr(LONG_STACK_DESCRIPTION if has_long else LONG_STACK_NOLONG_DESCRIPTION))
+
+  def _update_one_pedal_item(self, has_long: bool):
+    resolution = self._get_longitudinal_stack_resolution()
+    enabled = has_long and ui_state.is_offroad() and resolution.resolved_stack == CUSTOM_V2
+    self.one_pedal_longitudinal_item.action_item.set_enabled(enabled)
+    if not has_long:
+      description = ONE_PEDAL_NOLONG_DESCRIPTION
+    elif resolution.resolved_stack != CUSTOM_V2:
+      description = ONE_PEDAL_CUSTOM_V2_DESCRIPTION
+    else:
+      description = ONE_PEDAL_DESCRIPTION
+    self.one_pedal_longitudinal_item.set_description(tr(description))
 
   def _get_longitudinal_stack_resolution(self):
     return resolve_longitudinal_stack(
@@ -270,6 +302,7 @@ class CruiseLayout(Widget):
           ui_state.params.put("LongitudinalStack", selected_ref)
           ui_state.params.put_bool("OnroadCycleRequested", True)
           self._update_longitudinal_stack_item(ui_state.has_longitudinal_control)
+          self._update_one_pedal_item(ui_state.has_longitudinal_control)
       self._longitudinal_stack_dialog = None
 
     self._longitudinal_stack_dialog = TreeOptionDialog(
@@ -280,6 +313,9 @@ class CruiseLayout(Widget):
       on_exit=handle_selection,
     )
     gui_app.push_widget(self._longitudinal_stack_dialog)
+
+  def _on_one_pedal_mode_changed(self, _mode: int):
+    ui_state.params.put_bool("OnroadCycleRequested", True)
 
   def _on_custom_acc_toggle(self, state):
     self.custom_acc_short_increment.set_visible(state)
