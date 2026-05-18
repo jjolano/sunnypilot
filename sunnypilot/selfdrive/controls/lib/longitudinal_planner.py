@@ -7,6 +7,8 @@ See the LICENSE.md file in the root directory for more details.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
@@ -138,61 +140,82 @@ def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, sc
   return selected_source, selected_v_target, selected_a_target
 
 
+@dataclass(frozen=True)
+class SignalProviderCandidate:
+  source: DecisionSource
+  role: CandidateRole
+  target: tuple[float, float]
+  active: bool
+  confidence: float
+  urgency: float
+  active_reason: str
+
+  def to_longitudinal_candidate(self) -> LongitudinalCandidate:
+    v_target, a_target = self.target
+    return LongitudinalCandidate(
+      source=self.source,
+      role=self.role,
+      v_target=v_target,
+      a_target=a_target,
+      confidence=self.confidence,
+      urgency=self.urgency,
+      active_reason=self.active_reason,
+    )
+
+
+def build_sp_candidates_from_signal_providers(providers: tuple[SignalProviderCandidate, ...]) -> list[LongitudinalCandidate]:
+  return [provider.to_longitudinal_candidate() for provider in providers if provider.active]
+
+
 def build_sp_longitudinal_candidates(speed_limit_active, cruise, scc_vision, scc_vision_active, scc_map, scc_map_active,
                                      speed_limit_assist, osm_traffic_control, osm_traffic_control_active):
-  cruise_v, cruise_a = cruise
-  candidates = [LongitudinalCandidate(
-    source=DecisionSource.CRUISE,
-    role=CandidateRole.DRIVER_INTENT,
-    v_target=cruise_v,
-    a_target=cruise_a,
-    confidence=1.0,
-    urgency=0.1,
-    active_reason="driver_cruise_target",
-  )]
-
-  if speed_limit_active:
-    candidates.append(LongitudinalCandidate(
+  return build_sp_candidates_from_signal_providers((
+    SignalProviderCandidate(
+      source=DecisionSource.CRUISE,
+      role=CandidateRole.DRIVER_INTENT,
+      target=cruise,
+      active=True,
+      confidence=1.0,
+      urgency=0.1,
+      active_reason="driver_cruise_target",
+    ),
+    SignalProviderCandidate(
       source=DecisionSource.SPEED_LIMIT,
       role=CandidateRole.ADVISORY_CAP,
-      v_target=speed_limit_assist[0],
-      a_target=speed_limit_assist[1],
+      target=speed_limit_assist,
+      active=speed_limit_active,
       confidence=0.85,
       urgency=0.35,
       active_reason="speed_limit_assist_active",
-    ))
-  if scc_vision_active:
-    candidates.append(LongitudinalCandidate(
+    ),
+    SignalProviderCandidate(
       source=DecisionSource.SCC_VISION,
       role=CandidateRole.ADVISORY_CAP,
-      v_target=scc_vision[0],
-      a_target=scc_vision[1],
+      target=scc_vision,
+      active=scc_vision_active,
       confidence=0.80,
       urgency=0.45,
       active_reason="confident_vision_curve",
-    ))
-  if scc_map_active:
-    candidates.append(LongitudinalCandidate(
+    ),
+    SignalProviderCandidate(
       source=DecisionSource.SCC_MAP,
       role=CandidateRole.ADVISORY_CAP,
-      v_target=scc_map[0],
-      a_target=scc_map[1],
+      target=scc_map,
+      active=scc_map_active,
       confidence=0.80,
       urgency=0.40,
       active_reason="confident_map_curve",
-    ))
-  if osm_traffic_control_active:
-    candidates.append(LongitudinalCandidate(
+    ),
+    SignalProviderCandidate(
       source=DecisionSource.OSM_TRAFFIC_CONTROL,
       role=CandidateRole.ADVISORY_CAP,
-      v_target=osm_traffic_control[0],
-      a_target=osm_traffic_control[1],
+      target=osm_traffic_control,
+      active=osm_traffic_control_active,
       confidence=0.75,
       urgency=0.55,
       active_reason="model_confirmed_map_caution",
-    ))
-
-  return candidates
+    ),
+  ))
 
 
 class LongitudinalPlannerSP:
