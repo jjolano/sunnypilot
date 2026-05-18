@@ -133,7 +133,10 @@ class LateralLowSpeedReport:
   sample_count: int
   duration_s: float
   lane_change_excluded_count: int
+  signal_tagged_category_counts: dict[str, int]
+  signal_tagged_state_counts: dict[str, int]
   tiers: list[LateralLowSpeedTierMetrics]
+  signal_tagged_tiers: list[LateralLowSpeedTierMetrics]
 
   def to_dict(self) -> dict[str, Any]:
     return asdict(self)
@@ -280,12 +283,17 @@ def build_lateral_low_speed_report(
   ordered_msgs = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
   samples = _extract_torque_samples(ordered_msgs)
   if not samples:
-    return LateralLowSpeedReport(source, 0, 0.0, 0, [])
+    return LateralLowSpeedReport(source, 0, 0.0, 0, {}, {}, [], [])
   cols = _columns(samples)
   base = _low_speed_primary_mask(cols)
+  signal_tagged = _low_speed_signal_tagged_mask(cols)
   turn = _low_speed_turn_mask(cols)
   tiers = [
     _low_speed_tier_metrics(cols, _tier_label(lower, upper), lower, upper, base & turn & _speed_tier_mask(cols, lower, upper))
+    for lower, upper in LOW_SPEED_TIER_BOUNDS
+  ]
+  signal_tagged_tiers = [
+    _low_speed_tier_metrics(cols, _tier_label(lower, upper), lower, upper, signal_tagged & turn & _speed_tier_mask(cols, lower, upper))
     for lower, upper in LOW_SPEED_TIER_BOUNDS
   ]
   return LateralLowSpeedReport(
@@ -293,7 +301,10 @@ def build_lateral_low_speed_report(
     sample_count=len(samples),
     duration_s=float(cols["t"][-1] - cols["t"][0]) if len(samples) > 1 else 0.0,
     lane_change_excluded_count=_lane_change_excluded_count(cols),
+    signal_tagged_category_counts=_signal_tagged_category_counts(cols, turn),
+    signal_tagged_state_counts=_signal_tagged_state_counts(cols, turn),
     tiers=tiers,
+    signal_tagged_tiers=signal_tagged_tiers,
   )
 
 
@@ -333,22 +344,32 @@ def render_lateral_low_speed_report(report: LateralLowSpeedReport) -> str:
     f"samples: {report.sample_count}",
     f"duration: {report.duration_s:.1f} s",
     f"lane-change excluded samples: {report.lane_change_excluded_count}",
+    f"signal-tagged categories: {_format_counts(report.signal_tagged_category_counts)}",
+    f"signal-tagged states: {_format_counts(report.signal_tagged_state_counts)}",
+    "Primary tiers:",
   ]
   for metric in report.tiers:
-    lag = "n/a" if metric.best_lag_s is None else f"{metric.best_lag_s:.3f}s"
-    corr = "n/a" if metric.desired_actual_corr is None else f"{metric.desired_actual_corr:.3f}"
-    reasons = ",".join(f"{name}:{count}" for name, count in sorted(metric.model_path_reason_counts.items())) or "none"
-    lines.append(
-      f"{metric.segment}: samples={metric.sample_count} lag={lag} corr={corr} "
-      f"err_mean={metric.abs_error_mean:.3f} err95={metric.abs_error_p95:.3f} "
-      f"out_flips={metric.output_reversals} unshaped_flips={metric.unshaped_output_reversals} "
-      f"desired_flips={metric.desired_lateral_accel_reversals} actual_flips={metric.actual_lateral_accel_reversals} "
-      f"rate95={metric.steering_rate_p95:.2f} limited={metric.steer_limited_percent:.1f}% "
-      f"high_rate={metric.high_steering_rate_percent:.1f}% path_gated={metric.model_path_gated_percent:.1f}% "
-      f"path_quality={metric.model_path_quality_median:.2f} raw_proc_k95={metric.raw_processed_curvature_delta_p95:.5f} "
-      f"desired_proc_k95={metric.desired_processed_curvature_delta_p95:.5f} reasons={reasons}"
-    )
+    lines.append(_render_low_speed_tier_metric(metric))
+  lines.append("Signal-tagged tiers:")
+  for metric in report.signal_tagged_tiers:
+    lines.append(_render_low_speed_tier_metric(metric))
   return "\n".join(lines)
+
+
+def _render_low_speed_tier_metric(metric: LateralLowSpeedTierMetrics) -> str:
+  lag = "n/a" if metric.best_lag_s is None else f"{metric.best_lag_s:.3f}s"
+  corr = "n/a" if metric.desired_actual_corr is None else f"{metric.desired_actual_corr:.3f}"
+  reasons = ",".join(f"{name}:{count}" for name, count in sorted(metric.model_path_reason_counts.items())) or "none"
+  return (
+    f"{metric.segment}: samples={metric.sample_count} lag={lag} corr={corr} "
+    f"err_mean={metric.abs_error_mean:.3f} err95={metric.abs_error_p95:.3f} "
+    f"out_flips={metric.output_reversals} unshaped_flips={metric.unshaped_output_reversals} "
+    f"desired_flips={metric.desired_lateral_accel_reversals} actual_flips={metric.actual_lateral_accel_reversals} "
+    f"rate95={metric.steering_rate_p95:.2f} limited={metric.steer_limited_percent:.1f}% "
+    f"high_rate={metric.high_steering_rate_percent:.1f}% path_gated={metric.model_path_gated_percent:.1f}% "
+    f"path_quality={metric.model_path_quality_median:.2f} raw_proc_k95={metric.raw_processed_curvature_delta_p95:.5f} "
+    f"desired_proc_k95={metric.desired_processed_curvature_delta_p95:.5f} reasons={reasons}"
+  )
 
 
 def render_lateral_torque_ab_report(report: LateralTorqueABReport) -> str:
@@ -425,6 +446,7 @@ def _columns(samples: list[_TorqueSample]) -> dict[str, np.ndarray]:
     "lat_active": np.array([float(sample.lat_active) for sample in samples], dtype=float),
     "steering_pressed": np.array([float(sample.steering_pressed) for sample in samples], dtype=float),
     "blinker_active": np.array([float(sample.blinker_active) for sample in samples], dtype=float),
+    "lane_change_state": np.array([sample.lane_change_state for sample in samples], dtype=object),
     "lane_change_off": np.array([float(sample.lane_change_state == "off") for sample in samples], dtype=float),
     "steering_angle_deg": np.array([sample.steering_angle_deg for sample in samples], dtype=float),
     "steering_rate_deg": np.array([sample.steering_rate_deg for sample in samples], dtype=float),
@@ -556,13 +578,20 @@ def _base_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
 
 
 def _low_speed_primary_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
+  return _low_speed_common_mask(cols) & (cols["blinker_active"] < 0.5) & (cols["lane_change_off"] > 0.5)
+
+
+def _low_speed_signal_tagged_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
+  signal_tagged = (cols["blinker_active"] > 0.5) | (cols["lane_change_off"] < 0.5)
+  return _low_speed_common_mask(cols) & signal_tagged
+
+
+def _low_speed_common_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
   return (
     (cols["lat_active"] > 0.5)
     & (cols["v_ego"] >= 0.0)
     & (cols["v_ego"] < LOW_SPEED_REPORT_MAX_SPEED)
     & (cols["steering_pressed"] < 0.5)
-    & (cols["blinker_active"] < 0.5)
-    & (cols["lane_change_off"] > 0.5)
     & np.isfinite(cols["output"])
     & np.isfinite(cols["unshaped_output"])
     & np.isfinite(cols["desired_lateral_accel"])
@@ -587,6 +616,22 @@ def _lane_change_excluded_count(cols: dict[str, np.ndarray]) -> int:
   low_speed_active = (cols["lat_active"] > 0.5) & (cols["v_ego"] >= 0.0) & (cols["v_ego"] < LOW_SPEED_REPORT_MAX_SPEED)
   lane_change = (cols["blinker_active"] > 0.5) | (cols["lane_change_off"] < 0.5)
   return int(np.sum(low_speed_active & lane_change))
+
+
+def _signal_tagged_category_counts(cols: dict[str, np.ndarray], turn: np.ndarray) -> dict[str, int]:
+  signal_tagged = _low_speed_signal_tagged_mask(cols) & turn
+  blinker = cols["blinker_active"] > 0.5
+  lane_change = cols["lane_change_off"] < 0.5
+  return {
+    "blinker_only": int(np.sum(signal_tagged & blinker & ~lane_change)),
+    "lane_change_state_only": int(np.sum(signal_tagged & ~blinker & lane_change)),
+    "both": int(np.sum(signal_tagged & blinker & lane_change)),
+  }
+
+
+def _signal_tagged_state_counts(cols: dict[str, np.ndarray], turn: np.ndarray) -> dict[str, int]:
+  signal_tagged = _low_speed_signal_tagged_mask(cols) & turn
+  return _string_counts(cols["lane_change_state"][signal_tagged])
 
 
 def _tier_label(lower: float, upper: float) -> str:
@@ -644,6 +689,10 @@ def _string_counts(values: np.ndarray) -> dict[str, int]:
     key = str(value) if str(value) else "unknown"
     counts[key] = counts.get(key, 0) + 1
   return counts
+
+
+def _format_counts(counts: dict[str, int]) -> str:
+  return ",".join(f"{name}:{count}" for name, count in sorted(counts.items())) or "none"
 
 
 def _finite_or_fallback(values: np.ndarray, fallback: np.ndarray) -> np.ndarray:

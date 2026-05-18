@@ -224,6 +224,9 @@ def test_low_speed_lateral_report_buckets_path_and_torque_metrics():
   tier = next(metric for metric in report.tiers if metric.segment == "3-5mps")
 
   assert "Low-speed lateral report" in rendered
+  assert "Primary tiers:" in rendered
+  assert "Signal-tagged tiers:" in rendered
+  assert "signal-tagged categories:" in rendered
   assert tier.sample_count == 24
   assert tier.abs_error_p95 > 0.0
   assert tier.output_reversals > 0
@@ -247,9 +250,15 @@ def test_low_speed_lateral_report_excludes_lane_changes_from_primary_tiers():
     ))
 
   report = build_lateral_low_speed_report(msgs, already_sorted=True)
+  signal_tier = next(metric for metric in report.signal_tagged_tiers if metric.segment == "3-5mps")
 
   assert report.lane_change_excluded_count == 12
   assert all(metric.sample_count == 0 for metric in report.tiers)
+  assert signal_tier.sample_count == 12
+  assert signal_tier.abs_error_p95 > 0.0
+  assert signal_tier.model_path_reason_counts["ok"] == 12
+  assert report.signal_tagged_category_counts == {"blinker_only": 0, "lane_change_state_only": 0, "both": 12}
+  assert report.signal_tagged_state_counts["laneChangeStarting"] == 12
 
 
 def test_low_speed_lateral_report_handles_missing_path_state():
