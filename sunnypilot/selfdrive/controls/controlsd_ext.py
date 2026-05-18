@@ -18,8 +18,22 @@ from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2, LatControlTorqueV21
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
+  TorqueControllerDefinition,
+  TorqueControllerRegistry,
+  normalize_torque_tune_version,
+  resolve_torque_tune_version,
+)
+
+
+TORQUE_CONTROLLER_REGISTRY = TorqueControllerRegistry((
+  TorqueControllerDefinition(0.0, LatControlTorqueV0),
+  TorqueControllerDefinition(2.0, LatControlTorqueV2),
+  TorqueControllerDefinition(2.1, LatControlTorqueV21),
+  TorqueControllerDefinition(3.0, LatControlTorqueV3),
+))
 
 
 class ControlsExt(ModelStateBase):
@@ -40,11 +54,11 @@ class ControlsExt(ModelStateBase):
 
   def initialize_lateral_control(self, lac, CI, dt):
     enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
-    torque_version = self.normalize_torque_tune_version(self.params.get("TorqueControlTune", return_default=True))
+    torque_resolution = resolve_torque_tune_version(self.params.get("TorqueControlTune", return_default=True))
+    torque_version = torque_resolution.resolved_version
     native_torque = self.CP.lateralTuning.which() == 'torque'
-    if torque_version == 4.0:
-      self.params.put("TorqueControlTune", "2.0")
-      torque_version = 2.0
+    if torque_resolution.persist_value is not None:
+      self.params.put("TorqueControlTune", torque_resolution.persist_value)
     if not enforce_torque_control:
       if native_torque:
         return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)  # FIXME-SP: revert when upstream fixes tuning issues with v1
@@ -56,29 +70,14 @@ class ControlsExt(ModelStateBase):
     if not native_torque:
       return lac
 
-    if torque_version == 0.0:
-      return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)
-    if torque_version == 2.0:
-      return LatControlTorqueV2(self.CP, self.CP_SP, CI, dt)
-    if torque_version == 3.0:
-      return LatControlTorqueV3(self.CP, self.CP_SP, CI, dt)
+    controller_factory = TORQUE_CONTROLLER_REGISTRY.factory_for(torque_version)
+    if controller_factory is not None:
+      return controller_factory(self.CP, self.CP_SP, CI, dt)
     return lac
 
   @staticmethod
   def normalize_torque_tune_version(value) -> float | None:
-    if value is None:
-      return None
-
-    if isinstance(value, (int, float)):
-      return float(value)
-
-    if isinstance(value, bytes):
-      value = value.decode()
-
-    try:
-      return float(value)
-    except (TypeError, ValueError):
-      return None
+    return normalize_torque_tune_version(value)
 
   def get_params_sp(self, sm: messaging.SubMaster) -> None:
     if time.monotonic() - self._param_update_time > PARAMS_UPDATE_PERIOD:

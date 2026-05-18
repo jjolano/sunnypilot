@@ -17,8 +17,14 @@ from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque as LatControlTorqueV1
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2, LatControlTorqueV21
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
+  DEFAULT_TORQUE_TUNE_VERSION,
+  TorqueControllerDefinition,
+  TorqueControllerRegistry,
+  resolve_torque_tune_version,
+)
 
 msgq = types.ModuleType("msgq")
 msgq.fake_event_handle = object()
@@ -114,6 +120,27 @@ def test_normalize_torque_tune_version():
   assert ControlsExt.normalize_torque_tune_version("bad") is None
 
 
+def test_torque_tune_resolution_owns_removed_version_fallback():
+  resolution = resolve_torque_tune_version(4.0)
+
+  assert resolution.requested_version == 4.0
+  assert resolution.resolved_version == DEFAULT_TORQUE_TUNE_VERSION
+  assert resolution.persist_value == "2.0"
+  assert resolve_torque_tune_version(b"2.1").resolved_version == 2.1
+  assert resolve_torque_tune_version(b"3.0").resolved_version == 3.0
+  assert resolve_torque_tune_version("bad").resolved_version is None
+
+
+def test_torque_controller_registry_resolves_factories():
+  class ControllerA:
+    pass
+
+  registry = TorqueControllerRegistry((TorqueControllerDefinition(2.0, ControllerA),))
+
+  assert registry.factory_for(2.0) is ControllerA
+  assert registry.factory_for(3.0) is None
+
+
 def test_torque_controller_selection_variants():
   CP, CP_SP, CI = get_test_context()
   lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
@@ -130,6 +157,11 @@ def test_torque_controller_selection_variants():
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert isinstance(selected, LatControlTorqueV2)
   assert hasattr(selected, "output_shaper")
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, b"2.1"))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV21)
+  assert selected.USE_REFINED_OUTPUT_GOVERNOR
 
   params = FakeParams(True, 3.0)
   controls_ext = make_controls_ext(CP, CP_SP, params)
