@@ -15,3 +15,7 @@ class WMACConstants:
   SLOWNESS_WINDOW_SIZE = 10  # Stable slowness detection
   SLOWNESS_PROB = 0.55  # Clear threshold for slowness
   SLOWNESS_CRUISE_OFFSET = 1.025  # Conservative cruise speed offset
+
+  # Model stop evidence parameters
+  MODEL_STOP_SPEED = 1.0
+  MODEL_STOP_ENDPOINT_MARGIN = 5.0
