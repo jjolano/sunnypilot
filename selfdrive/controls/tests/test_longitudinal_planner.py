@@ -20,6 +20,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   has_valid_radar_lead,
   should_run_engage_stop_bootstrap,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController, TRAJECTORY_SIZE
 
 
 def make_radar_state(lead_one=False, lead_two=False):
@@ -36,12 +37,41 @@ def make_model_msg(desired_accel=0.0, should_stop=False, endpoint_x=200.0, posit
     velocity=SimpleNamespace(x=velocities or []),
   )
 
-
 class FakeSubMaster(dict):
   logMonoTime = {'modelV2': 1.0}
 
   def all_checks(self, service_list):
     return True
+
+
+def make_dec_model_msg(should_stop=False, endpoint_x=62.0, stop_index=None):
+  positions = [endpoint_x * i / (TRAJECTORY_SIZE - 1) for i in range(TRAJECTORY_SIZE)]
+  velocities = [15.9 for _ in range(TRAJECTORY_SIZE)]
+  velocities[-1] = 0.2
+  if stop_index is not None:
+    velocities[stop_index] = 0.5
+  return SimpleNamespace(
+    action=SimpleNamespace(desiredAcceleration=-1.0, shouldStop=should_stop),
+    position=SimpleNamespace(x=positions),
+    velocity=SimpleNamespace(x=velocities),
+    orientation=SimpleNamespace(x=[0.0] * TRAJECTORY_SIZE),
+  )
+
+
+def make_dec_sm(model_msg, v_ego=15.9):
+  return {
+    'carState': SimpleNamespace(vEgo=v_ego, vCruise=100.0, standstill=False),
+    'radarState': make_radar_state(),
+    'modelV2': model_msg,
+    'selfdriveState': SimpleNamespace(experimentalMode=True),
+  }
+
+
+def make_dec():
+  cp = SimpleNamespace(radarUnavailable=True)
+  mpc = SimpleNamespace(crash_cnt=0)
+  params = SimpleNamespace(get_bool=lambda _key: True)
+  return DynamicExperimentalController(cp, mpc, params=params)
 
 
 def test_has_valid_radar_lead_checks_both_tracks():
@@ -112,9 +142,25 @@ def test_engage_stop_bootstrap_ignores_weak_model_stop_signal():
 
 
 def test_e2e_stop_approach_brakes_for_short_no_lead_endpoint():
-  accel = get_e2e_stop_approach_accel(12.0, make_model_msg(endpoint_x=45.0), make_radar_state(), True)
+  accel = get_e2e_stop_approach_accel(
+    12.0,
+    make_model_msg(endpoint_x=45.0, positions=[0.0, 30.0, 45.0], velocities=[12.0, 0.5, 3.0]),
+    make_radar_state(),
+    True,
+  )
 
   assert -E2E_STOP_APPROACH_DECEL_MAX <= accel < -0.5
+
+
+def test_e2e_stop_approach_ignores_endpoint_shortage_without_stop_evidence():
+  accel = get_e2e_stop_approach_accel(
+    15.9,
+    make_model_msg(endpoint_x=62.0, positions=[0.0, 62.0], velocities=[15.9, 0.2]),
+    make_radar_state(),
+    True,
+  )
+
+  assert accel == 0.0
 
 
 def test_e2e_stop_approach_ignores_endpoint_with_sufficient_runway():
@@ -138,19 +184,34 @@ def test_e2e_stop_approach_uses_earlier_model_stop_point_for_crawl_reserve():
 
 
 def test_e2e_stop_approach_starts_mild_decel_for_route_like_runway():
-  accel = get_e2e_stop_approach_accel(15.7, make_model_msg(endpoint_x=84.0), make_radar_state(), True)
+  accel = get_e2e_stop_approach_accel(
+    15.7,
+    make_model_msg(endpoint_x=100.0, positions=[0.0, 86.0, 100.0], velocities=[15.7, 0.5, 3.0]),
+    make_radar_state(),
+    True,
+  )
 
   assert -0.5 < accel < -0.15
 
 
 def test_e2e_stop_approach_brakes_before_high_speed_max_decel_boundary():
-  accel = get_e2e_stop_approach_accel(60.0 / 3.6, make_model_msg(endpoint_x=90.0), make_radar_state(), True)
+  accel = get_e2e_stop_approach_accel(
+    60.0 / 3.6,
+    make_model_msg(endpoint_x=90.0, positions=[0.0, 70.0, 90.0], velocities=[60.0 / 3.6, 0.5, 3.0]),
+    make_radar_state(),
+    True,
+  )
 
   assert -E2E_STOP_APPROACH_DECEL_MAX <= accel < -0.5
 
 
 def test_e2e_stop_approach_caps_route_like_peak_decel():
-  accel = get_e2e_stop_approach_accel(60.0 / 3.6, make_model_msg(endpoint_x=45.0), make_radar_state(), True)
+  accel = get_e2e_stop_approach_accel(
+    60.0 / 3.6,
+    make_model_msg(endpoint_x=45.0, positions=[0.0, 30.0, 45.0], velocities=[60.0 / 3.6, 0.5, 3.0]),
+    make_radar_state(),
+    True,
+  )
 
   assert math.isclose(accel, -E2E_STOP_APPROACH_DECEL_MAX)
 
@@ -160,12 +221,29 @@ def test_e2e_stop_approach_ignores_clear_endpoint():
 
 
 def test_e2e_stop_approach_requires_no_lead_and_no_override():
-  model_msg = make_model_msg(endpoint_x=45.0)
+  model_msg = make_model_msg(endpoint_x=45.0, positions=[0.0, 30.0, 45.0], velocities=[12.0, 0.5, 3.0])
 
   assert get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(lead_one=True), True) == 0.0
   assert get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), False) == 0.0
   assert get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), True, brake_pressed=True) == 0.0
   assert get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), True, gas_pressed=True) == 0.0
+
+
+def test_dec_ignores_endpoint_only_slowdown_without_stop_evidence():
+  dec = make_dec()
+
+  dec.update(make_dec_sm(make_dec_model_msg(endpoint_x=62.0)))
+
+  assert not dec._has_slow_down
+  assert dec.mode() == 'acc'
+
+
+def test_dec_accepts_slowdown_with_confirmed_model_stop_point():
+  dec = make_dec()
+
+  dec.update(make_dec_sm(make_dec_model_msg(endpoint_x=62.0, stop_index=20)))
+
+  assert dec._has_slow_down
 
 
 def test_e2e_stop_approach_protects_close_endpoint_during_dec_acc_transition():
@@ -372,7 +450,8 @@ def test_e2e_runway_comfort_limits_negative_ramp():
 
 
 def test_e2e_runway_comfort_does_not_block_stop_approach_shortage_braking():
-  model_msg = make_model_msg(desired_accel=-0.4, should_stop=False, endpoint_x=45.0)
+  model_msg = make_model_msg(desired_accel=-0.4, should_stop=False, endpoint_x=45.0,
+                             positions=[0.0, 30.0, 45.0], velocities=[12.0, 0.5, 3.0])
   governed = get_e2e_runway_comfort_accel(12.0, -0.4, -0.25, model_msg, True, -0.2)
   shortage_accel = get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), True)
 
