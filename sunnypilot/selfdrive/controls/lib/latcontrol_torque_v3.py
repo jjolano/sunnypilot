@@ -9,6 +9,7 @@ from opendbc.car.lateral import get_friction
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_direction
 
 
@@ -36,26 +37,17 @@ BREAKAWAY_MAX_SCALE = 0.80
 TRIM_MAX_LAT_ACCEL = 0.16
 
 OUTPUT_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
-OUTPUT_SLEW_RATE_V = [1.20, 1.50, 2.00, 2.90, 3.60, 4.20]
+OUTPUT_SLEW_RATE_V = [1.40, 2.00, 3.00, 4.20, 5.00, 5.60]
 SIGN_CHANGE_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
-SIGN_CHANGE_SLEW_RATE_V = [0.70, 0.90, 1.20, 1.70, 2.10, 2.40]
+SIGN_CHANGE_SLEW_RATE_V = [0.90, 1.20, 1.80, 2.40, 3.00, 3.40]
 OVERRIDE_RELEASE_RATE = 4.0
-SAME_DIRECTION_LIMIT_RATE = 0.9
+SAME_DIRECTION_LIMIT_RATE = 1.3
 SAME_DIRECTION_LIMIT_CAP = 0.72
 TOYOTA_HIGH_RATE_START_DEG = 80.0
 TOYOTA_HIGH_RATE_FULL_DEG = 100.0
 TOYOTA_HIGH_RATE_MIN_CAP = 0.62
-TOYOTA_HIGH_RATE_SLEW_SCALE = 0.55
+TOYOTA_HIGH_RATE_SLEW_SCALE = 0.70
 
-LEARN_SPEED_BP = [0.0, 10.0, 20.0, 30.0, 40.0]
-LEARN_CONFIDENCE_BUILD = 0.015
-LEARN_CONFIDENCE_DECAY = 0.045
-LEARN_CONFIDENCE_FAST_DECAY = 0.20
-LEARN_SCALE_MIN = 0.86
-LEARN_SCALE_MAX = 1.18
-LEARN_SCALE_RATE = 0.018
-LEARN_TRIM_RATE = 0.006
-LEARN_STEADY_TARGET_RATE = 0.25
 LEARN_MIN_COMMAND = 0.035
 LEARN_SIGN_THRESHOLD = 0.05
 LEARN_MAX_JERK = 8.0
@@ -124,30 +116,22 @@ def _approach(value: float, target: float, step: float) -> float:
 
 
 @dataclass
-class LearnerCorrection:
+class ResponseSampleCorrection:
   response_scale: float
   trim_lat_accel: float
   confidence: float
 
 
 @dataclass
-class LearnerUpdate:
-  correction: LearnerCorrection
+class ResponseSampleUpdate:
+  correction: ResponseSampleCorrection
   sample_accepted: bool
   reject_reason: V3LearnerRejectReason
   residual_error: float
 
 
 @dataclass
-class LearnerRegion:
-  confidence: float = 0.0
-  response_scale: float = 1.0
-  trim_lat_accel: float = 0.0
-  residual_error: float = 0.0
-
-
-@dataclass
-class LearnerSample:
+class ResponseSample:
   active: bool
   steering_pressed: bool
   same_direction_limit: bool
@@ -162,98 +146,51 @@ class LearnerSample:
   actual_lateral_jerk: float
 
 
-class SessionResponseLearner:
-  def __init__(self):
-    self._regions: dict[int, list[LearnerRegion]] = {
-      -1: [LearnerRegion() for _ in LEARN_SPEED_BP],
-      1: [LearnerRegion() for _ in LEARN_SPEED_BP],
-    }
-    self._last_update = LearnerUpdate(LearnerCorrection(1.0, 0.0, 0.0), False, V3LearnerRejectReason.INACTIVE, 0.0)
+IDENTITY_RESPONSE_SAMPLE_CORRECTION = ResponseSampleCorrection(1.0, 0.0, 0.0)
 
-  def correction(self, v_ego: float, direction: int) -> LearnerCorrection:
-    if direction == 0:
-      return LearnerCorrection(1.0, 0.0, 0.0)
-    regions = self._regions[direction]
-    confidence = _interp(v_ego, LEARN_SPEED_BP, [region.confidence for region in regions])
-    raw_scale = _interp(v_ego, LEARN_SPEED_BP, [region.response_scale for region in regions])
-    raw_trim = _interp(v_ego, LEARN_SPEED_BP, [region.trim_lat_accel for region in regions])
-    return LearnerCorrection(
-      response_scale=1.0 + (raw_scale - 1.0) * confidence,
-      trim_lat_accel=raw_trim * confidence,
-      confidence=confidence,
-    )
 
-  def update(self, sample: LearnerSample) -> LearnerUpdate:
-    direction = _sign(sample.commanded_torque, LEARN_MIN_COMMAND)
-    target_direction = _sign(sample.target_lateral_accel, LEARN_SIGN_THRESHOLD)
-    if direction == 0 and target_direction != 0:
-      direction = target_direction
-    if direction == 0:
-      direction = 1
+def evaluate_response_sample(sample: ResponseSample) -> ResponseSampleUpdate:
+  direction = _sign(sample.commanded_torque, LEARN_MIN_COMMAND)
+  target_direction = _sign(sample.target_lateral_accel, LEARN_SIGN_THRESHOLD)
+  if direction == 0 and target_direction != 0:
+    direction = target_direction
+  if direction == 0:
+    direction = 1
 
-    region = self._regions[direction][self._bucket_idx(sample.v_ego)]
-    reject_reason = self._reject_reason(sample, direction)
-    if reject_reason != V3LearnerRejectReason.NONE:
-      self._decay(region, reject_reason)
-      correction = self.correction(sample.v_ego, direction)
-      self._last_update = LearnerUpdate(correction, False, reject_reason, region.residual_error)
-      return self._last_update
+  reject_reason = _sample_reject_reason(sample, direction)
+  residual = (
+    sample.target_lateral_accel - sample.actual_lateral_accel
+    if _finite(sample.target_lateral_accel, sample.actual_lateral_accel) else 0.0
+  )
+  return ResponseSampleUpdate(IDENTITY_RESPONSE_SAMPLE_CORRECTION, reject_reason == V3LearnerRejectReason.NONE, reject_reason, residual)
 
-    residual = sample.target_lateral_accel - sample.actual_lateral_accel
-    signed_residual = direction * residual
-    response_error = _clip(signed_residual / max(abs(sample.target_lateral_accel), 0.25), -0.8, 0.8)
-    region.response_scale = _clip(region.response_scale + LEARN_SCALE_RATE * response_error, LEARN_SCALE_MIN, LEARN_SCALE_MAX)
-    if abs(sample.target_lateral_accel_rate) < LEARN_STEADY_TARGET_RATE and abs(sample.target_lateral_accel) > 0.12:
-      region.trim_lat_accel = _clip(region.trim_lat_accel + LEARN_TRIM_RATE * residual, -TRIM_MAX_LAT_ACCEL, TRIM_MAX_LAT_ACCEL)
-    region.confidence = min(1.0, region.confidence + LEARN_CONFIDENCE_BUILD)
-    region.residual_error = 0.85 * region.residual_error + 0.15 * residual
-    correction = self.correction(sample.v_ego, direction)
-    self._last_update = LearnerUpdate(correction, True, V3LearnerRejectReason.NONE, region.residual_error)
-    return self._last_update
 
-  @staticmethod
-  def _bucket_idx(v_ego: float) -> int:
-    for idx in range(len(LEARN_SPEED_BP) - 1):
-      if LEARN_SPEED_BP[idx] <= v_ego < LEARN_SPEED_BP[idx + 1]:
-        return idx
-    return len(LEARN_SPEED_BP) - 1
-
-  @staticmethod
-  def _reject_reason(sample: LearnerSample, command_direction: int) -> V3LearnerRejectReason:
-    reason = V3LearnerRejectReason.NONE
-    if not sample.active:
-      reason |= V3LearnerRejectReason.INACTIVE
-    if sample.steering_pressed:
-      reason |= V3LearnerRejectReason.STEERING_PRESSED
-    if sample.same_direction_limit:
-      reason |= V3LearnerRejectReason.STEER_LIMITED
-    if sample.curvature_limited:
-      reason |= V3LearnerRejectReason.CURVATURE_LIMITED
-    if sample.saturated:
-      reason |= V3LearnerRejectReason.SATURATED
-    if sample.lateral_maneuver:
-      reason |= V3LearnerRejectReason.LATERAL_MANEUVER
-    if abs(sample.commanded_torque) < LEARN_MIN_COMMAND:
-      reason |= V3LearnerRejectReason.LOW_COMMAND
-    if not _finite(sample.v_ego, sample.commanded_torque, sample.target_lateral_accel, sample.target_lateral_accel_rate,
-                   sample.actual_lateral_accel, sample.actual_lateral_jerk):
-      reason |= V3LearnerRejectReason.NON_FINITE
-    if abs(sample.actual_lateral_jerk) > LEARN_MAX_JERK:
-      reason |= V3LearnerRejectReason.HIGH_JERK
-    target_sign = _sign(sample.target_lateral_accel, LEARN_SIGN_THRESHOLD)
-    actual_sign = _sign(sample.actual_lateral_accel, LEARN_SIGN_THRESHOLD)
-    if target_sign != 0 and actual_sign != 0 and command_direction != 0 and len({target_sign, actual_sign, command_direction}) > 1:
-      reason |= V3LearnerRejectReason.SIGN_CONFLICT
-    return reason
-
-  @staticmethod
-  def _decay(region: LearnerRegion, reason: V3LearnerRejectReason) -> None:
-    fast = bool(reason & (V3LearnerRejectReason.NON_FINITE | V3LearnerRejectReason.HIGH_JERK | V3LearnerRejectReason.SIGN_CONFLICT))
-    decay = LEARN_CONFIDENCE_FAST_DECAY if fast else LEARN_CONFIDENCE_DECAY
-    region.confidence = max(0.0, region.confidence - decay)
-    if fast:
-      region.response_scale = 1.0 + 0.5 * (region.response_scale - 1.0)
-      region.trim_lat_accel *= 0.5
+def _sample_reject_reason(sample: ResponseSample, command_direction: int) -> V3LearnerRejectReason:
+  reason = V3LearnerRejectReason.NONE
+  if not sample.active:
+    reason |= V3LearnerRejectReason.INACTIVE
+  if sample.steering_pressed:
+    reason |= V3LearnerRejectReason.STEERING_PRESSED
+  if sample.same_direction_limit:
+    reason |= V3LearnerRejectReason.STEER_LIMITED
+  if sample.curvature_limited:
+    reason |= V3LearnerRejectReason.CURVATURE_LIMITED
+  if sample.saturated:
+    reason |= V3LearnerRejectReason.SATURATED
+  if sample.lateral_maneuver:
+    reason |= V3LearnerRejectReason.LATERAL_MANEUVER
+  if abs(sample.commanded_torque) < LEARN_MIN_COMMAND:
+    reason |= V3LearnerRejectReason.LOW_COMMAND
+  if not _finite(sample.v_ego, sample.commanded_torque, sample.target_lateral_accel, sample.target_lateral_accel_rate,
+                 sample.actual_lateral_accel, sample.actual_lateral_jerk):
+    reason |= V3LearnerRejectReason.NON_FINITE
+  if abs(sample.actual_lateral_jerk) > LEARN_MAX_JERK:
+    reason |= V3LearnerRejectReason.HIGH_JERK
+  target_sign = _sign(sample.target_lateral_accel, LEARN_SIGN_THRESHOLD)
+  actual_sign = _sign(sample.actual_lateral_accel, LEARN_SIGN_THRESHOLD)
+  if target_sign != 0 and actual_sign != 0 and command_direction != 0 and len({target_sign, actual_sign, command_direction}) > 1:
+    reason |= V3LearnerRejectReason.SIGN_CONFLICT
+  return reason
 
 
 class LateralAccelMeasurementFilter:
@@ -372,7 +309,7 @@ class LatControlTorque(LatControl):
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * math.pi * MEASUREMENT_FILTER_CUTOFF_HZ), self.dt)
     self.measurement_filter = LateralAccelMeasurementFilter(self.dt)
     self.governor = TorqueV3OutputGovernor(self.dt)
-    self.learner = SessionResponseLearner()
+    self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
     self.lat_delay = max(float(getattr(CP, "steerActuatorDelay", 0.2)), self.dt)
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
@@ -398,6 +335,8 @@ class LatControlTorque(LatControl):
     del calibrated_pose
     if _finite(lat_delay):
       self.update_lateral_lag(lat_delay)
+    self.extension.last_v_ego = CS.vEgo
+    self.extension.update_override_torque_params(self.torque_params)
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
@@ -420,9 +359,7 @@ class LatControlTorque(LatControl):
       measurement_rate = self.measurement_rate_filter.update((measurement - self.previous_measurement) / self.dt)
     self.previous_measurement = measurement
 
-    direction = _sign(raw_target_lateral_accel, LEARN_SIGN_THRESHOLD)
-    learner_correction = self.learner.correction(CS.vEgo, direction)
-    lead_gain = _interp(CS.vEgo, LEAD_GAIN_BP, LEAD_GAIN_V) * learner_correction.response_scale
+    lead_gain = _interp(CS.vEgo, LEAD_GAIN_BP, LEAD_GAIN_V)
     lead_delta_cap = _interp(CS.vEgo, LEAD_DELTA_CAP_BP, LEAD_DELTA_CAP_V)
     lead_delta = _clip(target_lateral_accel_rate * self.lat_delay * lead_gain, -lead_delta_cap, lead_delta_cap)
     lead_lateral_accel = raw_target_lateral_accel + lead_delta
@@ -430,10 +367,10 @@ class LatControlTorque(LatControl):
     curvature_deadzone = abs(VM.calc_curvature(math.radians(self.steering_angle_deadzone_deg), CS.vEgo, 0.0))
     lateral_accel_deadzone = curvature_deadzone * CS.vEgo ** 2
     control_error = lead_lateral_accel - measurement
-    feedback_correction = _interp(CS.vEgo, FEEDBACK_GAIN_BP, FEEDBACK_GAIN_V) * control_error * learner_correction.response_scale
+    feedback_correction = _interp(CS.vEgo, FEEDBACK_GAIN_BP, FEEDBACK_GAIN_V) * control_error
     damping_correction = -_interp(CS.vEgo, DAMPING_GAIN_BP, DAMPING_GAIN_V) * measurement_rate
     breakaway = self._breakaway_lateral_accel(control_error, lateral_accel_deadzone, raw_target_lateral_accel, measurement)
-    trim_correction = learner_correction.trim_lat_accel
+    trim_correction = 0.0
     commanded_lateral_accel = (
       lead_lateral_accel
       - roll_compensation
@@ -466,8 +403,8 @@ class LatControlTorque(LatControl):
     output_torque = governor_result.output_torque
     saturated = self.steer_max - abs(output_torque) < 1e-3 or bool(governor_result.reason & V3GovernorReason.CLIPPED)
     delayed_target = self._delayed_target()
-    learner_update = self.learner.update(
-      LearnerSample(
+    response_sample = evaluate_response_sample(
+      ResponseSample(
         active=active and not invalid,
         steering_pressed=CS.steeringPressed,
         same_direction_limit=same_direction_limit,
@@ -506,7 +443,7 @@ class LatControlTorque(LatControl):
       trim_correction,
       raw_output_torque,
       governor_result,
-      learner_update,
+      response_sample,
       steer_limit_feedback,
       steer_limit_same_direction,
       steer_limit_unwind,
@@ -539,10 +476,10 @@ class LatControlTorque(LatControl):
     return V3Phase.hold
 
   def _fill_adaptive_log(self, pid_log, active: bool, raw_target_lateral_accel: float, lead_lateral_accel: float,
-                         feedback_correction: float, trim_correction: float, raw_output_torque: float,
-                         governor_result: GovernorResult, learner_update: LearnerUpdate, steer_limit_feedback,
-                         steer_limit_same_direction: bool, steer_limit_unwind: bool, actual_lateral_jerk: float,
-                         target_lateral_accel_rate: float, lead_gain: float) -> None:
+                          feedback_correction: float, trim_correction: float, raw_output_torque: float,
+                          governor_result: GovernorResult, response_sample: ResponseSampleUpdate, steer_limit_feedback,
+                          steer_limit_same_direction: bool, steer_limit_unwind: bool, actual_lateral_jerk: float,
+                          target_lateral_accel_rate: float, lead_gain: float) -> None:
     adaptive_log = pid_log.init('adaptiveTorqueState')
     log_active = bool(active and pid_log.active)
     adaptive_log.active = log_active
@@ -553,26 +490,26 @@ class LatControlTorque(LatControl):
     adaptive_log.assistOutput = float(feedback_correction)
     adaptive_log.biasOutput = float(trim_correction)
     adaptive_log.responseDeficit = float(pid_log.error)
-    adaptive_log.learningFrozen = bool(learner_update.reject_reason != V3LearnerRejectReason.NONE)
-    adaptive_log.freezeReason = int(learner_update.reject_reason)
-    adaptive_log.blockReason = int(learner_update.reject_reason)
+    adaptive_log.learningFrozen = False
+    adaptive_log.freezeReason = int(V3LearnerRejectReason.NONE)
+    adaptive_log.blockReason = int(V3LearnerRejectReason.NONE)
     adaptive_log.shapingActive = bool(governor_result.reason != V3GovernorReason.NONE)
     adaptive_log.shapingReason = int(governor_result.reason)
-    adaptive_log.shapingConfidence = float(learner_update.correction.confidence)
+    adaptive_log.shapingConfidence = float(response_sample.correction.confidence)
     adaptive_log.unshapedOutput = float(-raw_output_torque)
     adaptive_log.outputCap = float(governor_result.output_cap)
     adaptive_log.modelMode = 1
-    adaptive_log.modelConfidence = float(learner_update.correction.confidence)
+    adaptive_log.modelConfidence = float(response_sample.correction.confidence)
     adaptive_log.authorityBand = 0
-    adaptive_log.authorityScale = float(learner_update.correction.response_scale)
+    adaptive_log.authorityScale = float(response_sample.correction.response_scale)
     adaptive_log.fallbackActive = False
     adaptive_log.learnedLatAccelFactor = float(self.torque_params.latAccelFactor)
     adaptive_log.learnedFriction = float(self.torque_params.friction)
     adaptive_log.learnedLatAccelOffset = float(self.torque_params.latAccelOffset)
     adaptive_log.learnedResponseDelay = float(self.lat_delay)
-    adaptive_log.residualError = float(learner_update.residual_error)
-    adaptive_log.sampleAccepted = bool(learner_update.sample_accepted)
-    adaptive_log.sampleRejectReason = int(learner_update.reject_reason)
+    adaptive_log.residualError = float(response_sample.residual_error)
+    adaptive_log.sampleAccepted = bool(response_sample.sample_accepted)
+    adaptive_log.sampleRejectReason = int(response_sample.reject_reason)
     adaptive_log.disturbanceState = 0
     adaptive_log.disturbanceReason = 0
     adaptive_log.disturbanceConfidence = 0.0
@@ -588,7 +525,7 @@ class LatControlTorque(LatControl):
     adaptive_log.delayLeadLateralAccel = float(lead_lateral_accel)
     adaptive_log.feedbackCorrection = float(feedback_correction)
     adaptive_log.trimCorrection = float(trim_correction)
-    adaptive_log.learnerResponseScale = float(learner_update.correction.response_scale)
+    adaptive_log.learnerResponseScale = float(response_sample.correction.response_scale)
     adaptive_log.governorReason = int(governor_result.reason)
     adaptive_log.actualLateralJerk = float(actual_lateral_jerk if _finite(actual_lateral_jerk) else 0.0)
 
