@@ -98,6 +98,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_moving_lead_closing_cushion_target,
   get_moving_lead_stop_approach_comfort_target,
   get_moving_lead_stop_reserve,
+  get_slower_lead_approach_target_gap,
   get_lead_transition_accel_max,
   get_lead_transition_adjusted_accel,
   get_lead_transition_cost_obstacle,
@@ -3306,6 +3307,102 @@ def test_lead_accel_match_caps_soft_decel_target():
   accel_target, _ = get_lead_accel_match_target(v_lead, target_gap, -4.0, t_follow, v_ego)
 
   assert accel_target == pytest.approx(-LEAD_ACCEL_MATCH_DECEL_CAP)
+
+
+def test_slower_lead_approach_coasts_before_normal_target_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 12.0
+  closing_speed = v_ego - v_lead
+  bounded_target_gap = get_slower_lead_approach_target_gap(v_ego, v_lead, t_follow)
+  d_rel = bounded_target_gap + closing_speed**2 / (2.0 * 0.30)
+
+  target, cost = get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow)
+
+  assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow) + long_mpc.MOVING_LEAD_CLOSING_CUSHION_GAP_EXCESS_BP[-1]
+  assert MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 0.05 <= target <= 0.0
+  assert cost > 0.0
+
+
+def test_slower_lead_approach_brakes_lightly_when_runway_to_bounded_target_is_short():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 12.0
+  closing_speed = v_ego - v_lead
+  bounded_target_gap = get_slower_lead_approach_target_gap(v_ego, v_lead, t_follow)
+  d_rel = bounded_target_gap + closing_speed**2 / (2.0 * 0.85)
+
+  target, cost = get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow)
+
+  assert d_rel > get_desired_follow_distance(v_ego, v_lead, t_follow)
+  assert -MOVING_LEAD_CLOSING_CUSHION_DECEL_MAX <= target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
+  assert cost > 0.0
+
+
+def test_slower_lead_approach_stays_off_with_large_runway_to_bounded_target():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 12.0
+  closing_speed = v_ego - v_lead
+  bounded_target_gap = get_slower_lead_approach_target_gap(v_ego, v_lead, t_follow)
+  d_rel = bounded_target_gap + closing_speed**2 / (2.0 * 0.10)
+
+  target, cost = get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_slower_lead_approach_raw_lead_coasts_until_runway_and_ttc_are_severe():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 12.0
+  closing_speed = v_ego - v_lead
+  bounded_target_gap = get_slower_lead_approach_target_gap(v_ego, v_lead, t_follow)
+  routine_gap = bounded_target_gap + closing_speed**2 / (2.0 * 0.85)
+  severe_gap = bounded_target_gap + closing_speed**2 / (2.0 * 1.60)
+
+  routine_target, routine_cost = get_moving_lead_closing_cushion_target(
+    routine_gap, v_ego, v_lead, t_follow, lead_stable=False,
+  )
+  severe_target, severe_cost = get_moving_lead_closing_cushion_target(
+    severe_gap, v_ego, v_lead, t_follow, lead_stable=False,
+  )
+
+  assert routine_target == pytest.approx(MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
+  assert routine_cost > 0.0
+  assert severe_target < MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN
+  assert severe_cost > 0.0
+
+
+def test_slower_lead_approach_comfort_is_suppressed_by_driver_override():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 22.0
+  v_lead = 12.0
+  closing_speed = v_ego - v_lead
+  bounded_target_gap = get_slower_lead_approach_target_gap(v_ego, v_lead, t_follow)
+  d_rel = bounded_target_gap + closing_speed**2 / (2.0 * 0.85)
+
+  target, cost = get_moving_lead_closing_cushion_target(
+    d_rel, v_ego, v_lead, t_follow, comfort_brake_allowed=False,
+  )
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
+
+
+def test_slower_lead_approach_fades_out_below_crawl_domain():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 4.0
+  v_lead = 2.0
+  closing_speed = v_ego - v_lead
+  bounded_target_gap = get_slower_lead_approach_target_gap(v_ego, v_lead, t_follow)
+  d_rel = bounded_target_gap + closing_speed**2 / (2.0 * 0.85)
+
+  target, cost = get_moving_lead_closing_cushion_target(d_rel, v_ego, v_lead, t_follow)
+
+  assert target == pytest.approx(0.0)
+  assert cost == pytest.approx(0.0)
 
 
 def test_moving_lead_closing_cushion_prefers_coast_before_target_gap():
