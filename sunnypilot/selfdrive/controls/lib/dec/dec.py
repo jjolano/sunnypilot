@@ -22,6 +22,24 @@ SET_MODE_TIMEOUT = 15
 ModeType = Literal['acc', 'blended']
 
 
+def has_model_stop_evidence(md) -> bool:
+  if md.action.shouldStop:
+    return True
+
+  positions = list(getattr(md.position, "x", []))
+  velocities = list(getattr(md.velocity, "x", []))
+  if len(positions) < 3 or len(velocities) != len(positions):
+    return False
+
+  endpoint_x = positions[-1]
+  for idx, (x, v) in enumerate(zip(positions, velocities, strict=False)):
+    if idx == 0 or idx == len(positions) - 1:
+      continue
+    if x > 0.0 and v <= WMACConstants.MODEL_STOP_SPEED and endpoint_x - x >= WMACConstants.MODEL_STOP_ENDPOINT_MARGIN:
+      return True
+  return False
+
+
 class SmoothKalmanFilter:
   """Enhanced Kalman filter with smoothing for stable decision making."""
 
@@ -275,6 +293,13 @@ class DynamicExperimentalController:
                                WMACConstants.SLOW_DOWN_BP,
                                WMACConstants.SLOW_DOWN_DIST)
     self._expected_distance = expected_distance
+
+    if not has_model_stop_evidence(md):
+      self._slow_down_filter.add_data(0.0)
+      urgency_filtered = self._slow_down_filter.get_value() or 0.0
+      self._has_slow_down = urgency_filtered > (WMACConstants.SLOW_DOWN_PROB * 0.8)
+      self._urgency = urgency_filtered
+      return
 
     # Calculate urgency based on trajectory shortage
     if endpoint_x < expected_distance:
