@@ -36,3 +36,21 @@ def test_extract_manual_samples_persists_radar_lead_fields(monkeypatch):
   assert samples[0].lead_v_lead == 0.1
   assert samples[0].lead_a_lead == 0.05
   assert samples[0].lead_model_prob == 0.9
+
+
+def test_extract_manual_samples_persists_model_stop_context(monkeypatch):
+  msgs = [
+    msg("selfdriveState", 0.0, active=False),
+    msg("modelV2", 0.1,
+        action=SimpleNamespace(desiredAcceleration=-0.8, shouldStop=True),
+        position=SimpleNamespace(x=[5.0, 20.0, 35.0])),
+    msg("carState", 0.2, vEgo=8.0, aEgo=-0.4, gasPressed=False, brakePressed=True),
+  ]
+  monkeypatch.setattr(profile_cli, "LogReader", lambda route, default_mode, sort_by_time: msgs)
+
+  samples = profile_cli.extract_manual_samples("route-a", ReadMode.AUTO)
+
+  assert len(samples) == 1
+  assert samples[0].model_should_stop
+  assert samples[0].model_desired_accel == -0.8
+  assert samples[0].model_stop_distance == 35.0

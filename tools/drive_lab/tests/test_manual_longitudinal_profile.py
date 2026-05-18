@@ -8,6 +8,7 @@ from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   ProfileRange,
   SmoothAssertiveEnvelope,
   build_route_profile,
+  classify_stop_tier,
   classify_style,
   lead_crawl_gap_excess,
   lead_stop_presentation_distance,
@@ -18,7 +19,8 @@ from openpilot.tools.drive_lab.manual_longitudinal_profile import (
 
 
 def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0, v_rel=0.0,
-           route="route-a", lead_v=None, lead_a=0.0, model_prob=1.0):
+           route="route-a", lead_v=None, lead_a=0.0, model_prob=1.0,
+           model_should_stop=False, model_desired_accel=None, model_stop_distance=None):
   return ManualSample(
     route=route,
     t=t,
@@ -33,6 +35,9 @@ def sample(t, v, a, active=False, gas=False, brake=False, lead=False, d_rel=0.0,
     lead_v_lead=lead_v,
     lead_a_lead=lead_a,
     lead_model_prob=model_prob,
+    model_should_stop=model_should_stop,
+    model_desired_accel=model_desired_accel,
+    model_stop_distance=model_stop_distance,
   )
 
 
@@ -133,6 +138,13 @@ def test_route_profile_ignores_stopped_samples_for_manual_moving_count():
 
   assert not profile.include
   assert profile.manual_moving_samples == 6
+
+
+def test_classify_stop_tier_uses_required_decel_thresholds():
+  assert classify_stop_tier(None) == "ambiguous"
+  assert classify_stop_tier(0.5) == "routine"
+  assert classify_stop_tier(1.0) == "ambiguous"
+  assert classify_stop_tier(1.5) == "urgent"
 
 
 def test_lead_crawl_gap_excess_uses_stop_presentation_distance():
@@ -329,6 +341,51 @@ def test_manual_style_summary_stop_mean_ignores_stopped_brake_hold_samples():
   assert summary.stop_peak_decel.low == summary.stop_peak_decel.high == -0.6
 
 
+def test_manual_style_summary_separates_stop_approach_tiers_by_runway():
+  samples = [
+    sample(0.0, 8.0, -0.4, brake=True, model_stop_distance=60.0),
+    sample(1.0, 4.0, -0.4, brake=True, model_stop_distance=50.0),
+    sample(2.0, 0.5, -0.1, brake=False, model_stop_distance=45.0),
+    sample(10.0, 10.0, -1.5, brake=True, model_stop_distance=20.0),
+    sample(11.0, 5.0, -1.3, brake=True, model_stop_distance=10.0),
+    sample(12.0, 0.5, -0.2, brake=False, model_stop_distance=5.0),
+    sample(20.0, 8.0, -0.8, brake=True),
+    sample(21.0, 4.0, -0.7, brake=True),
+    sample(22.0, 0.5, -0.1, brake=False),
+  ]
+
+  summary = summarize_manual_style(samples)
+  bins = {stop_bin.label: stop_bin for stop_bin in summary.stop_approach_bins}
+
+  assert bins["routine"].count == 1
+  assert bins["routine"].required_decel.low == pytest.approx(8.0 ** 2 / (2.0 * 60.0))
+  assert bins["urgent"].count == 1
+  assert bins["urgent"].required_decel.low == pytest.approx(10.0 ** 2 / (2.0 * 20.0))
+  assert bins["ambiguous"].count == 1
+
+
+def test_manual_style_classification_uses_routine_stop_when_urgent_stop_is_present():
+  samples = [
+    sample(0.0, 0.5, 0.8, gas=True, model_stop_distance=80.0),
+    sample(1.1, 3.0, 0.8, gas=True, model_stop_distance=80.0),
+    sample(2.2, 6.0, 0.2, gas=False, model_stop_distance=80.0),
+    sample(10.0, 10.0, -0.6, brake=True, model_stop_distance=80.0),
+    sample(11.1, 5.0, -0.5, brake=True, model_stop_distance=70.0),
+    sample(12.2, 0.5, -0.2, brake=False, model_stop_distance=60.0),
+    sample(30.0, 10.0, -2.0, brake=True, model_stop_distance=20.0),
+    sample(31.1, 5.0, -1.8, brake=True, model_stop_distance=10.0),
+    sample(32.2, 0.5, -0.2, brake=False, model_stop_distance=5.0),
+  ]
+  samples += [sample(40.0 + i, 12.0, 0.8, gas=True) for i in range(8)]
+  samples += [sample(50.0 + i, 12.0, -0.7, brake=True) for i in range(8)]
+  samples += [sample(60.0 + i, 12.0, -0.3, gas=False, brake=False) for i in range(20)]
+
+  summary = summarize_manual_style(samples)
+
+  assert {stop_bin.label for stop_bin in summary.stop_approach_bins} == {"routine", "urgent"}
+  assert summary.style == "smooth_assertive"
+
+
 def test_manual_style_summary_coast_outlier_does_not_dominate_classification():
   samples = [
     sample(0.0, 0.5, 0.8, gas=True, lead=True, d_rel=4.0),
@@ -429,6 +486,7 @@ def test_render_manual_style_summary_includes_core_values():
   assert "coast accel:" in text
   assert "Speed bins:" in text
   assert "Following bins:" in text
+  assert "Stop approach tiers:" in text
 
 
 def test_render_manual_style_summary_includes_lead_crawl_sections():

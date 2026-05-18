@@ -56,6 +56,9 @@ def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample
   lead_v_lead = None
   lead_a_lead = None
   lead_model_prob = None
+  model_should_stop = False
+  model_desired_accel = None
+  model_stop_distance = None
   samples: list[ManualSample] = []
   for msg in msgs:
     typ = msg_type(msg)
@@ -70,6 +73,10 @@ def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample
       lead_v_lead = _finite_or_none(safe_get(lead, "vLeadK"))
       lead_a_lead = _finite_or_none(safe_get(lead, "aLeadK"))
       lead_model_prob = _finite_or_none(safe_get(lead, "modelProb"))
+    elif typ == "modelV2":
+      model_should_stop = bool(safe_get(payload, "action.shouldStop", False))
+      model_desired_accel = _finite_or_none(safe_get(payload, "action.desiredAcceleration"))
+      model_stop_distance = _last_finite_or_none(safe_get(payload, "position.x"))
     elif typ == "carState":
       v_ego = _finite_or_none(safe_get(payload, "vEgo"))
       a_ego = _finite_or_none(safe_get(payload, "aEgo"))
@@ -89,6 +96,9 @@ def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample
         lead_v_lead=lead_v_lead,
         lead_a_lead=lead_a_lead,
         lead_model_prob=lead_model_prob,
+        model_should_stop=model_should_stop,
+        model_desired_accel=model_desired_accel,
+        model_stop_distance=model_stop_distance,
       ))
   return samples
 
@@ -96,6 +106,20 @@ def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample
 def _finite_or_none(value: Any) -> float | None:
   if isinstance(value, int | float) and isfinite(float(value)):
     return float(value)
+  return None
+
+
+def _last_finite_or_none(values: Any) -> float | None:
+  if values is None:
+    return None
+  try:
+    iterable = list(values)
+  except TypeError:
+    return _finite_or_none(values)
+  for value in reversed(iterable):
+    finite_value = _finite_or_none(value)
+    if finite_value is not None:
+      return finite_value
   return None
 
 
