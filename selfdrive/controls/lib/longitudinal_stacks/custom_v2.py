@@ -34,6 +34,9 @@ EXCESS_GAP_ACCEL_MIN = 0.4
 EXCESS_GAP_ACCEL_MAX = 1.0
 EXCESS_GAP_CLOSING_TAPER = 0.3
 EXCESS_GAP_CLOSING_BLOCK = 0.7
+EXCESS_GAP_FAST_CLOSING_MID = 3.0
+EXCESS_GAP_FAST_CLOSING_ZERO = 6.0
+EXCESS_GAP_FAST_CLOSING_MID_CAP = 0.15
 NO_LEAD_STOP_CLEAR_DISTANCE = 20.0
 NO_LEAD_STOP_CLEAR_ACCEL_MIN = -0.5
 MAP_ONLY_CAUTION_ACCEL_MIN = -0.3
@@ -164,6 +167,18 @@ def excess_gap_accel_cap(scene: CustomV2Scene) -> float | None:
       1.0,
     )
     cap = EXCESS_GAP_ACCEL_MIN + taper * (cap - EXCESS_GAP_ACCEL_MIN)
+  if closing_speed > EXCESS_GAP_CLOSING_BLOCK:
+    if closing_speed <= EXCESS_GAP_FAST_CLOSING_MID:
+      closing_cap = _interp(
+        closing_speed, EXCESS_GAP_CLOSING_BLOCK, EXCESS_GAP_FAST_CLOSING_MID,
+        EXCESS_GAP_ACCEL_MIN, EXCESS_GAP_FAST_CLOSING_MID_CAP,
+      )
+    else:
+      closing_cap = _interp(
+        closing_speed, EXCESS_GAP_FAST_CLOSING_MID, EXCESS_GAP_FAST_CLOSING_ZERO,
+        EXCESS_GAP_FAST_CLOSING_MID_CAP, 0.0,
+      )
+    cap = min(cap, closing_cap)
   return cap
 
 
@@ -211,7 +226,7 @@ class CustomLongitudinalStackV2:
     if not blocked and not stop_active:
       a_target, selected_intent, selected_reason = self._apply_progress_floors(
         a_target, selected_intent, selected_reason, scene, accel_limits, rejected,
-        allow_lead_progress=False,
+        allow_lead_progress=not scene.stop_threat,
       )
     elif blocked:
       rejected.append(("launch", "driver_or_force_blocked"))

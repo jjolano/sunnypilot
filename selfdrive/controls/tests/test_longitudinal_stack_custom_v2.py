@@ -86,6 +86,37 @@ def test_direct_lead_scene_does_not_create_lead_progress():
   assert output.debug["custom_v2_selected_reason"] == "sunnypilot_current_seed"
 
 
+def test_excess_gap_progress_softens_far_fast_lead_approach_braking():
+  scene = CustomV2Scene(
+    v_ego=15.5,
+    v_cruise=16.7,
+    has_lead=True,
+    lead_v_rel=-6.5,
+    lead_gap_excess=40.0,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(-0.3, has_lead=True), scene, accel_limits=(-2.0, 2.0))
+
+  assert -0.05 <= output.a_target <= 0.05
+  assert output.debug["custom_v2_selected_intent"] == "lead_follow"
+  assert output.debug["custom_v2_selected_reason"] == "excess_gap_progress"
+
+
+def test_excess_gap_progress_remains_blocked_for_close_closing_lead():
+  scene = CustomV2Scene(
+    v_ego=15.0,
+    v_cruise=17.0,
+    has_lead=True,
+    lead_v_rel=-1.0,
+    lead_gap_excess=4.0,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(-0.3, has_lead=True), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == -0.3
+  assert "closing_speed_guard" in output.debug["custom_v2_rejected_reasons"]
+
+
 def test_planner_seed_classification_preserves_seed_trajectory():
   speeds = tuple(float(idx) for idx in range(CONTROL_N))
   accels = tuple(-0.7 + 0.01 * idx for idx in range(CONTROL_N))
