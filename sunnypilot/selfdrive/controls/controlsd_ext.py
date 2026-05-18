@@ -18,7 +18,7 @@ from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2, LatControlTorqueV21
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
   TorqueControllerDefinition,
@@ -31,6 +31,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
 TORQUE_CONTROLLER_REGISTRY = TorqueControllerRegistry((
   TorqueControllerDefinition(0.0, LatControlTorqueV0),
   TorqueControllerDefinition(2.0, LatControlTorqueV2),
+  TorqueControllerDefinition(2.1, LatControlTorqueV21),
   TorqueControllerDefinition(3.0, LatControlTorqueV3),
 ))
 
