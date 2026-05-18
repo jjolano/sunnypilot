@@ -38,6 +38,8 @@ LOW_SPEED_UNTRUSTED_CURVATURE_STEP = 0.0025
 LOW_SPEED_CURVE_RETENTION_FRAMES = 12
 LOW_SPEED_CURVE_RETENTION_MIN_CURVATURE = 0.008
 HARD_INVALID_RECOVERY_LAT_JERK = 2.0
+LOW_SPEED_CONFIRMED_TURN_MIN_LAT_ACCEL = 0.05
+LOW_SPEED_CONFIRMED_TURN_MAX_LAT_ACCEL_DELTA = 0.75
 SMOOTHED_CURVATURE_MIN_SPEED = 5.0
 SMOOTHED_CURVATURE_MIN_SAMPLES = 5
 SMOOTHED_CURVATURE_SPEED_BP = [5.0, 15.0, 30.0]
@@ -186,6 +188,13 @@ class ModelPathProcessor:
     if lane_quality < quality:
       quality = lane_quality
       reason = "low_lane_confidence"
+
+    if reason == "low_lane_confidence" and quality < LOW_QUALITY_BLEND_THRESHOLD and self._low_speed_measured_turn_confirms_curvature(
+      inputs,
+      desired_curvature,
+      path_disagreement,
+    ):
+      quality = LOW_QUALITY_BLEND_THRESHOLD
 
     if math.isfinite(inputs.frame_drop_perc) and inputs.frame_drop_perc > HIGH_FRAME_DROP_PERC:
       quality = min(quality, SOFT_GATE_HOLD_QUALITY)
@@ -437,6 +446,33 @@ class ModelPathProcessor:
   @staticmethod
   def _low_speed_curve_retention_active(v_ego: float) -> bool:
     return math.isfinite(v_ego) and v_ego < LOW_SPEED_SOFT_GATE_SPEED
+
+  @classmethod
+  def _low_speed_measured_turn_confirms_curvature(
+    cls,
+    inputs: ModelPathProcessorInputs,
+    desired_curvature: float,
+    path_disagreement: float | None,
+  ) -> bool:
+    if not cls._low_speed_curve_retention_active(inputs.v_ego):
+      return False
+    if not math.isfinite(desired_curvature) or not math.isfinite(inputs.measured_curvature):
+      return False
+    if desired_curvature * inputs.measured_curvature <= 0.0:
+      return False
+    if min(abs(desired_curvature), abs(inputs.measured_curvature)) < TURN_INTENT_MIN_CURVATURE:
+      return False
+    if inputs.turn_curvature_sign != 0 and desired_curvature * inputs.turn_curvature_sign <= 0.0:
+      return False
+    if path_disagreement is not None and path_disagreement > TURN_INTENT_MAX_PATH_CURVATURE_DISAGREEMENT:
+      return False
+
+    speed_sq = max(inputs.v_ego, 1.0) ** 2
+    desired_lat_accel = abs(desired_curvature) * speed_sq
+    measured_lat_accel = abs(inputs.measured_curvature) * speed_sq
+    if min(desired_lat_accel, measured_lat_accel) < LOW_SPEED_CONFIRMED_TURN_MIN_LAT_ACCEL:
+      return False
+    return abs(desired_curvature - inputs.measured_curvature) * speed_sq <= LOW_SPEED_CONFIRMED_TURN_MAX_LAT_ACCEL_DELTA
 
   @staticmethod
   def _curvature_is_plausible_for_retention(curvature: float) -> bool:
