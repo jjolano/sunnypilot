@@ -22,6 +22,8 @@ class LongitudinalStackOutput:
   jerks: tuple[float, ...]
   fcw: bool = False
   debug: Mapping[str, Any] = field(default_factory=dict)
+  seed_intent: str = ""
+  seed_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,10 @@ def validate_stack_output(output: object, accel_limits: tuple[float | None, floa
 
   if not isinstance(output.debug, Mapping):
     return StackOutputValidation(False, "invalid_debug")
+  if not isinstance(output.seed_intent, str):
+    return StackOutputValidation(False, "invalid_seed_intent")
+  if not isinstance(output.seed_reason, str):
+    return StackOutputValidation(False, "invalid_seed_reason")
 
   if not _finite_number(output.a_target):
     return StackOutputValidation(False, "non_finite_a_target")

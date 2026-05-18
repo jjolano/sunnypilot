@@ -9,6 +9,40 @@ PLANNER_SEED_CAP = "cap"
 PLANNER_SEED_FLOOR = "floor"
 POST_CAP_FLOOR_GROUPS = {"lead_stop_approach_slew", "low_speed_pullaway_accel_step"}
 STOP_INTENT_RELEASE_GROUPS = {"creep_pullaway_launch"}
+PLANNER_SEED_INTENT_DRIVER_CRUISE = "driver_cruise"
+PLANNER_SEED_INTENT_LEAD_FOLLOW = "lead_follow"
+PLANNER_SEED_INTENT_STOP_APPROACH = "stop_approach"
+PLANNER_SEED_INTENT_LAUNCH = "launch"
+PLANNER_SEED_INTENT_SAFETY_CAP = "safety_cap"
+PLANNER_SEED_MPC_REASON = "planner_seed_mpc"
+
+STOP_APPROACH_SEED_REASONS = {
+  "engage_model_stop_bootstrap",
+  "no_lead_close_stop_settle",
+  "no_lead_model_runway_comfort",
+  "no_lead_model_stop_approach",
+  "low_speed_model_runway_positive_cap",
+}
+LEAD_FOLLOW_SEED_REASONS = {
+  "stopped_lead_stop_gap_guard",
+  "creep_to_stop_gap",
+  "creep_to_stop_gap_accel_cap",
+  "stopped_lead_gap_fill",
+  "stopped_lead_gap_fill_accel_cap",
+  "lead_crawl_accel_cap",
+  "stopped_lead_creep_hold",
+  "moving_lead_stop_gap_guard",
+  "lead_accel_recovery",
+  "lead_stop_approach_slew",
+  "lead_loss_e2e_guard",
+}
+LAUNCH_SEED_REASONS = {
+  "creep_pullaway_launch",
+  "creep_pullaway_launch_accel_cap",
+  "low_speed_pullaway_accel_step_floor",
+  "low_speed_pullaway_accel_step_cap",
+}
+DRIVER_CRUISE_SEED_REASONS = {"plain_cruise_overspeed_coast"}
 
 
 @dataclass(frozen=True)
@@ -17,6 +51,22 @@ class PlannerSeedCandidate:
   output: LongitudinalStackOutput
   selection: str = PLANNER_SEED_CAP
   group: str = ""
+  intent: str = ""
+  reason: str = ""
+
+  def __post_init__(self) -> None:
+    reason = self.reason or self.output.seed_reason
+    intent = self.intent or self.output.seed_intent
+    if reason and not intent:
+      intent = planner_seed_intent_for_reason(reason, self.output.has_lead, self.output.should_stop, self.output.source)
+    object.__setattr__(self, "reason", str(reason or ""))
+    object.__setattr__(self, "intent", str(intent or ""))
+    if (intent and self.output.seed_intent != intent) or (reason and self.output.seed_reason != reason):
+      object.__setattr__(
+        self,
+        "output",
+        replace(self.output, seed_intent=str(intent or ""), seed_reason=str(reason or "")),
+      )
 
 
 def select_planner_seed_candidate(candidates: Iterable[PlannerSeedCandidate]) -> PlannerSeedCandidate:
@@ -36,6 +86,26 @@ def select_planner_seed_candidate(candidates: Iterable[PlannerSeedCandidate]) ->
   else:
     selected = baseline
   return _merge_stop_intent(selected, candidate_list[1:])
+
+
+def planner_seed_intent_for_reason(reason: str, has_lead: bool = False, should_stop: bool = False,
+                                   source: object = "") -> str:
+  reason = str(reason or "")
+  if reason == PLANNER_SEED_MPC_REASON:
+    if has_lead or str(source) in {"lead0", "lead1"}:
+      return PLANNER_SEED_INTENT_LEAD_FOLLOW
+    if should_stop:
+      return PLANNER_SEED_INTENT_STOP_APPROACH
+    return PLANNER_SEED_INTENT_DRIVER_CRUISE
+  if reason in STOP_APPROACH_SEED_REASONS:
+    return PLANNER_SEED_INTENT_STOP_APPROACH
+  if reason in LEAD_FOLLOW_SEED_REASONS:
+    return PLANNER_SEED_INTENT_LEAD_FOLLOW
+  if reason in LAUNCH_SEED_REASONS:
+    return PLANNER_SEED_INTENT_LAUNCH
+  if reason in DRIVER_CRUISE_SEED_REASONS:
+    return PLANNER_SEED_INTENT_DRIVER_CRUISE
+  return PLANNER_SEED_INTENT_DRIVER_CRUISE
 
 
 def _select_floor_candidate(baseline: PlannerSeedCandidate,
@@ -97,7 +167,15 @@ def _merge_stop_intent(selected: PlannerSeedCandidate, candidates: Iterable[Plan
   debug.update(stop_candidate.output.debug)
   return PlannerSeedCandidate(
     stop_candidate.name if selected.name == "sunnypilot-current" else selected.name,
-    replace(selected.output, should_stop=True, debug=debug),
+    replace(
+      selected.output,
+      should_stop=True,
+      debug=debug,
+      seed_intent=selected.intent or stop_candidate.intent,
+      seed_reason=selected.reason or stop_candidate.reason,
+    ),
     selection=selected.selection,
     group=selected.group,
+    intent=selected.intent or stop_candidate.intent,
+    reason=selected.reason or stop_candidate.reason,
   )

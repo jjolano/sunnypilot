@@ -35,6 +35,125 @@ class StackResolution:
   fallback_reason: str = ""
 
 
+@dataclass(frozen=True)
+class StackDefinition:
+  name: str
+  label: str
+  family: str
+  version: str = ""
+  implemented: bool = True
+
+
+class StackCatalog:
+  def __init__(self, manifest: dict[str, Any]):
+    self.manifest = manifest
+
+  @property
+  def default_stack(self) -> str:
+    return str(self.manifest.get("defaultStack") or DEFAULT_STACK)
+
+  @property
+  def custom_recommended_fallback(self) -> str:
+    return str(self.manifest.get("customRecommendedFallback") or self.default_stack)
+
+  @property
+  def stack_names(self) -> tuple[str, ...]:
+    return tuple(str(stack) for stack in self.manifest.get("stacks", {}))
+
+  def stack_definition(self, stack: str) -> StackDefinition:
+    info = self.manifest.get("stacks", {}).get(stack, {})
+    return StackDefinition(
+      name=str(stack or ""),
+      label=str(info.get("label") or stack or ""),
+      family=str(info.get("family") or ""),
+      version=str(info.get("version") or ""),
+      implemented=bool(info.get("implemented", True)),
+    )
+
+  def is_known(self, stack: str) -> bool:
+    return stack in self.manifest.get("stacks", {})
+
+  def available_stacks(self, capabilities: PlatformCapabilities) -> tuple[str, ...]:
+    available: list[str] = []
+    for stack in self.stack_names:
+      definition = self.stack_definition(stack)
+      if not definition.implemented:
+        continue
+      rule = self.manifest.get("availability", {}).get(stack, {})
+      if _availability_rule_matches(rule, capabilities):
+        available.append(stack)
+    return tuple(available)
+
+  def custom_recommended_stack(self, capabilities: PlatformCapabilities) -> str:
+    recommendations = self.manifest.get("customRecommendations", {})
+    fingerprints = recommendations.get("fingerprints", {})
+    fingerprint_keys = (
+      f"{capabilities.brand}:{capabilities.car_fingerprint}",
+      capabilities.car_fingerprint,
+    )
+    for key in fingerprint_keys:
+      if key and key in fingerprints:
+        return str(fingerprints[key] or "")
+
+    brands = recommendations.get("brands", {})
+    if capabilities.brand and capabilities.brand in brands:
+      return str(brands[capabilities.brand] or "")
+    return str(recommendations.get("default", "") or "")
+
+  def unavailable_reason(self, stack: str) -> str:
+    if not self.stack_definition(stack).implemented:
+      return "unimplemented_stack"
+    return "unavailable_stack"
+
+  def resolve(self, requested_stack: object, capabilities: PlatformCapabilities) -> StackResolution:
+    requested = normalize_stack_value(requested_stack, self.default_stack)
+    available_stacks = self.available_stacks(capabilities)
+
+    if requested == CUSTOM_RECOMMENDED:
+      recommended = self.custom_recommended_stack(capabilities)
+      if recommended and recommended in available_stacks:
+        return StackResolution(
+          requested_stack=requested,
+          resolved_stack=recommended,
+          available_stacks=available_stacks,
+          recommended_stack=recommended,
+          custom_version=self.stack_definition(recommended).version,
+        )
+      fallback = self.custom_recommended_fallback
+      return StackResolution(
+        requested_stack=requested,
+        resolved_stack=fallback,
+        available_stacks=available_stacks,
+        recommended_stack="",
+        custom_version=self.stack_definition(fallback).version,
+        fallback_reason="custom_recommended_unresolved",
+      )
+
+    if not self.is_known(requested):
+      return StackResolution(
+        requested_stack=requested,
+        resolved_stack=self.default_stack,
+        available_stacks=available_stacks,
+        fallback_reason="unknown_stack",
+      )
+
+    if requested not in available_stacks:
+      return StackResolution(
+        requested_stack=requested,
+        resolved_stack=self.default_stack,
+        available_stacks=available_stacks,
+        custom_version=self.stack_definition(self.default_stack).version,
+        fallback_reason=self.unavailable_reason(requested),
+      )
+
+    return StackResolution(
+      requested_stack=requested,
+      resolved_stack=requested,
+      available_stacks=available_stacks,
+      custom_version=self.stack_definition(requested).version,
+    )
+
+
 def load_stack_manifest(path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
   with open(path, encoding="utf-8") as f:
     return json.load(f)
@@ -62,16 +181,7 @@ def platform_capabilities_from_car_params(CP: object | None, CP_SP: object | Non
 
 
 def get_available_stacks(manifest: dict[str, Any], capabilities: PlatformCapabilities) -> tuple[str, ...]:
-  stacks = manifest.get("stacks", {})
-  availability = manifest.get("availability", {})
-  available: list[str] = []
-  for stack, info in stacks.items():
-    if info.get("implemented", True) is False:
-      continue
-    rule = availability.get(stack, {})
-    if _availability_rule_matches(rule, capabilities):
-      available.append(stack)
-  return tuple(available)
+  return StackCatalog(manifest).available_stacks(capabilities)
 
 
 def is_custom_stack(stack: str) -> bool:
@@ -84,55 +194,21 @@ def resolve_longitudinal_stack(
     CP_SP: object | None = None,
     manifest: dict[str, Any] | None = None) -> StackResolution:
   manifest = manifest if manifest is not None else load_stack_manifest()
-  default_stack = str(manifest.get("defaultStack") or DEFAULT_STACK)
+  catalog = StackCatalog(manifest)
   capabilities = platform_capabilities_from_car_params(CP, CP_SP)
-  requested = normalize_stack_value(requested_stack, default_stack)
-  available_stacks = get_available_stacks(manifest, capabilities)
-  stack_defs = manifest.get("stacks", {})
+  return catalog.resolve(requested_stack, capabilities)
 
-  if requested == CUSTOM_RECOMMENDED:
-    recommended = _custom_recommended_stack(manifest, capabilities)
-    if recommended and recommended in available_stacks:
-      return StackResolution(
-        requested_stack=requested,
-        resolved_stack=recommended,
-        available_stacks=available_stacks,
-        recommended_stack=recommended,
-        custom_version=_custom_version(stack_defs, recommended),
-      )
-    fallback = str(manifest.get("customRecommendedFallback") or default_stack)
-    return StackResolution(
-      requested_stack=requested,
-      resolved_stack=fallback,
-      available_stacks=available_stacks,
-      recommended_stack="",
-      custom_version=_custom_version(stack_defs, fallback),
-      fallback_reason="custom_recommended_unresolved",
-    )
 
-  if requested not in stack_defs:
-    return StackResolution(
-      requested_stack=requested,
-      resolved_stack=default_stack,
-      available_stacks=available_stacks,
-      fallback_reason="unknown_stack",
-    )
+def stack_id_for_name(name: str):
+  from cereal import custom
 
-  if requested not in available_stacks:
-    return StackResolution(
-      requested_stack=requested,
-      resolved_stack=default_stack,
-      available_stacks=available_stacks,
-      custom_version=_custom_version(stack_defs, default_stack),
-      fallback_reason=_unavailable_reason(stack_defs, requested),
-    )
-
-  return StackResolution(
-    requested_stack=requested,
-    resolved_stack=requested,
-    available_stacks=available_stacks,
-    custom_version=_custom_version(stack_defs, requested),
-  )
+  StackId = custom.LongitudinalPlanSP.Stack.StackId
+  stack_id_by_name = {
+    SUNNYPILOT_CURRENT: StackId.sunnypilotCurrent,
+    CUSTOM_RECOMMENDED: StackId.customRecommended,
+    CUSTOM_V2: StackId.customV2,
+  }
+  return stack_id_by_name.get(str(name or ""), StackId.unknown)
 
 
 def _get_attr(obj: object | None, name: str, default: object) -> object:
@@ -175,33 +251,3 @@ def _availability_rule_matches(rule: dict[str, Any], capabilities: PlatformCapab
     return False
 
   return True
-
-
-def _custom_recommended_stack(manifest: dict[str, Any], capabilities: PlatformCapabilities) -> str:
-  recommendations = manifest.get("customRecommendations", {})
-  fingerprints = recommendations.get("fingerprints", {})
-  fingerprint_keys = (
-    f"{capabilities.brand}:{capabilities.car_fingerprint}",
-    capabilities.car_fingerprint,
-  )
-  for key in fingerprint_keys:
-    if key and key in fingerprints:
-      return str(fingerprints[key] or "")
-
-  brands = recommendations.get("brands", {})
-  if capabilities.brand and capabilities.brand in brands:
-    return str(brands[capabilities.brand] or "")
-  return str(recommendations.get("default", "") or "")
-
-
-def _custom_version(stack_defs: dict[str, Any], stack: str) -> str:
-  info = stack_defs.get(stack, {})
-  version = info.get("version", "")
-  return str(version or "")
-
-
-def _unavailable_reason(stack_defs: dict[str, Any], stack: str) -> str:
-  info = stack_defs.get(stack, {})
-  if info.get("implemented", True) is False:
-    return "unimplemented_stack"
-  return "unavailable_stack"

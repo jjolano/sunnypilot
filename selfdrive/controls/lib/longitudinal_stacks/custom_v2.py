@@ -7,6 +7,12 @@ from typing import Any
 
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
+  PLANNER_SEED_INTENT_DRIVER_CRUISE,
+  PLANNER_SEED_INTENT_SAFETY_CAP,
+  PLANNER_SEED_MPC_REASON,
+  planner_seed_intent_for_reason,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2
 
 MPH_TO_MS = 0.44704
@@ -52,35 +58,6 @@ SYNTH_TRAJECTORY_DT = 0.2
 POSITIVE_PROGRESS_JERK = 4.0
 NORMAL_NEGATIVE_RETREAT_JERK = -5.0
 A_TARGET_EPS = 1e-4
-
-STOP_APPROACH_SEED_REASONS = {
-  "engage_model_stop_bootstrap",
-  "no_lead_close_stop_settle",
-  "no_lead_model_runway_comfort",
-  "no_lead_model_stop_approach",
-  "low_speed_model_runway_positive_cap",
-}
-LEAD_FOLLOW_SEED_REASONS = {
-  "stopped_lead_stop_gap_guard",
-  "creep_to_stop_gap",
-  "creep_to_stop_gap_accel_cap",
-  "stopped_lead_gap_fill",
-  "stopped_lead_gap_fill_accel_cap",
-  "lead_crawl_accel_cap",
-  "stopped_lead_creep_hold",
-  "moving_lead_stop_gap_guard",
-  "lead_accel_recovery",
-  "lead_stop_approach_slew",
-  "lead_loss_e2e_guard",
-}
-LAUNCH_SEED_REASONS = {
-  "creep_pullaway_launch",
-  "creep_pullaway_launch_accel_cap",
-  "low_speed_pullaway_accel_step_floor",
-  "low_speed_pullaway_accel_step_cap",
-}
-DRIVER_CRUISE_SEED_REASONS = {"plain_cruise_overspeed_coast"}
-
 
 class CustomV2SceneValidationError(ValueError):
   def __init__(self, reason: str):
@@ -403,26 +380,24 @@ def _clip_to_limits(value: float, accel_limits: tuple[float | None, float | None
 
 
 def _classify_seed(output: LongitudinalStackOutput, scene: CustomV2Scene) -> tuple[str, str]:
+  seed_intent = str(output.seed_intent or "")
+  seed_reason = str(output.seed_reason or "")
+  if seed_intent:
+    if seed_reason == PLANNER_SEED_MPC_REASON and scene.force_slow_decel:
+      return PLANNER_SEED_INTENT_SAFETY_CAP, seed_reason
+    return seed_intent, seed_reason or seed_intent
+
   reason = str(output.debug.get("planner_seed_candidate_reason", ""))
   if not reason:
-    return "driver_cruise", "sunnypilot_current_seed"
-  if reason == "planner_seed_mpc":
-    if scene.force_slow_decel:
-      return "safety_cap", reason
-    if output.has_lead or scene.has_lead or str(output.source) in {"lead0", "lead1"}:
-      return "lead_follow", reason
-    if output.should_stop:
-      return "stop_approach", reason
-    return "driver_cruise", reason
-  if reason in STOP_APPROACH_SEED_REASONS:
-    return "stop_approach", reason
-  if reason in LEAD_FOLLOW_SEED_REASONS:
-    return "lead_follow", reason
-  if reason in LAUNCH_SEED_REASONS:
-    return "launch", reason
-  if reason in DRIVER_CRUISE_SEED_REASONS:
-    return "driver_cruise", reason
-  return "driver_cruise", reason
+    return PLANNER_SEED_INTENT_DRIVER_CRUISE, "sunnypilot_current_seed"
+  if reason == PLANNER_SEED_MPC_REASON and scene.force_slow_decel:
+    return PLANNER_SEED_INTENT_SAFETY_CAP, reason
+  return planner_seed_intent_for_reason(
+    reason,
+    output.has_lead or scene.has_lead,
+    output.should_stop,
+    output.source,
+  ), reason
 
 
 def _preserve_seed_trajectory(output: LongitudinalStackOutput, decision: CustomV2Decision) -> bool:

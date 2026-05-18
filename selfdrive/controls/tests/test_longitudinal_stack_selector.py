@@ -4,11 +4,15 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_RECOMMENDED,
   CUSTOM_V2,
   DEFAULT_STACK,
+  PlatformCapabilities,
   SUNNYPILOT_CURRENT,
+  StackCatalog,
   load_stack_manifest,
   normalize_stack_value,
   resolve_longitudinal_stack,
+  stack_id_for_name,
 )
+from cereal import custom
 
 
 def make_cp(**kwargs):
@@ -63,7 +67,7 @@ def test_custom_recommended_falls_back_when_custom_unavailable():
   assert resolution.fallback_reason == "custom_recommended_unresolved"
 
 
-def test_custom_recommended_resolves_per_platform_manifest():
+def test_custom_recommended_can_use_manifest_platform_override():
   manifest = load_stack_manifest()
   manifest["customRecommendations"] = {
     "default": "",
@@ -77,6 +81,30 @@ def test_custom_recommended_resolves_per_platform_manifest():
   assert resolution.recommended_stack == CUSTOM_V2
   assert resolution.custom_version == "2.0"
   assert resolution.fallback_reason == ""
+
+
+def test_stack_catalog_owns_labels_availability_and_versions():
+  catalog = StackCatalog(load_stack_manifest())
+
+  assert catalog.default_stack == SUNNYPILOT_CURRENT
+  assert catalog.stack_names == (SUNNYPILOT_CURRENT, CUSTOM_RECOMMENDED, CUSTOM_V2)
+  assert catalog.stack_definition(CUSTOM_V2).label == "Custom v2.0"
+  assert catalog.stack_definition(CUSTOM_V2).family == "custom"
+  assert catalog.stack_definition(CUSTOM_V2).version == "2.0"
+  assert catalog.available_stacks(PlatformCapabilities(alpha_longitudinal_available=True)) == (
+    SUNNYPILOT_CURRENT,
+    CUSTOM_RECOMMENDED,
+    CUSTOM_V2,
+  )
+
+
+def test_stack_id_mapping_is_centralized_with_catalog():
+  StackId = custom.LongitudinalPlanSP.Stack.StackId
+
+  assert stack_id_for_name(SUNNYPILOT_CURRENT) == StackId.sunnypilotCurrent
+  assert stack_id_for_name(CUSTOM_RECOMMENDED) == StackId.customRecommended
+  assert stack_id_for_name(CUSTOM_V2) == StackId.customV2
+  assert stack_id_for_name("unknown") == StackId.unknown
 
 
 def test_literal_available_custom_v2_can_be_forced_without_promoting_recommended():

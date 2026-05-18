@@ -23,12 +23,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import Custo
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput, validate_stack_output
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_custom_longitudinal_stack
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
-  CUSTOM_RECOMMENDED,
   CUSTOM_V2,
   SUNNYPILOT_CURRENT,
   StackResolution,
   is_custom_stack,
   resolve_longitudinal_stack,
+  stack_id_for_name,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
@@ -57,13 +57,6 @@ LEAD_SPEEDUP_GUARD_CLOSING_V_REL = -0.2  # m/s, ignore noise around matched spee
 LEAD_SPEEDUP_GUARD_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating into the lead.
 LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL = 1.6
 SOURCE_SELECTION_HYSTERESIS_V = 0.25
-STACK_ID_BY_NAME = {
-  SUNNYPILOT_CURRENT: StackId.sunnypilotCurrent,
-  CUSTOM_RECOMMENDED: StackId.customRecommended,
-  CUSTOM_V2: StackId.customV2,
-}
-
-
 def _select_lower_target(selected_source, selected_v_target, selected_a_target, candidate_source, candidate):
   candidate_v_target, candidate_a_target = candidate
   if candidate_v_target < selected_v_target:
@@ -103,10 +96,6 @@ def publish_decision_layer_telemetry(longitudinalPlanSP, telemetry: Longitudinal
   decisionLayer.rawShouldStop = bool(telemetry.raw_should_stop)
   decisionLayer.appliedShouldStop = bool(telemetry.applied_should_stop)
   decisionLayer.legacyShouldStop = bool(telemetry.legacy_should_stop)
-
-
-def stack_id_for_name(name: str) -> custom.LongitudinalPlanSP.Stack.StackId:
-  return STACK_ID_BY_NAME.get(str(name or ""), StackId.unknown)
 
 
 def custom_v2_seed_output(planner: object, sunnypilot_output: LongitudinalStackOutput) -> LongitudinalStackOutput:

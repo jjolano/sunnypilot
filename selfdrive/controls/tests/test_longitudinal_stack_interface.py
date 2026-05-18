@@ -50,6 +50,11 @@ def test_missing_source_and_invalid_debug_fail_contract():
   assert_invalid(make_output(debug=[]), "invalid_debug")
 
 
+def test_invalid_seed_semantics_fail_contract():
+  assert_invalid(make_output(seed_intent=object()), "invalid_seed_intent")
+  assert_invalid(make_output(seed_reason=object()), "invalid_seed_reason")
+
+
 def test_non_finite_a_target_fails_contract():
   assert_invalid(make_output(a_target=math.nan), "non_finite_a_target")
 

@@ -24,7 +24,13 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import planner_state_to_stack_output
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_CAP, PLANNER_SEED_FLOOR, PlannerSeedCandidate
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
+  PLANNER_SEED_CAP,
+  PLANNER_SEED_FLOOR,
+  PLANNER_SEED_MPC_REASON,
+  PlannerSeedCandidate,
+  planner_seed_intent_for_reason,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import is_custom_stack
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, SunnypilotLongitudinalMpc
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
@@ -320,13 +326,16 @@ def build_planner_seed_accel_candidate(planner, name, a_target, has_lead, reason
   base_output = getattr(planner, "planner_seed_candidate_base_output", None)
   if base_output is None:
     base_output = planner_state_to_stack_output(planner, has_lead)
+  seed_intent = planner_seed_intent_for_reason(reason, has_lead, candidate_should_stop, base_output.source)
   output = replace(
     base_output,
     a_target=candidate_a_target,
     should_stop=candidate_should_stop,
     debug={"planner_seed_candidate_reason": reason},
+    seed_intent=seed_intent,
+    seed_reason=reason,
   )
-  return PlannerSeedCandidate(name, output, selection=selection, group=group)
+  return PlannerSeedCandidate(name, output, selection=selection, group=group, intent=seed_intent, reason=reason)
 
 
 def build_planner_seed_mpc_candidate(planner, mpc, a_target, should_stop, has_lead, accel_limits, speeds, accels, jerks, fcw):
@@ -342,6 +351,7 @@ def build_planner_seed_mpc_candidate(planner, mpc, a_target, should_stop, has_le
     selection = PLANNER_SEED_FLOOR
   else:
     selection = PLANNER_SEED_CAP
+  seed_intent = planner_seed_intent_for_reason(PLANNER_SEED_MPC_REASON, has_lead, candidate_should_stop, mpc.source)
   output = LongitudinalStackOutput(
     a_target=candidate_a_target,
     should_stop=candidate_should_stop,
@@ -353,9 +363,12 @@ def build_planner_seed_mpc_candidate(planner, mpc, a_target, should_stop, has_le
     accels=tuple(float(a) for a in accels),
     jerks=tuple(float(j) for j in jerks),
     fcw=bool(fcw),
-    debug={"planner_seed_candidate_reason": "planner_seed_mpc"},
+    debug={"planner_seed_candidate_reason": PLANNER_SEED_MPC_REASON},
+    seed_intent=seed_intent,
+    seed_reason=PLANNER_SEED_MPC_REASON,
   )
-  return PlannerSeedCandidate("planner_seed_mpc", output, selection=selection, group="planner_seed_mpc")
+  return PlannerSeedCandidate(PLANNER_SEED_MPC_REASON, output, selection=selection, group=PLANNER_SEED_MPC_REASON,
+                              intent=seed_intent, reason=PLANNER_SEED_MPC_REASON)
 
 
 def should_apply_cruise_coast_overspeed(reset_state, force_slow_decel, e2e_active, _has_lead, should_stop, source):

@@ -8,6 +8,7 @@ from enum import IntEnum
 
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_RECOMMENDED,
+  StackCatalog,
   load_stack_manifest,
   resolve_longitudinal_stack,
 )
@@ -49,6 +50,7 @@ class CruiseLayout(Widget):
     self._speed_limit_layout = SpeedLimitSettingsLayout(lambda: self._set_current_panel(PanelType.CRUISE))
     self._longitudinal_stack_dialog: TreeOptionDialog | None = None
     self._longitudinal_stack_manifest = load_stack_manifest()
+    self._longitudinal_stack_catalog = StackCatalog(self._longitudinal_stack_manifest)
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -224,8 +226,7 @@ class CruiseLayout(Widget):
     )
 
   def _stack_label(self, stack: str) -> str:
-    info = self._longitudinal_stack_manifest.get("stacks", {}).get(stack, {})
-    return str(info.get("label") or stack)
+    return self._longitudinal_stack_catalog.stack_definition(stack).label
 
   def _longitudinal_stack_label(self, stack: str, resolution=None) -> str:
     if stack == CUSTOM_RECOMMENDED:
@@ -237,11 +238,12 @@ class CruiseLayout(Widget):
     available = set(resolution.available_stacks)
     baseline_nodes = []
     custom_nodes = []
-    for stack, info in self._longitudinal_stack_manifest.get("stacks", {}).items():
+    for stack in self._longitudinal_stack_catalog.stack_names:
       if stack not in available:
         continue
+      definition = self._longitudinal_stack_catalog.stack_definition(stack)
       node = TreeNode(stack, {"display_name": self._longitudinal_stack_label(stack, resolution), "short_name": stack})
-      if str(info.get("family", "")).startswith("custom"):
+      if definition.family.startswith("custom"):
         custom_nodes.append(node)
       else:
         baseline_nodes.append(node)

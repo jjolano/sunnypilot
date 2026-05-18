@@ -672,7 +672,7 @@
   },
   "LongitudinalStack": {
     "title": "Longitudinal Stack",
-    "description": "Selects which longitudinal control stack is used after sunnypilot longitudinal control is active. Default is sunnypilot-current; custom-recommended resolves per vehicle.",
+    "description": "Selects which longitudinal control stack is used after sunnypilot longitudinal control is active. Default is sunnypilot-current; custom-recommended resolves globally to custom-2.0.",
     "options": [
       {
         "value": "sunnypilot-current",

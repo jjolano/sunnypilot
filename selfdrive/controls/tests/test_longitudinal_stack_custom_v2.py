@@ -19,7 +19,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput, validate_stack_output
 
 
-def make_output(a_target=0.0, should_stop=False, has_lead=False, debug=None, speeds=None, accels=None, jerks=None):
+def make_output(a_target=0.0, should_stop=False, has_lead=False, debug=None, speeds=None, accels=None, jerks=None,
+                seed_intent="", seed_reason=""):
   return LongitudinalStackOutput(
     a_target=a_target,
     should_stop=should_stop,
@@ -31,6 +32,8 @@ def make_output(a_target=0.0, should_stop=False, has_lead=False, debug=None, spe
     accels=tuple(a_target for _ in range(CONTROL_N)) if accels is None else accels,
     jerks=tuple(0.0 for _ in range(CONTROL_N)) if jerks is None else jerks,
     debug={} if debug is None else debug,
+    seed_intent=seed_intent,
+    seed_reason=seed_reason,
   )
 
 
@@ -139,6 +142,23 @@ def test_planner_seed_classification_preserves_seed_trajectory():
   assert output.speeds == speeds
   assert output.accels == accels
   assert output.jerks == jerks
+  assert output.debug["custom_v2_selected_intent"] == "lead_follow"
+  assert output.debug["custom_v2_selected_reason"] == "stopped_lead_stop_gap_guard"
+
+
+def test_structured_planner_seed_classification_does_not_require_debug_reason():
+  seed = make_output(
+    -0.7,
+    should_stop=True,
+    has_lead=True,
+    seed_intent="lead_follow",
+    seed_reason="stopped_lead_stop_gap_guard",
+  )
+  scene = CustomV2Scene(v_ego=0.3, v_cruise=6.0, has_lead=True)
+
+  output = CustomLongitudinalStackV2().update(seed, scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == -0.7
   assert output.debug["custom_v2_selected_intent"] == "lead_follow"
   assert output.debug["custom_v2_selected_reason"] == "stopped_lead_stop_gap_guard"
 
