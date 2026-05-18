@@ -123,6 +123,8 @@ CRUISE_COAST_FLAT_OVERSPEED = 0.45  # ~1 mph
 CRUISE_COAST_DOWNHILL_OVERSPEED = 1.35  # ~3 mph
 CRUISE_COAST_DOWNHILL_ACCEL = 0.25
 CRUISE_COAST_RECOVERY_OVERSPEED = 0.9  # ~2 mph from coast back to normal decel
+E2E_STOP_APPROACH_MODEL_STOP_ENDPOINT_MARGIN = 5.0
+E2E_STOP_APPROACH_CLOSE_ENDPOINT_DECEL = -1.0
 E2E_RUNWAY_COMFORT_MIN_V_EGO = 3.0
 E2E_RUNWAY_COMFORT_MIN_ENDPOINT = 1.0
 E2E_RUNWAY_COMFORT_COAST_MARGIN = 0.02
@@ -180,6 +182,21 @@ def get_model_stop_distance(model_msg):
   return None
 
 
+def get_e2e_confirmed_model_stop_distance(model_msg):
+  positions = list(getattr(model_msg.position, "x", []))
+  velocities = list(getattr(model_msg.velocity, "x", []))
+  if len(positions) < 3 or len(velocities) != len(positions):
+    return None
+
+  endpoint_x = float(positions[-1])
+  for idx, (x, v) in enumerate(zip(positions, velocities, strict=False)):
+    if idx == 0 or idx == len(positions) - 1:
+      continue
+    if x >= 0.0 and v <= ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED and endpoint_x - x >= E2E_STOP_APPROACH_MODEL_STOP_ENDPOINT_MARGIN:
+      return float(x)
+  return None
+
+
 def should_run_engage_stop_bootstrap(timer, v_ego, radar_state, model_msg):
   if timer <= 0.0 or v_ego < ENGAGE_STOP_BOOTSTRAP_MIN_SPEED or has_valid_radar_lead(radar_state):
     return False
@@ -204,8 +221,15 @@ def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force
   if not np.isfinite(endpoint_x) or endpoint_x <= 0.0:
     return 0.0
 
+  stop_distance = get_e2e_confirmed_model_stop_distance(model_msg)
+  close_endpoint_stop = (
+    endpoint_x <= E2E_STOP_APPROACH_MIN_ENDPOINT + E2E_STOP_APPROACH_CRAWL_RESERVE and
+    model_msg.action.desiredAcceleration <= E2E_STOP_APPROACH_CLOSE_ENDPOINT_DECEL
+  )
+  if stop_distance is None and not close_endpoint_stop:
+    return 0.0
+
   approach_distance = endpoint_x
-  stop_distance = get_model_stop_distance(model_msg)
   if stop_distance is not None and np.isfinite(stop_distance) and stop_distance > 0.0:
     approach_distance = min(endpoint_x, max(E2E_STOP_APPROACH_MIN_ENDPOINT, stop_distance - E2E_STOP_APPROACH_CRAWL_RESERVE))
 
