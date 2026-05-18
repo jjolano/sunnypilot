@@ -43,6 +43,7 @@ Add selectable `custom-2.0` as a full custom longitudinal stack that prioritizes
 - Positive jerk is personality-scoped: Relaxed ramps softly, Standard uses aggressive positive jerk for launch/pullaway pulses, and Aggressive may also use faster progress ramps for moving speed-up and excess-gap closure.
 - Normal negative jerk should be softer than the initial `-5.0 m/s^3` retreat; urgent stops, safety caps, and preserved planner lead restrictions may ramp faster when required.
 - Lead motion gate uses confirmed lead motion, opening-gap evidence, or trusted lead speed; lead acceleration can relax closing guards only when corroborated by stable opening evidence.
+- Slower Lead Approach uses bounded moving-follow runway comfort to coast first, then apply routine light braking when closing speed would consume the available runway to the bounded target.
 - Launch speed caps: `3.0 m/s` no-lead and `5.0 m/s` lead pullaway.
 - Stop Target Buffer: tight stopped-lead crawl starts around `+1.0 m` above Stop Target, follows around `+0.3 m`, and blocks positive creep at or below `0.0 m`.
 - Stopped-lead approach blends from normal geometry above `3.0 m/s` to the tight Stop Target Buffer below `1.0 m/s`.
@@ -66,7 +67,9 @@ Add selectable `custom-2.0` as a full custom longitudinal stack that prioritizes
 - Confirmed map caution is cap-only and does not set stop intent or get softened by comfort relax.
 - Driver brake/gas input blocks progress floors and comfort relax, while safety caps and conservative advisory caps may still apply.
 - New-lead and cut-in handling is severity-tiered: close or closing leads suppress progress immediately, while leads already opening the gap transition smoothly.
+- Slower Lead Approach remains `lead_follow`, not `stop_approach`; raw radar lead evidence may cap/coast, but routine braking needs stable lead evidence or severe closing runway/TTC evidence.
 - Low-confidence, flickering, or sensor-disagreed leads may suppress acceleration without custom hard braking unless Lead MPC or planner lead safety requires it.
+- Driver gas/brake input suppresses applying Slower Lead Approach routine comfort shaping; lead safety constraints remain available.
 - Independent stop threats block lead-pullaway progress until the stop threat clears.
 - Clear Launch Pulse may fire while turning, but lateral-accel or traction caps may still restrict it.
 - Low-speed under-response may receive a bounded follow-up increase inside existing accel limits when clear or lead evidence remains valid.

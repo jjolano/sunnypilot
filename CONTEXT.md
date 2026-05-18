@@ -104,6 +104,10 @@ _Avoid_: speed-up annoyance, custom policy preference
 A planner-level cap that blocks non-lead speed-up seeds when a close lead is being closed on.
 _Avoid_: lead braking, MPC replacement
 
+**Slower Lead Approach**:
+Lead-follow runway comfort for approaching a slower moving lead without declaring stop intent.
+_Avoid_: Stop Approach, stopped-lead crawl, lead speed-up guard
+
 **Standard Personality**:
 The driving-personality anchor for custom-2.0 comfort and progress behavior.
 _Avoid_: default mode, manual profile
@@ -151,6 +155,7 @@ _Avoid_: ignoring curves, lateral safety
 - Low-confidence, flickering, or transitioning lead evidence may restrict or hold acceleration, but only **Lead-confirmed Progress** may authorize positive lead progress.
 - **Closing-rate Risk** belongs to **Longitudinal MPC** or planner lead guards rather than a competing **Custom Stack** physics model.
 - A **Lead Speed-up Guard** caps planner seeds; **Longitudinal MPC** owns lead braking, time-gap, danger-gap, and stop-runway shaping.
+- A **Slower Lead Approach** is **Closing-rate Risk** handling inside lead-follow behavior; it may use bounded moving-follow runway comfort, but it is not **Stop Approach**.
 - **Stop/go Intent** belongs to the **Longitudinal Planner**; **Longitudinal MPC** owns physical lead/runway constraints and controller logic only shapes release.
 - A **Planner Seed Candidate** is planner-owned input to custom-stack arbitration, not a selectable stack version.
 - A **Custom Stack** may shape **Longitudinal Planner** behavior, but **sunnypilot-current** remains behavior-isolated.
@@ -160,7 +165,7 @@ _Avoid_: ignoring curves, lateral safety
 - A **Promotion Gate** can change the **custom-recommended** alias without changing the default **sunnypilot-current** baseline.
 - **Standard Personality** anchors custom-2.0 behavior; other personalities may scale comfort and progress, but not **Safety Caps**.
 - **Routine Stop Comfort** and **Urgent Stop Capability** are separate: routine stops favor comfort, while urgent stops preserve strong braking capability.
-- A **Stop Target Buffer** belongs to terminal stopped-lead crawl behavior and does not lower normal moving-follow gaps.
+- A **Stop Target Buffer** belongs to terminal stopped-lead crawl behavior and does not lower normal moving-follow gaps; **Slower Lead Approach** uses a separate bounded moving-follow floor.
 - **Clear Launch Pulse**, **Lead Pullaway Pulse**, **Excess Gap Closure**, and **Free Coast** are progress or comfort policies that yield to **Safety Caps**, confirmed stop evidence, and **Lead MPC** hazard handling.
 - **Driver-Like Curve Speed** cannot override lateral-accel or path-confidence limits.
 - **AlphaLongitudinalEnabled** gates gas/brake takeover separately from **Stack Selection**.
