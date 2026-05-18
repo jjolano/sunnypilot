@@ -54,16 +54,19 @@ from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 
 
 class FakeParams:
-  def __init__(self, enforce: bool, tune=None, default_tune=2.0):
+  def __init__(self, enforce: bool, tune=None, default_tune=2.0, speed_aware_params=None):
     self.enforce = enforce
     self.tune = tune
     self.default_tune = default_tune
+    self.speed_aware_params = speed_aware_params
     self.writes = {}
 
   def get_bool(self, key: str) -> bool:
     return self.enforce if key == "EnforceTorqueControl" else False
 
   def get(self, key: str, *args, **kwargs):
+    if key == "LiveTorqueSpeedAdaptiveParams":
+      return self.speed_aware_params
     if key != "TorqueControlTune":
       return None
     if self.tune is None and kwargs.get("return_default", False):
@@ -289,3 +292,60 @@ def test_get_params_sp_updates_lat_delay_for_selected_torque_controller(monkeypa
   controls_ext.get_params_sp({"liveDelay": FakeLiveDelay()})
 
   assert controls_ext.lat_delay == 0.52
+
+
+def test_get_params_sp_skips_speed_aware_params_without_extension(monkeypatch):
+  class FakeBlinkerPauseLateral:
+    def get_params(self):
+      pass
+
+  class FakeLiveDelay:
+    lateralDelay = 0.42
+
+  class FakeTorqueController:
+    CONTROL_STATE = "torque"
+
+  CP, CP_SP, _CI = get_test_context()
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, speed_aware_params="speed-aware-payload"))
+  controls_ext._param_update_time = 0.0
+  controls_ext.blinker_pause_lateral = FakeBlinkerPauseLateral()
+  controls_ext.LaC = FakeTorqueController()
+  monkeypatch.setattr(controlsd_ext, "get_lat_delay", lambda _params, lateral_delay: lateral_delay + 0.1)
+
+  controls_ext.get_params_sp({"liveDelay": FakeLiveDelay()})
+
+  assert controls_ext.lat_delay == 0.52
+
+
+def test_get_params_sp_updates_speed_aware_params_when_extension_exists(monkeypatch):
+  class FakeBlinkerPauseLateral:
+    def get_params(self):
+      pass
+
+  class FakeLiveDelay:
+    lateralDelay = 0.42
+
+  class FakeExtension:
+    def __init__(self):
+      self.speed_aware_params = None
+
+    def update_speed_aware_params(self, speed_aware_params):
+      self.speed_aware_params = speed_aware_params
+
+  class FakeTorqueController:
+    CONTROL_STATE = "torque"
+
+    def __init__(self):
+      self.extension = FakeExtension()
+
+  CP, CP_SP, _CI = get_test_context()
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, speed_aware_params="speed-aware-payload"))
+  controls_ext._param_update_time = 0.0
+  controls_ext.blinker_pause_lateral = FakeBlinkerPauseLateral()
+  controls_ext.LaC = FakeTorqueController()
+  monkeypatch.setattr(controlsd_ext, "get_lat_delay", lambda _params, lateral_delay: lateral_delay + 0.1)
+
+  controls_ext.get_params_sp({"liveDelay": FakeLiveDelay()})
+
+  assert controls_ext.lat_delay == 0.52
+  assert controls_ext.LaC.extension.speed_aware_params == "speed-aware-payload"
