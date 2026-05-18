@@ -15,6 +15,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import Torqu
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_direction
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_low_speed import low_speed_pid_gain_speed
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_observation import TorqueObservation
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_over_response_attenuator import attenuate_same_direction_over_response
 
 
@@ -229,24 +230,37 @@ class LatControlTorque(LatControl):
     steer_limit_feedback = self.steering_actuator_feedback
     steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
     response_steer_limited = steer_limited_by_safety and (steer_limit_same_direction if steer_limit_feedback.valid else True)
+    torque_observation = TorqueObservation(
+      active=active,
+      v_ego=CS.vEgo,
+      steering_pressed=CS.steeringPressed,
+      steer_limited_by_safety=response_steer_limited,
+      curvature_limited=curvature_limited,
+      saturated=saturated,
+      lateral_maneuver=lane_change_active,
+      target_lateral_accel=setpoint,
+      target_lateral_accel_rate=desired_lateral_jerk,
+      actual_lateral_accel=measurement,
+      actual_lateral_jerk=raw_actual_lateral_jerk,
+    )
     assist_result = self.response_assist.update(
       GuardedResponseAssistInputs(
-        active=active,
-        v_ego=CS.vEgo,
-        steering_pressed=CS.steeringPressed,
-        steer_limited_by_safety=response_steer_limited,
-        curvature_limited=curvature_limited,
-        saturated=saturated,
+        active=torque_observation.active,
+        v_ego=torque_observation.v_ego,
+        steering_pressed=torque_observation.steering_pressed,
+        steer_limited_by_safety=torque_observation.steer_limited_by_safety,
+        curvature_limited=torque_observation.curvature_limited,
+        saturated=torque_observation.saturated,
         max_output=self.steer_max,
         nominal_torque=output_torque,
-        desired_lateral_accel=setpoint,
-        actual_lateral_accel=measurement,
-        desired_lateral_jerk=desired_lateral_jerk,
-        actual_lateral_jerk=raw_actual_lateral_jerk,
+        desired_lateral_accel=torque_observation.target_lateral_accel,
+        actual_lateral_accel=torque_observation.actual_lateral_accel,
+        desired_lateral_jerk=torque_observation.target_lateral_accel_rate,
+        actual_lateral_jerk=torque_observation.actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
         desired_curvature=desired_curvature,
         tracking_torque_error=tracking_torque_error,
-        lane_change_active=lane_change_active,
+        lane_change_active=torque_observation.lateral_maneuver,
         same_sign_unwind=same_sign_unwind,
       )
     )
@@ -255,17 +269,17 @@ class LatControlTorque(LatControl):
     steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
     shaping_result = self.output_shaper.update(
       ConservativeOutputShaperInputs(
-        active=active,
-        v_ego=CS.vEgo,
-        steering_pressed=CS.steeringPressed,
+        active=torque_observation.active,
+        v_ego=torque_observation.v_ego,
+        steering_pressed=torque_observation.steering_pressed,
         steer_limited_by_safety=steer_limited_by_safety,
         release_active=assist_result.release_active,
         max_output=self.steer_max,
         unshaped_output=output_torque,
-        desired_lateral_accel=setpoint,
+        desired_lateral_accel=torque_observation.target_lateral_accel,
         actual_lateral_accel=shaping_measurement,
-        desired_lateral_jerk=desired_lateral_jerk,
-        actual_lateral_jerk=raw_actual_lateral_jerk,
+        desired_lateral_jerk=torque_observation.target_lateral_accel_rate,
+        actual_lateral_jerk=torque_observation.actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
         same_sign_unwind_release=same_sign_unwind_release,
         # The shaper sees pre-actuator torque; the actuator command is negated on return.
@@ -278,16 +292,16 @@ class LatControlTorque(LatControl):
     )
     disturbance_result = classify_torque_disturbance(
       TorqueDisturbanceInputs(
-        active=active,
-        v_ego=CS.vEgo,
-        steering_pressed=CS.steeringPressed,
+        active=torque_observation.active,
+        v_ego=torque_observation.v_ego,
+        steering_pressed=torque_observation.steering_pressed,
         steer_limited_by_safety=steer_limited_by_safety,
-        curvature_limited=curvature_limited,
+        curvature_limited=torque_observation.curvature_limited,
         saturated=saturated or self.steer_max - abs(shaping_result.unshaped_output) < 1e-3,
-        desired_lateral_accel=setpoint,
+        desired_lateral_accel=torque_observation.target_lateral_accel,
         actual_lateral_accel=shaping_measurement,
-        desired_lateral_jerk=desired_lateral_jerk,
-        actual_lateral_jerk=raw_actual_lateral_jerk,
+        desired_lateral_jerk=torque_observation.target_lateral_accel_rate,
+        actual_lateral_jerk=torque_observation.actual_lateral_jerk,
         lookahead_lateral_jerk=self.extension.lookahead_lateral_jerk,
         output_torque=shaping_result.unshaped_output,
         response_deficit=assist_result.response_deficit,

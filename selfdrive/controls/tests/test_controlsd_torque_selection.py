@@ -19,6 +19,12 @@ from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
+  DEFAULT_TORQUE_TUNE_VERSION,
+  TorqueControllerDefinition,
+  TorqueControllerRegistry,
+  resolve_torque_tune_version,
+)
 
 msgq = types.ModuleType("msgq")
 msgq.fake_event_handle = object()
@@ -109,6 +115,26 @@ def test_normalize_torque_tune_version():
   assert ControlsExt.normalize_torque_tune_version(b"2.0") == 2.0
   assert ControlsExt.normalize_torque_tune_version("1.0") == 1.0
   assert ControlsExt.normalize_torque_tune_version("bad") is None
+
+
+def test_torque_tune_resolution_owns_removed_version_fallback():
+  resolution = resolve_torque_tune_version(4.0)
+
+  assert resolution.requested_version == 4.0
+  assert resolution.resolved_version == DEFAULT_TORQUE_TUNE_VERSION
+  assert resolution.persist_value == "2.0"
+  assert resolve_torque_tune_version(b"3.0").resolved_version == 3.0
+  assert resolve_torque_tune_version("bad").resolved_version is None
+
+
+def test_torque_controller_registry_resolves_factories():
+  class ControllerA:
+    pass
+
+  registry = TorqueControllerRegistry((TorqueControllerDefinition(2.0, ControllerA),))
+
+  assert registry.factory_for(2.0) is ControllerA
+  assert registry.factory_for(3.0) is None
 
 
 def test_torque_controller_selection_variants():
