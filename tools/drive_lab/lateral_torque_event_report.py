@@ -447,7 +447,7 @@ def _columns(samples: list[_TorqueSample]) -> dict[str, np.ndarray]:
     "steering_pressed": np.array([float(sample.steering_pressed) for sample in samples], dtype=float),
     "blinker_active": np.array([float(sample.blinker_active) for sample in samples], dtype=float),
     "lane_change_state": np.array([sample.lane_change_state for sample in samples], dtype=object),
-    "lane_change_off": np.array([float(sample.lane_change_state == "off") for sample in samples], dtype=float),
+    "lane_change_active": np.array([float(_lane_change_state_active(sample.lane_change_state)) for sample in samples], dtype=float),
     "steering_angle_deg": np.array([sample.steering_angle_deg for sample in samples], dtype=float),
     "steering_rate_deg": np.array([sample.steering_rate_deg for sample in samples], dtype=float),
     "output": np.array([sample.output for sample in samples], dtype=float),
@@ -570,7 +570,7 @@ def _base_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
     & (cols["v_ego"] > 8.0)
     & (cols["steering_pressed"] < 0.5)
     & (cols["blinker_active"] < 0.5)
-    & (cols["lane_change_off"] > 0.5)
+    & (cols["lane_change_active"] < 0.5)
     & np.isfinite(cols["output"])
     & np.isfinite(cols["unshaped_output"])
     & np.isfinite(cols["steering_angle_deg"])
@@ -578,11 +578,11 @@ def _base_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
 
 
 def _low_speed_primary_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
-  return _low_speed_common_mask(cols) & (cols["blinker_active"] < 0.5) & (cols["lane_change_off"] > 0.5)
+  return _low_speed_common_mask(cols) & (cols["blinker_active"] < 0.5) & (cols["lane_change_active"] < 0.5)
 
 
 def _low_speed_signal_tagged_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
-  signal_tagged = (cols["blinker_active"] > 0.5) | (cols["lane_change_off"] < 0.5)
+  signal_tagged = (cols["blinker_active"] > 0.5) | (cols["lane_change_active"] > 0.5)
   return _low_speed_common_mask(cols) & signal_tagged
 
 
@@ -614,14 +614,14 @@ def _speed_tier_mask(cols: dict[str, np.ndarray], lower: float, upper: float) ->
 
 def _lane_change_excluded_count(cols: dict[str, np.ndarray]) -> int:
   low_speed_active = (cols["lat_active"] > 0.5) & (cols["v_ego"] >= 0.0) & (cols["v_ego"] < LOW_SPEED_REPORT_MAX_SPEED)
-  lane_change = (cols["blinker_active"] > 0.5) | (cols["lane_change_off"] < 0.5)
+  lane_change = (cols["blinker_active"] > 0.5) | (cols["lane_change_active"] > 0.5)
   return int(np.sum(low_speed_active & lane_change))
 
 
 def _signal_tagged_category_counts(cols: dict[str, np.ndarray], turn: np.ndarray) -> dict[str, int]:
   signal_tagged = _low_speed_signal_tagged_mask(cols) & turn
   blinker = cols["blinker_active"] > 0.5
-  lane_change = cols["lane_change_off"] < 0.5
+  lane_change = cols["lane_change_active"] > 0.5
   return {
     "blinker_only": int(np.sum(signal_tagged & blinker & ~lane_change)),
     "lane_change_state_only": int(np.sum(signal_tagged & ~blinker & lane_change)),
@@ -636,6 +636,10 @@ def _signal_tagged_state_counts(cols: dict[str, np.ndarray], turn: np.ndarray) -
 
 def _tier_label(lower: float, upper: float) -> str:
   return f"{lower:g}-{upper:g}mps"
+
+
+def _lane_change_state_active(state: str) -> bool:
+  return state not in ("off", "unknown")
 
 
 def _low_speed_tier_metrics(cols: dict[str, np.ndarray], segment: str, lower: float, upper: float,
