@@ -421,6 +421,20 @@ def test_e2e_stop_approach_ignores_endpoint_with_sufficient_runway():
   assert accel == 0.0
 
 
+def test_e2e_stop_approach_uses_earlier_model_stop_point_for_crawl_reserve():
+  route_like_model = make_model_msg(
+    endpoint_x=123.0,
+    positions=[0.0, 65.0, 123.0],
+    velocities=[15.3, 0.5, 3.0],
+  )
+
+  accel = get_e2e_stop_approach_accel(15.3, route_like_model, make_radar_state(), True)
+  endpoint_only_accel = get_e2e_stop_approach_accel(15.3, make_model_msg(endpoint_x=123.0), make_radar_state(), True)
+
+  assert endpoint_only_accel == 0.0
+  assert -1.0 < accel < -0.3
+
+
 def test_e2e_stop_approach_starts_mild_decel_for_route_like_runway():
   accel = get_e2e_stop_approach_accel(15.7, make_model_msg(endpoint_x=84.0), make_radar_state(), True)
 

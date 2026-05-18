@@ -37,6 +37,7 @@ SIMULATION = "SIMULATION" in os.environ
 TESTING_CLOSET = "TESTING_CLOSET" in os.environ
 
 LONGITUDINAL_PERSONALITY_MAP = {v: k for k, v in log.LongitudinalPersonality.schema.enumerants.items()}
+PERSONALITY_PARAM_READ_HOLDOFF = 0.5
 
 ThermalStatus = log.DeviceState.ThermalStatus
 State = log.SelfdriveState.OpenpilotState
@@ -168,6 +169,7 @@ class SelfdriveD(CruiseHelper):
       max(log.LongitudinalPersonality.schema.enumerants.values()),
       self.params,
     )
+    self._personality_param_hold_until = 0.0
     self.recalibrating_seen = False
     self.state_machine = StateMachine()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
@@ -503,6 +505,7 @@ class SelfdriveD(CruiseHelper):
         if not self.experimental_mode_switched:
           self.personality = (self.personality - 1) % 3
           self.params.put_nonblocking('LongitudinalPersonality', self.personality)
+          self._personality_param_hold_until = time.monotonic() + PERSONALITY_PARAM_READ_HOLDOFF
           self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
 
@@ -638,13 +641,19 @@ class SelfdriveD(CruiseHelper):
 
     self.CS_prev = CS
 
+  def update_personality_from_params(self, now: float | None = None) -> None:
+    personality = self.params.get("LongitudinalPersonality", return_default=True)
+    now = time.monotonic() if now is None else now
+    if now >= self._personality_param_hold_until:
+      self.personality = personality
+
   def params_thread(self, evt):
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      self.personality = self.params.get("LongitudinalPersonality", return_default=True)
+      self.update_personality_from_params()
 
       self.mads.read_params()
       time.sleep(0.1)

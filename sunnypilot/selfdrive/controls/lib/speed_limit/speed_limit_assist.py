@@ -164,7 +164,7 @@ class SpeedLimitAssist:
     return self.clamp_to_set_cruise_if_needed(max(target, min(previous_target, profile_target)))
 
   def clamp_to_set_cruise_if_needed(self, target: float) -> float:
-    if not self.CP_SP.pcmCruiseSpeed and 0. < self.v_cruise_cluster < V_CRUISE_UNSET:
+    if 0. < self.v_cruise_cluster < V_CRUISE_UNSET:
       return min(target, self.v_cruise_cluster)
     return target
 
