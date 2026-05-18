@@ -46,8 +46,17 @@ def test_openpilot_current_is_not_a_supported_stack():
   assert "openpilot-current" not in resolution.available_stacks
 
 
-def test_custom_recommended_falls_back_to_sunnypilot_when_unresolved():
+def test_custom_recommended_resolves_global_manifest_default():
   resolution = resolve_longitudinal_stack(CUSTOM_RECOMMENDED, make_cp(alphaLongitudinalAvailable=True))
+
+  assert resolution.resolved_stack == CUSTOM_V2
+  assert resolution.recommended_stack == CUSTOM_V2
+  assert resolution.custom_version == "2.0"
+  assert resolution.fallback_reason == ""
+
+
+def test_custom_recommended_falls_back_when_custom_unavailable():
+  resolution = resolve_longitudinal_stack(CUSTOM_RECOMMENDED, make_cp())
 
   assert resolution.resolved_stack == SUNNYPILOT_CURRENT
   assert resolution.recommended_stack == ""
@@ -77,8 +86,9 @@ def test_literal_available_custom_v2_can_be_forced_without_promoting_recommended
   assert resolution.resolved_stack == CUSTOM_V2
   assert resolution.custom_version == "2.0"
   assert resolution.fallback_reason == ""
-  assert recommended.resolved_stack == SUNNYPILOT_CURRENT
-  assert recommended.fallback_reason == "custom_recommended_unresolved"
+  assert recommended.resolved_stack == CUSTOM_V2
+  assert recommended.recommended_stack == CUSTOM_V2
+  assert recommended.fallback_reason == ""
 
 
 def test_literal_removed_custom_1_0_falls_back_to_default():

@@ -38,8 +38,8 @@ NO_LEAD_STOP_CLEAR_DISTANCE = 20.0
 NO_LEAD_STOP_CLEAR_ACCEL_MIN = -0.5
 MAP_ONLY_CAUTION_ACCEL_MIN = -0.3
 COMFORT_RELAX_ACCEL_MIN = -0.5
-CRUISE_LEEWAY_MIN = 3.0 * MPH_TO_MS
-CRUISE_LEEWAY_MAX = 7.0 * MPH_TO_MS
+CRUISE_LEEWAY_MIN = 5.0 * MPH_TO_MS
+CRUISE_LEEWAY_MAX = 10.0 * MPH_TO_MS
 CRUISE_LEEWAY_DOWNHILL_ACCEL = 0.25
 CRUISE_LEEWAY_RECOVERY = 2.0 * MPH_TO_MS
 STOP_APPROACH_COMFORT_DECEL = -0.2
@@ -304,12 +304,13 @@ class CustomLongitudinalStackV2:
       rejected.append(("speed_policy", "no_speed_reduction_needed"))
 
     if scene.map_caution_active:
-      cap = scene.map_caution_a_target if scene.map_caution_confirmed else max(scene.map_caution_a_target, MAP_ONLY_CAUTION_ACCEL_MIN)
-      cap = min(0.0, cap)
-      a_target, selected_intent, selected_reason = _apply_cap(
-        a_target, selected_intent, selected_reason, cap, "map_caution",
-        "confirmed_map_caution" if scene.map_caution_confirmed else "map_only_preparation",
-      )
+      if scene.map_caution_confirmed:
+        cap = min(0.0, scene.map_caution_a_target)
+        a_target, selected_intent, selected_reason = _apply_cap(
+          a_target, selected_intent, selected_reason, cap, "map_caution", "confirmed_map_caution",
+        )
+      else:
+        rejected.append(("map_caution", "map_only_ignored"))
 
     if scene.curve_active:
       a_target, selected_intent, selected_reason = _apply_cap(

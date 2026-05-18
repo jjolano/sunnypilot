@@ -28,7 +28,7 @@
     }
   },
   "customRecommendations": {
-    "default": "",
+    "default": "custom-2.0",
     "brands": {},
     "fingerprints": {}
   }

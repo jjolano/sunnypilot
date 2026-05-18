@@ -29,11 +29,11 @@ The baseline stack that preserves current sunnypilot behavior and must not be ch
 _Avoid_: upstream, stock, openpilot-current
 
 **custom-recommended**:
-An alias that resolves per platform to a promoted custom stack.
+The recommended custom-stack alias, distinct from the default baseline stack.
 _Avoid_: default custom, latest custom
 
 **Promotion Gate**:
-The evidence threshold required before a custom stack can become custom-recommended.
+The decision threshold for changing which custom stack the recommended alias names.
 _Avoid_: deploy check, smoke test
 
 **custom-2.0**:
@@ -104,6 +104,46 @@ _Avoid_: speed-up annoyance, custom policy preference
 A planner-level cap that blocks non-lead speed-up seeds when a close lead is being closed on.
 _Avoid_: lead braking, MPC replacement
 
+**Standard Personality**:
+The driving-personality anchor for custom-2.0 comfort and progress behavior.
+_Avoid_: default mode, manual profile
+
+**Routine Stop Comfort**:
+The non-urgent stop style that favors early mild deceleration while runway margin exists.
+_Avoid_: weak braking, urgent stop
+
+**Urgent Stop Capability**:
+The stop behavior that can use stronger braking when confirmed evidence and finite runway shortage require it.
+_Avoid_: panic braking, routine stop
+
+**Stop Target**:
+The desired terminal gap from a confirmed stopped lead.
+_Avoid_: model endpoint, zero gap
+
+**Stop Target Buffer**:
+Positive extra gap above the Stop Target used to shape crawl, follow, and soft-stop behavior.
+_Avoid_: following distance, bumper gap
+
+**Clear Launch Pulse**:
+A brief no-lead launch acceleration when fresh clear-path evidence supports progress.
+_Avoid_: no-lead creep, general speed-up
+
+**Lead Pullaway Pulse**:
+A brief confirmed-lead launch acceleration when the lead is moving away and the gap is opening.
+_Avoid_: lead-follow target, crawl
+
+**Excess Gap Closure**:
+Driver-like progress that closes a gap larger than the active follow target without lowering the steady-state target.
+_Avoid_: tighter following, tailgating
+
+**Free Coast**:
+Harmless overspeed coasting that lets speed bleed off naturally before smooth recovery braking is needed.
+_Avoid_: speed-limit policy, uncontrolled overspeed
+
+**Driver-Like Curve Speed**:
+Curve-speed behavior that may relax advisory deceleration only inside lateral-accel and path-confidence limits.
+_Avoid_: ignoring curves, lateral safety
+
 ## Relationships
 
 - A **Longitudinal Planner** may use **Longitudinal MPC** as a lower-level solver.
@@ -117,7 +157,12 @@ _Avoid_: lead braking, MPC replacement
 - A **Lead Speed-up Guard** is custom-stack behavior unless a separate baseline change is explicitly accepted.
 - **custom-2.0** is the only selectable **Custom Stack** until **custom-recommended** is promoted.
 - **custom-2.0** progress helpers express policy over confirmed evidence; they are not independent lead-physics authority.
-- A **Promotion Gate** requires route-level evidence and road-test evidence for behavior or feel changes.
+- A **Promotion Gate** can change the **custom-recommended** alias without changing the default **sunnypilot-current** baseline.
+- **Standard Personality** anchors custom-2.0 behavior; other personalities may scale comfort and progress, but not **Safety Caps**.
+- **Routine Stop Comfort** and **Urgent Stop Capability** are separate: routine stops favor comfort, while urgent stops preserve strong braking capability.
+- A **Stop Target Buffer** belongs to terminal stopped-lead crawl behavior and does not lower normal moving-follow gaps.
+- **Clear Launch Pulse**, **Lead Pullaway Pulse**, **Excess Gap Closure**, and **Free Coast** are progress or comfort policies that yield to **Safety Caps**, confirmed stop evidence, and **Lead MPC** hazard handling.
+- **Driver-Like Curve Speed** cannot override lateral-accel or path-confidence limits.
 - **AlphaLongitudinalEnabled** gates gas/brake takeover separately from **Stack Selection**.
 - SCC, SLA, and OSM are signal sources; **Stack Selection** changes how their outputs are used.
 - The **Longitudinal Decision Layer** is internal to custom-stack behavior and disabled for **sunnypilot-current**.

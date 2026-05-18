@@ -7,7 +7,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   CustomLongitudinalStackV2,
   CustomV2SceneValidationError,
   CustomV2Scene,
-  MAP_ONLY_CAUTION_ACCEL_MIN,
   MPH_TO_MS,
   NORMAL_NEGATIVE_RETREAT_JERK,
   NO_LEAD_LAUNCH_ACCEL_MAX,
@@ -141,7 +140,7 @@ def test_speed_policy_is_coast_biased_for_speed_reductions():
   assert output.debug["custom_v2_selected_reason"] == "coast_biased_speed_reduction"
 
 
-def test_map_only_caution_is_preparatory_not_full_stop_authority():
+def test_map_only_caution_is_ignored_for_control():
   scene = CustomV2Scene(
     v_ego=12.0,
     v_cruise=18.0,
@@ -152,10 +151,10 @@ def test_map_only_caution_is_preparatory_not_full_stop_authority():
 
   output = CustomLongitudinalStackV2().update(make_output(0.5), scene, accel_limits=(-2.0, 2.0))
 
-  assert output.a_target == MAP_ONLY_CAUTION_ACCEL_MIN
+  assert output.a_target == 0.5
   assert not output.should_stop
-  assert output.debug["custom_v2_selected_intent"] == "map_caution"
-  assert output.debug["custom_v2_selected_reason"] == "map_only_preparation"
+  assert output.debug["custom_v2_selected_intent"] == "driver_cruise"
+  assert "map_only_ignored" in output.debug["custom_v2_rejected_reasons"]
 
 
 def test_comfort_relax_only_softens_advisory_decel():
@@ -183,7 +182,7 @@ def test_dynamic_plain_cruise_leeway_allows_downhill_coasting():
 
   output = CustomLongitudinalStackV2().update(make_output(-0.8), scene, accel_limits=(-2.0, 2.0))
 
-  assert dynamic_cruise_overspeed_leeway(scene.accel_coast) == 7.0 * MPH_TO_MS
+  assert dynamic_cruise_overspeed_leeway(scene.accel_coast) == 10.0 * MPH_TO_MS
   assert output.a_target == 0.0
   assert output.debug["custom_v2_selected_reason"] == "dynamic_overspeed_coast_leeway"
 

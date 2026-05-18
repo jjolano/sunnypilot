@@ -6,14 +6,17 @@ Add selectable `custom-2.0` as a full custom longitudinal stack that prioritizes
 
 ## Non-Goals
 
-- Do not change `custom-recommended` during the first selectable release.
+- Do not change the unset/default `LongitudinalStack` resolution away from `sunnypilot-current`.
 - Do not require parity with the removed v1 stack.
 - Do not let `sunnypilot-current` consume custom-only tuning or arbitration.
+- Do not change FCW/AEB policy as part of custom-v2 style tuning.
+- Do not add autonomous no-lead creep in ambiguous low-speed spaces.
 
 ## Stack Selection
 
 - `LongitudinalStack` values are `sunnypilot-current`, `custom-recommended`, and `custom-2.0`.
 - Unset or unknown values resolve to `sunnypilot-current`.
+- `custom-recommended` resolves globally to `custom-2.0`; this is an opt-in alias and not the default baseline stack.
 - Stack selection is latched and changes require an onroad cycle.
 - `AlphaLongitudinalEnabled` remains the gas/brake takeover gate.
 
@@ -24,39 +27,51 @@ Add selectable `custom-2.0` as a full custom longitudinal stack that prioritizes
 - `lead_follow`: confirmed-lead following and lead safety behavior.
 - `launch`: no-lead and planner-seeded lead-pullaway progress behavior.
 - `speed_policy`: coast-biased speed-limit handling.
-- `curve_policy`: existing custom SCC vision/map thresholds at initial release.
-- `map_caution`: OSM/mapd hazard caps, with map-only preparation reserved for future unconfirmed map candidates.
+- `curve_policy`: driver-like curve-speed behavior inside lateral-accel and path-confidence limits.
+- `map_caution`: model-confirmed OSM/mapd caution only; raw map-only stops and hazards do not affect control.
 - `comfort_relax`: small relax of advisory braking inside clear safety margins.
 - `driver_cruise`: driver set-speed tracking with dynamic downhill/coast leeway.
 
 ## First-Release Tunings
 
-- No-lead launch ceiling: `0.95 m/s^2`.
-- Lead-pullaway ceiling: `1.20 m/s^2`.
-- Positive progress jerk: `4.0 m/s^3`.
-- Normal negative progress retreat jerk: `-5.0 m/s^3`.
-- Lead motion gate: `vLead >= 0.15 m/s` or positive opening prediction.
+- `Standard` driving personality is the manual-derived custom-v2 anchor.
+- `Relaxed` and `Aggressive` scale custom-v2 comfort/progress envelopes and jerk shaping only; safety caps stay fixed.
+- Routine stop comfort favors early mild decel around `-0.30` to `-0.45 m/s^2` while runway margin exists.
+- Urgent stop capability requires confirmed stop evidence plus finite runway shortage; it may use strong decel clipped to planner limits and should ramp by remaining margin when possible.
+- Clear Launch Pulse: brief no-lead launch pulse around `1.4-1.7 m/s^2` when fresh clear-path evidence supports progress, tapered down when weak distant model-stop ambiguity exists.
+- Lead Pullaway Pulse: manual-like peak allowed only when a confirmed lead is moving away and the gap is opening; close or unstable leads use lower lead-matched behavior.
+- Positive jerk is personality-scoped: Relaxed ramps softly, Standard uses aggressive positive jerk for launch/pullaway pulses, and Aggressive may also use faster progress ramps for moving speed-up and excess-gap closure.
+- Normal negative jerk should be softer than the initial `-5.0 m/s^3` retreat; urgent stops, safety caps, and preserved planner lead restrictions may ramp faster when required.
+- Lead motion gate uses confirmed lead motion, opening-gap evidence, or trusted lead speed; lead acceleration can relax closing guards only when corroborated by stable opening evidence.
 - Launch speed caps: `3.0 m/s` no-lead and `5.0 m/s` lead pullaway.
-- Excess-gap accel cap: `0.4-1.0 m/s^2` across `1-8 m` excess gap.
-- Closing-speed guard: taper above `0.3 m/s`, block above `0.7 m/s` unless the gap is still very large.
-- No-lead stop-clear: no `shouldStop`, no near stop point within `20 m`, and model desired accel not below `-0.5 m/s^2`.
-- Lead-loss or transition occlusion guard: `0.75 s`.
-- Plain-cruise overspeed leeway: dynamic by grade/coast context, bounded by `+3 to +7 mph`.
+- Stop Target Buffer: tight stopped-lead crawl starts around `+1.0 m` above Stop Target, follows around `+0.3 m`, and blocks positive creep at or below `0.0 m`.
+- Stopped-lead approach blends from normal geometry above `3.0 m/s` to the tight Stop Target Buffer below `1.0 m/s`.
+- Downhill crawl may loosen the Stop Target Buffer using existing grade or response proxies, but must not tighten below the base `+0.3 m` follow target.
+- Excess Gap Closure is speed-aware and planner-approved only; it does not lower steady moving-follow gaps or create an independent lead-physics model.
+- Lead-loss or transition occlusion guard is evidence-sensitive, roughly `1.0-1.5 s`.
+- Free Coast plain-cruise overspeed leeway is dynamic by grade/coast context, bounded around `+5 to +10 mph`; manual set-speed reductions get prompt smooth response instead.
 
 ## Scene Behavior
 
 - Lead-follow and lead-pullaway actuation is planner/MPC-seeded first; `custom-2.0` classifies and preserves planner seed behavior instead of independently creating lead acceleration.
 - Planner seed telemetry maps seed reasons into v2 intents while preserving the raw seed reason as `selectedReason`.
 - Classification-only planner seeds preserve their incoming speed, accel, and jerk trajectories.
-- No-lead launch remains limited to clear model stop context below the no-lead launch speed cap.
-- No-lead stop approach is comfort-bounded by default; `custom-2.0` may exceed the comfort bound only when `shouldStop` is true and a finite model stop distance requires harder decel, clipped to planner accel limits.
+- No-lead launch uses a tapered clear-path gate; missing or stale evidence is not clear-path permission.
+- No-lead stop approach is comfort-bounded by default; `custom-2.0` may exceed the comfort bound only when confirmed stop evidence and finite stop distance require harder decel.
+- Weak no-lead model slowdowns use coast or light decel first, then escalate only as runway shortage becomes real.
+- After a no-lead model stop, Clear Launch Pulse remains blocked until stop evidence clears.
 - Speed-limit reductions remain coast-biased; stronger braking must come from lead, stop, curve, or confirmed map-caution evidence.
-- SCC vision/map curve policy uses only active curve sources and applies the most restrictive active curve target.
-- OSM traffic-control prior `active` is treated as confirmed because that prior already requires model-distance confirmation. Map-only preparation remains future behavior until map-only candidates are exposed separately.
+- SCC vision/map curve policy may relax advisory decel only inside lateral-accel and path-confidence limits.
+- OSM traffic-control prior `active` is treated as confirmed because that prior already requires model-distance confirmation. Raw map-only traffic-control or hazard cues are ignored for control.
 - Confirmed map caution is cap-only and does not set stop intent or get softened by comfort relax.
-- Driver brake/gas input blocks progress floors and comfort relax, while conservative advisory caps may still apply.
+- Driver brake/gas input blocks progress floors and comfort relax, while safety caps and conservative advisory caps may still apply.
+- New-lead and cut-in handling is severity-tiered: close or closing leads suppress progress immediately, while leads already opening the gap transition smoothly.
+- Low-confidence, flickering, or sensor-disagreed leads may suppress acceleration without custom hard braking unless Lead MPC or planner lead safety requires it.
+- Independent stop threats block lead-pullaway progress until the stop threat clears.
+- Clear Launch Pulse may fire while turning, but lateral-accel or traction caps may still restrict it.
+- Low-speed under-response may receive a bounded follow-up increase inside existing accel limits when clear or lead evidence remains valid.
 - Core non-finite scene inputs fail closed; invalid optional speed, curve, or map advisory targets are ignored for that cycle.
-- Normal v2-owned accel changes are jerk-limited by the first-release jerk tunings. Hard model stops, safety caps, and preserved planner lead restrictions may bypass comfort jerk limiting.
+- Normal v2-owned accel changes are jerk-limited by personality-scaled tunings. Hard model stops, safety caps, and preserved planner lead restrictions may bypass comfort jerk limiting when safety requires it.
 
 ## Fail-Closed Behavior
 
@@ -65,5 +80,7 @@ If `custom-2.0` produces an invalid output or raises internally while enabled, l
 ## Validation
 
 - Selector, UI, metadata, and schema tests cover `custom-2.0` exposure.
-- Unit tests cover intent names, progress-core caps, planner seed classification, trajectory preservation, stop approach gates, speed-policy coast bias, map-caution authority, dynamic cruise leeway, scene validation, jerk limiting, and fail-closed behavior.
-- Promotion to `custom-recommended` requires route replay or Drive Lab validation plus a road test.
+- Unit tests cover intent names, personality scaling, progress-core caps, planner seed classification, trajectory preservation, stop tiers, launch gates, Stop Target Buffer boundaries, speed-policy coast bias, map-caution authority, driver-like curve caps, dynamic cruise leeway, scene validation, jerk limiting, and fail-closed behavior.
+- Drive Lab profiling should classify routine-vs-urgent stops by runway/required-decel evidence before route-derived stop comfort targets are changed.
+- Manual-vs-custom route analysis is primary for style tuning; minimal baseline-vs-custom checks remain necessary for regression detection.
+- Tests should assert scenario invariants rather than exact route-derived manual numbers.

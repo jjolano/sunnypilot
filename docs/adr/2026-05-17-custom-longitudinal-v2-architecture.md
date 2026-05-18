@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for initial implementation.
+Accepted for initial implementation. Rollout policy superseded by `2026-05-18-custom-recommended-global-v2.md`.
 
 ## Context
 
@@ -20,11 +20,11 @@ The baseline stack must remain isolated. SCC, SLA, and OSM behavior remain user-
 - progress-core envelopes for no-lead launch, lead pullaway, excess-gap closing, and lead-loss recovery
 - fail-closed validation that requests immediate disable on invalid custom output
 
-The selectable release keeps `custom-recommended` unchanged and does not require v1 parity. All intent names must exist from the first release, even if some are conservative placeholders.
+The initial selectable release kept `custom-recommended` unchanged and did not require v1 parity. All intent names must exist from the first release, even if some are conservative placeholders.
 
 ## Consequences
 
 - `sunnypilot-current` cannot consume v2-only tuning or output transforms.
 - `custom-2.0` starts without runtime baseline fallback output.
 - The v1 stack and baseline shadow fallback telemetry are removed from the public stack boundary.
-- Promotion of `custom-2.0` to `custom-recommended` requires route replay or Drive Lab validation plus a road test.
+- The original route-replay and road-test promotion gate for `custom-recommended` is superseded by the global alias policy.
