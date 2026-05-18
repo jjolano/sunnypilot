@@ -510,6 +510,30 @@ def test_sustained_low_lane_confidence_eventually_blends_but_single_frame_does_n
   assert 0.001 < sustained.desired_curvature < 0.006
 
 
+def test_sustained_low_lane_confidence_keeps_measured_confirmed_low_speed_turn():
+  processor = ModelPathProcessor()
+  low_lane_inputs = dict(
+    v_ego=6.0,
+    desired_curvature=0.020,
+    measured_curvature=0.018,
+    previous_desired_curvature=0.018,
+    lane_line_probs=(0.0, 0.1, 0.2, 0.0),
+    orientation_z=constant_curvature_yaws(0.020, 6.0),
+    orientation_rate_z=constant_curvature_yaw_rates(0.020, 6.0),
+  )
+
+  first = processor.update(make_inputs(**low_lane_inputs))
+  second = processor.update(make_inputs(**low_lane_inputs))
+  sustained = processor.update(make_inputs(**low_lane_inputs))
+
+  assert not first.gated
+  assert not second.gated
+  assert not sustained.gated
+  assert sustained.reason == "low_lane_confidence"
+  assert sustained.quality == pytest.approx(LOW_QUALITY_BLEND_THRESHOLD)
+  assert sustained.desired_curvature == pytest.approx(0.020)
+
+
 def test_high_speed_sustained_low_lane_confidence_does_not_soft_gate():
   processor = ModelPathProcessor()
   low_lane_inputs = dict(
@@ -561,7 +585,7 @@ def test_invalid_path_breaks_sustained_low_lane_confidence_streak():
   assert after_invalid.quality > LOW_QUALITY_BLEND_THRESHOLD
 
 
-def test_low_speed_low_lane_confidence_uses_retained_plausible_curve():
+def test_low_speed_low_lane_confidence_keeps_measured_confirmed_retained_curve():
   processor = ModelPathProcessor()
   seed = processor.update(make_inputs(
     v_ego=6.0,
@@ -582,7 +606,7 @@ def test_low_speed_low_lane_confidence_uses_retained_plausible_curve():
   retained = processor.update(make_inputs(**low_lane_inputs))
 
   assert seed.reason == "ok"
-  assert retained.gated
+  assert not retained.gated
   assert retained.reason == "low_lane_confidence"
   assert retained.desired_curvature == pytest.approx(0.020)
 

@@ -169,6 +169,14 @@ class LongitudinalDecisionTelemetry:
   accel_delta: float
 
 
+@dataclass(frozen=True)
+class LongitudinalDecisionOutput:
+  a_target: float
+  should_stop: bool
+  applied_reason: str
+  held_by_source_stability: bool = False
+
+
 def _fallback_decision(v_target: float, a_target: float, should_stop: bool, reason: str) -> LongitudinalDecision:
   return LongitudinalDecision(
     enabled=False,
@@ -208,11 +216,7 @@ def _driver_intent_contract_reason(candidates: list[LongitudinalCandidate] | tup
   return ""
 
 
-class LongitudinalArbiter:
-  def __init__(self) -> None:
-    self._source_stability_decision: LongitudinalDecision | None = None
-    self._source_stability_release_frames: int = 0
-
+class LongitudinalDecisionCore:
   def decide(self, candidates: list[LongitudinalCandidate] | tuple[LongitudinalCandidate, ...]) -> LongitudinalDecision:
     valid = [candidate for candidate in candidates if candidate.valid]
     suppressed: list[tuple[DecisionSource, str]] = [
@@ -305,13 +309,19 @@ class LongitudinalArbiter:
       active_reason=winner.active_reason,
     )
 
-  def reset_source_stability(self) -> None:
+
+class SourceStabilityHold:
+  def __init__(self) -> None:
+    self._source_stability_decision: LongitudinalDecision | None = None
+    self._source_stability_release_frames: int = 0
+
+  def reset(self) -> None:
     self._source_stability_decision = None
     self._source_stability_release_frames = 0
 
-  def apply_source_stability(self, decision: LongitudinalDecision, v_ego: float | None) -> LongitudinalDecision:
+  def apply(self, decision: LongitudinalDecision, v_ego: float | None) -> LongitudinalDecision:
     if not _source_stability_active(v_ego):
-      self.reset_source_stability()
+      self.reset()
       return decision
 
     previous = self._source_stability_decision
@@ -346,6 +356,21 @@ class LongitudinalArbiter:
   def _record_source_stability_decision(self, decision: LongitudinalDecision) -> None:
     self._source_stability_decision = decision
     self._source_stability_release_frames = SOURCE_STABILITY_RELEASE_FRAMES
+
+
+class LongitudinalArbiter:
+  def __init__(self) -> None:
+    self.core = LongitudinalDecisionCore()
+    self.source_stability = SourceStabilityHold()
+
+  def decide(self, candidates: list[LongitudinalCandidate] | tuple[LongitudinalCandidate, ...]) -> LongitudinalDecision:
+    return self.core.decide(candidates)
+
+  def reset_source_stability(self) -> None:
+    self.source_stability.reset()
+
+  def apply_source_stability(self, decision: LongitudinalDecision, v_ego: float | None) -> LongitudinalDecision:
+    return self.source_stability.apply(decision, v_ego)
 
 
 def _source_stability_active(v_ego: float | None) -> bool:
@@ -412,6 +437,50 @@ def get_active_lead_confidence(*leads: Any) -> float:
   )
 
 
+def apply_decision_source_output(decision: LongitudinalDecision, legacy_a_target: float,
+                                 legacy_should_stop: bool) -> LongitudinalDecisionOutput:
+  held_by_source_stability = _decision_held_by_source_stability(decision)
+  if not decision.enabled or decision.winner == DecisionSource.LEGACY_FALLBACK:
+    return LongitudinalDecisionOutput(
+      legacy_a_target,
+      legacy_should_stop,
+      decision.fallback_reason or "legacy_fallback",
+    )
+  if held_by_source_stability:
+    return LongitudinalDecisionOutput(
+      min(float(decision.a_target), legacy_a_target),
+      legacy_should_stop or decision.should_stop,
+      SOURCE_STABILITY_HOLD_REASON,
+      held_by_source_stability=True,
+    )
+  if decision.winner == DecisionSource.CRUISE:
+    return LongitudinalDecisionOutput(legacy_a_target, legacy_should_stop, "cruise_preserve_legacy")
+  if decision.winner in (DecisionSource.LEAD_MPC, DecisionSource.E2E_STOP, DecisionSource.STOP_LAUNCH):
+    return LongitudinalDecisionOutput(
+      legacy_a_target,
+      legacy_should_stop or decision.should_stop,
+      "physical_hazard_preserve_legacy",
+    )
+  if decision.winner in (
+    DecisionSource.SPEED_LIMIT,
+    DecisionSource.SCC_VISION,
+    DecisionSource.SCC_MAP,
+    DecisionSource.OSM_TRAFFIC_CONTROL,
+  ):
+    return LongitudinalDecisionOutput(
+      min(float(decision.a_target), legacy_a_target),
+      legacy_should_stop or decision.should_stop,
+      "advisory_min_legacy",
+    )
+  if decision.winner == DecisionSource.CRUISE_COAST:
+    return LongitudinalDecisionOutput(
+      float(decision.a_target),
+      legacy_should_stop or decision.should_stop,
+      "cruise_coast_applied",
+    )
+  return LongitudinalDecisionOutput(legacy_a_target, legacy_should_stop, "unknown_preserve_legacy")
+
+
 def apply_longitudinal_decision_output(decision: LongitudinalDecision, legacy_a_target: float,
                                        legacy_should_stop: bool, prev_a_target: float | None = None,
                                        personality: int = log.LongitudinalPersonality.standard,
@@ -435,42 +504,12 @@ def apply_longitudinal_decision_output_with_telemetry(
     dt: float = 0.0, comfort_active: bool = True) -> LongitudinalDecisionTelemetry:
   legacy_a_target = float(legacy_a_target)
   legacy_should_stop = bool(legacy_should_stop)
-  held_by_source_stability = _decision_held_by_source_stability(decision)
-  if not decision.enabled or decision.winner == DecisionSource.LEGACY_FALLBACK:
-    output_a_target = legacy_a_target
-    output_should_stop = legacy_should_stop
-    applied_reason = decision.fallback_reason or "legacy_fallback"
-  elif held_by_source_stability:
-    output_a_target = min(float(decision.a_target), legacy_a_target)
-    output_should_stop = legacy_should_stop or decision.should_stop
-    applied_reason = SOURCE_STABILITY_HOLD_REASON
-  elif decision.winner == DecisionSource.CRUISE:
-    output_a_target = legacy_a_target
-    output_should_stop = legacy_should_stop
-    applied_reason = "cruise_preserve_legacy"
-  elif decision.winner in (DecisionSource.LEAD_MPC, DecisionSource.E2E_STOP, DecisionSource.STOP_LAUNCH):
-    output_a_target = legacy_a_target
-    output_should_stop = legacy_should_stop or decision.should_stop
-    applied_reason = "physical_hazard_preserve_legacy"
-  elif decision.winner in (
-    DecisionSource.SPEED_LIMIT,
-    DecisionSource.SCC_VISION,
-    DecisionSource.SCC_MAP,
-    DecisionSource.OSM_TRAFFIC_CONTROL,
-  ):
-    output_a_target = min(float(decision.a_target), legacy_a_target)
-    output_should_stop = legacy_should_stop or decision.should_stop
-    applied_reason = "advisory_min_legacy"
-  elif decision.winner == DecisionSource.CRUISE_COAST:
-    output_a_target = float(decision.a_target)
-    output_should_stop = legacy_should_stop or decision.should_stop
-    applied_reason = "cruise_coast_applied"
-  else:
-    output_a_target = legacy_a_target
-    output_should_stop = legacy_should_stop
-    applied_reason = "unknown_preserve_legacy"
+  output = apply_decision_source_output(decision, legacy_a_target, legacy_should_stop)
+  output_a_target = output.a_target
+  output_should_stop = output.should_stop
+  applied_reason = output.applied_reason
 
-  if comfort_active and not held_by_source_stability and not output_should_stop and prev_a_target is not None:
+  if comfort_active and not output.held_by_source_stability and not output_should_stop and prev_a_target is not None:
     pre_comfort_a_target = output_a_target
     output_a_target = apply_personality_accel_comfort(decision, output_a_target, prev_a_target, personality, dt)
     if output_a_target != pre_comfort_a_target:

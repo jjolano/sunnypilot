@@ -4,9 +4,11 @@ from types import SimpleNamespace
 import pytest
 
 from openpilot.tools.drive_lab.lateral_torque_event_report import (
+  build_lateral_low_speed_report,
   build_lateral_torque_ab_report,
   build_lateral_torque_event_report,
   build_lateral_torque_lag_report,
+  render_lateral_low_speed_report,
   load_lateral_torque_event_report,
   render_lateral_torque_ab_report,
   render_lateral_torque_lag_report,
@@ -36,7 +38,12 @@ def msg(kind: str, t_s: float, **payload):
 
 def sample_msgs(t_s: float, output: float, *, unshaped: float | None = None, steering_angle: float = 0.0,
                  desired_accel: float = 0.05, actual_accel: float = 0.02, shaping_reason: int = 0,
-                 shaping_active: bool = False, steer_limited: bool = False, learner_confidence: float = 0.0):
+                 shaping_active: bool = False, steer_limited: bool = False, learner_confidence: float = 0.0,
+                 v_ego: float = 18.0, steering_rate: float = 0.0, left_blinker: bool = False,
+                 right_blinker: bool = False, lane_change_state: str = "off", path_gated: bool = False,
+                 path_reason: str = "ok", path_quality: float = 1.0, raw_curvature: float = 0.0,
+                 processed_curvature: float = 0.0, desired_curvature: float = 0.0,
+                 include_model_path: bool = True):
   adaptive = SimpleNamespace(
     shapingActive=shaping_active,
     shapingReason=shaping_reason,
@@ -54,13 +61,26 @@ def sample_msgs(t_s: float, output: float, *, unshaped: float | None = None, ste
     actualLateralAccel=actual_accel,
     adaptiveTorqueState=adaptive,
   )
+  controls_state = {
+    "curvature": processed_curvature,
+    "desiredCurvature": desired_curvature,
+    "lateralControlState": FakeUnion(torqueState=torque_state),
+  }
+  if include_model_path:
+    controls_state["modelPathState"] = SimpleNamespace(
+      gated=path_gated,
+      quality=path_quality,
+      reason=FakeEnum(path_reason),
+      rawDesiredCurvature=raw_curvature,
+      processedDesiredCurvature=processed_curvature,
+    )
   return [
-    msg("carState", t_s, vEgo=18.0, steeringPressed=False, leftBlinker=False, rightBlinker=False, steeringAngleDeg=steering_angle,
-        steeringRateDeg=0.0),
+    msg("carState", t_s, vEgo=v_ego, steeringPressed=False, leftBlinker=left_blinker, rightBlinker=right_blinker,
+        steeringAngleDeg=steering_angle, steeringRateDeg=steering_rate),
     msg("carControl", t_s, latActive=True),
     msg("carOutput", t_s, actuatorsOutput=SimpleNamespace(torque=output * 0.8)),
-    msg("modelV2", t_s, meta=SimpleNamespace(laneChangeState=FakeEnum("off"))),
-    msg("controlsState", t_s, lateralControlState=FakeUnion(torqueState=torque_state)),
+    msg("modelV2", t_s, meta=SimpleNamespace(laneChangeState=FakeEnum(lane_change_state))),
+    msg("controlsState", t_s, **controls_state),
   ]
 
 
@@ -175,3 +195,90 @@ def test_lateral_torque_ab_report_shows_candidate_lag_delta():
 
   assert "Lateral torque A/B report" in rendered
   assert report.deltas["curve.best_lag_s"] < 0.0
+
+
+def test_low_speed_lateral_report_buckets_path_and_torque_metrics():
+  msgs = []
+  for i in range(24):
+    t = i * 0.1
+    sign = 1.0 if (i // 3) % 2 == 0 else -1.0
+    msgs.extend(sample_msgs(
+      t,
+      output=0.10 * sign,
+      unshaped=0.12 * sign,
+      v_ego=4.0,
+      steering_angle=6.0 * sign,
+      steering_rate=12.0 * sign,
+      desired_accel=0.12 * sign,
+      actual_accel=0.08 * sign,
+      path_gated=i % 2 == 0,
+      path_reason="highPathStd" if i % 2 == 0 else "ok",
+      path_quality=0.6 if i % 2 == 0 else 1.0,
+      raw_curvature=0.004 * sign,
+      processed_curvature=0.003 * sign,
+      desired_curvature=0.0028 * sign,
+    ))
+
+  report = build_lateral_low_speed_report(msgs, source="synthetic", already_sorted=True)
+  rendered = render_lateral_low_speed_report(report)
+  tier = next(metric for metric in report.tiers if metric.segment == "3-5mps")
+
+  assert "Low-speed lateral report" in rendered
+  assert "Primary tiers:" in rendered
+  assert "Signal-tagged tiers:" in rendered
+  assert "signal-tagged categories:" in rendered
+  assert tier.sample_count == 24
+  assert tier.abs_error_p95 > 0.0
+  assert tier.output_reversals > 0
+  assert tier.model_path_gated_percent == pytest.approx(50.0)
+  assert tier.raw_processed_curvature_delta_p95 == pytest.approx(0.001)
+  assert tier.model_path_reason_counts["highPathStd"] == 12
+  assert tier.model_path_reason_counts["ok"] == 12
+
+
+def test_low_speed_lateral_report_excludes_lane_changes_from_primary_tiers():
+  msgs = []
+  for i in range(12):
+    msgs.extend(sample_msgs(
+      i * 0.1,
+      output=0.1,
+      v_ego=4.0,
+      left_blinker=True,
+      lane_change_state="laneChangeStarting",
+      desired_accel=0.12,
+      actual_accel=0.09,
+    ))
+
+  report = build_lateral_low_speed_report(msgs, already_sorted=True)
+  signal_tier = next(metric for metric in report.signal_tagged_tiers if metric.segment == "3-5mps")
+
+  assert report.lane_change_excluded_count == 12
+  assert all(metric.sample_count == 0 for metric in report.tiers)
+  assert signal_tier.sample_count == 12
+  assert signal_tier.abs_error_p95 > 0.0
+  assert signal_tier.model_path_reason_counts["ok"] == 12
+  assert report.signal_tagged_category_counts == {"blinker_only": 0, "lane_change_state_only": 0, "both": 12}
+  assert report.signal_tagged_state_counts["laneChangeStarting"] == 12
+
+
+def test_low_speed_lateral_report_handles_missing_path_state():
+  msgs = []
+  for i in range(10):
+    sign = 1.0 if i % 2 == 0 else -1.0
+    msgs.extend(sample_msgs(
+      i * 0.1,
+      output=0.08 * sign,
+      v_ego=6.0,
+      steering_angle=4.0 * sign,
+      desired_accel=0.10 * sign,
+      actual_accel=0.06 * sign,
+      desired_curvature=0.002 * sign,
+      include_model_path=False,
+    ))
+
+  report = build_lateral_low_speed_report(msgs, already_sorted=True)
+  tier = next(metric for metric in report.tiers if metric.segment == "5-8mps")
+
+  assert tier.sample_count == 10
+  assert tier.model_path_reason_counts["unknown"] == 10
+  assert tier.model_path_quality_median == pytest.approx(0.0)
