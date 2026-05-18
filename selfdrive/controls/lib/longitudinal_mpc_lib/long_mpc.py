@@ -143,6 +143,7 @@ LEAD_STOP_APPROACH_V_LEAD_BP = [0.3, 1.0]
 LEAD_STOP_APPROACH_REQUIRED_DECEL_BP = [0.6, 1.4]
 LEAD_STOP_APPROACH_DECEL_CAP = 1.2
 LEAD_STOP_APPROACH_COST = 10.0
+LEAD_STOP_APPROACH_URGENCY_COST_FLOOR = 0.25
 MOVING_LEAD_STOP_APPROACH_V_EGO_BP = [4.0, 12.0]
 MOVING_LEAD_STOP_APPROACH_V_LEAD_BP = [1.0, 3.0, 18.0, 22.0]
 MOVING_LEAD_STOP_APPROACH_DECEL_BP = [0.25, 0.9]
@@ -184,6 +185,8 @@ LEAD_APPROACH_CAUTION_TTC_MAX_BLEND = 0.75
 MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FULL = 1.0
 MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FADE = 2.0
 MOVING_LEAD_STOP_APPROACH_COST = 50.0
+MOVING_LEAD_STOP_APPROACH_MILD_RELAX_V_EGO_BP = [15.0, 18.0]
+MOVING_LEAD_STOP_APPROACH_MILD_RELAX_DECEL_BP = [0.3, 0.6]
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED = 0.8
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_STANDARD = 1.0
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_AGGRESSIVE = 1.3
@@ -1025,6 +1028,10 @@ def get_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follo
   stopped_blend = np.interp(v_lead, LEAD_STOP_APPROACH_V_LEAD_BP, [1.0, 0.0])
   decel_blend = np.interp(required_decel, LEAD_STOP_APPROACH_REQUIRED_DECEL_BP, [0.0, 1.0])
   urgency_blend = 1.0 - get_lead_stop_runway_urgency(x_lead, v_ego, v_lead, t_follow, a_lead)
+  urgency_blend = np.maximum(
+    urgency_blend,
+    LEAD_STOP_APPROACH_URGENCY_COST_FLOOR * speed_blend * stopped_blend * decel_blend,
+  )
   comfort_blend = speed_blend * stopped_blend * decel_blend * urgency_blend
   if np.all(comfort_blend <= 0.0):
     return np.zeros_like(x_lead), np.zeros_like(x_lead)
@@ -1169,6 +1176,12 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
     [pre_target_safety_threshold, pre_target_safety_threshold + PRE_TARGET_RUNWAY_DECEL_BLEND_WIDTH],
     [0.0, 1.0],
   )
+  danger_ttc = get_time_to_gap(x_lead, min_gap, closing_speed)
+  danger_ttc_blend = 1.0 - np.interp(
+    danger_ttc,
+    [MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FULL, MOVING_LEAD_STOP_APPROACH_DANGER_TTC_FADE],
+    [0.0, 1.0],
+  )
   danger_safety_blend = closing_blend * np.interp(
     danger_margin,
     [0.0, LEAD_STOP_RUNWAY_URGENCY_DANGER_MARGIN],
@@ -1204,10 +1217,27 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
   near_desired_recovery_blend *= 1.0 - required_runway_blend
   near_desired_recovery_block_blend = np.where(pre_target, pre_target_brake_blend, danger_safety_blend)
   near_desired_recovery_blend *= 1.0 - near_desired_recovery_block_blend
+  caution_gap_span = np.maximum(caution_gap - min_gap, 1e-3)
+  caution_gap_brake_blend = np.clip((caution_gap - x_lead) / caution_gap_span, 0.0, 1.0)
+  nonurgent_brake_blend = np.maximum.reduce([
+    caution_gap_brake_blend,
+    danger_ttc_blend,
+    danger_safety_blend,
+    required_runway_blend,
+  ])
+  nonurgent_limited_target = coast_limited_target + nonurgent_brake_blend * (target - coast_limited_target)
+  recovered_target = target + near_desired_recovery_blend * (coast_limited_target - target)
+  mild_decel_relax_blend = np.interp(v_ego, MOVING_LEAD_STOP_APPROACH_MILD_RELAX_V_EGO_BP, [0.0, 1.0])
+  mild_decel_relax_blend *= 1.0 - np.interp(
+    np.clip(-a_lead, 0.0, MOVING_LEAD_STOP_APPROACH_MILD_RELAX_DECEL_BP[-1]),
+    MOVING_LEAD_STOP_APPROACH_MILD_RELAX_DECEL_BP,
+    [0.0, 1.0],
+  )
+  relaxed_target = recovered_target + mild_decel_relax_blend * (np.maximum(recovered_target, nonurgent_limited_target) - recovered_target)
   target = np.where(
     pre_target,
     coast_limited_target + pre_target_brake_blend * (pre_target_target - coast_limited_target),
-    target + near_desired_recovery_blend * (coast_limited_target - target),
+    relaxed_target,
   )
 
   urgent_bypass_blend = np.maximum.reduce([
