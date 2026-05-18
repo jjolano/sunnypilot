@@ -1189,6 +1189,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     lead_gap_excess = float(lead_one.dRel) - get_lead_stop_presentation_distance(
       v_ego, float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.modelProb)
     ) if lead_one.status else 0.0
+    lead_v_rel = float(getattr(lead_one, "vRel", float(lead_one.vLeadK) - v_ego)) if lead_one.status else 0.0
     radar_predicted_v_lead, radar_predicted_gap_opening = (
       get_predicted_lead_pullaway(float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.aLeadTau)) if lead_one.status else (0.0, 0.0)
     )
@@ -1204,6 +1205,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     )
     creep_pullaway_release = lead_one.status and (
       float(lead_one.vLeadK) >= CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED or radar_predicted_pullaway or model_predicted_pullaway
+    )
+    confirmed_creep_pullaway_launch = lead_one.status and creep_pullaway_release and (radar_predicted_pullaway or model_predicted_pullaway)
+    confirmed_creep_pullaway_stop_release = confirmed_creep_pullaway_launch and not (
+      e2e_active and output_should_stop_e2e and output_a_target_e2e < 0.0
+    )
+    lead_pullaway_predicted_gap_opening = max(
+      radar_predicted_gap_opening if radar_predicted_pullaway else 0.0,
+      model_predicted_gap_opening if model_predicted_pullaway else 0.0,
+    )
+    lead_pullaway_runway_excess = lead_gap_excess + lead_pullaway_predicted_gap_opening
+    allow_creep_pullaway_release = creep_pullaway_release and (
+      not (e2e_active and output_should_stop_e2e) or confirmed_creep_pullaway_stop_release
     )
     prev_creep_to_stop_gap_active = self.creep_to_stop_gap_active
     self.creep_to_stop_gap_active, creep_a_target = get_creep_to_stop_gap_accel(
@@ -1222,7 +1235,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     custom_creep_to_stop_gap_selection = PLANNER_SEED_CAP
     custom_creep_to_stop_gap_accel_max = None
     if self.creep_to_stop_gap_active:
-      allow_creep_pullaway_release = creep_pullaway_release and not (e2e_active and output_should_stop_e2e)
       if creep_a_target >= 0.0:
         if not self.output_should_stop or allow_creep_pullaway_release or not (e2e_active and output_should_stop_e2e):
           custom_creep_to_stop_gap_a_target = creep_a_target
@@ -1331,28 +1343,27 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       v_ego < CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP_MAX_V_EGO and \
       CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS <= lead_gap_excess <= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MAX_EXCESS and \
       float(lead_one.aLeadK) >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MIN_LEAD_ACCEL and \
-      creep_pullaway_release and (radar_predicted_pullaway or model_predicted_pullaway)
-    creep_pullaway_launch = lead_one.status and not self.output_should_stop and not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
+      confirmed_creep_pullaway_stop_release
+    creep_pullaway_launch = lead_one.status and (not self.output_should_stop or confirmed_creep_pullaway_stop_release) and \
+      not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
       not force_slow_decel and not reset_state and \
       (v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM or continuing_creep_pullaway_launch) and \
       float(lead_one.modelProb) >= CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_PROB and \
       ((CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS <= lead_gap_excess <= CREEP_TO_STOP_GAP_MAX_EXCESS and
         self.creep_to_stop_gap_active and creep_a_target > 0.0) or continuing_creep_pullaway_launch) and \
-      creep_pullaway_release and \
-      (radar_predicted_pullaway or model_predicted_pullaway)
+      confirmed_creep_pullaway_stop_release
     custom_creep_pullaway_launch_floor = None
     custom_creep_pullaway_launch_cap = None
+    lead_pullaway_crawl_cap_released = lead_one.status and creep_pullaway_release and \
+      lead_pullaway_runway_excess >= CREEP_TO_STOP_GAP_START_EXCESS and lead_v_rel > 0.0 and float(lead_one.aLeadK) >= 0.0
     if creep_pullaway_launch:
       custom_creep_to_stop_gap_accel_max = None
-      launch_predicted_gap_opening = max(
-        radar_predicted_gap_opening if radar_predicted_pullaway else 0.0,
-        model_predicted_gap_opening if model_predicted_pullaway else 0.0,
-      )
-      launch_accel_max = get_creep_pullaway_launch_accel_max(lead_gap_excess, launch_predicted_gap_opening)
-      crawl_accel_max = get_lead_crawl_accel_max(
-        float(lead_one.dRel), v_ego, float(lead_one.vLeadK), float(lead_one.aLeadK), get_T_FOLLOW(sm['selfdriveState'].personality),
-      )
-      launch_accel_max = min(launch_accel_max, float(crawl_accel_max))
+      launch_accel_max = get_creep_pullaway_launch_accel_max(lead_gap_excess, lead_pullaway_predicted_gap_opening)
+      if not lead_pullaway_crawl_cap_released:
+        crawl_accel_max = get_lead_crawl_accel_max(
+          float(lead_one.dRel), v_ego, float(lead_one.vLeadK), float(lead_one.aLeadK), get_T_FOLLOW(sm['selfdriveState'].personality),
+        )
+        launch_accel_max = min(launch_accel_max, float(crawl_accel_max))
       custom_creep_pullaway_launch_floor = CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
       custom_creep_pullaway_launch_cap = launch_accel_max
 
@@ -1429,7 +1440,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         custom_pullaway_accel_step_floor = prev_output_a_target - CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP
       custom_pullaway_accel_step_cap = prev_output_a_target + CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP
     custom_lead_crawl_accel_cap = None
-    if lead_one.status and not creep_pullaway_launch and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO:
+    if lead_one.status and not creep_pullaway_launch and not lead_pullaway_crawl_cap_released and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO:
       custom_lead_crawl_accel_cap = LEAD_CRAWL_ACCEL_LIMIT
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.planner_seed_candidates = []
@@ -1505,14 +1516,16 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if custom_creep_pullaway_launch_floor is not None:
       creep_pullaway_launch_candidate = build_planner_seed_accel_candidate(
         self, "creep_pullaway_launch", custom_creep_pullaway_launch_floor, has_lead,
-        "creep_pullaway_launch", accel_clip, selection=PLANNER_SEED_FLOOR,
+        "creep_pullaway_launch", accel_clip, should_stop=False, selection=PLANNER_SEED_FLOOR,
+        group="creep_pullaway_launch",
       )
       if creep_pullaway_launch_candidate is not None:
         self.planner_seed_candidates.append(creep_pullaway_launch_candidate)
     if custom_creep_pullaway_launch_cap is not None:
       creep_pullaway_launch_cap_candidate = build_planner_seed_accel_candidate(
         self, "creep_pullaway_launch_accel_cap", custom_creep_pullaway_launch_cap, has_lead,
-        "creep_pullaway_launch_accel_cap", accel_clip, force=True,
+        "creep_pullaway_launch_accel_cap", accel_clip, should_stop=False, force=True,
+        group="creep_pullaway_launch",
       )
       if creep_pullaway_launch_cap_candidate is not None:
         self.planner_seed_candidates.append(creep_pullaway_launch_cap_candidate)
@@ -1631,7 +1644,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       gas_pressed=bool(sm['carState'].gasPressed),
       has_lead=bool(has_lead),
       lead_v=float(lead_one.vLeadK) if lead_one.status else 0.0,
-      lead_v_rel=float(getattr(lead_one, "vRel", float(lead_one.vLeadK) - v_ego)) if lead_one.status else 0.0,
+      lead_v_rel=lead_v_rel,
       lead_gap_excess=float(lead_gap_excess),
       lead_opening_prediction=bool(radar_predicted_pullaway or model_predicted_pullaway),
       lead_confirmed_pullaway=bool(creep_pullaway_release),

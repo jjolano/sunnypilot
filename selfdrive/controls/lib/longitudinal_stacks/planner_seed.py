@@ -8,6 +8,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import Longi
 PLANNER_SEED_CAP = "cap"
 PLANNER_SEED_FLOOR = "floor"
 POST_CAP_FLOOR_GROUPS = {"lead_stop_approach_slew", "low_speed_pullaway_accel_step"}
+STOP_INTENT_RELEASE_GROUPS = {"creep_pullaway_launch"}
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,8 @@ def _candidate_is_post_cap_floor(candidate: PlannerSeedCandidate) -> bool:
 
 def _merge_stop_intent(selected: PlannerSeedCandidate, candidates: Iterable[PlannerSeedCandidate]) -> PlannerSeedCandidate:
   if selected.output.should_stop:
+    return selected
+  if selected.group in STOP_INTENT_RELEASE_GROUPS:
     return selected
   stop_candidates = [candidate for candidate in candidates if candidate.output.should_stop]
   if not stop_candidates:

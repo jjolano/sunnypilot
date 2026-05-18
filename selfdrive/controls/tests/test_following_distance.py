@@ -425,6 +425,33 @@ def test_creep_pullaway_launch_assist_boosts_confirmed_standstill_pullaway(monke
   assert planner.output_a_target >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
 
 
+def test_creep_pullaway_launch_releases_e2e_stop_for_confirmed_pullaway(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (0.0, False))
+  monkeypatch.setattr(
+    longitudinal_planner,
+    "get_predicted_lead_pullaway",
+    lambda *_args, **_kwargs: (1.2, CREEP_TO_STOP_GAP_START_EXCESS),
+  )
+  planner = make_planner_for_stop_preservation(v_ego=0.0)
+  stop_target = get_lead_stop_presentation_distance(0.0, 0.05, 0.8, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + 0.40,
+    vLeadK=0.05,
+    modelProb=1.0,
+    aLeadK=0.8,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.0, lead, desired_accel=0.0, should_stop=True))
+
+  assert planner.creep_to_stop_gap_active
+  assert not planner.output_should_stop
+  assert planner.output_a_target >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
+
+
 def test_creep_pullaway_launch_accel_cap_scales_with_predicted_runway():
   weak_cap = get_creep_pullaway_launch_accel_max(0.4, CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING)
   medium_cap = get_creep_pullaway_launch_accel_max(0.8, 0.8)
@@ -493,6 +520,48 @@ def test_creep_pullaway_launch_assist_persists_while_lead_keeps_opening(monkeypa
   assert not planner.creep_to_stop_gap_active
   assert not planner.output_should_stop
   assert planner.output_a_target >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
+
+
+def test_low_speed_lead_crawl_cap_releases_for_opening_pullaway_runway(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (1.1, False))
+  planner = make_planner_for_stop_preservation(v_ego=0.6)
+  planner.output_a_target = 1.1
+  stop_target = get_lead_stop_presentation_distance(0.6, 1.2, 0.2, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + CREEP_TO_STOP_GAP_START_EXCESS + 0.2,
+    vLeadK=1.2,
+    modelProb=1.0,
+    aLeadK=0.2,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.6, lead, desired_accel=1.1, should_stop=False))
+
+  assert planner.output_a_target > LEAD_CRAWL_ACCEL_LIMIT
+
+
+def test_low_speed_lead_crawl_cap_reapplies_for_closing_decelerating_lead(monkeypatch):
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (1.1, False))
+  planner = make_planner_for_stop_preservation(v_ego=0.8)
+  planner.output_a_target = 1.1
+  stop_target = get_lead_stop_presentation_distance(0.8, 0.5, -0.2, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + CREEP_TO_STOP_GAP_START_EXCESS + 0.2,
+    vLeadK=0.5,
+    modelProb=1.0,
+    aLeadK=-0.2,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(0.8, lead, desired_accel=1.1, should_stop=False))
+
+  assert planner.output_a_target <= LEAD_CRAWL_ACCEL_LIMIT
 
 
 def test_creep_pullaway_brakes_after_positive_pullaway_without_delayed_clipping(monkeypatch):

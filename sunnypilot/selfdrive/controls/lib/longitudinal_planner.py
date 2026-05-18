@@ -32,19 +32,14 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
-from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import (
-  SmartCruiseControl,
-  SunnypilotCurrentSmartCruiseControl,
-)
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
 from openpilot.sunnypilot.selfdrive.controls.lib.osm_traffic_control_prior import OsmTrafficControlPrior
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import (
   SpeedLimitAssist,
-  SunnypilotCurrentSpeedLimitAssist,
   V_CRUISE_UNSET,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import (
   SpeedLimitResolver,
-  SunnypilotCurrentSpeedLimitResolver,
 )
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
@@ -279,9 +274,6 @@ class LongitudinalPlannerSP:
     self.osm_traffic_control_prior = OsmTrafficControlPrior()
     self.resolver = SpeedLimitResolver()
     self.sla = SpeedLimitAssist(CP, CP_SP)
-    self.sunnypilot_current_scc = SunnypilotCurrentSmartCruiseControl()
-    self.sunnypilot_current_resolver = SunnypilotCurrentSpeedLimitResolver()
-    self.sunnypilot_current_sla = SunnypilotCurrentSpeedLimitAssist(CP, CP_SP)
     self.active_scc = self.scc
     self.active_resolver = self.resolver
     self.active_sla = self.sla
@@ -312,12 +304,6 @@ class LongitudinalPlannerSP:
     if not is_custom_stack(stack_name):
       return None
     return make_custom_longitudinal_stack(stack_name)
-
-  def custom_longitudinal_targets_enabled(self) -> bool:
-    resolution = getattr(self, "longitudinal_stack_resolution", None)
-    if resolution is None:
-      return True
-    return is_custom_stack(getattr(resolution, "resolved_stack", ""))
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -355,35 +341,6 @@ class LongitudinalPlannerSP:
 
     long_enabled = sm['carControl'].enabled
     long_override = sm['carControl'].cruiseControl.override
-
-    if not self.custom_longitudinal_targets_enabled():
-      scc = getattr(self, "sunnypilot_current_scc", self.scc)
-      resolver = getattr(self, "sunnypilot_current_resolver", self.resolver)
-      sla = getattr(self, "sunnypilot_current_sla", self.sla)
-      self.active_scc = scc
-      self.active_resolver = resolver
-      self.active_sla = sla
-      self._speed_limit_handoff_active = False
-      self._speed_limit_active_prev = False
-      self.decision_candidates_sp = []
-
-      scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
-      resolver.update(v_ego, sm)
-
-      has_speed_limit = resolver.speed_limit_valid or resolver.speed_limit_last_valid
-      sla.update(long_enabled, long_override, v_ego, a_ego, v_cruise_cluster, resolver.speed_limit,
-                 resolver.speed_limit_final_last, has_speed_limit, resolver.distance, self.events_sp)
-
-      targets = {
-        LongitudinalPlanSource.cruise: (v_cruise, a_ego),
-        LongitudinalPlanSource.sccVision: (scc.vision.output_v_target, scc.vision.output_a_target),
-        LongitudinalPlanSource.sccMap: (scc.map.output_v_target, scc.map.output_a_target),
-        LongitudinalPlanSource.speedLimitAssist: (sla.output_v_target, sla.output_a_target),
-      }
-
-      self.source = min(targets, key=lambda k: targets[k][0])
-      self.output_v_target, self.output_a_target = targets[self.source]
-      return self.output_v_target, self.output_a_target
 
     self.active_scc = self.scc
     self.active_resolver = self.resolver
