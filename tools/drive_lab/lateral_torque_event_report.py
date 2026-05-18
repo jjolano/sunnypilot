@@ -28,6 +28,12 @@ SHAPING_REASON_NAMES = {
   1 << 14: "SAFETY_LIMITED_SIGN_HOLD",
 }
 
+LOW_SPEED_TIER_BOUNDS = ((0.0, 3.0), (3.0, 5.0), (5.0, 8.0), (8.0, 12.0))
+LOW_SPEED_REPORT_MAX_SPEED = LOW_SPEED_TIER_BOUNDS[-1][1]
+LOW_SPEED_TURN_MIN_LAT_ACCEL = 0.035
+LOW_SPEED_TURN_MIN_CURVATURE = 0.0015
+LOW_SPEED_TURN_MIN_STEERING_ANGLE_DEG = 3.0
+
 
 @dataclass(frozen=True)
 class LateralTorqueEvent:
@@ -98,6 +104,42 @@ class LateralTorqueLagMetrics:
 
 
 @dataclass(frozen=True)
+class LateralLowSpeedTierMetrics:
+  segment: str
+  speed_lower_mps: float
+  speed_upper_mps: float
+  sample_count: int
+  best_lag_s: float | None
+  desired_actual_corr: float | None
+  abs_error_mean: float
+  abs_error_p95: float
+  output_reversals: int
+  unshaped_output_reversals: int
+  desired_lateral_accel_reversals: int
+  actual_lateral_accel_reversals: int
+  steering_rate_p95: float
+  steer_limited_percent: float
+  high_steering_rate_percent: float
+  raw_processed_curvature_delta_p95: float
+  desired_processed_curvature_delta_p95: float
+  model_path_gated_percent: float
+  model_path_quality_median: float
+  model_path_reason_counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class LateralLowSpeedReport:
+  source: str
+  sample_count: int
+  duration_s: float
+  lane_change_excluded_count: int
+  tiers: list[LateralLowSpeedTierMetrics]
+
+  def to_dict(self) -> dict[str, Any]:
+    return asdict(self)
+
+
+@dataclass(frozen=True)
 class LateralTorqueLagReport:
   source: str
   sample_count: int
@@ -140,6 +182,13 @@ class _TorqueSample:
   output_cap: float
   steer_limit_error: float
   learner_confidence: float
+  current_curvature: float
+  desired_curvature: float
+  raw_desired_curvature: float
+  processed_desired_curvature: float
+  model_path_quality: float
+  model_path_gated: bool
+  model_path_reason: str
 
 
 def build_lateral_torque_event_report(
@@ -223,6 +272,31 @@ def build_lateral_torque_lag_report(
   )
 
 
+def build_lateral_low_speed_report(
+  msgs: list[Any],
+  source: str = "unknown",
+  already_sorted: bool = False,
+) -> LateralLowSpeedReport:
+  ordered_msgs = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
+  samples = _extract_torque_samples(ordered_msgs)
+  if not samples:
+    return LateralLowSpeedReport(source, 0, 0.0, 0, [])
+  cols = _columns(samples)
+  base = _low_speed_primary_mask(cols)
+  turn = _low_speed_turn_mask(cols)
+  tiers = [
+    _low_speed_tier_metrics(cols, _tier_label(lower, upper), lower, upper, base & turn & _speed_tier_mask(cols, lower, upper))
+    for lower, upper in LOW_SPEED_TIER_BOUNDS
+  ]
+  return LateralLowSpeedReport(
+    source=source,
+    sample_count=len(samples),
+    duration_s=float(cols["t"][-1] - cols["t"][0]) if len(samples) > 1 else 0.0,
+    lane_change_excluded_count=_lane_change_excluded_count(cols),
+    tiers=tiers,
+  )
+
+
 def build_lateral_torque_ab_report(
   baseline_msgs: list[Any],
   candidate_msgs: list[Any],
@@ -249,6 +323,30 @@ def render_lateral_torque_lag_report(report: LateralTorqueLagReport) -> str:
       f"err_mean={metric.abs_error_mean:.3f} err95={metric.abs_error_p95:.3f} "
       f"rate95={metric.steering_rate_p95:.2f} out_flips={metric.output_reversals} "
       f"limited={metric.steer_limited_percent:.1f}% high_rate={metric.high_steering_rate_percent:.1f}%"
+    )
+  return "\n".join(lines)
+
+
+def render_lateral_low_speed_report(report: LateralLowSpeedReport) -> str:
+  lines = [
+    f"Low-speed lateral report: {report.source}",
+    f"samples: {report.sample_count}",
+    f"duration: {report.duration_s:.1f} s",
+    f"lane-change excluded samples: {report.lane_change_excluded_count}",
+  ]
+  for metric in report.tiers:
+    lag = "n/a" if metric.best_lag_s is None else f"{metric.best_lag_s:.3f}s"
+    corr = "n/a" if metric.desired_actual_corr is None else f"{metric.desired_actual_corr:.3f}"
+    reasons = ",".join(f"{name}:{count}" for name, count in sorted(metric.model_path_reason_counts.items())) or "none"
+    lines.append(
+      f"{metric.segment}: samples={metric.sample_count} lag={lag} corr={corr} "
+      f"err_mean={metric.abs_error_mean:.3f} err95={metric.abs_error_p95:.3f} "
+      f"out_flips={metric.output_reversals} unshaped_flips={metric.unshaped_output_reversals} "
+      f"desired_flips={metric.desired_lateral_accel_reversals} actual_flips={metric.actual_lateral_accel_reversals} "
+      f"rate95={metric.steering_rate_p95:.2f} limited={metric.steer_limited_percent:.1f}% "
+      f"high_rate={metric.high_steering_rate_percent:.1f}% path_gated={metric.model_path_gated_percent:.1f}% "
+      f"path_quality={metric.model_path_quality_median:.2f} raw_proc_k95={metric.raw_processed_curvature_delta_p95:.5f} "
+      f"desired_proc_k95={metric.desired_processed_curvature_delta_p95:.5f} reasons={reasons}"
     )
   return "\n".join(lines)
 
@@ -287,6 +385,7 @@ def _extract_torque_samples(msgs: list[Any]) -> list[_TorqueSample]:
     lateral_state = safe_get(payload, "lateralControlState")
     lateral_payload = safe_get(lateral_state, format_enum(lateral_state.which()) if lateral_state is not None and hasattr(lateral_state, "which") else "torqueState", lateral_state)
     adaptive = safe_get(lateral_payload, "adaptiveTorqueState")
+    model_path_state = safe_get(payload, "modelPathState")
     samples.append(_TorqueSample(
       t=msg_time_s(msg, base_mono_time),
       v_ego=_finite_float(safe_get(car_state, "vEgo")),
@@ -308,6 +407,13 @@ def _extract_torque_samples(msgs: list[Any]) -> list[_TorqueSample]:
       output_cap=_finite_float(safe_get(adaptive, "outputCap"), 1.0),
       steer_limit_error=_finite_float(safe_get(adaptive, "steerLimitError")),
       learner_confidence=_finite_float(safe_get(adaptive, "modelConfidence")),
+      current_curvature=_finite_float(safe_get(payload, "curvature"), float("nan")),
+      desired_curvature=_finite_float(safe_get(payload, "desiredCurvature"), float("nan")),
+      raw_desired_curvature=_finite_float(safe_get(model_path_state, "rawDesiredCurvature"), float("nan")),
+      processed_desired_curvature=_finite_float(safe_get(model_path_state, "processedDesiredCurvature"), float("nan")),
+      model_path_quality=_finite_float(safe_get(model_path_state, "quality"), float("nan")),
+      model_path_gated=bool(safe_get(model_path_state, "gated", False)),
+      model_path_reason=format_enum(safe_get(model_path_state, "reason")),
     ))
   return samples
 
@@ -334,6 +440,13 @@ def _columns(samples: list[_TorqueSample]) -> dict[str, np.ndarray]:
     "output_cap": np.array([sample.output_cap for sample in samples], dtype=float),
     "steer_limit_error": np.array([sample.steer_limit_error for sample in samples], dtype=float),
     "learner_confidence": np.array([sample.learner_confidence for sample in samples], dtype=float),
+    "current_curvature": np.array([sample.current_curvature for sample in samples], dtype=float),
+    "desired_curvature": np.array([sample.desired_curvature for sample in samples], dtype=float),
+    "raw_desired_curvature": np.array([sample.raw_desired_curvature for sample in samples], dtype=float),
+    "processed_desired_curvature": np.array([sample.processed_desired_curvature for sample in samples], dtype=float),
+    "model_path_quality": np.array([sample.model_path_quality for sample in samples], dtype=float),
+    "model_path_gated": np.array([float(sample.model_path_gated) for sample in samples], dtype=float),
+    "model_path_reason": np.array([sample.model_path_reason for sample in samples], dtype=object),
   }
 
 
@@ -442,6 +555,80 @@ def _base_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
   )
 
 
+def _low_speed_primary_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
+  return (
+    (cols["lat_active"] > 0.5)
+    & (cols["v_ego"] >= 0.0)
+    & (cols["v_ego"] < LOW_SPEED_REPORT_MAX_SPEED)
+    & (cols["steering_pressed"] < 0.5)
+    & (cols["blinker_active"] < 0.5)
+    & (cols["lane_change_off"] > 0.5)
+    & np.isfinite(cols["output"])
+    & np.isfinite(cols["unshaped_output"])
+    & np.isfinite(cols["desired_lateral_accel"])
+    & np.isfinite(cols["actual_lateral_accel"])
+  )
+
+
+def _low_speed_turn_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
+  processed_curvature = _finite_or_fallback(cols["processed_desired_curvature"], cols["desired_curvature"])
+  return (
+    (np.abs(cols["desired_lateral_accel"]) >= LOW_SPEED_TURN_MIN_LAT_ACCEL)
+    | (np.abs(processed_curvature) >= LOW_SPEED_TURN_MIN_CURVATURE)
+    | (np.abs(cols["steering_angle_deg"]) >= LOW_SPEED_TURN_MIN_STEERING_ANGLE_DEG)
+  )
+
+
+def _speed_tier_mask(cols: dict[str, np.ndarray], lower: float, upper: float) -> np.ndarray:
+  return (cols["v_ego"] >= lower) & (cols["v_ego"] < upper)
+
+
+def _lane_change_excluded_count(cols: dict[str, np.ndarray]) -> int:
+  low_speed_active = (cols["lat_active"] > 0.5) & (cols["v_ego"] >= 0.0) & (cols["v_ego"] < LOW_SPEED_REPORT_MAX_SPEED)
+  lane_change = (cols["blinker_active"] > 0.5) | (cols["lane_change_off"] < 0.5)
+  return int(np.sum(low_speed_active & lane_change))
+
+
+def _tier_label(lower: float, upper: float) -> str:
+  return f"{lower:g}-{upper:g}mps"
+
+
+def _low_speed_tier_metrics(cols: dict[str, np.ndarray], segment: str, lower: float, upper: float,
+                            idx: np.ndarray) -> LateralLowSpeedTierMetrics:
+  sample_count = int(np.sum(idx))
+  if sample_count == 0:
+    return LateralLowSpeedTierMetrics(segment, lower, upper, 0, None, None, 0.0, 0.0, 0, 0, 0, 0, 0.0, 0.0,
+                                      0.0, 0.0, 0.0, 0.0, 0.0, {})
+
+  desired = cols["desired_lateral_accel"][idx]
+  actual = cols["actual_lateral_accel"][idx]
+  error = desired - actual
+  raw_processed_curvature_delta = cols["raw_desired_curvature"][idx] - cols["processed_desired_curvature"][idx]
+  desired_processed_curvature_delta = cols["desired_curvature"][idx] - cols["processed_desired_curvature"][idx]
+  return LateralLowSpeedTierMetrics(
+    segment=segment,
+    speed_lower_mps=lower,
+    speed_upper_mps=upper,
+    sample_count=sample_count,
+    best_lag_s=_best_lag_s(cols["t"][idx], desired, actual),
+    desired_actual_corr=_correlation(desired, actual),
+    abs_error_mean=float(np.nanmean(np.abs(error[np.isfinite(error)]))) if np.any(np.isfinite(error)) else 0.0,
+    abs_error_p95=_p95_abs(error),
+    output_reversals=_sign_flip_count(cols["output"][idx] - _median(cols["output"][idx]), 0.01),
+    unshaped_output_reversals=_sign_flip_count(cols["unshaped_output"][idx] - _median(cols["unshaped_output"][idx]), 0.01),
+    desired_lateral_accel_reversals=_sign_flip_count(desired - _median(desired), 0.03),
+    actual_lateral_accel_reversals=_sign_flip_count(actual - _median(actual), 0.03),
+    steering_rate_p95=_p95_abs(cols["steering_rate_deg"][idx]),
+    steer_limited_percent=_percent(cols["steer_limited"][idx] > 0.5),
+    high_steering_rate_percent=_percent(np.abs(cols["steering_rate_deg"][idx]) >= 80.0),
+    raw_processed_curvature_delta_p95=_p95_abs(raw_processed_curvature_delta),
+    desired_processed_curvature_delta_p95=_p95_abs(desired_processed_curvature_delta),
+    model_path_gated_percent=_percent(cols["model_path_gated"][idx] > 0.5),
+    model_path_quality_median=_median(cols["model_path_quality"][idx]),
+    model_path_reason_counts=_string_counts(cols["model_path_reason"][idx]),
+  )
+
+
 def _reason_counts(reasons: np.ndarray) -> dict[str, int]:
   counts: dict[str, int] = {}
   for reason in reasons.astype(int):
@@ -449,6 +636,18 @@ def _reason_counts(reasons: np.ndarray) -> dict[str, int]:
       if reason & bit:
         counts[name] = counts.get(name, 0) + 1
   return counts
+
+
+def _string_counts(values: np.ndarray) -> dict[str, int]:
+  counts: dict[str, int] = {}
+  for value in values:
+    key = str(value) if str(value) else "unknown"
+    counts[key] = counts.get(key, 0) + 1
+  return counts
+
+
+def _finite_or_fallback(values: np.ndarray, fallback: np.ndarray) -> np.ndarray:
+  return np.where(np.isfinite(values), values, fallback)
 
 
 def _likely_source(output_reversals: int, unshaped_reversals: int, desired_reversals: int,
