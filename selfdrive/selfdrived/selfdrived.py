@@ -38,6 +38,7 @@ TESTING_CLOSET = "TESTING_CLOSET" in os.environ
 
 LONGITUDINAL_PERSONALITY_MAP = {v: k for k, v in log.LongitudinalPersonality.schema.enumerants.items()}
 PERSONALITY_PARAM_READ_HOLDOFF = 0.5
+STARTUP_COMM_AVG_FREQ_GRACE_FRAMES = int(3.0 / DT_CTRL)
 
 ThermalStatus = log.DeviceState.ThermalStatus
 State = log.SelfdriveState.OpenpilotState
@@ -51,6 +52,18 @@ TurnDirection = custom.ModelDataV2SP.TurnDirection
 LongitudinalPlanSource = log.LongitudinalPlan.LongitudinalPlanSource
 
 IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
+
+
+def _comm_issue_event(sm, suppress_avg_freq: bool):
+  if sm.all_checks():
+    return None
+  if not sm.all_alive():
+    return EventName.commIssue
+  if not sm.all_freq_ok():
+    if suppress_avg_freq:
+      return EventName.commIssue if not sm.all_valid() else None
+    return EventName.commIssueAvgFreq
+  return EventName.commIssue
 
 
 class SelfdriveD(CruiseHelper):
@@ -161,6 +174,7 @@ class SelfdriveD(CruiseHelper):
     self.events_prev = []
     self.logged_comm_issue = None
     self.not_running_prev = None
+    self.startup_comm_avg_freq_grace_until_frame = -1
     self.experimental_mode = False
     self.personality = get_sanitize_int_param(
       "LongitudinalPersonality",
@@ -403,13 +417,12 @@ class SelfdriveD(CruiseHelper):
     # generic catch-all. ideally, a more specific event should be added above instead
     has_disable_events = self.events.contains(ET.NO_ENTRY) and (self.events.contains(ET.SOFT_DISABLE) or self.events.contains(ET.IMMEDIATE_DISABLE))
     no_system_errors = (not has_disable_events) or (len(self.events) == num_events)
-    if not self.sm.all_checks() and no_system_errors:
-      if not self.sm.all_alive():
-        self.events.add(EventName.commIssue)
-      elif not self.sm.all_freq_ok():
-        self.events.add(EventName.commIssueAvgFreq)
-      else:
-        self.events.add(EventName.commIssue)
+    comm_issue_event = _comm_issue_event(
+      self.sm,
+      self.sm.frame <= self.startup_comm_avg_freq_grace_until_frame,
+    )
+    if comm_issue_event is not None and no_system_errors:
+      self.events.add(comm_issue_event)
 
       logs = {
         'invalid': [s for s, valid in self.sm.valid.items() if not valid],
@@ -528,6 +541,8 @@ class SelfdriveD(CruiseHelper):
           self.state_machine.state = State.enabled
 
         self.initialized = True
+        if timed_out and not all_valid:
+          self.startup_comm_avg_freq_grace_until_frame = self.sm.frame + STARTUP_COMM_AVG_FREQ_GRACE_FRAMES
         cloudlog.event(
           "selfdrived.initialized",
           dt=self.sm.frame * DT_CTRL,
