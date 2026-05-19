@@ -50,7 +50,8 @@ V21_OUTPUT_SLEW_RATE_V = [1.40, 2.00, 3.00, 4.20, 5.00, 5.60]
 V21_SIGN_CHANGE_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
 V21_SIGN_CHANGE_SLEW_RATE_V = [0.90, 1.20, 1.80, 2.40, 3.00, 3.40]
 V21_OVERRIDE_RELEASE_RATE = 6.0
-V21_SAME_DIRECTION_LIMIT_RATE = 1.3
+V21_SAME_DIRECTION_LIMIT_RATE_BP = [0.0, 10.0, 20.0, 30.0, 40.0]
+V21_SAME_DIRECTION_LIMIT_RATE_V = [1.30, 1.30, 2.10, 3.20, 3.60]
 V21_SAME_DIRECTION_LIMIT_CAP = 0.85
 V21_HIGH_RATE_START_DEG = 80.0
 V21_HIGH_RATE_FULL_DEG = 100.0
@@ -170,7 +171,8 @@ class TorqueV21RefinedOutputGovernor:
     if high_rate_blend > 0.0:
       slew_rate *= V21_HIGH_RATE_SLEW_SCALE
     if inputs.same_direction_limit:
-      slew_rate = min(slew_rate, V21_SAME_DIRECTION_LIMIT_RATE)
+      same_direction_rate = float(np.interp(inputs.v_ego, V21_SAME_DIRECTION_LIMIT_RATE_BP, V21_SAME_DIRECTION_LIMIT_RATE_V))
+      slew_rate = min(slew_rate, same_direction_rate)
 
     target_decreases_same_direction = previous_sign != 0.0 and target_sign == previous_sign and abs(clipped) <= abs(self.previous_output)
     limited = clipped if target_decreases_same_direction else approach(self.previous_output, clipped, slew_rate * self.dt)
