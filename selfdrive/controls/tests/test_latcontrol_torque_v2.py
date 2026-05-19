@@ -397,6 +397,22 @@ def test_v21_same_direction_limit_uses_soft_cap_without_floor():
   assert result.output_torque == pytest.approx(0.85)
 
 
+def test_v21_same_direction_limit_recovers_faster_at_high_speed():
+  low_speed_governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
+  low_speed_governor.previous_output = 0.2
+  high_speed_governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
+  high_speed_governor.previous_output = 0.2
+
+  low_speed = low_speed_governor.update(make_governor_inputs(v_ego=8.0, same_direction_limit=True, output_torque=1.0))
+  high_speed = high_speed_governor.update(make_governor_inputs(v_ego=28.0, same_direction_limit=True, output_torque=1.0))
+
+  assert low_speed.reason & RefinedOutputGovernorReason.SAME_DIRECTION_LIMIT
+  assert high_speed.reason & RefinedOutputGovernorReason.SAME_DIRECTION_LIMIT
+  assert low_speed.reason & RefinedOutputGovernorReason.SLEW_LIMITED
+  assert high_speed.reason & RefinedOutputGovernorReason.SLEW_LIMITED
+  assert high_speed.output_torque > low_speed.output_torque
+
+
 def test_v21_high_rate_soft_cap_applies_outside_under_response_floor():
   governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
   governor.previous_output = 1.0
