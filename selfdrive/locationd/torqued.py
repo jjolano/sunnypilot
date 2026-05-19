@@ -12,7 +12,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.locationd.helpers import PointBuckets, ParameterEstimator, PoseCalibrator, Pose
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
-from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import TorqueEstimatorExt
+from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import TorqueEstimatorExt, format_speed_aware_params
 
 HISTORY = 5  # secs
 POINTS_PER_BUCKET = 1500
@@ -33,9 +33,30 @@ LAT_ACC_THRESHOLD = 1
 STEER_BUCKET_BOUNDS = [(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5)]
 MIN_BUCKET_POINTS = np.array([100, 300, 500, 500, 500, 500, 300, 100])
 MIN_ENGAGE_BUFFER = 2  # secs
+ROLL_MIN, ROLL_MAX = np.radians(-10), np.radians(10)
+ROLL_STD_MAX = np.radians(1.5)
 
-VERSION = 1  # bump this to invalidate old parameter caches
+VERSION = 2  # bump this to invalidate old parameter caches
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda', 'volkswagen']
+LIVE_TORQUE_SPEED_ADAPTIVE_PARAMS = "LiveTorqueSpeedAdaptiveParams"
+
+
+def cache_speed_aware_params(params, estimator):
+  speed_params = estimator.estimate_speed_aware_params()
+  payload = format_speed_aware_params(estimator.CP, speed_params) if speed_params else None
+  if payload is None:
+    params.remove(LIVE_TORQUE_SPEED_ADAPTIVE_PARAMS)
+    return
+
+  params.put_nonblocking(LIVE_TORQUE_SPEED_ADAPTIVE_PARAMS, str(payload))
+
+
+def update_speed_aware_param_cache(params, estimator):
+  if not estimator.speed_adaptive_enabled:
+    params.remove(LIVE_TORQUE_SPEED_ADAPTIVE_PARAMS)
+    return
+
+  cache_speed_aware_params(params, estimator)
 
 
 def slope2rot(slope):
@@ -188,15 +209,17 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
       self.lag = get_lat_delay(self.params, msg.lateralDelay)
     # calculate lateral accel from past steering torque
     elif which == "livePose":
-      is_valid = msg.angularVelocityDevice.valid and msg.orientationNED.valid and msg.inputsOK and msg.sensorsOK and msg.posenetOK
+      raw_roll_std = float(msg.orientationNED.xStd)
+      device_pose = Pose.from_live_pose(msg)
+      calibrated_pose = self.calibrator.build_calibrated_pose(device_pose)
+      roll = calibrated_pose.orientation.roll
+      roll_valid = msg.orientationNED.valid and ROLL_MIN < roll < ROLL_MAX and 0.0 < raw_roll_std < ROLL_STD_MAX
+      is_valid = msg.angularVelocityDevice.valid and roll_valid and msg.inputsOK and msg.sensorsOK and msg.posenetOK
       if len(self.raw_points['steer_torque']) == self.hist_len and is_valid:
         t = msg.timestamp * 1e-9
-        device_pose = Pose.from_live_pose(msg)
-        calibrated_pose = self.calibrator.build_calibrated_pose(device_pose)
         angular_velocity_calibrated = calibrated_pose.angular_velocity
 
         yaw_rate = angular_velocity_calibrated.yaw
-        roll = device_pose.orientation.roll
         # check lat active up to now (without lag compensation)
         lat_active = np.interp(np.arange(t - MIN_ENGAGE_BUFFER, t + self.lag, DT_MDL),
                                self.raw_points['carControl_t'], self.raw_points['lat_active']).astype(bool)
@@ -207,7 +230,7 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         lateral_acc = (vego * yaw_rate) - (np.sin(roll) * ACCELERATION_DUE_TO_GRAVITY).item()
         if all(lat_active) and not any(steer_override) and (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
           if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
-            self.filtered_points.add_point(steer, lateral_acc)
+            self.add_filtered_point(steer, lateral_acc, vego)
 
           if self.track_all_points:
             self.all_torque_points.append([steer, lateral_acc])
@@ -249,6 +272,10 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.maxResets = self.resets
     return msg
 
+  def add_filtered_point(self, steer, lateral_acc, v_ego):
+    self.filtered_points.add_point(steer, lateral_acc)
+    TorqueEstimatorExt.add_speed_aware_point(self, steer, lateral_acc, v_ego)
+
 
 def main(demo=False):
   config_realtime_process([0, 1, 2, 3], 5)
@@ -279,6 +306,9 @@ def main(demo=False):
     if sm.frame % 240 == 0:
       msg = estimator.get_msg(valid=sm.all_checks(), with_points=True)
       params.put_nonblocking("LiveTorqueParameters", msg.to_bytes())
+
+    if sm.frame % 240 == 0:
+      update_speed_aware_param_cache(params, estimator)
 
 
 if __name__ == "__main__":

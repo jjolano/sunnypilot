@@ -7,6 +7,7 @@
 
 inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AccessToken", {CLEAR_ON_MANAGER_START | DONT_LOG, STRING}},
+    {"AccurateLateralAccel", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"AdbEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"AlwaysOnDM", {PERSISTENT | BACKUP, BOOL}},
     {"ApiCache_Device", {PERSISTENT, STRING}},
@@ -85,6 +86,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LateralManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LongitudinalManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LongitudinalPersonality", {PERSISTENT | BACKUP, INT, std::to_string(static_cast<int>(cereal::LongitudinalPersonality::STANDARD))}},
+    {"LongitudinalStack", {PERSISTENT | BACKUP, STRING, "sunnypilot-current"}},
+    {"OnePedalLongitudinalMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"NetworkMetered", {PERSISTENT | BACKUP, BOOL}},
     {"ObdMultiplexingChanged", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"ObdMultiplexingEnabled", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
@@ -181,6 +184,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RocketFuel", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ShowAdvancedControls", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ShowTurnSignals", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"SmoothedModelPathCurvature", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"StandstillTimer", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TrueVEgoUI", {PERSISTENT | BACKUP, BOOL, "0"}},
 
@@ -199,6 +203,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ModelManager_ModelsCache", {PERSISTENT | BACKUP, JSON}},
 
     // Neural Network Lateral Control
+    {"ControlCalculationHardening", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"NeuralNetworkLateralControl", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // sunnylink params
@@ -235,12 +240,23 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneTurnDesire", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LaneTurnValue", {PERSISTENT | BACKUP, FLOAT, "19.0"}},
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
-
     // mapd
-    {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
+    {"MapAdvisoryLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapCurvatures", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapHazard", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapLanes", {CLEAR_ON_ONROAD_TRANSITION, INT, "0"}},
+    {"MapRoadContext", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    {"MapTrafficControl", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"MapdSettings", {PERSISTENT, JSON}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
+    {"NextMapAdvisoryLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"NextMapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"NextMapHazard", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"NextMapLanes", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"NextMapTrafficControl", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
     {"OsmDbUpdatesCheck", {CLEAR_ON_MANAGER_START, BOOL}},  // mapd database update happens with device ON, reset on boot
     {"OSMDownloadBounds", {PERSISTENT, STRING}},
@@ -265,6 +281,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // Smart Cruise Control
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    {"MapTargetVelocitiesValid", {CLEAR_ON_ONROAD_TRANSITION, BOOL}},
+    {"LastGPSPositionValid", {CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"SmartCruiseControlMap", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"SmartCruiseControlVision", {PERSISTENT | BACKUP, BOOL, "0"}},
 
@@ -273,8 +291,25 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"EnforceTorqueControl", {PERSISTENT | BACKUP, BOOL}},
     {"LiveTorqueParamsToggle", {PERSISTENT | BACKUP , BOOL}},
     {"LiveTorqueParamsRelaxedToggle", {PERSISTENT | BACKUP , BOOL}},
-    {"TorqueControlTune", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
+    {"LiveTorqueSpeedAdaptiveApplyToggle", {PERSISTENT | BACKUP , BOOL, "0"}},
+    {"LiveTorqueSpeedAdaptiveParams", {PERSISTENT, STRING, ""}},
+    {"LiveTorqueSpeedAdaptiveToggle", {PERSISTENT | BACKUP , BOOL, "0"}},
+    {"TorqueControlTune", {PERSISTENT | BACKUP, FLOAT, "2.0"}},
     {"TorqueParamsOverrideEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TorqueParamsOverrideFriction", {PERSISTENT | BACKUP, FLOAT, "0.1"}},
     {"TorqueParamsOverrideLatAccelFactor", {PERSISTENT | BACKUP, FLOAT, "2.5"}},
+
+    // Tailscale VPN
+    {"EnableTailscale", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"TailscaledPid", {PERSISTENT, INT}},
+    {"TailscaleState", {CLEAR_ON_MANAGER_START, STRING}},
+    {"TailscaleAuthURL", {CLEAR_ON_MANAGER_START | DONT_LOG, STRING}},
+    {"TailscaleLastError", {CLEAR_ON_MANAGER_START, STRING}},
+    {"TailscaleLoginRequested", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    {"TailscaleLogoutRequested", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    {"TailscaleInstallRequested", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    {"TailscaleInstallState", {CLEAR_ON_MANAGER_START, STRING}},
+    {"TailscaleInstallProgress", {CLEAR_ON_MANAGER_START, STRING}},
+    {"TailscaleInstalledVersion", {PERSISTENT, STRING}},
+    {"TailscaleLatestVersion", {PERSISTENT, STRING}},
 };

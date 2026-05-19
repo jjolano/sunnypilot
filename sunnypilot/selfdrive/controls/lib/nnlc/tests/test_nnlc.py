@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from cereal import car, log, messaging
 from opendbc.car.car_helpers import interfaces
@@ -16,6 +17,7 @@ from openpilot.selfdrive.locationd.helpers import Pose
 from openpilot.common.mock.generators import generate_livePose
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
 from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.nnlc import adjust_future_time_for_longitudinal_accel
 
 
 def generate_modelV2():
@@ -39,6 +41,24 @@ def generate_modelV2():
   model.modelV2.acceleration = acceleration
 
   return model
+
+
+def test_future_time_adjustment_advances_model_sample_when_accelerating():
+  v_ego = 10.0
+  future_time = 1.0
+  adjusted_time = adjust_future_time_for_longitudinal_accel(future_time, v_ego, 2.0)
+
+  assert adjusted_time < future_time
+  assert v_ego * adjusted_time + 0.5 * 2.0 * adjusted_time**2 == pytest.approx(v_ego * future_time)
+
+
+def test_future_time_adjustment_delays_model_sample_when_braking():
+  v_ego = 10.0
+  future_time = 1.0
+  adjusted_time = adjust_future_time_for_longitudinal_accel(future_time, v_ego, -2.0)
+
+  assert adjusted_time > future_time
+  assert v_ego * adjusted_time + 0.5 * -2.0 * adjusted_time**2 == pytest.approx(v_ego * future_time)
 
 
 class TestNeuralNetworkLateralControl:

@@ -1,0 +1,35 @@
+{
+  "defaultStack": "sunnypilot-current",
+  "customRecommendedFallback": "sunnypilot-current",
+  "stacks": {
+    "sunnypilot-current": {
+      "label": "sunnypilot Current",
+      "family": "baseline"
+    },
+    "custom-recommended": {
+      "label": "Custom Recommended",
+      "family": "custom-alias"
+    },
+    "custom-2.0": {
+      "label": "Custom v2.0",
+      "family": "custom",
+      "version": "2.0"
+    }
+  },
+  "availability": {
+    "sunnypilot-current": {
+      "always": true
+    },
+    "custom-recommended": {
+      "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
+    },
+    "custom-2.0": {
+      "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
+    }
+  },
+  "customRecommendations": {
+    "default": "custom-2.0",
+    "brands": {},
+    "fingerprints": {}
+  }
+}

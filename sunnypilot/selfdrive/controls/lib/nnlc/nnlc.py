@@ -17,6 +17,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_base import LatControlTorqueExtBase, sign
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.model import NNTorqueModel
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_low_speed import low_speed_pid_gain_speed
 
 LOW_SPEED_X = [0, 10, 20, 30]
 LOW_SPEED_Y = [12, 3, 1, 0]
@@ -31,11 +32,28 @@ def roll_pitch_adjust(roll, pitch):
   return roll * math.cos(pitch)
 
 
+def adjust_future_time_for_longitudinal_accel(future_time, v_ego, a_ego):
+  future_time = max(float(future_time), 0.0)
+  v_ego = max(float(v_ego), 1.0)
+  a_ego = float(a_ego)
+  if abs(a_ego) < 1e-6:
+    return future_time
+
+  target_distance = v_ego * future_time
+  discriminant = v_ego**2 + 2.0 * a_ego * target_distance
+  if discriminant <= 0.0:
+    return future_time
+
+  adjusted_time = (-v_ego + math.sqrt(discriminant)) / a_ego
+  return adjusted_time if math.isfinite(adjusted_time) and adjusted_time >= 0.0 else future_time
+
+
 class NeuralNetworkLateralControl(LatControlTorqueExtBase):
   def __init__(self, lac_torque, CP, CP_SP, CI):
     super().__init__(lac_torque, CP, CP_SP, CI)
     self.params = Params()
     self.enabled = self.params.get_bool("NeuralNetworkLateralControl")
+    self.control_calculation_hardening = self.params.get_bool("ControlCalculationHardening")
     self.has_nn_model = CP_SP.neuralNetworkLateralControl.model.path != MOCK_MODEL_PATH
 
     # NN model takes current v_ego, lateral_accel, lat accel/jerk error, roll, and past/future/planned data
@@ -87,9 +105,9 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
   def update_output_torque(self, CS):
     freeze_integrator = self._steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
     self._output_torque = self._pid.update(self._pid_log.error,
-                                           feedforward=self._ff,
-                                           speed=CS.vEgo,
-                                           freeze_integrator=freeze_integrator)
+                                            feedforward=self._ff,
+                                            speed=low_speed_pid_gain_speed(CS.vEgo),
+                                            freeze_integrator=freeze_integrator)
 
   def update_neural_network_feedforward(self, CS, params, calibrated_pose) -> None:
     if not self._nnlc_enabled:
@@ -112,7 +130,7 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
 
     # prepare past and future values
     # adjust future times to account for longitudinal acceleration
-    adjusted_future_times = [t + 0.5 * CS.aEgo * (t / max(CS.vEgo, 1.0)) for t in self.nn_future_times]
+    adjusted_future_times = [adjust_future_time_for_longitudinal_accel(t, CS.vEgo, CS.aEgo) for t in self.nn_future_times]
     past_rolls = [self.roll_deque[min(len(self.roll_deque) - 1, i)] for i in self.history_frame_offsets]
     future_rolls = [roll_pitch_adjust(np.interp(t, ModelConstants.T_IDXS, self.model_v2.orientation.x) + roll,
                                       np.interp(t, ModelConstants.T_IDXS, self.model_v2.orientation.y) + self.pitch_last) for t in

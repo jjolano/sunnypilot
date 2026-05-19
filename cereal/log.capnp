@@ -808,6 +808,7 @@ struct ControlsState @0x97ff69c53601abf1 {
   curvature @37 :Float32;  # path curvature from vehicle model
   desiredCurvature @61 :Float32;  # lag adjusted curvatures used by lateral controllers
   forceDecel @51 :Bool;
+  modelPathState @67 :ModelPathState;
 
   lateralControlState :union {
     pidState @53 :LateralPIDState;
@@ -847,6 +848,65 @@ struct ControlsState @0x97ff69c53601abf1 {
     desiredLateralAccel @10 :Float32;
     desiredLateralJerk @11 :Float32;
     version @12 :Int32;
+
+    struct AdaptiveTorqueState {
+      active @0 :Bool;
+
+      enum Phase @0xdd0ab28a74b46aa1 {
+        idle @0;
+        engage @1;
+        hold @2;
+        release @3;
+      }
+
+      phase @1 :Phase;
+      releaseActive @2 :Bool;
+      phaseGain @3 :Float32;
+      nominalOutput @4 :Float32;
+      assistOutput @5 :Float32;
+      biasOutput @6 :Float32;
+      responseDeficit @7 :Float32;
+      learningFrozen @8 :Bool;
+      freezeReason @9 :UInt32;  # Bitmask: why adaptive learning is frozen this frame.
+      blockReason @10 :UInt32;  # Bitmask: why assist/bias is blocked, reduced, or releasing.
+      shapingActive @11 :Bool;
+      shapingReason @12 :UInt32;
+      shapingConfidence @13 :Float32;
+      unshapedOutput @14 :Float32;
+      outputCap @15 :Float32;
+      modelMode @16 :UInt8;
+      modelConfidence @17 :Float32;
+      authorityBand @18 :UInt8;
+      authorityScale @19 :Float32;
+      fallbackActive @20 :Bool;
+      learnedLatAccelFactor @21 :Float32;
+      learnedFriction @22 :Float32;
+      learnedLatAccelOffset @23 :Float32;
+      learnedResponseDelay @24 :Float32;
+      residualError @25 :Float32;
+      sampleAccepted @26 :Bool;
+      sampleRejectReason @27 :UInt32;
+      disturbanceState @28 :UInt8;  # 0 none, 1 suspected, 2 active.
+      disturbanceReason @29 :UInt32;  # TorqueDisturbanceReason bitmask.
+      disturbanceConfidence @30 :Float32;
+      steerLimitValid @31 :Bool;
+      steerLimitLimited @32 :Bool;
+      steerLimitReason @33 :UInt32;  # SteeringLimitReason bitmask.
+      steerLimitRequested @34 :Float32;
+      steerLimitApplied @35 :Float32;
+      steerLimitError @36 :Float32;
+      steerLimitSameDirection @37 :Bool;
+      steerLimitUnwind @38 :Bool;
+      rawTargetLateralAccel @39 :Float32;
+      delayLeadLateralAccel @40 :Float32;
+      feedbackCorrection @41 :Float32;
+      trimCorrection @42 :Float32;
+      learnerResponseScale @43 :Float32;
+      governorReason @44 :UInt32;
+      actualLateralJerk @45 :Float32;
+    }
+
+    adaptiveTorqueState @13 :AdaptiveTorqueState;
    }
 
   struct LateralAngleState {
@@ -862,6 +922,36 @@ struct ControlsState @0x97ff69c53601abf1 {
     steeringAngleDeg @1 :Float32;
     output @2 :Float32;
     saturated @3 :Bool;
+  }
+
+  struct ModelPathState {
+    enum Reason {
+      unknown @0;
+      ok @1;
+      inactive @2;
+      nonfiniteCurvature @3;
+      invalidPath @4;
+      turnOppositeCurvature @5;
+      highPathStd @6;
+      lowLaneConfidence @7;
+      frameDrop @8;
+      pathDisagreement @9;
+      curvatureJump @10;
+      lateralManeuver @11;
+    }
+
+    active @0 :Bool;
+    gated @1 :Bool;
+    quality @2 :Float32;
+    reason @3 :Reason;
+    rawDesiredCurvature @4 :Float32;
+    processedDesiredCurvature @5 :Float32;
+    holdFramesRemaining @6 :UInt8;
+    smoothingTauS @7 :Float32;
+    dampingAlpha @8 :Float32;
+    trustPenalty @9 :Float32;
+    spatialSmoothedCurvature @10 :Float32;
+    laneChangeFade @11 :Float32;
   }
 
   deprecated :group {
@@ -2502,9 +2592,9 @@ struct Event {
     customReserved14 @140 :Custom.CustomReserved14;
     customReserved15 @141 :Custom.CustomReserved15;
     customReserved16 @142 :Custom.CustomReserved16;
-    customReserved17 @143 :Custom.CustomReserved17;
-    customReserved18 @144 :Custom.CustomReserved18;
-    customReserved19 @145 :Custom.CustomReserved19;
+    mapdExtendedOut @143 :Custom.MapdExtendedOut;
+    mapdIn @144 :Custom.MapdIn;
+    mapdOut @145 :Custom.MapdOut;
 
     # *********** legacy + deprecated ***********
     model @9 :Deprecated.ModelData; # TODO: rename modelV2 and mark this as deprecated

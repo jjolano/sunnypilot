@@ -11,11 +11,19 @@ from cereal import car
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
+from openpilot.sunnypilot.selfdrive.locationd.speed_aware_torque import (
+  SPEED_BUCKET_BP,
+  SPEED_BUCKET_LABELS,
+  SPEED_AWARE_PARAMS_VERSION,
+  SpeedAwareTorqueBuckets,
+  format_speed_aware_params,
+  parse_speed_aware_params,
+)
 
 RELAXED_MIN_BUCKET_POINTS = np.array([1, 200, 300, 500, 500, 300, 200, 1])
 
-ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda']
 
+ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda']
 
 class TorqueEstimatorExt:
   def __init__(self, CP: car.CarParams):
@@ -46,6 +54,50 @@ class TorqueEstimatorExt:
       if self._params.get_bool("CustomTorqueParams"):
         self.offline_latAccelFactor = float(self._params.get("TorqueParamsOverrideLatAccelFactor", return_default=True))
         self.offline_friction = float(self._params.get("TorqueParamsOverrideFriction", return_default=True))
+
+    self.speed_adaptive_enabled = self._params.get_bool("LiveTorqueSpeedAdaptiveToggle")
+    self.speed_bucket_params = {}
+    self.speed_bucket_filters = {}
+    self._init_speed_buckets()
+
+  def _init_speed_buckets(self):
+    from openpilot.selfdrive.locationd.torqued import STEER_BUCKET_BOUNDS, POINTS_PER_BUCKET
+    self.speed_buckets = SpeedAwareTorqueBuckets(
+      x_bounds=STEER_BUCKET_BOUNDS,
+      speed_bp=SPEED_BUCKET_BP,
+      min_points=self.min_bucket_points,
+      min_points_total=self.min_points_total,
+      points_per_bucket=POINTS_PER_BUCKET,
+      rowsize=3
+    )
+
+  def add_speed_aware_point(self, steer, lateral_acc, v_ego):
+    if not self.speed_adaptive_enabled:
+      return
+    self.speed_buckets.add_point(steer, lateral_acc, v_ego)
+
+  def estimate_speed_aware_params(self):
+    """Returns dict of bucket_label -> (latAccelFactor, latAccelOffset, frictionCoeff)"""
+    from openpilot.selfdrive.locationd.torqued import slope2rot, FRICTION_FACTOR
+    result = {}
+    for idx, label in enumerate(SPEED_BUCKET_LABELS):
+      bucket = self.speed_buckets.buckets[idx]
+      if not bucket.is_valid():
+        continue
+      points = bucket.get_points(self.fit_points)
+      try:
+        _, _, v = np.linalg.svd(points, full_matrices=False)
+        slope, offset = -v.T[0:2, 2] / v.T[2, 2]
+        _, spread = np.matmul(points[:, [0, 2]], slope2rot(slope)).T
+        friction_coeff = np.std(spread) * FRICTION_FACTOR
+        if any(not np.isfinite(val) for val in (slope, offset, friction_coeff)):
+          continue
+        slope = np.clip(slope, self.min_lataccel_factor, self.max_lataccel_factor)
+        friction_coeff = np.clip(friction_coeff, self.min_friction, self.max_friction)
+        result[label] = (float(slope), float(offset), float(friction_coeff))
+      except np.linalg.LinAlgError:
+        continue
+    return result
 
   def _update_params(self):
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:

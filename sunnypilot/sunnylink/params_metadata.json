@@ -3,6 +3,10 @@
     "title": "AccessTokenIsNice",
     "description": ""
   },
+  "AccurateLateralAccel": {
+    "title": "Accurate Lateral Acceleration",
+    "description": "Experimental opt-in control path that uses curvature-based lateral acceleration and exact roll gravity compensation in lateral and turn-speed calculations. Keep disabled unless validating this behavior."
+  },
   "AdbEnabled": {
     "title": "Enable ADB",
     "description": ""
@@ -185,6 +189,10 @@
   "CompletedTrainingVersion": {
     "title": "Completed Training Version",
     "description": ""
+  },
+  "ControlCalculationHardening": {
+    "title": "Control Calculation Hardening",
+    "description": "Enable experimental safer control math paths for validation."
   },
   "ControlsReady": {
     "title": "Controls Ready",
@@ -552,6 +560,10 @@
     "title": "Last Gps Position",
     "description": ""
   },
+  "LastGPSPositionValid": {
+    "title": "Last GPS Position Valid",
+    "description": ""
+  },
   "LastGPSPositionLLK": {
     "title": "Last GPS Position LLK",
     "description": ""
@@ -620,6 +632,18 @@
     "title": "Self-Tune",
     "description": "Enables self-tune for Torque lateral control"
   },
+  "LiveTorqueSpeedAdaptiveApplyToggle": {
+    "title": "Apply Speed-Adaptive Self-Tune",
+    "description": "Applies learned speed-adaptive torque parameters to lateral control. Keep disabled for shadow-mode learning."
+  },
+  "LiveTorqueSpeedAdaptiveParams": {
+    "title": "Speed-Adaptive Torque Parameters",
+    "description": ""
+  },
+  "LiveTorqueSpeedAdaptiveToggle": {
+    "title": "Speed-Adaptive Self-Tune",
+    "description": "Learn separate torque parameters for different speed ranges. Improves steering accuracy across low and high speeds."
+  },
   "LocationFilterInitialState": {
     "title": "Location Filter Initial State",
     "description": ""
@@ -643,6 +667,42 @@
       {
         "value": 2,
         "label": "Relaxed"
+      }
+    ]
+  },
+  "LongitudinalStack": {
+    "title": "Longitudinal Stack",
+    "description": "Selects which longitudinal control stack is used after sunnypilot longitudinal control is active. Default is sunnypilot-current; custom-recommended resolves globally to custom-2.0.",
+    "options": [
+      {
+        "value": "sunnypilot-current",
+        "label": "sunnypilot Current"
+      },
+      {
+        "value": "custom-recommended",
+        "label": "Custom Recommended"
+      },
+      {
+        "value": "custom-2.0",
+        "label": "Custom v2.0"
+      }
+    ]
+  },
+  "OnePedalLongitudinalMode": {
+    "title": "One Pedal Longitudinal",
+    "description": "Treats the cruise speed as a ceiling in custom v2.0. Lift-off coasts unless physical lead or stop evidence requires braking.",
+    "options": [
+      {
+        "value": 0,
+        "label": "Off"
+      },
+      {
+        "value": 1,
+        "label": "Creep"
+      },
+      {
+        "value": 2,
+        "label": "Full Stop"
       }
     ]
   },
@@ -680,12 +740,44 @@
     "title": "Map Advisory Speed Limit",
     "description": ""
   },
+  "MapAdvisoryLimit": {
+    "title": "Map Advisory Limit",
+    "description": ""
+  },
+  "MapCurvatures": {
+    "title": "Map Curvatures",
+    "description": ""
+  },
+  "MapHazard": {
+    "title": "Map Hazard",
+    "description": ""
+  },
+  "MapLanes": {
+    "title": "Map Lanes",
+    "description": ""
+  },
+  "MapRoadContext": {
+    "title": "Map Road Context",
+    "description": ""
+  },
   "MapSpeedLimit": {
     "title": "Map Speed Limit",
     "description": ""
   },
   "MapTargetVelocities": {
     "title": "Map Target Velocities",
+    "description": ""
+  },
+  "MapTargetVelocitiesValid": {
+    "title": "Map Target Velocities Valid",
+    "description": ""
+  },
+  "MapTrafficControl": {
+    "title": "Map Traffic Control",
+    "description": ""
+  },
+  "MapdSettings": {
+    "title": "Mapd Settings",
     "description": ""
   },
   "MapdVersion": {
@@ -749,6 +841,26 @@
   },
   "NextMapSpeedLimit": {
     "title": "Next Map Speed Limit",
+    "description": ""
+  },
+  "NextMapAdvisorySpeedLimit": {
+    "title": "Next Map Advisory Speed Limit",
+    "description": ""
+  },
+  "NextMapAdvisoryLimit": {
+    "title": "Next Map Advisory Limit",
+    "description": ""
+  },
+  "NextMapHazard": {
+    "title": "Next Map Hazard",
+    "description": ""
+  },
+  "NextMapLanes": {
+    "title": "Next Map Lanes",
+    "description": ""
+  },
+  "NextMapTrafficControl": {
+    "title": "Next Map Traffic Control",
     "description": ""
   },
   "OSMDownloadBounds": {
@@ -1154,6 +1266,10 @@
     "title": "Smart Cruise Control - Vision",
     "description": ""
   },
+  "SmoothedModelPathCurvature": {
+    "title": "Smoothed Model Path Curvature",
+    "description": "Use a speed-aware local model-path curvature estimate to reduce lateral jitter while preserving existing safety limits. Experimental and default off."
+  },
   "SnoozeUpdate": {
     "title": "Snooze Update",
     "description": ""
@@ -1271,6 +1387,54 @@
     "title": "Sunnylinkd Pid",
     "description": ""
   },
+  "EnableTailscale": {
+    "title": "Enable Tailscale",
+    "description": ""
+  },
+  "TailscaledPid": {
+    "title": "Tailscaled Pid",
+    "description": ""
+  },
+  "TailscaleAuthURL": {
+    "title": "Tailscale Auth URL",
+    "description": ""
+  },
+  "TailscaleInstallProgress": {
+    "title": "Tailscale Install Progress",
+    "description": ""
+  },
+  "TailscaleInstallRequested": {
+    "title": "Tailscale Install Requested",
+    "description": ""
+  },
+  "TailscaleInstallState": {
+    "title": "Tailscale Install State",
+    "description": ""
+  },
+  "TailscaleInstalledVersion": {
+    "title": "Tailscale Installed Version",
+    "description": ""
+  },
+  "TailscaleLastError": {
+    "title": "Tailscale Last Error",
+    "description": ""
+  },
+  "TailscaleLatestVersion": {
+    "title": "Tailscale Latest Version",
+    "description": ""
+  },
+  "TailscaleLoginRequested": {
+    "title": "Tailscale Login Requested",
+    "description": ""
+  },
+  "TailscaleLogoutRequested": {
+    "title": "Tailscale Logout Requested",
+    "description": ""
+  },
+  "TailscaleState": {
+    "title": "Tailscale State",
+    "description": ""
+  },
   "TermsVersion": {
     "title": "Terms Version",
     "description": ""
@@ -1285,11 +1449,23 @@
   },
   "TorqueControlTune": {
     "title": "Torque Control Tune Version",
-    "description": "Select the version of Torque Control Tune to use.",
+    "description": "Select the torque controller version. Default uses v2.0; v2.1 and v3.0 are experimental and only run on native torque vehicles.",
     "options": [
       {
         "value": "",
         "label": "Default"
+      },
+      {
+        "value": 3.0,
+        "label": "v3.0"
+      },
+      {
+        "value": 2.1,
+        "label": "v2.1"
+      },
+      {
+        "value": 2.0,
+        "label": "v2.0"
       },
       {
         "value": 1.0,

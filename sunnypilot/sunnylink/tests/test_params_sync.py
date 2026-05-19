@@ -4,12 +4,23 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+
 import json
 import os
 import pytest
 
-from openpilot.common.params import Params
-from openpilot.sunnypilot.sunnylink.athena.sunnylinkd import METADATA_PATH
+METADATA_PATH = os.path.join(os.path.dirname(__file__), "..", "params_metadata.json")
+REMOVED_RESPONSE_CURVE_PARAMS = (
+  "LongLearnedResponseCurveToggle",
+  "LongLearnedResponseCurveApplyToggle",
+  "LongLearnedResponseOffsets",
+)
+REMOVED_MASS_DRAG_PARAMS = (
+  "LongLearnedMassDragToggle",
+  "LongLearnedMassDragApplyToggle",
+  "LongLearnedKForce",
+  "LongLearnedCDrag",
+)
 
 
 def test_metadata_json_exists():
@@ -58,6 +69,8 @@ def test_all_params_have_metadata():
   There should be no parameters in Params() that are missing from the metadata file.
   If this fails, run 'python3 sunnypilot/sunnylink/tools/update_params_metadata.py'.
   """
+  from openpilot.common.params import Params
+
   params = Params()
   all_keys = [k.decode('utf-8') for k in params.all_keys()]
 
@@ -85,6 +98,8 @@ def test_metadata_keys_exist_in_params():
   There should be no keys in the metadata file that are not present in Params().
   This prints a warning rather than failing, as it's less critical than missing metadata.
   """
+  from openpilot.common.params import Params
+
   params = Params()
   all_keys = {k.decode('utf-8') for k in params.all_keys()}
 
@@ -115,8 +130,7 @@ def test_no_default_titles():
 
   if default_title_keys:
     pytest.fail(
-      f"The following parameters have default titles (title == key): {default_title_keys}. "
-      + "Please update 'params_metadata.json' with descriptive titles."
+      f"The following parameters have default titles (title == key): {default_title_keys}. " + "Please update 'params_metadata.json' with descriptive titles."
     )
 
 
@@ -201,6 +215,54 @@ def test_known_params_metadata():
   assert acc_long["max"] == 10
   assert acc_long["step"] == 1
 
+  assert "LongitudinalDecisionLayer" not in metadata
+
+  longitudinal_stack = metadata.get("LongitudinalStack")
+  assert longitudinal_stack is not None
+  assert longitudinal_stack["title"] == "Longitudinal Stack"
+  stack_options = {option["value"] for option in longitudinal_stack["options"]}
+  assert "sunnypilot-current" in stack_options
+  assert "custom-recommended" in stack_options
+  assert "custom-2.0" in stack_options
+
+  one_pedal = metadata.get("OnePedalLongitudinalMode")
+  assert one_pedal is not None
+  assert one_pedal["title"] == "One Pedal Longitudinal"
+  one_pedal_options = {option["value"]: option["label"] for option in one_pedal["options"]}
+  assert one_pedal_options == {0: "Off", 1: "Creep", 2: "Full Stop"}
+
+  accurate_lateral_accel = metadata.get("AccurateLateralAccel")
+  assert accurate_lateral_accel is not None
+  assert accurate_lateral_accel["title"] == "Accurate Lateral Acceleration"
+  assert "experimental" in accurate_lateral_accel["description"].lower()
+
+
+def test_accurate_lateral_accel_param_is_opt_in():
+  from openpilot.common.params import Params
+
+  params = Params()
+  all_keys = {k.decode("utf-8") for k in params.all_keys()}
+
+  assert "AccurateLateralAccel" in all_keys
+  params.remove("AccurateLateralAccel")
+  assert not params.get_bool("AccurateLateralAccel")
+
+
+def test_response_curve_learning_metadata_is_removed():
+  with open(METADATA_PATH) as f:
+    metadata = json.load(f)
+
+  for param in REMOVED_RESPONSE_CURVE_PARAMS:
+    assert param not in metadata
+
+
+def test_mass_drag_learning_metadata_is_removed():
+  with open(METADATA_PATH) as f:
+    metadata = json.load(f)
+
+  for param in REMOVED_MASS_DRAG_PARAMS:
+    assert param not in metadata
+
 
 def test_torque_control_tune_versions_in_sync():
   """
@@ -218,7 +280,7 @@ def test_torque_control_tune_versions_in_sync():
   from openpilot.common.basedir import BASEDIR
 
   versions_json_path = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "controls", "lib", "latcontrol_torque_versions.json")
-  sync_script_path = "python3 sunnypilot/sunnylink/tools/sync_torque_versions.py"
+  sync_script_path = "python3 sunnypilot/sunnylink/tools/update_params_metadata.py"
 
   # Load both files
   with open(METADATA_PATH) as f:
@@ -275,10 +337,38 @@ def test_torque_control_tune_versions_in_sync():
   # Check that all versions are represented
   missing_versions = expected_version_keys - actual_version_keys
   if missing_versions:
-    pytest.fail(f"The following versions are missing from TorqueControlTune options: {missing_versions}. " +
-                f"Please run '{sync_script_path}' to sync.")
+    pytest.fail(f"The following versions are missing from TorqueControlTune options: {missing_versions}. " + f"Please run '{sync_script_path}' to sync.")
 
   extra_versions = actual_version_keys - expected_version_keys
   if extra_versions:
-    pytest.fail("The following versions in TorqueControlTune options are not in latcontrol_torque_versions.json: " +
-                f"{extra_versions}. Please run '{sync_script_path}' to sync.")
+    pytest.fail(
+      "The following versions in TorqueControlTune options are not in latcontrol_torque_versions.json: "
+      + f"{extra_versions}. Please run '{sync_script_path}' to sync."
+    )
+
+
+def test_longitudinal_stack_options_in_sync():
+  from openpilot.common.basedir import BASEDIR
+
+  versions_json_path = os.path.join(
+    BASEDIR, "selfdrive", "controls", "lib", "longitudinal_stacks", "longitudinal_stack_versions.json"
+  )
+
+  with open(METADATA_PATH) as f:
+    metadata = json.load(f)
+
+  with open(versions_json_path) as f:
+    versions = json.load(f)
+
+  stack_metadata = metadata.get("LongitudinalStack")
+  assert stack_metadata is not None
+  options = stack_metadata.get("options")
+  assert isinstance(options, list)
+
+  expected_values = set(versions.get("stacks", {}).keys())
+  actual_values = {option.get("value") for option in options}
+
+  assert expected_values == actual_values
+  for option in options:
+    value = option["value"]
+    assert option["label"] == versions["stacks"][value]["label"]

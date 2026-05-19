@@ -78,7 +78,7 @@ class VehicleParamsLearner:
         yaw_rate, yaw_rate_std = 0.0, np.radians(10.0)
       self.observed_yaw_rate = yaw_rate
 
-      localizer_roll, localizer_roll_std = device_pose.orientation.x, device_pose.orientation.x_std
+      localizer_roll, localizer_roll_std = calibrated_pose.orientation.x, device_pose.orientation.x_std
       localizer_roll_std = np.radians(1) if np.isnan(localizer_roll_std) else localizer_roll_std
       roll_valid = (localizer_roll_std < ROLL_STD_MAX) and (ROLL_MIN < localizer_roll < ROLL_MAX) and msg.sensorsOK
       if roll_valid:
@@ -241,7 +241,7 @@ def retrieve_initial_vehicle_params(params: Params, CP: car.CarParams, replay: b
 
         initial_filter_std = np.array(lp.debugFilterState.std)
         if debug and len(initial_filter_std) != 0:
-          p_initial = np.diag(initial_filter_std)
+          p_initial = np.diag(initial_filter_std**2)
 
         steer_ratio, stiffness_factor, angle_offset_deg = lp.steerRatio, lp.stiffnessFactor, lp.angleOffsetAverageDeg
         retrieve_success = True

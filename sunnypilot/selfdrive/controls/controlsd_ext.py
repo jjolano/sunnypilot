@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+
 import time
 
 import cereal.messaging as messaging
@@ -17,6 +18,22 @@ from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2, LatControlTorqueV21
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
+  TorqueControllerDefinition,
+  TorqueControllerRegistry,
+  normalize_torque_tune_version,
+  resolve_torque_tune_version,
+)
+
+
+TORQUE_CONTROLLER_REGISTRY = TorqueControllerRegistry((
+  TorqueControllerDefinition(0.0, LatControlTorqueV0),
+  TorqueControllerDefinition(2.0, LatControlTorqueV2),
+  TorqueControllerDefinition(2.1, LatControlTorqueV21),
+  TorqueControllerDefinition(3.0, LatControlTorqueV3),
+))
 
 
 class ControlsExt(ModelStateBase):
@@ -26,6 +43,7 @@ class ControlsExt(ModelStateBase):
     self.params = params
     self._param_update_time: float = 0.0
     self.blinker_pause_lateral = BlinkerPauseLateral()
+    self.smoothed_model_path_curvature = params.get_bool("SmoothedModelPathCurvature")
 
     cloudlog.info("controlsd_ext is waiting for CarParamsSP")
     self.CP_SP = messaging.log_from_bytes(params.get("CarParamsSP", block=True), custom.CarParamsSP)
@@ -36,23 +54,46 @@ class ControlsExt(ModelStateBase):
 
   def initialize_lateral_control(self, lac, CI, dt):
     enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
-    torque_versions = self.params.get("TorqueControlTune")
+    torque_resolution = resolve_torque_tune_version(self.params.get("TorqueControlTune", return_default=True))
+    torque_version = torque_resolution.resolved_version
+    native_torque = self.CP.lateralTuning.which() == 'torque'
+    if torque_resolution.persist_value is not None:
+      self.params.put("TorqueControlTune", torque_resolution.persist_value)
     if not enforce_torque_control:
-      if self.CP.lateralTuning.which() == 'torque':
+      if native_torque:
         return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)  # FIXME-SP: revert when upstream fixes tuning issues with v1
       return lac
 
-    if torque_versions == 0.0:  # v0
-      return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)
-    else:
+    if self.CP.steerControlType == structs.CarParams.SteerControlType.angle:
       return lac
+
+    if not native_torque:
+      return lac
+
+    controller_factory = TORQUE_CONTROLLER_REGISTRY.factory_for(torque_version)
+    if controller_factory is not None:
+      return controller_factory(self.CP, self.CP_SP, CI, dt)
+    return lac
+
+  @staticmethod
+  def normalize_torque_tune_version(value) -> float | None:
+    return normalize_torque_tune_version(value)
 
   def get_params_sp(self, sm: messaging.SubMaster) -> None:
     if time.monotonic() - self._param_update_time > PARAMS_UPDATE_PERIOD:
       self.blinker_pause_lateral.get_params()
+      self.smoothed_model_path_curvature = self.params.get_bool("SmoothedModelPathCurvature")
 
-      if self.CP.lateralTuning.which() == 'torque':
+      lac = getattr(self, "LaC", None)
+      lat_control_state = getattr(lac, "CONTROL_STATE", self.CP.lateralTuning.which())
+      if lat_control_state == 'torque':
         self.lat_delay = get_lat_delay(self.params, sm["liveDelay"].lateralDelay)
+        if self.CP.lateralTuning.which() == 'torque':
+          speed_aware_params = self.params.get("LiveTorqueSpeedAdaptiveParams")
+          extension = getattr(lac, "extension", None)
+          update_speed_aware_params = getattr(extension, "update_speed_aware_params", None)
+          if update_speed_aware_params is not None:
+            update_speed_aware_params(speed_aware_params)
 
       self._param_update_time = time.monotonic()
 
