@@ -385,6 +385,7 @@ struct OnroadEventSP @0xda96579883444c35 {
     speedLimitAutoCruiseEnabled @24;
     speedLimitAutoCruiseDisabled @25;
     customLongitudinalStackFault @26;
+    lowTraction @27;
   }
 }
 
@@ -478,6 +479,9 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
+  tractionRisk @1 :Float32;       # Decayed 0..1 estimate of low-grip / traction-risk conditions.
+  tractionRiskRaw @2 :Float32;    # Current-frame risk before rise/decay filtering.
+  tractionRiskReason @3 :UInt32;  # TractionRiskReason bitmask from selfdrive/car/traction_risk.py.
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {

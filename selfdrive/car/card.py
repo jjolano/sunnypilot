@@ -20,6 +20,7 @@ from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 from openpilot.selfdrive.car.helpers import convert_carControlSP, convert_to_capnp
+from openpilot.selfdrive.car.traction_risk import TractionRiskEstimator
 
 from openpilot.sunnypilot.mads.helpers import set_alternative_experience, set_car_specific_params
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
@@ -78,6 +79,7 @@ class Car:
     self.CC_prev = car.CarControl.new_message()
     self.CS_prev = car.CarState.new_message()
     self.CS_SP_prev = custom.CarStateSP.new_message()
+    self.traction_risk_estimator = TractionRiskEstimator(DT_CTRL)
     self.initialized_prev = False
 
     self.last_actuators_output = structs.CarControl.Actuators()
@@ -221,6 +223,10 @@ class Car:
     # TODO: mirror the carState.cruiseState struct?
     CS.vCruise = float(self.v_cruise_helper.v_cruise_kph)
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
+    traction_risk = self.traction_risk_estimator.update(CS)
+    CS_SP.tractionRisk = traction_risk.risk
+    CS_SP.tractionRiskRaw = traction_risk.raw_risk
+    CS_SP.tractionRiskReason = traction_risk.reason
 
     return CS, CS_SP, RD
 

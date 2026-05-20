@@ -257,6 +257,14 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.NO_ENTRY: NoEntryAlert("Custom Longitudinal Stack Fault"),
   },
 
+  EventNameSP.lowTraction: {
+    ET.WARNING: Alert(
+      "Low Traction Detected",
+      "Driving softened",
+      AlertStatus.userPrompt, AlertSize.small,
+      Priority.LOW, VisualAlert.none, AudibleAlert.none, .2),
+  },
+
   EventNameSP.e2eChime: {
     ET.PERMANENT: Alert(
       "",
