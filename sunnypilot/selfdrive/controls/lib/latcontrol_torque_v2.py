@@ -463,7 +463,13 @@ class LatControlTorque(LatControl):
     output_torque = shaping_result.output_torque
     governor_result = RefinedOutputGovernorResult(output_torque, False, RefinedOutputGovernorReason.NONE)
     if self.refined_output_governor is not None:
-      governor_same_direction_limit = steer_limited_by_safety and (steer_limit_same_direction if steer_limit_feedback.valid else True) and not steer_limit_unwind
+      shaper_already_capped = shaping_result.active and shaping_result.output_cap <= V21_SAME_DIRECTION_LIMIT_CAP + 1e-6
+      governor_same_direction_limit = (
+        steer_limited_by_safety
+        and (steer_limit_same_direction if steer_limit_feedback.valid else True)
+        and not steer_limit_unwind
+        and not shaper_already_capped
+      )
       governor_result = self.refined_output_governor.update(
         RefinedOutputGovernorInputs(
           active=torque_observation.active,

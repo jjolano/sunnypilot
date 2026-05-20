@@ -48,6 +48,7 @@ LatControlTorque = latcontrol_torque_v2.LatControlTorque
 LatControlTorqueV21 = latcontrol_torque_v2.LatControlTorqueV21
 RefinedOutputGovernorInputs = latcontrol_torque_v2.RefinedOutputGovernorInputs
 RefinedOutputGovernorReason = latcontrol_torque_v2.RefinedOutputGovernorReason
+RefinedOutputGovernorResult = latcontrol_torque_v2.RefinedOutputGovernorResult
 TorqueV21RefinedOutputGovernor = latcontrol_torque_v2.TorqueV21RefinedOutputGovernor
 
 
@@ -128,6 +129,28 @@ class CapturingNNTorqueModel:
   def evaluate(self, input_array):
     self.inputs.append(list(input_array))
     return 0.0
+
+
+class FixedOutputShaper:
+  def __init__(self, result):
+    self.result = result
+    self.inputs = []
+
+  def update(self, inputs):
+    self.inputs.append(inputs)
+    return self.result
+
+
+class SpyRefinedOutputGovernor:
+  def __init__(self):
+    self.inputs = []
+
+  def reset(self):
+    pass
+
+  def update(self, inputs):
+    self.inputs.append(inputs)
+    return RefinedOutputGovernorResult(inputs.output_torque, False, RefinedOutputGovernorReason.NONE)
 
 
 def enable_flat_nnlc(controller):
@@ -537,6 +560,36 @@ def test_v21_logs_version_and_separate_governor_reason():
   assert adaptive_log.governorReason & RefinedOutputGovernorReason.SLEW_LIMITED
   assert adaptive_log.shapingReason == 0
   assert abs(lac_log.output) < abs(adaptive_log.unshapedOutput)
+
+
+def test_v21_skips_same_direction_governor_when_shaper_already_capped_route_cluster():
+  controller, VM = get_v21_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 21.5
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -8.0
+  CS.steeringRateDeg = 6.0
+  params = log.LiveParametersData.new_message()
+  shaper_result = ConservativeOutputShaperResult(
+    output_torque=0.60,
+    active=True,
+    reason=int(ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP),
+    confidence=1.0,
+    unshaped_output=0.90,
+    output_cap=0.60 / 0.90,
+  )
+  controller.output_shaper = FixedOutputShaper(shaper_result)
+  governor = SpyRefinedOutputGovernor()
+  controller.refined_output_governor = governor
+
+  # Route 0000014b--4165953d7c segs 19/20 repeatedly showed v2.1 same-direction
+  # governor limiting stacked on top of an already stricter safety/shaper cap.
+  controller.update(True, CS, VM, params, True, -0.0015, make_pose(), False, 0.2)
+
+  assert governor.inputs
+  assert not governor.inputs[-1].same_direction_limit
+  assert governor.inputs[-1].output_torque == pytest.approx(shaper_result.output_torque)
 
 
 def test_v2_softens_low_demand_friction_driven_reversals():
