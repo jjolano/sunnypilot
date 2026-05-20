@@ -15,6 +15,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.gps import get_gps_location_service
 
 from openpilot.selfdrive.car.car_specific import CarSpecificEvents
+from openpilot.selfdrive.car.traction_risk import TractionRiskReason
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.fcw import should_suppress_model_fcw
@@ -106,7 +107,7 @@ class SelfdriveD(CruiseHelper):
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelDataV2SP']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelDataV2SP', 'carStateSP']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY:
@@ -137,6 +138,7 @@ class SelfdriveD(CruiseHelper):
         'lateralManeuverPlan',
         'modelDataV2SP',
         'longitudinalPlanSP',
+        'carStateSP',
       ]
       + self.camera_packets
       + self.sensor_packets
@@ -363,6 +365,11 @@ class SelfdriveD(CruiseHelper):
       self.events_sp.add(custom.OnroadEventSP.EventName.laneTurnLeft)
     elif lane_turn_direction == TurnDirection.turnRight:
       self.events_sp.add(custom.OnroadEventSP.EventName.laneTurnRight)
+
+    if not self.CP.notCar:
+      traction_risk_reason = int(getattr(self.sm['carStateSP'], "tractionRiskReason", 0))
+      if traction_risk_reason & int(TractionRiskReason.ESP_ACTIVE):
+        self.events_sp.add(custom.OnroadEventSP.EventName.lowTraction)
 
     for i, pandaState in enumerate(self.sm['pandaStates']):
       # All pandas must match the list of safetyConfigs, and if outside this list, must be silent or noOutput
