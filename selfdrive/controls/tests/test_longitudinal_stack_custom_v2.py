@@ -24,6 +24,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   no_lead_stop_clear,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput, validate_stack_output
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate, select_planner_seed_candidate
 
 
 def make_output(a_target=0.0, should_stop=False, has_lead=False, debug=None, speeds=None, accels=None, jerks=None,
@@ -73,6 +74,33 @@ def test_no_lead_launch_requires_stop_clear():
   assert clear_output.debug["custom_v2_selected_intent"] == "launch"
   assert blocked_output.a_target == 0.0
   assert "model_stop_not_clear" in blocked_output.debug["custom_v2_rejected_reasons"]
+
+
+def test_zero_safety_cap_blocks_custom_progress_floors():
+  scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, model_stop_distance=30.0, model_desired_accel=0.0)
+
+  output = CustomLongitudinalStackV2().update(
+    make_output(0.0, seed_intent="safety_cap", seed_reason="lead_flicker_speedup_cap"),
+    scene,
+    accel_limits=(-2.0, 2.0),
+  )
+
+  assert output.a_target == 0.0
+  assert output.debug["custom_v2_selected_intent"] == "safety_cap"
+  assert output.debug["custom_v2_selected_reason"] == "lead_flicker_speedup_cap"
+
+
+def test_equal_zero_safety_cap_seed_wins_over_baseline_seed():
+  baseline = PlannerSeedCandidate("sunnypilot-current", make_output(0.0))
+  safety_cap = PlannerSeedCandidate(
+    "lead_flicker_speedup_cap",
+    make_output(0.0, seed_intent="safety_cap", seed_reason="lead_flicker_speedup_cap"),
+  )
+
+  selected = select_planner_seed_candidate((baseline, safety_cap))
+
+  assert selected.name == "lead_flicker_speedup_cap"
+  assert selected.intent == "safety_cap"
 
 
 def test_direct_lead_scene_does_not_create_lead_progress():

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 import math
 import numpy as np
 
@@ -20,6 +20,15 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   build_core_longitudinal_candidates,
   get_active_lead_confidence,
   resolve_longitudinal_decision,
+)
+from openpilot.selfdrive.controls.lib.lead_confidence import (
+  LEAD_FLICKER_CLOSE_COUNT_THRESHOLD,
+  LEAD_FLICKER_CLOSE_D_REL,
+  LEAD_FLICKER_CLOSE_GUARD_TIME,
+  LEAD_FLICKER_CLOSE_V_LEAD,
+  LEAD_FLICKER_COUNT_THRESHOLD,
+  LEAD_FLICKER_GUARD_TIME,
+  LEAD_FLICKER_WINDOW,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import planner_state_to_stack_output
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene, ONE_PEDAL_MODE_OFF, ONE_PEDAL_MODES
@@ -50,7 +59,11 @@ from openpilot.selfdrive.controls.lib.lateral_accel import lateral_accel_from_st
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
-from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
+  LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL,
+  LongitudinalPlannerSP,
+  should_block_lead_speedup,
+)
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0.0, 10.0, 25.0, 40.0]
@@ -205,6 +218,11 @@ E2E_CLOSE_STOP_DECEL_MAX = 0.8
 ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED = 1.0
 STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_D_REL_DELTA = 3.0
 STOPPED_LEAD_GAP_FILL_CONTINUITY_MAX_V_LEAD_DELTA = 1.0
+LEAD_FLICKER_SPEEDUP_CAP_REASON = "lead_flicker_speedup_cap"
+LEAD_FLICKER_SPEEDUP_CAP_A_TARGET_MAX = 0.0
+LEAD_FLICKER_FIRST_LOSS_HOLD_TIME = 0.5
+LEAD_FLICKER_FAR_CLOSING_SPEED_MIN = 1.0
+LEAD_FLICKER_FAR_REQUIRED_DECEL_MIN = 0.25
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -221,6 +239,110 @@ def get_coast_accel(pitch):
 
 def has_valid_radar_lead(radar_state):
   return radar_state.leadOne.status or radar_state.leadTwo.status
+
+
+def _finite_float(value, default=0.0):
+  try:
+    value = float(value)
+  except (TypeError, ValueError):
+    return default
+  return value if math.isfinite(value) else default
+
+
+def get_lead_flicker_required_decel(d_rel, v_rel):
+  closing_speed = max(0.0, -_finite_float(v_rel))
+  return closing_speed**2 / (2.0 * max(_finite_float(d_rel) - STOP_DISTANCE, 0.1))
+
+
+def should_cap_lead_flicker_speedup(v_ego, lead_status, d_rel, v_rel, v_lead, y_rel):
+  if not lead_status or abs(_finite_float(y_rel)) >= LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL:
+    return False
+
+  d_rel = _finite_float(d_rel)
+  v_rel = _finite_float(v_rel)
+  v_lead = _finite_float(v_lead)
+  if should_block_lead_speedup(v_ego, True, d_rel, v_rel, _finite_float(y_rel), False, False):
+    return True
+
+  closing_speed = max(0.0, -v_rel, _finite_float(v_ego) - v_lead)
+  required_decel = get_lead_flicker_required_decel(d_rel, -closing_speed)
+  return closing_speed >= LEAD_FLICKER_FAR_CLOSING_SPEED_MIN and required_decel >= LEAD_FLICKER_FAR_REQUIRED_DECEL_MIN
+
+
+@dataclass(frozen=True)
+class LeadFlickerSafetyCapState:
+  active: bool = False
+  timer: float = 0.0
+  risky_lead: bool = False
+
+
+@dataclass
+class LeadFlickerSafetyCapTracker:
+  _prev_status: bool = False
+  _transitions: list[float] = field(default_factory=list)
+  _timer: float = 0.0
+  _last_d_rel: float = 0.0
+  _last_v_rel: float = 0.0
+  _last_v_lead: float = 0.0
+  _last_y_rel: float = 0.0
+  _last_risky_lead: bool = False
+
+  def update(self, lead, v_ego, dt, reset_state=False, force_slow_decel=False, gas_pressed=False, brake_pressed=False):
+    dt = max(_finite_float(dt), 0.0)
+    if reset_state:
+      self._prev_status = False
+      self._transitions.clear()
+      self._timer = 0.0
+      self._last_risky_lead = False
+      return LeadFlickerSafetyCapState()
+
+    self._timer = max(0.0, self._timer - dt)
+    status = bool(getattr(lead, "status", False)) if lead is not None else False
+    d_rel, v_rel, v_lead, y_rel = self._lead_values(lead) if status else (
+      self._last_d_rel,
+      self._last_v_rel,
+      self._last_v_lead,
+      self._last_y_rel,
+    )
+    risky_lead = should_cap_lead_flicker_speedup(v_ego, status, d_rel, v_rel, v_lead, y_rel)
+    if status:
+      self._last_d_rel = d_rel
+      self._last_v_rel = v_rel
+      self._last_v_lead = v_lead
+      self._last_y_rel = y_rel
+      self._last_risky_lead = risky_lead
+
+    risk_context = risky_lead or self._last_risky_lead
+    if status != self._prev_status and risk_context:
+      self._transitions.append(0.0)
+      if not status and self._last_risky_lead:
+        self._timer = max(self._timer, LEAD_FLICKER_FIRST_LOSS_HOLD_TIME)
+    self._prev_status = status
+
+    self._transitions = [t + dt for t in self._transitions if t + dt <= LEAD_FLICKER_WINDOW]
+    if risk_context and len(self._transitions) >= LEAD_FLICKER_COUNT_THRESHOLD:
+      self._timer = max(self._timer, LEAD_FLICKER_GUARD_TIME)
+    if self._close_stop_go_context(d_rel, v_lead) and len(self._transitions) >= LEAD_FLICKER_CLOSE_COUNT_THRESHOLD:
+      self._timer = max(self._timer, LEAD_FLICKER_CLOSE_GUARD_TIME)
+
+    blocked = bool(force_slow_decel or gas_pressed or brake_pressed)
+    return LeadFlickerSafetyCapState(
+      active=bool(not blocked and (risky_lead or self._timer > 0.0)),
+      timer=self._timer,
+      risky_lead=bool(risky_lead),
+    )
+
+  @staticmethod
+  def _lead_values(lead):
+    d_rel = _finite_float(getattr(lead, "dRel", 0.0))
+    v_lead = _finite_float(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
+    v_rel = _finite_float(getattr(lead, "vRel", v_lead))
+    y_rel = _finite_float(getattr(lead, "yRel", 0.0))
+    return d_rel, v_rel, v_lead, y_rel
+
+  @staticmethod
+  def _close_stop_go_context(d_rel, v_lead):
+    return 0.0 < d_rel <= LEAD_FLICKER_CLOSE_D_REL and 0.0 <= v_lead <= LEAD_FLICKER_CLOSE_V_LEAD
 
 
 def has_model_stop_context(model_msg):
@@ -983,6 +1105,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.stopped_lead_gap_fill_track_id = -2
     self.stopped_lead_gap_fill_d_rel = 0.0
     self.stopped_lead_gap_fill_v_lead = 0.0
+    self.lead_flicker_safety_cap_trackers = [LeadFlickerSafetyCapTracker(), LeadFlickerSafetyCapTracker()]
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -1520,8 +1643,30 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     custom_lead_crawl_accel_cap = None
     if lead_one.status and not creep_pullaway_launch and not lead_pullaway_crawl_cap_released and v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO:
       custom_lead_crawl_accel_cap = LEAD_CRAWL_ACCEL_LIMIT
+    lead_flicker_trackers = getattr(self, "lead_flicker_safety_cap_trackers", None)
+    if lead_flicker_trackers is None:
+      lead_flicker_trackers = [LeadFlickerSafetyCapTracker(), LeadFlickerSafetyCapTracker()]
+      self.lead_flicker_safety_cap_trackers = lead_flicker_trackers
+    lead_flicker_safety_cap_states = [
+      tracker.update(
+        lead, v_ego, self.dt,
+        reset_state=reset_state,
+        force_slow_decel=force_slow_decel,
+        gas_pressed=sm['carState'].gasPressed,
+        brake_pressed=sm['carState'].brakePressed,
+      )
+      for tracker, lead in zip(lead_flicker_trackers, (sm['radarState'].leadOne, sm['radarState'].leadTwo), strict=False)
+    ]
+    lead_flicker_safety_cap_active = any(state.active for state in lead_flicker_safety_cap_states)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.planner_seed_candidates = []
+    if lead_flicker_safety_cap_active:
+      lead_flicker_speedup_cap_candidate = build_planner_seed_accel_candidate(
+        self, "lead_flicker_speedup_cap", LEAD_FLICKER_SPEEDUP_CAP_A_TARGET_MAX, has_lead,
+        LEAD_FLICKER_SPEEDUP_CAP_REASON, accel_clip, should_stop=False, force=True,
+      )
+      if lead_flicker_speedup_cap_candidate is not None:
+        self.planner_seed_candidates.append(lead_flicker_speedup_cap_candidate)
     if planner_seed_mpc_a_target is not None:
       planner_seed_mpc_candidate = build_planner_seed_mpc_candidate(
         self, planner_seed_mpc, planner_seed_mpc_a_target, planner_seed_mpc_should_stop, has_lead, accel_clip,

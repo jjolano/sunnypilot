@@ -449,6 +449,8 @@ def _comfort_relax_allowed(scene: CustomV2Scene) -> bool:
 
 def _one_pedal_preserves_physical_braking(output: LongitudinalStackOutput, selected_intent: str,
                                           a_target: float, should_stop: bool) -> bool:
+  if selected_intent == PLANNER_SEED_INTENT_SAFETY_CAP:
+    return a_target <= 0.0 or should_stop or output.should_stop
   return bool(
     selected_intent in {PLANNER_SEED_INTENT_LEAD_FOLLOW, PLANNER_SEED_INTENT_STOP_APPROACH, PLANNER_SEED_INTENT_SAFETY_CAP} and
     (a_target < 0.0 or should_stop or output.should_stop)

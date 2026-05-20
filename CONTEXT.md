@@ -124,6 +124,10 @@ _Avoid_: speed-up annoyance, custom policy preference
 A planner-level cap that blocks non-lead speed-up seeds when a close lead is being closed on.
 _Avoid_: lead braking, MPC replacement
 
+**Lead Flicker Safety Cap**:
+A custom-stack **Safety Cap** that blocks positive acceleration during low-confidence or recently lost risky lead evidence without treating that evidence as **Lead-confirmed Progress**.
+_Avoid_: lead persistence, hidden lead MPC, flicker progress
+
 **Slower Lead Approach**:
 Lead-follow runway comfort for approaching a slower moving lead without declaring stop intent.
 _Avoid_: Stop Approach, stopped-lead crawl, lead speed-up guard
@@ -175,6 +179,7 @@ _Avoid_: ignoring curves, lateral safety
 - Low-confidence, flickering, or transitioning lead evidence may restrict or hold acceleration, but only **Lead-confirmed Progress** may authorize positive lead progress.
 - **Closing-rate Risk** belongs to **Longitudinal MPC** or planner lead guards rather than a competing **Custom Stack** physics model.
 - A **Lead Speed-up Guard** caps planner seeds; **Longitudinal MPC** owns lead braking, time-gap, danger-gap, and stop-runway shaping.
+- A **Lead Flicker Safety Cap** may hold acceleration during risky flicker; it does not create **Lead-confirmed Progress** or a **Lead MPC** physical hazard.
 - A **Slower Lead Approach** is **Closing-rate Risk** handling inside lead-follow behavior; it may use bounded moving-follow runway comfort, but it is not **Stop Approach**.
 - **Stop/go Intent** belongs to the **Longitudinal Planner**; **Longitudinal MPC** owns physical lead/runway constraints and controller logic only shapes release.
 - A **Planner Seed Candidate** is planner-owned input to custom-stack arbitration, not a selectable stack version.

@@ -18,9 +18,13 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   E2E_CLOSE_STOP_MIN_ROLLING_V,
   E2E_STOP_APPROACH_DECEL_MAX,
   E2E_RUNWAY_FINAL_CRAWL_ACCEL_MAX,
+  LEAD_FLICKER_CLOSE_GUARD_TIME,
+  LEAD_FLICKER_FIRST_LOSS_HOLD_TIME,
+  LeadFlickerSafetyCapTracker,
   LongitudinalPlanner,
   _A_TOTAL_MAX_BP,
   _A_TOTAL_MAX_V,
+  get_lead_flicker_required_decel,
   get_custom_v2_curve_scene_target,
   get_e2e_close_stop_settle,
   get_max_accel,
@@ -32,6 +36,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   has_valid_radar_lead,
   limit_accel_in_turns,
   one_pedal_cruise_hold_requested,
+  should_cap_lead_flicker_speedup,
   should_enable_longitudinal_decision_layer,
   should_run_engage_stop_bootstrap,
   update_one_pedal_cruise_hold,
@@ -79,6 +84,17 @@ def make_radar_state(lead_one=False, lead_two=False):
   return SimpleNamespace(
     leadOne=SimpleNamespace(status=lead_one),
     leadTwo=SimpleNamespace(status=lead_two),
+  )
+
+
+def make_flicker_lead(status=True, v_ego=15.0, d_rel=20.0, v_rel=-1.4, y_rel=0.0):
+  return SimpleNamespace(
+    status=status,
+    dRel=d_rel,
+    vRel=v_rel,
+    vLeadK=v_ego + v_rel,
+    vLead=v_ego + v_rel,
+    yRel=y_rel,
   )
 
 
@@ -133,6 +149,99 @@ def test_has_valid_radar_lead_checks_both_tracks():
   assert not has_valid_radar_lead(make_radar_state())
   assert has_valid_radar_lead(make_radar_state(lead_one=True))
   assert has_valid_radar_lead(make_radar_state(lead_two=True))
+
+
+def test_lead_flicker_speedup_cap_uses_close_closing_guard():
+  assert should_cap_lead_flicker_speedup(
+    v_ego=15.0,
+    lead_status=True,
+    d_rel=20.0,
+    v_rel=-1.4,
+    v_lead=13.6,
+    y_rel=0.0,
+  )
+
+
+def test_lead_flicker_speedup_cap_ignores_far_matched_noise():
+  assert not should_cap_lead_flicker_speedup(
+    v_ego=15.0,
+    lead_status=True,
+    d_rel=96.0,
+    v_rel=-0.6,
+    v_lead=14.4,
+    y_rel=0.0,
+  )
+
+
+def test_lead_flicker_speedup_cap_uses_far_closing_required_decel():
+  assert get_lead_flicker_required_decel(90.0, -8.6) >= 0.25
+  assert should_cap_lead_flicker_speedup(
+    v_ego=20.0,
+    lead_status=True,
+    d_rel=90.0,
+    v_rel=-8.6,
+    v_lead=11.4,
+    y_rel=0.0,
+  )
+
+
+def test_lead_flicker_speedup_cap_ignores_lateral_exit_lead():
+  assert not should_cap_lead_flicker_speedup(
+    v_ego=15.0,
+    lead_status=True,
+    d_rel=20.0,
+    v_rel=-1.4,
+    v_lead=13.6,
+    y_rel=1.6,
+  )
+
+
+def test_lead_flicker_tracker_holds_after_first_risky_loss():
+  tracker = LeadFlickerSafetyCapTracker()
+  tracker.update(make_flicker_lead(), v_ego=15.0, dt=0.1)
+
+  state = tracker.update(make_flicker_lead(status=False), v_ego=15.0, dt=0.1)
+
+  assert state.active
+  assert state.timer == pytest.approx(LEAD_FLICKER_FIRST_LOSS_HOLD_TIME)
+
+
+def test_lead_flicker_tracker_hold_decays():
+  tracker = LeadFlickerSafetyCapTracker()
+  tracker.update(make_flicker_lead(), v_ego=15.0, dt=0.1)
+  tracker.update(make_flicker_lead(status=False), v_ego=15.0, dt=0.1)
+
+  still_held = tracker.update(make_flicker_lead(status=False), v_ego=15.0, dt=0.25)
+  released = tracker.update(make_flicker_lead(status=False), v_ego=15.0, dt=0.3)
+
+  assert still_held.active
+  assert not released.active
+  assert released.timer == pytest.approx(0.0)
+
+
+def test_lead_flicker_tracker_uses_close_stop_go_hold_for_repeated_flicker():
+  tracker = LeadFlickerSafetyCapTracker()
+  close_lead = make_flicker_lead(v_ego=2.0, d_rel=9.0, v_rel=-0.5)
+  lost_close_lead = make_flicker_lead(status=False, v_ego=2.0, d_rel=9.0, v_rel=-0.5)
+
+  tracker.update(close_lead, v_ego=2.0, dt=0.1)
+  tracker.update(lost_close_lead, v_ego=2.0, dt=0.1)
+  tracker.update(close_lead, v_ego=2.0, dt=0.1)
+  state = tracker.update(lost_close_lead, v_ego=2.0, dt=0.1)
+
+  assert state.active
+  assert state.timer == pytest.approx(LEAD_FLICKER_CLOSE_GUARD_TIME)
+
+
+def test_lead_flicker_tracker_driver_override_suppresses_active_cap():
+  tracker = LeadFlickerSafetyCapTracker()
+  tracker.update(make_flicker_lead(), v_ego=15.0, dt=0.1)
+  held = tracker.update(make_flicker_lead(status=False), v_ego=15.0, dt=0.1)
+  overridden = tracker.update(make_flicker_lead(status=False), v_ego=15.0, dt=0.1, gas_pressed=True)
+
+  assert held.active
+  assert overridden.timer > 0.0
+  assert not overridden.active
 
 
 def test_decision_layer_is_baked_into_custom_stacks_only():

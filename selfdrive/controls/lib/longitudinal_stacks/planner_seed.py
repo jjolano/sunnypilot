@@ -43,6 +43,7 @@ LAUNCH_SEED_REASONS = {
   "low_speed_pullaway_accel_step_cap",
 }
 DRIVER_CRUISE_SEED_REASONS = {"plain_cruise_overspeed_coast"}
+SAFETY_CAP_SEED_REASONS = {"lead_flicker_speedup_cap"}
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,8 @@ def planner_seed_intent_for_reason(reason: str, has_lead: bool = False, should_s
     return PLANNER_SEED_INTENT_LEAD_FOLLOW
   if reason in LAUNCH_SEED_REASONS:
     return PLANNER_SEED_INTENT_LAUNCH
+  if reason in SAFETY_CAP_SEED_REASONS:
+    return PLANNER_SEED_INTENT_SAFETY_CAP
   if reason in DRIVER_CRUISE_SEED_REASONS:
     return PLANNER_SEED_INTENT_DRIVER_CRUISE
   return PLANNER_SEED_INTENT_DRIVER_CRUISE
@@ -125,7 +128,8 @@ def _select_cap_candidate(baseline: PlannerSeedCandidate, candidates: Iterable[P
   applicable = [
     candidate for candidate in caps
     if candidate.output.a_target < baseline.output.a_target or
-       _candidate_caps_floor(candidate, selected_floor)
+       _candidate_caps_floor(candidate, selected_floor) or
+       _candidate_is_equal_safety_cap(candidate, baseline)
   ]
   return min(applicable, key=lambda candidate: candidate.output.a_target, default=None)
 
@@ -134,6 +138,10 @@ def _candidate_caps_floor(candidate: PlannerSeedCandidate, selected_floor: Plann
   if selected_floor is None or candidate.output.a_target >= selected_floor.output.a_target:
     return False
   return not candidate.group or candidate.group == selected_floor.group
+
+
+def _candidate_is_equal_safety_cap(candidate: PlannerSeedCandidate, baseline: PlannerSeedCandidate) -> bool:
+  return candidate.intent == PLANNER_SEED_INTENT_SAFETY_CAP and candidate.output.a_target <= baseline.output.a_target
 
 
 def _select_post_cap_floor(cap_candidate: PlannerSeedCandidate | None,
