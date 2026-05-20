@@ -201,9 +201,13 @@ E2E_RUNWAY_COMFORT_MIN_V_EGO = 3.0
 E2E_RUNWAY_COMFORT_MIN_ENDPOINT = 1.0
 E2E_RUNWAY_COMFORT_COAST_MARGIN = 0.02
 E2E_RUNWAY_COMFORT_LIGHT_DECEL = 0.30
+E2E_RUNWAY_COMFORT_TRACTION_LIGHT_DECEL = 0.25
 E2E_RUNWAY_COMFORT_DECEL_BLEND_BP = [1.2, 2.0]
 E2E_RUNWAY_COMFORT_RUNWAY_BLEND_BP = [0.5, 1.0]
 E2E_RUNWAY_COMFORT_NEGATIVE_RAMP_RATE = 0.35
+TRACTION_RISK_RUNWAY_SCALE_MAX = 1.25
+TRACTION_RISK_NEGATIVE_RAMP_MIN_SCALE = 0.75
+TRACTION_RISK_LEAD_STOP_SLEW_MIN_SCALE = 0.45
 E2E_RUNWAY_POSITIVE_CAP_REF_ACCEL = 0.45
 E2E_RUNWAY_POSITIVE_CAP_PREVIEW_T = 6.0
 E2E_RUNWAY_POSITIVE_CAP_MAX_ENDPOINT_V = 1.0
@@ -424,8 +428,39 @@ def should_run_engage_stop_bootstrap(timer, v_ego, radar_state, model_msg):
   )
 
 
+def clip_traction_risk(traction_risk: float) -> float:
+  try:
+    traction_risk = float(traction_risk)
+  except (TypeError, ValueError):
+    traction_risk = 0.0
+  return float(np.clip(traction_risk if np.isfinite(traction_risk) else 0.0, 0.0, 1.0))
+
+
+def get_traction_risk(car_state_sp) -> float:
+  try:
+    traction_risk = float(getattr(car_state_sp, "tractionRisk", 0.0))
+  except (TypeError, ValueError, AttributeError):
+    return 0.0
+  return clip_traction_risk(traction_risk)
+
+
+def get_traction_runway_scale(traction_risk: float) -> float:
+  return 1.0 + (TRACTION_RISK_RUNWAY_SCALE_MAX - 1.0) * clip_traction_risk(traction_risk)
+
+
+def get_traction_light_decel(traction_risk: float) -> float:
+  return float(np.interp(clip_traction_risk(traction_risk), [0.0, 1.0],
+                         [E2E_RUNWAY_COMFORT_LIGHT_DECEL, E2E_RUNWAY_COMFORT_TRACTION_LIGHT_DECEL]))
+
+
+def get_traction_negative_ramp_rate(base_rate: float, traction_risk: float) -> float:
+  scale = 1.0 - (1.0 - TRACTION_RISK_NEGATIVE_RAMP_MIN_SCALE) * clip_traction_risk(traction_risk)
+  return base_rate * scale
+
+
 def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force_slow_decel=False,
-                                brake_pressed=False, gas_pressed=False, model_stop_protection_active=False):
+                                brake_pressed=False, gas_pressed=False, model_stop_protection_active=False,
+                                traction_risk=0.0):
   protection_active = e2e_active or model_stop_protection_active
   min_v_ego = E2E_STOP_APPROACH_PROTECTION_MIN_V_EGO if model_stop_protection_active else E2E_STOP_APPROACH_MIN_V_EGO
   blocked = not protection_active or force_slow_decel or brake_pressed or gas_pressed
@@ -451,6 +486,7 @@ def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force
     approach_distance = min(endpoint_x, max(E2E_STOP_APPROACH_MIN_ENDPOINT, stop_distance - E2E_STOP_APPROACH_CRAWL_RESERVE))
 
   expected_distance = float(np.interp(v_ego * CV.MS_TO_KPH, E2E_STOP_APPROACH_EXPECTED_DIST_BP, E2E_STOP_APPROACH_EXPECTED_DIST_V))
+  expected_distance *= get_traction_runway_scale(traction_risk)
   max_decel_distance = v_ego**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX * (1.0 - E2E_STOP_APPROACH_MAX_DECEL_SHORTAGE))
   expected_distance = max(expected_distance, max_decel_distance)
   if expected_distance <= 0.0:
@@ -582,8 +618,8 @@ def get_e2e_close_stop_settle(v_ego, raw_e2e_accel, model_msg, radar_state, e2e_
 
 
 def get_e2e_runway_comfort_accel(v_ego, raw_e2e_accel, coast_accel, model_msg, e2e_active, prev_output_a_target,
-                                 reset_state=False, force_slow_decel=False, brake_pressed=False, gas_pressed=False,
-                                 engage_stop_bootstrap_active=False, has_radar_lead=False, dt=DT_MDL):
+                                  reset_state=False, force_slow_decel=False, brake_pressed=False, gas_pressed=False,
+                                  engage_stop_bootstrap_active=False, has_radar_lead=False, dt=DT_MDL, traction_risk=0.0):
   blocked = not e2e_active or reset_state or force_slow_decel or brake_pressed or gas_pressed
   blocked = blocked or engage_stop_bootstrap_active or has_radar_lead
   blocked = blocked or model_msg.action.shouldStop or v_ego < E2E_RUNWAY_COMFORT_MIN_V_EGO
@@ -596,6 +632,7 @@ def get_e2e_runway_comfort_accel(v_ego, raw_e2e_accel, coast_accel, model_msg, e
     return raw_e2e_accel
 
   expected_distance = float(np.interp(v_ego * CV.MS_TO_KPH, E2E_STOP_APPROACH_EXPECTED_DIST_BP, E2E_STOP_APPROACH_EXPECTED_DIST_V))
+  expected_distance *= get_traction_runway_scale(traction_risk)
   model_expected_distance = expected_distance
   max_decel_distance = v_ego**2 / (2.0 * E2E_STOP_APPROACH_DECEL_MAX * (1.0 - E2E_STOP_APPROACH_MAX_DECEL_SHORTAGE))
   expected_distance = max(expected_distance, max_decel_distance)
@@ -615,11 +652,11 @@ def get_e2e_runway_comfort_accel(v_ego, raw_e2e_accel, coast_accel, model_msg, e
   if blend >= 1.0:
     return raw_e2e_accel
 
-  light_decel_cap = min(coast_accel - E2E_RUNWAY_COMFORT_COAST_MARGIN, -E2E_RUNWAY_COMFORT_LIGHT_DECEL)
+  light_decel_cap = min(coast_accel - E2E_RUNWAY_COMFORT_COAST_MARGIN, -get_traction_light_decel(traction_risk))
   comfort_cap = (1.0 - blend) * light_decel_cap + blend * raw_e2e_accel
   governed_accel = max(raw_e2e_accel, comfort_cap)
 
-  max_negative_step = E2E_RUNWAY_COMFORT_NEGATIVE_RAMP_RATE * max(dt, 0.0)
+  max_negative_step = get_traction_negative_ramp_rate(E2E_RUNWAY_COMFORT_NEGATIVE_RAMP_RATE, traction_risk) * max(dt, 0.0)
   if np.isfinite(prev_output_a_target):
     governed_accel = max(governed_accel, prev_output_a_target - max_negative_step)
   return governed_accel
@@ -837,7 +874,7 @@ def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_
   return predicted_v_lead, predicted_gap_opening
 
 
-def get_lead_stop_approach_slewed_accel(v_ego, d_rel, v_lead, a_lead, prev_a_target, a_target, dt):
+def get_lead_stop_approach_slewed_accel(v_ego, d_rel, v_lead, a_lead, prev_a_target, a_target, dt, traction_risk=0.0):
   stopped_lead_with_runway = (
     v_lead <= LEAD_STOP_APPROACH_DECEL_SLEW_STOPPED_LEAD_V and
     d_rel > STOP_DISTANCE + LEAD_STOP_APPROACH_DECEL_SLEW_MIN_GAP_EXCESS
@@ -850,7 +887,8 @@ def get_lead_stop_approach_slewed_accel(v_ego, d_rel, v_lead, a_lead, prev_a_tar
   ):
     return a_target
 
-  max_delta = LEAD_STOP_APPROACH_DECEL_SLEW_MAX_JERK * dt
+  jerk_scale = 1.0 if hard_braking_lead else (1.0 - (1.0 - TRACTION_RISK_LEAD_STOP_SLEW_MIN_SCALE) * clip_traction_risk(traction_risk))
+  max_delta = LEAD_STOP_APPROACH_DECEL_SLEW_MAX_JERK * jerk_scale * dt
   return float(np.clip(a_target, prev_a_target - max_delta, prev_a_target + max_delta))
 
 
@@ -1150,6 +1188,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       cruise_coast_accel = 0.0
 
     v_ego = sm['carState'].vEgo
+    try:
+      car_state_sp = sm['carStateSP']
+    except (KeyError, TypeError):
+      car_state_sp = None
+    traction_risk = get_traction_risk(car_state_sp)
     prev_output_a_target = self.output_a_target
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
@@ -1304,6 +1347,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       engage_stop_bootstrap_active=custom_engage_stop_bootstrap_active,
       has_radar_lead=has_radar_lead,
       dt=self.dt,
+      traction_risk=traction_risk,
     )
     custom_e2e_close_stop_a_target, custom_close_stop_should_stop, self.e2e_close_stop_settle_active = get_e2e_close_stop_settle(
       v_ego, output_a_target_e2e, sm['modelV2'], sm['radarState'], e2e_active,
@@ -1354,6 +1398,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       brake_pressed=sm['carState'].brakePressed,
       gas_pressed=sm['carState'].gasPressed,
       model_stop_protection_active=model_stop_protection_active,
+      traction_risk=traction_risk,
     )
     e2e_stop_approach_a_target = 0.0
 
@@ -1533,7 +1578,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       custom_lead_stop_approach_base_a_target = lead_stop_approach_base_a_target
       custom_lead_stop_approach_slewed_a_target = get_lead_stop_approach_slewed_accel(
         v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK),
-        prev_output_a_target, lead_stop_approach_base_a_target, self.dt,
+        prev_output_a_target, lead_stop_approach_base_a_target, self.dt, traction_risk=traction_risk,
       )
 
     self.previous_lead_loss_status = lead_loss_guard_lead is not None

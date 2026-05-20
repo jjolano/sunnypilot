@@ -31,6 +31,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   get_e2e_runway_comfort_accel,
   get_e2e_runway_positive_accel_cap,
   get_e2e_stop_approach_accel,
+  get_lead_stop_approach_slewed_accel,
   get_model_stop_distance,
   has_model_stop_context,
   has_valid_radar_lead,
@@ -595,6 +596,16 @@ def test_e2e_stop_approach_ignores_endpoint_with_sufficient_runway():
   assert accel == 0.0
 
 
+def test_e2e_stop_approach_uses_longer_runway_with_traction_risk():
+  model_msg = make_model_msg(endpoint_x=80.0, positions=[0.0, 63.0, 80.0], velocities=[12.0, 0.5, 3.0])
+
+  normal = get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), True)
+  traction_limited = get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), True, traction_risk=1.0)
+
+  assert normal == 0.0
+  assert -E2E_STOP_APPROACH_DECEL_MAX <= traction_limited < 0.0
+
+
 def test_e2e_stop_approach_uses_earlier_model_stop_point_for_crawl_reserve():
   route_like_model = make_model_msg(
     endpoint_x=123.0,
@@ -637,6 +648,18 @@ def test_e2e_stop_approach_caps_route_like_peak_decel():
     make_model_msg(endpoint_x=45.0, positions=[0.0, 30.0, 45.0], velocities=[60.0 / 3.6, 0.5, 3.0]),
     make_radar_state(),
     True,
+  )
+
+  assert math.isclose(accel, -E2E_STOP_APPROACH_DECEL_MAX)
+
+
+def test_e2e_stop_approach_preserves_urgent_stop_cap_with_traction_risk():
+  accel = get_e2e_stop_approach_accel(
+    60.0 / 3.6,
+    make_model_msg(endpoint_x=45.0, positions=[0.0, 30.0, 45.0], velocities=[60.0 / 3.6, 0.5, 3.0]),
+    make_radar_state(),
+    True,
+    traction_risk=1.0,
   )
 
   assert math.isclose(accel, -E2E_STOP_APPROACH_DECEL_MAX)
@@ -811,6 +834,30 @@ def test_e2e_runway_comfort_prefers_coast_on_excessive_runway():
   assert math.isclose(accel, -0.30)
 
 
+def test_e2e_runway_comfort_uses_lighter_decel_with_traction_risk():
+  normal = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-1.2,
+    coast_accel=0.0,
+    model_msg=make_model_msg(desired_accel=-1.2, should_stop=False, endpoint_x=145.0),
+    e2e_active=True,
+    prev_output_a_target=-0.5,
+  )
+  traction_limited = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-1.2,
+    coast_accel=0.0,
+    model_msg=make_model_msg(desired_accel=-1.2, should_stop=False, endpoint_x=145.0),
+    e2e_active=True,
+    prev_output_a_target=-0.5,
+    traction_risk=1.0,
+  )
+
+  assert normal == pytest.approx(-0.30)
+  assert traction_limited == pytest.approx(-0.25)
+  assert normal < traction_limited < 0.0
+
+
 def test_e2e_runway_comfort_caps_route_like_far_no_stop_decel():
   accel = get_e2e_runway_comfort_accel(
     v_ego=17.26,
@@ -908,6 +955,28 @@ def test_e2e_runway_comfort_limits_negative_ramp():
   assert accel == -0.2175
 
 
+def test_e2e_runway_comfort_softens_negative_ramp_with_traction_risk():
+  normal = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-0.8,
+    coast_accel=-0.25,
+    model_msg=make_model_msg(desired_accel=-0.8, should_stop=False, endpoint_x=90.0),
+    e2e_active=True,
+    prev_output_a_target=-0.2,
+  )
+  traction_limited = get_e2e_runway_comfort_accel(
+    v_ego=17.2,
+    raw_e2e_accel=-0.8,
+    coast_accel=-0.25,
+    model_msg=make_model_msg(desired_accel=-0.8, should_stop=False, endpoint_x=90.0),
+    e2e_active=True,
+    prev_output_a_target=-0.2,
+    traction_risk=1.0,
+  )
+
+  assert normal < traction_limited < 0.0
+
+
 def test_e2e_runway_comfort_does_not_block_stop_approach_shortage_braking():
   model_msg = make_model_msg(desired_accel=-0.4, should_stop=False, endpoint_x=45.0,
                              positions=[0.0, 30.0, 45.0], velocities=[12.0, 0.5, 3.0])
@@ -916,6 +985,28 @@ def test_e2e_runway_comfort_does_not_block_stop_approach_shortage_braking():
 
   assert shortage_accel < governed
   assert shortage_accel < -0.5
+
+
+def test_lead_stop_approach_softens_stopped_lead_runway_slew_with_traction_risk():
+  normal = get_lead_stop_approach_slewed_accel(
+    v_ego=10.0, d_rel=40.0, v_lead=0.0, a_lead=0.0, prev_a_target=0.0, a_target=-1.0, dt=0.05,
+  )
+  traction_limited = get_lead_stop_approach_slewed_accel(
+    v_ego=10.0, d_rel=40.0, v_lead=0.0, a_lead=0.0, prev_a_target=0.0, a_target=-1.0, dt=0.05, traction_risk=1.0,
+  )
+
+  assert -1.0 < normal < traction_limited < 0.0
+
+
+def test_lead_stop_approach_preserves_hard_braking_lead_slew_with_traction_risk():
+  normal = get_lead_stop_approach_slewed_accel(
+    v_ego=10.0, d_rel=40.0, v_lead=5.0, a_lead=-1.0, prev_a_target=0.0, a_target=-1.0, dt=0.05,
+  )
+  traction_limited = get_lead_stop_approach_slewed_accel(
+    v_ego=10.0, d_rel=40.0, v_lead=5.0, a_lead=-1.0, prev_a_target=0.0, a_target=-1.0, dt=0.05, traction_risk=1.0,
+  )
+
+  assert traction_limited == pytest.approx(normal)
 
 
 def test_e2e_runway_positive_accel_cap_limits_short_runway_at_crawl():

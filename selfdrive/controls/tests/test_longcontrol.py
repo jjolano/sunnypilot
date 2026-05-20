@@ -138,6 +138,22 @@ def test_sunnypilot_current_starting_uses_platform_start_accel():
   assert output_accel == pytest.approx(CP.startAccel)
 
 
+def test_sunnypilot_current_starting_ignores_traction_risk():
+  CP = make_car_params(startingState=True, startAccel=1.0)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+
+  output_accel = loc.update(
+    True, make_car_state(v_ego=0.0), a_target=1.0, should_stop=False, accel_limits=(-3.0, 2.0),
+    custom_longitudinal_stack=False, traction_risk=1.0,
+  )
+
+  assert loc.long_control_state == LongCtrlState.starting
+  assert not loc.launch_envelope_active
+  assert output_accel == pytest.approx(CP.startAccel)
+
+
 def test_stopping_preserves_gentler_platform_stop_accel_while_rolling():
   CP = make_car_params(stopAccel=-0.55)
   CP_SP = custom.CarParamsSP.new_message()
@@ -262,6 +278,19 @@ def test_clear_runway_launch_allows_stronger_breakaway_and_faster_ramp_out():
   assert get_launch_envelope_blend(0.0, 0.4) == pytest.approx(0.0)
 
 
+def test_traction_risk_softens_launch_breakaway_and_envelope():
+  accel_limits = (-3.0, 2.0)
+
+  normal_breakaway = get_launch_breakaway_accel(1.0, accel_limits)
+  traction_breakaway = get_launch_breakaway_accel(1.0, accel_limits, traction_risk=1.0)
+  normal_envelope = apply_launch_envelope(1.0, accel_limits, 0.0, 0.0)
+  traction_envelope = apply_launch_envelope(1.0, accel_limits, 0.0, 0.0, traction_risk=1.0)
+
+  assert 0.0 < traction_breakaway < normal_breakaway
+  assert 0.0 < traction_envelope < normal_envelope
+  assert traction_breakaway == pytest.approx(normal_breakaway * 0.80)
+
+
 def test_adaptive_breakaway_base_for_mild_launch():
   accel_limits = (-3.0, 2.0)
   # Mild launch around the base target should get base breakaway.
@@ -306,6 +335,20 @@ def test_pid_launch_arms_and_caps_after_stop():
   assert loc.launch_envelope_active
   assert not loc.launch_breakaway_done
   assert output_accel == pytest.approx(get_launch_breakaway_accel(a_target, (-3.0, 2.0)))
+
+
+def test_pid_launch_uses_traction_risk_breakaway():
+  CP = make_car_params(startingState=False)
+  CP_SP = custom.CarParamsSP.new_message()
+  loc = LongControl(CP, CP_SP)
+  loc.long_control_state = LongCtrlState.stopping
+
+  a_target = 1.0
+  output_accel = loc.update(
+    True, make_car_state(v_ego=0.0), a_target=a_target, should_stop=False, accel_limits=(-3.0, 2.0), traction_risk=1.0,
+  )
+
+  assert output_accel == pytest.approx(get_launch_breakaway_accel(a_target, (-3.0, 2.0), traction_risk=1.0))
 
 
 def test_lead_launch_uses_breakaway_envelope_when_planner_releases():
