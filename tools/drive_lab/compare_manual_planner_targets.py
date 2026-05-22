@@ -27,6 +27,7 @@ DEFAULT_EPISODE_GAP_S = 0.6
 DEFAULT_EPISODE_CONTEXT_S = 3.0
 DEFAULT_LARGE_ERROR_THRESHOLD = 1.2
 DEFAULT_HIGH_JERK_THRESHOLD = 8.0
+UNSET_CRUISE_KPH = 250.0
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ class RouteAgreementProfile:
   duration_s: float
   moving_samples: int
   manual_moving_samples: int
+  low_confidence_preview_samples: int
   actuation_applicable_samples: int
   active_ratio: float
   include: bool
@@ -103,6 +105,8 @@ class PlannerTargetAgreementSummary:
   included_route_count: int
   sample_count: int
   manual_moving_sample_count: int
+  low_confidence_preview_sample_count: int
+  low_confidence_preview_reasons: dict[str, int]
   actuation_applicable_sample_count: int
   correlation: float | None
   mean_abs_error: float
@@ -137,6 +141,8 @@ def main() -> None:
   parser.add_argument("--episode-context", type=float, default=DEFAULT_EPISODE_CONTEXT_S)
   parser.add_argument("--high-jerk", type=float, default=DEFAULT_HIGH_JERK_THRESHOLD)
   parser.add_argument("--episodes", type=int, default=12, help="Number of suspicious episodes to show in text output")
+  parser.add_argument("--include-low-confidence-preview", action="store_true",
+                      help="Include reset/manual-preview samples in disagreement metrics for exploratory use")
   args = parser.parse_args()
 
   read_mode = ReadMode.QLOG if args.qlog else ReadMode.AUTO
@@ -154,6 +160,7 @@ def main() -> None:
     episode_gap_s=args.episode_gap,
     episode_context_s=args.episode_context,
     high_jerk_threshold=args.high_jerk,
+    include_low_confidence_preview=args.include_low_confidence_preview,
   )
   payload = summary_to_dict(summary)
   if args.output:
@@ -276,6 +283,7 @@ def build_route_agreement_profile(route: str, samples: list[PlannerTargetSample]
   route_id, segment = route_identity(route)
   moving_samples = [sample for sample in samples if sample.v_ego > MOVING_SPEED]
   manual_moving = [sample for sample in moving_samples if is_manual_preview_sample(sample)]
+  low_confidence_preview = [sample for sample in manual_moving if is_low_confidence_manual_preview_sample(sample)]
   actuation_applicable = [sample for sample in samples if is_actuation_applicable_sample(sample)]
   active_count = sum(1 for sample in samples if sample.selfdrive_active or sample.long_active)
   active_ratio = active_count / len(samples) if samples else 1.0
@@ -289,6 +297,7 @@ def build_route_agreement_profile(route: str, samples: list[PlannerTargetSample]
     duration_s=duration_s,
     moving_samples=len(moving_samples),
     manual_moving_samples=len(manual_moving),
+    low_confidence_preview_samples=len(low_confidence_preview),
     actuation_applicable_samples=len(actuation_applicable),
     active_ratio=active_ratio,
     include=include,
@@ -299,14 +308,23 @@ def summarize_planner_target_agreement(samples_by_route: dict[str, list[PlannerT
                                        large_error_threshold: float = DEFAULT_LARGE_ERROR_THRESHOLD,
                                        episode_gap_s: float = DEFAULT_EPISODE_GAP_S,
                                        episode_context_s: float = DEFAULT_EPISODE_CONTEXT_S,
-                                       high_jerk_threshold: float = DEFAULT_HIGH_JERK_THRESHOLD) -> PlannerTargetAgreementSummary:
+                                       high_jerk_threshold: float = DEFAULT_HIGH_JERK_THRESHOLD,
+                                       include_low_confidence_preview: bool = False) -> PlannerTargetAgreementSummary:
   included_routes = {profile.route for profile in profiles if profile.include}
-  comparison_samples = [
+  manual_preview_samples = [
     sample
     for route, samples in samples_by_route.items()
     if route in included_routes
     for sample in samples
     if sample.v_ego > MOVING_SPEED and is_manual_preview_sample(sample)
+  ]
+  low_confidence_preview_reasons = Counter(
+    reason
+    for sample in manual_preview_samples
+    if (reason := low_confidence_manual_preview_reason(sample))
+  )
+  comparison_samples = manual_preview_samples if include_low_confidence_preview else [
+    sample for sample in manual_preview_samples if not is_low_confidence_manual_preview_sample(sample)
   ]
   actuation_applicable_count = sum(
     1
@@ -333,6 +351,8 @@ def summarize_planner_target_agreement(samples_by_route: dict[str, list[PlannerT
     included_route_count=len(included_routes),
     sample_count=len(comparison_samples),
     manual_moving_sample_count=len(comparison_samples),
+    low_confidence_preview_sample_count=sum(low_confidence_preview_reasons.values()),
+    low_confidence_preview_reasons=dict(low_confidence_preview_reasons),
     actuation_applicable_sample_count=actuation_applicable_count,
     correlation=_correlation([sample.plan_a_target for sample in comparison_samples], [sample.a_ego for sample in comparison_samples]),
     mean_abs_error=_mean(abs_errors),
@@ -356,6 +376,22 @@ def summarize_planner_target_agreement(samples_by_route: dict[str, list[PlannerT
 
 def is_manual_preview_sample(sample: PlannerTargetSample) -> bool:
   return not sample.selfdrive_active and not sample.long_active
+
+
+def low_confidence_manual_preview_reason(sample: PlannerTargetSample) -> str:
+  if not is_manual_preview_sample(sample):
+    return ""
+  if _state_name(sample.long_control_state) == "off":
+    return "long_control_off"
+  if sample.v_cruise_kph is None:
+    return "missing_cruise"
+  if sample.v_cruise_kph >= UNSET_CRUISE_KPH:
+    return "unset_cruise"
+  return ""
+
+
+def is_low_confidence_manual_preview_sample(sample: PlannerTargetSample) -> bool:
+  return bool(low_confidence_manual_preview_reason(sample))
 
 
 def is_actuation_applicable_sample(sample: PlannerTargetSample) -> bool:
@@ -439,7 +475,10 @@ def render_agreement_summary(summary: PlannerTargetAgreementSummary, max_episode
   lines = [
     "Drive Lab manual planner-target agreement",
     f"routes={summary.route_count} included={summary.included_route_count} samples={summary.sample_count}",
-    f"manual_moving={summary.manual_moving_sample_count} actuation_applicable={summary.actuation_applicable_sample_count}",
+    f"manual_moving_high_confidence={summary.manual_moving_sample_count} "
+    + f"low_confidence_preview={summary.low_confidence_preview_sample_count} "
+    + f"actuation_applicable={summary.actuation_applicable_sample_count}",
+    "Low-confidence preview reasons: " + _format_counts(summary.low_confidence_preview_reasons),
     f"aTarget vs aEgo: corr={_format_optional(summary.correlation)} mean_abs={summary.mean_abs_error:.3f} "
     + f"p90_abs={summary.p90_abs_error:.3f} p95_abs={summary.p95_abs_error:.3f} m/s^2",
     f"opposite_intent={summary.opposite_count} ({summary.opposite_ratio:.3%}) "
@@ -456,7 +495,8 @@ def render_agreement_summary(summary: PlannerTargetAgreementSummary, max_episode
     segment = f"--{profile.segment}" if profile.segment is not None else ""
     lines.append(
       f"  {profile.route_id}{segment}: {status}, samples {profile.samples}, moving {profile.moving_samples}, "
-      + f"manual moving {profile.manual_moving_samples}, active {profile.active_ratio:.3f}, duration {profile.duration_s:.1f}s"
+      + f"manual moving {profile.manual_moving_samples}, low confidence {profile.low_confidence_preview_samples}, "
+      + f"active {profile.active_ratio:.3f}, duration {profile.duration_s:.1f}s"
     )
   lines.append("Suspicious episodes:")
   if not summary.episodes:
@@ -553,6 +593,10 @@ def _format_counts(counts: dict[str, int]) -> str:
 
 def _format_optional(value: float | None) -> str:
   return "n/a" if value is None else f"{value:.3f}"
+
+
+def _state_name(value: str) -> str:
+  return str(value).split(".")[-1].lower()
 
 
 if __name__ == "__main__":

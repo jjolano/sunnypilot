@@ -8,8 +8,10 @@ from openpilot.tools.drive_lab.compare_manual_planner_targets import (
   build_route_agreement_profile,
   build_suspicious_episodes,
   extract_planner_target_samples,
+  is_low_confidence_manual_preview_sample,
   is_opposite_intent,
   is_strong_opposite_intent,
+  low_confidence_manual_preview_reason,
   summarize_planner_target_agreement,
 )
 from openpilot.tools.lib.logreader import ReadMode
@@ -26,7 +28,8 @@ def msg(kind, t_s, **payload):
 
 def sample(t, plan_a, a_ego, route="route-a", route_id="route-a", segment=None, v=8.0, gas=False, brake=False,
            active=False, long_active=False, source="cruise", lead=False, d_rel=None, v_rel=None,
-           should_stop=False, fcw=False, sp_source="cruise", sp_stack="sunnypilotCurrent"):
+           should_stop=False, fcw=False, sp_source="cruise", sp_stack="sunnypilotCurrent", v_cruise=80.0,
+           long_state="pid"):
   return PlannerTargetSample(
     route=route,
     route_id=route_id,
@@ -40,8 +43,8 @@ def sample(t, plan_a, a_ego, route="route-a", route_id="route-a", segment=None, 
     selfdrive_enabled=active,
     selfdrive_active=active,
     long_active=long_active,
-    long_control_state="pid" if long_active else "off",
-    v_cruise_kph=80.0,
+    long_control_state=long_state,
+    v_cruise_kph=v_cruise,
     plan_a_target=plan_a,
     plan_source=source,
     plan_should_stop=should_stop,
@@ -80,6 +83,8 @@ def test_extract_planner_target_samples_persists_preview_context(monkeypatch):
   assert samples[0].lead_d_rel == 7.0
   assert samples[0].gas_pressed
   assert not samples[0].long_active
+  assert is_low_confidence_manual_preview_sample(samples[0])
+  assert low_confidence_manual_preview_reason(samples[0]) == "long_control_off"
 
 
 def test_extract_planner_target_samples_ignores_stale_plan(monkeypatch):
@@ -124,6 +129,31 @@ def test_summary_filters_excluded_routes_and_counts_manual_disagreement():
   assert summary.opposite_count == 2
   assert summary.strong_opposite_count == 2
   assert summary.planner_source_counts == {"lead0": 1, "cruise": 2}
+
+
+def test_summary_excludes_low_confidence_preview_by_default():
+  high_confidence = sample(0.0, -1.4, 0.2, gas=True, source="lead0")
+  reset_preview = sample(0.1, -1.4, -2.4, brake=True, v_cruise=255.0, long_state="off")
+  samples = [high_confidence, reset_preview]
+  profiles = [build_route_agreement_profile("route-a", samples, min_manual_moving_samples=1, max_active_ratio=0.25)]
+
+  summary = summarize_planner_target_agreement({"route-a": samples}, profiles)
+
+  assert summary.sample_count == 1
+  assert summary.low_confidence_preview_sample_count == 1
+  assert summary.low_confidence_preview_reasons == {"long_control_off": 1}
+  assert summary.opposite_count == 1
+
+  exploratory_summary = summarize_planner_target_agreement({"route-a": samples}, profiles, include_low_confidence_preview=True)
+  assert exploratory_summary.sample_count == 2
+
+
+def test_low_confidence_preview_reasons_distinguish_unset_cruise():
+  unset_cruise = sample(0.0, 0.1, 0.1, v_cruise=255.0, long_state="pid")
+  missing_cruise = sample(0.1, 0.1, 0.1, v_cruise=None, long_state="pid")
+
+  assert low_confidence_manual_preview_reason(unset_cruise) == "unset_cruise"
+  assert low_confidence_manual_preview_reason(missing_cruise) == "missing_cruise"
 
 
 def test_suspicious_episodes_track_context_flips_and_jerk():
