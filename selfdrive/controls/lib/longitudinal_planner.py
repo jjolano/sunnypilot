@@ -316,17 +316,18 @@ class LeadFlickerSafetyCapTracker:
       self._last_y_rel = y_rel
       self._last_risky_lead = risky_lead
 
-    risk_context = risky_lead or self._last_risky_lead
+    close_stop_go_context = self._close_stop_go_context(d_rel, v_lead, y_rel)
+    risk_context = risky_lead or self._last_risky_lead or close_stop_go_context
     if status != self._prev_status and risk_context:
       self._transitions.append(0.0)
-      if not status and self._last_risky_lead:
+      if not status and (self._last_risky_lead or close_stop_go_context):
         self._timer = max(self._timer, LEAD_FLICKER_FIRST_LOSS_HOLD_TIME)
     self._prev_status = status
 
     self._transitions = [t + dt for t in self._transitions if t + dt <= LEAD_FLICKER_WINDOW]
     if risk_context and len(self._transitions) >= LEAD_FLICKER_COUNT_THRESHOLD:
       self._timer = max(self._timer, LEAD_FLICKER_GUARD_TIME)
-    if self._close_stop_go_context(d_rel, v_lead) and len(self._transitions) >= LEAD_FLICKER_CLOSE_COUNT_THRESHOLD:
+    if close_stop_go_context and len(self._transitions) >= LEAD_FLICKER_CLOSE_COUNT_THRESHOLD:
       self._timer = max(self._timer, LEAD_FLICKER_CLOSE_GUARD_TIME)
 
     blocked = bool(force_slow_decel or gas_pressed or brake_pressed)
@@ -345,8 +346,12 @@ class LeadFlickerSafetyCapTracker:
     return d_rel, v_rel, v_lead, y_rel
 
   @staticmethod
-  def _close_stop_go_context(d_rel, v_lead):
-    return 0.0 < d_rel <= LEAD_FLICKER_CLOSE_D_REL and 0.0 <= v_lead <= LEAD_FLICKER_CLOSE_V_LEAD
+  def _close_stop_go_context(d_rel, v_lead, y_rel=0.0):
+    return (
+      abs(y_rel) < LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL and
+      0.0 < d_rel <= LEAD_FLICKER_CLOSE_D_REL and
+      0.0 <= v_lead <= LEAD_FLICKER_CLOSE_V_LEAD
+    )
 
 
 def has_model_stop_context(model_msg):

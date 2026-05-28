@@ -234,6 +234,28 @@ def test_lead_flicker_tracker_uses_close_stop_go_hold_for_repeated_flicker():
   assert state.timer == pytest.approx(LEAD_FLICKER_CLOSE_GUARD_TIME)
 
 
+def test_lead_flicker_tracker_caps_route_close_lead_dropout_without_override():
+  # Route 00000162--f95309d127--7 rlog, 466-482s: close lead dropped and preview cruise requested ~+1.0 m/s^2.
+  def route_state(gas_pressed=False):
+    tracker = LeadFlickerSafetyCapTracker()
+    close_lead = make_flicker_lead(v_ego=2.472, d_rel=4.04, v_rel=-0.075, y_rel=-0.56)
+    lost_close_lead = make_flicker_lead(status=False)
+
+    initial = tracker.update(close_lead, v_ego=2.472, dt=0.1)
+    lost = tracker.update(lost_close_lead, v_ego=5.151, dt=7.2, gas_pressed=gas_pressed)
+
+    assert not initial.risky_lead
+    return lost
+
+  no_override = route_state()
+  overridden = route_state(gas_pressed=True)
+
+  assert no_override.active
+  assert no_override.timer == pytest.approx(LEAD_FLICKER_FIRST_LOSS_HOLD_TIME)
+  assert not overridden.active
+  assert overridden.timer == pytest.approx(LEAD_FLICKER_FIRST_LOSS_HOLD_TIME)
+
+
 def test_lead_flicker_tracker_driver_override_suppresses_active_cap():
   tracker = LeadFlickerSafetyCapTracker()
   tracker.update(make_flicker_lead(), v_ego=15.0, dt=0.1)
