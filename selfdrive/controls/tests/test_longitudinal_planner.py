@@ -329,6 +329,31 @@ def test_publish_has_lead_checks_both_tracks(monkeypatch):
   assert pm.sent.longitudinalPlan.hasLead
 
 
+def test_publish_has_lead_ignores_internal_shadow_context(monkeypatch):
+  planner = LongitudinalPlanner.__new__(LongitudinalPlanner)
+  planner.mpc = SimpleNamespace(solve_time=0.0, source="cruise")
+  planner.v_desired_trajectory = np.zeros(3)
+  planner.a_desired_trajectory = np.zeros(3)
+  planner.j_desired_trajectory = np.zeros(2)
+  planner.fcw = False
+  planner.output_a_target = 0.0
+  planner.output_should_stop = False
+  planner.allow_throttle = True
+  planner.primary_lead_context = SimpleNamespace(shadow_active=True, has_physical_lead=True)
+  planner.publish_longitudinal_plan_sp = lambda _sm, _pm: None
+  sm = FakeSubMaster({
+    'radarState': make_radar_state(lead_one=False, lead_two=False),
+  })
+  plan_send = SimpleNamespace(logMonoTime=2_000_000_000, longitudinalPlan=SimpleNamespace())
+  pm = SimpleNamespace(sent=None, send=lambda _service, msg: setattr(pm, "sent", msg))
+
+  monkeypatch.setattr("openpilot.selfdrive.controls.lib.longitudinal_planner.messaging.new_message", lambda _service: plan_send)
+
+  planner.publish(sm, pm)
+
+  assert not pm.sent.longitudinalPlan.hasLead
+
+
 def test_engage_stop_bootstrap_requires_timer_speed_and_no_lead():
   model_msg = make_model_msg(desired_accel=-1.5)
 

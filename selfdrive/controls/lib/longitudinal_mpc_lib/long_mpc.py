@@ -12,6 +12,14 @@ from openpilot.selfdrive.modeld.constants import index_function
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceTracker, adjust_new_lead_accel
 
+
+LEAD_RELEVANCE_CLOSE_TIME_GAP = 2.2
+LEAD_RELEVANCE_PATH_EXIT_Y = 1.6
+LEAD_RELEVANCE_RISK_DECEL = 0.25
+LEAD_RELEVANCE_RISK_TTC = 4.0
+LEAD_RELEVANCE_STOP_CRAWL_DISTANCE = 15.0
+LEAD_RELEVANCE_STOP_CRAWL_SPEED = 5.0
+
 if __name__ == '__main__':  # generating code
   from openpilot.third_party.acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 else:
@@ -738,6 +746,69 @@ def apply_source_hysteresis(obstacles, current_idx, margin):
     current = obstacles[np.arange(len(current_idx)), current_idx]
     switch = current - best > margin
     return np.where(switch, best_idx, current_idx).astype(int)
+
+
+def _lead_context_state(lead_context, lead_idx):
+  for state in getattr(lead_context, "states", ()):
+    if int(getattr(state, "lead_idx", -1)) == lead_idx:
+      return state
+  return None
+
+
+def _lead_state_close_or_closing(state) -> bool:
+  if state is None:
+    return False
+  ttc = float(getattr(state, "ttc", np.inf))
+  time_gap = float(getattr(state, "time_gap", np.inf))
+  return bool(
+    float(getattr(state, "required_decel", 0.0)) >= LEAD_RELEVANCE_RISK_DECEL or
+    float(getattr(state, "risk_score", 0.0)) >= 0.35 or
+    ttc <= LEAD_RELEVANCE_RISK_TTC or
+    time_gap <= LEAD_RELEVANCE_CLOSE_TIME_GAP
+  )
+
+
+def _lead_state_stopped_crawl_relevant(state) -> bool:
+  if state is None:
+    return False
+  path_y_rel = float(getattr(state, "path_y_rel", getattr(state, "y_rel", 0.0)))
+  return bool(
+    abs(path_y_rel) < LEAD_RELEVANCE_PATH_EXIT_Y and
+    0.0 < float(getattr(state, "d_rel", 0.0)) <= LEAD_RELEVANCE_STOP_CRAWL_DISTANCE and
+    0.0 <= float(getattr(state, "v_lead", 0.0)) <= LEAD_RELEVANCE_STOP_CRAWL_SPEED
+  )
+
+
+def lead_relevance_comfort_mask(lead_context, radarstate) -> tuple[bool, bool]:
+  """Mask only comfort/progress extras; hard MPC obstacle columns stay intact."""
+  if lead_context is None:
+    return (True, True)
+
+  mask: list[bool] = []
+  for idx, lead in enumerate((radarstate.leadOne, radarstate.leadTwo)):
+    if not bool(getattr(lead, "status", False)):
+      mask.append(False)
+      continue
+    state = _lead_context_state(lead_context, idx)
+    if state is None:
+      mask.append(True)
+      continue
+    authority = str(getattr(state, "authority", ""))
+    path_y_rel = float(getattr(state, "path_y_rel", getattr(state, "y_rel", 0.0)))
+    relevant = bool(
+      idx == getattr(lead_context, "physical_idx", None) or
+      idx == getattr(lead_context, "behavior_idx", None) or
+      bool(getattr(state, "shadow", False)) or
+      bool(getattr(state, "new_lead", False)) or
+      float(getattr(state, "flicker_guard_timer", 0.0)) > 0.0 or
+      authority not in ("", "none") or
+      _lead_state_close_or_closing(state) or
+      _lead_state_stopped_crawl_relevant(state)
+    )
+    if abs(path_y_rel) >= LEAD_RELEVANCE_PATH_EXIT_Y and not _lead_state_close_or_closing(state) and authority == "none":
+      relevant = False
+    mask.append(relevant)
+  return (bool(mask[0]), bool(mask[1]))
 
 
 def get_slower_lead_approach_target_gap(v_ego, v_lead, t_follow, a_lead=0.0):
@@ -1959,7 +2030,7 @@ class LongitudinalMpc:
     return self.lead_transition_release_blends[lead_idx]
 
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, block_short_gap_pullaway_response=False,
-             model_msg=None):
+             model_msg=None, lead_context=None):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
@@ -2083,6 +2154,7 @@ class LongitudinalMpc:
         "a": tuple(float(a) for a in lead_1_a_traj),
       },
     )
+    lead_0_comfort_relevant, lead_1_comfort_relevant = lead_relevance_comfort_mask(lead_context, radarstate)
 
     # Apply speed-proportional hysteresis to source selection to prevent rapid switching
     margin = get_source_hysteresis_margin(v_ego)
@@ -2144,6 +2216,24 @@ class LongitudinalMpc:
     lead_1_surge_targets, lead_1_surge_costs = get_lead_surge_damping_target(
       lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow, lead_1_surge_decel_memory
     )
+    if not lead_0_comfort_relevant:
+      lead_0_gap_comfort_a_min = np.full_like(lead_0_gap_comfort_a_min, ACCEL_MIN, dtype=float)
+      lead_0_accel_costs = np.zeros_like(lead_0_accel_costs)
+      lead_0_closing_cushion_costs = np.zeros_like(lead_0_closing_cushion_costs)
+      lead_0_crawl_costs = np.zeros_like(lead_0_crawl_costs)
+      lead_0_crawl_accel_max = np.full_like(lead_0_crawl_accel_max, ACCEL_MAX, dtype=float)
+      lead_0_stop_costs = np.zeros_like(lead_0_stop_costs)
+      lead_0_moving_stop_costs = np.zeros_like(lead_0_moving_stop_costs)
+      lead_0_surge_costs = np.zeros_like(lead_0_surge_costs)
+    if not lead_1_comfort_relevant:
+      lead_1_gap_comfort_a_min = np.full_like(lead_1_gap_comfort_a_min, ACCEL_MIN, dtype=float)
+      lead_1_accel_costs = np.zeros_like(lead_1_accel_costs)
+      lead_1_closing_cushion_costs = np.zeros_like(lead_1_closing_cushion_costs)
+      lead_1_crawl_costs = np.zeros_like(lead_1_crawl_costs)
+      lead_1_crawl_accel_max = np.full_like(lead_1_crawl_accel_max, ACCEL_MAX, dtype=float)
+      lead_1_stop_costs = np.zeros_like(lead_1_stop_costs)
+      lead_1_moving_stop_costs = np.zeros_like(lead_1_moving_stop_costs)
+      lead_1_surge_costs = np.zeros_like(lead_1_surge_costs)
     # Use hysteretic dominant obstacle for all comfort lead selection.
     # When cruise is dominant, fall back to the closer lead for lead-only targets.
     lead_dominant = np.where(dominant_obstacle == 2,
@@ -2201,23 +2291,30 @@ class LongitudinalMpc:
     self.params[:, 1] = np.minimum(self.params[:, 1], np.minimum(lead_0_crawl_accel_max, lead_1_crawl_accel_max))
     lead_confidence_guard_timer = 0.0
     lead_flicker_guard_timer = 0.0
-    if dominant_obstacle[0] == 0:
+    if dominant_obstacle[0] == 0 and lead_0_comfort_relevant:
       lead_confidence_guard_timer = lead_0_confidence.guard_timer
       lead_flicker_guard_timer = lead_0_confidence.flicker_guard_timer
-    elif dominant_obstacle[0] == 1:
+    elif dominant_obstacle[0] == 1 and lead_1_comfort_relevant:
       lead_confidence_guard_timer = lead_1_confidence.guard_timer
       lead_flicker_guard_timer = lead_1_confidence.flicker_guard_timer
     # Also apply flicker guard from either lead if closing speed is high,
     # even when neither is the current dominant source (flicker may prevent
     # the lead from ever becoming dominant).
     if lead_flicker_guard_timer <= 0.0:
-      lead_flicker_guard_timer = max(lead_0_confidence.flicker_guard_timer, lead_1_confidence.flicker_guard_timer)
+      lead_flicker_guard_timer = max(
+        lead_0_confidence.flicker_guard_timer if lead_0_comfort_relevant else 0.0,
+        lead_1_confidence.flicker_guard_timer if lead_1_comfort_relevant else 0.0,
+      )
+    lead_transition_guard_timer = max(
+      self.lead_transition_guard_timers[0] if lead_0_comfort_relevant else 0.0,
+      self.lead_transition_guard_timers[1] if lead_1_comfort_relevant else 0.0,
+    )
     new_lead_cut_in_guard_timer = max(
-      get_new_lead_cut_in_guard_timer(v_ego, radarstate.leadOne, lead_0_confidence),
-      get_new_lead_cut_in_guard_timer(v_ego, radarstate.leadTwo, lead_1_confidence),
+      get_new_lead_cut_in_guard_timer(v_ego, radarstate.leadOne, lead_0_confidence) if lead_0_comfort_relevant else 0.0,
+      get_new_lead_cut_in_guard_timer(v_ego, radarstate.leadTwo, lead_1_confidence) if lead_1_comfort_relevant else 0.0,
     )
     apply_lead_transition_accel_guard(
-      self.params[:, 1], max(max(self.lead_transition_guard_timers), lead_confidence_guard_timer,
+      self.params[:, 1], max(lead_transition_guard_timer, lead_confidence_guard_timer,
                              new_lead_cut_in_guard_timer, lead_flicker_guard_timer)
     )
     self.params[:, 2] = np.min(x_obstacles, axis=1)

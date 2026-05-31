@@ -2019,6 +2019,70 @@ def test_mpc_keeps_two_real_lead_obstacles_plus_cruise_and_marks_fake_prediction
   assert not mpc.lead_predictions[1]["valid"]
 
 
+def test_path_irrelevant_non_dominant_lead_does_not_apply_crawl_accel_cap(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(2.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  relevant_lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=35.0, vLead=2.0, vLeadK=2.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  off_path_false_positive = SimpleNamespace(
+    status=True, radarTrackId=43, yRel=3.0, dRel=20.0, vLead=0.0, vLeadK=0.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.2, radar=False,
+  )
+  context = SimpleNamespace(
+    physical_idx=0,
+    behavior_idx=0,
+    states=(
+      SimpleNamespace(lead_idx=0, authority="progress_allowed", path_y_rel=0.0, d_rel=35.0, v_lead=2.0,
+                      required_decel=0.0, risk_score=0.0, ttc=float("inf"), time_gap=17.5,
+                      shadow=False, new_lead=False, flicker_guard_timer=0.0),
+      SimpleNamespace(lead_idx=1, authority="none", path_y_rel=3.0, d_rel=20.0, v_lead=0.0,
+                      required_decel=0.0, risk_score=0.0, ttc=float("inf"), time_gap=10.0,
+                      shadow=False, new_lead=False, flicker_guard_timer=0.0),
+    ),
+  )
+
+  for _ in range(6):
+    mpc.update(SimpleNamespace(leadOne=relevant_lead, leadTwo=off_path_false_positive), v_cruise=10.0, lead_context=context)
+
+  assert mpc.mpc_obstacle_columns == 3
+  assert mpc.params[0, 1] > LEAD_CRAWL_ACCEL_LIMIT
+
+
+def test_close_alternate_lead_still_suppresses_accel_with_relevance_context(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  primary_lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=25.0, vLead=18.0, vLeadK=18.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  cut_in_lead = SimpleNamespace(
+    status=True, radarTrackId=43, yRel=0.0, dRel=90.0, vLead=8.0, vLeadK=8.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  context = SimpleNamespace(
+    physical_idx=0,
+    behavior_idx=0,
+    states=(
+      SimpleNamespace(lead_idx=0, authority="progress_allowed", path_y_rel=0.0, d_rel=25.0, v_lead=18.0,
+                      required_decel=0.0, risk_score=0.0, ttc=float("inf"), time_gap=1.25,
+                      shadow=False, new_lead=False, flicker_guard_timer=0.0),
+      SimpleNamespace(lead_idx=1, authority="suppress_only", path_y_rel=0.0, d_rel=90.0, v_lead=8.0,
+                      required_decel=0.8, risk_score=0.8, ttc=7.5, time_gap=4.5,
+                      shadow=False, new_lead=True, flicker_guard_timer=0.0),
+    ),
+  )
+
+  for _ in range(6):
+    mpc.update(SimpleNamespace(leadOne=primary_lead, leadTwo=SimpleNamespace(status=False)), v_cruise=25.0)
+  mpc.update(SimpleNamespace(leadOne=primary_lead, leadTwo=cut_in_lead), v_cruise=25.0, lead_context=context)
+
+  assert mpc.params[0, 1] == pytest.approx(0.0)
+
+
 def test_approach_brake_stays_stock_for_small_closure():
   assert get_approach_brake(0.0) == pytest.approx(APPROACH_BRAKE)
   assert get_approach_brake(1.5) == pytest.approx(APPROACH_BRAKE)

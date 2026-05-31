@@ -120,6 +120,21 @@ def test_behavior_lead_opening_is_blocked_by_alternate_close_threat():
   assert context.lead_release_blocked_reason == "alternate_lead_threat"
 
 
+def test_secondary_pullaway_cannot_authorize_progress_with_stopped_uncertain_primary_physical():
+  stopped_uncertain_primary = make_lead(track_id=10, d_rel=6.0, v_lead=0.0, v_rel=-0.2, y_rel=0.0)
+  opening_secondary = make_lead(track_id=11, d_rel=18.0, v_lead=1.0, v_rel=0.8, y_rel=0.0, a_lead=0.4)
+
+  context = LeadContextTracker().update(
+    (stopped_uncertain_primary, opening_secondary), (new_conf(10), stable_conf(11)), v_ego=0.2, dt=0.1, lead_dominant_idx=1
+  )
+
+  assert context.physical_idx == 0
+  assert context.behavior_idx == 1
+  assert context.physical.authority == LEAD_AUTHORITY_SUPPRESS_ONLY
+  assert not context.lead_progress_allowed
+  assert context.lead_release_blocked_reason == "alternate_lead_threat"
+
+
 def test_shadow_blocks_no_lead_without_authorizing_progress():
   tracker = LeadContextTracker()
   close_lead = make_lead(track_id=4, d_rel=8.0, v_lead=0.0, v_rel=-0.5, y_rel=0.0)

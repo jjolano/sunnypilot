@@ -244,6 +244,7 @@ class LongitudinalPlannerSP:
     self.decision_candidates_sp = []
     self._speed_limit_handoff_active = False
     self._speed_limit_active_prev = False
+    self.speed_limit_handoff_debug: dict[str, object] = {}
     self.longitudinal_stack_resolution = resolve_longitudinal_stack(
       self.params.get("LongitudinalStack", return_default=True), self.CP, self.CP_SP
     )
@@ -278,16 +279,35 @@ class LongitudinalPlannerSP:
                        self.resolver.speed_limit_final_last != V_CRUISE_UNSET
     manual_cruise_below_limit = v_cruise < self.resolver.speed_limit_final_last
     above_manual_cruise = v_ego > v_cruise + SPEED_LIMIT_HANDOFF_EXIT_MARGIN
+    reason = "inactive"
 
     if self.sla.is_active:
       self._speed_limit_handoff_active = False
+      reason = "speed_limit_assist_active"
     elif (self._speed_limit_active_prev and long_enabled and not long_override and has_limit_target and
           manual_cruise_below_limit and above_manual_cruise):
       self._speed_limit_handoff_active = True
+      reason = "handoff_active"
     elif not long_enabled or long_override or not has_limit_target or not manual_cruise_below_limit or not above_manual_cruise:
       self._speed_limit_handoff_active = False
+      if not long_enabled:
+        reason = "longitudinal_disabled"
+      elif long_override:
+        reason = "driver_override"
+      elif not has_limit_target:
+        reason = "no_limit_target"
+      elif not manual_cruise_below_limit:
+        reason = "manual_cruise_not_below_limit"
+      elif not above_manual_cruise:
+        reason = "ego_not_above_manual_cruise"
 
     self._speed_limit_active_prev = self.sla.is_active
+    self.speed_limit_handoff_debug = {
+      "speed_limit_handoff_active": bool(self._speed_limit_handoff_active),
+      "manual_cruise_below_limit": bool(manual_cruise_below_limit),
+      "above_manual_cruise": bool(above_manual_cruise),
+      "reason": reason,
+    }
     return self._speed_limit_handoff_active
 
   def _speed_limit_handoff_target(self, v_ego: float, a_ego: float) -> tuple[float, float]:
@@ -326,6 +346,10 @@ class LongitudinalPlannerSP:
       self.sla.output_v_target,
       a_ego,
     )
+    self.speed_limit_handoff_debug.update({
+      "handoff_target_v": float(speed_limit_assist_target[0]) if speed_limit_handoff_active else 0.0,
+      "handoff_target_a": float(speed_limit_assist_target[1]) if speed_limit_handoff_active else 0.0,
+    })
     cruise_target = (v_cruise, min(a_ego, SPEED_LIMIT_HANDOFF_A_TARGET_MAX)) if speed_limit_handoff_active else (v_cruise, a_ego)
     lead_one = sm['radarState'].leadOne
     primary_lead_context = getattr(self, "primary_lead_context", None)

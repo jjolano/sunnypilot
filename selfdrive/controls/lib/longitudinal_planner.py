@@ -626,6 +626,157 @@ def build_planner_seed_mpc_candidate(planner, mpc, a_target, should_stop, has_le
                               intent=seed_intent, reason=PLANNER_SEED_MPC_REASON)
 
 
+def _planner_seed_candidates(*candidates) -> tuple[PlannerSeedCandidate, ...]:
+  return tuple(candidate for candidate in candidates if candidate is not None)
+
+
+def build_no_lead_stop_seed_candidates(planner, has_lead, accel_limits, *, engage_bootstrap_active=False,
+                                       engage_bootstrap_a_target=0.0, engage_bootstrap_should_stop=False,
+                                       e2e_close_stop_active=False, e2e_close_stop_a_target=0.0,
+                                       e2e_close_stop_should_stop=False,
+                                       e2e_runway_comfort_a_target=None,
+                                       e2e_stop_approach_a_target=0.0,
+                                       e2e_runway_positive_accel_cap=None) -> tuple[PlannerSeedCandidate, ...]:
+  return _planner_seed_candidates(
+    build_planner_seed_accel_candidate(
+      planner, "engage_stop_bootstrap", engage_bootstrap_a_target, has_lead,
+      "engage_model_stop_bootstrap", accel_limits, should_stop=engage_bootstrap_should_stop,
+    ) if engage_bootstrap_active else None,
+    build_planner_seed_accel_candidate(
+      planner, "e2e_close_stop_settle", e2e_close_stop_a_target, has_lead,
+      "no_lead_close_stop_settle", accel_limits, should_stop=e2e_close_stop_should_stop,
+    ) if e2e_close_stop_active else None,
+    build_planner_seed_accel_candidate(
+      planner, "e2e_runway_comfort", e2e_runway_comfort_a_target, has_lead,
+      "no_lead_model_runway_comfort", accel_limits, selection=PLANNER_SEED_FLOOR,
+    ) if e2e_runway_comfort_a_target is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "e2e_stop_approach", e2e_stop_approach_a_target, has_lead,
+      "no_lead_model_stop_approach", accel_limits,
+    ) if e2e_stop_approach_a_target < 0.0 else None,
+    build_planner_seed_accel_candidate(
+      planner, "e2e_runway_positive_cap", e2e_runway_positive_accel_cap, has_lead,
+      "low_speed_model_runway_positive_cap", accel_limits,
+    ) if e2e_runway_positive_accel_cap is not None else None,
+  )
+
+
+def build_stopped_lead_seed_candidates(planner, has_lead, accel_limits, *, stopped_stop_gap_guard_a_target=None,
+                                       stopped_stop_gap_guard_group="", creep_to_stop_gap_a_target=None,
+                                       creep_to_stop_gap_should_stop=None, creep_to_stop_gap_selection=PLANNER_SEED_CAP,
+                                       creep_to_stop_gap_accel_max=None, gap_fill_a_target=None,
+                                       gap_fill_should_stop=None, gap_fill_selection=PLANNER_SEED_CAP,
+                                       gap_fill_accel_max=None, lead_crawl_accel_cap=None,
+                                       creep_hold_a_target=None) -> tuple[PlannerSeedCandidate, ...]:
+  return _planner_seed_candidates(
+    build_planner_seed_accel_candidate(
+      planner, "stopped_lead_stop_gap_guard", stopped_stop_gap_guard_a_target, has_lead,
+      "stopped_lead_stop_gap_guard", accel_limits, should_stop=True, group=stopped_stop_gap_guard_group,
+    ) if stopped_stop_gap_guard_a_target is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "creep_to_stop_gap", creep_to_stop_gap_a_target, has_lead,
+      "creep_to_stop_gap", accel_limits, should_stop=creep_to_stop_gap_should_stop,
+      selection=creep_to_stop_gap_selection, group="creep_to_stop_gap",
+    ) if creep_to_stop_gap_a_target is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "creep_to_stop_gap_accel_cap", creep_to_stop_gap_accel_max, has_lead,
+      "creep_to_stop_gap_accel_cap", accel_limits, should_stop=creep_to_stop_gap_should_stop,
+      force=True, group="creep_to_stop_gap",
+    ) if creep_to_stop_gap_accel_max is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "stopped_lead_gap_fill", gap_fill_a_target, has_lead,
+      "stopped_lead_gap_fill", accel_limits, should_stop=gap_fill_should_stop,
+      selection=gap_fill_selection, group="stopped_lead_gap_fill",
+    ) if gap_fill_a_target is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "stopped_lead_gap_fill_accel_cap", gap_fill_accel_max, has_lead,
+      "stopped_lead_gap_fill_accel_cap", accel_limits, should_stop=gap_fill_should_stop,
+      force=True, group="stopped_lead_gap_fill",
+    ) if gap_fill_accel_max is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "lead_crawl_accel_cap", lead_crawl_accel_cap, has_lead,
+      "lead_crawl_accel_cap", accel_limits, force=True,
+    ) if lead_crawl_accel_cap is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "stopped_lead_creep_hold", creep_hold_a_target, has_lead,
+      "stopped_lead_creep_hold", accel_limits, should_stop=True,
+    ) if creep_hold_a_target is not None else None,
+  )
+
+
+def build_lead_pullaway_seed_candidates(planner, has_lead, accel_limits, *, creep_pullaway_launch_floor=None,
+                                        creep_pullaway_launch_cap=None, pullaway_accel_step_floor=None,
+                                        pullaway_accel_step_cap=None,
+                                        pullaway_step_cap_suppressed_for_stop_release=False) -> tuple[PlannerSeedCandidate, ...]:
+  return _planner_seed_candidates(
+    build_planner_seed_accel_candidate(
+      planner, "creep_pullaway_launch", creep_pullaway_launch_floor, has_lead,
+      "creep_pullaway_launch", accel_limits, should_stop=False, selection=PLANNER_SEED_FLOOR,
+      group="creep_pullaway_launch",
+    ) if creep_pullaway_launch_floor is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "creep_pullaway_launch_accel_cap", creep_pullaway_launch_cap, has_lead,
+      "creep_pullaway_launch_accel_cap", accel_limits, should_stop=False, force=True,
+      group="creep_pullaway_launch",
+    ) if creep_pullaway_launch_cap is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "low_speed_pullaway_accel_step_floor", pullaway_accel_step_floor, has_lead,
+      "low_speed_pullaway_accel_step_floor", accel_limits, selection=PLANNER_SEED_FLOOR,
+      should_stop=False, force=True, group="low_speed_pullaway_accel_step",
+    ) if pullaway_accel_step_floor is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "low_speed_pullaway_accel_step_cap", pullaway_accel_step_cap, has_lead,
+      "low_speed_pullaway_accel_step_cap", accel_limits, should_stop=False, force=True,
+      group="low_speed_pullaway_accel_step",
+    ) if pullaway_accel_step_cap is not None and not pullaway_step_cap_suppressed_for_stop_release else None,
+  )
+
+
+def build_moving_lead_seed_candidates(planner, has_lead, accel_limits, *, moving_stop_guard_a_target=None,
+                                      lead_accel_recovery_a_target=None, lead_stop_approach_slewed_a_target=None,
+                                      lead_stop_approach_base_a_target=None) -> tuple[PlannerSeedCandidate, ...]:
+  lead_stop_approach_slew_selection = PLANNER_SEED_CAP
+  if lead_stop_approach_slewed_a_target is not None and lead_stop_approach_base_a_target is not None:
+    lead_stop_approach_slew_selection = (
+      PLANNER_SEED_FLOOR if lead_stop_approach_slewed_a_target > lead_stop_approach_base_a_target else PLANNER_SEED_CAP
+    )
+  return _planner_seed_candidates(
+    build_planner_seed_accel_candidate(
+      planner, "moving_lead_stop_gap_guard", moving_stop_guard_a_target, has_lead,
+      "moving_lead_stop_gap_guard", accel_limits,
+    ) if moving_stop_guard_a_target is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "lead_accel_recovery", lead_accel_recovery_a_target, has_lead,
+      "lead_accel_recovery", accel_limits, selection=PLANNER_SEED_FLOOR,
+    ) if lead_accel_recovery_a_target is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "lead_stop_approach_slew", lead_stop_approach_slewed_a_target, has_lead,
+      "lead_stop_approach_slew", accel_limits, selection=lead_stop_approach_slew_selection,
+      force=True, group="lead_stop_approach_slew" if lead_stop_approach_slew_selection == PLANNER_SEED_FLOOR else "",
+    ) if lead_stop_approach_slewed_a_target is not None and lead_stop_approach_base_a_target is not None and not np.isclose(
+      lead_stop_approach_slewed_a_target, lead_stop_approach_base_a_target,
+    ) else None,
+  )
+
+
+def build_lead_loss_seed_candidates(planner, has_lead, accel_limits, *, lead_loss_e2e_guard_a_target=None) -> tuple[PlannerSeedCandidate, ...]:
+  return _planner_seed_candidates(
+    build_planner_seed_accel_candidate(
+      planner, "lead_loss_e2e_guard", lead_loss_e2e_guard_a_target, has_lead,
+      "lead_loss_e2e_guard", accel_limits, selection=PLANNER_SEED_FLOOR,
+    ) if lead_loss_e2e_guard_a_target is not None else None,
+  )
+
+
+def build_cruise_coast_seed_candidates(planner, has_lead, accel_limits, *, active=False, a_target=0.0) -> tuple[PlannerSeedCandidate, ...]:
+  return _planner_seed_candidates(
+    build_planner_seed_accel_candidate(
+      planner, "cruise_coast", a_target, has_lead, "plain_cruise_overspeed_coast", accel_limits,
+      selection=PLANNER_SEED_FLOOR,
+    ) if active else None,
+  )
+
+
 def should_apply_cruise_coast_overspeed(reset_state, force_slow_decel, e2e_active, _has_lead, should_stop, source):
   # A radar lead can be present while the selected longitudinal source is still plain cruise.
   # Keep the overspeed comfort cap active in that case so lead flicker/reacquisition cannot
@@ -1400,7 +1551,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       planner_seed_mpc.update(
         sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
         block_short_gap_pullaway_response=sm['carState'].brakePressed or sm['carState'].gasPressed or force_slow_decel or reset_state,
-        model_msg=sm['modelV2'],
+        model_msg=sm['modelV2'], lead_context=self.primary_lead_context,
       )
       planner_seed_mpc_v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, planner_seed_mpc.v_solution)
       planner_seed_mpc_a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, planner_seed_mpc.a_solution)
@@ -1912,174 +2063,74 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         self.planner_seed_candidates.append(planner_seed_mpc_candidate)
     else:
       self.planner_seed_candidate_base_output = None
-    if custom_engage_stop_bootstrap_active:
-      engage_bootstrap_candidate = build_planner_seed_accel_candidate(
-        self, "engage_stop_bootstrap", output_a_target_e2e, has_lead,
-        "engage_model_stop_bootstrap", accel_clip, should_stop=output_should_stop_e2e,
-      )
-      if engage_bootstrap_candidate is not None:
-        self.planner_seed_candidates.append(engage_bootstrap_candidate)
-    if custom_stopped_stop_gap_guard_a_target is not None:
-      stopped_stop_gap_guard_candidate = build_planner_seed_accel_candidate(
-        self, "stopped_lead_stop_gap_guard", custom_stopped_stop_gap_guard_a_target, has_lead,
-        "stopped_lead_stop_gap_guard", accel_clip, should_stop=True, group=stopped_stop_gap_guard_group,
-      )
-      if stopped_stop_gap_guard_candidate is not None:
-        self.planner_seed_candidates.append(stopped_stop_gap_guard_candidate)
+    self.planner_seed_candidates.extend(build_no_lead_stop_seed_candidates(
+      self, has_lead, accel_clip,
+      engage_bootstrap_active=custom_engage_stop_bootstrap_active,
+      engage_bootstrap_a_target=output_a_target_e2e,
+      engage_bootstrap_should_stop=output_should_stop_e2e,
+    ))
     creep_candidate_blocked_by_pullaway_floor = (
       custom_pullaway_accel_step_floor is not None and
       custom_creep_to_stop_gap_a_target is not None and
       custom_creep_to_stop_gap_a_target < custom_pullaway_accel_step_floor and
       not bool(custom_creep_to_stop_gap_should_stop)
     )
-    if custom_creep_to_stop_gap_a_target is not None and not creep_candidate_blocked_by_pullaway_floor:
-      creep_to_stop_gap_candidate = build_planner_seed_accel_candidate(
-        self, "creep_to_stop_gap", custom_creep_to_stop_gap_a_target, has_lead,
-        "creep_to_stop_gap", accel_clip, should_stop=custom_creep_to_stop_gap_should_stop,
-        selection=custom_creep_to_stop_gap_selection, group="creep_to_stop_gap",
-      )
-      if creep_to_stop_gap_candidate is not None:
-        self.planner_seed_candidates.append(creep_to_stop_gap_candidate)
-    if custom_creep_to_stop_gap_accel_max is not None:
-      creep_to_stop_gap_cap_candidate = build_planner_seed_accel_candidate(
-        self, "creep_to_stop_gap_accel_cap", custom_creep_to_stop_gap_accel_max, has_lead,
-        "creep_to_stop_gap_accel_cap", accel_clip, should_stop=custom_creep_to_stop_gap_should_stop,
-        force=True, group="creep_to_stop_gap",
-      )
-      if creep_to_stop_gap_cap_candidate is not None:
-        self.planner_seed_candidates.append(creep_to_stop_gap_cap_candidate)
-    if custom_gap_fill_a_target is not None:
-      gap_fill_candidate = build_planner_seed_accel_candidate(
-        self, "stopped_lead_gap_fill", custom_gap_fill_a_target, has_lead,
-        "stopped_lead_gap_fill", accel_clip, should_stop=custom_gap_fill_should_stop,
-        selection=custom_gap_fill_selection, group="stopped_lead_gap_fill",
-      )
-      if gap_fill_candidate is not None:
-        self.planner_seed_candidates.append(gap_fill_candidate)
-    if custom_gap_fill_accel_max is not None:
-      gap_fill_cap_candidate = build_planner_seed_accel_candidate(
-        self, "stopped_lead_gap_fill_accel_cap", custom_gap_fill_accel_max, has_lead,
-        "stopped_lead_gap_fill_accel_cap", accel_clip, should_stop=custom_gap_fill_should_stop,
-        force=True, group="stopped_lead_gap_fill",
-      )
-      if gap_fill_cap_candidate is not None:
-        self.planner_seed_candidates.append(gap_fill_cap_candidate)
-    if custom_creep_pullaway_launch_floor is not None:
-      creep_pullaway_launch_candidate = build_planner_seed_accel_candidate(
-        self, "creep_pullaway_launch", custom_creep_pullaway_launch_floor, has_lead,
-        "creep_pullaway_launch", accel_clip, should_stop=False, selection=PLANNER_SEED_FLOOR,
-        group="creep_pullaway_launch",
-      )
-      if creep_pullaway_launch_candidate is not None:
-        self.planner_seed_candidates.append(creep_pullaway_launch_candidate)
-    if custom_creep_pullaway_launch_cap is not None:
-      creep_pullaway_launch_cap_candidate = build_planner_seed_accel_candidate(
-        self, "creep_pullaway_launch_accel_cap", custom_creep_pullaway_launch_cap, has_lead,
-        "creep_pullaway_launch_accel_cap", accel_clip, should_stop=False, force=True,
-        group="creep_pullaway_launch",
-      )
-      if creep_pullaway_launch_cap_candidate is not None:
-        self.planner_seed_candidates.append(creep_pullaway_launch_cap_candidate)
-    if custom_pullaway_accel_step_floor is not None:
-      pullaway_accel_step_floor_candidate = build_planner_seed_accel_candidate(
-        self, "low_speed_pullaway_accel_step_floor", custom_pullaway_accel_step_floor, has_lead,
-        "low_speed_pullaway_accel_step_floor", accel_clip, selection=PLANNER_SEED_FLOOR,
-        should_stop=False, force=True, group="low_speed_pullaway_accel_step",
-      )
-      if pullaway_accel_step_floor_candidate is not None:
-        self.planner_seed_candidates.append(pullaway_accel_step_floor_candidate)
+    self.planner_seed_candidates.extend(build_stopped_lead_seed_candidates(
+      self, has_lead, accel_clip,
+      stopped_stop_gap_guard_a_target=custom_stopped_stop_gap_guard_a_target,
+      stopped_stop_gap_guard_group=stopped_stop_gap_guard_group,
+      creep_to_stop_gap_a_target=None if creep_candidate_blocked_by_pullaway_floor else custom_creep_to_stop_gap_a_target,
+      creep_to_stop_gap_should_stop=custom_creep_to_stop_gap_should_stop,
+      creep_to_stop_gap_selection=custom_creep_to_stop_gap_selection,
+      creep_to_stop_gap_accel_max=custom_creep_to_stop_gap_accel_max,
+      gap_fill_a_target=custom_gap_fill_a_target,
+      gap_fill_should_stop=custom_gap_fill_should_stop,
+      gap_fill_selection=custom_gap_fill_selection,
+      gap_fill_accel_max=custom_gap_fill_accel_max,
+    ))
     pullaway_step_cap_suppressed_for_stop_release = bool(legacy_should_stop and custom_creep_pullaway_launch_floor is not None)
-    if custom_pullaway_accel_step_cap is not None and not pullaway_step_cap_suppressed_for_stop_release:
-      pullaway_accel_step_cap_candidate = build_planner_seed_accel_candidate(
-        self, "low_speed_pullaway_accel_step_cap", custom_pullaway_accel_step_cap, has_lead,
-        "low_speed_pullaway_accel_step_cap", accel_clip, should_stop=False, force=True, group="low_speed_pullaway_accel_step",
-      )
-      if pullaway_accel_step_cap_candidate is not None:
-        self.planner_seed_candidates.append(pullaway_accel_step_cap_candidate)
-    if custom_lead_crawl_accel_cap is not None:
-      lead_crawl_accel_cap_candidate = build_planner_seed_accel_candidate(
-        self, "lead_crawl_accel_cap", custom_lead_crawl_accel_cap, has_lead,
-        "lead_crawl_accel_cap", accel_clip, force=True,
-      )
-      if lead_crawl_accel_cap_candidate is not None:
-        self.planner_seed_candidates.append(lead_crawl_accel_cap_candidate)
-    if custom_creep_hold_a_target is not None:
-      creep_hold_candidate = build_planner_seed_accel_candidate(
-        self, "stopped_lead_creep_hold", custom_creep_hold_a_target, has_lead,
-        "stopped_lead_creep_hold", accel_clip, should_stop=True,
-      )
-      if creep_hold_candidate is not None:
-        self.planner_seed_candidates.append(creep_hold_candidate)
-    if custom_moving_stop_guard_a_target is not None:
-      moving_stop_guard_candidate = build_planner_seed_accel_candidate(
-        self, "moving_lead_stop_gap_guard", custom_moving_stop_guard_a_target, has_lead,
-        "moving_lead_stop_gap_guard", accel_clip,
-      )
-      if moving_stop_guard_candidate is not None:
-        self.planner_seed_candidates.append(moving_stop_guard_candidate)
-    if custom_lead_accel_recovery_a_target is not None:
-      lead_accel_recovery_candidate = build_planner_seed_accel_candidate(
-        self, "lead_accel_recovery", custom_lead_accel_recovery_a_target, has_lead,
-        "lead_accel_recovery", accel_clip, selection=PLANNER_SEED_FLOOR,
-      )
-      if lead_accel_recovery_candidate is not None:
-        self.planner_seed_candidates.append(lead_accel_recovery_candidate)
-    if custom_lead_stop_approach_slewed_a_target is not None and not np.isclose(
-      custom_lead_stop_approach_slewed_a_target, custom_lead_stop_approach_base_a_target,
-    ):
-      lead_stop_approach_slew_selection = (
-        PLANNER_SEED_FLOOR if custom_lead_stop_approach_slewed_a_target > custom_lead_stop_approach_base_a_target else PLANNER_SEED_CAP
-      )
-      lead_stop_approach_slew_candidate = build_planner_seed_accel_candidate(
-        self, "lead_stop_approach_slew", custom_lead_stop_approach_slewed_a_target, has_lead,
-        "lead_stop_approach_slew", accel_clip,
-        selection=lead_stop_approach_slew_selection,
-        force=True, group="lead_stop_approach_slew" if lead_stop_approach_slew_selection == PLANNER_SEED_FLOOR else "",
-      )
-      if lead_stop_approach_slew_candidate is not None:
-        self.planner_seed_candidates.append(lead_stop_approach_slew_candidate)
-    if self.e2e_close_stop_settle_active:
-      e2e_close_stop_candidate = build_planner_seed_accel_candidate(
-        self, "e2e_close_stop_settle", custom_e2e_close_stop_a_target, has_lead,
-        "no_lead_close_stop_settle", accel_clip, should_stop=custom_close_stop_should_stop,
-      )
-      if e2e_close_stop_candidate is not None:
-        self.planner_seed_candidates.append(e2e_close_stop_candidate)
-    if custom_e2e_runway_comfort_output_a_target is not None:
-      e2e_runway_comfort_candidate = build_planner_seed_accel_candidate(
-        self, "e2e_runway_comfort", custom_e2e_runway_comfort_output_a_target, has_lead,
-        "no_lead_model_runway_comfort", accel_clip, selection=PLANNER_SEED_FLOOR,
-      )
-      if e2e_runway_comfort_candidate is not None:
-        self.planner_seed_candidates.append(e2e_runway_comfort_candidate)
-    if custom_lead_loss_e2e_guard_a_target is not None:
-      lead_loss_e2e_guard_candidate = build_planner_seed_accel_candidate(
-        self, "lead_loss_e2e_guard", custom_lead_loss_e2e_guard_a_target, has_lead,
-        "lead_loss_e2e_guard", accel_clip, selection=PLANNER_SEED_FLOOR,
-      )
-      if lead_loss_e2e_guard_candidate is not None:
-        self.planner_seed_candidates.append(lead_loss_e2e_guard_candidate)
-    if custom_e2e_stop_approach_a_target < 0.0:
-      e2e_stop_approach_candidate = build_planner_seed_accel_candidate(
-        self, "e2e_stop_approach", custom_e2e_stop_approach_a_target, has_lead, "no_lead_model_stop_approach", accel_clip,
-      )
-      if e2e_stop_approach_candidate is not None:
-        self.planner_seed_candidates.append(e2e_stop_approach_candidate)
-    e2e_runway_positive_cap_candidate = build_planner_seed_accel_candidate(
-      self, "e2e_runway_positive_cap", e2e_runway_positive_accel_cap, has_lead,
-      "low_speed_model_runway_positive_cap", accel_clip,
-    )
-    if e2e_runway_positive_cap_candidate is not None:
-      self.planner_seed_candidates.append(e2e_runway_positive_cap_candidate)
-    if should_apply_cruise_coast_overspeed(
-      reset_state, force_slow_decel, e2e_active, has_lead, self.output_should_stop, self.source
-    ):
-      cruise_coast_candidate = build_planner_seed_accel_candidate(
-        self, "cruise_coast", apply_cruise_coast_overspeed(v_ego, v_cruise, cruise_coast_accel, self.output_a_target),
-        has_lead, "plain_cruise_overspeed_coast", accel_clip, selection=PLANNER_SEED_FLOOR,
-      )
-      if cruise_coast_candidate is not None:
-        self.planner_seed_candidates.append(cruise_coast_candidate)
+    self.planner_seed_candidates.extend(build_lead_pullaway_seed_candidates(
+      self, has_lead, accel_clip,
+      creep_pullaway_launch_floor=custom_creep_pullaway_launch_floor,
+      creep_pullaway_launch_cap=custom_creep_pullaway_launch_cap,
+      pullaway_accel_step_floor=custom_pullaway_accel_step_floor,
+      pullaway_accel_step_cap=custom_pullaway_accel_step_cap,
+      pullaway_step_cap_suppressed_for_stop_release=pullaway_step_cap_suppressed_for_stop_release,
+    ))
+    self.planner_seed_candidates.extend(build_stopped_lead_seed_candidates(
+      self, has_lead, accel_clip,
+      lead_crawl_accel_cap=custom_lead_crawl_accel_cap,
+      creep_hold_a_target=custom_creep_hold_a_target,
+    ))
+    self.planner_seed_candidates.extend(build_moving_lead_seed_candidates(
+      self, has_lead, accel_clip,
+      moving_stop_guard_a_target=custom_moving_stop_guard_a_target,
+      lead_accel_recovery_a_target=custom_lead_accel_recovery_a_target,
+      lead_stop_approach_slewed_a_target=custom_lead_stop_approach_slewed_a_target,
+      lead_stop_approach_base_a_target=custom_lead_stop_approach_base_a_target,
+    ))
+    self.planner_seed_candidates.extend(build_no_lead_stop_seed_candidates(
+      self, has_lead, accel_clip,
+      e2e_close_stop_active=self.e2e_close_stop_settle_active,
+      e2e_close_stop_a_target=custom_e2e_close_stop_a_target,
+      e2e_close_stop_should_stop=custom_close_stop_should_stop,
+      e2e_runway_comfort_a_target=custom_e2e_runway_comfort_output_a_target,
+    ))
+    self.planner_seed_candidates.extend(build_lead_loss_seed_candidates(
+      self, has_lead, accel_clip, lead_loss_e2e_guard_a_target=custom_lead_loss_e2e_guard_a_target,
+    ))
+    self.planner_seed_candidates.extend(build_no_lead_stop_seed_candidates(
+      self, has_lead, accel_clip,
+      e2e_stop_approach_a_target=custom_e2e_stop_approach_a_target,
+      e2e_runway_positive_accel_cap=e2e_runway_positive_accel_cap,
+    ))
+    self.planner_seed_candidates.extend(build_cruise_coast_seed_candidates(
+      self, has_lead, accel_clip,
+      active=should_apply_cruise_coast_overspeed(
+        reset_state, force_slow_decel, e2e_active, has_lead, self.output_should_stop, self.source
+      ),
+      a_target=apply_cruise_coast_overspeed(v_ego, v_cruise, cruise_coast_accel, self.output_a_target),
+    ))
     active_scc = getattr(self, "active_scc", None) or getattr(self, "scc", None)
     active_scc_vision = getattr(active_scc, "vision", None)
     active_scc_map = getattr(active_scc, "map", None)
