@@ -1539,6 +1539,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       )
       self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP, scc_evidence=scc_evidence)
       mode_resolution = self.longitudinal_mode_resolution
+      self._update_e2e_alerts_for_mode(sm)
     e2e_active = self.is_e2e(sm)
     lead_loss_guard_lead = get_lead_loss_e2e_guard_lead(sm['radarState'])
     custom_engage_stop_bootstrap_active = e2e_active and should_run_engage_stop_bootstrap(

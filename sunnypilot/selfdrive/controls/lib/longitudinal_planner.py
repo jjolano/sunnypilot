@@ -479,6 +479,9 @@ class LongitudinalPlannerSP:
   def update(self, sm: messaging.SubMaster) -> None:
     self.events_sp.clear()
     self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP)
+    self._update_e2e_alerts_for_mode(sm)
+
+  def _update_e2e_alerts_for_mode(self, sm: messaging.SubMaster) -> None:
     if self.longitudinal_mode_resolution.e2e_like:
       self.e2e_alerts_helper.update(sm, self.events_sp)
     else:

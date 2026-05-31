@@ -50,6 +50,16 @@ class FakeEvents:
     self.names.clear()
 
 
+class FakeE2EAlertsHelper:
+  def __init__(self):
+    self.green_light_alert = True
+    self.lead_depart_alert = True
+    self.update_count = 0
+
+  def update(self, sm, events_sp):
+    self.update_count += 1
+
+
 class FakeParams:
   def __init__(self, values=None):
     self.values = {} if values is None else dict(values)
@@ -182,6 +192,36 @@ class TestStackAwareTargetSelection(unittest.TestCase):
 
     LongitudinalPlannerSP.update(planner, {"modelV2": PoisonModel()})
 
+    self.assertFalse(planner.e2e_alerts_helper.green_light_alert)
+    self.assertFalse(planner.e2e_alerts_helper.lead_depart_alert)
+
+  def test_scc_e2e_resolution_updates_e2e_alerts_after_evidence_promotion(self):
+    planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.SCC,
+      resolved_implementation=ResolvedLongitudinalImplementation.SCC_E2E,
+      actuation_type=LongitudinalActuationType.DIRECT,
+    )
+    planner.e2e_alerts_helper = FakeE2EAlertsHelper()
+    planner.events_sp = FakeEvents()
+
+    LongitudinalPlannerSP._update_e2e_alerts_for_mode(planner, {"modelV2": PoisonModel()})
+
+    self.assertEqual(planner.e2e_alerts_helper.update_count, 1)
+
+  def test_scc_acc_resolution_resets_e2e_alerts_without_model_inputs(self):
+    planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.SCC,
+      resolved_implementation=ResolvedLongitudinalImplementation.SCC_ACC,
+      actuation_type=LongitudinalActuationType.DIRECT,
+    )
+    planner.e2e_alerts_helper = FakeE2EAlertsHelper()
+    planner.events_sp = FakeEvents()
+
+    LongitudinalPlannerSP._update_e2e_alerts_for_mode(planner, {"modelV2": PoisonModel()})
+
+    self.assertEqual(planner.e2e_alerts_helper.update_count, 0)
     self.assertFalse(planner.e2e_alerts_helper.green_light_alert)
     self.assertFalse(planner.e2e_alerts_helper.lead_depart_alert)
 
