@@ -410,7 +410,7 @@ def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_t
                             speed_limit_handoff_active: bool = False) -> SccModeEvidence:
   return SccModeEvidence(
     confirmed_lead=has_confirmed_lead,
-    model_stop=has_model_stop_context(model_msg),
+    model_stop=bool(model_msg.action.shouldStop or get_e2e_confirmed_model_stop_distance(model_msg) is not None),
     curve_control=bool(getattr(getattr(scc, "vision", None), "is_active", False)),
     map_control=bool(getattr(getattr(scc, "map", None), "is_active", False)),
     speed_limit_control=bool(getattr(sla, "is_active", False) or speed_limit_handoff_active),

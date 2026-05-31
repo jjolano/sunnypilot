@@ -10,7 +10,6 @@ from opendbc.car.toyota.values import CAR as TOYOTA
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
-from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
@@ -44,7 +43,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   should_run_engage_stop_bootstrap,
   update_one_pedal_cruise_hold,
 )
-from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController, TRAJECTORY_SIZE
 
 ButtonType = car.CarState.ButtonEvent.Type
 
@@ -116,50 +114,6 @@ class FakeSubMaster(dict):
 
   def all_checks(self, service_list):
     return True
-
-
-def make_dec_model_msg(should_stop=False, endpoint_x=62.0, stop_index=None):
-  positions = [endpoint_x * i / (TRAJECTORY_SIZE - 1) for i in range(TRAJECTORY_SIZE)]
-  velocities = [15.9 for _ in range(TRAJECTORY_SIZE)]
-  velocities[-1] = 0.2
-  if stop_index is not None:
-    velocities[stop_index] = 0.5
-  return SimpleNamespace(
-    action=SimpleNamespace(desiredAcceleration=-1.0, shouldStop=should_stop),
-    position=SimpleNamespace(x=positions),
-    velocity=SimpleNamespace(x=velocities),
-    orientation=SimpleNamespace(x=[0.0] * TRAJECTORY_SIZE),
-  )
-
-
-def make_dec_sm(model_msg, v_ego=15.9):
-  return {
-    'carState': SimpleNamespace(vEgo=v_ego, vCruise=100.0, standstill=False),
-    'radarState': make_radar_state(),
-    'modelV2': model_msg,
-    'selfdriveState': SimpleNamespace(experimentalMode=True),
-  }
-
-
-def make_dec():
-  cp = SimpleNamespace(radarUnavailable=True)
-  mpc = SimpleNamespace(crash_cnt=0)
-  params = SimpleNamespace(get_bool=lambda _key: True)
-  return DynamicExperimentalController(cp, mpc, params=params)
-
-
-class FakeDecParams:
-  def __init__(self, values):
-    self.values = dict(values)
-
-  def get(self, key, *args, **kwargs):
-    return self.values.get(key)
-
-  def get_bool(self, key):
-    value = self.values.get(key)
-    if isinstance(value, bool):
-      return value
-    return str(value).lower() in ("1", "true", "yes")
 
 
 def test_has_valid_radar_lead_checks_both_tracks():
@@ -427,7 +381,7 @@ def test_engage_stop_bootstrap_model_stop_context_uses_low_predicted_velocity():
 def test_scc_mode_evidence_promotes_no_lead_model_stop_only():
   evidence = build_scc_mode_evidence(
     False,
-    make_model_msg(positions=[0.0, 20.0], velocities=[10.0, 0.5]),
+    make_model_msg(positions=[0.0, 20.0, 62.0], velocities=[10.0, 0.5, 0.2]),
     SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
     SimpleNamespace(is_active=False),
     SimpleNamespace(active=False),
@@ -436,6 +390,19 @@ def test_scc_mode_evidence_promotes_no_lead_model_stop_only():
   assert evidence.model_stop
   assert evidence.e2e_active
   assert evidence.reason == "scc_model_stop"
+
+
+def test_scc_mode_evidence_ignores_endpoint_only_slowdown_without_confirmed_stop():
+  evidence = build_scc_mode_evidence(
+    False,
+    make_model_msg(positions=[0.0, 31.0, 62.0], velocities=[10.0, 10.0, 0.2]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+  )
+
+  assert not evidence.model_stop
+  assert not evidence.e2e_active
 
 
 def test_scc_mode_evidence_keeps_signal_providers_acc_like():
@@ -772,47 +739,7 @@ def test_e2e_stop_approach_requires_no_lead_and_no_override():
   assert get_e2e_stop_approach_accel(12.0, model_msg, make_radar_state(), True, gas_pressed=True) == 0.0
 
 
-def test_dec_ignores_endpoint_only_slowdown_without_stop_evidence():
-  dec = make_dec()
-
-  dec.update(make_dec_sm(make_dec_model_msg(endpoint_x=62.0)))
-
-  assert not dec._has_slow_down
-  assert dec.mode() == 'acc'
-
-
-def test_dec_accepts_slowdown_with_confirmed_model_stop_point():
-  dec = make_dec()
-
-  dec.update(make_dec_sm(make_dec_model_msg(endpoint_x=62.0, stop_index=20)))
-
-  assert dec._has_slow_down
-
-
-def test_dec_enabled_follows_longitudinal_mode_source_of_truth():
-  params = FakeDecParams({
-    "LongitudinalMode": str(int(LongitudinalMode.ACC)),
-    "ExperimentalMode": True,
-    "DynamicExperimentalControl": True,
-  })
-  dec = DynamicExperimentalController(SimpleNamespace(radarUnavailable=True), SimpleNamespace(crash_cnt=0), params=params)
-
-  assert not dec.enabled()
-
-  params.values["LongitudinalMode"] = str(int(LongitudinalMode.SCC))
-  dec._read_params()
-
-  assert dec.enabled()
-
-
-def test_dec_legacy_params_only_enable_without_longitudinal_mode_source_of_truth():
-  params = FakeDecParams({"ExperimentalMode": True, "DynamicExperimentalControl": True})
-  dec = DynamicExperimentalController(SimpleNamespace(radarUnavailable=True), SimpleNamespace(crash_cnt=0), params=params)
-
-  assert dec.enabled()
-
-
-def test_e2e_stop_approach_protects_close_endpoint_during_dec_acc_transition():
+def test_e2e_stop_approach_protects_close_endpoint_during_scc_acc_transition():
   accel = get_e2e_stop_approach_accel(
     2.6,
     make_model_msg(desired_accel=-1.19, endpoint_x=5.7),
