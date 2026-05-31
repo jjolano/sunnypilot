@@ -9,6 +9,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_modes import (
   LongitudinalMode,
   LongitudinalModeResolver,
   ResolvedLongitudinalImplementation,
+  SccModeEvidence,
   filter_legacy_longitudinal_mode_params,
   legacy_longitudinal_mode_params_ignored,
   migrate_longitudinal_mode_params,
@@ -127,6 +128,40 @@ def test_resolver_returns_set_speed_advisory_without_direct_longitudinal():
 
   assert resolution.resolved_implementation == ResolvedLongitudinalImplementation.ICBM_ADVISORY
   assert resolution.actuation_type == LongitudinalActuationType.SET_SPEED_ADVISORY
+
+
+def test_scc_resolver_promotes_model_stop_evidence_to_e2e_like():
+  params = FakeParams()
+  params.put(LONGITUDINAL_MODE_PARAM, int(LongitudinalMode.SCC))
+
+  resolution = resolve_longitudinal_mode(params, scc_evidence=SccModeEvidence(model_stop=True))
+
+  assert resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_E2E
+  assert resolution.compatibility_alias_state.value == "blended"
+  assert resolution.debug["reason"] == "scc_model_stop"
+
+
+def test_scc_resolver_keeps_confirmed_lead_acc_like_even_with_model_stop():
+  params = FakeParams()
+  params.put(LONGITUDINAL_MODE_PARAM, int(LongitudinalMode.SCC))
+
+  resolution = resolve_longitudinal_mode(
+    params, scc_evidence=SccModeEvidence(confirmed_lead=True, model_stop=True)
+  )
+
+  assert resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC
+  assert resolution.compatibility_alias_state.value == "acc"
+  assert resolution.debug["reason"] == "scc_confirmed_lead"
+
+
+def test_scc_resolver_tracks_curve_evidence_without_promoting_e2e():
+  params = FakeParams()
+  params.put(LONGITUDINAL_MODE_PARAM, int(LongitudinalMode.SCC))
+
+  resolution = resolve_longitudinal_mode(params, scc_evidence=SccModeEvidence(curve_control=True))
+
+  assert resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC
+  assert resolution.debug["reason"] == "scc_curve"
 
 
 def test_resolver_keeps_dec_compatibility_alias_sane():

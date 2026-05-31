@@ -13,6 +13,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+  build_scc_mode_evidence,
   build_planner_seed_accel_candidate,
   E2E_CLOSE_STOP_DECEL_MAX,
   E2E_CLOSE_STOP_MIN_ROLLING_V,
@@ -406,6 +407,37 @@ def test_engage_stop_bootstrap_custom_candidate_does_not_mutate_baseline_output(
 def test_engage_stop_bootstrap_model_stop_context_uses_low_predicted_velocity():
   assert has_model_stop_context(make_model_msg(positions=[0.0, 20.0], velocities=[10.0, 0.5]))
   assert not has_model_stop_context(make_model_msg(positions=[0.0, 20.0], velocities=[10.0, 5.0]))
+
+
+def test_scc_mode_evidence_promotes_no_lead_model_stop_only():
+  evidence = build_scc_mode_evidence(
+    False,
+    make_model_msg(positions=[0.0, 20.0], velocities=[10.0, 0.5]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+  )
+
+  assert evidence.model_stop
+  assert evidence.e2e_active
+  assert evidence.reason == "scc_model_stop"
+
+
+def test_scc_mode_evidence_keeps_signal_providers_acc_like():
+  evidence = build_scc_mode_evidence(
+    False,
+    make_model_msg(positions=[0.0, 20.0], velocities=[10.0, 5.0]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=True), map=SimpleNamespace(is_active=True)),
+    SimpleNamespace(is_active=True),
+    SimpleNamespace(active=True),
+    speed_limit_handoff_active=True,
+  )
+
+  assert evidence.curve_control
+  assert evidence.map_control
+  assert evidence.speed_limit_control
+  assert evidence.traffic_control
+  assert not evidence.e2e_active
 
 
 def test_model_stop_distance_uses_first_low_velocity_point():

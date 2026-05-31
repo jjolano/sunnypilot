@@ -44,6 +44,36 @@ class DecCompatibilityState(Enum):
 
 
 @dataclass(frozen=True)
+class SccModeEvidence:
+  confirmed_lead: bool = False
+  model_stop: bool = False
+  curve_control: bool = False
+  map_control: bool = False
+  speed_limit_control: bool = False
+  traffic_control: bool = False
+
+  @property
+  def e2e_active(self) -> bool:
+    return bool(self.model_stop and not self.confirmed_lead)
+
+  @property
+  def reason(self) -> str:
+    if self.e2e_active:
+      return "scc_model_stop"
+    if self.confirmed_lead:
+      return "scc_confirmed_lead"
+    if self.traffic_control:
+      return "scc_traffic_control"
+    if self.speed_limit_control:
+      return "scc_speed_limit"
+    if self.map_control:
+      return "scc_map"
+    if self.curve_control:
+      return "scc_curve"
+    return "scc_cruise"
+
+
+@dataclass(frozen=True)
 class LongitudinalModeResolution:
   requested_mode: LongitudinalMode
   resolved_implementation: ResolvedLongitudinalImplementation
@@ -177,7 +207,7 @@ def _radar_unavailable(CP: Any | None) -> bool:
   return bool(getattr(CP, "radarUnavailable", False))
 
 
-def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_e2e_active: bool = False,
+def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_evidence: SccModeEvidence | None = None,
                               unsupported_reason: str = "", restriction_status: tuple[str, ...] = ()) -> LongitudinalModeResolution:
   requested = requested_mode_from_params(params)
   actuation = LongitudinalActuationType.DIRECT if _has_direct_longitudinal_control(CP) else LongitudinalActuationType.SET_SPEED_ADVISORY
@@ -205,6 +235,8 @@ def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_e2e_act
     )
 
   if requested == LongitudinalMode.SCC:
+    scc_evidence = scc_evidence or SccModeEvidence()
+    scc_e2e_active = scc_evidence.e2e_active
     resolved = ResolvedLongitudinalImplementation.SCC_E2E if scc_e2e_active else ResolvedLongitudinalImplementation.SCC_ACC
     return LongitudinalModeResolution(
       requested_mode=requested,
@@ -213,7 +245,7 @@ def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_e2e_act
       restriction_status=restriction_status,
       compatibility_alias_state=DecCompatibilityState.BLENDED if scc_e2e_active else DecCompatibilityState.ACC,
       unsupported_reason=unsupported_reason,
-      debug={"reason": unsupported_reason or ("scc_e2e" if scc_e2e_active else "scc_acc")},
+      debug={"reason": unsupported_reason or scc_evidence.reason},
     )
 
   resolved = ResolvedLongitudinalImplementation.MODEL_ACC if _radar_unavailable(CP) else ResolvedLongitudinalImplementation.HARDWARE_ACC
@@ -230,11 +262,11 @@ def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_e2e_act
 
 class LongitudinalModeResolver:
   @staticmethod
-  def resolve(params: Any, CP: Any | None = None, *, scc_e2e_active: bool = False,
+  def resolve(params: Any, CP: Any | None = None, *, scc_evidence: SccModeEvidence | None = None,
               unsupported_reason: str = "", restriction_status: tuple[str, ...] = ()) -> LongitudinalModeResolution:
     return resolve_longitudinal_mode(
       params, CP,
-      scc_e2e_active=scc_e2e_active,
+      scc_evidence=scc_evidence,
       unsupported_reason=unsupported_reason,
       restriction_status=restriction_status,
     )

@@ -21,7 +21,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   get_active_lead_confidence,
   resolve_longitudinal_decision,
 )
-from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, LongitudinalModeResolver
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, LongitudinalModeResolver, SccModeEvidence
 from openpilot.selfdrive.controls.lib.lead_confidence import (
   LeadConfidenceState,
   LEAD_FLICKER_CLOSE_COUNT_THRESHOLD,
@@ -404,6 +404,18 @@ def has_model_stop_context(model_msg):
   positions = list(getattr(model_msg.position, "x", []))
   velocities = list(getattr(model_msg.velocity, "x", []))
   return any(x > 0.0 and v <= ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED for x, v in zip(positions, velocities, strict=False))
+
+
+def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_traffic_control_prior,
+                            speed_limit_handoff_active: bool = False) -> SccModeEvidence:
+  return SccModeEvidence(
+    confirmed_lead=has_confirmed_lead,
+    model_stop=has_model_stop_context(model_msg),
+    curve_control=bool(getattr(getattr(scc, "vision", None), "is_active", False)),
+    map_control=bool(getattr(getattr(scc, "map", None), "is_active", False)),
+    speed_limit_control=bool(getattr(sla, "is_active", False) or speed_limit_handoff_active),
+    traffic_control=bool(getattr(osm_traffic_control_prior, "active", False)),
+  )
 
 
 def should_enable_longitudinal_decision_layer(stack_resolution) -> bool:
@@ -1521,8 +1533,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     has_radar_lead = has_valid_radar_lead(sm['radarState'])
     has_confirmed_lead = has_confirmed_radar_lead(sm['radarState'])
     if mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.SCC:
-      scc_e2e_active = not has_confirmed_lead and has_model_stop_context(sm['modelV2'])
-      self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP, scc_e2e_active=scc_e2e_active)
+      scc_evidence = build_scc_mode_evidence(
+        has_confirmed_lead, sm['modelV2'], self.scc, self.sla, self.osm_traffic_control_prior,
+        speed_limit_handoff_active=bool(getattr(self, "_speed_limit_handoff_active", False)),
+      )
+      self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP, scc_evidence=scc_evidence)
       mode_resolution = self.longitudinal_mode_resolution
     e2e_active = self.is_e2e(sm)
     lead_loss_guard_lead = get_lead_loss_e2e_guard_lead(sm['radarState'])
