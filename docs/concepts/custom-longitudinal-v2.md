@@ -56,8 +56,8 @@ Add selectable `custom-2.0` as a full custom longitudinal stack that prioritizes
 
 ## Scene Behavior
 
-- Lead-follow and lead-pullaway actuation is planner/MPC-seeded first; `custom-2.0` classifies and preserves planner seed behavior instead of independently creating lead acceleration.
-- Planner seed telemetry maps seed reasons into v2 intents while preserving the raw seed reason as `selectedReason`.
+- Lead-follow and lead-pullaway actuation is planner/MPC-seeded first; planner seeds and raw physical fallback candidates enter `LongitudinalDecisionCore` before `custom-2.0` shapes the selected output.
+- Planner seed telemetry publishes seed context/candidate and maps seed reasons into v2 intents while preserving the raw seed reason as `selectedReason`.
 - Classification-only planner seeds preserve their incoming speed, accel, and jerk trajectories.
 - No-lead launch uses a tapered clear-path gate; missing or stale evidence is not clear-path permission.
 - No-lead stop approach is comfort-bounded by default; `custom-2.0` may exceed the comfort bound only when confirmed stop evidence and finite stop distance require harder decel.
@@ -68,7 +68,7 @@ Add selectable `custom-2.0` as a full custom longitudinal stack that prioritizes
 - OSM traffic-control prior `active` is treated as confirmed because that prior already requires model-distance confirmation. Raw map-only traffic-control or hazard cues are ignored for control.
 - Confirmed map caution is cap-only and does not set stop intent or get softened by comfort relax.
 - Driver brake/gas input blocks progress floors and comfort relax, while safety caps and conservative advisory caps may still apply.
-- One-pedal mode suppresses non-hazard progress floors and advisory braking unless Temporary Cruise Hold is active.
+- One-pedal mode replaces driver intent inside the custom-v2 decision candidates and suppresses non-hazard progress floors and advisory braking unless Temporary Cruise Hold is active.
 - One-pedal Lift-Off Coast does not change Lead MPC follow-gap, danger-gap, TTC, stop-runway, FCW, or AEB behavior.
 - One-pedal Creep may hold a small crawl target once rolling or when existing clear evidence authorizes movement; it must not autonomously launch from ambiguous standstill.
 - One-pedal Full Stop may gently stop and hold below parking-lot speed without treating that terminal policy as Stop Approach evidence.

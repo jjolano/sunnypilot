@@ -7,7 +7,25 @@ from typing import Any
 
 from cereal import log
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
+from openpilot.selfdrive.controls.lib.longitudinal_decision import (
+  CandidateRole,
+  DecisionSource,
+  LongitudinalCandidate,
+  LongitudinalDecision,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import (
+  CUSTOM_V2_DEBUG_DISABLE_JERK_LIMIT,
+  CUSTOM_V2_DEBUG_INTENT,
+  CUSTOM_V2_DEBUG_REASON,
+  CUSTOM_V2_DEBUG_SEED_CANDIDATE,
+  CUSTOM_V2_DEBUG_SEED_CONTEXT,
+  CUSTOM_V2_DEBUG_STACK_OUTPUT,
+  custom_v2_candidate_with_debug,
+  custom_v2_intent_for_source,
+  custom_v2_rejections_from_decision,
+  selected_candidate_for_decision,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
   PLANNER_SEED_INTENT_DRIVER_CRUISE,
   PLANNER_SEED_INTENT_LAUNCH,
@@ -134,6 +152,7 @@ class CustomV2Decision:
   selected_reason: str
   rejected: tuple[tuple[str, str], ...]
   limit_jerk: bool = True
+  trajectory_output: LongitudinalStackOutput | None = None
 
 
 def dynamic_cruise_overspeed_leeway(accel_coast: float) -> float:
@@ -196,28 +215,34 @@ class CustomLongitudinalStackV2:
   stack_name = CUSTOM_V2
 
   def update(self, sunnypilot_output: LongitudinalStackOutput, scene: CustomV2Scene | None = None,
-             accel_limits: tuple[float | None, float | None] = (None, None)) -> LongitudinalStackOutput:
+             accel_limits: tuple[float | None, float | None] = (None, None),
+             decision: LongitudinalDecision | None = None,
+             extra_rejected: tuple[tuple[str, str], ...] = ()) -> LongitudinalStackOutput:
     scene = _validated_scene(scene or CustomV2Scene())
-    decision = self._decide(sunnypilot_output, scene, accel_limits)
-    if _preserve_seed_trajectory(sunnypilot_output, decision):
-      speeds, accels, jerks = sunnypilot_output.speeds, sunnypilot_output.accels, sunnypilot_output.jerks
+    custom_decision = self._decide_from_core(sunnypilot_output, scene, accel_limits, decision, extra_rejected) if decision is not None else \
+      self._decide(sunnypilot_output, scene, accel_limits)
+    trajectory_output = custom_decision.trajectory_output or sunnypilot_output
+    if _preserve_seed_trajectory(trajectory_output, custom_decision):
+      speeds, accels, jerks = trajectory_output.speeds, trajectory_output.accels, trajectory_output.jerks
     else:
-      speeds, accels, jerks = _synth_trajectory(sunnypilot_output, scene, decision.a_target, decision.limit_jerk)
+      speeds, accels, jerks = _synth_trajectory(trajectory_output, scene, custom_decision.a_target, custom_decision.limit_jerk)
     debug: dict[str, Any] = dict(sunnypilot_output.debug)
+    if custom_decision.trajectory_output is not None:
+      debug.update(custom_decision.trajectory_output.debug)
     debug.update({
       "custom_stack": self.stack_name,
-      "custom_v2_selected_intent": decision.selected_intent,
-      "custom_v2_selected_reason": decision.selected_reason,
-      "custom_v2_rejected_intents": tuple(intent for intent, _reason in decision.rejected[:3]),
-      "custom_v2_rejected_reasons": tuple(reason for _intent, reason in decision.rejected[:3]),
+      "custom_v2_selected_intent": custom_decision.selected_intent,
+      "custom_v2_selected_reason": custom_decision.selected_reason,
+      "custom_v2_rejected_intents": tuple(intent for intent, _reason in custom_decision.rejected),
+      "custom_v2_rejected_reasons": tuple(reason for _intent, reason in custom_decision.rejected),
       "custom_v2_intents": CUSTOM_V2_INTENTS,
       "custom_v2_one_pedal_mode": scene.one_pedal_mode,
       "custom_v2_one_pedal_cruise_hold": scene.one_pedal_cruise_hold,
     })
     return replace(
       sunnypilot_output,
-      a_target=decision.a_target,
-      should_stop=decision.should_stop,
+      a_target=custom_decision.a_target,
+      should_stop=custom_decision.should_stop,
       speeds=speeds,
       accels=accels,
       jerks=jerks,
@@ -294,6 +319,72 @@ class CustomLongitudinalStackV2:
       selected_reason=selected_reason,
       rejected=tuple(rejected),
       limit_jerk=limit_jerk,
+    )
+
+  def _decide_from_core(self, output: LongitudinalStackOutput, scene: CustomV2Scene,
+                        accel_limits: tuple[float | None, float | None], decision: LongitudinalDecision,
+                        extra_rejected: tuple[tuple[str, str], ...]) -> CustomV2Decision:
+    selected = selected_candidate_for_decision(decision)
+    rejected = [*custom_v2_rejections_from_decision(decision), *extra_rejected]
+    if not decision.enabled or selected is None or decision.winner == DecisionSource.LEGACY_FALLBACK:
+      selected_intent, selected_reason = _classify_seed(output, scene)
+      return CustomV2Decision(
+        a_target=_clip_to_limits(output.a_target, accel_limits),
+        should_stop=bool(output.should_stop),
+        selected_intent=selected_intent,
+        selected_reason=decision.fallback_reason or decision.active_reason or selected_reason,
+        rejected=tuple(dict.fromkeys(rejected)),
+        trajectory_output=output,
+      )
+
+    debug = selected.debug
+    selected_intent = str(debug.get(CUSTOM_V2_DEBUG_INTENT) or custom_v2_intent_for_source(selected.source))
+    selected_reason = str(debug.get(CUSTOM_V2_DEBUG_REASON) or decision.active_reason or selected.active_reason)
+    trajectory_output = debug.get(CUSTOM_V2_DEBUG_STACK_OUTPUT)
+    if not isinstance(trajectory_output, LongitudinalStackOutput):
+      trajectory_output = output
+    else:
+      trajectory_debug = dict(trajectory_output.debug)
+      trajectory_debug[CUSTOM_V2_DEBUG_SEED_CONTEXT] = str(debug.get(CUSTOM_V2_DEBUG_SEED_CONTEXT, ""))
+      trajectory_debug[CUSTOM_V2_DEBUG_SEED_CANDIDATE] = str(debug.get(CUSTOM_V2_DEBUG_SEED_CANDIDATE, ""))
+      trajectory_output = replace(trajectory_output, debug=trajectory_debug)
+
+    a_target = float(decision.a_target)
+    should_stop = bool(decision.should_stop)
+    limit_jerk = not bool(debug.get(CUSTOM_V2_DEBUG_DISABLE_JERK_LIMIT, False))
+
+    if selected.role == CandidateRole.DRIVER_INTENT and selected_intent == "driver_cruise":
+      a_target = float(output.a_target)
+      should_stop = bool(output.should_stop)
+      trajectory_output = output
+      selected_reason = "sunnypilot_current_seed"
+    elif selected.role == CandidateRole.ADVISORY_CAP:
+      a_target, selected_intent, selected_reason = _advisory_accel_for_selected_candidate(
+        selected, scene, a_target, selected_intent, selected_reason
+      )
+    elif selected.role == CandidateRole.PHYSICAL_HAZARD:
+      should_stop = bool(should_stop or trajectory_output.should_stop)
+
+    extra = debug.get("custom_v2_extra_rejected", ())
+    if isinstance(extra, tuple):
+      rejected.extend((str(intent), str(reason)) for intent, reason in extra)
+
+    if selected.role == CandidateRole.ADVISORY_CAP and selected_intent in {"speed_policy", "curve_policy", "map_caution"} and _comfort_relax_allowed(scene):
+      relaxed = max(a_target, COMFORT_RELAX_ACCEL_MIN)
+      if relaxed > a_target:
+        rejected.append((selected_intent, "comfort_relax_softened_advisory_decel"))
+        a_target = relaxed
+        selected_intent = "comfort_relax"
+        selected_reason = "clear_margin_advisory_softening"
+
+    return CustomV2Decision(
+      a_target=_clip_to_limits(a_target, accel_limits),
+      should_stop=should_stop,
+      selected_intent=selected_intent,
+      selected_reason=selected_reason,
+      rejected=tuple(dict.fromkeys(rejected)),
+      limit_jerk=limit_jerk,
+      trajectory_output=trajectory_output,
     )
 
   def _apply_one_pedal_policy(self, output: LongitudinalStackOutput, a_target: float, should_stop: bool,
@@ -402,6 +493,218 @@ class CustomLongitudinalStackV2:
       )
 
     return a_target, selected_intent, selected_reason
+
+
+def build_one_pedal_driver_candidate(scene: CustomV2Scene, v_target: float,
+                                      accel_limits: tuple[float | None, float | None]) -> tuple[LongitudinalCandidate | None, tuple[tuple[str, str], ...]]:
+  scene = _validated_scene(scene)
+  if scene.one_pedal_mode == ONE_PEDAL_MODE_OFF:
+    return None, ()
+  if scene.one_pedal_cruise_hold:
+    return None, (("one_pedal", "temporary_cruise_hold"),)
+  if scene.force_slow_decel or scene.brake_pressed or scene.gas_pressed:
+    return None, (("one_pedal", "driver_or_force_blocked"),)
+
+  extra_rejected: tuple[tuple[str, str], ...] = ()
+  if scene.one_pedal_mode == ONE_PEDAL_MODE_FULL_STOP and scene.v_ego <= ONE_PEDAL_FULL_STOP_ARM_SPEED:
+    a_target = _clip_to_limits(ONE_PEDAL_FULL_STOP_DECEL, accel_limits)
+    should_stop = scene.v_ego <= ONE_PEDAL_FULL_STOP_HOLD_SPEED
+    reason = "low_speed_terminal_stop"
+  elif scene.one_pedal_mode == ONE_PEDAL_MODE_CREEP and _one_pedal_creep_allowed(scene):
+    a_target = _clip_to_limits(_one_pedal_creep_accel(scene), accel_limits)
+    should_stop = False
+    reason = "terminal_creep"
+  else:
+    if scene.one_pedal_mode == ONE_PEDAL_MODE_CREEP and scene.v_ego <= ONE_PEDAL_CREEP_TARGET_SPEED:
+      extra_rejected = (("one_pedal", "terminal_creep_not_authorized"),)
+    a_target = _clip_to_limits(ONE_PEDAL_LIFT_OFF_COAST_ACCEL, accel_limits)
+    should_stop = False
+    reason = "lift_off_coast"
+
+  candidate = custom_v2_candidate_with_debug(
+    LongitudinalCandidate(
+      source=DecisionSource.CRUISE,
+      role=CandidateRole.DRIVER_INTENT,
+      v_target=max(0.0, float(v_target)),
+      a_target=a_target,
+      confidence=1.0,
+      urgency=0.1,
+      active_reason=reason,
+      should_stop=should_stop,
+    ),
+    intent="one_pedal",
+    reason=reason,
+    extra_rejected=extra_rejected,
+  )
+  return candidate, extra_rejected
+
+
+def build_force_slow_candidate(output: LongitudinalStackOutput, scene: CustomV2Scene,
+                               accel_limits: tuple[float | None, float | None]) -> LongitudinalCandidate | None:
+  scene = _validated_scene(scene)
+  if not scene.force_slow_decel:
+    return None
+  a_target = _clip_to_limits(min(float(output.a_target), SAFETY_FORCE_SLOW_DECEL), accel_limits)
+  force_output = replace(output, a_target=a_target, should_stop=True)
+  return custom_v2_candidate_with_debug(
+    LongitudinalCandidate(
+      source=DecisionSource.STOP_LAUNCH,
+      role=CandidateRole.PHYSICAL_HAZARD,
+      v_target=max(0.0, scene.v_cruise),
+      a_target=a_target,
+      confidence=1.0,
+      urgency=1.0,
+      active_reason="force_slow_decel",
+      should_stop=True,
+    ),
+    intent="safety_cap",
+    reason="force_slow_decel",
+    output=force_output,
+    seed_context="scene_physical",
+    disable_jerk_limit=True,
+  )
+
+
+def build_custom_v2_advisory_candidates(scene: CustomV2Scene) -> tuple[tuple[LongitudinalCandidate, ...], tuple[tuple[str, str], ...]]:
+  scene = _validated_scene(scene)
+  candidates: list[LongitudinalCandidate] = []
+  rejected: list[tuple[str, str]] = []
+
+  if scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego:
+    cap = min(0.0, max(scene.speed_limit_a_target, scene.accel_coast))
+    candidates.append(custom_v2_candidate_with_debug(
+      LongitudinalCandidate(
+        source=DecisionSource.SPEED_LIMIT,
+        role=CandidateRole.ADVISORY_CAP,
+        v_target=max(0.0, scene.speed_limit_v_target),
+        a_target=cap,
+        confidence=0.85,
+        urgency=0.35,
+        active_reason="coast_biased_speed_reduction",
+      ),
+      intent="speed_policy",
+      reason="coast_biased_speed_reduction",
+    ))
+  elif scene.speed_limit_active:
+    rejected.append(("speed_policy", "no_speed_reduction_needed"))
+
+  if scene.map_caution_active:
+    if scene.map_caution_confirmed:
+      candidates.append(custom_v2_candidate_with_debug(
+        LongitudinalCandidate(
+          source=DecisionSource.OSM_TRAFFIC_CONTROL,
+          role=CandidateRole.ADVISORY_CAP,
+          v_target=max(0.0, scene.v_ego - 0.1),
+          a_target=min(0.0, scene.map_caution_a_target),
+          confidence=0.75,
+          urgency=0.55,
+          active_reason="confirmed_map_caution",
+        ),
+        intent="map_caution",
+        reason="confirmed_map_caution",
+      ))
+    else:
+      rejected.append(("map_caution", "map_only_ignored"))
+
+  if scene.curve_active:
+    candidates.append(custom_v2_candidate_with_debug(
+      LongitudinalCandidate(
+        source=DecisionSource.SCC_VISION,
+        role=CandidateRole.ADVISORY_CAP,
+        v_target=max(0.0, scene.v_ego - 0.1),
+        a_target=scene.curve_a_target,
+        confidence=0.80,
+        urgency=0.45,
+        active_reason="existing_custom_curve_thresholds",
+      ),
+      intent="curve_policy",
+      reason="existing_custom_curve_thresholds",
+    ))
+
+  return tuple(candidates), tuple(rejected)
+
+
+def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: CustomV2Scene,
+                                        accel_limits: tuple[float | None, float | None]) -> tuple[tuple[LongitudinalCandidate, ...], tuple[tuple[str, str], ...]]:
+  scene = _validated_scene(scene)
+  candidates: list[LongitudinalCandidate] = []
+  rejected: list[tuple[str, str]] = []
+  blocked = scene.force_slow_decel or scene.brake_pressed or scene.gas_pressed
+  stop_active = scene.stop_threat and not scene.has_lead
+  if blocked:
+    rejected.append(("launch", "driver_or_force_blocked"))
+    return (), tuple(rejected)
+  if stop_active:
+    return (), ()
+
+  cruise_a = _dynamic_cruise_coast_accel(scene, float(output.a_target))
+  if cruise_a > float(output.a_target):
+    candidates.append(_custom_v2_relaxation_candidate(
+      DecisionSource.CRUISE_COAST, "driver_cruise", "dynamic_overspeed_coast_leeway",
+      scene, cruise_a, bool(output.should_stop), accel_limits,
+    ))
+
+  wants_progress = scene.v_cruise > scene.v_ego
+  if not wants_progress:
+    rejected.append(("launch", "cruise_not_above_ego"))
+    return tuple(candidates), tuple(rejected)
+
+  if not scene.has_lead and scene.v_ego < NO_LEAD_LAUNCH_MAX_V_EGO:
+    if no_lead_stop_clear(scene):
+      candidates.append(_custom_v2_relaxation_candidate(
+        DecisionSource.STOP_LAUNCH, "launch", "no_lead_stop_clear", scene,
+        _clip_to_limits(NO_LEAD_LAUNCH_ACCEL_MAX, accel_limits), False, accel_limits,
+      ))
+    else:
+      rejected.append(("launch", "model_stop_not_clear"))
+
+  lead_progress_allowed = not (scene.has_lead and output.a_target < 0.0 and scene.lead_v_rel >= 0.0)
+  if lead_progress_allowed and scene.has_lead and scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and lead_evidence_releases_stop(scene):
+    candidates.append(_custom_v2_relaxation_candidate(
+      DecisionSource.STOP_LAUNCH, "launch", "confirmed_lead_pullaway", scene,
+      _clip_to_limits(LEAD_PULLAWAY_ACCEL_MAX, accel_limits), False, accel_limits,
+    ))
+
+  gap_cap = excess_gap_accel_cap(scene) if lead_progress_allowed else None
+  if gap_cap is not None:
+    candidates.append(_custom_v2_relaxation_candidate(
+      DecisionSource.STOP_LAUNCH, "lead_follow", "excess_gap_progress", scene,
+      _clip_to_limits(gap_cap, accel_limits), bool(output.should_stop), accel_limits,
+    ))
+  elif scene.has_lead and scene.lead_gap_excess > EXCESS_GAP_MIN:
+    rejected.append(("lead_follow", "closing_speed_guard"))
+
+  return tuple(candidates), tuple(rejected)
+
+
+def _custom_v2_relaxation_candidate(source: DecisionSource, intent: str, reason: str, scene: CustomV2Scene,
+                                    a_target: float, should_stop: bool,
+                                    accel_limits: tuple[float | None, float | None]) -> LongitudinalCandidate:
+  return custom_v2_candidate_with_debug(
+    LongitudinalCandidate(
+      source=source,
+      role=CandidateRole.RELAXATION,
+      v_target=max(0.0, scene.v_cruise),
+      a_target=_clip_to_limits(a_target, accel_limits),
+      confidence=0.90,
+      urgency=0.55 if source == DecisionSource.STOP_LAUNCH else 0.20,
+      active_reason=reason,
+      should_stop=should_stop,
+    ),
+    intent=intent,
+    reason=reason,
+  )
+
+
+def _advisory_accel_for_selected_candidate(selected: LongitudinalCandidate, scene: CustomV2Scene, a_target: float,
+                                           selected_intent: str, selected_reason: str) -> tuple[float, str, str]:
+  if selected.source == DecisionSource.SPEED_LIMIT:
+    return min(0.0, max(scene.speed_limit_a_target, scene.accel_coast)), "speed_policy", "coast_biased_speed_reduction"
+  if selected.source == DecisionSource.OSM_TRAFFIC_CONTROL:
+    return min(0.0, scene.map_caution_a_target), "map_caution", "confirmed_map_caution"
+  if selected.source in (DecisionSource.SCC_VISION, DecisionSource.SCC_MAP):
+    return scene.curve_a_target, "curve_policy", "existing_custom_curve_thresholds"
+  return a_target, selected_intent, selected_reason
 
 
 def _dynamic_cruise_coast_accel(scene: CustomV2Scene, a_target: float) -> float:

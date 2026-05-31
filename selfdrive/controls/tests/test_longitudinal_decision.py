@@ -295,6 +295,17 @@ def test_relaxation_candidate_guarded_against_runaway_accel():
   assert (DecisionSource.CRUISE_COAST, "comfort_accel_exceeds_margin") in set(decision.suppressed)
 
 
+def test_planner_gated_stop_launch_relaxation_can_exceed_comfort_margin():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, 0.0, 1.0, 0.1, "driver_set_speed")
+  launch = make_candidate(DecisionSource.STOP_LAUNCH, CandidateRole.RELAXATION, 25.0, 0.95, 0.9, 0.5, "no_lead_stop_clear")
+
+  decision = arbiter.decide([cruise, launch])
+
+  assert decision.winner == DecisionSource.STOP_LAUNCH
+  assert decision.a_target == pytest.approx(0.95)
+
+
 def test_resolver_returns_legacy_fallback_when_toggle_disabled():
   cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 25.0, 0.2, 1.0, 0.1, "driver_set_speed")
 

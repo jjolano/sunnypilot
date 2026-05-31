@@ -7,21 +7,40 @@ See the LICENSE.md file in the root directory for more details.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import numpy as np
-from dataclasses import dataclass
 
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
-from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate, LongitudinalDecisionTelemetry
+from openpilot.selfdrive.controls.lib.longitudinal_decision import (
+  CandidateRole,
+  DecisionSource,
+  LongitudinalArbiter,
+  LongitudinalCandidate,
+  LongitudinalDecisionTelemetry,
+  resolve_longitudinal_decision,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import apply_stack_output_to_planner, planner_state_to_stack_output
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate, select_planner_seed_candidate
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene, CustomV2SceneValidationError
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
+  CustomV2Scene,
+  CustomV2SceneValidationError,
+  build_custom_v2_advisory_candidates,
+  build_custom_v2_progress_candidates,
+  build_force_slow_candidate,
+  build_one_pedal_driver_candidate,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput, validate_stack_output
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import (
+  SignalProviderCandidate,
+  build_sp_candidates_from_signal_providers,
+  build_sp_longitudinal_candidates,
+  ensure_driver_intent,
+  fallback_physical_candidates,
+  planner_seed_candidates_to_longitudinal_candidates,
+  replace_driver_intent,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_custom_longitudinal_stack
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_V2,
@@ -99,25 +118,11 @@ def publish_decision_layer_telemetry(longitudinalPlanSP, telemetry: Longitudinal
   decisionLayer.legacyShouldStop = bool(telemetry.legacy_should_stop)
 
 
-def custom_v2_seed_output(planner: object, sunnypilot_output: LongitudinalStackOutput) -> LongitudinalStackOutput:
-  candidates = tuple(getattr(planner, "planner_seed_candidates", ()))
-  if not candidates:
-    debug = dict(sunnypilot_output.debug)
-    debug["custom_v2_seed_context"] = "planner"
-    return replace(sunnypilot_output, debug=debug)
-
-  selected = select_planner_seed_candidate((PlannerSeedCandidate(SUNNYPILOT_CURRENT, sunnypilot_output), *candidates))
-  debug = dict(sunnypilot_output.debug)
-  debug.update(selected.output.debug)
-  debug["custom_v2_seed_context"] = "planner"
-  debug["custom_v2_seed_candidate"] = selected.name
-  return replace(selected.output, debug=debug)
-
-
 def publish_stack_telemetry(longitudinalPlanSP, resolution: StackResolution, actuated_stack: str,
                             actuated_a_target: float, fault_latched: bool = False, fault_reason: str = "",
                             selected_intent: str = "", selected_reason: str = "",
-                            rejected: tuple[tuple[str, str], ...] = ()) -> None:
+                            rejected: tuple[tuple[str, str], ...] = (), seed_context: str = "",
+                            seed_candidate: str = "") -> None:
   stack = longitudinalPlanSP.stack
   stack.requestedStack = stack_id_for_name(resolution.requested_stack)
   stack.resolvedStack = stack_id_for_name(resolution.resolved_stack)
@@ -128,8 +133,10 @@ def publish_stack_telemetry(longitudinalPlanSP, resolution: StackResolution, act
   stack.actuatedATarget = float(actuated_a_target)
   stack.selectedIntent = str(selected_intent)
   stack.selectedReason = str(selected_reason)
-  stack.rejectedIntents = [str(intent) for intent, _reason in rejected[:3]]
-  stack.rejectedReasons = [str(reason) for _intent, reason in rejected[:3]]
+  stack.rejectedIntents = [str(intent) for intent, _reason in rejected]
+  stack.rejectedReasons = [str(reason) for _intent, reason in rejected]
+  stack.seedContext = str(seed_context)
+  stack.seedCandidate = str(seed_candidate)
 
 
 def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_rel: float, y_rel: float,
@@ -194,84 +201,6 @@ def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, sc
   return selected_source, selected_v_target, selected_a_target
 
 
-@dataclass(frozen=True)
-class SignalProviderCandidate:
-  source: DecisionSource
-  role: CandidateRole
-  target: tuple[float, float]
-  active: bool
-  confidence: float
-  urgency: float
-  active_reason: str
-
-  def to_longitudinal_candidate(self) -> LongitudinalCandidate:
-    v_target, a_target = self.target
-    return LongitudinalCandidate(
-      source=self.source,
-      role=self.role,
-      v_target=v_target,
-      a_target=a_target,
-      confidence=self.confidence,
-      urgency=self.urgency,
-      active_reason=self.active_reason,
-    )
-
-
-def build_sp_candidates_from_signal_providers(providers: tuple[SignalProviderCandidate, ...]) -> list[LongitudinalCandidate]:
-  return [provider.to_longitudinal_candidate() for provider in providers if provider.active]
-
-
-def build_sp_longitudinal_candidates(speed_limit_active, cruise, scc_vision, scc_vision_active, scc_map, scc_map_active,
-                                     speed_limit_assist, osm_traffic_control, osm_traffic_control_active):
-  return build_sp_candidates_from_signal_providers((
-    SignalProviderCandidate(
-      source=DecisionSource.CRUISE,
-      role=CandidateRole.DRIVER_INTENT,
-      target=cruise,
-      active=True,
-      confidence=1.0,
-      urgency=0.1,
-      active_reason="driver_cruise_target",
-    ),
-    SignalProviderCandidate(
-      source=DecisionSource.SPEED_LIMIT,
-      role=CandidateRole.ADVISORY_CAP,
-      target=speed_limit_assist,
-      active=speed_limit_active,
-      confidence=0.85,
-      urgency=0.35,
-      active_reason="speed_limit_assist_active",
-    ),
-    SignalProviderCandidate(
-      source=DecisionSource.SCC_VISION,
-      role=CandidateRole.ADVISORY_CAP,
-      target=scc_vision,
-      active=scc_vision_active,
-      confidence=0.80,
-      urgency=0.45,
-      active_reason="confident_vision_curve",
-    ),
-    SignalProviderCandidate(
-      source=DecisionSource.SCC_MAP,
-      role=CandidateRole.ADVISORY_CAP,
-      target=scc_map,
-      active=scc_map_active,
-      confidence=0.80,
-      urgency=0.40,
-      active_reason="confident_map_curve",
-    ),
-    SignalProviderCandidate(
-      source=DecisionSource.OSM_TRAFFIC_CONTROL,
-      role=CandidateRole.ADVISORY_CAP,
-      target=osm_traffic_control,
-      active=osm_traffic_control_active,
-      confidence=0.75,
-      urgency=0.55,
-      active_reason="model_confirmed_map_caution",
-    ),
-  ))
-
-
 class LongitudinalPlannerSP:
   def __init__(self, CP: object, CP_SP: object, mpc):
     self.CP = CP
@@ -307,6 +236,8 @@ class LongitudinalPlannerSP:
     self.longitudinal_stack_selected_intent = ""
     self.longitudinal_stack_selected_reason = ""
     self.longitudinal_stack_rejected: tuple[tuple[str, str], ...] = ()
+    self.longitudinal_stack_seed_context = ""
+    self.longitudinal_stack_seed_candidate = ""
     self.custom_v2_fault_latched = False
     self.custom_v2_fault_reason = ""
 
@@ -432,7 +363,74 @@ class LongitudinalPlannerSP:
     if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != CUSTOM_V2:
       self.custom_longitudinal_stack = make_custom_longitudinal_stack(CUSTOM_V2)
     scene = getattr(self, "custom_v2_scene", CustomV2Scene())
-    return self.custom_longitudinal_stack.update(sunnypilot_output, scene=scene, accel_limits=accel_limits)
+    return self.custom_longitudinal_stack.update(
+      sunnypilot_output,
+      scene=scene,
+      accel_limits=accel_limits,
+      decision=getattr(self, "custom_v2_policy_decision", None),
+      extra_rejected=getattr(self, "custom_v2_policy_extra_rejected", ()),
+    )
+
+  def _resolve_custom_v2_policy_decision(self, sunnypilot_output: LongitudinalStackOutput,
+                                         accel_limits: tuple[float | None, float | None]):
+    scene = getattr(self, "custom_v2_scene", CustomV2Scene())
+    driver_candidates = tuple(
+      candidate for candidate in getattr(self, "decision_candidates_sp", ())
+      if candidate.role == CandidateRole.DRIVER_INTENT
+    )
+    provider_candidates = ensure_driver_intent(driver_candidates, sunnypilot_output, scene.v_cruise)
+    extra_rejected: list[tuple[str, str]] = []
+
+    one_pedal_candidate, one_pedal_rejected = build_one_pedal_driver_candidate(scene, scene.v_cruise, accel_limits)
+    extra_rejected.extend(one_pedal_rejected)
+    one_pedal_active = one_pedal_candidate is not None
+    if one_pedal_candidate is not None:
+      provider_candidates = replace_driver_intent(provider_candidates, one_pedal_candidate)
+
+    advisory_candidates, advisory_rejected = build_custom_v2_advisory_candidates(scene)
+    if one_pedal_active:
+      extra_rejected.extend((
+        (str(candidate.debug.get("custom_v2_intent", "driver_cruise")), "one_pedal_active")
+        for candidate in advisory_candidates
+      ))
+      advisory_candidates = ()
+    else:
+      extra_rejected.extend(advisory_rejected)
+
+    seed_candidates = planner_seed_candidates_to_longitudinal_candidates(
+      tuple(getattr(self, "planner_seed_candidates", ())), scene.v_cruise
+    )
+    raw_physical_candidates = fallback_physical_candidates(
+      seed_candidates, tuple(getattr(self, "longitudinal_decision_candidates", ())), sunnypilot_output
+    )
+    force_slow_candidate = build_force_slow_candidate(sunnypilot_output, scene, accel_limits)
+    physical_candidates = (*seed_candidates, *raw_physical_candidates)
+    if force_slow_candidate is not None:
+      physical_candidates = (*physical_candidates, force_slow_candidate)
+
+    progress_candidates: tuple[LongitudinalCandidate, ...] = ()
+    if not one_pedal_active:
+      progress_candidates, progress_rejected = build_custom_v2_progress_candidates(sunnypilot_output, scene, accel_limits)
+      extra_rejected.extend(progress_rejected)
+
+    candidates = (*provider_candidates, *advisory_candidates, *physical_candidates, *progress_candidates)
+    arbiter = getattr(self, "longitudinal_arbiter", None)
+    if arbiter is None:
+      arbiter = LongitudinalArbiter()
+      self.longitudinal_arbiter = arbiter
+    source_stability_v_ego = None if (scene.force_slow_decel or scene.brake_pressed or scene.gas_pressed) else scene.v_ego
+    decision = resolve_longitudinal_decision(
+      enabled=True,
+      candidates=candidates,
+      fallback_v_target=max(0.0, scene.v_cruise),
+      fallback_a_target=sunnypilot_output.a_target,
+      fallback_should_stop=sunnypilot_output.should_stop,
+      accel_limits=(float(accel_limits[0]), float(accel_limits[1])),
+      arbiter=arbiter,
+      v_ego=source_stability_v_ego,
+    )
+    self.longitudinal_decision = decision
+    return decision, tuple(dict.fromkeys(extra_rejected))
 
   def _set_custom_v2_fault(self, reason: str) -> None:
     self.custom_v2_fault_latched = True
@@ -448,17 +446,22 @@ class LongitudinalPlannerSP:
     rejected_intents = tuple(str(intent) for intent in debug.get("custom_v2_rejected_intents", ()))
     rejected_reasons = tuple(str(reason) for reason in debug.get("custom_v2_rejected_reasons", ()))
     self.longitudinal_stack_rejected = tuple(zip(rejected_intents, rejected_reasons, strict=False))
+    self.longitudinal_stack_seed_context = str(debug.get("custom_v2_seed_context", ""))
+    self.longitudinal_stack_seed_candidate = str(debug.get("custom_v2_seed_candidate", ""))
 
   def apply_longitudinal_stack_selection(self, sm: messaging.SubMaster, has_lead: bool,
                                          accel_limits: tuple[float | None, float | None]) -> None:
     sunnypilot_output = planner_state_to_stack_output(self, has_lead, debug={"adapter": SUNNYPILOT_CURRENT})
-    custom_seed_output = sunnypilot_output
     self.longitudinal_stack_actuated_stack = SUNNYPILOT_CURRENT
     self.longitudinal_stack_fault_latched = False
     self.longitudinal_stack_fault_reason = ""
     self.longitudinal_stack_selected_intent = ""
     self.longitudinal_stack_selected_reason = ""
     self.longitudinal_stack_rejected = ()
+    self.longitudinal_stack_seed_context = ""
+    self.longitudinal_stack_seed_candidate = ""
+    self.custom_v2_policy_decision = None
+    self.custom_v2_policy_extra_rejected = ()
     self.longitudinal_plan_source = sunnypilot_output.source
 
     resolved_stack = self.longitudinal_stack_resolution.resolved_stack
@@ -468,7 +471,6 @@ class LongitudinalPlannerSP:
     if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != resolved_stack:
       self.custom_longitudinal_stack = make_custom_longitudinal_stack(resolved_stack)
     if resolved_stack == CUSTOM_V2:
-      custom_seed_output = custom_v2_seed_output(self, sunnypilot_output)
       if not bool(sm['selfdriveState'].enabled):
         self.custom_v2_fault_latched = False
         self.custom_v2_fault_reason = ""
@@ -477,7 +479,10 @@ class LongitudinalPlannerSP:
         self._set_custom_v2_fault(self.custom_v2_fault_reason)
         return
       try:
-        custom_v2_output = self._custom_v2_stack_output(custom_seed_output, accel_limits)
+        self.custom_v2_policy_decision, self.custom_v2_policy_extra_rejected = self._resolve_custom_v2_policy_decision(
+          sunnypilot_output, accel_limits
+        )
+        custom_v2_output = self._custom_v2_stack_output(sunnypilot_output, accel_limits)
       except CustomV2SceneValidationError as error:
         self._set_custom_v2_fault(error.reason)
         return
@@ -568,6 +573,8 @@ class LongitudinalPlannerSP:
       selected_intent=getattr(self, "longitudinal_stack_selected_intent", ""),
       selected_reason=getattr(self, "longitudinal_stack_selected_reason", ""),
       rejected=getattr(self, "longitudinal_stack_rejected", ()),
+      seed_context=getattr(self, "longitudinal_stack_seed_context", ""),
+      seed_candidate=getattr(self, "longitudinal_stack_seed_candidate", ""),
     )
 
     pm.send('longitudinalPlanSP', plan_sp_send)

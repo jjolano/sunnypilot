@@ -40,7 +40,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
   PlannerSeedCandidate,
   planner_seed_intent_for_reason,
 )
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import is_custom_stack
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, is_custom_stack
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, SunnypilotLongitudinalMpc
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
@@ -1642,8 +1642,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     source_stability_v_ego = None if (
       reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed
     ) else v_ego
+    decision_layer_applies_before_stack = should_enable_longitudinal_decision_layer(stack_resolution) and \
+      getattr(stack_resolution, "resolved_stack", "") != CUSTOM_V2
     self.longitudinal_decision = resolve_longitudinal_decision(
-      enabled=should_enable_longitudinal_decision_layer(stack_resolution),
+      enabled=decision_layer_applies_before_stack,
       candidates=self.longitudinal_decision_candidates,
       fallback_v_target=v_cruise,
       fallback_a_target=legacy_a_target,
@@ -1653,7 +1655,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       v_ego=source_stability_v_ego,
     )
     self.longitudinal_decision_telemetry = None
-    if self.longitudinal_decision.enabled:
+    if decision_layer_applies_before_stack and self.longitudinal_decision.enabled:
       decision_accel_comfort_active = not (
         reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed or
         v_ego < DECISION_ACCEL_COMFORT_MIN_V_EGO or

@@ -4,10 +4,11 @@ from typing import Callable, cast
 
 from cereal import messaging
 from cereal import custom
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import planner_state_to_stack_output
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
-from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalDecisionTelemetry
+from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate, LongitudinalDecisionTelemetry
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene, ONE_PEDAL_MODE_CREEP
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, SUNNYPILOT_CURRENT, StackResolution
 from openpilot.sunnypilot.selfdrive.controls.lib import longitudinal_planner as sp_longitudinal_planner
@@ -322,6 +323,8 @@ class TestStackTelemetryPublish(unittest.TestCase):
     self.assertEqual(plan_sp.stack.selectedReason, "")
     self.assertEqual(plan_sp.stack.rejectedIntents, [])
     self.assertEqual(plan_sp.stack.rejectedReasons, [])
+    self.assertEqual(plan_sp.stack.seedContext, "")
+    self.assertEqual(plan_sp.stack.seedCandidate, "")
 
   def test_publish_stack_telemetry_reports_custom_v2_policy_debug(self):
     plan_sp = self.make_plan_sp()
@@ -337,6 +340,7 @@ class TestStackTelemetryPublish(unittest.TestCase):
       fault_latched=True, fault_reason="a_target_above_limits",
       selected_intent="launch", selected_reason="confirmed_lead_pullaway",
       rejected=(("stop_approach", "lead_pullaway_release"), ("speed_policy", "no_speed_reduction_needed")),
+      seed_context="planner", seed_candidate="creep_pullaway_launch",
     )
 
     self.assertEqual(plan_sp.stack.resolvedStack, StackId.customV2)
@@ -348,6 +352,8 @@ class TestStackTelemetryPublish(unittest.TestCase):
     self.assertEqual(plan_sp.stack.selectedReason, "confirmed_lead_pullaway")
     self.assertEqual(plan_sp.stack.rejectedIntents, ["stop_approach", "speed_policy"])
     self.assertEqual(plan_sp.stack.rejectedReasons, ["lead_pullaway_release", "no_speed_reduction_needed"])
+    self.assertEqual(plan_sp.stack.seedContext, "planner")
+    self.assertEqual(plan_sp.stack.seedCandidate, "creep_pullaway_launch")
 
   def test_capnp_stack_schema_fields_exist(self):
     msg = messaging.new_message("longitudinalPlanSP")
@@ -359,11 +365,15 @@ class TestStackTelemetryPublish(unittest.TestCase):
     msg.longitudinalPlanSP.stack.selectedReason = "no_lead_stop_clear"
     msg.longitudinalPlanSP.stack.rejectedIntents = ["stop_approach"]
     msg.longitudinalPlanSP.stack.rejectedReasons = ["lead_pullaway_release"]
+    msg.longitudinalPlanSP.stack.seedContext = "planner"
+    msg.longitudinalPlanSP.stack.seedCandidate = "creep_pullaway_launch"
 
     self.assertEqual(msg.longitudinalPlanSP.stack.requestedStack, StackId.sunnypilotCurrent)
     self.assertEqual(msg.longitudinalPlanSP.stack.faultReason, "")
     self.assertEqual(msg.longitudinalPlanSP.stack.selectedIntent, "launch")
     self.assertEqual(msg.longitudinalPlanSP.stack.rejectedIntents[0], "stop_approach")
+    self.assertEqual(msg.longitudinalPlanSP.stack.seedContext, "planner")
+    self.assertEqual(msg.longitudinalPlanSP.stack.seedCandidate, "creep_pullaway_launch")
 
 
 class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
@@ -412,6 +422,18 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
       accels=tuple(a_target for _ in range(CONTROL_N)) if accels is None else accels,
       jerks=tuple(0.0 for _ in range(CONTROL_N)) if jerks is None else jerks,
       debug={} if debug is None else debug,
+    )
+
+  def make_candidate(self, source, role, v_target, a_target, reason, should_stop=False):
+    return LongitudinalCandidate(
+      source=source,
+      role=role,
+      v_target=v_target,
+      a_target=a_target,
+      confidence=1.0,
+      urgency=0.8,
+      active_reason=reason,
+      should_stop=should_stop,
     )
 
   def test_custom_v2_selection_actuates_fail_closed_stack_without_shadow(self):
@@ -464,6 +486,142 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
     self.assertEqual(planner.longitudinal_stack_actuated_stack, "custom-2.0")
     self.assertEqual(planner.longitudinal_stack_selected_intent, "lead_follow")
     self.assertEqual(planner.longitudinal_stack_selected_reason, "stopped_lead_stop_gap_guard")
+
+  def test_equal_baseline_physical_candidate_suppresses_advisory_caps(self):
+    planner = self.make_planner()
+    planner.output_a_target = -0.4
+    planner.a_desired_trajectory = tuple(-0.4 for _ in range(CONTROL_N))
+    planner.decision_candidates_sp = [
+      self.make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 20.0, 0.0, "driver_cruise_target"),
+    ]
+    planner.longitudinal_decision_candidates = [
+      self.make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 20.0, 0.0, "driver_cruise_target"),
+      self.make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 20.0, -0.4, "confirmed_radar_lead"),
+    ]
+    planner.custom_v2_scene = CustomV2Scene(
+      v_ego=15.0,
+      v_cruise=20.0,
+      has_lead=True,
+      speed_limit_active=True,
+      speed_limit_v_target=10.0,
+      speed_limit_a_target=-1.0,
+      curve_active=True,
+      curve_a_target=-0.8,
+      map_caution_active=True,
+      map_caution_confirmed=True,
+      map_caution_a_target=-0.9,
+    )
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=True, accel_limits=(-2.0, 2.0))
+
+    self.assertEqual(planner.output_a_target, -0.4)
+    self.assertEqual(planner.longitudinal_stack_selected_intent, "lead_follow")
+    self.assertEqual(planner.longitudinal_stack_selected_reason, "confirmed_radar_lead")
+    self.assertIn(("speed_policy", "physical_hazard_active"), planner.longitudinal_stack_rejected)
+    self.assertIn(("curve_policy", "physical_hazard_active"), planner.longitudinal_stack_rejected)
+    self.assertIn(("map_caution", "physical_hazard_active"), planner.longitudinal_stack_rejected)
+
+  def test_stop_launch_progress_relaxation_applies_through_custom_v2_logic(self):
+    planner = self.make_planner()
+    planner.output_a_target = 0.0
+    planner.decision_candidates_sp = [
+      self.make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 8.0, 0.0, "driver_cruise_target"),
+    ]
+    planner.custom_v2_scene = CustomV2Scene(v_ego=0.2, v_cruise=8.0, model_stop_distance=30.0, model_desired_accel=0.0)
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
+
+    self.assertEqual(planner.output_a_target, 0.95)
+    self.assertEqual(planner.longitudinal_stack_selected_intent, "launch")
+    self.assertEqual(planner.longitudinal_stack_selected_reason, "no_lead_stop_clear")
+
+  def test_physical_hazard_blocks_stop_launch_progress_relaxation(self):
+    planner = self.make_planner()
+    planner.output_a_target = -0.6
+    planner.decision_candidates_sp = [
+      self.make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 8.0, 0.0, "driver_cruise_target"),
+    ]
+    planner.longitudinal_decision_candidates = [
+      self.make_candidate(DecisionSource.E2E_STOP, CandidateRole.PHYSICAL_HAZARD, 8.0, -0.6, "model_stop_or_slowdown", should_stop=True),
+    ]
+    planner.custom_v2_scene = CustomV2Scene(v_ego=0.2, v_cruise=8.0, model_stop_distance=30.0, model_desired_accel=0.0)
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
+
+    self.assertEqual(planner.output_a_target, -0.6)
+    self.assertTrue(planner.output_should_stop)
+    self.assertEqual(planner.longitudinal_stack_selected_intent, "stop_approach")
+    self.assertIn(("launch", "physical_hazard_active"), planner.longitudinal_stack_rejected)
+
+  def test_stop_launch_safety_cap_is_not_generic_comfort_relaxation(self):
+    planner = self.make_planner()
+    planner.output_a_target = 0.4
+    planner.decision_candidates_sp = [
+      self.make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 8.0, 0.4, "driver_cruise_target"),
+    ]
+    planner.custom_v2_scene = CustomV2Scene(v_ego=2.0, v_cruise=8.0, force_slow_decel=True)
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
+
+    self.assertEqual(planner.output_a_target, -0.2)
+    self.assertTrue(planner.output_should_stop)
+    self.assertEqual(planner.longitudinal_stack_selected_intent, "safety_cap")
+    self.assertEqual(planner.longitudinal_stack_selected_reason, "force_slow_decel")
+
+  def test_one_pedal_replaces_driver_intent_and_preserves_physical_braking(self):
+    planner = self.make_planner()
+    planner.output_a_target = -0.7
+    planner.decision_candidates_sp = [
+      self.make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 20.0, 0.4, "driver_cruise_target"),
+    ]
+    planner.longitudinal_decision_candidates = [
+      self.make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 20.0, -0.7, "confirmed_radar_lead"),
+    ]
+    planner.custom_v2_scene = CustomV2Scene(v_ego=14.0, v_cruise=20.0, has_lead=True, one_pedal_mode=ONE_PEDAL_MODE_CREEP)
+
+    decision, extra_rejected = planner._resolve_custom_v2_policy_decision(
+      planner_state_to_stack_output(planner, has_lead=True), (-2.0, 2.0)
+    )
+
+    self.assertEqual(sum(candidate.role == CandidateRole.DRIVER_INTENT for candidate in decision.candidates), 1)
+    self.assertEqual(decision.winner, DecisionSource.LEAD_MPC)
+    self.assertEqual(decision.a_target, -0.7)
+    self.assertEqual(extra_rejected, ())
+
+  def test_one_pedal_no_lead_standstill_does_not_create_autonomous_creep(self):
+    planner = self.make_planner()
+    planner.output_a_target = 0.0
+    planner.decision_candidates_sp = [
+      self.make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 8.0, 0.4, "driver_cruise_target"),
+    ]
+    planner.custom_v2_scene = CustomV2Scene(
+      v_ego=0.0,
+      v_cruise=8.0,
+      model_stop_distance=10.0,
+      model_desired_accel=0.0,
+      one_pedal_mode=ONE_PEDAL_MODE_CREEP,
+    )
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
+
+    self.assertEqual(planner.output_a_target, 0.0)
+    self.assertEqual(planner.longitudinal_stack_selected_intent, "one_pedal")
+    self.assertEqual(planner.longitudinal_stack_selected_reason, "lift_off_coast")
+    self.assertIn(("one_pedal", "terminal_creep_not_authorized"), planner.longitudinal_stack_rejected)
+
+  def test_seed_context_and_candidate_publish_from_selected_seed(self):
+    planner = self.make_planner()
+    planner.planner_seed_candidates = [PlannerSeedCandidate(
+      "lead_crawl_accel_cap",
+      self.make_output(0.0, has_lead=True, debug={"planner_seed_candidate_reason": "lead_crawl_accel_cap"}),
+      reason="lead_crawl_accel_cap",
+    )]
+    planner.custom_v2_scene = CustomV2Scene(v_ego=0.5, v_cruise=6.0, has_lead=True)
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=True, accel_limits=(-2.0, 2.0))
+
+    self.assertEqual(planner.longitudinal_stack_seed_context, "planner")
+    self.assertEqual(planner.longitudinal_stack_seed_candidate, "lead_crawl_accel_cap")
 
   def test_non_custom_selection_uses_sunnypilot_current_without_wrapper(self):
     planner = self.make_planner(resolved_stack="sunnypilot-current")

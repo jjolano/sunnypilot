@@ -292,7 +292,10 @@ class LongitudinalDecisionCore:
           candidate.active_reason,
         )) if comfort else driver
 
-    if winner is not driver and winner.role == CandidateRole.RELAXATION and winner.a_target > 0.0:
+    if (
+      winner is not driver and winner.role == CandidateRole.RELAXATION and winner.a_target > 0.0 and
+      winner.source != DecisionSource.STOP_LAUNCH
+    ):
       max_allowed = driver.a_target + COMFORT_MAX_DRIVER_ACCEL_MARGIN
       if winner.a_target > max_allowed:
         suppressed.append((winner.source, "comfort_accel_exceeds_margin"))

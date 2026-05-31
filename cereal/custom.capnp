@@ -328,6 +328,8 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     selectedReason @8 :Text;
     rejectedIntents @9 :List(Text);
     rejectedReasons @10 :List(Text);
+    seedContext @11 :Text;
+    seedCandidate @12 :Text;
 
     enum StackId {
       unknown @0;
