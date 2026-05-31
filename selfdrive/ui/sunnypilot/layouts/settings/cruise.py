@@ -6,6 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from enum import IntEnum
 
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_V2,
   CUSTOM_RECOMMENDED,
@@ -38,6 +39,8 @@ ICMB_UNAVAILABLE_LONG_UNAVAILABLE = tr_noop("sunnypilot Longitudinal Control is 
 ACC_ENABLED_DESCRIPTION = tr_noop("Enable custom Short & Long press increments for cruise speed increase/decrease.")
 ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot longitudinal control enabled.")
 ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on this platform due to vehicle limitations.")
+LONG_MODE_DESCRIPTION = tr_noop("Select the top-level longitudinal behavior: ACC for deterministic cruise/follow, E2E for model-primary driving, or SCC for smart switching.")
+LONG_MODE_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control to use longitudinal modes.")
 LONG_STACK_DESCRIPTION = tr_noop("Select which longitudinal control stack runs after sunnypilot longitudinal control is active. " +
                                  "Changing this requires an onroad cycle.")
 LONG_STACK_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control to use the longitudinal stack selector.")
@@ -67,15 +70,14 @@ class CruiseLayout(Widget):
       description="",
       param="IntelligentCruiseButtonManagement")
 
-    self.scc_v_toggle = toggle_item_sp(
-      title=tr("Smart Cruise Control - Vision"),
-      description=tr("Use vision path predictions to estimate the appropriate speed to drive through turns ahead."),
-      param="SmartCruiseControlVision")
-
-    self.scc_m_toggle = toggle_item_sp(
-      title=tr("Smart Cruise Control - Map"),
-      description=tr("Use map data to estimate the appropriate speed to drive through turns ahead."),
-      param="SmartCruiseControlMap")
+    self.longitudinal_mode_item = multiple_button_item_sp(
+      title=tr("Longitudinal Mode"),
+      description=tr(LONG_MODE_DESCRIPTION),
+      buttons=[tr("ACC"), tr("E2E"), tr("SCC")],
+      selected_index=int(ui_state.params.get("LongitudinalMode", return_default=True)),
+      callback=self._on_longitudinal_mode_changed,
+      param="LongitudinalMode",
+    )
 
     self.custom_acc_toggle = toggle_item_sp(
       title=tr("Custom ACC Speed Increments"),
@@ -102,11 +104,6 @@ class CruiseLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.SLA)
     )
 
-    self.dec_toggle = toggle_item_sp(
-      title=tr("Enable Dynamic Experimental Control"),
-      description=tr("Enable toggle to allow the model to determine when to use sunnypilot ACC or sunnypilot End to End Longitudinal."),
-      param="DynamicExperimentalControl")
-
     self.longitudinal_stack_item = ListItemSP(
       title=tr("Longitudinal Stack"),
       description=tr(LONG_STACK_DESCRIPTION),
@@ -125,11 +122,9 @@ class CruiseLayout(Widget):
 
     items = [
       self.icbm_toggle,
-      self.dec_toggle,
+      self.longitudinal_mode_item,
       self.longitudinal_stack_item,
       self.one_pedal_longitudinal_item,
-      self.scc_v_toggle,
-      self.scc_m_toggle,
       self.custom_acc_toggle,
       self.custom_acc_short_increment,
       self.custom_acc_long_increment,
@@ -148,6 +143,7 @@ class CruiseLayout(Widget):
     self._scroller.show_event()
     self.icbm_toggle.show_description(True)
     self.custom_acc_toggle.show_description(True)
+    self.longitudinal_mode_item.show_description(True)
     self.one_pedal_longitudinal_item.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
@@ -183,28 +179,25 @@ class CruiseLayout(Widget):
 
       if has_long or has_icbm:
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
-        self.dec_toggle.action_item.set_enabled(has_long)
+        self.longitudinal_mode_item.action_item.set_enabled(has_long)
         self.longitudinal_stack_item.action_item.set_enabled(has_long and ui_state.is_offroad())
         self._update_one_pedal_item(has_long)
-        self.scc_v_toggle.action_item.set_enabled(True)
-        self.scc_m_toggle.action_item.set_enabled(True)
       else:
         ui_state.params.remove("CustomAccIncrementsEnabled")
-        ui_state.params.remove("DynamicExperimentalControl")
-        ui_state.params.remove("SmartCruiseControlVision")
-        ui_state.params.remove("SmartCruiseControlMap")
+        ui_state.params.remove("LongitudinalMode")
         self.custom_acc_toggle.action_item.set_enabled(False)
-        self.dec_toggle.action_item.set_enabled(False)
+        self.longitudinal_mode_item.action_item.set_enabled(False)
         self.longitudinal_stack_item.action_item.set_enabled(False)
         self.one_pedal_longitudinal_item.action_item.set_enabled(False)
-        self.scc_v_toggle.action_item.set_enabled(False)
-        self.scc_m_toggle.action_item.set_enabled(False)
+      self._update_longitudinal_mode_item(has_long)
       self._update_longitudinal_stack_item(has_long)
 
     else:
       has_icbm = has_long = False
       self.icbm_toggle.action_item.set_enabled(False)
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
+      self.longitudinal_mode_item.action_item.set_enabled(False)
+      self.longitudinal_mode_item.set_description(tr(ONROAD_ONLY_DESCRIPTION))
       self.longitudinal_stack_item.action_item.set_enabled(False)
       self.longitudinal_stack_item.set_description(tr(ONROAD_ONLY_DESCRIPTION))
       self.one_pedal_longitudinal_item.action_item.set_enabled(False)
@@ -233,6 +226,9 @@ class CruiseLayout(Widget):
         self.custom_acc_toggle.show_description(True)
 
     self._on_custom_acc_toggle(self.custom_acc_toggle.action_item.get_state())
+
+  def _update_longitudinal_mode_item(self, has_long: bool):
+    self.longitudinal_mode_item.set_description(tr(LONG_MODE_DESCRIPTION if has_long else LONG_MODE_NOLONG_DESCRIPTION))
 
   def _update_longitudinal_stack_item(self, has_long: bool):
     resolution = self._get_longitudinal_stack_resolution()
@@ -316,6 +312,9 @@ class CruiseLayout(Widget):
 
   def _on_one_pedal_mode_changed(self, _mode: int):
     ui_state.params.put_bool("OnroadCycleRequested", True)
+
+  def _on_longitudinal_mode_changed(self, mode: int):
+    _ = LongitudinalMode(mode)
 
   def _on_custom_acc_toggle(self, state):
     self.custom_acc_short_increment.set_visible(state)

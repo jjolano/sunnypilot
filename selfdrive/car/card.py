@@ -21,6 +21,7 @@ from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 from openpilot.selfdrive.car.helpers import convert_carControlSP, convert_to_capnp
 from openpilot.selfdrive.car.traction_risk import TractionRiskEstimator
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, requested_mode_from_params
 
 from openpilot.sunnypilot.mads.helpers import set_alternative_experience, set_car_specific_params
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
@@ -128,8 +129,8 @@ class Car:
     set_alternative_experience(self.CP, self.CP_SP, self.params)
     set_car_specific_params(self.CP, self.CP_SP, self.params)
 
-    # Dynamic Experimental Control
-    self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
+    longitudinal_mode = requested_mode_from_params(self.params)
+    self.dynamic_experimental_control = longitudinal_mode == LongitudinalMode.SCC
 
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
     controller_available = self.CI.CC is not None and openpilot_enabled_toggle and not self.CP.dashcamOnly
@@ -182,7 +183,7 @@ class Car:
     self.v_cruise_helper = VCruiseHelper(self.CP, self.CP_SP)
 
     self.is_metric = self.params.get_bool("IsMetric")
-    self.experimental_mode = self.params.get_bool("ExperimentalMode")
+    self.experimental_mode = longitudinal_mode != LongitudinalMode.ACC
 
     # card is driven by can recv, expected at 100Hz
     self.rk = Ratekeeper(100, print_delay_threshold=None)
@@ -307,10 +308,11 @@ class Car:
   def params_thread(self, evt):
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
-      self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
+      longitudinal_mode = requested_mode_from_params(self.params)
+      self.experimental_mode = longitudinal_mode != LongitudinalMode.ACC and self.CP.openpilotLongitudinalControl
 
       # sunnypilot
-      self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
+      self.dynamic_experimental_control = longitudinal_mode == LongitudinalMode.SCC
       self.v_cruise_helper.read_custom_set_speed_params()
 
       time.sleep(0.1)

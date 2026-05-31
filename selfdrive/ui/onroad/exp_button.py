@@ -1,6 +1,7 @@
 import time
 import pyray as rl
 from openpilot.common.params import Params
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, requested_mode_from_params
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
@@ -36,7 +37,8 @@ class ExpButton(Widget):
     super()._handle_mouse_release(_)
     if self._is_toggle_allowed():
       new_mode = not self._experimental_mode
-      self._params.put_bool("ExperimentalMode", new_mode)
+      longitudinal_mode = LongitudinalMode.E2E if new_mode else LongitudinalMode.ACC
+      self._params.put("LongitudinalMode", str(int(longitudinal_mode)))
 
       # Hold new state temporarily
       self._held_mode = new_mode
@@ -63,6 +65,10 @@ class ExpButton(Widget):
     return self._experimental_mode
 
   def _is_toggle_allowed(self):
+    current_mode = requested_mode_from_params(self._params)
+    if current_mode == LongitudinalMode.SCC:
+      return False
+
     if not self._params.get_bool("ExperimentalModeConfirmed"):
       return False
 
