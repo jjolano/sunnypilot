@@ -2101,6 +2101,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.custom_v2_scene = CustomV2Scene(
       v_ego=float(v_ego),
       v_cruise=float(v_cruise),
+      personality=getattr(sm['selfdriveState'], "personality", log.LongitudinalPersonality.standard),
       a_ego=float(sm['carState'].aEgo),
       accel_coast=float(cruise_coast_accel),
       force_slow_decel=bool(force_slow_decel),

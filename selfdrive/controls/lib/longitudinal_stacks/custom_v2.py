@@ -60,8 +60,21 @@ ONE_PEDAL_MODE_CREEP = 1
 ONE_PEDAL_MODE_FULL_STOP = 2
 ONE_PEDAL_MODES = {ONE_PEDAL_MODE_OFF, ONE_PEDAL_MODE_CREEP, ONE_PEDAL_MODE_FULL_STOP}
 
-NO_LEAD_LAUNCH_ACCEL_MAX = 0.95
-LEAD_PULLAWAY_ACCEL_MAX = 1.20
+NO_LEAD_LAUNCH_ACCEL_MAX_BY_PERSONALITY = {
+  log.LongitudinalPersonality.relaxed: 1.10,
+  log.LongitudinalPersonality.standard: 1.35,
+  log.LongitudinalPersonality.aggressive: 1.55,
+}
+LEAD_PULLAWAY_ACCEL_MAX_BY_PERSONALITY = {
+  log.LongitudinalPersonality.relaxed: 1.10,
+  log.LongitudinalPersonality.standard: 1.30,
+  log.LongitudinalPersonality.aggressive: 1.45,
+}
+STOP_APPROACH_COMFORT_DECEL_BY_PERSONALITY = {
+  log.LongitudinalPersonality.relaxed: -0.30,
+  log.LongitudinalPersonality.standard: -0.38,
+  log.LongitudinalPersonality.aggressive: -0.45,
+}
 NO_LEAD_LAUNCH_MAX_V_EGO = 3.0
 LEAD_PULLAWAY_MAX_V_EGO = 5.0
 LEAD_MOTION_MIN_V = 0.15
@@ -84,7 +97,6 @@ CRUISE_LEEWAY_MIN = 5.0 * MPH_TO_MS
 CRUISE_LEEWAY_MAX = 10.0 * MPH_TO_MS
 CRUISE_LEEWAY_DOWNHILL_ACCEL = 0.25
 CRUISE_LEEWAY_RECOVERY = 2.0 * MPH_TO_MS
-STOP_APPROACH_COMFORT_DECEL = -0.2
 STOP_APPROACH_DECEL_MIN = -1.5
 SAFETY_FORCE_SLOW_DECEL = -0.2
 ONE_PEDAL_LIFT_OFF_COAST_ACCEL = 0.0
@@ -121,6 +133,7 @@ class CustomV2SceneValidationError(ValueError):
 class CustomV2Scene:
   v_ego: float = 0.0
   v_cruise: float = 0.0
+  personality: int = log.LongitudinalPersonality.standard
   a_ego: float = 0.0
   accel_coast: float = 0.0
   force_slow_decel: bool = False
@@ -193,6 +206,18 @@ def lead_evidence_releases_stop(scene: CustomV2Scene) -> bool:
     (scene.lead_confirmed_pullaway or scene.lead_opening_prediction or lead_moving) and
     not scene.independent_stop_threat
   )
+
+
+def _no_lead_launch_accel_max(scene: CustomV2Scene) -> float:
+  return NO_LEAD_LAUNCH_ACCEL_MAX_BY_PERSONALITY[_validated_personality(scene.personality)]
+
+
+def _lead_pullaway_accel_max(scene: CustomV2Scene) -> float:
+  return LEAD_PULLAWAY_ACCEL_MAX_BY_PERSONALITY[_validated_personality(scene.personality)]
+
+
+def _stop_approach_comfort_decel(scene: CustomV2Scene) -> float:
+  return STOP_APPROACH_COMFORT_DECEL_BY_PERSONALITY[_validated_personality(scene.personality)]
 
 
 def excess_gap_accel_cap(scene: CustomV2Scene) -> float | None:
@@ -482,19 +507,19 @@ class CustomLongitudinalStackV2:
     if not scene.has_lead and scene.v_ego < NO_LEAD_LAUNCH_MAX_V_EGO:
       if no_lead_stop_clear(scene):
         a_target, selected_intent, selected_reason = _apply_floor(
-          a_target, selected_intent, selected_reason, NO_LEAD_LAUNCH_ACCEL_MAX,
+          a_target, selected_intent, selected_reason, _no_lead_launch_accel_max(scene),
           "launch", "no_lead_stop_clear", accel_limits,
         )
       else:
         rejected.append(("launch", "model_stop_not_clear"))
 
-    lead_progress_allowed = allow_lead_progress and scene.lead_progress_allowed and not scene.alternate_lead_threat_active and not (
+    lead_progress_allowed = allow_lead_progress and scene.lead_progress_allowed and not scene.independent_stop_threat and \
+      not scene.alternate_lead_threat_active and not (
       scene.has_lead and a_target < 0.0 and scene.lead_v_rel >= 0.0
     )
-    lead_pullaway_progress_allowed = lead_progress_allowed and scene.lead_gap_excess > EXCESS_GAP_MIN and scene.lead_v_rel > 0.0
-    if lead_pullaway_progress_allowed and scene.has_lead and scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and lead_evidence_releases_stop(scene):
+    if _lead_pullaway_progress_allowed(scene, a_target, allow_lead_progress=lead_progress_allowed):
       a_target, selected_intent, selected_reason = _apply_floor(
-        a_target, selected_intent, selected_reason, LEAD_PULLAWAY_ACCEL_MAX,
+        a_target, selected_intent, selected_reason, _lead_pullaway_accel_max(scene),
         "launch", "confirmed_lead_pullaway", accel_limits,
       )
 
@@ -700,14 +725,21 @@ def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: 
     if no_lead_stop_clear(scene):
       candidates.append(_custom_v2_relaxation_candidate(
         DecisionSource.STOP_LAUNCH, "launch", "no_lead_stop_clear", scene,
-        _clip_to_limits(NO_LEAD_LAUNCH_ACCEL_MAX, accel_limits), False, accel_limits,
+        _clip_to_limits(_no_lead_launch_accel_max(scene), accel_limits), False, accel_limits,
       ))
     else:
       rejected.append(("launch", "model_stop_not_clear"))
 
-  lead_progress_allowed = scene.lead_progress_allowed and not scene.alternate_lead_threat_active and not (
+  lead_progress_allowed = scene.lead_progress_allowed and not scene.independent_stop_threat and \
+    not scene.alternate_lead_threat_active and not (
     scene.has_lead and output.a_target < 0.0 and scene.lead_v_rel >= 0.0
   )
+  if _lead_pullaway_progress_allowed(scene, float(output.a_target), allow_lead_progress=lead_progress_allowed):
+    candidates.append(_custom_v2_relaxation_candidate(
+      DecisionSource.STOP_LAUNCH, "launch", "confirmed_lead_pullaway", scene,
+      _clip_to_limits(_lead_pullaway_accel_max(scene), accel_limits), False, accel_limits,
+    ))
+
   gap_cap = excess_gap_accel_cap(scene) if lead_progress_allowed else None
   if gap_cap is not None:
     candidates.append(_custom_v2_relaxation_candidate(
@@ -774,17 +806,40 @@ def _lead_follow_gap_excess(scene: CustomV2Scene) -> float:
   return scene.lead_gap_excess if scene.lead_follow_gap_excess is None else scene.lead_follow_gap_excess
 
 
+def _lead_pullaway_progress_allowed(scene: CustomV2Scene, current_a_target: float,
+                                    allow_lead_progress: bool = True) -> bool:
+  return bool(
+    allow_lead_progress and
+    scene.has_lead and
+    scene.lead_progress_allowed and
+    not scene.alternate_lead_threat_active and
+    not scene.lead_lateral_progress_blocked and
+    abs(scene.lead_y_rel) < LEAD_LATERAL_PROGRESS_BLOCK_Y and
+    scene.lead_gap_excess > EXCESS_GAP_MIN and
+    scene.lead_v_rel > 0.0 and
+    scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and
+    not (current_a_target < 0.0 and scene.lead_v_rel >= 0.0) and
+    lead_evidence_releases_stop(scene)
+  )
+
+
 def _stop_approach_accel(scene: CustomV2Scene, current_a_target: float,
                          accel_limits: tuple[float | None, float | None]) -> tuple[float, str, bool]:
-  stop_a_target = min(current_a_target, scene.model_desired_accel, STOP_APPROACH_COMFORT_DECEL)
+  comfort_decel = _stop_approach_comfort_decel(scene)
+  stop_a_target = min(current_a_target, comfort_decel)
   selected_reason = "comfort_early_stop_threat"
   hard_stop = False
   if scene.model_stop_distance is not None and scene.model_stop_distance > 0.0:
     required = stopping_decel(scene.v_ego, scene.model_stop_distance, min_distance=1.0)
-    stop_a_target = min(stop_a_target, required)
+    if required < comfort_decel:
+      stop_a_target = min(stop_a_target, required)
+    if scene.model_should_stop:
+      stop_a_target = min(stop_a_target, scene.model_desired_accel, required)
     if scene.model_should_stop and required < STOP_APPROACH_DECEL_MIN:
       selected_reason = "hard_model_stop_threat"
       hard_stop = True
+  elif scene.model_should_stop:
+    stop_a_target = min(stop_a_target, scene.model_desired_accel)
   if hard_stop:
     return _clip_to_limits(stop_a_target, accel_limits), selected_reason, True
   return max(STOP_APPROACH_DECEL_MIN, stop_a_target), selected_reason, False
@@ -924,6 +979,7 @@ def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
 
   return replace(
     scene,
+    personality=_validated_personality(scene.personality),
     speed_limit_active=speed_limit_active,
     curve_active=curve_active,
     map_caution_active=map_caution_active,
@@ -947,6 +1003,14 @@ def _validated_one_pedal_mode(value: object) -> int:
   except (TypeError, ValueError):
     return ONE_PEDAL_MODE_OFF
   return mode if mode in ONE_PEDAL_MODES else ONE_PEDAL_MODE_OFF
+
+
+def _validated_personality(value: object) -> int:
+  try:
+    personality = int(value)
+  except (TypeError, ValueError):
+    return log.LongitudinalPersonality.standard
+  return personality if personality in NO_LEAD_LAUNCH_ACCEL_MAX_BY_PERSONALITY else log.LongitudinalPersonality.standard
 
 
 def _finite(value: object) -> bool:

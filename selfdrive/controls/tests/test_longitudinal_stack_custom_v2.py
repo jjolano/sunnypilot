@@ -11,7 +11,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   CustomV2Scene,
   MPH_TO_MS,
   NORMAL_NEGATIVE_RETREAT_JERK,
-  NO_LEAD_LAUNCH_ACCEL_MAX,
   ONE_PEDAL_CREEP_ACCEL_MAX,
   ONE_PEDAL_CREEP_TARGET_SPEED,
   ONE_PEDAL_FULL_STOP_DECEL,
@@ -61,6 +60,21 @@ def test_custom_v2_intent_taxonomy_is_complete():
   )
 
 
+def test_personality_tuning_order_is_monotonic():
+  relaxed = CustomV2Scene(personality=log.LongitudinalPersonality.relaxed)
+  standard = CustomV2Scene(personality=log.LongitudinalPersonality.standard)
+  aggressive = CustomV2Scene(personality=log.LongitudinalPersonality.aggressive)
+
+  assert custom_v2._no_lead_launch_accel_max(relaxed) == pytest.approx(1.10)
+  assert custom_v2._no_lead_launch_accel_max(standard) == pytest.approx(1.35)
+  assert custom_v2._no_lead_launch_accel_max(aggressive) == pytest.approx(1.55)
+  assert custom_v2._lead_pullaway_accel_max(relaxed) == pytest.approx(1.10)
+  assert custom_v2._lead_pullaway_accel_max(standard) == pytest.approx(1.30)
+  assert custom_v2._lead_pullaway_accel_max(aggressive) == pytest.approx(1.45)
+  assert custom_v2._stop_approach_comfort_decel(relaxed) > custom_v2._stop_approach_comfort_decel(standard)
+  assert custom_v2._stop_approach_comfort_decel(standard) > custom_v2._stop_approach_comfort_decel(aggressive)
+
+
 def test_no_lead_launch_requires_stop_clear():
   clear_scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, model_stop_distance=30.0, model_desired_accel=0.0)
   blocked_scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, model_stop_distance=10.0, model_desired_accel=0.0)
@@ -71,10 +85,20 @@ def test_no_lead_launch_requires_stop_clear():
 
   assert no_lead_stop_clear(clear_scene)
   assert not no_lead_stop_clear(blocked_scene)
-  assert clear_output.a_target == NO_LEAD_LAUNCH_ACCEL_MAX
+  assert 1.25 <= clear_output.a_target <= 1.45
   assert clear_output.debug["custom_v2_selected_intent"] == "launch"
+  assert clear_output.debug["custom_v2_selected_reason"] == "no_lead_stop_clear"
   assert blocked_output.a_target == 0.0
   assert "model_stop_not_clear" in blocked_output.debug["custom_v2_rejected_reasons"]
+
+
+def test_invalid_personality_defaults_to_standard_launch_tuning():
+  scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, personality=999, model_stop_distance=30.0, model_desired_accel=0.0)
+
+  output = CustomLongitudinalStackV2().update(make_output(), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == pytest.approx(custom_v2._no_lead_launch_accel_max(CustomV2Scene()))
+  assert 1.25 <= output.a_target <= 1.45
 
 
 def test_zero_safety_cap_blocks_custom_progress_floors():
@@ -172,6 +196,64 @@ def test_alternate_lead_threat_blocks_behavior_lead_progress():
 
   assert output.a_target == 0.0
   assert "alternate_lead_threat" in output.debug["custom_v2_rejected_reasons"]
+
+
+def test_confirmed_lead_pullaway_uses_bounded_standard_launch_floor():
+  scene = CustomV2Scene(
+    v_ego=0.2,
+    v_cruise=5.0,
+    has_lead=True,
+    lead_v=1.3,
+    lead_v_rel=1.1,
+    lead_gap_excess=2.5,
+    lead_progress_allowed=True,
+    lead_confirmed_pullaway=True,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0, has_lead=True), scene, accel_limits=(-2.0, 2.0))
+
+  assert lead_evidence_releases_stop(scene)
+  assert 1.20 <= output.a_target <= 1.40
+  assert output.debug["custom_v2_selected_intent"] == "launch"
+  assert output.debug["custom_v2_selected_reason"] == "confirmed_lead_pullaway"
+
+
+def test_close_non_opening_lead_does_not_surge():
+  scene = CustomV2Scene(
+    v_ego=0.2,
+    v_cruise=5.0,
+    has_lead=True,
+    lead_v=0.2,
+    lead_v_rel=0.0,
+    lead_gap_excess=0.5,
+    lead_progress_allowed=True,
+    lead_confirmed_pullaway=False,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0, has_lead=True), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == 0.0
+  assert output.debug["custom_v2_selected_intent"] == "driver_cruise"
+
+
+def test_lateral_progress_block_suppresses_lead_pullaway():
+  scene = CustomV2Scene(
+    v_ego=0.2,
+    v_cruise=5.0,
+    has_lead=True,
+    lead_v=1.3,
+    lead_v_rel=1.1,
+    lead_gap_excess=2.5,
+    lead_progress_allowed=True,
+    lead_confirmed_pullaway=True,
+    lead_lateral_progress_blocked=True,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0, has_lead=True), scene, accel_limits=(-2.0, 2.0))
+
+  assert lead_evidence_releases_stop(scene)
+  assert output.a_target == 0.0
+  assert output.debug["custom_v2_selected_reason"] != "confirmed_lead_pullaway"
 
 
 def test_excess_gap_progress_softens_far_fast_lead_approach_braking():
@@ -425,6 +507,21 @@ def test_comfort_relax_does_not_soften_confirmed_map_caution():
   assert output.debug["custom_v2_selected_reason"] == "confirmed_map_caution"
 
 
+@pytest.mark.parametrize("override", ["gas_pressed", "brake_pressed"])
+def test_driver_override_blocks_progress_floors_and_comfort_relax(override):
+  scene_kwargs = {override: True}
+  launch_scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, model_stop_distance=30.0, model_desired_accel=0.0, **scene_kwargs)
+  advisory_scene = CustomV2Scene(v_ego=12.0, v_cruise=18.0, curve_active=True, curve_a_target=-1.0, **scene_kwargs)
+
+  launch_output = CustomLongitudinalStackV2().update(make_output(0.0), launch_scene, accel_limits=(-2.0, 2.0))
+  advisory_output = CustomLongitudinalStackV2().update(make_output(0.4), advisory_scene, accel_limits=(-2.0, 2.0))
+
+  assert launch_output.a_target == 0.0
+  assert "driver_or_force_blocked" in launch_output.debug["custom_v2_rejected_reasons"]
+  assert advisory_output.a_target == -1.0
+  assert advisory_output.debug["custom_v2_selected_intent"] == "curve_policy"
+
+
 def test_dynamic_plain_cruise_leeway_allows_downhill_coasting():
   scene = CustomV2Scene(v_ego=20.0 + 6.0 * MPH_TO_MS, v_cruise=20.0, accel_coast=0.25)
 
@@ -485,6 +582,24 @@ def test_hard_model_stop_uses_required_decel_clipped_to_limits():
   assert output.accels[0] == -3.0
   assert output.debug["custom_v2_selected_intent"] == "stop_approach"
   assert output.debug["custom_v2_selected_reason"] == "hard_model_stop_threat"
+
+
+def test_routine_stop_approach_uses_standard_comfort_decel_with_runway():
+  scene = CustomV2Scene(
+    v_ego=12.0,
+    v_cruise=12.0,
+    stop_threat=True,
+    model_should_stop=False,
+    model_stop_distance=300.0,
+    model_desired_accel=-2.0,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0), scene, accel_limits=(-3.0, 2.0))
+
+  assert -0.45 <= output.a_target <= -0.30
+  assert output.a_target == pytest.approx(custom_v2._stop_approach_comfort_decel(scene))
+  assert output.debug["custom_v2_selected_intent"] == "stop_approach"
+  assert output.debug["custom_v2_selected_reason"] == "comfort_early_stop_threat"
 
 
 def test_normal_stop_approach_remains_comfort_bounded():
@@ -560,7 +675,7 @@ def test_normal_v2_accel_changes_are_jerk_limited():
   output = CustomLongitudinalStackV2().update(make_output(0.0), scene, accel_limits=(-2.0, 2.0))
   first_dt = custom_v2._synth_trajectory_dts()[0]
 
-  assert output.a_target == NO_LEAD_LAUNCH_ACCEL_MAX
+  assert output.a_target == custom_v2._no_lead_launch_accel_max(scene)
   assert output.accels[0] == POSITIVE_PROGRESS_JERK * first_dt
   assert output.jerks[0] == POSITIVE_PROGRESS_JERK
 
@@ -762,6 +877,6 @@ def test_one_pedal_cruise_hold_escape_uses_normal_custom_v2_policy():
 
   output = CustomLongitudinalStackV2().update(make_output(0.0), scene, accel_limits=(-2.0, 2.0))
 
-  assert output.a_target == NO_LEAD_LAUNCH_ACCEL_MAX
+  assert output.a_target == custom_v2._no_lead_launch_accel_max(scene)
   assert output.debug["custom_v2_selected_intent"] == "launch"
   assert "temporary_cruise_hold" in output.debug["custom_v2_rejected_reasons"]
