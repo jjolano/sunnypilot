@@ -158,13 +158,16 @@ def longitudinal_mode_source_of_truth_exists(params: Any) -> bool:
 
 
 def legacy_longitudinal_mode_params_ignored(params: Any) -> bool:
-  return longitudinal_mode_source_of_truth_exists(params) and longitudinal_mode_migration_current(params)
+  return longitudinal_mode_migration_current(params)
 
 
 def requested_mode_from_params(params: Any) -> LongitudinalMode:
   parsed = _parse_mode(_param_get(params, LONGITUDINAL_MODE_PARAM))
   if parsed is not None:
     return parsed
+
+  if longitudinal_mode_migration_current(params):
+    return LongitudinalMode.ACC
 
   # Centralized compatibility fallback for pre-migration runtimes/tests only.
   experimental = _param_get_bool(params, "ExperimentalMode")

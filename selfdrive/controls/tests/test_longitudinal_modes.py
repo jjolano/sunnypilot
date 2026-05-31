@@ -13,6 +13,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_modes import (
   filter_legacy_longitudinal_mode_params,
   legacy_longitudinal_mode_params_ignored,
   migrate_longitudinal_mode_params,
+  requested_mode_from_params,
   resolve_longitudinal_mode,
   should_skip_legacy_longitudinal_restore,
 )
@@ -91,6 +92,21 @@ def test_legacy_params_are_ignored_after_migration():
   assert legacy_longitudinal_mode_params_ignored(params)
   assert should_skip_legacy_longitudinal_restore("DynamicExperimentalControl", params)
   assert not should_skip_legacy_longitudinal_restore("SpeedLimitMode", params)
+
+  incoming = {key: "1" for key in LEGACY_LONGITUDINAL_MODE_PARAMS}
+  incoming["SpeedLimitMode"] = "3"
+  assert filter_legacy_longitudinal_mode_params(incoming, params) == {"SpeedLimitMode": "3"}
+
+
+def test_legacy_params_are_ignored_after_migration_even_if_source_param_is_missing():
+  params = FakeParams()
+  params.put(LONGITUDINAL_MODE_MIGRATION_PARAM, LONGITUDINAL_MODE_MIGRATION_VERSION)
+  params.put("ExperimentalMode", True)
+  params.put("DynamicExperimentalControl", True)
+
+  assert requested_mode_from_params(params) == LongitudinalMode.ACC
+  assert legacy_longitudinal_mode_params_ignored(params)
+  assert should_skip_legacy_longitudinal_restore("ExperimentalMode", params)
 
   incoming = {key: "1" for key in LEGACY_LONGITUDINAL_MODE_PARAMS}
   incoming["SpeedLimitMode"] = "3"
