@@ -162,6 +162,10 @@ class SelfdriveD(CruiseHelper):
       self.params.remove("AlphaLongitudinalEnabled")
     if not self.CP.openpilotLongitudinalControl:
       self.params.remove("ExperimentalMode")
+      self.params.remove("DynamicExperimentalControl")
+      self.params.remove("LongitudinalMode")
+      self.params.remove("SccCurveVisionEnabled")
+      self.params.remove("SccCurveMapEnabled")
 
     self.CS_prev = car.CarState.new_message()
     self.AM = AlertManager()

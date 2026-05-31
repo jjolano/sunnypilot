@@ -5,6 +5,8 @@ CRUISE_SETTINGS = Path(__file__).parents[1] / "sunnypilot/layouts/settings/cruis
 EXP_BUTTON = Path(__file__).parents[1] / "onroad/exp_button.py"
 TOGGLES_SETTINGS = Path(__file__).parents[1] / "layouts/settings/toggles.py"
 UI_STATE = Path(__file__).parents[1] / "sunnypilot/ui_state.py"
+SELFDRIVED = Path(__file__).parents[1] / "../selfdrived/selfdrived.py"
+CAR_INTERFACES = Path(__file__).parents[3] / "sunnypilot/selfdrive/car/interfaces.py"
 
 
 def test_longitudinal_stack_selector_is_in_cruise_settings():
@@ -74,3 +76,12 @@ def test_ui_constraints_clear_scc_curve_params_without_longitudinal():
 
   assert "self.params.remove(\"SccCurveVisionEnabled\")" in source
   assert "self.params.remove(\"SccCurveMapEnabled\")" in source
+
+
+def test_runtime_cleanup_clears_longitudinal_mode_params_without_longitudinal():
+  sources = (SELFDRIVED.read_text(), CAR_INTERFACES.read_text())
+
+  for source in sources:
+    assert "remove(\"LongitudinalMode\")" in source
+    assert "remove(\"SccCurveVisionEnabled\")" in source
+    assert "remove(\"SccCurveMapEnabled\")" in source
