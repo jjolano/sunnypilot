@@ -59,7 +59,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   resolve_longitudinal_stack,
   stack_id_for_name,
 )
-from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
 from openpilot.sunnypilot.selfdrive.controls.lib.osm_traffic_control_prior import OsmTrafficControlPrior
@@ -285,7 +284,6 @@ class LongitudinalPlannerSP:
       self.params = Params()
     self.events_sp = EventsSP()
     self.resolver = SpeedLimitResolver()
-    self.dec = DynamicExperimentalController(CP, mpc)
     self.scc = SmartCruiseControl()
     self.osm_traffic_control_prior = OsmTrafficControlPrior()
     self.resolver = SpeedLimitResolver()

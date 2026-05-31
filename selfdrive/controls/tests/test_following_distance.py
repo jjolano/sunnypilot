@@ -8,6 +8,12 @@ from openpilot.common.parameterized import parameterized_class
 from cereal import custom, log
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
 from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceState
+from openpilot.selfdrive.controls.lib.longitudinal_modes import (
+  LongitudinalActuationType,
+  LongitudinalMode,
+  LongitudinalModeResolution,
+  ResolvedLongitudinalImplementation,
+)
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
@@ -190,6 +196,17 @@ class FakeMpc:
     self.update_kwargs = kwargs
 
 
+class FakePlannerParams:
+  def __init__(self):
+    self.values = {"LongitudinalMode": str(int(LongitudinalMode.E2E))}
+
+  def get(self, key, *args, **kwargs):
+    return self.values.get(key)
+
+  def get_bool(self, _key):
+    return False
+
+
 def patch_planner_sp(monkeypatch):
   monkeypatch.setattr(longitudinal_planner.LongitudinalPlannerSP, "update", lambda _planner, _sm: None)
   monkeypatch.setattr(
@@ -239,7 +256,12 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
     vEgoStopping=0.5,
   )
   planner.mpc = FakeMpc()
-  planner.params = SimpleNamespace(get_bool=lambda _key: False)
+  planner.params = FakePlannerParams()
+  planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+    requested_mode=LongitudinalMode.E2E,
+    resolved_implementation=ResolvedLongitudinalImplementation.E2E,
+    actuation_type=LongitudinalActuationType.DIRECT,
+  )
   planner.VM = None
   planner.control_calculation_hardening = False
   arbiter_cls = getattr(longitudinal_planner, "LongitudinalArbiter", None)
@@ -268,7 +290,6 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.stopped_lead_gap_fill_track_id = -2
   planner.stopped_lead_gap_fill_d_rel = 0.0
   planner.stopped_lead_gap_fill_v_lead = 0.0
-  planner.dec = SimpleNamespace(active=lambda: False)
   planner.source = custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
   planner.events_sp = SimpleNamespace(add=lambda _event: None)
   planner.planner_seed_candidates = []
