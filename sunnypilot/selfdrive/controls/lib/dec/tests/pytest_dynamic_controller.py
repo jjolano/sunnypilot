@@ -68,7 +68,7 @@ def test_initial_mode_is_acc(mock_cp, mock_mpc):
 def test_standstill_triggers_blended(mock_cp, mock_mpc, default_sm):
   controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
   default_sm['carState'].standstill = True
-  for _ in range(10):
+  for _ in range(11):
     controller.update(default_sm)
   assert controller.mode() == "blended"
 

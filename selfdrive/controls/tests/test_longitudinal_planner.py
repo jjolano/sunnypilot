@@ -10,6 +10,7 @@ from opendbc.car.toyota.values import CAR as TOYOTA
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
@@ -145,6 +146,20 @@ def make_dec():
   mpc = SimpleNamespace(crash_cnt=0)
   params = SimpleNamespace(get_bool=lambda _key: True)
   return DynamicExperimentalController(cp, mpc, params=params)
+
+
+class FakeDecParams:
+  def __init__(self, values):
+    self.values = dict(values)
+
+  def get(self, key, *args, **kwargs):
+    return self.values.get(key)
+
+  def get_bool(self, key):
+    value = self.values.get(key)
+    if isinstance(value, bool):
+      return value
+    return str(value).lower() in ("1", "true", "yes")
 
 
 def test_has_valid_radar_lead_checks_both_tracks():
@@ -772,6 +787,29 @@ def test_dec_accepts_slowdown_with_confirmed_model_stop_point():
   dec.update(make_dec_sm(make_dec_model_msg(endpoint_x=62.0, stop_index=20)))
 
   assert dec._has_slow_down
+
+
+def test_dec_enabled_follows_longitudinal_mode_source_of_truth():
+  params = FakeDecParams({
+    "LongitudinalMode": str(int(LongitudinalMode.ACC)),
+    "ExperimentalMode": True,
+    "DynamicExperimentalControl": True,
+  })
+  dec = DynamicExperimentalController(SimpleNamespace(radarUnavailable=True), SimpleNamespace(crash_cnt=0), params=params)
+
+  assert not dec.enabled()
+
+  params.values["LongitudinalMode"] = str(int(LongitudinalMode.SCC))
+  dec._read_params()
+
+  assert dec.enabled()
+
+
+def test_dec_legacy_params_only_enable_without_longitudinal_mode_source_of_truth():
+  params = FakeDecParams({"ExperimentalMode": True, "DynamicExperimentalControl": True})
+  dec = DynamicExperimentalController(SimpleNamespace(radarUnavailable=True), SimpleNamespace(crash_cnt=0), params=params)
+
+  assert dec.enabled()
 
 
 def test_e2e_stop_approach_protects_close_endpoint_during_dec_acc_transition():

@@ -11,6 +11,7 @@ from opendbc.car import structs
 from numpy import interp
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, requested_mode_from_params
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.constants import WMACConstants
 from typing import Literal
 
@@ -23,11 +24,11 @@ ModeType = Literal['acc', 'blended']
 
 
 def has_model_stop_evidence(md) -> bool:
-  if md.action.shouldStop:
+  if bool(getattr(getattr(md, "action", None), "shouldStop", False)):
     return True
 
-  positions = list(getattr(md.position, "x", []))
-  velocities = list(getattr(md.velocity, "x", []))
+  positions = list(getattr(getattr(md, "position", None), "x", []))
+  velocities = list(getattr(getattr(md, "velocity", None), "x", []))
   if len(positions) < 3 or len(velocities) != len(positions):
     return False
 
@@ -153,7 +154,7 @@ class DynamicExperimentalController:
     self._CP = CP
     self._mpc = mpc
     self._params = params or Params()
-    self._enabled: bool = self._params.get_bool("DynamicExperimentalControl")
+    self._enabled: bool = self._longitudinal_mode_enabled()
     self._active: bool = False
     self._frame: int = 0
     self._urgency = 0.0
@@ -204,7 +205,10 @@ class DynamicExperimentalController:
 
   def _read_params(self) -> None:
     if self._frame % int(1. / DT_MDL) == 0:
-      self._enabled = self._params.get_bool("DynamicExperimentalControl")
+      self._enabled = self._longitudinal_mode_enabled()
+
+  def _longitudinal_mode_enabled(self) -> bool:
+    return requested_mode_from_params(self._params) == LongitudinalMode.SCC
 
   def mode(self) -> str:
     return self._mode_manager.get_mode()
