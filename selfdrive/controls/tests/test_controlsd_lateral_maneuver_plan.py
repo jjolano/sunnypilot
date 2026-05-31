@@ -44,6 +44,12 @@ import cereal.messaging as messaging
 from openpilot.selfdrive.controls.controlsd import Controls, fill_model_path_state, model_path_reason_to_capnp
 from openpilot.selfdrive.controls.lib.drive_helpers import MAX_LATERAL_ACCEL_NO_ROLL, clip_curvature
 from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LaneChangePathShaperResult
+from openpilot.selfdrive.controls.lib.lateral_demand import (
+  DEMAND_SOURCE_FALLBACK_MEASURED,
+  DEMAND_SOURCE_LATERAL_MANEUVER,
+  DEMAND_SOURCE_MODEL_PATH,
+  ProcessedLateralDemand,
+)
 from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessorResult
 
 
@@ -245,6 +251,7 @@ def test_processed_lateral_demand_tracks_raw_path_processed_and_clipped_curvatur
   assert demand.measured_curvature == pytest.approx(controls.curvature)
   assert demand.path_quality == pytest.approx(path_result.quality)
   assert demand.path_reason == path_result.reason
+  assert demand.demand_source == DEMAND_SOURCE_MODEL_PATH
   assert demand.lane_change_shaping_active
   assert demand.lane_change_blend == pytest.approx(0.5)
   assert demand.lateral_accel_limit == pytest.approx(MAX_LATERAL_ACCEL_NO_ROLL)
@@ -274,6 +281,7 @@ def test_lateral_maneuver_plan_processed_demand_resets_path_and_lane_shaping():
   assert demand.processed_curvature == pytest.approx(expected_curvature)
   assert demand.curvature_limited == expected_limited
   assert demand.path_reason == "lateral_maneuver"
+  assert demand.demand_source == DEMAND_SOURCE_LATERAL_MANEUVER
   assert demand.path_quality == pytest.approx(0.0)
   assert not demand.lane_change_shaping_active
   assert demand.lane_change_blend == pytest.approx(0.0)
@@ -304,7 +312,54 @@ def test_inactive_processed_lateral_demand_preserves_existing_clipping_path():
 
   assert controls.model_path_processor.inputs.lat_active is False
   assert demand.path_reason == "inactive"
+  assert demand.demand_source == DEMAND_SOURCE_FALLBACK_MEASURED
   assert demand.processed_curvature == pytest.approx(expected_curvature)
   assert demand.processed_curvature != pytest.approx(measured_curvature)
   assert demand.curvature_limited == expected_limited
   assert controls.desired_curvature == pytest.approx(expected_curvature)
+
+
+def test_update_lateral_controller_demand_calls_direct_hook():
+  class FakeController:
+    def __init__(self):
+      self.demand = None
+
+    def set_processed_lateral_demand(self, demand):
+      self.demand = demand
+
+  demand = ProcessedLateralDemand(0.1, 0.2, 0.3, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+
+  controls.update_lateral_controller_demand(demand)
+
+  assert controls.LaC.demand is demand
+
+
+def test_update_lateral_controller_demand_uses_extension_hook():
+  class FakeExtension:
+    def __init__(self):
+      self.demand = None
+
+    def set_processed_lateral_demand(self, demand):
+      self.demand = demand
+
+  class FakeController:
+    def __init__(self):
+      self.extension = FakeExtension()
+
+  demand = ProcessedLateralDemand(0.1, 0.2, 0.3, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+
+  controls.update_lateral_controller_demand(demand)
+
+  assert controls.LaC.extension.demand is demand
+
+
+def test_update_lateral_controller_demand_ignores_missing_hook():
+  controls = Controls.__new__(Controls)
+  controls.LaC = object()
+  demand = ProcessedLateralDemand(0.1, 0.2, 0.3, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
+
+  controls.update_lateral_controller_demand(demand)

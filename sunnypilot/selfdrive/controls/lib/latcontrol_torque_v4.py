@@ -8,6 +8,7 @@ import numpy as np
 from cereal import log
 from opendbc.car.lateral import get_friction
 from openpilot.common.params import Params, UnknownKeyName
+from openpilot.selfdrive.controls.lib.lateral_demand import DEMAND_SOURCE_MODEL_PATH, ProcessedLateralDemand
 from openpilot.selfdrive.controls.lib.lateral_accel import roll_lateral_accel
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_context
@@ -61,6 +62,8 @@ LEARN_MIN_TARGET = 0.08
 LEARN_SIGN_THRESHOLD = 0.05
 LEARN_MAX_JERK = 8.0
 LEARN_MAX_GOVERNOR_REASON = 0
+LEARN_MIN_PATH_QUALITY = 0.75
+LEARN_PATH_REASON_OK = "ok"
 
 SPEED_BUCKET_CENTERS = [5.0, 15.0, 25.0, 35.0, 45.0]
 
@@ -78,6 +81,10 @@ class TorqueV4LearnerRejectReason(IntFlag):
   SIGN_CONFLICT = 1 << 8
   SPEED_RANGE = 1 << 9
   GOVERNOR_ACTIVE = 1 << 10
+  NON_MODEL_DEMAND = 1 << 11
+  LOW_PATH_QUALITY = 1 << 12
+  PATH_REASON = 1 << 13
+  LANE_CHANGE_SHAPING = 1 << 14
 
 
 class TorqueV4GovernorReason(IntFlag):
@@ -174,6 +181,11 @@ class TorqueV4Observation:
   actual_lateral_jerk: float
   measurement_rate: float
   finite: bool
+  demand_source: str = DEMAND_SOURCE_MODEL_PATH
+  path_quality: float = 1.0
+  path_reason: str = LEARN_PATH_REASON_OK
+  lane_change_shaping_active: bool = False
+  lane_change_blend: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -375,6 +387,15 @@ class TorqueV4SessionAdaptation:
       reason |= TorqueV4LearnerRejectReason.SPEED_RANGE
     if governor_reason != TorqueV4GovernorReason(LEARN_MAX_GOVERNOR_REASON):
       reason |= TorqueV4LearnerRejectReason.GOVERNOR_ACTIVE
+    if observation.demand_source != DEMAND_SOURCE_MODEL_PATH:
+      reason |= TorqueV4LearnerRejectReason.NON_MODEL_DEMAND
+    if not _finite(observation.path_quality) or observation.path_quality < LEARN_MIN_PATH_QUALITY:
+      reason |= TorqueV4LearnerRejectReason.LOW_PATH_QUALITY
+    if observation.path_reason != LEARN_PATH_REASON_OK:
+      reason |= TorqueV4LearnerRejectReason.PATH_REASON
+    lane_change_blend = float(observation.lane_change_blend) if _finite(observation.lane_change_blend) else 0.0
+    if observation.lane_change_shaping_active or abs(lane_change_blend) > 1e-3:
+      reason |= TorqueV4LearnerRejectReason.LANE_CHANGE_SHAPING
     return reason
 
 
@@ -461,6 +482,8 @@ class LatControlTorqueV4(LatControl):
     self.previous_target_lateral_accel = 0.0
     self.previous_measurement = 0.0
     self.filtered_measurement_rate = 0.0
+    self.processed_lateral_demand = None
+    self.processed_lateral_demand: ProcessedLateralDemand | None = None
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction) -> None:
     self.torque_params.latAccelFactor = latAccelFactor
@@ -485,6 +508,9 @@ class LatControlTorqueV4(LatControl):
     except (TypeError, ValueError):
       lag = self.dt
     self.session_adaptation.update_lateral_lag(lag if math.isfinite(lag) else self.dt)
+
+  def set_processed_lateral_demand(self, demand: ProcessedLateralDemand) -> None:
+    self.processed_lateral_demand = demand
 
   def reset(self) -> None:
     super().reset()
@@ -587,6 +613,11 @@ class LatControlTorqueV4(LatControl):
       actual_lateral_jerk=actual_lateral_jerk,
       measurement_rate=measurement_rate,
       finite=not invalid,
+      demand_source=getattr(self.processed_lateral_demand, "demand_source", DEMAND_SOURCE_MODEL_PATH),
+      path_quality=getattr(self.processed_lateral_demand, "path_quality", 1.0),
+      path_reason=getattr(self.processed_lateral_demand, "path_reason", LEARN_PATH_REASON_OK),
+      lane_change_shaping_active=getattr(self.processed_lateral_demand, "lane_change_shaping_active", False),
+      lane_change_blend=getattr(self.processed_lateral_demand, "lane_change_blend", 0.0),
     )
     sample_update = self.session_adaptation.update(observation, governor_result.reason)
 

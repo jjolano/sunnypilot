@@ -12,6 +12,11 @@ from opendbc.car.vehicle_model import VehicleModel
 
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.helpers import convert_to_capnp
+from openpilot.selfdrive.controls.lib.lateral_demand import (
+  DEMAND_SOURCE_LATERAL_MANEUVER,
+  DEMAND_SOURCE_MODEL_PATH,
+  ProcessedLateralDemand,
+)
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import SteeringActuatorFeedback, SteeringLimitReason
 from openpilot.sunnypilot.selfdrive.locationd.speed_aware_torque import format_speed_aware_params
 
@@ -119,6 +124,23 @@ def make_observation(**overrides):
   return TorqueV4Observation(**values)
 
 
+def make_processed_lateral_demand(**overrides):
+  values = {
+    "raw_curvature": 0.001,
+    "processed_curvature": 0.001,
+    "measured_curvature": 0.0,
+    "curvature_limited": False,
+    "path_quality": 1.0,
+    "path_reason": "ok",
+    "lane_change_shaping_active": False,
+    "lane_change_blend": 0.0,
+    "lateral_accel_limit": 2.5,
+    "demand_source": DEMAND_SOURCE_MODEL_PATH,
+  }
+  values.update(overrides)
+  return ProcessedLateralDemand(**values)
+
+
 class ApplyEnabledParams(FakeParams):
   def get_bool(self, key: str) -> bool:
     return key == "LiveTorqueSpeedAdaptiveApplyToggle"
@@ -145,6 +167,7 @@ def test_v4_exposes_direct_controlsd_hooks_without_model_hooks():
   assert hasattr(controller, "update_live_torque_params")
   assert hasattr(controller, "update_speed_aware_params")
   assert hasattr(controller, "update_lateral_lag")
+  assert hasattr(controller, "set_processed_lateral_demand")
   assert hasattr(controller, "reset")
   assert not hasattr(controller, "extension")
   assert not hasattr(controller, "update_model_v2")
@@ -324,6 +347,31 @@ def test_v4_feedback_correction_sign_tracks_processed_lateral_demand():
 
   assert positive_log.adaptiveTorqueState.feedbackCorrection > 0.0
   assert negative_log.adaptiveTorqueState.feedbackCorrection < 0.0
+
+
+def test_v4_processed_lateral_demand_hook_stores_scalar_metadata():
+  controller, _VM, _CP = get_controller()
+  demand = make_processed_lateral_demand(path_quality=0.8, path_reason="high_path_std")
+
+  controller.set_processed_lateral_demand(demand)
+
+  assert controller.processed_lateral_demand is demand
+
+
+def test_v4_learning_rejects_forwarded_lateral_maneuver_demand():
+  controller, VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(
+    demand_source=DEMAND_SOURCE_LATERAL_MANEUVER,
+    path_quality=0.0,
+    path_reason="lateral_maneuver",
+  ))
+
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+
+  reject_reason = lac_log.adaptiveTorqueState.sampleRejectReason
+  assert reject_reason & TorqueV4LearnerRejectReason.NON_MODEL_DEMAND
+  assert reject_reason & TorqueV4LearnerRejectReason.LOW_PATH_QUALITY
+  assert reject_reason & TorqueV4LearnerRejectReason.PATH_REASON
 
 
 def test_v4_governor_driver_override_releases_with_bounded_decay():
@@ -516,6 +564,23 @@ def test_v4_measurement_rate_filter_resets_on_inactive_or_invalid():
   ({"finite": False}, TorqueV4LearnerRejectReason.NON_FINITE),
 ])
 def test_v4_session_learner_rejects_bad_samples(overrides, expected):
+  learner = TorqueV4SessionAdaptation(0.2)
+
+  result = learner.update(make_observation(**overrides), TorqueV4GovernorReason.NONE)
+
+  assert not result.sample_accepted
+  assert result.reject_reason & expected
+
+
+@pytest.mark.parametrize("overrides,expected", [
+  ({"demand_source": DEMAND_SOURCE_LATERAL_MANEUVER}, TorqueV4LearnerRejectReason.NON_MODEL_DEMAND),
+  ({"path_quality": 0.5}, TorqueV4LearnerRejectReason.LOW_PATH_QUALITY),
+  ({"path_quality": float("nan")}, TorqueV4LearnerRejectReason.LOW_PATH_QUALITY),
+  ({"path_reason": "path_disagreement"}, TorqueV4LearnerRejectReason.PATH_REASON),
+  ({"lane_change_shaping_active": True}, TorqueV4LearnerRejectReason.LANE_CHANGE_SHAPING),
+  ({"lane_change_blend": 0.5}, TorqueV4LearnerRejectReason.LANE_CHANGE_SHAPING),
+])
+def test_v4_session_learner_rejects_processed_demand_metadata(overrides, expected):
   learner = TorqueV4SessionAdaptation(0.2)
 
   result = learner.update(make_observation(**overrides), TorqueV4GovernorReason.NONE)

@@ -19,7 +19,12 @@ from openpilot.selfdrive.controls.lib.drive_helpers import (
   update_lateral_accel_limit,
 )
 from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LaneChangePathShaper, LaneChangePathShaperInputs
-from openpilot.selfdrive.controls.lib.lateral_demand import ProcessedLateralDemand
+from openpilot.selfdrive.controls.lib.lateral_demand import (
+  DEMAND_SOURCE_FALLBACK_MEASURED,
+  DEMAND_SOURCE_LATERAL_MANEUVER,
+  DEMAND_SOURCE_MODEL_PATH,
+  ProcessedLateralDemand,
+)
 from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs, ModelPathProcessorResult
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
@@ -194,6 +199,7 @@ class Controls(ControlsExt):
     lateral_maneuver_curvature = self.get_lateral_maneuver_curvature(CC.latActive)
     lane_change_shaping_active = False
     lane_change_blend = 0.0
+    demand_source = DEMAND_SOURCE_MODEL_PATH
 
     if lateral_maneuver_curvature is not None:
       self.lane_change_path_shaper.reset()
@@ -201,6 +207,7 @@ class Controls(ControlsExt):
       new_desired_curvature = lateral_maneuver_curvature
       self.model_path_result = ModelPathProcessorResult(lateral_maneuver_curvature, 0.0, True, "lateral_maneuver")
       self.model_path_raw_desired_curvature = raw_curvature
+      demand_source = DEMAND_SOURCE_LATERAL_MANEUVER
     else:
       turn_curvature_sign = 0
       if model_v2.meta.laneChangeState == LaneChangeState.off and self.sm.valid['modelDataV2SP']:
@@ -232,6 +239,8 @@ class Controls(ControlsExt):
       self.model_path_result = path_result
       self.model_path_raw_desired_curvature = raw_curvature
       model_desired_curvature = path_result.desired_curvature if CC.latActive else self.curvature
+      if not CC.latActive:
+        demand_source = DEMAND_SOURCE_FALLBACK_MEASURED
       left_lane_y0 = model_v2.laneLines[1].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[1].y) else None
       right_lane_y0 = model_v2.laneLines[2].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[2].y) else None
       lane_change_result = self.lane_change_path_shaper.update(
@@ -289,9 +298,17 @@ class Controls(ControlsExt):
       lane_change_shaping_active=lane_change_shaping_active,
       lane_change_blend=lane_change_blend,
       lateral_accel_limit=self.lateral_accel_limit_no_roll,
+      demand_source=demand_source,
     )
     self.processed_lateral_demand = demand
     return demand
+
+  def update_lateral_controller_demand(self, demand: ProcessedLateralDemand) -> None:
+    set_processed_lateral_demand = getattr(self.LaC, "set_processed_lateral_demand", None)
+    if set_processed_lateral_demand is None and hasattr(self.LaC, "extension"):
+      set_processed_lateral_demand = getattr(self.LaC.extension, "set_processed_lateral_demand", None)
+    if set_processed_lateral_demand is not None:
+      set_processed_lateral_demand(demand)
 
   def state_control(self):
     CS = self.sm['carState']
@@ -348,6 +365,7 @@ class Controls(ControlsExt):
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
     processed_lateral_demand = self.build_processed_lateral_demand(CC, CS, model_v2, lp)
+    self.update_lateral_controller_demand(processed_lateral_demand)
     curvature_limited = processed_lateral_demand.curvature_limited
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
