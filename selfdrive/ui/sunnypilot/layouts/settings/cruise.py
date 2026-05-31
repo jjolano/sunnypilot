@@ -202,8 +202,6 @@ class CruiseLayout(Widget):
       else:
         ui_state.params.remove("CustomAccIncrementsEnabled")
         ui_state.params.remove("LongitudinalMode")
-        ui_state.params.remove("SccCurveVisionEnabled")
-        ui_state.params.remove("SccCurveMapEnabled")
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.longitudinal_mode_item.action_item.set_enabled(False)
         self.scc_curve_vision_toggle.action_item.set_enabled(False)
