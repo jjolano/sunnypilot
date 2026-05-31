@@ -18,10 +18,12 @@ Introduce `LongitudinalMode` as the source of truth with values `ACC`, `E2E`, an
 
 `ACC` is deterministic cruise/follow. It does not read model stop/action/path policy or build map, OSM, SLA, or SCC curve candidates. `E2E` is model-primary with physical restrictions. `SCC` is the public DEC replacement and resolves through explicit SCC evidence rather than reading legacy DEC runtime state.
 
+SCC curve source controls are mode-owned params: `SccCurveVisionEnabled` and `SccCurveMapEnabled`. They replace the legacy `SmartCruiseControlVision` and `SmartCruiseControlMap` controls in device UI and Sunnylink, and they only apply when `LongitudinalMode == SCC`.
+
 ## Consequences
 
 - Fresh installs default to `ACC`.
 - One-time migration maps legacy `ExperimentalMode + DynamicExperimentalControl` to `SCC`, legacy `ExperimentalMode` to `E2E`, and all other legacy states to `ACC`.
 - Sunnylink saves and backup restores skip legacy longitudinal mode params after migration.
 - `longitudinalPlanSP.dec` remains a compatibility alias; new telemetry is published under `longitudinalPlanSP.longitudinalMode`.
-- UI cleanup can happen later without changing the source-of-truth or migration contract.
+- Device UI and Sunnylink expose `LongitudinalMode`; legacy mode toggles remain migration/compatibility inputs only.

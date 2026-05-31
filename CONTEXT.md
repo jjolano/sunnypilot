@@ -56,6 +56,10 @@ _Avoid_: legacy DEC toggle, stack selection
 The public smart-cruise mode that can select ACC-like or E2E-like behavior from explicit evidence while using curve, map, speed, or stop cues only inside mode-specific boundaries.
 _Avoid_: renamed DEC, SCC Vision toggle
 
+**SCC Curve Control**:
+Mode-owned SCC source controls, currently `SccCurveVisionEnabled` and `SccCurveMapEnabled`, that decide whether vision-predicted or map-derived curve caps may be built while SCC mode is active.
+_Avoid_: legacy SmartCruiseControlVision/Map params, standalone longitudinal mode
+
 **One-Pedal Longitudinal**:
 A custom-2.0 mode where driver lift-off makes cruise speed an acceleration ceiling instead of a speed-hold target.
 _Avoid_: regen mode, follow-gap mode
@@ -207,6 +211,7 @@ _Avoid_: ignoring curves, lateral safety
 - **Driver-Like Curve Speed** cannot override lateral-accel or path-confidence limits.
 - **AlphaLongitudinalEnabled** gates gas/brake takeover separately from **Stack Selection**.
 - SCC is a **Longitudinal Mode**; SCC Vision, SCC Map, SLA, and OSM are signal sources whose outputs are only built when the active mode allows them.
+- **SCC Curve Control** belongs inside **SCC Mode**; it can disable curve source candidates but cannot make ACC consume curve, map, SLA, OSM, or model-stop actuation inputs.
 - The **Longitudinal Decision Layer** is internal to custom-stack behavior and disabled for **sunnypilot-current**.
 - A **Claim Type** is classified before code ownership: physical feasibility belongs to MPC or lead guards, stop/go state belongs to the planner, policy trade-offs belong to custom-stack arbitration, actuator feel belongs to controller logic, and source interpretation belongs to signal providers.
 
