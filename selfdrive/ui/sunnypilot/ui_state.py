@@ -186,8 +186,7 @@ class UIStateSP:
       self.params.remove("DynamicExperimentalControl")
       self.params.remove("SccCurveVisionEnabled")
       self.params.remove("SccCurveMapEnabled")
-      if CP is not None:
-        self.params.remove("LongitudinalMode")
+      self.params.remove("LongitudinalMode")
 
     # ICBM: clear if not available or if full longitudinal control is active
     if self.CP_SP is not None:

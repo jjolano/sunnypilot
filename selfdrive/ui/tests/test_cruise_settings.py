@@ -74,8 +74,10 @@ def test_generic_toggles_do_not_expose_experimental_mode():
 def test_ui_constraints_clear_scc_curve_params_without_longitudinal():
   source = UI_STATE.read_text()
 
+  assert "self.params.remove(\"LongitudinalMode\")" in source
   assert "self.params.remove(\"SccCurveVisionEnabled\")" in source
   assert "self.params.remove(\"SccCurveMapEnabled\")" in source
+  assert "if CP is not None:\n        self.params.remove(\"LongitudinalMode\")" not in source
 
 
 def test_runtime_cleanup_clears_longitudinal_mode_params_without_longitudinal():
