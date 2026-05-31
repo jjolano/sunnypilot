@@ -29,8 +29,12 @@ Telemetry that explains how closely lateral actuation followed the processed lat
 _Avoid_: path quality, model confidence
 
 **Processed Lateral Demand**:
-The lateral demand after path quality and maneuver decisions have been resolved for controllers to follow.
+The controller-facing lateral demand after path quality, maneuver decisions, lane-change shaping, and hard curvature/lateral-accel caps have been resolved.
 _Avoid_: raw model path, actuator command
+
+**Lane-Change Shaping Active**:
+Evidence that lane-change path shaping is applying authority to the Processed Lateral Demand rather than merely observing a raw model lane-change state.
+_Avoid_: lane-change state, blinker state, path quality
 
 **Straight-Path Wander**:
 Low-frequency side-to-side drift or weave on a broad straight-ish road while lateral control is active and the driver is not steering or signaling.
@@ -63,7 +67,8 @@ _Avoid_: implemented recenter controller, lane-centering policy
 - **Tunable Lateral Conditioning Caps** may improve comfort, timing, or stability only inside **Hard Lateral Safety Caps**.
 - **Path-State Evidence** classifies upstream demand conditioning before interpreting **Actuation Tracking Evidence**.
 - **Actuation Tracking Evidence** measures controller and actuator response to **Processed Lateral Demand**.
-- **Processed Lateral Demand** is the boundary between path processing and lateral actuation.
+- **Processed Lateral Demand** is the boundary between path processing, hard demand caps, and lateral actuation.
+- **Lane-Change Shaping Active** is narrower than raw lane-change state; it only applies when the lane-change shaper is actually influencing demand.
 - **Straight-Path Wander** is evaluated at low frequency; fast reversal or twitch evidence belongs to **Actuation Tracking Evidence** unless processed demand is stable and the motion persists as broad weave.
 - **Demand-Driven Straight-Path Wander** belongs to **Path-State Evidence** before any controller tuning is considered.
 - **Actuation-Driven Straight-Path Wander** belongs to **Actuation Tracking Evidence** before any path smoothing is considered.
@@ -81,5 +86,6 @@ _Avoid_: implemented recenter controller, lane-centering policy
 
 - "All low-speed" was ambiguous between one algorithm and one product scope; resolved as **Low-Speed Lateral Envelope** with tiered metrics.
 - "Caps" was ambiguous between hard safety limits and tunable comfort behavior; resolved as **Hard Lateral Safety Cap** and **Tunable Lateral Conditioning Cap**.
+- "Processed demand" was ambiguous between pre-cap path demand and controller-facing demand; resolved as **Processed Lateral Demand** including hard curvature/lateral-accel caps.
 - "Wandering" was ambiguous between low-frequency path drift, lane-centering bias, curve weave, and fast torque twitch; resolved as **Straight-Path Wander** with separate demand-driven and actuation-driven evidence classes.
 - "Recenter correction" was ambiguous between validation evidence and a behavior feature; resolved as **Recenter Overshoot Candidate** until behavior work is explicitly accepted.

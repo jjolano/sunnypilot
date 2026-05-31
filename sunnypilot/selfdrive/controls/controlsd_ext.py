@@ -59,6 +59,10 @@ class ControlsExt(ModelStateBase):
     native_torque = self.CP.lateralTuning.which() == 'torque'
     if torque_resolution.persist_value is not None:
       self.params.put("TorqueControlTune", torque_resolution.persist_value)
+
+    # Selection contract:
+    # - EnforceTorqueControl off: native torque uses v0 compatibility shim; non-native keeps stock controller.
+    # - EnforceTorqueControl on: native torque uses selected 0.0/2.0/2.1/3.0; non-native keeps stock controller.
     if not enforce_torque_control:
       if native_torque:
         return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)  # FIXME-SP: revert when upstream fixes tuning issues with v1
