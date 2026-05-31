@@ -19,6 +19,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.system.version import get_version
 
 from cereal import messaging, custom
+from openpilot.selfdrive.controls.lib.longitudinal_modes import should_skip_legacy_longitudinal_restore
 from openpilot.sunnypilot.sunnylink.api import SunnylinkApi
 from openpilot.sunnypilot.sunnylink.backups.utils import decrypt_compressed_data, encrypt_compressed_data, SnakeCaseEncoder
 from openpilot.sunnypilot.sunnylink.utils import get_param_as_byte, save_param_from_base64_encoded_string
@@ -201,6 +202,10 @@ class BackupManagerSP:
       if param.lower() in backupable_set_lower:
         # Find real param name (with correct casing)
         real_param = next(p for p in backupable_params if p.lower() == param.lower())
+        if should_skip_legacy_longitudinal_restore(real_param, self.params):
+          skipped_count += 1
+          cloudlog.info(f"Skipped restoring param {param}: legacy longitudinal mode param ignored after migration")
+          continue
         try:
           save_param_from_base64_encoded_string(real_param, encoded_value)
           restored_count += 1

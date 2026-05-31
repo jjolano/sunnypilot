@@ -670,6 +670,28 @@
       }
     ]
   },
+  "LongitudinalMode": {
+    "title": "Longitudinal Mode",
+    "description": "Selects the top-level longitudinal behavior: ACC, E2E, or SCC.",
+    "options": [
+      {
+        "value": 0,
+        "label": "ACC"
+      },
+      {
+        "value": 1,
+        "label": "E2E"
+      },
+      {
+        "value": 2,
+        "label": "SCC"
+      }
+    ]
+  },
+  "LongitudinalModeMigrationVersion": {
+    "title": "Longitudinal Mode Migration Version",
+    "description": "Tracks one-time migration from legacy Experimental/DEC longitudinal settings."
+  },
   "LongitudinalStack": {
     "title": "Longitudinal Stack",
     "description": "Selects which longitudinal control stack is used after sunnypilot longitudinal control is active. Default is sunnypilot-current; custom-recommended resolves globally to custom-2.0.",
