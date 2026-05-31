@@ -194,6 +194,14 @@ def test_pid_origin_non_angle_controller_keeps_original_lac_for_v3():
   assert selected is lac
 
 
+def test_pid_origin_non_angle_controller_keeps_original_lac_without_enforce():
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(False, 3.0))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert selected is lac
+
+
 def test_pid_origin_non_angle_controller_keeps_original_lac_for_non_v3_tunes():
   CP, CP_SP, CI, lac = make_pid_origin_controller()
 

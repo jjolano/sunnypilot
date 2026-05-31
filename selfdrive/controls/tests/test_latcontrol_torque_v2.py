@@ -562,6 +562,16 @@ def test_v21_logs_version_and_separate_governor_reason():
   assert abs(lac_log.output) < abs(adaptive_log.unshapedOutput)
 
 
+def test_v21_keeps_v2_core_with_refined_governor_only():
+  controller, _ = get_v21_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  assert isinstance(controller, LatControlTorque)
+  assert controller.CONTROLLER_VERSION == latcontrol_torque_v2.VERSION_V21
+  assert controller.USE_REFINED_OUTPUT_GOVERNOR
+  assert controller.refined_output_governor is not None
+  assert not hasattr(controller, "governor")
+
+
 def test_v21_skips_same_direction_governor_when_shaper_already_capped_route_cluster():
   controller, VM = get_v21_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
 
