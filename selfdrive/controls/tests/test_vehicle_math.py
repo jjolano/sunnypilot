@@ -3,6 +3,7 @@ import math
 import pytest
 
 from openpilot.selfdrive.controls.lib.vehicle_math import (
+  lateral_jerk_from_curvature_rate,
   required_decel_to_target_speed,
   smooth_speed_floor,
   speed_for_lateral_accel,
@@ -60,6 +61,7 @@ def test_required_decel_outputs_are_finite_for_finite_inputs():
     required_decel_to_target_speed(20.0, 10.0, 100.0),
     stopping_decel(20.0, 100.0),
     speed_for_lateral_accel(2.0, 0.01),
+    lateral_jerk_from_curvature_rate(0.01, 20.0),
   )
 
   assert all(math.isfinite(value) for value in values)
@@ -86,3 +88,9 @@ def test_speed_for_lateral_accel_never_returns_nan():
 
   for lateral_accel, curvature in cases:
     assert not math.isnan(speed_for_lateral_accel(lateral_accel, curvature))
+
+
+def test_lateral_jerk_from_curvature_rate_uses_signed_kinematics():
+  assert lateral_jerk_from_curvature_rate(0.01, 20.0) == pytest.approx(4.0)
+  assert lateral_jerk_from_curvature_rate(-0.01, 20.0) == pytest.approx(-4.0)
+  assert lateral_jerk_from_curvature_rate(0.01, 0.0) == pytest.approx(0.0)
