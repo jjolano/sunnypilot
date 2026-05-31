@@ -232,6 +232,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DynamicExperimentalControl", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LongitudinalMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"LongitudinalModeMigrationVersion", {PERSISTENT, STRING, ""}},
+    {"SccCurveMapEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"SccCurveVisionEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"BlindSpot", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // sunnypilot model params
