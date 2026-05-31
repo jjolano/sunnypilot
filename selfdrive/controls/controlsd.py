@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import (
   update_lateral_accel_limit,
 )
 from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LaneChangePathShaper, LaneChangePathShaperInputs
+from openpilot.selfdrive.controls.lib.lateral_demand import ProcessedLateralDemand
 from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs, ModelPathProcessorResult
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
@@ -143,6 +144,17 @@ class Controls(ControlsExt):
     self.model_path_processor = ModelPathProcessor()
     self.model_path_result = ModelPathProcessorResult(0.0, 0.0, True, "inactive")
     self.model_path_raw_desired_curvature = 0.0
+    self.processed_lateral_demand = ProcessedLateralDemand(
+      0.0,
+      0.0,
+      0.0,
+      True,
+      0.0,
+      "inactive",
+      False,
+      0.0,
+      MAX_LATERAL_ACCEL_NO_ROLL,
+    )
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -176,6 +188,110 @@ class Controls(ControlsExt):
       cloudlog.error(f"lateralManeuverPlan.desiredCurvature not finite {desired_curvature}")
       return None
     return float(desired_curvature)
+
+  def build_processed_lateral_demand(self, CC, CS, model_v2, live_params) -> ProcessedLateralDemand:
+    raw_curvature = float(model_v2.action.desiredCurvature)
+    lateral_maneuver_curvature = self.get_lateral_maneuver_curvature(CC.latActive)
+    lane_change_shaping_active = False
+    lane_change_blend = 0.0
+
+    if lateral_maneuver_curvature is not None:
+      self.lane_change_path_shaper.reset()
+      self.model_path_processor.reset()
+      new_desired_curvature = lateral_maneuver_curvature
+      self.model_path_result = ModelPathProcessorResult(lateral_maneuver_curvature, 0.0, True, "lateral_maneuver")
+      self.model_path_raw_desired_curvature = raw_curvature
+    else:
+      turn_curvature_sign = 0
+      if model_v2.meta.laneChangeState == LaneChangeState.off and self.sm.valid['modelDataV2SP']:
+        turn_direction = self.sm['modelDataV2SP'].laneTurnDirection
+        if turn_direction == TurnDirection.turnRight:
+          turn_curvature_sign = 1
+        elif turn_direction == TurnDirection.turnLeft:
+          turn_curvature_sign = -1
+
+      path_result = self.model_path_processor.update(
+        ModelPathProcessorInputs(
+          lat_active=CC.latActive,
+          v_ego=CS.vEgo,
+          desired_curvature=model_v2.action.desiredCurvature,
+          measured_curvature=self.curvature,
+          previous_desired_curvature=self.desired_curvature,
+          position_x=tuple(model_v2.position.x),
+          position_y=tuple(model_v2.position.y),
+          position_y_std=tuple(model_v2.position.yStd),
+          orientation_z=tuple(model_v2.orientation.z),
+          orientation_rate_z=tuple(model_v2.orientationRate.z),
+          lane_line_probs=tuple(model_v2.laneLineProbs),
+          turn_curvature_sign=turn_curvature_sign,
+          frame_drop_perc=model_v2.frameDropPerc,
+          smooth_model_path_curvature=self.smoothed_model_path_curvature,
+          lane_change_active=model_v2.meta.laneChangeState != LaneChangeState.off,
+        )
+      )
+      self.model_path_result = path_result
+      self.model_path_raw_desired_curvature = raw_curvature
+      model_desired_curvature = path_result.desired_curvature if CC.latActive else self.curvature
+      left_lane_y0 = model_v2.laneLines[1].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[1].y) else None
+      right_lane_y0 = model_v2.laneLines[2].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[2].y) else None
+      lane_change_result = self.lane_change_path_shaper.update(
+        LaneChangePathShaperInputs(
+          lat_active=CC.latActive,
+          v_ego=CS.vEgo,
+          left_blinker=CS.leftBlinker,
+          right_blinker=CS.rightBlinker,
+          steering_pressed=CS.steeringPressed,
+          lane_change_state=model_v2.meta.laneChangeState,
+          lane_change_direction=model_v2.meta.laneChangeDirection,
+          model_curvature=model_desired_curvature,
+          prev_desired_curvature=self.desired_curvature if CC.latActive else self.curvature,
+          lane_line_probs=tuple(model_v2.laneLineProbs),
+          left_lane_y0=left_lane_y0,
+          right_lane_y0=right_lane_y0,
+        )
+      )
+      lane_change_shaping_active = bool(lane_change_result.active)
+      lane_change_blend = float(lane_change_result.blend)
+      new_desired_curvature = lane_change_result.desired_curvature if CC.latActive else self.curvature
+
+    manual_gas_lateral_accel_override = CS.gasPressed and not CC.longActive
+    self.lateral_accel_limit_no_roll = update_lateral_accel_limit(
+      self.lateral_accel_limit_no_roll,
+      manual_gas_lateral_accel_override,
+      CC.latActive,
+      CS.brakePressed,
+      CS.steeringPressed,
+      default_lateral_accel_limited=self.default_lateral_accel_limited,
+    )
+    processed_curvature, curvature_limited, default_lateral_accel_limited = clip_curvature(
+      CS.vEgo,
+      self.desired_curvature,
+      new_desired_curvature,
+      live_params.roll,
+      self.lateral_accel_limit_no_roll,
+      accurate_lateral_accel=self.params.get_bool("AccurateLateralAccel"),
+    )
+    self.default_lateral_accel_limited = should_latch_lateral_accel_burst(
+      default_lateral_accel_limited,
+      CC.latActive,
+      CS.brakePressed,
+      CS.steeringPressed,
+      manual_gas_lateral_accel_override,
+    )
+    self.desired_curvature = processed_curvature
+    demand = ProcessedLateralDemand(
+      raw_curvature=raw_curvature,
+      processed_curvature=processed_curvature,
+      measured_curvature=self.curvature,
+      curvature_limited=curvature_limited,
+      path_quality=self.model_path_result.quality,
+      path_reason=self.model_path_result.reason,
+      lane_change_shaping_active=lane_change_shaping_active,
+      lane_change_blend=lane_change_blend,
+      lateral_accel_limit=self.lateral_accel_limit_no_roll,
+    )
+    self.processed_lateral_demand = demand
+    return demand
 
   def state_control(self):
     CS = self.sm['carState']
@@ -231,95 +347,15 @@ class Controls(ControlsExt):
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
-    lateral_maneuver_curvature = self.get_lateral_maneuver_curvature(CC.latActive)
-    model_path_raw_curvature = float(model_v2.action.desiredCurvature)
-    if lateral_maneuver_curvature is not None:
-      self.lane_change_path_shaper.reset()
-      self.model_path_processor.reset()
-      new_desired_curvature = lateral_maneuver_curvature
-      self.model_path_result = ModelPathProcessorResult(lateral_maneuver_curvature, 0.0, True, "lateral_maneuver")
-      self.model_path_raw_desired_curvature = model_path_raw_curvature
-    else:
-      turn_curvature_sign = 0
-      if model_v2.meta.laneChangeState == LaneChangeState.off and self.sm.valid['modelDataV2SP']:
-        turn_direction = self.sm['modelDataV2SP'].laneTurnDirection
-        if turn_direction == TurnDirection.turnRight:
-          turn_curvature_sign = 1
-        elif turn_direction == TurnDirection.turnLeft:
-          turn_curvature_sign = -1
-
-      path_result = self.model_path_processor.update(
-        ModelPathProcessorInputs(
-          lat_active=CC.latActive,
-          v_ego=CS.vEgo,
-          desired_curvature=model_v2.action.desiredCurvature,
-          measured_curvature=self.curvature,
-          previous_desired_curvature=self.desired_curvature,
-          position_x=tuple(model_v2.position.x),
-          position_y=tuple(model_v2.position.y),
-          position_y_std=tuple(model_v2.position.yStd),
-          orientation_z=tuple(model_v2.orientation.z),
-          orientation_rate_z=tuple(model_v2.orientationRate.z),
-          lane_line_probs=tuple(model_v2.laneLineProbs),
-          turn_curvature_sign=turn_curvature_sign,
-          frame_drop_perc=model_v2.frameDropPerc,
-          smooth_model_path_curvature=self.smoothed_model_path_curvature,
-          lane_change_active=model_v2.meta.laneChangeState != LaneChangeState.off,
-        )
-      )
-      self.model_path_result = path_result
-      self.model_path_raw_desired_curvature = model_path_raw_curvature
-      model_desired_curvature = path_result.desired_curvature if CC.latActive else self.curvature
-      left_lane_y0 = model_v2.laneLines[1].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[1].y) else None
-      right_lane_y0 = model_v2.laneLines[2].y[0] if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[2].y) else None
-      lane_change_result = self.lane_change_path_shaper.update(
-        LaneChangePathShaperInputs(
-          lat_active=CC.latActive,
-          v_ego=CS.vEgo,
-          left_blinker=CS.leftBlinker,
-          right_blinker=CS.rightBlinker,
-          steering_pressed=CS.steeringPressed,
-          lane_change_state=model_v2.meta.laneChangeState,
-          lane_change_direction=model_v2.meta.laneChangeDirection,
-          model_curvature=model_desired_curvature,
-          prev_desired_curvature=self.desired_curvature if CC.latActive else self.curvature,
-          lane_line_probs=tuple(model_v2.laneLineProbs),
-          left_lane_y0=left_lane_y0,
-          right_lane_y0=right_lane_y0,
-        )
-      )
-      new_desired_curvature = lane_change_result.desired_curvature if CC.latActive else self.curvature
-    manual_gas_lateral_accel_override = CS.gasPressed and not CC.longActive
-    self.lateral_accel_limit_no_roll = update_lateral_accel_limit(
-      self.lateral_accel_limit_no_roll,
-      manual_gas_lateral_accel_override,
-      CC.latActive,
-      CS.brakePressed,
-      CS.steeringPressed,
-      default_lateral_accel_limited=self.default_lateral_accel_limited,
-    )
-    self.desired_curvature, curvature_limited, default_lateral_accel_limited = clip_curvature(
-      CS.vEgo,
-      self.desired_curvature,
-      new_desired_curvature,
-      lp.roll,
-      self.lateral_accel_limit_no_roll,
-      accurate_lateral_accel=self.params.get_bool("AccurateLateralAccel"),
-    )
-    self.default_lateral_accel_limited = should_latch_lateral_accel_burst(
-      default_lateral_accel_limited,
-      CC.latActive,
-      CS.brakePressed,
-      CS.steeringPressed,
-      manual_gas_lateral_accel_override,
-    )
+    processed_lateral_demand = self.build_processed_lateral_demand(CC, CS, model_v2, lp)
+    curvature_limited = processed_lateral_demand.curvature_limited
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
-    actuators.curvature = self.desired_curvature
+    actuators.curvature = processed_lateral_demand.processed_curvature
     self.update_steering_actuator_feedback(CC.latActive, actuators)
     self.LaC.set_steering_actuator_feedback(self.steering_actuator_feedback)
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
-                                                       self.steer_limited_by_safety, self.desired_curvature,
+                                                       self.steer_limited_by_safety, processed_lateral_demand.processed_curvature,
                                                        self.calibrated_pose, curvature_limited, lat_delay)
     actuators.torque = float(steer)
     actuators.steeringAngleDeg = float(steeringAngleDeg)
