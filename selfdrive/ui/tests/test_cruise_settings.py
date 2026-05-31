@@ -4,6 +4,7 @@ from pathlib import Path
 CRUISE_SETTINGS = Path(__file__).parents[1] / "sunnypilot/layouts/settings/cruise.py"
 EXP_BUTTON = Path(__file__).parents[1] / "onroad/exp_button.py"
 TOGGLES_SETTINGS = Path(__file__).parents[1] / "layouts/settings/toggles.py"
+UI_STATE = Path(__file__).parents[1] / "sunnypilot/ui_state.py"
 
 
 def test_longitudinal_stack_selector_is_in_cruise_settings():
@@ -66,3 +67,10 @@ def test_generic_toggles_do_not_expose_experimental_mode():
 
   assert "\"ExperimentalMode\": (" not in source
   assert "_handle_experimental_mode_toggle" not in source
+
+
+def test_ui_constraints_clear_scc_curve_params_without_longitudinal():
+  source = UI_STATE.read_text()
+
+  assert "self.params.remove(\"SccCurveVisionEnabled\")" in source
+  assert "self.params.remove(\"SccCurveMapEnabled\")" in source
