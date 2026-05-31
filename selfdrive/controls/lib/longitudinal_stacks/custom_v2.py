@@ -133,7 +133,6 @@ class CustomV2SceneValidationError(ValueError):
 class CustomV2Scene:
   v_ego: float = 0.0
   v_cruise: float = 0.0
-  personality: int = log.LongitudinalPersonality.standard
   a_ego: float = 0.0
   accel_coast: float = 0.0
   force_slow_decel: bool = False
@@ -171,6 +170,7 @@ class CustomV2Scene:
   map_caution_a_target: float = 0.0
   one_pedal_mode: int = ONE_PEDAL_MODE_OFF
   one_pedal_cruise_hold: bool = False
+  personality: int = log.LongitudinalPersonality.standard
 
 
 @dataclass(frozen=True)

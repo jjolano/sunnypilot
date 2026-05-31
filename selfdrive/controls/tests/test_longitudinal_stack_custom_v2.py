@@ -60,6 +60,16 @@ def test_custom_v2_intent_taxonomy_is_complete():
   )
 
 
+def test_positional_scene_construction_keeps_legacy_field_order():
+  scene = CustomV2Scene(1.0, 2.0, 3.0, 4.0)
+
+  assert scene.v_ego == 1.0
+  assert scene.v_cruise == 2.0
+  assert scene.a_ego == 3.0
+  assert scene.accel_coast == 4.0
+  assert scene.personality == log.LongitudinalPersonality.standard
+
+
 def test_personality_tuning_order_is_monotonic():
   relaxed = CustomV2Scene(personality=log.LongitudinalPersonality.relaxed)
   standard = CustomV2Scene(personality=log.LongitudinalPersonality.standard)

@@ -65,7 +65,7 @@ def test_duplicate_stop_launch_rejections_keep_actual_custom_v2_intents():
     reason="lead_flicker_speedup_cap",
   )
   launch = custom_v2_candidate_with_debug(
-    make_candidate(DecisionSource.STOP_LAUNCH, CandidateRole.RELAXATION, 0.95, "no_lead_stop_clear"),
+    make_candidate(DecisionSource.STOP_LAUNCH, CandidateRole.RELAXATION, 1.35, "no_lead_stop_clear"),
     intent="launch",
     reason="no_lead_stop_clear",
   )
@@ -162,6 +162,32 @@ def test_scene_derived_progress_candidates_are_relaxation_only_and_lose_to_physi
   assert progress_candidates[0].debug[CUSTOM_V2_DEBUG_SEED_CONTEXT] == ""
   assert decision.winner == DecisionSource.E2E_STOP
   assert ("launch", "physical_hazard_active") in custom_rejected
+
+
+def test_scene_derived_confirmed_lead_pullaway_candidate_is_standard_relaxation():
+  output = make_output(0.0, has_lead=True)
+  scene = CustomV2Scene(
+    v_ego=0.2,
+    v_cruise=8.0,
+    has_lead=True,
+    lead_v=1.3,
+    lead_v_rel=1.1,
+    lead_gap_excess=2.5,
+    lead_progress_allowed=True,
+    lead_confirmed_pullaway=True,
+  )
+
+  candidates, rejected = build_custom_v2_progress_candidates(output, scene, (-2.0, 2.0))
+  launch = [candidate for candidate in candidates if candidate.active_reason == "confirmed_lead_pullaway"]
+
+  assert rejected == ()
+  assert len(launch) == 1
+  assert launch[0].source == DecisionSource.STOP_LAUNCH
+  assert launch[0].role == CandidateRole.RELAXATION
+  assert launch[0].a_target == 1.30
+  assert launch[0].should_stop is False
+  assert launch[0].debug[CUSTOM_V2_DEBUG_INTENT] == "launch"
+  assert launch[0].debug[CUSTOM_V2_DEBUG_REASON] == "confirmed_lead_pullaway"
 
 
 def test_scene_derived_progress_candidates_are_blocked_by_overrides_and_stop_threats():
