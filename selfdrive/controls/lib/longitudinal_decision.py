@@ -117,6 +117,18 @@ class LongitudinalCandidate:
     return self.invalid_reason == ""
 
 
+@dataclass(frozen=True)
+class SuppressedLongitudinalCandidate:
+  source: DecisionSource
+  role: CandidateRole
+  active_reason: str
+  suppression_reason: str
+  debug: dict[str, Any] = field(default_factory=dict)
+  v_target: float = 0.0
+  a_target: float = 0.0
+  should_stop: bool = False
+
+
 PHYSICAL_CONFIDENCE_MIN = 0.55
 ADVISORY_CONFIDENCE_MIN = 0.75
 COMFORT_CONFIDENCE_MIN = 0.50
@@ -146,6 +158,7 @@ class LongitudinalDecision:
   should_stop: bool
   candidates: tuple[LongitudinalCandidate, ...] = ()
   suppressed: tuple[tuple[DecisionSource, str], ...] = ()
+  suppressed_candidates: tuple[SuppressedLongitudinalCandidate, ...] = ()
   fallback_reason: str = ""
   active_reason: str = ""
 
@@ -190,7 +203,8 @@ def _fallback_decision(v_target: float, a_target: float, should_stop: bool, reas
 
 
 def _internal_contract_fallback(valid: list[LongitudinalCandidate], suppressed: list[tuple[DecisionSource, str]],
-                                reason: str) -> LongitudinalDecision:
+                                reason: str,
+                                suppressed_candidates: list[SuppressedLongitudinalCandidate] | None = None) -> LongitudinalDecision:
   return LongitudinalDecision(
     enabled=True,
     winner=DecisionSource.LEGACY_FALLBACK,
@@ -199,6 +213,7 @@ def _internal_contract_fallback(valid: list[LongitudinalCandidate], suppressed: 
     should_stop=False,
     candidates=tuple(valid),
     suppressed=tuple(dict.fromkeys(suppressed)),
+    suppressed_candidates=_dedupe_suppressed_candidates(suppressed_candidates or []),
     fallback_reason=reason,
     active_reason=reason,
   )
@@ -216,12 +231,115 @@ def _driver_intent_contract_reason(candidates: list[LongitudinalCandidate] | tup
   return ""
 
 
+def _suppressed_candidate_safe(candidate: LongitudinalCandidate) -> bool:
+  return bool(
+    isinstance(candidate.source, DecisionSource) and
+    isinstance(candidate.role, CandidateRole) and
+    isinstance(candidate.active_reason, str) and candidate.active_reason
+  )
+
+
+def _suppressed_candidate(candidate: LongitudinalCandidate, reason: str) -> SuppressedLongitudinalCandidate | None:
+  if not _suppressed_candidate_safe(candidate):
+    return None
+  return SuppressedLongitudinalCandidate(
+    source=candidate.source,
+    role=candidate.role,
+    active_reason=candidate.active_reason,
+    suppression_reason=str(reason),
+    debug=dict(candidate.debug),
+    v_target=float(candidate.v_target),
+    a_target=float(candidate.a_target),
+    should_stop=bool(candidate.should_stop),
+  )
+
+
+def _append_suppression(suppressed: list[tuple[DecisionSource, str]],
+                        suppressed_candidates: list[SuppressedLongitudinalCandidate],
+                        candidate: LongitudinalCandidate, reason: str) -> None:
+  suppressed.append((candidate.source, str(reason)))
+  rich = _suppressed_candidate(candidate, reason)
+  if rich is not None:
+    suppressed_candidates.append(rich)
+
+
+def _append_suppressions(suppressed: list[tuple[DecisionSource, str]],
+                         suppressed_candidates: list[SuppressedLongitudinalCandidate],
+                         candidates, reason: str) -> None:
+  for candidate in candidates:
+    _append_suppression(suppressed, suppressed_candidates, candidate, reason)
+
+
+def _suppressed_candidate_key(candidate: SuppressedLongitudinalCandidate) -> tuple[object, ...]:
+  return (
+    candidate.source,
+    candidate.role,
+    candidate.active_reason,
+    candidate.suppression_reason,
+    candidate.v_target,
+    candidate.a_target,
+    candidate.should_stop,
+  )
+
+
+def _dedupe_suppressed_candidates(candidates: list[SuppressedLongitudinalCandidate] |
+                                  tuple[SuppressedLongitudinalCandidate, ...]) -> tuple[SuppressedLongitudinalCandidate, ...]:
+  deduped: list[SuppressedLongitudinalCandidate] = []
+  seen: set[tuple[object, ...]] = set()
+  for candidate in candidates:
+    key = _suppressed_candidate_key(candidate)
+    if key in seen:
+      continue
+    seen.add(key)
+    deduped.append(candidate)
+  return tuple(deduped)
+
+
+def _candidate_identity(candidate: LongitudinalCandidate) -> tuple[object, ...]:
+  return (
+    candidate.source,
+    candidate.role,
+    candidate.active_reason,
+    candidate.v_target,
+    candidate.a_target,
+    candidate.should_stop,
+  )
+
+
+def _prepend_candidate(candidate: LongitudinalCandidate | None,
+                       candidates: tuple[LongitudinalCandidate, ...]) -> tuple[LongitudinalCandidate, ...]:
+  if candidate is None:
+    return candidates
+  held_key = _candidate_identity(candidate)
+  return (candidate, *(current for current in candidates if _candidate_identity(current) != held_key))
+
+
+def _selected_candidate_for_decision(decision: LongitudinalDecision) -> LongitudinalCandidate | None:
+  for candidate in decision.candidates:
+    if (
+      candidate.source == decision.winner and
+      candidate.active_reason == decision.active_reason and
+      math.isclose(candidate.a_target, decision.a_target, abs_tol=1e-6)
+    ):
+      return candidate
+  for candidate in decision.candidates:
+    if candidate.source == decision.winner and candidate.active_reason == decision.active_reason:
+      return candidate
+  for candidate in decision.candidates:
+    if candidate.source == decision.winner:
+      return candidate
+  return None
+
+
 class LongitudinalDecisionCore:
   def decide(self, candidates: list[LongitudinalCandidate] | tuple[LongitudinalCandidate, ...]) -> LongitudinalDecision:
     valid = [candidate for candidate in candidates if candidate.valid]
-    suppressed: list[tuple[DecisionSource, str]] = [
-      (candidate.source, candidate.invalid_reason) for candidate in candidates if not candidate.valid
-    ]
+    suppressed: list[tuple[DecisionSource, str]] = []
+    suppressed_candidates: list[SuppressedLongitudinalCandidate] = []
+    for candidate in candidates:
+      if candidate.valid:
+        continue
+      _append_suppression(suppressed, suppressed_candidates, candidate, candidate.invalid_reason)
 
     drivers = [candidate for candidate in valid if candidate.role == CandidateRole.DRIVER_INTENT]
     driver = min(
@@ -229,21 +347,22 @@ class LongitudinalDecisionCore:
       key=lambda candidate: (_source_priority(candidate.source), candidate.v_target, candidate.a_target),
     ) if drivers else None
     if driver is None:
-      return _internal_contract_fallback(valid, suppressed, "missing_driver_intent")
+      return _internal_contract_fallback(valid, suppressed, "missing_driver_intent", suppressed_candidates)
     if len(drivers) > 1:
-      suppressed.extend((candidate.source, "duplicate_driver_intent") for candidate in drivers)
-      return _internal_contract_fallback(valid, suppressed, "duplicate_driver_intent")
+      _append_suppressions(suppressed, suppressed_candidates, drivers, "duplicate_driver_intent")
+      return _internal_contract_fallback(valid, suppressed, "duplicate_driver_intent", suppressed_candidates)
 
     physical = [
       candidate for candidate in valid
-      if candidate.role == CandidateRole.PHYSICAL_HAZARD and candidate.confidence >= PHYSICAL_CONFIDENCE_MIN
+      if candidate.role == CandidateRole.PHYSICAL_HAZARD and candidate.confidence >= PHYSICAL_CONFIDENCE_MIN and
+      _physical_candidate_active(candidate, driver)
     ]
     low_confidence = [
       candidate for candidate in valid
       if candidate.role in (CandidateRole.PHYSICAL_HAZARD, CandidateRole.ADVISORY_CAP)
       and candidate.confidence < (PHYSICAL_CONFIDENCE_MIN if candidate.role == CandidateRole.PHYSICAL_HAZARD else ADVISORY_CONFIDENCE_MIN)
     ]
-    suppressed.extend((candidate.source, "low_confidence") for candidate in low_confidence)
+    _append_suppressions(suppressed, suppressed_candidates, low_confidence, "low_confidence")
 
     if physical:
       winner = min(physical, key=lambda candidate: (
@@ -254,9 +373,10 @@ class LongitudinalDecisionCore:
         _source_priority(candidate.source),
         candidate.active_reason,
       ))
-      suppressed.extend(
-        (candidate.source, "physical_hazard_active") for candidate in valid
-        if candidate is not winner and candidate.role != CandidateRole.PHYSICAL_HAZARD
+      _append_suppressions(
+        suppressed, suppressed_candidates,
+        (candidate for candidate in valid if candidate is not winner and candidate.role != CandidateRole.PHYSICAL_HAZARD),
+        "physical_hazard_active",
       )
     else:
       advisory = [
@@ -274,7 +394,11 @@ class LongitudinalDecisionCore:
           _source_priority(candidate.source),
           candidate.active_reason,
         ))
-        suppressed.extend((candidate.source, "higher_advisory_target") for candidate in advisory if candidate is not winner)
+        _append_suppressions(
+          suppressed, suppressed_candidates,
+          (candidate for candidate in advisory if candidate is not winner),
+          "higher_advisory_target",
+        )
       else:
         comfort = [
           candidate for candidate in valid
@@ -298,7 +422,7 @@ class LongitudinalDecisionCore:
     ):
       max_allowed = driver.a_target + COMFORT_MAX_DRIVER_ACCEL_MARGIN
       if winner.a_target > max_allowed:
-        suppressed.append((winner.source, "comfort_accel_exceeds_margin"))
+        _append_suppression(suppressed, suppressed_candidates, winner, "comfort_accel_exceeds_margin")
         winner = driver
 
     return LongitudinalDecision(
@@ -309,6 +433,7 @@ class LongitudinalDecisionCore:
       should_stop=winner.should_stop,
       candidates=tuple(valid),
       suppressed=tuple(dict.fromkeys(suppressed)),
+      suppressed_candidates=_dedupe_suppressed_candidates(suppressed_candidates),
       active_reason=winner.active_reason,
     )
 
@@ -316,10 +441,12 @@ class LongitudinalDecisionCore:
 class SourceStabilityHold:
   def __init__(self) -> None:
     self._source_stability_decision: LongitudinalDecision | None = None
+    self._source_stability_candidate: LongitudinalCandidate | None = None
     self._source_stability_release_frames: int = 0
 
   def reset(self) -> None:
     self._source_stability_decision = None
+    self._source_stability_candidate = None
     self._source_stability_release_frames = 0
 
   def apply(self, decision: LongitudinalDecision, v_ego: float | None) -> LongitudinalDecision:
@@ -343,21 +470,31 @@ class SourceStabilityHold:
 
     self._source_stability_release_frames -= 1
     held_suppressed = tuple(dict.fromkeys((*decision.suppressed, (decision.winner, SOURCE_STABILITY_HOLD_REASON))))
+    current_candidate = _selected_candidate_for_decision(decision)
+    held_suppressed_candidates = list(decision.suppressed_candidates)
+    if current_candidate is not None:
+      rich = _suppressed_candidate(current_candidate, SOURCE_STABILITY_HOLD_REASON)
+      if rich is not None:
+        held_suppressed_candidates.append(rich)
+    held_candidate = self._source_stability_candidate or _selected_candidate_for_decision(previous)
     held = LongitudinalDecision(
       enabled=True,
       winner=previous.winner,
       v_target=previous.v_target,
       a_target=previous.a_target,
       should_stop=previous.should_stop,
-      candidates=decision.candidates,
+      candidates=_prepend_candidate(held_candidate, decision.candidates),
       suppressed=held_suppressed,
+      suppressed_candidates=_dedupe_suppressed_candidates(held_suppressed_candidates),
       active_reason=previous.active_reason,
     )
     self._source_stability_decision = held
+    self._source_stability_candidate = held_candidate
     return held
 
   def _record_source_stability_decision(self, decision: LongitudinalDecision) -> None:
     self._source_stability_decision = decision
+    self._source_stability_candidate = _selected_candidate_for_decision(decision)
     self._source_stability_release_frames = SOURCE_STABILITY_RELEASE_FRAMES
 
 
@@ -385,6 +522,14 @@ def _decision_more_restrictive(decision: LongitudinalDecision, previous: Longitu
     (decision.should_stop and not previous.should_stop) or
     decision.a_target < previous.a_target - SOURCE_STABILITY_ACCEL_EPS or
     decision.v_target < previous.v_target - SOURCE_STABILITY_SPEED_EPS
+  )
+
+
+def _physical_candidate_active(candidate: LongitudinalCandidate, driver: LongitudinalCandidate) -> bool:
+  return bool(
+    candidate.source == DecisionSource.STOP_LAUNCH or
+    (candidate.should_stop and not driver.should_stop) or
+    candidate.a_target < driver.a_target - SOURCE_STABILITY_ACCEL_EPS
   )
 
 
@@ -585,13 +730,14 @@ def apply_personality_accel_comfort(decision: LongitudinalDecision, a_target: fl
 
 
 def build_core_longitudinal_candidates(has_lead: bool, lead_confidence: float, v_cruise: float, a_cruise: float,
-                                       output_a_target_mpc: float, output_should_stop_mpc: bool,
-                                       e2e_active: bool, output_a_target_e2e: float, output_should_stop_e2e: bool,
-                                       e2e_stop_approach_a_target: float,
-                                       cruise_coast_applied: bool, cruise_coast_a_target: float) -> list[LongitudinalCandidate]:
+                                        output_a_target_mpc: float, output_should_stop_mpc: bool,
+                                        e2e_active: bool, output_a_target_e2e: float, output_should_stop_e2e: bool,
+                                        e2e_stop_approach_a_target: float,
+                                        cruise_coast_applied: bool, cruise_coast_a_target: float,
+                                        lead_mpc_allowed: bool = True) -> list[LongitudinalCandidate]:
   candidates: list[LongitudinalCandidate] = []
 
-  if has_lead:
+  if has_lead and lead_mpc_allowed:
     candidates.append(LongitudinalCandidate(
       source=DecisionSource.LEAD_MPC,
       role=CandidateRole.PHYSICAL_HAZARD,

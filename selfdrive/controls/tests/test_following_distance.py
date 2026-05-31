@@ -276,6 +276,8 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.longitudinal_stack_resolution = StackResolution(CUSTOM_V2, CUSTOM_V2, (CUSTOM_V2,), custom_version="2.0")
   planner.custom_v2_fault_latched = False
   planner.custom_v2_fault_reason = ""
+  planner.one_pedal_mode = longitudinal_planner.ONE_PEDAL_MODE_OFF
+  planner.one_pedal_cruise_hold_active = False
   return planner
 
 
@@ -303,6 +305,7 @@ def make_planner_sm(v_ego, lead, desired_accel=-1.0, should_stop=True, brake_pre
       aEgo=0.0,
       brakePressed=brake_pressed,
       gasPressed=gas_pressed,
+      buttonEvents=[],
     ),
     'controlsState': SimpleNamespace(longControlState=longitudinal_planner.LongCtrlState.pid, forceDecel=force_slow_decel),
     'selfdriveState': SimpleNamespace(enabled=True, experimentalMode=True, personality=log.LongitudinalPersonality.standard),

@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   get_active_lead_confidence,
   resolve_longitudinal_decision,
 )
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import selected_candidate_for_decision
 
 
 def test_candidate_clamps_confidence_and_urgency():
@@ -212,6 +213,13 @@ def test_confirmed_physical_hazard_overrides_speed_limit_advisory():
   assert decision.winner == DecisionSource.LEAD_MPC
   assert decision.a_target == -0.8
   assert (DecisionSource.SPEED_LIMIT, "physical_hazard_active") in decision.suppressed
+  assert any(
+    candidate.source == DecisionSource.SPEED_LIMIT and
+    candidate.role == CandidateRole.ADVISORY_CAP and
+    candidate.active_reason == "advisory_limit" and
+    candidate.suppression_reason == "physical_hazard_active"
+    for candidate in decision.suppressed_candidates
+  )
 
 
 def test_physical_hazard_tie_breaking_is_independent_of_candidate_order():
@@ -258,6 +266,12 @@ def test_low_confidence_advisory_is_suppressed_for_driver_intent():
 
   assert decision.winner == DecisionSource.CRUISE
   assert (DecisionSource.SCC_VISION, "low_confidence") in decision.suppressed
+  assert any(
+    candidate.source == DecisionSource.SCC_VISION and
+    candidate.active_reason == "weak_curve" and
+    candidate.suppression_reason == "low_confidence"
+    for candidate in decision.suppressed_candidates
+  )
 
 
 def test_relaxation_candidate_can_relax_accel_when_no_hazard_or_advisory():
@@ -471,6 +485,58 @@ def test_low_speed_source_stability_holds_recent_advisory_release():
 
   assert decision.winner == DecisionSource.CRUISE
   assert decision.a_target == pytest.approx(0.2)
+
+
+def test_low_speed_source_stability_held_decision_is_self_contained():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  scc_vision = make_candidate(DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 3.0, -0.3, 0.8, 0.5, "vision_curve")
+
+  first_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, scc_vision],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  held_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  second_held_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  selected = selected_candidate_for_decision(held_decision)
+
+  assert first_decision.winner == DecisionSource.SCC_VISION
+  assert held_decision.winner == DecisionSource.SCC_VISION
+  assert held_decision.candidates[0] == scc_vision
+  assert selected == scc_vision
+  assert second_held_decision.candidates[0] == scc_vision
+  assert sum(candidate == scc_vision for candidate in second_held_decision.candidates) == 1
+  assert (DecisionSource.CRUISE, SOURCE_STABILITY_HOLD_REASON) in held_decision.suppressed
+  assert any(
+    candidate.source == DecisionSource.CRUISE and
+    candidate.active_reason == "driver_set_speed" and
+    candidate.suppression_reason == SOURCE_STABILITY_HOLD_REASON
+    for candidate in held_decision.suppressed_candidates
+  )
 
 
 def test_source_stability_none_v_ego_clears_seeded_low_speed_hold():

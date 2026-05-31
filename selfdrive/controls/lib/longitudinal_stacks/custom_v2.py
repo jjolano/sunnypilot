@@ -12,6 +12,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   DecisionSource,
   LongitudinalCandidate,
   LongitudinalDecision,
+  SOURCE_STABILITY_HOLD_REASON,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import (
@@ -64,15 +65,17 @@ LEAD_PULLAWAY_ACCEL_MAX = 1.20
 NO_LEAD_LAUNCH_MAX_V_EGO = 3.0
 LEAD_PULLAWAY_MAX_V_EGO = 5.0
 LEAD_MOTION_MIN_V = 0.15
+LEAD_LATERAL_PROGRESS_BLOCK_Y = 0.6
 EXCESS_GAP_MIN = 1.0
 EXCESS_GAP_MAX = 8.0
 EXCESS_GAP_ACCEL_MIN = 0.4
-EXCESS_GAP_ACCEL_MAX = 1.0
+EXCESS_GAP_ACCEL_MAX = 0.8
 EXCESS_GAP_CLOSING_TAPER = 0.3
 EXCESS_GAP_CLOSING_BLOCK = 0.7
 EXCESS_GAP_FAST_CLOSING_MID = 3.0
 EXCESS_GAP_FAST_CLOSING_ZERO = 6.0
 EXCESS_GAP_FAST_CLOSING_MID_CAP = 0.15
+PROGRESS_CRUISE_SPEED_MARGIN = 0.2
 NO_LEAD_STOP_CLEAR_DISTANCE = 20.0
 NO_LEAD_STOP_CLEAR_ACCEL_MIN = -0.5
 MAP_ONLY_CAUTION_ACCEL_MIN = -0.3
@@ -126,7 +129,10 @@ class CustomV2Scene:
   has_lead: bool = False
   lead_v: float = 0.0
   lead_v_rel: float = 0.0
+  lead_y_rel: float = 0.0
   lead_gap_excess: float = 0.0
+  lead_follow_gap_excess: float | None = None
+  lead_lateral_progress_blocked: bool = False
   lead_opening_prediction: bool = False
   lead_confirmed_pullaway: bool = False
   stop_threat: bool = False
@@ -172,7 +178,7 @@ def no_lead_stop_clear(scene: CustomV2Scene) -> bool:
 
 
 def lead_evidence_releases_stop(scene: CustomV2Scene) -> bool:
-  lead_moving = scene.lead_v >= LEAD_MOTION_MIN_V or scene.lead_v_rel > 0.0
+  lead_moving = scene.lead_v_rel > 0.0 or (scene.v_ego < LEAD_MOTION_MIN_V and scene.lead_v >= LEAD_MOTION_MIN_V)
   return bool(
     scene.has_lead and
     (scene.lead_confirmed_pullaway or scene.lead_opening_prediction or lead_moving) and
@@ -181,16 +187,19 @@ def lead_evidence_releases_stop(scene: CustomV2Scene) -> bool:
 
 
 def excess_gap_accel_cap(scene: CustomV2Scene) -> float | None:
-  if not scene.has_lead or scene.lead_gap_excess <= EXCESS_GAP_MIN:
+  lead_follow_gap_excess = _lead_follow_gap_excess(scene)
+  if not scene.has_lead or lead_follow_gap_excess <= EXCESS_GAP_MIN:
+    return None
+  if scene.lead_lateral_progress_blocked or abs(scene.lead_y_rel) >= LEAD_LATERAL_PROGRESS_BLOCK_Y:
     return None
   if scene.lead_v < LEAD_MOTION_MIN_V:
     return None
 
   closing_speed = max(0.0, -scene.lead_v_rel)
-  if closing_speed >= EXCESS_GAP_CLOSING_BLOCK and scene.lead_gap_excess < EXCESS_GAP_MAX:
+  if closing_speed >= EXCESS_GAP_CLOSING_BLOCK and lead_follow_gap_excess < EXCESS_GAP_MAX:
     return None
 
-  cap = _interp(scene.lead_gap_excess, EXCESS_GAP_MIN, EXCESS_GAP_MAX, EXCESS_GAP_ACCEL_MIN, EXCESS_GAP_ACCEL_MAX)
+  cap = _interp(lead_follow_gap_excess, EXCESS_GAP_MIN, EXCESS_GAP_MAX, EXCESS_GAP_ACCEL_MIN, EXCESS_GAP_ACCEL_MAX)
   if closing_speed > EXCESS_GAP_CLOSING_TAPER:
     taper = 1.0 - _clip(
       (closing_speed - EXCESS_GAP_CLOSING_TAPER) / (EXCESS_GAP_CLOSING_BLOCK - EXCESS_GAP_CLOSING_TAPER),
@@ -355,9 +364,20 @@ class CustomLongitudinalStackV2:
     should_stop = bool(decision.should_stop)
     limit_jerk = not bool(debug.get(CUSTOM_V2_DEBUG_DISABLE_JERK_LIMIT, False))
 
+    if _decision_held_by_source_stability(decision):
+      return CustomV2Decision(
+        a_target=_clip_to_limits(a_target, accel_limits),
+        should_stop=should_stop,
+        selected_intent=selected_intent,
+        selected_reason=selected_reason,
+        rejected=tuple(dict.fromkeys(rejected)),
+        limit_jerk=limit_jerk,
+        trajectory_output=trajectory_output,
+      )
+
     if selected.role == CandidateRole.DRIVER_INTENT and selected_intent == "driver_cruise":
-      a_target = float(output.a_target)
-      should_stop = bool(output.should_stop)
+      a_target = float(selected.a_target)
+      should_stop = bool(selected.should_stop)
       trajectory_output = output
       selected_reason = "sunnypilot_current_seed"
     elif selected.role == CandidateRole.ADVISORY_CAP:
@@ -435,7 +455,7 @@ class CustomLongitudinalStackV2:
       selected_intent = "driver_cruise"
       selected_reason = "dynamic_overspeed_coast_leeway"
 
-    wants_progress = scene.v_cruise > scene.v_ego
+    wants_progress = scene.v_cruise > scene.v_ego + PROGRESS_CRUISE_SPEED_MARGIN
     if not wants_progress:
       rejected.append(("launch", "cruise_not_above_ego"))
       return a_target, selected_intent, selected_reason
@@ -452,7 +472,8 @@ class CustomLongitudinalStackV2:
     lead_progress_allowed = allow_lead_progress and not (
       scene.has_lead and a_target < 0.0 and scene.lead_v_rel >= 0.0
     )
-    if lead_progress_allowed and scene.has_lead and scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and lead_evidence_releases_stop(scene):
+    lead_pullaway_progress_allowed = lead_progress_allowed and scene.lead_gap_excess > EXCESS_GAP_MIN and scene.lead_v_rel > 0.0
+    if lead_pullaway_progress_allowed and scene.has_lead and scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and lead_evidence_releases_stop(scene):
       a_target, selected_intent, selected_reason = _apply_floor(
         a_target, selected_intent, selected_reason, LEAD_PULLAWAY_ACCEL_MAX,
         "launch", "confirmed_lead_pullaway", accel_limits,
@@ -464,7 +485,7 @@ class CustomLongitudinalStackV2:
         a_target, selected_intent, selected_reason, gap_cap,
         "lead_follow", "excess_gap_progress", accel_limits,
       )
-    elif allow_lead_progress and scene.has_lead and scene.lead_gap_excess > EXCESS_GAP_MIN:
+    elif allow_lead_progress and scene.has_lead and _lead_follow_gap_excess(scene) > EXCESS_GAP_MIN:
       rejected.append(("lead_follow", "closing_speed_guard"))
 
     return a_target, selected_intent, selected_reason
@@ -628,6 +649,11 @@ def build_custom_v2_advisory_candidates(scene: CustomV2Scene) -> tuple[tuple[Lon
 
 def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: CustomV2Scene,
                                         accel_limits: tuple[float | None, float | None]) -> tuple[tuple[LongitudinalCandidate, ...], tuple[tuple[str, str], ...]]:
+  # These are custom-v2 scene-derived RELAXATION candidates, intentionally allowed
+  # in addition to planner seeds. They are subordinate progress floors, not safety
+  # authority, so LongitudinalDecisionCore must rank them below physical hazards
+  # and advisory caps. Caller-owned one-pedal handling bypasses them; this builder
+  # also blocks them for force_slow, driver brake/gas, and active stop threats.
   scene = _validated_scene(scene)
   candidates: list[LongitudinalCandidate] = []
   rejected: list[tuple[str, str]] = []
@@ -646,7 +672,7 @@ def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: 
       scene, cruise_a, bool(output.should_stop), accel_limits,
     ))
 
-  wants_progress = scene.v_cruise > scene.v_ego
+  wants_progress = scene.v_cruise > scene.v_ego + PROGRESS_CRUISE_SPEED_MARGIN
   if not wants_progress:
     rejected.append(("launch", "cruise_not_above_ego"))
     return tuple(candidates), tuple(rejected)
@@ -661,19 +687,13 @@ def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: 
       rejected.append(("launch", "model_stop_not_clear"))
 
   lead_progress_allowed = not (scene.has_lead and output.a_target < 0.0 and scene.lead_v_rel >= 0.0)
-  if lead_progress_allowed and scene.has_lead and scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and lead_evidence_releases_stop(scene):
-    candidates.append(_custom_v2_relaxation_candidate(
-      DecisionSource.STOP_LAUNCH, "launch", "confirmed_lead_pullaway", scene,
-      _clip_to_limits(LEAD_PULLAWAY_ACCEL_MAX, accel_limits), False, accel_limits,
-    ))
-
   gap_cap = excess_gap_accel_cap(scene) if lead_progress_allowed else None
   if gap_cap is not None:
     candidates.append(_custom_v2_relaxation_candidate(
       DecisionSource.STOP_LAUNCH, "lead_follow", "excess_gap_progress", scene,
       _clip_to_limits(gap_cap, accel_limits), bool(output.should_stop), accel_limits,
     ))
-  elif scene.has_lead and scene.lead_gap_excess > EXCESS_GAP_MIN:
+  elif scene.has_lead and _lead_follow_gap_excess(scene) > EXCESS_GAP_MIN:
     rejected.append(("lead_follow", "closing_speed_guard"))
 
   return tuple(candidates), tuple(rejected)
@@ -709,6 +729,10 @@ def _advisory_accel_for_selected_candidate(selected: LongitudinalCandidate, scen
   return a_target, selected_intent, selected_reason
 
 
+def _decision_held_by_source_stability(decision: LongitudinalDecision) -> bool:
+  return any(reason == SOURCE_STABILITY_HOLD_REASON for _source, reason in decision.suppressed)
+
+
 def _dynamic_cruise_coast_accel(scene: CustomV2Scene, a_target: float) -> float:
   if scene.has_lead or scene.stop_threat or scene.force_slow_decel or scene.v_cruise <= 0.0:
     return a_target
@@ -723,6 +747,10 @@ def _dynamic_cruise_coast_accel(scene: CustomV2Scene, a_target: float) -> float:
   recovery = _clip((overspeed - leeway) / CRUISE_LEEWAY_RECOVERY, 0.0, 1.0)
   coast_target = (1.0 - recovery) * min(0.0, scene.accel_coast) + recovery * a_target
   return min(0.0, max(a_target, coast_target))
+
+
+def _lead_follow_gap_excess(scene: CustomV2Scene) -> float:
+  return scene.lead_gap_excess if scene.lead_follow_gap_excess is None else scene.lead_follow_gap_excess
 
 
 def _stop_approach_accel(scene: CustomV2Scene, current_a_target: float,
@@ -848,7 +876,7 @@ def _preserve_seed_trajectory(output: LongitudinalStackOutput, decision: CustomV
 
 def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
   core_fields = (
-    "v_ego", "v_cruise", "a_ego", "accel_coast", "lead_v", "lead_v_rel", "lead_gap_excess", "model_desired_accel",
+    "v_ego", "v_cruise", "a_ego", "accel_coast", "lead_v", "lead_v_rel", "lead_y_rel", "lead_gap_excess", "model_desired_accel",
   )
   for field_name in core_fields:
     if not _finite(getattr(scene, field_name)):
@@ -856,6 +884,8 @@ def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
 
   if scene.model_stop_distance is not None and not _finite(scene.model_stop_distance):
     raise CustomV2SceneValidationError("invalid_scene_model_stop_distance")
+  if scene.lead_follow_gap_excess is not None and not _finite(scene.lead_follow_gap_excess):
+    raise CustomV2SceneValidationError("invalid_scene_lead_follow_gap_excess")
 
   speed_limit_active = bool(scene.speed_limit_active)
   if speed_limit_active and not (_finite(scene.speed_limit_v_target) and _finite(scene.speed_limit_a_target)):

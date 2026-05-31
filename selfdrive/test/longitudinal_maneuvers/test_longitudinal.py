@@ -219,6 +219,7 @@ def test_no_lead_e2e_stop_approach_brakes_before_model_peak():
       lead_relevancy=False,
       e2e=True,
       model_position_x_values=[45.0, 45.0],
+      model_velocity_x_values=[-3.0, -3.0],
       model_desired_accel_values=[0.0, 0.0],
       cruise_values=[20.0, 20.0],
       breakpoints=[0.0, 6.0],

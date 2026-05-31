@@ -31,7 +31,12 @@ from openpilot.selfdrive.controls.lib.lead_confidence import (
   LEAD_FLICKER_WINDOW,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import planner_state_to_stack_output
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene, ONE_PEDAL_MODE_OFF, ONE_PEDAL_MODES
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
+  CustomV2Scene,
+  LEAD_LATERAL_PROGRESS_BLOCK_Y,
+  ONE_PEDAL_MODE_OFF,
+  ONE_PEDAL_MODES,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
   PLANNER_SEED_CAP,
@@ -47,6 +52,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   STOP_DISTANCE,
   LEAD_CRAWL_ACCEL_LIMIT,
   get_T_FOLLOW,
+  get_desired_follow_distance,
   get_lead_accel_recovery_a_min,
   get_lead_approach_gaps,
   get_lead_crawl_accel_max,
@@ -107,6 +113,8 @@ CREEP_TO_STOP_GAP_REHOLD_EXCESS = 0.2
 CREEP_TO_STOP_GAP_HOLD_RELEASE_EXCESS = CREEP_TO_STOP_GAP_FOLLOW_EXCESS
 CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_SPEED = 0.05
 CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_ACCEL = 0.15
+CREEP_TO_STOP_GAP_RESERVE_CREEP_MAX_V_EGO = 0.08
+CREEP_TO_STOP_GAP_RESERVE_CREEP_ACCEL_FLOOR = 0.0
 CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED = 0.15
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.55
@@ -142,6 +150,8 @@ STOPPED_LEAD_STOP_GAP_GUARD_TARGET_BUFFER = -0.75
 STOPPED_LEAD_STOP_GAP_GUARD_MIN_REQUIRED_DECEL = 0.1
 STOPPED_LEAD_STOP_GAP_GUARD_DECEL_CAP_BP = [4.0, 8.0]
 STOPPED_LEAD_STOP_GAP_GUARD_DECEL_CAP_V = [1.1, 2.0]
+STOPPED_LEAD_STOP_GAP_GUARD_REBOUND_JERK = 7.5
+STOPPED_LEAD_MOVING_REBOUND_HOLD_TIME = 10.0
 MOVING_LEAD_STOP_GAP_GUARD_MIN_V_EGO = 6.0
 MOVING_LEAD_STOP_GAP_GUARD_MIN_V_LEAD = 0.5
 MOVING_LEAD_STOP_GAP_GUARD_MIN_LEAD_DECEL = 0.25
@@ -227,6 +237,7 @@ LEAD_FLICKER_SPEEDUP_CAP_A_TARGET_MAX = 0.0
 LEAD_FLICKER_FIRST_LOSS_HOLD_TIME = 0.5
 LEAD_FLICKER_FAR_CLOSING_SPEED_MIN = 1.0
 LEAD_FLICKER_FAR_REQUIRED_DECEL_MIN = 0.25
+LEAD_LATERAL_PROGRESS_HOLD_TIME = 2.0
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -925,6 +936,13 @@ def get_mpc_source_lead(radar_state, mpc_source):
   return None
 
 
+def lead_laterally_exited(lead) -> bool:
+  return bool(
+    getattr(lead, "status", False) and
+    abs(_finite_float(getattr(lead, "yRel", 0.0))) >= LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL
+  )
+
+
 def creep_to_stop_gap_blocked(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False,
                               a_lead=0.0):
   stop_target = get_lead_stop_presentation_distance(v_ego, v_lead, a_lead, model_prob)
@@ -1340,6 +1358,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         action_t=action_t, vEgoStopping=self.CP.vEgoStopping,
       )
       planner_seed_mpc_fcw = planner_seed_mpc.crash_cnt > 2 and not sm['carState'].standstill
+    active_mpc_lead_lateral_exit = lead_laterally_exited(get_mpc_source_lead(sm['radarState'], self.mpc.source))
+    planner_seed_mpc_lead_lateral_exit = bool(
+      planner_seed_mpc is not None and lead_laterally_exited(get_mpc_source_lead(sm['radarState'], planner_seed_mpc.source))
+    )
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
     e2e_active = self.is_e2e(sm)
@@ -1439,6 +1461,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     )
     lead_gap_excess = float(lead_one.dRel) - get_lead_stop_presentation_distance(
       v_ego, float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.modelProb)
+    ) if lead_one.status else 0.0
+    lead_follow_gap_excess = float(lead_one.dRel) - get_desired_follow_distance(
+      v_ego, float(lead_one.vLeadK), get_T_FOLLOW(sm['selfdriveState'].personality)
     ) if lead_one.status else 0.0
     lead_v_rel = float(getattr(lead_one, "vRel", float(lead_one.vLeadK) - v_ego)) if lead_one.status else 0.0
     radar_predicted_v_lead, radar_predicted_gap_opening = (
@@ -1550,14 +1575,31 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       custom_creep_hold_a_target = min(CREEP_TO_STOP_GAP_ACCEL_MIN, get_creep_to_stop_gap_hold_accel(v_ego, float(lead_one.dRel)))
 
     custom_stopped_stop_gap_guard_a_target = None
+    stopped_stop_gap_guard_group = ""
     custom_moving_stop_guard_a_target = None
+    stopped_lead_moving_rebound_timer = max(0.0, float(getattr(self, "stopped_lead_moving_rebound_timer", 0.0)) - self.dt)
+    if lead_one.status and float(lead_one.vLeadK) > MOVING_LEAD_STOP_GAP_GUARD_MIN_V_LEAD:
+      stopped_lead_moving_rebound_timer = STOPPED_LEAD_MOVING_REBOUND_HOLD_TIME
+    elif not lead_one.status or reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed:
+      stopped_lead_moving_rebound_timer = 0.0
+    self.stopped_lead_moving_rebound_timer = stopped_lead_moving_rebound_timer
     if lead_one.status:
       if not defer_e2e_to_stopped_lead_mpc and self.mpc.source != LongitudinalPlanSource.e2e:
         stop_gap_guard_a_target = get_stopped_lead_stop_gap_guard_accel(
           v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.modelProb),
         )
         if stop_gap_guard_a_target is not None:
+          if (
+            stopped_lead_moving_rebound_timer > 0.0 and
+            stop_gap_guard_a_target > prev_output_a_target and
+            float(lead_one.dRel) > STOP_DISTANCE + CREEP_TO_STOP_GAP_FOLLOW_EXCESS
+          ):
+            stop_gap_guard_a_target = min(
+              stop_gap_guard_a_target,
+              prev_output_a_target + STOPPED_LEAD_STOP_GAP_GUARD_REBOUND_JERK * self.dt,
+            )
           custom_stopped_stop_gap_guard_a_target = stop_gap_guard_a_target
+          stopped_stop_gap_guard_group = "lead_stop_approach_slew" if stopped_lead_moving_rebound_timer > 0.0 else ""
 
       moving_stop_guard_a_target = get_moving_lead_stop_gap_guard_accel(
         v_ego, float(lead_one.dRel), float(lead_one.vLeadK), float(lead_one.aLeadK), float(lead_one.yRel),
@@ -1568,7 +1610,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     custom_lead_stop_approach_slewed_a_target = None
     custom_lead_stop_approach_base_a_target = None
-    if lead_one.status and not reset_state and not sm['carState'].brakePressed and not sm['carState'].gasPressed:
+    if lead_one.status and not active_mpc_lead_lateral_exit and not reset_state and not sm['carState'].brakePressed and not sm['carState'].gasPressed:
       lead_stop_approach_base_a_target = output_a_target
       if planner_seed_mpc_a_target is not None:
         planner_seed_mpc_lead_floor_blocked = (
@@ -1638,6 +1680,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       e2e_stop_approach_a_target=e2e_stop_approach_a_target,
       cruise_coast_applied=cruise_coast_applied,
       cruise_coast_a_target=cruise_coast_a_target,
+      lead_mpc_allowed=not active_mpc_lead_lateral_exit,
     )
     source_stability_v_ego = None if (
       reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed
@@ -1710,6 +1753,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       for tracker, lead in zip(lead_flicker_trackers, (sm['radarState'].leadOne, sm['radarState'].leadTwo), strict=False)
     ]
     lead_flicker_safety_cap_active = any(state.active for state in lead_flicker_safety_cap_states)
+    lead_lateral_progress_block_timer = max(0.0, float(getattr(self, "lead_lateral_progress_block_timer", 0.0)) - self.dt)
+    if lead_one.status and abs(float(lead_one.yRel)) >= LEAD_LATERAL_PROGRESS_BLOCK_Y:
+      lead_lateral_progress_block_timer = LEAD_LATERAL_PROGRESS_HOLD_TIME
+    elif not lead_one.status or reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed:
+      lead_lateral_progress_block_timer = 0.0
+    self.lead_lateral_progress_block_timer = lead_lateral_progress_block_timer
+    lead_lateral_progress_blocked = lead_lateral_progress_block_timer > 0.0
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.planner_seed_candidates = []
     if lead_flicker_safety_cap_active:
@@ -1719,7 +1769,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       )
       if lead_flicker_speedup_cap_candidate is not None:
         self.planner_seed_candidates.append(lead_flicker_speedup_cap_candidate)
-    if planner_seed_mpc_a_target is not None:
+    planner_seed_mpc_candidate_allowed = not (
+      planner_seed_mpc_lead_lateral_exit and planner_seed_mpc_a_target is not None and planner_seed_mpc_a_target < 0.0
+    )
+    if planner_seed_mpc_a_target is not None and planner_seed_mpc_candidate_allowed:
       planner_seed_mpc_candidate = build_planner_seed_mpc_candidate(
         self, planner_seed_mpc, planner_seed_mpc_a_target, planner_seed_mpc_should_stop, has_lead, accel_clip,
         planner_seed_mpc_v_desired_trajectory, planner_seed_mpc_a_desired_trajectory, planner_seed_mpc_j_desired_trajectory,
@@ -1752,11 +1805,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if custom_stopped_stop_gap_guard_a_target is not None:
       stopped_stop_gap_guard_candidate = build_planner_seed_accel_candidate(
         self, "stopped_lead_stop_gap_guard", custom_stopped_stop_gap_guard_a_target, has_lead,
-        "stopped_lead_stop_gap_guard", accel_clip, should_stop=True,
+        "stopped_lead_stop_gap_guard", accel_clip, should_stop=True, group=stopped_stop_gap_guard_group,
       )
       if stopped_stop_gap_guard_candidate is not None:
         self.planner_seed_candidates.append(stopped_stop_gap_guard_candidate)
-    if custom_creep_to_stop_gap_a_target is not None:
+    creep_candidate_blocked_by_pullaway_floor = (
+      custom_pullaway_accel_step_floor is not None and
+      custom_creep_to_stop_gap_a_target is not None and
+      custom_creep_to_stop_gap_a_target < custom_pullaway_accel_step_floor and
+      not bool(custom_creep_to_stop_gap_should_stop)
+    )
+    if custom_creep_to_stop_gap_a_target is not None and not creep_candidate_blocked_by_pullaway_floor:
       creep_to_stop_gap_candidate = build_planner_seed_accel_candidate(
         self, "creep_to_stop_gap", custom_creep_to_stop_gap_a_target, has_lead,
         "creep_to_stop_gap", accel_clip, should_stop=custom_creep_to_stop_gap_should_stop,
@@ -1808,14 +1867,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       pullaway_accel_step_floor_candidate = build_planner_seed_accel_candidate(
         self, "low_speed_pullaway_accel_step_floor", custom_pullaway_accel_step_floor, has_lead,
         "low_speed_pullaway_accel_step_floor", accel_clip, selection=PLANNER_SEED_FLOOR,
-        force=True, group="low_speed_pullaway_accel_step",
+        should_stop=False, force=True, group="low_speed_pullaway_accel_step",
       )
       if pullaway_accel_step_floor_candidate is not None:
         self.planner_seed_candidates.append(pullaway_accel_step_floor_candidate)
-    if custom_pullaway_accel_step_cap is not None:
+    pullaway_step_cap_suppressed_for_stop_release = bool(legacy_should_stop and custom_creep_pullaway_launch_floor is not None)
+    if custom_pullaway_accel_step_cap is not None and not pullaway_step_cap_suppressed_for_stop_release:
       pullaway_accel_step_cap_candidate = build_planner_seed_accel_candidate(
         self, "low_speed_pullaway_accel_step_cap", custom_pullaway_accel_step_cap, has_lead,
-        "low_speed_pullaway_accel_step_cap", accel_clip, force=True, group="low_speed_pullaway_accel_step",
+        "low_speed_pullaway_accel_step_cap", accel_clip, should_stop=False, force=True, group="low_speed_pullaway_accel_step",
       )
       if pullaway_accel_step_cap_candidate is not None:
         self.planner_seed_candidates.append(pullaway_accel_step_cap_candidate)
@@ -1920,9 +1980,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       has_lead=bool(has_lead),
       lead_v=float(lead_one.vLeadK) if lead_one.status else 0.0,
       lead_v_rel=lead_v_rel,
+      lead_y_rel=float(lead_one.yRel) if lead_one.status else 0.0,
       lead_gap_excess=float(lead_gap_excess),
+      lead_follow_gap_excess=float(lead_follow_gap_excess),
+      lead_lateral_progress_blocked=bool(lead_lateral_progress_blocked),
       lead_opening_prediction=bool(radar_predicted_pullaway or model_predicted_pullaway),
-      lead_confirmed_pullaway=bool(creep_pullaway_release),
+      lead_confirmed_pullaway=bool(creep_pullaway_release and (lead_v_rel > 0.0 or v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM)),
       stop_threat=bool(custom_e2e_stop_approach_a_target < 0.0 or self.e2e_close_stop_settle_active or output_should_stop_e2e),
       independent_stop_threat=bool(not lead_one.status and (custom_e2e_stop_approach_a_target < 0.0 or output_should_stop_e2e)),
       model_should_stop=bool(output_should_stop_e2e),
@@ -1941,6 +2004,19 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     )
     self.prev_accel_clip = accel_clip
     self.apply_longitudinal_stack_selection(sm, has_lead, tuple(accel_clip))
+    if is_custom_stack(getattr(stack_resolution, "resolved_stack", "")):
+      if custom_pullaway_accel_step_floor is not None and not self.output_should_stop:
+        self.output_a_target = max(self.output_a_target, custom_pullaway_accel_step_floor)
+      if custom_pullaway_accel_step_cap is not None and not pullaway_step_cap_suppressed_for_stop_release:
+        self.output_a_target = min(self.output_a_target, custom_pullaway_accel_step_cap)
+      reserve_creep_to_stop_gap = lead_one.status and not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
+        not force_slow_decel and not reset_state and \
+        v_ego < CREEP_TO_STOP_GAP_RESERVE_CREEP_MAX_V_EGO and \
+        float(lead_one.vLeadK) < CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED and \
+        STOP_DISTANCE + CREEP_TO_STOP_GAP_HOLD_BUFFER < float(lead_one.dRel) <= STOP_DISTANCE + CREEP_TO_STOP_GAP_FOLLOW_EXCESS
+      if reserve_creep_to_stop_gap:
+        self.output_a_target = max(self.output_a_target, CREEP_TO_STOP_GAP_RESERVE_CREEP_ACCEL_FLOOR)
+        self.output_should_stop = False
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')

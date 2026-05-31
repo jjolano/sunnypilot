@@ -32,6 +32,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   build_one_pedal_driver_candidate,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput, validate_stack_output
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR, PlannerSeedCandidate, select_planner_seed_candidate
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import (
   SignalProviderCandidate,
   build_sp_candidates_from_signal_providers,
@@ -397,9 +398,23 @@ class LongitudinalPlannerSP:
     else:
       extra_rejected.extend(advisory_rejected)
 
-    seed_candidates = planner_seed_candidates_to_longitudinal_candidates(
-      tuple(getattr(self, "planner_seed_candidates", ())), scene.v_cruise
-    )
+    planner_seed_candidates = tuple(getattr(self, "planner_seed_candidates", ()))
+    if planner_seed_candidates:
+      selected_planner_seed = select_planner_seed_candidate((
+        PlannerSeedCandidate("sunnypilot-current", sunnypilot_output), *planner_seed_candidates,
+      ))
+      selected_planner_seeds = [] if selected_planner_seed.name == "sunnypilot-current" else [selected_planner_seed]
+      selected_planner_seeds.extend(
+        candidate for candidate in planner_seed_candidates
+        if candidate.selection != PLANNER_SEED_FLOOR and candidate.output.a_target < selected_planner_seed.output.a_target and
+        not (selected_planner_seed.group and candidate.group == selected_planner_seed.group) and
+        not (
+          candidate.name == selected_planner_seed.name and candidate.reason == selected_planner_seed.reason and
+          candidate.output.a_target == selected_planner_seed.output.a_target
+        )
+      )
+      planner_seed_candidates = tuple(selected_planner_seeds)
+    seed_candidates = planner_seed_candidates_to_longitudinal_candidates(planner_seed_candidates, scene.v_cruise)
     raw_physical_candidates = fallback_physical_candidates(
       seed_candidates, tuple(getattr(self, "longitudinal_decision_candidates", ())), sunnypilot_output
     )

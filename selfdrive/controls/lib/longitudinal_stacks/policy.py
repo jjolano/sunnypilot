@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
   PLANNER_SEED_INTENT_LEAD_FOLLOW,
   PLANNER_SEED_INTENT_SAFETY_CAP,
   PLANNER_SEED_INTENT_STOP_APPROACH,
+  PLANNER_SEED_FLOOR,
   PLANNER_SEED_MPC_REASON,
   PlannerSeedCandidate,
   planner_seed_intent_for_reason,
@@ -149,7 +150,7 @@ def planner_seed_candidate_to_longitudinal_candidate(candidate: PlannerSeedCandi
   intent = _seed_intent(candidate)
   reason = str(candidate.reason or output.seed_reason or output.debug.get("planner_seed_candidate_reason", "") or intent)
   source = _decision_source_for_seed(intent, reason, output)
-  role = _role_for_seed(intent, reason)
+  role = _role_for_seed(intent, reason, candidate.selection)
   confidence, urgency = _confidence_urgency_for_seed(intent, role, output)
 
   return custom_v2_candidate_with_debug(
@@ -200,15 +201,29 @@ def custom_v2_candidate_with_debug(candidate: LongitudinalCandidate, intent: str
 def fallback_physical_candidates(converted_candidates: tuple[LongitudinalCandidate, ...],
                                  raw_candidates: tuple[LongitudinalCandidate, ...] | list[LongitudinalCandidate],
                                  fallback_output: LongitudinalStackOutput) -> tuple[LongitudinalCandidate, ...]:
-  represented_sources = {
-    candidate.source for candidate in converted_candidates
+  represented = {
+    _physical_candidate_identity(candidate) for candidate in converted_candidates
     if candidate.role == CandidateRole.PHYSICAL_HAZARD
   }
+  planner_seed_launch_release = any(
+    candidate.source == DecisionSource.STOP_LAUNCH and
+    candidate.role == CandidateRole.RELAXATION and
+    _candidate_custom_v2_intent(candidate) == "launch" and
+    not candidate.should_stop
+    for candidate in converted_candidates
+  )
+  fallback_source_is_lead = _source_matches(fallback_output.source, LEAD_MPC_SOURCE_VALUES, {"lead0", "lead1"})
   fallbacks: list[LongitudinalCandidate] = []
   for candidate in raw_candidates:
-    if candidate.role != CandidateRole.PHYSICAL_HAZARD or candidate.source in represented_sources:
+    if candidate.role != CandidateRole.PHYSICAL_HAZARD:
       continue
     intent = custom_v2_intent_for_source(candidate.source)
+    if (candidate.source, intent, candidate.active_reason) in represented:
+      continue
+    if candidate.source == DecisionSource.E2E_STOP and (
+      planner_seed_launch_release or (fallback_source_is_lead and not fallback_output.should_stop)
+    ):
+      continue
     fallbacks.append(custom_v2_candidate_with_debug(
       candidate,
       intent=intent,
@@ -238,9 +253,20 @@ def selected_candidate_for_decision(decision: LongitudinalDecision) -> Longitudi
 
 
 def custom_v2_rejections_from_decision(decision: LongitudinalDecision) -> tuple[tuple[str, str], ...]:
+  rich_suppressed = getattr(decision, "suppressed_candidates", ())
+  rich_keys = {
+    (getattr(candidate, "source", None), _suppressed_candidate_reason(candidate))
+    for candidate in rich_suppressed
+  }
+  rejected: list[tuple[str, str]] = [
+    (_suppressed_candidate_custom_v2_intent(candidate), _suppressed_candidate_reason(candidate))
+    for candidate in rich_suppressed
+  ]
+
   candidates_by_source = {candidate.source: candidate for candidate in decision.candidates}
-  rejected: list[tuple[str, str]] = []
   for source, reason in decision.suppressed:
+    if (source, str(reason)) in rich_keys:
+      continue
     candidate = candidates_by_source.get(source)
     intent = _candidate_custom_v2_intent(candidate) if candidate is not None else custom_v2_intent_for_source(source)
     rejected.append((intent, str(reason)))
@@ -269,6 +295,30 @@ def _candidate_custom_v2_intent(candidate: LongitudinalCandidate | None) -> str:
   if candidate is None:
     return "driver_cruise"
   return str(candidate.debug.get(CUSTOM_V2_DEBUG_INTENT) or custom_v2_intent_for_source(candidate.source))
+
+
+def _suppressed_candidate_custom_v2_intent(candidate: Any) -> str:
+  debug = getattr(candidate, "debug", {})
+  intent = debug.get(CUSTOM_V2_DEBUG_INTENT) if isinstance(debug, dict) else ""
+  if intent:
+    return str(intent)
+  return custom_v2_intent_for_source(getattr(candidate, "source", DecisionSource.CRUISE))
+
+
+def _suppressed_candidate_reason(candidate: Any) -> str:
+  reason = getattr(candidate, "suppression_reason", "")
+  if reason:
+    return str(reason)
+  debug = getattr(candidate, "debug", {})
+  if isinstance(debug, dict):
+    debug_reason = debug.get(CUSTOM_V2_DEBUG_REASON)
+    if debug_reason:
+      return str(debug_reason)
+  return str(getattr(candidate, "active_reason", ""))
+
+
+def _physical_candidate_identity(candidate: LongitudinalCandidate) -> tuple[DecisionSource, str, str]:
+  return (candidate.source, _candidate_custom_v2_intent(candidate), candidate.active_reason)
 
 
 def _seed_intent(candidate: PlannerSeedCandidate) -> str:
@@ -302,8 +352,10 @@ def _custom_v2_intent_for_seed(intent: str) -> str:
   return "driver_cruise"
 
 
-def _role_for_seed(intent: str, reason: str) -> CandidateRole:
+def _role_for_seed(intent: str, reason: str, selection: str = "") -> CandidateRole:
   if intent in (PLANNER_SEED_INTENT_LEAD_FOLLOW, PLANNER_SEED_INTENT_STOP_APPROACH, PLANNER_SEED_INTENT_SAFETY_CAP):
+    return CandidateRole.PHYSICAL_HAZARD
+  if intent == PLANNER_SEED_INTENT_LAUNCH and selection != PLANNER_SEED_FLOOR:
     return CandidateRole.PHYSICAL_HAZARD
   if intent == PLANNER_SEED_INTENT_LAUNCH or reason == "plain_cruise_overspeed_coast":
     return CandidateRole.RELAXATION
