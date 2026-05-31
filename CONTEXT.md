@@ -48,6 +48,14 @@ _Avoid_: stack selector, policy toggle
 The latched choice of longitudinal stack for an onroad cycle.
 _Avoid_: live stack switch, mode toggle
 
+**Longitudinal Mode**:
+The top-level user behavior choice among **ACC**, **E2E**, and **SCC**. It decides which classes of evidence may affect actuation before planner candidates are built.
+_Avoid_: legacy DEC toggle, stack selection
+
+**SCC Mode**:
+The public smart-cruise mode that can select ACC-like or E2E-like behavior from explicit evidence while using curve, map, speed, or stop cues only inside mode-specific boundaries.
+_Avoid_: renamed DEC, SCC Vision toggle
+
 **One-Pedal Longitudinal**:
 A custom-2.0 mode where driver lift-off makes cruise speed an acceleration ceiling instead of a speed-hold target.
 _Avoid_: regen mode, follow-gap mode
@@ -198,7 +206,7 @@ _Avoid_: ignoring curves, lateral safety
 - **Clear Launch Pulse**, **Lead Pullaway Pulse**, **Excess Gap Closure**, and **Free Coast** are progress or comfort policies that yield to **Safety Caps**, confirmed stop evidence, and **Lead MPC** hazard handling.
 - **Driver-Like Curve Speed** cannot override lateral-accel or path-confidence limits.
 - **AlphaLongitudinalEnabled** gates gas/brake takeover separately from **Stack Selection**.
-- SCC, SLA, and OSM are signal sources; **Stack Selection** changes how their outputs are used.
+- SCC is a **Longitudinal Mode**; SCC Vision, SCC Map, SLA, and OSM are signal sources whose outputs are only built when the active mode allows them.
 - The **Longitudinal Decision Layer** is internal to custom-stack behavior and disabled for **sunnypilot-current**.
 - A **Claim Type** is classified before code ownership: physical feasibility belongs to MPC or lead guards, stop/go state belongs to the planner, policy trade-offs belong to custom-stack arbitration, actuator feel belongs to controller logic, and source interpretation belongs to signal providers.
 
