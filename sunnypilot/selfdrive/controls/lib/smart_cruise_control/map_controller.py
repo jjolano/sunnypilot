@@ -9,6 +9,7 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
+from openpilot.selfdrive.controls.lib.vehicle_math import speed_for_lateral_accel
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.mapd.param_helpers import get_first_mapd_json, get_mapd_json, mapd_section_float
 from openpilot.sunnypilot.navd.helpers import coordinate_from_param, Coordinate
@@ -403,7 +404,8 @@ class SmartCruiseControlMap:
     if valid_curvatures.size == 0:
       return None
 
-    return float(np.sqrt(MODEL_CURVE_TARGET_LAT_ACCEL / np.max(valid_curvatures)))
+    target = speed_for_lateral_accel(MODEL_CURVE_TARGET_LAT_ACCEL, float(np.max(valid_curvatures)))
+    return float(target) if math.isfinite(target) else None
 
   @classmethod
   def _prediction_control_target(cls, target_v: float, distance: float, model_msg) -> float:

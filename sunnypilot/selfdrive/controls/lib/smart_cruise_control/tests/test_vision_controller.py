@@ -16,6 +16,7 @@ from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
+from openpilot.selfdrive.controls.lib.vehicle_math import speed_for_lateral_accel
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import (
@@ -188,6 +189,13 @@ class TestSmartCruiseControlVision:
     for _ in range(int(10.0 / DT_MDL)):
       self.scc_v.update(self.sm, True, False, 0.0, 0.0, 0.0)
     assert self.scc_v.state == VisionState.enabled
+
+  def test_turn_speed_wrapper_keeps_scc_sentinel_at_boundary(self):
+    assert math.isinf(speed_for_lateral_accel(_A_LAT_REG_MAX, 0.0))
+    assert self.scc_v._speed_for_lateral_accel(_A_LAT_REG_MAX, 0.0) == V_CRUISE_UNSET
+    assert self.scc_v._speed_for_lateral_accel(_A_LAT_REG_MAX, 0.01) == pytest.approx(
+      speed_for_lateral_accel(_A_LAT_REG_MAX, 0.01)
+    )
 
   @pytest.mark.parametrize(
     ("yaw_rates", "velocities"),

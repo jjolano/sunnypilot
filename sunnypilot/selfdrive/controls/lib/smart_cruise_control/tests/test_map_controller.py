@@ -14,6 +14,7 @@ from cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
+from openpilot.selfdrive.controls.lib.vehicle_math import speed_for_lateral_accel
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import map_controller
 from openpilot.sunnypilot.navd.helpers import Coordinate
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import (
@@ -316,6 +317,15 @@ class TestSmartCruiseControlMap:
 
     assert self.scc_m.state == VisionState.enabled
     assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_prediction_curve_target_matches_shared_lateral_accel_speed(self):
+    target_v = 18.0
+    yaw_rate = 25.0 * map_controller.MODEL_CURVE_TARGET_LAT_ACCEL / target_v**2
+    model_msg = make_model_prediction(distance=0.0, yaw_rate=yaw_rate, speed=25.0)
+
+    assert self.scc_m._prediction_curve_target(model_msg, 0.0) == pytest.approx(
+      speed_for_lateral_accel(map_controller.MODEL_CURVE_TARGET_LAT_ACCEL, yaw_rate / 25.0)
+    )
 
   def test_current_advisory_limit_alias_controls_scc_map_target(self):
     self.mem_params.put("MapAdvisoryLimit", json.dumps({
