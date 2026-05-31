@@ -21,6 +21,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   get_active_lead_confidence,
   resolve_longitudinal_decision,
 )
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, LongitudinalModeResolver
 from openpilot.selfdrive.controls.lib.lead_confidence import (
   LeadConfidenceState,
   LEAD_FLICKER_CLOSE_COUNT_THRESHOLD,
@@ -1413,6 +1414,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
   def update(self, sm):
     LongitudinalPlannerSP.update(self, sm)
+    mode_resolution = getattr(self, "longitudinal_mode_resolution", None)
+    acc_mode_requested = bool(mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.ACC)
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
@@ -1478,9 +1481,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
-    _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
-    # Don't clip at low speeds since throttle_prob doesn't account for creep
-    self.allow_throttle = throttle_prob > ALLOW_THROTTLE_THRESHOLD or v_ego <= MIN_ALLOW_THROTTLE_SPEED
+    if acc_mode_requested:
+      self.allow_throttle = True
+    else:
+      _, _, _, _, throttle_prob = self.parse_model(sm['modelV2'])
+      # Don't clip at low speeds since throttle_prob doesn't account for creep
+      self.allow_throttle = throttle_prob > ALLOW_THROTTLE_THRESHOLD or v_ego <= MIN_ALLOW_THROTTLE_SPEED
 
     if not self.allow_throttle:
       clipped_accel_coast = max(accel_coast, accel_clip[0])
@@ -1495,12 +1501,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       lead_context_tracker = LeadContextTracker()
       self.primary_lead_context_tracker = lead_context_tracker
     lead_tuple = (sm['radarState'].leadOne, sm['radarState'].leadTwo)
+    model_msg_for_lead_context = None if acc_mode_requested else sm['modelV2']
     self.primary_lead_context = lead_context_tracker.update(
       lead_tuple,
       get_mpc_lead_confidence_states(getattr(self, "planner_seed_mpc", self.mpc)),
       v_ego,
       self.dt,
-      model_msg=sm['modelV2'],
+      model_msg=model_msg_for_lead_context,
       reset_state=reset_state,
     )
 
@@ -1512,14 +1519,21 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       v_cruise = 0.0
 
     has_radar_lead = has_valid_radar_lead(sm['radarState'])
-    lead_loss_guard_lead = get_lead_loss_e2e_guard_lead(sm['radarState'])
-    custom_engage_stop_bootstrap_active = should_run_engage_stop_bootstrap(self.engage_stop_bootstrap_timer, v_ego, sm['radarState'], sm['modelV2'])
-
     has_confirmed_lead = has_confirmed_radar_lead(sm['radarState'])
+    if mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.SCC:
+      scc_e2e_active = not has_confirmed_lead and has_model_stop_context(sm['modelV2'])
+      self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP, scc_e2e_active=scc_e2e_active)
+      mode_resolution = self.longitudinal_mode_resolution
+    e2e_active = self.is_e2e(sm)
+    lead_loss_guard_lead = get_lead_loss_e2e_guard_lead(sm['radarState'])
+    custom_engage_stop_bootstrap_active = e2e_active and should_run_engage_stop_bootstrap(
+      self.engage_stop_bootstrap_timer, v_ego, sm['radarState'], sm['modelV2']
+    )
+
     self.lead_loss_e2e_guard_timer = update_lead_loss_e2e_guard_timer(
       self.lead_loss_e2e_guard_timer, self.dt,
       self.previous_lead_loss_status, self.previous_lead_loss_d_rel, self.previous_lead_loss_model_prob,
-      has_confirmed_lead, is_lane_change_active(sm['modelV2']),
+      has_confirmed_lead, is_lane_change_active(sm['modelV2']) if e2e_active else False,
       reset_state=reset_state,
       force_slow_decel=force_slow_decel,
       brake_pressed=sm['carState'].brakePressed,
@@ -1533,7 +1547,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.mpc.update(
       sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
       block_short_gap_pullaway_response=sm['carState'].brakePressed or sm['carState'].gasPressed or force_slow_decel or reset_state,
-      model_msg=sm['modelV2'],
+      model_msg=None if acc_mode_requested else sm['modelV2'],
     )
     planner_seed_mpc_v_desired_trajectory = None
     planner_seed_mpc_a_desired_trajectory = None
@@ -1551,7 +1565,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       planner_seed_mpc.update(
         sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
         block_short_gap_pullaway_response=sm['carState'].brakePressed or sm['carState'].gasPressed or force_slow_decel or reset_state,
-        model_msg=sm['modelV2'], lead_context=self.primary_lead_context,
+        model_msg=None if acc_mode_requested else sm['modelV2'], lead_context=self.primary_lead_context,
       )
       planner_seed_mpc_v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, planner_seed_mpc.v_solution)
       planner_seed_mpc_a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, planner_seed_mpc.a_solution)
@@ -1563,7 +1577,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       get_mpc_lead_confidence_states(context_mpc),
       v_ego,
       0.0,
-      model_msg=sm['modelV2'],
+      model_msg=model_msg_for_lead_context,
       dominant_idx=getattr(context_mpc, "dominant_obstacle_idx", None),
       lead_dominant_idx=getattr(context_mpc, "lead_dominant_obstacle_idx", None),
       reset_state=reset_state,
@@ -1608,28 +1622,33 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     planner_seed_mpc_lead_lateral_exit = bool(
       planner_seed_mpc is not None and lead_laterally_exited(get_mpc_source_lead(sm['radarState'], planner_seed_mpc.source))
     )
-    output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
-    output_should_stop_e2e = sm['modelV2'].action.shouldStop
-    e2e_active = self.is_e2e(sm)
-    custom_e2e_runway_comfort_a_target = get_e2e_runway_comfort_accel(
-      v_ego, output_a_target_e2e, accel_coast, sm['modelV2'], e2e_active, prev_output_a_target,
-      reset_state=reset_state,
-      force_slow_decel=force_slow_decel,
-      brake_pressed=sm['carState'].brakePressed,
-      gas_pressed=sm['carState'].gasPressed,
-      engage_stop_bootstrap_active=custom_engage_stop_bootstrap_active,
-      has_radar_lead=has_radar_lead,
-      dt=self.dt,
-      traction_risk=traction_risk,
-    )
-    custom_e2e_close_stop_a_target, custom_close_stop_should_stop, self.e2e_close_stop_settle_active = get_e2e_close_stop_settle(
-      v_ego, output_a_target_e2e, sm['modelV2'], sm['radarState'], e2e_active,
-      active=self.e2e_close_stop_settle_active,
-      reset_state=reset_state,
-      force_slow_decel=force_slow_decel,
-      brake_pressed=sm['carState'].brakePressed,
-      gas_pressed=sm['carState'].gasPressed,
-    )
+    output_a_target_e2e = sm['modelV2'].action.desiredAcceleration if e2e_active else 0.0
+    output_should_stop_e2e = sm['modelV2'].action.shouldStop if e2e_active else False
+    if e2e_active:
+      custom_e2e_runway_comfort_a_target = get_e2e_runway_comfort_accel(
+        v_ego, output_a_target_e2e, accel_coast, sm['modelV2'], e2e_active, prev_output_a_target,
+        reset_state=reset_state,
+        force_slow_decel=force_slow_decel,
+        brake_pressed=sm['carState'].brakePressed,
+        gas_pressed=sm['carState'].gasPressed,
+        engage_stop_bootstrap_active=custom_engage_stop_bootstrap_active,
+        has_radar_lead=has_radar_lead,
+        dt=self.dt,
+        traction_risk=traction_risk,
+      )
+      custom_e2e_close_stop_a_target, custom_close_stop_should_stop, self.e2e_close_stop_settle_active = get_e2e_close_stop_settle(
+        v_ego, output_a_target_e2e, sm['modelV2'], sm['radarState'], e2e_active,
+        active=self.e2e_close_stop_settle_active,
+        reset_state=reset_state,
+        force_slow_decel=force_slow_decel,
+        brake_pressed=sm['carState'].brakePressed,
+        gas_pressed=sm['carState'].gasPressed,
+      )
+    else:
+      custom_e2e_runway_comfort_a_target = output_a_target_e2e
+      custom_e2e_close_stop_a_target = output_a_target_e2e
+      custom_close_stop_should_stop = False
+      self.e2e_close_stop_settle_active = False
     mpc_source_lead = get_mpc_source_lead(sm['radarState'], self.mpc.source)
     defer_e2e_to_stopped_lead_mpc = e2e_active and should_defer_e2e_to_stopped_lead_mpc(
       v_ego, mpc_source_lead, self.mpc.source,
@@ -1654,25 +1673,29 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
-    model_stop_protection_active = sm['selfdriveState'].experimentalMode and self.dec.active() and not e2e_active
-    e2e_runway_positive_accel_cap = get_e2e_runway_positive_accel_cap(
-      v_ego, sm['modelV2'], e2e_active,
-      reset_state=reset_state,
-      force_slow_decel=force_slow_decel,
-      brake_pressed=sm['carState'].brakePressed,
-      gas_pressed=sm['carState'].gasPressed,
-      engage_stop_bootstrap_active=custom_engage_stop_bootstrap_active,
-      has_radar_lead=has_radar_lead,
-      model_stop_protection_active=model_stop_protection_active,
-    )
-    custom_e2e_stop_approach_a_target = get_e2e_stop_approach_accel(
-      v_ego, sm['modelV2'], sm['radarState'], e2e_active,
-      force_slow_decel=force_slow_decel or reset_state,
-      brake_pressed=sm['carState'].brakePressed,
-      gas_pressed=sm['carState'].gasPressed,
-      model_stop_protection_active=model_stop_protection_active,
-      traction_risk=traction_risk,
-    )
+    model_stop_protection_active = False
+    if e2e_active:
+      e2e_runway_positive_accel_cap = get_e2e_runway_positive_accel_cap(
+        v_ego, sm['modelV2'], e2e_active,
+        reset_state=reset_state,
+        force_slow_decel=force_slow_decel,
+        brake_pressed=sm['carState'].brakePressed,
+        gas_pressed=sm['carState'].gasPressed,
+        engage_stop_bootstrap_active=custom_engage_stop_bootstrap_active,
+        has_radar_lead=has_radar_lead,
+        model_stop_protection_active=model_stop_protection_active,
+      )
+      custom_e2e_stop_approach_a_target = get_e2e_stop_approach_accel(
+        v_ego, sm['modelV2'], sm['radarState'], e2e_active,
+        force_slow_decel=force_slow_decel or reset_state,
+        brake_pressed=sm['carState'].brakePressed,
+        gas_pressed=sm['carState'].gasPressed,
+        model_stop_protection_active=model_stop_protection_active,
+        traction_risk=traction_risk,
+      )
+    else:
+      e2e_runway_positive_accel_cap = ACCEL_MAX
+      custom_e2e_stop_approach_a_target = 0.0
     e2e_stop_approach_a_target = 0.0
 
     primary_behavior_progress_allowed = bool(
@@ -1716,7 +1739,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.stopped_lead_gap_fill_v_lead = behavior_lead_v_lead
 
     model_predicted_v_lead, model_predicted_gap_opening = (
-      get_model_lead_pullaway(sm['modelV2'], primary_behavior_lead, v_ego) if primary_behavior_progress_allowed else (0.0, 0.0)
+      get_model_lead_pullaway(sm['modelV2'], primary_behavior_lead, v_ego)
+      if primary_behavior_progress_allowed and not acc_mode_requested else (0.0, 0.0)
     )
     lead_gap_excess = behavior_lead_d_rel - get_lead_stop_presentation_distance(
       v_ego, behavior_lead_v_lead, behavior_lead_a, behavior_lead_model_prob
@@ -2136,7 +2160,20 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     active_scc_map = getattr(active_scc, "map", None)
     active_sla = getattr(self, "active_sla", None) or getattr(self, "sla", None)
     osm_traffic_control_prior = getattr(self, "osm_traffic_control_prior", None)
-    custom_v2_curve_active, custom_v2_curve_a_target = get_custom_v2_curve_scene_target(active_scc_vision, active_scc_map)
+    if acc_mode_requested:
+      custom_v2_curve_active, custom_v2_curve_a_target = False, 0.0
+      speed_limit_active_for_scene = False
+      speed_limit_v_target_for_scene = 0.0
+      speed_limit_a_target_for_scene = 0.0
+      map_caution_active_for_scene = False
+      map_caution_a_target_for_scene = 0.0
+    else:
+      custom_v2_curve_active, custom_v2_curve_a_target = get_custom_v2_curve_scene_target(active_scc_vision, active_scc_map)
+      speed_limit_active_for_scene = bool(getattr(active_sla, "is_active", False))
+      speed_limit_v_target_for_scene = float(getattr(active_sla, "output_v_target", 0.0))
+      speed_limit_a_target_for_scene = float(getattr(active_sla, "output_a_target", 0.0))
+      map_caution_active_for_scene = bool(getattr(osm_traffic_control_prior, "active", False))
+      map_caution_a_target_for_scene = float(getattr(osm_traffic_control_prior, "output_a_target", 0.0))
     scene_lead_state = primary_behavior_state if primary_behavior_state is not None else primary_physical_state
     scene_has_lead = bool(primary_lead_context.has_physical_lead)
     scene_lead_v = float(scene_lead_state.v_lead) if scene_lead_state is not None else 0.0
@@ -2175,19 +2212,19 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       alternate_lead_threat_active=bool(primary_lead_context.alternate_threat_active),
       shadow_lead_active=bool(primary_lead_context.shadow_active),
       lead_release_blocked_reason=str(primary_lead_context.lead_release_blocked_reason),
-      stop_threat=bool(custom_e2e_stop_approach_a_target < 0.0 or self.e2e_close_stop_settle_active or output_should_stop_e2e),
-      independent_stop_threat=bool(not scene_has_lead and (custom_e2e_stop_approach_a_target < 0.0 or output_should_stop_e2e)),
+      stop_threat=bool(e2e_active and (custom_e2e_stop_approach_a_target < 0.0 or self.e2e_close_stop_settle_active or output_should_stop_e2e)),
+      independent_stop_threat=bool(e2e_active and not scene_has_lead and (custom_e2e_stop_approach_a_target < 0.0 or output_should_stop_e2e)),
       model_should_stop=bool(output_should_stop_e2e),
-      model_stop_distance=get_model_stop_distance(sm['modelV2']),
+      model_stop_distance=get_model_stop_distance(sm['modelV2']) if e2e_active else None,
       model_desired_accel=float(output_a_target_e2e),
-      speed_limit_active=bool(getattr(active_sla, "is_active", False)),
-      speed_limit_v_target=float(getattr(active_sla, "output_v_target", 0.0)),
-      speed_limit_a_target=float(getattr(active_sla, "output_a_target", 0.0)),
+      speed_limit_active=speed_limit_active_for_scene,
+      speed_limit_v_target=speed_limit_v_target_for_scene,
+      speed_limit_a_target=speed_limit_a_target_for_scene,
       curve_active=custom_v2_curve_active,
       curve_a_target=custom_v2_curve_a_target,
-      map_caution_active=bool(getattr(osm_traffic_control_prior, "active", False)),
-      map_caution_confirmed=bool(getattr(osm_traffic_control_prior, "active", False)),
-      map_caution_a_target=float(getattr(osm_traffic_control_prior, "output_a_target", 0.0)),
+      map_caution_active=map_caution_active_for_scene,
+      map_caution_confirmed=map_caution_active_for_scene,
+      map_caution_a_target=map_caution_a_target_for_scene,
       one_pedal_mode=int(getattr(self, "one_pedal_mode", ONE_PEDAL_MODE_OFF)),
       one_pedal_cruise_hold=bool(getattr(self, "one_pedal_cruise_hold_active", False)),
     )
