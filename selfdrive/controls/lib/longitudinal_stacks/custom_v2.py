@@ -36,6 +36,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
   planner_seed_intent_for_reason,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2
+from openpilot.selfdrive.controls.lib.vehicle_math import stopping_decel
+from openpilot.selfdrive.modeld.constants import ModelConstants
 
 MPH_TO_MS = 0.44704
 
@@ -729,7 +731,7 @@ def _stop_approach_accel(scene: CustomV2Scene, current_a_target: float,
   selected_reason = "comfort_early_stop_threat"
   hard_stop = False
   if scene.model_stop_distance is not None and scene.model_stop_distance > 0.0:
-    required = -(scene.v_ego ** 2) / (2.0 * max(scene.model_stop_distance, 1.0))
+    required = stopping_decel(scene.v_ego, scene.model_stop_distance, min_distance=1.0)
     stop_a_target = min(stop_a_target, required)
     if scene.model_should_stop and required < STOP_APPROACH_DECEL_MIN:
       selected_reason = "hard_model_stop_threat"
@@ -909,26 +911,44 @@ def _synth_trajectory(output: LongitudinalStackOutput, scene: CustomV2Scene,
   accels_in = tuple(output.accels)
   v0 = scene.v_ego if math.isfinite(scene.v_ego) and scene.v_ego >= 0.0 else (float(speeds_in[0]) if speeds_in else 0.0)
   prev_accel = float(accels_in[0]) if accels_in else float(a_target)
+  dts = _synth_trajectory_dts()
   accels: list[float] = []
   jerks: list[float] = []
   current_accel = prev_accel
-  for _idx in range(CONTROL_N):
+  for dt in dts:
     if limit_jerk:
       delta = _clip(
         float(a_target) - current_accel,
-        NORMAL_NEGATIVE_RETREAT_JERK * SYNTH_TRAJECTORY_DT,
-        POSITIVE_PROGRESS_JERK * SYNTH_TRAJECTORY_DT,
+        NORMAL_NEGATIVE_RETREAT_JERK * dt,
+        POSITIVE_PROGRESS_JERK * dt,
       )
       next_accel = current_accel + delta
     else:
       next_accel = float(a_target)
-    jerks.append((next_accel - current_accel) / SYNTH_TRAJECTORY_DT)
+    jerks.append((next_accel - current_accel) / dt)
     accels.append(next_accel)
     current_accel = next_accel
 
   speeds: list[float] = []
   current_speed = max(0.0, v0)
-  for accel in accels:
+  for accel, dt in zip(accels, dts, strict=True):
     speeds.append(current_speed)
-    current_speed = max(0.0, current_speed + accel * SYNTH_TRAJECTORY_DT)
+    current_speed = max(0.0, current_speed + accel * dt)
   return tuple(speeds), tuple(accels), tuple(jerks)
+
+
+def _synth_trajectory_dts(t_idxs: object = None) -> tuple[float, ...]:
+  if t_idxs is None:
+    t_idxs = ModelConstants.T_IDXS
+  try:
+    times = tuple(float(t) for t in t_idxs[:CONTROL_N])
+  except (TypeError, ValueError):
+    return (SYNTH_TRAJECTORY_DT,) * CONTROL_N
+  if len(times) < CONTROL_N or not all(math.isfinite(t) for t in times):
+    return (SYNTH_TRAJECTORY_DT,) * CONTROL_N
+
+  intervals = [times[idx + 1] - times[idx] for idx in range(CONTROL_N - 1)]
+  dts = [*intervals, intervals[-1]]
+  if not all(math.isfinite(dt) and dt > 0.0 for dt in dts):
+    return (SYNTH_TRAJECTORY_DT,) * CONTROL_N
+  return tuple(dts)

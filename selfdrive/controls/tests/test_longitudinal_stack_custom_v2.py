@@ -2,6 +2,7 @@ import pytest
 
 from cereal import log
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
+from openpilot.selfdrive.controls.lib.longitudinal_stacks import custom_v2
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   COMFORT_RELAX_ACCEL_MIN,
   CUSTOM_V2_INTENTS,
@@ -450,13 +451,63 @@ def test_normal_stop_approach_remains_comfort_bounded():
   assert output.debug["custom_v2_selected_reason"] == "comfort_early_stop_threat"
 
 
+def test_stop_approach_closer_stop_does_not_weaken_braking():
+  far_scene = CustomV2Scene(
+    v_ego=12.0,
+    v_cruise=12.0,
+    stop_threat=True,
+    model_should_stop=True,
+    model_stop_distance=30.0,
+    model_desired_accel=-0.2,
+  )
+  close_scene = CustomV2Scene(
+    v_ego=12.0,
+    v_cruise=12.0,
+    stop_threat=True,
+    model_should_stop=True,
+    model_stop_distance=10.0,
+    model_desired_accel=-0.2,
+  )
+
+  far = CustomLongitudinalStackV2().update(make_output(0.0), far_scene, accel_limits=(-10.0, 2.0))
+  close = CustomLongitudinalStackV2().update(make_output(0.0), close_scene, accel_limits=(-10.0, 2.0))
+
+  assert close.a_target <= far.a_target
+  assert close.debug["custom_v2_selected_reason"] == "hard_model_stop_threat"
+
+
+def test_stop_approach_higher_speed_does_not_weaken_braking():
+  slow_scene = CustomV2Scene(
+    v_ego=8.0,
+    v_cruise=12.0,
+    stop_threat=True,
+    model_should_stop=True,
+    model_stop_distance=20.0,
+    model_desired_accel=-0.2,
+  )
+  fast_scene = CustomV2Scene(
+    v_ego=12.0,
+    v_cruise=12.0,
+    stop_threat=True,
+    model_should_stop=True,
+    model_stop_distance=20.0,
+    model_desired_accel=-0.2,
+  )
+
+  slow = CustomLongitudinalStackV2().update(make_output(0.0), slow_scene, accel_limits=(-10.0, 2.0))
+  fast = CustomLongitudinalStackV2().update(make_output(0.0), fast_scene, accel_limits=(-10.0, 2.0))
+
+  assert fast.a_target <= slow.a_target
+
+
 def test_normal_v2_accel_changes_are_jerk_limited():
   scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, model_stop_distance=30.0, model_desired_accel=0.0)
 
   output = CustomLongitudinalStackV2().update(make_output(0.0), scene, accel_limits=(-2.0, 2.0))
+  first_dt = custom_v2._synth_trajectory_dts()[0]
 
   assert output.a_target == NO_LEAD_LAUNCH_ACCEL_MAX
-  assert output.accels[0] == POSITIVE_PROGRESS_JERK * SYNTH_TRAJECTORY_DT
+  assert output.accels[0] == POSITIVE_PROGRESS_JERK * first_dt
   assert output.jerks[0] == POSITIVE_PROGRESS_JERK
 
 
@@ -471,10 +522,61 @@ def test_normal_negative_v2_changes_are_jerk_limited():
   )
 
   output = CustomLongitudinalStackV2().update(make_output(0.8), scene, accel_limits=(-2.0, 2.0))
+  first_dt = custom_v2._synth_trajectory_dts()[0]
 
   assert output.a_target == -0.25
-  assert output.accels[0] == 0.8 + NORMAL_NEGATIVE_RETREAT_JERK * SYNTH_TRAJECTORY_DT
+  assert output.accels[0] == 0.8 + NORMAL_NEGATIVE_RETREAT_JERK * first_dt
   assert output.jerks[0] == NORMAL_NEGATIVE_RETREAT_JERK
+
+
+def test_synth_trajectory_uniform_grid_matches_legacy_dt(monkeypatch):
+  monkeypatch.setattr(custom_v2.ModelConstants, "T_IDXS", tuple(idx * SYNTH_TRAJECTORY_DT for idx in range(CONTROL_N)))
+  scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, model_stop_distance=30.0, model_desired_accel=0.0)
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0), scene, accel_limits=(-2.0, 2.0))
+
+  assert len(output.speeds) == CONTROL_N
+  assert len(output.accels) == CONTROL_N
+  assert len(output.jerks) == CONTROL_N
+  assert output.accels[0] == pytest.approx(POSITIVE_PROGRESS_JERK * SYNTH_TRAJECTORY_DT)
+  assert output.jerks[0] == pytest.approx(POSITIVE_PROGRESS_JERK)
+  assert output.speeds[1] == pytest.approx(scene.v_ego + output.accels[0] * SYNTH_TRAJECTORY_DT)
+
+
+def test_synth_trajectory_nonuniform_grid_uses_per_step_dt(monkeypatch):
+  intervals = [0.1, 0.25, 0.4, *([0.2] * (CONTROL_N - 4))]
+  times = [0.0]
+  for dt in intervals:
+    times.append(times[-1] + dt)
+  monkeypatch.setattr(custom_v2.ModelConstants, "T_IDXS", tuple(times[:CONTROL_N]))
+  scene = CustomV2Scene(v_ego=10.0, v_cruise=15.0, map_caution_active=True, map_caution_confirmed=True, map_caution_a_target=-3.0)
+
+  output = CustomLongitudinalStackV2().update(make_output(0.8), scene, accel_limits=(-5.0, 2.0))
+
+  assert output.accels[0] == pytest.approx(0.8 + NORMAL_NEGATIVE_RETREAT_JERK * 0.1)
+  assert output.accels[1] == pytest.approx(output.accels[0] + NORMAL_NEGATIVE_RETREAT_JERK * 0.25)
+  assert output.jerks[0] == pytest.approx(NORMAL_NEGATIVE_RETREAT_JERK)
+  assert output.jerks[1] == pytest.approx(NORMAL_NEGATIVE_RETREAT_JERK)
+  assert output.speeds[1] == pytest.approx(scene.v_ego + output.accels[0] * 0.1)
+
+
+@pytest.mark.parametrize("grid", [
+  (0.0,) * CONTROL_N,
+  tuple(float(idx) for idx in range(CONTROL_N - 1)),
+  tuple([0.0, 0.2, 0.1, *[0.3 + idx * 0.2 for idx in range(CONTROL_N - 3)]]),
+  tuple([0.0, float("nan"), *[0.2 * idx for idx in range(2, CONTROL_N)]]),
+])
+def test_synth_trajectory_invalid_grid_falls_back_to_fixed_dt(monkeypatch, grid):
+  monkeypatch.setattr(custom_v2.ModelConstants, "T_IDXS", grid)
+  scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, model_stop_distance=30.0, model_desired_accel=0.0)
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0), scene, accel_limits=(-2.0, 2.0))
+
+  assert len(output.speeds) == CONTROL_N
+  assert len(output.accels) == CONTROL_N
+  assert len(output.jerks) == CONTROL_N
+  assert output.accels[0] == pytest.approx(POSITIVE_PROGRESS_JERK * SYNTH_TRAJECTORY_DT)
+  assert output.jerks[0] == pytest.approx(POSITIVE_PROGRESS_JERK)
 
 
 def test_one_pedal_lift_off_coasts_instead_of_accelerating_to_cruise():
