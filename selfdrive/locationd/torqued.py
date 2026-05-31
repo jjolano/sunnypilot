@@ -67,6 +67,8 @@ def slope2rot(slope):
 
 class TorqueBuckets(PointBuckets):
   def add_point(self, x, y):
+    if not np.isfinite(x) or not np.isfinite(y):
+      return
     for bound_min, bound_max in self.x_bounds:
       if (x >= bound_min) and (x < bound_max):
         self.buckets[(bound_min, bound_max)].append([x, 1.0, y])
