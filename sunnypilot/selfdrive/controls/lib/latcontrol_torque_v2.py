@@ -15,7 +15,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import La
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_conservative_output_shaper import ConservativeOutputShaperInputs, TorqueConservativeOutputShaper
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_disturbance import TorqueDisturbanceInputs, classify_torque_disturbance
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_guarded_response_assist import GuardedResponseAssistInputs, TorqueGuardedResponseAssist
-from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_direction
+from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_context
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_low_speed import low_speed_pid_gain_speed
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_observation import TorqueObservation
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_over_response_attenuator import attenuate_same_direction_over_response
@@ -378,8 +378,8 @@ class LatControlTorque(LatControl):
     tracking_torque_error = error / max(float(self.torque_params.latAccelFactor), 1e-3)
     lane_change_active = bool(self.extension.model_valid and self.extension.model_v2.meta.laneChangeState != log.LaneChangeState.off)
     steer_limit_feedback = self.steering_actuator_feedback
-    steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
-    response_steer_limited = steer_limited_by_safety and (steer_limit_same_direction if steer_limit_feedback.valid else True)
+    steer_limit_context = classify_steering_limit_context(steer_limit_feedback, -output_torque)
+    response_steer_limited = steer_limited_by_safety and (steer_limit_context.same_direction_limited if steer_limit_feedback.valid else True)
     torque_observation = TorqueObservation(
       active=active,
       v_ego=CS.vEgo,
@@ -416,7 +416,7 @@ class LatControlTorque(LatControl):
     )
     output_torque = assist_result.output_torque if active else 0.0
     same_sign_unwind_release = same_sign_unwind and sign(measurement) != 0.0 and sign(-output_torque) == sign(measurement)
-    steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -output_torque)
+    steer_limit_context = classify_steering_limit_context(steer_limit_feedback, -output_torque)
     shaping_result = self.output_shaper.update(
       ConservativeOutputShaperInputs(
         active=torque_observation.active,
@@ -434,8 +434,8 @@ class LatControlTorque(LatControl):
         same_sign_unwind_release=same_sign_unwind_release,
         # The shaper sees pre-actuator torque; the actuator command is negated on return.
         steering_rate_deg=-CS.steeringRateDeg,
-        steer_limit_same_direction=steer_limit_same_direction if steer_limit_feedback.valid else True,
-        steer_limit_unwind=steer_limit_unwind if steer_limit_feedback.valid else False,
+        steer_limit_same_direction=steer_limit_context.same_direction_limited if steer_limit_feedback.valid else True,
+        steer_limit_unwind=steer_limit_context.unwind_allowed if steer_limit_feedback.valid else False,
         steer_limit_requested_output=-steer_limit_feedback.requested if steer_limit_feedback.valid else 0.0,
         steer_limit_applied_output=-steer_limit_feedback.applied if steer_limit_feedback.valid else 0.0,
       )
@@ -466,8 +466,8 @@ class LatControlTorque(LatControl):
       shaper_already_capped = shaping_result.active and shaping_result.output_cap <= V21_SAME_DIRECTION_LIMIT_CAP + 1e-6
       governor_same_direction_limit = (
         steer_limited_by_safety
-        and (steer_limit_same_direction if steer_limit_feedback.valid else True)
-        and not steer_limit_unwind
+        and (steer_limit_context.same_direction_limited if steer_limit_feedback.valid else True)
+        and not steer_limit_context.unwind_allowed
         and not shaper_already_capped
       )
       governor_result = self.refined_output_governor.update(
@@ -524,14 +524,16 @@ class LatControlTorque(LatControl):
     adaptive_log.steerLimitRequested = float(steer_limit_feedback.requested)
     adaptive_log.steerLimitApplied = float(steer_limit_feedback.applied)
     adaptive_log.steerLimitError = float(steer_limit_feedback.error)
-    adaptive_log.steerLimitSameDirection = bool(steer_limit_same_direction)
-    adaptive_log.steerLimitUnwind = bool(steer_limit_unwind)
+    adaptive_log.steerLimitSameDirection = bool(steer_limit_context.same_direction_limited)
+    adaptive_log.steerLimitUnwind = bool(steer_limit_context.unwind_allowed)
     pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited_by_safety, curvature_limited))
 
     return -output_torque, 0.0, pid_log
 
 
 class LatControlTorqueV21(LatControlTorque):
+  # Torque v2.1 intentionally keeps the v2 response core above and only enables
+  # the refined final output governor. It does not inherit Torque v3 delay-lead behavior.
   CONTROLLER_VERSION = VERSION_V21
   USE_REFINED_OUTPUT_GOVERNOR = True
 
