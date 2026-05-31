@@ -25,6 +25,26 @@ sections:
       label: SCC
     enablement:
     - $ref: '#/macros/longitudinal'
+  - key: SccCurveVisionEnabled
+    widget: toggle
+    title: SCC Vision Curve Control
+    description: Allow SCC mode to slow for upcoming vision-predicted curves.
+    visibility:
+    - type: param
+      key: LongitudinalMode
+      equals: 2
+    enablement:
+    - $ref: '#/macros/longitudinal'
+  - key: SccCurveMapEnabled
+    widget: toggle
+    title: SCC Map Curve Control
+    description: Allow SCC mode to slow for map-derived upcoming curves.
+    visibility:
+    - type: param
+      key: LongitudinalMode
+      equals: 2
+    enablement:
+    - $ref: '#/macros/longitudinal'
   - key: DisengageOnAccelerator
     widget: toggle
     title: Disengage Cruise on Accelerator Pedal

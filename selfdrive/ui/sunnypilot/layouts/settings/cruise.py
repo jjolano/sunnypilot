@@ -41,6 +41,9 @@ ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot 
 ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on this platform due to vehicle limitations.")
 LONG_MODE_DESCRIPTION = tr_noop("Select the top-level longitudinal behavior: ACC for deterministic cruise/follow, E2E for model-primary driving, or SCC for smart switching.")
 LONG_MODE_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control to use longitudinal modes.")
+SCC_CURVE_DESCRIPTION = tr_noop("Allow SCC mode to slow for upcoming curves from this source. These controls only apply when Longitudinal Mode is SCC.")
+SCC_CURVE_NOSCC_DESCRIPTION = tr_noop("Select SCC in Longitudinal Mode to use SCC curve controls.")
+SCC_CURVE_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control to use SCC curve controls.")
 LONG_STACK_DESCRIPTION = tr_noop("Select which longitudinal control stack runs after sunnypilot longitudinal control is active. " +
                                  "Changing this requires an onroad cycle.")
 LONG_STACK_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control to use the longitudinal stack selector.")
@@ -85,6 +88,16 @@ class CruiseLayout(Widget):
       param="CustomAccIncrementsEnabled",
       callback=self._on_custom_acc_toggle)
 
+    self.scc_curve_vision_toggle = toggle_item_sp(
+      title=tr("SCC Vision Curve Control"),
+      description="",
+      param="SccCurveVisionEnabled")
+
+    self.scc_curve_map_toggle = toggle_item_sp(
+      title=tr("SCC Map Curve Control"),
+      description="",
+      param="SccCurveMapEnabled")
+
     self.custom_acc_short_increment = option_item_sp(
       title=tr("Short Press Increment"),
       param="CustomAccShortPressIncrement",
@@ -123,6 +136,8 @@ class CruiseLayout(Widget):
     items = [
       self.icbm_toggle,
       self.longitudinal_mode_item,
+      self.scc_curve_vision_toggle,
+      self.scc_curve_map_toggle,
       self.longitudinal_stack_item,
       self.one_pedal_longitudinal_item,
       self.custom_acc_toggle,
@@ -144,6 +159,8 @@ class CruiseLayout(Widget):
     self.icbm_toggle.show_description(True)
     self.custom_acc_toggle.show_description(True)
     self.longitudinal_mode_item.show_description(True)
+    self.scc_curve_vision_toggle.show_description(True)
+    self.scc_curve_map_toggle.show_description(True)
     self.one_pedal_longitudinal_item.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
@@ -185,11 +202,16 @@ class CruiseLayout(Widget):
       else:
         ui_state.params.remove("CustomAccIncrementsEnabled")
         ui_state.params.remove("LongitudinalMode")
+        ui_state.params.remove("SccCurveVisionEnabled")
+        ui_state.params.remove("SccCurveMapEnabled")
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.longitudinal_mode_item.action_item.set_enabled(False)
+        self.scc_curve_vision_toggle.action_item.set_enabled(False)
+        self.scc_curve_map_toggle.action_item.set_enabled(False)
         self.longitudinal_stack_item.action_item.set_enabled(False)
         self.one_pedal_longitudinal_item.action_item.set_enabled(False)
       self._update_longitudinal_mode_item(has_long)
+      self._update_scc_curve_items(has_long)
       self._update_longitudinal_stack_item(has_long)
 
     else:
@@ -198,6 +220,10 @@ class CruiseLayout(Widget):
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
       self.longitudinal_mode_item.action_item.set_enabled(False)
       self.longitudinal_mode_item.set_description(tr(ONROAD_ONLY_DESCRIPTION))
+      self.scc_curve_vision_toggle.action_item.set_enabled(False)
+      self.scc_curve_vision_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
+      self.scc_curve_map_toggle.action_item.set_enabled(False)
+      self.scc_curve_map_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
       self.longitudinal_stack_item.action_item.set_enabled(False)
       self.longitudinal_stack_item.set_description(tr(ONROAD_ONLY_DESCRIPTION))
       self.one_pedal_longitudinal_item.action_item.set_enabled(False)
@@ -229,6 +255,18 @@ class CruiseLayout(Widget):
 
   def _update_longitudinal_mode_item(self, has_long: bool):
     self.longitudinal_mode_item.set_description(tr(LONG_MODE_DESCRIPTION if has_long else LONG_MODE_NOLONG_DESCRIPTION))
+
+  def _update_scc_curve_items(self, has_long: bool):
+    try:
+      current_mode = LongitudinalMode(int(ui_state.params.get("LongitudinalMode", return_default=True)))
+    except (TypeError, ValueError):
+      current_mode = LongitudinalMode.ACC
+    enabled = has_long and current_mode == LongitudinalMode.SCC
+    description = SCC_CURVE_DESCRIPTION if enabled else (SCC_CURVE_NOSCC_DESCRIPTION if has_long else SCC_CURVE_NOLONG_DESCRIPTION)
+    self.scc_curve_vision_toggle.action_item.set_enabled(enabled)
+    self.scc_curve_map_toggle.action_item.set_enabled(enabled)
+    self.scc_curve_vision_toggle.set_description(tr(description))
+    self.scc_curve_map_toggle.set_description(tr(description))
 
   def _update_longitudinal_stack_item(self, has_long: bool):
     resolution = self._get_longitudinal_stack_resolution()
@@ -315,6 +353,7 @@ class CruiseLayout(Widget):
 
   def _on_longitudinal_mode_changed(self, mode: int):
     _ = LongitudinalMode(mode)
+    self._update_scc_curve_items(ui_state.has_longitudinal_control)
 
   def _on_custom_acc_toggle(self, state):
     self.custom_acc_short_increment.set_visible(state)

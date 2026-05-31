@@ -22,6 +22,9 @@ def test_longitudinal_mode_selector_replaces_legacy_toggles():
   assert "self.longitudinal_mode_item = multiple_button_item_sp" in source
   assert "LongitudinalMode" in source
   assert "buttons=[tr(\"ACC\"), tr(\"E2E\"), tr(\"SCC\")]" in source
+  assert "SccCurveVisionEnabled" in source
+  assert "SccCurveMapEnabled" in source
+  assert "current_mode == LongitudinalMode.SCC" in source
   assert "param=\"DynamicExperimentalControl\"" not in source
   assert "param=\"SmartCruiseControlVision\"" not in source
   assert "param=\"SmartCruiseControlMap\"" not in source
