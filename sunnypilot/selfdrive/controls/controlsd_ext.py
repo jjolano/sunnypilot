@@ -20,6 +20,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import Bl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2, LatControlTorqueV21
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV4
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
   TorqueControllerDefinition,
   TorqueControllerRegistry,
@@ -33,6 +34,7 @@ TORQUE_CONTROLLER_REGISTRY = TorqueControllerRegistry((
   TorqueControllerDefinition(2.0, LatControlTorqueV2),
   TorqueControllerDefinition(2.1, LatControlTorqueV21),
   TorqueControllerDefinition(3.0, LatControlTorqueV3),
+  TorqueControllerDefinition(4.0, LatControlTorqueV4),
 ))
 
 
@@ -62,7 +64,7 @@ class ControlsExt(ModelStateBase):
 
     # Selection contract:
     # - EnforceTorqueControl off: native torque uses v0 compatibility shim; non-native keeps stock controller.
-    # - EnforceTorqueControl on: native torque uses selected 0.0/2.0/2.1/3.0; non-native keeps stock controller.
+    # - EnforceTorqueControl on: native torque uses selected 0.0/2.0/2.1/3.0/4.0; non-native keeps stock controller.
     if not enforce_torque_control:
       if native_torque:
         return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)  # FIXME-SP: revert when upstream fixes tuning issues with v1
@@ -94,8 +96,10 @@ class ControlsExt(ModelStateBase):
         self.lat_delay = get_lat_delay(self.params, sm["liveDelay"].lateralDelay)
         if self.CP.lateralTuning.which() == 'torque':
           speed_aware_params = self.params.get("LiveTorqueSpeedAdaptiveParams")
-          extension = getattr(lac, "extension", None)
-          update_speed_aware_params = getattr(extension, "update_speed_aware_params", None)
+          update_speed_aware_params = getattr(lac, "update_speed_aware_params", None)
+          if update_speed_aware_params is None:
+            extension = getattr(lac, "extension", None)
+            update_speed_aware_params = getattr(extension, "update_speed_aware_params", None)
           if update_speed_aware_params is not None:
             update_speed_aware_params(speed_aware_params)
 

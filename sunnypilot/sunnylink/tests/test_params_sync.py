@@ -347,6 +347,18 @@ def test_torque_control_tune_versions_in_sync():
     )
 
 
+def test_torque_control_tune_v4_is_selectable_and_experimental():
+  with open(METADATA_PATH) as f:
+    metadata = json.load(f)
+
+  torque_tune = metadata["TorqueControlTune"]
+  v4_option = next((opt for opt in torque_tune["options"] if opt.get("value") == 4.0), None)
+
+  assert torque_tune["options"][0] == {"value": "", "label": "Default"}
+  assert v4_option == {"value": 4.0, "label": "v4.0"}
+  assert "experimental" in torque_tune.get("description", "").lower()
+
+
 def test_longitudinal_stack_options_in_sync():
   from openpilot.common.basedir import BASEDIR
 
