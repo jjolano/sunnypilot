@@ -1703,6 +1703,15 @@ class LongitudinalMpc:
     self.lead_transition_was_status = np.zeros(2, dtype=bool)
     self.lead_confidence_trackers = [LeadConfidenceTracker(), LeadConfidenceTracker()]
     self.lead_confidence_states = [tracker.update(None, 0.0) for tracker in self.lead_confidence_trackers]
+    self.dominant_obstacle_idx = 2
+    self.lead_dominant_obstacle_idx = None
+    self.lead_prediction_valid = (False, False)
+    self.lead_predictions = (
+      {"valid": False, "x": (), "v": (), "a": ()},
+      {"valid": False, "x": (), "v": (), "a": ()},
+    )
+    self.alternate_lead_threat_active = False
+    self.mpc_obstacle_columns = 0
     self.prev_dominant_obstacle = None
     self._last_set_weights_key = None
     self._last_cost_weight_key = None
@@ -2058,12 +2067,29 @@ class LongitudinalMpc:
 
     cost_obstacles = np.column_stack([lead_0_cost_obstacle, lead_1_cost_obstacle, cruise_obstacle])
     x_obstacles = np.column_stack([lead_0_mpc_obstacle, lead_1_mpc_obstacle, cruise_obstacle])
+    self.mpc_obstacle_columns = int(x_obstacles.shape[1])
+    self.lead_prediction_valid = (bool(radarstate.leadOne.status), bool(radarstate.leadTwo.status))
+    self.lead_predictions = (
+      {
+        "valid": bool(radarstate.leadOne.status),
+        "x": tuple(float(x) for x in lead_xv_0[:, 0]),
+        "v": tuple(float(v) for v in lead_xv_0[:, 1]),
+        "a": tuple(float(a) for a in lead_0_a_traj),
+      },
+      {
+        "valid": bool(radarstate.leadTwo.status),
+        "x": tuple(float(x) for x in lead_xv_1[:, 0]),
+        "v": tuple(float(v) for v in lead_xv_1[:, 1]),
+        "a": tuple(float(a) for a in lead_1_a_traj),
+      },
+    )
 
     # Apply speed-proportional hysteresis to source selection to prevent rapid switching
     margin = get_source_hysteresis_margin(v_ego)
     source_idx = MPC_SOURCES.index(self.source) if self.source in MPC_SOURCES else 2
     source_idx = apply_source_hysteresis(cost_obstacles[0], source_idx, margin)
     self.source = MPC_SOURCES[source_idx]
+    self.dominant_obstacle_idx = int(source_idx)
 
     # Apply hysteresis to dominant obstacle for comfort target switching
     if self.prev_dominant_obstacle is None:
@@ -2123,6 +2149,15 @@ class LongitudinalMpc:
     lead_dominant = np.where(dominant_obstacle == 2,
                               np.argmin(cost_obstacles[:, :2], axis=1),
                               dominant_obstacle)
+    self.dominant_obstacle_idx = int(dominant_obstacle[0])
+    self.lead_dominant_obstacle_idx = int(lead_dominant[0]) if int(lead_dominant[0]) in (0, 1) else None
+    self.alternate_lead_threat_active = bool(
+      any(
+        bool(getattr(lead, "status", False)) and idx != self.lead_dominant_obstacle_idx and
+        cost_obstacles[0, idx] < cruise_obstacle[0]
+        for idx, lead in enumerate((radarstate.leadOne, radarstate.leadTwo))
+      )
+    )
     lead_0_crawl_selected = lead_dominant == 0
     crawl_targets = np.where(lead_0_crawl_selected, lead_0_crawl_targets, lead_1_crawl_targets)
     crawl_costs = np.where(lead_0_crawl_selected, lead_0_crawl_costs, lead_1_crawl_costs)
@@ -2283,7 +2318,26 @@ class SunnypilotLongitudinalMpc(LongitudinalMpc):
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_sunnypilot_current_safe_obstacle_distance(v_cruise_clipped, t_follow)
 
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
+    self.mpc_obstacle_columns = int(x_obstacles.shape[1])
+    self.lead_prediction_valid = (bool(radarstate.leadOne.status), bool(radarstate.leadTwo.status))
+    self.lead_predictions = (
+      {
+        "valid": bool(radarstate.leadOne.status),
+        "x": tuple(float(x) for x in lead_xv_0[:, 0]),
+        "v": tuple(float(v) for v in lead_xv_0[:, 1]),
+        "a": tuple(0.0 for _ in range(N + 1)),
+      },
+      {
+        "valid": bool(radarstate.leadTwo.status),
+        "x": tuple(float(x) for x in lead_xv_1[:, 0]),
+        "v": tuple(float(v) for v in lead_xv_1[:, 1]),
+        "a": tuple(0.0 for _ in range(N + 1)),
+      },
+    )
     self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]
+    self.dominant_obstacle_idx = int(np.argmin(x_obstacles[0]))
+    self.lead_dominant_obstacle_idx = int(np.argmin(x_obstacles[0, :2]))
+    self.alternate_lead_threat_active = False
 
     self.yref[:, :] = 0.0
     for i in range(N):

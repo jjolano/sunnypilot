@@ -133,8 +133,16 @@ class CustomV2Scene:
   lead_gap_excess: float = 0.0
   lead_follow_gap_excess: float | None = None
   lead_lateral_progress_blocked: bool = False
+  lead_progress_allowed: bool = False
   lead_opening_prediction: bool = False
   lead_confirmed_pullaway: bool = False
+  primary_physical_lead_idx: int = -1
+  primary_behavior_lead_idx: int = -1
+  primary_lead_reason: str = ""
+  primary_lead_authority: str = ""
+  alternate_lead_threat_active: bool = False
+  shadow_lead_active: bool = False
+  lead_release_blocked_reason: str = ""
   stop_threat: bool = False
   independent_stop_threat: bool = False
   model_should_stop: bool = False
@@ -181,12 +189,15 @@ def lead_evidence_releases_stop(scene: CustomV2Scene) -> bool:
   lead_moving = scene.lead_v_rel > 0.0 or (scene.v_ego < LEAD_MOTION_MIN_V and scene.lead_v >= LEAD_MOTION_MIN_V)
   return bool(
     scene.has_lead and
+    scene.lead_progress_allowed and
     (scene.lead_confirmed_pullaway or scene.lead_opening_prediction or lead_moving) and
     not scene.independent_stop_threat
   )
 
 
 def excess_gap_accel_cap(scene: CustomV2Scene) -> float | None:
+  if not scene.lead_progress_allowed:
+    return None
   lead_follow_gap_excess = _lead_follow_gap_excess(scene)
   if not scene.has_lead or lead_follow_gap_excess <= EXCESS_GAP_MIN:
     return None
@@ -249,6 +260,14 @@ class CustomLongitudinalStackV2:
       "custom_v2_intents": CUSTOM_V2_INTENTS,
       "custom_v2_one_pedal_mode": scene.one_pedal_mode,
       "custom_v2_one_pedal_cruise_hold": scene.one_pedal_cruise_hold,
+      "primary_physical_lead_idx": int(scene.primary_physical_lead_idx),
+      "primary_behavior_lead_idx": int(scene.primary_behavior_lead_idx),
+      "primary_lead_reason": str(scene.primary_lead_reason),
+      "primary_lead_authority": str(scene.primary_lead_authority),
+      "alternate_lead_threat_active": bool(scene.alternate_lead_threat_active),
+      "shadow_lead_active": bool(scene.shadow_lead_active),
+      "lead_progress_allowed": bool(scene.lead_progress_allowed),
+      "lead_release_blocked_reason": str(scene.lead_release_blocked_reason),
     })
     return replace(
       sunnypilot_output,
@@ -469,7 +488,7 @@ class CustomLongitudinalStackV2:
       else:
         rejected.append(("launch", "model_stop_not_clear"))
 
-    lead_progress_allowed = allow_lead_progress and not (
+    lead_progress_allowed = allow_lead_progress and scene.lead_progress_allowed and not scene.alternate_lead_threat_active and not (
       scene.has_lead and a_target < 0.0 and scene.lead_v_rel >= 0.0
     )
     lead_pullaway_progress_allowed = lead_progress_allowed and scene.lead_gap_excess > EXCESS_GAP_MIN and scene.lead_v_rel > 0.0
@@ -486,7 +505,7 @@ class CustomLongitudinalStackV2:
         "lead_follow", "excess_gap_progress", accel_limits,
       )
     elif allow_lead_progress and scene.has_lead and _lead_follow_gap_excess(scene) > EXCESS_GAP_MIN:
-      rejected.append(("lead_follow", "closing_speed_guard"))
+      rejected.append(("lead_follow", scene.lead_release_blocked_reason or "closing_speed_guard"))
 
     return a_target, selected_intent, selected_reason
 
@@ -686,7 +705,9 @@ def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: 
     else:
       rejected.append(("launch", "model_stop_not_clear"))
 
-  lead_progress_allowed = not (scene.has_lead and output.a_target < 0.0 and scene.lead_v_rel >= 0.0)
+  lead_progress_allowed = scene.lead_progress_allowed and not scene.alternate_lead_threat_active and not (
+    scene.has_lead and output.a_target < 0.0 and scene.lead_v_rel >= 0.0
+  )
   gap_cap = excess_gap_accel_cap(scene) if lead_progress_allowed else None
   if gap_cap is not None:
     candidates.append(_custom_v2_relaxation_candidate(
@@ -694,7 +715,7 @@ def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: 
       _clip_to_limits(gap_cap, accel_limits), bool(output.should_stop), accel_limits,
     ))
   elif scene.has_lead and _lead_follow_gap_excess(scene) > EXCESS_GAP_MIN:
-    rejected.append(("lead_follow", "closing_speed_guard"))
+    rejected.append(("lead_follow", scene.lead_release_blocked_reason or "closing_speed_guard"))
 
   return tuple(candidates), tuple(rejected)
 
@@ -907,6 +928,14 @@ def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
     curve_active=curve_active,
     map_caution_active=map_caution_active,
     map_caution_confirmed=map_caution_confirmed,
+    lead_progress_allowed=bool(scene.lead_progress_allowed),
+    primary_physical_lead_idx=int(scene.primary_physical_lead_idx),
+    primary_behavior_lead_idx=int(scene.primary_behavior_lead_idx),
+    primary_lead_reason=str(scene.primary_lead_reason),
+    primary_lead_authority=str(scene.primary_lead_authority),
+    alternate_lead_threat_active=bool(scene.alternate_lead_threat_active),
+    shadow_lead_active=bool(scene.shadow_lead_active),
+    lead_release_blocked_reason=str(scene.lead_release_blocked_reason),
     one_pedal_mode=_validated_one_pedal_mode(scene.one_pedal_mode),
     one_pedal_cruise_hold=bool(scene.one_pedal_cruise_hold),
   )

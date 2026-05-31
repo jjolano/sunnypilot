@@ -110,6 +110,7 @@ def test_direct_lead_scene_does_not_create_lead_progress():
     v_cruise=6.0,
     has_lead=True,
     lead_v=0.2,
+    lead_progress_allowed=True,
     lead_confirmed_pullaway=True,
     stop_threat=True,
     model_should_stop=True,
@@ -126,6 +127,53 @@ def test_direct_lead_scene_does_not_create_lead_progress():
   assert output.debug["custom_v2_selected_reason"] == "sunnypilot_current_seed"
 
 
+def test_shadow_lead_blocks_no_lead_launch_without_authorizing_progress():
+  scene = CustomV2Scene(
+    v_ego=0.2,
+    v_cruise=5.0,
+    has_lead=True,
+    lead_v=1.0,
+    lead_v_rel=1.0,
+    lead_gap_excess=10.0,
+    lead_opening_prediction=True,
+    lead_confirmed_pullaway=True,
+    lead_progress_allowed=False,
+    shadow_lead_active=True,
+    model_stop_distance=30.0,
+    model_desired_accel=0.0,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0), scene, accel_limits=(-2.0, 2.0))
+
+  assert not lead_evidence_releases_stop(scene)
+  assert output.a_target == 0.0
+  assert output.debug["lead_progress_allowed"] is False
+  assert output.debug["shadow_lead_active"] is True
+
+
+def test_alternate_lead_threat_blocks_behavior_lead_progress():
+  scene = CustomV2Scene(
+    v_ego=0.2,
+    v_cruise=5.0,
+    has_lead=True,
+    lead_v=1.0,
+    lead_v_rel=1.0,
+    lead_gap_excess=10.0,
+    lead_progress_allowed=True,
+    lead_opening_prediction=True,
+    lead_confirmed_pullaway=True,
+    alternate_lead_threat_active=True,
+    lead_release_blocked_reason="alternate_lead_threat",
+    model_stop_distance=30.0,
+    model_desired_accel=0.0,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0, has_lead=True), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == 0.0
+  assert "alternate_lead_threat" in output.debug["custom_v2_rejected_reasons"]
+
+
 def test_excess_gap_progress_softens_far_fast_lead_approach_braking():
   scene = CustomV2Scene(
     v_ego=15.5,
@@ -134,6 +182,7 @@ def test_excess_gap_progress_softens_far_fast_lead_approach_braking():
     lead_v=9.0,
     lead_v_rel=-6.5,
     lead_gap_excess=40.0,
+    lead_progress_allowed=True,
   )
 
   output = CustomLongitudinalStackV2().update(make_output(-0.3, has_lead=True), scene, accel_limits=(-2.0, 2.0))
@@ -150,6 +199,7 @@ def test_excess_gap_progress_remains_blocked_for_close_closing_lead():
     has_lead=True,
     lead_v_rel=-1.0,
     lead_gap_excess=4.0,
+    lead_progress_allowed=True,
   )
 
   output = CustomLongitudinalStackV2().update(make_output(-0.3, has_lead=True), scene, accel_limits=(-2.0, 2.0))
@@ -166,6 +216,7 @@ def test_excess_gap_progress_ignores_stopped_lead():
     lead_v=0.0,
     lead_v_rel=0.0,
     lead_gap_excess=9.0,
+    lead_progress_allowed=True,
   )
 
   output = CustomLongitudinalStackV2().update(make_output(0.0, has_lead=True), scene, accel_limits=(-2.0, 2.0))
@@ -231,6 +282,7 @@ def test_planner_lead_seed_caps_are_not_relaxed_by_pullaway_progress():
     lead_v=0.5,
     lead_v_rel=-0.3,
     lead_gap_excess=1.4,
+    lead_progress_allowed=True,
     lead_confirmed_pullaway=True,
   )
 
@@ -278,6 +330,7 @@ def test_e2e_source_decel_is_preserved_with_lead_pullaway_evidence():
     lead_v=4.2,
     lead_v_rel=2.0,
     lead_gap_excess=10.0,
+    lead_progress_allowed=True,
     lead_opening_prediction=True,
     lead_confirmed_pullaway=True,
     model_desired_accel=-0.8,
@@ -307,6 +360,7 @@ def test_opening_lead_progress_preserves_planner_decel():
     lead_v=0.8,
     lead_v_rel=0.8,
     lead_gap_excess=4.5,
+    lead_progress_allowed=True,
     lead_confirmed_pullaway=True,
   )
 
@@ -632,6 +686,27 @@ def test_one_pedal_does_not_create_lead_braking_for_nonhazard_lead():
   assert output.a_target == 0.0
   assert output.debug["custom_v2_selected_intent"] == "one_pedal"
   assert output.debug["custom_v2_selected_reason"] == "lift_off_coast"
+
+
+def test_one_pedal_creep_behind_lead_requires_behavior_authority():
+  scene = CustomV2Scene(
+    v_ego=0.2,
+    v_cruise=10.0,
+    has_lead=True,
+    lead_v=1.0,
+    lead_v_rel=0.8,
+    lead_confirmed_pullaway=True,
+    lead_progress_allowed=False,
+    shadow_lead_active=True,
+    one_pedal_mode=ONE_PEDAL_MODE_CREEP,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.0, has_lead=True), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == 0.0
+  assert output.debug["custom_v2_selected_intent"] == "one_pedal"
+  assert output.debug["custom_v2_selected_reason"] == "lift_off_coast"
+  assert "terminal_creep_not_authorized" in output.debug["custom_v2_rejected_reasons"]
 
 
 def test_one_pedal_creep_holds_crawl_with_clear_evidence():

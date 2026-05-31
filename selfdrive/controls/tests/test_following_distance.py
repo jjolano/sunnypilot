@@ -2006,6 +2006,19 @@ def test_non_dominant_closing_cut_in_lead_caps_accel(monkeypatch):
   assert mpc.params[0, 1] == pytest.approx(0.0)
 
 
+def test_mpc_keeps_two_real_lead_obstacles_plus_cruise_and_marks_fake_predictions_invalid(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(10.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+
+  mpc.update(SimpleNamespace(leadOne=SimpleNamespace(status=False), leadTwo=SimpleNamespace(status=False)), v_cruise=25.0)
+
+  assert mpc.mpc_obstacle_columns == 3
+  assert mpc.lead_prediction_valid == (False, False)
+  assert not mpc.lead_predictions[0]["valid"]
+  assert not mpc.lead_predictions[1]["valid"]
+
+
 def test_approach_brake_stays_stock_for_small_closure():
   assert get_approach_brake(0.0) == pytest.approx(APPROACH_BRAKE)
   assert get_approach_brake(1.5) == pytest.approx(APPROACH_BRAKE)

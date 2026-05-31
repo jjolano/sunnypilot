@@ -153,6 +153,23 @@ def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_r
   return d_rel < close_distance
 
 
+def should_block_lead_speedup_from_context(context, v_ego: float, gas_pressed: bool, brake_pressed: bool) -> bool:
+  for state in getattr(context, "states", ()):
+    if str(getattr(state, "authority", "none")) == "none":
+      continue
+    if should_block_lead_speedup(
+      v_ego,
+      True,
+      float(getattr(state, "d_rel", 0.0)),
+      float(getattr(state, "v_rel", 0.0)),
+      float(getattr(state, "path_y_rel", getattr(state, "y_rel", 0.0))),
+      gas_pressed,
+      brake_pressed,
+    ):
+      return True
+  return False
+
+
 def apply_lead_speedup_guard(active: bool, v_ego: float, target: tuple[float, float]) -> tuple[float, float]:
   if not active:
     return target
@@ -311,15 +328,22 @@ class LongitudinalPlannerSP:
     )
     cruise_target = (v_cruise, min(a_ego, SPEED_LIMIT_HANDOFF_A_TARGET_MAX)) if speed_limit_handoff_active else (v_cruise, a_ego)
     lead_one = sm['radarState'].leadOne
-    lead_speedup_guard_active = should_block_lead_speedup(
-      v_ego,
-      bool(lead_one.status),
-      float(lead_one.dRel),
-      float(lead_one.vRel),
-      float(lead_one.yRel),
-      bool(CS.gasPressed),
-      bool(CS.brakePressed),
-    )
+    primary_lead_context = getattr(self, "primary_lead_context", None)
+    stack_resolution = getattr(self, "longitudinal_stack_resolution", None)
+    if is_custom_stack(getattr(stack_resolution, "resolved_stack", "")) and getattr(primary_lead_context, "states", ()):
+      lead_speedup_guard_active = should_block_lead_speedup_from_context(
+        primary_lead_context, v_ego, bool(CS.gasPressed), bool(CS.brakePressed)
+      )
+    else:
+      lead_speedup_guard_active = should_block_lead_speedup(
+        v_ego,
+        bool(lead_one.status),
+        float(lead_one.dRel),
+        float(lead_one.vRel),
+        float(lead_one.yRel),
+        bool(CS.gasPressed),
+        bool(CS.brakePressed),
+      )
     speed_limit_assist_target = apply_lead_speedup_guard(lead_speedup_guard_active, v_ego, speed_limit_assist_target)
     cruise_target = apply_lead_speedup_guard(lead_speedup_guard_active, v_ego, cruise_target)
     decision_cruise_target = speed_limit_assist_target if speed_limit_active else cruise_target

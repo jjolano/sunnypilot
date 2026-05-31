@@ -190,7 +190,10 @@ def test_scene_derived_progress_candidates_are_blocked_by_overrides_and_stop_thr
 
 def test_scene_derived_excess_gap_progress_loses_to_close_physical_lead():
   output = make_output(-0.2, has_lead=True)
-  scene = CustomV2Scene(v_ego=15.5, v_cruise=17.0, has_lead=True, lead_v=9.0, lead_v_rel=-6.5, lead_gap_excess=40.0)
+  scene = CustomV2Scene(
+    v_ego=15.5, v_cruise=17.0, has_lead=True, lead_v=9.0, lead_v_rel=-6.5,
+    lead_gap_excess=40.0, lead_progress_allowed=True,
+  )
   progress_candidates, _rejected = build_custom_v2_progress_candidates(output, scene, (-2.0, 2.0))
   cruise = custom_v2_candidate_with_debug(
     make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, -0.2, "driver_cruise_target", v_target=17.0),

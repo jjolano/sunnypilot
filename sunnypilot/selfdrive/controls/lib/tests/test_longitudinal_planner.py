@@ -21,6 +21,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
   build_sp_longitudinal_candidates,
   publish_stack_telemetry,
   select_lowest_longitudinal_target,
+  should_block_lead_speedup_from_context,
 )
 
 publish_decision_layer_telemetry = cast(
@@ -242,6 +243,22 @@ class TestLongitudinalPlannerHysteresis(unittest.TestCase):
     # If SLA is 22.5, it's still the winner among all.
     self.assertEqual(source, LongitudinalPlanSource.speedLimitAssist)
     self.assertEqual(v_target, 22.5)
+
+
+class TestLeadContextSpeedupGuard(unittest.TestCase):
+  def test_context_guard_uses_close_closing_shadow_or_real_lead(self):
+    context = SimpleNamespace(states=(
+      SimpleNamespace(authority="suppress_only", d_rel=12.0, v_rel=-1.0, path_y_rel=0.0),
+    ))
+
+    self.assertTrue(should_block_lead_speedup_from_context(context, 8.0, False, False))
+
+  def test_context_guard_ignores_released_false_positive(self):
+    context = SimpleNamespace(states=(
+      SimpleNamespace(authority="none", d_rel=12.0, v_rel=-1.0, path_y_rel=0.0),
+    ))
+
+    self.assertFalse(should_block_lead_speedup_from_context(context, 8.0, False, False))
 
 
 class TestDecisionLayerTelemetryPublish(unittest.TestCase):
