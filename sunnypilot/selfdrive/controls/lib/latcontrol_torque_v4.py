@@ -7,6 +7,7 @@ import numpy as np
 
 from cereal import log
 from opendbc.car.lateral import get_friction
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.selfdrive.controls.lib.lateral_accel import roll_lateral_accel
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_context
@@ -37,6 +38,8 @@ DAMPING_GAIN_V = [0.04, 0.05, 0.075, 0.060, 0.040, 0.035]
 BREAKAWAY_SCALE_BP = [0.0, 3.0, 10.0, 20.0, 30.0, 40.0]
 BREAKAWAY_SCALE_V = [0.30, 0.42, 0.68, 0.64, 0.50, 0.45]
 BREAKAWAY_FULL_DEMAND = 0.40
+MEASUREMENT_RATE_CAP = 20.0
+MEASUREMENT_RATE_FILTER_ALPHA = 0.25
 
 OUTPUT_SLEW_RATE_BP = [0.0, 3.0, 10.0, 20.0, 30.0, 40.0]
 OUTPUT_SLEW_RATE_V = [0.80, 1.10, 2.40, 3.60, 4.00, 4.00]
@@ -105,7 +108,10 @@ PHASE_TO_CAPNP = {
 
 
 def _finite(*values: float) -> bool:
-  return all(math.isfinite(float(value)) for value in values)
+  try:
+    return all(math.isfinite(float(value)) for value in values)
+  except (TypeError, ValueError):
+    return False
 
 
 def _clip(value: float, lower: float, upper: float) -> float:
@@ -161,7 +167,8 @@ class TorqueV4Observation:
   steer_limited_by_safety: bool
   curvature_limited: bool
   saturated: bool
-  target_lateral_accel: float
+  raw_target_lateral_accel: float
+  delay_lead_lateral_accel: float
   target_lateral_accel_rate: float
   actual_lateral_accel: float
   actual_lateral_jerk: float
@@ -183,6 +190,8 @@ class TorqueV4SpeedModelResult:
   sign_change_slew_rate: float
   speed_aware_confidence: float
   speed_aware_factor: float
+  effective_lat_accel_factor: float
+  effective_lat_accel_offset: float
 
 
 @dataclass(frozen=True)
@@ -200,9 +209,9 @@ class TorqueV4GovernorResult:
 
 
 class TorqueV4SpeedModel:
-  """Speed-aware corrections stay bounded; feedforward remains lateral-accel based."""
+  """Speed-aware corrections stay opt-in and bounded; never apply raw bucket params directly."""
 
-  def update(self, v_ego: float, torque_params, speed_aware_params: dict | None,
+  def update(self, v_ego: float, torque_params, speed_aware_params: dict | None, speed_aware_apply_enabled: bool,
              adaptation: "TorqueV4SessionAdaptation") -> TorqueV4SpeedModelResult:
     response_delay = _clip(adaptation.response_delay, RESPONSE_DELAY_MIN, RESPONSE_DELAY_MAX)
     lead_gain = _interp(v_ego, LEAD_GAIN_BP, LEAD_GAIN_V)
@@ -213,12 +222,12 @@ class TorqueV4SpeedModel:
     output_slew_rate = _interp(v_ego, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V)
     sign_change_slew_rate = _interp(v_ego, SIGN_CHANGE_SLEW_RATE_BP, SIGN_CHANGE_SLEW_RATE_V)
 
-    speed_factor, speed_offset, confidence = self._speed_aware_values(v_ego, torque_params, speed_aware_params)
+    speed_factor, speed_offset, confidence = self._speed_aware_values(v_ego, torque_params, speed_aware_params, speed_aware_apply_enabled)
     global_factor = max(float(torque_params.latAccelFactor), 1e-3)
+    global_offset = float(torque_params.latAccelOffset)
     speed_response_scale = _clip(global_factor / max(speed_factor, 1e-3), RESPONSE_SCALE_MIN, RESPONSE_SCALE_MAX)
     response_scale = _clip(adaptation.response_scale * speed_response_scale, RESPONSE_SCALE_MIN, RESPONSE_SCALE_MAX)
-    trim_lateral_accel = _clip(adaptation.trim_lateral_accel + (float(torque_params.latAccelOffset) - speed_offset),
-                              TRIM_LAT_ACCEL_MIN, TRIM_LAT_ACCEL_MAX)
+    trim_lateral_accel = _clip(adaptation.trim_lateral_accel + (global_offset - speed_offset), TRIM_LAT_ACCEL_MIN, TRIM_LAT_ACCEL_MAX)
     return TorqueV4SpeedModelResult(
       response_scale=response_scale,
       trim_lateral_accel=trim_lateral_accel,
@@ -232,12 +241,15 @@ class TorqueV4SpeedModel:
       sign_change_slew_rate=sign_change_slew_rate,
       speed_aware_confidence=confidence,
       speed_aware_factor=speed_factor,
+      effective_lat_accel_factor=speed_factor,
+      effective_lat_accel_offset=speed_offset,
     )
 
-  def _speed_aware_values(self, v_ego: float, torque_params, speed_aware_params: dict | None) -> tuple[float, float, float]:
+  def _speed_aware_values(self, v_ego: float, torque_params, speed_aware_params: dict | None,
+                          speed_aware_apply_enabled: bool) -> tuple[float, float, float]:
     global_factor = max(float(torque_params.latAccelFactor), 1e-3)
     global_offset = float(torque_params.latAccelOffset)
-    if v_ego < 10.0 or not speed_aware_params:
+    if not speed_aware_apply_enabled or v_ego < 15.0 or not speed_aware_params:
       return global_factor, global_offset, 0.0
 
     label = self._label_for_speed(v_ego)
@@ -250,7 +262,11 @@ class TorqueV4SpeedModel:
     if not _finite(local_factor, local_offset):
       return global_factor, global_offset, 0.0
 
-    confidence = 0.30 if v_ego < 30.0 else 0.22
+    base_confidence = 0.30 if v_ego < 30.0 else 0.22
+    speed_gate = _clip((v_ego - 15.0) / 5.0, 0.0, 1.0)
+    confidence = base_confidence * speed_gate
+    if confidence <= 0.0:
+      return global_factor, global_offset, 0.0
     effective_factor = confidence * local_factor + (1.0 - confidence) * global_factor
     effective_offset = confidence * local_offset + (1.0 - confidence) * global_offset
     effective_factor = _clip(effective_factor, 0.5 * global_factor, 2.0 * global_factor)
@@ -314,21 +330,22 @@ class TorqueV4SessionAdaptation:
 
   def update(self, observation: TorqueV4Observation, governor_reason: TorqueV4GovernorReason) -> TorqueV4AdaptationUpdate:
     reject_reason = self._reject_reason(observation, governor_reason)
-    residual = observation.target_lateral_accel - observation.actual_lateral_accel if observation.finite else 0.0
+    response_residual = observation.delay_lead_lateral_accel - observation.actual_lateral_accel if observation.finite else 0.0
+    trim_residual = observation.raw_target_lateral_accel - observation.actual_lateral_accel if observation.finite else 0.0
     if reject_reason != TorqueV4LearnerRejectReason.NONE:
-      return TorqueV4AdaptationUpdate(False, reject_reason, residual)
+      return TorqueV4AdaptationUpdate(False, reject_reason, response_residual)
 
     if abs(observation.actual_lateral_accel) > LEARN_SIGN_THRESHOLD:
-      target_scale = _clip(abs(observation.target_lateral_accel) / max(abs(observation.actual_lateral_accel), 1e-3),
+      target_scale = _clip(abs(observation.delay_lead_lateral_accel) / max(abs(observation.actual_lateral_accel), 1e-3),
                            RESPONSE_SCALE_MIN, RESPONSE_SCALE_MAX)
       self.response_scale = _clip(self.response_scale + 0.002 * (target_scale - self.response_scale),
                                   RESPONSE_SCALE_MIN, RESPONSE_SCALE_MAX)
 
     if abs(observation.target_lateral_accel_rate) < 0.12:
-      self.trim_lateral_accel = _clip(self.trim_lateral_accel + 0.0005 * residual,
+      self.trim_lateral_accel = _clip(self.trim_lateral_accel + 0.0005 * trim_residual,
                                       TRIM_LAT_ACCEL_MIN, TRIM_LAT_ACCEL_MAX)
 
-    return TorqueV4AdaptationUpdate(True, TorqueV4LearnerRejectReason.NONE, residual)
+    return TorqueV4AdaptationUpdate(True, TorqueV4LearnerRejectReason.NONE, response_residual)
 
   @staticmethod
   def _reject_reason(observation: TorqueV4Observation,
@@ -344,13 +361,13 @@ class TorqueV4SessionAdaptation:
       reason |= TorqueV4LearnerRejectReason.CURVATURE_LIMITED
     if observation.saturated:
       reason |= TorqueV4LearnerRejectReason.SATURATED
-    if abs(observation.target_lateral_accel) < LEARN_MIN_TARGET:
+    if abs(observation.delay_lead_lateral_accel) < LEARN_MIN_TARGET:
       reason |= TorqueV4LearnerRejectReason.LOW_DEMAND
     if not observation.finite:
       reason |= TorqueV4LearnerRejectReason.NON_FINITE
     if abs(observation.actual_lateral_jerk) > LEARN_MAX_JERK:
       reason |= TorqueV4LearnerRejectReason.HIGH_JERK
-    target_sign = _sign(observation.target_lateral_accel, LEARN_SIGN_THRESHOLD)
+    target_sign = _sign(observation.delay_lead_lateral_accel, LEARN_SIGN_THRESHOLD)
     actual_sign = _sign(observation.actual_lateral_accel, LEARN_SIGN_THRESHOLD)
     if target_sign != 0 and actual_sign != 0 and target_sign != actual_sign:
       reason |= TorqueV4LearnerRejectReason.SIGN_CONFLICT
@@ -431,6 +448,7 @@ class LatControlTorqueV4(LatControl):
     if CP.lateralTuning.which() != "torque":
       raise ValueError("Torque v4 requires native torque lateral tuning")
     self.CP = CP
+    self.params = Params()
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
@@ -439,8 +457,10 @@ class LatControlTorqueV4(LatControl):
     self.session_adaptation = TorqueV4SessionAdaptation(initial_delay)
     self.governor = TorqueV4OutputGovernor(self.dt)
     self.speed_aware_params = None
+    self.speed_adaptive_apply_enabled = False
     self.previous_target_lateral_accel = 0.0
     self.previous_measurement = 0.0
+    self.filtered_measurement_rate = 0.0
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction) -> None:
     self.torque_params.latAccelFactor = latAccelFactor
@@ -448,6 +468,7 @@ class LatControlTorqueV4(LatControl):
     self.torque_params.friction = friction
 
   def update_speed_aware_params(self, params_str) -> None:
+    self._refresh_speed_adaptive_apply_enabled()
     if not params_str:
       self.speed_aware_params = None
       return
@@ -471,6 +492,13 @@ class LatControlTorqueV4(LatControl):
     self.session_adaptation.reset()
     self.previous_target_lateral_accel = 0.0
     self.previous_measurement = 0.0
+    self.filtered_measurement_rate = 0.0
+
+  def _refresh_speed_adaptive_apply_enabled(self) -> None:
+    try:
+      self.speed_adaptive_apply_enabled = self.params.get_bool("LiveTorqueSpeedAdaptiveApplyToggle")
+    except UnknownKeyName:
+      self.speed_adaptive_apply_enabled = False
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
     # Torque v4 follows only the processed controller-facing curvature passed in by controlsd.
@@ -484,7 +512,8 @@ class LatControlTorqueV4(LatControl):
     input_invalid = not _finite(desired_curvature, CS.vEgo, CS.steeringAngleDeg, CS.steeringRateDeg,
                                 params.angleOffsetDeg, params.roll)
     speed_result = self.speed_model.update(CS.vEgo if _finite(CS.vEgo) else 0.0, self.torque_params,
-                                           self.speed_aware_params, self.session_adaptation)
+                                           self.speed_aware_params, self.speed_adaptive_apply_enabled,
+                                           self.session_adaptation)
     target = self._build_target(0.0 if input_invalid else desired_curvature, CS.vEgo, speed_result, input_invalid)
     steering_angle_rad = math.radians(CS.steeringAngleDeg - params.angleOffsetDeg) if not input_invalid else 0.0
     measured_curvature = -VM.calc_curvature(steering_angle_rad, CS.vEgo, params.roll) if not input_invalid else 0.0
@@ -496,8 +525,7 @@ class LatControlTorqueV4(LatControl):
       CS.vEgo if not input_invalid else 0.0,
       params.roll if not input_invalid else 0.0,
     )
-    measurement_rate = 0.0 if input_invalid else (actual_lateral_accel - self.previous_measurement) / self.dt
-    self.previous_measurement = actual_lateral_accel
+    measurement_rate = self._filtered_measurement_rate(active, input_invalid, actual_lateral_accel)
 
     roll_compensation = roll_lateral_accel(params.roll) if not input_invalid else 0.0
     lateral_accel_deadzone = 0.0
@@ -520,7 +548,8 @@ class LatControlTorqueV4(LatControl):
       + breakaway_compensation
     )
     invalid = input_invalid or not _finite(command_lateral_accel, actual_lateral_accel, actual_lateral_jerk, measurement_rate)
-    raw_output_torque = 0.0 if invalid else self.torque_from_lateral_accel(command_lateral_accel, self.torque_params)
+    effective_torque_params = self._effective_torque_params(speed_result)
+    raw_output_torque = 0.0 if invalid else self.torque_from_lateral_accel(command_lateral_accel, effective_torque_params)
     raw_output_torque = _clip(raw_output_torque, -self.steer_max, self.steer_max) if _finite(raw_output_torque) else 0.0
 
     steer_limit_feedback = self.steering_actuator_feedback
@@ -551,7 +580,8 @@ class LatControlTorqueV4(LatControl):
       steer_limited_by_safety=same_direction_limit,
       curvature_limited=curvature_limited,
       saturated=saturated,
-      target_lateral_accel=target.raw_lateral_accel,
+      raw_target_lateral_accel=target.raw_lateral_accel,
+      delay_lead_lateral_accel=target.delay_lead_lateral_accel,
       target_lateral_accel_rate=target.target_rate,
       actual_lateral_accel=actual_lateral_accel,
       actual_lateral_jerk=actual_lateral_jerk,
@@ -590,6 +620,25 @@ class LatControlTorqueV4(LatControl):
                        -speed_result.lead_delta_cap, speed_result.lead_delta_cap)
     return TorqueV4Target(raw_target, target_rate, raw_target + lead_delta, lead_delta,
                           speed_result.lead_gain, speed_result.lead_delta_cap)
+
+  def _filtered_measurement_rate(self, active: bool, invalid: bool, actual_lateral_accel: float) -> float:
+    if invalid or not active or not _finite(actual_lateral_accel, self.previous_measurement):
+      self.previous_measurement = actual_lateral_accel if _finite(actual_lateral_accel) else 0.0
+      self.filtered_measurement_rate = 0.0
+      return 0.0
+    raw_rate = (actual_lateral_accel - self.previous_measurement) / self.dt
+    self.previous_measurement = actual_lateral_accel
+    bounded_rate = _clip(raw_rate, -MEASUREMENT_RATE_CAP, MEASUREMENT_RATE_CAP)
+    self.filtered_measurement_rate += MEASUREMENT_RATE_FILTER_ALPHA * (bounded_rate - self.filtered_measurement_rate)
+    return self.filtered_measurement_rate if _finite(self.filtered_measurement_rate) else 0.0
+
+  def _effective_torque_params(self, speed_result: TorqueV4SpeedModelResult):
+    effective_torque_params = self.CP.lateralTuning.torque.as_builder()
+    effective_torque_params.friction = float(self.torque_params.friction)
+    effective_torque_params.steeringAngleDeadzoneDeg = float(self.torque_params.steeringAngleDeadzoneDeg)
+    effective_torque_params.latAccelFactor = float(speed_result.effective_lat_accel_factor)
+    effective_torque_params.latAccelOffset = float(speed_result.effective_lat_accel_offset)
+    return effective_torque_params
 
   def _breakaway_lateral_accel(self, error: float, lateral_accel_deadzone: float, target: float, measurement: float,
                                breakaway_scale: float) -> float:
@@ -637,9 +686,9 @@ class LatControlTorqueV4(LatControl):
     adaptive_log.authorityBand = 0
     adaptive_log.authorityScale = float(speed_result.response_scale)
     adaptive_log.fallbackActive = False
-    adaptive_log.learnedLatAccelFactor = float(self.torque_params.latAccelFactor)
+    adaptive_log.learnedLatAccelFactor = float(speed_result.effective_lat_accel_factor)
     adaptive_log.learnedFriction = float(self.torque_params.friction)
-    adaptive_log.learnedLatAccelOffset = float(self.torque_params.latAccelOffset)
+    adaptive_log.learnedLatAccelOffset = float(speed_result.effective_lat_accel_offset)
     adaptive_log.learnedResponseDelay = float(speed_result.response_delay)
     adaptive_log.residualError = float(sample_update.residual_error)
     adaptive_log.sampleAccepted = bool(sample_update.sample_accepted)
