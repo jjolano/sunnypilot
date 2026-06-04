@@ -406,6 +406,87 @@ def test_v4_governor_same_direction_limit_and_high_rate_cap_output():
   assert high_rate.output_cap < 1.0
 
 
+def test_v4_governor_low_speed_under_response_recovers_same_direction_authority():
+  governor = TorqueV4OutputGovernor(DT_CTRL)
+  speed_result = make_speed_result(output_slew_rate=3.0, sign_change_slew_rate=1.8)
+
+  result = governor.update(active=True, v_ego=8.0, steering_pressed=False, steering_rate_deg=0.0,
+                           same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                           actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                           desired_lateral_accel=0.6, actual_lateral_accel=0.3,
+                           under_response_recovery_allowed=True, speed_model=speed_result)
+
+  assert result.reason & TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
+  assert result.reason & TorqueV4GovernorReason.SLEW_LIMITED
+  assert result.output_cap == pytest.approx(latcontrol_torque_v4.LOW_SPEED_UNDER_RESPONSE_CAP)
+  assert result.output_torque == pytest.approx(speed_result.output_slew_rate * DT_CTRL)
+
+
+def test_v4_governor_low_speed_under_response_recovery_fades_out():
+  governor = TorqueV4OutputGovernor(DT_CTRL)
+  speed_result = make_speed_result(output_slew_rate=3.0, sign_change_slew_rate=1.8)
+
+  mid = governor.update(active=True, v_ego=10.5, steering_pressed=False, steering_rate_deg=0.0,
+                        same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                        actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                        desired_lateral_accel=0.6, actual_lateral_accel=0.3,
+                        under_response_recovery_allowed=True, speed_model=speed_result)
+
+  recovery = 0.5
+  expected_cap = latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP + recovery * (
+    latcontrol_torque_v4.LOW_SPEED_UNDER_RESPONSE_CAP - latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP
+  )
+  expected_rate = latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE + recovery * (
+    speed_result.output_slew_rate - latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE
+  )
+  assert mid.output_cap == pytest.approx(expected_cap)
+  assert mid.output_torque == pytest.approx(expected_rate * DT_CTRL)
+
+  governor.reset()
+  faded = governor.update(active=True, v_ego=12.0, steering_pressed=False, steering_rate_deg=0.0,
+                          same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                          actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                          desired_lateral_accel=0.6, actual_lateral_accel=0.3,
+                          under_response_recovery_allowed=True, speed_model=speed_result)
+
+  assert faded.output_cap == pytest.approx(latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP)
+  assert faded.output_torque == pytest.approx(latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE * DT_CTRL)
+
+
+@pytest.mark.parametrize("overrides", [
+  {"actual_lateral_accel": 0.7},
+  {"actual_lateral_accel": -0.2},
+  {"under_response_recovery_allowed": False},
+  {"steering_rate_deg": latcontrol_torque_v4.HIGH_RATE_START_DEG + 1.0},
+  {"actuator_mismatch": True, "actuator_error": latcontrol_torque_v4.STALE_ACTUATOR_ERROR_THRESHOLD + 0.01},
+])
+def test_v4_governor_low_speed_under_response_keeps_safety_guards(overrides):
+  governor = TorqueV4OutputGovernor(DT_CTRL)
+  speed_result = make_speed_result(output_slew_rate=3.0, sign_change_slew_rate=1.8)
+  values = {
+    "active": True,
+    "v_ego": 8.0,
+    "steering_pressed": False,
+    "steering_rate_deg": 0.0,
+    "same_direction_limit": True,
+    "steer_limit_unwind": False,
+    "actuator_mismatch": False,
+    "actuator_error": 0.0,
+    "raw_output_torque": 1.0,
+    "max_output": 1.0,
+    "desired_lateral_accel": 0.6,
+    "actual_lateral_accel": 0.3,
+    "under_response_recovery_allowed": True,
+    "speed_model": speed_result,
+  }
+  values.update(overrides)
+
+  result = governor.update(**values)
+
+  assert result.output_cap <= latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP
+  assert result.output_torque <= latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE * DT_CTRL
+
+
 def test_v4_same_direction_safety_limit_caps_controller_output():
   controller, VM, _CP = get_controller()
   CS = make_car_state(v_ego=20.0)

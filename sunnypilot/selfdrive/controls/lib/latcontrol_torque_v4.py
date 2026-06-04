@@ -55,6 +55,12 @@ HIGH_RATE_MIN_CAP = 0.60
 HIGH_RATE_SLEW_SCALE = 0.65
 STALE_ACTUATOR_ERROR_THRESHOLD = 0.15
 STALE_ACTUATOR_CAP = 0.35
+LOW_SPEED_UNDER_RESPONSE_MARGIN = 0.12
+LOW_SPEED_UNDER_RESPONSE_FULL_SPEED = 9.0
+LOW_SPEED_UNDER_RESPONSE_FADE_SPEED = 12.0
+LOW_SPEED_UNDER_RESPONSE_CAP = 0.85
+LOW_SPEED_UNDER_RESPONSE_MAX_ACTUAL_LAT_ACCEL = 2.6
+LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD = 0.05
 
 LEARN_MIN_SPEED = 10.0
 LEARN_MAX_SPEED = 35.0
@@ -409,7 +415,9 @@ class TorqueV4OutputGovernor:
 
   def update(self, *, active: bool, v_ego: float, steering_pressed: bool, steering_rate_deg: float,
              same_direction_limit: bool, steer_limit_unwind: bool, actuator_mismatch: bool, actuator_error: float,
-             raw_output_torque: float, max_output: float, speed_model: TorqueV4SpeedModelResult) -> TorqueV4GovernorResult:
+             raw_output_torque: float, max_output: float, speed_model: TorqueV4SpeedModelResult,
+             desired_lateral_accel: float = 0.0, actual_lateral_accel: float = 0.0,
+             under_response_recovery_allowed: bool = False) -> TorqueV4GovernorResult:
     reason = TorqueV4GovernorReason.NONE
     if not active:
       self.reset()
@@ -435,6 +443,18 @@ class TorqueV4OutputGovernor:
     if stale_actuator_mismatch:
       output_cap = min(output_cap, max_output * STALE_ACTUATOR_CAP)
       reason |= TorqueV4GovernorReason.STALE_ACTUATOR_MISMATCH
+    under_response_recovery = self._low_speed_under_response_recovery(
+      allowed=under_response_recovery_allowed,
+      v_ego=v_ego,
+      desired_lateral_accel=desired_lateral_accel,
+      actual_lateral_accel=actual_lateral_accel,
+      raw_output_torque=raw_output_torque,
+      high_rate_blend=high_rate_blend,
+      stale_actuator_mismatch=stale_actuator_mismatch,
+    )
+    if same_direction_limit and not steer_limit_unwind and under_response_recovery > 0.0:
+      recovery_cap = SAME_DIRECTION_LIMIT_CAP + under_response_recovery * (LOW_SPEED_UNDER_RESPONSE_CAP - SAME_DIRECTION_LIMIT_CAP)
+      output_cap = max(output_cap, max_output * recovery_cap)
 
     clipped = _clip(raw_output_torque, -output_cap, output_cap)
     if abs(clipped - raw_output_torque) > 1e-6:
@@ -449,7 +469,14 @@ class TorqueV4OutputGovernor:
     if high_rate_blend > 0.0:
       slew_rate *= HIGH_RATE_SLEW_SCALE
     if same_direction_limit and not steer_limit_unwind:
-      slew_rate = min(slew_rate, SAME_DIRECTION_LIMIT_RATE)
+      same_direction_rate = SAME_DIRECTION_LIMIT_RATE
+      if under_response_recovery > 0.0:
+        recovery_target_rate = speed_model.sign_change_slew_rate if sign_change else speed_model.output_slew_rate
+        same_direction_rate = max(
+          same_direction_rate,
+          same_direction_rate + under_response_recovery * (recovery_target_rate - same_direction_rate),
+        )
+      slew_rate = min(slew_rate, same_direction_rate)
     if stale_actuator_mismatch:
       slew_rate = min(slew_rate, STALE_ACTUATOR_CAP)
 
@@ -458,6 +485,33 @@ class TorqueV4OutputGovernor:
       reason |= TorqueV4GovernorReason.SLEW_LIMITED
     self.previous_output = output
     return TorqueV4GovernorResult(output, reason, output_cap)
+
+  @staticmethod
+  def _low_speed_under_response_recovery(*, allowed: bool, v_ego: float, desired_lateral_accel: float,
+                                         actual_lateral_accel: float, raw_output_torque: float,
+                                         high_rate_blend: float, stale_actuator_mismatch: bool) -> float:
+    if not allowed or high_rate_blend > 0.0 or stale_actuator_mismatch:
+      return 0.0
+    if not _finite(v_ego, desired_lateral_accel, actual_lateral_accel, raw_output_torque):
+      return 0.0
+    if v_ego >= LOW_SPEED_UNDER_RESPONSE_FADE_SPEED:
+      return 0.0
+
+    desired_sign = _sign(desired_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+    actual_sign = _sign(actual_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+    output_sign = _sign(raw_output_torque, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+    if desired_sign == 0 or output_sign != desired_sign or actual_sign not in (0, desired_sign):
+      return 0.0
+    if abs(actual_lateral_accel) > LOW_SPEED_UNDER_RESPONSE_MAX_ACTUAL_LAT_ACCEL:
+      return 0.0
+
+    under_response = desired_sign * (desired_lateral_accel - actual_lateral_accel)
+    if under_response <= LOW_SPEED_UNDER_RESPONSE_MARGIN:
+      return 0.0
+    if v_ego <= LOW_SPEED_UNDER_RESPONSE_FULL_SPEED:
+      return 1.0
+    span = LOW_SPEED_UNDER_RESPONSE_FADE_SPEED - LOW_SPEED_UNDER_RESPONSE_FULL_SPEED
+    return _clip((LOW_SPEED_UNDER_RESPONSE_FADE_SPEED - v_ego) / max(span, 1e-3), 0.0, 1.0)
 
 
 class LatControlTorqueV4(LatControl):
@@ -519,6 +573,20 @@ class LatControlTorqueV4(LatControl):
     self.previous_target_lateral_accel = 0.0
     self.previous_measurement = 0.0
     self.filtered_measurement_rate = 0.0
+
+  def _under_response_recovery_allowed(self) -> bool:
+    demand = self.processed_lateral_demand
+    if demand is None:
+      return False
+    path_quality = float(getattr(demand, "path_quality", 0.0))
+    return (
+      getattr(demand, "demand_source", DEMAND_SOURCE_MODEL_PATH) == DEMAND_SOURCE_MODEL_PATH
+      and math.isfinite(path_quality)
+      and path_quality >= LEARN_MIN_PATH_QUALITY
+      and getattr(demand, "path_reason", LEARN_PATH_REASON_OK) == LEARN_PATH_REASON_OK
+      and not getattr(demand, "lane_change_shaping_active", False)
+      and abs(float(getattr(demand, "lane_change_blend", 0.0))) <= 1e-3
+    )
 
   def _refresh_speed_adaptive_apply_enabled(self) -> None:
     try:
@@ -593,6 +661,9 @@ class LatControlTorqueV4(LatControl):
       raw_output_torque=raw_output_torque,
       max_output=self.steer_max,
       speed_model=speed_result,
+      desired_lateral_accel=target.raw_lateral_accel,
+      actual_lateral_accel=actual_lateral_accel,
+      under_response_recovery_allowed=self._under_response_recovery_allowed(),
     )
     if invalid:
       governor_result = TorqueV4GovernorResult(0.0, governor_result.reason | TorqueV4GovernorReason.INVALID, governor_result.output_cap)
