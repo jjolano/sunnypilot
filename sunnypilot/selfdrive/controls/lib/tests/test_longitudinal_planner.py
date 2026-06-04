@@ -18,6 +18,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import Custo
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import CUSTOM_V2_DEBUG_DISABLE_JERK_LIMIT, CUSTOM_V2_DEBUG_INTENT
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, SUNNYPILOT_CURRENT, StackResolution
+from openpilot.selfdrive.controls.lib.longitudinal_planner import build_moving_lead_seed_candidates
 from openpilot.sunnypilot.selfdrive.controls.lib import longitudinal_planner as sp_longitudinal_planner
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
   SignalProviderCandidate,
@@ -847,6 +848,34 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
 
     self.assertEqual(planner.longitudinal_stack_seed_context, "planner")
     self.assertEqual(planner.longitudinal_stack_seed_candidate, "lead_crawl_accel_cap")
+
+  def test_moving_lead_stop_gap_guard_keeps_route_derived_slew_floor(self):
+    planner = self.make_planner()
+    planner.output_a_target = -0.462
+    planner.a_desired_trajectory = tuple(-0.462 for _ in range(CONTROL_N))
+    planner.planner_seed_candidates = [
+      PlannerSeedCandidate(
+        "lead_flicker_speedup_cap",
+        self.make_output(0.0, has_lead=True, debug={"planner_seed_candidate_reason": "lead_flicker_speedup_cap"}),
+        reason="lead_flicker_speedup_cap",
+      ),
+      *build_moving_lead_seed_candidates(
+        planner, True, (-3.0, 2.0),
+        moving_stop_guard_a_target=-1.95,
+        lead_stop_approach_slewed_a_target=-0.852,
+        lead_stop_approach_base_a_target=-1.95,
+      ),
+    ]
+    planner.longitudinal_decision_candidates = [
+      self.make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 31.0, -0.462, "confirmed_radar_lead"),
+    ]
+    planner.custom_v2_scene = CustomV2Scene(v_ego=20.5, v_cruise=31.0, has_lead=True, lead_v=18.77, lead_v_rel=-1.83)
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=True, accel_limits=(-3.0, 2.0))
+
+    self.assertEqual(planner.output_a_target, -0.852)
+    self.assertEqual(planner.longitudinal_stack_selected_reason, "lead_stop_approach_slew")
+    self.assertEqual(planner.longitudinal_stack_seed_candidate, "lead_stop_approach_slew")
 
   def test_non_custom_selection_uses_sunnypilot_current_without_wrapper(self):
     planner = self.make_planner(resolved_stack="sunnypilot-current")

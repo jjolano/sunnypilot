@@ -753,10 +753,11 @@ def build_moving_lead_seed_candidates(planner, has_lead, accel_limits, *, moving
     lead_stop_approach_slew_selection = (
       PLANNER_SEED_FLOOR if lead_stop_approach_slewed_a_target > lead_stop_approach_base_a_target else PLANNER_SEED_CAP
     )
+  moving_stop_guard_group = "lead_stop_approach_slew" if lead_stop_approach_slew_selection == PLANNER_SEED_FLOOR else ""
   return _planner_seed_candidates(
     build_planner_seed_accel_candidate(
       planner, "moving_lead_stop_gap_guard", moving_stop_guard_a_target, has_lead,
-      "moving_lead_stop_gap_guard", accel_limits,
+      "moving_lead_stop_gap_guard", accel_limits, group=moving_stop_guard_group,
     ) if moving_stop_guard_a_target is not None else None,
     build_planner_seed_accel_candidate(
       planner, "lead_accel_recovery", lead_accel_recovery_a_target, has_lead,
