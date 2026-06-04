@@ -188,6 +188,31 @@ def test_lateral_torque_event_report_decodes_v3_governor_reason_not_v2_shaper_re
   assert event.governor_reason_counts["SAME_DIRECTION_LIMIT"] > 0
 
 
+def test_lateral_torque_event_report_decodes_v4_governor_reason_names():
+  msgs = []
+  for i in range(80):
+    t = i * 0.1
+    sign = 1.0 if (i // 2) % 2 == 0 else -1.0
+    msgs.extend(sample_msgs(
+      t,
+      output=0.16 * sign,
+      unshaped=0.22 * sign,
+      steering_angle=0.8 * sign,
+      governor_reason=(1 << 7) | (1 << 8),
+      shaping_active=True,
+      steer_limited=True,
+      torque_version=4,
+    ))
+
+  report = build_lateral_torque_event_report(msgs, source="synthetic", max_events=4)
+
+  assert report.top_events
+  event = report.top_events[0]
+  assert event.governor_reason_counts["STALE_ACTUATOR_MISMATCH"] > 0
+  assert event.governor_reason_counts["LOW_SPEED_UNDER_RESPONSE_RECOVERY"] > 0
+  assert "UNDER_RESPONSE_FLOOR" not in event.governor_reason_counts
+
+
 def test_lateral_torque_event_report_filters_inactive_samples():
   msgs = []
   for i in range(20):

@@ -44,6 +44,12 @@ V3_GOVERNOR_REASON_NAMES = {
   1 << 5: "TOYOTA_HIGH_RATE",
 }
 
+V4_GOVERNOR_REASON_NAMES = {
+  **GOVERNOR_REASON_NAMES,
+  1 << 7: "STALE_ACTUATOR_MISMATCH",
+  1 << 8: "LOW_SPEED_UNDER_RESPONSE_RECOVERY",
+}
+
 LOW_SPEED_TIER_BOUNDS = ((0.0, 3.0), (3.0, 5.0), (5.0, 8.0), (8.0, 12.0))
 LOW_SPEED_REPORT_MAX_SPEED = LOW_SPEED_TIER_BOUNDS[-1][1]
 LOW_SPEED_TURN_MIN_LAT_ACCEL = 0.035
@@ -722,7 +728,12 @@ def _reason_counts(reasons: np.ndarray, reason_names: dict[int, str]) -> dict[st
 def _governor_reason_counts(reasons: np.ndarray, versions: np.ndarray) -> dict[str, int]:
   counts: dict[str, int] = {}
   for reason, version in zip(reasons.astype(int), versions.astype(int), strict=False):
-    names = V3_GOVERNOR_REASON_NAMES if version == 3 else GOVERNOR_REASON_NAMES
+    if version == 3:
+      names = V3_GOVERNOR_REASON_NAMES
+    elif version == 4:
+      names = V4_GOVERNOR_REASON_NAMES
+    else:
+      names = GOVERNOR_REASON_NAMES
     for bit, name in names.items():
       if reason & bit:
         counts[name] = counts.get(name, 0) + 1
