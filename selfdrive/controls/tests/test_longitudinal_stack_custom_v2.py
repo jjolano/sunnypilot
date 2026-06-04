@@ -3,6 +3,7 @@ import pytest
 from cereal import log
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_stacks import custom_v2
+from openpilot.selfdrive.controls.lib.longitudinal_decision import DecisionSource, LongitudinalArbiter, resolve_longitudinal_decision
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   COMFORT_RELAX_ACCEL_MIN,
   CUSTOM_V2_INTENTS,
@@ -24,7 +25,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   no_lead_stop_clear,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput, validate_stack_output
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate, select_planner_seed_candidate
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_MPC_REASON, PlannerSeedCandidate, select_planner_seed_candidate
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import ensure_driver_intent, planner_seed_candidates_to_longitudinal_candidates
 
 
 def make_output(a_target=0.0, should_stop=False, has_lead=False, debug=None, speeds=None, accels=None, jerks=None,
@@ -389,13 +391,67 @@ def test_planner_lead_seed_caps_are_not_relaxed_by_pullaway_progress():
 
 def test_planner_seed_mpc_classifies_by_context():
   output = CustomLongitudinalStackV2().update(
-    make_output(-0.6, should_stop=False, has_lead=True, debug={"planner_seed_candidate_reason": "planner_seed_mpc"}),
+    make_output(
+      -0.6,
+      should_stop=False,
+      has_lead=True,
+      source=log.LongitudinalPlan.LongitudinalPlanSource.lead0,
+      debug={"planner_seed_candidate_reason": "planner_seed_mpc"},
+    ),
     CustomV2Scene(v_ego=10.0, v_cruise=10.0, has_lead=True),
     accel_limits=(-2.0, 2.0),
   )
 
   assert output.debug["custom_v2_selected_intent"] == "lead_follow"
   assert output.debug["custom_v2_selected_reason"] == "planner_seed_mpc"
+
+
+def test_cruise_source_planner_seed_mpc_does_not_create_lead_hazard():
+  # Route 0000017a--7bef604023 segment 16 around 975.6s: far/opening lead,
+  # cruise source, and a transient negative planner-seed MPC output.
+  scene = CustomV2Scene(
+    v_ego=8.52,
+    v_cruise=80.0 / 3.6,
+    has_lead=True,
+    lead_v=13.47,
+    lead_v_rel=4.95,
+    lead_gap_excess=45.5,
+  )
+  driver_output = make_output(
+    1.26,
+    has_lead=True,
+    source=log.LongitudinalPlan.LongitudinalPlanSource.cruise,
+  )
+  seed_output = make_output(
+    -1.03,
+    has_lead=True,
+    source=log.LongitudinalPlan.LongitudinalPlanSource.cruise,
+    accels=(1.58, 1.36, 0.69, *([0.0] * (CONTROL_N - 3))),
+    jerks=(-22.76, -19.56, -9.96, *([0.0] * (CONTROL_N - 3))),
+  )
+  seed = PlannerSeedCandidate(PLANNER_SEED_MPC_REASON, seed_output, reason=PLANNER_SEED_MPC_REASON)
+  candidates = (
+    *ensure_driver_intent((), driver_output, scene.v_cruise),
+    *planner_seed_candidates_to_longitudinal_candidates((seed,), scene.v_cruise),
+  )
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=candidates,
+    fallback_v_target=scene.v_cruise,
+    fallback_a_target=driver_output.a_target,
+    fallback_should_stop=False,
+    accel_limits=(-2.0, 2.0),
+    arbiter=LongitudinalArbiter(),
+    v_ego=scene.v_ego,
+  )
+
+  output = CustomLongitudinalStackV2().update(driver_output, scene, accel_limits=(-2.0, 2.0), decision=decision)
+
+  assert decision.winner == DecisionSource.CRUISE
+  assert output.a_target == pytest.approx(driver_output.a_target)
+  assert output.accels[0] == pytest.approx(driver_output.a_target)
+  assert output.debug["custom_v2_selected_intent"] == "driver_cruise"
+  assert output.debug["custom_v2_selected_reason"] == "sunnypilot_current_seed"
 
 
 def test_lead_mpc_source_is_preserved_without_independent_progress():

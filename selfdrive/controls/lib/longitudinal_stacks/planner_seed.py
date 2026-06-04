@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
+from cereal import log
+
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 
 PLANNER_SEED_CAP = "cap"
@@ -15,6 +17,9 @@ PLANNER_SEED_INTENT_STOP_APPROACH = "stop_approach"
 PLANNER_SEED_INTENT_LAUNCH = "launch"
 PLANNER_SEED_INTENT_SAFETY_CAP = "safety_cap"
 PLANNER_SEED_MPC_REASON = "planner_seed_mpc"
+LONGITUDINAL_PLAN_SOURCE = log.LongitudinalPlan.LongitudinalPlanSource
+LEAD_MPC_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_PLAN_SOURCE.lead1)}
+E2E_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.e2e)}
 
 STOP_APPROACH_SEED_REASONS = {
   "engage_model_stop_bootstrap",
@@ -93,9 +98,9 @@ def planner_seed_intent_for_reason(reason: str, has_lead: bool = False, should_s
                                    source: object = "") -> str:
   reason = str(reason or "")
   if reason == PLANNER_SEED_MPC_REASON:
-    if has_lead or str(source) in {"lead0", "lead1"}:
+    if _source_matches(source, LEAD_MPC_SOURCE_VALUES, {"lead0", "lead1"}):
       return PLANNER_SEED_INTENT_LEAD_FOLLOW
-    if should_stop:
+    if should_stop or _source_matches(source, E2E_SOURCE_VALUES, {"e2e"}):
       return PLANNER_SEED_INTENT_STOP_APPROACH
     return PLANNER_SEED_INTENT_DRIVER_CRUISE
   if reason in STOP_APPROACH_SEED_REASONS:
@@ -109,6 +114,15 @@ def planner_seed_intent_for_reason(reason: str, has_lead: bool = False, should_s
   if reason in DRIVER_CRUISE_SEED_REASONS:
     return PLANNER_SEED_INTENT_DRIVER_CRUISE
   return PLANNER_SEED_INTENT_DRIVER_CRUISE
+
+
+def _source_matches(source: object, values: set[int], names: set[str]) -> bool:
+  if str(source or "") in names:
+    return True
+  try:
+    return int(source) in values
+  except (TypeError, ValueError):
+    return False
 
 
 def _select_floor_candidate(baseline: PlannerSeedCandidate,
