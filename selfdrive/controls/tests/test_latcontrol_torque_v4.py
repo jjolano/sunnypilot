@@ -413,10 +413,11 @@ def test_v4_governor_low_speed_under_response_recovers_same_direction_authority(
   result = governor.update(active=True, v_ego=8.0, steering_pressed=False, steering_rate_deg=0.0,
                            same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
                            actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
-                           desired_lateral_accel=0.6, actual_lateral_accel=0.3,
+                           recovery_target_lateral_accel=0.6, actual_lateral_accel=0.3,
                            under_response_recovery_allowed=True, speed_model=speed_result)
 
   assert result.reason & TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
+  assert result.reason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
   assert result.reason & TorqueV4GovernorReason.SLEW_LIMITED
   assert result.output_cap == pytest.approx(latcontrol_torque_v4.LOW_SPEED_UNDER_RESPONSE_CAP)
   assert result.output_torque == pytest.approx(speed_result.output_slew_rate * DT_CTRL)
@@ -429,7 +430,7 @@ def test_v4_governor_low_speed_under_response_recovery_fades_out():
   mid = governor.update(active=True, v_ego=10.5, steering_pressed=False, steering_rate_deg=0.0,
                         same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
                         actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
-                        desired_lateral_accel=0.6, actual_lateral_accel=0.3,
+                        recovery_target_lateral_accel=0.6, actual_lateral_accel=0.3,
                         under_response_recovery_allowed=True, speed_model=speed_result)
 
   recovery = 0.5
@@ -446,7 +447,7 @@ def test_v4_governor_low_speed_under_response_recovery_fades_out():
   faded = governor.update(active=True, v_ego=12.0, steering_pressed=False, steering_rate_deg=0.0,
                           same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
                           actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
-                          desired_lateral_accel=0.6, actual_lateral_accel=0.3,
+                          recovery_target_lateral_accel=0.6, actual_lateral_accel=0.3,
                           under_response_recovery_allowed=True, speed_model=speed_result)
 
   assert faded.output_cap == pytest.approx(latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP)
@@ -456,6 +457,7 @@ def test_v4_governor_low_speed_under_response_recovery_fades_out():
 @pytest.mark.parametrize("overrides", [
   {"actual_lateral_accel": 0.7},
   {"actual_lateral_accel": -0.2},
+  {"recovery_target_lateral_accel": 0.2},
   {"under_response_recovery_allowed": False},
   {"steering_rate_deg": latcontrol_torque_v4.HIGH_RATE_START_DEG + 1.0},
   {"actuator_mismatch": True, "actuator_error": latcontrol_torque_v4.STALE_ACTUATOR_ERROR_THRESHOLD + 0.01},
@@ -474,7 +476,7 @@ def test_v4_governor_low_speed_under_response_keeps_safety_guards(overrides):
     "actuator_error": 0.0,
     "raw_output_torque": 1.0,
     "max_output": 1.0,
-    "desired_lateral_accel": 0.6,
+    "recovery_target_lateral_accel": 0.6,
     "actual_lateral_accel": 0.3,
     "under_response_recovery_allowed": True,
     "speed_model": speed_result,
@@ -485,6 +487,54 @@ def test_v4_governor_low_speed_under_response_keeps_safety_guards(overrides):
 
   assert result.output_cap <= latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP
   assert result.output_torque <= latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE * DT_CTRL
+  assert not result.reason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+
+
+def test_v4_under_response_recovery_fails_closed_for_bad_processed_demand_metadata():
+  controller, _VM, _CP = get_controller()
+
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(lane_change_blend="bad"))
+  assert not controller._under_response_recovery_allowed()
+
+  controller.set_processed_lateral_demand(types.SimpleNamespace(
+    demand_source=DEMAND_SOURCE_MODEL_PATH,
+    path_quality="bad",
+    path_reason="ok",
+    lane_change_shaping_active=False,
+    lane_change_blend=0.0,
+  ))
+  assert not controller._under_response_recovery_allowed()
+
+  controller.set_processed_lateral_demand(types.SimpleNamespace())
+  assert not controller._under_response_recovery_allowed()
+
+
+def test_v4_clean_processed_demand_allows_low_speed_recovery_in_controller():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=8.0)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller.set_steering_actuator_feedback(
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, -0.8, -0.7, -0.1, False, False)
+  )
+
+  _steer, _angle, lac_log = update(controller, VM, CS, 0.002, steer_limited=True)
+
+  assert lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
+  assert lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+
+
+def test_v4_bad_processed_demand_blocks_low_speed_recovery_in_controller():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=8.0)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.5))
+  controller.set_steering_actuator_feedback(
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, -0.8, -0.7, -0.1, False, False)
+  )
+
+  _steer, _angle, lac_log = update(controller, VM, CS, 0.002, steer_limited=True)
+
+  assert lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
+  assert not lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
 
 
 def test_v4_same_direction_safety_limit_caps_controller_output():
@@ -580,6 +630,20 @@ def test_v4_speed_model_transition_across_valid_buckets_is_bounded():
   high = TorqueV4SpeedModel().update(20.1, controller.torque_params, params, True, controller.session_adaptation)
 
   assert abs(high.response_scale - low.response_scale) < 0.01
+
+
+def test_v4_speed_model_interpolates_offset_across_valid_buckets():
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  params = {
+    "10_20": (factor * 1.10, -0.04, float(controller.torque_params.friction)),
+    "20_30": (factor * 1.10, 0.04, float(controller.torque_params.friction)),
+  }
+
+  low = TorqueV4SpeedModel().update(19.9, controller.torque_params, params, True, controller.session_adaptation)
+  high = TorqueV4SpeedModel().update(20.1, controller.torque_params, params, True, controller.session_adaptation)
+
+  assert abs(high.effective_lat_accel_offset - low.effective_lat_accel_offset) < 0.005
 
 
 def test_v4_speed_aware_effective_factor_is_reported_in_telemetry(monkeypatch):

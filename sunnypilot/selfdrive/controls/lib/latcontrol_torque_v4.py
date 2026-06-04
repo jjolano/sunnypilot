@@ -103,6 +103,7 @@ class TorqueV4GovernorReason(IntFlag):
   HIGH_STEERING_RATE = 1 << 5
   INVALID = 1 << 6
   STALE_ACTUATOR_MISMATCH = 1 << 7
+  LOW_SPEED_UNDER_RESPONSE_RECOVERY = 1 << 8
 
 
 class TorqueV4Phase(IntEnum):
@@ -125,6 +126,14 @@ def _finite(*values: float) -> bool:
     return all(math.isfinite(float(value)) for value in values)
   except (TypeError, ValueError):
     return False
+
+
+def _finite_float(value) -> float | None:
+  try:
+    result = float(value)
+  except (TypeError, ValueError):
+    return None
+  return result if math.isfinite(result) else None
 
 
 def _clip(value: float, lower: float, upper: float) -> float:
@@ -276,7 +285,7 @@ class TorqueV4SpeedModel:
       return global_factor, global_offset, 0.0
 
     local_factor = self._interpolate_factor(v_ego, speed_aware_params, global_factor)
-    local_offset = float(bucket[1])
+    local_offset = self._interpolate_offset(v_ego, speed_aware_params, global_factor, global_offset)
     if not _finite(local_factor, local_offset):
       return global_factor, global_offset, 0.0
 
@@ -322,6 +331,18 @@ class TorqueV4SpeedModel:
         valid_points.append((center, float(bucket[0])))
     if not valid_points:
       return global_factor
+    if len(valid_points) == 1:
+      return valid_points[0][1]
+    return float(np.interp(v_ego, [point[0] for point in valid_points], [point[1] for point in valid_points]))
+
+  def _interpolate_offset(self, v_ego: float, speed_aware_params: dict, global_factor: float, global_offset: float) -> float:
+    valid_points = []
+    for center, label in zip(SPEED_BUCKET_CENTERS, SPEED_BUCKET_LABELS):
+      bucket = speed_aware_params.get(label)
+      if self._valid_bucket(bucket, global_factor):
+        valid_points.append((center, float(bucket[1])))
+    if not valid_points:
+      return global_offset
     if len(valid_points) == 1:
       return valid_points[0][1]
     return float(np.interp(v_ego, [point[0] for point in valid_points], [point[1] for point in valid_points]))
@@ -399,8 +420,8 @@ class TorqueV4SessionAdaptation:
       reason |= TorqueV4LearnerRejectReason.LOW_PATH_QUALITY
     if observation.path_reason != LEARN_PATH_REASON_OK:
       reason |= TorqueV4LearnerRejectReason.PATH_REASON
-    lane_change_blend = float(observation.lane_change_blend) if _finite(observation.lane_change_blend) else 0.0
-    if observation.lane_change_shaping_active or abs(lane_change_blend) > 1e-3:
+    lane_change_blend = _finite_float(observation.lane_change_blend)
+    if observation.lane_change_shaping_active or lane_change_blend is None or abs(lane_change_blend) > 1e-3:
       reason |= TorqueV4LearnerRejectReason.LANE_CHANGE_SHAPING
     return reason
 
@@ -416,7 +437,7 @@ class TorqueV4OutputGovernor:
   def update(self, *, active: bool, v_ego: float, steering_pressed: bool, steering_rate_deg: float,
              same_direction_limit: bool, steer_limit_unwind: bool, actuator_mismatch: bool, actuator_error: float,
              raw_output_torque: float, max_output: float, speed_model: TorqueV4SpeedModelResult,
-             desired_lateral_accel: float = 0.0, actual_lateral_accel: float = 0.0,
+             recovery_target_lateral_accel: float = 0.0, actual_lateral_accel: float = 0.0,
              under_response_recovery_allowed: bool = False) -> TorqueV4GovernorResult:
     reason = TorqueV4GovernorReason.NONE
     if not active:
@@ -446,7 +467,7 @@ class TorqueV4OutputGovernor:
     under_response_recovery = self._low_speed_under_response_recovery(
       allowed=under_response_recovery_allowed,
       v_ego=v_ego,
-      desired_lateral_accel=desired_lateral_accel,
+      recovery_target_lateral_accel=recovery_target_lateral_accel,
       actual_lateral_accel=actual_lateral_accel,
       raw_output_torque=raw_output_torque,
       high_rate_blend=high_rate_blend,
@@ -455,6 +476,7 @@ class TorqueV4OutputGovernor:
     if same_direction_limit and not steer_limit_unwind and under_response_recovery > 0.0:
       recovery_cap = SAME_DIRECTION_LIMIT_CAP + under_response_recovery * (LOW_SPEED_UNDER_RESPONSE_CAP - SAME_DIRECTION_LIMIT_CAP)
       output_cap = max(output_cap, max_output * recovery_cap)
+      reason |= TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
 
     clipped = _clip(raw_output_torque, -output_cap, output_cap)
     if abs(clipped - raw_output_torque) > 1e-6:
@@ -487,17 +509,17 @@ class TorqueV4OutputGovernor:
     return TorqueV4GovernorResult(output, reason, output_cap)
 
   @staticmethod
-  def _low_speed_under_response_recovery(*, allowed: bool, v_ego: float, desired_lateral_accel: float,
+  def _low_speed_under_response_recovery(*, allowed: bool, v_ego: float, recovery_target_lateral_accel: float,
                                          actual_lateral_accel: float, raw_output_torque: float,
                                          high_rate_blend: float, stale_actuator_mismatch: bool) -> float:
     if not allowed or high_rate_blend > 0.0 or stale_actuator_mismatch:
       return 0.0
-    if not _finite(v_ego, desired_lateral_accel, actual_lateral_accel, raw_output_torque):
+    if not _finite(v_ego, recovery_target_lateral_accel, actual_lateral_accel, raw_output_torque):
       return 0.0
     if v_ego >= LOW_SPEED_UNDER_RESPONSE_FADE_SPEED:
       return 0.0
 
-    desired_sign = _sign(desired_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+    desired_sign = _sign(recovery_target_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
     actual_sign = _sign(actual_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
     output_sign = _sign(raw_output_torque, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
     if desired_sign == 0 or output_sign != desired_sign or actual_sign not in (0, desired_sign):
@@ -505,7 +527,7 @@ class TorqueV4OutputGovernor:
     if abs(actual_lateral_accel) > LOW_SPEED_UNDER_RESPONSE_MAX_ACTUAL_LAT_ACCEL:
       return 0.0
 
-    under_response = desired_sign * (desired_lateral_accel - actual_lateral_accel)
+    under_response = desired_sign * (recovery_target_lateral_accel - actual_lateral_accel)
     if under_response <= LOW_SPEED_UNDER_RESPONSE_MARGIN:
       return 0.0
     if v_ego <= LOW_SPEED_UNDER_RESPONSE_FULL_SPEED:
@@ -578,14 +600,16 @@ class LatControlTorqueV4(LatControl):
     demand = self.processed_lateral_demand
     if demand is None:
       return False
-    path_quality = float(getattr(demand, "path_quality", 0.0))
+    path_quality = _finite_float(getattr(demand, "path_quality", None))
+    lane_change_blend = _finite_float(getattr(demand, "lane_change_blend", None))
     return (
-      getattr(demand, "demand_source", DEMAND_SOURCE_MODEL_PATH) == DEMAND_SOURCE_MODEL_PATH
-      and math.isfinite(path_quality)
+      getattr(demand, "demand_source", None) == DEMAND_SOURCE_MODEL_PATH
+      and path_quality is not None
       and path_quality >= LEARN_MIN_PATH_QUALITY
-      and getattr(demand, "path_reason", LEARN_PATH_REASON_OK) == LEARN_PATH_REASON_OK
-      and not getattr(demand, "lane_change_shaping_active", False)
-      and abs(float(getattr(demand, "lane_change_blend", 0.0))) <= 1e-3
+      and getattr(demand, "path_reason", None) == LEARN_PATH_REASON_OK
+      and not getattr(demand, "lane_change_shaping_active", True)
+      and lane_change_blend is not None
+      and abs(lane_change_blend) <= 1e-3
     )
 
   def _refresh_speed_adaptive_apply_enabled(self) -> None:
@@ -661,7 +685,7 @@ class LatControlTorqueV4(LatControl):
       raw_output_torque=raw_output_torque,
       max_output=self.steer_max,
       speed_model=speed_result,
-      desired_lateral_accel=target.raw_lateral_accel,
+      recovery_target_lateral_accel=target.delay_lead_lateral_accel,
       actual_lateral_accel=actual_lateral_accel,
       under_response_recovery_allowed=self._under_response_recovery_allowed(),
     )
