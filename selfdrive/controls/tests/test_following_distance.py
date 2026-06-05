@@ -1223,7 +1223,45 @@ def test_moving_lead_stop_approach_tapers_near_caution_gap():
   assert cost > 0.0
 
 
-def test_moving_lead_stop_gap_guard_softens_route_derived_moderate_closing():
+def test_moving_lead_stop_approach_allows_routine_compression_at_target_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 15.0
+  v_lead = 13.5
+  d_rel = get_desired_follow_distance(v_ego, v_lead, t_follow)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(
+    x_lead=d_rel,
+    v_ego=v_ego,
+    v_lead=v_lead,
+    a_lead=-0.65,
+    t_follow=t_follow,
+  )
+
+  assert target >= long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 1e-6
+  assert cost > 0.0
+
+
+def test_moving_lead_stop_approach_allows_route_derived_compression_above_floor():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 15.07
+  v_lead = 13.61
+  d_rel = 25.56
+  compression_floor = long_mpc.get_moving_lead_compression_floor(v_ego, v_lead, t_follow, a_lead=-0.65)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(
+    x_lead=d_rel,
+    v_ego=v_ego,
+    v_lead=v_lead,
+    a_lead=-0.65,
+    t_follow=t_follow,
+  )
+
+  assert d_rel > compression_floor + 4.0
+  assert target >= long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 1e-6
+  assert cost > 0.0
+
+
+def test_moving_lead_stop_gap_guard_waits_until_compression_floor_for_routine_closing():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
 
   target = get_moving_lead_stop_gap_guard_accel(
@@ -1235,8 +1273,26 @@ def test_moving_lead_stop_gap_guard_softens_route_derived_moderate_closing():
     t_follow=t_follow,
   )
 
+  assert target is None
+
+
+def test_moving_lead_stop_gap_guard_brakes_near_compressed_floor():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 15.07
+  v_lead = 13.61
+  compression_floor = long_mpc.get_moving_lead_compression_floor(v_ego, v_lead, t_follow, a_lead=-0.65)
+
+  target = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=compression_floor - 0.1,
+    v_lead=v_lead,
+    a_lead=-0.65,
+    y_rel=0.0,
+    t_follow=t_follow,
+  )
+
   assert target is not None
-  assert -0.9 <= target <= -0.4
+  assert target <= -0.4
 
 
 def test_moving_lead_stop_gap_guard_preserves_urgent_closing_lead_brake():
@@ -2492,6 +2548,27 @@ def test_stop_go_crawl_context_releases_for_clear_pullaway():
   assert cost > 0.0
 
 
+def test_stop_go_crawl_brief_speedup_stays_near_coast_after_decel_memory(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(0.8, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  no_lead = SimpleNamespace(status=False)
+
+  def lead(d_rel, v_lead, a_lead):
+    return SimpleNamespace(
+      status=True, radarTrackId=42, yRel=0.0, dRel=d_rel, vLead=v_lead, vLeadK=v_lead,
+      aLeadK=a_lead, aLeadTau=0.0, modelProb=1.0, radar=True,
+    )
+
+  for _ in range(8):
+    mpc.update(SimpleNamespace(leadOne=lead(STOP_DISTANCE + 1.5, 0.7, -0.3), leadTwo=no_lead), v_cruise=10.0)
+  mpc.update(SimpleNamespace(leadOne=lead(STOP_DISTANCE + 1.55, 1.1, 0.3), leadTwo=no_lead), v_cruise=10.0)
+
+  assert mpc.lead_surge_decel_memories[0] > 0.0
+  assert 0.0 <= mpc.yref[0, 3] <= 0.05
+  assert mpc.params[0, 1] <= LEAD_CRAWL_ACCEL_LIMIT + 0.1
+
+
 def test_stop_go_crawl_context_does_not_limit_urgent_closure():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
 
@@ -2897,11 +2974,13 @@ def test_route_like_slowing_moving_lead_prefers_moderate_decel():
   assert cost > 0.0
 
 
-def test_route_bookmark_mild_lead_decel_starts_before_gap_collapse():
+def test_route_bookmark_mild_lead_decel_allows_compression_before_floor():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  compression_floor = long_mpc.get_moving_lead_compression_floor(12.01, 11.16, t_follow, a_lead=-0.34)
   target, cost = get_moving_lead_stop_approach_comfort_target(20.44, 12.01, 11.16, -0.34, t_follow)
 
-  assert target <= -long_mpc.MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX
+  assert 20.44 > compression_floor + long_mpc.MOVING_LEAD_COMPRESSION_RELAX_GAP
+  assert target == pytest.approx(long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
   assert cost > 0.0
 
 
