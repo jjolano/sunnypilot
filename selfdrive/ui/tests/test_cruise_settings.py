@@ -42,6 +42,17 @@ def test_one_pedal_mode_is_custom_v2_gated():
   assert "ui_state.params.put_bool(\"OnroadCycleRequested\", True)" in source
 
 
+def test_fast_lead_motion_is_custom_v2_offroad_cycle_toggle():
+  source = CRUISE_SETTINGS.read_text()
+
+  assert "self.fast_lead_motion_toggle = toggle_item_sp" in source
+  assert "FastLeadMotionEvidenceEnabled" in source
+  assert "resolution.resolved_stack == CUSTOM_V2" in source
+  assert "self.fast_lead_motion_toggle.action_item.set_enabled(enabled)" in source
+  assert "def _on_fast_lead_motion_changed" in source
+  assert "ui_state.params.put_bool(\"OnroadCycleRequested\", True)" in source
+
+
 def test_longitudinal_stack_selector_is_offroad_gated_and_requests_cycle():
   source = CRUISE_SETTINGS.read_text()
 

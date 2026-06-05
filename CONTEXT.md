@@ -128,6 +128,10 @@ _Avoid_: file choice, feature label
 Positive progress authorized by stable or confirmed lead evidence.
 _Avoid_: lead status, weak lead progress
 
+**Fast Lead Motion Evidence**:
+Immediate lead opening, closing, and moving evidence from raw relative lead speed and raw absolute lead speed.
+_Avoid_: lead authority, Lead MPC, filtered lead speed
+
 **Closing-rate Risk**:
 Lead-follow risk caused by ego speed consuming the lead gap faster than the lead trajectory can safely absorb.
 _Avoid_: speed-up annoyance, custom policy preference
@@ -189,6 +193,7 @@ _Avoid_: ignoring curves, lateral safety
 - A **Longitudinal Planner** may use **Longitudinal MPC** as a lower-level solver.
 - **Lead MPC** is authoritative physical-hazard evidence when lead confidence is sufficient.
 - Low-confidence, flickering, or transitioning lead evidence may restrict or hold acceleration, but only **Lead-confirmed Progress** may authorize positive lead progress.
+- **Fast Lead Motion Evidence** may shape custom **Stop/go Intent** and **Progress Core** timing after lead authority already exists, but it does not create **Lead-confirmed Progress** by itself or replace **Lead MPC** physics.
 - **Closing-rate Risk** belongs to **Longitudinal MPC** or planner lead guards rather than a competing **Custom Stack** physics model.
 - A **Lead Speed-up Guard** caps planner seeds; **Longitudinal MPC** owns lead braking, time-gap, danger-gap, and stop-runway shaping.
 - A **Lead Flicker Safety Cap** may hold acceleration during risky flicker; it does not create **Lead-confirmed Progress** or a **Lead MPC** physical hazard.

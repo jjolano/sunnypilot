@@ -718,6 +718,10 @@
       }
     ]
   },
+  "FastLeadMotionEvidenceEnabled": {
+    "title": "Fast Lead Motion",
+    "description": "Uses raw lead opening and lead speed evidence in custom v2.0 stop/go and progress behavior."
+  },
   "OnePedalLongitudinalMode": {
     "title": "One Pedal Longitudinal",
     "description": "Treats the cruise speed as a ceiling in custom v2.0. Lift-off coasts unless physical lead or stop evidence requires braking.",

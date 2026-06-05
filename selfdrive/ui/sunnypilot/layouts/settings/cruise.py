@@ -6,6 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from enum import IntEnum
 
+from openpilot.common.params import UnknownKeyName
 from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_V2,
@@ -47,6 +48,10 @@ SCC_CURVE_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control t
 LONG_STACK_DESCRIPTION = tr_noop("Select which longitudinal control stack runs after sunnypilot longitudinal control is active. " +
                                  "Changing this requires an onroad cycle.")
 LONG_STACK_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control to use the longitudinal stack selector.")
+FAST_LEAD_MOTION_DESCRIPTION = tr_noop("Use raw lead opening and lead speed evidence in custom v2.0 stop/go and progress behavior. " +
+                                       "Changing this requires an onroad cycle.")
+FAST_LEAD_MOTION_CUSTOM_V2_DESCRIPTION = tr_noop("Select custom v2.0 in Longitudinal Stack to use Fast Lead Motion.")
+FAST_LEAD_MOTION_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control and custom v2.0 to use Fast Lead Motion.")
 ONE_PEDAL_DESCRIPTION = tr_noop("Treat the cruise speed as a ceiling in custom v2.0. Lift-off coasts unless physical lead or stop evidence requires braking. " +
                                 "Changing this requires an onroad cycle.")
 ONE_PEDAL_CUSTOM_V2_DESCRIPTION = tr_noop("Select custom v2.0 in Longitudinal Stack to use One Pedal Longitudinal.")
@@ -133,12 +138,19 @@ class CruiseLayout(Widget):
       param="OnePedalLongitudinalMode",
     )
 
+    self.fast_lead_motion_toggle = toggle_item_sp(
+      title=tr("Fast Lead Motion"),
+      description=tr(FAST_LEAD_MOTION_DESCRIPTION),
+      initial_state=self._get_fast_lead_motion_state(),
+      callback=self._on_fast_lead_motion_changed)
+
     items = [
       self.icbm_toggle,
       self.longitudinal_mode_item,
       self.scc_curve_vision_toggle,
       self.scc_curve_map_toggle,
       self.longitudinal_stack_item,
+      self.fast_lead_motion_toggle,
       self.one_pedal_longitudinal_item,
       self.custom_acc_toggle,
       self.custom_acc_short_increment,
@@ -161,6 +173,7 @@ class CruiseLayout(Widget):
     self.longitudinal_mode_item.show_description(True)
     self.scc_curve_vision_toggle.show_description(True)
     self.scc_curve_map_toggle.show_description(True)
+    self.fast_lead_motion_toggle.show_description(True)
     self.one_pedal_longitudinal_item.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
@@ -198,6 +211,7 @@ class CruiseLayout(Widget):
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
         self.longitudinal_mode_item.action_item.set_enabled(has_long)
         self.longitudinal_stack_item.action_item.set_enabled(has_long and ui_state.is_offroad())
+        self._update_fast_lead_motion_item(has_long)
         self._update_one_pedal_item(has_long)
       else:
         ui_state.params.remove("CustomAccIncrementsEnabled")
@@ -207,6 +221,7 @@ class CruiseLayout(Widget):
         self.scc_curve_vision_toggle.action_item.set_enabled(False)
         self.scc_curve_map_toggle.action_item.set_enabled(False)
         self.longitudinal_stack_item.action_item.set_enabled(False)
+        self.fast_lead_motion_toggle.action_item.set_enabled(False)
         self.one_pedal_longitudinal_item.action_item.set_enabled(False)
       self._update_longitudinal_mode_item(has_long)
       self._update_scc_curve_items(has_long)
@@ -224,6 +239,8 @@ class CruiseLayout(Widget):
       self.scc_curve_map_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
       self.longitudinal_stack_item.action_item.set_enabled(False)
       self.longitudinal_stack_item.set_description(tr(ONROAD_ONLY_DESCRIPTION))
+      self.fast_lead_motion_toggle.action_item.set_enabled(False)
+      self.fast_lead_motion_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
       self.one_pedal_longitudinal_item.action_item.set_enabled(False)
       self.one_pedal_longitudinal_item.set_description(tr(ONROAD_ONLY_DESCRIPTION))
 
@@ -270,6 +287,19 @@ class CruiseLayout(Widget):
     resolution = self._get_longitudinal_stack_resolution()
     self.longitudinal_stack_item.action_item.set_value(self._longitudinal_stack_label(resolution.requested_stack, resolution))
     self.longitudinal_stack_item.set_description(tr(LONG_STACK_DESCRIPTION if has_long else LONG_STACK_NOLONG_DESCRIPTION))
+
+  def _update_fast_lead_motion_item(self, has_long: bool):
+    resolution = self._get_longitudinal_stack_resolution()
+    enabled = has_long and ui_state.is_offroad() and resolution.resolved_stack == CUSTOM_V2
+    self.fast_lead_motion_toggle.action_item.set_state(self._get_fast_lead_motion_state())
+    self.fast_lead_motion_toggle.action_item.set_enabled(enabled)
+    if not has_long:
+      description = FAST_LEAD_MOTION_NOLONG_DESCRIPTION
+    elif resolution.resolved_stack != CUSTOM_V2:
+      description = FAST_LEAD_MOTION_CUSTOM_V2_DESCRIPTION
+    else:
+      description = FAST_LEAD_MOTION_DESCRIPTION
+    self.fast_lead_motion_toggle.set_description(tr(description))
 
   def _update_one_pedal_item(self, has_long: bool):
     resolution = self._get_longitudinal_stack_resolution()
@@ -334,6 +364,7 @@ class CruiseLayout(Widget):
           ui_state.params.put("LongitudinalStack", selected_ref)
           ui_state.params.put_bool("OnroadCycleRequested", True)
           self._update_longitudinal_stack_item(ui_state.has_longitudinal_control)
+          self._update_fast_lead_motion_item(ui_state.has_longitudinal_control)
           self._update_one_pedal_item(ui_state.has_longitudinal_control)
       self._longitudinal_stack_dialog = None
 
@@ -347,6 +378,20 @@ class CruiseLayout(Widget):
     gui_app.push_widget(self._longitudinal_stack_dialog)
 
   def _on_one_pedal_mode_changed(self, _mode: int):
+    ui_state.params.put_bool("OnroadCycleRequested", True)
+
+  @staticmethod
+  def _get_fast_lead_motion_state() -> bool:
+    try:
+      return ui_state.params.get_bool("FastLeadMotionEvidenceEnabled")
+    except UnknownKeyName:
+      return False
+
+  def _on_fast_lead_motion_changed(self, state: bool):
+    try:
+      ui_state.params.put_bool("FastLeadMotionEvidenceEnabled", state)
+    except UnknownKeyName:
+      return
     ui_state.params.put_bool("OnroadCycleRequested", True)
 
   def _on_longitudinal_mode_changed(self, mode: int):

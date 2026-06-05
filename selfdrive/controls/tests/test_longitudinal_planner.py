@@ -19,13 +19,18 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   E2E_CLOSE_STOP_MIN_ROLLING_V,
   E2E_STOP_APPROACH_DECEL_MAX,
   E2E_RUNWAY_FINAL_CRAWL_ACCEL_MAX,
+  FAST_LEAD_MOTION_OPENING_DEADBAND,
   LEAD_FLICKER_CLOSE_GUARD_TIME,
   LEAD_FLICKER_FIRST_LOSS_HOLD_TIME,
+  FastLeadMotionEvidence,
   LeadFlickerSafetyCapTracker,
   LongitudinalPlanner,
   _A_TOTAL_MAX_BP,
   _A_TOTAL_MAX_V,
+  fast_lead_motion_evidence_enabled,
+  get_fast_lead_motion_evidence,
   get_lead_flicker_required_decel,
+  get_planner_lead_motion_values,
   get_custom_v2_curve_scene_target,
   get_e2e_close_stop_settle,
   get_max_accel,
@@ -235,6 +240,56 @@ def test_lead_flicker_tracker_driver_override_suppresses_active_cap():
   assert held.active
   assert overridden.timer > 0.0
   assert not overridden.active
+
+
+def test_fast_lead_motion_evidence_uses_raw_lead_motion_before_filter():
+  lead = SimpleNamespace(status=True, vLeadK=0.0, vLead=0.8, vRel=0.8)
+
+  evidence = get_fast_lead_motion_evidence(lead, v_ego=0.0)
+
+  assert evidence.v_lead == pytest.approx(0.8)
+  assert evidence.v_rel == pytest.approx(0.8)
+  assert evidence.moving()
+  assert evidence.opening()
+
+
+def test_fast_lead_motion_evidence_falls_back_to_aligned_relative_speed():
+  lead = SimpleNamespace(status=True, vLeadK=11.0, vRel=-0.4)
+
+  evidence = get_fast_lead_motion_evidence(lead, v_ego=12.0)
+
+  assert evidence.v_lead == pytest.approx(11.6)
+  assert evidence.v_rel == pytest.approx(-0.4)
+
+
+def test_fast_lead_motion_opening_deadband_blocks_zero_crossing_noise():
+  assert not FastLeadMotionEvidence(v_lead=0.0, v_rel=FAST_LEAD_MOTION_OPENING_DEADBAND - 0.01).opening()
+  assert FastLeadMotionEvidence(v_lead=0.0, v_rel=FAST_LEAD_MOTION_OPENING_DEADBAND).opening()
+
+
+def test_planner_lead_motion_values_preserve_filtered_speed_when_disabled():
+  lead = SimpleNamespace(status=True, vLeadK=0.0, vLead=0.8, vRel=0.8)
+
+  v_lead, v_rel, evidence = get_planner_lead_motion_values(lead, v_ego=0.0, use_fast_evidence=False)
+
+  assert v_lead == pytest.approx(0.0)
+  assert v_rel == pytest.approx(0.8)
+  assert evidence.v_lead == pytest.approx(0.8)
+
+
+def test_planner_lead_motion_values_use_raw_speed_when_enabled():
+  lead = SimpleNamespace(status=True, vLeadK=0.0, vLead=0.8, vRel=0.8)
+
+  v_lead, v_rel, _evidence = get_planner_lead_motion_values(lead, v_ego=0.0, use_fast_evidence=True)
+
+  assert v_lead == pytest.approx(0.8)
+  assert v_rel == pytest.approx(0.8)
+
+
+def test_fast_lead_motion_param_only_applies_to_custom_v2():
+  assert fast_lead_motion_evidence_enabled(SimpleNamespace(resolved_stack="custom-2.0"), True)
+  assert not fast_lead_motion_evidence_enabled(SimpleNamespace(resolved_stack="custom-2.0"), False)
+  assert not fast_lead_motion_evidence_enabled(SimpleNamespace(resolved_stack="sunnypilot-current"), True)
 
 
 def test_decision_layer_is_baked_into_custom_stacks_only():

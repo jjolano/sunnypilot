@@ -84,6 +84,7 @@ ButtonType = car.CarState.ButtonEvent.Type
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 ONE_PEDAL_LONGITUDINAL_MODE_PARAM = "OnePedalLongitudinalMode"
+FAST_LEAD_MOTION_EVIDENCE_PARAM = "FastLeadMotionEvidenceEnabled"
 ONE_PEDAL_CRUISE_HOLD_BUTTON_TYPES = frozenset((
   ButtonType.accelCruise,
   ButtonType.decelCruise,
@@ -122,6 +123,7 @@ CREEP_TO_STOP_GAP_HOLD_RELEASE_MIN_LEAD_ACCEL = 0.15
 CREEP_TO_STOP_GAP_RESERVE_CREEP_MAX_V_EGO = 0.08
 CREEP_TO_STOP_GAP_RESERVE_CREEP_ACCEL_FLOOR = 0.0
 CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED = 0.15
+FAST_LEAD_MOTION_OPENING_DEADBAND = CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED
 CREEP_TO_STOP_GAP_PULLAWAY_SPEED_MAX = 1.2
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX = 0.55
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MIN = 0.30
@@ -294,6 +296,38 @@ def _finite_float(value, default=0.0):
   except (TypeError, ValueError):
     return default
   return value if math.isfinite(value) else default
+
+
+@dataclass(frozen=True)
+class FastLeadMotionEvidence:
+  v_lead: float = 0.0
+  v_rel: float = 0.0
+
+  def opening(self, deadband=FAST_LEAD_MOTION_OPENING_DEADBAND) -> bool:
+    return self.v_rel >= deadband
+
+  def moving(self, threshold=CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED) -> bool:
+    return self.v_lead >= threshold
+
+
+def get_fast_lead_motion_evidence(lead, v_ego) -> FastLeadMotionEvidence:
+  stable_v_lead = _finite_float(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
+  v_rel = _finite_float(getattr(lead, "vRel", stable_v_lead - _finite_float(v_ego)), stable_v_lead - _finite_float(v_ego))
+  v_lead = _finite_float(getattr(lead, "vLead", math.nan), math.nan)
+  if not math.isfinite(v_lead):
+    v_lead = _finite_float(v_ego) + v_rel
+  return FastLeadMotionEvidence(v_lead=v_lead, v_rel=v_rel)
+
+
+def fast_lead_motion_evidence_enabled(stack_resolution, param_enabled) -> bool:
+  return bool(param_enabled and getattr(stack_resolution, "resolved_stack", "") == CUSTOM_V2)
+
+
+def get_planner_lead_motion_values(lead, v_ego, use_fast_evidence) -> tuple[float, float, FastLeadMotionEvidence]:
+  fast_evidence = get_fast_lead_motion_evidence(lead, v_ego)
+  if use_fast_evidence:
+    return fast_evidence.v_lead, fast_evidence.v_rel, fast_evidence
+  return get_lead_v_lead(lead), get_lead_v_rel(lead, v_ego), fast_evidence
 
 
 def get_lead_flicker_required_decel(d_rel, v_rel):
@@ -1020,7 +1054,7 @@ def get_creep_pullaway_launch_accel_max(lead_gap_excess, predicted_gap_opening):
   ))
 
 
-def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_GAP_MODEL_LEAD_HORIZON):
+def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_GAP_MODEL_LEAD_HORIZON, radar_v_lead_override=None):
   if v_ego >= CREEP_TO_STOP_GAP_MAX_V_EGO_ARM or not getattr(radar_lead, "status", False):
     return 0.0, 0.0
 
@@ -1040,7 +1074,10 @@ def get_model_lead_pullaway(model_msg, radar_lead, v_ego, horizon=CREEP_TO_STOP_
   radar_y_rel = float(getattr(radar_lead, "yRel", 0.0))
   if not np.isfinite(radar_y_rel):
     return 0.0, 0.0
-  radar_v_lead = float(getattr(radar_lead, "vLeadK", getattr(radar_lead, "vLead", 0.0)))
+  radar_v_lead = (
+    float(radar_v_lead_override) if radar_v_lead_override is not None
+    else float(getattr(radar_lead, "vLeadK", getattr(radar_lead, "vLead", 0.0)))
+  )
   if not np.isfinite(radar_v_lead):
     return 0.0, 0.0
 
@@ -1367,6 +1404,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.longitudinal_decision_telemetry: LongitudinalDecisionTelemetry | None = None
     self.planner_seed_candidates = []
     self.one_pedal_mode = get_one_pedal_longitudinal_mode(self.params)
+    try:
+      self.fast_lead_motion_evidence_param_enabled = self.params.get_bool(FAST_LEAD_MOTION_EVIDENCE_PARAM)
+    except UnknownKeyName:
+      self.fast_lead_motion_evidence_param_enabled = False
     self.one_pedal_cruise_hold_active = False
     LongitudinalPlannerSP.__init__(self, self.CP, CP_SP, self.mpc)
     self.fcw = False
@@ -1571,6 +1612,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     planner_seed_mpc_j_desired_trajectory = None
     planner_seed_mpc = getattr(self, "planner_seed_mpc", None)
     stack_resolution = getattr(self, "longitudinal_stack_resolution", None)
+    use_fast_lead_motion_evidence = fast_lead_motion_evidence_enabled(
+      stack_resolution, getattr(self, "fast_lead_motion_evidence_param_enabled", False)
+    )
     run_planner_seed_mpc = (
       bool(getattr(sm['selfdriveState'], "enabled", True)) and
       (has_radar_lead or force_slow_decel) and
@@ -1721,13 +1765,19 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     )
     behavior_lead_track_id = int(getattr(primary_behavior_lead, "radarTrackId", -2)) if primary_behavior_lead is not None else -2
     behavior_lead_d_rel = get_lead_d_rel(primary_behavior_lead) if primary_behavior_lead is not None else 0.0
-    behavior_lead_v_lead = get_lead_v_lead(primary_behavior_lead) if primary_behavior_lead is not None else 0.0
-    behavior_lead_v_rel = get_lead_v_rel(primary_behavior_lead, v_ego) if primary_behavior_lead is not None else 0.0
+    behavior_lead_v_lead, behavior_lead_v_rel, behavior_fast_motion = (
+      get_planner_lead_motion_values(primary_behavior_lead, v_ego, use_fast_lead_motion_evidence)
+      if primary_behavior_lead is not None else (0.0, 0.0, FastLeadMotionEvidence())
+    )
+    behavior_lead_opening = behavior_fast_motion.opening() if use_fast_lead_motion_evidence else behavior_lead_v_rel > 0.0
     behavior_lead_a = get_lead_a_lead(primary_behavior_lead) if primary_behavior_lead is not None else 0.0
     behavior_lead_tau = get_lead_a_tau(primary_behavior_lead) if primary_behavior_lead is not None else 0.0
     behavior_lead_model_prob = get_lead_model_prob(primary_behavior_lead) if primary_behavior_lead is not None else 0.0
     physical_lead_d_rel = get_lead_d_rel(primary_physical_lead) if primary_physical_lead is not None else 0.0
-    physical_lead_v_lead = get_lead_v_lead(primary_physical_lead) if primary_physical_lead is not None else 0.0
+    physical_lead_v_lead, physical_lead_v_rel, _physical_fast_motion = (
+      get_planner_lead_motion_values(primary_physical_lead, v_ego, use_fast_lead_motion_evidence)
+      if primary_physical_lead is not None else (0.0, 0.0, FastLeadMotionEvidence())
+    )
     physical_lead_a = get_lead_a_lead(primary_physical_lead) if primary_physical_lead is not None else 0.0
     physical_lead_model_prob = get_lead_model_prob(primary_physical_lead) if primary_physical_lead is not None else 0.0
     physical_lead_y_rel = get_lead_y_rel(primary_physical_lead) if primary_physical_lead is not None else 0.0
@@ -1756,7 +1806,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.stopped_lead_gap_fill_v_lead = behavior_lead_v_lead
 
     model_predicted_v_lead, model_predicted_gap_opening = (
-      get_model_lead_pullaway(sm['modelV2'], primary_behavior_lead, v_ego)
+      get_model_lead_pullaway(
+        sm['modelV2'], primary_behavior_lead, v_ego,
+        radar_v_lead_override=behavior_lead_v_lead if use_fast_lead_motion_evidence else None,
+      )
       if primary_behavior_progress_allowed and not acc_mode_requested else (0.0, 0.0)
     )
     lead_gap_excess = behavior_lead_d_rel - get_lead_stop_presentation_distance(
@@ -1949,7 +2002,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     custom_creep_pullaway_launch_floor = None
     custom_creep_pullaway_launch_cap = None
     lead_pullaway_crawl_cap_released = primary_behavior_progress_allowed and creep_pullaway_release and \
-      lead_pullaway_runway_excess >= CREEP_TO_STOP_GAP_START_EXCESS and behavior_lead_v_rel > 0.0 and behavior_lead_a >= 0.0
+      lead_pullaway_runway_excess >= CREEP_TO_STOP_GAP_START_EXCESS and behavior_lead_opening and behavior_lead_a >= 0.0
     if creep_pullaway_launch:
       custom_creep_to_stop_gap_accel_max = None
       launch_accel_max = get_creep_pullaway_launch_accel_max(lead_gap_excess, lead_pullaway_predicted_gap_opening)
@@ -2193,15 +2246,22 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       map_caution_a_target_for_scene = float(getattr(osm_traffic_control_prior, "output_a_target", 0.0))
     scene_lead_state = primary_behavior_state if primary_behavior_state is not None else primary_physical_state
     scene_has_lead = bool(primary_lead_context.has_physical_lead)
-    scene_lead_v = float(scene_lead_state.v_lead) if scene_lead_state is not None else 0.0
-    scene_lead_v_rel = float(scene_lead_state.v_rel) if scene_lead_state is not None else 0.0
+    if primary_behavior_state is not None and primary_behavior_lead is not None:
+      scene_lead_v = behavior_lead_v_lead
+      scene_lead_v_rel = behavior_lead_v_rel
+    elif primary_physical_state is not None and primary_physical_lead is not None:
+      scene_lead_v = physical_lead_v_lead
+      scene_lead_v_rel = physical_lead_v_rel
+    else:
+      scene_lead_v = 0.0
+      scene_lead_v_rel = 0.0
     scene_lead_y_rel = float(scene_lead_state.path_y_rel) if scene_lead_state is not None else 0.0
     scene_lead_gap_excess = float(lead_gap_excess) if primary_behavior_lead is not None else 0.0
     scene_lead_follow_gap_excess = float(lead_follow_gap_excess) if primary_behavior_lead is not None else 0.0
     scene_lead_opening_prediction = bool(primary_behavior_progress_allowed and (radar_predicted_pullaway or model_predicted_pullaway))
     scene_lead_confirmed_pullaway = bool(
       primary_behavior_progress_allowed and creep_pullaway_release and
-      (behavior_lead_v_rel > 0.0 or v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM)
+      (behavior_lead_opening or v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM)
     )
     self.custom_v2_scene = CustomV2Scene(
       v_ego=float(v_ego),
@@ -2229,6 +2289,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       alternate_lead_threat_active=bool(primary_lead_context.alternate_threat_active),
       shadow_lead_active=bool(primary_lead_context.shadow_active),
       lead_release_blocked_reason=str(primary_lead_context.lead_release_blocked_reason),
+      fast_lead_motion_evidence_enabled=bool(use_fast_lead_motion_evidence),
       stop_threat=bool(e2e_active and (custom_e2e_stop_approach_a_target < 0.0 or self.e2e_close_stop_settle_active or output_should_stop_e2e)),
       independent_stop_threat=bool(e2e_active and not scene_has_lead and (custom_e2e_stop_approach_a_target < 0.0 or output_should_stop_e2e)),
       model_should_stop=bool(output_should_stop_e2e),

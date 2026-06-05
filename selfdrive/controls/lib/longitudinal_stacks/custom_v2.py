@@ -171,6 +171,7 @@ class CustomV2Scene:
   one_pedal_mode: int = ONE_PEDAL_MODE_OFF
   one_pedal_cruise_hold: bool = False
   personality: int = log.LongitudinalPersonality.standard
+  fast_lead_motion_evidence_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -199,7 +200,8 @@ def no_lead_stop_clear(scene: CustomV2Scene) -> bool:
 
 
 def lead_evidence_releases_stop(scene: CustomV2Scene) -> bool:
-  lead_moving = scene.lead_v_rel > 0.0 or (scene.v_ego < LEAD_MOTION_MIN_V and scene.lead_v >= LEAD_MOTION_MIN_V)
+  lead_opening = scene.lead_v_rel >= LEAD_MOTION_MIN_V if scene.fast_lead_motion_evidence_enabled else scene.lead_v_rel > 0.0
+  lead_moving = lead_opening or (scene.v_ego < LEAD_MOTION_MIN_V and scene.lead_v >= LEAD_MOTION_MIN_V)
   return bool(
     scene.has_lead and
     scene.lead_progress_allowed and

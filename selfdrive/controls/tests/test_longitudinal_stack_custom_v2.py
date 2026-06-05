@@ -113,6 +113,28 @@ def test_invalid_personality_defaults_to_standard_launch_tuning():
   assert 1.25 <= output.a_target <= 1.45
 
 
+def test_fast_lead_motion_deadbands_positive_lead_opening():
+  normal_scene = CustomV2Scene(has_lead=True, lead_progress_allowed=True, lead_v=0.0, lead_v_rel=0.05)
+  fast_scene = CustomV2Scene(
+    has_lead=True,
+    lead_progress_allowed=True,
+    lead_v=0.0,
+    lead_v_rel=0.05,
+    fast_lead_motion_evidence_enabled=True,
+  )
+  fast_confirmed_scene = CustomV2Scene(
+    has_lead=True,
+    lead_progress_allowed=True,
+    lead_v=0.0,
+    lead_v_rel=custom_v2.LEAD_MOTION_MIN_V,
+    fast_lead_motion_evidence_enabled=True,
+  )
+
+  assert lead_evidence_releases_stop(normal_scene)
+  assert not lead_evidence_releases_stop(fast_scene)
+  assert lead_evidence_releases_stop(fast_confirmed_scene)
+
+
 def test_zero_safety_cap_blocks_custom_progress_floors():
   scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, model_stop_distance=30.0, model_desired_accel=0.0)
 
