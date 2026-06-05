@@ -157,9 +157,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   get_creep_to_stop_gap_accel,
   get_creep_to_stop_gap_pullaway_accel_min,
   get_lead_stop_approach_slewed_accel,
+  get_moving_lead_stop_gap_guard_accel,
   get_model_lead_pullaway,
   get_predicted_lead_pullaway,
   has_predicted_lead_pullaway,
+  should_reserve_creep_to_stop_gap,
   should_defer_e2e_to_stopped_lead_mpc,
   should_arm_stopped_lead_gap_fill,
   should_hold_creep_to_stop_gap,
@@ -1126,6 +1128,30 @@ def test_creep_to_stop_gap_uses_soft_release_inside_final_meter():
   assert 0.0 < accel <= 0.10
 
 
+def test_reserve_creep_does_not_clear_existing_stopped_lead_hold():
+  reserve = should_reserve_creep_to_stop_gap(
+    primary_behavior_progress_allowed=True,
+    output_should_stop=True,
+    v_ego=0.0,
+    d_rel=5.8,
+    v_lead=0.0,
+  )
+
+  assert not reserve
+
+
+def test_reserve_creep_still_holds_small_buffer_without_stop_intent():
+  reserve = should_reserve_creep_to_stop_gap(
+    primary_behavior_progress_allowed=True,
+    output_should_stop=False,
+    v_ego=0.0,
+    d_rel=5.8,
+    v_lead=0.0,
+  )
+
+  assert reserve
+
+
 def test_lead_stop_approach_slew_limits_rebound_while_lead_brakes_hard():
   slewed = get_lead_stop_approach_slewed_accel(
     v_ego=15.0,
@@ -1195,6 +1221,38 @@ def test_moving_lead_stop_approach_tapers_near_caution_gap():
   assert target >= -0.35
   assert target < 0.0
   assert cost > 0.0
+
+
+def test_moving_lead_stop_gap_guard_softens_route_derived_moderate_closing():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.07,
+    d_rel=25.56,
+    v_lead=13.61,
+    a_lead=-0.65,
+    y_rel=0.0,
+    t_follow=t_follow,
+  )
+
+  assert target is not None
+  assert -0.9 <= target <= -0.4
+
+
+def test_moving_lead_stop_gap_guard_preserves_urgent_closing_lead_brake():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.22,
+    d_rel=34.56,
+    v_lead=11.68,
+    a_lead=-1.3,
+    y_rel=0.0,
+    t_follow=t_follow,
+  )
+
+  assert target is not None
+  assert target <= -1.4
 
 
 def test_moving_lead_stop_approach_preserves_short_ttc_brake():

@@ -167,6 +167,12 @@ MOVING_LEAD_STOP_GAP_GUARD_MIN_TARGET_DECEL = 0.4
 MOVING_LEAD_STOP_GAP_GUARD_MAX_Y_REL = 1.5
 MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP = 1.95
 MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL = 2.0
+MOVING_LEAD_STOP_GAP_GUARD_PREDICT_T = 0.8
+MOVING_LEAD_STOP_GAP_GUARD_ALLOWED_CLOSING = 1.2
+MOVING_LEAD_STOP_GAP_GUARD_CLOSING_DECEL_CAP = 1.2
+MOVING_LEAD_STOP_GAP_GUARD_URGENT_CLOSING = 3.0
+MOVING_LEAD_STOP_GAP_GUARD_URGENT_DANGER_MARGIN = 2.0
+MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL = 3.0
 LEAD_STOP_APPROACH_DECEL_SLEW_MIN_V_EGO = 3.0
 LEAD_STOP_APPROACH_DECEL_SLEW_MIN_LEAD_DECEL = 0.6
 LEAD_STOP_APPROACH_DECEL_SLEW_STOPPED_LEAD_V = 0.2
@@ -1318,6 +1324,19 @@ def get_stopped_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, model_pr
   return -min(decel_cap, max(-CREEP_TO_STOP_GAP_ACCEL_MIN, required_decel))
 
 
+def get_moving_lead_stop_gap_guard_gradual_accel(v_ego, d_rel, v_lead, a_lead, t_follow):
+  _desired_gap, caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+  predicted_v_lead = max(0.0, v_lead + min(a_lead, 0.0) * MOVING_LEAD_STOP_GAP_GUARD_PREDICT_T)
+  predicted_closing_speed = max(v_ego - predicted_v_lead, 0.0)
+  allowed_closing_speed = float(np.interp(
+    d_rel, [danger_gap, caution_gap], [0.0, MOVING_LEAD_STOP_GAP_GUARD_ALLOWED_CLOSING]
+  ))
+  closing_excess = max(predicted_closing_speed - allowed_closing_speed, 0.0)
+  if closing_excess <= 0.0:
+    return 0.0
+  return -min(MOVING_LEAD_STOP_GAP_GUARD_CLOSING_DECEL_CAP, closing_excess / MOVING_LEAD_STOP_GAP_GUARD_PREDICT_T)
+
+
 def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_follow):
   if (
     v_ego < MOVING_LEAD_STOP_GAP_GUARD_MIN_V_EGO or
@@ -1328,7 +1347,7 @@ def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_
   ):
     return None
 
-  _desired_gap, caution_gap, _danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+  _desired_gap, caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
   if d_rel > caution_gap:
     return None
 
@@ -1339,8 +1358,32 @@ def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_
   closing_speed = max(v_ego - v_lead, 0.0)
   required_decel = float(get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead))
   decel_cap = -ACCEL_MIN if a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL else MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP
-  target = min(target, -min(decel_cap, required_decel))
+  urgent = (
+    d_rel <= danger_gap + MOVING_LEAD_STOP_GAP_GUARD_URGENT_DANGER_MARGIN or
+    closing_speed >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_CLOSING or
+    a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL or
+    (required_decel >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL and d_rel <= caution_gap)
+  )
+  if urgent:
+    target = min(target, -min(decel_cap, required_decel))
+  else:
+    target = max(target, get_moving_lead_stop_gap_guard_gradual_accel(v_ego, d_rel, v_lead, a_lead, t_follow))
+    if target > -MOVING_LEAD_STOP_GAP_GUARD_MIN_TARGET_DECEL:
+      return None
   return target
+
+
+def should_reserve_creep_to_stop_gap(primary_behavior_progress_allowed, output_should_stop, v_ego, d_rel, v_lead,
+                                     brake_pressed=False, gas_pressed=False, force_slow_decel=False, reset_state=False):
+  return bool(
+    primary_behavior_progress_allowed and
+    not output_should_stop and
+    not brake_pressed and not gas_pressed and
+    not force_slow_decel and not reset_state and
+    v_ego < CREEP_TO_STOP_GAP_RESERVE_CREEP_MAX_V_EGO and
+    v_lead < CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED and
+    STOP_DISTANCE + CREEP_TO_STOP_GAP_HOLD_BUFFER < d_rel <= STOP_DISTANCE + CREEP_TO_STOP_GAP_FOLLOW_EXCESS
+  )
 
 
 def should_arm_stopped_lead_gap_fill(v_ego, d_rel, v_lead, model_prob, brake_pressed=False, gas_pressed=False, force_slow_decel=False,
@@ -2313,11 +2356,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         self.output_a_target = max(self.output_a_target, custom_pullaway_accel_step_floor)
       if custom_pullaway_accel_step_cap is not None and not pullaway_step_cap_suppressed_for_stop_release:
         self.output_a_target = min(self.output_a_target, custom_pullaway_accel_step_cap)
-      reserve_creep_to_stop_gap = primary_behavior_progress_allowed and not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
-        not force_slow_decel and not reset_state and \
-        v_ego < CREEP_TO_STOP_GAP_RESERVE_CREEP_MAX_V_EGO and \
-        behavior_lead_v_lead < CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED and \
-        STOP_DISTANCE + CREEP_TO_STOP_GAP_HOLD_BUFFER < behavior_lead_d_rel <= STOP_DISTANCE + CREEP_TO_STOP_GAP_FOLLOW_EXCESS
+      reserve_creep_to_stop_gap = should_reserve_creep_to_stop_gap(
+        primary_behavior_progress_allowed, self.output_should_stop, v_ego, behavior_lead_d_rel, behavior_lead_v_lead,
+        brake_pressed=sm['carState'].brakePressed, gas_pressed=sm['carState'].gasPressed,
+        force_slow_decel=force_slow_decel, reset_state=reset_state,
+      )
       if reserve_creep_to_stop_gap:
         self.output_a_target = max(self.output_a_target, CREEP_TO_STOP_GAP_RESERVE_CREEP_ACCEL_FLOOR)
         self.output_should_stop = False
