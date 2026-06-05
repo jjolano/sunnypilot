@@ -447,10 +447,10 @@ def test_scc_mode_evidence_promotes_no_lead_model_stop_only():
   assert evidence.reason == "scc_model_stop"
 
 
-def test_scc_mode_evidence_ignores_endpoint_only_slowdown_without_confirmed_stop():
+def test_scc_mode_evidence_ignores_far_endpoint_only_slowdown_without_confirmed_stop():
   evidence = build_scc_mode_evidence(
     False,
-    make_model_msg(positions=[0.0, 31.0, 62.0], velocities=[10.0, 10.0, 0.2]),
+    make_model_msg(desired_accel=-1.5, positions=[0.0, 31.0, 62.0], velocities=[10.0, 10.0, 0.2]),
     SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
     SimpleNamespace(is_active=False),
     SimpleNamespace(active=False),
@@ -458,6 +458,25 @@ def test_scc_mode_evidence_ignores_endpoint_only_slowdown_without_confirmed_stop
 
   assert not evidence.model_stop
   assert not evidence.e2e_active
+
+
+def test_scc_mode_evidence_promotes_route_near_endpoint_model_stop():
+  # Route 00000187--ea39892416--4 rlog, 268.8-269.1s: model predicted a near terminal stop
+  # while SCC stayed acc-like until the driver braked.
+  evidence = build_scc_mode_evidence(
+    False,
+    make_model_msg(
+      desired_accel=-1.45,
+      positions=[0.0, 0.82, 3.08, 6.01, 8.29, 9.18, 9.34, 9.31, 8.65],
+      velocities=[5.30, 5.14, 4.44, 3.03, 1.31, 0.19, -0.04, 0.00, -0.07],
+    ),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+  )
+
+  assert evidence.model_stop
+  assert evidence.e2e_active
 
 
 def test_scc_mode_evidence_keeps_signal_providers_acc_like():

@@ -221,6 +221,9 @@ CRUISE_COAST_DOWNHILL_ACCEL = 0.25
 CRUISE_COAST_RECOVERY_OVERSPEED = 0.9  # ~2 mph from coast back to normal decel
 E2E_STOP_APPROACH_MODEL_STOP_ENDPOINT_MARGIN = 5.0
 E2E_STOP_APPROACH_CLOSE_ENDPOINT_DECEL = -1.0
+SCC_NEAR_ENDPOINT_MODEL_STOP_MAX_DISTANCE = 12.0
+SCC_NEAR_ENDPOINT_MODEL_STOP_MAX_V = 0.5
+SCC_NEAR_ENDPOINT_MODEL_STOP_ACCEL = -1.0
 E2E_RUNWAY_COMFORT_MIN_V_EGO = 3.0
 E2E_RUNWAY_COMFORT_MIN_ENDPOINT = 1.0
 E2E_RUNWAY_COMFORT_COAST_MARGIN = 0.02
@@ -450,7 +453,11 @@ def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_t
                             speed_limit_handoff_active: bool = False) -> SccModeEvidence:
   return SccModeEvidence(
     confirmed_lead=has_confirmed_lead,
-    model_stop=bool(model_msg.action.shouldStop or get_e2e_confirmed_model_stop_distance(model_msg) is not None),
+    model_stop=bool(
+      model_msg.action.shouldStop or
+      get_e2e_confirmed_model_stop_distance(model_msg) is not None or
+      has_scc_near_endpoint_model_stop(model_msg)
+    ),
     curve_control=bool(getattr(getattr(scc, "vision", None), "is_active", False)),
     map_control=bool(getattr(getattr(scc, "map", None), "is_active", False)),
     speed_limit_control=bool(getattr(sla, "is_active", False) or speed_limit_handoff_active),
@@ -516,6 +523,25 @@ def get_e2e_confirmed_model_stop_distance(model_msg):
     if x >= 0.0 and v <= ENGAGE_STOP_BOOTSTRAP_MODEL_STOP_SPEED and endpoint_x - x >= E2E_STOP_APPROACH_MODEL_STOP_ENDPOINT_MARGIN:
       return float(x)
   return None
+
+
+def has_scc_near_endpoint_model_stop(model_msg):
+  desired_accel = float(model_msg.action.desiredAcceleration)
+  if not np.isfinite(desired_accel) or desired_accel > SCC_NEAR_ENDPOINT_MODEL_STOP_ACCEL:
+    return False
+
+  positions = list(getattr(model_msg.position, "x", []))
+  velocities = list(getattr(model_msg.velocity, "x", []))
+  if len(positions) == 0 or len(velocities) != len(positions):
+    return False
+
+  endpoint_x = float(positions[-1])
+  endpoint_v = float(velocities[-1])
+  return bool(
+    np.isfinite(endpoint_x) and np.isfinite(endpoint_v) and
+    0.0 < endpoint_x <= SCC_NEAR_ENDPOINT_MODEL_STOP_MAX_DISTANCE and
+    endpoint_v <= SCC_NEAR_ENDPOINT_MODEL_STOP_MAX_V
+  )
 
 
 def should_run_engage_stop_bootstrap(timer, v_ego, radar_state, model_msg):
