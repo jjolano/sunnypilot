@@ -46,7 +46,6 @@ OUTPUT_SLEW_RATE_BP = [0.0, 3.0, 10.0, 20.0, 30.0, 40.0]
 OUTPUT_SLEW_RATE_V = [0.80, 1.10, 2.40, 3.60, 4.00, 4.00]
 SIGN_CHANGE_SLEW_RATE_BP = [0.0, 3.0, 10.0, 20.0, 30.0, 40.0]
 SIGN_CHANGE_SLEW_RATE_V = [0.40, 0.60, 1.40, 2.00, 2.20, 2.00]
-OVERRIDE_RELEASE_RATE = 4.0
 SAME_DIRECTION_LIMIT_CAP = 0.72
 SAME_DIRECTION_LIMIT_RATE = 1.20
 HIGH_RATE_START_DEG = 70.0
@@ -448,9 +447,7 @@ class TorqueV4OutputGovernor:
       return TorqueV4GovernorResult(0.0, TorqueV4GovernorReason.INVALID, 0.0)
 
     if steering_pressed:
-      output = _approach(self.previous_output, 0.0, OVERRIDE_RELEASE_RATE * self.dt)
-      self.previous_output = output
-      return TorqueV4GovernorResult(output, TorqueV4GovernorReason.DRIVER_OVERRIDE, max_output)
+      reason |= TorqueV4GovernorReason.DRIVER_OVERRIDE
 
     output_cap = max_output
     high_rate_blend = _clip((abs(steering_rate_deg) - HIGH_RATE_START_DEG) / max(HIGH_RATE_FULL_DEG - HIGH_RATE_START_DEG, 1e-3), 0.0, 1.0)

@@ -155,7 +155,7 @@ class TorqueGuardedResponseAssist:
       and abs(inputs.desired_lateral_jerk) < PLANNED_UNWIND_JERK_THRESHOLD
       and low_demand
     )
-    release_active = bool(inputs.steering_pressed or sign_conflict or (planned_unwind and residual_active))
+    release_active = bool(sign_conflict or (planned_unwind and residual_active))
     same_sign_hold = desired_sign != 0.0 and (actual_sign == 0.0 or desired_sign == actual_sign)
     freeze_reason = self._freeze_reason(inputs)
     shared_learning_frozen = freeze_reason != GuardedResponseReason.NONE

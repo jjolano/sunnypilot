@@ -374,19 +374,17 @@ def test_v4_learning_rejects_forwarded_lateral_maneuver_demand():
   assert reject_reason & TorqueV4LearnerRejectReason.PATH_REASON
 
 
-def test_v4_governor_driver_override_releases_with_bounded_decay():
+def test_v4_governor_driver_override_preserves_authority():
   governor = TorqueV4OutputGovernor(DT_CTRL)
+  governor.previous_output = 1.0
   speed_result = make_speed_result(output_slew_rate=4.0)
-  active = governor.update(active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
-                           same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
-                           actuator_error=0.0, raw_output_torque=1.0, max_output=1.0, speed_model=speed_result)
 
   override = governor.update(active=True, v_ego=20.0, steering_pressed=True, steering_rate_deg=0.0,
                              same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
                              actuator_error=0.0, raw_output_torque=1.0, max_output=1.0, speed_model=speed_result)
 
   assert override.reason & TorqueV4GovernorReason.DRIVER_OVERRIDE
-  assert abs(override.output_torque) <= abs(active.output_torque)
+  assert override.output_torque == pytest.approx(1.0)
 
 
 def test_v4_governor_same_direction_limit_and_high_rate_cap_output():

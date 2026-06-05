@@ -49,7 +49,6 @@ V21_OUTPUT_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
 V21_OUTPUT_SLEW_RATE_V = [1.40, 2.00, 3.00, 4.20, 5.00, 5.60]
 V21_SIGN_CHANGE_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
 V21_SIGN_CHANGE_SLEW_RATE_V = [0.90, 1.20, 1.80, 2.40, 3.00, 3.40]
-V21_OVERRIDE_RELEASE_RATE = 6.0
 V21_SAME_DIRECTION_LIMIT_RATE_BP = [0.0, 10.0, 20.0, 30.0, 40.0]
 V21_SAME_DIRECTION_LIMIT_RATE_V = [1.30, 1.30, 2.10, 3.20, 3.60]
 V21_SAME_DIRECTION_LIMIT_CAP = 0.85
@@ -136,10 +135,7 @@ class TorqueV21RefinedOutputGovernor:
       return RefinedOutputGovernorResult(0.0, True, RefinedOutputGovernorReason.INVALID)
 
     if inputs.steering_pressed:
-      output = approach(self.previous_output, 0.0, V21_OVERRIDE_RELEASE_RATE * self.dt)
-      self.previous_output = output
-      return RefinedOutputGovernorResult(output, abs(output - inputs.output_torque) > 1e-6,
-                                         RefinedOutputGovernorReason.DRIVER_OVERRIDE)
+      reason |= RefinedOutputGovernorReason.DRIVER_OVERRIDE
 
     under_response_floor = self._under_response_floor(inputs)
     if under_response_floor > 0.0:

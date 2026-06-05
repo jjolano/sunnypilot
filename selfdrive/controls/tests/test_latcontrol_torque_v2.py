@@ -451,14 +451,14 @@ def test_v21_high_rate_soft_cap_applies_outside_under_response_floor():
   assert result.output_torque == pytest.approx(0.62)
 
 
-def test_v21_driver_override_uses_fast_bounded_release():
+def test_v21_driver_override_preserves_authority():
   governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
   governor.previous_output = 1.0
 
   result = governor.update(make_governor_inputs(steering_pressed=True, output_torque=1.0))
 
   assert result.reason & RefinedOutputGovernorReason.DRIVER_OVERRIDE
-  assert result.output_torque == pytest.approx(0.94)
+  assert result.output_torque == pytest.approx(1.0)
 
 
 def test_v2_conditions_measurement_between_held_angle_updates():
@@ -682,28 +682,22 @@ def test_v2_disturbance_telemetry_clean_when_tracking_cleanly():
   assert adaptive_log.disturbanceConfidence == 0.0
 
 
-def test_v2_release_on_override():
+def test_v2_steering_override_freezes_without_release_cap():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
 
   CS = car.CarState.new_message()
   CS.vEgo = 6
-  CS.steeringPressed = False
+  CS.steeringPressed = True
   params = log.LiveParametersData.new_message()
 
   pose = make_pose()
-  for _ in range(40):
-    controller.update(True, CS, VM, params, False, 2e-4, pose, False, 0.2)
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-3, pose, False, 0.2)
 
-  CS.steeringPressed = True
-  _, _, lac_log = controller.update(True, CS, VM, params, False, 2e-5, pose, False, 0.2)
-  assert lac_log.adaptiveTorqueState.releaseActive
-  assert lac_log.adaptiveTorqueState.phase == log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.release
-  assert lac_log.adaptiveTorqueState.freezeReason != 0
-  assert lac_log.adaptiveTorqueState.blockReason != 0
-  assert lac_log.adaptiveTorqueState.shapingActive
-  assert lac_log.adaptiveTorqueState.shapingReason & ConservativeOutputShapingReason.STEERING_PRESSED
-  assert lac_log.adaptiveTorqueState.shapingReason & ConservativeOutputShapingReason.RELEASE
-  assert abs(lac_log.adaptiveTorqueState.outputCap - 0.8) < 1e-6
+  assert not lac_log.adaptiveTorqueState.releaseActive
+  assert lac_log.adaptiveTorqueState.freezeReason & GuardedResponseReason.STEERING_PRESSED
+  assert lac_log.adaptiveTorqueState.blockReason & GuardedResponseReason.STEERING_PRESSED
+  assert not lac_log.adaptiveTorqueState.shapingReason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert abs(lac_log.adaptiveTorqueState.outputCap - 1.0) < 1e-6
   assert abs(lac_log.output) <= abs(lac_log.adaptiveTorqueState.unshapedOutput)
 
 
