@@ -50,6 +50,7 @@ TorqueV4OutputGovernor = latcontrol_torque_v4.TorqueV4OutputGovernor
 TorqueV4SessionAdaptation = latcontrol_torque_v4.TorqueV4SessionAdaptation
 TorqueV4SpeedModel = latcontrol_torque_v4.TorqueV4SpeedModel
 TorqueV4SpeedModelResult = latcontrol_torque_v4.TorqueV4SpeedModelResult
+TorqueV4Target = latcontrol_torque_v4.TorqueV4Target
 finite_difference_curvature_rate_from_steering_rate = latcontrol_torque_v4.finite_difference_curvature_rate_from_steering_rate
 
 
@@ -421,7 +422,7 @@ def test_v4_governor_low_speed_under_response_recovers_same_direction_authority(
   assert result.output_torque == pytest.approx(speed_result.output_slew_rate * DT_CTRL)
 
 
-def test_v4_governor_low_speed_under_response_recovery_fades_out():
+def test_v4_governor_under_response_recovery_extends_across_speeds():
   governor = TorqueV4OutputGovernor(DT_CTRL)
   speed_result = make_speed_result(output_slew_rate=3.0, sign_change_slew_rate=1.8)
 
@@ -431,25 +432,21 @@ def test_v4_governor_low_speed_under_response_recovery_fades_out():
                         recovery_target_lateral_accel=0.6, actual_lateral_accel=0.3,
                         under_response_recovery_allowed=True, speed_model=speed_result)
 
-  recovery = 0.5
-  expected_cap = latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP + recovery * (
-    latcontrol_torque_v4.LOW_SPEED_UNDER_RESPONSE_CAP - latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP
-  )
-  expected_rate = latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE + recovery * (
-    speed_result.output_slew_rate - latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE
-  )
-  assert mid.output_cap == pytest.approx(expected_cap)
-  assert mid.output_torque == pytest.approx(expected_rate * DT_CTRL)
+  assert mid.reason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+  assert latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP < mid.output_cap <= latcontrol_torque_v4.LOW_SPEED_UNDER_RESPONSE_CAP
+  assert latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE * DT_CTRL < mid.output_torque <= speed_result.output_slew_rate * DT_CTRL
 
   governor.reset()
-  faded = governor.update(active=True, v_ego=12.0, steering_pressed=False, steering_rate_deg=0.0,
-                          same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
-                          actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
-                          recovery_target_lateral_accel=0.6, actual_lateral_accel=0.3,
-                          under_response_recovery_allowed=True, speed_model=speed_result)
+  high = governor.update(active=True, v_ego=25.0, steering_pressed=False, steering_rate_deg=0.0,
+                         same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                         actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                         recovery_target_lateral_accel=0.6, actual_lateral_accel=0.3,
+                         under_response_recovery_allowed=True, speed_model=speed_result)
 
-  assert faded.output_cap == pytest.approx(latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP)
-  assert faded.output_torque == pytest.approx(latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE * DT_CTRL)
+  assert high.reason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+  assert latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP < high.output_cap < mid.output_cap
+  assert high.output_torque > latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE * DT_CTRL
+  assert high.output_torque < speed_result.output_slew_rate * DT_CTRL
 
 
 @pytest.mark.parametrize("overrides", [
@@ -457,6 +454,7 @@ def test_v4_governor_low_speed_under_response_recovery_fades_out():
   {"actual_lateral_accel": -0.2},
   {"recovery_target_lateral_accel": 0.2},
   {"under_response_recovery_allowed": False},
+  {"steering_pressed": True},
   {"steering_rate_deg": latcontrol_torque_v4.HIGH_RATE_START_DEG + 1.0},
   {"actuator_mismatch": True, "actuator_error": latcontrol_torque_v4.STALE_ACTUATOR_ERROR_THRESHOLD + 0.01},
 ])
@@ -507,6 +505,22 @@ def test_v4_under_response_recovery_fails_closed_for_bad_processed_demand_metada
   assert not controller._under_response_recovery_allowed()
 
 
+def test_v4_under_response_recovery_allows_low_speed_usable_lane_confidence():
+  controller, _VM, _CP = get_controller()
+  controller.last_v_ego = 8.0
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.75, path_reason="low_lane_confidence"))
+
+  assert controller._under_response_recovery_allowed()
+
+
+def test_v4_under_response_recovery_keeps_high_speed_path_reason_strict():
+  controller, _VM, _CP = get_controller()
+  controller.last_v_ego = 18.0
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.95, path_reason="low_lane_confidence"))
+
+  assert not controller._under_response_recovery_allowed()
+
+
 def test_v4_clean_processed_demand_allows_low_speed_recovery_in_controller():
   controller, VM, _CP = get_controller()
   CS = make_car_state(v_ego=8.0)
@@ -533,6 +547,57 @@ def test_v4_bad_processed_demand_blocks_low_speed_recovery_in_controller():
 
   assert lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
   assert not lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+
+
+def test_v4_under_response_lead_boost_uses_clean_processed_demand():
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=0.4, target_rate=1.0, delay_lead_lateral_accel=0.5,
+                          lead_delta=0.1, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=0.2, invalid=False)
+
+  assert boosted.lead_gain > target.lead_gain
+  assert boosted.lead_delta_cap > target.lead_delta_cap
+  assert boosted.delay_lead_lateral_accel > target.delay_lead_lateral_accel
+
+
+@pytest.mark.parametrize("overrides", [
+  {"steering_pressed": True},
+  {"active": False},
+  {"invalid": True},
+])
+def test_v4_under_response_lead_boost_freezes_without_clean_active_control(overrides):
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=0.4, target_rate=1.0, delay_lead_lateral_accel=0.5,
+                          lead_delta=0.1, lead_gain=0.5, lead_delta_cap=0.5)
+  values = {
+    "active": True,
+    "steering_pressed": False,
+    "invalid": False,
+  }
+  values.update(overrides)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        actual_lateral_accel=0.2, **values)
+
+  assert boosted == target
+
+
+def test_v4_under_response_lead_boost_requires_clean_processed_demand():
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.5))
+  target = TorqueV4Target(raw_lateral_accel=0.4, target_rate=1.0, delay_lead_lateral_accel=0.5,
+                          lead_delta=0.1, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=0.2, invalid=False)
+
+  assert boosted == target
 
 
 def test_v4_same_direction_safety_limit_caps_controller_output():

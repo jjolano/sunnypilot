@@ -55,11 +55,19 @@ HIGH_RATE_SLEW_SCALE = 0.65
 STALE_ACTUATOR_ERROR_THRESHOLD = 0.15
 STALE_ACTUATOR_CAP = 0.35
 LOW_SPEED_UNDER_RESPONSE_MARGIN = 0.12
-LOW_SPEED_UNDER_RESPONSE_FULL_SPEED = 9.0
 LOW_SPEED_UNDER_RESPONSE_FADE_SPEED = 12.0
-LOW_SPEED_UNDER_RESPONSE_CAP = 0.85
+LOW_SPEED_UNDER_RESPONSE_CAP = 0.90
 LOW_SPEED_UNDER_RESPONSE_MAX_ACTUAL_LAT_ACCEL = 2.6
 LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD = 0.05
+UNDER_RESPONSE_RECOVERY_FULL_DEFICIT = 0.30
+UNDER_RESPONSE_RECOVERY_CAP_BP = [0.0, 9.0, 15.0, 25.0, 40.0]
+UNDER_RESPONSE_RECOVERY_CAP_V = [0.90, 0.90, 0.88, 0.84, 0.80]
+UNDER_RESPONSE_RECOVERY_RATE_SCALE_BP = [0.0, 15.0, 25.0, 40.0]
+UNDER_RESPONSE_RECOVERY_RATE_SCALE_V = [1.0, 1.0, 0.85, 0.75]
+UNDER_RESPONSE_LEAD_GAIN_BOOST_BP = [0.0, 10.0, 20.0, 40.0]
+UNDER_RESPONSE_LEAD_GAIN_BOOST_V = [0.18, 0.15, 0.10, 0.06]
+UNDER_RESPONSE_LEAD_CAP_BOOST_BP = [0.0, 10.0, 20.0, 40.0]
+UNDER_RESPONSE_LEAD_CAP_BOOST_V = [0.15, 0.12, 0.08, 0.05]
 
 LEARN_MIN_SPEED = 10.0
 LEARN_MAX_SPEED = 35.0
@@ -69,6 +77,7 @@ LEARN_MAX_JERK = 8.0
 LEARN_MAX_GOVERNOR_REASON = 0
 LEARN_MIN_PATH_QUALITY = 0.75
 LEARN_PATH_REASON_OK = "ok"
+UNDER_RESPONSE_LOW_SPEED_ALLOWED_PATH_REASONS = frozenset((LEARN_PATH_REASON_OK, "low_lane_confidence"))
 
 SPEED_BUCKET_CENTERS = [5.0, 15.0, 25.0, 35.0, 45.0]
 
@@ -151,6 +160,23 @@ def _approach(value: float, target: float, step: float) -> float:
   if target > value:
     return min(target, value + step)
   return max(target, value - step)
+
+
+def _under_response_strength(target_lateral_accel: float, actual_lateral_accel: float) -> float:
+  if not _finite(target_lateral_accel, actual_lateral_accel):
+    return 0.0
+  target_sign = _sign(target_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+  actual_sign = _sign(actual_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+  if target_sign == 0 or actual_sign not in (0, target_sign):
+    return 0.0
+  if abs(actual_lateral_accel) > LOW_SPEED_UNDER_RESPONSE_MAX_ACTUAL_LAT_ACCEL:
+    return 0.0
+
+  under_response = target_sign * (target_lateral_accel - actual_lateral_accel)
+  if under_response <= LOW_SPEED_UNDER_RESPONSE_MARGIN:
+    return 0.0
+  span = UNDER_RESPONSE_RECOVERY_FULL_DEFICIT - LOW_SPEED_UNDER_RESPONSE_MARGIN
+  return _clip((under_response - LOW_SPEED_UNDER_RESPONSE_MARGIN) / max(span, 1e-3), 0.0, 1.0)
 
 
 def finite_difference_curvature_rate_from_steering_rate(VM, steering_angle_rad: float, steering_rate_rad_s: float,
@@ -461,9 +487,10 @@ class TorqueV4OutputGovernor:
     if stale_actuator_mismatch:
       output_cap = min(output_cap, max_output * STALE_ACTUATOR_CAP)
       reason |= TorqueV4GovernorReason.STALE_ACTUATOR_MISMATCH
-    under_response_recovery = self._low_speed_under_response_recovery(
+    under_response_recovery = self._under_response_recovery_strength(
       allowed=under_response_recovery_allowed,
       v_ego=v_ego,
+      steering_pressed=steering_pressed,
       recovery_target_lateral_accel=recovery_target_lateral_accel,
       actual_lateral_accel=actual_lateral_accel,
       raw_output_torque=raw_output_torque,
@@ -471,7 +498,8 @@ class TorqueV4OutputGovernor:
       stale_actuator_mismatch=stale_actuator_mismatch,
     )
     if same_direction_limit and not steer_limit_unwind and under_response_recovery > 0.0:
-      recovery_cap = SAME_DIRECTION_LIMIT_CAP + under_response_recovery * (LOW_SPEED_UNDER_RESPONSE_CAP - SAME_DIRECTION_LIMIT_CAP)
+      recovery_target_cap = _interp(v_ego, UNDER_RESPONSE_RECOVERY_CAP_BP, UNDER_RESPONSE_RECOVERY_CAP_V)
+      recovery_cap = SAME_DIRECTION_LIMIT_CAP + under_response_recovery * (recovery_target_cap - SAME_DIRECTION_LIMIT_CAP)
       output_cap = max(output_cap, max_output * recovery_cap)
       reason |= TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
 
@@ -491,6 +519,7 @@ class TorqueV4OutputGovernor:
       same_direction_rate = SAME_DIRECTION_LIMIT_RATE
       if under_response_recovery > 0.0:
         recovery_target_rate = speed_model.sign_change_slew_rate if sign_change else speed_model.output_slew_rate
+        recovery_target_rate *= _interp(v_ego, UNDER_RESPONSE_RECOVERY_RATE_SCALE_BP, UNDER_RESPONSE_RECOVERY_RATE_SCALE_V)
         same_direction_rate = max(
           same_direction_rate,
           same_direction_rate + under_response_recovery * (recovery_target_rate - same_direction_rate),
@@ -506,31 +535,20 @@ class TorqueV4OutputGovernor:
     return TorqueV4GovernorResult(output, reason, output_cap)
 
   @staticmethod
-  def _low_speed_under_response_recovery(*, allowed: bool, v_ego: float, recovery_target_lateral_accel: float,
-                                         actual_lateral_accel: float, raw_output_torque: float,
-                                         high_rate_blend: float, stale_actuator_mismatch: bool) -> float:
-    if not allowed or high_rate_blend > 0.0 or stale_actuator_mismatch:
+  def _under_response_recovery_strength(*, allowed: bool, v_ego: float, steering_pressed: bool,
+                                         recovery_target_lateral_accel: float, actual_lateral_accel: float,
+                                         raw_output_torque: float, high_rate_blend: float,
+                                         stale_actuator_mismatch: bool) -> float:
+    if not allowed or steering_pressed or high_rate_blend > 0.0 or stale_actuator_mismatch:
       return 0.0
     if not _finite(v_ego, recovery_target_lateral_accel, actual_lateral_accel, raw_output_torque):
       return 0.0
-    if v_ego >= LOW_SPEED_UNDER_RESPONSE_FADE_SPEED:
-      return 0.0
 
     desired_sign = _sign(recovery_target_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
-    actual_sign = _sign(actual_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
     output_sign = _sign(raw_output_torque, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
-    if desired_sign == 0 or output_sign != desired_sign or actual_sign not in (0, desired_sign):
+    if desired_sign == 0 or output_sign != desired_sign:
       return 0.0
-    if abs(actual_lateral_accel) > LOW_SPEED_UNDER_RESPONSE_MAX_ACTUAL_LAT_ACCEL:
-      return 0.0
-
-    under_response = desired_sign * (recovery_target_lateral_accel - actual_lateral_accel)
-    if under_response <= LOW_SPEED_UNDER_RESPONSE_MARGIN:
-      return 0.0
-    if v_ego <= LOW_SPEED_UNDER_RESPONSE_FULL_SPEED:
-      return 1.0
-    span = LOW_SPEED_UNDER_RESPONSE_FADE_SPEED - LOW_SPEED_UNDER_RESPONSE_FULL_SPEED
-    return _clip((LOW_SPEED_UNDER_RESPONSE_FADE_SPEED - v_ego) / max(span, 1e-3), 0.0, 1.0)
+    return _under_response_strength(recovery_target_lateral_accel, actual_lateral_accel)
 
 
 class LatControlTorqueV4(LatControl):
@@ -555,6 +573,7 @@ class LatControlTorqueV4(LatControl):
     self.previous_target_lateral_accel = 0.0
     self.previous_measurement = 0.0
     self.filtered_measurement_rate = 0.0
+    self.last_v_ego = 0.0
     self.processed_lateral_demand = None
     self.processed_lateral_demand: ProcessedLateralDemand | None = None
 
@@ -599,11 +618,18 @@ class LatControlTorqueV4(LatControl):
       return False
     path_quality = _finite_float(getattr(demand, "path_quality", None))
     lane_change_blend = _finite_float(getattr(demand, "lane_change_blend", None))
+    path_reason = getattr(demand, "path_reason", None)
+    low_speed_usable_path = (
+      path_reason in UNDER_RESPONSE_LOW_SPEED_ALLOWED_PATH_REASONS
+      and path_quality is not None
+      and path_quality >= LEARN_MIN_PATH_QUALITY
+      and self.last_v_ego < LOW_SPEED_UNDER_RESPONSE_FADE_SPEED
+    )
     return (
       getattr(demand, "demand_source", None) == DEMAND_SOURCE_MODEL_PATH
       and path_quality is not None
       and path_quality >= LEARN_MIN_PATH_QUALITY
-      and getattr(demand, "path_reason", None) == LEARN_PATH_REASON_OK
+      and (path_reason == LEARN_PATH_REASON_OK or low_speed_usable_path)
       and not getattr(demand, "lane_change_shaping_active", True)
       and lane_change_blend is not None
       and abs(lane_change_blend) <= 1e-3
@@ -618,6 +644,7 @@ class LatControlTorqueV4(LatControl):
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
     # Torque v4 follows only the processed controller-facing curvature passed in by controlsd.
     del calibrated_pose
+    self.last_v_ego = CS.vEgo if _finite(CS.vEgo) else 0.0
     if _finite(lat_delay):
       self.update_lateral_lag(lat_delay)
 
@@ -641,6 +668,15 @@ class LatControlTorqueV4(LatControl):
       params.roll if not input_invalid else 0.0,
     )
     measurement_rate = self._filtered_measurement_rate(active, input_invalid, actual_lateral_accel)
+    target = self._apply_under_response_lead_boost(
+      target,
+      speed_result,
+      CS.vEgo,
+      active=active,
+      steering_pressed=CS.steeringPressed,
+      actual_lateral_accel=actual_lateral_accel,
+      invalid=input_invalid,
+    )
 
     roll_compensation = roll_lateral_accel(params.roll) if not input_invalid else 0.0
     lateral_accel_deadzone = 0.0
@@ -743,6 +779,27 @@ class LatControlTorqueV4(LatControl):
                        -speed_result.lead_delta_cap, speed_result.lead_delta_cap)
     return TorqueV4Target(raw_target, target_rate, raw_target + lead_delta, lead_delta,
                           speed_result.lead_gain, speed_result.lead_delta_cap)
+
+  def _apply_under_response_lead_boost(self, target: TorqueV4Target, speed_result: TorqueV4SpeedModelResult, v_ego: float,
+                                       *, active: bool, steering_pressed: bool, actual_lateral_accel: float,
+                                       invalid: bool) -> TorqueV4Target:
+    if invalid or not active or steering_pressed or not self._under_response_recovery_allowed():
+      return target
+    strength = _under_response_strength(target.delay_lead_lateral_accel, actual_lateral_accel)
+    if strength <= 0.0:
+      return target
+
+    lead_gain = target.lead_gain * (1.0 + strength * _interp(v_ego, UNDER_RESPONSE_LEAD_GAIN_BOOST_BP, UNDER_RESPONSE_LEAD_GAIN_BOOST_V))
+    lead_delta_cap = target.lead_delta_cap * (1.0 + strength * _interp(v_ego, UNDER_RESPONSE_LEAD_CAP_BOOST_BP, UNDER_RESPONSE_LEAD_CAP_BOOST_V))
+    lead_delta = _clip(target.target_rate * speed_result.response_delay * lead_gain, -lead_delta_cap, lead_delta_cap)
+    return TorqueV4Target(
+      target.raw_lateral_accel,
+      target.target_rate,
+      target.raw_lateral_accel + lead_delta,
+      lead_delta,
+      lead_gain,
+      lead_delta_cap,
+    )
 
   def _filtered_measurement_rate(self, active: bool, invalid: bool, actual_lateral_accel: float) -> float:
     if invalid or not active or not _finite(actual_lateral_accel, self.previous_measurement):
