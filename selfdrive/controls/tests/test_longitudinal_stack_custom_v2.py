@@ -20,6 +20,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   ONE_PEDAL_MODE_FULL_STOP,
   POSITIVE_PROGRESS_JERK,
   SYNTH_TRAJECTORY_DT,
+  build_custom_v2_advisory_candidates,
   dynamic_cruise_overspeed_leeway,
   lead_evidence_releases_stop,
   no_lead_stop_clear,
@@ -637,6 +638,38 @@ def test_speed_policy_is_coast_biased_for_speed_reductions():
   assert output.a_target == -0.25
   assert output.debug["custom_v2_selected_intent"] == "speed_policy"
   assert output.debug["custom_v2_selected_reason"] == "coast_biased_speed_reduction"
+
+
+def test_core_advisory_selection_prefers_curve_required_accel_over_lower_speed_policy():
+  scene = CustomV2Scene(
+    v_ego=22.0,
+    v_cruise=24.0,
+    accel_coast=-0.1,
+    speed_limit_active=True,
+    speed_limit_v_target=12.0,
+    speed_limit_a_target=-0.1,
+    curve_active=True,
+    curve_a_target=-0.8,
+  )
+  driver_output = make_output(0.5)
+  driver_candidates = ensure_driver_intent((), driver_output, scene.v_cruise)
+  advisory_candidates, rejected = build_custom_v2_advisory_candidates(scene)
+
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=(*driver_candidates, *advisory_candidates),
+    fallback_v_target=scene.v_cruise,
+    fallback_a_target=driver_output.a_target,
+    fallback_should_stop=False,
+    accel_limits=(-2.0, 2.0),
+    arbiter=LongitudinalArbiter(),
+    v_ego=scene.v_ego,
+  )
+
+  assert rejected == ()
+  assert decision.winner == DecisionSource.SCC_VISION
+  assert decision.active_reason == "existing_custom_curve_thresholds"
+  assert (DecisionSource.SPEED_LIMIT, "higher_advisory_target") in decision.suppressed
 
 
 def test_map_only_caution_is_ignored_for_control():

@@ -57,6 +57,7 @@ class SignalProviderCandidate:
       confidence=self.confidence,
       urgency=self.urgency,
       active_reason=self.active_reason,
+      required_a_target=a_target if self.role == CandidateRole.ADVISORY_CAP else None,
     )
 
 

@@ -115,7 +115,30 @@ def test_candidate_rejects_inverted_bounds():
   assert candidate.invalid_reason == "inverted_safety_bounds"
 
 
-def make_candidate(source, role, v_target, a_target, confidence, urgency, reason, should_stop=False):
+@pytest.mark.parametrize(("kwargs", "reason"), [
+  ({"horizon_distance": math.nan}, "non_finite_horizon_distance"),
+  ({"horizon_distance": -1.0}, "negative_horizon_distance"),
+  ({"horizon_time": math.inf}, "non_finite_horizon_time"),
+  ({"horizon_time": -0.1}, "negative_horizon_time"),
+  ({"required_a_target": math.nan}, "non_finite_required_a_target"),
+])
+def test_candidate_rejects_invalid_advisory_horizon_metadata(kwargs, reason):
+  candidate = LongitudinalCandidate(
+    source=DecisionSource.SCC_VISION,
+    role=CandidateRole.ADVISORY_CAP,
+    v_target=18.0,
+    a_target=-0.4,
+    confidence=0.9,
+    urgency=0.5,
+    active_reason="vision_curve",
+    **kwargs,
+  )
+
+  assert not candidate.valid
+  assert candidate.invalid_reason == reason
+
+
+def make_candidate(source, role, v_target, a_target, confidence, urgency, reason, should_stop=False, **kwargs):
   return LongitudinalCandidate(
     source=source,
     role=role,
@@ -125,6 +148,7 @@ def make_candidate(source, role, v_target, a_target, confidence, urgency, reason
     urgency=urgency,
     active_reason=reason,
     should_stop=should_stop,
+    **kwargs,
   )
 
 
@@ -243,6 +267,66 @@ def test_high_confidence_advisory_cap_shapes_driver_intent_without_hazard():
 
   assert decision.winner == DecisionSource.SPEED_LIMIT
   assert decision.a_target == -0.3
+
+
+def test_horizon_aware_advisory_rank_prefers_near_required_decel_over_far_lower_speed():
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 30.0, 0.1, 1.0, 0.1, "driver_set_speed")
+  near_curve = make_candidate(
+    DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 18.0, -0.6, 0.9, 0.8, "near_curve",
+    horizon_distance=60.0, horizon_time=2.5, required_a_target=-1.0,
+  )
+  far_limit = make_candidate(
+    DecisionSource.SPEED_LIMIT, CandidateRole.ADVISORY_CAP, 12.0, -0.2, 0.9, 0.4, "far_limit",
+    horizon_distance=400.0, horizon_time=14.0, required_a_target=-0.3,
+  )
+
+  decision = LongitudinalArbiter().decide([cruise, far_limit, near_curve])
+
+  assert decision.winner == DecisionSource.SCC_VISION
+  assert decision.active_reason == "near_curve"
+  assert (DecisionSource.SPEED_LIMIT, "higher_advisory_target") in decision.suppressed
+
+
+def test_horizon_aware_advisory_rank_prefers_stronger_required_decel_before_distance():
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 30.0, 0.1, 1.0, 0.1, "driver_set_speed")
+  near_mild_curve = make_candidate(
+    DecisionSource.SCC_MAP, CandidateRole.ADVISORY_CAP, 22.0, -0.2, 0.9, 0.7, "near_mild_curve",
+    horizon_distance=35.0, horizon_time=1.5, required_a_target=-0.2,
+  )
+  far_required_limit = make_candidate(
+    DecisionSource.SPEED_LIMIT, CandidateRole.ADVISORY_CAP, 12.0, -0.7, 0.9, 0.6, "far_required_limit",
+    horizon_distance=300.0, horizon_time=10.0, required_a_target=-0.9,
+  )
+
+  decision = LongitudinalArbiter().decide([cruise, near_mild_curve, far_required_limit])
+
+  assert decision.winner == DecisionSource.SPEED_LIMIT
+  assert decision.active_reason == "far_required_limit"
+
+
+def test_horizon_aware_advisory_rank_accepts_provider_debug_metadata():
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 30.0, 0.1, 1.0, 0.1, "driver_set_speed")
+  near_curve = make_candidate(
+    DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 18.0, -0.6, 0.9, 0.8, "near_curve",
+    debug={"horizon_distance": 60.0, "horizon_time": 2.5, "required_a_target": -1.0},
+  )
+  far_limit = make_candidate(DecisionSource.SPEED_LIMIT, CandidateRole.ADVISORY_CAP, 12.0, -0.2, 0.9, 0.4, "far_limit")
+
+  decision = LongitudinalArbiter().decide([cruise, far_limit, near_curve])
+
+  assert decision.winner == DecisionSource.SCC_VISION
+  assert decision.active_reason == "near_curve"
+
+
+def test_advisory_without_horizon_metadata_preserves_lowest_target_speed_ranking():
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 30.0, 0.1, 1.0, 0.1, "driver_set_speed")
+  lower_limit = make_candidate(DecisionSource.SPEED_LIMIT, CandidateRole.ADVISORY_CAP, 12.0, -0.2, 0.9, 0.4, "lower_limit")
+  stronger_curve = make_candidate(DecisionSource.SCC_VISION, CandidateRole.ADVISORY_CAP, 18.0, -0.8, 0.9, 0.8, "stronger_curve")
+
+  decision = LongitudinalArbiter().decide([cruise, stronger_curve, lower_limit])
+
+  assert decision.winner == DecisionSource.SPEED_LIMIT
+  assert decision.active_reason == "lower_limit"
 
 
 def test_advisory_tie_breaking_is_independent_of_candidate_order():

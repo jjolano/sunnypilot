@@ -471,6 +471,10 @@ class LongitudinalPlannerSP:
     scc_vision_active = bool(self.scc.vision.is_active) and not acc_mode_set_speed_advisory
     scc_map_active = bool(self.scc.map.is_active) and not acc_mode_set_speed_advisory
     osm_active = bool(self.osm_traffic_control_prior.active) and not acc_mode_set_speed_advisory
+    inactive_selection_target = speed_limit_assist_target if speed_limit_active else cruise_target
+    scc_vision_selection_target = scc_vision_target if not acc_mode_set_speed_advisory else inactive_selection_target
+    scc_map_selection_target = scc_map_target if not acc_mode_set_speed_advisory else inactive_selection_target
+    osm_selection_target = osm_target if not acc_mode_set_speed_advisory else inactive_selection_target
 
     self.decision_candidates_sp = build_sp_longitudinal_candidates(
       decision_speed_limit_active,
@@ -487,10 +491,10 @@ class LongitudinalPlannerSP:
     self.source, self.output_v_target, self.output_a_target = select_lowest_longitudinal_target(
       speed_limit_active,
       cruise_target,
-      scc_vision_target if scc_vision_active else (v_cruise, a_ego),
-      scc_map_target if scc_map_active else (v_cruise, a_ego),
+      scc_vision_selection_target,
+      scc_map_selection_target,
       speed_limit_assist_target,
-      osm_target if osm_active else (v_cruise, a_ego),
+      osm_selection_target,
       source_prev=getattr(self, 'source', None),
       v_target_prev=getattr(self, 'output_v_target', None),
     )

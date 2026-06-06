@@ -73,6 +73,17 @@ def _clamp01(value: float) -> float:
   return min(1.0, max(0.0, float(value)))
 
 
+def _optional_float(value: object) -> float | None:
+  if value is None:
+    return None
+  if not isinstance(value, (Real, str)):
+    return math.nan
+  try:
+    return float(value)
+  except (TypeError, ValueError):
+    return math.nan
+
+
 @dataclass(frozen=True)
 class LongitudinalCandidate:
   source: DecisionSource
@@ -85,6 +96,9 @@ class LongitudinalCandidate:
   should_stop: bool = False
   comfort_bounds: tuple[float | None, float | None] = (None, None)
   safety_bounds: tuple[float | None, float | None] = (None, None)
+  horizon_distance: float | None = None
+  horizon_time: float | None = None
+  required_a_target: float | None = None
   debug: dict[str, Any] = field(default_factory=dict)
 
   def __post_init__(self) -> None:
@@ -93,6 +107,9 @@ class LongitudinalCandidate:
     object.__setattr__(self, "confidence", _clamp01(float(self.confidence)))
     object.__setattr__(self, "urgency", _clamp01(float(self.urgency)))
     object.__setattr__(self, "active_reason", str(self.active_reason))
+    object.__setattr__(self, "horizon_distance", _optional_float(self.horizon_distance))
+    object.__setattr__(self, "horizon_time", _optional_float(self.horizon_time))
+    object.__setattr__(self, "required_a_target", _optional_float(self.required_a_target))
 
   @property
   def invalid_reason(self) -> str:
@@ -110,6 +127,13 @@ class LongitudinalCandidate:
       bounds_reason = _bounds_invalid_reason(name, bounds)
       if bounds_reason:
         return bounds_reason
+    for name, value in (("horizon_distance", self.horizon_distance), ("horizon_time", self.horizon_time)):
+      if value is not None and not math.isfinite(value):
+        return f"non_finite_{name}"
+      if value is not None and value < 0.0:
+        return f"negative_{name}"
+    if self.required_a_target is not None and not math.isfinite(self.required_a_target):
+      return "non_finite_required_a_target"
     return ""
 
   @property
@@ -295,6 +319,51 @@ def _dedupe_suppressed_candidates(candidates: list[SuppressedLongitudinalCandida
   return tuple(deduped)
 
 
+def _candidate_debug_float(candidate: LongitudinalCandidate, key: str) -> float | None:
+  value = _optional_float(candidate.debug.get(key))
+  return value if value is not None and math.isfinite(value) else None
+
+
+def _candidate_optional_metric(candidate: LongitudinalCandidate, attr: str) -> float | None:
+  value = getattr(candidate, attr)
+  if value is not None and math.isfinite(value):
+    return value
+  return _candidate_debug_float(candidate, attr)
+
+
+def _candidate_has_advisory_horizon(candidate: LongitudinalCandidate) -> bool:
+  return any(_candidate_optional_metric(candidate, attr) is not None for attr in (
+    "required_a_target", "horizon_time", "horizon_distance",
+  ))
+
+
+def _advisory_rank_key(candidate: LongitudinalCandidate, horizon_aware: bool) -> tuple[object, ...]:
+  if not horizon_aware:
+    return (
+      candidate.v_target,
+      candidate.a_target,
+      -candidate.confidence,
+      -candidate.urgency,
+      _source_priority(candidate.source),
+      candidate.active_reason,
+    )
+
+  required_a_target = _candidate_optional_metric(candidate, "required_a_target")
+  horizon_time = _candidate_optional_metric(candidate, "horizon_time")
+  horizon_distance = _candidate_optional_metric(candidate, "horizon_distance")
+  return (
+    required_a_target if required_a_target is not None else candidate.a_target,
+    horizon_time if horizon_time is not None else math.inf,
+    horizon_distance if horizon_distance is not None else math.inf,
+    candidate.v_target,
+    candidate.a_target,
+    -candidate.confidence,
+    -candidate.urgency,
+    _source_priority(candidate.source),
+    candidate.active_reason,
+  )
+
+
 def _candidate_identity(candidate: LongitudinalCandidate) -> tuple[object, ...]:
   return (
     candidate.source,
@@ -386,14 +455,8 @@ class LongitudinalDecisionCore:
         and candidate.v_target < driver.v_target
       ]
       if advisory:
-        winner = min(advisory, key=lambda candidate: (
-          candidate.v_target,
-          candidate.a_target,
-          -candidate.confidence,
-          -candidate.urgency,
-          _source_priority(candidate.source),
-          candidate.active_reason,
-        ))
+        horizon_aware = any(_candidate_has_advisory_horizon(candidate) for candidate in advisory)
+        winner = min(advisory, key=lambda candidate: _advisory_rank_key(candidate, horizon_aware))
         _append_suppressions(
           suppressed, suppressed_candidates,
           (candidate for candidate in advisory if candidate is not winner),
