@@ -20,7 +20,10 @@ def _finite(value: object) -> bool:
 
 
 def _clamp01(value: object) -> float:
-  return min(1.0, max(0.0, float(value))) if _finite(value) else 0.0
+  if not isinstance(value, Real):
+    return 0.0
+  value_float = float(value)
+  return min(1.0, max(0.0, value_float)) if math.isfinite(value_float) else 0.0
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,16 @@ class CurveSpeedPolicyResult:
   def to_candidate(self) -> LongitudinalCandidate | None:
     if not self.valid:
       return None
+    debug = {
+      "curve_lateral_accel_limit": float(self.lateral_accel_limit) if _finite(self.lateral_accel_limit) else 0.0,
+      "curve_horizon_source": self.horizon.source.value if self.horizon is not None else self.source.value,
+    }
+    if self.horizon is not None:
+      debug.update({
+        "horizon_distance": float(self.horizon.distance) if self.horizon.distance is not None else None,
+        "horizon_time": float(self.horizon.time) if self.horizon.time is not None else None,
+        "required_a_target": float(self.horizon.a_target),
+      })
     return LongitudinalCandidate(
       source=self.source,
       role=CandidateRole.ADVISORY_CAP,
@@ -109,10 +122,7 @@ class CurveSpeedPolicyResult:
       confidence=self.normalized_confidence,
       urgency=self.normalized_urgency,
       active_reason=str(self.reason),
-      debug={
-        "curve_lateral_accel_limit": float(self.lateral_accel_limit) if _finite(self.lateral_accel_limit) else 0.0,
-        "curve_horizon_source": self.horizon.source.value if self.horizon is not None else self.source.value,
-      },
+      debug=debug,
     )
 
 

@@ -66,6 +66,9 @@ def test_curve_policy_result_converts_to_advisory_candidate_with_horizon_metadat
   assert candidate.urgency == pytest.approx(0.8)
   assert candidate.debug["curve_lateral_accel_limit"] == pytest.approx(2.0)
   assert candidate.debug["curve_horizon_source"] == "scc_vision"
+  assert candidate.debug["horizon_distance"] == pytest.approx(40.0)
+  assert candidate.debug["horizon_time"] == pytest.approx(2.0)
+  assert candidate.debug["required_a_target"] == pytest.approx(-0.4)
 
 
 @pytest.mark.parametrize("overrides", [
