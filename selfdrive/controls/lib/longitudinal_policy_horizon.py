@@ -64,6 +64,8 @@ class AdvisoryConstraint:
 
 @dataclass(frozen=True)
 class LongitudinalPolicyHorizonGrid:
+  """Multi-step planner horizon grid assembled from restrictive advisory constraints."""
+
   v_upper: tuple[float, ...]
   a_min: tuple[float, ...]
   a_max: tuple[float, ...]
@@ -149,6 +151,8 @@ def build_longitudinal_policy_horizon(constraints: tuple[AdvisoryConstraint, ...
 
 @dataclass(frozen=True)
 class LongitudinalPolicyHorizon:
+  """Source-specific horizon descriptor used before conversion to an advisory candidate."""
+
   source: DecisionSource
   active: bool
   reason: str
