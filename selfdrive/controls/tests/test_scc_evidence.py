@@ -14,6 +14,12 @@ def test_no_evidence_classifies_none():
   assert not result.e2e_active
 
 
+def test_tier_aliases_keep_contract_labels():
+  assert SccEvidenceTier.none.label == "none"
+  assert SccEvidenceTier.URGENT_STOP.label == "urgent_stop"
+  assert SccEvidenceTier.stop == SccEvidenceTier.STOP
+
+
 def test_slowdown_stop_and_urgent_tiers_are_ordered():
   slowdown = classify_scc_evidence(model_slowdown=True)
   stop = classify_scc_evidence(model_stop=True, model_stop_distance=24.0)
@@ -72,6 +78,28 @@ def test_confirmed_lead_independent_urgent_stop_can_be_e2e_like():
   assert result.associated_lead_idx is None
   assert result.independent_of_lead
   assert result.e2e_active
+
+
+def test_confirmed_lead_stop_without_valid_geometry_fails_closed_to_e2e():
+  stop = classify_scc_evidence(
+    confirmed_lead=True,
+    model_stop=True,
+    model_stop_distance=18.0,
+  )
+  urgent = classify_scc_evidence(
+    confirmed_lead=True,
+    urgent_stop=True,
+    model_stop_distance=8.0,
+  )
+
+  assert stop.tier == SccEvidenceTier.STOP
+  assert stop.associated_lead_idx is None
+  assert stop.independent_of_lead
+  assert stop.e2e_active
+  assert urgent.tier == SccEvidenceTier.URGENT_STOP
+  assert urgent.associated_lead_idx is None
+  assert urgent.independent_of_lead
+  assert urgent.e2e_active
 
 
 def test_no_lead_model_stop_is_independent_e2e_evidence():

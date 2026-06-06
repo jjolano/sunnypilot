@@ -240,6 +240,9 @@ SCC_EARLY_MODEL_STOP_MIN_SPEED_DROP = 6.0
 SCC_EARLY_MODEL_STOP_ENDPOINT_MARGIN = 5.0
 SCC_EARLY_MODEL_STOP_MIN_REQUIRED_DECEL = 1.0
 SCC_EARLY_MODEL_STOP_EXPECTED_DISTANCE_SCALE = 1.0
+SCC_MODEL_SLOWDOWN_ACCEL = -0.8
+SCC_MODEL_SLOWDOWN_MIN_SPEED_DROP = 4.0
+SCC_MODEL_SLOWDOWN_MIN_ENDPOINT_DROP = 3.0
 E2E_RUNWAY_COMFORT_MIN_V_EGO = 3.0
 E2E_RUNWAY_COMFORT_MIN_ENDPOINT = 1.0
 E2E_RUNWAY_COMFORT_COAST_MARGIN = 0.02
@@ -470,7 +473,7 @@ def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_t
                             speed_limit_handoff_active: bool = False, lead_distance: float | None = None,
                             lead_path_y_rel: float = 0.0, lead_idx: int | None = None,
                             v_ego: float = 0.0) -> SccModeEvidence:
-  model_stop_distance = get_e2e_confirmed_model_stop_distance(model_msg) or get_model_stop_distance(model_msg)
+  model_stop_distance = get_e2e_confirmed_model_stop_distance(model_msg)
   model_stop = bool(
     model_msg.action.shouldStop or
     model_stop_distance is not None or
@@ -482,9 +485,13 @@ def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_t
     if positions is not None and len(positions) > 0:
       model_stop_distance = float(max(0.0, positions[-1]))
   stop_profile = jerk_limited_braking_profile(v_ego, 0.0, model_stop_distance) if model_stop_distance is not None else None
+  urgent_stop = bool(stop_profile is not None and stop_profile.urgent)
+  model_slowdown = bool(not model_stop and not urgent_stop and has_scc_model_slowdown(model_msg))
   return SccModeEvidence(
     confirmed_lead=has_confirmed_lead,
     model_stop=model_stop,
+    model_slowdown=model_slowdown,
+    urgent_stop=urgent_stop,
     independent_of_lead=bool(model_stop and not has_confirmed_lead),
     model_stop_distance=model_stop_distance,
     lead_distance=lead_distance,
@@ -615,6 +622,80 @@ def has_scc_early_model_stop(model_msg):
     (endpoint_x - middle_positions >= SCC_EARLY_MODEL_STOP_ENDPOINT_MARGIN) &
     (middle_velocities <= SCC_EARLY_MODEL_STOP_MAX_MID_V)
   ))
+
+
+def has_scc_model_slowdown(model_msg) -> bool:
+  try:
+    desired_accel = float(model_msg.action.desiredAcceleration)
+  except (TypeError, ValueError, AttributeError):
+    desired_accel = 0.0
+  positions = _finite_model_array(getattr(model_msg.position, "x", []))
+  velocities = _finite_model_array(getattr(model_msg.velocity, "x", []))
+  if positions is None or velocities is None or len(positions) < 2 or len(positions) != len(velocities):
+    return False
+
+  initial_v = max(0.0, float(velocities[0]))
+  endpoint_v = max(0.0, float(velocities[-1]))
+  min_v = max(0.0, float(np.min(velocities)))
+  speed_drop = initial_v - min_v
+  endpoint_drop = initial_v - endpoint_v
+  return bool(
+    desired_accel <= SCC_MODEL_SLOWDOWN_ACCEL and
+    (
+      speed_drop >= SCC_MODEL_SLOWDOWN_MIN_SPEED_DROP or
+      endpoint_drop >= SCC_MODEL_SLOWDOWN_MIN_ENDPOINT_DROP
+    )
+  )
+
+
+def _valid_scc_lead_geometry_values(lead) -> tuple[float | None, float, int | None]:
+  if lead is None or not bool(getattr(lead, "status", False)):
+    return None, 0.0, None
+  try:
+    d_rel = float(getattr(lead, "dRel", 0.0))
+  except (TypeError, ValueError):
+    return None, 0.0, None
+  if not math.isfinite(d_rel) or d_rel < 0.0:
+    return None, 0.0, None
+  try:
+    y_rel = float(getattr(lead, "yRel", 0.0))
+  except (TypeError, ValueError):
+    y_rel = 0.0
+  try:
+    track_id = int(getattr(lead, "radarTrackId", -1))
+  except (TypeError, ValueError):
+    track_id = -1
+  return d_rel, y_rel if math.isfinite(y_rel) else 0.0, track_id if track_id >= 0 else None
+
+
+def scc_lead_geometry_from_context(context: PrimaryLeadContext | None, radar_state) -> tuple[float | None, float, int | None]:
+  leads = (getattr(radar_state, "leadOne", None), getattr(radar_state, "leadTwo", None))
+  physical = getattr(context, "physical", None)
+  if physical is not None and not bool(getattr(physical, "shadow", False)) and bool(getattr(physical, "status", False)):
+    try:
+      lead_idx = int(getattr(physical, "lead_idx"))
+      path_y_rel = float(getattr(physical, "path_y_rel", getattr(physical, "y_rel", 0.0)))
+    except (TypeError, ValueError):
+      path_y_rel = 0.0
+      lead_idx = -1
+    raw_lead = leads[lead_idx] if 0 <= lead_idx < len(leads) else None
+    d_rel, raw_y_rel, _track_id = _valid_scc_lead_geometry_values(raw_lead)
+    if d_rel is not None:
+      return d_rel, path_y_rel if math.isfinite(path_y_rel) else raw_y_rel, lead_idx
+
+  confirmed = []
+  for idx, lead in enumerate(leads):
+    if not bool(getattr(lead, "status", False)):
+      continue
+    if _finite_float(getattr(lead, "modelProb", 0.0)) < LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB:
+      continue
+    d_rel, y_rel, _track_id = _valid_scc_lead_geometry_values(lead)
+    if d_rel is not None:
+      confirmed.append((idx, d_rel, y_rel))
+  if not confirmed:
+    return None, 0.0, None
+  idx, d_rel, y_rel = min(confirmed, key=lambda item: item[1])
+  return d_rel, y_rel, idx
 
 
 def _finite_model_array(values):
@@ -1733,10 +1814,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     has_radar_lead = has_valid_radar_lead(sm['radarState'])
     has_confirmed_lead = has_confirmed_radar_lead(sm['radarState'])
+    scc_lead_distance, scc_lead_path_y_rel, scc_lead_idx = scc_lead_geometry_from_context(
+      self.primary_lead_context, sm['radarState'],
+    )
     if mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.SCC and not set_speed_advisory_mode:
       scc_evidence = build_scc_mode_evidence(
         has_confirmed_lead, sm['modelV2'], self.scc, self.sla, self.osm_traffic_control_prior,
         speed_limit_handoff_active=bool(getattr(self, "_speed_limit_handoff_active", False)),
+        lead_distance=scc_lead_distance,
+        lead_path_y_rel=scc_lead_path_y_rel,
+        lead_idx=scc_lead_idx,
+        v_ego=v_ego,
       )
       self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP, scc_evidence=scc_evidence)
       mode_resolution = self.longitudinal_mode_resolution
@@ -1753,6 +1841,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       scc_evidence = build_scc_mode_evidence(
         has_confirmed_lead, sm['modelV2'], self.scc, self.sla, self.osm_traffic_control_prior,
         speed_limit_handoff_active=bool(getattr(self, "_speed_limit_handoff_active", False)),
+        lead_distance=scc_lead_distance,
+        lead_path_y_rel=scc_lead_path_y_rel,
+        lead_idx=scc_lead_idx,
+        v_ego=v_ego,
       )
       self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP, scc_evidence=scc_evidence)
       mode_resolution = self.longitudinal_mode_resolution

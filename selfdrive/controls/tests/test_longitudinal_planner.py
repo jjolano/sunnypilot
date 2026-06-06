@@ -13,6 +13,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_decision import DecisionSource, LongitudinalArbiter
 from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, ResolvedLongitudinalImplementation, SccModeEvidence
+from openpilot.selfdrive.controls.lib.scc_evidence import SccEvidenceTier
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import SUNNYPILOT_CURRENT, StackResolution
@@ -48,6 +49,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   get_lead_stop_approach_slewed_accel,
   get_model_stop_distance,
   has_model_stop_context,
+  has_scc_model_slowdown,
   has_valid_radar_lead,
   limit_accel_in_turns,
   one_pedal_cruise_hold_requested,
@@ -55,6 +57,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   should_enable_longitudinal_decision_layer,
   should_allow_stopped_lead_stop_gap_guard,
   should_run_engage_stop_bootstrap,
+  scc_lead_geometry_from_context,
   update_one_pedal_cruise_hold,
 )
 
@@ -248,11 +251,12 @@ class PoisonModel:
     return PoisonModelField(f"modelV2.{name}")
 
 
-def make_full_update_sm(model, lead_status=False):
+def make_full_update_sm(model, lead_status=False, lead_d_rel=30.0, lead_v_rel=-0.2, lead_y_rel=0.0,
+                        lead_model_prob=1.0):
   lead = SimpleNamespace(
-    status=lead_status, dRel=30.0 if lead_status else 100.0, vRel=-0.2 if lead_status else 0.0,
-    vLead=9.8 if lead_status else 0.0, vLeadK=9.8 if lead_status else 0.0, yRel=0.0,
-    modelProb=1.0 if lead_status else 0.0, radar=lead_status,
+    status=lead_status, dRel=lead_d_rel if lead_status else 100.0, vRel=lead_v_rel if lead_status else 0.0,
+    vLead=10.0 + lead_v_rel if lead_status else 0.0, vLeadK=10.0 + lead_v_rel if lead_status else 0.0,
+    yRel=lead_y_rel, modelProb=lead_model_prob if lead_status else 0.0, radar=lead_status, radarTrackId=0,
   )
   no_lead = SimpleNamespace(status=False, dRel=100.0, vRel=0.0, vLead=0.0, vLeadK=0.0, yRel=0.0, modelProb=0.0, radar=False)
   return FakeSubMaster({
@@ -432,6 +436,103 @@ def test_scc_e2e_full_update_model_stop_disables_scc_curve_sources_same_cycle():
   assert planner.custom_v2_scene.curve_active is False
   assert DecisionSource.SCC_VISION not in [candidate.source for candidate in planner.decision_candidates_sp]
   assert DecisionSource.SCC_MAP not in [candidate.source for candidate in planner.decision_candidates_sp]
+
+
+def test_scc_full_update_associates_confirmed_lead_model_stop_with_scc_acc():
+  planner = make_full_update_planner(LongitudinalMode.SCC, radar_unavailable=False)
+  model = make_safe_model_msg()
+  model.action.desiredAcceleration = -1.0
+  model.position.x = [0.0, 31.0, 80.0]
+  model.position.y = [0.0, 0.0, 0.0]
+  model.velocity.x = [10.0, 0.2, 0.2]
+
+  planner.update(make_full_update_sm(model, lead_status=True, lead_d_rel=30.0, lead_y_rel=0.0))
+  evidence = planner.longitudinal_mode_resolution.scc_evidence
+
+  assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC
+  assert evidence.associated_lead_idx == 0
+  assert not evidence.independent_of_lead
+  assert not evidence.e2e_active
+
+
+def test_scc_full_update_independent_urgent_stop_overrides_confirmed_lead_geometry():
+  planner = make_full_update_planner(LongitudinalMode.SCC, radar_unavailable=False)
+  model = make_safe_model_msg()
+  model.action.desiredAcceleration = -1.0
+  model.position.x = [0.0, 8.0, 80.0]
+  model.position.y = [0.0, 0.0, 0.0]
+  model.velocity.x = [10.0, 0.2, 0.2]
+
+  planner.update(make_full_update_sm(model, lead_status=True, lead_d_rel=30.0, lead_y_rel=0.0))
+  evidence = planner.longitudinal_mode_resolution.scc_evidence
+
+  assert evidence.tier == SccEvidenceTier.URGENT_STOP
+  assert evidence.independent_of_lead
+  assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_E2E
+
+
+def test_scc_full_update_path_mismatch_model_stop_is_independent():
+  planner = make_full_update_planner(LongitudinalMode.SCC, radar_unavailable=False)
+  model = make_safe_model_msg()
+  model.action.desiredAcceleration = -1.0
+  model.position.x = [0.0, 31.0, 80.0]
+  model.position.y = [0.0, 0.0, 0.0]
+  model.velocity.x = [10.0, 0.2, 0.2]
+
+  planner.update(make_full_update_sm(model, lead_status=True, lead_d_rel=30.0, lead_y_rel=2.0))
+  evidence = planner.longitudinal_mode_resolution.scc_evidence
+
+  assert evidence.associated_lead_idx is None
+  assert evidence.independent_of_lead
+  assert evidence.e2e_active
+  assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_E2E
+
+
+def test_scc_full_update_invalid_confirmed_lead_geometry_fails_closed_to_scc_e2e():
+  planner = make_full_update_planner(LongitudinalMode.SCC, radar_unavailable=False)
+  model = make_safe_model_msg()
+  model.action.desiredAcceleration = -1.0
+  model.position.x = [0.0, 2.0, 80.0]
+  model.position.y = [0.0, 0.0, 0.0]
+  model.velocity.x = [10.0, 0.2, 0.2]
+
+  planner.update(make_full_update_sm(model, lead_status=True, lead_d_rel=float("nan"), lead_y_rel=0.0))
+  evidence = planner.longitudinal_mode_resolution.scc_evidence
+
+  assert evidence.associated_lead_idx is None
+  assert evidence.independent_of_lead
+  assert evidence.e2e_active
+  assert evidence.tier == SccEvidenceTier.URGENT_STOP
+  assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_E2E
+
+
+def test_scc_final_mode_telemetry_uses_current_cycle_curve_advisory():
+  planner = make_full_update_planner(LongitudinalMode.SCC, radar_unavailable=False)
+  planner.scc.vision.is_active = True
+  planner.scc.vision.output_a_target = -0.4
+
+  planner.update(make_full_update_sm(make_safe_model_msg()))
+
+  assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC
+  assert "curve_cap" in planner.longitudinal_mode_resolution.scc_evidence.advisory_status
+
+
+def test_scc_pre_target_stale_curve_state_does_not_leak_into_final_telemetry():
+  planner = make_full_update_planner(LongitudinalMode.SCC, radar_unavailable=False)
+  planner.scc.vision.is_active = True
+  planner.scc.vision.output_a_target = -0.4
+
+  def disable_curve_after_update(*_args, **_kwargs):
+    planner.scc.update_count += 1
+    planner.scc.vision.is_active = False
+    planner.scc.map.is_active = False
+
+  planner.scc.update = disable_curve_after_update
+
+  planner.update(make_full_update_sm(make_safe_model_msg()))
+
+  assert planner.scc.update_count == 1
+  assert "curve_cap" not in planner.longitudinal_mode_resolution.scc_evidence.advisory_status
 
 
 def test_has_valid_radar_lead_checks_both_tracks():
@@ -772,7 +873,7 @@ def test_scc_mode_evidence_promotes_no_lead_model_stop_only():
   assert evidence.classify().independent_of_lead
 
 
-def test_scc_mode_evidence_ignores_far_endpoint_only_slowdown_without_confirmed_stop():
+def test_scc_mode_evidence_classifies_far_endpoint_only_slowdown_without_confirmed_stop():
   evidence = build_scc_mode_evidence(
     False,
     make_model_msg(desired_accel=-1.5, positions=[0.0, 31.0, 62.0], velocities=[10.0, 10.0, 0.2]),
@@ -782,7 +883,9 @@ def test_scc_mode_evidence_ignores_far_endpoint_only_slowdown_without_confirmed_
   )
 
   assert not evidence.model_stop
-  assert not evidence.e2e_active
+  assert evidence.model_slowdown
+  assert evidence.classify().tier == SccEvidenceTier.SLOWDOWN
+  assert evidence.e2e_active
 
 
 def test_scc_mode_evidence_promotes_route_near_endpoint_model_stop():
@@ -870,6 +973,52 @@ def test_scc_mode_evidence_associates_model_stop_with_confirmed_lead():
   assert not result.e2e_active
 
 
+def test_scc_mode_evidence_missing_confirmed_lead_geometry_fails_closed():
+  evidence = build_scc_mode_evidence(
+    True,
+    make_model_msg(positions=[0.0, 29.0, 60.0], velocities=[10.0, 0.2, 0.2]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+    v_ego=12.0,
+  )
+  result = evidence.classify()
+
+  assert evidence.model_stop
+  assert result.associated_lead_idx is None
+  assert result.independent_of_lead
+  assert result.e2e_active
+
+
+def test_scc_mode_evidence_short_runway_sets_urgent_stop_tier():
+  evidence = build_scc_mode_evidence(
+    False,
+    make_model_msg(positions=[0.0, 8.0, 60.0], velocities=[10.0, 0.2, 0.2]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+    v_ego=12.0,
+  )
+
+  assert evidence.urgent_stop
+  assert evidence.classify().tier == SccEvidenceTier.URGENT_STOP
+
+
+def test_scc_mode_evidence_long_runway_stays_stop_tier():
+  evidence = build_scc_mode_evidence(
+    False,
+    make_model_msg(positions=[0.0, 80.0, 120.0], velocities=[10.0, 0.2, 0.2]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+    v_ego=10.0,
+  )
+
+  assert evidence.model_stop
+  assert not evidence.urgent_stop
+  assert evidence.classify().tier == SccEvidenceTier.STOP
+
+
 def test_scc_mode_evidence_marks_geometrically_independent_urgent_stop():
   evidence = build_scc_mode_evidence(
     True,
@@ -894,6 +1043,132 @@ def test_scc_mode_evidence_marks_geometrically_independent_urgent_stop():
 
   assert urgent.independent_of_lead
   assert urgent.e2e_active
+
+
+def test_scc_mode_evidence_large_path_mismatch_is_independent():
+  evidence = build_scc_mode_evidence(
+    True,
+    make_model_msg(positions=[0.0, 31.0, 60.0], velocities=[10.0, 0.2, 0.2]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+    lead_distance=30.0,
+    lead_path_y_rel=2.0,
+    lead_idx=0,
+    v_ego=12.0,
+  )
+  result = evidence.classify()
+
+  assert result.associated_lead_idx is None
+  assert result.independent_of_lead
+  assert result.e2e_active
+
+
+def test_scc_model_slowdown_evidence_without_stop():
+  model = make_model_msg(desired_accel=-0.9, positions=[0.0, 30.0, 60.0], velocities=[10.0, 6.0, 5.5])
+  evidence = build_scc_mode_evidence(
+    False,
+    model,
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+  )
+
+  assert has_scc_model_slowdown(model)
+  assert evidence.model_slowdown
+  assert not evidence.model_stop
+  assert evidence.classify().tier == SccEvidenceTier.SLOWDOWN
+  assert evidence.e2e_active
+
+
+def test_scc_confirmed_lead_slowdown_remains_acc_like():
+  evidence = build_scc_mode_evidence(
+    True,
+    make_model_msg(desired_accel=-0.9, positions=[0.0, 30.0, 60.0], velocities=[10.0, 6.0, 5.5]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+    lead_distance=30.0,
+    lead_path_y_rel=0.0,
+    lead_idx=0,
+  )
+
+  assert evidence.model_slowdown
+  assert evidence.classify().tier == SccEvidenceTier.SLOWDOWN
+  assert not evidence.e2e_active
+
+
+def test_scc_signal_advisories_and_weak_decel_do_not_become_slowdown():
+  advisory_only = build_scc_mode_evidence(
+    False,
+    make_model_msg(desired_accel=0.0, positions=[0.0, 30.0, 60.0], velocities=[10.0, 10.0, 10.0]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=True), map=SimpleNamespace(is_active=True)),
+    SimpleNamespace(is_active=True),
+    SimpleNamespace(active=True),
+  )
+  weak_decel = build_scc_mode_evidence(
+    False,
+    make_model_msg(desired_accel=-0.2, positions=[0.0, 30.0, 60.0], velocities=[10.0, 6.0, 5.5]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+  )
+
+  assert not advisory_only.model_slowdown
+  assert advisory_only.classify().tier == SccEvidenceTier.NONE
+  assert not weak_decel.model_slowdown
+  assert weak_decel.classify().tier == SccEvidenceTier.NONE
+
+
+def test_shadow_context_is_not_used_for_scc_confirmed_lead_geometry():
+  shadow_context = SimpleNamespace(physical=SimpleNamespace(status=False, shadow=True, d_rel=8.0, path_y_rel=0.0, lead_idx=0))
+  radar_state = make_radar_state()
+
+  lead_distance, lead_path_y_rel, lead_idx = scc_lead_geometry_from_context(shadow_context, radar_state)
+
+  assert lead_distance is None
+  assert lead_path_y_rel == 0.0
+  assert lead_idx is None
+
+
+def test_invalid_confirmed_radar_geometry_is_not_used_for_scc_lead_context_fallback():
+  radar_state = SimpleNamespace(
+    leadOne=SimpleNamespace(status=True, dRel=float("nan"), yRel=0.0, modelProb=1.0, radarTrackId=0),
+    leadTwo=SimpleNamespace(status=False, dRel=100.0, yRel=0.0, modelProb=0.0, radarTrackId=-1),
+  )
+
+  lead_distance, lead_path_y_rel, lead_idx = scc_lead_geometry_from_context(SimpleNamespace(physical=None), radar_state)
+
+  assert lead_distance is None
+  assert lead_path_y_rel == 0.0
+  assert lead_idx is None
+
+
+def test_scc_lead_context_cross_checks_physical_context_against_raw_radar_geometry():
+  context = SimpleNamespace(physical=SimpleNamespace(status=True, shadow=False, d_rel=0.0, path_y_rel=0.0, lead_idx=0))
+  radar_state = SimpleNamespace(
+    leadOne=SimpleNamespace(status=True, dRel=float("nan"), yRel=0.0, modelProb=1.0, radarTrackId=0),
+    leadTwo=SimpleNamespace(status=False, dRel=100.0, yRel=0.0, modelProb=0.0, radarTrackId=-1),
+  )
+
+  lead_distance, lead_path_y_rel, lead_idx = scc_lead_geometry_from_context(context, radar_state)
+
+  assert lead_distance is None
+  assert lead_path_y_rel == 0.0
+  assert lead_idx is None
+
+
+def test_scc_lead_context_fallback_uses_valid_lead_two_when_lead_one_distance_is_invalid():
+  radar_state = SimpleNamespace(
+    leadOne=SimpleNamespace(status=True, dRel=-5.0, yRel=0.0, modelProb=1.0, radarTrackId=0),
+    leadTwo=SimpleNamespace(status=True, dRel=36.0, yRel=0.2, modelProb=1.0, radarTrackId=7),
+  )
+
+  lead_distance, lead_path_y_rel, lead_idx = scc_lead_geometry_from_context(SimpleNamespace(physical=None), radar_state)
+
+  assert lead_distance == 36.0
+  assert lead_path_y_rel == 0.2
+  assert lead_idx == 1
 
 
 def test_model_stop_distance_uses_first_low_velocity_point():

@@ -74,7 +74,7 @@ class SccEvidenceResult:
       return False
     if not self.confirmed_lead:
       return True
-    return bool(self.tier == SccEvidenceTier.URGENT_STOP and self.independent_of_lead)
+    return bool(self.tier in (SccEvidenceTier.STOP, SccEvidenceTier.URGENT_STOP) and self.independent_of_lead)
 
   @property
   def advisory_status(self) -> tuple[str, ...]:
@@ -235,7 +235,9 @@ def _independent_stop_evidence(confirmed_lead: bool, explicit_independent: bool,
     return True
   if explicit_independent:
     return True
-  if model_stop_distance is not None and lead_distance is not None:
+  if model_stop_distance is not None:
+    if lead_distance is None:
+      return True
     return associated_lead_idx is None
   return False
 

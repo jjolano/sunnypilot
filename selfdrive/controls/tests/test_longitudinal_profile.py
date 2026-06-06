@@ -50,9 +50,19 @@ def test_invalid_inputs_return_finite_safe_profile(v_initial, target_speed, dist
   profile = jerk_limited_braking_profile(v_initial, target_speed, distance)
 
   assert profile.finite
+  assert not profile.input_valid
+  assert profile.reason in ("invalid_input", "invalid_distance")
   assert math.isfinite(profile.required_accel)
   assert math.isfinite(profile.required_jerk)
   assert math.isfinite(profile.stopping_distance)
+
+
+def test_valid_profile_marks_input_valid():
+  profile = jerk_limited_braking_profile(20.0, 0.0, 80.0)
+
+  assert profile.finite
+  assert profile.input_valid
+  assert profile.reason == "braking_profile"
 
 
 def test_urgent_flag_set_for_short_runway_cases():

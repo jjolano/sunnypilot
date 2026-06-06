@@ -14,6 +14,7 @@ class BrakingProfile:
   comfortable: bool
   urgent: bool
   finite: bool
+  input_valid: bool
   reason: str
 
 
@@ -66,6 +67,7 @@ def jerk_limited_braking_profile(v_initial: float, target_speed: float, distance
     comfortable=comfortable,
     urgent=urgent,
     finite=True,
+    input_valid=finite_input and distance > 0.0,
     reason=reason,
   )
 
