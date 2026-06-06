@@ -29,10 +29,19 @@ DEFAULT_TIMELY_SIGNAL_GRACE_S = 0.5
 STRICT_LEAD_RATIO_MAX = 0.10
 LOW_LEAD_RATIO_MAX = 0.35
 
+E2E_STOP_APPROACH_EXPECTED_DIST_BP = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 55.0, 60.0]
+E2E_STOP_APPROACH_EXPECTED_DIST_V = [8.0, 18.0, 30.0, 43.0, 58.0, 74.0, 85.0, 96.0]
 MODEL_STOP_PATH_MAX_DISTANCE = 90.0
 MODEL_NEAR_ENDPOINT_MAX_DISTANCE = 80.0
 MODEL_NEAR_ENDPOINT_MAX_SPEED = 2.0
 MODEL_NEAR_ENDPOINT_ACCEL = -0.8
+SCC_EARLY_MODEL_STOP_ACCEL = -1.0
+SCC_EARLY_MODEL_STOP_MIN_INITIAL_V = 8.0
+SCC_EARLY_MODEL_STOP_MAX_MID_V = 4.0
+SCC_EARLY_MODEL_STOP_MIN_SPEED_DROP = 6.0
+SCC_EARLY_MODEL_STOP_ENDPOINT_MARGIN = 5.0
+SCC_EARLY_MODEL_STOP_MIN_REQUIRED_DECEL = 1.0
+SCC_EARLY_MODEL_STOP_EXPECTED_DISTANCE_SCALE = 1.0
 TRAFFIC_CONTROL_MAX_DISTANCE = 80.0
 TRAFFIC_CONTROL_MIN_DISTANCE = 1.0
 SUPPORTED_TRAFFIC_CONTROLS = frozenset((
@@ -49,6 +58,7 @@ SIGNAL_NAMES = (
   "model_stop_path",
   "model_path_or_should_stop",
   "model_near_endpoint",
+  "scc_early_model_stop_gate",
   "model_accel_le_-0.5",
   "model_accel_le_-1.0",
   "model_accel_le_-1.5",
@@ -84,6 +94,7 @@ class LeadlessStopSample:
   model_stop_distance: float | None
   model_endpoint_x: float | None
   model_endpoint_v: float | None
+  scc_early_model_stop: bool
   plan_should_stop: bool
   plan_source: str
   plan_a_target: float | None
@@ -212,6 +223,7 @@ def extract_leadless_stop_samples(route: str, read_mode: ReadMode) -> list[Leadl
     "model_stop_distance": None,
     "model_endpoint_x": None,
     "model_endpoint_v": None,
+    "scc_early_model_stop": False,
     "plan_should_stop": False,
     "plan_source": "unknown",
     "plan_a_target": None,
@@ -252,6 +264,7 @@ def extract_leadless_stop_samples(route: str, read_mode: ReadMode) -> list[Leadl
       state["model_stop_distance"] = stop_distance
       state["model_endpoint_x"] = endpoint_x
       state["model_endpoint_v"] = endpoint_v
+      state["scc_early_model_stop"] = scc_early_model_stop_context(payload)
     elif typ == "longitudinalPlan":
       state["plan_should_stop"] = bool(safe_get(payload, "shouldStop", False))
       state["plan_source"] = format_enum(safe_get(payload, "longitudinalPlanSource", "unknown"))
@@ -293,6 +306,7 @@ def extract_leadless_stop_samples(route: str, read_mode: ReadMode) -> list[Leadl
         model_stop_distance=state["model_stop_distance"],
         model_endpoint_x=state["model_endpoint_x"],
         model_endpoint_v=state["model_endpoint_v"],
+        scc_early_model_stop=bool(state["scc_early_model_stop"]),
         plan_should_stop=bool(state["plan_should_stop"]),
         plan_source=str(state["plan_source"]),
         plan_a_target=state["plan_a_target"],
@@ -493,6 +507,45 @@ def model_stop_context(model_data: Any) -> tuple[float | None, float | None, flo
   return stop_distance, endpoint_x, endpoint_v
 
 
+def scc_early_model_stop_context(model_data: Any) -> bool:
+  desired_accel = _finite_or_none(safe_get(model_data, "action.desiredAcceleration"))
+  if desired_accel is None or desired_accel > SCC_EARLY_MODEL_STOP_ACCEL:
+    return False
+
+  positions = np.asarray(_finite_list(safe_get(model_data, "position.x")), dtype=float)
+  velocities = np.asarray(_finite_list(safe_get(model_data, "velocity.x")), dtype=float)
+  if len(positions) < 3 or len(positions) != len(velocities):
+    return False
+
+  initial_v = float(velocities[0])
+  endpoint_x = float(positions[-1])
+  endpoint_v = max(float(velocities[-1]), 0.0)
+  if initial_v < SCC_EARLY_MODEL_STOP_MIN_INITIAL_V or endpoint_x <= 0.0:
+    return False
+  if initial_v - float(np.min(velocities)) < SCC_EARLY_MODEL_STOP_MIN_SPEED_DROP:
+    return False
+
+  expected_distance = float(np.interp(
+    initial_v * 3.6,
+    E2E_STOP_APPROACH_EXPECTED_DIST_BP,
+    E2E_STOP_APPROACH_EXPECTED_DIST_V,
+  ))
+  if endpoint_x > expected_distance * SCC_EARLY_MODEL_STOP_EXPECTED_DISTANCE_SCALE:
+    return False
+
+  required_decel = (initial_v**2 - endpoint_v**2) / (2.0 * endpoint_x)
+  if required_decel < SCC_EARLY_MODEL_STOP_MIN_REQUIRED_DECEL:
+    return False
+
+  middle_positions = positions[1:-1]
+  middle_velocities = velocities[1:-1]
+  return bool(np.any(
+    (middle_positions >= 0.0) &
+    (endpoint_x - middle_positions >= SCC_EARLY_MODEL_STOP_ENDPOINT_MARGIN) &
+    (middle_velocities <= SCC_EARLY_MODEL_STOP_MAX_MID_V)
+  ))
+
+
 def normalize_traffic_control(control_type: Any) -> str:
   return str(control_type or "").strip().lower().replace("-", "_").replace(" ", "_")
 
@@ -540,6 +593,8 @@ def signal_active(sample: LeadlessStopSample, signal_name: str) -> bool:
     return sample.model_should_stop or model_stop_path
   if signal_name == "model_near_endpoint":
     return model_stop_path or model_near_endpoint
+  if signal_name == "scc_early_model_stop_gate":
+    return sample.scc_early_model_stop
   if signal_name == "model_accel_le_-0.5":
     return sample.model_desired_accel is not None and sample.model_desired_accel <= -0.5
   if signal_name == "model_accel_le_-1.0":

@@ -10,6 +10,7 @@ from openpilot.tools.drive_lab.profile_leadless_stops import (
   model_stop_context,
   model_stop_matches_map_distance,
   route_identity,
+  scc_early_model_stop_context,
   signal_active,
   summarize_leadless_stop_correlation,
 )
@@ -26,10 +27,10 @@ def msg(kind, t_s, **payload):
 
 
 def sample(t, v, a, route="route-a--1/rlog.zst", route_id="route-a", segment=1, gas=False, brake=False,
-           active=False, long_active=False, lead=False, lead_d=None, model_stop=False, model_accel=None,
-           model_stop_distance=None, model_endpoint_x=None, model_endpoint_v=None, plan_stop=False,
-           plan_source="cruise", tc_valid=False, tc_type="", tc_distance=None, tca_valid=False,
-           tca_type="", tca_distance=None):
+            active=False, long_active=False, lead=False, lead_d=None, model_stop=False, model_accel=None,
+            model_stop_distance=None, model_endpoint_x=None, model_endpoint_v=None, plan_stop=False,
+            plan_source="cruise", scc_early_model_stop=False, tc_valid=False, tc_type="",
+            tc_distance=None, tca_valid=False, tca_type="", tca_distance=None):
   return LeadlessStopSample(
     route=route,
     route_id=route_id,
@@ -51,6 +52,7 @@ def sample(t, v, a, route="route-a--1/rlog.zst", route_id="route-a", segment=1, 
     model_stop_distance=model_stop_distance,
     model_endpoint_x=model_endpoint_x,
     model_endpoint_v=model_endpoint_v,
+    scc_early_model_stop=scc_early_model_stop,
     plan_should_stop=plan_stop,
     plan_source=plan_source,
     plan_a_target=None,
@@ -82,6 +84,22 @@ def test_model_stop_context_uses_first_low_velocity_path_point():
   assert model_stop_context(model) == (12.0, 24.0, 0.0)
 
 
+def test_scc_early_model_stop_context_matches_planner_gate_shape():
+  model = SimpleNamespace(
+    action=SimpleNamespace(desiredAcceleration=-1.2),
+    position=SimpleNamespace(x=[0.0, 10.0, 30.0]),
+    velocity=SimpleNamespace(x=[8.0, 0.5, 0.0]),
+  )
+  far_endpoint = SimpleNamespace(
+    action=SimpleNamespace(desiredAcceleration=-1.2),
+    position=SimpleNamespace(x=[0.0, 40.0, 120.0]),
+    velocity=SimpleNamespace(x=[8.0, 0.5, 0.0]),
+  )
+
+  assert scc_early_model_stop_context(model)
+  assert not scc_early_model_stop_context(far_endpoint)
+
+
 def test_extract_samples_persists_model_map_and_planner_context(monkeypatch):
   msgs = [
     msg("selfdriveState", 0.0, active=False),
@@ -104,6 +122,7 @@ def test_extract_samples_persists_model_map_and_planner_context(monkeypatch):
 
   assert len(samples) == 1
   assert samples[0].model_stop_distance == 10.0
+  assert samples[0].scc_early_model_stop
   assert samples[0].plan_should_stop
   assert samples[0].plan_source == "e2e"
   assert samples[0].sp_source == "osmTrafficControl"
@@ -114,7 +133,7 @@ def test_extract_samples_persists_model_map_and_planner_context(monkeypatch):
 def test_strict_leadless_stop_counts_model_accel_as_timely_and_should_stop_as_late():
   samples = [
     sample(0.0, 8.0, 0.0),
-    sample(1.0, 8.0, -0.1, model_accel=-1.0),
+    sample(1.0, 8.0, -0.1, model_accel=-1.0, scc_early_model_stop=True),
     sample(2.0, 7.5, -0.4),
     sample(3.0, 6.0, -0.8, brake=True),
     sample(4.0, 3.0, -1.0, brake=True),
@@ -127,6 +146,7 @@ def test_strict_leadless_stop_counts_model_accel_as_timely_and_should_stop_as_la
   episode = episodes[0]
   assert episode.kind == "strict_leadless_stop"
   assert episode.signals["model_accel_le_-1.0"]["timely"]
+  assert episode.signals["scc_early_model_stop_gate"]["timely"]
   assert episode.signals["model_should_stop"]["hit"]
   assert not episode.signals["model_should_stop"]["timely"]
   assert episode.signals["planner_should_stop"]["hit"]
@@ -181,6 +201,15 @@ def test_map_model_distance_match_signal_requires_supported_control_and_distance
   assert signal_active(matched, "map_model_distance_match")
   assert not signal_active(unsupported, "map_model_distance_match")
   assert not signal_active(mismatch, "map_model_distance_match")
+
+
+def test_scc_early_model_stop_gate_is_not_raw_model_accel():
+  raw_accel_only = sample(0.0, 10.0, 0.0, model_accel=-1.2)
+  gated = sample(0.0, 10.0, 0.0, model_accel=-1.2, scc_early_model_stop=True)
+
+  assert signal_active(raw_accel_only, "model_accel_le_-1.0")
+  assert not signal_active(raw_accel_only, "scc_early_model_stop_gate")
+  assert signal_active(gated, "scc_early_model_stop_gate")
 
 
 def test_summary_reports_false_positive_clusters_outside_episode_windows():
