@@ -28,6 +28,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
   StackId,
   build_sp_candidates_from_signal_providers,
   build_sp_longitudinal_candidates,
+  legacy_dec_enabled_for_mode,
   publish_longitudinal_mode_telemetry,
   publish_stack_telemetry,
   select_lowest_longitudinal_target,
@@ -181,6 +182,28 @@ class TestStackAwareTargetSelection(unittest.TestCase):
     self.assertEqual(planner.scc.update_count, 0)
     self.assertEqual(planner.resolver.update_count, 0)
     self.assertEqual(planner.sla.update_count, 0)
+    self.assertEqual(planner.osm_traffic_control_prior.update_count, 0)
+    self.assertEqual([candidate.source for candidate in planner.decision_candidates_sp], [DecisionSource.CRUISE])
+
+  def test_icbm_advisory_allows_speed_limit_assist_without_stale_scc_or_osm(self):
+    planner = make_target_planner(SUNNYPILOT_CURRENT)
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.SCC,
+      resolved_implementation=ResolvedLongitudinalImplementation.ICBM_ADVISORY,
+      actuation_type=LongitudinalActuationType.SET_SPEED_ADVISORY,
+    )
+    planner.scc = FakeStackSCC(vision=(6.0, -1.0, True), map_target=(7.0, -0.8, True))
+    planner.resolver = FakeStackResolver(speed_limit=8.0, speed_limit_final_last=8.0)
+    planner.sla = FakeStackSLA(target=(8.0, -1.0), active=True)
+    planner.osm_traffic_control_prior = FakeStackOsmPrior(target=(5.0, -1.0), active=True)
+
+    v_target, a_target = LongitudinalPlannerSP.update_targets(planner, make_target_sm(), 12.0, 0.2, 20.0)
+
+    self.assertEqual(v_target, 8.0)
+    self.assertEqual(a_target, 0.2)
+    self.assertEqual(planner.scc.update_count, 0)
+    self.assertEqual(planner.resolver.update_count, 1)
+    self.assertEqual(planner.sla.update_count, 1)
     self.assertEqual(planner.osm_traffic_control_prior.update_count, 0)
     self.assertEqual([candidate.source for candidate in planner.decision_candidates_sp], [DecisionSource.CRUISE])
 
@@ -523,6 +546,23 @@ class TestLongitudinalModeTelemetryPublish(unittest.TestCase):
     self.assertEqual(plan_sp.longitudinalMode.actuationType, LongitudinalModeStatus.ActuationType.direct)
     self.assertEqual(plan_sp.longitudinalMode.restrictionStatus, ["speed_limit_cap", "curve_cap"])
     self.assertEqual(plan_sp.longitudinalMode.compatibilityAliasState, LongitudinalModeStatus.CompatibilityAliasState.blended)
+
+  def test_legacy_dec_telemetry_uses_resolved_mode_not_stale_request(self):
+    stale_scc_icbm = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.SCC,
+      resolved_implementation=ResolvedLongitudinalImplementation.ICBM_ADVISORY,
+      actuation_type=LongitudinalActuationType.SET_SPEED_ADVISORY,
+      compatibility_alias_state=DecCompatibilityState.ACC,
+    )
+    scc_e2e = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.SCC,
+      resolved_implementation=ResolvedLongitudinalImplementation.SCC_E2E,
+      actuation_type=LongitudinalActuationType.DIRECT,
+      compatibility_alias_state=DecCompatibilityState.BLENDED,
+    )
+
+    self.assertFalse(legacy_dec_enabled_for_mode(stale_scc_icbm))
+    self.assertTrue(legacy_dec_enabled_for_mode(scc_e2e))
 
   def test_capnp_longitudinal_mode_schema_fields_exist(self):
     msg = messaging.new_message("longitudinalPlanSP")
@@ -911,15 +951,29 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
     self.assertEqual(planner.longitudinal_stack_fault_reason, "invalid_scene_v_ego")
     self.assertEqual(planner.events_sp.names, [custom.OnroadEventSP.EventName.customLongitudinalStackFault])
 
+  def test_custom_v2_fault_resets_source_stability(self):
+    planner = self.make_planner()
+    resets = []
+    planner.longitudinal_arbiter = SimpleNamespace(reset_source_stability=lambda: resets.append(True))
+
+    planner._set_custom_v2_fault("custom_exception")
+
+    self.assertEqual(len(resets), 1)
+    self.assertTrue(planner.custom_v2_fault_latched)
+    self.assertTrue(planner.longitudinal_stack_fault_latched)
+
   def test_custom_v2_fault_latch_resets_when_disabled(self):
     planner = self.make_planner()
     planner._custom_v2_stack_output = lambda _sunnypilot_output, _accel_limits: self.make_output(3.0)
     planner.apply_longitudinal_stack_selection(self.make_sm(enabled=True), has_lead=False, accel_limits=(-2.0, 2.0))
+    resets = []
+    planner.longitudinal_arbiter = SimpleNamespace(reset_source_stability=lambda: resets.append(True))
 
     planner.apply_longitudinal_stack_selection(self.make_sm(enabled=False), has_lead=False, accel_limits=(-2.0, 2.0))
 
     self.assertFalse(planner.custom_v2_fault_latched)
     self.assertFalse(planner.longitudinal_stack_fault_latched)
+    self.assertEqual(len(resets), 1)
 
 
 class TestSignalProviderCandidates(unittest.TestCase):

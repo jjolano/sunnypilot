@@ -951,6 +951,8 @@ def _source_matches(source: object, values: set[int], names: set[str]) -> bool:
 
 
 def _preserve_seed_trajectory(output: LongitudinalStackOutput, decision: CustomV2Decision) -> bool:
+  if bool(output.debug.get("planner_seed_scalar", False)):
+    return False
   return math.isclose(float(output.a_target), float(decision.a_target), abs_tol=A_TARGET_EPS)
 
 

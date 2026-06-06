@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 CRUISE_SETTINGS = Path(__file__).parents[1] / "sunnypilot/layouts/settings/cruise.py"
+SPEED_LIMIT_SETTINGS = Path(__file__).parents[1] / "sunnypilot/layouts/settings/cruise_sub_layouts/speed_limit_settings.py"
 EXP_BUTTON = Path(__file__).parents[1] / "onroad/exp_button.py"
 TOGGLES_SETTINGS = Path(__file__).parents[1] / "layouts/settings/toggles.py"
 UI_STATE = Path(__file__).parents[1] / "sunnypilot/ui_state.py"
@@ -25,6 +26,9 @@ def test_longitudinal_mode_selector_replaces_legacy_toggles():
   assert "self.longitudinal_mode_item = multiple_button_item_sp" in source
   assert "LongitudinalMode" in source
   assert "buttons=[tr(\"ACC\"), tr(\"E2E\"), tr(\"SCC\")]" in source
+  assert "param=\"LongitudinalMode\"" not in source
+  assert "ExperimentalModeConfirmed" in source
+  assert "ConfirmDialog" in source
   assert "SccCurveVisionEnabled" in source
   assert "SccCurveMapEnabled" in source
   assert "current_mode == LongitudinalMode.SCC" in source
@@ -72,7 +76,16 @@ def test_onroad_experimental_button_writes_longitudinal_mode_only():
   source = EXP_BUTTON.read_text()
 
   assert "put(\"LongitudinalMode\"" in source
+  assert "str(int(longitudinal_mode))" not in source
+  assert "ExperimentalModeConfirmed" in source
   assert "put_bool(\"ExperimentalMode\"" not in source
+
+
+def test_speed_limit_assist_is_unavailable_in_acc_mode():
+  source = SPEED_LIMIT_SETTINGS.read_text()
+
+  assert "requested_mode_from_params" in source
+  assert "has_icbm or (has_long and longitudinal_mode != LongitudinalMode.ACC)" in source
 
 
 def test_generic_toggles_do_not_expose_experimental_mode():

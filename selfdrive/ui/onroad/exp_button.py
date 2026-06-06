@@ -38,7 +38,7 @@ class ExpButton(Widget):
     if self._is_toggle_allowed():
       new_mode = not self._experimental_mode
       longitudinal_mode = LongitudinalMode.E2E if new_mode else LongitudinalMode.ACC
-      self._params.put("LongitudinalMode", str(int(longitudinal_mode)))
+      self._params.put("LongitudinalMode", int(longitudinal_mode))
 
       # Hold new state temporarily
       self._held_mode = new_mode

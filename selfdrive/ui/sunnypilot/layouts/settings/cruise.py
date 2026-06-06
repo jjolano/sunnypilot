@@ -23,6 +23,7 @@ from openpilot.system.ui.sunnypilot.lib.utils import NoElideButtonAction
 from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, toggle_item_sp, option_item_sp, simple_button_item_sp, multiple_button_item_sp
 from openpilot.system.ui.sunnypilot.widgets.tree_dialog import TreeOptionDialog, TreeFolder, TreeNode
 from openpilot.system.ui.widgets import Widget, DialogResult
+from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 
@@ -41,6 +42,7 @@ ACC_ENABLED_DESCRIPTION = tr_noop("Enable custom Short & Long press increments f
 ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot longitudinal control enabled.")
 ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on this platform due to vehicle limitations.")
 LONG_MODE_DESCRIPTION = tr_noop("Select the top-level longitudinal behavior: ACC for deterministic cruise/follow, E2E for model-primary driving, or SCC for smart switching.")
+LONG_MODE_EXPERIMENTAL_CONFIRMATION = tr_noop("E2E and SCC use experimental/model-based longitudinal behavior. Enable only if you understand this alpha feature can make unexpected speed or stop decisions.")
 LONG_MODE_NOLONG_DESCRIPTION = tr_noop("Enable sunnypilot longitudinal control to use longitudinal modes.")
 SCC_CURVE_DESCRIPTION = tr_noop("Allow SCC mode to slow for upcoming curves from this source. These controls only apply when Longitudinal Mode is SCC.")
 SCC_CURVE_NOSCC_DESCRIPTION = tr_noop("Select SCC in Longitudinal Mode to use SCC curve controls.")
@@ -84,7 +86,6 @@ class CruiseLayout(Widget):
       buttons=[tr("ACC"), tr("E2E"), tr("SCC")],
       selected_index=int(ui_state.params.get("LongitudinalMode", return_default=True)),
       callback=self._on_longitudinal_mode_changed,
-      param="LongitudinalMode",
     )
 
     self.custom_acc_toggle = toggle_item_sp(
@@ -395,7 +396,44 @@ class CruiseLayout(Widget):
     ui_state.params.put_bool("OnroadCycleRequested", True)
 
   def _on_longitudinal_mode_changed(self, mode: int):
-    _ = LongitudinalMode(mode)
+    try:
+      selected_mode = LongitudinalMode(mode)
+    except ValueError:
+      selected_mode = LongitudinalMode.ACC
+    previous_mode = self._current_longitudinal_mode()
+    action = self.longitudinal_mode_item.action_item
+
+    if selected_mode != LongitudinalMode.ACC and not ui_state.params.get_bool("ExperimentalModeConfirmed"):
+      action.selected_button = int(previous_mode)
+
+      def confirm_callback(result: DialogResult):
+        if result == DialogResult.CONFIRM:
+          ui_state.params.put_bool("ExperimentalModeConfirmed", True)
+          self._set_longitudinal_mode(selected_mode)
+        else:
+          action.selected_button = int(self._current_longitudinal_mode())
+
+      gui_app.push_widget(ConfirmDialog(
+        tr(LONG_MODE_EXPERIMENTAL_CONFIRMATION),
+        tr("Enable"),
+        rich=True,
+        callback=confirm_callback,
+      ))
+      self._update_scc_curve_items(ui_state.has_longitudinal_control)
+      return
+
+    self._set_longitudinal_mode(selected_mode)
+
+  @staticmethod
+  def _current_longitudinal_mode() -> LongitudinalMode:
+    try:
+      return LongitudinalMode(int(ui_state.params.get("LongitudinalMode", return_default=True)))
+    except (TypeError, ValueError):
+      return LongitudinalMode.ACC
+
+  def _set_longitudinal_mode(self, mode: LongitudinalMode):
+    ui_state.params.put("LongitudinalMode", int(mode))
+    self.longitudinal_mode_item.action_item.selected_button = int(mode)
     self._update_scc_curve_items(ui_state.has_longitudinal_control)
 
   def _on_custom_acc_toggle(self, state):

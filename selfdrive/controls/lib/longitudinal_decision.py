@@ -544,9 +544,10 @@ def _decision_raw_reason(decision: LongitudinalDecision) -> str:
 def resolve_longitudinal_decision(enabled: bool, candidates: list[LongitudinalCandidate] | tuple[LongitudinalCandidate, ...],
                                   fallback_v_target: float, fallback_a_target: float, fallback_should_stop: bool,
                                   accel_limits: tuple[float, float], arbiter: LongitudinalArbiter,
-                                  v_ego: float | None = None) -> LongitudinalDecision:
+                                  v_ego: float | None = None, reset_when_disabled: bool = True) -> LongitudinalDecision:
   if not enabled:
-    arbiter.reset_source_stability()
+    if reset_when_disabled:
+      arbiter.reset_source_stability()
     return _fallback_decision(fallback_v_target, fallback_a_target, fallback_should_stop, "feature_flag_disabled")
   contract_reason = _driver_intent_contract_reason(candidates)
   if contract_reason:

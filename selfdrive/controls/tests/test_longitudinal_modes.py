@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+from tempfile import TemporaryDirectory
+
+from openpilot.common.params import Params
 
 from openpilot.selfdrive.controls.lib.longitudinal_modes import (
   LEGACY_LONGITUDINAL_MODE_PARAMS,
@@ -41,7 +44,7 @@ def test_fresh_install_migrates_to_acc():
 
   assert migrate_longitudinal_mode_params(params)
 
-  assert params.values[LONGITUDINAL_MODE_PARAM] == str(int(LongitudinalMode.ACC))
+  assert params.values[LONGITUDINAL_MODE_PARAM] == int(LongitudinalMode.ACC)
   assert params.values[LONGITUDINAL_MODE_MIGRATION_PARAM] == LONGITUDINAL_MODE_MIGRATION_VERSION
 
 
@@ -52,7 +55,7 @@ def test_experimental_dec_migrates_to_scc():
 
   migrate_longitudinal_mode_params(params)
 
-  assert params.values[LONGITUDINAL_MODE_PARAM] == str(int(LongitudinalMode.SCC))
+  assert params.values[LONGITUDINAL_MODE_PARAM] == int(LongitudinalMode.SCC)
 
 
 def test_experimental_without_dec_migrates_to_e2e():
@@ -62,7 +65,56 @@ def test_experimental_without_dec_migrates_to_e2e():
 
   migrate_longitudinal_mode_params(params)
 
-  assert params.values[LONGITUDINAL_MODE_PARAM] == str(int(LongitudinalMode.E2E))
+  assert params.values[LONGITUDINAL_MODE_PARAM] == int(LongitudinalMode.E2E)
+
+
+def test_migration_writes_typed_params_with_real_params():
+  with TemporaryDirectory() as params_dir:
+    params = Params(params_dir)
+    params.put("ExperimentalMode", True)
+    params.put("DynamicExperimentalControl", True)
+
+    assert migrate_longitudinal_mode_params(params)
+
+    assert params.get(LONGITUDINAL_MODE_PARAM) == int(LongitudinalMode.SCC)
+    assert params.get(LONGITUDINAL_MODE_MIGRATION_PARAM) == LONGITUDINAL_MODE_MIGRATION_VERSION
+
+
+def test_migration_copies_legacy_scc_curve_params():
+  params = FakeParams()
+  params.put("ExperimentalMode", True)
+  params.put("DynamicExperimentalControl", True)
+  params.put("SmartCruiseControlVision", False)
+  params.put("SmartCruiseControlMap", True)
+
+  migrate_longitudinal_mode_params(params)
+
+  assert params.values["SccCurveVisionEnabled"] is False
+  assert params.values["SccCurveMapEnabled"] is True
+
+
+def test_migration_does_not_override_existing_scc_curve_params():
+  params = FakeParams()
+  params.put("SmartCruiseControlVision", False)
+  params.put("SccCurveVisionEnabled", True)
+
+  migrate_longitudinal_mode_params(params)
+
+  assert params.values["SccCurveVisionEnabled"] is True
+
+
+def test_v1_migrated_devices_still_copy_legacy_scc_curve_params():
+  params = FakeParams()
+  params.put(LONGITUDINAL_MODE_PARAM, int(LongitudinalMode.SCC))
+  params.put(LONGITUDINAL_MODE_MIGRATION_PARAM, "1.0")
+  params.put("SmartCruiseControlVision", False)
+  params.put("SmartCruiseControlMap", False)
+
+  assert migrate_longitudinal_mode_params(params)
+
+  assert params.values["SccCurveVisionEnabled"] is False
+  assert params.values["SccCurveMapEnabled"] is False
+  assert params.values[LONGITUDINAL_MODE_MIGRATION_PARAM] == LONGITUDINAL_MODE_MIGRATION_VERSION
 
 
 def test_existing_longitudinal_mode_is_never_overridden():

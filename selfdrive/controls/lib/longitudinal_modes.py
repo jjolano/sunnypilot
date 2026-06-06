@@ -5,10 +5,12 @@ from enum import Enum, IntEnum
 from typing import Any
 
 
-LONGITUDINAL_MODE_MIGRATION_VERSION = "1.0"
+LONGITUDINAL_MODE_MIGRATION_VERSION = "1.1"
 
 LONGITUDINAL_MODE_PARAM = "LongitudinalMode"
 LONGITUDINAL_MODE_MIGRATION_PARAM = "LongitudinalModeMigrationVersion"
+SCC_CURVE_VISION_PARAM = "SccCurveVisionEnabled"
+SCC_CURVE_MAP_PARAM = "SccCurveMapEnabled"
 
 LEGACY_LONGITUDINAL_MODE_PARAMS = frozenset((
   "DynamicExperimentalControl",
@@ -16,6 +18,11 @@ LEGACY_LONGITUDINAL_MODE_PARAMS = frozenset((
   "SmartCruiseControlMap",
   "ExperimentalMode",
 ))
+
+LEGACY_SCC_CURVE_PARAM_MIGRATIONS = {
+  "SmartCruiseControlVision": SCC_CURVE_VISION_PARAM,
+  "SmartCruiseControlMap": SCC_CURVE_MAP_PARAM,
+}
 
 
 class LongitudinalMode(IntEnum):
@@ -136,7 +143,7 @@ def _param_put(params: Any, key: str, value: Any) -> None:
   put = getattr(params, "put", None)
   if put is None:
     raise AttributeError("params object does not support put")
-  put(key, str(value))
+  put(key, value)
 
 
 def _parse_mode(value: Any) -> LongitudinalMode | None:
@@ -184,6 +191,11 @@ def migrate_longitudinal_mode_params(params: Any) -> bool:
     return False
 
   migrated = False
+  for legacy_key, target_key in LEGACY_SCC_CURVE_PARAM_MIGRATIONS.items():
+    if _param_get(params, legacy_key) is not None and _param_get(params, target_key) is None:
+      _param_put(params, target_key, _param_get_bool(params, legacy_key))
+      migrated = True
+
   if not longitudinal_mode_source_of_truth_exists(params):
     _param_put(params, LONGITUDINAL_MODE_PARAM, int(requested_mode_from_params(params)))
     migrated = True

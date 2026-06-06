@@ -703,6 +703,49 @@ def test_disabled_resolver_clears_source_stability_without_changing_fallback():
   assert enabled_decision.winner == DecisionSource.CRUISE
 
 
+def test_disabled_resolver_can_preserve_source_stability_for_later_custom_policy():
+  arbiter = LongitudinalArbiter()
+  cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
+  lead = make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, 5.0, -0.5, 0.9, 0.8, "confirmed_lead")
+
+  first_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise, lead],
+    fallback_v_target=5.0,
+    fallback_a_target=-0.5,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+  disabled_decision = resolve_longitudinal_decision(
+    enabled=False,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+    reset_when_disabled=False,
+  )
+  held_decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=[cruise],
+    fallback_v_target=5.0,
+    fallback_a_target=0.2,
+    fallback_should_stop=False,
+    accel_limits=(-1.2, 1.0),
+    arbiter=arbiter,
+    v_ego=0.4,
+  )
+
+  assert first_decision.winner == DecisionSource.LEAD_MPC
+  assert not disabled_decision.enabled
+  assert held_decision.winner == DecisionSource.LEAD_MPC
+  assert (DecisionSource.CRUISE, SOURCE_STABILITY_HOLD_REASON) in held_decision.suppressed
+
+
 def test_apply_decision_output_held_lead_release_uses_held_accel_conservatively():
   arbiter = LongitudinalArbiter()
   cruise = make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 5.0, 0.2, 1.0, 0.1, "driver_set_speed")
@@ -1051,6 +1094,29 @@ def test_core_candidate_builder_adds_e2e_stop_candidate_for_active_stop():
   assert e2e.role == CandidateRole.PHYSICAL_HAZARD
   assert e2e.should_stop
   assert e2e.confidence == pytest.approx(0.85)
+
+
+def test_core_candidate_builder_uses_e2e_stop_approach_accel():
+  candidates = build_core_longitudinal_candidates(
+    has_lead=False,
+    lead_confidence=0.0,
+    v_cruise=27.0,
+    a_cruise=0.1,
+    output_a_target_mpc=0.0,
+    output_should_stop_mpc=False,
+    e2e_active=True,
+    output_a_target_e2e=0.2,
+    output_should_stop_e2e=False,
+    e2e_stop_approach_a_target=-0.6,
+    cruise_coast_applied=False,
+    cruise_coast_a_target=0.0,
+  )
+
+  e2e = next(candidate for candidate in candidates if candidate.source == DecisionSource.E2E_STOP)
+  assert e2e.role == CandidateRole.PHYSICAL_HAZARD
+  assert not e2e.should_stop
+  assert e2e.a_target == pytest.approx(-0.6)
+  assert e2e.confidence == pytest.approx(0.65)
 
 
 def test_core_candidate_builder_adds_cruise_coast_comfort_candidate():

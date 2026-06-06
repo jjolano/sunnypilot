@@ -61,6 +61,13 @@ def _find_item(schema: dict[str, Any], key: str) -> dict[str, Any] | None:
   return None
 
 
+def _find_option(item: dict[str, Any], value: Any) -> dict[str, Any] | None:
+  for option in item.get("options", []):
+    if option.get("value") == value:
+      return option
+  return None
+
+
 def _find_section(schema: dict[str, Any], panel_id: str, section_id: str) -> dict[str, Any] | None:
   for panel in schema.get("panels", []):
     if panel.get("id") != panel_id:
@@ -85,6 +92,17 @@ def _flatten_rule_types(rules: list[dict[str, Any]] | None) -> set[str]:
   for rule in rules or []:
     _walk(rule)
   return out
+
+
+def _references_param_key(rules: list[dict[str, Any]] | None, key: str) -> bool:
+  def _walk(rule: dict[str, Any]) -> bool:
+    if rule.get("type") == "param" and rule.get("key") == key:
+      return True
+    if rule.get("type") == "not" and "condition" in rule:
+      return _walk(rule["condition"])
+    return any(_walk(child) for child in rule.get("conditions", []))
+
+  return any(_walk(rule) for rule in rules or [])
 
 
 def _references_capability_field(rules: list[dict[str, Any]] | None, field: str) -> bool:
@@ -202,6 +220,21 @@ class TestSpuriousOffroadGatesDropped:
     item = _find_item(schema, "LongitudinalMode")
     assert item is not None
     assert "offroad_only" not in _flatten_rule_types(item.get("enablement"))
+
+  @pytest.mark.parametrize("mode", [1, 2])
+  def test_experimental_longitudinal_modes_require_confirmation(self, schema, mode):
+    item = _find_item(schema, "LongitudinalMode")
+    assert item is not None
+    option = _find_option(item, mode)
+    assert option is not None
+    assert _references_param_key(option.get("enablement"), "ExperimentalModeConfirmed")
+
+  def test_speed_limit_assist_requires_non_acc_longitudinal_mode(self, schema):
+    item = _find_item(schema, "SpeedLimitMode")
+    assert item is not None
+    option = _find_option(item, 3)
+    assert option is not None
+    assert _references_param_key(option.get("enablement"), "LongitudinalMode")
 
 
 class TestNotEngagedReplacement:

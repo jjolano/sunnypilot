@@ -21,7 +21,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   get_active_lead_confidence,
   resolve_longitudinal_decision,
 )
-from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, LongitudinalModeResolver, SccModeEvidence
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalActuationType, LongitudinalMode, LongitudinalModeResolver, SccModeEvidence
 from openpilot.selfdrive.controls.lib.lead_confidence import (
   LeadConfidenceState,
   LEAD_FLICKER_CLOSE_COUNT_THRESHOLD,
@@ -725,7 +725,7 @@ def build_planner_seed_accel_candidate(planner, name, a_target, has_lead, reason
     base_output,
     a_target=candidate_a_target,
     should_stop=candidate_should_stop,
-    debug={"planner_seed_candidate_reason": reason},
+    debug={"planner_seed_candidate_reason": reason, "planner_seed_scalar": True},
     seed_intent=seed_intent,
     seed_reason=reason,
   )
@@ -1608,7 +1608,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
   def update(self, sm):
     LongitudinalPlannerSP.update(self, sm)
     mode_resolution = getattr(self, "longitudinal_mode_resolution", None)
-    acc_mode_requested = bool(mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.ACC)
+    set_speed_advisory_mode = bool(
+      mode_resolution is not None and mode_resolution.actuation_type == LongitudinalActuationType.SET_SPEED_ADVISORY
+    )
+    acc_mode_requested = bool(
+      mode_resolution is not None and (mode_resolution.requested_mode == LongitudinalMode.ACC or set_speed_advisory_mode)
+    )
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
@@ -1713,7 +1718,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     has_radar_lead = has_valid_radar_lead(sm['radarState'])
     has_confirmed_lead = has_confirmed_radar_lead(sm['radarState'])
-    if mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.SCC:
+    if mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.SCC and not set_speed_advisory_mode:
       scc_evidence = build_scc_mode_evidence(
         has_confirmed_lead, sm['modelV2'], self.scc, self.sla, self.osm_traffic_control_prior,
         speed_limit_handoff_active=bool(getattr(self, "_speed_limit_handoff_active", False)),
@@ -1896,7 +1901,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     else:
       e2e_runway_positive_accel_cap = ACCEL_MAX
       custom_e2e_stop_approach_a_target = 0.0
-    e2e_stop_approach_a_target = 0.0
+    e2e_stop_approach_a_target = custom_e2e_stop_approach_a_target
 
     primary_behavior_progress_allowed = bool(
       primary_behavior_lead is not None and primary_lead_context.lead_progress_allowed and
@@ -2189,6 +2194,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     ) else v_ego
     decision_layer_applies_before_stack = should_enable_longitudinal_decision_layer(stack_resolution) and \
       getattr(stack_resolution, "resolved_stack", "") != CUSTOM_V2
+    custom_v2_policy_resolves_decision = (
+      getattr(stack_resolution, "resolved_stack", "") == CUSTOM_V2 and
+      bool(sm['selfdriveState'].enabled) and
+      not bool(getattr(self, "custom_v2_fault_latched", False))
+    )
     self.longitudinal_decision = resolve_longitudinal_decision(
       enabled=decision_layer_applies_before_stack,
       candidates=self.longitudinal_decision_candidates,
@@ -2198,6 +2208,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       accel_limits=(accel_clip[0], accel_clip[1]),
       arbiter=self.longitudinal_arbiter,
       v_ego=source_stability_v_ego,
+      reset_when_disabled=not custom_v2_policy_resolves_decision,
     )
     self.longitudinal_decision_telemetry = None
     if decision_layer_applies_before_stack and self.longitudinal_decision.enabled:

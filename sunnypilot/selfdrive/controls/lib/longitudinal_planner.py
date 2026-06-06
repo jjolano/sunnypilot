@@ -197,6 +197,10 @@ def publish_longitudinal_mode_telemetry(longitudinalPlanSP, resolution: Longitud
   )
 
 
+def legacy_dec_enabled_for_mode(resolution: LongitudinalModeResolution) -> bool:
+  return bool(resolution.compatibility_alias_state == DecCompatibilityState.BLENDED or resolution.e2e_like)
+
+
 def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_rel: float, y_rel: float,
                               gas_pressed: bool, brake_pressed: bool) -> bool:
   if not lead_status or gas_pressed or brake_pressed:
@@ -379,7 +383,16 @@ class LongitudinalPlannerSP:
     self.active_resolver = self.resolver
     self.active_sla = self.sla
     mode_resolution = getattr(self, "longitudinal_mode_resolution", None)
-    if mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.ACC:
+    acc_mode_direct = bool(
+      mode_resolution is not None and
+      mode_resolution.requested_mode == LongitudinalMode.ACC and
+      mode_resolution.actuation_type == LongitudinalActuationType.DIRECT
+    )
+    acc_mode_set_speed_advisory = bool(
+      mode_resolution is not None and
+      mode_resolution.actuation_type == LongitudinalActuationType.SET_SPEED_ADVISORY
+    )
+    if acc_mode_direct:
       self._speed_limit_handoff_active = False
       self._speed_limit_active_prev = False
       self.decision_candidates_sp = build_sp_longitudinal_candidates(
@@ -399,7 +412,8 @@ class LongitudinalPlannerSP:
       return self.output_v_target, self.output_a_target
 
     # Smart Cruise Control
-    self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
+    if not acc_mode_set_speed_advisory:
+      self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
 
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm, coast_accel=coast_accel)
@@ -410,7 +424,8 @@ class LongitudinalPlannerSP:
                     self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp,
                     coast_accel=coast_accel)
 
-    self.osm_traffic_control_prior.update(sm, long_enabled, long_override, v_ego, a_ego)
+    if not acc_mode_set_speed_advisory:
+      self.osm_traffic_control_prior.update(sm, long_enabled, long_override, v_ego, a_ego)
 
     speed_limit_handoff_active = self._update_speed_limit_handoff(long_enabled, long_override, v_ego, v_cruise)
     speed_limit_active = self.sla.is_active or speed_limit_handoff_active
@@ -450,25 +465,32 @@ class LongitudinalPlannerSP:
       )
     decision_speed_limit_active = False  # Active SLA is represented as effective driver intent below.
 
+    scc_vision_target = (self.scc.vision.output_v_target, self.scc.vision.output_a_target)
+    scc_map_target = (self.scc.map.output_v_target, self.scc.map.output_a_target)
+    osm_target = (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target)
+    scc_vision_active = bool(self.scc.vision.is_active) and not acc_mode_set_speed_advisory
+    scc_map_active = bool(self.scc.map.is_active) and not acc_mode_set_speed_advisory
+    osm_active = bool(self.osm_traffic_control_prior.active) and not acc_mode_set_speed_advisory
+
     self.decision_candidates_sp = build_sp_longitudinal_candidates(
       decision_speed_limit_active,
       decision_cruise_target,
-      (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
-      self.scc.vision.is_active,
-      (self.scc.map.output_v_target, self.scc.map.output_a_target),
-      self.scc.map.is_active,
+      scc_vision_target,
+      scc_vision_active,
+      scc_map_target,
+      scc_map_active,
       speed_limit_assist_target,
-      (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
-      self.osm_traffic_control_prior.active,
+      osm_target,
+      osm_active,
     )
 
     self.source, self.output_v_target, self.output_a_target = select_lowest_longitudinal_target(
       speed_limit_active,
       cruise_target,
-      (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
-      (self.scc.map.output_v_target, self.scc.map.output_a_target),
+      scc_vision_target if scc_vision_active else (v_cruise, a_ego),
+      scc_map_target if scc_map_active else (v_cruise, a_ego),
       speed_limit_assist_target,
-      (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
+      osm_target if osm_active else (v_cruise, a_ego),
       source_prev=getattr(self, 'source', None),
       v_target_prev=getattr(self, 'output_v_target', None),
     )
@@ -575,11 +597,17 @@ class LongitudinalPlannerSP:
     return decision, tuple(dict.fromkeys(extra_rejected))
 
   def _set_custom_v2_fault(self, reason: str) -> None:
+    self._reset_longitudinal_source_stability()
     self.custom_v2_fault_latched = True
     self.custom_v2_fault_reason = reason
     self.longitudinal_stack_fault_latched = True
     self.longitudinal_stack_fault_reason = reason
     self.events_sp.add(custom.OnroadEventSP.EventName.customLongitudinalStackFault)
+
+  def _reset_longitudinal_source_stability(self) -> None:
+    arbiter = getattr(self, "longitudinal_arbiter", None)
+    if arbiter is not None:
+      arbiter.reset_source_stability()
 
   def _publish_custom_v2_policy_debug(self, output: LongitudinalStackOutput) -> None:
     debug = output.debug
@@ -614,10 +642,12 @@ class LongitudinalPlannerSP:
       self.custom_longitudinal_stack = make_custom_longitudinal_stack(resolved_stack)
     if resolved_stack == CUSTOM_V2:
       if not bool(sm['selfdriveState'].enabled):
+        self._reset_longitudinal_source_stability()
         self.custom_v2_fault_latched = False
         self.custom_v2_fault_reason = ""
         return
       if self.custom_v2_fault_latched:
+        self._reset_longitudinal_source_stability()
         self._set_custom_v2_fault(self.custom_v2_fault_reason)
         return
       try:
@@ -658,8 +688,9 @@ class LongitudinalPlannerSP:
     mode_resolution = getattr(self, "longitudinal_mode_resolution", DEFAULT_LONGITUDINAL_MODE_RESOLUTION)
     dec = longitudinalPlanSP.dec
     dec.state = DecState.blended if mode_resolution.compatibility_alias_state == DecCompatibilityState.BLENDED else DecState.acc
-    dec.enabled = mode_resolution.requested_mode != LongitudinalMode.ACC
-    dec.active = mode_resolution.requested_mode != LongitudinalMode.ACC
+    legacy_dec_enabled = legacy_dec_enabled_for_mode(mode_resolution)
+    dec.enabled = legacy_dec_enabled
+    dec.active = legacy_dec_enabled
 
     # Smart Cruise Control
     smartCruiseControl = longitudinalPlanSP.smartCruiseControl

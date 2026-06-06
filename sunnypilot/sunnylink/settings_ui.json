@@ -567,11 +567,25 @@
                 },
                 {
                   "value": 1,
-                  "label": "E2E"
+                  "label": "E2E",
+                  "enablement": [
+                    {
+                      "type": "param",
+                      "key": "ExperimentalModeConfirmed",
+                      "equals": true
+                    }
+                  ]
                 },
                 {
                   "value": 2,
-                  "label": "SCC"
+                  "label": "SCC",
+                  "enablement": [
+                    {
+                      "type": "param",
+                      "key": "ExperimentalModeConfirmed",
+                      "equals": true
+                    }
+                  ]
                 }
               ],
               "enablement": [
@@ -841,13 +855,26 @@
                           "conditions": [
                             {
                               "type": "capability",
-                              "field": "has_longitudinal_control",
+                              "field": "has_icbm",
                               "equals": true
                             },
                             {
-                              "type": "capability",
-                              "field": "has_icbm",
-                              "equals": true
+                              "type": "all",
+                              "conditions": [
+                                {
+                                  "type": "capability",
+                                  "field": "has_longitudinal_control",
+                                  "equals": true
+                                },
+                                {
+                                  "type": "not",
+                                  "condition": {
+                                    "type": "param",
+                                    "key": "LongitudinalMode",
+                                    "equals": 0
+                                  }
+                                }
+                              ]
                             }
                           ]
                         },

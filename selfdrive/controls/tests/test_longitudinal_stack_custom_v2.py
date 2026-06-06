@@ -424,6 +424,30 @@ def test_planner_seed_classification_preserves_seed_trajectory():
   assert output.debug["custom_v2_selected_reason"] == "stopped_lead_stop_gap_guard"
 
 
+def test_scalar_planner_seed_synthesizes_coherent_trajectory():
+  stale_speeds = tuple(float(idx) for idx in range(CONTROL_N))
+  stale_accels = tuple(0.6 for _ in range(CONTROL_N))
+  stale_jerks = tuple(0.0 for _ in range(CONTROL_N))
+  seed = make_output(
+    -0.7,
+    should_stop=True,
+    has_lead=True,
+    speeds=stale_speeds,
+    accels=stale_accels,
+    jerks=stale_jerks,
+    debug={"planner_seed_candidate_reason": "stopped_lead_stop_gap_guard", "planner_seed_scalar": True},
+  )
+  scene = CustomV2Scene(v_ego=0.3, v_cruise=6.0, has_lead=True)
+
+  output = CustomLongitudinalStackV2().update(seed, scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == -0.7
+  assert output.should_stop
+  assert output.accels != stale_accels
+  assert output.accels[0] < stale_accels[0]
+  assert output.jerks != stale_jerks
+
+
 def test_structured_planner_seed_classification_does_not_require_debug_reason():
   seed = make_output(
     -0.7,
