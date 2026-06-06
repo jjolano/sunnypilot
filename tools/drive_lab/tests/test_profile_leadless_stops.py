@@ -219,13 +219,34 @@ def test_summary_reports_false_positive_clusters_outside_episode_windows():
     sample(2.0, 7.0, -0.7, brake=True),
     sample(3.0, 0.8, -0.2, brake=True),
   ]
-  route_b = [sample(0.0, 8.0, 0.0, route="route-b--0/rlog.zst", route_id="route-b", segment=0, model_accel=-1.0)]
+  route_b = [
+    sample(0.0, 8.0, 0.0, route="route-b--0/rlog.zst", route_id="route-b", segment=0),
+    sample(1.0, 8.0, -0.1, route="route-b--0/rlog.zst", route_id="route-b", segment=0, model_accel=-1.0),
+    sample(2.0, 7.5, -0.2, route="route-b--0/rlog.zst", route_id="route-b", segment=0, plan_source="e2e"),
+  ]
 
   summary = summarize_leadless_stop_correlation({"route-a": route_a, "route-b": route_b})
 
   metric = summary.signal_metrics["model_accel_le_-1.0"]["strict"]
+  fp_clusters = [
+    cluster for cluster in summary.false_positive_clusters
+    if cluster.scope == "strict" and cluster.signal_name == "model_accel_le_-1.0"
+  ]
 
   assert summary.episode_counts == {"strict_leadless_stop": 1}
   assert metric.timely_hit_count == 1
   assert metric.false_positive_clusters == 1
   assert metric.precision_proxy == pytest.approx(0.5)
+  assert len(fp_clusters) == 1
+  assert fp_clusters[0].route_id == "route-b"
+  assert fp_clusters[0].segment == 0
+  assert fp_clusters[0].start_time_s == pytest.approx(1.0)
+  assert fp_clusters[0].end_time_s == pytest.approx(1.0)
+  assert fp_clusters[0].v_start == pytest.approx(8.0)
+  assert fp_clusters[0].v_end == pytest.approx(7.5)
+  assert fp_clusters[0].delta_v == pytest.approx(-0.5)
+  assert fp_clusters[0].model_desired_accel_min == pytest.approx(-1.0)
+  assert fp_clusters[0].brake_ratio == 0.0
+  assert fp_clusters[0].lead_ratio == 0.0
+  assert fp_clusters[0].active_ratio == 0.0
+  assert fp_clusters[0].planner_sources == {"cruise": 2, "e2e": 1}

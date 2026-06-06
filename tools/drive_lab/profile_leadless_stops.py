@@ -164,12 +164,50 @@ class StopSignalMetric:
 
 
 @dataclass(frozen=True)
+class FalsePositiveCluster:
+  signal_name: str
+  scope: str
+  route: str
+  route_id: str
+  segment: int | None
+  start_time_s: float
+  end_time_s: float
+  duration_s: float
+  sample_count: int
+  context_start_time_s: float
+  context_end_time_s: float
+  v_start: float
+  v_end: float
+  delta_v: float
+  min_v_ego: float
+  max_v_ego: float
+  mean_accel: float
+  min_accel: float
+  brake_ratio: float
+  gas_ratio: float
+  lead_ratio: float
+  min_lead_d_rel: float | None
+  active_ratio: float
+  long_active_ratio: float
+  first_brake_time_s: float | None
+  first_decel_time_s: float | None
+  model_desired_accel_min: float | None
+  model_stop_distance_min: float | None
+  model_endpoint_x_min: float | None
+  model_endpoint_v_min: float | None
+  planner_sources: dict[str, int]
+  sp_sources: dict[str, int]
+  traffic_control_types: dict[str, int]
+
+
+@dataclass(frozen=True)
 class LeadlessStopCorrelationSummary:
   route_count: int
   sample_count: int
   manual_leadless_moving_sample_count: int
   episode_counts: dict[str, int]
   signal_metrics: dict[str, dict[str, StopSignalMetric]]
+  false_positive_clusters: list[FalsePositiveCluster]
   route_profiles: list[RouteLeadlessStopProfile]
   episodes: list[LeadlessStopEpisode]
 
@@ -181,6 +219,7 @@ def main() -> None:
   parser.add_argument("--json", action="store_true", help="Print JSON instead of text")
   parser.add_argument("--output", help="Write JSON summary to this path")
   parser.add_argument("--episodes", type=int, default=20, help="Number of episodes to show in text output")
+  parser.add_argument("--false-positives", type=int, default=20, help="Number of false-positive clusters to show in text output")
   parser.add_argument("--min-start-speed", type=float, default=DEFAULT_MIN_START_SPEED)
   parser.add_argument("--stop-speed", type=float, default=DEFAULT_STOP_SPEED)
   parser.add_argument("--slowdown-delta-v", type=float, default=DEFAULT_SLOWDOWN_DELTA_V)
@@ -206,7 +245,11 @@ def main() -> None:
     with open(args.output, "w") as f:
       json.dump(payload, f, indent=2)
       f.write("\n")
-  print(json.dumps(payload, indent=2) if args.json else render_leadless_stop_summary(summary, max_episodes=args.episodes))
+  print(json.dumps(payload, indent=2) if args.json else render_leadless_stop_summary(
+    summary,
+    max_episodes=args.episodes,
+    max_false_positives=args.false_positives,
+  ))
 
 
 def extract_leadless_stop_samples(route: str, read_mode: ReadMode) -> list[LeadlessStopSample]:
@@ -353,6 +396,12 @@ def summarize_leadless_stop_correlation(samples_by_route: dict[str, list[Leadles
     ),
     episode_counts=dict(Counter(episode.kind for episode in episodes)),
     signal_metrics=build_signal_metrics(all_samples, episodes, signal_lookback_s=signal_lookback_s),
+    false_positive_clusters=build_false_positive_clusters(
+      all_samples,
+      episodes,
+      signal_lookback_s=signal_lookback_s,
+      driver_decel_threshold=driver_decel_threshold,
+    ),
     route_profiles=profiles,
     episodes=episodes,
   )
@@ -420,7 +469,24 @@ def build_signal_metrics(samples: list[LeadlessStopSample], episodes: list[Leadl
   return metrics
 
 
-def render_leadless_stop_summary(summary: LeadlessStopCorrelationSummary, max_episodes: int = 20) -> str:
+def build_false_positive_clusters(samples: list[LeadlessStopSample], episodes: list[LeadlessStopEpisode],
+                                  signal_lookback_s: float = DEFAULT_SIGNAL_LOOKBACK_S,
+                                  driver_decel_threshold: float = DEFAULT_DRIVER_DECEL_THRESHOLD) -> list[FalsePositiveCluster]:
+  strict = [episode for episode in episodes if episode.kind.startswith("strict_leadless")]
+  review = [episode for episode in episodes if episode.kind.startswith("strict_leadless") or episode.kind.startswith("low_lead_flicker")]
+  clusters: list[FalsePositiveCluster] = []
+  for scope, scope_episodes in (("strict", strict), ("review", review)):
+    for signal_name in SIGNAL_NAMES:
+      signal_samples = _false_positive_signal_samples(samples, scope_episodes, signal_name, signal_lookback_s)
+      clusters.extend(
+        _summarize_false_positive_cluster(samples, cluster, signal_name, scope, driver_decel_threshold)
+        for cluster in _cluster_signal_samples(signal_samples)
+      )
+  return sorted(clusters, key=lambda cluster: (cluster.scope, cluster.signal_name, cluster.route_id, cluster.segment or -1, cluster.start_time_s))
+
+
+def render_leadless_stop_summary(summary: LeadlessStopCorrelationSummary, max_episodes: int = 20,
+                                 max_false_positives: int = 20) -> str:
   lines = [
     "Drive Lab leadless stop correlation",
     f"routes={summary.route_count} samples={summary.sample_count} "
@@ -466,6 +532,22 @@ def render_leadless_stop_summary(summary: LeadlessStopCorrelationSummary, max_ep
       + f"brake={episode.brake_ratio:.2f} lead={episode.lead_ratio:.2f} "
       + f"sources={_format_counts(episode.planner_sources)} tc={_format_counts(episode.traffic_control_types)} "
       + "signals=" + (", ".join(hits) if hits else "none")
+    )
+
+  lines.append("False-positive clusters:")
+  if not summary.false_positive_clusters:
+    lines.append("  none")
+  for cluster in summary.false_positive_clusters[:max_false_positives]:
+    segment = f"--{cluster.segment}" if cluster.segment is not None else ""
+    lines.append(
+      f"  {cluster.scope}:{cluster.signal_name} {cluster.route_id}{segment} "
+      + f"{cluster.start_time_s:.1f}-{cluster.end_time_s:.1f}s dur={cluster.duration_s:.1f}s "
+      + f"v={cluster.v_start:.1f}->{cluster.v_end:.1f} dv={cluster.delta_v:.1f} "
+      + f"a_min={cluster.min_accel:.2f} brake={cluster.brake_ratio:.2f} gas={cluster.gas_ratio:.2f} "
+      + f"lead={cluster.lead_ratio:.2f} active={cluster.active_ratio:.2f} "
+      + f"model_accel_min={_format_optional_float(cluster.model_desired_accel_min)} "
+      + f"endpoint_min={_format_optional_float(cluster.model_endpoint_x_min)} "
+      + f"sources={_format_counts(cluster.planner_sources)}"
     )
   return "\n".join(lines)
 
@@ -723,12 +805,7 @@ def _signal_metric(samples: list[LeadlessStopSample], episodes: list[LeadlessSto
     for episode in hit_episodes
     if episode.signals[signal_name]["earliest_rel_onset_s"] is not None
   ]
-  windows = [(episode.route, episode.start_time_s - signal_lookback_s, episode.end_time_s + 2.0) for episode in episodes]
-  false_positive_samples = [
-    sample for sample in samples
-    if is_manual_preview_sample(sample) and not sample.lead_status and sample.v_ego > MOVING_SPEED and
-       signal_active(sample, signal_name) and not _sample_in_windows(sample, windows)
-  ]
+  false_positive_samples = _false_positive_signal_samples(samples, episodes, signal_name, signal_lookback_s)
   false_positive_clusters = len(_cluster_signal_samples(false_positive_samples))
   timely_hit_count = len(timely_hit_episodes)
   return StopSignalMetric(
@@ -741,6 +818,65 @@ def _signal_metric(samples: list[LeadlessStopSample], episodes: list[LeadlessSto
     precision_proxy=timely_hit_count / (timely_hit_count + false_positive_clusters) if timely_hit_count + false_positive_clusters else 0.0,
     median_earliest_rel_onset_s=float(np.median(rel_onsets)) if rel_onsets else None,
     p10_earliest_rel_onset_s=float(np.percentile(rel_onsets, 10.0)) if rel_onsets else None,
+  )
+
+
+def _false_positive_signal_samples(samples: list[LeadlessStopSample], episodes: list[LeadlessStopEpisode],
+                                   signal_name: str, signal_lookback_s: float) -> list[LeadlessStopSample]:
+  windows = [(episode.route, episode.start_time_s - signal_lookback_s, episode.end_time_s + 2.0) for episode in episodes]
+  return [
+    sample for sample in samples
+    if is_manual_preview_sample(sample) and not sample.lead_status and sample.v_ego > MOVING_SPEED and
+       signal_active(sample, signal_name) and not _sample_in_windows(sample, windows)
+  ]
+
+
+def _summarize_false_positive_cluster(samples: list[LeadlessStopSample], cluster: list[LeadlessStopSample],
+                                      signal_name: str, scope: str,
+                                      driver_decel_threshold: float) -> FalsePositiveCluster:
+  start_t = cluster[0].t
+  end_t = cluster[-1].t
+  context = [
+    sample for sample in samples
+    if sample.route == cluster[0].route and start_t - DEFAULT_CONTEXT_BEFORE_S <= sample.t <= end_t + DEFAULT_CONTEXT_AFTER_S
+  ] or cluster
+  lead_distances = [sample.lead_d_rel for sample in context if sample.lead_d_rel is not None]
+  brake_times = [sample.t for sample in context if sample.brake_pressed]
+  decel_times = [sample.t for sample in context if sample.a_ego <= driver_decel_threshold]
+  return FalsePositiveCluster(
+    signal_name=signal_name,
+    scope=scope,
+    route=cluster[0].route,
+    route_id=cluster[0].route_id,
+    segment=cluster[0].segment,
+    start_time_s=start_t,
+    end_time_s=end_t,
+    duration_s=max(0.0, end_t - start_t),
+    sample_count=len(cluster),
+    context_start_time_s=context[0].t,
+    context_end_time_s=context[-1].t,
+    v_start=context[0].v_ego,
+    v_end=context[-1].v_ego,
+    delta_v=context[-1].v_ego - context[0].v_ego,
+    min_v_ego=min(sample.v_ego for sample in context),
+    max_v_ego=max(sample.v_ego for sample in context),
+    mean_accel=float(np.mean([sample.a_ego for sample in context])),
+    min_accel=min(sample.a_ego for sample in context),
+    brake_ratio=sum(1 for sample in context if sample.brake_pressed) / len(context),
+    gas_ratio=sum(1 for sample in context if sample.gas_pressed) / len(context),
+    lead_ratio=sum(1 for sample in context if sample.lead_status) / len(context),
+    min_lead_d_rel=min(lead_distances) if lead_distances else None,
+    active_ratio=sum(1 for sample in context if sample.selfdrive_active or sample.long_active) / len(context),
+    long_active_ratio=sum(1 for sample in context if sample.long_active) / len(context),
+    first_brake_time_s=min(brake_times) if brake_times else None,
+    first_decel_time_s=min(decel_times) if decel_times else None,
+    model_desired_accel_min=_min_optional(sample.model_desired_accel for sample in cluster),
+    model_stop_distance_min=_min_optional(sample.model_stop_distance for sample in cluster),
+    model_endpoint_x_min=_min_optional(sample.model_endpoint_x for sample in cluster),
+    model_endpoint_v_min=_min_optional(sample.model_endpoint_v for sample in cluster),
+    planner_sources=dict(Counter(sample.plan_source for sample in context)),
+    sp_sources=dict(Counter(sample.sp_source for sample in context)),
+    traffic_control_types=_traffic_control_counts(context),
   )
 
 
@@ -816,6 +952,11 @@ def _finite_list(values: Any) -> list[float]:
   return [finite_value for value in iterable if (finite_value := _finite_or_none(value)) is not None]
 
 
+def _min_optional(values: Iterable[float | None]) -> float | None:
+  finite_values = [value for value in values if value is not None and isfinite(value)]
+  return min(finite_values) if finite_values else None
+
+
 def _format_counts(counts: dict[str, int]) -> str:
   if not counts:
     return "none"
@@ -824,6 +965,10 @@ def _format_counts(counts: dict[str, int]) -> str:
 
 def _format_optional_seconds(value: float | None) -> str:
   return "n/a" if value is None else f"{value:.3f}s"
+
+
+def _format_optional_float(value: float | None) -> str:
+  return "n/a" if value is None else f"{value:.2f}"
 
 
 def _rank_signal_metrics(metrics: dict[str, dict[str, StopSignalMetric]], scope: str) -> list[tuple[str, dict[str, StopSignalMetric]]]:
