@@ -28,6 +28,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_modes import (
   ResolvedLongitudinalImplementation,
   SccModeEvidence,
 )
+from openpilot.selfdrive.controls.lib.longitudinal_profile import jerk_limited_braking_profile
 from openpilot.selfdrive.controls.lib.lead_confidence import (
   LeadConfidenceState,
   LEAD_FLICKER_CLOSE_COUNT_THRESHOLD,
@@ -480,6 +481,7 @@ def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_t
     positions = _finite_model_array(getattr(model_msg.position, "x", []))
     if positions is not None and len(positions) > 0:
       model_stop_distance = float(max(0.0, positions[-1]))
+  stop_profile = jerk_limited_braking_profile(v_ego, 0.0, model_stop_distance) if model_stop_distance is not None else None
   return SccModeEvidence(
     confirmed_lead=has_confirmed_lead,
     model_stop=model_stop,
@@ -489,6 +491,7 @@ def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_t
     lead_path_y_rel=lead_path_y_rel,
     lead_idx=lead_idx,
     v_ego=v_ego,
+    urgency=None if stop_profile is None else min(1.0, max(0.0, abs(stop_profile.required_accel) / 3.5)),
     curve_control=bool(getattr(getattr(scc, "vision", None), "is_active", False)),
     map_control=bool(getattr(getattr(scc, "map", None), "is_active", False)),
     speed_limit_control=bool(getattr(sla, "is_active", False) or speed_limit_handoff_active),
