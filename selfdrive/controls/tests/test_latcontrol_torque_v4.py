@@ -43,6 +43,7 @@ sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
 from openpilot.sunnypilot.selfdrive.controls.lib import latcontrol_torque_v4
 
 LatControlTorqueV4 = latcontrol_torque_v4.LatControlTorqueV4
+LatControlTorqueV41 = latcontrol_torque_v4.LatControlTorqueV41
 TorqueV4GovernorReason = latcontrol_torque_v4.TorqueV4GovernorReason
 TorqueV4LearnerRejectReason = latcontrol_torque_v4.TorqueV4LearnerRejectReason
 TorqueV4Observation = latcontrol_torque_v4.TorqueV4Observation
@@ -174,6 +175,58 @@ def test_v4_exposes_direct_controlsd_hooks_without_model_hooks():
   assert not hasattr(controller, "update_model_v2")
   assert not hasattr(controller, "model_v2")
   assert not hasattr(controller, "model_valid")
+
+
+def test_v4_default_governor_profile_is_unchanged():
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.output_slew_rate_bp == [0.0, 3.0, 10.0, 20.0, 30.0, 40.0]
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.output_slew_rate_v == [0.80, 1.10, 2.40, 3.60, 4.00, 4.00]
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.sign_change_slew_rate_bp == [0.0, 3.0, 10.0, 20.0, 30.0, 40.0]
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.sign_change_slew_rate_v == [0.40, 0.60, 1.40, 2.00, 2.20, 2.00]
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.same_direction_limit_cap == pytest.approx(0.72)
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.same_direction_limit_rate == pytest.approx(1.20)
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.high_rate_start_deg == pytest.approx(70.0)
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.high_rate_full_deg == pytest.approx(100.0)
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.high_rate_min_cap == pytest.approx(0.60)
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.high_rate_slew_scale == pytest.approx(0.65)
+  assert not LatControlTorqueV4.GOVERNOR_PROFILE.same_direction_decrease_bypass
+
+
+def test_v41_governor_profile_is_relaxed():
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.output_slew_rate_v == [1.40, 2.00, 3.00, 4.20, 5.00, 5.60]
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.sign_change_slew_rate_v == [0.90, 1.20, 1.80, 2.40, 3.00, 3.40]
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.same_direction_limit_cap == pytest.approx(0.85)
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.same_direction_limit_rate == pytest.approx(1.30)
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.same_direction_limit_rate_bp == [0.0, 10.0, 20.0, 30.0, 40.0]
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.same_direction_limit_rate_v == [1.30, 1.30, 2.10, 3.20, 3.60]
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.high_rate_start_deg == pytest.approx(80.0)
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.high_rate_min_cap == pytest.approx(0.62)
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.high_rate_slew_scale == pytest.approx(0.70)
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.same_direction_decrease_bypass
+
+
+def test_v41_speed_model_uses_relaxed_slew_profile():
+  controller, _VM, _CP = get_controller()
+  v4_result = TorqueV4SpeedModel(LatControlTorqueV4.GOVERNOR_PROFILE).update(
+    30.0, controller.torque_params, None, False, controller.session_adaptation
+  )
+  v41_result = TorqueV4SpeedModel(LatControlTorqueV41.GOVERNOR_PROFILE).update(
+    30.0, controller.torque_params, None, False, controller.session_adaptation
+  )
+
+  assert v4_result.output_slew_rate == pytest.approx(4.0)
+  assert v4_result.sign_change_slew_rate == pytest.approx(2.2)
+  assert v41_result.output_slew_rate == pytest.approx(5.0)
+  assert v41_result.sign_change_slew_rate == pytest.approx(3.0)
+
+
+def test_v41_logs_version_41():
+  CP, CP_SP, CI = get_context()
+  VM = VehicleModel(CP)
+  v41 = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+
+  _steer, _angle, lac_log = update(v41, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert lac_log.version == 41
 
 
 def test_v4_uses_no_v2_or_extension_post_core_limiters():
@@ -376,7 +429,7 @@ def test_v4_learning_rejects_forwarded_lateral_maneuver_demand():
 
 
 def test_v4_governor_driver_override_preserves_authority():
-  governor = TorqueV4OutputGovernor(DT_CTRL)
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
   governor.previous_output = 1.0
   speed_result = make_speed_result(output_slew_rate=4.0)
 
@@ -389,7 +442,7 @@ def test_v4_governor_driver_override_preserves_authority():
 
 
 def test_v4_governor_same_direction_limit_and_high_rate_cap_output():
-  governor = TorqueV4OutputGovernor(DT_CTRL)
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
   speed_result = make_speed_result(output_slew_rate=10.0)
 
   same_direction = governor.update(active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
@@ -405,8 +458,94 @@ def test_v4_governor_same_direction_limit_and_high_rate_cap_output():
   assert high_rate.output_cap < 1.0
 
 
+def test_v41_governor_relaxes_same_direction_rate_and_high_rate_gate():
+  speed_result = make_speed_result(output_slew_rate=10.0, sign_change_slew_rate=10.0)
+  v4_governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
+  v41_governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV41.GOVERNOR_PROFILE)
+
+  v4_same_direction = v4_governor.update(active=True, v_ego=30.0, steering_pressed=False, steering_rate_deg=0.0,
+                                         same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                                         actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                                         speed_model=speed_result)
+  v41_same_direction = v41_governor.update(active=True, v_ego=30.0, steering_pressed=False, steering_rate_deg=0.0,
+                                           same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                                           actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                                           speed_model=speed_result)
+
+  assert v4_same_direction.output_cap == pytest.approx(0.72)
+  assert v41_same_direction.output_cap == pytest.approx(0.85)
+  assert v4_same_direction.output_torque == pytest.approx(1.20 * DT_CTRL)
+  assert v41_same_direction.output_torque == pytest.approx(3.20 * DT_CTRL)
+
+  v4_high_rate = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE).update(
+    active=True, v_ego=30.0, steering_pressed=False, steering_rate_deg=75.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=0.0, max_output=1.0, speed_model=speed_result
+  )
+  v41_high_rate = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV41.GOVERNOR_PROFILE).update(
+    active=True, v_ego=30.0, steering_pressed=False, steering_rate_deg=75.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=0.0, max_output=1.0, speed_model=speed_result
+  )
+
+  assert v4_high_rate.reason & TorqueV4GovernorReason.HIGH_STEERING_RATE
+  assert not v41_high_rate.reason & TorqueV4GovernorReason.HIGH_STEERING_RATE
+
+
+def test_v41_governor_same_direction_rate_interpolates_by_speed():
+  speed_result = make_speed_result(output_slew_rate=10.0, sign_change_slew_rate=10.0)
+
+  for v_ego, expected_rate in ((0.0, 1.30), (30.0, 3.20), (40.0, 3.60)):
+    governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV41.GOVERNOR_PROFILE)
+    result = governor.update(active=True, v_ego=v_ego, steering_pressed=False, steering_rate_deg=0.0,
+                             same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                             actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                             speed_model=speed_result)
+
+    assert result.output_torque == pytest.approx(expected_rate * DT_CTRL)
+
+
+def test_v41_governor_uses_profiled_sign_change_rate():
+  controller, _VM, _CP = get_controller()
+  speed_result = TorqueV4SpeedModel(LatControlTorqueV41.GOVERNOR_PROFILE).update(
+    20.0, controller.torque_params, None, False, controller.session_adaptation
+  )
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV41.GOVERNOR_PROFILE)
+  governor.previous_output = 0.5
+
+  result = governor.update(active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+                           same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+                           actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+                           speed_model=speed_result)
+
+  assert result.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+  assert result.output_torque == pytest.approx(0.5 - speed_result.sign_change_slew_rate * DT_CTRL)
+
+
+def test_v41_governor_bypasses_slew_for_same_direction_decrease():
+  speed_result = make_speed_result(output_slew_rate=0.1, sign_change_slew_rate=0.1)
+  v4_governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
+  v41_governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV41.GOVERNOR_PROFILE)
+  v4_governor.previous_output = 0.8
+  v41_governor.previous_output = 0.8
+
+  v4_result = v4_governor.update(active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+                                 same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+                                 actuator_error=0.0, raw_output_torque=0.2, max_output=1.0,
+                                 speed_model=speed_result)
+  v41_result = v41_governor.update(active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+                                   same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+                                   actuator_error=0.0, raw_output_torque=0.2, max_output=1.0,
+                                   speed_model=speed_result)
+
+  assert v4_result.output_torque > 0.2
+  assert v4_result.reason & TorqueV4GovernorReason.SLEW_LIMITED
+  assert v41_result.output_torque == pytest.approx(0.2)
+  assert not v41_result.reason & TorqueV4GovernorReason.SLEW_LIMITED
+
+
 def test_v4_governor_low_speed_under_response_recovers_same_direction_authority():
-  governor = TorqueV4OutputGovernor(DT_CTRL)
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
   speed_result = make_speed_result(output_slew_rate=3.0, sign_change_slew_rate=1.8)
 
   result = governor.update(active=True, v_ego=8.0, steering_pressed=False, steering_rate_deg=0.0,
@@ -423,7 +562,7 @@ def test_v4_governor_low_speed_under_response_recovers_same_direction_authority(
 
 
 def test_v4_governor_under_response_recovery_extends_across_speeds():
-  governor = TorqueV4OutputGovernor(DT_CTRL)
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
   speed_result = make_speed_result(output_slew_rate=3.0, sign_change_slew_rate=1.8)
 
   mid = governor.update(active=True, v_ego=10.5, steering_pressed=False, steering_rate_deg=0.0,
@@ -459,7 +598,7 @@ def test_v4_governor_under_response_recovery_extends_across_speeds():
   {"actuator_mismatch": True, "actuator_error": latcontrol_torque_v4.STALE_ACTUATOR_ERROR_THRESHOLD + 0.01},
 ])
 def test_v4_governor_low_speed_under_response_keeps_safety_guards(overrides):
-  governor = TorqueV4OutputGovernor(DT_CTRL)
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
   speed_result = make_speed_result(output_slew_rate=3.0, sign_change_slew_rate=1.8)
   values = {
     "active": True,

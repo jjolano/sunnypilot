@@ -20,7 +20,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2, LatControlTorqueV21
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV4
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV4, LatControlTorqueV41
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
   DEFAULT_TORQUE_TUNE_VERSION,
   TorqueControllerDefinition,
@@ -129,6 +129,7 @@ def test_torque_tune_resolution_keeps_reactivated_v4_numeric():
   assert resolution.requested_version == 4.0
   assert resolution.resolved_version == 4.0
   assert resolution.persist_value is None
+  assert resolve_torque_tune_version("4.1").resolved_version == 4.1
   assert resolve_torque_tune_version(b"2.1").resolved_version == 2.1
   assert resolve_torque_tune_version(b"3.0").resolved_version == 3.0
   assert resolve_torque_tune_version("bad").resolved_version is None
@@ -179,6 +180,13 @@ def test_torque_controller_selection_variants():
   assert not hasattr(selected, "extension")
   assert "TorqueControlTune" not in params.writes
 
+  params = FakeParams(True, 4.1)
+  controls_ext = make_controls_ext(CP, CP_SP, params)
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV41)
+  assert not hasattr(selected, "extension")
+  assert "TorqueControlTune" not in params.writes
+
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 1.0))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert selected is lac
@@ -201,6 +209,23 @@ def test_pid_origin_non_angle_controller_keeps_original_lac_for_v4():
   CP, CP_SP, CI, lac = make_pid_origin_controller()
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, "4.0"))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert selected is lac
+
+
+def test_pid_origin_non_angle_controller_keeps_original_lac_for_v41():
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, "4.1"))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert selected is lac
+
+
+def test_angle_controller_keeps_original_lac_for_v41():
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
+  CP.steerControlType = car.CarParams.SteerControlType.angle
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, "4.1"))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert selected is lac
 

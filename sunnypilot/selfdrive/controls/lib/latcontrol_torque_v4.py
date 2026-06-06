@@ -248,6 +248,23 @@ class TorqueV4SpeedModelResult:
 
 
 @dataclass(frozen=True)
+class TorqueV4GovernorProfile:
+  output_slew_rate_bp: list[float]
+  output_slew_rate_v: list[float]
+  sign_change_slew_rate_bp: list[float]
+  sign_change_slew_rate_v: list[float]
+  same_direction_limit_cap: float
+  same_direction_limit_rate: float
+  high_rate_start_deg: float
+  high_rate_full_deg: float
+  high_rate_min_cap: float
+  high_rate_slew_scale: float
+  same_direction_limit_rate_bp: list[float] | None = None
+  same_direction_limit_rate_v: list[float] | None = None
+  same_direction_decrease_bypass: bool = False
+
+
+@dataclass(frozen=True)
 class TorqueV4AdaptationUpdate:
   sample_accepted: bool
   reject_reason: TorqueV4LearnerRejectReason
@@ -264,6 +281,9 @@ class TorqueV4GovernorResult:
 class TorqueV4SpeedModel:
   """Speed-aware corrections stay opt-in and bounded; never apply raw bucket params directly."""
 
+  def __init__(self, governor_profile: TorqueV4GovernorProfile | None = None):
+    self.governor_profile = governor_profile or LatControlTorqueV4.GOVERNOR_PROFILE
+
   def update(self, v_ego: float, torque_params, speed_aware_params: dict | None, speed_aware_apply_enabled: bool,
              adaptation: "TorqueV4SessionAdaptation") -> TorqueV4SpeedModelResult:
     response_delay = _clip(adaptation.response_delay, RESPONSE_DELAY_MIN, RESPONSE_DELAY_MAX)
@@ -272,8 +292,9 @@ class TorqueV4SpeedModel:
     feedback_gain = _interp(v_ego, FEEDBACK_GAIN_BP, FEEDBACK_GAIN_V)
     damping_gain = _interp(v_ego, DAMPING_GAIN_BP, DAMPING_GAIN_V)
     breakaway_scale = _interp(v_ego, BREAKAWAY_SCALE_BP, BREAKAWAY_SCALE_V)
-    output_slew_rate = _interp(v_ego, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V)
-    sign_change_slew_rate = _interp(v_ego, SIGN_CHANGE_SLEW_RATE_BP, SIGN_CHANGE_SLEW_RATE_V)
+    output_slew_rate = _interp(v_ego, self.governor_profile.output_slew_rate_bp, self.governor_profile.output_slew_rate_v)
+    sign_change_slew_rate = _interp(v_ego, self.governor_profile.sign_change_slew_rate_bp,
+                                    self.governor_profile.sign_change_slew_rate_v)
 
     speed_factor, speed_offset, confidence = self._speed_aware_values(v_ego, torque_params, speed_aware_params, speed_aware_apply_enabled)
     global_factor = max(float(torque_params.latAccelFactor), 1e-3)
@@ -453,8 +474,9 @@ class TorqueV4SessionAdaptation:
 
 
 class TorqueV4OutputGovernor:
-  def __init__(self, dt: float):
+  def __init__(self, dt: float, profile: TorqueV4GovernorProfile):
     self.dt = max(float(dt), 1e-3)
+    self.profile = profile
     self.previous_output = 0.0
 
   def reset(self) -> None:
@@ -477,12 +499,12 @@ class TorqueV4OutputGovernor:
       reason |= TorqueV4GovernorReason.DRIVER_OVERRIDE
 
     output_cap = max_output
-    high_rate_blend = _clip((abs(steering_rate_deg) - HIGH_RATE_START_DEG) / max(HIGH_RATE_FULL_DEG - HIGH_RATE_START_DEG, 1e-3), 0.0, 1.0)
+    high_rate_blend = _clip((abs(steering_rate_deg) - self.profile.high_rate_start_deg) / max(self.profile.high_rate_full_deg - self.profile.high_rate_start_deg, 1e-3), 0.0, 1.0)
     if high_rate_blend > 0.0:
-      output_cap = min(output_cap, max_output * (1.0 + high_rate_blend * (HIGH_RATE_MIN_CAP - 1.0)))
+      output_cap = min(output_cap, max_output * (1.0 + high_rate_blend * (self.profile.high_rate_min_cap - 1.0)))
       reason |= TorqueV4GovernorReason.HIGH_STEERING_RATE
     if same_direction_limit and not steer_limit_unwind:
-      output_cap = min(output_cap, max_output * SAME_DIRECTION_LIMIT_CAP)
+      output_cap = min(output_cap, max_output * self.profile.same_direction_limit_cap)
       reason |= TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
     stale_actuator_mismatch = actuator_mismatch and same_direction_limit and not steer_limit_unwind and abs(actuator_error) > STALE_ACTUATOR_ERROR_THRESHOLD
     if stale_actuator_mismatch:
@@ -500,7 +522,7 @@ class TorqueV4OutputGovernor:
     )
     if same_direction_limit and not steer_limit_unwind and under_response_recovery > 0.0:
       recovery_target_cap = _interp(v_ego, UNDER_RESPONSE_RECOVERY_CAP_BP, UNDER_RESPONSE_RECOVERY_CAP_V)
-      recovery_cap = SAME_DIRECTION_LIMIT_CAP + under_response_recovery * (recovery_target_cap - SAME_DIRECTION_LIMIT_CAP)
+      recovery_cap = self.profile.same_direction_limit_cap + under_response_recovery * (recovery_target_cap - self.profile.same_direction_limit_cap)
       output_cap = max(output_cap, max_output * recovery_cap)
       reason |= TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
 
@@ -515,9 +537,9 @@ class TorqueV4OutputGovernor:
     if sign_change:
       reason |= TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
     if high_rate_blend > 0.0:
-      slew_rate *= HIGH_RATE_SLEW_SCALE
+      slew_rate *= self.profile.high_rate_slew_scale
     if same_direction_limit and not steer_limit_unwind:
-      same_direction_rate = SAME_DIRECTION_LIMIT_RATE
+      same_direction_rate = self._same_direction_limit_rate(v_ego)
       if under_response_recovery > 0.0:
         recovery_target_rate = speed_model.sign_change_slew_rate if sign_change else speed_model.output_slew_rate
         recovery_target_rate *= _interp(v_ego, UNDER_RESPONSE_RECOVERY_RATE_SCALE_BP, UNDER_RESPONSE_RECOVERY_RATE_SCALE_V)
@@ -529,11 +551,18 @@ class TorqueV4OutputGovernor:
     if stale_actuator_mismatch:
       slew_rate = min(slew_rate, STALE_ACTUATOR_CAP)
 
-    output = _approach(self.previous_output, clipped, slew_rate * self.dt)
+    target_decreases_same_direction = previous_sign != 0 and target_sign == previous_sign and abs(clipped) <= abs(self.previous_output)
+    output = clipped if self.profile.same_direction_decrease_bypass and target_decreases_same_direction else \
+      _approach(self.previous_output, clipped, slew_rate * self.dt)
     if abs(output - clipped) > 1e-6:
       reason |= TorqueV4GovernorReason.SLEW_LIMITED
     self.previous_output = output
     return TorqueV4GovernorResult(output, reason, output_cap)
+
+  def _same_direction_limit_rate(self, v_ego: float) -> float:
+    if self.profile.same_direction_limit_rate_bp is not None and self.profile.same_direction_limit_rate_v is not None:
+      return _interp(v_ego, self.profile.same_direction_limit_rate_bp, self.profile.same_direction_limit_rate_v)
+    return self.profile.same_direction_limit_rate
 
   @staticmethod
   def _under_response_recovery_strength(*, allowed: bool, v_ego: float, steering_pressed: bool,
@@ -554,6 +583,19 @@ class TorqueV4OutputGovernor:
 
 class LatControlTorqueV4(LatControl):
   CONTROL_STATE = "torque"
+  VERSION = 4
+  GOVERNOR_PROFILE = TorqueV4GovernorProfile(
+    output_slew_rate_bp=OUTPUT_SLEW_RATE_BP,
+    output_slew_rate_v=OUTPUT_SLEW_RATE_V,
+    sign_change_slew_rate_bp=SIGN_CHANGE_SLEW_RATE_BP,
+    sign_change_slew_rate_v=SIGN_CHANGE_SLEW_RATE_V,
+    same_direction_limit_cap=SAME_DIRECTION_LIMIT_CAP,
+    same_direction_limit_rate=SAME_DIRECTION_LIMIT_RATE,
+    high_rate_start_deg=HIGH_RATE_START_DEG,
+    high_rate_full_deg=HIGH_RATE_FULL_DEG,
+    high_rate_min_cap=HIGH_RATE_MIN_CAP,
+    high_rate_slew_scale=HIGH_RATE_SLEW_SCALE,
+  )
 
   def __init__(self, CP, CP_SP, CI, dt):
     super().__init__(CP, CP_SP, CI, dt)
@@ -566,9 +608,9 @@ class LatControlTorqueV4(LatControl):
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
     initial_delay = max(float(getattr(CP, "steerActuatorDelay", 0.2)), self.dt)
-    self.speed_model = TorqueV4SpeedModel()
+    self.speed_model = TorqueV4SpeedModel(self.GOVERNOR_PROFILE)
     self.session_adaptation = TorqueV4SessionAdaptation(initial_delay)
-    self.governor = TorqueV4OutputGovernor(self.dt)
+    self.governor = TorqueV4OutputGovernor(self.dt, self.GOVERNOR_PROFILE)
     self.speed_aware_params = None
     self.speed_adaptive_apply_enabled = False
     self.previous_target_lateral_accel = 0.0
@@ -649,7 +691,7 @@ class LatControlTorqueV4(LatControl):
       self.update_lateral_lag(lat_delay)
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
-    pid_log.version = VERSION
+    pid_log.version = self.VERSION
 
     input_invalid = not _finite(desired_curvature, CS.vEgo, CS.steeringAngleDeg, CS.steeringRateDeg,
                                 params.angleOffsetDeg, params.roll)
@@ -892,5 +934,23 @@ class LatControlTorqueV4(LatControl):
     adaptive_log.governorReason = int(governor_result.reason)
     adaptive_log.actualLateralJerk = float(actual_lateral_jerk if _finite(actual_lateral_jerk) else 0.0)
 
+
+class LatControlTorqueV41(LatControlTorqueV4):
+  VERSION = 41
+  GOVERNOR_PROFILE = TorqueV4GovernorProfile(
+    output_slew_rate_bp=[0.0, 5.0, 10.0, 20.0, 30.0, 40.0],
+    output_slew_rate_v=[1.40, 2.00, 3.00, 4.20, 5.00, 5.60],
+    sign_change_slew_rate_bp=[0.0, 5.0, 10.0, 20.0, 30.0, 40.0],
+    sign_change_slew_rate_v=[0.90, 1.20, 1.80, 2.40, 3.00, 3.40],
+    same_direction_limit_cap=0.85,
+    same_direction_limit_rate=1.30,
+    high_rate_start_deg=80.0,
+    high_rate_full_deg=100.0,
+    high_rate_min_cap=0.62,
+    high_rate_slew_scale=0.70,
+    same_direction_limit_rate_bp=[0.0, 10.0, 20.0, 30.0, 40.0],
+    same_direction_limit_rate_v=[1.30, 1.30, 2.10, 3.20, 3.60],
+    same_direction_decrease_bypass=True,
+  )
 
 LatControlTorque = LatControlTorqueV4
