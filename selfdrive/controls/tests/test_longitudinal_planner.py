@@ -12,7 +12,7 @@ from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_decision import DecisionSource, LongitudinalArbiter
-from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, ResolvedLongitudinalImplementation
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, ResolvedLongitudinalImplementation, SccModeEvidence
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import SUNNYPILOT_CURRENT, StackResolution
@@ -769,6 +769,7 @@ def test_scc_mode_evidence_promotes_no_lead_model_stop_only():
   assert evidence.model_stop
   assert evidence.e2e_active
   assert evidence.reason == "scc_model_stop"
+  assert evidence.classify().independent_of_lead
 
 
 def test_scc_mode_evidence_ignores_far_endpoint_only_slowdown_without_confirmed_stop():
@@ -847,6 +848,52 @@ def test_scc_mode_evidence_keeps_signal_providers_acc_like():
   assert evidence.speed_limit_control
   assert evidence.traffic_control
   assert not evidence.e2e_active
+
+
+def test_scc_mode_evidence_associates_model_stop_with_confirmed_lead():
+  evidence = build_scc_mode_evidence(
+    True,
+    make_model_msg(positions=[0.0, 29.0, 60.0], velocities=[10.0, 0.2, 0.2]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+    lead_distance=30.0,
+    lead_path_y_rel=0.1,
+    lead_idx=0,
+    v_ego=12.0,
+  )
+  result = evidence.classify()
+
+  assert evidence.model_stop
+  assert result.associated_lead_idx == 0
+  assert not result.independent_of_lead
+  assert not result.e2e_active
+
+
+def test_scc_mode_evidence_marks_geometrically_independent_urgent_stop():
+  evidence = build_scc_mode_evidence(
+    True,
+    make_model_msg(positions=[0.0, 8.0, 60.0], velocities=[10.0, 0.2, 0.2]),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+    lead_distance=30.0,
+    lead_path_y_rel=0.0,
+    lead_idx=0,
+    v_ego=12.0,
+  )
+  urgent = SccModeEvidence(
+    confirmed_lead=True,
+    urgent_stop=True,
+    model_stop_distance=evidence.model_stop_distance,
+    lead_distance=30.0,
+    lead_path_y_rel=0.0,
+    lead_idx=0,
+    v_ego=12.0,
+  ).classify()
+
+  assert urgent.independent_of_lead
+  assert urgent.e2e_active
 
 
 def test_model_stop_distance_uses_first_low_velocity_point():

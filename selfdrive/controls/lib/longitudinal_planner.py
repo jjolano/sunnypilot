@@ -466,17 +466,29 @@ def has_model_stop_context(model_msg):
 
 
 def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_traffic_control_prior,
-                            speed_limit_handoff_active: bool = False) -> SccModeEvidence:
+                            speed_limit_handoff_active: bool = False, lead_distance: float | None = None,
+                            lead_path_y_rel: float = 0.0, lead_idx: int | None = None,
+                            v_ego: float = 0.0) -> SccModeEvidence:
+  model_stop_distance = get_e2e_confirmed_model_stop_distance(model_msg) or get_model_stop_distance(model_msg)
   model_stop = bool(
     model_msg.action.shouldStop or
-    get_e2e_confirmed_model_stop_distance(model_msg) is not None or
+    model_stop_distance is not None or
     has_scc_near_endpoint_model_stop(model_msg) or
     has_scc_early_model_stop(model_msg)
   )
+  if model_stop and model_stop_distance is None:
+    positions = _finite_model_array(getattr(model_msg.position, "x", []))
+    if positions is not None and len(positions) > 0:
+      model_stop_distance = float(max(0.0, positions[-1]))
   return SccModeEvidence(
     confirmed_lead=has_confirmed_lead,
     model_stop=model_stop,
     independent_of_lead=bool(model_stop and not has_confirmed_lead),
+    model_stop_distance=model_stop_distance,
+    lead_distance=lead_distance,
+    lead_path_y_rel=lead_path_y_rel,
+    lead_idx=lead_idx,
+    v_ego=v_ego,
     curve_control=bool(getattr(getattr(scc, "vision", None), "is_active", False)),
     map_control=bool(getattr(getattr(scc, "map", None), "is_active", False)),
     speed_limit_control=bool(getattr(sla, "is_active", False) or speed_limit_handoff_active),

@@ -316,7 +316,8 @@ def test_scc_map_speed_and_curve_evidence_are_advisory_only():
 
   assert map_only.tier == SccEvidenceTier.NONE
   assert map_only.advisory.map_caution
-  assert map_only.advisory_status == ("map_caution",)
+  assert map_only.advisory.traffic_control_prior
+  assert map_only.advisory_status == ("map_caution", "traffic_control_prior")
   assert speed_limit.tier == SccEvidenceTier.NONE
   assert speed_limit.advisory_status == ("speed_limit_cap",)
   assert curve.tier == SccEvidenceTier.NONE
@@ -327,7 +328,11 @@ def test_acc_mode_ignores_scc_evidence_classifier():
   params = FakeParams()
   params.put(LONGITUDINAL_MODE_PARAM, int(LongitudinalMode.ACC))
 
-  resolution = resolve_longitudinal_mode(params, scc_evidence=SccModeEvidence(urgent_stop=True, independent_of_lead=True))
+  class PoisonSccEvidence(SccModeEvidence):
+    def classify(self):
+      raise AssertionError("ACC mode must not classify SCC evidence")
+
+  resolution = resolve_longitudinal_mode(params, scc_evidence=PoisonSccEvidence())
 
   assert resolution.requested_mode == LongitudinalMode.ACC
   assert resolution.resolved_implementation == ResolvedLongitudinalImplementation.HARDWARE_ACC

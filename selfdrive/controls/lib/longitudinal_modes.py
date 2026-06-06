@@ -4,6 +4,14 @@ from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from typing import Any
 
+from openpilot.selfdrive.controls.lib.scc_evidence import (
+  SccAdvisoryFlags,
+  SccEvidenceAdvisory,
+  SccEvidenceResult,
+  SccEvidenceTier,
+  SccModeEvidence,
+)
+
 
 LONGITUDINAL_MODE_MIGRATION_VERSION = "1.1"
 
@@ -48,160 +56,6 @@ class LongitudinalActuationType(Enum):
 class DecCompatibilityState(Enum):
   ACC = "acc"
   BLENDED = "blended"
-
-
-class SccEvidenceTier(Enum):
-  NONE = "none"
-  SLOWDOWN = "slowdown"
-  STOP = "stop"
-  URGENT_STOP = "urgent_stop"
-
-
-@dataclass(frozen=True)
-class SccEvidenceAdvisory:
-  map_caution: bool = False
-  speed_limit_cap: bool = False
-  curve_cap: bool = False
-
-  @property
-  def status(self) -> tuple[str, ...]:
-    active: list[str] = []
-    if self.map_caution:
-      active.append("map_caution")
-    if self.speed_limit_cap:
-      active.append("speed_limit_cap")
-    if self.curve_cap:
-      active.append("curve_cap")
-    return tuple(active)
-
-
-@dataclass(frozen=True)
-class SccEvidenceResult:
-  tier: SccEvidenceTier = SccEvidenceTier.NONE
-  confidence: float = 0.0
-  urgency: float = 0.0
-  reason: str = "scc_no_evidence"
-  independent_of_lead: bool = False
-  confirmed_lead: bool = False
-  advisory: SccEvidenceAdvisory = field(default_factory=SccEvidenceAdvisory)
-
-  @property
-  def e2e_active(self) -> bool:
-    if self.tier == SccEvidenceTier.NONE:
-      return False
-    if not self.confirmed_lead:
-      return True
-    return bool(self.tier == SccEvidenceTier.URGENT_STOP and self.independent_of_lead)
-
-  @property
-  def advisory_status(self) -> tuple[str, ...]:
-    return self.advisory.status
-
-
-@dataclass(frozen=True)
-class SccModeEvidence:
-  confirmed_lead: bool = False
-  model_stop: bool = False
-  curve_control: bool = False
-  map_control: bool = False
-  speed_limit_control: bool = False
-  traffic_control: bool = False
-  model_slowdown: bool = False
-  urgent_stop: bool = False
-  independent_of_lead: bool = False
-  confidence: float | None = None
-  urgency: float | None = None
-  evidence_reason: str = ""
-
-  def classify(self) -> SccEvidenceResult:
-    advisory = SccEvidenceAdvisory(
-      map_caution=bool(self.traffic_control),
-      speed_limit_cap=bool(self.speed_limit_control),
-      curve_cap=bool(self.curve_control or self.map_control),
-    )
-    if self.urgent_stop:
-      return SccEvidenceResult(
-        tier=SccEvidenceTier.URGENT_STOP,
-        confidence=_bounded_unit(self.confidence, 1.0),
-        urgency=_bounded_unit(self.urgency, 1.0),
-        reason=self.evidence_reason or "scc_urgent_stop",
-        independent_of_lead=bool(self.independent_of_lead),
-        confirmed_lead=bool(self.confirmed_lead),
-        advisory=advisory,
-      )
-    if self.model_stop:
-      return SccEvidenceResult(
-        tier=SccEvidenceTier.STOP,
-        confidence=_bounded_unit(self.confidence, 0.90),
-        urgency=_bounded_unit(self.urgency, 0.80),
-        reason=self.evidence_reason or "scc_model_stop",
-        independent_of_lead=bool(self.independent_of_lead),
-        confirmed_lead=bool(self.confirmed_lead),
-        advisory=advisory,
-      )
-    if self.model_slowdown:
-      return SccEvidenceResult(
-        tier=SccEvidenceTier.SLOWDOWN,
-        confidence=_bounded_unit(self.confidence, 0.65),
-        urgency=_bounded_unit(self.urgency, 0.45),
-        reason=self.evidence_reason or "scc_model_slowdown",
-        independent_of_lead=bool(self.independent_of_lead),
-        confirmed_lead=bool(self.confirmed_lead),
-        advisory=advisory,
-      )
-    return SccEvidenceResult(
-      tier=SccEvidenceTier.NONE,
-      confidence=0.0,
-      urgency=0.0,
-      reason=self.evidence_reason or _scc_advisory_reason(advisory),
-      independent_of_lead=False,
-      confirmed_lead=bool(self.confirmed_lead),
-      advisory=advisory,
-    )
-
-  @property
-  def e2e_active(self) -> bool:
-    return self.classify().e2e_active
-
-  @property
-  def reason(self) -> str:
-    classification = self.classify()
-    if classification.e2e_active:
-      return classification.reason
-    if self.confirmed_lead:
-      return "scc_confirmed_lead"
-    if self.traffic_control:
-      return "scc_traffic_control"
-    if self.speed_limit_control:
-      return "scc_speed_limit"
-    if self.map_control:
-      return "scc_map"
-    if self.curve_control:
-      return "scc_curve"
-    return "scc_cruise"
-
-
-def _bounded_unit(value: float | None, default: float) -> float:
-  if value is None:
-    value = default
-  else:
-    try:
-      value = float(value)
-    except (TypeError, ValueError):
-      value = default
-  if value != value:
-    value = default
-  return max(0.0, min(1.0, value))
-
-
-def _scc_advisory_reason(advisory: SccEvidenceAdvisory) -> str:
-  if advisory.map_caution:
-    return "scc_map_caution"
-  if advisory.speed_limit_cap:
-    return "scc_speed_limit_cap"
-  if advisory.curve_cap:
-    return "scc_curve_cap"
-  return "scc_no_evidence"
 
 
 @dataclass(frozen=True)

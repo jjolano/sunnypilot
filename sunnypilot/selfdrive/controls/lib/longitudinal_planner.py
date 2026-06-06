@@ -196,7 +196,7 @@ def publish_longitudinal_mode_telemetry(longitudinalPlanSP, resolution: Longitud
     resolution.compatibility_alias_state, LongitudinalModeTelemetryCompatibilityAliasState.acc
   )
   evidence = resolution.scc_evidence
-  longitudinal_mode.evidenceTier = str(evidence.tier.value)
+  longitudinal_mode.evidenceTier = str(evidence.tier_label)
   longitudinal_mode.evidenceReason = str(evidence.reason)
   longitudinal_mode.evidenceConfidence = float(evidence.confidence)
   longitudinal_mode.evidenceUrgency = float(evidence.urgency)
