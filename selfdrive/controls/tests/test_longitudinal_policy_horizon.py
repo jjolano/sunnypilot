@@ -2,8 +2,12 @@ import pytest
 
 from openpilot.selfdrive.controls.lib.longitudinal_decision import DecisionSource
 from openpilot.selfdrive.controls.lib.longitudinal_policy_horizon import (
+  AdvisoryConstraint,
   CurveSpeedPolicyResult,
   LongitudinalPolicyHorizon,
+  advisory_constraint_for_speed_drop,
+  advisory_constraints_allowed_for_mode,
+  build_longitudinal_policy_horizon,
   select_curve_speed_policy_result,
 )
 
@@ -126,3 +130,54 @@ def test_curve_policy_arbitration_uses_existing_source_priority_for_ties():
   selected = select_curve_speed_policy_result((map_curve, vision), driver_v_target=25.0)
 
   assert selected is vision
+
+
+def test_speed_drop_constraint_shorter_distance_never_weaker_decel():
+  near = advisory_constraint_for_speed_drop("speed_limit", current_speed=25.0, target_speed=15.0, distance=80.0)
+  far = advisory_constraint_for_speed_drop("speed_limit", current_speed=25.0, target_speed=15.0, distance=160.0)
+
+  assert near.target_accel is not None
+  assert far.target_accel is not None
+  assert near.target_accel < far.target_accel < 0.0
+
+
+def test_physical_hazard_suppresses_advisory_horizon_source():
+  constraint = advisory_constraint_for_speed_drop("speed_limit", current_speed=25.0, target_speed=15.0, distance=80.0)
+
+  horizon = build_longitudinal_policy_horizon((constraint,), physical_hazard_active=True, horizon_len=3)
+
+  assert horizon.source_by_t == ("physical_hazard", "physical_hazard", "physical_hazard")
+  assert horizon.confidence_by_t == (1.0, 1.0, 1.0)
+
+
+def test_invalid_horizon_constraint_is_ignored():
+  invalid = AdvisoryConstraint(
+    source="speed_limit",
+    target_speed=15.0,
+    target_distance=float("nan"),
+    target_accel=-0.3,
+    confidence=1.0,
+    urgency=0.5,
+  )
+
+  horizon = build_longitudinal_policy_horizon((invalid,), horizon_len=2, default_v_upper=30.0, default_a_max=1.0)
+
+  assert horizon.v_upper == (30.0, 30.0)
+  assert horizon.a_max == (1.0, 1.0)
+  assert horizon.source_by_t == ("", "")
+
+
+def test_acc_ignores_actuation_advisory_constraints():
+  assert not advisory_constraints_allowed_for_mode("ACC")
+  assert advisory_constraints_allowed_for_mode("SCC")
+  assert advisory_constraints_allowed_for_mode("E2E")
+
+
+def test_e2e_and_scc_horizon_constraints_remain_restrictive_only():
+  constraint = advisory_constraint_for_speed_drop("curve", current_speed=25.0, target_speed=15.0, distance=100.0)
+  informational = AdvisoryConstraint("debug", None, None, 0.5, 1.0, 0.0, authority="informational")
+
+  horizon = build_longitudinal_policy_horizon((constraint, informational), horizon_len=2, default_a_max=1.0)
+
+  assert horizon.a_max[0] < 0.0
+  assert horizon.source_by_t == ("curve", "curve")
