@@ -225,6 +225,13 @@ E2E_STOP_APPROACH_CLOSE_ENDPOINT_DECEL = -1.0
 SCC_NEAR_ENDPOINT_MODEL_STOP_MAX_DISTANCE = 12.0
 SCC_NEAR_ENDPOINT_MODEL_STOP_MAX_V = 0.5
 SCC_NEAR_ENDPOINT_MODEL_STOP_ACCEL = -1.0
+SCC_EARLY_MODEL_STOP_ACCEL = -1.0
+SCC_EARLY_MODEL_STOP_MIN_INITIAL_V = 8.0
+SCC_EARLY_MODEL_STOP_MAX_MID_V = 4.0
+SCC_EARLY_MODEL_STOP_MIN_SPEED_DROP = 6.0
+SCC_EARLY_MODEL_STOP_ENDPOINT_MARGIN = 5.0
+SCC_EARLY_MODEL_STOP_MIN_REQUIRED_DECEL = 1.0
+SCC_EARLY_MODEL_STOP_EXPECTED_DISTANCE_SCALE = 1.0
 E2E_RUNWAY_COMFORT_MIN_V_EGO = 3.0
 E2E_RUNWAY_COMFORT_MIN_ENDPOINT = 1.0
 E2E_RUNWAY_COMFORT_COAST_MARGIN = 0.02
@@ -457,7 +464,8 @@ def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_t
     model_stop=bool(
       model_msg.action.shouldStop or
       get_e2e_confirmed_model_stop_distance(model_msg) is not None or
-      has_scc_near_endpoint_model_stop(model_msg)
+      has_scc_near_endpoint_model_stop(model_msg) or
+      has_scc_early_model_stop(model_msg)
     ),
     curve_control=bool(getattr(getattr(scc, "vision", None), "is_active", False)),
     map_control=bool(getattr(getattr(scc, "map", None), "is_active", False)),
@@ -543,6 +551,55 @@ def has_scc_near_endpoint_model_stop(model_msg):
     0.0 < endpoint_x <= SCC_NEAR_ENDPOINT_MODEL_STOP_MAX_DISTANCE and
     endpoint_v <= SCC_NEAR_ENDPOINT_MODEL_STOP_MAX_V
   )
+
+
+def has_scc_early_model_stop(model_msg):
+  desired_accel = float(model_msg.action.desiredAcceleration)
+  if not np.isfinite(desired_accel) or desired_accel > SCC_EARLY_MODEL_STOP_ACCEL:
+    return False
+
+  positions = _finite_model_array(getattr(model_msg.position, "x", []))
+  velocities = _finite_model_array(getattr(model_msg.velocity, "x", []))
+  if positions is None or velocities is None or len(positions) < 3 or len(positions) != len(velocities):
+    return False
+
+  initial_v = float(velocities[0])
+  endpoint_x = float(positions[-1])
+  endpoint_v = max(float(velocities[-1]), 0.0)
+  if initial_v < SCC_EARLY_MODEL_STOP_MIN_INITIAL_V or endpoint_x <= 0.0:
+    return False
+  if initial_v - float(np.min(velocities)) < SCC_EARLY_MODEL_STOP_MIN_SPEED_DROP:
+    return False
+
+  expected_distance = float(np.interp(
+    initial_v * CV.MS_TO_KPH,
+    E2E_STOP_APPROACH_EXPECTED_DIST_BP,
+    E2E_STOP_APPROACH_EXPECTED_DIST_V,
+  ))
+  if endpoint_x > expected_distance * SCC_EARLY_MODEL_STOP_EXPECTED_DISTANCE_SCALE:
+    return False
+
+  required_decel = (initial_v**2 - endpoint_v**2) / (2.0 * endpoint_x)
+  if required_decel < SCC_EARLY_MODEL_STOP_MIN_REQUIRED_DECEL:
+    return False
+
+  middle_positions = positions[1:-1]
+  middle_velocities = velocities[1:-1]
+  return bool(np.any(
+    (middle_positions >= 0.0) &
+    (endpoint_x - middle_positions >= SCC_EARLY_MODEL_STOP_ENDPOINT_MARGIN) &
+    (middle_velocities <= SCC_EARLY_MODEL_STOP_MAX_MID_V)
+  ))
+
+
+def _finite_model_array(values):
+  try:
+    array = np.asarray(list(values), dtype=float)
+  except (TypeError, ValueError):
+    return None
+  if len(array) == 0 or not np.all(np.isfinite(array)):
+    return None
+  return array
 
 
 def should_run_engage_stop_bootstrap(timer, v_ego, radar_state, model_msg):

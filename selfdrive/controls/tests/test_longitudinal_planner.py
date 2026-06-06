@@ -481,6 +481,35 @@ def test_scc_mode_evidence_promotes_route_near_endpoint_model_stop():
   assert evidence.e2e_active
 
 
+def test_scc_mode_evidence_promotes_route_early_model_stop_slowdown():
+  # Route 00000188--249e4349c3--2 rlog, 141.46s: SCC stayed acc-like even though the
+  # model slowed from 15.9 m/s to parking-lot speed over less runway than expected.
+  evidence = build_scc_mode_evidence(
+    False,
+    make_model_msg(
+      desired_accel=-1.22,
+      positions=[
+        0.00, 0.15, 0.62, 1.39, 2.47, 3.85, 5.54, 7.50, 9.75, 12.27, 15.04,
+        18.03, 21.23, 24.61, 28.09, 31.69, 35.37, 39.03, 42.77, 46.32, 49.83,
+        53.32, 56.50, 59.46, 62.22, 64.79, 66.98, 68.78, 70.48, 72.08, 73.46,
+        74.71, 75.79,
+      ],
+      velocities=[
+        15.89, 15.88, 15.88, 15.84, 15.77, 15.71, 15.59, 15.45, 15.27, 15.04,
+        14.76, 14.42, 14.00, 13.50, 12.95, 12.33, 11.68, 11.00, 10.28, 9.58,
+        8.82, 8.08, 7.30, 6.52, 5.76, 5.03, 4.37, 3.80, 3.34, 2.98, 2.77,
+        2.61, 2.56,
+      ],
+    ),
+    SimpleNamespace(vision=SimpleNamespace(is_active=False), map=SimpleNamespace(is_active=False)),
+    SimpleNamespace(is_active=False),
+    SimpleNamespace(active=False),
+  )
+
+  assert evidence.model_stop
+  assert evidence.e2e_active
+
+
 def test_scc_mode_evidence_keeps_signal_providers_acc_like():
   evidence = build_scc_mode_evidence(
     False,
