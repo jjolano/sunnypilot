@@ -549,6 +549,34 @@ def test_creep_pullaway_launch_assist_persists_while_lead_keeps_opening(monkeypa
   assert planner.output_a_target >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
 
 
+def test_creep_pullaway_launch_assist_catches_route_like_opening_after_ego_starts_moving(monkeypatch):
+  # Route 0000018e--2182c485e2--7 rlog, 466.5-468.0s: lead accelerated away from a stop,
+  # but the planner stayed near 0.6 m/s^2 instead of reaching the launch pulse floor.
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (0.4, False))
+  v_ego = 0.47
+  planner = make_planner_for_stop_preservation(v_ego=v_ego)
+  planner.creep_to_stop_gap_active = True
+  planner.output_a_target = 0.20
+  stop_target = get_lead_stop_presentation_distance(v_ego, 1.75, 1.07, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + 3.0,
+    vLeadK=1.75,
+    vRel=1.28,
+    modelProb=1.0,
+    aLeadK=1.07,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(v_ego, lead, desired_accel=0.8, should_stop=False))
+
+  assert planner.creep_to_stop_gap_active
+  assert not planner.output_should_stop
+  assert planner.output_a_target >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
+
+
 def test_low_speed_lead_crawl_cap_releases_for_opening_pullaway_runway(monkeypatch):
   patch_planner_sp(monkeypatch)
   monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (1.1, False))

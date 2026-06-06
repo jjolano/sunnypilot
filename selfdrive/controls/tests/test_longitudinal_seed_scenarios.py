@@ -76,7 +76,7 @@ def test_lead_pullaway_helper_preserves_stop_release_cap_suppression():
     creep_pullaway_launch_floor=0.7,
     pullaway_accel_step_floor=0.3,
     pullaway_accel_step_cap=0.6,
-    pullaway_step_cap_suppressed_for_stop_release=True,
+    pullaway_step_cap_suppressed=True,
   )
 
   assert [seed.name for seed in seeds] == ["creep_pullaway_launch", "low_speed_pullaway_accel_step_floor"]

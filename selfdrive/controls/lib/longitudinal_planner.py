@@ -133,6 +133,7 @@ CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX = 1.20
 CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS = CREEP_TO_STOP_GAP_STOP_EXCESS
 CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MAX_EXCESS = 8.0
 CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MIN_LEAD_ACCEL = 0.6
+CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_OPENING_MAX_V_EGO = CREEP_TO_STOP_GAP_MAX_V_EGO
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP = 7.5 * DT_MDL
 CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_STEP_MAX_V_EGO = 3.0
 CREEP_TO_STOP_GAP_PREDICT_T = 0.8
@@ -844,7 +845,7 @@ def build_stopped_lead_seed_candidates(planner, has_lead, accel_limits, *, stopp
 def build_lead_pullaway_seed_candidates(planner, has_lead, accel_limits, *, creep_pullaway_launch_floor=None,
                                         creep_pullaway_launch_cap=None, pullaway_accel_step_floor=None,
                                         pullaway_accel_step_cap=None,
-                                        pullaway_step_cap_suppressed_for_stop_release=False) -> tuple[PlannerSeedCandidate, ...]:
+                                        pullaway_step_cap_suppressed=False) -> tuple[PlannerSeedCandidate, ...]:
   return _planner_seed_candidates(
     build_planner_seed_accel_candidate(
       planner, "creep_pullaway_launch", creep_pullaway_launch_floor, has_lead,
@@ -865,7 +866,7 @@ def build_lead_pullaway_seed_candidates(planner, has_lead, accel_limits, *, cree
       planner, "low_speed_pullaway_accel_step_cap", pullaway_accel_step_cap, has_lead,
       "low_speed_pullaway_accel_step_cap", accel_limits, should_stop=False, force=True,
       group="low_speed_pullaway_accel_step",
-    ) if pullaway_accel_step_cap is not None and not pullaway_step_cap_suppressed_for_stop_release else None,
+    ) if pullaway_accel_step_cap is not None and not pullaway_step_cap_suppressed else None,
   )
 
 
@@ -2132,13 +2133,19 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS <= lead_gap_excess <= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MAX_EXCESS and \
       behavior_lead_a >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MIN_LEAD_ACCEL and \
       confirmed_creep_pullaway_stop_release
+    strong_opening_creep_pullaway_launch = primary_behavior_progress_allowed and \
+      v_ego < CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_OPENING_MAX_V_EGO and \
+      CREEP_TO_STOP_GAP_START_EXCESS <= lead_gap_excess <= CREEP_TO_STOP_GAP_MAX_EXCESS and \
+      behavior_lead_opening and behavior_lead_a >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_CONTINUE_MIN_LEAD_ACCEL and \
+      self.creep_to_stop_gap_active and creep_a_target > 0.0 and \
+      confirmed_creep_pullaway_stop_release
     creep_pullaway_launch = primary_behavior_progress_allowed and (not self.output_should_stop or confirmed_creep_pullaway_stop_release) and \
       not sm['carState'].brakePressed and not sm['carState'].gasPressed and \
       not force_slow_decel and not reset_state and \
-      (v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM or continuing_creep_pullaway_launch) and \
+      (v_ego < CREEP_TO_STOP_GAP_MAX_V_EGO_ARM or continuing_creep_pullaway_launch or strong_opening_creep_pullaway_launch) and \
       behavior_lead_model_prob >= CREEP_TO_STOP_GAP_MODEL_LEAD_MIN_PROB and \
       ((CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_MIN_EXCESS <= lead_gap_excess <= CREEP_TO_STOP_GAP_MAX_EXCESS and
-        self.creep_to_stop_gap_active and creep_a_target > 0.0) or continuing_creep_pullaway_launch) and \
+        self.creep_to_stop_gap_active and creep_a_target > 0.0) or continuing_creep_pullaway_launch or strong_opening_creep_pullaway_launch) and \
       confirmed_creep_pullaway_stop_release
     custom_creep_pullaway_launch_floor = None
     custom_creep_pullaway_launch_cap = None
@@ -2323,14 +2330,16 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       gap_fill_selection=custom_gap_fill_selection,
       gap_fill_accel_max=custom_gap_fill_accel_max,
     ))
-    pullaway_step_cap_suppressed_for_stop_release = bool(legacy_should_stop and custom_creep_pullaway_launch_floor is not None)
+    pullaway_step_cap_suppressed = bool(
+      custom_creep_pullaway_launch_floor is not None and (legacy_should_stop or strong_opening_creep_pullaway_launch)
+    )
     self.planner_seed_candidates.extend(build_lead_pullaway_seed_candidates(
       self, has_lead, accel_clip,
       creep_pullaway_launch_floor=custom_creep_pullaway_launch_floor,
       creep_pullaway_launch_cap=custom_creep_pullaway_launch_cap,
       pullaway_accel_step_floor=custom_pullaway_accel_step_floor,
       pullaway_accel_step_cap=custom_pullaway_accel_step_cap,
-      pullaway_step_cap_suppressed_for_stop_release=pullaway_step_cap_suppressed_for_stop_release,
+      pullaway_step_cap_suppressed=pullaway_step_cap_suppressed,
     ))
     self.planner_seed_candidates.extend(build_stopped_lead_seed_candidates(
       self, has_lead, accel_clip,
@@ -2452,7 +2461,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if is_custom_stack(getattr(stack_resolution, "resolved_stack", "")):
       if custom_pullaway_accel_step_floor is not None and not self.output_should_stop:
         self.output_a_target = max(self.output_a_target, custom_pullaway_accel_step_floor)
-      if custom_pullaway_accel_step_cap is not None and not pullaway_step_cap_suppressed_for_stop_release:
+      if custom_pullaway_accel_step_cap is not None and not pullaway_step_cap_suppressed:
         self.output_a_target = min(self.output_a_target, custom_pullaway_accel_step_cap)
       reserve_creep_to_stop_gap = should_reserve_creep_to_stop_gap(
         primary_behavior_progress_allowed, self.output_should_stop, v_ego, behavior_lead_d_rel, behavior_lead_v_lead,
