@@ -343,9 +343,10 @@ def fast_lead_motion_evidence_enabled(stack_resolution, param_enabled) -> bool:
 
 def get_planner_lead_motion_values(lead, v_ego, use_fast_evidence) -> tuple[float, float, FastLeadMotionEvidence]:
   fast_evidence = get_fast_lead_motion_evidence(lead, v_ego)
-  if use_fast_evidence:
-    return fast_evidence.v_lead, fast_evidence.v_rel, fast_evidence
-  return get_lead_v_lead(lead), get_lead_v_rel(lead, v_ego), fast_evidence
+  # Raw fast evidence is returned separately; planner/control values stay stable regardless of the setting.
+  stable_v_lead = get_lead_v_lead(lead)
+  stable_v_rel = stable_v_lead - _finite_float(v_ego)
+  return stable_v_lead, stable_v_rel, fast_evidence
 
 
 def get_lead_flicker_required_decel(d_rel, v_rel):
@@ -1908,6 +1909,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       if primary_behavior_lead is not None else (0.0, 0.0, FastLeadMotionEvidence())
     )
     behavior_lead_opening = behavior_fast_motion.opening() if use_fast_lead_motion_evidence else behavior_lead_v_rel > 0.0
+    behavior_lead_moving = behavior_fast_motion.moving() if use_fast_lead_motion_evidence else behavior_lead_v_lead >= CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED
     behavior_lead_a = get_lead_a_lead(primary_behavior_lead) if primary_behavior_lead is not None else 0.0
     behavior_lead_tau = get_lead_a_tau(primary_behavior_lead) if primary_behavior_lead is not None else 0.0
     behavior_lead_model_prob = get_lead_model_prob(primary_behavior_lead) if primary_behavior_lead is not None else 0.0
@@ -1944,10 +1946,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.stopped_lead_gap_fill_v_lead = behavior_lead_v_lead
 
     model_predicted_v_lead, model_predicted_gap_opening = (
-      get_model_lead_pullaway(
-        sm['modelV2'], primary_behavior_lead, v_ego,
-        radar_v_lead_override=behavior_lead_v_lead if use_fast_lead_motion_evidence else None,
-      )
+      get_model_lead_pullaway(sm['modelV2'], primary_behavior_lead, v_ego)
       if primary_behavior_progress_allowed and not acc_mode_requested else (0.0, 0.0)
     )
     lead_gap_excess = behavior_lead_d_rel - get_lead_stop_presentation_distance(
@@ -1971,7 +1970,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       lead_gap_excess, model_predicted_v_lead, model_predicted_gap_opening,
     )
     creep_pullaway_release = primary_behavior_progress_allowed and (
-      behavior_lead_v_lead >= CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED or radar_predicted_pullaway or model_predicted_pullaway
+      behavior_lead_moving or radar_predicted_pullaway or model_predicted_pullaway
     )
     confirmed_creep_pullaway_launch = primary_behavior_progress_allowed and creep_pullaway_release and (radar_predicted_pullaway or model_predicted_pullaway)
     confirmed_creep_pullaway_stop_release = confirmed_creep_pullaway_launch and not (
@@ -2432,6 +2431,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       lead_progress_allowed=bool(primary_behavior_progress_allowed),
       lead_opening_prediction=scene_lead_opening_prediction,
       lead_confirmed_pullaway=scene_lead_confirmed_pullaway,
+      fast_lead_motion_opening=bool(behavior_lead_opening),
+      fast_lead_motion_moving=bool(behavior_lead_moving),
       primary_physical_lead_idx=-1 if primary_lead_context.physical_idx is None else int(primary_lead_context.physical_idx),
       primary_behavior_lead_idx=-1 if primary_lead_context.behavior_idx is None else int(primary_lead_context.behavior_idx),
       primary_lead_reason=str(primary_lead_context.reason),

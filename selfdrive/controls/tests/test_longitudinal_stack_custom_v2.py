@@ -127,12 +127,69 @@ def test_fast_lead_motion_deadbands_positive_lead_opening():
     lead_progress_allowed=True,
     lead_v=0.0,
     lead_v_rel=custom_v2.LEAD_MOTION_MIN_V,
+    fast_lead_motion_opening=True,
+    fast_lead_motion_moving=True,
     fast_lead_motion_evidence_enabled=True,
   )
 
   assert lead_evidence_releases_stop(normal_scene)
   assert not lead_evidence_releases_stop(fast_scene)
   assert lead_evidence_releases_stop(fast_confirmed_scene)
+
+
+def test_fast_lead_motion_evidence_releases_stop_with_stable_scene_values():
+  scene = CustomV2Scene(
+    has_lead=True,
+    lead_progress_allowed=True,
+    lead_v=0.0,
+    lead_v_rel=0.0,
+    lead_confirmed_pullaway=False,
+    fast_lead_motion_opening=True,
+    fast_lead_motion_moving=True,
+    fast_lead_motion_evidence_enabled=True,
+  )
+
+  assert lead_evidence_releases_stop(scene)
+
+
+def test_fast_lead_motion_does_not_use_raw_values_for_progress_caps():
+  scene = CustomV2Scene(
+    v_ego=15.0,
+    v_cruise=17.0,
+    has_lead=True,
+    lead_v=0.0,
+    lead_v_rel=0.0,
+    lead_gap_excess=4.0,
+    lead_follow_gap_excess=4.0,
+    lead_progress_allowed=True,
+    fast_lead_motion_opening=True,
+    fast_lead_motion_moving=True,
+    fast_lead_motion_evidence_enabled=True,
+  )
+
+  assert custom_v2.excess_gap_accel_cap(scene) is None
+  assert not custom_v2._lead_pullaway_progress_allowed(scene, 0.0, allow_lead_progress=True)
+
+
+def test_fast_lead_motion_does_not_bypass_stable_decel_progress_guard():
+  scene = CustomV2Scene(
+    v_ego=0.2,
+    v_cruise=5.0,
+    has_lead=True,
+    lead_v=1.0,
+    lead_v_rel=0.0,
+    lead_gap_excess=4.0,
+    lead_follow_gap_excess=4.0,
+    lead_progress_allowed=True,
+    fast_lead_motion_opening=True,
+    fast_lead_motion_moving=True,
+    fast_lead_motion_evidence_enabled=True,
+  )
+
+  candidates, _rejected = custom_v2.build_custom_v2_progress_candidates(make_output(-0.2, has_lead=True), scene, (-2.0, 2.0))
+
+  assert not candidates
+  assert not custom_v2._lead_pullaway_progress_allowed(scene, -0.2, allow_lead_progress=True)
 
 
 def test_zero_safety_cap_blocks_custom_progress_floors():

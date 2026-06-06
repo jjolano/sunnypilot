@@ -275,17 +275,28 @@ def test_planner_lead_motion_values_preserve_filtered_speed_when_disabled():
   v_lead, v_rel, evidence = get_planner_lead_motion_values(lead, v_ego=0.0, use_fast_evidence=False)
 
   assert v_lead == pytest.approx(0.0)
-  assert v_rel == pytest.approx(0.8)
+  assert v_rel == pytest.approx(0.0)
   assert evidence.v_lead == pytest.approx(0.8)
 
 
-def test_planner_lead_motion_values_use_raw_speed_when_enabled():
+def test_planner_lead_motion_values_keep_control_safe_when_fast_evidence_enabled():
+  lead = SimpleNamespace(status=True, vLeadK=1.2, vLead=0.8, vRel=0.8)
+
+  v_lead, v_rel, evidence = get_planner_lead_motion_values(lead, v_ego=0.0, use_fast_evidence=True)
+
+  assert v_lead == pytest.approx(1.2)
+  assert v_rel == pytest.approx(1.2)
+  assert evidence.v_lead == pytest.approx(0.8)
+  assert evidence.v_rel == pytest.approx(0.8)
+
+
+def test_planner_lead_motion_values_keep_stable_speed_when_enabled():
   lead = SimpleNamespace(status=True, vLeadK=0.0, vLead=0.8, vRel=0.8)
 
   v_lead, v_rel, _evidence = get_planner_lead_motion_values(lead, v_ego=0.0, use_fast_evidence=True)
 
-  assert v_lead == pytest.approx(0.8)
-  assert v_rel == pytest.approx(0.8)
+  assert v_lead == pytest.approx(0.0)
+  assert v_rel == pytest.approx(0.0)
 
 
 def test_fast_lead_motion_param_only_applies_to_custom_v2():

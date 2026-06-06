@@ -172,6 +172,8 @@ class CustomV2Scene:
   one_pedal_cruise_hold: bool = False
   personality: int = log.LongitudinalPersonality.standard
   fast_lead_motion_evidence_enabled: bool = False
+  fast_lead_motion_opening: bool = False
+  fast_lead_motion_moving: bool = False
 
 
 @dataclass(frozen=True)
@@ -200,8 +202,8 @@ def no_lead_stop_clear(scene: CustomV2Scene) -> bool:
 
 
 def lead_evidence_releases_stop(scene: CustomV2Scene) -> bool:
-  lead_opening = scene.lead_v_rel >= LEAD_MOTION_MIN_V if scene.fast_lead_motion_evidence_enabled else scene.lead_v_rel > 0.0
-  lead_moving = lead_opening or (scene.v_ego < LEAD_MOTION_MIN_V and scene.lead_v >= LEAD_MOTION_MIN_V)
+  lead_opening = scene.fast_lead_motion_opening if scene.fast_lead_motion_evidence_enabled else scene.lead_v_rel > 0.0
+  lead_moving = scene.fast_lead_motion_moving if scene.fast_lead_motion_evidence_enabled else (lead_opening or (scene.v_ego < LEAD_MOTION_MIN_V and scene.lead_v >= LEAD_MOTION_MIN_V))
   return bool(
     scene.has_lead and
     scene.lead_progress_allowed and
@@ -818,7 +820,7 @@ def _lead_pullaway_progress_allowed(scene: CustomV2Scene, current_a_target: floa
     not scene.lead_lateral_progress_blocked and
     abs(scene.lead_y_rel) < LEAD_LATERAL_PROGRESS_BLOCK_Y and
     scene.lead_gap_excess > EXCESS_GAP_MIN and
-    scene.lead_v_rel > 0.0 and
+    (scene.lead_v_rel > 0.0 or (scene.fast_lead_motion_evidence_enabled and scene.fast_lead_motion_opening)) and
     scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and
     not (current_a_target < 0.0 and scene.lead_v_rel >= 0.0) and
     lead_evidence_releases_stop(scene)
