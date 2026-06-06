@@ -99,6 +99,13 @@ class TestSmartCruiseControlMap:
     assert self.params.get("LastGPSPositionValid") is None
     assert self.params.get("MapTargetVelocitiesValid") is None
 
+  def test_position_validity_accepts_bool_param(self):
+    self.mem_params.put("LastGPSPositionValid", True)
+    assert self.scc_m._position_params_valid()
+
+    self.mem_params.put("LastGPSPositionValid", False)
+    assert not self.scc_m._position_params_valid()
+
   def test_system_disabled(self):
     self.params.put_bool("SmartCruiseControlMap", False)
     self.scc_m.enabled = self.params.get_bool("SmartCruiseControlMap")

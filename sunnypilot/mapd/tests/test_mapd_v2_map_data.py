@@ -24,6 +24,9 @@ class FakeParams:
     self.put_counts[key] = self.put_counts.get(key, 0) + 1
     self.values[key] = value
 
+  def put_bool(self, key, value):
+    self.put(key, bool(value))
+
   def remove(self, key):
     self.values.pop(key, None)
 
@@ -239,6 +242,8 @@ def test_mapd_v2_updates_legacy_last_gps_position_for_map_distance_users():
 
   data.update_location()
 
+  assert data.mem_params.values["LastGPSPositionValid"] is True
+  assert data.mem_params.values["MapTargetVelocitiesValid"] is True
   assert json.loads(data.mem_params.values["LastGPSPosition"]) == {
     "latitude": 39.0,
     "longitude": -84.0,

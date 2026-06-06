@@ -49,7 +49,7 @@ MODEL_CURVE_OVERSLOWDOWN_DELTA = 5.0  # m/s, require model confirmation for larg
 MODEL_CURVE_OVERSLOWDOWN_RATIO = 0.8  # fraction of v_ego, require model confirmation for relative map slowdowns.
 MODEL_CURVE_OVERSLOWDOWN_MARGIN = 2.0  # m/s, allow small map/model target mismatch.
 PARAM_CACHE_MISS = object()
-VALID_TRUE_VALUES = ("1", "true", "True", b"1", b"true", b"True")
+VALID_TRUE_VALUES = (True, "1", "true", "True", b"1", b"true", b"True")
 MAP_DATA_HEARTBEAT_TTL = 5.0
 
 

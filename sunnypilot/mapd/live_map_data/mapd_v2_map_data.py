@@ -83,6 +83,11 @@ class MapdV2MapData(BaseMapData):
     if current != value:
       params.put(key, value)
 
+  @staticmethod
+  def _put_bool_if_changed(params, key: str, value: bool) -> None:
+    if params.get(key) != value:
+      params.put_bool(key, value)
+
   @property
   def mapd_out(self):
     return self.sm["mapdOut"]
@@ -150,7 +155,7 @@ class MapdV2MapData(BaseMapData):
         target_velocities.append({"latitude": latitude, "longitude": longitude, "velocity": target_velocity})
 
     self._put_if_changed(self.mem_params, "MapTargetVelocities", json.dumps(target_velocities))
-    self._put_if_changed(self.mem_params, "MapTargetVelocitiesValid", "1")
+    self._put_bool_if_changed(self.mem_params, "MapTargetVelocitiesValid", True)
 
     advisory_speed = _float(_getattr_or_default(self.mapd_out, "advisorySpeed"))
     self._put_if_changed(self.mem_params, "MapAdvisoryLimit", {"speedlimit": advisory_speed, "distance": 0.0} if advisory_speed > 0.0 else {})
@@ -165,7 +170,7 @@ class MapdV2MapData(BaseMapData):
   def _write_last_gps_position(self) -> None:
     location = self.sm['liveLocationKalman']
     self.localizer_valid = (location.status == log.LiveLocationKalman.Status.valid) and location.positionGeodetic.valid
-    self._put_if_changed(self.mem_params, "LastGPSPositionValid", "1" if self.localizer_valid else "0")
+    self._put_bool_if_changed(self.mem_params, "LastGPSPositionValid", self.localizer_valid)
 
     if self.localizer_valid:
       self.last_bearing = math.degrees(location.calibratedOrientationNED.value[2])

@@ -23,7 +23,7 @@ class OsmMapData(BaseMapData):
   def update_location(self) -> None:
     location = self.sm['liveLocationKalman']
     self.localizer_valid = (location.status == log.LiveLocationKalman.Status.valid) and location.positionGeodetic.valid
-    self.mem_params.put("LastGPSPositionValid", "1" if self.localizer_valid else "0")
+    self.mem_params.put_bool("LastGPSPositionValid", self.localizer_valid)
 
     if self.localizer_valid:
       self.last_bearing = math.degrees(location.calibratedOrientationNED.value[2])
