@@ -159,6 +159,7 @@ STOPPED_LEAD_STOP_GAP_GUARD_MIN_REQUIRED_DECEL = 0.1
 STOPPED_LEAD_STOP_GAP_GUARD_DECEL_CAP_BP = [4.0, 8.0]
 STOPPED_LEAD_STOP_GAP_GUARD_DECEL_CAP_V = [1.1, 2.0]
 STOPPED_LEAD_STOP_GAP_GUARD_REBOUND_JERK = 7.5
+STOPPED_LEAD_STOP_GAP_GUARD_LANE_CHANGE_MAX_TTC = 4.0
 STOPPED_LEAD_MOVING_REBOUND_HOLD_TIME = 10.0
 MOVING_LEAD_STOP_GAP_GUARD_MIN_V_EGO = 6.0
 MOVING_LEAD_STOP_GAP_GUARD_MIN_V_LEAD = 0.5
@@ -1350,6 +1351,16 @@ def get_stopped_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, model_pr
   return -min(decel_cap, max(-CREEP_TO_STOP_GAP_ACCEL_MIN, required_decel))
 
 
+def should_allow_stopped_lead_stop_gap_guard(v_ego, d_rel, v_lead, lane_change_active=False):
+  if not lane_change_active:
+    return True
+  closing_speed = max(_finite_float(v_ego) - _finite_float(v_lead), 0.0)
+  if closing_speed <= 0.1:
+    return True
+  ttc = max(_finite_float(d_rel), 0.0) / closing_speed
+  return ttc <= STOPPED_LEAD_STOP_GAP_GUARD_LANE_CHANGE_MAX_TTC
+
+
 def get_moving_lead_stop_gap_guard_gradual_accel(v_ego, d_rel, v_lead, a_lead, t_follow):
   _desired_gap, caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
   predicted_v_lead = max(0.0, v_lead + min(a_lead, 0.0) * MOVING_LEAD_STOP_GAP_GUARD_PREDICT_T)
@@ -2011,6 +2022,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         stop_gap_guard_a_target = get_stopped_lead_stop_gap_guard_accel(
           v_ego, physical_lead_d_rel, physical_lead_v_lead, physical_lead_a, physical_lead_model_prob,
         )
+        if not should_allow_stopped_lead_stop_gap_guard(
+          v_ego, physical_lead_d_rel, physical_lead_v_lead, is_lane_change_active(sm['modelV2']),
+        ):
+          stop_gap_guard_a_target = None
         if stop_gap_guard_a_target is not None:
           if (
             stopped_lead_moving_rebound_timer > 0.0 and

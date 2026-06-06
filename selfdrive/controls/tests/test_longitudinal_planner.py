@@ -31,6 +31,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   get_fast_lead_motion_evidence,
   get_lead_flicker_required_decel,
   get_planner_lead_motion_values,
+  get_stopped_lead_stop_gap_guard_accel,
   get_custom_v2_curve_scene_target,
   get_e2e_close_stop_settle,
   get_max_accel,
@@ -45,6 +46,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   one_pedal_cruise_hold_requested,
   should_cap_lead_flicker_speedup,
   should_enable_longitudinal_decision_layer,
+  should_allow_stopped_lead_stop_gap_guard,
   should_run_engage_stop_bootstrap,
   update_one_pedal_cruise_hold,
 )
@@ -684,6 +686,36 @@ def test_stopped_lead_stop_gap_guard_custom_candidate_carries_stop_intent_withou
   assert candidate.output.debug["planner_seed_candidate_reason"] == "stopped_lead_stop_gap_guard"
   assert planner.output_a_target == pytest.approx(-0.1)
   assert not planner.output_should_stop
+
+
+def test_stopped_lead_stop_gap_guard_blocks_far_lane_change_false_stop_seed():
+  # Route 0000018e--2182c485e2--17, 1066.50s: a far near-zero-speed lead appeared
+  # during pre-lane-change and selected stopped_lead_stop_gap_guard at ~96 m.
+  route_guard = get_stopped_lead_stop_gap_guard_accel(
+    v_ego=17.45,
+    d_rel=96.16,
+    v_lead=-0.14,
+    a_lead=0.03,
+    model_prob=0.75,
+  )
+
+  assert route_guard is not None
+  assert not should_allow_stopped_lead_stop_gap_guard(17.45, 96.16, -0.14, lane_change_active=True)
+  assert should_allow_stopped_lead_stop_gap_guard(17.45, 96.16, -0.14, lane_change_active=False)
+
+
+def test_stopped_lead_stop_gap_guard_preserves_close_lane_change_stop_threat():
+  close_guard = get_stopped_lead_stop_gap_guard_accel(
+    v_ego=15.7,
+    d_rel=40.8,
+    v_lead=-0.10,
+    a_lead=0.0,
+    model_prob=0.77,
+  )
+
+  assert close_guard is not None
+  assert close_guard < -1.0
+  assert should_allow_stopped_lead_stop_gap_guard(15.7, 40.8, -0.10, lane_change_active=True)
 
 
 def test_stopped_lead_creep_hold_custom_candidate_carries_stop_intent_without_mutating_baseline():
