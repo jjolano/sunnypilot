@@ -50,6 +50,7 @@ RefinedOutputGovernorInputs = latcontrol_torque_v2.RefinedOutputGovernorInputs
 RefinedOutputGovernorReason = latcontrol_torque_v2.RefinedOutputGovernorReason
 RefinedOutputGovernorResult = latcontrol_torque_v2.RefinedOutputGovernorResult
 TorqueV21RefinedOutputGovernor = latcontrol_torque_v2.TorqueV21RefinedOutputGovernor
+adaptive_lateral_accel_rate = latcontrol_torque_v2.adaptive_lateral_accel_rate
 
 
 def get_controller(car_name):
@@ -139,6 +140,15 @@ class FixedOutputShaper:
   def update(self, inputs):
     self.inputs.append(inputs)
     return self.result
+
+
+class PassthroughSpyOutputShaper:
+  def __init__(self):
+    self.inputs = []
+
+  def update(self, inputs):
+    self.inputs.append(inputs)
+    return ConservativeOutputShaperResult(inputs.unshaped_output, False, 0, 0.0, inputs.unshaped_output, 1.0)
 
 
 class SpyRefinedOutputGovernor:
@@ -256,6 +266,48 @@ def test_nnlc_hardening_uses_kinematic_accel_adjustment():
   expected_future_times = [adjust_future_time_for_longitudinal_accel(t, CS.vEgo, CS.aEgo)
                            for t in controller.extension.nn_future_times]
   assert capturing_model.inputs[-1][7:11] == pytest.approx(expected_future_times)
+
+
+def test_adaptive_lateral_accel_rate_uses_model_release_when_request_buffer_increases():
+  assert adaptive_lateral_accel_rate(-0.6, -0.18, 0.20) == pytest.approx(0.20)
+
+
+def test_adaptive_lateral_accel_rate_keeps_request_rate_without_model_release():
+  assert adaptive_lateral_accel_rate(-0.6, -0.18, -0.05) == pytest.approx(-0.18)
+
+
+def test_v2_uses_model_plan_release_rate_for_adaptive_shaping():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  spy_shaper = PassthroughSpyOutputShaper()
+  controller.output_shaper = spy_shaper
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 9.5
+  CS.aEgo = -1.0
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+  pose = make_pose()
+
+  model_v2 = make_flat_model_v2()
+  # Route 0000018e--2182c485e2 around 1251s showed this mismatch: the model
+  # lateral plan was unwinding, while the request buffer still increased demand.
+  model_v2.acceleration.y = [-0.62 + 0.08 * min(t / 0.3, 1.0) for t in ModelConstants.T_IDXS]
+  controller.extension.update_lateral_lag(0.2)
+  controller.extension.update_model_v2(model_v2)
+
+  stale_target = -0.50
+  current_target = -0.62
+  controller.lat_accel_request_buffer.clear()
+  controller.lat_accel_request_buffer.extend([stale_target] * controller.lat_accel_request_buffer_len)
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, current_target / CS.vEgo**2, pose, False, 0.2)
+
+  assert spy_shaper.inputs
+  request_buffer_rate = (current_target - stale_target) / 0.2
+  assert request_buffer_rate < 0.0
+  assert controller.extension.model_plan_lateral_accel_rate > 0.0
+  assert spy_shaper.inputs[-1].desired_lateral_jerk == pytest.approx(controller.extension.model_plan_lateral_accel_rate)
+  assert lac_log.desiredLateralJerk == pytest.approx(controller.extension.model_plan_lateral_accel_rate)
 
 
 def test_measurement_smoother_predicts_between_held_angle_updates():

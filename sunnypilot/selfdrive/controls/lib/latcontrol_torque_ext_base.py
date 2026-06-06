@@ -60,6 +60,7 @@ class LatControlTorqueExtBase:
     self.lateral_jerk_setpoint: float = 0.0
     self.lateral_jerk_measurement: float = 0.0
     self.lookahead_lateral_jerk: float = 0.0
+    self.model_plan_lateral_accel_rate: float = 0.0
 
     self.torque_from_lateral_accel_in_torque_space = CI.torque_from_lateral_accel_in_torque_space()
     self.torque_params = lac_torque.torque_params
@@ -124,6 +125,7 @@ class LatControlTorqueExtBase:
     self.lateral_jerk_setpoint = 0.0
     self.lateral_jerk_measurement = 0.0
     self.lookahead_lateral_jerk = 0.0
+    self.model_plan_lateral_accel_rate = 0.0
 
     actual_curvature_rate = -VM.calc_curvature(math.radians(CS.steeringRateDeg), CS.vEgo, 0.0)
     self.actual_lateral_jerk = actual_curvature_rate * CS.vEgo ** 2
@@ -135,6 +137,7 @@ class LatControlTorqueExtBase:
       predicted_lateral_jerk = get_predicted_lateral_jerk(self.model_v2.acceleration.y, self.t_diffs)
       desired_lateral_jerk = (np.interp(self.desired_lat_jerk_time, ModelConstants.T_IDXS,
                               self.model_v2.acceleration.y) - desired_lateral_accel) / self.desired_lat_jerk_time
+      self.model_plan_lateral_accel_rate = desired_lateral_jerk
       self.lookahead_lateral_jerk = get_lookahead_value(predicted_lateral_jerk[LAT_PLAN_MIN_IDX:friction_upper_idx], desired_lateral_jerk)
       if self.lookahead_lateral_jerk == 0.0:
         self.actual_lateral_jerk = 0.0

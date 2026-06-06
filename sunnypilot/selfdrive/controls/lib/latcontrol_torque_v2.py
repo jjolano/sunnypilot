@@ -44,6 +44,8 @@ MEASUREMENT_SMOOTHER_CORRECTION_GAIN = 0.35
 MEASUREMENT_SMOOTHER_MAX_PREDICTIVE_JERK = 5.0
 MEASUREMENT_SMOOTHER_IMPLAUSIBLE_JERK = 80.0
 MEASUREMENT_SMOOTHER_MAX_RAW_ERROR = 1.0
+MODEL_PLAN_RELEASE_RATE_THRESHOLD = 0.05
+REQUEST_BUFFER_INCREASE_RATE_THRESHOLD = 0.05
 
 V21_OUTPUT_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
 V21_OUTPUT_SLEW_RATE_V = [1.40, 2.00, 3.00, 4.20, 5.00, 5.60]
@@ -82,6 +84,26 @@ def approach(value: float, target: float, step: float) -> float:
 def low_demand_friction_scale(setpoint: float, measurement: float) -> float:
   demand = max(abs(setpoint), abs(measurement))
   return float(np.clip(demand / LOW_DEMAND_FRICTION_FULL_LAT_ACCEL, 0.0, 1.0))
+
+
+def adaptive_lateral_accel_rate(setpoint: float, request_buffer_rate: float, model_plan_rate: float) -> float:
+  try:
+    setpoint = float(setpoint)
+    request_buffer_rate = float(request_buffer_rate)
+    model_plan_rate = float(model_plan_rate)
+  except (TypeError, ValueError):
+    return request_buffer_rate
+  if not all(math.isfinite(v) for v in (setpoint, request_buffer_rate, model_plan_rate)):
+    return request_buffer_rate
+  setpoint_sign = sign(setpoint)
+  if setpoint_sign == 0.0:
+    return request_buffer_rate
+
+  model_plan_releasing = setpoint_sign * model_plan_rate < -MODEL_PLAN_RELEASE_RATE_THRESHOLD
+  request_buffer_increasing = setpoint_sign * request_buffer_rate > REQUEST_BUFFER_INCREASE_RATE_THRESHOLD
+  if model_plan_releasing and request_buffer_increasing:
+    return model_plan_rate
+  return request_buffer_rate
 
 
 class RefinedOutputGovernorReason(IntFlag):
@@ -376,6 +398,11 @@ class LatControlTorque(LatControl):
     steer_limit_feedback = self.steering_actuator_feedback
     steer_limit_context = classify_steering_limit_context(steer_limit_feedback, -output_torque)
     response_steer_limited = steer_limited_by_safety and (steer_limit_context.same_direction_limited if steer_limit_feedback.valid else True)
+    adaptive_target_lateral_accel_rate = adaptive_lateral_accel_rate(
+      setpoint,
+      desired_lateral_jerk,
+      self.extension.model_plan_lateral_accel_rate,
+    )
     torque_observation = TorqueObservation(
       active=active,
       v_ego=CS.vEgo,
@@ -385,7 +412,7 @@ class LatControlTorque(LatControl):
       saturated=saturated,
       lateral_maneuver=lane_change_active,
       target_lateral_accel=setpoint,
-      target_lateral_accel_rate=desired_lateral_jerk,
+      target_lateral_accel_rate=adaptive_target_lateral_accel_rate,
       actual_lateral_accel=measurement,
       actual_lateral_jerk=raw_actual_lateral_jerk,
     )
@@ -488,7 +515,7 @@ class LatControlTorque(LatControl):
     pid_log.output = float(-output_torque)
     pid_log.actualLateralAccel = float(measurement)
     pid_log.desiredLateralAccel = float(setpoint)
-    pid_log.desiredLateralJerk = float(desired_lateral_jerk)
+    pid_log.desiredLateralJerk = float(adaptive_target_lateral_accel_rate)
     adaptive_log = pid_log.init('adaptiveTorqueState')
     adaptive_active = active and (
       shaping_result.active or governor_result.active or assist_result.phase_id != 0
