@@ -1,6 +1,12 @@
 import json
+import math
+import time
 from collections.abc import Iterable, Mapping
 from typing import Any
+
+
+MAP_ADVISORY_UPDATED_AT_PARAM = "MapAdvisoryUpdatedAt"
+MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM = "MapTargetVelocitiesUpdatedAt"
 
 
 def parse_mapd_json(value: Any) -> Any | None:
@@ -57,3 +63,19 @@ def mapd_section_int(section: Mapping[str, Any], key: str, default: int = 0) -> 
     return int(value)
   except (TypeError, ValueError):
     return default
+
+
+def write_mapd_heartbeat(params, key: str, now: float | None = None, min_period: float = 1.0) -> None:
+  now = time.monotonic() if now is None else now
+  if not isinstance(now, (int, float)) or not math.isfinite(now):
+    return
+
+  try:
+    last_updated_at = float(params.get(key) or 0.0)
+  except (TypeError, ValueError):
+    last_updated_at = 0.0
+
+  if math.isfinite(last_updated_at) and 0.0 <= last_updated_at <= now and now - last_updated_at < min_period:
+    return
+
+  params.put(key, str(now))

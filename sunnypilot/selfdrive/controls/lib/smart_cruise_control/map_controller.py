@@ -1,6 +1,7 @@
 import json
 import math
 import platform
+import time
 
 import numpy as np
 
@@ -11,7 +12,13 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.vehicle_math import speed_for_lateral_accel
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
-from openpilot.sunnypilot.mapd.param_helpers import get_first_mapd_json, get_mapd_json, mapd_section_float
+from openpilot.sunnypilot.mapd.param_helpers import (
+  MAP_ADVISORY_UPDATED_AT_PARAM,
+  MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM,
+  get_first_mapd_json,
+  get_mapd_json,
+  mapd_section_float,
+)
 from openpilot.sunnypilot.navd.helpers import coordinate_from_param, Coordinate
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
@@ -43,6 +50,7 @@ MODEL_CURVE_OVERSLOWDOWN_RATIO = 0.8  # fraction of v_ego, require model confirm
 MODEL_CURVE_OVERSLOWDOWN_MARGIN = 2.0  # m/s, allow small map/model target mismatch.
 PARAM_CACHE_MISS = object()
 VALID_TRUE_VALUES = ("1", "true", "True", b"1", b"true", b"True")
+MAP_DATA_HEARTBEAT_TTL = 5.0
 
 
 def valid_map_coordinate(latitude: float | None, longitude: float | None) -> bool:
@@ -167,21 +175,57 @@ class SmartCruiseControlMap:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self.params.get_bool("SmartCruiseControlMap")
 
-  def _update_cached_map_params(self) -> None:
+  def _update_cached_position(self) -> None:
     last_position_raw = self.mem_params.get("LastGPSPosition")
     if last_position_raw != self._last_position_raw:
       self._last_position_raw = last_position_raw
       self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
 
+  def _update_cached_target_velocities(self) -> None:
     target_velocities_raw = self.mem_params.get("MapTargetVelocities")
     if target_velocities_raw != self._target_velocities_raw:
       self._target_velocities_raw = target_velocities_raw
       self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
 
-  def _map_params_valid(self) -> bool:
-    gps_valid = self.mem_params.get("LastGPSPositionValid")
-    velocities_valid = self.mem_params.get("MapTargetVelocitiesValid")
-    return (gps_valid in (None, *VALID_TRUE_VALUES)) and (velocities_valid in (None, *VALID_TRUE_VALUES))
+  def _clear_cached_target_velocities(self) -> None:
+    self._target_velocities_raw = PARAM_CACHE_MISS
+    self.target_velocities = []
+
+  def _update_cached_map_params(self) -> None:
+    self._update_cached_position()
+    if self._target_velocity_params_valid():
+      self._update_cached_target_velocities()
+    else:
+      self._clear_cached_target_velocities()
+
+  def _valid_param_flag(self, key: str) -> bool:
+    value = self.mem_params.get(key)
+    return value in (None, *VALID_TRUE_VALUES)
+
+  def _heartbeat_fresh(self, key: str) -> bool:
+    heartbeat_raw = self.mem_params.get(key)
+    if heartbeat_raw in (None, ""):
+      return True
+
+    try:
+      heartbeat = float(heartbeat_raw)
+    except (TypeError, ValueError):
+      return False
+
+    now = time.monotonic()
+    if not math.isfinite(heartbeat) or heartbeat < 0.0 or heartbeat > now:
+      return False
+
+    return now - heartbeat <= MAP_DATA_HEARTBEAT_TTL
+
+  def _position_params_valid(self) -> bool:
+    return self._valid_param_flag("LastGPSPositionValid")
+
+  def _target_velocity_params_valid(self) -> bool:
+    return self._valid_param_flag("MapTargetVelocitiesValid") and self._heartbeat_fresh(MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM)
+
+  def _advisory_params_valid(self) -> bool:
+    return self._heartbeat_fresh(MAP_ADVISORY_UPDATED_AT_PARAM)
 
   def _clear_map_target(self) -> None:
     self.v_target = 0.0
@@ -199,7 +243,7 @@ class SmartCruiseControlMap:
   def update_calculations(self, model_msg=None) -> None:
     self._update_cached_map_params()
 
-    if not self._map_params_valid():
+    if not self._position_params_valid():
       self._clear_map_target()
       return
 
@@ -447,6 +491,8 @@ class SmartCruiseControlMap:
 
   def _advisory_targets(self, model_msg=None) -> list[tuple[float, float, float, bool]]:
     targets = []
+    if not self._advisory_params_valid():
+      return targets
 
     current_advisory = self._cached_first_mapd_json(ADVISORY_LIMIT_KEYS)
     current_target = self._advisory_target(current_advisory)
@@ -532,10 +578,15 @@ class SunnypilotCurrentSmartCruiseControlMap(SmartCruiseControlMap):
   def get_a_target_from_control(self) -> float:
     return self.a_ego
 
-  def update_calculations(self) -> None:
-    self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
+  def update_calculations(self, model_msg=None) -> None:
+    self._update_cached_position()
+    self.last_position = self.last_position or Coordinate(0.0, 0.0)
     lat = self.last_position.latitude
     lon = self.last_position.longitude
+
+    if not self._position_params_valid() or not self._target_velocity_params_valid():
+      self._clear_map_target()
+      return
 
     self.target_velocities = sunnypilot_current_velocities_from_param("MapTargetVelocities", self.mem_params) or []
 
@@ -628,7 +679,7 @@ class SunnypilotCurrentSmartCruiseControlMap(SmartCruiseControlMap):
     self.target_lat = target_lat
     self.target_lon = target_lon
 
-  def update(self, long_enabled: bool, long_override: bool, v_ego, a_ego, v_cruise) -> None:
+  def update(self, long_enabled: bool, long_override: bool, v_ego, a_ego, v_cruise, model_msg=None) -> None:
     self.long_enabled = long_enabled
     self.long_override = long_override
     self.v_ego = v_ego
@@ -636,7 +687,7 @@ class SunnypilotCurrentSmartCruiseControlMap(SmartCruiseControlMap):
     self.v_cruise = v_cruise
 
     self.update_params()
-    self.update_calculations()
+    self.update_calculations(model_msg)
 
     self.is_enabled, self.is_active = self._update_state_machine()
 

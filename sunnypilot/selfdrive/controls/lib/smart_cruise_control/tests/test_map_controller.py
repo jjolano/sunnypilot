@@ -189,12 +189,33 @@ class TestSmartCruiseControlMap:
 
     assert calls == 2
 
-  def test_stale_map_params_clear_active_target(self):
+  def test_stale_map_params_clear_active_target(self, monkeypatch):
     self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
       "start_latitude": 0.0,
       "start_longitude": 0.0,
       "speedlimit": 15.0,
     }))
+    monkeypatch.setattr(map_controller.time, "monotonic", lambda: 106.5)
+    self.mem_params.put(map_controller.MAP_ADVISORY_UPDATED_AT_PARAM, "105.0")
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+    assert self.scc_m.state == VisionState.turning
+
+    self.mem_params.put(map_controller.MAP_ADVISORY_UPDATED_AT_PARAM, "100.0")
+    self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_invalid_map_params_clear_active_target(self, monkeypatch):
+    self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "speedlimit": 15.0,
+    }))
+    monkeypatch.setattr(map_controller.time, "monotonic", lambda: 106.5)
+    self.mem_params.put(map_controller.MAP_ADVISORY_UPDATED_AT_PARAM, "105.0")
 
     for _ in range(2):
       self.scc_m.update(True, False, 25.0, 0.0, 30.0)
@@ -205,6 +226,63 @@ class TestSmartCruiseControlMap:
 
     assert self.scc_m.state == VisionState.enabled
     assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_missing_heartbeat_keeps_compatibility(self, monkeypatch):
+    self.mem_params.values.pop(map_controller.MAP_ADVISORY_UPDATED_AT_PARAM, None)
+    self.mem_params.put("MapAdvisorySpeedLimit", json.dumps({
+      "start_latitude": 0.0,
+      "start_longitude": 0.0,
+      "speedlimit": 15.0,
+    }))
+
+    monkeypatch.setattr(map_controller.time, "monotonic", lambda: 106.5)
+
+    for _ in range(2):
+      self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+
+    assert self.scc_m.state == VisionState.turning
+    assert self.scc_m.output_v_target == 15.0
+
+  def test_future_heartbeat_invalidates_advisory_params(self, monkeypatch):
+    monkeypatch.setattr(map_controller.time, "monotonic", lambda: 106.5)
+    self.mem_params.put(map_controller.MAP_ADVISORY_UPDATED_AT_PARAM, "107.0")
+
+    assert not self.scc_m._advisory_params_valid()
+
+  def test_stale_target_velocity_heartbeat_ignores_cached_map_target(self, monkeypatch):
+    self.scc_m.v_ego = 25.0
+    self.scc_m.a_ego = 0.0
+    distance = self.scc_m._target_control_distance(20.0) - 1.0
+    target_lon = distance / R * TO_DEGREES
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": target_lon, "velocity": 20.0},
+    ]))
+    self.mem_params.put(map_controller.MAP_ADVISORY_UPDATED_AT_PARAM, "105.0")
+    self.mem_params.put(map_controller.MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM, "100.0")
+    monkeypatch.setattr(map_controller.time, "monotonic", lambda: 106.5)
+
+    self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+
+    assert self.scc_m.state == VisionState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_stale_heartbeat_clears_current_stack_target(self, monkeypatch):
+    current_map = SunnypilotCurrentSmartCruiseControlMap()
+    current_map.mem_params = self.mem_params
+    monkeypatch.setattr(map_controller.time, "monotonic", lambda: 106.5)
+    self.mem_params.put(map_controller.MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM, "105.0")
+    self.mem_params.put("MapTargetVelocities", json.dumps([
+      {"latitude": 0.0, "longitude": 0.001, "velocity": 15.0},
+    ]))
+
+    for _ in range(2):
+      current_map.update(True, False, 25.0, 0.0, 30.0)
+
+    self.mem_params.put(map_controller.MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM, "100.0")
+    current_map.update(True, False, 25.0, 0.0, 30.0)
+
+    assert current_map.state == VisionState.enabled
+    assert current_map.output_v_target == V_CRUISE_UNSET
 
   def test_forward_target_velocity_distances_follow_ordered_path(self):
     first = Coordinate(0.0, 0.001)
