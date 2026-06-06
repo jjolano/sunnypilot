@@ -508,9 +508,20 @@ def test_v4_under_response_recovery_fails_closed_for_bad_processed_demand_metada
 def test_v4_under_response_recovery_allows_low_speed_usable_lane_confidence():
   controller, _VM, _CP = get_controller()
   controller.last_v_ego = 8.0
-  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.75, path_reason="low_lane_confidence"))
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.649, path_reason="low_lane_confidence"))
 
   assert controller._under_response_recovery_allowed()
+
+
+def test_v4_under_response_recovery_blocks_unstable_low_speed_path_reasons():
+  controller, _VM, _CP = get_controller()
+  controller.last_v_ego = 8.0
+
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.649, path_reason="high_path_std"))
+  assert not controller._under_response_recovery_allowed()
+
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.5, path_reason="low_lane_confidence"))
+  assert not controller._under_response_recovery_allowed()
 
 
 def test_v4_under_response_recovery_keeps_high_speed_path_reason_strict():

@@ -59,6 +59,7 @@ LOW_SPEED_UNDER_RESPONSE_FADE_SPEED = 12.0
 LOW_SPEED_UNDER_RESPONSE_CAP = 0.90
 LOW_SPEED_UNDER_RESPONSE_MAX_ACTUAL_LAT_ACCEL = 2.6
 LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD = 0.05
+LOW_SPEED_UNDER_RESPONSE_MIN_PATH_QUALITY = 0.64
 UNDER_RESPONSE_RECOVERY_FULL_DEFICIT = 0.30
 UNDER_RESPONSE_RECOVERY_CAP_BP = [0.0, 9.0, 15.0, 25.0, 40.0]
 UNDER_RESPONSE_RECOVERY_CAP_V = [0.90, 0.90, 0.88, 0.84, 0.80]
@@ -622,14 +623,13 @@ class LatControlTorqueV4(LatControl):
     low_speed_usable_path = (
       path_reason in UNDER_RESPONSE_LOW_SPEED_ALLOWED_PATH_REASONS
       and path_quality is not None
-      and path_quality >= LEARN_MIN_PATH_QUALITY
+      and path_quality >= LOW_SPEED_UNDER_RESPONSE_MIN_PATH_QUALITY
       and self.last_v_ego < LOW_SPEED_UNDER_RESPONSE_FADE_SPEED
     )
     return (
       getattr(demand, "demand_source", None) == DEMAND_SOURCE_MODEL_PATH
       and path_quality is not None
-      and path_quality >= LEARN_MIN_PATH_QUALITY
-      and (path_reason == LEARN_PATH_REASON_OK or low_speed_usable_path)
+      and ((path_reason == LEARN_PATH_REASON_OK and path_quality >= LEARN_MIN_PATH_QUALITY) or low_speed_usable_path)
       and not getattr(demand, "lane_change_shaping_active", True)
       and lane_change_blend is not None
       and abs(lane_change_blend) <= 1e-3
