@@ -1007,14 +1007,14 @@ def test_v4_actual_lateral_jerk_helper_zero_rate_is_zero():
   assert finite_difference_curvature_rate_from_steering_rate(LinearVehicleModel(), 0.1, 0.0, 20.0, 0.0) == pytest.approx(0.0)
 
 
-def test_v4_actual_lateral_jerk_helper_sign_follows_steering_rate():
+def test_v4_actual_lateral_jerk_helper_sign_matches_measured_curvature_convention():
   vm = LinearVehicleModel()
 
   positive = finite_difference_curvature_rate_from_steering_rate(vm, 0.1, 0.2, 20.0, 0.0)
   negative = finite_difference_curvature_rate_from_steering_rate(vm, 0.1, -0.2, 20.0, 0.0)
 
-  assert positive > 0.0
-  assert negative < 0.0
+  assert positive < 0.0
+  assert negative > 0.0
 
 
 def test_v4_actual_lateral_jerk_helper_is_finite_and_close_to_linear_approximation():
@@ -1025,7 +1025,7 @@ def test_v4_actual_lateral_jerk_helper_is_finite_and_close_to_linear_approximati
   result = finite_difference_curvature_rate_from_steering_rate(vm, 0.05, rate, v_ego, 0.0)
 
   assert math.isfinite(result)
-  assert result == pytest.approx(vm.calc_curvature(rate, v_ego, 0.0) * v_ego ** 2)
+  assert result == pytest.approx(-vm.calc_curvature(rate, v_ego, 0.0) * v_ego ** 2)
 
 
 def test_v4_actual_lateral_jerk_helper_invalid_inputs_fallback_safe():

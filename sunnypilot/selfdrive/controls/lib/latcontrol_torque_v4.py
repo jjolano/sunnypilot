@@ -193,7 +193,7 @@ def finite_difference_curvature_rate_from_steering_rate(VM, steering_angle_rad: 
   if not _finite(k_plus, k_minus):
     return 0.0
   dk_dangle = (k_plus - k_minus) / (2.0 * eps)
-  actual_lateral_jerk = float(v_ego) ** 2 * dk_dangle * float(steering_rate_rad_s)
+  actual_lateral_jerk = -float(v_ego) ** 2 * dk_dangle * float(steering_rate_rad_s)
   return actual_lateral_jerk if math.isfinite(actual_lateral_jerk) else 0.0
 
 
