@@ -12,6 +12,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_modes import (
   LongitudinalMode,
   LongitudinalModeResolution,
   ResolvedLongitudinalImplementation,
+  SccEvidenceAdvisory,
+  SccEvidenceResult,
+  SccEvidenceTier,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene, ONE_PEDAL_MODE_CREEP
@@ -156,6 +159,11 @@ def make_target_planner(resolved_stack: str):
   )
   planner.events_sp = FakeEvents()
   planner.source = LongitudinalPlanSource.cruise
+  planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+    requested_mode=LongitudinalMode.SCC,
+    resolved_implementation=ResolvedLongitudinalImplementation.SCC_ACC,
+    actuation_type=LongitudinalActuationType.DIRECT,
+  )
   planner._speed_limit_handoff_active = False
   planner._speed_limit_active_prev = False
   return planner
@@ -206,6 +214,63 @@ class TestStackAwareTargetSelection(unittest.TestCase):
     self.assertEqual(planner.sla.update_count, 1)
     self.assertEqual(planner.osm_traffic_control_prior.update_count, 0)
     self.assertEqual([candidate.source for candidate in planner.decision_candidates_sp], [DecisionSource.CRUISE])
+
+  def test_e2e_mode_does_not_select_scc_vision_or_map_sources(self):
+    planner = make_target_planner(CUSTOM_V2)
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.E2E,
+      resolved_implementation=ResolvedLongitudinalImplementation.E2E,
+      actuation_type=LongitudinalActuationType.DIRECT,
+    )
+    planner.scc = FakeStackSCC(vision=(8.0, -1.0, True), map_target=(9.0, -0.8, True))
+    planner.resolver = FakeStackResolver()
+    planner.sla = FakeStackSLA()
+    planner.osm_traffic_control_prior = FakeStackOsmPrior()
+
+    v_target, a_target = LongitudinalPlannerSP.update_targets(planner, make_target_sm(), 12.0, 0.2, 20.0)
+
+    self.assertEqual(planner.source, LongitudinalPlanSource.cruise)
+    self.assertEqual(v_target, 20.0)
+    self.assertEqual(a_target, 0.2)
+    self.assertEqual(planner.scc.update_count, 0)
+    self.assertNotIn(DecisionSource.SCC_VISION, [candidate.source for candidate in planner.decision_candidates_sp])
+    self.assertNotIn(DecisionSource.SCC_MAP, [candidate.source for candidate in planner.decision_candidates_sp])
+
+  def test_scc_mode_still_allows_scc_curve_candidates(self):
+    planner = make_target_planner(CUSTOM_V2)
+    planner.scc = FakeStackSCC(vision=(8.0, -1.0, True), map_target=(9.0, -0.8, True))
+    planner.resolver = FakeStackResolver()
+    planner.sla = FakeStackSLA()
+    planner.osm_traffic_control_prior = FakeStackOsmPrior()
+
+    v_target, a_target = LongitudinalPlannerSP.update_targets(planner, make_target_sm(), 12.0, 0.2, 20.0)
+
+    self.assertEqual(planner.source, LongitudinalPlanSource.sccVision)
+    self.assertEqual(v_target, 8.0)
+    self.assertEqual(a_target, -1.0)
+    self.assertEqual(planner.scc.update_count, 1)
+    self.assertIn(DecisionSource.SCC_VISION, [candidate.source for candidate in planner.decision_candidates_sp])
+
+  def test_scc_e2e_mode_does_not_select_scc_curve_candidates(self):
+    planner = make_target_planner(CUSTOM_V2)
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.SCC,
+      resolved_implementation=ResolvedLongitudinalImplementation.SCC_E2E,
+      actuation_type=LongitudinalActuationType.DIRECT,
+    )
+    planner.scc = FakeStackSCC(vision=(8.0, -1.0, True), map_target=(9.0, -0.8, True))
+    planner.resolver = FakeStackResolver()
+    planner.sla = FakeStackSLA()
+    planner.osm_traffic_control_prior = FakeStackOsmPrior()
+
+    v_target, a_target = LongitudinalPlannerSP.update_targets(planner, make_target_sm(), 12.0, 0.2, 20.0)
+
+    self.assertEqual(planner.source, LongitudinalPlanSource.cruise)
+    self.assertEqual(v_target, 20.0)
+    self.assertEqual(a_target, 0.2)
+    self.assertEqual(planner.scc.update_count, 0)
+    self.assertNotIn(DecisionSource.SCC_VISION, [candidate.source for candidate in planner.decision_candidates_sp])
+    self.assertNotIn(DecisionSource.SCC_MAP, [candidate.source for candidate in planner.decision_candidates_sp])
 
   def test_acc_mode_update_does_not_touch_e2e_alert_model_inputs(self):
     planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
@@ -331,6 +396,20 @@ class TestLongitudinalPlannerHysteresis(unittest.TestCase):
     )
     self.assertEqual(source, LongitudinalPlanSource.speedLimitAssist)
     self.assertEqual(v_target, 22.0)
+
+  def test_source_selection_can_exclude_scc_curve_targets(self):
+    source, v_target, _a_target = select_lowest_longitudinal_target(
+      False,
+      self.cruise,
+      self.scc_vision,
+      self.scc_map,
+      (35.0, 0.0),
+      (36.0, 0.0),
+      allow_scc_curve_targets=False,
+    )
+
+    self.assertEqual(source, LongitudinalPlanSource.cruise)
+    self.assertEqual(v_target, 30.0)
 
   def test_hysteresis_safety_switch(self):
     # Always switch to a SLOWER target (safety)
@@ -537,6 +616,15 @@ class TestLongitudinalModeTelemetryPublish(unittest.TestCase):
       actuation_type=LongitudinalActuationType.DIRECT,
       restriction_status=("speed_limit_cap", "curve_cap"),
       compatibility_alias_state=DecCompatibilityState.BLENDED,
+      scc_evidence=SccEvidenceResult(
+        tier=SccEvidenceTier.URGENT_STOP,
+        confidence=0.95,
+        urgency=1.0,
+        reason="scc_urgent_stop",
+        independent_of_lead=True,
+        confirmed_lead=False,
+        advisory=SccEvidenceAdvisory(map_caution=True, speed_limit_cap=True, curve_cap=True),
+      ),
     )
 
     publish_longitudinal_mode_telemetry(plan_sp, resolution)
@@ -546,6 +634,13 @@ class TestLongitudinalModeTelemetryPublish(unittest.TestCase):
     self.assertEqual(plan_sp.longitudinalMode.actuationType, LongitudinalModeStatus.ActuationType.direct)
     self.assertEqual(plan_sp.longitudinalMode.restrictionStatus, ["speed_limit_cap", "curve_cap"])
     self.assertEqual(plan_sp.longitudinalMode.compatibilityAliasState, LongitudinalModeStatus.CompatibilityAliasState.blended)
+    self.assertEqual(plan_sp.longitudinalMode.evidenceTier, "urgent_stop")
+    self.assertEqual(plan_sp.longitudinalMode.evidenceReason, "scc_urgent_stop")
+    self.assertAlmostEqual(plan_sp.longitudinalMode.evidenceConfidence, 0.95, places=6)
+    self.assertEqual(plan_sp.longitudinalMode.evidenceUrgency, 1.0)
+    self.assertTrue(plan_sp.longitudinalMode.independentOfLead)
+    self.assertFalse(plan_sp.longitudinalMode.confirmedLead)
+    self.assertEqual(plan_sp.longitudinalMode.evidenceAdvisories, ["map_caution", "speed_limit_cap", "curve_cap"])
 
   def test_legacy_dec_telemetry_uses_resolved_mode_not_stale_request(self):
     stale_scc_icbm = LongitudinalModeResolution(
@@ -572,9 +667,18 @@ class TestLongitudinalModeTelemetryPublish(unittest.TestCase):
     msg.longitudinalPlanSP.longitudinalMode.restrictionStatus = ["none"]
     msg.longitudinalPlanSP.longitudinalMode.unsupportedReason = ""
     msg.longitudinalPlanSP.longitudinalMode.compatibilityAliasState = LongitudinalModeStatus.CompatibilityAliasState.acc
+    msg.longitudinalPlanSP.longitudinalMode.evidenceTier = "none"
+    msg.longitudinalPlanSP.longitudinalMode.evidenceReason = "scc_no_evidence"
+    msg.longitudinalPlanSP.longitudinalMode.evidenceConfidence = 0.0
+    msg.longitudinalPlanSP.longitudinalMode.evidenceUrgency = 0.0
+    msg.longitudinalPlanSP.longitudinalMode.independentOfLead = False
+    msg.longitudinalPlanSP.longitudinalMode.evidenceAdvisories = []
+    msg.longitudinalPlanSP.longitudinalMode.confirmedLead = False
 
     self.assertEqual(msg.longitudinalPlanSP.longitudinalMode.requestedMode, LongitudinalModeStatus.Mode.acc)
     self.assertEqual(msg.longitudinalPlanSP.longitudinalMode.restrictionStatus[0], "none")
+    self.assertEqual(msg.longitudinalPlanSP.longitudinalMode.evidenceTier, "none")
+    self.assertEqual(msg.longitudinalPlanSP.longitudinalMode.evidenceReason, "scc_no_evidence")
 
 
 class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
@@ -595,6 +699,12 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
       resolved_stack=resolved_stack,
       available_stacks=("sunnypilot-current", resolved_stack),
       custom_version="2.0" if resolved_stack == "custom-2.0" else "",
+    )
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.SCC,
+      resolved_implementation=ResolvedLongitudinalImplementation.SCC_E2E,
+      actuation_type=LongitudinalActuationType.DIRECT,
+      compatibility_alias_state=DecCompatibilityState.BLENDED,
     )
     planner.custom_longitudinal_stack = None
     planner.planner_seed_candidates = []
@@ -690,6 +800,12 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
 
   def test_equal_baseline_physical_candidate_suppresses_advisory_caps(self):
     planner = self.make_planner()
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.SCC,
+      resolved_implementation=ResolvedLongitudinalImplementation.SCC_ACC,
+      actuation_type=LongitudinalActuationType.DIRECT,
+      compatibility_alias_state=DecCompatibilityState.ACC,
+    )
     planner.output_a_target = -0.4
     planner.a_desired_trajectory = tuple(-0.4 for _ in range(CONTROL_N))
     planner.decision_candidates_sp = [
@@ -938,6 +1054,124 @@ class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
     self.assertTrue(planner.longitudinal_stack_fault_latched)
     self.assertEqual(planner.longitudinal_stack_fault_reason, "a_target_above_limits")
     self.assertEqual(planner.events_sp.names, [custom.OnroadEventSP.EventName.customLongitudinalStackFault])
+
+  def test_acc_mode_custom_v2_builds_only_acc_legal_candidates(self):
+    planner = self.make_planner()
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.ACC,
+      resolved_implementation=ResolvedLongitudinalImplementation.HARDWARE_ACC,
+      actuation_type=LongitudinalActuationType.DIRECT,
+    )
+    planner.output_a_target = 0.0
+    planner.custom_v2_scene = CustomV2Scene(
+      v_ego=0.2,
+      v_cruise=8.0,
+      model_stop_distance=30.0,
+      model_desired_accel=0.0,
+      speed_limit_active=True,
+      speed_limit_v_target=1.0,
+      speed_limit_a_target=-0.4,
+      curve_active=True,
+      curve_a_target=-0.8,
+      map_caution_active=True,
+      map_caution_confirmed=True,
+      map_caution_a_target=-0.5,
+    )
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
+
+    self.assertEqual(planner.output_a_target, 0.0)
+    self.assertEqual([candidate.source for candidate in planner.longitudinal_decision.candidates], [DecisionSource.CRUISE])
+    self.assertNotIn(DecisionSource.SPEED_LIMIT, [candidate.source for candidate in planner.longitudinal_decision.candidates])
+    self.assertNotIn(DecisionSource.SCC_VISION, [candidate.source for candidate in planner.longitudinal_decision.candidates])
+    self.assertNotIn(DecisionSource.OSM_TRAFFIC_CONTROL, [candidate.source for candidate in planner.longitudinal_decision.candidates])
+    self.assertNotIn(DecisionSource.STOP_LAUNCH, [candidate.source for candidate in planner.longitudinal_decision.candidates])
+
+  def test_e2e_mode_custom_v2_allows_model_and_sla_osm_but_not_scc_curve(self):
+    planner = self.make_planner()
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.E2E,
+      resolved_implementation=ResolvedLongitudinalImplementation.E2E,
+      actuation_type=LongitudinalActuationType.DIRECT,
+      compatibility_alias_state=DecCompatibilityState.BLENDED,
+    )
+    planner.output_a_target = -0.6
+    planner.decision_candidates_sp = [
+      self.make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 8.0, 0.0, "driver_cruise_target"),
+    ]
+    planner.longitudinal_decision_candidates = [
+      self.make_candidate(DecisionSource.E2E_STOP, CandidateRole.PHYSICAL_HAZARD, 8.0, -0.6, "model_stop", should_stop=True),
+    ]
+    planner.custom_v2_scene = CustomV2Scene(
+      v_ego=2.0,
+      v_cruise=8.0,
+      model_stop_distance=8.0,
+      model_desired_accel=-0.6,
+      speed_limit_active=True,
+      speed_limit_v_target=1.0,
+      speed_limit_a_target=-0.4,
+      curve_active=True,
+      curve_a_target=-0.9,
+      map_caution_active=True,
+      map_caution_confirmed=True,
+      map_caution_a_target=-0.5,
+    )
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
+
+    candidate_sources = [candidate.source for candidate in planner.longitudinal_decision.candidates]
+    self.assertIn(DecisionSource.E2E_STOP, candidate_sources)
+    self.assertIn(DecisionSource.SPEED_LIMIT, candidate_sources)
+    self.assertIn(DecisionSource.OSM_TRAFFIC_CONTROL, candidate_sources)
+    self.assertNotIn(DecisionSource.SCC_VISION, candidate_sources)
+    self.assertNotIn(DecisionSource.SCC_MAP, candidate_sources)
+    self.assertEqual(planner.longitudinal_decision.winner, DecisionSource.E2E_STOP)
+
+  def test_scc_mode_custom_v2_allows_curve_candidate(self):
+    planner = self.make_planner()
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.SCC,
+      resolved_implementation=ResolvedLongitudinalImplementation.SCC_ACC,
+      actuation_type=LongitudinalActuationType.DIRECT,
+      compatibility_alias_state=DecCompatibilityState.ACC,
+    )
+    planner.output_a_target = 0.0
+    planner.decision_candidates_sp = [
+      self.make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 8.0, 0.0, "driver_cruise_target"),
+    ]
+    planner.custom_v2_scene = CustomV2Scene(v_ego=2.0, v_cruise=8.0, curve_active=True, curve_a_target=-0.6)
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
+
+    candidate_sources = [candidate.source for candidate in planner.longitudinal_decision.candidates]
+    self.assertIn(DecisionSource.SCC_VISION, candidate_sources)
+    self.assertEqual(planner.longitudinal_decision.winner, DecisionSource.SCC_VISION)
+
+  def test_one_pedal_acc_mode_does_not_open_illegal_advisory_or_progress_candidates(self):
+    planner = self.make_planner()
+    planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+      requested_mode=LongitudinalMode.ACC,
+      resolved_implementation=ResolvedLongitudinalImplementation.HARDWARE_ACC,
+      actuation_type=LongitudinalActuationType.DIRECT,
+    )
+    planner.output_a_target = 0.0
+    planner.custom_v2_scene = CustomV2Scene(
+      v_ego=2.0,
+      v_cruise=8.0,
+      model_stop_distance=30.0,
+      model_desired_accel=0.0,
+      one_pedal_mode=ONE_PEDAL_MODE_CREEP,
+      speed_limit_active=True,
+      speed_limit_v_target=1.0,
+      speed_limit_a_target=-0.4,
+      curve_active=True,
+      curve_a_target=-0.6,
+    )
+
+    planner.apply_longitudinal_stack_selection(self.make_sm(), has_lead=False, accel_limits=(-2.0, 2.0))
+
+    self.assertEqual(planner.longitudinal_stack_selected_intent, "one_pedal")
+    self.assertEqual([candidate.source for candidate in planner.longitudinal_decision.candidates], [DecisionSource.CRUISE])
 
   def test_custom_v2_invalid_scene_requests_immediate_disable_with_reason(self):
     planner = self.make_planner()

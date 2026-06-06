@@ -852,7 +852,7 @@ def lead_relevance_comfort_mask(lead_context, radarstate) -> tuple[bool, bool]:
       _lead_state_close_or_closing(state) or
       _lead_state_stopped_crawl_relevant(state)
     )
-    if abs(path_y_rel) >= LEAD_RELEVANCE_PATH_EXIT_Y and not _lead_state_close_or_closing(state) and authority == "none":
+    if abs(path_y_rel) >= LEAD_RELEVANCE_PATH_EXIT_Y and authority == "none":
       relevant = False
     mask.append(relevant)
   return (bool(mask[0]), bool(mask[1]))

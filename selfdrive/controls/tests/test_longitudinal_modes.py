@@ -12,6 +12,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_modes import (
   LongitudinalMode,
   LongitudinalModeResolver,
   ResolvedLongitudinalImplementation,
+  SccEvidenceTier,
   SccModeEvidence,
   filter_legacy_longitudinal_mode_params,
   legacy_longitudinal_mode_params_ignored,
@@ -165,6 +166,21 @@ def test_legacy_params_are_ignored_after_migration_even_if_source_param_is_missi
   assert filter_legacy_longitudinal_mode_params(incoming, params) == {"SpeedLimitMode": "3"}
 
 
+def test_migration_current_missing_mode_reports_degraded_acc_fallback():
+  params = FakeParams()
+  params.put(LONGITUDINAL_MODE_MIGRATION_PARAM, LONGITUDINAL_MODE_MIGRATION_VERSION)
+  params.put("ExperimentalMode", True)
+  params.put("DynamicExperimentalControl", True)
+
+  resolution = resolve_longitudinal_mode(params, SimpleNamespace(radarUnavailable=False, openpilotLongitudinalControl=True))
+
+  assert resolution.requested_mode == LongitudinalMode.ACC
+  assert resolution.resolved_implementation == ResolvedLongitudinalImplementation.HARDWARE_ACC
+  assert resolution.debug["reason"] == "migration_current_missing_mode"
+  assert resolution.unsupported_reason == "migration_current_missing_mode"
+  assert "migration_current_missing_mode" in resolution.restriction_status
+
+
 def test_resolver_returns_hardware_acc_for_acc_with_radar():
   params = FakeParams()
   params.put(LONGITUDINAL_MODE_PARAM, int(LongitudinalMode.ACC))
@@ -230,6 +246,92 @@ def test_scc_resolver_tracks_curve_evidence_without_promoting_e2e():
 
   assert resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC
   assert resolution.debug["reason"] == "scc_curve"
+
+
+def test_scc_evidence_classifier_no_evidence_is_none():
+  result = SccModeEvidence().classify()
+
+  assert result.tier == SccEvidenceTier.NONE
+  assert result.reason == "scc_no_evidence"
+  assert not result.e2e_active
+
+
+def test_scc_evidence_classifier_slowdown_evidence():
+  result = SccModeEvidence(model_slowdown=True).classify()
+
+  assert result.tier == SccEvidenceTier.SLOWDOWN
+  assert result.reason == "scc_model_slowdown"
+  assert result.e2e_active
+
+
+def test_scc_evidence_classifier_stop_evidence():
+  result = SccModeEvidence(model_stop=True).classify()
+
+  assert result.tier == SccEvidenceTier.STOP
+  assert result.reason == "scc_model_stop"
+  assert result.e2e_active
+
+
+def test_scc_evidence_classifier_urgent_stop_evidence():
+  result = SccModeEvidence(urgent_stop=True, independent_of_lead=True).classify()
+
+  assert result.tier == SccEvidenceTier.URGENT_STOP
+  assert result.reason == "scc_urgent_stop"
+  assert result.confidence == 1.0
+  assert result.urgency == 1.0
+  assert result.independent_of_lead
+  assert result.e2e_active
+
+
+def test_scc_confirmed_lead_associated_stop_stays_scc_acc():
+  params = FakeParams()
+  params.put(LONGITUDINAL_MODE_PARAM, int(LongitudinalMode.SCC))
+
+  resolution = resolve_longitudinal_mode(params, scc_evidence=SccModeEvidence(confirmed_lead=True, model_stop=True))
+
+  assert resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC
+  assert resolution.debug["reason"] == "scc_confirmed_lead"
+  assert resolution.scc_evidence.tier == SccEvidenceTier.STOP
+  assert not resolution.scc_evidence.e2e_active
+
+
+def test_scc_independent_urgent_stop_can_restrict_confirmed_lead():
+  params = FakeParams()
+  params.put(LONGITUDINAL_MODE_PARAM, int(LongitudinalMode.SCC))
+
+  resolution = resolve_longitudinal_mode(
+    params,
+    scc_evidence=SccModeEvidence(confirmed_lead=True, urgent_stop=True, independent_of_lead=True),
+  )
+
+  assert resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_E2E
+  assert resolution.debug["reason"] == "scc_urgent_stop"
+  assert resolution.scc_evidence.independent_of_lead
+
+
+def test_scc_map_speed_and_curve_evidence_are_advisory_only():
+  map_only = SccModeEvidence(traffic_control=True).classify()
+  speed_limit = SccModeEvidence(speed_limit_control=True).classify()
+  curve = SccModeEvidence(curve_control=True, map_control=True).classify()
+
+  assert map_only.tier == SccEvidenceTier.NONE
+  assert map_only.advisory.map_caution
+  assert map_only.advisory_status == ("map_caution",)
+  assert speed_limit.tier == SccEvidenceTier.NONE
+  assert speed_limit.advisory_status == ("speed_limit_cap",)
+  assert curve.tier == SccEvidenceTier.NONE
+  assert curve.advisory_status == ("curve_cap",)
+
+
+def test_acc_mode_ignores_scc_evidence_classifier():
+  params = FakeParams()
+  params.put(LONGITUDINAL_MODE_PARAM, int(LongitudinalMode.ACC))
+
+  resolution = resolve_longitudinal_mode(params, scc_evidence=SccModeEvidence(urgent_stop=True, independent_of_lead=True))
+
+  assert resolution.requested_mode == LongitudinalMode.ACC
+  assert resolution.resolved_implementation == ResolvedLongitudinalImplementation.HARDWARE_ACC
+  assert resolution.scc_evidence.tier == SccEvidenceTier.NONE
 
 
 def test_resolver_keeps_dec_compatibility_alias_sane():

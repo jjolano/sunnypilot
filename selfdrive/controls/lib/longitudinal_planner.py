@@ -21,7 +21,13 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   get_active_lead_confidence,
   resolve_longitudinal_decision,
 )
-from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalActuationType, LongitudinalMode, LongitudinalModeResolver, SccModeEvidence
+from openpilot.selfdrive.controls.lib.longitudinal_modes import (
+  LongitudinalActuationType,
+  LongitudinalMode,
+  LongitudinalModeResolver,
+  ResolvedLongitudinalImplementation,
+  SccModeEvidence,
+)
 from openpilot.selfdrive.controls.lib.lead_confidence import (
   LeadConfidenceState,
   LEAD_FLICKER_CLOSE_COUNT_THRESHOLD,
@@ -461,14 +467,16 @@ def has_model_stop_context(model_msg):
 
 def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_traffic_control_prior,
                             speed_limit_handoff_active: bool = False) -> SccModeEvidence:
+  model_stop = bool(
+    model_msg.action.shouldStop or
+    get_e2e_confirmed_model_stop_distance(model_msg) is not None or
+    has_scc_near_endpoint_model_stop(model_msg) or
+    has_scc_early_model_stop(model_msg)
+  )
   return SccModeEvidence(
     confirmed_lead=has_confirmed_lead,
-    model_stop=bool(
-      model_msg.action.shouldStop or
-      get_e2e_confirmed_model_stop_distance(model_msg) is not None or
-      has_scc_near_endpoint_model_stop(model_msg) or
-      has_scc_early_model_stop(model_msg)
-    ),
+    model_stop=model_stop,
+    independent_of_lead=bool(model_stop and not has_confirmed_lead),
     curve_control=bool(getattr(getattr(scc, "vision", None), "is_active", False)),
     map_control=bool(getattr(getattr(scc, "map", None), "is_active", False)),
     speed_limit_control=bool(getattr(sla, "is_active", False) or speed_limit_handoff_active),
@@ -1614,7 +1622,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     acc_mode_requested = bool(
       mode_resolution is not None and (mode_resolution.requested_mode == LongitudinalMode.ACC or set_speed_advisory_mode)
     )
-
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
       speed_limit_coast_accel = accel_coast
@@ -1709,13 +1716,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       reset_state=reset_state,
     )
 
-    # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist
-    v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired,
-                                                                    v_cruise, coast_accel=speed_limit_coast_accel)
-
-    if force_slow_decel:
-      v_cruise = 0.0
-
     has_radar_lead = has_valid_radar_lead(sm['radarState'])
     has_confirmed_lead = has_confirmed_radar_lead(sm['radarState'])
     if mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.SCC and not set_speed_advisory_mode:
@@ -1725,8 +1725,33 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       )
       self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP, scc_evidence=scc_evidence)
       mode_resolution = self.longitudinal_mode_resolution
+
+    # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist. SCC target providers are gated by
+    # the pre-target SCC evidence resolution so SCC_E2E cycles cannot select stale SCC curve/map actuation first.
+    v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired,
+                                                                    v_cruise, coast_accel=speed_limit_coast_accel)
+
+    if force_slow_decel:
+      v_cruise = 0.0
+
+    if mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.SCC and not set_speed_advisory_mode:
+      scc_evidence = build_scc_mode_evidence(
+        has_confirmed_lead, sm['modelV2'], self.scc, self.sla, self.osm_traffic_control_prior,
+        speed_limit_handoff_active=bool(getattr(self, "_speed_limit_handoff_active", False)),
+      )
+      self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP, scc_evidence=scc_evidence)
+      mode_resolution = self.longitudinal_mode_resolution
       self._update_e2e_alerts_for_mode(sm)
     e2e_active = self.is_e2e(sm)
+    direct_actuation_mode = bool(mode_resolution is not None and mode_resolution.actuation_type == LongitudinalActuationType.DIRECT)
+    e2e_or_scc_direct = bool(
+      mode_resolution is not None and mode_resolution.requested_mode in (LongitudinalMode.E2E, LongitudinalMode.SCC) and direct_actuation_mode
+    )
+    scc_curve_scene_allowed = bool(
+      mode_resolution is not None and
+      mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC and
+      direct_actuation_mode
+    )
     lead_loss_guard_lead = get_lead_loss_e2e_guard_lead(sm['radarState'])
     custom_engage_stop_bootstrap_active = e2e_active and should_run_engage_stop_bootstrap(
       self.engage_stop_bootstrap_timer, v_ego, sm['radarState'], sm['modelV2']
@@ -2085,7 +2110,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
           v_ego, physical_lead_d_rel, physical_lead_v_lead, physical_lead_a, physical_lead_model_prob,
         )
         if not should_allow_stopped_lead_stop_gap_guard(
-          v_ego, physical_lead_d_rel, physical_lead_v_lead, is_lane_change_active(sm['modelV2']),
+          v_ego, physical_lead_d_rel, physical_lead_v_lead, is_lane_change_active(sm['modelV2']) if e2e_active else False,
         ):
           stop_gap_guard_a_target = None
         if stop_gap_guard_a_target is not None:
@@ -2398,7 +2423,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       map_caution_active_for_scene = False
       map_caution_a_target_for_scene = 0.0
     else:
-      custom_v2_curve_active, custom_v2_curve_a_target = get_custom_v2_curve_scene_target(active_scc_vision, active_scc_map)
+      custom_v2_curve_active, custom_v2_curve_a_target = (
+        get_custom_v2_curve_scene_target(active_scc_vision, active_scc_map) if scc_curve_scene_allowed else (False, 0.0)
+      )
       speed_limit_active_for_scene = bool(getattr(active_sla, "is_active", False))
       speed_limit_v_target_for_scene = float(getattr(active_sla, "output_v_target", 0.0))
       speed_limit_a_target_for_scene = float(getattr(active_sla, "output_a_target", 0.0))
@@ -2467,6 +2494,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       map_caution_a_target=map_caution_a_target_for_scene,
       one_pedal_mode=int(getattr(self, "one_pedal_mode", ONE_PEDAL_MODE_OFF)),
       one_pedal_cruise_hold=bool(getattr(self, "one_pedal_cruise_hold_active", False)),
+      allow_speed_limit_advisory=e2e_or_scc_direct,
+      allow_curve_advisory=scc_curve_scene_allowed,
+      allow_map_caution_advisory=e2e_or_scc_direct,
+      allow_no_lead_progress=bool(mode_resolution.e2e_like) if mode_resolution is not None else False,
+      allow_lead_progress=direct_actuation_mode,
     )
     self.prev_accel_clip = accel_clip
     self.apply_longitudinal_stack_selection(sm, has_lead, tuple(accel_clip))

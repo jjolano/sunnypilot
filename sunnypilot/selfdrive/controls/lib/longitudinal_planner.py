@@ -195,6 +195,14 @@ def publish_longitudinal_mode_telemetry(longitudinalPlanSP, resolution: Longitud
   longitudinal_mode.compatibilityAliasState = LONGITUDINAL_MODE_TELEMETRY_COMPATIBILITY_ALIAS_STATES.get(
     resolution.compatibility_alias_state, LongitudinalModeTelemetryCompatibilityAliasState.acc
   )
+  evidence = resolution.scc_evidence
+  longitudinal_mode.evidenceTier = str(evidence.tier.value)
+  longitudinal_mode.evidenceReason = str(evidence.reason)
+  longitudinal_mode.evidenceConfidence = float(evidence.confidence)
+  longitudinal_mode.evidenceUrgency = float(evidence.urgency)
+  longitudinal_mode.independentOfLead = bool(evidence.independent_of_lead)
+  longitudinal_mode.evidenceAdvisories = [str(status) for status in evidence.advisory_status]
+  longitudinal_mode.confirmedLead = bool(evidence.confirmed_lead)
 
 
 def legacy_dec_enabled_for_mode(resolution: LongitudinalModeResolution) -> bool:
@@ -240,7 +248,7 @@ def apply_lead_speedup_guard(active: bool, v_ego: float, target: tuple[float, fl
 
 
 def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control,
-                                      source_prev=None, v_target_prev=None):
+                                      source_prev=None, v_target_prev=None, allow_scc_curve_targets=True):
   if speed_limit_active:
     selected_source = LongitudinalPlanSource.speedLimitAssist
     selected_v_target = speed_limit_assist[0]
@@ -249,13 +257,14 @@ def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, sc
     selected_source = LongitudinalPlanSource.cruise
     selected_v_target, selected_a_target = cruise
 
-  selected_source, selected_v_target, selected_a_target = _select_lower_target(
-    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccVision, scc_vision
-  )
+  if allow_scc_curve_targets:
+    selected_source, selected_v_target, selected_a_target = _select_lower_target(
+      selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccVision, scc_vision
+    )
 
-  selected_source, selected_v_target, selected_a_target = _select_lower_target(
-    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccMap, scc_map
-  )
+    selected_source, selected_v_target, selected_a_target = _select_lower_target(
+      selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccMap, scc_map
+    )
   if not speed_limit_active:
     selected_source, selected_v_target, selected_a_target = _select_lower_target(
       selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.speedLimitAssist, speed_limit_assist
@@ -392,6 +401,11 @@ class LongitudinalPlannerSP:
       mode_resolution is not None and
       mode_resolution.actuation_type == LongitudinalActuationType.SET_SPEED_ADVISORY
     )
+    scc_curve_actuation_allowed = bool(
+      mode_resolution is not None and
+      mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC and
+      mode_resolution.actuation_type == LongitudinalActuationType.DIRECT
+    )
     if acc_mode_direct:
       self._speed_limit_handoff_active = False
       self._speed_limit_active_prev = False
@@ -412,7 +426,7 @@ class LongitudinalPlannerSP:
       return self.output_v_target, self.output_a_target
 
     # Smart Cruise Control
-    if not acc_mode_set_speed_advisory:
+    if scc_curve_actuation_allowed:
       self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
 
     # Speed Limit Resolver
@@ -468,12 +482,12 @@ class LongitudinalPlannerSP:
     scc_vision_target = (self.scc.vision.output_v_target, self.scc.vision.output_a_target)
     scc_map_target = (self.scc.map.output_v_target, self.scc.map.output_a_target)
     osm_target = (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target)
-    scc_vision_active = bool(self.scc.vision.is_active) and not acc_mode_set_speed_advisory
-    scc_map_active = bool(self.scc.map.is_active) and not acc_mode_set_speed_advisory
+    scc_vision_active = bool(self.scc.vision.is_active) and scc_curve_actuation_allowed
+    scc_map_active = bool(self.scc.map.is_active) and scc_curve_actuation_allowed
     osm_active = bool(self.osm_traffic_control_prior.active) and not acc_mode_set_speed_advisory
     inactive_selection_target = speed_limit_assist_target if speed_limit_active else cruise_target
-    scc_vision_selection_target = scc_vision_target if not acc_mode_set_speed_advisory else inactive_selection_target
-    scc_map_selection_target = scc_map_target if not acc_mode_set_speed_advisory else inactive_selection_target
+    scc_vision_selection_target = scc_vision_target if scc_curve_actuation_allowed else inactive_selection_target
+    scc_map_selection_target = scc_map_target if scc_curve_actuation_allowed else inactive_selection_target
     osm_selection_target = osm_target if not acc_mode_set_speed_advisory else inactive_selection_target
 
     self.decision_candidates_sp = build_sp_longitudinal_candidates(
@@ -497,6 +511,7 @@ class LongitudinalPlannerSP:
       osm_selection_target,
       source_prev=getattr(self, 'source', None),
       v_target_prev=getattr(self, 'output_v_target', None),
+      allow_scc_curve_targets=scc_curve_actuation_allowed,
     )
     return self.output_v_target, self.output_a_target
 
@@ -528,6 +543,10 @@ class LongitudinalPlannerSP:
   def _resolve_custom_v2_policy_decision(self, sunnypilot_output: LongitudinalStackOutput,
                                          accel_limits: tuple[float | None, float | None]):
     scene = getattr(self, "custom_v2_scene", CustomV2Scene())
+    mode_resolution = getattr(self, "longitudinal_mode_resolution", DEFAULT_LONGITUDINAL_MODE_RESOLUTION)
+    direct_actuation = mode_resolution.actuation_type == LongitudinalActuationType.DIRECT
+    scc_curve_direct = bool(mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC and direct_actuation)
+    e2e_or_scc_direct = bool(mode_resolution.requested_mode in (LongitudinalMode.E2E, LongitudinalMode.SCC) and direct_actuation)
     driver_candidates = tuple(
       candidate for candidate in getattr(self, "decision_candidates_sp", ())
       if candidate.role == CandidateRole.DRIVER_INTENT
@@ -541,7 +560,12 @@ class LongitudinalPlannerSP:
     if one_pedal_candidate is not None:
       provider_candidates = replace_driver_intent(provider_candidates, one_pedal_candidate)
 
-    advisory_candidates, advisory_rejected = build_custom_v2_advisory_candidates(scene)
+    advisory_candidates, advisory_rejected = build_custom_v2_advisory_candidates(
+      scene,
+      allow_speed_limit=e2e_or_scc_direct,
+      allow_map_caution=e2e_or_scc_direct,
+      allow_curve=scc_curve_direct,
+    )
     if one_pedal_active:
       extra_rejected.extend((
         (str(candidate.debug.get("custom_v2_intent", "driver_cruise")), "one_pedal_active")
@@ -578,7 +602,11 @@ class LongitudinalPlannerSP:
 
     progress_candidates: tuple[LongitudinalCandidate, ...] = ()
     if not one_pedal_active:
-      progress_candidates, progress_rejected = build_custom_v2_progress_candidates(sunnypilot_output, scene, accel_limits)
+      progress_candidates, progress_rejected = build_custom_v2_progress_candidates(
+        sunnypilot_output, scene, accel_limits,
+        allow_no_lead_progress=mode_resolution.e2e_like,
+        allow_lead_progress=direct_actuation,
+      )
       extra_rejected.extend(progress_rejected)
 
     candidates = (*provider_candidates, *advisory_candidates, *physical_candidates, *progress_candidates)

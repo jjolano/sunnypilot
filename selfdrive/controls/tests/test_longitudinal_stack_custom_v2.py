@@ -1082,3 +1082,36 @@ def test_one_pedal_cruise_hold_escape_uses_normal_custom_v2_policy():
   assert output.a_target == custom_v2._no_lead_launch_accel_max(scene)
   assert output.debug["custom_v2_selected_intent"] == "launch"
   assert "temporary_cruise_hold" in output.debug["custom_v2_rejected_reasons"]
+
+
+def test_no_policy_fallback_respects_scene_mode_boundary_flags():
+  scene = CustomV2Scene(
+    v_ego=2.0,
+    v_cruise=8.0,
+    accel_coast=-0.25,
+    model_stop_distance=30.0,
+    model_desired_accel=0.0,
+    speed_limit_active=True,
+    speed_limit_v_target=1.0,
+    speed_limit_a_target=-0.5,
+    curve_active=True,
+    curve_a_target=-0.7,
+    map_caution_active=True,
+    map_caution_confirmed=True,
+    map_caution_a_target=-0.9,
+    allow_speed_limit_advisory=False,
+    allow_curve_advisory=False,
+    allow_map_caution_advisory=False,
+    allow_no_lead_progress=False,
+    allow_lead_progress=False,
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(0.4), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.a_target == 0.4
+  assert output.debug["custom_v2_selected_intent"] == "driver_cruise"
+  assert output.debug["custom_v2_rejected_intents"].count("speed_policy") == 1
+  assert output.debug["custom_v2_rejected_intents"].count("curve_policy") == 1
+  assert output.debug["custom_v2_rejected_intents"].count("map_caution") == 1
+  assert output.debug["custom_v2_rejected_intents"].count("launch") == 1
+  assert output.debug["custom_v2_rejected_reasons"].count("mode_boundary_blocked") == 4

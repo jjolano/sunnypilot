@@ -50,6 +50,54 @@ class DecCompatibilityState(Enum):
   BLENDED = "blended"
 
 
+class SccEvidenceTier(Enum):
+  NONE = "none"
+  SLOWDOWN = "slowdown"
+  STOP = "stop"
+  URGENT_STOP = "urgent_stop"
+
+
+@dataclass(frozen=True)
+class SccEvidenceAdvisory:
+  map_caution: bool = False
+  speed_limit_cap: bool = False
+  curve_cap: bool = False
+
+  @property
+  def status(self) -> tuple[str, ...]:
+    active: list[str] = []
+    if self.map_caution:
+      active.append("map_caution")
+    if self.speed_limit_cap:
+      active.append("speed_limit_cap")
+    if self.curve_cap:
+      active.append("curve_cap")
+    return tuple(active)
+
+
+@dataclass(frozen=True)
+class SccEvidenceResult:
+  tier: SccEvidenceTier = SccEvidenceTier.NONE
+  confidence: float = 0.0
+  urgency: float = 0.0
+  reason: str = "scc_no_evidence"
+  independent_of_lead: bool = False
+  confirmed_lead: bool = False
+  advisory: SccEvidenceAdvisory = field(default_factory=SccEvidenceAdvisory)
+
+  @property
+  def e2e_active(self) -> bool:
+    if self.tier == SccEvidenceTier.NONE:
+      return False
+    if not self.confirmed_lead:
+      return True
+    return bool(self.tier == SccEvidenceTier.URGENT_STOP and self.independent_of_lead)
+
+  @property
+  def advisory_status(self) -> tuple[str, ...]:
+    return self.advisory.status
+
+
 @dataclass(frozen=True)
 class SccModeEvidence:
   confirmed_lead: bool = False
@@ -58,15 +106,68 @@ class SccModeEvidence:
   map_control: bool = False
   speed_limit_control: bool = False
   traffic_control: bool = False
+  model_slowdown: bool = False
+  urgent_stop: bool = False
+  independent_of_lead: bool = False
+  confidence: float | None = None
+  urgency: float | None = None
+  evidence_reason: str = ""
+
+  def classify(self) -> SccEvidenceResult:
+    advisory = SccEvidenceAdvisory(
+      map_caution=bool(self.traffic_control),
+      speed_limit_cap=bool(self.speed_limit_control),
+      curve_cap=bool(self.curve_control or self.map_control),
+    )
+    if self.urgent_stop:
+      return SccEvidenceResult(
+        tier=SccEvidenceTier.URGENT_STOP,
+        confidence=_bounded_unit(self.confidence, 1.0),
+        urgency=_bounded_unit(self.urgency, 1.0),
+        reason=self.evidence_reason or "scc_urgent_stop",
+        independent_of_lead=bool(self.independent_of_lead),
+        confirmed_lead=bool(self.confirmed_lead),
+        advisory=advisory,
+      )
+    if self.model_stop:
+      return SccEvidenceResult(
+        tier=SccEvidenceTier.STOP,
+        confidence=_bounded_unit(self.confidence, 0.90),
+        urgency=_bounded_unit(self.urgency, 0.80),
+        reason=self.evidence_reason or "scc_model_stop",
+        independent_of_lead=bool(self.independent_of_lead),
+        confirmed_lead=bool(self.confirmed_lead),
+        advisory=advisory,
+      )
+    if self.model_slowdown:
+      return SccEvidenceResult(
+        tier=SccEvidenceTier.SLOWDOWN,
+        confidence=_bounded_unit(self.confidence, 0.65),
+        urgency=_bounded_unit(self.urgency, 0.45),
+        reason=self.evidence_reason or "scc_model_slowdown",
+        independent_of_lead=bool(self.independent_of_lead),
+        confirmed_lead=bool(self.confirmed_lead),
+        advisory=advisory,
+      )
+    return SccEvidenceResult(
+      tier=SccEvidenceTier.NONE,
+      confidence=0.0,
+      urgency=0.0,
+      reason=self.evidence_reason or _scc_advisory_reason(advisory),
+      independent_of_lead=False,
+      confirmed_lead=bool(self.confirmed_lead),
+      advisory=advisory,
+    )
 
   @property
   def e2e_active(self) -> bool:
-    return bool(self.model_stop and not self.confirmed_lead)
+    return self.classify().e2e_active
 
   @property
   def reason(self) -> str:
-    if self.e2e_active:
-      return "scc_model_stop"
+    classification = self.classify()
+    if classification.e2e_active:
+      return classification.reason
     if self.confirmed_lead:
       return "scc_confirmed_lead"
     if self.traffic_control:
@@ -80,6 +181,29 @@ class SccModeEvidence:
     return "scc_cruise"
 
 
+def _bounded_unit(value: float | None, default: float) -> float:
+  if value is None:
+    value = default
+  else:
+    try:
+      value = float(value)
+    except (TypeError, ValueError):
+      value = default
+  if value != value:
+    value = default
+  return max(0.0, min(1.0, value))
+
+
+def _scc_advisory_reason(advisory: SccEvidenceAdvisory) -> str:
+  if advisory.map_caution:
+    return "scc_map_caution"
+  if advisory.speed_limit_cap:
+    return "scc_speed_limit_cap"
+  if advisory.curve_cap:
+    return "scc_curve_cap"
+  return "scc_no_evidence"
+
+
 @dataclass(frozen=True)
 class LongitudinalModeResolution:
   requested_mode: LongitudinalMode
@@ -89,6 +213,7 @@ class LongitudinalModeResolution:
   compatibility_alias_state: DecCompatibilityState = DecCompatibilityState.ACC
   unsupported_reason: str = ""
   debug: dict[str, str] = field(default_factory=dict)
+  scc_evidence: SccEvidenceResult = field(default_factory=SccEvidenceResult)
 
   @property
   def acc_like(self) -> bool:
@@ -168,6 +293,12 @@ def legacy_longitudinal_mode_params_ignored(params: Any) -> bool:
   return longitudinal_mode_migration_current(params)
 
 
+def longitudinal_mode_degraded_reason(params: Any) -> str:
+  if longitudinal_mode_migration_current(params) and not longitudinal_mode_source_of_truth_exists(params):
+    return "migration_current_missing_mode"
+  return ""
+
+
 def requested_mode_from_params(params: Any) -> LongitudinalMode:
   parsed = _parse_mode(_param_get(params, LONGITUDINAL_MODE_PARAM))
   if parsed is not None:
@@ -226,16 +357,21 @@ def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_evidenc
                               unsupported_reason: str = "", restriction_status: tuple[str, ...] = ()) -> LongitudinalModeResolution:
   requested = requested_mode_from_params(params)
   actuation = LongitudinalActuationType.DIRECT if _has_direct_longitudinal_control(CP) else LongitudinalActuationType.SET_SPEED_ADVISORY
+  degraded_reason = longitudinal_mode_degraded_reason(params)
+  effective_unsupported_reason = unsupported_reason or degraded_reason
+  effective_restriction_status = restriction_status
+  if degraded_reason and degraded_reason not in effective_restriction_status:
+    effective_restriction_status = (*effective_restriction_status, degraded_reason)
 
   if actuation == LongitudinalActuationType.SET_SPEED_ADVISORY:
     return LongitudinalModeResolution(
       requested_mode=requested,
       resolved_implementation=ResolvedLongitudinalImplementation.ICBM_ADVISORY,
       actuation_type=actuation,
-      restriction_status=restriction_status,
+      restriction_status=effective_restriction_status,
       compatibility_alias_state=DecCompatibilityState.ACC,
-      unsupported_reason=unsupported_reason,
-      debug={"reason": unsupported_reason or "set_speed_advisory"},
+      unsupported_reason=effective_unsupported_reason,
+      debug={"reason": effective_unsupported_reason or "set_speed_advisory"},
     )
 
   if requested == LongitudinalMode.E2E:
@@ -243,24 +379,26 @@ def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_evidenc
       requested_mode=requested,
       resolved_implementation=ResolvedLongitudinalImplementation.E2E,
       actuation_type=actuation,
-      restriction_status=restriction_status,
+      restriction_status=effective_restriction_status,
       compatibility_alias_state=DecCompatibilityState.BLENDED,
-      unsupported_reason=unsupported_reason,
-      debug={"reason": unsupported_reason or "requested_e2e"},
+      unsupported_reason=effective_unsupported_reason,
+      debug={"reason": effective_unsupported_reason or "requested_e2e"},
     )
 
   if requested == LongitudinalMode.SCC:
     scc_evidence = scc_evidence or SccModeEvidence()
-    scc_e2e_active = scc_evidence.e2e_active
+    scc_evidence_result = scc_evidence.classify()
+    scc_e2e_active = scc_evidence_result.e2e_active
     resolved = ResolvedLongitudinalImplementation.SCC_E2E if scc_e2e_active else ResolvedLongitudinalImplementation.SCC_ACC
     return LongitudinalModeResolution(
       requested_mode=requested,
       resolved_implementation=resolved,
       actuation_type=actuation,
-      restriction_status=restriction_status,
+      restriction_status=effective_restriction_status,
       compatibility_alias_state=DecCompatibilityState.BLENDED if scc_e2e_active else DecCompatibilityState.ACC,
-      unsupported_reason=unsupported_reason,
-      debug={"reason": unsupported_reason or scc_evidence.reason},
+      unsupported_reason=effective_unsupported_reason,
+      debug={"reason": effective_unsupported_reason or scc_evidence.reason},
+      scc_evidence=scc_evidence_result,
     )
 
   resolved = ResolvedLongitudinalImplementation.MODEL_ACC if _radar_unavailable(CP) else ResolvedLongitudinalImplementation.HARDWARE_ACC
@@ -268,10 +406,10 @@ def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_evidenc
     requested_mode=LongitudinalMode.ACC,
     resolved_implementation=resolved,
     actuation_type=actuation,
-    restriction_status=restriction_status,
+    restriction_status=effective_restriction_status,
     compatibility_alias_state=DecCompatibilityState.ACC,
-    unsupported_reason=unsupported_reason,
-    debug={"reason": unsupported_reason or resolved.value},
+    unsupported_reason=effective_unsupported_reason,
+    debug={"reason": effective_unsupported_reason or resolved.value},
   )
 
 

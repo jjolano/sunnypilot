@@ -269,6 +269,13 @@ def _is_close_or_closing(state: LeadRelevanceState) -> bool:
   )
 
 
+def _stable_lead_progress_allowed(d_rel: float, v_lead: float, v_rel: float, time_gap: float) -> bool:
+  opening_or_pullaway = v_rel > 0.15 or (v_lead > 0.2 and v_rel > 0.05)
+  stopped_without_pullaway = v_lead <= 0.2 and v_rel <= 0.15
+  gap_safe = d_rel > LEAD_CONTEXT_CLOSE_DISTANCE and time_gap > LEAD_CONTEXT_CLOSE_TIME_GAP
+  return bool(opening_or_pullaway or (gap_safe and not stopped_without_pullaway))
+
+
 class LeadShadowTracker:
   def __init__(self, lead_idx: int):
     self.lead_idx = int(lead_idx)
@@ -430,7 +437,7 @@ class LeadContextTracker:
     ghost = _ghost_score(on_path, risk, confidence, model_prob, radar)
     prediction = lead_prediction(d_rel, v_lead, finite_float(getattr(lead, "aLeadK", 0.0)), v_ego, True)
     authority, reason = self._authority_for_real_lead(idx, confidence_state, path_y_rel, on_path, risk, required_decel, ttc,
-                                                      v_rel, model_prob, confidence, ghost)
+                                                      d_rel, v_lead, v_rel, time_gap, model_prob, confidence, ghost)
     return LeadRelevanceState(
       lead_idx=idx,
       status=True,
@@ -496,11 +503,12 @@ class LeadContextTracker:
     )
 
   def _authority_for_real_lead(self, idx: int, confidence_state: LeadConfidenceState, path_y_rel: float, on_path: float,
-                               risk: float, required_decel: float, ttc: float, v_rel: float, model_prob: float,
-                               confidence: float, ghost: float) -> tuple[str, str]:
+                               risk: float, required_decel: float, ttc: float, d_rel: float, v_lead: float,
+                               v_rel: float, time_gap: float, model_prob: float, confidence: float,
+                               ghost: float) -> tuple[str, str]:
     close_or_closing = bool(required_decel >= LEAD_CONTEXT_RISK_REQUIRED_DECEL or ttc <= LEAD_CONTEXT_RISK_TTC or risk >= 0.35)
     low_risk_path_exit = self._false_positive_release_timers[idx] >= LEAD_CONTEXT_FALSE_POSITIVE_HOLD
-    if low_risk_path_exit and not close_or_closing:
+    if low_risk_path_exit and (not close_or_closing or abs(path_y_rel) >= LEAD_CONTEXT_PATH_EXIT_Y):
       return LEAD_AUTHORITY_NONE, "lateral_exit_confirmed"
     if abs(path_y_rel) >= LEAD_CONTEXT_NEW_FAR_Y_REL and not close_or_closing and model_prob < LEAD_CONTEXT_NEW_FAR_MODEL_PROB:
       return LEAD_AUTHORITY_NONE, "path_relevance_low"
@@ -512,10 +520,10 @@ class LeadContextTracker:
       return LEAD_AUTHORITY_NONE, "new_low_relevance_lead"
     if on_path <= 0.0 and not close_or_closing:
       return LEAD_AUTHORITY_SUPPRESS_ONLY, "path_exit_pending_release"
-    if confidence_state.stable and on_path > 0.0 and ghost < 0.8:
-      return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_path_relevant_lead"
     if close_or_closing:
       return LEAD_AUTHORITY_PHYSICAL, "close_or_closing_lead"
+    if confidence_state.stable and on_path > 0.0 and ghost < 0.8 and _stable_lead_progress_allowed(d_rel, v_lead, v_rel, time_gap):
+      return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_progress_authorized_lead"
     if on_path > 0.0 and confidence >= 0.45:
       return LEAD_AUTHORITY_PHYSICAL, "path_relevant_physical_lead"
     return LEAD_AUTHORITY_NONE, "weak_lead_evidence"
@@ -529,7 +537,8 @@ class LeadContextTracker:
     moving_out = abs_y >= prev_abs_y - 0.02
     low_risk = state.required_decel < LEAD_CONTEXT_NEW_FAR_REQUIRED_DECEL and (math.isinf(state.ttc) or state.ttc > LEAD_CONTEXT_RISK_TTC)
     weak_signal = state.model_prob < 0.6 or state.confidence < 0.55
-    release_evidence = abs_y >= LEAD_CONTEXT_PATH_EXIT_Y and moving_out and low_risk and weak_signal
+    previously_released = self._false_positive_release_timers[idx] >= LEAD_CONTEXT_FALSE_POSITIVE_HOLD
+    release_evidence = abs_y >= LEAD_CONTEXT_PATH_EXIT_Y and moving_out and ((low_risk and weak_signal) or previously_released)
     if release_evidence:
       self._false_positive_release_timers[idx] += dt
     else:

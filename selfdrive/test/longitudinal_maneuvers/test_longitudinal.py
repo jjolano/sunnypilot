@@ -1002,16 +1002,17 @@ def test_lateral_lead_exit_hands_off_to_revealed_stopped_lead():
   assert np.min(output[reveal_window, 5]) < -1.0
   assert np.min(output[handoff_window, 8]) > 4.0
 
-def test_lateral_exited_slowing_lead_does_not_force_hard_brake():
+def test_lateral_exited_slowing_lead_keeps_mpc_safety_obstacle():
   exiting_output = run_lateral_exit_slowing_simulation([0.0, 0.0, 2.2, 2.2, 2.2])
   in_path_output = run_lateral_exit_slowing_simulation([0.0, 0.0, 0.0, 0.0, 0.0])
 
   release_window = (exiting_output[:, 0] >= 3.8) & (exiting_output[:, 0] <= 5.5)
   in_path_window = (in_path_output[:, 0] >= 3.8) & (in_path_output[:, 0] <= 5.5)
 
-  assert np.min(exiting_output[release_window, 5]) > -0.8
+  assert np.min(exiting_output[:, 6]) > STOP_DISTANCE
+  assert np.min(exiting_output[release_window, 5]) < -1.0
   assert np.min(in_path_output[in_path_window, 5]) < -1.5
-  assert np.min(exiting_output[release_window, 5]) > np.min(in_path_output[in_path_window, 5]) + 1.0
+  assert np.min(exiting_output[release_window, 5]) > np.min(in_path_output[in_path_window, 5])
 
 
 def test_curved_lane_closing_lead_keeps_stop_threat_braking():

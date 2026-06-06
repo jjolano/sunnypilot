@@ -347,6 +347,13 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     restrictionStatus @3 :List(Text);
     unsupportedReason @4 :Text;
     compatibilityAliasState @5 :CompatibilityAliasState;
+    evidenceTier @6 :Text;
+    evidenceReason @7 :Text;
+    evidenceConfidence @8 :Float32;
+    evidenceUrgency @9 :Float32;
+    independentOfLead @10 :Bool;
+    evidenceAdvisories @11 :List(Text);
+    confirmedLead @12 :Bool;
 
     enum Mode {
       acc @0;

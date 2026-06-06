@@ -5,6 +5,7 @@ import pytest
 from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceState
 from openpilot.selfdrive.controls.lib.lead_context import (
   LEAD_AUTHORITY_NONE,
+  LEAD_AUTHORITY_PHYSICAL,
   LEAD_AUTHORITY_PROGRESS_ALLOWED,
   LEAD_AUTHORITY_SUPPRESS_ONLY,
   LEAD_CONTEXT_SHADOW_NORMAL_TIME,
@@ -88,6 +89,47 @@ def test_lead1_stable_on_path_can_be_primary_behavior_lead():
   assert context.behavior.authority == LEAD_AUTHORITY_PROGRESS_ALLOWED
   assert context.lead_progress_allowed
   assert context.behavior.v_rel == pytest.approx(1.0)
+
+
+def test_stable_close_closing_lead_is_not_progress_allowed():
+  close_closing = make_lead(track_id=10, d_rel=12.0, v_lead=5.0, v_rel=-2.0, y_rel=0.0)
+
+  context = LeadContextTracker().update((close_closing, NO_LEAD), (stable_conf(10), empty_conf()), v_ego=7.0, dt=0.1)
+
+  assert context.physical_idx == 0
+  assert context.behavior_idx is None
+  assert context.physical.authority == LEAD_AUTHORITY_PHYSICAL
+  assert not context.lead_progress_allowed
+
+
+def test_stable_stopped_lead_without_pullaway_is_not_progress_allowed():
+  stopped = make_lead(track_id=10, d_rel=10.0, v_lead=0.0, v_rel=0.0, y_rel=0.0)
+
+  context = LeadContextTracker().update((stopped, NO_LEAD), (stable_conf(10), empty_conf()), v_ego=0.2, dt=0.1)
+
+  assert context.physical_idx == 0
+  assert context.behavior_idx is None
+  assert not context.lead_progress_allowed
+
+
+def test_stable_matched_speed_close_lead_is_not_progress_allowed():
+  matched_close = make_lead(track_id=10, d_rel=18.0, v_lead=8.0, v_rel=0.0, y_rel=0.0)
+
+  context = LeadContextTracker().update((matched_close, NO_LEAD), (stable_conf(10), empty_conf()), v_ego=8.0, dt=0.1)
+
+  assert context.physical_idx == 0
+  assert context.behavior_idx is None
+  assert not context.lead_progress_allowed
+
+
+def test_stable_opening_safe_gap_lead_is_progress_allowed():
+  opening = make_lead(track_id=10, d_rel=30.0, v_lead=11.0, v_rel=1.0, y_rel=0.0)
+
+  context = LeadContextTracker().update((opening, NO_LEAD), (stable_conf(10), empty_conf()), v_ego=10.0, dt=0.1)
+
+  assert context.behavior_idx == 0
+  assert context.behavior.authority == LEAD_AUTHORITY_PROGRESS_ALLOWED
+  assert context.lead_progress_allowed
 
 
 def test_lead1_primary_physical_blocks_progress_without_behavior_authority():
@@ -191,6 +233,23 @@ def test_lateral_false_positive_releases_after_persistent_low_risk_path_exit():
   assert released.physical_idx is None
   assert released.states[0].authority == LEAD_AUTHORITY_NONE
   assert released.states[0].reason == "lateral_exit_confirmed"
+
+
+def test_lateral_false_positive_release_persists_when_exited_lead_slows():
+  tracker = LeadContextTracker()
+  exiting_lead = make_lead(track_id=5, d_rel=35.0, v_lead=10.0, v_rel=1.0, y_rel=2.0, model_prob=0.55, radar=False)
+  weak_conf = LeadConfidenceState(status=True, speed_trusted=False, radar=False, track_id=5)
+
+  tracker.update((exiting_lead, NO_LEAD), (weak_conf, empty_conf()), v_ego=9.0, dt=0.1)
+  tracker.update((exiting_lead, NO_LEAD), (weak_conf, empty_conf()), v_ego=9.0, dt=0.1)
+  released = tracker.update((exiting_lead, NO_LEAD), (weak_conf, empty_conf()), v_ego=9.0, dt=0.1)
+  slowing_exited = make_lead(track_id=5, d_rel=35.0, v_lead=5.0, v_rel=-4.0, y_rel=2.0, model_prob=0.55, radar=False)
+
+  still_released = tracker.update((slowing_exited, NO_LEAD), (weak_conf, empty_conf()), v_ego=9.0, dt=0.1)
+
+  assert released.states[0].authority == LEAD_AUTHORITY_NONE
+  assert still_released.states[0].authority == LEAD_AUTHORITY_NONE
+  assert still_released.physical_idx is None
 
 
 def test_no_status_fake_mpc_fallback_lead_never_becomes_primary():

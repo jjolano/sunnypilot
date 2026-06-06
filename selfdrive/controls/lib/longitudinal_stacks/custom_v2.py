@@ -174,6 +174,11 @@ class CustomV2Scene:
   fast_lead_motion_evidence_enabled: bool = False
   fast_lead_motion_opening: bool = False
   fast_lead_motion_moving: bool = False
+  allow_speed_limit_advisory: bool = True
+  allow_curve_advisory: bool = True
+  allow_map_caution_advisory: bool = True
+  allow_no_lead_progress: bool = True
+  allow_lead_progress: bool = True
 
 
 @dataclass(frozen=True)
@@ -335,7 +340,8 @@ class CustomLongitudinalStackV2:
     elif not blocked and not stop_active and progress_floors_allowed:
       a_target, selected_intent, selected_reason = self._apply_progress_floors(
         a_target, selected_intent, selected_reason, scene, accel_limits, rejected,
-        allow_lead_progress=not scene.stop_threat,
+        allow_no_lead_progress=scene.allow_no_lead_progress,
+        allow_lead_progress=scene.allow_lead_progress and not scene.stop_threat,
       )
     elif not blocked and not stop_active:
       rejected.append((selected_intent, "planner_seed_preserved"))
@@ -496,7 +502,8 @@ class CustomLongitudinalStackV2:
 
   def _apply_progress_floors(self, a_target: float, selected_intent: str, selected_reason: str,
                               scene: CustomV2Scene, accel_limits: tuple[float | None, float | None],
-                              rejected: list[tuple[str, str]], allow_lead_progress: bool = True) -> tuple[float, str, str]:
+                              rejected: list[tuple[str, str]], allow_no_lead_progress: bool = True,
+                              allow_lead_progress: bool = True) -> tuple[float, str, str]:
     cruise_a = _dynamic_cruise_coast_accel(scene, a_target)
     if cruise_a > a_target:
       a_target = cruise_a
@@ -508,7 +515,9 @@ class CustomLongitudinalStackV2:
       rejected.append(("launch", "cruise_not_above_ego"))
       return a_target, selected_intent, selected_reason
 
-    if not scene.has_lead and scene.v_ego < NO_LEAD_LAUNCH_MAX_V_EGO:
+    if not scene.has_lead and not allow_no_lead_progress:
+      rejected.append(("launch", "mode_boundary_blocked"))
+    elif not scene.has_lead and scene.v_ego < NO_LEAD_LAUNCH_MAX_V_EGO:
       if no_lead_stop_clear(scene):
         a_target, selected_intent, selected_reason = _apply_floor(
           a_target, selected_intent, selected_reason, _no_lead_launch_accel_max(scene),
@@ -540,7 +549,9 @@ class CustomLongitudinalStackV2:
 
   def _apply_advisory_caps(self, a_target: float, selected_intent: str, selected_reason: str,
                            scene: CustomV2Scene, rejected: list[tuple[str, str]]) -> tuple[float, str, str]:
-    if scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego:
+    if scene.speed_limit_active and not scene.allow_speed_limit_advisory:
+      rejected.append(("speed_policy", "mode_boundary_blocked"))
+    elif scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego:
       cap = min(0.0, max(scene.speed_limit_a_target, scene.accel_coast))
       a_target, selected_intent, selected_reason = _apply_cap(
         a_target, selected_intent, selected_reason, cap, "speed_policy", "coast_biased_speed_reduction",
@@ -548,7 +559,9 @@ class CustomLongitudinalStackV2:
     elif scene.speed_limit_active:
       rejected.append(("speed_policy", "no_speed_reduction_needed"))
 
-    if scene.map_caution_active:
+    if scene.map_caution_active and not scene.allow_map_caution_advisory:
+      rejected.append(("map_caution", "mode_boundary_blocked"))
+    elif scene.map_caution_active:
       if scene.map_caution_confirmed:
         cap = min(0.0, scene.map_caution_a_target)
         a_target, selected_intent, selected_reason = _apply_cap(
@@ -557,7 +570,9 @@ class CustomLongitudinalStackV2:
       else:
         rejected.append(("map_caution", "map_only_ignored"))
 
-    if scene.curve_active:
+    if scene.curve_active and not scene.allow_curve_advisory:
+      rejected.append(("curve_policy", "mode_boundary_blocked"))
+    elif scene.curve_active:
       a_target, selected_intent, selected_reason = _apply_cap(
         a_target, selected_intent, selected_reason, scene.curve_a_target,
         "curve_policy", "existing_custom_curve_thresholds",
@@ -636,12 +651,16 @@ def build_force_slow_candidate(output: LongitudinalStackOutput, scene: CustomV2S
   )
 
 
-def build_custom_v2_advisory_candidates(scene: CustomV2Scene) -> tuple[tuple[LongitudinalCandidate, ...], tuple[tuple[str, str], ...]]:
+def build_custom_v2_advisory_candidates(scene: CustomV2Scene, *, allow_speed_limit: bool = True,
+                                        allow_curve: bool = True,
+                                        allow_map_caution: bool = True) -> tuple[tuple[LongitudinalCandidate, ...], tuple[tuple[str, str], ...]]:
   scene = _validated_scene(scene)
   candidates: list[LongitudinalCandidate] = []
   rejected: list[tuple[str, str]] = []
 
-  if scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego:
+  if scene.speed_limit_active and not allow_speed_limit:
+    rejected.append(("speed_policy", "mode_boundary_blocked"))
+  elif scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego:
     cap = min(0.0, max(scene.speed_limit_a_target, scene.accel_coast))
     candidates.append(custom_v2_candidate_with_debug(
       LongitudinalCandidate(
@@ -660,7 +679,9 @@ def build_custom_v2_advisory_candidates(scene: CustomV2Scene) -> tuple[tuple[Lon
   elif scene.speed_limit_active:
     rejected.append(("speed_policy", "no_speed_reduction_needed"))
 
-  if scene.map_caution_active:
+  if scene.map_caution_active and not allow_map_caution:
+    rejected.append(("map_caution", "mode_boundary_blocked"))
+  elif scene.map_caution_active:
     if scene.map_caution_confirmed:
       candidates.append(custom_v2_candidate_with_debug(
         LongitudinalCandidate(
@@ -679,7 +700,9 @@ def build_custom_v2_advisory_candidates(scene: CustomV2Scene) -> tuple[tuple[Lon
     else:
       rejected.append(("map_caution", "map_only_ignored"))
 
-  if scene.curve_active:
+  if scene.curve_active and not allow_curve:
+    rejected.append(("curve_policy", "mode_boundary_blocked"))
+  elif scene.curve_active:
     candidates.append(custom_v2_candidate_with_debug(
       LongitudinalCandidate(
         source=DecisionSource.SCC_VISION,
@@ -699,12 +722,16 @@ def build_custom_v2_advisory_candidates(scene: CustomV2Scene) -> tuple[tuple[Lon
 
 
 def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: CustomV2Scene,
-                                        accel_limits: tuple[float | None, float | None]) -> tuple[tuple[LongitudinalCandidate, ...], tuple[tuple[str, str], ...]]:
+                                        accel_limits: tuple[float | None, float | None], *,
+                                        allow_no_lead_progress: bool = True,
+                                        allow_lead_progress: bool = True) -> tuple[tuple[LongitudinalCandidate, ...], tuple[tuple[str, str], ...]]:
   # These are custom-v2 scene-derived RELAXATION candidates, intentionally allowed
   # in addition to planner seeds. They are subordinate progress floors, not safety
   # authority, so LongitudinalDecisionCore must rank them below physical hazards
   # and advisory caps. Caller-owned one-pedal handling bypasses them; this builder
   # also blocks them for force_slow, driver brake/gas, and active stop threats.
+  # lead_progress_allowed is the only field that may authorize lead-derived positive progress;
+  # has_lead alone must never authorize lead progress.
   scene = _validated_scene(scene)
   candidates: list[LongitudinalCandidate] = []
   rejected: list[tuple[str, str]] = []
@@ -728,7 +755,9 @@ def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: 
     rejected.append(("launch", "cruise_not_above_ego"))
     return tuple(candidates), tuple(rejected)
 
-  if not scene.has_lead and scene.v_ego < NO_LEAD_LAUNCH_MAX_V_EGO:
+  if not scene.has_lead and not allow_no_lead_progress:
+    rejected.append(("launch", "mode_boundary_blocked"))
+  elif not scene.has_lead and scene.v_ego < NO_LEAD_LAUNCH_MAX_V_EGO:
     if no_lead_stop_clear(scene):
       candidates.append(_custom_v2_relaxation_candidate(
         DecisionSource.STOP_LAUNCH, "launch", "no_lead_stop_clear", scene,
@@ -737,7 +766,7 @@ def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: 
     else:
       rejected.append(("launch", "model_stop_not_clear"))
 
-  lead_progress_allowed = scene.lead_progress_allowed and not scene.independent_stop_threat and \
+  lead_progress_allowed = allow_lead_progress and scene.lead_progress_allowed and not scene.independent_stop_threat and \
     not scene.alternate_lead_threat_active and not (
     scene.has_lead and output.a_target < 0.0 and scene.lead_v_rel >= 0.0
   )

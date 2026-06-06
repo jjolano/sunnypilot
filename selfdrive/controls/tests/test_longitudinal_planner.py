@@ -3,14 +3,21 @@ import math
 
 import numpy as np
 import pytest
-from cereal import car
+from cereal import car, log
 from opendbc.car.car_helpers import interfaces
-from opendbc.car.interfaces import ACCEL_MAX
+from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from opendbc.car.toyota.values import CAR as TOYOTA
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.constants import CV
+from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
+from openpilot.selfdrive.controls.lib.longitudinal_decision import DecisionSource, LongitudinalArbiter
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, ResolvedLongitudinalImplementation
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import SUNNYPILOT_CURRENT, StackResolution
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanSource as LongitudinalPlanSourceSP
+from openpilot.selfdrive.modeld.constants import ModelConstants
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   build_scc_mode_evidence,
@@ -121,6 +128,310 @@ class FakeSubMaster(dict):
 
   def all_checks(self, service_list):
     return True
+
+
+class FakeEvents:
+  def __init__(self):
+    self.names = []
+
+  def add(self, event):
+    self.names.append(event)
+
+  def clear(self):
+    self.names.clear()
+
+
+class FakeModeParams:
+  def __init__(self, mode: LongitudinalMode):
+    self.mode = mode
+
+  def get(self, key, *args, **kwargs):
+    if key == "LongitudinalMode":
+      return str(int(self.mode))
+    return None
+
+  def get_bool(self, key):
+    return False
+
+
+class FakeMpc:
+  def __init__(self):
+    self.source = LongitudinalPlanSource.cruise
+    self.v_solution = np.full(len(T_IDXS_MPC), 10.0)
+    self.a_solution = np.zeros(len(T_IDXS_MPC))
+    self.j_solution = np.zeros(len(T_IDXS_MPC) - 1)
+    self.crash_cnt = 0
+    self.solve_time = 0.0
+    self.dominant_obstacle_idx = None
+    self.lead_dominant_obstacle_idx = None
+    self.model_msgs = []
+
+  def set_weights(self, *args, **kwargs):
+    pass
+
+  def set_cur_state(self, *args, **kwargs):
+    pass
+
+  def update(self, *args, model_msg=None, **kwargs):
+    self.model_msgs.append(model_msg)
+
+
+class FakeSCC:
+  def __init__(self):
+    self.vision = SimpleNamespace(output_v_target=255.0, output_a_target=0.0, is_active=False, state=0)
+    self.map = SimpleNamespace(output_v_target=255.0, output_a_target=0.0, is_active=False, state=0)
+    self.update_count = 0
+
+  def update(self, *args, **kwargs):
+    self.update_count += 1
+
+
+class FakeResolver:
+  speed_limit_valid = False
+  speed_limit_last_valid = False
+  speed_limit = 0.0
+  speed_limit_final_last = 0.0
+  distance = 0.0
+
+  def update(self, *args, **kwargs):
+    pass
+
+
+class FakeSLA:
+  is_active = False
+  output_v_target = 255.0
+  output_a_target = 0.0
+
+  def update(self, *args, **kwargs):
+    pass
+
+
+class FakeOsmPrior:
+  active = False
+  output_v_target = 255.0
+  output_a_target = 0.0
+
+  def update(self, *args, **kwargs):
+    pass
+
+
+class PoisonModelField:
+  def __init__(self, path: str):
+    self.path = path
+
+  def _raise(self):
+    raise AssertionError(f"illegal model read: {self.path}")
+
+  def __getattr__(self, name):
+    raise AssertionError(f"illegal model read: {self.path}.{name}")
+
+  def __iter__(self):
+    self._raise()
+
+  def __len__(self):
+    self._raise()
+
+  def __getitem__(self, _idx):
+    self._raise()
+
+  def __bool__(self):
+    self._raise()
+
+  def __float__(self):
+    self._raise()
+
+
+class PoisonModel:
+  def __getattr__(self, name):
+    if name == "leadsV3":
+      return []
+    return PoisonModelField(f"modelV2.{name}")
+
+
+def make_full_update_sm(model, lead_status=False):
+  lead = SimpleNamespace(
+    status=lead_status, dRel=30.0 if lead_status else 100.0, vRel=-0.2 if lead_status else 0.0,
+    vLead=9.8 if lead_status else 0.0, vLeadK=9.8 if lead_status else 0.0, yRel=0.0,
+    modelProb=1.0 if lead_status else 0.0, radar=lead_status,
+  )
+  no_lead = SimpleNamespace(status=False, dRel=100.0, vRel=0.0, vLead=0.0, vLeadK=0.0, yRel=0.0, modelProb=0.0, radar=False)
+  return FakeSubMaster({
+    "carControl": SimpleNamespace(enabled=True, orientationNED=[0.0, 0.0, 0.0], cruiseControl=SimpleNamespace(override=False)),
+    "carState": SimpleNamespace(
+      vEgo=10.0,
+      vCruise=72.0,
+      vCruiseCluster=72.0,
+      standstill=False,
+      aEgo=0.0,
+      steeringAngleDeg=0.0,
+      buttonEvents=[],
+      gasPressed=False,
+      brakePressed=False,
+    ),
+    "controlsState": SimpleNamespace(longControlState=0, forceDecel=False),
+    "selfdriveState": SimpleNamespace(enabled=True, personality=0),
+    "liveParameters": SimpleNamespace(angleOffsetDeg=0.0, stiffnessFactor=1.0, steerRatio=15.0, roll=0.0),
+    "radarState": SimpleNamespace(leadOne=lead, leadTwo=no_lead),
+    "modelV2": model,
+  })
+
+
+def make_safe_model_msg():
+  xs = np.linspace(0.0, 120.0, ModelConstants.IDX_N).tolist()
+  return SimpleNamespace(
+    action=SimpleNamespace(desiredAcceleration=0.0, shouldStop=False),
+    position=SimpleNamespace(x=xs, y=[0.0 for _ in xs]),
+    velocity=SimpleNamespace(x=[10.0 for _ in xs]),
+    acceleration=SimpleNamespace(x=[0.0 for _ in xs]),
+    meta=SimpleNamespace(
+      disengagePredictions=SimpleNamespace(gasPressProbs=[0.0, 1.0]),
+      laneChangeState=log.LaneChangeState.off,
+    ),
+    leadsV3=[],
+  )
+
+
+def make_full_update_planner(mode=LongitudinalMode.ACC, radar_unavailable=False):
+  CP = get_test_cp()
+  CP.openpilotLongitudinalControl = True
+  CP.radarUnavailable = radar_unavailable
+  planner = LongitudinalPlanner.__new__(LongitudinalPlanner)
+  planner.CP = CP
+  planner.params = FakeModeParams(mode)
+  planner.mpc = FakeMpc()
+  planner.planner_seed_mpc = None
+  planner.VM = VehicleModel(CP)
+  planner.longitudinal_arbiter = LongitudinalArbiter()
+  planner.longitudinal_decision = None
+  planner.longitudinal_decision_candidates = []
+  planner.longitudinal_decision_telemetry = None
+  planner.planner_seed_candidates = []
+  planner.one_pedal_mode = 0
+  planner.fast_lead_motion_evidence_param_enabled = False
+  planner.one_pedal_cruise_hold_active = False
+  planner.events_sp = FakeEvents()
+  planner.e2e_alerts_helper = SimpleNamespace(green_light_alert=True, lead_depart_alert=True, update=lambda _sm, _events: None)
+  planner.scc = FakeSCC()
+  planner.resolver = FakeResolver()
+  planner.sla = FakeSLA()
+  planner.osm_traffic_control_prior = FakeOsmPrior()
+  planner.decision_candidates_sp = []
+  planner._speed_limit_handoff_active = False
+  planner._speed_limit_active_prev = False
+  planner.speed_limit_handoff_debug = {}
+  planner.source = LongitudinalPlanSourceSP.cruise
+  planner.output_v_target = 0.0
+  planner.longitudinal_stack_resolution = StackResolution(
+    requested_stack=SUNNYPILOT_CURRENT,
+    resolved_stack=SUNNYPILOT_CURRENT,
+    available_stacks=(SUNNYPILOT_CURRENT,),
+  )
+  planner.custom_longitudinal_stack = None
+  planner.longitudinal_stack_actuated_stack = SUNNYPILOT_CURRENT
+  planner.longitudinal_stack_fault_latched = False
+  planner.longitudinal_stack_fault_reason = ""
+  planner.longitudinal_stack_selected_intent = ""
+  planner.longitudinal_stack_selected_reason = ""
+  planner.longitudinal_stack_rejected = ()
+  planner.longitudinal_stack_seed_context = ""
+  planner.longitudinal_stack_seed_candidate = ""
+  planner.custom_v2_fault_latched = False
+  planner.custom_v2_fault_reason = ""
+  planner.fcw = False
+  planner.dt = 0.05
+  planner.allow_throttle = True
+  planner.a_desired = 0.0
+  planner.v_desired_filter = FirstOrderFilter(10.0, 2.0, planner.dt)
+  planner.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
+  planner.prev_reset_state = False
+  planner.engage_stop_bootstrap_timer = 0.0
+  planner.e2e_close_stop_settle_active = False
+  planner.output_a_target = 0.0
+  planner.output_should_stop = False
+  planner.creep_to_stop_gap_active = False
+  planner.creep_stop_hold_released = False
+  planner.stopped_lead_gap_fill_timer = 0.0
+  planner.lead_loss_e2e_guard_timer = 0.0
+  planner.previous_lead_loss_status = False
+  planner.previous_lead_loss_d_rel = 0.0
+  planner.previous_lead_loss_model_prob = 0.0
+  planner.stopped_lead_gap_fill_track_id = -2
+  planner.stopped_lead_gap_fill_d_rel = 0.0
+  planner.stopped_lead_gap_fill_v_lead = 0.0
+  planner.v_desired_trajectory = np.zeros(CONTROL_N)
+  planner.a_desired_trajectory = np.zeros(CONTROL_N)
+  planner.j_desired_trajectory = np.zeros(CONTROL_N)
+  planner.control_calculation_hardening = False
+  return planner
+
+
+def test_acc_hardware_full_update_does_not_touch_poison_model_fields():
+  planner = make_full_update_planner(LongitudinalMode.ACC, radar_unavailable=False)
+
+  planner.update(make_full_update_sm(PoisonModel()))
+
+  assert planner.mpc.model_msgs == [None]
+  assert planner.longitudinal_mode_resolution.requested_mode == LongitudinalMode.ACC
+
+
+def test_acc_full_update_with_physical_lead_does_not_touch_poison_model_fields():
+  planner = make_full_update_planner(LongitudinalMode.ACC, radar_unavailable=False)
+
+  planner.update(make_full_update_sm(PoisonModel(), lead_status=True))
+
+  assert planner.mpc.model_msgs == [None]
+  assert planner.longitudinal_mode_resolution.requested_mode == LongitudinalMode.ACC
+
+
+def test_model_acc_full_update_does_not_touch_poison_model_stop_path_or_curve_fields():
+  planner = make_full_update_planner(LongitudinalMode.ACC, radar_unavailable=True)
+
+  planner.update(make_full_update_sm(PoisonModel()))
+
+  assert planner.mpc.model_msgs == [None]
+  assert planner.longitudinal_mode_resolution.requested_mode == LongitudinalMode.ACC
+
+
+def test_e2e_full_update_poison_model_is_active():
+  planner = make_full_update_planner(LongitudinalMode.E2E, radar_unavailable=False)
+
+  with pytest.raises(AssertionError, match="illegal model read"):
+    planner.update(make_full_update_sm(PoisonModel()))
+
+
+def test_e2e_full_update_scene_disables_scc_curve_only_sources():
+  planner = make_full_update_planner(LongitudinalMode.E2E, radar_unavailable=False)
+  planner.scc.vision.is_active = True
+  planner.scc.vision.output_a_target = -1.0
+  planner.scc.map.is_active = True
+  planner.scc.map.output_a_target = -0.8
+
+  planner.update(make_full_update_sm(make_safe_model_msg()))
+
+  assert planner.custom_v2_scene.curve_active is False
+  assert planner.custom_v2_scene.curve_a_target == 0.0
+
+
+def test_scc_e2e_full_update_model_stop_disables_scc_curve_sources_same_cycle():
+  planner = make_full_update_planner(LongitudinalMode.SCC, radar_unavailable=False)
+  planner.scc.vision.is_active = True
+  planner.scc.vision.output_v_target = 5.0
+  planner.scc.vision.output_a_target = -1.2
+  planner.scc.map.is_active = True
+  planner.scc.map.output_v_target = 6.0
+  planner.scc.map.output_a_target = -1.0
+  model = make_safe_model_msg()
+  model.action.shouldStop = True
+  model.action.desiredAcceleration = -1.0
+
+  planner.update(make_full_update_sm(model))
+
+  assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_E2E
+  assert planner.scc.update_count == 0
+  assert planner.source == LongitudinalPlanSourceSP.cruise
+  assert planner.custom_v2_scene.curve_active is False
+  assert DecisionSource.SCC_VISION not in [candidate.source for candidate in planner.decision_candidates_sp]
+  assert DecisionSource.SCC_MAP not in [candidate.source for candidate in planner.decision_candidates_sp]
 
 
 def test_has_valid_radar_lead_checks_both_tracks():
