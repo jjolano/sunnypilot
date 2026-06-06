@@ -252,17 +252,21 @@ def select_curve_speed_policy_result(
   driver_v_target: float,
   driver_a_target: float = 0.0,
 ) -> CurveSpeedPolicyResult | None:
+  driver_v_target = float(driver_v_target) if _finite(driver_v_target) else 0.0
   driver = LongitudinalCandidate(
     source=DecisionSource.CRUISE,
     role=CandidateRole.DRIVER_INTENT,
-    v_target=float(driver_v_target),
+    v_target=driver_v_target,
     a_target=float(driver_a_target),
     confidence=1.0,
     urgency=0.0,
     active_reason="driver_set_speed",
   )
   pairs = [(result, result.to_candidate()) for result in results]
-  candidate_pairs = [(result, candidate) for result, candidate in pairs if candidate is not None]
+  candidate_pairs = [
+    (result, candidate) for result, candidate in pairs
+    if candidate is not None and candidate.v_target <= driver_v_target
+  ]
   if not candidate_pairs:
     return None
 
