@@ -59,6 +59,19 @@ def new_conf(track_id=1):
   )
 
 
+def flicker_conf(track_id=1):
+  return LeadConfidenceState(
+    status=True,
+    stable=True,
+    speed_trusted=True,
+    radar=True,
+    age=1.0,
+    accel_blend=1.0,
+    flicker_guard_timer=0.35,
+    track_id=track_id,
+  )
+
+
 def empty_conf():
   return LeadConfidenceState()
 
@@ -100,6 +113,10 @@ def test_stable_close_closing_lead_is_not_progress_allowed():
   assert context.behavior_idx is None
   assert context.physical.authority == LEAD_AUTHORITY_PHYSICAL
   assert not context.lead_progress_allowed
+  assert context.physical.risk_model.required_decel > 0.0
+  assert context.physical.risk_model.closing_speed > 0.0
+  assert context.physical.risk_model.gap_shortage > 0.0
+  assert context.physical.progress_model.reason == "stop_or_closing_threat"
 
 
 def test_stable_stopped_lead_without_pullaway_is_not_progress_allowed():
@@ -110,6 +127,8 @@ def test_stable_stopped_lead_without_pullaway_is_not_progress_allowed():
   assert context.physical_idx == 0
   assert context.behavior_idx is None
   assert not context.lead_progress_allowed
+  assert context.physical.risk_model.stopped_or_crawling
+  assert context.physical.progress_model.reason == "stop_or_closing_threat"
 
 
 def test_stable_matched_speed_close_lead_is_not_progress_allowed():
@@ -130,6 +149,51 @@ def test_stable_opening_safe_gap_lead_is_progress_allowed():
   assert context.behavior_idx == 0
   assert context.behavior.authority == LEAD_AUTHORITY_PROGRESS_ALLOWED
   assert context.lead_progress_allowed
+  assert context.behavior.progress_model.allowed
+  assert context.behavior.progress_model.opening_speed == pytest.approx(1.0)
+  assert context.behavior.progress_model.gap_excess > 0.0
+  assert context.behavior.progress_model.predicted_gap_opening
+
+
+def test_progress_model_requires_explicit_opening_pullaway_or_gap_evidence():
+  matched_gap = make_lead(track_id=10, d_rel=30.0, v_lead=10.0, v_rel=0.0, y_rel=0.0)
+
+  context = LeadContextTracker().update((matched_gap, NO_LEAD), (stable_conf(10), empty_conf()), v_ego=10.0, dt=0.1)
+
+  assert context.behavior_idx == 0
+  assert context.lead_progress_allowed
+  assert context.behavior.progress_model.gap_excess > 0.0
+  assert context.behavior.progress_model.reason == "opening_or_gap_progress"
+
+
+def test_new_and_flicker_leads_suppress_without_progress_authority():
+  opening_new = make_lead(track_id=10, d_rel=30.0, v_lead=11.0, v_rel=1.0, y_rel=0.0)
+  opening_flicker = make_lead(track_id=11, d_rel=30.0, v_lead=11.0, v_rel=1.0, y_rel=0.0)
+
+  new_context = LeadContextTracker().update((opening_new, NO_LEAD), (new_conf(10), empty_conf()), v_ego=10.0, dt=0.1)
+  flicker_context = LeadContextTracker().update((opening_flicker, NO_LEAD), (flicker_conf(11), empty_conf()), v_ego=10.0, dt=0.1)
+
+  assert new_context.physical.authority == LEAD_AUTHORITY_SUPPRESS_ONLY
+  assert not new_context.lead_progress_allowed
+  assert not new_context.physical.progress_model.allowed
+  assert new_context.physical.progress_model.reason == "insufficient_confidence_stability"
+  assert flicker_context.physical.authority == LEAD_AUTHORITY_SUPPRESS_ONLY
+  assert not flicker_context.lead_progress_allowed
+  assert not flicker_context.physical.progress_model.allowed
+  assert flicker_context.physical.progress_model.reason == "insufficient_confidence_stability"
+
+
+def test_primary_lead_debug_exposes_risk_and_progress_metrics():
+  opening = make_lead(track_id=10, d_rel=30.0, v_lead=11.0, v_rel=1.0, y_rel=0.0)
+
+  context = LeadContextTracker().update((opening, NO_LEAD), (stable_conf(10), empty_conf()), v_ego=10.0, dt=0.1)
+  debug = context.debug_dict()
+
+  assert debug["primary_lead_required_decel"] == pytest.approx(context.behavior.risk_model.required_decel)
+  assert debug["primary_lead_gap_shortage"] == pytest.approx(context.behavior.risk_model.gap_shortage)
+  assert debug["primary_lead_closing_speed"] == pytest.approx(context.behavior.risk_model.closing_speed)
+  assert debug["primary_lead_progress_reason"] == context.behavior.progress_model.reason
+  assert debug["primary_lead_predicted_gap_opening"] is True
 
 
 def test_lead1_primary_physical_blocks_progress_without_behavior_authority():
