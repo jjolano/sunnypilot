@@ -1,3 +1,11 @@
+"""Stack Selection policy seam.
+
+Stack Selection chooses the latched Custom Stack product/version for an onroad
+cycle.  It is deliberately separate from Longitudinal Mode and does not solve
+physical trajectories; Longitudinal MPC / Lead MPC remain responsible for lead
+and cruise feasibility.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
