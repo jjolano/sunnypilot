@@ -198,10 +198,13 @@ MOVING_LEAD_STOP_APPROACH_COST = 50.0
 MOVING_LEAD_STOP_APPROACH_MILD_RELAX_V_EGO_BP = [15.0, 18.0]
 MOVING_LEAD_STOP_APPROACH_MILD_RELAX_DECEL_BP = [0.3, 0.6]
 MOVING_LEAD_COMPRESSION_FLOOR_MARGIN = 1.0
+MOVING_LEAD_COMPRESSION_LOW_SPEED_FLOOR_MARGIN = 2.5
+MOVING_LEAD_COMPRESSION_FLOOR_MARGIN_V_EGO_BP = [5.0, 12.0]
 MOVING_LEAD_COMPRESSION_RELAX_GAP = 4.0
 MOVING_LEAD_COMPRESSION_ROUTINE_DECEL_BP = [0.7, 1.0]
 MOVING_LEAD_COMPRESSION_CLOSING_BP = [2.0, 3.0]
 MOVING_LEAD_COMPRESSION_TTC_BP = [1.0, 2.0]
+MOVING_LEAD_COMPRESSION_CLOSING_ACCEL_BP = [-0.3, 0.7]
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_RELAXED = 0.8
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_STANDARD = 1.0
 PRE_TARGET_RUNWAY_DECEL_THRESHOLD_AGGRESSIVE = 1.3
@@ -470,12 +473,27 @@ def get_lead_approach_gaps(v_ego, v_lead, t_follow, a_lead=0.0, stop_gap=STOP_DI
   return target_gap, caution_gap, danger_gap
 
 
+def get_moving_lead_compression_floor_margin(v_ego):
+  return np.interp(
+    v_ego,
+    MOVING_LEAD_COMPRESSION_FLOOR_MARGIN_V_EGO_BP,
+    [MOVING_LEAD_COMPRESSION_LOW_SPEED_FLOOR_MARGIN, MOVING_LEAD_COMPRESSION_FLOOR_MARGIN],
+  )
+
+
 def get_moving_lead_compression_floor(v_ego, v_lead, t_follow, a_lead=0.0):
   _target_gap, _caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow, a_lead)
-  return danger_gap + MOVING_LEAD_COMPRESSION_FLOOR_MARGIN
+  return danger_gap + get_moving_lead_compression_floor_margin(v_ego)
 
 
-def get_moving_lead_compression_relax_blend(x_lead, v_ego, v_lead, a_lead, t_follow):
+def get_moving_lead_compression_relative_accel_blend(a_ego, a_lead):
+  if a_ego is None:
+    return 1.0
+  closing_accel = np.asarray(a_ego, dtype=float) - np.asarray(a_lead, dtype=float)
+  return np.interp(closing_accel, MOVING_LEAD_COMPRESSION_CLOSING_ACCEL_BP, [1.0, 0.0])
+
+
+def get_moving_lead_compression_relax_blend(x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=None):
   x_lead = np.asarray(x_lead, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
   a_lead = np.asarray(a_lead, dtype=float)
@@ -490,7 +508,8 @@ def get_moving_lead_compression_relax_blend(x_lead, v_ego, v_lead, a_lead, t_fol
   closing_urgency_blend = np.interp(closing_speed, MOVING_LEAD_COMPRESSION_CLOSING_BP, [0.0, 1.0])
   floor_ttc = get_time_to_gap(x_lead, compression_floor, closing_speed)
   ttc_safety_blend = np.interp(floor_ttc, MOVING_LEAD_COMPRESSION_TTC_BP, [0.0, 1.0])
-  return gap_blend * routine_decel_blend * (1.0 - closing_urgency_blend) * ttc_safety_blend
+  relative_accel_blend = get_moving_lead_compression_relative_accel_blend(a_ego, a_lead)
+  return gap_blend * routine_decel_blend * (1.0 - closing_urgency_blend) * ttc_safety_blend * relative_accel_blend
 
 
 def get_time_to_gap(d_rel, gap, closing_speed):
@@ -1281,7 +1300,7 @@ def get_moving_lead_stop_approach_ttc_gate(x_lead, v_ego, v_lead, t_follow):
   return np.maximum.reduce([desired_gate, caution_gate, danger_gate])
 
 
-def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow):
+def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=None):
   x_lead = np.asarray(x_lead, dtype=float)
   v_lead = np.asarray(v_lead, dtype=float)
   a_lead = np.asarray(a_lead, dtype=float)
@@ -1437,7 +1456,7 @@ def get_moving_lead_stop_approach_comfort_target(x_lead, v_ego, v_lead, a_lead, 
     coast_limited_target + pre_target_brake_blend * (pre_target_target - coast_limited_target),
     relaxed_target,
   )
-  compression_relax_blend = get_moving_lead_compression_relax_blend(x_lead, v_ego, v_lead, a_lead, t_follow)
+  compression_relax_blend = get_moving_lead_compression_relax_blend(x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=a_ego)
   compression_relaxed_target = np.maximum(target, MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
   target = target + compression_relax_blend * (compression_relaxed_target - target)
 
@@ -2236,10 +2255,10 @@ class LongitudinalMpc:
       lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow
     )
     lead_0_moving_stop_targets, lead_0_moving_stop_costs = get_moving_lead_stop_approach_comfort_target(
-      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow
+      lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow, a_ego=self.x0[2]
     )
     lead_1_moving_stop_targets, lead_1_moving_stop_costs = get_moving_lead_stop_approach_comfort_target(
-      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow
+      lead_brake_xv_1[:, 0], v_ego, lead_brake_xv_1[:, 1], lead_1_brake_a_traj, t_follow, a_ego=self.x0[2]
     )
     lead_0_surge_targets, lead_0_surge_costs = get_lead_surge_damping_target(
       lead_brake_xv_0[:, 0], v_ego, lead_brake_xv_0[:, 1], lead_0_brake_a_traj, t_follow, lead_0_surge_decel_memory

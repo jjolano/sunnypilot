@@ -1269,6 +1269,72 @@ def test_moving_lead_stop_approach_allows_routine_compression_at_target_gap():
   assert cost > 0.0
 
 
+def test_moving_lead_compression_floor_is_stiffer_at_low_speed():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  _target_gap, _caution_gap, low_speed_danger_gap = get_lead_approach_gaps(5.0, 3.5, t_follow, a_lead=-0.4)
+  _target_gap, _caution_gap, high_speed_danger_gap = get_lead_approach_gaps(15.0, 13.5, t_follow, a_lead=-0.4)
+
+  low_speed_floor = long_mpc.get_moving_lead_compression_floor(5.0, 3.5, t_follow, a_lead=-0.4)
+  high_speed_floor = long_mpc.get_moving_lead_compression_floor(15.0, 13.5, t_follow, a_lead=-0.4)
+
+  assert low_speed_floor - low_speed_danger_gap == pytest.approx(long_mpc.MOVING_LEAD_COMPRESSION_LOW_SPEED_FLOOR_MARGIN)
+  assert high_speed_floor - high_speed_danger_gap == pytest.approx(long_mpc.MOVING_LEAD_COMPRESSION_FLOOR_MARGIN)
+
+
+def test_low_speed_moving_lead_compression_resists_old_full_relax_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 5.0
+  v_lead = 3.5
+  a_lead = -0.4
+  _target_gap, _caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow, a_lead=a_lead)
+  old_full_relax_gap = danger_gap + long_mpc.MOVING_LEAD_COMPRESSION_FLOOR_MARGIN + long_mpc.MOVING_LEAD_COMPRESSION_RELAX_GAP
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(old_full_relax_gap, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 0.05
+  assert cost > 0.0
+
+
+def test_moving_lead_compression_relaxes_when_ego_is_already_braking():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 8.0
+  v_lead = 6.5
+  a_lead = -0.5
+  compression_floor = long_mpc.get_moving_lead_compression_floor(v_ego, v_lead, t_follow, a_lead=a_lead)
+  x_lead = compression_floor + long_mpc.MOVING_LEAD_COMPRESSION_RELAX_GAP
+
+  already_braking_blend = long_mpc.get_moving_lead_compression_relax_blend(
+    x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=-0.9,
+  )
+  not_braking_blend = long_mpc.get_moving_lead_compression_relax_blend(
+    x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=0.0,
+  )
+
+  assert already_braking_blend == pytest.approx(1.0)
+  assert not_braking_blend < already_braking_blend
+
+
+def test_moving_lead_stop_approach_uses_ego_decel_for_spring_relaxation():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 8.0
+  v_lead = 6.5
+  a_lead = -0.5
+  compression_floor = long_mpc.get_moving_lead_compression_floor(v_ego, v_lead, t_follow, a_lead=a_lead)
+  x_lead = compression_floor + long_mpc.MOVING_LEAD_COMPRESSION_RELAX_GAP
+
+  already_braking_target, braking_cost = get_moving_lead_stop_approach_comfort_target(
+    x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=-0.9,
+  )
+  not_braking_target, not_braking_cost = get_moving_lead_stop_approach_comfort_target(
+    x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=0.0,
+  )
+
+  assert already_braking_target == pytest.approx(long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
+  assert not_braking_target < already_braking_target
+  assert braking_cost > 0.0
+  assert not_braking_cost > 0.0
+
+
 def test_moving_lead_stop_approach_allows_route_derived_compression_above_floor():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   v_ego = 15.07

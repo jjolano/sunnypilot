@@ -1432,7 +1432,7 @@ def get_moving_lead_stop_gap_guard_gradual_accel(v_ego, d_rel, v_lead, a_lead, t
   return -min(MOVING_LEAD_STOP_GAP_GUARD_CLOSING_DECEL_CAP, closing_excess / MOVING_LEAD_STOP_GAP_GUARD_PREDICT_T)
 
 
-def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_follow):
+def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_follow, a_ego=None):
   if (
     v_ego < MOVING_LEAD_STOP_GAP_GUARD_MIN_V_EGO or
     v_lead < MOVING_LEAD_STOP_GAP_GUARD_MIN_V_LEAD or
@@ -1446,7 +1446,7 @@ def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_
   if d_rel > caution_gap:
     return None
 
-  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow)
+  target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow, a_ego=a_ego)
   target = float(target)
   if float(cost) <= 0.0 or target > -MOVING_LEAD_STOP_GAP_GUARD_MIN_TARGET_DECEL:
     return None
@@ -2099,7 +2099,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
       moving_stop_guard_a_target = get_moving_lead_stop_gap_guard_accel(
         v_ego, physical_lead_d_rel, physical_lead_v_lead, physical_lead_a, physical_lead_y_rel,
-        get_T_FOLLOW(sm['selfdriveState'].personality),
+        get_T_FOLLOW(sm['selfdriveState'].personality), a_ego=sm['carState'].aEgo,
       )
       if moving_stop_guard_a_target is not None:
         custom_moving_stop_guard_a_target = moving_stop_guard_a_target
