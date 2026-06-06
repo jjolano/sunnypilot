@@ -744,6 +744,10 @@
     "title": "Map Advisory Limit",
     "description": ""
   },
+  "MapAdvisoryUpdatedAt": {
+    "title": "Map Advisory Updated At",
+    "description": ""
+  },
   "MapCurvatures": {
     "title": "Map Curvatures",
     "description": ""
@@ -766,6 +770,10 @@
   },
   "MapTargetVelocities": {
     "title": "Map Target Velocities",
+    "description": ""
+  },
+  "MapTargetVelocitiesUpdatedAt": {
+    "title": "Map Target Velocities Updated At",
     "description": ""
   },
   "MapTargetVelocitiesValid": {
