@@ -157,6 +157,8 @@ PHYSICAL_CONFIDENCE_MIN = 0.55
 ADVISORY_CONFIDENCE_MIN = 0.75
 COMFORT_CONFIDENCE_MIN = 0.50
 COMFORT_MAX_DRIVER_ACCEL_MARGIN = 0.5
+ADVISORY_INCREASES_ACCEL_REASON = "advisory_increases_accel"
+ADVISORY_CAP_ACTIVE_REASON = "advisory_cap_active"
 SOURCE_STABILITY_MAX_V_EGO = 2.5
 SOURCE_STABILITY_RELEASE_FRAMES = 3
 SOURCE_STABILITY_ACCEL_EPS = 1e-3
@@ -337,6 +339,45 @@ def _candidate_has_advisory_horizon(candidate: LongitudinalCandidate) -> bool:
   ))
 
 
+def advisory_cap_can_restrict(candidate: LongitudinalCandidate, driver: LongitudinalCandidate) -> bool:
+  """Return whether an advisory claim may reduce speed or accel from driver intent.
+
+  Advisory authority is restrictive-only: it can lower target speed and/or accel,
+  but it must never raise accel or act as launch/progress authority.
+  """
+  if candidate.role != CandidateRole.ADVISORY_CAP or candidate.confidence < ADVISORY_CONFIDENCE_MIN:
+    return False
+  lowers_speed = candidate.v_target < driver.v_target - SOURCE_STABILITY_SPEED_EPS
+  lowers_accel = candidate.a_target < driver.a_target - SOURCE_STABILITY_ACCEL_EPS
+  does_not_raise_accel = candidate.a_target <= driver.a_target + SOURCE_STABILITY_ACCEL_EPS
+  return bool((lowers_speed or lowers_accel) and does_not_raise_accel)
+
+
+def advisory_cap_rejection_reason(candidate: LongitudinalCandidate, driver: LongitudinalCandidate) -> str:
+  if candidate.role != CandidateRole.ADVISORY_CAP or candidate.confidence < ADVISORY_CONFIDENCE_MIN:
+    return ""
+  lowers_speed = candidate.v_target < driver.v_target - SOURCE_STABILITY_SPEED_EPS
+  lowers_accel = candidate.a_target < driver.a_target - SOURCE_STABILITY_ACCEL_EPS
+  if (lowers_speed or lowers_accel) and candidate.a_target > driver.a_target + SOURCE_STABILITY_ACCEL_EPS:
+    return ADVISORY_INCREASES_ACCEL_REASON
+  return ""
+
+
+def relaxation_can_raise_accel(candidate: LongitudinalCandidate, driver: LongitudinalCandidate) -> bool:
+  """Return whether a relaxation candidate is eligible as a progress floor.
+
+  Relaxation is subordinate authority. It can raise accel only below driver speed
+  intent and only after physical/advisory blockers have been ruled out by the
+  caller.
+  """
+  return bool(
+    candidate.role == CandidateRole.RELAXATION
+    and candidate.confidence >= COMFORT_CONFIDENCE_MIN
+    and candidate.v_target <= driver.v_target + SOURCE_STABILITY_SPEED_EPS
+    and candidate.a_target > driver.a_target + SOURCE_STABILITY_ACCEL_EPS
+  )
+
+
 def _advisory_rank_key(candidate: LongitudinalCandidate, horizon_aware: bool) -> tuple[object, ...]:
   if not horizon_aware:
     return (
@@ -448,12 +489,19 @@ class LongitudinalDecisionCore:
         "physical_hazard_active",
       )
     else:
-      advisory = [
+      advisory_claims = [
         candidate for candidate in valid
         if candidate.role == CandidateRole.ADVISORY_CAP
         and candidate.confidence >= ADVISORY_CONFIDENCE_MIN
-        and candidate.v_target < driver.v_target
       ]
+      advisory = []
+      for candidate in advisory_claims:
+        reason = advisory_cap_rejection_reason(candidate, driver)
+        if reason:
+          _append_suppression(suppressed, suppressed_candidates, candidate, reason)
+          continue
+        if advisory_cap_can_restrict(candidate, driver):
+          advisory.append(candidate)
       if advisory:
         horizon_aware = any(_candidate_has_advisory_horizon(candidate) for candidate in advisory)
         winner = min(advisory, key=lambda candidate: _advisory_rank_key(candidate, horizon_aware))
@@ -462,13 +510,15 @@ class LongitudinalDecisionCore:
           (candidate for candidate in advisory if candidate is not winner),
           "higher_advisory_target",
         )
+        _append_suppressions(
+          suppressed, suppressed_candidates,
+          (candidate for candidate in valid if candidate.role == CandidateRole.RELAXATION),
+          ADVISORY_CAP_ACTIVE_REASON,
+        )
       else:
         comfort = [
           candidate for candidate in valid
-          if candidate.role == CandidateRole.RELAXATION
-          and candidate.confidence >= COMFORT_CONFIDENCE_MIN
-          and candidate.v_target <= driver.v_target
-          and candidate.a_target > driver.a_target
+          if relaxation_can_raise_accel(candidate, driver)
         ]
         winner = min(comfort, key=lambda candidate: (
           -candidate.a_target,
