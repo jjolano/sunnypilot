@@ -184,7 +184,6 @@ MOVING_LEAD_STOP_GAP_GUARD_PREDICT_T = 0.8
 MOVING_LEAD_STOP_GAP_GUARD_ALLOWED_CLOSING = 1.2
 MOVING_LEAD_STOP_GAP_GUARD_CLOSING_DECEL_CAP = 1.2
 MOVING_LEAD_STOP_GAP_GUARD_URGENT_CLOSING = 3.0
-MOVING_LEAD_STOP_GAP_GUARD_URGENT_DANGER_MARGIN = 2.0
 MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL = 3.0
 MOVING_LEAD_SLOWER_APPROACH_MIN_CLOSING = 0.3
 MOVING_LEAD_SLOWER_APPROACH_MIN_GAP_DEFICIT = 0.25
@@ -194,8 +193,13 @@ MOVING_LEAD_SLOWER_APPROACH_CLOSING_GAIN = 0.25
 MOVING_LEAD_SLOWER_APPROACH_GAP_GAIN = 0.03
 MOVING_LEAD_SLOWER_APPROACH_LEAD_DECEL_GAIN = 0.05
 ROUTINE_LEAD_APPROACH_PREVIEW_T = 2.0
+ROUTINE_LEAD_RESPONSE_TIME = 0.35
 ROUTINE_LEAD_APPROACH_MIN_CLOSING = 0.25
 ROUTINE_LEAD_APPROACH_MIN_BLEND = 0.05
+ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN = 1.0
+ROUTINE_LEAD_APPROACH_COAST_BLEND = 0.18
+ROUTINE_LEAD_APPROACH_SOFT_BLEND = 0.45
+ROUTINE_LEAD_APPROACH_SOFT_DECEL_CAP = 0.25
 ROUTINE_LEAD_APPROACH_DECEL_MIN = MOVING_LEAD_SLOWER_APPROACH_MIN_TARGET_DECEL
 ROUTINE_LEAD_APPROACH_DECEL_CAP = MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
 ROUTINE_LEAD_APPROACH_NEGATIVE_JERK = 0.45
@@ -2082,7 +2086,14 @@ def _routine_lead_approach_debug(**overrides):
     "routine_lead_approach_active": False,
     "routine_lead_approach_reason": "inactive",
     "routine_lead_approach_urgent": False,
+    "routine_lead_phase": "inactive",
+    "routine_lead_coast_first_active": False,
     "routine_lead_anticipatory_active": False,
+    "routine_lead_response_time": ROUTINE_LEAD_RESPONSE_TIME,
+    "routine_lead_gap_lost_to_response": 0.0,
+    "routine_lead_effective_d_rel": 0.0,
+    "routine_lead_projected_gap_raw": 0.0,
+    "routine_lead_projected_gap_response_compensated": 0.0,
     "routine_lead_preview_t": ROUTINE_LEAD_APPROACH_PREVIEW_T,
     "routine_lead_projected_gap": 0.0,
     "routine_lead_projected_closing": 0.0,
@@ -2095,6 +2106,8 @@ def _routine_lead_approach_debug(**overrides):
     "routine_lead_compression_blend": 0.0,
     "routine_lead_raw_a_target": 0.0,
     "routine_lead_ramped_a_target": 0.0,
+    "routine_lead_a_ego": 0.0,
+    "routine_lead_decel_shortfall": 0.0,
     "routine_lead_jerk_limited": False,
     "routine_lead_release_limited": False,
     "routine_lead_urgent_bypass": False,
@@ -2107,13 +2120,13 @@ def _routine_lead_approach_debug(**overrides):
 
 def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_follow,
                                     prev_a_target=None, dt=DT_MDL, a_ego=None) -> RoutineLeadApproach:
-  del a_ego
   v_ego = _finite_float(v_ego)
   d_rel = _finite_float(d_rel)
   v_lead = _finite_float(v_lead)
   a_lead = _finite_float(a_lead)
   y_rel = _finite_float(y_rel)
   t_follow = _finite_float(t_follow)
+  a_ego = _finite_float(a_ego)
   desired_gap, caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
   desired_gap = float(desired_gap)
   caution_gap = float(caution_gap)
@@ -2121,18 +2134,30 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   closing_speed = max(v_ego - v_lead, 0.0)
   relative_accel = max(-a_lead, 0.0)
   preview_t = ROUTINE_LEAD_APPROACH_PREVIEW_T
-  projected_closing_speed = max(closing_speed + relative_accel * preview_t, 0.0)
-  predicted_gap = max(0.0, d_rel - closing_speed * preview_t - 0.5 * relative_accel * preview_t**2)
+  response_t = ROUTINE_LEAD_RESPONSE_TIME
+  response_gap_loss = closing_speed * response_t + 0.5 * relative_accel * response_t**2
+  effective_d_rel = max(0.0, d_rel - response_gap_loss)
+  delayed_closing_speed = closing_speed + relative_accel * response_t
+  projected_closing_speed = max(delayed_closing_speed + relative_accel * preview_t, 0.0)
+  predicted_gap_raw = max(0.0, d_rel - closing_speed * preview_t - 0.5 * relative_accel * preview_t**2)
+  predicted_gap = max(0.0, effective_d_rel - delayed_closing_speed * preview_t - 0.5 * relative_accel * preview_t**2)
   required_decel = float(get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead))
   distance_to_caution = d_rel - caution_gap
   distance_to_danger = d_rel - danger_gap
+  routine_floor_gap = danger_gap + ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN
   base_debug = _routine_lead_approach_debug(
     routine_lead_projected_gap=predicted_gap,
+    routine_lead_response_time=response_t,
+    routine_lead_gap_lost_to_response=response_gap_loss,
+    routine_lead_effective_d_rel=effective_d_rel,
+    routine_lead_projected_gap_raw=predicted_gap_raw,
+    routine_lead_projected_gap_response_compensated=predicted_gap,
     routine_lead_projected_closing=projected_closing_speed,
     routine_lead_desired_gap=desired_gap,
     routine_lead_caution_gap=caution_gap,
     routine_lead_danger_gap=danger_gap,
     routine_lead_required_decel=required_decel,
+    routine_lead_a_ego=a_ego,
     routine_lead_distance_to_caution=distance_to_caution,
     routine_lead_distance_to_danger=distance_to_danger,
   )
@@ -2145,10 +2170,9 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     abs(y_rel) > MOVING_LEAD_STOP_GAP_GUARD_MAX_Y_REL
   )
   urgent = (
-    d_rel <= danger_gap + MOVING_LEAD_STOP_GAP_GUARD_URGENT_DANGER_MARGIN or
+    d_rel <= danger_gap or
     closing_speed >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_CLOSING or
-    a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL or
-    (required_decel >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL and d_rel <= caution_gap)
+    a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL
   )
   if invalid:
     return RoutineLeadApproach(urgent=urgent, required_decel=required_decel, predicted_gap=predicted_gap,
@@ -2157,12 +2181,12 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
                                       "routine_lead_approach_urgent": urgent})
 
   routine_start_gap = caution_gap + max(closing_speed, projected_closing_speed) * preview_t
-  risk_gap = min(d_rel, predicted_gap)
-  blend_span = max(routine_start_gap - danger_gap, 0.1)
+  risk_gap = min(effective_d_rel, predicted_gap)
+  blend_span = max(routine_start_gap - routine_floor_gap, 0.1)
   blend_x = float(np.clip((routine_start_gap - risk_gap) / blend_span, 0.0, 1.0))
   compression_blend = blend_x * blend_x * (3.0 - 2.0 * blend_x)
   allowed_closing_speed = float(np.interp(
-    risk_gap, [danger_gap, routine_start_gap], [0.0, MOVING_LEAD_STOP_GAP_GUARD_ALLOWED_CLOSING]
+    risk_gap, [routine_floor_gap, routine_start_gap], [0.0, MOVING_LEAD_STOP_GAP_GUARD_ALLOWED_CLOSING]
   ))
   closing_excess = max(projected_closing_speed - allowed_closing_speed, 0.0)
   anticipatory_active = bool(d_rel > caution_gap and predicted_gap <= caution_gap)
@@ -2188,6 +2212,7 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
                                projected_closing_speed=projected_closing_speed, reason=reason, debug=debug)
 
   lead_decel_excess = max(0.0, -a_lead - MOVING_LEAD_STOP_GAP_GUARD_MIN_LEAD_DECEL)
+  actual_decel = max(0.0, -a_ego)
   decel = (
     ROUTINE_LEAD_APPROACH_DECEL_MIN +
     closing_excess * MOVING_LEAD_SLOWER_APPROACH_CLOSING_GAIN +
@@ -2195,7 +2220,23 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     lead_decel_excess * MOVING_LEAD_SLOWER_APPROACH_LEAD_DECEL_GAIN
   )
   decel = float(np.clip(decel, ROUTINE_LEAD_APPROACH_DECEL_MIN, ROUTINE_LEAD_APPROACH_DECEL_CAP))
-  raw_a_target = -decel
+  if compression_blend < ROUTINE_LEAD_APPROACH_COAST_BLEND and not urgent:
+    phase = "free_coast"
+    raw_a_target = 0.0
+  elif compression_blend < ROUTINE_LEAD_APPROACH_SOFT_BLEND and not urgent:
+    phase = "soft_decel"
+    soft_x = float(np.clip(
+      (compression_blend - ROUTINE_LEAD_APPROACH_COAST_BLEND) /
+      max(ROUTINE_LEAD_APPROACH_SOFT_BLEND - ROUTINE_LEAD_APPROACH_COAST_BLEND, 1e-3),
+      0.0, 1.0,
+    ))
+    soft_cap = ROUTINE_LEAD_APPROACH_DECEL_MIN + soft_x * (ROUTINE_LEAD_APPROACH_SOFT_DECEL_CAP - ROUTINE_LEAD_APPROACH_DECEL_MIN)
+    decel = min(decel, soft_cap)
+    raw_a_target = -decel
+  else:
+    phase = "routine_decel"
+    raw_a_target = -decel
+  requested_decel = max(0.0, -raw_a_target)
   if prev_a_target is None:
     ramped_a_target = raw_a_target
   else:
@@ -2211,12 +2252,15 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     "routine_lead_approach_active": True,
     "routine_lead_approach_reason": "routine_slower_lead_approach",
     "routine_lead_approach_urgent": urgent,
+    "routine_lead_phase": phase,
+    "routine_lead_coast_first_active": phase == "free_coast",
     "routine_lead_anticipatory_active": anticipatory_active,
     "routine_lead_allowed_closing": allowed_closing_speed,
     "routine_lead_closing_excess": closing_excess,
     "routine_lead_compression_blend": compression_blend,
     "routine_lead_raw_a_target": raw_a_target,
     "routine_lead_ramped_a_target": ramped_a_target,
+    "routine_lead_decel_shortfall": max(0.0, requested_decel - actual_decel),
     "routine_lead_jerk_limited": jerk_limited,
     "routine_lead_release_limited": release_limited,
   }
@@ -2275,17 +2319,18 @@ def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_
     return _result(None)
   if far_hard_braking_limited_runway:
     debug["routine_lead_urgent_bypass"] = True
+    debug["routine_lead_phase"] = "urgent_bypass"
     return _result(target)
   decel_cap = -ACCEL_MIN if a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL else MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP
   urgent = (
-    d_rel <= danger_gap + MOVING_LEAD_STOP_GAP_GUARD_URGENT_DANGER_MARGIN or
+    d_rel <= danger_gap or
     closing_speed >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_CLOSING or
-    a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL or
-    (required_decel >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL and d_rel <= caution_gap)
+    a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL
   )
   if urgent:
     debug["routine_lead_approach_urgent"] = True
     debug["routine_lead_urgent_bypass"] = True
+    debug["routine_lead_phase"] = "urgent_bypass"
     target = min(target, -min(decel_cap, required_decel))
   else:
     target = max(target, get_moving_lead_stop_gap_guard_gradual_accel(v_ego, d_rel, v_lead, a_lead, t_follow))

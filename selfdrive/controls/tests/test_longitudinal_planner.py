@@ -15,7 +15,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import DecisionSourc
 from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, ResolvedLongitudinalImplementation, SccModeEvidence
 from openpilot.selfdrive.controls.lib.scc_evidence import SccEvidenceTier
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS as T_IDXS_MPC
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS as T_IDXS_MPC, get_lead_approach_gaps
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, SUNNYPILOT_CURRENT, StackResolution
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanSource as LongitudinalPlanSourceSP
@@ -37,8 +37,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   LeadPullawayIntentTracker,
   LeadPullawayPhase,
   LEAD_PULLAWAY_PULSE_REASON,
+  MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP,
   MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP,
+  ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN,
   ROUTINE_LEAD_APPROACH_NEGATIVE_JERK,
+  ROUTINE_LEAD_APPROACH_PREVIEW_T,
+  ROUTINE_LEAD_RESPONSE_TIME,
   STOP_RELEASE_GUARD_HOLD_TIME,
   STOP_RELEASE_GUARD_LEAD_RELEASE_REASON,
   STOP_RELEASE_GUARD_WAITING_REASON,
@@ -1913,12 +1917,212 @@ def test_moving_lead_routine_approach_anticipates_projected_compression_before_c
   )
 
   assert accel is not None
-  assert -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP <= accel < 0.0
+  assert accel == pytest.approx(0.0)
   assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_phase"] == "free_coast"
+  assert debug["routine_lead_coast_first_active"]
   assert debug["routine_lead_anticipatory_active"]
   assert not debug["routine_lead_approach_urgent"]
   assert d_rel > debug["routine_lead_caution_gap"]
   assert debug["routine_lead_projected_gap"] <= debug["routine_lead_caution_gap"]
+
+
+def test_moving_lead_routine_approach_uses_response_compensated_gap_for_anticipation():
+  v_ego = 20.7
+  v_lead = 18.9
+  t_follow = 1.55
+  _desired_gap, caution_gap, _danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+  closing = v_ego - v_lead
+  response_gap_loss = closing * ROUTINE_LEAD_RESPONSE_TIME
+  d_rel = caution_gap + closing * ROUTINE_LEAD_APPROACH_PREVIEW_T + response_gap_loss * 0.5
+
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=d_rel,
+    v_lead=v_lead,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=t_follow,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_anticipatory_active"]
+  assert not debug["routine_lead_approach_urgent"]
+  assert debug["routine_lead_gap_lost_to_response"] == pytest.approx(response_gap_loss)
+  assert debug["routine_lead_effective_d_rel"] == pytest.approx(d_rel - response_gap_loss)
+  assert debug["routine_lead_projected_gap_raw"] > debug["routine_lead_caution_gap"]
+  assert debug["routine_lead_projected_gap_response_compensated"] <= debug["routine_lead_caution_gap"]
+  assert debug["routine_lead_projected_gap"] == pytest.approx(debug["routine_lead_projected_gap_response_compensated"])
+
+
+def test_moving_lead_routine_approach_response_compensation_includes_lead_decel():
+  v_ego = 20.7
+  v_lead = 18.9
+  a_lead = -1.0
+  t_follow = 1.55
+  _desired_gap, caution_gap, _danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+  closing = v_ego - v_lead
+  relative_accel = -a_lead
+  delayed_closing = closing + relative_accel * ROUTINE_LEAD_RESPONSE_TIME
+  response_gap_loss = closing * ROUTINE_LEAD_RESPONSE_TIME + 0.5 * relative_accel * ROUTINE_LEAD_RESPONSE_TIME**2
+  d_rel = caution_gap + closing * ROUTINE_LEAD_APPROACH_PREVIEW_T + 0.5 * relative_accel * ROUTINE_LEAD_APPROACH_PREVIEW_T**2 + response_gap_loss * 0.5
+  expected_compensated_gap = max(
+    0.0,
+    d_rel - response_gap_loss - delayed_closing * ROUTINE_LEAD_APPROACH_PREVIEW_T -
+    0.5 * relative_accel * ROUTINE_LEAD_APPROACH_PREVIEW_T**2,
+  )
+
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=d_rel,
+    v_lead=v_lead,
+    a_lead=a_lead,
+    y_rel=0.0,
+    t_follow=t_follow,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_gap_lost_to_response"] == pytest.approx(response_gap_loss)
+  assert debug["routine_lead_effective_d_rel"] == pytest.approx(d_rel - response_gap_loss)
+  assert debug["routine_lead_projected_closing"] == pytest.approx(delayed_closing + relative_accel * ROUTINE_LEAD_APPROACH_PREVIEW_T)
+  assert debug["routine_lead_projected_gap_raw"] > debug["routine_lead_caution_gap"]
+  assert debug["routine_lead_projected_gap_response_compensated"] == pytest.approx(expected_compensated_gap)
+  assert debug["routine_lead_projected_gap_response_compensated"] <= debug["routine_lead_projected_gap_raw"] - relative_accel * ROUTINE_LEAD_RESPONSE_TIME * ROUTINE_LEAD_APPROACH_PREVIEW_T
+
+
+def test_moving_lead_routine_approach_reports_response_lag_shortfall_without_strengthening_cap():
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=20.7,
+    d_rel=40.0,
+    v_lead=18.7,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.5,
+    a_ego=0.0,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_phase"] == "soft_decel"
+  assert debug["routine_lead_a_ego"] == pytest.approx(0.0)
+  assert debug["routine_lead_decel_shortfall"] == pytest.approx(-debug["routine_lead_raw_a_target"])
+  assert not debug["routine_lead_approach_urgent"]
+  assert not debug["routine_lead_urgent_bypass"]
+  assert -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP <= accel < 0.0
+
+
+def test_moving_lead_routine_approach_soft_decel_follows_coast_as_compression_worsens():
+  coast_accel, coast_debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=20.7,
+    d_rel=42.0,
+    v_lead=18.7,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+  soft_accel, soft_debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=20.7,
+    d_rel=40.0,
+    v_lead=18.7,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=coast_accel,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert coast_accel == pytest.approx(0.0)
+  assert coast_debug["routine_lead_phase"] == "free_coast"
+  assert soft_accel is not None
+  assert -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP <= soft_accel < 0.0
+  assert soft_debug["routine_lead_phase"] == "soft_decel"
+  assert soft_accel >= -ROUTINE_LEAD_APPROACH_NEGATIVE_JERK * 0.5 - 1e-6
+
+
+def test_moving_lead_routine_approach_allows_compression_to_danger_gap_plus_margin_without_urgent_bypass():
+  v_ego = 20.7
+  v_lead = 18.7
+  t_follow = 1.55
+  _desired_gap, _caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=danger_gap + ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN,
+    v_lead=v_lead,
+    a_lead=-0.5,
+    y_rel=0.0,
+    t_follow=t_follow,
+    prev_a_target=0.0,
+    dt=0.5,
+    a_ego=0.0,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert not debug["routine_lead_approach_urgent"]
+  assert not debug["routine_lead_urgent_bypass"]
+  assert debug["routine_lead_phase"] == "routine_decel"
+  assert accel >= -MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP
+
+
+def test_moving_lead_routine_approach_true_danger_gap_remains_urgent():
+  v_ego = 20.7
+  v_lead = 18.7
+  t_follow = 1.55
+  _desired_gap, _caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=danger_gap,
+    v_lead=v_lead,
+    a_lead=-0.5,
+    y_rel=0.0,
+    t_follow=t_follow,
+    prev_a_target=0.0,
+    dt=0.5,
+    a_ego=0.0,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_urgent"]
+  assert debug["routine_lead_phase"] in ("routine_decel", "urgent_bypass")
+
+
+def test_moving_lead_routine_approach_releases_when_projection_risk_clears_without_positive_accel():
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=20.7,
+    d_rel=42.0,
+    v_lead=18.7,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=-0.3,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_phase"] == "free_coast"
+  assert debug["routine_lead_raw_a_target"] == pytest.approx(0.0)
+  assert debug["routine_lead_release_limited"]
+  assert -0.3 < accel <= 0.0
 
 
 def test_moving_lead_routine_approach_builds_one_direction_while_compression_worsens():
@@ -2036,6 +2240,7 @@ def test_moving_lead_slower_approach_preserves_urgent_caution_braking():
   assert accel is not None
   assert accel < -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
   assert debug["routine_lead_urgent_bypass"]
+  assert debug["routine_lead_phase"] == "urgent_bypass"
 
 
 def test_moving_lead_slower_approach_preserves_lateral_exit_rejection():
