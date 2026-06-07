@@ -750,6 +750,205 @@ def test_v4_under_response_lead_boost_requires_clean_processed_demand():
   assert boosted == target
 
 
+def test_v41_under_response_release_hold_does_not_release_away_from_lagging_raw_target():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=-0.6, target_rate=1.0, delay_lead_lateral_accel=-0.2,
+                          lead_delta=0.4, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=-0.1, invalid=False)
+
+  assert boosted.delay_lead_lateral_accel <= target.delay_lead_lateral_accel
+  assert abs(boosted.lead_delta) < abs(target.lead_delta)
+  assert boosted.delay_lead_lateral_accel == pytest.approx(target.raw_lateral_accel)
+
+
+def test_v41_under_response_release_hold_blocks_partial_release_away_from_lagging_raw_target():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=-0.6, target_rate=1.0, delay_lead_lateral_accel=-0.2,
+                          lead_delta=0.4, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=-0.42, invalid=False)
+
+  assert 0.0 < latcontrol_torque_v4._under_response_strength(target.raw_lateral_accel, -0.42) < 1.0
+  assert boosted.lead_delta == pytest.approx(0.0)
+  assert boosted.delay_lead_lateral_accel == pytest.approx(target.raw_lateral_accel)
+
+
+def test_v41_under_response_release_hold_freezes_at_high_steering_rate():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=-0.6, target_rate=1.0, delay_lead_lateral_accel=-0.2,
+                          lead_delta=0.4, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(
+    target,
+    make_speed_result(response_delay=0.2),
+    v_ego=18.0,
+    active=True,
+    steering_pressed=False,
+    actual_lateral_accel=-0.42,
+    invalid=False,
+    steering_rate_deg=LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG,
+  )
+
+  assert boosted == target
+
+
+def test_v41_under_response_release_hold_requires_uncurtailed_processed_demand():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(curvature_limited=True))
+  target = TorqueV4Target(raw_lateral_accel=-0.6, target_rate=1.0, delay_lead_lateral_accel=-0.2,
+                          lead_delta=0.4, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=-0.42, invalid=False)
+
+  assert boosted == target
+
+
+def test_v4_under_response_release_hold_remains_disabled_for_base_v4():
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=-0.6, target_rate=1.0, delay_lead_lateral_accel=-0.2,
+                          lead_delta=0.4, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=-0.1, invalid=False)
+
+  assert boosted.delay_lead_lateral_accel > target.raw_lateral_accel
+  assert boosted.lead_delta > 0.0
+
+
+@pytest.mark.parametrize("raw_target,actual", [(0.6, 0.2), (-0.6, -0.2)])
+def test_v41_under_response_catchup_adds_bounded_same_sign_feedback(raw_target, actual):
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+
+  correction = controller._under_response_catchup_correction(
+    raw_target,
+    actual,
+    v_ego=18.0,
+    steering_rate_deg=0.0,
+    active=True,
+    steering_pressed=False,
+    invalid=False,
+  )
+
+  expected_cap = latcontrol_torque_v4._interp(18.0, latcontrol_torque_v4.V41_UNDER_RESPONSE_CATCHUP_CAP_BP,
+                                              latcontrol_torque_v4.V41_UNDER_RESPONSE_CATCHUP_CAP_V)
+  assert math.copysign(1.0, correction) == math.copysign(1.0, raw_target)
+  assert 0.0 < abs(correction) <= expected_cap + 1e-9
+
+
+@pytest.mark.parametrize("overrides", [
+  {"active": False},
+  {"steering_pressed": True},
+  {"invalid": True},
+  {"steering_rate_deg": LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG},
+  {"actual_lateral_accel": -0.2},
+  {"actual_lateral_accel": 0.65},
+])
+def test_v41_under_response_catchup_keeps_safety_guards(overrides):
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+
+  values = {
+    "raw_target_lateral_accel": 0.6,
+    "actual_lateral_accel": 0.2,
+    "v_ego": 18.0,
+    "steering_rate_deg": 0.0,
+    "active": True,
+    "steering_pressed": False,
+    "invalid": False,
+  }
+  values.update(overrides)
+
+  correction = controller._under_response_catchup_correction(
+    values["raw_target_lateral_accel"],
+    values["actual_lateral_accel"],
+    v_ego=values["v_ego"],
+    steering_rate_deg=values["steering_rate_deg"],
+    active=values["active"],
+    steering_pressed=values["steering_pressed"],
+    invalid=values["invalid"],
+  )
+
+  assert correction == 0.0
+
+
+def test_v41_under_response_catchup_requires_clean_processed_demand():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.5))
+
+  correction = controller._under_response_catchup_correction(
+    0.6,
+    0.2,
+    v_ego=18.0,
+    steering_rate_deg=0.0,
+    active=True,
+    steering_pressed=False,
+    invalid=False,
+  )
+
+  assert correction == 0.0
+
+
+def test_v41_under_response_catchup_blocks_curvature_limited_processed_demand():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(curvature_limited=True))
+
+  correction = controller._under_response_catchup_correction(
+    0.6,
+    0.2,
+    v_ego=18.0,
+    steering_rate_deg=0.0,
+    active=True,
+    steering_pressed=False,
+    invalid=False,
+  )
+
+  assert correction == 0.0
+
+
+def test_v41_under_response_catchup_reaches_update_feedback_without_base_v4_change():
+  base_controller, base_vm, _CP = get_controller()
+  CP, CP_SP, CI = get_context()
+  v41_controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  CS = make_car_state(v_ego=20.0, steering_angle=0.0, steering_rate=0.0)
+  base_controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  v41_controller.set_processed_lateral_demand(make_processed_lateral_demand())
+
+  _base_steer, _angle, base_log = update(base_controller, base_vm, CS, 0.0015)
+  _v41_steer, _angle, v41_log = update(v41_controller, VehicleModel(CP), CS, 0.0015)
+
+  assert base_controller._under_response_catchup_correction(
+    base_log.adaptiveTorqueState.rawTargetLateralAccel,
+    base_log.actualLateralAccel,
+    v_ego=CS.vEgo,
+    steering_rate_deg=CS.steeringRateDeg,
+    active=True,
+    steering_pressed=False,
+    invalid=False,
+  ) == 0.0
+  assert v41_log.adaptiveTorqueState.assistOutput > base_log.adaptiveTorqueState.assistOutput
+
+
 def test_v4_same_direction_safety_limit_caps_controller_output():
   controller, VM, _CP = get_controller()
   CS = make_car_state(v_ego=20.0)

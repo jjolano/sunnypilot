@@ -69,6 +69,10 @@ UNDER_RESPONSE_LEAD_GAIN_BOOST_BP = [0.0, 10.0, 20.0, 40.0]
 UNDER_RESPONSE_LEAD_GAIN_BOOST_V = [0.18, 0.15, 0.10, 0.06]
 UNDER_RESPONSE_LEAD_CAP_BOOST_BP = [0.0, 10.0, 20.0, 40.0]
 UNDER_RESPONSE_LEAD_CAP_BOOST_V = [0.15, 0.12, 0.08, 0.05]
+V41_UNDER_RESPONSE_CATCHUP_GAIN_BP = [0.0, 10.0, 20.0, 40.0]
+V41_UNDER_RESPONSE_CATCHUP_GAIN_V = [0.35, 0.30, 0.22, 0.14]
+V41_UNDER_RESPONSE_CATCHUP_CAP_BP = [0.0, 10.0, 20.0, 40.0]
+V41_UNDER_RESPONSE_CATCHUP_CAP_V = [0.16, 0.15, 0.12, 0.08]
 
 LEARN_MIN_SPEED = 10.0
 LEARN_MAX_SPEED = 35.0
@@ -588,6 +592,13 @@ class TorqueV4OutputGovernor:
 class LatControlTorqueV4(LatControl):
   CONTROL_STATE = "torque"
   VERSION = 4
+  UNDER_RESPONSE_RELEASE_HOLD = False
+  UNDER_RESPONSE_CATCHUP_ENABLED = False
+  UNDER_RESPONSE_CATCHUP_GAIN_BP = []
+  UNDER_RESPONSE_CATCHUP_GAIN_V = []
+  UNDER_RESPONSE_CATCHUP_CAP_BP = []
+  UNDER_RESPONSE_CATCHUP_CAP_V = []
+  UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG = HIGH_RATE_START_DEG
   GOVERNOR_PROFILE = TorqueV4GovernorProfile(
     output_slew_rate_bp=OUTPUT_SLEW_RATE_BP,
     output_slew_rate_v=OUTPUT_SLEW_RATE_V,
@@ -721,6 +732,7 @@ class LatControlTorqueV4(LatControl):
       CS.vEgo,
       active=active,
       steering_pressed=CS.steeringPressed,
+      steering_rate_deg=CS.steeringRateDeg,
       actual_lateral_accel=actual_lateral_accel,
       invalid=input_invalid,
     )
@@ -732,7 +744,18 @@ class LatControlTorqueV4(LatControl):
       lateral_accel_deadzone = curvature_deadzone * CS.vEgo ** 2
 
     control_error = target.delay_lead_lateral_accel - actual_lateral_accel
-    feedback_correction = speed_result.feedback_gain * control_error
+    under_response_catchup = self._under_response_catchup_correction(
+      target.raw_lateral_accel,
+      actual_lateral_accel,
+      v_ego=CS.vEgo,
+      steering_rate_deg=CS.steeringRateDeg,
+      active=active,
+      steering_pressed=CS.steeringPressed,
+      invalid=input_invalid,
+    )
+    feedback_correction = speed_result.feedback_gain * control_error + under_response_catchup / max(
+      speed_result.response_scale, 1e-3,
+    )
     damping_correction = -speed_result.damping_gain * measurement_rate
     breakaway_compensation = self._breakaway_lateral_accel(control_error, lateral_accel_deadzone, target.raw_lateral_accel,
                                                            actual_lateral_accel, speed_result.breakaway_scale)
@@ -830,16 +853,30 @@ class LatControlTorqueV4(LatControl):
 
   def _apply_under_response_lead_boost(self, target: TorqueV4Target, speed_result: TorqueV4SpeedModelResult, v_ego: float,
                                        *, active: bool, steering_pressed: bool, actual_lateral_accel: float,
-                                       invalid: bool) -> TorqueV4Target:
+                                       invalid: bool, steering_rate_deg: float = 0.0) -> TorqueV4Target:
     if invalid or not active or steering_pressed or not self._under_response_recovery_allowed():
       return target
     strength = _under_response_strength(target.delay_lead_lateral_accel, actual_lateral_accel)
-    if strength <= 0.0:
+    release_hold_allowed = (
+      self.UNDER_RESPONSE_RELEASE_HOLD
+      and self._under_response_enhancement_allowed()
+      and _finite(steering_rate_deg)
+      and abs(steering_rate_deg) < self.UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG
+    )
+    raw_strength = _under_response_strength(target.raw_lateral_accel, actual_lateral_accel) if release_hold_allowed else 0.0
+    if strength <= 0.0 and raw_strength <= 0.0:
       return target
 
     lead_gain = target.lead_gain * (1.0 + strength * _interp(v_ego, UNDER_RESPONSE_LEAD_GAIN_BOOST_BP, UNDER_RESPONSE_LEAD_GAIN_BOOST_V))
     lead_delta_cap = target.lead_delta_cap * (1.0 + strength * _interp(v_ego, UNDER_RESPONSE_LEAD_CAP_BOOST_BP, UNDER_RESPONSE_LEAD_CAP_BOOST_V))
     lead_delta = _clip(target.target_rate * speed_result.response_delay * lead_gain, -lead_delta_cap, lead_delta_cap)
+    if release_hold_allowed:
+      raw_sign = _sign(target.raw_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+      lead_sign = _sign(lead_delta, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+      actual_sign = _sign(actual_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+      lagging_raw_target = abs(actual_lateral_accel) < abs(target.raw_lateral_accel)
+      if raw_strength > 0.0 and raw_sign != 0 and actual_sign in (0, raw_sign) and lagging_raw_target and lead_sign == -raw_sign:
+        lead_delta = 0.0
     return TorqueV4Target(
       target.raw_lateral_accel,
       target.target_rate,
@@ -848,6 +885,39 @@ class LatControlTorqueV4(LatControl):
       lead_gain,
       lead_delta_cap,
     )
+
+  def _under_response_catchup_correction(self, raw_target_lateral_accel: float, actual_lateral_accel: float, *,
+                                         v_ego: float, steering_rate_deg: float, active: bool,
+                                         steering_pressed: bool, invalid: bool) -> float:
+    if not self.UNDER_RESPONSE_CATCHUP_ENABLED or invalid or not active or steering_pressed:
+      return 0.0
+    if not _finite(raw_target_lateral_accel, actual_lateral_accel, v_ego, steering_rate_deg):
+      return 0.0
+    if abs(steering_rate_deg) >= self.UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG:
+      return 0.0
+    if not self._under_response_enhancement_allowed():
+      return 0.0
+
+    strength = _under_response_strength(raw_target_lateral_accel, actual_lateral_accel)
+    if strength <= 0.0:
+      return 0.0
+    target_sign = _sign(raw_target_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+    actual_sign = _sign(actual_lateral_accel, LOW_SPEED_UNDER_RESPONSE_SIGN_THRESHOLD)
+    if target_sign == 0 or actual_sign not in (0, target_sign):
+      return 0.0
+    deficit = abs(raw_target_lateral_accel) - abs(actual_lateral_accel)
+    if deficit <= LOW_SPEED_UNDER_RESPONSE_MARGIN:
+      return 0.0
+
+    gain = _interp(v_ego, self.UNDER_RESPONSE_CATCHUP_GAIN_BP, self.UNDER_RESPONSE_CATCHUP_GAIN_V)
+    cap = _interp(v_ego, self.UNDER_RESPONSE_CATCHUP_CAP_BP, self.UNDER_RESPONSE_CATCHUP_CAP_V)
+    correction = target_sign * min(max(deficit * gain * strength, 0.0), cap)
+    return correction if _finite(correction) else 0.0
+
+  def _under_response_enhancement_allowed(self) -> bool:
+    if not self._under_response_recovery_allowed():
+      return False
+    return not getattr(self.processed_lateral_demand, "curvature_limited", True)
 
   def _filtered_measurement_rate(self, active: bool, invalid: bool, actual_lateral_accel: float) -> float:
     if invalid or not active or not _finite(actual_lateral_accel, self.previous_measurement):
@@ -943,6 +1013,13 @@ class LatControlTorqueV4(LatControl):
 
 class LatControlTorqueV41(LatControlTorqueV4):
   VERSION = 41
+  UNDER_RESPONSE_RELEASE_HOLD = True
+  UNDER_RESPONSE_CATCHUP_ENABLED = True
+  UNDER_RESPONSE_CATCHUP_GAIN_BP = V41_UNDER_RESPONSE_CATCHUP_GAIN_BP
+  UNDER_RESPONSE_CATCHUP_GAIN_V = V41_UNDER_RESPONSE_CATCHUP_GAIN_V
+  UNDER_RESPONSE_CATCHUP_CAP_BP = V41_UNDER_RESPONSE_CATCHUP_CAP_BP
+  UNDER_RESPONSE_CATCHUP_CAP_V = V41_UNDER_RESPONSE_CATCHUP_CAP_V
+  UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG = 80.0
   GOVERNOR_PROFILE = TorqueV4GovernorProfile(
     output_slew_rate_bp=[0.0, 5.0, 10.0, 20.0, 30.0, 40.0],
     output_slew_rate_v=[1.40, 2.00, 3.00, 4.20, 5.00, 5.60],
