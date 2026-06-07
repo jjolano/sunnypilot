@@ -8,6 +8,7 @@ from openpilot.common.parameterized import parameterized_class
 from cereal import custom, log
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
 from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceState
+from openpilot.selfdrive.controls.lib.lead_context import LEAD_AUTHORITY_PROGRESS_ALLOWED, PrimaryLeadContext
 from openpilot.selfdrive.controls.lib.longitudinal_modes import (
   LongitudinalActuationType,
   LongitudinalMode,
@@ -209,6 +210,78 @@ class FakePlannerParams:
     return False
 
 
+class FakeLeadContextState(SimpleNamespace):
+  @property
+  def suppressive(self):
+    return True
+
+  @property
+  def progress_allowed(self):
+    return self.authority == LEAD_AUTHORITY_PROGRESS_ALLOWED
+
+
+class FakeSteadyProgressLeadContextTracker:
+  def update(self, leads, *_args, **_kwargs):
+    lead = leads[0]
+    if not bool(getattr(lead, "status", False)):
+      return longitudinal_planner.empty_primary_lead_context()
+    d_rel = float(getattr(lead, "dRel", 0.0))
+    v_lead = float(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
+    v_rel = float(getattr(lead, "vRel", v_lead))
+    y_rel = float(getattr(lead, "yRel", 0.0))
+    model_prob = float(getattr(lead, "modelProb", 1.0))
+    state = FakeLeadContextState(
+      lead_idx=0,
+      status=True,
+      shadow=False,
+      stable=True,
+      new_lead=False,
+      track_id=int(getattr(lead, "radarTrackId", 0)),
+      d_rel=d_rel,
+      y_rel=y_rel,
+      path_y_rel=y_rel,
+      v_lead=v_lead,
+      v_rel=v_rel,
+      model_prob=model_prob,
+      radar=bool(getattr(lead, "radar", True)),
+      ttc=float("inf"),
+      required_decel=0.0,
+      time_gap=float("inf"),
+      on_path_score=1.0,
+      risk_score=0.0,
+      ghost_score=0.0,
+      confidence=1.0,
+      authority=LEAD_AUTHORITY_PROGRESS_ALLOWED,
+      reason="test_steady_progress_authorized_lead",
+      progress_model=SimpleNamespace(
+        reason="test_fixture_stable_progress",
+        gap_excess=0.0,
+        predicted_gap_opening=False,
+      ),
+      risk_model=SimpleNamespace(
+        required_decel=0.0,
+        ttc=float("inf"),
+        time_gap=float("inf"),
+        gap_shortage=0.0,
+        closing_speed=0.0,
+        stopped_or_crawling=False,
+        ghost_score=0.0,
+      ),
+    )
+    return PrimaryLeadContext(
+      physical_idx=0,
+      behavior_idx=0,
+      physical=state,
+      behavior=state,
+      alternate_threat_active=False,
+      shadow_active=False,
+      reason="test_steady_progress_authorized_lead",
+      states=(state,),
+      lead_progress_allowed=True,
+      lead_release_blocked_reason="",
+    )
+
+
 def patch_planner_sp(monkeypatch):
   monkeypatch.setattr(longitudinal_planner.LongitudinalPlannerSP, "update", lambda _planner, _sm: None)
   monkeypatch.setattr(
@@ -292,6 +365,8 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.stopped_lead_gap_fill_track_id = -2
   planner.stopped_lead_gap_fill_d_rel = 0.0
   planner.stopped_lead_gap_fill_v_lead = 0.0
+  planner.primary_lead_context_tracker = FakeSteadyProgressLeadContextTracker()
+  planner.primary_lead_context = longitudinal_planner.empty_primary_lead_context()
   planner.source = custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
   planner.events_sp = SimpleNamespace(add=lambda _event: None)
   planner.planner_seed_candidates = []

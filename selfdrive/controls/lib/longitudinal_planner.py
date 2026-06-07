@@ -29,6 +29,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_modes import (
   SccModeEvidence,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_profile import jerk_limited_braking_profile
+from openpilot.selfdrive.controls.lib.scc_evidence import SccEvidenceSelector, SccEvidenceTier
 from openpilot.selfdrive.controls.lib.lead_confidence import (
   LeadConfidenceState,
   LEAD_FLICKER_CLOSE_COUNT_THRESHOLD,
@@ -487,12 +488,13 @@ def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_t
   stop_profile = jerk_limited_braking_profile(v_ego, 0.0, model_stop_distance) if model_stop_distance is not None else None
   urgent_stop = bool(stop_profile is not None and stop_profile.urgent)
   model_slowdown = bool(not model_stop and not urgent_stop and has_scc_model_slowdown(model_msg))
+  confirmed_geometry = bool(has_confirmed_lead and lead_distance is not None)
   return SccModeEvidence(
-    confirmed_lead=has_confirmed_lead,
+    confirmed_lead=confirmed_geometry,
     model_stop=model_stop,
     model_slowdown=model_slowdown,
     urgent_stop=urgent_stop,
-    independent_of_lead=bool(model_stop and not has_confirmed_lead),
+    independent_of_lead=bool(model_stop and not confirmed_geometry),
     model_stop_distance=model_stop_distance,
     lead_distance=lead_distance,
     lead_path_y_rel=lead_path_y_rel,
@@ -670,6 +672,7 @@ def _valid_scc_lead_geometry_values(lead) -> tuple[float | None, float, int | No
 
 def scc_lead_geometry_from_context(context: PrimaryLeadContext | None, radar_state) -> tuple[float | None, float, int | None]:
   leads = (getattr(radar_state, "leadOne", None), getattr(radar_state, "leadTwo", None))
+  shadow_indices = _scc_shadow_lead_indices(context)
   physical = getattr(context, "physical", None)
   if physical is not None and not bool(getattr(physical, "shadow", False)) and bool(getattr(physical, "status", False)):
     try:
@@ -685,6 +688,8 @@ def scc_lead_geometry_from_context(context: PrimaryLeadContext | None, radar_sta
 
   confirmed = []
   for idx, lead in enumerate(leads):
+    if idx in shadow_indices:
+      continue
     if not bool(getattr(lead, "status", False)):
       continue
     if _finite_float(getattr(lead, "modelProb", 0.0)) < LEAD_LOSS_E2E_GUARD_MIN_MODEL_PROB:
@@ -696,6 +701,20 @@ def scc_lead_geometry_from_context(context: PrimaryLeadContext | None, radar_sta
     return None, 0.0, None
   idx, d_rel, y_rel = min(confirmed, key=lambda item: item[1])
   return d_rel, y_rel, idx
+
+
+def _scc_shadow_lead_indices(context: PrimaryLeadContext | None) -> set[int]:
+  indices: set[int] = set()
+  for state in (*tuple(getattr(context, "states", ())), getattr(context, "physical", None), getattr(context, "behavior", None)):
+    if state is None or not bool(getattr(state, "shadow", False)):
+      continue
+    try:
+      lead_idx = int(getattr(state, "lead_idx"))
+    except (TypeError, ValueError):
+      continue
+    if lead_idx >= 0:
+      indices.add(lead_idx)
+  return indices
 
 
 def _finite_model_array(values):
@@ -1661,6 +1680,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
     self.prev_reset_state = True
+    # Stop/go Intent is represented by these planner-owned latches and timers.
+    # They may hold or restrict stop/creep/gap-fill behavior, but positive
+    # progress still requires stable lead/runway evidence and must yield to
+    # reset, force-slow, brake/gas, stop-threat, and physical lead safety paths.
     self.engage_stop_bootstrap_timer = 0.0
     self.e2e_close_stop_settle_active = False
     self.output_a_target = 0.0
@@ -1678,6 +1701,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.lead_flicker_safety_cap_trackers = [LeadFlickerSafetyCapTracker(), LeadFlickerSafetyCapTracker()]
     self.primary_lead_context_tracker = LeadContextTracker()
     self.primary_lead_context = empty_primary_lead_context()
+    self.scc_evidence_selector = SccEvidenceSelector()
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -1817,8 +1841,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     scc_lead_distance, scc_lead_path_y_rel, scc_lead_idx = scc_lead_geometry_from_context(
       self.primary_lead_context, sm['radarState'],
     )
+    scc_evidence_selector = getattr(self, "scc_evidence_selector", None)
+    if scc_evidence_selector is None:
+      scc_evidence_selector = SccEvidenceSelector()
+      self.scc_evidence_selector = scc_evidence_selector
+    scc_selector_reset = bool(reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed)
     if mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.SCC and not set_speed_advisory_mode:
-      scc_evidence = build_scc_mode_evidence(
+      raw_scc_evidence = build_scc_mode_evidence(
         has_confirmed_lead, sm['modelV2'], self.scc, self.sla, self.osm_traffic_control_prior,
         speed_limit_handoff_active=bool(getattr(self, "_speed_limit_handoff_active", False)),
         lead_distance=scc_lead_distance,
@@ -1826,8 +1855,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         lead_idx=scc_lead_idx,
         v_ego=v_ego,
       )
+      scc_evidence = scc_evidence_selector.update(raw_scc_evidence.classify(), self.dt, reset=scc_selector_reset)
       self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP, scc_evidence=scc_evidence)
       mode_resolution = self.longitudinal_mode_resolution
+    else:
+      scc_evidence_selector.reset()
 
     # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist. SCC target providers are gated by
     # the pre-target SCC evidence resolution so SCC_E2E cycles cannot select stale SCC curve/map actuation first.
@@ -1838,7 +1870,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       v_cruise = 0.0
 
     if mode_resolution is not None and mode_resolution.requested_mode == LongitudinalMode.SCC and not set_speed_advisory_mode:
-      scc_evidence = build_scc_mode_evidence(
+      raw_scc_evidence = build_scc_mode_evidence(
         has_confirmed_lead, sm['modelV2'], self.scc, self.sla, self.osm_traffic_control_prior,
         speed_limit_handoff_active=bool(getattr(self, "_speed_limit_handoff_active", False)),
         lead_distance=scc_lead_distance,
@@ -1846,6 +1878,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         lead_idx=scc_lead_idx,
         v_ego=v_ego,
       )
+      scc_evidence = scc_evidence_selector.select(raw_scc_evidence.classify())
       self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP, scc_evidence=scc_evidence)
       mode_resolution = self.longitudinal_mode_resolution
       self._update_e2e_alerts_for_mode(sm)
@@ -1857,7 +1890,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     scc_curve_scene_allowed = bool(
       mode_resolution is not None and
       mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC and
-      direct_actuation_mode
+      direct_actuation_mode and
+      mode_resolution.scc_evidence.tier not in (SccEvidenceTier.STOP, SccEvidenceTier.URGENT_STOP)
     )
     lead_loss_guard_lead = get_lead_loss_e2e_guard_lead(sm['radarState'])
     custom_engage_stop_bootstrap_active = e2e_active and should_run_engage_stop_bootstrap(

@@ -30,6 +30,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_modes import (
   LongitudinalModeResolver,
   ResolvedLongitudinalImplementation,
 )
+from openpilot.selfdrive.controls.lib.scc_evidence import SccEvidenceTier
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import apply_stack_output_to_planner, planner_state_to_stack_output
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   CustomV2Scene,
@@ -125,6 +126,17 @@ def _select_lower_target(selected_source, selected_v_target, selected_a_target, 
 
 def _decision_source_name(source) -> str:
   return source.value if isinstance(source, DecisionSource) else str(source or "")
+
+
+def _scc_curve_sources_allowed(mode_resolution: LongitudinalModeResolution | None) -> bool:
+  if not (
+    mode_resolution is not None and
+    mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC and
+    mode_resolution.actuation_type == LongitudinalActuationType.DIRECT
+  ):
+    return False
+  evidence_tier = getattr(getattr(mode_resolution, "scc_evidence", None), "tier", SccEvidenceTier.NONE)
+  return evidence_tier not in (SccEvidenceTier.STOP, SccEvidenceTier.URGENT_STOP)
 
 
 def publish_decision_layer_telemetry(longitudinalPlanSP, telemetry: LongitudinalDecisionTelemetry | None) -> None:
@@ -401,11 +413,7 @@ class LongitudinalPlannerSP:
       mode_resolution is not None and
       mode_resolution.actuation_type == LongitudinalActuationType.SET_SPEED_ADVISORY
     )
-    scc_curve_actuation_allowed = bool(
-      mode_resolution is not None and
-      mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC and
-      mode_resolution.actuation_type == LongitudinalActuationType.DIRECT
-    )
+    scc_curve_actuation_allowed = _scc_curve_sources_allowed(mode_resolution)
     if acc_mode_direct:
       self._speed_limit_handoff_active = False
       self._speed_limit_active_prev = False

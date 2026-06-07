@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import IntEnum
+from dataclasses import dataclass, field, replace
+from enum import Enum, IntEnum
 import math
+from typing import Any
 
 
 class SccEvidenceTier(IntEnum):
@@ -21,6 +22,18 @@ class SccEvidenceTier(IntEnum):
   @property
   def label(self) -> str:
     return self.name.lower()
+
+
+class SccEvidenceSelectorState(Enum):
+  SCC_ACC = "scc_acc"
+  SCC_E2E_PENDING = "scc_e2e_pending"
+  SCC_E2E_ACTIVE = "scc_e2e_active"
+  SCC_ACC_RECOVERY = "scc_acc_recovery"
+
+
+SCC_E2E_STOP_PERSISTENCE = 0.15
+SCC_E2E_SLOWDOWN_PERSISTENCE = 0.35
+SCC_ACC_RECOVERY_TIME = 0.50
 
 
 @dataclass(frozen=True)
@@ -59,6 +72,7 @@ class SccEvidenceResult:
   advisory: SccAdvisoryFlags = field(default_factory=SccAdvisoryFlags)
   model_stop_distance: float | None = None
   associated_lead_idx: int | None = None
+  mode_e2e_active: bool | None = None
 
   @property
   def advisories(self) -> SccAdvisoryFlags:
@@ -70,6 +84,8 @@ class SccEvidenceResult:
 
   @property
   def e2e_active(self) -> bool:
+    if self.mode_e2e_active is not None:
+      return bool(self.mode_e2e_active)
     if self.tier == SccEvidenceTier.NONE:
       return False
     if not self.confirmed_lead:
@@ -212,6 +228,102 @@ def classify_scc_evidence(*, confirmed_lead: bool = False, model_stop: bool = Fa
     model_stop_distance=model_stop_distance,
     associated_lead_idx=associated_lead_idx,
   )
+
+
+class SccEvidenceSelector:
+  """Planner-owned SCC anti-flicker selector.
+
+  The classifier remains frame-level and stateless. This selector only decides
+  when classified evidence is stable enough to authorize SCC_E2E mode. Unstable
+  evidence can still publish and restrict via downstream caps, but it does not
+  authorize progress or mode switching.
+  """
+
+  def __init__(self) -> None:
+    self.state = SccEvidenceSelectorState.SCC_ACC
+    self._evidence_timer = 0.0
+    self._recovery_timer = 0.0
+
+  def reset(self) -> None:
+    self.state = SccEvidenceSelectorState.SCC_ACC
+    self._evidence_timer = 0.0
+    self._recovery_timer = 0.0
+
+  def update(self, evidence: SccEvidenceResult, dt: float, *, reset: bool = False) -> SccEvidenceResult:
+    dt = max(0.0, _finite_float(dt, 0.0))
+    if reset:
+      self.reset()
+      if _scc_evidence_immediate_e2e(evidence):
+        self.state = SccEvidenceSelectorState.SCC_E2E_ACTIVE
+      return self.select(evidence)
+
+    if _scc_evidence_immediate_e2e(evidence):
+      self.state = SccEvidenceSelectorState.SCC_E2E_ACTIVE
+      self._evidence_timer = 0.0
+      self._recovery_timer = 0.0
+      return self.select(evidence)
+
+    if _scc_evidence_candidate(evidence):
+      if self.state == SccEvidenceSelectorState.SCC_E2E_ACTIVE:
+        return self.select(evidence)
+      threshold = _scc_evidence_persistence_threshold(evidence)
+      self._evidence_timer = self._evidence_timer + dt
+      self._recovery_timer = 0.0
+      if self._evidence_timer >= threshold:
+        self.state = SccEvidenceSelectorState.SCC_E2E_ACTIVE
+      else:
+        self.state = SccEvidenceSelectorState.SCC_E2E_PENDING
+      return self.select(evidence)
+
+    self._evidence_timer = 0.0
+    if self.state == SccEvidenceSelectorState.SCC_E2E_ACTIVE:
+      self.state = SccEvidenceSelectorState.SCC_ACC_RECOVERY
+      self._recovery_timer = SCC_ACC_RECOVERY_TIME
+    elif self.state == SccEvidenceSelectorState.SCC_ACC_RECOVERY:
+      self._recovery_timer = max(0.0, self._recovery_timer - dt)
+      if self._recovery_timer <= 0.0:
+        self.state = SccEvidenceSelectorState.SCC_ACC
+    else:
+      self.state = SccEvidenceSelectorState.SCC_ACC
+      self._recovery_timer = 0.0
+    return self.select(evidence)
+
+  def select(self, evidence: SccEvidenceResult) -> SccEvidenceResult:
+    if self.state == SccEvidenceSelectorState.SCC_E2E_ACTIVE:
+      return replace(evidence, mode_e2e_active=True)
+    if self.state == SccEvidenceSelectorState.SCC_E2E_PENDING:
+      return replace(evidence, reason="scc_e2e_pending", mode_e2e_active=False)
+    if self.state == SccEvidenceSelectorState.SCC_ACC_RECOVERY:
+      return replace(evidence, reason="scc_acc_recovery", mode_e2e_active=False)
+    return replace(evidence, mode_e2e_active=False)
+
+
+def _scc_evidence_immediate_e2e(evidence: SccEvidenceResult) -> bool:
+  return bool(evidence.tier == SccEvidenceTier.URGENT_STOP and evidence.independent_of_lead)
+
+
+def _scc_evidence_candidate(evidence: SccEvidenceResult) -> bool:
+  if evidence.tier == SccEvidenceTier.STOP:
+    return bool(evidence.independent_of_lead or not evidence.confirmed_lead)
+  if evidence.tier == SccEvidenceTier.SLOWDOWN:
+    return bool(not evidence.confirmed_lead)
+  return False
+
+
+def _scc_evidence_persistence_threshold(evidence: SccEvidenceResult) -> float:
+  if evidence.tier == SccEvidenceTier.STOP:
+    return SCC_E2E_STOP_PERSISTENCE
+  if evidence.tier == SccEvidenceTier.SLOWDOWN:
+    return SCC_E2E_SLOWDOWN_PERSISTENCE
+  return math.inf
+
+
+def _finite_float(value: Any, default: float = 0.0) -> float:
+  try:
+    value_float = float(value)
+  except (TypeError, ValueError):
+    return default
+  return value_float if math.isfinite(value_float) else default
 
 
 def associate_model_stop_with_lead(*, confirmed_lead: bool, model_stop_distance: float | None,

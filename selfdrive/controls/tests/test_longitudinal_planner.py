@@ -14,6 +14,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_decision import DecisionSource, LongitudinalArbiter
 from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, ResolvedLongitudinalImplementation, SccModeEvidence
 from openpilot.selfdrive.controls.lib.scc_evidence import SccEvidenceTier
+from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import SUNNYPILOT_CURRENT, StackResolution
@@ -54,8 +55,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   limit_accel_in_turns,
   one_pedal_cruise_hold_requested,
   should_cap_lead_flicker_speedup,
+  should_arm_stopped_lead_gap_fill,
   should_enable_longitudinal_decision_layer,
   should_allow_stopped_lead_stop_gap_guard,
+  should_reserve_creep_to_stop_gap,
+  update_lead_loss_e2e_guard_timer,
+  get_stopped_lead_gap_fill_accel,
   should_run_engage_stop_bootstrap,
   scc_lead_geometry_from_context,
   update_one_pedal_cruise_hold,
@@ -252,7 +257,7 @@ class PoisonModel:
 
 
 def make_full_update_sm(model, lead_status=False, lead_d_rel=30.0, lead_v_rel=-0.2, lead_y_rel=0.0,
-                        lead_model_prob=1.0):
+                        lead_model_prob=1.0, long_control_state=LongCtrlState.off):
   lead = SimpleNamespace(
     status=lead_status, dRel=lead_d_rel if lead_status else 100.0, vRel=lead_v_rel if lead_status else 0.0,
     vLead=10.0 + lead_v_rel if lead_status else 0.0, vLeadK=10.0 + lead_v_rel if lead_status else 0.0,
@@ -272,7 +277,7 @@ def make_full_update_sm(model, lead_status=False, lead_d_rel=30.0, lead_v_rel=-0
       gasPressed=False,
       brakePressed=False,
     ),
-    "controlsState": SimpleNamespace(longControlState=0, forceDecel=False),
+    "controlsState": SimpleNamespace(longControlState=long_control_state, forceDecel=False),
     "selfdriveState": SimpleNamespace(enabled=True, personality=0),
     "liveParameters": SimpleNamespace(angleOffsetDeg=0.0, stiffnessFactor=1.0, steerRatio=15.0, roll=0.0),
     "radarState": SimpleNamespace(leadOne=lead, leadTwo=no_lead),
@@ -416,7 +421,7 @@ def test_e2e_full_update_scene_disables_scc_curve_only_sources():
   assert planner.custom_v2_scene.curve_a_target == 0.0
 
 
-def test_scc_e2e_full_update_model_stop_disables_scc_curve_sources_same_cycle():
+def test_scc_full_update_pending_model_stop_disables_scc_curve_sources_same_cycle():
   planner = make_full_update_planner(LongitudinalMode.SCC, radar_unavailable=False)
   planner.scc.vision.is_active = True
   planner.scc.vision.output_v_target = 5.0
@@ -427,15 +432,26 @@ def test_scc_e2e_full_update_model_stop_disables_scc_curve_sources_same_cycle():
   model = make_safe_model_msg()
   model.action.shouldStop = True
   model.action.desiredAcceleration = -1.0
+  sm = make_full_update_sm(model, long_control_state=LongCtrlState.pid)
 
-  planner.update(make_full_update_sm(model))
+  planner.update(sm)
 
-  assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_E2E
+  evidence = planner.longitudinal_mode_resolution.scc_evidence
+  assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC
+  assert evidence.tier == SccEvidenceTier.STOP
+  assert evidence.reason == "scc_e2e_pending"
+  assert not evidence.e2e_active
   assert planner.scc.update_count == 0
   assert planner.source == LongitudinalPlanSourceSP.cruise
   assert planner.custom_v2_scene.curve_active is False
   assert DecisionSource.SCC_VISION not in [candidate.source for candidate in planner.decision_candidates_sp]
   assert DecisionSource.SCC_MAP not in [candidate.source for candidate in planner.decision_candidates_sp]
+
+  for _ in range(2):
+    planner.update(sm)
+
+  assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_E2E
+  assert planner.longitudinal_mode_resolution.scc_evidence.e2e_active
 
 
 def test_scc_full_update_associates_confirmed_lead_model_stop_with_scc_acc():
@@ -479,11 +495,21 @@ def test_scc_full_update_path_mismatch_model_stop_is_independent():
   model.position.y = [0.0, 0.0, 0.0]
   model.velocity.x = [10.0, 0.2, 0.2]
 
-  planner.update(make_full_update_sm(model, lead_status=True, lead_d_rel=30.0, lead_y_rel=2.0))
+  sm = make_full_update_sm(model, lead_status=True, lead_d_rel=30.0, lead_y_rel=2.0, long_control_state=LongCtrlState.pid)
+
+  planner.update(sm)
   evidence = planner.longitudinal_mode_resolution.scc_evidence
 
   assert evidence.associated_lead_idx is None
   assert evidence.independent_of_lead
+  assert evidence.reason == "scc_e2e_pending"
+  assert not evidence.e2e_active
+  assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC
+
+  for _ in range(2):
+    planner.update(sm)
+  evidence = planner.longitudinal_mode_resolution.scc_evidence
+
   assert evidence.e2e_active
   assert planner.longitudinal_mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_E2E
 
@@ -1617,6 +1643,60 @@ def test_e2e_close_stop_settle_requires_no_lead_e2e_and_no_override():
   assert get_e2e_close_stop_settle(0.5, -0.2, model_msg, make_radar_state(), False) == (-0.2, False, False)
   assert get_e2e_close_stop_settle(0.5, -0.2, model_msg, make_radar_state(), True, brake_pressed=True) == (-0.2, False, False)
   assert get_e2e_close_stop_settle(0.5, -0.2, model_msg, make_radar_state(), True, gas_pressed=True) == (-0.2, False, False)
+
+
+@pytest.mark.parametrize("block", [
+  {"brake_pressed": True},
+  {"gas_pressed": True},
+  {"force_slow_decel": True},
+  {"reset_state": True},
+])
+def test_stop_go_reserve_creep_requires_progress_authority_and_no_blocks(block):
+  kwargs = dict(primary_behavior_progress_allowed=True, output_should_stop=False, v_ego=0.02, d_rel=5.75, v_lead=0.0)
+
+  assert should_reserve_creep_to_stop_gap(**kwargs)
+  assert not should_reserve_creep_to_stop_gap(**{**kwargs, "primary_behavior_progress_allowed": False})
+  assert not should_reserve_creep_to_stop_gap(**{**kwargs, "output_should_stop": True})
+  assert not should_reserve_creep_to_stop_gap(**kwargs, **block)
+
+
+@pytest.mark.parametrize("block", [
+  {"brake_pressed": True},
+  {"gas_pressed": True},
+  {"force_slow_decel": True},
+])
+def test_stopped_lead_gap_fill_arms_and_accelerates_only_without_blocks(block):
+  assert should_arm_stopped_lead_gap_fill(v_ego=0.1, d_rel=5.5, v_lead=0.0, model_prob=1.0)
+  assert not should_arm_stopped_lead_gap_fill(v_ego=0.1, d_rel=5.5, v_lead=0.0, model_prob=1.0, **block)
+
+  active, accel = get_stopped_lead_gap_fill_accel(v_ego=0.2, d_rel=12.0, v_lead=0.2, model_prob=1.0, armed=True)
+  blocked_active, blocked_accel = get_stopped_lead_gap_fill_accel(
+    v_ego=0.2, d_rel=12.0, v_lead=0.2, model_prob=1.0, armed=True, **block,
+  )
+
+  assert active
+  assert accel > 0.0
+  assert not blocked_active
+  assert blocked_accel == 0.0
+
+
+@pytest.mark.parametrize("block", [
+  {"reset_state": True},
+  {"force_slow_decel": True},
+  {"brake_pressed": True},
+  {"gas_pressed": True},
+])
+def test_lead_loss_e2e_guard_timer_is_cap_only_and_clears_on_blocks(block):
+  guard_kwargs = dict(
+    previous_lead_status=True, previous_d_rel=50.0, previous_model_prob=1.0,
+    current_has_lead=False, lane_change_active=True,
+  )
+  armed = update_lead_loss_e2e_guard_timer(0.0, 0.1, **guard_kwargs)
+  cleared = update_lead_loss_e2e_guard_timer(armed, 0.1, **guard_kwargs, **block)
+
+  assert armed > 0.0
+  assert cleared == 0.0
+  assert update_lead_loss_e2e_guard_timer(armed, 0.1, **{**guard_kwargs, "current_has_lead": True}) == 0.0
 
 
 def test_e2e_close_stop_settle_ignores_positive_model_accel():

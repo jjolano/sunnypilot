@@ -207,7 +207,8 @@ def _radar_unavailable(CP: Any | None) -> bool:
   return bool(getattr(CP, "radarUnavailable", False))
 
 
-def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_evidence: SccModeEvidence | None = None,
+def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *,
+                              scc_evidence: SccModeEvidence | SccEvidenceResult | None = None,
                               unsupported_reason: str = "", restriction_status: tuple[str, ...] = ()) -> LongitudinalModeResolution:
   requested = requested_mode_from_params(params)
   actuation = LongitudinalActuationType.DIRECT if _has_direct_longitudinal_control(CP) else LongitudinalActuationType.SET_SPEED_ADVISORY
@@ -241,7 +242,7 @@ def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_evidenc
 
   if requested == LongitudinalMode.SCC:
     scc_evidence = scc_evidence or SccModeEvidence()
-    scc_evidence_result = scc_evidence.classify()
+    scc_evidence_result = _classify_scc_mode_evidence(scc_evidence)
     scc_e2e_active = scc_evidence_result.e2e_active
     resolved = ResolvedLongitudinalImplementation.SCC_E2E if scc_e2e_active else ResolvedLongitudinalImplementation.SCC_ACC
     return LongitudinalModeResolution(
@@ -251,7 +252,7 @@ def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_evidenc
       restriction_status=effective_restriction_status,
       compatibility_alias_state=DecCompatibilityState.BLENDED if scc_e2e_active else DecCompatibilityState.ACC,
       unsupported_reason=effective_unsupported_reason,
-      debug={"reason": effective_unsupported_reason or scc_evidence.reason},
+      debug={"reason": effective_unsupported_reason or _scc_evidence_debug_reason(scc_evidence, scc_evidence_result)},
       scc_evidence=scc_evidence_result,
     )
 
@@ -269,7 +270,8 @@ def resolve_longitudinal_mode(params: Any, CP: Any | None = None, *, scc_evidenc
 
 class LongitudinalModeResolver:
   @staticmethod
-  def resolve(params: Any, CP: Any | None = None, *, scc_evidence: SccModeEvidence | None = None,
+  def resolve(params: Any, CP: Any | None = None, *,
+              scc_evidence: SccModeEvidence | SccEvidenceResult | None = None,
               unsupported_reason: str = "", restriction_status: tuple[str, ...] = ()) -> LongitudinalModeResolution:
     return resolve_longitudinal_mode(
       params, CP,
@@ -277,3 +279,20 @@ class LongitudinalModeResolver:
       unsupported_reason=unsupported_reason,
       restriction_status=restriction_status,
     )
+
+
+def _classify_scc_mode_evidence(scc_evidence: SccModeEvidence | SccEvidenceResult) -> SccEvidenceResult:
+  if isinstance(scc_evidence, SccEvidenceResult):
+    return scc_evidence
+  return scc_evidence.classify()
+
+
+def _scc_evidence_debug_reason(scc_evidence: SccModeEvidence | SccEvidenceResult,
+                               result: SccEvidenceResult) -> str:
+  if result.e2e_active:
+    return result.reason
+  if result.reason in ("scc_e2e_pending", "scc_acc_recovery"):
+    return result.reason
+  if result.confirmed_lead:
+    return "scc_confirmed_lead"
+  return getattr(scc_evidence, "reason", result.reason)
