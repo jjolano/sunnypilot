@@ -59,6 +59,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   LongitudinalPlanner,
   _A_TOTAL_MAX_BP,
   _A_TOTAL_MAX_V,
+  apply_curve_load_comfort_accel_limit,
   apply_lead_pullaway_runway_output_cap,
   apply_stop_release_guard_accel,
   fast_lead_motion_evidence_enabled,
@@ -1444,6 +1445,41 @@ def test_limit_accel_in_turns_hardening_uses_vehicle_model_curvature():
   vehicle_model_a_y = v_ego**2 * VM.calc_curvature(angle_steers * CV.DEG_TO_RAD, v_ego, 0.0)
   expected_a_x_allowed = math.sqrt(max(a_total_max**2 - vehicle_model_a_y**2, 0.0))
   assert limited == pytest.approx([a_target[0], min(a_target[1], expected_a_x_allowed)])
+
+
+def test_curve_load_comfort_tapers_positive_accel_near_lateral_limit():
+  CP = get_test_cp()
+  v_ego = 30.0
+  angle_steers = 5.0
+  a_target = [-1.0, 1.2]
+
+  limited = apply_curve_load_comfort_accel_limit(v_ego, angle_steers, a_target, CP)
+
+  assert limited[0] == pytest.approx(a_target[0])
+  assert 0.0 < limited[1] < a_target[1]
+
+
+def test_curve_load_comfort_never_commands_braking_from_lateral_load_only():
+  CP = get_test_cp()
+  v_ego = 30.0
+  angle_steers = 15.0
+  a_target = [-1.0, 1.2]
+
+  limited = apply_curve_load_comfort_accel_limit(v_ego, angle_steers, a_target, CP)
+
+  assert limited[0] == pytest.approx(a_target[0])
+  assert limited[1] == pytest.approx(0.0)
+
+
+def test_curve_load_comfort_bypasses_urgent_cases():
+  CP = get_test_cp()
+  v_ego = 30.0
+  angle_steers = 15.0
+  a_target = [-1.0, 1.2]
+
+  limited = apply_curve_load_comfort_accel_limit(v_ego, angle_steers, a_target, CP, urgent_bypass=True)
+
+  assert limited == pytest.approx(a_target)
 
 
 def test_publish_has_lead_checks_both_tracks(monkeypatch):

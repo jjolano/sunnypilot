@@ -327,6 +327,9 @@ STOP_RELEASE_GUARD_FORCE_BLOCK_REASON = "driver_or_force_blocked"
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20.0, 40.0]
+CURVE_LOAD_COMFORT_MIN_V_EGO = 8.0
+CURVE_LOAD_COMFORT_TAPER_START = 0.55
+CURVE_LOAD_COMFORT_TAPER_FULL = 0.90
 
 
 def get_max_accel(v_ego):
@@ -1847,24 +1850,53 @@ def apply_lead_loss_e2e_guard_accel(e2e_accel, e2e_should_stop, timer, has_lead)
   return max(e2e_accel, LEAD_LOSS_E2E_GUARD_ACCEL_FLOOR)
 
 
+def get_turn_lateral_accel(v_ego, angle_steers, CP, control_calculation_hardening=False,
+                           vehicle_model=None, roll=0.0, accurate_lateral_accel=False):
+  # FIXME: This function to calculate lateral accel is incorrect and should use the VehicleModel
+  # The lookup table for turns should also be updated if we do this
+  if accurate_lateral_accel and vehicle_model is not None:
+    return lateral_accel_from_steering_angle(v_ego, angle_steers * CV.DEG_TO_RAD, vehicle_model, roll)
+  if control_calculation_hardening:
+    return v_ego**2 * VehicleModel(CP).calc_curvature(angle_steers * CV.DEG_TO_RAD, v_ego, 0.0)
+  return v_ego**2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
+
+
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP, control_calculation_hardening=False,
                          vehicle_model=None, roll=0.0, accurate_lateral_accel=False):
   """
   This function returns a limited long acceleration allowed, depending on the existing lateral acceleration
   this should avoid accelerating when losing the target in turns
   """
-  # FIXME: This function to calculate lateral accel is incorrect and should use the VehicleModel
-  # The lookup table for turns should also be updated if we do this
   a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
-  if accurate_lateral_accel and vehicle_model is not None:
-    a_y = lateral_accel_from_steering_angle(v_ego, angle_steers * CV.DEG_TO_RAD, vehicle_model, roll)
-  elif control_calculation_hardening:
-    a_y = v_ego**2 * VehicleModel(CP).calc_curvature(angle_steers * CV.DEG_TO_RAD, v_ego, 0.0)
-  else:
-    a_y = v_ego**2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
+  a_y = get_turn_lateral_accel(v_ego, angle_steers, CP, control_calculation_hardening,
+                               vehicle_model, roll, accurate_lateral_accel)
   a_x_allowed = math.sqrt(max(a_total_max**2 - a_y**2, 0.0))
 
   return [a_target[0], min(a_target[1], a_x_allowed)]
+
+
+def apply_curve_load_comfort_accel_limit(v_ego, angle_steers, a_target, CP, control_calculation_hardening=False,
+                                         vehicle_model=None, roll=0.0, accurate_lateral_accel=False,
+                                         urgent_bypass=False):
+  if urgent_bypass or v_ego < CURVE_LOAD_COMFORT_MIN_V_EGO or a_target[1] <= 0.0:
+    return list(a_target)
+
+  a_total_max = float(np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V))
+  if a_total_max <= 0.0:
+    return list(a_target)
+  a_y = abs(get_turn_lateral_accel(v_ego, angle_steers, CP, control_calculation_hardening,
+                                   vehicle_model, roll, accurate_lateral_accel))
+  lateral_load_ratio = a_y / a_total_max
+  if lateral_load_ratio <= CURVE_LOAD_COMFORT_TAPER_START:
+    return list(a_target)
+
+  positive_accel_scale = float(np.interp(
+    lateral_load_ratio,
+    [CURVE_LOAD_COMFORT_TAPER_START, CURVE_LOAD_COMFORT_TAPER_FULL],
+    [1.0, 0.0],
+  ))
+  comfort_upper = max(0.0, float(a_target[1]) * positive_accel_scale)
+  return [a_target[0], min(a_target[1], comfort_upper)]
 
 
 def get_predicted_lead_pullaway(v_lead, a_lead, a_lead_tau, horizon=CREEP_TO_STOP_GAP_PREDICT_T):
@@ -3322,6 +3354,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     has_lead = sm['radarState'].leadOne.status or sm['radarState'].leadTwo.status
     cruise_coast_applied = False
     cruise_coast_a_target = output_a_target
+    curve_load_comfort_bypass = bool(
+      reset_state or force_slow_decel or sm['carState'].brakePressed or sm['carState'].gasPressed or
+      self.output_should_stop or self.fcw
+    )
+    accel_clip = apply_curve_load_comfort_accel_limit(
+      v_ego, steer_angle_without_offset, accel_clip, self.CP,
+      control_calculation_hardening=self.control_calculation_hardening,
+      vehicle_model=self.VM, roll=live_params.roll,
+      accurate_lateral_accel=accurate_lateral_accel,
+      urgent_bypass=curve_load_comfort_bypass,
+    )
 
     legacy_a_target = float(output_a_target)
     legacy_should_stop = bool(self.output_should_stop)
