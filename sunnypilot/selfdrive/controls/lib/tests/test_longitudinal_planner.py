@@ -566,9 +566,9 @@ class TestStackTelemetryPublish(unittest.TestCase):
     publish_stack_telemetry(
       plan_sp, resolution, "custom-2.0", 0.2,
       fault_latched=True, fault_reason="a_target_above_limits",
-      selected_intent="launch", selected_reason="confirmed_lead_pullaway",
+      selected_intent="launch", selected_reason="confirmed_lead_pullaway_pulse",
       rejected=(("stop_approach", "lead_pullaway_release"), ("speed_policy", "no_speed_reduction_needed")),
-      seed_context="planner", seed_candidate="creep_pullaway_launch",
+      seed_context="planner", seed_candidate="lead_pullaway_pulse",
     )
 
     self.assertEqual(plan_sp.stack.resolvedStack, StackId.customV2)
@@ -577,11 +577,11 @@ class TestStackTelemetryPublish(unittest.TestCase):
     self.assertTrue(plan_sp.stack.faultLatched)
     self.assertEqual(plan_sp.stack.faultReason, "a_target_above_limits")
     self.assertEqual(plan_sp.stack.selectedIntent, "launch")
-    self.assertEqual(plan_sp.stack.selectedReason, "confirmed_lead_pullaway")
+    self.assertEqual(plan_sp.stack.selectedReason, "confirmed_lead_pullaway_pulse")
     self.assertEqual(plan_sp.stack.rejectedIntents, ["stop_approach", "speed_policy"])
     self.assertEqual(plan_sp.stack.rejectedReasons, ["lead_pullaway_release", "no_speed_reduction_needed"])
     self.assertEqual(plan_sp.stack.seedContext, "planner")
-    self.assertEqual(plan_sp.stack.seedCandidate, "creep_pullaway_launch")
+    self.assertEqual(plan_sp.stack.seedCandidate, "lead_pullaway_pulse")
 
   def test_capnp_stack_schema_fields_exist(self):
     msg = messaging.new_message("longitudinalPlanSP")
@@ -594,14 +594,14 @@ class TestStackTelemetryPublish(unittest.TestCase):
     msg.longitudinalPlanSP.stack.rejectedIntents = ["stop_approach"]
     msg.longitudinalPlanSP.stack.rejectedReasons = ["lead_pullaway_release"]
     msg.longitudinalPlanSP.stack.seedContext = "planner"
-    msg.longitudinalPlanSP.stack.seedCandidate = "creep_pullaway_launch"
+    msg.longitudinalPlanSP.stack.seedCandidate = "lead_pullaway_pulse"
 
     self.assertEqual(msg.longitudinalPlanSP.stack.requestedStack, StackId.sunnypilotCurrent)
     self.assertEqual(msg.longitudinalPlanSP.stack.faultReason, "")
     self.assertEqual(msg.longitudinalPlanSP.stack.selectedIntent, "launch")
     self.assertEqual(msg.longitudinalPlanSP.stack.rejectedIntents[0], "stop_approach")
     self.assertEqual(msg.longitudinalPlanSP.stack.seedContext, "planner")
-    self.assertEqual(msg.longitudinalPlanSP.stack.seedCandidate, "creep_pullaway_launch")
+    self.assertEqual(msg.longitudinalPlanSP.stack.seedCandidate, "lead_pullaway_pulse")
 
 
 class TestLongitudinalModeTelemetryPublish(unittest.TestCase):

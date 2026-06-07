@@ -17,7 +17,7 @@ from openpilot.selfdrive.controls.lib.scc_evidence import SccEvidenceTier
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import SUNNYPILOT_CURRENT, StackResolution
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, SUNNYPILOT_CURRENT, StackResolution
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanSource as LongitudinalPlanSourceSP
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
@@ -31,8 +31,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   FAST_LEAD_MOTION_OPENING_DEADBAND,
   LEAD_FLICKER_CLOSE_GUARD_TIME,
   LEAD_FLICKER_FIRST_LOSS_HOLD_TIME,
+  EXCESS_GAP_CLOSURE_REASON,
   FastLeadMotionEvidence,
   LeadFlickerSafetyCapTracker,
+  LeadPullawayIntentTracker,
+  LeadPullawayPhase,
+  LEAD_PULLAWAY_PULSE_REASON,
   LongitudinalPlanner,
   _A_TOTAL_MAX_BP,
   _A_TOTAL_MAX_V,
@@ -65,6 +69,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   scc_lead_geometry_from_context,
   update_one_pedal_cruise_hold,
 )
+from openpilot.selfdrive.controls.lib.lead_confidence import LEAD_CONFIDENCE_TRACK_UNKNOWN, LeadConfidenceState
+from openpilot.selfdrive.controls.lib.lead_context import LEAD_AUTHORITY_PROGRESS_ALLOWED, LeadContextTracker, LeadProgressModel, LeadRiskModel
 
 ButtonType = car.CarState.ButtonEvent.Type
 
@@ -113,11 +119,98 @@ def make_radar_state(lead_one=False, lead_two=False):
 def make_flicker_lead(status=True, v_ego=15.0, d_rel=20.0, v_rel=-1.4, y_rel=0.0):
   return SimpleNamespace(
     status=status,
+    radarTrackId=1,
     dRel=d_rel,
     vRel=v_rel,
     vLeadK=v_ego + v_rel,
     vLead=v_ego + v_rel,
     yRel=y_rel,
+    aLeadK=0.0,
+    modelProb=1.0,
+    radar=True,
+  )
+
+
+NO_LEAD = SimpleNamespace(status=False)
+
+
+def make_pullaway_lead(track_id=1, d_rel=31.0, v_lead=1.2, v_rel=None, a_lead=0.4, status=True, model_prob=1.0):
+  if v_rel is None:
+    v_rel = v_lead
+  return SimpleNamespace(
+    status=status,
+    radarTrackId=track_id,
+    dRel=d_rel,
+    vLeadK=v_lead,
+    vLead=v_lead,
+    vRel=v_rel,
+    aLeadK=a_lead,
+    aLeadTau=0.0,
+    yRel=0.0,
+    modelProb=model_prob,
+    radar=True,
+  )
+
+
+def stable_lead_conf(track_id=1):
+  return LeadConfidenceState(
+    status=True,
+    stable=True,
+    speed_trusted=True,
+    radar=True,
+    age=1.0,
+    accel_blend=1.0,
+    track_id=track_id,
+  )
+
+
+def new_lead_conf(track_id=1):
+  return LeadConfidenceState(status=True, new_lead=True, speed_trusted=True, radar=True, guard_timer=0.35, track_id=track_id)
+
+
+def flicker_lead_conf(track_id=1):
+  return LeadConfidenceState(status=True, stable=True, speed_trusted=True, radar=True, flicker_guard_timer=0.35, track_id=track_id)
+
+
+def lead_context_for(lead, v_ego=0.0, conf=None, lead_two=NO_LEAD, conf_two=None, lead_dominant_idx=None):
+  conf = stable_lead_conf(getattr(lead, "radarTrackId", 1)) if conf is None else conf
+  conf_two = LeadConfidenceState() if conf_two is None else conf_two
+  return LeadContextTracker().update(
+    (lead, lead_two), (conf, conf_two), v_ego=v_ego, dt=0.1, lead_dominant_idx=lead_dominant_idx,
+  )
+
+
+def update_pullaway_tracker(tracker, context, lead, *, v_ego=0.0, dt=0.1, lead_gap_excess=None,
+                            predicted_gap_opening=0.4, lead_opening=None, lead_moving=None, lead_accel=None,
+                            independent_stop_threat=False, alternate_lead_threat_active=False,
+                            brake_pressed=False, gas_pressed=False, force_slow_decel=False, reset_state=False):
+  behavior_lead = context.behavior_lead_data((lead, NO_LEAD))
+  state = context.behavior
+  progress = getattr(state, "progress_model", None)
+  if lead_gap_excess is None:
+    lead_gap_excess = getattr(progress, "gap_excess", 0.0)
+  if lead_opening is None:
+    lead_opening = getattr(progress, "opening_speed", 0.0) > 0.15
+  if lead_moving is None:
+    lead_moving = getattr(progress, "lead_moving", False)
+  if lead_accel is None:
+    lead_accel = getattr(progress, "lead_accel", 0.0)
+  return tracker.update(
+    v_ego=v_ego,
+    behavior_lead=behavior_lead,
+    primary_lead_context=context,
+    lead_gap_excess=lead_gap_excess,
+    predicted_gap_opening=predicted_gap_opening,
+    lead_opening=lead_opening,
+    lead_moving=lead_moving,
+    lead_accel=lead_accel,
+    independent_stop_threat=independent_stop_threat,
+    alternate_lead_threat_active=alternate_lead_threat_active,
+    brake_pressed=brake_pressed,
+    gas_pressed=gas_pressed,
+    force_slow_decel=force_slow_decel,
+    reset_state=reset_state,
+    dt=dt,
   )
 
 
@@ -257,19 +350,20 @@ class PoisonModel:
 
 
 def make_full_update_sm(model, lead_status=False, lead_d_rel=30.0, lead_v_rel=-0.2, lead_y_rel=0.0,
-                        lead_model_prob=1.0, long_control_state=LongCtrlState.off):
+                        lead_model_prob=1.0, long_control_state=LongCtrlState.off, v_ego=10.0,
+                        v_cruise_kph=72.0):
   lead = SimpleNamespace(
     status=lead_status, dRel=lead_d_rel if lead_status else 100.0, vRel=lead_v_rel if lead_status else 0.0,
-    vLead=10.0 + lead_v_rel if lead_status else 0.0, vLeadK=10.0 + lead_v_rel if lead_status else 0.0,
+    vLead=v_ego + lead_v_rel if lead_status else 0.0, vLeadK=v_ego + lead_v_rel if lead_status else 0.0,
     yRel=lead_y_rel, modelProb=lead_model_prob if lead_status else 0.0, radar=lead_status, radarTrackId=0,
   )
   no_lead = SimpleNamespace(status=False, dRel=100.0, vRel=0.0, vLead=0.0, vLeadK=0.0, yRel=0.0, modelProb=0.0, radar=False)
   return FakeSubMaster({
     "carControl": SimpleNamespace(enabled=True, orientationNED=[0.0, 0.0, 0.0], cruiseControl=SimpleNamespace(override=False)),
     "carState": SimpleNamespace(
-      vEgo=10.0,
-      vCruise=72.0,
-      vCruiseCluster=72.0,
+      vEgo=v_ego,
+      vCruise=v_cruise_kph,
+      vCruiseCluster=v_cruise_kph,
       standstill=False,
       aEgo=0.0,
       steeringAngleDeg=0.0,
@@ -358,6 +452,7 @@ def make_full_update_planner(mode=LongitudinalMode.ACC, radar_unavailable=False)
   planner.output_a_target = 0.0
   planner.output_should_stop = False
   planner.creep_to_stop_gap_active = False
+  planner.pullaway_accel_step_handoff_timer = 0.0
   planner.creep_stop_hold_released = False
   planner.stopped_lead_gap_fill_timer = 0.0
   planner.lead_loss_e2e_guard_timer = 0.0
@@ -561,6 +656,122 @@ def test_scc_pre_target_stale_curve_state_does_not_leak_into_final_telemetry():
   assert "curve_cap" not in planner.longitudinal_mode_resolution.scc_evidence.advisory_status
 
 
+def test_custom_v2_pullaway_handoff_clamp_does_not_mask_physical_braking():
+  planner = make_full_update_planner(LongitudinalMode.SCC, radar_unavailable=False)
+  planner.longitudinal_stack_resolution = StackResolution(
+    requested_stack=CUSTOM_V2,
+    resolved_stack=CUSTOM_V2,
+    available_stacks=(SUNNYPILOT_CURRENT, CUSTOM_V2),
+    custom_version="2.0",
+  )
+  planner.output_a_target = 0.4
+  planner.pullaway_accel_step_handoff_timer = 0.4
+  planner.mpc.a_solution = np.full(len(T_IDXS_MPC), 1.0)
+  planner.scc.vision.is_active = True
+  planner.scc.vision.output_v_target = 2.0
+  planner.scc.vision.output_a_target = -0.6
+
+  planner.update(make_full_update_sm(
+    make_safe_model_msg(),
+    lead_status=True,
+    lead_d_rel=24.0,
+    lead_v_rel=2.0,
+    v_ego=3.1,
+    v_cruise_kph=72.0,
+    long_control_state=LongCtrlState.pid,
+  ))
+
+  assert planner.pullaway_accel_step_handoff_timer > 0.0
+  assert planner.output_a_target < 0.0
+  assert planner.longitudinal_stack_selected_intent == "lead_follow"
+
+
+def test_custom_v2_pullaway_handoff_clamp_does_not_mask_advisory_braking():
+  lead = make_pullaway_lead(track_id=1, d_rel=60.0, v_lead=8.1, v_rel=5.0)
+
+  class FakeProgressContext:
+    physical_idx = 0
+    behavior_idx = 0
+    alternate_threat_active = False
+    shadow_active = False
+    reason = "behavior_stable_progress_authorized_lead"
+    lead_progress_allowed = True
+    lead_release_blocked_reason = ""
+
+    def __init__(self):
+      self.state = SimpleNamespace(
+        lead_idx=0,
+        status=True,
+        shadow=False,
+        stable=True,
+        new_lead=False,
+        flicker_guard_timer=0.0,
+        track_id=1,
+        d_rel=lead.dRel,
+        y_rel=lead.yRel,
+        path_y_rel=0.0,
+        v_lead=lead.vLeadK,
+        v_rel=lead.vRel,
+        model_prob=lead.modelProb,
+        radar=True,
+        risk_score=0.0,
+        on_path_score=1.0,
+        authority=LEAD_AUTHORITY_PROGRESS_ALLOWED,
+        risk_model=LeadRiskModel(time_gap=10.0, stopped_or_crawling=False),
+        progress_model=LeadProgressModel(
+          opening_speed=lead.vRel,
+          lead_moving=True,
+          lead_accel=lead.aLeadK,
+          predicted_gap_opening=True,
+          gap_excess=10.0,
+          stop_threat_absent=True,
+          confidence_stability_sufficient=True,
+          allowed=True,
+          reason="opening_or_gap_progress",
+        ),
+      )
+      self.physical = self.state
+      self.behavior = self.state
+      self.states = (self.state,)
+
+    @property
+    def has_physical_lead(self):
+      return True
+
+    def physical_lead_data(self, _leads):
+      return lead
+
+    def behavior_lead_data(self, _leads):
+      return lead
+
+  planner = make_full_update_planner(LongitudinalMode.SCC, radar_unavailable=False)
+  planner.primary_lead_context_tracker = SimpleNamespace(update=lambda *_args, **_kwargs: FakeProgressContext())
+  planner.longitudinal_stack_resolution = StackResolution(
+    requested_stack=CUSTOM_V2,
+    resolved_stack=CUSTOM_V2,
+    available_stacks=(SUNNYPILOT_CURRENT, CUSTOM_V2),
+    custom_version="2.0",
+  )
+  planner.output_a_target = 0.4
+  planner.pullaway_accel_step_handoff_timer = 0.4
+  planner.mpc.a_solution = np.full(len(T_IDXS_MPC), 1.0)
+  planner.scc.vision.is_active = True
+  planner.scc.vision.output_v_target = 2.0
+  planner.scc.vision.output_a_target = -0.6
+
+  planner.update(make_full_update_sm(
+    make_safe_model_msg(),
+    lead_status=False,
+    v_ego=3.1,
+    v_cruise_kph=72.0,
+    long_control_state=LongCtrlState.pid,
+  ))
+
+  assert planner.pullaway_accel_step_handoff_timer > 0.0
+  assert planner.output_a_target == pytest.approx(-0.6)
+  assert planner.longitudinal_stack_selected_intent == "curve_policy"
+
+
 def test_has_valid_radar_lead_checks_both_tracks():
   assert not has_valid_radar_lead(make_radar_state())
   assert has_valid_radar_lead(make_radar_state(lead_one=True))
@@ -680,6 +891,148 @@ def test_lead_flicker_tracker_driver_override_suppresses_active_cap():
   assert held.active
   assert overridden.timer > 0.0
   assert not overridden.active
+
+
+def test_lead_pullaway_tracker_arms_then_pulses_on_confirmed_opening_lead():
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead()
+  context = lead_context_for(lead)
+
+  armed = update_pullaway_tracker(tracker, context, lead)
+  pulse = update_pullaway_tracker(tracker, context, lead)
+
+  assert armed.phase == LeadPullawayPhase.ARMED
+  assert not armed.active
+  assert pulse.phase == LeadPullawayPhase.PULSE
+  assert pulse.active
+  assert pulse.reason == LEAD_PULLAWAY_PULSE_REASON
+  assert 0.0 < pulse.a_floor <= 0.7
+
+
+def test_lead_pullaway_pulse_is_time_limited_and_transitions_to_gap_closure():
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead(d_rel=36.0, v_lead=1.5, v_rel=1.5)
+  context = lead_context_for(lead)
+  update_pullaway_tracker(tracker, context, lead)
+  update_pullaway_tracker(tracker, context, lead)
+
+  after_window = update_pullaway_tracker(tracker, context, lead, dt=1.0)
+
+  assert after_window.phase == LeadPullawayPhase.GAP_CLOSURE
+  assert after_window.active
+  assert after_window.reason == EXCESS_GAP_CLOSURE_REASON
+  assert after_window.a_floor < 0.7
+
+
+def test_lead_pullaway_tracker_aborts_when_lead_stops_again():
+  tracker = LeadPullawayIntentTracker()
+  moving = make_pullaway_lead(track_id=7)
+  moving_context = lead_context_for(moving)
+  update_pullaway_tracker(tracker, moving_context, moving)
+  update_pullaway_tracker(tracker, moving_context, moving)
+  stopped = make_pullaway_lead(track_id=7, v_lead=0.0, v_rel=0.0, a_lead=0.0)
+  stopped_context = lead_context_for(stopped)
+
+  aborted = update_pullaway_tracker(tracker, stopped_context, stopped, predicted_gap_opening=0.0, lead_opening=False, lead_moving=False)
+
+  assert aborted.phase == LeadPullawayPhase.HOLD
+  assert not aborted.active
+  assert aborted.reason == "lead_stopped_again"
+
+
+def test_lead_pullaway_tracker_does_not_repeatedly_pulse_same_track():
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead(track_id=3, d_rel=36.0)
+  context = lead_context_for(lead)
+  update_pullaway_tracker(tracker, context, lead)
+  first_pulse = update_pullaway_tracker(tracker, context, lead)
+  cooled = update_pullaway_tracker(tracker, context, lead, dt=3.0)
+  repeated = update_pullaway_tracker(tracker, context, lead, dt=0.1)
+
+  assert first_pulse.phase == LeadPullawayPhase.PULSE
+  assert cooled.phase in (LeadPullawayPhase.GAP_CLOSURE, LeadPullawayPhase.NORMAL)
+  assert repeated.phase != LeadPullawayPhase.PULSE
+
+
+def test_lead_pullaway_tracker_allows_fresh_valid_track_after_used_pulse():
+  tracker = LeadPullawayIntentTracker()
+  first = make_pullaway_lead(track_id=3)
+  first_context = lead_context_for(first)
+  update_pullaway_tracker(tracker, first_context, first)
+  update_pullaway_tracker(tracker, first_context, first)
+  fresh = make_pullaway_lead(track_id=4)
+  fresh_context = lead_context_for(fresh)
+
+  armed = update_pullaway_tracker(tracker, fresh_context, fresh)
+  pulse = update_pullaway_tracker(tracker, fresh_context, fresh)
+
+  assert armed.phase == LeadPullawayPhase.ARMED
+  assert pulse.phase == LeadPullawayPhase.PULSE
+  assert pulse.track_id == 4
+
+
+@pytest.mark.parametrize("conf", [new_lead_conf(), flicker_lead_conf()])
+def test_lead_pullaway_tracker_blocks_new_or_flicker_leads(conf):
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead()
+  context = lead_context_for(lead, conf=conf)
+
+  intent = update_pullaway_tracker(tracker, context, lead)
+
+  assert intent.phase == LeadPullawayPhase.HOLD
+  assert not intent.active
+
+
+def test_lead_pullaway_tracker_blocks_unknown_track_before_pulse():
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead(track_id=LEAD_CONFIDENCE_TRACK_UNKNOWN)
+  context = lead_context_for(lead, conf=stable_lead_conf(LEAD_CONFIDENCE_TRACK_UNKNOWN))
+
+  intent = update_pullaway_tracker(tracker, context, lead)
+
+  assert intent.phase == LeadPullawayPhase.HOLD
+  assert not intent.active
+  assert intent.reason == "lead_confidence_low"
+
+
+def test_lead_pullaway_tracker_blocks_alternate_threat_and_independent_stop():
+  lead = make_pullaway_lead(track_id=1, d_rel=31.0, v_lead=1.2, v_rel=1.2)
+  threat = make_pullaway_lead(track_id=2, d_rel=8.0, v_lead=0.0, v_rel=-1.0, a_lead=0.0)
+  context = lead_context_for(lead, lead_two=threat, conf_two=new_lead_conf(2), lead_dominant_idx=1)
+  tracker = LeadPullawayIntentTracker()
+
+  alternate = update_pullaway_tracker(tracker, context, lead, alternate_lead_threat_active=context.alternate_threat_active)
+  independent = update_pullaway_tracker(LeadPullawayIntentTracker(), lead_context_for(lead), lead, independent_stop_threat=True)
+
+  assert alternate.reason == "alternate_lead_threat"
+  assert not alternate.active
+  assert independent.reason == "independent_stop_threat"
+  assert not independent.active
+
+
+def test_lead_pullaway_tracker_driver_gas_suppresses_without_consuming_pulse():
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead(track_id=5)
+  context = lead_context_for(lead)
+
+  blocked = update_pullaway_tracker(tracker, context, lead, gas_pressed=True)
+  armed = update_pullaway_tracker(tracker, context, lead)
+
+  assert blocked.reason == "driver_or_force_blocked"
+  assert not blocked.active
+  assert armed.phase == LeadPullawayPhase.ARMED
+
+
+def test_lead_pullaway_tracker_does_not_run_in_high_speed_lead_follow():
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead(d_rel=80.0, v_lead=18.5, v_rel=0.5, a_lead=0.1)
+  context = lead_context_for(lead, v_ego=18.0)
+
+  intent = update_pullaway_tracker(tracker, context, lead, v_ego=18.0)
+
+  assert intent.phase == LeadPullawayPhase.NORMAL
+  assert not intent.active
+  assert intent.reason == "outside_low_speed_launch"
 
 
 def test_fast_lead_motion_evidence_uses_raw_lead_motion_before_filter():

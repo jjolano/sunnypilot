@@ -81,9 +81,6 @@ def test_personality_tuning_order_is_monotonic():
   assert custom_v2._no_lead_launch_accel_max(relaxed) == pytest.approx(1.10)
   assert custom_v2._no_lead_launch_accel_max(standard) == pytest.approx(1.35)
   assert custom_v2._no_lead_launch_accel_max(aggressive) == pytest.approx(1.55)
-  assert custom_v2._lead_pullaway_accel_max(relaxed) == pytest.approx(1.10)
-  assert custom_v2._lead_pullaway_accel_max(standard) == pytest.approx(1.30)
-  assert custom_v2._lead_pullaway_accel_max(aggressive) == pytest.approx(1.45)
   assert custom_v2._stop_approach_comfort_decel(relaxed) > custom_v2._stop_approach_comfort_decel(standard)
   assert custom_v2._stop_approach_comfort_decel(standard) > custom_v2._stop_approach_comfort_decel(aggressive)
 
@@ -168,8 +165,10 @@ def test_fast_lead_motion_does_not_use_raw_values_for_progress_caps():
     fast_lead_motion_evidence_enabled=True,
   )
 
-  assert custom_v2.excess_gap_accel_cap(scene) is None
-  assert not custom_v2._lead_pullaway_progress_allowed(scene, 0.0, allow_lead_progress=True)
+  candidates, rejected = custom_v2.build_custom_v2_progress_candidates(make_output(0.0, has_lead=True), scene, (-2.0, 2.0))
+
+  assert not candidates
+  assert ("lead_follow", "planner_seed_required") in rejected
 
 
 def test_fast_lead_motion_does_not_bypass_stable_decel_progress_guard():
@@ -190,7 +189,6 @@ def test_fast_lead_motion_does_not_bypass_stable_decel_progress_guard():
   candidates, _rejected = custom_v2.build_custom_v2_progress_candidates(make_output(-0.2, has_lead=True), scene, (-2.0, 2.0))
 
   assert not candidates
-  assert not custom_v2._lead_pullaway_progress_allowed(scene, -0.2, allow_lead_progress=True)
 
 
 def test_zero_safety_cap_blocks_custom_progress_floors():
@@ -290,7 +288,7 @@ def test_alternate_lead_threat_blocks_behavior_lead_progress():
   assert "alternate_lead_threat" in output.debug["custom_v2_rejected_reasons"]
 
 
-def test_confirmed_lead_pullaway_uses_bounded_standard_launch_floor():
+def test_confirmed_lead_pullaway_scene_alone_does_not_create_custom_physics():
   scene = CustomV2Scene(
     v_ego=0.2,
     v_cruise=5.0,
@@ -305,9 +303,38 @@ def test_confirmed_lead_pullaway_uses_bounded_standard_launch_floor():
   output = CustomLongitudinalStackV2().update(make_output(0.0, has_lead=True), scene, accel_limits=(-2.0, 2.0))
 
   assert lead_evidence_releases_stop(scene)
-  assert 1.20 <= output.a_target <= 1.40
+  assert output.a_target == 0.0
+  assert output.debug["custom_v2_selected_intent"] == "driver_cruise"
+  assert "planner_seed_required" in output.debug["custom_v2_rejected_reasons"]
+
+
+def test_selected_lead_pullaway_pulse_seed_is_consumed_as_launch_relaxation():
+  scene = CustomV2Scene(v_ego=0.2, v_cruise=5.0, has_lead=True, lead_progress_allowed=True)
+  driver_output = make_output(0.0, has_lead=True)
+  seed = PlannerSeedCandidate(
+    "lead_pullaway_pulse",
+    make_output(0.3, has_lead=True, seed_intent="launch", seed_reason="confirmed_lead_pullaway_pulse"),
+    selection="floor",
+  )
+  candidates = (*ensure_driver_intent((), driver_output, scene.v_cruise), *planner_seed_candidates_to_longitudinal_candidates((seed,), scene.v_cruise))
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=candidates,
+    fallback_v_target=scene.v_cruise,
+    fallback_a_target=driver_output.a_target,
+    fallback_should_stop=False,
+    accel_limits=(-2.0, 2.0),
+    arbiter=LongitudinalArbiter(),
+    v_ego=scene.v_ego,
+  )
+
+  output = CustomLongitudinalStackV2().update(driver_output, scene, accel_limits=(-2.0, 2.0), decision=decision)
+
+  assert output.a_target == pytest.approx(0.3)
   assert output.debug["custom_v2_selected_intent"] == "launch"
-  assert output.debug["custom_v2_selected_reason"] == "confirmed_lead_pullaway"
+  assert output.debug["custom_v2_selected_reason"] == "confirmed_lead_pullaway_pulse"
+  assert output.debug["custom_v2_seed_context"] == "planner"
+  assert output.debug["custom_v2_seed_candidate"] == "lead_pullaway_pulse"
 
 
 def test_close_non_opening_lead_does_not_surge():
@@ -348,7 +375,7 @@ def test_lateral_progress_block_suppresses_lead_pullaway():
   assert output.debug["custom_v2_selected_reason"] != "confirmed_lead_pullaway"
 
 
-def test_excess_gap_progress_softens_far_fast_lead_approach_braking():
+def test_excess_gap_scene_alone_does_not_create_custom_physics():
   scene = CustomV2Scene(
     v_ego=15.5,
     v_cruise=16.7,
@@ -361,9 +388,38 @@ def test_excess_gap_progress_softens_far_fast_lead_approach_braking():
 
   output = CustomLongitudinalStackV2().update(make_output(-0.3, has_lead=True), scene, accel_limits=(-2.0, 2.0))
 
-  assert -0.05 <= output.a_target <= 0.05
+  assert output.a_target == -0.3
+  assert output.debug["custom_v2_selected_intent"] == "driver_cruise"
+  assert "planner_seed_required" in output.debug["custom_v2_rejected_reasons"]
+
+
+def test_selected_excess_gap_closure_seed_is_consumed_as_lead_follow_relaxation():
+  scene = CustomV2Scene(v_ego=6.0, v_cruise=10.0, has_lead=True, lead_progress_allowed=True)
+  driver_output = make_output(0.0, has_lead=True)
+  seed = PlannerSeedCandidate(
+    "excess_gap_closure",
+    make_output(0.22, has_lead=True, seed_intent="lead_follow", seed_reason="excess_gap_closure"),
+    selection="floor",
+  )
+  candidates = (*ensure_driver_intent((), driver_output, scene.v_cruise), *planner_seed_candidates_to_longitudinal_candidates((seed,), scene.v_cruise))
+  decision = resolve_longitudinal_decision(
+    enabled=True,
+    candidates=candidates,
+    fallback_v_target=scene.v_cruise,
+    fallback_a_target=driver_output.a_target,
+    fallback_should_stop=False,
+    accel_limits=(-2.0, 2.0),
+    arbiter=LongitudinalArbiter(),
+    v_ego=scene.v_ego,
+  )
+
+  output = CustomLongitudinalStackV2().update(driver_output, scene, accel_limits=(-2.0, 2.0), decision=decision)
+
+  assert decision.winner == DecisionSource.STOP_LAUNCH
+  assert output.a_target == pytest.approx(0.22)
   assert output.debug["custom_v2_selected_intent"] == "lead_follow"
-  assert output.debug["custom_v2_selected_reason"] == "excess_gap_progress"
+  assert output.debug["custom_v2_selected_reason"] == "excess_gap_closure"
+  assert output.debug["custom_v2_seed_candidate"] == "excess_gap_closure"
 
 
 def test_excess_gap_progress_remains_blocked_for_close_closing_lead():
@@ -379,7 +435,7 @@ def test_excess_gap_progress_remains_blocked_for_close_closing_lead():
   output = CustomLongitudinalStackV2().update(make_output(-0.3, has_lead=True), scene, accel_limits=(-2.0, 2.0))
 
   assert output.a_target == -0.3
-  assert "closing_speed_guard" in output.debug["custom_v2_rejected_reasons"]
+  assert "planner_seed_required" in output.debug["custom_v2_rejected_reasons"]
 
 
 def test_excess_gap_progress_ignores_stopped_lead():
@@ -396,7 +452,7 @@ def test_excess_gap_progress_ignores_stopped_lead():
   output = CustomLongitudinalStackV2().update(make_output(0.0, has_lead=True), scene, accel_limits=(-2.0, 2.0))
 
   assert output.a_target == 0.0
-  assert "closing_speed_guard" in output.debug["custom_v2_rejected_reasons"]
+  assert "planner_seed_required" in output.debug["custom_v2_rejected_reasons"]
 
 
 def test_planner_seed_classification_preserves_seed_trajectory():
@@ -620,7 +676,7 @@ def test_opening_lead_progress_preserves_planner_decel():
 
   assert lead_evidence_releases_stop(scene)
   assert output.a_target == -1.0
-  assert "closing_speed_guard" in output.debug["custom_v2_rejected_reasons"]
+  assert "planner_seed_required" in output.debug["custom_v2_rejected_reasons"]
 
 
 def test_speed_policy_is_coast_biased_for_speed_reductions():

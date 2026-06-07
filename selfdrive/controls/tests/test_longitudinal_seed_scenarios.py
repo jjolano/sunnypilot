@@ -4,10 +4,15 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   build_cruise_coast_seed_candidates,
   build_lead_loss_seed_candidates,
+  build_lead_pullaway_intent_seed_candidates,
   build_lead_pullaway_seed_candidates,
   build_moving_lead_seed_candidates,
   build_no_lead_stop_seed_candidates,
   build_stopped_lead_seed_candidates,
+  EXCESS_GAP_CLOSURE_REASON,
+  LeadPullawayIntent,
+  LeadPullawayPhase,
+  LEAD_PULLAWAY_PULSE_REASON,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import planner_seed_candidates_to_longitudinal_candidates
@@ -82,6 +87,47 @@ def test_lead_pullaway_helper_preserves_stop_release_cap_suppression():
   assert [seed.name for seed in seeds] == ["creep_pullaway_launch", "low_speed_pullaway_accel_step_floor"]
   assert_seed(seeds[0], name="creep_pullaway_launch", intent="launch", reason="creep_pullaway_launch",
               selection=PLANNER_SEED_FLOOR, group="creep_pullaway_launch")
+
+
+def test_lead_pullaway_intent_helper_emits_stable_pulse_metadata():
+  intent = LeadPullawayIntent(
+    phase=LeadPullawayPhase.PULSE,
+    active=True,
+    a_floor=0.25,
+    reason=LEAD_PULLAWAY_PULSE_REASON,
+    track_id=42,
+    pulse_timer=0.5,
+    cooldown_timer=1.7,
+    gap_excess=5.0,
+    predicted_gap_opening=0.8,
+  )
+
+  seeds = build_lead_pullaway_intent_seed_candidates(make_planner(0.0), True, (-2.0, 2.0), intent)
+
+  assert [seed.name for seed in seeds] == ["lead_pullaway_pulse", "lead_pullaway_pulse_accel_cap"]
+  assert_seed(seeds[0], name="lead_pullaway_pulse", intent="launch", reason=LEAD_PULLAWAY_PULSE_REASON,
+              selection=PLANNER_SEED_FLOOR, group="lead_pullaway_pulse")
+  assert seeds[0].output.debug["lead_pullaway_phase"] == "pulse"
+  assert seeds[0].output.debug["lead_pullaway_track_id"] == 42
+
+
+def test_lead_pullaway_intent_helper_emits_excess_gap_closure_metadata():
+  intent = LeadPullawayIntent(
+    phase=LeadPullawayPhase.GAP_CLOSURE,
+    active=True,
+    a_floor=0.24,
+    reason=EXCESS_GAP_CLOSURE_REASON,
+    track_id=7,
+    gap_excess=9.0,
+    predicted_gap_opening=0.0,
+  )
+
+  seeds = build_lead_pullaway_intent_seed_candidates(make_planner(0.0), True, (-2.0, 2.0), intent)
+
+  assert [seed.name for seed in seeds] == ["excess_gap_closure", "excess_gap_closure_accel_cap"]
+  assert_seed(seeds[0], name="excess_gap_closure", intent="lead_follow", reason=EXCESS_GAP_CLOSURE_REASON,
+              selection=PLANNER_SEED_FLOOR, group="excess_gap_closure")
+  assert seeds[0].output.debug["lead_pullaway_phase"] == "gap_closure"
 
 
 def test_moving_lead_helper_marks_slew_floor_group():

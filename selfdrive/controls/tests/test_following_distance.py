@@ -1445,6 +1445,37 @@ def test_moving_lead_stop_gap_guard_waits_until_compression_floor_for_routine_cl
   assert target is None
 
 
+def test_moving_lead_stop_gap_guard_brakes_for_far_hard_braking_limited_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target = get_moving_lead_stop_gap_guard_accel(
+    v_ego=18.0,
+    d_rel=64.6,
+    v_lead=11.6,
+    a_lead=-4.0,
+    y_rel=0.0,
+    t_follow=t_follow,
+  )
+
+  assert target is not None
+  assert target < -1.2
+
+
+def test_moving_lead_stop_gap_guard_waits_for_far_hard_braking_with_extra_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target = get_moving_lead_stop_gap_guard_accel(
+    v_ego=18.0,
+    d_rel=84.6,
+    v_lead=11.6,
+    a_lead=-4.0,
+    y_rel=0.0,
+    t_follow=t_follow,
+  )
+
+  assert target is None
+
+
 def test_moving_lead_stop_gap_guard_brakes_near_compressed_floor():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
   v_ego = 15.07

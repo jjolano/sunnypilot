@@ -65,29 +65,15 @@ NO_LEAD_LAUNCH_ACCEL_MAX_BY_PERSONALITY = {
   log.LongitudinalPersonality.standard: 1.35,
   log.LongitudinalPersonality.aggressive: 1.55,
 }
-LEAD_PULLAWAY_ACCEL_MAX_BY_PERSONALITY = {
-  log.LongitudinalPersonality.relaxed: 1.10,
-  log.LongitudinalPersonality.standard: 1.30,
-  log.LongitudinalPersonality.aggressive: 1.45,
-}
 STOP_APPROACH_COMFORT_DECEL_BY_PERSONALITY = {
   log.LongitudinalPersonality.relaxed: -0.30,
   log.LongitudinalPersonality.standard: -0.38,
   log.LongitudinalPersonality.aggressive: -0.45,
 }
 NO_LEAD_LAUNCH_MAX_V_EGO = 3.0
-LEAD_PULLAWAY_MAX_V_EGO = 5.0
 LEAD_MOTION_MIN_V = 0.15
 LEAD_LATERAL_PROGRESS_BLOCK_Y = 0.6
 EXCESS_GAP_MIN = 1.0
-EXCESS_GAP_MAX = 8.0
-EXCESS_GAP_ACCEL_MIN = 0.4
-EXCESS_GAP_ACCEL_MAX = 0.8
-EXCESS_GAP_CLOSING_TAPER = 0.3
-EXCESS_GAP_CLOSING_BLOCK = 0.7
-EXCESS_GAP_FAST_CLOSING_MID = 3.0
-EXCESS_GAP_FAST_CLOSING_ZERO = 6.0
-EXCESS_GAP_FAST_CLOSING_MID_CAP = 0.15
 PROGRESS_CRUISE_SPEED_MARGIN = 0.2
 NO_LEAD_STOP_CLEAR_DISTANCE = 20.0
 NO_LEAD_STOP_CLEAR_ACCEL_MIN = -0.5
@@ -179,6 +165,15 @@ class CustomV2Scene:
   allow_map_caution_advisory: bool = True
   allow_no_lead_progress: bool = True
   allow_lead_progress: bool = True
+  lead_pullaway_phase: str = "hold"
+  lead_pullaway_reason: str = ""
+  lead_pullaway_track_id: int = -1
+  lead_pullaway_pulse_timer: float = 0.0
+  lead_pullaway_cooldown_timer: float = 0.0
+  lead_pullaway_gap_excess: float = 0.0
+  lead_pullaway_predicted_gap_opening: float = 0.0
+  lead_pullaway_a_floor: float = 0.0
+  lead_pullaway_rejected_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -221,50 +216,8 @@ def _no_lead_launch_accel_max(scene: CustomV2Scene) -> float:
   return NO_LEAD_LAUNCH_ACCEL_MAX_BY_PERSONALITY[_validated_personality(scene.personality)]
 
 
-def _lead_pullaway_accel_max(scene: CustomV2Scene) -> float:
-  return LEAD_PULLAWAY_ACCEL_MAX_BY_PERSONALITY[_validated_personality(scene.personality)]
-
-
 def _stop_approach_comfort_decel(scene: CustomV2Scene) -> float:
   return STOP_APPROACH_COMFORT_DECEL_BY_PERSONALITY[_validated_personality(scene.personality)]
-
-
-def excess_gap_accel_cap(scene: CustomV2Scene) -> float | None:
-  if not scene.lead_progress_allowed:
-    return None
-  lead_follow_gap_excess = _lead_follow_gap_excess(scene)
-  if not scene.has_lead or lead_follow_gap_excess <= EXCESS_GAP_MIN:
-    return None
-  if scene.lead_lateral_progress_blocked or abs(scene.lead_y_rel) >= LEAD_LATERAL_PROGRESS_BLOCK_Y:
-    return None
-  if scene.lead_v < LEAD_MOTION_MIN_V:
-    return None
-
-  closing_speed = max(0.0, -scene.lead_v_rel)
-  if closing_speed >= EXCESS_GAP_CLOSING_BLOCK and lead_follow_gap_excess < EXCESS_GAP_MAX:
-    return None
-
-  cap = _interp(lead_follow_gap_excess, EXCESS_GAP_MIN, EXCESS_GAP_MAX, EXCESS_GAP_ACCEL_MIN, EXCESS_GAP_ACCEL_MAX)
-  if closing_speed > EXCESS_GAP_CLOSING_TAPER:
-    taper = 1.0 - _clip(
-      (closing_speed - EXCESS_GAP_CLOSING_TAPER) / (EXCESS_GAP_CLOSING_BLOCK - EXCESS_GAP_CLOSING_TAPER),
-      0.0,
-      1.0,
-    )
-    cap = EXCESS_GAP_ACCEL_MIN + taper * (cap - EXCESS_GAP_ACCEL_MIN)
-  if closing_speed > EXCESS_GAP_CLOSING_BLOCK:
-    if closing_speed <= EXCESS_GAP_FAST_CLOSING_MID:
-      closing_cap = _interp(
-        closing_speed, EXCESS_GAP_CLOSING_BLOCK, EXCESS_GAP_FAST_CLOSING_MID,
-        EXCESS_GAP_ACCEL_MIN, EXCESS_GAP_FAST_CLOSING_MID_CAP,
-      )
-    else:
-      closing_cap = _interp(
-        closing_speed, EXCESS_GAP_FAST_CLOSING_MID, EXCESS_GAP_FAST_CLOSING_ZERO,
-        EXCESS_GAP_FAST_CLOSING_MID_CAP, 0.0,
-      )
-    cap = min(cap, closing_cap)
-  return cap
 
 
 class CustomLongitudinalStackV2:
@@ -302,6 +255,15 @@ class CustomLongitudinalStackV2:
       "shadow_lead_active": bool(scene.shadow_lead_active),
       "lead_progress_allowed": bool(scene.lead_progress_allowed),
       "lead_release_blocked_reason": str(scene.lead_release_blocked_reason),
+      "lead_pullaway_phase": str(scene.lead_pullaway_phase),
+      "lead_pullaway_reason": str(scene.lead_pullaway_reason),
+      "lead_pullaway_track_id": int(scene.lead_pullaway_track_id),
+      "lead_pullaway_pulse_timer": float(scene.lead_pullaway_pulse_timer),
+      "lead_pullaway_cooldown_timer": float(scene.lead_pullaway_cooldown_timer),
+      "lead_pullaway_gap_excess": float(scene.lead_pullaway_gap_excess),
+      "lead_pullaway_predicted_gap_opening": float(scene.lead_pullaway_predicted_gap_opening),
+      "lead_pullaway_a_floor": float(scene.lead_pullaway_a_floor),
+      "lead_pullaway_rejected_reason": str(scene.lead_pullaway_rejected_reason),
     })
     return replace(
       sunnypilot_output,
@@ -526,24 +488,11 @@ class CustomLongitudinalStackV2:
       else:
         rejected.append(("launch", "model_stop_not_clear"))
 
-    lead_progress_allowed = allow_lead_progress and scene.lead_progress_allowed and not scene.independent_stop_threat and \
-      not scene.alternate_lead_threat_active and not (
-      scene.has_lead and a_target < 0.0 and scene.lead_v_rel >= 0.0
-    )
-    if _lead_pullaway_progress_allowed(scene, a_target, allow_lead_progress=lead_progress_allowed):
-      a_target, selected_intent, selected_reason = _apply_floor(
-        a_target, selected_intent, selected_reason, _lead_pullaway_accel_max(scene),
-        "launch", "confirmed_lead_pullaway", accel_limits,
-      )
-
-    gap_cap = excess_gap_accel_cap(scene) if lead_progress_allowed else None
-    if gap_cap is not None:
-      a_target, selected_intent, selected_reason = _apply_floor(
-        a_target, selected_intent, selected_reason, gap_cap,
-        "lead_follow", "excess_gap_progress", accel_limits,
-      )
+    lead_seed_rejected_reason = scene.lead_pullaway_rejected_reason or scene.lead_release_blocked_reason
+    if allow_lead_progress and scene.has_lead and lead_seed_rejected_reason:
+      rejected.append(("launch", lead_seed_rejected_reason))
     elif allow_lead_progress and scene.has_lead and _lead_follow_gap_excess(scene) > EXCESS_GAP_MIN:
-      rejected.append(("lead_follow", scene.lead_release_blocked_reason or "closing_speed_guard"))
+      rejected.append(("lead_follow", "planner_seed_required"))
 
     return a_target, selected_intent, selected_reason
 
@@ -766,24 +715,11 @@ def build_custom_v2_progress_candidates(output: LongitudinalStackOutput, scene: 
     else:
       rejected.append(("launch", "model_stop_not_clear"))
 
-  lead_progress_allowed = allow_lead_progress and scene.lead_progress_allowed and not scene.independent_stop_threat and \
-    not scene.alternate_lead_threat_active and not (
-    scene.has_lead and output.a_target < 0.0 and scene.lead_v_rel >= 0.0
-  )
-  if _lead_pullaway_progress_allowed(scene, float(output.a_target), allow_lead_progress=lead_progress_allowed):
-    candidates.append(_custom_v2_relaxation_candidate(
-      DecisionSource.STOP_LAUNCH, "launch", "confirmed_lead_pullaway", scene,
-      _clip_to_limits(_lead_pullaway_accel_max(scene), accel_limits), False, accel_limits,
-    ))
-
-  gap_cap = excess_gap_accel_cap(scene) if lead_progress_allowed else None
-  if gap_cap is not None:
-    candidates.append(_custom_v2_relaxation_candidate(
-      DecisionSource.STOP_LAUNCH, "lead_follow", "excess_gap_progress", scene,
-      _clip_to_limits(gap_cap, accel_limits), bool(output.should_stop), accel_limits,
-    ))
+  lead_seed_rejected_reason = scene.lead_pullaway_rejected_reason or scene.lead_release_blocked_reason
+  if allow_lead_progress and scene.has_lead and lead_seed_rejected_reason:
+    rejected.append(("launch", lead_seed_rejected_reason))
   elif scene.has_lead and _lead_follow_gap_excess(scene) > EXCESS_GAP_MIN:
-    rejected.append(("lead_follow", scene.lead_release_blocked_reason or "closing_speed_guard"))
+    rejected.append(("lead_follow", "planner_seed_required"))
 
   return tuple(candidates), tuple(rejected)
 
@@ -840,23 +776,6 @@ def _dynamic_cruise_coast_accel(scene: CustomV2Scene, a_target: float) -> float:
 
 def _lead_follow_gap_excess(scene: CustomV2Scene) -> float:
   return scene.lead_gap_excess if scene.lead_follow_gap_excess is None else scene.lead_follow_gap_excess
-
-
-def _lead_pullaway_progress_allowed(scene: CustomV2Scene, current_a_target: float,
-                                    allow_lead_progress: bool = True) -> bool:
-  return bool(
-    allow_lead_progress and
-    scene.has_lead and
-    scene.lead_progress_allowed and
-    not scene.alternate_lead_threat_active and
-    not scene.lead_lateral_progress_blocked and
-    abs(scene.lead_y_rel) < LEAD_LATERAL_PROGRESS_BLOCK_Y and
-    scene.lead_gap_excess > EXCESS_GAP_MIN and
-    (scene.lead_v_rel > 0.0 or (scene.fast_lead_motion_evidence_enabled and scene.fast_lead_motion_opening)) and
-    scene.v_ego < LEAD_PULLAWAY_MAX_V_EGO and
-    not (current_a_target < 0.0 and scene.lead_v_rel >= 0.0) and
-    lead_evidence_releases_stop(scene)
-  )
 
 
 def _stop_approach_accel(scene: CustomV2Scene, current_a_target: float,
@@ -991,6 +910,8 @@ def _preserve_seed_trajectory(output: LongitudinalStackOutput, decision: CustomV
 def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
   core_fields = (
     "v_ego", "v_cruise", "a_ego", "accel_coast", "lead_v", "lead_v_rel", "lead_y_rel", "lead_gap_excess", "model_desired_accel",
+    "lead_pullaway_pulse_timer", "lead_pullaway_cooldown_timer", "lead_pullaway_gap_excess",
+    "lead_pullaway_predicted_gap_opening", "lead_pullaway_a_floor",
   )
   for field_name in core_fields:
     if not _finite(getattr(scene, field_name)):
@@ -1030,6 +951,10 @@ def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
     alternate_lead_threat_active=bool(scene.alternate_lead_threat_active),
     shadow_lead_active=bool(scene.shadow_lead_active),
     lead_release_blocked_reason=str(scene.lead_release_blocked_reason),
+    lead_pullaway_phase=str(scene.lead_pullaway_phase),
+    lead_pullaway_reason=str(scene.lead_pullaway_reason),
+    lead_pullaway_track_id=int(scene.lead_pullaway_track_id),
+    lead_pullaway_rejected_reason=str(scene.lead_pullaway_rejected_reason),
     one_pedal_mode=_validated_one_pedal_mode(scene.one_pedal_mode),
     one_pedal_cruise_hold=bool(scene.one_pedal_cruise_hold),
   )

@@ -10,7 +10,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   build_custom_v2_progress_candidates,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR, PlannerSeedCandidate
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import (
   CUSTOM_V2_DEBUG_INTENT,
   CUSTOM_V2_DEBUG_REASON,
@@ -137,6 +137,135 @@ def test_planner_seed_conversion_preserves_custom_v2_metadata():
   assert candidate.debug[CUSTOM_V2_DEBUG_SEED_CANDIDATE] == "lead_crawl_accel_cap"
 
 
+def test_excess_gap_closure_seed_converts_to_relaxation_not_lead_mpc_physics():
+  seed = PlannerSeedCandidate(
+    "excess_gap_closure",
+    make_output(0.24, has_lead=True, seed_intent="lead_follow", seed_reason="excess_gap_closure"),
+    selection=PLANNER_SEED_FLOOR,
+  )
+
+  candidate = planner_seed_candidate_to_longitudinal_candidate(seed, v_target=8.0)
+
+  assert candidate.source == DecisionSource.STOP_LAUNCH
+  assert candidate.role == CandidateRole.RELAXATION
+  assert candidate.active_reason == "excess_gap_closure"
+  assert candidate.debug[CUSTOM_V2_DEBUG_INTENT] == "lead_follow"
+  assert candidate.debug[CUSTOM_V2_DEBUG_SEED_CANDIDATE] == "excess_gap_closure"
+
+
+def test_lead_pullaway_seed_relaxation_loses_to_physical_hazard():
+  seed = PlannerSeedCandidate(
+    "lead_pullaway_pulse",
+    make_output(0.3, has_lead=True, seed_intent="launch", seed_reason="confirmed_lead_pullaway_pulse"),
+    selection=PLANNER_SEED_FLOOR,
+  )
+  launch = planner_seed_candidate_to_longitudinal_candidate(seed, v_target=8.0)
+  driver = custom_v2_candidate_with_debug(
+    make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 0.0, "driver_cruise_target", v_target=8.0),
+    intent="driver_cruise",
+    reason="driver_cruise_target",
+  )
+  physical = custom_v2_candidate_with_debug(
+    make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, -0.5, "confirmed_radar_lead", v_target=8.0),
+    intent="lead_follow",
+    reason="confirmed_radar_lead",
+  )
+
+  decision = LongitudinalArbiter().decide((driver, physical, launch))
+  rejected = custom_v2_rejections_from_decision(decision)
+
+  assert decision.winner == DecisionSource.LEAD_MPC
+  assert ("launch", "physical_hazard_active") in rejected
+
+
+def test_excess_gap_closure_seed_relaxation_loses_to_advisory_cap():
+  seed = PlannerSeedCandidate(
+    "excess_gap_closure",
+    make_output(0.24, has_lead=True, seed_intent="lead_follow", seed_reason="excess_gap_closure"),
+    selection=PLANNER_SEED_FLOOR,
+  )
+  gap_closure = planner_seed_candidate_to_longitudinal_candidate(seed, v_target=8.0)
+  driver = custom_v2_candidate_with_debug(
+    make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 0.0, "driver_cruise_target", v_target=8.0),
+    intent="driver_cruise",
+    reason="driver_cruise_target",
+  )
+  advisory = custom_v2_candidate_with_debug(
+    make_candidate(DecisionSource.SPEED_LIMIT, CandidateRole.ADVISORY_CAP, -0.2, "coast_biased_speed_reduction", v_target=6.0,
+                   confidence=1.0, urgency=0.7),
+    intent="speed_policy",
+    reason="coast_biased_speed_reduction",
+  )
+
+  decision = LongitudinalArbiter().decide((driver, advisory, gap_closure))
+  rejected = custom_v2_rejections_from_decision(decision)
+
+  assert decision.winner == DecisionSource.SPEED_LIMIT
+  assert ("lead_follow", "advisory_cap_active") in rejected
+
+
+def test_low_speed_pullaway_cap_seed_is_restrictive_cap_not_physics():
+  seed = PlannerSeedCandidate(
+    "low_speed_pullaway_accel_step_cap",
+    make_output(0.55, has_lead=True, seed_intent="launch", seed_reason="low_speed_pullaway_accel_step_cap"),
+  )
+
+  candidate = planner_seed_candidate_to_longitudinal_candidate(seed, v_target=8.0)
+
+  assert candidate.source == DecisionSource.STOP_LAUNCH
+  assert candidate.role == CandidateRole.ADVISORY_CAP
+  assert candidate.debug[CUSTOM_V2_DEBUG_INTENT] == "launch"
+
+
+def test_low_speed_pullaway_cap_seed_loses_to_more_restrictive_advisory():
+  seed = PlannerSeedCandidate(
+    "low_speed_pullaway_accel_step_cap",
+    make_output(0.55, has_lead=True, seed_intent="launch", seed_reason="low_speed_pullaway_accel_step_cap"),
+  )
+  pullaway_cap = planner_seed_candidate_to_longitudinal_candidate(seed, v_target=8.0)
+  driver = custom_v2_candidate_with_debug(
+    make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 1.0, "driver_cruise_target", v_target=8.0),
+    intent="driver_cruise",
+    reason="driver_cruise_target",
+  )
+  advisory = custom_v2_candidate_with_debug(
+    make_candidate(DecisionSource.SPEED_LIMIT, CandidateRole.ADVISORY_CAP, -0.2, "coast_biased_speed_reduction", v_target=6.0,
+                   confidence=1.0, urgency=0.7),
+    intent="speed_policy",
+    reason="coast_biased_speed_reduction",
+  )
+
+  decision = LongitudinalArbiter().decide((driver, advisory, pullaway_cap))
+  rejected = custom_v2_rejections_from_decision(decision)
+
+  assert decision.winner == DecisionSource.SPEED_LIMIT
+  assert ("launch", "higher_advisory_target") in rejected
+
+
+def test_low_speed_pullaway_cap_seed_loses_to_physical_braking():
+  seed = PlannerSeedCandidate(
+    "low_speed_pullaway_accel_step_cap",
+    make_output(0.55, has_lead=True, seed_intent="launch", seed_reason="low_speed_pullaway_accel_step_cap"),
+  )
+  pullaway_cap = planner_seed_candidate_to_longitudinal_candidate(seed, v_target=8.0)
+  driver = custom_v2_candidate_with_debug(
+    make_candidate(DecisionSource.CRUISE, CandidateRole.DRIVER_INTENT, 1.0, "driver_cruise_target", v_target=8.0),
+    intent="driver_cruise",
+    reason="driver_cruise_target",
+  )
+  physical = custom_v2_candidate_with_debug(
+    make_candidate(DecisionSource.LEAD_MPC, CandidateRole.PHYSICAL_HAZARD, -0.5, "confirmed_radar_lead", v_target=8.0),
+    intent="lead_follow",
+    reason="confirmed_radar_lead",
+  )
+
+  decision = LongitudinalArbiter().decide((driver, physical, pullaway_cap))
+  rejected = custom_v2_rejections_from_decision(decision)
+
+  assert decision.winner == DecisionSource.LEAD_MPC
+  assert ("launch", "physical_hazard_active") in rejected
+
+
 def test_scene_derived_progress_candidates_are_relaxation_only_and_lose_to_physical():
   output = make_output(0.0)
   scene = CustomV2Scene(v_ego=0.2, v_cruise=8.0, model_stop_distance=30.0, model_desired_accel=0.0)
@@ -164,7 +293,7 @@ def test_scene_derived_progress_candidates_are_relaxation_only_and_lose_to_physi
   assert ("launch", "physical_hazard_active") in custom_rejected
 
 
-def test_scene_derived_confirmed_lead_pullaway_candidate_is_standard_relaxation():
+def test_scene_derived_confirmed_lead_pullaway_no_longer_creates_custom_physics():
   output = make_output(0.0, has_lead=True)
   scene = CustomV2Scene(
     v_ego=0.2,
@@ -178,16 +307,9 @@ def test_scene_derived_confirmed_lead_pullaway_candidate_is_standard_relaxation(
   )
 
   candidates, rejected = build_custom_v2_progress_candidates(output, scene, (-2.0, 2.0))
-  launch = [candidate for candidate in candidates if candidate.active_reason == "confirmed_lead_pullaway"]
 
-  assert rejected == ()
-  assert len(launch) == 1
-  assert launch[0].source == DecisionSource.STOP_LAUNCH
-  assert launch[0].role == CandidateRole.RELAXATION
-  assert launch[0].a_target == 1.30
-  assert launch[0].should_stop is False
-  assert launch[0].debug[CUSTOM_V2_DEBUG_INTENT] == "launch"
-  assert launch[0].debug[CUSTOM_V2_DEBUG_REASON] == "confirmed_lead_pullaway"
+  assert candidates == ()
+  assert ("lead_follow", "planner_seed_required") in rejected
 
 
 def test_scene_derived_progress_candidates_are_blocked_by_overrides_and_stop_threats():
@@ -234,6 +356,6 @@ def test_scene_derived_excess_gap_progress_loses_to_close_physical_lead():
 
   decision = LongitudinalArbiter().decide([cruise, lead, *progress_candidates])
 
-  assert any(candidate.debug[CUSTOM_V2_DEBUG_INTENT] == "lead_follow" for candidate in progress_candidates)
+  assert progress_candidates == ()
   assert decision.winner == DecisionSource.LEAD_MPC
   assert decision.a_target == -0.7

@@ -10,7 +10,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import Longi
 PLANNER_SEED_CAP = "cap"
 PLANNER_SEED_FLOOR = "floor"
 POST_CAP_FLOOR_GROUPS = {"lead_stop_approach_slew", "low_speed_pullaway_accel_step"}
-STOP_INTENT_RELEASE_GROUPS = {"creep_pullaway_launch"}
+STOP_INTENT_RELEASE_GROUPS = {"creep_pullaway_launch", "lead_pullaway_pulse", "excess_gap_closure"}
 PLANNER_SEED_INTENT_DRIVER_CRUISE = "driver_cruise"
 PLANNER_SEED_INTENT_LEAD_FOLLOW = "lead_follow"
 PLANNER_SEED_INTENT_STOP_APPROACH = "stop_approach"
@@ -40,12 +40,16 @@ LEAD_FOLLOW_SEED_REASONS = {
   "lead_accel_recovery",
   "lead_stop_approach_slew",
   "lead_loss_e2e_guard",
+  "excess_gap_closure",
+  "excess_gap_closure_accel_cap",
 }
 LAUNCH_SEED_REASONS = {
   "creep_pullaway_launch",
   "creep_pullaway_launch_accel_cap",
   "low_speed_pullaway_accel_step_floor",
   "low_speed_pullaway_accel_step_cap",
+  "confirmed_lead_pullaway_pulse",
+  "lead_pullaway_pulse_accel_cap",
 }
 DRIVER_CRUISE_SEED_REASONS = {"plain_cruise_overspeed_coast"}
 SAFETY_CAP_SEED_REASONS = {"lead_flicker_speedup_cap"}

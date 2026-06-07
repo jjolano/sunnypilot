@@ -30,6 +30,19 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
 LONGITUDINAL_PLAN_SOURCE = log.LongitudinalPlan.LongitudinalPlanSource
 LEAD_MPC_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_PLAN_SOURCE.lead1)}
 E2E_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.e2e)}
+PROGRESS_RELAXATION_SEED_REASONS = {"confirmed_lead_pullaway_pulse", "excess_gap_closure"}
+PROGRESS_ACCEL_CAP_SEED_REASONS = {
+  "creep_pullaway_launch_accel_cap",
+  "low_speed_pullaway_accel_step_cap",
+  "lead_pullaway_pulse_accel_cap",
+  "excess_gap_closure_accel_cap",
+}
+STOP_LAUNCH_SEED_REASONS = {
+  "confirmed_lead_pullaway_pulse",
+  "lead_pullaway_pulse_accel_cap",
+  "excess_gap_closure",
+  "excess_gap_closure_accel_cap",
+}
 
 
 def planner_seed_candidate_to_longitudinal_candidate(candidate: PlannerSeedCandidate,
@@ -134,6 +147,10 @@ def _custom_v2_intent_for_seed(intent: str) -> str:
 
 
 def _role_for_seed(intent: str, reason: str, selection: str = "") -> CandidateRole:
+  if reason in PROGRESS_ACCEL_CAP_SEED_REASONS:
+    return CandidateRole.ADVISORY_CAP
+  if reason in PROGRESS_RELAXATION_SEED_REASONS and selection == PLANNER_SEED_FLOOR:
+    return CandidateRole.RELAXATION
   if intent in (PLANNER_SEED_INTENT_LEAD_FOLLOW, PLANNER_SEED_INTENT_STOP_APPROACH, PLANNER_SEED_INTENT_SAFETY_CAP):
     return CandidateRole.PHYSICAL_HAZARD
   if intent == PLANNER_SEED_INTENT_LAUNCH and selection != PLANNER_SEED_FLOOR:
@@ -144,6 +161,8 @@ def _role_for_seed(intent: str, reason: str, selection: str = "") -> CandidateRo
 
 
 def _decision_source_for_seed(intent: str, reason: str, output: LongitudinalStackOutput) -> DecisionSource:
+  if reason in STOP_LAUNCH_SEED_REASONS:
+    return DecisionSource.STOP_LAUNCH
   if intent == PLANNER_SEED_INTENT_LEAD_FOLLOW:
     return DecisionSource.LEAD_MPC
   if intent == PLANNER_SEED_INTENT_STOP_APPROACH:
