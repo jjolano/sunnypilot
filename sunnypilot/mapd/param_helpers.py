@@ -78,4 +78,4 @@ def write_mapd_heartbeat(params, key: str, now: float | None = None, min_period:
   if math.isfinite(last_updated_at) and 0.0 <= last_updated_at <= now and now - last_updated_at < min_period:
     return
 
-  params.put(key, str(now))
+  params.put(key, float(now))

@@ -190,7 +190,7 @@ def test_mapd_v2_update_location_writes_advisory_heartbeat_for_mapd_out(monkeypa
 
   data.update_location()
 
-  assert data.mem_params.values[MAP_ADVISORY_UPDATED_AT_PARAM] == "123.0"
+  assert data.mem_params.values[MAP_ADVISORY_UPDATED_AT_PARAM] == 123.0
   assert MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM not in data.mem_params.values
 
 
@@ -200,19 +200,19 @@ def test_mapd_v2_update_location_writes_target_velocity_heartbeat_for_extended_o
 
   data.update_location()
 
-  assert data.mem_params.values[MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM] == "123.0"
+  assert data.mem_params.values[MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM] == 123.0
   assert MAP_ADVISORY_UPDATED_AT_PARAM not in data.mem_params.values
 
 
 def test_mapd_v2_update_location_does_not_refresh_target_heartbeat_from_mapd_out_only(monkeypatch):
   monkeypatch.setattr("openpilot.sunnypilot.mapd.param_helpers.time.monotonic", lambda: 123.0)
   data = build_map_data_with_update_state({"mapdOut": True, "mapdExtendedOut": False})
-  data.mem_params.put(MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM, "100.0")
+  data.mem_params.put(MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM, 100.0)
 
   data.update_location()
 
-  assert data.mem_params.values[MAP_ADVISORY_UPDATED_AT_PARAM] == "123.0"
-  assert data.mem_params.values[MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM] == "100.0"
+  assert data.mem_params.values[MAP_ADVISORY_UPDATED_AT_PARAM] == 123.0
+  assert data.mem_params.values[MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM] == 100.0
 
 
 def test_mapd_v2_update_location_skips_unchanged_legacy_param_writes():
