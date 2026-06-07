@@ -44,6 +44,7 @@ import cereal.messaging as messaging
 from openpilot.selfdrive.controls.controlsd import Controls, fill_model_path_state, model_path_reason_to_capnp
 from openpilot.selfdrive.controls.lib.drive_helpers import MAX_LATERAL_ACCEL_NO_ROLL, clip_curvature
 from openpilot.selfdrive.controls.lib.lane_change_path_shaper import LaneChangePathShaperResult
+from openpilot.selfdrive.controls.lib.lane_centering_assist import LaneCenteringAssistResult, inactive_lane_centering_assist_result
 from openpilot.selfdrive.controls.lib.lateral_demand import (
   DEMAND_SOURCE_FALLBACK_MEASURED,
   DEMAND_SOURCE_LATERAL_MANEUVER,
@@ -111,6 +112,22 @@ class FakeLaneChangePathShaper:
     self.reset_count += 1
 
 
+class FakeLaneCenteringAssistTracker:
+  def __init__(self, result=None):
+    self.result = result or inactive_lane_centering_assist_result()
+    self.inputs = None
+    self.dt = None
+    self.reset_count = 0
+
+  def update(self, inputs, dt):
+    self.inputs = inputs
+    self.dt = dt
+    return self.result
+
+  def reset(self):
+    self.reset_count += 1
+
+
 def make_model_v2(raw_curvature=0.002):
   samples = [float(i) for i in range(33)]
   zeros = [0.0 for _ in samples]
@@ -163,6 +180,8 @@ def make_demand_controls(*, previous_curvature=0.0, measured_curvature=0.001, de
   controls.model_path_raw_desired_curvature = 0.0
   controls.model_path_processor = FakeModelPathProcessor(path_result or ModelPathProcessorResult(measured_curvature, 0.0, True, "inactive"))
   controls.lane_change_path_shaper = FakeLaneChangePathShaper(lane_result or LaneChangePathShaperResult(measured_curvature, 0.0, False, False))
+  controls.lane_centering_assist_enabled = False
+  controls.lane_centering_assist_tracker = FakeLaneCenteringAssistTracker()
   return controls
 
 
@@ -259,6 +278,85 @@ def test_processed_lateral_demand_tracks_raw_path_processed_and_clipped_curvatur
   assert controls.model_path_raw_desired_curvature == pytest.approx(raw_curvature)
   assert controls.model_path_processor.inputs.desired_curvature == pytest.approx(raw_curvature)
   assert controls.lane_change_path_shaper.inputs.model_curvature == pytest.approx(path_result.desired_curvature)
+  assert not demand.lane_centering_assist_active
+  assert demand.lane_centering_curvature_nudge == pytest.approx(0.0)
+
+
+def test_lane_centering_assist_is_default_off_for_processed_demand():
+  path_result = ModelPathProcessorResult(0.001, 1.0, False, "ok")
+  lane_result = LaneChangePathShaperResult(0.001, 0.0, False, False)
+  controls = make_demand_controls(path_result=path_result, lane_result=lane_result)
+  controls.lane_centering_assist_tracker = FakeLaneCenteringAssistTracker(
+    LaneCenteringAssistResult(True, 0.0005, 0.1, 0.0, 0.2, 1.0, "growing_lateral_error")
+  )
+  CS = make_car_state(v_ego=20.0)
+  live_params = make_live_params()
+
+  demand = controls.build_processed_lateral_demand(make_car_control(), CS, make_model_v2(), live_params)
+  expected_curvature, _expected_limited, _ = clip_curvature(
+    CS.vEgo, 0.0, lane_result.desired_curvature, live_params.roll, MAX_LATERAL_ACCEL_NO_ROLL,
+  )
+
+  assert controls.lane_centering_assist_tracker.inputs is None
+  assert demand.processed_curvature == pytest.approx(expected_curvature)
+  assert not demand.lane_centering_assist_active
+
+
+def test_lane_centering_assist_nudges_before_final_clipping_when_enabled():
+  path_result = ModelPathProcessorResult(0.001, 1.0, False, "ok")
+  lane_result = LaneChangePathShaperResult(0.001, 0.0, False, False)
+  controls = make_demand_controls(path_result=path_result, lane_result=lane_result)
+  controls.lane_centering_assist_enabled = True
+  controls.lane_centering_assist_tracker = FakeLaneCenteringAssistTracker(
+    LaneCenteringAssistResult(True, 0.0002, 0.1, 0.0, 0.2, 1.0, "growing_lateral_error")
+  )
+  CS = make_car_state(v_ego=20.0)
+  live_params = make_live_params()
+
+  demand = controls.build_processed_lateral_demand(make_car_control(), CS, make_model_v2(), live_params)
+  expected_curvature, _expected_limited, _ = clip_curvature(
+    CS.vEgo, 0.0, lane_result.desired_curvature + 0.0002, live_params.roll, MAX_LATERAL_ACCEL_NO_ROLL,
+  )
+
+  assert controls.lane_centering_assist_tracker.inputs is not None
+  assert controls.lane_centering_assist_tracker.inputs.model_curvature == pytest.approx(lane_result.desired_curvature)
+  assert demand.processed_curvature == pytest.approx(expected_curvature)
+  assert demand.lane_centering_assist_active
+  assert demand.lane_centering_curvature_nudge == pytest.approx(0.0002)
+
+
+def test_lane_centering_assist_does_not_bypass_final_clipping():
+  path_result = ModelPathProcessorResult(0.0, 1.0, False, "ok")
+  lane_result = LaneChangePathShaperResult(0.0, 0.0, False, False)
+  controls = make_demand_controls(path_result=path_result, lane_result=lane_result)
+  controls.lane_centering_assist_enabled = True
+  controls.lane_centering_assist_tracker = FakeLaneCenteringAssistTracker(
+    LaneCenteringAssistResult(True, 1.0, 0.1, 0.0, 0.2, 1.0, "growing_lateral_error")
+  )
+  CS = make_car_state(v_ego=30.0)
+  live_params = make_live_params()
+
+  demand = controls.build_processed_lateral_demand(make_car_control(), CS, make_model_v2(), live_params)
+  expected_curvature, expected_limited, _ = clip_curvature(
+    CS.vEgo, 0.0, 1.0, live_params.roll, MAX_LATERAL_ACCEL_NO_ROLL,
+  )
+
+  assert demand.processed_curvature == pytest.approx(expected_curvature)
+  assert demand.curvature_limited == expected_limited
+  assert demand.processed_curvature != pytest.approx(1.0)
+
+
+def test_lateral_maneuver_source_does_not_call_lane_centering_assist():
+  controls = make_demand_controls(desired_curvature=0.002, checks_ok=True)
+  controls.lane_centering_assist_enabled = True
+  tracker = FakeLaneCenteringAssistTracker(LaneCenteringAssistResult(True, 0.0002, 0.1, 0.0, 0.2, 1.0, "growing_lateral_error"))
+  controls.lane_centering_assist_tracker = tracker
+
+  demand = controls.build_processed_lateral_demand(make_car_control(), make_car_state(), make_model_v2(), make_live_params())
+
+  assert tracker.inputs is None
+  assert demand.demand_source == DEMAND_SOURCE_LATERAL_MANEUVER
+  assert not demand.lane_centering_assist_active
 
 
 def test_lateral_maneuver_plan_processed_demand_resets_path_and_lane_shaping():

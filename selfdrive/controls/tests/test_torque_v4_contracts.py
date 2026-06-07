@@ -72,6 +72,7 @@ def test_processed_demand_learning_gates_cover_quality_reason_shaping_and_limits
     ({"lane_change_shaping_active": True}, latcontrol_torque_v4.TorqueV4LearnerRejectReason.LANE_CHANGE_SHAPING),
     ({"lane_change_blend": 0.2}, latcontrol_torque_v4.TorqueV4LearnerRejectReason.LANE_CHANGE_SHAPING),
     ({"curvature_limited": True}, latcontrol_torque_v4.TorqueV4LearnerRejectReason.CURVATURE_LIMITED),
+    ({"lane_centering_assist_active": True}, latcontrol_torque_v4.TorqueV4LearnerRejectReason.LANE_CENTERING_ASSIST),
   ]
 
   for overrides, reason in cases:

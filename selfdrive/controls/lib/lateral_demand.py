@@ -18,3 +18,10 @@ class ProcessedLateralDemand:
   lane_change_blend: float
   lateral_accel_limit: float
   demand_source: str = DEMAND_SOURCE_MODEL_PATH
+  lane_centering_assist_active: bool = False
+  lane_centering_reason: str = ""
+  lane_centering_lateral_error: float = 0.0
+  lane_centering_heading_error: float = 0.0
+  lane_centering_predicted_error: float = 0.0
+  lane_centering_curvature_nudge: float = 0.0
+  lane_centering_confidence: float = 0.0

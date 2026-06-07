@@ -100,6 +100,7 @@ class TorqueV4LearnerRejectReason(IntFlag):
   LOW_PATH_QUALITY = 1 << 12
   PATH_REASON = 1 << 13
   LANE_CHANGE_SHAPING = 1 << 14
+  LANE_CENTERING_ASSIST = 1 << 15
 
 
 class TorqueV4GovernorReason(IntFlag):
@@ -227,6 +228,7 @@ class TorqueV4Observation:
   path_reason: str = LEARN_PATH_REASON_OK
   lane_change_shaping_active: bool = False
   lane_change_blend: float = 0.0
+  lane_centering_assist_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -470,6 +472,8 @@ class TorqueV4SessionAdaptation:
     lane_change_blend = _finite_float(observation.lane_change_blend)
     if observation.lane_change_shaping_active or lane_change_blend is None or abs(lane_change_blend) > 1e-3:
       reason |= TorqueV4LearnerRejectReason.LANE_CHANGE_SHAPING
+    if observation.lane_centering_assist_active:
+      reason |= TorqueV4LearnerRejectReason.LANE_CENTERING_ASSIST
     return reason
 
 
@@ -675,6 +679,7 @@ class LatControlTorqueV4(LatControl):
       and not getattr(demand, "lane_change_shaping_active", True)
       and lane_change_blend is not None
       and abs(lane_change_blend) <= 1e-3
+      and not getattr(demand, "lane_centering_assist_active", False)
     )
 
   def _refresh_speed_adaptive_apply_enabled(self) -> None:
@@ -788,6 +793,7 @@ class LatControlTorqueV4(LatControl):
       path_reason=getattr(self.processed_lateral_demand, "path_reason", LEARN_PATH_REASON_OK),
       lane_change_shaping_active=getattr(self.processed_lateral_demand, "lane_change_shaping_active", False),
       lane_change_blend=getattr(self.processed_lateral_demand, "lane_change_blend", 0.0),
+      lane_centering_assist_active=getattr(self.processed_lateral_demand, "lane_centering_assist_active", False),
     )
     sample_update = self.session_adaptation.update(observation, governor_result.reason)
 
