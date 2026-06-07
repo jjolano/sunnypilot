@@ -142,6 +142,20 @@ def test_moving_lead_helper_marks_slew_floor_group():
               selection=PLANNER_SEED_FLOOR, group="lead_stop_approach_slew")
 
 
+def test_moving_lead_helper_carries_routine_approach_debug():
+  seeds = build_moving_lead_seed_candidates(
+    make_planner(0.0), True, (-2.0, 2.0),
+    moving_stop_guard_a_target=-0.2,
+    moving_stop_guard_debug={"routine_lead_approach_active": True, "routine_lead_compression_blend": 0.4},
+  )
+
+  assert len(seeds) == 1
+  assert_seed(seeds[0], name="moving_lead_stop_gap_guard", intent="lead_follow", reason="moving_lead_stop_gap_guard",
+              selection="cap")
+  assert seeds[0].output.debug["routine_lead_approach_active"]
+  assert seeds[0].output.debug["routine_lead_compression_blend"] == 0.4
+
+
 def test_lead_loss_and_cruise_helpers_keep_policy_conversion_debug():
   lead_loss = build_lead_loss_seed_candidates(
     make_planner(-1.0), True, (-2.0, 2.0), lead_loss_e2e_guard_a_target=-0.4,

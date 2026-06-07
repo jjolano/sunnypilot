@@ -38,6 +38,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   LeadPullawayPhase,
   LEAD_PULLAWAY_PULSE_REASON,
   MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP,
+  ROUTINE_LEAD_APPROACH_NEGATIVE_JERK,
   STOP_RELEASE_GUARD_HOLD_TIME,
   STOP_RELEASE_GUARD_LEAD_RELEASE_REASON,
   STOP_RELEASE_GUARD_WAITING_REASON,
@@ -1851,6 +1852,107 @@ def test_moving_lead_slower_approach_starts_mild_pre_caution_braking():
   assert -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP <= accel < 0.0
 
 
+def test_moving_lead_routine_approach_anticipates_projected_compression_before_caution():
+  d_rel = 42.0
+
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=20.7,
+    d_rel=d_rel,
+    v_lead=18.7,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP <= accel < 0.0
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_anticipatory_active"]
+  assert not debug["routine_lead_approach_urgent"]
+  assert d_rel > debug["routine_lead_caution_gap"]
+  assert debug["routine_lead_projected_gap"] <= debug["routine_lead_caution_gap"]
+
+
+def test_moving_lead_routine_approach_builds_one_direction_while_compression_worsens():
+  prev_a_target = 0.0
+  dt = 0.5
+
+  for d_rel in (42.0, 40.0, 38.0):
+    accel, debug = get_moving_lead_stop_gap_guard_accel(
+      v_ego=20.7,
+      d_rel=d_rel,
+      v_lead=18.7,
+      a_lead=0.0,
+      y_rel=0.0,
+      t_follow=1.55,
+      prev_a_target=prev_a_target,
+      dt=dt,
+      return_debug=True,
+    )
+
+    assert accel is not None
+    assert debug["routine_lead_approach_active"]
+    assert not debug["routine_lead_approach_urgent"]
+    assert accel <= prev_a_target + 1e-6
+    assert prev_a_target - accel <= ROUTINE_LEAD_APPROACH_NEGATIVE_JERK * dt + 1e-6
+    prev_a_target = accel
+
+
+def test_moving_lead_routine_approach_does_not_weaken_existing_guard_target():
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=22.0,
+    d_rel=45.17,
+    v_lead=19.2,
+    a_lead=-0.6,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.05,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_ramped_a_target"] > -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
+  assert accel < -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
+  assert accel < debug["routine_lead_ramped_a_target"]
+
+
+def test_moving_lead_routine_approach_does_not_drop_at_closing_urgent_threshold_without_stronger_target():
+  below_threshold, _below_debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=22.0,
+    d_rel=50.0,
+    v_lead=19.01,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.05,
+    return_debug=True,
+  )
+  at_threshold, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=22.0,
+    d_rel=50.0,
+    v_lead=19.0,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.05,
+    return_debug=True,
+  )
+
+  assert below_threshold is not None
+  assert at_threshold is not None
+  assert at_threshold <= below_threshold + 1e-6
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_approach_urgent"]
+  assert not debug["routine_lead_urgent_bypass"]
+
+
 def test_moving_lead_slower_approach_ignores_clear_or_opening_gap():
   clear_gap = get_moving_lead_stop_gap_guard_accel(
     v_ego=15.0,
@@ -1874,17 +1976,21 @@ def test_moving_lead_slower_approach_ignores_clear_or_opening_gap():
 
 
 def test_moving_lead_slower_approach_preserves_urgent_caution_braking():
-  accel = get_moving_lead_stop_gap_guard_accel(
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
     v_ego=15.12,
     d_rel=24.36,
     v_lead=12.72,
     a_lead=-2.0,
     y_rel=0.0,
     t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
   )
 
   assert accel is not None
   assert accel < -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
+  assert debug["routine_lead_urgent_bypass"]
 
 
 def test_moving_lead_slower_approach_preserves_lateral_exit_rejection():
