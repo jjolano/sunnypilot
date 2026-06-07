@@ -1035,6 +1035,51 @@ def test_lead_pullaway_tracker_arms_then_pulses_on_confirmed_opening_lead():
   assert 0.0 < pulse.a_floor <= 0.7
 
 
+def test_route_close_lead_pullaway_authorizes_stop_release_progress():
+  # Route 0000019e--7e2d240269--7 around 455-457s: lead was close but
+  # opening from standstill; custom-2.0 kept rejecting launch as
+  # no_lead_progress_authority until driver gas override.
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead(d_rel=7.24, v_lead=0.93, v_rel=0.93, a_lead=0.0)
+  context = lead_context_for(lead, v_ego=0.0)
+  behavior_lead = context.behavior_lead_data((lead, NO_LEAD))
+
+  release = lead_confirmed_stop_release(
+    context,
+    behavior_lead,
+    lead_opening=True,
+    lead_moving=True,
+    lead_accel=0.0,
+    predicted_gap_opening=0.72,
+  )
+  armed = update_pullaway_tracker(
+    tracker, context, lead, lead_gap_excess=2.2, predicted_gap_opening=0.72,
+    lead_opening=True, lead_moving=True, lead_accel=0.0,
+  )
+  pulse = update_pullaway_tracker(
+    tracker, context, lead, lead_gap_excess=2.2, predicted_gap_opening=0.72,
+    lead_opening=True, lead_moving=True, lead_accel=0.0,
+  )
+
+  assert context.lead_progress_allowed
+  assert context.behavior is not None
+  assert context.behavior.authority == LEAD_AUTHORITY_PROGRESS_ALLOWED
+  assert release
+  assert armed.phase == LeadPullawayPhase.ARMED
+  assert pulse.phase == LeadPullawayPhase.PULSE
+  assert pulse.active
+  assert pulse.a_floor > 0.0
+
+
+def test_close_stopped_lead_without_opening_remains_suppressive_only():
+  lead = make_pullaway_lead(d_rel=7.24, v_lead=0.0, v_rel=0.0, a_lead=0.0)
+  context = lead_context_for(lead, v_ego=0.0)
+
+  assert not context.lead_progress_allowed
+  assert context.behavior is None
+  assert context.physical is not None
+
+
 def test_lead_pullaway_pulse_is_time_limited_and_transitions_to_gap_closure():
   tracker = LeadPullawayIntentTracker()
   lead = make_pullaway_lead(d_rel=36.0, v_lead=1.5, v_rel=1.5)

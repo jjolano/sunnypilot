@@ -20,6 +20,8 @@ LEAD_CONTEXT_CLOSE_TIME_GAP = 2.2
 LEAD_CONTEXT_CLOSE_DISTANCE = 25.0
 LEAD_CONTEXT_CLOSE_STOP_D_REL = 15.0
 LEAD_CONTEXT_CLOSE_STOP_V = 5.0
+LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_OPENING = 0.15
+LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD = 0.2
 LEAD_CONTEXT_NEW_FAR_Y_REL = 1.6
 LEAD_CONTEXT_NEW_FAR_MODEL_PROB = 0.5
 LEAD_CONTEXT_NEW_FAR_REQUIRED_DECEL = 0.15
@@ -668,6 +670,8 @@ class LeadContextTracker:
       return LEAD_AUTHORITY_NONE, "new_low_relevance_lead"
     if on_path <= 0.0 and not close_or_closing:
       return LEAD_AUTHORITY_SUPPRESS_ONLY, "path_exit_pending_release"
+    if _close_stop_pullaway_progress_allowed(d_rel, v_lead, v_rel, progress_model):
+      return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_close_stop_pullaway_authorized_lead"
     if close_or_closing:
       return LEAD_AUTHORITY_PHYSICAL, "close_or_closing_lead"
     if progress_model.allowed:
@@ -796,3 +800,16 @@ def _context_reason(physical: LeadRelevanceState | None, behavior: LeadRelevance
   if physical is not None:
     return f"physical_{physical.reason}"
   return "no_lead"
+
+
+def _close_stop_pullaway_progress_allowed(d_rel: float, v_lead: float, v_rel: float,
+                                          progress_model: LeadProgressModel) -> bool:
+  # Close stopped/crawling leads stay suppressive unless the same stable,
+  # on-path progress model already says the lead is safely opening.
+  return bool(
+    progress_model.allowed and
+    progress_model.stop_threat_absent and
+    0.0 < d_rel <= LEAD_CONTEXT_CLOSE_STOP_D_REL and
+    LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD < v_lead <= LEAD_CONTEXT_CLOSE_STOP_V and
+    v_rel > LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_OPENING
+  )
