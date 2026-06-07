@@ -307,6 +307,10 @@ LEAD_PULLAWAY_PULSE_A_FLOOR = CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
 LEAD_PULLAWAY_PULSE_ACCEL_CAP = CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MAX
 LEAD_PULLAWAY_PULSE_JERK_UP = 2.0
 LEAD_PULLAWAY_PULSE_JERK_DOWN = 5.0
+LEAD_PULLAWAY_RUNWAY_T = 2.0
+LEAD_PULLAWAY_RUNWAY_MARGIN = 0.5
+LEAD_PULLAWAY_ACCEL_TREND_DECREASE = -0.05
+LEAD_PULLAWAY_DECEL_ABORT = -0.05
 EXCESS_GAP_CLOSURE_START_EXCESS = CREEP_TO_STOP_GAP_MAX_EXCESS
 EXCESS_GAP_CLOSURE_FULL_EXCESS = 8.0
 EXCESS_GAP_CLOSURE_ACCEL_BASE = CREEP_TO_STOP_GAP_ACCEL_MAX
@@ -647,6 +651,67 @@ class LeadPullawayIntent:
   cooldown_timer: float = 0.0
   gap_excess: float = 0.0
   predicted_gap_opening: float = 0.0
+  predicted_gap: float = 0.0
+  safe_accel_cap: float = LEAD_PULLAWAY_PULSE_ACCEL_CAP
+  lead_accel_trend: float = 0.0
+  runway_margin: float = 0.0
+  coast_required: bool = False
+  pulse_capped_by_runway: bool = False
+  runway_trend: str = "stable"
+
+
+@dataclass(frozen=True)
+class LeadPullawayRunway:
+  predicted_gap: float = 0.0
+  safe_accel_cap: float = LEAD_PULLAWAY_PULSE_ACCEL_CAP
+  lead_accel_trend: float = 0.0
+  runway_margin: float = 0.0
+  coast_required: bool = False
+  trend: str = "stable"
+
+
+def get_lead_pullaway_runway(v_ego, d_rel, v_lead, a_lead, lead_accel_trend,
+                             desired_gap=STOP_DISTANCE + CREEP_TO_STOP_GAP_FOLLOW_EXCESS,
+                             margin=LEAD_PULLAWAY_RUNWAY_MARGIN,
+                             horizon=LEAD_PULLAWAY_RUNWAY_T) -> LeadPullawayRunway:
+  v_ego = max(0.0, _finite_float(v_ego))
+  d_rel = max(0.0, _finite_float(d_rel))
+  v_lead = max(0.0, _finite_float(v_lead))
+  a_lead = _finite_float(a_lead)
+  lead_accel_trend = _finite_float(lead_accel_trend)
+  desired_gap = max(0.0, _finite_float(desired_gap))
+  margin = max(0.0, _finite_float(margin))
+  horizon = max(0.1, _finite_float(horizon, LEAD_PULLAWAY_RUNWAY_T))
+
+  if a_lead <= LEAD_PULLAWAY_DECEL_ABORT:
+    trend = "decelerating"
+    a_lead_pred = min(a_lead, 0.0)
+  elif lead_accel_trend < LEAD_PULLAWAY_ACCEL_TREND_DECREASE:
+    trend = "decreasing"
+    a_lead_pred = max(0.0, a_lead + lead_accel_trend * horizon)
+  elif a_lead > CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL:
+    trend = "increasing"
+    a_lead_pred = a_lead
+  else:
+    trend = "stable"
+    a_lead_pred = max(0.0, a_lead)
+
+  runway_without_ego_accel = d_rel - desired_gap - margin + (v_lead - v_ego) * horizon
+  a_cap = a_lead_pred + 2.0 * runway_without_ego_accel / horizon**2
+  safe_accel_cap = float(np.clip(a_cap, 0.0, LEAD_PULLAWAY_PULSE_ACCEL_CAP))
+  if trend == "decelerating":
+    safe_accel_cap = 0.0
+  predicted_gap = max(0.0, d_rel + (v_lead - v_ego) * horizon + 0.5 * (a_lead_pred - safe_accel_cap) * horizon**2)
+  runway_margin = predicted_gap - desired_gap - margin
+  coast_required = bool(a_lead <= LEAD_PULLAWAY_DECEL_ABORT or safe_accel_cap <= 1e-3)
+  return LeadPullawayRunway(
+    predicted_gap=predicted_gap,
+    safe_accel_cap=safe_accel_cap,
+    lead_accel_trend=lead_accel_trend,
+    runway_margin=runway_margin,
+    coast_required=coast_required,
+    trend=trend,
+  )
 
 
 def approach_accel_with_jerk_limit(prev_a, target_a, dt, jerk_up, jerk_down):
@@ -668,6 +733,8 @@ class LeadPullawayIntentTracker:
   _pulse_timer: float = 0.0
   _cooldown_timer: float = 0.0
   _last_a_floor: float = 0.0
+  _last_lead_accel: float | None = None
+  _last_lead_accel_track_id: int = LEAD_CONFIDENCE_TRACK_UNKNOWN
 
   def reset(self):
     self._phase = LeadPullawayPhase.HOLD
@@ -676,6 +743,8 @@ class LeadPullawayIntentTracker:
     self._pulse_timer = 0.0
     self._cooldown_timer = 0.0
     self._last_a_floor = 0.0
+    self._last_lead_accel = None
+    self._last_lead_accel_track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
 
   def update(
     self,
@@ -700,6 +769,7 @@ class LeadPullawayIntentTracker:
     lead_gap_excess = max(0.0, _finite_float(lead_gap_excess))
     predicted_gap_opening = max(0.0, _finite_float(predicted_gap_opening))
     v_ego = max(0.0, _finite_float(v_ego))
+    lead_accel = _finite_float(lead_accel)
     self._cooldown_timer = max(0.0, self._cooldown_timer - dt)
 
     if reset_state:
@@ -714,7 +784,11 @@ class LeadPullawayIntentTracker:
       self._last_a_floor = 0.0
       self._pulse_used_track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
       self._cooldown_timer = 0.0
+      self._last_lead_accel = None
+      self._last_lead_accel_track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
     self._track_id = track_id
+    lead_accel_trend = self._lead_accel_trend(track_id, lead_accel, dt)
+    runway = self._runway(behavior_lead, behavior_state, v_ego, lead_accel, lead_accel_trend)
 
     blocker = self._blocking_reason(
       behavior_lead=behavior_lead,
@@ -737,13 +811,13 @@ class LeadPullawayIntentTracker:
       self._phase = LeadPullawayPhase.HOLD
       self._pulse_timer = 0.0
       self._last_a_floor = 0.0
-      return self._intent(LeadPullawayPhase.HOLD, False, 0.0, blocker, lead_gap_excess, predicted_gap_opening)
+      return self._intent(LeadPullawayPhase.HOLD, False, 0.0, blocker, lead_gap_excess, predicted_gap_opening, runway)
 
     if v_ego >= LEAD_PULLAWAY_MAX_V_EGO:
       self._phase = LeadPullawayPhase.NORMAL
       self._pulse_timer = 0.0
       self._last_a_floor = 0.0
-      return self._intent(LeadPullawayPhase.NORMAL, False, 0.0, "outside_low_speed_launch", lead_gap_excess, predicted_gap_opening)
+      return self._intent(LeadPullawayPhase.NORMAL, False, 0.0, "outside_low_speed_launch", lead_gap_excess, predicted_gap_opening, runway)
 
     progress_model = getattr(behavior_state, "progress_model", None)
     opening_evidence = bool(
@@ -753,8 +827,10 @@ class LeadPullawayIntentTracker:
       (lead_accel >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL and getattr(progress_model, "predicted_gap_opening", False))
     )
     moving_evidence = bool(lead_moving or getattr(progress_model, "lead_moving", False))
+    runway_allows_progress = bool(not runway.coast_required and runway.safe_accel_cap > 1e-3)
     pulse_evidence = bool(opening_evidence and moving_evidence)
     gap_closure_allowed = bool(
+      runway_allows_progress and
       moving_evidence and
       lead_gap_excess >= EXCESS_GAP_CLOSURE_START_EXCESS and
       not self._lead_closing(progress_model, lead_opening)
@@ -762,10 +838,10 @@ class LeadPullawayIntentTracker:
 
     if self._phase == LeadPullawayPhase.PULSE:
       self._pulse_timer = max(0.0, self._pulse_timer - dt)
-      if self._pulse_timer > 0.0 and v_ego < LEAD_PULLAWAY_MAX_V_EGO and pulse_evidence:
+      if self._pulse_timer > 0.0 and v_ego < LEAD_PULLAWAY_MAX_V_EGO and pulse_evidence and runway_allows_progress:
         return self._active_intent(
           LeadPullawayPhase.PULSE, LEAD_PULLAWAY_PULSE_A_FLOOR, LEAD_PULLAWAY_PULSE_REASON,
-          lead_gap_excess, predicted_gap_opening, LEAD_PULLAWAY_PULSE_JERK_UP, LEAD_PULLAWAY_PULSE_JERK_DOWN, dt,
+          lead_gap_excess, predicted_gap_opening, LEAD_PULLAWAY_PULSE_JERK_UP, LEAD_PULLAWAY_PULSE_JERK_DOWN, dt, runway,
         )
       self._phase = LeadPullawayPhase.GAP_CLOSURE if gap_closure_allowed else LeadPullawayPhase.NORMAL
 
@@ -773,7 +849,7 @@ class LeadPullawayIntentTracker:
       if gap_closure_allowed:
         return self._active_intent(
           LeadPullawayPhase.GAP_CLOSURE, self._gap_closure_floor(lead_gap_excess), EXCESS_GAP_CLOSURE_REASON,
-          lead_gap_excess, predicted_gap_opening, EXCESS_GAP_CLOSURE_JERK_UP, EXCESS_GAP_CLOSURE_JERK_DOWN, dt,
+          lead_gap_excess, predicted_gap_opening, EXCESS_GAP_CLOSURE_JERK_UP, EXCESS_GAP_CLOSURE_JERK_DOWN, dt, runway,
         )
       self._phase = LeadPullawayPhase.NORMAL
 
@@ -781,17 +857,17 @@ class LeadPullawayIntentTracker:
       self._phase = LeadPullawayPhase.GAP_CLOSURE
       return self._active_intent(
         LeadPullawayPhase.GAP_CLOSURE, self._gap_closure_floor(lead_gap_excess), EXCESS_GAP_CLOSURE_REASON,
-        lead_gap_excess, predicted_gap_opening, EXCESS_GAP_CLOSURE_JERK_UP, EXCESS_GAP_CLOSURE_JERK_DOWN, dt,
+        lead_gap_excess, predicted_gap_opening, EXCESS_GAP_CLOSURE_JERK_UP, EXCESS_GAP_CLOSURE_JERK_DOWN, dt, runway,
       )
 
-    if not pulse_evidence:
+    if not pulse_evidence or not runway_allows_progress:
       self._phase = LeadPullawayPhase.NORMAL if gap_closure_allowed else LeadPullawayPhase.HOLD
-      reason = EXCESS_GAP_CLOSURE_REASON if gap_closure_allowed else "lead_not_opening"
-      return self._intent(self._phase, False, 0.0, reason, lead_gap_excess, predicted_gap_opening)
+      reason = EXCESS_GAP_CLOSURE_REASON if gap_closure_allowed else "lead_pullaway_runway_coast" if runway.coast_required else "lead_not_opening"
+      return self._intent(self._phase, False, 0.0, reason, lead_gap_excess, predicted_gap_opening, runway)
 
     if self._pulse_used_track_id == track_id or self._cooldown_timer > 0.0:
       self._phase = LeadPullawayPhase.NORMAL
-      return self._intent(LeadPullawayPhase.NORMAL, False, 0.0, "pullaway_cooldown", lead_gap_excess, predicted_gap_opening)
+      return self._intent(LeadPullawayPhase.NORMAL, False, 0.0, "pullaway_cooldown", lead_gap_excess, predicted_gap_opening, runway)
 
     if self._phase == LeadPullawayPhase.ARMED:
       self._phase = LeadPullawayPhase.PULSE
@@ -800,19 +876,28 @@ class LeadPullawayIntentTracker:
       self._pulse_used_track_id = track_id
       return self._active_intent(
         LeadPullawayPhase.PULSE, LEAD_PULLAWAY_PULSE_A_FLOOR, LEAD_PULLAWAY_PULSE_REASON,
-        lead_gap_excess, predicted_gap_opening, LEAD_PULLAWAY_PULSE_JERK_UP, LEAD_PULLAWAY_PULSE_JERK_DOWN, dt,
+        lead_gap_excess, predicted_gap_opening, LEAD_PULLAWAY_PULSE_JERK_UP, LEAD_PULLAWAY_PULSE_JERK_DOWN, dt, runway,
       )
 
     self._phase = LeadPullawayPhase.ARMED
     self._last_a_floor = 0.0
-    return self._intent(LeadPullawayPhase.ARMED, False, 0.0, "lead_pullaway_armed", lead_gap_excess, predicted_gap_opening)
+    return self._intent(LeadPullawayPhase.ARMED, False, 0.0, "lead_pullaway_armed", lead_gap_excess, predicted_gap_opening, runway)
 
-  def _active_intent(self, phase, target_floor, reason, gap_excess, predicted_gap_opening, jerk_up, jerk_down, dt):
-    a_floor = approach_accel_with_jerk_limit(self._last_a_floor, target_floor, dt, jerk_up, jerk_down)
+  def _active_intent(self, phase, target_floor, reason, gap_excess, predicted_gap_opening, jerk_up, jerk_down, dt,
+                     runway: LeadPullawayRunway | None = None):
+    runway = runway or LeadPullawayRunway()
+    capped_target_floor = min(max(0.0, _finite_float(target_floor)), runway.safe_accel_cap)
+    a_floor = approach_accel_with_jerk_limit(self._last_a_floor, capped_target_floor, dt, jerk_up, jerk_down)
+    a_floor = min(a_floor, capped_target_floor)
     self._last_a_floor = a_floor
-    return self._intent(phase, True, a_floor, reason, gap_excess, predicted_gap_opening)
+    return self._intent(
+      phase, True, a_floor, reason, gap_excess, predicted_gap_opening, runway,
+      pulse_capped_by_runway=capped_target_floor + 1e-3 < _finite_float(target_floor),
+    )
 
-  def _intent(self, phase, active, a_floor, reason, gap_excess, predicted_gap_opening):
+  def _intent(self, phase, active, a_floor, reason, gap_excess, predicted_gap_opening,
+              runway: LeadPullawayRunway | None = None, pulse_capped_by_runway=False):
+    runway = runway or LeadPullawayRunway()
     return LeadPullawayIntent(
       phase=phase,
       active=bool(active),
@@ -823,7 +908,37 @@ class LeadPullawayIntentTracker:
       cooldown_timer=max(0.0, float(self._cooldown_timer)),
       gap_excess=max(0.0, _finite_float(gap_excess)),
       predicted_gap_opening=max(0.0, _finite_float(predicted_gap_opening)),
+      predicted_gap=max(0.0, _finite_float(runway.predicted_gap)),
+      safe_accel_cap=max(0.0, _finite_float(runway.safe_accel_cap)),
+      lead_accel_trend=_finite_float(runway.lead_accel_trend),
+      runway_margin=_finite_float(runway.runway_margin),
+      coast_required=bool(runway.coast_required),
+      pulse_capped_by_runway=bool(pulse_capped_by_runway),
+      runway_trend=str(runway.trend),
     )
+
+  def _lead_accel_trend(self, track_id, lead_accel, dt):
+    lead_accel = _finite_float(lead_accel)
+    if track_id == LEAD_CONFIDENCE_TRACK_UNKNOWN or self._last_lead_accel_track_id != track_id or self._last_lead_accel is None:
+      trend = 0.0
+    else:
+      trend = (lead_accel - self._last_lead_accel) / max(dt, DT_MDL)
+    self._last_lead_accel = lead_accel
+    self._last_lead_accel_track_id = track_id
+    return trend
+
+  @staticmethod
+  def _runway(behavior_lead, behavior_state, v_ego, lead_accel, lead_accel_trend):
+    if behavior_state is not None:
+      d_rel = getattr(behavior_state, "d_rel", 0.0)
+      v_lead = getattr(behavior_state, "v_lead", 0.0)
+    elif behavior_lead is not None:
+      d_rel = getattr(behavior_lead, "dRel", 0.0)
+      v_lead = getattr(behavior_lead, "vLeadK", getattr(behavior_lead, "vLead", 0.0))
+    else:
+      d_rel = 0.0
+      v_lead = 0.0
+    return get_lead_pullaway_runway(v_ego, d_rel, v_lead, lead_accel, lead_accel_trend)
 
   def _fresh_stable_track(self, track_id):
     return bool(
@@ -1451,8 +1566,36 @@ def lead_pullaway_intent_debug(intent: LeadPullawayIntent) -> dict[str, object]:
     "lead_pullaway_gap_excess": float(intent.gap_excess),
     "lead_pullaway_predicted_gap_opening": float(intent.predicted_gap_opening),
     "lead_pullaway_a_floor": float(intent.a_floor),
+    "lead_pullaway_predicted_gap": float(intent.predicted_gap),
+    "lead_pullaway_safe_accel_cap": float(intent.safe_accel_cap),
+    "lead_pullaway_lead_accel_trend": float(intent.lead_accel_trend),
+    "lead_pullaway_runway_margin": float(intent.runway_margin),
+    "lead_pullaway_coast_required": bool(intent.coast_required),
+    "lead_pullaway_pulse_capped_by_runway": bool(intent.pulse_capped_by_runway),
+    "lead_pullaway_runway_trend": str(intent.runway_trend),
     "lead_pullaway_rejected_reason": rejected_reason,
   }
+
+
+def get_lead_pullaway_runway_output_cap(intent: LeadPullawayIntent | None) -> float | None:
+  if intent is None:
+    return None
+  if not bool(intent.active):
+    return None
+  if bool(intent.coast_required):
+    return 0.0
+  safe_cap = max(0.0, _finite_float(intent.safe_accel_cap))
+  if intent.phase == LeadPullawayPhase.PULSE:
+    return min(LEAD_PULLAWAY_PULSE_ACCEL_CAP, safe_cap)
+  if intent.phase == LeadPullawayPhase.GAP_CLOSURE:
+    return min(EXCESS_GAP_CLOSURE_ACCEL_CAP, safe_cap)
+  return None
+
+
+def apply_lead_pullaway_runway_output_cap(a_target, intent: LeadPullawayIntent | None) -> float:
+  cap = get_lead_pullaway_runway_output_cap(intent)
+  a_target = _finite_float(a_target)
+  return a_target if cap is None else min(a_target, cap)
 
 
 def build_lead_pullaway_intent_seed_candidates(planner, has_lead, accel_limits, intent: LeadPullawayIntent) -> tuple[PlannerSeedCandidate, ...]:
@@ -1461,6 +1604,7 @@ def build_lead_pullaway_intent_seed_candidates(planner, has_lead, accel_limits, 
 
   debug = lead_pullaway_intent_debug(intent)
   if intent.phase == LeadPullawayPhase.PULSE:
+    pulse_cap = min(LEAD_PULLAWAY_PULSE_ACCEL_CAP, max(0.0, _finite_float(intent.safe_accel_cap)))
     return _planner_seed_candidates(
       build_planner_seed_accel_candidate(
         planner, "lead_pullaway_pulse", intent.a_floor, has_lead,
@@ -1468,13 +1612,14 @@ def build_lead_pullaway_intent_seed_candidates(planner, has_lead, accel_limits, 
         group="lead_pullaway_pulse", debug=debug,
       ),
       build_planner_seed_accel_candidate(
-        planner, "lead_pullaway_pulse_accel_cap", LEAD_PULLAWAY_PULSE_ACCEL_CAP, has_lead,
+        planner, "lead_pullaway_pulse_accel_cap", pulse_cap, has_lead,
         LEAD_PULLAWAY_PULSE_CAP_REASON, accel_limits, should_stop=False, force=True,
         group="lead_pullaway_pulse", debug=debug,
       ),
     )
 
   if intent.phase == LeadPullawayPhase.GAP_CLOSURE:
+    gap_closure_cap = min(EXCESS_GAP_CLOSURE_ACCEL_CAP, max(0.0, _finite_float(intent.safe_accel_cap)))
     return _planner_seed_candidates(
       build_planner_seed_accel_candidate(
         planner, "excess_gap_closure", intent.a_floor, has_lead,
@@ -1482,7 +1627,7 @@ def build_lead_pullaway_intent_seed_candidates(planner, has_lead, accel_limits, 
         group="excess_gap_closure", debug=debug,
       ),
       build_planner_seed_accel_candidate(
-        planner, "excess_gap_closure_accel_cap", EXCESS_GAP_CLOSURE_ACCEL_CAP, has_lead,
+        planner, "excess_gap_closure_accel_cap", gap_closure_cap, has_lead,
         EXCESS_GAP_CLOSURE_CAP_REASON, accel_limits, should_stop=False, force=True,
         group="excess_gap_closure", debug=debug,
       ),
@@ -2094,6 +2239,7 @@ def _routine_lead_approach_debug(**overrides):
     "routine_lead_effective_d_rel": 0.0,
     "routine_lead_projected_gap_raw": 0.0,
     "routine_lead_projected_gap_response_compensated": 0.0,
+    "routine_lead_gap_after_coast": 0.0,
     "routine_lead_preview_t": ROUTINE_LEAD_APPROACH_PREVIEW_T,
     "routine_lead_projected_gap": 0.0,
     "routine_lead_projected_closing": 0.0,
@@ -2101,6 +2247,7 @@ def _routine_lead_approach_debug(**overrides):
     "routine_lead_caution_gap": 0.0,
     "routine_lead_danger_gap": 0.0,
     "routine_lead_required_decel": 0.0,
+    "routine_lead_required_decel_after_coast": 0.0,
     "routine_lead_allowed_closing": 0.0,
     "routine_lead_closing_excess": 0.0,
     "routine_lead_compression_blend": 0.0,
@@ -2145,6 +2292,8 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   distance_to_caution = d_rel - caution_gap
   distance_to_danger = d_rel - danger_gap
   routine_floor_gap = danger_gap + ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN
+  gap_after_coast = predicted_gap
+  required_decel_after_coast = projected_closing_speed**2 / (2.0 * max(gap_after_coast - routine_floor_gap, 0.1))
   base_debug = _routine_lead_approach_debug(
     routine_lead_projected_gap=predicted_gap,
     routine_lead_response_time=response_t,
@@ -2152,11 +2301,13 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     routine_lead_effective_d_rel=effective_d_rel,
     routine_lead_projected_gap_raw=predicted_gap_raw,
     routine_lead_projected_gap_response_compensated=predicted_gap,
+    routine_lead_gap_after_coast=gap_after_coast,
     routine_lead_projected_closing=projected_closing_speed,
     routine_lead_desired_gap=desired_gap,
     routine_lead_caution_gap=caution_gap,
     routine_lead_danger_gap=danger_gap,
     routine_lead_required_decel=required_decel,
+    routine_lead_required_decel_after_coast=required_decel_after_coast,
     routine_lead_a_ego=a_ego,
     routine_lead_distance_to_caution=distance_to_caution,
     routine_lead_distance_to_danger=distance_to_danger,
@@ -3509,6 +3660,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       lead_pullaway_predicted_gap_opening=float(lead_pullaway_debug["lead_pullaway_predicted_gap_opening"]),
       lead_pullaway_a_floor=float(lead_pullaway_debug["lead_pullaway_a_floor"]),
       lead_pullaway_rejected_reason=str(lead_pullaway_debug["lead_pullaway_rejected_reason"]),
+      lead_pullaway_predicted_gap=float(lead_pullaway_debug["lead_pullaway_predicted_gap"]),
+      lead_pullaway_safe_accel_cap=float(lead_pullaway_debug["lead_pullaway_safe_accel_cap"]),
+      lead_pullaway_lead_accel_trend=float(lead_pullaway_debug["lead_pullaway_lead_accel_trend"]),
+      lead_pullaway_runway_margin=float(lead_pullaway_debug["lead_pullaway_runway_margin"]),
+      lead_pullaway_coast_required=bool(lead_pullaway_debug["lead_pullaway_coast_required"]),
+      lead_pullaway_pulse_capped_by_runway=bool(lead_pullaway_debug["lead_pullaway_pulse_capped_by_runway"]),
+      lead_pullaway_runway_trend=str(lead_pullaway_debug["lead_pullaway_runway_trend"]),
     )
     self.prev_accel_clip = accel_clip
     self.apply_longitudinal_stack_selection(sm, has_lead, tuple(accel_clip))
@@ -3530,6 +3688,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
           self.output_a_target,
           getattr(self, "stop_release_guard_state", StopReleaseGuardState()),
         )
+      self.output_a_target = apply_lead_pullaway_runway_output_cap(
+        self.output_a_target,
+        getattr(self, "lead_pullaway_intent", None),
+      )
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')

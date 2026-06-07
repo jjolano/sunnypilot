@@ -174,6 +174,13 @@ class CustomV2Scene:
   lead_pullaway_predicted_gap_opening: float = 0.0
   lead_pullaway_a_floor: float = 0.0
   lead_pullaway_rejected_reason: str = ""
+  lead_pullaway_predicted_gap: float = 0.0
+  lead_pullaway_safe_accel_cap: float = 0.0
+  lead_pullaway_lead_accel_trend: float = 0.0
+  lead_pullaway_runway_margin: float = 0.0
+  lead_pullaway_coast_required: bool = False
+  lead_pullaway_pulse_capped_by_runway: bool = False
+  lead_pullaway_runway_trend: str = "stable"
 
 
 @dataclass(frozen=True)
@@ -264,6 +271,13 @@ class CustomLongitudinalStackV2:
       "lead_pullaway_predicted_gap_opening": float(scene.lead_pullaway_predicted_gap_opening),
       "lead_pullaway_a_floor": float(scene.lead_pullaway_a_floor),
       "lead_pullaway_rejected_reason": str(scene.lead_pullaway_rejected_reason),
+      "lead_pullaway_predicted_gap": float(scene.lead_pullaway_predicted_gap),
+      "lead_pullaway_safe_accel_cap": float(scene.lead_pullaway_safe_accel_cap),
+      "lead_pullaway_lead_accel_trend": float(scene.lead_pullaway_lead_accel_trend),
+      "lead_pullaway_runway_margin": float(scene.lead_pullaway_runway_margin),
+      "lead_pullaway_coast_required": bool(scene.lead_pullaway_coast_required),
+      "lead_pullaway_pulse_capped_by_runway": bool(scene.lead_pullaway_pulse_capped_by_runway),
+      "lead_pullaway_runway_trend": str(scene.lead_pullaway_runway_trend),
     })
     return replace(
       sunnypilot_output,
@@ -911,7 +925,8 @@ def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
   core_fields = (
     "v_ego", "v_cruise", "a_ego", "accel_coast", "lead_v", "lead_v_rel", "lead_y_rel", "lead_gap_excess", "model_desired_accel",
     "lead_pullaway_pulse_timer", "lead_pullaway_cooldown_timer", "lead_pullaway_gap_excess",
-    "lead_pullaway_predicted_gap_opening", "lead_pullaway_a_floor",
+    "lead_pullaway_predicted_gap_opening", "lead_pullaway_a_floor", "lead_pullaway_predicted_gap",
+    "lead_pullaway_safe_accel_cap", "lead_pullaway_lead_accel_trend", "lead_pullaway_runway_margin",
   )
   for field_name in core_fields:
     if not _finite(getattr(scene, field_name)):
@@ -955,6 +970,9 @@ def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
     lead_pullaway_reason=str(scene.lead_pullaway_reason),
     lead_pullaway_track_id=int(scene.lead_pullaway_track_id),
     lead_pullaway_rejected_reason=str(scene.lead_pullaway_rejected_reason),
+    lead_pullaway_coast_required=bool(scene.lead_pullaway_coast_required),
+    lead_pullaway_pulse_capped_by_runway=bool(scene.lead_pullaway_pulse_capped_by_runway),
+    lead_pullaway_runway_trend=str(scene.lead_pullaway_runway_trend),
     one_pedal_mode=_validated_one_pedal_mode(scene.one_pedal_mode),
     one_pedal_cruise_hold=bool(scene.one_pedal_cruise_hold),
   )

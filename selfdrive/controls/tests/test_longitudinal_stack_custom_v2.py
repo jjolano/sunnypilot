@@ -337,6 +337,51 @@ def test_selected_lead_pullaway_pulse_seed_is_consumed_as_launch_relaxation():
   assert output.debug["custom_v2_seed_candidate"] == "lead_pullaway_pulse"
 
 
+def test_lead_pullaway_runway_debug_is_preserved_in_custom_v2_output():
+  scene = CustomV2Scene(
+    lead_pullaway_phase="pulse",
+    lead_pullaway_reason="confirmed_lead_pullaway_pulse",
+    lead_pullaway_predicted_gap=6.7,
+    lead_pullaway_safe_accel_cap=0.42,
+    lead_pullaway_lead_accel_trend=-0.2,
+    lead_pullaway_runway_margin=0.2,
+    lead_pullaway_coast_required=False,
+    lead_pullaway_pulse_capped_by_runway=True,
+    lead_pullaway_runway_trend="decreasing",
+  )
+
+  output = CustomLongitudinalStackV2().update(make_output(), scene, accel_limits=(-2.0, 2.0))
+
+  assert output.debug["lead_pullaway_predicted_gap"] == pytest.approx(6.7)
+  assert output.debug["lead_pullaway_safe_accel_cap"] == pytest.approx(0.42)
+  assert output.debug["lead_pullaway_lead_accel_trend"] == pytest.approx(-0.2)
+  assert output.debug["lead_pullaway_runway_margin"] == pytest.approx(0.2)
+  assert not output.debug["lead_pullaway_coast_required"]
+  assert output.debug["lead_pullaway_pulse_capped_by_runway"]
+  assert output.debug["lead_pullaway_runway_trend"] == "decreasing"
+
+
+def test_lead_pullaway_runway_rejection_remains_specific():
+  scene = CustomV2Scene(
+    v_ego=0.2,
+    v_cruise=5.0,
+    has_lead=True,
+    lead_v=0.4,
+    lead_v_rel=0.4,
+    lead_follow_gap_excess=5.0,
+    lead_progress_allowed=True,
+    lead_pullaway_rejected_reason="lead_pullaway_runway_coast",
+    lead_pullaway_coast_required=True,
+  )
+
+  _candidates, rejected = custom_v2.build_custom_v2_progress_candidates(
+    make_output(0.0, has_lead=True), scene, (-2.0, 2.0),
+  )
+
+  assert ("launch", "lead_pullaway_runway_coast") in rejected
+  assert ("launch", "no_lead_progress_authority") not in rejected
+
+
 def test_close_non_opening_lead_does_not_surge():
   scene = CustomV2Scene(
     v_ego=0.2,

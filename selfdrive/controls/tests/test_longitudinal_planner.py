@@ -17,25 +17,34 @@ from openpilot.selfdrive.controls.lib.scc_evidence import SccEvidenceTier
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS as T_IDXS_MPC, get_lead_approach_gaps
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, SUNNYPILOT_CURRENT, StackResolution
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanSource as LongitudinalPlanSourceSP
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   build_scc_mode_evidence,
+  build_lead_pullaway_intent_seed_candidates,
   build_planner_seed_accel_candidate,
   E2E_CLOSE_STOP_DECEL_MAX,
   E2E_CLOSE_STOP_MIN_ROLLING_V,
   E2E_STOP_APPROACH_DECEL_MAX,
   E2E_RUNWAY_FINAL_CRAWL_ACCEL_MAX,
   FAST_LEAD_MOTION_OPENING_DEADBAND,
+  EXCESS_GAP_CLOSURE_CAP_REASON,
+  EXCESS_GAP_CLOSURE_ACCEL_CAP,
   LEAD_FLICKER_CLOSE_GUARD_TIME,
   LEAD_FLICKER_FIRST_LOSS_HOLD_TIME,
   EXCESS_GAP_CLOSURE_REASON,
   FastLeadMotionEvidence,
   LeadFlickerSafetyCapTracker,
+  LeadPullawayIntent,
   LeadPullawayIntentTracker,
   LeadPullawayPhase,
+  LeadPullawayRunway,
+  LEAD_PULLAWAY_PULSE_A_FLOOR,
+  LEAD_PULLAWAY_PULSE_ACCEL_CAP,
+  LEAD_PULLAWAY_PULSE_CAP_REASON,
   LEAD_PULLAWAY_PULSE_REASON,
   MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP,
   MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP,
@@ -50,10 +59,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   LongitudinalPlanner,
   _A_TOTAL_MAX_BP,
   _A_TOTAL_MAX_V,
+  apply_lead_pullaway_runway_output_cap,
   apply_stop_release_guard_accel,
   fast_lead_motion_evidence_enabled,
   get_fast_lead_motion_evidence,
   get_lead_flicker_required_decel,
+  get_lead_pullaway_runway,
   get_moving_lead_stop_gap_guard_accel,
   get_planner_lead_motion_values,
   get_stopped_lead_stop_gap_guard_accel,
@@ -224,6 +235,28 @@ def update_pullaway_tracker(tracker, context, lead, *, v_ego=0.0, dt=0.1, lead_g
     force_slow_decel=force_slow_decel,
     reset_state=reset_state,
     dt=dt,
+  )
+
+
+def make_planner_seed_base_output(a_target=0.0, should_stop=False, has_lead=True):
+  return LongitudinalStackOutput(
+    a_target=a_target,
+    should_stop=should_stop,
+    has_lead=has_lead,
+    source="cruise",
+    allow_throttle=True,
+    allow_brake=True,
+    speeds=tuple(0.0 for _ in range(CONTROL_N)),
+    accels=tuple(a_target for _ in range(CONTROL_N)),
+    jerks=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+
+
+def make_planner_seed_stub(a_target=0.0, should_stop=False, has_lead=True):
+  return SimpleNamespace(
+    output_a_target=a_target,
+    output_should_stop=should_stop,
+    planner_seed_candidate_base_output=make_planner_seed_base_output(a_target, should_stop, has_lead),
   )
 
 
@@ -1037,6 +1070,39 @@ def test_lead_pullaway_tracker_arms_then_pulses_on_confirmed_opening_lead():
   assert pulse.active
   assert pulse.reason == LEAD_PULLAWAY_PULSE_REASON
   assert 0.0 < pulse.a_floor <= 0.7
+  assert pulse.safe_accel_cap == pytest.approx(LEAD_PULLAWAY_PULSE_ACCEL_CAP)
+  assert not pulse.pulse_capped_by_runway
+
+
+def test_lead_pullaway_runway_caps_taper_when_lead_accel_decreases():
+  runway = get_lead_pullaway_runway(
+    v_ego=0.0,
+    d_rel=6.3,
+    v_lead=0.3,
+    a_lead=0.1,
+    lead_accel_trend=-0.4,
+  )
+
+  assert runway.trend == "decreasing"
+  assert 0.0 < runway.safe_accel_cap < LEAD_PULLAWAY_PULSE_ACCEL_CAP
+  assert runway.predicted_gap == pytest.approx(6.5)
+
+
+def test_lead_pullaway_tracker_blocks_pulse_when_runway_requires_coast():
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead(d_rel=6.4, v_lead=0.4, v_rel=0.4, a_lead=-0.1)
+  context = lead_context_for(lead)
+
+  intent = update_pullaway_tracker(
+    tracker, context, lead, lead_gap_excess=1.4, predicted_gap_opening=0.3,
+    lead_opening=True, lead_moving=True, lead_accel=-0.1,
+  )
+
+  assert intent.phase == LeadPullawayPhase.HOLD
+  assert not intent.active
+  assert intent.reason == "lead_pullaway_runway_coast"
+  assert intent.coast_required
+  assert intent.safe_accel_cap == pytest.approx(0.0)
 
 
 def test_route_close_lead_pullaway_authorizes_stop_release_progress():
@@ -1097,6 +1163,77 @@ def test_lead_pullaway_pulse_is_time_limited_and_transitions_to_gap_closure():
   assert after_window.active
   assert after_window.reason == EXCESS_GAP_CLOSURE_REASON
   assert after_window.a_floor < 0.7
+
+
+def test_lead_pullaway_seed_caps_use_runway_cap_values():
+  pulse_intent = LeadPullawayIntent(
+    phase=LeadPullawayPhase.PULSE,
+    active=True,
+    a_floor=0.42,
+    reason=LEAD_PULLAWAY_PULSE_REASON,
+    safe_accel_cap=0.42,
+    pulse_capped_by_runway=True,
+  )
+  pulse_candidates = build_lead_pullaway_intent_seed_candidates(
+    make_planner_seed_stub(), True, (-2.0, 2.0), pulse_intent,
+  )
+  pulse_cap = next(candidate for candidate in pulse_candidates if candidate.reason == LEAD_PULLAWAY_PULSE_CAP_REASON)
+
+  gap_intent = LeadPullawayIntent(
+    phase=LeadPullawayPhase.GAP_CLOSURE,
+    active=True,
+    a_floor=0.18,
+    reason=EXCESS_GAP_CLOSURE_REASON,
+    safe_accel_cap=0.24,
+  )
+  gap_candidates = build_lead_pullaway_intent_seed_candidates(
+    make_planner_seed_stub(), True, (-2.0, 2.0), gap_intent,
+  )
+  gap_cap = next(candidate for candidate in gap_candidates if candidate.reason == EXCESS_GAP_CLOSURE_CAP_REASON)
+
+  assert pulse_cap.output.a_target == pytest.approx(0.42)
+  assert pulse_cap.output.debug["lead_pullaway_safe_accel_cap"] == pytest.approx(0.42)
+  assert pulse_cap.output.debug["lead_pullaway_pulse_capped_by_runway"]
+  assert gap_cap.output.a_target == pytest.approx(min(EXCESS_GAP_CLOSURE_ACCEL_CAP, 0.24))
+
+
+def test_lead_pullaway_runway_cap_clamps_final_custom_output():
+  pulse_intent = LeadPullawayIntent(
+    phase=LeadPullawayPhase.PULSE,
+    active=True,
+    safe_accel_cap=0.24,
+  )
+  gap_intent = LeadPullawayIntent(
+    phase=LeadPullawayPhase.GAP_CLOSURE,
+    active=True,
+    safe_accel_cap=LEAD_PULLAWAY_PULSE_ACCEL_CAP,
+  )
+  coast_intent = LeadPullawayIntent(phase=LeadPullawayPhase.PULSE, active=True, coast_required=True)
+
+  assert apply_lead_pullaway_runway_output_cap(0.55, pulse_intent) == pytest.approx(0.24)
+  assert apply_lead_pullaway_runway_output_cap(0.55, gap_intent) == pytest.approx(EXCESS_GAP_CLOSURE_ACCEL_CAP)
+  assert apply_lead_pullaway_runway_output_cap(0.55, coast_intent) == pytest.approx(0.0)
+  assert apply_lead_pullaway_runway_output_cap(-0.4, pulse_intent) == pytest.approx(-0.4)
+
+
+def test_lead_pullaway_active_intent_hard_clamps_when_runway_cap_drops():
+  tracker = LeadPullawayIntentTracker()
+  tracker._last_a_floor = 0.7
+
+  intent = tracker._active_intent(
+    LeadPullawayPhase.PULSE,
+    LEAD_PULLAWAY_PULSE_A_FLOOR,
+    LEAD_PULLAWAY_PULSE_REASON,
+    gap_excess=2.0,
+    predicted_gap_opening=0.3,
+    jerk_up=2.0,
+    jerk_down=5.0,
+    dt=0.1,
+    runway=LeadPullawayRunway(safe_accel_cap=0.12),
+  )
+
+  assert intent.a_floor == pytest.approx(0.12)
+  assert intent.pulse_capped_by_runway
 
 
 def test_lead_pullaway_tracker_aborts_when_lead_stops_again():
@@ -1957,6 +2094,8 @@ def test_moving_lead_routine_approach_uses_response_compensated_gap_for_anticipa
   assert debug["routine_lead_projected_gap_raw"] > debug["routine_lead_caution_gap"]
   assert debug["routine_lead_projected_gap_response_compensated"] <= debug["routine_lead_caution_gap"]
   assert debug["routine_lead_projected_gap"] == pytest.approx(debug["routine_lead_projected_gap_response_compensated"])
+  assert debug["routine_lead_gap_after_coast"] == pytest.approx(debug["routine_lead_projected_gap"])
+  assert debug["routine_lead_required_decel_after_coast"] >= 0.0
 
 
 def test_moving_lead_routine_approach_response_compensation_includes_lead_decel():

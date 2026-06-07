@@ -217,6 +217,20 @@ def test_low_speed_pullaway_cap_seed_is_restrictive_cap_not_physics():
   assert candidate.debug[CUSTOM_V2_DEBUG_INTENT] == "launch"
 
 
+def test_lead_pullaway_pulse_cap_seed_is_restrictive_cap_not_progress_authority():
+  seed = PlannerSeedCandidate(
+    "lead_pullaway_pulse_accel_cap",
+    make_output(0.42, has_lead=True, seed_intent="launch", seed_reason="lead_pullaway_pulse_accel_cap"),
+  )
+
+  candidate = planner_seed_candidate_to_longitudinal_candidate(seed, v_target=8.0)
+
+  assert candidate.source == DecisionSource.STOP_LAUNCH
+  assert candidate.role == CandidateRole.ADVISORY_CAP
+  assert candidate.debug[CUSTOM_V2_DEBUG_INTENT] == "launch"
+  assert candidate.active_reason == "lead_pullaway_pulse_accel_cap"
+
+
 def test_low_speed_pullaway_cap_seed_loses_to_more_restrictive_advisory():
   seed = PlannerSeedCandidate(
     "low_speed_pullaway_accel_step_cap",
