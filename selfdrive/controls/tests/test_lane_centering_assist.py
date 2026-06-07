@@ -135,3 +135,62 @@ def test_high_speed_has_smaller_curvature_nudge_for_same_lateral_error():
   assert high_speed.active
   assert abs(high_speed.curvature_nudge) < abs(low_speed.curvature_nudge)
   assert abs(high_speed.curvature_nudge) <= LANE_CENTERING_ASSIST_MAX_LAT_ACCEL / 30.0**2
+
+
+def test_high_speed_straight_cruise_tiny_wiggle_stays_quiet():
+  xs = make_inputs().position_x
+  tiny_wiggle = tuple(0.018 + 0.001 * x for x in xs)
+
+  result = LaneCenteringAssistTracker().update(make_inputs(v_ego=30.0, position_y=tiny_wiggle), dt=0.5)
+
+  assert not result.active
+  assert result.curvature_nudge == pytest.approx(0.0)
+  assert result.reason == "error_not_growing"
+
+
+def test_high_speed_straight_cruise_uses_stricter_lateral_accel_cap():
+  xs = make_inputs().position_x
+  path_y = tuple(0.20 + 0.002 * x for x in xs)
+
+  result = LaneCenteringAssistTracker().update(make_inputs(v_ego=30.0, position_y=path_y), dt=5.0)
+
+  assert result.active
+  assert result.debug["lane_centering_straight_cruise"]
+  assert result.debug["lane_centering_max_nudge"] == pytest.approx(0.025 / 30.0**2)
+  assert abs(result.curvature_nudge) <= float(result.debug["lane_centering_max_nudge"])
+
+
+def test_high_speed_curve_context_keeps_legacy_lateral_accel_cap():
+  xs = make_inputs().position_x
+  path_y = tuple(0.20 + 0.002 * x for x in xs)
+
+  result = LaneCenteringAssistTracker().update(make_inputs(v_ego=30.0, position_y=path_y, measured_curvature=0.001), dt=5.0)
+
+  assert result.active
+  assert not result.debug["lane_centering_straight_cruise"]
+  assert result.debug["lane_centering_max_nudge"] == pytest.approx(LANE_CENTERING_ASSIST_MAX_LAT_ACCEL / 30.0**2)
+
+
+def test_low_speed_cap_does_not_exceed_legacy_lateral_accel_limit():
+  xs = make_inputs().position_x
+  path_y = tuple(0.30 + 0.004 * x for x in xs)
+
+  result = LaneCenteringAssistTracker().update(make_inputs(v_ego=10.0, position_y=path_y), dt=5.0)
+
+  assert result.active
+  assert not result.debug["lane_centering_straight_cruise"]
+  assert result.debug["lane_centering_max_nudge"] == pytest.approx(LANE_CENTERING_ASSIST_MAX_LAT_ACCEL / 10.0**2)
+
+
+def test_straight_cruise_builds_more_slowly_than_curve_context():
+  xs = make_inputs().position_x
+  path_y = tuple(0.30 + 0.004 * x for x in xs)
+
+  straight = LaneCenteringAssistTracker().update(make_inputs(v_ego=24.0, position_y=path_y), dt=0.5)
+  curve = LaneCenteringAssistTracker().update(make_inputs(v_ego=24.0, position_y=path_y, measured_curvature=0.001), dt=0.5)
+
+  assert straight.active
+  assert curve.active
+  assert straight.debug["lane_centering_straight_cruise"]
+  assert not curve.debug["lane_centering_straight_cruise"]
+  assert abs(straight.curvature_nudge) < abs(curve.curvature_nudge)

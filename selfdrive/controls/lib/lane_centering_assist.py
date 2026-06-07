@@ -18,12 +18,19 @@ LANE_CENTERING_ASSIST_LATERAL_DEADBAND = 0.03
 LANE_CENTERING_ASSIST_GROWTH_DEADBAND = 0.015
 LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE = 1e-6
 LANE_CENTERING_ASSIST_MAX_LAT_ACCEL = 0.08
+LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_BP = [10.0, 20.0, 30.0]
+LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_V = [0.12, 0.06, 0.025]
 LANE_CENTERING_ASSIST_SPEED_FLOOR = 5.0
 LANE_CENTERING_ASSIST_LATERAL_GAIN = 0.00045
 LANE_CENTERING_ASSIST_HEADING_GAIN = 0.0020
 LANE_CENTERING_ASSIST_GROWTH_GAIN = 0.00070
 LANE_CENTERING_ASSIST_BUILD_RATE = 0.00030
 LANE_CENTERING_ASSIST_RELEASE_RATE = 0.00060
+LANE_CENTERING_ASSIST_STRAIGHT_MIN_SPEED = 24.0
+LANE_CENTERING_ASSIST_STRAIGHT_CURVATURE_MAX = 2.5e-4
+LANE_CENTERING_ASSIST_STRAIGHT_LATERAL_DEADBAND = 0.06
+LANE_CENTERING_ASSIST_STRAIGHT_GROWTH_DEADBAND = 0.035
+LANE_CENTERING_ASSIST_STRAIGHT_BUILD_RATE = 0.00008
 
 
 @dataclass(frozen=True)
@@ -83,13 +90,16 @@ class LaneCenteringAssistTracker:
     if gate_reason is not None:
       return self._hard_block(gate_reason, lateral_error, heading_error, predicted_lateral_error)
 
-    error_sign = _sign(predicted_lateral_error, LANE_CENTERING_ASSIST_LATERAL_DEADBAND)
-    now_sign = _sign(lateral_error, LANE_CENTERING_ASSIST_LATERAL_DEADBAND)
+    straight_cruise = _straight_cruise(inputs)
+    lateral_deadband = _lateral_deadband(straight_cruise)
+    growth_deadband = _growth_deadband(straight_cruise)
+    error_sign = _sign(predicted_lateral_error, lateral_deadband)
+    now_sign = _sign(lateral_error, lateral_deadband)
     if error_sign == 0:
       error_sign = now_sign
     same_direction = error_sign != 0 and (now_sign == 0 or now_sign == error_sign)
     error_growth = abs(predicted_lateral_error) - abs(lateral_error)
-    growing = same_direction and error_growth > LANE_CENTERING_ASSIST_GROWTH_DEADBAND
+    growing = same_direction and error_growth > growth_deadband
     if not growing:
       return self._release("error_not_growing", dt, lateral_error, heading_error, predicted_lateral_error)
 
@@ -99,7 +109,7 @@ class LaneCenteringAssistTracker:
       LANE_CENTERING_ASSIST_HEADING_GAIN * heading_error +
       LANE_CENTERING_ASSIST_GROWTH_GAIN * (predicted_lateral_error - lateral_error)
     )
-    max_nudge = _max_nudge_curvature(inputs.v_ego)
+    max_nudge = _max_nudge_curvature(inputs.v_ego, straight_cruise)
     target_nudge = float(np.clip(raw_nudge, -max_nudge, max_nudge))
     target_sign = _sign(target_nudge, LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE)
     current_sign = _sign(self._filtered_nudge, LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE)
@@ -112,18 +122,20 @@ class LaneCenteringAssistTracker:
       return LaneCenteringAssistResult(
         abs(self._filtered_nudge) > 0.0, self._filtered_nudge, lateral_error, heading_error, predicted_lateral_error,
         confidence, "sign_hysteresis", _debug(inputs, lateral_error, heading_error, predicted_lateral_error,
-                                              confidence, raw_nudge, target_nudge, self._filtered_nudge,
-                                              "sign_hysteresis"),
+                                               confidence, raw_nudge, target_nudge, self._filtered_nudge,
+                                               "sign_hysteresis", max_nudge, straight_cruise),
       )
 
-    nudge = _approach(self._filtered_nudge, target_nudge, LANE_CENTERING_ASSIST_BUILD_RATE * dt)
+    build_rate = _build_rate(straight_cruise)
+    nudge = _approach(self._filtered_nudge, target_nudge, build_rate * dt)
     self._filtered_nudge = nudge
     self._active_sign = _sign(nudge, LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE)
     active = abs(nudge) > 0.0
     reason = "growing_lateral_error" if active else "below_deadband"
     return LaneCenteringAssistResult(
       active, nudge, lateral_error, heading_error, predicted_lateral_error, confidence, reason,
-      _debug(inputs, lateral_error, heading_error, predicted_lateral_error, confidence, raw_nudge, target_nudge, nudge, reason),
+      _debug(inputs, lateral_error, heading_error, predicted_lateral_error, confidence, raw_nudge, target_nudge, nudge, reason,
+             max_nudge, straight_cruise),
     )
 
   def _release(self, reason: str, dt: float, lateral_error: float = 0.0, heading_error: float = 0.0,
@@ -196,9 +208,35 @@ def _confidence(inputs: LaneCenteringAssistInputs) -> float:
   return min(path_confidence, lane_confidence)
 
 
-def _max_nudge_curvature(v_ego: float) -> float:
+def _max_nudge_curvature(v_ego: float, straight_cruise: bool = False) -> float:
   speed = max(abs(_finite_float(v_ego)), LANE_CENTERING_ASSIST_SPEED_FLOOR)
-  return LANE_CENTERING_ASSIST_MAX_LAT_ACCEL / speed**2
+  max_lat_accel = LANE_CENTERING_ASSIST_MAX_LAT_ACCEL
+  if straight_cruise:
+    max_lat_accel = min(
+      max_lat_accel,
+      float(np.interp(speed, LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_BP, LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_V)),
+    )
+  return max_lat_accel / speed**2
+
+
+def _straight_cruise(inputs: LaneCenteringAssistInputs) -> bool:
+  return bool(
+    inputs.v_ego >= LANE_CENTERING_ASSIST_STRAIGHT_MIN_SPEED and
+    max(abs(inputs.model_curvature), abs(inputs.measured_curvature), abs(inputs.previous_processed_curvature)) <=
+    LANE_CENTERING_ASSIST_STRAIGHT_CURVATURE_MAX
+  )
+
+
+def _lateral_deadband(straight_cruise: bool) -> float:
+  return LANE_CENTERING_ASSIST_STRAIGHT_LATERAL_DEADBAND if straight_cruise else LANE_CENTERING_ASSIST_LATERAL_DEADBAND
+
+
+def _growth_deadband(straight_cruise: bool) -> float:
+  return LANE_CENTERING_ASSIST_STRAIGHT_GROWTH_DEADBAND if straight_cruise else LANE_CENTERING_ASSIST_GROWTH_DEADBAND
+
+
+def _build_rate(straight_cruise: bool) -> float:
+  return LANE_CENTERING_ASSIST_STRAIGHT_BUILD_RATE if straight_cruise else LANE_CENTERING_ASSIST_BUILD_RATE
 
 
 def _finite_array(values: Sequence[float]) -> list[float]:
@@ -250,7 +288,8 @@ def _approach(value: float, target: float, step: float) -> float:
 
 def _debug(inputs: LaneCenteringAssistInputs | None = None, lateral_error: float = 0.0, heading_error: float = 0.0,
            predicted_lateral_error: float = 0.0, confidence: float = 0.0, raw_nudge: float = 0.0,
-           target_nudge: float = 0.0, filtered_nudge: float = 0.0, reason: str = "inactive") -> dict[str, float | str | bool]:
+           target_nudge: float = 0.0, filtered_nudge: float = 0.0, reason: str = "inactive",
+           max_nudge: float = 0.0, straight_cruise: bool = False) -> dict[str, float | str | bool]:
   return {
     "lane_centering_assist_active": abs(filtered_nudge) > 0.0,
     "lane_centering_reason": reason,
@@ -261,5 +300,7 @@ def _debug(inputs: LaneCenteringAssistInputs | None = None, lateral_error: float
     "lane_centering_raw_nudge": raw_nudge,
     "lane_centering_target_nudge": target_nudge,
     "lane_centering_curvature_nudge": filtered_nudge,
+    "lane_centering_max_nudge": max_nudge,
+    "lane_centering_straight_cruise": straight_cruise,
     "lane_centering_v_ego": float(inputs.v_ego) if inputs is not None else 0.0,
   }
