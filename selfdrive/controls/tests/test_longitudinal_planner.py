@@ -37,12 +37,19 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   LeadPullawayIntentTracker,
   LeadPullawayPhase,
   LEAD_PULLAWAY_PULSE_REASON,
+  MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP,
+  STOP_RELEASE_GUARD_HOLD_TIME,
+  STOP_RELEASE_GUARD_LEAD_RELEASE_REASON,
+  STOP_RELEASE_GUARD_WAITING_REASON,
+  StopReleaseGuardTracker,
   LongitudinalPlanner,
   _A_TOTAL_MAX_BP,
   _A_TOTAL_MAX_V,
+  apply_stop_release_guard_accel,
   fast_lead_motion_evidence_enabled,
   get_fast_lead_motion_evidence,
   get_lead_flicker_required_decel,
+  get_moving_lead_stop_gap_guard_accel,
   get_planner_lead_motion_values,
   get_stopped_lead_stop_gap_guard_accel,
   get_custom_v2_curve_scene_target,
@@ -56,6 +63,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   has_model_stop_context,
   has_scc_model_slowdown,
   has_valid_radar_lead,
+  lead_confirmed_stop_release,
   limit_accel_in_turns,
   one_pedal_cruise_hold_requested,
   should_cap_lead_flicker_speedup,
@@ -893,6 +901,123 @@ def test_lead_flicker_tracker_driver_override_suppresses_active_cap():
   assert not overridden.active
 
 
+def test_stop_release_guard_blocks_positive_accel_after_recent_stop_clear():
+  tracker = StopReleaseGuardTracker()
+  tracker.update(
+    v_ego=0.0, standstill=True, stop_evidence_active=True, lead_confirmed_release=False, dt=0.1,
+  )
+
+  guard = tracker.update(
+    v_ego=0.0, standstill=True, stop_evidence_active=False, lead_confirmed_release=False, dt=0.1,
+  )
+  guarded_accel, applied_guard = apply_stop_release_guard_accel(0.25, guard)
+
+  assert guard.active
+  assert guard.reason == STOP_RELEASE_GUARD_WAITING_REASON
+  assert guarded_accel == 0.0
+  assert applied_guard.applied
+
+
+def test_stop_release_guard_expires_after_clear_persistence():
+  tracker = StopReleaseGuardTracker()
+  tracker.update(
+    v_ego=0.0, standstill=True, stop_evidence_active=True, lead_confirmed_release=False, dt=0.1,
+  )
+
+  guard = tracker.update(
+    v_ego=0.0,
+    standstill=True,
+    stop_evidence_active=False,
+    lead_confirmed_release=False,
+    dt=STOP_RELEASE_GUARD_HOLD_TIME + 0.01,
+  )
+  accel, applied_guard = apply_stop_release_guard_accel(0.25, guard)
+
+  assert not guard.active
+  assert accel == pytest.approx(0.25)
+  assert not applied_guard.applied
+
+
+@pytest.mark.parametrize("block", ["brake_pressed", "force_slow_decel"])
+def test_stop_release_guard_brake_or_force_still_caps_positive_accel(block):
+  tracker = StopReleaseGuardTracker()
+  tracker.update(
+    v_ego=0.0, standstill=True, stop_evidence_active=True, lead_confirmed_release=False, dt=0.1,
+  )
+
+  guard = tracker.update(
+    v_ego=0.0,
+    standstill=True,
+    stop_evidence_active=False,
+    lead_confirmed_release=False,
+    dt=0.1,
+    **{block: True},
+  )
+  guarded_accel, applied_guard = apply_stop_release_guard_accel(0.25, guard)
+
+  assert guard.active
+  assert guarded_accel == 0.0
+  assert applied_guard.applied
+
+
+def test_stop_release_guard_allows_lead_confirmed_release():
+  tracker = StopReleaseGuardTracker()
+  lead = make_pullaway_lead(v_lead=1.2, v_rel=1.2, a_lead=0.4)
+  context = lead_context_for(lead)
+
+  release = lead_confirmed_stop_release(
+    context,
+    context.behavior_lead_data((lead, NO_LEAD)),
+    lead_opening=True,
+    lead_moving=True,
+    lead_accel=0.4,
+    predicted_gap_opening=0.4,
+  )
+  tracker.update(
+    v_ego=0.0, standstill=True, stop_evidence_active=True, lead_confirmed_release=False, dt=0.1,
+  )
+  guard = tracker.update(
+    v_ego=0.0, standstill=True, stop_evidence_active=False, lead_confirmed_release=release, dt=0.1,
+  )
+  accel, applied_guard = apply_stop_release_guard_accel(0.35, guard)
+
+  assert release
+  assert not guard.active
+  assert guard.reason == STOP_RELEASE_GUARD_LEAD_RELEASE_REASON
+  assert accel == pytest.approx(0.35)
+  assert not applied_guard.applied
+
+
+@pytest.mark.parametrize("conf", [new_lead_conf(), flicker_lead_conf()])
+def test_lead_confirmed_stop_release_blocks_unstable_or_flicker_lead(conf):
+  lead = make_pullaway_lead(v_lead=1.2, v_rel=1.2, a_lead=0.4)
+  context = lead_context_for(lead, conf=conf)
+
+  assert not lead_confirmed_stop_release(
+    context,
+    context.behavior_lead_data((lead, NO_LEAD)),
+    lead_opening=True,
+    lead_moving=True,
+    lead_accel=0.4,
+    predicted_gap_opening=0.4,
+  )
+
+
+def test_lead_confirmed_stop_release_blocks_independent_stop_threat():
+  lead = make_pullaway_lead(v_lead=1.2, v_rel=1.2, a_lead=0.4)
+  context = lead_context_for(lead)
+
+  assert not lead_confirmed_stop_release(
+    context,
+    context.behavior_lead_data((lead, NO_LEAD)),
+    lead_opening=True,
+    lead_moving=True,
+    lead_accel=0.4,
+    predicted_gap_opening=0.4,
+    independent_stop_threat=True,
+  )
+
+
 def test_lead_pullaway_tracker_arms_then_pulses_on_confirmed_opening_lead():
   tracker = LeadPullawayIntentTracker()
   lead = make_pullaway_lead()
@@ -1710,6 +1835,69 @@ def test_moving_lead_stop_gap_guard_custom_candidate_does_not_mutate_baseline_ou
   assert candidate.output.has_lead
   assert candidate.output.debug["planner_seed_candidate_reason"] == "moving_lead_stop_gap_guard"
   assert planner.output_a_target == pytest.approx(0.1)
+
+
+def test_moving_lead_slower_approach_starts_mild_pre_caution_braking():
+  accel = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.15,
+    d_rel=25.92,
+    v_lead=14.76,
+    a_lead=-0.52,
+    y_rel=0.0,
+    t_follow=1.55,
+  )
+
+  assert accel is not None
+  assert -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP <= accel < 0.0
+
+
+def test_moving_lead_slower_approach_ignores_clear_or_opening_gap():
+  clear_gap = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.0,
+    d_rel=35.0,
+    v_lead=14.0,
+    a_lead=-0.7,
+    y_rel=0.0,
+    t_follow=1.55,
+  )
+  opening_gap = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.0,
+    d_rel=25.0,
+    v_lead=15.2,
+    a_lead=-0.7,
+    y_rel=0.0,
+    t_follow=1.55,
+  )
+
+  assert clear_gap is None
+  assert opening_gap is None
+
+
+def test_moving_lead_slower_approach_preserves_urgent_caution_braking():
+  accel = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.12,
+    d_rel=24.36,
+    v_lead=12.72,
+    a_lead=-2.0,
+    y_rel=0.0,
+    t_follow=1.55,
+  )
+
+  assert accel is not None
+  assert accel < -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
+
+
+def test_moving_lead_slower_approach_preserves_lateral_exit_rejection():
+  accel = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.15,
+    d_rel=25.92,
+    v_lead=14.76,
+    a_lead=-0.52,
+    y_rel=2.0,
+    t_follow=1.55,
+  )
+
+  assert accel is None
 
 
 def test_stopped_lead_stop_gap_guard_custom_candidate_carries_stop_intent_without_mutating_baseline():

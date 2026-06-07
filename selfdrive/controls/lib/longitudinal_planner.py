@@ -186,6 +186,13 @@ MOVING_LEAD_STOP_GAP_GUARD_CLOSING_DECEL_CAP = 1.2
 MOVING_LEAD_STOP_GAP_GUARD_URGENT_CLOSING = 3.0
 MOVING_LEAD_STOP_GAP_GUARD_URGENT_DANGER_MARGIN = 2.0
 MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL = 3.0
+MOVING_LEAD_SLOWER_APPROACH_MIN_CLOSING = 0.3
+MOVING_LEAD_SLOWER_APPROACH_MIN_GAP_DEFICIT = 0.25
+MOVING_LEAD_SLOWER_APPROACH_MIN_TARGET_DECEL = 0.12
+MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP = 0.45
+MOVING_LEAD_SLOWER_APPROACH_CLOSING_GAIN = 0.25
+MOVING_LEAD_SLOWER_APPROACH_GAP_GAIN = 0.03
+MOVING_LEAD_SLOWER_APPROACH_LEAD_DECEL_GAIN = 0.05
 LEAD_STOP_APPROACH_DECEL_SLEW_MIN_V_EGO = 3.0
 LEAD_STOP_APPROACH_DECEL_SLEW_MIN_LEAD_DECEL = 0.6
 LEAD_STOP_APPROACH_DECEL_SLEW_STOPPED_LEAD_V = 0.2
@@ -295,6 +302,12 @@ EXCESS_GAP_CLOSURE_ACCEL_BASE = CREEP_TO_STOP_GAP_ACCEL_MAX
 EXCESS_GAP_CLOSURE_ACCEL_CAP = STOPPED_LEAD_GAP_FILL_ACCEL_MAX
 EXCESS_GAP_CLOSURE_JERK_UP = 0.8
 EXCESS_GAP_CLOSURE_JERK_DOWN = 4.0
+STOP_RELEASE_GUARD_HOLD_TIME = 1.5
+STOP_RELEASE_GUARD_MAX_V_EGO = 0.3
+STOP_RELEASE_GUARD_WAITING_REASON = "waiting_for_stop_clear"
+STOP_RELEASE_GUARD_LEAD_RELEASE_REASON = "lead_confirmed_release"
+STOP_RELEASE_GUARD_DRIVER_REASON = "driver_override"
+STOP_RELEASE_GUARD_FORCE_BLOCK_REASON = "driver_or_force_blocked"
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -357,6 +370,113 @@ class FastLeadMotionEvidence:
 
   def moving(self, threshold=CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED) -> bool:
     return self.v_lead >= threshold
+
+
+@dataclass(frozen=True)
+class StopReleaseGuardState:
+  active: bool = False
+  reason: str = "clear"
+  recent_stop_timer: float = 0.0
+  lead_confirmed_release: bool = False
+  applied: bool = False
+
+
+@dataclass
+class StopReleaseGuardTracker:
+  _recent_stop_timer: float = 0.0
+
+  def reset(self) -> None:
+    self._recent_stop_timer = 0.0
+
+  def update(self, *, v_ego, standstill, stop_evidence_active, lead_confirmed_release,
+             reset_state=False, force_slow_decel=False, brake_pressed=False, gas_pressed=False,
+             dt=DT_MDL) -> StopReleaseGuardState:
+    dt = max(0.0, _finite_float(dt))
+    if reset_state:
+      self.reset()
+      return StopReleaseGuardState(reason="reset")
+
+    if stop_evidence_active:
+      self._recent_stop_timer = STOP_RELEASE_GUARD_HOLD_TIME
+    else:
+      self._recent_stop_timer = max(0.0, self._recent_stop_timer - dt)
+
+    near_stopped = bool(standstill or _finite_float(v_ego) <= STOP_RELEASE_GUARD_MAX_V_EGO)
+    if not near_stopped or self._recent_stop_timer <= 0.0:
+      return StopReleaseGuardState(reason="clear", recent_stop_timer=self._recent_stop_timer)
+
+    if bool(gas_pressed):
+      return StopReleaseGuardState(
+        reason=STOP_RELEASE_GUARD_DRIVER_REASON,
+        recent_stop_timer=self._recent_stop_timer,
+      )
+    if bool(brake_pressed or force_slow_decel):
+      return StopReleaseGuardState(
+        active=True,
+        reason=STOP_RELEASE_GUARD_FORCE_BLOCK_REASON,
+        recent_stop_timer=self._recent_stop_timer,
+      )
+    if bool(lead_confirmed_release):
+      return StopReleaseGuardState(
+        reason=STOP_RELEASE_GUARD_LEAD_RELEASE_REASON,
+        recent_stop_timer=self._recent_stop_timer,
+        lead_confirmed_release=True,
+      )
+
+    return StopReleaseGuardState(
+      active=True,
+      reason=STOP_RELEASE_GUARD_WAITING_REASON,
+      recent_stop_timer=self._recent_stop_timer,
+    )
+
+
+def apply_stop_release_guard_accel(a_target, guard: StopReleaseGuardState) -> tuple[float, StopReleaseGuardState]:
+  a_target = _finite_float(a_target)
+  if guard.active and a_target > 0.0:
+    return 0.0, replace(guard, applied=True)
+  return a_target, replace(guard, applied=False)
+
+
+def lead_confirmed_stop_release(primary_lead_context: PrimaryLeadContext, behavior_lead, *, lead_opening=False,
+                                lead_moving=False, lead_accel=0.0, predicted_gap_opening=0.0,
+                                independent_stop_threat=False, brake_pressed=False, gas_pressed=False,
+                                force_slow_decel=False) -> bool:
+  if bool(independent_stop_threat or brake_pressed or gas_pressed or force_slow_decel):
+    return False
+  if not bool(getattr(primary_lead_context, "lead_progress_allowed", False)):
+    return False
+  if bool(getattr(primary_lead_context, "alternate_threat_active", False) or getattr(primary_lead_context, "shadow_active", False)):
+    return False
+
+  behavior_state = getattr(primary_lead_context, "behavior", None)
+  if behavior_lead is None or behavior_state is None:
+    return False
+  if bool(getattr(behavior_state, "shadow", False) or getattr(behavior_state, "flicker_guard_timer", 0.0) > 0.0):
+    return False
+  if bool(getattr(behavior_state, "new_lead", False) or not getattr(behavior_state, "stable", False)):
+    return False
+
+  progress_model = getattr(behavior_state, "progress_model", None)
+  if progress_model is None:
+    return False
+  if not bool(getattr(progress_model, "allowed", False)):
+    return False
+  if not bool(getattr(progress_model, "confidence_stability_sufficient", False)):
+    return False
+  if not bool(getattr(progress_model, "stop_threat_absent", False)):
+    return False
+  if not bool(getattr(progress_model, "alternate_threat_absent", True) and getattr(progress_model, "shadow_absent", True)):
+    return False
+
+  opening_evidence = bool(
+    lead_opening or
+    lead_moving or
+    _finite_float(getattr(progress_model, "opening_speed", 0.0)) >= CREEP_TO_STOP_GAP_PULLAWAY_MIN_LEAD_SPEED or
+    _finite_float(lead_accel) >= CREEP_TO_STOP_GAP_PREDICT_MIN_LEAD_ACCEL or
+    _finite_float(predicted_gap_opening) >= CREEP_TO_STOP_GAP_PREDICT_MIN_GAP_OPENING or
+    bool(getattr(progress_model, "predicted_gap_opening", False))
+  )
+  return bool(opening_evidence)
 
 
 def get_fast_lead_motion_evidence(lead, v_ego) -> FastLeadMotionEvidence:
@@ -1906,6 +2026,33 @@ def get_moving_lead_stop_gap_guard_gradual_accel(v_ego, d_rel, v_lead, a_lead, t
   return -min(MOVING_LEAD_STOP_GAP_GUARD_CLOSING_DECEL_CAP, closing_excess / MOVING_LEAD_STOP_GAP_GUARD_PREDICT_T)
 
 
+def get_slower_lead_approach_accel(v_ego, d_rel, v_lead, a_lead, t_follow, desired_gap=None, caution_gap=None):
+  if desired_gap is None or caution_gap is None:
+    desired_gap, caution_gap, _danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+  closing_speed = max(_finite_float(v_ego) - _finite_float(v_lead), 0.0)
+  gap_deficit = _finite_float(desired_gap) - _finite_float(d_rel)
+  if (
+    _finite_float(d_rel) <= _finite_float(caution_gap) or
+    gap_deficit < MOVING_LEAD_SLOWER_APPROACH_MIN_GAP_DEFICIT or
+    closing_speed < MOVING_LEAD_SLOWER_APPROACH_MIN_CLOSING
+  ):
+    return None
+
+  lead_decel_excess = max(0.0, -_finite_float(a_lead) - MOVING_LEAD_STOP_GAP_GUARD_MIN_LEAD_DECEL)
+  decel = (
+    MOVING_LEAD_SLOWER_APPROACH_MIN_TARGET_DECEL +
+    (closing_speed - MOVING_LEAD_SLOWER_APPROACH_MIN_CLOSING) * MOVING_LEAD_SLOWER_APPROACH_CLOSING_GAIN +
+    gap_deficit * MOVING_LEAD_SLOWER_APPROACH_GAP_GAIN +
+    lead_decel_excess * MOVING_LEAD_SLOWER_APPROACH_LEAD_DECEL_GAIN
+  )
+  decel = float(np.clip(
+    decel,
+    MOVING_LEAD_SLOWER_APPROACH_MIN_TARGET_DECEL,
+    MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP,
+  ))
+  return -decel
+
+
 def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_follow, a_ego=None):
   if (
     v_ego < MOVING_LEAD_STOP_GAP_GUARD_MIN_V_EGO or
@@ -1919,8 +2066,6 @@ def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_
   _desired_gap, caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
   target, cost = get_moving_lead_stop_approach_comfort_target(d_rel, v_ego, v_lead, a_lead, t_follow, a_ego=a_ego)
   target = float(target)
-  if float(cost) <= 0.0 or target > -MOVING_LEAD_STOP_GAP_GUARD_MIN_TARGET_DECEL:
-    return None
   closing_speed = max(v_ego - v_lead, 0.0)
   required_decel = float(get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead))
   far_hard_braking_limited_runway = bool(
@@ -1929,6 +2074,10 @@ def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_
     required_decel >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL * 0.5
   )
   if d_rel > caution_gap and not far_hard_braking_limited_runway:
+    return get_slower_lead_approach_accel(
+      v_ego, d_rel, v_lead, a_lead, t_follow, desired_gap=_desired_gap, caution_gap=caution_gap,
+    )
+  if float(cost) <= 0.0 or target > -MOVING_LEAD_STOP_GAP_GUARD_MIN_TARGET_DECEL:
     return None
   if far_hard_braking_limited_runway:
     return target
@@ -2058,6 +2207,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.lead_flicker_safety_cap_trackers = [LeadFlickerSafetyCapTracker(), LeadFlickerSafetyCapTracker()]
     self.lead_pullaway_intent_tracker = LeadPullawayIntentTracker()
     self.lead_pullaway_intent = LeadPullawayIntent()
+    self.stop_release_guard_tracker = StopReleaseGuardTracker()
+    self.stop_release_guard_state = StopReleaseGuardState()
     self.primary_lead_context_tracker = LeadContextTracker()
     self.primary_lead_context = empty_primary_lead_context()
     self.scc_evidence_selector = SccEvidenceSelector()
@@ -2549,6 +2700,45 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       gas_pressed=sm['carState'].gasPressed,
       force_slow_decel=force_slow_decel,
       reset_state=reset_state or not custom_stack_active,
+      dt=self.dt,
+    )
+    stop_release_lead_confirmed = bool(
+      getattr(self.lead_pullaway_intent, "active", False) or
+      lead_confirmed_stop_release(
+        primary_lead_context,
+        primary_behavior_lead,
+        lead_opening=behavior_lead_opening,
+        lead_moving=behavior_lead_moving,
+        lead_accel=behavior_lead_a,
+        predicted_gap_opening=lead_pullaway_predicted_gap_opening,
+        independent_stop_threat=lead_pullaway_independent_stop_threat,
+        brake_pressed=sm['carState'].brakePressed,
+        gas_pressed=sm['carState'].gasPressed,
+        force_slow_decel=force_slow_decel,
+      )
+    )
+    scc_stop_evidence_active = bool(
+      mode_resolution is not None and
+      getattr(mode_resolution.scc_evidence, "tier", SccEvidenceTier.NONE) in (SccEvidenceTier.STOP, SccEvidenceTier.URGENT_STOP)
+    )
+    stop_release_stop_evidence_active = bool(
+      self.output_should_stop or output_should_stop_mpc or output_should_stop_e2e or custom_close_stop_should_stop or
+      custom_e2e_stop_approach_a_target < 0.0 or scc_stop_evidence_active or
+      (not acc_mode_requested and has_model_stop_context(sm['modelV2']))
+    )
+    stop_release_guard_tracker = getattr(self, "stop_release_guard_tracker", None)
+    if stop_release_guard_tracker is None:
+      stop_release_guard_tracker = StopReleaseGuardTracker()
+      self.stop_release_guard_tracker = stop_release_guard_tracker
+    self.stop_release_guard_state = stop_release_guard_tracker.update(
+      v_ego=v_ego,
+      standstill=sm['carState'].standstill,
+      stop_evidence_active=stop_release_stop_evidence_active,
+      lead_confirmed_release=stop_release_lead_confirmed,
+      reset_state=reset_state,
+      force_slow_decel=force_slow_decel,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
       dt=self.dt,
     )
     prev_creep_to_stop_gap_active = self.creep_to_stop_gap_active
@@ -3085,6 +3275,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       if reserve_creep_to_stop_gap:
         self.output_a_target = max(self.output_a_target, CREEP_TO_STOP_GAP_RESERVE_CREEP_ACCEL_FLOOR)
         self.output_should_stop = False
+      if getattr(stack_resolution, "resolved_stack", "") == CUSTOM_V2:
+        self.output_a_target, self.stop_release_guard_state = apply_stop_release_guard_accel(
+          self.output_a_target,
+          getattr(self, "stop_release_guard_state", StopReleaseGuardState()),
+        )
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
