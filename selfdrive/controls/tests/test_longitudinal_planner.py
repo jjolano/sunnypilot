@@ -46,6 +46,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   LEAD_PULLAWAY_PULSE_ACCEL_CAP,
   LEAD_PULLAWAY_PULSE_CAP_REASON,
   LEAD_PULLAWAY_PULSE_REASON,
+  MOVING_LEAD_STOP_GAP_GUARD_CLOSING_DECEL_CAP,
+  MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL,
   MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP,
   MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP,
   ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN,
@@ -1135,6 +1137,40 @@ def test_route_close_lead_pullaway_authorizes_stop_release_progress():
   assert context.lead_progress_allowed
   assert context.behavior is not None
   assert context.behavior.authority == LEAD_AUTHORITY_PROGRESS_ALLOWED
+  assert release
+  assert armed.phase == LeadPullawayPhase.ARMED
+  assert pulse.phase == LeadPullawayPhase.PULSE
+  assert pulse.active
+  assert pulse.a_floor > 0.0
+
+
+def test_route_low_speed_pullaway_handoff_authorizes_progress_without_gas():
+  # Route 000001a4--433fd05705 segment 8: lead was already opening and
+  # accelerating before driver gas. Preserve the non-gas handoff path so a
+  # low-speed pullaway can release into progress authority from lead evidence.
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead(d_rel=8.1, v_lead=1.62, v_rel=0.47, a_lead=0.49)
+  context = lead_context_for(lead, v_ego=1.15)
+  behavior_lead = context.behavior_lead_data((lead, NO_LEAD))
+
+  release = lead_confirmed_stop_release(
+    context,
+    behavior_lead,
+    lead_opening=True,
+    lead_moving=True,
+    lead_accel=0.49,
+    predicted_gap_opening=0.94,
+  )
+  armed = update_pullaway_tracker(
+    tracker, context, lead, v_ego=1.15, lead_gap_excess=2.0, predicted_gap_opening=0.94,
+    lead_opening=True, lead_moving=True, lead_accel=0.49,
+  )
+  pulse = update_pullaway_tracker(
+    tracker, context, lead, v_ego=1.15, lead_gap_excess=2.0, predicted_gap_opening=0.94,
+    lead_opening=True, lead_moving=True, lead_accel=0.49,
+  )
+
+  assert context.lead_progress_allowed
   assert release
   assert armed.phase == LeadPullawayPhase.ARMED
   assert pulse.phase == LeadPullawayPhase.PULSE
@@ -2278,6 +2314,91 @@ def test_moving_lead_routine_approach_true_danger_gap_remains_urgent():
   assert accel is not None
   assert debug["routine_lead_approach_urgent"]
   assert debug["routine_lead_phase"] in ("routine_decel", "urgent_bypass")
+
+
+def test_route_moving_lead_stop_gap_guard_caution_edge_does_not_hard_bypass_while_far_from_danger():
+  # Route 000001a4--433fd05705 segment 10 crossed caution while still more
+  # than 10 m outside danger. The guard should not jump directly to the hard
+  # moving-lead stop cap there; it should stay on the pre-danger closing ramp.
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=18.53,
+    d_rel=40.5,
+    v_lead=15.0,
+    a_lead=-1.20,
+    y_rel=0.0,
+    t_follow=1.45,
+    prev_a_target=-1.22,
+    dt=0.19,
+    a_ego=-1.22,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_distance_to_caution"] == pytest.approx(-0.21, abs=0.05)
+  assert debug["routine_lead_distance_to_danger"] > 10.0
+  assert not debug["moving_lead_stop_gap_guard_urgent"]
+  assert not debug["routine_lead_urgent_bypass"]
+  assert accel >= -MOVING_LEAD_STOP_GAP_GUARD_CLOSING_DECEL_CAP - 1e-6
+
+
+def test_route_moving_lead_stop_gap_guard_hard_lead_inside_caution_stays_urgent():
+  # Same route, later in segment 10: hard lead braking with limited runway must
+  # keep urgent physical braking. This prevents the pre-danger comfort ramp from
+  # weakening true hard-closing lead response.
+  v_ego = 12.39
+  v_lead = 9.31
+  a_lead = -2.03
+  t_follow = 1.45
+  _desired_gap, caution_gap, _danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=float(caution_gap) - 0.2,
+    v_lead=v_lead,
+    a_lead=a_lead,
+    y_rel=0.0,
+    t_follow=t_follow,
+    prev_a_target=-1.93,
+    dt=0.5,
+    a_ego=-1.93,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_distance_to_danger"] > 2.0
+  assert debug["moving_lead_stop_gap_guard_hard_lead_urgent"]
+  assert debug["moving_lead_stop_gap_guard_urgent"]
+  assert debug["routine_lead_urgent_bypass"]
+  assert accel <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL
+
+
+def test_moving_lead_stop_gap_guard_short_danger_ttc_stays_urgent_without_hard_lead():
+  v_ego = 18.53
+  v_lead = 15.0
+  a_lead = -1.20
+  t_follow = 1.45
+  _desired_gap, _caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=float(danger_gap) + 7.0,
+    v_lead=v_lead,
+    a_lead=a_lead,
+    y_rel=0.0,
+    t_follow=t_follow,
+    prev_a_target=-0.45,
+    dt=0.5,
+    a_ego=-0.45,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert not debug["moving_lead_stop_gap_guard_hard_lead_urgent"]
+  assert debug["moving_lead_stop_gap_guard_danger_ttc"] <= 2.0
+  assert debug["moving_lead_stop_gap_guard_closing_urgent"]
+  assert debug["moving_lead_stop_gap_guard_urgent"]
+  assert debug["routine_lead_urgent_bypass"]
+  assert accel <= -MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP
 
 
 def test_moving_lead_routine_approach_releases_when_projection_risk_clears_without_positive_accel():

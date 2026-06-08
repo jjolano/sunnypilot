@@ -185,6 +185,8 @@ MOVING_LEAD_STOP_GAP_GUARD_ALLOWED_CLOSING = 1.2
 MOVING_LEAD_STOP_GAP_GUARD_CLOSING_DECEL_CAP = 1.2
 MOVING_LEAD_STOP_GAP_GUARD_URGENT_CLOSING = 3.0
 MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL = 3.0
+MOVING_LEAD_STOP_GAP_GUARD_PRE_DANGER_URGENT_MARGIN = 2.0
+MOVING_LEAD_STOP_GAP_GUARD_PRE_DANGER_URGENT_TTC = 2.0
 MOVING_LEAD_SLOWER_APPROACH_MIN_CLOSING = 0.3
 MOVING_LEAD_SLOWER_APPROACH_MIN_GAP_DEFICIT = 0.25
 MOVING_LEAD_SLOWER_APPROACH_MIN_TARGET_DECEL = 0.12
@@ -2478,9 +2480,46 @@ def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_
   target = float(target)
   closing_speed = max(v_ego - v_lead, 0.0)
   required_decel = float(get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead))
+  # Crossing the caution gap while still comfortably outside danger should stay
+  # on the pre-danger closing ramp. Reserve urgent bypass for true danger-gap,
+  # short-TTC, limited-runway, or hard lead-braking cases.
+  danger_margin = d_rel - danger_gap
+  danger_ttc = danger_margin / max(closing_speed, 1e-3) if closing_speed > 0.0 else float("inf")
+  hard_lead_braking = bool(a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL)
+  near_danger_gap = bool(danger_margin <= MOVING_LEAD_STOP_GAP_GUARD_PRE_DANGER_URGENT_MARGIN)
+  runway_urgent = bool(required_decel >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL)
+  hard_lead_urgent = bool(
+    hard_lead_braking and (
+      d_rel <= caution_gap or
+      required_decel >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL * 0.5
+    )
+  )
+  closing_urgent = bool(
+    closing_speed >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_CLOSING and
+    (near_danger_gap or danger_ttc <= MOVING_LEAD_STOP_GAP_GUARD_PRE_DANGER_URGENT_TTC or runway_urgent)
+  )
+  moving_guard_urgent = bool(
+    d_rel <= danger_gap or
+    runway_urgent or
+    hard_lead_urgent or
+    closing_urgent
+  )
+  debug.update({
+    "moving_lead_stop_gap_guard_target": target,
+    "moving_lead_stop_gap_guard_cost": float(cost),
+    "moving_lead_stop_gap_guard_closing_speed": closing_speed,
+    "moving_lead_stop_gap_guard_required_decel": required_decel,
+    "moving_lead_stop_gap_guard_danger_margin": danger_margin,
+    "moving_lead_stop_gap_guard_danger_ttc": danger_ttc,
+    "moving_lead_stop_gap_guard_near_danger": near_danger_gap,
+    "moving_lead_stop_gap_guard_runway_urgent": runway_urgent,
+    "moving_lead_stop_gap_guard_closing_urgent": closing_urgent,
+    "moving_lead_stop_gap_guard_hard_lead_urgent": hard_lead_urgent,
+    "moving_lead_stop_gap_guard_urgent": moving_guard_urgent,
+  })
   far_hard_braking_limited_runway = bool(
     d_rel > caution_gap and
-    a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL and
+    hard_lead_braking and
     required_decel >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_REQUIRED_DECEL * 0.5
   )
   if a_lead > -MOVING_LEAD_STOP_GAP_GUARD_MIN_LEAD_DECEL:
@@ -2505,12 +2544,7 @@ def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_
     debug["routine_lead_phase"] = "urgent_bypass"
     return _result(target)
   decel_cap = -ACCEL_MIN if a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL else MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP
-  urgent = (
-    d_rel <= danger_gap or
-    closing_speed >= MOVING_LEAD_STOP_GAP_GUARD_URGENT_CLOSING or
-    a_lead <= -MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL
-  )
-  if urgent:
+  if moving_guard_urgent:
     debug["routine_lead_approach_urgent"] = True
     debug["routine_lead_urgent_bypass"] = True
     debug["routine_lead_phase"] = "urgent_bypass"
