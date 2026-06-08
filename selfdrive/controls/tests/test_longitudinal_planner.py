@@ -30,6 +30,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   E2E_CLOSE_STOP_MIN_ROLLING_V,
   E2E_STOP_APPROACH_DECEL_MAX,
   E2E_RUNWAY_FINAL_CRAWL_ACCEL_MAX,
+  EXCESS_GAP_CLOSURE_START_EXCESS,
   FAST_LEAD_MOTION_OPENING_DEADBAND,
   EXCESS_GAP_CLOSURE_CAP_REASON,
   EXCESS_GAP_CLOSURE_ACCEL_CAP,
@@ -62,6 +63,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   _A_TOTAL_MAX_BP,
   _A_TOTAL_MAX_V,
   apply_curve_load_comfort_accel_limit,
+  apply_lead_pullaway_final_output_shaping,
   apply_lead_pullaway_runway_output_cap,
   apply_stop_release_guard_accel,
   fast_lead_motion_evidence_enabled,
@@ -97,7 +99,15 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   update_one_pedal_cruise_hold,
 )
 from openpilot.selfdrive.controls.lib.lead_confidence import LEAD_CONFIDENCE_TRACK_UNKNOWN, LeadConfidenceState
-from openpilot.selfdrive.controls.lib.lead_context import LEAD_AUTHORITY_PROGRESS_ALLOWED, LeadContextTracker, LeadProgressModel, LeadRiskModel
+from openpilot.selfdrive.controls.lib.lead_context import (
+  LEAD_AUTHORITY_PHYSICAL,
+  LEAD_AUTHORITY_PROGRESS_ALLOWED,
+  LeadContextTracker,
+  LeadProgressModel,
+  LeadRelevanceState,
+  LeadRiskModel,
+  PrimaryLeadContext,
+)
 
 ButtonType = car.CarState.ButtonEvent.Type
 
@@ -1144,6 +1154,89 @@ def test_route_close_lead_pullaway_authorizes_stop_release_progress():
   assert pulse.a_floor > 0.0
 
 
+def test_lead_created_runway_authorizes_early_progress_before_authority_returns():
+  tracker = LeadPullawayIntentTracker()
+  lead = make_pullaway_lead(d_rel=7.8, v_lead=1.4, v_rel=1.4, a_lead=0.55)
+  physical = LeadRelevanceState(
+    lead_idx=0,
+    status=True,
+    shadow=False,
+    stable=True,
+    new_lead=False,
+    flicker_guard_timer=0.0,
+    track_id=1,
+    d_rel=lead.dRel,
+    y_rel=lead.yRel,
+    path_y_rel=0.0,
+    v_lead=lead.vLeadK,
+    v_rel=lead.vRel,
+    model_prob=lead.modelProb,
+    radar=True,
+    ttc=10.0,
+    required_decel=0.0,
+    time_gap=10.0,
+    on_path_score=1.0,
+    risk_score=0.0,
+    ghost_score=0.0,
+    confidence=1.0,
+    authority=LEAD_AUTHORITY_PHYSICAL,
+    reason="physical",
+    risk_model=LeadRiskModel(time_gap=10.0, stopped_or_crawling=False),
+    progress_model=LeadProgressModel(
+      opening_speed=lead.vRel,
+      lead_moving=True,
+      lead_accel=lead.aLeadK,
+      predicted_gap_opening=True,
+      gap_excess=0.0,
+      stop_threat_absent=True,
+      confidence_stability_sufficient=True,
+      allowed=False,
+      reason="opening_or_gap_progress",
+    ),
+  )
+  context = PrimaryLeadContext(
+    physical_idx=0,
+    behavior_idx=None,
+    physical=physical,
+    behavior=None,
+    alternate_threat_active=False,
+    shadow_active=False,
+    reason="test",
+    states=(physical,),
+    lead_progress_allowed=False,
+    lead_release_blocked_reason="no_behavior_lead",
+  )
+
+  armed = update_pullaway_tracker(
+    tracker, context, lead, v_ego=0.0, lead_gap_excess=1.0, predicted_gap_opening=1.0,
+    lead_opening=True, lead_moving=True, lead_accel=0.55,
+  )
+  pulse = update_pullaway_tracker(
+    tracker, context, lead, v_ego=0.0, lead_gap_excess=1.0, predicted_gap_opening=1.0,
+    lead_opening=True, lead_moving=True, lead_accel=0.55,
+  )
+
+  assert armed.phase == LeadPullawayPhase.ARMED
+  assert pulse.phase == LeadPullawayPhase.PULSE
+  assert armed.early_authority
+  assert pulse.early_authority
+  assert armed.lead_created_runway
+  assert pulse.lead_created_runway
+  assert armed.early_authority_reason == "lead_created_runway"
+  assert pulse.early_authority_reason == "lead_created_runway"
+  assert pulse.reason == LEAD_PULLAWAY_PULSE_REASON
+  assert pulse.reason != "no_lead_progress_authority"
+
+
+def test_lead_pullaway_runway_does_not_trigger_excess_gap_closure_without_progress_authority():
+  runway = get_lead_pullaway_runway(v_ego=0.0, d_rel=7.8, v_lead=1.4, a_lead=0.55, lead_accel_trend=0.0)
+
+  assert runway.lead_created_runway
+  assert runway.runway_creation > 0.0
+  assert runway.runway_margin_now < EXCESS_GAP_CLOSURE_START_EXCESS
+  assert runway.runway_margin_t < EXCESS_GAP_CLOSURE_START_EXCESS
+
+
 def test_route_low_speed_pullaway_handoff_authorizes_progress_without_gas():
   # Route 000001a4--433fd05705 segment 8: lead was already opening and
   # accelerating before driver gas. Preserve the non-gas handoff path so a
@@ -1185,6 +1278,30 @@ def test_close_stopped_lead_without_opening_remains_suppressive_only():
   assert not context.lead_progress_allowed
   assert context.behavior is None
   assert context.physical is not None
+
+
+def test_stopped_gap_creep_authority_blocks_closing_or_flickering_lead():
+  closing_lead = make_pullaway_lead(d_rel=6.2, v_lead=0.0, v_rel=-0.4, a_lead=0.0)
+  flicker_lead = make_pullaway_lead(d_rel=6.2, v_lead=0.0, v_rel=0.0, a_lead=0.0)
+
+  closing_context = lead_context_for(closing_lead, v_ego=0.4)
+  flicker_context = lead_context_for(flicker_lead, v_ego=0.0, conf=flicker_lead_conf())
+
+  assert not closing_context.lead_progress_allowed
+  assert closing_context.behavior is None
+  assert not flicker_context.lead_progress_allowed
+  assert flicker_context.behavior is None
+
+
+def test_stopped_gap_creep_authority_blocks_alternate_threat():
+  lead = make_pullaway_lead(track_id=1, d_rel=6.2, v_lead=0.0, v_rel=0.0, a_lead=0.0)
+  alternate = make_pullaway_lead(track_id=2, d_rel=5.8, v_lead=0.0, v_rel=0.0, a_lead=0.0)
+
+  context = lead_context_for(lead, v_ego=0.0, lead_two=alternate, conf_two=stable_lead_conf(2))
+
+  assert not context.lead_progress_allowed
+  assert context.alternate_threat_active
+  assert context.lead_release_blocked_reason == "alternate_lead_threat"
 
 
 def test_lead_pullaway_pulse_is_time_limited_and_transitions_to_gap_closure():
@@ -1251,6 +1368,38 @@ def test_lead_pullaway_runway_cap_clamps_final_custom_output():
   assert apply_lead_pullaway_runway_output_cap(0.55, gap_intent) == pytest.approx(EXCESS_GAP_CLOSURE_ACCEL_CAP)
   assert apply_lead_pullaway_runway_output_cap(0.55, coast_intent) == pytest.approx(0.0)
   assert apply_lead_pullaway_runway_output_cap(-0.4, pulse_intent) == pytest.approx(-0.4)
+
+
+def test_lead_pullaway_final_shaping_keeps_runway_cap_authoritative():
+  intent = LeadPullawayIntent(
+    phase=LeadPullawayPhase.GAP_CLOSURE,
+    active=True,
+    a_floor=0.5,
+    reason=EXCESS_GAP_CLOSURE_REASON,
+    safe_accel_cap=0.24,
+  )
+
+  output = apply_lead_pullaway_final_output_shaping(
+    0.0, intent, prev_a_target=0.8, dt=0.05, selected_reason=EXCESS_GAP_CLOSURE_REASON,
+  )
+
+  assert output == pytest.approx(0.24)
+
+
+def test_lead_pullaway_gap_closure_jerk_shape_does_not_soften_other_selected_outputs():
+  intent = LeadPullawayIntent(
+    phase=LeadPullawayPhase.GAP_CLOSURE,
+    active=True,
+    a_floor=0.5,
+    reason=EXCESS_GAP_CLOSURE_REASON,
+    safe_accel_cap=1.0,
+  )
+
+  output = apply_lead_pullaway_final_output_shaping(
+    -1.0, intent, prev_a_target=0.8, dt=0.05, selected_reason="planner_seed_mpc",
+  )
+
+  assert output == pytest.approx(-1.0)
 
 
 def test_lead_pullaway_active_intent_hard_clamps_when_runway_cap_drops():
@@ -2446,7 +2595,28 @@ def test_moving_lead_routine_approach_builds_one_direction_while_compression_wor
     prev_a_target = accel
 
 
-def test_moving_lead_routine_approach_does_not_weaken_existing_guard_target():
+def test_moving_lead_routine_approach_does_not_weaken_safety_relevant_existing_guard_target():
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.12,
+    d_rel=24.36,
+    v_lead=12.72,
+    a_lead=-2.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_existing_target_safety_relevant"]
+  assert debug["routine_lead_should_defer_to_existing_target"]
+  assert accel == pytest.approx(debug["routine_lead_existing_target"])
+  assert accel <= debug["routine_lead_ramped_a_target"]
+
+
+def test_moving_lead_routine_approach_prefers_routine_for_nonurgent_firmer_existing_target():
   accel, debug = get_moving_lead_stop_gap_guard_accel(
     v_ego=22.0,
     d_rel=45.17,
@@ -2461,9 +2631,35 @@ def test_moving_lead_routine_approach_does_not_weaken_existing_guard_target():
 
   assert accel is not None
   assert debug["routine_lead_approach_active"]
-  assert debug["routine_lead_ramped_a_target"] > -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
-  assert accel < -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
-  assert accel < debug["routine_lead_ramped_a_target"]
+  assert debug["routine_lead_can_own_nonurgent_shape"]
+  assert not debug["routine_lead_should_defer_to_existing_target"]
+  assert debug["routine_lead_existing_target_reason"] in ("slower_lead_approach", "moving_lead_stop_gap_guard")
+  assert not debug["routine_lead_existing_target_safety_relevant"]
+  assert accel == pytest.approx(debug["routine_lead_ramped_a_target"])
+  assert debug["routine_lead_selected_target"] == pytest.approx(accel)
+
+
+def test_moving_lead_routine_approach_defers_to_safety_relevant_existing_target():
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.12,
+    d_rel=24.36,
+    v_lead=12.72,
+    a_lead=-2.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert not debug["routine_lead_can_own_nonurgent_shape"]
+  assert debug["routine_lead_should_defer_to_existing_target"]
+  assert debug["routine_lead_existing_target_safety_relevant"]
+  assert debug["routine_lead_existing_target_reason"] == "moving_lead_stop_gap_guard"
+  assert accel == pytest.approx(debug["routine_lead_existing_target"])
+  assert debug["routine_lead_selected_target"] == pytest.approx(accel)
 
 
 def test_moving_lead_routine_approach_does_not_drop_at_closing_urgent_threshold_without_stronger_target():

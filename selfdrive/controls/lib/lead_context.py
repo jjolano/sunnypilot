@@ -22,6 +22,9 @@ LEAD_CONTEXT_CLOSE_STOP_D_REL = 15.0
 LEAD_CONTEXT_CLOSE_STOP_V = 5.0
 LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_OPENING = 0.15
 LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD = 0.2
+LEAD_CONTEXT_STOP_GAP_CREEP_ARM_EXCESS = 1.05
+LEAD_CONTEXT_STOP_GAP_CREEP_MAX_EXCESS = 1.25
+LEAD_CONTEXT_STOP_GAP_CREEP_MIN_V_REL = -0.25
 LEAD_CONTEXT_NEW_FAR_Y_REL = 1.6
 LEAD_CONTEXT_NEW_FAR_MODEL_PROB = 0.5
 LEAD_CONTEXT_NEW_FAR_REQUIRED_DECEL = 0.15
@@ -31,6 +34,9 @@ LEAD_CONTEXT_SHADOW_NORMAL_TIME = 0.4
 LEAD_CONTEXT_SHADOW_RISK_TIME = 1.0
 LEAD_CONTEXT_SHADOW_STOP_GO_TIME = 1.5
 LEAD_CONTEXT_PREVIEW_T = (0.0, 0.2, 0.6, 1.0)
+LEAD_CONTEXT_DUPLICATE_D_REL_TOL = 0.15
+LEAD_CONTEXT_DUPLICATE_V_TOL = 0.05
+LEAD_CONTEXT_DUPLICATE_Y_TOL = 0.05
 
 
 @dataclass(frozen=True)
@@ -672,6 +678,8 @@ class LeadContextTracker:
       return LEAD_AUTHORITY_SUPPRESS_ONLY, "path_exit_pending_release"
     if _close_stop_pullaway_progress_allowed(d_rel, v_lead, v_rel, progress_model):
       return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_close_stop_pullaway_authorized_lead"
+    if _stopped_gap_creep_progress_allowed(d_rel, v_lead, v_rel, progress_model):
+      return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_stopped_gap_creep_authorized_lead"
     if close_or_closing:
       return LEAD_AUTHORITY_PHYSICAL, "close_or_closing_lead"
     if progress_model.allowed:
@@ -787,9 +795,26 @@ def _alternate_threat(state: LeadRelevanceState, behavior: LeadRelevanceState | 
     return False
   if state.lead_idx == behavior.lead_idx:
     return False
+  if _same_lead_duplicate(state, behavior):
+    return False
   if not state.suppressive:
     return False
   return bool(state.shadow or state.authority != LEAD_AUTHORITY_PROGRESS_ALLOWED or _is_close_or_closing(state))
+
+
+def _same_lead_duplicate(state: LeadRelevanceState, behavior: LeadRelevanceState) -> bool:
+  if not (state.status and behavior.status):
+    return False
+  state_track_known = state.track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN
+  behavior_track_known = behavior.track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN
+  if state_track_known or behavior_track_known:
+    return bool(state_track_known and behavior_track_known and state.track_id == behavior.track_id)
+  return bool(
+    abs(state.d_rel - behavior.d_rel) <= LEAD_CONTEXT_DUPLICATE_D_REL_TOL and
+    abs(state.v_lead - behavior.v_lead) <= LEAD_CONTEXT_DUPLICATE_V_TOL and
+    abs(state.v_rel - behavior.v_rel) <= LEAD_CONTEXT_DUPLICATE_V_TOL and
+    abs(state.path_y_rel - behavior.path_y_rel) <= LEAD_CONTEXT_DUPLICATE_Y_TOL
+  )
 
 
 def _context_reason(physical: LeadRelevanceState | None, behavior: LeadRelevanceState | None, blocked_reason: str) -> str:
@@ -812,4 +837,17 @@ def _close_stop_pullaway_progress_allowed(d_rel: float, v_lead: float, v_rel: fl
     0.0 < d_rel <= LEAD_CONTEXT_CLOSE_STOP_D_REL and
     LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD < v_lead <= LEAD_CONTEXT_CLOSE_STOP_V and
     v_rel > LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_OPENING
+  )
+
+
+def _stopped_gap_creep_progress_allowed(d_rel: float, v_lead: float, v_rel: float,
+                                        progress_model: LeadProgressModel) -> bool:
+  stopped_gap_excess = d_rel - LEAD_CONTEXT_STOP_DISTANCE
+  return bool(
+    progress_model.confidence_stability_sufficient and
+    progress_model.alternate_threat_absent and
+    progress_model.shadow_absent and
+    0.0 <= v_lead <= LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD and
+    v_rel >= LEAD_CONTEXT_STOP_GAP_CREEP_MIN_V_REL and
+    LEAD_CONTEXT_STOP_GAP_CREEP_ARM_EXCESS <= stopped_gap_excess <= LEAD_CONTEXT_STOP_GAP_CREEP_MAX_EXCESS
   )

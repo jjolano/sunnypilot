@@ -178,9 +178,20 @@ class CustomV2Scene:
   lead_pullaway_safe_accel_cap: float = 0.0
   lead_pullaway_lead_accel_trend: float = 0.0
   lead_pullaway_runway_margin: float = 0.0
+  lead_pullaway_runway_margin_now: float = 0.0
+  lead_pullaway_runway_margin_t: float = 0.0
+  lead_pullaway_runway_creation: float = 0.0
+  lead_pullaway_lead_created_runway: bool = False
+  lead_pullaway_early_authority: bool = False
+  lead_pullaway_early_authority_reason: str = ""
+  lead_pullaway_pulse_floor: float = 0.0
+  lead_pullaway_pulse_cap: float = 0.0
   lead_pullaway_coast_required: bool = False
   lead_pullaway_pulse_capped_by_runway: bool = False
+  lead_pullaway_crawl_cap_released_by_runway: bool = False
+  lead_pullaway_low_speed_step_cap_suppressed_by_runway: bool = False
   lead_pullaway_runway_trend: str = "stable"
+  lead_pullaway_selected_or_rejected_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -275,9 +286,20 @@ class CustomLongitudinalStackV2:
       "lead_pullaway_safe_accel_cap": float(scene.lead_pullaway_safe_accel_cap),
       "lead_pullaway_lead_accel_trend": float(scene.lead_pullaway_lead_accel_trend),
       "lead_pullaway_runway_margin": float(scene.lead_pullaway_runway_margin),
+      "lead_pullaway_runway_margin_now": float(scene.lead_pullaway_runway_margin_now),
+      "lead_pullaway_runway_margin_t": float(scene.lead_pullaway_runway_margin_t),
+      "lead_pullaway_runway_creation": float(scene.lead_pullaway_runway_creation),
+      "lead_pullaway_lead_created_runway": bool(scene.lead_pullaway_lead_created_runway),
+      "lead_pullaway_early_authority": bool(scene.lead_pullaway_early_authority),
+      "lead_pullaway_early_authority_reason": str(scene.lead_pullaway_early_authority_reason),
+      "lead_pullaway_pulse_floor": float(scene.lead_pullaway_pulse_floor),
+      "lead_pullaway_pulse_cap": float(scene.lead_pullaway_pulse_cap),
       "lead_pullaway_coast_required": bool(scene.lead_pullaway_coast_required),
       "lead_pullaway_pulse_capped_by_runway": bool(scene.lead_pullaway_pulse_capped_by_runway),
+      "lead_pullaway_crawl_cap_released_by_runway": bool(scene.lead_pullaway_crawl_cap_released_by_runway),
+      "lead_pullaway_low_speed_step_cap_suppressed_by_runway": bool(scene.lead_pullaway_low_speed_step_cap_suppressed_by_runway),
       "lead_pullaway_runway_trend": str(scene.lead_pullaway_runway_trend),
+      "lead_pullaway_selected_or_rejected_reason": str(scene.lead_pullaway_selected_or_rejected_reason),
     })
     return replace(
       sunnypilot_output,
@@ -927,6 +949,8 @@ def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
     "lead_pullaway_pulse_timer", "lead_pullaway_cooldown_timer", "lead_pullaway_gap_excess",
     "lead_pullaway_predicted_gap_opening", "lead_pullaway_a_floor", "lead_pullaway_predicted_gap",
     "lead_pullaway_safe_accel_cap", "lead_pullaway_lead_accel_trend", "lead_pullaway_runway_margin",
+    "lead_pullaway_runway_margin_now", "lead_pullaway_runway_margin_t", "lead_pullaway_runway_creation",
+    "lead_pullaway_pulse_floor", "lead_pullaway_pulse_cap",
   )
   for field_name in core_fields:
     if not _finite(getattr(scene, field_name)):
@@ -970,9 +994,15 @@ def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
     lead_pullaway_reason=str(scene.lead_pullaway_reason),
     lead_pullaway_track_id=int(scene.lead_pullaway_track_id),
     lead_pullaway_rejected_reason=str(scene.lead_pullaway_rejected_reason),
+    lead_pullaway_early_authority_reason=str(scene.lead_pullaway_early_authority_reason),
     lead_pullaway_coast_required=bool(scene.lead_pullaway_coast_required),
     lead_pullaway_pulse_capped_by_runway=bool(scene.lead_pullaway_pulse_capped_by_runway),
+    lead_pullaway_lead_created_runway=bool(scene.lead_pullaway_lead_created_runway),
+    lead_pullaway_early_authority=bool(scene.lead_pullaway_early_authority),
+    lead_pullaway_crawl_cap_released_by_runway=bool(scene.lead_pullaway_crawl_cap_released_by_runway),
+    lead_pullaway_low_speed_step_cap_suppressed_by_runway=bool(scene.lead_pullaway_low_speed_step_cap_suppressed_by_runway),
     lead_pullaway_runway_trend=str(scene.lead_pullaway_runway_trend),
+    lead_pullaway_selected_or_rejected_reason=str(scene.lead_pullaway_selected_or_rejected_reason),
     one_pedal_mode=_validated_one_pedal_mode(scene.one_pedal_mode),
     one_pedal_cruise_hold=bool(scene.one_pedal_cruise_hold),
   )
