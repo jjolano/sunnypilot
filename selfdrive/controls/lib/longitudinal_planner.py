@@ -208,6 +208,8 @@ ROUTINE_LEAD_APPROACH_DECEL_MIN = MOVING_LEAD_SLOWER_APPROACH_MIN_TARGET_DECEL
 ROUTINE_LEAD_APPROACH_DECEL_CAP = MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
 ROUTINE_LEAD_APPROACH_NEGATIVE_JERK = 0.45
 ROUTINE_LEAD_APPROACH_RELEASE_JERK = 0.25
+ROUTINE_LEAD_FAR_COAST_TTC = 7.0  # seconds - time to caution gap threshold for far coast
+ROUTINE_LEAD_FAR_COAST_MIN_CLOSING = 0.25  # m/s - minimum closing speed for far coast
 LEAD_STOP_APPROACH_DECEL_SLEW_MIN_V_EGO = 3.0
 LEAD_STOP_APPROACH_DECEL_SLEW_MIN_LEAD_DECEL = 0.6
 LEAD_STOP_APPROACH_DECEL_SLEW_STOPPED_LEAD_V = 0.2
@@ -405,6 +407,7 @@ class FastLeadMotionEvidence:
 @dataclass(frozen=True)
 class RoutineLeadApproach:
   active: bool = False
+  far_coast_active: bool = False
   urgent: bool = False
   raw_a_target: float = 0.0
   ramped_a_target: float = 0.0
@@ -2510,6 +2513,8 @@ def _routine_lead_approach_debug(**overrides):
     "routine_lead_urgent_bypass": False,
     "routine_lead_distance_to_caution": 0.0,
     "routine_lead_distance_to_danger": 0.0,
+    "routine_lead_time_to_caution": 0.0,
+    "routine_lead_far_coast_active": False,
   }
   debug.update(overrides)
   return debug
@@ -2541,6 +2546,7 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   required_decel = float(get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead))
   distance_to_caution = d_rel - caution_gap
   distance_to_danger = d_rel - danger_gap
+  time_to_caution = (distance_to_caution / max(closing_speed, 1e-3)) if closing_speed > ROUTINE_LEAD_FAR_COAST_MIN_CLOSING else float('inf')
   compression_budget = d_rel - danger_gap
   comfort_budget = d_rel - caution_gap
   projected_compression_budget = predicted_gap - danger_gap
@@ -2565,6 +2571,7 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     routine_lead_a_ego=a_ego,
     routine_lead_distance_to_caution=distance_to_caution,
     routine_lead_distance_to_danger=distance_to_danger,
+    routine_lead_time_to_caution=time_to_caution,
     routine_lead_compression_budget=compression_budget,
     routine_lead_comfort_budget=comfort_budget,
     routine_lead_projected_compression_budget=projected_compression_budget,
@@ -2588,9 +2595,16 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
                                projected_closing_speed=projected_closing_speed, reason="invalid",
                                compression_budget=compression_budget, comfort_budget=comfort_budget,
                                projected_compression_budget=projected_compression_budget,
-                               projected_comfort_budget=projected_comfort_budget,
+                               projected_comfort_budget=projected_comfort_budget, far_coast_active=False,
                                debug={**base_debug, "routine_lead_approach_reason": "invalid",
                                       "routine_lead_approach_urgent": urgent})
+
+  # Far-lead coast: remove positive accel early for stable valid slower leads
+  # that are still well above caution gap but closing with finite TTC.
+  if not invalid and not urgent and d_rel > caution_gap and closing_speed >= ROUTINE_LEAD_FAR_COAST_MIN_CLOSING and time_to_caution <= ROUTINE_LEAD_FAR_COAST_TTC and time_to_caution > 0.0:
+    far_coast_active = True
+  else:
+    far_coast_active = False
 
   routine_start_gap = caution_gap + max(closing_speed, projected_closing_speed) * preview_t
   risk_gap = min(effective_d_rel, predicted_gap)
@@ -2602,11 +2616,12 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   ))
   closing_excess = max(projected_closing_speed - allowed_closing_speed, 0.0)
   anticipatory_active = bool(d_rel > caution_gap and predicted_gap <= caution_gap)
-  active = bool(
+  _routine_approach_active = bool(
     compression_blend >= ROUTINE_LEAD_APPROACH_MIN_BLEND and
     closing_excess > 0.0
   )
-  if not active:
+  active = bool(_routine_approach_active or far_coast_active)
+  if not active and not far_coast_active:
     reason = "below_threshold"
     debug = {
       **base_debug,
@@ -2617,8 +2632,9 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
       "routine_lead_closing_excess": closing_excess,
       "routine_lead_compression_blend": compression_blend,
       "routine_lead_urgent_bypass": False,
+      "routine_lead_far_coast_active": far_coast_active,
     }
-    return RoutineLeadApproach(active=False, urgent=urgent, required_decel=required_decel,
+    return RoutineLeadApproach(active=False, far_coast_active=far_coast_active, urgent=urgent, required_decel=required_decel,
                                allowed_closing_speed=allowed_closing_speed, closing_excess=closing_excess,
                                compression_blend=compression_blend, compression_budget=compression_budget,
                                comfort_budget=comfort_budget, projected_compression_budget=projected_compression_budget,
@@ -2635,7 +2651,10 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     lead_decel_excess * MOVING_LEAD_SLOWER_APPROACH_LEAD_DECEL_GAIN
   )
   decel = float(np.clip(decel, ROUTINE_LEAD_APPROACH_DECEL_MIN, ROUTINE_LEAD_APPROACH_DECEL_CAP))
-  if compression_blend < ROUTINE_LEAD_APPROACH_COAST_BLEND and not urgent:
+  if far_coast_active and not _routine_approach_active:
+    phase = "far_lead_coast"
+    raw_a_target = 0.0
+  elif compression_blend < ROUTINE_LEAD_APPROACH_COAST_BLEND and not urgent:
     phase = "free_coast"
     raw_a_target = 0.0
   elif compression_blend < ROUTINE_LEAD_APPROACH_SOFT_BLEND and not urgent:
@@ -2678,8 +2697,11 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     "routine_lead_decel_shortfall": max(0.0, requested_decel - actual_decel),
     "routine_lead_jerk_limited": jerk_limited,
     "routine_lead_release_limited": release_limited,
+    "routine_lead_far_coast_active": far_coast_active,
+    "routine_lead_time_to_caution": time_to_caution,
   }
-  return RoutineLeadApproach(active=True, urgent=urgent, raw_a_target=raw_a_target, ramped_a_target=ramped_a_target,
+  return RoutineLeadApproach(active=(active or far_coast_active), far_coast_active=far_coast_active, urgent=urgent,
+                             raw_a_target=raw_a_target, ramped_a_target=ramped_a_target,
                              required_decel=required_decel, allowed_closing_speed=allowed_closing_speed,
                              closing_excess=closing_excess, compression_blend=compression_blend,
                              compression_budget=compression_budget, comfort_budget=comfort_budget,

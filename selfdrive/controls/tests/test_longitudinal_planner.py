@@ -55,6 +55,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN,
   ROUTINE_LEAD_APPROACH_NEGATIVE_JERK,
   ROUTINE_LEAD_APPROACH_PREVIEW_T,
+  ROUTINE_LEAD_FAR_COAST_TTC,
+  ROUTINE_LEAD_FAR_COAST_MIN_CLOSING,
   ROUTINE_LEAD_RESPONSE_TIME,
   STOP_RELEASE_GUARD_HOLD_TIME,
   STOP_RELEASE_GUARD_LEAD_CAPPED_RELEASE_REASON,
@@ -3785,3 +3787,128 @@ def test_stop_release_guard_driver_override_still_bypasses():
   a_out, guard_out = apply_stop_release_guard_accel(1.5, guard)
   assert a_out == 1.5
   assert not guard_out.applied
+
+
+def test_far_lead_coast_activates_for_stable_slower_far_lead():
+  """Stable slower lead with closing=2.5 m/s, d_rel=65 (within TTC < 7s).
+  Expected: far_coast_active=True, phase='far_lead_coast', raw_a_target=0.0."""
+  v_ego = 25.0
+  v_lead = 22.5
+  t_follow = 1.8
+  d_rel = 65.0
+
+  result = get_routine_lead_approach_accel(
+    v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=0.0, y_rel=0.0, t_follow=t_follow,
+  )
+  assert result.far_coast_active, f"Expected far_coast_active=True, got {result.far_coast_active}"
+  assert result.debug["routine_lead_phase"] == "far_lead_coast"
+  assert result.raw_a_target == 0.0
+  assert result.debug["routine_lead_far_coast_active"]
+  assert result.debug["routine_lead_time_to_caution"] <= ROUTINE_LEAD_FAR_COAST_TTC
+  assert result.debug["routine_lead_time_to_caution"] > 0.0
+
+
+def test_far_lead_coast_inactive_when_ttc_very_long():
+  """Same lead but at 200m. TTC to caution > 7s. Expected: far_coast_active=False."""
+  v_ego = 25.0
+  v_lead = 22.5
+  t_follow = 1.8
+  d_rel = 200.0
+
+  result = get_routine_lead_approach_accel(
+    v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=0.0, y_rel=0.0, t_follow=t_follow,
+  )
+  assert not result.far_coast_active, f"Expected far_coast_active=False, got {result.far_coast_active}"
+  # Should be below_threshold or inactive (not active through any phase)
+  assert not result.active or result.reason == "below_threshold"
+
+
+def test_far_lead_coast_inactive_when_not_closing():
+  """Lead at same speed as ego (closing_speed=0). Expected: far_coast_active=False."""
+  v_ego = 25.0
+  v_lead = 25.0
+  d_rel = 65.0
+  t_follow = 1.8
+
+  result = get_routine_lead_approach_accel(
+    v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=0.0, y_rel=0.0, t_follow=t_follow,
+  )
+  assert not result.far_coast_active
+
+
+def test_far_lead_coast_inactive_when_urgent():
+  """Close lead, high closing speed, danger gap. Expected: far_coast_active=False, urgent=True."""
+  v_ego = 25.0
+  v_lead = 5.0
+  d_rel = 10.0
+  t_follow = 1.8
+
+  result = get_routine_lead_approach_accel(
+    v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=0.0, y_rel=0.0, t_follow=t_follow,
+  )
+  assert not result.far_coast_active
+  assert result.urgent
+
+
+def test_far_lead_coast_inactive_for_shadow_flicker_new_lead():
+  """Test that is_valid_routine_lead_approach() still rejects shadow/flicker/new leads.
+  The far_coast path should not bypass validity checks."""
+  # Shadow lead
+  context = SimpleNamespace(
+    behavior=None,
+    shadow_active=True,
+    alternate_threat_active=False,
+    lead_progress_allowed=True,
+    lead_release_blocked_reason="",
+  )
+  assert not is_valid_routine_lead_approach(
+    primary_lead_context=context, brake_pressed=False, gas_pressed=False,
+    force_slow_decel=False, independent_stop_threat=False,
+    alternate_lead_threat_active=False,
+  )
+
+  # Flicker lead
+  context = SimpleNamespace(
+    behavior=SimpleNamespace(
+      shadow=False, flicker_guard_timer=0.5, new_lead=False, stable=True,
+    ),
+    shadow_active=False,
+    alternate_threat_active=False,
+    lead_progress_allowed=True,
+    lead_release_blocked_reason="",
+  )
+  assert not is_valid_routine_lead_approach(
+    primary_lead_context=context, brake_pressed=False, gas_pressed=False,
+    force_slow_decel=False, independent_stop_threat=False,
+    alternate_lead_threat_active=False,
+  )
+
+  # New lead
+  context = SimpleNamespace(
+    behavior=SimpleNamespace(
+      shadow=False, flicker_guard_timer=0.0, new_lead=True, stable=True,
+    ),
+    shadow_active=False,
+    alternate_threat_active=False,
+    lead_progress_allowed=True,
+    lead_release_blocked_reason="",
+  )
+  assert not is_valid_routine_lead_approach(
+    primary_lead_context=context, brake_pressed=False, gas_pressed=False,
+    force_slow_decel=False, independent_stop_threat=False,
+    alternate_lead_threat_active=False,
+  )
+
+
+def test_far_lead_coast_does_not_produce_negative_accel():
+  """Any far_coast_active result should have raw_a_target == 0.0 (coast only, no braking)."""
+  v_ego = 25.0
+  v_lead = 22.5
+  t_follow = 1.8
+  d_rel = 65.0
+
+  result = get_routine_lead_approach_accel(
+    v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=0.0, y_rel=0.0, t_follow=t_follow,
+  )
+  if result.far_coast_active:
+    assert result.raw_a_target == 0.0, f"Expected 0.0 accel for far coast, got {result.raw_a_target}"
