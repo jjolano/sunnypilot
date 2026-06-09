@@ -300,6 +300,7 @@ LEAD_FLICKER_FIRST_LOSS_HOLD_TIME = 0.5
 LEAD_FLICKER_FAR_CLOSING_SPEED_MIN = 1.0
 LEAD_FLICKER_FAR_REQUIRED_DECEL_MIN = 0.25
 LEAD_LATERAL_PROGRESS_HOLD_TIME = 2.0
+ROUTINE_LEAD_APPROACH_SEED_REASON = "routine_slower_lead_approach"
 LEAD_PULLAWAY_PULSE_REASON = "confirmed_lead_pullaway_pulse"
 LEAD_PULLAWAY_PULSE_CAP_REASON = "lead_pullaway_pulse_accel_cap"
 EXCESS_GAP_CLOSURE_REASON = "excess_gap_closure"
@@ -410,6 +411,11 @@ class RoutineLeadApproach:
   allowed_closing_speed: float = 0.0
   closing_excess: float = 0.0
   compression_blend: float = 0.0
+  compression_budget: float = 0.0
+  comfort_budget: float = 0.0
+  projected_compression_budget: float = 0.0
+  projected_comfort_budget: float = 0.0
+  valid_lead_approach: bool = False
   predicted_gap: float = 0.0
   projected_closing_speed: float = 0.0
   reason: str = "inactive"
@@ -1834,7 +1840,8 @@ def build_lead_pullaway_intent_seed_candidates(planner, has_lead, accel_limits, 
 
 def build_moving_lead_seed_candidates(planner, has_lead, accel_limits, *, moving_stop_guard_a_target=None,
                                       moving_stop_guard_debug=None, lead_accel_recovery_a_target=None, lead_stop_approach_slewed_a_target=None,
-                                      lead_stop_approach_base_a_target=None) -> tuple[PlannerSeedCandidate, ...]:
+                                      lead_stop_approach_base_a_target=None,
+                                      routine_lead_approach_a_target=None, routine_lead_approach_debug=None) -> tuple[PlannerSeedCandidate, ...]:
   lead_stop_approach_slew_selection = PLANNER_SEED_CAP
   if lead_stop_approach_slewed_a_target is not None and lead_stop_approach_base_a_target is not None:
     lead_stop_approach_slew_selection = (
@@ -1847,6 +1854,11 @@ def build_moving_lead_seed_candidates(planner, has_lead, accel_limits, *, moving
       "moving_lead_stop_gap_guard", accel_limits, group=moving_stop_guard_group,
       debug=moving_stop_guard_debug,
     ) if moving_stop_guard_a_target is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "routine_lead_approach", routine_lead_approach_a_target, has_lead,
+      ROUTINE_LEAD_APPROACH_SEED_REASON, accel_limits, selection=PLANNER_SEED_FLOOR,
+      debug=routine_lead_approach_debug,
+    ) if routine_lead_approach_a_target is not None else None,
     build_planner_seed_accel_candidate(
       planner, "lead_accel_recovery", lead_accel_recovery_a_target, has_lead,
       "lead_accel_recovery", accel_limits, selection=PLANNER_SEED_FLOOR,
@@ -2476,6 +2488,11 @@ def _routine_lead_approach_debug(**overrides):
     "routine_lead_allowed_closing": 0.0,
     "routine_lead_closing_excess": 0.0,
     "routine_lead_compression_blend": 0.0,
+    "routine_lead_compression_budget": 0.0,
+    "routine_lead_comfort_budget": 0.0,
+    "routine_lead_projected_compression_budget": 0.0,
+    "routine_lead_projected_comfort_budget": 0.0,
+    "routine_lead_valid_approach": False,
     "routine_lead_raw_a_target": 0.0,
     "routine_lead_ramped_a_target": 0.0,
     "routine_lead_a_ego": 0.0,
@@ -2516,6 +2533,10 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   required_decel = float(get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead))
   distance_to_caution = d_rel - caution_gap
   distance_to_danger = d_rel - danger_gap
+  compression_budget = d_rel - danger_gap
+  comfort_budget = d_rel - caution_gap
+  projected_compression_budget = predicted_gap - danger_gap
+  projected_comfort_budget = predicted_gap - caution_gap
   routine_floor_gap = danger_gap + ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN
   gap_after_coast = predicted_gap
   required_decel_after_coast = projected_closing_speed**2 / (2.0 * max(gap_after_coast - routine_floor_gap, 0.1))
@@ -2536,6 +2557,10 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     routine_lead_a_ego=a_ego,
     routine_lead_distance_to_caution=distance_to_caution,
     routine_lead_distance_to_danger=distance_to_danger,
+    routine_lead_compression_budget=compression_budget,
+    routine_lead_comfort_budget=comfort_budget,
+    routine_lead_projected_compression_budget=projected_compression_budget,
+    routine_lead_projected_comfort_budget=projected_comfort_budget,
   )
 
   invalid = (
@@ -2553,6 +2578,9 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   if invalid:
     return RoutineLeadApproach(urgent=urgent, required_decel=required_decel, predicted_gap=predicted_gap,
                                projected_closing_speed=projected_closing_speed, reason="invalid",
+                               compression_budget=compression_budget, comfort_budget=comfort_budget,
+                               projected_compression_budget=projected_compression_budget,
+                               projected_comfort_budget=projected_comfort_budget,
                                debug={**base_debug, "routine_lead_approach_reason": "invalid",
                                       "routine_lead_approach_urgent": urgent})
 
@@ -2584,7 +2612,10 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     }
     return RoutineLeadApproach(active=False, urgent=urgent, required_decel=required_decel,
                                allowed_closing_speed=allowed_closing_speed, closing_excess=closing_excess,
-                               compression_blend=compression_blend, predicted_gap=predicted_gap,
+                               compression_blend=compression_blend, compression_budget=compression_budget,
+                               comfort_budget=comfort_budget, projected_compression_budget=projected_compression_budget,
+                               projected_comfort_budget=projected_comfort_budget,
+                               predicted_gap=predicted_gap,
                                projected_closing_speed=projected_closing_speed, reason=reason, debug=debug)
 
   lead_decel_excess = max(0.0, -a_lead - MOVING_LEAD_STOP_GAP_GUARD_MIN_LEAD_DECEL)
@@ -2643,8 +2674,55 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   return RoutineLeadApproach(active=True, urgent=urgent, raw_a_target=raw_a_target, ramped_a_target=ramped_a_target,
                              required_decel=required_decel, allowed_closing_speed=allowed_closing_speed,
                              closing_excess=closing_excess, compression_blend=compression_blend,
+                             compression_budget=compression_budget, comfort_budget=comfort_budget,
+                             projected_compression_budget=projected_compression_budget,
+                             projected_comfort_budget=projected_comfort_budget,
                              predicted_gap=predicted_gap, projected_closing_speed=projected_closing_speed,
                              reason="routine_slower_lead_approach", debug=debug)
+
+
+def is_valid_routine_lead_approach(*, primary_lead_context, brake_pressed=False, gas_pressed=False,
+                                    force_slow_decel=False, independent_stop_threat=False,
+                                    alternate_lead_threat_active=False) -> bool:
+  """Check whether a routine lead approach is valid for comfort shaping.
+
+  A valid routine lead approach requires:
+  - lead exists and is path-relevant
+  - lead is stable, not new, not flicker, not shadow
+  - no driver brake/gas override
+  - no force_slow.
+  - no independent stop threat.
+  - no alternate closer threat.
+  - lead progress is allowed (not suppressive-only).
+  """
+  if primary_lead_context is None:
+    return False
+  if bool(brake_pressed or gas_pressed or force_slow_decel):
+    return False
+  if bool(independent_stop_threat):
+    return False
+  if bool(alternate_lead_threat_active):
+    return False
+  if bool(getattr(primary_lead_context, "alternate_threat_active", False)):
+    return False
+  if bool(getattr(primary_lead_context, "shadow_active", False)):
+    return False
+  behavior = getattr(primary_lead_context, "behavior", None)
+  if behavior is None:
+    return False
+  if bool(getattr(behavior, "shadow", False)):
+    return False
+  if bool(getattr(behavior, "flicker_guard_timer", 0.0) > 0.0):
+    return False
+  if bool(getattr(behavior, "new_lead", False)):
+    return False
+  if not bool(getattr(behavior, "stable", False)):
+    return False
+  if not bool(getattr(primary_lead_context, "lead_progress_allowed", False)):
+    blocked_reason = str(getattr(primary_lead_context, "lead_release_blocked_reason", ""))
+    if blocked_reason == "primary_physical_lead_suppressive":
+      return False
+  return True
 
 
 def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_follow, a_ego=None,
@@ -3524,6 +3602,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     stopped_stop_gap_guard_group = ""
     custom_moving_stop_guard_a_target = None
     custom_moving_stop_guard_debug = None
+    custom_routine_lead_approach_a_target = None
+    custom_routine_lead_approach_debug = None
     stopped_lead_moving_rebound_timer = max(0.0, float(getattr(self, "stopped_lead_moving_rebound_timer", 0.0)) - self.dt)
     if primary_physical_lead is not None and physical_lead_v_lead > MOVING_LEAD_STOP_GAP_GUARD_MIN_V_LEAD:
       stopped_lead_moving_rebound_timer = STOPPED_LEAD_MOVING_REBOUND_HOLD_TIME
@@ -3560,6 +3640,25 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       if moving_stop_guard_a_target is not None:
         custom_moving_stop_guard_a_target = moving_stop_guard_a_target
         custom_moving_stop_guard_debug = moving_stop_guard_debug
+      # Emit routine lead approach floor seed when routine is active, valid, and non-urgent.
+      # This allows routine comfort shaping to relax non-urgent baseline targets at seed level.
+      if moving_stop_guard_debug is not None:
+        routine_active = bool(moving_stop_guard_debug.get("routine_lead_approach_active", False))
+        routine_urgent = bool(moving_stop_guard_debug.get("routine_lead_approach_urgent", False))
+        routine_ramped = float(moving_stop_guard_debug.get("routine_lead_ramped_a_target", 0.0))
+        routine_can_own = bool(moving_stop_guard_debug.get("routine_lead_can_own_nonurgent_shape", False))
+        routine_safety_relevant = bool(moving_stop_guard_debug.get("routine_lead_existing_target_safety_relevant", False))
+        valid_approach = is_valid_routine_lead_approach(
+          primary_lead_context=primary_lead_context,
+          brake_pressed=sm['carState'].brakePressed,
+          gas_pressed=sm['carState'].gasPressed,
+          force_slow_decel=force_slow_decel,
+          independent_stop_threat=lead_pullaway_independent_stop_threat,
+          alternate_lead_threat_active=bool(getattr(primary_lead_context, "alternate_threat_active", False)),
+        )
+        if routine_active and not routine_urgent and routine_can_own and not routine_safety_relevant and valid_approach:
+          custom_routine_lead_approach_a_target = routine_ramped
+          custom_routine_lead_approach_debug = {k: v for k, v in moving_stop_guard_debug.items() if k.startswith("routine_lead_")}
 
     custom_lead_stop_approach_slewed_a_target = None
     custom_lead_stop_approach_base_a_target = None
@@ -3894,6 +3993,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       lead_accel_recovery_a_target=custom_lead_accel_recovery_a_target,
       lead_stop_approach_slewed_a_target=custom_lead_stop_approach_slewed_a_target,
       lead_stop_approach_base_a_target=custom_lead_stop_approach_base_a_target,
+      routine_lead_approach_a_target=custom_routine_lead_approach_a_target,
+      routine_lead_approach_debug=custom_routine_lead_approach_debug,
     ))
     self.planner_seed_candidates.extend(build_no_lead_stop_seed_candidates(
       self, has_lead, accel_clip,

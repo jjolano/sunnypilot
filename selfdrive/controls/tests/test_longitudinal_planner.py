@@ -16,16 +16,17 @@ from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode
 from openpilot.selfdrive.controls.lib.scc_evidence import SccEvidenceTier
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS as T_IDXS_MPC, get_lead_approach_gaps
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR, PLANNER_SEED_INTENT_LEAD_FOLLOW
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, SUNNYPILOT_CURRENT, StackResolution
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanSource as LongitudinalPlanSourceSP
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
-  build_scc_mode_evidence,
   build_lead_pullaway_intent_seed_candidates,
+  build_moving_lead_seed_candidates,
   build_planner_seed_accel_candidate,
+  build_scc_mode_evidence,
   E2E_CLOSE_STOP_DECEL_MAX,
   E2E_CLOSE_STOP_MIN_ROLLING_V,
   E2E_STOP_APPROACH_DECEL_MAX,
@@ -72,6 +73,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   get_lead_pullaway_runway,
   get_moving_lead_stop_gap_guard_accel,
   get_planner_lead_motion_values,
+  get_routine_lead_approach_accel,
   get_stopped_lead_stop_gap_guard_accel,
   get_custom_v2_curve_scene_target,
   get_e2e_close_stop_settle,
@@ -84,9 +86,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   has_model_stop_context,
   has_scc_model_slowdown,
   has_valid_radar_lead,
+  is_valid_routine_lead_approach,
   lead_confirmed_stop_release,
   limit_accel_in_turns,
   one_pedal_cruise_hold_requested,
+  planner_seed_intent_for_reason,
+  ROUTINE_LEAD_APPROACH_SEED_REASON,
   should_cap_lead_flicker_speedup,
   should_arm_stopped_lead_gap_fill,
   should_enable_longitudinal_decision_layer,
@@ -3415,3 +3420,177 @@ def test_e2e_runway_positive_accel_cap_ignores_weak_model_signal_and_invalid_end
 
   assert get_e2e_runway_positive_accel_cap(0.5, weak_model_msg, True) == ACCEL_MAX
   assert get_e2e_runway_positive_accel_cap(0.5, invalid_endpoint_msg, True) == ACCEL_MAX
+
+
+def test_routine_lead_approach_compression_budget_fields():
+  result = get_routine_lead_approach_accel(
+    v_ego=20.0, d_rel=50.0, v_lead=18.0, a_lead=0.0, y_rel=0.0, t_follow=1.5,
+  )
+  assert result.compression_budget > 0.0
+  assert result.comfort_budget > 0.0
+  assert result.projected_compression_budget > 0.0
+  assert result.projected_comfort_budget > 0.0
+  assert result.compression_budget > result.comfort_budget
+
+
+def test_routine_lead_approach_compression_budget_shrinks_as_gap_closes():
+  far_result = get_routine_lead_approach_accel(
+    v_ego=20.0, d_rel=50.0, v_lead=18.0, a_lead=0.0, y_rel=0.0, t_follow=1.5,
+  )
+  close_result = get_routine_lead_approach_accel(
+    v_ego=20.0, d_rel=30.0, v_lead=18.0, a_lead=0.0, y_rel=0.0, t_follow=1.5,
+  )
+  assert close_result.compression_budget < far_result.compression_budget
+  assert close_result.comfort_budget < far_result.comfort_budget
+
+
+def test_is_valid_routine_lead_approach_rejects_shadow():
+  context = SimpleNamespace(
+    behavior=None,
+    shadow_active=True,
+    alternate_threat_active=False,
+    lead_progress_allowed=True,
+    lead_release_blocked_reason="",
+  )
+  assert not is_valid_routine_lead_approach(
+    primary_lead_context=context, brake_pressed=False, gas_pressed=False,
+    force_slow_decel=False, independent_stop_threat=False,
+    alternate_lead_threat_active=False,
+  )
+
+
+def test_is_valid_routine_lead_approach_rejects_flicker():
+  context = SimpleNamespace(
+    behavior=SimpleNamespace(
+      shadow=False, flicker_guard_timer=0.5, new_lead=False, stable=True,
+    ),
+    shadow_active=False,
+    alternate_threat_active=False,
+    lead_progress_allowed=True,
+    lead_release_blocked_reason="",
+  )
+  assert not is_valid_routine_lead_approach(
+    primary_lead_context=context, brake_pressed=False, gas_pressed=False,
+    force_slow_decel=False, independent_stop_threat=False,
+    alternate_lead_threat_active=False,
+  )
+
+
+def test_is_valid_routine_lead_approach_rejects_new_lead():
+  context = SimpleNamespace(
+    behavior=SimpleNamespace(
+      shadow=False, flicker_guard_timer=0.0, new_lead=True, stable=True,
+    ),
+    shadow_active=False,
+    alternate_threat_active=False,
+    lead_progress_allowed=True,
+    lead_release_blocked_reason="",
+  )
+  assert not is_valid_routine_lead_approach(
+    primary_lead_context=context, brake_pressed=False, gas_pressed=False,
+    force_slow_decel=False, independent_stop_threat=False,
+    alternate_lead_threat_active=False,
+  )
+
+
+def test_is_valid_routine_lead_approach_rejects_unstable_lead():
+  context = SimpleNamespace(
+    behavior=SimpleNamespace(
+      shadow=False, flicker_guard_timer=0.0, new_lead=False, stable=False,
+    ),
+    shadow_active=False,
+    alternate_threat_active=False,
+    lead_progress_allowed=True,
+    lead_release_blocked_reason="",
+  )
+  assert not is_valid_routine_lead_approach(
+    primary_lead_context=context, brake_pressed=False, gas_pressed=False,
+    force_slow_decel=False, independent_stop_threat=False,
+    alternate_lead_threat_active=False,
+  )
+
+
+def test_is_valid_routine_lead_approach_rejects_driver_override():
+  context = SimpleNamespace(
+    behavior=SimpleNamespace(
+      shadow=False, flicker_guard_timer=0.0, new_lead=False, stable=True,
+    ),
+    shadow_active=False,
+    alternate_threat_active=False,
+    lead_progress_allowed=True,
+    lead_release_blocked_reason="",
+  )
+  assert not is_valid_routine_lead_approach(
+    primary_lead_context=context, brake_pressed=True, gas_pressed=False,
+    force_slow_decel=False, independent_stop_threat=False,
+    alternate_lead_threat_active=False,
+  )
+
+
+def test_is_valid_routine_lead_approach_accepts_stable_valid_lead():
+  context = SimpleNamespace(
+    behavior=SimpleNamespace(
+      shadow=False, flicker_guard_timer=0.0, new_lead=False, stable=True,
+    ),
+    shadow_active=False,
+    alternate_threat_active=False,
+    lead_progress_allowed=True,
+    lead_release_blocked_reason="",
+  )
+  assert is_valid_routine_lead_approach(
+    primary_lead_context=context, brake_pressed=False, gas_pressed=False,
+    force_slow_decel=False, independent_stop_threat=False,
+    alternate_lead_threat_active=False,
+  )
+
+
+def test_routine_lead_approach_seed_reason_is_lead_follow():
+  assert planner_seed_intent_for_reason(ROUTINE_LEAD_APPROACH_SEED_REASON, has_lead=True) == PLANNER_SEED_INTENT_LEAD_FOLLOW
+
+
+def test_routine_lead_approach_seed_is_floor_selection():
+  planner = SimpleNamespace(
+    output_a_target=-1.0,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="lead0"),
+    v_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(-1.0 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+  candidates = build_moving_lead_seed_candidates(
+    planner, True, (-2.0, 2.0),
+    routine_lead_approach_a_target=0.0,
+    routine_lead_approach_debug={},
+  )
+  routine_seed = None
+  for candidate in candidates:
+    if candidate.name == "routine_lead_approach":
+      routine_seed = candidate
+      break
+  assert routine_seed is not None
+  assert routine_seed.selection == PLANNER_SEED_FLOOR
+  assert routine_seed.reason == ROUTINE_LEAD_APPROACH_SEED_REASON
+
+
+def test_routine_lead_approach_seed_not_emitted_when_none():
+  planner = SimpleNamespace(
+    output_a_target=0.0,
+    output_should_stop=False,
+    allow_throttle=True,
+    fcw=False,
+    source="cruise",
+    mpc=SimpleNamespace(source="lead0"),
+    v_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+    a_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+    j_desired_trajectory=tuple(0.0 for _ in range(CONTROL_N)),
+  )
+  candidates = build_moving_lead_seed_candidates(
+    planner, True, (-2.0, 2.0),
+    routine_lead_approach_a_target=None,
+    routine_lead_approach_debug=None,
+  )
+  for candidate in candidates:
+    assert candidate.name != "routine_lead_approach"

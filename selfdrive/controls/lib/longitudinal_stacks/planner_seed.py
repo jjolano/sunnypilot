@@ -42,6 +42,7 @@ LEAD_FOLLOW_SEED_REASONS = {
   "lead_loss_e2e_guard",
   "excess_gap_closure",
   "excess_gap_closure_accel_cap",
+  "routine_slower_lead_approach",
 }
 LAUNCH_SEED_REASONS = {
   "creep_pullaway_launch",
