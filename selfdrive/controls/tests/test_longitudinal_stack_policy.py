@@ -588,6 +588,94 @@ def test_routine_comfort_without_own_shape_allows_nonurgent_fallback():
   assert len(result) == 1, f"non-urgent LEAD_MPC should pass when routine does NOT own shape, got {len(result)}"
 
 
+def test_routine_comfort_far_coast_suppresses_nonurgent_lead_mpc_fallback():
+  """When routine_lead_can_own_nonurgent_shape is False but routine_lead_far_coast_active
+  is True and routine_lead_phase is far_lead_coast, fallback suppression should still
+  recognize routine comfort as owning shape and skip non-urgent LEAD_MPC fallback.
+
+  This verifies the seam fix: _is_routine_comfort_relaxation now checks
+  (can_own or far_coast or comfort_phase), matching the planner seed emission condition."""
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import fallback_physical_candidates
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  # Routine comfort seed with can_own=False but far_coast=True and phase=far_lead_coast
+  routine_seed = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.RELAXATION,
+    v_target=25.0,
+    a_target=0.0,
+    confidence=0.8,
+    urgency=0.2,
+    active_reason=ROUTINE_LEAD_APPROACH_SEED_REASON,
+    should_stop=False,
+    debug={
+      "routine_lead_can_own_nonurgent_shape": False,
+      "routine_lead_existing_target_safety_relevant": False,
+      "routine_lead_urgent_bypass": False,
+      "routine_lead_phase": "far_lead_coast",
+      "routine_lead_far_coast_active": True,
+    },
+  )
+  # Raw non-urgent LEAD_MPC fallback that would suppress routine comfort
+  raw_lead_mpc = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.PHYSICAL_HAZARD,
+    v_target=25.0,
+    a_target=-0.8,
+    confidence=0.9,
+    urgency=0.6,
+    active_reason="lead0",
+    should_stop=False,
+  )
+  fallback_output = make_output(a_target=-0.8, has_lead=True)
+  result = fallback_physical_candidates((routine_seed,), (raw_lead_mpc,), fallback_output)
+  # Non-urgent LEAD_MPC fallback should be skipped when far_coast owns shape
+  assert len(result) == 0, f"non-urgent LEAD_MPC fallback should be skipped when far_coast owns shape, got {len(result)} candidates"
+
+
+def test_routine_comfort_soft_decel_phase_suppresses_nonurgent_lead_mpc_fallback():
+  """When routine_lead_can_own_nonurgent_shape is False but routine_lead_phase
+  is soft_decel (a comfort phase), fallback suppression should still recognize
+  routine comfort as owning shape and skip non-urgent LEAD_MPC fallback."""
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import fallback_physical_candidates
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  # Routine comfort seed with can_own=False but phase=soft_decel (comfort phase)
+  routine_seed = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.RELAXATION,
+    v_target=25.0,
+    a_target=-0.3,
+    confidence=0.8,
+    urgency=0.2,
+    active_reason=ROUTINE_LEAD_APPROACH_SEED_REASON,
+    should_stop=False,
+    debug={
+      "routine_lead_can_own_nonurgent_shape": False,
+      "routine_lead_existing_target_safety_relevant": False,
+      "routine_lead_urgent_bypass": False,
+      "routine_lead_phase": "soft_decel",
+      "routine_lead_far_coast_active": False,
+    },
+  )
+  raw_lead_mpc = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.PHYSICAL_HAZARD,
+    v_target=25.0,
+    a_target=-0.8,
+    confidence=0.9,
+    urgency=0.6,
+    active_reason="lead0",
+    should_stop=False,
+  )
+  fallback_output = make_output(a_target=-0.8, has_lead=True)
+  result = fallback_physical_candidates((routine_seed,), (raw_lead_mpc,), fallback_output)
+  # Non-urgent LEAD_MPC fallback should be skipped when comfort_phase owns shape
+  assert len(result) == 0, f"non-urgent LEAD_MPC fallback should be skipped when comfort_phase owns shape, got {len(result)} candidates"
+
+
 def test_advisory_cap_still_wins_over_routine_comfort_floor():
   from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
 

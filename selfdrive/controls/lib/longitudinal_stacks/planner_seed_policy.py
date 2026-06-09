@@ -40,9 +40,16 @@ def _is_routine_comfort_relaxation(converted_candidates: tuple[LongitudinalCandi
   A routine comfort seed is present when:
   - role == RELAXATION
   - reason == routine_slower_lead_approach
-  - debug says routine can own non-urgent shape
+  - debug says routine can own non-urgent shape, OR
+    debug says far-lead coast is active, OR
+    debug says the phase is a comfort phase (far_lead_coast/free_coast/soft_decel/routine_decel)
   - debug says existing target is not safety-relevant
   - debug says no urgent bypass
+
+  This mirrors the planner-level seed emission condition:
+    routine_can_own OR routine_far_coast OR routine_comfort_phase
+  so that fallback suppression recognizes the same routine comfort authority
+  that the planner used to emit the seed.
   """
   for candidate in converted_candidates:
     if candidate.role != CandidateRole.RELAXATION:
@@ -55,11 +62,16 @@ def _is_routine_comfort_relaxation(converted_candidates: tuple[LongitudinalCandi
       can_own = bool(debug.get("routine_lead_can_own_nonurgent_shape", False))
       safety_relevant = bool(debug.get("routine_lead_existing_target_safety_relevant", False))
       urgent_bypass = bool(debug.get("routine_lead_urgent_bypass", False))
+      phase = str(debug.get("routine_lead_phase", ""))
+      far_coast = bool(debug.get("routine_lead_far_coast_active", False))
     else:
       can_own = bool(getattr(debug, "routine_lead_can_own_nonurgent_shape", False))
       safety_relevant = bool(getattr(debug, "routine_lead_existing_target_safety_relevant", False))
       urgent_bypass = bool(getattr(debug, "routine_lead_urgent_bypass", False))
-    if can_own and not safety_relevant and not urgent_bypass:
+      phase = str(getattr(debug, "routine_lead_phase", ""))
+      far_coast = bool(getattr(debug, "routine_lead_far_coast_active", False))
+    comfort_phase = phase in ("far_lead_coast", "free_coast", "soft_decel", "routine_decel")
+    if (can_own or far_coast or comfort_phase) and not safety_relevant and not urgent_bypass:
       return True
   return False
 
