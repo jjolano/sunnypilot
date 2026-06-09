@@ -206,6 +206,7 @@ ROUTINE_LEAD_APPROACH_SOFT_BLEND = 0.45
 ROUTINE_LEAD_APPROACH_SOFT_DECEL_CAP = 0.25
 ROUTINE_LEAD_APPROACH_DECEL_MIN = MOVING_LEAD_SLOWER_APPROACH_MIN_TARGET_DECEL
 ROUTINE_LEAD_APPROACH_DECEL_CAP = MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
+ROUTINE_LEAD_APPROACH_FIRM_DECEL_CAP = 1.5
 ROUTINE_LEAD_APPROACH_NEGATIVE_JERK = 0.45
 ROUTINE_LEAD_APPROACH_RELEASE_JERK = 0.25
 ROUTINE_LEAD_FAR_COAST_TTC = 7.0  # seconds - time to caution gap threshold for far coast
@@ -405,6 +406,52 @@ class FastLeadMotionEvidence:
 
 
 @dataclass(frozen=True)
+class LongitudinalComfortBudget:
+  far_coast_ttc: float = ROUTINE_LEAD_FAR_COAST_TTC
+  soft_decel_cap: float = ROUTINE_LEAD_APPROACH_SOFT_DECEL_CAP
+  routine_decel_cap: float = ROUTINE_LEAD_APPROACH_DECEL_CAP
+  firm_routine_decel_cap: float = ROUTINE_LEAD_APPROACH_FIRM_DECEL_CAP
+  routine_negative_jerk: float = ROUTINE_LEAD_APPROACH_NEGATIVE_JERK
+  routine_release_jerk: float = ROUTINE_LEAD_APPROACH_RELEASE_JERK
+  response_time: float = ROUTINE_LEAD_RESPONSE_TIME
+
+
+COMFORT_BUDGET_BY_PERSONALITY = {
+  0: LongitudinalComfortBudget(  # relaxed
+    far_coast_ttc=9.0,
+    soft_decel_cap=0.20,
+    routine_decel_cap=0.35,
+    firm_routine_decel_cap=1.2,
+    routine_negative_jerk=0.35,
+    routine_release_jerk=0.20,
+    response_time=0.40,
+  ),
+  1: LongitudinalComfortBudget(  # standard
+    far_coast_ttc=7.0,
+    soft_decel_cap=0.25,
+    routine_decel_cap=0.45,
+    firm_routine_decel_cap=1.5,
+    routine_negative_jerk=0.45,
+    routine_release_jerk=0.25,
+    response_time=0.35,
+  ),
+  2: LongitudinalComfortBudget(  # aggressive
+    far_coast_ttc=5.5,
+    soft_decel_cap=0.30,
+    routine_decel_cap=0.55,
+    firm_routine_decel_cap=1.8,
+    routine_negative_jerk=0.55,
+    routine_release_jerk=0.30,
+    response_time=0.30,
+  ),
+}
+
+
+def get_comfort_budget(personality: int = 1) -> LongitudinalComfortBudget:
+  return COMFORT_BUDGET_BY_PERSONALITY.get(personality, COMFORT_BUDGET_BY_PERSONALITY[1])
+
+
+@dataclass(frozen=True)
 class RoutineLeadApproach:
   active: bool = False
   far_coast_active: bool = False
@@ -417,6 +464,7 @@ class RoutineLeadApproach:
   compression_blend: float = 0.0
   compression_budget: float = 0.0
   comfort_budget: float = 0.0
+  firm_routine_decel_cap: float = ROUTINE_LEAD_APPROACH_FIRM_DECEL_CAP
   projected_compression_budget: float = 0.0
   projected_comfort_budget: float = 0.0
   valid_lead_approach: bool = False
@@ -2521,7 +2569,10 @@ def _routine_lead_approach_debug(**overrides):
 
 
 def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_follow,
-                                    prev_a_target=None, dt=DT_MDL, a_ego=None) -> RoutineLeadApproach:
+                                    prev_a_target=None, dt=DT_MDL, a_ego=None,
+                                    budget=None) -> RoutineLeadApproach:
+  if budget is None:
+    budget = get_comfort_budget(1)  # standard
   v_ego = _finite_float(v_ego)
   d_rel = _finite_float(d_rel)
   v_lead = _finite_float(v_lead)
@@ -2536,7 +2587,7 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   closing_speed = max(v_ego - v_lead, 0.0)
   relative_accel = max(-a_lead, 0.0)
   preview_t = ROUTINE_LEAD_APPROACH_PREVIEW_T
-  response_t = ROUTINE_LEAD_RESPONSE_TIME
+  response_t = budget.response_time
   response_gap_loss = closing_speed * response_t + 0.5 * relative_accel * response_t**2
   effective_d_rel = max(0.0, d_rel - response_gap_loss)
   delayed_closing_speed = closing_speed + relative_accel * response_t
@@ -2596,12 +2647,13 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
                                compression_budget=compression_budget, comfort_budget=comfort_budget,
                                projected_compression_budget=projected_compression_budget,
                                projected_comfort_budget=projected_comfort_budget, far_coast_active=False,
+                               firm_routine_decel_cap=budget.firm_routine_decel_cap,
                                debug={**base_debug, "routine_lead_approach_reason": "invalid",
                                       "routine_lead_approach_urgent": urgent})
 
   # Far-lead coast: remove positive accel early for stable valid slower leads
   # that are still well above caution gap but closing with finite TTC.
-  if not invalid and not urgent and d_rel > caution_gap and closing_speed >= ROUTINE_LEAD_FAR_COAST_MIN_CLOSING and time_to_caution <= ROUTINE_LEAD_FAR_COAST_TTC and time_to_caution > 0.0:
+  if not invalid and not urgent and d_rel > caution_gap and closing_speed >= ROUTINE_LEAD_FAR_COAST_MIN_CLOSING and time_to_caution <= budget.far_coast_ttc and time_to_caution > 0.0:
     far_coast_active = True
   else:
     far_coast_active = False
@@ -2640,17 +2692,19 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
                                comfort_budget=comfort_budget, projected_compression_budget=projected_compression_budget,
                                projected_comfort_budget=projected_comfort_budget,
                                predicted_gap=predicted_gap,
-                               projected_closing_speed=projected_closing_speed, reason=reason, debug=debug)
+                               projected_closing_speed=projected_closing_speed,
+                               firm_routine_decel_cap=budget.firm_routine_decel_cap,
+                               reason=reason, debug=debug)
 
   lead_decel_excess = max(0.0, -a_lead - MOVING_LEAD_STOP_GAP_GUARD_MIN_LEAD_DECEL)
   actual_decel = max(0.0, -a_ego)
   decel = (
     ROUTINE_LEAD_APPROACH_DECEL_MIN +
     closing_excess * MOVING_LEAD_SLOWER_APPROACH_CLOSING_GAIN +
-    compression_blend * (ROUTINE_LEAD_APPROACH_DECEL_CAP - ROUTINE_LEAD_APPROACH_DECEL_MIN) * 0.5 +
+    compression_blend * (budget.routine_decel_cap - ROUTINE_LEAD_APPROACH_DECEL_MIN) * 0.5 +
     lead_decel_excess * MOVING_LEAD_SLOWER_APPROACH_LEAD_DECEL_GAIN
   )
-  decel = float(np.clip(decel, ROUTINE_LEAD_APPROACH_DECEL_MIN, ROUTINE_LEAD_APPROACH_DECEL_CAP))
+  decel = float(np.clip(decel, ROUTINE_LEAD_APPROACH_DECEL_MIN, budget.routine_decel_cap))
   if far_coast_active and not _routine_approach_active:
     phase = "far_lead_coast"
     raw_a_target = 0.0
@@ -2664,7 +2718,7 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
       max(ROUTINE_LEAD_APPROACH_SOFT_BLEND - ROUTINE_LEAD_APPROACH_COAST_BLEND, 1e-3),
       0.0, 1.0,
     ))
-    soft_cap = ROUTINE_LEAD_APPROACH_DECEL_MIN + soft_x * (ROUTINE_LEAD_APPROACH_SOFT_DECEL_CAP - ROUTINE_LEAD_APPROACH_DECEL_MIN)
+    soft_cap = ROUTINE_LEAD_APPROACH_DECEL_MIN + soft_x * (budget.soft_decel_cap - ROUTINE_LEAD_APPROACH_DECEL_MIN)
     decel = min(decel, soft_cap)
     raw_a_target = -decel
   else:
@@ -2676,8 +2730,8 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   else:
     ramped_a_target = approach_accel_with_jerk_limit(
       prev_a_target, raw_a_target, dt,
-      jerk_up=ROUTINE_LEAD_APPROACH_RELEASE_JERK,
-      jerk_down=ROUTINE_LEAD_APPROACH_NEGATIVE_JERK,
+      jerk_up=budget.routine_release_jerk,
+      jerk_down=budget.routine_negative_jerk,
     )
   jerk_limited = bool(ramped_a_target > raw_a_target + 1e-6)
   release_limited = bool(ramped_a_target < raw_a_target - 1e-6)
@@ -2708,6 +2762,7 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
                              projected_compression_budget=projected_compression_budget,
                              projected_comfort_budget=projected_comfort_budget,
                              predicted_gap=predicted_gap, projected_closing_speed=projected_closing_speed,
+                             firm_routine_decel_cap=budget.firm_routine_decel_cap,
                              reason="routine_slower_lead_approach", debug=debug)
 
 
@@ -2756,10 +2811,11 @@ def is_valid_routine_lead_approach(*, primary_lead_context, brake_pressed=False,
 
 
 def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_follow, a_ego=None,
-                                         prev_a_target=None, dt=DT_MDL, return_debug=False):
+                                         prev_a_target=None, dt=DT_MDL, return_debug=False,
+                                         budget=None):
   routine = get_routine_lead_approach_accel(
     v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=a_lead, y_rel=y_rel, t_follow=t_follow,
-    prev_a_target=prev_a_target, dt=dt, a_ego=a_ego,
+    prev_a_target=prev_a_target, dt=dt, a_ego=a_ego, budget=budget,
   )
   debug = dict(routine.debug)
 
@@ -3667,6 +3723,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         v_ego, physical_lead_d_rel, physical_lead_v_lead, physical_lead_a, physical_lead_y_rel,
         get_T_FOLLOW(sm['selfdriveState'].personality), a_ego=sm['carState'].aEgo,
         prev_a_target=prev_output_a_target, dt=self.dt, return_debug=True,
+        budget=get_comfort_budget(sm['selfdriveState'].personality),
       )
       if moving_stop_guard_a_target is not None:
         custom_moving_stop_guard_a_target = moving_stop_guard_a_target

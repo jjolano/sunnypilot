@@ -39,6 +39,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   LEAD_FLICKER_FIRST_LOSS_HOLD_TIME,
   EXCESS_GAP_CLOSURE_REASON,
   FastLeadMotionEvidence,
+  COMFORT_BUDGET_BY_PERSONALITY,
+  get_comfort_budget,
+  LongitudinalComfortBudget,
   LeadFlickerSafetyCapTracker,
   LeadPullawayIntent,
   LeadPullawayIntentTracker,
@@ -55,6 +58,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN,
   ROUTINE_LEAD_APPROACH_NEGATIVE_JERK,
   ROUTINE_LEAD_APPROACH_PREVIEW_T,
+  ROUTINE_LEAD_APPROACH_SOFT_DECEL_CAP,
+  ROUTINE_LEAD_APPROACH_DECEL_CAP,
+  ROUTINE_LEAD_APPROACH_FIRM_DECEL_CAP,
+  ROUTINE_LEAD_APPROACH_RELEASE_JERK,
   ROUTINE_LEAD_FAR_COAST_TTC,
   ROUTINE_LEAD_FAR_COAST_MIN_CLOSING,
   ROUTINE_LEAD_RESPONSE_TIME,
@@ -3912,3 +3919,74 @@ def test_far_lead_coast_does_not_produce_negative_accel():
   )
   if result.far_coast_active:
     assert result.raw_a_target == 0.0, f"Expected 0.0 accel for far coast, got {result.raw_a_target}"
+
+
+def test_comfort_budget_relaxed_starts_coast_earlier():
+  """Relaxed personality (0): far_coast_ttc=9.0 allows coast when
+  standard (7.0) would not, given TTC ~8.0."""
+  v_ego = 25.0
+  v_lead = 22.5
+  t_follow = 1.8
+  # Choose d_rel so TTC to caution is ~8s — above standard (7.0) but below relaxed (9.0)
+  # closing = 2.5 m/s, caution_gap depends on v_ego/v_lead/t_follow
+  _desired_gap, caution_gap, _danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+  caution_gap = float(caution_gap)
+  closing = v_ego - v_lead  # 2.5 m/s
+  ttc_to_caution = 7.8  # seconds
+  d_rel = caution_gap + closing * ttc_to_caution
+
+  relaxed = get_routine_lead_approach_accel(
+    v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=0.0, y_rel=0.0, t_follow=t_follow,
+    budget=get_comfort_budget(0),
+  )
+  standard = get_routine_lead_approach_accel(
+    v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=0.0, y_rel=0.0, t_follow=t_follow,
+    budget=get_comfort_budget(1),
+  )
+
+  assert relaxed.far_coast_active, "Relaxed should coast at TTC ~7.8"
+  assert not standard.far_coast_active, "Standard should not coast at TTC ~7.8"
+  assert relaxed.raw_a_target == 0.0
+
+
+def test_comfort_budget_aggressive_builds_sooner():
+  """Aggressive personality (2): routine_decel_cap=0.55 allows stronger
+  decel than standard (0.45) for the same closing scenario."""
+  v_ego = 20.0
+  v_lead = 18.0
+  d_rel = 31.0
+  t_follow = 1.5
+
+  standard = get_routine_lead_approach_accel(
+    v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=0.0, y_rel=0.0, t_follow=t_follow,
+    budget=get_comfort_budget(1),
+  )
+  aggressive = get_routine_lead_approach_accel(
+    v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=0.0, y_rel=0.0, t_follow=t_follow,
+    budget=get_comfort_budget(2),
+  )
+
+  assert standard.active or not standard.far_coast_active
+  assert aggressive.active or not aggressive.far_coast_active
+  # Aggressive should pull a stronger (more negative) target when both are active
+  if standard.active and aggressive.active:
+    assert aggressive.raw_a_target <= standard.raw_a_target + 1e-6
+
+
+def test_comfort_budget_standard_matches_defaults():
+  """Standard comfort budget fields equal the original hardcoded constants."""
+  budget = get_comfort_budget(1)
+  assert budget.far_coast_ttc == ROUTINE_LEAD_FAR_COAST_TTC
+  assert budget.soft_decel_cap == ROUTINE_LEAD_APPROACH_SOFT_DECEL_CAP
+  assert budget.routine_decel_cap == ROUTINE_LEAD_APPROACH_DECEL_CAP
+  assert budget.firm_routine_decel_cap == ROUTINE_LEAD_APPROACH_FIRM_DECEL_CAP
+  assert budget.routine_negative_jerk == ROUTINE_LEAD_APPROACH_NEGATIVE_JERK
+  assert budget.routine_release_jerk == ROUTINE_LEAD_APPROACH_RELEASE_JERK
+  assert budget.response_time == ROUTINE_LEAD_RESPONSE_TIME
+
+
+def test_comfort_budget_firm_routine_decel_cap():
+  """firm_routine_decel_cap is 1.2 for relaxed, 1.5 for standard, 1.8 for aggressive."""
+  assert get_comfort_budget(0).firm_routine_decel_cap == 1.2
+  assert get_comfort_budget(1).firm_routine_decel_cap == 1.5
+  assert get_comfort_budget(2).firm_routine_decel_cap == 1.8
