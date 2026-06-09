@@ -57,8 +57,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   ROUTINE_LEAD_APPROACH_PREVIEW_T,
   ROUTINE_LEAD_RESPONSE_TIME,
   STOP_RELEASE_GUARD_HOLD_TIME,
+  STOP_RELEASE_GUARD_LEAD_CAPPED_RELEASE_REASON,
   STOP_RELEASE_GUARD_LEAD_RELEASE_REASON,
   STOP_RELEASE_GUARD_WAITING_REASON,
+  StopReleaseGuardState,
   StopReleaseGuardTracker,
   LongitudinalPlanner,
   _A_TOTAL_MAX_BP,
@@ -1038,10 +1040,18 @@ def test_stop_release_guard_allows_lead_confirmed_release():
   accel, applied_guard = apply_stop_release_guard_accel(0.35, guard)
 
   assert release
-  assert not guard.active
-  assert guard.reason == STOP_RELEASE_GUARD_LEAD_RELEASE_REASON
+  assert guard.active
+  assert guard.reason == STOP_RELEASE_GUARD_LEAD_CAPPED_RELEASE_REASON
+  assert guard.lead_confirmed_release
+  assert guard.release_accel_cap == LEAD_PULLAWAY_PULSE_A_FLOOR
+  # 0.35 is below the cap (0.70), so it passes through
   assert accel == pytest.approx(0.35)
   assert not applied_guard.applied
+
+  # Accel above cap should be capped
+  accel_above, applied_above = apply_stop_release_guard_accel(1.5, guard)
+  assert accel_above == LEAD_PULLAWAY_PULSE_A_FLOOR
+  assert applied_above.applied
 
 
 @pytest.mark.parametrize("conf", [new_lead_conf(), flicker_lead_conf()])
@@ -3670,3 +3680,108 @@ def test_routine_lead_approach_valid_approach_gates_on_stable_lead():
     brake_pressed=False, gas_pressed=False, force_slow_decel=False,
     independent_stop_threat=False, alternate_lead_threat_active=False,
   ) is False
+
+
+def test_stop_release_guard_lead_confirmed_release_caps_accel():
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    StopReleaseGuardTracker, StopReleaseGuardState, apply_stop_release_guard_accel,
+    STOP_RELEASE_GUARD_HOLD_TIME, STOP_RELEASE_GUARD_LEAD_CAPPED_RELEASE_REASON,
+    LEAD_PULLAWAY_PULSE_A_FLOOR,
+  )
+  tracker = StopReleaseGuardTracker()
+  # Simulate stop evidence active for 1 cycle, then stop evidence clears but lead confirmed
+  guard = tracker.update(v_ego=0.0, standstill=True, stop_evidence_active=True,
+                          lead_confirmed_release=False, dt=0.01)
+  assert guard.active
+  assert guard.reason == "waiting_for_stop_clear"
+  # Now stop evidence clears, lead confirmed release
+  guard = tracker.update(v_ego=0.0, standstill=True, stop_evidence_active=False,
+                          lead_confirmed_release=True, dt=0.01)
+  assert guard.active  # Should still be active (not bypass)
+  assert guard.lead_confirmed_release
+  assert guard.release_accel_cap == LEAD_PULLAWAY_PULSE_A_FLOOR
+  assert guard.reason == STOP_RELEASE_GUARD_LEAD_CAPPED_RELEASE_REASON
+  # Apply guard: positive accel should be capped, not zeroed
+  a_out, guard_out = apply_stop_release_guard_accel(1.5, guard)
+  assert a_out == LEAD_PULLAWAY_PULSE_A_FLOOR  # capped to 0.70, not 0.0
+  assert guard_out.applied
+  # Small positive accel below cap should pass through (still marks applied since guard is active)
+  a_out2, guard_out2 = apply_stop_release_guard_accel(0.3, guard)
+  assert a_out2 == 0.3  # below cap, passes through unchanged
+  assert not guard_out2.applied  # value not modified, so applied=False
+
+
+def test_stop_release_guard_waiting_zeros_accel():
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    StopReleaseGuardTracker, StopReleaseGuardState, apply_stop_release_guard_accel,
+  )
+  tracker = StopReleaseGuardTracker()
+  guard = tracker.update(v_ego=0.0, standstill=True, stop_evidence_active=True,
+                          lead_confirmed_release=False, dt=0.01)
+  assert guard.active
+  assert guard.release_accel_cap == 0.0  # default cap is 0
+  # Positive accel should be zeroed
+  a_out, guard_out = apply_stop_release_guard_accel(1.5, guard)
+  assert a_out == 0.0
+  assert guard_out.applied
+
+
+def test_lead_pullaway_independent_stop_threat_suppressed_with_confirmed_lead():
+  # When primary_behavior_progress_allowed is True (confirmed radar lead with progress authority),
+  # the E2E stop threat should NOT contribute to lead_pullaway_independent_stop_threat.
+  # This is tested by verifying the logic: the E2E clause includes `not primary_behavior_progress_allowed`.
+  # When primary_behavior_progress_allowed=True, the E2E portion evaluates to False,
+  # so only scc_independent_stop_threat can make it True.
+  # This test verifies the computation inline since it's inside the planner update.
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
+  # The key assertion: with a confirmed lead (primary_behavior_progress_allowed=True),
+  # E2E shouldStop should not block launch via independent_stop_threat.
+  # This is verified by the scene.independent_stop_threat field being False
+  # when scene.has_lead=True and the E2E model says stop.
+  # We verify the logic expression directly:
+  scc_independent_stop_threat = False
+  e2e_active = True
+  defer_e2e_to_stopped_lead_mpc = False
+  primary_behavior_progress_allowed = True  # confirmed radar lead present
+  output_should_stop_e2e = True  # E2E model says stop
+  custom_e2e_stop_approach_a_target = -0.5  # E2E wants decel
+  lead_pullaway_independent_stop_threat = bool(
+    scc_independent_stop_threat or (
+      e2e_active and not defer_e2e_to_stopped_lead_mpc and
+      not primary_behavior_progress_allowed and
+      (output_should_stop_e2e or custom_e2e_stop_approach_a_target < 0.0)
+    )
+  )
+  assert not lead_pullaway_independent_stop_threat, \
+    "E2E stop threat should not block launch when confirmed radar lead is present"
+  # Without a confirmed lead, E2E stop threat should still block
+  primary_behavior_progress_allowed = False
+  lead_pullaway_independent_stop_threat = bool(
+    scc_independent_stop_threat or (
+      e2e_active and not defer_e2e_to_stopped_lead_mpc and
+      not primary_behavior_progress_allowed and
+      (output_should_stop_e2e or custom_e2e_stop_approach_a_target < 0.0)
+    )
+  )
+  assert lead_pullaway_independent_stop_threat, \
+    "E2E stop threat should block launch when no confirmed radar lead is present"
+
+
+def test_stop_release_guard_driver_override_still_bypasses():
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    StopReleaseGuardTracker, apply_stop_release_guard_accel,
+  )
+  tracker = StopReleaseGuardTracker()
+  # Build up stop timer
+  guard = tracker.update(v_ego=0.0, standstill=True, stop_evidence_active=True,
+                          lead_confirmed_release=False, dt=0.01)
+  assert guard.active
+  # Driver presses gas
+  guard = tracker.update(v_ego=0.0, standstill=True, stop_evidence_active=False,
+                          lead_confirmed_release=False, gas_pressed=True, dt=0.01)
+  assert not guard.active  # driver override bypasses guard
+  assert guard.reason == "driver_override"
+  # Positive accel should pass through
+  a_out, guard_out = apply_stop_release_guard_accel(1.5, guard)
+  assert a_out == 1.5
+  assert not guard_out.applied

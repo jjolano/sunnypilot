@@ -332,6 +332,7 @@ STOP_RELEASE_GUARD_HOLD_TIME = 1.5
 STOP_RELEASE_GUARD_MAX_V_EGO = 0.3
 STOP_RELEASE_GUARD_WAITING_REASON = "waiting_for_stop_clear"
 STOP_RELEASE_GUARD_LEAD_RELEASE_REASON = "lead_confirmed_release"
+STOP_RELEASE_GUARD_LEAD_CAPPED_RELEASE_REASON = "lead_confirmed_capped_release"
 STOP_RELEASE_GUARD_DRIVER_REASON = "driver_override"
 STOP_RELEASE_GUARD_FORCE_BLOCK_REASON = "driver_or_force_blocked"
 
@@ -429,6 +430,7 @@ class StopReleaseGuardState:
   recent_stop_timer: float = 0.0
   lead_confirmed_release: bool = False
   applied: bool = False
+  release_accel_cap: float = 0.0
 
 
 @dataclass
@@ -468,9 +470,11 @@ class StopReleaseGuardTracker:
       )
     if bool(lead_confirmed_release):
       return StopReleaseGuardState(
-        reason=STOP_RELEASE_GUARD_LEAD_RELEASE_REASON,
+        active=True,
+        reason=STOP_RELEASE_GUARD_LEAD_CAPPED_RELEASE_REASON,
         recent_stop_timer=self._recent_stop_timer,
         lead_confirmed_release=True,
+        release_accel_cap=LEAD_PULLAWAY_PULSE_A_FLOOR,
       )
 
     return StopReleaseGuardState(
@@ -483,6 +487,10 @@ class StopReleaseGuardTracker:
 def apply_stop_release_guard_accel(a_target, guard: StopReleaseGuardState) -> tuple[float, StopReleaseGuardState]:
   a_target = _finite_float(a_target)
   if guard.active and a_target > 0.0:
+    cap = _finite_float(guard.release_accel_cap)
+    if cap > 0.0:
+      clamped = min(a_target, cap)
+      return clamped, replace(guard, applied=clamped < a_target)
     return 0.0, replace(guard, applied=True)
   return a_target, replace(guard, applied=False)
 
@@ -3448,6 +3456,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     lead_pullaway_independent_stop_threat = bool(
       scc_independent_stop_threat or (
         e2e_active and not defer_e2e_to_stopped_lead_mpc and
+        not primary_behavior_progress_allowed and
         (output_should_stop_e2e or custom_e2e_stop_approach_a_target < 0.0)
       )
     )
