@@ -3990,3 +3990,101 @@ def test_comfort_budget_firm_routine_decel_cap():
   assert get_comfort_budget(0).firm_routine_decel_cap == 1.2
   assert get_comfort_budget(1).firm_routine_decel_cap == 1.5
   assert get_comfort_budget(2).firm_routine_decel_cap == 1.8
+
+
+def test_low_speed_step_cap_not_clamped_below_runway_safe_floor():
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    LeadPullawayIntent, LeadPullawayPhase, CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX,
+  )
+  # When early_authority=True and safe_accel_cap is high enough,
+  # low_speed_step_cap_suppressed_by_runway should be True,
+  # meaning the step cap should not clamp the pullaway floor.
+  intent = LeadPullawayIntent(
+    phase=LeadPullawayPhase.PULSE,
+    active=True,
+    a_floor=LEAD_PULLAWAY_PULSE_A_FLOOR,
+    reason="lead_created_runway",
+    early_authority=True,
+    safe_accel_cap=CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX + 0.5,
+    runway_margin=2.0,
+    lead_created_runway=True,
+  )
+  # The pullaway floor should be at least LEAD_PULLAWAY_PULSE_A_FLOOR
+  assert intent.a_floor == LEAD_PULLAWAY_PULSE_A_FLOOR
+  assert intent.early_authority
+  assert intent.safe_accel_cap >= CREEP_TO_STOP_GAP_PULLAWAY_ACCEL_MAX
+
+
+def test_stop_release_guard_blocks_positive_accel_without_lead_release():
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    StopReleaseGuardTracker, apply_stop_release_guard_accel,
+  )
+  tracker = StopReleaseGuardTracker()
+  # Build up stop timer without lead release
+  guard = tracker.update(v_ego=0.0, standstill=True, stop_evidence_active=True,
+                          lead_confirmed_release=False, dt=0.01)
+  assert guard.active
+  assert guard.release_accel_cap == 0.0  # default cap is 0, blocks all positive accel
+  # Positive accel should be zeroed
+  a_out, guard_out = apply_stop_release_guard_accel(1.5, guard)
+  assert a_out == 0.0
+  assert guard_out.applied
+
+
+def test_early_pullaway_authority_with_lead_created_runway():
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    LeadPullawayIntentTracker,
+  )
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
+
+  # Create a mock lead state with progress model
+  class MockProgressModel:
+    confidence_stability_sufficient = True
+    alternate_threat_absent = True
+    shadow_absent = True
+    allowed = True
+    stop_threat_absent = True
+    opening_speed = 0.5
+    lead_moving = True
+
+  class MockRiskModel:
+    closing_speed = 0.0
+    required_decel = 0.0
+    ttc = float('inf')
+
+  class MockLeadState:
+    track_id = 1
+    shadow = False
+    flicker_guard_timer = 0.0
+    new_lead = False
+    stable = True
+    v_rel = 0.5
+    progress_model = MockProgressModel()
+    risk_model = MockRiskModel()
+
+  class MockPrimaryLeadContext:
+    alternate_threat_active = False
+    shadow_active = False
+    lead_progress_allowed = True
+    lead_release_blocked_reason = ""
+
+  class MockRunway:
+    coast_required = False
+    safe_accel_cap = 1.0
+    lead_created_runway = True
+
+  authority, reason = LeadPullawayIntentTracker._early_pullaway_authority(
+    lead_state=MockLeadState(),
+    primary_lead_context=MockPrimaryLeadContext(),
+    runway=MockRunway(),
+    lead_opening=True,
+    lead_moving=True,
+    lead_accel=0.3,
+    independent_stop_threat=False,
+    alternate_lead_threat_active=False,
+    brake_pressed=False,
+    gas_pressed=False,
+    force_slow_decel=False,
+  )
+  assert authority, f"Expected authority with lead_created_runway, got reason: {reason}"
+  assert reason == "lead_created_runway"
