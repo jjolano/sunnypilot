@@ -4115,7 +4115,9 @@ def test_routine_lead_approach_valid_for_stable_physical_lead_without_behavior()
 
 def test_far_lead_coast_helper_phase_and_target():
   """Far-lead coast: stable slower lead above caution gap, within TTC budget,
-  should produce phase=far_lead_coast, far_coast_active=True, a_target=0.0."""
+  should produce phase=far_lead_coast, far_coast_active=True, a_target=0.0.
+  Trigger conditions: dRel above caution, projected gap above caution,
+  time_to_caution <= far_coast_ttc, not urgent."""
   accel, debug = get_moving_lead_stop_gap_guard_accel(
     v_ego=28.0,
     d_rel=60.0,
@@ -4134,6 +4136,8 @@ def test_far_lead_coast_helper_phase_and_target():
   # Far-lead coast target should be 0.0 (coast, no braking)
   assert debug["routine_lead_raw_a_target"] == pytest.approx(0.0, abs=0.01)
   assert not debug["routine_lead_approach_urgent"]
+  # Trigger conditions: time_to_caution within far_coast_ttc budget
+  assert 0.0 < debug["routine_lead_time_to_caution"] <= ROUTINE_LEAD_FAR_COAST_TTC
 
 
 def test_far_lead_coast_blocked_by_safety():

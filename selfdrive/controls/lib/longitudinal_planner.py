@@ -3752,8 +3752,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       # Emit routine lead approach floor seed when routine is active, valid, and non-urgent.
       # This allows routine comfort shaping to relax non-urgent baseline targets at seed level.
       # Far-lead coast, free-coast, soft-decel, and routine-decel phases can emit the seed
-      # even when there is no existing non-urgent target to relax (routine_can_own covers that
-      # case via the safety_relevant gate). Urgent/safety-relevant targets are never overridden.
+      # even when routine_can_own is false because no existing non-urgent target was present.
+      # Urgent/safety-relevant targets are never overridden.
       if moving_stop_guard_debug is not None:
         routine_active = bool(moving_stop_guard_debug.get("routine_lead_approach_active", False))
         routine_urgent = bool(moving_stop_guard_debug.get("routine_lead_approach_urgent", False))
