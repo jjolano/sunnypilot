@@ -4164,7 +4164,14 @@ def test_moving_lead_routine_far_lead_coast_starts_before_projection_caution():
   closing speed is moderate, and TTC to caution is within the far_coast_ttc
   budget. This verifies the far-lead coast phase starts before the projected
   gap reaches caution — the vehicle is closing on a slower lead but has
-  enough runway that coasting (a_target=0) is the right comfort response."""
+  enough runway that coasting (a_target=0) is the right comfort response.
+
+  Trigger conditions:
+    dRel above caution
+    projected gap still above caution
+    time_to_caution <= far_coast_ttc
+    not urgent, not urgent_bypass
+  """
   v_ego = 28.0
   v_lead = 26.0
   d_rel = 60.0
@@ -4177,12 +4184,15 @@ def test_moving_lead_routine_far_lead_coast_starts_before_projection_caution():
   # closing with finite TTC within budget, not urgent
   assert result.far_coast_active, f"Expected far_coast_active=True, got {result.far_coast_active}"
   assert result.debug["routine_lead_phase"] == "far_lead_coast"
-  assert result.raw_a_target == 0.0
   assert result.debug["routine_lead_far_coast_active"]
-  # TTC to caution should be positive and within the far_coast_ttc budget
-  assert 0.0 < result.debug["routine_lead_time_to_caution"] <= ROUTINE_LEAD_FAR_COAST_TTC
+  assert result.debug["routine_lead_coast_first_active"]
+  # Far-lead coast target should be 0.0 (coast, no braking)
+  assert result.raw_a_target == 0.0
   # Not urgent — this is a comfort coast, not a safety event
   assert not result.urgent
+  assert not result.debug.get("routine_lead_urgent_bypass", False)
+  # TTC to caution should be positive and within the far_coast_ttc budget
+  assert 0.0 < result.debug["routine_lead_time_to_caution"] <= ROUTINE_LEAD_FAR_COAST_TTC
 
 
 def test_routine_comfort_phase_emits_seed_without_existing_target():
