@@ -7,6 +7,9 @@ from openpilot.selfdrive.controls.lib.model_path_processor import (
   LOW_QUALITY_BLEND_MIN_ALPHA,
   LOW_QUALITY_BLEND_THRESHOLD,
   LOW_SPEED_UNTRUSTED_CURVATURE_STEP,
+  STRAIGHT_ROAD_DAMPING_MAX_CURVATURE,
+  STRAIGHT_ROAD_DAMPING_MIN_SPEED,
+  STRAIGHT_ROAD_DAMPING_TAU_S,
   ModelPathProcessor,
   ModelPathProcessorInputs,
 )
@@ -948,3 +951,93 @@ def test_frame_drop_gates_then_recovers_after_clean_hold():
   assert not recovered.gated
   assert recovered.reason == "ok"
   assert recovered.hold_frames_remaining == 0
+
+
+# --- Straight-road damping tests ---
+
+def _straight_road_inputs(**overrides):
+  """Helper for straight-road damping tests: high speed, near-zero curvature, good path."""
+  defaults = dict(
+    lat_active=True,
+    v_ego=STRAIGHT_ROAD_DAMPING_MIN_SPEED + 5.0,
+    desired_curvature=1e-5,
+    measured_curvature=1e-5,
+    previous_desired_curvature=1e-5,
+    position_x=tuple(range(ModelConstants.IDX_N)),
+    position_y=tuple(0.001 * i for i in range(ModelConstants.IDX_N)),
+    position_y_std=tuple(0.01 for _ in range(ModelConstants.IDX_N)),
+    orientation_z=tuple(0.0 for _ in range(ModelConstants.IDX_N)),
+    orientation_rate_z=tuple(0.0 for _ in range(ModelConstants.IDX_N)),
+    lane_line_probs=(0.0, 0.9, 0.9, 0.0),
+    smooth_model_path_curvature=True,
+  )
+  defaults.update(overrides)
+  return ModelPathProcessorInputs(**defaults)
+
+
+def test_straight_road_damping_increases_tau_at_high_speed_near_zero_curvature():
+  """On a straight road at high speed, tau should be larger than base tau."""
+  mpp = ModelPathProcessor()
+  # Prime with several frames of near-zero curvature at high speed
+  for _ in range(20):
+    result = mpp.update(_straight_road_inputs())
+  # At high speed with near-zero curvature, tau should be larger than base (0.055s at 30 m/s)
+  assert result.smoothing_tau_s > 0.055, f"Expected tau > 0.055 on straight road, got {result.smoothing_tau_s}"
+  assert result.straight_road_damping_active
+
+
+def test_straight_road_damping_not_active_at_low_speed():
+  """Straight-road damping should not activate below the minimum speed."""
+  mpp = ModelPathProcessor()
+  result = mpp.update(_straight_road_inputs(
+    v_ego=STRAIGHT_ROAD_DAMPING_MIN_SPEED - 5.0,
+  ))
+  assert not result.straight_road_damping_active
+
+
+def test_straight_road_damping_not_active_during_lane_change():
+  """Straight-road damping should not activate during lane change."""
+  mpp = ModelPathProcessor()
+  result = mpp.update(_straight_road_inputs(lane_change_active=True))
+  assert not result.straight_road_damping_active
+
+
+def test_straight_road_damping_not_active_at_high_curvature():
+  """Straight-road damping should not activate when curvature is significant."""
+  mpp = ModelPathProcessor()
+  result = mpp.update(_straight_road_inputs(
+    desired_curvature=STRAIGHT_ROAD_DAMPING_MAX_CURVATURE * 2,
+    measured_curvature=STRAIGHT_ROAD_DAMPING_MAX_CURVATURE * 2,
+    previous_desired_curvature=STRAIGHT_ROAD_DAMPING_MAX_CURVATURE * 2,
+  ))
+  assert not result.straight_road_damping_active
+
+
+def test_straight_road_damping_deadband_holds_previous_curvature():
+  """Within the deadband, the smoothed curvature should hold near its previous value."""
+  mpp = ModelPathProcessor()
+  # Prime with stable near-zero curvature
+  for _ in range(30):
+    mpp.update(_straight_road_inputs())
+  # Send a small oscillation within the deadband
+  result = mpp.update(_straight_road_inputs(
+    desired_curvature=8e-5,
+    measured_curvature=8e-5,
+    previous_desired_curvature=1e-5,
+  ))
+  assert result.straight_road_damping_active
+  # The output curvature should be closer to 1e-5 than to 8e-5
+  assert abs(result.desired_curvature - 1e-5) < abs(result.desired_curvature - 8e-5)
+
+
+def test_straight_road_damping_blend_decreases_with_curvature():
+  """As curvature increases toward the threshold, straight-road damping blend decreases."""
+  mpp_low = ModelPathProcessor()
+  result_low = mpp_low.update(_straight_road_inputs(desired_curvature=1e-5, measured_curvature=1e-5, previous_desired_curvature=1e-5))
+
+  mpp_mid = ModelPathProcessor()
+  result_mid = mpp_mid.update(_straight_road_inputs(desired_curvature=2e-4, measured_curvature=2e-4, previous_desired_curvature=2e-4))
+
+  # Low curvature should have higher tau (more damping) than moderate curvature
+  assert result_low.smoothing_tau_s > result_mid.smoothing_tau_s, \
+    f"Expected tau_low ({result_low.smoothing_tau_s}) > tau_mid ({result_mid.smoothing_tau_s})"
