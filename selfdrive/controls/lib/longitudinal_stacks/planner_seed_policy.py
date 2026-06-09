@@ -142,8 +142,12 @@ def fallback_physical_candidates(converted_candidates: tuple[LongitudinalCandida
     # that would merely reintroduce the same non-urgent lead baseline.
     # True physical hazards still pass through:
     # - should_stop: stop-threat handling requires this candidate
-    # - hard braking (a_target < -1.0): safety-relevant decel that routine
-    #   comfort should not suppress, even if should_stop is not yet set
+    # - hard braking (a_target < -1.0 m/s²): decel strong enough to be
+    #   safety-relevant even if should_stop is not yet set. This threshold
+    #   is intentionally more conservative than the lead-stop slew threshold
+    #   (LEAD_STOP_APPROACH_DECEL_SLEW_MIN_LEAD_DECEL = 0.6 m/s²) because
+    #   fallback suppression should err on the side of preserving safety-relevant
+    #   decel, while the lead-stop slew can apply its own rate limit.
     if routine_comfort_owns_shape and candidate.source == DecisionSource.LEAD_MPC:
       if not candidate.should_stop and not (float(candidate.a_target) < -1.0):
         continue

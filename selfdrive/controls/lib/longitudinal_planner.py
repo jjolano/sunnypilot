@@ -3792,9 +3792,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       custom_lead_stop_approach_base_a_target = lead_stop_approach_base_a_target
 
       # The lead-stop approach slew applies a high-jerk rate limit only for
-      # urgent scenarios: hard-braking lead (a_lead <= -1.0 m/s²) or stopped
-      # lead with runway remaining. Both conditions describe physical hazards
-      # that are not routine/comfort-shaped.
+      # urgent scenarios: hard-braking lead (a_lead <= -0.6 m/s², matching
+      # LEAD_STOP_APPROACH_DECEL_SLEW_MIN_LEAD_DECEL) or stopped lead with
+      # runway remaining. Both conditions describe physical hazards that are
+      # not routine/comfort-shaped.
       #
       # When routine_lead_can_own_nonurgent_shape is true, the lead is neither
       # hard-braking nor stopped-with-runway, so get_lead_stop_approach_slewed_accel
