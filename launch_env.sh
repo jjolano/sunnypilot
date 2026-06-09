@@ -20,11 +20,3 @@ if [ -z "$AGNOS_VERSION" ]; then
 fi
 
 export STAGING_ROOT="/data/safe_staging"
-
-# Prepend the uv-managed virtual environment to PATH so that
-# python3 (used by manager.py, build.py, etc.) resolves to the
-# venv Python where all required packages are installed.
-VENV_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )/.venv/bin"
-if [ -d "$VENV_DIR" ]; then
-  export PATH="$VENV_DIR:$PATH"
-fi
