@@ -2741,7 +2741,7 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     "routine_lead_approach_reason": "routine_slower_lead_approach",
     "routine_lead_approach_urgent": urgent,
     "routine_lead_phase": phase,
-    "routine_lead_coast_first_active": phase == "free_coast",
+    "routine_lead_coast_first_active": phase in ("far_lead_coast", "free_coast"),
     "routine_lead_anticipatory_active": anticipatory_active,
     "routine_lead_allowed_closing": allowed_closing_speed,
     "routine_lead_closing_excess": closing_excess,
@@ -3751,12 +3751,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         custom_moving_stop_guard_debug = moving_stop_guard_debug
       # Emit routine lead approach floor seed when routine is active, valid, and non-urgent.
       # This allows routine comfort shaping to relax non-urgent baseline targets at seed level.
+      # Far-lead coast, free-coast, soft-decel, and routine-decel phases can emit the seed
+      # even when there is no existing non-urgent target to relax (routine_can_own covers that
+      # case via the safety_relevant gate). Urgent/safety-relevant targets are never overridden.
       if moving_stop_guard_debug is not None:
         routine_active = bool(moving_stop_guard_debug.get("routine_lead_approach_active", False))
         routine_urgent = bool(moving_stop_guard_debug.get("routine_lead_approach_urgent", False))
         routine_ramped = float(moving_stop_guard_debug.get("routine_lead_ramped_a_target", 0.0))
         routine_can_own = bool(moving_stop_guard_debug.get("routine_lead_can_own_nonurgent_shape", False))
         routine_safety_relevant = bool(moving_stop_guard_debug.get("routine_lead_existing_target_safety_relevant", False))
+        routine_phase = str(moving_stop_guard_debug.get("routine_lead_phase", ""))
+        routine_far_coast = bool(moving_stop_guard_debug.get("routine_lead_far_coast_active", False))
+        routine_comfort_phase = routine_phase in ("far_lead_coast", "free_coast", "soft_decel", "routine_decel")
         valid_approach = is_valid_routine_lead_approach(
           primary_lead_context=primary_lead_context,
           brake_pressed=sm['carState'].brakePressed,
@@ -3765,7 +3771,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
           independent_stop_threat=lead_pullaway_independent_stop_threat,
           alternate_lead_threat_active=bool(getattr(primary_lead_context, "alternate_threat_active", False)),
         )
-        if routine_active and not routine_urgent and routine_can_own and not routine_safety_relevant and valid_approach:
+        if routine_active and not routine_urgent and not routine_safety_relevant and valid_approach and (routine_can_own or routine_far_coast or routine_comfort_phase):
           custom_routine_lead_approach_a_target = routine_ramped
           custom_routine_lead_approach_debug = {k: v for k, v in moving_stop_guard_debug.items() if k.startswith("routine_lead_")}
 

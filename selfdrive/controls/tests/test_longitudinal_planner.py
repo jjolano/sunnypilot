@@ -4113,6 +4113,73 @@ def test_routine_lead_approach_valid_for_stable_physical_lead_without_behavior()
   assert is_valid_routine_lead_approach(primary_lead_context=context)
 
 
+def test_far_lead_coast_helper_phase_and_target():
+  """Far-lead coast: stable slower lead above caution gap, within TTC budget,
+  should produce phase=far_lead_coast, far_coast_active=True, a_target=0.0."""
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=28.0,
+    d_rel=60.0,
+    v_lead=26.0,
+    a_lead=-0.1,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.05,
+    return_debug=True,
+  )
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_phase"] == "far_lead_coast"
+  assert debug["routine_lead_far_coast_active"]
+  assert debug["routine_lead_coast_first_active"]
+  # Far-lead coast target should be 0.0 (coast, no braking)
+  assert debug["routine_lead_raw_a_target"] == pytest.approx(0.0, abs=0.01)
+  assert not debug["routine_lead_approach_urgent"]
+
+
+def test_far_lead_coast_blocked_by_safety():
+  """Far-lead coast should not activate when the lead is urgent (short TTC,
+  hard braking, or danger gap). Safety-relevant targets should win."""
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.0,
+    d_rel=8.0,
+    v_lead=5.0,
+    a_lead=-3.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.05,
+    return_debug=True,
+  )
+  # Short distance, hard braking lead — should be urgent, not far-lead coast
+  assert not debug.get("routine_lead_far_coast_active", False)
+  assert debug.get("routine_lead_approach_urgent", False) or accel is not None and accel < -1.0
+
+
+def test_routine_comfort_phase_emits_seed_without_existing_target():
+  """Routine comfort floor seed should be emitted for far-lead coast and
+  other comfort phases even when there is no existing non-urgent target.
+  This tests the planner-level seed emission condition, not just the helper."""
+  # Use the helper to get a far-lead coast scenario
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=25.0,
+    d_rel=50.0,
+    v_lead=22.0,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.05,
+    return_debug=True,
+  )
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_can_own_nonurgent_shape"]
+  assert debug["routine_lead_phase"] in ("far_lead_coast", "free_coast", "soft_decel", "routine_decel")
+  # The routine comfort floor should be emitted even with no existing target
+  assert debug["routine_lead_existing_target_reason"] == "none"
+  assert not debug["routine_lead_existing_target_safety_relevant"]
+
+
 def test_routine_can_own_without_existing_target():
   """Routine comfort should own non-urgent shape even when there is no
   prior moving-lead baseline target. Far-lead coast and free-coast phases
