@@ -118,6 +118,7 @@ from openpilot.selfdrive.controls.lib.lead_confidence import LEAD_CONFIDENCE_TRA
 from openpilot.selfdrive.controls.lib.lead_context import (
   LEAD_AUTHORITY_PHYSICAL,
   LEAD_AUTHORITY_PROGRESS_ALLOWED,
+  LEAD_AUTHORITY_SUPPRESS_ONLY,
   LeadContextTracker,
   LeadProgressModel,
   LeadRelevanceState,
@@ -4088,3 +4089,66 @@ def test_early_pullaway_authority_with_lead_created_runway():
   )
   assert authority, f"Expected authority with lead_created_runway, got reason: {reason}"
   assert reason == "lead_created_runway"
+
+
+def test_routine_lead_approach_valid_for_stable_physical_lead_without_behavior():
+  """Routine comfort shaping should be valid for a stable physical lead
+  even when no behavior/progress-allowed lead exists. Far-lead coast and
+  soft decel should not require progress authority."""
+  physical = LeadRelevanceState(
+    lead_idx=0, status=True, shadow=False, stable=True, new_lead=False,
+    flicker_guard_timer=0.0, track_id=1, d_rel=80.0, y_rel=0.0,
+    path_y_rel=0.0, v_lead=22.0, v_rel=-2.0, model_prob=0.95, radar=True,
+    ttc=40.0, required_decel=0.1, time_gap=3.5, on_path_score=0.9,
+    risk_score=0.3, ghost_score=0.0, confidence=0.9,
+    authority=LEAD_AUTHORITY_SUPPRESS_ONLY, reason="path_relevant_physical_lead",
+  )
+  context = PrimaryLeadContext(
+    physical_idx=0, behavior_idx=None, physical=physical, behavior=None,
+    alternate_threat_active=False, shadow_active=False,
+    reason="path_relevant_physical_lead",
+    states=(physical,), lead_progress_allowed=False,
+    lead_release_blocked_reason="",
+  )
+  assert is_valid_routine_lead_approach(primary_lead_context=context)
+
+
+def test_routine_lead_approach_invalid_for_suppressive_only_physical_lead():
+  """A purely suppressive-only physical lead that blocks progress should
+  not be valid for routine comfort shaping."""
+  physical = LeadRelevanceState(
+    lead_idx=0, status=True, shadow=False, stable=True, new_lead=False,
+    flicker_guard_timer=0.0, track_id=1, d_rel=5.0, y_rel=0.0,
+    path_y_rel=0.0, v_lead=0.0, v_rel=20.0, model_prob=0.95, radar=True,
+    ttc=1.0, required_decel=3.0, time_gap=0.25, on_path_score=0.9,
+    risk_score=0.9, ghost_score=0.0, confidence=0.9,
+    authority=LEAD_AUTHORITY_SUPPRESS_ONLY, reason="primary_physical_lead_suppressive",
+  )
+  context = PrimaryLeadContext(
+    physical_idx=0, behavior_idx=None, physical=physical, behavior=None,
+    alternate_threat_active=False, shadow_active=False,
+    reason="primary_physical_lead_suppressive",
+    states=(physical,), lead_progress_allowed=False,
+    lead_release_blocked_reason="primary_physical_lead_suppressive",
+  )
+  assert not is_valid_routine_lead_approach(primary_lead_context=context)
+
+
+def test_routine_lead_approach_valid_for_behavior_lead():
+  """A stable behavior lead with progress allowed should be valid."""
+  behavior = LeadRelevanceState(
+    lead_idx=0, status=True, shadow=False, stable=True, new_lead=False,
+    flicker_guard_timer=0.0, track_id=1, d_rel=40.0, y_rel=0.0,
+    path_y_rel=0.0, v_lead=22.0, v_rel=-2.0, model_prob=0.95, radar=True,
+    ttc=20.0, required_decel=0.1, time_gap=1.8, on_path_score=0.9,
+    risk_score=0.3, ghost_score=0.0, confidence=0.9,
+    authority=LEAD_AUTHORITY_PROGRESS_ALLOWED, reason="stable_moving_lead",
+  )
+  context = PrimaryLeadContext(
+    physical_idx=None, behavior_idx=0, physical=None, behavior=behavior,
+    alternate_threat_active=False, shadow_active=False,
+    reason="stable_moving_lead",
+    states=(behavior,), lead_progress_allowed=True,
+    lead_release_blocked_reason="",
+  )
+  assert is_valid_routine_lead_approach(primary_lead_context=context)

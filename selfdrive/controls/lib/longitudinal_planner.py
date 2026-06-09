@@ -2772,13 +2772,17 @@ def is_valid_routine_lead_approach(*, primary_lead_context, brake_pressed=False,
   """Check whether a routine lead approach is valid for comfort shaping.
 
   A valid routine lead approach requires:
-  - lead exists and is path-relevant
-  - lead is stable, not new, not flicker, not shadow
+  - a stable, path-relevant lead (behavior or physical)
+  - lead is not new, not flicker, not shadow
   - no driver brake/gas override
-  - no force_slow.
-  - no independent stop threat.
-  - no alternate closer threat.
-  - lead progress is allowed (not suppressive-only).
+  - no force_slow
+  - no independent stop threat
+  - no alternate closer threat
+  - not suppressive-only without progress authority
+
+  Routine comfort shaping does not require lead_progress_allowed; it only
+  requires a stable, path-relevant lead that is not suppressive-only.
+  Progress authority is a separate gate for launch/pullaway/excess-gap closure.
   """
   if primary_lead_context is None:
     return False
@@ -2792,17 +2796,30 @@ def is_valid_routine_lead_approach(*, primary_lead_context, brake_pressed=False,
     return False
   if bool(getattr(primary_lead_context, "shadow_active", False)):
     return False
+
+  # Accept a stable behavior lead or a stable physical lead.
+  # Behavior leads come from progress_allowed states; physical leads come
+  # from suppressive states. Both are valid for routine comfort shaping
+  # as long as the lead is stable, path-relevant, and not shadow/flicker/new.
   behavior = getattr(primary_lead_context, "behavior", None)
-  if behavior is None:
+  physical = getattr(primary_lead_context, "physical", None)
+  lead_state = behavior or physical
+
+  if lead_state is None:
     return False
-  if bool(getattr(behavior, "shadow", False)):
+  if bool(getattr(lead_state, "shadow", False)):
     return False
-  if bool(getattr(behavior, "flicker_guard_timer", 0.0) > 0.0):
+  if bool(getattr(lead_state, "flicker_guard_timer", 0.0) > 0.0):
     return False
-  if bool(getattr(behavior, "new_lead", False)):
+  if bool(getattr(lead_state, "new_lead", False)):
     return False
-  if not bool(getattr(behavior, "stable", False)):
+  if not bool(getattr(lead_state, "stable", False)):
     return False
+
+  # A suppressive-only physical lead without any progress-allowed behavior
+  # lead is still valid for routine comfort shaping (coast/soft decel), but
+  # a purely suppressive-only lead that blocks progress entirely is not.
+  # The primary_physical_lead_suppressive block already handles that case.
   if not bool(getattr(primary_lead_context, "lead_progress_allowed", False)):
     blocked_reason = str(getattr(primary_lead_context, "lead_release_blocked_reason", ""))
     if blocked_reason == "primary_physical_lead_suppressive":
@@ -3763,6 +3780,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         if lead_stop_pre_slew_a_target is not None:
           lead_stop_approach_base_a_target = min(lead_stop_approach_base_a_target, lead_stop_pre_slew_a_target)
       custom_lead_stop_approach_base_a_target = lead_stop_approach_base_a_target
+
+      # The lead-stop approach slew applies a high-jerk rate limit only for
+      # urgent scenarios: hard-braking lead (a_lead <= -1.0 m/s²) or stopped
+      # lead with runway remaining. Both conditions describe physical hazards
+      # that are not routine/comfort-shaped.
+      #
+      # When routine_lead_can_own_nonurgent_shape is true, the lead is neither
+      # hard-braking nor stopped-with-runway, so get_lead_stop_approach_slewed_accel
+      # returns a_target unchanged (no actual slew). Even in the unlikely case
+      # both conditions held simultaneously, the routineness gate at line ~3764
+      # (not routine_urgent) already prevents routine comfort from owning urgent
+      # shapes. No additional guard is needed here.
       custom_lead_stop_approach_slewed_a_target = get_lead_stop_approach_slewed_accel(
         v_ego, physical_lead_d_rel, physical_lead_v_lead, physical_lead_a,
         prev_output_a_target, lead_stop_approach_base_a_target, self.dt, traction_risk=traction_risk,

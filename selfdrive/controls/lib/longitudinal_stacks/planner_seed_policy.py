@@ -140,7 +140,10 @@ def fallback_physical_candidates(converted_candidates: tuple[LongitudinalCandida
       continue
     # When routine comfort owns non-urgent shape, skip raw LEAD_MPC fallback
     # that would merely reintroduce the same non-urgent lead baseline.
-    # True physical hazards (should_stop, hard braking, safety-relevant) still pass through.
+    # True physical hazards still pass through:
+    # - should_stop: stop-threat handling requires this candidate
+    # - hard braking (a_target < -1.0): safety-relevant decel that routine
+    #   comfort should not suppress, even if should_stop is not yet set
     if routine_comfort_owns_shape and candidate.source == DecisionSource.LEAD_MPC:
       if not candidate.should_stop and not (float(candidate.a_target) < -1.0):
         continue
