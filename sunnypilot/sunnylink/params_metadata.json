@@ -7,6 +7,10 @@
     "title": "Accurate Lateral Acceleration",
     "description": "Experimental opt-in control path that uses curvature-based lateral acceleration and exact roll gravity compensation in lateral and turn-speed calculations. Keep disabled unless validating this behavior."
   },
+  "LaneCenteringAssistEnabled": {
+    "title": "Lane Centering Assist",
+    "description": "Apply small curvature corrections on straight roads to reduce lateral drift. Only active when lateral control is using the model path and driving straight at highway speed."
+  },
   "AdbEnabled": {
     "title": "Enable ADB",
     "description": ""

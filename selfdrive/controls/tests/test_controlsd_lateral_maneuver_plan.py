@@ -80,8 +80,14 @@ def make_controls(*, desired_curvature=0.001, checks_ok=True):
 
 
 class FakeParams:
-  def get_bool(self, _key):
-    return False
+  def __init__(self):
+    self._store = {}
+
+  def get_bool(self, key):
+    return self._store.get(key, False)
+
+  def put_bool(self, key, value):
+    self._store[key] = bool(value)
 
 
 class FakeModelPathProcessor:
@@ -180,7 +186,7 @@ def make_demand_controls(*, previous_curvature=0.0, measured_curvature=0.001, de
   controls.model_path_raw_desired_curvature = 0.0
   controls.model_path_processor = FakeModelPathProcessor(path_result or ModelPathProcessorResult(measured_curvature, 0.0, True, "inactive"))
   controls.lane_change_path_shaper = FakeLaneChangePathShaper(lane_result or LaneChangePathShaperResult(measured_curvature, 0.0, False, False))
-  controls.lane_centering_assist_enabled = False
+  controls.params.put_bool("LaneCenteringAssistEnabled", False)
   controls.lane_centering_assist_tracker = FakeLaneCenteringAssistTracker()
   return controls
 
@@ -306,7 +312,7 @@ def test_lane_centering_assist_nudges_before_final_clipping_when_enabled():
   path_result = ModelPathProcessorResult(0.001, 1.0, False, "ok")
   lane_result = LaneChangePathShaperResult(0.001, 0.0, False, False)
   controls = make_demand_controls(path_result=path_result, lane_result=lane_result)
-  controls.lane_centering_assist_enabled = True
+  controls.params.put_bool("LaneCenteringAssistEnabled", True)
   controls.lane_centering_assist_tracker = FakeLaneCenteringAssistTracker(
     LaneCenteringAssistResult(True, 0.0002, 0.1, 0.0, 0.2, 1.0, "growing_lateral_error")
   )
@@ -329,7 +335,7 @@ def test_lane_centering_assist_does_not_bypass_final_clipping():
   path_result = ModelPathProcessorResult(0.0, 1.0, False, "ok")
   lane_result = LaneChangePathShaperResult(0.0, 0.0, False, False)
   controls = make_demand_controls(path_result=path_result, lane_result=lane_result)
-  controls.lane_centering_assist_enabled = True
+  controls.params.put_bool("LaneCenteringAssistEnabled", True)
   controls.lane_centering_assist_tracker = FakeLaneCenteringAssistTracker(
     LaneCenteringAssistResult(True, 1.0, 0.1, 0.0, 0.2, 1.0, "growing_lateral_error")
   )
@@ -348,7 +354,7 @@ def test_lane_centering_assist_does_not_bypass_final_clipping():
 
 def test_lateral_maneuver_source_does_not_call_lane_centering_assist():
   controls = make_demand_controls(desired_curvature=0.002, checks_ok=True)
-  controls.lane_centering_assist_enabled = True
+  controls.params.put_bool("LaneCenteringAssistEnabled", True)
   tracker = FakeLaneCenteringAssistTracker(LaneCenteringAssistResult(True, 0.0002, 0.1, 0.0, 0.2, 1.0, "growing_lateral_error"))
   controls.lane_centering_assist_tracker = tracker
 

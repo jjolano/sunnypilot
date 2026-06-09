@@ -152,7 +152,6 @@ class Controls(ControlsExt):
     self.lateral_accel_limit_no_roll = MAX_LATERAL_ACCEL_NO_ROLL
     self.default_lateral_accel_limited = False
     self.lane_change_path_shaper = LaneChangePathShaper(DT_CTRL)
-    self.lane_centering_assist_enabled = False
     self.lane_centering_assist_tracker = LaneCenteringAssistTracker()
     self.model_path_processor = ModelPathProcessor()
     self.model_path_result = ModelPathProcessorResult(0.0, 0.0, True, "inactive")
@@ -282,7 +281,7 @@ class Controls(ControlsExt):
       lane_change_blend = float(lane_change_result.blend)
       new_desired_curvature = lane_change_result.desired_curvature if CC.latActive else self.curvature
 
-      lane_centering_assist_enabled = getattr(self, "lane_centering_assist_enabled", False)
+      lane_centering_assist_enabled = self.params.get_bool("LaneCenteringAssistEnabled")
       if lane_centering_assist_enabled and demand_source == DEMAND_SOURCE_MODEL_PATH:
         accurate_lateral_accel = self.params.get_bool("AccurateLateralAccel")
         base_clip_result = clip_curvature_with_result(
