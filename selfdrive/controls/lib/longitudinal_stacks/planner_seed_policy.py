@@ -32,6 +32,38 @@ LEAD_MPC_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_
 E2E_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.e2e)}
 PROGRESS_RELAXATION_SEED_REASONS = {"confirmed_lead_pullaway_pulse", "excess_gap_closure"}
 ROUTINE_COMFORT_SEED_REASONS = {"routine_slower_lead_approach"}
+
+
+def _is_routine_comfort_relaxation(converted_candidates: tuple[LongitudinalCandidate, ...]) -> bool:
+  """Detect whether a routine comfort RELAXATION seed owns non-urgent comfort shape.
+
+  A routine comfort seed is present when:
+  - role == RELAXATION
+  - reason == routine_slower_lead_approach
+  - debug says routine can own non-urgent shape
+  - debug says existing target is not safety-relevant
+  - debug says no urgent bypass
+  """
+  for candidate in converted_candidates:
+    if candidate.role != CandidateRole.RELAXATION:
+      continue
+    reason = str(candidate.active_reason or "")
+    if reason not in ROUTINE_COMFORT_SEED_REASONS:
+      continue
+    debug = getattr(candidate, "debug", None) or {}
+    if isinstance(debug, dict):
+      can_own = bool(debug.get("routine_lead_can_own_nonurgent_shape", False))
+      safety_relevant = bool(debug.get("routine_lead_existing_target_safety_relevant", False))
+      urgent_bypass = bool(debug.get("routine_lead_urgent_bypass", False))
+    else:
+      can_own = bool(getattr(debug, "routine_lead_can_own_nonurgent_shape", False))
+      safety_relevant = bool(getattr(debug, "routine_lead_existing_target_safety_relevant", False))
+      urgent_bypass = bool(getattr(debug, "routine_lead_urgent_bypass", False))
+    if can_own and not safety_relevant and not urgent_bypass:
+      return True
+  return False
+
+
 PROGRESS_ACCEL_CAP_SEED_REASONS = {
   "creep_pullaway_launch_accel_cap",
   "low_speed_pullaway_accel_step_cap",
@@ -80,8 +112,8 @@ def planner_seed_candidates_to_longitudinal_candidates(candidates: tuple[Planner
 
 
 def fallback_physical_candidates(converted_candidates: tuple[LongitudinalCandidate, ...],
-                                 raw_candidates: tuple[LongitudinalCandidate, ...] | list[LongitudinalCandidate],
-                                 fallback_output: LongitudinalStackOutput) -> tuple[LongitudinalCandidate, ...]:
+                                  raw_candidates: tuple[LongitudinalCandidate, ...] | list[LongitudinalCandidate],
+                                  fallback_output: LongitudinalStackOutput) -> tuple[LongitudinalCandidate, ...]:
   represented = {
     _physical_candidate_identity(candidate) for candidate in converted_candidates
     if candidate.role == CandidateRole.PHYSICAL_HAZARD
@@ -93,6 +125,7 @@ def fallback_physical_candidates(converted_candidates: tuple[LongitudinalCandida
     not candidate.should_stop
     for candidate in converted_candidates
   )
+  routine_comfort_owns_shape = _is_routine_comfort_relaxation(converted_candidates)
   fallback_source_is_lead = _source_matches(fallback_output.source, LEAD_MPC_SOURCE_VALUES, {"lead0", "lead1"})
   fallbacks: list[LongitudinalCandidate] = []
   for candidate in raw_candidates:
@@ -105,6 +138,12 @@ def fallback_physical_candidates(converted_candidates: tuple[LongitudinalCandida
       planner_seed_launch_release or (fallback_source_is_lead and not fallback_output.should_stop)
     ):
       continue
+    # When routine comfort owns non-urgent shape, skip raw LEAD_MPC fallback
+    # that would merely reintroduce the same non-urgent lead baseline.
+    # True physical hazards (should_stop, hard braking, safety-relevant) still pass through.
+    if routine_comfort_owns_shape and candidate.source == DecisionSource.LEAD_MPC:
+      if not candidate.should_stop and not (float(candidate.a_target) < -1.0):
+        continue
     fallbacks.append(custom_v2_candidate_with_debug(
       candidate,
       intent=intent,

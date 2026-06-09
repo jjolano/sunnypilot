@@ -439,3 +439,192 @@ def test_safety_cap_beats_routine_comfort_floor():
   selected = select_planner_seed_candidate([baseline, routine_floor, safety_cap])
   # Safety cap should win (most restrictive cap)
   assert selected.output.a_target <= -1.5, f"safety cap should win over routine floor, got {selected.output.a_target}"
+
+
+def test_routine_comfort_relaxation_survives_nonurgent_lead_mpc_fallback():
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import fallback_physical_candidates
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  # Routine comfort RELAXATION seed that owns non-urgent shape
+  routine_seed = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.RELAXATION,
+    v_target=18.0,
+    a_target=-0.15,
+    confidence=0.8,
+    urgency=0.2,
+    active_reason=ROUTINE_LEAD_APPROACH_SEED_REASON,
+    should_stop=False,
+    debug={
+      "routine_lead_can_own_nonurgent_shape": True,
+      "routine_lead_existing_target_safety_relevant": False,
+      "routine_lead_urgent_bypass": False,
+    },
+  )
+  # Raw non-urgent LEAD_MPC physical hazard that would suppress routine comfort
+  raw_lead_mpc = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.PHYSICAL_HAZARD,
+    v_target=18.0,
+    a_target=-0.8,
+    confidence=0.9,
+    urgency=0.6,
+    active_reason="lead0",
+    should_stop=False,
+  )
+  fallback_output = make_output(a_target=-0.8, has_lead=True)
+  result = fallback_physical_candidates((routine_seed,), (raw_lead_mpc,), fallback_output)
+  # Non-urgent LEAD_MPC fallback should be skipped when routine comfort owns shape
+  assert len(result) == 0, f"non-urgent LEAD_MPC fallback should be skipped, got {len(result)} candidates"
+
+
+def test_routine_comfort_does_not_block_urgent_lead_mpc_fallback():
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import fallback_physical_candidates
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  routine_seed = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.RELAXATION,
+    v_target=18.0,
+    a_target=-0.15,
+    confidence=0.8,
+    urgency=0.2,
+    active_reason=ROUTINE_LEAD_APPROACH_SEED_REASON,
+    should_stop=False,
+    debug={
+      "routine_lead_can_own_nonurgent_shape": True,
+      "routine_lead_existing_target_safety_relevant": False,
+      "routine_lead_urgent_bypass": False,
+    },
+  )
+  # Urgent LEAD_MPC with hard braking
+  urgent_lead_mpc = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.PHYSICAL_HAZARD,
+    v_target=18.0,
+    a_target=-2.5,
+    confidence=0.9,
+    urgency=0.8,
+    active_reason="lead0",
+    should_stop=False,
+  )
+  fallback_output = make_output(a_target=-2.5, has_lead=True)
+  result = fallback_physical_candidates((routine_seed,), (urgent_lead_mpc,), fallback_output)
+  assert len(result) == 1, f"urgent LEAD_MPC fallback should survive, got {len(result)} candidates"
+  assert result[0].a_target == -2.5
+
+
+def test_routine_comfort_does_not_block_should_stop_fallback():
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import fallback_physical_candidates
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  routine_seed = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.RELAXATION,
+    v_target=18.0,
+    a_target=-0.15,
+    confidence=0.8,
+    urgency=0.2,
+    active_reason=ROUTINE_LEAD_APPROACH_SEED_REASON,
+    should_stop=False,
+    debug={
+      "routine_lead_can_own_nonurgent_shape": True,
+      "routine_lead_existing_target_safety_relevant": False,
+      "routine_lead_urgent_bypass": False,
+    },
+  )
+  stop_lead_mpc = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.PHYSICAL_HAZARD,
+    v_target=0.5,
+    a_target=-1.5,
+    confidence=0.95,
+    urgency=0.9,
+    active_reason="lead0",
+    should_stop=True,
+  )
+  fallback_output = make_output(a_target=-1.5, has_lead=True)
+  result = fallback_physical_candidates((routine_seed,), (stop_lead_mpc,), fallback_output)
+  assert len(result) == 1, f"should_stop LEAD_MPC fallback should survive, got {len(result)} candidates"
+  assert result[0].should_stop is True
+
+
+def test_routine_comfort_without_own_shape_allows_nonurgent_fallback():
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import fallback_physical_candidates
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  # Routine seed where safety_relevant=True (routine should NOT own shape)
+  routine_seed = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.RELAXATION,
+    v_target=18.0,
+    a_target=-0.15,
+    confidence=0.8,
+    urgency=0.2,
+    active_reason=ROUTINE_LEAD_APPROACH_SEED_REASON,
+    should_stop=False,
+    debug={
+      "routine_lead_can_own_nonurgent_shape": True,
+      "routine_lead_existing_target_safety_relevant": True,  # safety relevant
+      "routine_lead_urgent_bypass": False,
+    },
+  )
+  raw_lead_mpc = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.PHYSICAL_HAZARD,
+    v_target=18.0,
+    a_target=-0.8,
+    confidence=0.9,
+    urgency=0.6,
+    active_reason="lead0",
+    should_stop=False,
+  )
+  fallback_output = make_output(a_target=-0.8, has_lead=True)
+  result = fallback_physical_candidates((routine_seed,), (raw_lead_mpc,), fallback_output)
+  assert len(result) == 1, f"non-urgent LEAD_MPC should pass when routine does NOT own shape, got {len(result)}"
+
+
+def test_advisory_cap_still_wins_over_routine_comfort_floor():
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  baseline = PlannerSeedCandidate(
+    name="baseline",
+    output=make_output(a_target=-0.5, has_lead=True),
+  )
+  routine_floor = PlannerSeedCandidate(
+    name="routine_lead_approach",
+    output=make_output(a_target=-0.15, has_lead=True),
+    selection=PLANNER_SEED_FLOOR,
+    reason=ROUTINE_LEAD_APPROACH_SEED_REASON,
+  )
+  advisory_cap = PlannerSeedCandidate(
+    name="lead_flicker_speedup_cap",
+    output=make_output(a_target=0.0, has_lead=True),
+    selection=PLANNER_SEED_CAP,
+    reason="lead_flicker_speedup_cap",
+  )
+  selected = select_planner_seed_candidate([baseline, routine_floor, advisory_cap])
+  # Advisory cap should clamp positive accel
+  assert selected.output.a_target <= 0.0, f"advisory cap should win, got {selected.output.a_target}"
+
+
+def test_select_planner_seed_candidate_routine_floor_selected():
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  baseline = PlannerSeedCandidate(
+    name="baseline",
+    output=make_output(a_target=-1.0, has_lead=True),
+  )
+  routine_floor = PlannerSeedCandidate(
+    name="routine_lead_approach",
+    output=make_output(a_target=-0.2, has_lead=True),
+    selection=PLANNER_SEED_FLOOR,
+    reason=ROUTINE_LEAD_APPROACH_SEED_REASON,
+  )
+  selected = select_planner_seed_candidate([baseline, routine_floor])
+  # Routine floor should raise the target from -1.0 to -0.2
+  assert selected.output.a_target == -0.2, f"routine floor should be selected, got {selected.output.a_target}"
