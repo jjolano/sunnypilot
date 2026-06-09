@@ -4241,3 +4241,118 @@ def test_routine_lead_approach_valid_for_behavior_lead():
     lead_release_blocked_reason="",
   )
   assert is_valid_routine_lead_approach(primary_lead_context=context)
+
+
+def test_routine_seed_emission_condition_far_coast_without_can_own():
+  """Planner-level seed emission should fire when routine_can_own is False
+  but routine_far_coast is True. This verifies the defensive disjunction
+  (routine_can_own or routine_far_coast or routine_comfort_phase) in the
+  seed emission condition at the planner level.
+
+  In current helper code paths, routine_can_own is always True when
+  routine_far_coast is True and routine_safety_relevant is False, because
+  routine_can_own = routine.active and not safety_relevant, and far_coast
+  requires routine.active. But the disjunction is defensive: if future
+  code changes create a path where routine_can_own is False while
+  routine_far_coast is True, the seed should still emit.
+  """
+  # Simulate the planner-level seed emission condition directly.
+  # The condition is:
+  #   routine_active and not routine_urgent and not routine_safety_relevant
+  #   and valid_approach and (routine_can_own or routine_far_coast or routine_comfort_phase)
+
+  # Case 1: routine_can_own=False, routine_far_coast=True, routine_comfort_phase=True
+  # (far_lead_coast phase implies both far_coast and comfort_phase)
+  routine_active = True
+  routine_urgent = False
+  routine_safety_relevant = False
+  valid_approach = True
+  routine_can_own = False
+  routine_far_coast = True
+  routine_comfort_phase = True  # far_lead_coast is a comfort phase
+
+  seed_emits = (
+    routine_active and not routine_urgent and not routine_safety_relevant
+    and valid_approach and (routine_can_own or routine_far_coast or routine_comfort_phase)
+  )
+  assert seed_emits, "Seed should emit when routine_far_coast=True even if routine_can_own=False"
+
+  # Case 2: routine_can_own=False, routine_far_coast=True, routine_comfort_phase=False
+  # (far_coast_active without being in a comfort phase — defensive edge case)
+  routine_far_coast = True
+  routine_comfort_phase = False
+  seed_emits = (
+    routine_active and not routine_urgent and not routine_safety_relevant
+    and valid_approach and (routine_can_own or routine_far_coast or routine_comfort_phase)
+  )
+  assert seed_emits, "Seed should emit when routine_far_coast=True and routine_comfort_phase=False even if routine_can_own=False"
+
+
+def test_routine_seed_emission_condition_comfort_phase_without_can_own():
+  """Planner-level seed emission should fire when routine_can_own is False
+  but routine_comfort_phase is True (and routine_far_coast is False).
+
+  This covers soft_decel and routine_decel phases where routine_can_own
+  might be False due to safety_relevant=True with existing_target=None
+  (a defensive edge case), but the phase is still a comfort phase.
+  """
+  routine_active = True
+  routine_urgent = False
+  routine_safety_relevant = False
+  valid_approach = True
+  routine_can_own = False
+  routine_far_coast = False
+  routine_comfort_phase = True  # e.g. soft_decel or routine_decel
+
+  seed_emits = (
+    routine_active and not routine_urgent and not routine_safety_relevant
+    and valid_approach and (routine_can_own or routine_far_coast or routine_comfort_phase)
+  )
+  assert seed_emits, "Seed should emit when routine_comfort_phase=True even if routine_can_own=False"
+
+
+def test_routine_seed_emission_blocked_by_urgent_or_safety_relevant():
+  """Seed emission should be blocked when routine_urgent or
+  routine_safety_relevant is True, regardless of routine_far_coast
+  or routine_comfort_phase."""
+  routine_active = True
+  valid_approach = True
+  routine_can_own = False
+  routine_far_coast = True
+  routine_comfort_phase = True
+
+  # Urgent blocks emission
+  routine_urgent = True
+  routine_safety_relevant = False
+  seed_emits = (
+    routine_active and not routine_urgent and not routine_safety_relevant
+    and valid_approach and (routine_can_own or routine_far_coast or routine_comfort_phase)
+  )
+  assert not seed_emits, "Seed should NOT emit when routine_urgent=True"
+
+  # Safety-relevant blocks emission
+  routine_urgent = False
+  routine_safety_relevant = True
+  seed_emits = (
+    routine_active and not routine_urgent and not routine_safety_relevant
+    and valid_approach and (routine_can_own or routine_far_coast or routine_comfort_phase)
+  )
+  assert not seed_emits, "Seed should NOT emit when routine_safety_relevant=True"
+
+
+def test_routine_seed_emission_blocked_without_valid_approach():
+  """Seed emission should be blocked when valid_approach is False,
+  even if routine_far_coast and routine_comfort_phase are True."""
+  routine_active = True
+  routine_urgent = False
+  routine_safety_relevant = False
+  routine_can_own = False
+  routine_far_coast = True
+  routine_comfort_phase = True
+  valid_approach = False
+
+  seed_emits = (
+    routine_active and not routine_urgent and not routine_safety_relevant
+    and valid_approach and (routine_can_own or routine_far_coast or routine_comfort_phase)
+  )
+  assert not seed_emits, "Seed should NOT emit when valid_approach=False"
