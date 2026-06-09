@@ -51,6 +51,7 @@ TorqueV4OutputGovernor = latcontrol_torque_v4.TorqueV4OutputGovernor
 TorqueV4SessionAdaptation = latcontrol_torque_v4.TorqueV4SessionAdaptation
 TorqueV4SpeedModel = latcontrol_torque_v4.TorqueV4SpeedModel
 TorqueV4SpeedModelResult = latcontrol_torque_v4.TorqueV4SpeedModelResult
+TorqueV4RecenterMode = latcontrol_torque_v4.TorqueV4RecenterMode
 TorqueV4Target = latcontrol_torque_v4.TorqueV4Target
 finite_difference_curvature_rate_from_steering_rate = latcontrol_torque_v4.finite_difference_curvature_rate_from_steering_rate
 
@@ -1238,3 +1239,170 @@ def test_v4_finite_helper_rejects_nonnumeric_values():
 
 def test_v4_actual_lateral_jerk_helper_nonnumeric_inputs_fallback_safe():
   assert finite_difference_curvature_rate_from_steering_rate(LinearVehicleModel(), "bad", 0.2, 20.0, 0.0) == 0.0
+
+
+# ── Recenter Mode Tests ─────────────────────────────────────────────────
+
+RECENTER = latcontrol_torque_v4
+_DT = DT_CTRL
+
+
+def _recenter_detect(controller, target, prev_target, v_ego=20.0, path_quality=1.0,
+                     lane_change=False, steering=False, saturated=False, curvature_limited=False):
+  """Shorthand for calling _detect_recenter_mode."""
+  return controller._detect_recenter_mode(
+    target_lateral_accel=target,
+    previous_target_lateral_accel=prev_target,
+    v_ego=v_ego,
+    path_quality=path_quality,
+    lane_change_active=lane_change,
+    steering_pressed=steering,
+    saturated=saturated,
+    curvature_limited=curvature_limited,
+  )
+
+
+def test_recenter_mode_requires_persistence():
+  """Recenter mode must not activate on the first frame; needs RECENTER_PERSISTENCE_FRAMES."""
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller._recenter_persistence_frames = 0
+
+  # First frame with decreasing target — not enough persistence
+  result = _recenter_detect(controller, target=0.35, prev_target=0.40)
+  assert not result.active
+  assert controller._recenter_persistence_frames == 1
+
+  # Still below threshold
+  for _ in range(RECENTER.RECENTER_PERSISTENCE_FRAMES - 2):
+    result = _recenter_detect(controller, target=0.30, prev_target=0.35)
+
+  assert not result.active
+  assert controller._recenter_persistence_frames == RECENTER.RECENTER_PERSISTENCE_FRAMES - 1
+
+  # One more frame — crosses threshold
+  result = _recenter_detect(controller, target=0.25, prev_target=0.30)
+  assert result.active
+  assert result.persistence_frames >= RECENTER.RECENTER_PERSISTENCE_FRAMES
+
+
+def test_recenter_mode_activates_when_target_collapses_toward_zero():
+  """Feed decreasing target lateral accel at high speed with good path quality."""
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller._recenter_persistence_frames = 0
+
+  # Feed decreasing targets that satisfy collapse rate and near-center condition.
+  # Loop for enough frames to activate plus extra to verify persistence holds.
+  prev = 0.40
+  active_at_full_effect = False
+  for i in range(RECENTER.RECENTER_PERSISTENCE_FRAMES * 3):
+    cur = 0.40 - (i + 1) * 0.03  # keeps decreasing steadily
+    result = _recenter_detect(controller, target=cur, prev_target=prev)
+    prev = cur
+    if result.active and result.lead_reduction > 0.0 and result.slew_boost > 1.0:
+      active_at_full_effect = True
+      break
+
+  assert active_at_full_effect, "Recenter mode must become active with non-zero lead_reduction and slew_boost"
+
+
+def test_recenter_mode_inactive_at_low_speed():
+  """Recenter mode does not activate below RECENTER_MIN_SPEED."""
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller._recenter_persistence_frames = 0
+
+  prev = 0.40
+  for i in range(RECENTER.RECENTER_PERSISTENCE_FRAMES + 2):
+    cur = max(0.10, prev - 0.08)
+    result = _recenter_detect(controller, target=cur, prev_target=prev, v_ego=5.0)
+    prev = cur
+
+  assert not result.active
+
+
+def test_recenter_mode_inactive_during_lane_change():
+  """Recenter mode does not activate when lane change is active."""
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller._recenter_persistence_frames = 0
+
+  prev = 0.40
+  for i in range(RECENTER.RECENTER_PERSISTENCE_FRAMES + 2):
+    cur = max(0.10, prev - 0.08)
+    result = _recenter_detect(controller, target=cur, prev_target=prev, lane_change=True)
+    prev = cur
+
+  assert not result.active
+
+
+def test_recenter_mode_reduces_lead_delta():
+  """When recenter mode is active, _build_target should produce a smaller lead delta."""
+  controller, _VM, _CP = get_controller()
+
+  # Build a target WITHOUT recenter (normal)
+  speed_result = make_speed_result(response_delay=0.2, lead_gain=0.5, lead_delta_cap=0.5)
+  target_no_recenter = controller._build_target(
+    desired_curvature=0.001, v_ego=20.0, speed_result=speed_result, invalid=False,
+    recenter=None,
+  )
+
+  # Build a target WITH recenter (lead_reduction=0.6 = full reduction)
+  recenter_active = TorqueV4RecenterMode(active=True, persistence_frames=RECENTER.RECENTER_PERSISTENCE_FRAMES,
+                                         lead_reduction=0.6, slew_boost=1.5)
+  target_recenter = controller._build_target(
+    desired_curvature=0.001, v_ego=20.0, speed_result=speed_result, invalid=False,
+    recenter=recenter_active,
+  )
+
+  # Reset previous_target_lateral_accel to get fair comparison
+  controller.previous_target_lateral_accel = 0.0
+
+  # With recenter, lead_gain and lead_delta_cap should be reduced
+  expected_lead_gain = speed_result.lead_gain * (1.0 - 0.6)
+  expected_lead_delta_cap = speed_result.lead_delta_cap * (1.0 - 0.6)
+  assert target_recenter.lead_gain == pytest.approx(expected_lead_gain)
+  assert target_recenter.lead_delta_cap == pytest.approx(expected_lead_delta_cap)
+  assert abs(target_recenter.lead_delta) <= abs(target_no_recenter.lead_delta)
+
+
+def test_recenter_mode_boosts_sign_change_slew_rate():
+  """When recenter mode is active and a sign change occurs, the governor boosts slew rate."""
+  governor = TorqueV4OutputGovernor(_DT, LatControlTorqueV4.GOVERNOR_PROFILE)
+  governor.previous_output = 0.5  # positive output
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+
+  # First without recenter
+  result_normal = governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+    speed_model=speed_result, recenter=None,
+  )
+  governor.previous_output = 0.5  # reset
+
+  # With recenter
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.0, slew_boost=2.0)
+  result_boosted = governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+    speed_model=speed_result, recenter=recenter,
+  )
+
+  # Both should have sign change detected
+  assert result_normal.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+  assert result_boosted.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+
+  # Recenter should also have RECENTER_MODE flag
+  assert result_boosted.reason & TorqueV4GovernorReason.RECENTER_MODE
+  assert not result_normal.reason & TorqueV4GovernorReason.RECENTER_MODE
+
+  # Recenter mode should move further toward the target (boosted slew rate)
+  # Without boost: approach from 0.5 toward -1.0 at 1.0 * DT_CTRL
+  # With boost: approach from 0.5 toward -1.0 at 2.0 * DT_CTRL
+  # Since target is negative, boosted output should be lower (more negative)
+  assert result_boosted.output_torque < result_normal.output_torque
+  assert result_boosted.output_torque == pytest.approx(0.5 - 2.0 * _DT)

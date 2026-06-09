@@ -86,6 +86,15 @@ UNDER_RESPONSE_LOW_SPEED_ALLOWED_PATH_REASONS = frozenset((LEARN_PATH_REASON_OK,
 
 SPEED_BUCKET_CENTERS = [5.0, 15.0, 25.0, 35.0, 45.0]
 
+# Recenter mode: faster torque unwind and relaxed sign-change when target collapses toward zero.
+RECENTER_MIN_SPEED = 10.0  # m/s — only activate above this speed
+RECENTER_TARGET_COLLAPSE_RATE = 0.3  # m/s² per frame — target must be decreasing faster than this
+RECENTER_MAX_ABS_TARGET = 0.5  # m/s² — target must be small enough to be "near center"
+RECENTER_MIN_PATH_QUALITY = 0.5  # — path quality must be reasonable
+RECENTER_PERSISTENCE_FRAMES = 5  # — must be recentering for this many consecutive frames
+RECENTER_LEAD_REDUCTION = 0.6  # — reduce response-delay lead by this fraction when recentering
+RECENTER_SLEW_BOOST = 1.5  # — multiply sign-change slew rate by this when recentering
+
 
 class TorqueV4LearnerRejectReason(IntFlag):
   NONE = 0
@@ -118,6 +127,7 @@ class TorqueV4GovernorReason(IntFlag):
   INVALID = 1 << 6
   STALE_ACTUATOR_MISMATCH = 1 << 7
   LOW_SPEED_UNDER_RESPONSE_RECOVERY = 1 << 8
+  RECENTER_MODE = 1 << 9
 
 
 class TorqueV4Phase(IntEnum):
@@ -282,6 +292,14 @@ class TorqueV4GovernorResult:
   output_torque: float
   reason: TorqueV4GovernorReason
   output_cap: float
+
+
+@dataclass(frozen=True)
+class TorqueV4RecenterMode:
+  active: bool = False
+  persistence_frames: int = 0
+  lead_reduction: float = 0.0
+  slew_boost: float = 1.0
 
 
 class TorqueV4SpeedModel:
@@ -494,7 +512,8 @@ class TorqueV4OutputGovernor:
              same_direction_limit: bool, steer_limit_unwind: bool, actuator_mismatch: bool, actuator_error: float,
              raw_output_torque: float, max_output: float, speed_model: TorqueV4SpeedModelResult,
              recovery_target_lateral_accel: float = 0.0, actual_lateral_accel: float = 0.0,
-             under_response_recovery_allowed: bool = False) -> TorqueV4GovernorResult:
+             under_response_recovery_allowed: bool = False,
+             recenter: TorqueV4RecenterMode | None = None) -> TorqueV4GovernorResult:
     reason = TorqueV4GovernorReason.NONE
     if not active:
       self.reset()
@@ -544,6 +563,10 @@ class TorqueV4OutputGovernor:
     slew_rate = speed_model.sign_change_slew_rate if sign_change else speed_model.output_slew_rate
     if sign_change:
       reason |= TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+      # Apply recenter slew boost: allow faster sign changes when recentering
+      if recenter is not None and recenter.active:
+        slew_rate *= recenter.slew_boost
+        reason |= TorqueV4GovernorReason.RECENTER_MODE
     if high_rate_blend > 0.0:
       slew_rate *= self.profile.high_rate_slew_scale
     if same_direction_limit and not steer_limit_unwind:
@@ -634,6 +657,7 @@ class LatControlTorqueV4(LatControl):
     self.last_v_ego = 0.0
     self.processed_lateral_demand = None
     self.processed_lateral_demand: ProcessedLateralDemand | None = None
+    self._recenter_persistence_frames: int = 0
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction) -> None:
     self.torque_params.latAccelFactor = latAccelFactor
@@ -669,6 +693,7 @@ class LatControlTorqueV4(LatControl):
     self.previous_target_lateral_accel = 0.0
     self.previous_measurement = 0.0
     self.filtered_measurement_rate = 0.0
+    self._recenter_persistence_frames = 0
 
   def _under_response_recovery_allowed(self) -> bool:
     demand = self.processed_lateral_demand
@@ -693,6 +718,47 @@ class LatControlTorqueV4(LatControl):
       and not getattr(demand, "lane_centering_assist_active", False)
     )
 
+  def _detect_recenter_mode(self, *, target_lateral_accel: float, previous_target_lateral_accel: float,
+                            v_ego: float, path_quality: float, lane_change_active: bool,
+                            steering_pressed: bool, saturated: bool, curvature_limited: bool) -> TorqueV4RecenterMode:
+    """Detect recenter mode: target lateral accel collapsing toward zero on a straight-ish road."""
+    # Conditions that disqualify recenter mode
+    if (not _finite(target_lateral_accel, previous_target_lateral_accel, v_ego)
+        or v_ego < RECENTER_MIN_SPEED
+        or lane_change_active
+        or steering_pressed
+        or saturated
+        or curvature_limited
+        or path_quality < RECENTER_MIN_PATH_QUALITY):
+      self._recenter_persistence_frames = 0
+      return TorqueV4RecenterMode()
+
+    # Target must be decreasing in magnitude (collapsing toward zero)
+    target_decreasing = abs(target_lateral_accel) < abs(previous_target_lateral_accel)
+    # Target must be small enough to be "near center"
+    target_near_center = abs(target_lateral_accel) < RECENTER_MAX_ABS_TARGET
+    # Rate of decrease must be significant
+    decrease_rate = abs(previous_target_lateral_accel) - abs(target_lateral_accel)
+    target_collapsing = decrease_rate > RECENTER_TARGET_COLLAPSE_RATE * self.dt
+
+    if target_decreasing and target_near_center and target_collapsing:
+      self._recenter_persistence_frames = min(self._recenter_persistence_frames + 1, RECENTER_PERSISTENCE_FRAMES * 3)
+    else:
+      self._recenter_persistence_frames = max(0, self._recenter_persistence_frames - 1)
+
+    # Only activate after persistence threshold
+    if self._recenter_persistence_frames >= RECENTER_PERSISTENCE_FRAMES:
+      # Blend in the recenter effect based on how persistent the recentering is
+      persistence_blend = min(1.0, (self._recenter_persistence_frames - RECENTER_PERSISTENCE_FRAMES) / RECENTER_PERSISTENCE_FRAMES)
+      return TorqueV4RecenterMode(
+        active=True,
+        persistence_frames=self._recenter_persistence_frames,
+        lead_reduction=RECENTER_LEAD_REDUCTION * persistence_blend,
+        slew_boost=1.0 + (RECENTER_SLEW_BOOST - 1.0) * persistence_blend,
+      )
+
+    return TorqueV4RecenterMode()
+
   def _refresh_speed_adaptive_apply_enabled(self) -> None:
     try:
       self.speed_adaptive_apply_enabled = self.params.get_bool("LiveTorqueSpeedAdaptiveApplyToggle")
@@ -714,7 +780,17 @@ class LatControlTorqueV4(LatControl):
     speed_result = self.speed_model.update(CS.vEgo if _finite(CS.vEgo) else 0.0, self.torque_params,
                                            self.speed_aware_params, self.speed_adaptive_apply_enabled,
                                            self.session_adaptation)
-    target = self._build_target(0.0 if input_invalid else desired_curvature, CS.vEgo, speed_result, input_invalid)
+    recenter = self._detect_recenter_mode(
+      target_lateral_accel=0.0 if input_invalid else desired_curvature * CS.vEgo ** 2,
+      previous_target_lateral_accel=self.previous_target_lateral_accel,
+      v_ego=CS.vEgo if _finite(CS.vEgo) else 0.0,
+      path_quality=(_finite_float(getattr(self.processed_lateral_demand, "path_quality", None)) if self.processed_lateral_demand is not None else 1.0) or 1.0,
+      lane_change_active=getattr(self.processed_lateral_demand, "lane_change_shaping_active", False) if self.processed_lateral_demand is not None else False,
+      steering_pressed=CS.steeringPressed,
+      saturated=False,
+      curvature_limited=curvature_limited,
+    )
+    target = self._build_target(0.0 if input_invalid else desired_curvature, CS.vEgo, speed_result, input_invalid, recenter=recenter)
     steering_angle_rad = math.radians(CS.steeringAngleDeg - params.angleOffsetDeg) if not input_invalid else 0.0
     measured_curvature = -VM.calc_curvature(steering_angle_rad, CS.vEgo, params.roll) if not input_invalid else 0.0
     actual_lateral_accel = measured_curvature * CS.vEgo ** 2 if not input_invalid else 0.0
@@ -791,6 +867,7 @@ class LatControlTorqueV4(LatControl):
       recovery_target_lateral_accel=target.delay_lead_lateral_accel,
       actual_lateral_accel=actual_lateral_accel,
       under_response_recovery_allowed=self._under_response_recovery_allowed(),
+      recenter=recenter,
     )
     if invalid:
       governor_result = TorqueV4GovernorResult(0.0, governor_result.reason | TorqueV4GovernorReason.INVALID, governor_result.output_cap)
@@ -842,14 +919,20 @@ class LatControlTorqueV4(LatControl):
     return -output_torque, 0.0, pid_log
 
   def _build_target(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
-                    invalid: bool) -> TorqueV4Target:
+                    invalid: bool, recenter: TorqueV4RecenterMode | None = None) -> TorqueV4Target:
     raw_target = 0.0 if invalid else desired_curvature * v_ego ** 2
     target_rate = 0.0 if invalid else (raw_target - self.previous_target_lateral_accel) / self.dt
     self.previous_target_lateral_accel = raw_target
-    lead_delta = _clip(target_rate * speed_result.response_delay * speed_result.lead_gain,
-                       -speed_result.lead_delta_cap, speed_result.lead_delta_cap)
+    lead_gain = speed_result.lead_gain
+    lead_delta_cap = speed_result.lead_delta_cap
+    # Reduce lead when recentering — the target is collapsing toward zero, so lead overshoots
+    if recenter is not None and recenter.active:
+      lead_gain *= (1.0 - recenter.lead_reduction)
+      lead_delta_cap *= (1.0 - recenter.lead_reduction)
+    lead_delta = _clip(target_rate * speed_result.response_delay * lead_gain,
+                       -lead_delta_cap, lead_delta_cap)
     return TorqueV4Target(raw_target, target_rate, raw_target + lead_delta, lead_delta,
-                          speed_result.lead_gain, speed_result.lead_delta_cap)
+                          lead_gain, lead_delta_cap)
 
   def _apply_under_response_lead_boost(self, target: TorqueV4Target, speed_result: TorqueV4SpeedModelResult, v_ego: float,
                                        *, active: bool, steering_pressed: bool, actual_lateral_accel: float,
