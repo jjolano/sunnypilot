@@ -2840,7 +2840,11 @@ def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_
     return (a_target, debug) if return_debug else a_target
 
   def _selected_result(a_target, *, existing_target=None, existing_reason="none", safety_relevant=False):
-    routine_can_own = bool(routine.active and existing_target is not None and not safety_relevant)
+    # Routine comfort can own non-urgent shape when it is active and the
+    # existing target is not safety-relevant.  It does NOT require an existing
+    # target — far-lead coast and free-coast phases produce a routine target
+    # even when there is no prior moving-lead baseline to relax.
+    routine_can_own = bool(routine.active and not safety_relevant)
     debug.update({
       "routine_lead_existing_target": 0.0 if existing_target is None else float(existing_target),
       "routine_lead_existing_target_reason": str(existing_reason),

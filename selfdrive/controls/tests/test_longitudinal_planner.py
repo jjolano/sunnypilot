@@ -4113,9 +4113,31 @@ def test_routine_lead_approach_valid_for_stable_physical_lead_without_behavior()
   assert is_valid_routine_lead_approach(primary_lead_context=context)
 
 
+def test_routine_can_own_without_existing_target():
+  """Routine comfort should own non-urgent shape even when there is no
+  prior moving-lead baseline target. Far-lead coast and free-coast phases
+  produce a routine target that can relax a negative non-urgent baseline
+  without needing an existing_target to replace."""
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=25.0,
+    d_rel=50.0,
+    v_lead=22.0,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.05,
+    return_debug=True,
+  )
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  # routine_can_own should be True even when existing_target is None/none
+  assert debug["routine_lead_can_own_nonurgent_shape"]
+  assert debug["routine_lead_existing_target_reason"] == "none"
+  assert not debug["routine_lead_existing_target_safety_relevant"]
+
+
 def test_routine_lead_approach_invalid_for_suppressive_only_physical_lead():
-  """A purely suppressive-only physical lead that blocks progress should
-  not be valid for routine comfort shaping."""
   physical = LeadRelevanceState(
     lead_idx=0, status=True, shadow=False, stable=True, new_lead=False,
     flicker_guard_timer=0.0, track_id=1, d_rel=5.0, y_rel=0.0,
