@@ -31,6 +31,7 @@ LONGITUDINAL_PLAN_SOURCE = log.LongitudinalPlan.LongitudinalPlanSource
 LEAD_MPC_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_PLAN_SOURCE.lead1)}
 E2E_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.e2e)}
 PROGRESS_RELAXATION_SEED_REASONS = {"confirmed_lead_pullaway_pulse", "excess_gap_closure"}
+ROUTINE_COMFORT_SEED_REASONS = {"routine_slower_lead_approach"}
 PROGRESS_ACCEL_CAP_SEED_REASONS = {
   "creep_pullaway_launch_accel_cap",
   "low_speed_pullaway_accel_step_cap",
@@ -149,6 +150,8 @@ def _custom_v2_intent_for_seed(intent: str) -> str:
 def _role_for_seed(intent: str, reason: str, selection: str = "") -> CandidateRole:
   if reason in PROGRESS_ACCEL_CAP_SEED_REASONS:
     return CandidateRole.ADVISORY_CAP
+  if reason in ROUTINE_COMFORT_SEED_REASONS and selection == PLANNER_SEED_FLOOR:
+    return CandidateRole.RELAXATION
   if reason in PROGRESS_RELAXATION_SEED_REASONS and selection == PLANNER_SEED_FLOOR:
     return CandidateRole.RELAXATION
   if intent in (PLANNER_SEED_INTENT_LEAD_FOLLOW, PLANNER_SEED_INTENT_STOP_APPROACH, PLANNER_SEED_INTENT_SAFETY_CAP):

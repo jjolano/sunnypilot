@@ -10,7 +10,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   build_custom_v2_progress_candidates,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR, PlannerSeedCandidate
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_CAP, PLANNER_SEED_FLOOR, PlannerSeedCandidate, select_planner_seed_candidate
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import (
   CUSTOM_V2_DEBUG_INTENT,
   CUSTOM_V2_DEBUG_REASON,
@@ -373,3 +373,69 @@ def test_scene_derived_excess_gap_progress_loses_to_close_physical_lead():
   assert progress_candidates == ()
   assert decision.winner == DecisionSource.LEAD_MPC
   assert decision.a_target == -0.7
+
+
+def test_routine_lead_approach_seed_is_relaxation_not_physical_hazard():
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
+    PlannerSeedCandidate, PLANNER_SEED_FLOOR, PLANNER_SEED_INTENT_LEAD_FOLLOW,
+  )
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import (
+    planner_seed_candidate_to_longitudinal_candidate, ROUTINE_COMFORT_SEED_REASONS,
+  )
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  output = make_output(a_target=-0.15, has_lead=True)
+  candidate = PlannerSeedCandidate(
+    name="routine_lead_approach",
+    output=output,
+    selection=PLANNER_SEED_FLOOR,
+    intent=PLANNER_SEED_INTENT_LEAD_FOLLOW,
+    reason=ROUTINE_LEAD_APPROACH_SEED_REASON,
+  )
+  converted = planner_seed_candidate_to_longitudinal_candidate(candidate, v_target=18.0)
+  assert converted.role == CandidateRole.RELAXATION, f"routine lead approach floor should be RELAXATION, got {converted.role}"
+  assert ROUTINE_LEAD_APPROACH_SEED_REASON in ROUTINE_COMFORT_SEED_REASONS
+
+
+def test_routine_lead_approach_seed_does_not_become_progress_authority():
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import (
+    _custom_v2_intent_for_seed, _role_for_seed,
+  )
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  role = _role_for_seed("lead_follow", ROUTINE_LEAD_APPROACH_SEED_REASON, PLANNER_SEED_FLOOR)
+  assert role == CandidateRole.RELAXATION
+  intent = _custom_v2_intent_for_seed("lead_follow")
+  assert intent == "lead_follow", f"routine lead approach intent should be lead_follow, got {intent}"
+  assert intent != "launch", "routine lead approach must not be launch intent"
+
+
+def test_safety_cap_beats_routine_comfort_floor():
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
+    PLANNER_SEED_CAP, PLANNER_SEED_FLOOR, select_planner_seed_candidate,
+  )
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import ROUTINE_LEAD_APPROACH_SEED_REASON
+
+  baseline = PlannerSeedCandidate(
+    name="baseline",
+    output=make_output(a_target=-1.5, has_lead=True),
+    selection=PLANNER_SEED_CAP,
+  )
+  routine_floor = PlannerSeedCandidate(
+    name="routine_lead_approach",
+    output=make_output(a_target=-0.15, has_lead=True),
+    selection=PLANNER_SEED_FLOOR,
+    reason=ROUTINE_LEAD_APPROACH_SEED_REASON,
+  )
+  safety_cap = PlannerSeedCandidate(
+    name="moving_lead_stop_gap_guard",
+    output=make_output(a_target=-2.0, has_lead=True),
+    selection=PLANNER_SEED_CAP,
+    reason="moving_lead_stop_gap_guard",
+  )
+  selected = select_planner_seed_candidate([baseline, routine_floor, safety_cap])
+  # Safety cap should win (most restrictive cap)
+  assert selected.output.a_target <= -1.5, f"safety cap should win over routine floor, got {selected.output.a_target}"

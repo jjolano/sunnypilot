@@ -3594,3 +3594,79 @@ def test_routine_lead_approach_seed_not_emitted_when_none():
   )
   for candidate in candidates:
     assert candidate.name != "routine_lead_approach"
+
+
+def test_routine_lead_approach_valid_approach_gates_on_stable_lead():
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import is_valid_routine_lead_approach
+
+  # Stable valid lead context
+  progress_model = SimpleNamespace(allowed=True, confidence_stability_sufficient=True, alternate_threat_absent=True, shadow_absent=True)
+  behavior = SimpleNamespace(stable=True, new_lead=False, shadow=False, flicker_guard_timer=0.0, progress_model=progress_model, track_id=1)
+  primary_lead_context = SimpleNamespace(
+    lead_progress_allowed=True,
+    alternate_threat_active=False,
+    shadow_active=False,
+    behavior=behavior,
+    lead_release_blocked_reason="",
+  )
+  assert is_valid_routine_lead_approach(
+    primary_lead_context=primary_lead_context,
+    brake_pressed=False, gas_pressed=False, force_slow_decel=False,
+    independent_stop_threat=False, alternate_lead_threat_active=False,
+  ) is True
+
+  # Driver brake blocks
+  assert is_valid_routine_lead_approach(
+    primary_lead_context=primary_lead_context,
+    brake_pressed=True, gas_pressed=False, force_slow_decel=False,
+    independent_stop_threat=False, alternate_lead_threat_active=False,
+  ) is False
+
+  # Force slow blocks
+  assert is_valid_routine_lead_approach(
+    primary_lead_context=primary_lead_context,
+    brake_pressed=False, gas_pressed=False, force_slow_decel=True,
+    independent_stop_threat=False, alternate_lead_threat_active=False,
+  ) is False
+
+  # Independent stop threat blocks
+  assert is_valid_routine_lead_approach(
+    primary_lead_context=primary_lead_context,
+    brake_pressed=False, gas_pressed=False, force_slow_decel=False,
+    independent_stop_threat=True, alternate_lead_threat_active=False,
+  ) is False
+
+  # Alternate threat blocks
+  assert is_valid_routine_lead_approach(
+    primary_lead_context=primary_lead_context,
+    brake_pressed=False, gas_pressed=False, force_slow_decel=False,
+    independent_stop_threat=False, alternate_lead_threat_active=True,
+  ) is False
+
+  # Shadow blocks
+  shadow_context = SimpleNamespace(
+    lead_progress_allowed=True,
+    alternate_threat_active=False,
+    shadow_active=True,
+    behavior=behavior,
+    lead_release_blocked_reason="",
+  )
+  assert is_valid_routine_lead_approach(
+    primary_lead_context=shadow_context,
+    brake_pressed=False, gas_pressed=False, force_slow_decel=False,
+    independent_stop_threat=False, alternate_lead_threat_active=False,
+  ) is False
+
+  # Suppressive physical lead blocks
+  suppressive_context = SimpleNamespace(
+    lead_progress_allowed=False,
+    alternate_threat_active=False,
+    shadow_active=False,
+    behavior=behavior,
+    lead_release_blocked_reason="primary_physical_lead_suppressive",
+  )
+  assert is_valid_routine_lead_approach(
+    primary_lead_context=suppressive_context,
+    brake_pressed=False, gas_pressed=False, force_slow_decel=False,
+    independent_stop_threat=False, alternate_lead_threat_active=False,
+  ) is False
