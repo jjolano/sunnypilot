@@ -162,6 +162,7 @@ class Controls(ControlsExt):
     self.lateral_demand_stack = CustomV2LateralDemandStack(dt=DT_CTRL)
     self.lateral_demand_stack_output: LateralDemandStackOutput | None = None
     self.lateral_demand_stack_resolution: LateralDemandStackResolution | None = None
+    self._last_logged_stack: tuple[str, str, bool, str] | None = None
     self.processed_lateral_demand = ProcessedLateralDemand(
       0.0,
       0.0,
@@ -426,6 +427,25 @@ class Controls(ControlsExt):
       self.lat_delay = lat_delay
       update_lateral_lag(lat_delay)
 
+  def _log_lateral_demand_stack_telemetry(self) -> None:
+    if self.lateral_demand_stack_output is None or self.lateral_demand_stack_resolution is None:
+      return
+    output = self.lateral_demand_stack_output
+    resolution = self.lateral_demand_stack_resolution
+    fallback_active = bool(resolution.fallback_reason) or resolution.resolved_stack != resolution.requested_stack
+    cache_key = (output.resolved_stack, output.version, fallback_active, resolution.fallback_reason)
+    if self._last_logged_stack == cache_key:
+      return
+    cloudlog.info(
+      "lateral_demand_stack resolved=%s requested=%s version=%s fallback=%s reason=%s",
+      output.resolved_stack,
+      output.requested_stack,
+      output.version,
+      fallback_active,
+      resolution.fallback_reason,
+    )
+    self._last_logged_stack = cache_key
+
   def publish(self, CC, lac_log):
     CS = self.sm['carState']
 
@@ -484,6 +504,7 @@ class Controls(ControlsExt):
       cs.lateralControlState.torqueState = lac_log
 
     self.pm.send('controlsState', dat)
+    self._log_lateral_demand_stack_telemetry()
 
     # carControl
     cc_send = messaging.new_message('carControl')
