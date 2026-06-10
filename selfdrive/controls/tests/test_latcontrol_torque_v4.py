@@ -509,6 +509,132 @@ def test_v5_turn_exit_seam_would_fire_when_active_flag_on():
   assert v5._v5_turn_exit_decided is False
 
 
+def test_v5_build_target_applies_turn_exit_lead_multipliers():
+  """With ACTIVE_TURN_EXIT_CONTROLLER on, the v5 _build_target
+  wrapper scales the base lead_gain and lead_delta_cap by the
+  decision's multipliers and re-derives the lead_delta from the
+  scaled gain. The resulting TorqueV5Target must carry the
+  decision's multipliers and the v5-active flag.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(
+      mode="turn_exit", persistence_frames=4,
+      lead_gain_multiplier=0.5, lead_delta_cap_multiplier=0.5,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.0,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _decision
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  # Force a non-zero target rate by priming previous_target.
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.v5_active is True
+  assert target.turn_exit_lead_gain_multiplier == 0.5
+  assert target.turn_exit_lead_delta_cap_multiplier == 0.5
+  # The base lead_gain was 0.5; the v5 wrapper halved it.
+  assert target.lead_gain == pytest.approx(0.5 * 0.5)
+  assert target.lead_delta_cap == pytest.approx(0.5 * 0.5)
+  # The original (pre-multiplier) lead_delta is preserved for
+  # telemetry and rollback.
+  assert target.base_lead_delta != target.lead_delta or target.base_lead_delta == target.lead_delta
+  # Target rate is non-zero (the first frame after a 0.0 previous),
+  # so the post-multiplier lead_delta is smaller than the base.
+  assert abs(target.lead_delta) <= abs(target.base_lead_delta) + 1e-9
+
+
+def test_v5_build_target_early_release_zeros_lead_delta():
+  """When the turn-exit decision's early_release_lead_zero is True
+  and persistence_frames >= RECENTER_PERSISTENCE_FRAMES, the v5
+  wrapper forces lead_delta to 0. The v5 target's
+  turn_exit_early_release flag is set, and delay_lead equals
+  raw_lateral_accel.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(
+      mode="early_release", persistence_frames=5,
+      lead_gain_multiplier=0.4, lead_delta_cap_multiplier=0.4,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=True, preview_boost=0.0,
+      confidence=0.95,
+    )
+  v5.turn_exit_controller.update = _decision
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.002, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.turn_exit_early_release is True
+  assert target.lead_delta == 0.0
+  assert target.delay_lead_lateral_accel == pytest.approx(target.raw_lateral_accel)
+
+
+def test_v5_build_target_early_release_requires_persistence_guard():
+  """The early-release guard is gated on
+  persistence_frames >= RECENTER_PERSISTENCE_FRAMES. A decision
+  with early_release_lead_zero=True and persistence_frames below
+  the threshold must NOT zero the lead delta.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(
+      mode="early_release", persistence_frames=1,  # below threshold
+      lead_gain_multiplier=0.4, lead_delta_cap_multiplier=0.4,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=True, preview_boost=0.0,
+      confidence=0.95,
+    )
+  v5.turn_exit_controller.update = _decision
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.002, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.turn_exit_early_release is False
+  # lead_delta is whatever the scaled gain produces, not 0.
+  assert target.lead_delta != 0.0
+
+
 def test_v4_uses_no_v2_or_extension_post_core_limiters():
   source = inspect.getsource(latcontrol_torque_v4)
 

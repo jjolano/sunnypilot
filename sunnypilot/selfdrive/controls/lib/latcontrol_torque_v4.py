@@ -921,7 +921,8 @@ class LatControlTorqueV4(LatControl):
       saturated=False,
       curvature_limited=curvature_limited,
     )
-    target = self._build_target(0.0 if input_invalid else desired_curvature, CS.vEgo, speed_result, input_invalid, recenter=recenter)
+    target = self._build_target(0.0 if input_invalid else desired_curvature, CS.vEgo, speed_result, input_invalid, recenter=recenter,
+                                curvature_limited=curvature_limited, cs=CS)
     steering_angle_rad = math.radians(CS.steeringAngleDeg - params.angleOffsetDeg) if not input_invalid else 0.0
     measured_curvature = -VM.calc_curvature(steering_angle_rad, CS.vEgo, params.roll) if not input_invalid else 0.0
     actual_lateral_accel = measured_curvature * CS.vEgo ** 2 if not input_invalid else 0.0
@@ -1163,9 +1164,13 @@ class LatControlTorqueV4(LatControl):
                           lead_gain, lead_delta_cap)
 
   def _build_target(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
-                    invalid: bool, recenter: TorqueV4RecenterMode | None = None) -> TorqueV4Target:
+                    invalid: bool, recenter: TorqueV4RecenterMode | None = None,
+                    curvature_limited: bool = False, cs=None) -> TorqueV4Target:
     """Public target build seam. v4.0/v4.1 forward to the base
     implementation; v5.0 overrides this to add profile shaping.
+
+    `curvature_limited` and `cs` are unused by the base; v5.0 uses
+    them when routing the pre-target turn-exit decision.
     """
     return self._build_target_base(desired_curvature, v_ego, speed_result, invalid, recenter)
 
@@ -1450,15 +1455,17 @@ class LatControlTorqueV5(LatControlTorqueV41):
       self._v5_turn_exit_decision = None
       return None
     # Path enabled by a later commit. Not exercised in the skeleton.
+    cs_v_ego = getattr(CS, "vEgo", 0.0) if CS is not None else 0.0
+    cs_steering_pressed = bool(getattr(CS, "steeringPressed", False)) if CS is not None else False
     self._v5_turn_exit_decided = True
     self._v5_turn_exit_decision = self.turn_exit_controller.update(
       target=target.raw_lateral_accel,
       profile=self.lateral_demand_profile,
       active=bool(active),
-      v_ego=CS.vEgo,
+      v_ego=cs_v_ego,
       path_quality=_finite_float(getattr(self.processed_lateral_demand, "path_quality", 1.0)) or 1.0,
       lane_change_active=bool(getattr(self.processed_lateral_demand, "lane_change_shaping_active", False)),
-      steering_pressed=CS.steeringPressed,
+      steering_pressed=cs_steering_pressed,
       curvature_limited=curvature_limited,
       saturated=False,
     )
@@ -1480,19 +1487,66 @@ class LatControlTorqueV5(LatControlTorqueV41):
     )
 
   def _build_target(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
-                    invalid: bool, recenter: TorqueV4RecenterMode | None = None) -> TorqueV4Target:
-    """v5 build target runs the pre-target turn-exit seam before
-    delegating to the base. The seam is a no-op while
-    ACTIVE_TURN_EXIT_CONTROLLER is False, so parity is preserved.
+                    invalid: bool, recenter: TorqueV4RecenterMode | None = None,
+                    curvature_limited: bool = False, cs=None) -> TorqueV4Target:
+    """v5 build target.
+
+    Runs the pre-target turn-exit seam before delegating to the
+    base. When ACTIVE_TURN_EXIT_CONTROLLER is True and the seam
+    fires, the cached decision becomes source of truth for lead
+    gain, lead delta cap, and the early-release guard. The
+    resulting target is a TorqueV5Target that carries the
+    v5 metadata fields so downstream code can see exactly which
+    shaping the v5 path applied.
+
+    When ACTIVE_TURN_EXIT_CONTROLLER is False (the parity-only
+    default), the wrapper is a thin pass-through and the
+    returned target is the v4 base target.
     """
     base = self._build_target_base(desired_curvature, v_ego, speed_result, invalid, recenter)
-    if self.ACTIVE_TURN_EXIT_CONTROLLER and not invalid:
-      # Caller passes CS / curvature_limited via cached state, but
-      # this seam only fires when the active flag is on. In the
-      # parity-only skeleton this branch is unreachable.
-      self._v5_pre_target_decide_turn_exit(
-        base, active=True, CS=None, curvature_limited=False,
-      )
-    return base
+    if not self.ACTIVE_TURN_EXIT_CONTROLLER or invalid:
+      return base
+
+    # Pre-target decision seam. Stores self._v5_turn_exit_decision
+    # or leaves it None if the controller was inactive.
+    self._v5_pre_target_decide_turn_exit(
+      base, active=True, CS=cs, curvature_limited=curvature_limited,
+    )
+    decision = self._v5_turn_exit_decision
+    if decision is None or not self._v5_turn_exit_decided:
+      return base
+
+    # Apply lead gain / cap multipliers from the decision.
+    lead_gain = base.lead_gain * float(decision.lead_gain_multiplier)
+    lead_delta_cap = base.lead_delta_cap * float(decision.lead_delta_cap_multiplier)
+    lead_delta = _clip(
+      base.target_rate * speed_result.response_delay * lead_gain,
+      -lead_delta_cap, lead_delta_cap,
+    )
+    # Early release: only fire when the controller has been
+    # persistent enough to trust the lead-collapse direction.
+    early_release_active = (
+      bool(decision.early_release_lead_zero)
+      and int(decision.persistence_frames) >= RECENTER_PERSISTENCE_FRAMES
+    )
+    if early_release_active:
+      lead_delta = 0.0
+    delay_lead = base.raw_lateral_accel + lead_delta
+    return TorqueV5Target(
+      raw_lateral_accel=base.raw_lateral_accel,
+      target_rate=base.target_rate,
+      delay_lead_lateral_accel=delay_lead,
+      lead_delta=lead_delta,
+      lead_gain=lead_gain,
+      lead_delta_cap=lead_delta_cap,
+      base_lead_delta=base.lead_delta,
+      preview_boost_computed=0.0,
+      preview_boost_applied=0.0,
+      turn_exit_lead_gain_multiplier=float(decision.lead_gain_multiplier),
+      turn_exit_lead_delta_cap_multiplier=float(decision.lead_delta_cap_multiplier),
+      turn_exit_early_release=early_release_active,
+      v5_active=True,
+      v5_reason="turn_exit_source_of_truth",
+    )
 
 LatControlTorque = LatControlTorqueV4
