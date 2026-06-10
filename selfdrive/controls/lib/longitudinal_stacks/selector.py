@@ -9,6 +9,7 @@ from typing import Any
 SUNNYPILOT_CURRENT = "sunnypilot-current"
 CUSTOM_RECOMMENDED = "custom-recommended"
 CUSTOM_V2 = "custom-2.0"
+CUSTOM_EXPERIMENTAL = "custom-experimental"
 DEFAULT_STACK = SUNNYPILOT_CURRENT
 
 MANIFEST_PATH = Path(__file__).with_name("longitudinal_stack_versions.json")
@@ -207,6 +208,7 @@ def stack_id_for_name(name: str):
     SUNNYPILOT_CURRENT: StackId.sunnypilotCurrent,
     CUSTOM_RECOMMENDED: StackId.customRecommended,
     CUSTOM_V2: StackId.customV2,
+    CUSTOM_EXPERIMENTAL: StackId.customRecommended,
   }
   return stack_id_by_name.get(str(name or ""), StackId.unknown)
 
