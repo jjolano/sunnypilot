@@ -269,3 +269,31 @@ def test_score_signal_flicker_counted_per_transition() -> None:
 def test_unknown_signal_raises() -> None:
   with pytest.raises(KeyError):
     score_signal_for_category([], [], "not_a_signal")
+
+
+def test_plan_e2e_source_signal() -> None:
+  assert signal_scorer.SIGNAL_REGISTRY["plan_e2e_source"](make_sample(plan_source="e2e"))
+  assert signal_scorer.SIGNAL_REGISTRY["plan_e2e_source"](make_sample(plan_source="model"))
+  assert not signal_scorer.SIGNAL_REGISTRY["plan_e2e_source"](make_sample(plan_source="cruise"))
+  assert not signal_scorer.SIGNAL_REGISTRY["plan_e2e_source"](make_sample(plan_source="lead0"))
+
+
+def test_plan_e2e_or_should_stop_signal() -> None:
+  assert signal_scorer.SIGNAL_REGISTRY["plan_e2e_or_should_stop"](make_sample(plan_source="cruise", plan_should_stop=True))
+  assert signal_scorer.SIGNAL_REGISTRY["plan_e2e_or_should_stop"](make_sample(plan_source="e2e", plan_should_stop=False))
+  assert not signal_scorer.SIGNAL_REGISTRY["plan_e2e_or_should_stop"](make_sample(plan_source="cruise", plan_should_stop=False))
+
+
+def test_sp_customv2_active_signal() -> None:
+  assert signal_scorer.SIGNAL_REGISTRY["sp_customv2_active"](make_sample(sp_stack="customV2"))
+  assert signal_scorer.SIGNAL_REGISTRY["sp_customv2_active"](make_sample(sp_stack="custom-2.0"))
+  assert not signal_scorer.SIGNAL_REGISTRY["sp_customv2_active"](make_sample(sp_stack="sunnypilotCurrent"))
+
+
+def test_plan_braking_signals() -> None:
+  assert signal_scorer.SIGNAL_REGISTRY["plan_braking"](make_sample(plan_a_target=-0.5))
+  assert signal_scorer.SIGNAL_REGISTRY["plan_braking"](make_sample(plan_a_target=-1.0))
+  assert not signal_scorer.SIGNAL_REGISTRY["plan_braking"](make_sample(plan_a_target=0.0))
+  assert not signal_scorer.SIGNAL_REGISTRY["plan_braking"](make_sample(plan_a_target=None))
+  assert signal_scorer.SIGNAL_REGISTRY["plan_strong_brake"](make_sample(plan_a_target=-1.5))
+  assert not signal_scorer.SIGNAL_REGISTRY["plan_strong_brake"](make_sample(plan_a_target=-0.5))

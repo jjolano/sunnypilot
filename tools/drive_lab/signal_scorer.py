@@ -624,6 +624,33 @@ def _sig_sp_e2e_like(s: SignalSample) -> bool:
   return s.sp_source.lower() in {"e2e", "model"}
 
 
+@register_signal("plan_e2e_source")
+def _sig_plan_e2e_source(s: SignalSample) -> bool:
+  return s.plan_source.lower() in {"e2e", "model"}
+
+
+@register_signal("plan_e2e_or_should_stop")
+def _sig_plan_e2e_or_should_stop(s: SignalSample) -> bool:
+  if s.plan_should_stop:
+    return True
+  return s.plan_source.lower() in {"e2e", "model"}
+
+
+@register_signal("sp_customv2_active")
+def _sig_sp_customv2_active(s: SignalSample) -> bool:
+  return s.sp_stack.lower() in {"customv2", "custom-2.0"}
+
+
+@register_signal("plan_braking")
+def _sig_plan_braking(s: SignalSample) -> bool:
+  return s.plan_a_target is not None and s.plan_a_target < -0.3
+
+
+@register_signal("plan_strong_brake")
+def _sig_plan_strong_brake(s: SignalSample) -> bool:
+  return s.plan_a_target is not None and s.plan_a_target < -1.0
+
+
 @register_signal("lead_present")
 def _sig_lead_present(s: SignalSample) -> bool:
   return s.lead_status
@@ -789,6 +816,9 @@ CATEGORY_DEFINITIONS: dict[str, dict[str, Any]] = {
       "plan_a_target_negative",
       "plan_a_target_positive",
       "sp_e2e_like",
+      "plan_e2e_source",
+      "plan_e2e_or_should_stop",
+      "sp_customv2_active",
     ],
   },
   "lead_transition": {
@@ -799,6 +829,11 @@ CATEGORY_DEFINITIONS: dict[str, dict[str, Any]] = {
       "plan_a_target_negative",
       "plan_brake_direction",
       "sp_e2e_like",
+      "plan_e2e_source",
+      "plan_e2e_or_should_stop",
+      "sp_customv2_active",
+      "plan_braking",
+      "plan_strong_brake",
     ],
   },
 }
