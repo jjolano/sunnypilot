@@ -4188,6 +4188,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if (
       moving_recovery_context_valid
       and moving_recovery_lead_state_valid
+      and not moving_recovery_physical_risk_active
       and not reset_state
       and not force_slow_decel
       and not sm['carState'].brakePressed

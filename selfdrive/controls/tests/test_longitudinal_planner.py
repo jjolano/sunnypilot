@@ -5310,3 +5310,44 @@ def test_moving_recovery_physical_risk_active_none_model_is_safe():
     is_moving_recovery_physical_risk_active,
   )
   assert is_moving_recovery_physical_risk_active(None) is False
+
+
+def test_moving_recovery_gate_risk_check_independent_of_lead_state_valid():
+  """The planner gate now combines is_moving_recovery_lead_state_valid
+  with a direct `not is_moving_recovery_physical_risk_active` check.
+  This makes the safety intent explicit at the gate, so a future
+  refactor that drops the risk check from is_moving_recovery_lead_state_valid
+  would still keep the gate fail-closed. This test pins that
+  independence: a lead can pass lead_state_valid (stable, suppressive,
+  on-path) but still be rejected by the gate when its risk model is
+  active."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+    is_moving_recovery_physical_risk_active,
+  )
+
+  risky_risk_model = SimpleNamespace(required_decel=0.5, ttc=math.inf, closing_speed=0.2)
+  safe_risk_model = SimpleNamespace(required_decel=0.05, ttc=math.inf, closing_speed=0.2)
+  physical_attrs = dict(
+    shadow=False, new_lead=False, flicker_guard_timer=0.0,
+    stable=True, suppressive=True,
+  )
+
+  risky_context = SimpleNamespace(physical=SimpleNamespace(**physical_attrs, risk_model=risky_risk_model))
+  safe_context = SimpleNamespace(physical=SimpleNamespace(**physical_attrs, risk_model=safe_risk_model))
+
+  assert is_moving_recovery_lead_state_valid(risky_context) is False, (
+    "helper-level check must reject risky lead"
+  )
+  assert is_moving_recovery_physical_risk_active(risky_risk_model) is True
+  assert (
+    is_moving_recovery_lead_state_valid(risky_context)
+    and not is_moving_recovery_physical_risk_active(risky_risk_model)
+  ) is False, "gate must reject risky lead even if helper were ever to mis-allow it"
+
+  assert is_moving_recovery_lead_state_valid(safe_context) is True
+  assert is_moving_recovery_physical_risk_active(safe_risk_model) is False
+  assert (
+    is_moving_recovery_lead_state_valid(safe_context)
+    and not is_moving_recovery_physical_risk_active(safe_risk_model)
+  ) is True, "gate must allow safe lead when both checks pass"
