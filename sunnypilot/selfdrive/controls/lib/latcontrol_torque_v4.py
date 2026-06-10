@@ -675,6 +675,14 @@ class LatControlTorqueV4(LatControl):
   UNDER_RESPONSE_CATCHUP_CAP_BP = []
   UNDER_RESPONSE_CATCHUP_CAP_V = []
   UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG = HIGH_RATE_START_DEG
+  # Gate for the active learned-bias term that compensates the
+  # controller command lateral accel using the LateralVehicleHealthEstimator
+  # output. The estimator itself is kept active (learning and telemetry
+  # only); the gate controls whether the learned bias is allowed to
+  # shape the command. Off in 4.1 so the 4.1 torque path is unchanged
+  # by learned bias. A future LatControlTorqueV5 can set this True
+  # intentionally to start applying the bias term to the command.
+  ACTIVE_VEHICLE_BIAS_COMPENSATION = False
   GOVERNOR_PROFILE = TorqueV4GovernorProfile(
     output_slew_rate_bp=OUTPUT_SLEW_RATE_BP,
     output_slew_rate_v=OUTPUT_SLEW_RATE_V,
@@ -956,8 +964,18 @@ class LatControlTorqueV4(LatControl):
     )
     damping_correction = -(speed_result.damping_gain * self._last_wobble_response.damping_gain_multiplier) * measurement_rate
     breakaway_compensation = self._breakaway_lateral_accel(control_error, lateral_accel_deadzone, target.raw_lateral_accel,
-                                                           actual_lateral_accel, speed_result.breakaway_scale)
-    bias_compensation = self._vehicle_bias_compensation(self._last_health_estimate, wobble_active=self._wobble_active)
+                                                            actual_lateral_accel, speed_result.breakaway_scale)
+    # 4.1 keeps the learned bias diagnostic-only. Estimator state
+    # still updates (and telemetry still surfaces it) but the
+    # compensation term is forced to 0.0 so the 4.1 torque command is
+    # bit-equivalent to the pre-bias-gate behavior. A future
+    # LatControlTorqueV5 can flip ACTIVE_VEHICLE_BIAS_COMPENSATION
+    # to True to start applying the term.
+    bias_compensation = (
+      self._vehicle_bias_compensation(self._last_health_estimate, wobble_active=self._wobble_active)
+      if self.ACTIVE_VEHICLE_BIAS_COMPENSATION
+      else 0.0
+    )
     command_lateral_accel = (
       target.delay_lead_lateral_accel
       - roll_compensation

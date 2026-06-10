@@ -708,37 +708,49 @@ def test_v4_vehicle_health_estimator_converges_under_persistent_bias():
   assert abs(controller._last_health_estimate.bias_estimate) <= HEALTH_EST_BIAS_MAX
 
 
-def test_v4_bias_compensation_changes_command_when_estimate_is_nonzero():
+def test_v4_bias_compensation_does_not_change_command_in_4p1():
+  """4.1 keeps the learned bias diagnostic-only: estimator state still
+  updates and is surfaced in telemetry, but the compensation term is
+  forced to 0.0 in the command path. A future LatControlTorqueV5 can
+  flip ACTIVE_VEHICLE_BIAS_COMPENSATION to True to apply the term.
+  """
   from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
     LateralVehicleHealthEstimate,
   )
 
-  controller, VM, _CP = get_controller()
+  # Use two fresh controllers so the only varying input between the
+  # two calls is the mocked estimator output. Internal IIR state
+  # (measurement-rate filter, etc.) would otherwise drift one step
+  # between calls and contaminate the diff with non-bias terms.
+  controller_clean, VM, _CP = get_controller()
+  controller_biased, _, _ = get_controller()
   CS = make_car_state(v_ego=20.0, steering_pressed=False)
   demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
 
-  for _ in range(20):
-    controller.set_processed_lateral_demand(demand)
-    update(controller, VM, CS, 0.001, lat_delay=0.2)
-  controller.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
+  controller_clean.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
     bias_estimate=0.0, bias_confidence=0.0, bias_warning=False,
   )
-  controller.set_processed_lateral_demand(demand)
-  log_clean = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
-  clean_command = log_clean.f
-
-  controller.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
+  controller_biased.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
     bias_estimate=0.05, bias_confidence=1.0, bias_warning=True,
   )
-  controller.set_processed_lateral_demand(demand)
-  log_biased = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
-  biased_command = log_biased.f
 
-  assert biased_command < clean_command
-  assert abs(clean_command - biased_command - 0.05) < 0.01
+  controller_clean.set_processed_lateral_demand(demand)
+  controller_biased.set_processed_lateral_demand(demand)
+  log_clean = update(controller_clean, VM, CS, 0.001, lat_delay=0.2)[2]
+  log_biased = update(controller_biased, VM, CS, 0.001, lat_delay=0.2)[2]
+
+  # Command path is unchanged by learned bias in 4.1. Telemetry still
+  # surfaces the estimator's intent.
+  assert log_biased.f == pytest.approx(log_clean.f)
+  assert log_biased.adaptiveTorqueState.vehicleBiasEstimate == pytest.approx(0.05)
+  assert log_clean.adaptiveTorqueState.vehicleBiasEstimate == pytest.approx(0.0)
 
 
-def test_v4_bias_compensation_zero_when_wobble_active():
+def test_v4_bias_compensation_command_path_is_invariant_to_estimator_wobble_gate():
+  """In 4.1 the wobble gate inside the bias helper is irrelevant for the
+  command because the entire bias term is forced to 0. Wobble still
+  affects the wobble response multipliers independently.
+  """
   from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
     LateralOscillationClassification,
   )
@@ -746,40 +758,42 @@ def test_v4_bias_compensation_zero_when_wobble_active():
     LateralVehicleHealthEstimate,
   )
 
-  controller, VM, _CP = get_controller()
+  # Use two fresh controllers to isolate the wobble classifier effect.
+  controller_wobble, VM, _CP = get_controller()
+  controller_clean, _, _ = get_controller()
   CS = make_car_state(v_ego=20.0, steering_pressed=False)
   demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
 
-  for _ in range(20):
-    controller.set_processed_lateral_demand(demand)
-    update(controller, VM, CS, 0.001, lat_delay=0.2)
-  controller.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
-    bias_estimate=0.05, bias_confidence=1.0, bias_warning=True,
-  )
+  for c in (controller_wobble, controller_clean):
+    c.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
+      bias_estimate=0.05, bias_confidence=1.0, bias_warning=True,
+    )
 
-  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+  controller_wobble.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
     classification="controller_oscillation", confidence=0.9,
     raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
     torque_sign_flips=10, curvature_offset=0.0, curvature_offset_confidence=0.0,
     recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=False,
     path_quality=1.0, lane_change_active=False,
   )
-  controller.set_processed_lateral_demand(demand)
-  log_wobble = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
-
-  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+  controller_clean.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
     classification="none", confidence=0.0,
     raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
     torque_sign_flips=0, curvature_offset=0.0, curvature_offset_confidence=0.0,
     recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=True,
     path_quality=1.0, lane_change_active=False,
   )
-  controller.set_processed_lateral_demand(demand)
-  log_clean = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
 
-  assert log_wobble.f > log_clean.f
+  controller_wobble.set_processed_lateral_demand(demand)
+  controller_clean.set_processed_lateral_demand(demand)
+  log_wobble = update(controller_wobble, VM, CS, 0.001, lat_delay=0.2)[2]
+  log_clean = update(controller_clean, VM, CS, 0.001, lat_delay=0.2)[2]
+
+  # Bias contribution to f is zero in both cases in 4.1. Wobble still
+  # flips the wobbleActive telemetry flag and modulates the feedback gain.
   assert log_wobble.adaptiveTorqueState.wobbleActive is True
   assert log_clean.adaptiveTorqueState.wobbleActive is False
+  assert log_wobble.adaptiveTorqueState.vehicleBiasEstimate == pytest.approx(0.05)
 
 
 def test_v4_wobble_response_reduces_feedback_for_controller_oscillation():
