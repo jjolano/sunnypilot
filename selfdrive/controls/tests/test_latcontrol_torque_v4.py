@@ -442,12 +442,12 @@ def test_v5_turn_exit_seam_is_noop_when_active_flag_off():
 
   # Skeleton seam: pre-target is no-op, decided flag stays False.
   assert v5.ACTIVE_TURN_EXIT_CONTROLLER is False
-  v5._v5_pre_target_decide_turn_exit(
+  v5._v5_turn_exit_decision(
     TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5),
     active=True, CS=CS, curvature_limited=False,
   )
   assert v5._v5_turn_exit_decided is False
-  assert v5._v5_turn_exit_decision is None
+  assert v5._v5_cached_turn_exit_decision is None
 
   # Driving a frame through the controller still works and v5 stays
   # parity-equivalent to v4.1.
@@ -490,13 +490,13 @@ def test_v5_turn_exit_seam_would_fire_when_active_flag_on():
   v5.turn_exit_controller.update = _counting_update
 
   target = TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5)
-  v5._v5_pre_target_decide_turn_exit(
+  v5._v5_turn_exit_decision(
     target, active=True, CS=make_car_state(v_ego=20.0, steering_pressed=False), curvature_limited=False,
   )
   assert v5._v5_turn_exit_decided is True
-  assert v5._v5_turn_exit_decision is not None
-  assert v5._v5_turn_exit_decision.mode == "turn_in"
-  assert v5._v5_turn_exit_decision.preview_boost == pytest.approx(0.07)
+  assert v5._v5_cached_turn_exit_decision is not None
+  assert v5._v5_cached_turn_exit_decision.mode == "turn_in"
+  assert v5._v5_cached_turn_exit_decision.preview_boost == pytest.approx(0.07)
   # Exactly one controller call so far.
   assert len(calls) == 1
 
