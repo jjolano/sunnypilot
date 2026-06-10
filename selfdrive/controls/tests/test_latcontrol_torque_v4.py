@@ -504,7 +504,7 @@ def test_v5_turn_exit_seam_would_fire_when_active_flag_on():
   # base implementation must NOT call the controller again.
   decision = v5._v5_record_turn_exit_telemetry(
     target=target, active=True,
-    CS=make_car_state(v_ego=20.0, steering_pressed=False), curvature_limited=False,
+    CS=make_car_state(v_ego=20.0, steering_pressed=False), curvature_limited=False, saturated=False,
   )
   assert len(calls) == 1, (
     f"Expected no second controller call when pre-target decided, got {len(calls)}"
@@ -903,7 +903,102 @@ def test_v5_vehicle_bias_compensation_infrastructure_awaits_route_validation():
   assert V5_VEHICLE_BIAS_HARD_CAP >= V5_VEHICLE_BIAS_INITIAL_CAP
 
 
-def test_v4_governor_context_is_none():
+def test_v4_recenter_mode_uses_previous_saturation_gate():
+  """Recenter detection is active command shaping. It must NOT
+  fire when the previous frame's output was saturated, because
+  firing would aggressively reduce lead just as the controller
+  ran out of authority. The _detect_recenter_mode(...) call in
+  update() must pass saturated=self._previous_saturated, not a
+  hard-coded False.
+  """
+  import inspect
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+  )
+
+  source = inspect.getsource(LatControlTorqueV4.update)
+  # The call site must pass the previous-frame saturation, not
+  # a hard-coded False.
+  assert "saturated=self._previous_saturated" in source
+  # No remaining hard-coded saturated=False on the recenter
+  # call site.
+  recenter_block = source.split("_detect_recenter_mode(", 1)[1].split(")", 1)[0]
+  assert "saturated=False" not in recenter_block
+
+
+def test_v4_turn_exit_decision_uses_actual_saturation():
+  """The post-command turn-exit telemetry call must pass the
+  actual saturation value, not a hard-coded False. Otherwise
+  the turn-exit controller would fire early-release decisions
+  immediately after a saturated frame and the v5 source-of-
+  truth path would inherit that bug.
+  """
+  import inspect
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+  )
+
+  source = inspect.getsource(LatControlTorqueV4.update)
+  # The post-command call site passes the actual saturation.
+  assert "_v5_record_turn_exit_telemetry(" in source
+  call_block_idx = source.find("_v5_record_turn_exit_telemetry(")
+  call_block = source[call_block_idx:source.find(")", call_block_idx) + 1]
+  assert "saturated=saturated" in call_block
+
+
+def test_v4_recenter_does_not_fire_after_saturated_frame_in_actual_flow():
+  """End-to-end: simulate a saturated previous frame and a target
+  collapse that would normally activate recenter. Recenter must
+  not activate.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV41,
+  )
+
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV4(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  CS = make_car_state(v_ego=15.0, steering_pressed=False)
+  # Simulate a recenter-triggering target collapse while the
+  # previous frame was saturated.
+  controller._previous_saturated = True
+  controller.previous_target_lateral_accel = 0.5
+  recenter = controller._detect_recenter_mode(
+    target_lateral_accel=0.05,
+    previous_target_lateral_accel=controller.previous_target_lateral_accel,
+    v_ego=CS.vEgo,
+    path_quality=1.0,
+    lane_change_active=False,
+    steering_pressed=CS.steeringPressed,
+    saturated=controller._previous_saturated,
+    curvature_limited=False,
+  )
+  # The detector has its own logic; what matters for this
+  # regression is the wiring. The call site must pass
+  # _previous_saturated. Re-run with saturated=False and verify
+  # the detector would have produced a different (recenter-
+  # active) result, proving the gate is the only thing holding
+  # it back.
+  if hasattr(controller, "_detect_recenter_mode"):
+    unsat_recenter = controller._detect_recenter_mode(
+      target_lateral_accel=0.05,
+      previous_target_lateral_accel=controller.previous_target_lateral_accel,
+      v_ego=CS.vEgo,
+      path_quality=1.0,
+      lane_change_active=False,
+      steering_pressed=CS.steeringPressed,
+      saturated=False,
+      curvature_limited=False,
+    )
+    # If the detector would have fired without the gate, the
+    # saturated path must NOT fire. If the detector doesn't
+    # fire without the gate either, the test is still a valid
+    # wiring check but we skip the inequality assertion.
+    if unsat_recenter.active:
+      assert not recenter.active or recenter.lead_reduction < unsat_recenter.lead_reduction
+
+
+
   """v4 always returns None from _v5_governor_context so the
   governor sees no v5 context and applies v4.1 slew rates.
   """

@@ -975,7 +975,10 @@ class LatControlTorqueV4(LatControl):
       path_quality=(_finite_float(getattr(self.processed_lateral_demand, "path_quality", None)) if self.processed_lateral_demand is not None else 1.0) or 1.0,
       lane_change_active=getattr(self.processed_lateral_demand, "lane_change_shaping_active", False) if self.processed_lateral_demand is not None else False,
       steering_pressed=CS.steeringPressed,
-      saturated=False,
+      # Recentering is active command shaping. It must not fire
+      # immediately after a saturated frame; gate it on the
+      # previous frame's saturation.
+      saturated=self._previous_saturated,
       curvature_limited=curvature_limited,
     )
     target = self._build_target(0.0 if input_invalid else desired_curvature, CS.vEgo, speed_result, input_invalid, recenter=recenter,
@@ -1147,6 +1150,7 @@ class LatControlTorqueV4(LatControl):
 
     turn_exit_decision = self._v5_record_turn_exit_telemetry(
       target=target, active=active, CS=CS, curvature_limited=curvature_limited,
+      saturated=saturated,
     )
     self._last_turn_exit_mode = turn_exit_decision.mode
     self._last_turn_exit_persistence = int(turn_exit_decision.persistence_frames)
@@ -1248,7 +1252,7 @@ class LatControlTorqueV4(LatControl):
     return None
 
   def _v5_record_turn_exit_telemetry(self, *, target: TorqueV4Target, active: bool,
-                                     CS, curvature_limited: bool) -> TurnExitDecision:
+                                     CS, curvature_limited: bool, saturated: bool) -> TurnExitDecision:
     """Post-command turn-exit telemetry seam. v4 calls
     turn_exit_controller.update() and stores the result for
     telemetry. v5 with ACTIVE_TURN_EXIT_CONTROLLER=True uses the
@@ -1263,7 +1267,11 @@ class LatControlTorqueV4(LatControl):
       lane_change_active=bool(getattr(self.processed_lateral_demand, "lane_change_shaping_active", False)),
       steering_pressed=CS.steeringPressed,
       curvature_limited=curvature_limited,
-      saturated=False,
+      # The actual saturation is known at this point in the
+      # update flow. The turn-exit controller must receive it
+      # so an early-release decision is suppressed when the
+      # previous frame's output was clipped.
+      saturated=saturated,
     )
     return decision
 
@@ -1632,7 +1640,7 @@ class LatControlTorqueV5(LatControlTorqueV41):
     return None
 
   def _v5_record_turn_exit_telemetry(self, *, target: TorqueV4Target, active: bool,
-                                     CS, curvature_limited: bool) -> TurnExitDecision:
+                                     CS, curvature_limited: bool, saturated: bool) -> TurnExitDecision:
     """Post-command turn-exit telemetry. v5 with the active flag
     on uses the cached pre-target decision; otherwise it falls
     through to the v4 base which calls turn_exit_controller.update.
@@ -1643,7 +1651,7 @@ class LatControlTorqueV5(LatControlTorqueV41):
       self._v5_turn_exit_decided = False
       return self._v5_turn_exit_decision
     return super()._v5_record_turn_exit_telemetry(
-      target=target, active=active, CS=CS, curvature_limited=curvature_limited,
+      target=target, active=active, CS=CS, curvature_limited=curvature_limited, saturated=saturated,
     )
 
   def _build_target(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
