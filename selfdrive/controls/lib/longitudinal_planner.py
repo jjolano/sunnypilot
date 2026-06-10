@@ -3168,6 +3168,25 @@ def select_moving_recovery_lead_opening(*, primary_behavior_lead, behavior_lead_
   return bool(physical_lead_opening), "physical"
 
 
+def select_moving_recovery_gate_reason(gate_conditions: dict[str, bool]) -> str:
+  """Name the first failing condition of the moving recovery gate.
+
+  The planner publishes a small inactive debug object when the moving
+  recovery helper is gated out (any condition in gate_conditions is
+  False). This helper picks the first failing condition name so route
+  analysis can see why recovery was inactive without having to
+  reproduce the full update().
+
+  The returned name matches one of the keys the planner feeds into
+  gate_conditions: 'context', 'lead_state', 'physical_risk', 'reset',
+  'force_slow', 'brake', 'gas', 'v_ego'.
+  """
+  for name, ok in gate_conditions.items():
+    if not ok:
+      return name
+  return "all_conditions_met"
+
+
 def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_follow, a_ego=None,
                                          prev_a_target=None, dt=DT_MDL, return_debug=False,
                                          budget=None):
@@ -4185,16 +4204,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       and not bool(getattr(primary_lead_context, "shadow_active", False))
       and not bool(getattr(primary_lead_context, "alternate_threat_active", False))
     )
-    if (
-      moving_recovery_context_valid
-      and moving_recovery_lead_state_valid
-      and not moving_recovery_physical_risk_active
-      and not reset_state
-      and not force_slow_decel
-      and not sm['carState'].brakePressed
-      and not sm['carState'].gasPressed
-      and v_ego >= MOVING_LEAD_RECOVERY_MIN_V_EGO
-    ):
+    gate_conditions = {
+      "context": moving_recovery_context_valid,
+      "lead_state": moving_recovery_lead_state_valid,
+      "physical_risk": not moving_recovery_physical_risk_active,
+      "reset": not reset_state,
+      "force_slow": not force_slow_decel,
+      "brake": not sm['carState'].brakePressed,
+      "gas": not sm['carState'].gasPressed,
+      "v_ego": v_ego >= MOVING_LEAD_RECOVERY_MIN_V_EGO,
+    }
+    if all(gate_conditions.values()):
       # Track lead accel trend for the recovery helper. The lead-pursuit
       # track id switches reset the trend baseline, just like the
       # low-speed pullaway tracker. Use getattr so tests that build
@@ -4245,6 +4265,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         "moving_lead_recovery_lead_opening_source": str(moving_recovery_lead_opening_source),
         "moving_lead_recovery_lead_state_valid": bool(moving_recovery_lead_state_valid),
         "moving_lead_recovery_physical_risk_active": bool(moving_recovery_physical_risk_active),
+        "moving_lead_recovery_gate_reason": "all_conditions_met",
       }
       if (
         moving_recovery.active
@@ -4252,6 +4273,23 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         and not bool(getattr(primary_lead_context, "alternate_threat_active", False))
       ):
         custom_moving_lead_recovery_a_target = float(moving_recovery.a_floor)
+    else:
+      custom_moving_lead_recovery_debug = {
+        "moving_lead_recovery_active": False,
+        "moving_lead_recovery_phase": "inactive",
+        "moving_lead_recovery_a_floor": 0.0,
+        "moving_lead_recovery_predicted_gap": float(physical_lead_d_rel) if physical_lead_d_rel is not None else 0.0,
+        "moving_lead_recovery_minimum_allowed_gap": MOVING_LEAD_RECOVERY_MIN_GAP,
+        "moving_lead_recovery_safe_accel_cap": 0.0,
+        "moving_lead_recovery_lead_created_runway": False,
+        "moving_lead_recovery_reason": "gate_inactive",
+        "moving_lead_recovery_trend": 0.0,
+        "moving_lead_recovery_track_id": int(moving_recovery_track_id),
+        "moving_lead_recovery_lead_opening_source": "none",
+        "moving_lead_recovery_lead_state_valid": bool(moving_recovery_lead_state_valid),
+        "moving_lead_recovery_physical_risk_active": bool(moving_recovery_physical_risk_active),
+        "moving_lead_recovery_gate_reason": select_moving_recovery_gate_reason(gate_conditions),
+      }
 
     self.previous_lead_loss_status = lead_loss_guard_lead is not None
     self.previous_lead_loss_d_rel = float(lead_loss_guard_lead.dRel) if lead_loss_guard_lead is not None else 0.0

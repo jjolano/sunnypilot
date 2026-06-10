@@ -5351,3 +5351,49 @@ def test_moving_recovery_gate_risk_check_independent_of_lead_state_valid():
     is_moving_recovery_lead_state_valid(safe_context)
     and not is_moving_recovery_physical_risk_active(safe_risk_model)
   ) is True, "gate must allow safe lead when both checks pass"
+
+
+def test_select_moving_recovery_gate_reason_returns_all_met_when_all_ok():
+  """When every gate condition is True, the helper reports
+  'all_conditions_met'. The planner publishes this as the gate_reason
+  field on the active-path debug payload."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    select_moving_recovery_gate_reason,
+  )
+  gate_conditions = {
+    "context": True, "lead_state": True, "physical_risk": True,
+    "reset": True, "force_slow": True, "brake": True, "gas": True, "v_ego": True,
+  }
+  assert select_moving_recovery_gate_reason(gate_conditions) == "all_conditions_met"
+
+
+def test_select_moving_recovery_gate_reason_names_first_failing_condition():
+  """When the gate is closed, the helper returns the name of the
+  first failing condition. Order matters: the planner feeds the
+  conditions in the same order it evaluates the gate, so the first
+  failing name is the most informative one for route diagnostics."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    select_moving_recovery_gate_reason,
+  )
+  base = {
+    "context": True, "lead_state": True, "physical_risk": True,
+    "reset": True, "force_slow": True, "brake": True, "gas": True, "v_ego": True,
+  }
+  failing_only_physical_risk = dict(base, physical_risk=False)
+  assert select_moving_recovery_gate_reason(failing_only_physical_risk) == "physical_risk"
+  failing_only_v_ego = dict(base, v_ego=False)
+  assert select_moving_recovery_gate_reason(failing_only_v_ego) == "v_ego"
+  failing_first = dict(base, physical_risk=False, v_ego=False)
+  assert select_moving_recovery_gate_reason(failing_first) == "physical_risk"
+  failing_last = dict(base, context=True, lead_state=True, physical_risk=True,
+                      reset=True, force_slow=True, brake=True, gas=True, v_ego=False)
+  assert select_moving_recovery_gate_reason(failing_last) == "v_ego"
+
+
+def test_select_moving_recovery_gate_reason_handles_empty_conditions():
+  """An empty gate-conditions dict means no gate was evaluated; the
+  helper should still return a stable string instead of raising."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    select_moving_recovery_gate_reason,
+  )
+  assert select_moving_recovery_gate_reason({}) == "all_conditions_met"
