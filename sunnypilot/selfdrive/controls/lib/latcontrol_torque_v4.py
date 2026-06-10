@@ -1714,15 +1714,15 @@ class LatControlTorqueV5(LatControlTorqueV41):
 
     # Preview boost. Computed every frame so telemetry can show
     # the gate reason and the capped value. Applied only when
-    # ACTIVE_PROFILE_PREVIEW_LEAD is True (commit 7). In commit 6
-    # the flag is off so preview_boost_applied is always 0.
-    preview_boost_computed, preview_reason = self._v5_compute_preview_boost(
-      decision, v_ego=v_ego, curvature_limited=curvature_limited, cs=cs,
+    # ACTIVE_PROFILE_PREVIEW_LEAD is True and the gate passes.
+    preview_allowed, preview_reason = self._v5_preview_allowed(
+      active=True, invalid=False, CS=cs, v_ego=v_ego,
+      profile=self.lateral_demand_profile, demand=self.processed_lateral_demand,
+      curvature_limited=curvature_limited, saturated=self._previous_saturated,
+      steer_limited_by_safety=False,
     )
-    preview_boost_applied = (
-      preview_boost_computed
-      if (self.ACTIVE_PROFILE_PREVIEW_LEAD and preview_reason == "allowed")
-      else 0.0
+    preview_boost_computed, preview_boost_applied = self._v5_preview_boost(
+      v_ego=v_ego, decision=decision, allowed=preview_allowed,
     )
     # Re-clip after the boost so the final lead delta is bounded
     # by the scaled cap, never by a wider envelope.
@@ -1756,56 +1756,77 @@ class LatControlTorqueV5(LatControlTorqueV41):
       v5_reason="turn_exit_source_of_truth" if preview_boost_applied == 0.0 else "preview_boost_applied",
     )
 
-  def _v5_compute_preview_boost(self, decision, *, v_ego: float,
-                                curvature_limited: bool, cs) -> tuple[float, str]:
-    """Compute the gated/capped preview boost for telemetry.
+  def _v5_preview_allowed(self, *, active: bool, invalid: bool, CS,
+                          v_ego: float = 0.0,
+                          profile: "LateralDemandProfile | None",
+                          demand: "ProcessedLateralDemand | None",
+                          curvature_limited: bool, saturated: bool,
+                          steer_limited_by_safety: bool) -> tuple[bool, str]:
+    """Pure gate: returns (allowed, reason). No boost math, no
+    telemetry side effects. The reason string is one of a fixed
+    set so route tooling can group disable causes.
+    """
+    if not active:
+      return False, "inactive"
+    if invalid:
+      return False, "invalid"
+    if profile is None:
+      return False, "missing_profile"
+    if demand is None:
+      return False, "missing_demand"
+    if getattr(profile, "mode", None) != "turn_in":
+      return False, "wrong_mode"
+    if float(getattr(profile, "mode_confidence", 0.0)) < self.PREVIEW_MIN_MODE_CONFIDENCE:
+      return False, "low_mode_confidence"
+    if float(getattr(profile, "path_quality", 1.0)) < self.PREVIEW_MIN_PATH_QUALITY:
+      return False, "low_path_quality"
+    if getattr(profile, "path_reason", LEARN_PATH_REASON_OK) != LEARN_PATH_REASON_OK:
+      return False, "bad_path_reason"
+    if getattr(profile, "demand_source", DEMAND_SOURCE_MODEL_PATH) != DEMAND_SOURCE_MODEL_PATH:
+      return False, "non_model_profile"
+    if getattr(demand, "demand_source", DEMAND_SOURCE_MODEL_PATH) != DEMAND_SOURCE_MODEL_PATH:
+      return False, "non_model_demand"
+    if bool(getattr(demand, "lane_change_shaping_active", False)):
+      return False, "lane_change"
+    lcb = _finite_float(getattr(demand, "lane_change_blend", None))
+    if lcb is not None and abs(lcb) > 1e-3:
+      return False, "lane_change"
+    if curvature_limited:
+      return False, "curvature_limited"
+    if saturated:
+      return False, "saturated"
+    if steer_limited_by_safety:
+      return False, "steer_limited"
+    cs_steering_pressed = bool(getattr(CS, "steeringPressed", False)) if CS is not None else False
+    if cs_steering_pressed:
+      return False, "steering_pressed"
+    if self._wobble_active:
+      return False, "wobble_active"
+    cs_v_ego = float(getattr(CS, "vEgo", 0.0)) if CS is not None else 0.0
+    effective_v_ego = cs_v_ego if cs_v_ego > 0.0 else float(v_ego)
+    if effective_v_ego < 5.0:
+      return False, "low_speed"
+    return True, "allowed"
 
-    The boost is the decision's preview_boost value, clipped to
-    PREVIEW_BOOST_CAP_V at PREVIEW_BOOST_CAP_BP, but only when
-    every gate is clean. The return tuple is (boost, reason):
-    reason is "allowed" or a short tag naming the gate that
-    blocked the boost. preview_boost_applied is left to the
-    caller so this method can run in both gated-off and
-    gated-on modes.
+  def _v5_preview_boost(self, *, v_ego: float, decision,
+                         allowed: bool) -> tuple[float, float]:
+    """Compute preview_boost_computed and preview_boost_applied.
+
+    Per the v5 plan:
+      preview_boost_computed = decision.preview_boost  (raw)
+      preview_boost_applied  = 0.0 if the active flag is off
+                              else the speed-capped value
+                              when the gate is allowed
+
+    The cap is on the applied value, not the computed value:
+    computed is the raw decision so telemetry can show the
+    unbounded intent, while applied is what actually lands
+    in lead_delta.
     """
     raw_boost = float(decision.preview_boost) if decision is not None else 0.0
     cap = _interp(v_ego, self.PREVIEW_BOOST_CAP_BP, self.PREVIEW_BOOST_CAP_V)
     capped = _clip(raw_boost, -cap, cap)
-    # Gate
-    if decision is None:
-      return 0.0, "no_decision"
-    if v_ego < 5.0:
-      return 0.0, "low_speed"
-    if curvature_limited:
-      return 0.0, "curvature_limited"
-    cs_steering_pressed = bool(getattr(cs, "steeringPressed", False)) if cs is not None else False
-    if cs_steering_pressed:
-      return 0.0, "steering_pressed"
-    profile = self.lateral_demand_profile
-    if profile is None:
-      return 0.0, "no_profile"
-    if getattr(profile, "mode", None) != "turn_in":
-      return 0.0, "not_turn_in"
-    if float(getattr(profile, "mode_confidence", 0.0)) < self.PREVIEW_MIN_MODE_CONFIDENCE:
-      return 0.0, "low_mode_confidence"
-    demand = self.processed_lateral_demand
-    if demand is not None:
-      pq = _finite_float(getattr(demand, "path_quality", None))
-      if pq is None or pq < self.PREVIEW_MIN_PATH_QUALITY:
-        return 0.0, "low_path_quality"
-      if getattr(demand, "path_reason", LEARN_PATH_REASON_OK) != LEARN_PATH_REASON_OK:
-        return 0.0, "bad_path_reason"
-      if getattr(demand, "demand_source", DEMAND_SOURCE_MODEL_PATH) != DEMAND_SOURCE_MODEL_PATH:
-        return 0.0, "non_model_source"
-      if bool(getattr(demand, "lane_change_shaping_active", False)):
-        return 0.0, "lane_change_active"
-      lcb = _finite_float(getattr(demand, "lane_change_blend", None))
-      if lcb is not None and abs(lcb) > 1e-3:
-        return 0.0, "lane_change_blend"
-    if self._wobble_active:
-      return 0.0, "wobble_active"
-    if self._previous_saturated:
-      return 0.0, "saturated"
-    return capped, "allowed"
+    applied = capped if (self.ACTIVE_PROFILE_PREVIEW_LEAD and allowed) else 0.0
+    return float(raw_boost), float(applied)
 
 LatControlTorque = LatControlTorqueV4

@@ -727,7 +727,11 @@ def test_v5_preview_boost_gate_blocks_low_speed():
   target = v5._build_target(0.001, 4.0, speed_result, False, curvature_limited=False)
 
   assert isinstance(target, TorqueV5Target)
-  assert target.preview_boost_computed == 0.0
+  # Computed is the raw decision (capping happens in applied).
+  assert target.preview_boost_computed == pytest.approx(0.07)
+  # Applied is zero when the gate blocks, regardless of the raw
+  # computed value.
+  assert target.preview_boost_applied == 0.0
   assert target.preview_reason == "low_speed"
 
 
@@ -771,7 +775,10 @@ def test_v5_preview_boost_gate_blocks_lane_change():
   target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
 
   assert isinstance(target, TorqueV5Target)
-  assert target.preview_reason == "lane_change_active"
+  # Lane change blocks the gate, so applied is zero even though
+  # computed is the raw decision.
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "lane_change"
 
 
 def test_v5_preview_boost_gate_blocks_wobble():
@@ -787,11 +794,12 @@ def test_v5_preview_boost_gate_blocks_wobble():
   assert target.preview_reason == "wobble_active"
 
 
-def test_v5_preview_boost_cap_enforced_on_computed_value():
-  """The cap is enforced on preview_boost_computed (not just on
-  the applied value) so telemetry reflects the bounded value
-  even when the flag is off. At 20 m/s the cap is 0.12; a raw
-  boost of 0.5 must clip to 0.12.
+def test_v5_preview_boost_cap_enforced_on_applied_value():
+  """The speed cap is enforced on preview_boost_applied (the
+  value that actually lands in lead_delta), not on
+  preview_boost_computed (the raw decision surface). At 20 m/s
+  the cap is 0.12; a raw boost of 0.5 produces a raw computed
+  of 0.5 and a capped applied of 0.12.
   """
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV5,
@@ -809,7 +817,9 @@ def test_v5_preview_boost_cap_enforced_on_computed_value():
   target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
 
   assert isinstance(target, TorqueV5Target)
-  assert target.preview_boost_computed == pytest.approx(0.12, abs=1e-9)
+  # Computed is the raw decision value (capping is applied separately).
+  assert target.preview_boost_computed == pytest.approx(0.5, abs=1e-9)
+  # Applied is bounded by the cap and is zero when the flag is off.
   assert target.preview_boost_applied == 0.0
   assert target.preview_reason == "allowed"
 
@@ -862,7 +872,9 @@ def test_v5_preview_boost_not_applied_when_gate_blocks_even_with_flag_on():
   target = v5._build_target(0.001, 4.0, speed_result, False, curvature_limited=False)
 
   assert isinstance(target, TorqueV5Target)
-  assert target.preview_boost_computed == 0.0
+  # Computed is the raw decision.
+  assert target.preview_boost_computed == pytest.approx(0.05)
+  # Applied is zero when the gate blocks.
   assert target.preview_boost_applied == 0.0
   assert target.preview_reason == "low_speed"
   assert "preview_boost_applied" not in target.v5_reason
