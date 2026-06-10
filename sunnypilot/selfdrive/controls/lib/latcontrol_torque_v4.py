@@ -1342,4 +1342,34 @@ class LatControlTorqueV41(LatControlTorqueV4):
     same_direction_decrease_bypass=True,
   )
 
+
+# 5.0 active deltas. All flags are False in the initial commit, so
+# the v5 subclass is bit-equivalent to v4.1. Subsequent commits will
+# flip these one at a time, each with its own gate and tests.
+V5_PREVIEW_BOOST_CAP_BP = [0.0, 10.0, 20.0, 40.0]
+V5_PREVIEW_BOOST_CAP_V = [0.00, 0.08, 0.12, 0.10]
+
+
+class LatControlTorqueV5(LatControlTorqueV41):
+  """Torque 5.0: profile-aware active command shaping.
+
+  This is the parity-only skeleton. Every active delta is gated
+  behind a class flag that defaults to False, so the controller
+  is bit-equivalent to LatControlTorqueV41 until later commits
+  flip the flags and add the corresponding gates and tests.
+
+  Active delta flags (all off initially):
+    ACTIVE_PROFILE_PREVIEW_LEAD     - profile-aware turn-in preview boost
+    ACTIVE_TURN_EXIT_CONTROLLER     - turn-exit controller as source of truth
+    ACTIVE_VEHICLE_BIAS_COMPENSATION - learned vehicle-bias applied to command
+  """
+  VERSION = 50
+  ACTIVE_PROFILE_PREVIEW_LEAD = False
+  ACTIVE_TURN_EXIT_CONTROLLER = False
+  ACTIVE_VEHICLE_BIAS_COMPENSATION = False
+  PREVIEW_BOOST_CAP_BP = V5_PREVIEW_BOOST_CAP_BP
+  PREVIEW_BOOST_CAP_V = V5_PREVIEW_BOOST_CAP_V
+  PREVIEW_MIN_PATH_QUALITY = 0.75
+  PREVIEW_MIN_MODE_CONFIDENCE = 0.75
+
 LatControlTorque = LatControlTorqueV4

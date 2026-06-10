@@ -233,25 +233,111 @@ def test_v41_logs_version_41():
 
 def test_v41_is_current_lateral_torque_version():
   """4.1 is the live lateral-torque version. v4.0 stays as the base
-  class for tests and the alias, and no LatControlTorqueV5 exists yet.
-  Any future v5 must be a sibling class with VERSION=5, not a
-  in-place bump of V41's VERSION=41.
+  class for tests and the alias. v5 is a sibling class (VERSION=50)
+  whose active deltas are gated off until later commits. Any future
+  v5 must be a sibling class with VERSION=50, not an in-place bump
+  of V41's VERSION=41.
   """
   import openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 as module
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV4,
     LatControlTorqueV41,
+    LatControlTorqueV5,
   )
 
   # V4.0 stays at 4 (tests, alias, base class).
   assert LatControlTorqueV4.VERSION == 4
   # V4.1 stays at 41 (deployed behavior).
   assert LatControlTorqueV41.VERSION == 41
-  # No V5 has been added.
-  assert not hasattr(module, "LatControlTorqueV5")
-  # The default alias still points at the v4.0 base class; v4.1 is
-  # selected by parameter, not by replacing the alias.
+  # V5 exists at 50 but its active deltas are gated off.
+  assert LatControlTorqueV5.VERSION == 50
+  assert issubclass(LatControlTorqueV5, LatControlTorqueV41)
+  # The default alias still points at the v4.0 base class; v4.1/v5
+  # are selected by parameter, not by replacing the alias.
   assert module.LatControlTorque is LatControlTorqueV4
+
+
+def test_v5_active_delta_flags_are_off_by_default():
+  """Initial 5.0 skeleton has every active delta gated off. Each
+  future commit will flip one of these flags and add the gate and
+  tests for it. Until then, v5 is bit-equivalent to v4.1.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV5
+
+  assert LatControlTorqueV5.ACTIVE_PROFILE_PREVIEW_LEAD is False
+  assert LatControlTorqueV5.ACTIVE_TURN_EXIT_CONTROLLER is False
+  assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
+
+
+def test_v5_logs_version_50():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV5
+
+  CP, CP_SP, CI = get_context()
+  VM = VehicleModel(CP)
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+
+  _steer, _angle, lac_log = update(v5, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert lac_log.version == 50
+
+
+def test_v5_inherits_v41_governor_profile_and_under_response_settings():
+  """5.0 must inherit 4.1's governor profile and under-response
+  settings unchanged. v5 is a refinement layer on top, not a
+  replacement of v4.1's authority envelope.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV41,
+    LatControlTorqueV5,
+  )
+
+  assert LatControlTorqueV5.UNDER_RESPONSE_RELEASE_HOLD == LatControlTorqueV41.UNDER_RESPONSE_RELEASE_HOLD
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_ENABLED == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_ENABLED
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_GAIN_BP == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_GAIN_BP
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_GAIN_V == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_GAIN_V
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_CAP_BP == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_CAP_BP
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_CAP_V == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_CAP_V
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG
+  assert LatControlTorqueV5.GOVERNOR_PROFILE == LatControlTorqueV41.GOVERNOR_PROFILE
+
+
+def test_v5_is_parity_with_v41_when_all_active_flags_off():
+  """With every v5 active flag off, the v5 controller must produce
+  the same output torque, command lateral accel, and telemetry as
+  v4.1 given the same inputs and initial state. This is the
+  skeleton-level parity guarantee.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV41,
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  VM = VehicleModel(CP)
+  v41 = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0005, path_quality=1.0, path_reason="ok")
+
+  # Two frames so internal IIR state has a chance to settle.
+  for _ in range(2):
+    v41.set_processed_lateral_demand(demand)
+    v5.set_processed_lateral_demand(demand)
+    update(v41, VM, CS, 0.0005)
+    update(v5, VM, CS, 0.0005)
+
+  v41.set_processed_lateral_demand(demand)
+  v5.set_processed_lateral_demand(demand)
+  log_v41 = update(v41, VM, CS, 0.0005)[2]
+  log_v5 = update(v5, VM, CS, 0.0005)[2]
+
+  # Command path is bit-equivalent.
+  assert log_v5.f == pytest.approx(log_v41.f)
+  assert log_v5.output == pytest.approx(log_v41.output)
+  # Version differs by design.
+  assert log_v5.version == 50
+  assert log_v41.version == 41
 
 
 def test_v4_uses_no_v2_or_extension_post_core_limiters():
