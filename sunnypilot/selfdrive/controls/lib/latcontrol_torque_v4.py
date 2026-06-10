@@ -722,6 +722,7 @@ class LatControlTorqueV4(LatControl):
     self.oscillation_classifier = LateralOscillationClassifier()
     self._last_oscillation_classification: str = "none"
     self._last_oscillation_confidence: float = 0.0
+    self._previous_output_torque: float = 0.0
     self._wobble_active: bool = False
     self._last_wobble_response: WobbleResponse = compute_wobble_response("none", 0.0)
     self.vehicle_health_estimator = LateralVehicleHealthEstimator()
@@ -775,6 +776,7 @@ class LatControlTorqueV4(LatControl):
     self.oscillation_classifier = LateralOscillationClassifier()
     self._last_oscillation_classification = "none"
     self._last_oscillation_confidence = 0.0
+    self._previous_output_torque = 0.0
     self._wobble_active = False
     self._last_wobble_response = compute_wobble_response("none", 0.0)
     self.vehicle_health_estimator = LateralVehicleHealthEstimator()
@@ -910,7 +912,12 @@ class LatControlTorqueV4(LatControl):
       processed_curvature=float(processed_curvature_for_classifier),
       target_lateral_accel=target.raw_lateral_accel,
       actual_lateral_accel=actual_lateral_accel,
-      torque_output=0.0,
+      # Pass the previous frame's post-governor output torque so the
+      # classifier can detect real torque flips. Using 0.0 here would
+      # mean every input looks like a sign change on the first frame
+      # and zero sign changes afterwards, which masks the wobble the
+      # controller is supposed to detect.
+      torque_output=self._previous_output_torque,
       path_quality=getattr(self.processed_lateral_demand, "path_quality", 1.0),
       lane_change_active=getattr(self.processed_lateral_demand, "lane_change_shaping_active", False),
       v_ego=CS.vEgo,
@@ -1015,6 +1022,7 @@ class LatControlTorqueV4(LatControl):
       governor_result = TorqueV4GovernorResult(0.0, governor_result.reason | TorqueV4GovernorReason.INVALID, governor_result.output_cap)
     output_torque = governor_result.output_torque
     saturated = self.steer_max - abs(output_torque) < 1e-3 or bool(governor_result.reason & TorqueV4GovernorReason.CLIPPED)
+    self._previous_output_torque = float(output_torque)
 
     observation = TorqueV4Observation(
       active=active and not invalid,

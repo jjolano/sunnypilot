@@ -571,6 +571,40 @@ def test_v4_oscillation_classifier_receives_frame_signals():
   assert len(controller.oscillation_classifier._raw_curvature) == 1
 
 
+def test_v4_oscillation_classifier_receives_real_torque_history():
+  """The classifier must see the previous frame's post-governor output
+  torque, not a hard-coded 0.0. With 0.0, the sign-flip counter never
+  fires and torque_sign_flips is stuck at 0, masking the wobble the
+  classifier is supposed to detect.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import STRAIGHT_ROAD_MIN_SPEED as _SPEED
+
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=_SPEED, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=1.0, path_reason="ok")
+
+  # Drive a few frames with a fixed nonzero curvature so the controller
+  # produces a steady nonzero output torque. This populates the
+  # classifier's torque window with the real history.
+  for _ in range(8):
+    controller.set_processed_lateral_demand(demand)
+    update(controller, VM, CS, 0.0008)
+
+  torque_window = list(controller.oscillation_classifier._torque_output)
+  assert len(torque_window) >= 2
+  # Every entry in the window is the previous frame's real output
+  # torque. A pre-fix controller would leave the window all zero.
+  assert all(t == 0.0 for t in torque_window) is False, (
+    "Classifier received all-zero torque history; "
+    "controller is not feeding back real output torque."
+  )
+  # Each entry is finite and at least one is non-trivially nonzero.
+  assert all(math.isfinite(t) for t in torque_window)
+  assert max(abs(t) for t in torque_window) > 0.1, (
+    f"Expected non-trivial torque magnitudes in classifier window, got {torque_window}"
+  )
+
+
 def test_v4_oscillation_classifier_window_grows_then_classifies():
   from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import STRAIGHT_ROAD_MIN_SPEED as _SPEED
 
