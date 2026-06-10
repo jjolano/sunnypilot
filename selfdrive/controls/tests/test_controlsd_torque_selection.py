@@ -20,7 +20,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2, LatControlTorqueV21
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV4, LatControlTorqueV41
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV4, LatControlTorqueV41, LatControlTorqueV5
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
   DEFAULT_TORQUE_TUNE_VERSION,
   TorqueControllerDefinition,
@@ -185,6 +185,16 @@ def test_torque_controller_selection_variants():
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert isinstance(selected, LatControlTorqueV41)
   assert not hasattr(selected, "extension")
+  assert "TorqueControlTune" not in params.writes
+
+  # 5.0 is the first torque version with active profile-aware
+  # command shaping. There is no 5.0-shadow; selecting 5.0
+  # directly selects LatControlTorqueV5.
+  params = FakeParams(True, 5.0)
+  controls_ext = make_controls_ext(CP, CP_SP, params)
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV5)
+  assert selected.VERSION == 50
   assert "TorqueControlTune" not in params.writes
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 1.0))

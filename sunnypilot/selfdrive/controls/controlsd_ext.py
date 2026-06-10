@@ -20,7 +20,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import Bl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2, LatControlTorqueV21
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV4, LatControlTorqueV41
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV4, LatControlTorqueV41, LatControlTorqueV5
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
   TorqueControllerDefinition,
   TorqueControllerRegistry,
@@ -36,6 +36,11 @@ TORQUE_CONTROLLER_REGISTRY = TorqueControllerRegistry((
   TorqueControllerDefinition(3.0, LatControlTorqueV3),
   TorqueControllerDefinition(4.0, LatControlTorqueV4),
   TorqueControllerDefinition(4.1, LatControlTorqueV41),
+  # 5.0 is the first torque version with active profile-aware
+  # command shaping (preview lead + turn-exit source-of-truth).
+  # No 5.0-shadow selector exists; the version is selected
+  # directly via TorqueControlTune=5.0.
+  TorqueControllerDefinition(5.0, LatControlTorqueV5),
 ))
 
 
