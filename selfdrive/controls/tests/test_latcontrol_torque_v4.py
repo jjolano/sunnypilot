@@ -231,6 +231,29 @@ def test_v41_logs_version_41():
   assert lac_log.version == 41
 
 
+def test_v41_is_current_lateral_torque_version():
+  """4.1 is the live lateral-torque version. v4.0 stays as the base
+  class for tests and the alias, and no LatControlTorqueV5 exists yet.
+  Any future v5 must be a sibling class with VERSION=5, not a
+  in-place bump of V41's VERSION=41.
+  """
+  import openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 as module
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV41,
+  )
+
+  # V4.0 stays at 4 (tests, alias, base class).
+  assert LatControlTorqueV4.VERSION == 4
+  # V4.1 stays at 41 (deployed behavior).
+  assert LatControlTorqueV41.VERSION == 41
+  # No V5 has been added.
+  assert not hasattr(module, "LatControlTorqueV5")
+  # The default alias still points at the v4.0 base class; v4.1 is
+  # selected by parameter, not by replacing the alias.
+  assert module.LatControlTorque is LatControlTorqueV4
+
+
 def test_v4_uses_no_v2_or_extension_post_core_limiters():
   source = inspect.getsource(latcontrol_torque_v4)
 
