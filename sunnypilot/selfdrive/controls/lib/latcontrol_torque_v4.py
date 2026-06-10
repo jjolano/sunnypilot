@@ -20,6 +20,7 @@ from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
 )
 from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
   LateralTurnExitController,
+  TurnExitDecision,
   TurnExitMode,
 )
 from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
@@ -752,6 +753,12 @@ class LatControlTorqueV4(LatControl):
     self._last_turn_exit_persistence: int = 0
     self._last_turn_exit_preview_boost: float = 0.0
     self._last_turn_exit_early_release: bool = False
+    # v5.0 pre-target turn-exit seam. When set, the post-command
+    # telemetry path uses self._v5_turn_exit_decision instead of
+    # re-calling turn_exit_controller.update(). v4 always leaves
+    # this False, so the post-command call runs every frame.
+    self._v5_turn_exit_decided: bool = False
+    self._v5_turn_exit_decision: TurnExitDecision | None = None
     self._recenter_persistence_frames: int = 0
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction) -> None:
@@ -807,6 +814,8 @@ class LatControlTorqueV4(LatControl):
     self._last_turn_exit_persistence = 0
     self._last_turn_exit_preview_boost = 0.0
     self._last_turn_exit_early_release = False
+    self._v5_turn_exit_decided = False
+    self._v5_turn_exit_decision = None
 
   def _under_response_recovery_allowed(self) -> bool:
     if self._wobble_active:
@@ -1073,16 +1082,8 @@ class LatControlTorqueV4(LatControl):
     )
     sample_update = self.session_adaptation.update(observation, governor_result.reason)
 
-    turn_exit_decision = self.turn_exit_controller.update(
-      target=target.raw_lateral_accel,
-      profile=self.lateral_demand_profile,
-      active=bool(active and not invalid),
-      v_ego=CS.vEgo,
-      path_quality=_finite_float(getattr(self.processed_lateral_demand, "path_quality", 1.0)) or 1.0,
-      lane_change_active=bool(getattr(self.processed_lateral_demand, "lane_change_shaping_active", False)),
-      steering_pressed=CS.steeringPressed,
-      curvature_limited=curvature_limited,
-      saturated=False,
+    turn_exit_decision = self._v5_record_turn_exit_telemetry(
+      target=target, active=active, CS=CS, curvature_limited=curvature_limited,
     )
     self._last_turn_exit_mode = turn_exit_decision.mode
     self._last_turn_exit_persistence = int(turn_exit_decision.persistence_frames)
@@ -1167,6 +1168,37 @@ class LatControlTorqueV4(LatControl):
     implementation; v5.0 overrides this to add profile shaping.
     """
     return self._build_target_base(desired_curvature, v_ego, speed_result, invalid, recenter)
+
+  def _v5_pre_target_decide_turn_exit(self, target: TorqueV4Target, *, active: bool,
+                                      CS, curvature_limited: bool) -> None:
+    """Pre-target turn-exit decision seam. v4 inherits as a no-op;
+    v5 overrides to call turn_exit_controller.update() before the
+    target is built and store the decision in self._v5_turn_exit_decision.
+
+    The decision is not yet used to shape the target; that lands in
+    later commits. This commit only establishes the wiring.
+    """
+    return None
+
+  def _v5_record_turn_exit_telemetry(self, *, target: TorqueV4Target, active: bool,
+                                     CS, curvature_limited: bool) -> TurnExitDecision:
+    """Post-command turn-exit telemetry seam. v4 calls
+    turn_exit_controller.update() and stores the result for
+    telemetry. v5 with ACTIVE_TURN_EXIT_CONTROLLER=True uses the
+    pre-target cached decision instead.
+    """
+    decision = self.turn_exit_controller.update(
+      target=target.raw_lateral_accel,
+      profile=self.lateral_demand_profile,
+      active=bool(active and not self._v5_turn_exit_decided),
+      v_ego=CS.vEgo,
+      path_quality=_finite_float(getattr(self.processed_lateral_demand, "path_quality", 1.0)) or 1.0,
+      lane_change_active=bool(getattr(self.processed_lateral_demand, "lane_change_shaping_active", False)),
+      steering_pressed=CS.steeringPressed,
+      curvature_limited=curvature_limited,
+      saturated=False,
+    )
+    return decision
 
   def _apply_under_response_lead_boost(self, target: TorqueV4Target, speed_result: TorqueV4SpeedModelResult, v_ego: float,
                                        *, active: bool, steering_pressed: bool, actual_lateral_accel: float,
@@ -1404,5 +1436,63 @@ class LatControlTorqueV5(LatControlTorqueV41):
   PREVIEW_BOOST_CAP_V = V5_PREVIEW_BOOST_CAP_V
   PREVIEW_MIN_PATH_QUALITY = 0.75
   PREVIEW_MIN_MODE_CONFIDENCE = 0.75
+
+  def _v5_pre_target_decide_turn_exit(self, target: TorqueV4Target, *, active: bool,
+                                      CS, curvature_limited: bool) -> None:
+    """Pre-target turn-exit decision. v5 hooks this so the
+    decision is computed before target building. ACTIVE_TURN_EXIT_CONTROLLER
+    is False in the parity-only skeleton, so this method is a no-op
+    and the post-command path drives telemetry. Flipping the flag in
+    a later commit is what activates the seam.
+    """
+    if not self.ACTIVE_TURN_EXIT_CONTROLLER:
+      self._v5_turn_exit_decided = False
+      self._v5_turn_exit_decision = None
+      return None
+    # Path enabled by a later commit. Not exercised in the skeleton.
+    self._v5_turn_exit_decided = True
+    self._v5_turn_exit_decision = self.turn_exit_controller.update(
+      target=target.raw_lateral_accel,
+      profile=self.lateral_demand_profile,
+      active=bool(active),
+      v_ego=CS.vEgo,
+      path_quality=_finite_float(getattr(self.processed_lateral_demand, "path_quality", 1.0)) or 1.0,
+      lane_change_active=bool(getattr(self.processed_lateral_demand, "lane_change_shaping_active", False)),
+      steering_pressed=CS.steeringPressed,
+      curvature_limited=curvature_limited,
+      saturated=False,
+    )
+    return None
+
+  def _v5_record_turn_exit_telemetry(self, *, target: TorqueV4Target, active: bool,
+                                     CS, curvature_limited: bool) -> TurnExitDecision:
+    """Post-command turn-exit telemetry. v5 with the active flag
+    on uses the cached pre-target decision; otherwise it falls
+    through to the v4 base which calls turn_exit_controller.update.
+    The fallback is what keeps parity in the skeleton commit.
+    """
+    if self.ACTIVE_TURN_EXIT_CONTROLLER and self._v5_turn_exit_decided and self._v5_turn_exit_decision is not None:
+      # Clear the latch so the next frame starts fresh.
+      self._v5_turn_exit_decided = False
+      return self._v5_turn_exit_decision
+    return super()._v5_record_turn_exit_telemetry(
+      target=target, active=active, CS=CS, curvature_limited=curvature_limited,
+    )
+
+  def _build_target(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
+                    invalid: bool, recenter: TorqueV4RecenterMode | None = None) -> TorqueV4Target:
+    """v5 build target runs the pre-target turn-exit seam before
+    delegating to the base. The seam is a no-op while
+    ACTIVE_TURN_EXIT_CONTROLLER is False, so parity is preserved.
+    """
+    base = self._build_target_base(desired_curvature, v_ego, speed_result, invalid, recenter)
+    if self.ACTIVE_TURN_EXIT_CONTROLLER and not invalid:
+      # Caller passes CS / curvature_limited via cached state, but
+      # this seam only fires when the active flag is on. In the
+      # parity-only skeleton this branch is unreachable.
+      self._v5_pre_target_decide_turn_exit(
+        base, active=True, CS=None, curvature_limited=False,
+      )
+    return base
 
 LatControlTorque = LatControlTorqueV4

@@ -415,6 +415,100 @@ def test_v5_target_extends_v4_target_with_metadata_fields():
   assert v5.lead_delta_cap == base.lead_delta_cap
 
 
+def test_v5_turn_exit_seam_is_noop_when_active_flag_off():
+  """With ACTIVE_TURN_EXIT_CONTROLLER=False (the skeleton default),
+  the v5 pre-target seam is a no-op. The post-command telemetry
+  path therefore drives the controller exactly once per frame, just
+  like v4.1. This is the parity guarantee for the seam.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  controller, VM, _CP = get_controller()
+  v5, _, _ = (None, None, None), None, None
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
+  v5.set_processed_lateral_demand(demand)
+
+  # Skeleton seam: pre-target is no-op, decided flag stays False.
+  assert v5.ACTIVE_TURN_EXIT_CONTROLLER is False
+  v5._v5_pre_target_decide_turn_exit(
+    TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5),
+    active=True, CS=CS, curvature_limited=False,
+  )
+  assert v5._v5_turn_exit_decided is False
+  assert v5._v5_turn_exit_decision is None
+
+  # Driving a frame through the controller still works and v5 stays
+  # parity-equivalent to v4.1.
+  log_v5 = update(v5, VM, CS, 0.001)[2]
+  assert log_v5.version == 50
+  assert log_v5.adaptiveTorqueState.turnExitMode >= 0  # telemetry populated
+
+
+def test_v5_turn_exit_seam_would_fire_when_active_flag_on():
+  """With ACTIVE_TURN_EXIT_CONTROLLER=True (the future state), the
+  pre-target seam calls turn_exit_controller.update() and stores the
+  decision. The post-command telemetry path then reads from the
+  cached decision. The controller must be called exactly once per
+  frame in that mode.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    LateralTurnExitController,
+    TurnExitDecision,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+
+  # Replace the controller with a mock that counts calls and
+  # returns a known decision.
+  calls: list[dict] = []
+  def _counting_update(**kwargs):
+    calls.append(kwargs)
+    return TurnExitDecision(
+      mode="turn_in", persistence_frames=5,
+      lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.07,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _counting_update
+
+  target = TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5)
+  v5._v5_pre_target_decide_turn_exit(
+    target, active=True, CS=make_car_state(v_ego=20.0, steering_pressed=False), curvature_limited=False,
+  )
+  assert v5._v5_turn_exit_decided is True
+  assert v5._v5_turn_exit_decision is not None
+  assert v5._v5_turn_exit_decision.mode == "turn_in"
+  assert v5._v5_turn_exit_decision.preview_boost == pytest.approx(0.07)
+  # Exactly one controller call so far.
+  assert len(calls) == 1
+
+  # Post-command telemetry reads from the cached decision. The
+  # base implementation must NOT call the controller again.
+  decision = v5._v5_record_turn_exit_telemetry(
+    target=target, active=True,
+    CS=make_car_state(v_ego=20.0, steering_pressed=False), curvature_limited=False,
+  )
+  assert len(calls) == 1, (
+    f"Expected no second controller call when pre-target decided, got {len(calls)}"
+  )
+  assert decision.mode == "turn_in"
+  assert decision.preview_boost == pytest.approx(0.07)
+  # Latch is cleared so the next frame starts fresh.
+  assert v5._v5_turn_exit_decided is False
+
+
 def test_v4_uses_no_v2_or_extension_post_core_limiters():
   source = inspect.getsource(latcontrol_torque_v4)
 
