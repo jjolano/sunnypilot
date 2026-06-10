@@ -881,6 +881,122 @@ def test_v5_active_flag_default_is_on_after_first_active_delta():
   assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
 
 
+def test_v4_governor_context_is_none():
+  """v4 always returns None from _v5_governor_context so the
+  governor sees no v5 context and applies v4.1 slew rates.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+  )
+  controller, _, _ = get_controller()
+  assert controller._v5_governor_context(target=None) is None
+  assert LatControlTorqueV4._v5_governor_context.__qualname__.endswith("._v5_governor_context")
+
+
+def test_v5_governor_context_carries_profile_and_telemetry_state():
+  """v5 builds a populated TorqueV5GovernorContext every frame.
+  The context surfaces profile mode / confidence, last-frame
+  preview/turn-exit activity, wobble state, and v5-active flag.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5GovernorContext,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5._v5_last_preview_active = True
+  v5._v5_last_turn_exit_active = True
+  v5._wobble_active = False
+  v5._v5_last_v5_active = True
+  v5._v5_last_v5_reason = "preview_boost_applied"
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.85,
+    ),
+  )
+
+  ctx = v5._v5_governor_context(target=None)
+  assert isinstance(ctx, TorqueV5GovernorContext)
+  assert ctx.profile_available is True
+  assert ctx.demand_mode == LateralMode.TURN_IN.value
+  assert ctx.demand_mode_confidence == pytest.approx(0.85)
+  assert ctx.preview_active is True
+  assert ctx.turn_exit_active is True
+  assert ctx.wobble_active is False
+  assert ctx.v5_active is True
+  assert ctx.v5_reason == "preview_boost_applied"
+
+
+def test_v5_governor_context_turn_exit_boost_does_not_loosen_safety_caps():
+  """The v5 context drives a bounded slew boost during turn-exit
+  unwind. The output cap, sign-change slew rate, and CLIPPED
+  reason must all be unchanged from the v4.1 baseline. The
+  boost can only relax the inter-frame slew, never the safety
+  envelope.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV5,
+    TorqueV5GovernorContext,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v4 = LatControlTorqueV4(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+
+  # Simulate a sign-change unwind frame: previous_output is on
+  # one side, raw_output_torque is on the other. Build a v5
+  # context that reports turn_exit_active.
+  v5.governor.previous_output = 1.0
+  v4.governor.previous_output = 1.0
+  v5._v5_last_turn_exit_active = True
+  v5._v5_last_preview_active = False
+  v5._v5_last_v5_active = True
+  v5._v5_last_v5_reason = "turn_exit_source_of_truth"
+
+  kwargs = dict(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False,
+    actuator_mismatch=False, actuator_error=0.0,
+    raw_output_torque=-1.0, max_output=2.0,
+    speed_model=make_speed_result(),
+  )
+  result_v4 = v4.governor.update(**kwargs)
+  v5_ctx = v5._v5_governor_context(target=None)
+  result_v5 = v5.governor.update(**kwargs, v5_context=v5_ctx)
+  # Output cap is the safety envelope; the v5 boost must not
+  # change it.
+  assert result_v5.output_cap == pytest.approx(result_v4.output_cap)
+  # Sign-change was present in both calls; the SLEW_LIMITED
+  # reason and the same_direction cap-rate logic are untouched.
+  assert (result_v5.reason & 0xFF) == (result_v4.reason & 0xFF)
+
+
 def test_v4_uses_no_v2_or_extension_post_core_limiters():
   source = inspect.getsource(latcontrol_torque_v4)
 

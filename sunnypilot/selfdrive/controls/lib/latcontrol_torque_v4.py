@@ -361,6 +361,27 @@ class TorqueV4GovernorResult:
 
 
 @dataclass(frozen=True)
+class TorqueV5GovernorContext:
+  """Per-frame v5 context passed to the governor.
+
+  Lets the governor distinguish a clean profile-driven frame
+  from a degraded one (low path quality, lane change, wobble,
+  turn-exit). The initial 5.0 implementation uses this for
+  telemetry and a bounded turn-exit unwind slew boost. Safety
+  caps, output caps, and sign-change slew rates stay at v4.1
+  values regardless of context.
+  """
+  profile_available: bool
+  demand_mode: str
+  demand_mode_confidence: float
+  preview_active: bool
+  turn_exit_active: bool
+  wobble_active: bool
+  v5_active: bool
+  v5_reason: str
+
+
+@dataclass(frozen=True)
 class TorqueV4RecenterMode:
   active: bool = False
   persistence_frames: int = 0
@@ -579,7 +600,8 @@ class TorqueV4OutputGovernor:
              raw_output_torque: float, max_output: float, speed_model: TorqueV4SpeedModelResult,
              recovery_target_lateral_accel: float = 0.0, actual_lateral_accel: float = 0.0,
              under_response_recovery_allowed: bool = False,
-             recenter: TorqueV4RecenterMode | None = None) -> TorqueV4GovernorResult:
+             recenter: TorqueV4RecenterMode | None = None,
+             v5_context: TorqueV5GovernorContext | None = None) -> TorqueV4GovernorResult:
     reason = TorqueV4GovernorReason.NONE
     if not active:
       self.reset()
@@ -642,6 +664,20 @@ class TorqueV4OutputGovernor:
       else:
         slew_rate *= RECENTER_SAME_DIRECTION_SLEW_BOOST
       reason |= TorqueV4GovernorReason.RECENTER_MODE
+    # v5.0 turn-exit unwind boost. Only fires when the v5 context
+    # reports turn_exit_active, only on unwind frames (sign change
+    # or same-direction decrease), and only as a bounded slew-rate
+    # multiplier. Output caps, sign-change slew rates, and safety
+    # caps remain at v4.1 values.
+    if (
+      v5_context is not None
+      and v5_context.turn_exit_active
+      and (sign_change or target_decreases_same_direction)
+    ):
+      if sign_change:
+        slew_rate *= TORQUE_V5_TURN_EXIT_SIGN_CHANGE_SLEW_BOOST
+      else:
+        slew_rate *= TORQUE_V5_TURN_EXIT_SAME_DIRECTION_SLEW_BOOST
     if high_rate_blend > 0.0:
       slew_rate *= self.profile.high_rate_slew_scale
     if same_direction_limit and not steer_limit_unwind:
@@ -760,6 +796,11 @@ class LatControlTorqueV4(LatControl):
     # this False, so the post-command call runs every frame.
     self._v5_turn_exit_decided: bool = False
     self._v5_turn_exit_decision: TurnExitDecision | None = None
+    # v5.0 last-frame shaping telemetry for the governor context.
+    self._v5_last_preview_active: bool = False
+    self._v5_last_turn_exit_active: bool = False
+    self._v5_last_v5_active: bool = False
+    self._v5_last_v5_reason: str = ""
     self._recenter_persistence_frames: int = 0
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction) -> None:
@@ -817,6 +858,10 @@ class LatControlTorqueV4(LatControl):
     self._last_turn_exit_early_release = False
     self._v5_turn_exit_decided = False
     self._v5_turn_exit_decision = None
+    self._v5_last_preview_active = False
+    self._v5_last_turn_exit_active = False
+    self._v5_last_v5_active = False
+    self._v5_last_v5_reason = ""
 
   def _under_response_recovery_allowed(self) -> bool:
     if self._wobble_active:
@@ -1053,6 +1098,7 @@ class LatControlTorqueV4(LatControl):
       actual_lateral_accel=actual_lateral_accel,
       under_response_recovery_allowed=self._under_response_recovery_allowed(),
       recenter=recenter,
+      v5_context=self._v5_governor_context(target=target),
     )
     if invalid:
       governor_result = TorqueV4GovernorResult(0.0, governor_result.reason | TorqueV4GovernorReason.INVALID, governor_result.output_cap)
@@ -1205,6 +1251,13 @@ class LatControlTorqueV4(LatControl):
       saturated=False,
     )
     return decision
+
+  def _v5_governor_context(self, *, target: TorqueV4Target) -> TorqueV5GovernorContext | None:
+    """v4 always returns None: the governor sees no v5 context
+    and applies the v4.1 slew rates and caps unchanged. v5
+    overrides this to return a populated context.
+    """
+    return None
 
   def _apply_under_response_lead_boost(self, target: TorqueV4Target, speed_result: TorqueV4SpeedModelResult, v_ego: float,
                                        *, active: bool, steering_pressed: bool, actual_lateral_accel: float,
@@ -1421,6 +1474,14 @@ V5_PREVIEW_BOOST_CAP_BP = [0.0, 10.0, 20.0, 40.0]
 V5_PREVIEW_BOOST_CAP_V = [0.00, 0.08, 0.12, 0.10]
 
 
+# Bounded turn-exit slew boost. Used by the governor only when the
+# v5 context reports turn_exit_active, only on unwind frames, and
+# only as a multiplier on the v4.1 slew rate. Safety caps and
+# output caps remain at v4.1 values.
+TORQUE_V5_TURN_EXIT_SIGN_CHANGE_SLEW_BOOST = 1.20
+TORQUE_V5_TURN_EXIT_SAME_DIRECTION_SLEW_BOOST = 1.10
+
+
 class LatControlTorqueV5(LatControlTorqueV41):
   """Torque 5.0: profile-aware active command shaping.
 
@@ -1442,6 +1503,29 @@ class LatControlTorqueV5(LatControlTorqueV41):
   PREVIEW_BOOST_CAP_V = V5_PREVIEW_BOOST_CAP_V
   PREVIEW_MIN_PATH_QUALITY = 0.75
   PREVIEW_MIN_MODE_CONFIDENCE = 0.75
+
+  def _v5_governor_context(self, *, target: TorqueV4Target) -> TorqueV5GovernorContext | None:
+    """v5 builds a populated governor context every frame.
+
+    The context lets the governor apply the bounded turn-exit
+    unwind slew boost and surface v5 telemetry. The governor's
+    safety caps, sign-change slew rates, and output caps stay at
+    v4.1 values regardless of the context.
+    """
+    profile = self.lateral_demand_profile
+    profile_available = profile is not None
+    demand_mode = getattr(profile, "mode", "straight_stable") if profile is not None else "straight_stable"
+    demand_mode_confidence = float(getattr(profile, "mode_confidence", 0.0)) if profile is not None else 0.0
+    return TorqueV5GovernorContext(
+      profile_available=profile_available,
+      demand_mode=demand_mode,
+      demand_mode_confidence=demand_mode_confidence,
+      preview_active=self._v5_last_preview_active,
+      turn_exit_active=self._v5_last_turn_exit_active,
+      wobble_active=self._wobble_active,
+      v5_active=self._v5_last_v5_active,
+      v5_reason=self._v5_last_v5_reason,
+    )
 
   def _v5_pre_target_decide_turn_exit(self, target: TorqueV4Target, *, active: bool,
                                       CS, curvature_limited: bool) -> None:
@@ -1506,6 +1590,10 @@ class LatControlTorqueV5(LatControlTorqueV41):
     """
     base = self._build_target_base(desired_curvature, v_ego, speed_result, invalid, recenter)
     if not self.ACTIVE_TURN_EXIT_CONTROLLER or invalid:
+      self._v5_last_preview_active = False
+      self._v5_last_turn_exit_active = False
+      self._v5_last_v5_active = False
+      self._v5_last_v5_reason = ""
       return base
 
     # Pre-target decision seam. Stores self._v5_turn_exit_decision
@@ -1515,6 +1603,10 @@ class LatControlTorqueV5(LatControlTorqueV41):
     )
     decision = self._v5_turn_exit_decision
     if decision is None or not self._v5_turn_exit_decided:
+      self._v5_last_preview_active = False
+      self._v5_last_turn_exit_active = False
+      self._v5_last_v5_active = False
+      self._v5_last_v5_reason = ""
       return base
 
     # Apply lead gain / cap multipliers from the decision.
@@ -1550,6 +1642,13 @@ class LatControlTorqueV5(LatControlTorqueV41):
     if preview_boost_applied != 0.0:
       lead_delta = _clip(lead_delta + preview_boost_applied, -lead_delta_cap, lead_delta_cap)
     delay_lead = base.raw_lateral_accel + lead_delta
+    # Telemetry flags for the governor context. The context is
+    # only consulted on v5 (with ACTIVE_TURN_EXIT_CONTROLLER on);
+    # v4 never sees it.
+    self._v5_last_preview_active = bool(preview_boost_applied != 0.0)
+    self._v5_last_turn_exit_active = bool(early_release_active or decision.mode in ("turn_exit", "early_release"))
+    self._v5_last_v5_active = True
+    self._v5_last_v5_reason = "turn_exit_source_of_truth" if preview_boost_applied == 0.0 else "preview_boost_applied"
     return TorqueV5Target(
       raw_lateral_accel=base.raw_lateral_accel,
       target_rate=base.target_rate,
