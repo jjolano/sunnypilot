@@ -299,6 +299,49 @@ def test_plan_braking_signals() -> None:
   assert not signal_scorer.SIGNAL_REGISTRY["plan_strong_brake"](make_sample(plan_a_target=-0.5))
 
 
+def test_non_episode_windows_skips_overlap() -> None:
+  from openpilot.tools.drive_lab.signal_scorer import _non_episode_windows
+  samples = [make_sample(t=i * 1.0) for i in range(60)]
+  episodes = [DecisionEpisode(
+    category="x", route="r", route_id="r", segment=0,
+    decision_time_s=20.0, start_time_s=15.0, end_time_s=25.0, duration_s=10.0,
+    kind="k", v_ego=10.0, a_ego=0.0, active_ratio=0.0, long_active_ratio=0.0,
+  )]
+  windows = _non_episode_windows(samples, episodes, window_s=10.0, max_windows=10)
+  for w_start, w_end in windows:
+    assert not (w_start < 25.0 and 15.0 < w_end), f"window {w_start}-{w_end} overlaps episode 15-25"
+
+
+def test_precision_is_one_when_no_false_alarms() -> None:
+  samples = [make_sample(t=i * 0.1, v_ego=10.0, model_should_stop=(i % 2 == 0)) for i in range(50)]
+  ep = DecisionEpisode(
+    category="stop_go", route="r", route_id="r", segment=0,
+    decision_time_s=2.0, start_time_s=1.5, end_time_s=2.5, duration_s=1.0,
+    kind="leadless_slowdown", v_ego=10.0, a_ego=0.0, active_ratio=0.0, long_active_ratio=0.0,
+  )
+  metric = score_signal_for_category(samples, [ep], "model_should_stop", lookback_s=2.0, timely_grace_s=1.5)
+  assert metric.true_positives > 0
+  assert metric.precision > 0.5
+
+
+def test_precision_drops_with_false_alarms() -> None:
+  samples = [make_sample(t=i * 0.1, v_ego=10.0, model_should_stop=(i % 2 == 0)) for i in range(80)]
+  ep = DecisionEpisode(
+    category="stop_go", route="r", route_id="r", segment=0,
+    decision_time_s=2.0, start_time_s=1.5, end_time_s=2.5, duration_s=1.0,
+    kind="leadless_slowdown", v_ego=10.0, a_ego=0.0, active_ratio=0.0, long_active_ratio=0.0,
+  )
+  new_samples = []
+  for s in samples:
+    if 5.0 <= s.t <= 7.0:
+      new_samples.append(make_sample(t=s.t, v_ego=s.v_ego, a_ego=s.a_ego, model_should_stop=True))
+    else:
+      new_samples.append(s)
+  metric_overfire = score_signal_for_category(new_samples, [ep], "model_should_stop", lookback_s=2.0, timely_grace_s=1.5)
+  assert metric_overfire.false_positives > 0
+  assert metric_overfire.precision < 1.0
+
+
 def test_render_summary_groups_zero_recall() -> None:
   from openpilot.tools.drive_lab.signal_scorer import (
     CategoryScorecard, ScorerSummary, SignalMetric, render_summary,
@@ -306,14 +349,16 @@ def test_render_summary_groups_zero_recall() -> None:
   zero = SignalMetric(
     category="t", signal="zero", episodes=2, hit_count=0, timely_hit_count=0,
     missed_count=2, fire_count=0, recall=0.0, recall_timely=0.0,
-    precision_proxy=0.0, false_positive_rate=0.0, median_lead_time_s=None,
-    p10_lead_time_s=None, flicker_count=0, onset_lag_s=None,
+    precision=0.0, true_positives=0, false_positives=0, false_alarm_count=0,
+    false_alarm_windows=0, median_lead_time_s=None, p10_lead_time_s=None,
+    flicker_count=0, onset_lag_s=None,
   )
   hit = SignalMetric(
     category="t", signal="hit", episodes=2, hit_count=2, timely_hit_count=2,
     missed_count=0, fire_count=3, recall=1.0, recall_timely=1.0,
-    precision_proxy=1.0, false_positive_rate=0.5, median_lead_time_s=1.0,
-    p10_lead_time_s=0.5, flicker_count=1, onset_lag_s=2.0,
+    precision=1.0, true_positives=3, false_positives=0, false_alarm_count=0,
+    false_alarm_windows=5, median_lead_time_s=1.0, p10_lead_time_s=0.5,
+    flicker_count=1, onset_lag_s=2.0,
   )
   card = CategoryScorecard(category="t", episode_count=2, signals={"zero": zero, "hit": hit})
   summary = ScorerSummary(

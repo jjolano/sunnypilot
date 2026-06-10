@@ -139,8 +139,11 @@ class SignalMetric:
   fire_count: int
   recall: float
   recall_timely: float
-  precision_proxy: float
-  false_positive_rate: float
+  precision: float
+  true_positives: int
+  false_positives: int
+  false_alarm_count: int
+  false_alarm_windows: int
   median_lead_time_s: float | None
   p10_lead_time_s: float | None
   flicker_count: int
@@ -675,6 +678,32 @@ def _signal_hits_in_window(samples: list[SignalSample], decision_time: float,
   return hits, timely
 
 
+def _non_episode_windows(sorted_samples: list[SignalSample], episodes: list[DecisionEpisode],
+                        window_s: float, max_windows: int = 50) -> list[tuple[float, float]]:
+  """Sample non-episode windows of length window_s for false-alarm measurement."""
+  if not episodes or not sorted_samples:
+    return []
+  t_min = sorted_samples[0].t
+  t_max = sorted_samples[-1].t
+  if t_max - t_min <= window_s:
+    return []
+
+  episode_ranges = [(ep.start_time_s, ep.end_time_s) for ep in episodes]
+  episode_ranges.sort()
+
+  def overlaps(a_start, a_end, b_start, b_end):
+    return a_start < b_end and b_start < a_end
+
+  stride = max(window_s, (t_max - t_min - window_s) / max_windows)
+  out: list[tuple[float, float]] = []
+  t = t_min
+  while t + window_s <= t_max and len(out) < max_windows:
+    if not any(overlaps(t, t + window_s, er[0], er[1]) for er in episode_ranges):
+      out.append((t, t + window_s))
+    t += stride
+  return out
+
+
 def score_signal_for_category(samples: list[SignalSample], episodes: list[DecisionEpisode], signal_name: str,
                               lookback_s: float = DEFAULT_SIGNAL_LOOKBACK_S,
                               timely_grace_s: float = DEFAULT_TIMELY_GRACE_S) -> SignalMetric:
@@ -688,12 +717,14 @@ def score_signal_for_category(samples: list[SignalSample], episodes: list[Decisi
   fire_count = 0
   flicker_count = 0
   onset_lags: list[float] = []
+  true_positive_fires = 0
 
   sorted_samples = sorted(samples, key=lambda s: s.t)
   for ep in episodes:
     window = [s for s in sorted_samples if (ep.decision_time_s - lookback_s) <= s.t <= (ep.decision_time_s + timely_grace_s)]
     hits = [s for s in window if signal(s)]
     fire_count += len(hits)
+    true_positive_fires += len(hits)
     if hits:
       hit_count += 1
       if any(s.t <= ep.decision_time_s + timely_grace_s for s in hits):
@@ -706,6 +737,21 @@ def score_signal_for_category(samples: list[SignalSample], episodes: list[Decisi
     else:
       miss_count += 1
 
+  false_alarm_count = 0
+  false_alarm_windows = 0
+  false_positive_fires = 0
+  gap_window_s = lookback_s + timely_grace_s
+  non_ep_windows = _non_episode_windows(sorted_samples, episodes, gap_window_s)
+  for nw_start, nw_end in non_ep_windows:
+    nw_samples = [s for s in sorted_samples if nw_start <= s.t <= nw_end]
+    fires_in_window = sum(1 for s in nw_samples if signal(s))
+    false_positive_fires += fires_in_window
+    if fires_in_window > 0:
+      false_alarm_count += 1
+    false_alarm_windows += 1
+
+  precision = _ratio(true_positive_fires, true_positive_fires + false_positive_fires)
+
   return SignalMetric(
     category="",
     signal=signal_name,
@@ -716,8 +762,11 @@ def score_signal_for_category(samples: list[SignalSample], episodes: list[Decisi
     fire_count=fire_count,
     recall=_ratio(hit_count, len(episodes)),
     recall_timely=_ratio(timely_count, len(episodes)),
-    precision_proxy=_precision_proxy(len(episodes), fire_count, len(samples), lookback_s + timely_grace_s),
-    false_positive_rate=_false_positive_rate(len(episodes), fire_count, len(samples), lookback_s + timely_grace_s),
+    precision=precision,
+    true_positives=true_positive_fires,
+    false_positives=false_positive_fires,
+    false_alarm_count=false_alarm_count,
+    false_alarm_windows=false_alarm_windows,
     median_lead_time_s=_median_or_none(lead_times),
     p10_lead_time_s=_percentile_or_none(lead_times, 10.0),
     flicker_count=flicker_count,
@@ -727,18 +776,6 @@ def score_signal_for_category(samples: list[SignalSample], episodes: list[Decisi
 
 def _ratio(num: int, denom: int) -> float:
   return num / denom if denom else 0.0
-
-
-def _precision_proxy(episodes: int, fires_in_episode_windows: int, total_samples: int, window_s: float) -> float:
-  if episodes == 0:
-    return 0.0
-  return _ratio(fires_in_episode_windows, fires_in_episode_windows)
-
-
-def _false_positive_rate(episodes: int, fires_in_episode_windows: int, total_samples: int, window_s: float) -> float:
-  if total_samples == 0:
-    return 0.0
-  return _ratio(fires_in_episode_windows, total_samples)
 
 
 def _median_or_none(values: list[float]) -> float | None:
@@ -772,8 +809,11 @@ def score_category(samples: list[SignalSample], category: str, signal_names: lis
       fire_count=metric.fire_count,
       recall=metric.recall,
       recall_timely=metric.recall_timely,
-      precision_proxy=metric.precision_proxy,
-      false_positive_rate=metric.false_positive_rate,
+      precision=metric.precision,
+      true_positives=metric.true_positives,
+      false_positives=metric.false_positives,
+      false_alarm_count=metric.false_alarm_count,
+      false_alarm_windows=metric.false_alarm_windows,
       median_lead_time_s=metric.median_lead_time_s,
       p10_lead_time_s=metric.p10_lead_time_s,
       flicker_count=metric.flicker_count,
@@ -889,10 +929,10 @@ def render_summary(summary: ScorerSummary) -> str:
     if not cat.signals:
       lines.append("  (no signals scored)")
       continue
-    lines.append("  (signals with recall > 0, ranked by recall, then by -fire_count)")
+    lines.append("  (signals with recall > 0, ranked by precision then recall then -fire_count)")
     ranked = sorted(
       cat.signals.items(),
-      key=lambda item: (-item[1].recall_timely, -item[1].recall, item[1].fire_count),
+      key=lambda item: (-item[1].precision, -item[1].recall_timely, -item[1].recall, item[1].fire_count),
     )
     for name, m in ranked:
       if m.recall <= 0:
@@ -901,7 +941,10 @@ def render_summary(summary: ScorerSummary) -> str:
       p10 = f"{m.p10_lead_time_s:+.2f}s" if m.p10_lead_time_s is not None else "  n/a"
       lines.append(
         f"  {name:30s} recall={m.recall:.2f} timely={m.recall_timely:.2f} "
-        f"flickers={m.flicker_count:5d} lead={lead} p10={p10} fires={m.fire_count:5d}"
+        f"precision={m.precision:.2f} flickers={m.flicker_count:5d} "
+        f"lead={lead} p10={p10} fires={m.fire_count:5d} "
+        f"tp={m.true_positives:4d} fp={m.false_positives:4d} "
+        f"fa_windows={m.false_alarm_count}/{m.false_alarm_windows}"
       )
     skipped = [(n, m) for n, m in cat.signals.items() if m.recall <= 0]
     if skipped:
