@@ -81,6 +81,14 @@ class CustomV2LateralDemandStack:
     return self._lateral_accel_limit_no_roll
 
   @property
+  def default_lateral_accel_limited(self) -> bool:
+    return self._default_lateral_accel_limited
+
+  @property
+  def previous_desired_curvature(self) -> float:
+    return self._previous_desired_curvature
+
+  @property
   def last_legacy_demand(self) -> ProcessedLateralDemand | None:
     return self._last_legacy_demand
 

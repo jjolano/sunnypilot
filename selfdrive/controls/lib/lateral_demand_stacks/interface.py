@@ -53,8 +53,8 @@ class LateralDemandStackOutput:
   resolved_stack: str
   fallback_reason: str
   version: str
-  legacy: object
-  profile: object | None = None
+  legacy: Any
+  profile: Any | None = None
   debug: dict[str, Any] = field(default_factory=dict)
 
 
@@ -67,7 +67,7 @@ class StackOutputValidation:
 def validate_lateral_demand_stack_output(output: object) -> StackOutputValidation:
   if not isinstance(output, LateralDemandStackOutput):
     return StackOutputValidation(False, "invalid_output_type")
-  if not isinstance(output.legacy, object) or output.legacy is None:
+  if output.legacy is None:
     return StackOutputValidation(False, "missing_legacy")
   if not isinstance(output.requested_stack, str) or not output.requested_stack:
     return StackOutputValidation(False, "missing_requested_stack")
@@ -77,7 +77,7 @@ def validate_lateral_demand_stack_output(output: object) -> StackOutputValidatio
     return StackOutputValidation(False, "invalid_fallback_reason")
   if not isinstance(output.version, str):
     return StackOutputValidation(False, "invalid_version")
-  if not isinstance(output.profile, (type(None), object)):
+  if output.profile is not None and not isinstance(output.profile, object):
     return StackOutputValidation(False, "invalid_profile_type")
   if not isinstance(output.debug, dict):
     return StackOutputValidation(False, "invalid_debug")
