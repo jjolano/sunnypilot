@@ -1091,8 +1091,15 @@ class LatControlTorqueV4(LatControl):
 
     return -output_torque, 0.0, pid_log
 
-  def _build_target(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
-                    invalid: bool, recenter: TorqueV4RecenterMode | None = None) -> TorqueV4Target:
+  def _build_target_base(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
+                         invalid: bool, recenter: TorqueV4RecenterMode | None = None) -> TorqueV4Target:
+    """Base target builder shared by v4.0, v4.1, and v5.0.
+
+    Computes raw target, target rate, lead gain / cap, the early-
+    release guard, and the recenter lead reduction. The seam lets
+    v5.0 wrap this method to add profile-aware shaping without
+    duplicating the base behavior.
+    """
     raw_target = 0.0 if invalid else desired_curvature * v_ego ** 2
     target_rate = 0.0 if invalid else (raw_target - self.previous_target_lateral_accel) / self.dt
     previous_target = self.previous_target_lateral_accel
@@ -1134,6 +1141,13 @@ class LatControlTorqueV4(LatControl):
       lead_delta = 0.0
     return TorqueV4Target(raw_target, target_rate, raw_target + lead_delta, lead_delta,
                           lead_gain, lead_delta_cap)
+
+  def _build_target(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
+                    invalid: bool, recenter: TorqueV4RecenterMode | None = None) -> TorqueV4Target:
+    """Public target build seam. v4.0/v4.1 forward to the base
+    implementation; v5.0 overrides this to add profile shaping.
+    """
+    return self._build_target_base(desired_curvature, v_ego, speed_result, invalid, recenter)
 
   def _apply_under_response_lead_boost(self, target: TorqueV4Target, speed_result: TorqueV4SpeedModelResult, v_ego: float,
                                        *, active: bool, steering_pressed: bool, actual_lateral_accel: float,

@@ -340,6 +340,46 @@ def test_v5_is_parity_with_v41_when_all_active_flags_off():
   assert log_v41.version == 41
 
 
+def test_v4_build_target_seam_delegates_to_base():
+  """The v4 _build_target() entry point must delegate to the
+  _build_target_base() implementation. v5.0 will override
+  _build_target() to add profile shaping without re-implementing
+  the base math.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV41,
+    LatControlTorqueV5,
+  )
+
+  speed_result = make_speed_result()
+  # Use fresh controllers per call because _build_target_base mutates
+  # self.previous_target_lateral_accel. Each call must start from the
+  # same initial state to be comparable.
+  def _v4_pair():
+    a, VM, _CP = get_controller()
+    b, _, _ = get_controller()
+    return a, b, VM
+
+  a, b, _VM = _v4_pair()
+  base_target = a._build_target_base(0.001, 20.0, speed_result, False)
+  seam_target = b._build_target(0.001, 20.0, speed_result, False)
+  assert isinstance(base_target, TorqueV4Target)
+  assert seam_target == base_target
+
+  # v4.1 also forwards to the same base.
+  CP, CP_SP, CI = get_context()
+  v41a = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v41b = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  assert v41a._build_target(0.001, 20.0, speed_result, False) == v41b._build_target_base(0.001, 20.0, speed_result, False)
+  # v5 also forwards to the same base (skeleton parity).
+  v5a = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5b = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  assert v5a._build_target(0.001, 20.0, speed_result, False) == v5b._build_target_base(0.001, 20.0, speed_result, False)
+  # And the base class is the only place the math lives.
+  assert LatControlTorqueV4._build_target_base.__qualname__.endswith("._build_target_base")
+
+
 def test_v4_uses_no_v2_or_extension_post_core_limiters():
   source = inspect.getsource(latcontrol_torque_v4)
 
