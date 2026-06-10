@@ -67,9 +67,9 @@ def test_resolve_profile_features_match_resolved_stack():
 
 
 def test_resolve_profile_experimental_stage_propagates():
-  profile = resolve_controls_profile("custom-experimental", "custom-experimental", CP=_FakeCP())
+  profile = resolve_controls_profile("custom-experimental", "custom-2.0", CP=_FakeCP())
   assert profile.lateral_features.features.experimental_stage == "experimental"
-  assert profile.longitudinal_features.features.experimental_stage == "experimental"
+  assert profile.longitudinal_features.features.experimental_stage == "stable"
 
 
 def test_policy_summary_round_trip():

@@ -54,13 +54,13 @@ def test_end_to_end_default_pair():
 
 
 def test_end_to_end_experimental_pair():
-  params = _FakeParams({LATERAL_STACK_PARAM: b"custom-experimental", LONGITUDINAL_STACK_PARAM: b"custom-experimental"})
+  params = _FakeParams({LATERAL_STACK_PARAM: b"custom-experimental", LONGITUDINAL_STACK_PARAM: b"custom-2.0"})
   resolver = ControlsProfileResolver(params_getter=params)
   profile = resolver.engage(CP=_FakeCP())
   assert profile.resolved_lateral == "custom-experimental"
-  assert profile.resolved_longitudinal == "custom-experimental"
+  assert profile.resolved_longitudinal == "custom-2.0"
   assert profile.lateral_features.features.experimental_stage == "experimental"
-  assert profile.longitudinal_features.features.experimental_stage == "experimental"
+  assert profile.longitudinal_features.features.experimental_stage == "stable"
 
 
 def test_end_to_end_baseline_pair():
@@ -98,7 +98,7 @@ def test_end_to_end_manifests_agree_with_selector():
   resolver = ControlsProfileResolver(params_getter=params)
   profile = resolver.engage(CP=_FakeCP())
   assert "custom-experimental" in get_controls_profile_metadata()["lateral_manifest"]["stacks"]
-  assert "custom-experimental" in get_controls_profile_metadata()["longitudinal_manifest"]["stacks"]
+  assert "custom-experimental" not in get_controls_profile_metadata()["longitudinal_manifest"]["stacks"]
   assert get_features("custom-experimental").experimental_stage == "experimental"
 
 

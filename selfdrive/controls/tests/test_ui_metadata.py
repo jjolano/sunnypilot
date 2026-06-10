@@ -17,11 +17,11 @@ def test_lateral_manifest_summary_lists_all_four_stacks():
   assert "custom-experimental" in summary["availability"]
 
 
-def test_longitudinal_manifest_summary_lists_all_four_stacks():
+def test_longitudinal_manifest_summary_lists_stable_stacks():
   summary = get_longitudinal_manifest_summary()
   assert "sunnypilot-current" in summary["stacks"]
   assert "custom-2.0" in summary["stacks"]
-  assert "custom-experimental" in summary["stacks"]
+  assert "custom-experimental" not in summary["stacks"]
 
 
 def test_feature_registry_summary_exposes_capabilities():
