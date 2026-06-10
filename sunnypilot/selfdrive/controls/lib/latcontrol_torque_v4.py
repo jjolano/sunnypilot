@@ -1657,26 +1657,17 @@ class LatControlTorqueV5(LatControlTorqueV41):
   def _build_target(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
                     invalid: bool, recenter: TorqueV4RecenterMode | None = None,
                     curvature_limited: bool = False, cs=None) -> TorqueV4Target:
-    """v5 build target.
+    """v5 build target orchestrator.
 
-    Runs the pre-target turn-exit seam before delegating to the
-    base. When ACTIVE_TURN_EXIT_CONTROLLER is True and the seam
-    fires, the cached decision becomes source of truth for lead
-    gain, lead delta cap, the early-release guard, and the
-    computed preview boost. The result is a TorqueV5Target that
-    carries the v5 metadata fields so downstream code can see
-    exactly which shaping the v5 path applied.
-
-    When ACTIVE_TURN_EXIT_CONTROLLER is False (the parity-only
-    default), the wrapper is a thin pass-through and the
-    returned target is the v4 base target.
+    Calls _build_target_base for the v4-compatible math, runs
+    the pre-target turn-exit seam, gates the preview boost, then
+    delegates to _build_v5_target to apply the v5 shaping. The
+    orchestrator stays thin; the v5 shaping math lives in
+    _build_v5_target and is unit-testable on its own.
     """
     base = self._build_target_base(desired_curvature, v_ego, speed_result, invalid, recenter)
     if not self.ACTIVE_TURN_EXIT_CONTROLLER or invalid:
-      self._v5_last_preview_active = False
-      self._v5_last_turn_exit_active = False
-      self._v5_last_v5_active = False
-      self._v5_last_v5_reason = ""
+      self._clear_v5_telemetry()
       self._v5_last_final_lead_delta = float(base.lead_delta)
       self._v5_last_preview_applied_value = 0.0
       return base
@@ -1688,14 +1679,49 @@ class LatControlTorqueV5(LatControlTorqueV41):
     )
     decision = self._v5_cached_turn_exit_decision
     if decision is None or not self._v5_turn_exit_decided:
-      self._v5_last_preview_active = False
-      self._v5_last_turn_exit_active = False
-      self._v5_last_v5_active = False
-      self._v5_last_v5_reason = ""
+      self._clear_v5_telemetry()
       self._v5_last_final_lead_delta = float(base.lead_delta)
       self._v5_last_preview_applied_value = 0.0
       return base
 
+    # Gate the preview boost before handing the decision off.
+    preview_allowed, preview_reason = self._v5_preview_allowed(
+      active=True, invalid=False, CS=cs, v_ego=v_ego,
+      profile=self.lateral_demand_profile, demand=self.processed_lateral_demand,
+      curvature_limited=curvature_limited, saturated=self._previous_saturated,
+      steer_limited_by_safety=False,
+    )
+    return self._build_v5_target(
+      base=base, v_ego=v_ego, speed_result=speed_result, decision=decision,
+      preview_allowed=preview_allowed, preview_reason=preview_reason,
+    )
+
+  def _clear_v5_telemetry(self) -> None:
+    """Reset v5 telemetry flags to their neutral state. Called on
+    early-return paths where v5 shaping did not run.
+    """
+    self._v5_last_preview_active = False
+    self._v5_last_turn_exit_active = False
+    self._v5_last_v5_active = False
+    self._v5_last_v5_reason = ""
+
+  def _build_v5_target(self, *, base: TorqueV4Target,
+                       v_ego: float,
+                       speed_result: TorqueV4SpeedModelResult,
+                       decision: TurnExitDecision,
+                       preview_allowed: bool,
+                       preview_reason: str) -> TorqueV5Target:
+    """Pure v5 target builder. Applies the turn-exit decision's
+    lead gain / cap multipliers, the early-release guard, and the
+    preview boost. The result is a TorqueV5Target that carries
+    the v5 metadata fields so downstream code can see exactly
+    which shaping the v5 path applied.
+
+    The v4 base target math is not re-run here; the orchestrator
+    passed in the already-built base. The lead math is the same
+    as the v4 base, with the decision's multipliers applied and
+    lead_delta re-clipped to the scaled cap.
+    """
     # Apply lead gain / cap multipliers from the decision.
     lead_gain = base.lead_gain * float(decision.lead_gain_multiplier)
     lead_delta_cap = base.lead_delta_cap * float(decision.lead_delta_cap_multiplier)
@@ -1712,15 +1738,9 @@ class LatControlTorqueV5(LatControlTorqueV41):
     if early_release_active:
       lead_delta = 0.0
 
-    # Preview boost. Computed every frame so telemetry can show
-    # the gate reason and the capped value. Applied only when
-    # ACTIVE_PROFILE_PREVIEW_LEAD is True and the gate passes.
-    preview_allowed, preview_reason = self._v5_preview_allowed(
-      active=True, invalid=False, CS=cs, v_ego=v_ego,
-      profile=self.lateral_demand_profile, demand=self.processed_lateral_demand,
-      curvature_limited=curvature_limited, saturated=self._previous_saturated,
-      steer_limited_by_safety=False,
-    )
+    # Preview boost. Applied only when the gate passes AND the
+    # active flag is on. The boost math is delegated to
+    # _v5_preview_boost so it stays unit-testable.
     preview_boost_computed, preview_boost_applied = self._v5_preview_boost(
       v_ego=v_ego, decision=decision, allowed=preview_allowed,
     )
@@ -1729,9 +1749,8 @@ class LatControlTorqueV5(LatControlTorqueV41):
     if preview_boost_applied != 0.0:
       lead_delta = _clip(lead_delta + preview_boost_applied, -lead_delta_cap, lead_delta_cap)
     delay_lead = base.raw_lateral_accel + lead_delta
-    # Telemetry flags for the governor context. The context is
-    # only consulted on v5 (with ACTIVE_TURN_EXIT_CONTROLLER on);
-    # v4 never sees it.
+    # Telemetry flags for the governor context and the route
+    # summary.
     self._v5_last_preview_active = bool(preview_boost_applied != 0.0)
     self._v5_last_turn_exit_active = bool(early_release_active or decision.mode in ("turn_exit", "early_release"))
     self._v5_last_v5_active = True
