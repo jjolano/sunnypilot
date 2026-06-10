@@ -355,6 +355,15 @@ MOVING_LEAD_RECOVERY_MAX_ACCEL = 0.70
 MOVING_LEAD_RECOVERY_JERK_UP = 0.8
 MOVING_LEAD_RECOVERY_JERK_DOWN = 2.0
 MOVING_LEAD_RECOVERY_SEED_REASON = "moving_lead_recovery"
+# Risk-gating thresholds for the planner-side moving recovery gate.
+# These mirror LEAD_CONTEXT_RISK_* so the moving recovery helper only
+# activates for stable, non-risky physical leads. The helper itself
+# only enforces the 4 m predicted-gap floor; this gate enforces the
+# physical-hazard safety preconditions that the helper's lead-state
+# gating is meant to enforce.
+MOVING_LEAD_RECOVERY_PHYSICAL_RISK_REQ_DECEL = 0.25
+MOVING_LEAD_RECOVERY_PHYSICAL_RISK_TTC = 4.0
+MOVING_LEAD_RECOVERY_PHYSICAL_RISK_CLOSING_SPEED = 1.0
 STOP_RELEASE_GUARD_HOLD_TIME = 1.5
 STOP_RELEASE_GUARD_MAX_V_EGO = 0.3
 STOP_RELEASE_GUARD_WAITING_REASON = "waiting_for_stop_clear"
@@ -3088,6 +3097,77 @@ def is_valid_routine_lead_approach(*, primary_lead_context, brake_pressed=False,
   return True
 
 
+def is_moving_recovery_physical_risk_active(physical_risk_model, *,
+                                             req_decel=MOVING_LEAD_RECOVERY_PHYSICAL_RISK_REQ_DECEL,
+                                             ttc=MOVING_LEAD_RECOVERY_PHYSICAL_RISK_TTC,
+                                             closing_speed=MOVING_LEAD_RECOVERY_PHYSICAL_RISK_CLOSING_SPEED) -> bool:
+  """Whether the physical lead's risk model exposes a hazard that should
+  block the moving recovery helper.
+
+  The moving recovery helper only enforces the 4 m predicted-gap floor.
+  Short-TTC, high-required-decel, and high-closing-speed hazards can
+  still be runway-safe per the helper's own math (the lead may be
+  opening fast enough), but those cases should remain under physical
+  hazard authority and must not be relaxed by the recovery floor."""
+  if physical_risk_model is None:
+    return False
+  risk_required_decel = _finite_float(getattr(physical_risk_model, "required_decel", 0.0))
+  risk_ttc = getattr(physical_risk_model, "ttc", math.inf)
+  risk_closing = _finite_float(getattr(physical_risk_model, "closing_speed", 0.0))
+  if risk_required_decel >= req_decel:
+    return True
+  if not math.isinf(risk_ttc) and _finite_float(risk_ttc, math.inf) <= ttc:
+    return True
+  if risk_closing >= closing_speed:
+    return True
+  return False
+
+
+def is_moving_recovery_lead_state_valid(primary_lead_context) -> bool:
+  """Whether the primary lead context's physical state is safe to feed
+  into the moving recovery helper.
+
+  The helper assumes a stable, on-path, non-flickering physical lead.
+  Reject shadow / flicker / new / unstable / suppressive-only / risky
+  leads here so the helper only ever sees Lead-confirmed Progress
+  evidence. Returning False here is the same as "do not call the
+  helper at all" — the integration is expected to early-exit."""
+  if primary_lead_context is None:
+    return False
+  physical = getattr(primary_lead_context, "physical", None)
+  if physical is None:
+    return False
+  if bool(getattr(physical, "shadow", False)):
+    return False
+  if bool(getattr(physical, "new_lead", False)):
+    return False
+  if _finite_float(getattr(physical, "flicker_guard_timer", 0.0)) > 0.0:
+    return False
+  if not bool(getattr(physical, "stable", False)):
+    return False
+  if not bool(getattr(physical, "suppressive", False)):
+    return False
+  if is_moving_recovery_physical_risk_active(getattr(physical, "risk_model", None)):
+    return False
+  return True
+
+
+def select_moving_recovery_lead_opening(*, primary_behavior_lead, behavior_lead_opening,
+                                        physical_lead_opening) -> tuple[bool, str]:
+  """Pick the opening signal that matches the lead source the moving
+  recovery helper is using.
+
+  The moving recovery helper reads physical-lead evidence (v_ego, d_rel,
+  v_lead, a_lead) directly, so its `lead_opening` input must come from
+  the same physical lead evidence when no behavior authority is present.
+  When a behavior lead is available, prefer its opening signal because
+  it incorporates the model and is the same one used by the
+  LeadPullawayIntent tracker."""
+  if primary_behavior_lead is not None:
+    return bool(behavior_lead_opening), "behavior"
+  return bool(physical_lead_opening), "physical"
+
+
 def get_moving_lead_stop_gap_guard_accel(v_ego, d_rel, v_lead, a_lead, y_rel, t_follow, a_ego=None,
                                          prev_a_target=None, dt=DT_MDL, return_debug=False,
                                          budget=None):
@@ -4089,8 +4169,25 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       int(getattr(primary_physical_lead, "radarTrackId", LEAD_CONFIDENCE_TRACK_UNKNOWN))
       if primary_physical_lead is not None else LEAD_CONFIDENCE_TRACK_UNKNOWN
     )
-    if (
+    # Reject shadow / flicker / new / suppressive-only leads before
+    # the recovery helper sees them. The helper itself does not
+    # enforce confidence gating; that is the planner's job. We use
+    # the primary_lead_context.physical LeadRelevanceState so the same
+    # confidence, stability, and risk gating that protects
+    # Lead-confirmed Progress also protects the moving recovery
+    # helper.
+    moving_recovery_lead_state_valid = is_moving_recovery_lead_state_valid(primary_lead_context)
+    moving_recovery_physical_risk_active = is_moving_recovery_physical_risk_active(
+      getattr(getattr(primary_lead_context, "physical", None), "risk_model", None)
+    )
+    moving_recovery_context_valid = bool(
       primary_physical_lead is not None
+      and not bool(getattr(primary_lead_context, "shadow_active", False))
+      and not bool(getattr(primary_lead_context, "alternate_threat_active", False))
+    )
+    if (
+      moving_recovery_context_valid
+      and moving_recovery_lead_state_valid
       and not reset_state
       and not force_slow_decel
       and not sm['carState'].brakePressed
@@ -4114,37 +4211,46 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self._moving_recovery_last_a_lead = float(physical_lead_a)
       self._moving_recovery_last_track_id = int(moving_recovery_track_id)
 
-      # Reject shadow / flicker / new / suppressive-only leads before
-      # the recovery helper sees them. The helper itself does not
-      # enforce confidence gating; that is the planner's job.
-      moving_recovery_lead = primary_physical_lead
-      if moving_recovery_lead is not None:
-        moving_recovery = get_moving_lead_recovery(
-          v_ego=v_ego,
-          d_rel=float(physical_lead_d_rel),
-          v_lead=float(physical_lead_v_lead),
-          a_lead=float(physical_lead_a),
-          lead_accel_trend=moving_recovery_trend,
-          lead_opening=bool(behavior_lead_opening),
-        )
-        custom_moving_lead_recovery_debug = {
-          "moving_lead_recovery_active": bool(moving_recovery.active),
-          "moving_lead_recovery_phase": moving_recovery.phase.value,
-          "moving_lead_recovery_a_floor": float(moving_recovery.a_floor),
-          "moving_lead_recovery_predicted_gap": float(moving_recovery.predicted_gap),
-          "moving_lead_recovery_minimum_allowed_gap": float(moving_recovery.minimum_allowed_gap),
-          "moving_lead_recovery_safe_accel_cap": float(moving_recovery.safe_accel_cap),
-          "moving_lead_recovery_lead_created_runway": bool(moving_recovery.lead_created_runway),
-          "moving_lead_recovery_reason": str(moving_recovery.reason),
-          "moving_lead_recovery_trend": float(moving_recovery_trend),
-          "moving_lead_recovery_track_id": int(moving_recovery_track_id),
-        }
-        if (
-          moving_recovery.active
-          and not lead_pullaway_independent_stop_threat
-          and not bool(getattr(primary_lead_context, "alternate_threat_active", False))
-        ):
-          custom_moving_lead_recovery_a_target = float(moving_recovery.a_floor)
+      # When the moving recovery uses the physical lead, the opening
+      # signal must come from the same physical lead evidence. If
+      # behavior authority is also present and has its own opening
+      # signal, prefer that (it incorporates the model); otherwise
+      # fall back to physical opening so a physical-only lead still
+      # gets a recovery floor when the lead is opening.
+      moving_recovery_lead_opening, moving_recovery_lead_opening_source = select_moving_recovery_lead_opening(
+        primary_behavior_lead=primary_behavior_lead,
+        behavior_lead_opening=behavior_lead_opening,
+        physical_lead_opening=physical_lead_opening,
+      )
+      moving_recovery = get_moving_lead_recovery(
+        v_ego=v_ego,
+        d_rel=float(physical_lead_d_rel),
+        v_lead=float(physical_lead_v_lead),
+        a_lead=float(physical_lead_a),
+        lead_accel_trend=moving_recovery_trend,
+        lead_opening=bool(moving_recovery_lead_opening),
+      )
+      custom_moving_lead_recovery_debug = {
+        "moving_lead_recovery_active": bool(moving_recovery.active),
+        "moving_lead_recovery_phase": moving_recovery.phase.value,
+        "moving_lead_recovery_a_floor": float(moving_recovery.a_floor),
+        "moving_lead_recovery_predicted_gap": float(moving_recovery.predicted_gap),
+        "moving_lead_recovery_minimum_allowed_gap": float(moving_recovery.minimum_allowed_gap),
+        "moving_lead_recovery_safe_accel_cap": float(moving_recovery.safe_accel_cap),
+        "moving_lead_recovery_lead_created_runway": bool(moving_recovery.lead_created_runway),
+        "moving_lead_recovery_reason": str(moving_recovery.reason),
+        "moving_lead_recovery_trend": float(moving_recovery_trend),
+        "moving_lead_recovery_track_id": int(moving_recovery_track_id),
+        "moving_lead_recovery_lead_opening_source": str(moving_recovery_lead_opening_source),
+        "moving_lead_recovery_lead_state_valid": bool(moving_recovery_lead_state_valid),
+        "moving_lead_recovery_physical_risk_active": bool(moving_recovery_physical_risk_active),
+      }
+      if (
+        moving_recovery.active
+        and not lead_pullaway_independent_stop_threat
+        and not bool(getattr(primary_lead_context, "alternate_threat_active", False))
+      ):
+        custom_moving_lead_recovery_a_target = float(moving_recovery.a_floor)
 
     self.previous_lead_loss_status = lead_loss_guard_lead is not None
     self.previous_lead_loss_d_rel = float(lead_loss_guard_lead.dRel) if lead_loss_guard_lead is not None else 0.0

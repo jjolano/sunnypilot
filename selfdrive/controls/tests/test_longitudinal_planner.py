@@ -4871,6 +4871,7 @@ def test_moving_lead_recovery_suppresses_raw_lead_mpc_fallback_when_runway_safe(
   """Fallback suppression should recognize the moving_lead_recovery
   RELAXATION seed the same way it recognizes routine comfort, but only
   when debug says it is non-urgent and runway-safe."""
+  from dataclasses import replace
   from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import (
     fallback_physical_candidates,
   )
@@ -4889,6 +4890,22 @@ def test_moving_lead_recovery_suppresses_raw_lead_mpc_fallback_when_runway_safe(
     urgency=0.2,
     active_reason=MOVING_LEAD_RECOVERY_SEED_REASON,
     should_stop=False,
+  )
+  # Fallback suppression only recognizes the moving_lead_recovery
+  # RELAXATION seed as runway-safe when its debug payload confirms
+  # the predicted gap is above the safety floor, the runway margin is
+  # non-negative, and the projected lead accel is not strongly
+  # negative. Without these fields, the suppression path stays
+  # inert — which is why the original identity-based assertion was
+  # a false-positive.
+  moving_recovery_candidate = replace(
+    moving_recovery_candidate,
+    debug={
+      "moving_lead_recovery_predicted_gap": 9.5,
+      "moving_lead_recovery_minimum_allowed_gap": 4.0,
+      "moving_lead_recovery_runway_margin_t": 2.0,
+      "moving_lead_recovery_a_lead_pred": 0.4,
+    },
   )
   raw_lead_mpc = LongitudinalCandidate(
     source=DecisionSource.LEAD_MPC,
@@ -4906,13 +4923,24 @@ def test_moving_lead_recovery_suppresses_raw_lead_mpc_fallback_when_runway_safe(
     (raw_lead_mpc,),
     fallback_output,
   )
-  assert all(c is not raw_lead_mpc for c in fallbacks)
+  # The raw non-urgent LEAD_MPC fallback should be fully suppressed
+  # when the moving_lead_recovery seed is runway-safe. Assert by
+  # content, not object identity: fallback_physical_candidates
+  # re-wraps the candidate via custom_v2_candidate_with_debug, so
+  # identity-based checks would always pass even if the suppression
+  # path is broken.
+  assert len(fallbacks) == 0
+  assert not any(
+    c.source == DecisionSource.LEAD_MPC and c.a_target == pytest.approx(-0.20)
+    for c in fallbacks
+  )
 
 
-def test_moving_lead_recovery_preserves_hard_braking_lead_fallback():
-  """When the raw LEAD_MPC fallback is hard-braking (a_target < -1.0),
-  it must NOT be suppressed even if the moving recovery is active.
-  Hard-braking-lead is always a physical hazard."""
+def test_moving_lead_recovery_suppression_requires_runway_safe_debug():
+  """A moving_lead_recovery seed without the runway-safe debug payload
+  must NOT suppress the raw LEAD_MPC fallback. This guards against
+  silently bypassing the safety gate when debug is missing or stale."""
+  from dataclasses import replace
   from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import (
     fallback_physical_candidates,
   )
@@ -4931,6 +4959,67 @@ def test_moving_lead_recovery_preserves_hard_braking_lead_fallback():
     urgency=0.2,
     active_reason=MOVING_LEAD_RECOVERY_SEED_REASON,
     should_stop=False,
+  )
+  # Intentionally leave debug empty / not runway-safe. The suppression
+  # helper should refuse to recognize this as runway-safe and must
+  # preserve the raw LEAD_MPC fallback.
+  raw_lead_mpc = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.PHYSICAL_HAZARD,
+    v_target=15.0,
+    a_target=-0.20,
+    confidence=0.9,
+    urgency=0.6,
+    active_reason="lead_mpc",
+    should_stop=False,
+  )
+  fallback_output = SimpleNamespace(a_target=0.0, should_stop=False, source="lead0")
+  fallbacks = fallback_physical_candidates(
+    (moving_recovery_candidate,),
+    (raw_lead_mpc,),
+    fallback_output,
+  )
+  assert any(
+    c.source == DecisionSource.LEAD_MPC and c.a_target == pytest.approx(-0.20)
+    for c in fallbacks
+  )
+
+
+def test_moving_lead_recovery_preserves_hard_braking_lead_fallback():
+  """When the raw LEAD_MPC fallback is hard-braking (a_target < -1.0),
+  it must NOT be suppressed even if the moving recovery is active.
+  Hard-braking-lead is always a physical hazard."""
+  from dataclasses import replace
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import (
+    fallback_physical_candidates,
+  )
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import (
+    CandidateRole,
+    DecisionSource,
+    LongitudinalCandidate,
+  )
+
+  moving_recovery_candidate = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.RELAXATION,
+    v_target=15.0,
+    a_target=0.35,
+    confidence=0.8,
+    urgency=0.2,
+    active_reason=MOVING_LEAD_RECOVERY_SEED_REASON,
+    should_stop=False,
+  )
+  # Runway-safe debug so the suppression path is active, proving the
+  # hard-braking guard is what preserves this candidate, not an
+  # inert suppression path.
+  moving_recovery_candidate = replace(
+    moving_recovery_candidate,
+    debug={
+      "moving_lead_recovery_predicted_gap": 9.5,
+      "moving_lead_recovery_minimum_allowed_gap": 4.0,
+      "moving_lead_recovery_runway_margin_t": 2.0,
+      "moving_lead_recovery_a_lead_pred": 0.4,
+    },
   )
   raw_lead_mpc_hard = LongitudinalCandidate(
     source=DecisionSource.LEAD_MPC,
@@ -4949,6 +5038,275 @@ def test_moving_lead_recovery_preserves_hard_braking_lead_fallback():
     fallback_output,
   )
   # The hard-braking fallback must be present, even though the moving
-  # recovery is also active. Match by a_target because the function
-  # re-wraps the candidate.
+  # recovery is also active and runway-safe. Match by a_target because
+  # the function re-wraps the candidate.
   assert any(c.a_target == pytest.approx(-1.5) and c.role == CandidateRole.PHYSICAL_HAZARD for c in fallbacks)
+
+
+# ----------------------------------------------------------------------------
+# Moving lead recovery integration gating tests
+# ----------------------------------------------------------------------------
+
+
+def test_moving_recovery_lead_opening_source_prefers_behavior_when_present():
+  """When a behavior lead is available, the moving recovery uses the
+  behavior opening signal. This matches the lead_pullaway intent tracker
+  and the same authority the recovery helper consumes."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    select_moving_recovery_lead_opening,
+  )
+  behavior_lead = SimpleNamespace(radarTrackId=1)
+  opening, source = select_moving_recovery_lead_opening(
+    primary_behavior_lead=behavior_lead,
+    behavior_lead_opening=True,
+    physical_lead_opening=False,
+  )
+  assert opening is True
+  assert source == "behavior"
+
+  opening, source = select_moving_recovery_lead_opening(
+    primary_behavior_lead=behavior_lead,
+    behavior_lead_opening=False,
+    physical_lead_opening=True,
+  )
+  assert opening is False
+  assert source == "behavior"
+
+
+def test_moving_recovery_lead_opening_source_falls_back_to_physical_only_lead():
+  """When no behavior lead is present, the moving recovery must use
+  physical_lead_opening. This is the fix for the physical-only
+  re-accel scenario: a stable physical lead that is opening should
+  still get a recovery floor, even though behavior authority is not
+  present yet."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    select_moving_recovery_lead_opening,
+  )
+  opening, source = select_moving_recovery_lead_opening(
+    primary_behavior_lead=None,
+    behavior_lead_opening=False,
+    physical_lead_opening=True,
+  )
+  assert opening is True
+  assert source == "physical"
+
+  opening, source = select_moving_recovery_lead_opening(
+    primary_behavior_lead=None,
+    behavior_lead_opening=True,
+    physical_lead_opening=False,
+  )
+  assert opening is False
+  assert source == "physical"
+
+
+def test_moving_recovery_lead_opening_source_physical_only_helper_activates():
+  """End-to-end check: when only a physical lead is present and
+  physical_lead_opening is True, the moving recovery helper receives
+  lead_opening=True and can activate. This is the regression guard
+  for the physical-only re-accel scenario described in the review:
+  the previous integration passed behavior_lead_opening even when no
+  behavior lead existed, so a physical-only lead would silently miss
+  the recovery floor even when the lead was clearly opening."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    get_moving_lead_recovery,
+    select_moving_recovery_lead_opening,
+  )
+  # Simulate the physical-only branch: no behavior lead, behavior
+  # opening is False, but physical opening is True.
+  opening, source = select_moving_recovery_lead_opening(
+    primary_behavior_lead=None,
+    behavior_lead_opening=False,
+    physical_lead_opening=True,
+  )
+  assert opening is True
+  assert source == "physical"
+  # The helper is called with the physical opening signal.
+  result = get_moving_lead_recovery(
+    v_ego=15.0, d_rel=10.0, v_lead=14.0, a_lead=0.3, lead_accel_trend=0.1,
+    lead_opening=opening, minimum_allowed_gap=4.0,
+  )
+  assert result.active
+  assert result.debug["moving_lead_recovery_lead_opening"] is True
+
+
+def test_moving_recovery_lead_state_valid_accepts_stable_suppressive_physical():
+  """A stable, on-path, suppressive physical lead with no hazard risk
+  is the canonical case for the moving recovery helper."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+  )
+  risk_model = SimpleNamespace(required_decel=0.05, ttc=math.inf, closing_speed=0.2)
+  physical = SimpleNamespace(
+    shadow=False, new_lead=False, flicker_guard_timer=0.0,
+    stable=True, suppressive=True, risk_model=risk_model,
+  )
+  context = SimpleNamespace(physical=physical)
+  assert is_moving_recovery_lead_state_valid(context) is True
+
+
+def test_moving_recovery_lead_state_valid_rejects_new_lead():
+  """A new_lead physical lead (recently acquired) must NOT enter the
+  moving recovery helper. New leads are suppressive-only and have
+  not yet accumulated stability evidence."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+  )
+  risk_model = SimpleNamespace(required_decel=0.05, ttc=math.inf, closing_speed=0.2)
+  physical = SimpleNamespace(
+    shadow=False, new_lead=True, flicker_guard_timer=0.0,
+    stable=True, suppressive=True, risk_model=risk_model,
+  )
+  context = SimpleNamespace(physical=physical)
+  assert is_moving_recovery_lead_state_valid(context) is False
+
+
+def test_moving_recovery_lead_state_valid_rejects_flicker_guard():
+  """A physical lead with active flicker guard timer is unstable and
+  must NOT enter the moving recovery helper."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+  )
+  risk_model = SimpleNamespace(required_decel=0.05, ttc=math.inf, closing_speed=0.2)
+  physical = SimpleNamespace(
+    shadow=False, new_lead=False, flicker_guard_timer=0.4,
+    stable=True, suppressive=True, risk_model=risk_model,
+  )
+  context = SimpleNamespace(physical=physical)
+  assert is_moving_recovery_lead_state_valid(context) is False
+
+
+def test_moving_recovery_lead_state_valid_rejects_unstable_lead():
+  """An unstable physical lead (e.g. confidence not yet stable) must
+  NOT enter the moving recovery helper."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+  )
+  risk_model = SimpleNamespace(required_decel=0.05, ttc=math.inf, closing_speed=0.2)
+  physical = SimpleNamespace(
+    shadow=False, new_lead=False, flicker_guard_timer=0.0,
+    stable=False, suppressive=True, risk_model=risk_model,
+  )
+  context = SimpleNamespace(physical=physical)
+  assert is_moving_recovery_lead_state_valid(context) is False
+
+
+def test_moving_recovery_lead_state_valid_rejects_non_suppressive_lead():
+  """A physical lead with no suppressive authority (e.g. authority=NONE)
+  must NOT enter the moving recovery helper. The helper expects a
+  confirmed lead, not a phantom one."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+  )
+  risk_model = SimpleNamespace(required_decel=0.05, ttc=math.inf, closing_speed=0.2)
+  physical = SimpleNamespace(
+    shadow=False, new_lead=False, flicker_guard_timer=0.0,
+    stable=True, suppressive=False, risk_model=risk_model,
+  )
+  context = SimpleNamespace(physical=physical)
+  assert is_moving_recovery_lead_state_valid(context) is False
+
+
+def test_moving_recovery_lead_state_valid_rejects_short_ttc_hazard():
+  """A physical lead with short TTC (≤ 4 s) is a physical hazard.
+  The moving recovery helper only enforces the 4 m predicted-gap
+  floor; the planner-side gate must also block short-TTC cases so the
+  helper's own math doesn't accidentally relax a real hazard."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+  )
+  risk_model = SimpleNamespace(required_decel=0.05, ttc=3.0, closing_speed=0.2)
+  physical = SimpleNamespace(
+    shadow=False, new_lead=False, flicker_guard_timer=0.0,
+    stable=True, suppressive=True, risk_model=risk_model,
+  )
+  context = SimpleNamespace(physical=physical)
+  assert is_moving_recovery_lead_state_valid(context) is False
+
+
+def test_moving_recovery_lead_state_valid_rejects_high_required_decel_hazard():
+  """A physical lead with high required decel (≥ 0.25 m/s²) is a
+  physical hazard and must NOT enter the moving recovery helper."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+  )
+  risk_model = SimpleNamespace(required_decel=0.40, ttc=math.inf, closing_speed=0.2)
+  physical = SimpleNamespace(
+    shadow=False, new_lead=False, flicker_guard_timer=0.0,
+    stable=True, suppressive=True, risk_model=risk_model,
+  )
+  context = SimpleNamespace(physical=physical)
+  assert is_moving_recovery_lead_state_valid(context) is False
+
+
+def test_moving_recovery_lead_state_valid_rejects_high_closing_speed_hazard():
+  """A physical lead with high closing speed (≥ 1.0 m/s) is a
+  physical hazard and must NOT enter the moving recovery helper."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+  )
+  risk_model = SimpleNamespace(required_decel=0.05, ttc=math.inf, closing_speed=1.5)
+  physical = SimpleNamespace(
+    shadow=False, new_lead=False, flicker_guard_timer=0.0,
+    stable=True, suppressive=True, risk_model=risk_model,
+  )
+  context = SimpleNamespace(physical=physical)
+  assert is_moving_recovery_lead_state_valid(context) is False
+
+
+def test_moving_recovery_lead_state_valid_handles_missing_risk_model():
+  """A physical lead without a risk model is treated as not risky.
+  The helper still has its own 4 m predicted-gap safety floor."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+  )
+  physical = SimpleNamespace(
+    shadow=False, new_lead=False, flicker_guard_timer=0.0,
+    stable=True, suppressive=True, risk_model=None,
+  )
+  context = SimpleNamespace(physical=physical)
+  assert is_moving_recovery_lead_state_valid(context) is True
+
+
+def test_moving_recovery_lead_state_valid_handles_none_context():
+  """A None context must NOT enter the moving recovery helper."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_lead_state_valid,
+  )
+  assert is_moving_recovery_lead_state_valid(None) is False
+
+
+def test_moving_recovery_physical_risk_active_uses_default_thresholds():
+  """The default risk thresholds match LEAD_CONTEXT_RISK_REQUIRED_DECEL
+  (0.25) and LEAD_CONTEXT_RISK_TTC (4.0) so the planner-side gate is
+  consistent with the rest of the lead-context risk model."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_physical_risk_active,
+  )
+  # At-or-above thresholds trigger.
+  assert is_moving_recovery_physical_risk_active(
+    SimpleNamespace(required_decel=0.25, ttc=math.inf, closing_speed=0.0)
+  ) is True
+  assert is_moving_recovery_physical_risk_active(
+    SimpleNamespace(required_decel=0.0, ttc=4.0, closing_speed=0.0)
+  ) is True
+  assert is_moving_recovery_physical_risk_active(
+    SimpleNamespace(required_decel=0.0, ttc=math.inf, closing_speed=1.0)
+  ) is True
+  # Below thresholds do not.
+  assert is_moving_recovery_physical_risk_active(
+    SimpleNamespace(required_decel=0.10, ttc=8.0, closing_speed=0.5)
+  ) is False
+  # ttc=inf is never risky.
+  assert is_moving_recovery_physical_risk_active(
+    SimpleNamespace(required_decel=0.0, ttc=math.inf, closing_speed=0.0)
+  ) is False
+
+
+def test_moving_recovery_physical_risk_active_none_model_is_safe():
+  """A None risk model is treated as not risky. The lead-context
+  selector never populates risk_model=None for confirmed leads, but
+  the integration is robust to that case."""
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    is_moving_recovery_physical_risk_active,
+  )
+  assert is_moving_recovery_physical_risk_active(None) is False
