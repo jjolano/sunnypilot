@@ -208,7 +208,6 @@ def stack_id_for_name(name: str):
     SUNNYPILOT_CURRENT: StackId.sunnypilotCurrent,
     CUSTOM_RECOMMENDED: StackId.customRecommended,
     CUSTOM_V2: StackId.customV2,
-    CUSTOM_EXPERIMENTAL: StackId.customRecommended,
   }
   return stack_id_by_name.get(str(name or ""), StackId.unknown)
 

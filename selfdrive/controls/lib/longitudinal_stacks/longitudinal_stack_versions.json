@@ -14,11 +14,6 @@
       "label": "Custom v2.0",
       "family": "custom",
       "version": "2.0"
-    },
-    "custom-experimental": {
-      "label": "Custom Experimental",
-      "family": "custom",
-      "version": "experimental"
     }
   },
   "availability": {
@@ -26,13 +21,16 @@
       "always": true
     },
     "custom-recommended": {
-      "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
+      "requiresAny": [
+        "openpilotLongitudinalControl",
+        "alphaLongitudinalAvailable"
+      ]
     },
     "custom-2.0": {
-      "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
-    },
-    "custom-experimental": {
-      "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
+      "requiresAny": [
+        "openpilotLongitudinalControl",
+        "alphaLongitudinalAvailable"
+      ]
     }
   },
   "customRecommendations": {

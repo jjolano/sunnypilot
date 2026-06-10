@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import openpilot.selfdrive.controls.lib.feature_registry_entries  # noqa: F401  (registers feature entries on import)
 from openpilot.selfdrive.controls.lib.feature_registry import feature_registry_snapshot
 from openpilot.selfdrive.controls.lib.lateral_demand_stacks.selector import (
   load_lateral_demand_stack_manifest,
