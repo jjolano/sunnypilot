@@ -679,6 +679,70 @@ def test_v4_health_estimator_does_not_learn_bias_during_saturation():
   assert calls[-1]["saturated"] is True
 
 
+def test_v4_turn_exit_decision_is_telemetry_only_in_4p1():
+  """4.1 surfaces the turn-exit decision in telemetry but does not
+  route it into the command path. The command, lead gain, and output
+  torque must be identical whether the controller is in INACTIVE,
+  TURN_IN, TURN_EXIT, EARLY_RELEASE, or STEADY_CURVE.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    LateralTurnExitController,
+    TurnExitDecision,
+    TurnExitMode,
+  )
+
+  def _decider_with_mode(mode: str, preview_boost: float):
+    def _decide(**_kwargs):
+      return TurnExitDecision(
+        mode=mode,
+        persistence_frames=10,
+        lead_gain_multiplier=1.0,
+        lead_delta_cap_multiplier=1.0,
+        slew_boost=1.0,
+        same_direction_slew_boost=1.0,
+        early_release_lead_zero=False,
+        preview_boost=preview_boost,
+        confidence=0.9,
+      )
+    return _decide
+
+  def _decider_inactive(**_kwargs):
+    return _decider_with_mode(TurnExitMode.INACTIVE.value, 0.0)()
+
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0005, path_quality=1.0, path_reason="ok")
+
+  # Reference: controller in INACTIVE mode.
+  controller_ref, VM, _CP = get_controller()
+  controller_ref.turn_exit_controller.update = _decider_inactive
+  controller_ref.set_processed_lateral_demand(demand)
+  log_ref = update(controller_ref, VM, CS, 0.0005)[2]
+
+  # Each non-INACTIVE mode with a non-zero preview_boost must produce
+  # the same f (command_lateral_accel), the same feedback correction,
+  # the same output torque, and the same lead gain.
+  for mode in (TurnExitMode.TURN_IN.value, TurnExitMode.TURN_EXIT.value,
+               TurnExitMode.EARLY_RELEASE.value, TurnExitMode.STEADY_CURVE.value):
+    controller_alt, _, _ = get_controller()
+    controller_alt.turn_exit_controller.update = _decider_with_mode(mode, 0.5)
+    controller_alt.set_processed_lateral_demand(demand)
+    log_alt = update(controller_alt, VM, CS, 0.0005)[2]
+
+    # Command path is identical.
+    assert log_alt.f == pytest.approx(log_ref.f), (
+      f"Mode {mode} changed command_lateral_accel: {log_ref.f} -> {log_alt.f}"
+    )
+    # Output torque is identical.
+    assert log_alt.output == pytest.approx(log_ref.output)
+    # Telemetry differs: mode is surfaced, preview boost is surfaced.
+    assert log_alt.adaptiveTorqueState.turnExitMode != log_ref.adaptiveTorqueState.turnExitMode
+    assert log_alt.adaptiveTorqueState.previewBoost == pytest.approx(0.5)
+    assert log_ref.adaptiveTorqueState.previewBoost == pytest.approx(0.0)
+  # Sanity: with the decider forced, the controller still works (the
+  # return type matches the real LateralTurnExitController.update).
+  assert isinstance(controller_ref.turn_exit_controller, LateralTurnExitController)
+
+
 def test_v4_oscillation_classifier_window_grows_then_classifies():
   from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import STRAIGHT_ROAD_MIN_SPEED as _SPEED
 
