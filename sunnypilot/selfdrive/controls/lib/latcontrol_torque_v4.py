@@ -1511,6 +1511,15 @@ V5_PREVIEW_BOOST_CAP_V = [0.00, 0.08, 0.12, 0.10]
 TORQUE_V5_TURN_EXIT_SIGN_CHANGE_SLEW_BOOST = 1.20
 TORQUE_V5_TURN_EXIT_SAME_DIRECTION_SLEW_BOOST = 1.10
 
+# 5.1 vehicle-bias compensation bounds. ACTIVE_VEHICLE_BIAS_COMPENSATION
+# stays False in initial 5.0; flipping the flag in 5.1 applies the
+# bias term with a ±V5_VEHICLE_BIAS_INITIAL_CAP envelope, hard-capped
+# at ±V5_VEHICLE_BIAS_HARD_CAP. The flag flip must wait for
+# route validation per the v5 plan.
+V5_VEHICLE_BIAS_INITIAL_CAP = 0.03
+V5_VEHICLE_BIAS_HARD_CAP = 0.06
+V5_VEHICLE_BIAS_MIN_CONFIDENCE = 0.80
+
 
 class LatControlTorqueV5(LatControlTorqueV41):
   """Torque 5.0: profile-aware active command shaping.

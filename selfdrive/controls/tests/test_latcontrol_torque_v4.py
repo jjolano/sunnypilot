@@ -881,6 +881,28 @@ def test_v5_active_flag_default_is_on_after_first_active_delta():
   assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
 
 
+def test_v5_vehicle_bias_compensation_infrastructure_awaits_route_validation():
+  """5.1 vehicle-bias compensation is wired up with caps and a
+  minimum-confidence gate, but the active flag stays False in
+  5.0. Flipping the flag is gated on route validation per the
+  v5 plan; this test pins the cap, the confidence threshold,
+  and the off-by-default flag so a premature flip is caught.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    V5_VEHICLE_BIAS_INITIAL_CAP,
+    V5_VEHICLE_BIAS_HARD_CAP,
+    V5_VEHICLE_BIAS_MIN_CONFIDENCE,
+  )
+  assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
+  assert V5_VEHICLE_BIAS_INITIAL_CAP == pytest.approx(0.03)
+  assert V5_VEHICLE_BIAS_HARD_CAP == pytest.approx(0.06)
+  assert V5_VEHICLE_BIAS_MIN_CONFIDENCE == pytest.approx(0.80)
+  # Hard cap is at least the initial cap; otherwise the cap
+  # envelope is meaningless.
+  assert V5_VEHICLE_BIAS_HARD_CAP >= V5_VEHICLE_BIAS_INITIAL_CAP
+
+
 def test_v4_governor_context_is_none():
   """v4 always returns None from _v5_governor_context so the
   governor sees no v5 context and applies v4.1 slew rates.
