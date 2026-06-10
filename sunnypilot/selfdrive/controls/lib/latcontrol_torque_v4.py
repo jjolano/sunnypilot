@@ -727,6 +727,7 @@ class LatControlTorqueV4(LatControl):
     self._last_wobble_response: WobbleResponse = compute_wobble_response("none", 0.0)
     self.vehicle_health_estimator = LateralVehicleHealthEstimator()
     self._last_health_estimate: LateralVehicleHealthEstimate = LateralVehicleHealthEstimate()
+    self._previous_saturated: bool = False
     self.turn_exit_controller = LateralTurnExitController()
     self._last_turn_exit_mode: str = TurnExitMode.INACTIVE.value
     self._last_turn_exit_persistence: int = 0
@@ -781,6 +782,7 @@ class LatControlTorqueV4(LatControl):
     self._last_wobble_response = compute_wobble_response("none", 0.0)
     self.vehicle_health_estimator = LateralVehicleHealthEstimator()
     self._last_health_estimate = LateralVehicleHealthEstimate()
+    self._previous_saturated = False
     self.turn_exit_controller = LateralTurnExitController()
     self._last_turn_exit_mode = TurnExitMode.INACTIVE.value
     self._last_turn_exit_persistence = 0
@@ -937,7 +939,11 @@ class LatControlTorqueV4(LatControl):
       lane_change_active=bool(getattr(self.processed_lateral_demand, "lane_change_shaping_active", False)),
       steering_pressed=CS.steeringPressed,
       curvature_limited=curvature_limited,
-      saturated=False,
+      # The estimator cannot know this frame's saturation status yet
+      # (it is determined after the command path runs), so feed the
+      # previous frame's saturation. Hard-coding False here meant
+      # bias learning ignored saturation entirely.
+      saturated=self._previous_saturated,
     )
     target = self._apply_under_response_lead_boost(
       target,
@@ -1023,6 +1029,7 @@ class LatControlTorqueV4(LatControl):
     output_torque = governor_result.output_torque
     saturated = self.steer_max - abs(output_torque) < 1e-3 or bool(governor_result.reason & TorqueV4GovernorReason.CLIPPED)
     self._previous_output_torque = float(output_torque)
+    self._previous_saturated = bool(saturated)
 
     observation = TorqueV4Observation(
       active=active and not invalid,

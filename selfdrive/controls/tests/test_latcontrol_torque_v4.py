@@ -605,6 +605,80 @@ def test_v4_oscillation_classifier_receives_real_torque_history():
   )
 
 
+def test_v4_health_estimator_receives_previous_frame_saturation():
+  """The health estimator's `saturated` input must reflect the
+  previous frame's actual saturation status, not a hard-coded False.
+  Hard-coding False meant bias learning ignored saturation entirely
+  and could learn a bias from frames whose output was clipped.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=1.0, path_reason="ok")
+
+  seen_saturated: list[bool] = []
+  def _capture(**_kwargs):
+    seen_saturated.append(bool(_kwargs.get("saturated", False)))
+    return LateralVehicleHealthEstimate(
+      bias_estimate=0.0, bias_confidence=0.0, bias_warning=False,
+    )
+  controller.vehicle_health_estimator.update = _capture
+
+  # Pretend the previous frame's output was saturated.
+  controller._previous_saturated = True
+  controller.set_processed_lateral_demand(demand)
+  update(controller, VM, CS, 0.0001)
+
+  assert seen_saturated[-1] is True, (
+    f"Estimator received saturated=False despite previous-frame saturation; "
+    f"all values seen: {seen_saturated}"
+  )
+
+  # And the inverse: after a non-saturated frame, the estimator must
+  # see saturated=False.
+  controller._previous_saturated = False
+  controller.set_processed_lateral_demand(demand)
+  update(controller, VM, CS, 0.0001)
+  assert seen_saturated[-1] is False
+
+
+def test_v4_health_estimator_does_not_learn_bias_during_saturation():
+  """Saturated frames must not update the bias estimate. The estimator
+  can be told to return a high estimate anyway (telemetry surface), but
+  the controller must have routed a True saturated flag to it.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=1.0, path_reason="ok")
+
+  # Run a few frames with the real estimator so it has internal history.
+  for _ in range(5):
+    controller.set_processed_lateral_demand(demand)
+    update(controller, VM, CS, 0.0001)
+
+  # Capture every call's saturated argument and return a fixed estimate.
+  calls: list[dict] = []
+  def _capture(**kwargs):
+    calls.append(dict(kwargs))
+    return LateralVehicleHealthEstimate(
+      bias_estimate=0.0, bias_confidence=0.0, bias_warning=False,
+    )
+  controller.vehicle_health_estimator.update = _capture
+
+  # Frame N: pretend the previous frame was saturated.
+  controller._previous_saturated = True
+  controller.set_processed_lateral_demand(demand)
+  update(controller, VM, CS, 0.0001)
+  assert calls[-1]["saturated"] is True
+
+
 def test_v4_oscillation_classifier_window_grows_then_classifies():
   from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import STRAIGHT_ROAD_MIN_SPEED as _SPEED
 
