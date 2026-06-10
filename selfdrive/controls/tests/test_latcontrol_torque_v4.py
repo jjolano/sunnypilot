@@ -628,6 +628,89 @@ def test_v4_oscillation_classifier_receives_real_torque_history():
   )
 
 
+def test_v4_oscillation_classifier_detects_controller_oscillation_from_real_torque():
+  """Direct regression for the previous-frame-torque fix. With
+  torque_output=0.0 the classifier's torque window was all zeros and
+  torque_sign_flips never fired, so a real controller oscillation
+  would slip past undetected.
+
+  Two-part regression:
+
+  1. The controller must feed its previous-frame output torque into
+     the classifier (proves the wiring is real, not hard-coded 0.0).
+  2. A sign-flipping torque series passed to the classifier must
+     produce a controller_oscillation classification with non-zero
+     torque_sign_flips (proves the detection logic is reachable).
+
+  Pre-fix, part 1 would fail because the classifier received 0.0 on
+  every frame and torque_sign_flips could not rise above zero.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    LateralOscillationClassifier,
+    STRAIGHT_ROAD_MIN_SPEED,
+  )
+
+  # Part 1: controller wiring. Drive the controller with a fixed
+  # nonzero curvature and verify the classifier window contains the
+  # previous frame's real output torque, not 0.0.
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=STRAIGHT_ROAD_MIN_SPEED, steering_pressed=False)
+  demand = make_processed_lateral_demand(
+    processed_curvature=0.0, path_quality=1.0, path_reason="ok",
+  )
+  for _ in range(8):
+    controller.set_processed_lateral_demand(demand)
+    update(controller, VM, CS, 0.0008)
+  torque_window = list(controller.oscillation_classifier._torque_output)
+  assert len(torque_window) >= 2
+  assert all(t == 0.0 for t in torque_window) is False, (
+    "Classifier received all-zero torque history; the previous-frame "
+    "torque wiring is broken."
+  )
+
+  # Part 2: detection. Drive the classifier with a constant curvature
+  # and target but a sign-flipping previous-frame torque. That mimics
+  # the real failure mode: planner is steady, controller is hunting.
+  # The classifier must see the torque flips and produce
+  # controller_oscillation with non-zero torque_sign_flips.
+  classifier = LateralOscillationClassifier()
+  for i in range(classifier.window_frames + 10):
+    sign = 1.0 if i % 2 == 0 else -1.0
+    classifier.update(
+      raw_curvature=0.0,
+      processed_curvature=0.0,
+      target_lateral_accel=0.0,
+      actual_lateral_accel=0.0,
+      # The previous-frame torque is what the controller fix feeds in.
+      # A pre-fix controller would feed 0.0 here and torque_sign_flips
+      # could not rise.
+      torque_output=sign * 0.1,
+      path_quality=1.0,
+      lane_change_active=False,
+      v_ego=STRAIGHT_ROAD_MIN_SPEED,
+      curvature_limited=False,
+      steering_pressed=False,
+    )
+  final = classifier.update(
+    raw_curvature=0.0,
+    processed_curvature=0.0,
+    target_lateral_accel=0.0,
+    actual_lateral_accel=0.0,
+    torque_output=0.0,
+    path_quality=1.0,
+    lane_change_active=False,
+    v_ego=STRAIGHT_ROAD_MIN_SPEED,
+    curvature_limited=False,
+    steering_pressed=False,
+  )
+  assert final.torque_sign_flips > 0, (
+    f"Expected torque_sign_flips > 0 with sign-flipping torque, got {final.torque_sign_flips}"
+  )
+  assert final.classification == "controller_oscillation", (
+    f"Expected controller_oscillation, got {final.classification}"
+  )
+
+
 def test_v4_health_estimator_receives_previous_frame_saturation():
   """The health estimator's `saturated` input must reflect the
   previous frame's actual saturation status, not a hard-coded False.
@@ -903,11 +986,16 @@ def test_v4_vehicle_health_estimator_converges_under_persistent_bias():
   assert abs(controller._last_health_estimate.bias_estimate) <= HEALTH_EST_BIAS_MAX
 
 
-def test_v4_bias_compensation_does_not_change_command_in_4p1():
+def test_v41_vehicle_bias_compensation_is_diagnostic_only():
   """4.1 keeps the learned bias diagnostic-only: estimator state still
   updates and is surfaced in telemetry, but the compensation term is
   forced to 0.0 in the command path. A future LatControlTorqueV5 can
   flip ACTIVE_VEHICLE_BIAS_COMPENSATION to True to apply the term.
+
+  This is a direct regression test: feed a high-confidence, high-bias
+  estimate and verify the 4.1 command output is bit-equivalent to the
+  zero-bias run. The estimator's intent is still logged, the command
+  ignores it.
   """
   from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
     LateralVehicleHealthEstimate,
@@ -939,6 +1027,18 @@ def test_v4_bias_compensation_does_not_change_command_in_4p1():
   assert log_biased.f == pytest.approx(log_clean.f)
   assert log_biased.adaptiveTorqueState.vehicleBiasEstimate == pytest.approx(0.05)
   assert log_clean.adaptiveTorqueState.vehicleBiasEstimate == pytest.approx(0.0)
+
+
+def test_v41_active_vehicle_bias_compensation_flag_is_false_by_default():
+  """Pin the 4.1 default: ACTIVE_VEHICLE_BIAS_COMPENSATION must be False
+  on the V4.1 class. Any future flip-to-True must be an explicit class
+  attribute change on a new version, not a silent edit of the base
+  flag.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV41,
+  )
+  assert LatControlTorqueV41.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
 
 
 def test_v4_bias_compensation_command_path_is_invariant_to_estimator_wobble_gate():
