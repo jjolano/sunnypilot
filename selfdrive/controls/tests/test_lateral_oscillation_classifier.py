@@ -3,9 +3,18 @@ import math
 import pytest
 
 from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+  LATERAL_OSCILLATION_TO_UINT8,
+  LATERAL_UINT8_TO_OSCILLATION,
   STRAIGHT_ROAD_MIN_SPEED,
-  LateralOscillationClassifier,
+  WOBBLE_ACTIVE_CLASSIFICATIONS,
+  WOBBLE_CONFIDENCE_THRESHOLD,
+  WobbleResponse,
+  compute_wobble_response,
+  is_wobble_active,
+  lateral_oscillation_to_uint8,
+  uint8_to_lateral_oscillation,
 )
+from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import LateralOscillationClassifier
 
 
 def _fill_classifier(clf, n, **kwargs):
@@ -174,3 +183,123 @@ class TestLateralOscillationClassifier:
     result = clf.update(**dict(self.BASE_KWARGS, lane_change_active=True))
     assert result.classification == "none", f"Expected none (lane change active), got {result.classification}"
     assert result.lane_change_active
+
+
+class TestOscillationUint8Mapping:
+
+  def test_all_classifications_have_unique_uint8(self):
+    values = list(LATERAL_OSCILLATION_TO_UINT8.values())
+    assert len(values) == len(LATERAL_UINT8_TO_OSCILLATION)
+    assert len(set(values)) == len(values)
+
+  def test_known_classifications(self):
+    assert lateral_oscillation_to_uint8("none") == 0
+    assert lateral_oscillation_to_uint8("planner_oscillation") == 1
+    assert lateral_oscillation_to_uint8("controller_oscillation") == 2
+    assert lateral_oscillation_to_uint8("vehicle_bias") == 3
+    assert lateral_oscillation_to_uint8("recenter_lag") == 4
+    assert lateral_oscillation_to_uint8("sign_change_lag") == 5
+    assert lateral_oscillation_to_uint8("straight_road_hunting") == 6
+
+  def test_unknown_returns_zero(self):
+    assert lateral_oscillation_to_uint8("nope") == 0
+    assert lateral_oscillation_to_uint8("") == 0
+
+  def test_uint8_round_trip(self):
+    for name, value in LATERAL_OSCILLATION_TO_UINT8.items():
+      assert uint8_to_lateral_oscillation(value) == name
+    assert uint8_to_lateral_oscillation(99) == "none"
+
+
+class TestIsWobbleActive:
+
+  def test_controller_oscillation_high_confidence_activates(self):
+    assert is_wobble_active("controller_oscillation", 0.8) is True
+
+  def test_planner_oscillation_high_confidence_activates(self):
+    assert is_wobble_active("planner_oscillation", 0.7) is True
+
+  def test_straight_road_hunting_high_confidence_activates(self):
+    assert is_wobble_active("straight_road_hunting", 0.9) is True
+
+  def test_low_confidence_does_not_activate(self):
+    assert is_wobble_active("controller_oscillation", WOBBLE_CONFIDENCE_THRESHOLD) is False
+    assert is_wobble_active("controller_oscillation", WOBBLE_CONFIDENCE_THRESHOLD - 0.1) is False
+
+  def test_recenter_lag_does_not_activate(self):
+    assert is_wobble_active("recenter_lag", 0.95) is False
+
+  def test_sign_change_lag_does_not_activate(self):
+    assert is_wobble_active("sign_change_lag", 0.95) is False
+
+  def test_vehicle_bias_does_not_activate(self):
+    assert is_wobble_active("vehicle_bias", 0.95) is False
+
+  def test_none_does_not_activate(self):
+    assert is_wobble_active("none", 1.0) is False
+
+  def test_wobble_set_includes_only_oscillation_sources(self):
+    assert WOBBLE_ACTIVE_CLASSIFICATIONS == frozenset({
+      "planner_oscillation",
+      "controller_oscillation",
+      "straight_road_hunting",
+    })
+
+
+class TestComputeWobbleResponse:
+
+  def test_none_returns_neutral(self):
+    r = compute_wobble_response("none", 1.0)
+    assert r.is_neutral is True
+    assert r.source_active is False
+    assert r.source == "none"
+    assert r.feedback_gain_multiplier == 1.0
+    assert r.damping_gain_multiplier == 1.0
+
+  def test_planner_oscillation_reduces_feedback(self):
+    r = compute_wobble_response("planner_oscillation", 0.8)
+    assert r.source_active is True
+    assert r.source == "planner"
+    assert r.feedback_gain_multiplier < 1.0
+    assert r.damping_gain_multiplier > 1.0
+
+  def test_controller_oscillation_aggressive_reduction(self):
+    r = compute_wobble_response("controller_oscillation", 0.9)
+    assert r.source_active is True
+    assert r.source == "controller"
+    assert r.feedback_gain_multiplier <= 0.6
+    assert r.damping_gain_multiplier >= 1.5
+
+  def test_straight_road_hunting_same_as_controller(self):
+    r = compute_wobble_response("straight_road_hunting", 0.8)
+    assert r.source_active is True
+    assert r.source == "straight_road"
+    assert r.feedback_gain_multiplier == compute_wobble_response("controller_oscillation", 0.9).feedback_gain_multiplier
+    assert r.damping_gain_multiplier == compute_wobble_response("controller_oscillation", 0.9).damping_gain_multiplier
+
+  def test_low_confidence_returns_neutral(self):
+    r = compute_wobble_response("planner_oscillation", WOBBLE_CONFIDENCE_THRESHOLD - 0.1)
+    assert r.is_neutral is True
+    assert r.source_active is False
+
+  def test_vehicle_bias_returns_neutral(self):
+    r = compute_wobble_response("vehicle_bias", 0.9)
+    assert r.is_neutral is True
+    assert r.source_active is False
+
+  def test_recenter_lag_returns_neutral(self):
+    r = compute_wobble_response("recenter_lag", 0.9)
+    assert r.is_neutral is True
+
+  def test_sign_change_lag_returns_neutral(self):
+    r = compute_wobble_response("sign_change_lag", 0.9)
+    assert r.is_neutral is True
+
+  def test_returns_wobble_response_instance(self):
+    r = compute_wobble_response("none", 0.0)
+    assert isinstance(r, WobbleResponse)
+
+  def test_is_neutral_property(self):
+    assert compute_wobble_response("none", 0.0).is_neutral is True
+    assert compute_wobble_response("planner_oscillation", 0.8).is_neutral is False
+    assert compute_wobble_response("controller_oscillation", 0.9).is_neutral is False

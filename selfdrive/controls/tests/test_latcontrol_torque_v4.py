@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.lateral_demand import (
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import SteeringActuatorFeedback, SteeringLimitReason
 from openpilot.sunnypilot.selfdrive.locationd.speed_aware_torque import format_speed_aware_params
+from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import STRAIGHT_ROAD_MIN_SPEED
 
 params_pyx = types.ModuleType("openpilot.common.params_pyx")
 
@@ -411,6 +412,488 @@ def test_v4_processed_lateral_demand_hook_stores_scalar_metadata():
   controller.set_processed_lateral_demand(demand)
 
   assert controller.processed_lateral_demand is demand
+
+
+def test_v4_lateral_demand_profile_hook_stores_profile_and_resets():
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralDemandProfileBuilder,
+    LateralMode,
+    lateral_mode_to_uint8,
+  )
+
+  controller, _VM, _CP = get_controller()
+  builder = LateralDemandProfileBuilder(dt=DT_CTRL)
+  demand = make_processed_lateral_demand(processed_curvature=0.001)
+  profile = builder.update(demand, v_ego=20.0)
+
+  assert profile.mode == LateralMode.STEADY_CURVE.value
+
+  controller.set_lateral_demand_profile(profile)
+  assert controller.lateral_demand_profile is profile
+
+  controller.reset()
+  assert controller.lateral_demand_profile is None
+
+
+def test_v4_adaptive_torque_state_logs_demand_mode_when_profile_set():
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfileBuilder,
+    LateralMode,
+    lateral_mode_to_uint8,
+  )
+
+  controller, VM, _CP = get_controller()
+  builder = LateralDemandProfileBuilder(dt=DT_CTRL)
+  demand = make_processed_lateral_demand(processed_curvature=0.001)
+  profile = builder.update(demand, v_ego=20.0)
+  controller.set_lateral_demand_profile(profile)
+
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert lac_log.adaptiveTorqueState.demandMode == lateral_mode_to_uint8(LateralMode.STEADY_CURVE.value)
+  assert 0.0 < lac_log.adaptiveTorqueState.demandModeConfidence <= 1.0
+
+
+def test_v4_adaptive_torque_state_logs_demand_mode_zero_when_profile_unset():
+  controller, VM, _CP = get_controller()
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+  assert lac_log.adaptiveTorqueState.demandMode == 0
+  assert lac_log.adaptiveTorqueState.demandModeConfidence == 0.0
+
+
+def test_v4_adaptive_torque_state_logs_demand_mode_driver_override():
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfileBuilder,
+    LateralMode,
+    lateral_mode_to_uint8,
+  )
+
+  controller, VM, _CP = get_controller()
+  builder = LateralDemandProfileBuilder(dt=DT_CTRL)
+  demand = make_processed_lateral_demand(processed_curvature=0.001)
+  profile = builder.update(demand, v_ego=20.0, steering_pressed=True)
+  controller.set_lateral_demand_profile(profile)
+
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0, steering_pressed=True), 0.001)
+
+  assert lac_log.adaptiveTorqueState.demandMode == lateral_mode_to_uint8(LateralMode.DRIVER_OVERRIDE.value)
+
+
+def test_v4_under_response_recovery_blocked_when_wobble_active():
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  assert controller._under_response_recovery_allowed() is True
+  controller._wobble_active = True
+  assert controller._under_response_recovery_allowed() is False
+
+
+def test_v4_under_response_recovery_allowed_when_wobble_inactive():
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller._wobble_active = False
+  assert controller._under_response_recovery_allowed() is True
+
+
+def test_v4_reset_clears_oscillation_classifier_state():
+  controller, _VM, _CP = get_controller()
+  controller._last_oscillation_classification = "controller_oscillation"
+  controller._last_oscillation_confidence = 0.9
+  controller._wobble_active = True
+
+  controller.reset()
+
+  assert controller._last_oscillation_classification == "none"
+  assert controller._last_oscillation_confidence == 0.0
+  assert controller._wobble_active is False
+  assert isinstance(controller.oscillation_classifier, type(controller.oscillation_classifier))
+
+
+def test_v4_adaptive_torque_state_logs_oscillation_classification():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import lateral_oscillation_to_uint8
+
+  controller, VM, _CP = get_controller()
+  for _ in range(60):
+    controller.oscillation_classifier.update(
+      raw_curvature=0.0,
+      processed_curvature=0.0,
+      target_lateral_accel=0.0,
+      actual_lateral_accel=0.0,
+      torque_output=1.0,
+      path_quality=1.0,
+      lane_change_active=False,
+      v_ego=STRAIGHT_ROAD_MIN_SPEED,
+      curvature_limited=False,
+      steering_pressed=False,
+    )
+  assert controller._last_oscillation_classification in {
+    "controller_oscillation", "straight_road_hunting", "none",
+  }
+
+  for _ in range(20):
+    controller.oscillation_classifier.update(
+      raw_curvature=0.0,
+      processed_curvature=0.0,
+      target_lateral_accel=0.0,
+      actual_lateral_accel=0.0,
+      torque_output=-1.0,
+      path_quality=1.0,
+      lane_change_active=False,
+      v_ego=STRAIGHT_ROAD_MIN_SPEED,
+      curvature_limited=False,
+      steering_pressed=False,
+    )
+
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=STRAIGHT_ROAD_MIN_SPEED), 0.0)
+
+  assert lac_log.adaptiveTorqueState.oscillationClassification == lateral_oscillation_to_uint8(
+    controller._last_oscillation_classification
+  )
+  assert lac_log.adaptiveTorqueState.wobbleActive == controller._wobble_active
+
+
+def test_v4_adaptive_torque_state_logs_oscillation_default():
+  controller, VM, _CP = get_controller()
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+  assert lac_log.adaptiveTorqueState.oscillationClassification == 0
+  assert lac_log.adaptiveTorqueState.wobbleActive is False
+
+
+def test_v4_oscillation_classifier_receives_frame_signals():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import LateralOscillationClassifier
+
+  controller, VM, _CP = get_controller()
+  initial_window_len = len(controller.oscillation_classifier._raw_curvature)
+  assert isinstance(controller.oscillation_classifier, LateralOscillationClassifier)
+  assert initial_window_len == 0
+
+  _steer, _angle, _lac_log = update(controller, VM, make_car_state(v_ego=20.0, steering_pressed=False), 0.001)
+  assert len(controller.oscillation_classifier._raw_curvature) == 1
+
+
+def test_v4_oscillation_classifier_window_grows_then_classifies():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import STRAIGHT_ROAD_MIN_SPEED as _SPEED
+
+  controller, VM, _CP = get_controller()
+  demand = make_processed_lateral_demand(processed_curvature=0.0001)
+
+  for i in range(60):
+    sign = 1.0 if i % 2 == 0 else -1.0
+    CS = make_car_state(v_ego=_SPEED, steering_pressed=False)
+    update(controller, VM, CS, sign * 0.0001)
+    controller.set_processed_lateral_demand(demand)
+
+  assert controller._last_oscillation_classification in {
+    "none", "controller_oscillation", "straight_road_hunting",
+    "planner_oscillation", "vehicle_bias", "recenter_lag", "sign_change_lag",
+  }
+  assert 0.0 <= controller._last_oscillation_confidence <= 1.0
+
+
+def test_v4_vehicle_bias_compensation_returns_zero_when_wobble_active():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+  controller, _VM, _CP = get_controller()
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=0.04, bias_confidence=0.9, bias_warning=True,
+  )
+  assert controller._vehicle_bias_compensation(estimate, wobble_active=True) == 0.0
+
+
+def test_v4_vehicle_bias_compensation_scales_by_confidence():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    HEALTH_EST_BIAS_MAX,
+    LateralVehicleHealthEstimate,
+  )
+  controller, _VM, _CP = get_controller()
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=0.04, bias_confidence=0.5, bias_warning=False,
+  )
+  expected = 0.04 * 0.5
+  result = controller._vehicle_bias_compensation(estimate, wobble_active=False)
+  assert result == pytest.approx(expected, rel=1e-6)
+  assert abs(result) <= HEALTH_EST_BIAS_MAX
+
+
+def test_v4_vehicle_bias_compensation_clamps_to_hard_bound():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    HEALTH_EST_BIAS_MAX,
+    LateralVehicleHealthEstimate,
+  )
+  controller, _VM, _CP = get_controller()
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=0.5, bias_confidence=1.0, bias_warning=True,
+  )
+  result = controller._vehicle_bias_compensation(estimate, wobble_active=False)
+  assert result == pytest.approx(HEALTH_EST_BIAS_MAX, rel=1e-6)
+
+
+def test_v4_vehicle_bias_compensation_returns_zero_for_non_finite():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+  controller, _VM, _CP = get_controller()
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=float("nan"), bias_confidence=1.0, bias_warning=False,
+  )
+  assert controller._vehicle_bias_compensation(estimate, wobble_active=False) == 0.0
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=0.05, bias_confidence=float("inf"), bias_warning=False,
+  )
+  assert controller._vehicle_bias_compensation(estimate, wobble_active=False) == 0.0
+
+
+def test_v4_vehicle_bias_compensation_negative_sign():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+  controller, _VM, _CP = get_controller()
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=-0.03, bias_confidence=1.0, bias_warning=False,
+  )
+  assert controller._vehicle_bias_compensation(estimate, wobble_active=False) == pytest.approx(-0.03, rel=1e-6)
+
+
+def test_v4_reset_resets_vehicle_health_estimator():
+  controller, _VM, _CP = get_controller()
+  controller._last_health_estimate = type(controller._last_health_estimate)(
+    bias_estimate=0.05, bias_confidence=0.9, bias_warning=True,
+  )
+  controller.vehicle_health_estimator._bias_ema = 0.05
+  controller.vehicle_health_estimator._bias_sample_count = 50
+
+  controller.reset()
+
+  assert controller._last_health_estimate.bias_estimate == 0.0
+  assert controller._last_health_estimate.bias_confidence == 0.0
+  assert controller._last_health_estimate.bias_warning is False
+  assert controller.vehicle_health_estimator._bias_ema == 0.0
+  assert controller.vehicle_health_estimator._bias_sample_count == 0
+
+
+def test_v4_adaptive_torque_state_logs_vehicle_health_fields():
+  controller, VM, _CP = get_controller()
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+  assert lac_log.adaptiveTorqueState.vehicleBiasEstimate == 0.0
+  assert lac_log.adaptiveTorqueState.vehicleBiasConfidence == 0.0
+  assert lac_log.adaptiveTorqueState.vehicleBiasWarning is False
+  assert lac_log.adaptiveTorqueState.vehicleHealthActive is False
+
+
+def test_v4_vehicle_health_estimator_receives_frame_signals():
+  controller, VM, _CP = get_controller()
+  initial_count = controller.vehicle_health_estimator._frame_count
+  assert initial_count == 0
+
+  update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert controller.vehicle_health_estimator._frame_count == 1
+
+
+def test_v4_vehicle_health_estimator_converges_under_persistent_bias():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    HEALTH_EST_BIAS_MAX,
+  )
+
+  controller, VM, _CP = get_controller()
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=1.0, path_reason="ok")
+  controller.set_processed_lateral_demand(demand)
+  CS = make_car_state(v_ego=25.0)
+  for _ in range(150):
+    update(controller, VM, CS, 0.0, lat_delay=0.2)
+    controller.set_processed_lateral_demand(demand)
+
+  assert controller._last_health_estimate.persistence_frames > 0
+  assert abs(controller._last_health_estimate.bias_estimate) <= HEALTH_EST_BIAS_MAX
+
+
+def test_v4_bias_compensation_changes_command_when_estimate_is_nonzero():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
+
+  for _ in range(20):
+    controller.set_processed_lateral_demand(demand)
+    update(controller, VM, CS, 0.001, lat_delay=0.2)
+  controller.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
+    bias_estimate=0.0, bias_confidence=0.0, bias_warning=False,
+  )
+  controller.set_processed_lateral_demand(demand)
+  log_clean = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
+  clean_command = log_clean.f
+
+  controller.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
+    bias_estimate=0.05, bias_confidence=1.0, bias_warning=True,
+  )
+  controller.set_processed_lateral_demand(demand)
+  log_biased = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
+  biased_command = log_biased.f
+
+  assert biased_command < clean_command
+  assert abs(clean_command - biased_command - 0.05) < 0.01
+
+
+def test_v4_bias_compensation_zero_when_wobble_active():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    LateralOscillationClassification,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
+
+  for _ in range(20):
+    controller.set_processed_lateral_demand(demand)
+    update(controller, VM, CS, 0.001, lat_delay=0.2)
+  controller.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
+    bias_estimate=0.05, bias_confidence=1.0, bias_warning=True,
+  )
+
+  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="controller_oscillation", confidence=0.9,
+    raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
+    torque_sign_flips=10, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=False,
+    path_quality=1.0, lane_change_active=False,
+  )
+  controller.set_processed_lateral_demand(demand)
+  log_wobble = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
+
+  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="none", confidence=0.0,
+    raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
+    torque_sign_flips=0, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=True,
+    path_quality=1.0, lane_change_active=False,
+  )
+  controller.set_processed_lateral_demand(demand)
+  log_clean = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
+
+  assert log_wobble.f > log_clean.f
+  assert log_wobble.adaptiveTorqueState.wobbleActive is True
+  assert log_clean.adaptiveTorqueState.wobbleActive is False
+
+
+def test_v4_wobble_response_reduces_feedback_for_controller_oscillation():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    LateralOscillationClassification,
+  )
+
+  controller, VM, _CP = get_controller()
+  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="controller_oscillation",
+    confidence=0.9,
+    raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
+    torque_sign_flips=10, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=False,
+    path_quality=1.0, lane_change_active=False,
+  )
+
+  _steer, _angle, log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert log.adaptiveTorqueState.wobbleFeedbackGainMult < 1.0
+  assert log.adaptiveTorqueState.wobbleDampingGainMult > 1.0
+
+
+def test_v4_wobble_response_reduces_feedback_for_planner_oscillation():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    LateralOscillationClassification,
+  )
+
+  controller, VM, _CP = get_controller()
+  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="planner_oscillation",
+    confidence=0.8,
+    raw_curvature_sign_flips=10, processed_curvature_sign_flips=10,
+    torque_sign_flips=0, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=False,
+    path_quality=1.0, lane_change_active=False,
+  )
+
+  _steer, _angle, log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert log.adaptiveTorqueState.wobbleFeedbackGainMult < 1.0
+  assert log.adaptiveTorqueState.wobbleDampingGainMult > 1.0
+
+
+def test_v4_wobble_response_neutral_when_inactive():
+  controller, VM, _CP = get_controller()
+  _steer, _angle, log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+  assert log.adaptiveTorqueState.wobbleFeedbackGainMult == 1.0
+  assert log.adaptiveTorqueState.wobbleDampingGainMult == 1.0
+
+
+def test_v4_wobble_response_changes_feedback_correction_in_oscillation_mode():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    LateralOscillationClassification,
+  )
+
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
+
+  for _ in range(20):
+    controller.set_processed_lateral_demand(demand)
+    update(controller, VM, CS, 0.001, lat_delay=0.2)
+
+  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="none", confidence=0.0,
+    raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
+    torque_sign_flips=0, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=True,
+    path_quality=1.0, lane_change_active=False,
+  )
+  controller.set_processed_lateral_demand(demand)
+  log_clean = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
+  clean_fb = log_clean.adaptiveTorqueState.feedbackCorrection
+  clean_wobble_mult = log_clean.adaptiveTorqueState.wobbleFeedbackGainMult
+
+  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="controller_oscillation", confidence=0.9,
+    raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
+    torque_sign_flips=10, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=False,
+    path_quality=1.0, lane_change_active=False,
+  )
+  controller.set_processed_lateral_demand(demand)
+  log_wobble = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
+  wobble_fb = log_wobble.adaptiveTorqueState.feedbackCorrection
+  wobble_wobble_mult = log_wobble.adaptiveTorqueState.wobbleFeedbackGainMult
+
+  assert clean_wobble_mult == 1.0
+  assert wobble_wobble_mult < 1.0
+  assert abs(wobble_fb) < abs(clean_fb)
+
+
+def test_v4_wobble_response_receives_classifier_classification():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=STRAIGHT_ROAD_MIN_SPEED, steering_pressed=False)
+  for _ in range(60):
+    update(controller, VM, CS, 0.0001, lat_delay=0.2)
+  assert controller._last_wobble_response.classification in {
+    "none", "planner_oscillation", "controller_oscillation", "straight_road_hunting",
+    "vehicle_bias", "recenter_lag", "sign_change_lag",
+  }
+
+
+def test_v4_reset_resets_wobble_response():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    compute_wobble_response,
+  )
+
+  controller, _VM, _CP = get_controller()
+  controller._last_wobble_response = compute_wobble_response("controller_oscillation", 0.9)
+  controller.reset()
+  assert controller._last_wobble_response.classification == "none"
+  assert controller._last_wobble_response.feedback_gain_multiplier == 1.0
 
 
 def test_v4_learning_rejects_forwarded_lateral_maneuver_demand():

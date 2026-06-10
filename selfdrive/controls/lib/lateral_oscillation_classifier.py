@@ -32,6 +32,115 @@ class LateralOscillationClassification:
   debug: dict[str, object] = field(default_factory=dict)
 
 
+LATERAL_OSCILLATION_TO_UINT8 = {
+  "none": 0,
+  "planner_oscillation": 1,
+  "controller_oscillation": 2,
+  "vehicle_bias": 3,
+  "recenter_lag": 4,
+  "sign_change_lag": 5,
+  "straight_road_hunting": 6,
+}
+
+LATERAL_UINT8_TO_OSCILLATION = {value: key for key, value in LATERAL_OSCILLATION_TO_UINT8.items()}
+
+
+def lateral_oscillation_to_uint8(classification: str) -> int:
+  return LATERAL_OSCILLATION_TO_UINT8.get(classification, 0)
+
+
+def uint8_to_lateral_oscillation(value: int) -> str:
+  return LATERAL_UINT8_TO_OSCILLATION.get(int(value), "none")
+
+
+WOBBLE_ACTIVE_CLASSIFICATIONS = frozenset({
+  "planner_oscillation",
+  "controller_oscillation",
+  "straight_road_hunting",
+})
+
+WOBBLE_CONFIDENCE_THRESHOLD = 0.5
+
+
+def is_wobble_active(classification: str, confidence: float) -> bool:
+  return classification in WOBBLE_ACTIVE_CLASSIFICATIONS and confidence > WOBBLE_CONFIDENCE_THRESHOLD
+
+
+@dataclass(frozen=True)
+class WobbleResponse:
+  classification: str
+  confidence: float
+  feedback_gain_multiplier: float
+  damping_gain_multiplier: float
+  source_active: bool
+  source: str
+
+  @property
+  def is_neutral(self) -> bool:
+    return self.feedback_gain_multiplier == 1.0 and self.damping_gain_multiplier == 1.0
+
+
+WOBBLE_FEEDBACK_MULT_DEFAULT = 1.0
+WOBBLE_DAMPING_MULT_DEFAULT = 1.0
+WOBBLE_FEEDBACK_MULT_PLANNER_OSCILLATION = 0.7
+WOBBLE_DAMPING_MULT_PLANNER_OSCILLATION = 1.2
+WOBBLE_FEEDBACK_MULT_CONTROLLER_OSCILLATION = 0.6
+WOBBLE_DAMPING_MULT_CONTROLLER_OSCILLATION = 1.5
+WOBBLE_FEEDBACK_MULT_STRAIGHT_ROAD_HUNTING = 0.6
+WOBBLE_DAMPING_MULT_STRAIGHT_ROAD_HUNTING = 1.5
+
+
+def compute_wobble_response(classification: str, confidence: float) -> WobbleResponse:
+  """Source-aware response to lateral oscillation patterns.
+
+  Returns a WobbleResponse that the controller applies to its feedback and
+  damping gains. The default is neutral (1.0, 1.0). The response targets
+  the responsible layer only:
+
+  - planner_oscillation: reduce feedback so the controller doesn't chase
+    path noise. Slight damping boost.
+  - controller_oscillation: aggressively reduce feedback and boost damping
+    to stop the controller from amplifying itself.
+  - straight_road_hunting: same as controller_oscillation.
+  - other classifications: neutral.
+  """
+  if classification == "planner_oscillation" and confidence > WOBBLE_CONFIDENCE_THRESHOLD:
+    return WobbleResponse(
+      classification=classification,
+      confidence=confidence,
+      feedback_gain_multiplier=WOBBLE_FEEDBACK_MULT_PLANNER_OSCILLATION,
+      damping_gain_multiplier=WOBBLE_DAMPING_MULT_PLANNER_OSCILLATION,
+      source_active=True,
+      source="planner",
+    )
+  if classification == "controller_oscillation" and confidence > WOBBLE_CONFIDENCE_THRESHOLD:
+    return WobbleResponse(
+      classification=classification,
+      confidence=confidence,
+      feedback_gain_multiplier=WOBBLE_FEEDBACK_MULT_CONTROLLER_OSCILLATION,
+      damping_gain_multiplier=WOBBLE_DAMPING_MULT_CONTROLLER_OSCILLATION,
+      source_active=True,
+      source="controller",
+    )
+  if classification == "straight_road_hunting" and confidence > WOBBLE_CONFIDENCE_THRESHOLD:
+    return WobbleResponse(
+      classification=classification,
+      confidence=confidence,
+      feedback_gain_multiplier=WOBBLE_FEEDBACK_MULT_STRAIGHT_ROAD_HUNTING,
+      damping_gain_multiplier=WOBBLE_DAMPING_MULT_STRAIGHT_ROAD_HUNTING,
+      source_active=True,
+      source="straight_road",
+    )
+  return WobbleResponse(
+    classification=classification,
+    confidence=confidence,
+    feedback_gain_multiplier=WOBBLE_FEEDBACK_MULT_DEFAULT,
+    damping_gain_multiplier=WOBBLE_DAMPING_MULT_DEFAULT,
+    source_active=False,
+    source="none",
+  )
+
+
 class LateralOscillationClassifier:
   """Diagnostic lateral oscillation classifier.
 

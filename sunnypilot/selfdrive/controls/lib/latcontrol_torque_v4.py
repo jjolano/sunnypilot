@@ -10,6 +10,24 @@ from opendbc.car.lateral import get_friction
 from openpilot.common.params import Params, UnknownKeyName
 from openpilot.selfdrive.controls.lib.lateral_demand import DEMAND_SOURCE_MODEL_PATH, ProcessedLateralDemand
 from openpilot.selfdrive.controls.lib.lateral_accel import roll_lateral_accel
+from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfile, lateral_mode_to_uint8
+from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+  LateralOscillationClassifier,
+  WobbleResponse,
+  compute_wobble_response,
+  is_wobble_active,
+  lateral_oscillation_to_uint8,
+)
+from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+  LateralTurnExitController,
+  TurnExitMode,
+)
+from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+  HEALTH_EST_BIAS_MAX,
+  HEALTH_EST_BIAS_WARNING,
+  LateralVehicleHealthEstimate,
+  LateralVehicleHealthEstimator,
+)
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_context
 from openpilot.sunnypilot.selfdrive.locationd.speed_aware_torque import (
@@ -184,6 +202,19 @@ def _interp(value: float, bp: list[float], vals: list[float]) -> float:
 
 def _sign(value: float, threshold: float = 0.0) -> int:
   return 1 if value > threshold else (-1 if value < -threshold else 0)
+
+
+def turn_exit_mode_to_uint8(mode: str) -> int:
+  return TURN_EXIT_MODE_TO_UINT8.get(mode, 0)
+
+
+TURN_EXIT_MODE_TO_UINT8 = {
+  TurnExitMode.INACTIVE.value: 0,
+  TurnExitMode.TURN_IN.value: 1,
+  TurnExitMode.STEADY_CURVE.value: 2,
+  TurnExitMode.TURN_EXIT.value: 3,
+  TurnExitMode.EARLY_RELEASE.value: 4,
+}
 
 
 def _approach(value: float, target: float, step: float) -> float:
@@ -679,6 +710,19 @@ class LatControlTorqueV4(LatControl):
     self.last_v_ego = 0.0
     self.processed_lateral_demand = None
     self.processed_lateral_demand: ProcessedLateralDemand | None = None
+    self.lateral_demand_profile: LateralDemandProfile | None = None
+    self.oscillation_classifier = LateralOscillationClassifier()
+    self._last_oscillation_classification: str = "none"
+    self._last_oscillation_confidence: float = 0.0
+    self._wobble_active: bool = False
+    self._last_wobble_response: WobbleResponse = compute_wobble_response("none", 0.0)
+    self.vehicle_health_estimator = LateralVehicleHealthEstimator()
+    self._last_health_estimate: LateralVehicleHealthEstimate = LateralVehicleHealthEstimate()
+    self.turn_exit_controller = LateralTurnExitController()
+    self._last_turn_exit_mode: str = TurnExitMode.INACTIVE.value
+    self._last_turn_exit_persistence: int = 0
+    self._last_turn_exit_preview_boost: float = 0.0
+    self._last_turn_exit_early_release: bool = False
     self._recenter_persistence_frames: int = 0
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction) -> None:
@@ -708,6 +752,9 @@ class LatControlTorqueV4(LatControl):
   def set_processed_lateral_demand(self, demand: ProcessedLateralDemand) -> None:
     self.processed_lateral_demand = demand
 
+  def set_lateral_demand_profile(self, profile: LateralDemandProfile) -> None:
+    self.lateral_demand_profile = profile
+
   def reset(self) -> None:
     super().reset()
     self.governor.reset()
@@ -716,8 +763,23 @@ class LatControlTorqueV4(LatControl):
     self.previous_measurement = 0.0
     self.filtered_measurement_rate = 0.0
     self._recenter_persistence_frames = 0
+    self.lateral_demand_profile = None
+    self.oscillation_classifier = LateralOscillationClassifier()
+    self._last_oscillation_classification = "none"
+    self._last_oscillation_confidence = 0.0
+    self._wobble_active = False
+    self._last_wobble_response = compute_wobble_response("none", 0.0)
+    self.vehicle_health_estimator = LateralVehicleHealthEstimator()
+    self._last_health_estimate = LateralVehicleHealthEstimate()
+    self.turn_exit_controller = LateralTurnExitController()
+    self._last_turn_exit_mode = TurnExitMode.INACTIVE.value
+    self._last_turn_exit_persistence = 0
+    self._last_turn_exit_preview_boost = 0.0
+    self._last_turn_exit_early_release = False
 
   def _under_response_recovery_allowed(self) -> bool:
+    if self._wobble_active:
+      return False
     demand = self.processed_lateral_demand
     if demand is None:
       return False
@@ -831,6 +893,37 @@ class LatControlTorqueV4(LatControl):
       params.roll if not input_invalid else 0.0,
     )
     measurement_rate = self._filtered_measurement_rate(active, input_invalid, actual_lateral_accel)
+    raw_desired_curvature = float(desired_curvature) if _finite(desired_curvature) else 0.0
+    processed_curvature_for_classifier = _finite_float(getattr(self.processed_lateral_demand, "processed_curvature", None))
+    if processed_curvature_for_classifier is None:
+      processed_curvature_for_classifier = raw_desired_curvature
+    classifier_result = self.oscillation_classifier.update(
+      raw_curvature=raw_desired_curvature,
+      processed_curvature=float(processed_curvature_for_classifier),
+      target_lateral_accel=target.raw_lateral_accel,
+      actual_lateral_accel=actual_lateral_accel,
+      torque_output=0.0,
+      path_quality=getattr(self.processed_lateral_demand, "path_quality", 1.0),
+      lane_change_active=getattr(self.processed_lateral_demand, "lane_change_shaping_active", False),
+      v_ego=CS.vEgo,
+      curvature_limited=curvature_limited,
+      steering_pressed=CS.steeringPressed,
+    )
+    self._last_oscillation_classification = classifier_result.classification
+    self._last_oscillation_confidence = float(classifier_result.confidence)
+    self._wobble_active = is_wobble_active(classifier_result.classification, classifier_result.confidence)
+    self._last_wobble_response = compute_wobble_response(classifier_result.classification, float(classifier_result.confidence))
+    self._last_health_estimate = self.vehicle_health_estimator.update(
+      v_ego=CS.vEgo if not input_invalid else 0.0,
+      target_lateral_accel=target.raw_lateral_accel,
+      actual_lateral_accel=actual_lateral_accel,
+      path_quality=_finite_float(getattr(self.processed_lateral_demand, "path_quality", 0.0)) or 0.0,
+      demand_source=getattr(self.processed_lateral_demand, "demand_source", DEMAND_SOURCE_MODEL_PATH),
+      lane_change_active=bool(getattr(self.processed_lateral_demand, "lane_change_shaping_active", False)),
+      steering_pressed=CS.steeringPressed,
+      curvature_limited=curvature_limited,
+      saturated=False,
+    )
     target = self._apply_under_response_lead_boost(
       target,
       speed_result,
@@ -858,12 +951,13 @@ class LatControlTorqueV4(LatControl):
       steering_pressed=CS.steeringPressed,
       invalid=input_invalid,
     )
-    feedback_correction = speed_result.feedback_gain * control_error + under_response_catchup / max(
+    feedback_correction = (speed_result.feedback_gain * self._last_wobble_response.feedback_gain_multiplier) * control_error + under_response_catchup / max(
       speed_result.response_scale, 1e-3,
     )
-    damping_correction = -speed_result.damping_gain * measurement_rate
+    damping_correction = -(speed_result.damping_gain * self._last_wobble_response.damping_gain_multiplier) * measurement_rate
     breakaway_compensation = self._breakaway_lateral_accel(control_error, lateral_accel_deadzone, target.raw_lateral_accel,
                                                            actual_lateral_accel, speed_result.breakaway_scale)
+    bias_compensation = self._vehicle_bias_compensation(self._last_health_estimate, wobble_active=self._wobble_active)
     command_lateral_accel = (
       target.delay_lead_lateral_accel
       - roll_compensation
@@ -872,6 +966,7 @@ class LatControlTorqueV4(LatControl):
       + damping_correction
       + speed_result.trim_lateral_accel
       + breakaway_compensation
+      - bias_compensation
     )
     invalid = input_invalid or not _finite(command_lateral_accel, actual_lateral_accel, actual_lateral_jerk, measurement_rate)
     effective_torque_params = self._effective_torque_params(speed_result)
@@ -925,6 +1020,22 @@ class LatControlTorqueV4(LatControl):
       lane_centering_assist_active=getattr(self.processed_lateral_demand, "lane_centering_assist_active", False),
     )
     sample_update = self.session_adaptation.update(observation, governor_result.reason)
+
+    turn_exit_decision = self.turn_exit_controller.update(
+      target=target.raw_lateral_accel,
+      profile=self.lateral_demand_profile,
+      active=bool(active and not invalid),
+      v_ego=CS.vEgo,
+      path_quality=_finite_float(getattr(self.processed_lateral_demand, "path_quality", 1.0)) or 1.0,
+      lane_change_active=bool(getattr(self.processed_lateral_demand, "lane_change_shaping_active", False)),
+      steering_pressed=CS.steeringPressed,
+      curvature_limited=curvature_limited,
+      saturated=False,
+    )
+    self._last_turn_exit_mode = turn_exit_decision.mode
+    self._last_turn_exit_persistence = int(turn_exit_decision.persistence_frames)
+    self._last_turn_exit_preview_boost = float(turn_exit_decision.preview_boost)
+    self._last_turn_exit_early_release = bool(turn_exit_decision.early_release_lead_zero)
 
     pid_log.active = bool(active and not invalid)
     pid_log.error = float(control_error if _finite(control_error) else 0.0)
@@ -1086,6 +1197,14 @@ class LatControlTorqueV4(LatControl):
       scale *= 0.5
     return get_friction(error * scale, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params) * scale
 
+  def _vehicle_bias_compensation(self, estimate: LateralVehicleHealthEstimate, *, wobble_active: bool) -> float:
+    if wobble_active:
+      return 0.0
+    if not _finite(estimate.bias_estimate, estimate.bias_confidence):
+      return 0.0
+    raw = float(estimate.bias_estimate) * float(estimate.bias_confidence)
+    return _clip(raw, -HEALTH_EST_BIAS_MAX, HEALTH_EST_BIAS_MAX)
+
   @staticmethod
   def _phase(active: bool, target_rate: float, governor_reason: TorqueV4GovernorReason) -> TorqueV4Phase:
     if not active:
@@ -1149,6 +1268,20 @@ class LatControlTorqueV4(LatControl):
     adaptive_log.learnerResponseScale = float(speed_result.response_scale)
     adaptive_log.governorReason = int(governor_result.reason)
     adaptive_log.actualLateralJerk = float(actual_lateral_jerk if _finite(actual_lateral_jerk) else 0.0)
+    if self.lateral_demand_profile is not None:
+      adaptive_log.demandMode = int(lateral_mode_to_uint8(self.lateral_demand_profile.mode))
+      adaptive_log.demandModeConfidence = float(self.lateral_demand_profile.mode_confidence) if _finite(self.lateral_demand_profile.mode_confidence) else 0.0
+    adaptive_log.oscillationClassification = int(lateral_oscillation_to_uint8(self._last_oscillation_classification))
+    adaptive_log.wobbleActive = bool(self._wobble_active)
+    adaptive_log.vehicleBiasEstimate = float(self._last_health_estimate.bias_estimate) if _finite(self._last_health_estimate.bias_estimate) else 0.0
+    adaptive_log.vehicleBiasConfidence = float(self._last_health_estimate.bias_confidence) if _finite(self._last_health_estimate.bias_confidence) else 0.0
+    adaptive_log.vehicleBiasWarning = bool(self._last_health_estimate.bias_warning)
+    adaptive_log.vehicleHealthActive = bool(self._last_health_estimate.learning_active)
+    adaptive_log.turnExitMode = int(turn_exit_mode_to_uint8(self._last_turn_exit_mode))
+    adaptive_log.previewBoost = float(self._last_turn_exit_preview_boost)
+    adaptive_log.earlyReleaseActive = bool(self._last_turn_exit_early_release)
+    adaptive_log.wobbleFeedbackGainMult = float(self._last_wobble_response.feedback_gain_multiplier)
+    adaptive_log.wobbleDampingGainMult = float(self._last_wobble_response.damping_gain_multiplier)
 
 
 class LatControlTorqueV41(LatControlTorqueV4):

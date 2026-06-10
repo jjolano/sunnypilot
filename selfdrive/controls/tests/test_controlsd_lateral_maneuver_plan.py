@@ -467,3 +467,82 @@ def test_update_lateral_controller_demand_ignores_missing_hook():
   demand = ProcessedLateralDemand(0.1, 0.2, 0.3, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
 
   controls.update_lateral_controller_demand(demand)
+
+
+def test_update_lateral_demand_profile_calls_direct_hook():
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfile
+
+  class FakeController:
+    def __init__(self):
+      self.profile = None
+
+    def set_lateral_demand_profile(self, profile):
+      self.profile = profile
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder
+  controls.lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
+  demand = ProcessedLateralDemand(0.001, 0.001, 0.0, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
+
+  controls.update_lateral_demand_profile(demand, v_ego=20.0)
+
+  assert isinstance(controls.LaC.profile, LateralDemandProfile)
+  assert controls.LaC.profile.mode in {
+    "straight_stable", "steady_curve", "turn_in", "turn_exit_recenter",
+    "lane_change", "low_quality_path", "safety_limited", "driver_override",
+  }
+
+
+def test_update_lateral_demand_profile_uses_extension_hook():
+  class FakeExtension:
+    def __init__(self):
+      self.profile = None
+
+    def set_lateral_demand_profile(self, profile):
+      self.profile = profile
+
+  class FakeController:
+    def __init__(self):
+      self.extension = FakeExtension()
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder
+  controls.lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
+  demand = ProcessedLateralDemand(0.001, 0.001, 0.0, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
+
+  controls.update_lateral_demand_profile(demand, v_ego=20.0)
+
+  assert controls.LaC.extension.profile is not None
+
+
+def test_update_lateral_demand_profile_ignores_missing_hook():
+  controls = Controls.__new__(Controls)
+  controls.LaC = object()
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder
+  controls.lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
+  demand = ProcessedLateralDemand(0.001, 0.001, 0.0, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
+
+  controls.update_lateral_demand_profile(demand, v_ego=20.0)
+
+
+def test_update_lateral_demand_profile_classifies_steering_pressed_as_driver_override():
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralMode
+
+  class FakeController:
+    def __init__(self):
+      self.profile = None
+
+    def set_lateral_demand_profile(self, profile):
+      self.profile = profile
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder
+  controls.lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
+  demand = ProcessedLateralDemand(0.001, 0.001, 0.0, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
+
+  controls.update_lateral_demand_profile(demand, v_ego=20.0, steering_pressed=True)
+
+  assert controls.LaC.profile.mode == LateralMode.DRIVER_OVERRIDE.value

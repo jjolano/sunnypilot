@@ -31,6 +31,7 @@ from openpilot.selfdrive.controls.lib.lateral_demand import (
   DEMAND_SOURCE_MODEL_PATH,
   ProcessedLateralDemand,
 )
+from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder
 from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessor, ModelPathProcessorInputs, ModelPathProcessorResult
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
@@ -167,6 +168,7 @@ class Controls(ControlsExt):
       0.0,
       MAX_LATERAL_ACCEL_NO_ROLL,
     )
+    self.lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=DT_CTRL)
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -364,6 +366,23 @@ class Controls(ControlsExt):
     if set_processed_lateral_demand is not None:
       set_processed_lateral_demand(demand)
 
+  def update_lateral_demand_profile(self, demand: ProcessedLateralDemand, v_ego: float, *,
+                                    curvature_limited: bool = False, saturated: bool = False,
+                                    steer_limited_by_safety: bool = False, steering_pressed: bool = False) -> None:
+    profile = self.lateral_demand_profile_builder.update(
+      demand,
+      v_ego,
+      curvature_limited=curvature_limited,
+      saturated=saturated,
+      steer_limited_by_safety=steer_limited_by_safety,
+      steering_pressed=steering_pressed,
+    )
+    set_lateral_demand_profile = getattr(self.LaC, "set_lateral_demand_profile", None)
+    if set_lateral_demand_profile is None and hasattr(self.LaC, "extension"):
+      set_lateral_demand_profile = getattr(self.LaC.extension, "set_lateral_demand_profile", None)
+    if set_lateral_demand_profile is not None:
+      set_lateral_demand_profile(profile)
+
   def state_control(self):
     CS = self.sm['carState']
 
@@ -431,6 +450,13 @@ class Controls(ControlsExt):
                                                        self.calibrated_pose, curvature_limited, lat_delay)
     actuators.torque = float(steer)
     actuators.steeringAngleDeg = float(steeringAngleDeg)
+    self.update_lateral_demand_profile(
+      processed_lateral_demand,
+      CS.vEgo,
+      curvature_limited=curvature_limited,
+      steer_limited_by_safety=bool(self.steering_actuator_feedback.limited),
+      steering_pressed=CS.steeringPressed,
+    )
     self.toyota_eps_high_rate_frames, self.toyota_eps_cut_frames = apply_toyota_eps_high_rate_guard(
       self.CP, CC, CS, self.toyota_eps_high_rate_frames, self.toyota_eps_cut_frames
     )
