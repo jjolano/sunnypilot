@@ -353,15 +353,12 @@ def test_v4_build_target_seam_delegates_to_base():
   )
 
   speed_result = make_speed_result()
+
   # Use fresh controllers per call because _build_target_base mutates
   # self.previous_target_lateral_accel. Each call must start from the
   # same initial state to be comparable.
-  def _v4_pair():
-    a, VM, _CP = get_controller()
-    b, _, _ = get_controller()
-    return a, b, VM
-
-  a, b, _VM = _v4_pair()
+  a, _VM, _CP = get_controller()
+  b, _, _ = get_controller()
   base_target = a._build_target_base(0.001, 20.0, speed_result, False)
   seam_target = b._build_target(0.001, 20.0, speed_result, False)
   assert isinstance(base_target, TorqueV4Target)
@@ -378,6 +375,44 @@ def test_v4_build_target_seam_delegates_to_base():
   assert v5a._build_target(0.001, 20.0, speed_result, False) == v5b._build_target_base(0.001, 20.0, speed_result, False)
   # And the base class is the only place the math lives.
   assert LatControlTorqueV4._build_target_base.__qualname__.endswith("._build_target_base")
+
+
+def test_v5_target_extends_v4_target_with_metadata_fields():
+  """TorqueV5Target must extend TorqueV4Target and expose the
+  profile-aware shaping fields. Defaults match a no-op v5 (every
+  multiplier at identity, every flag off, every boost zero) so the
+  dataclass can be used in parity code paths without changing
+  behavior.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  base = TorqueV4Target(
+    raw_lateral_accel=0.5, target_rate=0.0,
+    delay_lead_lateral_accel=0.5, lead_delta=0.0,
+    lead_gain=0.5, lead_delta_cap=0.5,
+  )
+  v5 = TorqueV5Target(
+    raw_lateral_accel=0.5, target_rate=0.0,
+    delay_lead_lateral_accel=0.5, lead_delta=0.0,
+    lead_gain=0.5, lead_delta_cap=0.5,
+  )
+  # Subclass relationship.
+  assert isinstance(v5, TorqueV4Target)
+  # Default shaping fields are all identity / zero / off.
+  assert v5.base_lead_delta == 0.0
+  assert v5.preview_boost_computed == 0.0
+  assert v5.preview_boost_applied == 0.0
+  assert v5.turn_exit_lead_gain_multiplier == 1.0
+  assert v5.turn_exit_lead_delta_cap_multiplier == 1.0
+  assert v5.turn_exit_early_release is False
+  assert v5.v5_active is False
+  assert v5.v5_reason == ""
+  # A default-constructed v5 target has the same base fields as
+  # a v4 target with zero lead_delta, so it is safe to drop into
+  # the v4 code path.
+  assert v5.raw_lateral_accel == base.raw_lateral_accel
+  assert v5.lead_gain == base.lead_gain
+  assert v5.lead_delta_cap == base.lead_delta_cap
 
 
 def test_v4_uses_no_v2_or_extension_post_core_limiters():

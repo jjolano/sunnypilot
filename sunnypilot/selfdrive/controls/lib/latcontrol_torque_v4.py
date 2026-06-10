@@ -268,6 +268,25 @@ class TorqueV4Target:
 
 
 @dataclass(frozen=True)
+class TorqueV5Target(TorqueV4Target):
+  """v5.0 target with profile-aware shaping fields.
+
+  All shaping fields are computed/applied metadata. They are
+  populated by the v5 _build_target() wrapper in later commits;
+  this commit only adds the dataclass so callers can pass the
+  richer object around without behavior change.
+  """
+  base_lead_delta: float = 0.0
+  preview_boost_computed: float = 0.0
+  preview_boost_applied: float = 0.0
+  turn_exit_lead_gain_multiplier: float = 1.0
+  turn_exit_lead_delta_cap_multiplier: float = 1.0
+  turn_exit_early_release: bool = False
+  v5_active: bool = False
+  v5_reason: str = ""
+
+
+@dataclass(frozen=True)
 class TorqueV4Observation:
   active: bool
   v_ego: float
