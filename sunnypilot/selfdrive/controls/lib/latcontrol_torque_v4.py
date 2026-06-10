@@ -1544,7 +1544,7 @@ class LatControlTorqueV5(LatControlTorqueV41):
   """
   VERSION = 50
   ACTIVE_PROFILE_PREVIEW_LEAD = True
-  ACTIVE_TURN_EXIT_CONTROLLER = False
+  ACTIVE_TURN_EXIT_CONTROLLER = True
   ACTIVE_VEHICLE_BIAS_COMPENSATION = False
   PREVIEW_BOOST_CAP_BP = V5_PREVIEW_BOOST_CAP_BP
   PREVIEW_BOOST_CAP_V = V5_PREVIEW_BOOST_CAP_V
@@ -1635,7 +1635,7 @@ class LatControlTorqueV5(LatControlTorqueV41):
       lane_change_active=bool(getattr(self.processed_lateral_demand, "lane_change_shaping_active", False)),
       steering_pressed=cs_steering_pressed,
       curvature_limited=curvature_limited,
-      saturated=False,
+      saturated=bool(self._previous_saturated),
     )
     return None
 

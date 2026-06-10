@@ -260,17 +260,18 @@ def test_v41_is_current_lateral_torque_version():
 def test_v5_active_delta_flags_have_expected_default_state():
   """Pin the default state of every v5 active-delta flag.
 
-  After commit 7, ACTIVE_PROFILE_PREVIEW_LEAD is True (the first
-  active delta shipping in 5.0). The other two stay off until
-  later commits. Any future flip of these defaults must be
-  paired with a parity + behavior test.
+  After commit 9, both ACTIVE_PROFILE_PREVIEW_LEAD and
+  ACTIVE_TURN_EXIT_CONTROLLER are True (the first two active
+  deltas shipping in 5.0). ACTIVE_VEHICLE_BIAS_COMPENSATION
+  stays off; it's future 5.1 work. Any future flip of these
+  defaults must be paired with a parity + behavior test.
   """
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV5
 
-  # First active delta shipped in 5.0.
+  # Active deltas shipped in 5.0.
   assert LatControlTorqueV5.ACTIVE_PROFILE_PREVIEW_LEAD is True
-  # Other active deltas stay off in initial 5.0.
-  assert LatControlTorqueV5.ACTIVE_TURN_EXIT_CONTROLLER is False
+  assert LatControlTorqueV5.ACTIVE_TURN_EXIT_CONTROLLER is True
+  # Bias compensation stays off in 5.0; it's 5.1 territory.
   assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
 
 
@@ -347,9 +348,9 @@ def test_v5_is_parity_with_v41_when_all_active_flags_off():
 
 def test_v4_build_target_seam_delegates_to_base():
   """The v4 _build_target() entry point must delegate to the
-  _build_target_base() implementation. v5.0 will override
-  _build_target() to add profile shaping without re-implementing
-  the base math.
+  _build_target_base() implementation. v5.0 uses _build_target
+  as the orchestrator that calls _build_target_base and then
+  delegates shaping to _build_v5_target.
   """
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV4,
@@ -374,10 +375,12 @@ def test_v4_build_target_seam_delegates_to_base():
   v41a = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
   v41b = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
   assert v41a._build_target(0.001, 20.0, speed_result, False) == v41b._build_target_base(0.001, 20.0, speed_result, False)
-  # v5 also forwards to the same base (skeleton parity).
-  v5a = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
-  v5b = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
-  assert v5a._build_target(0.001, 20.0, speed_result, False) == v5b._build_target_base(0.001, 20.0, speed_result, False)
+  # v5 with the active flags forced off still forwards to the base.
+  v5_off_a = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5_off_b = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5_off_a.ACTIVE_TURN_EXIT_CONTROLLER = False
+  v5_off_b.ACTIVE_TURN_EXIT_CONTROLLER = False
+  assert v5_off_a._build_target(0.001, 20.0, speed_result, False) == v5_off_b._build_target_base(0.001, 20.0, speed_result, False)
   # And the base class is the only place the math lives.
   assert LatControlTorqueV4._build_target_base.__qualname__.endswith("._build_target_base")
 
@@ -422,23 +425,23 @@ def test_v5_target_extends_v4_target_with_metadata_fields():
 
 
 def test_v5_turn_exit_seam_is_noop_when_active_flag_off():
-  """With ACTIVE_TURN_EXIT_CONTROLLER=False (the skeleton default),
-  the v5 pre-target seam is a no-op. The post-command telemetry
-  path therefore drives the controller exactly once per frame, just
+  """When ACTIVE_TURN_EXIT_CONTROLLER is forced off, the v5
+  pre-target seam is a no-op. The post-command telemetry path
+  therefore drives the controller exactly once per frame, just
   like v4.1. This is the parity guarantee for the seam.
   """
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV5,
   )
 
-  controller, VM, _CP = get_controller()
-  v5, _, _ = (None, None, None), None, None
   CP, CP_SP, CI = get_context()
   v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = False  # Force the gated-off state.
 
   CS = make_car_state(v_ego=20.0, steering_pressed=False)
   demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
   v5.set_processed_lateral_demand(demand)
+  _, VM, _ = get_controller()
 
   # Skeleton seam: pre-target is no-op, decided flag stays False.
   assert v5.ACTIVE_TURN_EXIT_CONTROLLER is False
@@ -881,15 +884,15 @@ def test_v5_preview_boost_not_applied_when_gate_blocks_even_with_flag_on():
 
 
 def test_v5_active_flag_default_is_on_after_first_active_delta():
-  """5.0 ships with ACTIVE_PROFILE_PREVIEW_LEAD on. The flag is no
-  longer False in the parity-only default.
+  """5.0 ships with both ACTIVE_PROFILE_PREVIEW_LEAD and
+  ACTIVE_TURN_EXIT_CONTROLLER on. ACTIVE_VEHICLE_BIAS_COMPENSATION
+  stays off in 5.0 (future 5.1).
   """
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV5,
   )
   assert LatControlTorqueV5.ACTIVE_PROFILE_PREVIEW_LEAD is True
-  # Other active deltas stay off in initial 5.0.
-  assert LatControlTorqueV5.ACTIVE_TURN_EXIT_CONTROLLER is False
+  assert LatControlTorqueV5.ACTIVE_TURN_EXIT_CONTROLLER is True
   assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
 
 
@@ -913,6 +916,304 @@ def test_v5_vehicle_bias_compensation_infrastructure_awaits_route_validation():
   # Hard cap is at least the initial cap; otherwise the cap
   # envelope is meaningless.
   assert V5_VEHICLE_BIAS_HARD_CAP >= V5_VEHICLE_BIAS_INITIAL_CAP
+
+
+def _v5_with_active_turn_exit(decision_kwargs):
+  """Build a v5 with ACTIVE_TURN_EXIT_CONTROLLER=True and a
+  stubbed turn-exit decision. Returns (v5, decision_factory).
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  # ACTIVE_TURN_EXIT_CONTROLLER is True by default in v5.0.
+
+  base_kwargs = dict(
+    mode="turn_in", persistence_frames=4,
+    lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+    slew_boost=1.0, same_direction_slew_boost=1.0,
+    early_release_lead_zero=False, preview_boost=0.0,
+    confidence=0.9,
+  )
+  base_kwargs.update(decision_kwargs)
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(**base_kwargs)
+  v5.turn_exit_controller.update = _decision
+
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  return v5
+
+
+def test_v5_turn_exit_reduces_lead_gain_and_cap():
+  """With ACTIVE_TURN_EXIT_CONTROLLER=True, the v5 build applies
+  the decision's lead_gain_multiplier and lead_delta_cap_multiplier
+  to the lead math.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_active_turn_exit(dict(
+    lead_gain_multiplier=0.5, lead_delta_cap_multiplier=0.5,
+  ))
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.turn_exit_lead_gain_multiplier == 0.5
+  assert target.turn_exit_lead_delta_cap_multiplier == 0.5
+  # v5 halved the base 0.5 lead gain / cap.
+  assert target.lead_gain == pytest.approx(0.25)
+  assert target.lead_delta_cap == pytest.approx(0.25)
+
+
+def test_v5_turn_exit_early_release_zeroes_lead_delta():
+  """When the decision's early_release_lead_zero is True and
+  persistence_frames >= RECENTER_PERSISTENCE_FRAMES, the v5
+  build forces lead_delta to 0 and marks early release.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_active_turn_exit(dict(
+    mode="early_release", persistence_frames=5,
+    lead_gain_multiplier=0.4, lead_delta_cap_multiplier=0.4,
+    early_release_lead_zero=True,
+  ))
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.turn_exit_early_release is True
+  assert target.lead_delta == 0.0
+  # Final delay-lead equals raw target (no lead offset).
+  assert target.delay_lead_lateral_accel == pytest.approx(target.raw_lateral_accel)
+
+
+def test_v5_turn_exit_inactive_matches_v41():
+  """When the turn-exit controller returns an inactive decision,
+  v5 with ACTIVE_TURN_EXIT_CONTROLLER on must still produce
+  4.1-equivalent math (decision multipliers all 1.0,
+  early_release False, no cap reduction).
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV41,
+  )
+
+  v5 = _v5_with_active_turn_exit(dict(
+    mode="inactive", persistence_frames=0,
+    lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+    early_release_lead_zero=False, preview_boost=0.0,
+  ))
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target_v5 = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target_v5, TorqueV5Target)
+  assert target_v5.turn_exit_lead_gain_multiplier == 1.0
+  assert target_v5.turn_exit_lead_delta_cap_multiplier == 1.0
+  assert target_v5.turn_exit_early_release is False
+  # lead_gain / cap unchanged from base.
+  assert target_v5.lead_gain == pytest.approx(speed_result.lead_gain)
+  assert target_v5.lead_delta_cap == pytest.approx(speed_result.lead_delta_cap)
+
+  # Compare against a v4.1 controller with the same input. The
+  # v5 inactive-decision path must match v4.1 lead math.
+  CP, CP_SP, CI = get_context()
+  v41_a = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v41_b = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  base_a = v41_a._build_target_base(0.001, 20.0, speed_result, False, None)
+  base_b = v41_b._build_target(0.001, 20.0, speed_result, False, None)
+  assert base_a == base_b  # v4.1 sanity: base and seam produce the same result.
+  # v5 inactive decision should match the v4.1 lead math.
+  assert target_v5.lead_delta == pytest.approx(base_a.lead_delta)
+  assert target_v5.delay_lead_lateral_accel == pytest.approx(base_a.delay_lead_lateral_accel)
+
+
+def test_v5_turn_exit_blocked_by_saturation():
+  """When the previous frame was saturated, the v5 turn-exit
+  decision must be inactive. The pre-target seam passes
+  saturated=self._previous_saturated to the controller, which
+  suppresses active decisions.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._previous_saturated = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+
+  seen_saturated: list[bool] = []
+  def _capture(**kwargs):
+    seen_saturated.append(bool(kwargs.get("saturated", False)))
+    return TurnExitDecision(
+      mode="turn_in", persistence_frames=4,
+      lead_gain_multiplier=0.5, lead_delta_cap_multiplier=0.5,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.0,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _capture
+  v5._v5_turn_exit_decision(
+    TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5),
+    active=True, CS=None, curvature_limited=False,
+  )
+  assert seen_saturated[-1] is True
+
+
+def test_v5_turn_exit_blocked_by_lane_change():
+  """When lane_change_shaping_active is True on the processed
+  demand, the pre-target seam passes lane_change_active=True to
+  the turn-exit controller, which suppresses the decision.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(
+      processed_curvature=0.0, path_quality=0.9, path_reason="ok",
+      lane_change_shaping_active=True,
+    ),
+  )
+  seen_lane_change: list[bool] = []
+  def _capture(**kwargs):
+    seen_lane_change.append(bool(kwargs.get("lane_change_active", False)))
+    return TurnExitDecision(
+      mode="inactive", persistence_frames=0,
+      lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.0,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _capture
+  v5._v5_turn_exit_decision(
+    TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5),
+    active=True, CS=None, curvature_limited=False,
+  )
+  assert seen_lane_change[-1] is True
+
+
+def test_v5_turn_exit_blocked_by_steering_pressed():
+  """When the driver is pressing the steering wheel, the pre-target
+  seam passes steering_pressed=True to the turn-exit controller,
+  which suppresses the decision.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  seen_steering_pressed: list[bool] = []
+  def _capture(**kwargs):
+    seen_steering_pressed.append(bool(kwargs.get("steering_pressed", False)))
+    return TurnExitDecision(
+      mode="inactive", persistence_frames=0,
+      lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.0,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _capture
+  cs = make_car_state(v_ego=20.0, steering_pressed=True)
+  v5._v5_turn_exit_decision(
+    TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5),
+    active=True, CS=cs, curvature_limited=False,
+  )
+  assert seen_steering_pressed[-1] is True
+
+
+def test_v5_turn_exit_final_lead_delta_still_capped():
+  """Even with the decision's lead_delta_cap_multiplier applied,
+  the final lead_delta must be re-clipped to the scaled cap. A
+  decision that asks for a huge preview boost cannot blow past
+  the cap.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  v5.turn_exit_controller.update = lambda **_: type("D", (), {
+    "mode": "turn_in", "persistence_frames": 4,
+    "lead_gain_multiplier": 0.5, "lead_delta_cap_multiplier": 0.5,
+    "slew_boost": 1.0, "same_direction_slew_boost": 1.0,
+    "early_release_lead_zero": False, "preview_boost": 0.0,
+    "confidence": 0.9,
+  })()
+  v5.ACTIVE_PROFILE_PREVIEW_LEAD = False  # Disable preview for cap check.
+
+  # Build a target with a large target_rate so the cap actually
+  # engages.
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.1, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.01, 20.0, speed_result, False, curvature_limited=False)
+  assert isinstance(target, TorqueV5Target)
+  # Final lead delta is bounded by the scaled cap.
+  assert abs(target.lead_delta) <= target.lead_delta_cap + 1e-9
 
 
 def test_v4_recenter_mode_uses_previous_saturation_gate():
