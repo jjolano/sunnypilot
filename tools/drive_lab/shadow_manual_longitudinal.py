@@ -233,7 +233,7 @@ def extract_shadow_samples(route: str, read_mode: ReadMode, options: ShadowRepla
     if typ != "modelV2" or not shadow_inputs_ready(latest_shadow):
       continue
     if car_params is None or car_params_sp is None:
-      raise ShadowReplayError(f"{route}: missing carParams/carParamsSP before modelV2; cannot instantiate planner")
+      continue
     add_optional_defaults(latest_shadow, latest_mono_time, mono_time)
     if planner is None:
       factory = planner_factory or default_planner_factory
