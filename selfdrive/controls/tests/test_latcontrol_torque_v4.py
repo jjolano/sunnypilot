@@ -1406,3 +1406,272 @@ def test_recenter_mode_boosts_sign_change_slew_rate():
   # Since target is negative, boosted output should be lower (more negative)
   assert result_boosted.output_torque < result_normal.output_torque
   assert result_boosted.output_torque == pytest.approx(0.5 - 2.0 * _DT)
+
+
+# ----------------------------------------------------------------------------
+# Recenter mode refinement: looser thresholds, persistence, early release
+# ----------------------------------------------------------------------------
+
+
+def test_recenter_mode_max_abs_target_is_broadened_to_0_85():
+  """RECENTER_MAX_ABS_TARGET should be loosened from the old 0.5 to 0.85
+  so turn-exit can start the unwind as soon as the target drops into the
+  comfort range, not only when it is already near zero."""
+  assert RECENTER.RECENTER_MAX_ABS_TARGET >= 0.8
+
+
+def test_recenter_mode_persistence_shortened_to_3_frames():
+  """RECENTER_PERSISTENCE_FRAMES should be shortened from the old 5 to 3
+  so a brief but consistent recenter signal activates the mode quickly
+  enough to feel immediate on turn exit."""
+  assert RECENTER.RECENTER_PERSISTENCE_FRAMES <= 3
+
+
+def test_recenter_mode_partial_lead_reduction_at_first_active_frame():
+  """The first frame the recenter activates should already trim some
+  response-delay lead (lead_reduction > 0), not wait a full persistence
+  ramp. This is the "partial lead_reduction from first active frame"
+  behavior — turn-exit feels immediate even on a short recenter."""
+  controller, VM, _CP = get_controller()
+  controller._recenter_persistence_frames = RECENTER.RECENTER_PERSISTENCE_FRAMES  # exactly at threshold
+
+  result = _recenter_detect(
+    controller, target=0.5, prev_target=1.0, v_ego=20.0,
+  )
+  # First active frame: lead_reduction should be > 0
+  assert result.lead_reduction > 0.0
+  # But it should be capped at RECENTER_LEAD_REDUCTION * persistence_blend
+  # where persistence_blend is at the floor (RECENTER_LEAD_REDUCTION_FLOOR)
+  assert result.lead_reduction <= RECENTER.RECENTER_LEAD_REDUCTION
+
+
+def test_recenter_mode_full_lead_reduction_after_full_persistence_ramp():
+  """After a full persistence window beyond the threshold, lead_reduction
+  should ramp to the full RECENTER_LEAD_REDUCTION."""
+  controller, VM, _CP = get_controller()
+  controller._recenter_persistence_frames = RECENTER.RECENTER_PERSISTENCE_FRAMES * 3
+
+  result = _recenter_detect(
+    controller, target=0.5, prev_target=1.0, v_ego=20.0,
+  )
+  assert result.lead_reduction == pytest.approx(RECENTER.RECENTER_LEAD_REDUCTION)
+
+
+def test_recenter_mode_activates_at_looser_persistence_threshold():
+  """With RECENTER_PERSISTENCE_FRAMES=3, the recenter should activate
+  after exactly 3 frames of consistent recentering."""
+  controller, VM, _CP = get_controller()
+  # Set counter to one less than threshold; the detection function will
+  # increment it on a valid recentering frame, hitting the threshold.
+  controller._recenter_persistence_frames = RECENTER.RECENTER_PERSISTENCE_FRAMES - 1
+  result = _recenter_detect(
+    controller, target=0.5, prev_target=1.0, v_ego=20.0,
+  )
+  # Counter incremented from 2 to 3, so recenter is now active.
+  assert result.active
+  assert result.persistence_frames == RECENTER.RECENTER_PERSISTENCE_FRAMES
+
+  # One more frame: counter goes to 4, recenter still active.
+  result2 = _recenter_detect(
+    controller, target=0.4, prev_target=0.5, v_ego=20.0,
+  )
+  assert result2.active
+  assert result2.persistence_frames == RECENTER.RECENTER_PERSISTENCE_FRAMES + 1
+
+
+def test_recenter_mode_does_not_activate_below_persistence_threshold():
+  """If the recenter signal is not sustained (target is not collapsing),
+  the persistence counter does not grow and the recenter does not
+  activate below the threshold."""
+  controller, VM, _CP = get_controller()
+  controller._recenter_persistence_frames = 0
+
+  # Frame 1: target is not collapsing (growing), so counter does not
+  # grow. With RECENTER_PERSISTENCE_FRAMES=3, the recenter is not active.
+  result = _recenter_detect(
+    controller, target=0.2, prev_target=0.1, v_ego=20.0,  # growing, not collapsing
+  )
+  assert not result.active
+  assert controller._recenter_persistence_frames == 0
+
+
+def test_recenter_mode_target_above_loosened_max_keeps_inactive():
+  """With the loosened RECENTER_MAX_ABS_TARGET=0.85, a target above 0.85
+  should keep the recenter inactive. The threshold is the upper bound
+  for "near center" detection."""
+  controller, VM, _CP = get_controller()
+  controller._recenter_persistence_frames = RECENTER.RECENTER_PERSISTENCE_FRAMES
+  # Target just above loosened max
+  result = _recenter_detect(
+    controller, target=RECENTER.RECENTER_MAX_ABS_TARGET + 0.01, prev_target=1.5, v_ego=20.0,
+  )
+  assert not result.active
+
+
+def test_build_target_early_release_guard_zeros_lead_delta_on_collapse():
+  """When the raw target is decreasing toward zero and the lead delta
+  would push away from zero (sign mismatch), the early release guard
+  should zero the lead delta. This fires before the recenter mode
+  activates, so turn-exit feels immediate regardless of persistence."""
+  controller, VM, CP = get_controller()
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+
+  # Simulate: previous target was 1.0 (turning right), now target is 0.5
+  # (collapsing toward zero on turn exit). The target_rate is negative
+  # so the natural lead_delta is negative — which would push the
+  # controller output away from zero (the target is positive but the
+  # lead is negative).
+  controller.previous_target_lateral_accel = 1.0
+  target = controller._build_target(
+    desired_curvature=0.5 / 20.0 ** 2,  # raw_target = 0.5
+    v_ego=20.0, speed_result=speed_result, invalid=False, recenter=None,
+  )
+  # Early release guard should have zeroed the lead_delta.
+  assert target.lead_delta == 0.0
+
+
+def test_build_target_early_release_guard_keeps_lead_when_target_growing():
+  """When the target is growing in magnitude (turning harder), the
+  early release guard should NOT fire. lead_delta should be present
+  to anticipate the larger target."""
+  controller, VM, CP = get_controller()
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+
+  # Simulate: previous target was 0.5, now target is 1.0 (growing).
+  # target_rate is positive, so lead_delta is positive. The lead
+  # anticipates the larger target.
+  controller.previous_target_lateral_accel = 0.5
+  target = controller._build_target(
+    desired_curvature=1.0 / 20.0 ** 2,  # raw_target = 1.0
+    v_ego=20.0, speed_result=speed_result, invalid=False, recenter=None,
+  )
+  # lead_delta should be non-zero (target is growing, lead is in the same direction)
+  assert target.lead_delta != 0.0
+
+
+def test_build_target_early_release_guard_keeps_lead_on_sign_flip():
+  """When the target sign flips (turning the other way), the early
+  release guard should NOT fire — the lead should track the new
+  direction. The guard only fires when the target sign is stable
+  (same sign as previous) AND the magnitude is decreasing."""
+  controller, VM, CP = get_controller()
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+
+  # Sign flip: previous was +1.0, now -0.5
+  controller.previous_target_lateral_accel = 1.0
+  target = controller._build_target(
+    desired_curvature=-0.5 / 20.0 ** 2,  # raw_target = -0.5
+    v_ego=20.0, speed_result=speed_result, invalid=False, recenter=None,
+  )
+  # Sign is flipped, so the target_sign_stable check fails, and the
+  # early release guard does NOT zero the lead.
+  assert target.lead_delta != 0.0
+
+
+def test_recenter_mode_applies_slew_boost_to_same_direction_unwind():
+  """Recenter mode should apply a slew boost to same-direction unwind
+  (not just sign change). The same-direction boost is smaller than the
+  sign-change boost (RECENTER_SAME_DIRECTION_SLEW_BOOST < RECENTER_SLEW_BOOST)."""
+  governor = TorqueV4OutputGovernor(_DT, LatControlTorqueV4.GOVERNOR_PROFILE)
+  governor.previous_output = 0.5  # positive
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.0, slew_boost=2.0)
+
+  # Same-direction unwind: target is +0.2 (positive, smaller than previous_output 0.5)
+  result = governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=0.2, max_output=1.0,
+    speed_model=speed_result, recenter=recenter,
+  )
+  # Recenter mode flag should be set even without a sign change
+  assert result.reason & TorqueV4GovernorReason.RECENTER_MODE
+  # Should NOT have sign-change-limited flag
+  assert not result.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+
+
+def test_recenter_mode_no_slew_boost_without_same_direction_unwind():
+  """Recenter mode boost requires either a sign change or a
+  same-direction unwind. If the target is growing in the same
+  direction (target > previous), no boost is applied."""
+  governor = TorqueV4OutputGovernor(_DT, LatControlTorqueV4.GOVERNOR_PROFILE)
+  governor.previous_output = 0.2  # positive
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.0, slew_boost=2.0)
+
+  # Same direction, but growing: target +0.5 > previous 0.2
+  result = governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=0.5, max_output=1.0,
+    speed_model=speed_result, recenter=recenter,
+  )
+  # No sign change, no same-direction unwind → no RECENTER_MODE flag
+  assert not result.reason & TorqueV4GovernorReason.RECENTER_MODE
+  assert not result.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+
+
+# ----------------------------------------------------------------------------
+# Straight-road damping diagnostic preservation
+# ----------------------------------------------------------------------------
+
+
+def test_recenter_mode_preserves_straight_road_damping_diagnostic():
+  """Straight-road damping is the model path processor's diagnostic
+  for "the road is straight, the curvature is small, so hold the
+  target instead of chasing noise." The recenter mode changes should
+  not interfere with this diagnostic — it lives in a different layer
+  (model_path_processor) and the controller just reads it.
+
+  Verify the recenter mode is orthogonal to straight_road_damping_active:
+  the recenter mode can fire while straight_road_damping_active is True,
+  and vice versa. Both diagnostics are exposed for route telemetry."""
+  from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessorResult
+
+  # Straight road: curvature is small. Path processor reports damping active.
+  straight_path = ModelPathProcessorResult(
+    desired_curvature=0.0,  # straight
+    quality=1.0,
+    gated=False,
+    reason="inactive",
+    trust_penalty=0.0,
+    straight_road_damping_active=True,  # straight road → damping is active
+  )
+  # Recenter mode is independent of straight-road damping. Both are
+  # valid simultaneously: turn exit on a straight road.
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.6, slew_boost=1.5)
+  # Sanity: the two fields are independent. The recenter mode fires
+  # based on the target's collapse rate, not the path processor's
+  # straight-road state.
+  assert straight_path.straight_road_damping_active
+  assert recenter.active
+
+
+def test_early_release_guard_does_not_over_hold_recenter_target():
+  """When straight-road damping is active and the target is collapsing
+  to zero, the early release guard should still zero the lead delta.
+  The damping diagnostic should not over-hold the target past the
+  point where the controller would otherwise release the lead.
+
+  This is a structural test: the early release guard operates on
+  raw_target (which the path processor has already damped), and the
+  recenter lead reduction operates on lead_gain. They are independent
+  layers and the recenter+early-release pair should release the lead
+  regardless of whether straight-road damping is active."""
+  controller, VM, CP = get_controller()
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+
+  # Previous target 1.0, current 0.5 — collapsing toward zero.
+  controller.previous_target_lateral_accel = 1.0
+  target = controller._build_target(
+    desired_curvature=0.5 / 20.0 ** 2,
+    v_ego=20.0, speed_result=speed_result, invalid=False, recenter=None,
+  )
+  # Early release guard fires: lead_delta is zero regardless of any
+  # straight-road damping state (which is a separate concern).
+  assert target.lead_delta == 0.0

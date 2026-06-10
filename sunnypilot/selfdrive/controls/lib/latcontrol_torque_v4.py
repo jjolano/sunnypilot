@@ -87,13 +87,27 @@ UNDER_RESPONSE_LOW_SPEED_ALLOWED_PATH_REASONS = frozenset((LEARN_PATH_REASON_OK,
 SPEED_BUCKET_CENTERS = [5.0, 15.0, 25.0, 35.0, 45.0]
 
 # Recenter mode: faster torque unwind and relaxed sign-change when target collapses toward zero.
+# Broader recenter: target can be larger and persistence is shorter so the
+# turn-exit feel matches v2.1's "on rails" unwind without globally
+# increasing aggression or causing straight-road hunting. The early
+# release guard in _build_target fires even before recenter mode
+# activates, so turn-exit feels immediate regardless of these bounds.
 RECENTER_MIN_SPEED = 10.0  # m/s — only activate above this speed
 RECENTER_TARGET_COLLAPSE_RATE = 0.3  # m/s² per frame — target must be decreasing faster than this
-RECENTER_MAX_ABS_TARGET = 0.5  # m/s² — target must be small enough to be "near center"
+RECENTER_MAX_ABS_TARGET = 0.85  # m/s² — target must be small enough to be "near center" (loosened from 0.5)
 RECENTER_MIN_PATH_QUALITY = 0.5  # — path quality must be reasonable
-RECENTER_PERSISTENCE_FRAMES = 5  # — must be recentering for this many consecutive frames
+RECENTER_PERSISTENCE_FRAMES = 3  # — must be recentering for this many consecutive frames (loosened from 5)
 RECENTER_LEAD_REDUCTION = 0.6  # — reduce response-delay lead by this fraction when recentering
 RECENTER_SLEW_BOOST = 1.5  # — multiply sign-change slew rate by this when recentering
+# Recenter lead_reduction has a non-zero floor so the very first frame
+# the recenter activates already trims some response-delay lead, instead
+# of waiting a full persistence window. This makes turn-exit feel
+# immediate even on a single "collapse" frame.
+RECENTER_LEAD_REDUCTION_FLOOR = 0.3
+# Recenter slew boost floor for same-direction unwind. Smaller than
+# RECENTER_SLEW_BOOST because same-direction unwind doesn't need the
+# full sign-change boost; we just want a bit more headroom.
+RECENTER_SAME_DIRECTION_SLEW_BOOST = 1.2
 
 
 class TorqueV4LearnerRejectReason(IntFlag):
@@ -560,13 +574,22 @@ class TorqueV4OutputGovernor:
     previous_sign = _sign(self.previous_output, 1e-4)
     target_sign = _sign(clipped, 1e-4)
     sign_change = previous_sign != 0 and target_sign != 0 and previous_sign != target_sign
+    target_decreases_same_direction = previous_sign != 0 and target_sign == previous_sign and abs(clipped) <= abs(self.previous_output)
     slew_rate = speed_model.sign_change_slew_rate if sign_change else speed_model.output_slew_rate
     if sign_change:
       reason |= TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
-      # Apply recenter slew boost: allow faster sign changes when recentering
-      if recenter is not None and recenter.active:
+    if recenter is not None and recenter.active and (sign_change or target_decreases_same_direction):
+      # Apply recenter slew boost: allow faster unwind (sign-change or
+      # same-direction unwind) when recentering. The same-direction
+      # path uses a smaller boost (RECENTER_SAME_DIRECTION_SLEW_BOOST)
+      # because we just want a bit more headroom, not the full
+      # sign-change boost. This is the "apply recenter boost to
+      # same-direction unwind too" change.
+      if sign_change:
         slew_rate *= recenter.slew_boost
-        reason |= TorqueV4GovernorReason.RECENTER_MODE
+      else:
+        slew_rate *= RECENTER_SAME_DIRECTION_SLEW_BOOST
+      reason |= TorqueV4GovernorReason.RECENTER_MODE
     if high_rate_blend > 0.0:
       slew_rate *= self.profile.high_rate_slew_scale
     if same_direction_limit and not steer_limit_unwind:
@@ -582,7 +605,6 @@ class TorqueV4OutputGovernor:
     if stale_actuator_mismatch:
       slew_rate = min(slew_rate, STALE_ACTUATOR_CAP)
 
-    target_decreases_same_direction = previous_sign != 0 and target_sign == previous_sign and abs(clipped) <= abs(self.previous_output)
     output = clipped if self.profile.same_direction_decrease_bypass and target_decreases_same_direction else \
       _approach(self.previous_output, clipped, slew_rate * self.dt)
     if abs(output - clipped) > 1e-6:
@@ -748,8 +770,15 @@ class LatControlTorqueV4(LatControl):
 
     # Only activate after persistence threshold
     if self._recenter_persistence_frames >= RECENTER_PERSISTENCE_FRAMES:
-      # Blend in the recenter effect based on how persistent the recentering is
-      persistence_blend = min(1.0, (self._recenter_persistence_frames - RECENTER_PERSISTENCE_FRAMES) / RECENTER_PERSISTENCE_FRAMES)
+      # Blend in the recenter effect based on how persistent the recentering is.
+      # The blend starts at RECENTER_LEAD_REDUCTION_FLOOR (non-zero) so the
+      # first active frame already trims some response-delay lead, instead
+      # of waiting the full RECENTER_PERSISTENCE_FRAMES ramp. This is the
+      # "partial lead_reduction from first active frame" behavior: the
+      # turn-exit feel is immediate even on a short recenter.
+      ramp = (self._recenter_persistence_frames - RECENTER_PERSISTENCE_FRAMES) / RECENTER_PERSISTENCE_FRAMES
+      ramp_blend = max(0.0, min(1.0, float(ramp)))
+      persistence_blend = RECENTER_LEAD_REDUCTION_FLOOR + (1.0 - RECENTER_LEAD_REDUCTION_FLOOR) * ramp_blend
       return TorqueV4RecenterMode(
         active=True,
         persistence_frames=self._recenter_persistence_frames,
@@ -922,15 +951,43 @@ class LatControlTorqueV4(LatControl):
                     invalid: bool, recenter: TorqueV4RecenterMode | None = None) -> TorqueV4Target:
     raw_target = 0.0 if invalid else desired_curvature * v_ego ** 2
     target_rate = 0.0 if invalid else (raw_target - self.previous_target_lateral_accel) / self.dt
+    previous_target = self.previous_target_lateral_accel
     self.previous_target_lateral_accel = raw_target
     lead_gain = speed_result.lead_gain
     lead_delta_cap = speed_result.lead_delta_cap
+    # Early release guard: when the target is collapsing toward zero and
+    # the lead delta would push the controller output away from zero,
+    # zero the lead delta. This fires before abs(target) < RECENTER_MAX_ABS_TARGET
+    # so turn exit feels immediate, not just near the center threshold.
+    # Conditions:
+    # - raw target is decreasing in magnitude (|raw_target| < |previous|)
+    # - lead delta would push away from zero (sign(lead_delta) != sign(raw_target))
+    # - target sign is stable (sign(raw_target) == sign(previous), or both zero)
+    target_decreasing_to_zero = abs(raw_target) < abs(previous_target)
+    target_sign_stable = (raw_target == 0.0 and previous_target == 0.0) or (
+      raw_target != 0.0 and previous_target != 0.0 and
+      (raw_target > 0.0) == (previous_target > 0.0)
+    )
     # Reduce lead when recentering — the target is collapsing toward zero, so lead overshoots
     if recenter is not None and recenter.active:
       lead_gain *= (1.0 - recenter.lead_reduction)
       lead_delta_cap *= (1.0 - recenter.lead_reduction)
     lead_delta = _clip(target_rate * speed_result.response_delay * lead_gain,
                        -lead_delta_cap, lead_delta_cap)
+    if (
+      target_decreasing_to_zero
+      and target_sign_stable
+      and raw_target != 0.0
+      and lead_delta != 0.0
+      and (lead_delta > 0.0) != (raw_target > 0.0)
+    ):
+      # Early release guard: zero the lead delta so the response-delay
+      # overshoot doesn't pull the controller output away from zero
+      # when the target is collapsing. This complements the recenter
+      # lead reduction (which only fires after RECENTER_PERSISTENCE_FRAMES)
+      # by making turn-exit feel immediate on the very first frame the
+      # target starts collapsing.
+      lead_delta = 0.0
     return TorqueV4Target(raw_target, target_rate, raw_target + lead_delta, lead_delta,
                           lead_gain, lead_delta_cap)
 
