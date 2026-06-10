@@ -257,14 +257,19 @@ def test_v41_is_current_lateral_torque_version():
   assert module.LatControlTorque is LatControlTorqueV4
 
 
-def test_v5_active_delta_flags_are_off_by_default():
-  """Initial 5.0 skeleton has every active delta gated off. Each
-  future commit will flip one of these flags and add the gate and
-  tests for it. Until then, v5 is bit-equivalent to v4.1.
+def test_v5_active_delta_flags_have_expected_default_state():
+  """Pin the default state of every v5 active-delta flag.
+
+  After commit 7, ACTIVE_PROFILE_PREVIEW_LEAD is True (the first
+  active delta shipping in 5.0). The other two stay off until
+  later commits. Any future flip of these defaults must be
+  paired with a parity + behavior test.
   """
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV5
 
-  assert LatControlTorqueV5.ACTIVE_PROFILE_PREVIEW_LEAD is False
+  # First active delta shipped in 5.0.
+  assert LatControlTorqueV5.ACTIVE_PROFILE_PREVIEW_LEAD is True
+  # Other active deltas stay off in initial 5.0.
   assert LatControlTorqueV5.ACTIVE_TURN_EXIT_CONTROLLER is False
   assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
 
@@ -682,10 +687,10 @@ def _v5_with_clean_preview_setup(preview_boost=0.07):
 
 
 def test_v5_preview_boost_is_computed_but_not_applied_when_flag_off():
-  """Commit 6 invariant: ACTIVE_PROFILE_PREVIEW_LEAD is False in the
-  skeleton, so preview_boost_applied is always 0. preview_boost_computed
-  must still surface the gated/capped value so telemetry can show
-  the gate outcome.
+  """When ACTIVE_PROFILE_PREVIEW_LEAD is False, the preview boost
+  is computed (so telemetry can show the gate outcome and the
+  capped value) but never applied. preview_boost_applied is 0 in
+  this mode.
   """
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV5,
@@ -693,7 +698,10 @@ def test_v5_preview_boost_is_computed_but_not_applied_when_flag_off():
   )
 
   v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
-  assert v5.ACTIVE_PROFILE_PREVIEW_LEAD is False
+  # Force the gated-off state explicitly. The v5 class default is
+  # True after commit 7, so this test still covers the gated-off
+  # path.
+  v5.ACTIVE_PROFILE_PREVIEW_LEAD = False
 
   speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
   v5.previous_target_lateral_accel = 0.0
@@ -704,6 +712,10 @@ def test_v5_preview_boost_is_computed_but_not_applied_when_flag_off():
   assert target.preview_boost_computed != 0.0
   assert target.preview_boost_applied == 0.0
   assert target.preview_reason == "allowed"
+  # v5_active still True because the v5 build target ran, but
+  # the reason notes that no preview boost was applied.
+  assert target.v5_active is True
+  assert "preview_boost_applied" not in target.v5_reason
 
 
 def test_v5_preview_boost_gate_blocks_low_speed():
@@ -778,8 +790,8 @@ def test_v5_preview_boost_gate_blocks_wobble():
 def test_v5_preview_boost_cap_enforced_on_computed_value():
   """The cap is enforced on preview_boost_computed (not just on
   the applied value) so telemetry reflects the bounded value
-  even when the flag is off. At 20 m/s the cap is 0.08; a raw
-  boost of 0.5 must clip to 0.08.
+  even when the flag is off. At 20 m/s the cap is 0.12; a raw
+  boost of 0.5 must clip to 0.12.
   """
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV5,
@@ -787,7 +799,8 @@ def test_v5_preview_boost_cap_enforced_on_computed_value():
   )
 
   v5 = _v5_with_clean_preview_setup(preview_boost=0.5)
-  # Cap at 20 m/s is 0.08 per V5_PREVIEW_BOOST_CAP_V[2].
+  v5.ACTIVE_PROFILE_PREVIEW_LEAD = False
+  # Cap at 20 m/s is 0.12 per V5_PREVIEW_BOOST_CAP_V[2].
   assert v5.PREVIEW_BOOST_CAP_BP[2] == 20.0
   assert v5.PREVIEW_BOOST_CAP_V[2] == pytest.approx(0.12)
 
@@ -799,6 +812,73 @@ def test_v5_preview_boost_cap_enforced_on_computed_value():
   assert target.preview_boost_computed == pytest.approx(0.12, abs=1e-9)
   assert target.preview_boost_applied == 0.0
   assert target.preview_reason == "allowed"
+
+
+def test_v5_preview_boost_is_applied_when_flag_on_and_gates_clean():
+  """The first real 5.0 behavior delta: a clean turn-in profile
+  with preview_boost > 0 increases the lead delta by the gated,
+  capped boost. preview_boost_applied equals preview_boost_computed
+  and the v5_reason marks the application.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.05)
+  # v5 default now flips the active flag on.
+  assert v5.ACTIVE_PROFILE_PREVIEW_LEAD is True
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_boost_computed == pytest.approx(0.05, abs=1e-9)
+  assert target.preview_boost_applied == pytest.approx(0.05, abs=1e-9)
+  assert target.preview_reason == "allowed"
+  assert target.v5_active is True
+  assert "preview_boost_applied" in target.v5_reason
+  # The lead delta is shifted by the applied boost, but re-clipped
+  # to the scaled cap so the total lead delta stays bounded.
+  assert abs(target.lead_delta) <= target.lead_delta_cap + 1e-9
+
+
+def test_v5_preview_boost_not_applied_when_gate_blocks_even_with_flag_on():
+  """With ACTIVE_PROFILE_PREVIEW_LEAD on, a gate failure still
+  forces preview_boost_applied to 0. Only clean gates see the
+  boost land.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.05)
+  assert v5.ACTIVE_PROFILE_PREVIEW_LEAD is True
+  # Force a low_speed gate failure.
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 4.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_boost_computed == 0.0
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "low_speed"
+  assert "preview_boost_applied" not in target.v5_reason
+
+
+def test_v5_active_flag_default_is_on_after_first_active_delta():
+  """5.0 ships with ACTIVE_PROFILE_PREVIEW_LEAD on. The flag is no
+  longer False in the parity-only default.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+  assert LatControlTorqueV5.ACTIVE_PROFILE_PREVIEW_LEAD is True
+  # Other active deltas stay off in initial 5.0.
+  assert LatControlTorqueV5.ACTIVE_TURN_EXIT_CONTROLLER is False
+  assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
 
 
 def test_v4_uses_no_v2_or_extension_post_core_limiters():
