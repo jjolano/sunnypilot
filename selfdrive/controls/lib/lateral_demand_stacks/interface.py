@@ -10,17 +10,30 @@ class LateralDemandStackInputs:
   lat_active: bool
   v_ego: float
   desired_curvature: float
+  measured_curvature: float
   model_v2: object
   live_params: object
   curvature_limited: bool
+  accurate_lateral_accel: bool
   manual_gas_lateral_accel_override: bool
   lateral_maneuver_curvature: float | None
   roll: float
   lateral_accel_limit_no_roll: float
   default_lateral_accel_limited: bool
   lane_change_state: int
+  lane_change_direction: int
   turn_direction: int
+  model_data_v2_sp_valid: bool
   lane_centering_assist_enabled: bool
+  gas_pressed: bool
+  brake_pressed: bool
+  steering_pressed: bool
+  left_blinker: bool
+  right_blinker: bool
+  left_lane_y0: float | None
+  right_lane_y0: float | None
+  frame_drop_perc: float
+  smoothed_model_path_curvature: bool
   position_x: Sequence[float] = ()
   position_y: Sequence[float] = ()
   position_y_std: Sequence[float] = ()
