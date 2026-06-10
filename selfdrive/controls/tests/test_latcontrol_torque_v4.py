@@ -402,6 +402,7 @@ def test_v5_target_extends_v4_target_with_metadata_fields():
   assert v5.base_lead_delta == 0.0
   assert v5.preview_boost_computed == 0.0
   assert v5.preview_boost_applied == 0.0
+  assert v5.preview_reason == ""
   assert v5.turn_exit_lead_gain_multiplier == 1.0
   assert v5.turn_exit_lead_delta_cap_multiplier == 1.0
   assert v5.turn_exit_early_release is False
@@ -633,6 +634,171 @@ def test_v5_build_target_early_release_requires_persistence_guard():
   assert target.turn_exit_early_release is False
   # lead_delta is whatever the scaled gain produces, not 0.
   assert target.lead_delta != 0.0
+
+
+def _v5_with_clean_preview_setup(preview_boost=0.07):
+  """Build a v5 controller with the active flag on, a stubbed
+  turn-exit decision that returns the requested preview boost,
+  and a clean LateralDemandProfile / processed_demand. Returns
+  (v5, decision_factory).
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(
+      mode="turn_in", persistence_frames=4,
+      lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=preview_boost,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _decision
+
+  profile = LateralDemandProfile(
+    raw_curvature=0.0, processed_curvature=0.0,
+    curvature_limited=False, path_quality=0.9, path_reason="ok",
+    lane_change_shaping_active=False, lane_change_blend=0.0,
+    demand_source="model_path", mode=LateralMode.TURN_IN.value,
+    mode_confidence=0.9,
+  )
+  v5.set_lateral_demand_profile(profile)
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(processed_curvature=0.0, path_quality=0.9, path_reason="ok"),
+  )
+  return v5
+
+
+def test_v5_preview_boost_is_computed_but_not_applied_when_flag_off():
+  """Commit 6 invariant: ACTIVE_PROFILE_PREVIEW_LEAD is False in the
+  skeleton, so preview_boost_applied is always 0. preview_boost_computed
+  must still surface the gated/capped value so telemetry can show
+  the gate outcome.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  assert v5.ACTIVE_PROFILE_PREVIEW_LEAD is False
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  # Computed is non-zero (gates are clean, boost is small).
+  assert target.preview_boost_computed != 0.0
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "allowed"
+
+
+def test_v5_preview_boost_gate_blocks_low_speed():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 4.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_boost_computed == 0.0
+  assert target.preview_reason == "low_speed"
+
+
+def test_v5_preview_boost_gate_blocks_curvature_limited():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=True)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_reason == "curvature_limited"
+
+
+def test_v5_preview_boost_gate_blocks_steering_pressed():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  cs = make_car_state(v_ego=20.0, steering_pressed=True)
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False, cs=cs)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_reason == "steering_pressed"
+
+
+def test_v5_preview_boost_gate_blocks_lane_change():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(
+      processed_curvature=0.0, path_quality=0.9, path_reason="ok",
+      lane_change_shaping_active=True,
+    ),
+  )
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_reason == "lane_change_active"
+
+
+def test_v5_preview_boost_gate_blocks_wobble():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  v5._wobble_active = True
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_reason == "wobble_active"
+
+
+def test_v5_preview_boost_cap_enforced_on_computed_value():
+  """The cap is enforced on preview_boost_computed (not just on
+  the applied value) so telemetry reflects the bounded value
+  even when the flag is off. At 20 m/s the cap is 0.08; a raw
+  boost of 0.5 must clip to 0.08.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.5)
+  # Cap at 20 m/s is 0.08 per V5_PREVIEW_BOOST_CAP_V[2].
+  assert v5.PREVIEW_BOOST_CAP_BP[2] == 20.0
+  assert v5.PREVIEW_BOOST_CAP_V[2] == pytest.approx(0.12)
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_boost_computed == pytest.approx(0.12, abs=1e-9)
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "allowed"
 
 
 def test_v4_uses_no_v2_or_extension_post_core_limiters():

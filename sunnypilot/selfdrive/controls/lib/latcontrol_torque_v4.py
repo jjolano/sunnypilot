@@ -280,6 +280,7 @@ class TorqueV5Target(TorqueV4Target):
   base_lead_delta: float = 0.0
   preview_boost_computed: float = 0.0
   preview_boost_applied: float = 0.0
+  preview_reason: str = ""
   turn_exit_lead_gain_multiplier: float = 1.0
   turn_exit_lead_delta_cap_multiplier: float = 1.0
   turn_exit_early_release: bool = False
@@ -1494,10 +1495,10 @@ class LatControlTorqueV5(LatControlTorqueV41):
     Runs the pre-target turn-exit seam before delegating to the
     base. When ACTIVE_TURN_EXIT_CONTROLLER is True and the seam
     fires, the cached decision becomes source of truth for lead
-    gain, lead delta cap, and the early-release guard. The
-    resulting target is a TorqueV5Target that carries the
-    v5 metadata fields so downstream code can see exactly which
-    shaping the v5 path applied.
+    gain, lead delta cap, the early-release guard, and the
+    computed preview boost. The result is a TorqueV5Target that
+    carries the v5 metadata fields so downstream code can see
+    exactly which shaping the v5 path applied.
 
     When ACTIVE_TURN_EXIT_CONTROLLER is False (the parity-only
     default), the wrapper is a thin pass-through and the
@@ -1531,6 +1532,23 @@ class LatControlTorqueV5(LatControlTorqueV41):
     )
     if early_release_active:
       lead_delta = 0.0
+
+    # Preview boost. Computed every frame so telemetry can show
+    # the gate reason and the capped value. Applied only when
+    # ACTIVE_PROFILE_PREVIEW_LEAD is True (commit 7). In commit 6
+    # the flag is off so preview_boost_applied is always 0.
+    preview_boost_computed, preview_reason = self._v5_compute_preview_boost(
+      decision, v_ego=v_ego, curvature_limited=curvature_limited, cs=cs,
+    )
+    preview_boost_applied = (
+      preview_boost_computed
+      if (self.ACTIVE_PROFILE_PREVIEW_LEAD and preview_reason == "allowed")
+      else 0.0
+    )
+    # Re-clip after the boost so the final lead delta is bounded
+    # by the scaled cap, never by a wider envelope.
+    if preview_boost_applied != 0.0:
+      lead_delta = _clip(lead_delta + preview_boost_applied, -lead_delta_cap, lead_delta_cap)
     delay_lead = base.raw_lateral_accel + lead_delta
     return TorqueV5Target(
       raw_lateral_accel=base.raw_lateral_accel,
@@ -1540,13 +1558,66 @@ class LatControlTorqueV5(LatControlTorqueV41):
       lead_gain=lead_gain,
       lead_delta_cap=lead_delta_cap,
       base_lead_delta=base.lead_delta,
-      preview_boost_computed=0.0,
-      preview_boost_applied=0.0,
+      preview_boost_computed=preview_boost_computed,
+      preview_boost_applied=preview_boost_applied,
+      preview_reason=preview_reason,
       turn_exit_lead_gain_multiplier=float(decision.lead_gain_multiplier),
       turn_exit_lead_delta_cap_multiplier=float(decision.lead_delta_cap_multiplier),
       turn_exit_early_release=early_release_active,
       v5_active=True,
-      v5_reason="turn_exit_source_of_truth",
+      v5_reason="turn_exit_source_of_truth" if preview_boost_applied == 0.0 else "preview_boost_applied",
     )
+
+  def _v5_compute_preview_boost(self, decision, *, v_ego: float,
+                                curvature_limited: bool, cs) -> tuple[float, str]:
+    """Compute the gated/capped preview boost for telemetry.
+
+    The boost is the decision's preview_boost value, clipped to
+    PREVIEW_BOOST_CAP_V at PREVIEW_BOOST_CAP_BP, but only when
+    every gate is clean. The return tuple is (boost, reason):
+    reason is "allowed" or a short tag naming the gate that
+    blocked the boost. preview_boost_applied is left to the
+    caller so this method can run in both gated-off and
+    gated-on modes.
+    """
+    raw_boost = float(decision.preview_boost) if decision is not None else 0.0
+    cap = _interp(v_ego, self.PREVIEW_BOOST_CAP_BP, self.PREVIEW_BOOST_CAP_V)
+    capped = _clip(raw_boost, -cap, cap)
+    # Gate
+    if decision is None:
+      return 0.0, "no_decision"
+    if v_ego < 5.0:
+      return 0.0, "low_speed"
+    if curvature_limited:
+      return 0.0, "curvature_limited"
+    cs_steering_pressed = bool(getattr(cs, "steeringPressed", False)) if cs is not None else False
+    if cs_steering_pressed:
+      return 0.0, "steering_pressed"
+    profile = self.lateral_demand_profile
+    if profile is None:
+      return 0.0, "no_profile"
+    if getattr(profile, "mode", None) != "turn_in":
+      return 0.0, "not_turn_in"
+    if float(getattr(profile, "mode_confidence", 0.0)) < self.PREVIEW_MIN_MODE_CONFIDENCE:
+      return 0.0, "low_mode_confidence"
+    demand = self.processed_lateral_demand
+    if demand is not None:
+      pq = _finite_float(getattr(demand, "path_quality", None))
+      if pq is None or pq < self.PREVIEW_MIN_PATH_QUALITY:
+        return 0.0, "low_path_quality"
+      if getattr(demand, "path_reason", LEARN_PATH_REASON_OK) != LEARN_PATH_REASON_OK:
+        return 0.0, "bad_path_reason"
+      if getattr(demand, "demand_source", DEMAND_SOURCE_MODEL_PATH) != DEMAND_SOURCE_MODEL_PATH:
+        return 0.0, "non_model_source"
+      if bool(getattr(demand, "lane_change_shaping_active", False)):
+        return 0.0, "lane_change_active"
+      lcb = _finite_float(getattr(demand, "lane_change_blend", None))
+      if lcb is not None and abs(lcb) > 1e-3:
+        return 0.0, "lane_change_blend"
+    if self._wobble_active:
+      return 0.0, "wobble_active"
+    if self._previous_saturated:
+      return 0.0, "saturated"
+    return capped, "allowed"
 
 LatControlTorque = LatControlTorqueV4
