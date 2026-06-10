@@ -35,7 +35,20 @@ visionipc = types.ModuleType("msgq.visionipc")
 visionipc.VisionBuf = object
 visionipc.VisionIpcClient = object
 visionipc.VisionIpcServer = object
-visionipc.VisionStreamType = object
+# NOTE: do NOT set visionipc.VisionStreamType = object here. The visionipc
+# module is registered into sys.modules (via setdefault below) and the
+# object builtin has no usable enum members; later tests that import
+# msgq.visionipc (e.g. via openpilot.selfdrive.test.process_replay.vision_meta)
+# would resolve VisionStreamType to <class 'object'> and fail with
+# AttributeError: type object 'object' has no attribute 'VISION_STREAM_ROAD'.
+# Use a small class stand-in that quacks like a flag enum for any
+# incidental attribute lookups in this test file.
+class _FakeVisionStreamType:
+  VISION_STREAM_ROAD = 0
+  VISION_STREAM_DRIVER = 1
+  VISION_STREAM_WIDE_ROAD = 2
+  VISION_STREAM_MAP = 3
+visionipc.VisionStreamType = _FakeVisionStreamType
 visionipc.get_endpoint_name = lambda *args, **kwargs: ""
 sys.modules.setdefault("msgq.visionipc", visionipc)
 
