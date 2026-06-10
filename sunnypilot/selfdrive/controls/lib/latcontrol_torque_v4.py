@@ -801,6 +801,12 @@ class LatControlTorqueV4(LatControl):
     self._v5_last_turn_exit_active: bool = False
     self._v5_last_v5_active: bool = False
     self._v5_last_v5_reason: str = ""
+    # v5.0 route-validation counters and last-frame values.
+    self._v5_output_sign_flips: int = 0
+    self._v5_straight_road_torque_flips: int = 0
+    self._v5_last_output_sign: int = 0
+    self._v5_last_final_lead_delta: float = 0.0
+    self._v5_last_preview_applied_value: float = 0.0
     self._recenter_persistence_frames: int = 0
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction) -> None:
@@ -862,6 +868,11 @@ class LatControlTorqueV4(LatControl):
     self._v5_last_turn_exit_active = False
     self._v5_last_v5_active = False
     self._v5_last_v5_reason = ""
+    self._v5_output_sign_flips = 0
+    self._v5_straight_road_torque_flips = 0
+    self._v5_last_output_sign = 0
+    self._v5_last_final_lead_delta = 0.0
+    self._v5_last_preview_applied_value = 0.0
 
   def _under_response_recovery_allowed(self) -> bool:
     if self._wobble_active:
@@ -1106,6 +1117,10 @@ class LatControlTorqueV4(LatControl):
     saturated = self.steer_max - abs(output_torque) < 1e-3 or bool(governor_result.reason & TorqueV4GovernorReason.CLIPPED)
     self._previous_output_torque = float(output_torque)
     self._previous_saturated = bool(saturated)
+    # v5.0 route-validation counters. Track sign flips of the
+    # finalized output torque and how many of those happened on
+    # straight road. Reset happens in reset().
+    self._v5_record_output_torque_sign_flips(output_torque)
 
     observation = TorqueV4Observation(
       active=active and not invalid,
@@ -1256,6 +1271,13 @@ class LatControlTorqueV4(LatControl):
     """v4 always returns None: the governor sees no v5 context
     and applies the v4.1 slew rates and caps unchanged. v5
     overrides this to return a populated context.
+    """
+    return None
+
+  def _v5_record_output_torque_sign_flips(self, output_torque: float) -> None:
+    """v4 no-op. v5 overrides to maintain the
+    output_sign_flips and straight_road_torque_flips counters
+    that power route validation.
     """
     return None
 
@@ -1439,6 +1461,14 @@ class LatControlTorqueV4(LatControl):
     adaptive_log.earlyReleaseActive = bool(self._last_turn_exit_early_release)
     adaptive_log.wobbleFeedbackGainMult = float(self._last_wobble_response.feedback_gain_multiplier)
     adaptive_log.wobbleDampingGainMult = float(self._last_wobble_response.damping_gain_multiplier)
+    # v5.0 route-validation telemetry. Always present on the log
+    # so route tooling has a single stable place to read these
+    # fields regardless of whether v5 was active this frame.
+    adaptive_log.v5Active = bool(self._v5_last_v5_active)
+    adaptive_log.previewBoostApplied = float(self._v5_last_preview_applied_value)
+    adaptive_log.finalLeadDelta = float(self._v5_last_final_lead_delta)
+    adaptive_log.outputSignFlips = int(self._v5_output_sign_flips)
+    adaptive_log.straightRoadTorqueFlips = int(self._v5_straight_road_torque_flips)
 
 
 class LatControlTorqueV41(LatControlTorqueV4):
@@ -1527,6 +1557,42 @@ class LatControlTorqueV5(LatControlTorqueV41):
       v5_reason=self._v5_last_v5_reason,
     )
 
+  def _v5_record_output_torque_sign_flips(self, output_torque: float) -> None:
+    """Maintain the v5 route-validation counters.
+
+    output_sign_flips counts every time the output torque's
+    sign changes (with a small deadband to ignore numerical
+    noise). straight_road_torque_flips counts only the flips
+    that happen while the controller classifies the road as
+    straight. Both counters are cumulative since the last reset
+    and are surfaced through the adaptive log for route tooling.
+    """
+    if not _finite(output_torque):
+      return
+    new_sign = _sign(float(output_torque), 1e-4)
+    prev_sign = getattr(self, "_v5_last_output_sign", 0)
+    if new_sign != 0 and prev_sign != 0 and new_sign != prev_sign:
+      self._v5_output_sign_flips += 1
+      if getattr(self, "_last_straight_road", False):
+        self._v5_straight_road_torque_flips += 1
+    if new_sign != 0:
+      self._v5_last_output_sign = new_sign
+
+  def _v5_route_summary(self) -> dict:
+    """Snapshot of the v5 route-validation telemetry. Useful for
+    tests and route tools; the same values also flow into the
+    adaptive log.
+    """
+    return {
+      "v5_active": self._v5_last_v5_active,
+      "preview_boost_applied": float(self._v5_last_preview_applied_value),
+      "turn_exit_mode": int(turn_exit_mode_to_uint8(self._last_turn_exit_mode)),
+      "wobble_active": bool(self._wobble_active),
+      "final_lead_delta": float(self._v5_last_final_lead_delta),
+      "output_sign_flips": int(self._v5_output_sign_flips),
+      "straight_road_torque_flips": int(self._v5_straight_road_torque_flips),
+    }
+
   def _v5_pre_target_decide_turn_exit(self, target: TorqueV4Target, *, active: bool,
                                       CS, curvature_limited: bool) -> None:
     """Pre-target turn-exit decision. v5 hooks this so the
@@ -1594,6 +1660,8 @@ class LatControlTorqueV5(LatControlTorqueV41):
       self._v5_last_turn_exit_active = False
       self._v5_last_v5_active = False
       self._v5_last_v5_reason = ""
+      self._v5_last_final_lead_delta = float(base.lead_delta)
+      self._v5_last_preview_applied_value = 0.0
       return base
 
     # Pre-target decision seam. Stores self._v5_turn_exit_decision
@@ -1607,6 +1675,8 @@ class LatControlTorqueV5(LatControlTorqueV41):
       self._v5_last_turn_exit_active = False
       self._v5_last_v5_active = False
       self._v5_last_v5_reason = ""
+      self._v5_last_final_lead_delta = float(base.lead_delta)
+      self._v5_last_preview_applied_value = 0.0
       return base
 
     # Apply lead gain / cap multipliers from the decision.
@@ -1649,6 +1719,8 @@ class LatControlTorqueV5(LatControlTorqueV41):
     self._v5_last_turn_exit_active = bool(early_release_active or decision.mode in ("turn_exit", "early_release"))
     self._v5_last_v5_active = True
     self._v5_last_v5_reason = "turn_exit_source_of_truth" if preview_boost_applied == 0.0 else "preview_boost_applied"
+    self._v5_last_final_lead_delta = float(lead_delta)
+    self._v5_last_preview_applied_value = float(preview_boost_applied)
     return TorqueV5Target(
       raw_lateral_accel=base.raw_lateral_accel,
       target_rate=base.target_rate,

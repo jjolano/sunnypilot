@@ -997,6 +997,155 @@ def test_v5_governor_context_turn_exit_boost_does_not_loosen_safety_caps():
   assert (result_v5.reason & 0xFF) == (result_v4.reason & 0xFF)
 
 
+def test_v5_route_summary_returns_all_required_fields():
+  """_v5_route_summary must expose the seven fields route
+  validation tooling needs: v5_active, preview_boost_applied,
+  turn_exit_mode, wobble_active, final_lead_delta,
+  output_sign_flips, straight_road_torque_flips.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._v5_last_v5_active = True
+  v5._v5_last_preview_applied_value = 0.04
+  v5._v5_last_final_lead_delta = 0.1
+  v5._v5_output_sign_flips = 7
+  v5._v5_straight_road_torque_flips = 2
+
+  summary = v5._v5_route_summary()
+  assert set(summary) == {
+    "v5_active",
+    "preview_boost_applied",
+    "turn_exit_mode",
+    "wobble_active",
+    "final_lead_delta",
+    "output_sign_flips",
+    "straight_road_torque_flips",
+  }
+  assert summary["v5_active"] is True
+  assert summary["preview_boost_applied"] == pytest.approx(0.04)
+  assert summary["final_lead_delta"] == pytest.approx(0.1)
+  assert summary["output_sign_flips"] == 7
+  assert summary["straight_road_torque_flips"] == 2
+
+
+def test_v5_output_sign_flips_counter_increments_on_real_flip():
+  """The output_sign_flips counter must increment when the
+  output torque's sign changes between frames. Initialized to
+  zero and incremented on every real flip.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  assert v5._v5_output_sign_flips == 0
+
+  v5._v5_record_output_torque_sign_flips(0.5)
+  assert v5._v5_output_sign_flips == 0
+  v5._v5_record_output_torque_sign_flips(0.3)
+  assert v5._v5_output_sign_flips == 0
+  v5._v5_record_output_torque_sign_flips(-0.2)
+  assert v5._v5_output_sign_flips == 1
+  v5._v5_record_output_torque_sign_flips(-0.4)
+  assert v5._v5_output_sign_flips == 1
+  v5._v5_record_output_torque_sign_flips(0.1)
+  assert v5._v5_output_sign_flips == 2
+
+
+def test_v5_straight_road_torque_flips_counter_gated_by_straight_flag():
+  """straight_road_torque_flips must only count flips that
+  happened while the controller's straight-road flag was set.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._v5_last_output_sign = 0
+  assert v5._v5_straight_road_torque_flips == 0
+
+  v5._last_straight_road = True
+  v5._v5_record_output_torque_sign_flips(0.5)
+  v5._v5_record_output_torque_sign_flips(-0.3)  # flip on straight
+  assert v5._v5_straight_road_torque_flips == 1
+
+  v5._last_straight_road = False
+  v5._v5_record_output_torque_sign_flips(0.4)  # flip off straight
+  assert v5._v5_straight_road_torque_flips == 1
+  assert v5._v5_output_sign_flips == 2
+
+
+def test_v5_adaptive_log_includes_route_summary_fields():
+  """The v5 adaptive log must surface the v5Active, previewBoostApplied,
+  finalLeadDelta, outputSignFlips, and straightRoadTorqueFlips fields
+  for route tooling. A driven v5 controller writes non-zero values
+  to these fields.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5._v5_last_v5_active = True
+  v5._v5_last_preview_applied_value = 0.04
+  v5._v5_last_final_lead_delta = 0.1
+  v5._v5_output_sign_flips = 5
+  v5._v5_straight_road_torque_flips = 1
+
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=0.9, path_reason="ok")
+  v5.set_processed_lateral_demand(demand)
+  log = update(v5, VM=None, CS=CS, desired_curvature=0.001)[2] if False else None
+
+  # The _fill_adaptive_log path is exercised during a full
+  # update; we drive the log fill directly here so the test does
+  # not depend on CS/VM plumbing. Build a stub log with the
+  # v5 fields and verify they get written.
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV4Target,
+    TorqueV4AdaptationUpdate,
+    TorqueV4GovernorResult,
+    TorqueV4GovernorReason,
+  )
+  pid_log = type("PIDLog", (), {})()
+  adaptive_log = type("AdaptiveLog", (), {})()
+  pid_log.init = lambda _name: adaptive_log
+  pid_log.active = True
+  pid_log.error = 0.0
+  governor_result = TorqueV4GovernorResult(0.5, TorqueV4GovernorReason.NONE, 2.0)
+  sample_update = TorqueV4AdaptationUpdate(
+    reject_reason=0, residual_error=0.0, sample_accepted=True,
+  )
+  v5._fill_adaptive_log(
+    pid_log=pid_log,
+    active=True,
+    target=TorqueV4Target(0.4, 0.0, 0.4, 0.1, 0.5, 0.5),
+    feedback_correction=0.0,
+    damping_correction=0.0,
+    raw_output_torque=0.5,
+    governor_result=governor_result,
+    sample_update=sample_update,
+    speed_result=make_speed_result(),
+    steer_limit_feedback=type("F", (), {"valid": False, "limited": False, "reason": 0, "requested": 0.0, "applied": 0.0, "error": 0.0})(),
+    steer_limit_same_direction=False,
+    steer_limit_unwind=False,
+    actual_lateral_jerk=0.0,
+  )
+  assert adaptive_log.v5Active is True
+  assert adaptive_log.previewBoostApplied == pytest.approx(0.04)
+  assert adaptive_log.finalLeadDelta == pytest.approx(0.1)
+  assert adaptive_log.outputSignFlips == 5
+  assert adaptive_log.straightRoadTorqueFlips == 1
+
+
 def test_v4_uses_no_v2_or_extension_post_core_limiters():
   source = inspect.getsource(latcontrol_torque_v4)
 

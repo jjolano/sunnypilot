@@ -917,6 +917,11 @@ struct ControlsState @0x97ff69c53601abf1 {
       earlyReleaseActive @56 :Bool;  # True when the turn-exit controller fires the early release guard this frame.
       wobbleFeedbackGainMult @57 :Float32;  # Multiplier applied to feedback gain by the anti-wobble supervisor (1.0 = neutral).
       wobbleDampingGainMult @58 :Float32;  # Multiplier applied to damping gain by the anti-wobble supervisor (1.0 = neutral).
+      v5Active @59 :Bool;  # True when LatControlTorqueV5 ran its profile-aware shaping path this frame.
+      previewBoostApplied @60 :Float32;  # Preview boost that actually landed in the lead delta (zero when gated off or blocked).
+      finalLeadDelta @61 :Float32;  # Lead delta after v5 shaping (preview boost + turn-exit multipliers + early release).
+      outputSignFlips @62 :UInt32;  # Cumulative count of output torque sign flips since controller init.
+      straightRoadTorqueFlips @63 :UInt32;  # Cumulative count of output torque sign flips while the road was straight.
     }
 
     adaptiveTorqueState @13 :AdaptiveTorqueState;
