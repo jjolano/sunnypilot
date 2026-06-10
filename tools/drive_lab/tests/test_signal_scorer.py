@@ -297,3 +297,30 @@ def test_plan_braking_signals() -> None:
   assert not signal_scorer.SIGNAL_REGISTRY["plan_braking"](make_sample(plan_a_target=None))
   assert signal_scorer.SIGNAL_REGISTRY["plan_strong_brake"](make_sample(plan_a_target=-1.5))
   assert not signal_scorer.SIGNAL_REGISTRY["plan_strong_brake"](make_sample(plan_a_target=-0.5))
+
+
+def test_render_summary_groups_zero_recall() -> None:
+  from openpilot.tools.drive_lab.signal_scorer import (
+    CategoryScorecard, ScorerSummary, SignalMetric, render_summary,
+  )
+  zero = SignalMetric(
+    category="t", signal="zero", episodes=2, hit_count=0, timely_hit_count=0,
+    missed_count=2, fire_count=0, recall=0.0, recall_timely=0.0,
+    precision_proxy=0.0, false_positive_rate=0.0, median_lead_time_s=None,
+    p10_lead_time_s=None, flicker_count=0, onset_lag_s=None,
+  )
+  hit = SignalMetric(
+    category="t", signal="hit", episodes=2, hit_count=2, timely_hit_count=2,
+    missed_count=0, fire_count=3, recall=1.0, recall_timely=1.0,
+    precision_proxy=1.0, false_positive_rate=0.5, median_lead_time_s=1.0,
+    p10_lead_time_s=0.5, flicker_count=1, onset_lag_s=2.0,
+  )
+  card = CategoryScorecard(category="t", episode_count=2, signals={"zero": zero, "hit": hit})
+  summary = ScorerSummary(
+    route_count=1, sample_count=100, episode_count=2, category_count=1,
+    signal_count=2, categories=[card],
+  )
+  rendered = render_summary(summary)
+  assert "hit" in rendered
+  assert "zero-recall signals" in rendered
+  assert "zero" in rendered.split("(zero-recall signals:")[1]

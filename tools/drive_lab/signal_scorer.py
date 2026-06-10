@@ -889,13 +889,23 @@ def render_summary(summary: ScorerSummary) -> str:
     if not cat.signals:
       lines.append("  (no signals scored)")
       continue
-    for name, m in cat.signals.items():
+    lines.append("  (signals with recall > 0, ranked by recall, then by -fire_count)")
+    ranked = sorted(
+      cat.signals.items(),
+      key=lambda item: (-item[1].recall_timely, -item[1].recall, item[1].fire_count),
+    )
+    for name, m in ranked:
+      if m.recall <= 0:
+        continue
       lead = f"{m.median_lead_time_s:+.2f}s" if m.median_lead_time_s is not None else "  n/a"
       p10 = f"{m.p10_lead_time_s:+.2f}s" if m.p10_lead_time_s is not None else "  n/a"
       lines.append(
         f"  {name:30s} recall={m.recall:.2f} timely={m.recall_timely:.2f} "
-        f"flickers={m.flicker_count:3d} lead={lead} p10={p10} fires={m.fire_count}"
+        f"flickers={m.flicker_count:5d} lead={lead} p10={p10} fires={m.fire_count:5d}"
       )
+    skipped = [(n, m) for n, m in cat.signals.items() if m.recall <= 0]
+    if skipped:
+      lines.append("  (zero-recall signals: " + ", ".join(n for n, _ in skipped) + ")")
   return "\n".join(lines)
 
 
