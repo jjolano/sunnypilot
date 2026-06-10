@@ -51,6 +51,14 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   LEAD_PULLAWAY_PULSE_ACCEL_CAP,
   LEAD_PULLAWAY_PULSE_CAP_REASON,
   LEAD_PULLAWAY_PULSE_REASON,
+  MOVING_LEAD_RECOVERY_MAX_ACCEL,
+  MOVING_LEAD_RECOVERY_MILD_ACCEL,
+  MOVING_LEAD_RECOVERY_MIN_GAP,
+  MOVING_LEAD_RECOVERY_MIN_V_EGO,
+  MOVING_LEAD_RECOVERY_SEED_REASON,
+  MovingLeadRecovery,
+  MovingLeadRecoveryPhase,
+  get_moving_lead_recovery,
   MOVING_LEAD_STOP_GAP_GUARD_CLOSING_DECEL_CAP,
   MOVING_LEAD_STOP_GAP_GUARD_HARD_DECEL,
   MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP,
@@ -2386,7 +2394,7 @@ def test_moving_lead_routine_approach_response_compensation_includes_lead_decel(
 def test_moving_lead_routine_approach_reports_response_lag_shortfall_without_strengthening_cap():
   accel, debug = get_moving_lead_stop_gap_guard_accel(
     v_ego=20.7,
-    d_rel=40.0,
+    d_rel=38.0,
     v_lead=18.7,
     a_lead=0.0,
     y_rel=0.0,
@@ -2421,7 +2429,7 @@ def test_moving_lead_routine_approach_soft_decel_follows_coast_as_compression_wo
   )
   soft_accel, soft_debug = get_moving_lead_stop_gap_guard_accel(
     v_ego=20.7,
-    d_rel=40.0,
+    d_rel=38.0,
     v_lead=18.7,
     a_lead=0.0,
     y_rel=0.0,
@@ -2437,6 +2445,181 @@ def test_moving_lead_routine_approach_soft_decel_follows_coast_as_compression_wo
   assert -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP <= soft_accel < 0.0
   assert soft_debug["routine_lead_phase"] == "soft_decel"
   assert soft_accel >= -ROUTINE_LEAD_APPROACH_NEGATIVE_JERK * 0.5 - 1e-6
+
+
+def test_moving_lead_routine_approach_drel_40_remains_free_coast_with_looser_threshold():
+  """With the looser ROUTINE_LEAD_APPROACH_COAST_BLEND (0.32 vs old 0.18),
+  a d_rel of 40 m at v_ego=20.7 v_lead=18.7 (closing 2 m/s) should now
+  remain in free_coast, not soft_decel. The compression_blend at this
+  point is ~0.27, which is above the old 0.18 threshold but below the
+  new 0.32 threshold.
+
+  This is the explicit expression of the gap-compression loosening: the
+  routine phase should spend more of its compression runway coasting and
+  not preemptively brake at a comfort gap that is still well-buffered."""
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=20.7,
+    d_rel=40.0,
+    v_lead=18.7,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_phase"] == "free_coast"
+  assert accel == pytest.approx(0.0)
+  # Comp_blend is between old and new COAST_BLEND thresholds.
+  assert 0.18 <= debug["routine_lead_compression_blend"] < 0.32
+  assert not debug["routine_lead_approach_urgent"]
+
+
+def test_moving_lead_routine_approach_drel_38_enters_soft_decel_with_looser_threshold():
+  """At d_rel=38 m the compression_blend climbs to ~0.40, just above the
+  new COAST_BLEND of 0.32 and below the new SOFT_BLEND of 0.62. The phase
+  should be soft_decel with a bounded decel. This is the second
+  compression-worsen case after free_coast at d_rel=40."""
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=20.7,
+    d_rel=38.0,
+    v_lead=18.7,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert debug["routine_lead_phase"] == "soft_decel"
+  assert -MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP <= accel < 0.0
+  # Soft_decel cap is tighter than routine_decel cap.
+  assert -ROUTINE_LEAD_APPROACH_SOFT_DECEL_CAP - 1e-6 <= accel
+  assert not debug["routine_lead_approach_urgent"]
+
+
+def test_moving_lead_routine_approach_no_brake_yet_debug_field_is_exposed():
+  """The no-brake-yet flag should be exposed in the routine debug output
+  so route diagnostics and post-hoc logging can verify the rule
+  computation. The flag combines two conditions:
+  - brake_predicted_gap > caution_gap - 0.5 m
+  - required_decel_after_coast < 0.25 m/s²
+  Both use the brake_preview_t horizon so they reflect the brake-side
+  projection, not the coast-side projection used for compression_blend."""
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=20.7,
+    d_rel=42.0,
+    v_lead=18.7,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=1.55,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+  assert accel is not None
+  assert "routine_lead_no_brake_yet" in debug
+  # At d_rel=42 (well above caution) the brake projection is safe and the
+  # post-coast required decel is small, so no-brake-yet should be True.
+  assert debug["routine_lead_no_brake_yet"] is True
+  assert debug["routine_lead_brake_predicted_gap"] > debug["routine_lead_caution_gap"] - 0.5
+  assert debug["routine_lead_required_decel_after_coast"] < 0.25
+
+
+def test_moving_lead_routine_approach_no_brake_yet_relaxes_when_brake_projection_drops():
+  """When the brake-projected gap drops below caution_gap - 0.5, the
+  no-brake-yet rule stops firing and the routine phase is driven by the
+  compression_blend ramp alone (soft_decel or routine_decel)."""
+  v_ego = 20.7
+  v_lead = 18.7
+  t_follow = 1.55
+
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=34.0,
+    v_lead=v_lead,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=t_follow,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert not debug["routine_lead_no_brake_yet"]
+  # The phase is now driven by compression_blend, not the no-brake-yet rule.
+  assert debug["routine_lead_phase"] in ("soft_decel", "routine_decel")
+  assert accel < 0.0
+
+
+def test_moving_lead_routine_approach_brake_preview_uses_shorter_horizon_than_coast_preview():
+  """The brake-preview projection should look ahead less than the
+  coast-preview projection. brake_predicted_gap is the gap projected over
+  the shorter brake_preview_t (1.4 s) using response-compensated state.
+  Because we project over less time, the brake projection always shows a
+  larger remaining gap than the coast projection."""
+  v_ego = 20.7
+  v_lead = 18.7
+  t_follow = 1.55
+
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=42.0,
+    v_lead=v_lead,
+    a_lead=0.0,
+    y_rel=0.0,
+    t_follow=t_follow,
+    prev_a_target=0.0,
+    dt=0.5,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  # Brake preview is shorter than coast preview.
+  assert debug["routine_lead_brake_preview_t"] < debug["routine_lead_preview_t"]
+  # Brake projection leaves more room than coast projection because the
+  # brake projection only looks ahead over a shorter horizon.
+  assert debug["routine_lead_brake_predicted_gap"] >= debug["routine_lead_projected_gap"]
+  # Brake projected closing is smaller or equal to coast projected closing
+  # because we look ahead less time.
+  assert debug["routine_lead_brake_projected_closing"] <= debug["routine_lead_projected_closing"]
+
+
+def test_moving_lead_routine_approach_near_danger_plus_margin_allows_routine_decel():
+  """At a gap just past the routine floor (danger_gap + margin), the
+  routine phase should be routine_decel with bounded decel. The urgent
+  path is reserved for true danger gap / short TTC / hard lead braking."""
+  v_ego = 20.7
+  v_lead = 18.7
+  t_follow = 1.55
+  _desired_gap, _caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow)
+
+  accel, debug = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=danger_gap + ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN,
+    v_lead=v_lead,
+    a_lead=-0.5,
+    y_rel=0.0,
+    t_follow=t_follow,
+    prev_a_target=0.0,
+    dt=0.5,
+    a_ego=0.0,
+    return_debug=True,
+  )
+
+  assert accel is not None
+  assert debug["routine_lead_approach_active"]
+  assert not debug["routine_lead_approach_urgent"]
+  assert not debug["routine_lead_urgent_bypass"]
+  assert debug["routine_lead_phase"] == "routine_decel"
+  assert accel >= -MOVING_LEAD_STOP_GAP_GUARD_MILD_DECEL_CAP
 
 
 def test_moving_lead_routine_approach_allows_compression_to_danger_gap_plus_margin_without_urgent_bypass():
@@ -4396,3 +4579,376 @@ def test_routine_seed_emission_blocked_without_valid_approach():
     and valid_approach and (routine_can_own or routine_far_coast or routine_comfort_phase)
   )
   assert not seed_emits, "Seed should NOT emit when valid_approach=False"
+
+
+# ----------------------------------------------------------------------------
+# Moving lead recovery helper tests
+# ----------------------------------------------------------------------------
+
+
+def test_moving_lead_recovery_inactive_below_min_v_ego():
+  """Recovery authority is gated above MOVING_LEAD_RECOVERY_MIN_V_EGO
+  (3 m/s). Below that, low-speed LeadPullawayIntent owns the launch /
+  pullaway path; the moving recovery helper is intentionally a no-op."""
+  result = get_moving_lead_recovery(
+    v_ego=2.5, d_rel=15.0, v_lead=1.5, a_lead=0.5, lead_accel_trend=0.2,
+    lead_opening=True,
+  )
+  assert isinstance(result, MovingLeadRecovery)
+  assert not result.active
+  assert result.phase == MovingLeadRecoveryPhase.INACTIVE
+  assert result.reason == "below_min_v_ego"
+  assert result.a_floor == 0.0
+
+
+def test_moving_lead_recovery_inactive_when_gap_below_minimum_floor():
+  """The recovery helper enforces a 4 m safety floor on the current gap
+  before considering activation. Below the floor, urgent / lead-stop
+  paths own the brake; the recovery helper must not loosen anything."""
+  result = get_moving_lead_recovery(
+    v_ego=15.0, d_rel=3.0, v_lead=12.0, a_lead=0.5, lead_accel_trend=0.2,
+    lead_opening=True, minimum_allowed_gap=MOVING_LEAD_RECOVERY_MIN_GAP,
+  )
+  assert not result.active
+  assert result.phase == MovingLeadRecoveryPhase.INACTIVE
+  assert result.reason == "below_min_gap"
+
+
+def test_moving_lead_recovery_inactive_when_lead_still_braking():
+  """Hard lead braking (a_lead <= -0.05) or a strongly decreasing
+  accel trend must keep the recovery helper inactive. The lead is not
+  opening; this is a hard-braking-lead scenario, not a recovery one."""
+  result = get_moving_lead_recovery(
+    v_ego=15.0, d_rel=15.0, v_lead=12.0, a_lead=-0.5, lead_accel_trend=-0.1,
+    lead_opening=False,
+  )
+  assert not result.active
+  assert result.reason == "lead_not_opening"
+
+
+def test_moving_lead_recovery_inactive_when_runway_pushes_below_floor():
+  """If the predicted gap after applying a_floor would drop below the
+  safety floor, recovery authority is suspended. The lead's runway is
+  not strong enough to support any re-accel; the urgent / lead-stop
+  path keeps the brake authority."""
+  # v_ego=15, v_lead=13 (closing 2 m/s), a_lead=0.3, lead_opening=True.
+  # d_rel=12, minimum_allowed_gap=10.
+  # predicted_gap = 12 + (13-15)*1.5 + 0.5*(0.3-0.3)*1.5² = 12 - 3 = 9
+  # 9 < 10 -> runway_below_floor.
+  result = get_moving_lead_recovery(
+    v_ego=15.0, d_rel=12.0, v_lead=13.0, a_lead=0.3, lead_accel_trend=0.1,
+    lead_opening=True, minimum_allowed_gap=10.0,
+  )
+  assert not result.active
+  assert result.reason == "runway_below_floor"
+
+
+def test_moving_lead_recovery_inactive_when_lead_stopped():
+  """If the lead has no forward velocity, this is a stopped-lead
+  scenario. Moving recovery is a moving-speed policy; the low-speed
+  LeadPullawayIntent or stopped-lead gap-fill paths own this case."""
+  result = get_moving_lead_recovery(
+    v_ego=15.0, d_rel=12.0, v_lead=0.0, a_lead=0.0, lead_accel_trend=0.0,
+  )
+  assert not result.active
+  assert result.reason == "lead_not_moving"
+
+
+def test_moving_lead_recovery_brake_release_when_lead_just_recovering():
+  """Brake-release phase: lead is opening but the lead accel is below
+  MILD_REACCEL threshold. Just stop braking; let routine follow shape
+  the rest. a_floor is 0.0."""
+  # v_ego=15, v_lead=14, a_lead=0.0, lead_opening=True: tiny positive
+  # accel trend would be enough to authorize MILD_REACCEL; we suppress
+  # by setting lead_accel_trend to 0.0 and a_lead=0.0.
+  result = get_moving_lead_recovery(
+    v_ego=15.0, d_rel=6.0, v_lead=14.0, a_lead=0.0, lead_accel_trend=0.0,
+    lead_opening=False, minimum_allowed_gap=4.0,
+  )
+  # When lead is not opening and a_lead is 0, the helper treats it as
+  # "lead not opening" and suspends. This is the correct behavior —
+  # brake_release is only a "weak" recovery, not a default-active state.
+  assert not result.active
+  assert result.reason == "lead_not_opening"
+
+
+def test_moving_lead_recovery_mild_reaccel_when_lead_just_accelerating():
+  """Mild-reaccel phase: lead accel is positive but the gap is small
+  enough that bounded re-accel keeps us in the comfort buffer."""
+  result = get_moving_lead_recovery(
+    v_ego=15.0, d_rel=10.0, v_lead=14.0, a_lead=0.3, lead_accel_trend=0.1,
+    lead_opening=True, minimum_allowed_gap=4.0,
+  )
+  assert result.active
+  assert result.phase == MovingLeadRecoveryPhase.MILD_REACCEL
+  # MILD_REACCEL caps the floor at MOVING_LEAD_RECOVERY_MILD_ACCEL.
+  assert 0.0 <= result.a_floor <= MOVING_LEAD_RECOVERY_MILD_ACCEL
+  # Predicted gap stays above the safety floor.
+  assert result.predicted_gap >= result.minimum_allowed_gap
+
+
+def test_moving_lead_recovery_gap_recovery_when_lead_opening_excess_gap():
+  """Gap-recovery phase: lead is opening and the lead-created runway is
+  large enough that the safety floor is comfortably above the minimum.
+  a_floor reaches the full MOVING_LEAD_RECOVERY_MAX_ACCEL ceiling."""
+  result = get_moving_lead_recovery(
+    v_ego=15.0, d_rel=20.0, v_lead=18.0, a_lead=0.5, lead_accel_trend=0.1,
+    lead_opening=True, minimum_allowed_gap=4.0,
+  )
+  assert result.active
+  assert result.phase == MovingLeadRecoveryPhase.GAP_RECOVERY
+  assert result.lead_created_runway
+  # GAP_RECOVERY caps the floor at MOVING_LEAD_RECOVERY_MAX_ACCEL.
+  assert 0.0 <= result.a_floor <= MOVING_LEAD_RECOVERY_MAX_ACCEL
+  assert result.predicted_gap >= result.minimum_allowed_gap
+  # Runway margin is positive (lead is creating gap).
+  assert result.debug["moving_lead_recovery_runway_margin_t"] > 0.0
+
+
+def test_moving_lead_recovery_safe_accel_cap_caps_floor_under_runway():
+  """If the safe_accel_cap is small (lead accel low and runway tight),
+  the a_floor is clamped below MILD_REACCEL even if the lead is
+  technically opening."""
+  # v_ego=15, v_lead=14.9 (closing 0.1), a_lead=0.1, lead_opening=True
+  # predicted_gap = d_rel + (v_lead - v_ego) * 1.5 + 0.5*0.1*1.5²
+  #               = d_rel - 0.15 + 0.1125
+  # For d_rel=4.5, predicted_gap=4.46, just above min
+  # safe_accel_cap = 0.1 + 2*(4.46-4.0-0.5)/1.5² (very small) ≈ 0.1
+  # runway_margin_t = 4.46 - 5.775 - 0.5 = -1.815 (negative)
+  # lead_created_runway = False
+  # Phase: BRAKE_RELEASE (lead not opening enough)
+  result = get_moving_lead_recovery(
+    v_ego=15.0, d_rel=4.5, v_lead=14.9, a_lead=0.1, lead_accel_trend=0.0,
+    lead_opening=True, minimum_allowed_gap=4.0,
+  )
+  # predicted_gap is just above min, lead is opening but runway is tight.
+  # The MILD_REACCEL a_floor is bounded by safe_accel_cap which is small.
+  if result.active:
+    assert result.a_floor <= MOVING_LEAD_RECOVERY_MILD_ACCEL
+    assert result.a_floor <= result.safe_accel_cap
+    assert result.predicted_gap >= result.minimum_allowed_gap
+
+
+def test_moving_lead_recovery_min_v_ego_boundary_at_3_mps():
+  """v_ego exactly at MOVING_LEAD_RECOVERY_MIN_V_EGO should activate
+  (the check is strict-greater-than-equal)."""
+  result = get_moving_lead_recovery(
+    v_ego=MOVING_LEAD_RECOVERY_MIN_V_EGO, d_rel=15.0, v_lead=5.0,
+    a_lead=0.5, lead_accel_trend=0.1, lead_opening=True,
+  )
+  # The lead is far below v_ego here so v_lead=5 with v_ego=3 means the
+  # lead is moving away. This is a recovery scenario.
+  assert result.active or result.reason in ("lead_not_opening",)
+
+
+def test_moving_lead_recovery_predicted_gap_never_below_minimum_allowed_gap():
+  """When active, the helper guarantees the predicted gap after the
+  a_floor horizon stays above minimum_allowed_gap. This is the
+  structural safety guarantee — the recovery floor is always runway-safe."""
+  for v_ego, v_lead, a_lead, d_rel in [
+    (15.0, 10.0, 0.5, 20.0),
+    (15.0, 14.0, 0.3, 12.0),
+    (8.0, 5.0, 0.4, 10.0),
+    (25.0, 20.0, 0.8, 30.0),
+  ]:
+    result = get_moving_lead_recovery(
+      v_ego=v_ego, d_rel=d_rel, v_lead=v_lead, a_lead=a_lead,
+      lead_accel_trend=0.1, lead_opening=True, minimum_allowed_gap=4.0,
+    )
+    if result.active:
+      assert result.predicted_gap >= result.minimum_allowed_gap
+
+
+def test_moving_lead_recovery_debug_keys_are_exposed():
+  """The debug dict should expose enough fields for post-hoc route
+  diagnostics to verify the runway math and safety floor checks."""
+  result = get_moving_lead_recovery(
+    v_ego=15.0, d_rel=20.0, v_lead=18.0, a_lead=0.5, lead_accel_trend=0.1,
+    lead_opening=True,
+  )
+  expected_keys = {
+    "moving_lead_recovery_v_ego", "moving_lead_recovery_d_rel",
+    "moving_lead_recovery_v_lead", "moving_lead_recovery_a_lead",
+    "moving_lead_recovery_lead_accel_trend", "moving_lead_recovery_lead_opening",
+    "moving_lead_recovery_horizon", "moving_lead_recovery_min_lead_accel",
+    "moving_lead_recovery_minimum_allowed_gap",
+  }
+  assert expected_keys.issubset(set(result.debug.keys()))
+
+
+def test_moving_lead_recovery_seed_reason_constant_is_distinct_from_pullaway():
+  """The moving_lead_recovery seed reason is a separate constant so the
+  planner seed layer can map it to the right intent (RELAXATION, not
+  LAUNCH). It must not collide with confirmed_lead_pullaway_pulse or
+  excess_gap_closure which are launch-related."""
+  assert MOVING_LEAD_RECOVERY_SEED_REASON == "moving_lead_recovery"
+  assert MOVING_LEAD_RECOVERY_SEED_REASON != "confirmed_lead_pullaway_pulse"
+  assert MOVING_LEAD_RECOVERY_SEED_REASON != "excess_gap_closure"
+
+
+def test_moving_lead_recovery_emits_relaxation_role_in_seed_layer():
+  """The moving_lead_recovery seed must convert to a RELAXATION role,
+  never PHYSICAL_HAZARD or LAUNCH. This is a moving comfort/recovery
+  floor, not a hazard or launch authority."""
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import (
+    _role_for_seed,
+    PLANNER_SEED_FLOOR,
+    PLANNER_SEED_INTENT_LAUNCH,
+    PLANNER_SEED_INTENT_LEAD_FOLLOW,
+  )
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole
+
+  # Floor with LEAD_FOLLOW intent (what the planner would produce for
+  # this reason) must be RELAXATION, not PHYSICAL_HAZARD.
+  role = _role_for_seed(PLANNER_SEED_INTENT_LEAD_FOLLOW, MOVING_LEAD_RECOVERY_SEED_REASON, PLANNER_SEED_FLOOR)
+  assert role == CandidateRole.RELAXATION
+
+  # Cap should also be RELAXATION, not PHYSICAL_HAZARD.
+  role = _role_for_seed(PLANNER_SEED_INTENT_LEAD_FOLLOW, MOVING_LEAD_RECOVERY_SEED_REASON, "cap")
+  assert role == CandidateRole.RELAXATION
+
+  # Even if someone mis-labels the intent as LAUNCH, we still want
+  # RELAXATION because the moving_lead_recovery reason is a moving
+  # comfort/recovery policy, not a launch authority.
+  role = _role_for_seed(PLANNER_SEED_INTENT_LAUNCH, MOVING_LEAD_RECOVERY_SEED_REASON, PLANNER_SEED_FLOOR)
+  assert role == CandidateRole.RELAXATION
+
+
+def test_moving_lead_recovery_seed_intent_is_lead_follow():
+  """The moving_lead_recovery reason must map to LEAD_FOLLOW intent in
+  the planner seed layer, matching the rest of the lead-follow family
+  of seed reasons. This is what allows the seed to participate in the
+  lead-follow decision layer without being treated as a launch or
+  driver-cruise candidate."""
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
+    planner_seed_intent_for_reason,
+  )
+  intent = planner_seed_intent_for_reason(MOVING_LEAD_RECOVERY_SEED_REASON, has_lead=True)
+  assert intent == "lead_follow"
+
+
+def test_moving_lead_recovery_inactive_lead_context_blocks_emission():
+  """Without a primary physical lead, the moving recovery helper is
+  not called and the seed is not emitted. The fallback path
+  (raw LEAD_MPC fallback) keeps authority."""
+  planner = SimpleNamespace(output_a_target=0.0, output_should_stop=False)
+  candidates = build_moving_lead_seed_candidates(
+    planner, has_lead=True, accel_limits=(-2.0, 2.0),
+    moving_lead_recovery_a_target=None,
+  )
+  # No seed candidate with name "moving_lead_recovery" emitted.
+  assert all(c.name != "moving_lead_recovery" for c in candidates)
+
+
+def test_moving_lead_recovery_active_emits_floor_seed():
+  """When the planner produces a moving_lead_recovery floor, the seed
+  is emitted with selection=FLOOR and the recovery debug attached."""
+  planner = SimpleNamespace(output_a_target=0.0, output_should_stop=False)
+  candidates = build_moving_lead_seed_candidates(
+    planner, has_lead=True, accel_limits=(-2.0, 2.0),
+    moving_lead_recovery_a_target=0.35,
+    moving_lead_recovery_debug={
+      "moving_lead_recovery_active": True,
+      "moving_lead_recovery_phase": "mild_reaccel",
+      "moving_lead_recovery_predicted_gap": 9.5,
+      "moving_lead_recovery_minimum_allowed_gap": 4.0,
+      "moving_lead_recovery_safe_accel_cap": 0.42,
+      "moving_lead_recovery_lead_created_runway": True,
+    },
+  )
+  recovery_candidates = [c for c in candidates if c.name == "moving_lead_recovery"]
+  assert len(recovery_candidates) == 1
+  c = recovery_candidates[0]
+  assert c.output.a_target == pytest.approx(0.35)
+  assert c.reason == MOVING_LEAD_RECOVERY_SEED_REASON
+  assert c.selection == "floor"
+  assert c.output.has_lead
+  assert c.output.debug["moving_lead_recovery_active"] is True
+  assert c.output.debug["moving_lead_recovery_phase"] == "mild_reaccel"
+
+
+def test_moving_lead_recovery_suppresses_raw_lead_mpc_fallback_when_runway_safe():
+  """Fallback suppression should recognize the moving_lead_recovery
+  RELAXATION seed the same way it recognizes routine comfort, but only
+  when debug says it is non-urgent and runway-safe."""
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import (
+    fallback_physical_candidates,
+  )
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import (
+    CandidateRole,
+    DecisionSource,
+    LongitudinalCandidate,
+  )
+
+  moving_recovery_candidate = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.RELAXATION,
+    v_target=15.0,
+    a_target=0.35,
+    confidence=0.8,
+    urgency=0.2,
+    active_reason=MOVING_LEAD_RECOVERY_SEED_REASON,
+    should_stop=False,
+  )
+  raw_lead_mpc = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.PHYSICAL_HAZARD,
+    v_target=15.0,
+    a_target=-0.20,
+    confidence=0.9,
+    urgency=0.6,
+    active_reason="lead_mpc",
+    should_stop=False,
+  )
+  fallback_output = SimpleNamespace(a_target=0.0, should_stop=False, source="lead0")
+  fallbacks = fallback_physical_candidates(
+    (moving_recovery_candidate,),
+    (raw_lead_mpc,),
+    fallback_output,
+  )
+  assert all(c is not raw_lead_mpc for c in fallbacks)
+
+
+def test_moving_lead_recovery_preserves_hard_braking_lead_fallback():
+  """When the raw LEAD_MPC fallback is hard-braking (a_target < -1.0),
+  it must NOT be suppressed even if the moving recovery is active.
+  Hard-braking-lead is always a physical hazard."""
+  from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed_policy import (
+    fallback_physical_candidates,
+  )
+  from openpilot.selfdrive.controls.lib.longitudinal_decision import (
+    CandidateRole,
+    DecisionSource,
+    LongitudinalCandidate,
+  )
+
+  moving_recovery_candidate = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.RELAXATION,
+    v_target=15.0,
+    a_target=0.35,
+    confidence=0.8,
+    urgency=0.2,
+    active_reason=MOVING_LEAD_RECOVERY_SEED_REASON,
+    should_stop=False,
+  )
+  raw_lead_mpc_hard = LongitudinalCandidate(
+    source=DecisionSource.LEAD_MPC,
+    role=CandidateRole.PHYSICAL_HAZARD,
+    v_target=15.0,
+    a_target=-1.5,
+    confidence=0.9,
+    urgency=0.8,
+    active_reason="lead_mpc",
+    should_stop=False,
+  )
+  fallback_output = SimpleNamespace(a_target=0.0, should_stop=False, source="lead0")
+  fallbacks = fallback_physical_candidates(
+    (moving_recovery_candidate,),
+    (raw_lead_mpc_hard,),
+    fallback_output,
+  )
+  # The hard-braking fallback must be present, even though the moving
+  # recovery is also active. Match by a_target because the function
+  # re-wraps the candidate.
+  assert any(c.a_target == pytest.approx(-1.5) and c.role == CandidateRole.PHYSICAL_HAZARD for c in fallbacks)

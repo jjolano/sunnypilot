@@ -197,18 +197,22 @@ MOVING_LEAD_SLOWER_APPROACH_CLOSING_GAIN = 0.25
 MOVING_LEAD_SLOWER_APPROACH_GAP_GAIN = 0.03
 MOVING_LEAD_SLOWER_APPROACH_LEAD_DECEL_GAIN = 0.05
 ROUTINE_LEAD_APPROACH_PREVIEW_T = 2.0
+ROUTINE_LEAD_APPROACH_BRAKE_PREVIEW_T = 1.4
 ROUTINE_LEAD_RESPONSE_TIME = 0.35
 ROUTINE_LEAD_APPROACH_MIN_CLOSING = 0.25
 ROUTINE_LEAD_APPROACH_MIN_BLEND = 0.05
 ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN = 1.0
-ROUTINE_LEAD_APPROACH_COAST_BLEND = 0.18
-ROUTINE_LEAD_APPROACH_SOFT_BLEND = 0.45
+ROUTINE_LEAD_APPROACH_COAST_BLEND = 0.32
+ROUTINE_LEAD_APPROACH_SOFT_BLEND = 0.62
 ROUTINE_LEAD_APPROACH_SOFT_DECEL_CAP = 0.25
 ROUTINE_LEAD_APPROACH_DECEL_MIN = MOVING_LEAD_SLOWER_APPROACH_MIN_TARGET_DECEL
 ROUTINE_LEAD_APPROACH_DECEL_CAP = MOVING_LEAD_SLOWER_APPROACH_DECEL_CAP
 ROUTINE_LEAD_APPROACH_FIRM_DECEL_CAP = 1.5
 ROUTINE_LEAD_APPROACH_NEGATIVE_JERK = 0.45
 ROUTINE_LEAD_APPROACH_RELEASE_JERK = 0.25
+ROUTINE_LEAD_APPROACH_NO_BRAKE_DECEL = 0.25
+ROUTINE_LEAD_APPROACH_NO_BRAKE_GAP_HEADROOM = 0.5
+ROUTINE_LEAD_APPROACH_PREDICTED_GAP_FLOOR = 4.0
 ROUTINE_LEAD_FAR_COAST_TTC = 7.0  # seconds - time to caution gap threshold for far coast
 ROUTINE_LEAD_FAR_COAST_MIN_CLOSING = 0.25  # m/s - minimum closing speed for far coast
 LEAD_STOP_APPROACH_DECEL_SLEW_MIN_V_EGO = 3.0
@@ -331,6 +335,26 @@ EXCESS_GAP_CLOSURE_ACCEL_BASE = CREEP_TO_STOP_GAP_ACCEL_MAX
 EXCESS_GAP_CLOSURE_ACCEL_CAP = STOPPED_LEAD_GAP_FILL_ACCEL_MAX
 EXCESS_GAP_CLOSURE_JERK_UP = 0.8
 EXCESS_GAP_CLOSURE_JERK_DOWN = 4.0
+
+# Moving lead recovery: brake-release and bounded re-accel when a moving
+# lead slows (or has slowed) and then starts accelerating again. The
+# recovery helper is intentionally separate from the low-speed
+# LeadPullawayIntent tracker: above MOVING_LEAD_RECOVERY_MIN_V_EGO, the
+# moving-follow routine is in charge of brake release / re-accel, not
+# the launch pullaway path. The recovery floor is a moving
+# comfort/recovery policy, not a launch authority.
+MOVING_LEAD_RECOVERY_MIN_V_EGO = 3.0
+MOVING_LEAD_RECOVERY_MIN_GAP = 4.0
+MOVING_LEAD_RECOVERY_MARGIN = 0.5
+MOVING_LEAD_RECOVERY_PREDICT_T = 1.5
+MOVING_LEAD_RECOVERY_MIN_LEAD_ACCEL = 0.20
+MOVING_LEAD_RECOVERY_MIN_OPENING = 0.15
+MOVING_LEAD_RECOVERY_RELEASE_A = 0.0
+MOVING_LEAD_RECOVERY_MILD_ACCEL = 0.25
+MOVING_LEAD_RECOVERY_MAX_ACCEL = 0.70
+MOVING_LEAD_RECOVERY_JERK_UP = 0.8
+MOVING_LEAD_RECOVERY_JERK_DOWN = 2.0
+MOVING_LEAD_RECOVERY_SEED_REASON = "moving_lead_recovery"
 STOP_RELEASE_GUARD_HOLD_TIME = 1.5
 STOP_RELEASE_GUARD_MAX_V_EGO = 0.3
 STOP_RELEASE_GUARD_WAITING_REASON = "waiting_for_stop_clear"
@@ -814,6 +838,200 @@ def get_lead_pullaway_runway(v_ego, d_rel, v_lead, a_lead, lead_accel_trend,
     lead_created_runway=lead_created_runway,
     coast_required=coast_required,
     trend=trend,
+  )
+
+
+class MovingLeadRecoveryPhase(Enum):
+  INACTIVE = "inactive"
+  BRAKE_RELEASE = "brake_release"
+  MILD_REACCEL = "mild_reaccel"
+  GAP_RECOVERY = "gap_recovery"
+
+
+@dataclass(frozen=True)
+class MovingLeadRecovery:
+  active: bool = False
+  phase: MovingLeadRecoveryPhase = MovingLeadRecoveryPhase.INACTIVE
+  a_floor: float = 0.0
+  predicted_gap: float = 0.0
+  minimum_allowed_gap: float = MOVING_LEAD_RECOVERY_MIN_GAP
+  safe_accel_cap: float = 0.0
+  lead_created_runway: bool = False
+  reason: str = "inactive"
+  debug: dict[str, object] = field(default_factory=dict)
+
+
+def get_moving_lead_recovery(*, v_ego, d_rel, v_lead, a_lead, lead_accel_trend,
+                             lead_opening=False, desired_gap=None,
+                             margin=MOVING_LEAD_RECOVERY_MARGIN,
+                             horizon=MOVING_LEAD_RECOVERY_PREDICT_T,
+                             min_lead_accel=MOVING_LEAD_RECOVERY_MIN_LEAD_ACCEL,
+                             minimum_allowed_gap=None) -> MovingLeadRecovery:
+  """Compute a moving lead recovery floor for a confirmed moving lead.
+
+  The recovery helper is a moving comfort/recovery policy, not a launch
+  authority. It returns a_floor >= 0 only when:
+  - the lead is stable, on-path, and physically confirmed
+  - the lead is moving (v_lead > 0) and either opening the gap or
+    predicted to open it
+  - the lead accel is positive (or trending up enough to project
+    positive accel over the recovery horizon)
+  - the runway after applying a_floor keeps the predicted gap above
+    the safety minimum (4 m, or STOP_DISTANCE - small tolerance)
+
+  Callers should treat a return with active=False as "no recovery
+  authority" and let existing lead-follow / lead-stop / urgent paths
+  own the output. Callers must never apply a_floor if the underlying
+  baseline is already braking harder than a_floor, or if a safety
+  hazard (force_slow, FCW/AEB, alternate threat, independent stop
+  threat, short TTC, danger gap, hard lead braking) is active."""
+  v_ego = max(0.0, _finite_float(v_ego))
+  d_rel = max(0.0, _finite_float(d_rel))
+  v_lead = max(0.0, _finite_float(v_lead))
+  a_lead = _finite_float(a_lead)
+  lead_accel_trend = _finite_float(lead_accel_trend)
+  lead_opening = bool(lead_opening)
+  margin = max(0.0, _finite_float(margin))
+  horizon = max(0.1, _finite_float(horizon, MOVING_LEAD_RECOVERY_PREDICT_T))
+  min_lead_accel = max(0.0, _finite_float(min_lead_accel, MOVING_LEAD_RECOVERY_MIN_LEAD_ACCEL))
+  if minimum_allowed_gap is None:
+    minimum_allowed_gap = max(MOVING_LEAD_RECOVERY_MIN_GAP, STOP_DISTANCE - 1.0)
+  minimum_allowed_gap = max(0.0, _finite_float(minimum_allowed_gap, MOVING_LEAD_RECOVERY_MIN_GAP))
+
+  debug: dict[str, object] = {
+    "moving_lead_recovery_v_ego": float(v_ego),
+    "moving_lead_recovery_d_rel": float(d_rel),
+    "moving_lead_recovery_v_lead": float(v_lead),
+    "moving_lead_recovery_a_lead": float(a_lead),
+    "moving_lead_recovery_lead_accel_trend": float(lead_accel_trend),
+    "moving_lead_recovery_lead_opening": bool(lead_opening),
+    "moving_lead_recovery_horizon": float(horizon),
+    "moving_lead_recovery_min_lead_accel": float(min_lead_accel),
+    "moving_lead_recovery_minimum_allowed_gap": float(minimum_allowed_gap),
+  }
+
+  base = MovingLeadRecovery(
+    active=False,
+    phase=MovingLeadRecoveryPhase.INACTIVE,
+    a_floor=0.0,
+    predicted_gap=float(d_rel),
+    minimum_allowed_gap=float(minimum_allowed_gap),
+    safe_accel_cap=0.0,
+    lead_created_runway=False,
+    reason="below_min_v_ego",
+    debug=debug,
+  )
+  if v_ego < MOVING_LEAD_RECOVERY_MIN_V_EGO:
+    return base
+  if d_rel < minimum_allowed_gap:
+    return MovingLeadRecovery(
+      active=False, phase=MovingLeadRecoveryPhase.INACTIVE,
+      a_floor=0.0, predicted_gap=float(d_rel),
+      minimum_allowed_gap=float(minimum_allowed_gap),
+      safe_accel_cap=0.0, lead_created_runway=False,
+      reason="below_min_gap", debug=debug,
+    )
+  if v_lead < 1e-2:
+    return MovingLeadRecovery(
+      active=False, phase=MovingLeadRecoveryPhase.INACTIVE,
+      a_floor=0.0, predicted_gap=float(d_rel),
+      minimum_allowed_gap=float(minimum_allowed_gap),
+      safe_accel_cap=0.0, lead_created_runway=False,
+      reason="lead_not_moving", debug=debug,
+    )
+
+  if desired_gap is None:
+    # Reuse the lead-pursuit safe-obstacle distance scaled by a small
+    # recovery margin, so a recovery floor only relaxes the gap back
+    # toward the standard follow distance, never below it.
+    desired_gap = STOP_DISTANCE + max(0.0, float(get_T_FOLLOW())) * 0.5
+  desired_gap = max(minimum_allowed_gap, _finite_float(desired_gap, minimum_allowed_gap))
+
+  # Project a_lead over the recovery horizon; if the trend is strongly
+  # decreasing, treat the lead as decelerating and abort recovery
+  # authority. This mirrors the runway math used by low-speed pullaway
+  # so the two policies stay aligned on what "opening" means.
+  if a_lead <= -0.05 or lead_accel_trend < -0.20:
+    a_lead_pred = min(0.0, a_lead)
+  else:
+    a_lead_pred = max(0.0, a_lead)
+  if a_lead_pred < min_lead_accel and not (lead_opening or a_lead > 0.0):
+    return MovingLeadRecovery(
+      active=False, phase=MovingLeadRecoveryPhase.INACTIVE,
+      a_floor=0.0, predicted_gap=float(d_rel),
+      minimum_allowed_gap=float(minimum_allowed_gap),
+      safe_accel_cap=0.0, lead_created_runway=False,
+      reason="lead_not_opening", debug=debug,
+    )
+
+  runway_margin_now = d_rel - desired_gap - margin
+  runway_without_ego_accel = runway_margin_now + (v_lead - v_ego) * horizon
+  # Cap ego-side acceleration so the post-floor predicted gap stays
+  # above minimum_allowed_gap. This is the safety runway for moving
+  # recovery: it is intentionally stricter than low-speed pullaway
+  # because we are above MOVING_LEAD_RECOVERY_MIN_V_EGO and the moving
+  # follow path already has its own runway math.
+  a_cap = a_lead_pred + 2.0 * max(runway_without_ego_accel, 0.0) / horizon**2
+  safe_accel_cap = float(np.clip(a_cap, 0.0, MOVING_LEAD_RECOVERY_MAX_ACCEL))
+  predicted_gap = max(0.0, d_rel + (v_lead - v_ego) * horizon + 0.5 * (a_lead_pred - safe_accel_cap) * horizon**2)
+  if predicted_gap < minimum_allowed_gap:
+    # The runway can't keep us above the safety floor; degrade to
+    # coast-only and let the urgent / lead-stop path own the brake.
+    return MovingLeadRecovery(
+      active=False, phase=MovingLeadRecoveryPhase.INACTIVE,
+      a_floor=0.0, predicted_gap=float(predicted_gap),
+      minimum_allowed_gap=float(minimum_allowed_gap),
+      safe_accel_cap=float(safe_accel_cap),
+      lead_created_runway=False,
+      reason="runway_below_floor", debug=debug,
+    )
+
+  runway_margin_t = predicted_gap - desired_gap - margin
+  runway_creation = runway_margin_t - runway_margin_now
+  lead_created_runway = bool(
+    runway_creation >= LEAD_PULLAWAY_RUNWAY_CREATION_MIN and
+    safe_accel_cap >= MOVING_LEAD_RECOVERY_MILD_ACCEL and
+    not (a_lead <= -0.05 or lead_accel_trend < -0.20)
+  )
+
+  # Phase selection:
+  # - GAP_RECOVERY: lead is actively creating runway AND the excess
+  #   margin is large enough that bounded re-accel keeps us above the
+  #   safety floor with room to spare. This is the "lead is leaving,
+  #   close the gap" case.
+  # - MILD_REACCEL: lead accel is positive (or lead_opening) but the
+  #   excess is not yet large enough for full gap recovery. Apply a
+  #   small floor so we follow the lead before the gap explodes.
+  # - BRAKE_RELEASE: lead is just barely recovering or hasn't fully
+  #   opened yet. Just stop braking (a_floor = 0) and let the routine
+  #   lead follow shape the rest.
+  if lead_created_runway and (predicted_gap - minimum_allowed_gap) >= MOVING_LEAD_RECOVERY_MARGIN + 1.0:
+    phase = MovingLeadRecoveryPhase.GAP_RECOVERY
+    a_floor = min(MOVING_LEAD_RECOVERY_MAX_ACCEL, safe_accel_cap)
+  elif a_lead_pred >= min_lead_accel or lead_opening or a_lead > 0.0:
+    phase = MovingLeadRecoveryPhase.MILD_REACCEL
+    a_floor = min(MOVING_LEAD_RECOVERY_MILD_ACCEL, safe_accel_cap)
+  else:
+    phase = MovingLeadRecoveryPhase.BRAKE_RELEASE
+    a_floor = MOVING_LEAD_RECOVERY_RELEASE_A
+
+  debug["moving_lead_recovery_predicted_gap"] = float(predicted_gap)
+  debug["moving_lead_recovery_safe_accel_cap"] = float(safe_accel_cap)
+  debug["moving_lead_recovery_runway_margin_now"] = float(runway_margin_now)
+  debug["moving_lead_recovery_runway_margin_t"] = float(runway_margin_t)
+  debug["moving_lead_recovery_runway_creation"] = float(runway_creation)
+  debug["moving_lead_recovery_a_lead_pred"] = float(a_lead_pred)
+
+  return MovingLeadRecovery(
+    active=True,
+    phase=phase,
+    a_floor=float(a_floor),
+    predicted_gap=float(predicted_gap),
+    minimum_allowed_gap=float(minimum_allowed_gap),
+    safe_accel_cap=float(safe_accel_cap),
+    lead_created_runway=lead_created_runway,
+    reason="moving_lead_recovery_active",
+    debug=debug,
   )
 
 
@@ -1900,7 +2118,8 @@ def build_lead_pullaway_intent_seed_candidates(planner, has_lead, accel_limits, 
 def build_moving_lead_seed_candidates(planner, has_lead, accel_limits, *, moving_stop_guard_a_target=None,
                                       moving_stop_guard_debug=None, lead_accel_recovery_a_target=None, lead_stop_approach_slewed_a_target=None,
                                       lead_stop_approach_base_a_target=None,
-                                      routine_lead_approach_a_target=None, routine_lead_approach_debug=None) -> tuple[PlannerSeedCandidate, ...]:
+                                      routine_lead_approach_a_target=None, routine_lead_approach_debug=None,
+                                      moving_lead_recovery_a_target=None, moving_lead_recovery_debug=None) -> tuple[PlannerSeedCandidate, ...]:
   lead_stop_approach_slew_selection = PLANNER_SEED_CAP
   if lead_stop_approach_slewed_a_target is not None and lead_stop_approach_base_a_target is not None:
     lead_stop_approach_slew_selection = (
@@ -1918,6 +2137,11 @@ def build_moving_lead_seed_candidates(planner, has_lead, accel_limits, *, moving
       ROUTINE_LEAD_APPROACH_SEED_REASON, accel_limits, selection=PLANNER_SEED_FLOOR,
       debug=routine_lead_approach_debug,
     ) if routine_lead_approach_a_target is not None else None,
+    build_planner_seed_accel_candidate(
+      planner, "moving_lead_recovery", moving_lead_recovery_a_target, has_lead,
+      MOVING_LEAD_RECOVERY_SEED_REASON, accel_limits, selection=PLANNER_SEED_FLOOR,
+      debug=moving_lead_recovery_debug,
+    ) if moving_lead_recovery_a_target is not None else None,
     build_planner_seed_accel_candidate(
       planner, "lead_accel_recovery", lead_accel_recovery_a_target, has_lead,
       "lead_accel_recovery", accel_limits, selection=PLANNER_SEED_FLOOR,
@@ -2539,6 +2763,10 @@ def _routine_lead_approach_debug(**overrides):
     "routine_lead_preview_t": ROUTINE_LEAD_APPROACH_PREVIEW_T,
     "routine_lead_projected_gap": 0.0,
     "routine_lead_projected_closing": 0.0,
+    "routine_lead_brake_preview_t": ROUTINE_LEAD_APPROACH_BRAKE_PREVIEW_T,
+    "routine_lead_brake_predicted_gap": 0.0,
+    "routine_lead_brake_projected_closing": 0.0,
+    "routine_lead_no_brake_yet": False,
     "routine_lead_desired_gap": 0.0,
     "routine_lead_caution_gap": 0.0,
     "routine_lead_danger_gap": 0.0,
@@ -2587,13 +2815,25 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   closing_speed = max(v_ego - v_lead, 0.0)
   relative_accel = max(-a_lead, 0.0)
   preview_t = ROUTINE_LEAD_APPROACH_PREVIEW_T
+  brake_preview_t = ROUTINE_LEAD_APPROACH_BRAKE_PREVIEW_T
   response_t = budget.response_time
   response_gap_loss = closing_speed * response_t + 0.5 * relative_accel * response_t**2
   effective_d_rel = max(0.0, d_rel - response_gap_loss)
   delayed_closing_speed = closing_speed + relative_accel * response_t
+  # Coast preview (longer): used to remove positive accel early and to seed
+  # the compression_blend ramp that decides between free_coast / soft_decel /
+  # routine_decel. Coast acts on a longer horizon than braking because a
+  # human driver stops accelerating well before starting to brake.
   projected_closing_speed = max(delayed_closing_speed + relative_accel * preview_t, 0.0)
   predicted_gap_raw = max(0.0, d_rel - closing_speed * preview_t - 0.5 * relative_accel * preview_t**2)
   predicted_gap = max(0.0, effective_d_rel - delayed_closing_speed * preview_t - 0.5 * relative_accel * preview_t**2)
+  # Brake preview (shorter): used to decide whether braking is actually
+  # needed and how hard. By projecting the gap over a shorter horizon we
+  # understate how much gap the routine will consume, so the no-brake-yet
+  # rule stays conservative and the routine phase only commands decel when
+  # the brake-projection says the comfort buffer is really being eaten.
+  brake_projected_closing_speed = max(delayed_closing_speed + relative_accel * brake_preview_t, 0.0)
+  brake_predicted_gap = max(0.0, effective_d_rel - delayed_closing_speed * brake_preview_t - 0.5 * relative_accel * brake_preview_t**2)
   required_decel = float(get_lead_stop_runway_required_decel(d_rel, v_ego, v_lead, closing_speed, a_lead))
   distance_to_caution = d_rel - caution_gap
   distance_to_danger = d_rel - danger_gap
@@ -2603,8 +2843,19 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   projected_compression_budget = predicted_gap - danger_gap
   projected_comfort_budget = predicted_gap - caution_gap
   routine_floor_gap = danger_gap + ROUTINE_LEAD_APPROACH_DANGER_GAP_MARGIN
+  # 4 m hard floor: routine must never intentionally compress below this gap.
+  # STOP_DISTANCE - small tolerance acts as the same floor at the stop target.
+  routine_floor_gap = max(routine_floor_gap, ROUTINE_LEAD_APPROACH_PREDICTED_GAP_FLOOR, STOP_DISTANCE - 1.0)
   gap_after_coast = predicted_gap
-  required_decel_after_coast = projected_closing_speed**2 / (2.0 * max(gap_after_coast - routine_floor_gap, 0.1))
+  required_decel_after_coast = brake_projected_closing_speed**2 / (2.0 * max(brake_predicted_gap - routine_floor_gap, 0.1))
+  # No-brake-yet rule: even when compression_blend says we are deep into
+  # soft_decel / routine_decel, hold off on actual braking if the brake
+  # projection still has us above caution_gap - headroom and the decel
+  # required to recover after a coast is below a small comfort budget.
+  no_brake_yet = bool(
+    brake_predicted_gap > caution_gap - ROUTINE_LEAD_APPROACH_NO_BRAKE_GAP_HEADROOM and
+    required_decel_after_coast < ROUTINE_LEAD_APPROACH_NO_BRAKE_DECEL
+  )
   base_debug = _routine_lead_approach_debug(
     routine_lead_projected_gap=predicted_gap,
     routine_lead_response_time=response_t,
@@ -2614,6 +2865,10 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
     routine_lead_projected_gap_response_compensated=predicted_gap,
     routine_lead_gap_after_coast=gap_after_coast,
     routine_lead_projected_closing=projected_closing_speed,
+    routine_lead_brake_preview_t=brake_preview_t,
+    routine_lead_brake_predicted_gap=brake_predicted_gap,
+    routine_lead_brake_projected_closing=brake_projected_closing_speed,
+    routine_lead_no_brake_yet=no_brake_yet,
     routine_lead_desired_gap=desired_gap,
     routine_lead_caution_gap=caution_gap,
     routine_lead_danger_gap=danger_gap,
@@ -2708,7 +2963,13 @@ def get_routine_lead_approach_accel(*, v_ego, d_rel, v_lead, a_lead, y_rel, t_fo
   if far_coast_active and not _routine_approach_active:
     phase = "far_lead_coast"
     raw_a_target = 0.0
-  elif compression_blend < ROUTINE_LEAD_APPROACH_COAST_BLEND and not urgent:
+  elif (compression_blend < ROUTINE_LEAD_APPROACH_COAST_BLEND or no_brake_yet) and not urgent:
+    # No-brake-yet rule: even if compression_blend would push us into
+    # soft_decel / routine_decel, hold off on braking as long as the brake
+    # projection still has us above caution - headroom and the post-coast
+    # required decel is below the comfort budget. This keeps routine lead
+    # approach from preemptively slowing the car when the lead is just
+    # barely closing in.
     phase = "free_coast"
     raw_a_target = 0.0
   elif compression_blend < ROUTINE_LEAD_APPROACH_SOFT_BLEND and not urgent:
@@ -3090,6 +3351,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.primary_lead_context_tracker = LeadContextTracker()
     self.primary_lead_context = empty_primary_lead_context()
     self.scc_evidence_selector = SccEvidenceSelector()
+    # Moving lead recovery state: track the last lead accel to compute
+    # the lead accel trend for the moving recovery helper. The recovery
+    # helper is gated above MOVING_LEAD_RECOVERY_MIN_V_EGO so the
+    # lead-pursuit trend is only meaningful at moving speeds.
+    self._moving_recovery_last_a_lead = None
+    self._moving_recovery_last_track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -3808,6 +4075,77 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         prev_output_a_target, lead_stop_approach_base_a_target, self.dt, traction_risk=traction_risk,
       )
 
+    # Moving lead recovery: brake-release / bounded re-accel when a
+    # moving lead starts accelerating again. Above
+    # MOVING_LEAD_RECOVERY_MIN_V_EGO, the LeadPullawayIntent tracker is
+    # already gated to NORMAL (no pulse), so the moving recovery helper
+    # is the only brake-release / re-accel authority in this regime.
+    # The recovery floor is a moving comfort/recovery policy, not a
+    # launch authority — it must not change the moving follow target
+    # gap, and it must lose to every safety hazard below.
+    custom_moving_lead_recovery_a_target = None
+    custom_moving_lead_recovery_debug = None
+    moving_recovery_track_id = (
+      int(getattr(primary_physical_lead, "radarTrackId", LEAD_CONFIDENCE_TRACK_UNKNOWN))
+      if primary_physical_lead is not None else LEAD_CONFIDENCE_TRACK_UNKNOWN
+    )
+    if (
+      primary_physical_lead is not None
+      and not reset_state
+      and not force_slow_decel
+      and not sm['carState'].brakePressed
+      and not sm['carState'].gasPressed
+      and v_ego >= MOVING_LEAD_RECOVERY_MIN_V_EGO
+    ):
+      # Track lead accel trend for the recovery helper. The lead-pursuit
+      # track id switches reset the trend baseline, just like the
+      # low-speed pullaway tracker. Use getattr so tests that build
+      # the planner via __new__ (bypassing __init__) still work.
+      last_a_lead = getattr(self, "_moving_recovery_last_a_lead", None)
+      last_track_id = getattr(self, "_moving_recovery_last_track_id", LEAD_CONFIDENCE_TRACK_UNKNOWN)
+      if (
+        moving_recovery_track_id == LEAD_CONFIDENCE_TRACK_UNKNOWN
+        or last_track_id != moving_recovery_track_id
+        or last_a_lead is None
+      ):
+        moving_recovery_trend = 0.0
+      else:
+        moving_recovery_trend = (physical_lead_a - last_a_lead) / max(self.dt, DT_MDL)
+      self._moving_recovery_last_a_lead = float(physical_lead_a)
+      self._moving_recovery_last_track_id = int(moving_recovery_track_id)
+
+      # Reject shadow / flicker / new / suppressive-only leads before
+      # the recovery helper sees them. The helper itself does not
+      # enforce confidence gating; that is the planner's job.
+      moving_recovery_lead = primary_physical_lead
+      if moving_recovery_lead is not None:
+        moving_recovery = get_moving_lead_recovery(
+          v_ego=v_ego,
+          d_rel=float(physical_lead_d_rel),
+          v_lead=float(physical_lead_v_lead),
+          a_lead=float(physical_lead_a),
+          lead_accel_trend=moving_recovery_trend,
+          lead_opening=bool(behavior_lead_opening),
+        )
+        custom_moving_lead_recovery_debug = {
+          "moving_lead_recovery_active": bool(moving_recovery.active),
+          "moving_lead_recovery_phase": moving_recovery.phase.value,
+          "moving_lead_recovery_a_floor": float(moving_recovery.a_floor),
+          "moving_lead_recovery_predicted_gap": float(moving_recovery.predicted_gap),
+          "moving_lead_recovery_minimum_allowed_gap": float(moving_recovery.minimum_allowed_gap),
+          "moving_lead_recovery_safe_accel_cap": float(moving_recovery.safe_accel_cap),
+          "moving_lead_recovery_lead_created_runway": bool(moving_recovery.lead_created_runway),
+          "moving_lead_recovery_reason": str(moving_recovery.reason),
+          "moving_lead_recovery_trend": float(moving_recovery_trend),
+          "moving_lead_recovery_track_id": int(moving_recovery_track_id),
+        }
+        if (
+          moving_recovery.active
+          and not lead_pullaway_independent_stop_threat
+          and not bool(getattr(primary_lead_context, "alternate_threat_active", False))
+        ):
+          custom_moving_lead_recovery_a_target = float(moving_recovery.a_floor)
+
     self.previous_lead_loss_status = lead_loss_guard_lead is not None
     self.previous_lead_loss_d_rel = float(lead_loss_guard_lead.dRel) if lead_loss_guard_lead is not None else 0.0
     self.previous_lead_loss_model_prob = float(lead_loss_guard_lead.modelProb) if lead_loss_guard_lead is not None else 0.0
@@ -4123,6 +4461,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       lead_stop_approach_base_a_target=custom_lead_stop_approach_base_a_target,
       routine_lead_approach_a_target=custom_routine_lead_approach_a_target,
       routine_lead_approach_debug=custom_routine_lead_approach_debug,
+      moving_lead_recovery_a_target=custom_moving_lead_recovery_a_target,
+      moving_lead_recovery_debug=custom_moving_lead_recovery_debug,
     ))
     self.planner_seed_candidates.extend(build_no_lead_stop_seed_candidates(
       self, has_lead, accel_clip,

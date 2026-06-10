@@ -27,11 +27,68 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
 )
 
 
+def _finite_float(value, default=0.0):
+  try:
+    value = float(value)
+  except (TypeError, ValueError):
+    return default
+  return value if (value == value) and value not in (float('inf'), float('-inf')) else default
+
+
+MOVING_LEAD_RECOVERY_MIN_GAP = 4.0
+
+
 LONGITUDINAL_PLAN_SOURCE = log.LongitudinalPlan.LongitudinalPlanSource
 LEAD_MPC_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_PLAN_SOURCE.lead1)}
 E2E_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.e2e)}
 PROGRESS_RELAXATION_SEED_REASONS = {"confirmed_lead_pullaway_pulse", "excess_gap_closure"}
+MOVING_LEAD_RECOVERY_SEED_REASONS = {"moving_lead_recovery"}
 ROUTINE_COMFORT_SEED_REASONS = {"routine_slower_lead_approach"}
+
+
+def _is_moving_lead_recovery_relaxation(converted_candidates: tuple[LongitudinalCandidate, ...]) -> bool:
+  """Detect whether a moving lead recovery RELAXATION seed owns non-urgent shape.
+
+  The moving_lead_recovery seed is a moving comfort/recovery floor, not
+  a launch authority. Fallback suppression should recognize it the same
+  way it recognizes routine comfort — but only when the seed's debug
+  payload confirms it is non-urgent and runway-safe.
+
+  Conditions:
+  - role == RELAXATION
+  - reason == moving_lead_recovery
+  - debug says predicted_gap is above the safety floor
+  - debug says no urgent hard-braking lead (a_lead_pred not strongly
+    negative) and runway margin is non-negative
+
+  Mirrors the planner-level emission conditions so fallback suppression
+  never suppresses a safety-relevant hard-braking-lead baseline while
+  the recovery helper is active."""
+  for candidate in converted_candidates:
+    if candidate.role != CandidateRole.RELAXATION:
+      continue
+    reason = str(candidate.active_reason or "")
+    if reason not in MOVING_LEAD_RECOVERY_SEED_REASONS:
+      continue
+    debug = getattr(candidate, "debug", None) or {}
+    if isinstance(debug, dict):
+      predicted_gap = _finite_float(debug.get("moving_lead_recovery_predicted_gap", 0.0))
+      minimum_allowed_gap = _finite_float(debug.get("moving_lead_recovery_minimum_allowed_gap", MOVING_LEAD_RECOVERY_MIN_GAP))
+      runway_margin_t = _finite_float(debug.get("moving_lead_recovery_runway_margin_t", 0.0))
+      a_lead_pred = _finite_float(debug.get("moving_lead_recovery_a_lead_pred", 0.0))
+    else:
+      predicted_gap = _finite_float(getattr(debug, "moving_lead_recovery_predicted_gap", 0.0))
+      minimum_allowed_gap = _finite_float(getattr(debug, "moving_lead_recovery_minimum_allowed_gap", MOVING_LEAD_RECOVERY_MIN_GAP))
+      runway_margin_t = _finite_float(getattr(debug, "moving_lead_recovery_runway_margin_t", 0.0))
+      a_lead_pred = _finite_float(getattr(debug, "moving_lead_recovery_a_lead_pred", 0.0))
+    if predicted_gap < minimum_allowed_gap:
+      continue
+    if runway_margin_t < 0.0:
+      continue
+    if a_lead_pred < -0.20:
+      continue
+    return True
+  return False
 
 
 def _is_routine_comfort_relaxation(converted_candidates: tuple[LongitudinalCandidate, ...]) -> bool:
@@ -138,6 +195,7 @@ def fallback_physical_candidates(converted_candidates: tuple[LongitudinalCandida
     for candidate in converted_candidates
   )
   routine_comfort_owns_shape = _is_routine_comfort_relaxation(converted_candidates)
+  moving_recovery_owns_shape = _is_moving_lead_recovery_relaxation(converted_candidates)
   fallback_source_is_lead = _source_matches(fallback_output.source, LEAD_MPC_SOURCE_VALUES, {"lead0", "lead1"})
   fallbacks: list[LongitudinalCandidate] = []
   for candidate in raw_candidates:
@@ -161,6 +219,14 @@ def fallback_physical_candidates(converted_candidates: tuple[LongitudinalCandida
     #   fallback suppression should err on the side of preserving safety-relevant
     #   decel, while the lead-stop slew can apply its own rate limit.
     if routine_comfort_owns_shape and candidate.source == DecisionSource.LEAD_MPC:
+      if not candidate.should_stop and not (float(candidate.a_target) < -1.0):
+        continue
+    # Moving lead recovery is a moving comfort/recovery floor, not a
+    # launch authority. When the recovery floor is runway-safe and
+    # non-urgent, suppress raw LEAD_MPC fallback that would re-introduce
+    # the same non-urgent lead baseline. Same hard-braking and stop guards
+    # as routine comfort apply.
+    if moving_recovery_owns_shape and candidate.source == DecisionSource.LEAD_MPC:
       if not candidate.should_stop and not (float(candidate.a_target) < -1.0):
         continue
     fallbacks.append(custom_v2_candidate_with_debug(
@@ -209,6 +275,11 @@ def _role_for_seed(intent: str, reason: str, selection: str = "") -> CandidateRo
   if reason in PROGRESS_ACCEL_CAP_SEED_REASONS:
     return CandidateRole.ADVISORY_CAP
   if reason in ROUTINE_COMFORT_SEED_REASONS and selection == PLANNER_SEED_FLOOR:
+    return CandidateRole.RELAXATION
+  if reason in MOVING_LEAD_RECOVERY_SEED_REASONS:
+    # Moving lead recovery is a moving comfort/recovery floor. It is
+    # never a physical hazard and never a launch authority — it is
+    # always RELAXATION regardless of selection.
     return CandidateRole.RELAXATION
   if reason in PROGRESS_RELAXATION_SEED_REASONS and selection == PLANNER_SEED_FLOOR:
     return CandidateRole.RELAXATION
