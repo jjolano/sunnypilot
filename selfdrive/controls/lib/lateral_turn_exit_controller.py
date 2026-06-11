@@ -131,17 +131,6 @@ class LateralTurnExitController:
       else:
         self._recenter_persistence_frames = max(0, self._recenter_persistence_frames - 1)
 
-    ramp = 0.0
-    if self._recenter_persistence_frames >= RECENTER_PERSISTENCE_FRAMES:
-      ramp_value = (self._recenter_persistence_frames - RECENTER_PERSISTENCE_FRAMES) / RECENTER_PERSISTENCE_FRAMES
-      ramp = max(0.0, min(1.0, float(ramp_value)))
-    persistence_blend = RECENTER_LEAD_REDUCTION_FLOOR + (1.0 - RECENTER_LEAD_REDUCTION_FLOOR) * ramp
-    lead_reduction = RECENTER_LEAD_REDUCTION * persistence_blend
-    slew_boost = 1.0 + (RECENTER_SLEW_BOOST - 1.0) * persistence_blend
-    same_direction_slew_boost = 1.0 + (RECENTER_SAME_DIRECTION_SLEW_BOOST - 1.0) * persistence_blend
-    lead_gain_mult = 1.0 - lead_reduction
-    lead_cap_mult = 1.0 - lead_reduction
-
     target_decreasing_to_zero = abs(target) < abs(previous_target) and target != 0.0
     signs_stable = _signs_stable(target, previous_target)
     early_release_lead_zero = bool(
@@ -149,6 +138,72 @@ class LateralTurnExitController:
       and signs_stable
       and target != 0.0
       and math.isfinite(target_rate)
+    )
+
+    turn_in_active = abs(target) > TURN_IN_MIN_LAT_ACCEL and abs(target_rate) > TURN_IN_MIN_ABS_TARGET_RATE
+    preview_boost = 0.0
+    if turn_in_active and not early_release_lead_zero:
+      preview_target = target + target_rate * PREVIEW_HORIZON_S[0]
+      preview_boost = _compute_preview_boost(
+        target=target,
+        preview_0_2s=preview_target,
+        target_rate=target_rate,
+        v_ego=v_ego,
+      )
+
+    # Recenter is active only after the persistence floor has
+    # cleared. Before that, lead gain / cap multipliers, slew
+    # boost, and same-direction slew boost all stay at the
+    # neutral 1.0 value. early_release_lead_zero may still be
+    # true on a collapse frame; it just means the consumer of
+    # this decision must zero lead directly, not that lead
+    # multipliers should be reduced.
+    recenter_active = self._recenter_persistence_frames >= RECENTER_PERSISTENCE_FRAMES
+    if recenter_active:
+      ramp = max(0.0, min(1.0, float(
+        (self._recenter_persistence_frames - RECENTER_PERSISTENCE_FRAMES) / RECENTER_PERSISTENCE_FRAMES
+      )))
+      persistence_blend = RECENTER_LEAD_REDUCTION_FLOOR + (1.0 - RECENTER_LEAD_REDUCTION_FLOOR) * ramp
+      lead_reduction = RECENTER_LEAD_REDUCTION * persistence_blend
+      lead_gain_mult = 1.0 - lead_reduction
+      lead_cap_mult = 1.0 - lead_reduction
+      slew_boost = 1.0 + (RECENTER_SLEW_BOOST - 1.0) * persistence_blend
+      same_direction_slew_boost = 1.0 + (RECENTER_SAME_DIRECTION_SLEW_BOOST - 1.0) * persistence_blend
+    else:
+      lead_gain_mult = 1.0
+      lead_cap_mult = 1.0
+      slew_boost = 1.0
+      same_direction_slew_boost = 1.0
+
+    if early_release_lead_zero and recenter_active:
+      mode = TurnExitMode.TURN_EXIT.value
+      confidence = 0.95
+    elif early_release_lead_zero:
+      mode = TurnExitMode.EARLY_RELEASE.value
+      confidence = 0.95
+    elif recenter_active:
+      mode = TurnExitMode.TURN_EXIT.value
+      confidence = 0.9
+    elif turn_in_active:
+      mode = TurnExitMode.TURN_IN.value
+      confidence = 0.85
+    elif abs(target) > STEADY_CURVE_MIN_LAT_ACCEL:
+      mode = TurnExitMode.STEADY_CURVE.value
+      confidence = 0.7
+    else:
+      mode = TurnExitMode.INACTIVE.value
+      confidence = 0.5
+
+    return TurnExitDecision(
+      mode=mode,
+      persistence_frames=self._recenter_persistence_frames,
+      lead_gain_multiplier=lead_gain_mult,
+      lead_delta_cap_multiplier=lead_cap_mult,
+      slew_boost=slew_boost,
+      same_direction_slew_boost=same_direction_slew_boost,
+      early_release_lead_zero=early_release_lead_zero,
+      preview_boost=preview_boost,
+      confidence=confidence,
     )
 
     turn_in_active = abs(target) > TURN_IN_MIN_LAT_ACCEL and abs(target_rate) > TURN_IN_MIN_ABS_TARGET_RATE

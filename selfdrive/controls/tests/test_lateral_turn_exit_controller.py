@@ -97,6 +97,98 @@ class TestLateralTurnExitController:
     assert d.lead_gain_multiplier < 1.0
     assert d.slew_boost > 1.0
 
+  def test_turn_exit_controller_inactive_returns_identity_lead_multipliers(self):
+    """When the decision is INACTIVE, lead gain / cap multipliers,
+    slew boost, and same-direction slew boost must all be 1.0.
+    """
+    c = LateralTurnExitController(dt=0.05)
+    d = c.update(target=0.05, profile=None, active=True, v_ego=20.0, path_quality=1.0)
+    assert d.mode == TurnExitMode.INACTIVE.value
+    assert d.lead_gain_multiplier == 1.0
+    assert d.lead_delta_cap_multiplier == 1.0
+    assert d.slew_boost == 1.0
+    assert d.same_direction_slew_boost == 1.0
+
+  def test_turn_exit_controller_turn_in_returns_identity_lead_multipliers(self):
+    """TURN_IN mode is not recenter. Lead multipliers stay at 1.0
+    even though the controller is producing a TURN_IN decision.
+    """
+    c = LateralTurnExitController(dt=0.05)
+    # Need a non-zero target_rate to trigger TURN_IN. Drive from
+    # 0 -> 0.4 in one step so the rate jumps above the floor.
+    c.update(target=0.0, profile=None, active=True, v_ego=20.0)
+    d = c.update(
+      target=0.4, profile=_make_profile(curvature=0.001), active=True, v_ego=20.0,
+    )
+    assert d.mode == TurnExitMode.TURN_IN.value
+    assert d.lead_gain_multiplier == 1.0
+    assert d.lead_delta_cap_multiplier == 1.0
+    assert d.slew_boost == 1.0
+    assert d.same_direction_slew_boost == 1.0
+    assert d.early_release_lead_zero is False
+
+  def test_turn_exit_controller_steady_curve_returns_identity_lead_multipliers(self):
+    """STEADY_CURVE mode is not recenter. Lead multipliers stay at
+    1.0 even though |target| is above STEADY_CURVE_MIN_LAT_ACCEL.
+    """
+    c = LateralTurnExitController(dt=0.05)
+    d = c.update(
+      target=0.6, profile=_make_profile(curvature=0.0015),
+      active=True, v_ego=20.0, path_quality=1.0,
+    )
+    assert d.mode == TurnExitMode.STEADY_CURVE.value
+    assert d.lead_gain_multiplier == 1.0
+    assert d.lead_delta_cap_multiplier == 1.0
+    assert d.slew_boost == 1.0
+    assert d.same_direction_slew_boost == 1.0
+
+  def test_turn_exit_controller_early_release_zeroes_lead_without_lead_multiplier_reduction(self):
+    """EARLY_RELEASE on a collapse frame is allowed to set
+    early_release_lead_zero=True, but lead gain / cap
+    multipliers must stay at 1.0 unless recenter is fully
+    active. The v5 consumer is responsible for zeroing lead
+    delta directly; the multipliers do not change.
+    """
+    c = LateralTurnExitController(dt=0.05)
+    # Drive a target collapse: same sign, decreasing magnitude,
+    # |target| > 0, target_rate finite. recenter is NOT active
+    # (persistence has not yet cleared the floor).
+    decreasing_targets = [0.5, 0.4, 0.3]
+    d = None
+    for t in decreasing_targets:
+      d = c.update(
+        target=t, profile=_make_profile(curvature=t / (20.0 ** 2)),
+        active=True, v_ego=20.0, path_quality=1.0,
+      )
+      if d.early_release_lead_zero:
+        break
+    assert d is not None and d.early_release_lead_zero is True
+    # Recenter not yet active: lead multipliers must stay 1.0.
+    assert d.mode == TurnExitMode.EARLY_RELEASE.value
+    assert d.lead_gain_multiplier == 1.0
+    assert d.lead_delta_cap_multiplier == 1.0
+
+  def test_turn_exit_controller_recenter_active_reduces_lead_multipliers(self):
+    """After the recenter persistence floor clears, lead gain /
+    cap multipliers are reduced below 1.0 and slew boost rises
+    above 1.0.
+    """
+    c = LateralTurnExitController(dt=0.05)
+    decreasing_targets = [0.5, 0.4, 0.3, 0.2, 0.15]
+    d = None
+    for t in decreasing_targets:
+      d = c.update(
+        target=t, profile=_make_profile(curvature=t / (20.0 ** 2)),
+        active=True, v_ego=20.0, path_quality=1.0,
+      )
+    assert d.mode == TurnExitMode.TURN_EXIT.value
+    assert d.persistence_frames >= RECENTER_PERSISTENCE_FRAMES
+    assert d.lead_gain_multiplier < 1.0
+    assert d.lead_delta_cap_multiplier < 1.0
+    assert d.lead_gain_multiplier == pytest.approx(d.lead_delta_cap_multiplier)
+    assert d.slew_boost > 1.0
+    assert d.same_direction_slew_boost > 1.0
+
   def test_turn_exit_persistence_counter(self):
     c = LateralTurnExitController(dt=0.05)
     decreasing_targets = [0.5, 0.4, 0.3, 0.2, 0.15]
