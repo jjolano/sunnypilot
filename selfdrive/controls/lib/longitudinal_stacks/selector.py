@@ -27,6 +27,10 @@ class PlatformCapabilities:
   cp_sp_flags: int = 0
 
 
+def normalize_stack_value(value: object, default_stack: str = DEFAULT_STACK) -> str:
+  return _normalize_stack_value(value, default_stack)
+
+
 class StackCatalog:
   def __init__(self, manifest: dict[str, Any]):
     self.manifest = manifest
@@ -92,10 +96,6 @@ class StackCatalog:
 def load_stack_manifest(path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
   with open(path, encoding="utf-8") as f:
     return json.load(f)
-
-
-def normalize_stack_value(value: object, default_stack: str = DEFAULT_STACK) -> str:
-  return _normalize_stack_value(value, default_stack)
 
 
 def platform_capabilities_from_car_params(CP: object | None, CP_SP: object | None = None) -> PlatformCapabilities:
