@@ -87,6 +87,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LongitudinalManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LongitudinalPersonality", {PERSISTENT | BACKUP, INT, std::to_string(static_cast<int>(cereal::LongitudinalPersonality::STANDARD))}},
     {"LongitudinalStack", {PERSISTENT | BACKUP, STRING, "sunnypilot-current"}},
+    {"FastLeadMotionEvidenceEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"OnePedalLongitudinalMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"NetworkMetered", {PERSISTENT | BACKUP, BOOL}},
     {"ObdMultiplexingChanged", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
@@ -230,6 +231,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ToyotaStopAndGoHack", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     {"DynamicExperimentalControl", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"LongitudinalMode", {PERSISTENT | BACKUP, INT, "0"}},
+    {"LongitudinalModeMigrationVersion", {PERSISTENT, STRING, ""}},
+    {"SccCurveMapEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"SccCurveVisionEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"BlindSpot", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // sunnypilot model params
@@ -280,7 +285,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SpeedLimitValueOffset", {PERSISTENT | BACKUP, INT, "0"}},
 
     // Smart Cruise Control
+    {"MapAdvisoryUpdatedAt", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    {"MapTargetVelocitiesUpdatedAt", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
     {"MapTargetVelocitiesValid", {CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"LastGPSPositionValid", {CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"SmartCruiseControlMap", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -297,9 +304,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TorqueControlTune", {PERSISTENT | BACKUP, FLOAT, "2.0"}},
     // 5.0 lateral demand stack + driving profile selectors.
     // Persistent backup STRING. Defaults are resolved in
-    // lateral_demand_stack.py (custom-2.0 for both). 5.0 is
-    // not default; custom-experimental is the only path that
-    // reaches the 5.0 torque controller.
+    // controlsd (custom-2.0 for both). 5.0 is not default;
+    // custom-experimental is the only path that reaches the
+    // 5.0 torque controller.
     {"LateralDemandStack", {PERSISTENT | BACKUP, STRING, "custom-2.0"}},
     {"ControlsProfile", {PERSISTENT | BACKUP, STRING, "custom-2.0"}},
     {"TorqueParamsOverrideEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},

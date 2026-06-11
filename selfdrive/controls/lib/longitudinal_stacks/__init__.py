@@ -2,6 +2,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import (
   apply_stack_output_to_planner,
   planner_state_to_stack_output,
 )
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_experimental import CustomExperimentalLongitudinalStack
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   CUSTOM_V2_INTENTS,
   CustomLongitudinalStackV2,
@@ -13,6 +14,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import (
   validate_stack_output,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
+  CUSTOM_EXPERIMENTAL,
   CUSTOM_RECOMMENDED,
   CUSTOM_V2,
   DEFAULT_STACK,
@@ -31,9 +33,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_custom_longitudinal_stack
 
 __all__ = [
+  "CUSTOM_EXPERIMENTAL",
   "CUSTOM_RECOMMENDED",
   "CUSTOM_V2",
   "CUSTOM_V2_INTENTS",
+  "CustomExperimentalLongitudinalStack",
   "CustomLongitudinalStackV2",
   "CustomV2Scene",
   "DEFAULT_STACK",

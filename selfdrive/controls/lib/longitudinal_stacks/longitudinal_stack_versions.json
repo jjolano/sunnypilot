@@ -21,10 +21,16 @@
       "always": true
     },
     "custom-recommended": {
-      "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
+      "requiresAny": [
+        "openpilotLongitudinalControl",
+        "alphaLongitudinalAvailable"
+      ]
     },
     "custom-2.0": {
-      "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
+      "requiresAny": [
+        "openpilotLongitudinalControl",
+        "alphaLongitudinalAvailable"
+      ]
     }
   },
   "customRecommendations": {

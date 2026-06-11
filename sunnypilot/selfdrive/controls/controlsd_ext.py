@@ -62,7 +62,12 @@ class ControlsExt(ModelStateBase):
 
   def initialize_lateral_control(self, lac, CI, dt):
     enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
-    torque_resolution = resolve_torque_tune_version(self.params.get("TorqueControlTune", return_default=True))
+    torque_selection = self.params.get("TorqueControlTune", return_default=True)
+    controls_profile_resolution = getattr(self, "controls_profile_resolution", None)
+    active_profile_tune = getattr(controls_profile_resolution, "torque_control_tune", None)
+    if active_profile_tune is not None:
+      torque_selection = getattr(active_profile_tune, "value", active_profile_tune)
+    torque_resolution = resolve_torque_tune_version(torque_selection)
     torque_version = torque_resolution.resolved_version
     native_torque = self.CP.lateralTuning.which() == 'torque'
     if torque_resolution.persist_value is not None:

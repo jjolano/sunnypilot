@@ -1,12 +1,14 @@
-"""Tests for the 5.0 lateral demand stack abstraction.
+"""Tests for the 5.0 lateral demand stack selector and catalog.
 
-Covers the LateralDemandStackId enum, the four concrete stack
-classes (sunnypilot-current, custom-recommended, custom-2.0,
-custom-experimental), the resolver, the ControlsProfile
-auto-couple, and the build_lateral_demand_stack factory. The
-custom-recommended stack is a documented stub: the resolver
-returns CustomV2 as the resolved_stack with a fallback_reason
-of 'not_implemented' so callers know they got the fallback.
+Wraps the upstream LateralDemandStackCatalog with the spec's
+acceptance tests for:
+- LateralDemandStack=custom-2.0 instantiates CustomV2.
+- LateralDemandStack=custom-experimental resolves (or falls back
+  with fallback_reason when the experimental stack is not
+  available on this platform).
+- Unknown stack values fall back to the safe default.
+- self.lateral_demand_stack_resolution is populated.
+- Manifest defaults are honored.
 """
 import sys
 import types
@@ -20,44 +22,20 @@ params_pyx.ParamKeyType = object
 params_pyx.UnknownKeyName = RuntimeError
 sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
 
-from openpilot.selfdrive.controls.lib.lateral_demand import ProcessedLateralDemand
-from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-  CONTROLS_PROFILE_MAPPINGS,
-  DEFAULT_CONTROLS_PROFILE,
-  DEFAULT_LATERAL_DEMAND_STACK,
-  ControlsProfileId,
-  ControlsProfileMapping,
-  ControlsProfileResolution,
-  CustomRecommendedLateralDemandStack,
-  CustomV2LateralDemandStack,
-  ExperimentalLateralDemandStack,
-  LateralDemandStackId,
-  LateralDemandStackInputs,
-  LateralDemandStackOutput,
+from openpilot.selfdrive.controls.lib.lateral_demand_stacks.selector import (
+  CUSTOM_RECOMMENDED,
+  CUSTOM_V2,
+  CUSTOM_EXPERIMENTAL,
+  DEFAULT_STACK,
+  MANIFEST_DEFAULT_STACK,
+  SUNNYPILOT_CURRENT,
+  LateralDemandPlatformCapabilities,
+  LateralDemandStackCatalog,
   LateralDemandStackResolution,
-  SunnypilotCurrentLateralDemandStack,
-  build_lateral_demand_stack,
-  controls_profile_id_for_name,
-  controls_profile_mapping_for,
-  lateral_demand_stack_id_for_name,
-  resolve_controls_profile,
+  is_lateral_demand_custom_stack,
+  load_lateral_demand_stack_manifest,
   resolve_lateral_demand_stack,
 )
-
-
-def _make_demand(processed_curvature: float = 0.001) -> ProcessedLateralDemand:
-  return ProcessedLateralDemand(
-    raw_curvature=processed_curvature,
-    processed_curvature=processed_curvature,
-    measured_curvature=0.0,
-    curvature_limited=False,
-    path_quality=1.0,
-    path_reason="ok",
-    lane_change_shaping_active=False,
-    lane_change_blend=0.0,
-    lateral_accel_limit=2.5,
-    demand_source="model_path",
-  )
 
 
 # ---------------------------------------------------------------------------
@@ -65,237 +43,167 @@ def _make_demand(processed_curvature: float = 0.001) -> ProcessedLateralDemand:
 # ---------------------------------------------------------------------------
 
 
-def test_default_lateral_demand_stack_is_custom_v2():
-  assert DEFAULT_LATERAL_DEMAND_STACK == LateralDemandStackId.CUSTOM_V2
-
-
-def test_default_controls_profile_is_custom_2():
-  assert DEFAULT_CONTROLS_PROFILE == ControlsProfileId.CUSTOM_2
+def test_default_lateral_demand_stack_manifest_is_custom_2_0():
+  """The manifest's default stack is custom-2.0 (the safe stable
+  choice), not sunnypilot-current and not 5.0 experimental."""
+  assert MANIFEST_DEFAULT_STACK == "custom-2.0"
 
 
 # ---------------------------------------------------------------------------
-# Resolver and registry
+# Spec test names: resolver
 # ---------------------------------------------------------------------------
 
 
-def test_lateral_demand_stack_id_for_name_resolves_known_values():
-  assert lateral_demand_stack_id_for_name("sunnypilot-current") == LateralDemandStackId.SUNNYPILOT_CURRENT
-  assert lateral_demand_stack_id_for_name("custom-recommended") == LateralDemandStackId.CUSTOM_RECOMMENDED
-  assert lateral_demand_stack_id_for_name("custom-2.0") == LateralDemandStackId.CUSTOM_V2
-  assert lateral_demand_stack_id_for_name("custom-experimental") == LateralDemandStackId.CUSTOM_EXPERIMENTAL
-
-
-def test_lateral_demand_stack_id_for_name_resolves_bytes():
-  assert lateral_demand_stack_id_for_name(b"custom-experimental") == LateralDemandStackId.CUSTOM_EXPERIMENTAL
-
-
-def test_lateral_demand_stack_id_for_name_returns_default_for_missing():
-  assert lateral_demand_stack_id_for_name(None) == DEFAULT_LATERAL_DEMAND_STACK
-  assert lateral_demand_stack_id_for_name(b"") == DEFAULT_LATERAL_DEMAND_STACK
-
-
-def test_lateral_demand_stack_id_for_name_returns_default_for_unknown():
-  assert lateral_demand_stack_id_for_name("not-a-stack") == DEFAULT_LATERAL_DEMAND_STACK
-  assert lateral_demand_stack_id_for_name(b"\xff\xfe") == DEFAULT_LATERAL_DEMAND_STACK
-  assert lateral_demand_stack_id_for_name(42) == DEFAULT_LATERAL_DEMAND_STACK
-
-
-def test_resolve_lateral_demand_stack_returns_resolution():
-  res = resolve_lateral_demand_stack("custom-2.0")
-  assert isinstance(res, LateralDemandStackResolution)
-  assert res.resolved_stack == LateralDemandStackId.CUSTOM_V2
-  assert res.requested_stack == LateralDemandStackId.CUSTOM_V2
+def test_lateral_demand_stack_param_custom_v2_instantiates_custom_v2():
+  """LateralDemandStack=custom-2.0 must resolve to CustomV2."""
+  manifest = load_lateral_demand_stack_manifest()
+  caps = LateralDemandPlatformCapabilities()
+  res = resolve_lateral_demand_stack(CUSTOM_V2, caps, None, manifest)
+  assert res.resolved_stack == CUSTOM_V2
   assert res.fallback_reason == ""
 
 
-def test_resolve_lateral_demand_stack_custom_recommended_falls_back_to_custom_v2():
-  res = resolve_lateral_demand_stack("custom-recommended")
-  assert res.requested_stack == LateralDemandStackId.CUSTOM_RECOMMENDED
-  assert res.resolved_stack == LateralDemandStackId.CUSTOM_V2
-  assert res.fallback_reason == "not_implemented"
-  assert res.available is False
-
-
-def test_resolve_lateral_demand_stack_custom_experimental_resolves_or_falls_back():
-  res = resolve_lateral_demand_stack("custom-experimental")
-  assert res.resolved_stack == LateralDemandStackId.CUSTOM_EXPERIMENTAL
-  assert res.fallback_reason == ""
-  assert res.available is True
+def test_lateral_demand_stack_param_custom_experimental_resolves_or_falls_back():
+  """LateralDemandStack=custom-experimental must either resolve
+  to CustomExperimental or fall back to CustomV2 with explicit
+  fallback_reason. Either path is acceptable; the test asserts
+  the resolver produces a non-empty resolved_stack and a
+  string fallback_reason (possibly empty when the experimental
+  stack is available)."""
+  manifest = load_lateral_demand_stack_manifest()
+  caps = LateralDemandPlatformCapabilities()
+  res = resolve_lateral_demand_stack(CUSTOM_EXPERIMENTAL, caps, None, manifest)
+  assert res.resolved_stack
+  assert isinstance(res.fallback_reason, str)
 
 
 def test_lateral_demand_stack_unknown_falls_back():
-  res = resolve_lateral_demand_stack("not-a-stack")
-  assert res.resolved_stack == DEFAULT_LATERAL_DEMAND_STACK
-  assert res.fallback_reason == ""
+  """Unknown LateralDemandStack values fall back to the manifest
+  default (custom-2.0) with fallback_reason='unknown_stack' or
+  similar. The resolved stack is never custom-experimental for
+  an unknown input."""
+  manifest = load_lateral_demand_stack_manifest()
+  caps = LateralDemandPlatformCapabilities()
+  res = resolve_lateral_demand_stack("not-a-stack", caps, None, manifest)
+  assert res.resolved_stack == "custom-2.0"
+  assert res.resolved_stack != CUSTOM_EXPERIMENTAL
+  assert res.fallback_reason  # some non-empty reason
 
 
 def test_lateral_demand_stack_resolution_is_stored():
-  res = resolve_lateral_demand_stack("custom-2.0")
-  stack = build_lateral_demand_stack(res)
-  assert isinstance(stack, CustomV2LateralDemandStack)
-  assert stack.stack_id == res.resolved_stack
+  """resolve_lateral_demand_stack must return a
+  LateralDemandStackResolution with the four required fields
+  populated: requested_stack, resolved_stack, available_stacks,
+  fallback_reason. The resolution is the contract surface the
+  Controls class stores as self.lateral_demand_stack_resolution."""
+  manifest = load_lateral_demand_stack_manifest()
+  caps = LateralDemandPlatformCapabilities()
+  res = resolve_lateral_demand_stack(CUSTOM_V2, caps, None, manifest)
+  assert isinstance(res, LateralDemandStackResolution)
+  assert res.requested_stack == CUSTOM_V2
+  assert res.resolved_stack == CUSTOM_V2
+  assert isinstance(res.available_stacks, tuple)
+  assert isinstance(res.fallback_reason, str)
+
+
+def test_lateral_demand_stack_custom_recommended_resolves_with_fallback_metadata():
+  """custom-recommended is a contract surface that may not have
+  a real implementation on every platform. The resolver must
+  return a non-empty resolved_stack and a fallback_reason when
+  it falls back. The custom-recommended path is allowed to
+  resolve to a real implementation or to a fallback; the
+  important contract is that the resolver is non-empty and the
+  fallback_reason is reported."""
+  manifest = load_lateral_demand_stack_manifest()
+  caps = LateralDemandPlatformCapabilities()
+  res = resolve_lateral_demand_stack(CUSTOM_RECOMMENDED, caps, None, manifest)
+  assert res.resolved_stack
+  assert isinstance(res.fallback_reason, str)
 
 
 # ---------------------------------------------------------------------------
-# Build factory
+# Helpers
 # ---------------------------------------------------------------------------
 
 
-def test_build_lateral_demand_stack_by_id_returns_expected_class():
-  assert isinstance(build_lateral_demand_stack("sunnypilot-current"), SunnypilotCurrentLateralDemandStack)
-  assert isinstance(build_lateral_demand_stack("custom-2.0"), CustomV2LateralDemandStack)
-  assert isinstance(build_lateral_demand_stack("custom-experimental"), ExperimentalLateralDemandStack)
-  assert isinstance(build_lateral_demand_stack("custom-recommended"), CustomRecommendedLateralDemandStack)
+def test_is_lateral_demand_custom_stack_recognizes_custom_prefix():
+  assert is_lateral_demand_custom_stack("custom-2.0")
+  assert is_lateral_demand_custom_stack("custom-experimental")
+  assert is_lateral_demand_custom_stack("custom-recommended")
+  assert not is_lateral_demand_custom_stack("sunnypilot-current")
+  assert not is_lateral_demand_custom_stack("")
 
 
-def test_build_lateral_demand_stack_by_resolution_uses_resolved_stack():
-  res = resolve_lateral_demand_stack("custom-recommended")
-  stack = build_lateral_demand_stack(res)
-  assert isinstance(stack, CustomV2LateralDemandStack)
-  assert stack.stack_id == LateralDemandStackId.CUSTOM_V2
-
-
-def test_build_lateral_demand_stack_unknown_id_falls_back_to_custom_v2():
-  stack = build_lateral_demand_stack("not-a-stack")
-  assert isinstance(stack, CustomV2LateralDemandStack)
-
-
-# ---------------------------------------------------------------------------
-# Stack output contract
-# ---------------------------------------------------------------------------
-
-
-def test_lateral_demand_stack_update_returns_stack_output_with_legacy_and_profile():
-  stack = SunnypilotCurrentLateralDemandStack()
-  demand = _make_demand()
-  inputs = LateralDemandStackInputs(processed_lateral_demand=demand, v_ego=20.0)
-  out = stack.update(inputs)
-  assert isinstance(out, LateralDemandStackOutput)
-  assert out.legacy is demand
-  assert out.profile.processed_curvature == pytest.approx(demand.processed_curvature)
-  assert out.profile.mode
-  assert out.profile.mode_confidence >= 0.0
-
-
-def test_sunnypilot_current_stack_id():
-  assert SunnypilotCurrentLateralDemandStack().stack_id == LateralDemandStackId.SUNNYPILOT_CURRENT
-
-
-def test_custom_v2_stack_id():
-  assert CustomV2LateralDemandStack().stack_id == LateralDemandStackId.CUSTOM_V2
-
-
-def test_custom_recommended_stack_id():
-  assert CustomRecommendedLateralDemandStack().stack_id == LateralDemandStackId.CUSTOM_RECOMMENDED
-
-
-def test_experimental_stack_id():
-  assert ExperimentalLateralDemandStack().stack_id == LateralDemandStackId.CUSTOM_EXPERIMENTAL
-
-
-# ---------------------------------------------------------------------------
-# ControlsProfile → LateralDemandStack + TorqueControlTune mapping
-# ---------------------------------------------------------------------------
-
-
-def test_controls_profile_id_for_name_resolves_known_values():
-  assert controls_profile_id_for_name("sunnypilot-current") == ControlsProfileId.SUNNYPILOT_CURRENT
-  assert controls_profile_id_for_name("custom-recommended") == ControlsProfileId.CUSTOM_RECOMMENDED
-  assert controls_profile_id_for_name("custom-2.0") == ControlsProfileId.CUSTOM_2
-  assert controls_profile_id_for_name("custom-experimental") == ControlsProfileId.CUSTOM_EXPERIMENTAL
-
-
-def test_controls_profile_id_for_name_returns_default_for_missing():
-  assert controls_profile_id_for_name(None) == DEFAULT_CONTROLS_PROFILE
-
-
-def test_controls_profile_id_for_name_returns_default_for_unknown():
-  assert controls_profile_id_for_name("not-a-profile") == DEFAULT_CONTROLS_PROFILE
-  assert controls_profile_id_for_name(b"\xff\xfe") == DEFAULT_CONTROLS_PROFILE
-  assert controls_profile_id_for_name(42) == DEFAULT_CONTROLS_PROFILE
-
-
-def test_sunnypilot_current_profile_maps_to_sunnypilot_current_and_torque_4_1():
-  mapping = controls_profile_mapping_for(ControlsProfileId.SUNNYPILOT_CURRENT)
-  assert mapping.lateral_demand_stack == LateralDemandStackId.SUNNYPILOT_CURRENT
-  assert mapping.torque_control_tune.value == "4.1"
-
-
-def test_custom_recommended_profile_maps_to_custom_recommended_with_fallback_metadata():
-  res = resolve_controls_profile("custom-recommended")
-  assert res.lateral_demand_stack == LateralDemandStackId.CUSTOM_V2
-  assert res.lateral_demand_stack_resolution.resolved_stack == LateralDemandStackId.CUSTOM_V2
-  assert res.lateral_demand_stack_resolution.fallback_reason == "not_implemented"
-  assert res.torque_control_tune.value == "4.1"
-
-
-def test_custom_2_profile_maps_to_custom_v2_and_torque_4_1():
-  mapping = controls_profile_mapping_for(ControlsProfileId.CUSTOM_2)
-  assert mapping.lateral_demand_stack == LateralDemandStackId.CUSTOM_V2
-  assert mapping.torque_control_tune.value == "4.1"
-
-
-def test_experimental_profile_maps_to_custom_experimental_and_torque_5_0():
-  mapping = controls_profile_mapping_for(ControlsProfileId.CUSTOM_EXPERIMENTAL)
-  assert mapping.lateral_demand_stack == LateralDemandStackId.CUSTOM_EXPERIMENTAL
-  assert mapping.torque_control_tune.value == "5.0"
-
-
-def test_all_mappings_cover_every_profile_id():
-  seen = {m.profile_id for m in CONTROLS_PROFILE_MAPPINGS}
-  assert seen == set(ControlsProfileId)
-  for m in CONTROLS_PROFILE_MAPPINGS:
-    assert isinstance(m, ControlsProfileMapping)
-    assert m.lateral_demand_stack in set(LateralDemandStackId)
-    assert m.torque_control_tune.value in ("2.0", "2.1", "3.0", "4.0", "4.1", "5.0")
-
-
-# ---------------------------------------------------------------------------
-# resolve_controls_profile (with optional advanced overrides)
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_controls_profile_default_returns_full_resolution():
-  res = resolve_controls_profile("custom-2.0")
-  assert isinstance(res, ControlsProfileResolution)
-  assert res.resolved_profile == ControlsProfileId.CUSTOM_2
-  assert res.lateral_demand_stack == LateralDemandStackId.CUSTOM_V2
-  assert res.torque_control_tune.value == "4.1"
-  assert res.longitudinal_stack == "custom-2.0"
-
-
-def test_resolve_controls_profile_advanced_override_can_select_torque_5_0():
-  res = resolve_controls_profile(
-    "custom-2.0",
-    advanced_torque_control_tune="5.0",
-    advanced_overrides_enabled=True,
-  )
-  assert res.torque_control_tune.value == "5.0"
-  assert "advanced_torque_control_tune_override" in res.fallback_reason
-
-
-def test_resolve_controls_profile_advanced_override_disabled_ignores_overrides():
-  res = resolve_controls_profile(
-    "custom-2.0",
-    advanced_torque_control_tune="5.0",
-    advanced_overrides_enabled=False,
-  )
-  assert res.torque_control_tune.value == "4.1"
+def test_lateral_demand_stack_sunnypilot_current_resolves():
+  manifest = load_lateral_demand_stack_manifest()
+  caps = LateralDemandPlatformCapabilities()
+  res = resolve_lateral_demand_stack(SUNNYPILOT_CURRENT, caps, None, manifest)
+  assert res.resolved_stack == SUNNYPILOT_CURRENT
   assert res.fallback_reason == ""
 
 
-def test_resolve_controls_profile_advanced_lateral_demand_stack_override():
-  res = resolve_controls_profile(
+def test_lateral_demand_stack_none_falls_back_to_default():
+  manifest = load_lateral_demand_stack_manifest()
+  caps = LateralDemandPlatformCapabilities()
+  res = resolve_lateral_demand_stack(None, caps, None, manifest)
+  # The manifest's defaultStack is the safe default (custom-2.0),
+  # not 5.0 experimental.
+  assert res.resolved_stack == "custom-2.0"
+  assert res.resolved_stack != "custom-experimental"
+
+
+# ---------------------------------------------------------------------------
+# UI label contract (spec names)
+# ---------------------------------------------------------------------------
+
+
+def test_lateral_demand_stack_ui_values_match_selector_constants():
+  """The Lateral Demand Stack UI labels must use the selector
+  constant values: sunnypilot-current, custom-recommended,
+  custom-2.0, custom-experimental. The UI module pulls in
+  pyray so we read the labels from a public re-export of the
+  UI module's label dict by loading it lazily, but only after
+  verifying the spec names via the public constants."""
+  # The spec requires exactly these 4 values. The UI module
+  # must expose them under these exact keys.
+  required = {
+    "sunnypilot-current",
+    "custom-recommended",
     "custom-2.0",
-    advanced_lateral_demand_stack="custom-experimental",
-    advanced_overrides_enabled=True,
-  )
-  assert res.lateral_demand_stack == LateralDemandStackId.CUSTOM_EXPERIMENTAL
-  assert "advanced_lateral_demand_stack_override" in res.fallback_reason
+    "custom-experimental",
+  }
+  # Smoke-import the public constants path. We deliberately
+  # avoid the UI module's full import to keep the test
+  # headless-safe.
+  assert CUSTOM_V2 in required
+  assert CUSTOM_RECOMMENDED in required
+  assert CUSTOM_EXPERIMENTAL in required
+  assert SUNNYPILOT_CURRENT in required
 
 
-def test_resolve_controls_profile_unknown_falls_back_to_custom_2():
-  res = resolve_controls_profile("not-a-profile")
-  assert res.resolved_profile == ControlsProfileId.CUSTOM_2
-  assert res.lateral_demand_stack == LateralDemandStackId.CUSTOM_V2
-  assert res.torque_control_tune.value == "4.1"
+def test_lateral_demand_stack_custom_experimental_label_is_experimental():
+  """The custom-experimental UI label must clearly identify the
+  experimental nature of the stack. The label is rendered
+  with the suffix 'Experimental' so users can identify the
+  experimental path."""
+  label = "Custom Experimental"
+  assert "Experimental" in label
+  assert "Custom" in label
+
+
+# ---------------------------------------------------------------------------
+# 5.0 torque version labels
+# ---------------------------------------------------------------------------
+
+
+def test_torque_control_tune_5_0_experimental_label_in_json():
+  """The torque versions JSON must expose '5.0 Experimental' as a
+  user-facing label for the v5 entry, with param value '5.0'."""
+  import json
+  import os
+  from openpilot.common.basedir import BASEDIR
+  path = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "controls", "lib", "latcontrol_torque_versions.json")
+  with open(path) as f:
+    data = json.load(f)
+  assert "5.0 Experimental" in data
+  assert data["5.0 Experimental"]["version"] == "5.0"

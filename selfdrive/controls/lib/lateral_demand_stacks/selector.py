@@ -10,24 +10,27 @@ SUNNYPILOT_CURRENT = "sunnypilot-current"
 CUSTOM_RECOMMENDED = "custom-recommended"
 CUSTOM_V2 = "custom-2.0"
 CUSTOM_EXPERIMENTAL = "custom-experimental"
-DEFAULT_STACK = SUNNYPILOT_CURRENT
 
-MANIFEST_PATH = Path(__file__).with_name("longitudinal_stack_versions.json")
+DEFAULT_STACK = SUNNYPILOT_CURRENT
+MANIFEST_DEFAULT_STACK = CUSTOM_V2
+
+MANIFEST_PATH = Path(__file__).with_name("lateral_demand_stack_versions.json")
 
 
 @dataclass(frozen=True)
-class PlatformCapabilities:
+class LateralDemandPlatformCapabilities:
   brand: str = ""
   car_fingerprint: str = ""
-  openpilot_longitudinal_control: bool = False
-  alpha_longitudinal_available: bool = False
-  pcm_cruise: bool = False
-  radar_unavailable: bool = False
+  lateral_controller_stack: str = ""
+  torque_version: int = 0
+  model_v2_available: bool = True
+  lane_lines_available: bool = True
+  lane_centering_assist_enabled: bool = False
   cp_sp_flags: int = 0
 
 
 @dataclass(frozen=True)
-class StackResolution:
+class LateralDemandStackResolution:
   requested_stack: str
   resolved_stack: str
   available_stacks: tuple[str, ...]
@@ -37,7 +40,7 @@ class StackResolution:
 
 
 @dataclass(frozen=True)
-class StackDefinition:
+class LateralDemandStackDefinition:
   name: str
   label: str
   family: str
@@ -45,13 +48,13 @@ class StackDefinition:
   implemented: bool = True
 
 
-class StackCatalog:
+class LateralDemandStackCatalog:
   def __init__(self, manifest: dict[str, Any]):
     self.manifest = manifest
 
   @property
   def default_stack(self) -> str:
-    return str(self.manifest.get("defaultStack") or DEFAULT_STACK)
+    return str(self.manifest.get("defaultStack") or MANIFEST_DEFAULT_STACK)
 
   @property
   def custom_recommended_fallback(self) -> str:
@@ -61,9 +64,9 @@ class StackCatalog:
   def stack_names(self) -> tuple[str, ...]:
     return tuple(str(stack) for stack in self.manifest.get("stacks", {}))
 
-  def stack_definition(self, stack: str) -> StackDefinition:
+  def stack_definition(self, stack: str) -> LateralDemandStackDefinition:
     info = self.manifest.get("stacks", {}).get(stack, {})
-    return StackDefinition(
+    return LateralDemandStackDefinition(
       name=str(stack or ""),
       label=str(info.get("label") or stack or ""),
       family=str(info.get("family") or ""),
@@ -74,7 +77,7 @@ class StackCatalog:
   def is_known(self, stack: str) -> bool:
     return stack in self.manifest.get("stacks", {})
 
-  def available_stacks(self, capabilities: PlatformCapabilities) -> tuple[str, ...]:
+  def available_stacks(self, capabilities: LateralDemandPlatformCapabilities) -> tuple[str, ...]:
     available: list[str] = []
     for stack in self.stack_names:
       definition = self.stack_definition(stack)
@@ -85,7 +88,7 @@ class StackCatalog:
         available.append(stack)
     return tuple(available)
 
-  def custom_recommended_stack(self, capabilities: PlatformCapabilities) -> str:
+  def custom_recommended_stack(self, capabilities: LateralDemandPlatformCapabilities) -> str:
     recommendations = self.manifest.get("customRecommendations", {})
     fingerprints = recommendations.get("fingerprints", {})
     fingerprint_keys = (
@@ -95,7 +98,6 @@ class StackCatalog:
     for key in fingerprint_keys:
       if key and key in fingerprints:
         return str(fingerprints[key] or "")
-
     brands = recommendations.get("brands", {})
     if capabilities.brand and capabilities.brand in brands:
       return str(brands[capabilities.brand] or "")
@@ -106,14 +108,15 @@ class StackCatalog:
       return "unimplemented_stack"
     return "unavailable_stack"
 
-  def resolve(self, requested_stack: object, capabilities: PlatformCapabilities) -> StackResolution:
+  def resolve(self, requested_stack: object,
+              capabilities: LateralDemandPlatformCapabilities) -> LateralDemandStackResolution:
     requested = normalize_stack_value(requested_stack, self.default_stack)
     available_stacks = self.available_stacks(capabilities)
 
     if requested == CUSTOM_RECOMMENDED:
       recommended = self.custom_recommended_stack(capabilities)
       if recommended and recommended in available_stacks:
-        return StackResolution(
+        return LateralDemandStackResolution(
           requested_stack=requested,
           resolved_stack=recommended,
           available_stacks=available_stacks,
@@ -121,7 +124,7 @@ class StackCatalog:
           custom_version=self.stack_definition(recommended).version,
         )
       fallback = self.custom_recommended_fallback
-      return StackResolution(
+      return LateralDemandStackResolution(
         requested_stack=requested,
         resolved_stack=fallback,
         available_stacks=available_stacks,
@@ -130,8 +133,18 @@ class StackCatalog:
         fallback_reason="custom_recommended_unresolved",
       )
 
+    if requested == CUSTOM_EXPERIMENTAL and CUSTOM_EXPERIMENTAL not in available_stacks:
+      fallback = CUSTOM_V2 if CUSTOM_V2 in available_stacks else self.default_stack
+      return LateralDemandStackResolution(
+        requested_stack=requested,
+        resolved_stack=fallback,
+        available_stacks=available_stacks,
+        custom_version=self.stack_definition(fallback).version,
+        fallback_reason="experimental_unavailable",
+      )
+
     if not self.is_known(requested):
-      return StackResolution(
+      return LateralDemandStackResolution(
         requested_stack=requested,
         resolved_stack=self.default_stack,
         available_stacks=available_stacks,
@@ -139,7 +152,7 @@ class StackCatalog:
       )
 
     if requested not in available_stacks:
-      return StackResolution(
+      return LateralDemandStackResolution(
         requested_stack=requested,
         resolved_stack=self.default_stack,
         available_stacks=available_stacks,
@@ -147,7 +160,7 @@ class StackCatalog:
         fallback_reason=self.unavailable_reason(requested),
       )
 
-    return StackResolution(
+    return LateralDemandStackResolution(
       requested_stack=requested,
       resolved_stack=requested,
       available_stacks=available_stacks,
@@ -155,12 +168,12 @@ class StackCatalog:
     )
 
 
-def load_stack_manifest(path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
+def load_lateral_demand_stack_manifest(path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
   with open(path, encoding="utf-8") as f:
     return json.load(f)
 
 
-def normalize_stack_value(value: object, default_stack: str = DEFAULT_STACK) -> str:
+def normalize_stack_value(value: object, default_stack: str = MANIFEST_DEFAULT_STACK) -> str:
   if value is None:
     return default_stack
   if isinstance(value, bytes):
@@ -169,47 +182,35 @@ def normalize_stack_value(value: object, default_stack: str = DEFAULT_STACK) -> 
   return value or default_stack
 
 
-def platform_capabilities_from_car_params(CP: object | None, CP_SP: object | None = None) -> PlatformCapabilities:
-  return PlatformCapabilities(
+def lateral_demand_platform_capabilities_from_car_params(CP: object | None,
+                                                        CP_SP: object | None = None) -> LateralDemandPlatformCapabilities:
+  return LateralDemandPlatformCapabilities(
     brand=str(_get_attr(CP, "brand", "") or ""),
     car_fingerprint=str(_get_attr(CP, "carFingerprint", "") or ""),
-    openpilot_longitudinal_control=bool(_get_attr(CP, "openpilotLongitudinalControl", False)),
-    alpha_longitudinal_available=bool(_get_attr(CP, "alphaLongitudinalAvailable", False)),
-    pcm_cruise=bool(_get_attr(CP, "pcmCruise", False)),
-    radar_unavailable=bool(_get_attr(CP, "radarUnavailable", False)),
+    model_v2_available=True,
+    lane_lines_available=True,
+    lane_centering_assist_enabled=bool(_get_attr(CP_SP, "laneCenteringAssistEnabled", False)),
     cp_sp_flags=_safe_int(_get_attr(CP_SP, "flags", 0)),
   )
 
 
-def get_available_stacks(manifest: dict[str, Any], capabilities: PlatformCapabilities) -> tuple[str, ...]:
-  return StackCatalog(manifest).available_stacks(capabilities)
+def get_available_lateral_demand_stacks(manifest: dict[str, Any],
+                                        capabilities: LateralDemandPlatformCapabilities) -> tuple[str, ...]:
+  return LateralDemandStackCatalog(manifest).available_stacks(capabilities)
 
 
-def is_custom_stack(stack: str) -> bool:
+def is_lateral_demand_custom_stack(stack: str) -> bool:
   return str(stack or "").startswith("custom-")
 
 
-def resolve_longitudinal_stack(
-    requested_stack: object,
-    CP: object | None = None,
-    CP_SP: object | None = None,
-    manifest: dict[str, Any] | None = None) -> StackResolution:
-  manifest = manifest if manifest is not None else load_stack_manifest()
-  catalog = StackCatalog(manifest)
-  capabilities = platform_capabilities_from_car_params(CP, CP_SP)
+def resolve_lateral_demand_stack(requested_stack: object,
+                                 CP: object | None = None,
+                                 CP_SP: object | None = None,
+                                 manifest: dict[str, Any] | None = None) -> LateralDemandStackResolution:
+  manifest = manifest if manifest is not None else load_lateral_demand_stack_manifest()
+  catalog = LateralDemandStackCatalog(manifest)
+  capabilities = lateral_demand_platform_capabilities_from_car_params(CP, CP_SP)
   return catalog.resolve(requested_stack, capabilities)
-
-
-def stack_id_for_name(name: str):
-  from cereal import custom
-
-  StackId = custom.LongitudinalPlanSP.Stack.StackId
-  stack_id_by_name = {
-    SUNNYPILOT_CURRENT: StackId.sunnypilotCurrent,
-    CUSTOM_RECOMMENDED: StackId.customRecommended,
-    CUSTOM_V2: StackId.customV2,
-  }
-  return stack_id_by_name.get(str(name or ""), StackId.unknown)
 
 
 def _get_attr(obj: object | None, name: str, default: object) -> object:
@@ -223,21 +224,20 @@ def _safe_int(value: object) -> int:
     return 0
 
 
-def _capability_value(capabilities: PlatformCapabilities, key: str) -> bool:
+def _capability_value(capabilities: LateralDemandPlatformCapabilities, key: str) -> bool:
   mapping = {
-    "openpilotLongitudinalControl": capabilities.openpilot_longitudinal_control,
-    "alphaLongitudinalAvailable": capabilities.alpha_longitudinal_available,
-    "pcmCruise": capabilities.pcm_cruise,
-    "radarUnavailable": capabilities.radar_unavailable,
+    "modelV2Available": capabilities.model_v2_available,
+    "laneLinesAvailable": capabilities.lane_lines_available,
+    "laneCenteringAssistEnabled": capabilities.lane_centering_assist_enabled,
   }
   return bool(mapping.get(key, False))
 
 
-def _availability_rule_matches(rule: dict[str, Any], capabilities: PlatformCapabilities) -> bool:
+def _availability_rule_matches(rule: dict[str, Any], capabilities: LateralDemandPlatformCapabilities) -> bool:
   if not rule:
     return False
-  if rule.get("always"):
-    return True
+  if "always" in rule:
+    return bool(rule.get("always"))
 
   required = tuple(rule.get("requires", ()))
   if required and not all(_capability_value(capabilities, key) for key in required):
@@ -251,4 +251,5 @@ def _availability_rule_matches(rule: dict[str, Any], capabilities: PlatformCapab
   if blocked and any(_capability_value(capabilities, key) for key in blocked):
     return False
 
-  return True
+  has_match_condition = bool(required) or bool(requires_any) or bool(blocked)
+  return has_match_condition

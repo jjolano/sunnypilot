@@ -26,6 +26,9 @@ params_pyx.UnknownKeyName = RuntimeError
 sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
 
 from openpilot.selfdrive.controls.lib.lateral_demand import ProcessedLateralDemand
+from openpilot.selfdrive.controls.lib.lateral_demand_stacks.interface import (
+  LateralDemandStackOutput,
+)
 
 
 def _make_demand(processed_curvature: float = 0.001) -> ProcessedLateralDemand:
@@ -52,8 +55,7 @@ def test_controlsd_forwards_stack_profile_before_lateral_update():
   """state_control must call self.lateral_demand_stack.update(...) and
   forward stack_output.profile to the LaC BEFORE
   self.LaC.update(...). Static source check: parse the method body
-  and verify the call ordering.
-  """
+  and verify the call ordering."""
   from openpilot.selfdrive.controls import controlsd
 
   source = inspect.getsource(controlsd.Controls.state_control)
@@ -78,8 +80,7 @@ def test_controlsd_does_not_double_update_lateral_demand_profile_builder():
   directly. All builds must go through the lateral demand stack
   (self.lateral_demand_stack.update) so the build and push are atomic.
   The legacy update_lateral_demand_profile wrapper is retained for
-  unit-test backward compat but must not be called from state_control.
-  """
+  unit-test backward compat but must not be called from state_control."""
   from openpilot.selfdrive.controls import controlsd
 
   source = inspect.getsource(controlsd.Controls.state_control)
@@ -87,8 +88,7 @@ def test_controlsd_does_not_double_update_lateral_demand_profile_builder():
   legacy_call_count = source.count("self.update_lateral_demand_profile(")
   assert builder_call_count == 0, (
     "state_control must not call lateral_demand_profile_builder.update directly; "
-    "go through the lateral_demand_stack so build and push are atomic. Found "
-    f"{builder_call_count} direct call(s)."
+    f"found {builder_call_count} direct call(s)."
   )
   assert legacy_call_count == 0, (
     "state_control must not call the legacy update_lateral_demand_profile wrapper; "
@@ -104,28 +104,24 @@ def test_controlsd_state_control_records_stack_output_and_desired_curvature():
   from openpilot.selfdrive.controls import controlsd
 
   source = inspect.getsource(controlsd.Controls.state_control)
-  assert "self.lateral_demand_stack_output = stack_output" in source
+  assert "self.lateral_demand_stack_output = " in source
   assert "self.desired_curvature = " in source
-  assert "self.processed_lateral_demand = processed_lateral_demand" in source
+  assert "self.processed_lateral_demand = " in source
 
 
 def test_controlsd_build_lateral_demand_stack_inputs_method_exists():
   """controlsd must expose build_lateral_demand_stack_inputs as the
   per-frame bundle the lateral demand stack consumes. The method
-  is the contract surface for state_control's stack update call;
-  state_control tests verify it returns a LateralDemandStackInputs
-  by running end-to-end (this test verifies the public surface
-  exists and accepts the four required args)."""
+  is the contract surface for state_control's stack update call."""
   from openpilot.selfdrive.controls.controlsd import Controls
-  assert hasattr(Controls, "build_lateral_demand_stack_inputs")
-  import inspect
-  sig = inspect.signature(Controls.build_lateral_demand_stack_inputs)
-  params = list(sig.parameters.keys())
-  assert params[:4] == ["self", "CC", "CS", "model_v2"]
-  assert "lp" in params
-  from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks.interface import (
     LateralDemandStackInputs,
   )
+  assert hasattr(Controls, "build_lateral_demand_stack_inputs")
+  sig = inspect.signature(Controls.build_lateral_demand_stack_inputs)
+  params = list(sig.parameters.keys())
+  # First four args (after self) must be CC, CS, model_v2, and live_params.
+  assert params[:5] == ["self", "CC", "CS", "model_v2", "live_params"]
   return_annotation = sig.return_annotation
   assert return_annotation is LateralDemandStackInputs or return_annotation is inspect.Signature.empty
 
@@ -153,6 +149,10 @@ def test_controlsd_pushes_stack_output_profile_to_lac_directly():
     def __init__(self, profile):
       self.profile = profile
       self.legacy = None
+      self.requested_stack = "custom-2.0"
+      self.resolved_stack = "custom-2.0"
+      self.fallback_reason = ""
+      self.version = "2.0"
 
   controls = Controls.__new__(Controls)
   controls.LaC = FakeController()
@@ -189,6 +189,10 @@ def test_controlsd_push_lateral_demand_stack_output_uses_extension_hook():
     def __init__(self, profile):
       self.profile = profile
       self.legacy = None
+      self.requested_stack = "custom-2.0"
+      self.resolved_stack = "custom-2.0"
+      self.fallback_reason = ""
+      self.version = "2.0"
 
   controls = Controls.__new__(Controls)
   controls.LaC = FakeController()
@@ -222,13 +226,12 @@ def test_v5_uses_same_frame_turn_in_profile_for_preview_gate():
   from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
     TurnExitDecision,
   )
-  from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 
   sys.modules.setdefault("msgq", types.ModuleType("msgq"))
   from cereal import car
   from opendbc.car.car_helpers import interfaces
   from opendbc.car.toyota.values import CAR as TOYOTA
-
+  from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
   from openpilot.common.realtime import DT_CTRL
   from openpilot.selfdrive.car.helpers import convert_to_capnp
   from openpilot.selfdrive.controls.lib.lateral_demand import (

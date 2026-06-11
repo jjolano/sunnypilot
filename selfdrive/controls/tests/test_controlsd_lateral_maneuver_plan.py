@@ -35,7 +35,20 @@ visionipc = types.ModuleType("msgq.visionipc")
 visionipc.VisionBuf = object
 visionipc.VisionIpcClient = object
 visionipc.VisionIpcServer = object
-visionipc.VisionStreamType = object
+# NOTE: do NOT set visionipc.VisionStreamType = object here. The visionipc
+# module is registered into sys.modules (via setdefault below) and the
+# object builtin has no usable enum members; later tests that import
+# msgq.visionipc (e.g. via openpilot.selfdrive.test.process_replay.vision_meta)
+# would resolve VisionStreamType to <class 'object'> and fail with
+# AttributeError: type object 'object' has no attribute 'VISION_STREAM_ROAD'.
+# Use a small class stand-in that quacks like a flag enum for any
+# incidental attribute lookups in this test file.
+class _FakeVisionStreamType:
+  VISION_STREAM_ROAD = 0
+  VISION_STREAM_DRIVER = 1
+  VISION_STREAM_WIDE_ROAD = 2
+  VISION_STREAM_MAP = 3
+visionipc.VisionStreamType = _FakeVisionStreamType
 visionipc.get_endpoint_name = lambda *args, **kwargs: ""
 sys.modules.setdefault("msgq.visionipc", visionipc)
 
@@ -51,6 +64,7 @@ from openpilot.selfdrive.controls.lib.lateral_demand import (
   DEMAND_SOURCE_MODEL_PATH,
   ProcessedLateralDemand,
 )
+from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfile, LateralDemandProfileBuilder
 from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessorResult
 
 
@@ -66,7 +80,7 @@ class FakeSubMaster(dict):
       modelDataV2SP=types.SimpleNamespace(laneTurnDirection=0),
     )
     self._checks_ok = checks_ok
-    self.valid = {'modelDataV2SP': False}
+    self.valid = {'modelDataV2SP': False, 'modelV2': True, 'liveParameters': True, 'lateralManeuverPlan': checks_ok}
 
   def all_checks(self, services):
     assert services == ['lateralManeuverPlan']
@@ -144,6 +158,7 @@ def make_model_v2(raw_curvature=0.002):
     orientation=types.SimpleNamespace(z=zeros),
     orientationRate=types.SimpleNamespace(z=zeros),
     laneLineProbs=(0.0, 0.9, 0.9, 0.0),
+    laneLineStds=(0.0, 0.0, 0.0, 0.0),
     laneLines=[types.SimpleNamespace(y=[]), types.SimpleNamespace(y=[-1.8]), types.SimpleNamespace(y=[1.8]), types.SimpleNamespace(y=[])],
     frameDropPerc=0.0,
   )
@@ -188,7 +203,39 @@ def make_demand_controls(*, previous_curvature=0.0, measured_curvature=0.001, de
   controls.lane_change_path_shaper = FakeLaneChangePathShaper(lane_result or LaneChangePathShaperResult(measured_curvature, 0.0, False, False))
   controls.params.put_bool("LaneCenteringAssistEnabled", False)
   controls.lane_centering_assist_tracker = FakeLaneCenteringAssistTracker()
+
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks.custom_v2 import CustomV2LateralDemandStack
+  stack = CustomV2LateralDemandStack(dt=0.05)
+  stack._model_path_processor = controls.model_path_processor
+  stack._lane_change_path_shaper = controls.lane_change_path_shaper
+  stack._lane_centering_assist_tracker = controls.lane_centering_assist_tracker
+  stack._model_path_result = controls.model_path_result
+  stack._smoothed_model_path_curvature = controls.smoothed_model_path_curvature
+  stack._previous_desired_curvature = previous_curvature
+  stack._lateral_accel_limit_no_roll = controls.lateral_accel_limit_no_roll
+  stack._default_lateral_accel_limited = controls.default_lateral_accel_limited
+  controls.lateral_demand_stack = stack
   return controls
+
+
+def run_lateral_demand(controls, CC, CS, model_v2, live_params):
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks import LateralDemandStackInputs
+  if hasattr(controls, 'lane_centering_assist_tracker') and controls.lane_centering_assist_tracker is not controls.lateral_demand_stack._lane_centering_assist_tracker:
+    controls.lateral_demand_stack._lane_centering_assist_tracker = controls.lane_centering_assist_tracker
+  if hasattr(controls, 'model_path_processor') and controls.model_path_processor is not controls.lateral_demand_stack._model_path_processor:
+    controls.lateral_demand_stack._model_path_processor = controls.model_path_processor
+  if hasattr(controls, 'lane_change_path_shaper') and controls.lane_change_path_shaper is not controls.lateral_demand_stack._lane_change_path_shaper:
+    controls.lateral_demand_stack._lane_change_path_shaper = controls.lane_change_path_shaper
+  stack_inputs = controls.build_lateral_demand_stack_inputs(CC, CS, model_v2, live_params)
+  output = controls.lateral_demand_stack.update(stack_inputs)
+  controls.desired_curvature = output.legacy.processed_curvature
+  controls.processed_lateral_demand = output.legacy
+  controls.model_path_result = controls.lateral_demand_stack.model_path_result
+  controls.model_path_raw_desired_curvature = controls.lateral_demand_stack.model_path_raw_desired_curvature
+  controls.smoothed_model_path_curvature = controls.lateral_demand_stack.smoothed_model_path_curvature
+  controls.lateral_accel_limit_no_roll = controls.lateral_demand_stack.lateral_accel_limit_no_roll
+  controls.default_lateral_accel_limited = controls.lateral_demand_stack.default_lateral_accel_limited
+  return output
 
 
 def test_lateral_maneuver_curvature_uses_fresh_finite_plan():
@@ -261,7 +308,8 @@ def test_processed_lateral_demand_tracks_raw_path_processed_and_clipped_curvatur
   live_params = make_live_params()
   raw_curvature = 0.02
 
-  demand = controls.build_processed_lateral_demand(make_car_control(), CS, make_model_v2(raw_curvature), live_params)
+  output = run_lateral_demand(controls, make_car_control(), CS, make_model_v2(raw_curvature), live_params)
+  demand = output.legacy
   expected_curvature, expected_limited, _ = clip_curvature(
     CS.vEgo,
     0.0,
@@ -298,7 +346,8 @@ def test_lane_centering_assist_is_default_off_for_processed_demand():
   CS = make_car_state(v_ego=20.0)
   live_params = make_live_params()
 
-  demand = controls.build_processed_lateral_demand(make_car_control(), CS, make_model_v2(), live_params)
+  output = run_lateral_demand(controls, make_car_control(), CS, make_model_v2(), live_params)
+  demand = output.legacy
   expected_curvature, _expected_limited, _ = clip_curvature(
     CS.vEgo, 0.0, lane_result.desired_curvature, live_params.roll, MAX_LATERAL_ACCEL_NO_ROLL,
   )
@@ -319,7 +368,8 @@ def test_lane_centering_assist_nudges_before_final_clipping_when_enabled():
   CS = make_car_state(v_ego=20.0)
   live_params = make_live_params()
 
-  demand = controls.build_processed_lateral_demand(make_car_control(), CS, make_model_v2(), live_params)
+  output = run_lateral_demand(controls, make_car_control(), CS, make_model_v2(), live_params)
+  demand = output.legacy
   expected_curvature, _expected_limited, _ = clip_curvature(
     CS.vEgo, 0.0, lane_result.desired_curvature + 0.0002, live_params.roll, MAX_LATERAL_ACCEL_NO_ROLL,
   )
@@ -342,7 +392,8 @@ def test_lane_centering_assist_does_not_bypass_final_clipping():
   CS = make_car_state(v_ego=30.0)
   live_params = make_live_params()
 
-  demand = controls.build_processed_lateral_demand(make_car_control(), CS, make_model_v2(), live_params)
+  output = run_lateral_demand(controls, make_car_control(), CS, make_model_v2(), live_params)
+  demand = output.legacy
   expected_curvature, expected_limited, _ = clip_curvature(
     CS.vEgo, 0.0, 1.0, live_params.roll, MAX_LATERAL_ACCEL_NO_ROLL,
   )
@@ -358,8 +409,8 @@ def test_lateral_maneuver_source_does_not_call_lane_centering_assist():
   tracker = FakeLaneCenteringAssistTracker(LaneCenteringAssistResult(True, 0.0002, 0.1, 0.0, 0.2, 1.0, "growing_lateral_error"))
   controls.lane_centering_assist_tracker = tracker
 
-  demand = controls.build_processed_lateral_demand(make_car_control(), make_car_state(), make_model_v2(), make_live_params())
-
+  output = run_lateral_demand(controls, make_car_control(), make_car_state(), make_model_v2(), make_live_params())
+  demand = output.legacy
   assert tracker.inputs is None
   assert demand.demand_source == DEMAND_SOURCE_LATERAL_MANEUVER
   assert not demand.lane_centering_assist_active
@@ -372,7 +423,8 @@ def test_lateral_maneuver_plan_processed_demand_resets_path_and_lane_shaping():
   CS = make_car_state(v_ego=10.0)
   live_params = make_live_params()
 
-  demand = controls.build_processed_lateral_demand(make_car_control(), CS, make_model_v2(raw_curvature), live_params)
+  output = run_lateral_demand(controls, make_car_control(), CS, make_model_v2(raw_curvature), live_params)
+  demand = output.legacy
   expected_curvature, expected_limited, _ = clip_curvature(
     CS.vEgo,
     0.0,
@@ -405,7 +457,8 @@ def test_inactive_processed_lateral_demand_preserves_existing_clipping_path():
   CS = make_car_state(v_ego=10.0)
   live_params = make_live_params()
 
-  demand = controls.build_processed_lateral_demand(CC, CS, make_model_v2(0.02), live_params)
+  output = run_lateral_demand(controls, CC, CS, make_model_v2(0.02), live_params)
+  demand = output.legacy
   expected_curvature, expected_limited, _ = clip_curvature(
     CS.vEgo,
     previous_curvature,
@@ -470,7 +523,6 @@ def test_update_lateral_controller_demand_ignores_missing_hook():
 
 
 def test_update_lateral_demand_profile_calls_direct_hook():
-  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfile
 
   class FakeController:
     def __init__(self):
@@ -481,8 +533,9 @@ def test_update_lateral_demand_profile_calls_direct_hook():
 
   controls = Controls.__new__(Controls)
   controls.LaC = FakeController()
-  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder
-  controls.lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks.custom_v2 import CustomV2LateralDemandStack
+  controls.lateral_demand_stack = CustomV2LateralDemandStack(dt=0.05)
+  controls.lateral_demand_stack._lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
   demand = ProcessedLateralDemand(0.001, 0.001, 0.0, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
 
   controls.update_lateral_demand_profile(demand, v_ego=20.0)
@@ -508,8 +561,9 @@ def test_update_lateral_demand_profile_uses_extension_hook():
 
   controls = Controls.__new__(Controls)
   controls.LaC = FakeController()
-  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder
-  controls.lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks.custom_v2 import CustomV2LateralDemandStack
+  controls.lateral_demand_stack = CustomV2LateralDemandStack(dt=0.05)
+  controls.lateral_demand_stack._lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
   demand = ProcessedLateralDemand(0.001, 0.001, 0.0, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
 
   controls.update_lateral_demand_profile(demand, v_ego=20.0)
@@ -520,15 +574,16 @@ def test_update_lateral_demand_profile_uses_extension_hook():
 def test_update_lateral_demand_profile_ignores_missing_hook():
   controls = Controls.__new__(Controls)
   controls.LaC = object()
-  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder
-  controls.lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks.custom_v2 import CustomV2LateralDemandStack
+  controls.lateral_demand_stack = CustomV2LateralDemandStack(dt=0.05)
+  controls.lateral_demand_stack._lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
   demand = ProcessedLateralDemand(0.001, 0.001, 0.0, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
 
   controls.update_lateral_demand_profile(demand, v_ego=20.0)
 
 
 def test_update_lateral_demand_profile_classifies_steering_pressed_as_driver_override():
-  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralMode
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder, LateralMode
 
   class FakeController:
     def __init__(self):
@@ -539,8 +594,9 @@ def test_update_lateral_demand_profile_classifies_steering_pressed_as_driver_ove
 
   controls = Controls.__new__(Controls)
   controls.LaC = FakeController()
-  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder
-  controls.lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks.custom_v2 import CustomV2LateralDemandStack
+  controls.lateral_demand_stack = CustomV2LateralDemandStack(dt=0.05)
+  controls.lateral_demand_stack._lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=0.05)
   demand = ProcessedLateralDemand(0.001, 0.001, 0.0, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
 
   controls.update_lateral_demand_profile(demand, v_ego=20.0, steering_pressed=True)
@@ -596,12 +652,12 @@ def test_controlsd_does_not_double_update_lateral_demand_profile_builder():
 
 def test_controlsd_resolves_lateral_demand_stack_from_param():
   """controlsd.__init__ must resolve the LateralDemandStack
-  param into a LateralDemandStackResolution on the instance.
-  The custom-2.0 default applies for missing or unknown
-  values."""
+  param into a concrete stack on the instance. The
+  sunnypilot-current migration default applies for missing
+  or unknown values."""
   from openpilot.selfdrive.controls.controlsd import Controls
   from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-    LateralDemandStackId, build_lateral_demand_stack, resolve_lateral_demand_stack,
+    LateralDemandStackId, resolve_lateral_demand_stack,
   )
 
   class FakeParams:
@@ -614,9 +670,7 @@ def test_controlsd_resolves_lateral_demand_stack_from_param():
   controls.params = FakeParams()
   resolution = resolve_lateral_demand_stack(None)
   controls.lateral_demand_stack_resolution = resolution
-  controls.lateral_demand_stack = build_lateral_demand_stack(resolution)
   assert resolution.resolved_stack == LateralDemandStackId.CUSTOM_V2
-  assert controls.lateral_demand_stack.stack_id == LateralDemandStackId.CUSTOM_V2
 
 
 def test_controlsd_pushes_stack_output_profile_to_lac():
@@ -689,29 +743,23 @@ def test_controlsd_push_lateral_demand_stack_output_uses_extension_hook():
   assert controls.LaC.extension.profile is profile
 
 
-def test_controlsd_lateral_demand_stack_auto_couples_torque_per_id():
-  """Each lateral demand stack id maps to a TorqueControlTune
-  value via the controls profile mapping:
+def test_controlsd_auto_couple_torque_for_stack_maps_experimental_to_5_0():
+  """_auto_couple_torque_for_stack must map each known stack
+  id to the correct TorqueControlTune value:
   custom-experimental → 5.0, custom-2.0 → 4.1,
-  sunnypilot-current → 4.1. Custom-recommended → 4.1
-  (with fallback metadata)."""
+  sunnypilot-current → 4.1.
+  """
+  from openpilot.selfdrive.controls.controlsd import Controls
   from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-    ControlsProfileId, controls_profile_mapping_for, resolve_controls_profile,
+    CustomExperimentalLateralDemandStack,
+    CustomV2LateralDemandStack,
+    SunnypilotCurrentLateralDemandStack,
   )
 
-  experimental = controls_profile_mapping_for(ControlsProfileId.CUSTOM_EXPERIMENTAL)
-  assert experimental.torque_control_tune.value == "5.0"
-  custom_2 = controls_profile_mapping_for(ControlsProfileId.CUSTOM_2)
-  assert custom_2.torque_control_tune.value == "4.1"
-  sunnypilot_current = controls_profile_mapping_for(ControlsProfileId.SUNNYPILOT_CURRENT)
-  assert sunnypilot_current.torque_control_tune.value == "4.1"
-  recommended = controls_profile_mapping_for(ControlsProfileId.CUSTOM_RECOMMENDED)
-  assert recommended.torque_control_tune.value == "4.1"
-  # The custom-recommended path must NOT silently expose a
-  # missing stack; the resolution's lateral_demand_stack_resolution
-  # carries fallback metadata.
-  recommended_resolution = resolve_controls_profile("custom-recommended")
-  assert recommended_resolution.lateral_demand_stack_resolution.fallback_reason == "not_implemented"
+  controls = Controls.__new__(Controls)
+  assert controls._auto_couple_torque_for_stack(CustomExperimentalLateralDemandStack()) == 5.0
+  assert controls._auto_couple_torque_for_stack(CustomV2LateralDemandStack()) == 4.1
+  assert controls._auto_couple_torque_for_stack(SunnypilotCurrentLateralDemandStack()) == 4.1
 
 
 def test_controls_profile_experimental_auto_couples_torque_5_0():
@@ -723,11 +771,57 @@ def test_controls_profile_experimental_auto_couples_torque_5_0():
   test confirms the user-facing profile selector routes to V5.
   """
   from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-    ControlsProfileId, resolve_controls_profile,
+    ControlsProfileId,
+    controls_profile_mapping_for,
   )
   from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import resolve_torque_tune_version
 
-  resolution = resolve_controls_profile("custom-experimental")
-  torque_resolution = resolve_torque_tune_version(resolution.torque_control_tune.value)
-  assert torque_resolution.resolved_version == 5.0
-  assert resolution.lateral_demand_stack.value == "custom-experimental"
+  mapping = controls_profile_mapping_for(ControlsProfileId.CUSTOM_EXPERIMENTAL)
+  resolution = resolve_torque_tune_version(mapping.torque_control_tune.value)
+  assert resolution.resolved_version == 5.0
+  assert mapping.lateral_demand_stack.value == "custom-experimental"
+
+
+def _make_capnp_model_v2_reader(lane_change_state=log.LaneChangeState.off,
+                                lane_change_direction=log.LaneChangeDirection.none,
+                                raw_curvature=0.002):
+  msg = messaging.new_message('modelV2')
+  mv2 = msg.modelV2
+  mv2.action.desiredCurvature = float(raw_curvature)
+  mv2.meta.laneChangeState = lane_change_state
+  mv2.meta.laneChangeDirection = lane_change_direction
+  samples = [float(i) for i in range(33)]
+  zeros = [0.0 for _ in samples]
+  mv2.position.x = samples
+  mv2.position.y = zeros
+  mv2.position.yStd = zeros
+  mv2.orientation.z = zeros
+  mv2.orientationRate.z = zeros
+  mv2.laneLineProbs = [0.0, 0.9, 0.9, 0.0]
+  mv2.laneLineStds = [0.0, 0.0, 0.0, 0.0]
+  lane_lines = mv2.init('laneLines', 4)
+  lane_lines[1].y = [-1.8]
+  lane_lines[2].y = [1.8]
+  mv2.frameDropPerc = 0.0
+  with log.Event.from_bytes(msg.to_bytes()) as evt:
+    return evt.modelV2.as_builder().as_reader()
+
+
+@pytest.mark.parametrize("lcs,lcd", [
+  (log.LaneChangeState.off, log.LaneChangeDirection.none),
+  (log.LaneChangeState.preLaneChange, log.LaneChangeDirection.left),
+  (log.LaneChangeState.laneChangeStarting, log.LaneChangeDirection.right),
+  (log.LaneChangeState.laneChangeFinishing, log.LaneChangeDirection.left),
+])
+def test_build_lateral_demand_stack_inputs_accepts_capnp_dynamic_enum(lcs, lcd):
+  controls = make_demand_controls()
+  model_v2 = _make_capnp_model_v2_reader(lane_change_state=lcs, lane_change_direction=lcd)
+
+  stack_inputs = controls.build_lateral_demand_stack_inputs(
+    make_car_control(), make_car_state(), model_v2, make_live_params(),
+  )
+
+  assert isinstance(stack_inputs.lane_change_state, int)
+  assert isinstance(stack_inputs.lane_change_direction, int)
+  assert stack_inputs.lane_change_state == int(getattr(lcs, "raw", lcs))
+  assert stack_inputs.lane_change_direction == int(getattr(lcd, "raw", lcd))

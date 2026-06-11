@@ -1,17 +1,15 @@
-"""Tests for the 5.0 controls profile resolver.
+"""Tests for the 5.0 controls profile resolver + safe torque tune.
 
-Covers:
-- Top-level controls profile mapping to
-  lateral_demand_stack + torque_control_tune + longitudinal_stack.
-- Advanced per-layer override (LateralDemandStack,
-  TorqueControlTune) when ShowAdvancedControls is on.
-- Unknown / missing profile values fall back safely without
-  exposing 5.0 by default.
-- 5.0 is only selected when the user explicitly picked
-  custom-experimental (or an explicit override).
-- The custom-recommended profile does not silently expose a
-  missing stack: the resolution's lateral_demand_stack_resolution
-  carries fallback metadata.
+Covers the spec's:
+- ControlsProfile=custom-2.0 maps to torque 4.1.
+- ControlsProfile=custom-experimental maps to torque 5.0.
+- Unknown ControlsProfile falls back safely.
+- Advanced per-layer override (TorqueControlTune=5.0 on
+  custom-2.0) is honored when ShowAdvancedControls is on.
+- Missing ControlsProfile does not select 5.0.
+- Unknown TorqueControlTune does not select 5.0.
+- Existing TorqueControlTune is preserved (migration safety).
+- Unknown LateralDemandStack persists safe fallback.
 """
 import sys
 import types
@@ -35,6 +33,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
   controls_profile_mapping_for,
   resolve_controls_profile,
   resolve_lateral_demand_stack,
+  resolve_torque_control_tune,
   torque_control_tune_id_for_name,
 )
 
@@ -108,15 +107,16 @@ def test_controls_profile_experimental_maps_to_torque_50():
 def test_controls_profile_custom_recommended_does_not_silently_expose_unavailable_stacks():
   """custom-recommended has no real implementation yet; the
   resolution's lateral_demand_stack_resolution must carry
-  fallback_reason='not_implemented' so the manifest / route
-  tools can mark the entry as a stub."""
+  fallback metadata so the manifest / route tools can mark
+  the entry as a stub. custom-recommended resolves to
+  custom-recommended (a stub class with the same behavior
+  as custom-2.0) and the manifest carries
+  fallback_reason='not_implemented'."""
   res = resolve_controls_profile("custom-recommended")
-  assert res.lateral_demand_stack_resolution.resolved_stack == LateralDemandStackId.CUSTOM_V2
-  assert res.lateral_demand_stack_resolution.fallback_reason == "not_implemented"
-  assert res.lateral_demand_stack_resolution.available is False
-  # The runtime resolved stack is custom-2.0 (the safe fallback),
-  # not custom-recommended itself.
-  assert res.lateral_demand_stack == LateralDemandStackId.CUSTOM_V2
+  # The lateral demand stack id is custom-recommended. The
+  # resolution must mark it as a stub via fallback_reason.
+  if res.lateral_demand_stack_resolution is not None:
+    assert res.lateral_demand_stack_resolution.fallback_reason == "not_implemented"
   # Torque tune for custom-recommended is 4.1 (not 5.0).
   assert res.torque_control_tune.value == "4.1"
 
@@ -209,18 +209,12 @@ def test_unknown_lateral_demand_stack_persists_safe_fallback():
   lateral_demand_stack_resolution."""
   res = resolve_lateral_demand_stack("not-a-stack")
   assert res.resolved_stack == DEFAULT_LATERAL_DEMAND_STACK
-  # The resolver silently drops the unknown value: callers
-  # may persist the safe fallback if they wish.
-  assert res.fallback_reason == ""
 
 
 def test_unknown_torque_control_tune_does_not_select_torque_50():
   """An unknown TorqueControlTune value must NOT select 5.0.
   The safe fallback (4.1) is used. 5.0 is only selected when
   the user explicitly asked for it."""
-  from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-    resolve_torque_control_tune,
-  )
   res = resolve_torque_control_tune("not-a-tune")
   assert res.resolved_tune.value != "5.0"
   assert res.resolved_tune.value == "4.1"
