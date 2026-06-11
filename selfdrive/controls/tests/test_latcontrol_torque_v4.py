@@ -4177,6 +4177,146 @@ def test_recenter_mode_boosts_sign_change_slew_rate():
   assert result_boosted.output_torque == pytest.approx(0.5 - 2.0 * _DT)
 
 
+def _v5_turn_exit_context():
+  """Build a populated v5 governor context that reports
+  turn_exit_active, mirroring the state a real v5 turn-exit
+  unwind frame would carry.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5GovernorContext,
+  )
+  return TorqueV5GovernorContext(
+    profile_available=True,
+    demand_mode="turn_in",
+    demand_mode_confidence=0.9,
+    preview_active=False,
+    turn_exit_active=True,
+    wobble_active=False,
+    v5_active=True,
+    v5_reason="turn_exit_source_of_truth",
+  )
+
+
+def test_v4_recenter_governor_behavior_unchanged():
+  """v4 governor (no v5 context) must still receive the legacy
+  recenter slew boost on sign-change unwind. This is the
+  pre-existing path the v5 turn-exit integration is forbidden
+  from breaking.
+  """
+  governor = TorqueV4OutputGovernor(_DT, LatControlTorqueV4.GOVERNOR_PROFILE)
+  governor.previous_output = 0.5
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.0, slew_boost=2.0)
+  result_boosted = governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+    speed_model=speed_result, recenter=recenter, v5_context=None,
+  )
+  # RECENTER_MODE flag is set, output is boosted to 2.0x slew.
+  assert result_boosted.reason & TorqueV4GovernorReason.RECENTER_MODE
+  assert result_boosted.output_torque == pytest.approx(0.5 - 2.0 * _DT)
+
+
+def test_v5_turn_exit_governor_does_not_double_apply_recenter_and_v5_boost():
+  """When the v5 context reports turn_exit_active on a sign-change
+  frame, the legacy recenter slew boost must NOT also multiply
+  the slew rate. v5 turn-exit is the source of truth and the
+  bounded v5 boost (1.20x) is the only slew multiplier applied
+  on those frames. Without this guard, the same frame would
+  receive recenter (2.0x) * v5 (1.20x) = 2.40x, which is the
+  double-apply bug.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.governor.previous_output = 0.5
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.0, slew_boost=2.0)
+  v5_ctx = _v5_turn_exit_context()
+
+  result = v5.governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+    speed_model=speed_result, recenter=recenter, v5_context=v5_ctx,
+  )
+  # RECENTER_MODE flag is NOT set on a v5 turn-exit frame; the
+  # legacy boost path is suppressed.
+  assert not (result.reason & TorqueV4GovernorReason.RECENTER_MODE)
+  # Output is at the v5-only 1.20x slew, not the stacked 2.40x.
+  assert result.output_torque == pytest.approx(0.5 - 1.20 * _DT)
+
+
+def test_v5_turn_exit_governor_applies_v5_boost_on_sign_change():
+  """When the v5 context reports turn_exit_active on a
+  sign-change frame and recenter is not active, the v5
+  sign-change slew boost (1.20x) is applied to the
+  sign_change_slew_rate.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.governor.previous_output = 0.5
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+  v5_ctx = _v5_turn_exit_context()
+
+  result = v5.governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+    speed_model=speed_result, recenter=None, v5_context=v5_ctx,
+  )
+  # Sign-change was detected, v5 boost applied at 1.20x.
+  assert result.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+  assert not (result.reason & TorqueV4GovernorReason.RECENTER_MODE)
+  assert result.output_torque == pytest.approx(0.5 - 1.20 * _DT)
+
+
+def test_v5_turn_exit_governor_applies_v5_boost_on_same_direction_unwind():
+  """When the v5 context reports turn_exit_active on a
+  same-direction unwind frame, the v5 same-direction slew
+  boost (1.10x) is applied to the output_slew_rate. This test
+  uses a custom profile with same_direction_decrease_bypass=False
+  so the slew limiter actually runs on the unwind path; the
+  default V4 profile bypasses the slew on same-direction
+  decrease, which would mask the boost.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV4GovernorProfile,
+  )
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  no_bypass_profile = TorqueV4GovernorProfile(
+    **{**LatControlTorqueV4.GOVERNOR_PROFILE.__dict__, "same_direction_decrease_bypass": False}
+  )
+  v5.governor = TorqueV4OutputGovernor(_DT, no_bypass_profile)
+  v5.governor.previous_output = 1.0
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+  v5_ctx = _v5_turn_exit_context()
+
+  # raw_output_torque is same sign as previous_output and
+  # |raw_output| <= |previous_output| → target_decreases_same_direction.
+  result = v5.governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=0.5, max_output=1.0,
+    speed_model=speed_result, recenter=None, v5_context=v5_ctx,
+  )
+  # v5 same-direction boost (1.10x) on output_slew_rate (3.0).
+  assert not (result.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED)
+  assert not (result.reason & TorqueV4GovernorReason.RECENTER_MODE)
+  assert result.output_torque == pytest.approx(1.0 - 3.0 * 1.10 * _DT)
+
+
 # ----------------------------------------------------------------------------
 # Recenter mode refinement: looser thresholds, persistence, early release
 # ----------------------------------------------------------------------------

@@ -652,7 +652,18 @@ class TorqueV4OutputGovernor:
     slew_rate = speed_model.sign_change_slew_rate if sign_change else speed_model.output_slew_rate
     if sign_change:
       reason |= TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
-    if recenter is not None and recenter.active and (sign_change or target_decreases_same_direction):
+    # 5.0 source-of-truth: v5 turn-exit is the only unwinder on
+    # frames where v5_context.turn_exit_active is set. The legacy
+    # recenter slew boost is suppressed on those frames to avoid
+    # stacking legacy_recenter_boost * v5_turn_exit_boost on the
+    # same unwind. v4.1 (no v5 context) keeps the legacy behavior.
+    v5_turn_exit_unwinding = (
+      v5_context is not None
+      and v5_context.turn_exit_active
+      and (sign_change or target_decreases_same_direction)
+    )
+    legacy_recenter_boost_allowed = not v5_turn_exit_unwinding
+    if recenter is not None and recenter.active and legacy_recenter_boost_allowed and (sign_change or target_decreases_same_direction):
       # Apply recenter slew boost: allow faster unwind (sign-change or
       # same-direction unwind) when recentering. The same-direction
       # path uses a smaller boost (RECENTER_SAME_DIRECTION_SLEW_BOOST)
@@ -669,11 +680,7 @@ class TorqueV4OutputGovernor:
     # or same-direction decrease), and only as a bounded slew-rate
     # multiplier. Output caps, sign-change slew rates, and safety
     # caps remain at v4.1 values.
-    if (
-      v5_context is not None
-      and v5_context.turn_exit_active
-      and (sign_change or target_decreases_same_direction)
-    ):
+    if v5_turn_exit_unwinding:
       if sign_change:
         slew_rate *= TORQUE_V5_TURN_EXIT_SIGN_CHANGE_SLEW_BOOST
       else:

@@ -206,48 +206,6 @@ class LateralTurnExitController:
       confidence=confidence,
     )
 
-    turn_in_active = abs(target) > TURN_IN_MIN_LAT_ACCEL and abs(target_rate) > TURN_IN_MIN_ABS_TARGET_RATE
-    preview_boost = 0.0
-    if turn_in_active and not early_release_lead_zero:
-      preview_target = target + target_rate * PREVIEW_HORIZON_S[0]
-      preview_boost = _compute_preview_boost(
-        target=target,
-        preview_0_2s=preview_target,
-        target_rate=target_rate,
-        v_ego=v_ego,
-      )
-
-    if early_release_lead_zero and self._recenter_persistence_frames >= RECENTER_PERSISTENCE_FRAMES:
-      mode = TurnExitMode.TURN_EXIT.value
-      confidence = 0.95
-    elif early_release_lead_zero:
-      mode = TurnExitMode.EARLY_RELEASE.value
-      confidence = 0.95
-    elif self._recenter_persistence_frames >= RECENTER_PERSISTENCE_FRAMES:
-      mode = TurnExitMode.TURN_EXIT.value
-      confidence = 0.9
-    elif turn_in_active:
-      mode = TurnExitMode.TURN_IN.value
-      confidence = 0.85
-    elif abs(target) > STEADY_CURVE_MIN_LAT_ACCEL:
-      mode = TurnExitMode.STEADY_CURVE.value
-      confidence = 0.7
-    else:
-      mode = TurnExitMode.INACTIVE.value
-      confidence = 0.5
-
-    return TurnExitDecision(
-      mode=mode,
-      persistence_frames=self._recenter_persistence_frames,
-      lead_gain_multiplier=lead_gain_mult,
-      lead_delta_cap_multiplier=lead_cap_mult,
-      slew_boost=slew_boost,
-      same_direction_slew_boost=same_direction_slew_boost,
-      early_release_lead_zero=early_release_lead_zero,
-      preview_boost=preview_boost,
-      confidence=confidence,
-    )
-
 
 def _signs_stable(a: float, b: float) -> bool:
   if a == 0.0 and b == 0.0:
