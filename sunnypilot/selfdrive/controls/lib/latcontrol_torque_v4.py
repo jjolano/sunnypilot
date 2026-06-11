@@ -1857,8 +1857,13 @@ class LatControlTorqueV5(LatControlTorqueV41):
       return False, "non_model_demand"
     if bool(getattr(demand, "lane_change_shaping_active", False)):
       return False, "lane_change"
+    # Fail closed: a missing or non-finite lane_change_blend is
+    # treated as if a lane change is in progress. Better to skip
+    # the boost than to apply it without the missing input.
     lcb = _finite_float(getattr(demand, "lane_change_blend", None))
-    if lcb is not None and abs(lcb) > 1e-3:
+    if lcb is None:
+      return False, "lane_change"
+    if abs(lcb) > 1e-3:
       return False, "lane_change"
     if curvature_limited:
       return False, "curvature_limited"
