@@ -28,8 +28,9 @@ def msg(kind, t_s, **payload):
 
 def sample(t, plan_a, a_ego, route="route-a", route_id="route-a", segment=None, v=8.0, gas=False, brake=False,
            active=False, long_active=False, source="cruise", lead=False, d_rel=None, v_rel=None,
-           should_stop=False, fcw=False, sp_source="cruise", sp_stack="sunnypilotCurrent", v_cruise=80.0,
+           should_stop=False, fcw=False, sp_source="cruise", sp_stack="sunnypilotCurrent", v_cruise: float | None = 80.0,
            long_state="pid"):
+  closing_speed = (-v_rel) if v_rel is not None else None
   return PlannerTargetSample(
     route=route,
     route_id=route_id,
@@ -55,6 +56,9 @@ def sample(t, plan_a, a_ego, route="route-a", route_id="route-a", segment=None, 
     lead_status=lead,
     lead_d_rel=d_rel,
     lead_v_rel=v_rel,
+    ttc_s=(d_rel / closing_speed) if lead and d_rel is not None and closing_speed is not None and closing_speed > 0.1 and d_rel > 0 else None,
+    required_decel_mps2=((closing_speed ** 2) / (2.0 * max(d_rel, 0.1))) if lead and d_rel is not None and closing_speed is not None and closing_speed > 0.1 and d_rel > 0 else None,
+    time_headway_s=(d_rel / max(v, 0.1)) if lead and d_rel is not None and d_rel > 0 and v > 0.1 else None,
     model_desired_accel=None,
     model_should_stop=False,
   )
@@ -83,6 +87,9 @@ def test_extract_planner_target_samples_persists_preview_context(monkeypatch):
   assert samples[0].lead_d_rel == 7.0
   assert samples[0].gas_pressed
   assert not samples[0].long_active
+  assert samples[0].ttc_s == pytest.approx(17.5)
+  assert samples[0].required_decel_mps2 == pytest.approx(0.16 / 14.0)
+  assert samples[0].time_headway_s == pytest.approx(7.0 / 7.5)
   assert is_low_confidence_manual_preview_sample(samples[0])
   assert low_confidence_manual_preview_reason(samples[0]) == "long_control_off"
 
@@ -185,3 +192,48 @@ def test_should_stop_conflict_is_reported_for_moving_preview():
 
   assert summary.should_stop_moving_count == 1
   assert summary.should_stop_conflict_count == 1
+
+
+def test_lead_risk_metrics_compute_ttc_required_decel_and_headway():
+  lead_sample = sample(0.0, -0.2, 0.1, lead=True, d_rel=10.0, v_rel=-5.0, v=20.0, source="lead0")
+
+  assert lead_sample.ttc_s == pytest.approx(2.0)
+  assert lead_sample.required_decel_mps2 == pytest.approx(1.25)
+  assert lead_sample.time_headway_s == pytest.approx(0.5)
+
+
+def test_summary_includes_lead_risk_counts_and_render_line():
+  samples = [
+    sample(0.0, -0.2, 0.1, lead=True, d_rel=2.0, v_rel=-5.0, v=10.0, source="lead0"),
+    sample(0.1, -0.2, 0.1, lead=True, d_rel=15.0, v_rel=-1.0, v=10.0, source="cruise"),
+    sample(0.2, 0.1, 0.1, lead=False, source="cruise"),
+  ]
+  profiles = [build_route_agreement_profile("route-a", samples, min_manual_moving_samples=1, max_active_ratio=0.25)]
+
+  summary = summarize_planner_target_agreement({"route-a": samples}, profiles, include_low_confidence_preview=True)
+  rendered = compare_cli.render_agreement_summary(summary)
+
+  assert summary.high_required_decel_count == 1
+  assert summary.low_ttc_count == 1
+  assert summary.lead_risk_source_counts == {"lead0": 1}
+  assert summary.min_ttc_s == pytest.approx(0.4)
+  assert summary.max_required_decel_mps2 == pytest.approx(6.25)
+  assert summary.mean_time_headway_s == pytest.approx((0.2 + 1.5) / 2)
+  assert "lead risk:" in rendered
+  assert "high_decel=1" in rendered
+
+
+def test_no_lead_or_opening_lead_yields_no_risk_metrics():
+  samples = [
+    sample(0.0, 0.0, 0.0, lead=False),
+    sample(0.1, 0.0, 0.0, lead=True, d_rel=10.0, v_rel=1.0, v=10.0),
+  ]
+  profiles = [build_route_agreement_profile("route-a", samples, min_manual_moving_samples=1, max_active_ratio=0.25)]
+
+  summary = summarize_planner_target_agreement({"route-a": samples}, profiles)
+
+  assert summary.high_required_decel_count == 0
+  assert summary.low_ttc_count == 0
+  assert summary.min_ttc_s is None
+  assert summary.max_required_decel_mps2 is None
+  assert summary.mean_time_headway_s == pytest.approx(1.0)

@@ -27,6 +27,10 @@ DEFAULT_EPISODE_GAP_S = 0.6
 DEFAULT_EPISODE_CONTEXT_S = 3.0
 DEFAULT_LARGE_ERROR_THRESHOLD = 1.2
 DEFAULT_HIGH_JERK_THRESHOLD = 8.0
+LOW_TTC_THRESHOLD_S = 2.5
+HIGH_REQUIRED_DECEL_THRESHOLD_MPS2 = 2.5
+MIN_CLOSING_SPEED_MPS = 0.1
+MIN_HEADWAY_SPEED_MPS = 0.1
 UNSET_CRUISE_KPH = 250.0
 
 
@@ -58,6 +62,9 @@ class PlannerTargetSample:
   lead_v_rel: float | None
   model_desired_accel: float | None
   model_should_stop: bool
+  ttc_s: float | None = None
+  required_decel_mps2: float | None = None
+  time_headway_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,8 @@ class PlannerTargetEpisode:
   plan_source_flips: int
   plan_span: float
   high_plan_jerk_count: int
+  min_ttc_s: float | None
+  max_required_decel_mps2: float | None
 
 
 @dataclass(frozen=True)
@@ -120,6 +129,12 @@ class PlannerTargetAgreementSummary:
   should_stop_conflict_count: int
   fcw_count: int
   high_plan_jerk_count: int
+  min_ttc_s: float | None
+  max_required_decel_mps2: float | None
+  mean_time_headway_s: float | None
+  high_required_decel_count: int
+  low_ttc_count: int
+  lead_risk_source_counts: dict[str, int]
   planner_source_counts: dict[str, int]
   sp_source_counts: dict[str, int]
   sp_stack_counts: dict[str, int]
@@ -235,6 +250,13 @@ def extract_planner_target_samples(route: str, read_mode: ReadMode, max_plan_age
       a_ego = _finite_or_none(safe_get(payload, "aEgo"))
       if v_ego is None or a_ego is None:
         continue
+      lead_status = bool(state["lead_status"])
+      lead_d_rel = state["lead_d_rel"]
+      lead_v_rel = state["lead_v_rel"]
+      closing_speed = (-float(lead_v_rel)) if lead_v_rel is not None else None
+      ttc_s = _ttc_s(lead_status, lead_d_rel, closing_speed)
+      required_decel_mps2 = _required_decel_mps2(lead_status, lead_d_rel, closing_speed)
+      time_headway_s = _time_headway_s(lead_status, lead_d_rel, v_ego)
       samples.append(PlannerTargetSample(
         route=route,
         route_id=route_id,
@@ -257,9 +279,12 @@ def extract_planner_target_samples(route: str, read_mode: ReadMode, max_plan_age
         sp_a_target=state["sp_a_target"],
         sp_source=str(state["sp_source"]),
         sp_stack=str(state["sp_stack"]),
-        lead_status=bool(state["lead_status"]),
-        lead_d_rel=state["lead_d_rel"],
-        lead_v_rel=state["lead_v_rel"],
+        lead_status=lead_status,
+        lead_d_rel=lead_d_rel,
+        lead_v_rel=lead_v_rel,
+        ttc_s=ttc_s,
+        required_decel_mps2=required_decel_mps2,
+        time_headway_s=time_headway_s,
         model_desired_accel=state["model_desired_accel"],
         model_should_stop=bool(state["model_should_stop"]),
       ))
@@ -339,6 +364,7 @@ def summarize_planner_target_agreement(samples_by_route: dict[str, list[PlannerT
   should_stop_moving = [sample for sample in comparison_samples if sample.plan_should_stop and sample.v_ego > MOVING_SPEED]
   should_stop_conflicts = [sample for sample in should_stop_moving if not sample.brake_pressed and sample.a_ego > -0.2]
   high_jerks = high_plan_jerk_pairs(comparison_samples, high_jerk_threshold)
+  risk_samples = [sample for sample in comparison_samples if _is_lead_risk_sample(sample)]
   episodes = build_suspicious_episodes(
     comparison_samples,
     large_error_threshold=large_error_threshold,
@@ -366,6 +392,15 @@ def summarize_planner_target_agreement(samples_by_route: dict[str, list[PlannerT
     should_stop_conflict_count=len(should_stop_conflicts),
     fcw_count=sum(1 for sample in comparison_samples if sample.plan_fcw),
     high_plan_jerk_count=len(high_jerks),
+    min_ttc_s=min((sample.ttc_s for sample in comparison_samples if sample.ttc_s is not None), default=None),
+    max_required_decel_mps2=max((sample.required_decel_mps2 for sample in comparison_samples if sample.required_decel_mps2 is not None), default=None),
+    mean_time_headway_s=_optional_mean([sample.time_headway_s for sample in comparison_samples if sample.time_headway_s is not None]),
+    high_required_decel_count=sum(
+      1 for sample in comparison_samples
+      if sample.required_decel_mps2 is not None and sample.required_decel_mps2 >= HIGH_REQUIRED_DECEL_THRESHOLD_MPS2
+    ),
+    low_ttc_count=sum(1 for sample in comparison_samples if sample.ttc_s is not None and sample.ttc_s <= LOW_TTC_THRESHOLD_S),
+    lead_risk_source_counts=dict(Counter(sample.plan_source for sample in risk_samples)),
     planner_source_counts=dict(Counter(sample.plan_source for sample in comparison_samples)),
     sp_source_counts=dict(Counter(sample.sp_source for sample in comparison_samples)),
     sp_stack_counts=dict(Counter(sample.sp_stack for sample in comparison_samples)),
@@ -485,6 +520,9 @@ def render_agreement_summary(summary: PlannerTargetAgreementSummary, max_episode
     + f"strong={summary.strong_opposite_count} ({summary.strong_opposite_ratio:.3%})",
     f"shouldStop_moving={summary.should_stop_moving_count} shouldStop_conflicts={summary.should_stop_conflict_count} "
     + f"fcw={summary.fcw_count} high_plan_jerk={summary.high_plan_jerk_count}",
+    f"lead risk: high_decel={summary.high_required_decel_count} low_ttc={summary.low_ttc_count} "
+    + f"min_ttc={_format_optional(summary.min_ttc_s)} max_req_decel={_format_optional(summary.max_required_decel_mps2)} "
+    + f"mean_headway={_format_optional(summary.mean_time_headway_s)} sources={_format_counts(summary.lead_risk_source_counts)}",
     "Planner sources: " + _format_counts(summary.planner_source_counts),
     "SP sources: " + _format_counts(summary.sp_source_counts),
     "SP stacks: " + _format_counts(summary.sp_stack_counts),
@@ -510,7 +548,8 @@ def render_agreement_summary(summary: PlannerTargetAgreementSummary, max_episode
       + f"gas={episode.driver_gas_count} brake={episode.driver_brake_count} lead={episode.lead_ratio:.2f} "
       + f"min_d={_format_optional(episode.min_lead_d_rel)} min_vrel={_format_optional(episode.min_lead_v_rel)} "
       + f"lead_flips={episode.lead_status_flips} source_flips={episode.plan_source_flips} "
-      + f"plan_span={episode.plan_span:.2f} high_jerk={episode.high_plan_jerk_count}"
+      + f"plan_span={episode.plan_span:.2f} high_jerk={episode.high_plan_jerk_count} "
+      + f"min_ttc={_format_optional(episode.min_ttc_s)} max_req_decel={_format_optional(episode.max_required_decel_mps2)}"
     )
   return "\n".join(lines)
 
@@ -548,6 +587,8 @@ def _summarize_episode(episode: list[PlannerTargetSample], all_samples: list[Pla
     plan_source_flips=sum(1 for prev, cur in zip(window, window[1:], strict=False) if prev.plan_source != cur.plan_source),
     plan_span=(max(plan_values) - min(plan_values)) if plan_values else 0.0,
     high_plan_jerk_count=len(high_plan_jerk_pairs(window, high_jerk_threshold)),
+    min_ttc_s=min((sample.ttc_s for sample in episode if sample.ttc_s is not None), default=None),
+    max_required_decel_mps2=max((sample.required_decel_mps2 for sample in episode if sample.required_decel_mps2 is not None), default=None),
   )
 
 
@@ -555,6 +596,32 @@ def _is_suspicious_sample(sample: PlannerTargetSample, large_error_threshold: fl
   return is_opposite_intent(sample) or is_strong_opposite_intent(sample) or \
     abs(sample.plan_a_target - sample.a_ego) >= large_error_threshold or \
     (sample.plan_should_stop and sample.v_ego > MOVING_SPEED and not sample.brake_pressed and sample.a_ego > -0.2)
+
+
+def _is_lead_risk_sample(sample: PlannerTargetSample) -> bool:
+  return (
+    sample.required_decel_mps2 is not None and sample.required_decel_mps2 >= HIGH_REQUIRED_DECEL_THRESHOLD_MPS2
+  ) or (
+    sample.ttc_s is not None and sample.ttc_s <= LOW_TTC_THRESHOLD_S
+  )
+
+
+def _ttc_s(lead_status: bool, d_rel: float | None, closing_speed: float | None) -> float | None:
+  if not lead_status or d_rel is None or closing_speed is None or closing_speed <= MIN_CLOSING_SPEED_MPS or d_rel <= 0.0:
+    return None
+  return float(d_rel / closing_speed)
+
+
+def _required_decel_mps2(lead_status: bool, d_rel: float | None, closing_speed: float | None, epsilon: float = 0.1) -> float | None:
+  if not lead_status or d_rel is None or closing_speed is None or closing_speed <= MIN_CLOSING_SPEED_MPS or d_rel <= 0.0:
+    return None
+  return float((closing_speed ** 2) / (2.0 * max(d_rel, epsilon)))
+
+
+def _time_headway_s(lead_status: bool, d_rel: float | None, v_ego: float, epsilon: float = 0.1) -> float | None:
+  if not lead_status or d_rel is None or d_rel <= 0.0 or v_ego <= MIN_HEADWAY_SPEED_MPS:
+    return None
+  return float(d_rel / max(v_ego, epsilon))
 
 
 def _finite_or_none(value: Any) -> float | None:
@@ -575,6 +642,10 @@ def _correlation(xs: list[float], ys: list[float]) -> float | None:
 
 def _mean(values: list[float]) -> float:
   return float(np.mean(values)) if values else 0.0
+
+
+def _optional_mean(values: list[float]) -> float | None:
+  return float(np.mean(values)) if values else None
 
 
 def _percentile(values: list[float], percentile: float) -> float:
