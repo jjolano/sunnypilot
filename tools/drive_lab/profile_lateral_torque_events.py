@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 from openpilot.tools.drive_lab.lateral_torque_event_report import (
   build_lateral_low_speed_report,
@@ -11,6 +10,7 @@ from openpilot.tools.drive_lab.lateral_torque_event_report import (
   render_lateral_torque_event_report,
   save_lateral_torque_event_report,
 )
+from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 
 
 def main() -> None:
@@ -23,22 +23,25 @@ def main() -> None:
   parser.add_argument("--low-speed", action="store_true", help="Profile low-speed lateral tier metrics instead of fast torque events")
   args = parser.parse_args()
 
-  from openpilot.tools.lib.logreader import LogReader, ReadMode
-
-  read_mode = ReadMode.QLOG if args.qlog else ReadMode.AUTO
-  msgs = list(LogReader(args.route, default_mode=read_mode, sort_by_time=True))
+  msgs = load_route_msgs(args.route, qlog=args.qlog)
   if args.low_speed:
     report = build_lateral_low_speed_report(msgs, source=args.route, already_sorted=True)
-    if args.output:
-      with open(args.output, "w", encoding="utf-8") as f:
-        f.write(json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n")
-    print(json.dumps(report.to_dict(), indent=2) if args.json else render_lateral_low_speed_report(report))
+    print(output_report(
+      report,
+      json_output=args.json,
+      renderer=render_lateral_low_speed_report,
+      output_path=args.output,
+    ))
     return
 
   report = build_lateral_torque_event_report(msgs, source=args.route, already_sorted=True, max_events=args.max_events)
-  if args.output:
-    save_lateral_torque_event_report(report, args.output)
-  print(json.dumps(report.to_dict(), indent=2) if args.json else render_lateral_torque_event_report(report))
+  print(output_report(
+    report,
+    json_output=args.json,
+    renderer=render_lateral_torque_event_report,
+    output_path=args.output,
+    save=save_lateral_torque_event_report,
+  ))
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 
 from openpilot.tools.drive_lab.scenario_spec import ScenarioSpec, route_window_provenance
+from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type, safe_get
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
@@ -181,16 +182,16 @@ def main() -> None:
     include_low_confidence_preview=args.include_low_confidence_preview,
   )
   payload = summary_to_dict(summary)
-  if args.output:
-    with open(args.output, "w") as f:
-      json.dump(payload, f, indent=2)
-      f.write("\n")
   if args.scenario_output:
     scenarios = [episode_to_scenario_spec(episode, index=i).to_dict() for i, episode in enumerate(summary.episodes[:args.episodes])]
     with open(args.scenario_output, "w") as f:
       json.dump(scenarios, f, indent=2)
       f.write("\n")
-  print(json.dumps(payload, indent=2) if args.json else render_agreement_summary(summary, max_episodes=args.episodes))
+  class _PlannerPayload:
+    def to_dict(self):
+      return payload
+
+  print(output_report(_PlannerPayload(), json_output=args.json, renderer=lambda _: render_agreement_summary(summary, max_episodes=args.episodes), output_path=args.output))
 
 
 def extract_planner_target_samples(route: str, read_mode: ReadMode, max_plan_age_s: float = DEFAULT_MAX_PLAN_AGE_S) -> list[PlannerTargetSample]:

@@ -132,7 +132,7 @@ def test_lateral_performance_gate_classifies_demand_driven_wander_and_round_trip
   rendered = render_lateral_performance_gate(loaded)
 
   assert loaded.dominant_failure_class == PATH_WANDER_DOMINANT
-  assert loaded.branch_recommendation == "feat/lateral-model-path-processing"
+  assert loaded.branch_recommendation == "feat/lateral-control"
   assert loaded.wander_candidate_windows
   assert loaded.wander_candidate_windows[0].cause == DEMAND_DRIVEN_WANDER
   assert "dominant failure class" in rendered
@@ -177,7 +177,7 @@ def test_lateral_performance_gate_classifies_torque_event_dominant():
   report = build_lateral_performance_gate(msgs, source="torque", window_s=8.0, step_s=2.0)
 
   assert report.dominant_failure_class == TORQUE_EVENT_DOMINANT
-  assert report.branch_recommendation == "feat/torque-v2"
+  assert report.branch_recommendation == "feat/lateral-control"
   assert report.torque_event_score > report.path_wander_score
 
 
@@ -200,7 +200,7 @@ def test_lateral_performance_gate_classifies_low_speed_lateral_dominant():
   report = build_lateral_performance_gate(msgs, source="low-speed", window_s=8.0, step_s=2.0)
 
   assert report.dominant_failure_class == LOW_SPEED_LATERAL_DOMINANT
-  assert report.branch_recommendation == "inspect_low_speed_tier_evidence"
+  assert report.branch_recommendation == "feat/lateral-control"
 
 
 def test_lateral_performance_gate_reports_recenter_overshoot_candidates():

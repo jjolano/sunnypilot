@@ -13,6 +13,7 @@ from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   render_manual_style_summary,
   summarize_manual_style,
 )
+from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 from openpilot.tools.drive_lab.timeline import msg_payload, msg_time_s, msg_type, safe_get
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
@@ -39,11 +40,11 @@ def main() -> None:
 
   summary = summarize_manual_style(included_samples)
   payload = {"routes": [asdict(profile) for profile in route_profiles], "summary": asdict(summary)}
-  if args.output:
-    with open(args.output, "w") as f:
-      json.dump(payload, f, indent=2)
-      f.write("\n")
-  print(json.dumps(payload, indent=2) if args.json else render_manual_style_summary(summary, route_profiles))
+  class _ManualPayload:
+    def to_dict(self):
+      return payload
+
+  print(output_report(_ManualPayload(), json_output=args.json, renderer=lambda _: render_manual_style_summary(summary, route_profiles), output_path=args.output))
 
 
 def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample]:

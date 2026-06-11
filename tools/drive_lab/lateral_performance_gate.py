@@ -27,9 +27,9 @@ ACTUATION_DRIVEN_WANDER = "actuation_driven_straight_path_wander"
 MIXED_WANDER = "mixed_straight_path_wander"
 
 BRANCH_RECOMMENDATIONS = {
-  TORQUE_EVENT_DOMINANT: "feat/torque-v2",
-  PATH_WANDER_DOMINANT: "feat/lateral-model-path-processing",
-  LOW_SPEED_LATERAL_DOMINANT: "inspect_low_speed_tier_evidence",
+  TORQUE_EVENT_DOMINANT: "feat/lateral-control",
+  PATH_WANDER_DOMINANT: "feat/lateral-control",
+  LOW_SPEED_LATERAL_DOMINANT: "feat/lateral-control",
   INSUFFICIENT_EVIDENCE: "none",
 }
 

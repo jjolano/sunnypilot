@@ -12,6 +12,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type, safe_get
+from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 
@@ -241,15 +242,15 @@ def main() -> None:
     signal_lookback_s=args.signal_lookback,
   )
   payload = asdict(summary)
-  if args.output:
-    with open(args.output, "w") as f:
-      json.dump(payload, f, indent=2)
-      f.write("\n")
-  print(json.dumps(payload, indent=2) if args.json else render_leadless_stop_summary(
+  class _LeadlessPayload:
+    def to_dict(self):
+      return payload
+
+  print(output_report(_LeadlessPayload(), json_output=args.json, renderer=lambda _: render_leadless_stop_summary(
     summary,
     max_episodes=args.episodes,
     max_false_positives=args.false_positives,
-  ))
+  ), output_path=args.output))
 
 
 def extract_leadless_stop_samples(route: str, read_mode: ReadMode) -> list[LeadlessStopSample]:

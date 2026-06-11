@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 from openpilot.tools.drive_lab.lateral_performance_gate import (
   build_lateral_performance_gate,
@@ -11,6 +10,7 @@ from openpilot.tools.drive_lab.lateral_performance_gate import (
   render_lateral_performance_gate_ab_report,
   save_lateral_performance_gate,
 )
+from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 
 
 def main() -> None:
@@ -25,13 +25,10 @@ def main() -> None:
   parser.add_argument("--candidate-label", default="candidate", help="Label for the candidate route when comparing two routes")
   args = parser.parse_args()
 
-  from openpilot.tools.lib.logreader import LogReader, ReadMode
-
-  read_mode = ReadMode.QLOG if args.qlog else ReadMode.AUTO
   qlog_safe_lane_policy = not args.strict_lane_state
-  baseline_msgs = list(LogReader(args.route, default_mode=read_mode, sort_by_time=True))
+  baseline_msgs = load_route_msgs(args.route, qlog=args.qlog)
   if args.candidate:
-    candidate_msgs = list(LogReader(args.candidate, default_mode=read_mode, sort_by_time=True))
+    candidate_msgs = load_route_msgs(args.candidate, qlog=args.qlog)
     report = build_lateral_performance_gate_ab_report(
       baseline_msgs,
       candidate_msgs,
@@ -40,7 +37,7 @@ def main() -> None:
       already_sorted=True,
       qlog_safe_lane_policy=qlog_safe_lane_policy,
     )
-    rendered = render_lateral_performance_gate_ab_report(report)
+    renderer = render_lateral_performance_gate_ab_report
   else:
     report = build_lateral_performance_gate(
       baseline_msgs,
@@ -48,11 +45,15 @@ def main() -> None:
       already_sorted=True,
       qlog_safe_lane_policy=qlog_safe_lane_policy,
     )
-    rendered = render_lateral_performance_gate(report)
+    renderer = render_lateral_performance_gate
 
-  if args.output:
-    save_lateral_performance_gate(report, args.output)
-  print(json.dumps(report.to_dict(), indent=2) if args.json else rendered)
+  print(output_report(
+    report,
+    json_output=args.json,
+    renderer=renderer,
+    output_path=args.output,
+    save=save_lateral_performance_gate,
+  ))
 
 
 if __name__ == "__main__":
