@@ -982,7 +982,8 @@ class LatControlTorqueV4(LatControl):
       curvature_limited=curvature_limited,
     )
     target = self._build_target(0.0 if input_invalid else desired_curvature, CS.vEgo, speed_result, input_invalid, recenter=recenter,
-                                curvature_limited=curvature_limited, cs=CS)
+                                curvature_limited=curvature_limited, cs=CS,
+                                active=active, steer_limited_by_safety=steer_limited_by_safety)
     steering_angle_rad = math.radians(CS.steeringAngleDeg - params.angleOffsetDeg) if not input_invalid else 0.0
     measured_curvature = -VM.calc_curvature(steering_angle_rad, CS.vEgo, params.roll) if not input_invalid else 0.0
     actual_lateral_accel = measured_curvature * CS.vEgo ** 2 if not input_invalid else 0.0
@@ -1231,12 +1232,16 @@ class LatControlTorqueV4(LatControl):
 
   def _build_target(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
                     invalid: bool, recenter: TorqueV4RecenterMode | None = None,
-                    curvature_limited: bool = False, cs=None) -> TorqueV4Target:
+                    curvature_limited: bool = False, cs=None,
+                    active: bool = True,
+                    steer_limited_by_safety: bool = False) -> TorqueV4Target:
     """Public target build seam. v4.0/v4.1 forward to the base
     implementation; v5.0 overrides this to add profile shaping.
 
-    `curvature_limited` and `cs` are unused by the base; v5.0 uses
-    them when routing the pre-target turn-exit decision.
+    `curvature_limited`, `cs`, `active`, and
+    `steer_limited_by_safety` are unused by the base; v5.0 uses
+    them when routing the pre-target turn-exit decision and the
+    preview gate.
     """
     return self._build_target_base(desired_curvature, v_ego, speed_result, invalid, recenter)
 
@@ -1656,7 +1661,9 @@ class LatControlTorqueV5(LatControlTorqueV41):
 
   def _build_target(self, desired_curvature: float, v_ego: float, speed_result: TorqueV4SpeedModelResult,
                     invalid: bool, recenter: TorqueV4RecenterMode | None = None,
-                    curvature_limited: bool = False, cs=None) -> TorqueV4Target:
+                    curvature_limited: bool = False, cs=None,
+                    active: bool = True,
+                    steer_limited_by_safety: bool = False) -> TorqueV4Target:
     """v5 build target orchestrator.
 
     Calls _build_target_base for the v4-compatible math, runs
@@ -1664,9 +1671,14 @@ class LatControlTorqueV5(LatControlTorqueV41):
     delegates to _build_v5_target to apply the v5 shaping. The
     orchestrator stays thin; the v5 shaping math lives in
     _build_v5_target and is unit-testable on its own.
+
+    `active` and `steer_limited_by_safety` are propagated into
+    the v5 gates so an inactive or steer-limited controller does
+    not silently produce v5 target/telemetry pollution.
     """
     base = self._build_target_base(desired_curvature, v_ego, speed_result, invalid, recenter)
-    if not self.ACTIVE_TURN_EXIT_CONTROLLER or invalid:
+    v5_effective_active = bool(active and not invalid)
+    if not self.ACTIVE_TURN_EXIT_CONTROLLER or not v5_effective_active:
       self._clear_v5_telemetry()
       self._v5_last_final_lead_delta = float(base.lead_delta)
       self._v5_last_preview_applied_value = 0.0
@@ -1675,7 +1687,7 @@ class LatControlTorqueV5(LatControlTorqueV41):
     # Pre-target decision seam. Stores self._v5_cached_turn_exit_decision
     # or leaves it None if the controller was inactive.
     self._v5_turn_exit_decision(
-      base, active=True, CS=cs, curvature_limited=curvature_limited,
+      base, active=v5_effective_active, CS=cs, curvature_limited=curvature_limited,
     )
     decision = self._v5_cached_turn_exit_decision
     if decision is None or not self._v5_turn_exit_decided:
@@ -1686,10 +1698,10 @@ class LatControlTorqueV5(LatControlTorqueV41):
 
     # Gate the preview boost before handing the decision off.
     preview_allowed, preview_reason = self._v5_preview_allowed(
-      active=True, invalid=False, CS=cs, v_ego=v_ego,
+      active=v5_effective_active, invalid=False, CS=cs, v_ego=v_ego,
       profile=self.lateral_demand_profile, demand=self.processed_lateral_demand,
       curvature_limited=curvature_limited, saturated=self._previous_saturated,
-      steer_limited_by_safety=False,
+      steer_limited_by_safety=steer_limited_by_safety,
     )
     return self._build_v5_target(
       base=base, v_ego=v_ego, speed_result=speed_result, decision=decision,
