@@ -53,7 +53,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
   CustomV2Scene,
   LEAD_LATERAL_PROGRESS_BLOCK_Y,
   ONE_PEDAL_MODE_OFF,
-  ONE_PEDAL_MODES,
+)
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2_one_pedal import (
+  get_one_pedal_longitudinal_mode,
+  one_pedal_cruise_hold_requested,
+  update_one_pedal_cruise_hold,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
@@ -95,14 +99,7 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ButtonType = car.CarState.ButtonEvent.Type
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
-ONE_PEDAL_LONGITUDINAL_MODE_PARAM = "OnePedalLongitudinalMode"
 FAST_LEAD_MOTION_EVIDENCE_PARAM = "FastLeadMotionEvidenceEnabled"
-ONE_PEDAL_CRUISE_HOLD_BUTTON_TYPES = frozenset((
-  ButtonType.accelCruise,
-  ButtonType.decelCruise,
-  ButtonType.resumeCruise,
-  ButtonType.setCruise,
-))
 DECISION_ACCEL_COMFORT_MIN_V_EGO = 1.0
 CREEP_TO_STOP_GAP_START_EXCESS = 1.2
 CREEP_TO_STOP_GAP_FOLLOW_EXCESS = 1.0
@@ -1522,24 +1519,6 @@ def build_scc_mode_evidence(has_confirmed_lead: bool, model_msg, scc, sla, osm_t
 
 def should_enable_longitudinal_decision_layer(stack_resolution) -> bool:
   return stack_resolution is None or is_custom_stack(getattr(stack_resolution, "resolved_stack", ""))
-
-
-def get_one_pedal_longitudinal_mode(params) -> int:
-  try:
-    mode = int(params.get(ONE_PEDAL_LONGITUDINAL_MODE_PARAM, return_default=True))
-  except (TypeError, ValueError, UnknownKeyName):
-    return ONE_PEDAL_MODE_OFF
-  return mode if mode in ONE_PEDAL_MODES else ONE_PEDAL_MODE_OFF
-
-
-def one_pedal_cruise_hold_requested(button_events) -> bool:
-  return any(getattr(event, "type", None) in ONE_PEDAL_CRUISE_HOLD_BUTTON_TYPES for event in button_events)
-
-
-def update_one_pedal_cruise_hold(active: bool, button_events, gas_pressed: bool, brake_pressed: bool, enabled: bool) -> bool:
-  if not enabled or gas_pressed or brake_pressed:
-    return False
-  return bool(active or one_pedal_cruise_hold_requested(button_events))
 
 
 def get_custom_v2_curve_scene_target(*controllers):

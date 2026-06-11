@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import math
 from numbers import Real
-from typing import Any
+from typing import Any, cast
 
 from cereal import log
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
@@ -15,6 +15,15 @@ from openpilot.selfdrive.controls.lib.longitudinal_decision import (
   SOURCE_STABILITY_HOLD_REASON,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2_trajectory import (
+  A_TARGET_EPS,
+  NORMAL_NEGATIVE_RETREAT_JERK,
+  POSITIVE_PROGRESS_JERK,
+  SYNTH_TRAJECTORY_DT,
+  preserve_seed_trajectory,
+  synth_custom_v2_trajectory,
+  synth_trajectory_dts,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import (
   CUSTOM_V2_DEBUG_DISABLE_JERK_LIMIT,
   CUSTOM_V2_DEBUG_INTENT,
@@ -93,10 +102,6 @@ ONE_PEDAL_CREEP_ROLLING_MIN_SPEED = 0.05
 ONE_PEDAL_FULL_STOP_ARM_SPEED = 2.5
 ONE_PEDAL_FULL_STOP_DECEL = -0.3
 ONE_PEDAL_FULL_STOP_HOLD_SPEED = 0.3
-SYNTH_TRAJECTORY_DT = 0.2
-POSITIVE_PROGRESS_JERK = 4.0
-NORMAL_NEGATIVE_RETREAT_JERK = -5.0
-A_TARGET_EPS = 1e-4
 LONGITUDINAL_PLAN_SOURCE = log.LongitudinalPlan.LongitudinalPlanSource
 LEAD_MPC_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_PLAN_SOURCE.lead1)}
 E2E_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.e2e)}
@@ -927,7 +932,7 @@ def _progress_floors_allowed(selected_intent: str) -> bool:
 
 def _source_matches(source: object, values: set[int], names: set[str]) -> bool:
   if isinstance(source, Real):
-    return int(source) in values
+    return int(float(source)) in values
   source_name = str(source or "")
   if source_name in names:
     return True
@@ -938,9 +943,7 @@ def _source_matches(source: object, values: set[int], names: set[str]) -> bool:
 
 
 def _preserve_seed_trajectory(output: LongitudinalStackOutput, decision: CustomV2Decision) -> bool:
-  if bool(output.debug.get("planner_seed_scalar", False)):
-    return False
-  return math.isclose(float(output.a_target), float(decision.a_target), abs_tol=A_TARGET_EPS)
+  return preserve_seed_trajectory(output, decision.a_target)
 
 
 def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
@@ -1010,7 +1013,7 @@ def _validated_scene(scene: CustomV2Scene) -> CustomV2Scene:
 
 def _validated_one_pedal_mode(value: object) -> int:
   try:
-    mode = int(value)
+    mode = int(float(cast(Any, value)))
   except (TypeError, ValueError):
     return ONE_PEDAL_MODE_OFF
   return mode if mode in ONE_PEDAL_MODES else ONE_PEDAL_MODE_OFF
@@ -1018,7 +1021,7 @@ def _validated_one_pedal_mode(value: object) -> int:
 
 def _validated_personality(value: object) -> int:
   try:
-    personality = int(value)
+    personality = int(float(cast(Any, value)))
   except (TypeError, ValueError):
     return log.LongitudinalPersonality.standard
   return personality if personality in NO_LEAD_LAUNCH_ACCEL_MAX_BY_PERSONALITY else log.LongitudinalPersonality.standard
@@ -1041,48 +1044,8 @@ def _interp(value: float, x0: float, x1: float, y0: float, y1: float) -> float:
 
 def _synth_trajectory(output: LongitudinalStackOutput, scene: CustomV2Scene,
                       a_target: float, limit_jerk: bool) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
-  speeds_in = tuple(output.speeds)
-  accels_in = tuple(output.accels)
-  v0 = scene.v_ego if math.isfinite(scene.v_ego) and scene.v_ego >= 0.0 else (float(speeds_in[0]) if speeds_in else 0.0)
-  prev_accel = float(accels_in[0]) if accels_in else float(a_target)
-  dts = _synth_trajectory_dts()
-  accels: list[float] = []
-  jerks: list[float] = []
-  current_accel = prev_accel
-  for dt in dts:
-    if limit_jerk:
-      delta = _clip(
-        float(a_target) - current_accel,
-        NORMAL_NEGATIVE_RETREAT_JERK * dt,
-        POSITIVE_PROGRESS_JERK * dt,
-      )
-      next_accel = current_accel + delta
-    else:
-      next_accel = float(a_target)
-    jerks.append((next_accel - current_accel) / dt)
-    accels.append(next_accel)
-    current_accel = next_accel
-
-  speeds: list[float] = []
-  current_speed = max(0.0, v0)
-  for accel, dt in zip(accels, dts, strict=True):
-    speeds.append(current_speed)
-    current_speed = max(0.0, current_speed + accel * dt)
-  return tuple(speeds), tuple(accels), tuple(jerks)
+  return synth_custom_v2_trajectory(output, scene.v_ego, a_target, limit_jerk)
 
 
 def _synth_trajectory_dts(t_idxs: object = None) -> tuple[float, ...]:
-  if t_idxs is None:
-    t_idxs = ModelConstants.T_IDXS
-  try:
-    times = tuple(float(t) for t in t_idxs[:CONTROL_N])
-  except (TypeError, ValueError):
-    return (SYNTH_TRAJECTORY_DT,) * CONTROL_N
-  if len(times) < CONTROL_N or not all(math.isfinite(t) for t in times):
-    return (SYNTH_TRAJECTORY_DT,) * CONTROL_N
-
-  intervals = [times[idx + 1] - times[idx] for idx in range(CONTROL_N - 1)]
-  dts = [*intervals, intervals[-1]]
-  if not all(math.isfinite(dt) and dt > 0.0 for dt in dts):
-    return (SYNTH_TRAJECTORY_DT,) * CONTROL_N
-  return tuple(dts)
+  return synth_trajectory_dts(t_idxs)
