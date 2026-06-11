@@ -2,6 +2,10 @@
 
 Status: accepted
 
+## Amendment: Session Learner Deferred
+
+The native-torque, processed-curvature, and delay-lead parts of this ADR remain accepted. The bounded session response-scale and trim learner described in the original decision is not implemented in the current Torque v3 controller. Existing learner/model-authority telemetry fields are retained for schema compatibility and populated as evidence-only identity placeholders until a separate telemetry migration deliberately changes downstream consumers.
+
 Torque v3 replaces the previous universal adaptive-controller design in place while keeping Torque v2 as the default baseline. The new design is native-torque-only, follows processed curvature, improves curve entry and exit through delay-aware lateral-acceleration control, and limits runtime learning to bounded session response-scale and trim corrections.
 
 ## Considered Options

@@ -44,6 +44,10 @@ def run_steps(controller: LaneChangePathShaper, inputs: LaneChangePathShaperInpu
   return [controller.update(inputs) for _ in range(steps)]
 
 
+def run_speed_profile(controller: LaneChangePathShaper, speeds: list[float]):
+  return [controller.update(make_inputs(v_ego=speed)) for speed in speeds]
+
+
 def test_lane_change_profile_is_symmetric():
   left_controller = LaneChangePathShaper()
   right_controller = LaneChangePathShaper()
@@ -80,6 +84,18 @@ def test_peak_highway_curvature_is_smoother():
   peak_curvature = max(abs(result.desired_curvature - inputs.model_curvature) for result in results)
 
   assert peak_curvature < 0.001
+
+
+def test_decel_does_not_amplify_lane_change_curvature():
+  steps = int(LANE_CHANGE_DURATION / DT_CTRL)
+  constant_results = run_speed_profile(LaneChangePathShaper(), [30.0] * steps)
+  decel_speeds = [30.0 - 10.0 * i / max(steps - 1, 1) for i in range(steps)]
+  decel_results = run_speed_profile(LaneChangePathShaper(), decel_speeds)
+
+  constant_peak = max(abs(result.desired_curvature) for result in constant_results)
+  decel_peak = max(abs(result.desired_curvature) for result in decel_results)
+
+  assert decel_peak <= constant_peak * 1.05
 
 
 def test_same_direction_model_curvature_remains_primary():

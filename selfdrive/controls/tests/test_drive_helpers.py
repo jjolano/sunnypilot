@@ -7,7 +7,9 @@ from openpilot.selfdrive.controls.lib.drive_helpers import (
   MAX_CURVATURE,
   MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL,
   MAX_LATERAL_ACCEL_NO_ROLL,
+  CurvatureClipResult,
   clip_curvature,
+  clip_curvature_with_result,
   curv_from_psis,
   get_accel_from_plan,
   get_curvature_from_plan,
@@ -56,6 +58,52 @@ def test_clip_curvature_uses_default_lateral_accel_limit():
 
   assert clipped_curvature == pytest.approx(MAX_LATERAL_ACCEL_NO_ROLL / v_ego**2)
   assert limited
+
+
+def test_clip_curvature_with_result_preserves_tuple_contract():
+  v_ego = 10.0
+  requested_curvature = 4.0 / v_ego**2
+
+  result = clip_curvature_with_result(v_ego, requested_curvature, requested_curvature, 0.0)
+
+  assert isinstance(result, CurvatureClipResult)
+  assert clip_curvature(v_ego, requested_curvature, requested_curvature, 0.0) == (
+    result.curvature,
+    result.limited,
+    result.default_lateral_accel_limited,
+  )
+  assert result.lateral_accel_limited
+  assert result.any_limited
+
+
+def test_clip_curvature_result_reports_jerk_limit_without_changing_legacy_limited_flag():
+  result = clip_curvature_with_result(
+    10.0,
+    0.0,
+    0.1,
+    0.0,
+    MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL,
+  )
+
+  assert result.jerk_limited
+  assert not result.limited
+  assert result.any_limited
+
+
+def test_clip_curvature_result_reports_max_curvature_limit():
+  requested_curvature = MAX_CURVATURE + 0.1
+
+  result = clip_curvature_with_result(
+    1.0,
+    requested_curvature,
+    requested_curvature,
+    0.0,
+    MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL,
+  )
+
+  assert result.curvature == pytest.approx(MAX_CURVATURE)
+  assert result.max_curvature_limited
+  assert result.limited
 
 
 def test_clip_curvature_allows_driver_gas_lateral_accel_limit():

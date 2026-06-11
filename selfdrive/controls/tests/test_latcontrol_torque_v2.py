@@ -48,7 +48,9 @@ LatControlTorque = latcontrol_torque_v2.LatControlTorque
 LatControlTorqueV21 = latcontrol_torque_v2.LatControlTorqueV21
 RefinedOutputGovernorInputs = latcontrol_torque_v2.RefinedOutputGovernorInputs
 RefinedOutputGovernorReason = latcontrol_torque_v2.RefinedOutputGovernorReason
+RefinedOutputGovernorResult = latcontrol_torque_v2.RefinedOutputGovernorResult
 TorqueV21RefinedOutputGovernor = latcontrol_torque_v2.TorqueV21RefinedOutputGovernor
+adaptive_lateral_accel_rate = latcontrol_torque_v2.adaptive_lateral_accel_rate
 
 
 def get_controller(car_name):
@@ -128,6 +130,37 @@ class CapturingNNTorqueModel:
   def evaluate(self, input_array):
     self.inputs.append(list(input_array))
     return 0.0
+
+
+class FixedOutputShaper:
+  def __init__(self, result):
+    self.result = result
+    self.inputs = []
+
+  def update(self, inputs):
+    self.inputs.append(inputs)
+    return self.result
+
+
+class PassthroughSpyOutputShaper:
+  def __init__(self):
+    self.inputs = []
+
+  def update(self, inputs):
+    self.inputs.append(inputs)
+    return ConservativeOutputShaperResult(inputs.unshaped_output, False, 0, 0.0, inputs.unshaped_output, 1.0)
+
+
+class SpyRefinedOutputGovernor:
+  def __init__(self):
+    self.inputs = []
+
+  def reset(self):
+    pass
+
+  def update(self, inputs):
+    self.inputs.append(inputs)
+    return RefinedOutputGovernorResult(inputs.output_torque, False, RefinedOutputGovernorReason.NONE)
 
 
 def enable_flat_nnlc(controller):
@@ -233,6 +266,48 @@ def test_nnlc_hardening_uses_kinematic_accel_adjustment():
   expected_future_times = [adjust_future_time_for_longitudinal_accel(t, CS.vEgo, CS.aEgo)
                            for t in controller.extension.nn_future_times]
   assert capturing_model.inputs[-1][7:11] == pytest.approx(expected_future_times)
+
+
+def test_adaptive_lateral_accel_rate_uses_model_release_when_request_buffer_increases():
+  assert adaptive_lateral_accel_rate(-0.6, -0.18, 0.20) == pytest.approx(0.20)
+
+
+def test_adaptive_lateral_accel_rate_keeps_request_rate_without_model_release():
+  assert adaptive_lateral_accel_rate(-0.6, -0.18, -0.05) == pytest.approx(-0.18)
+
+
+def test_v2_uses_model_plan_release_rate_for_adaptive_shaping():
+  controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+  spy_shaper = PassthroughSpyOutputShaper()
+  controller.output_shaper = spy_shaper
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 9.5
+  CS.aEgo = -1.0
+  CS.steeringPressed = False
+  params = log.LiveParametersData.new_message()
+  pose = make_pose()
+
+  model_v2 = make_flat_model_v2()
+  # Route 0000018e--2182c485e2 around 1251s showed this mismatch: the model
+  # lateral plan was unwinding, while the request buffer still increased demand.
+  model_v2.acceleration.y = [-0.62 + 0.08 * min(t / 0.3, 1.0) for t in ModelConstants.T_IDXS]
+  controller.extension.update_lateral_lag(0.2)
+  controller.extension.update_model_v2(model_v2)
+
+  stale_target = -0.50
+  current_target = -0.62
+  controller.lat_accel_request_buffer.clear()
+  controller.lat_accel_request_buffer.extend([stale_target] * controller.lat_accel_request_buffer_len)
+
+  _, _, lac_log = controller.update(True, CS, VM, params, False, current_target / CS.vEgo**2, pose, False, 0.2)
+
+  assert spy_shaper.inputs
+  request_buffer_rate = (current_target - stale_target) / 0.2
+  assert request_buffer_rate < 0.0
+  assert controller.extension.model_plan_lateral_accel_rate > 0.0
+  assert spy_shaper.inputs[-1].desired_lateral_jerk == pytest.approx(controller.extension.model_plan_lateral_accel_rate)
+  assert lac_log.desiredLateralJerk == pytest.approx(controller.extension.model_plan_lateral_accel_rate)
 
 
 def test_measurement_smoother_predicts_between_held_angle_updates():
@@ -428,14 +503,14 @@ def test_v21_high_rate_soft_cap_applies_outside_under_response_floor():
   assert result.output_torque == pytest.approx(0.62)
 
 
-def test_v21_driver_override_uses_fast_bounded_release():
+def test_v21_driver_override_preserves_authority():
   governor = TorqueV21RefinedOutputGovernor(DT_CTRL)
   governor.previous_output = 1.0
 
   result = governor.update(make_governor_inputs(steering_pressed=True, output_torque=1.0))
 
   assert result.reason & RefinedOutputGovernorReason.DRIVER_OVERRIDE
-  assert result.output_torque == pytest.approx(0.94)
+  assert result.output_torque == pytest.approx(1.0)
 
 
 def test_v2_conditions_measurement_between_held_angle_updates():
@@ -539,6 +614,46 @@ def test_v21_logs_version_and_separate_governor_reason():
   assert abs(lac_log.output) < abs(adaptive_log.unshapedOutput)
 
 
+def test_v21_keeps_v2_core_with_refined_governor_only():
+  controller, _ = get_v21_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  assert isinstance(controller, LatControlTorque)
+  assert controller.CONTROLLER_VERSION == latcontrol_torque_v2.VERSION_V21
+  assert controller.USE_REFINED_OUTPUT_GOVERNOR
+  assert controller.refined_output_governor is not None
+  assert not hasattr(controller, "governor")
+
+
+def test_v21_skips_same_direction_governor_when_shaper_already_capped_route_cluster():
+  controller, VM = get_v21_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
+
+  CS = car.CarState.new_message()
+  CS.vEgo = 21.5
+  CS.steeringPressed = False
+  CS.steeringAngleDeg = -8.0
+  CS.steeringRateDeg = 6.0
+  params = log.LiveParametersData.new_message()
+  shaper_result = ConservativeOutputShaperResult(
+    output_torque=0.60,
+    active=True,
+    reason=int(ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP),
+    confidence=1.0,
+    unshaped_output=0.90,
+    output_cap=0.60 / 0.90,
+  )
+  controller.output_shaper = FixedOutputShaper(shaper_result)
+  governor = SpyRefinedOutputGovernor()
+  controller.refined_output_governor = governor
+
+  # Route 0000014b--4165953d7c segs 19/20 repeatedly showed v2.1 same-direction
+  # governor limiting stacked on top of an already stricter safety/shaper cap.
+  controller.update(True, CS, VM, params, True, -0.0015, make_pose(), False, 0.2)
+
+  assert governor.inputs
+  assert not governor.inputs[-1].same_direction_limit
+  assert governor.inputs[-1].output_torque == pytest.approx(shaper_result.output_torque)
+
+
 def test_v2_softens_low_demand_friction_driven_reversals():
   controller, VM = get_controller(TOYOTA.TOYOTA_RAV4_TSS2)
 
@@ -619,28 +734,22 @@ def test_v2_disturbance_telemetry_clean_when_tracking_cleanly():
   assert adaptive_log.disturbanceConfidence == 0.0
 
 
-def test_v2_release_on_override():
+def test_v2_steering_override_freezes_without_release_cap():
   controller, VM = get_controller(TOYOTA.TOYOTA_COROLLA_TSS2)
 
   CS = car.CarState.new_message()
   CS.vEgo = 6
-  CS.steeringPressed = False
+  CS.steeringPressed = True
   params = log.LiveParametersData.new_message()
 
   pose = make_pose()
-  for _ in range(40):
-    controller.update(True, CS, VM, params, False, 2e-4, pose, False, 0.2)
+  _, _, lac_log = controller.update(True, CS, VM, params, False, 5e-3, pose, False, 0.2)
 
-  CS.steeringPressed = True
-  _, _, lac_log = controller.update(True, CS, VM, params, False, 2e-5, pose, False, 0.2)
-  assert lac_log.adaptiveTorqueState.releaseActive
-  assert lac_log.adaptiveTorqueState.phase == log.ControlsState.LateralTorqueState.AdaptiveTorqueState.Phase.release
-  assert lac_log.adaptiveTorqueState.freezeReason != 0
-  assert lac_log.adaptiveTorqueState.blockReason != 0
-  assert lac_log.adaptiveTorqueState.shapingActive
-  assert lac_log.adaptiveTorqueState.shapingReason & ConservativeOutputShapingReason.STEERING_PRESSED
-  assert lac_log.adaptiveTorqueState.shapingReason & ConservativeOutputShapingReason.RELEASE
-  assert abs(lac_log.adaptiveTorqueState.outputCap - 0.8) < 1e-6
+  assert not lac_log.adaptiveTorqueState.releaseActive
+  assert lac_log.adaptiveTorqueState.freezeReason & GuardedResponseReason.STEERING_PRESSED
+  assert lac_log.adaptiveTorqueState.blockReason & GuardedResponseReason.STEERING_PRESSED
+  assert not lac_log.adaptiveTorqueState.shapingReason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert abs(lac_log.adaptiveTorqueState.outputCap - 1.0) < 1e-6
   assert abs(lac_log.output) <= abs(lac_log.adaptiveTorqueState.unshapedOutput)
 
 

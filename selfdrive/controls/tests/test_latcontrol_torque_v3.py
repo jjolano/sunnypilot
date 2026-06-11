@@ -163,6 +163,19 @@ def test_v3_delay_leads_curve_entry_and_release():
   assert abs(exit_log.output) < abs(curve_log.output)
 
 
+def test_v3_target_uses_processed_curvature_argument_not_raw_model_preview():
+  controller, VM = get_controller()
+  CS = make_car_state(v_ego=20.0)
+  raw_model_curvature = 0.01
+  processed_curvature = 0.001
+
+  _, _, lac_log = update(controller, VM, CS, processed_curvature)
+  adaptive = lac_log.adaptiveTorqueState
+
+  assert adaptive.rawTargetLateralAccel == pytest.approx(processed_curvature * CS.vEgo**2)
+  assert adaptive.rawTargetLateralAccel != pytest.approx(raw_model_curvature * CS.vEgo**2)
+
+
 def test_v3_toyota_high_rate_governor_softens_rapid_steering():
   normal_controller, normal_vm = get_controller()
   high_rate_controller, high_rate_vm = get_controller()
@@ -216,7 +229,7 @@ def test_v3_signed_same_direction_limit_caps_output_and_reports_sample_rejection
   controller, VM = get_controller()
   CS = make_car_state(v_ego=20.0)
   controller.set_steering_actuator_feedback(
-    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, -0.8, -0.5, 0.3, True, False)
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, -0.8, -0.5, -0.3, False, False)
   )
 
   _, _, lac_log = update(controller, VM, CS, 0.01, steer_limited=True)

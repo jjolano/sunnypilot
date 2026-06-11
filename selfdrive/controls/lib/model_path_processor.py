@@ -52,6 +52,14 @@ SMOOTHED_CURVATURE_MAX_RAW_LAT_ACCEL_DISAGREEMENT = 1.25
 DAMPING_TAU_SPEED_BP = [5.0, 15.0, 30.0]
 DAMPING_TAU_S = [0.16, 0.10, 0.055]
 
+# Straight-road damping: larger tau and deadband when driving straight at high speed.
+STRAIGHT_ROAD_DAMPING_MIN_SPEED = 20.0  # m/s — only activate above this speed
+STRAIGHT_ROAD_DAMPING_MAX_CURVATURE = 3e-4  # 1/m — only activate when curvature is near-zero
+STRAIGHT_ROAD_DAMPING_TAU_S = 0.35  # seconds — much larger tau for straight-road smoothing
+STRAIGHT_ROAD_DAMPING_DEADBAND = 1.5e-4  # 1/m — ignore curvature changes smaller than this on straight roads
+STRAIGHT_ROAD_DAMPING_BLEND_BP = [0.0, 1.5e-4, 3e-4]  # curvature breakpoints for blend
+STRAIGHT_ROAD_DAMPING_BLEND_SCALE = [1.0, 0.0, 0.0]  # full straight-road damping at zero curvature, none at 3e-4
+
 # Trust penalty after unstable frames (decay then bump on same frame when applicable).
 TRUST_DECAY = 0.92
 TRUST_BUMP = 0.38
@@ -96,6 +104,7 @@ class ModelPathProcessorResult:
   trust_penalty: float = 0.0
   spatial_smoothed_curvature: float = 0.0
   lane_change_fade: float = 0.0
+  straight_road_damping_active: bool = False
 
 
 class ModelPathProcessor:
@@ -117,6 +126,7 @@ class ModelPathProcessor:
     self._last_smoothing_tau_s = 0.0
     self._last_damping_alpha = 0.0
     self._last_spatial_curvature = 0.0
+    self._straight_road_damping_active = False
 
   def update(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult:
     self._last_smoothing_tau_s = 0.0
@@ -126,7 +136,7 @@ class ModelPathProcessor:
 
     if not inputs.lat_active:
       self.reset()
-      return ModelPathProcessorResult(float(inputs.measured_curvature), 0.0, True, "inactive")
+      return ModelPathProcessorResult(float(inputs.measured_curvature), 0.0, True, "inactive", straight_road_damping_active=self._straight_road_damping_active)
 
     self._trust_penalty *= TRUST_DECAY
     self._age_retained_curve()
@@ -136,7 +146,7 @@ class ModelPathProcessor:
       self._low_lane_confidence_frames = 0
       self._clear_retained_curve()
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
-      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature", 0, trust_penalty=self._trust_penalty)
+      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature", 0, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
     if not self._valid_core_path(inputs.position_x, inputs.position_y):
       self._recovering_from_hard_invalid = True
@@ -153,7 +163,7 @@ class ModelPathProcessor:
         hard_invalid_fallback,
         fallback_curvature,
       )
-      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path", 0, trust_penalty=self._trust_penalty)
+      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path", 0, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
     desired_curvature = float(inputs.desired_curvature)
     fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
@@ -167,7 +177,7 @@ class ModelPathProcessor:
         inputs.measured_curvature,
         inputs.turn_curvature_sign,
       )
-      return ModelPathProcessorResult(turn_fallback_curvature, 0.5, True, "turn_opposite_curvature", 0, trust_penalty=self._trust_penalty)
+      return ModelPathProcessorResult(turn_fallback_curvature, 0.5, True, "turn_opposite_curvature", 0, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
     path_curvature = self._path_curvature(inputs.orientation_z, inputs.orientation_rate_z, inputs.v_ego)
     path_disagreement = None
@@ -208,7 +218,7 @@ class ModelPathProcessor:
     jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
     if jump_result is not None:
       self._recovering_from_hard_invalid = False
-      return replace(jump_result, trust_penalty=self._trust_penalty)
+      return replace(jump_result, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
     self._refresh_retained_curve(inputs, desired_curvature, quality, reason, path_disagreement)
 
@@ -232,6 +242,7 @@ class ModelPathProcessor:
         )
       return ModelPathProcessorResult(
         desired_curvature, quality, True, reason, hold_frames_remaining, trust_penalty=self._trust_penalty,
+        straight_road_damping_active=self._straight_road_damping_active,
       )
 
     raw_base = desired_curvature
@@ -246,7 +257,7 @@ class ModelPathProcessor:
       after_spatial = raw_base
       self._last_spatial_curvature = raw_base
 
-    tau_s, damp_alpha, damped = self._temporal_damp_curvature(inputs, after_spatial, bool(inputs.smooth_model_path_curvature))
+    tau_s, damp_alpha, damped, straight_road_active = self._temporal_damp_curvature(inputs, after_spatial, bool(inputs.smooth_model_path_curvature))
     self._last_smoothing_tau_s = tau_s
     self._last_damping_alpha = damp_alpha
 
@@ -279,6 +290,7 @@ class ModelPathProcessor:
         trust_penalty=self._trust_penalty,
         spatial_smoothed_curvature=self._last_spatial_curvature,
         lane_change_fade=lc_fade_report,
+        straight_road_damping_active=straight_road_active,
       )
 
     recovery_result = self._limit_hard_invalid_recovery(inputs, desired_curvature)
@@ -290,6 +302,7 @@ class ModelPathProcessor:
         trust_penalty=self._trust_penalty,
         spatial_smoothed_curvature=self._last_spatial_curvature,
         lane_change_fade=lc_fade_report,
+        straight_road_damping_active=straight_road_active,
       )
 
     return ModelPathProcessorResult(
@@ -303,6 +316,7 @@ class ModelPathProcessor:
       trust_penalty=self._trust_penalty,
       spatial_smoothed_curvature=self._last_spatial_curvature,
       lane_change_fade=lc_fade_report,
+      straight_road_damping_active=straight_road_active,
     )
 
   def _temporal_damp_curvature(
@@ -310,18 +324,41 @@ class ModelPathProcessor:
     inputs: ModelPathProcessorInputs,
     target: float,
     smoothing_enabled: bool,
-  ) -> tuple[float, float, float]:
+  ) -> tuple[float, float, float, bool]:
+    """Returns (tau_s, alpha, damped_curvature, straight_road_damping_active)."""
     if not smoothing_enabled:
       self._temporal_smoothed_curvature = None
-      return 0.0, 0.0, float(target)
+      self._straight_road_damping_active = False
+      return 0.0, 0.0, float(target), False
 
     v_ego = float(inputs.v_ego)
     if not math.isfinite(v_ego) or v_ego < SMOOTHED_CURVATURE_MIN_SPEED:
       self._temporal_smoothed_curvature = None
-      return 0.0, 0.0, float(target)
+      self._straight_road_damping_active = False
+      return 0.0, 0.0, float(target), False
 
     tau_s = float(np.interp(v_ego, DAMPING_TAU_SPEED_BP, DAMPING_TAU_S))
     tau_s = max(tau_s, 1e-4)
+
+    # Straight-road damping: increase tau and apply deadband when driving straight.
+    straight_road_active = False
+    if v_ego >= STRAIGHT_ROAD_DAMPING_MIN_SPEED and not inputs.lane_change_active:
+      abs_curvature = abs(target)
+      if abs_curvature < STRAIGHT_ROAD_DAMPING_MAX_CURVATURE:
+        blend = float(np.interp(abs_curvature, STRAIGHT_ROAD_DAMPING_BLEND_BP, STRAIGHT_ROAD_DAMPING_BLEND_SCALE))
+        if blend > 0.0:
+          # Blend between base tau and straight-road tau
+          tau_s = tau_s * (1.0 - blend) + STRAIGHT_ROAD_DAMPING_TAU_S * blend
+          straight_road_active = True
+
+          # Apply deadband: if curvature change is within deadband, hold previous value
+          if self._temporal_smoothed_curvature is not None and math.isfinite(self._temporal_smoothed_curvature):
+            delta = abs(target - self._temporal_smoothed_curvature)
+            if delta < STRAIGHT_ROAD_DAMPING_DEADBAND * blend:
+              # Within deadband — hold previous smoothed value
+              self._straight_road_damping_active = True
+              return tau_s, float(DT_CTRL / (DT_CTRL + tau_s)), float(self._temporal_smoothed_curvature), True
+
     alpha = float(DT_CTRL / (DT_CTRL + tau_s))
 
     if self._temporal_smoothed_curvature is None or not math.isfinite(self._temporal_smoothed_curvature):
@@ -331,7 +368,8 @@ class ModelPathProcessor:
         self._temporal_smoothed_curvature + alpha * (target - self._temporal_smoothed_curvature)
       )
 
-    return tau_s, alpha, float(self._temporal_smoothed_curvature)
+    self._straight_road_damping_active = straight_road_active
+    return tau_s, alpha, float(self._temporal_smoothed_curvature), straight_road_active
 
   def _apply_soft_gate_hold(self, quality: float, reason: str, v_ego: float) -> tuple[float, str, int]:
     if reason in SOFT_GATE_REASONS and quality < LOW_QUALITY_BLEND_THRESHOLD:

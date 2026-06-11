@@ -39,6 +39,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback impo
   SteeringActuatorRequest,
   SteeringLimitReason,
   build_steering_actuator_feedback,
+  classify_steering_limit_context,
   classify_steering_limit_direction,
 )
 
@@ -132,6 +133,18 @@ def test_limit_direction_can_be_classified_for_current_command():
 
   assert not same_direction
   assert unwind
+
+
+def test_limit_context_classifies_direction_with_current_command():
+  feedback = SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, 0.7, 0.45, 0.25, False, False)
+
+  same_direction = classify_steering_limit_context(feedback, 0.2)
+  unwind = classify_steering_limit_context(feedback, -0.2)
+
+  assert same_direction.same_direction_limited
+  assert not same_direction.unwind_allowed
+  assert not unwind.same_direction_limited
+  assert unwind.unwind_allowed
 
 
 class DummyLatControl(LatControl):

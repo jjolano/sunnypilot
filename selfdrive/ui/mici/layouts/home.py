@@ -4,6 +4,7 @@ import time
 from cereal import log
 import pyray as rl
 from collections.abc import Callable
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, requested_mode_from_params
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.layouts import HBoxLayout
 from openpilot.system.ui.widgets.icon_widget import IconWidget
@@ -153,7 +154,7 @@ class MiciHomeLayout(Widget):
     self._update_params()
 
   def _update_params(self):
-    self._experimental_mode = ui_state.params.get_bool("ExperimentalMode")
+    self._experimental_mode = requested_mode_from_params(ui_state.params) != LongitudinalMode.ACC
 
   def _update_state(self):
     if self.is_pressed and not self._is_pressed_prev:
@@ -166,9 +167,11 @@ class MiciHomeLayout(Widget):
     if self._mouse_down_t is not None:
       if time.monotonic() - self._mouse_down_t > 0.5:
         # long gating for experimental mode - only allow toggle if longitudinal control is available
-        if ui_state.has_longitudinal_control:
+        current_mode = requested_mode_from_params(ui_state.params)
+        if ui_state.has_longitudinal_control and current_mode != LongitudinalMode.SCC and ui_state.params.get_bool("ExperimentalModeConfirmed"):
           self._experimental_mode = not self._experimental_mode
-          ui_state.params.put("ExperimentalMode", self._experimental_mode)
+          next_mode = LongitudinalMode.E2E if self._experimental_mode else LongitudinalMode.ACC
+          ui_state.params.put("LongitudinalMode", int(next_mode))
         self._mouse_down_t = None
         self._did_long_press = True
 

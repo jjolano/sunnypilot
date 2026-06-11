@@ -5,9 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 DEFAULT_TORQUE_TUNE_VERSION = 2.0
-REMOVED_TORQUE_TUNE_FALLBACKS = {
-  4.0: DEFAULT_TORQUE_TUNE_VERSION,
-}
+REMOVED_TORQUE_TUNE_FALLBACKS = {}
 
 
 @dataclass(frozen=True)

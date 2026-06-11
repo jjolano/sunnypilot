@@ -10,7 +10,7 @@ from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
-from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_direction
+from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import classify_steering_limit_context
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_observation import TorqueObservation, torque_direction
 
 
@@ -118,6 +118,7 @@ def _approach(value: float, target: float, step: float) -> float:
 
 @dataclass
 class ResponseSampleCorrection:
+  # Evidence-only placeholder values until a real bounded session learner is added.
   response_scale: float
   trim_lat_accel: float
   confidence: float
@@ -362,6 +363,7 @@ class LatControlTorque(LatControl):
     feedback_correction = _interp(CS.vEgo, FEEDBACK_GAIN_BP, FEEDBACK_GAIN_V) * control_error
     damping_correction = -_interp(CS.vEgo, DAMPING_GAIN_BP, DAMPING_GAIN_V) * measurement_rate
     breakaway = self._breakaway_lateral_accel(control_error, lateral_accel_deadzone, raw_target_lateral_accel, measurement)
+    # v3 currently has no session trim learner; telemetry reports this identity correction explicitly.
     trim_correction = 0.0
     commanded_lateral_accel = (
       lead_lateral_accel
@@ -370,7 +372,6 @@ class LatControlTorque(LatControl):
       + feedback_correction
       + damping_correction
       + breakaway
-      + trim_correction
     )
 
     invalid = input_invalid or not _finite(commanded_lateral_accel, lead_lateral_accel, measurement, raw_actual_lateral_jerk, measurement_rate)
@@ -378,11 +379,8 @@ class LatControlTorque(LatControl):
     raw_output_torque = _clip(raw_output_torque, -self.steer_max, self.steer_max) if _finite(raw_output_torque) else 0.0
 
     steer_limit_feedback = self.steering_actuator_feedback
-    steer_limit_same_direction, steer_limit_unwind = classify_steering_limit_direction(steer_limit_feedback, -raw_output_torque)
-    if steer_limit_feedback.valid:
-      steer_limit_same_direction = steer_limit_same_direction or bool(steer_limit_feedback.same_direction_limited)
-      steer_limit_unwind = steer_limit_unwind or bool(steer_limit_feedback.unwind_allowed)
-    same_direction_limit = bool(steer_limited_by_safety and (steer_limit_same_direction if steer_limit_feedback.valid else True))
+    steer_limit_context = classify_steering_limit_context(steer_limit_feedback, -raw_output_torque)
+    same_direction_limit = bool(steer_limited_by_safety and (steer_limit_context.same_direction_limited if steer_limit_feedback.valid else True))
     governor_result = self.governor.update(
       active and not invalid,
       CS.vEgo,
@@ -439,8 +437,8 @@ class LatControlTorque(LatControl):
       governor_result,
       response_sample,
       steer_limit_feedback,
-      steer_limit_same_direction,
-      steer_limit_unwind,
+      steer_limit_context.same_direction_limited,
+      steer_limit_context.unwind_allowed,
       raw_actual_lateral_jerk,
       target_lateral_accel_rate,
       lead_gain,
@@ -492,6 +490,8 @@ class LatControlTorque(LatControl):
     adaptive_log.shapingConfidence = float(response_sample.correction.confidence)
     adaptive_log.unshapedOutput = float(-raw_output_torque)
     adaptive_log.outputCap = float(governor_result.output_cap)
+    # Learner/model-authority fields remain for schema compatibility only. Current v3
+    # reports identity/evidence values and does not run bounded session learning.
     adaptive_log.modelMode = 1
     adaptive_log.modelConfidence = float(response_sample.correction.confidence)
     adaptive_log.authorityBand = 0

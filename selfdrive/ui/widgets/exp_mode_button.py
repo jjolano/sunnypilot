@@ -1,5 +1,6 @@
 import pyray as rl
 from openpilot.common.params import Params
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, requested_mode_from_params
 from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets import Widget
@@ -14,19 +15,19 @@ class ExperimentalModeButton(Widget):
     self.button_height = 125
 
     self.params = Params()
-    self.experimental_mode = self.params.get_bool("ExperimentalMode")
+    self.longitudinal_mode = requested_mode_from_params(self.params)
 
     self.chill_pixmap = gui_app.texture("icons/couch.png", self.img_width, self.img_width)
     self.experimental_pixmap = gui_app.texture("icons/experimental_grey.png", self.img_width, self.img_width)
 
   def show_event(self):
     super().show_event()
-    self.experimental_mode = self.params.get_bool("ExperimentalMode")
+    self.longitudinal_mode = requested_mode_from_params(self.params)
 
   def _get_gradient_colors(self):
     alpha = 0xCC if self.is_pressed else 0xFF
 
-    if self.experimental_mode:
+    if self.longitudinal_mode != LongitudinalMode.ACC:
       return rl.Color(255, 155, 63, alpha), rl.Color(219, 56, 34, alpha)
     else:
       return rl.Color(20, 255, 171, alpha), rl.Color(35, 149, 255, alpha)
@@ -48,7 +49,12 @@ class ExperimentalModeButton(Widget):
     rl.draw_line_ex(rl.Vector2(line_x, rect.y), rl.Vector2(line_x, rect.y + rect.height), 3, separator_color)
 
     # Draw text label (left aligned)
-    text = tr("EXPERIMENTAL MODE ON") if self.experimental_mode else tr("CHILL MODE ON")
+    if self.longitudinal_mode == LongitudinalMode.SCC:
+      text = tr("SCC MODE ON")
+    elif self.longitudinal_mode == LongitudinalMode.E2E:
+      text = tr("E2E MODE ON")
+    else:
+      text = tr("ACC MODE ON")
     text_x = rect.x + self.horizontal_padding
     text_y = rect.y + rect.height / 2 - 45 * FONT_SCALE // 2  # Center vertically
 
@@ -60,6 +66,6 @@ class ExperimentalModeButton(Widget):
     icon_rect = rl.Rectangle(icon_x, icon_y, self.img_width, self.img_width)
 
     # Draw current mode icon
-    current_icon = self.experimental_pixmap if self.experimental_mode else self.chill_pixmap
+    current_icon = self.experimental_pixmap if self.longitudinal_mode != LongitudinalMode.ACC else self.chill_pixmap
     source_rect = rl.Rectangle(0, 0, current_icon.width, current_icon.height)
     rl.draw_texture_pro(current_icon, source_rect, icon_rect, rl.Vector2(0, 0), 0, rl.WHITE)

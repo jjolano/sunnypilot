@@ -7,6 +7,10 @@
     "title": "Accurate Lateral Acceleration",
     "description": "Experimental opt-in control path that uses curvature-based lateral acceleration and exact roll gravity compensation in lateral and turn-speed calculations. Keep disabled unless validating this behavior."
   },
+  "LaneCenteringAssistEnabled": {
+    "title": "Lane Centering Assist",
+    "description": "Apply small curvature corrections on straight roads to reduce lateral drift. Only active when lateral control is using the model path and driving straight at highway speed."
+  },
   "AdbEnabled": {
     "title": "Enable ADB",
     "description": ""
@@ -670,6 +674,36 @@
       }
     ]
   },
+  "LongitudinalMode": {
+    "title": "Longitudinal Mode",
+    "description": "Selects the top-level longitudinal behavior: ACC, E2E, or SCC.",
+    "options": [
+      {
+        "value": 0,
+        "label": "ACC"
+      },
+      {
+        "value": 1,
+        "label": "E2E"
+      },
+      {
+        "value": 2,
+        "label": "SCC"
+      }
+    ]
+  },
+  "LongitudinalModeMigrationVersion": {
+    "title": "Longitudinal Mode Migration Version",
+    "description": "Tracks one-time migration from legacy Experimental/DEC longitudinal settings."
+  },
+  "SccCurveMapEnabled": {
+    "title": "SCC Map Curve Control",
+    "description": "Allow SCC mode to use map-derived curve speed caps."
+  },
+  "SccCurveVisionEnabled": {
+    "title": "SCC Vision Curve Control",
+    "description": "Allow SCC mode to use vision-predicted curve speed caps."
+  },
   "LongitudinalStack": {
     "title": "Longitudinal Stack",
     "description": "Selects which longitudinal control stack is used after sunnypilot longitudinal control is active. Default is sunnypilot-current; custom-recommended resolves globally to custom-2.0.",
@@ -687,6 +721,10 @@
         "label": "Custom v2.0"
       }
     ]
+  },
+  "FastLeadMotionEvidenceEnabled": {
+    "title": "Fast Lead Motion",
+    "description": "Uses raw lead opening and lead speed evidence in custom v2.0 stop/go and progress behavior."
   },
   "OnePedalLongitudinalMode": {
     "title": "One Pedal Longitudinal",
@@ -744,6 +782,10 @@
     "title": "Map Advisory Limit",
     "description": ""
   },
+  "MapAdvisoryUpdatedAt": {
+    "title": "Map Advisory Updated At",
+    "description": ""
+  },
   "MapCurvatures": {
     "title": "Map Curvatures",
     "description": ""
@@ -766,6 +808,10 @@
   },
   "MapTargetVelocities": {
     "title": "Map Target Velocities",
+    "description": ""
+  },
+  "MapTargetVelocitiesUpdatedAt": {
+    "title": "Map Target Velocities Updated At",
     "description": ""
   },
   "MapTargetVelocitiesValid": {
@@ -1449,11 +1495,19 @@
   },
   "TorqueControlTune": {
     "title": "Torque Control Tune Version",
-    "description": "Select the torque controller version. Default uses v2.0; v2.1 and v3.0 are experimental and only run on native torque vehicles.",
+    "description": "Select the torque controller version. Default uses v2.0; v2.1, v3.0, and experimental v4.0/v4.1 only run on native torque vehicles.",
     "options": [
       {
         "value": "",
         "label": "Default"
+      },
+      {
+        "value": 4.1,
+        "label": "v4.1"
+      },
+      {
+        "value": 4.0,
+        "label": "v4.0"
       },
       {
         "value": 3.0,

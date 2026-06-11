@@ -47,3 +47,8 @@ def speed_for_lateral_accel(lateral_accel: float, curvature: float) -> float:
   if not math.isfinite(curvature) or curvature <= MIN_CURVATURE_FOR_SPEED:
     return math.inf
   return math.sqrt(lateral_accel / curvature)
+
+
+def lateral_jerk_from_curvature_rate(curvature_rate: float, v_ego: float) -> float:
+  """Signed lateral jerk implied by curvature rate at current speed."""
+  return float(curvature_rate) * float(v_ego) ** 2

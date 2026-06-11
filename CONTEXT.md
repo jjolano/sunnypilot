@@ -48,6 +48,18 @@ _Avoid_: stack selector, policy toggle
 The latched choice of longitudinal stack for an onroad cycle.
 _Avoid_: live stack switch, mode toggle
 
+**Longitudinal Mode**:
+The top-level user behavior choice among **ACC**, **E2E**, and **SCC**. It decides which classes of evidence may affect actuation before planner candidates are built.
+_Avoid_: legacy DEC toggle, stack selection
+
+**SCC Mode**:
+The public smart-cruise mode that can select ACC-like or E2E-like behavior from explicit evidence while using curve, map, speed, or stop cues only inside mode-specific boundaries.
+_Avoid_: renamed DEC, SCC Vision toggle
+
+**SCC Curve Control**:
+Mode-owned SCC source controls, currently `SccCurveVisionEnabled` and `SccCurveMapEnabled`, that decide whether vision-predicted or map-derived curve caps may be built while SCC mode is active.
+_Avoid_: legacy SmartCruiseControlVision/Map params, standalone longitudinal mode
+
 **One-Pedal Longitudinal**:
 A custom-2.0 mode where driver lift-off makes cruise speed an acceleration ceiling instead of a speed-hold target.
 _Avoid_: regen mode, follow-gap mode
@@ -116,6 +128,10 @@ _Avoid_: file choice, feature label
 Positive progress authorized by stable or confirmed lead evidence.
 _Avoid_: lead status, weak lead progress
 
+**Fast Lead Motion Evidence**:
+Immediate lead opening, closing, and moving evidence from raw relative lead speed and raw absolute lead speed.
+_Avoid_: lead authority, Lead MPC, filtered lead speed
+
 **Closing-rate Risk**:
 Lead-follow risk caused by ego speed consuming the lead gap faster than the lead trajectory can safely absorb.
 _Avoid_: speed-up annoyance, custom policy preference
@@ -123,6 +139,10 @@ _Avoid_: speed-up annoyance, custom policy preference
 **Lead Speed-up Guard**:
 A planner-level cap that blocks non-lead speed-up seeds when a close lead is being closed on.
 _Avoid_: lead braking, MPC replacement
+
+**Lead Flicker Safety Cap**:
+A custom-stack **Safety Cap** that blocks positive acceleration during low-confidence or recently lost risky lead evidence without treating that evidence as **Lead-confirmed Progress**.
+_Avoid_: lead persistence, hidden lead MPC, flicker progress
 
 **Slower Lead Approach**:
 Lead-follow runway comfort for approaching a slower moving lead without declaring stop intent.
@@ -173,8 +193,10 @@ _Avoid_: ignoring curves, lateral safety
 - A **Longitudinal Planner** may use **Longitudinal MPC** as a lower-level solver.
 - **Lead MPC** is authoritative physical-hazard evidence when lead confidence is sufficient.
 - Low-confidence, flickering, or transitioning lead evidence may restrict or hold acceleration, but only **Lead-confirmed Progress** may authorize positive lead progress.
+- **Fast Lead Motion Evidence** may shape custom **Stop/go Intent** and **Progress Core** timing after lead authority already exists, but it does not create **Lead-confirmed Progress** by itself or replace **Lead MPC** physics.
 - **Closing-rate Risk** belongs to **Longitudinal MPC** or planner lead guards rather than a competing **Custom Stack** physics model.
 - A **Lead Speed-up Guard** caps planner seeds; **Longitudinal MPC** owns lead braking, time-gap, danger-gap, and stop-runway shaping.
+- A **Lead Flicker Safety Cap** may hold acceleration during risky flicker; it does not create **Lead-confirmed Progress** or a **Lead MPC** physical hazard.
 - A **Slower Lead Approach** is **Closing-rate Risk** handling inside lead-follow behavior; it may use bounded moving-follow runway comfort, but it is not **Stop Approach**.
 - **Stop/go Intent** belongs to the **Longitudinal Planner**; **Longitudinal MPC** owns physical lead/runway constraints and controller logic only shapes release.
 - A **Planner Seed Candidate** is planner-owned input to custom-stack arbitration, not a selectable stack version.
@@ -193,7 +215,8 @@ _Avoid_: ignoring curves, lateral safety
 - **Clear Launch Pulse**, **Lead Pullaway Pulse**, **Excess Gap Closure**, and **Free Coast** are progress or comfort policies that yield to **Safety Caps**, confirmed stop evidence, and **Lead MPC** hazard handling.
 - **Driver-Like Curve Speed** cannot override lateral-accel or path-confidence limits.
 - **AlphaLongitudinalEnabled** gates gas/brake takeover separately from **Stack Selection**.
-- SCC, SLA, and OSM are signal sources; **Stack Selection** changes how their outputs are used.
+- SCC is a **Longitudinal Mode**; SCC Vision, SCC Map, SLA, and OSM are signal sources whose outputs are only built when the active mode allows them.
+- **SCC Curve Control** belongs inside **SCC Mode**; it can disable curve source candidates but cannot make ACC consume curve, map, SLA, OSM, or model-stop actuation inputs.
 - The **Longitudinal Decision Layer** is internal to custom-stack behavior and disabled for **sunnypilot-current**.
 - A **Claim Type** is classified before code ownership: physical feasibility belongs to MPC or lead guards, stop/go state belongs to the planner, policy trade-offs belong to custom-stack arbitration, actuator feel belongs to controller logic, and source interpretation belongs to signal providers.
 

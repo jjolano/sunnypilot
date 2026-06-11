@@ -8,6 +8,7 @@ params_pyx.ParamKeyType = object
 params_pyx.UnknownKeyName = RuntimeError
 sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
 
+from cereal import car
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.toyota.values import CAR as TOYOTA
 
@@ -19,6 +20,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v2 import LatControlTorque as LatControlTorqueV2, LatControlTorqueV21
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v3 import LatControlTorqueV3
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV4, LatControlTorqueV41, LatControlTorqueV5
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
   DEFAULT_TORQUE_TUNE_VERSION,
   TorqueControllerDefinition,
@@ -120,12 +122,14 @@ def test_normalize_torque_tune_version():
   assert ControlsExt.normalize_torque_tune_version("bad") is None
 
 
-def test_torque_tune_resolution_owns_removed_version_fallback():
-  resolution = resolve_torque_tune_version(4.0)
+def test_torque_tune_resolution_keeps_reactivated_v4_numeric():
+  resolution = resolve_torque_tune_version("4.0")
 
+  assert DEFAULT_TORQUE_TUNE_VERSION == 2.0
   assert resolution.requested_version == 4.0
-  assert resolution.resolved_version == DEFAULT_TORQUE_TUNE_VERSION
-  assert resolution.persist_value == "2.0"
+  assert resolution.resolved_version == 4.0
+  assert resolution.persist_value is None
+  assert resolve_torque_tune_version("4.1").resolved_version == 4.1
   assert resolve_torque_tune_version(b"2.1").resolved_version == 2.1
   assert resolve_torque_tune_version(b"3.0").resolved_version == 3.0
   assert resolve_torque_tune_version("bad").resolved_version is None
@@ -172,9 +176,68 @@ def test_torque_controller_selection_variants():
   params = FakeParams(True, 4.0)
   controls_ext = make_controls_ext(CP, CP_SP, params)
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV4)
+  assert not hasattr(selected, "extension")
+  assert "TorqueControlTune" not in params.writes
+
+  params = FakeParams(True, 4.1)
+  controls_ext = make_controls_ext(CP, CP_SP, params)
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV41)
+  assert not hasattr(selected, "extension")
+  assert "TorqueControlTune" not in params.writes
+
+  # 5.0 is the first torque version with active profile-aware
+  # command shaping. There is no 5.0-shadow; selecting 5.0
+  # directly selects LatControlTorqueV5.
+  params = FakeParams(True, 5.0)
+  controls_ext = make_controls_ext(CP, CP_SP, params)
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV5)
+  assert selected.VERSION == 50
+  assert "TorqueControlTune" not in params.writes
+
+
+def test_torque_control_tune_5_instantiates_latcontrol_torque_v5():
+  """TorqueControlTune=5.0 must select LatControlTorqueV5, the
+  first torque version with active profile-aware command
+  shaping (preview lead + turn-exit source-of-truth)."""
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 5.0))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV5)
+  assert selected.VERSION == 50
+
+
+def test_torque_control_tune_41_instantiates_latcontrol_torque_v41():
+  """TorqueControlTune=4.1 must select LatControlTorqueV41, the
+  current stable default. The 4.1 path is the v4.1 controller
+  (no v5 active delta)."""
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 4.1))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV41)
+  assert selected.VERSION == 41
+
+
+def test_torque_control_tune_unknown_falls_back_safely():
+  """An unknown TorqueControlTune value must fall back safely
+  (to 2.0, the historical stable default) and must NOT select
+  5.0. The fallback path is exercised by users who set a
+  deprecated or future value."""
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+  # None → falls back to the historical 2.0 default (existing
+  # behavior preserved).
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, None))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert not isinstance(selected, LatControlTorqueV5)
   assert isinstance(selected, LatControlTorqueV2)
-  assert hasattr(selected, "output_shaper")
-  assert params.writes["TorqueControlTune"] == "2.0"
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 1.0))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
@@ -190,6 +253,48 @@ def test_pid_origin_non_angle_controller_keeps_original_lac_for_v3():
   CP, CP_SP, CI, lac = make_pid_origin_controller()
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 3.0))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert selected is lac
+
+
+def test_pid_origin_non_angle_controller_keeps_original_lac_for_v4():
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, "4.0"))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert selected is lac
+
+
+def test_pid_origin_non_angle_controller_keeps_original_lac_for_v41():
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, "4.1"))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert selected is lac
+
+
+def test_angle_controller_keeps_original_lac_for_v41():
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
+  CP.steerControlType = car.CarParams.SteerControlType.angle
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, "4.1"))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert selected is lac
+
+
+def test_angle_controller_keeps_original_lac_for_v4():
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
+  CP.steerControlType = car.CarParams.SteerControlType.angle
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, "4.0"))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert selected is lac
+
+
+def test_pid_origin_non_angle_controller_keeps_original_lac_without_enforce():
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(False, 3.0))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert selected is lac
 
@@ -381,3 +486,42 @@ def test_get_params_sp_updates_speed_aware_params_when_extension_exists(monkeypa
 
   assert controls_ext.lat_delay == 0.52
   assert controls_ext.LaC.extension.speed_aware_params == "speed-aware-payload"
+
+
+def test_get_params_sp_prefers_direct_speed_aware_params_hook(monkeypatch):
+  class FakeBlinkerPauseLateral:
+    def get_params(self):
+      pass
+
+  class FakeLiveDelay:
+    lateralDelay = 0.42
+
+  class FakeExtension:
+    def __init__(self):
+      self.speed_aware_params = None
+
+    def update_speed_aware_params(self, speed_aware_params):
+      self.speed_aware_params = speed_aware_params
+
+  class FakeTorqueController:
+    CONTROL_STATE = "torque"
+
+    def __init__(self):
+      self.speed_aware_params = None
+      self.extension = FakeExtension()
+
+    def update_speed_aware_params(self, speed_aware_params):
+      self.speed_aware_params = speed_aware_params
+
+  CP, CP_SP, _CI = get_test_context()
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, speed_aware_params="speed-aware-payload"))
+  controls_ext._param_update_time = 0.0
+  controls_ext.blinker_pause_lateral = FakeBlinkerPauseLateral()
+  controls_ext.LaC = FakeTorqueController()
+  monkeypatch.setattr(controlsd_ext, "get_lat_delay", lambda _params, lateral_delay: lateral_delay + 0.1)
+
+  controls_ext.get_params_sp({"liveDelay": FakeLiveDelay()})
+
+  assert controls_ext.lat_delay == 0.52
+  assert controls_ext.LaC.speed_aware_params == "speed-aware-payload"
+  assert controls_ext.LaC.extension.speed_aware_params is None

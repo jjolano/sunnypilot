@@ -218,9 +218,6 @@ class TorqueConservativeOutputShaper:
       and desired_sign * (inputs.desired_lateral_accel - inputs.actual_lateral_accel) > AUTHORITY_RECOVERY_BYPASS_UNDER_RESPONSE
     )
 
-    if inputs.steering_pressed:
-      output_cap, confidence, reason = self._apply(output_cap, confidence, reason, OVERRIDE_RELEASE_CAP, 1.0,
-                                                   ConservativeOutputShapingReason.STEERING_PRESSED)
     if inputs.release_active:
       output_cap, confidence, reason = self._apply(output_cap, confidence, reason, OVERRIDE_RELEASE_CAP, 1.0,
                                                    ConservativeOutputShapingReason.RELEASE)

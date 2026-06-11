@@ -272,20 +272,19 @@ def test_curve_exit_assist_respects_existing_limit_blocks():
     assert abs(result.assist_torque) < 1e-6
 
 
-def test_release_on_override():
+def test_steering_override_freezes_without_release():
   assist = TorqueGuardedResponseAssist(0.01)
   for _ in range(40):
     assist.update(make_inputs())
 
-  result = assist.update(
-    make_inputs(steering_pressed=True, desired_lateral_accel=0.05, desired_lateral_jerk=0.05, lookahead_lateral_jerk=0.05, desired_curvature=0.005)
-  )
-  assert result.phase == "RELEASE"
-  assert result.release_active
-  assert abs(result.assist_torque) < 0.14
+  result = assist.update(make_inputs(steering_pressed=True))
+
+  assert result.phase != "RELEASE"
+  assert not result.release_active
+  assert result.learning_frozen
   assert result.freeze_reason & GuardedResponseReason.STEERING_PRESSED
-  assert result.block_reason & GuardedResponseReason.RELEASE
   assert result.block_reason & GuardedResponseReason.STEERING_PRESSED
+  assert not result.block_reason & GuardedResponseReason.RELEASE
 
 
 def test_bump_disturbance_freezes_learning():
