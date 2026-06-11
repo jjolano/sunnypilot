@@ -602,3 +602,48 @@ def test_update_lateral_demand_profile_classifies_steering_pressed_as_driver_ove
   controls.update_lateral_demand_profile(demand, v_ego=20.0, steering_pressed=True)
 
   assert controls.LaC.profile.mode == LateralMode.DRIVER_OVERRIDE.value
+
+
+def _make_capnp_model_v2_reader(lane_change_state=log.LaneChangeState.off,
+                                lane_change_direction=log.LaneChangeDirection.none,
+                                raw_curvature=0.002):
+  msg = messaging.new_message('modelV2')
+  mv2 = msg.modelV2
+  mv2.action.desiredCurvature = float(raw_curvature)
+  mv2.meta.laneChangeState = lane_change_state
+  mv2.meta.laneChangeDirection = lane_change_direction
+  samples = [float(i) for i in range(33)]
+  zeros = [0.0 for _ in samples]
+  mv2.position.x = samples
+  mv2.position.y = zeros
+  mv2.position.yStd = zeros
+  mv2.orientation.z = zeros
+  mv2.orientationRate.z = zeros
+  mv2.laneLineProbs = [0.0, 0.9, 0.9, 0.0]
+  mv2.laneLineStds = [0.0, 0.0, 0.0, 0.0]
+  lane_lines = mv2.init('laneLines', 4)
+  lane_lines[1].y = [-1.8]
+  lane_lines[2].y = [1.8]
+  mv2.frameDropPerc = 0.0
+  with log.Event.from_bytes(msg.to_bytes()) as evt:
+    return evt.modelV2.as_builder().as_reader()
+
+
+@pytest.mark.parametrize("lcs,lcd", [
+  (log.LaneChangeState.off, log.LaneChangeDirection.none),
+  (log.LaneChangeState.preLaneChange, log.LaneChangeDirection.left),
+  (log.LaneChangeState.laneChangeStarting, log.LaneChangeDirection.right),
+  (log.LaneChangeState.laneChangeFinishing, log.LaneChangeDirection.left),
+])
+def test_build_lateral_demand_stack_inputs_accepts_capnp_dynamic_enum(lcs, lcd):
+  controls = make_demand_controls()
+  model_v2 = _make_capnp_model_v2_reader(lane_change_state=lcs, lane_change_direction=lcd)
+
+  stack_inputs = controls.build_lateral_demand_stack_inputs(
+    make_car_control(), make_car_state(), model_v2, make_live_params(),
+  )
+
+  assert isinstance(stack_inputs.lane_change_state, int)
+  assert isinstance(stack_inputs.lane_change_direction, int)
+  assert stack_inputs.lane_change_state == int(getattr(lcs, "raw", lcs))
+  assert stack_inputs.lane_change_direction == int(getattr(lcd, "raw", lcd))

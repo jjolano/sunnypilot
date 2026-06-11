@@ -87,6 +87,11 @@ def model_path_reason_to_capnp(reason: str):
   return MODEL_PATH_REASON_TO_CAPNP.get(reason, log.ControlsState.ModelPathState.Reason.unknown)
 
 
+def _enum_int(value) -> int:
+  raw = getattr(value, "raw", value)
+  return int(raw)
+
+
 def fill_model_path_state(model_path_state, model_path_result: ModelPathProcessorResult, raw_desired_curvature: float) -> None:
   model_path_state.active = model_path_result.reason != "inactive"
   model_path_state.gated = bool(model_path_result.gated)
@@ -215,7 +220,7 @@ class Controls(ControlsExt):
       model_v2.meta.laneChangeState == LaneChangeState.off
       and self.sm.valid['modelDataV2SP']
     ):
-      turn_direction = int(self.sm['modelDataV2SP'].laneTurnDirection)
+      turn_direction = _enum_int(self.sm['modelDataV2SP'].laneTurnDirection)
     return LateralDemandStackInputs(
       lat_active=CC.latActive,
       v_ego=CS.vEgo,
@@ -230,8 +235,8 @@ class Controls(ControlsExt):
       roll=live_params.roll,
       lateral_accel_limit_no_roll=MAX_LATERAL_ACCEL_NO_ROLL,
       default_lateral_accel_limited=False,
-      lane_change_state=int(model_v2.meta.laneChangeState),
-      lane_change_direction=int(model_v2.meta.laneChangeDirection),
+      lane_change_state=_enum_int(model_v2.meta.laneChangeState),
+      lane_change_direction=_enum_int(model_v2.meta.laneChangeDirection),
       turn_direction=turn_direction,
       model_data_v2_sp_valid=bool(self.sm.valid['modelDataV2SP']),
       lane_centering_assist_enabled=self.params.get_bool("LaneCenteringAssistEnabled"),
