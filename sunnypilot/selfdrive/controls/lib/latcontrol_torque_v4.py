@@ -1627,6 +1627,15 @@ class LatControlTorqueV5(LatControlTorqueV41):
       self._v5_turn_exit_decided = False
       self._v5_cached_turn_exit_decision = None
       return None
+    # 5.0 v5 contract: missing profile = full 4.1 fallback. The
+    # preview gate already requires a profile to allow a boost;
+    # the turn-exit source-of-truth must do the same so a frame
+    # without a profile produces a target that exactly matches
+    # the v4.1 base.
+    if self.lateral_demand_profile is None:
+      self._v5_turn_exit_decided = False
+      self._v5_cached_turn_exit_decision = None
+      return None
     # Path enabled by a later commit. Not exercised in the skeleton.
     cs_v_ego = getattr(CS, "vEgo", 0.0) if CS is not None else 0.0
     cs_steering_pressed = bool(getattr(CS, "steeringPressed", False)) if CS is not None else False
