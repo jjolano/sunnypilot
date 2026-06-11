@@ -1553,6 +1553,10 @@ class LatControlTorqueV5(LatControlTorqueV41):
     ACTIVE_VEHICLE_BIAS_COMPENSATION - learned vehicle-bias applied to command
                                        (5.1 territory; stays False in 5.0)
   """
+  # Torque 5.0 active deltas:
+  #   profile preview lead          - active
+  #   turn-exit source-of-truth     - active
+  #   vehicle-bias compensation     - disabled until 5.1
   VERSION = 50
   ACTIVE_PROFILE_PREVIEW_LEAD = True
   ACTIVE_TURN_EXIT_CONTROLLER = True
