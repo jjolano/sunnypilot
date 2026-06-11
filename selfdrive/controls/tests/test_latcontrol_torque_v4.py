@@ -2,6 +2,7 @@ import inspect
 import math
 import sys
 import types
+from unittest.mock import patch
 
 import pytest
 
@@ -1475,6 +1476,29 @@ def test_v5_turn_exit_reduces_lead_gain_and_cap():
   assert target.lead_delta_cap == pytest.approx(0.25)
 
 
+def test_v5_turn_in_preview_does_not_reduce_base_lead_gain_or_cap():
+  """TURN_IN mode is not recenter. The turn-exit seam must
+  return lead_gain_multiplier=1.0 and lead_delta_cap_multiplier=1.0,
+  leaving the base lead_gain and lead_delta_cap intact. Only the
+  preview boost (a separate additive path) is allowed to apply.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.05)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_boost_applied > 0.0
+  assert target.turn_exit_lead_gain_multiplier == 1.0
+  assert target.turn_exit_lead_delta_cap_multiplier == 1.0
+  assert target.lead_gain == pytest.approx(0.5)
+  assert target.lead_delta_cap == pytest.approx(0.5)
+
+
 def test_v5_turn_exit_early_release_zeroes_lead_delta():
   """When the decision's early_release_lead_zero is True and
   persistence_frames >= RECENTER_PERSISTENCE_FRAMES, the v5
@@ -2023,6 +2047,123 @@ def test_v5_straight_road_torque_flips_counter_gated_by_straight_flag():
   v5._v5_record_output_torque_sign_flips(0.4)  # flip off straight
   assert v5._v5_straight_road_torque_flips == 1
   assert v5._v5_output_sign_flips == 2
+
+
+def test_v5_output_sign_flip_counter_increments():
+  """Direct test of the flip counter helper. The counter must
+  start at zero, increment only on real sign changes, and
+  never count the first call (no prior sign to compare
+  against).
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._v5_last_output_sign = 0
+  assert v5._v5_output_sign_flips == 0
+
+  v5._v5_record_output_torque_sign_flips(0.6)
+  assert v5._v5_output_sign_flips == 0
+  assert v5._v5_last_output_sign == 1
+
+  v5._v5_record_output_torque_sign_flips(0.4)
+  assert v5._v5_output_sign_flips == 0
+
+  v5._v5_record_output_torque_sign_flips(-0.5)
+  assert v5._v5_output_sign_flips == 1
+
+  v5._v5_record_output_torque_sign_flips(0.2)
+  assert v5._v5_output_sign_flips == 2
+
+
+def test_v5_straight_road_torque_flip_counter_uses_classifier_straight_road():
+  """_last_straight_road must be set from the live
+  classifier_result.straight_road output every frame. A
+  straight-road classifier result must leave the flag True; a
+  curve-road result must leave it False. The flip counters are
+  gated by the flag (covered in
+  test_v5_straight_road_torque_flips_counter_gated_by_straight_flag);
+  this test verifies the wiring from the classifier output to
+  the flag is live on every update().
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._last_straight_road = False
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(processed_curvature=0.0, path_quality=0.9, path_reason="ok"),
+  )
+
+  class _StraightClassifier:
+    classification = "none"
+    confidence = 0.0
+    straight_road = True
+
+  class _CurveClassifier:
+    classification = "none"
+    confidence = 0.0
+    straight_road = False
+
+  with patch.object(v5.oscillation_classifier, "update",
+                    return_value=_StraightClassifier()):
+    update(v5, VehicleModel(CP), make_car_state(v_ego=20.0), 0.0001)
+  assert v5._last_straight_road is True
+
+  with patch.object(v5.oscillation_classifier, "update",
+                    return_value=_CurveClassifier()):
+    update(v5, VehicleModel(CP), make_car_state(v_ego=20.0), 0.0001)
+  assert v5._last_straight_road is False
+
+  with patch.object(v5.oscillation_classifier, "update",
+                    return_value=_StraightClassifier()):
+    update(v5, VehicleModel(CP), make_car_state(v_ego=20.0), 0.0001)
+  assert v5._last_straight_road is True
+
+  v5.reset()
+  assert v5._last_straight_road is False
+
+
+def test_v5_straight_road_torque_flip_counter_does_not_increment_when_not_straight():
+  """When _last_straight_road is False, the
+  straight_road_torque_flips counter must stay at zero even
+  though the underlying output_sign_flips counter still
+  increments.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._v5_last_output_sign = 0
+  v5._last_straight_road = False
+  assert v5._v5_straight_road_torque_flips == 0
+
+  v5._v5_record_output_torque_sign_flips(0.5)
+  v5._v5_record_output_torque_sign_flips(-0.4)
+  v5._v5_record_output_torque_sign_flips(0.3)
+  v5._v5_record_output_torque_sign_flips(-0.2)
+  v5._v5_record_output_torque_sign_flips(0.1)
+
+  assert v5._v5_output_sign_flips == 4
+  assert v5._v5_straight_road_torque_flips == 0
 
 
 def test_v5_adaptive_log_includes_route_summary_fields():

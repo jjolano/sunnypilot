@@ -781,6 +781,7 @@ class LatControlTorqueV4(LatControl):
     self._last_oscillation_confidence: float = 0.0
     self._previous_output_torque: float = 0.0
     self._wobble_active: bool = False
+    self._last_straight_road: bool = False
     self._last_wobble_response: WobbleResponse = compute_wobble_response("none", 0.0)
     self.vehicle_health_estimator = LateralVehicleHealthEstimator()
     self._last_health_estimate: LateralVehicleHealthEstimate = LateralVehicleHealthEstimate()
@@ -853,6 +854,7 @@ class LatControlTorqueV4(LatControl):
     self._last_oscillation_confidence = 0.0
     self._previous_output_torque = 0.0
     self._wobble_active = False
+    self._last_straight_road = False
     self._last_wobble_response = compute_wobble_response("none", 0.0)
     self.vehicle_health_estimator = LateralVehicleHealthEstimator()
     self._last_health_estimate = LateralVehicleHealthEstimate()
@@ -1019,6 +1021,7 @@ class LatControlTorqueV4(LatControl):
     self._last_oscillation_classification = classifier_result.classification
     self._last_oscillation_confidence = float(classifier_result.confidence)
     self._wobble_active = is_wobble_active(classifier_result.classification, classifier_result.confidence)
+    self._last_straight_road = bool(classifier_result.straight_road)
     self._last_wobble_response = compute_wobble_response(classifier_result.classification, float(classifier_result.confidence))
     self._last_health_estimate = self.vehicle_health_estimator.update(
       v_ego=CS.vEgo if not input_invalid else 0.0,
@@ -1537,15 +1540,11 @@ V5_VEHICLE_BIAS_MIN_CONFIDENCE = 0.80
 class LatControlTorqueV5(LatControlTorqueV41):
   """Torque 5.0: profile-aware active command shaping.
 
-  This is the parity-only skeleton. Every active delta is gated
-  behind a class flag that defaults to False, so the controller
-  is bit-equivalent to LatControlTorqueV41 until later commits
-  flip the flags and add the corresponding gates and tests.
-
-  Active delta flags (all off initially):
+  Active delta flags (5.0):
     ACTIVE_PROFILE_PREVIEW_LEAD     - profile-aware turn-in preview boost
     ACTIVE_TURN_EXIT_CONTROLLER     - turn-exit controller as source of truth
     ACTIVE_VEHICLE_BIAS_COMPENSATION - learned vehicle-bias applied to command
+                                       (5.1 territory; stays False in 5.0)
   """
   VERSION = 50
   ACTIVE_PROFILE_PREVIEW_LEAD = True
@@ -1619,9 +1618,10 @@ class LatControlTorqueV5(LatControlTorqueV41):
                              CS, curvature_limited: bool) -> None:
     """Pre-target turn-exit decision. v5 hooks this so the
     decision is computed before target building. ACTIVE_TURN_EXIT_CONTROLLER
-    is False in the parity-only skeleton, so this method is a no-op
-    and the post-command path drives telemetry. Flipping the flag in
-    a later commit is what activates the seam.
+    is True in v5.0, so this method drives the seam and the
+    post-command path uses the cached decision. The seam is
+    still a no-op when ACTIVE_TURN_EXIT_CONTROLLER is False
+    (e.g. unit tests that explicitly opt out).
     """
     if not self.ACTIVE_TURN_EXIT_CONTROLLER:
       self._v5_turn_exit_decided = False
