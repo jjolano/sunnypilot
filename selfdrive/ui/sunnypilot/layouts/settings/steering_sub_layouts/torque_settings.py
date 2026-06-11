@@ -23,6 +23,18 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 TORQUE_VERSIONS_PATH = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "controls", "lib", "latcontrol_torque_versions.json")
 
+LATERAL_DEMAND_STACK_LABELS = {
+  "sunnypilot-current": "Sunnypilot Current",
+  "custom-2.0": "Custom 2.0",
+  "custom-experimental": "Custom Experimental",
+}
+
+CONTROLS_PROFILE_LABELS = {
+  "standard": "Standard",
+  "custom-2.0": "Custom 2.0",
+  "experimental": "Experimental",
+}
+
 
 class TorqueSettingsLayout(Widget):
   def __init__(self, back_btn_callback: Callable):
@@ -30,6 +42,8 @@ class TorqueSettingsLayout(Widget):
     self._back_button = NavButton(tr("Back"))
     self._back_button.set_click_callback(back_btn_callback)
     self._torque_version_dialog: TreeOptionDialog | None = None
+    self._lateral_demand_stack_dialog: TreeOptionDialog | None = None
+    self._controls_profile_dialog: TreeOptionDialog | None = None
     self.cached_torque_versions = {}
     self._load_versions()
     items = self._initialize_items()
@@ -45,6 +59,20 @@ class TorqueSettingsLayout(Widget):
       description="Select the version of Torque Control Tune to use.",
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_torque_version_dialog,
+    )
+    self._lateral_demand_stack_selector = ListItemSP(
+      title=tr("Lateral Demand Stack"),
+      description=tr("Selects the lateral demand stack. The SunnypilotCurrent stack preserves existing behavior. "
+                     + "CustomExperimental enables v5 profile-aware preview and turn-exit source-of-truth."),
+      action_item=NoElideButtonAction(tr("SELECT")),
+      callback=self._show_lateral_demand_stack_dialog,
+    )
+    self._controls_profile_selector = ListItemSP(
+      title=tr("Controls Profile"),
+      description=tr("User-facing driving profile alias. Auto-couples the lateral demand stack and torque "
+                     + "controller. Advanced per-layer selectors can break the coupling afterwards."),
+      action_item=NoElideButtonAction(tr("SELECT")),
+      callback=self._show_controls_profile_dialog,
     )
     self._control_calculation_hardening_toggle = toggle_item_sp(
       param="ControlCalculationHardening",
@@ -111,7 +139,9 @@ class TorqueSettingsLayout(Widget):
     )
 
     items = [
+      self._controls_profile_selector,
       self._torque_control_versions,
+      self._lateral_demand_stack_selector,
       self._control_calculation_hardening_toggle,
       self._self_tune_toggle,
       self._relaxed_tune_toggle,
@@ -149,6 +179,11 @@ class TorqueSettingsLayout(Widget):
     self._torque_lat_accel_factor.set_title(lambda: tr("Lateral Acceleration Factor") + " (" + title_text + ")")
     self._torque_friction.set_title(lambda: tr("Friction") + " (" + title_text + ")")
     self._torque_control_versions.action_item.set_value(self._get_current_torque_version_label())
+
+    show_advanced = ui_state.params.get_bool("ShowAdvancedControls")
+    self._torque_control_versions.set_visible(show_advanced)
+    self._lateral_demand_stack_selector.set_visible(show_advanced)
+    self._controls_profile_selector.set_visible(True)
 
   def _render(self, rect):
     self._back_button.set_position(self._rect.x, self._rect.y + 20)
@@ -211,3 +246,65 @@ class TorqueSettingsLayout(Widget):
       on_exit=handle_selection,
     )
     gui_app.push_widget(self._torque_version_dialog)
+
+  def _show_lateral_demand_stack_dialog(self):
+    current_bytes = ui_state.params.get("LateralDemandStack")
+    current_value = current_bytes.decode("utf-8") if isinstance(current_bytes, bytes) else current_bytes
+    current_label = LATERAL_DEMAND_STACK_LABELS.get(current_value or "", tr("Default"))
+
+    def handle_selection(result: int):
+      if result == DialogResult.CONFIRM and self._lateral_demand_stack_dialog:
+        selected_ref = self._lateral_demand_stack_dialog.selection_ref
+        if selected_ref == tr("Default"):
+          ui_state.params.remove("LateralDemandStack")
+        else:
+          for value, label in LATERAL_DEMAND_STACK_LABELS.items():
+            if label == selected_ref:
+              ui_state.params.put("LateralDemandStack", value)
+              break
+      self._lateral_demand_stack_dialog = None
+
+    nodes = [TreeNode(tr("Default"))]
+    for value, label in LATERAL_DEMAND_STACK_LABELS.items():
+      nodes.append(TreeNode(label))
+    folders = [TreeFolder("", nodes)]
+
+    self._lateral_demand_stack_dialog = TreeOptionDialog(
+      tr("Select Lateral Demand Stack"),
+      folders,
+      current_ref=current_label,
+      option_font_weight=FontWeight.UNIFONT,
+      on_exit=handle_selection,
+    )
+    gui_app.push_widget(self._lateral_demand_stack_dialog)
+
+  def _show_controls_profile_dialog(self):
+    current_bytes = ui_state.params.get("ControlsProfile")
+    current_value = current_bytes.decode("utf-8") if isinstance(current_bytes, bytes) else current_bytes
+    current_label = CONTROLS_PROFILE_LABELS.get(current_value or "", tr("Default"))
+
+    def handle_selection(result: int):
+      if result == DialogResult.CONFIRM and self._controls_profile_dialog:
+        selected_ref = self._controls_profile_dialog.selection_ref
+        if selected_ref == tr("Default"):
+          ui_state.params.remove("ControlsProfile")
+        else:
+          for value, label in CONTROLS_PROFILE_LABELS.items():
+            if label == selected_ref:
+              ui_state.params.put("ControlsProfile", value)
+              break
+      self._controls_profile_dialog = None
+
+    nodes = [TreeNode(tr("Default"))]
+    for value, label in CONTROLS_PROFILE_LABELS.items():
+      nodes.append(TreeNode(label))
+    folders = [TreeFolder("", nodes)]
+
+    self._controls_profile_dialog = TreeOptionDialog(
+      tr("Select Controls Profile"),
+      folders,
+      current_ref=current_label,
+      option_font_weight=FontWeight.UNIFONT,
+      on_exit=handle_selection,
+    )
+    gui_app.push_widget(self._controls_profile_dialog)

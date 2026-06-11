@@ -42,6 +42,14 @@ from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
+from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
+  ControlsProfileId,
+  LateralDemandStack,
+  LateralDemandStackId,
+  controls_profile_id_for_name,
+  controls_profile_mapping_for,
+  resolve_lateral_demand_stack,
+)
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import (
   SteeringActuatorFeedback,
   SteeringActuatorRequest,
@@ -169,6 +177,30 @@ class Controls(ControlsExt):
       MAX_LATERAL_ACCEL_NO_ROLL,
     )
     self.lateral_demand_profile_builder = LateralDemandProfileBuilder(dt=DT_CTRL)
+
+    # 5.0 driving profile (user-facing alias).  The profile
+    # auto-couples LateralDemandStack + TorqueControlTune.  If
+    # both an explicit LateralDemandStack and a ControlsProfile
+    # are set, the explicit LateralDemandStack wins (advanced
+    # override).  Missing / unknown values resolve to STANDARD.
+    self.controls_profile_id: ControlsProfileId = controls_profile_id_for_name(
+      self.params.get("ControlsProfile", return_default=True),
+    )
+    profile_mapping = controls_profile_mapping_for(self.controls_profile_id)
+    if self.params.get("LateralDemandStack", return_default=True) is None:
+      self.params.put("LateralDemandStack", profile_mapping.lateral_demand_stack.value)
+    if self.params.get("TorqueControlTune", return_default=True) is None:
+      self.params.put("TorqueControlTune", profile_mapping.torque_tune)
+
+    # 5.0 lateral demand stack. The stack wraps the profile
+    # builder and is the contract surface between controlsd
+    # and the LaC.  Resolved from the LateralDemandStack param
+    # (sunnypilot-current / custom-2.0 / custom-experimental).
+    # Missing / unknown values resolve to sunnypilot-current
+    # for migration safety.
+    self.lateral_demand_stack: LateralDemandStack = resolve_lateral_demand_stack(
+      self.params.get("LateralDemandStack", return_default=True), dt=DT_CTRL,
+    )
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -382,6 +414,36 @@ class Controls(ControlsExt):
       set_lateral_demand_profile = getattr(self.LaC.extension, "set_lateral_demand_profile", None)
     if set_lateral_demand_profile is not None:
       set_lateral_demand_profile(profile)
+
+  def push_lateral_demand_stack_output(self, stack_output, *, steering_pressed: bool = False) -> None:
+    """Forward a LateralDemandStackOutput to the controller.
+
+    The profile goes to set_lateral_demand_profile so the v5
+    preview gate, turn-exit source-of-truth, and demand-mode
+    telemetry see the same-frame profile. The legacy demand
+    also goes through update_lateral_controller_demand for
+    backward compat with v4.1 controllers that only consume
+    the legacy signal.
+    """
+    profile = getattr(stack_output, "profile", None)
+    if profile is None:
+      return
+    set_lateral_demand_profile = getattr(self.LaC, "set_lateral_demand_profile", None)
+    if set_lateral_demand_profile is None and hasattr(self.LaC, "extension"):
+      set_lateral_demand_profile = getattr(self.LaC.extension, "set_lateral_demand_profile", None)
+    if set_lateral_demand_profile is not None:
+      set_lateral_demand_profile(profile)
+
+  def _auto_couple_torque_for_stack(self, stack: LateralDemandStack):
+    """Map a lateral demand stack to a TorqueControlTune value
+    for first-run auto-couple. custom-experimental → 5.0,
+    custom-2.0 → 4.1, sunnypilot-current → 4.1. Returns None if
+    the stack is unknown (no auto-couple)."""
+    if stack.stack_id == LateralDemandStackId.CUSTOM_EXPERIMENTAL:
+      return 5.0
+    if stack.stack_id in (LateralDemandStackId.CUSTOM_V2, LateralDemandStackId.SUNNYPILOT_CURRENT):
+      return 4.1
+    return None
   def state_control(self):
     CS = self.sm['carState']
 
@@ -444,19 +506,23 @@ class Controls(ControlsExt):
     actuators.curvature = processed_lateral_demand.processed_curvature
     self.update_steering_actuator_feedback(CC.latActive, actuators)
     self.LaC.set_steering_actuator_feedback(self.steering_actuator_feedback)
-    # Build and push the same-frame lateral demand profile to the
-    # controller BEFORE LaC.update so v5 profile-aware preview
-    # gating, turn-exit source-of-truth, and demand-mode telemetry
-    # see current-frame mode/rate. The previous ordering pushed
-    # the profile after LaC.update, leaving v5 to run on a stale
-    # or absent profile and delaying preview activation.
-    self.update_lateral_demand_profile(
+    # Build and push the same-frame lateral demand stack output
+    # to the controller BEFORE LaC.update so v5 profile-aware
+    # preview gating, turn-exit source-of-truth, and demand-mode
+    # telemetry see current-frame mode/rate. The previous
+    # ordering pushed the profile after LaC.update, leaving v5
+    # to run on a stale or absent profile and delaying preview
+    # activation. The lateral demand stack is the contract
+    # surface for the active delta flags; the SunnypilotCurrent
+    # default stack preserves the pre-5.0 behavior.
+    stack_output = self.lateral_demand_stack.update(
       processed_lateral_demand,
       CS.vEgo,
       curvature_limited=curvature_limited,
       steer_limited_by_safety=bool(self.steering_actuator_feedback.limited),
       steering_pressed=CS.steeringPressed,
     )
+    self.push_lateral_demand_stack_output(stack_output, steering_pressed=CS.steeringPressed)
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, processed_lateral_demand.processed_curvature,
                                                        self.calibrated_pose, curvature_limited, lat_delay)

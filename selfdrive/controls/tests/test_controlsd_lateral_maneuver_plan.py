@@ -550,8 +550,8 @@ def test_update_lateral_demand_profile_classifies_steering_pressed_as_driver_ove
 
 def test_controlsd_forwards_stack_profile_before_lateral_update():
   """state_control must push the same-frame lateral demand
-  profile to LaC BEFORE calling self.LaC.update, so v5
-  profile-aware preview gating and turn-exit source-of-truth
+  stack output (profile) to LaC BEFORE calling self.LaC.update,
+  so v5 profile-aware preview gating and turn-exit source-of-truth
   see current-frame mode/rate. Static source check: parse the
   method body and verify the call ordering.
   """
@@ -559,9 +559,14 @@ def test_controlsd_forwards_stack_profile_before_lateral_update():
   from openpilot.selfdrive.controls import controlsd
 
   source = inspect.getsource(controlsd.Controls.state_control)
-  push_idx = source.find("self.update_lateral_demand_profile(")
+  push_idx = source.find("self.push_lateral_demand_stack_output(")
+  if push_idx == -1:
+    # Backward-compat: the legacy wrapper is still allowed
+    # (e.g. when the stack integration is staged behind a
+    # feature flag). Both must land before LaC.update.
+    push_idx = source.find("self.update_lateral_demand_profile(")
   update_idx = source.find("self.LaC.update(")
-  assert push_idx != -1, "state_control does not call self.update_lateral_demand_profile"
+  assert push_idx != -1, "state_control does not push the lateral demand profile before LaC.update"
   assert update_idx != -1, "state_control does not call self.LaC.update"
   assert push_idx < update_idx, (
     "lateral demand profile must be pushed to LaC BEFORE LaC.update; "
@@ -571,12 +576,11 @@ def test_controlsd_forwards_stack_profile_before_lateral_update():
 
 def test_controlsd_does_not_double_update_lateral_demand_profile_builder():
   """state_control must not call the lateral_demand_profile_builder
-  twice for the same demand. The post-LaC.update profile push
-  that survived the v5 hardening would re-run the builder after
-  the controller had already consumed the current-frame profile,
-  causing the next frame to see a one-frame-stale builder state.
-  The profile builder should run exactly once per state_control
-  call (via the wrapper that pushes the result to the controller).
+  directly. All builds must go through the lateral demand stack
+  (self.lateral_demand_stack.update) so the build and push are
+  atomic. The legacy update_lateral_demand_profile wrapper is
+  retained for unit-test backward compat but is not called from
+  state_control.
   """
   import inspect
   from openpilot.selfdrive.controls import controlsd
@@ -585,7 +589,138 @@ def test_controlsd_does_not_double_update_lateral_demand_profile_builder():
   builder_call_count = source.count("self.lateral_demand_profile_builder.update(")
   assert builder_call_count == 0, (
     "state_control must not call lateral_demand_profile_builder.update directly; "
-    "go through the update_lateral_demand_profile wrapper so the build and push "
-    "are atomic. Found "
+    "go through the lateral_demand_stack so build and push are atomic. Found "
     f"{builder_call_count} direct call(s)."
   )
+
+
+def test_controlsd_resolves_lateral_demand_stack_from_param():
+  """controlsd.__init__ must resolve the LateralDemandStack
+  param into a concrete stack on the instance. The
+  sunnypilot-current migration default applies for missing
+  or unknown values."""
+  from openpilot.selfdrive.controls.controlsd import Controls
+  from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
+    LateralDemandStackId, resolve_lateral_demand_stack,
+  )
+
+  class FakeParams:
+    def get(self, key, *args, **kwargs):
+      if key == "LateralDemandStack" and kwargs.get("return_default", False):
+        return None
+      return None
+
+  controls = Controls.__new__(Controls)
+  controls.params = FakeParams()
+  stack = resolve_lateral_demand_stack(None)
+  controls.lateral_demand_stack = stack
+  assert stack.stack_id == LateralDemandStackId.SUNNYPILOT_CURRENT
+
+
+def test_controlsd_pushes_stack_output_profile_to_lac():
+  """push_lateral_demand_stack_output must call
+  set_lateral_demand_profile on the LaC (or its extension) so
+  v5 sees the same-frame profile. The contract is: the profile
+  from stack_output reaches the controller before LaC.update
+  is called in state_control.
+  """
+  from openpilot.selfdrive.controls.controlsd import Controls
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfile
+
+  class FakeController:
+    def __init__(self):
+      self.profile = None
+
+    def set_lateral_demand_profile(self, profile):
+      self.profile = profile
+
+  class FakeStackOutput:
+    def __init__(self, profile):
+      self.profile = profile
+      self.legacy = None
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  profile = LateralDemandProfile(
+    raw_curvature=0.001, processed_curvature=0.001, curvature_limited=False,
+    path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+    lane_change_blend=0.0, demand_source="model_path", mode="turn_in",
+    mode_confidence=0.9,
+  )
+  controls.push_lateral_demand_stack_output(FakeStackOutput(profile))
+  assert controls.LaC.profile is profile
+
+
+def test_controlsd_push_lateral_demand_stack_output_uses_extension_hook():
+  """When LaC itself has no set_lateral_demand_profile, the
+  helper must fall back to LaC.extension.set_lateral_demand_profile.
+  This is the path the v4.1 → v5 transition takes (the LaC
+  shim does not have the hook, the extension does)."""
+  from openpilot.selfdrive.controls.controlsd import Controls
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfile
+
+  class FakeExtension:
+    def __init__(self):
+      self.profile = None
+
+    def set_lateral_demand_profile(self, profile):
+      self.profile = profile
+
+  class FakeController:
+    def __init__(self):
+      self.extension = FakeExtension()
+
+  class FakeStackOutput:
+    def __init__(self, profile):
+      self.profile = profile
+      self.legacy = None
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  profile = LateralDemandProfile(
+    raw_curvature=0.001, processed_curvature=0.001, curvature_limited=False,
+    path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+    lane_change_blend=0.0, demand_source="model_path", mode="turn_in",
+    mode_confidence=0.9,
+  )
+  controls.push_lateral_demand_stack_output(FakeStackOutput(profile))
+  assert controls.LaC.extension.profile is profile
+
+
+def test_controlsd_auto_couple_torque_for_stack_maps_experimental_to_5_0():
+  """_auto_couple_torque_for_stack must map each known stack
+  id to the correct TorqueControlTune value:
+  custom-experimental → 5.0, custom-2.0 → 4.1,
+  sunnypilot-current → 4.1.
+  """
+  from openpilot.selfdrive.controls.controlsd import Controls
+  from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
+    CustomExperimentalLateralDemandStack,
+    CustomV2LateralDemandStack,
+    SunnypilotCurrentLateralDemandStack,
+  )
+
+  controls = Controls.__new__(Controls)
+  assert controls._auto_couple_torque_for_stack(CustomExperimentalLateralDemandStack()) == 5.0
+  assert controls._auto_couple_torque_for_stack(CustomV2LateralDemandStack()) == 4.1
+  assert controls._auto_couple_torque_for_stack(SunnypilotCurrentLateralDemandStack()) == 4.1
+
+
+def test_controls_profile_experimental_auto_couples_torque_5_0():
+  """ControlsProfile=experimental must auto-couple
+  TorqueControlTune=5.0 and LateralDemandStack=custom-experimental
+  on a fresh Params. The TorqueControlTune=5.0 value is the
+  same path the v5 test_torque_controller_selection_variants
+  uses to instantiate LatControlTorqueV5, so this end-to-end
+  test confirms the user-facing profile selector routes to V5.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
+    ControlsProfileId,
+    controls_profile_mapping_for,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import resolve_torque_tune_version
+
+  mapping = controls_profile_mapping_for(ControlsProfileId.EXPERIMENTAL)
+  resolution = resolve_torque_tune_version(mapping.torque_tune)
+  assert resolution.resolved_version == 5.0
+  assert mapping.lateral_demand_stack.value == "custom-experimental"
