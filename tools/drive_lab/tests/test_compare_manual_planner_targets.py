@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from openpilot.tools.drive_lab import compare_manual_planner_targets as compare_cli
+from openpilot.tools.drive_lab.scenario_spec import ScenarioSpec
 from openpilot.tools.drive_lab.compare_manual_planner_targets import (
   PlannerTargetSample,
   build_route_agreement_profile,
@@ -28,7 +29,7 @@ def msg(kind, t_s, **payload):
 
 def sample(t, plan_a, a_ego, route="route-a", route_id="route-a", segment=None, v=8.0, gas=False, brake=False,
            active=False, long_active=False, source="cruise", lead=False, d_rel=None, v_rel=None,
-           should_stop=False, fcw=False, sp_source="cruise", sp_stack="sunnypilotCurrent", v_cruise: float | None = 80.0,
+           should_stop=False, fcw=False, sp_source="cruise", sp_stack="sunnypilotCurrent", v_cruise=80.0,
            long_state="pid"):
   closing_speed = (-v_rel) if v_rel is not None else None
   return PlannerTargetSample(
@@ -157,7 +158,7 @@ def test_summary_excludes_low_confidence_preview_by_default():
 
 def test_low_confidence_preview_reasons_distinguish_unset_cruise():
   unset_cruise = sample(0.0, 0.1, 0.1, v_cruise=255.0, long_state="pid")
-  missing_cruise = sample(0.1, 0.1, 0.1, v_cruise=None, long_state="pid")
+  missing_cruise = sample(0.1, 0.1, 0.1, v_cruise=None, long_state="pid")  # type: ignore[arg-type]
 
   assert low_confidence_manual_preview_reason(unset_cruise) == "unset_cruise"
   assert low_confidence_manual_preview_reason(missing_cruise) == "missing_cruise"
@@ -237,3 +238,110 @@ def test_no_lead_or_opening_lead_yields_no_risk_metrics():
   assert summary.min_ttc_s is None
   assert summary.max_required_decel_mps2 is None
   assert summary.mean_time_headway_s == pytest.approx(1.0)
+
+
+def test_episode_to_scenario_spec_includes_route_provenance_and_checks():
+  episode = compare_cli.PlannerTargetEpisode(
+    route="route-a--7",
+    route_id="route-a",
+    segment=7,
+    start_time_s=10.0,
+    end_time_s=14.0,
+    duration_s=4.0,
+    sample_count=3,
+    opposite_count=1,
+    strong_opposite_count=0,
+    max_abs_error=1.5,
+    planner_sources={"lead0": 2, "cruise": 1},
+    driver_gas_count=1,
+    driver_brake_count=0,
+    lead_ratio=1.0,
+    min_lead_d_rel=5.0,
+    min_lead_v_rel=-2.0,
+    lead_status_flips=1,
+    plan_source_flips=1,
+    plan_span=1.8,
+    high_plan_jerk_count=2,
+    min_ttc_s=1.4,
+    max_required_decel_mps2=2.8,
+  )
+
+  spec = compare_cli.episode_to_scenario_spec(episode, index=2)
+
+  assert isinstance(spec, ScenarioSpec)
+  assert spec.kind == "lead_risk"
+  assert spec.mode == "route-derived"
+  assert spec.source == "manual-planner-target"
+  assert spec.maneuver_kwargs == {"route_id": "route-a", "segment": 7, "start_time_s": 10.0, "end_time_s": 14.0}
+  assert spec.actors["lead"]["min_ttc_s"] == 1.4
+  assert spec.events == ("lead_risk", "high_plan_jerk")
+  assert spec.oracle["checks"] == ("manual_agreement", "lead_risk", "jerk")
+  assert "route-derived" in spec.tags
+  assert spec.provenance["source_tool"] == "compare_manual_planner_targets"
+
+
+def test_manual_planner_cli_writes_scenario_export(tmp_path, monkeypatch):
+  summary = compare_cli.PlannerTargetAgreementSummary(
+    route_count=1,
+    included_route_count=1,
+    sample_count=0,
+    manual_moving_sample_count=0,
+    low_confidence_preview_sample_count=0,
+    low_confidence_preview_reasons={},
+    actuation_applicable_sample_count=0,
+    correlation=None,
+    mean_abs_error=0.0,
+    p90_abs_error=0.0,
+    p95_abs_error=0.0,
+    opposite_count=0,
+    opposite_ratio=0.0,
+    strong_opposite_count=0,
+    strong_opposite_ratio=0.0,
+    should_stop_moving_count=0,
+    should_stop_conflict_count=0,
+    fcw_count=0,
+    high_plan_jerk_count=0,
+    min_ttc_s=None,
+    max_required_decel_mps2=None,
+    mean_time_headway_s=None,
+    high_required_decel_count=0,
+    low_ttc_count=0,
+    lead_risk_source_counts={},
+    planner_source_counts={},
+    sp_source_counts={},
+    sp_stack_counts={},
+    route_profiles=[],
+    episodes=[compare_cli.PlannerTargetEpisode(
+      route="route-a",
+      route_id="route-a",
+      segment=None,
+      start_time_s=1.0,
+      end_time_s=2.0,
+      duration_s=1.0,
+      sample_count=1,
+      opposite_count=0,
+      strong_opposite_count=0,
+      max_abs_error=0.0,
+      planner_sources={"cruise": 1},
+      driver_gas_count=0,
+      driver_brake_count=0,
+      lead_ratio=0.0,
+      min_lead_d_rel=None,
+      min_lead_v_rel=None,
+      lead_status_flips=0,
+      plan_source_flips=0,
+      plan_span=0.0,
+      high_plan_jerk_count=0,
+      min_ttc_s=None,
+      max_required_decel_mps2=None,
+    )],
+  )
+  monkeypatch.setattr(compare_cli, "summarize_planner_target_agreement", lambda *args, **kwargs: summary)
+  monkeypatch.setattr(compare_cli, "extract_planner_target_samples", lambda *args, **kwargs: [])
+  out = tmp_path / "scenarios.json"
+  monkeypatch.setattr(compare_cli.sys, "argv", ["prog", "route-a", "--scenario-output", str(out), "--episodes", "1"])
+
+  compare_cli.main()
+
+  payload = ScenarioSpec.from_dict(__import__("json").loads(out.read_text())[0])
+  assert payload.provenance["source_tool"] == "compare_manual_planner_targets"

@@ -35,6 +35,24 @@ def test_scenario_spec_round_trips_maneuver_kwargs():
   assert spec.oracle["checks"] == ("valid", "finite", "speed", "collision", "jerk")
 
 
+def test_scenario_spec_round_trips_provenance_and_legacy_payloads():
+  legacy = {
+    "scenario_id": "s:mode:kind:x",
+    "kind": "kind",
+    "title": "title",
+    "mode": "mode",
+    "duration": 1.0,
+    "source": "src",
+    "maneuver_kwargs": {},
+  }
+  restored_legacy = ScenarioSpec.from_dict(legacy)
+  spec = ScenarioSpec.from_maneuver_kwargs("kind", "title", "mode", 1.0, {}, source="src", provenance={"route_id": "r1"})
+
+  assert restored_legacy.provenance == {}
+  assert ScenarioSpec.from_dict(spec.to_dict()) == spec
+  assert spec.provenance == {"route_id": "r1"}
+
+
 def test_evaluate_maneuver_output_returns_metrics_and_failures():
   output = np.array([
     [0.0, 0.0, 0.0, 4.0, 4.0, 0.0, 10.0],

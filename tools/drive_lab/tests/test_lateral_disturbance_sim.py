@@ -3,10 +3,12 @@ import pytest
 from openpilot.tools.drive_lab.lateral_disturbance_sim import (
   LateralDisturbanceConfig,
   LateralTrace,
+  lateral_disturbance_report_to_specs,
   render_lateral_disturbance_report,
   simulate_lateral_disturbance,
   synthetic_lateral_trace,
 )
+from openpilot.tools.drive_lab.scenario_spec import ScenarioSpec
 
 
 def test_lateral_disturbance_sim_is_seed_deterministic():
@@ -64,3 +66,16 @@ def test_route_like_trace_reports_lag_and_render_summary():
   assert report.desired_actual_corr is not None
   assert "Lateral disturbance simulation" in rendered
   assert report.steering_angle_pp == pytest.approx(max(desired) * 3200.0 - min(desired) * 3200.0, rel=0.05)
+
+
+def test_lateral_disturbance_report_exports_route_derived_specs():
+  config = LateralDisturbanceConfig(seed=7, duration_s=20.0, authority_attenuation=0.55, authority_start_s=3.0, authority_end_s=10.0)
+  report = simulate_lateral_disturbance(synthetic_lateral_trace(config, "reversal"), config, source="route-a")
+  specs = lateral_disturbance_report_to_specs(report, max_events=3)
+
+  assert specs
+  assert all(isinstance(spec, ScenarioSpec) for spec in specs)
+  assert all(spec.mode == "lateral-disturbance" for spec in specs)
+  assert specs[0].source == "route-a"
+  assert specs[0].provenance["source_tool"] == "lateral_disturbance_sim"
+  assert specs[0].provenance["config_hash"] == report.config_hash

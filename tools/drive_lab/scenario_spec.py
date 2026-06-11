@@ -23,10 +23,12 @@ class ScenarioSpec:
   tags: tuple[str, ...] = ()
   seed: int | None = None
   index: int | None = None
+  provenance: dict[str, Any] = field(default_factory=dict)
 
   @classmethod
   def from_maneuver_kwargs(cls, kind: str, title: str, mode: str, duration: float, kwargs: dict[str, Any],
-                           source: str = "generated", seed: int | None = None, index: int | None = None) -> ScenarioSpec:
+                           source: str = "generated", seed: int | None = None, index: int | None = None,
+                           provenance: dict[str, Any] | None = None) -> ScenarioSpec:
     scenario_id = _scenario_id(source, mode, kind, title, seed, index)
     return cls(
       scenario_id=scenario_id,
@@ -43,6 +45,7 @@ class ScenarioSpec:
       tags=tuple(tag for tag in (source, mode, kind) if tag),
       seed=seed,
       index=index,
+      provenance=dict(provenance or {}),
     )
 
   def to_dict(self) -> dict[str, Any]:
@@ -61,6 +64,7 @@ class ScenarioSpec:
       "tags": list(self.tags),
       "seed": self.seed,
       "index": self.index,
+      "provenance": self.provenance,
     }
 
   @classmethod
@@ -83,7 +87,18 @@ class ScenarioSpec:
       tags=tuple(data.get("tags", ())),
       seed=data.get("seed"),
       index=data.get("index"),
+      provenance=dict(data.get("provenance", {})),
     )
+
+
+def route_window_provenance(route_id: str, segment: int | None, start_s: float, end_s: float, source_tool: str) -> dict[str, Any]:
+  return {
+    "route_id": route_id,
+    "segment": segment,
+    "start_s": start_s,
+    "end_s": end_s,
+    "source_tool": source_tool,
+  }
 
 
 def _scenario_id(source: str, mode: str, kind: str, title: str, seed: int | None, index: int | None) -> str:

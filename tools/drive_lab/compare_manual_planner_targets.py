@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from math import isfinite
@@ -11,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from openpilot.tools.drive_lab.scenario_spec import ScenarioSpec, route_window_provenance
 from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type, safe_get
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
@@ -156,6 +158,7 @@ def main() -> None:
   parser.add_argument("--episode-context", type=float, default=DEFAULT_EPISODE_CONTEXT_S)
   parser.add_argument("--high-jerk", type=float, default=DEFAULT_HIGH_JERK_THRESHOLD)
   parser.add_argument("--episodes", type=int, default=12, help="Number of suspicious episodes to show in text output")
+  parser.add_argument("--scenario-output", help="Write route-derived scenario specs JSON to this path")
   parser.add_argument("--include-low-confidence-preview", action="store_true",
                       help="Include reset/manual-preview samples in disagreement metrics for exploratory use")
   args = parser.parse_args()
@@ -181,6 +184,11 @@ def main() -> None:
   if args.output:
     with open(args.output, "w") as f:
       json.dump(payload, f, indent=2)
+      f.write("\n")
+  if args.scenario_output:
+    scenarios = [episode_to_scenario_spec(episode, index=i).to_dict() for i, episode in enumerate(summary.episodes[:args.episodes])]
+    with open(args.scenario_output, "w") as f:
+      json.dump(scenarios, f, indent=2)
       f.write("\n")
   print(json.dumps(payload, indent=2) if args.json else render_agreement_summary(summary, max_episodes=args.episodes))
 
@@ -406,6 +414,48 @@ def summarize_planner_target_agreement(samples_by_route: dict[str, list[PlannerT
     sp_stack_counts=dict(Counter(sample.sp_stack for sample in comparison_samples)),
     route_profiles=profiles,
     episodes=episodes,
+  )
+
+
+def episode_to_scenario_spec(episode: PlannerTargetEpisode, source: str = "manual-planner-target", index: int | None = None) -> ScenarioSpec:
+  kind = "lead_risk" if episode.min_ttc_s is not None or episode.max_required_decel_mps2 is not None else "planner_target_disagreement"
+  title = f"{episode.route_id}{f'--{episode.segment}' if episode.segment is not None else ''} {episode.start_time_s:.1f}-{episode.end_time_s:.1f}s"
+  maneuver_kwargs = {
+    "route_id": episode.route_id,
+    "segment": episode.segment,
+    "start_time_s": episode.start_time_s,
+    "end_time_s": episode.end_time_s,
+  }
+  actors: dict[str, Any] = {}
+  if episode.min_lead_d_rel is not None or episode.min_lead_v_rel is not None or episode.min_ttc_s is not None or episode.max_required_decel_mps2 is not None:
+    lead: dict[str, Any] = {}
+    if episode.min_lead_d_rel is not None:
+      lead["min_d_rel"] = episode.min_lead_d_rel
+    if episode.min_lead_v_rel is not None:
+      lead["min_v_rel"] = episode.min_lead_v_rel
+    if episode.min_ttc_s is not None:
+      lead["min_ttc_s"] = episode.min_ttc_s
+    if episode.max_required_decel_mps2 is not None:
+      lead["max_required_decel_mps2"] = episode.max_required_decel_mps2
+    actors["lead"] = lead
+  events = [kind]
+  if episode.high_plan_jerk_count > 0:
+    events.append("high_plan_jerk")
+  return ScenarioSpec(
+    scenario_id=f"{source}:{kind}:{episode.route_id}:{episode.start_time_s:.1f}:{episode.end_time_s:.1f}" if index is None else f"{source}:{kind}:{episode.route_id}:{index}",
+    kind=kind,
+    title=title,
+    mode="route-derived",
+    duration=episode.duration_s,
+    source=source,
+    maneuver_kwargs=maneuver_kwargs,
+    actors=actors,
+    events=tuple(events),
+    oracle={"checks": ("manual_agreement", "lead_risk", "jerk")},
+    tags=(source, "route-derived", "longitudinal", kind),
+    seed=None,
+    index=index,
+    provenance=route_window_provenance(episode.route_id, episode.segment, episode.start_time_s, episode.end_time_s, "compare_manual_planner_targets"),
   )
 
 
