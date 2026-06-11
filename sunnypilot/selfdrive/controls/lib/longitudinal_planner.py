@@ -129,6 +129,8 @@ def _decision_source_name(source) -> str:
 
 
 def _scc_curve_sources_allowed(mode_resolution: LongitudinalModeResolution | None) -> bool:
+  if mode_resolution is None:
+    return True
   if not (
     mode_resolution is not None and
     mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC and
