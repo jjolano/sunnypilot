@@ -25,14 +25,23 @@ TORQUE_VERSIONS_PATH = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "control
 
 LATERAL_DEMAND_STACK_LABELS = {
   "sunnypilot-current": "Sunnypilot Current",
+  "custom-recommended": "Custom Recommended",
   "custom-2.0": "Custom 2.0",
   "custom-experimental": "Custom Experimental",
 }
 
 CONTROLS_PROFILE_LABELS = {
-  "standard": "Standard",
+  "sunnypilot-current": "Sunnypilot Current",
+  "custom-recommended": "Custom Recommended",
   "custom-2.0": "Custom 2.0",
-  "experimental": "Experimental",
+  "custom-experimental": "Custom Experimental",
+}
+
+CONTROLS_PROFILE_DESCRIPTIONS = {
+  "sunnypilot-current": "Matches current sunnypilot behavior where possible.",
+  "custom-recommended": "Uses the recommended custom controls stack for this car.",
+  "custom-2.0": "Stable custom controls. Uses lateral demand custom-2.0 and torque 4.1.",
+  "custom-experimental": "Experimental controls. Uses torque 5.0 and experimental lateral demand stack when available.",
 }
 
 

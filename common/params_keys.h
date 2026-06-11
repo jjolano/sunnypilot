@@ -295,6 +295,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LiveTorqueSpeedAdaptiveParams", {PERSISTENT, STRING, ""}},
     {"LiveTorqueSpeedAdaptiveToggle", {PERSISTENT | BACKUP , BOOL, "0"}},
     {"TorqueControlTune", {PERSISTENT | BACKUP, FLOAT, "2.0"}},
+    // 5.0 lateral demand stack + driving profile selectors.
+    // Persistent backup STRING. Defaults are resolved in
+    // lateral_demand_stack.py (custom-2.0 for both). 5.0 is
+    // not default; custom-experimental is the only path that
+    // reaches the 5.0 torque controller.
+    {"LateralDemandStack", {PERSISTENT | BACKUP, STRING, "custom-2.0"}},
+    {"ControlsProfile", {PERSISTENT | BACKUP, STRING, "custom-2.0"}},
     {"TorqueParamsOverrideEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TorqueParamsOverrideFriction", {PERSISTENT | BACKUP, FLOAT, "0.1"}},
     {"TorqueParamsOverrideLatAccelFactor", {PERSISTENT | BACKUP, FLOAT, "2.5"}},

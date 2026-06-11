@@ -596,12 +596,12 @@ def test_controlsd_does_not_double_update_lateral_demand_profile_builder():
 
 def test_controlsd_resolves_lateral_demand_stack_from_param():
   """controlsd.__init__ must resolve the LateralDemandStack
-  param into a concrete stack on the instance. The
-  sunnypilot-current migration default applies for missing
-  or unknown values."""
+  param into a LateralDemandStackResolution on the instance.
+  The custom-2.0 default applies for missing or unknown
+  values."""
   from openpilot.selfdrive.controls.controlsd import Controls
   from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-    LateralDemandStackId, resolve_lateral_demand_stack,
+    LateralDemandStackId, build_lateral_demand_stack, resolve_lateral_demand_stack,
   )
 
   class FakeParams:
@@ -612,9 +612,11 @@ def test_controlsd_resolves_lateral_demand_stack_from_param():
 
   controls = Controls.__new__(Controls)
   controls.params = FakeParams()
-  stack = resolve_lateral_demand_stack(None)
-  controls.lateral_demand_stack = stack
-  assert stack.stack_id == LateralDemandStackId.SUNNYPILOT_CURRENT
+  resolution = resolve_lateral_demand_stack(None)
+  controls.lateral_demand_stack_resolution = resolution
+  controls.lateral_demand_stack = build_lateral_demand_stack(resolution)
+  assert resolution.resolved_stack == LateralDemandStackId.CUSTOM_V2
+  assert controls.lateral_demand_stack.stack_id == LateralDemandStackId.CUSTOM_V2
 
 
 def test_controlsd_pushes_stack_output_profile_to_lac():
@@ -687,27 +689,33 @@ def test_controlsd_push_lateral_demand_stack_output_uses_extension_hook():
   assert controls.LaC.extension.profile is profile
 
 
-def test_controlsd_auto_couple_torque_for_stack_maps_experimental_to_5_0():
-  """_auto_couple_torque_for_stack must map each known stack
-  id to the correct TorqueControlTune value:
+def test_controlsd_lateral_demand_stack_auto_couples_torque_per_id():
+  """Each lateral demand stack id maps to a TorqueControlTune
+  value via the controls profile mapping:
   custom-experimental → 5.0, custom-2.0 → 4.1,
-  sunnypilot-current → 4.1.
-  """
-  from openpilot.selfdrive.controls.controlsd import Controls
+  sunnypilot-current → 4.1. Custom-recommended → 4.1
+  (with fallback metadata)."""
   from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-    CustomExperimentalLateralDemandStack,
-    CustomV2LateralDemandStack,
-    SunnypilotCurrentLateralDemandStack,
+    ControlsProfileId, controls_profile_mapping_for, resolve_controls_profile,
   )
 
-  controls = Controls.__new__(Controls)
-  assert controls._auto_couple_torque_for_stack(CustomExperimentalLateralDemandStack()) == 5.0
-  assert controls._auto_couple_torque_for_stack(CustomV2LateralDemandStack()) == 4.1
-  assert controls._auto_couple_torque_for_stack(SunnypilotCurrentLateralDemandStack()) == 4.1
+  experimental = controls_profile_mapping_for(ControlsProfileId.CUSTOM_EXPERIMENTAL)
+  assert experimental.torque_control_tune.value == "5.0"
+  custom_2 = controls_profile_mapping_for(ControlsProfileId.CUSTOM_2)
+  assert custom_2.torque_control_tune.value == "4.1"
+  sunnypilot_current = controls_profile_mapping_for(ControlsProfileId.SUNNYPILOT_CURRENT)
+  assert sunnypilot_current.torque_control_tune.value == "4.1"
+  recommended = controls_profile_mapping_for(ControlsProfileId.CUSTOM_RECOMMENDED)
+  assert recommended.torque_control_tune.value == "4.1"
+  # The custom-recommended path must NOT silently expose a
+  # missing stack; the resolution's lateral_demand_stack_resolution
+  # carries fallback metadata.
+  recommended_resolution = resolve_controls_profile("custom-recommended")
+  assert recommended_resolution.lateral_demand_stack_resolution.fallback_reason == "not_implemented"
 
 
 def test_controls_profile_experimental_auto_couples_torque_5_0():
-  """ControlsProfile=experimental must auto-couple
+  """ControlsProfile=custom-experimental must auto-couple
   TorqueControlTune=5.0 and LateralDemandStack=custom-experimental
   on a fresh Params. The TorqueControlTune=5.0 value is the
   same path the v5 test_torque_controller_selection_variants
@@ -715,12 +723,11 @@ def test_controls_profile_experimental_auto_couples_torque_5_0():
   test confirms the user-facing profile selector routes to V5.
   """
   from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-    ControlsProfileId,
-    controls_profile_mapping_for,
+    ControlsProfileId, resolve_controls_profile,
   )
   from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import resolve_torque_tune_version
 
-  mapping = controls_profile_mapping_for(ControlsProfileId.EXPERIMENTAL)
-  resolution = resolve_torque_tune_version(mapping.torque_tune)
-  assert resolution.resolved_version == 5.0
-  assert mapping.lateral_demand_stack.value == "custom-experimental"
+  resolution = resolve_controls_profile("custom-experimental")
+  torque_resolution = resolve_torque_tune_version(resolution.torque_control_tune.value)
+  assert torque_resolution.resolved_version == 5.0
+  assert resolution.lateral_demand_stack.value == "custom-experimental"

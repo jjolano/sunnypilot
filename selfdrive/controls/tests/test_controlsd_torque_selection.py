@@ -197,6 +197,48 @@ def test_torque_controller_selection_variants():
   assert selected.VERSION == 50
   assert "TorqueControlTune" not in params.writes
 
+
+def test_torque_control_tune_5_instantiates_latcontrol_torque_v5():
+  """TorqueControlTune=5.0 must select LatControlTorqueV5, the
+  first torque version with active profile-aware command
+  shaping (preview lead + turn-exit source-of-truth)."""
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 5.0))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV5)
+  assert selected.VERSION == 50
+
+
+def test_torque_control_tune_41_instantiates_latcontrol_torque_v41():
+  """TorqueControlTune=4.1 must select LatControlTorqueV41, the
+  current stable default. The 4.1 path is the v4.1 controller
+  (no v5 active delta)."""
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 4.1))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV41)
+  assert selected.VERSION == 41
+
+
+def test_torque_control_tune_unknown_falls_back_safely():
+  """An unknown TorqueControlTune value must fall back safely
+  (to 2.0, the historical stable default) and must NOT select
+  5.0. The fallback path is exercised by users who set a
+  deprecated or future value."""
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+  # None → falls back to the historical 2.0 default (existing
+  # behavior preserved).
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, None))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert not isinstance(selected, LatControlTorqueV5)
+  assert isinstance(selected, LatControlTorqueV2)
+
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 1.0))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert selected is lac
