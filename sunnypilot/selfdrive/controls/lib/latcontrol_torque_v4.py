@@ -1734,19 +1734,31 @@ class LatControlTorqueV5(LatControlTorqueV41):
     as the v4 base, with the decision's multipliers applied and
     lead_delta re-clipped to the scaled cap.
     """
+    # Start from the base target's lead math. v5 must not
+    # reintroduce a lead delta that the base immediate early-
+    # release guard already zeroed on a turn-exit collapse frame.
+    lead_gain = base.lead_gain
+    lead_delta_cap = base.lead_delta_cap
+    lead_delta = base.lead_delta
     # Apply lead gain / cap multipliers from the decision.
-    lead_gain = base.lead_gain * float(decision.lead_gain_multiplier)
-    lead_delta_cap = base.lead_delta_cap * float(decision.lead_delta_cap_multiplier)
-    lead_delta = _clip(
-      base.target_rate * speed_result.response_delay * lead_gain,
-      -lead_delta_cap, lead_delta_cap,
-    )
-    # Early release: only fire when the controller has been
-    # persistent enough to trust the lead-collapse direction.
-    early_release_active = (
-      bool(decision.early_release_lead_zero)
-      and int(decision.persistence_frames) >= RECENTER_PERSISTENCE_FRAMES
-    )
+    lead_gain = lead_gain * float(decision.lead_gain_multiplier)
+    lead_delta_cap = lead_delta_cap * float(decision.lead_delta_cap_multiplier)
+    # Only re-derive lead_delta from the scaled gain/cap when the
+    # base did not already early-release (base.lead_delta == 0).
+    # If the base zeroed it, v5 must preserve that. This keeps
+    # "turn-exit feels immediate" intact on the first collapse
+    # frame instead of v5 reintroducing a nonzero lead.
+    if base.lead_delta != 0.0:
+      lead_delta = _clip(
+        base.target_rate * speed_result.response_delay * lead_gain,
+        -lead_delta_cap, lead_delta_cap,
+      )
+    # Early release. The decision's classification is the
+    # source of truth; no persistence floor is required for
+    # the immediate early-release guard. The persistence check
+    # was an over-conservative gate that let v5 undo the base
+    # guard for the first RECENTER_PERSISTENCE_FRAMES frames.
+    early_release_active = bool(decision.early_release_lead_zero)
     if early_release_active:
       lead_delta = 0.0
 
@@ -1765,8 +1777,6 @@ class LatControlTorqueV5(LatControlTorqueV41):
     # summary.
     self._v5_last_preview_active = bool(preview_boost_applied != 0.0)
     self._v5_last_turn_exit_active = bool(early_release_active or decision.mode in ("turn_exit", "early_release"))
-    self._v5_last_v5_active = True
-    self._v5_last_v5_reason = "turn_exit_source_of_truth" if preview_boost_applied == 0.0 else "preview_boost_applied"
     self._v5_last_final_lead_delta = float(lead_delta)
     self._v5_last_preview_applied_value = float(preview_boost_applied)
     return TorqueV5Target(
@@ -1783,8 +1793,8 @@ class LatControlTorqueV5(LatControlTorqueV41):
       turn_exit_lead_gain_multiplier=float(decision.lead_gain_multiplier),
       turn_exit_lead_delta_cap_multiplier=float(decision.lead_delta_cap_multiplier),
       turn_exit_early_release=early_release_active,
-      v5_active=True,
-      v5_reason="turn_exit_source_of_truth" if preview_boost_applied == 0.0 else "preview_boost_applied",
+      v5_active=False,  # Set in Commit D based on actual behavior delta
+      v5_reason="",
     )
 
   def _v5_preview_allowed(self, *, active: bool, invalid: bool, CS,
