@@ -4,7 +4,6 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-import math
 import time
 
 import cereal.messaging as messaging
@@ -12,8 +11,7 @@ from cereal import custom
 from openpilot.common.constants import CV
 from openpilot.common.gps import get_gps_location_service
 from openpilot.common.params import Params
-from openpilot.common.realtime import DT_MDL
-from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD, get_sanitize_int_param
+from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import (
   LIMIT_ADAPT_ACC,
   LIMIT_COAST_APPROACH_MARGIN_S,
@@ -21,6 +19,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import (
   LIMIT_MAX_MAP_DATA_AGE,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy, OffsetType
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.params import finite_float_param, should_refresh_params
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 
@@ -97,7 +96,7 @@ class SpeedLimitResolver:
     return self.speed_limit_last > 0.
 
   def update_params(self):
-    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+    if should_refresh_params(self.frame):
       self.policy = get_sanitize_int_param(
         "SpeedLimitPolicy",
         Policy.min().value,
@@ -111,13 +110,7 @@ class SpeedLimitResolver:
         OffsetType.max().value,
         self.params,
       )
-      self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
-      try:
-        self.offset_value = float(self.offset_value)
-      except (TypeError, ValueError):
-        self.offset_value = 0.0
-      if not math.isfinite(self.offset_value):
-        self.offset_value = 0.0
+      self.offset_value = finite_float_param(self.params.get("SpeedLimitValueOffset", return_default=True))
 
   def _get_speed_limit_offset(self) -> float:
     if self.offset_type == OffsetType.off:
@@ -231,7 +224,7 @@ class SpeedLimitResolver:
 
 class SunnypilotCurrentSpeedLimitResolver(SpeedLimitResolver):
   def update_params(self):
-    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+    if should_refresh_params(self.frame):
       self.policy = self.params.get("SpeedLimitPolicy", return_default=True)
       self.is_metric = self.params.get_bool("IsMetric")
       self.offset_type = self.params.get("SpeedLimitOffsetType", return_default=True)

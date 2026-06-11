@@ -17,7 +17,7 @@ from openpilot.selfdrive.controls.lib.lateral_accel import lateral_accel_from_cu
 from openpilot.selfdrive.controls.lib.vehicle_math import speed_for_lateral_accel
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.params import should_refresh_params
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
 VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
@@ -103,7 +103,7 @@ class SmartCruiseControlVision:
     return V_CRUISE_UNSET
 
   def _update_params(self) -> None:
-    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+    if should_refresh_params(self.frame):
       self.enabled = self.params.get_bool("SmartCruiseControlVision")
       self.accurate_lateral_accel = self.params.get_bool("AccurateLateralAccel")
 
@@ -313,7 +313,7 @@ class SunnypilotCurrentSmartCruiseControlVision(SmartCruiseControlVision):
     return V_CRUISE_UNSET
 
   def _update_params(self) -> None:
-    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+    if should_refresh_params(self.frame):
       self.enabled = self.params.get_bool("SmartCruiseControlVision")
 
   def _update_calculations(self, sm: messaging.SubMaster) -> None:

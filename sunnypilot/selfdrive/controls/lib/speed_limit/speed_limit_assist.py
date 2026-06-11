@@ -13,7 +13,6 @@ from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import (
   CONFIRM_SPEED_THRESHOLD,
@@ -22,6 +21,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import (
   PCM_LONG_REQUIRED_MAX_SET_SPEED,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.params import should_refresh_params
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import compare_cluster_target, set_speed_limit_assist_availability
 
 ButtonType = car.CarState.ButtonEvent.Type
@@ -169,7 +169,7 @@ class SpeedLimitAssist:
     return target
 
   def update_params(self) -> None:
-    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+    if should_refresh_params(self.frame):
       self.is_metric = self.params.get_bool("IsMetric")
       set_speed_limit_assist_availability(self.CP, self.CP_SP, self.params)
       self.enabled = self.params.get("SpeedLimitMode", return_default=True) == Mode.assist
