@@ -18,6 +18,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
   planner_seed_intent_for_reason,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2
+from openpilot.selfdrive.controls.lib.vehicle_math import stopping_decel
 
 MPH_TO_MS = 0.44704
 
@@ -426,7 +427,7 @@ def _stop_approach_accel(scene: CustomV2Scene, current_a_target: float,
   selected_reason = "comfort_early_stop_threat"
   hard_stop = False
   if scene.model_stop_distance is not None and scene.model_stop_distance > 0.0:
-    required = -(scene.v_ego ** 2) / (2.0 * max(scene.model_stop_distance, 1.0))
+    required = stopping_decel(scene.v_ego, scene.model_stop_distance, min_distance=1.0)
     stop_a_target = min(stop_a_target, required)
     if scene.model_should_stop and required < STOP_APPROACH_DECEL_MIN:
       selected_reason = "hard_model_stop_threat"
