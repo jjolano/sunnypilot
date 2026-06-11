@@ -47,6 +47,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import (
 )
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2
 from openpilot.selfdrive.controls.lib.vehicle_math import stopping_decel
+from openpilot.selfdrive.modeld.constants import ModelConstants
 
 MPH_TO_MS = 0.44704
 
