@@ -1499,6 +1499,68 @@ def test_v5_turn_in_preview_does_not_reduce_base_lead_gain_or_cap():
   assert target.lead_delta_cap == pytest.approx(0.5)
 
 
+def test_v5_uses_same_frame_turn_in_profile_for_preview_gate():
+  """v5 must activate the preview boost on a clean TURN_IN
+  frame using the profile built and pushed in the same frame
+  (no stale or one-frame-old profile). Uses the real
+  LateralDemandProfileBuilder on a fresh ProcessedLateralDemand
+  to mirror controlsd's same-frame build+push flow.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfileBuilder,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(
+      mode="turn_in", persistence_frames=0,
+      lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.05,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _decision
+
+  builder = LateralDemandProfileBuilder(dt=DT_CTRL)
+  v_ego = 20.0
+  # Frame 1: zero demand. Builds a STRAIGHT_STABLE baseline.
+  demand0 = make_processed_lateral_demand(processed_curvature=0.0, path_quality=0.9, path_reason="ok")
+  profile0 = builder.update(demand0, v_ego)
+  assert profile0.mode != LateralMode.TURN_IN.value
+  v5.set_lateral_demand_profile(profile0)
+  v5.set_processed_lateral_demand(demand0)
+
+  # Frame 2: jump in processed_curvature. Same frame: builder
+  # runs, classifies TURN_IN, profile is pushed to v5 BEFORE
+  # _build_target reads it. preview_boost_applied must be > 0.
+  processed_curvature_turn_in = 0.0010  # target = 0.4, rate ~ 0.4/0.05 = 8.0
+  demand1 = make_processed_lateral_demand(processed_curvature=processed_curvature_turn_in,
+                                           path_quality=0.9, path_reason="ok")
+  profile1 = builder.update(demand1, v_ego)
+  assert profile1.mode == LateralMode.TURN_IN.value
+  v5.set_lateral_demand_profile(profile1)
+  v5.set_processed_lateral_demand(demand1)
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(processed_curvature_turn_in, v_ego, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_boost_applied > 0.0
+  assert target.v5_active is True
+  assert target.v5_reason == "preview_boost_applied"
+
+
 def test_v5_turn_exit_early_release_zeroes_lead_delta():
   """When the decision's early_release_lead_zero is True and
   persistence_frames >= RECENTER_PERSISTENCE_FRAMES, the v5

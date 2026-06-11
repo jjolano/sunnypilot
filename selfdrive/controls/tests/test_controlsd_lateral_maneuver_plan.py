@@ -546,3 +546,46 @@ def test_update_lateral_demand_profile_classifies_steering_pressed_as_driver_ove
   controls.update_lateral_demand_profile(demand, v_ego=20.0, steering_pressed=True)
 
   assert controls.LaC.profile.mode == LateralMode.DRIVER_OVERRIDE.value
+
+
+def test_controlsd_forwards_stack_profile_before_lateral_update():
+  """state_control must push the same-frame lateral demand
+  profile to LaC BEFORE calling self.LaC.update, so v5
+  profile-aware preview gating and turn-exit source-of-truth
+  see current-frame mode/rate. Static source check: parse the
+  method body and verify the call ordering.
+  """
+  import inspect
+  from openpilot.selfdrive.controls import controlsd
+
+  source = inspect.getsource(controlsd.Controls.state_control)
+  push_idx = source.find("self.update_lateral_demand_profile(")
+  update_idx = source.find("self.LaC.update(")
+  assert push_idx != -1, "state_control does not call self.update_lateral_demand_profile"
+  assert update_idx != -1, "state_control does not call self.LaC.update"
+  assert push_idx < update_idx, (
+    "lateral demand profile must be pushed to LaC BEFORE LaC.update; "
+    f"push at offset {push_idx}, update at offset {update_idx}"
+  )
+
+
+def test_controlsd_does_not_double_update_lateral_demand_profile_builder():
+  """state_control must not call the lateral_demand_profile_builder
+  twice for the same demand. The post-LaC.update profile push
+  that survived the v5 hardening would re-run the builder after
+  the controller had already consumed the current-frame profile,
+  causing the next frame to see a one-frame-stale builder state.
+  The profile builder should run exactly once per state_control
+  call (via the wrapper that pushes the result to the controller).
+  """
+  import inspect
+  from openpilot.selfdrive.controls import controlsd
+
+  source = inspect.getsource(controlsd.Controls.state_control)
+  builder_call_count = source.count("self.lateral_demand_profile_builder.update(")
+  assert builder_call_count == 0, (
+    "state_control must not call lateral_demand_profile_builder.update directly; "
+    "go through the update_lateral_demand_profile wrapper so the build and push "
+    "are atomic. Found "
+    f"{builder_call_count} direct call(s)."
+  )

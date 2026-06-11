@@ -382,7 +382,6 @@ class Controls(ControlsExt):
       set_lateral_demand_profile = getattr(self.LaC.extension, "set_lateral_demand_profile", None)
     if set_lateral_demand_profile is not None:
       set_lateral_demand_profile(profile)
-
   def state_control(self):
     CS = self.sm['carState']
 
@@ -445,11 +444,12 @@ class Controls(ControlsExt):
     actuators.curvature = processed_lateral_demand.processed_curvature
     self.update_steering_actuator_feedback(CC.latActive, actuators)
     self.LaC.set_steering_actuator_feedback(self.steering_actuator_feedback)
-    steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
-                                                       self.steer_limited_by_safety, processed_lateral_demand.processed_curvature,
-                                                       self.calibrated_pose, curvature_limited, lat_delay)
-    actuators.torque = float(steer)
-    actuators.steeringAngleDeg = float(steeringAngleDeg)
+    # Build and push the same-frame lateral demand profile to the
+    # controller BEFORE LaC.update so v5 profile-aware preview
+    # gating, turn-exit source-of-truth, and demand-mode telemetry
+    # see current-frame mode/rate. The previous ordering pushed
+    # the profile after LaC.update, leaving v5 to run on a stale
+    # or absent profile and delaying preview activation.
     self.update_lateral_demand_profile(
       processed_lateral_demand,
       CS.vEgo,
@@ -457,6 +457,11 @@ class Controls(ControlsExt):
       steer_limited_by_safety=bool(self.steering_actuator_feedback.limited),
       steering_pressed=CS.steeringPressed,
     )
+    steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
+                                                       self.steer_limited_by_safety, processed_lateral_demand.processed_curvature,
+                                                       self.calibrated_pose, curvature_limited, lat_delay)
+    actuators.torque = float(steer)
+    actuators.steeringAngleDeg = float(steeringAngleDeg)
     self.toyota_eps_high_rate_frames, self.toyota_eps_cut_frames = apply_toyota_eps_high_rate_guard(
       self.CP, CC, CS, self.toyota_eps_high_rate_frames, self.toyota_eps_cut_frames
     )
