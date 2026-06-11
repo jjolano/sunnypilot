@@ -22,6 +22,15 @@ def stopping_decel(v_ego: float, distance: float, min_distance: float = MIN_DIST
   return required_decel_to_target_speed(v_ego, 0.0, distance, min_distance)
 
 
+def lateral_jerk_from_curvature_rate(v_ego: float, curvature_rate: float) -> float:
+  """Return lateral jerk from curvature rate at fixed speed.
+
+  curvature_rate is in 1/(m*s) and lateral jerk is in m/s^3.
+  Assumes speed is fixed.
+  """
+  return float(v_ego) ** 2 * float(curvature_rate)
+
+
 def speed_for_lateral_accel(lateral_accel: float, curvature: float) -> float:
   """Return speed for a lateral acceleration budget and curvature magnitude.
 

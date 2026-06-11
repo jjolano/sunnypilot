@@ -35,6 +35,15 @@ def test_lateral_accel_from_curvature_removes_roll_gravity():
   assert lateral_accel_from_curvature(v_ego, curvature, roll) == pytest.approx(3.75)
 
 
+@pytest.mark.parametrize("roll", [math.radians(6.0), math.radians(-6.0)])
+def test_lateral_accel_from_curvature_roll_sign_matches_roll_lateral_accel(roll):
+  v_ego = 15.0
+  curvature = 0.02
+  base = curvature * v_ego**2
+
+  assert lateral_accel_from_curvature(v_ego, curvature, roll) == pytest.approx(base - roll_lateral_accel(roll))
+
+
 def test_lateral_accel_from_steering_angle_uses_vehicle_model_curvature():
   vehicle_model = FakeVehicleModel(curvature=0.02)
   v_ego = 15.0

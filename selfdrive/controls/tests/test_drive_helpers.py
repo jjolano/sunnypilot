@@ -8,6 +8,9 @@ from openpilot.selfdrive.controls.lib.drive_helpers import (
   MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL,
   MAX_LATERAL_ACCEL_NO_ROLL,
   clip_curvature,
+  curv_from_psis,
+  get_accel_from_plan,
+  get_curvature_from_plan,
   should_latch_lateral_accel_burst,
   update_lateral_accel_limit,
 )
@@ -146,6 +149,24 @@ def test_clip_curvature_preserves_legacy_linear_roll_compensation_by_default():
 
   assert clipped_curvature == pytest.approx((MAX_LATERAL_ACCEL_NO_ROLL + roll * ACCELERATION_DUE_TO_GRAVITY) / v_ego**2)
   assert limited
+
+
+def test_get_accel_from_plan_returns_safe_stop_for_length_mismatch():
+  assert get_accel_from_plan([0.0], [0.0, 0.0], [0.0]) == (0.0, True)
+
+
+def test_curv_from_psis_is_finite_and_get_curvature_from_plan_matches_interpolated_yaw():
+  yaws = [0.0, 0.05, 0.1]
+  yaw_rates = [0.01, 0.02, 0.03]
+  t_idxs = [0.0, 1.0, 2.0]
+  vego = 12.0
+  action_t = 1.5
+
+  psi_target = yaws[1] + (action_t - t_idxs[1]) * (yaws[2] - yaws[1]) / (t_idxs[2] - t_idxs[1])
+  expected = curv_from_psis(psi_target, yaw_rates[0], vego, action_t)
+
+  assert math.isfinite(expected)
+  assert get_curvature_from_plan(yaws, yaw_rates, t_idxs, vego, action_t) == pytest.approx(expected)
 
 
 def test_clip_curvature_accurate_lateral_accel_uses_exact_roll_compensation():
