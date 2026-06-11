@@ -8,6 +8,7 @@ from collections.abc import Callable
 from enum import IntEnum
 
 import pyray as rl
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, requested_mode_from_params
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_policy import SpeedLimitPolicyLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode as SpeedLimitMode
@@ -128,6 +129,7 @@ class SpeedLimitSettingsLayout(Widget):
       brand = ui_state.CP.brand
       has_long = ui_state.has_longitudinal_control
       has_icbm = ui_state.has_icbm
+      longitudinal_mode = requested_mode_from_params(ui_state.params)
 
       """
           Speed Limit Assist is available when:
@@ -137,7 +139,7 @@ class SpeedLimitSettingsLayout(Widget):
       """
       sla_disallow_in_release = brand == "tesla" and ui_state.is_sp_release
       sla_always_disallow = brand == "rivian"
-      sla_available = (has_long or has_icbm) and not sla_disallow_in_release and not sla_always_disallow
+      sla_available = (has_icbm or (has_long and longitudinal_mode != LongitudinalMode.ACC)) and not sla_disallow_in_release and not sla_always_disallow
 
       if not sla_available and speed_limit_mode_param == int(SpeedLimitMode.assist):
         ui_state.params.put("SpeedLimitMode", int(SpeedLimitMode.warning))

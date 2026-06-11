@@ -1,3 +1,10 @@
+"""Planner/Custom Stack mutation Adapters.
+
+These Adapters are intentionally small.  They are the only mutation boundary
+between planner state and `LongitudinalStackOutput`, which keeps Custom Stack
+policy code from reaching directly into the Longitudinal Planner.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

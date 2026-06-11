@@ -48,6 +48,7 @@ MODEL_CURVE_OVERSLOWDOWN_DELTA = 5.0  # m/s, require model confirmation for larg
 MODEL_CURVE_OVERSLOWDOWN_RATIO = 0.8  # fraction of v_ego, require model confirmation for relative map slowdowns.
 MODEL_CURVE_OVERSLOWDOWN_MARGIN = 2.0  # m/s, allow small map/model target mismatch.
 PARAM_CACHE_MISS = object()
+SCC_CURVE_MAP_PARAM = "SccCurveMapEnabled"
 VALID_TRUE_VALUES = ("1", "true", "True", b"1", b"true", b"True")
 MAP_DATA_HEARTBEAT_TTL = 5.0
 
@@ -141,7 +142,7 @@ class SmartCruiseControlMap:
   def __init__(self):
     self.params = Params()
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
-    self.enabled = self.params.get_bool("SmartCruiseControlMap")
+    self.enabled = self.params.get_bool(SCC_CURVE_MAP_PARAM)
     self.long_enabled = False
     self.long_override = False
     self.is_enabled = False
@@ -172,7 +173,7 @@ class SmartCruiseControlMap:
 
   def update_params(self):
     if should_refresh_params(self.frame):
-      self.enabled = self.params.get_bool("SmartCruiseControlMap")
+      self.enabled = self.params.get_bool(SCC_CURVE_MAP_PARAM)
 
   def _update_cached_position(self) -> None:
     last_position_raw = self.mem_params.get("LastGPSPosition")

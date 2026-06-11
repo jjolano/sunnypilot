@@ -147,7 +147,7 @@ def _get_attr(obj: object | None, name: str, default: object) -> object:
 
 def _safe_int(value: object) -> int:
   try:
-    return int(str(value))
+    return int(cast(Any, value))
   except (TypeError, ValueError):
     return 0
 

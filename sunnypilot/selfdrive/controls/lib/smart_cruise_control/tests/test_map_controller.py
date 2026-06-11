@@ -63,7 +63,7 @@ class TestSmartCruiseControlMap:
     self.scc_m.mem_params = self.mem_params
 
   def reset_params(self):
-    self.params.put_bool("SmartCruiseControlMap", True)
+    self.params.put_bool("SccCurveMapEnabled", True)
 
     # TODO-SP: mock data from gpsLocation
     self.mem_params.put("LastGPSPosition", json.dumps({"latitude": 0.0, "longitude": 0.0}))
@@ -107,8 +107,8 @@ class TestSmartCruiseControlMap:
     assert not self.scc_m._position_params_valid()
 
   def test_system_disabled(self):
-    self.params.put_bool("SmartCruiseControlMap", False)
-    self.scc_m.enabled = self.params.get_bool("SmartCruiseControlMap")
+    self.params.put_bool("SccCurveMapEnabled", False)
+    self.scc_m.enabled = self.params.get_bool("SccCurveMapEnabled")
 
     for _ in range(int(10. / DT_MDL)):
       self.scc_m.update(True, False, 0., 0., 0.)
@@ -648,7 +648,7 @@ class TestSunnypilotCurrentSmartCruiseControlMap:
   def setup_method(self):
     self.params = Params()
     self.mem_params = MockParams()
-    self.params.put_bool("SmartCruiseControlMap", True)
+    self.params.put_bool("SccCurveMapEnabled", True)
     self.mem_params.put("LastGPSPosition", json.dumps({"latitude": 0.0, "longitude": 0.0}))
     self.mem_params.put("MapTargetVelocities", "[]")
     self.mem_params.put("MapAdvisorySpeedLimit", "{}")

@@ -112,6 +112,14 @@ def apply_toyota_eps_high_rate_guard(CP, CC, CS, high_rate_frames, cut_frames):
   return 0, TOYOTA_EPS_HIGH_RATE_CUT_FRAMES - 1
 
 
+def get_traction_risk(car_state_sp) -> float:
+  try:
+    traction_risk = float(getattr(car_state_sp, "tractionRisk", 0.0))
+  except (TypeError, ValueError, AttributeError):
+    return 0.0
+  return float(min(1.0, max(0.0, traction_risk))) if math.isfinite(traction_risk) else 0.0
+
+
 class Controls(ControlsExt):
   def __init__(self) -> None:
     self.params = Params()
@@ -125,9 +133,9 @@ class Controls(ControlsExt):
     self.CI = interfaces[self.CP.carFingerprint](self.CP, self.CP_SP)
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'modelDataV2SP', 'selfdriveState',
-                                   'liveCalibration', 'livePose', 'longitudinalPlan', 'longitudinalPlanSP', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay'] + self.sm_services_ext,
-                                  poll='selfdriveState')
+                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'longitudinalPlanSP', 'lateralManeuverPlan', 'carState', 'carOutput',
+                                    'carStateSP', 'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay'] + self.sm_services_ext,
+                                   poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
 
     self.steer_limited_by_safety = False
@@ -227,6 +235,7 @@ class Controls(ControlsExt):
     actuators.accel = float(self.LoC.update(
       CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits, long_plan.hasLead,
       custom_longitudinal_stack=custom_longitudinal_stack,
+      traction_risk=get_traction_risk(self.sm['carStateSP']),
     ))
 
     # Steering PID loop and lateral MPC

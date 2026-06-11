@@ -7,21 +7,50 @@ See the LICENSE.md file in the root directory for more details.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import numpy as np
-from dataclasses import dataclass
 
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
-from openpilot.selfdrive.controls.lib.longitudinal_decision import CandidateRole, DecisionSource, LongitudinalCandidate, LongitudinalDecisionTelemetry
+from openpilot.selfdrive.controls.lib.longitudinal_decision import (
+  CandidateRole,
+  DecisionSource,
+  LongitudinalArbiter,
+  LongitudinalCandidate,
+  LongitudinalDecisionTelemetry,
+  resolve_longitudinal_decision,
+)
+from openpilot.selfdrive.controls.lib.longitudinal_modes import (
+  DecCompatibilityState,
+  LongitudinalActuationType,
+  LongitudinalMode,
+  LongitudinalModeResolution,
+  LongitudinalModeResolver,
+  ResolvedLongitudinalImplementation,
+)
+from openpilot.selfdrive.controls.lib.scc_evidence import SccEvidenceTier
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.adapters import apply_stack_output_to_planner, planner_state_to_stack_output
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PlannerSeedCandidate, select_planner_seed_candidate
-from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomV2Scene, CustomV2SceneValidationError
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import (
+  CustomV2Scene,
+  CustomV2SceneValidationError,
+  build_custom_v2_advisory_candidates,
+  build_custom_v2_progress_candidates,
+  build_force_slow_candidate,
+  build_one_pedal_driver_candidate,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput, validate_stack_output
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.planner_seed import PLANNER_SEED_FLOOR, PlannerSeedCandidate, select_planner_seed_candidate
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import (
+  SignalProviderCandidate,
+  build_sp_candidates_from_signal_providers,
+  build_sp_longitudinal_candidates,
+  ensure_driver_intent,
+  fallback_physical_candidates,
+  planner_seed_candidates_to_longitudinal_candidates,
+  replace_driver_intent,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.registry import make_custom_longitudinal_stack
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   CUSTOM_V2,
@@ -31,7 +60,6 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   resolve_longitudinal_stack,
   stack_id_for_name,
 )
-from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
 from openpilot.sunnypilot.selfdrive.controls.lib.osm_traffic_control_prior import OsmTrafficControlPrior
@@ -46,8 +74,39 @@ from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
+LongitudinalModeStatus = custom.LongitudinalPlanSP.LongitudinalModeStatus
+LongitudinalModeTelemetryMode = LongitudinalModeStatus.Mode
+LongitudinalModeTelemetryImplementation = LongitudinalModeStatus.Implementation
+LongitudinalModeTelemetryActuationType = LongitudinalModeStatus.ActuationType
+LongitudinalModeTelemetryCompatibilityAliasState = LongitudinalModeStatus.CompatibilityAliasState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 StackId = custom.LongitudinalPlanSP.Stack.StackId
+DEFAULT_LONGITUDINAL_MODE_RESOLUTION = LongitudinalModeResolution(
+  requested_mode=LongitudinalMode.ACC,
+  resolved_implementation=ResolvedLongitudinalImplementation.HARDWARE_ACC,
+  actuation_type=LongitudinalActuationType.DIRECT,
+)
+LONGITUDINAL_MODE_TELEMETRY_MODES = {
+  LongitudinalMode.ACC: LongitudinalModeTelemetryMode.acc,
+  LongitudinalMode.E2E: LongitudinalModeTelemetryMode.e2e,
+  LongitudinalMode.SCC: LongitudinalModeTelemetryMode.scc,
+}
+LONGITUDINAL_MODE_TELEMETRY_IMPLEMENTATIONS = {
+  ResolvedLongitudinalImplementation.HARDWARE_ACC: LongitudinalModeTelemetryImplementation.hardwareAcc,
+  ResolvedLongitudinalImplementation.MODEL_ACC: LongitudinalModeTelemetryImplementation.modelAcc,
+  ResolvedLongitudinalImplementation.E2E: LongitudinalModeTelemetryImplementation.e2e,
+  ResolvedLongitudinalImplementation.SCC_ACC: LongitudinalModeTelemetryImplementation.sccAcc,
+  ResolvedLongitudinalImplementation.SCC_E2E: LongitudinalModeTelemetryImplementation.sccE2e,
+  ResolvedLongitudinalImplementation.ICBM_ADVISORY: LongitudinalModeTelemetryImplementation.icbmAdvisory,
+}
+LONGITUDINAL_MODE_TELEMETRY_ACTUATION_TYPES = {
+  LongitudinalActuationType.DIRECT: LongitudinalModeTelemetryActuationType.direct,
+  LongitudinalActuationType.SET_SPEED_ADVISORY: LongitudinalModeTelemetryActuationType.setSpeedAdvisory,
+}
+LONGITUDINAL_MODE_TELEMETRY_COMPATIBILITY_ALIAS_STATES = {
+  DecCompatibilityState.ACC: LongitudinalModeTelemetryCompatibilityAliasState.acc,
+  DecCompatibilityState.BLENDED: LongitudinalModeTelemetryCompatibilityAliasState.blended,
+}
 SPEED_LIMIT_HANDOFF_EXIT_MARGIN = 0.25  # m/s, near enough to manual cruise to return to cruise.
 SPEED_LIMIT_HANDOFF_A_TARGET_MAX = 0.0  # m/s^2, coast instead of accelerating during handoff.
 SPEED_LIMIT_SPEED_UP_ACCEL_CAP = 0.8  # m/s^2, driver-intent candidate speed-up governor.
@@ -67,6 +126,17 @@ def _select_lower_target(selected_source, selected_v_target, selected_a_target, 
 
 def _decision_source_name(source) -> str:
   return source.value if isinstance(source, DecisionSource) else str(source or "")
+
+
+def _scc_curve_sources_allowed(mode_resolution: LongitudinalModeResolution | None) -> bool:
+  if not (
+    mode_resolution is not None and
+    mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC and
+    mode_resolution.actuation_type == LongitudinalActuationType.DIRECT
+  ):
+    return False
+  evidence_tier = getattr(getattr(mode_resolution, "scc_evidence", None), "tier", SccEvidenceTier.NONE)
+  return evidence_tier not in (SccEvidenceTier.STOP, SccEvidenceTier.URGENT_STOP)
 
 
 def publish_decision_layer_telemetry(longitudinalPlanSP, telemetry: LongitudinalDecisionTelemetry | None) -> None:
@@ -99,25 +169,11 @@ def publish_decision_layer_telemetry(longitudinalPlanSP, telemetry: Longitudinal
   decisionLayer.legacyShouldStop = bool(telemetry.legacy_should_stop)
 
 
-def custom_v2_seed_output(planner: object, sunnypilot_output: LongitudinalStackOutput) -> LongitudinalStackOutput:
-  candidates = tuple(getattr(planner, "planner_seed_candidates", ()))
-  if not candidates:
-    debug = dict(sunnypilot_output.debug)
-    debug["custom_v2_seed_context"] = "planner"
-    return replace(sunnypilot_output, debug=debug)
-
-  selected = select_planner_seed_candidate((PlannerSeedCandidate(SUNNYPILOT_CURRENT, sunnypilot_output), *candidates))
-  debug = dict(sunnypilot_output.debug)
-  debug.update(selected.output.debug)
-  debug["custom_v2_seed_context"] = "planner"
-  debug["custom_v2_seed_candidate"] = selected.name
-  return replace(selected.output, debug=debug)
-
-
 def publish_stack_telemetry(longitudinalPlanSP, resolution: StackResolution, actuated_stack: str,
                             actuated_a_target: float, fault_latched: bool = False, fault_reason: str = "",
                             selected_intent: str = "", selected_reason: str = "",
-                            rejected: tuple[tuple[str, str], ...] = ()) -> None:
+                            rejected: tuple[tuple[str, str], ...] = (), seed_context: str = "",
+                            seed_candidate: str = "") -> None:
   stack = longitudinalPlanSP.stack
   stack.requestedStack = stack_id_for_name(resolution.requested_stack)
   stack.resolvedStack = stack_id_for_name(resolution.resolved_stack)
@@ -128,8 +184,41 @@ def publish_stack_telemetry(longitudinalPlanSP, resolution: StackResolution, act
   stack.actuatedATarget = float(actuated_a_target)
   stack.selectedIntent = str(selected_intent)
   stack.selectedReason = str(selected_reason)
-  stack.rejectedIntents = [str(intent) for intent, _reason in rejected[:3]]
-  stack.rejectedReasons = [str(reason) for _intent, reason in rejected[:3]]
+  stack.rejectedIntents = [str(intent) for intent, _reason in rejected]
+  stack.rejectedReasons = [str(reason) for _intent, reason in rejected]
+  stack.seedContext = str(seed_context)
+  stack.seedCandidate = str(seed_candidate)
+
+
+def publish_longitudinal_mode_telemetry(longitudinalPlanSP, resolution: LongitudinalModeResolution | None) -> None:
+  resolution = resolution or DEFAULT_LONGITUDINAL_MODE_RESOLUTION
+  longitudinal_mode = longitudinalPlanSP.longitudinalMode
+  longitudinal_mode.requestedMode = LONGITUDINAL_MODE_TELEMETRY_MODES.get(
+    resolution.requested_mode, LongitudinalModeTelemetryMode.acc
+  )
+  longitudinal_mode.resolvedImplementation = LONGITUDINAL_MODE_TELEMETRY_IMPLEMENTATIONS.get(
+    resolution.resolved_implementation, LongitudinalModeTelemetryImplementation.hardwareAcc
+  )
+  longitudinal_mode.actuationType = LONGITUDINAL_MODE_TELEMETRY_ACTUATION_TYPES.get(
+    resolution.actuation_type, LongitudinalModeTelemetryActuationType.direct
+  )
+  longitudinal_mode.restrictionStatus = [str(status) for status in resolution.restriction_status]
+  longitudinal_mode.unsupportedReason = str(resolution.unsupported_reason)
+  longitudinal_mode.compatibilityAliasState = LONGITUDINAL_MODE_TELEMETRY_COMPATIBILITY_ALIAS_STATES.get(
+    resolution.compatibility_alias_state, LongitudinalModeTelemetryCompatibilityAliasState.acc
+  )
+  evidence = resolution.scc_evidence
+  longitudinal_mode.evidenceTier = str(evidence.tier_label)
+  longitudinal_mode.evidenceReason = str(evidence.reason)
+  longitudinal_mode.evidenceConfidence = float(evidence.confidence)
+  longitudinal_mode.evidenceUrgency = float(evidence.urgency)
+  longitudinal_mode.independentOfLead = bool(evidence.independent_of_lead)
+  longitudinal_mode.evidenceAdvisories = [str(status) for status in evidence.advisory_status]
+  longitudinal_mode.confirmedLead = bool(evidence.confirmed_lead)
+
+
+def legacy_dec_enabled_for_mode(resolution: LongitudinalModeResolution) -> bool:
+  return bool(resolution.compatibility_alias_state == DecCompatibilityState.BLENDED or resolution.e2e_like)
 
 
 def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_rel: float, y_rel: float,
@@ -145,6 +234,23 @@ def should_block_lead_speedup(v_ego: float, lead_status: bool, d_rel: float, v_r
   return d_rel < close_distance
 
 
+def should_block_lead_speedup_from_context(context, v_ego: float, gas_pressed: bool, brake_pressed: bool) -> bool:
+  for state in getattr(context, "states", ()):
+    if str(getattr(state, "authority", "none")) == "none":
+      continue
+    if should_block_lead_speedup(
+      v_ego,
+      True,
+      float(getattr(state, "d_rel", 0.0)),
+      float(getattr(state, "v_rel", 0.0)),
+      float(getattr(state, "path_y_rel", getattr(state, "y_rel", 0.0))),
+      gas_pressed,
+      brake_pressed,
+    ):
+      return True
+  return False
+
+
 def apply_lead_speedup_guard(active: bool, v_ego: float, target: tuple[float, float]) -> tuple[float, float]:
   if not active:
     return target
@@ -154,7 +260,7 @@ def apply_lead_speedup_guard(active: bool, v_ego: float, target: tuple[float, fl
 
 
 def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, scc_map, speed_limit_assist, osm_traffic_control,
-                                      source_prev=None, v_target_prev=None):
+                                      source_prev=None, v_target_prev=None, allow_scc_curve_targets=True):
   if speed_limit_active:
     selected_source = LongitudinalPlanSource.speedLimitAssist
     selected_v_target = speed_limit_assist[0]
@@ -163,13 +269,14 @@ def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, sc
     selected_source = LongitudinalPlanSource.cruise
     selected_v_target, selected_a_target = cruise
 
-  selected_source, selected_v_target, selected_a_target = _select_lower_target(
-    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccVision, scc_vision
-  )
+  if allow_scc_curve_targets:
+    selected_source, selected_v_target, selected_a_target = _select_lower_target(
+      selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccVision, scc_vision
+    )
 
-  selected_source, selected_v_target, selected_a_target = _select_lower_target(
-    selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccMap, scc_map
-  )
+    selected_source, selected_v_target, selected_a_target = _select_lower_target(
+      selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.sccMap, scc_map
+    )
   if not speed_limit_active:
     selected_source, selected_v_target, selected_a_target = _select_lower_target(
       selected_source, selected_v_target, selected_a_target, LongitudinalPlanSource.speedLimitAssist, speed_limit_assist
@@ -194,84 +301,6 @@ def select_lowest_longitudinal_target(speed_limit_active, cruise, scc_vision, sc
   return selected_source, selected_v_target, selected_a_target
 
 
-@dataclass(frozen=True)
-class SignalProviderCandidate:
-  source: DecisionSource
-  role: CandidateRole
-  target: tuple[float, float]
-  active: bool
-  confidence: float
-  urgency: float
-  active_reason: str
-
-  def to_longitudinal_candidate(self) -> LongitudinalCandidate:
-    v_target, a_target = self.target
-    return LongitudinalCandidate(
-      source=self.source,
-      role=self.role,
-      v_target=v_target,
-      a_target=a_target,
-      confidence=self.confidence,
-      urgency=self.urgency,
-      active_reason=self.active_reason,
-    )
-
-
-def build_sp_candidates_from_signal_providers(providers: tuple[SignalProviderCandidate, ...]) -> list[LongitudinalCandidate]:
-  return [provider.to_longitudinal_candidate() for provider in providers if provider.active]
-
-
-def build_sp_longitudinal_candidates(speed_limit_active, cruise, scc_vision, scc_vision_active, scc_map, scc_map_active,
-                                     speed_limit_assist, osm_traffic_control, osm_traffic_control_active):
-  return build_sp_candidates_from_signal_providers((
-    SignalProviderCandidate(
-      source=DecisionSource.CRUISE,
-      role=CandidateRole.DRIVER_INTENT,
-      target=cruise,
-      active=True,
-      confidence=1.0,
-      urgency=0.1,
-      active_reason="driver_cruise_target",
-    ),
-    SignalProviderCandidate(
-      source=DecisionSource.SPEED_LIMIT,
-      role=CandidateRole.ADVISORY_CAP,
-      target=speed_limit_assist,
-      active=speed_limit_active,
-      confidence=0.85,
-      urgency=0.35,
-      active_reason="speed_limit_assist_active",
-    ),
-    SignalProviderCandidate(
-      source=DecisionSource.SCC_VISION,
-      role=CandidateRole.ADVISORY_CAP,
-      target=scc_vision,
-      active=scc_vision_active,
-      confidence=0.80,
-      urgency=0.45,
-      active_reason="confident_vision_curve",
-    ),
-    SignalProviderCandidate(
-      source=DecisionSource.SCC_MAP,
-      role=CandidateRole.ADVISORY_CAP,
-      target=scc_map,
-      active=scc_map_active,
-      confidence=0.80,
-      urgency=0.40,
-      active_reason="confident_map_curve",
-    ),
-    SignalProviderCandidate(
-      source=DecisionSource.OSM_TRAFFIC_CONTROL,
-      role=CandidateRole.ADVISORY_CAP,
-      target=osm_traffic_control,
-      active=osm_traffic_control_active,
-      confidence=0.75,
-      urgency=0.55,
-      active_reason="model_confirmed_map_caution",
-    ),
-  ))
-
-
 class LongitudinalPlannerSP:
   def __init__(self, CP: object, CP_SP: object, mpc):
     self.CP = CP
@@ -280,7 +309,6 @@ class LongitudinalPlannerSP:
       self.params = Params()
     self.events_sp = EventsSP()
     self.resolver = SpeedLimitResolver()
-    self.dec = DynamicExperimentalController(CP, mpc)
     self.scc = SmartCruiseControl()
     self.osm_traffic_control_prior = OsmTrafficControlPrior()
     self.resolver = SpeedLimitResolver()
@@ -297,9 +325,11 @@ class LongitudinalPlannerSP:
     self.decision_candidates_sp = []
     self._speed_limit_handoff_active = False
     self._speed_limit_active_prev = False
+    self.speed_limit_handoff_debug: dict[str, object] = {}
     self.longitudinal_stack_resolution = resolve_longitudinal_stack(
       self.params.get("LongitudinalStack", return_default=True), self.CP, self.CP_SP
     )
+    self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP)
     self.custom_longitudinal_stack = self._make_custom_longitudinal_stack(self.longitudinal_stack_resolution.resolved_stack)
     self.longitudinal_stack_actuated_stack = SUNNYPILOT_CURRENT
     self.longitudinal_stack_fault_latched = False
@@ -307,6 +337,8 @@ class LongitudinalPlannerSP:
     self.longitudinal_stack_selected_intent = ""
     self.longitudinal_stack_selected_reason = ""
     self.longitudinal_stack_rejected: tuple[tuple[str, str], ...] = ()
+    self.longitudinal_stack_seed_context = ""
+    self.longitudinal_stack_seed_candidate = ""
     self.custom_v2_fault_latched = False
     self.custom_v2_fault_reason = ""
 
@@ -317,11 +349,7 @@ class LongitudinalPlannerSP:
     return make_custom_longitudinal_stack(stack_name)
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
-    experimental_mode = sm['selfdriveState'].experimentalMode
-    if not self.dec.active():
-      return experimental_mode
-
-    return experimental_mode and self.dec.mode() == "blended"
+    return bool(getattr(self, "longitudinal_mode_resolution", DEFAULT_LONGITUDINAL_MODE_RESOLUTION).e2e_like)
 
   def _update_speed_limit_handoff(self, long_enabled: bool, long_override: bool, v_ego: float, v_cruise: float) -> bool:
     has_limit_target = (self.resolver.speed_limit_valid or self.resolver.speed_limit_last_valid) and \
@@ -329,16 +357,35 @@ class LongitudinalPlannerSP:
                        self.resolver.speed_limit_final_last != V_CRUISE_UNSET
     manual_cruise_below_limit = v_cruise < self.resolver.speed_limit_final_last
     above_manual_cruise = v_ego > v_cruise + SPEED_LIMIT_HANDOFF_EXIT_MARGIN
+    reason = "inactive"
 
     if self.sla.is_active:
       self._speed_limit_handoff_active = False
+      reason = "speed_limit_assist_active"
     elif (self._speed_limit_active_prev and long_enabled and not long_override and has_limit_target and
           manual_cruise_below_limit and above_manual_cruise):
       self._speed_limit_handoff_active = True
+      reason = "handoff_active"
     elif not long_enabled or long_override or not has_limit_target or not manual_cruise_below_limit or not above_manual_cruise:
       self._speed_limit_handoff_active = False
+      if not long_enabled:
+        reason = "longitudinal_disabled"
+      elif long_override:
+        reason = "driver_override"
+      elif not has_limit_target:
+        reason = "no_limit_target"
+      elif not manual_cruise_below_limit:
+        reason = "manual_cruise_not_below_limit"
+      elif not above_manual_cruise:
+        reason = "ego_not_above_manual_cruise"
 
     self._speed_limit_active_prev = self.sla.is_active
+    self.speed_limit_handoff_debug = {
+      "speed_limit_handoff_active": bool(self._speed_limit_handoff_active),
+      "manual_cruise_below_limit": bool(manual_cruise_below_limit),
+      "above_manual_cruise": bool(above_manual_cruise),
+      "reason": reason,
+    }
     return self._speed_limit_handoff_active
 
   def _speed_limit_handoff_target(self, v_ego: float, a_ego: float) -> tuple[float, float]:
@@ -356,9 +403,39 @@ class LongitudinalPlannerSP:
     self.active_scc = self.scc
     self.active_resolver = self.resolver
     self.active_sla = self.sla
+    mode_resolution = getattr(self, "longitudinal_mode_resolution", None)
+    acc_mode_direct = bool(
+      mode_resolution is not None and
+      mode_resolution.requested_mode == LongitudinalMode.ACC and
+      mode_resolution.actuation_type == LongitudinalActuationType.DIRECT
+    )
+    acc_mode_set_speed_advisory = bool(
+      mode_resolution is not None and
+      mode_resolution.actuation_type == LongitudinalActuationType.SET_SPEED_ADVISORY
+    )
+    scc_curve_actuation_allowed = _scc_curve_sources_allowed(mode_resolution)
+    if acc_mode_direct:
+      self._speed_limit_handoff_active = False
+      self._speed_limit_active_prev = False
+      self.decision_candidates_sp = build_sp_longitudinal_candidates(
+        False,
+        (v_cruise, a_ego),
+        (v_cruise, a_ego),
+        False,
+        (v_cruise, a_ego),
+        False,
+        (v_cruise, a_ego),
+        (v_cruise, a_ego),
+        False,
+      )
+      self.source = LongitudinalPlanSource.cruise
+      self.output_v_target = v_cruise
+      self.output_a_target = a_ego
+      return self.output_v_target, self.output_a_target
 
     # Smart Cruise Control
-    self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
+    if scc_curve_actuation_allowed:
+      self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
 
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm, coast_accel=coast_accel)
@@ -369,7 +446,8 @@ class LongitudinalPlannerSP:
                     self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp,
                     coast_accel=coast_accel)
 
-    self.osm_traffic_control_prior.update(sm, long_enabled, long_override, v_ego, a_ego)
+    if not acc_mode_set_speed_advisory:
+      self.osm_traffic_control_prior.update(sm, long_enabled, long_override, v_ego, a_ego)
 
     speed_limit_handoff_active = self._update_speed_limit_handoff(long_enabled, long_override, v_ego, v_cruise)
     speed_limit_active = self.sla.is_active or speed_limit_handoff_active
@@ -377,17 +455,28 @@ class LongitudinalPlannerSP:
       self.sla.output_v_target,
       a_ego,
     )
+    self.speed_limit_handoff_debug.update({
+      "handoff_target_v": float(speed_limit_assist_target[0]) if speed_limit_handoff_active else 0.0,
+      "handoff_target_a": float(speed_limit_assist_target[1]) if speed_limit_handoff_active else 0.0,
+    })
     cruise_target = (v_cruise, min(a_ego, SPEED_LIMIT_HANDOFF_A_TARGET_MAX)) if speed_limit_handoff_active else (v_cruise, a_ego)
     lead_one = sm['radarState'].leadOne
-    lead_speedup_guard_active = should_block_lead_speedup(
-      v_ego,
-      bool(lead_one.status),
-      float(lead_one.dRel),
-      float(lead_one.vRel),
-      float(lead_one.yRel),
-      bool(CS.gasPressed),
-      bool(CS.brakePressed),
-    )
+    primary_lead_context = getattr(self, "primary_lead_context", None)
+    stack_resolution = getattr(self, "longitudinal_stack_resolution", None)
+    if is_custom_stack(getattr(stack_resolution, "resolved_stack", "")) and getattr(primary_lead_context, "states", ()):
+      lead_speedup_guard_active = should_block_lead_speedup_from_context(
+        primary_lead_context, v_ego, bool(CS.gasPressed), bool(CS.brakePressed)
+      )
+    else:
+      lead_speedup_guard_active = should_block_lead_speedup(
+        v_ego,
+        bool(lead_one.status),
+        float(lead_one.dRel),
+        float(lead_one.vRel),
+        float(lead_one.yRel),
+        bool(CS.gasPressed),
+        bool(CS.brakePressed),
+      )
     speed_limit_assist_target = apply_lead_speedup_guard(lead_speedup_guard_active, v_ego, speed_limit_assist_target)
     cruise_target = apply_lead_speedup_guard(lead_speedup_guard_active, v_ego, cruise_target)
     decision_cruise_target = speed_limit_assist_target if speed_limit_active else cruise_target
@@ -398,48 +487,167 @@ class LongitudinalPlannerSP:
       )
     decision_speed_limit_active = False  # Active SLA is represented as effective driver intent below.
 
+    scc_vision_target = (self.scc.vision.output_v_target, self.scc.vision.output_a_target)
+    scc_map_target = (self.scc.map.output_v_target, self.scc.map.output_a_target)
+    osm_target = (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target)
+    scc_vision_active = bool(self.scc.vision.is_active) and scc_curve_actuation_allowed
+    scc_map_active = bool(self.scc.map.is_active) and scc_curve_actuation_allowed
+    osm_active = bool(self.osm_traffic_control_prior.active) and not acc_mode_set_speed_advisory
+    inactive_selection_target = speed_limit_assist_target if speed_limit_active else cruise_target
+    scc_vision_selection_target = scc_vision_target if scc_curve_actuation_allowed else inactive_selection_target
+    scc_map_selection_target = scc_map_target if scc_curve_actuation_allowed else inactive_selection_target
+    osm_selection_target = osm_target if not acc_mode_set_speed_advisory else inactive_selection_target
+
     self.decision_candidates_sp = build_sp_longitudinal_candidates(
       decision_speed_limit_active,
       decision_cruise_target,
-      (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
-      self.scc.vision.is_active,
-      (self.scc.map.output_v_target, self.scc.map.output_a_target),
-      self.scc.map.is_active,
+      scc_vision_target,
+      scc_vision_active,
+      scc_map_target,
+      scc_map_active,
       speed_limit_assist_target,
-      (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
-      self.osm_traffic_control_prior.active,
+      osm_target,
+      osm_active,
     )
 
     self.source, self.output_v_target, self.output_a_target = select_lowest_longitudinal_target(
       speed_limit_active,
       cruise_target,
-      (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
-      (self.scc.map.output_v_target, self.scc.map.output_a_target),
+      scc_vision_selection_target,
+      scc_map_selection_target,
       speed_limit_assist_target,
-      (self.osm_traffic_control_prior.output_v_target, self.osm_traffic_control_prior.output_a_target),
+      osm_selection_target,
       source_prev=getattr(self, 'source', None),
       v_target_prev=getattr(self, 'output_v_target', None),
+      allow_scc_curve_targets=scc_curve_actuation_allowed,
     )
     return self.output_v_target, self.output_a_target
 
   def update(self, sm: messaging.SubMaster) -> None:
     self.events_sp.clear()
-    self.dec.update(sm)
-    self.e2e_alerts_helper.update(sm, self.events_sp)
+    self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP)
+    self._update_e2e_alerts_for_mode(sm)
+
+  def _update_e2e_alerts_for_mode(self, sm: messaging.SubMaster) -> None:
+    if self.longitudinal_mode_resolution.e2e_like:
+      self.e2e_alerts_helper.update(sm, self.events_sp)
+    else:
+      self.e2e_alerts_helper.green_light_alert = False
+      self.e2e_alerts_helper.lead_depart_alert = False
 
   def _custom_v2_stack_output(self, sunnypilot_output: LongitudinalStackOutput,
                               accel_limits: tuple[float | None, float | None]) -> LongitudinalStackOutput:
     if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != CUSTOM_V2:
       self.custom_longitudinal_stack = make_custom_longitudinal_stack(CUSTOM_V2)
     scene = getattr(self, "custom_v2_scene", CustomV2Scene())
-    return self.custom_longitudinal_stack.update(sunnypilot_output, scene=scene, accel_limits=accel_limits)
+    return self.custom_longitudinal_stack.update(
+      sunnypilot_output,
+      scene=scene,
+      accel_limits=accel_limits,
+      decision=getattr(self, "custom_v2_policy_decision", None),
+      extra_rejected=getattr(self, "custom_v2_policy_extra_rejected", ()),
+    )
+
+  def _resolve_custom_v2_policy_decision(self, sunnypilot_output: LongitudinalStackOutput,
+                                         accel_limits: tuple[float | None, float | None]):
+    scene = getattr(self, "custom_v2_scene", CustomV2Scene())
+    mode_resolution = getattr(self, "longitudinal_mode_resolution", DEFAULT_LONGITUDINAL_MODE_RESOLUTION)
+    direct_actuation = mode_resolution.actuation_type == LongitudinalActuationType.DIRECT
+    scc_curve_direct = bool(mode_resolution.resolved_implementation == ResolvedLongitudinalImplementation.SCC_ACC and direct_actuation)
+    e2e_or_scc_direct = bool(mode_resolution.requested_mode in (LongitudinalMode.E2E, LongitudinalMode.SCC) and direct_actuation)
+    driver_candidates = tuple(
+      candidate for candidate in getattr(self, "decision_candidates_sp", ())
+      if candidate.role == CandidateRole.DRIVER_INTENT
+    )
+    provider_candidates = ensure_driver_intent(driver_candidates, sunnypilot_output, scene.v_cruise)
+    extra_rejected: list[tuple[str, str]] = []
+
+    one_pedal_candidate, one_pedal_rejected = build_one_pedal_driver_candidate(scene, scene.v_cruise, accel_limits)
+    extra_rejected.extend(one_pedal_rejected)
+    one_pedal_active = one_pedal_candidate is not None
+    if one_pedal_candidate is not None:
+      provider_candidates = replace_driver_intent(provider_candidates, one_pedal_candidate)
+
+    advisory_candidates, advisory_rejected = build_custom_v2_advisory_candidates(
+      scene,
+      allow_speed_limit=e2e_or_scc_direct,
+      allow_map_caution=e2e_or_scc_direct,
+      allow_curve=scc_curve_direct,
+    )
+    if one_pedal_active:
+      extra_rejected.extend((
+        (str(candidate.debug.get("custom_v2_intent", "driver_cruise")), "one_pedal_active")
+        for candidate in advisory_candidates
+      ))
+      advisory_candidates = ()
+    else:
+      extra_rejected.extend(advisory_rejected)
+
+    planner_seed_candidates = tuple(getattr(self, "planner_seed_candidates", ()))
+    if planner_seed_candidates:
+      selected_planner_seed = select_planner_seed_candidate((
+        PlannerSeedCandidate("sunnypilot-current", sunnypilot_output), *planner_seed_candidates,
+      ))
+      selected_planner_seeds = [] if selected_planner_seed.name == "sunnypilot-current" else [selected_planner_seed]
+      selected_planner_seeds.extend(
+        candidate for candidate in planner_seed_candidates
+        if candidate.selection != PLANNER_SEED_FLOOR and candidate.output.a_target < selected_planner_seed.output.a_target and
+        not (selected_planner_seed.group and candidate.group == selected_planner_seed.group) and
+        not (
+          candidate.name == selected_planner_seed.name and candidate.reason == selected_planner_seed.reason and
+          candidate.output.a_target == selected_planner_seed.output.a_target
+        )
+      )
+      planner_seed_candidates = tuple(selected_planner_seeds)
+    seed_candidates = planner_seed_candidates_to_longitudinal_candidates(planner_seed_candidates, scene.v_cruise)
+    raw_physical_candidates = fallback_physical_candidates(
+      seed_candidates, tuple(getattr(self, "longitudinal_decision_candidates", ())), sunnypilot_output
+    )
+    force_slow_candidate = build_force_slow_candidate(sunnypilot_output, scene, accel_limits)
+    physical_candidates = (*seed_candidates, *raw_physical_candidates)
+    if force_slow_candidate is not None:
+      physical_candidates = (*physical_candidates, force_slow_candidate)
+
+    progress_candidates: tuple[LongitudinalCandidate, ...] = ()
+    if not one_pedal_active:
+      progress_candidates, progress_rejected = build_custom_v2_progress_candidates(
+        sunnypilot_output, scene, accel_limits,
+        allow_no_lead_progress=mode_resolution.e2e_like,
+        allow_lead_progress=direct_actuation,
+      )
+      extra_rejected.extend(progress_rejected)
+
+    candidates = (*provider_candidates, *advisory_candidates, *physical_candidates, *progress_candidates)
+    arbiter = getattr(self, "longitudinal_arbiter", None)
+    if arbiter is None:
+      arbiter = LongitudinalArbiter()
+      self.longitudinal_arbiter = arbiter
+    source_stability_v_ego = None if (scene.force_slow_decel or scene.brake_pressed or scene.gas_pressed) else scene.v_ego
+    decision = resolve_longitudinal_decision(
+      enabled=True,
+      candidates=candidates,
+      fallback_v_target=max(0.0, scene.v_cruise),
+      fallback_a_target=sunnypilot_output.a_target,
+      fallback_should_stop=sunnypilot_output.should_stop,
+      accel_limits=(float(accel_limits[0]), float(accel_limits[1])),
+      arbiter=arbiter,
+      v_ego=source_stability_v_ego,
+    )
+    self.longitudinal_decision = decision
+    return decision, tuple(dict.fromkeys(extra_rejected))
 
   def _set_custom_v2_fault(self, reason: str) -> None:
+    self._reset_longitudinal_source_stability()
     self.custom_v2_fault_latched = True
     self.custom_v2_fault_reason = reason
     self.longitudinal_stack_fault_latched = True
     self.longitudinal_stack_fault_reason = reason
     self.events_sp.add(custom.OnroadEventSP.EventName.customLongitudinalStackFault)
+
+  def _reset_longitudinal_source_stability(self) -> None:
+    arbiter = getattr(self, "longitudinal_arbiter", None)
+    if arbiter is not None:
+      arbiter.reset_source_stability()
 
   def _publish_custom_v2_policy_debug(self, output: LongitudinalStackOutput) -> None:
     debug = output.debug
@@ -448,17 +656,22 @@ class LongitudinalPlannerSP:
     rejected_intents = tuple(str(intent) for intent in debug.get("custom_v2_rejected_intents", ()))
     rejected_reasons = tuple(str(reason) for reason in debug.get("custom_v2_rejected_reasons", ()))
     self.longitudinal_stack_rejected = tuple(zip(rejected_intents, rejected_reasons, strict=False))
+    self.longitudinal_stack_seed_context = str(debug.get("custom_v2_seed_context", ""))
+    self.longitudinal_stack_seed_candidate = str(debug.get("custom_v2_seed_candidate", ""))
 
   def apply_longitudinal_stack_selection(self, sm: messaging.SubMaster, has_lead: bool,
                                          accel_limits: tuple[float | None, float | None]) -> None:
     sunnypilot_output = planner_state_to_stack_output(self, has_lead, debug={"adapter": SUNNYPILOT_CURRENT})
-    custom_seed_output = sunnypilot_output
     self.longitudinal_stack_actuated_stack = SUNNYPILOT_CURRENT
     self.longitudinal_stack_fault_latched = False
     self.longitudinal_stack_fault_reason = ""
     self.longitudinal_stack_selected_intent = ""
     self.longitudinal_stack_selected_reason = ""
     self.longitudinal_stack_rejected = ()
+    self.longitudinal_stack_seed_context = ""
+    self.longitudinal_stack_seed_candidate = ""
+    self.custom_v2_policy_decision = None
+    self.custom_v2_policy_extra_rejected = ()
     self.longitudinal_plan_source = sunnypilot_output.source
 
     resolved_stack = self.longitudinal_stack_resolution.resolved_stack
@@ -468,16 +681,20 @@ class LongitudinalPlannerSP:
     if self.custom_longitudinal_stack is None or self.custom_longitudinal_stack.stack_name != resolved_stack:
       self.custom_longitudinal_stack = make_custom_longitudinal_stack(resolved_stack)
     if resolved_stack == CUSTOM_V2:
-      custom_seed_output = custom_v2_seed_output(self, sunnypilot_output)
       if not bool(sm['selfdriveState'].enabled):
+        self._reset_longitudinal_source_stability()
         self.custom_v2_fault_latched = False
         self.custom_v2_fault_reason = ""
         return
       if self.custom_v2_fault_latched:
+        self._reset_longitudinal_source_stability()
         self._set_custom_v2_fault(self.custom_v2_fault_reason)
         return
       try:
-        custom_v2_output = self._custom_v2_stack_output(custom_seed_output, accel_limits)
+        self.custom_v2_policy_decision, self.custom_v2_policy_extra_rejected = self._resolve_custom_v2_policy_decision(
+          sunnypilot_output, accel_limits
+        )
+        custom_v2_output = self._custom_v2_stack_output(sunnypilot_output, accel_limits)
       except CustomV2SceneValidationError as error:
         self._set_custom_v2_fault(error.reason)
         return
@@ -508,10 +725,12 @@ class LongitudinalPlannerSP:
     active_sla = getattr(self, "active_sla", self.sla)
 
     # Dynamic Experimental Control
+    mode_resolution = getattr(self, "longitudinal_mode_resolution", DEFAULT_LONGITUDINAL_MODE_RESOLUTION)
     dec = longitudinalPlanSP.dec
-    dec.state = DecState.blended if self.dec.mode() == 'blended' else DecState.acc
-    dec.enabled = self.dec.enabled()
-    dec.active = self.dec.active()
+    dec.state = DecState.blended if mode_resolution.compatibility_alias_state == DecCompatibilityState.BLENDED else DecState.acc
+    legacy_dec_enabled = legacy_dec_enabled_for_mode(mode_resolution)
+    dec.enabled = legacy_dec_enabled
+    dec.active = legacy_dec_enabled
 
     # Smart Cruise Control
     smartCruiseControl = longitudinalPlanSP.smartCruiseControl
@@ -568,6 +787,9 @@ class LongitudinalPlannerSP:
       selected_intent=getattr(self, "longitudinal_stack_selected_intent", ""),
       selected_reason=getattr(self, "longitudinal_stack_selected_reason", ""),
       rejected=getattr(self, "longitudinal_stack_rejected", ()),
+      seed_context=getattr(self, "longitudinal_stack_seed_context", ""),
+      seed_candidate=getattr(self, "longitudinal_stack_seed_candidate", ""),
     )
+    publish_longitudinal_mode_telemetry(longitudinalPlanSP, mode_resolution)
 
     pm.send('longitudinalPlanSP', plan_sp_send)

@@ -3,18 +3,23 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
+from cereal import log
+
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 
 PLANNER_SEED_CAP = "cap"
 PLANNER_SEED_FLOOR = "floor"
 POST_CAP_FLOOR_GROUPS = {"lead_stop_approach_slew", "low_speed_pullaway_accel_step"}
-STOP_INTENT_RELEASE_GROUPS = {"creep_pullaway_launch"}
+STOP_INTENT_RELEASE_GROUPS = {"creep_pullaway_launch", "lead_pullaway_pulse", "excess_gap_closure"}
 PLANNER_SEED_INTENT_DRIVER_CRUISE = "driver_cruise"
 PLANNER_SEED_INTENT_LEAD_FOLLOW = "lead_follow"
 PLANNER_SEED_INTENT_STOP_APPROACH = "stop_approach"
 PLANNER_SEED_INTENT_LAUNCH = "launch"
 PLANNER_SEED_INTENT_SAFETY_CAP = "safety_cap"
 PLANNER_SEED_MPC_REASON = "planner_seed_mpc"
+LONGITUDINAL_PLAN_SOURCE = log.LongitudinalPlan.LongitudinalPlanSource
+LEAD_MPC_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_PLAN_SOURCE.lead1)}
+E2E_SOURCE_VALUES = {int(LONGITUDINAL_PLAN_SOURCE.e2e)}
 
 STOP_APPROACH_SEED_REASONS = {
   "engage_model_stop_bootstrap",
@@ -35,14 +40,21 @@ LEAD_FOLLOW_SEED_REASONS = {
   "lead_accel_recovery",
   "lead_stop_approach_slew",
   "lead_loss_e2e_guard",
+  "excess_gap_closure",
+  "excess_gap_closure_accel_cap",
+  "routine_slower_lead_approach",
+  "moving_lead_recovery",
 }
 LAUNCH_SEED_REASONS = {
   "creep_pullaway_launch",
   "creep_pullaway_launch_accel_cap",
   "low_speed_pullaway_accel_step_floor",
   "low_speed_pullaway_accel_step_cap",
+  "confirmed_lead_pullaway_pulse",
+  "lead_pullaway_pulse_accel_cap",
 }
 DRIVER_CRUISE_SEED_REASONS = {"plain_cruise_overspeed_coast"}
+SAFETY_CAP_SEED_REASONS = {"lead_flicker_speedup_cap"}
 
 
 @dataclass(frozen=True)
@@ -92,9 +104,9 @@ def planner_seed_intent_for_reason(reason: str, has_lead: bool = False, should_s
                                    source: object = "") -> str:
   reason = str(reason or "")
   if reason == PLANNER_SEED_MPC_REASON:
-    if has_lead or str(source) in {"lead0", "lead1"}:
+    if _source_matches(source, LEAD_MPC_SOURCE_VALUES, {"lead0", "lead1"}):
       return PLANNER_SEED_INTENT_LEAD_FOLLOW
-    if should_stop:
+    if should_stop or _source_matches(source, E2E_SOURCE_VALUES, {"e2e"}):
       return PLANNER_SEED_INTENT_STOP_APPROACH
     return PLANNER_SEED_INTENT_DRIVER_CRUISE
   if reason in STOP_APPROACH_SEED_REASONS:
@@ -103,9 +115,20 @@ def planner_seed_intent_for_reason(reason: str, has_lead: bool = False, should_s
     return PLANNER_SEED_INTENT_LEAD_FOLLOW
   if reason in LAUNCH_SEED_REASONS:
     return PLANNER_SEED_INTENT_LAUNCH
+  if reason in SAFETY_CAP_SEED_REASONS:
+    return PLANNER_SEED_INTENT_SAFETY_CAP
   if reason in DRIVER_CRUISE_SEED_REASONS:
     return PLANNER_SEED_INTENT_DRIVER_CRUISE
   return PLANNER_SEED_INTENT_DRIVER_CRUISE
+
+
+def _source_matches(source: object, values: set[int], names: set[str]) -> bool:
+  if str(source or "") in names:
+    return True
+  try:
+    return int(source) in values
+  except (TypeError, ValueError):
+    return False
 
 
 def _select_floor_candidate(baseline: PlannerSeedCandidate,
@@ -125,7 +148,8 @@ def _select_cap_candidate(baseline: PlannerSeedCandidate, candidates: Iterable[P
   applicable = [
     candidate for candidate in caps
     if candidate.output.a_target < baseline.output.a_target or
-       _candidate_caps_floor(candidate, selected_floor)
+       _candidate_caps_floor(candidate, selected_floor) or
+       _candidate_is_equal_safety_cap(candidate, baseline)
   ]
   return min(applicable, key=lambda candidate: candidate.output.a_target, default=None)
 
@@ -134,6 +158,10 @@ def _candidate_caps_floor(candidate: PlannerSeedCandidate, selected_floor: Plann
   if selected_floor is None or candidate.output.a_target >= selected_floor.output.a_target:
     return False
   return not candidate.group or candidate.group == selected_floor.group
+
+
+def _candidate_is_equal_safety_cap(candidate: PlannerSeedCandidate, baseline: PlannerSeedCandidate) -> bool:
+  return candidate.intent == PLANNER_SEED_INTENT_SAFETY_CAP and candidate.output.a_target <= baseline.output.a_target
 
 
 def _select_post_cap_floor(cap_candidate: PlannerSeedCandidate | None,

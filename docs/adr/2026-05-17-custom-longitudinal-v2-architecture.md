@@ -16,9 +16,11 @@ The baseline stack must remain isolated. SCC, SLA, and OSM behavior remain user-
 
 - normalized-scene interpretation at the stack boundary
 - ten intent families: `driver_cruise`, `lead_follow`, `stop_approach`, `launch`, `one_pedal`, `speed_policy`, `curve_policy`, `map_caution`, `comfort_relax`, and `safety_cap`
-- safety-first arbitration order: `safety_cap`, `stop_approach`, `lead_follow`, `launch`, advisory caps, `comfort_relax`, then `driver_cruise`
+- role-aware shaping and trajectory synthesis after `LongitudinalDecisionCore` selects the active driver, physical, advisory, or progress candidate
 - progress-core envelopes for no-lead launch, lead pullaway, excess-gap closing, and lead-loss recovery
 - fail-closed validation that requests immediate disable on invalid custom output
+
+The canonical policy arbiter is `LongitudinalDecisionCore`. Physical lead/e2e/force-slow candidates suppress advisory and progress candidates there before `CustomLongitudinalStackV2` applies stack-specific shaping.
 
 The initial selectable release kept `custom-recommended` unchanged and did not require v1 parity. All intent names must exist from the first release, even if some are conservative placeholders.
 
