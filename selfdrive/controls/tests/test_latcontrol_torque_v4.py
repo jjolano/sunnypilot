@@ -466,6 +466,10 @@ def test_v5_turn_exit_seam_would_fire_when_active_flag_on():
   cached decision. The controller must be called exactly once per
   frame in that mode.
   """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
   from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
     LateralTurnExitController,
     TurnExitDecision,
@@ -477,6 +481,14 @@ def test_v5_turn_exit_seam_would_fire_when_active_flag_on():
   CP, CP_SP, CI = get_context()
   v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
   v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
 
   # Replace the controller with a mock that counts calls and
   # returns a known decision.
@@ -523,10 +535,15 @@ def test_v5_build_target_applies_turn_exit_lead_multipliers():
   wrapper scales the base lead_gain and lead_delta_cap by the
   decision's multipliers and re-derives the lead_delta from the
   scaled gain. The resulting TorqueV5Target must carry the
-  decision's multipliers and the v5-active flag.
+  decision's multipliers and the v5-active flag set when the
+  behavior actually changed.
   """
   from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
     TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
   )
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV5,
@@ -536,6 +553,14 @@ def test_v5_build_target_applies_turn_exit_lead_multipliers():
   CP, CP_SP, CI = get_context()
   v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
   v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
 
   def _decision(**_kwargs):
     return TurnExitDecision(
@@ -553,7 +578,10 @@ def test_v5_build_target_applies_turn_exit_lead_multipliers():
   target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
 
   assert isinstance(target, TorqueV5Target)
+  # The decision's lead gain / cap multipliers scale the base;
+  # the behavior delta is non-zero so v5_active is True.
   assert target.v5_active is True
+  assert target.v5_reason == "turn_exit_source_of_truth"
   assert target.turn_exit_lead_gain_multiplier == 0.5
   assert target.turn_exit_lead_delta_cap_multiplier == 0.5
   # The base lead_gain was 0.5; the v5 wrapper halved it.
@@ -568,14 +596,17 @@ def test_v5_build_target_applies_turn_exit_lead_multipliers():
 
 
 def test_v5_build_target_early_release_zeros_lead_delta():
-  """When the turn-exit decision's early_release_lead_zero is True
-  and persistence_frames >= RECENTER_PERSISTENCE_FRAMES, the v5
-  wrapper forces lead_delta to 0. The v5 target's
-  turn_exit_early_release flag is set, and delay_lead equals
-  raw_lateral_accel.
+  """When the turn-exit decision's early_release_lead_zero is True,
+  the v5 wrapper forces lead_delta to 0 immediately, no
+  persistence floor. The v5 target's turn_exit_early_release
+  flag is set, and delay_lead equals raw_lateral_accel.
   """
   from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
     TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
   )
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV5,
@@ -585,6 +616,14 @@ def test_v5_build_target_early_release_zeros_lead_delta():
   CP, CP_SP, CI = get_context()
   v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
   v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
 
   def _decision(**_kwargs):
     return TurnExitDecision(
@@ -606,14 +645,18 @@ def test_v5_build_target_early_release_zeros_lead_delta():
   assert target.delay_lead_lateral_accel == pytest.approx(target.raw_lateral_accel)
 
 
-def test_v5_build_target_early_release_requires_persistence_guard():
-  """The early-release guard is gated on
-  persistence_frames >= RECENTER_PERSISTENCE_FRAMES. A decision
-  with early_release_lead_zero=True and persistence_frames below
-  the threshold must NOT zero the lead delta.
+def test_v5_build_target_early_release_no_persistence_floor():
+  """The v5 plan removed the persistence floor on
+  early_release_lead_zero. A decision with persistence=0 must
+  still zero lead_delta on the first frame, matching the
+  base's immediate early-release guard.
   """
   from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
     TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
   )
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV5,
@@ -623,10 +666,18 @@ def test_v5_build_target_early_release_requires_persistence_guard():
   CP, CP_SP, CI = get_context()
   v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
   v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
 
   def _decision(**_kwargs):
     return TurnExitDecision(
-      mode="early_release", persistence_frames=1,  # below threshold
+      mode="early_release", persistence_frames=0,  # no persistence
       lead_gain_multiplier=0.4, lead_delta_cap_multiplier=0.4,
       slew_boost=1.0, same_direction_slew_boost=1.0,
       early_release_lead_zero=True, preview_boost=0.0,
@@ -639,9 +690,9 @@ def test_v5_build_target_early_release_requires_persistence_guard():
   target = v5._build_target(0.002, 20.0, speed_result, False, curvature_limited=False)
 
   assert isinstance(target, TorqueV5Target)
-  assert target.turn_exit_early_release is False
-  # lead_delta is whatever the scaled gain produces, not 0.
-  assert target.lead_delta != 0.0
+  # No persistence floor: lead_delta is zero on the first frame.
+  assert target.turn_exit_early_release is True
+  assert target.lead_delta == 0.0
 
 
 def _v5_with_clean_preview_setup(preview_boost=0.07):
@@ -715,10 +766,11 @@ def test_v5_preview_boost_is_computed_but_not_applied_when_flag_off():
   assert target.preview_boost_computed != 0.0
   assert target.preview_boost_applied == 0.0
   assert target.preview_reason == "allowed"
-  # v5_active still True because the v5 build target ran, but
-  # the reason notes that no preview boost was applied.
-  assert target.v5_active is True
-  assert "preview_boost_applied" not in target.v5_reason
+  # v5_active is False because no behavior delta: flag off
+  # means preview did not land and the inactive decision did
+  # not change lead gain / cap.
+  assert target.v5_active is False
+  assert target.v5_reason == "inactive"
 
 
 def test_v5_preview_boost_gate_blocks_low_speed():
@@ -1109,12 +1161,24 @@ def test_v5_turn_exit_blocked_by_lane_change():
   from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
     TurnExitDecision,
   )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV5,
   )
 
   CP, CP_SP, CI = get_context()
   v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
   v5.set_processed_lateral_demand(
     make_processed_lateral_demand(
       processed_curvature=0.0, path_quality=0.9, path_reason="ok",
@@ -1147,12 +1211,24 @@ def test_v5_turn_exit_blocked_by_steering_pressed():
   from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
     TurnExitDecision,
   )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
   from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
     LatControlTorqueV5,
   )
 
   CP, CP_SP, CI = get_context()
   v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
   seen_steering_pressed: list[bool] = []
   def _capture(**kwargs):
     seen_steering_pressed.append(bool(kwargs.get("steering_pressed", False)))

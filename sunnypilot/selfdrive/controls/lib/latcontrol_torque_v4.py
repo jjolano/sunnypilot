@@ -1783,9 +1783,28 @@ class LatControlTorqueV5(LatControlTorqueV41):
       lead_delta = _clip(lead_delta + preview_boost_applied, -lead_delta_cap, lead_delta_cap)
     delay_lead = base.raw_lateral_accel + lead_delta
     # Telemetry flags for the governor context and the route
-    # summary.
+    # summary. v5_active means "v5 actually changed behavior",
+    # not "v5 path ran". Compute the delta against the base
+    # target so route validation isn't polluted by frames
+    # where v5 ran but the final target equals the v4.1 base.
+    turn_exit_changed = (
+      lead_gain != base.lead_gain
+      or lead_delta_cap != base.lead_delta_cap
+      or early_release_active
+    )
+    preview_changed = bool(preview_boost_applied != 0.0)
+    lead_changed = abs(lead_delta - base.lead_delta) > 1e-9
+    v5_active = bool(turn_exit_changed or preview_changed or lead_changed)
+    if preview_changed:
+      v5_reason = "preview_boost_applied"
+    elif turn_exit_changed:
+      v5_reason = "turn_exit_source_of_truth"
+    else:
+      v5_reason = "inactive"
     self._v5_last_preview_active = bool(preview_boost_applied != 0.0)
     self._v5_last_turn_exit_active = bool(early_release_active or decision.mode in ("turn_exit", "early_release"))
+    self._v5_last_v5_active = v5_active
+    self._v5_last_v5_reason = v5_reason
     self._v5_last_final_lead_delta = float(lead_delta)
     self._v5_last_preview_applied_value = float(preview_boost_applied)
     return TorqueV5Target(
@@ -1802,8 +1821,8 @@ class LatControlTorqueV5(LatControlTorqueV41):
       turn_exit_lead_gain_multiplier=float(decision.lead_gain_multiplier),
       turn_exit_lead_delta_cap_multiplier=float(decision.lead_delta_cap_multiplier),
       turn_exit_early_release=early_release_active,
-      v5_active=False,  # Set in Commit D based on actual behavior delta
-      v5_reason="",
+      v5_active=v5_active,
+      v5_reason=v5_reason,
     )
 
   def _v5_preview_allowed(self, *, active: bool, invalid: bool, CS,
