@@ -674,6 +674,36 @@
       }
     ]
   },
+  "LongitudinalMode": {
+    "title": "Longitudinal Mode",
+    "description": "Selects the top-level longitudinal behavior: ACC, E2E, or SCC.",
+    "options": [
+      {
+        "value": 0,
+        "label": "ACC"
+      },
+      {
+        "value": 1,
+        "label": "E2E"
+      },
+      {
+        "value": 2,
+        "label": "SCC"
+      }
+    ]
+  },
+  "LongitudinalModeMigrationVersion": {
+    "title": "Longitudinal Mode Migration Version",
+    "description": "Tracks one-time migration from legacy Experimental/DEC longitudinal settings."
+  },
+  "SccCurveMapEnabled": {
+    "title": "SCC Map Curve Control",
+    "description": "Allow SCC mode to use map-derived curve speed caps."
+  },
+  "SccCurveVisionEnabled": {
+    "title": "SCC Vision Curve Control",
+    "description": "Allow SCC mode to use vision-predicted curve speed caps."
+  },
   "LongitudinalStack": {
     "title": "Longitudinal Stack",
     "description": "Selects which longitudinal control stack is used after sunnypilot longitudinal control is active. Default is sunnypilot-current; custom-recommended resolves globally to custom-2.0.",
@@ -691,6 +721,10 @@
         "label": "Custom v2.0"
       }
     ]
+  },
+  "FastLeadMotionEvidenceEnabled": {
+    "title": "Fast Lead Motion",
+    "description": "Uses raw lead opening and lead speed evidence in custom v2.0 stop/go and progress behavior."
   },
   "OnePedalLongitudinalMode": {
     "title": "One Pedal Longitudinal",
@@ -748,6 +782,10 @@
     "title": "Map Advisory Limit",
     "description": ""
   },
+  "MapAdvisoryUpdatedAt": {
+    "title": "Map Advisory Updated At",
+    "description": ""
+  },
   "MapCurvatures": {
     "title": "Map Curvatures",
     "description": ""
@@ -770,6 +808,10 @@
   },
   "MapTargetVelocities": {
     "title": "Map Target Velocities",
+    "description": ""
+  },
+  "MapTargetVelocitiesUpdatedAt": {
+    "title": "Map Target Velocities Updated At",
     "description": ""
   },
   "MapTargetVelocitiesValid": {

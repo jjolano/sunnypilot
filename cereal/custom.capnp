@@ -196,6 +196,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   e2eAlerts @7 :E2eAlerts;
   decisionLayer @8 :DecisionLayer;
   stack @9 :Stack;
+  longitudinalMode @10 :LongitudinalModeStatus;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -328,12 +329,55 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     selectedReason @8 :Text;
     rejectedIntents @9 :List(Text);
     rejectedReasons @10 :List(Text);
+    seedContext @11 :Text;
+    seedCandidate @12 :Text;
 
     enum StackId {
       unknown @0;
       sunnypilotCurrent @1;
       customRecommended @2;
       customV2 @3;
+    }
+  }
+
+  struct LongitudinalModeStatus {
+    requestedMode @0 :Mode;
+    resolvedImplementation @1 :Implementation;
+    actuationType @2 :ActuationType;
+    restrictionStatus @3 :List(Text);
+    unsupportedReason @4 :Text;
+    compatibilityAliasState @5 :CompatibilityAliasState;
+    evidenceTier @6 :Text;
+    evidenceReason @7 :Text;
+    evidenceConfidence @8 :Float32;
+    evidenceUrgency @9 :Float32;
+    independentOfLead @10 :Bool;
+    evidenceAdvisories @11 :List(Text);
+    confirmedLead @12 :Bool;
+
+    enum Mode {
+      acc @0;
+      e2e @1;
+      scc @2;
+    }
+
+    enum Implementation {
+      hardwareAcc @0;
+      modelAcc @1;
+      e2e @2;
+      sccAcc @3;
+      sccE2e @4;
+      icbmAdvisory @5;
+    }
+
+    enum ActuationType {
+      direct @0;
+      setSpeedAdvisory @1;
+    }
+
+    enum CompatibilityAliasState {
+      acc @0;
+      blended @1;
     }
   }
 }

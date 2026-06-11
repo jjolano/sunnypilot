@@ -11,17 +11,46 @@ sections:
   title: ''
   description: ''
   items:
-  - key: ExperimentalMode
-    widget: toggle
-    title: Experimental Mode
+  - key: LongitudinalMode
+    widget: multiple_button
+    title: Longitudinal Mode
+    description: Select the top-level longitudinal behavior. ACC is deterministic cruise/follow, E2E is model-primary,
+      and SCC smart-switches from explicit evidence.
+    options:
+    - value: 0
+      label: ACC
+    - value: 1
+      label: E2E
+      enablement:
+      - type: param
+        key: ExperimentalModeConfirmed
+        equals: true
+    - value: 2
+      label: SCC
+      enablement:
+      - type: param
+        key: ExperimentalModeConfirmed
+        equals: true
     enablement:
     - $ref: '#/macros/longitudinal'
-  - key: DynamicExperimentalControl
+  - key: SccCurveVisionEnabled
     widget: toggle
-    title: Dynamic Experimental Control
-    description: Let the model decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal.
+    title: SCC Vision Curve Control
+    description: Allow SCC mode to slow for upcoming vision-predicted curves.
     visibility:
+    - type: param
+      key: LongitudinalMode
+      equals: 2
+    enablement:
     - $ref: '#/macros/longitudinal'
+  - key: SccCurveMapEnabled
+    widget: toggle
+    title: SCC Map Curve Control
+    description: Allow SCC mode to slow for map-derived upcoming curves.
+    visibility:
+    - type: param
+      key: LongitudinalMode
+      equals: 2
     enablement:
     - $ref: '#/macros/longitudinal'
   - key: DisengageOnAccelerator
@@ -152,11 +181,18 @@ sections:
         - type: any
           conditions:
           - type: capability
-            field: has_longitudinal_control
-            equals: true
-          - type: capability
             field: has_icbm
             equals: true
+          - type: all
+            conditions:
+            - type: capability
+              field: has_longitudinal_control
+              equals: true
+            - type: not
+              condition:
+                type: param
+                key: LongitudinalMode
+                equals: 0
         - type: not
           condition:
             type: capability
@@ -210,60 +246,3 @@ sections:
         key: SpeedLimitOffsetType
         op: '>'
         value: 0
-- id: smart_cruise
-  title: Smart Cruise Control
-  description: ''
-  enablement:
-  - type: any
-    conditions:
-    - type: capability
-      field: has_longitudinal_control
-      equals: true
-    - type: capability
-      field: has_icbm
-      equals: true
-  items:
-  - key: SmartCruiseControlVision
-    widget: toggle
-    title: Vision
-    description: Use vision path predictions to estimate the appropriate speed to drive through turns ahead.
-    visibility:
-    - type: any
-      conditions:
-      - type: capability
-        field: has_longitudinal_control
-        equals: true
-      - type: capability
-        field: has_icbm
-        equals: true
-    enablement:
-    - type: any
-      conditions:
-      - type: capability
-        field: has_longitudinal_control
-        equals: true
-      - type: capability
-        field: has_icbm
-        equals: true
-  - key: SmartCruiseControlMap
-    widget: toggle
-    title: Map
-    description: Use map data to estimate the appropriate speed to drive through turns ahead.
-    visibility:
-    - type: any
-      conditions:
-      - type: capability
-        field: has_longitudinal_control
-        equals: true
-      - type: capability
-        field: has_icbm
-        equals: true
-    enablement:
-    - type: any
-      conditions:
-      - type: capability
-        field: has_longitudinal_control
-        equals: true
-      - type: capability
-        field: has_icbm
-        equals: true

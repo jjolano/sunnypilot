@@ -21,6 +21,7 @@ from functools import partial
 from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.controls.lib.longitudinal_modes import filter_legacy_longitudinal_mode_params
 from openpilot.system.hardware.hw import Paths
 from openpilot.system.athena.athenad import ws_send, jsonrpc_handler, \
   recv_queue, UploadQueueCache, upload_queue, cur_upload_items, backoff, ws_manage, log_handler, start_local_proxy_shim, upload_handler, stat_handler
@@ -267,6 +268,7 @@ def getParams(params_keys: list[str], compression: bool = False) -> str | dict[s
 
 @dispatcher.add_method
 def saveParams(params_to_update: dict[str, str], compression: bool = False) -> None:
+  params_to_update = filter_legacy_longitudinal_mode_params(params_to_update, params)
   for key, value in params_to_update.items():
     # disallow modifications to blocked parameters
     if key in BLOCKED_PARAMS:

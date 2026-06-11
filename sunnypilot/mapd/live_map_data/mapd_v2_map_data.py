@@ -5,6 +5,11 @@ import platform
 from cereal import log
 from openpilot.common.params import Params
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData
+from openpilot.sunnypilot.mapd.param_helpers import (
+  MAP_ADVISORY_UPDATED_AT_PARAM,
+  MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM,
+  write_mapd_heartbeat,
+)
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
 
@@ -78,6 +83,11 @@ class MapdV2MapData(BaseMapData):
     if current != value:
       params.put(key, value)
 
+  @staticmethod
+  def _put_bool_if_changed(params, key: str, value: bool) -> None:
+    if params.get(key) != value:
+      params.put_bool(key, value)
+
   @property
   def mapd_out(self):
     return self.sm["mapdOut"]
@@ -89,7 +99,17 @@ class MapdV2MapData(BaseMapData):
   def update_location(self) -> None:
     self._write_last_gps_position()
     self._write_map_compat_params()
+    if self._map_source_updated("mapdOut"):
+      write_mapd_heartbeat(self.mem_params, MAP_ADVISORY_UPDATED_AT_PARAM)
+    if self._map_source_updated("mapdExtendedOut"):
+      write_mapd_heartbeat(self.mem_params, MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM)
     self._write_download_progress()
+
+  def _map_source_updated(self, service: str) -> bool:
+    updated = getattr(self.sm, "updated", None)
+    if not isinstance(updated, dict):
+      return True
+    return bool(updated.get(service, False))
 
   def get_current_speed_limit(self) -> float:
     return _float(_getattr_or_default(self.mapd_out, "speedLimit"))
@@ -135,6 +155,7 @@ class MapdV2MapData(BaseMapData):
         target_velocities.append({"latitude": latitude, "longitude": longitude, "velocity": target_velocity})
 
     self._put_if_changed(self.mem_params, "MapTargetVelocities", json.dumps(target_velocities))
+    self._put_bool_if_changed(self.mem_params, "MapTargetVelocitiesValid", True)
 
     advisory_speed = _float(_getattr_or_default(self.mapd_out, "advisorySpeed"))
     self._put_if_changed(self.mem_params, "MapAdvisoryLimit", {"speedlimit": advisory_speed, "distance": 0.0} if advisory_speed > 0.0 else {})
@@ -149,6 +170,7 @@ class MapdV2MapData(BaseMapData):
   def _write_last_gps_position(self) -> None:
     location = self.sm['liveLocationKalman']
     self.localizer_valid = (location.status == log.LiveLocationKalman.Status.valid) and location.positionGeodetic.valid
+    self._put_bool_if_changed(self.mem_params, "LastGPSPositionValid", self.localizer_valid)
 
     if self.localizer_valid:
       self.last_bearing = math.degrees(location.calibratedOrientationNED.value[2])

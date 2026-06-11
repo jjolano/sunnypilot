@@ -24,8 +24,21 @@ LAUNCH_ENVELOPE_TIME_BP = [0.0, 0.25]
 LAUNCH_ENVELOPE_V_EGO_BP = [0.0, 0.6]
 LAUNCH_BREAKAWAY_TARGET_BP = [LAUNCH_ENVELOPE_MIN_ACCEL, LAUNCH_BREAKAWAY_BASE_TARGET_ACCEL, LAUNCH_BREAKAWAY_TARGET_ACCEL]
 LAUNCH_BREAKAWAY_ACCEL_BP = [LAUNCH_ENVELOPE_MIN_ACCEL, LAUNCH_BREAKAWAY_BASE_ACCEL, LAUNCH_BREAKAWAY_ACCEL]
+TRACTION_RISK_LAUNCH_MAX_REDUCTION = 0.20
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
+
+
+def _clip_traction_risk(traction_risk):
+  try:
+    traction_risk = float(traction_risk)
+  except (TypeError, ValueError):
+    traction_risk = 0.0
+  return float(np.clip(traction_risk if np.isfinite(traction_risk) else 0.0, 0.0, 1.0))
+
+
+def _traction_risk_launch_scale(traction_risk):
+  return 1.0 - TRACTION_RISK_LAUNCH_MAX_REDUCTION * _clip_traction_risk(traction_risk)
 
 
 def long_control_state_trans(CP, CP_SP, active, long_control_state, v_ego, should_stop, brake_pressed, cruise_standstill):
@@ -75,10 +88,11 @@ def launch_breakaway_active(v_ego, a_ego, launch_elapsed):
   return launch_elapsed < LAUNCH_BREAKAWAY_MIN_TIME or a_ego < LAUNCH_BREAKAWAY_A_EGO
 
 
-def get_launch_breakaway_accel(a_target, accel_limits):
+def get_launch_breakaway_accel(a_target, accel_limits, traction_risk=0.0):
   if a_target < LAUNCH_ENVELOPE_MIN_ACCEL:
     return 0.0
   breakaway_accel = np.interp(max(a_target, 0.0), LAUNCH_BREAKAWAY_TARGET_BP, LAUNCH_BREAKAWAY_ACCEL_BP)
+  breakaway_accel *= _traction_risk_launch_scale(traction_risk)
   return float(np.clip(breakaway_accel, 0.0, accel_limits[1]))
 
 
@@ -87,7 +101,7 @@ def launch_should_stop_hold_active(v_ego, a_ego, brake_pressed, launch_elapsed, 
     a_ego < LAUNCH_BREAKAWAY_A_EGO and launch_elapsed < LAUNCH_SHOULD_STOP_HOLD_TIME
 
 
-def apply_launch_envelope(output_accel, accel_limits, v_ego, launch_elapsed, blend=None):
+def apply_launch_envelope(output_accel, accel_limits, v_ego, launch_elapsed, blend=None, traction_risk=0.0):
   if output_accel <= 0.0:
     return float(output_accel)
 
@@ -96,7 +110,8 @@ def apply_launch_envelope(output_accel, accel_limits, v_ego, launch_elapsed, ble
   if blend <= 0.0:
     return float(output_accel)
 
-  launch_cap = accel_limits[1] - (accel_limits[1] - min(accel_limits[1], LAUNCH_ENVELOPE_MAX_ACCEL)) * blend
+  traction_soft_cap = LAUNCH_ENVELOPE_MAX_ACCEL * _traction_risk_launch_scale(traction_risk)
+  launch_cap = accel_limits[1] - (accel_limits[1] - min(accel_limits[1], traction_soft_cap)) * blend
   launch_floor = min(LAUNCH_ENVELOPE_MIN_ACCEL * blend, launch_cap)
   return float(np.clip(output_accel, launch_floor, launch_cap))
 
@@ -151,7 +166,8 @@ class LongControl:
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel
 
-  def update(self, active, CS, a_target, should_stop, accel_limits, has_lead=False, custom_longitudinal_stack=True):
+  def update(self, active, CS, a_target, should_stop, accel_limits, has_lead=False, custom_longitudinal_stack=True,
+             traction_risk=0.0):
     """Update longitudinal control. This updates the state machine and runs a PID loop"""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
@@ -208,13 +224,14 @@ class LongControl:
       if a_target < 0.0:
         self.reset_launch_envelope()
       elif not self.launch_breakaway_done and launch_breakaway_active(CS.vEgo, CS.aEgo, self.launch_breakaway_elapsed):
-        output_accel = get_launch_breakaway_accel(launch_a_target, accel_limits)
+        output_accel = get_launch_breakaway_accel(launch_a_target, accel_limits, traction_risk=traction_risk)
         self.launch_breakaway_elapsed += DT_CTRL
       else:
         self.launch_breakaway_done = True
         launch_blend = get_launch_envelope_blend(CS.vEgo, self.launch_taper_elapsed)
         output_accel = max(output_accel, LAUNCH_ENVELOPE_MIN_ACCEL * launch_blend)
-        output_accel = apply_launch_envelope(output_accel, accel_limits, CS.vEgo, self.launch_taper_elapsed, launch_blend)
+        output_accel = apply_launch_envelope(output_accel, accel_limits, CS.vEgo, self.launch_taper_elapsed, launch_blend,
+                                             traction_risk=traction_risk)
         if launch_blend <= 0.0:
           self.reset_launch_envelope()
         else:

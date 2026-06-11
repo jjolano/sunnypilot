@@ -5,6 +5,18 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 from openpilot.sunnypilot.sunnylink.athena import sunnylinkd
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LONGITUDINAL_MODE_MIGRATION_PARAM, LONGITUDINAL_MODE_MIGRATION_VERSION
+
+
+class FakeParams:
+  def __init__(self, values=None):
+    self.values = {"ParamsVersion": "0"} if values is None else dict(values)
+
+  def get(self, key, *args, **kwargs):
+    return self.values.get(key)
+
+  def put(self, key, value):
+    self.values[key] = str(value)
 
 
 class TestSunnylinkdMethods:
@@ -12,6 +24,7 @@ class TestSunnylinkdMethods:
     self.saved_params = []
 
     self.original_save = sunnylinkd.save_param_from_base64_encoded_string
+    self.original_params = sunnylinkd.params
 
     def mock_save_param(key, value, compression=False):
       self.saved_params.append((key, value, compression))
@@ -20,6 +33,7 @@ class TestSunnylinkdMethods:
 
   def teardown_method(self):
     sunnylinkd.save_param_from_base64_encoded_string = self.original_save
+    sunnylinkd.params = self.original_params
 
   def test_saveParams_blocked(self):
     blocked_params = {
@@ -57,3 +71,21 @@ class TestSunnylinkdMethods:
     assert len(self.saved_params) == 1
     assert self.saved_params[0][0] == "SpeedLimitOffset"
     assert self.saved_params[0][1] == "10"
+
+  def test_saveParams_after_migration_drops_legacy_longitudinal_mode_params(self):
+    sunnylinkd.params = FakeParams({
+      LONGITUDINAL_MODE_MIGRATION_PARAM: LONGITUDINAL_MODE_MIGRATION_VERSION,
+      "ParamsVersion": "0",
+    })
+    params_to_update = {
+      "DynamicExperimentalControl": "1",
+      "SmartCruiseControlVision": "1",
+      "SmartCruiseControlMap": "1",
+      "ExperimentalMode": "1",
+      "SpeedLimitMode": "2",
+    }
+
+    sunnylinkd.saveParams(params_to_update)
+
+    assert [param[0] for param in self.saved_params] == ["SpeedLimitMode"]
+    assert self.saved_params[0][1] == "2"

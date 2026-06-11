@@ -8,6 +8,13 @@ from openpilot.common.parameterized import parameterized_class
 from cereal import custom, log
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
 from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceState
+from openpilot.selfdrive.controls.lib.lead_context import LEAD_AUTHORITY_PROGRESS_ALLOWED, PrimaryLeadContext
+from openpilot.selfdrive.controls.lib.longitudinal_modes import (
+  LongitudinalActuationType,
+  LongitudinalMode,
+  LongitudinalModeResolution,
+  ResolvedLongitudinalImplementation,
+)
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   APPROACH_BRAKE,
@@ -151,9 +158,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   get_creep_to_stop_gap_accel,
   get_creep_to_stop_gap_pullaway_accel_min,
   get_lead_stop_approach_slewed_accel,
+  get_moving_lead_stop_gap_guard_accel,
   get_model_lead_pullaway,
   get_predicted_lead_pullaway,
   has_predicted_lead_pullaway,
+  should_reserve_creep_to_stop_gap,
   should_defer_e2e_to_stopped_lead_mpc,
   should_arm_stopped_lead_gap_fill,
   should_hold_creep_to_stop_gap,
@@ -188,6 +197,89 @@ class FakeMpc:
   def update(self, *args, **kwargs):
     self.update_args = args
     self.update_kwargs = kwargs
+
+
+class FakePlannerParams:
+  def __init__(self):
+    self.values = {"LongitudinalMode": str(int(LongitudinalMode.E2E))}
+
+  def get(self, key, *args, **kwargs):
+    return self.values.get(key)
+
+  def get_bool(self, _key):
+    return False
+
+
+class FakeLeadContextState(SimpleNamespace):
+  @property
+  def suppressive(self):
+    return True
+
+  @property
+  def progress_allowed(self):
+    return self.authority == LEAD_AUTHORITY_PROGRESS_ALLOWED
+
+
+class FakeSteadyProgressLeadContextTracker:
+  def update(self, leads, *_args, **_kwargs):
+    lead = leads[0]
+    if not bool(getattr(lead, "status", False)):
+      return longitudinal_planner.empty_primary_lead_context()
+    d_rel = float(getattr(lead, "dRel", 0.0))
+    v_lead = float(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
+    v_rel = float(getattr(lead, "vRel", v_lead))
+    y_rel = float(getattr(lead, "yRel", 0.0))
+    model_prob = float(getattr(lead, "modelProb", 1.0))
+    state = FakeLeadContextState(
+      lead_idx=0,
+      status=True,
+      shadow=False,
+      stable=True,
+      new_lead=False,
+      track_id=int(getattr(lead, "radarTrackId", 0)),
+      d_rel=d_rel,
+      y_rel=y_rel,
+      path_y_rel=y_rel,
+      v_lead=v_lead,
+      v_rel=v_rel,
+      model_prob=model_prob,
+      radar=bool(getattr(lead, "radar", True)),
+      ttc=float("inf"),
+      required_decel=0.0,
+      time_gap=float("inf"),
+      on_path_score=1.0,
+      risk_score=0.0,
+      ghost_score=0.0,
+      confidence=1.0,
+      authority=LEAD_AUTHORITY_PROGRESS_ALLOWED,
+      reason="test_steady_progress_authorized_lead",
+      progress_model=SimpleNamespace(
+        reason="test_fixture_stable_progress",
+        gap_excess=0.0,
+        predicted_gap_opening=False,
+      ),
+      risk_model=SimpleNamespace(
+        required_decel=0.0,
+        ttc=float("inf"),
+        time_gap=float("inf"),
+        gap_shortage=0.0,
+        closing_speed=0.0,
+        stopped_or_crawling=False,
+        ghost_score=0.0,
+      ),
+    )
+    return PrimaryLeadContext(
+      physical_idx=0,
+      behavior_idx=0,
+      physical=state,
+      behavior=state,
+      alternate_threat_active=False,
+      shadow_active=False,
+      reason="test_steady_progress_authorized_lead",
+      states=(state,),
+      lead_progress_allowed=True,
+      lead_release_blocked_reason="",
+    )
 
 
 def patch_planner_sp(monkeypatch):
@@ -239,7 +331,12 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
     vEgoStopping=0.5,
   )
   planner.mpc = FakeMpc()
-  planner.params = SimpleNamespace(get_bool=lambda _key: False)
+  planner.params = FakePlannerParams()
+  planner.longitudinal_mode_resolution = LongitudinalModeResolution(
+    requested_mode=LongitudinalMode.E2E,
+    resolved_implementation=ResolvedLongitudinalImplementation.E2E,
+    actuation_type=LongitudinalActuationType.DIRECT,
+  )
   planner.VM = None
   planner.control_calculation_hardening = False
   arbiter_cls = getattr(longitudinal_planner, "LongitudinalArbiter", None)
@@ -268,7 +365,8 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.stopped_lead_gap_fill_track_id = -2
   planner.stopped_lead_gap_fill_d_rel = 0.0
   planner.stopped_lead_gap_fill_v_lead = 0.0
-  planner.dec = SimpleNamespace(active=lambda: False)
+  planner.primary_lead_context_tracker = FakeSteadyProgressLeadContextTracker()
+  planner.primary_lead_context = longitudinal_planner.empty_primary_lead_context()
   planner.source = custom.LongitudinalPlanSP.LongitudinalPlanSource.cruise
   planner.events_sp = SimpleNamespace(add=lambda _event: None)
   planner.planner_seed_candidates = []
@@ -276,6 +374,8 @@ def make_planner_for_stop_preservation(v_ego=0.0, gap_fill_timer=0.0):
   planner.longitudinal_stack_resolution = StackResolution(CUSTOM_V2, CUSTOM_V2, (CUSTOM_V2,), custom_version="2.0")
   planner.custom_v2_fault_latched = False
   planner.custom_v2_fault_reason = ""
+  planner.one_pedal_mode = longitudinal_planner.ONE_PEDAL_MODE_OFF
+  planner.one_pedal_cruise_hold_active = False
   return planner
 
 
@@ -303,6 +403,7 @@ def make_planner_sm(v_ego, lead, desired_accel=-1.0, should_stop=True, brake_pre
       aEgo=0.0,
       brakePressed=brake_pressed,
       gasPressed=gas_pressed,
+      buttonEvents=[],
     ),
     'controlsState': SimpleNamespace(longControlState=longitudinal_planner.LongCtrlState.pid, forceDecel=force_slow_decel),
     'selfdriveState': SimpleNamespace(enabled=True, experimentalMode=True, personality=log.LongitudinalPersonality.standard),
@@ -519,6 +620,34 @@ def test_creep_pullaway_launch_assist_persists_while_lead_keeps_opening(monkeypa
   planner.update(make_planner_sm(0.4, lead, desired_accel=0.0, should_stop=False))
 
   assert not planner.creep_to_stop_gap_active
+  assert not planner.output_should_stop
+  assert planner.output_a_target >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
+
+
+def test_creep_pullaway_launch_assist_catches_route_like_opening_after_ego_starts_moving(monkeypatch):
+  # Route 0000018e--2182c485e2--7 rlog, 466.5-468.0s: lead accelerated away from a stop,
+  # but the planner stayed near 0.6 m/s^2 instead of reaching the launch pulse floor.
+  patch_planner_sp(monkeypatch)
+  monkeypatch.setattr(longitudinal_planner, "get_accel_from_plan", lambda *_args, **_kwargs: (0.4, False))
+  v_ego = 0.47
+  planner = make_planner_for_stop_preservation(v_ego=v_ego)
+  planner.creep_to_stop_gap_active = True
+  planner.output_a_target = 0.20
+  stop_target = get_lead_stop_presentation_distance(v_ego, 1.75, 1.07, 1.0)
+  lead = SimpleNamespace(
+    status=True,
+    dRel=stop_target + 3.0,
+    vLeadK=1.75,
+    vRel=1.28,
+    modelProb=1.0,
+    aLeadK=1.07,
+    aLeadTau=0.0,
+    yRel=0.0,
+  )
+
+  planner.update(make_planner_sm(v_ego, lead, desired_accel=0.8, should_stop=False))
+
+  assert planner.creep_to_stop_gap_active
   assert not planner.output_should_stop
   assert planner.output_a_target >= CREEP_TO_STOP_GAP_PULLAWAY_LAUNCH_ACCEL_MIN
 
@@ -1102,6 +1231,30 @@ def test_creep_to_stop_gap_uses_soft_release_inside_final_meter():
   assert 0.0 < accel <= 0.10
 
 
+def test_reserve_creep_does_not_clear_existing_stopped_lead_hold():
+  reserve = should_reserve_creep_to_stop_gap(
+    primary_behavior_progress_allowed=True,
+    output_should_stop=True,
+    v_ego=0.0,
+    d_rel=5.8,
+    v_lead=0.0,
+  )
+
+  assert not reserve
+
+
+def test_reserve_creep_still_holds_small_buffer_without_stop_intent():
+  reserve = should_reserve_creep_to_stop_gap(
+    primary_behavior_progress_allowed=True,
+    output_should_stop=False,
+    v_ego=0.0,
+    d_rel=5.8,
+    v_lead=0.0,
+  )
+
+  assert reserve
+
+
 def test_lead_stop_approach_slew_limits_rebound_while_lead_brakes_hard():
   slewed = get_lead_stop_approach_slewed_accel(
     v_ego=15.0,
@@ -1171,6 +1324,191 @@ def test_moving_lead_stop_approach_tapers_near_caution_gap():
   assert target >= -0.35
   assert target < 0.0
   assert cost > 0.0
+
+
+def test_moving_lead_stop_approach_allows_routine_compression_at_target_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 15.0
+  v_lead = 13.5
+  d_rel = get_desired_follow_distance(v_ego, v_lead, t_follow)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(
+    x_lead=d_rel,
+    v_ego=v_ego,
+    v_lead=v_lead,
+    a_lead=-0.65,
+    t_follow=t_follow,
+  )
+
+  assert target >= long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 1e-6
+  assert cost > 0.0
+
+
+def test_moving_lead_compression_floor_is_stiffer_at_low_speed():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  _target_gap, _caution_gap, low_speed_danger_gap = get_lead_approach_gaps(5.0, 3.5, t_follow, a_lead=-0.4)
+  _target_gap, _caution_gap, high_speed_danger_gap = get_lead_approach_gaps(15.0, 13.5, t_follow, a_lead=-0.4)
+
+  low_speed_floor = long_mpc.get_moving_lead_compression_floor(5.0, 3.5, t_follow, a_lead=-0.4)
+  high_speed_floor = long_mpc.get_moving_lead_compression_floor(15.0, 13.5, t_follow, a_lead=-0.4)
+
+  assert low_speed_floor - low_speed_danger_gap == pytest.approx(long_mpc.MOVING_LEAD_COMPRESSION_LOW_SPEED_FLOOR_MARGIN)
+  assert high_speed_floor - high_speed_danger_gap == pytest.approx(long_mpc.MOVING_LEAD_COMPRESSION_FLOOR_MARGIN)
+
+
+def test_low_speed_moving_lead_compression_resists_old_full_relax_gap():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 5.0
+  v_lead = 3.5
+  a_lead = -0.4
+  _target_gap, _caution_gap, danger_gap = get_lead_approach_gaps(v_ego, v_lead, t_follow, a_lead=a_lead)
+  old_full_relax_gap = danger_gap + long_mpc.MOVING_LEAD_COMPRESSION_FLOOR_MARGIN + long_mpc.MOVING_LEAD_COMPRESSION_RELAX_GAP
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(old_full_relax_gap, v_ego, v_lead, a_lead, t_follow)
+
+  assert target < long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 0.05
+  assert cost > 0.0
+
+
+def test_moving_lead_compression_relaxes_when_ego_is_already_braking():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 8.0
+  v_lead = 6.5
+  a_lead = -0.5
+  compression_floor = long_mpc.get_moving_lead_compression_floor(v_ego, v_lead, t_follow, a_lead=a_lead)
+  x_lead = compression_floor + long_mpc.MOVING_LEAD_COMPRESSION_RELAX_GAP
+
+  already_braking_blend = long_mpc.get_moving_lead_compression_relax_blend(
+    x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=-0.9,
+  )
+  not_braking_blend = long_mpc.get_moving_lead_compression_relax_blend(
+    x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=0.0,
+  )
+
+  assert already_braking_blend == pytest.approx(1.0)
+  assert not_braking_blend < already_braking_blend
+
+
+def test_moving_lead_stop_approach_uses_ego_decel_for_spring_relaxation():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 8.0
+  v_lead = 6.5
+  a_lead = -0.5
+  compression_floor = long_mpc.get_moving_lead_compression_floor(v_ego, v_lead, t_follow, a_lead=a_lead)
+  x_lead = compression_floor + long_mpc.MOVING_LEAD_COMPRESSION_RELAX_GAP
+
+  already_braking_target, braking_cost = get_moving_lead_stop_approach_comfort_target(
+    x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=-0.9,
+  )
+  not_braking_target, not_braking_cost = get_moving_lead_stop_approach_comfort_target(
+    x_lead, v_ego, v_lead, a_lead, t_follow, a_ego=0.0,
+  )
+
+  assert already_braking_target == pytest.approx(long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
+  assert not_braking_target < already_braking_target
+  assert braking_cost > 0.0
+  assert not_braking_cost > 0.0
+
+
+def test_moving_lead_stop_approach_allows_route_derived_compression_above_floor():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 15.07
+  v_lead = 13.61
+  d_rel = 25.56
+  compression_floor = long_mpc.get_moving_lead_compression_floor(v_ego, v_lead, t_follow, a_lead=-0.65)
+
+  target, cost = get_moving_lead_stop_approach_comfort_target(
+    x_lead=d_rel,
+    v_ego=v_ego,
+    v_lead=v_lead,
+    a_lead=-0.65,
+    t_follow=t_follow,
+  )
+
+  assert d_rel > compression_floor + 4.0
+  assert target >= long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN - 1e-6
+  assert cost > 0.0
+
+
+def test_moving_lead_stop_gap_guard_waits_until_compression_floor_for_routine_closing():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.07,
+    d_rel=25.56,
+    v_lead=13.61,
+    a_lead=-0.65,
+    y_rel=0.0,
+    t_follow=t_follow,
+  )
+
+  assert target is None
+
+
+def test_moving_lead_stop_gap_guard_brakes_for_far_hard_braking_limited_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target = get_moving_lead_stop_gap_guard_accel(
+    v_ego=18.0,
+    d_rel=64.6,
+    v_lead=11.6,
+    a_lead=-4.0,
+    y_rel=0.0,
+    t_follow=t_follow,
+  )
+
+  assert target is not None
+  assert target < -1.2
+
+
+def test_moving_lead_stop_gap_guard_waits_for_far_hard_braking_with_extra_runway():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target = get_moving_lead_stop_gap_guard_accel(
+    v_ego=18.0,
+    d_rel=84.6,
+    v_lead=11.6,
+    a_lead=-4.0,
+    y_rel=0.0,
+    t_follow=t_follow,
+  )
+
+  assert target is None
+
+
+def test_moving_lead_stop_gap_guard_brakes_near_compressed_floor():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  v_ego = 15.07
+  v_lead = 13.61
+  compression_floor = long_mpc.get_moving_lead_compression_floor(v_ego, v_lead, t_follow, a_lead=-0.65)
+
+  target = get_moving_lead_stop_gap_guard_accel(
+    v_ego=v_ego,
+    d_rel=compression_floor - 0.1,
+    v_lead=v_lead,
+    a_lead=-0.65,
+    y_rel=0.0,
+    t_follow=t_follow,
+  )
+
+  assert target is not None
+  assert target <= -0.4
+
+
+def test_moving_lead_stop_gap_guard_preserves_urgent_closing_lead_brake():
+  t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+
+  target = get_moving_lead_stop_gap_guard_accel(
+    v_ego=15.22,
+    d_rel=34.56,
+    v_lead=11.68,
+    a_lead=-1.3,
+    y_rel=0.0,
+    t_follow=t_follow,
+  )
+
+  assert target is not None
+  assert target <= -1.4
 
 
 def test_moving_lead_stop_approach_preserves_short_ttc_brake():
@@ -2003,6 +2341,83 @@ def test_non_dominant_closing_cut_in_lead_caps_accel(monkeypatch):
   assert mpc.params[0, 1] == pytest.approx(0.0)
 
 
+def test_mpc_keeps_two_real_lead_obstacles_plus_cruise_and_marks_fake_predictions_invalid(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(10.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+
+  mpc.update(SimpleNamespace(leadOne=SimpleNamespace(status=False), leadTwo=SimpleNamespace(status=False)), v_cruise=25.0)
+
+  assert mpc.mpc_obstacle_columns == 3
+  assert mpc.lead_prediction_valid == (False, False)
+  assert not mpc.lead_predictions[0]["valid"]
+  assert not mpc.lead_predictions[1]["valid"]
+
+
+def test_path_irrelevant_non_dominant_lead_does_not_apply_crawl_accel_cap(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(2.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  relevant_lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=35.0, vLead=2.0, vLeadK=2.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  off_path_false_positive = SimpleNamespace(
+    status=True, radarTrackId=43, yRel=3.0, dRel=20.0, vLead=0.0, vLeadK=0.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.2, radar=False,
+  )
+  context = SimpleNamespace(
+    physical_idx=0,
+    behavior_idx=0,
+    states=(
+      SimpleNamespace(lead_idx=0, authority="progress_allowed", path_y_rel=0.0, d_rel=35.0, v_lead=2.0,
+                      required_decel=0.0, risk_score=0.0, ttc=float("inf"), time_gap=17.5,
+                      shadow=False, new_lead=False, flicker_guard_timer=0.0),
+      SimpleNamespace(lead_idx=1, authority="none", path_y_rel=3.0, d_rel=20.0, v_lead=0.0,
+                      required_decel=0.0, risk_score=0.0, ttc=float("inf"), time_gap=10.0,
+                      shadow=False, new_lead=False, flicker_guard_timer=0.0),
+    ),
+  )
+
+  for _ in range(6):
+    mpc.update(SimpleNamespace(leadOne=relevant_lead, leadTwo=off_path_false_positive), v_cruise=10.0, lead_context=context)
+
+  assert mpc.mpc_obstacle_columns == 3
+  assert mpc.params[0, 1] > LEAD_CRAWL_ACCEL_LIMIT
+
+
+def test_close_alternate_lead_still_suppresses_accel_with_relevance_context(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(20.0, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  primary_lead = SimpleNamespace(
+    status=True, radarTrackId=42, yRel=0.0, dRel=25.0, vLead=18.0, vLeadK=18.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  cut_in_lead = SimpleNamespace(
+    status=True, radarTrackId=43, yRel=0.0, dRel=90.0, vLead=8.0, vLeadK=8.0,
+    aLeadK=0.0, aLeadTau=0.0, modelProb=0.95, radar=True,
+  )
+  context = SimpleNamespace(
+    physical_idx=0,
+    behavior_idx=0,
+    states=(
+      SimpleNamespace(lead_idx=0, authority="progress_allowed", path_y_rel=0.0, d_rel=25.0, v_lead=18.0,
+                      required_decel=0.0, risk_score=0.0, ttc=float("inf"), time_gap=1.25,
+                      shadow=False, new_lead=False, flicker_guard_timer=0.0),
+      SimpleNamespace(lead_idx=1, authority="suppress_only", path_y_rel=0.0, d_rel=90.0, v_lead=8.0,
+                      required_decel=0.8, risk_score=0.8, ttc=7.5, time_gap=4.5,
+                      shadow=False, new_lead=True, flicker_guard_timer=0.0),
+    ),
+  )
+
+  for _ in range(6):
+    mpc.update(SimpleNamespace(leadOne=primary_lead, leadTwo=SimpleNamespace(status=False)), v_cruise=25.0)
+  mpc.update(SimpleNamespace(leadOne=primary_lead, leadTwo=cut_in_lead), v_cruise=25.0, lead_context=context)
+
+  assert mpc.params[0, 1] == pytest.approx(0.0)
+
+
 def test_approach_brake_stays_stock_for_small_closure():
   assert get_approach_brake(0.0) == pytest.approx(APPROACH_BRAKE)
   assert get_approach_brake(1.5) == pytest.approx(APPROACH_BRAKE)
@@ -2331,6 +2746,27 @@ def test_stop_go_crawl_context_releases_for_clear_pullaway():
   assert target > STOP_GO_CRAWL_TARGET_ACCEL_MAX
   assert target <= LEAD_CRAWL_ACCEL_MAX
   assert cost > 0.0
+
+
+def test_stop_go_crawl_brief_speedup_stays_near_coast_after_decel_memory(monkeypatch):
+  mpc = LongitudinalMpc(dt=0.1)
+  mpc.set_cur_state(0.8, 0.0)
+  monkeypatch.setattr(mpc, "run", lambda: None)
+  no_lead = SimpleNamespace(status=False)
+
+  def lead(d_rel, v_lead, a_lead):
+    return SimpleNamespace(
+      status=True, radarTrackId=42, yRel=0.0, dRel=d_rel, vLead=v_lead, vLeadK=v_lead,
+      aLeadK=a_lead, aLeadTau=0.0, modelProb=1.0, radar=True,
+    )
+
+  for _ in range(8):
+    mpc.update(SimpleNamespace(leadOne=lead(STOP_DISTANCE + 1.5, 0.7, -0.3), leadTwo=no_lead), v_cruise=10.0)
+  mpc.update(SimpleNamespace(leadOne=lead(STOP_DISTANCE + 1.55, 1.1, 0.3), leadTwo=no_lead), v_cruise=10.0)
+
+  assert mpc.lead_surge_decel_memories[0] > 0.0
+  assert 0.0 <= mpc.yref[0, 3] <= 0.05
+  assert mpc.params[0, 1] <= LEAD_CRAWL_ACCEL_LIMIT + 0.1
 
 
 def test_stop_go_crawl_context_does_not_limit_urgent_closure():
@@ -2738,11 +3174,13 @@ def test_route_like_slowing_moving_lead_prefers_moderate_decel():
   assert cost > 0.0
 
 
-def test_route_bookmark_mild_lead_decel_starts_before_gap_collapse():
+def test_route_bookmark_mild_lead_decel_allows_compression_before_floor():
   t_follow = get_T_FOLLOW(log.LongitudinalPersonality.standard)
+  compression_floor = long_mpc.get_moving_lead_compression_floor(12.01, 11.16, t_follow, a_lead=-0.34)
   target, cost = get_moving_lead_stop_approach_comfort_target(20.44, 12.01, 11.16, -0.34, t_follow)
 
-  assert target <= -long_mpc.MOVING_LEAD_STOP_APPROACH_LIGHT_DECEL_MAX
+  assert 20.44 > compression_floor + long_mpc.MOVING_LEAD_COMPRESSION_RELAX_GAP
+  assert target == pytest.approx(long_mpc.MOVING_LEAD_CLOSING_CUSHION_ACCEL_MIN)
   assert cost > 0.0
 
 
