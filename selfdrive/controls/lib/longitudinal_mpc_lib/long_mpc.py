@@ -13,7 +13,7 @@ from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 from openpilot.selfdrive.controls.lib.lead_confidence import LeadConfidenceTracker, adjust_new_lead_accel
 
 if __name__ == '__main__':  # generating code
-  from openpilot.third_party.acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+  from acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 else:
   from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.c_generated_code.acados_ocp_solver_pyx import AcadosOcpSolverCython
 
