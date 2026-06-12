@@ -371,6 +371,7 @@ def test_torque_control_tune_50_is_selectable_and_experimental():
 
   assert torque_tune["options"][0] == {"value": "", "label": "Default"}
   assert v50_option == {"value": "5.0", "label": "5.0 Experimental"}
+  assert "default uses 2.1" in torque_tune.get("description", "").lower()
   assert "experimental" in torque_tune.get("description", "").lower()
 
 

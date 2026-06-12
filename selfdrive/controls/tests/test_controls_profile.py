@@ -45,7 +45,7 @@ class FakeParams:
         "ControlsProfile": b"custom-2.0",
         "LateralDemandStack": b"custom-2.0",
         "LongitudinalStack": b"sunnypilot-current",
-        "TorqueControlTune": b"4.1",
+        "TorqueControlTune": b"2.1",
       }.get(key)
     return None
 
@@ -77,7 +77,7 @@ def test_unknown_controls_profile_does_not_select_torque_50():
 def test_controls_profile_default_is_custom_2():
   assert DEFAULT_CONTROLS_PROFILE == ControlsProfileId.CUSTOM_2
   assert DEFAULT_LATERAL_DEMAND_STACK == LATERAL_CUSTOM_V2
-  assert DEFAULT_TORQUE_CONTROL_TUNE == TorqueControlTuneId.V41
+  assert DEFAULT_TORQUE_CONTROL_TUNE == TorqueControlTuneId.V21
 
 
 def test_controls_profile_custom_2_maps_to_21():
@@ -121,8 +121,8 @@ def test_missing_controls_profile_preserves_existing_torque_control_tune_41():
   assert _resolved_torque(FakeParams({"TorqueControlTune": "4.1"})) == "4.1"
 
 
-def test_missing_controls_profile_without_existing_tune_defaults_to_41():
-  assert _resolved_torque(FakeParams()) == "4.1"
+def test_missing_controls_profile_without_existing_tune_defaults_to_21():
+  assert _resolved_torque(FakeParams()) == "2.1"
 
 
 def test_advanced_override_ignored_when_show_advanced_controls_false():
@@ -197,7 +197,7 @@ def test_torque_control_tune_id_for_name_resolves_supported_values():
   assert torque_control_tune_id_for_name("2.0") == TorqueControlTuneId.V20
   assert torque_control_tune_id_for_name(b"2.1") == TorqueControlTuneId.V21
   assert torque_control_tune_id_for_name(5.0) == TorqueControlTuneId.V50_EXPERIMENTAL
-  assert resolve_torque_control_tune("not-a-tune").resolved_tune == TorqueControlTuneId.V41
+  assert resolve_torque_control_tune("not-a-tune").resolved_tune == TorqueControlTuneId.V21
 
 
 def test_unknown_lateral_demand_stack_persists_safe_fallback():

@@ -1543,7 +1543,7 @@
   },
   "TorqueControlTune": {
     "title": "Torque Controller",
-    "description": "Select the torque controller version. Default uses 4.1; 5.0 is experimental and only selected explicitly.",
+    "description": "Select the torque controller version. Default uses 2.1; 5.0 is experimental and only selected explicitly.",
     "options": [
       {
         "value": "",

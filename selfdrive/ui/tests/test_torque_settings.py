@@ -60,6 +60,7 @@ def test_torque_controller_sunnylink_values_are_strings():
   assert {option["label"] for option in options} >= {"2.0", "2.1", "3.0", "4.0", "4.1", "5.0 Experimental"}
   for option in options:
     assert isinstance(option["value"], str)
+  assert "Default uses 2.1" in metadata["TorqueControlTune"]["description"]
   assert "shadow" not in metadata["TorqueControlTune"]["description"].lower()
 
 

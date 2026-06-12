@@ -63,7 +63,7 @@ from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 
 
 class FakeParams:
-  def __init__(self, enforce: bool, tune=None, default_tune=4.1, speed_aware_params=None, controls_profile=None):
+  def __init__(self, enforce: bool, tune=None, default_tune=2.1, speed_aware_params=None, controls_profile=None):
     self.enforce = enforce
     self.tune = tune
     self.default_tune = default_tune
@@ -134,14 +134,14 @@ def test_normalize_torque_tune_version():
 def test_torque_tune_resolution_keeps_reactivated_v4_numeric():
   resolution = resolve_torque_tune_version("4.0")
 
-  assert DEFAULT_TORQUE_TUNE_VERSION == 4.1
+  assert DEFAULT_TORQUE_TUNE_VERSION == 2.1
   assert resolution.requested_version == 4.0
   assert resolution.resolved_version == 4.0
   assert resolution.persist_value is None
   assert resolve_torque_tune_version("4.1").resolved_version == 4.1
   assert resolve_torque_tune_version(b"2.1").resolved_version == 2.1
   assert resolve_torque_tune_version(b"3.0").resolved_version == 3.0
-  assert resolve_torque_tune_version("bad").resolved_version == 4.1
+  assert resolve_torque_tune_version("bad").resolved_version == 2.1
 
 
 def test_torque_controller_registry_resolves_factories():
@@ -222,7 +222,7 @@ def test_torque_control_tune_5_instantiates_latcontrol_torque_v5():
 
 def test_torque_control_tune_41_instantiates_latcontrol_torque_v41():
   """TorqueControlTune=4.1 must select LatControlTorqueV41, the
-  current stable default. The 4.1 path is the v4.1 controller
+  manually selectable v4.1 controller
   (no v5 active delta)."""
   CP, CP_SP, CI = get_test_context()
   lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
@@ -235,7 +235,7 @@ def test_torque_control_tune_41_instantiates_latcontrol_torque_v41():
 
 def test_torque_control_tune_unknown_falls_back_safely():
   """An unknown TorqueControlTune value must fall back safely
-  (to 4.1, the stable default) and must NOT select
+  (to 2.1, the stable default) and must NOT select
   5.0. The fallback path is exercised by users who set a
   deprecated or future value."""
   CP, CP_SP, CI = get_test_context()
@@ -244,24 +244,24 @@ def test_torque_control_tune_unknown_falls_back_safely():
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, None))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert not isinstance(selected, LatControlTorqueV5)
-  assert isinstance(selected, LatControlTorqueV41)
+  assert isinstance(selected, LatControlTorqueV21)
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 1.0))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
-  assert isinstance(selected, LatControlTorqueV41)
+  assert isinstance(selected, LatControlTorqueV21)
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, None))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
-  assert isinstance(selected, LatControlTorqueV41)
+  assert isinstance(selected, LatControlTorqueV21)
 
 
-def test_unknown_torque_tune_falls_back_to_41():
+def test_unknown_torque_tune_falls_back_to_21():
   CP, CP_SP, CI = get_test_context()
   lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, "not-a-tune"))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
-  assert isinstance(selected, LatControlTorqueV41)
+  assert isinstance(selected, LatControlTorqueV21)
 
 
 def test_pid_origin_non_angle_controller_keeps_original_lac_for_v3():

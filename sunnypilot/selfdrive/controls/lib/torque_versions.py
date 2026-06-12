@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-DEFAULT_TORQUE_TUNE_VERSION = 4.1
+DEFAULT_TORQUE_TUNE_VERSION = 2.1
 SUPPORTED_TORQUE_TUNE_VERSIONS = frozenset({0.0, 2.0, 2.1, 3.0, 4.0, 4.1, 5.0})
 REMOVED_TORQUE_TUNE_FALLBACKS = {}
 
