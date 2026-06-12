@@ -19,6 +19,7 @@ def test_controls_profile_ui_values_match_resolver():
 
   for value in ("sunnypilot-current", "custom-recommended", "custom-2.0", "custom-experimental"):
     assert value in source
+  assert "Controls Profile" in source
   assert "CONTROLS_PROFILE_LABELS" in source
   assert "CONTROLS_PROFILE_DESCRIPTIONS" in source
 
@@ -40,6 +41,7 @@ def test_lateral_demand_stack_ui_values_match_selector():
   assert "CUSTOM_RECOMMENDED" in source
   assert "CUSTOM_V2" in source
   assert "CUSTOM_EXPERIMENTAL" in source
+  assert "Lateral Demand Stack" in source
   assert "LATERAL_DEMAND_STACK_LABELS" in source
 
 
@@ -64,3 +66,18 @@ def test_controls_profile_sunnylink_metadata_exists():
 
   for key in ("ControlsProfile", "ControlsProfileMigrationVersion", "LateralDemandStack"):
     assert key in metadata
+
+  assert metadata["ControlsProfile"]["title"] == "Controls Profile"
+  assert metadata["LateralDemandStack"]["title"] == "Lateral Demand Stack"
+  assert {option["label"] for option in metadata["ControlsProfile"]["options"]} >= {
+    "Sunnypilot Current",
+    "Custom Recommended",
+    "Custom 2.0",
+    "Custom Experimental",
+  }
+  assert {option["label"] for option in metadata["LateralDemandStack"]["options"]} >= {
+    "Sunnypilot Current",
+    "Custom Recommended",
+    "Custom 2.0",
+    "Custom Experimental",
+  }

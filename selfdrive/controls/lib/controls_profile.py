@@ -143,7 +143,7 @@ class ControlsProfileMapping:
   profile_id: ControlsProfileId
   longitudinal_stack: str
   lateral_demand_stack: str
-  torque_control_tune: TorqueControlTuneId
+  torque_control_tune: TorqueControlTuneId | None
 
 
 def _build_controls_profile_mappings() -> tuple[ControlsProfileMapping, ...]:
@@ -152,7 +152,7 @@ def _build_controls_profile_mappings() -> tuple[ControlsProfileMapping, ...]:
       ControlsProfileId.SUNNYPILOT_CURRENT,
       LONG_SUNNYPILOT_CURRENT,
       LATERAL_SUNNYPILOT_CURRENT,
-      SAFE_TORQUE_TUNE_FALLBACK,
+      None,
     ),
     ControlsProfileMapping(
       ControlsProfileId.CUSTOM_RECOMMENDED,
@@ -209,7 +209,7 @@ class ControlsProfileResolution:
   resolved_profile: ControlsProfileId
   longitudinal_stack: str
   lateral_demand_stack: str
-  torque_control_tune: TorqueControlTuneId
+  torque_control_tune: TorqueControlTuneId | None
   fallback_reason: str = ""
   lateral_demand_stack_resolution: LateralDemandStackResolution | None = None
   torque_control_tune_resolution: TorqueControlTuneResolution | None = None
@@ -253,8 +253,9 @@ def resolve_controls_profile(
     if override_torque != effective_torque:
       fallback_reasons.append("advanced_torque_control_tune_override")
     effective_torque = override_torque
-  torque_resolution = resolve_torque_control_tune(effective_torque)
-  effective_torque = torque_resolution.resolved_tune
+  torque_resolution = resolve_torque_control_tune(effective_torque) if effective_torque is not None else None
+  if torque_resolution is not None:
+    effective_torque = torque_resolution.resolved_tune
 
   effective_longitudinal = mapping.longitudinal_stack
   if advanced_overrides_enabled and advanced_longitudinal_stack is not None:

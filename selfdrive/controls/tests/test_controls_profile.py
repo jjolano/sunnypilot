@@ -57,7 +57,9 @@ class FakeParams:
 
 
 def _resolved_torque(params: FakeParams) -> str:
-  return resolve_controls_profile_from_params(params).controls_profile_resolution.torque_control_tune.value
+  torque = resolve_controls_profile_from_params(params).controls_profile_resolution.torque_control_tune
+  assert torque is not None
+  return torque.value
 
 
 def test_missing_controls_profile_does_not_select_torque_50():
@@ -95,7 +97,8 @@ def test_controls_profile_experimental_maps_to_50():
 def test_controls_profile_sunnypilot_current_maps_to_sunnypilot_current_stack():
   res = resolve_controls_profile("sunnypilot-current")
   assert res.lateral_demand_stack == LATERAL_SUNNYPILOT_CURRENT
-  assert res.torque_control_tune == TorqueControlTuneId.V41
+  assert res.torque_control_tune is None
+  assert res.torque_control_tune_resolution is None
   assert res.longitudinal_stack == LONG_SUNNYPILOT_CURRENT
 
 
@@ -204,7 +207,7 @@ def test_all_profile_mappings_cover_every_id():
       LATERAL_CUSTOM_V2,
       LATERAL_CUSTOM_EXPERIMENTAL,
     }
-    assert mapping.torque_control_tune in set(TorqueControlTuneId)
+    assert mapping.torque_control_tune is None or mapping.torque_control_tune in set(TorqueControlTuneId)
     assert mapping.longitudinal_stack
 
 

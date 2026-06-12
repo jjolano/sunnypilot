@@ -13,6 +13,7 @@ from cereal import log, custom
 from opendbc.car import structs
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.controls.lib.controls_profile import ControlsProfileId
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
@@ -71,17 +72,19 @@ class ControlsExt(ModelStateBase):
     torque_version = torque_resolution.resolved_version
     native_torque = self.CP.lateralTuning.which() == 'torque'
     controls_profile_param_resolution = getattr(self, "controls_profile_param_resolution", None)
+    active_profile_id = getattr(controls_profile_resolution, "resolved_profile", None)
     profile_requests_torque_controller = (
       bool(getattr(controls_profile_param_resolution, "controls_profile_explicit", False))
       and active_profile_tune is not None
+      and active_profile_id != ControlsProfileId.SUNNYPILOT_CURRENT
     )
     if torque_resolution.persist_value is not None:
       self.params.put("TorqueControlTune", torque_resolution.persist_value)
 
     # Selection contract:
-    # - EnforceTorqueControl off and no explicit ControlsProfile: native torque uses v0 compatibility shim;
+    # - EnforceTorqueControl off and no torque-requesting profile: native torque uses v0 compatibility shim;
     #   non-native keeps stock controller.
-    # - EnforceTorqueControl on or explicit ControlsProfile: native torque uses selected
+    # - EnforceTorqueControl on or explicit custom ControlsProfile: native torque uses selected
     #   0.0/2.0/2.1/3.0/4.0/4.1/5.0 Experimental;
     #   non-native keeps stock controller.
     if not enforce_torque_control and not profile_requests_torque_controller:

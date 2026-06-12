@@ -358,6 +358,18 @@ def test_missing_controls_profile_still_uses_v0_when_enforce_torque_off():
   assert isinstance(selected, LatControlTorqueV0)
 
 
+def test_controls_profile_sunnypilot_current_does_not_force_custom_torque_when_enforce_off():
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+  params = FakeParams(False, 5.0, controls_profile=b"sunnypilot-current")
+
+  controls_ext = make_controls_ext(CP, CP_SP, params)
+  apply_controls_profile_params(controls_ext, params)
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+
+  assert isinstance(selected, LatControlTorqueV0)
+
+
 def test_explicit_custom_2_profile_instantiates_v41_on_native_torque():
   CP, CP_SP, CI = get_test_context()
   lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
