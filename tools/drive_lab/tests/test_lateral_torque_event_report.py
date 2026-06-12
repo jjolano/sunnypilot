@@ -188,6 +188,31 @@ def test_lateral_torque_event_report_decodes_v3_governor_reason_not_v2_shaper_re
   assert event.governor_reason_counts["SAME_DIRECTION_LIMIT"] > 0
 
 
+def test_lateral_torque_event_report_decodes_v4_governor_reason_names():
+  msgs = []
+  for i in range(80):
+    t = i * 0.1
+    sign = 1.0 if (i // 2) % 2 == 0 else -1.0
+    msgs.extend(sample_msgs(
+      t,
+      output=0.16 * sign,
+      unshaped=0.22 * sign,
+      steering_angle=0.8 * sign,
+      governor_reason=(1 << 7) | (1 << 8),
+      shaping_active=True,
+      steer_limited=True,
+      torque_version=4,
+    ))
+
+  report = build_lateral_torque_event_report(msgs, source="synthetic", max_events=4)
+
+  assert report.top_events
+  event = report.top_events[0]
+  assert event.governor_reason_counts["STALE_ACTUATOR_MISMATCH"] > 0
+  assert event.governor_reason_counts["LOW_SPEED_UNDER_RESPONSE_RECOVERY"] > 0
+  assert "UNDER_RESPONSE_FLOOR" not in event.governor_reason_counts
+
+
 def test_lateral_torque_event_report_filters_inactive_samples():
   msgs = []
   for i in range(20):
@@ -236,6 +261,67 @@ def test_lateral_torque_lag_report_estimates_tracking_lag():
   assert curve.abs_error_p95 > 0.0
 
 
+def test_lateral_torque_lag_report_adds_high_curvature_low_quality_and_physics_metrics():
+  msgs = []
+  for i in range(20):
+    t = i * 0.1
+    v_ego = 10.0
+    processed_curvature = 0.002 if i < 10 else 0.0
+    current_curvature = 0.0015
+    desired_accel = v_ego ** 2 * processed_curvature
+    actual_accel = v_ego ** 2 * current_curvature
+    msgs.extend(sample_msgs(
+      t,
+      output=0.12,
+      v_ego=v_ego,
+      desired_accel=desired_accel,
+      actual_accel=actual_accel,
+      path_gated=i % 2 == 0,
+      path_reason="highPathStd" if i % 2 == 0 else "ok",
+      path_quality=0.6 if i % 2 == 0 else 0.9,
+      raw_curvature=processed_curvature,
+      processed_curvature=processed_curvature,
+      desired_curvature=processed_curvature,
+    ))
+
+  report = build_lateral_torque_lag_report(msgs, source="synthetic", already_sorted=True)
+  high_curvature = next(metric for metric in report.metrics if metric.segment == "high_curvature")
+  low_quality = next(metric for metric in report.metrics if metric.segment == "low_path_quality")
+
+  assert high_curvature.sample_count > 0
+  assert high_curvature.desired_lateral_accel_residual_abs_p95 == pytest.approx(0.0, abs=1e-9)
+  assert high_curvature.actual_lateral_accel_residual_abs_p95 == pytest.approx(0.05, rel=1e-2)
+  assert low_quality.sample_count == 10
+  assert low_quality.model_path_low_quality_percent == pytest.approx(100.0)
+  assert low_quality.model_path_reason_counts["highPathStd"] == 10
+
+
+def test_lateral_torque_lag_report_renders_reason_counts():
+  msgs = []
+  for i in range(12):
+    t = i * 0.1
+    msgs.extend(sample_msgs(
+      t,
+      output=0.12,
+      desired_accel=0.2,
+      actual_accel=0.2,
+      shaping_reason=512,
+      governor_reason=(1 << 1),
+      path_reason="ok",
+      path_quality=0.8,
+      steer_limited=True,
+    ))
+
+  report = build_lateral_torque_lag_report(msgs, source="synthetic", already_sorted=True)
+  rendered = render_lateral_torque_lag_report(report)
+
+  assert "jerk95=" in rendered
+  assert "aresid95=" in rendered
+  assert "path_low=" in rendered
+  assert "shaper_reasons=" in rendered
+  assert "governor_reasons=" in rendered
+
+
 def test_lateral_torque_lag_report_splits_warm_learner_segments():
   report = build_lateral_torque_lag_report(lag_msgs(0.1, learner_confidence=0.8), source="warm")
   warm = next(metric for metric in report.metrics if metric.segment == "warm")
@@ -243,6 +329,24 @@ def test_lateral_torque_lag_report_splits_warm_learner_segments():
 
   assert warm.sample_count > 0
   assert cold.sample_count == 0
+
+
+def test_lateral_torque_lag_report_handles_missing_model_path_state_as_unknown():
+  msgs = []
+  for i in range(10):
+    msgs.extend(sample_msgs(
+      i * 0.1,
+      output=0.1,
+      desired_accel=0.1,
+      actual_accel=0.1,
+      include_model_path=False,
+    ))
+
+  report = build_lateral_torque_lag_report(msgs, source="synthetic", already_sorted=True)
+  low_quality = next(metric for metric in report.metrics if metric.segment == "low_path_quality")
+
+  assert low_quality.sample_count == 0
+  assert low_quality.model_path_low_quality_percent == 0.0
 
 
 def test_lateral_torque_ab_report_shows_candidate_lag_delta():

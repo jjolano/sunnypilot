@@ -9,6 +9,8 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from openpilot.tools.drive_lab.scenario_spec import ScenarioSpec, route_window_provenance
+
 
 @dataclass(frozen=True)
 class LateralDisturbanceConfig:
@@ -216,6 +218,48 @@ def render_lateral_disturbance_report(report: LateralDisturbanceReport) -> str:
         f"atten={event.authority_attenuation_median:.2f}"
       )
   return "\n".join(lines)
+
+
+def lateral_disturbance_event_to_spec(report: LateralDisturbanceReport, event: LateralEventWindow, index: int | None = None) -> ScenarioSpec:
+  maneuvers = {
+    "config": report.config.to_dict(),
+    "event": {
+      "kind": event.kind,
+      "start_s": event.start_s,
+      "end_s": event.end_s,
+      "score": event.score,
+    },
+  }
+  checks = ["finite", "lag"]
+  if event.kind == "fast_reversal":
+    checks.append("reversal")
+  elif event.kind == "rebound":
+    checks.append("rebound")
+  return ScenarioSpec(
+    scenario_id=f"{report.source}:{event.kind}:{report.config.seed}:{index if index is not None else int(round(event.start_s * 10))}",
+    kind=event.kind,
+    title=f"{report.source} {event.kind} {event.start_s:.1f}-{event.end_s:.1f}s",
+    mode="lateral-disturbance",
+    duration=event.end_s - event.start_s,
+    source=report.source,
+    maneuver_kwargs=maneuvers,
+    ego={"speed_mps": report.config.speed_mps},
+    events=(event.kind,),
+    oracle={"checks": tuple(checks)},
+    tags=("route-derived", "lateral", "lateral-disturbance", event.kind),
+    seed=report.config.seed,
+    index=index,
+    provenance={
+      **route_window_provenance(report.source, None, event.start_s, event.end_s, "lateral_disturbance_sim"),
+      "config_hash": report.config_hash,
+      "event_start_s": event.start_s,
+      "event_end_s": event.end_s,
+    },
+  )
+
+
+def lateral_disturbance_report_to_specs(report: LateralDisturbanceReport, max_events: int = 12) -> list[ScenarioSpec]:
+  return [lateral_disturbance_event_to_spec(report, event, index=i) for i, event in enumerate(report.top_events[:max_events])]
 
 
 def save_lateral_disturbance_report(report: LateralDisturbanceReport, path: str | Path) -> None:

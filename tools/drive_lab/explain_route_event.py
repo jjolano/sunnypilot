@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 
 from openpilot.tools.drive_lab.timeline import render_summary, select_event_time, summarize_window
-from openpilot.tools.lib.logreader import LogReader, ReadMode
+from openpilot.tools.drive_lab.route_io import load_route_msgs
 
 
 def main() -> None:
@@ -17,8 +17,7 @@ def main() -> None:
   parser.add_argument("--qlog", action="store_true", help="Prefer qlogs instead of rlogs")
   args = parser.parse_args()
 
-  read_mode = ReadMode.QLOG if args.qlog else ReadMode.AUTO
-  msgs = list(LogReader(args.route, default_mode=read_mode, sort_by_time=True))
+  msgs = load_route_msgs(args.route, qlog=args.qlog)
   event_time_s = select_event_time(msgs, args.time, args.nearest_bookmark)
   summary = summarize_window(msgs, event_time_s, args.before, args.after)
   print(render_summary(summary))

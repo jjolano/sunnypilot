@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 from openpilot.tools.drive_lab.log_profile import build_longitudinal_profile, render_profile, save_profile
+from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 
 
 def main() -> None:
@@ -15,14 +15,9 @@ def main() -> None:
   parser.add_argument("--qlog", action="store_true", help="Prefer qlogs instead of rlogs")
   args = parser.parse_args()
 
-  from openpilot.tools.lib.logreader import LogReader, ReadMode
-
-  read_mode = ReadMode.QLOG if args.qlog else ReadMode.AUTO
-  msgs = list(LogReader(args.route, default_mode=read_mode, sort_by_time=True))
+  msgs = load_route_msgs(args.route, qlog=args.qlog)
   profile = build_longitudinal_profile(msgs, source=args.route, already_sorted=True)
-  if args.output:
-    save_profile(profile, args.output)
-  print(json.dumps(profile.to_dict(), indent=2) if args.json else render_profile(profile))
+  print(output_report(profile, json_output=args.json, renderer=render_profile, output_path=args.output, save=save_profile))
 
 
 if __name__ == "__main__":

@@ -44,6 +44,12 @@ V3_GOVERNOR_REASON_NAMES = {
   1 << 5: "TOYOTA_HIGH_RATE",
 }
 
+V4_GOVERNOR_REASON_NAMES = {
+  **GOVERNOR_REASON_NAMES,
+  1 << 7: "STALE_ACTUATOR_MISMATCH",
+  1 << 8: "LOW_SPEED_UNDER_RESPONSE_RECOVERY",
+}
+
 LOW_SPEED_TIER_BOUNDS = ((0.0, 3.0), (3.0, 5.0), (5.0, 8.0), (8.0, 12.0))
 LOW_SPEED_REPORT_MAX_SPEED = LOW_SPEED_TIER_BOUNDS[-1][1]
 LOW_SPEED_TURN_MIN_LAT_ACCEL = 0.035
@@ -118,6 +124,14 @@ class LateralTorqueLagMetrics:
   output_reversals: int
   steer_limited_percent: float
   high_steering_rate_percent: float
+  desired_lateral_jerk_p95: float
+  actual_lateral_jerk_p95: float
+  desired_lateral_accel_residual_abs_p95: float
+  actual_lateral_accel_residual_abs_p95: float
+  model_path_low_quality_percent: float
+  model_path_reason_counts: dict[str, int]
+  shaping_reason_counts: dict[str, int]
+  governor_reason_counts: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -279,6 +293,9 @@ def build_lateral_torque_lag_report(
   cols = _columns(samples)
   base = _base_mask(cols)
   desired_rate = _derivative(cols["t"], cols["desired_lateral_accel"])
+  processed_curvature = _finite_or_fallback(cols["processed_desired_curvature"], cols["desired_curvature"])
+  desired_lateral_accel_residual = cols["desired_lateral_accel"] - np.square(cols["v_ego"]) * processed_curvature
+  actual_lateral_accel_residual = cols["actual_lateral_accel"] - np.square(cols["v_ego"]) * cols["current_curvature"]
   curve = np.abs(cols["desired_lateral_accel"]) > 0.08
   masks = {
     "curve": base & curve,
@@ -286,12 +303,15 @@ def build_lateral_torque_lag_report(
     "exit": base & curve & (desired_rate < -0.15),
     "cold": base & curve & (cols["learner_confidence"] < 0.3),
     "warm": base & curve & (cols["learner_confidence"] >= 0.6),
+    "high_curvature": base & (np.abs(processed_curvature) >= 0.0015),
+    "low_path_quality": base & ((cols["model_path_gated"] > 0.5) | ((cols["model_path_quality"] < 0.7) & np.isfinite(cols["model_path_quality"]))),
+    "steering_limited": base & (cols["steer_limited"] > 0.5),
   }
   return LateralTorqueLagReport(
     source=source,
     sample_count=len(samples),
     duration_s=float(cols["t"][-1] - cols["t"][0]) if len(samples) > 1 else 0.0,
-    metrics=[_lag_metrics(cols, name, mask) for name, mask in masks.items()],
+    metrics=[_lag_metrics(cols, name, mask, desired_rate, desired_lateral_accel_residual, actual_lateral_accel_residual) for name, mask in masks.items()],
   )
 
 
@@ -349,11 +369,17 @@ def render_lateral_torque_lag_report(report: LateralTorqueLagReport) -> str:
   for metric in report.metrics:
     lag = "n/a" if metric.best_lag_s is None else f"{metric.best_lag_s:.3f}s"
     corr = "n/a" if metric.desired_actual_corr is None else f"{metric.desired_actual_corr:.3f}"
+    reasons = _format_counts(metric.model_path_reason_counts)
+    shaper = _format_counts(metric.shaping_reason_counts)
+    governor = _format_counts(metric.governor_reason_counts)
     lines.append(
       f"{metric.segment}: samples={metric.sample_count} lag={lag} corr={corr} "
       f"err_mean={metric.abs_error_mean:.3f} err95={metric.abs_error_p95:.3f} "
-      f"rate95={metric.steering_rate_p95:.2f} out_flips={metric.output_reversals} "
-      f"limited={metric.steer_limited_percent:.1f}% high_rate={metric.high_steering_rate_percent:.1f}%"
+      f"rate95={metric.steering_rate_p95:.2f} jerk95={metric.desired_lateral_jerk_p95:.2f}/{metric.actual_lateral_jerk_p95:.2f} "
+      f"aresid95={metric.desired_lateral_accel_residual_abs_p95:.4f}/{metric.actual_lateral_accel_residual_abs_p95:.4f} "
+      f"out_flips={metric.output_reversals} limited={metric.steer_limited_percent:.1f}% "
+      f"high_rate={metric.high_steering_rate_percent:.1f}% path_low={metric.model_path_low_quality_percent:.1f}% "
+      f"path_reasons={reasons} shaper_reasons={shaper} governor_reasons={governor}"
     )
   return "\n".join(lines)
 
@@ -722,7 +748,12 @@ def _reason_counts(reasons: np.ndarray, reason_names: dict[int, str]) -> dict[st
 def _governor_reason_counts(reasons: np.ndarray, versions: np.ndarray) -> dict[str, int]:
   counts: dict[str, int] = {}
   for reason, version in zip(reasons.astype(int), versions.astype(int), strict=False):
-    names = V3_GOVERNOR_REASON_NAMES if version == 3 else GOVERNOR_REASON_NAMES
+    if version == 3:
+      names = V3_GOVERNOR_REASON_NAMES
+    elif version == 4:
+      names = V4_GOVERNOR_REASON_NAMES
+    else:
+      names = GOVERNOR_REASON_NAMES
     for bit, name in names.items():
       if reason & bit:
         counts[name] = counts.get(name, 0) + 1
@@ -789,9 +820,16 @@ def _event_from_dict(data: dict[str, Any]) -> LateralTorqueEvent:
   )
 
 
-def _lag_metrics(cols: dict[str, np.ndarray], segment: str, idx: np.ndarray) -> LateralTorqueLagMetrics:
+def _lag_metrics(
+  cols: dict[str, np.ndarray],
+  segment: str,
+  idx: np.ndarray,
+  desired_rate: np.ndarray,
+  desired_lateral_accel_residual: np.ndarray,
+  actual_lateral_accel_residual: np.ndarray,
+) -> LateralTorqueLagMetrics:
   if int(np.sum(idx)) < 8:
-    return LateralTorqueLagMetrics(segment, int(np.sum(idx)), None, None, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
+    return LateralTorqueLagMetrics(segment, int(np.sum(idx)), None, None, 0.0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, {}, {}, {})
   desired = cols["desired_lateral_accel"][idx]
   actual = cols["actual_lateral_accel"][idx]
   error = desired - actual
@@ -806,6 +844,14 @@ def _lag_metrics(cols: dict[str, np.ndarray], segment: str, idx: np.ndarray) -> 
     output_reversals=_sign_flip_count(cols["output"][idx] - _median(cols["output"][idx]), 0.01),
     steer_limited_percent=_percent(cols["steer_limited"][idx] > 0.5),
     high_steering_rate_percent=_percent(np.abs(cols["steering_rate_deg"][idx]) >= 80.0),
+    desired_lateral_jerk_p95=_p95_abs(desired_rate[idx]),
+    actual_lateral_jerk_p95=_p95_abs(_derivative(cols["t"][idx], actual)),
+    desired_lateral_accel_residual_abs_p95=_p95_abs(desired_lateral_accel_residual[idx]),
+    actual_lateral_accel_residual_abs_p95=_p95_abs(actual_lateral_accel_residual[idx]),
+    model_path_low_quality_percent=_percent((cols["model_path_gated"][idx] > 0.5) | ((cols["model_path_quality"][idx] < 0.7) & np.isfinite(cols["model_path_quality"][idx]))),
+    model_path_reason_counts=_string_counts(cols["model_path_reason"][idx]),
+    shaping_reason_counts=_reason_counts(cols["shaping_reason"][idx], SHAPING_REASON_NAMES),
+    governor_reason_counts=_governor_reason_counts(cols["governor_reason"][idx], cols["torque_version"][idx]),
   )
 
 

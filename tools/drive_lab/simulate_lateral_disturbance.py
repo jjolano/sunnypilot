@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 from openpilot.tools.drive_lab.lateral_disturbance_sim import (
   LateralDisturbanceConfig,
@@ -12,6 +11,7 @@ from openpilot.tools.drive_lab.lateral_disturbance_sim import (
   simulate_lateral_disturbance,
   synthetic_lateral_trace,
 )
+from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 
 
 def main() -> None:
@@ -63,17 +63,12 @@ def main() -> None:
   )
   source = args.synthetic
   if args.route:
-    from openpilot.tools.lib.logreader import LogReader, ReadMode
-
-    read_mode = ReadMode.QLOG if args.qlog else ReadMode.AUTO
-    trace = route_lateral_trace(LogReader(args.route, default_mode=read_mode, sort_by_time=True), source=args.route)
+    trace = route_lateral_trace(load_route_msgs(args.route, qlog=args.qlog), source=args.route)
     source = args.route
   else:
     trace = synthetic_lateral_trace(config, args.synthetic)
   report = simulate_lateral_disturbance(trace, config, source=source)
-  if args.output:
-    save_lateral_disturbance_report(report, args.output)
-  print(json.dumps(report.to_dict(), indent=2) if args.json else render_lateral_disturbance_report(report))
+  print(output_report(report, json_output=args.json, renderer=render_lateral_disturbance_report, output_path=args.output, save=save_lateral_disturbance_report))
 
 
 if __name__ == "__main__":

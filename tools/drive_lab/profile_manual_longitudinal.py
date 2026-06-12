@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict
-from math import isfinite
 from typing import Any
 
 from openpilot.tools.drive_lab.manual_longitudinal_profile import (
@@ -13,7 +12,9 @@ from openpilot.tools.drive_lab.manual_longitudinal_profile import (
   render_manual_style_summary,
   summarize_manual_style,
 )
-from openpilot.tools.drive_lab.timeline import msg_payload, msg_time_s, msg_type, safe_get
+from openpilot.tools.drive_lab.route_analysis import finite_list, finite_or_none, iter_route_messages
+from openpilot.tools.drive_lab.route_io import output_report
+from openpilot.tools.drive_lab.timeline import safe_get
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 
@@ -39,16 +40,14 @@ def main() -> None:
 
   summary = summarize_manual_style(included_samples)
   payload = {"routes": [asdict(profile) for profile in route_profiles], "summary": asdict(summary)}
-  if args.output:
-    with open(args.output, "w") as f:
-      json.dump(payload, f, indent=2)
-      f.write("\n")
-  print(json.dumps(payload, indent=2) if args.json else render_manual_style_summary(summary, route_profiles))
+  class _ManualPayload:
+    def to_dict(self):
+      return payload
+
+  print(output_report(_ManualPayload(), json_output=args.json, renderer=lambda _: render_manual_style_summary(summary, route_profiles), output_path=args.output))
 
 
 def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample]:
-  msgs = list(LogReader(route, default_mode=read_mode, sort_by_time=True))
-  base_mono_time = int(getattr(msgs[0], "logMonoTime", 0)) if msgs else 0
   active = False
   lead_status = False
   lead_d_rel = None
@@ -60,31 +59,31 @@ def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample
   model_desired_accel = None
   model_stop_distance = None
   samples: list[ManualSample] = []
-  for msg in msgs:
-    typ = msg_type(msg)
-    payload = msg_payload(msg)
+  for route_msg in iter_route_messages(route, read_mode, log_reader_factory=LogReader):
+    typ = route_msg.typ
+    payload = route_msg.payload
     if typ == "selfdriveState":
       active = bool(safe_get(payload, "active", False))
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne")
       lead_status = bool(safe_get(lead, "status", False))
-      lead_d_rel = _finite_or_none(safe_get(lead, "dRel"))
-      lead_v_rel = _finite_or_none(safe_get(lead, "vRel"))
-      lead_v_lead = _finite_or_none(safe_get(lead, "vLeadK"))
-      lead_a_lead = _finite_or_none(safe_get(lead, "aLeadK"))
-      lead_model_prob = _finite_or_none(safe_get(lead, "modelProb"))
+      lead_d_rel = finite_or_none(safe_get(lead, "dRel"))
+      lead_v_rel = finite_or_none(safe_get(lead, "vRel"))
+      lead_v_lead = finite_or_none(safe_get(lead, "vLeadK"))
+      lead_a_lead = finite_or_none(safe_get(lead, "aLeadK"))
+      lead_model_prob = finite_or_none(safe_get(lead, "modelProb"))
     elif typ == "modelV2":
       model_should_stop = bool(safe_get(payload, "action.shouldStop", False))
-      model_desired_accel = _finite_or_none(safe_get(payload, "action.desiredAcceleration"))
+      model_desired_accel = finite_or_none(safe_get(payload, "action.desiredAcceleration"))
       model_stop_distance = _last_finite_or_none(safe_get(payload, "position.x"))
     elif typ == "carState":
-      v_ego = _finite_or_none(safe_get(payload, "vEgo"))
-      a_ego = _finite_or_none(safe_get(payload, "aEgo"))
+      v_ego = finite_or_none(safe_get(payload, "vEgo"))
+      a_ego = finite_or_none(safe_get(payload, "aEgo"))
       if v_ego is None or a_ego is None:
         continue
       samples.append(ManualSample(
         route=route,
-        t=msg_time_s(msg, base_mono_time),
+        t=route_msg.t,
         v_ego=v_ego,
         a_ego=a_ego,
         active=active,
@@ -103,24 +102,9 @@ def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample
   return samples
 
 
-def _finite_or_none(value: Any) -> float | None:
-  if isinstance(value, int | float) and isfinite(float(value)):
-    return float(value)
-  return None
-
-
 def _last_finite_or_none(values: Any) -> float | None:
-  if values is None:
-    return None
-  try:
-    iterable = list(values)
-  except TypeError:
-    return _finite_or_none(values)
-  for value in reversed(iterable):
-    finite_value = _finite_or_none(value)
-    if finite_value is not None:
-      return finite_value
-  return None
+  finite_values = finite_list(values)
+  return finite_values[-1] if finite_values else None
 
 
 if __name__ == "__main__":

@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 from openpilot.tools.drive_lab.lateral_event_report import (
   build_lateral_event_report,
   render_lateral_event_report,
   save_lateral_event_report,
 )
+from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 
 
 def main() -> None:
@@ -20,14 +20,15 @@ def main() -> None:
   parser.add_argument("--max-events", type=int, default=15, help="Maximum ranked events to report")
   args = parser.parse_args()
 
-  from openpilot.tools.lib.logreader import LogReader, ReadMode
-
-  read_mode = ReadMode.QLOG if args.qlog else ReadMode.AUTO
-  msgs = list(LogReader(args.route, default_mode=read_mode, sort_by_time=True))
+  msgs = load_route_msgs(args.route, qlog=args.qlog)
   report = build_lateral_event_report(msgs, source=args.route, already_sorted=True, max_events=args.max_events)
-  if args.output:
-    save_lateral_event_report(report, args.output)
-  print(json.dumps(report.to_dict(), indent=2) if args.json else render_lateral_event_report(report))
+  print(output_report(
+    report,
+    json_output=args.json,
+    renderer=render_lateral_event_report,
+    output_path=args.output,
+    save=save_lateral_event_report,
+  ))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,8 @@ from typing import Any
 
 import numpy as np
 
-from openpilot.tools.drive_lab.timeline import msg_payload, msg_time_s, msg_type, safe_get
+from openpilot.tools.drive_lab.route_analysis import build_route_messages
+from openpilot.tools.drive_lab.timeline import safe_get
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class LongitudinalProfile:
 
 def build_longitudinal_profile(msgs: list[Any], source: str = "unknown", already_sorted: bool = False) -> LongitudinalProfile:
   msgs = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
+  route_msgs = build_route_messages(msgs)
   car_state_by_time: list[tuple[float, float, bool]] = []
   ego_speeds: list[float] = []
   cruise_speeds: list[float] = []
@@ -60,12 +62,11 @@ def build_longitudinal_profile(msgs: list[Any], source: str = "unknown", already
 
   prev_lead_time: float | None = None
   prev_lead_speed: float | None = None
-  base_mono_time = int(getattr(msgs[0], "logMonoTime", 0)) if msgs else 0
 
-  for msg in msgs:
-    typ = msg_type(msg)
-    payload = msg_payload(msg)
-    t = msg_time_s(msg, base_mono_time)
+  for route_msg in route_msgs:
+    typ = route_msg.typ
+    payload = route_msg.payload
+    t = route_msg.t
     if typ == "carState":
       v_ego = safe_get(payload, "vEgo")
       if _finite_positive(v_ego, allow_zero=True):

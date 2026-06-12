@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 from openpilot.tools.drive_lab.lateral_torque_event_report import (
   build_lateral_torque_ab_report,
   render_lateral_torque_ab_report,
 )
+from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 
 
 def main() -> None:
@@ -20,11 +20,8 @@ def main() -> None:
   parser.add_argument("--qlog", action="store_true", help="Prefer qlogs instead of rlogs")
   args = parser.parse_args()
 
-  from openpilot.tools.lib.logreader import LogReader, ReadMode
-
-  read_mode = ReadMode.QLOG if args.qlog else ReadMode.AUTO
-  baseline_msgs = list(LogReader(args.baseline, default_mode=read_mode, sort_by_time=True))
-  candidate_msgs = list(LogReader(args.candidate, default_mode=read_mode, sort_by_time=True))
+  baseline_msgs = load_route_msgs(args.baseline, qlog=args.qlog)
+  candidate_msgs = load_route_msgs(args.candidate, qlog=args.qlog)
   report = build_lateral_torque_ab_report(
     baseline_msgs,
     candidate_msgs,
@@ -32,7 +29,7 @@ def main() -> None:
     candidate_source=args.candidate_label,
     already_sorted=True,
   )
-  print(json.dumps(report.to_dict(), indent=2) if args.json else render_lateral_torque_ab_report(report))
+  print(output_report(report, json_output=args.json, renderer=render_lateral_torque_ab_report))
 
 
 if __name__ == "__main__":
