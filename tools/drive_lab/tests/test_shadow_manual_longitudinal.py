@@ -111,6 +111,15 @@ def test_missing_model_v2_requires_rlog(monkeypatch):
     extract_shadow_samples("route-a--3/qlog.zst", ReadMode.QLOG, ShadowReplayOptions())
 
 
+def test_missing_model_v2_takes_precedence_over_unset_cruise_option(monkeypatch):
+  monkeypatch.setattr(shadow_cli, "LogReader", lambda route, default_mode, sort_by_time: [
+    msg("carState", 0.0, vEgo=1.0, vCruise=255.0),
+  ])
+
+  with pytest.raises(MissingModelV2Error, match="requires rlogs"):
+    extract_shadow_samples("route-a--3/qlog.zst", ReadMode.QLOG, ShadowReplayOptions(fail_on_unset_cruise=True))
+
+
 def test_extract_shadow_samples_shapes_as_if_engaged_inputs(monkeypatch):
   msgs = required_shadow_msgs()
   planner = FakePlanner()

@@ -5,14 +5,21 @@ import argparse
 import json
 from collections import Counter
 from dataclasses import asdict, dataclass
-from math import isfinite
-from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
 
-from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type, safe_get
-from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
+from openpilot.tools.drive_lab.timeline import format_enum, safe_get
+from openpilot.tools.drive_lab.route_io import output_report
+from openpilot.tools.drive_lab.route_analysis import (
+  finite_list as _finite_list,
+  finite_or_none as _finite_or_none,
+  format_counts as _format_counts,
+  iter_route_messages,
+  min_optional as _min_optional,
+  route_duration,
+  route_identity,
+)
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 
@@ -282,13 +289,10 @@ def extract_leadless_stop_samples(route: str, read_mode: ReadMode) -> list[Leadl
     "traffic_control_ahead_distance": None,
   }
   samples: list[LeadlessStopSample] = []
-  base_mono_time: int | None = None
 
-  for msg in LogReader(route, default_mode=read_mode, sort_by_time=True):
-    if base_mono_time is None:
-      base_mono_time = int(getattr(msg, "logMonoTime", 0))
-    typ = msg_type(msg)
-    payload = msg_payload(msg)
+  for route_msg in iter_route_messages(route, read_mode, log_reader_factory=LogReader):
+    typ = route_msg.typ
+    payload = route_msg.payload
 
     if typ == "selfdriveState":
       state["selfdrive_active"] = bool(safe_get(payload, "active", False))
@@ -333,7 +337,7 @@ def extract_leadless_stop_samples(route: str, read_mode: ReadMode) -> list[Leadl
         route=route,
         route_id=route_id,
         segment=segment,
-        t=msg_time_s(msg, base_mono_time),
+        t=route_msg.t,
         v_ego=v_ego,
         a_ego=a_ego,
         gas_pressed=bool(safe_get(payload, "gasPressed", False)),
@@ -416,7 +420,7 @@ def build_route_profile(route: str, samples: list[LeadlessStopSample], episodes:
     route_id=route_id,
     segment=segment,
     samples=len(samples),
-    duration_s=max((sample.t for sample in samples), default=0.0) - min((sample.t for sample in samples), default=0.0),
+    duration_s=route_duration(samples),
     manual_moving_samples=sum(1 for sample in samples if is_manual_preview_sample(sample) and sample.v_ego > MOVING_SPEED),
     manual_leadless_moving_samples=sum(
       1 for sample in samples if is_manual_preview_sample(sample) and not sample.lead_status and sample.v_ego > MOVING_SPEED
@@ -551,27 +555,6 @@ def render_leadless_stop_summary(summary: LeadlessStopCorrelationSummary, max_ep
       + f"sources={_format_counts(cluster.planner_sources)}"
     )
   return "\n".join(lines)
-
-
-def route_identity(route: str) -> tuple[str, int | None]:
-  path = Path(str(route))
-  name = path.name
-  if name in {"qlog.zst", "rlog.zst", "qlog.bz2", "rlog.bz2"}:
-    if path.parent.name.isdigit() and "--" in path.parent.parent.name:
-      name = f"{path.parent.parent.name}--{path.parent.name}"
-    else:
-      name = path.parent.name
-  for suffix in (".qlog.zst", ".rlog.zst", ".qlog.bz2", ".rlog.bz2"):
-    if name.endswith(suffix):
-      name = name[:-len(suffix)]
-      break
-  if "--" not in name:
-    return str(route), None
-  prefix, segment_text = name.rsplit("--", 1)
-  try:
-    return prefix, int(segment_text)
-  except ValueError:
-    return name, None
 
 
 def model_stop_context(model_data: Any) -> tuple[float | None, float | None, float | None]:
@@ -905,7 +888,7 @@ def _nearest_lead(*leads: Any) -> tuple[bool, float | None, float | None]:
   if not valid_leads:
     return False, None, None
   d_rel, v_rel = min(valid_leads, key=lambda item: item[0])
-  return True, None if not isfinite(d_rel) else d_rel, v_rel
+  return True, None if d_rel == float("inf") else d_rel, v_rel
 
 
 def _traffic_control_counts(samples: Iterable[LeadlessStopSample]) -> dict[str, int]:
@@ -932,36 +915,6 @@ def _cluster_signal_samples(samples: list[LeadlessStopSample], gap_s: float = 1.
 
 def _sample_in_windows(sample: LeadlessStopSample, windows: list[tuple[str, float, float]]) -> bool:
   return any(sample.route == route and start_t <= sample.t <= end_t for route, start_t, end_t in windows)
-
-
-def _finite_or_none(value: Any) -> float | None:
-  if isinstance(value, int | float):
-    numeric = float(value)
-    if isfinite(numeric):
-      return numeric
-  return None
-
-
-def _finite_list(values: Any) -> list[float]:
-  if values is None:
-    return []
-  try:
-    iterable = list(values)
-  except TypeError:
-    finite_value = _finite_or_none(values)
-    return [] if finite_value is None else [finite_value]
-  return [finite_value for value in iterable if (finite_value := _finite_or_none(value)) is not None]
-
-
-def _min_optional(values: Iterable[float | None]) -> float | None:
-  finite_values = [value for value in values if value is not None and isfinite(value)]
-  return min(finite_values) if finite_values else None
-
-
-def _format_counts(counts: dict[str, int]) -> str:
-  if not counts:
-    return "none"
-  return ", ".join(f"{key}={value}" for key, value in sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
 def _format_optional_seconds(value: float | None) -> str:

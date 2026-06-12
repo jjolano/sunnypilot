@@ -8,7 +8,8 @@ from typing import Any
 
 import numpy as np
 
-from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type, safe_get
+from openpilot.tools.drive_lab.route_analysis import build_route_messages
+from openpilot.tools.drive_lab.timeline import format_enum, safe_get
 
 
 @dataclass(frozen=True)
@@ -175,12 +176,11 @@ def load_lateral_profile(path: str | Path) -> LateralOscillationProfile:
 def _extract_lateral_samples(msgs: list[Any]) -> list[_LateralSample]:
   if not msgs:
     return []
-  base_mono_time = int(getattr(msgs[0], "logMonoTime", 0))
   latest: dict[str, Any] = {}
   samples: list[_LateralSample] = []
-  for msg in msgs:
-    typ = msg_type(msg)
-    payload = msg_payload(msg)
+  for route_msg in build_route_messages(msgs):
+    typ = route_msg.typ
+    payload = route_msg.payload
     if typ in ("carState", "carControl", "carOutput", "modelV2"):
       latest[typ] = payload
     if typ != "controlsState":
@@ -194,7 +194,7 @@ def _extract_lateral_samples(msgs: list[Any]) -> list[_LateralSample]:
     lateral_payload = safe_get(lateral_state, format_enum(lateral_state.which()) if lateral_state is not None and hasattr(lateral_state, "which") else "torqueState", lateral_state)
     model_path = safe_get(payload, "modelPathState")
     samples.append(_LateralSample(
-      t=msg_time_s(msg, base_mono_time),
+      t=route_msg.t,
       v_ego=_finite_float(safe_get(car_state, "vEgo")),
       lat_active=bool(safe_get(lateral_payload, "active", False)) and bool(safe_get(car_control, "latActive", False)),
       steering_pressed=bool(safe_get(car_state, "steeringPressed", False)),

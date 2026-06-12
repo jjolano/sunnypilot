@@ -6,13 +6,12 @@ import copy
 import json
 from collections import Counter
 from dataclasses import asdict, dataclass
-from math import isfinite
 from typing import Any, Callable
 
 from cereal import messaging
 from openpilot.common.constants import CV
 from openpilot.common.prefix import OpenpilotPrefix
-from openpilot.tools.drive_lab.compare_manual_planner_targets import (
+from openpilot.tools.drive_lab.planner_target_analysis import (
   DEFAULT_EPISODE_CONTEXT_S,
   DEFAULT_EPISODE_GAP_S,
   DEFAULT_HIGH_JERK_THRESHOLD,
@@ -21,18 +20,24 @@ from openpilot.tools.drive_lab.compare_manual_planner_targets import (
   PlannerTargetEpisode,
   PlannerTargetSample,
   UNSET_CRUISE_KPH,
-  _correlation,
-  _format_counts,
-  _format_optional,
-  _mean,
-  _percentile,
-  _ratio,
   build_suspicious_episodes,
   high_plan_jerk_pairs,
   is_opposite_intent,
   is_strong_opposite_intent,
 )
-from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type, safe_get
+from openpilot.tools.drive_lab.route_analysis import (
+  correlation as _correlation,
+  finite_or_none as _finite_or_none,
+  format_counts as _format_counts,
+  format_optional as _format_optional,
+  iter_route_messages,
+  mean as _mean,
+  percentile as _percentile,
+  ratio as _ratio,
+  route_duration,
+  route_identity,
+)
+from openpilot.tools.drive_lab.timeline import format_enum, safe_get
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 
@@ -194,10 +199,6 @@ def main() -> None:
 
 def extract_shadow_samples(route: str, read_mode: ReadMode, options: ShadowReplayOptions,
                            planner_factory: PlannerFactory | None = None) -> list[PlannerTargetSample]:
-  msgs = list(LogReader(route, default_mode=read_mode, sort_by_time=True))
-  if not any(msg_type(msg) == "modelV2" for msg in msgs):
-    raise MissingModelV2Error(f"{route}: no modelV2 messages found; shadow replay requires rlogs")
-
   route_id, segment = route_identity(route)
   latest_raw: dict[str, Any] = {}
   latest_shadow: dict[str, Any] = {}
@@ -206,48 +207,58 @@ def extract_shadow_samples(route: str, read_mode: ReadMode, options: ShadowRepla
   car_params_sp = None
   planner = None
   samples: list[PlannerTargetSample] = []
-  base_mono_time: int | None = None
   latest_car_state_inferred_cruise = False
+  seen_model_v2 = False
+  route_messages = iter_route_messages(route, read_mode, log_reader_factory=LogReader)
 
-  for msg in msgs:
-    if base_mono_time is None:
-      base_mono_time = int(getattr(msg, "logMonoTime", 0))
-    typ = msg_type(msg)
-    payload = msg_payload(msg)
-    mono_time = int(getattr(msg, "logMonoTime", 0))
+  try:
+    for route_msg in route_messages:
+      typ = route_msg.typ
+      payload = route_msg.payload
+      mono_time = route_msg.log_mono_time
 
-    if typ == "carParams":
-      car_params = payload
-      continue
-    if typ == "carParamsSP":
-      car_params_sp = payload
-      continue
-    if typ in REQUIRED_SHADOW_SERVICES or typ in OPTIONAL_SHADOW_SERVICES:
-      latest_raw[typ] = payload
-      shadow_payload, inferred = shape_shadow_payload(typ, payload, options)
-      latest_shadow[typ] = shadow_payload
-      latest_mono_time[typ] = mono_time
-      if typ == "carState":
-        latest_car_state_inferred_cruise = inferred
+      if typ == "modelV2":
+        seen_model_v2 = True
 
-    if typ != "modelV2" or not shadow_inputs_ready(latest_shadow):
-      continue
-    if car_params is None or car_params_sp is None:
-      continue
-    add_optional_defaults(latest_shadow, latest_mono_time, mono_time)
-    if planner is None:
-      factory = planner_factory or default_planner_factory
-      planner = factory(car_params, car_params_sp, float(safe_get(latest_shadow["carState"], "vEgo", 0.0)), options.initial_a)
-      configure_shadow_stack(planner, options.stack, car_params, car_params_sp)
+      if typ == "carParams":
+        car_params = payload
+        continue
+      if typ == "carParamsSP":
+        car_params_sp = payload
+        continue
+      if typ in REQUIRED_SHADOW_SERVICES or typ in OPTIONAL_SHADOW_SERVICES:
+        latest_raw[typ] = payload
+        shadow_payload, inferred = shape_shadow_payload(typ, payload, options)
+        latest_shadow[typ] = shadow_payload
+        latest_mono_time[typ] = mono_time
+        if typ == "carState":
+          latest_car_state_inferred_cruise = inferred
 
-    sm = ShadowSubMaster(latest_shadow, latest_mono_time)
-    if hasattr(getattr(planner, "sla", None), "update_car_state"):
-      planner.sla.update_car_state(sm["carState"])
-    planner.update(sm)
-    samples.append(build_shadow_sample(
-      route, route_id, segment, msg_time_s(msg, base_mono_time), latest_raw, latest_shadow, planner,
-      latest_car_state_inferred_cruise,
-    ))
+      if typ != "modelV2" or not shadow_inputs_ready(latest_shadow):
+        continue
+      if car_params is None or car_params_sp is None:
+        continue
+      add_optional_defaults(latest_shadow, latest_mono_time, mono_time)
+      if planner is None:
+        factory = planner_factory or default_planner_factory
+        planner = factory(car_params, car_params_sp, float(safe_get(latest_shadow["carState"], "vEgo", 0.0)), options.initial_a)
+        configure_shadow_stack(planner, options.stack, car_params, car_params_sp)
+
+      sm = ShadowSubMaster(latest_shadow, latest_mono_time)
+      if hasattr(getattr(planner, "sla", None), "update_car_state"):
+        planner.sla.update_car_state(sm["carState"])
+      planner.update(sm)
+      samples.append(build_shadow_sample(
+        route, route_id, segment, route_msg.t, latest_raw, latest_shadow, planner,
+        latest_car_state_inferred_cruise,
+      ))
+  except ShadowReplayError:
+    if seen_model_v2 or any(route_msg.typ == "modelV2" for route_msg in route_messages):
+      raise
+    raise MissingModelV2Error(f"{route}: no modelV2 messages found; shadow replay requires rlogs")
+
+  if not seen_model_v2:
+    raise MissingModelV2Error(f"{route}: no modelV2 messages found; shadow replay requires rlogs")
 
   return samples
 
@@ -336,13 +347,12 @@ def render_shadow_summary(summary: ShadowReplaySummary, max_episodes: int = 12) 
 
 def build_shadow_route_profile(route: str, samples: list[PlannerTargetSample]) -> ShadowRouteProfile:
   route_id, segment = route_identity(route)
-  duration_s = max((sample.t for sample in samples), default=0.0) - min((sample.t for sample in samples), default=0.0)
   return ShadowRouteProfile(
     route=route,
     route_id=route_id,
     segment=segment,
     samples=len(samples),
-    duration_s=duration_s,
+    duration_s=route_duration(samples),
     moving_samples=sum(1 for sample in samples if sample.v_ego > MOVING_SPEED),
     inferred_cruise_samples=sum(1 for sample in samples if is_inferred_cruise_sample(sample)),
     stack_counts=dict(Counter(sample.sp_stack for sample in samples)),
@@ -501,18 +511,6 @@ def stack_display_name(stack: object) -> str:
     "custom-recommended": "customRecommended",
     "custom-2.0": "customV2",
   }.get(text, text)
-
-
-def route_identity(route: str) -> tuple[str, int | None]:
-  from openpilot.tools.drive_lab.compare_manual_planner_targets import route_identity as _route_identity
-
-  return _route_identity(route)
-
-
-def _finite_or_none(value: Any) -> float | None:
-  if isinstance(value, int | float) and isfinite(float(value)):
-    return float(value)
-  return None
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ from math import isfinite
 from typing import Any, Callable, Iterable
 
 from openpilot.tools.drive_lab import profile_leadless_stops
-from openpilot.tools.drive_lab.compare_manual_planner_targets import (
+from openpilot.tools.drive_lab.planner_target_analysis import (
   MOVING_SPEED,
   PlannerTargetSample,
   is_opposite_intent,
@@ -44,7 +44,8 @@ from openpilot.tools.drive_lab.shadow_manual_longitudinal import (
   ShadowReplayOptions,
   extract_shadow_samples,
 )
-from openpilot.tools.drive_lab.timeline import msg_payload, msg_time_s, msg_type, safe_get
+from openpilot.tools.drive_lab.route_analysis import iter_route_messages, route_identity
+from openpilot.tools.drive_lab.timeline import safe_get
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 
@@ -267,14 +268,11 @@ def qlog_samples_to_signal_samples(route: str, read_mode: ReadMode) -> list[Sign
     "fcw": False,
     "v_cruise_kph": None,
   }
-  base_mono = None
-  route_id_str, seg_int = _route_identity(route)
-  for msg in LogReader(route, default_mode=read_mode, sort_by_time=True):
-    if base_mono is None:
-      base_mono = int(getattr(msg, "logMonoTime", 0))
-    t = msg_time_s(msg, base_mono)
-    typ = msg_type(msg)
-    payload = msg_payload(msg)
+  route_id_str, seg_int = route_identity(route)
+  for route_msg in iter_route_messages(route, read_mode, log_reader_factory=LogReader):
+    t = route_msg.t
+    typ = route_msg.typ
+    payload = route_msg.payload
     if typ == "selfdriveState":
       state["selfdrive_active"] = bool(safe_get(payload, "active", False))
     elif typ == "carControl":
@@ -377,20 +375,6 @@ def _planner_from_leadless(ss: LeadlessStopSample) -> PlannerTargetSample:
     model_desired_accel=ss.model_desired_accel,
     model_should_stop=ss.model_should_stop,
   )
-
-
-def _route_identity(route: str) -> tuple[str, int | None]:
-  import os
-  from pathlib import Path
-  path = Path(str(route))
-  name = path.parent.name if path.name in {"qlog.zst", "rlog.zst", "qlog.bz2", "rlog.bz2"} else path.name
-  if "--" not in name:
-    return str(route), None
-  prefix, segment = name.rsplit("--", 1)
-  try:
-    return prefix, int(segment)
-  except ValueError:
-    return name, None
 
 
 def is_stop_go_candidate(sample: SignalSample) -> bool:
