@@ -6,8 +6,9 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 LONGCONTROL = REPO_ROOT / "selfdrive" / "controls" / "lib" / "longcontrol.py"
 LONGITUDINAL_PLANNER_SP = REPO_ROOT / "sunnypilot" / "selfdrive" / "controls" / "lib" / "longitudinal_planner.py"
 PARAMS_KEYS = REPO_ROOT / "common" / "params_keys.h"
-PARAMS_METADATA = REPO_ROOT / "sunnypilot" / "sunnylink" / "params_metadata.json"
 CRUISE_SETTINGS = REPO_ROOT / "selfdrive" / "ui" / "sunnypilot" / "layouts" / "settings" / "cruise.py"
+SUNNYLINK_SETTINGS = REPO_ROOT / "sunnypilot" / "sunnylink" / "settings_ui.json"
+SUNNYLINK_CRUISE_SETTINGS_SRC = REPO_ROOT / "sunnypilot" / "sunnylink" / "settings_ui_src" / "pages" / "cruise.yaml"
 LONG_MASS_DRAG_LEARNER = REPO_ROOT / "sunnypilot" / "selfdrive" / "controls" / "lib" / "long_learned_mass_drag.py"
 LONGCONTROL_EXT = REPO_ROOT / "sunnypilot" / "selfdrive" / "controls" / "lib" / "longcontrol_ext.py"
 
@@ -34,8 +35,9 @@ def test_longitudinal_mass_drag_learning_is_removed():
     LONGCONTROL.read_text(encoding="utf-8"),
     LONGITUDINAL_PLANNER_SP.read_text(encoding="utf-8"),
     PARAMS_KEYS.read_text(encoding="utf-8"),
-    PARAMS_METADATA.read_text(encoding="utf-8"),
     CRUISE_SETTINGS.read_text(encoding="utf-8"),
+    SUNNYLINK_SETTINGS.read_text(encoding="utf-8"),
+    SUNNYLINK_CRUISE_SETTINGS_SRC.read_text(encoding="utf-8"),
   )
   removed_tokens = (
     "LongLearnedMassDrag",

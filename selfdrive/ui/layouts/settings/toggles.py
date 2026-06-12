@@ -167,9 +167,9 @@ class TogglesLayout(Widget):
     self._scroller.render(rect)
 
   def _toggle_callback(self, state: bool, param: str):
-    self._params.put_bool(param, state)
+    self._params.put_bool(param, state, block=True)
     if self._toggle_defs[param][3]:
-      self._params.put_bool("OnroadCycleRequested", True)
+      self._params.put_bool("OnroadCycleRequested", True, block=True)
 
   def _set_longitudinal_personality(self, button_index: int):
-    self._params.put("LongitudinalPersonality", button_index)
+    self._params.put("LongitudinalPersonality", button_index, block=True)

@@ -14,7 +14,8 @@ FORBIDDEN_SYMBOLS_BY_FILE = {
   "sunnypilot/mapd/live_map_data/mapd_v2_map_data.py": ("get_road_curvatures", "MAP_CURVATURE"),
   "sunnypilot/mapd/live_map_data/osm_map_data.py": ("get_road_curvatures",),
   "sunnypilot/selfdrive/controls/controlsd_ext.py": ("LateralMapCurvatureFallback", "lateral_map_curvature"),
-  "sunnypilot/sunnylink/params_metadata.json": ("LateralMapCurvatureFallback",),
+  "sunnypilot/sunnylink/settings_ui.json": ("LateralMapCurvatureFallback",),
+  "sunnypilot/sunnylink/settings_ui_src/pages/steering.yaml": ("LateralMapCurvatureFallback",),
 }
 
 
