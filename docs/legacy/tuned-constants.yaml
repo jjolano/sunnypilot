@@ -1,0 +1,1166 @@
+# Tuned constants extracted from the frozen custom branch (8a97000e19).
+# Source of truth for reimplementation values; meanings are refined per port phase.
+
+lateral_controller:
+  latcontrol_torque_v2:
+    source: sunnypilot/selfdrive/controls/lib/latcontrol_torque_v2.py
+    constants:
+      KP:
+        value: "1.0"
+        line: 24
+      KI:
+        value: "0.2"
+        line: 25
+      KD:
+        value: "0.0"
+        line: 26
+      INTERP_SPEEDS:
+        value: "[1, 1.5, 2.0, 3.0, 5, 7.5, 10, 15, 30]"
+        line: 27
+      KP_INTERP:
+        value: "[165, 90, 52, 26, 9.0, 5.5, 3.5, 2.0, KP]"
+        line: 29
+      LP_FILTER_CUTOFF_HZ:
+        value: "1.2"
+        line: 31
+      LAT_ACCEL_REQUEST_BUFFER_SECONDS:
+        value: "1.0"
+        line: 32
+      FRICTION_THRESHOLD:
+        value: "0.3"
+        line: 33
+      LOW_DEMAND_FRICTION_FULL_LAT_ACCEL:
+        value: "0.35"
+        line: 34
+      LOW_SPEED_UNWIND_VEGO:
+        value: "8.0"
+        line: 37
+      LOW_SPEED_UNWIND_SETPOINT:
+        value: "0.2"
+        line: 38
+      LOW_SPEED_UNWIND_MARGIN:
+        value: "0.08"
+        line: 39
+      LOW_SPEED_UNWIND_JERK:
+        value: "0.5"
+        line: 40
+      LOW_SPEED_UNWIND_GAIN_SPEED:
+        value: "8.0"
+        line: 41
+      MEASUREMENT_SMOOTHER_MIN_VEGO:
+        value: "5.0"
+        line: 42
+      MEASUREMENT_SMOOTHER_CORRECTION_GAIN:
+        value: "0.35"
+        line: 43
+      MEASUREMENT_SMOOTHER_MAX_PREDICTIVE_JERK:
+        value: "5.0"
+        line: 44
+      MEASUREMENT_SMOOTHER_IMPLAUSIBLE_JERK:
+        value: "80.0"
+        line: 45
+      MEASUREMENT_SMOOTHER_MAX_RAW_ERROR:
+        value: "1.0"
+        line: 46
+      MODEL_PLAN_RELEASE_RATE_THRESHOLD:
+        value: "0.05"
+        line: 47
+      REQUEST_BUFFER_INCREASE_RATE_THRESHOLD:
+        value: "0.05"
+        line: 48
+      V21_OUTPUT_SLEW_RATE_BP:
+        value: "[0.0, 5.0, 10.0, 20.0, 30.0, 40.0]"
+        line: 50
+      V21_OUTPUT_SLEW_RATE_V:
+        value: "[1.40, 2.00, 3.00, 4.20, 5.00, 5.60]"
+        line: 51
+      V21_SIGN_CHANGE_SLEW_RATE_BP:
+        value: "[0.0, 5.0, 10.0, 20.0, 30.0, 40.0]"
+        line: 52
+      V21_SIGN_CHANGE_SLEW_RATE_V:
+        value: "[0.90, 1.20, 1.80, 2.40, 3.00, 3.40]"
+        line: 53
+      V21_SAME_DIRECTION_LIMIT_RATE_BP:
+        value: "[0.0, 10.0, 20.0, 30.0, 40.0]"
+        line: 54
+      V21_SAME_DIRECTION_LIMIT_RATE_V:
+        value: "[1.30, 1.30, 2.10, 3.20, 3.60]"
+        line: 55
+      V21_SAME_DIRECTION_LIMIT_CAP:
+        value: "0.85"
+        line: 56
+      V21_HIGH_RATE_START_DEG:
+        value: "80.0"
+        line: 57
+      V21_HIGH_RATE_FULL_DEG:
+        value: "100.0"
+        line: 58
+      V21_HIGH_RATE_MIN_CAP:
+        value: "0.62"
+        line: 59
+      V21_HIGH_RATE_SLEW_SCALE:
+        value: "0.70"
+        line: 60
+      V21_UNDER_RESPONSE_MARGIN:
+        value: "0.12"
+        line: 61
+      V21_UNDER_RESPONSE_FULL_SPEED:
+        value: "9.0"
+        line: 62
+      V21_UNDER_RESPONSE_FADE_SPEED:
+        value: "12.0"
+        line: 63
+      V21_SIGN_THRESHOLD:
+        value: "0.05"
+        line: 64
+  torque_conservative_output_shaper:
+    source: sunnypilot/selfdrive/controls/lib/torque_conservative_output_shaper.py
+    constants:
+      ISO_LATERAL_ACCEL:
+        value: "3.0"
+        line: 5
+      ISO_ACCEL_MARGIN:
+        value: "2.6"
+        line: 6
+      SIGN_THRESHOLD:
+        value: "0.05"
+        line: 7
+      OVER_RESPONSE_MARGIN:
+        value: "0.12"
+        line: 8
+      UNDER_RESPONSE_MARGIN:
+        value: "0.12"
+        line: 9
+      OVER_RESPONSE_DYNAMIC_START:
+        value: "0.10"
+        line: 10
+      OVER_RESPONSE_MODERATE_EXCESS:
+        value: "0.35"
+        line: 11
+      OVER_RESPONSE_SEVERE_EXCESS:
+        value: "0.60"
+        line: 12
+      BUMP_JERK_THRESHOLD:
+        value: "2.0"
+        line: 13
+      BUMP_LOOKAHEAD_DELTA_THRESHOLD:
+        value: "1.4"
+        line: 14
+      LOW_SPEED_THRESHOLD:
+        value: "8.0"
+        line: 15
+      HIGH_OUTPUT_FRACTION:
+        value: "0.70"
+        line: 16
+      OUTPUT_RATE_RECOVERY_WINDOW:
+        value: "0.40"
+        line: 17
+      OUTPUT_RECOVERY_RATE:
+        value: "2.50"
+        line: 18
+      OUTPUT_SIGN_TRANSITION_RATE:
+        value: "4.00"
+        line: 19
+      AUTHORITY_RECOVERY_LOW_SPEED:
+        value: "8.0"
+        line: 20
+      AUTHORITY_RECOVERY_MID_SPEED:
+        value: "15.0"
+        line: 21
+      AUTHORITY_RECOVERY_HIGH_SPEED:
+        value: "25.0"
+        line: 22
+      AUTHORITY_RECOVERY_LOW_SPEED_RATE:
+        value: "1.20"
+        line: 23
+      AUTHORITY_RECOVERY_HIGH_SPEED_RATE:
+        value: "4.00"
+        line: 24
+      AUTHORITY_RECOVERY_BYPASS_UNDER_RESPONSE:
+        value: "0.50"
+        line: 25
+      STEERING_RATE_COMFORT_START:
+        value: "15.0"
+        line: 26
+      STEERING_RATE_COMFORT_FULL:
+        value: "80.0"
+        line: 27
+      STEERING_RATE_COMFORT_RATE:
+        value: "0.75"
+        line: 28
+      ACTUATOR_LAG_COMFORT_START:
+        value: "15.0"
+        line: 29
+      ACTUATOR_LAG_COMFORT_RATE:
+        value: "0.35"
+        line: 30
+      ACTUATOR_LAG_COMFORT_LOW_SPEED:
+        value: "8.0"
+        line: 31
+      ACTUATOR_LAG_COMFORT_MID_SPEED:
+        value: "15.0"
+        line: 32
+      ACTUATOR_LAG_COMFORT_HIGH_SPEED:
+        value: "25.0"
+        line: 33
+      STALE_ACTUATOR_REVERSAL_THRESHOLD:
+        value: "0.05"
+        line: 34
+      SAFETY_LIMITED_RAMP_ERROR_THRESHOLD:
+        value: "0.10"
+        line: 35
+      SAFETY_LIMITED_RAMP_FOLLOW_MARGIN:
+        value: "0.15"
+        line: 36
+      SAFETY_LIMITED_RAMP_APPLIED_RECOVERY_THRESHOLD:
+        value: "0.05"
+        line: 37
+      SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FLOOR:
+        value: "0.45"
+        line: 38
+      SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FULL_SPEED:
+        value: "9.0"
+        line: 39
+      SAFETY_LIMITED_RAMP_UNDER_RESPONSE_FADE_SPEED:
+        value: "12.0"
+        line: 40
+      HIGH_SPEED_ACTUATOR_LAG_UNWIND_SPEED:
+        value: "16.0"
+        line: 41
+      HIGH_SPEED_ACTUATOR_LAG_UNWIND_MARGIN:
+        value: "0.15"
+        line: 42
+      HIGH_SPEED_ACTUATOR_LAG_UNWIND_GAP:
+        value: "0.25"
+        line: 43
+      HIGH_SPEED_ACTUATOR_LAG_UNWIND_CAP:
+        value: "0.70"
+        line: 44
+      SAFETY_LIMITED_SIGN_HOLD_THRESHOLD:
+        value: "0.35"
+        line: 45
+      SAFETY_LIMITED_SIGN_HOLD_TIME:
+        value: "0.12"
+        line: 46
+      DEFAULT_DT:
+        value: "0.01"
+        line: 47
+      NORMAL_CAP:
+        value: "1.00"
+        line: 49
+      LOW_SPEED_STEER_LIMITED_CAP:
+        value: "0.92"
+        line: 50
+      BUMP_CAP:
+        value: "0.90"
+        line: 51
+      NEAR_ISO_ACCEL_CAP:
+        value: "0.85"
+        line: 52
+      OVER_ISO_ACCEL_CAP:
+        value: "0.80"
+        line: 53
+      OVER_RESPONSE_CAP:
+        value: "0.85"
+        line: 54
+      OVER_RESPONSE_MODERATE_CAP:
+        value: "0.65"
+        line: 55
+      OVER_RESPONSE_SEVERE_CAP:
+        value: "0.45"
+        line: 56
+      SIGN_CONFLICT_CAP:
+        value: "0.80"
+        line: 57
+      OVERRIDE_RELEASE_CAP:
+        value: "0.80"
+        line: 58
+      SAME_SIGN_UNWIND_CAP:
+        value: "0.30"
+        line: 59
+      STEERING_RATE_COMFORT_MIN_CAP:
+        value: "0.80"
+        line: 60
+      ACTUATOR_LAG_COMFORT_LOW_SPEED_CAP:
+        value: "0.55"
+        line: 61
+      ACTUATOR_LAG_COMFORT_MID_SPEED_CAP:
+        value: "0.70"
+        line: 62
+      ACTUATOR_LAG_COMFORT_HIGH_SPEED_CAP:
+        value: "0.85"
+        line: 63
+      STALE_ACTUATOR_REVERSAL_CAP:
+        value: "0.35"
+        line: 64
+      STALE_ACTUATOR_REVERSAL_RATE:
+        value: "0.20"
+        line: 65
+  torque_guarded_response_assist:
+    source: sunnypilot/selfdrive/controls/lib/torque_guarded_response_assist.py
+    constants:
+      RESPONSE_DEFICIT_THRESHOLD:
+        value: "0.04"
+        line: 7
+      OVER_RESPONSE_BIAS_MARGIN:
+        value: "0.12"
+        line: 8
+      STEADY_HOLD_LAT_ACCEL_THRESHOLD:
+        value: "0.12"
+        line: 9
+      STEADY_HOLD_JERK_THRESHOLD:
+        value: "0.35"
+        line: 10
+      LOW_DEMAND_CURVATURE_THRESHOLD:
+        value: "0.02"
+        line: 11
+      PLANNED_UNWIND_JERK_THRESHOLD:
+        value: "0.2"
+        line: 12
+      ASSIST_GAIN:
+        value: "1.6"
+        line: 13
+      ASSIST_BUILD_RATE:
+        value: "0.8"
+        line: 14
+      ASSIST_DECAY_RATE:
+        value: "1.6"
+        line: 15
+      CURVE_EXIT_RESPONSE_DEFICIT_THRESHOLD:
+        value: "0.02"
+        line: 16
+      CURVE_EXIT_MIN_LAT_ACCEL:
+        value: "0.6"
+        line: 17
+      CURVE_EXIT_MIN_CURVATURE:
+        value: "0.02"
+        line: 18
+      CURVE_EXIT_MIN_UNDER_RESPONSE:
+        value: "0.18"
+        line: 19
+      CURVE_EXIT_MIN_UNWIND_JERK:
+        value: "0.15"
+        line: 20
+      CURVE_EXIT_MAX_LOOKAHEAD_JERK:
+        value: "0.05"
+        line: 21
+      CURVE_EXIT_ASSIST_GAIN:
+        value: "0.8"
+        line: 22
+      CURVE_EXIT_ASSIST_CAP_SCALE:
+        value: "0.4"
+        line: 23
+      CURVE_EXIT_ASSIST_BUILD_RATE:
+        value: "0.4"
+        line: 24
+      CURVE_PREPOSITION_RESPONSE_DEFICIT_THRESHOLD:
+        value: "0.02"
+        line: 25
+      CURVE_PREPOSITION_MIN_LAT_ACCEL:
+        value: "0.8"
+        line: 26
+      CURVE_PREPOSITION_MIN_CURVATURE:
+        value: "0.02"
+        line: 27
+      CURVE_PREPOSITION_MIN_UNDER_RESPONSE:
+        value: "0.2"
+        line: 28
+      CURVE_PREPOSITION_MIN_DESIRED_JERK:
+        value: "0.25"
+        line: 29
+      CURVE_PREPOSITION_MIN_JERK_DEFICIT:
+        value: "0.25"
+        line: 30
+      CURVE_PREPOSITION_MIN_OUTPUT_FRACTION:
+        value: "0.55"
+        line: 31
+      CURVE_PREPOSITION_MAX_OUTPUT_FRACTION:
+        value: "0.9"
+        line: 32
+      CURVE_PREPOSITION_ASSIST_DEFICIT_GAIN:
+        value: "0.5"
+        line: 33
+      CURVE_PREPOSITION_ASSIST_JERK_GAIN:
+        value: "0.02"
+        line: 34
+      CURVE_PREPOSITION_ASSIST_CAP_SCALE:
+        value: "0.35"
+        line: 35
+      CURVE_PREPOSITION_ASSIST_BUILD_RATE:
+        value: "0.35"
+        line: 36
+      BIAS_TARGET_GAIN:
+        value: "0.6"
+        line: 37
+      BIAS_BUILD_RATE:
+        value: "0.18"
+        line: 38
+      BIAS_DECAY_RATE:
+        value: "0.08"
+        line: 39
+      RELEASE_DECAY_RATE:
+        value: "0.24"
+        line: 40
+      UNWIND_TRIM_RATE:
+        value: "1.2"
+        line: 41
+      SIGN_THRESHOLD:
+        value: "0.05"
+        line: 42
+      MIN_VEGO:
+        value: "4.0"
+        line: 43
+      BUMP_JERK_THRESHOLD:
+        value: "2.0"
+        line: 44
+      BUMP_LOOKAHEAD_DELTA_THRESHOLD:
+        value: "1.4"
+        line: 45
+      FREEZE_TIME:
+        value: "0.30"
+        line: 46
+      ASSIST_CAP_BP:
+        value: "[0.0, 5.0, 10.0, 20.0, 30.0]"
+        line: 47
+      ASSIST_CAP_V:
+        value: "[0.04, 0.06, 0.10, 0.14, 0.18]"
+        line: 48
+      BIAS_CAP_BP:
+        value: "[0.0, 5.0, 10.0, 20.0, 30.0]"
+        line: 49
+      BIAS_CAP_V:
+        value: "[0.02, 0.03, 0.05, 0.07, 0.08]"
+        line: 50
+      LANE_CHANGE_ASSIST_SCALE:
+        value: "0.75"
+        line: 51
+      LANE_CHANGE_BIAS_SCALE:
+        value: "0.6"
+        line: 52
+      ACTIVE_RELEASE_THRESHOLD:
+        value: "1e-4"
+        line: 53
+  torque_disturbance:
+    source: sunnypilot/selfdrive/controls/lib/torque_disturbance.py
+    constants:
+      MEASUREMENT_RESET_MIN_VEGO:
+        value: "5.0"
+        line: 17
+  torque_over_response_attenuator:
+    source: sunnypilot/selfdrive/controls/lib/torque_over_response_attenuator.py
+    constants:
+      OVER_RESPONSE_ATTENUATION_MARGIN:
+        value: "0.12"
+        line: 1
+      OVER_RESPONSE_ATTENUATION_FULL_EXCESS:
+        value: "0.60"
+        line: 2
+      OVER_RESPONSE_ATTENUATION_MIN_SCALE:
+        value: "0.30"
+        line: 3
+  torque_low_speed:
+    source: sunnypilot/selfdrive/controls/lib/torque_low_speed.py
+    constants:
+      LOW_SPEED_PID_GAIN_FLOOR:
+        value: "3.0"
+        line: 1
+  speed_aware_torque:
+    source: sunnypilot/selfdrive/locationd/speed_aware_torque.py
+    constants:
+      SPEED_BUCKET_BP:
+        value: "[0, 10, 20, 30, 40]"
+        line: 8
+      SPEED_BUCKET_LABELS:
+        value: "[\"0_10\", \"10_20\", \"20_30\", \"30_40\", \"40_plus\"]"
+        line: 9
+
+lateral_demand:
+  model_path_processor:
+    source: selfdrive/controls/lib/model_path_processor.py
+    constants:
+      PATH_VALID_MIN_LEN:
+        value: "17"
+        line: 12
+      PATH_VALID_MIN_X_SPAN:
+        value: "1.0"
+        line: 13
+      MIN_CORE_PATH_X_STEP:
+        value: "1e-3"
+        line: 14
+      MAX_CORE_PATH_LATERAL_SLOPE:
+        value: "1.0"
+        line: 15
+      PATH_CURVATURE_ACTION_T:
+        value: "0.25"
+        line: 16
+      MIN_JUMP_CHECK_SPEED:
+        value: "4.0"
+        line: 17
+      MAX_LAT_ACCEL_JUMP:
+        value: "3.0"
+        line: 18
+      MAX_HARD_LAT_ACCEL_JUMP:
+        value: "5.0"
+        line: 19
+      MAX_PATH_CURVATURE_DISAGREEMENT:
+        value: "3.0"
+        line: 20
+      MAX_PATH_Y_STD:
+        value: "0.8"
+        line: 21
+      TURN_INTENT_MAX_PATH_Y_STD:
+        value: "1.8"
+        line: 22
+      TURN_INTENT_MIN_CURVATURE:
+        value: "0.002"
+        line: 23
+      TURN_INTENT_MAX_PATH_CURVATURE_DISAGREEMENT:
+        value: "0.75"
+        line: 24
+      LOW_LANE_LINE_PROB:
+        value: "0.35"
+        line: 25
+      LOW_LANE_CONFIDENCE_SUSTAIN_FRAMES:
+        value: "3"
+        line: 26
+      LOW_LANE_CONFIDENCE_SUSTAINED_QUALITY:
+        value: "0.65"
+        line: 27
+      HIGH_FRAME_DROP_PERC:
+        value: "20.0"
+        line: 28
+      LOW_QUALITY_BLEND_THRESHOLD:
+        value: "0.75"
+        line: 29
+      LOW_QUALITY_BLEND_MIN_ALPHA:
+        value: "0.4"
+        line: 30
+      HARD_INVALID_FALLBACK_MEASURED_ALPHA:
+        value: "0.25"
+        line: 31
+      SOFT_GATE_HOLD_FRAMES:
+        value: "2"
+        line: 32
+      LOW_SPEED_SOFT_GATE_SPEED:
+        value: "12.0"
+        line: 33
+      LOW_SPEED_SOFT_GATE_MAX_EXTRA_FRAMES:
+        value: "3"
+        line: 34
+      SOFT_GATE_HOLD_QUALITY:
+        value: "0.70"
+        line: 35
+      SOFT_GATE_REASONS:
+        value: "frozenset((\"high_path_std\", \"frame_drop\", \"path_disagreement\", \"low_lane_confidence\"))"
+        line: 36
+      LOW_SPEED_UNTRUSTED_CURVATURE_STEP:
+        value: "0.0025"
+        line: 37
+      LOW_SPEED_CURVE_RETENTION_FRAMES:
+        value: "12"
+        line: 38
+      LOW_SPEED_CURVE_RETENTION_MIN_CURVATURE:
+        value: "0.008"
+        line: 39
+      HARD_INVALID_RECOVERY_LAT_JERK:
+        value: "2.0"
+        line: 40
+      LOW_SPEED_CONFIRMED_TURN_MIN_LAT_ACCEL:
+        value: "0.05"
+        line: 41
+      LOW_SPEED_CONFIRMED_TURN_MAX_LAT_ACCEL_DELTA:
+        value: "0.75"
+        line: 42
+      SMOOTHED_CURVATURE_MIN_SPEED:
+        value: "5.0"
+        line: 43
+      SMOOTHED_CURVATURE_MIN_SAMPLES:
+        value: "5"
+        line: 44
+      SMOOTHED_CURVATURE_SPEED_BP:
+        value: "[5.0, 15.0, 30.0]"
+        line: 45
+      SMOOTHED_CURVATURE_WINDOW_S:
+        value: "[0.28, 0.45, 0.65]"
+        line: 46
+      SMOOTHED_CURVATURE_BLEND_ALPHA:
+        value: "[0.20, 0.35, 0.50]"
+        line: 47
+      SMOOTHED_CURVATURE_MAX_LAT_ACCEL_DELTA:
+        value: "[0.20, 0.35, 0.50]"
+        line: 48
+      SMOOTHED_CURVATURE_MAX_RAW_LAT_ACCEL_DISAGREEMENT:
+        value: "1.25"
+        line: 49
+      DAMPING_TAU_SPEED_BP:
+        value: "[5.0, 15.0, 30.0]"
+        line: 52
+      DAMPING_TAU_S:
+        value: "[0.16, 0.10, 0.055]"
+        line: 53
+      STRAIGHT_ROAD_DAMPING_MIN_SPEED:
+        value: "20.0"
+        line: 56
+      STRAIGHT_ROAD_DAMPING_MAX_CURVATURE:
+        value: "3e-4"
+        line: 57
+      STRAIGHT_ROAD_DAMPING_TAU_S:
+        value: "0.35"
+        line: 58
+      STRAIGHT_ROAD_DAMPING_DEADBAND:
+        value: "1.5e-4"
+        line: 59
+      STRAIGHT_ROAD_DAMPING_BLEND_BP:
+        value: "[0.0, 1.5e-4, 3e-4]"
+        line: 60
+      STRAIGHT_ROAD_DAMPING_BLEND_SCALE:
+        value: "[1.0, 0.0, 0.0]"
+        line: 61
+      TRUST_DECAY:
+        value: "0.92"
+        line: 64
+      TRUST_BUMP:
+        value: "0.38"
+        line: 65
+      TRUST_BUMP_REASONS:
+        value: "frozenset({\"invalid_path\", \"frame_drop\", \"path_disagreement\"})"
+        line: 66
+      NEAR_ZERO_CURVATURE_BP:
+        value: "[0.0, 0.00045]"
+        line: 69
+      NEAR_ZERO_BLEND_SCALE:
+        value: "[0.32, 1.0]"
+        line: 70
+      LANE_CHANGE_OFFSET_FADE_S:
+        value: "0.5"
+        line: 73
+  lane_change_path_shaper:
+    source: selfdrive/controls/lib/lane_change_path_shaper.py
+    constants:
+      LANE_CHANGE_DURATION:
+        value: "5.5"
+        line: 12
+      ENTRY_BLEND_DURATION:
+        value: "1.6"
+        line: 13
+      EXIT_BLEND_DURATION:
+        value: "0.8"
+        line: 14
+      EARLY_TURN_IN_AUTHORITY_DURATION:
+        value: "1.8"
+        line: 15
+      MIN_LANE_LINE_PROB:
+        value: "0.6"
+        line: 16
+      SOFT_FALLBACK_LANE_LINE_PROB:
+        value: "0.45"
+        line: 17
+      MIN_LANE_WIDTH:
+        value: "3.0"
+        line: 18
+      MAX_LANE_WIDTH:
+        value: "4.0"
+        line: 19
+      NOMINAL_LANE_WIDTH:
+        value: "3.6"
+        line: 20
+      LANE_WIDTH_GEOMETRY_WEIGHT:
+        value: "0.6"
+        line: 21
+      LANE_WIDTH_TOLERANCE:
+        value: "0.8"
+        line: 22
+      MAX_ENTRY_CURVATURE:
+        value: "0.0015"
+        line: 23
+      MIN_VEGO:
+        value: "1.0"
+        line: 24
+  lane_centering_assist:
+    source: selfdrive/controls/lib/lane_centering_assist.py
+    constants:
+      LANE_CENTERING_ASSIST_MIN_SPEED:
+        value: "5.0"
+        line: 10
+      LANE_CENTERING_ASSIST_MIN_PATH_QUALITY:
+        value: "0.85"
+        line: 11
+      LANE_CENTERING_ASSIST_OK_REASON:
+        value: "\"ok\""
+        line: 12
+      LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_T:
+        value: "0.35"
+        line: 13
+      LANE_CENTERING_ASSIST_PREVIEW_T:
+        value: "1.20"
+        line: 14
+      LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_MIN_M:
+        value: "3.0"
+        line: 15
+      LANE_CENTERING_ASSIST_PREVIEW_MIN_M:
+        value: "8.0"
+        line: 16
+      LANE_CENTERING_ASSIST_LATERAL_DEADBAND:
+        value: "0.03"
+        line: 17
+      LANE_CENTERING_ASSIST_GROWTH_DEADBAND:
+        value: "0.015"
+        line: 18
+      LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE:
+        value: "1e-6"
+        line: 19
+      LANE_CENTERING_ASSIST_MAX_LAT_ACCEL:
+        value: "0.08"
+        line: 20
+      LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_BP:
+        value: "[10.0, 20.0, 30.0]"
+        line: 21
+      LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_V:
+        value: "[0.12, 0.06, 0.025]"
+        line: 22
+      LANE_CENTERING_ASSIST_SPEED_FLOOR:
+        value: "5.0"
+        line: 23
+      LANE_CENTERING_ASSIST_LATERAL_GAIN:
+        value: "0.00045"
+        line: 24
+      LANE_CENTERING_ASSIST_HEADING_GAIN:
+        value: "0.0020"
+        line: 25
+      LANE_CENTERING_ASSIST_GROWTH_GAIN:
+        value: "0.00070"
+        line: 26
+      LANE_CENTERING_ASSIST_BUILD_RATE:
+        value: "0.00030"
+        line: 27
+      LANE_CENTERING_ASSIST_RELEASE_RATE:
+        value: "0.00060"
+        line: 28
+      LANE_CENTERING_ASSIST_STRAIGHT_MIN_SPEED:
+        value: "24.0"
+        line: 29
+      LANE_CENTERING_ASSIST_STRAIGHT_CURVATURE_MAX:
+        value: "2.5e-4"
+        line: 30
+      LANE_CENTERING_ASSIST_STRAIGHT_LATERAL_DEADBAND:
+        value: "0.06"
+        line: 31
+      LANE_CENTERING_ASSIST_STRAIGHT_GROWTH_DEADBAND:
+        value: "0.035"
+        line: 32
+      LANE_CENTERING_ASSIST_STRAIGHT_BUILD_RATE:
+        value: "0.00008"
+        line: 33
+
+longitudinal:
+  custom_v2:
+    source: selfdrive/controls/lib/longitudinal_stacks/custom_v2.py
+    constants:
+      MPH_TO_MS:
+        value: "0.44704"
+        line: 52
+      CUSTOM_V2_INTENTS:
+        value: "( \"driver_cruise\", \"lead_follow\", \"stop_approach\", \"launch\", \"one_pedal\", \"speed_policy\", \"curve_policy\", \"map_cautio..."
+        line: 54
+      ONE_PEDAL_MODE_OFF:
+        value: "0"
+        line: 67
+      ONE_PEDAL_MODE_CREEP:
+        value: "1"
+        line: 68
+      ONE_PEDAL_MODE_FULL_STOP:
+        value: "2"
+        line: 69
+      ONE_PEDAL_MODES:
+        value: "{ONE_PEDAL_MODE_OFF, ONE_PEDAL_MODE_CREEP, ONE_PEDAL_MODE_FULL_STOP}"
+        line: 70
+      NO_LEAD_LAUNCH_ACCEL_MAX_BY_PERSONALITY:
+        value: "{ log.LongitudinalPersonality.relaxed: 1.10, log.LongitudinalPersonality.standard: 1.35, log.LongitudinalPersonality...."
+        line: 72
+      STOP_APPROACH_COMFORT_DECEL_BY_PERSONALITY:
+        value: "{ log.LongitudinalPersonality.relaxed: -0.30, log.LongitudinalPersonality.standard: -0.38, log.LongitudinalPersonalit..."
+        line: 77
+      NO_LEAD_LAUNCH_MAX_V_EGO:
+        value: "3.0"
+        line: 82
+      LEAD_MOTION_MIN_V:
+        value: "0.15"
+        line: 83
+      LEAD_LATERAL_PROGRESS_BLOCK_Y:
+        value: "0.6"
+        line: 84
+      EXCESS_GAP_MIN:
+        value: "1.0"
+        line: 85
+      PROGRESS_CRUISE_SPEED_MARGIN:
+        value: "0.2"
+        line: 86
+      NO_LEAD_STOP_CLEAR_DISTANCE:
+        value: "20.0"
+        line: 87
+      NO_LEAD_STOP_CLEAR_ACCEL_MIN:
+        value: "-0.5"
+        line: 88
+      MAP_ONLY_CAUTION_ACCEL_MIN:
+        value: "-0.3"
+        line: 89
+      COMFORT_RELAX_ACCEL_MIN:
+        value: "-0.5"
+        line: 90
+      CRUISE_LEEWAY_MIN:
+        value: "5.0 * MPH_TO_MS"
+        line: 91
+      CRUISE_LEEWAY_MAX:
+        value: "10.0 * MPH_TO_MS"
+        line: 92
+      CRUISE_LEEWAY_DOWNHILL_ACCEL:
+        value: "0.25"
+        line: 93
+      CRUISE_LEEWAY_RECOVERY:
+        value: "2.0 * MPH_TO_MS"
+        line: 94
+      STOP_APPROACH_DECEL_MIN:
+        value: "-1.5"
+        line: 95
+      SAFETY_FORCE_SLOW_DECEL:
+        value: "-0.2"
+        line: 96
+      ONE_PEDAL_LIFT_OFF_COAST_ACCEL:
+        value: "0.0"
+        line: 97
+      ONE_PEDAL_CREEP_TARGET_SPEED:
+        value: "1.2"
+        line: 98
+      ONE_PEDAL_CREEP_ACCEL_GAIN:
+        value: "0.5"
+        line: 99
+      ONE_PEDAL_CREEP_ACCEL_MAX:
+        value: "0.35"
+        line: 100
+      ONE_PEDAL_CREEP_ROLLING_MIN_SPEED:
+        value: "0.05"
+        line: 101
+      ONE_PEDAL_FULL_STOP_ARM_SPEED:
+        value: "2.5"
+        line: 102
+      ONE_PEDAL_FULL_STOP_DECEL:
+        value: "-0.3"
+        line: 103
+      ONE_PEDAL_FULL_STOP_HOLD_SPEED:
+        value: "0.3"
+        line: 104
+      LONGITUDINAL_PLAN_SOURCE:
+        value: "log.LongitudinalPlan.LongitudinalPlanSource"
+        line: 105
+      LEAD_MPC_SOURCE_VALUES:
+        value: "{int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_PLAN_SOURCE.lead1)}"
+        line: 106
+      E2E_SOURCE_VALUES:
+        value: "{int(LONGITUDINAL_PLAN_SOURCE.e2e)}"
+        line: 107
+      LEAD_MPC_SEED_REASON:
+        value: "\"lead_mpc_seed\""
+        line: 108
+      E2E_SEED_REASON:
+        value: "\"e2e_seed\""
+        line: 109
+      PROGRESS_PRESERVING_INTENTS:
+        value: "{ PLANNER_SEED_INTENT_LAUNCH, PLANNER_SEED_INTENT_LEAD_FOLLOW, PLANNER_SEED_INTENT_SAFETY_CAP, PLANNER_SEED_INTENT_ST..."
+        line: 110
+  custom_v2_trajectory:
+    source: selfdrive/controls/lib/longitudinal_stacks/custom_v2_trajectory.py
+    constants:
+      SYNTH_TRAJECTORY_DT:
+        value: "0.2"
+        line: 10
+      POSITIVE_PROGRESS_JERK:
+        value: "4.0"
+        line: 11
+      NORMAL_NEGATIVE_RETREAT_JERK:
+        value: "-5.0"
+        line: 12
+      A_TARGET_EPS:
+        value: "1e-4"
+        line: 13
+  planner_seed_policy:
+    source: selfdrive/controls/lib/longitudinal_stacks/planner_seed_policy.py
+    constants:
+      MOVING_LEAD_RECOVERY_MIN_GAP:
+        value: "4.0"
+        line: 38
+      LONGITUDINAL_PLAN_SOURCE:
+        value: "log.LongitudinalPlan.LongitudinalPlanSource"
+        line: 41
+      LEAD_MPC_SOURCE_VALUES:
+        value: "{int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_PLAN_SOURCE.lead1)}"
+        line: 42
+      E2E_SOURCE_VALUES:
+        value: "{int(LONGITUDINAL_PLAN_SOURCE.e2e)}"
+        line: 43
+      PROGRESS_RELAXATION_SEED_REASONS:
+        value: "{\"confirmed_lead_pullaway_pulse\", \"excess_gap_closure\"}"
+        line: 44
+      MOVING_LEAD_RECOVERY_SEED_REASONS:
+        value: "{\"moving_lead_recovery\"}"
+        line: 45
+      ROUTINE_COMFORT_SEED_REASONS:
+        value: "{\"routine_slower_lead_approach\"}"
+        line: 46
+      PROGRESS_ACCEL_CAP_SEED_REASONS:
+        value: "{ \"creep_pullaway_launch_accel_cap\", \"low_speed_pullaway_accel_step_cap\", \"lead_pullaway_pulse_accel_cap\", \"excess_ga..."
+        line: 136
+      STOP_LAUNCH_SEED_REASONS:
+        value: "{ \"confirmed_lead_pullaway_pulse\", \"lead_pullaway_pulse_accel_cap\", \"excess_gap_closure\", \"excess_gap_closure_accel_c..."
+        line: 142
+  planner_seed:
+    source: selfdrive/controls/lib/longitudinal_stacks/planner_seed.py
+    constants:
+      PLANNER_SEED_CAP:
+        value: "\"cap\""
+        line: 10
+      PLANNER_SEED_FLOOR:
+        value: "\"floor\""
+        line: 11
+      POST_CAP_FLOOR_GROUPS:
+        value: "{\"lead_stop_approach_slew\", \"low_speed_pullaway_accel_step\"}"
+        line: 12
+      STOP_INTENT_RELEASE_GROUPS:
+        value: "{\"creep_pullaway_launch\", \"lead_pullaway_pulse\", \"excess_gap_closure\"}"
+        line: 13
+      PLANNER_SEED_INTENT_DRIVER_CRUISE:
+        value: "\"driver_cruise\""
+        line: 14
+      PLANNER_SEED_INTENT_LEAD_FOLLOW:
+        value: "\"lead_follow\""
+        line: 15
+      PLANNER_SEED_INTENT_STOP_APPROACH:
+        value: "\"stop_approach\""
+        line: 16
+      PLANNER_SEED_INTENT_LAUNCH:
+        value: "\"launch\""
+        line: 17
+      PLANNER_SEED_INTENT_SAFETY_CAP:
+        value: "\"safety_cap\""
+        line: 18
+      PLANNER_SEED_MPC_REASON:
+        value: "\"planner_seed_mpc\""
+        line: 19
+      LONGITUDINAL_PLAN_SOURCE:
+        value: "log.LongitudinalPlan.LongitudinalPlanSource"
+        line: 20
+      LEAD_MPC_SOURCE_VALUES:
+        value: "{int(LONGITUDINAL_PLAN_SOURCE.lead0), int(LONGITUDINAL_PLAN_SOURCE.lead1)}"
+        line: 21
+      E2E_SOURCE_VALUES:
+        value: "{int(LONGITUDINAL_PLAN_SOURCE.e2e)}"
+        line: 22
+      STOP_APPROACH_SEED_REASONS:
+        value: "{ \"engage_model_stop_bootstrap\", \"no_lead_close_stop_settle\", \"no_lead_model_runway_comfort\", \"no_lead_model_stop_app..."
+        line: 24
+      LEAD_FOLLOW_SEED_REASONS:
+        value: "{ \"stopped_lead_stop_gap_guard\", \"creep_to_stop_gap\", \"creep_to_stop_gap_accel_cap\", \"stopped_lead_gap_fill\", \"stoppe..."
+        line: 31
+      LAUNCH_SEED_REASONS:
+        value: "{ \"creep_pullaway_launch\", \"creep_pullaway_launch_accel_cap\", \"low_speed_pullaway_accel_step_floor\", \"low_speed_pulla..."
+        line: 48
+      DRIVER_CRUISE_SEED_REASONS:
+        value: "{\"plain_cruise_overspeed_coast\"}"
+        line: 56
+      SAFETY_CAP_SEED_REASONS:
+        value: "{\"lead_flicker_speedup_cap\"}"
+        line: 57
+  lead_context:
+    source: selfdrive/controls/lib/lead_context.py
+    constants:
+      LEAD_AUTHORITY_NONE:
+        value: "\"none\""
+        line: 10
+      LEAD_AUTHORITY_SUPPRESS_ONLY:
+        value: "\"suppress_only\""
+        line: 11
+      LEAD_AUTHORITY_PHYSICAL:
+        value: "\"physical\""
+        line: 12
+      LEAD_AUTHORITY_PROGRESS_ALLOWED:
+        value: "\"progress_allowed\""
+        line: 13
+      LEAD_CONTEXT_STOP_DISTANCE:
+        value: "5.0"
+        line: 15
+      LEAD_CONTEXT_ON_PATH_Y:
+        value: "0.6"
+        line: 16
+      LEAD_CONTEXT_PATH_EXIT_Y:
+        value: "1.6"
+        line: 17
+      LEAD_CONTEXT_FALSE_POSITIVE_HOLD:
+        value: "0.25"
+        line: 18
+      LEAD_CONTEXT_CLOSE_TIME_GAP:
+        value: "2.2"
+        line: 19
+      LEAD_CONTEXT_CLOSE_DISTANCE:
+        value: "25.0"
+        line: 20
+      LEAD_CONTEXT_CLOSE_STOP_D_REL:
+        value: "15.0"
+        line: 21
+      LEAD_CONTEXT_CLOSE_STOP_V:
+        value: "5.0"
+        line: 22
+      LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_OPENING:
+        value: "0.15"
+        line: 23
+      LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD:
+        value: "0.2"
+        line: 24
+      LEAD_CONTEXT_STOP_GAP_CREEP_ARM_EXCESS:
+        value: "1.05"
+        line: 25
+      LEAD_CONTEXT_STOP_GAP_CREEP_MAX_EXCESS:
+        value: "1.25"
+        line: 26
+      LEAD_CONTEXT_STOP_GAP_CREEP_MIN_V_REL:
+        value: "-0.25"
+        line: 27
+      LEAD_CONTEXT_NEW_FAR_Y_REL:
+        value: "1.6"
+        line: 28
+      LEAD_CONTEXT_NEW_FAR_MODEL_PROB:
+        value: "0.5"
+        line: 29
+      LEAD_CONTEXT_NEW_FAR_REQUIRED_DECEL:
+        value: "0.15"
+        line: 30
+      LEAD_CONTEXT_RISK_REQUIRED_DECEL:
+        value: "0.25"
+        line: 31
+      LEAD_CONTEXT_RISK_TTC:
+        value: "4.0"
+        line: 32
+      LEAD_CONTEXT_SHADOW_NORMAL_TIME:
+        value: "0.4"
+        line: 33
+      LEAD_CONTEXT_SHADOW_RISK_TIME:
+        value: "1.0"
+        line: 34
+      LEAD_CONTEXT_SHADOW_STOP_GO_TIME:
+        value: "1.5"
+        line: 35
+      LEAD_CONTEXT_PREVIEW_T:
+        value: "(0.0, 0.2, 0.6, 1.0)"
+        line: 36
+      LEAD_CONTEXT_DUPLICATE_D_REL_TOL:
+        value: "0.15"
+        line: 37
+      LEAD_CONTEXT_DUPLICATE_V_TOL:
+        value: "0.05"
+        line: 38
+      LEAD_CONTEXT_DUPLICATE_Y_TOL:
+        value: "0.05"
+        line: 39
+  lead_confidence:
+    source: selfdrive/controls/lib/lead_confidence.py
+    constants:
+      LEAD_CONFIDENCE_TRACK_UNKNOWN:
+        value: "-2"
+        line: 6
+      NEW_LEAD_GUARD_TIME:
+        value: "0.35"
+        line: 7
+      NEW_LEAD_POS_ACCEL_HOLD_TIME:
+        value: "0.25"
+        line: 8
+      NEW_LEAD_STABLE_TIME:
+        value: "0.45"
+        line: 9
+      NEW_LEAD_CONTINUITY_MAX_D_REL_DELTA:
+        value: "5.0"
+        line: 10
+      NEW_LEAD_CONTINUITY_MAX_V_LEAD_DELTA:
+        value: "5.0"
+        line: 11
+      NEW_LEAD_CONTINUITY_MAX_Y_REL_DELTA:
+        value: "1.0"
+        line: 12
+      NEW_LEAD_LATERAL_CHURN_Y_REL_MIN:
+        value: "1.0"
+        line: 13
+      LEAD_FLICKER_WINDOW:
+        value: "3.0"
+        line: 14
+      LEAD_FLICKER_COUNT_THRESHOLD:
+        value: "3"
+        line: 15
+      LEAD_FLICKER_GUARD_TIME:
+        value: "1.0"
+        line: 16
+      LEAD_FLICKER_CLOSE_COUNT_THRESHOLD:
+        value: "2"
+        line: 17
+      LEAD_FLICKER_CLOSE_GUARD_TIME:
+        value: "1.5"
+        line: 18
+      LEAD_FLICKER_CLOSE_D_REL:
+        value: "15.0"
+        line: 19
+      LEAD_FLICKER_CLOSE_V_LEAD:
+        value: "5.0"
+        line: 20
+  longitudinal_decision:
+    source: selfdrive/controls/lib/longitudinal_decision.py
+    constants:
+      DECISION_SOURCE_PRIORITY:
+        value: "{ DecisionSource.CRUISE: 0, DecisionSource.LEAD_MPC: 10, DecisionSource.E2E_STOP: 20, DecisionSource.OSM_TRAFFIC_CONT..."
+        line: 34
+      PHYSICAL_CONFIDENCE_MIN:
+        value: "0.55"
+        line: 156
+      ADVISORY_CONFIDENCE_MIN:
+        value: "0.75"
+        line: 157
+      COMFORT_CONFIDENCE_MIN:
+        value: "0.50"
+        line: 158
+      COMFORT_MAX_DRIVER_ACCEL_MARGIN:
+        value: "0.5"
+        line: 159
+      ADVISORY_INCREASES_ACCEL_REASON:
+        value: "\"advisory_increases_accel\""
+        line: 160
+      ADVISORY_CAP_ACTIVE_REASON:
+        value: "\"advisory_cap_active\""
+        line: 161
+      SOURCE_STABILITY_MAX_V_EGO:
+        value: "2.5"
+        line: 162
+      SOURCE_STABILITY_RELEASE_FRAMES:
+        value: "3"
+        line: 163
+      SOURCE_STABILITY_ACCEL_EPS:
+        value: "1e-3"
+        line: 164
+      SOURCE_STABILITY_SPEED_EPS:
+        value: "1e-3"
+        line: 165
+      SOURCE_STABILITY_HOLD_REASON:
+        value: "\"source_stability_hold\""
+        line: 166
+      SOURCE_STABILITY_HOLD_SOURCES:
+        value: "frozenset(( DecisionSource.LEAD_MPC, DecisionSource.E2E_STOP, DecisionSource.SPEED_LIMIT, DecisionSource.SCC_VISION, ..."
+        line: 167
+      ACCEL_COMFORT_POSITIVE_RATE:
+        value: "{ log.LongitudinalPersonality.relaxed: 1.2, log.LongitudinalPersonality.standard: 2.0, log.LongitudinalPersonality.ag..."
+        line: 796
+      ACCEL_COMFORT_MILD_DECEL_RATE:
+        value: "{ log.LongitudinalPersonality.relaxed: 1.6, log.LongitudinalPersonality.standard: 2.4, log.LongitudinalPersonality.ag..."
+        line: 801
+      ACCEL_COMFORT_URGENT_DECEL_DELTA:
+        value: "0.6"
+        line: 806
+      ACCEL_COMFORT_URGENT_DECEL_TARGET:
+        value: "-0.7"
+        line: 807
+      ACCEL_COMFORT_BYPASS_SOURCES:
+        value: "frozenset(( DecisionSource.CRUISE, DecisionSource.LEAD_MPC, DecisionSource.E2E_STOP, DecisionSource.STOP_LAUNCH, Deci..."
+        line: 808
