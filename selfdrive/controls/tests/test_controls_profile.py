@@ -167,6 +167,15 @@ def test_missing_controls_profile_does_not_overwrite_existing_longitudinal_stack
   assert 'requested_longitudinal_stack = self.params.get("LongitudinalStack", return_default=True)' in planner_source
 
 
+def test_missing_controls_profile_longitudinal_stack_matches_param_default():
+  params = FakeParams()
+  state = resolve_controls_profile_from_params(params)
+
+  assert state.controls_profile_explicit is False
+  assert state.longitudinal_stack_explicit is False
+  assert state.controls_profile_resolution.longitudinal_stack == LONG_SUNNYPILOT_CURRENT
+
+
 def test_controls_profile_id_for_name_resolves_known_values():
   assert controls_profile_id_for_name("sunnypilot-current") == ControlsProfileId.SUNNYPILOT_CURRENT
   assert controls_profile_id_for_name("custom-recommended") == ControlsProfileId.CUSTOM_RECOMMENDED

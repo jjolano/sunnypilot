@@ -75,9 +75,9 @@ def _param_has_value(params, key: str) -> bool:
   return bool(value)
 
 
-def _param_value(params, key: str):
+def _param_value(params, key: str, *, return_default: bool = False):
   try:
-    return params.get(key)
+    return params.get(key, return_default=return_default)
   except Exception:
     return None
 
@@ -303,7 +303,10 @@ def resolve_controls_profile_from_params(params) -> ControlsProfileParamResoluti
     default_resolution = resolve_controls_profile(None)
     lateral_value = default_resolution.lateral_demand_stack
     torque_value = SAFE_TORQUE_TUNE_FALLBACK
-    longitudinal_value = default_resolution.longitudinal_stack
+    longitudinal_value = longitudinal_stack_id_for_name(
+      _param_value(params, "LongitudinalStack", return_default=True),
+      default_resolution.longitudinal_stack,
+    )
     fallback_reasons: list[str] = []
 
     if lateral_stack_explicit:

@@ -124,6 +124,20 @@ def test_controlsd_state_control_records_stack_output_and_desired_curvature():
   assert "self.processed_lateral_demand = " in source
 
 
+def test_controlsd_does_not_construct_default_stack_before_profile_resolution():
+  from openpilot.selfdrive.controls import controlsd
+
+  source = inspect.getsource(controlsd.Controls.__init__)
+  first_build_idx = source.find("build_lateral_demand_stack_from_resolution(")
+  profile_resolution_idx = source.find("resolve_controls_profile_from_params(self.params)")
+  redundant_default_idx = source.find("CustomV2LateralDemandStack(dt=DT_CTRL)")
+
+  assert first_build_idx != -1
+  assert profile_resolution_idx != -1
+  assert redundant_default_idx == -1
+  assert profile_resolution_idx < first_build_idx
+
+
 def test_controlsd_build_lateral_demand_stack_inputs_method_exists():
   """controlsd must expose build_lateral_demand_stack_inputs as the
   per-frame bundle the lateral demand stack consumes. The method

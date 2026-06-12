@@ -195,7 +195,6 @@ class Controls(ControlsExt):
     self._previous_steering_actuator_request: SteeringActuatorRequest | None = None
     self.curvature = 0.0
     self.desired_curvature = 0.0
-    self.lateral_demand_stack = CustomV2LateralDemandStack(dt=DT_CTRL)
     self.lateral_demand_stack_output: LateralDemandStackOutput | None = None
     self.lateral_demand_stack_resolution: LateralDemandStackResolution | None = None
     self.controls_profile_param_resolution: ControlsProfileParamResolution | None = None
