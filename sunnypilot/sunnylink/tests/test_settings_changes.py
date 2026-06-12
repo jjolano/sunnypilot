@@ -236,6 +236,12 @@ class TestSpuriousOffroadGatesDropped:
     assert option is not None
     assert _references_param_key(option.get("enablement"), "LongitudinalMode")
 
+  def test_planner_stack_scene_memory_is_not_remote_selectable_before_validation(self, schema):
+    item = _find_item(schema, "PlannerStack")
+    assert item is not None
+    assert _find_option(item, "planner-current") is not None
+    assert _find_option(item, "scene-memory-v1") is None
+
 
 class TestNotEngagedReplacement:
   @pytest.mark.parametrize("key", [

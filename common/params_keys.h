@@ -91,6 +91,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ControlsProfileMigrationVersion", {PERSISTENT, STRING, ""}},
     {"LateralDemandStack", {PERSISTENT | BACKUP, STRING, "custom-2.0"}},
     {"LongitudinalStack", {PERSISTENT | BACKUP, STRING, "sunnypilot-current"}},
+    {"PlannerStack", {PERSISTENT | BACKUP, STRING, "planner-current"}},
+    {"PlannerStackValidationGate", {PERSISTENT | DEVELOPMENT_ONLY | DONT_LOG, BOOL, "0"}},
     {"TorqueControlTune", {PERSISTENT | BACKUP, STRING, "2.1"}},
     {"FastLeadMotionEvidenceEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"OnePedalLongitudinalMode", {PERSISTENT | BACKUP, INT, "0"}},

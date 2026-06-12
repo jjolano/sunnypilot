@@ -1,0 +1,23 @@
+{
+  "defaultStack": "planner-current",
+  "stacks": {
+    "planner-current": {
+      "label": "Planner Current",
+      "family": "baseline"
+    },
+    "scene-memory-v1": {
+      "label": "Scene Memory v1",
+      "family": "scene-memory",
+      "version": "1.0"
+    }
+  },
+  "availability": {
+    "planner-current": {
+      "always": true
+    },
+    "scene-memory-v1": {
+      "requires": ["plannerValidationGate"],
+      "requiresAny": ["openpilotLongitudinalControl", "alphaLongitudinalAvailable"]
+    }
+  }
+}

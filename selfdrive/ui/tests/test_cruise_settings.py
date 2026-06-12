@@ -19,11 +19,21 @@ def test_longitudinal_stack_selector_is_in_cruise_settings():
   assert "TreeOptionDialog" in source
   assert "self.longitudinal_stack_item," in source
 
-
 def test_longitudinal_stack_selection_clears_controls_profile():
   source = CRUISE_SETTINGS.read_text()
 
   assert 'ui_state.params.remove("ControlsProfile")' in source
+
+
+def test_planner_stack_selector_is_in_cruise_settings_and_validation_gated():
+  source = CRUISE_SETTINGS.read_text()
+
+  assert "self.planner_stack_item = ListItemSP" in source
+  assert "PlannerStack" in source
+  assert "PLANNER_STACK_VALIDATION_GATE_PARAM" in source
+  assert "resolve_planner_stack" in source
+  assert "SCENE_MEMORY_V1 not in resolution.available_stacks" in source
+  assert "self.planner_stack_item," in source
 
 
 def test_longitudinal_mode_selector_replaces_legacy_toggles():
@@ -70,6 +80,14 @@ def test_longitudinal_stack_selector_is_offroad_gated_and_requests_cycle():
   assert "self.longitudinal_stack_item.set_visible(show_advanced)" in source
   assert "self.longitudinal_stack_item.action_item.set_enabled(has_long and ui_state.is_offroad())" in source
   assert "ui_state.params.put(\"LongitudinalStack\", selected_ref)" in source
+  assert "ui_state.params.put_bool(\"OnroadCycleRequested\", True)" in source
+
+
+def test_planner_stack_selector_is_offroad_gated_and_requests_cycle():
+  source = CRUISE_SETTINGS.read_text()
+
+  assert "self.planner_stack_item.action_item.set_enabled(has_long and ui_state.is_offroad())" in source
+  assert "ui_state.params.put(PLANNER_STACK_PARAM, selected_ref)" in source
   assert "ui_state.params.put_bool(\"OnroadCycleRequested\", True)" in source
 
 
