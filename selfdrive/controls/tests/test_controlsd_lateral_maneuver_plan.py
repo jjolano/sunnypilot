@@ -764,8 +764,8 @@ def test_controlsd_push_lateral_demand_stack_output_uses_extension_hook():
 def test_controlsd_auto_couple_torque_for_stack_maps_experimental_to_5_0():
   """_auto_couple_torque_for_stack must map each known stack
   id to the correct TorqueControlTune value:
-  custom-experimental → 5.0, custom-2.0 → 4.1,
-  sunnypilot-current → 4.1.
+  custom-experimental → 5.0, custom-2.0 → 2.1,
+  sunnypilot-current → no torque auto-couple.
   """
   from openpilot.selfdrive.controls.controlsd import Controls
   from openpilot.selfdrive.controls.lib.lateral_demand_stacks.custom_experimental import CustomExperimentalLateralDemandStack
@@ -774,8 +774,8 @@ def test_controlsd_auto_couple_torque_for_stack_maps_experimental_to_5_0():
 
   controls = Controls.__new__(Controls)
   assert controls._auto_couple_torque_for_stack(CustomExperimentalLateralDemandStack(dt=0.05)) == 5.0
-  assert controls._auto_couple_torque_for_stack(CustomV2LateralDemandStack(dt=0.05)) == 4.1
-  assert controls._auto_couple_torque_for_stack(SunnypilotCurrentLateralDemandStack(dt=0.05)) == 4.1
+  assert controls._auto_couple_torque_for_stack(CustomV2LateralDemandStack(dt=0.05)) == 2.1
+  assert controls._auto_couple_torque_for_stack(SunnypilotCurrentLateralDemandStack(dt=0.05)) is None
 
 
 def test_controls_profile_experimental_auto_couples_torque_5_0():

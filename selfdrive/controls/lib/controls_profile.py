@@ -158,13 +158,13 @@ def _build_controls_profile_mappings() -> tuple[ControlsProfileMapping, ...]:
       ControlsProfileId.CUSTOM_RECOMMENDED,
       LONG_CUSTOM_RECOMMENDED,
       LATERAL_CUSTOM_RECOMMENDED,
-      SAFE_TORQUE_TUNE_FALLBACK,
+      TorqueControlTuneId.V21,
     ),
     ControlsProfileMapping(
       ControlsProfileId.CUSTOM_2,
       LONG_CUSTOM_V2,
       LATERAL_CUSTOM_V2,
-      TorqueControlTuneId.V41,
+      TorqueControlTuneId.V21,
     ),
     ControlsProfileMapping(
       ControlsProfileId.CUSTOM_EXPERIMENTAL,

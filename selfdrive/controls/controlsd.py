@@ -377,14 +377,14 @@ class Controls(ControlsExt):
   def _auto_couple_torque_for_stack(self, stack):
     """Map a lateral demand stack to a TorqueControlTune value
     for first-run auto-couple. custom-experimental → 5.0,
-    custom-2.0 → 4.1, sunnypilot-current → 4.1. Returns None if
-    the stack is unknown (no auto-couple)."""
+    custom-2.0/custom-recommended → 2.1. sunnypilot-current
+    and unknown stacks do not auto-couple torque."""
     stack_id = getattr(stack, "stack_id", getattr(stack, "NAME", None))
     stack_value = getattr(stack_id, "value", stack_id)
     if stack_value == "custom-experimental":
       return 5.0
-    if stack_value in ("custom-2.0", "custom-recommended", "sunnypilot-current"):
-      return 4.1
+    if stack_value in ("custom-2.0", "custom-recommended"):
+      return 2.1
     return None
 
   def state_control(self):

@@ -62,16 +62,16 @@ def _resolved_torque(params: FakeParams) -> str:
   return torque.value
 
 
-def test_missing_controls_profile_does_not_select_torque_50():
+def test_default_controls_profile_maps_to_stable_torque_21():
   res = resolve_controls_profile(None)
-  assert res.torque_control_tune == TorqueControlTuneId.V41
+  assert res.torque_control_tune == TorqueControlTuneId.V21
   assert res.lateral_demand_stack == DEFAULT_LATERAL_DEMAND_STACK
 
 
 def test_unknown_controls_profile_does_not_select_torque_50():
   res = resolve_controls_profile("not-a-profile")
   assert res.resolved_profile == DEFAULT_CONTROLS_PROFILE
-  assert res.torque_control_tune == TorqueControlTuneId.V41
+  assert res.torque_control_tune == TorqueControlTuneId.V21
 
 
 def test_controls_profile_default_is_custom_2():
@@ -80,11 +80,18 @@ def test_controls_profile_default_is_custom_2():
   assert DEFAULT_TORQUE_CONTROL_TUNE == TorqueControlTuneId.V41
 
 
-def test_controls_profile_custom_2_maps_to_41():
+def test_controls_profile_custom_2_maps_to_21():
   res = resolve_controls_profile("custom-2.0")
   assert res.resolved_profile == ControlsProfileId.CUSTOM_2
   assert res.lateral_demand_stack == LATERAL_CUSTOM_V2
-  assert res.torque_control_tune == TorqueControlTuneId.V41
+  assert res.torque_control_tune == TorqueControlTuneId.V21
+
+
+def test_controls_profile_custom_recommended_maps_to_21():
+  res = resolve_controls_profile("custom-recommended")
+  assert res.resolved_profile == ControlsProfileId.CUSTOM_RECOMMENDED
+  assert res.lateral_demand_stack == LATERAL_CUSTOM_V2
+  assert res.torque_control_tune == TorqueControlTuneId.V21
 
 
 def test_controls_profile_experimental_maps_to_50():
@@ -123,7 +130,7 @@ def test_advanced_override_ignored_when_show_advanced_controls_false():
   state = resolve_controls_profile_from_params(params)
   assert state.controls_profile_explicit is True
   assert state.torque_control_tune_explicit is True
-  assert state.controls_profile_resolution.torque_control_tune == TorqueControlTuneId.V41
+  assert state.controls_profile_resolution.torque_control_tune == TorqueControlTuneId.V21
 
 
 def test_advanced_override_honored_when_show_advanced_controls_true():

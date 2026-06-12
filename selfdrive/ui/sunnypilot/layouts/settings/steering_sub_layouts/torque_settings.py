@@ -53,8 +53,8 @@ CONTROLS_PROFILE_LABELS = {
 
 CONTROLS_PROFILE_DESCRIPTIONS = {
   "sunnypilot-current": "Matches current sunnypilot behavior where possible.",
-  "custom-recommended": "Uses the recommended custom controls stack for this car.",
-  "custom-2.0": "Stable custom controls. Uses lateral demand custom-2.0 and torque 4.1.",
+  "custom-recommended": "Uses the recommended custom controls stack for this car with torque 2.1.",
+  "custom-2.0": "Stable custom controls. Uses lateral demand custom-2.0 and torque 2.1.",
   "custom-experimental": "Experimental controls. Uses torque 5.0 and experimental lateral demand stack when available.",
 }
 

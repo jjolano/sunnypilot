@@ -20,6 +20,8 @@ def test_controls_profile_ui_values_match_resolver():
   for value in ("sunnypilot-current", "custom-recommended", "custom-2.0", "custom-experimental"):
     assert value in source
   assert "Controls Profile" in source
+  assert "torque 2.1" in source
+  assert "torque 4.1." not in source
   assert "CONTROLS_PROFILE_LABELS" in source
   assert "CONTROLS_PROFILE_DESCRIPTIONS" in source
 
