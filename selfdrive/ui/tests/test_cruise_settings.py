@@ -19,6 +19,11 @@ def test_longitudinal_stack_selector_is_in_cruise_settings():
   assert "TreeOptionDialog" in source
   assert "self.longitudinal_stack_item," in source
 
+def test_longitudinal_stack_selection_clears_controls_profile():
+  source = CRUISE_SETTINGS.read_text()
+
+  assert 'ui_state.params.remove("ControlsProfile")' in source
+
 
 def test_planner_stack_selector_is_in_cruise_settings_and_validation_gated():
   source = CRUISE_SETTINGS.read_text()
@@ -71,6 +76,8 @@ def test_fast_lead_motion_is_custom_v2_offroad_cycle_toggle():
 def test_longitudinal_stack_selector_is_offroad_gated_and_requests_cycle():
   source = CRUISE_SETTINGS.read_text()
 
+  assert "show_advanced = ui_state.params.get_bool(\"ShowAdvancedControls\")" in source
+  assert "self.longitudinal_stack_item.set_visible(show_advanced)" in source
   assert "self.longitudinal_stack_item.action_item.set_enabled(has_long and ui_state.is_offroad())" in source
   assert "ui_state.params.put(\"LongitudinalStack\", selected_ref)" in source
   assert "ui_state.params.put_bool(\"OnroadCycleRequested\", True)" in source

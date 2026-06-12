@@ -207,6 +207,8 @@ class CruiseLayout(Widget):
 
   def _update_state(self):
     super()._update_state()
+    show_advanced = ui_state.params.get_bool("ShowAdvancedControls")
+    self.longitudinal_stack_item.set_visible(show_advanced)
 
     if ui_state.CP is not None and ui_state.CP_SP is not None:
       has_icbm = ui_state.has_icbm
@@ -467,6 +469,7 @@ class CruiseLayout(Widget):
       if result == DialogResult.CONFIRM and self._longitudinal_stack_dialog:
         selected_ref = self._longitudinal_stack_dialog.selection_ref
         if selected_ref:
+          ui_state.params.remove("ControlsProfile")
           ui_state.params.put("LongitudinalStack", selected_ref)
           ui_state.params.put_bool("OnroadCycleRequested", True)
           self._update_longitudinal_stack_item(ui_state.has_longitudinal_control)

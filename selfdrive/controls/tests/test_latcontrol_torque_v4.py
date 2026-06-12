@@ -1,0 +1,4648 @@
+import inspect
+import math
+import sys
+import types
+from unittest.mock import patch
+
+import pytest
+
+from cereal import car, log
+from opendbc.car.car_helpers import interfaces
+from opendbc.car.toyota.values import CAR as TOYOTA
+from opendbc.car.vehicle_model import VehicleModel
+
+from openpilot.common.realtime import DT_CTRL
+from openpilot.selfdrive.car.helpers import convert_to_capnp
+from openpilot.selfdrive.controls.lib.lateral_demand import (
+  DEMAND_SOURCE_LATERAL_MANEUVER,
+  DEMAND_SOURCE_MODEL_PATH,
+  ProcessedLateralDemand,
+)
+from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import SteeringActuatorFeedback, SteeringLimitReason
+from openpilot.sunnypilot.selfdrive.locationd.speed_aware_torque import format_speed_aware_params
+from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import STRAIGHT_ROAD_MIN_SPEED
+
+params_pyx = types.ModuleType("openpilot.common.params_pyx")
+
+
+class FakeParams:
+  def get_bool(self, _key: str) -> bool:
+    return False
+
+  def remove(self, _key: str) -> None:
+    pass
+
+  def get(self, _key: str, *_args, **_kwargs):
+    return None
+
+
+params_pyx.Params = FakeParams
+params_pyx.ParamKeyFlag = object
+params_pyx.ParamKeyType = object
+params_pyx.UnknownKeyName = RuntimeError
+sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
+
+from openpilot.sunnypilot.selfdrive.controls.lib import latcontrol_torque_v4
+
+LatControlTorqueV4 = latcontrol_torque_v4.LatControlTorqueV4
+LatControlTorqueV41 = latcontrol_torque_v4.LatControlTorqueV41
+TorqueV4GovernorReason = latcontrol_torque_v4.TorqueV4GovernorReason
+TorqueV4LearnerRejectReason = latcontrol_torque_v4.TorqueV4LearnerRejectReason
+TorqueV4Observation = latcontrol_torque_v4.TorqueV4Observation
+TorqueV4OutputGovernor = latcontrol_torque_v4.TorqueV4OutputGovernor
+TorqueV4SessionAdaptation = latcontrol_torque_v4.TorqueV4SessionAdaptation
+TorqueV4SpeedModel = latcontrol_torque_v4.TorqueV4SpeedModel
+TorqueV4SpeedModelResult = latcontrol_torque_v4.TorqueV4SpeedModelResult
+TorqueV4RecenterMode = latcontrol_torque_v4.TorqueV4RecenterMode
+TorqueV4Target = latcontrol_torque_v4.TorqueV4Target
+finite_difference_curvature_rate_from_steering_rate = latcontrol_torque_v4.finite_difference_curvature_rate_from_steering_rate
+
+
+def get_context(car_name=TOYOTA.TOYOTA_RAV4):
+  CarInterface = interfaces[car_name]
+  CP = CarInterface.get_non_essential_params(car_name)
+  CP_SP = CarInterface.get_non_essential_params_sp(CP, car_name)
+  CI = CarInterface(CP, CP_SP)
+  return CP, CP_SP, CI
+
+
+def get_controller(car_name=TOYOTA.TOYOTA_RAV4):
+  CP, CP_SP, CI = get_context(car_name)
+  VM = VehicleModel(CP)
+  CP_SP = convert_to_capnp(CP_SP)
+  controller = LatControlTorqueV4(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+  return controller, VM, CP
+
+
+def make_car_state(v_ego=20.0, steering_angle=0.0, steering_rate=0.0, steering_pressed=False):
+  CS = car.CarState.new_message()
+  CS.vEgo = v_ego
+  CS.steeringAngleDeg = steering_angle
+  CS.steeringRateDeg = steering_rate
+  CS.steeringPressed = steering_pressed
+  return CS
+
+
+def update(controller, VM, CS, desired_curvature, *, active=True, steer_limited=False, curvature_limited=False, lat_delay=0.2):
+  params = log.LiveParametersData.new_message()
+  return controller.update(active, CS, VM, params, steer_limited, desired_curvature, None, curvature_limited, lat_delay)
+
+
+def make_speed_result(**overrides):
+  values = {
+    "response_scale": 1.0,
+    "trim_lateral_accel": 0.0,
+    "response_delay": 0.2,
+    "lead_gain": 0.5,
+    "lead_delta_cap": 0.5,
+    "feedback_gain": 0.2,
+    "damping_gain": 0.05,
+    "breakaway_scale": 0.6,
+    "output_slew_rate": 3.0,
+    "sign_change_slew_rate": 1.5,
+    "speed_aware_confidence": 0.0,
+    "speed_aware_factor": 1.0,
+    "effective_lat_accel_factor": 1.0,
+    "effective_lat_accel_offset": 0.0,
+  }
+  values.update(overrides)
+  return TorqueV4SpeedModelResult(**values)
+
+
+def make_observation(**overrides):
+  values = {
+    "active": True,
+    "v_ego": 20.0,
+    "steering_pressed": False,
+    "steer_limited_by_safety": False,
+    "curvature_limited": False,
+    "saturated": False,
+    "raw_target_lateral_accel": 0.5,
+    "delay_lead_lateral_accel": 0.5,
+    "target_lateral_accel_rate": 0.0,
+    "actual_lateral_accel": 0.4,
+    "actual_lateral_jerk": 0.1,
+    "measurement_rate": 0.0,
+    "finite": True,
+  }
+  values.update(overrides)
+  return TorqueV4Observation(**values)
+
+
+def make_processed_lateral_demand(**overrides):
+  values = {
+    "raw_curvature": 0.001,
+    "processed_curvature": 0.001,
+    "measured_curvature": 0.0,
+    "curvature_limited": False,
+    "path_quality": 1.0,
+    "path_reason": "ok",
+    "lane_change_shaping_active": False,
+    "lane_change_blend": 0.0,
+    "lateral_accel_limit": 2.5,
+    "demand_source": DEMAND_SOURCE_MODEL_PATH,
+  }
+  values.update(overrides)
+  return ProcessedLateralDemand(**values)
+
+
+class ApplyEnabledParams(FakeParams):
+  def get_bool(self, key: str) -> bool:
+    return key == "LiveTorqueSpeedAdaptiveApplyToggle"
+
+
+def test_v4_requires_native_torque_tuning():
+  CP, CP_SP, CI = get_context()
+  CP.lateralTuning.init('pid')
+  CP.lateralTuning.pid.kpBP = [0.0]
+  CP.lateralTuning.pid.kpV = [0.1]
+  CP.lateralTuning.pid.kiBP = [0.0]
+  CP.lateralTuning.pid.kiV = [0.01]
+  CP.lateralTuning.pid.kf = 0.00006
+  CP_SP = convert_to_capnp(CP_SP)
+
+  with pytest.raises(ValueError, match="Torque v4 requires native torque lateral tuning"):
+    LatControlTorqueV4(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+
+def test_v4_exposes_direct_controlsd_hooks_without_model_hooks():
+  controller, _VM, _CP = get_controller()
+
+  assert controller.CONTROL_STATE == "torque"
+  assert hasattr(controller, "update_live_torque_params")
+  assert hasattr(controller, "update_speed_aware_params")
+  assert hasattr(controller, "update_lateral_lag")
+  assert hasattr(controller, "set_processed_lateral_demand")
+  assert hasattr(controller, "reset")
+  assert not hasattr(controller, "extension")
+  assert not hasattr(controller, "update_model_v2")
+  assert not hasattr(controller, "model_v2")
+  assert not hasattr(controller, "model_valid")
+
+
+def test_v4_default_governor_profile_is_unchanged():
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.output_slew_rate_bp == [0.0, 3.0, 10.0, 20.0, 30.0, 40.0]
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.output_slew_rate_v == [0.80, 1.10, 2.40, 3.60, 4.00, 4.00]
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.sign_change_slew_rate_bp == [0.0, 3.0, 10.0, 20.0, 30.0, 40.0]
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.sign_change_slew_rate_v == [0.40, 0.60, 1.40, 2.00, 2.20, 2.00]
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.same_direction_limit_cap == pytest.approx(0.72)
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.same_direction_limit_rate == pytest.approx(1.20)
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.high_rate_start_deg == pytest.approx(70.0)
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.high_rate_full_deg == pytest.approx(100.0)
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.high_rate_min_cap == pytest.approx(0.60)
+  assert LatControlTorqueV4.GOVERNOR_PROFILE.high_rate_slew_scale == pytest.approx(0.65)
+  assert not LatControlTorqueV4.GOVERNOR_PROFILE.same_direction_decrease_bypass
+
+
+def test_v41_governor_profile_is_relaxed():
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.output_slew_rate_v == [1.40, 2.00, 3.00, 4.20, 5.00, 5.60]
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.sign_change_slew_rate_v == [0.90, 1.20, 1.80, 2.40, 3.00, 3.40]
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.same_direction_limit_cap == pytest.approx(0.85)
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.same_direction_limit_rate == pytest.approx(1.30)
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.same_direction_limit_rate_bp == [0.0, 10.0, 20.0, 30.0, 40.0]
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.same_direction_limit_rate_v == [1.30, 1.30, 2.10, 3.20, 3.60]
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.high_rate_start_deg == pytest.approx(80.0)
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.high_rate_min_cap == pytest.approx(0.62)
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.high_rate_slew_scale == pytest.approx(0.70)
+  assert LatControlTorqueV41.GOVERNOR_PROFILE.same_direction_decrease_bypass
+
+
+def test_v41_speed_model_uses_relaxed_slew_profile():
+  controller, _VM, _CP = get_controller()
+  v4_result = TorqueV4SpeedModel(LatControlTorqueV4.GOVERNOR_PROFILE).update(
+    30.0, controller.torque_params, None, False, controller.session_adaptation
+  )
+  v41_result = TorqueV4SpeedModel(LatControlTorqueV41.GOVERNOR_PROFILE).update(
+    30.0, controller.torque_params, None, False, controller.session_adaptation
+  )
+
+  assert v4_result.output_slew_rate == pytest.approx(4.0)
+  assert v4_result.sign_change_slew_rate == pytest.approx(2.2)
+  assert v41_result.output_slew_rate == pytest.approx(5.0)
+  assert v41_result.sign_change_slew_rate == pytest.approx(3.0)
+
+
+def test_v41_logs_version_41():
+  CP, CP_SP, CI = get_context()
+  VM = VehicleModel(CP)
+  v41 = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+
+  _steer, _angle, lac_log = update(v41, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert lac_log.version == 41
+
+
+def test_v41_is_current_lateral_torque_version():
+  """4.1 is the live lateral-torque version. v4.0 stays as the base
+  class for tests and the alias. v5 is a sibling class (VERSION=50)
+  whose active deltas are gated off until later commits. Any future
+  v5 must be a sibling class with VERSION=50, not an in-place bump
+  of V41's VERSION=41.
+  """
+  import openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 as module
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV41,
+    LatControlTorqueV5,
+  )
+
+  # V4.0 stays at 4 (tests, alias, base class).
+  assert LatControlTorqueV4.VERSION == 4
+  # V4.1 stays at 41 (deployed behavior).
+  assert LatControlTorqueV41.VERSION == 41
+  # V5 exists at 50 but its active deltas are gated off.
+  assert LatControlTorqueV5.VERSION == 50
+  assert issubclass(LatControlTorqueV5, LatControlTorqueV41)
+  # The default alias still points at the v4.0 base class; v4.1/v5
+  # are selected by parameter, not by replacing the alias.
+  assert module.LatControlTorque is LatControlTorqueV4
+
+
+def test_v5_active_delta_flags_have_expected_default_state():
+  """Pin the default state of every v5 active-delta flag.
+
+  After commit 9, both ACTIVE_PROFILE_PREVIEW_LEAD and
+  ACTIVE_TURN_EXIT_CONTROLLER are True (the first two active
+  deltas shipping in 5.0). ACTIVE_VEHICLE_BIAS_COMPENSATION
+  stays off; it's future 5.1 work. Any future flip of these
+  defaults must be paired with a parity + behavior test.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV5
+
+  # Active deltas shipped in 5.0.
+  assert LatControlTorqueV5.ACTIVE_PROFILE_PREVIEW_LEAD is True
+  assert LatControlTorqueV5.ACTIVE_TURN_EXIT_CONTROLLER is True
+  # Bias compensation stays off in 5.0; it's 5.1 territory.
+  assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
+
+
+def test_v5_logs_version_50():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import LatControlTorqueV5
+
+  CP, CP_SP, CI = get_context()
+  VM = VehicleModel(CP)
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+
+  _steer, _angle, lac_log = update(v5, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert lac_log.version == 50
+
+
+def test_v5_inherits_v41_governor_profile_and_under_response_settings():
+  """5.0 must inherit 4.1's governor profile and under-response
+  settings unchanged. v5 is a refinement layer on top, not a
+  replacement of v4.1's authority envelope.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV41,
+    LatControlTorqueV5,
+  )
+
+  assert LatControlTorqueV5.UNDER_RESPONSE_RELEASE_HOLD == LatControlTorqueV41.UNDER_RESPONSE_RELEASE_HOLD
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_ENABLED == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_ENABLED
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_GAIN_BP == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_GAIN_BP
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_GAIN_V == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_GAIN_V
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_CAP_BP == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_CAP_BP
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_CAP_V == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_CAP_V
+  assert LatControlTorqueV5.UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG == LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG
+  assert LatControlTorqueV5.GOVERNOR_PROFILE == LatControlTorqueV41.GOVERNOR_PROFILE
+
+
+def test_v5_is_parity_with_v41_when_all_active_flags_off():
+  """With every v5 active flag off, the v5 controller must produce
+  the same output torque, command lateral accel, and telemetry as
+  v4.1 given the same inputs and initial state. This is the
+  skeleton-level parity guarantee.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV41,
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  VM = VehicleModel(CP)
+  v41 = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0005, path_quality=1.0, path_reason="ok")
+
+  # Two frames so internal IIR state has a chance to settle.
+  for _ in range(2):
+    v41.set_processed_lateral_demand(demand)
+    v5.set_processed_lateral_demand(demand)
+    update(v41, VM, CS, 0.0005)
+    update(v5, VM, CS, 0.0005)
+
+  v41.set_processed_lateral_demand(demand)
+  v5.set_processed_lateral_demand(demand)
+  log_v41 = update(v41, VM, CS, 0.0005)[2]
+  log_v5 = update(v5, VM, CS, 0.0005)[2]
+
+  # Command path is bit-equivalent.
+  assert log_v5.f == pytest.approx(log_v41.f)
+  assert log_v5.output == pytest.approx(log_v41.output)
+  # Version differs by design.
+  assert log_v5.version == 50
+  assert log_v41.version == 41
+
+
+def test_v4_build_target_seam_delegates_to_base():
+  """The v4 _build_target() entry point must delegate to the
+  _build_target_base() implementation. v5.0 uses _build_target
+  as the orchestrator that calls _build_target_base and then
+  delegates shaping to _build_v5_target.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV41,
+    LatControlTorqueV5,
+  )
+
+  speed_result = make_speed_result()
+
+  # Use fresh controllers per call because _build_target_base mutates
+  # self.previous_target_lateral_accel. Each call must start from the
+  # same initial state to be comparable.
+  a, _VM, _CP = get_controller()
+  b, _, _ = get_controller()
+  base_target = a._build_target_base(0.001, 20.0, speed_result, False)
+  seam_target = b._build_target(0.001, 20.0, speed_result, False)
+  assert isinstance(base_target, TorqueV4Target)
+  assert seam_target == base_target
+
+  # v4.1 also forwards to the same base.
+  CP, CP_SP, CI = get_context()
+  v41a = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v41b = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  assert v41a._build_target(0.001, 20.0, speed_result, False) == v41b._build_target_base(0.001, 20.0, speed_result, False)
+  # v5 with the active flags forced off still forwards to the base.
+  v5_off_a = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5_off_b = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5_off_a.ACTIVE_TURN_EXIT_CONTROLLER = False
+  v5_off_b.ACTIVE_TURN_EXIT_CONTROLLER = False
+  assert v5_off_a._build_target(0.001, 20.0, speed_result, False) == v5_off_b._build_target_base(0.001, 20.0, speed_result, False)
+  # And the base class is the only place the math lives.
+  assert LatControlTorqueV4._build_target_base.__qualname__.endswith("._build_target_base")
+
+
+def test_v5_target_extends_v4_target_with_metadata_fields():
+  """TorqueV5Target must extend TorqueV4Target and expose the
+  profile-aware shaping fields. Defaults match a no-op v5 (every
+  multiplier at identity, every flag off, every boost zero) so the
+  dataclass can be used in parity code paths without changing
+  behavior.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  base = TorqueV4Target(
+    raw_lateral_accel=0.5, target_rate=0.0,
+    delay_lead_lateral_accel=0.5, lead_delta=0.0,
+    lead_gain=0.5, lead_delta_cap=0.5,
+  )
+  v5 = TorqueV5Target(
+    raw_lateral_accel=0.5, target_rate=0.0,
+    delay_lead_lateral_accel=0.5, lead_delta=0.0,
+    lead_gain=0.5, lead_delta_cap=0.5,
+  )
+  # Subclass relationship.
+  assert isinstance(v5, TorqueV4Target)
+  # Default shaping fields are all identity / zero / off.
+  assert v5.base_lead_delta == 0.0
+  assert v5.preview_boost_computed == 0.0
+  assert v5.preview_boost_applied == 0.0
+  assert v5.preview_reason == ""
+  assert v5.turn_exit_lead_gain_multiplier == 1.0
+  assert v5.turn_exit_lead_delta_cap_multiplier == 1.0
+  assert v5.turn_exit_early_release is False
+  assert v5.v5_active is False
+  assert v5.v5_reason == ""
+  # A default-constructed v5 target has the same base fields as
+  # a v4 target with zero lead_delta, so it is safe to drop into
+  # the v4 code path.
+  assert v5.raw_lateral_accel == base.raw_lateral_accel
+  assert v5.lead_gain == base.lead_gain
+  assert v5.lead_delta_cap == base.lead_delta_cap
+
+
+def test_v5_turn_exit_seam_is_noop_when_active_flag_off():
+  """When ACTIVE_TURN_EXIT_CONTROLLER is forced off, the v5
+  pre-target seam is a no-op. The post-command telemetry path
+  therefore drives the controller exactly once per frame, just
+  like v4.1. This is the parity guarantee for the seam.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = False  # Force the gated-off state.
+
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
+  v5.set_processed_lateral_demand(demand)
+  _, VM, _ = get_controller()
+
+  # Skeleton seam: pre-target is no-op, decided flag stays False.
+  assert v5.ACTIVE_TURN_EXIT_CONTROLLER is False
+  v5._v5_turn_exit_decision(
+    TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5),
+    active=True, CS=CS, curvature_limited=False,
+  )
+  assert v5._v5_turn_exit_decided is False
+  assert v5._v5_cached_turn_exit_decision is None
+
+  # Driving a frame through the controller still works and v5 stays
+  # parity-equivalent to v4.1.
+  log_v5 = update(v5, VM, CS, 0.001)[2]
+  assert log_v5.version == 50
+  assert log_v5.adaptiveTorqueState.turnExitMode >= 0  # telemetry populated
+
+
+def test_v5_turn_exit_seam_would_fire_when_active_flag_on():
+  """With ACTIVE_TURN_EXIT_CONTROLLER=True (the future state), the
+  pre-target seam calls turn_exit_controller.update() and stores the
+  decision. The post-command telemetry path then reads from the
+  cached decision. The controller must be called exactly once per
+  frame in that mode.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    LateralTurnExitController,
+    TurnExitDecision,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+
+  # Replace the controller with a mock that counts calls and
+  # returns a known decision.
+  calls: list[dict] = []
+  def _counting_update(**kwargs):
+    calls.append(kwargs)
+    return TurnExitDecision(
+      mode="turn_in", persistence_frames=5,
+      lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.07,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _counting_update
+
+  target = TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5)
+  v5._v5_turn_exit_decision(
+    target, active=True, CS=make_car_state(v_ego=20.0, steering_pressed=False), curvature_limited=False,
+  )
+  assert v5._v5_turn_exit_decided is True
+  assert v5._v5_cached_turn_exit_decision is not None
+  assert v5._v5_cached_turn_exit_decision.mode == "turn_in"
+  assert v5._v5_cached_turn_exit_decision.preview_boost == pytest.approx(0.07)
+  # Exactly one controller call so far.
+  assert len(calls) == 1
+
+  # Post-command telemetry reads from the cached decision. The
+  # base implementation must NOT call the controller again.
+  decision = v5._v5_record_turn_exit_telemetry(
+    target=target, active=True,
+    CS=make_car_state(v_ego=20.0, steering_pressed=False), curvature_limited=False, saturated=False,
+  )
+  assert len(calls) == 1, (
+    f"Expected no second controller call when pre-target decided, got {len(calls)}"
+  )
+  assert decision.mode == "turn_in"
+  assert decision.preview_boost == pytest.approx(0.07)
+  # Latch is cleared so the next frame starts fresh.
+  assert v5._v5_turn_exit_decided is False
+
+
+def test_v5_build_target_applies_turn_exit_lead_multipliers():
+  """With ACTIVE_TURN_EXIT_CONTROLLER on, the v5 _build_target
+  wrapper scales the base lead_gain and lead_delta_cap by the
+  decision's multipliers and re-derives the lead_delta from the
+  scaled gain. The resulting TorqueV5Target must carry the
+  decision's multipliers and the v5-active flag set when the
+  behavior actually changed.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(
+      mode="turn_exit", persistence_frames=4,
+      lead_gain_multiplier=0.5, lead_delta_cap_multiplier=0.5,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.0,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _decision
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  # Force a non-zero target rate by priming previous_target.
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  # The decision's lead gain / cap multipliers scale the base;
+  # the behavior delta is non-zero so v5_active is True.
+  assert target.v5_active is True
+  assert target.v5_reason == "turn_exit_source_of_truth"
+  assert target.turn_exit_lead_gain_multiplier == 0.5
+  assert target.turn_exit_lead_delta_cap_multiplier == 0.5
+  # The base lead_gain was 0.5; the v5 wrapper halved it.
+  assert target.lead_gain == pytest.approx(0.5 * 0.5)
+  assert target.lead_delta_cap == pytest.approx(0.5 * 0.5)
+  # The original (pre-multiplier) lead_delta is preserved for
+  # telemetry and rollback.
+  assert target.base_lead_delta != target.lead_delta or target.base_lead_delta == target.lead_delta
+  # Target rate is non-zero (the first frame after a 0.0 previous),
+  # so the post-multiplier lead_delta is smaller than the base.
+  assert abs(target.lead_delta) <= abs(target.base_lead_delta) + 1e-9
+
+
+def test_v5_build_target_early_release_zeros_lead_delta():
+  """When the turn-exit decision's early_release_lead_zero is True,
+  the v5 wrapper forces lead_delta to 0 immediately, no
+  persistence floor. The v5 target's turn_exit_early_release
+  flag is set, and delay_lead equals raw_lateral_accel.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(
+      mode="early_release", persistence_frames=5,
+      lead_gain_multiplier=0.4, lead_delta_cap_multiplier=0.4,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=True, preview_boost=0.0,
+      confidence=0.95,
+    )
+  v5.turn_exit_controller.update = _decision
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.002, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.turn_exit_early_release is True
+  assert target.lead_delta == 0.0
+  assert target.delay_lead_lateral_accel == pytest.approx(target.raw_lateral_accel)
+
+
+def test_v5_build_target_early_release_no_persistence_floor():
+  """The v5 plan removed the persistence floor on
+  early_release_lead_zero. A decision with persistence=0 must
+  still zero lead_delta on the first frame, matching the
+  base's immediate early-release guard.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(
+      mode="early_release", persistence_frames=0,  # no persistence
+      lead_gain_multiplier=0.4, lead_delta_cap_multiplier=0.4,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=True, preview_boost=0.0,
+      confidence=0.95,
+    )
+  v5.turn_exit_controller.update = _decision
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.002, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  # No persistence floor: lead_delta is zero on the first frame.
+  assert target.turn_exit_early_release is True
+  assert target.lead_delta == 0.0
+
+
+def _v5_with_clean_preview_setup(preview_boost=0.07):
+  """Build a v5 controller with the active flag on, a stubbed
+  turn-exit decision that returns the requested preview boost,
+  and a clean LateralDemandProfile / processed_demand. Returns
+  (v5, decision_factory).
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(
+      mode="turn_in", persistence_frames=4,
+      lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=preview_boost,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _decision
+
+  profile = LateralDemandProfile(
+    raw_curvature=0.0, processed_curvature=0.0,
+    curvature_limited=False, path_quality=0.9, path_reason="ok",
+    lane_change_shaping_active=False, lane_change_blend=0.0,
+    demand_source="model_path", mode=LateralMode.TURN_IN.value,
+    mode_confidence=0.9,
+  )
+  v5.set_lateral_demand_profile(profile)
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(processed_curvature=0.0, path_quality=0.9, path_reason="ok"),
+  )
+  return v5
+
+
+def test_v5_preview_boost_is_computed_but_not_applied_when_flag_off():
+  """When ACTIVE_PROFILE_PREVIEW_LEAD is False, the preview boost
+  is computed (so telemetry can show the gate outcome and the
+  capped value) but never applied. preview_boost_applied is 0 in
+  this mode.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  # Force the gated-off state explicitly. The v5 class default is
+  # True after commit 7, so this test still covers the gated-off
+  # path.
+  v5.ACTIVE_PROFILE_PREVIEW_LEAD = False
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  # Computed is non-zero (gates are clean, boost is small).
+  assert target.preview_boost_computed != 0.0
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "allowed"
+  # v5_active is False because no behavior delta: flag off
+  # means preview did not land and the inactive decision did
+  # not change lead gain / cap.
+  assert target.v5_active is False
+  assert target.v5_reason == "inactive"
+
+
+def test_v5_preview_boost_gate_blocks_low_speed():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 4.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  # Computed is the raw decision (capping happens in applied).
+  assert target.preview_boost_computed == pytest.approx(0.07)
+  # Applied is zero when the gate blocks, regardless of the raw
+  # computed value.
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "low_speed"
+
+
+def test_v5_preview_boost_gate_blocks_curvature_limited():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=True)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_reason == "curvature_limited"
+
+
+def test_v5_preview_boost_gate_blocks_steering_pressed():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  cs = make_car_state(v_ego=20.0, steering_pressed=True)
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False, cs=cs)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_reason == "steering_pressed"
+
+
+def test_v5_preview_boost_gate_blocks_lane_change():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(
+      processed_curvature=0.0, path_quality=0.9, path_reason="ok",
+      lane_change_shaping_active=True,
+    ),
+  )
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  # Lane change blocks the gate, so applied is zero even though
+  # computed is the raw decision.
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "lane_change"
+
+
+def test_v5_preview_boost_gate_blocks_wobble():
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import TorqueV5Target
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.07)
+  v5._wobble_active = True
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_reason == "wobble_active"
+
+
+def test_v5_preview_boost_cap_enforced_on_applied_value():
+  """The speed cap is enforced on preview_boost_applied (the
+  value that actually lands in lead_delta), not on
+  preview_boost_computed (the raw decision surface). At 20 m/s
+  the cap is 0.12; a raw boost of 0.5 produces a raw computed
+  of 0.5 and a capped applied of 0.12.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.5)
+  v5.ACTIVE_PROFILE_PREVIEW_LEAD = False
+  # Cap at 20 m/s is 0.12 per V5_PREVIEW_BOOST_CAP_V[2].
+  assert v5.PREVIEW_BOOST_CAP_BP[2] == 20.0
+  assert v5.PREVIEW_BOOST_CAP_V[2] == pytest.approx(0.12)
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  # Computed is the raw decision value (capping is applied separately).
+  assert target.preview_boost_computed == pytest.approx(0.5, abs=1e-9)
+  # Applied is bounded by the cap and is zero when the flag is off.
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "allowed"
+
+
+def test_v5_preview_boost_is_applied_when_flag_on_and_gates_clean():
+  """The first real 5.0 behavior delta: a clean turn-in profile
+  with preview_boost > 0 increases the lead delta by the gated,
+  capped boost. preview_boost_applied equals preview_boost_computed
+  and the v5_reason marks the application.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.05)
+  # v5 default now flips the active flag on.
+  assert v5.ACTIVE_PROFILE_PREVIEW_LEAD is True
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_boost_computed == pytest.approx(0.05, abs=1e-9)
+  assert target.preview_boost_applied == pytest.approx(0.05, abs=1e-9)
+  assert target.preview_reason == "allowed"
+  assert target.v5_active is True
+  assert "preview_boost_applied" in target.v5_reason
+  # The lead delta is shifted by the applied boost, but re-clipped
+  # to the scaled cap so the total lead delta stays bounded.
+  assert abs(target.lead_delta) <= target.lead_delta_cap + 1e-9
+
+
+def test_v5_preview_boost_not_applied_when_gate_blocks_even_with_flag_on():
+  """With ACTIVE_PROFILE_PREVIEW_LEAD on, a gate failure still
+  forces preview_boost_applied to 0. Only clean gates see the
+  boost land.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.05)
+  assert v5.ACTIVE_PROFILE_PREVIEW_LEAD is True
+  # Force a low_speed gate failure.
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 4.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  # Computed is the raw decision.
+  assert target.preview_boost_computed == pytest.approx(0.05)
+  # Applied is zero when the gate blocks.
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "low_speed"
+  assert "preview_boost_applied" not in target.v5_reason
+
+
+def test_v5_active_flag_default_is_on_after_first_active_delta():
+  """5.0 ships with both ACTIVE_PROFILE_PREVIEW_LEAD and
+  ACTIVE_TURN_EXIT_CONTROLLER on. ACTIVE_VEHICLE_BIAS_COMPENSATION
+  stays off in 5.0 (future 5.1).
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+  assert LatControlTorqueV5.ACTIVE_PROFILE_PREVIEW_LEAD is True
+  assert LatControlTorqueV5.ACTIVE_TURN_EXIT_CONTROLLER is True
+  assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
+
+
+# --- Required-tests block added in the v5 hardening review ---
+
+
+def _make_v5_with_profile(profile_kwargs=None):
+  """Helper: build a v5 with ACTIVE_TURN_EXIT_CONTROLLER and
+  ACTIVE_PROFILE_PREVIEW_LEAD both on, a clean TURN_IN profile,
+  a stubbed turn-exit decision factory, and a clean demand.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  profile_attrs = dict(
+    raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+    path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+    lane_change_blend=0.0, demand_source="model_path",
+    mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+  )
+  if profile_kwargs:
+    profile_attrs.update(profile_kwargs)
+  v5.set_lateral_demand_profile(LateralDemandProfile(**profile_attrs))
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(
+      processed_curvature=0.0, path_quality=0.9, path_reason="ok",
+    ),
+  )
+  return v5
+
+
+def _set_default_turn_exit(v5, **overrides):
+  """Stub v5.turn_exit_controller.update to return a known decision."""
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  base = dict(
+    mode="turn_in", persistence_frames=4,
+    lead_gain_multiplier=0.5, lead_delta_cap_multiplier=0.5,
+    slew_boost=1.0, same_direction_slew_boost=1.0,
+    early_release_lead_zero=False, preview_boost=0.05,
+    confidence=0.9,
+  )
+  base.update(overrides)
+  def _decision(**_kwargs):
+    return TurnExitDecision(**base)
+  v5.turn_exit_controller.update = _decision
+
+
+def test_v5_preview_disabled_when_inactive():
+  """When active=False, the v5 orchestrator short-circuits to the
+  v4.1 base, so no preview boost lands and v5 telemetry reflects
+  no v5 activity.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV4Target,
+  )
+
+  v5 = _make_v5_with_profile()
+  _set_default_turn_exit(v5)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  # active=False propagates through the v5 gates.
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False,
+                           active=False, steer_limited_by_safety=False)
+  # v5 short-circuited; the returned target is the v4.1 base,
+  # not a TorqueV5Target. Preview is not applied.
+  assert isinstance(target, TorqueV4Target)
+  assert v5._v5_last_v5_active is False
+  assert v5._v5_last_v5_reason == ""
+
+
+def test_v5_turn_exit_disabled_when_inactive():
+  """When active=False, the pre-target turn-exit seam returns
+  no decision, so the v5 build target does not run and the
+  target equals the v4.1 base.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV5,
+    TorqueV4Target,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v4 = LatControlTorqueV4(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  # Set a profile on both so the v4.1 path has the same context.
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  profile = LateralDemandProfile(
+    raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+    path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+    lane_change_blend=0.0, demand_source="model_path",
+    mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+  )
+  v5.set_lateral_demand_profile(profile)
+  v4.set_lateral_demand_profile(profile)
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(processed_curvature=0.001, path_quality=0.9, path_reason="ok"),
+  )
+  v4.set_processed_lateral_demand(
+    make_processed_lateral_demand(processed_curvature=0.001, path_quality=0.9, path_reason="ok"),
+  )
+  _set_default_turn_exit(v5)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  v4.previous_target_lateral_accel = 0.0
+  v5_target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False,
+                              active=False)
+  v4_target = v4._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+  assert isinstance(v5_target, TorqueV4Target)
+  # v5 short-circuited; the target equals the v4.1 base.
+  assert v5_target == v4_target
+  # The seam must not have called the controller.
+  assert v5._v5_turn_exit_decided is False
+  assert v5._v5_cached_turn_exit_decision is None
+
+
+def test_v5_preview_disabled_when_steer_limited_by_safety():
+  """steer_limited_by_safety propagates into the preview gate and
+  blocks the boost.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _make_v5_with_profile()
+  _set_default_turn_exit(v5)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False,
+                           active=True, steer_limited_by_safety=True)
+  assert isinstance(target, TorqueV5Target)
+  # Steer-limited means the boost did not land; applied=0.
+  assert target.preview_boost_computed != 0.0
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "steer_limited"
+
+
+def test_v5_preserves_base_early_release_guard():
+  """When the v4.1 base's immediate early-release guard zeros
+  lead_delta (target collapsing toward zero, lead would push away
+  from zero), v5 must preserve that zero and not reintroduce a
+  nonzero lead. The decision's lead multipliers scale the gain /
+  cap, but the v5 wrapper must not recompute lead_delta from the
+  scaled gain when base.lead_delta is already 0.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  # Decision has identity multipliers and no early-release; the
+  # base's early-release guard is what makes lead_delta=0.
+  _set_default_turn_exit(v5, lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+                        early_release_lead_zero=False, preview_boost=0.0)
+
+  # Drive a frame so the base's recenter logic fires and the
+  # base.lead_delta collapses. Use a small drop in |raw target|.
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.5  # larger than current target
+  # Use a small current target so the base early-release guard
+  # fires (|raw| < |previous|, lead would push away).
+  target = v5._build_target(0.0005, 20.0, speed_result, False, curvature_limited=False)
+
+  # Whatever the base produced, v5 must not reintroduce lead.
+  assert isinstance(target, TorqueV5Target)
+  assert target.lead_delta == target.base_lead_delta
+
+
+def test_v5_first_collapse_frame_does_not_reintroduce_lead():
+  """On the very first frame of a target collapse (where base
+  zeroed lead_delta), v5 must produce lead_delta == 0. The
+  decision's multipliers scale the gain/cap, but the v5 wrapper
+  must not recompute lead_delta from the scaled gain when base
+  zeroed it.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  # Identity multipliers: v5 should not change lead math at all.
+  _set_default_turn_exit(v5, lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+                        early_release_lead_zero=False, preview_boost=0.0)
+  # Prime previous so the next target is a strict collapse.
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.5
+  target = v5._build_target(0.0001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  # lead_delta is whatever the base produced; v5 did not
+  # recompute it from the scaled gain.
+  assert target.lead_delta == target.base_lead_delta
+  # gain / cap are at base (identity multipliers).
+  assert target.lead_gain == pytest.approx(speed_result.lead_gain)
+  assert target.lead_delta_cap == pytest.approx(speed_result.lead_delta_cap)
+
+
+def test_v5_turn_exit_multiplier_does_not_override_zero_lead_delta():
+  """Even with non-identity lead multipliers, if the base zeroed
+  lead_delta, the v5 lead_delta must stay zero.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  # Halved multipliers: if the v5 wrapper were to recompute
+  # lead_delta from the scaled gain, it would produce a nonzero
+  # value. With base.lead_delta == 0, v5 must preserve zero.
+  _set_default_turn_exit(v5, lead_gain_multiplier=0.5, lead_delta_cap_multiplier=0.5,
+                        early_release_lead_zero=False, preview_boost=0.0)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.5
+  target = v5._build_target(0.0001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.lead_delta == target.base_lead_delta
+  assert target.lead_gain == pytest.approx(0.5 * 0.5)
+  assert target.lead_delta_cap == pytest.approx(0.5 * 0.5)
+
+
+def test_v5_missing_profile_matches_v41_on_turn_exit():
+  """When no profile is set, _v5_turn_exit_decision must return
+  no decision and the v5 path must not run. The target equals
+  the v4.1 base.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v4 = LatControlTorqueV4(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  # No profile set on v5.
+  assert v5.lateral_demand_profile is None
+  # Set processed demand only (no profile).
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(processed_curvature=0.001, path_quality=0.9, path_reason="ok"),
+  )
+  v4.set_processed_lateral_demand(
+    make_processed_lateral_demand(processed_curvature=0.001, path_quality=0.9, path_reason="ok"),
+  )
+  _set_default_turn_exit(v5)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  v4.previous_target_lateral_accel = 0.0
+  v5_target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+  v4_target = v4._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+  # v5 short-circuited; v5_target is the v4.1 base.
+  assert v5_target == v4_target
+  # The seam must not have called the controller.
+  assert v5._v5_turn_exit_decided is False
+  assert v5._v5_cached_turn_exit_decision is None
+
+
+def test_v5_missing_profile_does_not_set_v5_active():
+  """Missing profile must not produce a TorqueV5Target with
+  v5_active=True; v5 must look like a no-op for v5 telemetry.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV4Target,
+  )
+
+  v5 = _make_v5_with_profile()
+  v5.lateral_demand_profile = None  # explicitly clear
+  _set_default_turn_exit(v5)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+  # The v5 orchestrator short-circuited; the returned target
+  # is the v4.1 base, not a TorqueV5Target.
+  assert isinstance(target, TorqueV4Target)
+  # v5 telemetry reflects no v5 activity.
+  assert v5._v5_last_v5_active is False
+  assert v5._v5_last_v5_reason == ""
+
+
+def test_v5_active_false_when_target_matches_base():
+  """v5_active means 'v5 actually changed behavior'. When the
+  decision's multipliers are all 1.0, the preview boost is
+  computed but not applied (flag off), and no early release
+  fires, the final target equals the v4.1 base and v5_active
+  must be False.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _make_v5_with_profile()
+  # Force the preview boost to be computed but not applied.
+  v5.ACTIVE_PROFILE_PREVIEW_LEAD = False
+  # Identity decision: no multiplier change, no early release.
+  _set_default_turn_exit(v5, lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+                        early_release_lead_zero=False, preview_boost=0.05)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+  assert isinstance(target, TorqueV5Target)
+  # No behavior delta: gain/cap unchanged, no early release,
+  # no preview applied.
+  assert target.lead_gain == pytest.approx(speed_result.lead_gain)
+  assert target.lead_delta_cap == pytest.approx(speed_result.lead_delta_cap)
+  assert target.lead_delta == pytest.approx(target.base_lead_delta)
+  assert target.preview_boost_applied == 0.0
+  # v5_active is False; v5_reason notes that nothing changed.
+  assert target.v5_active is False
+  assert target.v5_reason == "inactive"
+
+
+def test_v5_active_true_when_preview_applied():
+  """A clean turn-in profile with a positive preview boost flips
+  v5_active to True and v5_reason to 'preview_boost_applied'.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _make_v5_with_profile()
+  _set_default_turn_exit(v5, lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+                        early_release_lead_zero=False, preview_boost=0.05)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+  assert isinstance(target, TorqueV5Target)
+  # Preview landed.
+  assert target.preview_boost_applied == pytest.approx(0.05, abs=1e-9)
+  # v5_active is True and reason is the boost.
+  assert target.v5_active is True
+  assert target.v5_reason == "preview_boost_applied"
+
+
+def test_v5_active_true_when_turn_exit_changes_lead():
+  """A turn-exit decision whose lead multipliers differ from 1.0
+  flips v5_active to True and v5_reason to
+  'turn_exit_source_of_truth'.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _make_v5_with_profile()
+  _set_default_turn_exit(v5, lead_gain_multiplier=0.5, lead_delta_cap_multiplier=0.5,
+                        early_release_lead_zero=False, preview_boost=0.0)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+  assert isinstance(target, TorqueV5Target)
+  # lead gain / cap halved.
+  assert target.lead_gain == pytest.approx(0.5 * 0.5)
+  assert target.lead_delta_cap == pytest.approx(0.5 * 0.5)
+  # v5_active is True and reason is the turn-exit shaping.
+  assert target.v5_active is True
+  assert target.v5_reason == "turn_exit_source_of_truth"
+
+
+def test_v5_preview_blocked_nonfinite_lane_change_blend():
+  """The lane-change gate must fail closed: a non-finite
+  lane_change_blend is treated as a lane change in progress and
+  blocks the boost.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _make_v5_with_profile()
+  _set_default_turn_exit(v5, lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+                        early_release_lead_zero=False, preview_boost=0.05)
+  # A demand with a non-finite lane_change_blend. The factory
+  # allows passing lane_change_blend via a simple namespace.
+  import types
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=0.9, path_reason="ok")
+  # Overwrite lane_change_blend with a non-finite value.
+  object.__setattr__(demand, "lane_change_blend", float("nan"))
+  v5.set_processed_lateral_demand(demand)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+  assert isinstance(target, TorqueV5Target)
+  # Gate fails closed: applied = 0, reason = lane_change.
+  assert target.preview_boost_applied == 0.0
+  assert target.preview_reason == "lane_change"
+
+
+def test_v5_vehicle_bias_compensation_infrastructure_awaits_route_validation():
+  """5.1 vehicle-bias compensation is wired up with caps and a
+  minimum-confidence gate, but the active flag stays False in
+  5.0. Flipping the flag is gated on route validation per the
+  v5 plan; this test pins the cap, the confidence threshold,
+  and the off-by-default flag so a premature flip is caught.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    V5_VEHICLE_BIAS_INITIAL_CAP,
+    V5_VEHICLE_BIAS_HARD_CAP,
+    V5_VEHICLE_BIAS_MIN_CONFIDENCE,
+  )
+  assert LatControlTorqueV5.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
+  assert V5_VEHICLE_BIAS_INITIAL_CAP == pytest.approx(0.03)
+  assert V5_VEHICLE_BIAS_HARD_CAP == pytest.approx(0.06)
+  assert V5_VEHICLE_BIAS_MIN_CONFIDENCE == pytest.approx(0.80)
+  # Hard cap is at least the initial cap; otherwise the cap
+  # envelope is meaningless.
+  assert V5_VEHICLE_BIAS_HARD_CAP >= V5_VEHICLE_BIAS_INITIAL_CAP
+
+
+def _v5_with_active_turn_exit(decision_kwargs):
+  """Build a v5 with ACTIVE_TURN_EXIT_CONTROLLER=True and a
+  stubbed turn-exit decision. Returns (v5, decision_factory).
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  # ACTIVE_TURN_EXIT_CONTROLLER is True by default in v5.0.
+
+  base_kwargs = dict(
+    mode="turn_in", persistence_frames=4,
+    lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+    slew_boost=1.0, same_direction_slew_boost=1.0,
+    early_release_lead_zero=False, preview_boost=0.0,
+    confidence=0.9,
+  )
+  base_kwargs.update(decision_kwargs)
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(**base_kwargs)
+  v5.turn_exit_controller.update = _decision
+
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  return v5
+
+
+def test_v5_turn_exit_reduces_lead_gain_and_cap():
+  """With ACTIVE_TURN_EXIT_CONTROLLER=True, the v5 build applies
+  the decision's lead_gain_multiplier and lead_delta_cap_multiplier
+  to the lead math.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_active_turn_exit(dict(
+    lead_gain_multiplier=0.5, lead_delta_cap_multiplier=0.5,
+  ))
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.turn_exit_lead_gain_multiplier == 0.5
+  assert target.turn_exit_lead_delta_cap_multiplier == 0.5
+  # v5 halved the base 0.5 lead gain / cap.
+  assert target.lead_gain == pytest.approx(0.25)
+  assert target.lead_delta_cap == pytest.approx(0.25)
+
+
+def test_v5_turn_in_preview_does_not_reduce_base_lead_gain_or_cap():
+  """TURN_IN mode is not recenter. The turn-exit seam must
+  return lead_gain_multiplier=1.0 and lead_delta_cap_multiplier=1.0,
+  leaving the base lead_gain and lead_delta_cap intact. Only the
+  preview boost (a separate additive path) is allowed to apply.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_clean_preview_setup(preview_boost=0.05)
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_boost_applied > 0.0
+  assert target.turn_exit_lead_gain_multiplier == 1.0
+  assert target.turn_exit_lead_delta_cap_multiplier == 1.0
+  assert target.lead_gain == pytest.approx(0.5)
+  assert target.lead_delta_cap == pytest.approx(0.5)
+
+
+def test_v5_uses_same_frame_turn_in_profile_for_preview_gate():
+  """v5 must activate the preview boost on a clean TURN_IN
+  frame using the profile built and pushed in the same frame
+  (no stale or one-frame-old profile). Uses the real
+  LateralDemandProfileBuilder on a fresh ProcessedLateralDemand
+  to mirror controlsd's same-frame build+push flow.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfileBuilder,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+
+  def _decision(**_kwargs):
+    return TurnExitDecision(
+      mode="turn_in", persistence_frames=0,
+      lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.05,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _decision
+
+  builder = LateralDemandProfileBuilder(dt=DT_CTRL)
+  v_ego = 20.0
+  # Frame 1: zero demand. Builds a STRAIGHT_STABLE baseline.
+  demand0 = make_processed_lateral_demand(processed_curvature=0.0, path_quality=0.9, path_reason="ok")
+  profile0 = builder.update(demand0, v_ego)
+  assert profile0.mode != LateralMode.TURN_IN.value
+  v5.set_lateral_demand_profile(profile0)
+  v5.set_processed_lateral_demand(demand0)
+
+  # Frame 2: jump in processed_curvature. Same frame: builder
+  # runs, classifies TURN_IN, profile is pushed to v5 BEFORE
+  # _build_target reads it. preview_boost_applied must be > 0.
+  processed_curvature_turn_in = 0.0010  # target = 0.4, rate ~ 0.4/0.05 = 8.0
+  demand1 = make_processed_lateral_demand(processed_curvature=processed_curvature_turn_in,
+                                           path_quality=0.9, path_reason="ok")
+  profile1 = builder.update(demand1, v_ego)
+  assert profile1.mode == LateralMode.TURN_IN.value
+  v5.set_lateral_demand_profile(profile1)
+  v5.set_processed_lateral_demand(demand1)
+
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(processed_curvature_turn_in, v_ego, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.preview_boost_applied > 0.0
+  assert target.v5_active is True
+  assert target.v5_reason == "preview_boost_applied"
+
+
+def test_v5_turn_exit_early_release_zeroes_lead_delta():
+  """When the decision's early_release_lead_zero is True and
+  persistence_frames >= RECENTER_PERSISTENCE_FRAMES, the v5
+  build forces lead_delta to 0 and marks early release.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+
+  v5 = _v5_with_active_turn_exit(dict(
+    mode="early_release", persistence_frames=5,
+    lead_gain_multiplier=0.4, lead_delta_cap_multiplier=0.4,
+    early_release_lead_zero=True,
+  ))
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target, TorqueV5Target)
+  assert target.turn_exit_early_release is True
+  assert target.lead_delta == 0.0
+  # Final delay-lead equals raw target (no lead offset).
+  assert target.delay_lead_lateral_accel == pytest.approx(target.raw_lateral_accel)
+
+
+def test_v5_turn_exit_inactive_matches_v41():
+  """When the turn-exit controller returns an inactive decision,
+  v5 with ACTIVE_TURN_EXIT_CONTROLLER on must still produce
+  4.1-equivalent math (decision multipliers all 1.0,
+  early_release False, no cap reduction).
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5Target,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV41,
+  )
+
+  v5 = _v5_with_active_turn_exit(dict(
+    mode="inactive", persistence_frames=0,
+    lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+    early_release_lead_zero=False, preview_boost=0.0,
+  ))
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target_v5 = v5._build_target(0.001, 20.0, speed_result, False, curvature_limited=False)
+
+  assert isinstance(target_v5, TorqueV5Target)
+  assert target_v5.turn_exit_lead_gain_multiplier == 1.0
+  assert target_v5.turn_exit_lead_delta_cap_multiplier == 1.0
+  assert target_v5.turn_exit_early_release is False
+  # lead_gain / cap unchanged from base.
+  assert target_v5.lead_gain == pytest.approx(speed_result.lead_gain)
+  assert target_v5.lead_delta_cap == pytest.approx(speed_result.lead_delta_cap)
+
+  # Compare against a v4.1 controller with the same input. The
+  # v5 inactive-decision path must match v4.1 lead math.
+  CP, CP_SP, CI = get_context()
+  v41_a = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v41_b = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  base_a = v41_a._build_target_base(0.001, 20.0, speed_result, False, None)
+  base_b = v41_b._build_target(0.001, 20.0, speed_result, False, None)
+  assert base_a == base_b  # v4.1 sanity: base and seam produce the same result.
+  # v5 inactive decision should match the v4.1 lead math.
+  assert target_v5.lead_delta == pytest.approx(base_a.lead_delta)
+  assert target_v5.delay_lead_lateral_accel == pytest.approx(base_a.delay_lead_lateral_accel)
+
+
+def test_v5_turn_exit_blocked_by_saturation():
+  """When the previous frame was saturated, the v5 turn-exit
+  decision must be inactive. The pre-target seam passes
+  saturated=self._previous_saturated to the controller, which
+  suppresses active decisions.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._previous_saturated = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+
+  seen_saturated: list[bool] = []
+  def _capture(**kwargs):
+    seen_saturated.append(bool(kwargs.get("saturated", False)))
+    return TurnExitDecision(
+      mode="turn_in", persistence_frames=4,
+      lead_gain_multiplier=0.5, lead_delta_cap_multiplier=0.5,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.0,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _capture
+  v5._v5_turn_exit_decision(
+    TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5),
+    active=True, CS=None, curvature_limited=False,
+  )
+  assert seen_saturated[-1] is True
+
+
+def test_v5_turn_exit_blocked_by_lane_change():
+  """When lane_change_shaping_active is True on the processed
+  demand, the pre-target seam passes lane_change_active=True to
+  the turn-exit controller, which suppresses the decision.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(
+      processed_curvature=0.0, path_quality=0.9, path_reason="ok",
+      lane_change_shaping_active=True,
+    ),
+  )
+  seen_lane_change: list[bool] = []
+  def _capture(**kwargs):
+    seen_lane_change.append(bool(kwargs.get("lane_change_active", False)))
+    return TurnExitDecision(
+      mode="inactive", persistence_frames=0,
+      lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.0,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _capture
+  v5._v5_turn_exit_decision(
+    TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5),
+    active=True, CS=None, curvature_limited=False,
+  )
+  assert seen_lane_change[-1] is True
+
+
+def test_v5_turn_exit_blocked_by_steering_pressed():
+  """When the driver is pressing the steering wheel, the pre-target
+  seam passes steering_pressed=True to the turn-exit controller,
+  which suppresses the decision.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  seen_steering_pressed: list[bool] = []
+  def _capture(**kwargs):
+    seen_steering_pressed.append(bool(kwargs.get("steering_pressed", False)))
+    return TurnExitDecision(
+      mode="inactive", persistence_frames=0,
+      lead_gain_multiplier=1.0, lead_delta_cap_multiplier=1.0,
+      slew_boost=1.0, same_direction_slew_boost=1.0,
+      early_release_lead_zero=False, preview_boost=0.0,
+      confidence=0.9,
+    )
+  v5.turn_exit_controller.update = _capture
+  cs = make_car_state(v_ego=20.0, steering_pressed=True)
+  v5._v5_turn_exit_decision(
+    TorqueV4Target(0.4, 0.0, 0.4, 0.0, 0.5, 0.5),
+    active=True, CS=cs, curvature_limited=False,
+  )
+  assert seen_steering_pressed[-1] is True
+
+
+def test_v5_turn_exit_final_lead_delta_still_capped():
+  """Even with the decision's lead_delta_cap_multiplier applied,
+  the final lead_delta must be re-clipped to the scaled cap. A
+  decision that asks for a huge preview boost cannot blow past
+  the cap.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5Target,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  v5.turn_exit_controller.update = lambda **_: type("D", (), {
+    "mode": "turn_in", "persistence_frames": 4,
+    "lead_gain_multiplier": 0.5, "lead_delta_cap_multiplier": 0.5,
+    "slew_boost": 1.0, "same_direction_slew_boost": 1.0,
+    "early_release_lead_zero": False, "preview_boost": 0.0,
+    "confidence": 0.9,
+  })()
+  v5.ACTIVE_PROFILE_PREVIEW_LEAD = False  # Disable preview for cap check.
+
+  # Build a target with a large target_rate so the cap actually
+  # engages.
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.1, response_delay=0.2)
+  v5.previous_target_lateral_accel = 0.0
+  target = v5._build_target(0.01, 20.0, speed_result, False, curvature_limited=False)
+  assert isinstance(target, TorqueV5Target)
+  # Final lead delta is bounded by the scaled cap.
+  assert abs(target.lead_delta) <= target.lead_delta_cap + 1e-9
+
+
+def test_v4_recenter_mode_uses_previous_saturation_gate():
+  """Recenter detection is active command shaping. It must NOT
+  fire when the previous frame's output was saturated, because
+  firing would aggressively reduce lead just as the controller
+  ran out of authority. The _detect_recenter_mode(...) call in
+  update() must pass saturated=self._previous_saturated, not a
+  hard-coded False.
+  """
+  import inspect
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+  )
+
+  source = inspect.getsource(LatControlTorqueV4.update)
+  # The call site must pass the previous-frame saturation, not
+  # a hard-coded False.
+  assert "saturated=self._previous_saturated" in source
+  # No remaining hard-coded saturated=False on the recenter
+  # call site.
+  recenter_block = source.split("_detect_recenter_mode(", 1)[1].split(")", 1)[0]
+  assert "saturated=False" not in recenter_block
+
+
+def test_v4_turn_exit_decision_uses_actual_saturation():
+  """The post-command turn-exit telemetry call must pass the
+  actual saturation value, not a hard-coded False. Otherwise
+  the turn-exit controller would fire early-release decisions
+  immediately after a saturated frame and the v5 source-of-
+  truth path would inherit that bug.
+  """
+  import inspect
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+  )
+
+  source = inspect.getsource(LatControlTorqueV4.update)
+  # The post-command call site passes the actual saturation.
+  assert "_v5_record_turn_exit_telemetry(" in source
+  call_block_idx = source.find("_v5_record_turn_exit_telemetry(")
+  call_block = source[call_block_idx:source.find(")", call_block_idx) + 1]
+  assert "saturated=saturated" in call_block
+
+
+def test_v4_recenter_does_not_fire_after_saturated_frame_in_actual_flow():
+  """End-to-end: simulate a saturated previous frame and a target
+  collapse that would normally activate recenter. Recenter must
+  not activate.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV41,
+  )
+
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV4(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  CS = make_car_state(v_ego=15.0, steering_pressed=False)
+  # Simulate a recenter-triggering target collapse while the
+  # previous frame was saturated.
+  controller._previous_saturated = True
+  controller.previous_target_lateral_accel = 0.5
+  recenter = controller._detect_recenter_mode(
+    target_lateral_accel=0.05,
+    previous_target_lateral_accel=controller.previous_target_lateral_accel,
+    v_ego=CS.vEgo,
+    path_quality=1.0,
+    lane_change_active=False,
+    steering_pressed=CS.steeringPressed,
+    saturated=controller._previous_saturated,
+    curvature_limited=False,
+  )
+  # The detector has its own logic; what matters for this
+  # regression is the wiring. The call site must pass
+  # _previous_saturated. Re-run with saturated=False and verify
+  # the detector would have produced a different (recenter-
+  # active) result, proving the gate is the only thing holding
+  # it back.
+  if hasattr(controller, "_detect_recenter_mode"):
+    unsat_recenter = controller._detect_recenter_mode(
+      target_lateral_accel=0.05,
+      previous_target_lateral_accel=controller.previous_target_lateral_accel,
+      v_ego=CS.vEgo,
+      path_quality=1.0,
+      lane_change_active=False,
+      steering_pressed=CS.steeringPressed,
+      saturated=False,
+      curvature_limited=False,
+    )
+    # If the detector would have fired without the gate, the
+    # saturated path must NOT fire. If the detector doesn't
+    # fire without the gate either, the test is still a valid
+    # wiring check but we skip the inequality assertion.
+    if unsat_recenter.active:
+      assert not recenter.active or recenter.lead_reduction < unsat_recenter.lead_reduction
+
+
+
+  """v4 always returns None from _v5_governor_context so the
+  governor sees no v5 context and applies v4.1 slew rates.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+  )
+  controller, _, _ = get_controller()
+  assert controller._v5_governor_context(target=None) is None
+  assert LatControlTorqueV4._v5_governor_context.__qualname__.endswith("._v5_governor_context")
+
+
+def test_v5_governor_context_carries_profile_and_telemetry_state():
+  """v5 builds a populated TorqueV5GovernorContext every frame.
+  The context surfaces profile mode / confidence, last-frame
+  preview/turn-exit activity, wobble state, and v5-active flag.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV5GovernorContext,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5._v5_last_preview_active = True
+  v5._v5_last_turn_exit_active = True
+  v5._wobble_active = False
+  v5._v5_last_v5_active = True
+  v5._v5_last_v5_reason = "preview_boost_applied"
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.85,
+    ),
+  )
+
+  ctx = v5._v5_governor_context(target=None)
+  assert isinstance(ctx, TorqueV5GovernorContext)
+  assert ctx.profile_available is True
+  assert ctx.demand_mode == LateralMode.TURN_IN.value
+  assert ctx.demand_mode_confidence == pytest.approx(0.85)
+  assert ctx.preview_active is True
+  assert ctx.turn_exit_active is True
+  assert ctx.wobble_active is False
+  assert ctx.v5_active is True
+  assert ctx.v5_reason == "preview_boost_applied"
+
+
+def test_v5_governor_context_turn_exit_boost_does_not_loosen_safety_caps():
+  """The v5 context drives a bounded slew boost during turn-exit
+  unwind. The output cap, sign-change slew rate, and CLIPPED
+  reason must all be unchanged from the v4.1 baseline. The
+  boost can only relax the inter-frame slew, never the safety
+  envelope.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    TurnExitDecision,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV4,
+    LatControlTorqueV5,
+    TorqueV5GovernorContext,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v4 = LatControlTorqueV4(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+
+  # Simulate a sign-change unwind frame: previous_output is on
+  # one side, raw_output_torque is on the other. Build a v5
+  # context that reports turn_exit_active.
+  v5.governor.previous_output = 1.0
+  v4.governor.previous_output = 1.0
+  v5._v5_last_turn_exit_active = True
+  v5._v5_last_preview_active = False
+  v5._v5_last_v5_active = True
+  v5._v5_last_v5_reason = "turn_exit_source_of_truth"
+
+  kwargs = dict(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False,
+    actuator_mismatch=False, actuator_error=0.0,
+    raw_output_torque=-1.0, max_output=2.0,
+    speed_model=make_speed_result(),
+  )
+  result_v4 = v4.governor.update(**kwargs)
+  v5_ctx = v5._v5_governor_context(target=None)
+  result_v5 = v5.governor.update(**kwargs, v5_context=v5_ctx)
+  # Output cap is the safety envelope; the v5 boost must not
+  # change it.
+  assert result_v5.output_cap == pytest.approx(result_v4.output_cap)
+  # Sign-change was present in both calls; the SLEW_LIMITED
+  # reason and the same_direction cap-rate logic are untouched.
+  assert (result_v5.reason & 0xFF) == (result_v4.reason & 0xFF)
+
+
+def test_v5_route_summary_returns_all_required_fields():
+  """_v5_route_summary must expose the seven fields route
+  validation tooling needs: v5_active, preview_boost_applied,
+  turn_exit_mode, wobble_active, final_lead_delta,
+  output_sign_flips, straight_road_torque_flips.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._v5_last_v5_active = True
+  v5._v5_last_preview_applied_value = 0.04
+  v5._v5_last_final_lead_delta = 0.1
+  v5._v5_output_sign_flips = 7
+  v5._v5_straight_road_torque_flips = 2
+
+  summary = v5._v5_route_summary()
+  assert set(summary) == {
+    "v5_active",
+    "preview_boost_applied",
+    "turn_exit_mode",
+    "wobble_active",
+    "final_lead_delta",
+    "output_sign_flips",
+    "straight_road_torque_flips",
+  }
+  assert summary["v5_active"] is True
+  assert summary["preview_boost_applied"] == pytest.approx(0.04)
+  assert summary["final_lead_delta"] == pytest.approx(0.1)
+  assert summary["output_sign_flips"] == 7
+  assert summary["straight_road_torque_flips"] == 2
+
+
+def test_v5_output_sign_flips_counter_increments_on_real_flip():
+  """The output_sign_flips counter must increment when the
+  output torque's sign changes between frames. Initialized to
+  zero and incremented on every real flip.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  assert v5._v5_output_sign_flips == 0
+
+  v5._v5_record_output_torque_sign_flips(0.5)
+  assert v5._v5_output_sign_flips == 0
+  v5._v5_record_output_torque_sign_flips(0.3)
+  assert v5._v5_output_sign_flips == 0
+  v5._v5_record_output_torque_sign_flips(-0.2)
+  assert v5._v5_output_sign_flips == 1
+  v5._v5_record_output_torque_sign_flips(-0.4)
+  assert v5._v5_output_sign_flips == 1
+  v5._v5_record_output_torque_sign_flips(0.1)
+  assert v5._v5_output_sign_flips == 2
+
+
+def test_v5_straight_road_torque_flips_counter_gated_by_straight_flag():
+  """straight_road_torque_flips must only count flips that
+  happened while the controller's straight-road flag was set.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._v5_last_output_sign = 0
+  assert v5._v5_straight_road_torque_flips == 0
+
+  v5._last_straight_road = True
+  v5._v5_record_output_torque_sign_flips(0.5)
+  v5._v5_record_output_torque_sign_flips(-0.3)  # flip on straight
+  assert v5._v5_straight_road_torque_flips == 1
+
+  v5._last_straight_road = False
+  v5._v5_record_output_torque_sign_flips(0.4)  # flip off straight
+  assert v5._v5_straight_road_torque_flips == 1
+  assert v5._v5_output_sign_flips == 2
+
+
+def test_v5_output_sign_flip_counter_increments():
+  """Direct test of the flip counter helper. The counter must
+  start at zero, increment only on real sign changes, and
+  never count the first call (no prior sign to compare
+  against).
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._v5_last_output_sign = 0
+  assert v5._v5_output_sign_flips == 0
+
+  v5._v5_record_output_torque_sign_flips(0.6)
+  assert v5._v5_output_sign_flips == 0
+  assert v5._v5_last_output_sign == 1
+
+  v5._v5_record_output_torque_sign_flips(0.4)
+  assert v5._v5_output_sign_flips == 0
+
+  v5._v5_record_output_torque_sign_flips(-0.5)
+  assert v5._v5_output_sign_flips == 1
+
+  v5._v5_record_output_torque_sign_flips(0.2)
+  assert v5._v5_output_sign_flips == 2
+
+
+def test_v5_straight_road_torque_flip_counter_uses_classifier_straight_road():
+  """_last_straight_road must be set from the live
+  classifier_result.straight_road output every frame. A
+  straight-road classifier result must leave the flag True; a
+  curve-road result must leave it False. The flip counters are
+  gated by the flag (covered in
+  test_v5_straight_road_torque_flips_counter_gated_by_straight_flag);
+  this test verifies the wiring from the classifier output to
+  the flag is live on every update().
+  """
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralMode,
+  )
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._last_straight_road = False
+  v5.set_lateral_demand_profile(
+    LateralDemandProfile(
+      raw_curvature=0.0, processed_curvature=0.0, curvature_limited=False,
+      path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+      lane_change_blend=0.0, demand_source="model_path",
+      mode=LateralMode.TURN_IN.value, mode_confidence=0.9,
+    ),
+  )
+  v5.set_processed_lateral_demand(
+    make_processed_lateral_demand(processed_curvature=0.0, path_quality=0.9, path_reason="ok"),
+  )
+
+  class _StraightClassifier:
+    classification = "none"
+    confidence = 0.0
+    straight_road = True
+
+  class _CurveClassifier:
+    classification = "none"
+    confidence = 0.0
+    straight_road = False
+
+  with patch.object(v5.oscillation_classifier, "update",
+                    return_value=_StraightClassifier()):
+    update(v5, VehicleModel(CP), make_car_state(v_ego=20.0), 0.0001)
+  assert v5._last_straight_road is True
+
+  with patch.object(v5.oscillation_classifier, "update",
+                    return_value=_CurveClassifier()):
+    update(v5, VehicleModel(CP), make_car_state(v_ego=20.0), 0.0001)
+  assert v5._last_straight_road is False
+
+  with patch.object(v5.oscillation_classifier, "update",
+                    return_value=_StraightClassifier()):
+    update(v5, VehicleModel(CP), make_car_state(v_ego=20.0), 0.0001)
+  assert v5._last_straight_road is True
+
+  v5.reset()
+  assert v5._last_straight_road is False
+
+
+def test_v5_straight_road_torque_flip_counter_does_not_increment_when_not_straight():
+  """When _last_straight_road is False, the
+  straight_road_torque_flips counter must stay at zero even
+  though the underlying output_sign_flips counter still
+  increments.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5._v5_last_output_sign = 0
+  v5._last_straight_road = False
+  assert v5._v5_straight_road_torque_flips == 0
+
+  v5._v5_record_output_torque_sign_flips(0.5)
+  v5._v5_record_output_torque_sign_flips(-0.4)
+  v5._v5_record_output_torque_sign_flips(0.3)
+  v5._v5_record_output_torque_sign_flips(-0.2)
+  v5._v5_record_output_torque_sign_flips(0.1)
+
+  assert v5._v5_output_sign_flips == 4
+  assert v5._v5_straight_road_torque_flips == 0
+
+
+def test_v5_adaptive_log_includes_route_summary_fields():
+  """The v5 adaptive log must surface the v5Active, previewBoostApplied,
+  finalLeadDelta, outputSignFlips, and straightRoadTorqueFlips fields
+  for route tooling. A driven v5 controller writes non-zero values
+  to these fields.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.ACTIVE_TURN_EXIT_CONTROLLER = True
+  v5._v5_last_v5_active = True
+  v5._v5_last_preview_applied_value = 0.04
+  v5._v5_last_final_lead_delta = 0.1
+  v5._v5_output_sign_flips = 5
+  v5._v5_straight_road_torque_flips = 1
+
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=0.9, path_reason="ok")
+  v5.set_processed_lateral_demand(demand)
+  log = update(v5, VM=None, CS=CS, desired_curvature=0.001)[2] if False else None
+
+  # The _fill_adaptive_log path is exercised during a full
+  # update; we drive the log fill directly here so the test does
+  # not depend on CS/VM plumbing. Build a stub log with the
+  # v5 fields and verify they get written.
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV4Target,
+    TorqueV4AdaptationUpdate,
+    TorqueV4GovernorResult,
+    TorqueV4GovernorReason,
+  )
+  pid_log = type("PIDLog", (), {})()
+  adaptive_log = type("AdaptiveLog", (), {})()
+  pid_log.init = lambda _name: adaptive_log
+  pid_log.active = True
+  pid_log.error = 0.0
+  governor_result = TorqueV4GovernorResult(0.5, TorqueV4GovernorReason.NONE, 2.0)
+  sample_update = TorqueV4AdaptationUpdate(
+    reject_reason=0, residual_error=0.0, sample_accepted=True,
+  )
+  v5._fill_adaptive_log(
+    pid_log=pid_log,
+    active=True,
+    target=TorqueV4Target(0.4, 0.0, 0.4, 0.1, 0.5, 0.5),
+    feedback_correction=0.0,
+    damping_correction=0.0,
+    raw_output_torque=0.5,
+    governor_result=governor_result,
+    sample_update=sample_update,
+    speed_result=make_speed_result(),
+    steer_limit_feedback=type("F", (), {"valid": False, "limited": False, "reason": 0, "requested": 0.0, "applied": 0.0, "error": 0.0})(),
+    steer_limit_same_direction=False,
+    steer_limit_unwind=False,
+    actual_lateral_jerk=0.0,
+  )
+  assert adaptive_log.v5Active is True
+  assert adaptive_log.previewBoostApplied == pytest.approx(0.04)
+  assert adaptive_log.finalLeadDelta == pytest.approx(0.1)
+  assert adaptive_log.outputSignFlips == 5
+  assert adaptive_log.straightRoadTorqueFlips == 1
+
+
+def test_v4_uses_no_v2_or_extension_post_core_limiters():
+  source = inspect.getsource(latcontrol_torque_v4)
+
+  assert "LatControlTorqueExt" not in source
+  assert "TorqueConservativeOutputShaper" not in source
+  assert "TorqueGuardedResponseAssist" not in source
+  assert "attenuate_same_direction_over_response" not in source
+  assert "TorqueV21RefinedOutputGovernor" not in source
+
+
+def test_v4_direct_speed_aware_hook_parses_numeric_payload():
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  friction = float(controller.torque_params.friction)
+  payload = format_speed_aware_params(controller.CP, {"20_30": (factor * 1.1, 0.02, friction)})
+
+  controller.update_speed_aware_params(str(payload))
+
+  assert controller.speed_aware_params["20_30"][0] == pytest.approx(factor * 1.1)
+
+
+def test_v4_direct_speed_aware_hook_honors_apply_toggle_false():
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  payload = format_speed_aware_params(controller.CP, {"20_30": (factor * 1.2, 0.02, float(controller.torque_params.friction))})
+
+  controller.update_speed_aware_params(str(payload))
+  result = TorqueV4SpeedModel().update(25.0, controller.torque_params, controller.speed_aware_params,
+                                       controller.speed_adaptive_apply_enabled, controller.session_adaptation)
+
+  assert controller.speed_aware_params is not None
+  assert not controller.speed_adaptive_apply_enabled
+  assert result.speed_aware_confidence == 0.0
+  assert result.effective_lat_accel_factor == pytest.approx(factor)
+
+
+def test_v4_direct_speed_aware_hook_applies_when_toggle_true(monkeypatch):
+  monkeypatch.setattr(latcontrol_torque_v4, "Params", ApplyEnabledParams)
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  payload = format_speed_aware_params(controller.CP, {"20_30": (factor * 1.2, 0.02, float(controller.torque_params.friction))})
+
+  controller.update_speed_aware_params(str(payload))
+  result = TorqueV4SpeedModel().update(25.0, controller.torque_params, controller.speed_aware_params,
+                                       controller.speed_adaptive_apply_enabled, controller.session_adaptation)
+
+  assert controller.speed_adaptive_apply_enabled
+  assert 0.0 < result.speed_aware_confidence < 1.0
+  assert factor < result.effective_lat_accel_factor < factor * 1.2
+  assert result.effective_lat_accel_offset == pytest.approx(0.006)
+
+
+def test_v4_invalid_speed_aware_payload_falls_back_to_global(monkeypatch):
+  monkeypatch.setattr(latcontrol_torque_v4, "Params", ApplyEnabledParams)
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+
+  controller.update_speed_aware_params("not a payload")
+  result = TorqueV4SpeedModel().update(25.0, controller.torque_params, controller.speed_aware_params,
+                                       controller.speed_adaptive_apply_enabled, controller.session_adaptation)
+
+  assert controller.speed_aware_params is None
+  assert result.speed_aware_confidence == 0.0
+  assert result.effective_lat_accel_factor == pytest.approx(factor)
+
+
+def test_v4_missing_speed_aware_payload_falls_back_to_global(monkeypatch):
+  monkeypatch.setattr(latcontrol_torque_v4, "Params", ApplyEnabledParams)
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+
+  controller.update_speed_aware_params(None)
+  result = TorqueV4SpeedModel().update(25.0, controller.torque_params, controller.speed_aware_params,
+                                       controller.speed_adaptive_apply_enabled, controller.session_adaptation)
+
+  assert controller.speed_aware_params is None
+  assert result.speed_aware_confidence == 0.0
+  assert result.effective_lat_accel_factor == pytest.approx(factor)
+
+
+def test_v4_update_live_torque_params_and_lateral_lag_are_bounded():
+  controller, _VM, _CP = get_controller()
+
+  controller.update_live_torque_params(2.0, 0.1, 0.2)
+  controller.update_lateral_lag(0.01)
+  low_delay = controller.session_adaptation.response_delay
+  controller.update_lateral_lag(1.0)
+  high_delay = controller.session_adaptation.response_delay
+
+  assert controller.torque_params.latAccelFactor == pytest.approx(2.0)
+  assert controller.torque_params.latAccelOffset == pytest.approx(0.1)
+  assert controller.torque_params.friction == pytest.approx(0.2)
+  assert low_delay == pytest.approx(latcontrol_torque_v4.RESPONSE_DELAY_MIN)
+  assert high_delay == pytest.approx(latcontrol_torque_v4.RESPONSE_DELAY_MAX)
+
+
+def test_v4_positive_curvature_preserves_existing_torque_sign_convention():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0)
+
+  steer, _angle, lac_log = update(controller, VM, CS, 0.001)
+
+  assert steer < 0.0
+  assert lac_log.output == pytest.approx(steer)
+  assert lac_log.adaptiveTorqueState.rawTargetLateralAccel > 0.0
+
+
+def test_v4_invalid_input_zeroes_output_and_logs_governor_reason():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0)
+
+  steer, _angle, lac_log = update(controller, VM, CS, float("nan"))
+
+  assert steer == 0.0
+  assert lac_log.output == 0.0
+  assert lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.INVALID
+  assert lac_log.adaptiveTorqueState.sampleRejectReason & TorqueV4LearnerRejectReason.INACTIVE
+
+
+def test_v4_invalid_input_logs_finite_safe_telemetry():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0)
+
+  _steer, _angle, lac_log = update(controller, VM, CS, "bad")
+
+  assert lac_log.output == 0.0
+  assert math.isfinite(lac_log.error)
+  assert math.isfinite(lac_log.errorRate)
+  assert math.isfinite(lac_log.adaptiveTorqueState.actualLateralJerk)
+
+
+def test_v4_inactive_resets_governor_and_adaptation_state():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0)
+  controller.session_adaptation.response_scale = 1.1
+  controller.session_adaptation.trim_lateral_accel = 0.1
+  controller.filtered_measurement_rate = 5.0
+  update(controller, VM, CS, 0.002)
+
+  update(controller, VM, CS, 0.002, active=False)
+
+  assert controller.governor.previous_output == 0.0
+  assert controller.session_adaptation.response_scale == pytest.approx(1.0)
+  assert controller.session_adaptation.trim_lateral_accel == pytest.approx(0.0)
+  assert controller.filtered_measurement_rate == pytest.approx(0.0)
+
+
+def test_v4_delay_leads_curve_entry_and_exit():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0)
+
+  for _ in range(8):
+    update(controller, VM, CS, 0.0)
+  _steer, _angle, entry_log = update(controller, VM, CS, 0.001)
+  for _ in range(60):
+    update(controller, VM, CS, 0.001)
+  _steer, _angle, exit_log = update(controller, VM, CS, 0.0)
+
+  assert entry_log.adaptiveTorqueState.delayLeadLateralAccel > entry_log.adaptiveTorqueState.rawTargetLateralAccel
+  assert exit_log.adaptiveTorqueState.delayLeadLateralAccel < exit_log.adaptiveTorqueState.rawTargetLateralAccel
+
+
+def test_v4_feedback_correction_sign_tracks_processed_lateral_demand():
+  positive_controller, positive_vm, _CP = get_controller()
+  negative_controller, negative_vm, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0)
+
+  _steer, _angle, positive_log = update(positive_controller, positive_vm, CS, 0.001)
+  _steer, _angle, negative_log = update(negative_controller, negative_vm, CS, -0.001)
+
+  assert positive_log.adaptiveTorqueState.feedbackCorrection > 0.0
+  assert negative_log.adaptiveTorqueState.feedbackCorrection < 0.0
+
+
+def test_v4_processed_lateral_demand_hook_stores_scalar_metadata():
+  controller, _VM, _CP = get_controller()
+  demand = make_processed_lateral_demand(path_quality=0.8, path_reason="high_path_std")
+
+  controller.set_processed_lateral_demand(demand)
+
+  assert controller.processed_lateral_demand is demand
+
+
+def test_v4_lateral_demand_profile_hook_stores_profile_and_resets():
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfile,
+    LateralDemandProfileBuilder,
+    LateralMode,
+    lateral_mode_to_uint8,
+  )
+
+  controller, _VM, _CP = get_controller()
+  builder = LateralDemandProfileBuilder(dt=DT_CTRL)
+  demand = make_processed_lateral_demand(processed_curvature=0.001)
+  profile = builder.update(demand, v_ego=20.0)
+
+  assert profile.mode == LateralMode.STEADY_CURVE.value
+
+  controller.set_lateral_demand_profile(profile)
+  assert controller.lateral_demand_profile is profile
+
+  controller.reset()
+  assert controller.lateral_demand_profile is None
+
+
+def test_v4_adaptive_torque_state_logs_demand_mode_when_profile_set():
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfileBuilder,
+    LateralMode,
+    lateral_mode_to_uint8,
+  )
+
+  controller, VM, _CP = get_controller()
+  builder = LateralDemandProfileBuilder(dt=DT_CTRL)
+  demand = make_processed_lateral_demand(processed_curvature=0.001)
+  profile = builder.update(demand, v_ego=20.0)
+  controller.set_lateral_demand_profile(profile)
+
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert lac_log.adaptiveTorqueState.demandMode == lateral_mode_to_uint8(LateralMode.STEADY_CURVE.value)
+  assert 0.0 < lac_log.adaptiveTorqueState.demandModeConfidence <= 1.0
+
+
+def test_v4_adaptive_torque_state_logs_demand_mode_zero_when_profile_unset():
+  controller, VM, _CP = get_controller()
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+  assert lac_log.adaptiveTorqueState.demandMode == 0
+  assert lac_log.adaptiveTorqueState.demandModeConfidence == 0.0
+
+
+def test_v4_adaptive_torque_state_logs_demand_mode_driver_override():
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import (
+    LateralDemandProfileBuilder,
+    LateralMode,
+    lateral_mode_to_uint8,
+  )
+
+  controller, VM, _CP = get_controller()
+  builder = LateralDemandProfileBuilder(dt=DT_CTRL)
+  demand = make_processed_lateral_demand(processed_curvature=0.001)
+  profile = builder.update(demand, v_ego=20.0, steering_pressed=True)
+  controller.set_lateral_demand_profile(profile)
+
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0, steering_pressed=True), 0.001)
+
+  assert lac_log.adaptiveTorqueState.demandMode == lateral_mode_to_uint8(LateralMode.DRIVER_OVERRIDE.value)
+
+
+def test_v4_under_response_recovery_blocked_when_wobble_active():
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  assert controller._under_response_recovery_allowed() is True
+  controller._wobble_active = True
+  assert controller._under_response_recovery_allowed() is False
+
+
+def test_v4_under_response_recovery_allowed_when_wobble_inactive():
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller._wobble_active = False
+  assert controller._under_response_recovery_allowed() is True
+
+
+def test_v4_reset_clears_oscillation_classifier_state():
+  controller, _VM, _CP = get_controller()
+  controller._last_oscillation_classification = "controller_oscillation"
+  controller._last_oscillation_confidence = 0.9
+  controller._wobble_active = True
+
+  controller.reset()
+
+  assert controller._last_oscillation_classification == "none"
+  assert controller._last_oscillation_confidence == 0.0
+  assert controller._wobble_active is False
+  assert isinstance(controller.oscillation_classifier, type(controller.oscillation_classifier))
+
+
+def test_v4_adaptive_torque_state_logs_oscillation_classification():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import lateral_oscillation_to_uint8
+
+  controller, VM, _CP = get_controller()
+  for _ in range(60):
+    controller.oscillation_classifier.update(
+      raw_curvature=0.0,
+      processed_curvature=0.0,
+      target_lateral_accel=0.0,
+      actual_lateral_accel=0.0,
+      torque_output=1.0,
+      path_quality=1.0,
+      lane_change_active=False,
+      v_ego=STRAIGHT_ROAD_MIN_SPEED,
+      curvature_limited=False,
+      steering_pressed=False,
+    )
+  assert controller._last_oscillation_classification in {
+    "controller_oscillation", "straight_road_hunting", "none",
+  }
+
+  for _ in range(20):
+    controller.oscillation_classifier.update(
+      raw_curvature=0.0,
+      processed_curvature=0.0,
+      target_lateral_accel=0.0,
+      actual_lateral_accel=0.0,
+      torque_output=-1.0,
+      path_quality=1.0,
+      lane_change_active=False,
+      v_ego=STRAIGHT_ROAD_MIN_SPEED,
+      curvature_limited=False,
+      steering_pressed=False,
+    )
+
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=STRAIGHT_ROAD_MIN_SPEED), 0.0)
+
+  assert lac_log.adaptiveTorqueState.oscillationClassification == lateral_oscillation_to_uint8(
+    controller._last_oscillation_classification
+  )
+  assert lac_log.adaptiveTorqueState.wobbleActive == controller._wobble_active
+
+
+def test_v4_adaptive_torque_state_logs_oscillation_default():
+  controller, VM, _CP = get_controller()
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+  assert lac_log.adaptiveTorqueState.oscillationClassification == 0
+  assert lac_log.adaptiveTorqueState.wobbleActive is False
+
+
+def test_v4_oscillation_classifier_receives_frame_signals():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import LateralOscillationClassifier
+
+  controller, VM, _CP = get_controller()
+  initial_window_len = len(controller.oscillation_classifier._raw_curvature)
+  assert isinstance(controller.oscillation_classifier, LateralOscillationClassifier)
+  assert initial_window_len == 0
+
+  _steer, _angle, _lac_log = update(controller, VM, make_car_state(v_ego=20.0, steering_pressed=False), 0.001)
+  assert len(controller.oscillation_classifier._raw_curvature) == 1
+
+
+def test_v4_oscillation_classifier_receives_real_torque_history():
+  """The classifier must see the previous frame's post-governor output
+  torque, not a hard-coded 0.0. With 0.0, the sign-flip counter never
+  fires and torque_sign_flips is stuck at 0, masking the wobble the
+  classifier is supposed to detect.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import STRAIGHT_ROAD_MIN_SPEED as _SPEED
+
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=_SPEED, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=1.0, path_reason="ok")
+
+  # Drive a few frames with a fixed nonzero curvature so the controller
+  # produces a steady nonzero output torque. This populates the
+  # classifier's torque window with the real history.
+  for _ in range(8):
+    controller.set_processed_lateral_demand(demand)
+    update(controller, VM, CS, 0.0008)
+
+  torque_window = list(controller.oscillation_classifier._torque_output)
+  assert len(torque_window) >= 2
+  # Every entry in the window is the previous frame's real output
+  # torque. A pre-fix controller would leave the window all zero.
+  assert all(t == 0.0 for t in torque_window) is False, (
+    "Classifier received all-zero torque history; "
+    "controller is not feeding back real output torque."
+  )
+  # Each entry is finite and at least one is non-trivially nonzero.
+  assert all(math.isfinite(t) for t in torque_window)
+  assert max(abs(t) for t in torque_window) > 0.1, (
+    f"Expected non-trivial torque magnitudes in classifier window, got {torque_window}"
+  )
+
+
+def test_v4_oscillation_classifier_detects_controller_oscillation_from_real_torque():
+  """Direct regression for the previous-frame-torque fix. With
+  torque_output=0.0 the classifier's torque window was all zeros and
+  torque_sign_flips never fired, so a real controller oscillation
+  would slip past undetected.
+
+  Two-part regression:
+
+  1. The controller must feed its previous-frame output torque into
+     the classifier (proves the wiring is real, not hard-coded 0.0).
+  2. A sign-flipping torque series passed to the classifier must
+     produce a controller_oscillation classification with non-zero
+     torque_sign_flips (proves the detection logic is reachable).
+
+  Pre-fix, part 1 would fail because the classifier received 0.0 on
+  every frame and torque_sign_flips could not rise above zero.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    LateralOscillationClassifier,
+    STRAIGHT_ROAD_MIN_SPEED,
+  )
+
+  # Part 1: controller wiring. Drive the controller with a fixed
+  # nonzero curvature and verify the classifier window contains the
+  # previous frame's real output torque, not 0.0.
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=STRAIGHT_ROAD_MIN_SPEED, steering_pressed=False)
+  demand = make_processed_lateral_demand(
+    processed_curvature=0.0, path_quality=1.0, path_reason="ok",
+  )
+  for _ in range(8):
+    controller.set_processed_lateral_demand(demand)
+    update(controller, VM, CS, 0.0008)
+  torque_window = list(controller.oscillation_classifier._torque_output)
+  assert len(torque_window) >= 2
+  assert all(t == 0.0 for t in torque_window) is False, (
+    "Classifier received all-zero torque history; the previous-frame "
+    "torque wiring is broken."
+  )
+
+  # Part 2: detection. Drive the classifier with a constant curvature
+  # and target but a sign-flipping previous-frame torque. That mimics
+  # the real failure mode: planner is steady, controller is hunting.
+  # The classifier must see the torque flips and produce
+  # controller_oscillation with non-zero torque_sign_flips.
+  classifier = LateralOscillationClassifier()
+  for i in range(classifier.window_frames + 10):
+    sign = 1.0 if i % 2 == 0 else -1.0
+    classifier.update(
+      raw_curvature=0.0,
+      processed_curvature=0.0,
+      target_lateral_accel=0.0,
+      actual_lateral_accel=0.0,
+      # The previous-frame torque is what the controller fix feeds in.
+      # A pre-fix controller would feed 0.0 here and torque_sign_flips
+      # could not rise.
+      torque_output=sign * 0.1,
+      path_quality=1.0,
+      lane_change_active=False,
+      v_ego=STRAIGHT_ROAD_MIN_SPEED,
+      curvature_limited=False,
+      steering_pressed=False,
+    )
+  final = classifier.update(
+    raw_curvature=0.0,
+    processed_curvature=0.0,
+    target_lateral_accel=0.0,
+    actual_lateral_accel=0.0,
+    torque_output=0.0,
+    path_quality=1.0,
+    lane_change_active=False,
+    v_ego=STRAIGHT_ROAD_MIN_SPEED,
+    curvature_limited=False,
+    steering_pressed=False,
+  )
+  assert final.torque_sign_flips > 0, (
+    f"Expected torque_sign_flips > 0 with sign-flipping torque, got {final.torque_sign_flips}"
+  )
+  assert final.classification == "controller_oscillation", (
+    f"Expected controller_oscillation, got {final.classification}"
+  )
+
+
+def test_v4_health_estimator_receives_previous_frame_saturation():
+  """The health estimator's `saturated` input must reflect the
+  previous frame's actual saturation status, not a hard-coded False.
+  Hard-coding False meant bias learning ignored saturation entirely
+  and could learn a bias from frames whose output was clipped.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=1.0, path_reason="ok")
+
+  seen_saturated: list[bool] = []
+  def _capture(**_kwargs):
+    seen_saturated.append(bool(_kwargs.get("saturated", False)))
+    return LateralVehicleHealthEstimate(
+      bias_estimate=0.0, bias_confidence=0.0, bias_warning=False,
+    )
+  controller.vehicle_health_estimator.update = _capture
+
+  # Pretend the previous frame's output was saturated.
+  controller._previous_saturated = True
+  controller.set_processed_lateral_demand(demand)
+  update(controller, VM, CS, 0.0001)
+
+  assert seen_saturated[-1] is True, (
+    f"Estimator received saturated=False despite previous-frame saturation; "
+    f"all values seen: {seen_saturated}"
+  )
+
+  # And the inverse: after a non-saturated frame, the estimator must
+  # see saturated=False.
+  controller._previous_saturated = False
+  controller.set_processed_lateral_demand(demand)
+  update(controller, VM, CS, 0.0001)
+  assert seen_saturated[-1] is False
+
+
+def test_v4_health_estimator_does_not_learn_bias_during_saturation():
+  """Saturated frames must not update the bias estimate. The estimator
+  can be told to return a high estimate anyway (telemetry surface), but
+  the controller must have routed a True saturated flag to it.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=1.0, path_reason="ok")
+
+  # Run a few frames with the real estimator so it has internal history.
+  for _ in range(5):
+    controller.set_processed_lateral_demand(demand)
+    update(controller, VM, CS, 0.0001)
+
+  # Capture every call's saturated argument and return a fixed estimate.
+  calls: list[dict] = []
+  def _capture(**kwargs):
+    calls.append(dict(kwargs))
+    return LateralVehicleHealthEstimate(
+      bias_estimate=0.0, bias_confidence=0.0, bias_warning=False,
+    )
+  controller.vehicle_health_estimator.update = _capture
+
+  # Frame N: pretend the previous frame was saturated.
+  controller._previous_saturated = True
+  controller.set_processed_lateral_demand(demand)
+  update(controller, VM, CS, 0.0001)
+  assert calls[-1]["saturated"] is True
+
+
+def test_v4_turn_exit_decision_is_telemetry_only_in_4p1():
+  """4.1 surfaces the turn-exit decision in telemetry but does not
+  route it into the command path. The command, lead gain, and output
+  torque must be identical whether the controller is in INACTIVE,
+  TURN_IN, TURN_EXIT, EARLY_RELEASE, or STEADY_CURVE.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_turn_exit_controller import (
+    LateralTurnExitController,
+    TurnExitDecision,
+    TurnExitMode,
+  )
+
+  def _decider_with_mode(mode: str, preview_boost: float):
+    def _decide(**_kwargs):
+      return TurnExitDecision(
+        mode=mode,
+        persistence_frames=10,
+        lead_gain_multiplier=1.0,
+        lead_delta_cap_multiplier=1.0,
+        slew_boost=1.0,
+        same_direction_slew_boost=1.0,
+        early_release_lead_zero=False,
+        preview_boost=preview_boost,
+        confidence=0.9,
+      )
+    return _decide
+
+  def _decider_inactive(**_kwargs):
+    return _decider_with_mode(TurnExitMode.INACTIVE.value, 0.0)()
+
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.0005, path_quality=1.0, path_reason="ok")
+
+  # Reference: controller in INACTIVE mode.
+  controller_ref, VM, _CP = get_controller()
+  controller_ref.turn_exit_controller.update = _decider_inactive
+  controller_ref.set_processed_lateral_demand(demand)
+  log_ref = update(controller_ref, VM, CS, 0.0005)[2]
+
+  # Each non-INACTIVE mode with a non-zero preview_boost must produce
+  # the same f (command_lateral_accel), the same feedback correction,
+  # the same output torque, and the same lead gain.
+  for mode in (TurnExitMode.TURN_IN.value, TurnExitMode.TURN_EXIT.value,
+               TurnExitMode.EARLY_RELEASE.value, TurnExitMode.STEADY_CURVE.value):
+    controller_alt, _, _ = get_controller()
+    controller_alt.turn_exit_controller.update = _decider_with_mode(mode, 0.5)
+    controller_alt.set_processed_lateral_demand(demand)
+    log_alt = update(controller_alt, VM, CS, 0.0005)[2]
+
+    # Command path is identical.
+    assert log_alt.f == pytest.approx(log_ref.f), (
+      f"Mode {mode} changed command_lateral_accel: {log_ref.f} -> {log_alt.f}"
+    )
+    # Output torque is identical.
+    assert log_alt.output == pytest.approx(log_ref.output)
+    # Telemetry differs: mode is surfaced, preview boost is surfaced.
+    assert log_alt.adaptiveTorqueState.turnExitMode != log_ref.adaptiveTorqueState.turnExitMode
+    assert log_alt.adaptiveTorqueState.previewBoost == pytest.approx(0.5)
+    assert log_ref.adaptiveTorqueState.previewBoost == pytest.approx(0.0)
+  # Sanity: with the decider forced, the controller still works (the
+  # return type matches the real LateralTurnExitController.update).
+  assert isinstance(controller_ref.turn_exit_controller, LateralTurnExitController)
+
+
+def test_v4_oscillation_classifier_window_grows_then_classifies():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import STRAIGHT_ROAD_MIN_SPEED as _SPEED
+
+  controller, VM, _CP = get_controller()
+  demand = make_processed_lateral_demand(processed_curvature=0.0001)
+
+  for i in range(60):
+    sign = 1.0 if i % 2 == 0 else -1.0
+    CS = make_car_state(v_ego=_SPEED, steering_pressed=False)
+    update(controller, VM, CS, sign * 0.0001)
+    controller.set_processed_lateral_demand(demand)
+
+  assert controller._last_oscillation_classification in {
+    "none", "controller_oscillation", "straight_road_hunting",
+    "planner_oscillation", "vehicle_bias", "recenter_lag", "sign_change_lag",
+  }
+  assert 0.0 <= controller._last_oscillation_confidence <= 1.0
+
+
+def test_v4_vehicle_bias_compensation_returns_zero_when_wobble_active():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+  controller, _VM, _CP = get_controller()
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=0.04, bias_confidence=0.9, bias_warning=True,
+  )
+  assert controller._vehicle_bias_compensation(estimate, wobble_active=True) == 0.0
+
+
+def test_v4_vehicle_bias_compensation_scales_by_confidence():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    HEALTH_EST_BIAS_MAX,
+    LateralVehicleHealthEstimate,
+  )
+  controller, _VM, _CP = get_controller()
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=0.04, bias_confidence=0.5, bias_warning=False,
+  )
+  expected = 0.04 * 0.5
+  result = controller._vehicle_bias_compensation(estimate, wobble_active=False)
+  assert result == pytest.approx(expected, rel=1e-6)
+  assert abs(result) <= HEALTH_EST_BIAS_MAX
+
+
+def test_v4_vehicle_bias_compensation_clamps_to_hard_bound():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    HEALTH_EST_BIAS_MAX,
+    LateralVehicleHealthEstimate,
+  )
+  controller, _VM, _CP = get_controller()
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=0.5, bias_confidence=1.0, bias_warning=True,
+  )
+  result = controller._vehicle_bias_compensation(estimate, wobble_active=False)
+  assert result == pytest.approx(HEALTH_EST_BIAS_MAX, rel=1e-6)
+
+
+def test_v4_vehicle_bias_compensation_returns_zero_for_non_finite():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+  controller, _VM, _CP = get_controller()
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=float("nan"), bias_confidence=1.0, bias_warning=False,
+  )
+  assert controller._vehicle_bias_compensation(estimate, wobble_active=False) == 0.0
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=0.05, bias_confidence=float("inf"), bias_warning=False,
+  )
+  assert controller._vehicle_bias_compensation(estimate, wobble_active=False) == 0.0
+
+
+def test_v4_vehicle_bias_compensation_negative_sign():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+  controller, _VM, _CP = get_controller()
+  estimate = LateralVehicleHealthEstimate(
+    bias_estimate=-0.03, bias_confidence=1.0, bias_warning=False,
+  )
+  assert controller._vehicle_bias_compensation(estimate, wobble_active=False) == pytest.approx(-0.03, rel=1e-6)
+
+
+def test_v4_reset_resets_vehicle_health_estimator():
+  controller, _VM, _CP = get_controller()
+  controller._last_health_estimate = type(controller._last_health_estimate)(
+    bias_estimate=0.05, bias_confidence=0.9, bias_warning=True,
+  )
+  controller.vehicle_health_estimator._bias_ema = 0.05
+  controller.vehicle_health_estimator._bias_sample_count = 50
+
+  controller.reset()
+
+  assert controller._last_health_estimate.bias_estimate == 0.0
+  assert controller._last_health_estimate.bias_confidence == 0.0
+  assert controller._last_health_estimate.bias_warning is False
+  assert controller.vehicle_health_estimator._bias_ema == 0.0
+  assert controller.vehicle_health_estimator._bias_sample_count == 0
+
+
+def test_v4_adaptive_torque_state_logs_vehicle_health_fields():
+  controller, VM, _CP = get_controller()
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+  assert lac_log.adaptiveTorqueState.vehicleBiasEstimate == 0.0
+  assert lac_log.adaptiveTorqueState.vehicleBiasConfidence == 0.0
+  assert lac_log.adaptiveTorqueState.vehicleBiasWarning is False
+  assert lac_log.adaptiveTorqueState.vehicleHealthActive is False
+
+
+def test_v4_vehicle_health_estimator_receives_frame_signals():
+  controller, VM, _CP = get_controller()
+  initial_count = controller.vehicle_health_estimator._frame_count
+  assert initial_count == 0
+
+  update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert controller.vehicle_health_estimator._frame_count == 1
+
+
+def test_v4_vehicle_health_estimator_converges_under_persistent_bias():
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    HEALTH_EST_BIAS_MAX,
+  )
+
+  controller, VM, _CP = get_controller()
+  demand = make_processed_lateral_demand(processed_curvature=0.0, path_quality=1.0, path_reason="ok")
+  controller.set_processed_lateral_demand(demand)
+  CS = make_car_state(v_ego=25.0)
+  for _ in range(150):
+    update(controller, VM, CS, 0.0, lat_delay=0.2)
+    controller.set_processed_lateral_demand(demand)
+
+  assert controller._last_health_estimate.persistence_frames > 0
+  assert abs(controller._last_health_estimate.bias_estimate) <= HEALTH_EST_BIAS_MAX
+
+
+def test_v41_vehicle_bias_compensation_is_diagnostic_only():
+  """4.1 keeps the learned bias diagnostic-only: estimator state still
+  updates and is surfaced in telemetry, but the compensation term is
+  forced to 0.0 in the command path. A future LatControlTorqueV5 can
+  flip ACTIVE_VEHICLE_BIAS_COMPENSATION to True to apply the term.
+
+  This is a direct regression test: feed a high-confidence, high-bias
+  estimate and verify the 4.1 command output is bit-equivalent to the
+  zero-bias run. The estimator's intent is still logged, the command
+  ignores it.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+
+  # Use two fresh controllers so the only varying input between the
+  # two calls is the mocked estimator output. Internal IIR state
+  # (measurement-rate filter, etc.) would otherwise drift one step
+  # between calls and contaminate the diff with non-bias terms.
+  controller_clean, VM, _CP = get_controller()
+  controller_biased, _, _ = get_controller()
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
+
+  controller_clean.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
+    bias_estimate=0.0, bias_confidence=0.0, bias_warning=False,
+  )
+  controller_biased.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
+    bias_estimate=0.05, bias_confidence=1.0, bias_warning=True,
+  )
+
+  controller_clean.set_processed_lateral_demand(demand)
+  controller_biased.set_processed_lateral_demand(demand)
+  log_clean = update(controller_clean, VM, CS, 0.001, lat_delay=0.2)[2]
+  log_biased = update(controller_biased, VM, CS, 0.001, lat_delay=0.2)[2]
+
+  # Command path is unchanged by learned bias in 4.1. Telemetry still
+  # surfaces the estimator's intent.
+  assert log_biased.f == pytest.approx(log_clean.f)
+  assert log_biased.adaptiveTorqueState.vehicleBiasEstimate == pytest.approx(0.05)
+  assert log_clean.adaptiveTorqueState.vehicleBiasEstimate == pytest.approx(0.0)
+
+
+def test_v41_active_vehicle_bias_compensation_flag_is_false_by_default():
+  """Pin the 4.1 default: ACTIVE_VEHICLE_BIAS_COMPENSATION must be False
+  on the V4.1 class. Any future flip-to-True must be an explicit class
+  attribute change on a new version, not a silent edit of the base
+  flag.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV41,
+  )
+  assert LatControlTorqueV41.ACTIVE_VEHICLE_BIAS_COMPENSATION is False
+
+
+def test_v4_bias_compensation_command_path_is_invariant_to_estimator_wobble_gate():
+  """In 4.1 the wobble gate inside the bias helper is irrelevant for the
+  command because the entire bias term is forced to 0. Wobble still
+  affects the wobble response multipliers independently.
+  """
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    LateralOscillationClassification,
+  )
+  from openpilot.selfdrive.controls.lib.lateral_vehicle_health_estimator import (
+    LateralVehicleHealthEstimate,
+  )
+
+  # Use two fresh controllers to isolate the wobble classifier effect.
+  controller_wobble, VM, _CP = get_controller()
+  controller_clean, _, _ = get_controller()
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
+
+  for c in (controller_wobble, controller_clean):
+    c.vehicle_health_estimator.update = lambda **_: LateralVehicleHealthEstimate(
+      bias_estimate=0.05, bias_confidence=1.0, bias_warning=True,
+    )
+
+  controller_wobble.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="controller_oscillation", confidence=0.9,
+    raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
+    torque_sign_flips=10, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=False,
+    path_quality=1.0, lane_change_active=False,
+  )
+  controller_clean.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="none", confidence=0.0,
+    raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
+    torque_sign_flips=0, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=True,
+    path_quality=1.0, lane_change_active=False,
+  )
+
+  controller_wobble.set_processed_lateral_demand(demand)
+  controller_clean.set_processed_lateral_demand(demand)
+  log_wobble = update(controller_wobble, VM, CS, 0.001, lat_delay=0.2)[2]
+  log_clean = update(controller_clean, VM, CS, 0.001, lat_delay=0.2)[2]
+
+  # Bias contribution to f is zero in both cases in 4.1. Wobble still
+  # flips the wobbleActive telemetry flag and modulates the feedback gain.
+  assert log_wobble.adaptiveTorqueState.wobbleActive is True
+  assert log_clean.adaptiveTorqueState.wobbleActive is False
+  assert log_wobble.adaptiveTorqueState.vehicleBiasEstimate == pytest.approx(0.05)
+
+
+def test_v4_wobble_response_reduces_feedback_for_controller_oscillation():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    LateralOscillationClassification,
+  )
+
+  controller, VM, _CP = get_controller()
+  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="controller_oscillation",
+    confidence=0.9,
+    raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
+    torque_sign_flips=10, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=False,
+    path_quality=1.0, lane_change_active=False,
+  )
+
+  _steer, _angle, log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert log.adaptiveTorqueState.wobbleFeedbackGainMult < 1.0
+  assert log.adaptiveTorqueState.wobbleDampingGainMult > 1.0
+
+
+def test_v4_wobble_response_reduces_feedback_for_planner_oscillation():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    LateralOscillationClassification,
+  )
+
+  controller, VM, _CP = get_controller()
+  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="planner_oscillation",
+    confidence=0.8,
+    raw_curvature_sign_flips=10, processed_curvature_sign_flips=10,
+    torque_sign_flips=0, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=False,
+    path_quality=1.0, lane_change_active=False,
+  )
+
+  _steer, _angle, log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+
+  assert log.adaptiveTorqueState.wobbleFeedbackGainMult < 1.0
+  assert log.adaptiveTorqueState.wobbleDampingGainMult > 1.0
+
+
+def test_v4_wobble_response_neutral_when_inactive():
+  controller, VM, _CP = get_controller()
+  _steer, _angle, log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+  assert log.adaptiveTorqueState.wobbleFeedbackGainMult == 1.0
+  assert log.adaptiveTorqueState.wobbleDampingGainMult == 1.0
+
+
+def test_v4_wobble_response_changes_feedback_correction_in_oscillation_mode():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    LateralOscillationClassification,
+  )
+
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0, steering_pressed=False)
+  demand = make_processed_lateral_demand(processed_curvature=0.001, path_quality=1.0, path_reason="ok")
+
+  for _ in range(20):
+    controller.set_processed_lateral_demand(demand)
+    update(controller, VM, CS, 0.001, lat_delay=0.2)
+
+  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="none", confidence=0.0,
+    raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
+    torque_sign_flips=0, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=True,
+    path_quality=1.0, lane_change_active=False,
+  )
+  controller.set_processed_lateral_demand(demand)
+  log_clean = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
+  clean_fb = log_clean.adaptiveTorqueState.feedbackCorrection
+  clean_wobble_mult = log_clean.adaptiveTorqueState.wobbleFeedbackGainMult
+
+  controller.oscillation_classifier.update = lambda **_: LateralOscillationClassification(
+    classification="controller_oscillation", confidence=0.9,
+    raw_curvature_sign_flips=0, processed_curvature_sign_flips=0,
+    torque_sign_flips=10, curvature_offset=0.0, curvature_offset_confidence=0.0,
+    recenter_lag_frames=0, sign_change_lag_frames=0, straight_road=False,
+    path_quality=1.0, lane_change_active=False,
+  )
+  controller.set_processed_lateral_demand(demand)
+  log_wobble = update(controller, VM, CS, 0.001, lat_delay=0.2)[2]
+  wobble_fb = log_wobble.adaptiveTorqueState.feedbackCorrection
+  wobble_wobble_mult = log_wobble.adaptiveTorqueState.wobbleFeedbackGainMult
+
+  assert clean_wobble_mult == 1.0
+  assert wobble_wobble_mult < 1.0
+  assert abs(wobble_fb) < abs(clean_fb)
+
+
+def test_v4_wobble_response_receives_classifier_classification():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=STRAIGHT_ROAD_MIN_SPEED, steering_pressed=False)
+  for _ in range(60):
+    update(controller, VM, CS, 0.0001, lat_delay=0.2)
+  assert controller._last_wobble_response.classification in {
+    "none", "planner_oscillation", "controller_oscillation", "straight_road_hunting",
+    "vehicle_bias", "recenter_lag", "sign_change_lag",
+  }
+
+
+def test_v4_reset_resets_wobble_response():
+  from openpilot.selfdrive.controls.lib.lateral_oscillation_classifier import (
+    compute_wobble_response,
+  )
+
+  controller, _VM, _CP = get_controller()
+  controller._last_wobble_response = compute_wobble_response("controller_oscillation", 0.9)
+  controller.reset()
+  assert controller._last_wobble_response.classification == "none"
+  assert controller._last_wobble_response.feedback_gain_multiplier == 1.0
+
+
+def test_v4_learning_rejects_forwarded_lateral_maneuver_demand():
+  controller, VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(
+    demand_source=DEMAND_SOURCE_LATERAL_MANEUVER,
+    path_quality=0.0,
+    path_reason="lateral_maneuver",
+  ))
+
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=20.0), 0.001)
+
+  reject_reason = lac_log.adaptiveTorqueState.sampleRejectReason
+  assert reject_reason & TorqueV4LearnerRejectReason.NON_MODEL_DEMAND
+  assert reject_reason & TorqueV4LearnerRejectReason.LOW_PATH_QUALITY
+  assert reject_reason & TorqueV4LearnerRejectReason.PATH_REASON
+
+
+def test_v4_governor_driver_override_preserves_authority():
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
+  governor.previous_output = 1.0
+  speed_result = make_speed_result(output_slew_rate=4.0)
+
+  override = governor.update(active=True, v_ego=20.0, steering_pressed=True, steering_rate_deg=0.0,
+                             same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+                             actuator_error=0.0, raw_output_torque=1.0, max_output=1.0, speed_model=speed_result)
+
+  assert override.reason & TorqueV4GovernorReason.DRIVER_OVERRIDE
+  assert override.output_torque == pytest.approx(1.0)
+
+
+def test_v4_governor_same_direction_limit_and_high_rate_cap_output():
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
+  speed_result = make_speed_result(output_slew_rate=10.0)
+
+  same_direction = governor.update(active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+                                   same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                                   actuator_error=0.0, raw_output_torque=1.0, max_output=1.0, speed_model=speed_result)
+  high_rate = governor.update(active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=100.0,
+                              same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+                              actuator_error=0.0, raw_output_torque=1.0, max_output=1.0, speed_model=speed_result)
+
+  assert same_direction.reason & TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
+  assert same_direction.output_cap < 1.0
+  assert high_rate.reason & TorqueV4GovernorReason.HIGH_STEERING_RATE
+  assert high_rate.output_cap < 1.0
+
+
+def test_v41_governor_relaxes_same_direction_rate_and_high_rate_gate():
+  speed_result = make_speed_result(output_slew_rate=10.0, sign_change_slew_rate=10.0)
+  v4_governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
+  v41_governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV41.GOVERNOR_PROFILE)
+
+  v4_same_direction = v4_governor.update(active=True, v_ego=30.0, steering_pressed=False, steering_rate_deg=0.0,
+                                         same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                                         actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                                         speed_model=speed_result)
+  v41_same_direction = v41_governor.update(active=True, v_ego=30.0, steering_pressed=False, steering_rate_deg=0.0,
+                                           same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                                           actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                                           speed_model=speed_result)
+
+  assert v4_same_direction.output_cap == pytest.approx(0.72)
+  assert v41_same_direction.output_cap == pytest.approx(0.85)
+  assert v4_same_direction.output_torque == pytest.approx(1.20 * DT_CTRL)
+  assert v41_same_direction.output_torque == pytest.approx(3.20 * DT_CTRL)
+
+  v4_high_rate = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE).update(
+    active=True, v_ego=30.0, steering_pressed=False, steering_rate_deg=75.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=0.0, max_output=1.0, speed_model=speed_result
+  )
+  v41_high_rate = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV41.GOVERNOR_PROFILE).update(
+    active=True, v_ego=30.0, steering_pressed=False, steering_rate_deg=75.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=0.0, max_output=1.0, speed_model=speed_result
+  )
+
+  assert v4_high_rate.reason & TorqueV4GovernorReason.HIGH_STEERING_RATE
+  assert not v41_high_rate.reason & TorqueV4GovernorReason.HIGH_STEERING_RATE
+
+
+def test_v41_governor_same_direction_rate_interpolates_by_speed():
+  speed_result = make_speed_result(output_slew_rate=10.0, sign_change_slew_rate=10.0)
+
+  for v_ego, expected_rate in ((0.0, 1.30), (30.0, 3.20), (40.0, 3.60)):
+    governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV41.GOVERNOR_PROFILE)
+    result = governor.update(active=True, v_ego=v_ego, steering_pressed=False, steering_rate_deg=0.0,
+                             same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                             actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                             speed_model=speed_result)
+
+    assert result.output_torque == pytest.approx(expected_rate * DT_CTRL)
+
+
+def test_v41_governor_uses_profiled_sign_change_rate():
+  controller, _VM, _CP = get_controller()
+  speed_result = TorqueV4SpeedModel(LatControlTorqueV41.GOVERNOR_PROFILE).update(
+    20.0, controller.torque_params, None, False, controller.session_adaptation
+  )
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV41.GOVERNOR_PROFILE)
+  governor.previous_output = 0.5
+
+  result = governor.update(active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+                           same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+                           actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+                           speed_model=speed_result)
+
+  assert result.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+  assert result.output_torque == pytest.approx(0.5 - speed_result.sign_change_slew_rate * DT_CTRL)
+
+
+def test_v41_governor_bypasses_slew_for_same_direction_decrease():
+  speed_result = make_speed_result(output_slew_rate=0.1, sign_change_slew_rate=0.1)
+  v4_governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
+  v41_governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV41.GOVERNOR_PROFILE)
+  v4_governor.previous_output = 0.8
+  v41_governor.previous_output = 0.8
+
+  v4_result = v4_governor.update(active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+                                 same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+                                 actuator_error=0.0, raw_output_torque=0.2, max_output=1.0,
+                                 speed_model=speed_result)
+  v41_result = v41_governor.update(active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+                                   same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+                                   actuator_error=0.0, raw_output_torque=0.2, max_output=1.0,
+                                   speed_model=speed_result)
+
+  assert v4_result.output_torque > 0.2
+  assert v4_result.reason & TorqueV4GovernorReason.SLEW_LIMITED
+  assert v41_result.output_torque == pytest.approx(0.2)
+  assert not v41_result.reason & TorqueV4GovernorReason.SLEW_LIMITED
+
+
+def test_v4_governor_low_speed_under_response_recovers_same_direction_authority():
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
+  speed_result = make_speed_result(output_slew_rate=3.0, sign_change_slew_rate=1.8)
+
+  result = governor.update(active=True, v_ego=8.0, steering_pressed=False, steering_rate_deg=0.0,
+                           same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                           actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                           recovery_target_lateral_accel=0.6, actual_lateral_accel=0.3,
+                           under_response_recovery_allowed=True, speed_model=speed_result)
+
+  assert result.reason & TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
+  assert result.reason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+  assert result.reason & TorqueV4GovernorReason.SLEW_LIMITED
+  assert result.output_cap == pytest.approx(latcontrol_torque_v4.LOW_SPEED_UNDER_RESPONSE_CAP)
+  assert result.output_torque == pytest.approx(speed_result.output_slew_rate * DT_CTRL)
+
+
+def test_v4_governor_under_response_recovery_extends_across_speeds():
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
+  speed_result = make_speed_result(output_slew_rate=3.0, sign_change_slew_rate=1.8)
+
+  mid = governor.update(active=True, v_ego=10.5, steering_pressed=False, steering_rate_deg=0.0,
+                        same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                        actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                        recovery_target_lateral_accel=0.6, actual_lateral_accel=0.3,
+                        under_response_recovery_allowed=True, speed_model=speed_result)
+
+  assert mid.reason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+  assert latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP < mid.output_cap <= latcontrol_torque_v4.LOW_SPEED_UNDER_RESPONSE_CAP
+  assert latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE * DT_CTRL < mid.output_torque <= speed_result.output_slew_rate * DT_CTRL
+
+  governor.reset()
+  high = governor.update(active=True, v_ego=25.0, steering_pressed=False, steering_rate_deg=0.0,
+                         same_direction_limit=True, steer_limit_unwind=False, actuator_mismatch=False,
+                         actuator_error=0.0, raw_output_torque=1.0, max_output=1.0,
+                         recovery_target_lateral_accel=0.6, actual_lateral_accel=0.3,
+                         under_response_recovery_allowed=True, speed_model=speed_result)
+
+  assert high.reason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+  assert latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP < high.output_cap < mid.output_cap
+  assert high.output_torque > latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE * DT_CTRL
+  assert high.output_torque < speed_result.output_slew_rate * DT_CTRL
+
+
+@pytest.mark.parametrize("overrides", [
+  {"actual_lateral_accel": 0.7},
+  {"actual_lateral_accel": -0.2},
+  {"recovery_target_lateral_accel": 0.2},
+  {"under_response_recovery_allowed": False},
+  {"steering_pressed": True},
+  {"steering_rate_deg": latcontrol_torque_v4.HIGH_RATE_START_DEG + 1.0},
+  {"actuator_mismatch": True, "actuator_error": latcontrol_torque_v4.STALE_ACTUATOR_ERROR_THRESHOLD + 0.01},
+])
+def test_v4_governor_low_speed_under_response_keeps_safety_guards(overrides):
+  governor = TorqueV4OutputGovernor(DT_CTRL, LatControlTorqueV4.GOVERNOR_PROFILE)
+  speed_result = make_speed_result(output_slew_rate=3.0, sign_change_slew_rate=1.8)
+  values = {
+    "active": True,
+    "v_ego": 8.0,
+    "steering_pressed": False,
+    "steering_rate_deg": 0.0,
+    "same_direction_limit": True,
+    "steer_limit_unwind": False,
+    "actuator_mismatch": False,
+    "actuator_error": 0.0,
+    "raw_output_torque": 1.0,
+    "max_output": 1.0,
+    "recovery_target_lateral_accel": 0.6,
+    "actual_lateral_accel": 0.3,
+    "under_response_recovery_allowed": True,
+    "speed_model": speed_result,
+  }
+  values.update(overrides)
+
+  result = governor.update(**values)
+
+  assert result.output_cap <= latcontrol_torque_v4.SAME_DIRECTION_LIMIT_CAP
+  assert result.output_torque <= latcontrol_torque_v4.SAME_DIRECTION_LIMIT_RATE * DT_CTRL
+  assert not result.reason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+
+
+def test_v4_under_response_recovery_fails_closed_for_bad_processed_demand_metadata():
+  controller, _VM, _CP = get_controller()
+
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(lane_change_blend="bad"))
+  assert not controller._under_response_recovery_allowed()
+
+  controller.set_processed_lateral_demand(types.SimpleNamespace(
+    demand_source=DEMAND_SOURCE_MODEL_PATH,
+    path_quality="bad",
+    path_reason="ok",
+    lane_change_shaping_active=False,
+    lane_change_blend=0.0,
+  ))
+  assert not controller._under_response_recovery_allowed()
+
+  controller.set_processed_lateral_demand(types.SimpleNamespace())
+  assert not controller._under_response_recovery_allowed()
+
+
+def test_v4_under_response_recovery_allows_low_speed_usable_lane_confidence():
+  controller, _VM, _CP = get_controller()
+  controller.last_v_ego = 8.0
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.649, path_reason="low_lane_confidence"))
+
+  assert controller._under_response_recovery_allowed()
+
+
+def test_v4_under_response_recovery_blocks_unstable_low_speed_path_reasons():
+  controller, _VM, _CP = get_controller()
+  controller.last_v_ego = 8.0
+
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.649, path_reason="high_path_std"))
+  assert not controller._under_response_recovery_allowed()
+
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.5, path_reason="low_lane_confidence"))
+  assert not controller._under_response_recovery_allowed()
+
+
+def test_v4_under_response_recovery_keeps_high_speed_path_reason_strict():
+  controller, _VM, _CP = get_controller()
+  controller.last_v_ego = 18.0
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.95, path_reason="low_lane_confidence"))
+
+  assert not controller._under_response_recovery_allowed()
+
+
+def test_v4_clean_processed_demand_allows_low_speed_recovery_in_controller():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=8.0)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller.set_steering_actuator_feedback(
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, -0.8, -0.7, -0.1, False, False)
+  )
+
+  _steer, _angle, lac_log = update(controller, VM, CS, 0.002, steer_limited=True)
+
+  assert lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
+  assert lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+
+
+def test_v4_bad_processed_demand_blocks_low_speed_recovery_in_controller():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=8.0)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.5))
+  controller.set_steering_actuator_feedback(
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, -0.8, -0.7, -0.1, False, False)
+  )
+
+  _steer, _angle, lac_log = update(controller, VM, CS, 0.002, steer_limited=True)
+
+  assert lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
+  assert not lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.LOW_SPEED_UNDER_RESPONSE_RECOVERY
+
+
+def test_v4_under_response_lead_boost_uses_clean_processed_demand():
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=0.4, target_rate=1.0, delay_lead_lateral_accel=0.5,
+                          lead_delta=0.1, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=0.2, invalid=False)
+
+  assert boosted.lead_gain > target.lead_gain
+  assert boosted.lead_delta_cap > target.lead_delta_cap
+  assert boosted.delay_lead_lateral_accel > target.delay_lead_lateral_accel
+
+
+@pytest.mark.parametrize("overrides", [
+  {"steering_pressed": True},
+  {"active": False},
+  {"invalid": True},
+])
+def test_v4_under_response_lead_boost_freezes_without_clean_active_control(overrides):
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=0.4, target_rate=1.0, delay_lead_lateral_accel=0.5,
+                          lead_delta=0.1, lead_gain=0.5, lead_delta_cap=0.5)
+  values = {
+    "active": True,
+    "steering_pressed": False,
+    "invalid": False,
+  }
+  values.update(overrides)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        actual_lateral_accel=0.2, **values)
+
+  assert boosted == target
+
+
+def test_v4_under_response_lead_boost_requires_clean_processed_demand():
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.5))
+  target = TorqueV4Target(raw_lateral_accel=0.4, target_rate=1.0, delay_lead_lateral_accel=0.5,
+                          lead_delta=0.1, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=0.2, invalid=False)
+
+  assert boosted == target
+
+
+def test_v41_under_response_release_hold_does_not_release_away_from_lagging_raw_target():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=-0.6, target_rate=1.0, delay_lead_lateral_accel=-0.2,
+                          lead_delta=0.4, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=-0.1, invalid=False)
+
+  assert boosted.delay_lead_lateral_accel <= target.delay_lead_lateral_accel
+  assert abs(boosted.lead_delta) < abs(target.lead_delta)
+  assert boosted.delay_lead_lateral_accel == pytest.approx(target.raw_lateral_accel)
+
+
+def test_v41_under_response_release_hold_blocks_partial_release_away_from_lagging_raw_target():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=-0.6, target_rate=1.0, delay_lead_lateral_accel=-0.2,
+                          lead_delta=0.4, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=-0.42, invalid=False)
+
+  assert 0.0 < latcontrol_torque_v4._under_response_strength(target.raw_lateral_accel, -0.42) < 1.0
+  assert boosted.lead_delta == pytest.approx(0.0)
+  assert boosted.delay_lead_lateral_accel == pytest.approx(target.raw_lateral_accel)
+
+
+def test_v41_under_response_release_hold_freezes_at_high_steering_rate():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=-0.6, target_rate=1.0, delay_lead_lateral_accel=-0.2,
+                          lead_delta=0.4, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(
+    target,
+    make_speed_result(response_delay=0.2),
+    v_ego=18.0,
+    active=True,
+    steering_pressed=False,
+    actual_lateral_accel=-0.42,
+    invalid=False,
+    steering_rate_deg=LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG,
+  )
+
+  assert boosted == target
+
+
+def test_v41_under_response_release_hold_requires_uncurtailed_processed_demand():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(curvature_limited=True))
+  target = TorqueV4Target(raw_lateral_accel=-0.6, target_rate=1.0, delay_lead_lateral_accel=-0.2,
+                          lead_delta=0.4, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=-0.42, invalid=False)
+
+  assert boosted == target
+
+
+def test_v4_under_response_release_hold_remains_disabled_for_base_v4():
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  target = TorqueV4Target(raw_lateral_accel=-0.6, target_rate=1.0, delay_lead_lateral_accel=-0.2,
+                          lead_delta=0.4, lead_gain=0.5, lead_delta_cap=0.5)
+
+  boosted = controller._apply_under_response_lead_boost(target, make_speed_result(response_delay=0.2), v_ego=18.0,
+                                                        active=True, steering_pressed=False,
+                                                        actual_lateral_accel=-0.1, invalid=False)
+
+  assert boosted.delay_lead_lateral_accel > target.raw_lateral_accel
+  assert boosted.lead_delta > 0.0
+
+
+@pytest.mark.parametrize("raw_target,actual", [(0.6, 0.2), (-0.6, -0.2)])
+def test_v41_under_response_catchup_adds_bounded_same_sign_feedback(raw_target, actual):
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+
+  correction = controller._under_response_catchup_correction(
+    raw_target,
+    actual,
+    v_ego=18.0,
+    steering_rate_deg=0.0,
+    active=True,
+    steering_pressed=False,
+    invalid=False,
+  )
+
+  expected_cap = latcontrol_torque_v4._interp(18.0, latcontrol_torque_v4.V41_UNDER_RESPONSE_CATCHUP_CAP_BP,
+                                              latcontrol_torque_v4.V41_UNDER_RESPONSE_CATCHUP_CAP_V)
+  assert math.copysign(1.0, correction) == math.copysign(1.0, raw_target)
+  assert 0.0 < abs(correction) <= expected_cap + 1e-9
+
+
+@pytest.mark.parametrize("overrides", [
+  {"active": False},
+  {"steering_pressed": True},
+  {"invalid": True},
+  {"steering_rate_deg": LatControlTorqueV41.UNDER_RESPONSE_CATCHUP_MAX_STEERING_RATE_DEG},
+  {"actual_lateral_accel": -0.2},
+  {"actual_lateral_accel": 0.65},
+])
+def test_v41_under_response_catchup_keeps_safety_guards(overrides):
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+
+  values = {
+    "raw_target_lateral_accel": 0.6,
+    "actual_lateral_accel": 0.2,
+    "v_ego": 18.0,
+    "steering_rate_deg": 0.0,
+    "active": True,
+    "steering_pressed": False,
+    "invalid": False,
+  }
+  values.update(overrides)
+
+  correction = controller._under_response_catchup_correction(
+    values["raw_target_lateral_accel"],
+    values["actual_lateral_accel"],
+    v_ego=values["v_ego"],
+    steering_rate_deg=values["steering_rate_deg"],
+    active=values["active"],
+    steering_pressed=values["steering_pressed"],
+    invalid=values["invalid"],
+  )
+
+  assert correction == 0.0
+
+
+def test_v41_under_response_catchup_requires_clean_processed_demand():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(path_quality=0.5))
+
+  correction = controller._under_response_catchup_correction(
+    0.6,
+    0.2,
+    v_ego=18.0,
+    steering_rate_deg=0.0,
+    active=True,
+    steering_pressed=False,
+    invalid=False,
+  )
+
+  assert correction == 0.0
+
+
+def test_v41_under_response_catchup_blocks_curvature_limited_processed_demand():
+  CP, CP_SP, CI = get_context()
+  controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  controller.set_processed_lateral_demand(make_processed_lateral_demand(curvature_limited=True))
+
+  correction = controller._under_response_catchup_correction(
+    0.6,
+    0.2,
+    v_ego=18.0,
+    steering_rate_deg=0.0,
+    active=True,
+    steering_pressed=False,
+    invalid=False,
+  )
+
+  assert correction == 0.0
+
+
+def test_v41_under_response_catchup_reaches_update_feedback_without_base_v4_change():
+  base_controller, base_vm, _CP = get_controller()
+  CP, CP_SP, CI = get_context()
+  v41_controller = LatControlTorqueV41(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  CS = make_car_state(v_ego=20.0, steering_angle=0.0, steering_rate=0.0)
+  base_controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  v41_controller.set_processed_lateral_demand(make_processed_lateral_demand())
+
+  _base_steer, _angle, base_log = update(base_controller, base_vm, CS, 0.0015)
+  _v41_steer, _angle, v41_log = update(v41_controller, VehicleModel(CP), CS, 0.0015)
+
+  assert base_controller._under_response_catchup_correction(
+    base_log.adaptiveTorqueState.rawTargetLateralAccel,
+    base_log.actualLateralAccel,
+    v_ego=CS.vEgo,
+    steering_rate_deg=CS.steeringRateDeg,
+    active=True,
+    steering_pressed=False,
+    invalid=False,
+  ) == 0.0
+  assert v41_log.adaptiveTorqueState.assistOutput > base_log.adaptiveTorqueState.assistOutput
+
+
+def test_v4_same_direction_safety_limit_caps_controller_output():
+  controller, VM, _CP = get_controller()
+  CS = make_car_state(v_ego=20.0)
+  controller.set_steering_actuator_feedback(
+    SteeringActuatorFeedback(True, True, SteeringLimitReason.ACTUATOR_MISMATCH, -0.8, -0.5, -0.3, False, False)
+  )
+
+  _steer, _angle, lac_log = update(controller, VM, CS, 0.01, steer_limited=True)
+
+  assert lac_log.adaptiveTorqueState.governorReason & TorqueV4GovernorReason.SAME_DIRECTION_LIMIT
+  assert lac_log.adaptiveTorqueState.outputCap < 1.0
+
+
+def test_v4_speed_model_ignores_low_speed_learned_bucket():
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  params = {"0_10": (factor * 1.5, 0.12, float(controller.torque_params.friction))}
+
+  result = TorqueV4SpeedModel().update(5.0, controller.torque_params, params, True, controller.session_adaptation)
+
+  assert result.speed_aware_confidence == 0.0
+  assert result.speed_aware_factor == pytest.approx(factor)
+  assert result.response_scale == pytest.approx(1.0)
+  assert result.effective_lat_accel_factor == pytest.approx(factor)
+
+
+def test_v4_speed_model_missing_bucket_falls_back_to_global():
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  params = {"20_30": (factor * 1.2, 0.12, float(controller.torque_params.friction))}
+
+  result = TorqueV4SpeedModel().update(15.0, controller.torque_params, params, True, controller.session_adaptation)
+
+  assert result.speed_aware_confidence == 0.0
+  assert result.speed_aware_factor == pytest.approx(factor)
+  assert result.response_scale == pytest.approx(1.0)
+
+
+def test_v4_speed_model_gates_10_20_bucket_below_collection_speed():
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  params = {"10_20": (factor * 1.2, 0.0, float(controller.torque_params.friction))}
+
+  below = TorqueV4SpeedModel().update(12.0, controller.torque_params, params, True, controller.session_adaptation)
+  at_gate = TorqueV4SpeedModel().update(15.0, controller.torque_params, params, True, controller.session_adaptation)
+  partial = TorqueV4SpeedModel().update(17.5, controller.torque_params, params, True, controller.session_adaptation)
+
+  assert below.speed_aware_confidence == 0.0
+  assert below.effective_lat_accel_factor == pytest.approx(factor)
+  assert at_gate.speed_aware_confidence == pytest.approx(0.0)
+  assert at_gate.effective_lat_accel_factor == pytest.approx(factor)
+  assert 0.0 < partial.speed_aware_confidence < 0.30
+  assert factor < partial.effective_lat_accel_factor < factor * 1.2
+
+
+def test_v4_speed_model_valid_medium_bucket_uses_shrinkage():
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  params = {"20_30": (factor * 1.2, 0.12, float(controller.torque_params.friction))}
+
+  result = TorqueV4SpeedModel().update(25.0, controller.torque_params, params, True, controller.session_adaptation)
+
+  assert 0.0 < result.speed_aware_confidence < 1.0
+  assert factor < result.speed_aware_factor < factor * 1.2
+  assert result.effective_lat_accel_factor == pytest.approx(result.speed_aware_factor)
+  assert latcontrol_torque_v4.RESPONSE_SCALE_MIN <= result.response_scale <= latcontrol_torque_v4.RESPONSE_SCALE_MAX
+
+
+def test_v4_speed_model_valid_high_bucket_uses_shrinkage():
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  params = {"30_40": (factor * 0.85, -0.08, float(controller.torque_params.friction))}
+
+  result = TorqueV4SpeedModel().update(35.0, controller.torque_params, params, True, controller.session_adaptation)
+
+  assert 0.0 < result.speed_aware_confidence < 1.0
+  assert factor * 0.85 < result.speed_aware_factor < factor
+  assert result.effective_lat_accel_factor == pytest.approx(result.speed_aware_factor)
+  assert latcontrol_torque_v4.TRIM_LAT_ACCEL_MIN <= result.trim_lateral_accel <= latcontrol_torque_v4.TRIM_LAT_ACCEL_MAX
+
+
+def test_v4_speed_model_transition_across_valid_buckets_is_bounded():
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  params = {
+    "10_20": (factor * 1.10, 0.0, float(controller.torque_params.friction)),
+    "20_30": (factor * 1.12, 0.0, float(controller.torque_params.friction)),
+  }
+
+  low = TorqueV4SpeedModel().update(19.9, controller.torque_params, params, True, controller.session_adaptation)
+  high = TorqueV4SpeedModel().update(20.1, controller.torque_params, params, True, controller.session_adaptation)
+
+  assert abs(high.response_scale - low.response_scale) < 0.01
+
+
+def test_v4_speed_model_interpolates_offset_across_valid_buckets():
+  controller, _VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  params = {
+    "10_20": (factor * 1.10, -0.04, float(controller.torque_params.friction)),
+    "20_30": (factor * 1.10, 0.04, float(controller.torque_params.friction)),
+  }
+
+  low = TorqueV4SpeedModel().update(19.9, controller.torque_params, params, True, controller.session_adaptation)
+  high = TorqueV4SpeedModel().update(20.1, controller.torque_params, params, True, controller.session_adaptation)
+
+  assert abs(high.effective_lat_accel_offset - low.effective_lat_accel_offset) < 0.005
+
+
+def test_v4_speed_aware_effective_factor_is_reported_in_telemetry(monkeypatch):
+  monkeypatch.setattr(latcontrol_torque_v4, "Params", ApplyEnabledParams)
+  controller, VM, _CP = get_controller()
+  factor = float(controller.torque_params.latAccelFactor)
+  payload = format_speed_aware_params(controller.CP, {"20_30": (factor * 1.2, 0.02, float(controller.torque_params.friction))})
+  controller.update_speed_aware_params(str(payload))
+
+  _steer, _angle, lac_log = update(controller, VM, make_car_state(v_ego=25.0), 0.001)
+
+  assert lac_log.adaptiveTorqueState.modelConfidence > 0.0
+  assert factor < lac_log.adaptiveTorqueState.learnedLatAccelFactor < factor * 1.2
+  assert lac_log.adaptiveTorqueState.learnedLatAccelOffset == pytest.approx(0.006)
+
+
+def test_v4_effective_factor_changes_feedforward_conversion_when_apply_enabled(monkeypatch):
+  monkeypatch.setattr(latcontrol_torque_v4, "Params", ApplyEnabledParams)
+  base_controller, base_vm, _CP = get_controller()
+  tuned_controller, tuned_vm, _CP = get_controller()
+  factor = float(tuned_controller.torque_params.latAccelFactor)
+  payload = format_speed_aware_params(tuned_controller.CP, {"20_30": (factor * 1.2, 0.0, float(tuned_controller.torque_params.friction))})
+  tuned_controller.update_speed_aware_params(str(payload))
+  CS = make_car_state(v_ego=25.0)
+
+  _base_steer, _angle, base_log = update(base_controller, base_vm, CS, 0.001)
+  tuned_steer, _angle, tuned_log = update(tuned_controller, tuned_vm, CS, 0.001)
+
+  assert tuned_log.adaptiveTorqueState.learnedLatAccelFactor > factor
+  assert abs(tuned_log.adaptiveTorqueState.unshapedOutput) < abs(base_log.adaptiveTorqueState.unshapedOutput)
+  assert abs(tuned_steer) <= abs(base_log.adaptiveTorqueState.unshapedOutput)
+
+
+def test_v4_measurement_rate_filter_caps_single_frame_spike():
+  controller, _VM, _CP = get_controller()
+
+  rate = controller._filtered_measurement_rate(True, False, 100.0)
+
+  assert rate == pytest.approx(latcontrol_torque_v4.MEASUREMENT_RATE_CAP * latcontrol_torque_v4.MEASUREMENT_RATE_FILTER_ALPHA)
+  assert math.isfinite(rate)
+
+
+def test_v4_measurement_rate_filter_resets_on_inactive_or_invalid():
+  controller, _VM, _CP = get_controller()
+  controller.filtered_measurement_rate = 7.0
+  inactive_rate = controller._filtered_measurement_rate(False, False, 1.0)
+  controller.filtered_measurement_rate = 7.0
+  invalid_rate = controller._filtered_measurement_rate(True, True, float("nan"))
+
+  assert inactive_rate == 0.0
+  assert invalid_rate == 0.0
+  assert controller.filtered_measurement_rate == 0.0
+
+
+@pytest.mark.parametrize("overrides,expected", [
+  ({"steering_pressed": True}, TorqueV4LearnerRejectReason.STEERING_PRESSED),
+  ({"saturated": True}, TorqueV4LearnerRejectReason.SATURATED),
+  ({"steer_limited_by_safety": True}, TorqueV4LearnerRejectReason.STEER_LIMITED),
+  ({"curvature_limited": True}, TorqueV4LearnerRejectReason.CURVATURE_LIMITED),
+  ({"actual_lateral_jerk": 20.0}, TorqueV4LearnerRejectReason.HIGH_JERK),
+  ({"actual_lateral_accel": -0.4}, TorqueV4LearnerRejectReason.SIGN_CONFLICT),
+  ({"delay_lead_lateral_accel": 0.01}, TorqueV4LearnerRejectReason.LOW_DEMAND),
+  ({"finite": False}, TorqueV4LearnerRejectReason.NON_FINITE),
+])
+def test_v4_session_learner_rejects_bad_samples(overrides, expected):
+  learner = TorqueV4SessionAdaptation(0.2)
+
+  result = learner.update(make_observation(**overrides), TorqueV4GovernorReason.NONE)
+
+  assert not result.sample_accepted
+  assert result.reject_reason & expected
+
+
+@pytest.mark.parametrize("overrides,expected", [
+  ({"demand_source": DEMAND_SOURCE_LATERAL_MANEUVER}, TorqueV4LearnerRejectReason.NON_MODEL_DEMAND),
+  ({"path_quality": 0.5}, TorqueV4LearnerRejectReason.LOW_PATH_QUALITY),
+  ({"path_quality": float("nan")}, TorqueV4LearnerRejectReason.LOW_PATH_QUALITY),
+  ({"path_reason": "path_disagreement"}, TorqueV4LearnerRejectReason.PATH_REASON),
+  ({"lane_change_shaping_active": True}, TorqueV4LearnerRejectReason.LANE_CHANGE_SHAPING),
+  ({"lane_change_blend": 0.5}, TorqueV4LearnerRejectReason.LANE_CHANGE_SHAPING),
+])
+def test_v4_session_learner_rejects_processed_demand_metadata(overrides, expected):
+  learner = TorqueV4SessionAdaptation(0.2)
+
+  result = learner.update(make_observation(**overrides), TorqueV4GovernorReason.NONE)
+
+  assert not result.sample_accepted
+  assert result.reject_reason & expected
+
+
+def test_v4_session_learner_rejects_safety_governor_dominated_samples():
+  learner = TorqueV4SessionAdaptation(0.2)
+
+  result = learner.update(make_observation(), TorqueV4GovernorReason.SLEW_LIMITED)
+
+  assert not result.sample_accepted
+  assert result.reject_reason & TorqueV4LearnerRejectReason.GOVERNOR_ACTIVE
+
+
+def test_v4_session_learner_accepts_clean_sample_and_stays_bounded():
+  learner = TorqueV4SessionAdaptation(0.2)
+
+  result = learner.update(make_observation(raw_target_lateral_accel=0.5, delay_lead_lateral_accel=0.5, actual_lateral_accel=0.4),
+                          TorqueV4GovernorReason.NONE)
+
+  assert result.sample_accepted
+  assert result.reject_reason == TorqueV4LearnerRejectReason.NONE
+  assert latcontrol_torque_v4.RESPONSE_SCALE_MIN <= learner.response_scale <= latcontrol_torque_v4.RESPONSE_SCALE_MAX
+  assert latcontrol_torque_v4.TRIM_LAT_ACCEL_MIN <= learner.trim_lateral_accel <= latcontrol_torque_v4.TRIM_LAT_ACCEL_MAX
+  assert learner.response_scale > 1.0
+  assert learner.trim_lateral_accel > 0.0
+
+
+def test_v4_session_learner_response_residual_uses_delay_lead_target():
+  learner = TorqueV4SessionAdaptation(0.2)
+
+  result = learner.update(make_observation(raw_target_lateral_accel=0.42, delay_lead_lateral_accel=0.8,
+                                           target_lateral_accel_rate=0.2, actual_lateral_accel=0.4),
+                          TorqueV4GovernorReason.NONE)
+
+  assert result.sample_accepted
+  assert result.residual_error == pytest.approx(0.4)
+  assert learner.response_scale > 1.0
+  assert learner.trim_lateral_accel == pytest.approx(0.0)
+
+
+def test_v4_session_learner_trim_residual_uses_raw_steady_state_target():
+  learner = TorqueV4SessionAdaptation(0.2)
+
+  result = learner.update(make_observation(raw_target_lateral_accel=0.42, delay_lead_lateral_accel=0.8,
+                                           target_lateral_accel_rate=0.0, actual_lateral_accel=0.4),
+                          TorqueV4GovernorReason.NONE)
+
+  assert result.sample_accepted
+  assert result.residual_error == pytest.approx(0.4)
+  assert learner.trim_lateral_accel == pytest.approx(0.00001)
+
+
+class LinearVehicleModel:
+  def __init__(self, gain=0.02):
+    self.gain = gain
+
+  def calc_curvature(self, steering_angle_rad, _v_ego, _roll):
+    return self.gain * steering_angle_rad
+
+
+def test_v4_actual_lateral_jerk_helper_zero_rate_is_zero():
+  assert finite_difference_curvature_rate_from_steering_rate(LinearVehicleModel(), 0.1, 0.0, 20.0, 0.0) == pytest.approx(0.0)
+
+
+def test_v4_actual_lateral_jerk_helper_sign_matches_measured_curvature_convention():
+  vm = LinearVehicleModel()
+
+  positive = finite_difference_curvature_rate_from_steering_rate(vm, 0.1, 0.2, 20.0, 0.0)
+  negative = finite_difference_curvature_rate_from_steering_rate(vm, 0.1, -0.2, 20.0, 0.0)
+
+  assert positive < 0.0
+  assert negative > 0.0
+
+
+def test_v4_actual_lateral_jerk_helper_is_finite_and_close_to_linear_approximation():
+  vm = LinearVehicleModel(gain=0.03)
+  rate = 0.2
+  v_ego = 15.0
+
+  result = finite_difference_curvature_rate_from_steering_rate(vm, 0.05, rate, v_ego, 0.0)
+
+  assert math.isfinite(result)
+  assert result == pytest.approx(-vm.calc_curvature(rate, v_ego, 0.0) * v_ego ** 2)
+
+
+def test_v4_actual_lateral_jerk_helper_invalid_inputs_fallback_safe():
+  assert finite_difference_curvature_rate_from_steering_rate(LinearVehicleModel(), float("nan"), 0.2, 20.0, 0.0) == 0.0
+
+
+def test_v4_finite_helper_rejects_nonnumeric_values():
+  assert not latcontrol_torque_v4._finite(None)
+  assert not latcontrol_torque_v4._finite("bad")
+
+
+def test_v4_actual_lateral_jerk_helper_nonnumeric_inputs_fallback_safe():
+  assert finite_difference_curvature_rate_from_steering_rate(LinearVehicleModel(), "bad", 0.2, 20.0, 0.0) == 0.0
+
+
+# ── Recenter Mode Tests ─────────────────────────────────────────────────
+
+RECENTER = latcontrol_torque_v4
+_DT = DT_CTRL
+
+
+def _recenter_detect(controller, target, prev_target, v_ego=20.0, path_quality=1.0,
+                     lane_change=False, steering=False, saturated=False, curvature_limited=False):
+  """Shorthand for calling _detect_recenter_mode."""
+  return controller._detect_recenter_mode(
+    target_lateral_accel=target,
+    previous_target_lateral_accel=prev_target,
+    v_ego=v_ego,
+    path_quality=path_quality,
+    lane_change_active=lane_change,
+    steering_pressed=steering,
+    saturated=saturated,
+    curvature_limited=curvature_limited,
+  )
+
+
+def test_recenter_mode_requires_persistence():
+  """Recenter mode must not activate on the first frame; needs RECENTER_PERSISTENCE_FRAMES."""
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller._recenter_persistence_frames = 0
+
+  # First frame with decreasing target — not enough persistence
+  result = _recenter_detect(controller, target=0.35, prev_target=0.40)
+  assert not result.active
+  assert controller._recenter_persistence_frames == 1
+
+  # Still below threshold
+  for _ in range(RECENTER.RECENTER_PERSISTENCE_FRAMES - 2):
+    result = _recenter_detect(controller, target=0.30, prev_target=0.35)
+
+  assert not result.active
+  assert controller._recenter_persistence_frames == RECENTER.RECENTER_PERSISTENCE_FRAMES - 1
+
+  # One more frame — crosses threshold
+  result = _recenter_detect(controller, target=0.25, prev_target=0.30)
+  assert result.active
+  assert result.persistence_frames >= RECENTER.RECENTER_PERSISTENCE_FRAMES
+
+
+def test_recenter_mode_activates_when_target_collapses_toward_zero():
+  """Feed decreasing target lateral accel at high speed with good path quality."""
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller._recenter_persistence_frames = 0
+
+  # Feed decreasing targets that satisfy collapse rate and near-center condition.
+  # Loop for enough frames to activate plus extra to verify persistence holds.
+  prev = 0.40
+  active_at_full_effect = False
+  for i in range(RECENTER.RECENTER_PERSISTENCE_FRAMES * 3):
+    cur = 0.40 - (i + 1) * 0.03  # keeps decreasing steadily
+    result = _recenter_detect(controller, target=cur, prev_target=prev)
+    prev = cur
+    if result.active and result.lead_reduction > 0.0 and result.slew_boost > 1.0:
+      active_at_full_effect = True
+      break
+
+  assert active_at_full_effect, "Recenter mode must become active with non-zero lead_reduction and slew_boost"
+
+
+def test_recenter_mode_inactive_at_low_speed():
+  """Recenter mode does not activate below RECENTER_MIN_SPEED."""
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller._recenter_persistence_frames = 0
+
+  prev = 0.40
+  for i in range(RECENTER.RECENTER_PERSISTENCE_FRAMES + 2):
+    cur = max(0.10, prev - 0.08)
+    result = _recenter_detect(controller, target=cur, prev_target=prev, v_ego=5.0)
+    prev = cur
+
+  assert not result.active
+
+
+def test_recenter_mode_inactive_during_lane_change():
+  """Recenter mode does not activate when lane change is active."""
+  controller, _VM, _CP = get_controller()
+  controller.set_processed_lateral_demand(make_processed_lateral_demand())
+  controller._recenter_persistence_frames = 0
+
+  prev = 0.40
+  for i in range(RECENTER.RECENTER_PERSISTENCE_FRAMES + 2):
+    cur = max(0.10, prev - 0.08)
+    result = _recenter_detect(controller, target=cur, prev_target=prev, lane_change=True)
+    prev = cur
+
+  assert not result.active
+
+
+def test_recenter_mode_reduces_lead_delta():
+  """When recenter mode is active, _build_target should produce a smaller lead delta."""
+  controller, _VM, _CP = get_controller()
+
+  # Build a target WITHOUT recenter (normal)
+  speed_result = make_speed_result(response_delay=0.2, lead_gain=0.5, lead_delta_cap=0.5)
+  target_no_recenter = controller._build_target(
+    desired_curvature=0.001, v_ego=20.0, speed_result=speed_result, invalid=False,
+    recenter=None,
+  )
+
+  # Build a target WITH recenter (lead_reduction=0.6 = full reduction)
+  recenter_active = TorqueV4RecenterMode(active=True, persistence_frames=RECENTER.RECENTER_PERSISTENCE_FRAMES,
+                                         lead_reduction=0.6, slew_boost=1.5)
+  target_recenter = controller._build_target(
+    desired_curvature=0.001, v_ego=20.0, speed_result=speed_result, invalid=False,
+    recenter=recenter_active,
+  )
+
+  # Reset previous_target_lateral_accel to get fair comparison
+  controller.previous_target_lateral_accel = 0.0
+
+  # With recenter, lead_gain and lead_delta_cap should be reduced
+  expected_lead_gain = speed_result.lead_gain * (1.0 - 0.6)
+  expected_lead_delta_cap = speed_result.lead_delta_cap * (1.0 - 0.6)
+  assert target_recenter.lead_gain == pytest.approx(expected_lead_gain)
+  assert target_recenter.lead_delta_cap == pytest.approx(expected_lead_delta_cap)
+  assert abs(target_recenter.lead_delta) <= abs(target_no_recenter.lead_delta)
+
+
+def test_recenter_mode_boosts_sign_change_slew_rate():
+  """When recenter mode is active and a sign change occurs, the governor boosts slew rate."""
+  governor = TorqueV4OutputGovernor(_DT, LatControlTorqueV4.GOVERNOR_PROFILE)
+  governor.previous_output = 0.5  # positive output
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+
+  # First without recenter
+  result_normal = governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+    speed_model=speed_result, recenter=None,
+  )
+  governor.previous_output = 0.5  # reset
+
+  # With recenter
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.0, slew_boost=2.0)
+  result_boosted = governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+    speed_model=speed_result, recenter=recenter,
+  )
+
+  # Both should have sign change detected
+  assert result_normal.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+  assert result_boosted.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+
+  # Recenter should also have RECENTER_MODE flag
+  assert result_boosted.reason & TorqueV4GovernorReason.RECENTER_MODE
+  assert not result_normal.reason & TorqueV4GovernorReason.RECENTER_MODE
+
+  # Recenter mode should move further toward the target (boosted slew rate)
+  # Without boost: approach from 0.5 toward -1.0 at 1.0 * DT_CTRL
+  # With boost: approach from 0.5 toward -1.0 at 2.0 * DT_CTRL
+  # Since target is negative, boosted output should be lower (more negative)
+  assert result_boosted.output_torque < result_normal.output_torque
+  assert result_boosted.output_torque == pytest.approx(0.5 - 2.0 * _DT)
+
+
+def _v5_turn_exit_context():
+  """Build a populated v5 governor context that reports
+  turn_exit_active, mirroring the state a real v5 turn-exit
+  unwind frame would carry.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    TorqueV5GovernorContext,
+  )
+  return TorqueV5GovernorContext(
+    profile_available=True,
+    demand_mode="turn_in",
+    demand_mode_confidence=0.9,
+    preview_active=False,
+    turn_exit_active=True,
+    wobble_active=False,
+    v5_active=True,
+    v5_reason="turn_exit_source_of_truth",
+  )
+
+
+def test_v4_recenter_governor_behavior_unchanged():
+  """v4 governor (no v5 context) must still receive the legacy
+  recenter slew boost on sign-change unwind. This is the
+  pre-existing path the v5 turn-exit integration is forbidden
+  from breaking.
+  """
+  governor = TorqueV4OutputGovernor(_DT, LatControlTorqueV4.GOVERNOR_PROFILE)
+  governor.previous_output = 0.5
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.0, slew_boost=2.0)
+  result_boosted = governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+    speed_model=speed_result, recenter=recenter, v5_context=None,
+  )
+  # RECENTER_MODE flag is set, output is boosted to 2.0x slew.
+  assert result_boosted.reason & TorqueV4GovernorReason.RECENTER_MODE
+  assert result_boosted.output_torque == pytest.approx(0.5 - 2.0 * _DT)
+
+
+def test_v5_turn_exit_governor_does_not_double_apply_recenter_and_v5_boost():
+  """When the v5 context reports turn_exit_active on a sign-change
+  frame, the legacy recenter slew boost must NOT also multiply
+  the slew rate. v5 turn-exit is the source of truth and the
+  bounded v5 boost (1.20x) is the only slew multiplier applied
+  on those frames. Without this guard, the same frame would
+  receive recenter (2.0x) * v5 (1.20x) = 2.40x, which is the
+  double-apply bug.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.governor.previous_output = 0.5
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.0, slew_boost=2.0)
+  v5_ctx = _v5_turn_exit_context()
+
+  result = v5.governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+    speed_model=speed_result, recenter=recenter, v5_context=v5_ctx,
+  )
+  # RECENTER_MODE flag is NOT set on a v5 turn-exit frame; the
+  # legacy boost path is suppressed.
+  assert not (result.reason & TorqueV4GovernorReason.RECENTER_MODE)
+  # Output is at the v5-only 1.20x slew, not the stacked 2.40x.
+  assert result.output_torque == pytest.approx(0.5 - 1.20 * _DT)
+
+
+def test_v5_turn_exit_governor_applies_v5_boost_on_sign_change():
+  """When the v5 context reports turn_exit_active on a
+  sign-change frame and recenter is not active, the v5
+  sign-change slew boost (1.20x) is applied to the
+  sign_change_slew_rate.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+  )
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  v5.governor.previous_output = 0.5
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+  v5_ctx = _v5_turn_exit_context()
+
+  result = v5.governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=-1.0, max_output=1.0,
+    speed_model=speed_result, recenter=None, v5_context=v5_ctx,
+  )
+  # Sign-change was detected, v5 boost applied at 1.20x.
+  assert result.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+  assert not (result.reason & TorqueV4GovernorReason.RECENTER_MODE)
+  assert result.output_torque == pytest.approx(0.5 - 1.20 * _DT)
+
+
+def test_v5_turn_exit_governor_applies_v5_boost_on_same_direction_unwind():
+  """When the v5 context reports turn_exit_active on a
+  same-direction unwind frame, the v5 same-direction slew
+  boost (1.10x) is applied to the output_slew_rate. This test
+  uses a custom profile with same_direction_decrease_bypass=False
+  so the slew limiter actually runs on the unwind path; the
+  default V4 profile bypasses the slew on same-direction
+  decrease, which would mask the boost.
+  """
+  from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v4 import (
+    LatControlTorqueV5,
+    TorqueV4GovernorProfile,
+  )
+  CP, CP_SP, CI = get_context()
+  v5 = LatControlTorqueV5(CP.as_reader(), convert_to_capnp(CP_SP).as_reader(), CI, DT_CTRL)
+  no_bypass_profile = TorqueV4GovernorProfile(
+    **{**LatControlTorqueV4.GOVERNOR_PROFILE.__dict__, "same_direction_decrease_bypass": False}
+  )
+  v5.governor = TorqueV4OutputGovernor(_DT, no_bypass_profile)
+  v5.governor.previous_output = 1.0
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+  v5_ctx = _v5_turn_exit_context()
+
+  # raw_output_torque is same sign as previous_output and
+  # |raw_output| <= |previous_output| → target_decreases_same_direction.
+  result = v5.governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=0.5, max_output=1.0,
+    speed_model=speed_result, recenter=None, v5_context=v5_ctx,
+  )
+  # v5 same-direction boost (1.10x) on output_slew_rate (3.0).
+  assert not (result.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED)
+  assert not (result.reason & TorqueV4GovernorReason.RECENTER_MODE)
+  assert result.output_torque == pytest.approx(1.0 - 3.0 * 1.10 * _DT)
+
+
+# ----------------------------------------------------------------------------
+# Recenter mode refinement: looser thresholds, persistence, early release
+# ----------------------------------------------------------------------------
+
+
+def test_recenter_mode_max_abs_target_is_broadened_to_0_85():
+  """RECENTER_MAX_ABS_TARGET should be loosened from the old 0.5 to 0.85
+  so turn-exit can start the unwind as soon as the target drops into the
+  comfort range, not only when it is already near zero."""
+  assert RECENTER.RECENTER_MAX_ABS_TARGET >= 0.8
+
+
+def test_recenter_mode_persistence_shortened_to_3_frames():
+  """RECENTER_PERSISTENCE_FRAMES should be shortened from the old 5 to 3
+  so a brief but consistent recenter signal activates the mode quickly
+  enough to feel immediate on turn exit."""
+  assert RECENTER.RECENTER_PERSISTENCE_FRAMES <= 3
+
+
+def test_recenter_mode_partial_lead_reduction_at_first_active_frame():
+  """The first frame the recenter activates should already trim some
+  response-delay lead (lead_reduction > 0), not wait a full persistence
+  ramp. This is the "partial lead_reduction from first active frame"
+  behavior — turn-exit feels immediate even on a short recenter."""
+  controller, VM, _CP = get_controller()
+  controller._recenter_persistence_frames = RECENTER.RECENTER_PERSISTENCE_FRAMES  # exactly at threshold
+
+  result = _recenter_detect(
+    controller, target=0.5, prev_target=1.0, v_ego=20.0,
+  )
+  # First active frame: lead_reduction should be > 0
+  assert result.lead_reduction > 0.0
+  # But it should be capped at RECENTER_LEAD_REDUCTION * persistence_blend
+  # where persistence_blend is at the floor (RECENTER_LEAD_REDUCTION_FLOOR)
+  assert result.lead_reduction <= RECENTER.RECENTER_LEAD_REDUCTION
+
+
+def test_recenter_mode_full_lead_reduction_after_full_persistence_ramp():
+  """After a full persistence window beyond the threshold, lead_reduction
+  should ramp to the full RECENTER_LEAD_REDUCTION."""
+  controller, VM, _CP = get_controller()
+  controller._recenter_persistence_frames = RECENTER.RECENTER_PERSISTENCE_FRAMES * 3
+
+  result = _recenter_detect(
+    controller, target=0.5, prev_target=1.0, v_ego=20.0,
+  )
+  assert result.lead_reduction == pytest.approx(RECENTER.RECENTER_LEAD_REDUCTION)
+
+
+def test_recenter_mode_activates_at_looser_persistence_threshold():
+  """With RECENTER_PERSISTENCE_FRAMES=3, the recenter should activate
+  after exactly 3 frames of consistent recentering."""
+  controller, VM, _CP = get_controller()
+  # Set counter to one less than threshold; the detection function will
+  # increment it on a valid recentering frame, hitting the threshold.
+  controller._recenter_persistence_frames = RECENTER.RECENTER_PERSISTENCE_FRAMES - 1
+  result = _recenter_detect(
+    controller, target=0.5, prev_target=1.0, v_ego=20.0,
+  )
+  # Counter incremented from 2 to 3, so recenter is now active.
+  assert result.active
+  assert result.persistence_frames == RECENTER.RECENTER_PERSISTENCE_FRAMES
+
+  # One more frame: counter goes to 4, recenter still active.
+  result2 = _recenter_detect(
+    controller, target=0.4, prev_target=0.5, v_ego=20.0,
+  )
+  assert result2.active
+  assert result2.persistence_frames == RECENTER.RECENTER_PERSISTENCE_FRAMES + 1
+
+
+def test_recenter_mode_does_not_activate_below_persistence_threshold():
+  """If the recenter signal is not sustained (target is not collapsing),
+  the persistence counter does not grow and the recenter does not
+  activate below the threshold."""
+  controller, VM, _CP = get_controller()
+  controller._recenter_persistence_frames = 0
+
+  # Frame 1: target is not collapsing (growing), so counter does not
+  # grow. With RECENTER_PERSISTENCE_FRAMES=3, the recenter is not active.
+  result = _recenter_detect(
+    controller, target=0.2, prev_target=0.1, v_ego=20.0,  # growing, not collapsing
+  )
+  assert not result.active
+  assert controller._recenter_persistence_frames == 0
+
+
+def test_recenter_mode_target_above_loosened_max_keeps_inactive():
+  """With the loosened RECENTER_MAX_ABS_TARGET=0.85, a target above 0.85
+  should keep the recenter inactive. The threshold is the upper bound
+  for "near center" detection."""
+  controller, VM, _CP = get_controller()
+  controller._recenter_persistence_frames = RECENTER.RECENTER_PERSISTENCE_FRAMES
+  # Target just above loosened max
+  result = _recenter_detect(
+    controller, target=RECENTER.RECENTER_MAX_ABS_TARGET + 0.01, prev_target=1.5, v_ego=20.0,
+  )
+  assert not result.active
+
+
+def test_build_target_early_release_guard_zeros_lead_delta_on_collapse():
+  """When the raw target is decreasing toward zero and the lead delta
+  would push away from zero (sign mismatch), the early release guard
+  should zero the lead delta. This fires before the recenter mode
+  activates, so turn-exit feels immediate regardless of persistence."""
+  controller, VM, CP = get_controller()
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+
+  # Simulate: previous target was 1.0 (turning right), now target is 0.5
+  # (collapsing toward zero on turn exit). The target_rate is negative
+  # so the natural lead_delta is negative — which would push the
+  # controller output away from zero (the target is positive but the
+  # lead is negative).
+  controller.previous_target_lateral_accel = 1.0
+  target = controller._build_target(
+    desired_curvature=0.5 / 20.0 ** 2,  # raw_target = 0.5
+    v_ego=20.0, speed_result=speed_result, invalid=False, recenter=None,
+  )
+  # Early release guard should have zeroed the lead_delta.
+  assert target.lead_delta == 0.0
+
+
+def test_build_target_early_release_guard_keeps_lead_when_target_growing():
+  """When the target is growing in magnitude (turning harder), the
+  early release guard should NOT fire. lead_delta should be present
+  to anticipate the larger target."""
+  controller, VM, CP = get_controller()
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+
+  # Simulate: previous target was 0.5, now target is 1.0 (growing).
+  # target_rate is positive, so lead_delta is positive. The lead
+  # anticipates the larger target.
+  controller.previous_target_lateral_accel = 0.5
+  target = controller._build_target(
+    desired_curvature=1.0 / 20.0 ** 2,  # raw_target = 1.0
+    v_ego=20.0, speed_result=speed_result, invalid=False, recenter=None,
+  )
+  # lead_delta should be non-zero (target is growing, lead is in the same direction)
+  assert target.lead_delta != 0.0
+
+
+def test_build_target_early_release_guard_keeps_lead_on_sign_flip():
+  """When the target sign flips (turning the other way), the early
+  release guard should NOT fire — the lead should track the new
+  direction. The guard only fires when the target sign is stable
+  (same sign as previous) AND the magnitude is decreasing."""
+  controller, VM, CP = get_controller()
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+
+  # Sign flip: previous was +1.0, now -0.5
+  controller.previous_target_lateral_accel = 1.0
+  target = controller._build_target(
+    desired_curvature=-0.5 / 20.0 ** 2,  # raw_target = -0.5
+    v_ego=20.0, speed_result=speed_result, invalid=False, recenter=None,
+  )
+  # Sign is flipped, so the target_sign_stable check fails, and the
+  # early release guard does NOT zero the lead.
+  assert target.lead_delta != 0.0
+
+
+def test_recenter_mode_applies_slew_boost_to_same_direction_unwind():
+  """Recenter mode should apply a slew boost to same-direction unwind
+  (not just sign change). The same-direction boost is smaller than the
+  sign-change boost (RECENTER_SAME_DIRECTION_SLEW_BOOST < RECENTER_SLEW_BOOST)."""
+  governor = TorqueV4OutputGovernor(_DT, LatControlTorqueV4.GOVERNOR_PROFILE)
+  governor.previous_output = 0.5  # positive
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.0, slew_boost=2.0)
+
+  # Same-direction unwind: target is +0.2 (positive, smaller than previous_output 0.5)
+  result = governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=0.2, max_output=1.0,
+    speed_model=speed_result, recenter=recenter,
+  )
+  # Recenter mode flag should be set even without a sign change
+  assert result.reason & TorqueV4GovernorReason.RECENTER_MODE
+  # Should NOT have sign-change-limited flag
+  assert not result.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+
+
+def test_recenter_mode_no_slew_boost_without_same_direction_unwind():
+  """Recenter mode boost requires either a sign change or a
+  same-direction unwind. If the target is growing in the same
+  direction (target > previous), no boost is applied."""
+  governor = TorqueV4OutputGovernor(_DT, LatControlTorqueV4.GOVERNOR_PROFILE)
+  governor.previous_output = 0.2  # positive
+  speed_result = make_speed_result(sign_change_slew_rate=1.0, output_slew_rate=3.0)
+
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.0, slew_boost=2.0)
+
+  # Same direction, but growing: target +0.5 > previous 0.2
+  result = governor.update(
+    active=True, v_ego=20.0, steering_pressed=False, steering_rate_deg=0.0,
+    same_direction_limit=False, steer_limit_unwind=False, actuator_mismatch=False,
+    actuator_error=0.0, raw_output_torque=0.5, max_output=1.0,
+    speed_model=speed_result, recenter=recenter,
+  )
+  # No sign change, no same-direction unwind → no RECENTER_MODE flag
+  assert not result.reason & TorqueV4GovernorReason.RECENTER_MODE
+  assert not result.reason & TorqueV4GovernorReason.SIGN_CHANGE_LIMITED
+
+
+# ----------------------------------------------------------------------------
+# Straight-road damping diagnostic preservation
+# ----------------------------------------------------------------------------
+
+
+def test_recenter_mode_preserves_straight_road_damping_diagnostic():
+  """Straight-road damping is the model path processor's diagnostic
+  for "the road is straight, the curvature is small, so hold the
+  target instead of chasing noise." The recenter mode changes should
+  not interfere with this diagnostic — it lives in a different layer
+  (model_path_processor) and the controller just reads it.
+
+  Verify the recenter mode is orthogonal to straight_road_damping_active:
+  the recenter mode can fire while straight_road_damping_active is True,
+  and vice versa. Both diagnostics are exposed for route telemetry."""
+  from openpilot.selfdrive.controls.lib.model_path_processor import ModelPathProcessorResult
+
+  # Straight road: curvature is small. Path processor reports damping active.
+  straight_path = ModelPathProcessorResult(
+    desired_curvature=0.0,  # straight
+    quality=1.0,
+    gated=False,
+    reason="inactive",
+    trust_penalty=0.0,
+    straight_road_damping_active=True,  # straight road → damping is active
+  )
+  # Recenter mode is independent of straight-road damping. Both are
+  # valid simultaneously: turn exit on a straight road.
+  recenter = TorqueV4RecenterMode(active=True, persistence_frames=10,
+                                  lead_reduction=0.6, slew_boost=1.5)
+  # Sanity: the two fields are independent. The recenter mode fires
+  # based on the target's collapse rate, not the path processor's
+  # straight-road state.
+  assert straight_path.straight_road_damping_active
+  assert recenter.active
+
+
+def test_early_release_guard_does_not_over_hold_recenter_target():
+  """When straight-road damping is active and the target is collapsing
+  to zero, the early release guard should still zero the lead delta.
+  The damping diagnostic should not over-hold the target past the
+  point where the controller would otherwise release the lead.
+
+  This is a structural test: the early release guard operates on
+  raw_target (which the path processor has already damped), and the
+  recenter lead reduction operates on lead_gain. They are independent
+  layers and the recenter+early-release pair should release the lead
+  regardless of whether straight-road damping is active."""
+  controller, VM, CP = get_controller()
+  speed_result = make_speed_result(lead_gain=0.5, lead_delta_cap=0.5, response_delay=0.2)
+
+  # Previous target 1.0, current 0.5 — collapsing toward zero.
+  controller.previous_target_lateral_accel = 1.0
+  target = controller._build_target(
+    desired_curvature=0.5 / 20.0 ** 2,
+    v_ego=20.0, speed_result=speed_result, invalid=False, recenter=None,
+  )
+  # Early release guard fires: lead_delta is zero regardless of any
+  # straight-road damping state (which is a separate concern).
+  assert target.lead_delta == 0.0

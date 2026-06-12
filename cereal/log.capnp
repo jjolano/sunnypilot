@@ -907,6 +907,24 @@ struct ControlsState @0x97ff69c53601abf1 {
       learnerResponseScale @43 :Float32;
       governorReason @44 :UInt32;
       actualLateralJerk @45 :Float32;
+      demandMode @46 :UInt8;  # LateralMode: 0 unknown, 1 straight_stable, 2 straight_bias_correction, 3 turn_in, 4 steady_curve, 5 turn_exit_recenter, 6 lane_change, 7 low_quality_path, 8 safety_limited, 9 driver_override.
+      demandModeConfidence @47 :Float32;
+      oscillationClassification @48 :UInt8;  # LateralOscillation: 0 none, 1 planner_oscillation, 2 controller_oscillation, 3 vehicle_bias, 4 recenter_lag, 5 sign_change_lag, 6 straight_road_hunting.
+      wobbleActive @49 :Bool;  # True when classifier says planner/controller/straight-road wobble AND confidence > WOBBLE_CONFIDENCE_THRESHOLD.
+      vehicleBiasEstimate @50 :Float32;  # Persistent lateral accel bias estimate from LateralVehicleHealthEstimator (m/s², bounded ±HEALTH_EST_BIAS_MAX).
+      vehicleBiasConfidence @51 :Float32;  # Confidence in bias estimate, 0-1.
+      vehicleBiasWarning @52 :Bool;  # True when |bias_estimate| > HEALTH_EST_BIAS_WARNING. Diagnostic event, not a hidden compensation.
+      vehicleHealthActive @53 :Bool;  # True when the estimator's learning conditions are met this frame.
+      turnExitMode @54 :UInt8;  # TurnExitMode: 0 inactive, 1 turn_in, 2 steady_curve, 3 turn_exit, 4 early_release.
+      previewBoost @55 :Float32;  # Preview-based lead boost derived from LateralTurnExitController, bounded ±TURN_IN_PREVIEW_BOOST_CAP.
+      earlyReleaseActive @56 :Bool;  # True when the turn-exit controller fires the early release guard this frame.
+      wobbleFeedbackGainMult @57 :Float32;  # Multiplier applied to feedback gain by the anti-wobble supervisor (1.0 = neutral).
+      wobbleDampingGainMult @58 :Float32;  # Multiplier applied to damping gain by the anti-wobble supervisor (1.0 = neutral).
+      v5Active @59 :Bool;  # True when LatControlTorqueV5 ran its profile-aware shaping path this frame.
+      previewBoostApplied @60 :Float32;  # Preview boost that actually landed in the lead delta (zero when gated off or blocked).
+      finalLeadDelta @61 :Float32;  # Lead delta after v5 shaping (preview boost + turn-exit multipliers + early release).
+      outputSignFlips @62 :UInt32;  # Cumulative count of output torque sign flips since controller init.
+      straightRoadTorqueFlips @63 :UInt32;  # Cumulative count of output torque sign flips while the road was straight.
     }
 
     adaptiveTorqueState @13 :AdaptiveTorqueState;

@@ -62,6 +62,7 @@ class LaneChangePathShaper:
     self.blend = 0.0
     self.baseline_curvature = 0.0
     self.lane_width = 0.0
+    self.curvature_speed_floor = MIN_VEGO
 
   def update(self, inputs: LaneChangePathShaperInputs) -> LaneChangePathShaperResult:
     if not self._lane_change_active(inputs):
@@ -87,6 +88,7 @@ class LaneChangePathShaper:
     target_blend = 1.0 if not finishing and not self.soft_fallback and self.elapsed < LANE_CHANGE_DURATION else 0.0
     self.blend = self._approach(self.blend, target_blend)
 
+    self.curvature_speed_floor = max(self.curvature_speed_floor, self._finite_v_ego(inputs.v_ego))
     reference_curvature = self._reference_curvature(inputs.v_ego)
     shaped_curvature = self._model_primary_curvature(inputs.model_curvature, reference_curvature)
     authority = self.blend * self._early_turn_in_authority()
@@ -110,9 +112,11 @@ class LaneChangePathShaper:
       self.planned = True
       self.baseline_curvature = inputs.prev_desired_curvature
       self.lane_width = self._smoothed_lane_width(lane_width)
+      self.curvature_speed_floor = self._finite_v_ego(inputs.v_ego)
     else:
       self.baseline_curvature = 0.0
       self.lane_width = 0.0
+      self.curvature_speed_floor = MIN_VEGO
 
   def _should_soft_fallback(self, inputs: LaneChangePathShaperInputs) -> bool:
     lane_width = self._lane_width(inputs, SOFT_FALLBACK_LANE_LINE_PROB, clamp=False)
@@ -131,7 +135,9 @@ class LaneChangePathShaper:
     )
     direction_sign = -1.0 if self.direction == LaneChangeDirection.left else 1.0
     lateral_accel = direction_sign * self.lane_width * accel_scale / (LANE_CHANGE_DURATION**2)
-    curvature_offset = lateral_accel / max(v_ego, MIN_VEGO) ** 2
+    # Keep decel/coast from converting the same lateral profile into larger curvature demand.
+    curvature_v_ego = max(self._finite_v_ego(v_ego), self.curvature_speed_floor)
+    curvature_offset = lateral_accel / curvature_v_ego ** 2
     return self.baseline_curvature + curvature_offset
 
   def _model_primary_curvature(self, model_curvature: float, reference_curvature: float) -> float:
@@ -150,6 +156,14 @@ class LaneChangePathShaper:
   @staticmethod
   def _smoothed_lane_width(lane_width: float) -> float:
     return NOMINAL_LANE_WIDTH + LANE_WIDTH_GEOMETRY_WEIGHT * (lane_width - NOMINAL_LANE_WIDTH)
+
+  @staticmethod
+  def _finite_v_ego(v_ego: float) -> float:
+    try:
+      value = float(v_ego)
+    except (TypeError, ValueError):
+      return MIN_VEGO
+    return max(value, MIN_VEGO) if math.isfinite(value) else MIN_VEGO
 
   def _hard_abort(self, inputs: LaneChangePathShaperInputs) -> bool:
     one_blinker = inputs.left_blinker != inputs.right_blinker

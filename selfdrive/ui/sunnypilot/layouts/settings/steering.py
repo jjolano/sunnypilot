@@ -106,6 +106,11 @@ class SteeringLayout(Widget):
       title=lambda: tr("Accurate Lateral Acceleration (Experimental)"),
       description=lambda: tr("Use curvature-based lateral acceleration and exact roll gravity compensation in lateral and turn-speed calculations."),
     )
+    self._lane_centering_assist_toggle = toggle_item_sp(
+      param="LaneCenteringAssistEnabled",
+      title=lambda: tr("Lane Centering Assist"),
+      description=lambda: tr("Apply small curvature corrections on straight roads to reduce lateral drift. Only active when lateral control is using the model path and driving straight at highway speed."),
+    )
 
     items = [
       self._mads_toggle,
@@ -124,6 +129,7 @@ class SteeringLayout(Widget):
       LineSeparatorSP(40),
       self._nnlc_toggle,
       self._accurate_lateral_accel_toggle,
+      self._lane_centering_assist_toggle,
     ]
     return items
 
@@ -157,6 +163,7 @@ class SteeringLayout(Widget):
     self._torque_control_toggle.action_item.set_enabled(ui_state.is_offroad() and torque_allowed and not nnlc_enabled)
     self._torque_customization_button.action_item.set_enabled(self._torque_control_toggle.action_item.get_state())
     self._accurate_lateral_accel_toggle.action_item.set_enabled(ui_state.is_offroad())
+    self._lane_centering_assist_toggle.action_item.set_enabled(ui_state.is_offroad())
 
   def _render(self, rect):
     if self._current_panel == PanelType.LANE_CHANGE:

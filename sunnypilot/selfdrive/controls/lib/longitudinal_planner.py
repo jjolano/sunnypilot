@@ -60,6 +60,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   resolve_longitudinal_stack,
   stack_id_for_name,
 )
+from openpilot.selfdrive.controls.lib.controls_profile import resolve_controls_profile_from_params
 from openpilot.selfdrive.controls.lib.planner_stacks.scene_memory import SceneMemory, SceneMemorySnapshot
 from openpilot.selfdrive.controls.lib.planner_stacks.selector import (
   PLANNER_CURRENT,
@@ -368,8 +369,15 @@ class LongitudinalPlannerSP:
     self._speed_limit_handoff_active = False
     self._speed_limit_active_prev = False
     self.speed_limit_handoff_debug: dict[str, object] = {}
+    controls_profile_param_resolution = resolve_controls_profile_from_params(self.params)
+    self.controls_profile_resolution = controls_profile_param_resolution.controls_profile_resolution
+    if controls_profile_param_resolution.controls_profile_explicit:
+      requested_longitudinal_stack = self.controls_profile_resolution.longitudinal_stack
+      self.params.put("LongitudinalStack", requested_longitudinal_stack)
+    else:
+      requested_longitudinal_stack = self.params.get("LongitudinalStack", return_default=True)
     self.longitudinal_stack_resolution = resolve_longitudinal_stack(
-      self.params.get("LongitudinalStack", return_default=True), self.CP, self.CP_SP
+      requested_longitudinal_stack, self.CP, self.CP_SP
     )
     self.planner_stack_validation_gate_passed = self.params.get_bool(PLANNER_STACK_VALIDATION_GATE_PARAM)
     self.planner_stack_resolution = resolve_planner_stack(

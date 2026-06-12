@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import numpy as np
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.realtime import DT_CTRL, DT_MDL
@@ -16,6 +18,20 @@ MAX_LATERAL_JERK = 5.0  # m/s^3
 MAX_LATERAL_ACCEL_NO_ROLL = 3.0  # m/s^2
 MAX_LATERAL_ACCEL_DRIVER_GAS_NO_ROLL = 5.0  # m/s^2
 LATERAL_ACCEL_DRIVER_GAS_DECAY_SECONDS = 1.25
+
+
+@dataclass(frozen=True)
+class CurvatureClipResult:
+  curvature: float
+  limited: bool
+  default_lateral_accel_limited: bool
+  jerk_limited: bool
+  lateral_accel_limited: bool
+  max_curvature_limited: bool
+
+  @property
+  def any_limited(self) -> bool:
+    return self.jerk_limited or self.lateral_accel_limited or self.max_curvature_limited
 
 
 def clamp(val, min_val, max_val):
@@ -60,12 +76,21 @@ def is_default_lateral_accel_limited(v_ego, curvature, roll, accurate_lateral_ac
 
 def clip_curvature(v_ego, prev_curvature, new_curvature, roll, lateral_accel_limit=MAX_LATERAL_ACCEL_NO_ROLL,
                    accurate_lateral_accel=False) -> tuple[float, bool, bool]:
+  result = clip_curvature_with_result(v_ego, prev_curvature, new_curvature, roll, lateral_accel_limit, accurate_lateral_accel)
+  return result.curvature, result.limited, result.default_lateral_accel_limited
+
+
+def clip_curvature_with_result(v_ego, prev_curvature, new_curvature, roll,
+                               lateral_accel_limit=MAX_LATERAL_ACCEL_NO_ROLL,
+                               accurate_lateral_accel=False) -> CurvatureClipResult:
   # This function respects ISO lateral jerk and acceleration limits + a max curvature
   v_ego = max(v_ego, MIN_SPEED)
   max_curvature_rate = MAX_LATERAL_JERK / (v_ego ** 2)  # inexact calculation, check https://github.com/commaai/openpilot/pull/24755
-  new_curvature = np.clip(new_curvature,
-                          prev_curvature - max_curvature_rate * DT_CTRL,
-                          prev_curvature + max_curvature_rate * DT_CTRL)
+  requested_curvature = new_curvature
+  new_curvature = float(np.clip(new_curvature,
+                                prev_curvature - max_curvature_rate * DT_CTRL,
+                                prev_curvature + max_curvature_rate * DT_CTRL))
+  jerk_limited = new_curvature != requested_curvature
   default_lateral_accel_limited = is_default_lateral_accel_limited(v_ego, new_curvature, roll, accurate_lateral_accel)
 
   if not np.isfinite(lateral_accel_limit):
@@ -78,7 +103,15 @@ def clip_curvature(v_ego, prev_curvature, new_curvature, roll, lateral_accel_lim
   new_curvature, limited_accel = clamp(new_curvature, min_lat_accel / v_ego ** 2, max_lat_accel / v_ego ** 2)
 
   new_curvature, limited_max_curv = clamp(new_curvature, -MAX_CURVATURE, MAX_CURVATURE)
-  return float(new_curvature), limited_accel or limited_max_curv, bool(default_lateral_accel_limited)
+  legacy_limited = limited_accel or limited_max_curv
+  return CurvatureClipResult(
+    curvature=float(new_curvature),
+    limited=bool(legacy_limited),
+    default_lateral_accel_limited=bool(default_lateral_accel_limited),
+    jerk_limited=bool(jerk_limited),
+    lateral_accel_limited=bool(limited_accel),
+    max_curvature_limited=bool(limited_max_curv),
+  )
 
 
 def get_accel_from_plan(speeds, accels, t_idxs, action_t=DT_MDL, vEgoStopping=0.3):

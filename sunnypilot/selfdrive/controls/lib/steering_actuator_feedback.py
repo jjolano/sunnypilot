@@ -51,6 +51,12 @@ class SteeringActuatorFeedback:
     return cls(False, False, reason, 0.0, 0.0, 0.0, False, False)
 
 
+@dataclass(frozen=True)
+class SteeringLimitContext:
+  same_direction_limited: bool
+  unwind_allowed: bool
+
+
 def sign(value: float) -> int:
   if value > SIGN_EPS:
     return 1
@@ -79,7 +85,9 @@ def build_steering_actuator_feedback(
   limited = abs(error) > threshold
   reason = SteeringLimitReason.ACTUATOR_MISMATCH if limited else SteeringLimitReason.NONE
 
-  same_direction_limited, unwind_allowed = classify_steering_limit_direction(
+  # Without a current command this is raw actuator mismatch evidence only; controller-side
+  # code classifies same-direction limiting/unwind once it has the command being considered.
+  context = classify_steering_limit_context(
     SteeringActuatorFeedback(True, limited, reason, requested_value, applied_value, error, False, False),
     current_command,
   )
@@ -91,8 +99,8 @@ def build_steering_actuator_feedback(
     requested=requested_value,
     applied=applied_value,
     error=error,
-    same_direction_limited=same_direction_limited,
-    unwind_allowed=unwind_allowed,
+    same_direction_limited=context.same_direction_limited,
+    unwind_allowed=context.unwind_allowed,
   )
 
 
@@ -105,12 +113,17 @@ def _values_for_control_type(requested: SteeringActuatorRequest, applied_actuato
 
 
 def classify_steering_limit_direction(feedback: SteeringActuatorFeedback, current_command: float | None) -> tuple[bool, bool]:
+  context = classify_steering_limit_context(feedback, current_command)
+  return context.same_direction_limited, context.unwind_allowed
+
+
+def classify_steering_limit_context(feedback: SteeringActuatorFeedback, current_command: float | None) -> SteeringLimitContext:
   if current_command is None or not feedback.valid or not feedback.limited:
-    return False, False
+    return SteeringLimitContext(False, False)
 
   error_sign = sign(feedback.error)
   command_sign = sign(float(current_command))
   if error_sign == 0 or command_sign == 0:
-    return False, False
+    return SteeringLimitContext(False, False)
 
-  return command_sign == error_sign, command_sign == -error_sign
+  return SteeringLimitContext(command_sign == error_sign, command_sign == -error_sign)

@@ -54,13 +54,13 @@ def test_clean_under_response_is_not_shaped():
   assert result.output_torque == result.unshaped_output
 
 
-def test_driver_override_caps_output():
+def test_driver_override_does_not_cap_output():
   result = assert_cap_only(make_inputs(steering_pressed=True))
 
-  assert result.active
-  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
-  assert result.output_cap == 0.8
-  assert result.output_torque == 0.4
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert result.output_cap == 1.0
+  assert result.output_torque == result.unshaped_output
 
 
 def test_release_caps_output():
@@ -157,7 +157,7 @@ def test_recent_over_response_bypass_expires_during_zero_output_frames():
   _ = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=0.4, actual_lateral_accel=1.2))
   for _ in range(50):
     _ = shaper.update(make_inputs(unshaped_output=0.0, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
-  _ = shaper.update(make_inputs(unshaped_output=1.0, steering_pressed=True, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
+  _ = shaper.update(make_inputs(unshaped_output=1.0, release_active=True, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
 
   result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=0.4, actual_lateral_accel=0.5))
 
@@ -166,12 +166,12 @@ def test_recent_over_response_bypass_expires_during_zero_output_frames():
   assert result.output_torque == -0.04
 
 
-def test_driver_override_keeps_release_cap_during_over_response():
+def test_driver_override_keeps_safety_caps_during_over_response():
   result = assert_cap_only(make_inputs(steering_pressed=True, desired_lateral_accel=2.5, actual_lateral_accel=3.3, unshaped_output=1.0))
 
   assert result.active
-  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
   assert result.reason & ConservativeOutputShapingReason.OVER_RESPONSE
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
   assert result.output_cap == 0.8
   assert result.output_torque == 0.8
 
@@ -388,7 +388,7 @@ def test_low_speed_corrective_unwind_bypasses_same_sign_actuator_lag_caps():
   assert_close(result.output_torque, 0.8)
 
 
-def test_low_speed_corrective_unwind_preserves_driver_override_cap():
+def test_low_speed_corrective_unwind_preserves_same_sign_unwind_cap_during_driver_override():
   result = assert_cap_only(make_inputs(v_ego=7.0, steering_pressed=True, steer_limited_by_safety=True,
                                        steer_limit_same_direction=True, steer_limit_unwind=False,
                                        same_sign_unwind_release=True, steering_rate_deg=40.0, unshaped_output=1.0,
@@ -396,8 +396,8 @@ def test_low_speed_corrective_unwind_preserves_driver_override_cap():
                                        steer_limit_requested_output=0.8, steer_limit_applied_output=0.23))
 
   assert result.active
-  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
   assert result.reason & ConservativeOutputShapingReason.SAME_SIGN_UNWIND
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
   assert_close(result.output_cap, 0.3)
   assert_close(result.output_torque, 0.3)
 
@@ -756,15 +756,15 @@ def test_low_speed_safety_limit_under_response_floor_preserves_same_sign_unwind_
   assert result.output_cap == 0.3
 
 
-def test_low_speed_safety_limit_under_response_floor_preserves_driver_override():
+def test_low_speed_safety_limit_under_response_keeps_steering_override_authority():
   result = assert_cap_only(make_inputs(v_ego=3.5, steering_pressed=True, steer_limited_by_safety=True, steer_limit_same_direction=True,
                                        unshaped_output=1.0, desired_lateral_accel=1.21, actual_lateral_accel=0.81,
                                        steer_limit_requested_output=1.0, steer_limit_applied_output=0.2))
 
   assert result.active
-  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
   assert not result.reason & ConservativeOutputShapingReason.SAFETY_LIMITED_RAMP
-  assert result.output_cap == 0.8
+  assert result.output_cap == 0.92
 
 
 def test_low_speed_safety_limit_under_response_floor_preserves_near_iso_cap():
@@ -888,16 +888,16 @@ def test_recent_actuator_lag_comfort_does_not_rate_limit_next_low_rate_opposing_
   assert result.output_torque == result.unshaped_output
 
 
-def test_actuator_lag_comfort_does_not_reduce_driver_override_cap():
+def test_actuator_lag_comfort_does_not_reduce_driver_override_authority():
   result = assert_cap_only(
     make_inputs(v_ego=5.0, steering_pressed=True, steer_limited_by_safety=True, steering_rate_deg=40.0, unshaped_output=1.0)
   )
 
   assert result.active
-  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
   assert not result.reason & ConservativeOutputShapingReason.ACTUATOR_LAG_COMFORT
-  assert result.output_cap == 0.8
-  assert result.output_torque == 0.8
+  assert result.output_cap == 0.92
+  assert result.output_torque == 0.92
 
 
 def test_same_sign_unwind_release_clamps_output_toward_zero():
@@ -1056,7 +1056,7 @@ def test_strongest_cap_wins_when_multiple_reasons_apply():
   )
 
   assert result.active
-  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
   assert result.reason & ConservativeOutputShapingReason.SIGN_CONFLICT
   assert result.reason & ConservativeOutputShapingReason.BUMP
   assert result.output_cap == 0.8
@@ -1064,7 +1064,7 @@ def test_strongest_cap_wins_when_multiple_reasons_apply():
 
 def test_recovery_after_cap_ramps_upward():
   shaper = TorqueConservativeOutputShaper(dt=0.1)
-  capped = shaper.update(make_inputs(steering_pressed=True))
+  capped = shaper.update(make_inputs(release_active=True))
   recovered = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.6))
 
   assert capped.output_torque == 0.4
@@ -1074,9 +1074,9 @@ def test_recovery_after_cap_ramps_upward():
   assert abs(recovered.output_torque) <= abs(recovered.unshaped_output)
 
 
-def test_low_speed_recovery_after_driver_override_ramps_more_softly():
+def test_low_speed_recovery_after_release_cap_ramps_more_softly():
   shaper = TorqueConservativeOutputShaper(dt=0.1)
-  capped = shaper.update(make_inputs(v_ego=5.0, steering_pressed=True))
+  capped = shaper.update(make_inputs(v_ego=5.0, release_active=True))
   recovered = shaper.update(make_inputs(v_ego=5.0, unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.6))
 
   assert capped.output_torque == 0.4
@@ -1088,7 +1088,7 @@ def test_low_speed_recovery_after_driver_override_ramps_more_softly():
 
 def test_strong_under_response_bypasses_low_speed_recovery_ramp():
   shaper = TorqueConservativeOutputShaper(dt=0.1)
-  _ = shaper.update(make_inputs(v_ego=5.0, steering_pressed=True))
+  _ = shaper.update(make_inputs(v_ego=5.0, release_active=True))
 
   recovered = shaper.update(make_inputs(v_ego=5.0, unshaped_output=1.0, desired_lateral_accel=1.2, actual_lateral_accel=0.4))
 
@@ -1099,22 +1099,22 @@ def test_strong_under_response_bypasses_low_speed_recovery_ramp():
 
 def test_lower_target_after_cap_applies_immediately():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  _ = shaper.update(make_inputs(unshaped_output=1.0, steering_pressed=True))
+  _ = shaper.update(make_inputs(unshaped_output=1.0, release_active=True))
   result = shaper.update(make_inputs(unshaped_output=0.3, desired_lateral_accel=0.4, actual_lateral_accel=0.2))
 
   assert not result.active
   assert result.output_torque == 0.3
 
 
-def test_driver_override_cap_applies_immediately_after_clean_tracking():
+def test_driver_override_does_not_cap_immediately_after_clean_tracking():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
   _ = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.2))
   result = shaper.update(make_inputs(unshaped_output=1.0, steering_pressed=True))
 
-  assert result.active
-  assert result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
-  assert result.output_cap == 0.8
-  assert result.output_torque == 0.8
+  assert not result.active
+  assert not result.reason & ConservativeOutputShapingReason.STEERING_PRESSED
+  assert result.output_cap == 1.0
+  assert result.output_torque == 1.0
 
 
 def test_near_iso_cap_applies_immediately_after_clean_tracking():
@@ -1161,7 +1161,7 @@ def test_recent_hard_shaping_rate_limits_clear_under_response_recovery():
 
 def test_sign_flip_after_cap_does_not_hold_old_opposite_torque():
   shaper = TorqueConservativeOutputShaper(dt=0.01)
-  _ = shaper.update(make_inputs(steering_pressed=True))
+  _ = shaper.update(make_inputs(release_active=True))
   result = shaper.update(make_inputs(unshaped_output=-1.0, desired_lateral_accel=-0.8, actual_lateral_accel=-0.2))
 
   assert result.active
@@ -1173,7 +1173,7 @@ def test_sign_flip_after_cap_does_not_hold_old_opposite_torque():
 
 def test_output_rate_limit_expires_after_short_window():
   shaper = TorqueConservativeOutputShaper(dt=0.2)
-  _ = shaper.update(make_inputs(steering_pressed=True))
+  _ = shaper.update(make_inputs(release_active=True))
   _ = shaper.update(make_inputs(unshaped_output=0.2, desired_lateral_accel=0.4, actual_lateral_accel=0.2))
   _ = shaper.update(make_inputs(unshaped_output=0.2, desired_lateral_accel=0.4, actual_lateral_accel=0.2))
   result = shaper.update(make_inputs(unshaped_output=1.0, desired_lateral_accel=1.0, actual_lateral_accel=0.2))
