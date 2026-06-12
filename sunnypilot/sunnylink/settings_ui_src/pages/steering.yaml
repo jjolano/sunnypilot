@@ -255,3 +255,22 @@ sections:
       key: AutoLaneChangeTimer
       op: '>'
       value: 0
+
+- id: lateral_experiments
+  title: Lateral Experiments
+  description: Experimental lateral-control behavior
+  enablement:
+  - $ref: '#/macros/offroad'
+  items:
+  - key: AccurateLateralAccel
+    widget: toggle
+    title: Accurate Lateral Acceleration
+    description: Experimental opt-in control path that uses curvature-based lateral acceleration and exact roll gravity compensation in lateral and turn-speed calculations. Keep disabled unless validating this behavior.
+  - key: LaneCenteringAssistEnabled
+    widget: toggle
+    title: Lane Centering Assist
+    description: Apply small curvature corrections on straight roads to reduce lateral drift. Only active when lateral control is using the model path and driving straight at highway speed.
+  - key: SmoothedModelPathCurvature
+    widget: toggle
+    title: Smoothed Model Path Curvature
+    description: Use a speed-aware local model-path curvature estimate to reduce lateral jitter while preserving existing safety limits. Experimental and default off.

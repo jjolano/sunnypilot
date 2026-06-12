@@ -162,8 +162,8 @@ class TestSmartCruiseControlVision:
     }
 
   def reset_params(self):
-    self.params.put_bool("SccCurveVisionEnabled", True)
-    self.params.put_bool("AccurateLateralAccel", False)
+    self.params.put_bool("SccCurveVisionEnabled", True, block=True)
+    self.params.put_bool("AccurateLateralAccel", False, block=True)
 
   def test_initial_state(self):
     assert self.scc_v.state == VisionState.disabled
@@ -172,7 +172,7 @@ class TestSmartCruiseControlVision:
     assert self.scc_v.output_a_target == 0.0
 
   def test_system_disabled(self):
-    self.params.put_bool("SccCurveVisionEnabled", False)
+    self.params.put_bool("SccCurveVisionEnabled", False, block=True)
     self.scc_v.enabled = self.params.get_bool("SccCurveVisionEnabled")
 
     for _ in range(int(10.0 / DT_MDL)):

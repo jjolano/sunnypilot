@@ -539,6 +539,36 @@
               ]
             }
           ]
+        },
+        {
+          "id": "lateral_experiments",
+          "title": "Lateral Experiments",
+          "description": "Experimental lateral-control behavior",
+          "enablement": [
+            {
+              "type": "offroad_only"
+            }
+          ],
+          "items": [
+            {
+              "key": "AccurateLateralAccel",
+              "widget": "toggle",
+              "title": "Accurate Lateral Acceleration",
+              "description": "Experimental opt-in control path that uses curvature-based lateral acceleration and exact roll gravity compensation in lateral and turn-speed calculations. Keep disabled unless validating this behavior."
+            },
+            {
+              "key": "LaneCenteringAssistEnabled",
+              "widget": "toggle",
+              "title": "Lane Centering Assist",
+              "description": "Apply small curvature corrections on straight roads to reduce lateral drift. Only active when lateral control is using the model path and driving straight at highway speed."
+            },
+            {
+              "key": "SmoothedModelPathCurvature",
+              "widget": "toggle",
+              "title": "Smoothed Model Path Curvature",
+              "description": "Use a speed-aware local model-path curvature estimate to reduce lateral jitter while preserving existing safety limits. Experimental and default off."
+            }
+          ]
         }
       ]
     },
@@ -659,6 +689,107 @@
                 {
                   "value": 2,
                   "label": "Relaxed"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "LongitudinalStack",
+              "widget": "multiple_button",
+              "title": "Longitudinal Stack",
+              "description": "Selects which longitudinal control stack is used after sunnypilot longitudinal control is active. Default is sunnypilot-current; custom-recommended resolves globally to custom-2.0.",
+              "options": [
+                {
+                  "value": "sunnypilot-current",
+                  "label": "sunnypilot Current"
+                },
+                {
+                  "value": "custom-recommended",
+                  "label": "Custom Recommended"
+                },
+                {
+                  "value": "custom-2.0",
+                  "label": "Custom v2.0"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "FastLeadMotionEvidenceEnabled",
+              "widget": "toggle",
+              "title": "Fast Lead Motion",
+              "description": "Uses raw lead opening and lead speed evidence in custom v2.0 stop/go and progress behavior.",
+              "visibility": [
+                {
+                  "type": "any",
+                  "conditions": [
+                    {
+                      "type": "param",
+                      "key": "LongitudinalStack",
+                      "equals": "custom-recommended"
+                    },
+                    {
+                      "type": "param",
+                      "key": "LongitudinalStack",
+                      "equals": "custom-2.0"
+                    }
+                  ]
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "OnePedalLongitudinalMode",
+              "widget": "multiple_button",
+              "title": "One Pedal Longitudinal",
+              "description": "Treats the cruise speed as a ceiling in custom v2.0. Lift-off coasts unless physical lead or stop evidence requires braking.",
+              "options": [
+                {
+                  "value": 0,
+                  "label": "Off"
+                },
+                {
+                  "value": 1,
+                  "label": "Creep"
+                },
+                {
+                  "value": 2,
+                  "label": "Full Stop"
+                }
+              ],
+              "visibility": [
+                {
+                  "type": "any",
+                  "conditions": [
+                    {
+                      "type": "param",
+                      "key": "LongitudinalStack",
+                      "equals": "custom-recommended"
+                    },
+                    {
+                      "type": "param",
+                      "key": "LongitudinalStack",
+                      "equals": "custom-2.0"
+                    }
+                  ]
                 }
               ],
               "enablement": [
@@ -1622,13 +1753,13 @@
         {
           "id": "updates",
           "title": "Updates",
-          "description": "Control automatic software updates",
+          "description": "Control software updates",
           "items": [
             {
               "key": "DisableUpdates",
               "widget": "toggle",
               "title": "Disable Updates",
-              "description": "When enabled, automatic software updates will be off. This requires a reboot to take effect.",
+              "description": "When enabled, software updates will be off. This requires a reboot to take effect.",
               "enablement": [
                 {
                   "type": "offroad_only"
