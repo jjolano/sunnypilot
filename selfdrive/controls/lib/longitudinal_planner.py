@@ -86,6 +86,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.controls.lib.lateral_accel import lateral_accel_from_steering_angle
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.controls.lib.vehicle_math import stopping_decel
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
   LEAD_SPEEDUP_GUARD_LATERAL_EXIT_Y_REL,
@@ -1798,7 +1799,9 @@ def get_e2e_stop_approach_accel(v_ego, model_msg, radar_state, e2e_active, force
 
   shortage_decel = float(np.interp(shortage, E2E_STOP_APPROACH_SHORTAGE_BP, E2E_STOP_APPROACH_DECEL_BP))
   required_decel_blend = float(np.interp(shortage, E2E_STOP_APPROACH_REQUIRED_DECEL_SHORTAGE_BP, [0.0, 1.0]))
-  required_decel = required_decel_blend * E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND * v_ego**2 / (2.0 * max(endpoint_x, E2E_STOP_APPROACH_MIN_ENDPOINT))
+  required_decel = required_decel_blend * E2E_STOP_APPROACH_REQUIRED_DECEL_BLEND * -stopping_decel(
+    v_ego, endpoint_x, min_distance=E2E_STOP_APPROACH_MIN_ENDPOINT,
+  )
   target_decel = min(max(shortage_decel, required_decel), E2E_STOP_APPROACH_DECEL_MAX)
   return -target_decel
 
@@ -2195,7 +2198,9 @@ def get_e2e_close_stop_settle(v_ego, raw_e2e_accel, model_msg, radar_state, e2e_
   if v_ego < E2E_CLOSE_STOP_MIN_ROLLING_V:
     return raw_e2e_accel, should_stop, should_stop
 
-  required_decel = v_ego**2 / (2.0 * max(stop_distance + E2E_CLOSE_STOP_DECEL_BUFFER, E2E_CLOSE_STOP_DECEL_BUFFER))
+  required_decel = -stopping_decel(
+    v_ego, stop_distance + E2E_CLOSE_STOP_DECEL_BUFFER, min_distance=E2E_CLOSE_STOP_DECEL_BUFFER,
+  )
   target_decel = min(required_decel, E2E_CLOSE_STOP_DECEL_MAX)
   return min(raw_e2e_accel, -target_decel), should_stop, True
 

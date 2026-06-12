@@ -51,8 +51,22 @@ def test_stopping_decel_gets_weaker_with_distance():
   assert close < far < 0.0
 
 
+@pytest.mark.parametrize("distance", [0.0, -1.0])
+def test_required_decel_and_stopping_decel_use_min_distance_for_nonpositive_distances(distance):
+  expected = required_decel_to_target_speed(10.0, 0.0, 1.0, min_distance=1.0)
+
+  assert required_decel_to_target_speed(10.0, 0.0, distance, min_distance=1.0) == pytest.approx(expected)
+  assert stopping_decel(10.0, distance, min_distance=1.0) == pytest.approx(expected)
+
+
 def test_required_decel_uses_min_distance_floor():
   assert stopping_decel(10.0, 0.0, min_distance=1.0) == pytest.approx(stopping_decel(10.0, 1.0, min_distance=1.0))
+
+
+def test_lateral_jerk_from_curvature_rate_uses_speed_squared_scaling_and_sign():
+  assert lateral_jerk_from_curvature_rate(10.0, 0.02) == pytest.approx(2.0)
+  assert lateral_jerk_from_curvature_rate(10.0, -0.02) == pytest.approx(-2.0)
+  assert lateral_jerk_from_curvature_rate(20.0, 0.02) == pytest.approx(8.0)
 
 
 def test_required_decel_outputs_are_finite_for_finite_inputs():
@@ -70,6 +84,10 @@ def test_required_decel_outputs_are_finite_for_finite_inputs():
 def test_speed_for_lateral_accel_uses_curvature_magnitude():
   assert speed_for_lateral_accel(2.0, -0.02) == pytest.approx(speed_for_lateral_accel(2.0, 0.02))
   assert speed_for_lateral_accel(2.0, -0.02) == pytest.approx(10.0)
+
+
+def test_speed_for_lateral_accel_inf_speed_returns_inf_for_finite_curvature():
+  assert speed_for_lateral_accel(math.inf, 0.01) == math.inf
 
 
 @pytest.mark.parametrize("lateral_accel,curvature", [

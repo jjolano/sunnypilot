@@ -22,6 +22,20 @@ def stopping_decel(v_ego: float, distance: float, min_distance: float = MIN_DIST
   return required_decel_to_target_speed(v_ego, 0.0, distance, min_distance)
 
 
+def lateral_jerk_from_curvature_rate(v_ego: float, curvature_rate: float) -> float:
+  """Return signed lateral jerk from curvature rate at fixed speed.
+
+  The canonical order is ``(v_ego, curvature_rate)``.  Older retained callers
+  used ``(curvature_rate, v_ego)``; keep that order working for compatibility
+  when the first value looks like curvature and the second looks like speed.
+  """
+  first = float(v_ego)
+  second = float(curvature_rate)
+  if abs(first) <= 1.0 and abs(second) > 1.0:
+    first, second = second, first
+  return first ** 2 * second
+
+
 def speed_for_lateral_accel(lateral_accel: float, curvature: float) -> float:
   """Return speed for a lateral acceleration budget and curvature magnitude.
 
@@ -38,8 +52,3 @@ def speed_for_lateral_accel(lateral_accel: float, curvature: float) -> float:
   if not math.isfinite(curvature) or curvature <= MIN_CURVATURE_FOR_SPEED:
     return math.inf
   return math.sqrt(lateral_accel / curvature)
-
-
-def lateral_jerk_from_curvature_rate(curvature_rate: float, v_ego: float) -> float:
-  """Signed lateral jerk implied by curvature rate at current speed."""
-  return float(curvature_rate) * float(v_ego) ** 2

@@ -4,9 +4,27 @@ import pytest
 
 from cereal import car
 from openpilot.selfdrive.locationd.helpers import PointBuckets
-from openpilot.selfdrive.locationd.torqued import cache_speed_aware_params, update_speed_aware_param_cache
+from openpilot.selfdrive.locationd.torqued import STEER_BUCKET_BOUNDS, cache_speed_aware_params, update_speed_aware_param_cache
 from openpilot.sunnypilot.selfdrive.locationd import torqued_ext
-from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import SPEED_AWARE_PARAMS_VERSION, SpeedAwareTorqueBuckets, format_speed_aware_params
+from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import SPEED_AWARE_PARAMS_VERSION, SPEED_BUCKET_BP, SPEED_BUCKET_LABELS, SpeedAwareTorqueBuckets, format_speed_aware_params
+
+
+def make_test_speed_buckets():
+  return SpeedAwareTorqueBuckets(
+    x_bounds=STEER_BUCKET_BOUNDS,
+    speed_bp=SPEED_BUCKET_BP,
+    min_points=np.ones(len(STEER_BUCKET_BOUNDS)),
+    min_points_total=len(STEER_BUCKET_BOUNDS),
+    points_per_bucket=100,
+    rowsize=3,
+  )
+
+
+def add_synthetic_speed_bucket_line(buckets, *, speed: float, slope: float, offset: float, repeats: int = 3):
+  for low, high in STEER_BUCKET_BOUNDS:
+    steer = (low + high) / 2.0
+    for _ in range(repeats):
+      buckets.add_point(steer, slope * steer + offset, speed)
 
 
 def test_speed_aware_buckets_routing():
@@ -77,6 +95,16 @@ def test_speed_aware_get_points():
   pts = buckets.get_points(10)
   assert len(pts) == 5
   assert pts.shape[1] == 3
+
+
+def test_speed_aware_buckets_ignore_non_finite_inputs():
+  buckets = make_test_speed_buckets()
+
+  buckets.add_point(float("nan"), 1.0, 5.0)
+  buckets.add_point(0.0, float("inf"), 5.0)
+  buckets.add_point(0.0, 1.0, float("nan"))
+
+  assert buckets.total_points() == 0
 
 
 def make_cp(fingerprint="mock-car", lateral_tuning="torque"):
@@ -210,3 +238,22 @@ def test_update_speed_aware_param_cache_clears_when_learning_disabled():
   assert estimator.estimate_calls == 0
   assert params.writes == {}
   assert params.removed == ["LiveTorqueSpeedAdaptiveParams"]
+
+
+def test_speed_aware_estimator_recovers_synthetic_bucket_lines(monkeypatch):
+  ext = make_torque_ext(monkeypatch, custom_torque_params=False, torque_override_enabled=False)
+  ext.speed_buckets = make_test_speed_buckets()
+  ext.fit_points = 100
+  ext.min_lataccel_factor = 0.0
+  ext.max_lataccel_factor = 10.0
+  ext.min_friction = 0.0
+  ext.max_friction = 10.0
+  add_synthetic_speed_bucket_line(ext.speed_buckets, speed=5.0, slope=1.4, offset=0.05)
+  add_synthetic_speed_bucket_line(ext.speed_buckets, speed=15.0, slope=2.1, offset=-0.10)
+
+  params = ext.estimate_speed_aware_params()
+
+  assert params[SPEED_BUCKET_LABELS[0]][0] == pytest.approx(1.4)
+  assert params[SPEED_BUCKET_LABELS[0]][1] == pytest.approx(0.05)
+  assert params[SPEED_BUCKET_LABELS[1]][0] == pytest.approx(2.1)
+  assert params[SPEED_BUCKET_LABELS[1]][1] == pytest.approx(-0.10)

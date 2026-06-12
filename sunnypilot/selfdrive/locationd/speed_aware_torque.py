@@ -67,6 +67,8 @@ def parse_speed_aware_params(CP: car.CarParams, payload: dict) -> dict | None:
 
 class _TorqueBuckets(PointBuckets):
   def add_point(self, x, y):
+    if not np.isfinite(x) or not np.isfinite(y):
+      return
     for bound_min, bound_max in self.x_bounds:
       if (x >= bound_min) and (x < bound_max):
         self.buckets[(bound_min, bound_max)].append([x, 1.0, y])
@@ -101,6 +103,8 @@ class SpeedAwareTorqueBuckets:
     return len(self.speed_bp) - 1
 
   def add_point(self, x, y, v_ego):
+    if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(v_ego):
+      return
     idx = self._bucket_idx(v_ego)
     self.buckets[idx].add_point(x, y)
 
