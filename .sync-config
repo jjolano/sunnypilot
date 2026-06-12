@@ -1,0 +1,44 @@
+# CLI flags on the scripts override these values.
+# See: scripts/sync-upstream.sh --help
+# See: scripts/propagate-retained.sh --help
+# See: scripts/rebuild-custom.sh --help
+# See: scripts/deploy.sh --help
+
+LOCAL_BRANCH="master"
+INTEGRATION_BRANCH="custom"
+
+UPSTREAM_REMOTE="upstream"
+UPSTREAM_BRANCH="master"
+
+# Leave this empty if you want `custom` to track `master` plus custom-only files.
+RETAINED_BASE_BRANCH="feat/retained-baseline"
+
+MERGE_ORDER=(
+  feat/retained-baseline
+  feat/device-admin
+  feat/longitudinal-control
+  feat/speed-map-control
+  feat/lateral-control
+  feat/control-learning-stats
+  feat/offline-drive-analysis
+)
+
+# Files that exist only on the integration branch. The rebuild script saves
+# them before resetting the branch, then restores and commits them afterward.
+CUSTOM_FILES=(
+  .gitignore
+  .sync-config
+  AGENTS.md
+  .agents/skills/
+  scripts/rebuild-custom.sh
+  scripts/sync-upstream.sh
+  scripts/propagate-retained.sh
+  scripts/deploy.sh
+  scripts/lib/workflow.sh
+)
+
+METADATA_COMMIT_MSG="fork: update metadata and custom-only files"
+
+DEPLOY_HOST="comma@100.94.10.12"
+DEPLOY_REMOTE="jjolano"
+DEPLOY_PATH="/data/openpilot"

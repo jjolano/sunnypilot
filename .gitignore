@@ -8,6 +8,7 @@ venv/
 .ipynb_checkpoints
 .idea
 .overlay_init
+.sisyphus/
 .overlay_consistent
 .sconsign.dblite
 a.out
@@ -44,7 +45,7 @@ bin/
 config.json
 compile_commands.json
 compare_runtime*.html
-selfdrive/modeld/models/tg_input_devices.json
+selfdrive/modeld/models/tg_compiled_flags.json
 
 # build artifacts
 docs_site/
@@ -76,7 +77,6 @@ build/
 .history
 .ionide
 .vscode/*
-.history/
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
@@ -90,6 +90,7 @@ PLAN.md
 TASK.md
 CLAUDE.md
 SKILL.md
+!.agents/skills/**/SKILL.md
 
 ### JetBrains ###
 !.idea/customTargets.xml
