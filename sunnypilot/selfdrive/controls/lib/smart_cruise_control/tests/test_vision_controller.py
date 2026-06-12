@@ -367,7 +367,7 @@ class TestSmartCruiseControlVision:
     assert self.scc_v.max_pred_lat_acc == pytest.approx(1.0)
 
   def test_accurate_lateral_accel_prediction_uses_current_speed_curvature(self):
-    self.params.put_bool("AccurateLateralAccel", True)
+    self.params.put_bool("AccurateLateralAccel", True, block=True)
     self.scc_v = SmartCruiseControlVision()
     mdl = generate_modelV2()
     _set_predicted_curvature_at_model_speed(mdl, curvature=0.01, model_speed=10.0)
@@ -378,7 +378,7 @@ class TestSmartCruiseControlVision:
     assert self.scc_v.max_pred_lat_acc == pytest.approx(4.0)
 
   def test_accurate_lateral_accel_current_turn_uses_exact_roll_compensation(self):
-    self.params.put_bool("AccurateLateralAccel", True)
+    self.params.put_bool("AccurateLateralAccel", True, block=True)
     self.scc_v = SmartCruiseControlVision()
     v_ego = 20.0
     roll = math.asin(2.0 / ACCELERATION_DUE_TO_GRAVITY)
@@ -577,8 +577,8 @@ class TestSmartCruiseControlVision:
 class TestSunnypilotCurrentSmartCruiseControlVision:
   def setup_method(self):
     self.params = Params()
-    self.params.put_bool("SccCurveVisionEnabled", True)
-    self.params.put_bool("AccurateLateralAccel", False)
+    self.params.put_bool("SccCurveVisionEnabled", True, block=True)
+    self.params.put_bool("AccurateLateralAccel", False, block=True)
     self.scc_v = SunnypilotCurrentSmartCruiseControlVision()
 
     mdl = generate_modelV2()
@@ -629,7 +629,7 @@ class TestSunnypilotCurrentSmartCruiseControlVision:
     assert self.scc_v.output_v_target == V_CRUISE_UNSET
 
   def test_lateral_accel_uses_master_curvature_calculation_even_with_accurate_param(self):
-    self.params.put_bool("AccurateLateralAccel", True)
+    self.params.put_bool("AccurateLateralAccel", True, block=True)
     self.scc_v = SunnypilotCurrentSmartCruiseControlVision()
     v_ego = 20.0
     roll = math.asin(2.0 / ACCELERATION_DUE_TO_GRAVITY)
