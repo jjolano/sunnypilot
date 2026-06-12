@@ -1,0 +1,8 @@
+# Deploy configuration. CLI flags on scripts/deploy.sh override these values.
+# Change DEPLOY_BRANCH to "master" once restart has fast-forwarded onto master.
+
+DEPLOY_BRANCH="restart"
+
+DEPLOY_HOST="comma@100.94.10.12"
+DEPLOY_REMOTE="jjolano"
+DEPLOY_PATH="/data/openpilot"

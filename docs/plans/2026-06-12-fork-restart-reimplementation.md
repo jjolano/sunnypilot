@@ -42,6 +42,12 @@ model:
   implementation; nothing is developed there. Quirk forensics on old route logs run from a
   `custom` checkout, since those logs carry the old cereal schema's custom fields.
 - **No stack multiplexing**: features are plain params, one implementation per axis.
+- **Deploy workflow retained**: the old fork's deploy script survives in simplified form
+  (`scripts/deploy.sh` + `.deploy-config` + the `deploy-workflow` agent skill). The
+  "commit rebuild deploy" verb interface keeps working; "rebuild" (re-assembling the
+  integration branch) is now a no-op since there is no integration branch to assemble.
+- **Agent guidance**: `AGENTS.md` is the canonical agent-instructions file; `CLAUDE.md`
+  is a symlink to it.
 
 ## Guiding principles
 
@@ -113,8 +119,10 @@ test in Phase 2").
 4. Cereal: start with zero custom fields. Add fields only when a kept feature demands them,
    into one `custom.capnp` section per subsystem. (Old fork: +262 lines, mostly multi-stack
    diagnostics — expect <80 lines.)
-5. No sync/propagate scripts. A deploy script is the only tooling ported, when device
-   deployment starts.
+5. Tooling: simplified `scripts/deploy.sh` (+ `.deploy-config`, `deploy-workflow` skill)
+   ported from the old fork, minus the rebuild/propagate machinery. No sync scripts.
+6. `AGENTS.md` (with `CLAUDE.md` symlink) documents the repo model, workflow keywords,
+   testing setup, and deploy health checks for agents.
 
 ## Phase 2 — Lateral controller: torque v2.1 as a unified rewrite
 
