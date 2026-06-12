@@ -697,6 +697,25 @@
               ]
             },
             {
+              "key": "PlannerStack",
+              "widget": "multiple_button",
+              "title": "Planner Stack",
+              "description": "Selects which planner family is used after sunnypilot longitudinal control is active. Scene Memory v1 is validation-gated and cannot be selected for active control yet.",
+              "options": [
+                {
+                  "value": "planner-current",
+                  "label": "Planner Current"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ]
+            },
+            {
               "key": "FastLeadMotionEvidenceEnabled",
               "widget": "toggle",
               "title": "Fast Lead Motion",

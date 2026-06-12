@@ -197,6 +197,8 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   decisionLayer @8 :DecisionLayer;
   stack @9 :Stack;
   longitudinalMode @10 :LongitudinalModeStatus;
+  plannerStack @11 :PlannerStack;
+  sceneMemory @12 :SceneMemory;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -338,6 +340,37 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       customRecommended @2;
       customV2 @3;
     }
+  }
+
+  struct PlannerStack {
+    requestedStack @0 :PlannerStackId;
+    resolvedStack @1 :PlannerStackId;
+    actuatedStack @2 :PlannerStackId;
+    validationGatePassed @3 :Bool;
+    compatibilityFallbackReason @4 :Text;
+    faultLatched @5 :Bool;
+    faultReason @6 :Text;
+
+    enum PlannerStackId {
+      unknown @0;
+      plannerCurrent @1;
+      sceneMemoryV1 @2;
+    }
+  }
+
+  struct SceneMemory {
+    enabled @0 :Bool;
+    active @1 :Bool;
+    shadow @2 :Bool;
+    oldestEvidenceAge @3 :Float32;
+    leadStability @4 :Float32;
+    pathStability @5 :Float32;
+    mapSpeedStability @6 :Float32;
+    invalidEvidenceCount @7 :UInt32;
+    staleEvidenceCount @8 :UInt32;
+    provenance @9 :List(Text);
+    sourceEligibility @10 :List(Text);
+    summary @11 :Text;
   }
 
   struct LongitudinalModeStatus {

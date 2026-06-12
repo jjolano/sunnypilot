@@ -9,8 +9,35 @@ SCHEMA_CONTRACT_DECLARATIONS = (
   "decisionLayer @8 :DecisionLayer;",
   "stack @9 :Stack;",
   "longitudinalMode @10 :LongitudinalModeStatus;",
+  "plannerStack @11 :PlannerStack;",
+  "sceneMemory @12 :SceneMemory;",
   "seedContext @11 :Text;",
   "seedCandidate @12 :Text;",
+)
+
+PLANNER_STACK_CONTRACT_DECLARATIONS = (
+  "requestedStack @0 :PlannerStackId;",
+  "resolvedStack @1 :PlannerStackId;",
+  "actuatedStack @2 :PlannerStackId;",
+  "validationGatePassed @3 :Bool;",
+  "compatibilityFallbackReason @4 :Text;",
+  "faultLatched @5 :Bool;",
+  "faultReason @6 :Text;",
+)
+
+SCENE_MEMORY_CONTRACT_DECLARATIONS = (
+  "enabled @0 :Bool;",
+  "active @1 :Bool;",
+  "shadow @2 :Bool;",
+  "oldestEvidenceAge @3 :Float32;",
+  "leadStability @4 :Float32;",
+  "pathStability @5 :Float32;",
+  "mapSpeedStability @6 :Float32;",
+  "invalidEvidenceCount @7 :UInt32;",
+  "staleEvidenceCount @8 :UInt32;",
+  "provenance @9 :List(Text);",
+  "sourceEligibility @10 :List(Text);",
+  "summary @11 :Text;",
 )
 
 LONGITUDINAL_MODE_STATUS_CONTRACT_DECLARATIONS = (
@@ -52,4 +79,28 @@ def test_longitudinal_mode_status_schema_field_ids_are_stable():
     assert declaration in schema
 
   ordered_offsets = [schema.index(declaration) for declaration in LONGITUDINAL_MODE_STATUS_CONTRACT_DECLARATIONS]
+  assert ordered_offsets == sorted(ordered_offsets)
+
+
+def test_planner_stack_schema_field_ids_are_stable():
+  schema = Path("cereal/custom.capnp").read_text()
+  schema = schema[schema.index("struct PlannerStack {"):]
+
+  assert "struct PlannerStack {" in schema
+  for declaration in PLANNER_STACK_CONTRACT_DECLARATIONS:
+    assert declaration in schema
+
+  ordered_offsets = [schema.index(declaration) for declaration in PLANNER_STACK_CONTRACT_DECLARATIONS]
+  assert ordered_offsets == sorted(ordered_offsets)
+
+
+def test_scene_memory_schema_field_ids_are_stable():
+  schema = Path("cereal/custom.capnp").read_text()
+  schema = schema[schema.index("struct SceneMemory {"):]
+
+  assert "struct SceneMemory {" in schema
+  for declaration in SCENE_MEMORY_CONTRACT_DECLARATIONS:
+    assert declaration in schema
+
+  ordered_offsets = [schema.index(declaration) for declaration in SCENE_MEMORY_CONTRACT_DECLARATIONS]
   assert ordered_offsets == sorted(ordered_offsets)

@@ -60,6 +60,15 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   resolve_longitudinal_stack,
   stack_id_for_name,
 )
+from openpilot.selfdrive.controls.lib.planner_stacks.scene_memory import SceneMemory, SceneMemorySnapshot
+from openpilot.selfdrive.controls.lib.planner_stacks.selector import (
+  PLANNER_CURRENT,
+  PLANNER_STACK_PARAM,
+  PLANNER_STACK_VALIDATION_GATE_PARAM,
+  StackResolution as PlannerStackResolution,
+  planner_stack_id_for_name,
+  resolve_planner_stack,
+)
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
 from openpilot.sunnypilot.selfdrive.controls.lib.osm_traffic_control_prior import OsmTrafficControlPrior
@@ -81,6 +90,7 @@ LongitudinalModeTelemetryActuationType = LongitudinalModeStatus.ActuationType
 LongitudinalModeTelemetryCompatibilityAliasState = LongitudinalModeStatus.CompatibilityAliasState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 StackId = custom.LongitudinalPlanSP.Stack.StackId
+PlannerStackId = custom.LongitudinalPlanSP.PlannerStack.PlannerStackId
 DEFAULT_LONGITUDINAL_MODE_RESOLUTION = LongitudinalModeResolution(
   requested_mode=LongitudinalMode.ACC,
   resolved_implementation=ResolvedLongitudinalImplementation.HARDWARE_ACC,
@@ -188,6 +198,36 @@ def publish_stack_telemetry(longitudinalPlanSP, resolution: StackResolution, act
   stack.rejectedReasons = [str(reason) for _intent, reason in rejected]
   stack.seedContext = str(seed_context)
   stack.seedCandidate = str(seed_candidate)
+
+
+def publish_planner_stack_telemetry(longitudinalPlanSP, resolution: PlannerStackResolution, actuated_stack: str,
+                                    validation_gate_passed: bool = False, fault_latched: bool = False,
+                                    fault_reason: str = "") -> None:
+  planner_stack = longitudinalPlanSP.plannerStack
+  planner_stack.requestedStack = planner_stack_id_for_name(resolution.requested_stack)
+  planner_stack.resolvedStack = planner_stack_id_for_name(resolution.resolved_stack)
+  planner_stack.actuatedStack = planner_stack_id_for_name(actuated_stack)
+  planner_stack.validationGatePassed = bool(validation_gate_passed)
+  planner_stack.compatibilityFallbackReason = str(resolution.fallback_reason)
+  planner_stack.faultLatched = bool(fault_latched)
+  planner_stack.faultReason = str(fault_reason)
+
+
+def publish_scene_memory_telemetry(longitudinalPlanSP, snapshot: SceneMemorySnapshot | None) -> None:
+  snapshot = snapshot or SceneMemorySnapshot()
+  scene_memory = longitudinalPlanSP.sceneMemory
+  scene_memory.enabled = bool(snapshot.enabled)
+  scene_memory.active = bool(snapshot.active)
+  scene_memory.shadow = bool(snapshot.shadow)
+  scene_memory.oldestEvidenceAge = float(snapshot.oldest_evidence_age)
+  scene_memory.leadStability = float(snapshot.lead_stability)
+  scene_memory.pathStability = float(snapshot.path_stability)
+  scene_memory.mapSpeedStability = float(snapshot.map_speed_stability)
+  scene_memory.invalidEvidenceCount = max(0, int(snapshot.invalid_evidence_count))
+  scene_memory.staleEvidenceCount = max(0, int(snapshot.stale_evidence_count))
+  scene_memory.provenance = [str(item) for item in snapshot.provenance]
+  scene_memory.sourceEligibility = [str(item) for item in snapshot.source_eligibility]
+  scene_memory.summary = str(snapshot.summary)
 
 
 def publish_longitudinal_mode_telemetry(longitudinalPlanSP, resolution: LongitudinalModeResolution | None) -> None:
@@ -329,6 +369,19 @@ class LongitudinalPlannerSP:
     self.longitudinal_stack_resolution = resolve_longitudinal_stack(
       self.params.get("LongitudinalStack", return_default=True), self.CP, self.CP_SP
     )
+    self.planner_stack_validation_gate_passed = self.params.get_bool(PLANNER_STACK_VALIDATION_GATE_PARAM)
+    self.planner_stack_resolution = resolve_planner_stack(
+      self.params.get(PLANNER_STACK_PARAM, return_default=True), self.CP, self.CP_SP,
+      validation_gate=self.planner_stack_validation_gate_passed,
+    )
+    # Milestone 1 is a boundary + shadow-memory rollout. Even if the hidden
+    # validation gate is forced, planner authority remains planner-current until
+    # a later active scene-memory implementation adds fail-closed validation.
+    self.planner_stack_actuated_stack = PLANNER_CURRENT
+    self.planner_stack_fault_latched = False
+    self.planner_stack_fault_reason = ""
+    self.scene_memory = SceneMemory()
+    self.scene_memory_snapshot = SceneMemorySnapshot()
     self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP)
     self.custom_longitudinal_stack = self._make_custom_longitudinal_stack(self.longitudinal_stack_resolution.resolved_stack)
     self.longitudinal_stack_actuated_stack = SUNNYPILOT_CURRENT
@@ -791,5 +844,28 @@ class LongitudinalPlannerSP:
       seed_candidate=getattr(self, "longitudinal_stack_seed_candidate", ""),
     )
     publish_longitudinal_mode_telemetry(longitudinalPlanSP, mode_resolution)
+    planner_stack_resolution = getattr(self, "planner_stack_resolution", None)
+    if planner_stack_resolution is None:
+      planner_stack_resolution = resolve_planner_stack(
+        PLANNER_CURRENT, getattr(self, "CP", None), getattr(self, "CP_SP", None)
+      )
+    planner_stack_actuated_stack = getattr(self, "planner_stack_actuated_stack", PLANNER_CURRENT)
+    scene_memory = getattr(self, "scene_memory", None)
+    if scene_memory is not None:
+      self.scene_memory_snapshot = scene_memory.update_from_planner(
+        self,
+        mode_resolution,
+        planner_stack_resolution,
+        planner_stack_actuated_stack,
+      )
+    publish_planner_stack_telemetry(
+      longitudinalPlanSP,
+      planner_stack_resolution,
+      planner_stack_actuated_stack,
+      validation_gate_passed=bool(getattr(self, "planner_stack_validation_gate_passed", False)),
+      fault_latched=bool(getattr(self, "planner_stack_fault_latched", False)),
+      fault_reason=getattr(self, "planner_stack_fault_reason", ""),
+    )
+    publish_scene_memory_telemetry(longitudinalPlanSP, getattr(self, "scene_memory_snapshot", None))
 
     pm.send('longitudinalPlanSP', plan_sp_send)

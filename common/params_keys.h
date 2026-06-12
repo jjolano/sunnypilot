@@ -88,6 +88,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LongitudinalManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LongitudinalPersonality", {PERSISTENT | BACKUP, INT, std::to_string(static_cast<int>(cereal::LongitudinalPersonality::STANDARD))}},
     {"LongitudinalStack", {PERSISTENT | BACKUP, STRING, "sunnypilot-current"}},
+    {"PlannerStack", {PERSISTENT | BACKUP, STRING, "planner-current"}},
+    {"PlannerStackValidationGate", {PERSISTENT | DEVELOPMENT_ONLY | DONT_LOG, BOOL, "0"}},
     {"FastLeadMotionEvidenceEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"OnePedalLongitudinalMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"NetworkMetered", {PERSISTENT | BACKUP, BOOL}},

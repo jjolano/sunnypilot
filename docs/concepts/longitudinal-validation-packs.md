@@ -32,6 +32,19 @@ uv run --extra testing --extra tools python -m pytest \
 
 This pack protects planner seed metadata, custom-v2 fail-closed behavior, stack selection, Sunnylink-visible telemetry, and retained planner publish helpers.
 
+## Planner-stack and scene-memory boundary
+
+```bash
+uv run --extra testing --extra tools python -m pytest \
+  selfdrive/controls/tests/test_planner_stack_selector.py \
+  selfdrive/controls/tests/test_scene_memory.py \
+  selfdrive/controls/tests/test_longitudinal_plan_schema_contract.py \
+  selfdrive/ui/tests/test_cruise_settings.py \
+  sunnypilot/selfdrive/controls/lib/tests/test_longitudinal_planner.py
+```
+
+This pack protects top-level PlannerStack resolution, validation-gated active selection, volatile shadow Scene Memory defaults, source-provenance telemetry, planner-current equivalence, normal cruise UI gating, and planner-stack publish helpers.
+
 ## Speed, map, and curve advisories
 
 ```bash

@@ -21,6 +21,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import Custo
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.interface import LongitudinalStackOutput
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.policy import CUSTOM_V2_DEBUG_DISABLE_JERK_LIMIT, CUSTOM_V2_DEBUG_INTENT
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import CUSTOM_V2, SUNNYPILOT_CURRENT, StackResolution
+from openpilot.selfdrive.controls.lib.planner_stacks.scene_memory import SceneMemorySnapshot
+from openpilot.selfdrive.controls.lib.planner_stacks.selector import (
+  PLANNER_CURRENT,
+  SCENE_MEMORY_V1,
+  StackResolution as PlannerStackResolution,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_planner import build_moving_lead_seed_candidates
 from openpilot.sunnypilot.selfdrive.controls.lib import longitudinal_planner as sp_longitudinal_planner
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
@@ -28,11 +34,14 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
   LongitudinalPlannerSP,
   LongitudinalPlanSource,
   LongitudinalModeStatus,
+  PlannerStackId,
   StackId,
   build_sp_candidates_from_signal_providers,
   build_sp_longitudinal_candidates,
   legacy_dec_enabled_for_mode,
   publish_longitudinal_mode_telemetry,
+  publish_planner_stack_telemetry,
+  publish_scene_memory_telemetry,
   publish_stack_telemetry,
   select_lowest_longitudinal_target,
   should_block_lead_speedup_from_context,
@@ -679,6 +688,85 @@ class TestLongitudinalModeTelemetryPublish(unittest.TestCase):
     self.assertEqual(msg.longitudinalPlanSP.longitudinalMode.restrictionStatus[0], "none")
     self.assertEqual(msg.longitudinalPlanSP.longitudinalMode.evidenceTier, "none")
     self.assertEqual(msg.longitudinalPlanSP.longitudinalMode.evidenceReason, "scc_no_evidence")
+
+
+class TestPlannerStackTelemetryPublish(unittest.TestCase):
+  def make_plan_sp(self):
+    return SimpleNamespace(plannerStack=SimpleNamespace(), sceneMemory=SimpleNamespace())
+
+  def test_publish_planner_stack_telemetry_reports_validation_gated_resolution(self):
+    plan_sp = self.make_plan_sp()
+    resolution = PlannerStackResolution(
+      requested_stack=SCENE_MEMORY_V1,
+      resolved_stack=PLANNER_CURRENT,
+      available_stacks=(PLANNER_CURRENT,),
+      fallback_reason="validation_gate_unmet",
+    )
+
+    publish_planner_stack_telemetry(
+      plan_sp,
+      resolution,
+      PLANNER_CURRENT,
+      validation_gate_passed=False,
+      fault_latched=False,
+      fault_reason="",
+    )
+
+    self.assertEqual(plan_sp.plannerStack.requestedStack, PlannerStackId.sceneMemoryV1)
+    self.assertEqual(plan_sp.plannerStack.resolvedStack, PlannerStackId.plannerCurrent)
+    self.assertEqual(plan_sp.plannerStack.actuatedStack, PlannerStackId.plannerCurrent)
+    self.assertFalse(plan_sp.plannerStack.validationGatePassed)
+    self.assertEqual(plan_sp.plannerStack.compatibilityFallbackReason, "validation_gate_unmet")
+    self.assertFalse(plan_sp.plannerStack.faultLatched)
+    self.assertEqual(plan_sp.plannerStack.faultReason, "")
+
+  def test_publish_scene_memory_telemetry_reports_shadow_snapshot(self):
+    plan_sp = self.make_plan_sp()
+    snapshot = SceneMemorySnapshot(
+      enabled=True,
+      active=False,
+      shadow=True,
+      oldest_evidence_age=0.1,
+      lead_stability=0.8,
+      path_stability=0.0,
+      map_speed_stability=1.0,
+      invalid_evidence_count=1,
+      stale_evidence_count=2,
+      provenance=("lead:PrimaryLeadContext", "output:planner"),
+      source_eligibility=("cruise", "lead"),
+      summary="validation_gate_unmet",
+    )
+
+    publish_scene_memory_telemetry(plan_sp, snapshot)
+
+    self.assertTrue(plan_sp.sceneMemory.enabled)
+    self.assertFalse(plan_sp.sceneMemory.active)
+    self.assertTrue(plan_sp.sceneMemory.shadow)
+    self.assertAlmostEqual(plan_sp.sceneMemory.oldestEvidenceAge, 0.1, places=6)
+    self.assertAlmostEqual(plan_sp.sceneMemory.leadStability, 0.8, places=6)
+    self.assertEqual(plan_sp.sceneMemory.invalidEvidenceCount, 1)
+    self.assertEqual(plan_sp.sceneMemory.staleEvidenceCount, 2)
+    self.assertEqual(plan_sp.sceneMemory.provenance, ["lead:PrimaryLeadContext", "output:planner"])
+    self.assertEqual(plan_sp.sceneMemory.sourceEligibility, ["cruise", "lead"])
+    self.assertEqual(plan_sp.sceneMemory.summary, "validation_gate_unmet")
+
+  def test_capnp_planner_stack_and_scene_memory_schema_fields_exist(self):
+    msg = messaging.new_message("longitudinalPlanSP")
+    msg.longitudinalPlanSP.plannerStack.requestedStack = PlannerStackId.plannerCurrent
+    msg.longitudinalPlanSP.plannerStack.resolvedStack = PlannerStackId.plannerCurrent
+    msg.longitudinalPlanSP.plannerStack.actuatedStack = PlannerStackId.plannerCurrent
+    msg.longitudinalPlanSP.plannerStack.validationGatePassed = False
+    msg.longitudinalPlanSP.plannerStack.compatibilityFallbackReason = ""
+    msg.longitudinalPlanSP.plannerStack.faultReason = ""
+    msg.longitudinalPlanSP.sceneMemory.enabled = True
+    msg.longitudinalPlanSP.sceneMemory.shadow = True
+    msg.longitudinalPlanSP.sceneMemory.provenance = ["output:planner"]
+    msg.longitudinalPlanSP.sceneMemory.sourceEligibility = ["cruise"]
+    msg.longitudinalPlanSP.sceneMemory.summary = "planner_current"
+
+    self.assertEqual(msg.longitudinalPlanSP.plannerStack.requestedStack, PlannerStackId.plannerCurrent)
+    self.assertEqual(msg.longitudinalPlanSP.sceneMemory.provenance[0], "output:planner")
+    self.assertEqual(msg.longitudinalPlanSP.sceneMemory.summary, "planner_current")
 
 
 class TestLongitudinalStackSelectionIntegration(unittest.TestCase):
