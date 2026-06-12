@@ -76,6 +76,10 @@ class TorqueSettingsLayout(Widget):
     with open(TORQUE_VERSIONS_PATH) as f:
       self.cached_torque_versions = json.load(f)
 
+  @staticmethod
+  def _clear_controls_profile():
+    ui_state.params.remove("ControlsProfile")
+
   def _initialize_items(self):
     self._torque_control_versions = ListItemSP(
       title=tr("Torque Controller"),
@@ -256,8 +260,10 @@ class TorqueSettingsLayout(Widget):
       if result == DialogResult.CONFIRM and self._torque_version_dialog:
         selected_ref = self._torque_version_dialog.selection_ref
         if selected_ref == tr("Default"):
+          self._clear_controls_profile()
           ui_state.params.remove("TorqueControlTune")
         elif selected_ref in options_map:
+          self._clear_controls_profile()
           ui_state.params.put("TorqueControlTune", options_map[selected_ref])
       self._torque_version_dialog = None
 
@@ -279,8 +285,10 @@ class TorqueSettingsLayout(Widget):
       if result == DialogResult.CONFIRM and self._lateral_demand_stack_dialog:
         selected_ref = self._lateral_demand_stack_dialog.selection_ref
         if selected_ref == tr("Default"):
+          self._clear_controls_profile()
           ui_state.params.remove("LateralDemandStack")
         else:
+          self._clear_controls_profile()
           for value, label in LATERAL_DEMAND_STACK_LABELS.items():
             if label == selected_ref:
               ui_state.params.put("LateralDemandStack", value)
@@ -304,21 +312,24 @@ class TorqueSettingsLayout(Widget):
   def _show_controls_profile_dialog(self):
     current_bytes = ui_state.params.get("ControlsProfile")
     current_value = current_bytes.decode("utf-8") if isinstance(current_bytes, bytes) else current_bytes
-    current_label = CONTROLS_PROFILE_LABELS.get(current_value or "", tr("Default"))
+    current_label = CONTROLS_PROFILE_LABELS.get(current_value or "", tr("Manual / No Profile"))
 
     def handle_selection(result: int):
       if result == DialogResult.CONFIRM and self._controls_profile_dialog:
         selected_ref = self._controls_profile_dialog.selection_ref
-        if selected_ref == tr("Default"):
+        if selected_ref == tr("Manual / No Profile"):
           ui_state.params.remove("ControlsProfile")
         else:
           for value, label in CONTROLS_PROFILE_LABELS.items():
             if label == selected_ref:
+              ui_state.params.remove("TorqueControlTune")
+              ui_state.params.remove("LateralDemandStack")
+              ui_state.params.remove("LongitudinalStack")
               ui_state.params.put("ControlsProfile", value)
               break
       self._controls_profile_dialog = None
 
-    nodes = [TreeNode(tr("Default"))]
+    nodes = [TreeNode(tr("Manual / No Profile"))]
     for value, label in CONTROLS_PROFILE_LABELS.items():
       nodes.append(TreeNode(label))
     folders = [TreeFolder("", nodes)]

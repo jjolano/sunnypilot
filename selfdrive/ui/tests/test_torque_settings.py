@@ -17,6 +17,7 @@ def test_control_calculation_hardening_toggle_is_in_torque_settings():
 def test_controls_profile_ui_values_match_resolver():
   source = TORQUE_SETTINGS.read_text()
 
+  assert "Manual / No Profile" in source
   for value in ("sunnypilot-current", "custom-recommended", "custom-2.0", "custom-experimental"):
     assert value in source
   assert "Controls Profile" in source
@@ -45,6 +46,24 @@ def test_lateral_demand_stack_ui_values_match_selector():
   assert "CUSTOM_EXPERIMENTAL" in source
   assert "Lateral Demand Stack" in source
   assert "LATERAL_DEMAND_STACK_LABELS" in source
+
+
+def test_controls_profile_selection_clears_manual_overrides():
+  source = TORQUE_SETTINGS.read_text()
+
+  assert 'ui_state.params.remove("TorqueControlTune")' in source
+  assert 'ui_state.params.remove("LateralDemandStack")' in source
+  assert 'ui_state.params.remove("LongitudinalStack")' in source
+  assert 'ui_state.params.remove("ControlsProfile")' in source
+
+
+def test_advanced_edit_clears_controls_profile_before_writing_override():
+  source = TORQUE_SETTINGS.read_text()
+
+  assert 'if selected_ref == tr("Default"):\n          self._clear_controls_profile()\n          ui_state.params.remove("TorqueControlTune")' in source
+  assert 'elif selected_ref in options_map:\n          self._clear_controls_profile()\n          ui_state.params.put("TorqueControlTune", options_map[selected_ref])' in source
+  assert 'if selected_ref == tr("Default"):\n          self._clear_controls_profile()\n          ui_state.params.remove("LateralDemandStack")' in source
+  assert 'else:\n          self._clear_controls_profile()\n          for value, label in LATERAL_DEMAND_STACK_LABELS.items()' in source
 
 
 def test_no_shadow_option_in_controls_ui():

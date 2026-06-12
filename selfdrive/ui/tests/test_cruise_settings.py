@@ -20,6 +20,12 @@ def test_longitudinal_stack_selector_is_in_cruise_settings():
   assert "self.longitudinal_stack_item," in source
 
 
+def test_longitudinal_stack_selection_clears_controls_profile():
+  source = CRUISE_SETTINGS.read_text()
+
+  assert 'ui_state.params.remove("ControlsProfile")' in source
+
+
 def test_longitudinal_mode_selector_replaces_legacy_toggles():
   source = CRUISE_SETTINGS.read_text()
 
