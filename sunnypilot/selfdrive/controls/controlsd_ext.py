@@ -38,7 +38,7 @@ TORQUE_CONTROLLER_REGISTRY = TorqueControllerRegistry((
   TorqueControllerDefinition(4.1, LatControlTorqueV41),
   # 5.0 is the first torque version with active profile-aware
   # command shaping (preview lead + turn-exit source-of-truth).
-  # No 5.0-shadow selector exists; the version is selected
+  # No hidden selector exists; the version is selected
   # directly via TorqueControlTune=5.0.
   TorqueControllerDefinition(5.0, LatControlTorqueV5),
 ))

@@ -55,10 +55,12 @@ from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
-from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
+from openpilot.selfdrive.controls.lib.controls_profile import (
   ControlsProfileId,
+  ControlsProfileParamResolution,
   ControlsProfileResolution,
-  resolve_controls_profile,
+  _param_has_value,
+  resolve_controls_profile_from_params,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.steering_actuator_feedback import (
   SteeringActuatorFeedback,
@@ -196,7 +198,9 @@ class Controls(ControlsExt):
     self.lateral_demand_stack = CustomV2LateralDemandStack(dt=DT_CTRL)
     self.lateral_demand_stack_output: LateralDemandStackOutput | None = None
     self.lateral_demand_stack_resolution: LateralDemandStackResolution | None = None
+    self.controls_profile_param_resolution: ControlsProfileParamResolution | None = None
     self.controls_profile_resolution: ControlsProfileResolution | None = None
+    self.resolved_longitudinal_stack = ""
     self._last_logged_stack: tuple[str, str, bool, str] | None = None
     self.processed_lateral_demand = ProcessedLateralDemand(
       0.0,
@@ -210,31 +214,26 @@ class Controls(ControlsExt):
       MAX_LATERAL_ACCEL_NO_ROLL,
     )
 
-    # 5.0 driving profile (user-facing alias). The profile
-    # auto-couples LateralDemandStack + TorqueControlTune. The
-    # advanced per-layer selectors only break the coupling when
-    # ShowAdvancedControls is enabled and the underlying param is
-    # explicitly present; registry defaults are not treated as
-    # explicit overrides.
-    advanced_overrides_enabled = self.params.get_bool("ShowAdvancedControls")
-    self.controls_profile_resolution = resolve_controls_profile(
-      self.params.get("ControlsProfile", return_default=True),
-      advanced_lateral_demand_stack=(
-        self.params.get("LateralDemandStack") if advanced_overrides_enabled else None
-      ),
-      advanced_torque_control_tune=(
-        self.params.get("TorqueControlTune") if advanced_overrides_enabled else None
-      ),
-      advanced_overrides_enabled=advanced_overrides_enabled,
-    )
+    # ControlsProfile is a user-facing alias for longitudinal stack,
+    # lateral demand stack, and torque controller tune. Missing profile
+    # params are migration-safe: existing explicit TorqueControlTune /
+    # LateralDemandStack / LongitudinalStack values are preserved, while
+    # absent torque safely defaults to 4.1 (never 5.0). Registry/default
+    # return values are not treated as explicit user choices.
+    controls_profile_explicit = _param_has_value(self.params, "ControlsProfile")
+    self.controls_profile_param_resolution = resolve_controls_profile_from_params(self.params)
+    self.controls_profile_resolution = self.controls_profile_param_resolution.controls_profile_resolution
     self.controls_profile_id: ControlsProfileId = self.controls_profile_resolution.resolved_profile
+    self.resolved_longitudinal_stack = self.controls_profile_resolution.longitudinal_stack
+    if controls_profile_explicit:
+      self.params.put("LongitudinalStack", self.resolved_longitudinal_stack)
 
     # Rich lateral demand stack. The manifest resolver owns
     # availability, fallback metadata, and custom-recommended
     # resolution. The selected concrete stack is then built from
     # the resolved stack id.
     self.lateral_demand_stack_resolution = resolve_lateral_demand_stack_selection(
-      self.controls_profile_resolution.lateral_demand_stack.value,
+      self.controls_profile_resolution.lateral_demand_stack,
       CP=self.CP,
       CP_SP=self.CP_SP,
     )
@@ -343,7 +342,13 @@ class Controls(ControlsExt):
   def update_lateral_demand_profile(self, demand: ProcessedLateralDemand, v_ego: float, *,
                                     curvature_limited: bool = False, saturated: bool = False,
                                     steer_limited_by_safety: bool = False, steering_pressed: bool = False) -> None:
-    profile = self.lateral_demand_stack._lateral_demand_profile_builder.update(
+    # Deprecated compatibility wrapper. state_control forwards
+    # stack_output.profile instead; stacks without the legacy private
+    # builder intentionally no-op here.
+    builder = getattr(self.lateral_demand_stack, "_lateral_demand_profile_builder", None)
+    if builder is None:
+      return
+    profile = builder.update(
       demand,
       v_ego,
       curvature_limited=curvature_limited,
@@ -358,18 +363,12 @@ class Controls(ControlsExt):
       set_lateral_demand_profile(profile)
 
   def push_lateral_demand_stack_output(self, stack_output, *, steering_pressed: bool = False) -> None:
-    """Forward a LateralDemandStackOutput to the controller.
+    """Forward the same-frame lateral demand profile to the lateral controller.
 
-    The profile goes to set_lateral_demand_profile so the v5
-    preview gate, turn-exit source-of-truth, and demand-mode
-    telemetry see the same-frame profile. The legacy demand
-    also goes through update_lateral_controller_demand for
-    backward compat with v4.1 controllers that only consume
-    the legacy signal.
+    Passing profile=None is intentional: it clears stale profile state when
+    the selected lateral demand stack does not provide a profile.
     """
     profile = getattr(stack_output, "profile", None)
-    if profile is None:
-      return
     set_lateral_demand_profile = getattr(self.LaC, "set_lateral_demand_profile", None)
     if set_lateral_demand_profile is None and hasattr(self.LaC, "extension"):
       set_lateral_demand_profile = getattr(self.LaC.extension, "set_lateral_demand_profile", None)

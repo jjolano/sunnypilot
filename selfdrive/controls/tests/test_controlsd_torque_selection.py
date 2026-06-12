@@ -27,6 +27,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
   TorqueControllerRegistry,
   resolve_torque_tune_version,
 )
+from openpilot.selfdrive.controls.lib.controls_profile import resolve_controls_profile
 
 msgq = types.ModuleType("msgq")
 msgq.fake_event_handle = object()
@@ -62,7 +63,7 @@ from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 
 
 class FakeParams:
-  def __init__(self, enforce: bool, tune=None, default_tune=2.0, speed_aware_params=None):
+  def __init__(self, enforce: bool, tune=None, default_tune=4.1, speed_aware_params=None):
     self.enforce = enforce
     self.tune = tune
     self.default_tune = default_tune
@@ -125,14 +126,14 @@ def test_normalize_torque_tune_version():
 def test_torque_tune_resolution_keeps_reactivated_v4_numeric():
   resolution = resolve_torque_tune_version("4.0")
 
-  assert DEFAULT_TORQUE_TUNE_VERSION == 2.0
+  assert DEFAULT_TORQUE_TUNE_VERSION == 4.1
   assert resolution.requested_version == 4.0
   assert resolution.resolved_version == 4.0
   assert resolution.persist_value is None
   assert resolve_torque_tune_version("4.1").resolved_version == 4.1
   assert resolve_torque_tune_version(b"2.1").resolved_version == 2.1
   assert resolve_torque_tune_version(b"3.0").resolved_version == 3.0
-  assert resolve_torque_tune_version("bad").resolved_version is None
+  assert resolve_torque_tune_version("bad").resolved_version == 4.1
 
 
 def test_torque_controller_registry_resolves_factories():
@@ -188,7 +189,7 @@ def test_torque_controller_selection_variants():
   assert "TorqueControlTune" not in params.writes
 
   # 5.0 is the first torque version with active profile-aware
-  # command shaping. There is no 5.0-shadow; selecting 5.0
+  # command shaping. There is no hidden selector; selecting 5.0
   # directly selects LatControlTorqueV5.
   params = FakeParams(True, 5.0)
   controls_ext = make_controls_ext(CP, CP_SP, params)
@@ -226,27 +227,33 @@ def test_torque_control_tune_41_instantiates_latcontrol_torque_v41():
 
 def test_torque_control_tune_unknown_falls_back_safely():
   """An unknown TorqueControlTune value must fall back safely
-  (to 2.0, the historical stable default) and must NOT select
+  (to 4.1, the stable default) and must NOT select
   5.0. The fallback path is exercised by users who set a
   deprecated or future value."""
   CP, CP_SP, CI = get_test_context()
   lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
 
-  # None → falls back to the historical 2.0 default (existing
-  # behavior preserved).
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, None))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert not isinstance(selected, LatControlTorqueV5)
-  assert isinstance(selected, LatControlTorqueV2)
+  assert isinstance(selected, LatControlTorqueV41)
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 1.0))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
-  assert selected is lac
+  assert isinstance(selected, LatControlTorqueV41)
 
   controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, None))
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
-  assert isinstance(selected, LatControlTorqueV2)
-  assert hasattr(selected, "output_shaper")
+  assert isinstance(selected, LatControlTorqueV41)
+
+
+def test_unknown_torque_tune_falls_back_to_41():
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, "not-a-tune"))
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV41)
 
 
 def test_pid_origin_non_angle_controller_keeps_original_lac_for_v3():
@@ -302,10 +309,30 @@ def test_pid_origin_non_angle_controller_keeps_original_lac_without_enforce():
 def test_pid_origin_non_angle_controller_keeps_original_lac_for_non_v3_tunes():
   CP, CP_SP, CI, lac = make_pid_origin_controller()
 
-  for tune in (None, 2.0, 0.0):
+  for tune in (2.0, 0.0):
     controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, tune))
     selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
     assert selected is lac
+
+
+def test_controls_profile_experimental_instantiates_latcontrol_torque_v5():
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 4.1))
+  controls_ext.controls_profile_resolution = resolve_controls_profile("custom-experimental")
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV5)
+
+
+def test_controls_profile_custom_2_instantiates_latcontrol_torque_v41():
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+  controls_ext = make_controls_ext(CP, CP_SP, FakeParams(True, 5.0))
+  controls_ext.controls_profile_resolution = resolve_controls_profile("custom-2.0")
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+  assert isinstance(selected, LatControlTorqueV41)
 
 
 def test_update_lateral_controller_inputs_refreshes_extension_limits_after_live_torque_params():

@@ -638,7 +638,7 @@
   },
   "LiveTorqueSpeedAdaptiveApplyToggle": {
     "title": "Apply Speed-Adaptive Self-Tune",
-    "description": "Applies learned speed-adaptive torque parameters to lateral control. Keep disabled for shadow-mode learning."
+    "description": "Applies learned speed-adaptive torque parameters to lateral control. Keep disabled for passive learning."
   },
   "LiveTorqueSpeedAdaptiveParams": {
     "title": "Speed-Adaptive Torque Parameters",
@@ -703,6 +703,54 @@
   "SccCurveVisionEnabled": {
     "title": "SCC Vision Curve Control",
     "description": "Allow SCC mode to use vision-predicted curve speed caps."
+  },
+  "ControlsProfile": {
+    "title": "Controls Profile",
+    "description": "Selects the controls profile. Existing explicit torque users keep their torque tune until a profile or advanced override is selected.",
+    "options": [
+      {
+        "value": "sunnypilot-current",
+        "label": "Sunnypilot Current"
+      },
+      {
+        "value": "custom-recommended",
+        "label": "Custom Recommended"
+      },
+      {
+        "value": "custom-2.0",
+        "label": "Custom 2.0"
+      },
+      {
+        "value": "custom-experimental",
+        "label": "Custom Experimental"
+      }
+    ]
+  },
+  "ControlsProfileMigrationVersion": {
+    "title": "Controls Profile Migration Version",
+    "description": "Tracks controls profile migration state."
+  },
+  "LateralDemandStack": {
+    "title": "Lateral Demand Stack",
+    "description": "Selects the lateral demand stack used by controls when advanced controls are enabled.",
+    "options": [
+      {
+        "value": "sunnypilot-current",
+        "label": "Sunnypilot Current"
+      },
+      {
+        "value": "custom-recommended",
+        "label": "Custom Recommended"
+      },
+      {
+        "value": "custom-2.0",
+        "label": "Custom 2.0"
+      },
+      {
+        "value": "custom-experimental",
+        "label": "Custom Experimental"
+      }
+    ]
   },
   "LongitudinalStack": {
     "title": "Longitudinal Stack",
@@ -1494,40 +1542,36 @@
     "description": "Display steering arc on the driving screen when lateral control is enabled."
   },
   "TorqueControlTune": {
-    "title": "Torque Control Tune Version",
-    "description": "Select the torque controller version. Default uses v2.0; v2.1, v3.0, and experimental v4.0/v4.1 only run on native torque vehicles.",
+    "title": "Torque Controller",
+    "description": "Select the torque controller version. Default uses 4.1; 5.0 is experimental and only selected explicitly.",
     "options": [
       {
         "value": "",
         "label": "Default"
       },
       {
-        "value": 4.1,
-        "label": "v4.1"
+        "value": "2.0",
+        "label": "2.0"
       },
       {
-        "value": 4.0,
-        "label": "v4.0"
+        "value": "2.1",
+        "label": "2.1"
       },
       {
-        "value": 3.0,
-        "label": "v3.0"
+        "value": "3.0",
+        "label": "3.0"
       },
       {
-        "value": 2.1,
-        "label": "v2.1"
+        "value": "4.0",
+        "label": "4.0"
       },
       {
-        "value": 2.0,
-        "label": "v2.0"
+        "value": "4.1",
+        "label": "4.1"
       },
       {
-        "value": 1.0,
-        "label": "v1.0"
-      },
-      {
-        "value": 0.0,
-        "label": "v0.0"
+        "value": "5.0",
+        "label": "5.0 Experimental"
       }
     ]
   },

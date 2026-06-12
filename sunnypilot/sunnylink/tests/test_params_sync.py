@@ -21,6 +21,14 @@ REMOVED_MASS_DRAG_PARAMS = (
   "LongLearnedKForce",
   "LongLearnedCDrag",
 )
+TORQUE_CONTROL_TUNE_METADATA_LABELS = {
+  "2.0": "2.0",
+  "2.1": "2.1",
+  "3.0": "3.0",
+  "4.0": "4.0",
+  "4.1": "4.1",
+  "5.0": "5.0 Experimental",
+}
 
 
 def test_metadata_json_exists():
@@ -312,50 +320,57 @@ def test_torque_control_tune_versions_in_sync():
   if default_option.get("label") != "Default":
     pytest.fail(f"Default option must have label 'Default'. Please run '{sync_script_path}' to sync.")
 
-  # Build expected options from versions.json
-  expected_version_keys = set(versions.keys())
-  actual_version_keys = set()
+  # Build expected options from supported UI-safe versions. The param is STRING,
+  # so metadata values must remain strings and unsupported v0/v1 entries from
+  # the backend registry are intentionally not exposed in the selector.
+  version_to_label = {
+    f"{float(version_data['version']):.1f}": TORQUE_CONTROL_TUNE_METADATA_LABELS[f"{float(version_data['version']):.1f}"]
+    for version_data in versions.values()
+    if f"{float(version_data['version']):.1f}" in TORQUE_CONTROL_TUNE_METADATA_LABELS
+  }
+  expected_options = {version: label for version, label in version_to_label.items()}
+  actual_options = {}
 
   for option in options:
     if option.get("value") == "":
       continue  # Skip the default option
 
-    label = option.get("label")
     value = option.get("value")
+    label = option.get("label")
 
-    # Check that this option corresponds to a version
-    if label not in versions:
-      pytest.fail(f"Option label '{label}' not found in latcontrol_torque_versions.json. Please run '{sync_script_path}' to sync.")
+    if not isinstance(value, str):
+      pytest.fail(f"Option '{label}' value must be a string, got {type(value).__name__}. Please run '{sync_script_path}' to sync.")
 
-    # Check that the value matches the version number
-    expected_value = float(versions[label]["version"])
-    if value != expected_value:
-      pytest.fail(f"Option '{label}' has value {value}, expected {expected_value}. Please run '{sync_script_path}' to sync.")
+    expected_label = expected_options.get(value)
+    if expected_label is None:
+      pytest.fail(f"Option value '{value}' is not a supported TorqueControlTune UI value. Please run '{sync_script_path}' to sync.")
+    if label != expected_label:
+      pytest.fail(f"Option value '{value}' has label {label}, expected {expected_label}. Please run '{sync_script_path}' to sync.")
 
-    actual_version_keys.add(label)
+    actual_options[value] = label
 
   # Check that all versions are represented
-  missing_versions = expected_version_keys - actual_version_keys
+  missing_versions = set(expected_options) - set(actual_options)
   if missing_versions:
     pytest.fail(f"The following versions are missing from TorqueControlTune options: {missing_versions}. " + f"Please run '{sync_script_path}' to sync.")
 
-  extra_versions = actual_version_keys - expected_version_keys
+  extra_versions = set(actual_options) - set(expected_options)
   if extra_versions:
     pytest.fail(
-      "The following versions in TorqueControlTune options are not in latcontrol_torque_versions.json: "
+      "The following versions in TorqueControlTune options are not supported UI values: "
       + f"{extra_versions}. Please run '{sync_script_path}' to sync."
     )
 
 
-def test_torque_control_tune_v4_is_selectable_and_experimental():
+def test_torque_control_tune_50_is_selectable_and_experimental():
   with open(METADATA_PATH) as f:
     metadata = json.load(f)
 
   torque_tune = metadata["TorqueControlTune"]
-  v4_option = next((opt for opt in torque_tune["options"] if opt.get("value") == 4.0), None)
+  v50_option = next((opt for opt in torque_tune["options"] if opt.get("value") == "5.0"), None)
 
   assert torque_tune["options"][0] == {"value": "", "label": "Default"}
-  assert v4_option == {"value": 4.0, "label": "v4.0"}
+  assert v50_option == {"value": "5.0", "label": "5.0 Experimental"}
   assert "experimental" in torque_tune.get("description", "").lower()
 
 

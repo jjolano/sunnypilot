@@ -184,6 +184,8 @@ class CruiseLayout(Widget):
 
   def _update_state(self):
     super()._update_state()
+    show_advanced = ui_state.params.get_bool("ShowAdvancedControls")
+    self.longitudinal_stack_item.set_visible(show_advanced)
 
     if ui_state.CP is not None and ui_state.CP_SP is not None:
       has_icbm = ui_state.has_icbm

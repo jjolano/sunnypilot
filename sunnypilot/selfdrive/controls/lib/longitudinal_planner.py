@@ -60,6 +60,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
   resolve_longitudinal_stack,
   stack_id_for_name,
 )
+from openpilot.selfdrive.controls.lib.controls_profile import resolve_controls_profile_from_params
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
 from openpilot.sunnypilot.selfdrive.controls.lib.osm_traffic_control_prior import OsmTrafficControlPrior
@@ -328,8 +329,15 @@ class LongitudinalPlannerSP:
     self._speed_limit_handoff_active = False
     self._speed_limit_active_prev = False
     self.speed_limit_handoff_debug: dict[str, object] = {}
+    controls_profile_param_resolution = resolve_controls_profile_from_params(self.params)
+    self.controls_profile_resolution = controls_profile_param_resolution.controls_profile_resolution
+    if controls_profile_param_resolution.controls_profile_explicit:
+      requested_longitudinal_stack = self.controls_profile_resolution.longitudinal_stack
+      self.params.put("LongitudinalStack", requested_longitudinal_stack)
+    else:
+      requested_longitudinal_stack = self.params.get("LongitudinalStack", return_default=True)
     self.longitudinal_stack_resolution = resolve_longitudinal_stack(
-      self.params.get("LongitudinalStack", return_default=True), self.CP, self.CP_SP
+      requested_longitudinal_stack, self.CP, self.CP_SP
     )
     self.longitudinal_mode_resolution = LongitudinalModeResolver.resolve(self.params, self.CP)
     self.custom_longitudinal_stack = self._make_custom_longitudinal_stack(self.longitudinal_stack_resolution.resolved_stack)

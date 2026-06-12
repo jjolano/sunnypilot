@@ -11,6 +11,12 @@ from collections.abc import Callable
 import pyray as rl
 
 from openpilot.common.basedir import BASEDIR
+from openpilot.selfdrive.controls.lib.lateral_demand_stacks import (
+  CUSTOM_EXPERIMENTAL,
+  CUSTOM_RECOMMENDED,
+  CUSTOM_V2,
+  SUNNYPILOT_CURRENT,
+)
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
@@ -22,12 +28,20 @@ from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 TORQUE_VERSIONS_PATH = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "controls", "lib", "latcontrol_torque_versions.json")
+TORQUE_CONTROLLER_LABELS = {
+  "2.0": "2.0",
+  "2.1": "2.1",
+  "3.0": "3.0",
+  "4.0": "4.0",
+  "4.1": "4.1",
+  "5.0": "5.0 Experimental",
+}
 
 LATERAL_DEMAND_STACK_LABELS = {
-  "sunnypilot-current": "Sunnypilot Current",
-  "custom-recommended": "Custom Recommended",
-  "custom-2.0": "Custom 2.0",
-  "custom-experimental": "Custom Experimental",
+  SUNNYPILOT_CURRENT: "Sunnypilot Current",
+  CUSTOM_RECOMMENDED: "Custom Recommended",
+  CUSTOM_V2: "Custom 2.0",
+  CUSTOM_EXPERIMENTAL: "Custom Experimental",
 }
 
 CONTROLS_PROFILE_LABELS = {
@@ -64,8 +78,8 @@ class TorqueSettingsLayout(Widget):
 
   def _initialize_items(self):
     self._torque_control_versions = ListItemSP(
-      title=tr("Torque Control Tune Version"),
-      description="Select the version of Torque Control Tune to use.",
+      title=tr("Torque Controller"),
+      description="Select the torque controller version to use.",
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_torque_version_dialog,
     )
@@ -109,7 +123,7 @@ class TorqueSettingsLayout(Widget):
     self._speed_adaptive_apply_toggle = toggle_item_sp(
       param="LiveTorqueSpeedAdaptiveApplyToggle",
       title=lambda: tr("Apply Speed-Adaptive Self-Tune"),
-      description=lambda: tr("Applies learned speed-adaptive torque parameters to lateral control. Keep disabled for shadow-mode learning."),
+      description=lambda: tr("Applies learned speed-adaptive torque parameters to lateral control. Keep disabled for passive learning."),
     )
     self._custom_tune_toggle = toggle_item_sp(
       param="CustomTorqueParams",
@@ -210,28 +224,28 @@ class TorqueSettingsLayout(Widget):
       return tr("Default")
 
     try:
-      current_val = float(current_val_bytes)
-      for label, info in self.cached_torque_versions.items():
-        if math.isclose(float(info["version"]), current_val, rel_tol=1e-5):
+      current_val = f"{float(current_val_bytes):.1f}"
+      for version, label in TORQUE_CONTROLLER_LABELS.items():
+        if math.isclose(float(version), float(current_val), rel_tol=1e-5):
           return label
-    except (ValueError, KeyError):
+    except ValueError:
       pass
 
     return tr("Default")
 
   def _show_torque_version_dialog(self):
     options_map = {}
-    for label, info in self.cached_torque_versions.items():
-      try:
-        options_map[label] = float(info["version"])
-      except (ValueError, KeyError):
-        pass
-
-    # Sort options by label in descending order
-    sorted_labels = sorted(options_map.keys(), key=lambda k: options_map[k], reverse=True)
+    available_versions = {
+      f"{float(info.get('version')):.1f}"
+      for info in self.cached_torque_versions.values()
+      if str(info.get("version", ""))
+    }
+    for version, label in TORQUE_CONTROLLER_LABELS.items():
+      if version in available_versions:
+        options_map[label] = version
 
     nodes = [TreeNode(tr("Default"))]
-    for label in sorted_labels:
+    for label in options_map:
       nodes.append(TreeNode(label))
 
     folders = [TreeFolder("", nodes)]
@@ -248,7 +262,7 @@ class TorqueSettingsLayout(Widget):
       self._torque_version_dialog = None
 
     self._torque_version_dialog = TreeOptionDialog(
-      tr("Select Torque Control Tune Version"),
+      tr("Select Torque Controller"),
       folders,
       current_ref=current_label,
       option_font_weight=FontWeight.UNIFONT,

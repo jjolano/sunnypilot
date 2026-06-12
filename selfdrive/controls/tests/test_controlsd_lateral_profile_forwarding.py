@@ -25,6 +25,14 @@ params_pyx.ParamKeyType = object
 params_pyx.UnknownKeyName = RuntimeError
 sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
 
+visionipc = types.ModuleType("msgq.visionipc")
+visionipc.VisionBuf = object
+visionipc.VisionIpcClient = object
+visionipc.VisionIpcServer = object
+visionipc.VisionStreamType = object
+visionipc.get_endpoint_name = lambda *args, **kwargs: ""
+sys.modules.setdefault("msgq.visionipc", visionipc)
+
 from openpilot.selfdrive.controls.lib.lateral_demand import ProcessedLateralDemand
 from openpilot.selfdrive.controls.lib.lateral_demand_stacks.interface import (
   LateralDemandStackOutput,
@@ -94,6 +102,13 @@ def test_controlsd_does_not_double_update_lateral_demand_profile_builder():
     "state_control must not call the legacy update_lateral_demand_profile wrapper; "
     f"found {legacy_call_count} call(s). The lateral demand stack is the single builder."
   )
+
+
+def test_state_control_does_not_call_update_lateral_demand_profile():
+  from openpilot.selfdrive.controls import controlsd
+
+  source = inspect.getsource(controlsd.Controls.state_control)
+  assert "self.update_lateral_demand_profile(" not in source
 
 
 def test_controlsd_state_control_records_stack_output_and_desired_curvature():
@@ -204,6 +219,62 @@ def test_controlsd_push_lateral_demand_stack_output_uses_extension_hook():
   )
   controls.push_lateral_demand_stack_output(FakeStackOutput(profile))
   assert controls.LaC.extension.profile is profile
+
+
+def test_controlsd_pushes_none_profile_to_clear_stale_lac_profile():
+  from openpilot.selfdrive.controls.controlsd import Controls
+  from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfile
+
+  class FakeController:
+    def __init__(self):
+      self.profile = LateralDemandProfile(
+        raw_curvature=0.001, processed_curvature=0.001, curvature_limited=False,
+        path_quality=0.9, path_reason="ok", lane_change_shaping_active=False,
+        lane_change_blend=0.0, demand_source="model_path", mode="turn_in",
+        mode_confidence=0.9,
+      )
+
+    def set_lateral_demand_profile(self, profile):
+      self.profile = profile
+
+  class FakeStackOutput:
+    profile = None
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  controls.push_lateral_demand_stack_output(FakeStackOutput())
+  assert controls.LaC.profile is None
+
+
+def test_controlsd_pushes_none_profile_to_extension_hook():
+  from openpilot.selfdrive.controls.controlsd import Controls
+
+  class FakeExtension:
+    def __init__(self):
+      self.profile = object()
+
+    def set_lateral_demand_profile(self, profile):
+      self.profile = profile
+
+  class FakeController:
+    def __init__(self):
+      self.extension = FakeExtension()
+
+  class FakeStackOutput:
+    profile = None
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  controls.push_lateral_demand_stack_output(FakeStackOutput())
+  assert controls.LaC.extension.profile is None
+
+
+def test_controlsd_push_lateral_demand_stack_output_docstring_does_not_claim_legacy_forwarding():
+  from openpilot.selfdrive.controls.controlsd import Controls
+
+  docstring = Controls.push_lateral_demand_stack_output.__doc__ or ""
+  assert "legacy" not in docstring.lower()
+  assert "profile=None" in docstring
 
 
 # ---------------------------------------------------------------------------

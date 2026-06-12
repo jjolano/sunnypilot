@@ -14,6 +14,14 @@ from openpilot.sunnypilot.system.params_migration import ONROAD_BRIGHTNESS_TIMER
 
 METADATA_PATH = os.path.join(os.path.dirname(__file__), "../params_metadata.json")
 TORQUE_VERSIONS_JSON = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "controls", "lib", "latcontrol_torque_versions.json")
+TORQUE_CONTROL_TUNE_METADATA_LABELS = {
+  "2.0": "2.0",
+  "2.1": "2.1",
+  "3.0": "3.0",
+  "4.0": "4.0",
+  "4.1": "4.1",
+  "5.0": "5.0 Experimental",
+}
 
 
 def main():
@@ -112,9 +120,14 @@ def update_torque_versions_param():
       params_metadata = json.load(f)
 
     options = [{"value": "", "label": "Default"}]
-    for version_key, version_data in current_versions.items():
-      version_value = float(version_data["version"])
-      options.append({"value": version_value, "label": str(version_key)})
+    available_versions = {
+      f"{float(version_data['version']):.1f}"
+      for version_data in current_versions.values()
+      if str(version_data.get("version", ""))
+    }
+    for version_value, label in TORQUE_CONTROL_TUNE_METADATA_LABELS.items():
+      if version_value in available_versions:
+        options.append({"value": version_value, "label": label})
 
     if "TorqueControlTune" in params_metadata:
       params_metadata["TorqueControlTune"]["options"] = options

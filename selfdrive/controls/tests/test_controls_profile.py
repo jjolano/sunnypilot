@@ -1,238 +1,170 @@
-"""Tests for the 5.0 controls profile resolver + safe torque tune.
-
-Covers the spec's:
-- ControlsProfile=custom-2.0 maps to torque 4.1.
-- ControlsProfile=custom-experimental maps to torque 5.0.
-- Unknown ControlsProfile falls back safely.
-- Advanced per-layer override (TorqueControlTune=5.0 on
-  custom-2.0) is honored when ShowAdvancedControls is on.
-- Missing ControlsProfile does not select 5.0.
-- Unknown TorqueControlTune does not select 5.0.
-- Existing TorqueControlTune is preserved (migration safety).
-- Unknown LateralDemandStack persists safe fallback.
-"""
-import sys
-import types
+from pathlib import Path
 
 import pytest
 
-params_pyx = types.ModuleType("openpilot.common.params_pyx")
-params_pyx.Params = object
-params_pyx.ParamKeyFlag = object
-params_pyx.ParamKeyType = object
-params_pyx.UnknownKeyName = RuntimeError
-sys.modules.setdefault("openpilot.common.params_pyx", params_pyx)
-
-from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-  ControlsProfileId,
+from openpilot.selfdrive.controls.lib.controls_profile import (
+  CONTROLS_PROFILE_MAPPINGS,
   DEFAULT_CONTROLS_PROFILE,
   DEFAULT_LATERAL_DEMAND_STACK,
-  LateralDemandStackId,
+  DEFAULT_TORQUE_CONTROL_TUNE,
+  ControlsProfileId,
   TorqueControlTuneId,
   controls_profile_id_for_name,
   controls_profile_mapping_for,
+  lateral_demand_stack_id_for_name,
   resolve_controls_profile,
-  resolve_lateral_demand_stack,
+  resolve_controls_profile_from_params,
   resolve_torque_control_tune,
   torque_control_tune_id_for_name,
 )
+from openpilot.selfdrive.controls.lib.lateral_demand_stacks.selector import (
+  CUSTOM_EXPERIMENTAL as LATERAL_CUSTOM_EXPERIMENTAL,
+  CUSTOM_RECOMMENDED as LATERAL_CUSTOM_RECOMMENDED,
+  CUSTOM_V2 as LATERAL_CUSTOM_V2,
+  SUNNYPILOT_CURRENT as LATERAL_SUNNYPILOT_CURRENT,
+)
+from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import (
+  CUSTOM_EXPERIMENTAL as LONG_CUSTOM_EXPERIMENTAL,
+  CUSTOM_V2 as LONG_CUSTOM_V2,
+  SUNNYPILOT_CURRENT as LONG_SUNNYPILOT_CURRENT,
+  resolve_longitudinal_stack,
+)
 
 
-# ---------------------------------------------------------------------------
-# Defaults + missing
-# ---------------------------------------------------------------------------
+class FakeParams:
+  def __init__(self, values=None, bools=None):
+    self.values = values or {}
+    self.bools = bools or {}
+    self.writes = {}
+
+  def get(self, key, *args, **kwargs):
+    if key in self.values:
+      return self.values[key]
+    if kwargs.get("return_default", False):
+      return {
+        "ControlsProfile": b"custom-2.0",
+        "LateralDemandStack": b"custom-2.0",
+        "LongitudinalStack": b"sunnypilot-current",
+        "TorqueControlTune": b"4.1",
+      }.get(key)
+    return None
+
+  def get_bool(self, key):
+    return bool(self.bools.get(key, False))
+
+  def put(self, key, value):
+    self.writes[key] = value
+
+
+def _resolved_torque(params: FakeParams) -> str:
+  return resolve_controls_profile_from_params(params).controls_profile_resolution.torque_control_tune.value
 
 
 def test_missing_controls_profile_does_not_select_torque_50():
-  """A missing ControlsProfile must not select torque 5.0. The
-  default resolution must use the safe stable torque (4.1)."""
   res = resolve_controls_profile(None)
-  assert res.torque_control_tune.value != "5.0"
-  assert res.torque_control_tune.value == "4.1"
+  assert res.torque_control_tune == TorqueControlTuneId.V41
   assert res.lateral_demand_stack == DEFAULT_LATERAL_DEMAND_STACK
 
 
 def test_unknown_controls_profile_does_not_select_torque_50():
-  """An unknown ControlsProfile value must not select torque 5.0.
-  It must resolve to the safe stable default (custom-2.0 +
-  torque 4.1)."""
   res = resolve_controls_profile("not-a-profile")
-  assert res.torque_control_tune.value != "5.0"
-  assert res.torque_control_tune.value == "4.1"
   assert res.resolved_profile == DEFAULT_CONTROLS_PROFILE
+  assert res.torque_control_tune == TorqueControlTuneId.V41
 
 
 def test_controls_profile_default_is_custom_2():
-  """The default ControlsProfile id is custom-2.0 (the safe
-  stable choice that maps to torque 4.1, not 5.0)."""
   assert DEFAULT_CONTROLS_PROFILE == ControlsProfileId.CUSTOM_2
+  assert DEFAULT_LATERAL_DEMAND_STACK == LATERAL_CUSTOM_V2
+  assert DEFAULT_TORQUE_CONTROL_TUNE == TorqueControlTuneId.V41
 
 
-def test_controls_profile_default_lateral_demand_stack_is_custom_2():
-  """The default lateral demand stack id is custom-2.0. 5.0
-  experimental is never the default."""
-  assert DEFAULT_LATERAL_DEMAND_STACK == LateralDemandStackId.CUSTOM_V2
-
-
-# ---------------------------------------------------------------------------
-# Mapping: custom-2.0 -> 4.1
-# ---------------------------------------------------------------------------
-
-
-def test_controls_profile_custom_2_maps_to_torque_41():
+def test_controls_profile_custom_2_maps_to_41():
   res = resolve_controls_profile("custom-2.0")
   assert res.resolved_profile == ControlsProfileId.CUSTOM_2
-  assert res.lateral_demand_stack == LateralDemandStackId.CUSTOM_V2
-  assert res.torque_control_tune.value == "4.1"
-  assert res.longitudinal_stack == "custom-2.0"
+  assert res.lateral_demand_stack == LATERAL_CUSTOM_V2
+  assert res.torque_control_tune == TorqueControlTuneId.V41
 
 
-# ---------------------------------------------------------------------------
-# Mapping: custom-experimental -> 5.0
-# ---------------------------------------------------------------------------
-
-
-def test_controls_profile_experimental_maps_to_torque_50():
+def test_controls_profile_experimental_maps_to_50():
   res = resolve_controls_profile("custom-experimental")
   assert res.resolved_profile == ControlsProfileId.CUSTOM_EXPERIMENTAL
-  assert res.lateral_demand_stack == LateralDemandStackId.CUSTOM_EXPERIMENTAL
-  assert res.torque_control_tune.value == "5.0"
-
-
-# ---------------------------------------------------------------------------
-# Custom-recommended: stub with fallback metadata
-# ---------------------------------------------------------------------------
-
-
-def test_controls_profile_custom_recommended_does_not_silently_expose_unavailable_stacks():
-  """custom-recommended has no real implementation yet; the
-  resolution's lateral_demand_stack_resolution must carry
-  fallback metadata so the manifest / route tools can mark
-  the entry as a stub. custom-recommended resolves to
-  custom-recommended (a stub class with the same behavior
-  as custom-2.0) and the manifest carries
-  fallback_reason='not_implemented'."""
-  res = resolve_controls_profile("custom-recommended")
-  # The lateral demand stack id is custom-recommended. The
-  # resolution must mark it as a stub via fallback_reason.
-  if res.lateral_demand_stack_resolution is not None:
-    assert res.lateral_demand_stack_resolution.fallback_reason == "not_implemented"
-  # Torque tune for custom-recommended is 4.1 (not 5.0).
-  assert res.torque_control_tune.value == "4.1"
-
-
-# ---------------------------------------------------------------------------
-# Mapping: sunnypilot-current
-# ---------------------------------------------------------------------------
+  assert res.lateral_demand_stack == LATERAL_CUSTOM_EXPERIMENTAL
+  assert res.torque_control_tune == TorqueControlTuneId.V50_EXPERIMENTAL
 
 
 def test_controls_profile_sunnypilot_current_maps_to_sunnypilot_current_stack():
   res = resolve_controls_profile("sunnypilot-current")
-  assert res.lateral_demand_stack == LateralDemandStackId.SUNNYPILOT_CURRENT
-  assert res.torque_control_tune.value == "4.1"
-  assert res.longitudinal_stack == "sunnypilot-current"
+  assert res.lateral_demand_stack == LATERAL_SUNNYPILOT_CURRENT
+  assert res.torque_control_tune == TorqueControlTuneId.V41
+  assert res.longitudinal_stack == LONG_SUNNYPILOT_CURRENT
 
 
-# ---------------------------------------------------------------------------
-# Advanced override path
-# ---------------------------------------------------------------------------
+def test_missing_controls_profile_preserves_existing_torque_control_tune_20():
+  assert _resolved_torque(FakeParams({"TorqueControlTune": b"2.0"})) == "2.0"
 
 
-def test_controls_profile_advanced_override_can_select_torque_50():
-  """When ShowAdvancedControls is on, an explicit
-  TorqueControlTune=5.0 override on a custom-2.0 profile can
-  select torque 5.0. The override metadata is recorded in
-  fallback_reason."""
-  res = resolve_controls_profile(
-    "custom-2.0",
-    advanced_torque_control_tune="5.0",
-    advanced_overrides_enabled=True,
+def test_missing_controls_profile_preserves_existing_torque_control_tune_21():
+  assert _resolved_torque(FakeParams({"TorqueControlTune": "2.1"})) == "2.1"
+
+
+def test_missing_controls_profile_preserves_existing_torque_control_tune_41():
+  assert _resolved_torque(FakeParams({"TorqueControlTune": "4.1"})) == "4.1"
+
+
+def test_missing_controls_profile_without_existing_tune_defaults_to_41():
+  assert _resolved_torque(FakeParams()) == "4.1"
+
+
+def test_advanced_override_ignored_when_show_advanced_controls_false():
+  params = FakeParams({"ControlsProfile": b"custom-2.0", "TorqueControlTune": b"5.0"})
+  state = resolve_controls_profile_from_params(params)
+  assert state.controls_profile_explicit is True
+  assert state.torque_control_tune_explicit is True
+  assert state.controls_profile_resolution.torque_control_tune == TorqueControlTuneId.V41
+
+
+def test_advanced_override_honored_when_show_advanced_controls_true():
+  params = FakeParams(
+    {"ControlsProfile": b"custom-2.0", "TorqueControlTune": b"5.0", "LateralDemandStack": b"custom-experimental"},
+    {"ShowAdvancedControls": True},
   )
-  assert res.torque_control_tune.value == "5.0"
-  assert "advanced_torque_control_tune_override" in res.fallback_reason
+  state = resolve_controls_profile_from_params(params)
+  assert state.controls_profile_resolution.torque_control_tune == TorqueControlTuneId.V50_EXPERIMENTAL
+  assert state.controls_profile_resolution.lateral_demand_stack == LATERAL_CUSTOM_EXPERIMENTAL
 
 
-def test_controls_profile_advanced_lateral_demand_stack_override():
-  """An explicit LateralDemandStack=custom-experimental override
-  on a custom-2.0 profile selects the experimental stack
-  without changing the profile id."""
-  res = resolve_controls_profile(
-    "custom-2.0",
-    advanced_lateral_demand_stack="custom-experimental",
-    advanced_overrides_enabled=True,
-  )
-  assert res.resolved_profile == ControlsProfileId.CUSTOM_2
-  assert res.lateral_demand_stack == LateralDemandStackId.CUSTOM_EXPERIMENTAL
-  assert "advanced_lateral_demand_stack_override" in res.fallback_reason
-  # Torque tune from the profile mapping is unchanged (4.1);
-  # the override only flipped the lateral demand stack.
-  assert res.torque_control_tune.value == "4.1"
+def test_controls_profile_custom_2_maps_longitudinal_stack():
+  res = resolve_controls_profile("custom-2.0")
+  assert res.longitudinal_stack == LONG_CUSTOM_V2
 
 
-def test_controls_profile_advanced_overrides_disabled_ignores_overrides():
-  """When ShowAdvancedControls is off, advanced per-layer
-  override params must be ignored. The profile mapping wins
-  regardless of any override value."""
-  res = resolve_controls_profile(
-    "custom-2.0",
-    advanced_torque_control_tune="5.0",
-    advanced_lateral_demand_stack="custom-experimental",
-    advanced_overrides_enabled=False,
-  )
-  assert res.torque_control_tune.value == "4.1"
-  assert res.lateral_demand_stack == LateralDemandStackId.CUSTOM_V2
+def test_controls_profile_experimental_maps_longitudinal_stack_or_fallback():
+  res = resolve_controls_profile("custom-experimental")
+  assert res.longitudinal_stack == LONG_CUSTOM_V2
+  resolved_long = resolve_longitudinal_stack(res.longitudinal_stack)
+  assert resolved_long.resolved_stack in {LONG_CUSTOM_EXPERIMENTAL, LONG_CUSTOM_V2, LONG_SUNNYPILOT_CURRENT}
 
 
-# ---------------------------------------------------------------------------
-# Migration safety
-# ---------------------------------------------------------------------------
+def test_controls_profile_applies_longitudinal_stack_when_explicit():
+  params = FakeParams({"ControlsProfile": b"custom-2.0", "LongitudinalStack": b"sunnypilot-current"})
+  state = resolve_controls_profile_from_params(params)
+  assert state.controls_profile_explicit is True
+  assert state.controls_profile_resolution.longitudinal_stack == LONG_CUSTOM_V2
+  repo_root = Path(__file__).parents[3]
+  controlsd_source = (repo_root / "selfdrive/controls/controlsd.py").read_text()
+  planner_source = (repo_root / "sunnypilot/selfdrive/controls/lib/longitudinal_planner.py").read_text()
+  assert 'self.params.put("LongitudinalStack", self.resolved_longitudinal_stack)' in controlsd_source
+  assert 'self.params.put("LongitudinalStack", requested_longitudinal_stack)' in planner_source
 
 
-def test_existing_torque_control_tune_preserved_when_advanced_overrides_off():
-  """An existing user with TorqueControlTune=2.0 set explicitly
-  and no advanced-overrides gate must keep torque 2.0.  This
-  is the migration path: we do not silently change a user
-  from 2.0/2.1/4.1 to 5.0 when advanced overrides are off."""
-  res = resolve_controls_profile(
-    None,
-    advanced_torque_control_tune="2.0",
-    advanced_overrides_enabled=False,
-  )
-  # Override ignored because advanced_overrides_enabled=False.
-  assert res.torque_control_tune.value == "4.1"
-
-
-def test_unknown_lateral_demand_stack_persists_safe_fallback():
-  """An unknown LateralDemandStack value (e.g. from a typo or
-  downgrade from a future version) must resolve to the safe
-  default. The resolver sets fallback_reason on the
-  lateral_demand_stack_resolution."""
-  res = resolve_lateral_demand_stack("not-a-stack")
-  assert res.resolved_stack == DEFAULT_LATERAL_DEMAND_STACK
-
-
-def test_unknown_torque_control_tune_does_not_select_torque_50():
-  """An unknown TorqueControlTune value must NOT select 5.0.
-  The safe fallback (4.1) is used. 5.0 is only selected when
-  the user explicitly asked for it."""
-  res = resolve_torque_control_tune("not-a-tune")
-  assert res.resolved_tune.value != "5.0"
-  assert res.resolved_tune.value == "4.1"
-
-
-def test_torque_control_tune_id_for_name_returns_default_for_missing():
-  assert torque_control_tune_id_for_name(None) == TorqueControlTuneId.V41
-
-
-def test_torque_control_tune_id_for_name_returns_default_for_unknown():
-  assert torque_control_tune_id_for_name("not-a-tune") == TorqueControlTuneId.V41
-  assert torque_control_tune_id_for_name(b"") == TorqueControlTuneId.V41
-
-
-def test_torque_control_tune_id_for_name_resolves_5_0():
-  assert torque_control_tune_id_for_name("5.0") == TorqueControlTuneId.V50_EXPERIMENTAL
-  assert torque_control_tune_id_for_name(b"5.0") == TorqueControlTuneId.V50_EXPERIMENTAL
-  assert torque_control_tune_id_for_name(5.0) == TorqueControlTuneId.V50_EXPERIMENTAL
+def test_missing_controls_profile_does_not_overwrite_existing_longitudinal_stack():
+  params = FakeParams({"LongitudinalStack": b"sunnypilot-current"})
+  state = resolve_controls_profile_from_params(params)
+  assert state.controls_profile_explicit is False
+  assert state.controls_profile_resolution.longitudinal_stack == LONG_SUNNYPILOT_CURRENT
+  assert params.writes == {}
+  planner_source = (Path(__file__).parents[3] / "sunnypilot/selfdrive/controls/lib/longitudinal_planner.py").read_text()
+  assert 'requested_longitudinal_stack = self.params.get("LongitudinalStack", return_default=True)' in planner_source
 
 
 def test_controls_profile_id_for_name_resolves_known_values():
@@ -242,13 +174,53 @@ def test_controls_profile_id_for_name_resolves_known_values():
   assert controls_profile_id_for_name("custom-experimental") == ControlsProfileId.CUSTOM_EXPERIMENTAL
 
 
+def test_torque_control_tune_id_for_name_resolves_supported_values():
+  assert torque_control_tune_id_for_name("2.0") == TorqueControlTuneId.V20
+  assert torque_control_tune_id_for_name(b"2.1") == TorqueControlTuneId.V21
+  assert torque_control_tune_id_for_name(5.0) == TorqueControlTuneId.V50_EXPERIMENTAL
+  assert resolve_torque_control_tune("not-a-tune").resolved_tune == TorqueControlTuneId.V41
+
+
+def test_unknown_lateral_demand_stack_persists_safe_fallback():
+  assert lateral_demand_stack_id_for_name("not-a-stack") == LATERAL_CUSTOM_V2
+
+
 def test_all_profile_mappings_cover_every_id():
-  from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-    CONTROLS_PROFILE_MAPPINGS,
-  )
   seen = {m.profile_id for m in CONTROLS_PROFILE_MAPPINGS}
   assert seen == set(ControlsProfileId)
-  for m in CONTROLS_PROFILE_MAPPINGS:
-    assert m.lateral_demand_stack in set(LateralDemandStackId)
-    assert m.torque_control_tune in set(TorqueControlTuneId)
-    assert m.longitudinal_stack
+  for mapping in CONTROLS_PROFILE_MAPPINGS:
+    assert mapping.lateral_demand_stack in {
+      LATERAL_SUNNYPILOT_CURRENT,
+      LATERAL_CUSTOM_RECOMMENDED,
+      LATERAL_CUSTOM_V2,
+      LATERAL_CUSTOM_EXPERIMENTAL,
+    }
+    assert mapping.torque_control_tune in set(TorqueControlTuneId)
+    assert mapping.longitudinal_stack
+
+
+def test_controls_profile_uses_runtime_lateral_stack_ids():
+  runtime_ids = {LATERAL_SUNNYPILOT_CURRENT, LATERAL_CUSTOM_RECOMMENDED, LATERAL_CUSTOM_V2, LATERAL_CUSTOM_EXPERIMENTAL}
+  assert {mapping.lateral_demand_stack for mapping in CONTROLS_PROFILE_MAPPINGS} <= runtime_ids
+
+
+def test_no_duplicate_lateral_demand_stack_id_enums():
+  repo_root = Path(__file__).parents[3]
+  lib_files = list((repo_root / "selfdrive/controls/lib").rglob("*.py"))
+  lib_files += list((repo_root / "sunnypilot/selfdrive/controls/lib").rglob("*.py"))
+  definitions = [path for path in lib_files if "class LateralDemandStackId" in path.read_text()]
+  assert definitions == []
+
+
+def test_no_duplicate_lateral_demand_stack_output_definitions():
+  repo_root = Path(__file__).parents[3]
+  lib_files = list((repo_root / "selfdrive/controls/lib").rglob("*.py"))
+  lib_files += list((repo_root / "sunnypilot/selfdrive/controls/lib").rglob("*.py"))
+  definitions = [path for path in lib_files if "class LateralDemandStackOutput" in path.read_text()]
+  assert definitions == [repo_root / "selfdrive/controls/lib/lateral_demand_stacks/interface.py"]
+
+
+@pytest.mark.parametrize("value", [None, b"", "", "not-a-profile"])
+def test_missing_or_unknown_controls_profile_safe_default_is_non_v5(value):
+  res = resolve_controls_profile(value)
+  assert res.torque_control_tune != TorqueControlTuneId.V50_EXPERIMENTAL

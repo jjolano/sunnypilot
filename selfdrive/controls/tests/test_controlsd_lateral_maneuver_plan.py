@@ -582,6 +582,24 @@ def test_update_lateral_demand_profile_ignores_missing_hook():
   controls.update_lateral_demand_profile(demand, v_ego=20.0)
 
 
+def test_update_lateral_demand_profile_noops_when_stack_has_no_builder():
+  class FakeController:
+    def __init__(self):
+      self.profile = "stale"
+
+    def set_lateral_demand_profile(self, profile):
+      self.profile = profile
+
+  controls = Controls.__new__(Controls)
+  controls.LaC = FakeController()
+  controls.lateral_demand_stack = object()
+  demand = ProcessedLateralDemand(0.001, 0.001, 0.0, False, 1.0, "ok", False, 0.0, MAX_LATERAL_ACCEL_NO_ROLL)
+
+  controls.update_lateral_demand_profile(demand, v_ego=20.0)
+
+  assert controls.LaC.profile == "stale"
+
+
 def test_update_lateral_demand_profile_classifies_steering_pressed_as_driver_override():
   from openpilot.selfdrive.controls.lib.lateral_demand_profile import LateralDemandProfileBuilder, LateralMode
 
@@ -656,8 +674,8 @@ def test_controlsd_resolves_lateral_demand_stack_from_param():
   sunnypilot-current migration default applies for missing
   or unknown values."""
   from openpilot.selfdrive.controls.controlsd import Controls
-  from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-    LateralDemandStackId, resolve_lateral_demand_stack,
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks import (
+    CUSTOM_V2, resolve_lateral_demand_stack,
   )
 
   class FakeParams:
@@ -670,7 +688,7 @@ def test_controlsd_resolves_lateral_demand_stack_from_param():
   controls.params = FakeParams()
   resolution = resolve_lateral_demand_stack(None)
   controls.lateral_demand_stack_resolution = resolution
-  assert resolution.resolved_stack == LateralDemandStackId.CUSTOM_V2
+  assert resolution.resolved_stack == CUSTOM_V2
 
 
 def test_controlsd_pushes_stack_output_profile_to_lac():
@@ -750,16 +768,14 @@ def test_controlsd_auto_couple_torque_for_stack_maps_experimental_to_5_0():
   sunnypilot-current → 4.1.
   """
   from openpilot.selfdrive.controls.controlsd import Controls
-  from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
-    CustomExperimentalLateralDemandStack,
-    CustomV2LateralDemandStack,
-    SunnypilotCurrentLateralDemandStack,
-  )
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks.custom_experimental import CustomExperimentalLateralDemandStack
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks.custom_v2 import CustomV2LateralDemandStack
+  from openpilot.selfdrive.controls.lib.lateral_demand_stacks.sunnypilot_current import SunnypilotCurrentLateralDemandStack
 
   controls = Controls.__new__(Controls)
-  assert controls._auto_couple_torque_for_stack(CustomExperimentalLateralDemandStack()) == 5.0
-  assert controls._auto_couple_torque_for_stack(CustomV2LateralDemandStack()) == 4.1
-  assert controls._auto_couple_torque_for_stack(SunnypilotCurrentLateralDemandStack()) == 4.1
+  assert controls._auto_couple_torque_for_stack(CustomExperimentalLateralDemandStack(dt=0.05)) == 5.0
+  assert controls._auto_couple_torque_for_stack(CustomV2LateralDemandStack(dt=0.05)) == 4.1
+  assert controls._auto_couple_torque_for_stack(SunnypilotCurrentLateralDemandStack(dt=0.05)) == 4.1
 
 
 def test_controls_profile_experimental_auto_couples_torque_5_0():
@@ -770,7 +786,7 @@ def test_controls_profile_experimental_auto_couples_torque_5_0():
   uses to instantiate LatControlTorqueV5, so this end-to-end
   test confirms the user-facing profile selector routes to V5.
   """
-  from openpilot.sunnypilot.selfdrive.controls.lib.lateral_demand_stack import (
+  from openpilot.selfdrive.controls.lib.controls_profile import (
     ControlsProfileId,
     controls_profile_mapping_for,
   )
@@ -779,7 +795,7 @@ def test_controls_profile_experimental_auto_couples_torque_5_0():
   mapping = controls_profile_mapping_for(ControlsProfileId.CUSTOM_EXPERIMENTAL)
   resolution = resolve_torque_tune_version(mapping.torque_control_tune.value)
   assert resolution.resolved_version == 5.0
-  assert mapping.lateral_demand_stack.value == "custom-experimental"
+  assert mapping.lateral_demand_stack == "custom-experimental"
 
 
 def _make_capnp_model_v2_reader(lane_change_state=log.LaneChangeState.off,
