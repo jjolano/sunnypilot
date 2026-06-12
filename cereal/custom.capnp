@@ -196,6 +196,9 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   e2eAlerts @7 :E2eAlerts;
   decisionLayer @8 :DecisionLayer;
   stack @9 :Stack;
+  longitudinalMode @10 :LongitudinalModeStatus;
+  plannerStack @11 :PlannerStack;
+  sceneMemory @12 :SceneMemory;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -328,12 +331,86 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     selectedReason @8 :Text;
     rejectedIntents @9 :List(Text);
     rejectedReasons @10 :List(Text);
+    seedContext @11 :Text;
+    seedCandidate @12 :Text;
 
     enum StackId {
       unknown @0;
       sunnypilotCurrent @1;
       customRecommended @2;
       customV2 @3;
+    }
+  }
+
+  struct PlannerStack {
+    requestedStack @0 :PlannerStackId;
+    resolvedStack @1 :PlannerStackId;
+    actuatedStack @2 :PlannerStackId;
+    validationGatePassed @3 :Bool;
+    compatibilityFallbackReason @4 :Text;
+    faultLatched @5 :Bool;
+    faultReason @6 :Text;
+
+    enum PlannerStackId {
+      unknown @0;
+      plannerCurrent @1;
+      sceneMemoryV1 @2;
+    }
+  }
+
+  struct SceneMemory {
+    enabled @0 :Bool;
+    active @1 :Bool;
+    shadow @2 :Bool;
+    oldestEvidenceAge @3 :Float32;
+    leadStability @4 :Float32;
+    pathStability @5 :Float32;
+    mapSpeedStability @6 :Float32;
+    invalidEvidenceCount @7 :UInt32;
+    staleEvidenceCount @8 :UInt32;
+    provenance @9 :List(Text);
+    sourceEligibility @10 :List(Text);
+    summary @11 :Text;
+  }
+
+  struct LongitudinalModeStatus {
+    requestedMode @0 :Mode;
+    resolvedImplementation @1 :Implementation;
+    actuationType @2 :ActuationType;
+    restrictionStatus @3 :List(Text);
+    unsupportedReason @4 :Text;
+    compatibilityAliasState @5 :CompatibilityAliasState;
+    evidenceTier @6 :Text;
+    evidenceReason @7 :Text;
+    evidenceConfidence @8 :Float32;
+    evidenceUrgency @9 :Float32;
+    independentOfLead @10 :Bool;
+    evidenceAdvisories @11 :List(Text);
+    confirmedLead @12 :Bool;
+
+    enum Mode {
+      acc @0;
+      e2e @1;
+      scc @2;
+    }
+
+    enum Implementation {
+      hardwareAcc @0;
+      modelAcc @1;
+      e2e @2;
+      sccAcc @3;
+      sccE2e @4;
+      icbmAdvisory @5;
+    }
+
+    enum ActuationType {
+      direct @0;
+      setSpeedAdvisory @1;
+    }
+
+    enum CompatibilityAliasState {
+      acc @0;
+      blended @1;
     }
   }
 }

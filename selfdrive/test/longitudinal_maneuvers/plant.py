@@ -4,8 +4,10 @@ import numpy as np
 
 from cereal import log
 import cereal.messaging as messaging
+from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper, DT_MDL
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import resolve_longitudinal_stack
@@ -58,6 +60,7 @@ class Plant:
 
     CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
     CP_SP = CarInterface.get_non_essential_params_sp(CP, CAR.HONDA_CIVIC)
+    Params().put("LongitudinalMode", int(LongitudinalMode.E2E if e2e else LongitudinalMode.ACC))
     self.planner = LongitudinalPlanner(CP, CP_SP, init_v=self.speed)
     if longitudinal_stack is not None:
       self.planner.longitudinal_stack_resolution = resolve_longitudinal_stack(longitudinal_stack, CP, CP_SP)

@@ -201,10 +201,13 @@ class UIStateSP:
       self.params.remove("NeuralNetworkLateralControl")
       self.params.remove("AlphaLongitudinalEnabled")
 
-    # No longitudinal control: no experimental mode or DEC
+    # No longitudinal control: no longitudinal mode or SCC curve controls
     if not has_long:
       self.params.remove("ExperimentalMode")
       self.params.remove("DynamicExperimentalControl")
+      self.params.remove("SccCurveVisionEnabled")
+      self.params.remove("SccCurveMapEnabled")
+      self.params.remove("LongitudinalMode")
 
     # ICBM: clear if not available or if full longitudinal control is active
     if self.CP_SP is not None:

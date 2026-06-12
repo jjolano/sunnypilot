@@ -4,6 +4,7 @@ import time
 from cereal import log
 import pyray as rl
 from collections.abc import Callable
+from openpilot.selfdrive.controls.lib.longitudinal_modes import LongitudinalMode, requested_mode_from_params
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.layouts import HBoxLayout
 from openpilot.system.ui.widgets.icon_widget import IconWidget
@@ -137,6 +138,7 @@ class MiciHomeLayout(Widget):
     self._is_pressed_prev = False
 
     self._version_text = self._get_version_text()
+    self._experimental_mode = False
 
     self._experimental_icon = IconWidget("icons_mici/experimental_mode.png", (48, 48))
     self._egpu_icon = IconWidget("icons_mici/egpu.png", (50, 37))
@@ -163,6 +165,14 @@ class MiciHomeLayout(Widget):
     self._branch_label = UnifiedLabel("", font_size=36, text_color=rl.GRAY, font_weight=FontWeight.ROMAN, scroll=True)
     self._version_commit_label = UnifiedLabel("", font_size=36, text_color=rl.GRAY, font_weight=FontWeight.ROMAN, max_width=480, wrap_text=False)
 
+  def show_event(self):
+    super().show_event()
+    self._version_text = self._get_version_text()
+    self._update_params()
+
+  def _update_params(self):
+    self._experimental_mode = requested_mode_from_params(ui_state.params) != LongitudinalMode.ACC
+
   def _update_state(self):
     if self.is_pressed and not self._is_pressed_prev:
       self._mouse_down_t = time.monotonic()
@@ -174,9 +184,11 @@ class MiciHomeLayout(Widget):
     if self._mouse_down_t is not None:
       if time.monotonic() - self._mouse_down_t > 0.5:
         # long gating for experimental mode - only allow toggle if longitudinal control is available
-        if ui_state.has_longitudinal_control:
-          ui_state.experimental_mode = not ui_state.experimental_mode
-          ui_state.params.put("ExperimentalMode", ui_state.experimental_mode, block=True)
+        current_mode = requested_mode_from_params(ui_state.params)
+        if ui_state.has_longitudinal_control and current_mode != LongitudinalMode.SCC and ui_state.params.get_bool("ExperimentalModeConfirmed"):
+          self._experimental_mode = not self._experimental_mode
+          next_mode = LongitudinalMode.E2E if self._experimental_mode else LongitudinalMode.ACC
+          ui_state.params.put("LongitudinalMode", int(next_mode), block=True)
         self._mouse_down_t = None
         self._did_long_press = True
 
@@ -247,7 +259,7 @@ class MiciHomeLayout(Widget):
         self._version_commit_label.render()
 
     # ***** Center-aligned bottom section icons *****
-    self._experimental_icon.set_visible(ui_state.experimental_mode)
+    self._experimental_icon.set_visible(self._experimental_mode)
     self._egpu_icon.set_visible(ui_state.usbgpu and ui_state.usbgpu_compiled)
     self._egpu_icon_gray.set_visible(ui_state.usbgpu and not ui_state.usbgpu_compiled)
     self._mic_icon.set_visible(ui_state.recording_audio)

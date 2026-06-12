@@ -1,3 +1,11 @@
+"""Fail-closed Custom Stack output Interface.
+
+`LongitudinalStackOutput` is the narrow contract between the Longitudinal
+Planner and a Custom Stack.  `validate_stack_output()` is intentionally kept at
+this Seam so invalid custom output disables the stack instead of mutating
+planner state or silently falling back.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

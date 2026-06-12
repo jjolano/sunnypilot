@@ -1,3 +1,10 @@
+"""Custom Stack construction seam.
+
+This registry is intentionally shallow while only `custom-2.0` exists.  It is
+kept to isolate Custom Stack construction from Stack Selection and to give a
+single place for future stack implementations without expanding selector logic.
+"""
+
 from __future__ import annotations
 
 from openpilot.selfdrive.controls.lib.longitudinal_stacks.custom_v2 import CustomLongitudinalStackV2

@@ -117,6 +117,12 @@ class TestParams:
     assert b"LongitudinalStack" in Params().all_keys()
     assert self.params.get("LongitudinalStack", return_default=True) == "sunnypilot-current"
 
+  def test_planner_stack_defaults_to_planner_current(self):
+    assert b"PlannerStack" in Params().all_keys()
+    assert self.params.get("PlannerStack", return_default=True) == "planner-current"
+    assert b"PlannerStackValidationGate" in Params().all_keys()
+    assert self.params.get("PlannerStackValidationGate", return_default=True) is False
+
   def test_smoothed_model_path_curvature_defaults_off(self):
     assert b"SmoothedModelPathCurvature" in Params().all_keys()
     assert self.params.get("SmoothedModelPathCurvature", return_default=True) is False

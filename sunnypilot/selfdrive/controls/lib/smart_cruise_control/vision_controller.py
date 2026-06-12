@@ -58,6 +58,7 @@ _SUNNYPILOT_CURRENT_ENTERING_SMOOTH_DECEL_V = [-0.2, -1.0]
 _SUNNYPILOT_CURRENT_ENTERING_SMOOTH_DECEL_BP = [1.3, 3.0]
 _SUNNYPILOT_CURRENT_TURNING_ACC_V = [0.5, 0.0, -0.4]
 _SUNNYPILOT_CURRENT_TURNING_ACC_BP = [1.5, 2.3, 3.0]
+SCC_CURVE_VISION_PARAM = "SccCurveVisionEnabled"
 
 
 class SmartCruiseControlVision:
@@ -75,7 +76,7 @@ class SmartCruiseControlVision:
     self.long_override = False
     self.is_enabled = False
     self.is_active = False
-    self.enabled = self.params.get_bool("SmartCruiseControlVision")
+    self.enabled = self.params.get_bool(SCC_CURVE_VISION_PARAM)
     self.accurate_lateral_accel = self.params.get_bool("AccurateLateralAccel")
     self.v_cruise_setpoint = 0.0
 
@@ -101,7 +102,7 @@ class SmartCruiseControlVision:
 
   def _update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      self.enabled = self.params.get_bool("SmartCruiseControlVision")
+      self.enabled = self.params.get_bool(SCC_CURVE_VISION_PARAM)
       self.accurate_lateral_accel = self.params.get_bool("AccurateLateralAccel")
 
   def _update_calculations(self, sm: messaging.SubMaster) -> None:
@@ -310,7 +311,7 @@ class SunnypilotCurrentSmartCruiseControlVision(SmartCruiseControlVision):
 
   def _update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      self.enabled = self.params.get_bool("SmartCruiseControlVision")
+      self.enabled = self.params.get_bool(SCC_CURVE_VISION_PARAM)
 
   def _update_calculations(self, sm: messaging.SubMaster) -> None:
     if not self.long_enabled:

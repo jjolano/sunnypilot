@@ -362,13 +362,13 @@ enablement:
   - {type: param, key: IntelligentCruiseButtonManagement, equals: true}
 ```
 
-**OR across two params** (writable when either is on):
+**OR across two params** (writable when either mode-specific source is on):
 ```yaml
 enablement:
   - type: any
     conditions:
-      - {type: param, key: ExperimentalMode, equals: true}
-      - {type: param, key: DynamicExperimentalControl, equals: true}
+      - {type: param, key: SccCurveVisionEnabled, equals: true}
+      - {type: param, key: SccCurveMapEnabled, equals: true}
 ```
 
 **Mixed: capability AND param** (only on longitudinal cars when ShowAdvancedControls is on):
@@ -581,5 +581,5 @@ Settings layouts should not duplicate these params.remove() calls. Instead, rely
 Example constraints in `_enforce_constraints()`:
 - Angle steering cars: remove `EnforceTorqueControl` and `NeuralNetworkLateralControl`
 - No CarParams: remove all car-dependent params
-- No longitudinal: remove `ExperimentalMode`
+- No longitudinal: remove `LongitudinalMode` and SCC curve controls
 - No ICBM: remove `IntelligentCruiseButtonManagement`

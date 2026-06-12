@@ -161,7 +161,7 @@ class TestSmartCruiseControlVision:
     }
 
   def reset_params(self):
-    self.params.put_bool("SmartCruiseControlVision", True, block=True)
+    self.params.put_bool("SccCurveVisionEnabled", True, block=True)
     self.params.put_bool("AccurateLateralAccel", False, block=True)
 
   def test_initial_state(self):
@@ -171,8 +171,8 @@ class TestSmartCruiseControlVision:
     assert self.scc_v.output_a_target == 0.0
 
   def test_system_disabled(self):
-    self.params.put_bool("SmartCruiseControlVision", False, block=True)
-    self.scc_v.enabled = self.params.get_bool("SmartCruiseControlVision")
+    self.params.put_bool("SccCurveVisionEnabled", False, block=True)
+    self.scc_v.enabled = self.params.get_bool("SccCurveVisionEnabled")
 
     for _ in range(int(10.0 / DT_MDL)):
       self.scc_v.update(self.sm, True, False, 0.0, 0.0, 0.0)
@@ -569,7 +569,7 @@ class TestSmartCruiseControlVision:
 class TestSunnypilotCurrentSmartCruiseControlVision:
   def setup_method(self):
     self.params = Params()
-    self.params.put_bool("SmartCruiseControlVision", True)
+    self.params.put_bool("SccCurveVisionEnabled", True)
     self.params.put_bool("AccurateLateralAccel", False)
     self.scc_v = SunnypilotCurrentSmartCruiseControlVision()
 

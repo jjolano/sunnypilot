@@ -7,6 +7,10 @@ See the LICENSE.md file in the root directory for more details.
 import json
 
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.controls.lib.longitudinal_modes import (
+  LONGITUDINAL_MODE_MIGRATION_VERSION,
+  migrate_longitudinal_mode_params,
+)
 from openpilot.sunnypilot.selfdrive.car.sync_sunnylink_params import CAR_LIST_JSON_OUT
 
 ONROAD_BRIGHTNESS_MIGRATION_VERSION: str = "1.0"
@@ -48,6 +52,12 @@ def _migrate_car_platform_bundle(_params):
 
 
 def run_migration(_params):
+  try:
+    if migrate_longitudinal_mode_params(_params):
+      cloudlog.info(f"params_migration: LongitudinalMode migrated to version {LONGITUDINAL_MODE_MIGRATION_VERSION}")
+  except Exception as e:
+    cloudlog.exception(f"Error migrating LongitudinalMode: {e}")
+
   # migrate OnroadScreenOffBrightness
   if _params.get("OnroadScreenOffBrightnessMigrated") != ONROAD_BRIGHTNESS_MIGRATION_VERSION:
     try:
