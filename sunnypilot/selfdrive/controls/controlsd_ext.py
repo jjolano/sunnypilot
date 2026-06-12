@@ -70,14 +70,21 @@ class ControlsExt(ModelStateBase):
     torque_resolution = resolve_torque_tune_version(torque_selection)
     torque_version = torque_resolution.resolved_version
     native_torque = self.CP.lateralTuning.which() == 'torque'
+    controls_profile_param_resolution = getattr(self, "controls_profile_param_resolution", None)
+    profile_requests_torque_controller = (
+      bool(getattr(controls_profile_param_resolution, "controls_profile_explicit", False))
+      and active_profile_tune is not None
+    )
     if torque_resolution.persist_value is not None:
       self.params.put("TorqueControlTune", torque_resolution.persist_value)
 
     # Selection contract:
-    # - EnforceTorqueControl off: native torque uses v0 compatibility shim; non-native keeps stock controller.
-    # - EnforceTorqueControl on: native torque uses selected 0.0/2.0/2.1/3.0/4.0/4.1/5.0 Experimental;
+    # - EnforceTorqueControl off and no explicit ControlsProfile: native torque uses v0 compatibility shim;
     #   non-native keeps stock controller.
-    if not enforce_torque_control:
+    # - EnforceTorqueControl on or explicit ControlsProfile: native torque uses selected
+    #   0.0/2.0/2.1/3.0/4.0/4.1/5.0 Experimental;
+    #   non-native keeps stock controller.
+    if not enforce_torque_control and not profile_requests_torque_controller:
       if native_torque:
         return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)  # FIXME-SP: revert when upstream fixes tuning issues with v1
       return lac

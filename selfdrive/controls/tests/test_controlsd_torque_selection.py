@@ -27,7 +27,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.torque_versions import (
   TorqueControllerRegistry,
   resolve_torque_tune_version,
 )
-from openpilot.selfdrive.controls.lib.controls_profile import resolve_controls_profile
+from openpilot.selfdrive.controls.lib.controls_profile import resolve_controls_profile, resolve_controls_profile_from_params
 
 msgq = types.ModuleType("msgq")
 msgq.fake_event_handle = object()
@@ -63,11 +63,12 @@ from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 
 
 class FakeParams:
-  def __init__(self, enforce: bool, tune=None, default_tune=4.1, speed_aware_params=None):
+  def __init__(self, enforce: bool, tune=None, default_tune=4.1, speed_aware_params=None, controls_profile=None):
     self.enforce = enforce
     self.tune = tune
     self.default_tune = default_tune
     self.speed_aware_params = speed_aware_params
+    self.controls_profile = controls_profile
     self.writes = {}
 
   def get_bool(self, key: str) -> bool:
@@ -76,6 +77,8 @@ class FakeParams:
   def get(self, key: str, *args, **kwargs):
     if key == "LiveTorqueSpeedAdaptiveParams":
       return self.speed_aware_params
+    if key == "ControlsProfile":
+      return self.controls_profile
     if key != "TorqueControlTune":
       return None
     if self.tune is None and kwargs.get("return_default", False):
@@ -102,6 +105,11 @@ def make_controls_ext(CP, CP_SP, params):
   controls_ext.CP_SP = CP_SP.as_reader()
   controls_ext.params = params
   return controls_ext
+
+
+def apply_controls_profile_params(controls_ext, params):
+  controls_ext.controls_profile_param_resolution = resolve_controls_profile_from_params(params)
+  controls_ext.controls_profile_resolution = controls_ext.controls_profile_param_resolution.controls_profile_resolution
 
 
 def make_pid_origin_controller():
@@ -323,6 +331,55 @@ def test_controls_profile_experimental_instantiates_latcontrol_torque_v5():
   controls_ext.controls_profile_resolution = resolve_controls_profile("custom-experimental")
   selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
   assert isinstance(selected, LatControlTorqueV5)
+
+
+def test_controls_profile_experimental_instantiates_v5_when_enforce_torque_off_but_profile_explicit():
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+  params = FakeParams(False, controls_profile=b"custom-experimental")
+
+  controls_ext = make_controls_ext(CP, CP_SP, params)
+  apply_controls_profile_params(controls_ext, params)
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+
+  assert isinstance(selected, LatControlTorqueV5)
+  assert selected.VERSION == 50
+
+
+def test_missing_controls_profile_still_uses_v0_when_enforce_torque_off():
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+  params = FakeParams(False)
+
+  controls_ext = make_controls_ext(CP, CP_SP, params)
+  apply_controls_profile_params(controls_ext, params)
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+
+  assert isinstance(selected, LatControlTorqueV0)
+
+
+def test_explicit_custom_2_profile_instantiates_v41_on_native_torque():
+  CP, CP_SP, CI = get_test_context()
+  lac = LatControlTorqueV1(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+  params = FakeParams(False, 5.0, controls_profile=b"custom-2.0")
+
+  controls_ext = make_controls_ext(CP, CP_SP, params)
+  apply_controls_profile_params(controls_ext, params)
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+
+  assert isinstance(selected, LatControlTorqueV41)
+  assert selected.VERSION == 41
+
+
+def test_non_native_torque_profile_does_not_force_torque_controller():
+  CP, CP_SP, CI, lac = make_pid_origin_controller()
+  params = FakeParams(False, controls_profile=b"custom-experimental")
+
+  controls_ext = make_controls_ext(CP, CP_SP, params)
+  apply_controls_profile_params(controls_ext, params)
+  selected = controls_ext.initialize_lateral_control(lac, CI, DT_CTRL)
+
+  assert selected is lac
 
 
 def test_controls_profile_custom_2_instantiates_latcontrol_torque_v41():
