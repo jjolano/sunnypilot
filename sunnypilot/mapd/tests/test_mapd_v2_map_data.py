@@ -6,6 +6,10 @@ import pytest
 from cereal import log
 
 from openpilot.sunnypilot.mapd.live_map_data.mapd_v2_map_data import MapdV2MapData
+from openpilot.sunnypilot.mapd.param_helpers import (
+  MAP_ADVISORY_UPDATED_AT_PARAM,
+  MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM,
+)
 
 
 class FakeParams:
@@ -19,6 +23,9 @@ class FakeParams:
   def put(self, key, value):
     self.put_counts[key] = self.put_counts.get(key, 0) + 1
     self.values[key] = value
+
+  def put_bool(self, key, value):
+    self.put(key, bool(value))
 
   def remove(self, key):
     self.values.pop(key, None)
@@ -95,6 +102,18 @@ def build_map_data(mapd_out=None, mapd_extended=None):
   return data
 
 
+def build_map_data_with_update_state(updated: dict[str, bool]):
+  data = build_map_data()
+
+  class FakeSubMaster(dict):
+    pass
+
+  sm = FakeSubMaster(data.sm)
+  sm.updated = updated
+  data.sm = sm
+  return data
+
+
 def test_mapd_v2_getters_populate_live_map_fields():
   data = build_map_data()
 
@@ -165,6 +184,37 @@ def test_mapd_v2_compat_params_write_path_and_advisory_data():
   assert data.mem_params.values["NextMapAdvisoryLimit"] == {"speedlimit": 10.0, "distance": 60.0}
 
 
+def test_mapd_v2_update_location_writes_advisory_heartbeat_for_mapd_out(monkeypatch):
+  monkeypatch.setattr("openpilot.sunnypilot.mapd.param_helpers.time.monotonic", lambda: 123.0)
+  data = build_map_data_with_update_state({"mapdOut": True, "mapdExtendedOut": False})
+
+  data.update_location()
+
+  assert data.mem_params.values[MAP_ADVISORY_UPDATED_AT_PARAM] == 123.0
+  assert MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM not in data.mem_params.values
+
+
+def test_mapd_v2_update_location_writes_target_velocity_heartbeat_for_extended_out(monkeypatch):
+  monkeypatch.setattr("openpilot.sunnypilot.mapd.param_helpers.time.monotonic", lambda: 123.0)
+  data = build_map_data_with_update_state({"mapdOut": False, "mapdExtendedOut": True})
+
+  data.update_location()
+
+  assert data.mem_params.values[MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM] == 123.0
+  assert MAP_ADVISORY_UPDATED_AT_PARAM not in data.mem_params.values
+
+
+def test_mapd_v2_update_location_does_not_refresh_target_heartbeat_from_mapd_out_only(monkeypatch):
+  monkeypatch.setattr("openpilot.sunnypilot.mapd.param_helpers.time.monotonic", lambda: 123.0)
+  data = build_map_data_with_update_state({"mapdOut": True, "mapdExtendedOut": False})
+  data.mem_params.put(MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM, 100.0)
+
+  data.update_location()
+
+  assert data.mem_params.values[MAP_ADVISORY_UPDATED_AT_PARAM] == 123.0
+  assert data.mem_params.values[MAP_TARGET_VELOCITIES_UPDATED_AT_PARAM] == 100.0
+
+
 def test_mapd_v2_update_location_skips_unchanged_legacy_param_writes():
   path = [SimpleNamespace(latitude=1.0, longitude=2.0, targetVelocity=14.0)]
   progress = SimpleNamespace(
@@ -192,6 +242,8 @@ def test_mapd_v2_updates_legacy_last_gps_position_for_map_distance_users():
 
   data.update_location()
 
+  assert data.mem_params.values["LastGPSPositionValid"] is True
+  assert data.mem_params.values["MapTargetVelocitiesValid"] is True
   assert json.loads(data.mem_params.values["LastGPSPosition"]) == {
     "latitude": 39.0,
     "longitude": -84.0,
