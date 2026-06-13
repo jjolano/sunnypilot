@@ -94,40 +94,38 @@ This is what removes the `0.1`-vs-`0.01` class of drift at the root.
 
 ## Conversion status (2026-06-13)
 
-Schema-driven (production): **steering** (`SchemaSteeringLayout`, sub-panels delegated)
-and **visuals** (`SchemaPanelLayout("visuals")`, flat). These are the panels whose
-controls are purely declarative toggles/enums that map cleanly onto the schema; both
-have parity tests asserting the schema declares exactly the controls the hand-coded
-panel had.
+Schema-driven (production, deployed + health-checked): **steering**
+(`SchemaSteeringLayout`), **visuals** (`SchemaPanelLayout`), **cruise**
+(`SchemaNavLayout`, speed-limit delegated, longitudinal consolidated per owner),
+and **display** (`SchemaPanelLayout`, brightness + two value-mapped delay steppers).
+These are every panel whose controls are declarative toggles/options/enums + rules;
+each has a parity test asserting the schema declares exactly the controls — with
+device-appropriate widgets — that the hand-coded panel had. The reusable renderer
+(rules engine; numeric / contiguous / value-mapped encodings; option-provider +
+custom-widget registry; flat + nav layouts) is built and unit-tested headless.
 
-Staying hand-coded (the custom set) — each has a concrete blocker, not mere effort:
+Staying hand-coded — NOT a schema-driven candidate. These are custom UIs (dialogs,
+state machines, external integrations, upstream behavior), not declarative control
+lists. "Converting" one means reimplementing it as a registered custom widget — that
+is custom-widget development, the opposite of declarative conversion, and a separate
+effort that must be done with on-device visual validation:
 
 - **toggles** — upstream `TogglesLayout` with special handling (IsMetric unit refresh,
-  OpenpilotEnabledToggle confirm). Don't fork upstream behavior into the schema.
-- **display** — option steppers with computed labels (brightness %, "Auto"/"Auto Dark",
-  time strings) and a non-contiguous timer value-map. Labels are logic, not data.
-- **device / developer / models / software** — dialogs and state machines
-  (driver-camera, Tailscale install/login, model-manager tree + download progress,
-  branch selector). These need real custom widgets via the registry, not declarative
-  controls; the schema doesn't (and shouldn't) carry the toggles those panels' custom
-  buttons live alongside.
-- **cruise** — groundwork done: the schema is reconciled (custom-ACC increments
-  inlined to match the device; the long-press increment given its real {1,5,10}
-  value-map), and the reusable pieces exist (value-mapped enum rendering +
-  `SchemaNavLayout` for sub-panel delegation). Mounting is BLOCKED on a content
-  decision: the schema's cruise panel also declares `ExperimentalMode` /
-  `DisengageOnAccelerator` / `LongitudinalPersonality`, which the device already
-  shows in the upstream Toggles panel — mounting as-is duplicates them. Deduping
-  (or confirming the move is intended) plus the param-forcing cleanup needs the
-  owner's call and on-device visual validation.
-- **vehicle / network / osm / trips / sunnylink / firehose** — genuinely custom
-  (brand selectors, wifi, maps, uploads).
+  OpenpilotEnabledToggle confirm). Don't fork upstream behavior.
+- **developer** — Tailscale install/login state machine, error-log modal, quick-boot
+  file I/O. The schema's toggles are a fraction of the panel; rendering only those
+  would drop the custom controls.
+- **models** — model-manager tree picker, live download progress, clear-cache.
+- **software** — branch-selector dialog + system commands.
+- **device** — dual-buttons with dynamic style/position, driver-camera + confirm dialogs.
+- **vehicle / network / osm / trips / sunnylink / firehose** — brand selectors, wifi,
+  maps, uploads.
 
-So "complete" today means: every panel that is cleanly declarative is schema-driven;
-the rest are blocked on a real capability (custom-widget registry made real,
-value-mapped labels, `on_change`) or are legitimately custom. Those capabilities are
-the remaining roadmap above — to be built with on-device visual validation in the loop,
-since the renderer has no headless way to verify pixels.
+So the schema-driven conversion is COMPLETE for its scope: every declarative settings
+panel is schema-driven. The custom set is a distinct body of work (custom-widget
+development behind the `widget: custom` hook), out of scope for "schema-driven
+conversion" — and since the renderer has no headless way to verify pixels, each must be
+done panel-by-panel with the owner's eyes on the device.
 
 ## Alternatives considered
 
