@@ -289,9 +289,13 @@ Decision points:
   `SmartCruiseControlMap` toggle params, and the `mapd/` infra). So Phase 6's core is just
   CONNECTING those existing curve sources to the custom mode gate — done: `wiring` reads the
   real SCC toggles and routes SCC vision/map a_targets into the SCC-mode curve evidence
-  (`CURVE_VISION`/`CURVE_MAP`), gated by the toggles. DONE. The legacy OSM traffic-control
-  prior (model-confirmed stop/yield from OSM) is NOT on master and remains a future
-  enhancement (`MAP_CAUTION` evidence slot already exists in the mode gate for it).
+  (`CURVE_VISION`/`CURVE_MAP`), gated by the toggles. DONE.
+- OSM traffic-control prior: DROPPED (2026-06-13) — mapd doesn't expose it normally, so there
+  is no signal to consume. The `MAP_CAUTION` slot stays in the mode gate but is unused.
+- Model stop: wired from upstream's verified `modelV2.action.shouldStop` /
+  `desiredAcceleration` (the same signal the base planner uses — no guessing), trust-gated by
+  a `StopTrustLearner` that adapts from real driver disagreement (gas during a model stop =
+  countermanding it -> lower trust). DONE.
 - Speed-adaptive torque learning promotion to default-on (from Phase 2 optional).
 - UI settings pages beyond the minimal params needed.
 

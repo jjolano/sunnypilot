@@ -19,10 +19,13 @@ def lead(d_rel=30.0, v_lead=12.0, status=True):
                          yRel=0.0, radarTrackId=3, radar=True, modelProb=0.9, aLeadTau=1.0)
 
 
-def fake_sm(lead_one=None, brake=False, gas=False):
+def fake_sm(lead_one=None, brake=False, gas=False, model_should_stop=False, model_accel=0.0, pitch=0.0):
   return {
     'radarState': SimpleNamespace(leadOne=lead_one, leadTwo=None),
     'carState': SimpleNamespace(brakePressed=brake, gasPressed=gas),
+    'modelV2': SimpleNamespace(action=SimpleNamespace(shouldStop=model_should_stop,
+                                                      desiredAcceleration=model_accel)),
+    'carControl': SimpleNamespace(orientationNED=[0.0, pitch, 0.0]),
   }
 
 
@@ -88,6 +91,27 @@ def test_adapter_acc_ignores_curve():
   a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
   out = a.apply(fake_sm(), 20.0, 0.0, 22.0, 0.4, fake_scc(vision_active=True, vision_a=-1.0), fake_sla())
   assert out == pytest.approx(0.4)  # ACC excludes curve evidence -> cruise stands
+
+
+def test_model_stop_from_upstream_signal_brakes_in_e2e():
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+  # upstream model stop -> E2E brakes; ACC ignores it
+  out_e2e = a.apply(fake_sm(model_should_stop=True, model_accel=-2.0), 15.0, 0.0, 15.0, 0.0,
+                    fake_scc(), fake_sla())
+  acc = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
+  out_acc = acc.apply(fake_sm(model_should_stop=True, model_accel=-2.0), 15.0, 0.0, 15.0, 0.0,
+                      fake_scc(), fake_sla())
+  assert out_e2e < 0.0
+  assert out_acc == pytest.approx(0.0)
+
+
+def test_driver_gas_disagreement_lowers_stop_trust():
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+  before = a._stop_trust.confidence
+  for _ in range(40):
+    a.apply(fake_sm(model_should_stop=True, model_accel=-2.5, gas=True), 15.0, 0.0, 15.0, 0.0,
+            fake_scc(), fake_sla(), dt=0.05)
+  assert a._stop_trust.confidence < before  # repeated driver countermanding softens trust
 
 
 def test_scc_curve_gated_by_smart_cruise_control_vision_toggle():

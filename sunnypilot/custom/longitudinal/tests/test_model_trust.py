@@ -5,7 +5,10 @@ import pytest
 
 from openpilot.sunnypilot.custom.longitudinal.model_trust import (
   GENTLE_CAUTION_DECEL,
+  STOP_TRUST_MAX,
+  STOP_TRUST_MIN,
   TRUST_FULL_STOP,
+  StopTrustLearner,
   gate_model_stop,
 )
 
@@ -54,3 +57,34 @@ def test_full_stop_threshold():
 def test_caution_never_below_gentle_floor_at_zero_trust():
   r = gate_model_stop(True, -5.0, stop_prob=0.0)
   assert r.desired_accel == pytest.approx(GENTLE_CAUTION_DECEL)
+
+
+def test_stop_trust_learner_drops_on_driver_disagreement():
+  learner = StopTrustLearner(initial=0.8)
+  c = 0.8
+  for _ in range(20):
+    c = learner.update(model_should_stop=True, driver_disagrees=True, dt=0.05)
+  assert c < 0.8
+
+
+def test_stop_trust_learner_recovers_on_agreement():
+  learner = StopTrustLearner(initial=0.4)
+  c = 0.4
+  for _ in range(100):
+    c = learner.update(model_should_stop=True, driver_disagrees=False, dt=0.05)
+  assert c > 0.4
+
+
+def test_stop_trust_learner_idle_without_model_stop():
+  learner = StopTrustLearner(initial=0.7)
+  assert learner.update(model_should_stop=False, driver_disagrees=True, dt=0.05) == 0.7
+
+
+def test_stop_trust_learner_stays_bounded():
+  learner = StopTrustLearner(initial=0.8)
+  for _ in range(2000):
+    learner.update(True, True, 0.05)
+  assert learner.confidence >= STOP_TRUST_MIN
+  for _ in range(5000):
+    learner.update(True, False, 0.05)
+  assert learner.confidence <= STOP_TRUST_MAX

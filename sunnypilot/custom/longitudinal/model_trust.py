@@ -25,6 +25,13 @@ TRUST_FULL_STOP = 0.7           # stop_prob/trust above which a hard should_stop
 RADAR_CORROBORATION_TRUST = 0.85
 LEAD_CLOSING_MIN = 0.5          # m/s relative closing to count as radar corroboration
 
+# StopTrustLearner: learn how much to trust the upstream model stop from driver disagreement.
+STOP_TRUST_INITIAL = 0.8
+STOP_TRUST_MIN = 0.2
+STOP_TRUST_MAX = 0.95
+STOP_TRUST_DISAGREE_RATE = 0.5   # confidence/s drop when the driver countermands a model stop
+STOP_TRUST_AGREE_RATE = 0.05     # confidence/s recovery when the driver accepts it
+
 
 @dataclass(frozen=True)
 class ModelStopTrustResult:
@@ -68,3 +75,23 @@ def gate_model_stop(model_should_stop: bool, model_desired_accel: float, stop_pr
   # decel (high trust). Never command less caution than the model asks if it is fully trusted.
   desired_accel = GENTLE_CAUTION_DECEL + trust * (model_decel - GENTLE_CAUTION_DECEL)
   return ModelStopTrustResult(should_stop, float(desired_accel), float(trust), reason)
+
+
+class StopTrustLearner:
+  """Learn the confidence to feed gate_model_stop from real driver disagreement.
+
+  Rather than guessing a model stop probability, we take upstream's verified model stop
+  (modelV2.action.shouldStop) at face value and adjust how much to trust it from how the
+  driver reacts: a driver who countermands a model stop (gas, or disengages) during the stop
+  is telling us the stop was wrong -> drop confidence fast; a driver who lets it happen agrees
+  -> recover slowly. Over a drive this softens repeatedly-false model stops while keeping the
+  ones the driver accepts. (Session-scoped; param persistence is a later enhancement.)"""
+
+  def __init__(self, initial: float = STOP_TRUST_INITIAL):
+    self.confidence = _clip(float(initial), STOP_TRUST_MIN, STOP_TRUST_MAX)
+
+  def update(self, model_should_stop: bool, driver_disagrees: bool, dt: float) -> float:
+    if model_should_stop:
+      rate = -STOP_TRUST_DISAGREE_RATE if driver_disagrees else STOP_TRUST_AGREE_RATE
+      self.confidence = _clip(self.confidence + rate * max(0.0, float(dt)), STOP_TRUST_MIN, STOP_TRUST_MAX)
+    return self.confidence
