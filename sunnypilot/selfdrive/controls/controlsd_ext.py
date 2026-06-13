@@ -18,6 +18,7 @@ from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.custom.lateral.torque_v2_1 import LatControlTorqueV21
+from openpilot.sunnypilot.custom.lateral.demand.wiring import LateralDemandAdapter
 
 
 class ControlsExt(ModelStateBase):
@@ -27,6 +28,8 @@ class ControlsExt(ModelStateBase):
     self.params = params
     self._param_update_time: float = 0.0
     self.blinker_pause_lateral = BlinkerPauseLateral()
+    # Opt-in custom-2.0 lateral demand pipeline (default off -> stock model curvature).
+    self.lateral_demand = LateralDemandAdapter(params)
 
     cloudlog.info("controlsd_ext is waiting for CarParamsSP")
     self.CP_SP = messaging.log_from_bytes(params.get("CarParamsSP", block=True), custom.CarParamsSP)

@@ -139,6 +139,8 @@ class Controls(ControlsExt):
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+      # Opt-in custom-2.0 lateral demand pipeline (fail-closed; returns the raw curvature when disabled).
+      new_desired_curvature = self.lateral_demand.process(CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2)
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
