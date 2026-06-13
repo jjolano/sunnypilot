@@ -75,8 +75,9 @@ def coast_horizon(inp: CoastHorizonInputs) -> CoastHorizonResult:
   if dist > lift_off_distance:
     return CoastHorizonResult(CoastAction.CRUISE, 0.0, coast_distance, lift_off_distance, slack)
   if dist >= coast_distance:
-    # within the lift window: coasting still reaches the target by the constraint
-    return CoastHorizonResult(CoastAction.COAST, 0.0, coast_distance, lift_off_distance, slack)
+    # within the lift window: lift off and let speed bleed at the natural coast decel
+    # (commanding a_coast, not 0 — 0 would hold speed instead of coasting down)
+    return CoastHorizonResult(CoastAction.COAST, a_coast, coast_distance, lift_off_distance, slack)
   # Coasting can no longer bleed enough over the remaining distance -> brake.
   required = (v_t * v_t - v0 * v0) / (2.0 * max(dist, MIN_USEFUL_DISTANCE))
   return CoastHorizonResult(CoastAction.BRAKE, min(required, inp.comfort_brake_decel),

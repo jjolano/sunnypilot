@@ -15,7 +15,7 @@ def test_cushion_coasts_to_slower_lead_with_runway():
   # runway lands in the lift window -> coast, no brake
   r = lead_following_cushion(v_ego=20.0, v_lead=15.0, d_rel=375.0, follow_gap=20.0, coast_decel=-0.25)
   assert r.coast_first is True
-  assert r.a_target == 0.0
+  assert -0.5 <= r.a_target <= 0.0  # gentle coast, never hard braking
   assert r.action in (CoastAction.COAST, CoastAction.CRUISE)
 
 

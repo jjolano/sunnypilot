@@ -41,7 +41,7 @@ def test_coast_distance_matches_kinematics():
 def test_coast_when_inside_lift_window():
   r = ch(25.0, 15.0, 805.0, a_coast=-0.25)  # coast_distance=800, lift_off=815
   assert r.action is CoastAction.COAST
-  assert r.recommended_accel == 0.0
+  assert r.recommended_accel == pytest.approx(-0.25)  # command the natural coast decel
 
 
 def test_brake_when_too_close():

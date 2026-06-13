@@ -54,8 +54,8 @@ def lead_following_cushion(v_ego: float, v_lead: float, d_rel: float, follow_gap
   ))
   if r.action is CoastAction.BRAKE:
     return CushionResult(CoastAction.BRAKE, r.recommended_accel, False)
-  # CRUISE (too early) or COAST (in the lift window) -> coast-first, no braking yet
-  return CushionResult(CoastAction.COAST if r.action is CoastAction.COAST else CoastAction.CRUISE, 0.0, True)
+  # CRUISE (too early -> 0, keep cruising) or COAST (lift window -> gentle coast decel)
+  return CushionResult(r.action, r.recommended_accel, True)
 
 
 def lead_speedup_guard(v_ego: float, v_lead: float, d_rel: float, follow_gap: float,
