@@ -37,6 +37,18 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 OP.PANEL_COLOR = rl.Color(10, 10, 10, 255)
 ICON_SIZE = 70
 
+
+def _steering_layout() -> Widget:
+  """Steering panel: schema-driven (A/B) when SettingsSchemaDrivenSteering is set, else hand-coded.
+
+  Default-off param flag; lazily constructs the schema-driven layout only when enabled.
+  """
+  from openpilot.common.params import Params
+  if Params().get_bool("SettingsSchemaDrivenSteering"):
+    from openpilot.sunnypilot.selfdrive.ui.settings_schema.steering_panel import SchemaSteeringLayout
+    return SchemaSteeringLayout()
+  return SteeringLayout()
+
 OP.PanelType = IntEnum(
   "PanelType",
   [es.name for es in OP.PanelType] + [
@@ -115,7 +127,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
       OP.PanelType.TOGGLES: PanelInfo(tr_noop("Toggles"), TogglesLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_toggle.png"),
       OP.PanelType.SOFTWARE: PanelInfo(tr_noop("Software"), SoftwareLayoutSP(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_software.png"),
       OP.PanelType.MODELS: PanelInfo(tr_noop("Models"), ModelsLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_models.png"),
-      OP.PanelType.STEERING: PanelInfo(tr_noop("Steering"), SteeringLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_lateral.png"),
+      OP.PanelType.STEERING: PanelInfo(tr_noop("Steering"), _steering_layout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_lateral.png"),
       OP.PanelType.CRUISE: PanelInfo(tr_noop("Cruise"), CruiseLayout(), icon="icons/speed_limit.png"),
       OP.PanelType.VISUALS: PanelInfo(tr_noop("Visuals"), VisualsLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_visuals.png"),
       OP.PanelType.DISPLAY: PanelInfo(tr_noop("Display"), DisplayLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_display.png"),
