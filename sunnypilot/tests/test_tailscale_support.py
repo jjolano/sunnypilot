@@ -70,8 +70,8 @@ class TestTailscaleConstants:
   def test_tailscaled_pid_survives_manager_start_clear(self):
     params = Params()
     try:
-      params.put("TailscaledPid", 123)
-      params.put("TailscaleState", "Running")
+      params.put("TailscaledPid", 123, block=True)
+      params.put("TailscaleState", "Running", block=True)
 
       params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
 
@@ -286,17 +286,13 @@ class TestTailscaleInstaller:
 
 
 class TestTailscalePairingDialog:
-  def test_hide_event_clears_auth_url(self):
-    from openpilot.system.ui.sunnypilot.widgets.tailscale_pairing_dialog import TailscalePairingDialog
+  def test_clear_auth_url_helper_avoids_ui_import(self):
+    from openpilot.sunnypilot.system.tailscale.auth import clear_tailscale_auth_url
 
     params = FakeParams()
     params.put("TailscaleAuthURL", "https://login.tailscale.com/a/abc123")
-    dialog = TailscalePairingDialog.__new__(TailscalePairingDialog)
-    dialog.params = params
-    dialog._children = []
-    dialog.qr_texture = None
 
-    dialog.hide_event()
+    clear_tailscale_auth_url(params)
 
     assert params.get("TailscaleAuthURL") == ""
 

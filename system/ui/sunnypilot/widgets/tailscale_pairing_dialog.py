@@ -12,6 +12,7 @@ from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.lib.wrap_text import wrap_text
+from openpilot.sunnypilot.system.tailscale.auth import clear_tailscale_auth_url
 
 
 class TailscalePairingDialog(PairingDialog):
@@ -47,10 +48,7 @@ class TailscalePairingDialog(PairingDialog):
       gui_app.pop_widget()
 
   def hide_event(self):
-    try:
-      self.params.remove("TailscaleAuthURL")
-    except Exception:
-      cloudlog.exception("tailscale: failed to clear auth URL on dialog close")
+    clear_tailscale_auth_url(self.params)
     PairingDialog.hide_event(self)
 
   def _render(self, rect: rl.Rectangle) -> int:
