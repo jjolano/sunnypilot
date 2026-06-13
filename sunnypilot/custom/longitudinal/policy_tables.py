@@ -1,0 +1,64 @@
+"""Personality tables and policy constants (personality-as-data).
+
+Values are the legacy custom-2.0 constants (docs/legacy/tuned-constants.yaml /
+custom_v2.py). The ADR's "personality as data" decision: standard anchors comfort/progress,
+other personalities scale comfort/progress only — never safety caps.
+"""
+from __future__ import annotations
+
+from enum import Enum
+
+MPH_TO_MS = 0.44704
+
+
+class Personality(Enum):
+  RELAXED = "relaxed"
+  STANDARD = "standard"
+  AGGRESSIVE = "aggressive"
+
+  @classmethod
+  def from_value(cls, value: object, default: "Personality" = None) -> "Personality":
+    default = default if default is not None else cls.STANDARD
+    if isinstance(value, cls):
+      return value
+    text = str(value if value is not None else "").strip().lower()
+    for p in cls:
+      if text in (p.value, p.name.lower()):
+        return p
+    # legacy cereal int encoding: relaxed=0, standard=1, aggressive=2
+    return {"0": cls.RELAXED, "1": cls.STANDARD, "2": cls.AGGRESSIVE}.get(text, default)
+
+
+# Progress / comfort scale with personality (never safety caps).
+NO_LEAD_LAUNCH_ACCEL_MAX = {
+  Personality.RELAXED: 1.10,
+  Personality.STANDARD: 1.35,
+  Personality.AGGRESSIVE: 1.55,
+}
+STOP_APPROACH_COMFORT_DECEL = {
+  Personality.RELAXED: -0.30,
+  Personality.STANDARD: -0.38,
+  Personality.AGGRESSIVE: -0.45,
+}
+
+# Policy constants (personality-independent).
+NO_LEAD_LAUNCH_MAX_V_EGO = 3.0
+PROGRESS_CRUISE_SPEED_MARGIN = 0.2
+NO_LEAD_STOP_CLEAR_DISTANCE = 20.0
+NO_LEAD_STOP_CLEAR_ACCEL_MIN = -0.5
+MAP_ONLY_CAUTION_ACCEL_MIN = -0.3
+COMFORT_RELAX_ACCEL_MIN = -0.5
+CRUISE_LEEWAY_MIN = 5.0 * MPH_TO_MS
+CRUISE_LEEWAY_MAX = 10.0 * MPH_TO_MS
+CRUISE_LEEWAY_DOWNHILL_ACCEL = 0.25
+CRUISE_LEEWAY_RECOVERY = 2.0 * MPH_TO_MS
+STOP_APPROACH_DECEL_MIN = -1.5
+EXCESS_GAP_MIN = 1.0
+
+
+def launch_accel_max(personality: Personality) -> float:
+  return NO_LEAD_LAUNCH_ACCEL_MAX[personality]
+
+
+def stop_approach_comfort_decel(personality: Personality) -> float:
+  return STOP_APPROACH_COMFORT_DECEL[personality]
