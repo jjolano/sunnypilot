@@ -11,7 +11,7 @@ import pyray as rl
 from openpilot.selfdrive.ui.layouts.settings import settings as OP
 from openpilot.selfdrive.ui.layouts.settings.firehose import FirehoseLayout
 from openpilot.selfdrive.ui.layouts.settings.toggles import TogglesLayout
-from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise import CruiseLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_settings import SpeedLimitSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.developer import DeveloperLayoutSP
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.device import DeviceLayoutSP
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.display import DisplayLayout
@@ -22,6 +22,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.software import Software
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.sunnylink import SunnylinkLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.trips import TripsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle import VehicleLayout
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.nav_layout import SchemaNavLayout
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.steering_panel import SchemaSteeringLayout
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.widgets import SchemaPanelLayout
 from openpilot.system.ui.lib.application import gui_app, MousePos
@@ -36,6 +37,9 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 OP.PANEL_COLOR = rl.Color(10, 10, 10, 255)
 ICON_SIZE = 70
+
+# Schema sub_panel id -> the hand-coded sub-layout the schema-driven cruise panel opens.
+_CRUISE_SUBPANELS = {"speed_limit_settings": SpeedLimitSettingsLayout}
 
 OP.PanelType = IntEnum(
   "PanelType",
@@ -116,7 +120,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
       OP.PanelType.SOFTWARE: PanelInfo(tr_noop("Software"), SoftwareLayoutSP(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_software.png"),
       OP.PanelType.MODELS: PanelInfo(tr_noop("Models"), ModelsLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_models.png"),
       OP.PanelType.STEERING: PanelInfo(tr_noop("Steering"), SchemaSteeringLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_lateral.png"),
-      OP.PanelType.CRUISE: PanelInfo(tr_noop("Cruise"), CruiseLayout(), icon="icons/speed_limit.png"),
+      OP.PanelType.CRUISE: PanelInfo(tr_noop("Cruise"), SchemaNavLayout("cruise", _CRUISE_SUBPANELS), icon="icons/speed_limit.png"),
       OP.PanelType.VISUALS: PanelInfo(tr_noop("Visuals"), SchemaPanelLayout("visuals"), icon="../../sunnypilot/selfdrive/assets/offroad/icon_visuals.png"),
       OP.PanelType.DISPLAY: PanelInfo(tr_noop("Display"), DisplayLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_display.png"),
       OP.PanelType.OSM: PanelInfo(tr_noop("OSM"), OSMLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_map.png"),
