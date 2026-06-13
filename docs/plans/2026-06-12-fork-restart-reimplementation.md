@@ -283,12 +283,15 @@ only new learned state; persist it like the existing live torque params.
 
 ## Phase 6 — Optional periphery (only what real usage justifies)
 
-Decision points — defer until the core phases prove out:
-- Map/OSM curve + speed-limit sources (old speed-map-control work): wanted, because they
-  feed SCC mode's curve awareness (`SccCurveVisionEnabled` / `SccCurveMapEnabled`) and the
-  Phase 5 map-curve soft advance. The mapd plumbing is large, so it lands here rather than
-  blocking the core; SCC mode ships functional without it (traffic-control/stop awareness
-  from the model) and gains curve sources when this lands.
+Decision points:
+- Map/OSM curve + speed-limit sources: the heavy plumbing already ships on upstream `master`
+  (SCC vision/map controllers in `smart_cruise_control/`, the `SmartCruiseControlVision` /
+  `SmartCruiseControlMap` toggle params, and the `mapd/` infra). So Phase 6's core is just
+  CONNECTING those existing curve sources to the custom mode gate — done: `wiring` reads the
+  real SCC toggles and routes SCC vision/map a_targets into the SCC-mode curve evidence
+  (`CURVE_VISION`/`CURVE_MAP`), gated by the toggles. DONE. The legacy OSM traffic-control
+  prior (model-confirmed stop/yield from OSM) is NOT on master and remains a future
+  enhancement (`MAP_CAUTION` evidence slot already exists in the mode gate for it).
 - Speed-adaptive torque learning promotion to default-on (from Phase 2 optional).
 - UI settings pages beyond the minimal params needed.
 

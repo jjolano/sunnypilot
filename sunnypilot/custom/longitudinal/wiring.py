@@ -73,9 +73,10 @@ class CustomLongitudinalAdapter:
       self.enabled = bool(p.get_bool("CustomLongitudinalEnabled"))
       self.mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode"))
       self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
+      # SCC curve sources are gated by the existing upstream SCC enable toggles.
       self.sources = SourceToggles(
-        scc_curve_vision_enabled=bool(p.get_bool("SccCurveVisionEnabled")) if _has_key(p, "SccCurveVisionEnabled") else False,
-        scc_curve_map_enabled=bool(p.get_bool("SccCurveMapEnabled")) if _has_key(p, "SccCurveMapEnabled") else False,
+        scc_curve_vision_enabled=bool(p.get_bool("SmartCruiseControlVision")),
+        scc_curve_map_enabled=bool(p.get_bool("SmartCruiseControlMap")),
       )
     except Exception:  # params are advisory; never fault the planner on a read error
       self.enabled = False
@@ -106,10 +107,3 @@ class CustomLongitudinalAdapter:
       return float(result.a_target)
     except Exception:  # fail-closed: never let the custom stack break the planner
       return seed_a_target
-
-
-def _has_key(params: Any, key: str) -> bool:
-  try:
-    return key.encode() in params.all_keys()
-  except Exception:
-    return False

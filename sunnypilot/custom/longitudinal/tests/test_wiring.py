@@ -88,3 +88,15 @@ def test_adapter_acc_ignores_curve():
   a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
   out = a.apply(fake_sm(), 20.0, 0.0, 22.0, 0.4, fake_scc(vision_active=True, vision_a=-1.0), fake_sla())
   assert out == pytest.approx(0.4)  # ACC excludes curve evidence -> cruise stands
+
+
+def test_scc_curve_gated_by_smart_cruise_control_vision_toggle():
+  scc = fake_scc(vision_active=True, vision_a=-0.7)
+  on = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc",
+                                            SmartCruiseControlVision=True))
+  off = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc",
+                                             SmartCruiseControlVision=False))
+  out_on = on.apply(fake_sm(), 20.0, 0.0, 22.0, 0.5, scc, fake_sla())
+  out_off = off.apply(fake_sm(), 20.0, 0.0, 22.0, 0.5, scc, fake_sla())
+  assert out_off == pytest.approx(0.5)  # SCC curve source disabled -> cruise stands
+  assert out_on < out_off               # SmartCruiseControlVision on -> curve cap admitted
