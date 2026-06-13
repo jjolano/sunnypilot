@@ -36,7 +36,7 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.encoding import (
-  contiguous_int_options, encode_numeric_option, sequential_int_labels,
+  contiguous_int_options, encode_numeric_option, sequential_int_labels, value_mapped_option,
 )
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.registry import custom_widget_factory, resolve_options
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.rules import RuleContext, rules_pass
@@ -110,16 +110,25 @@ def build_control(item: dict, unsupported: list[dict], is_metric_fn: Callable[[]
   if widget == "option":
     options = resolve_options(item)
     if options is not None:
-      enum = contiguous_int_options({**item, "options": options})
-      if enum is None:
-        unsupported.append(item)  # string/float/gapped values -> value-mapped or custom selector
-        return None
-      labels = enum.labels_by_value
-      return option_item_sp(
-        title=title, param=key, description=desc,
-        min_value=enum.min_value, max_value=enum.max_value, value_change_step=1,
-        label_callback=lambda x: tr(labels.get(x, str(x))),
-      )
+      norm = {**item, "options": options}
+      enum = contiguous_int_options(norm)
+      if enum is not None:
+        labels = enum.labels_by_value
+        return option_item_sp(
+          title=title, param=key, description=desc,
+          min_value=enum.min_value, max_value=enum.max_value, value_change_step=1,
+          label_callback=lambda x: tr(labels.get(x, str(x))),
+        )
+      vmap = value_mapped_option(norm)
+      if vmap is not None:
+        by_value = vmap.labels_by_value
+        return option_item_sp(
+          title=title, param=key, description=desc,
+          min_value=vmap.min_value, max_value=vmap.max_value, value_change_step=1,
+          value_map=vmap.value_map, label_callback=lambda v: tr(by_value.get(v, str(v))),
+        )
+      unsupported.append(item)  # non-integer values -> custom selector
+      return None
     return _numeric_option(item, is_metric_fn)
 
   # info / unknown widgets -> custom registry territory.

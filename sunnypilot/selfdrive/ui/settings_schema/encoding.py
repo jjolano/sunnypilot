@@ -96,6 +96,45 @@ def contiguous_int_options(item: dict) -> ContiguousEnum | None:
   return ContiguousEnum(min_value=values[0], max_value=values[-1], labels_by_value=labels)
 
 
+@dataclass(frozen=True)
+class ValueMappedOption:
+  """Enumerated integer options whose stored values aren't a 0/contiguous run.
+
+  Renders as an OptionControlSP stepper over display indices 1..N with a
+  value_map to the real stored values — matching the device's hand-coded
+  option_item_sp(value_map=...) controls (e.g. CustomAccLongPressIncrement's
+  {1: 1, 2: 5, 3: 10}). Use this only when contiguous_int_options() returns None.
+  """
+  value_map: dict[int, int]        # display index (1..N) -> stored param value
+  labels_by_value: dict[int, str]  # stored param value -> label (OptionControlSP passes the mapped value)
+
+  @property
+  def min_value(self) -> int:
+    return 1
+
+  @property
+  def max_value(self) -> int:
+    return len(self.value_map)
+
+
+def value_mapped_option(item: dict) -> ValueMappedOption | None:
+  """Detect an enumerated option with arbitrary (gapped/non-zero) integer values."""
+  options = item.get("options")
+  if not options:
+    return None
+  values: list[int] = []
+  labels: list[str] = []
+  for opt in options:
+    value = opt.get("value")
+    if not isinstance(value, int) or isinstance(value, bool):
+      return None
+    values.append(value)
+    labels.append(opt.get("label", str(value)))
+  value_map = {i + 1: values[i] for i in range(len(values))}
+  labels_by_value = {values[i]: labels[i] for i in range(len(values))}
+  return ValueMappedOption(value_map=value_map, labels_by_value=labels_by_value)
+
+
 def sequential_int_labels(item: dict) -> list[str] | None:
   """Return option labels iff the option values are exactly 0..n-1 ints.
 

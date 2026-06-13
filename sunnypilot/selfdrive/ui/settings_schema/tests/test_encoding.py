@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.encoding import (
-  contiguous_int_options, encode_numeric_option, sequential_int_labels,
+  contiguous_int_options, encode_numeric_option, sequential_int_labels, value_mapped_option,
 )
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import find_item, get_panel, load_schema
 
@@ -85,8 +85,24 @@ def test_zero_based_enum_is_also_contiguous():
   "TorqueControlTune",            # values '', 1.0, 0.0 (string + floats)
 ])
 def test_string_float_enums_remain_escape_hatch(key):
-  # No contiguous-int and no zero-based-button-row encoding -> needs a value-mapped
-  # or custom selector (deferred; these live in not-yet-wired sub-panels).
+  # No contiguous-int and no zero-based-button-row encoding -> needs a custom
+  # selector (string/float values; deferred to the dialog custom widget).
   item = find_item(STEERING, key)
   assert contiguous_int_options(item) is None
   assert sequential_int_labels(item) is None
+  assert value_mapped_option(item) is None  # value_mapped only handles ints
+
+
+def test_value_mapped_option_for_gapped_ints():
+  # Cruise's CustomAccLongPressIncrement: stored values 1/5/10 over a 3-step stepper.
+  item = {"options": [{"value": 1, "label": "1"}, {"value": 5, "label": "5"}, {"value": 10, "label": "10"}]}
+  vm = value_mapped_option(item)
+  assert vm is not None
+  assert vm.value_map == {1: 1, 2: 5, 3: 10}           # display index -> stored value
+  assert vm.labels_by_value == {1: "1", 5: "5", 10: "10"}
+  assert (vm.min_value, vm.max_value) == (1, 3)
+
+
+def test_value_mapped_option_rejects_non_ints():
+  assert value_mapped_option({"options": [{"value": "a", "label": "A"}]}) is None
+  assert value_mapped_option({"options": []}) is None

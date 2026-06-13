@@ -98,15 +98,7 @@ sections:
       - type: capability
         field: has_icbm
         equals: true
-  sub_panels:
-  - id: custom_acc_intervals
-    label: Custom ACC Speed Intervals Settings
-    trigger_key: CustomAccIncrementsEnabled
-    trigger_condition:
-      type: param
-      key: CustomAccIncrementsEnabled
-      equals: true
-    items:
+    sub_items:
     - key: CustomAccShortPressIncrement
       widget: option
       title: Short Press Increment
@@ -120,9 +112,13 @@ sections:
     - key: CustomAccLongPressIncrement
       widget: option
       title: Long Press Increment
-      min: 1
-      max: 10
-      step: 1
+      options:
+      - value: 1
+        label: '1'
+      - value: 5
+        label: '5'
+      - value: 10
+        label: '10'
       enablement:
       - type: param
         key: CustomAccIncrementsEnabled

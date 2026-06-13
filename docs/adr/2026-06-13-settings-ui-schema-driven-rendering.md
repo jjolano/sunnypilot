@@ -111,9 +111,15 @@ Staying hand-coded (the custom set) — each has a concrete blocker, not mere ef
   branch selector). These need real custom widgets via the registry, not declarative
   controls; the schema doesn't (and shouldn't) carry the toggles those panels' custom
   buttons live alongside.
-- **cruise** — convertible in principle (steering pattern), but the schema's structure
-  diverges from the device (custom-ACC inlined vs. sub-panelled) and it relies on
-  param-forcing cleanup; needs reconciliation + an `on_change` hatch first.
+- **cruise** — groundwork done: the schema is reconciled (custom-ACC increments
+  inlined to match the device; the long-press increment given its real {1,5,10}
+  value-map), and the reusable pieces exist (value-mapped enum rendering +
+  `SchemaNavLayout` for sub-panel delegation). Mounting is BLOCKED on a content
+  decision: the schema's cruise panel also declares `ExperimentalMode` /
+  `DisengageOnAccelerator` / `LongitudinalPersonality`, which the device already
+  shows in the upstream Toggles panel — mounting as-is duplicates them. Deduping
+  (or confirming the move is intended) plus the param-forcing cleanup needs the
+  owner's call and on-device visual validation.
 - **vehicle / network / osm / trips / sunnylink / firehose** — genuinely custom
   (brand selectors, wifi, maps, uploads).
 
