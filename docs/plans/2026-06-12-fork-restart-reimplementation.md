@@ -23,8 +23,11 @@ improvement specs.
 - Preserving the stack-selector / registry / promotion-gate machinery (single known-good
   implementation per axis, plain params for toggles).
 - Porting torque v0/v3/v4, custom-experimental stacks, or scene-memory-v1.
-- One-pedal mode, SCC mode restructuring, tailscale/device-admin in the first pass
-  (re-add later only if actually used; each was independent in the old fork).
+- One-pedal longitudinal mode — dropped (not used day-to-day; confirmed 2026-06-13).
+- Tailscale IS kept — ported 2026-06-13 as new files plus three small touch points; see
+  `docs/touch-points.md`.
+
+SCC mode is KEPT, not deferred — see "Longitudinal modes" below.
 
 ## Repo model (simplified)
 
@@ -126,14 +129,31 @@ test in Phase 2").
 
 ## Phase 2 — Lateral controller: torque v2.1 as a unified rewrite
 
-**Port** the proven v2 response core *unchanged in math*: speed-interpolated KP schedule,
-1 s lateral-accel request buffer + delay compensation, measurement smoother, low-speed
-unwind, low-demand friction scaling (~350 lines). Feel lives here; do not "improve" it.
+**Integration: join upstream's native selector, don't rebuild the fork's.** Upstream
+sunnypilot already ships a torque controller list (`TorqueControlTune` param,
+`latcontrol_torque_versions.json` manifest driving the torque settings UI and sunnylink
+schema, dispatch in `controlsd_ext.initialize_lateral_control()`) with v0.0 and v1.0
+entries. The rewritten v2.1 becomes a third entry: one manifest line, one new controller
+module, one dispatch case in `controlsd_ext.py` (a designed extension point — small
+touch). The list reads v0.0 / v1.0 / v2.1; both stock fallbacks come free. Default is
+`TorqueControlTune=2.1` on the device once this phase validates. The fork's parallel
+`torque_versions.py` registry and the retired versions (v2.0, v3, v4.x, 5.0) do not
+return. Longitudinal has no upstream equivalent (`LongitudinalStack` was fork-invented),
+so it stays a single fork param — custom policy on/off — defaulting on after Phase 4.
 
-**Rewrite** the output stage. Today four mechanisms stack with cross-layer special cases
-(over-response attenuator → guarded response assist → conservative shaper → refined
-governor, with e.g. `shaper_already_capped` leaking shaper state into governor gating).
-This stack is the prime controller-side quirk suspect. Replace with **one** output governor:
+**Clean-room architecture, preserved behavior.** The controller is rebuilt with whatever
+architecture is best — it is not a file-by-file port. What is preserved is *behavioral*:
+the v2 response math that carries the feel (speed-interpolated KP schedule, 1 s
+lateral-accel request buffer + delay compensation, measurement smoother, low-speed
+unwind, low-demand friction scaling) and the tuned constants, with parity enforced by
+the Phase 0 corpus gates rather than by structural fidelity. Restructure freely; change
+behavior knowingly (each intentional behavior delta gets named and gated) or not at all.
+
+**Rewrite** the output stage as part of that. Today four mechanisms stack with
+cross-layer special cases (over-response attenuator → guarded response assist →
+conservative shaper → refined governor, with e.g. `shaper_already_capped` leaking shaper
+state into governor gating). This stack is the prime controller-side quirk suspect.
+Replace with **one** output governor:
 
 - Single input observation struct (the existing `TorqueObservation` generalized).
 - Single pass computing: cap (high-rate, same-direction, saturation context), slew
@@ -179,12 +199,44 @@ attribution is a log query, not a fork restart.
 Exit criteria: each enabled processor shows a measurable corpus win (or is dropped);
 combined feel parity with old fork on the corpus.
 
-## Phase 4 — Longitudinal core: policy overlay, decision duality collapsed
+## Phase 4 — Longitudinal core: modes + policy overlay, decision duality collapsed
 
 **Preserve the architecture** (ADR 0001 verbatim): custom longitudinal is policy arbitration
 over valid MPC envelopes. MPC keeps all physical lead-follow authority. Fail-closed faults.
 
-**Rewrite shape** (~2.5k lines target, from ~3.4k):
+### Longitudinal modes (ACC / E2E / SCC) — KEPT
+
+This is a deliberate product feature, not stack scaffolding, and it is preserved. A
+**Longitudinal Mode** is the top-level user behavior choice; it gates which *classes of
+evidence* may reach actuation before policy candidates are built. The three modes and their
+intended character (owner intent, 2026-06-13):
+
+- **ACC** — a faithful OEM-like adaptive cruise: speed hold + lead following only. It must
+  *not* consume model-stop, map, speed-limit, OSM, or curve evidence. The bar is "feels like
+  the car's factory ACC", so a driver can pick it and get predictable, boring cruise.
+- **E2E** — the driving model drives the car: full model authority, including reacting to
+  traffic lights and stop signs the model detects. This is the headline advantage of E2E
+  over ACC.
+- **SCC** — intelligently blends ACC and E2E: ACC-like smoothness and predictability as the
+  base, with E2E's traffic-control awareness (lights, stop signs, stops) layered in inside
+  mode-specific boundaries. SCC selects ACC-like or E2E-like behavior from explicit evidence
+  rather than running raw model output.
+
+**Joint control toggle** is kept: one convenient setting switches the active mode (the old
+fork's mode selector UX). Modes are a latched per-onroad-cycle choice, not a per-tick
+arbiter, and they sit *above* the policy overlay — the overlay still arbitrates within
+whatever evidence the active mode admits.
+
+**Rewrite shape (mode layer):** a single `LongitudinalMode` enum + an evidence-admission
+gate (one function: mode → allowed evidence classes), replacing the old DEC/mode plumbing.
+The gate is the *only* place that decides admissibility; the policy overlay and MPC never
+re-admit evidence the mode excluded. SCC's blend logic is a named, tested component, not
+scattered conditionals. Reference: legacy ADR `2026-05-31-longitudinal-modes.md` and the
+SCC Mode / SCC Curve Control language in `docs/legacy/CONTEXT-longitudinal.md`. SCC curve
+sources (`SccCurveVisionEnabled`, `SccCurveMapEnabled`) come with the map work in Phase 6;
+until then SCC blends model-stop/lead evidence only and the curve-source toggles are inert.
+
+**Rewrite shape (policy overlay)** (~2.5k lines target, from ~3.4k):
 - Merge `longitudinal_decision.py` (891) and `custom_v2.py` (1051) into one decision core +
   one policy module. Delete the legacy `_decide` path — `_decide_from_core` becomes the only
   path. The candidate/intent/authority model is good; the duality and scene-struct shadowing
@@ -232,11 +284,15 @@ only new learned state; persist it like the existing live torque params.
 ## Phase 6 — Optional periphery (only what real usage justifies)
 
 Decision points — defer until the core phases prove out:
-- Map/OSM curve + speed-limit sources (old speed-map-control work): port only if Phase 5
-  item 4 is wanted; the mapd plumbing is large.
-- One-pedal mode: skip unless actually used day-to-day.
+- Map/OSM curve + speed-limit sources (old speed-map-control work): wanted, because they
+  feed SCC mode's curve awareness (`SccCurveVisionEnabled` / `SccCurveMapEnabled`) and the
+  Phase 5 map-curve soft advance. The mapd plumbing is large, so it lands here rather than
+  blocking the core; SCC mode ships functional without it (traffic-control/stop awareness
+  from the model) and gains curve sources when this lands.
 - Speed-adaptive torque learning promotion to default-on (from Phase 2 optional).
-- Tailscale/device-admin, UI settings pages beyond the minimal params needed.
+- UI settings pages beyond the minimal params needed.
+
+Dropped (not deferred): one-pedal longitudinal mode. Tailscale already landed (Phase 1).
 
 ## Validation infrastructure (cross-cutting)
 
