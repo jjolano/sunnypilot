@@ -238,16 +238,25 @@ def _path_relative_y(y_rel: float, d_rel: float, model_msg: Any | None) -> float
   return y_rel
 
 
-def lead_prediction(d_rel: float, v_lead: float, a_lead: float, v_ego: float, valid: bool = True) -> LeadTrajectoryPrediction:
+A_LEAD_TAU_DEFAULT = 1.5  # s; lead-accel decay time constant (matches the MPC's aLeadTau use)
+
+
+def lead_prediction(d_rel: float, v_lead: float, a_lead: float, v_ego: float, valid: bool = True,
+                    a_lead_tau: float = A_LEAD_TAU_DEFAULT) -> LeadTrajectoryPrediction:
+  # Decay the (noisy) lead accel toward zero with aLeadTau instead of propagating it constant,
+  # as the MPC does — constant a_lead over the horizon was a likely lead-pullaway quirk source
+  # (it makes predicted_gap_opening over-eager when the lead briefly accelerates).
+  tau = max(finite_float(a_lead_tau, A_LEAD_TAU_DEFAULT), 0.1)
   xs: list[float] = []
   vs: list[float] = []
   accels: list[float] = []
   for t in LEAD_CONTEXT_PREVIEW_T:
-    v = max(0.0, v_lead + a_lead * t)
-    x = max(0.0, d_rel + (v_lead - v_ego) * t + 0.5 * a_lead * t * t)
+    decay = math.exp(-t / tau)
+    v = max(0.0, v_lead + a_lead * tau * (1.0 - decay))
+    x = max(0.0, d_rel + (v_lead - v_ego) * t + a_lead * tau * (t - tau * (1.0 - decay)))
     xs.append(float(x))
     vs.append(float(v))
-    accels.append(float(a_lead))
+    accels.append(float(a_lead * decay))
   return LeadTrajectoryPrediction(tuple(xs), tuple(vs), tuple(accels), valid)
 
 
@@ -571,7 +580,8 @@ class LeadContextTracker:
     confidence = _confidence_score(True, False, confidence_state, model_prob, radar)
     ghost = _ghost_score(on_path, risk, confidence, model_prob, radar)
     a_lead = finite_float(getattr(lead, "aLeadK", 0.0))
-    prediction = lead_prediction(d_rel, v_lead, a_lead, v_ego, True)
+    a_lead_tau = finite_float(getattr(lead, "aLeadTau", A_LEAD_TAU_DEFAULT), A_LEAD_TAU_DEFAULT)
+    prediction = lead_prediction(d_rel, v_lead, a_lead, v_ego, True, a_lead_tau)
     risk_model = _lead_risk_model(
       required_decel, ttc, time_gap, d_rel, v_ego, v_lead, v_rel, path_y_rel, on_path,
       confidence_state, model_prob, radar, ghost,

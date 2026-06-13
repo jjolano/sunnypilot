@@ -23,6 +23,16 @@ def test_lead_prediction_fields_finite():
   assert p.x[-1] <= p.x[0]
 
 
+def test_lead_prediction_decays_a_lead():
+  # accelerating lead: a_lead decays over the horizon and the predicted gap is less eager than
+  # constant-a_lead kinematics would give (the predicted_gap_opening over-eagerness fix)
+  p = lc.lead_prediction(d_rel=30.0, v_lead=15.0, a_lead=2.0, v_ego=15.0, a_lead_tau=1.5)
+  assert all(p.a[i + 1] < p.a[i] for i in range(len(p.a) - 1))
+  t_end = lc.LEAD_CONTEXT_PREVIEW_T[-1]
+  constant_gap = 30.0 + 0.5 * 2.0 * t_end * t_end  # v_lead == v_ego, so only the accel term
+  assert p.x[-1] < constant_gap
+
+
 def test_required_decel_zero_when_not_closing():
   assert lc._required_decel(d_rel=20.0, v_rel=2.0) == 0.0   # opening
   assert lc._required_decel(d_rel=20.0, v_rel=0.0) == 0.0
