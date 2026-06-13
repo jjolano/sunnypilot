@@ -6,16 +6,19 @@ See the LICENSE.md file in the root directory for more details.
 
 Global settings search panel.
 
-A tappable search box (opens the on-screen keyboard) over a list of ranked result
-rows; each result shows the setting title + the panel it now lives in, and tapping
-it jumps there via the supplied navigate callback. `set_query` drives the results,
-so the screenshot harness can render a fixed query without typing.
+A search field (magnifier + query text) that opens the on-screen keyboard on tap,
+over a list of ranked result rows. Each result shows the setting title + the panel
+it now lives in, and tapping it jumps there via the supplied navigate callback.
+`set_query` drives the results, so the screenshot harness can render a fixed query
+without typing.
 """
 from collections.abc import Callable
 
 import pyray as rl
 
+from openpilot.system.ui.lib.application import FontWeight, MousePos, gui_app
 from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.sunnypilot.lib.styles import style
 from openpilot.system.ui.sunnypilot.widgets.input_dialog import InputDialogSP
 from openpilot.system.ui.sunnypilot.widgets.list_view import simple_button_item_sp
 from openpilot.system.ui.widgets import DialogResult, Widget
@@ -34,9 +37,7 @@ class SearchLayout(Widget):
     self._navigate = navigate_callback
     self._index = index if index is not None else build_index()
     self._query = ""
-    self._search_button = simple_button_item_sp(
-      button_text=lambda: self._query or tr("Search settings…"),
-      callback=self._open_keyboard, button_width=_RESULT_WIDTH)
+    self._box_rect = rl.Rectangle(0, 0, 0, 0)
     self._results = Scroller([], line_separator=True, spacing=0)
     self.set_query(query)
 
@@ -57,11 +58,28 @@ class SearchLayout(Widget):
         callback=lambda r=rec: self._navigate(r.live_panel_id, r.key) if self._navigate else None))
     self._results = Scroller(rows, line_separator=True, spacing=0)
 
+  def _draw_search_field(self, rect: rl.Rectangle):
+    self._box_rect = rl.Rectangle(rect.x, rect.y, rect.width, _BOX_HEIGHT)
+    rl.draw_rectangle_rounded(self._box_rect, 0.3, 16, style.BASE_BG_COLOR)
+    # magnifier: lens ring + handle
+    cx, cy, r = rect.x + 58, rect.y + _BOX_HEIGHT / 2, 24
+    icon_color = style.ITEM_DESC_TEXT_COLOR
+    rl.draw_ring(rl.Vector2(cx, cy), r - 5, r, 0, 360, 32, icon_color)
+    rl.draw_line_ex(rl.Vector2(cx + r * 0.7, cy + r * 0.7), rl.Vector2(cx + r * 1.4, cy + r * 1.4), 7, icon_color)
+    # query / placeholder
+    text = self._query or tr("Search settings")
+    color = style.ITEM_TEXT_COLOR if self._query else style.ITEM_DESC_TEXT_COLOR
+    rl.draw_text_ex(gui_app.font(FontWeight.NORMAL), text,
+                    rl.Vector2(rect.x + 115, rect.y + _BOX_HEIGHT / 2 - 28), 52, 0, color)
+
   def _render(self, rect: rl.Rectangle):
-    self._search_button.set_parent_rect(rect)
-    self._search_button.render(rl.Rectangle(rect.x, rect.y, rect.width, _BOX_HEIGHT))
+    self._draw_search_field(rect)
     self._results.render(rl.Rectangle(rect.x, rect.y + _BOX_HEIGHT + 20,
                                       rect.width, rect.height - _BOX_HEIGHT - 20))
+
+  def _handle_mouse_release(self, mouse_pos: MousePos):
+    if rl.check_collision_point_rec(mouse_pos, self._box_rect):
+      self._open_keyboard()
 
   def show_event(self):
     self._results.show_event()
