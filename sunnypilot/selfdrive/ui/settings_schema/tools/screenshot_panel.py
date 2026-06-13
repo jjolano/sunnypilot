@@ -65,8 +65,8 @@ def build_panel(panel_id: str):
     from openpilot.sunnypilot.selfdrive.ui.settings_schema.interface_panel import build_interface_layout
     return build_interface_layout()
   if panel_id.startswith("search:"):
-    from openpilot.sunnypilot.selfdrive.ui.settings_schema.search_view import SearchView
-    return SearchView(query=panel_id.split(":", 1)[1])
+    from openpilot.sunnypilot.selfdrive.ui.settings_schema.search_view import SearchLayout
+    return SearchLayout(query=panel_id.split(":", 1)[1])
   return SchemaPanelLayout(panel_id)
 
 

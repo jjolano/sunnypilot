@@ -22,6 +22,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.trips import TripsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle import VehicleLayout
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.driving_panel import build_driving_layout
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.interface_panel import build_interface_layout
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.search_view import SearchLayout
 from openpilot.system.ui.lib.application import gui_app, MousePos
 from openpilot.system.ui.lib.multilang import tr_noop
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -38,6 +39,7 @@ ICON_SIZE = 70
 OP.PanelType = IntEnum(
   "PanelType",
   [es.name for es in OP.PanelType] + [
+    "SEARCH",
     "SUNNYLINK",
     "MODELS",
     "DRIVING",
@@ -49,6 +51,18 @@ OP.PanelType = IntEnum(
   ],
   start=0,
 )
+
+# Consolidated-panel id (from a search record's live_panel_id) -> the PanelType to open.
+_PANEL_BY_ID = {
+  "driving": OP.PanelType.DRIVING,
+  "interface": OP.PanelType.INTERFACE,
+  "models": OP.PanelType.MODELS,
+  "software": OP.PanelType.SOFTWARE,
+  "developer": OP.PanelType.DEVELOPER,
+  "device": OP.PanelType.DEVICE,
+  "vehicle": OP.PanelType.VEHICLE,
+  "toggles": OP.PanelType.TOGGLES,
+}
 
 
 @dataclass
@@ -105,6 +119,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
     wifi_manager.set_active(False)
 
     self._panels = {
+      OP.PanelType.SEARCH: PanelInfo(tr_noop("Search"), SearchLayout(self._navigate_to_setting), icon="icons/network.png"),
       OP.PanelType.DEVICE: PanelInfo(tr_noop("Device"), DeviceLayoutSP(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_home.png"),
       OP.PanelType.NETWORK: PanelInfo(tr_noop("Network"), NetworkUISP(wifi_manager), icon="icons/network.png"),
       OP.PanelType.SUNNYLINK: PanelInfo(tr_noop("sunnylink"), SunnylinkLayout(), icon="icons/wifi_strength_full.png"),
@@ -120,6 +135,12 @@ class SettingsLayoutSP(OP.SettingsLayout):
       OP.PanelType.FIREHOSE: PanelInfo(tr_noop("Firehose"), FirehoseLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_firehose.png"),
       OP.PanelType.DEVELOPER: PanelInfo(tr_noop("Developer"), DeveloperLayoutSP(), icon="icons/shell.png"),
     }
+
+  def _navigate_to_setting(self, live_panel_id: str, key: str) -> None:
+    """Jump from a global-search result to the panel the setting lives in."""
+    panel_type = _PANEL_BY_ID.get(live_panel_id)
+    if panel_type is not None:
+      self.set_current_panel(panel_type)
 
   def _draw_sidebar(self, rect: rl.Rectangle):
     rl.draw_rectangle_rec(rect, OP.SIDEBAR_COLOR)

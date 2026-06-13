@@ -16,28 +16,40 @@ from dataclasses import dataclass
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import iter_items, load_schema
 
 
+# Source schema panel -> the consolidated panel it now lives in (device IA).
+# Anything not listed lives in a panel of its own id.
+_CONSOLIDATION = {
+  "steering": ("driving", "Driving"),
+  "cruise": ("driving", "Driving"),
+  "visuals": ("interface", "Interface"),
+  "display": ("interface", "Interface"),
+}
+
+
 @dataclass(frozen=True)
 class SearchRecord:
   key: str
   title: str
   description: str
-  panel_id: str
+  panel_id: str         # source schema panel
   panel_label: str
+  live_panel_id: str    # consolidated panel the setting is reached through
+  live_panel_label: str
 
 
 def build_index(schema: dict | None = None) -> list[SearchRecord]:
   schema = schema if schema is not None else load_schema()
   records: list[SearchRecord] = []
   for panel in schema.get("panels", []):
+    pid = panel.get("id", "")
+    plabel = panel.get("label", pid)
+    live_id, live_label = _CONSOLIDATION.get(pid, (pid, plabel))
     for item in iter_items(panel):
       if "key" not in item:
         continue
       records.append(SearchRecord(
-        key=item["key"],
-        title=item.get("title", ""),
-        description=item.get("description", ""),
-        panel_id=panel.get("id", ""),
-        panel_label=panel.get("label", panel.get("id", "")),
+        key=item["key"], title=item.get("title", ""), description=item.get("description", ""),
+        panel_id=pid, panel_label=plabel, live_panel_id=live_id, live_panel_label=live_label,
       ))
   return records
 
