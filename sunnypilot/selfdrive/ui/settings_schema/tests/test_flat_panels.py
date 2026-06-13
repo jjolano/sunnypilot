@@ -12,10 +12,13 @@ class of regression). Pure/headless.
 """
 from __future__ import annotations
 
-from openpilot.sunnypilot.selfdrive.ui.settings_schema.encoding import sequential_int_labels
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.encoding import (
+  contiguous_int_options, sequential_int_labels, value_mapped_option,
+)
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import find_item, get_panel, iter_items, load_schema
 
 VISUALS = get_panel(load_schema(), "visuals")
+DISPLAY = get_panel(load_schema(), "display")
 
 # Transcribed from the retired visuals.py: 11 toggles + 2 enum button-rows.
 VISUALS_EXPECTED = {
@@ -44,3 +47,38 @@ def test_visuals_chevron_gated_on_longitudinal():
   chevron = find_item(VISUALS, "ChevronInfo")
   rules = chevron.get("enablement") or []
   assert any(r.get("type") == "capability" and r.get("field") == "has_longitudinal_control" for r in rules)
+
+
+# --- display: three steppers (brightness + two value-mapped delays) -----------
+
+def test_display_controls_are_option_steppers():
+  got = {it["key"]: it["widget"] for it in iter_items(DISPLAY) if "key" in it}
+  assert got == {
+    "OnroadScreenOffBrightness": "option",
+    "OnroadScreenOffTimer": "option",
+    "InteractivityTimeout": "option",
+  }
+
+
+def test_display_brightness_contiguous_with_labels():
+  enc = contiguous_int_options(find_item(DISPLAY, "OnroadScreenOffBrightness"))
+  assert enc is not None
+  assert (enc.min_value, enc.max_value) == (0, 22)
+  assert enc.labels_by_value[0] == "Auto (Default)"
+  assert enc.labels_by_value[2] == "Screen Off"
+  assert enc.labels_by_value[22] == "100 %"
+
+
+def test_display_timer_value_mapped_to_valid_seconds_only():
+  # Matches ONROAD_BRIGHTNESS_TIMER_VALUES exactly — no invalid 0/"Always On".
+  enc = value_mapped_option(find_item(DISPLAY, "OnroadScreenOffTimer"))
+  assert enc is not None
+  assert set(enc.value_map.values()) == {3, 5, 7, 10, 15, 30, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600}
+
+
+def test_display_timer_gated_on_brightness_not_auto():
+  # display.py:88 — timer enabled only when brightness is not AUTO(0)/AUTO_DARK(1).
+  enc = value_mapped_option(find_item(DISPLAY, "InteractivityTimeout"))
+  assert enc is not None and enc.value_map[1] == 0  # "Default"
+  timer = find_item(DISPLAY, "OnroadScreenOffTimer")
+  assert timer.get("enablement"), "timer must carry the brightness gate"

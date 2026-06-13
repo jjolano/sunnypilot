@@ -14,7 +14,6 @@ from openpilot.selfdrive.ui.layouts.settings.toggles import TogglesLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_settings import SpeedLimitSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.developer import DeveloperLayoutSP
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.device import DeviceLayoutSP
-from openpilot.selfdrive.ui.sunnypilot.layouts.settings.display import DisplayLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.models import ModelsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.network import NetworkUISP
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.osm import OSMLayout
@@ -122,7 +121,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
       OP.PanelType.STEERING: PanelInfo(tr_noop("Steering"), SchemaSteeringLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_lateral.png"),
       OP.PanelType.CRUISE: PanelInfo(tr_noop("Cruise"), SchemaNavLayout("cruise", _CRUISE_SUBPANELS), icon="icons/speed_limit.png"),
       OP.PanelType.VISUALS: PanelInfo(tr_noop("Visuals"), SchemaPanelLayout("visuals"), icon="../../sunnypilot/selfdrive/assets/offroad/icon_visuals.png"),
-      OP.PanelType.DISPLAY: PanelInfo(tr_noop("Display"), DisplayLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_display.png"),
+      OP.PanelType.DISPLAY: PanelInfo(tr_noop("Display"), SchemaPanelLayout("display"), icon="../../sunnypilot/selfdrive/assets/offroad/icon_display.png"),
       OP.PanelType.OSM: PanelInfo(tr_noop("OSM"), OSMLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_map.png"),
       # OP.PanelType.NAVIGATION: PanelInfo(tr_noop("Navigation"), NavigationLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_map.png"),
       OP.PanelType.TRIPS: PanelInfo(tr_noop("Trips"), TripsLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_trips.png"),

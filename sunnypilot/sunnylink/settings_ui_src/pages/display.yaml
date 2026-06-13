@@ -12,7 +12,7 @@ sections:
   description: Screen dimming and sleep behavior while driving
   items:
   - key: OnroadScreenOffBrightness
-    widget: multiple_button
+    widget: option
     title: Onroad Brightness
     options:
     - value: 0
@@ -62,29 +62,41 @@ sections:
     - value: 22
       label: 100 %
   - key: OnroadScreenOffTimer
-    widget: multiple_button
+    widget: option
     title: Onroad Brightness Delay
     options:
-    - value: 0
-      label: Always On
     - value: 3
-      label: 3s
+      label: 3 s
     - value: 5
-      label: 5s
+      label: 5 s
+    - value: 7
+      label: 7 s
     - value: 10
-      label: 10s
+      label: 10 s
     - value: 15
-      label: 15s
+      label: 15 s
     - value: 30
-      label: 30s
+      label: 30 s
     - value: 60
-      label: 1m
+      label: 1 m
+    - value: 120
+      label: 2 m
     - value: 180
-      label: 3m
+      label: 3 m
+    - value: 240
+      label: 4 m
     - value: 300
-      label: 5m
+      label: 5 m
+    - value: 360
+      label: 6 m
+    - value: 420
+      label: 7 m
+    - value: 480
+      label: 8 m
+    - value: 540
+      label: 9 m
     - value: 600
-      label: 10m
+      label: 10 m
     enablement:
     - type: not
       condition:
@@ -97,7 +109,7 @@ sections:
           key: OnroadScreenOffBrightness
           equals: 1
   - key: InteractivityTimeout
-    widget: multiple_button
+    widget: option
     title: Interactivity Timeout
     description: Apply a custom timeout for settings UI. This is the time after which settings UI closes automatically if
       user is not interacting with the screen.
