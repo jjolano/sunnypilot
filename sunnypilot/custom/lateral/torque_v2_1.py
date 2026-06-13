@@ -1,0 +1,116 @@
+"""Torque v2.1 controller — composes the response core and unified output governor.
+
+Wires response_core -> NNLC/override extension -> output_governor behind the upstream
+``LatControl`` interface, and is dispatched from ``controlsd_ext.initialize_lateral_control``
+when ``TorqueControlTune == 2.1``. See
+``docs/adr/2026-06-13-clean-room-torque-v2-1-architecture.md``.
+
+First-cut approximations (land with engaged-route tuning / the steering-actuator-feedback
+port): the governor's ``same_direction_limit`` is approximated by ``steer_limited_by_safety``
+and ``release_active`` by ``steering_pressed``; the governor's deferred comfort behaviors and
+the additive assist learning are not yet present. End-to-end feel is validated against the
+engaged-route corpus, not here.
+"""
+from __future__ import annotations
+
+from cereal import log
+from opendbc.car.lateral import get_friction
+
+from openpilot.selfdrive.controls.lib.latcontrol import LatControl
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
+from openpilot.sunnypilot.custom.lateral.output_governor import OutputGovernor, OutputGovernorInputs
+from openpilot.sunnypilot.custom.lateral.response_core import ResponseCore, ResponseCoreInputs
+
+VERSION_V21 = 21
+
+
+class LatControlTorqueV21(LatControl):
+  def __init__(self, CP, CP_SP, CI, dt, extension=None):
+    super().__init__(CP, CP_SP, CI, dt)
+    self.torque_params = CP.lateralTuning.torque.as_builder()
+    self._vm = None
+    self.response_core = ResponseCore(
+      dt, self.steer_max, self.torque_params,
+      calc_curvature=lambda angle_rad, v_ego, roll: self._vm.calc_curvature(angle_rad, v_ego, roll),
+      torque_from_lateral_accel=CI.torque_from_lateral_accel(),
+      lateral_accel_from_torque=CI.lateral_accel_from_torque(),
+      get_friction=get_friction,
+    )
+    self.governor = OutputGovernor(dt)
+    self.extension = extension if extension is not None else LatControlTorqueExt(self, CP, CP_SP, CI)
+
+  def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
+    self.torque_params.latAccelFactor = latAccelFactor
+    self.torque_params.latAccelOffset = latAccelOffset
+    self.torque_params.friction = friction
+    self.response_core.update_limits()
+
+  def _core_inputs(self, active, CS, params, steer_limited_by_safety, desired_curvature, lat_delay) -> ResponseCoreInputs:
+    return ResponseCoreInputs(
+      active=active,
+      v_ego=CS.vEgo,
+      steering_angle_deg=CS.steeringAngleDeg,
+      steering_rate_deg=CS.steeringRateDeg,
+      steering_pressed=CS.steeringPressed,
+      angle_offset_deg=params.angleOffsetDeg,
+      roll=params.roll,
+      desired_curvature=desired_curvature,
+      lat_delay=max(lat_delay, self.dt),
+      steer_limited_by_safety=steer_limited_by_safety,
+    )
+
+  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
+    self._vm = VM
+    if self.extension.update_override_torque_params(self.torque_params):
+      self.response_core.update_limits()
+
+    pid_log = log.ControlsState.LateralTorqueState.new_message()
+    pid_log.version = VERSION_V21
+
+    # The response core always advances its buffer/smoother (matching legacy v2) and resets
+    # its PID when inactive; only its PID output is gated by `active`.
+    rc = self.response_core.update(self._core_inputs(active, CS, params, steer_limited_by_safety, desired_curvature, lat_delay))
+
+    if not active:
+      self.governor.reset()
+      pid_log.active = False
+      return 0.0, 0.0, pid_log
+
+    pid_log.error = float(rc.error)
+    output_torque = rc.output_torque
+
+    # NNLC / override extension (explicit injection point; overrides pid_log and output_torque)
+    pid_log, output_torque = self.extension.update(
+      CS, VM, self.response_core.pid, params, rc.ff, pid_log, rc.setpoint, rc.measurement, calibrated_pose,
+      rc.roll_compensation, rc.future_desired_lateral_accel, rc.measurement, rc.lateral_accel_deadzone,
+      rc.gravity_adjusted_future_lateral_accel, desired_curvature, rc.measured_curvature, steer_limited_by_safety,
+      output_torque,
+    )
+
+    governed = self.governor.update(OutputGovernorInputs(
+      active=True,
+      v_ego=CS.vEgo,
+      steering_rate_deg=-CS.steeringRateDeg,
+      nominal_torque=output_torque,
+      max_output=self.steer_max,
+      desired_lateral_accel=rc.setpoint,
+      actual_lateral_accel=rc.measurement,
+      same_direction_limit=bool(steer_limited_by_safety),
+      release_active=bool(CS.steeringPressed),
+    ))
+    output_torque = governed.output_torque
+
+    pid_log.active = True
+    pid_log.p = float(self.response_core.pid.p)
+    pid_log.i = float(self.response_core.pid.i)
+    pid_log.d = float(self.response_core.pid.d)
+    pid_log.f = float(self.response_core.pid.f)
+    pid_log.output = float(-output_torque)
+    pid_log.actualLateralAccel = float(rc.measurement)
+    pid_log.desiredLateralAccel = float(rc.setpoint)
+    pid_log.desiredLateralJerk = float(rc.desired_lateral_jerk)
+    pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS,
+                                                    steer_limited_by_safety, curvature_limited))
+
+    # TODO left is positive in this convention
+    return -output_torque, 0.0, pid_log

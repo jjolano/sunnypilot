@@ -107,6 +107,8 @@ class ResponseCoreResult:
   raw_measurement: float
   measured_curvature: float
   error: float
+  ff: float
+  roll_compensation: float
   desired_lateral_jerk: float
   raw_actual_lateral_jerk: float
   future_desired_lateral_accel: float
@@ -250,6 +252,8 @@ class ResponseCore:
       raw_measurement=raw_measurement,
       measured_curvature=measured_curvature,
       error=error,
+      ff=ff,
+      roll_compensation=roll_compensation,
       desired_lateral_jerk=desired_lateral_jerk,
       raw_actual_lateral_jerk=raw_actual_lateral_jerk,
       future_desired_lateral_accel=future_desired_lateral_accel,
