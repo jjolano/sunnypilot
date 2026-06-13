@@ -82,6 +82,16 @@ def test_personality_changes_launch():
   assert results[Personality.AGGRESSIVE] > results[Personality.RELAXED]
 
 
+def test_stack_cushion_active_with_slower_lead():
+  # slower lead with enough runway -> the lead-following cushion coasts (advisory) instead of
+  # cruising up to the set speed, proving the Phase 5 integration is live in the stack path.
+  s = CustomLongitudinalStack()
+  r = s.update(base(v_ego=20.0, v_cruise=22.0, seed_a_target=0.3,
+                    leads=(lead(d_rel=385.0, v_lead=15.0), None), lead_a_target=0.0,
+                    mode=LongitudinalMode.ACC), DT)
+  assert r.a_target < 0.3
+
+
 def test_reset_clears_trackers():
   s = CustomLongitudinalStack()
   for _ in range(10):

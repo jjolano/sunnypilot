@@ -17,9 +17,11 @@ corpus; the implementation and its constants are complete.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from openpilot.sunnypilot.custom.longitudinal.decision import CandidateRole, LongitudinalCandidate
+from openpilot.sunnypilot.custom.longitudinal.lead_cushion import lead_following_cushion, lead_speedup_guard
+from openpilot.sunnypilot.custom.longitudinal.model_trust import gate_model_stop
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   COMFORT_RELAX_ACCEL_MIN,
@@ -53,10 +55,16 @@ class LongitudinalScene:
   lead_should_stop: bool = False
   lead_gap_excess: float = 0.0
   lead_progress_allowed: bool = False
+  # lead kinematics (for cushion / speedup guard / radar corroboration)
+  lead_v: float = 0.0
+  lead_d_rel: float = 0.0
+  lead_v_rel: float = 0.0
+  follow_gap: float = 0.0
   # model stop (E2E)
   model_should_stop: bool = False
   model_stop_distance: float | None = None
   model_desired_accel: float = 0.0
+  model_stop_prob: float = 1.0   # model confidence in the stop (trust gate); 1.0 = fully trusted
   stop_threat: bool = False
   # advisory sources
   speed_limit_active: bool = False
@@ -161,9 +169,12 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
     cands.append(LongitudinalCandidate(launch_accel_max(personality), CandidateRole.PROGRESS,
                                        EvidenceClass.CRUISE, "no_lead_launch", authorized=True))
 
-  # lead pullaway / lead-follow progress (only when lead progress is authorized)
+  # lead pullaway progress (only when authorized), capped by the lead-aware speedup guard so a
+  # speed-up can never dig a hole that needs hard braking to climb out of.
   if not blocked and wants_progress and scene.has_lead and scene.lead_progress_allowed and scene.lead_gap_excess > 0.0:
-    cands.append(LongitudinalCandidate(max(0.0, float(scene.seed_a_target)), CandidateRole.PROGRESS,
+    pullaway = lead_speedup_guard(scene.v_ego, scene.lead_v, scene.lead_d_rel, scene.follow_gap,
+                                  max(0.0, float(scene.seed_a_target)))
+    cands.append(LongitudinalCandidate(pullaway, CandidateRole.PROGRESS,
                                        EvidenceClass.LEAD, "lead_pullaway", authorized=True))
 
   # comfort relax: soften advisory braking when clear
@@ -175,12 +186,26 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   if scene.has_lead:
     cands.append(LongitudinalCandidate(float(scene.lead_a_target), CandidateRole.PHYSICAL_HAZARD,
                                        EvidenceClass.LEAD, "lead_follow", is_stop=bool(scene.lead_should_stop)))
+    # lead-following cushion: anticipatory gentle coast to a slower moving lead while runway
+    # allows, as an advisory cap. The MPC hazard above still binds when it must brake harder
+    # (tighten = safe; this only relaxes the approach, never overrides the physics floor).
+    if scene.lead_v > 0.0 and scene.lead_d_rel > 0.0 and scene.follow_gap > 0.0:
+      cushion = lead_following_cushion(scene.v_ego, scene.lead_v, scene.lead_d_rel, scene.follow_gap,
+                                       coast_decel=_scene_coast_decel(scene))
+      if cushion.coast_first and cushion.a_target < 0.0:
+        cands.append(LongitudinalCandidate(cushion.a_target, CandidateRole.ADVISORY_CAP,
+                                           EvidenceClass.LEAD, "lead_cushion"))
 
-  # model stop-approach hazard (E2E/SCC only via the mode gate)
+  # model stop-approach hazard (E2E/SCC only via the mode gate), trust-gated: a low-confidence
+  # or uncorroborated model stop is softened toward a gentle precautionary decel and is not
+  # committed as a stop until trusted (anti-quirk: don't slam on a flickery model stop).
   if scene.model_should_stop or (scene.model_stop_distance is not None and scene.model_stop_distance > 0.0):
-    stop_a, hard = stop_approach_accel(scene)
+    trust = gate_model_stop(scene.model_should_stop, scene.model_desired_accel, scene.model_stop_prob,
+                            has_radar_lead=scene.has_lead, lead_v_rel=scene.lead_v_rel)
+    trusted_scene = replace(scene, model_should_stop=trust.should_stop, model_desired_accel=trust.desired_accel)
+    stop_a, hard = stop_approach_accel(trusted_scene)
     cands.append(LongitudinalCandidate(stop_a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP,
-                                       "stop_approach", is_stop=bool(scene.model_should_stop and hard)))
+                                       "stop_approach", is_stop=bool(trust.should_stop and hard)))
 
   # advisory caps
   if scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego:
@@ -202,5 +227,9 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
 
 
 def _with_personality(scene: LongitudinalScene, personality: Personality) -> LongitudinalScene:
-  from dataclasses import replace
   return replace(scene, personality=personality)
+
+
+def _scene_coast_decel(scene: LongitudinalScene) -> float:
+  """A usable (negative) natural coast decel for the cushion; falls back to a flat-road proxy."""
+  return scene.accel_coast if scene.accel_coast < -0.02 else -0.25

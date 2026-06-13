@@ -112,6 +112,34 @@ def test_lead_follow_hazard_binds():
   assert d.reason == "physical_hazard"
 
 
+def test_model_stop_trust_gated_in_policy():
+  # low-confidence model stop in E2E -> softened, not committed; high confidence -> full + commit
+  common = dict(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0, model_should_stop=True,
+                model_stop_distance=25.0, model_desired_accel=-3.0)
+  low = decide(build_candidates(LongitudinalScene(model_stop_prob=0.2, **common)), LongitudinalMode.E2E, LIMITS)
+  high = decide(build_candidates(LongitudinalScene(model_stop_prob=0.95, **common)), LongitudinalMode.E2E, LIMITS)
+  assert low.should_stop is False          # not committed on a low-confidence model stop
+  assert high.should_stop is True
+  assert low.a_target > high.a_target       # softer braking than the trusted stop
+
+
+def test_lead_pullaway_candidate_speedup_guarded():
+  scene = LongitudinalScene(v_ego=20.0, v_cruise=25.0, seed_a_target=2.5, has_lead=True,
+                            lead_a_target=1.0, lead_progress_allowed=True, lead_gap_excess=1.5,
+                            lead_v=20.5, lead_d_rel=21.0, follow_gap=20.0)  # tight 1 m excess
+  pull = [c for c in build_candidates(scene) if c.intent == "lead_pullaway"]
+  assert pull and pull[0].a_target < 2.5    # guarded below the raw seed accel
+
+
+def test_lead_cushion_advisory_when_runway():
+  scene = LongitudinalScene(v_ego=20.0, v_cruise=22.0, seed_a_target=0.3, has_lead=True,
+                            lead_a_target=0.0, lead_v=15.0, lead_d_rel=375.0, follow_gap=20.0,
+                            accel_coast=-0.25)
+  cushion = [c for c in build_candidates(scene) if c.intent == "lead_cushion"]
+  assert cushion and cushion[0].role is CandidateRole.ADVISORY_CAP
+  assert cushion[0].a_target < 0.0          # anticipatory gentle coast cap
+
+
 def test_no_lead_stop_clear_gate():
   clear = LongitudinalScene(v_ego=1.0, v_cruise=12.0, seed_a_target=0.0, model_should_stop=False,
                             model_stop_distance=50.0, model_desired_accel=0.0)

@@ -27,6 +27,19 @@ from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, Sou
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 
+import math
+
+FOLLOW_TIME_GAP_S = 1.5   # steady-state follow time gap proxy
+FOLLOW_GAP_MIN_M = 6.0
+
+
+def _f(value: object, default: float = 0.0) -> float:
+  try:
+    v = float(value)  # type: ignore[arg-type]
+  except (TypeError, ValueError):
+    return default
+  return v if math.isfinite(v) else default
+
 
 @dataclass(frozen=True)
 class LongitudinalStackInputs:
@@ -42,6 +55,7 @@ class LongitudinalStackInputs:
   model_should_stop: bool = False
   model_stop_distance: float | None = None
   model_desired_accel: float = 0.0
+  model_stop_prob: float = 1.0   # model confidence in the stop (trust gate); 1.0 = fully trusted
   stop_threat: bool = False
   # advisory evidence
   speed_limit_active: bool = False
@@ -89,13 +103,22 @@ class CustomLongitudinalStack:
     lead_progress_allowed = bool(getattr(lead_ctx, "lead_progress_allowed", False))
     lead_gap_excess = float(getattr(lead_ctx, "lead_gap_excess", 0.0) or 0.0)
 
+    # Lead kinematics for the cushion / speedup guard / radar corroboration (from radarState).
+    lead0 = inp.leads[0]
+    lead_v = _f(getattr(lead0, "vLeadK", getattr(lead0, "vLead", 0.0))) if has_lead else 0.0
+    lead_d_rel = _f(getattr(lead0, "dRel", 0.0)) if has_lead else 0.0
+    lead_v_rel = _f(getattr(lead0, "vRel", lead_v - inp.v_ego)) if has_lead else 0.0
+    follow_gap = max(FOLLOW_GAP_MIN_M, FOLLOW_TIME_GAP_S * max(0.0, inp.v_ego))
+
     scene = LongitudinalScene(
       v_ego=inp.v_ego, v_cruise=inp.v_cruise, seed_a_target=inp.seed_a_target,
       accel_coast=inp.accel_coast, personality=inp.personality,
       has_lead=has_lead, lead_a_target=inp.lead_a_target, lead_should_stop=inp.lead_should_stop,
       lead_gap_excess=lead_gap_excess, lead_progress_allowed=lead_progress_allowed,
+      lead_v=lead_v, lead_d_rel=lead_d_rel, lead_v_rel=lead_v_rel, follow_gap=follow_gap,
       model_should_stop=inp.model_should_stop, model_stop_distance=inp.model_stop_distance,
-      model_desired_accel=inp.model_desired_accel, stop_threat=inp.stop_threat,
+      model_desired_accel=inp.model_desired_accel, model_stop_prob=inp.model_stop_prob,
+      stop_threat=inp.stop_threat,
       speed_limit_active=inp.speed_limit_active, speed_limit_v_target=inp.speed_limit_v_target,
       speed_limit_a_target=inp.speed_limit_a_target,
       map_caution_active=inp.map_caution_active, map_caution_confirmed=inp.map_caution_confirmed,
