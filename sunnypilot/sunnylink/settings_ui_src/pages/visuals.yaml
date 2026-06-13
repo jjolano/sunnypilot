@@ -45,7 +45,7 @@ sections:
     visibility:
     - $ref: '#/macros/hide_on_mici'
   - key: ChevronInfo
-    widget: option
+    widget: multiple_button
     title: Display Metrics Below Chevron
     options:
     - value: 0
@@ -69,7 +69,7 @@ sections:
   - $ref: '#/macros/hide_on_mici'
   items:
   - key: DevUIInfo
-    widget: option
+    widget: multiple_button
     title: Developer UI
     description: Display real-time parameters and metrics from various sources.
     options:

@@ -40,7 +40,7 @@ from openpilot.sunnypilot.selfdrive.ui.settings_schema.encoding import (
 )
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.registry import custom_widget_factory, resolve_options
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.rules import RuleContext, rules_pass
-from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import iter_items
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import get_panel, iter_items, load_schema
 
 
 def _t(text: str) -> Callable[[], str]:
@@ -195,3 +195,28 @@ def live_rule_context() -> RuleContext:
     is_offroad=ui_state.is_offroad(),
     is_engaged=ui_state.is_onroad(),
   )
+
+
+class SchemaPanelLayout(Widget):
+  """A flat schema-driven settings panel mounted directly in the sidebar.
+
+  For panels with no sub-panels (visuals, display, toggles, ...): builds every
+  control from the named compiled-schema panel and drives enable/visible from
+  the rules each frame. Panels that have sub-panels use a dedicated layout
+  (e.g. SchemaSteeringLayout). `unsupported` exposes any control the renderer
+  could not build (escape-hatch residue) for callers that want to assert on it.
+  """
+  def __init__(self, panel_id: str):
+    super().__init__()
+    from openpilot.selfdrive.ui.ui_state import ui_state
+    panel = get_panel(load_schema(), panel_id)
+    if panel is None:
+      raise ValueError(f"schema panel {panel_id!r} not found")
+    self._panel = SchemaPanel(panel, live_rule_context, lambda: ui_state.is_metric)
+    self.unsupported = self._panel.unsupported
+
+  def _render(self, rect: rl.Rectangle):
+    self._panel.render(rect)
+
+  def show_event(self):
+    self._panel.show_event()

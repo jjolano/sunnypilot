@@ -92,6 +92,37 @@ This is what removes the `0.1`-vs-`0.01` class of drift at the root.
    device-rendered bounds equal schema bounds — the same discipline the cloud JSON already
    enforces via its byte-match test.
 
+## Conversion status (2026-06-13)
+
+Schema-driven (production): **steering** (`SchemaSteeringLayout`, sub-panels delegated)
+and **visuals** (`SchemaPanelLayout("visuals")`, flat). These are the panels whose
+controls are purely declarative toggles/enums that map cleanly onto the schema; both
+have parity tests asserting the schema declares exactly the controls the hand-coded
+panel had.
+
+Staying hand-coded (the custom set) — each has a concrete blocker, not mere effort:
+
+- **toggles** — upstream `TogglesLayout` with special handling (IsMetric unit refresh,
+  OpenpilotEnabledToggle confirm). Don't fork upstream behavior into the schema.
+- **display** — option steppers with computed labels (brightness %, "Auto"/"Auto Dark",
+  time strings) and a non-contiguous timer value-map. Labels are logic, not data.
+- **device / developer / models / software** — dialogs and state machines
+  (driver-camera, Tailscale install/login, model-manager tree + download progress,
+  branch selector). These need real custom widgets via the registry, not declarative
+  controls; the schema doesn't (and shouldn't) carry the toggles those panels' custom
+  buttons live alongside.
+- **cruise** — convertible in principle (steering pattern), but the schema's structure
+  diverges from the device (custom-ACC inlined vs. sub-panelled) and it relies on
+  param-forcing cleanup; needs reconciliation + an `on_change` hatch first.
+- **vehicle / network / osm / trips / sunnylink / firehose** — genuinely custom
+  (brand selectors, wifi, maps, uploads).
+
+So "complete" today means: every panel that is cleanly declarative is schema-driven;
+the rest are blocked on a real capability (custom-widget registry made real,
+value-mapped labels, `on_change`) or are legitimately custom. Those capabilities are
+the remaining roadmap above — to be built with on-device visual validation in the loop,
+since the renderer has no headless way to verify pixels.
+
 ## Alternatives considered
 
 - **Codegen Python panels from the schema.** Rejected: generated UI code is hard to read and
