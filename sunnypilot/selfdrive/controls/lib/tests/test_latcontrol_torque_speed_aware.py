@@ -1,0 +1,133 @@
+import json
+from types import SimpleNamespace
+
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_override import LatControlTorqueExtOverride
+
+
+def profile_payload(anchors=None, ratios=None, confidence=None, points=None):
+  return json.dumps({
+    "version": 1,
+    "restoreKey": {"carFingerprint": "test", "lateralTuning": "torque", "latAccelFactor": 2.0, "friction": 0.2},
+    "anchors": anchors or [20.0, 30.0],
+    "ratios": ratios or [1.1, 1.2],
+    "confidence": confidence or [1.0, 1.0],
+    "points": points or [500, 500],
+    "globalLatAccelFactor": 2.0,
+    "globalFriction": 0.2,
+  })
+
+
+PROFILE = profile_payload()
+
+
+def cp():
+  torque = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  return SimpleNamespace(carFingerprint='test', lateralTuning=SimpleNamespace(which=lambda: 'torque', torque=torque))
+
+
+def test_override_off_and_manual_priority():
+  ext = LatControlTorqueExtOverride(cp())
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  class P:
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled', 'LiveTorqueParamsToggle')
+    def get(self, k, return_default=True):
+      if k == 'LiveTorqueSpeedAdaptiveParams':
+        return profile_payload(anchors=[20.0], ratios=[1.1], confidence=[1.0], points=[1])
+      if k == 'LiveTorqueSpeedAdaptiveMode':
+        return 'apply'
+      if 'TorqueParamsOverride' in k:
+        return '2.0' if 'LatAccelFactor' in k else '0.2'
+      return ''
+  ext.params = P()
+  ext.enforce_torque_control_toggle = True
+  ext.torque_override_enabled = True
+  assert ext.update_override_torque_params(tp, 25.0)
+
+
+def test_restore_base_on_low_speed_and_no_compounding():
+  ext = LatControlTorqueExtOverride(cp())
+  class P:
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'LiveTorqueParamsToggle')
+    def get(self, k, return_default=True):
+      if k == 'LiveTorqueSpeedAdaptiveMode':
+        return 'apply'
+      if k == 'LiveTorqueSpeedAdaptiveParams':
+        return PROFILE
+      return ''
+  ext.params = P()
+  ext.enforce_torque_control_toggle = True
+  ext.base_latAccelFactor = 2.0
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  assert ext.update_override_torque_params(tp, 10.0) is False
+  assert tp.latAccelFactor == 2.0
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  applied = tp.latAccelFactor
+  tp.latAccelFactor = applied
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == applied
+
+
+def test_mode_off_restores_previous_speed_apply():
+  ext = LatControlTorqueExtOverride(cp())
+  class P:
+    mode = 'apply'
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'LiveTorqueParamsToggle')
+    def get(self, k, return_default=True):
+      if k == 'LiveTorqueSpeedAdaptiveMode':
+        return self.mode
+      if k == 'LiveTorqueSpeedAdaptiveParams':
+        return PROFILE
+      return ''
+  p = P()
+  ext.params = p
+  ext.enforce_torque_control_toggle = True
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor != 2.0
+  p.mode = 'off'
+  ext.frame = 299
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == 2.0
+
+
+def test_profile_payload_polled_not_read_every_tick():
+  ext = LatControlTorqueExtOverride(cp())
+  class P:
+    profile_reads = 0
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'LiveTorqueParamsToggle')
+    def get(self, k, return_default=True):
+      if k == 'LiveTorqueSpeedAdaptiveMode':
+        return 'apply'
+      if k == 'LiveTorqueSpeedAdaptiveParams':
+        self.profile_reads += 1
+        return PROFILE
+      return ''
+  p = P()
+  ext.params = p
+  ext.enforce_torque_control_toggle = True
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert p.profile_reads == 1
+
+
+def test_speed_apply_does_not_freeze_live_friction_update():
+  ext = LatControlTorqueExtOverride(cp())
+  class P:
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'LiveTorqueParamsToggle')
+    def get(self, k, return_default=True):
+      if k == 'LiveTorqueSpeedAdaptiveMode':
+        return 'apply'
+      if k == 'LiveTorqueSpeedAdaptiveParams':
+        return PROFILE
+      return ''
+  ext.params = P()
+  ext.enforce_torque_control_toggle = True
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  assert ext.update_override_torque_params(tp, 25.0) is True
+
+  # Simulate controlsd applying a fresh normal live-torque update before the next override tick.
+  tp.latAccelFactor = 2.0
+  tp.friction = 0.25
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.friction == 0.25

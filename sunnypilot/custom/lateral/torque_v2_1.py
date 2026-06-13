@@ -61,7 +61,7 @@ class LatControlTorqueV21(LatControl):
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
     self._vm = VM
-    if self.extension.update_override_torque_params(self.torque_params):
+    if self.extension.update_override_torque_params(self.torque_params, CS.vEgo):
       self.response_core.update_limits()
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()

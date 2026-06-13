@@ -335,6 +335,31 @@
                   ]
                 },
                 {
+                  "key": "LiveTorqueSpeedAdaptiveMode",
+                  "widget": "multiple_button",
+                  "title": "Speed-Aware Curve",
+                  "description": "Choose how learned speed correction is used.",
+                  "options": [
+                    {
+                      "value": "off",
+                      "label": "Off"
+                    },
+                    {
+                      "value": "shadow",
+                      "label": "Learn only"
+                    },
+                    {
+                      "value": "apply",
+                      "label": "Apply learned curve"
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
                   "key": "LiveTorqueParamsRelaxedToggle",
                   "widget": "toggle",
                   "title": "Less Restrict Settings for Self-Tune (Beta)",

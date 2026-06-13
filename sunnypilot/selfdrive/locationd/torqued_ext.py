@@ -5,12 +5,17 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import numpy as np
+import json
 
 from cereal import car
 
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
+from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
+  SpeedAwareTorqueBuckets, fit_speed_aware_torque_profile, format_speed_aware_torque_profile,
+  parse_speed_aware_torque_profile, SpeedAwareTorqueRuntime, SPEED_BUCKET_BP,
+)
 
 RELAXED_MIN_BUCKET_POINTS = np.array([1, 200, 300, 500, 500, 300, 200, 1])
 
@@ -33,6 +38,13 @@ class TorqueEstimatorExt:
     self.friction_sanity = 0.0
     self.offline_latAccelFactor = 0.0
     self.offline_friction = 0.0
+    self.speed_adaptive_mode = 'off'
+    self.speed_adaptive_runtime = SpeedAwareTorqueRuntime()
+    self.speed_learning_buckets = SpeedAwareTorqueBuckets(
+      x_bounds=[(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5)],
+      speed_bp=SPEED_BUCKET_BP, min_points=1, min_points_total=1, points_per_bucket=1500, rowsize=3)
+    self.speed_profile_cache = None
+    self._last_speed_profile_write = -1
 
   def initialize_custom_params(self, decimated=False):
     self.update_use_params()
@@ -52,6 +64,18 @@ class TorqueEstimatorExt:
       self.use_live_torque_params = self._params.get_bool("LiveTorqueParamsToggle")
       self.custom_torque_params = self._params.get_bool("CustomTorqueParams")
       self.torque_override_enabled = self._params.get_bool("TorqueParamsOverrideEnabled")
+      self.speed_adaptive_mode = self._params.get("LiveTorqueSpeedAdaptiveMode", return_default=True) or 'off'
+      if self.speed_adaptive_mode not in ('off', 'shadow', 'apply'):
+        self.speed_adaptive_mode = 'off'
+      payload = self._params.get("LiveTorqueSpeedAdaptiveParams", return_default=True)
+      if payload:
+        try:
+          parsed = json.loads(payload)
+          self.speed_profile_cache = parse_speed_aware_torque_profile(self.CP, parsed)
+          self.speed_adaptive_runtime.profile = self.speed_profile_cache
+        except Exception:
+          self.speed_profile_cache = None
+          self.speed_adaptive_runtime.profile = None
 
   def update_use_params(self):
     self._update_params()
@@ -63,3 +87,19 @@ class TorqueEstimatorExt:
         self.use_params = self.use_live_torque_params
 
     self.frame += 1
+
+  def add_torque_learning_point(self, steer, lateral_acc, v_ego):
+    if self.speed_adaptive_mode in ('shadow', 'apply'):
+      self.speed_learning_buckets.add_point(steer, lateral_acc, v_ego)
+
+  def maybe_persist_speed_profile(self, cache_write=False):
+    if self.speed_adaptive_mode not in ('shadow', 'apply'):
+      return
+    if not cache_write:
+      return
+    profile = fit_speed_aware_torque_profile(self.CP, self.speed_learning_buckets)
+    if profile is None:
+      return
+    self.speed_profile_cache = profile
+    self.speed_adaptive_runtime.profile = profile
+    self._params.put("LiveTorqueSpeedAdaptiveParams", format_speed_aware_torque_profile(profile))

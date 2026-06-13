@@ -207,6 +207,7 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         lateral_acc = (vego * yaw_rate) - (np.sin(roll) * ACCELERATION_DUE_TO_GRAVITY).item()
         if all(lat_active) and not any(steer_override) and (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
           if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
+            self.add_torque_learning_point(steer, lateral_acc, vego)
             self.filtered_points.add_point(steer, lateral_acc)
 
           if self.track_all_points:
@@ -279,6 +280,7 @@ def main(demo=False):
     if sm.frame % 240 == 0:
       msg = estimator.get_msg(valid=sm.all_checks(), with_points=True)
       params.put("LiveTorqueParameters", msg.to_bytes())
+      estimator.maybe_persist_speed_profile(cache_write=True)
 
 
 if __name__ == "__main__":
