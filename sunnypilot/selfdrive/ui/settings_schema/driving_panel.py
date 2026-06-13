@@ -15,41 +15,12 @@ cloud frontend are untouched; only the device IA consolidates.
 `driving_panel_dict` is pure (no pyray) so it can be unit-tested headless;
 `build_driving_layout` wraps it in a SchemaNavLayout with the hand-coded sub-layouts.
 """
-from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import get_panel, load_schema
-
-LATERAL_GROUP = "Lateral Control"
-LONGITUDINAL_GROUP = "Longitudinal Control"
-
-
-def _shorten(item: dict) -> dict:
-  out = dict(item)
-  title = out.get("title", "")
-  if isinstance(title, str) and title.startswith("Enable "):
-    out["title"] = title[len("Enable "):]
-  if "sub_items" in out:
-    out["sub_items"] = [_shorten(s) for s in out["sub_items"]]
-  return out
-
-
-def _untitled(sections: list) -> list:
-  # Keep each section's items + sub_panels interleaved, drop the sub-header title,
-  # and tidy the toggle titles.
-  return [{**s, "title": "", "items": [_shorten(i) for i in s.get("items", [])]} for s in sections]
-
-
-def _group(title: str) -> dict:
-  return {"id": title.lower().replace(" ", "_"), "title": title, "items": [], "sub_panels": []}
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.consolidation import combined_panel
 
 
 def driving_panel_dict(schema: dict | None = None) -> dict:
-  schema = schema if schema is not None else load_schema()
-  steering = get_panel(schema, "steering")
-  cruise = get_panel(schema, "cruise")
-  return {
-    "id": "driving", "label": "Driving",
-    "sections": [_group(LATERAL_GROUP)] + _untitled(steering["sections"]) +
-                [_group(LONGITUDINAL_GROUP)] + _untitled(cruise["sections"]),
-  }
+  return combined_panel("driving", "Driving",
+                        [("Lateral Control", "steering"), ("Longitudinal Control", "cruise")], schema)
 
 
 def build_driving_layout():

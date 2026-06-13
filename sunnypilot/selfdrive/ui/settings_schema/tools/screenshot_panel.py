@@ -61,6 +61,9 @@ def build_panel(panel_id: str):
   if panel_id == "driving":
     from openpilot.sunnypilot.selfdrive.ui.settings_schema.driving_panel import build_driving_layout
     return build_driving_layout()
+  if panel_id == "interface":
+    from openpilot.sunnypilot.selfdrive.ui.settings_schema.interface_panel import build_interface_layout
+    return build_interface_layout()
   return SchemaPanelLayout(panel_id)
 
 
