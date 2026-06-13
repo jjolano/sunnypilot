@@ -1,0 +1,162 @@
+"""Invariant (property) tests for the unified output governor first cut.
+
+These gate the governor's INVARIANTS — safety bound, reset, floor-relaxes-only,
+cap monotonicity, slew bounding, sign-change rate, passthrough. They do NOT certify feel;
+that requires engaged-route replay against legacy v2.1 (see the ADR).
+"""
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from openpilot.sunnypilot.custom.lateral.output_governor import (
+  HIGH_RATE_SLEW_SCALE,
+  OUTPUT_SLEW_RATE_BP,
+  OUTPUT_SLEW_RATE_V,
+  OVER_RESPONSE_MIN_SCALE,
+  SAME_DIRECTION_LIMIT_CAP,
+  SIGN_CHANGE_SLEW_RATE_BP,
+  SIGN_CHANGE_SLEW_RATE_V,
+  GovernorReason,
+  OutputGovernor,
+  OutputGovernorInputs,
+)
+
+DT = 0.01
+MAX = 1.0
+
+
+def benign(nominal=0.0, v=20.0, rate=0.0, desired=0.0, actual=0.0,
+           same_dir=False, release=False, active=True):
+  """An input with no cap/floor triggers unless overridden."""
+  return OutputGovernorInputs(active=active, v_ego=v, steering_rate_deg=rate,
+                              nominal_torque=nominal, max_output=MAX,
+                              desired_lateral_accel=desired, actual_lateral_accel=actual,
+                              same_direction_limit=same_dir, release_active=release)
+
+
+def test_output_never_exceeds_max_output():
+  gov = OutputGovernor(DT)
+  rng = np.random.default_rng(20260613)
+  for _ in range(5000):
+    inp = OutputGovernorInputs(
+      active=bool(rng.random() > 0.05),
+      v_ego=float(rng.uniform(0.0, 40.0)),
+      steering_rate_deg=float(rng.uniform(-150.0, 150.0)),
+      nominal_torque=float(rng.uniform(-2.0, 2.0)),   # can exceed max_output; must be clipped
+      max_output=MAX,
+      desired_lateral_accel=float(rng.uniform(-4.0, 4.0)),
+      actual_lateral_accel=float(rng.uniform(-4.0, 4.0)),
+      same_direction_limit=bool(rng.random() > 0.7),
+      release_active=bool(rng.random() > 0.8),
+    )
+    r = gov.update(inp)
+    assert abs(r.output_torque) <= MAX + 1e-9
+    assert 0.0 <= r.floor <= 1.0
+    assert r.cap <= 1.0 + 1e-9
+
+
+def test_inactive_resets_and_zero_output():
+  gov = OutputGovernor(DT)
+  for _ in range(20):
+    gov.update(benign(nominal=0.8, v=20.0))
+  assert gov.previous_output != 0.0
+  r = gov.update(benign(nominal=0.8, active=False))
+  assert r.output_torque == 0.0
+  assert r.active is False
+  assert gov.previous_output == 0.0
+
+
+def test_invalid_inputs_flagged_and_safe():
+  gov = OutputGovernor(DT)
+  gov.update(benign(nominal=0.5))
+  r = gov.update(benign(nominal=float("nan")))
+  assert r.output_torque == 0.0
+  assert r.reason & GovernorReason.INVALID
+  assert gov.previous_output == 0.0
+
+
+def test_slew_bounds_rate_of_change():
+  gov = OutputGovernor(DT)
+  v = 20.0
+  slew = float(np.interp(v, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V))
+  prev = 0.0
+  for _ in range(200):
+    r = gov.update(benign(nominal=MAX, v=v))  # command pinned high, no caps/floor
+    assert abs(r.output_torque - prev) <= slew * DT + 1e-9
+    prev = r.output_torque
+  assert prev == pytest.approx(MAX, abs=1e-6)  # eventually reaches the command
+
+
+def test_floor_relaxes_cap_only_upward():
+  gov_lo = OutputGovernor(DT)
+  gov_hi = OutputGovernor(DT)
+  # Under-response at low speed (floor=1.0) with a same-direction cap (0.85) -> cap_eff = 1.0.
+  floored = benign(nominal=0.9, v=8.0, desired=2.0, actual=0.5, same_dir=True)
+  unfloored = benign(nominal=0.9, v=15.0, desired=2.0, actual=0.5, same_dir=True)  # v>=12 -> floor 0
+  r_lo = gov_lo.update(floored)
+  r_hi = gov_hi.update(unfloored)
+  assert r_lo.floor == 1.0
+  assert r_lo.cap == pytest.approx(1.0)            # fully relaxed
+  assert r_hi.floor == 0.0
+  assert r_hi.cap == pytest.approx(SAME_DIRECTION_LIMIT_CAP)
+  assert r_lo.cap >= r_hi.cap                       # floor only relaxes (never tightens)
+
+
+def test_over_response_cap_monotonic():
+  # Increasing same-direction over-response must not increase the cap (more excess -> tighter).
+  caps = []
+  for actual in [1.0, 1.12, 1.25, 1.4, 1.6, 1.8]:
+    gov = OutputGovernor(DT)
+    r = gov.update(benign(nominal=0.5, v=20.0, desired=1.0, actual=actual))  # v=20 -> no floor
+    caps.append(r.cap)
+  for a, b in zip(caps, caps[1:], strict=False):
+    assert b <= a + 1e-9
+  assert caps[-1] == pytest.approx(OVER_RESPONSE_MIN_SCALE, abs=1e-6)  # saturates at min scale
+
+
+def test_sign_change_uses_slower_slew():
+  gov = OutputGovernor(DT)
+  v = 20.0
+  for _ in range(300):
+    gov.update(benign(nominal=MAX, v=v))   # ramp up to +MAX
+  assert gov.previous_output == pytest.approx(MAX, abs=1e-6)
+  prev = gov.previous_output
+  r = gov.update(benign(nominal=-MAX, v=v))  # command flips negative
+  sign_change_slew = float(np.interp(v, SIGN_CHANGE_SLEW_RATE_BP, SIGN_CHANGE_SLEW_RATE_V))
+  assert r.reason & GovernorReason.SIGN_CHANGE_LIMITED
+  assert abs(r.output_torque - prev) <= sign_change_slew * DT + 1e-9
+
+
+def test_high_steering_rate_caps_and_scales_slew():
+  gov = OutputGovernor(DT)
+  v = 20.0
+  r = gov.update(benign(nominal=MAX, v=v, rate=120.0))  # >= HIGH_RATE_FULL_DEG -> full blend
+  assert r.reason & GovernorReason.HIGH_STEERING_RATE
+  assert r.cap < 1.0
+  # first step from 0 with scaled slew rate
+  scaled_slew = float(np.interp(v, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V)) * HIGH_RATE_SLEW_SCALE
+  assert abs(r.output_torque) <= scaled_slew * DT + 1e-9
+
+
+def test_steady_state_passthrough():
+  gov = OutputGovernor(DT)
+  for _ in range(500):
+    r = gov.update(benign(nominal=0.3, v=25.0))  # benign, no caps/floor
+  assert r.output_torque == pytest.approx(0.3, abs=1e-6)
+  assert not (r.reason & GovernorReason.CLIPPED)
+
+
+def test_output_preserves_command_sign_or_passes_through_zero():
+  # Output may lag/reduce but must not spontaneously flip to the side opposing both the
+  # command and the previous output.
+  gov = OutputGovernor(DT)
+  rng = np.random.default_rng(7)
+  prev = 0.0
+  for _ in range(2000):
+    nominal = float(rng.uniform(-MAX, MAX))
+    r = gov.update(benign(nominal=nominal, v=float(rng.uniform(0, 40))))
+    s = np.sign(r.output_torque)
+    if s != 0:
+      assert s == np.sign(nominal) or s == np.sign(prev)
+    prev = r.output_torque
