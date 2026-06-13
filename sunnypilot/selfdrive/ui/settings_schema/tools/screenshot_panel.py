@@ -59,34 +59,8 @@ def build_panel(panel_id: str):
     )
     return SchemaNavLayout("cruise", {"speed_limit_settings": SpeedLimitSettingsLayout})
   if panel_id == "driving":
-    # Iterate on the consolidated Driving page by combining steering + cruise
-    # sections at runtime — no schema files touched until the design settles.
-    from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_settings import (
-      SpeedLimitSettingsLayout,
-    )
-    from openpilot.selfdrive.ui.sunnypilot.layouts.settings.steering_sub_layouts.mads_settings import MadsSettingsLayout
-    from openpilot.selfdrive.ui.sunnypilot.layouts.settings.steering_sub_layouts.torque_settings import (
-      TorqueSettingsLayout,
-    )
-    from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import get_panel, load_schema
-    schema = load_schema()
-    steering = get_panel(schema, "steering")
-    cruise = get_panel(schema, "cruise")
-
-    def group(title):  # a titled, empty section -> renders as a group header
-      return {"id": title.lower().replace(" ", "_"), "title": title, "items": [], "sub_panels": []}
-
-    def untitled(sections):  # keep items/sub-panels interleaved, drop the sub-headers
-      return [{**s, "title": ""} for s in sections]
-
-    combined = {"id": "driving", "label": "Driving", "sections":
-                [group("Lateral Control")] + untitled(steering["sections"]) +
-                [group("Longitudinal Control")] + untitled(cruise["sections"])}
-    return SchemaNavLayout(combined, {
-      "mads_settings": MadsSettingsLayout,
-      "torque_settings": TorqueSettingsLayout,
-      "speed_limit_settings": SpeedLimitSettingsLayout,
-    })
+    from openpilot.sunnypilot.selfdrive.ui.settings_schema.driving_panel import build_driving_layout
+    return build_driving_layout()
   return SchemaPanelLayout(panel_id)
 
 

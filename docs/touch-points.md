@@ -12,7 +12,7 @@ upstream updates.
 | `selfdrive/locationd/torqued.py` | Route accepted learning points through the extension hook and persist speed profiles on the 60s cache cadence |
 | `sunnypilot/selfdrive/controls/lib/longitudinal_planner.py` | Opt-in custom-2.0 longitudinal hook in `update_targets` (import + adapter + 1 fail-closed call). Model-stop now read from upstream `modelV2.action.shouldStop`/`desiredAcceleration` + coast from `get_coast_accel(pitch)` inside the adapter (no new planner touch) |
 | `selfdrive/ui/sunnypilot/layouts/settings/steering_sub_layouts/torque_settings.py` | Offroad speed-aware torque mode selector + dialog wiring |
-| `selfdrive/ui/sunnypilot/layouts/settings/settings.py` | Mount the schema-driven steering panel (`SchemaSteeringLayout`) in place of the hand-coded `SteeringLayout` (import + 1-line swap) |
+| `selfdrive/ui/sunnypilot/layouts/settings/settings.py` | Mount schema-driven panels: consolidated `Driving` (steering+cruise via `build_driving_layout`) + `visuals`/`display` (`SchemaPanelLayout`); sidebar Steering+Cruise → one Driving entry |
 | `system/manager/process_config.py` | `manage_tailscaled` daemon process entry (2 lines) |
 | `selfdrive/ui/sunnypilot/layouts/settings/developer.py` | Tailscale install/enable/login/logout settings items |
 | `sunnypilot/selfdrive/controls/controlsd_ext.py` | Dispatch torque v2.1 when `TorqueControlTune == 2.1` (import + 1 `elif`); hold the opt-in `LateralDemandAdapter` |
