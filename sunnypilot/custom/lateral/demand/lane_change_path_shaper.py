@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Sequence
+from collections.abc import Sequence
 
 from cereal import log
 from openpilot.common.realtime import DT_CTRL
@@ -60,6 +60,7 @@ class LaneChangePathShaper:
     self.direction = LaneChangeDirection.none
     self.elapsed = 0.0
     self.blend = 0.0
+    self.blend_phase = 0.0
     self.baseline_curvature = 0.0
     self.lane_width = 0.0
     self.curvature_speed_floor = MIN_VEGO
@@ -85,8 +86,12 @@ class LaneChangePathShaper:
       self.soft_fallback = True
 
     finishing = inputs.lane_change_state == LaneChangeState.laneChangeFinishing
-    target_blend = 1.0 if not finishing and not self.soft_fallback and self.elapsed < LANE_CHANGE_DURATION else 0.0
-    self.blend = self._approach(self.blend, target_blend)
+    target_phase = 1.0 if not finishing and not self.soft_fallback and self.elapsed < LANE_CHANGE_DURATION else 0.0
+    # Ramp a linear phase, then ease the blend through a quintic smootherstep so the very start and
+    # end of the maneuver have zero steering-rate (and zero steering-accel) — no wheel-jerk at the
+    # endpoints, where a raw linear ramp would step the curvature rate. Timing is unchanged.
+    self.blend_phase = self._approach(self.blend_phase, target_phase)
+    self.blend = self._smootherstep(self.blend_phase)
 
     self.curvature_speed_floor = max(self.curvature_speed_floor, self._finite_v_ego(inputs.v_ego))
     reference_curvature = self._reference_curvature(inputs.v_ego)
@@ -104,6 +109,7 @@ class LaneChangePathShaper:
     self.direction = inputs.lane_change_direction
     self.elapsed = 0.0
     self.blend = 0.0
+    self.blend_phase = 0.0
     self.soft_fallback = False
 
     lane_width = self._lane_width(inputs, MIN_LANE_LINE_PROB)
@@ -152,6 +158,11 @@ class LaneChangePathShaper:
       return 1.0
     progress = min(max(self.elapsed / EARLY_TURN_IN_AUTHORITY_DURATION, 0.0), 1.0)
     return progress * progress * progress * (10.0 + progress * (-15.0 + 6.0 * progress))
+
+  @staticmethod
+  def _smootherstep(x: float) -> float:
+    x = min(max(x, 0.0), 1.0)
+    return x * x * x * (10.0 + x * (-15.0 + 6.0 * x))
 
   @staticmethod
   def _smoothed_lane_width(lane_width: float) -> float:
