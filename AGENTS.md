@@ -21,9 +21,9 @@ commaai/openpilot  ->  sunnypilot/sunnypilot  ->  jjolano/sunnypilot (this repo)
 
 Deliberately simple — the previous fork's branch machinery is retired.
 
-- `master` tracks `upstream/master`. Work happens as linear commits on the `restart`
-  branch (based on `master`); it fast-forwards onto `master` when ready, after which
-  `master` is the fork.
+- `master` is the fork: linear commits land directly on `master`, and deploys run from it
+  (`.deploy-config` `DEPLOY_BRANCH=master`). The `restart` branch (the reimplementation
+  runway) is retired now that it has fast-forwarded onto `master`.
 - Upstream updates are deliberate merges of `upstream/master`, not scheduled syncs.
 - The old `custom` branch (frozen at `8a97000e19`) is the executable reference
   implementation of the previous fork. Read from it (`git show custom:<path>`); never

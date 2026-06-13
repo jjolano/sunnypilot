@@ -1,7 +1,8 @@
 # Deploy configuration. CLI flags on scripts/deploy.sh override these values.
-# Change DEPLOY_BRANCH to "master" once restart has fast-forwarded onto master.
+# master is the fork: deploys and future work happen here (restart is retired).
+# DEPLOY_HOST is the Tailscale name; pass --host comma@<lan-ip> when the device is LAN-only.
 
-DEPLOY_BRANCH="restart"
+DEPLOY_BRANCH="master"
 
 DEPLOY_HOST="comma@100.94.10.12"
 DEPLOY_REMOTE="jjolano"
