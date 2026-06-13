@@ -16,6 +16,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
+from openpilot.common.params import Params
+from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
@@ -35,6 +37,9 @@ class LongitudinalPlannerSP:
 
     self.output_v_target = 0.
     self.output_a_target = 0.
+
+    # Custom-2.0 longitudinal policy (opt-in via CustomLongitudinalEnabled; default off).
+    self.custom_long = CustomLongitudinalAdapter(Params())
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -71,6 +76,12 @@ class LongitudinalPlannerSP:
 
     self.source = min(targets, key=lambda k: targets[k][0])
     self.output_v_target, self.output_a_target = targets[self.source]
+
+    # Opt-in: shape the baseline a_target with the custom-2.0 policy (fail-closed; returns the
+    # unchanged target when disabled or on any fault, so default behavior is never affected).
+    self.output_a_target = self.custom_long.apply(
+      sm, v_ego, a_ego, v_cruise, self.output_a_target, self.scc, self.sla,
+    )
     return self.output_v_target, self.output_a_target
 
   def update(self, sm: messaging.SubMaster) -> None:
