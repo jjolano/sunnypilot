@@ -1,0 +1,67 @@
+"""
+Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
+
+This file is part of sunnypilot and is licensed under the MIT License.
+See the LICENSE.md file in the root directory for more details.
+
+Global settings search.
+
+Settings are data, so a search index over every schema item (title, description,
+param key) is cheap. This is the engine — pure, headless-testable; the search
+overlay UI consumes `build_index` + `search`. Records carry the panel a setting
+lives in so the UI can jump straight to it.
+"""
+from dataclasses import dataclass
+
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import iter_items, load_schema
+
+
+@dataclass(frozen=True)
+class SearchRecord:
+  key: str
+  title: str
+  description: str
+  panel_id: str
+  panel_label: str
+
+
+def build_index(schema: dict | None = None) -> list[SearchRecord]:
+  schema = schema if schema is not None else load_schema()
+  records: list[SearchRecord] = []
+  for panel in schema.get("panels", []):
+    for item in iter_items(panel):
+      if "key" not in item:
+        continue
+      records.append(SearchRecord(
+        key=item["key"],
+        title=item.get("title", ""),
+        description=item.get("description", ""),
+        panel_id=panel.get("id", ""),
+        panel_label=panel.get("label", panel.get("id", "")),
+      ))
+  return records
+
+
+def _score(query: str, rec: SearchRecord) -> int:
+  """Higher is better. Title hit > key hit > description hit; word-prefix bonus."""
+  score = 0
+  title = rec.title.lower()
+  if query in title:
+    score += 4
+    if title.startswith(query) or f" {query}" in title:  # word-boundary match
+      score += 2
+  if query in rec.key.lower():
+    score += 3
+  if query in rec.description.lower():
+    score += 1
+  return score
+
+
+def search(query: str, index: list[SearchRecord], limit: int = 12) -> list[SearchRecord]:
+  q = query.lower().strip()
+  if not q:
+    return []
+  scored = [(_score(q, r), r) for r in index]
+  hits = [(s, r) for s, r in scored if s > 0]
+  hits.sort(key=lambda sr: (-sr[0], sr[1].title))
+  return [r for _, r in hits[:limit]]
