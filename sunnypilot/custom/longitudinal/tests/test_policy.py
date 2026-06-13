@@ -123,6 +123,18 @@ def test_model_stop_trust_gated_in_policy():
   assert low.a_target > high.a_target       # softer braking than the trusted stop
 
 
+def test_committed_far_stop_coasts_first():
+  # high-confidence model stop 1 km away -> coast-first (hold/coast), not early braking
+  far = LongitudinalScene(v_ego=20.0, v_cruise=20.0, seed_a_target=0.0, model_should_stop=True,
+                          model_stop_distance=1000.0, model_desired_accel=-0.5, model_stop_prob=0.95)
+  d = decide(build_candidates(far), LongitudinalMode.E2E, LIMITS)
+  assert d.a_target >= -0.1
+  # the same stop close in still brakes
+  near = LongitudinalScene(v_ego=20.0, v_cruise=20.0, seed_a_target=0.0, model_should_stop=True,
+                           model_stop_distance=18.0, model_desired_accel=-2.5, model_stop_prob=0.95)
+  assert decide(build_candidates(near), LongitudinalMode.E2E, LIMITS).a_target < -1.0
+
+
 def test_lead_pullaway_candidate_speedup_guarded():
   scene = LongitudinalScene(v_ego=20.0, v_cruise=25.0, seed_a_target=2.5, has_lead=True,
                             lead_a_target=1.0, lead_progress_allowed=True, lead_gap_excess=1.5,

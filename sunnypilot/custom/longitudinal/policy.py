@@ -23,6 +23,7 @@ from openpilot.sunnypilot.custom.longitudinal.decision import CandidateRole, Lon
 from openpilot.sunnypilot.custom.longitudinal.lead_cushion import lead_following_cushion, lead_speedup_guard
 from openpilot.sunnypilot.custom.longitudinal.model_trust import gate_model_stop
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass
+from openpilot.sunnypilot.custom.longitudinal.runway_governor import runway_comfort_governor
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   COMFORT_RELAX_ACCEL_MIN,
   CRUISE_LEEWAY_DOWNHILL_ACCEL,
@@ -204,6 +205,11 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
                             has_radar_lead=scene.has_lead, lead_v_rel=scene.lead_v_rel)
     trusted_scene = replace(scene, model_should_stop=trust.should_stop, model_desired_accel=trust.desired_accel)
     stop_a, hard = stop_approach_accel(trusted_scene)
+    # Coast-first for a long stop runway: only for a COMMITTED (trusted) stop, so the trust
+    # gate's softening of a low-confidence stop is never re-hardened by stop kinematics.
+    if trust.should_stop and not hard and scene.model_stop_distance is not None and scene.model_stop_distance > 0.0:
+      stop_a = runway_comfort_governor(scene.v_ego, 0.0, scene.model_stop_distance, stop_a,
+                                       _scene_coast_decel(scene))
     cands.append(LongitudinalCandidate(stop_a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP,
                                        "stop_approach", is_stop=bool(trust.should_stop and hard)))
 
