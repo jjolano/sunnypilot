@@ -25,7 +25,7 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.rules import evaluate_rule, rules_pass
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import get_panel, load_schema, plan_page
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.widgets import (
-  build_control, live_rule_context, placeholder_item,
+  SectionHeaderSP, build_control, live_rule_context, placeholder_item,
 )
 
 _TOP_LEVEL = 0
@@ -38,11 +38,12 @@ class SchemaNavLayout(Widget):
   callback and returning the sub-layout Widget. Sub_panels without an entry get
   no nav button (their controls live only in the sub-layout, or are omitted).
   """
-  def __init__(self, panel_id: str, subpanel_factories: dict[str, Callable[[Callable], Widget]]):
+  def __init__(self, panel: str | dict, subpanel_factories: dict[str, Callable[[Callable], Widget]]):
     super().__init__()
-    panel = get_panel(load_schema(), panel_id)
-    if panel is None:
-      raise ValueError(f"schema panel {panel_id!r} not found")
+    if isinstance(panel, str):
+      panel = get_panel(load_schema(), panel)
+      if panel is None:
+        raise ValueError("schema panel not found")
 
     self._current = _TOP_LEVEL
     self._sub_layouts: dict[int, Widget] = {}
@@ -56,7 +57,10 @@ class SchemaNavLayout(Widget):
     self.unsupported: list[dict] = []
 
     items = []
-    for entry in plan_page(panel):
+    for entry in plan_page(panel, with_sections=True):
+      if entry["kind"] == "section":
+        items.append(SectionHeaderSP(entry["title"]))
+        continue
       if entry["kind"] == "control":
         item = entry["item"]
         control = build_control(item, self.unsupported, lambda: ui_state.is_metric)

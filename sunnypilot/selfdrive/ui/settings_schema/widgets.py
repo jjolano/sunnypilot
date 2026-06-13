@@ -25,7 +25,9 @@ from collections.abc import Callable
 
 import pyray as rl
 
+from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.sunnypilot.lib.styles import style
 from openpilot.system.ui.sunnypilot.widgets.list_view import (
   ListItemSP,
   multiple_button_item_sp,
@@ -134,6 +136,28 @@ def build_control(item: dict, unsupported: list[dict], is_metric_fn: Callable[[]
   # info / unknown widgets -> custom registry territory.
   unsupported.append(item)
   return None
+
+
+class SectionHeaderSP(Widget):
+  """A non-interactive section header: an accent, upper-cased group title.
+
+  Lets the schema's section titles structure a panel visually — essential for
+  consolidated pages (e.g. Driving's Lateral / Longitudinal grouping).
+  """
+  HEIGHT = 120
+
+  def __init__(self, title: str | Callable[[], str]):
+    super().__init__()
+    self._title = title
+    self.set_rect(rl.Rectangle(0, 0, 0, self.HEIGHT))
+
+  def _render(self, rect: rl.Rectangle):
+    title = self._title() if callable(self._title) else self._title
+    font = gui_app.font(FontWeight.BOLD)
+    rl.draw_text_ex(font, title.upper(), rl.Vector2(rect.x + style.ITEM_PADDING, rect.y + 55), 42, 2, style.BLUE)
+    line_y = int(rect.y + self.HEIGHT - 14)
+    rl.draw_line(int(rect.x + style.ITEM_PADDING), line_y,
+                 int(rect.x + rect.width - style.ITEM_PADDING), line_y, rl.Color(45, 45, 45, 255))
 
 
 def placeholder_item(item: dict) -> ListItemSP:

@@ -62,16 +62,17 @@ def find_item(panel: dict, key: str) -> dict | None:
   return next((it for it in iter_items(panel) if it.get("key") == key), None)
 
 
-def plan_page(panel: dict) -> list[dict]:
+def plan_page(panel: dict, with_sections: bool = False) -> list[dict]:
   """Flatten a panel into an ordered render plan for the device top level.
 
   Returns a list of entries in display order:
-    {"kind": "control", "item": <item>}        a rendered control (+ its sub_items)
+    {"kind": "section", "title", "id"}          a group header (only if with_sections)
+    {"kind": "control", "item": <item>}         a rendered control (+ its sub_items)
     {"kind": "subpanel", "id", "label", "trigger"}  a nav button into a sub-panel
 
   Sub-panel *contents* are NOT inlined — they are reached via the nav button and
-  rendered by their own layout. Mirrors the device's top-level structure (section
-  controls interleaved with "Customize ..." buttons), but driven by the schema.
+  rendered by their own layout. With `with_sections`, each titled section emits a
+  header entry before its controls (used by consolidated pages like Driving).
   """
   plan: list[dict] = []
 
@@ -89,6 +90,9 @@ def plan_page(panel: dict) -> list[dict]:
     })
 
   for section in panel.get("sections", []):
+    title = section.get("title")
+    if with_sections and title:
+      plan.append({"kind": "section", "title": title, "id": section.get("id")})
     for item in section.get("items", []):
       add_item(item)
     for sp in section.get("sub_panels", []):
