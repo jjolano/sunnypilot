@@ -4,18 +4,17 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-Schema-driven steering panel (live A/B, behind the SettingsSchemaDrivenSteering
-param flag — default off).
+Schema-driven steering panel — the production steering settings panel.
 
 The top-level controls and their enable/visible behavior are driven entirely by
 the compiled settings_ui.json: there is no hand-written _initialize_items() or
 _update_state() rule logic here. Sub-panels (MADS, Torque) reuse the existing
 hand-coded layouts, reached via nav buttons gated by the schema's
-trigger_condition. Controls the renderer can't build yet (e.g. the -1..5
-lane-change-timer enum) appear as visible "pending" placeholders.
+trigger_condition. Any control the renderer can't build yet appears as a visible
+"pending" placeholder; the steering top level currently has none.
 
-Structurally a near-mirror of selfdrive/ui/sunnypilot/layouts/settings/steering.py
-so rendering matches by construction; the difference is where the panel's shape
+Structurally a near-mirror of the now-retired hand-coded steering layout so
+rendering matches by construction; the difference is where the panel's shape
 comes from (schema vs hand-coded).
 """
 from enum import IntEnum

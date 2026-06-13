@@ -29,6 +29,7 @@ def test_plan_order_matches_device_top_level():
     ("control", "BlinkerMinLateralControlSpeed"),
     ("control", "BlinkerLateralReengageDelay"),
     ("control", "EnforceTorqueControl"),
+    ("control", "NeuralNetworkLateralControl"),
     ("subpanel", "torque_settings"),
     ("control", "AutoLaneChangeTimer"),
     ("control", "AutoLaneChangeBsmDelay"),

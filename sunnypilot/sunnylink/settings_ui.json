@@ -310,6 +310,27 @@
                   "equals": false
                 }
               ]
+            },
+            {
+              "key": "NeuralNetworkLateralControl",
+              "widget": "toggle",
+              "title": "Neural Network Lateral Control (NNLC)",
+              "description": "",
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                },
+                {
+                  "type": "capability",
+                  "field": "torque_allowed",
+                  "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "EnforceTorqueControl",
+                  "equals": false
+                }
+              ]
             }
           ],
           "sub_panels": [
@@ -341,8 +362,8 @@
                   "description": "Choose how learned speed correction is used.",
                   "options": [
                     {
-                      "value": "off",
-                      "label": "Off"
+                      "value": false,
+                      "label": false
                     },
                     {
                       "value": "shadow",

@@ -38,6 +38,7 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.encoding import (
   contiguous_int_options, encode_numeric_option, sequential_int_labels,
 )
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.registry import custom_widget_factory, resolve_options
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.rules import RuleContext, rules_pass
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import iter_items
 
@@ -88,8 +89,16 @@ def build_control(item: dict, unsupported: list[dict], is_metric_fn: Callable[[]
   if widget == "toggle":
     return toggle_item_sp(title=title, description=desc, param=key)
 
+  if widget == "custom":
+    factory = custom_widget_factory(item.get("component", ""))
+    if factory is None:
+      unsupported.append(item)  # no registered component for this id
+      return None
+    return factory(item)
+
   if widget == "multiple_button":
-    labels = sequential_int_labels(item)
+    options = resolve_options(item)
+    labels = sequential_int_labels({**item, "options": options}) if options else None
     if labels is None:
       unsupported.append(item)  # string/float/non-sequential enum -> custom selector
       return None
@@ -99,8 +108,9 @@ def build_control(item: dict, unsupported: list[dict], is_metric_fn: Callable[[]
     )
 
   if widget == "option":
-    if "options" in item:
-      enum = contiguous_int_options(item)
+    options = resolve_options(item)
+    if options is not None:
+      enum = contiguous_int_options({**item, "options": options})
       if enum is None:
         unsupported.append(item)  # string/float/gapped values -> value-mapped or custom selector
         return None
@@ -112,7 +122,7 @@ def build_control(item: dict, unsupported: list[dict], is_metric_fn: Callable[[]
       )
     return _numeric_option(item, is_metric_fn)
 
-  # button / info / unknown widgets -> custom registry territory.
+  # info / unknown widgets -> custom registry territory.
   unsupported.append(item)
   return None
 

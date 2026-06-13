@@ -220,14 +220,25 @@ def test_value_drift_between_schema_and_device_is_real():
   assert fric["min"] != device_fric["min"]  # 0.0  vs 0.01
 
 
-def test_nnlc_is_device_only_drift():
-  """NeuralNetworkLateralControl exists on-device but is absent from the schema.
+def test_nnlc_present_and_mutually_exclusive_with_enforce_torque():
+  """NNLC was device-only drift; the conversion added it to the schema.
 
-  steering.py:94 declares the NNLC toggle; it has no schema item. Documented so
-  the gap is visible (it must be added to steering.yaml when unifying).
+  Its enablement mirrors steering.py:142 (offroad and torque_allowed and not
+  EnforceTorqueControl), and EnforceTorqueControl reciprocally gates on NNLC.
   """
-  assert find_item(STEERING, "NeuralNetworkLateralControl") is None
-  # ...yet the schema already *references* it in EnforceTorqueControl's enablement:
+  nnlc = find_item(STEERING, "NeuralNetworkLateralControl")
+  assert nnlc is not None, "NNLC must be in the schema now that it's the production panel"
+
+  for is_offroad in (True, False):
+    for torque_allowed in (True, False):
+      for enforce in (True, False):
+        ctx = make_ctx(is_offroad=is_offroad, torque_allowed=torque_allowed,
+                       steer_control_type="torque" if torque_allowed else "angle",
+                       params=FakeParams(EnforceTorqueControl=enforce))
+        expected = is_offroad and torque_allowed and not enforce
+        assert rules_pass(nnlc.get("enablement"), ctx) == expected
+
+  # The mutual exclusion is symmetric: EnforceTorqueControl gates on NNLC == false.
   refs = [r for r in iter_rules(enablement_of("EnforceTorqueControl"))
           if r.get("type") == "param" and r.get("key") == "NeuralNetworkLateralControl"]
-  assert refs, "schema references NNLC as a dependency but never renders it"
+  assert refs

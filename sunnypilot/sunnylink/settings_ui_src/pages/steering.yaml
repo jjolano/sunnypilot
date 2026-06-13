@@ -118,6 +118,18 @@ sections:
     - type: param
       key: NeuralNetworkLateralControl
       equals: false
+  - key: NeuralNetworkLateralControl
+    widget: toggle
+    title: Neural Network Lateral Control (NNLC)
+    description: ''
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: capability
+      field: torque_allowed
+      equals: true
+    - type: param
+      key: EnforceTorqueControl
+      equals: false
   sub_panels:
   - id: torque_settings
     label: Torque Settings
