@@ -86,12 +86,17 @@ def analyze_route(msgs: list[Any], source: str) -> dict[str, Any]:
 
   a_raw = np.array([r[0] for r in rows])
   a_shaped = np.array([r[1] for r in rows])
+  a_lead = np.array([r[2] for r in rows])
+  v_rel = np.array([r[3] for r in rows])
   delta = a_shaped - a_raw                              # >0 => §3 reduced braking
   softened = delta > 0.02
-  # safety: §3 reducing braking while the lead is genuinely closing fast (vRel very negative)
-  v_rel = np.array([r[3] for r in rows])
-  risky = softened & (v_rel < -1.5) & (delta > 0.3)
+  risky = softened & (v_rel < -1.5) & (delta > 0.3)    # safety: eased braking while lead closing fast
+  # is the braking aLeadK-noise (a decel spike on a non-closing lead, smoothable) or genuine
+  # closing (slower/closing lead, NOT removable by any aLeadK shaping)?
+  braking = a_raw < BRAKE_A
   return {
+    "brake_aleadk_noise": int(np.sum(braking & (a_lead < -1.0) & (v_rel > -1.0))),
+    "brake_genuine_closing": int(np.sum(braking & (v_rel < -1.0))),
     "source": source,
     "following_frames": len(rows),
     "braking_frames": int(np.sum(a_raw < BRAKE_A)),
@@ -111,12 +116,13 @@ def render(r: dict[str, Any]) -> str:
     return f"§3 A/B {r['source']}: {r.get('note', 'no data')}"
   return (
     f"§3 lead-anticipation A/B: {r['source']}\n"
-    f"  following frames {r['following_frames']} ({r['braking_frames']} braking)\n"
-    f"  §3 softened braking on {r['softened_frames']} frames ({r['softened_pct']}%): "
-    f"mean -{abs(r['mean_brake_reduction']):.3f}->less, p90 {r['p90_brake_reduction']:.3f}, max {r['max_brake_reduction']:.3f} m/s^2\n"
-    f"  decel peak: raw {r['decel_peak_raw']} -> shaped {r['decel_peak_shaped']} m/s^2  "
-    f"(reactive-brake reduction = {r['decel_peak_shaped'] - r['decel_peak_raw']:+.3f})\n"
-    f"  SAFETY — risky softenings (eased braking while lead closing >1.5 m/s): {r['risky_softenings']}"
+    + f"  following frames {r['following_frames']} ({r['braking_frames']} braking: "
+    + f"{r['brake_aleadk_noise']} aLeadK-noise, {r['brake_genuine_closing']} genuine closing)\n"
+    + f"  §3 softened braking on {r['softened_frames']} frames ({r['softened_pct']}%): "
+    + f"mean {r['mean_brake_reduction']:+.3f}, p90 {r['p90_brake_reduction']:.3f}, max {r['max_brake_reduction']:.3f} m/s^2\n"
+    + f"  decel peak: raw {r['decel_peak_raw']} -> shaped {r['decel_peak_shaped']} m/s^2  "
+    + f"(reactive-brake reduction = {r['decel_peak_shaped'] - r['decel_peak_raw']:+.3f})\n"
+    + f"  SAFETY — risky softenings (eased braking while lead closing >1.5 m/s): {r['risky_softenings']}"
   )
 
 
