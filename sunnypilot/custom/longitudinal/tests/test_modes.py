@@ -14,7 +14,7 @@ from openpilot.sunnypilot.custom.longitudinal.modes import (
 )
 
 CURVE = {EvidenceClass.CURVE_VISION, EvidenceClass.CURVE_MAP}
-SCC_EXTRA = {EvidenceClass.MAP_CAUTION, EvidenceClass.SPEED_LIMIT}
+SCC_EXTRA = {EvidenceClass.SPEED_LIMIT}
 ALL_TOGGLES = [SourceToggles(v, m) for v, m in itertools.product((False, True), repeat=2)]
 
 
@@ -43,7 +43,7 @@ def test_e2e_admits_model_stop_but_not_scc_sources():
     assert not (adm & SCC_EXTRA)
 
 
-def test_scc_blends_model_stop_and_map_speed():
+def test_scc_blends_model_stop_and_speed_limit():
   adm = admitted_evidence(LongitudinalMode.SCC, SourceToggles())
   assert EvidenceClass.MODEL_STOP in adm
   assert SCC_EXTRA <= adm

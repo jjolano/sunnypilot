@@ -75,17 +75,16 @@ def test_stop_approach_hardens_when_runway_short():
   assert a < -1.5
 
 
-def test_acc_is_oem_like_excludes_model_stop_map_curve():
+def test_acc_is_oem_like_excludes_model_stop_curve():
   scene = LongitudinalScene(
     v_ego=20.0, v_cruise=20.0, seed_a_target=0.3,
     model_should_stop=True, model_stop_distance=25.0, model_desired_accel=-2.5,
     curve_active=True, curve_a_target=-1.0,
-    map_caution_active=True, map_caution_confirmed=True, map_caution_a_target=-1.5,
   )
   cands = build_candidates(scene)
   acc = decide(cands, LongitudinalMode.ACC, LIMITS)
   e2e = decide(cands, LongitudinalMode.E2E, LIMITS)
-  # ACC ignores model-stop/map/curve -> cruise stands; E2E brakes for the model stop
+  # ACC ignores model-stop/curve -> cruise stands; E2E brakes for the model stop
   assert acc.a_target == pytest.approx(0.3)
   assert acc.should_stop is False
   assert e2e.a_target < 0.0

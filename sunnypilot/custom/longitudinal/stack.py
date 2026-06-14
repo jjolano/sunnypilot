@@ -23,7 +23,7 @@ from typing import Any
 from openpilot.sunnypilot.custom.longitudinal.decision import Decision, decide
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceState, LeadConfidenceTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
-from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 
@@ -61,11 +61,9 @@ class LongitudinalStackInputs:
   speed_limit_active: bool = False
   speed_limit_v_target: float = 0.0
   speed_limit_a_target: float = 0.0
-  map_caution_active: bool = False
-  map_caution_confirmed: bool = False
-  map_caution_a_target: float = 0.0
   curve_active: bool = False
   curve_a_target: float = 0.0
+  curve_source: EvidenceClass = EvidenceClass.CURVE_VISION   # which SCC curve source bound the cap
   # driver / safety
   force_slow_decel: bool = False
   brake_pressed: bool = False
@@ -121,9 +119,7 @@ class CustomLongitudinalStack:
       stop_threat=inp.stop_threat,
       speed_limit_active=inp.speed_limit_active, speed_limit_v_target=inp.speed_limit_v_target,
       speed_limit_a_target=inp.speed_limit_a_target,
-      map_caution_active=inp.map_caution_active, map_caution_confirmed=inp.map_caution_confirmed,
-      map_caution_a_target=inp.map_caution_a_target,
-      curve_active=inp.curve_active, curve_a_target=inp.curve_a_target,
+      curve_active=inp.curve_active, curve_a_target=inp.curve_a_target, curve_source=inp.curve_source,
       force_slow_decel=inp.force_slow_decel, brake_pressed=inp.brake_pressed, gas_pressed=inp.gas_pressed,
     )
     candidates = build_candidates(scene)

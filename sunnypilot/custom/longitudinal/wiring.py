@@ -20,7 +20,7 @@ import math
 from typing import Any
 
 from openpilot.sunnypilot.custom.longitudinal.model_trust import StopTrustLearner
-from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.stack import CustomLongitudinalStack, LongitudinalStackInputs
 
@@ -76,12 +76,15 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
   has_lead = lead_one is not None and bool(getattr(lead_one, "status", False))
   # MPC owns lead-follow physics; carry the planner's a_target as the lead-follow accel.
   lead_a_target = float(seed_a_target) if has_lead else 0.0
-  # SCC vision/map are curve-speed sources -> the curve advisory cap (most restrictive wins).
+  # SCC vision/map are curve-speed sources -> the curve advisory cap (most restrictive wins). Tag
+  # the cap by the source that bound it so the mode gate admits it correctly (a map-only curve must
+  # be admitted under CURVE_MAP, not CURVE_VISION).
   curve_active = bool(scc_vision_active or scc_map_active)
-  curve_a_target = min(
-    scc_vision_a_target if scc_vision_active else 0.0,
-    scc_map_a_target if scc_map_active else 0.0,
-  ) if curve_active else 0.0
+  v_curve = scc_vision_a_target if scc_vision_active else float("inf")
+  m_curve = scc_map_a_target if scc_map_active else float("inf")
+  curve_a_target = min(v_curve, m_curve) if curve_active else 0.0
+  curve_source = EvidenceClass.CURVE_MAP if (scc_map_active and (not scc_vision_active or m_curve <= v_curve)) \
+      else EvidenceClass.CURVE_VISION
   return LongitudinalStackInputs(
     v_ego=v_ego, v_cruise=v_cruise, seed_a_target=seed_a_target, accel_limits=accel_limits,
     accel_coast=float(accel_coast),
@@ -100,7 +103,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     # lead-coupled, making it fully redundant with has_lead (zero observable effect).
     model_desired_accel=float(model_desired_accel), model_stop_prob=float(model_stop_prob), stop_threat=False,
     speed_limit_active=bool(sla_active), speed_limit_v_target=float(sla_v_target), speed_limit_a_target=float(sla_a_target),
-    curve_active=curve_active, curve_a_target=float(curve_a_target),
+    curve_active=curve_active, curve_a_target=float(curve_a_target), curve_source=curve_source,
     brake_pressed=brake_pressed, gas_pressed=gas_pressed,
     mode=mode, sources=sources, personality=personality,
   )

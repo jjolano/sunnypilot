@@ -75,11 +75,9 @@ class LongitudinalScene:
   speed_limit_active: bool = False
   speed_limit_v_target: float = 0.0
   speed_limit_a_target: float = 0.0
-  map_caution_active: bool = False
-  map_caution_confirmed: bool = False
-  map_caution_a_target: float = 0.0
   curve_active: bool = False
   curve_a_target: float = 0.0
+  curve_source: EvidenceClass = EvidenceClass.CURVE_VISION   # which SCC curve source bound the cap
   # driver / safety
   force_slow_decel: bool = False
   brake_pressed: bool = False
@@ -145,8 +143,7 @@ def stop_approach_accel(scene: LongitudinalScene) -> tuple[float, bool]:
 
 def comfort_relax_allowed(scene: LongitudinalScene) -> bool:
   return bool(not scene.has_lead and not scene.stop_threat and not scene.force_slow_decel
-              and not scene.brake_pressed and not scene.gas_pressed
-              and not (scene.map_caution_active and scene.map_caution_confirmed))
+              and not scene.brake_pressed and not scene.gas_pressed)
 
 
 def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
@@ -244,12 +241,9 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   if scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego:
     cap = min(0.0, max(scene.speed_limit_a_target, scene.accel_coast))  # coast-biased
     cands.append(LongitudinalCandidate(cap, CandidateRole.ADVISORY_CAP, EvidenceClass.SPEED_LIMIT, "speed_policy"))
-  if scene.map_caution_active and scene.map_caution_confirmed:
-    cands.append(LongitudinalCandidate(min(0.0, scene.map_caution_a_target), CandidateRole.ADVISORY_CAP,
-                                       EvidenceClass.MAP_CAUTION, "map_caution"))
   if scene.curve_active:
     cands.append(LongitudinalCandidate(float(scene.curve_a_target), CandidateRole.ADVISORY_CAP,
-                                       EvidenceClass.CURVE_VISION, "curve_policy"))
+                                       scene.curve_source, "curve_policy"))
 
   # force-slow safety hazard (driver/system force)
   if scene.force_slow_decel:

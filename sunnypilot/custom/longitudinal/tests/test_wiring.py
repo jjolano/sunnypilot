@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal.decision import decide
+from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.wiring import (
   DEFAULT_ACCEL_LIMITS,
@@ -71,9 +73,30 @@ def test_build_stack_inputs_maps_evidence():
     mode=LongitudinalMode.SCC, personality=Personality.STANDARD, sources=SourceToggles(True, False),
   )
   assert inp.curve_active is True and inp.curve_a_target == pytest.approx(-0.7)
+  assert inp.curve_source is EvidenceClass.CURVE_VISION   # vision-bound curve
   assert inp.speed_limit_active is True and inp.speed_limit_a_target == pytest.approx(-0.5)
   assert inp.lead_a_target == pytest.approx(0.4)   # MPC baseline carried as lead-follow accel
   assert inp.model_should_stop is False            # conservatively defaulted (harness-gated)
+
+
+def test_map_only_curve_tags_curve_map_and_is_admitted_in_scc():
+  # #18: a map-sourced curve was always tagged CURVE_VISION, so with only the map toggle on it was
+  # silently dropped under SCC. Tag by binding source so SCC admits it.
+  inp = build_stack_inputs(
+    v_ego=20.0, a_ego=0.0, v_cruise=22.0, seed_a_target=0.4, accel_limits=DEFAULT_ACCEL_LIMITS,
+    lead_one=None, lead_two=None,
+    scc_vision_active=False, scc_vision_a_target=0.0, scc_map_active=True, scc_map_a_target=-0.8,
+    sla_active=False, sla_v_target=0.0, sla_a_target=0.0,
+    mode=LongitudinalMode.SCC, personality=Personality.STANDARD, sources=SourceToggles(False, True),
+  )
+  assert inp.curve_source is EvidenceClass.CURVE_MAP and inp.curve_a_target == pytest.approx(-0.8)
+  scene = LongitudinalScene(v_ego=20.0, v_cruise=22.0, seed_a_target=0.4,
+                            curve_active=True, curve_a_target=-0.8, curve_source=EvidenceClass.CURVE_MAP)
+  cands = build_candidates(scene)
+  on = decide(cands, LongitudinalMode.SCC, DEFAULT_ACCEL_LIMITS, SourceToggles(False, True))
+  off = decide(cands, LongitudinalMode.SCC, DEFAULT_ACCEL_LIMITS, SourceToggles(False, False))
+  assert on.a_target < 0.4                          # map-curve admitted -> caps the cruise
+  assert off.a_target == pytest.approx(0.4)         # map toggle off -> curve not admitted, cruise stands
 
 
 def test_adapter_disabled_passthrough():

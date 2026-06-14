@@ -9,8 +9,8 @@ nothing downstream re-admits what the mode excluded. See
 Owner intent (2026-06-13):
   ACC  — OEM-like cruise: CRUISE + LEAD only.
   E2E  — the model drives the car: adds MODEL_STOP (traffic lights / stop signs).
-  SCC  — intelligent ACC/E2E blend: ACC-like base + MODEL_STOP + map/speed-limit, with the
-         curve sources gated by SccCurveVisionEnabled / SccCurveMapEnabled.
+  SCC  — intelligent ACC/E2E blend: ACC-like base + MODEL_STOP + speed-limit, with the curve
+         sources gated by SccCurveVisionEnabled / SccCurveMapEnabled.
 
 This module is pure and exhaustively property-tested; correctness needs no engaged data.
 """
@@ -46,7 +46,6 @@ class EvidenceClass(Enum):
   CRUISE = auto()        # speed-hold / set-speed cruise (always admissible)
   LEAD = auto()          # confirmed lead following (MPC physical hazard)
   MODEL_STOP = auto()    # E2E model stop: traffic lights, stop signs, model-detected stops
-  MAP_CAUTION = auto()   # OSM / mapd preparatory caution
   SPEED_LIMIT = auto()   # speed-limit assist (SLA)
   CURVE_VISION = auto()  # SCC vision-predicted curve cap
   CURVE_MAP = auto()     # SCC map-derived curve cap
@@ -61,7 +60,7 @@ class SourceToggles:
 
 _ACC_EVIDENCE = frozenset({EvidenceClass.CRUISE, EvidenceClass.LEAD})
 _E2E_EVIDENCE = _ACC_EVIDENCE | {EvidenceClass.MODEL_STOP}
-_SCC_BASE_EVIDENCE = _E2E_EVIDENCE | {EvidenceClass.MAP_CAUTION, EvidenceClass.SPEED_LIMIT}
+_SCC_BASE_EVIDENCE = _E2E_EVIDENCE | {EvidenceClass.SPEED_LIMIT}
 
 
 def admitted_evidence(mode: LongitudinalMode, sources: SourceToggles = SourceToggles()) -> frozenset[EvidenceClass]:
