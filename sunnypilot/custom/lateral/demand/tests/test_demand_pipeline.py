@@ -113,3 +113,22 @@ def test_debug_records_each_stage():
               "lane_centering_nudge", "processed_curvature", "demand_source"):
     assert key in r.debug
   assert r.debug["raw_curvature"] == pytest.approx(0.002)
+
+
+def test_curve_memory_resumes_corner_after_standstill():
+  # corner -> stop mid-corner -> launch, through the pipeline (which manages prev curvature across
+  # the stop). With curve memory the gated launch resumes the corner; without it, it starts cold.
+  def run(curve_memory: bool) -> float:
+    p = LateralDemandPipeline(DT)
+    for _ in range(5):                                        # driving the corner (k=0.02 at 8 m/s)
+      p.update(valid_inputs(v_ego=8.0, curvature=0.02, curve_memory_enabled=curve_memory))
+    p.update(valid_inputs(v_ego=0.0, curvature=0.0, lat_active=False, curve_memory_enabled=curve_memory))
+    for _ in range(20):                                       # held at a stop
+      p.update(valid_inputs(v_ego=0.0, curvature=0.0, lat_active=False, curve_memory_enabled=curve_memory))
+    # gated launch: low speed, high path std, conservative ("forgotten") raw curvature
+    r = p.update(valid_inputs(v_ego=3.0, curvature=0.005, position_y_std=[1.6] * N,
+                              curve_memory_enabled=curve_memory))
+    return float(r.demand.processed_curvature)
+
+  assert run(True) > 0.008                 # resumes the corner (vs 0.005 raw / 0.0025 cold start)
+  assert run(True) > 3.0 * run(False)      # vs cold start without curve memory

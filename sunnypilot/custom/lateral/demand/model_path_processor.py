@@ -37,6 +37,14 @@ SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "path_disagreement
 LOW_SPEED_UNTRUSTED_CURVATURE_STEP = 0.0025
 LOW_SPEED_CURVE_RETENTION_FRAMES = 12
 LOW_SPEED_CURVE_RETENTION_MIN_CURVATURE = 0.008
+
+# Curve memory (opt-in): hold a decaying corner-curvature prior across a brief standstill (stopped
+# mid-corner — lat goes inactive and wipes the retained curve) and re-seed the retained-curve
+# fallback on launch, so the car resumes the corner instead of starting cold on conservative
+# low-speed vision. Reuses the retained-curve sign/closeness safety checks; default-off.
+STANDSTILL_PRIOR_MAX_SECONDS = 6.0      # forget the corner after this long stopped
+STANDSTILL_PRIOR_ROLLING_MAX_V = 2.0    # m/s; rolling faster while inactive => not a clean stop, forget
+STANDSTILL_SEED_RETENTION_FRAMES = 50   # ~0.5 s of launch hold; fresh trusted vision overrides sooner
 HARD_INVALID_RECOVERY_LAT_JERK = 2.0
 LOW_SPEED_CONFIRMED_TURN_MIN_LAT_ACCEL = 0.05
 LOW_SPEED_CONFIRMED_TURN_MAX_LAT_ACCEL_DELTA = 0.75
@@ -90,6 +98,7 @@ class ModelPathProcessorInputs:
   frame_drop_perc: float = 0.0
   smooth_model_path_curvature: bool = False
   lane_change_active: bool = False
+  curve_memory_enabled: bool = False
 
 
 @dataclass
@@ -112,6 +121,13 @@ class ModelPathProcessor:
     self.reset()
 
   def reset(self) -> None:
+    self._reset_transient()
+    # Curve memory (opt-in): a decaying corner-curvature prior held across a brief standstill.
+    self._standstill_prior_curvature: float | None = None
+    self._standstill_prior_age_s: float = 0.0
+    self._was_inactive = False
+
+  def _reset_transient(self) -> None:
     self._hold_frames_remaining = 0
     self._hold_reason = "ok"
     self._hold_quality: float = SOFT_GATE_HOLD_QUALITY
@@ -135,8 +151,15 @@ class ModelPathProcessor:
     lc_fade_report = 0.0
 
     if not inputs.lat_active:
-      self.reset()
+      self._handle_inactive(inputs)
       return ModelPathProcessorResult(float(inputs.measured_curvature), 0.0, True, "inactive", straight_road_damping_active=self._straight_road_damping_active)
+
+    # Reactivation after a standstill: re-seed the retained-curve fallback with the decaying corner
+    # prior so the launch frames can hold the corner (opt-in curve memory) instead of starting cold
+    # on conservative low-speed vision. Reuses the retained-curve sign/closeness safety checks.
+    if self._was_inactive:
+      self._seed_retained_curve_from_standstill_prior(inputs)
+      self._was_inactive = False
 
     self._trust_penalty *= TRUST_DECAY
     self._age_retained_curve()
@@ -428,6 +451,44 @@ class ModelPathProcessor:
   def _clear_retained_curve(self) -> None:
     self._retained_curve_curvature = None
     self._retained_curve_frames = 0
+
+  def _handle_inactive(self, inputs: ModelPathProcessorInputs) -> None:
+    """Lat-inactive (e.g. standstill) handling. With curve memory on, capture/hold a decaying
+    corner prior across a brief stop so it survives the inactive wipe; otherwise behaves like the
+    old full reset. Always resets the transient control state."""
+    if bool(getattr(inputs, "curve_memory_enabled", False)):
+      if not self._was_inactive:
+        # active -> inactive transition: the last commanded curvature still holds the corner.
+        prior = float(inputs.previous_desired_curvature)
+        self._standstill_prior_curvature = prior if self._curvature_is_plausible_for_retention(prior) else None
+        self._standstill_prior_age_s = 0.0
+      elif self._standstill_prior_curvature is not None:
+        self._standstill_prior_age_s += DT_CTRL
+        v_ego = float(inputs.v_ego)
+        rolling_away = not math.isfinite(v_ego) or v_ego > STANDSTILL_PRIOR_ROLLING_MAX_V
+        if self._standstill_prior_age_s > STANDSTILL_PRIOR_MAX_SECONDS or rolling_away:
+          self._standstill_prior_curvature = None
+          self._standstill_prior_age_s = 0.0
+    else:
+      self._standstill_prior_curvature = None
+      self._standstill_prior_age_s = 0.0
+    self._reset_transient()
+    self._was_inactive = True
+
+  def _seed_retained_curve_from_standstill_prior(self, inputs: ModelPathProcessorInputs) -> None:
+    prior = self._standstill_prior_curvature
+    self._standstill_prior_curvature = None
+    self._standstill_prior_age_s = 0.0
+    if prior is None or not bool(getattr(inputs, "curve_memory_enabled", False)):
+      return
+    if not self._low_speed_curve_retention_active(inputs.v_ego):
+      return
+    if not self._curvature_is_plausible_for_retention(prior):
+      return
+    # Seed the retained-curve fallback; its existing quality gate + sign/closeness checks decide
+    # whether to actually hold it, and fresh trusted vision refreshes it once re-acquired.
+    self._retained_curve_curvature = float(prior)
+    self._retained_curve_frames = STANDSTILL_SEED_RETENTION_FRAMES
 
   def _refresh_retained_curve(
     self,

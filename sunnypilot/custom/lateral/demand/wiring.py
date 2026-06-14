@@ -24,7 +24,8 @@ PARAMS_REFRESH_PERIOD = 100  # control ticks (100Hz -> ~1s)
 
 def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_curvature: float,
                           measured_curvature: float, model_v2: Any,
-                          lane_centering_assist_enabled: bool) -> LateralDemandPipelineInputs:
+                          lane_centering_assist_enabled: bool,
+                          curve_memory_enabled: bool = False) -> LateralDemandPipelineInputs:
   pos = getattr(model_v2, "position", None)
   ori = getattr(model_v2, "orientation", None)
   ori_rate = getattr(model_v2, "orientationRate", None)
@@ -41,6 +42,7 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
     # conservative until wired (harness-gated):
     lane_change_state=0, lane_change_direction=0,
     lane_centering_assist_enabled=bool(lane_centering_assist_enabled),
+    curve_memory_enabled=bool(curve_memory_enabled),
   )
 
 
@@ -51,6 +53,7 @@ class LateralDemandAdapter:
     self._tick = 0
     self.enabled = False
     self.lane_centering_assist_enabled = False
+    self.curve_memory_enabled = False
     if params is not None:
       self.refresh_params()
 
@@ -61,6 +64,7 @@ class LateralDemandAdapter:
     try:
       self.enabled = bool(p.get_bool("CustomLateralDemandEnabled"))
       self.lane_centering_assist_enabled = bool(p.get_bool("LaneCenteringAssistEnabled"))
+      self.curve_memory_enabled = bool(p.get_bool("CurveMemoryEnabled"))
     except Exception:
       self.enabled = False
 
@@ -78,6 +82,7 @@ class LateralDemandAdapter:
         lat_active=lat_active, v_ego=v_ego, roll=roll, raw_curvature=raw_curvature,
         measured_curvature=measured_curvature, model_v2=model_v2,
         lane_centering_assist_enabled=self.lane_centering_assist_enabled,
+        curve_memory_enabled=self.curve_memory_enabled,
       )
       return float(self._pipeline.update(inputs).demand.processed_curvature)
     except Exception:

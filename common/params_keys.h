@@ -93,6 +93,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CustomLongitudinalMode", {PERSISTENT | BACKUP, STRING, "acc"}},
     {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"CurveMemoryEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"NetworkMetered", {PERSISTENT | BACKUP, BOOL}},
     {"ObdMultiplexingChanged", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"ObdMultiplexingEnabled", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},

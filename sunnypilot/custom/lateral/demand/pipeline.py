@@ -80,6 +80,7 @@ class LateralDemandPipelineInputs:
   # toggles
   smooth_model_path_curvature: bool = False
   lane_centering_assist_enabled: bool = False
+  curve_memory_enabled: bool = False
   # passed through (downstream clip result)
   curvature_limited: bool = False
 
@@ -147,6 +148,7 @@ class LateralDemandPipeline:
         frame_drop_perc=inputs.frame_drop_perc,
         smooth_model_path_curvature=inputs.smooth_model_path_curvature,
         lane_change_active=inputs.lane_change_state != LANE_CHANGE_STATE_OFF,
+        curve_memory_enabled=inputs.curve_memory_enabled,
       ))
       model_desired_curvature = model_path_result.desired_curvature if inputs.lat_active else inputs.measured_curvature
       if not inputs.lat_active:
