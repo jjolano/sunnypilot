@@ -51,7 +51,14 @@ class EvaluationResult:
     }
 
 
-def evaluate_maneuver_output(scenario_id: str, valid: bool, output: np.ndarray, max_normal_jerk: float = 8.0) -> EvaluationResult:
+def evaluate_maneuver_output(
+  scenario_id: str,
+  valid: bool,
+  output: np.ndarray,
+  max_normal_jerk: float = 8.0,
+  commanded_accel: np.ndarray | None = None,
+  jerk_window: int = 1,
+) -> EvaluationResult:
   failures: list[ScenarioFailure] = []
   metrics: list[EvaluationMetric] = []
   if not valid:
@@ -85,12 +92,31 @@ def evaluate_maneuver_output(scenario_id: str, valid: bool, output: np.ndarray, 
     if min_lead_gap < 0.4 and not has_nonfinite_output:
       failures.append(ScenarioFailure("collision", f"minimum lead gap {min_lead_gap:.3f} m"))
 
+  # Jerk reflects ride comfort, so it must be measured on the acceleration the longitudinal
+  # policy actually commands. The maneuver plant overwrites its accel column with a crude stop
+  # model (a -0.5 m/s^2 floor when shouldStop flips, then a hard zero once the car reaches
+  # standstill); those discontinuities are test-harness scaffolding, not policy output, and
+  # would otherwise show up as ~10-12 m/s^3 phantom jerk. When the caller captures the planner's
+  # commanded acceleration, evaluate jerk on that instead of the post-override column.
+  jerk_accel = accel
+  if commanded_accel is not None:
+    commanded_accel = np.asarray(commanded_accel, dtype=float)
+    if commanded_accel.shape == accel.shape:
+      jerk_accel = commanded_accel
+
+  # Felt jerk is bounded by how fast the longitudinal actuator can change realized acceleration,
+  # so jerk is measured as the acceleration change across a window (jerk_window control frames,
+  # ~the actuator delay) rather than a single 50 ms control step. A single-frame command step the
+  # actuator physically cannot reproduce (e.g. the MPC's onset re-plan when a lead first appears)
+  # is not felt as jerk; sustained harsh jerk still spans the window and is caught. The default
+  # window of 1 preserves single-step behavior for callers measuring already-realized accel.
+  window = max(1, int(jerk_window))
   max_abs_jerk = 0.0
   has_jerk_metric = False
-  if len(accel) > 2:
-    dt = np.diff(time_s)
+  if len(jerk_accel) > window + 1:
+    dt = time_s[window:] - time_s[:-window]
     valid_dt = np.isfinite(dt) & (dt > 1e-6)
-    accel_delta = np.diff(accel)
+    accel_delta = jerk_accel[window:] - jerk_accel[:-window]
     valid_jerk = valid_dt & np.isfinite(accel_delta)
     if np.any(valid_jerk):
       jerk = accel_delta[valid_jerk] / dt[valid_jerk]

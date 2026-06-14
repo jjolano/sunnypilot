@@ -7,6 +7,7 @@ import numpy as np
 from openpilot.tools.drive_lab import fuzz_longitudinal
 from openpilot.tools.drive_lab.fuzz_longitudinal import (
   Scenario,
+  evaluate_collision_response,
   evaluate_lead_pullaway_start,
   evaluate_invariants,
   generate_scenarios,
@@ -134,6 +135,42 @@ def test_lead_pullaway_start_check_accepts_started_then_settled_follow():
   ])
 
   assert evaluate_lead_pullaway_start(output) == []
+
+
+def _collision_output(impact_speed: float, contact: bool = True) -> np.ndarray:
+  # columns: time, ego_x, lead_x, v_ego, v_lead, accel, d_rel
+  gap = 0.2 if contact else 5.0
+  v_lead = 0.0
+  return np.array([
+    [0.0, 0.0, 40.0, impact_speed, v_lead, 0.0, 40.0],
+    [0.1, 1.0, 40.0, impact_speed, v_lead, 0.0, 20.0],
+    [0.2, 2.0, 40.0, impact_speed, v_lead, 0.0, gap],
+  ])
+
+
+def test_collision_response_accepts_when_no_contact():
+  output = _collision_output(impact_speed=10.0, contact=False)
+  assert evaluate_collision_response(output, np.full(3, -1.0), np.ones(3)) == []
+
+
+def test_collision_response_accepts_unavoidable_contact_braked_at_full_authority():
+  output = _collision_output(impact_speed=10.0)
+  commanded = np.array([-3.5, -3.5, -3.5])
+  assert evaluate_collision_response(output, commanded, np.ones(3)) == []
+
+
+def test_collision_response_accepts_benign_low_speed_bump_without_full_braking():
+  output = _collision_output(impact_speed=2.0)
+  commanded = np.array([-2.0, -2.0, -2.0])
+  assert evaluate_collision_response(output, commanded, np.ones(3)) == []
+
+
+def test_collision_response_flags_hard_impact_with_braking_authority_left_unused():
+  output = _collision_output(impact_speed=10.0)
+  commanded = np.array([-1.0, -1.0, -1.0])
+  failures = evaluate_collision_response(output, commanded, np.ones(3))
+  assert [f.check for f in failures] == ["collision"]
+  assert "without full braking" in failures[0].detail
 
 
 def test_lead_pullaway_start_check_flags_never_starting():
