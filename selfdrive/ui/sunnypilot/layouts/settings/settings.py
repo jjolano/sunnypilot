@@ -110,6 +110,8 @@ class SettingsLayoutSP(OP.SettingsLayout):
   def __init__(self):
     OP.SettingsLayout.__init__(self)
     self._nav_items: list[Widget] = []
+    self._close_btn_rect = rl.Rectangle(0, 0, 0, 0)
+    self._search_btn_rect = rl.Rectangle(0, 0, 0, 0)
 
     # Create sidebar scroller
     self._sidebar_scroller = Scroller([], spacing=0, line_separator=False, pad_end=False)
@@ -119,7 +121,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
     wifi_manager.set_active(False)
 
     self._panels = {
-      OP.PanelType.SEARCH: PanelInfo(tr_noop("Search"), SearchLayout(self._navigate_to_setting), icon="icons/network.png"),
+      OP.PanelType.SEARCH: PanelInfo(tr_noop("Search"), SearchLayout(self._navigate_to_setting)),
       OP.PanelType.DEVICE: PanelInfo(tr_noop("Device"), DeviceLayoutSP(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_home.png"),
       OP.PanelType.NETWORK: PanelInfo(tr_noop("Network"), NetworkUISP(wifi_manager), icon="icons/network.png"),
       OP.PanelType.SUNNYLINK: PanelInfo(tr_noop("sunnylink"), SunnylinkLayout(), icon="icons/wifi_strength_full.png"),
@@ -142,41 +144,71 @@ class SettingsLayoutSP(OP.SettingsLayout):
     if panel_type is not None:
       self.set_current_panel(panel_type)
 
-  def _draw_sidebar(self, rect: rl.Rectangle):
-    rl.draw_rectangle_rec(rect, OP.SIDEBAR_COLOR)
+  def _draw_top_button(self, rect: rl.Rectangle, active: bool, icon: str):
+    bg_color = OP.CLOSE_BTN_PRESSED if active else OP.CLOSE_BTN_COLOR
+    rl.draw_rectangle_rounded(rect, 1.0, 20, bg_color)
 
-    # Close button
-    close_btn_rect = rl.Rectangle(
-      rect.x + style.ITEM_PADDING * 3, rect.y + style.ITEM_PADDING * 2, style.CLOSE_BTN_SIZE, style.CLOSE_BTN_SIZE
-    )
+    icon_color = rl.Color(255, 255, 255, 255) if not active else rl.Color(220, 220, 220, 255)
+    if icon == "close":
+      icon_dest = rl.Rectangle(
+        rect.x + (rect.width - self._close_icon.width) / 2,
+        rect.y + (rect.height - self._close_icon.height) / 2,
+        self._close_icon.width,
+        self._close_icon.height,
+      )
+      rl.draw_texture_pro(
+        self._close_icon,
+        rl.Rectangle(0, 0, self._close_icon.width, self._close_icon.height),
+        icon_dest,
+        rl.Vector2(0, 0),
+        0,
+        icon_color,
+      )
+      return
 
-    pressed = (rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT) and
-               rl.check_collision_point_rec(rl.get_mouse_position(), close_btn_rect))
-    close_color = OP.CLOSE_BTN_PRESSED if pressed else OP.CLOSE_BTN_COLOR
-    rl.draw_rectangle_rounded(close_btn_rect, 1.0, 20, close_color)
-
-    icon_color = rl.Color(255, 255, 255, 255) if not pressed else rl.Color(220, 220, 220, 255)
-    icon_dest = rl.Rectangle(
-      close_btn_rect.x + (close_btn_rect.width - self._close_icon.width) / 2,
-      close_btn_rect.y + (close_btn_rect.height - self._close_icon.height) / 2,
-      self._close_icon.width,
-      self._close_icon.height,
-    )
-    rl.draw_texture_pro(
-      self._close_icon,
-      rl.Rectangle(0, 0, self._close_icon.width, self._close_icon.height),
-      icon_dest,
-      rl.Vector2(0, 0),
-      0,
+    # Search icon: a simple magnifier, drawn to match the close button's weight.
+    cx = rect.x + rect.width * 0.43
+    cy = rect.y + rect.height * 0.43
+    radius = rect.width * 0.16
+    for i in range(4):
+      rl.draw_circle_lines(int(cx), int(cy), max(int(radius) - i, 1), icon_color)
+    rl.draw_line_ex(
+      rl.Vector2(cx + radius * 0.7, cy + radius * 0.7),
+      rl.Vector2(cx + radius * 1.55, cy + radius * 1.55),
+      7,
       icon_color,
     )
 
+  def _draw_sidebar(self, rect: rl.Rectangle):
+    rl.draw_rectangle_rec(rect, OP.SIDEBAR_COLOR)
+
+    # Top action buttons: close + search, centered as a pair.
+    top_btn_y = rect.y + style.ITEM_PADDING * 2
+    top_btn_gap = style.ITEM_PADDING
+    top_btn_total_width = style.CLOSE_BTN_SIZE * 2 + top_btn_gap
+    top_btn_x = rect.x + (rect.width - top_btn_total_width) / 2
+
+    close_btn_rect = rl.Rectangle(top_btn_x, top_btn_y, style.CLOSE_BTN_SIZE, style.CLOSE_BTN_SIZE)
+    search_btn_rect = rl.Rectangle(
+      top_btn_x + style.CLOSE_BTN_SIZE + top_btn_gap, top_btn_y, style.CLOSE_BTN_SIZE, style.CLOSE_BTN_SIZE
+    )
+
+    mouse_pos = rl.get_mouse_position()
+    close_pressed = rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT) and rl.check_collision_point_rec(mouse_pos, close_btn_rect)
+    search_pressed = rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT) and rl.check_collision_point_rec(mouse_pos, search_btn_rect)
+
+    self._draw_top_button(close_btn_rect, close_pressed, "close")
+    self._draw_top_button(search_btn_rect, search_pressed or self._current_panel == OP.PanelType.SEARCH, "search")
+
     # Store close button rect for click detection
     self._close_btn_rect = close_btn_rect
+    self._search_btn_rect = search_btn_rect
 
     # Navigation buttons with scroller
     if not self._nav_items:
       for panel_type, panel_info in self._panels.items():
+        if panel_type == OP.PanelType.SEARCH:
+          continue
         nav_button = NavButton(self, panel_type, panel_info)
         nav_button.rect.width = rect.width - 100  # Full width minus padding
         nav_button.rect.height = OP.NAV_BTN_HEIGHT
@@ -186,9 +218,9 @@ class SettingsLayoutSP(OP.SettingsLayout):
     # Draw navigation section with scroller
     nav_rect = rl.Rectangle(
       rect.x,
-      self._close_btn_rect.height + style.ITEM_PADDING * 4,  # Starting Y position for nav items
+      self._search_btn_rect.y + self._search_btn_rect.height + style.ITEM_PADDING * 2,
       rect.width,
-      rect.height - 300  # Remaining height after close button
+      rect.height - (self._search_btn_rect.y + self._search_btn_rect.height + style.ITEM_PADDING * 2 - rect.y)
     )
 
     if self._nav_items:
@@ -202,8 +234,15 @@ class SettingsLayoutSP(OP.SettingsLayout):
         self._close_callback()
       return True
 
+    # Check search button
+    if rl.check_collision_point_rec(mouse_pos, self._search_btn_rect):
+      self.set_current_panel(OP.PanelType.SEARCH)
+      return True
+
     # Check navigation buttons
     for panel_type, panel_info in self._panels.items():
+      if panel_type == OP.PanelType.SEARCH:
+        continue
       if rl.check_collision_point_rec(mouse_pos, panel_info.button_rect) and self._sidebar_scroller.scroll_panel.is_touch_valid():
         self.set_current_panel(panel_type)
         return True
