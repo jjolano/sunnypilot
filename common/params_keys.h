@@ -91,7 +91,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Custom-2.0 longitudinal policy + lateral demand pipeline (default-on; fail-closed shapers
     // bounded by the MPC / clip_curvature safety floors — they only shape feel, never relax safety)
     {"CustomLongitudinalEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
-    {"CustomLongitudinalMode", {PERSISTENT | BACKUP, STRING, "acc"}},
+    {"CustomLongitudinalMode", {PERSISTENT | BACKUP, STRING, "scc"}},
     {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CurveMemoryEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},

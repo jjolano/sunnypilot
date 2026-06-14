@@ -180,3 +180,15 @@ def test_distance_aware_stop_approach_brakes_in_e2e():
                       fake_scc(), fake_sla())
   assert out_e2e < 0.0
   assert out_acc == pytest.approx(0.0)
+
+
+def test_default_mode_is_scc_the_dec_replacement():
+  a = CustomLongitudinalAdapter(params=None)
+  assert a.mode is LongitudinalMode.SCC                     # default: the intelligent blend
+
+
+def test_explicit_mode_from_param():
+  for setting, expected in (("acc", LongitudinalMode.ACC), ("e2e", LongitudinalMode.E2E),
+                            ("scc", LongitudinalMode.SCC)):
+    a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode=setting))
+    assert a.mode is expected

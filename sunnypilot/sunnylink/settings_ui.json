@@ -1122,8 +1122,12 @@
                   "key": "CustomLongitudinalMode",
                   "widget": "multiple_button",
                   "title": "Longitudinal Mode",
-                  "description": "ACC is OEM-like (cruise + lead). E2E also uses the driving model's predicted stops and slowdowns.",
+                  "description": "SCC is the intelligent blend (recommended) and the custom-2.0 replacement for Dynamic Experimental Control, adding the model's trust-gated stops and map/speed-limit caps on top of cruise + lead. ACC forces OEM-like cruise + lead only; E2E forces the model's stops/slowdowns without the map/speed-limit caps.",
                   "options": [
+                    {
+                      "value": "scc",
+                      "label": "SCC"
+                    },
                     {
                       "value": "acc",
                       "label": "ACC"

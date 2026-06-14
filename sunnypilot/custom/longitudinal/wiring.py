@@ -113,7 +113,7 @@ class CustomLongitudinalAdapter:
     self._stop_trust = StopTrustLearner()
     self._tick = 0
     self.enabled = False
-    self.mode = LongitudinalMode.ACC
+    self.mode = LongitudinalMode.SCC
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     if params is not None:
@@ -125,7 +125,9 @@ class CustomLongitudinalAdapter:
       return
     try:
       self.enabled = bool(p.get_bool("CustomLongitudinalEnabled"))
-      self.mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode"))
+      # SCC is the default: the custom-2.0 intelligent ACC/E2E blend (the DEC replacement). acc/e2e
+      # force OEM-like cruise or the model's stops respectively.
+      self.mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc")
       self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
       # SCC curve sources are gated by the existing upstream SCC enable toggles.
       self.sources = SourceToggles(
