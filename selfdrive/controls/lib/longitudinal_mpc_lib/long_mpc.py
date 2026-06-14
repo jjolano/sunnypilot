@@ -54,7 +54,9 @@ T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
-STOP_DISTANCE = 6.0
+STOP_DISTANCE = 6.0      # g_stop: standstill gap behind a lead (the stop buffer)
+MOVING_GAP = 1.5        # g_move: the moving follow constant the stop gap fades to (decoupled)
+GAP_FADE_V = 4.0        # m/s; speed scale over which the stop gap fades to the moving gap
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
@@ -83,8 +85,16 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
+def follow_offset(v_ego):
+  # Decouple the stop gap from the moving follow distance. STOP_DISTANCE is the standstill buffer
+  # (the gap you stop at behind a lead); while moving the constant fades to the smaller MOVING_GAP so
+  # the static stop distance no longer inflates the moving gap (the low-speed hang-back). At a stop
+  # the offset returns to STOP_DISTANCE, so the car never settles closer than the stop buffer.
+  # Rational fade (no exp) so it works for both numpy arrays and the casadi SX cost expression.
+  return MOVING_GAP + (STOP_DISTANCE - MOVING_GAP) / (1.0 + (v_ego / GAP_FADE_V) ** 2)
+
 def get_safe_obstacle_distance(v_ego, t_follow):
-  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + STOP_DISTANCE
+  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + follow_offset(v_ego)
 
 def gen_long_model():
   model = AcadosModel()
