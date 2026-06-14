@@ -16,6 +16,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.common.params import Params
+from openpilot.sunnypilot.custom.longitudinal.lead_anticipation import LeadAnticipation
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
@@ -37,6 +38,9 @@ class LongitudinalPlannerSP:
 
     # Custom-2.0 longitudinal policy (opt-in via CustomLongitudinalEnabled; default off).
     self.custom_long = CustomLongitudinalAdapter(Params())
+    # §3 lead-motion anticipation: confidence-shape the lead accel fed to the MPC (opt-in via
+    # LeadAnticipationEnabled; default off, fail-closed to the raw radarState).
+    self.lead_anticipation = LeadAnticipation(Params())
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode

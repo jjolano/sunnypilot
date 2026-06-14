@@ -1,0 +1,121 @@
+"""Lead-motion anticipation (§3) — confidence-shape the radar lead's accel before the MPC.
+
+A transient, low-confidence negative ``aLeadK`` spike, extrapolated by the MPC's ``process_lead``,
+drives reactive braking (see docs/adr/2026-06-14-longitudinal-lead-anticipation.md). This adapter
+discounts ``aLeadK`` by a confidence derived from lead-track stability (the same
+``LeadConfidenceTracker`` the custom stack uses), so an unconfirmed/transient lead-decel doesn't brake
+the car — while a confident or *sustained* decel propagates at full weight.
+
+SAFETY — unlike the a_target shaper, this reaches the MPC *input* and can reduce braking. So it:
+- only ever makes a *braking* lead look *less* braking — the shaped ``aLeadK`` stays in ``[raw, 0]``
+  (never positive, never beyond the raw measurement, so the lead is never predicted faster/closer);
+- never discounts a non-braking lead, a high-confidence lead, or a sustained brake;
+- floors the discount at ``DISCOUNT_FLOOR``;
+- is opt-in (``LeadAnticipationEnabled``, default-off) and fails closed to the raw radarState.
+
+Validate via ``profile_lead_following`` replay (reactive-brake + decel-peak down, headway not up,
+zero new close-approaches) before any default-on.
+"""
+from __future__ import annotations
+
+import math
+from typing import Any
+
+from openpilot.sunnypilot.custom.longitudinal.lead_confidence import NEW_LEAD_STABLE_TIME, LeadConfidenceTracker
+
+HIGH_CONFIDENCE = 0.8        # at/above this confidence, trust the decel fully (no discount)
+DISCOUNT_FLOOR = 0.5         # never discount a measured decel below this fraction of the raw aLeadK
+SUSTAINED_BRAKE_S = 0.6      # consecutive braking this long => a real brake, no discount
+SUSTAINED_BRAKE_A = -0.5     # m/s^2; aLeadK at/below this counts as a meaningful brake
+PARAMS_REFRESH_PERIOD = 50   # planner ticks
+
+
+def _f(value: Any, default: float = 0.0) -> float:
+  try:
+    v = float(value)
+  except (TypeError, ValueError):
+    return default
+  return v if math.isfinite(v) else default
+
+
+def _confidence(state: Any) -> float:
+  """0..1 from lead-track stability: a stable, non-flickering, established track is fully trusted; a
+  new / flickering / just-acquired track is not (its aLeadK is the noisy term we guard against)."""
+  if state is None or not bool(getattr(state, "status", False)):
+    return 0.0
+  if state.new_lead or state.guard_timer > 0.0 or state.flicker_guard_timer > 0.0:
+    return 0.0
+  if state.stable:
+    return 1.0
+  return max(0.0, min(0.9, _f(state.age) / NEW_LEAD_STABLE_TIME))
+
+
+class _ShapedLead:
+  """Proxies a radar lead, overriding only aLeadK (and aLeadTau)."""
+  def __init__(self, lead: Any, a_lead: float, a_lead_tau: float):
+    object.__setattr__(self, "_lead", lead)
+    object.__setattr__(self, "aLeadK", float(a_lead))
+    object.__setattr__(self, "aLeadTau", float(a_lead_tau))
+
+  def __getattr__(self, name: str) -> Any:
+    return getattr(self._lead, name)
+
+
+class _ShapedRadarState:
+  """Proxies radarState, overriding only leadOne/leadTwo."""
+  def __init__(self, rs: Any, lead_one: Any, lead_two: Any):
+    object.__setattr__(self, "_rs", rs)
+    object.__setattr__(self, "leadOne", lead_one)
+    object.__setattr__(self, "leadTwo", lead_two)
+
+  def __getattr__(self, name: str) -> Any:
+    return getattr(self._rs, name)
+
+
+class LeadAnticipation:
+  def __init__(self, params: Any = None):
+    self._params = params
+    self._conf = (LeadConfidenceTracker(), LeadConfidenceTracker())
+    self._brake_s = [0.0, 0.0]
+    self._tick = 0
+    self.enabled = False
+    if params is not None:
+      self.refresh_params()
+
+  def refresh_params(self) -> None:
+    if self._params is None:
+      return
+    try:
+      self.enabled = bool(self._params.get_bool("LeadAnticipationEnabled"))
+    except Exception:
+      self.enabled = False
+
+  def shape(self, radarstate: Any, dt: float) -> Any:
+    """Return radarstate unchanged when disabled, else a wrapper with confidence-shaped lead accel."""
+    self._tick += 1
+    if self._params is not None and self._tick % PARAMS_REFRESH_PERIOD == 0:
+      self.refresh_params()
+    if not self.enabled:
+      return radarstate
+    try:
+      one = self._shape_lead(getattr(radarstate, "leadOne", None), 0, dt)
+      two = self._shape_lead(getattr(radarstate, "leadTwo", None), 1, dt)
+      return _ShapedRadarState(radarstate, one, two)
+    except Exception:   # fail closed: never let anticipation break the planner
+      return radarstate
+
+  def _shape_lead(self, lead: Any, idx: int, dt: float) -> Any:
+    state = self._conf[idx].update(lead, dt)
+    if lead is None or not bool(getattr(lead, "status", False)):
+      self._brake_s[idx] = 0.0
+      return lead
+    a_lead = _f(getattr(lead, "aLeadK", 0.0))
+    # sustained-brake tracker: count consecutive time the lead has been meaningfully braking.
+    self._brake_s[idx] = self._brake_s[idx] + max(0.0, _f(dt)) if a_lead <= SUSTAINED_BRAKE_A else 0.0
+    if a_lead >= 0.0:
+      return lead                                  # never touch a non-braking lead
+    if _confidence(state) >= HIGH_CONFIDENCE or self._brake_s[idx] >= SUSTAINED_BRAKE_S:
+      return lead                                  # trust a confident or sustained decel fully
+    discount = max(DISCOUNT_FLOOR, _confidence(state))
+    a_shaped = a_lead * discount                   # a_lead < 0, discount in (0,1] -> in [a_lead, 0]
+    return _ShapedLead(lead, a_shaped, _f(getattr(lead, "aLeadTau", 1.5)))

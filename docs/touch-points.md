@@ -6,11 +6,12 @@ upstream updates.
 
 | File | Why |
 |---|---|
-| `common/params_keys.h` | Tailscale param keys (12) + custom long/lat opt-in params (5, incl. `CurveMemoryEnabled`) + speed-aware torque params (2) |
+| `common/params_keys.h` | Tailscale param keys (12) + custom long/lat opt-in params (6, incl. `CurveMemoryEnabled`, `LeadAnticipationEnabled`) + speed-aware torque params (2) |
 | `selfdrive/controls/controlsd.py` | Opt-in lateral demand pipeline hook (1 fail-closed line on the model-curvature branch). REMAINING (harness-gated): wire lane-change state/direction + lane-line y0 into `demand/wiring.build_pipeline_inputs` (currently inert) |
 | `selfdrive/controls/lib/latcontrol_torque.py` | Pass `CS.vEgo` into the torque override extension hook (1 line) |
 | `selfdrive/locationd/torqued.py` | Route accepted learning points through the extension hook and persist speed profiles on the 60s cache cadence |
-| `sunnypilot/selfdrive/controls/lib/longitudinal_planner.py` | Opt-in custom-2.0 longitudinal hook in `update_targets` (import + adapter + 1 fail-closed call). Model-stop now read from upstream `modelV2.action.shouldStop`/`desiredAcceleration` (+ predicted stop distance derived from the model trajectory `position.x`/`velocity.x`) + coast from `get_coast_accel(pitch)` inside the adapter (no new planner touch) |
+| `sunnypilot/selfdrive/controls/lib/longitudinal_planner.py` | Opt-in custom-2.0 longitudinal hook in `update_targets` (import + adapter + 1 fail-closed call). Model-stop now read from upstream `modelV2.action.shouldStop`/`desiredAcceleration` (+ predicted stop distance derived from the model trajectory `position.x`/`velocity.x`) + coast from `get_coast_accel(pitch)` inside the adapter (no new planner touch). DEC bypassed in `is_e2e`/`update` when custom long is on (SCC replaces it). Holds the §3 `LeadAnticipation` adapter |
+| `selfdrive/controls/lib/longitudinal_planner.py` | §3 opt-in lead-motion anticipation: 1 fail-closed call (`self.lead_anticipation.shape(radarState, dt)`) confidence-shaping the lead accel fed to `mpc.update` (returns the raw radarState when disabled/on fault) |
 | `selfdrive/ui/sunnypilot/layouts/settings/steering_sub_layouts/torque_settings.py` | Offroad speed-aware torque mode selector + dialog wiring |
 | `selfdrive/ui/sunnypilot/layouts/settings/settings.py` | Mount consolidated schema-driven panels: `Driving` (steering+cruise) + `Interface` (visuals+display) + a global `Search` panel (jump-to-setting via `_navigate_to_setting`); sidebar collapses 4 entries → 2 and gains Search |
 | `system/manager/process_config.py` | `manage_tailscaled` daemon process entry (2 lines) |
