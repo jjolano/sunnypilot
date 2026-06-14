@@ -280,3 +280,22 @@ sections:
       key: AutoLaneChangeTimer
       op: '>'
       value: 0
+- id: custom_lateral_demand
+  title: Custom Lateral Demand
+  description: ''
+  items:
+  - key: CustomLateralDemandEnabled
+    widget: toggle
+    title: Custom Lateral Demand
+    description: Process the driving model's steering curvature (quality gating + smoothing) before lateral control.
+      Fail-closed to the stock curvature and still clipped by the safety limiter; off uses the stock model curvature.
+    sub_items:
+    - key: CurveMemoryEnabled
+      widget: toggle
+      title: Corner Curve Memory
+      description: Remember a corner's curvature seen at speed and hold it through low-speed stops so the car resumes the
+        turn instead of forgetting it. Supplement-only and vetoed by confident vision; requires Custom Lateral Demand.
+      enablement:
+      - type: param
+        key: CustomLateralDemandEnabled
+        equals: true

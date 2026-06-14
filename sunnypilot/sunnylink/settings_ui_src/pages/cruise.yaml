@@ -263,3 +263,30 @@ sections:
       - type: capability
         field: has_icbm
         equals: true
+- id: custom_longitudinal
+  title: Custom Longitudinal Policy (custom-2.0)
+  description: ''
+  enablement:
+  - $ref: '#/macros/longitudinal'
+  items:
+  - key: CustomLongitudinalEnabled
+    widget: toggle
+    title: Custom Longitudinal
+    description: Shape the stock longitudinal planner with the custom-2.0 policy for smoother launches and lead-following.
+      It only shapes within the planner's safety envelope and never relaxes braking; off uses the stock planner.
+    enablement:
+    - $ref: '#/macros/longitudinal'
+    sub_items:
+    - key: CustomLongitudinalMode
+      widget: multiple_button
+      title: Longitudinal Mode
+      description: ACC is OEM-like (cruise + lead). E2E also uses the driving model's predicted stops and slowdowns.
+      options:
+      - value: acc
+        label: ACC
+      - value: e2e
+        label: E2E
+      enablement:
+      - type: param
+        key: CustomLongitudinalEnabled
+        equals: true

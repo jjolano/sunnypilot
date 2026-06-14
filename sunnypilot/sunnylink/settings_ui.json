@@ -585,6 +585,34 @@
               ]
             }
           ]
+        },
+        {
+          "id": "custom_lateral_demand",
+          "title": "Custom Lateral Demand",
+          "description": "",
+          "items": [
+            {
+              "key": "CustomLateralDemandEnabled",
+              "widget": "toggle",
+              "title": "Custom Lateral Demand",
+              "description": "Process the driving model's steering curvature (quality gating + smoothing) before lateral control. Fail-closed to the stock curvature and still clipped by the safety limiter; off uses the stock model curvature.",
+              "sub_items": [
+                {
+                  "key": "CurveMemoryEnabled",
+                  "widget": "toggle",
+                  "title": "Corner Curve Memory",
+                  "description": "Remember a corner's curvature seen at speed and hold it through low-speed stops so the car resumes the turn instead of forgetting it. Supplement-only and vetoed by confident vision; requires Custom Lateral Demand.",
+                  "enablement": [
+                    {
+                      "type": "param",
+                      "key": "CustomLateralDemandEnabled",
+                      "equals": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
         }
       ]
     },
@@ -1057,6 +1085,58 @@
                     {
                       "type": "capability",
                       "field": "has_icbm",
+                      "equals": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "custom_longitudinal",
+          "title": "Custom Longitudinal Policy (custom-2.0)",
+          "description": "",
+          "enablement": [
+            {
+              "type": "capability",
+              "field": "has_longitudinal_control",
+              "equals": true
+            }
+          ],
+          "items": [
+            {
+              "key": "CustomLongitudinalEnabled",
+              "widget": "toggle",
+              "title": "Custom Longitudinal",
+              "description": "Shape the stock longitudinal planner with the custom-2.0 policy for smoother launches and lead-following. It only shapes within the planner's safety envelope and never relaxes braking; off uses the stock planner.",
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ],
+              "sub_items": [
+                {
+                  "key": "CustomLongitudinalMode",
+                  "widget": "multiple_button",
+                  "title": "Longitudinal Mode",
+                  "description": "ACC is OEM-like (cruise + lead). E2E also uses the driving model's predicted stops and slowdowns.",
+                  "options": [
+                    {
+                      "value": "acc",
+                      "label": "ACC"
+                    },
+                    {
+                      "value": "e2e",
+                      "label": "E2E"
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "param",
+                      "key": "CustomLongitudinalEnabled",
                       "equals": true
                     }
                   ]

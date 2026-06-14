@@ -33,6 +33,8 @@ def test_plan_order_matches_device_top_level():
     ("subpanel", "torque_settings"),
     ("control", "AutoLaneChangeTimer"),
     ("control", "AutoLaneChangeBsmDelay"),
+    ("control", "CustomLateralDemandEnabled"),
+    ("control", "CurveMemoryEnabled"),       # sub_item, inlined after its parent toggle
   ]
 
 
