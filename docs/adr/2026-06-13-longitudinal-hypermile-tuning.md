@@ -1,7 +1,7 @@
 # Longitudinal hypermile tuning (Phase 5 feel)
 
-Status: proposed
-Date: 2026-06-13
+Status: §1 implemented (commit `0404c21a`, default-off); §2 dropped after validation; §3 deferred to its own ADR
+Date: 2026-06-13 (implementation status added 2026-06-14)
 Relates to: [clean-room longitudinal architecture](2026-06-13-clean-room-longitudinal-architecture.md),
 legacy ADR `docs/legacy/adr/0001-longitudinal-planner-mpc-boundary.md`, the
 `profile_lead_following` drive_lab metric (commit `68f3c5ab12`), and `docs/touch-points.md`.
@@ -100,3 +100,32 @@ proves to require boundary changes, gets its own ADR rather than riding this one
   prerequisite for trusting the §2/§3 deltas, and `bd`/`be` should be re-pulled cleanly.
 - Custom-policy changes go in new files / hook-sized diffs per the repo model; any planner-lead-input change
   for §3 is a touch-point to record in `docs/touch-points.md`.
+
+## Implementation status (2026-06-14)
+
+**§1 — implemented and validated (commit `0404c21a`, default-off).** The launch hesitancy was deeper than
+the gate alone: `lead_a_target == seed_a_target` (`wiring.py`), so the lead-follow PHYSICAL_HAZARD clamped
+the authorized pull-away back to the timid MPC seed, *and* the pull-away's proposed accel was `max(0, seed)` —
+the candidate was inert. Fix (all in the custom policy, no planner↔MPC boundary touch): (a) the close-launch
+pull-away keys on a lead-tracking accel `min(launch_accel_max, (v_lead−v_ego)/τ)` (τ = `LEAD_LAUNCH_TAU` 1.0 s)
+— gentle for a crawling lead, brisk when it genuinely goes — capped by the unchanged speedup guard; (b) gated
+on `lead_progress_allowed` + an *opening* lead below `LEAD_LAUNCH_MAX_V_EGO` (8 m/s), not the 25 m gap_excess
+(which never fires at a ~6 m launch); (c) the lead-follow hazard is emitted decel-only in that authorized case
+so a *braking* seed still binds (a positive "hazard" is not a hazard). Plus the creep-arm trim
+(`STOP_GAP_CREEP_ARM_EXCESS` 1.05 → 1.0). Validation: matched-state A/B through the stateful stack —
+old `a_target == seed` exactly (pull-away inert), new +0.19 mean / +0.31 peak m/s² brisker at the launch, decel
+floor unchanged; property tests pin the invariants (braking binds, speedup-guard, requires-authorization); a
+closed-loop stack test drives the real confidence tracker earning the authorization.
+
+**§2 — dropped after validation (not shipped).** Tuning `COAST_ARRIVAL_MARGIN_S` (0.6 → 0.35) is a measured
+*no-op* for real approaches. The cushion only coasts when runway ≥ `coast_distance` (≈518 m for a 22→15 m/s
+delta at −0.25 m/s²); real approaches start far closer, so the cushion is **runway-limited → BRAKE mode**, where
+it emits no candidate and the arrival margin is irrelevant (A/B: byte-identical old vs new — lift-off, decel
+peak, settled headway all unchanged). Lowering the approach decel *peak* without adding hang-back is
+contradictory at a fixed coast decel; it requires anticipating the lead won't fully stop — i.e. §3. So §2's
+named lever folds into §3 rather than shipping as an ineffective tune.
+
+**§3 — the real approach/anticipation lever, deferred to its own ADR.** Both the reactive-braking reduction and
+the approach-decel softening reduce to feeding confidence-/τ-shaped lead-accel to the **MPC input** (planner
+lead processing), which is the planner↔MPC boundary (legacy ADR 0001). Tracked separately as the ADR text
+anticipated.
