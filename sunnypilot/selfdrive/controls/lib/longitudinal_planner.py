@@ -40,7 +40,10 @@ class LongitudinalPlannerSP:
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
-    if not self.dec.active():
+    # The custom-2.0 stack's SCC mode is the DEC replacement, so when the custom policy is enabled
+    # DEC is bypassed: the base MPC just follows Experimental Mode and the custom SCC blend owns the
+    # ACC/E2E decision (avoids stacking two ACC/E2E deciders).
+    if self.custom_long.enabled or not self.dec.active():
       return experimental_mode
 
     return experimental_mode and self.dec.mode() == "blended"
@@ -83,7 +86,8 @@ class LongitudinalPlannerSP:
 
   def update(self, sm: messaging.SubMaster) -> None:
     self.events_sp.clear()
-    self.dec.update(sm)
+    if not self.custom_long.enabled:   # custom SCC mode replaces DEC; keep DEC dormant when custom is on
+      self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
 
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:

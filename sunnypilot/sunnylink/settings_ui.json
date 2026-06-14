@@ -645,7 +645,7 @@
               "key": "DynamicExperimentalControl",
               "widget": "toggle",
               "title": "Dynamic Experimental Control",
-              "description": "Let the model decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal.",
+              "description": "Let the model decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal. Superseded by the custom Longitudinal Policy's SCC mode, so it is disabled while Custom Longitudinal is on.",
               "visibility": [
                 {
                   "type": "capability",
@@ -658,6 +658,11 @@
                   "type": "capability",
                   "field": "has_longitudinal_control",
                   "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "CustomLongitudinalEnabled",
+                  "equals": false
                 }
               ]
             },
