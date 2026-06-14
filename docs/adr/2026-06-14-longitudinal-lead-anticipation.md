@@ -1,6 +1,6 @@
 # Longitudinal §3 — lead-motion anticipation at the planner↔MPC boundary
 
-Status: proposed
+Status: implemented default-off/inert; validation harness hardened; not default-on
 Date: 2026-06-14
 Relates to: [hypermile tuning ADR §3](2026-06-13-longitudinal-hypermile-tuning.md),
 [clean-room longitudinal architecture](2026-06-13-clean-room-longitudinal-architecture.md),
@@ -110,6 +110,17 @@ to **all** leads (not confidence-gated) — but that reduces braking responsiven
 too, so it is a distinct, higher-risk change needing its own scoping + a closed-loop "still brakes for
 a real decel" gate. §3 stays committed default-off as the foundation (the `LeadAnticipation` adapter
 can host the temporal-smoothing path).
+
+**Validation harness hardened (2026-06-14) but corpus rerun blocked in this checkout.** The replay gate
+now emits machine-readable evidence fields (`benefit_detected`, `safety_pass`, `invalid_metric`) and has
+synthetic tests for no-data, softened-frame counting, decel peaks, risky softenings, and JSON rendering.
+This improves repeatability of the gate only; it does **not** replace route replay and does not certify
+default-on safety. The historical 6-route run above remains historical evidence until rerun.
+
+The current checkout does not include a canonical route manifest or local logs for that rerun. Existing
+ADR shorthand references (`c7/b4/b5/c4/c8/c9`, `bd/be`, `000001c7`) are not valid `LogReader`
+identifiers by themselves, so the corpus cannot be replayed here without full canonical route names or
+local `rlog`/`qlog` files.
 
 ## Consequences
 

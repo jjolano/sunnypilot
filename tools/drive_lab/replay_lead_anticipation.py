@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""§3 validation gate — run the real LongitudinalMpc over a route's logged following frames twice
-(raw leads vs §3 confidence-shaped leads) and compare the braking it commands. Answers the ADR's
-question: does lead-motion anticipation cut reactive braking WITHOUT under-braking real decels?
+"""§3 validation gate — run the real LongitudinalMpc over a route's logged lead-following frames
+twice (raw leads vs §3 confidence-shaped leads) and compare the braking it commands. Answers the
+ADR's question: does lead-motion anticipation cut reactive braking WITHOUT under-braking real decels?
 
 For each radarState frame the MPC is anchored to the logged ego state (set_cur_state from
 carState), so the per-frame a_target difference is purely the lead-shaping effect. v_cruise is set
@@ -12,7 +12,10 @@ Run: uv run python -m openpilot.tools.drive_lab.replay_lead_anticipation ROUTE [
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+import json
 import math
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -42,6 +45,58 @@ class _AlwaysOn:
     return True
 
 
+@dataclass(frozen=True)
+class LeadReplayRow:
+  a_raw: float
+  a_shaped: float
+  a_lead: float
+  v_rel: float
+  d_rel: float
+
+
+def summarize_rows(rows: list[LeadReplayRow], source: str) -> dict[str, Any]:
+  if not rows:
+    return {
+      "source": source,
+      "following_frames": 0,
+      "note": f"no lead-following frames >= {V_MIN:g} m/s",
+      "benefit_detected": False,
+      "safety_pass": False,
+      "invalid_metric": False,
+    }
+
+  a_raw = np.array([r.a_raw for r in rows])
+  a_shaped = np.array([r.a_shaped for r in rows])
+  a_lead = np.array([r.a_lead for r in rows])
+  v_rel = np.array([r.v_rel for r in rows])
+  d_rel = np.array([r.d_rel for r in rows])
+  valid = all(np.all(np.isfinite(arr)) for arr in (a_raw, a_shaped, a_lead, v_rel, d_rel))
+  delta = a_shaped - a_raw
+  softened = delta > 0.02
+  risky = softened & (v_rel < -1.5) & (delta > 0.3)
+  braking = a_raw < BRAKE_A
+  benefit_detected = bool(np.any(softened) and float(np.sum(delta[softened])) > 0.0)
+  invalid_metric = not valid or any(not math.isfinite(x) for x in (float(np.min(a_raw)), float(np.min(a_shaped)), float(np.max(delta))))
+  return {
+    "brake_aleadk_noise": int(np.sum(braking & (a_lead < -1.0) & (v_rel > -1.0))),
+    "brake_genuine_closing": int(np.sum(braking & (v_rel < -1.0))),
+    "source": source,
+    "following_frames": len(rows),
+    "braking_frames": int(np.sum(braking)),
+    "softened_frames": int(np.sum(softened)),
+    "softened_pct": round(100.0 * np.mean(softened), 1),
+    "decel_peak_raw": round(float(a_raw.min()), 3),
+    "decel_peak_shaped": round(float(a_shaped.min()), 3),
+    "mean_brake_reduction": round(float(delta[softened].mean()), 4) if softened.any() else 0.0,
+    "p90_brake_reduction": round(float(np.percentile(delta[softened], 90)), 4) if softened.any() else 0.0,
+    "max_brake_reduction": round(float(delta.max()), 4),
+    "risky_softenings": int(np.sum(risky)),
+    "benefit_detected": benefit_detected,
+    "invalid_metric": invalid_metric,
+    "safety_pass": bool(valid and int(np.sum(risky)) == 0),
+  }
+
+
 def _mpc():
   m = LongitudinalMpc()
   m.set_weights()
@@ -52,7 +107,7 @@ def analyze_route(msgs: list[Any], source: str) -> dict[str, Any]:
   mpc_raw, mpc_shaped = _mpc(), _mpc()
   la = LeadAnticipation(_AlwaysOn())
   latest: dict[str, Any] = {}
-  rows = []
+  rows: list[LeadReplayRow] = []
   for rec in build_route_messages(msgs):
     typ, payload = rec.typ, rec.payload
     if typ in ("carState", "carControl"):
@@ -76,44 +131,16 @@ def analyze_route(msgs: list[Any], source: str) -> dict[str, Any]:
       mpc.update(rs, V_CRUISE_HIGH)
     if not following:
       continue
-    a_raw = float(mpc_raw.a_solution[0])
-    a_shaped = float(mpc_shaped.a_solution[0])
-    rows.append((a_raw, a_shaped, _f(safe_get(lead, "aLeadK")), _f(safe_get(lead, "vRel")),
-                 _f(safe_get(lead, "dRel"))))
+    rows.append(LeadReplayRow(float(mpc_raw.a_solution[0]), float(mpc_shaped.a_solution[0]),
+                              _f(safe_get(lead, "aLeadK")), _f(safe_get(lead, "vRel")),
+                              _f(safe_get(lead, "dRel"))))
 
-  if not rows:
-    return {"source": source, "following_frames": 0, "note": "no engaged following frames >= 8 m/s"}
-
-  a_raw = np.array([r[0] for r in rows])
-  a_shaped = np.array([r[1] for r in rows])
-  a_lead = np.array([r[2] for r in rows])
-  v_rel = np.array([r[3] for r in rows])
-  delta = a_shaped - a_raw                              # >0 => §3 reduced braking
-  softened = delta > 0.02
-  risky = softened & (v_rel < -1.5) & (delta > 0.3)    # safety: eased braking while lead closing fast
-  # is the braking aLeadK-noise (a decel spike on a non-closing lead, smoothable) or genuine
-  # closing (slower/closing lead, NOT removable by any aLeadK shaping)?
-  braking = a_raw < BRAKE_A
-  return {
-    "brake_aleadk_noise": int(np.sum(braking & (a_lead < -1.0) & (v_rel > -1.0))),
-    "brake_genuine_closing": int(np.sum(braking & (v_rel < -1.0))),
-    "source": source,
-    "following_frames": len(rows),
-    "braking_frames": int(np.sum(a_raw < BRAKE_A)),
-    "softened_frames": int(np.sum(softened)),
-    "softened_pct": round(100.0 * np.mean(softened), 1),
-    "decel_peak_raw": round(float(a_raw.min()), 3),
-    "decel_peak_shaped": round(float(a_shaped.min()), 3),
-    "mean_brake_reduction": round(float(delta[softened].mean()), 4) if softened.any() else 0.0,
-    "p90_brake_reduction": round(float(np.percentile(delta[softened], 90)), 4) if softened.any() else 0.0,
-    "max_brake_reduction": round(float(delta.max()), 4),
-    "risky_softenings": int(np.sum(risky)),   # SAFETY: softened a brake while the lead closed fast
-  }
+  return summarize_rows(rows, source)
 
 
 def render(r: dict[str, Any]) -> str:
   if r.get("following_frames", 0) == 0:
-    return f"§3 A/B {r['source']}: {r.get('note', 'no data')}"
+    return f"§3 lead-anticipation A/B: {r['source']}\n  note: {r.get('note', 'no data')}"
   return (
     f"§3 lead-anticipation A/B: {r['source']}\n"
     + f"  following frames {r['following_frames']} ({r['braking_frames']} braking: "
@@ -126,13 +153,27 @@ def render(r: dict[str, Any]) -> str:
   )
 
 
+def _json_payload(reports: list[dict[str, Any]]) -> dict[str, Any] | list[dict[str, Any]]:
+  return reports[0] if len(reports) == 1 else reports
+
+
+def render_reports(reports: list[dict[str, Any]], json_output: bool = False) -> str:
+  if json_output:
+    return json.dumps(_json_payload(reports), indent=2)
+  return "\n\n".join(render(report) for report in reports)
+
+
 def main() -> None:
-  p = argparse.ArgumentParser(description="§3 lead-anticipation MPC A/B over engaged following frames.")
+  p = argparse.ArgumentParser(description="§3 lead-anticipation MPC A/B over lead-following frames.")
   p.add_argument("routes", nargs="+")
+  p.add_argument("--output")
+  p.add_argument("--json", action="store_true")
   p.add_argument("--qlog", action="store_true")
   args = p.parse_args()
-  for route in args.routes:
-    print(render(analyze_route(load_route_msgs(route, qlog=args.qlog), route)))
+  reports = [analyze_route(load_route_msgs(route, qlog=args.qlog), route) for route in args.routes]
+  if args.output:
+    Path(args.output).write_text(json.dumps(_json_payload(reports), indent=2, sort_keys=True) + "\n")
+  print(render_reports(reports, json_output=args.json))
 
 
 if __name__ == "__main__":
