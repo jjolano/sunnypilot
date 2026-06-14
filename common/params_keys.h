@@ -88,12 +88,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LateralManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LongitudinalManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LongitudinalPersonality", {PERSISTENT | BACKUP, INT, std::to_string(static_cast<int>(cereal::LongitudinalPersonality::STANDARD))}},
-    // Custom-2.0 longitudinal policy (opt-in; default off keeps stock planner behavior)
-    {"CustomLongitudinalEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    // Custom-2.0 longitudinal policy + lateral demand pipeline (default-on; fail-closed shapers
+    // bounded by the MPC / clip_curvature safety floors — they only shape feel, never relax safety)
+    {"CustomLongitudinalEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"CustomLongitudinalMode", {PERSISTENT | BACKUP, STRING, "acc"}},
-    {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"CurveMemoryEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"CurveMemoryEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"NetworkMetered", {PERSISTENT | BACKUP, BOOL}},
     {"ObdMultiplexingChanged", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"ObdMultiplexingEnabled", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
