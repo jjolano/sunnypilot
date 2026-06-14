@@ -143,6 +143,72 @@ def test_lead_pullaway_candidate_speedup_guarded():
   assert pull and pull[0].a_target < 2.5    # guarded below the raw seed accel
 
 
+def _launch_scene(**over):
+  # Stop-and-go launch behind a close, authorized, opening lead. The MPC seed is timid (0.2) and
+  # equals the lead-follow a_target, as the planner wires it (wiring.py).
+  base = dict(v_ego=0.5, v_cruise=12.0, seed_a_target=0.2, has_lead=True, lead_a_target=0.2,
+              lead_progress_allowed=True, lead_gap_excess=0.0,
+              lead_v=2.0, lead_v_rel=1.5, lead_d_rel=7.0, follow_gap=6.0)
+  base.update(over)
+  return LongitudinalScene(**base)
+
+
+def test_launch_behind_opening_lead_is_brisk_not_timid():
+  # The hypermile launch fix: an authorized, opening close lead launches off the line instead of
+  # being clamped to the timid MPC seed (the old gap_excess>0 gate never fires at a ~6 m gap).
+  d = decide(build_candidates(_launch_scene()), LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(min(launch_accel_max(Personality.STANDARD), (2.0 - 0.5) / 1.0))
+  assert d.a_target > 0.2                                  # exceeds the timid seed
+  assert d.a_target <= launch_accel_max(Personality.STANDARD)
+
+
+def test_launch_tracks_lead_speed_gently_when_crawling():
+  # A barely-moving lead gets a gentle, lead-tracking pull (no fixed lurch).
+  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.3, lead_v_rel=0.3, lead_d_rel=6.5,
+                                            seed_a_target=0.0, lead_a_target=0.0)),
+             LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(0.3)                  # ~ (v_lead - v_ego)/tau, well below the cap
+  assert 0.0 < d.a_target < launch_accel_max(Personality.STANDARD)
+
+
+def test_launch_does_not_override_a_braking_seed():
+  # Safety invariant: even with an opening, authorized lead, a braking MPC seed still binds —
+  # the shaper never reduces the MPC's follow decel.
+  scene = _launch_scene(v_ego=2.0, seed_a_target=-1.0, lead_a_target=-1.0,
+                        lead_v=3.0, lead_v_rel=1.0, lead_d_rel=4.0)  # opening but we're too close
+  d = decide(build_candidates(scene), LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.0)
+  assert d.reason == "physical_hazard"
+
+
+def test_launch_requires_authorization():
+  # Without lead_progress_allowed the launch pull-away never fires; the timid seed stands.
+  scene = _launch_scene(lead_progress_allowed=False)
+  cands = build_candidates(scene)
+  assert not [c for c in cands if c.intent == "lead_pullaway"]
+  assert decide(cands, LongitudinalMode.ACC, LIMITS).a_target == pytest.approx(0.2)
+
+
+def test_launch_pullaway_respects_speedup_guard_invariant():
+  # For any authorized launch, applying the commanded accel for the 1 s lookahead must not leave
+  # a re-settle decel worse than the speedup guard's comfort floor (-1.2 m/s^2).
+  for v_ego in (0.0, 1.0, 3.0, 6.0):
+    for v_rel in (0.5, 2.0, 5.0):            # genuinely opening: lead faster than ego
+      for d_rel in (6.2, 8.0, 12.0):
+        lead_v = v_ego + v_rel
+        scene = _launch_scene(v_ego=v_ego, lead_v=lead_v, lead_v_rel=v_rel,
+                              lead_d_rel=d_rel, follow_gap=6.0)
+        pull = [c for c in build_candidates(scene) if c.intent == "lead_pullaway"]
+        if not pull:
+          continue
+        a = pull[0].a_target
+        assert 0.0 <= a <= launch_accel_max(Personality.STANDARD) + 1e-9
+        excess_gap = d_rel - 6.0
+        closing_next = max(0.0, (v_ego + a * 1.0) - lead_v)
+        required = (closing_next * closing_next) / (2.0 * max(excess_gap, 1e-3))
+        assert required <= 1.2 + 1e-6        # never digs a hole needing harder than comfort to undo
+
+
 def test_lead_cushion_advisory_when_runway():
   scene = LongitudinalScene(v_ego=20.0, v_cruise=22.0, seed_a_target=0.3, has_lead=True,
                             lead_a_target=0.0, lead_v=15.0, lead_d_rel=375.0, follow_gap=20.0,

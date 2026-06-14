@@ -99,3 +99,72 @@ def test_reset_clears_trackers():
   s.reset()
   r = s.update(base(leads=(None, None), mode=LongitudinalMode.ACC), DT)
   assert r.debug["has_lead"] is False
+
+
+def test_launch_behind_opening_lead_tracks_off_the_line():
+  """Stop-and-go launch through the full stateful stack: stopped ~6.5 m behind a stopped lead,
+  then the lead launches. Unlike the policy unit tests (which inject lead_progress_allowed), this
+  drives the real lead-confidence tracker, which must *earn* the pull-away authorisation over
+  ~0.45 s. Once stable, the stack should pull away off the line — commanding well above a timid
+  MPC seed — instead of hanging back (ADR hypermile §1)."""
+  from types import SimpleNamespace
+  s = CustomLongitudinalStack()
+  v_ego = x_ego = 0.0
+  v_lead, x_lead = 0.0, 6.5
+  seed = 0.15                                   # deliberately timid MPC seed
+  launched_a: list[float] = []
+  for i in range(120):                          # 6 s
+    t = i * DT
+    a_lead = 1.2 if (1.0 <= t and v_lead < 8.0) else 0.0
+    v_lead = min(8.0, v_lead + a_lead * DT)
+    x_lead += v_lead * DT
+    d_rel = max(0.1, x_lead - x_ego)
+    ld = SimpleNamespace(status=True, dRel=d_rel, vLead=v_lead, vLeadK=v_lead, aLeadK=a_lead,
+                         yRel=0.0, radarTrackId=7, radar=True, modelProb=0.9, aLeadTau=1.0)
+    r = s.update(base(v_ego=v_ego, v_cruise=13.4, seed_a_target=seed, lead_a_target=seed,
+                      leads=(ld, None), mode=LongitudinalMode.ACC), DT)
+    assert LIMITS[0] - 1e-9 <= r.a_target <= LIMITS[1] + 1e-9
+    if 1.5 <= t <= 3.0:                         # well into the launch, confidence stabilised
+      launched_a.append(r.a_target)
+    v_ego = max(0.0, v_ego + r.a_target * DT)   # closed-loop: ego driven by the stack
+    x_ego += v_ego * DT
+  assert launched_a
+  assert max(launched_a) > seed + 0.3, "hung back at the timid seed instead of following the lead"
+  assert min(launched_a) >= 0.0               # never braked during a clean launch
+
+
+def test_model_stop_distance_closed_loop_comes_to_comfortable_rest():
+  """Drive-lab style closed-loop gate for the model_stop_distance path (C): integrate the
+  stack's a_target against a fixed stop point and assert the approach comes to rest without
+  rolling through the stop, stays within the accel envelope, and keeps jerk comfortable."""
+  s = CustomLongitudinalStack()
+  v, x, stop_point = 13.0, 0.0, 45.0   # 13 m/s closing on a stop 45 m ahead
+  a_prev, max_abs_jerk, min_a, near_zero_while_approaching = None, 0.0, 0.0, 0
+  for _ in range(800):
+    dist_to_stop = stop_point - x
+    r = s.update(base(
+      v_ego=v, v_cruise=15.0, seed_a_target=0.0, mode=LongitudinalMode.E2E,
+      leads=(None, None),
+      model_should_stop=True, model_stop_distance=max(0.0, dist_to_stop),
+      model_desired_accel=-2.0, model_stop_prob=1.0,
+    ), DT)
+    a = r.a_target
+    assert LIMITS[0] - 1e-9 <= a <= LIMITS[1] + 1e-9
+    if a_prev is not None:                       # skip the cold-start step (a_prev has no real history)
+      max_abs_jerk = max(max_abs_jerk, abs(a - a_prev) / DT)
+    if a > -0.1 and dist_to_stop > 0.0 and v > 0.5:   # no "stop braking" gaps while still rolling up
+      near_zero_while_approaching += 1
+    min_a = min(min_a, a)
+    a_prev = a
+    v = max(0.0, v + a * DT)
+    x += v * DT
+    if v < 0.05 and dist_to_stop < 1.0:
+      break
+  assert v < 0.3, f"never came to rest (v={v:.2f})"
+  # Comes to rest right at the line: neither rolling through (collision risk) nor stopping far short.
+  assert stop_point - 2.0 <= x <= stop_point + 0.5, f"stopped at x={x:.2f}, expected near {stop_point}"
+  assert near_zero_while_approaching == 0, "braking relaxed to ~0 mid-approach (coast-horizon gap)"
+  assert min_a < -0.5, "never meaningfully braked for the predicted stop"
+  assert min_a >= LIMITS[0] - 1e-9          # never demands harder than the decel limit
+  # Raw-policy jerk (pre-MPC-smoothing); one comfort-decel candidate step is expected.
+  assert max_abs_jerk <= 12.0, f"uncomfortable jerk {max_abs_jerk:.2f} m/s^3"

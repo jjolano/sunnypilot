@@ -11,6 +11,7 @@ from openpilot.sunnypilot.custom.longitudinal.wiring import (
   DEFAULT_ACCEL_LIMITS,
   CustomLongitudinalAdapter,
   build_stack_inputs,
+  _model_stop_distance,
 )
 
 
@@ -19,14 +20,24 @@ def lead(d_rel=30.0, v_lead=12.0, status=True):
                          yRel=0.0, radarTrackId=3, radar=True, modelProb=0.9, aLeadTau=1.0)
 
 
-def fake_sm(lead_one=None, brake=False, gas=False, model_should_stop=False, model_accel=0.0, pitch=0.0):
+def fake_sm(lead_one=None, brake=False, gas=False, model_should_stop=False, model_accel=0.0, pitch=0.0,
+            model_x=None, model_v=None):
   return {
     'radarState': SimpleNamespace(leadOne=lead_one, leadTwo=None),
     'carState': SimpleNamespace(brakePressed=brake, gasPressed=gas),
     'modelV2': SimpleNamespace(action=SimpleNamespace(shouldStop=model_should_stop,
-                                                      desiredAcceleration=model_accel)),
+                                                      desiredAcceleration=model_accel),
+                               position=SimpleNamespace(x=model_x),
+                               velocity=SimpleNamespace(x=model_v)),
     'carControl': SimpleNamespace(orientationNED=[0.0, pitch, 0.0]),
   }
+
+
+# A trajectory that decelerates to rest ~38 m ahead (velocity dips to ~0 at index 5).
+STOP_TRAJ_V = [15.0, 12.0, 9.0, 6.0, 3.0, 0.2, 0.0, 0.0]
+STOP_TRAJ_X = [0.0, 13.0, 24.0, 32.0, 37.0, 38.0, 38.0, 38.0]
+CRUISE_TRAJ_V = [20.0] * 8
+CRUISE_TRAJ_X = [20.0 * i for i in range(8)]
 
 
 def fake_scc(vision_active=False, vision_a=0.0, map_active=False, map_a=0.0):
@@ -124,3 +135,48 @@ def test_scc_curve_gated_by_smart_cruise_control_vision_toggle():
   out_off = off.apply(fake_sm(), 20.0, 0.0, 22.0, 0.5, scc, fake_sla())
   assert out_off == pytest.approx(0.5)  # SCC curve source disabled -> cruise stands
   assert out_on < out_off               # SmartCruiseControlVision on -> curve cap admitted
+
+
+def test_model_stop_distance_from_trajectory():
+  model = SimpleNamespace(position=SimpleNamespace(x=STOP_TRAJ_X),
+                          velocity=SimpleNamespace(x=STOP_TRAJ_V))
+  # distance at the first horizon index where predicted speed drops to ~0 (index 5 -> 38 m)
+  assert _model_stop_distance(model) == pytest.approx(38.0)
+
+
+def test_model_stop_distance_none_when_cruising():
+  model = SimpleNamespace(position=SimpleNamespace(x=CRUISE_TRAJ_X),
+                          velocity=SimpleNamespace(x=CRUISE_TRAJ_V))
+  assert _model_stop_distance(model) is None  # speed never drops -> no predicted stop
+
+
+def test_model_stop_distance_none_on_bad_trajectory():
+  assert _model_stop_distance(SimpleNamespace(position=None, velocity=None)) is None
+  # mismatched lengths -> None, never raise
+  bad = SimpleNamespace(position=SimpleNamespace(x=[0.0, 1.0]), velocity=SimpleNamespace(x=[1.0]))
+  assert _model_stop_distance(bad) is None
+
+
+def test_build_stack_inputs_carries_model_stop_distance():
+  inp = build_stack_inputs(
+    v_ego=15.0, a_ego=0.0, v_cruise=15.0, seed_a_target=0.0, accel_limits=DEFAULT_ACCEL_LIMITS,
+    lead_one=None, lead_two=None,
+    scc_vision_active=False, scc_vision_a_target=0.0, scc_map_active=False, scc_map_a_target=0.0,
+    sla_active=False, sla_v_target=0.0, sla_a_target=0.0,
+    mode=LongitudinalMode.E2E, personality=Personality.STANDARD, sources=SourceToggles(),
+    model_stop_distance=38.0,
+  )
+  assert inp.model_stop_distance == pytest.approx(38.0)
+
+
+def test_distance_aware_stop_approach_brakes_in_e2e():
+  # No upstream shouldStop, but the model trajectory predicts a near stop -> the distance-aware
+  # stop-approach path engages and brakes in E2E (and is excluded in ACC).
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+  out_e2e = a.apply(fake_sm(model_x=STOP_TRAJ_X, model_v=STOP_TRAJ_V), 15.0, 0.0, 15.0, 0.0,
+                    fake_scc(), fake_sla())
+  acc = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
+  out_acc = acc.apply(fake_sm(model_x=STOP_TRAJ_X, model_v=STOP_TRAJ_V), 15.0, 0.0, 15.0, 0.0,
+                      fake_scc(), fake_sla())
+  assert out_e2e < 0.0
+  assert out_acc == pytest.approx(0.0)

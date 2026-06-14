@@ -8,7 +8,8 @@ default driving.
 Evidence mapping — all from verified upstream signals (no guessing): leads from
 ``radarState`` LeadData; advisory caps from the planner's own SCC vision/map and
 Speed-Limit-Assist outputs; the model stop from ``modelV2.action.shouldStop`` /
-``desiredAcceleration`` (the same signal the base planner uses); the coast-down accel from
+``desiredAcceleration`` plus the predicted stop distance derived from the model trajectory
+(``position.x``/``velocity.x``, the same signal the base planner uses); the coast-down accel from
 ``get_coast_accel(pitch)``; mode/personality from params. The model stop is then trust-gated
 by ``StopTrustLearner``, which learns how much to trust it from real driver disagreement
 (gas during a model stop = the driver countermanding it) rather than a guessed probability.
@@ -25,6 +26,7 @@ from openpilot.sunnypilot.custom.longitudinal.stack import CustomLongitudinalSta
 
 PARAMS_REFRESH_PERIOD = 50  # planner ticks (~20Hz -> ~2.5s)
 DEFAULT_ACCEL_LIMITS = (-4.0, 2.0)
+MODEL_STOP_SPEED = 0.3  # m/s; predicted speed at/below this marks the trajectory's rest point
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -40,6 +42,27 @@ def _coast_accel(pitch: float) -> float:
   return math.sin(_f(pitch)) * -5.65 - 0.3
 
 
+def _model_stop_distance(model: Any) -> float | None:
+  """Forward distance to where the model's predicted trajectory comes to rest, or None.
+
+  Reads ``modelV2.position.x`` / ``velocity.x`` (the same trajectory the base planner parses)
+  and returns the position at the first horizon index where predicted speed drops to ~0.
+  Returns None when the model isn't predicting a stop within the horizon (cruise keeps speed
+  up the whole horizon), so the distance-aware stop-approach path stays inert until a real
+  stop is predicted. The policy still trust-gates whether to commit to the stop."""
+  position = getattr(model, "position", None)
+  velocity = getattr(model, "velocity", None)
+  xs = getattr(position, "x", None) if position is not None else None
+  vs = getattr(velocity, "x", None) if velocity is not None else None
+  if not xs or not vs or len(xs) != len(vs):
+    return None
+  for x, v in zip(xs, vs, strict=True):
+    if _f(v, default=1.0) <= MODEL_STOP_SPEED:
+      d = _f(x)
+      return d if d > 0.0 else None
+  return None
+
+
 def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_target: float,
                        accel_limits: tuple[float, float], lead_one: Any, lead_two: Any,
                        scc_vision_active: bool, scc_vision_a_target: float,
@@ -48,7 +71,8 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        mode: LongitudinalMode, personality: Personality, sources: SourceToggles,
                        brake_pressed: bool = False, gas_pressed: bool = False,
                        model_should_stop: bool = False, model_desired_accel: float = 0.0,
-                       model_stop_prob: float = 1.0, accel_coast: float = 0.0) -> LongitudinalStackInputs:
+                       model_stop_prob: float = 1.0, model_stop_distance: float | None = None,
+                       accel_coast: float = 0.0) -> LongitudinalStackInputs:
   has_lead = lead_one is not None and bool(getattr(lead_one, "status", False))
   # MPC owns lead-follow physics; carry the planner's a_target as the lead-follow accel.
   lead_a_target = float(seed_a_target) if has_lead else 0.0
@@ -62,8 +86,18 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     v_ego=v_ego, v_cruise=v_cruise, seed_a_target=seed_a_target, accel_limits=accel_limits,
     accel_coast=float(accel_coast),
     leads=(lead_one, lead_two),
+    # lead_should_stop is intentionally inert: the adapter shapes only a_target (ADR 0001 —
+    # the MPC owns lead-follow physics), and the base planner already derives the actuated
+    # `shouldStop` by OR-ing the MPC's own stopping detection with modelV2.action.shouldStop
+    # (longitudinal_planner.py). The custom stack's should_stop is built from those same two
+    # cases, so routing it back would only re-assert signals already consumed — no unique
+    # information. Leaving it False keeps the redundant stop path out of actuation.
     lead_a_target=lead_a_target, lead_should_stop=False,
-    model_should_stop=bool(model_should_stop), model_stop_distance=None,
+    model_should_stop=bool(model_should_stop),
+    model_stop_distance=(float(model_stop_distance) if model_stop_distance is not None else None),
+    # stop_threat is intentionally inert: every policy consumer (coast/launch/comfort-relax)
+    # is already gated by has_lead, and the only lead-derived stop-threat signal is itself
+    # lead-coupled, making it fully redundant with has_lead (zero observable effect).
     model_desired_accel=float(model_desired_accel), model_stop_prob=float(model_stop_prob), stop_threat=False,
     speed_limit_active=bool(sla_active), speed_limit_v_target=float(sla_v_target), speed_limit_a_target=float(sla_a_target),
     curve_active=curve_active, curve_a_target=float(curve_a_target),
@@ -116,10 +150,14 @@ class CustomLongitudinalAdapter:
 
       # Upstream's verified model stop (the same signal the base planner uses), with trust
       # learned from driver disagreement: gas during a model stop = the driver countermanding it.
-      action = getattr(sm['modelV2'], "action", None)
+      model = sm['modelV2']
+      action = getattr(model, "action", None)
       model_should_stop = bool(getattr(action, "shouldStop", False)) if action is not None else False
       model_desired_accel = _f(getattr(action, "desiredAcceleration", 0.0)) if action is not None else 0.0
       model_stop_prob = self._stop_trust.update(model_should_stop, driver_disagrees=gas_pressed, dt=dt)
+      # Distance to the model's predicted rest point, enabling the early/gentle stop-approach
+      # + runway-comfort governor (the distance-aware path is inert while this is None).
+      model_stop_distance = _model_stop_distance(model)
 
       cc = sm['carControl']
       ned = getattr(cc, "orientationNED", None)
@@ -136,7 +174,7 @@ class CustomLongitudinalAdapter:
         mode=self.mode, personality=self.personality, sources=self.sources,
         brake_pressed=bool(getattr(cs, "brakePressed", False)), gas_pressed=gas_pressed,
         model_should_stop=model_should_stop, model_desired_accel=model_desired_accel,
-        model_stop_prob=model_stop_prob, accel_coast=accel_coast,
+        model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance, accel_coast=accel_coast,
       )
       result = self._stack.update(inputs, dt)
       return float(result.a_target)

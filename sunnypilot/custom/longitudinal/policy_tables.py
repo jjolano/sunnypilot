@@ -44,6 +44,15 @@ STOP_APPROACH_COMFORT_DECEL = {
 # Policy constants (personality-independent).
 NO_LEAD_LAUNCH_MAX_V_EGO = 3.0
 PROGRESS_CRUISE_SPEED_MARGIN = 0.2
+# Lead pull-away launch (off-the-line behind an opening lead, e.g. stop-and-go): below this ego
+# speed and when the lead is genuinely opening, key the pull-away on a lead-tracking launch accel
+# (match the lead's speed over LEAD_LAUNCH_TAU, capped by the personality launch accel and the
+# speedup guard) instead of waiting for a far 25 m gap excess. Gentle for a crawling lead, brisk
+# when it genuinely goes — never a fixed lurch.
+LEAD_LAUNCH_MAX_V_EGO = 8.0
+LEAD_LAUNCH_TAU = 1.0               # s; time constant to match the lead's speed off the line
+LEAD_PULLAWAY_MIN_V_LEAD = 0.2     # m/s; lead considered moving (mirror of the close-stop gate)
+LEAD_PULLAWAY_MIN_OPENING = 0.15   # m/s; lead considered opening (mirror of the close-stop gate)
 NO_LEAD_STOP_CLEAR_DISTANCE = 20.0
 NO_LEAD_STOP_CLEAR_ACCEL_MIN = -0.5
 MAP_ONLY_CAUTION_ACCEL_MIN = -0.3

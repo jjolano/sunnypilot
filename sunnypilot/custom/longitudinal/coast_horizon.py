@@ -62,9 +62,17 @@ def coast_horizon(inp: CoastHorizonInputs) -> CoastHorizonResult:
   dist = _finite(inp.distance_to_constraint)
   a_coast = _clip(_finite(inp.accel_coast), MIN_COAST_DECEL, MAX_COAST_DECEL)
 
-  # No need to slow (target >= current, or no usable constraint distance).
-  if v_t >= v0 or dist <= MIN_USEFUL_DISTANCE:
+  # No need to slow (target >= current): hold speed.
+  if v_t >= v0:
     return CoastHorizonResult(CoastAction.CRUISE, 0.0, 0.0, 0.0, dist)
+
+  # Need to slow but (almost) no runway left: coasting can't help, so brake at the decel the
+  # remaining distance requires (floored to avoid a divide-by-~0 blowup). Treating this as
+  # CRUISE — as the old combined guard did — zeroed out braking in the last metre of a stop or
+  # curve approach (the runway governor / lead cushion would relax raw braking to 0).
+  if dist <= MIN_USEFUL_DISTANCE:
+    required = (v_t * v_t - v0 * v0) / (2.0 * MIN_USEFUL_DISTANCE)
+    return CoastHorizonResult(CoastAction.BRAKE, required, 0.0, 0.0, dist)
 
   # Distance for coasting alone to bleed v0 -> v_t:  v_t^2 = v0^2 + 2*a*x  =>  x = (v_t^2 - v0^2)/(2a)
   coast_distance = (v_t * v_t - v0 * v0) / (2.0 * a_coast)

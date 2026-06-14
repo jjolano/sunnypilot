@@ -101,3 +101,32 @@ def test_tracker_update_returns_primary_context():
       v_ego=20.0, dt=0.05,
     )
   assert isinstance(ctx, lc.PrimaryLeadContext)
+
+
+def _relevance_state(authority, *, gap_excess=0.0):
+  return lc.LeadRelevanceState(
+    lead_idx=0, status=True, shadow=False, stable=True, new_lead=False, flicker_guard_timer=0.0,
+    track_id=3, d_rel=20.0, y_rel=0.0, path_y_rel=0.0, v_lead=8.0, v_rel=-2.0, model_prob=0.9,
+    radar=True, ttc=10.0, required_decel=0.0, time_gap=2.0, on_path_score=1.0, risk_score=0.0,
+    ghost_score=0.0, confidence=1.0, authority=authority, reason="test",
+    progress_model=lc.LeadProgressModel(gap_excess=gap_excess),
+  )
+
+
+def _primary_ctx(behavior):
+  return lc.PrimaryLeadContext(
+    physical_idx=None, behavior_idx=0 if behavior is not None else None,
+    physical=None, behavior=behavior, alternate_threat_active=False, shadow_active=False,
+    reason="test", lead_progress_allowed=behavior is not None,
+  )
+
+
+def test_primary_context_surfaces_lead_gap_excess():
+  # The stack reads lead_gap_excess to offer the lead-pullaway progress candidate; before this
+  # accessor existed the stack's getattr fell back to 0.0 and pullaway could never fire.
+  ctx = _primary_ctx(_relevance_state(lc.LEAD_AUTHORITY_PROGRESS_ALLOWED, gap_excess=5.0))
+  assert ctx.lead_gap_excess == 5.0
+
+
+def test_primary_context_lead_gap_excess_zero_with_no_lead():
+  assert _primary_ctx(None).lead_gap_excess == 0.0

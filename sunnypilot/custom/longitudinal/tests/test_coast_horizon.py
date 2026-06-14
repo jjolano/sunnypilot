@@ -52,6 +52,20 @@ def test_brake_when_too_close():
   assert r.recommended_accel == pytest.approx((15.0**2 - 25.0**2) / (2 * 100.0))
 
 
+def test_brake_when_slowing_with_almost_no_runway():
+  # Need to slow (v_target < v_ego) but within MIN_USEFUL_DISTANCE -> must BRAKE, not CRUISE.
+  # Regression: the old guard returned CRUISE here, zeroing braking in the last metre of a stop.
+  for dist in (1.0, 0.5, 0.1):
+    r = ch(1.55, 0.0, dist, a_coast=-0.25)
+    assert r.action is CoastAction.BRAKE, f"dist={dist} should brake"
+    assert r.recommended_accel < 0.0
+
+
+def test_cruise_when_close_but_no_need_to_slow():
+  # Short distance but target not slower -> still CRUISE (don't invent braking).
+  assert ch(10.0, 12.0, 0.5).action is CoastAction.CRUISE
+
+
 def test_weaker_coast_lifts_off_earlier():
   weak = ch(25.0, 15.0, 10000.0, a_coast=-0.15).lift_off_distance
   strong = ch(25.0, 15.0, 10000.0, a_coast=-0.8).lift_off_distance

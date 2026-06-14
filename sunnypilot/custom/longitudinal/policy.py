@@ -30,6 +30,10 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   CRUISE_LEEWAY_MAX,
   CRUISE_LEEWAY_MIN,
   CRUISE_LEEWAY_RECOVERY,
+  LEAD_LAUNCH_MAX_V_EGO,
+  LEAD_LAUNCH_TAU,
+  LEAD_PULLAWAY_MIN_OPENING,
+  LEAD_PULLAWAY_MIN_V_LEAD,
   NO_LEAD_LAUNCH_MAX_V_EGO,
   NO_LEAD_STOP_CLEAR_ACCEL_MIN,
   NO_LEAD_STOP_CLEAR_DISTANCE,
@@ -170,11 +174,28 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
     cands.append(LongitudinalCandidate(launch_accel_max(personality), CandidateRole.PROGRESS,
                                        EvidenceClass.CRUISE, "no_lead_launch", authorized=True))
 
-  # lead pullaway progress (only when authorized), capped by the lead-aware speedup guard so a
-  # speed-up can never dig a hole that needs hard braking to climb out of.
-  if not blocked and wants_progress and scene.has_lead and scene.lead_progress_allowed and scene.lead_gap_excess > 0.0:
-    pullaway = lead_speedup_guard(scene.v_ego, scene.lead_v, scene.lead_d_rel, scene.follow_gap,
-                                  max(0.0, float(scene.seed_a_target)))
+  # Lead pull-away progress (only when the lead context authorizes it), always capped by the
+  # lead-aware speedup guard so a speed-up can never dig a hole that needs hard braking to climb
+  # out of. Two regimes:
+  #  - off-the-line behind an *opening* lead (stop-and-go / launch): key the pull-away on a
+  #    lead-tracking launch accel so we follow the lead off the line instead of waiting for a 25 m
+  #    gap to open. The gap_excess gate never fires at a close launch (desired gap is >=25 m, the
+  #    launch gap is ~6 m), which is exactly the launch-hesitancy the hypermile tuning targets.
+  #  - steady, far pull-away (a real gap excess): the gentle seed-based pull, unchanged.
+  lead_opening = bool(scene.v_ego < LEAD_LAUNCH_MAX_V_EGO and scene.lead_v > LEAD_PULLAWAY_MIN_V_LEAD
+                      and scene.lead_v_rel > LEAD_PULLAWAY_MIN_OPENING)
+  opening_pullaway = bool(not blocked and wants_progress and scene.has_lead
+                          and scene.lead_progress_allowed and lead_opening)
+  far_pullaway = bool(not blocked and wants_progress and scene.has_lead
+                      and scene.lead_progress_allowed and scene.lead_gap_excess > 0.0)
+  if opening_pullaway or far_pullaway:
+    if opening_pullaway:
+      # Match the lead's speed over the launch time constant: gentle for a crawling lead, brisk
+      # when it genuinely goes, never a fixed lurch. Capped by the personality launch accel.
+      proposed = min(launch_accel_max(personality), max(0.0, scene.lead_v - scene.v_ego) / LEAD_LAUNCH_TAU)
+    else:
+      proposed = max(0.0, float(scene.seed_a_target))
+    pullaway = lead_speedup_guard(scene.v_ego, scene.lead_v, scene.lead_d_rel, scene.follow_gap, proposed)
     cands.append(LongitudinalCandidate(pullaway, CandidateRole.PROGRESS,
                                        EvidenceClass.LEAD, "lead_pullaway", authorized=True))
 
@@ -183,8 +204,14 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
     cands.append(LongitudinalCandidate(COMFORT_RELAX_ACCEL_MIN, CandidateRole.COMFORT_RELAX,
                                        EvidenceClass.CRUISE, "comfort_relax"))
 
-  # lead-follow hazard (MPC owns the physics; we carry its a_target as the binding decel)
-  if scene.has_lead:
+  # Lead-follow hazard: the MPC owns the physics; we carry its a_target as the binding follow
+  # DECEL. A braking seed always binds (the shaper never reduces the MPC's follow decel). Only in
+  # the authorized launch case, when the MPC is *not* braking for the lead, does the non-braking
+  # seed impose no floor — so the speedup-guarded launch pulse can follow an opening lead off the
+  # line. (A positive "hazard" is not a hazard; it would otherwise clamp the PROGRESS layer that
+  # is designed to raise accel when authorized. The instant the lead requires braking the seed
+  # goes negative and re-binds.)
+  if scene.has_lead and (scene.lead_a_target < 0.0 or not opening_pullaway):
     cands.append(LongitudinalCandidate(float(scene.lead_a_target), CandidateRole.PHYSICAL_HAZARD,
                                        EvidenceClass.LEAD, "lead_follow", is_stop=bool(scene.lead_should_stop)))
     # lead-following cushion: anticipatory gentle coast to a slower moving lead while runway

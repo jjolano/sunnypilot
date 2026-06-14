@@ -22,7 +22,9 @@ LEAD_CONTEXT_CLOSE_STOP_D_REL = 15.0
 LEAD_CONTEXT_CLOSE_STOP_V = 5.0
 LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_OPENING = 0.15
 LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD = 0.2
-LEAD_CONTEXT_STOP_GAP_CREEP_ARM_EXCESS = 1.05
+# Creep arms at the desired gap (1.0 m beyond the stop distance), not well beyond it — hypermile
+# launch tuning (ADR 2026-06-13-longitudinal-hypermile-tuning §1).
+LEAD_CONTEXT_STOP_GAP_CREEP_ARM_EXCESS = 1.0
 LEAD_CONTEXT_STOP_GAP_CREEP_MAX_EXCESS = 1.25
 LEAD_CONTEXT_STOP_GAP_CREEP_MIN_V_REL = -0.25
 LEAD_CONTEXT_NEW_FAR_Y_REL = 1.6
@@ -142,6 +144,14 @@ class PrimaryLeadContext:
 
   def behavior_lead_data(self, leads: tuple[Any, Any]) -> Any | None:
     return _lead_data_for_state(self.behavior, leads)
+
+  @property
+  def lead_gap_excess(self) -> float:
+    # Surfaces the primary lead's progress-model gap excess so the stack can offer the
+    # lead-pullaway progress candidate (policy gates it on gap_excess > 0). Without this the
+    # stack's getattr fell back to 0.0 and lead-pullaway could never fire.
+    primary = self.behavior or self.physical  # same primary the debug view uses
+    return 0.0 if primary is None else float(primary.progress_model.gap_excess)
 
   def debug_dict(self) -> dict[str, object]:
     physical = self.physical
