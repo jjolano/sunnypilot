@@ -38,6 +38,10 @@ from openpilot.sunnypilot.custom.lateral.demand.lane_change_path_shaper import (
   LaneChangePathShaper,
   LaneChangePathShaperInputs,
 )
+from openpilot.sunnypilot.custom.lateral.demand.curve_memory import (
+  CurveMemory,
+  CurveMemoryInputs,
+)
 from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   ModelPathProcessor,
   ModelPathProcessorInputs,
@@ -96,6 +100,7 @@ class LateralDemandPipeline:
   def __init__(self, dt: float = DT_CTRL) -> None:
     self.dt = float(dt)
     self._model_path_processor = ModelPathProcessor()
+    self._curve_memory = CurveMemory()
     self._lane_change_path_shaper = LaneChangePathShaper(dt)
     self._lane_centering_assist = LaneCenteringAssistTracker()
     self._previous_desired_curvature = 0.0
@@ -106,6 +111,7 @@ class LateralDemandPipeline:
 
   def reset(self) -> None:
     self._model_path_processor.reset()
+    self._curve_memory.reset()
     self._lane_change_path_shaper.reset()
     self._lane_centering_assist.reset()
     self._previous_desired_curvature = 0.0
@@ -119,6 +125,7 @@ class LateralDemandPipeline:
 
     if inputs.lateral_maneuver_curvature is not None:
       self._model_path_processor.reset()
+      self._curve_memory.reset()
       self._lane_change_path_shaper.reset()
       self._lane_centering_assist.reset()
       new_desired_curvature = float(inputs.lateral_maneuver_curvature)
@@ -148,9 +155,18 @@ class LateralDemandPipeline:
         frame_drop_perc=inputs.frame_drop_perc,
         smooth_model_path_curvature=inputs.smooth_model_path_curvature,
         lane_change_active=inputs.lane_change_state != LANE_CHANGE_STATE_OFF,
-        curve_memory_enabled=inputs.curve_memory_enabled,
       ))
-      model_desired_curvature = model_path_result.desired_curvature if inputs.lat_active else inputs.measured_curvature
+      # Pose-anchored CurveMemory stage: remember road curvature seen ahead with good vision and
+      # recall it through the low-speed traverse where vision degrades (runs every frame to track
+      # arc length + capture; only ever raises an under-curved vision, vetoed by confident vision).
+      curve_memory_result = self._curve_memory.update(CurveMemoryInputs(
+        enabled=inputs.curve_memory_enabled, lat_active=inputs.lat_active, v_ego=inputs.v_ego,
+        desired_curvature=model_path_result.desired_curvature, path_quality=model_path_result.quality,
+        position_x=tuple(inputs.position_x), position_y=tuple(inputs.position_y),
+        orientation_z=tuple(inputs.orientation_z),
+        valid_path=ModelPathProcessor._valid_core_path(inputs.position_x, inputs.position_y),
+      ), self.dt)
+      model_desired_curvature = curve_memory_result.desired_curvature if inputs.lat_active else inputs.measured_curvature
       if not inputs.lat_active:
         demand_source = DEMAND_SOURCE_FALLBACK_MEASURED
 
@@ -231,6 +247,8 @@ class LateralDemandPipeline:
         "lane_change_shaping_active": lane_change_shaping_active,
         "lane_centering_active": bool(lane_centering_result.active),
         "lane_centering_nudge": float(lane_centering_result.curvature_nudge),
+        "curve_memory_active": bool(curve_memory_result.active) if inputs.lateral_maneuver_curvature is None else False,
+        "curve_memory_remembered": float(curve_memory_result.remembered) if inputs.lateral_maneuver_curvature is None else float("nan"),
         "processed_curvature": processed_curvature,
         "demand_source": demand_source,
       },
