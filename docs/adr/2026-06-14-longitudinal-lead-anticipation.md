@@ -91,6 +91,26 @@ Either way it is gated by a new param (default-off) and falls back to raw `aLead
 - Widen the engaged following corpus first — the current ~3 min is too thin to trust the deltas
   (`bd`/`be` to be re-pulled cleanly), as the hypermile ADR flagged.
 
+## Implementation + validation status (2026-06-14)
+
+**Implemented (commit `c16fd328`, default-off) and validated INERT — not enabled.** Built the
+`LeadAnticipation` adapter + the `tools/drive_lab/replay_lead_anticipation.py` MPC A/B gate (commit
+`b795484a`). The gate ran the real `LongitudinalMpc` over 6 routes / ~7000 moving-with-lead frames
+(c7/b4/b5/c4/c8/c9) with raw vs §3-shaped leads: **0 softened frames, decel peak unchanged, 0 risky
+softenings.** The gate **failed on benefit**, so `LeadAnticipationEnabled` stays off.
+
+Why it's inert: real radar leads are continuously-tracked → high confidence, and §3 by design never
+discounts a confident lead. The confidence gate that makes it *safe* makes it do *nothing* exactly
+where steady-following reactive braking happens — on a stable lead whose `aLeadK` is noisy but
+"trusted." §3 only fires for a genuinely-new cut-in lead in its first ~0.45 s while braking (unit-
+tested, but absent from the corpus).
+
+**The real lever** for the felt reactive braking is temporal smoothing / a shorter `aLeadTau` applied
+to **all** leads (not confidence-gated) — but that reduces braking responsiveness for confident leads
+too, so it is a distinct, higher-risk change needing its own scoping + a closed-loop "still brakes for
+a real decel" gate. §3 stays committed default-off as the foundation (the `LeadAnticipation` adapter
+can host the temporal-smoothing path).
+
 ## Consequences
 
 - Highest-risk longitudinal lever (can reduce braking) → most validation-gated; default-on waits on a
