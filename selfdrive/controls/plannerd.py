@@ -9,6 +9,78 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPl
 import cereal.messaging as messaging
 
 
+PLANNER_VALIDITY_CHECKS = {
+  'longitudinalPlan': ['carState', 'controlsState', 'selfdriveState', 'radarState'],
+  'longitudinalPlanSP': ['carState', 'controlsState'],
+  'driverAssistance': ['carState', 'carControl', 'modelV2', 'liveParameters'],
+}
+PLANNER_VALIDITY_SERVICES = sorted({s for services in PLANNER_VALIDITY_CHECKS.values() for s in services})
+
+
+def _freq_tracker_snapshot(sm, service):
+  tracker = sm.freq_tracker[service]
+
+  def _freq(avg):
+    if avg.count == 0:
+      return None
+    average_dt = avg.get_average()
+    return None if average_dt <= 0 else float(1. / average_dt)
+
+  return {
+    'avgCount': int(tracker.avg_dt.count),
+    'recentCount': int(tracker.recent_avg_dt.count),
+    'avgFreq': _freq(tracker.avg_dt),
+    'recentFreq': _freq(tracker.recent_avg_dt),
+    'minFreq': float(tracker.min_freq),
+    'maxFreq': float(tracker.max_freq),
+  }
+
+
+def _planner_validity_diag(sm):
+  output_valid = {name: sm.all_checks(service_list=services) for name, services in PLANNER_VALIDITY_CHECKS.items()}
+  services = {
+    s: {
+      'valid': bool(sm.valid[s]),
+      'alive': bool(sm.alive[s]),
+      'freqOk': bool(sm.freq_ok[s]),
+      'updated': bool(sm.updated[s]),
+      'recvFrame': int(sm.recv_frame[s]),
+      'frameAge': int(sm.frame - sm.recv_frame[s]),
+      'logMonoTime': int(sm.logMonoTime[s]),
+      'freq': _freq_tracker_snapshot(sm, s),
+    }
+    for s in PLANNER_VALIDITY_SERVICES
+  }
+  failed = {
+    name: {
+      'invalid': [s for s in check_services if not sm.valid[s]],
+      'notAlive': [s for s in check_services if not sm.alive[s]],
+      'notFreqOk': [s for s in check_services if sm._check_avg_freq(s) and not sm.freq_ok[s]],
+    }
+    for name, check_services in PLANNER_VALIDITY_CHECKS.items()
+    if not output_valid[name]
+  }
+  return {
+    'outputs': output_valid,
+    'failed': failed,
+    'services': services,
+    'frame': int(sm.frame),
+    'modelV2LogMonoTime': int(sm.logMonoTime['modelV2']),
+  }
+
+
+def _planner_validity_signature(diag):
+  if all(diag['outputs'].values()):
+    return ('ok',)
+  return tuple(
+    (name,
+     tuple(failed['invalid']),
+     tuple(failed['notAlive']),
+     tuple(failed['notFreqOk']))
+    for name, failed in sorted(diag['failed'].items())
+  )
+
+
 def main():
   config_realtime_process(5, Priority.CTRL_LOW)
 
@@ -29,12 +101,24 @@ def main():
   sm = messaging.SubMaster(['carControl', 'carState', 'controlsState', 'liveParameters', 'radarState', 'modelV2', 'selfdriveState',
                             'liveMapDataSP', 'carStateSP', gps_location_service],
                            poll='carState')
+  last_validity_signature = None
+  last_validity_failed = False
 
   while True:
     sm.update()
     longitudinal_planner.sla.update_car_state(sm['carState'])
     if sm.updated['modelV2']:
       longitudinal_planner.update(sm)
+      validity_diag = _planner_validity_diag(sm)
+      validity_signature = _planner_validity_signature(validity_diag)
+      validity_failed = not all(validity_diag['outputs'].values())
+      if (validity_failed or last_validity_failed) and validity_signature != last_validity_signature:
+        if validity_failed:
+          cloudlog.event("plannerd_validity", error=True, **validity_diag)
+        else:
+          cloudlog.event("plannerd_validity", **validity_diag)
+      last_validity_signature = validity_signature
+      last_validity_failed = validity_failed
       longitudinal_planner.publish(sm, pm)
 
       ldw.update(sm.frame, sm['modelV2'], sm['carState'], sm['carControl'])
