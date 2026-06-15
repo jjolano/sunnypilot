@@ -12,6 +12,9 @@ from cereal import car
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
+from openpilot.sunnypilot.custom.lateral.disturbance_classifier import (
+  DisturbanceClassifier, LateralSample, LearningDecision,
+)
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   SpeedAwareTorqueBuckets, fit_speed_aware_torque_profile, format_speed_aware_torque_profile,
   parse_speed_aware_torque_profile, SpeedAwareTorqueRuntime, SPEED_BUCKET_BP,
@@ -45,6 +48,15 @@ class TorqueEstimatorExt:
       speed_bp=SPEED_BUCKET_BP, min_points=1, min_points_total=1, points_per_bucket=1500, rowsize=3)
     self.speed_profile_cache = None
     self._last_speed_profile_write = -1
+
+    # Phase 0b shadow-only disturbance classifier observability. These counters
+    # never suppress learning points in this phase.
+    self.disturbance_classifier = DisturbanceClassifier()
+    self.shadow_accepted = 0
+    self.shadow_quarantined = 0
+    self.shadow_rejected = 0
+    self.shadow_reasons = 0
+    self._last_disturbance_sample: LateralSample | None = None
 
   def initialize_custom_params(self, decimated=False):
     self.update_use_params()
@@ -91,6 +103,21 @@ class TorqueEstimatorExt:
   def add_torque_learning_point(self, steer, lateral_acc, v_ego):
     if self.speed_adaptive_mode in ('shadow', 'apply'):
       self.speed_learning_buckets.add_point(steer, lateral_acc, v_ego)
+
+  def shadow_classify_learning_point(self, sample: LateralSample) -> LearningDecision:
+    """Shadow-only classification for observability. Does not suppress points."""
+    prev = self._last_disturbance_sample
+    dt = (sample.t - prev.t) if prev is not None else None
+    result = self.disturbance_classifier.classify(sample, prev_sample=prev, dt=dt)
+    self._last_disturbance_sample = sample
+    self.shadow_reasons |= int(result.reasons)
+    if result.decision == LearningDecision.ACCEPT:
+      self.shadow_accepted += 1
+    elif result.decision == LearningDecision.QUARANTINE:
+      self.shadow_quarantined += 1
+    elif result.decision == LearningDecision.REJECT_SHADOW:
+      self.shadow_rejected += 1
+    return result.decision
 
   def maybe_persist_speed_profile(self, cache_write=False):
     if self.speed_adaptive_mode not in ('shadow', 'apply'):

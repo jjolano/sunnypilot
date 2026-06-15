@@ -2236,6 +2236,13 @@ struct LiveTorqueParametersData {
   version @11 :Int32;
   useParams @12 :Bool;
   calPerc @13 :Int8;
+
+  # Phase 0b shadow-only lateral disturbance classifier observability.
+  # These counters never suppress learning points in this phase.
+  shadowAccepted @14 :UInt32;
+  shadowQuarantined @15 :UInt32;
+  shadowRejected @16 :UInt32;
+  shadowReasons @17 :UInt32;
 }
 
 struct LiveDelayData {
