@@ -12,6 +12,7 @@ centering) only. See docs/touch-points.md.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
@@ -84,6 +85,7 @@ class LateralDemandAdapter:
         lane_centering_assist_enabled=self.lane_centering_assist_enabled,
         curve_memory_enabled=self.curve_memory_enabled,
       )
+      inputs = replace(inputs, smooth_model_path_curvature=True)
       return float(self._pipeline.update(inputs).demand.processed_curvature)
     except Exception:
       return raw_curvature

@@ -30,6 +30,15 @@ class FakeParams:
     return bool(self._v.get(k, False))
 
 
+class SpyPipeline:
+  def __init__(self):
+    self.inputs = None
+
+  def update(self, inputs):
+    self.inputs = inputs
+    return SimpleNamespace(demand=SimpleNamespace(processed_curvature=inputs.desired_curvature))
+
+
 def test_build_pipeline_inputs_extracts_model_arrays():
   inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
                               measured_curvature=0.0015, model_v2=fake_model(0.002),
@@ -50,6 +59,16 @@ def test_adapter_enabled_processes_curvature():
   out = a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001))
   assert math.isfinite(out)
   assert out == pytest.approx(0.001, abs=3e-3)  # high-quality straight path passes near through
+
+
+def test_adapter_enabled_turns_on_model_path_smoothing():
+  a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
+  spy = SpyPipeline()
+  setattr(a, "_pipeline", spy)
+  out = a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001))
+  assert out == pytest.approx(0.001)
+  assert spy.inputs is not None
+  assert spy.inputs.smooth_model_path_curvature is True
 
 
 def test_adapter_fail_closed_on_bad_model():

@@ -20,7 +20,7 @@ DT = 0.01
 
 class NoOpExtension:
   """Stands in for LatControlTorqueExt (NNLC/override) — passes torque through unchanged."""
-  def update_override_torque_params(self, torque_params) -> bool:
+  def update_override_torque_params(self, torque_params, v_ego=None) -> bool:
     return False
 
   def update(self, CS, VM, pid, params, ff, pid_log, *rest):
