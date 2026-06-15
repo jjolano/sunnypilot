@@ -169,6 +169,7 @@ class PrimaryLeadContext:
       "primary_lead_d_rel": 0.0 if primary is None else float(primary.d_rel),
       "primary_lead_v_rel": 0.0 if primary is None else float(primary.v_rel),
       "primary_lead_y_rel": 0.0 if primary is None else float(primary.y_rel),
+      "primary_lead_path_y_rel": 0.0 if primary is None else float(primary.path_y_rel),
       "primary_lead_risk_score": 0.0 if primary is None else float(primary.risk_score),
       "primary_lead_on_path_score": 0.0 if primary is None else float(primary.on_path_score),
       "primary_lead_required_decel": 0.0 if primary is None else float(primary.risk_model.required_decel),

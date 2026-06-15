@@ -69,6 +69,8 @@ class LongitudinalStackInputs:
   model_desired_accel: float = 0.0
   model_stop_prob: float = 1.0   # model confidence in the stop (trust gate); 1.0 = fully trusted
   stop_threat: bool = False
+  # shadow path-relative lead context (telemetry only; not used for actuation)
+  model_msg: Any | None = None
   # advisory evidence
   speed_limit_active: bool = False
   speed_limit_v_target: float = 0.0
@@ -102,10 +104,12 @@ class CustomLongitudinalStack:
   def __init__(self) -> None:
     self._lead_confidence = (LeadConfidenceTracker(), LeadConfidenceTracker())
     self._lead_context = LeadContextTracker()
+    self._shadow_lead_context = LeadContextTracker()
 
   def reset(self) -> None:
     self._lead_confidence = (LeadConfidenceTracker(), LeadConfidenceTracker())
     self._lead_context = LeadContextTracker()
+    self._shadow_lead_context = LeadContextTracker()
 
   def update(self, inp: LongitudinalStackInputs, dt: float) -> LongitudinalStackResult:
     confidence_states = (
@@ -113,6 +117,19 @@ class CustomLongitudinalStack:
       self._lead_confidence[1].update(inp.leads[1], dt),
     )
     lead_ctx = self._lead_context.update(inp.leads, confidence_states, inp.v_ego, dt)
+
+    # Shadow path-relative lead context is computed in an exception-isolated tracker for
+    # telemetry/debug only. It must never change actuation or fail the adapter.
+    path_shadow_model_path_available = False
+    path_shadow_fault = False
+    shadow_debug: dict[str, Any] = {}
+    try:
+      path_shadow_model_path_available = _model_path_available(inp.model_msg)
+      shadow_ctx = self._shadow_lead_context.update(inp.leads, confidence_states, inp.v_ego, dt, model_msg=inp.model_msg)
+      shadow_debug = {f"path_shadow_{k}": v for k, v in shadow_ctx.debug_dict().items()}
+    except Exception:
+      path_shadow_fault = True
+
     raw_lead_present = _any_status(inp.leads)
     lead_shadow_active = bool(getattr(lead_ctx, "shadow_active", False))
     alternate_threat_active = bool(getattr(lead_ctx, "alternate_threat_active", False))
@@ -187,9 +204,25 @@ class CustomLongitudinalStack:
         "alternate_threat_active": alternate_threat_active,
         "n_candidates": len(candidates),
         "rejected": decision.rejected,
+        **{f"actual_{k}": v for k, v in lead_ctx.debug_dict().items()},
+        "path_shadow_model_path_available": path_shadow_model_path_available,
+        "path_shadow_fault": path_shadow_fault,
+        **shadow_debug,
       },
     )
 
 
 def _any_status(leads: tuple[Any, Any]) -> bool:
   return any(lead is not None and bool(getattr(lead, "status", False)) for lead in leads)
+
+
+def _model_path_available(model_msg: Any | None) -> bool:
+  if model_msg is None:
+    return False
+  try:
+    position = getattr(model_msg, "position", None)
+    xs = getattr(position, "x", None) if position is not None else None
+    ys = getattr(position, "y", None) if position is not None else None
+    return bool(xs is not None and ys is not None and len(xs) >= 2 and len(xs) == len(ys))
+  except Exception:
+    return False

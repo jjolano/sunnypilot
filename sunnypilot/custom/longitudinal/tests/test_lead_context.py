@@ -8,6 +8,8 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
+import pytest
+
 from openpilot.sunnypilot.custom.longitudinal import lead_context as lc
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceState
 
@@ -91,6 +93,10 @@ def lead(d_rel=30.0, v_lead=12.0, a_lead=0.0, y_rel=0.0, status=True, track_id=3
                          yRel=y_rel, radarTrackId=track_id, radar=True, modelProb=0.9, aLeadTau=1.0)
 
 
+def model_path(xs=(0.0, 30.0, 60.0), ys=(0.0, 1.5, 2.0)):
+  return SimpleNamespace(position=SimpleNamespace(x=list(xs), y=list(ys)))
+
+
 def test_tracker_update_returns_primary_context():
   t = lc.LeadContextTracker()
   ctx = None
@@ -101,6 +107,24 @@ def test_tracker_update_returns_primary_context():
       v_ego=20.0, dt=0.05,
     )
   assert isinstance(ctx, lc.PrimaryLeadContext)
+
+
+def test_tracker_interpolates_model_path_for_path_relative_y_shadow_signal():
+  raw_tracker = lc.LeadContextTracker()
+  model_tracker = lc.LeadContextTracker()
+  confidence = (LeadConfidenceState(status=True, stable=True, accel_blend=1.0), LeadConfidenceState())
+
+  raw_ctx = raw_tracker.update(
+    leads=(lead(d_rel=45.0, y_rel=0.0), None), confidence_states=confidence,
+    v_ego=20.0, dt=0.05,
+  )
+  model_ctx = model_tracker.update(
+    leads=(lead(d_rel=45.0, y_rel=0.0), None), confidence_states=confidence,
+    v_ego=20.0, dt=0.05, model_msg=model_path(),
+  )
+
+  assert raw_ctx.states[0].path_y_rel == pytest.approx(0.0)
+  assert model_ctx.states[0].path_y_rel == pytest.approx(-1.75)
 
 
 def _relevance_state(authority, *, gap_excess=0.0):

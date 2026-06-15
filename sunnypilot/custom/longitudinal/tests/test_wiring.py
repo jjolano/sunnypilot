@@ -17,19 +17,27 @@ from openpilot.sunnypilot.custom.longitudinal.wiring import (
 )
 
 
-def lead(d_rel=30.0, v_lead=12.0, status=True):
-  return SimpleNamespace(status=status, dRel=d_rel, vLead=v_lead, vLeadK=v_lead, aLeadK=0.0,
-                         yRel=0.0, radarTrackId=3, radar=True, modelProb=0.9, aLeadTau=1.0)
+def lead(d_rel=30.0, v_lead=12.0, v_rel=None, status=True):
+  ld = SimpleNamespace(status=status, dRel=d_rel, vLead=v_lead, vLeadK=v_lead, aLeadK=0.0,
+                       yRel=0.0, radarTrackId=3, radar=True, modelProb=0.9, aLeadTau=1.0)
+  if v_rel is not None:
+    ld.vRel = v_rel
+  return ld
 
 
 def fake_sm(lead_one=None, brake=False, gas=False, model_should_stop=False, model_accel=0.0, pitch=0.0,
-            model_x=None, model_v=None):
+            model_x=None, model_y=None, model_v=None):
+  position = SimpleNamespace()
+  if model_x is not None:
+    position.x = model_x
+  if model_y is not None:
+    position.y = model_y
   return {
     'radarState': SimpleNamespace(leadOne=lead_one, leadTwo=None),
     'carState': SimpleNamespace(brakePressed=brake, gasPressed=gas),
     'modelV2': SimpleNamespace(action=SimpleNamespace(shouldStop=model_should_stop,
-                                                      desiredAcceleration=model_accel),
-                               position=SimpleNamespace(x=model_x),
+                                                       desiredAcceleration=model_accel),
+                               position=position,
                                velocity=SimpleNamespace(x=model_v)),
     'carControl': SimpleNamespace(orientationNED=[0.0, pitch, 0.0]),
     'controlsState': SimpleNamespace(forceDecel=False),
@@ -63,6 +71,14 @@ class FakeParams:
     return self._v.get(k)
   def all_keys(self):
     return [k.encode() for k in self._v]
+
+
+class BadModelPathPosition:
+  x = [0.0, 30.0, 60.0]
+
+  @property
+  def y(self):
+    raise RuntimeError("bad model path")
 
 
 def test_build_stack_inputs_maps_evidence():
@@ -268,3 +284,36 @@ def test_mode_and_enable_latch_after_init():
   assert a.personality is not None
   assert a.sources.scc_curve_vision_enabled is False
   assert a.sources.scc_curve_map_enabled is True
+
+
+def test_adapter_passes_model_path_into_shadow_debug():
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
+  out = a.evaluate(
+    fake_sm(
+      lead(d_rel=60.0, v_lead=25.0, v_rel=0.0),
+      model_x=[0.0, 30.0, 60.0], model_y=[0.0, 0.5, 1.0], model_v=[25.0, 25.0, 25.0],
+    ),
+    25.0, 0.0, 25.0, -0.3, fake_scc(), fake_sla(), dt=0.05,
+  )
+
+  assert out.enabled is True
+  assert out.debug["path_shadow_model_path_available"] is True
+  assert out.debug["path_shadow_fault"] is False
+  assert out.debug["actual_primary_lead_path_y_rel"] == pytest.approx(0.0)
+  assert out.debug["path_shadow_primary_lead_path_y_rel"] == pytest.approx(-1.0)
+
+
+def test_adapter_contains_path_shadow_fault_without_fail_closed():
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
+  sm = fake_sm(
+    lead(d_rel=60.0, v_lead=25.0, v_rel=0.0),
+    model_x=[0.0, 30.0, 60.0], model_v=[25.0, 25.0, 25.0],
+  )
+  sm['modelV2'].position = BadModelPathPosition()
+
+  out = a.evaluate(sm, 25.0, 0.0, 25.0, -0.3, fake_scc(), fake_sla(), dt=0.05)
+
+  assert out.enabled is True
+  assert out.selected_intent != "fault"
+  assert out.debug["path_shadow_model_path_available"] is False
+  assert out.debug["path_shadow_fault"] is True

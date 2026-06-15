@@ -73,7 +73,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        brake_pressed: bool = False, gas_pressed: bool = False, force_slow_decel: bool = False,
                        model_should_stop: bool = False, model_desired_accel: float = 0.0,
                        model_stop_prob: float = 1.0, model_stop_distance: float | None = None,
-                       accel_coast: float = 0.0) -> LongitudinalStackInputs:
+                       accel_coast: float = 0.0, model_msg: Any | None = None) -> LongitudinalStackInputs:
   has_lead = lead_one is not None and bool(getattr(lead_one, "status", False))
   # Pre-MPC lead-present seed: carry the currently selected planner a_target into the custom
   # policy. Final lead-follow physics remains owned by the downstream MPC solve.
@@ -104,7 +104,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     speed_limit_active=bool(sla_active), speed_limit_v_target=float(sla_v_target), speed_limit_a_target=float(sla_a_target),
     curve_active=curve_active, curve_a_target=float(curve_a_target), curve_source=curve_source,
     force_slow_decel=bool(force_slow_decel), brake_pressed=brake_pressed, gas_pressed=gas_pressed,
-    mode=mode, sources=sources, personality=personality,
+    mode=mode, sources=sources, personality=personality, model_msg=model_msg,
   )
 
 
@@ -183,6 +183,7 @@ class CustomLongitudinalAdapter:
         force_slow_decel=bool(getattr(controls_state, "forceDecel", False)),
         model_should_stop=model_should_stop, model_desired_accel=model_desired_accel,
         model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance, accel_coast=accel_coast,
+        model_msg=model,
       )
       result = self._stack.update(inputs, dt)
       debug = dict(result.debug or {})

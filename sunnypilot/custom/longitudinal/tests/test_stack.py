@@ -25,6 +25,22 @@ def lead(d_rel=30.0, v_lead=12.0, v_rel=0.0, y_rel=0.0, status=True, track_id=3)
                          modelProb=0.9, aLeadTau=1.0)
 
 
+def model_path(xs=(0.0, 30.0, 60.0), ys=(0.0, 0.5, 1.0)):
+  return SimpleNamespace(position=SimpleNamespace(x=list(xs), y=list(ys)))
+
+
+class RaisesOnY:
+  x = [0.0, 30.0, 60.0]
+
+  @property
+  def y(self):
+    raise RuntimeError("bad model path")
+
+
+def malformed_model_path():
+  return SimpleNamespace(position=RaisesOnY())
+
+
 def base(**kw):
   d = dict(v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, accel_limits=LIMITS)
   d.update(kw)
@@ -262,3 +278,46 @@ def test_invalid_raw_live_kinematics_do_not_trigger_softening():
   ), DT)
   assert r.a_target == pytest.approx(-0.3)
   assert "lead_follow_soft" not in r.debug.get("intent", "")
+
+
+def test_path_shadow_model_offset_does_not_change_stack_actuation():
+  raw_stack = CustomLongitudinalStack()
+  model_stack = CustomLongitudinalStack()
+  common = dict(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=-0.3,
+    leads=(lead(d_rel=60.0, v_lead=25.0, v_rel=0.0), None),
+    lead_a_target=-0.3, mode=LongitudinalMode.ACC,
+  )
+
+  raw = with_model = None
+  for _ in range(12):
+    raw = raw_stack.update(base(**common), DT)
+    with_model = model_stack.update(base(**common, model_msg=model_path()), DT)
+    assert with_model.a_target == pytest.approx(raw.a_target)
+    assert with_model.decision.reason == raw.decision.reason
+    assert with_model.standstill_release_allowed == raw.standstill_release_allowed
+
+  assert raw is not None and with_model is not None
+  assert with_model.debug["actual_primary_lead_path_y_rel"] == pytest.approx(0.0)
+  assert with_model.debug["path_shadow_primary_lead_path_y_rel"] == pytest.approx(-1.0)
+  assert with_model.debug["path_shadow_model_path_available"] is True
+  assert with_model.debug["path_shadow_fault"] is False
+
+
+def test_path_shadow_fault_is_contained_inside_stack_update():
+  raw_stack = CustomLongitudinalStack()
+  bad_model_stack = CustomLongitudinalStack()
+  common = dict(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=-0.3,
+    leads=(lead(d_rel=60.0, v_lead=25.0, v_rel=0.0), None),
+    lead_a_target=-0.3, mode=LongitudinalMode.ACC,
+  )
+
+  raw = raw_stack.update(base(**common), DT)
+  bad = bad_model_stack.update(base(**common, model_msg=malformed_model_path()), DT)
+
+  assert bad.a_target == pytest.approx(raw.a_target)
+  assert bad.decision.reason == raw.decision.reason
+  assert bad.standstill_release_allowed == raw.standstill_release_allowed
+  assert bad.debug["path_shadow_model_path_available"] is False
+  assert bad.debug["path_shadow_fault"] is True
