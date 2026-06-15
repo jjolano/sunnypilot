@@ -349,7 +349,7 @@ def _live_parameters(t_s: float, roll: float = 0.0) -> SimpleNamespace:
   return _route_msg("liveParameters", t_s, SimpleNamespace(roll=roll))
 
 
-def _model_v2(t_s: float, desired_curvature: float, v_ego: float = 20.0) -> SimpleNamespace:
+def _model_v2(t_s: float, desired_curvature: float, v_ego: float = 20.0, frame_drop_perc: float = 0.0) -> SimpleNamespace:
   path = _coherent_path(desired_curvature, v_ego)
   return _route_msg(
     "modelV2",
@@ -364,6 +364,7 @@ def _model_v2(t_s: float, desired_curvature: float, v_ego: float = 20.0) -> Simp
       orientation=SimpleNamespace(z=path["orientation_z"]),
       orientationRate=SimpleNamespace(z=path["orientation_rate_z"]),
       laneLineProbs=[0.9, 0.9, 0.9, 0.9],
+      frameDropPerc=frame_drop_perc,
       meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
     ),
   )
@@ -408,6 +409,20 @@ def _model_v2_no_action(t_s: float, desired_curvature: float, v_ego: float = 20.
   )
 
 
+def _model_v2_empty_arrays(t_s: float) -> SimpleNamespace:
+  return _route_msg(
+    "modelV2",
+    t_s,
+    SimpleNamespace(
+      position=SimpleNamespace(x=[], y=[], yStd=[]),
+      orientation=SimpleNamespace(z=[]),
+      orientationRate=SimpleNamespace(z=[]),
+      laneLineProbs=[],
+      meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
+    ),
+  )
+
+
 def _fake_route_messages(n: int, desired_curvature: float = 0.001, start_t: float = 0.0) -> list[SimpleNamespace]:
   msgs: list[SimpleNamespace] = []
   for i in range(n):
@@ -442,6 +457,9 @@ def test_extract_lateral_route_frames_summary_preserves_original_time_span():
   assert summary.qlog is True
   assert summary.extracted_count == 5
   assert summary.original_time_span_s == pytest.approx(0.04)
+  assert summary.selected_original_start_s == pytest.approx(0.0)
+  assert summary.selected_original_end_s == pytest.approx(0.04)
+  assert summary.source_dt_stats == {"min": pytest.approx(DT), "median": pytest.approx(DT), "max": pytest.approx(DT)}
 
 
 def test_extract_lateral_route_frames_applies_window_and_max_frames():
@@ -465,6 +483,19 @@ def test_extract_lateral_route_frames_prefers_model_v2_action_curvature():
   assert len(frames) == 1
   assert frames[0].raw_curvature == pytest.approx(k_model)
   assert frames[0].measured_curvature == pytest.approx(k_controls)
+
+
+def test_extract_lateral_route_frames_preserves_frame_drop_perc():
+  msgs = [
+    _car_state(0.0),
+    _car_control(0.0),
+    _live_parameters(0.0),
+    _model_v2(0.0, desired_curvature=0.001, frame_drop_perc=12.5),
+    _controls_state(0.0, curvature=0.001, desired_curvature=0.001),
+  ]
+  frames = extract_lateral_route_frames(msgs)
+  assert len(frames) == 1
+  assert frames[0].frame_drop_perc == pytest.approx(12.5)
 
 
 def test_extract_lateral_route_frames_uses_measured_when_inactive_and_preserves_steering_pressed():
@@ -566,6 +597,87 @@ def test_extract_lateral_route_frames_inactive_fallback_uses_actuator_curvature(
   assert len(frames) == 1
   assert frames[0].raw_curvature == pytest.approx(k)
   assert frames[0].lat_active is False
+
+
+def test_extraction_summary_quality_counts_input_and_controls_state():
+  msgs = _fake_route_messages(3, desired_curvature=0.001)
+  frames, summary = extract_lateral_route_frames_with_summary(msgs)
+  assert len(frames) == 3
+  assert summary.quality is not None
+  assert summary.quality.input_message_count == len(msgs)
+  assert summary.quality.controls_state_seen == 3
+  assert summary.quality.controls_state_in_window == 3
+  assert summary.quality.skipped_missing_car_state == 0
+
+
+def test_extraction_summary_quality_counts_missing_context():
+  msgs = [
+    _car_state(0.0),
+    _controls_state(0.0),
+    _car_state(0.01),
+    _controls_state(0.01),
+  ]
+  frames, summary = extract_lateral_route_frames_with_summary(msgs)
+  assert len(frames) == 2
+  assert summary.quality is not None
+  assert summary.quality.missing_model_v2 == 2
+  assert summary.quality.missing_car_control == 2
+  assert summary.quality.missing_live_parameters == 2
+
+
+def test_extraction_summary_quality_counts_skipped_missing_car_state():
+  msgs = [
+    _controls_state(0.0),
+    _car_state(0.01),
+    _controls_state(0.01),
+  ]
+  frames, summary = extract_lateral_route_frames_with_summary(msgs)
+  assert len(frames) == 1
+  assert summary.quality is not None
+  assert summary.quality.controls_state_seen == 2
+  assert summary.quality.controls_state_in_window == 2
+  assert summary.quality.skipped_missing_car_state == 1
+
+
+def test_extraction_summary_quality_counts_empty_arrays():
+  msgs = [
+    _car_state(0.0),
+    _car_control(0.0),
+    _live_parameters(0.0),
+    _model_v2_empty_arrays(0.0),
+    _controls_state(0.0),
+  ]
+  frames, summary = extract_lateral_route_frames_with_summary(msgs)
+  assert len(frames) == 1
+  assert summary.quality is not None
+  assert summary.quality.empty_position_path == 1
+  assert summary.quality.empty_orientation == 1
+  assert summary.quality.empty_orientation_rate == 1
+  assert summary.quality.empty_lane_line_probs == 1
+  assert summary.quality.missing_model_v2 == 0
+
+
+def test_extracted_frames_preserve_source_t():
+  msgs = _fake_route_messages(5, desired_curvature=0.001, start_t=2.0)
+  frames = extract_lateral_route_frames(msgs)
+  assert len(frames) == 5
+  for i, frame in enumerate(frames):
+    assert frame.t == pytest.approx(i * DT)
+    assert frame.source_t == pytest.approx(i * DT)
+
+
+def test_perturbations_preserve_source_t():
+  frames = extract_lateral_route_frames(_fake_route_messages(8, desired_curvature=0.001))
+  for kind, params in (
+    ("noise", {"noise_seed": 1}),
+    ("dropout", {}),
+    ("delay", {"delay_frames": 1}),
+    ("stale", {}),
+    ("scale", {"scale_seed": 1}),
+    ("offset", {"offset_seed": 1}),
+  ):
+    perturbed = _apply_recipe(PerturbationRecipe(kind=kind, start_frame=2, end_frame=6, description=kind, params=params), frames)
+    assert [frame.source_t for frame in perturbed] == [frame.source_t for frame in frames]
 
 
 # ---------- route-derived scenario tests ----------
@@ -672,6 +784,383 @@ def test_main_route_and_preset_are_mutually_exclusive(monkeypatch):
     ]
     with pytest.raises(SystemExit):
       main()
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+
+def test_list_only_json_includes_quality(monkeypatch):
+  baseline = _fake_route_messages(5, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  previous_argv = sys.argv
+  stdout = io.StringIO()
+  try:
+    sys.argv = ["fuzz_lateral_route_replay.py", "--route", "fake/route", "--list-only", "--json"]
+    with contextlib.redirect_stdout(stdout):
+      main()
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+  payload = json.loads(stdout.getvalue())
+  assert "quality" in payload
+  assert payload["quality"]["input_message_count"] == len(baseline)
+  assert payload["quality"]["controls_state_seen"] == 5
+
+
+def test_route_mode_json_preserves_quality_and_timing_metadata(monkeypatch):
+  baseline = _fake_route_messages(6, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  previous_argv = sys.argv
+  stdout = io.StringIO()
+  try:
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "fake/route",
+      "--qlog",
+      "--cases", "1",
+      "--perturbation", "none",
+      "--json",
+    ]
+    with contextlib.redirect_stdout(stdout):
+      main()
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+  payload = json.loads(stdout.getvalue())
+  assert payload["duration"] is None
+  meta = payload["route_metadata"]
+  assert meta["route"] == "fake/route"
+  assert meta["qlog"] is True
+  assert meta["timing_mode"] == "fixed-dt"
+  assert "quality" in meta
+  assert meta["quality_scope"] == "extracted_frames"
+  assert meta["quality"]["controls_state_seen"] == 6
+
+
+def test_route_artifact_preserves_quality_and_metadata(monkeypatch):
+  baseline = _fake_route_messages(8, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  try:
+    scenarios = generate_scenarios(RouteReplayFuzzerConfig(seed=3, cases=1, route="fake/route", qlog=True, perturbation="none"))
+    result = evaluate_scenario(scenarios[0])
+    with tempfile.TemporaryDirectory() as tmpdir:
+      path = write_artifact(result, Path(tmpdir), seed=3, index=0)
+      data = json.loads(path.read_text())
+      assert data["route_metadata"]["quality"]["controls_state_seen"] == 8
+      assert data["route_metadata"]["timing_mode"] == "fixed-dt"
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+
+
+def test_default_prefix_sampling_matches_current_extraction(monkeypatch):
+  baseline = _fake_route_messages(12, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  try:
+    scenarios = generate_scenarios(RouteReplayFuzzerConfig(seed=4, cases=2, route="fake/route", max_frames=8))
+    assert len(scenarios) == 2
+    assert all(len(s.frames) == 8 for s in scenarios)
+    assert all(s.route_metadata.sampling_mode == "prefix" for s in scenarios)
+    assert all(s.route_metadata.sampling_window_index is None for s in scenarios)
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+
+
+def test_window_applies_before_sampling(monkeypatch):
+  baseline = _fake_route_messages(20, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  try:
+    scenarios = generate_scenarios(
+      RouteReplayFuzzerConfig(
+        seed=5,
+        cases=1,
+        route="fake/route",
+        window_start_s=0.02,
+        window_end_s=0.08,
+        sample_mode="uniform-windows",
+        sample_window_duration_s=0.03,
+        sample_window_count=2,
+      )
+    )
+    assert len(scenarios) == 1
+    meta = scenarios[0].route_metadata
+    assert meta.window_start_s == pytest.approx(0.02)
+    assert meta.window_end_s == pytest.approx(0.08)
+    assert meta.selected_original_start_s >= 0.02 - 1e-9
+    assert meta.selected_original_end_s <= 0.08 + 1e-9
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+
+
+def test_random_window_sampling_is_deterministic(monkeypatch):
+  baseline = _fake_route_messages(30, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  try:
+    def run():
+      return generate_scenarios(
+        RouteReplayFuzzerConfig(
+          seed=6,
+          cases=1,
+          route="fake/route",
+          sample_mode="random-window",
+          sample_window_duration_s=0.05,
+          sample_window_count=2,
+          sample_seed=42,
+        )
+      )
+    first = run()
+    second = run()
+    assert len(first) == len(second) == 1
+    assert first[0].route_metadata.selected_original_start_s == second[0].route_metadata.selected_original_start_s
+    assert first[0].route_metadata.selected_original_end_s == second[0].route_metadata.selected_original_end_s
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+
+
+def test_uniform_windows_produces_expected_metadata(monkeypatch):
+  baseline = _fake_route_messages(20, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  try:
+    scenarios = generate_scenarios(
+      RouteReplayFuzzerConfig(
+        seed=7,
+        cases=4,
+        route="fake/route",
+        sample_mode="uniform-windows",
+        sample_window_duration_s=0.05,
+        sample_window_count=2,
+      )
+    )
+    assert len(scenarios) == 4
+    window_indices = [s.route_metadata.sampling_window_index for s in scenarios]
+    assert window_indices == [0, 1, 0, 1]
+    metas = [s.route_metadata for s in scenarios[:2]]
+    assert metas[0].selected_original_start_s < metas[1].selected_original_start_s
+    assert metas[0].sampling_window_count == 2
+    assert metas[1].sampling_window_count == 2
+    assert metas[0].quality_scope == "base_extraction"
+    assert metas[1].quality_scope == "base_extraction"
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+
+
+def test_route_mode_json_includes_sampled_windows(monkeypatch):
+  baseline = _fake_route_messages(25, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  previous_argv = sys.argv
+  stdout = io.StringIO()
+  try:
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "fake/route",
+      "--cases", "2",
+      "--perturbation", "none",
+      "--sample-mode", "uniform-windows",
+      "--sample-window-duration", "0.05",
+      "--sample-window-count", "2",
+      "--json",
+    ]
+    with contextlib.redirect_stdout(stdout):
+      main()
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+  payload = json.loads(stdout.getvalue())
+  assert len(payload["sampled_windows"]) == 2
+  assert [window["sampling_window_index"] for window in payload["sampled_windows"]] == [0, 1]
+  assert {window["quality_scope"] for window in payload["sampled_windows"]} == {"base_extraction"}
+
+
+def test_list_only_summarizes_sampled_windows(monkeypatch):
+  baseline = _fake_route_messages(25, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  previous_argv = sys.argv
+  stdout = io.StringIO()
+  try:
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "fake/route",
+      "--list-only",
+      "--json",
+      "--sample-mode", "uniform-windows",
+      "--sample-window-duration", "0.05",
+      "--sample-window-count", "2",
+    ]
+    with contextlib.redirect_stdout(stdout):
+      main()
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+  payload = json.loads(stdout.getvalue())
+  assert "windows" in payload
+  assert len(payload["windows"]) == 2
+  for window in payload["windows"]:
+    assert window["sampling_mode"] == "uniform-windows"
+    assert "sampling_window_index" in window
+    assert "selected_original_start_s" in window
+    assert "selected_original_end_s" in window
+
+
+def test_invalid_sampling_args_fail_before_loading():
+  loaded: list[bool] = []
+  original_load_route_msgs = route_io_module.load_route_msgs
+  def capture_load(route, qlog=False):
+    loaded.append(True)
+    return []
+  route_io_module.load_route_msgs = capture_load
+  previous_argv = sys.argv
+  try:
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "fake/route",
+      "--sample-mode", "random-window",
+      "--cases", "1",
+    ]
+    with pytest.raises(SystemExit):
+      main()
+    assert not loaded
+
+    loaded.clear()
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "fake/route",
+      "--sample-mode", "uniform-windows",
+      "--sample-window-duration", "0",
+      "--cases", "1",
+    ]
+    with pytest.raises(SystemExit):
+      main()
+    assert not loaded
+
+    loaded.clear()
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "fake/route",
+      "--sample-window-count", "0",
+      "--cases", "1",
+    ]
+    with pytest.raises(SystemExit):
+      main()
+    assert not loaded
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+
+def test_timing_original_fails_before_loading():
+  loaded: list[bool] = []
+  original_load_route_msgs = route_io_module.load_route_msgs
+  def capture_load(route, qlog=False):
+    loaded.append(True)
+    return []
+  route_io_module.load_route_msgs = capture_load
+  previous_argv = sys.argv
+  try:
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "fake/route",
+      "--timing", "original",
+      "--cases", "1",
+    ]
+    with pytest.raises(SystemExit):
+      main()
+    assert not loaded
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+
+def test_api_rejects_original_timing_before_fake_fixed_dt_metadata():
+  with pytest.raises(ValueError, match="original"):
+    extract_lateral_route_frames_with_summary(_fake_route_messages(2), timing_mode="original")
+
+
+def test_api_rejects_unknown_extraction_sampling_metadata():
+  with pytest.raises(ValueError, match="sampling_mode"):
+    extract_lateral_route_frames_with_summary(_fake_route_messages(2), sampling_mode="invalid")
+
+
+def test_generate_scenarios_rejects_route_original_timing_before_loading(monkeypatch):
+  loaded: list[bool] = []
+  original_load_route_msgs = route_io_module.load_route_msgs
+  def capture_load(route, qlog=False):
+    loaded.append(True)
+    return []
+  route_io_module.load_route_msgs = capture_load
+  try:
+    with pytest.raises(ValueError, match="original"):
+      generate_scenarios(RouteReplayFuzzerConfig(route="fake/route", timing_mode="original"))
+    assert not loaded
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+
+
+def test_generate_scenarios_rejects_invalid_route_sampling_before_loading(monkeypatch):
+  loaded: list[bool] = []
+  original_load_route_msgs = route_io_module.load_route_msgs
+  def capture_load(route, qlog=False):
+    loaded.append(True)
+    return []
+  route_io_module.load_route_msgs = capture_load
+  try:
+    with pytest.raises(ValueError, match="sample_mode"):
+      generate_scenarios(RouteReplayFuzzerConfig(route="fake/route", sample_mode="invalid"))
+    with pytest.raises(ValueError, match="requires"):
+      generate_scenarios(RouteReplayFuzzerConfig(route="fake/route", sample_mode="random-window"))
+    with pytest.raises(ValueError, match="> 0"):
+      generate_scenarios(RouteReplayFuzzerConfig(route="fake/route", sample_window_count=0))
+    assert not loaded
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+
+
+def test_generate_scenarios_returns_no_sampled_windows_for_empty_route(monkeypatch):
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: []
+  try:
+    scenarios = generate_scenarios(
+      RouteReplayFuzzerConfig(
+        route="fake/route",
+        sample_mode="uniform-windows",
+        sample_window_duration_s=0.05,
+        sample_window_count=2,
+      )
+    )
+    assert scenarios == []
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+
+
+def test_list_only_sampled_empty_route_exits_cleanly_without_format_traceback(monkeypatch):
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: []
+  previous_argv = sys.argv
+  stdout = io.StringIO()
+  try:
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "fake/route",
+      "--list-only",
+      "--sample-mode", "uniform-windows",
+      "--sample-window-duration", "0.05",
+      "--sample-window-count", "2",
+    ]
+    with pytest.raises(SystemExit) as exc, contextlib.redirect_stdout(stdout):
+      main()
+    assert exc.value.code == 1
+    assert "sampled windows" in stdout.getvalue()
   finally:
     route_io_module.load_route_msgs = original_load_route_msgs
     sys.argv = previous_argv

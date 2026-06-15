@@ -44,6 +44,58 @@ PRESETS = ("synthetic_straight", "synthetic_curve", "synthetic_sine", "synthetic
 PERTURBATION_KINDS = ("noise", "dropout", "delay", "stale", "scale", "offset")
 CLI_PERTURBATION_KINDS = PERTURBATION_KINDS + ("none",)
 ROUTE_EXTRACTED_PRESET = "route_extracted"
+SAMPLE_MODES = ("prefix", "random-window", "uniform-windows")
+TIMING_MODES = ("fixed-dt", "original")
+
+
+@dataclass
+class RouteExtractionQuality:
+  """Quality/context counters for route extraction."""
+
+  input_message_count: int = 0
+  controls_state_seen: int = 0
+  controls_state_in_window: int = 0
+  skipped_missing_car_state: int = 0
+  missing_model_v2: int = 0
+  missing_car_control: int = 0
+  missing_live_parameters: int = 0
+  empty_position_path: int = 0
+  empty_orientation: int = 0
+  empty_orientation_rate: int = 0
+  empty_lane_line_probs: int = 0
+
+  def to_dict(self) -> dict[str, Any]:
+    return {
+      "input_message_count": self.input_message_count,
+      "controls_state_seen": self.controls_state_seen,
+      "controls_state_in_window": self.controls_state_in_window,
+      "skipped_missing_car_state": self.skipped_missing_car_state,
+      "missing_model_v2": self.missing_model_v2,
+      "missing_car_control": self.missing_car_control,
+      "missing_live_parameters": self.missing_live_parameters,
+      "empty_position_path": self.empty_position_path,
+      "empty_orientation": self.empty_orientation,
+      "empty_orientation_rate": self.empty_orientation_rate,
+      "empty_lane_line_probs": self.empty_lane_line_probs,
+    }
+
+  @classmethod
+  def from_dict(cls, data: dict[str, Any] | None) -> RouteExtractionQuality | None:
+    if data is None:
+      return None
+    return cls(
+      input_message_count=int(data.get("input_message_count", 0)),
+      controls_state_seen=int(data.get("controls_state_seen", 0)),
+      controls_state_in_window=int(data.get("controls_state_in_window", 0)),
+      skipped_missing_car_state=int(data.get("skipped_missing_car_state", 0)),
+      missing_model_v2=int(data.get("missing_model_v2", 0)),
+      missing_car_control=int(data.get("missing_car_control", 0)),
+      missing_live_parameters=int(data.get("missing_live_parameters", 0)),
+      empty_position_path=int(data.get("empty_position_path", 0)),
+      empty_orientation=int(data.get("empty_orientation", 0)),
+      empty_orientation_rate=int(data.get("empty_orientation_rate", 0)),
+      empty_lane_line_probs=int(data.get("empty_lane_line_probs", 0)),
+    )
 
 
 @dataclass(frozen=True)
@@ -58,9 +110,20 @@ class RouteExtractionSummary:
   extracted_count: int
   original_time_span_s: float | None
   dt: float
+  quality: RouteExtractionQuality | None = None
+  quality_scope: str = "extracted_frames"
+  timing_mode: str = "fixed-dt"
+  sampling_mode: str | None = None
+  sampling_window_index: int | None = None
+  sampling_window_count: int | None = None
+  sampling_seed: int | None = None
+  sampling_window_duration_s: float | None = None
+  selected_original_start_s: float | None = None
+  selected_original_end_s: float | None = None
+  source_dt_stats: dict[str, float] | None = None
 
   def to_dict(self) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
       "route": self.route,
       "qlog": self.qlog,
       "window_start_s": self.window_start_s,
@@ -69,7 +132,28 @@ class RouteExtractionSummary:
       "extracted_count": self.extracted_count,
       "original_time_span_s": self.original_time_span_s,
       "dt": self.dt,
+      "quality_scope": self.quality_scope,
+      "timing_mode": self.timing_mode,
     }
+    if self.quality is not None:
+      payload["quality"] = self.quality.to_dict()
+    if self.sampling_mode is not None:
+      payload["sampling_mode"] = self.sampling_mode
+    if self.sampling_window_index is not None:
+      payload["sampling_window_index"] = self.sampling_window_index
+    if self.sampling_window_count is not None:
+      payload["sampling_window_count"] = self.sampling_window_count
+    if self.sampling_seed is not None:
+      payload["sampling_seed"] = self.sampling_seed
+    if self.sampling_window_duration_s is not None:
+      payload["sampling_window_duration_s"] = self.sampling_window_duration_s
+    if self.selected_original_start_s is not None:
+      payload["selected_original_start_s"] = self.selected_original_start_s
+    if self.selected_original_end_s is not None:
+      payload["selected_original_end_s"] = self.selected_original_end_s
+    if self.source_dt_stats is not None:
+      payload["source_dt_stats"] = self.source_dt_stats
+    return payload
 
   @classmethod
   def from_dict(cls, data: dict[str, Any]) -> RouteExtractionSummary:
@@ -82,6 +166,17 @@ class RouteExtractionSummary:
       extracted_count=int(data.get("extracted_count", 0)),
       original_time_span_s=_float_or_none(data.get("original_time_span_s")),
       dt=float(data.get("dt", DT)),
+      quality=RouteExtractionQuality.from_dict(data.get("quality")),
+      quality_scope=str(data.get("quality_scope", "extracted_frames")),
+      timing_mode=str(data.get("timing_mode", "fixed-dt")),
+      sampling_mode=data.get("sampling_mode"),
+      sampling_window_index=int(data["sampling_window_index"]) if data.get("sampling_window_index") is not None else None,
+      sampling_window_count=int(data["sampling_window_count"]) if data.get("sampling_window_count") is not None else None,
+      sampling_seed=int(data["sampling_seed"]) if data.get("sampling_seed") is not None else None,
+      sampling_window_duration_s=_float_or_none(data.get("sampling_window_duration_s")),
+      selected_original_start_s=_float_or_none(data.get("selected_original_start_s")),
+      selected_original_end_s=_float_or_none(data.get("selected_original_end_s")),
+      source_dt_stats=data.get("source_dt_stats"),
     )
 
 
@@ -117,9 +212,10 @@ class LateralRouteFrame:
   orientation_rate_z: tuple[float, ...]
   lane_line_probs: tuple[float, ...]
   frame_drop_perc: float
+  source_t: float | None = None
 
   def to_dict(self) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
       "t": self.t,
       "v_ego": self.v_ego,
       "lat_active": self.lat_active,
@@ -139,6 +235,9 @@ class LateralRouteFrame:
       "lane_line_probs": list(self.lane_line_probs),
       "frame_drop_perc": self.frame_drop_perc,
     }
+    if self.source_t is not None:
+      payload["source_t"] = self.source_t
+    return payload
 
   @classmethod
   def from_dict(cls, data: dict[str, Any]) -> LateralRouteFrame:
@@ -161,6 +260,7 @@ class LateralRouteFrame:
       orientation_rate_z=tuple(float(v) for v in data["orientation_rate_z"]),
       lane_line_probs=tuple(float(v) for v in data["lane_line_probs"]),
       frame_drop_perc=float(data["frame_drop_perc"]),
+      source_t=_float_or_none(data.get("source_t")),
     )
 
 
@@ -421,7 +521,7 @@ def _extract_measured_curvature(state: dict[str, Any]) -> float:
   return 0.0
 
 
-def _frame_from_controls_state(t: float, state: dict[str, Any]) -> LateralRouteFrame:
+def _frame_from_controls_state(t: float, state: dict[str, Any], source_t: float | None = None) -> LateralRouteFrame:
   car_state = state.get("carState")
   car_control = state.get("carControl")
   model_v2 = state.get("modelV2")
@@ -486,7 +586,50 @@ def _frame_from_controls_state(t: float, state: dict[str, Any]) -> LateralRouteF
     orientation_rate_z=orientation_rate_z,
     lane_line_probs=lane_line_probs,
     frame_drop_perc=frame_drop_perc,
+    source_t=source_t,
   )
+
+
+def _source_dt_stats(frames: tuple[LateralRouteFrame, ...]) -> dict[str, float] | None:
+  times = [frame.source_t for frame in frames if frame.source_t is not None]
+  if len(times) < 2:
+    return None
+  dts = [times[i] - times[i - 1] for i in range(1, len(times))]
+  if not dts:
+    return None
+  return {
+    "min": float(np.min(dts)),
+    "median": float(np.median(dts)),
+    "max": float(np.max(dts)),
+  }
+
+
+def _count_frame_quality(frame: LateralRouteFrame, state: dict[str, Any], quality: RouteExtractionQuality) -> None:
+  if state.get("modelV2") is None:
+    quality.missing_model_v2 += 1
+  else:
+    if len(frame.position_x) == 0 or len(frame.position_y) == 0 or len(frame.position_y_std) == 0:
+      quality.empty_position_path += 1
+    if len(frame.orientation_z) == 0:
+      quality.empty_orientation += 1
+    if len(frame.orientation_rate_z) == 0:
+      quality.empty_orientation_rate += 1
+    if len(frame.lane_line_probs) == 0:
+      quality.empty_lane_line_probs += 1
+  if state.get("carControl") is None:
+    quality.missing_car_control += 1
+  if state.get("liveParameters") is None:
+    quality.missing_live_parameters += 1
+
+
+def _validate_route_timing_mode(timing_mode: str) -> None:
+  if timing_mode != "fixed-dt":
+    raise ValueError("timing_mode 'original' is not yet supported; fixed-DT route replay only")
+
+
+def _validate_route_sampling_mode(sampling_mode: str) -> None:
+  if sampling_mode not in SAMPLE_MODES:
+    raise ValueError(f"unknown sampling_mode {sampling_mode!r}")
 
 
 def extract_lateral_route_frames_with_summary(
@@ -497,6 +640,8 @@ def extract_lateral_route_frames_with_summary(
   start_s: float | None = None,
   end_s: float | None = None,
   max_frames: int | None = None,
+  timing_mode: str = "fixed-dt",
+  sampling_mode: str = "prefix",
 ) -> tuple[tuple[LateralRouteFrame, ...], RouteExtractionSummary]:
   """Extract fixed-DT lateral replay frames from raw route messages.
 
@@ -505,25 +650,33 @@ def extract_lateral_route_frames_with_summary(
   controlsState. Applies the original-time window, truncates to ``max_frames``,
   then normalizes ``frame.t = index * DT``.
   """
+  _validate_route_timing_mode(timing_mode)
+  _validate_route_sampling_mode(sampling_mode)
   from openpilot.tools.drive_lab.route_analysis import build_route_messages
 
   route_messages = build_route_messages(messages)
   latest_state: dict[str, Any] = {}
   extracted: list[LateralRouteFrame] = []
   original_times: list[float] = []
+  quality = RouteExtractionQuality(input_message_count=len(route_messages))
 
   for rm in route_messages:
     if rm.typ in ("carState", "carControl", "modelV2", "liveParameters", "controlsState"):
       latest_state[rm.typ] = rm.payload
     if rm.typ != "controlsState":
       continue
-    if latest_state.get("carState") is None:
-      continue
+    quality.controls_state_seen += 1
     if start_s is not None and rm.t < start_s:
       continue
     if end_s is not None and rm.t >= end_s:
       continue
-    extracted.append(_frame_from_controls_state(rm.t, latest_state))
+    quality.controls_state_in_window += 1
+    if latest_state.get("carState") is None:
+      quality.skipped_missing_car_state += 1
+      continue
+    frame = _frame_from_controls_state(rm.t, latest_state, source_t=rm.t)
+    _count_frame_quality(frame, latest_state, quality)
+    extracted.append(frame)
     original_times.append(rm.t)
     if max_frames is not None and len(extracted) >= max_frames:
       break
@@ -542,6 +695,12 @@ def extract_lateral_route_frames_with_summary(
     extracted_count=len(normalized),
     original_time_span_s=original_span,
     dt=DT,
+    quality=quality,
+    timing_mode=timing_mode,
+    sampling_mode=sampling_mode,
+    selected_original_start_s=original_times[0] if original_times else None,
+    selected_original_end_s=original_times[-1] if original_times else None,
+    source_dt_stats=_source_dt_stats(normalized),
   )
   return normalized, summary
 
@@ -564,6 +723,8 @@ def _load_route_frames_with_summary(
   start_s: float | None = None,
   end_s: float | None = None,
   max_frames: int | None = None,
+  timing_mode: str = "fixed-dt",
+  sampling_mode: str = "prefix",
 ) -> tuple[tuple[LateralRouteFrame, ...], RouteExtractionSummary]:
   from openpilot.tools.drive_lab.route_io import load_route_msgs
 
@@ -575,6 +736,8 @@ def _load_route_frames_with_summary(
     start_s=start_s,
     end_s=end_s,
     max_frames=max_frames,
+    timing_mode=timing_mode,
+    sampling_mode=sampling_mode,
   )
 
 
@@ -677,6 +840,7 @@ def _apply_noise(rng: random.Random, frames: tuple[LateralRouteFrame, ...], star
         orientation_rate_z=path["orientation_rate_z"],
         lane_line_probs=frame.lane_line_probs,
         frame_drop_perc=frame.frame_drop_perc,
+        source_t=frame.source_t,
       ))
     else:
       out.append(frame)
@@ -706,6 +870,7 @@ def _apply_dropout(frames: tuple[LateralRouteFrame, ...], start: int, end: int) 
         orientation_rate_z=(),
         lane_line_probs=frame.lane_line_probs,
         frame_drop_perc=frame.frame_drop_perc,
+        source_t=frame.source_t,
       ))
     else:
       out.append(frame)
@@ -738,6 +903,7 @@ def _apply_delay(frames: tuple[LateralRouteFrame, ...], start: int, end: int, de
       orientation_rate_z=path["orientation_rate_z"],
       lane_line_probs=frames[i].lane_line_probs,
       frame_drop_perc=frames[i].frame_drop_perc,
+      source_t=frames[i].source_t,
     )
   return tuple(out)
 
@@ -767,6 +933,7 @@ def _apply_stale(frames: tuple[LateralRouteFrame, ...], start: int, end: int) ->
       orientation_rate_z=path["orientation_rate_z"],
       lane_line_probs=frames[i].lane_line_probs,
       frame_drop_perc=frames[i].frame_drop_perc,
+      source_t=frames[i].source_t,
     )
   return tuple(out)
 
@@ -797,6 +964,7 @@ def _apply_scale(rng: random.Random, frames: tuple[LateralRouteFrame, ...], star
         orientation_rate_z=path["orientation_rate_z"],
         lane_line_probs=frame.lane_line_probs,
         frame_drop_perc=frame.frame_drop_perc,
+        source_t=frame.source_t,
       ))
     else:
       out.append(frame)
@@ -829,6 +997,7 @@ def _apply_offset(rng: random.Random, frames: tuple[LateralRouteFrame, ...], sta
         orientation_rate_z=path["orientation_rate_z"],
         lane_line_probs=frame.lane_line_probs,
         frame_drop_perc=frame.frame_drop_perc,
+        source_t=frame.source_t,
       ))
     else:
       out.append(frame)
@@ -910,6 +1079,23 @@ class RouteReplayFuzzerConfig:
   window_start_s: float | None = None
   window_end_s: float | None = None
   max_frames: int | None = None
+  sample_mode: str = "prefix"
+  sample_window_duration_s: float | None = None
+  sample_window_count: int = 1
+  sample_seed: int | None = None
+  timing_mode: str = "fixed-dt"
+
+
+def _validate_route_config(config: RouteReplayFuzzerConfig) -> None:
+  _validate_route_timing_mode(config.timing_mode)
+  if config.sample_mode not in SAMPLE_MODES:
+    raise ValueError(f"unknown sample_mode {config.sample_mode!r}")
+  if config.sample_mode != "prefix" and config.sample_window_duration_s is None:
+    raise ValueError(f"sample_mode {config.sample_mode!r} requires sample_window_duration_s")
+  if config.sample_window_duration_s is not None and config.sample_window_duration_s <= 0.0:
+    raise ValueError("sample_window_duration_s must be > 0")
+  if config.sample_window_count <= 0:
+    raise ValueError("sample_window_count must be > 0")
 
 
 def _generate_route_scenarios(
@@ -937,16 +1123,156 @@ def _generate_route_scenarios(
   return scenarios
 
 
+def _sample_route_windows(
+  frames: tuple[LateralRouteFrame, ...],
+  base_summary: RouteExtractionSummary,
+  config: RouteReplayFuzzerConfig,
+) -> list[tuple[tuple[LateralRouteFrame, ...], RouteExtractionSummary]]:
+  """Split extracted frames into sampled replay windows.
+
+  ``prefix`` sampling returns the whole input unchanged. ``random-window`` and
+  ``uniform-windows`` select ``sample_window_count`` sub-windows of
+  ``sample_window_duration_s`` seconds from the original route time span and
+  re-normalize each window to ``frame.t = index * DT``.
+  """
+  if config.sample_mode == "prefix":
+    return [(frames, base_summary)]
+  if not frames:
+    return []
+
+  source_times = [frame.source_t for frame in frames if frame.source_t is not None]
+  if len(source_times) < 2:
+    return []
+
+  start_t = source_times[0]
+  end_t = source_times[-1]
+  available = end_t - start_t
+  duration = config.sample_window_duration_s
+  if duration is None or duration <= 0.0:
+    return [(frames, base_summary)]
+
+  rng = random.Random(config.sample_seed if config.sample_seed is not None else config.seed)
+  window_count = config.sample_window_count
+  windows: list[tuple[float, float]] = []
+
+  if config.sample_mode == "random-window":
+    if duration >= available:
+      windows = [(start_t, end_t)]
+    else:
+      starts = sorted(start_t + rng.random() * (available - duration) for _ in range(window_count))
+      windows = [(s, s + duration) for s in starts]
+  elif config.sample_mode == "uniform-windows":
+    if duration >= available:
+      windows = [(start_t, end_t)]
+    elif window_count == 1:
+      windows = [(start_t, min(end_t, start_t + duration))]
+    else:
+      last_start = end_t - duration
+      step = (last_start - start_t) / float(window_count - 1)
+      windows = [(start_t + i * step, min(end_t, start_t + i * step + duration)) for i in range(window_count)]
+  else:
+    return [(frames, base_summary)]
+
+  results: list[tuple[tuple[LateralRouteFrame, ...], RouteExtractionSummary]] = []
+  sampling_seed = config.sample_seed if config.sample_seed is not None else config.seed
+  for window_idx, (w_start, w_end) in enumerate(windows):
+    selected_raw = [
+      frame for frame in frames
+      if frame.source_t is not None and w_start <= frame.source_t < w_end
+    ]
+    selected = tuple(
+      LateralRouteFrame.from_dict({**frame.to_dict(), "t": float(i) * DT})
+      for i, frame in enumerate(selected_raw)
+    )
+    if config.max_frames is not None:
+      selected = selected[:config.max_frames]
+    if not selected:
+      continue
+    original_times = [frame.source_t for frame in selected if frame.source_t is not None]
+    original_span = original_times[-1] - original_times[0] if len(original_times) > 1 else None
+    summary = RouteExtractionSummary(
+      route=base_summary.route,
+      qlog=base_summary.qlog,
+      window_start_s=base_summary.window_start_s,
+      window_end_s=base_summary.window_end_s,
+      max_frames=config.max_frames,
+      extracted_count=len(selected),
+      original_time_span_s=original_span,
+      dt=DT,
+      quality=base_summary.quality,
+      quality_scope="base_extraction",
+      timing_mode=base_summary.timing_mode,
+      sampling_mode=config.sample_mode,
+      sampling_window_index=window_idx,
+      sampling_window_count=len(windows),
+      sampling_seed=sampling_seed,
+      sampling_window_duration_s=duration,
+      selected_original_start_s=w_start,
+      selected_original_end_s=w_end,
+      source_dt_stats=_source_dt_stats(selected),
+    )
+    results.append((selected, summary))
+  return results
+
+
+def _route_window_config(config: RouteReplayFuzzerConfig) -> RouteReplayFuzzerConfig:
+  """Return a config suitable for loading the base route before sampling."""
+  return RouteReplayFuzzerConfig(
+    seed=config.seed,
+    cases=config.cases,
+    preset=config.preset,
+    perturbation=config.perturbation,
+    duration_s=config.duration_s,
+    route=config.route,
+    qlog=config.qlog,
+    window_start_s=config.window_start_s,
+    window_end_s=config.window_end_s,
+    max_frames=None if config.sample_mode != "prefix" else config.max_frames,
+    sample_mode="prefix",
+    sample_window_duration_s=None,
+    sample_window_count=1,
+    sample_seed=None,
+    timing_mode=config.timing_mode,
+  )
+
+
 def generate_scenarios(config: RouteReplayFuzzerConfig) -> list[RouteReplayScenario]:
   if config.route is not None:
+    _validate_route_config(config)
+    load_config = _route_window_config(config)
+    assert load_config.route is not None
     baseline, metadata = _load_route_frames_with_summary(
-      config.route,
-      qlog=config.qlog,
-      start_s=config.window_start_s,
-      end_s=config.window_end_s,
-      max_frames=config.max_frames,
+      load_config.route,
+      qlog=load_config.qlog,
+      start_s=load_config.window_start_s,
+      end_s=load_config.window_end_s,
+      max_frames=load_config.max_frames,
+      timing_mode=load_config.timing_mode,
+      sampling_mode=load_config.sample_mode,
     )
-    return _generate_route_scenarios(baseline, metadata, config)
+    if config.sample_mode == "prefix":
+      return _generate_route_scenarios(baseline, metadata, config)
+
+    windows = _sample_route_windows(baseline, metadata, config)
+    if not windows:
+      return []
+    rng = random.Random(config.seed)
+    scenarios: list[RouteReplayScenario] = []
+    for idx in range(config.cases):
+      window_idx = idx % len(windows)
+      window_frames, window_metadata = windows[window_idx]
+      recipe = _generate_recipe(rng, len(window_frames), config.perturbation)
+      perturbed = _apply_recipe(recipe, window_frames)
+      title = f"route replay {ROUTE_EXTRACTED_PRESET} with {recipe.kind} #{idx} window={window_idx}"
+      scenarios.append(RouteReplayScenario(
+        preset=ROUTE_EXTRACTED_PRESET,
+        title=title,
+        frames=window_frames,
+        recipe=recipe,
+        perturbed_frames=perturbed,
+        route_metadata=window_metadata,
+      ))
+    return scenarios
 
   rng = random.Random(config.seed)
   presets = [config.preset] if config.preset else list(PRESETS)
@@ -1264,6 +1590,11 @@ def main() -> None:
   parser.add_argument("--qlog", action="store_true", help="Use qlog when loading route")
   parser.add_argument("--window", type=str, default=None, help="Original-time window START,END in seconds")
   parser.add_argument("--max-frames", type=int, default=None, help="Maximum route frames to extract")
+  parser.add_argument("--sample-mode", choices=SAMPLE_MODES, default="prefix", help="Route sampling mode (default prefix)")
+  parser.add_argument("--sample-window-duration", type=float, default=None, help="Sampled window duration in seconds")
+  parser.add_argument("--sample-window-count", type=int, default=1, help="Number of sampled windows")
+  parser.add_argument("--sample-seed", type=int, default=None, help="Seed for random-window sampling (defaults to --seed)")
+  parser.add_argument("--timing", choices=TIMING_MODES, default="fixed-dt", help="Timing mode for route replay (default fixed-dt)")
   parser.add_argument("--list-only", action="store_true", help="Only extract and summarize route frames; skip fuzzing")
   args = parser.parse_args()
 
@@ -1284,26 +1615,73 @@ def main() -> None:
     parser.error("--list-only requires --route")
   if args.route and args.cases <= 0:
     parser.error("--route requires --cases > 0")
+  if args.sample_mode != "prefix" and args.sample_window_duration is None:
+    parser.error(f"--sample-mode {args.sample_mode} requires --sample-window-duration")
+  if args.sample_window_duration is not None and args.sample_window_duration <= 0.0:
+    parser.error("--sample-window-duration must be > 0")
+  if args.sample_window_count <= 0:
+    parser.error("--sample-window-count must be > 0")
+  if args.route and args.timing == "original":
+    parser.error("--timing original is not yet supported; use fixed-dt")
+  sample_seed = args.sample_seed if args.sample_seed is not None else args.seed
 
   if args.route and args.list_only:
-    frames, summary = _load_route_frames_with_summary(
-      args.route,
+    list_config = RouteReplayFuzzerConfig(
+      seed=args.seed,
+      route=args.route,
       qlog=args.qlog,
-      start_s=window_start_s,
-      end_s=window_end_s,
-      max_frames=args.max_frames,
+      window_start_s=window_start_s,
+      window_end_s=window_end_s,
+      max_frames=None if args.sample_mode != "prefix" else args.max_frames,
+      sample_mode=args.sample_mode,
+      sample_window_duration_s=args.sample_window_duration,
+      sample_window_count=args.sample_window_count,
+      sample_seed=sample_seed,
+      timing_mode=args.timing,
     )
+    load_config = _route_window_config(list_config)
+    assert load_config.route is not None
+    baseline, base_summary = _load_route_frames_with_summary(
+      load_config.route,
+      qlog=load_config.qlog,
+      start_s=load_config.window_start_s,
+      end_s=load_config.window_end_s,
+      max_frames=load_config.max_frames,
+      timing_mode=load_config.timing_mode,
+      sampling_mode=load_config.sample_mode,
+    )
+    windows = _sample_route_windows(baseline, base_summary, list_config)
+    summaries = [window_summary for _, window_summary in windows]
     if args.json:
-      print(json.dumps(_sanitize(summary.to_dict()), indent=2, sort_keys=True, allow_nan=False))
+      if args.sample_mode == "prefix":
+        payload = _sanitize(summaries[0].to_dict()) if summaries else {}
+      else:
+        payload = {"windows": [_sanitize(summary.to_dict()) for summary in summaries]}
+      print(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False))
     else:
-      print(f"Route extraction summary for {args.route}:")
-      print(f"  extracted_frames={summary.extracted_count}")
-      print(f"  qlog={summary.qlog}")
-      print(f"  window={summary.window_start_s},{summary.window_end_s}")
-      print(f"  max_frames={summary.max_frames}")
-      print(f"  original_time_span_s={summary.original_time_span_s}")
-      print(f"  dt={summary.dt}")
-    if not frames:
+      if args.sample_mode == "prefix":
+        summary = summaries[0] if summaries else base_summary
+        print(f"Route extraction summary for {args.route}:")
+        print(f"  extracted_frames={summary.extracted_count}")
+        print(f"  qlog={summary.qlog}")
+        print(f"  window={summary.window_start_s},{summary.window_end_s}")
+        print(f"  max_frames={summary.max_frames}")
+        print(f"  original_time_span_s={summary.original_time_span_s}")
+        print(f"  dt={summary.dt}")
+        if summary.quality is not None:
+          print(f"  quality={summary.quality.to_dict()}")
+      else:
+        print(f"Route extraction summary for {args.route} ({len(summaries)} sampled windows):")
+        for idx, summary in enumerate(summaries):
+          print(
+            f"  window[{idx}]: extracted={summary.extracted_count} "
+            + f"original_start={summary.selected_original_start_s:.3f} "
+            + f"original_end={summary.selected_original_end_s:.3f} "
+            + f"dt={summary.dt}"
+          )
+          if summary.quality is not None:
+            print(f"    quality={summary.quality.to_dict()}")
+    if not summaries or not any(summary.extracted_count > 0 for summary in summaries):
       raise SystemExit(1)
     return
 
@@ -1332,6 +1710,11 @@ def main() -> None:
     window_start_s=window_start_s,
     window_end_s=window_end_s,
     max_frames=args.max_frames,
+    sample_mode=args.sample_mode,
+    sample_window_duration_s=args.sample_window_duration,
+    sample_window_count=args.sample_window_count,
+    sample_seed=sample_seed,
+    timing_mode=args.timing,
   )
   scenarios = list(generate_scenarios(config))
   if args.route and not scenarios:
@@ -1373,6 +1756,16 @@ def main() -> None:
     if args.route:
       if results and results[0][1].scenario.route_metadata is not None:
         payload["route_metadata"] = results[0][1].scenario.route_metadata.to_dict()
+        if args.sample_mode != "prefix":
+          sampled_windows: list[dict[str, Any]] = []
+          seen_windows: set[int | None] = set()
+          for _, result in results:
+            meta = result.scenario.route_metadata
+            if meta is None or meta.sampling_window_index in seen_windows:
+              continue
+            seen_windows.add(meta.sampling_window_index)
+            sampled_windows.append(meta.to_dict())
+          payload["sampled_windows"] = sampled_windows
       else:
         payload["route"] = args.route
         payload["qlog"] = args.qlog
