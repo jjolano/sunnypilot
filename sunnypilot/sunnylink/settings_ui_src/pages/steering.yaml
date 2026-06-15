@@ -290,6 +290,15 @@ sections:
     description: Process the driving model's steering curvature (quality gating + smoothing) before lateral control.
       Fail-closed to the stock curvature and still clipped by the safety limiter; off uses the stock model curvature.
     sub_items:
+    - key: LaneCenteringAssistEnabled
+      widget: toggle
+      title: Lane Centering Assist
+      description: Nudge the processed model path toward the lane center when lane-line confidence is usable. Requires Custom
+        Lateral Demand.
+      enablement:
+      - type: param
+        key: CustomLateralDemandEnabled
+        equals: true
     - key: CurveMemoryEnabled
       widget: toggle
       title: Corner Curve Memory
