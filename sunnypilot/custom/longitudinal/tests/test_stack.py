@@ -54,6 +54,53 @@ def test_acc_cruises_when_clear():
   assert r.debug["has_lead"] is False
 
 
+def test_standstill_release_fields_for_no_lead_launch():
+  s = CustomLongitudinalStack()
+  r = s.update(base(
+    v_ego=0.0, v_cruise=12.0, seed_a_target=0.2, leads=(None, None), mode=LongitudinalMode.E2E,
+    model_should_stop=False, model_stop_distance=None, model_desired_accel=0.2,
+  ), DT)
+  assert r.standstill_release_allowed is True
+  assert r.standstill_release_source == "no_lead_launch"
+  assert r.standstill_release_a_target >= 0.15
+
+
+def test_no_lead_release_requires_runway_confirmed_clear_path():
+  s = CustomLongitudinalStack()
+  model_stop = s.update(base(
+    v_ego=0.0, v_cruise=12.0, seed_a_target=0.2, leads=(None, None), mode=LongitudinalMode.E2E,
+    model_should_stop=True, model_stop_distance=8.0, model_desired_accel=-1.0,
+  ), DT)
+  assert model_stop.standstill_release_allowed is False
+
+  near_stop = s.update(base(
+    v_ego=0.0, v_cruise=12.0, seed_a_target=0.2, leads=(None, None), mode=LongitudinalMode.E2E,
+    model_should_stop=False, model_stop_distance=8.0, model_desired_accel=0.0,
+  ), DT)
+  assert near_stop.standstill_release_allowed is False
+
+
+def test_no_lead_release_blocked_by_shadow_lead():
+  s = CustomLongitudinalStack()
+  for _ in range(12):
+    s.update(base(v_ego=0.0, v_cruise=12.0, seed_a_target=0.2,
+                  leads=(lead(d_rel=6.5, v_lead=0.0), None), mode=LongitudinalMode.ACC), DT)
+  lost = s.update(base(v_ego=0.0, v_cruise=12.0, seed_a_target=0.2,
+                       leads=(None, None), mode=LongitudinalMode.ACC), DT)
+  assert lost.debug["lead_shadow_active"] is True
+  assert lost.standstill_release_allowed is False
+
+
+def test_standstill_release_blocked_by_physical_hazard_and_brake_seed():
+  s = CustomLongitudinalStack()
+  haz = s.update(base(
+    v_ego=0.0, v_cruise=12.0, seed_a_target=0.2, lead_a_target=-0.2,
+    leads=(lead(d_rel=6.0, v_lead=0.0), None), mode=LongitudinalMode.SCC,
+  ), DT)
+  assert haz.standstill_release_allowed is False
+  assert haz.standstill_release_source == ""
+
+
 def test_e2e_model_stop_brakes_acc_does_not():
   stop = dict(model_should_stop=True, model_stop_distance=18.0, model_desired_accel=-2.5, stop_threat=True)
   s_acc, s_e2e = CustomLongitudinalStack(), CustomLongitudinalStack()
@@ -113,6 +160,7 @@ def test_launch_behind_opening_lead_tracks_off_the_line():
   v_lead, x_lead = 0.0, 6.5
   seed = 0.15                                   # deliberately timid MPC seed
   launched_a: list[float] = []
+  release_seen = False
   for i in range(120):                          # 6 s
     t = i * DT
     a_lead = 1.2 if (1.0 <= t and v_lead < 8.0) else 0.0
@@ -126,9 +174,11 @@ def test_launch_behind_opening_lead_tracks_off_the_line():
     assert LIMITS[0] - 1e-9 <= r.a_target <= LIMITS[1] + 1e-9
     if 1.5 <= t <= 3.0:                         # well into the launch, confidence stabilised
       launched_a.append(r.a_target)
+      release_seen = release_seen or r.standstill_release_allowed
     v_ego = max(0.0, v_ego + r.a_target * DT)   # closed-loop: ego driven by the stack
     x_ego += v_ego * DT
   assert launched_a
+  assert release_seen, "lead pullaway did not expose standstill release once authorized"
   assert max(launched_a) > seed + 0.3, "hung back at the timid seed instead of following the lead"
   assert min(launched_a) >= 0.0               # never braked during a clean launch
 

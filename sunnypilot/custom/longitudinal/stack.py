@@ -17,7 +17,7 @@ is integration-tested with fakes.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from openpilot.sunnypilot.custom.longitudinal.decision import Decision, decide
@@ -79,7 +79,11 @@ class LongitudinalStackResult:
   a_target: float
   should_stop: bool
   decision: Decision
-  debug: dict[str, Any]
+  debug: dict[str, Any] = field(default_factory=dict)
+  standstill_release_allowed: bool = False
+  standstill_release_source: str = ""
+  standstill_release_a_target: float = 0.0
+  standstill_release_reason: str = ""
 
 
 class CustomLongitudinalStack:
@@ -97,7 +101,11 @@ class CustomLongitudinalStack:
       self._lead_confidence[1].update(inp.leads[1], dt),
     )
     lead_ctx = self._lead_context.update(inp.leads, confidence_states, inp.v_ego, dt)
-    has_lead = bool(getattr(lead_ctx, "has_lead", False) or _any_status(inp.leads))
+    raw_lead_present = _any_status(inp.leads)
+    lead_shadow_active = bool(getattr(lead_ctx, "shadow_active", False))
+    alternate_threat_active = bool(getattr(lead_ctx, "alternate_threat_active", False))
+    lead_threat_active = bool(getattr(lead_ctx, "has_physical_lead", False) or lead_shadow_active or alternate_threat_active)
+    has_lead = bool(raw_lead_present or lead_threat_active)
     lead_progress_allowed = bool(getattr(lead_ctx, "lead_progress_allowed", False))
     lead_gap_excess = float(getattr(lead_ctx, "lead_gap_excess", 0.0) or 0.0)
 
@@ -128,15 +136,36 @@ class CustomLongitudinalStack:
     # The custom policy never relaxes the MPC's physical envelope: clamp to the seed when the
     # seed is more conservative than a non-hazard policy choice would allow.
     a_target = decision.a_target
+    release_source = str(decision.selected_intent)
+    lead_release_context = bool(release_source == "lead_pullaway" and raw_lead_present and lead_progress_allowed
+                                and not lead_shadow_active and not alternate_threat_active)
+    clear_release_context = bool(release_source == "no_lead_launch" and not raw_lead_present and not lead_threat_active)
+    standstill_release_allowed = bool(
+      release_source in ("lead_pullaway", "no_lead_launch")
+      and (lead_release_context or clear_release_context)
+      and decision.reason != "physical_hazard"
+      and not decision.should_stop
+      and a_target >= 0.15
+      and not inp.force_slow_decel
+      and not inp.brake_pressed
+      and not inp.gas_pressed
+      and not inp.model_should_stop
+    )
     return LongitudinalStackResult(
       a_target=float(a_target),
       should_stop=bool(decision.should_stop),
       decision=decision,
+      standstill_release_allowed=standstill_release_allowed,
+      standstill_release_source=str(decision.selected_intent if standstill_release_allowed else ""),
+      standstill_release_a_target=float(max(a_target, 0.15)) if standstill_release_allowed else 0.0,
+      standstill_release_reason=str(decision.reason if standstill_release_allowed else ""),
       debug={
         "intent": decision.selected_intent,
         "reason": decision.reason,
         "has_lead": has_lead,
         "lead_progress_allowed": lead_progress_allowed,
+        "lead_shadow_active": lead_shadow_active,
+        "alternate_threat_active": alternate_threat_active,
         "n_candidates": len(candidates),
         "rejected": decision.rejected,
       },

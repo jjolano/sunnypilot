@@ -32,6 +32,7 @@ def fake_sm(lead_one=None, brake=False, gas=False, model_should_stop=False, mode
                                position=SimpleNamespace(x=model_x),
                                velocity=SimpleNamespace(x=model_v)),
     'carControl': SimpleNamespace(orientationNED=[0.0, pitch, 0.0]),
+    'controlsState': SimpleNamespace(forceDecel=False),
   }
 
 
@@ -137,6 +138,43 @@ def test_model_stop_from_upstream_signal_brakes_in_e2e():
                       fake_scc(), fake_sla())
   assert out_e2e < 0.0
   assert out_acc == pytest.approx(0.0)
+
+
+def test_build_stack_inputs_carries_force_slow_decel():
+  inp = build_stack_inputs(
+    v_ego=10.0, a_ego=0.0, v_cruise=12.0, seed_a_target=0.2, accel_limits=DEFAULT_ACCEL_LIMITS,
+    lead_one=None, lead_two=None,
+    scc_vision_active=False, scc_vision_a_target=0.0, scc_map_active=False, scc_map_a_target=0.0,
+    sla_active=False, sla_v_target=0.0, sla_a_target=0.0,
+    mode=LongitudinalMode.SCC, personality=Personality.STANDARD, sources=SourceToggles(),
+    force_slow_decel=True,
+  )
+  assert inp.force_slow_decel is True
+
+
+def test_adapter_exposes_lead_pullaway_release_fields_after_confidence_stabilizes():
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
+  sm = fake_sm(lead(status=True, d_rel=6.5, v_lead=1.5))
+  sm['controlsState'] = SimpleNamespace(forceDecel=False)
+  out = None
+  for _ in range(12):
+    out = a.evaluate(sm, 0.0, 0.0, 12.0, 0.2, fake_scc(), fake_sla(), dt=0.05)
+  assert out is not None
+  assert out.standstill_release_allowed is True
+  assert out.standstill_release_source == "lead_pullaway"
+  assert out.standstill_release_a_target >= 0.15
+
+
+def test_adapter_vetoes_release_for_driver_and_force_slow_blockers():
+  for blocker in ("brake", "gas", "force"):
+    a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
+    sm = fake_sm(lead(status=True, d_rel=6.5, v_lead=1.5), brake=(blocker == "brake"), gas=(blocker == "gas"))
+    sm['controlsState'] = SimpleNamespace(forceDecel=(blocker == "force"))
+    out = None
+    for _ in range(12):
+      out = a.evaluate(sm, 0.0, 0.0, 12.0, 0.2, fake_scc(), fake_sla(), dt=0.05)
+    assert out is not None
+    assert out.standstill_release_allowed is False
 
 
 def test_driver_gas_disagreement_lowers_stop_trust():

@@ -118,15 +118,43 @@ class LongitudinalPlannerSP:
     filtered[LongitudinalPlanSource.cruise] = targets[LongitudinalPlanSource.cruise]
     return filtered
 
+  def _standstill_release_clears_mpc_stop(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
+                                          raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[bool, float]:
+    if not self.custom_long.enabled or self.custom_long_output is None or not bool(getattr(self.custom_long_output, "standstill_release_allowed", False)):
+      return False, float(mpc_a_target)
+    if str(getattr(self.custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "no_lead_launch"):
+      return False, float(mpc_a_target)
+    if bool(getattr(self.custom_long_output, "should_stop", False)):
+      return False, float(mpc_a_target)
+    if raw_model_should_stop:
+      return False, float(mpc_a_target)
+    if self.custom_long.mode is LongitudinalMode.E2E and float(raw_model_a_target) < 0.15:
+      return False, float(mpc_a_target)
+    cs = sm["carState"]
+    controls_state = sm["controlsState"]
+    if bool(getattr(cs, "brakePressed", False)) or bool(getattr(cs, "gasPressed", False)):
+      return False, float(mpc_a_target)
+    if bool(getattr(controls_state, "forceDecel", False)):
+      return False, float(mpc_a_target)
+    if float(mpc_a_target) < -0.03:
+      return False, float(mpc_a_target)
+    if not mpc_should_stop:
+      return False, float(mpc_a_target)
+    release_a = max(float(mpc_a_target), 0.15, float(getattr(self.custom_long_output, "standstill_release_a_target", 0.0)))
+    return True, release_a
+
   def final_longitudinal_output(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
                                 raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[float, bool, bool]:
-    custom_should_stop = self.custom_longitudinal_should_stop(mpc_should_stop, raw_model_should_stop)
-    if self.is_e2e(sm):
-      a_target = min(raw_model_a_target, mpc_a_target)
-      should_stop = custom_should_stop if custom_should_stop is not None else (raw_model_should_stop or mpc_should_stop)
-      return float(a_target), bool(should_stop), bool(a_target < mpc_a_target)
-    should_stop = custom_should_stop if custom_should_stop is not None else mpc_should_stop
-    return float(mpc_a_target), bool(should_stop), False
+    release_mpc_stop, release_a_target = self._standstill_release_clears_mpc_stop(
+      sm, mpc_a_target, mpc_should_stop, raw_model_a_target, raw_model_should_stop)
+    mpc_stop = bool(mpc_should_stop and not release_mpc_stop)
+    custom_should_stop = self.custom_longitudinal_should_stop(mpc_stop, raw_model_should_stop)
+    is_e2e = self.is_e2e(sm)
+    should_stop = bool(custom_should_stop if custom_should_stop is not None else (mpc_stop or (raw_model_should_stop and is_e2e)))
+    if is_e2e:
+      a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
+      return float(a_target), should_stop, bool(a_target < mpc_a_target)
+    return float(release_a_target if release_mpc_stop else mpc_a_target), bool(should_stop), False
 
   def update(self, sm: messaging.SubMaster) -> None:
     self.events_sp.clear()

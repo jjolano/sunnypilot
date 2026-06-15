@@ -17,20 +17,25 @@ class FakeParams:
   def get(self, k): return self._v.get(k)
 
 
-def fake_sm(exp_mode=False):
+def fake_sm(exp_mode=False, brake=False, gas=False, force_decel=False):
   return {  # type: ignore[return-value]
     'selfdriveState': SimpleNamespace(experimentalMode=exp_mode),
+    'carState': SimpleNamespace(brakePressed=brake, gasPressed=gas),
+    'controlsState': SimpleNamespace(forceDecel=force_decel),
   }
 
 
-def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceToggles()):
+def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceToggles(), release=False):
   sp = object.__new__(LongitudinalPlannerSP)
   sp.__dict__['custom_long'] = SimpleNamespace(enabled=True, mode=mode, sources=sources,
                                                maybe_refresh_params=lambda: None)
   sp.__dict__['dec'] = SimpleNamespace(active=lambda: True, mode=lambda: 'blended')
   sp.__dict__['custom_long_output'] = CustomLongitudinalOutput(
     a_target=0.0, should_stop=should_stop, enabled=True, mode=mode,
-    selected_intent=None, reason=None, debug={})
+    selected_intent=("lead_pullaway" if release else None), reason=("trusted" if release else None),
+    standstill_release_allowed=release, standstill_release_source=("lead_pullaway" if release else ""),
+    standstill_release_a_target=(0.2 if release else 0.0), standstill_release_reason=("trusted" if release else ""),
+    debug={})
   return sp
 
 
@@ -43,8 +48,9 @@ def test_adapter_evaluate_and_apply_keep_float_api():
     'carState': SimpleNamespace(brakePressed=False, gasPressed=False),
     'modelV2': SimpleNamespace(action=SimpleNamespace(shouldStop=True, desiredAcceleration=-2.0), position=SimpleNamespace(x=stop_x), velocity=SimpleNamespace(x=stop_v)),
     'carControl': SimpleNamespace(orientationNED=[0.0, 0.0, 0.0]),
+    'controlsState': SimpleNamespace(forceDecel=False),
   }
-  a._stack.update = lambda *args, **kwargs: SimpleNamespace(a_target=-1.5, should_stop=True, debug={'intent': 'e2e', 'reason': 'trusted'})  # type: ignore[assignment]
+  a._stack.update = lambda *args, **kwargs: SimpleNamespace(a_target=-1.5, should_stop=True, standstill_release_allowed=False, standstill_release_source='', standstill_release_a_target=0.0, standstill_release_reason='', debug={'intent': 'e2e', 'reason': 'trusted'})  # type: ignore[assignment]
   out = None
   for _ in range(20):
     out = a.evaluate(sm, 10.0, 0.0, 12.0, 0.3, SimpleNamespace(vision=SimpleNamespace(is_active=False, output_a_target=0.0), map=SimpleNamespace(is_active=False, output_a_target=0.0)), SimpleNamespace(is_active=False, output_v_target=0.0, output_a_target=0.0))
@@ -73,6 +79,7 @@ def test_custom_should_stop_ownership():
   assert sp.custom_longitudinal_should_stop(False, True) is False
   sp.custom_long.mode = LongitudinalMode.E2E
   assert sp.custom_longitudinal_should_stop(True, False) is True
+  assert sp.custom_longitudinal_should_stop(False, True) is True
 
 
 def test_final_output_selection_does_not_raw_or_model_stop_in_scc_or_acc():
@@ -85,6 +92,7 @@ def test_final_output_selection_does_not_raw_or_model_stop_in_scc_or_acc():
   sp.custom_long_output = CustomLongitudinalOutput(a_target=0.0, should_stop=True, enabled=True, mode=LongitudinalMode.SCC, selected_intent=None, reason=None, debug={})  # type: ignore[assignment]
   assert sp.final_longitudinal_output(fake_sm(True), -0.2, False, -3.0, True)[1] is True  # type: ignore[arg-type]
 
+  sp.custom_long_output = CustomLongitudinalOutput(a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.ACC, selected_intent=None, reason=None, debug={})  # type: ignore[assignment]
   sp.custom_long.mode = LongitudinalMode.ACC
   a, should_stop, e2e_source = sp.final_longitudinal_output(fake_sm(True), -0.2, False, -3.0, True)  # type: ignore[arg-type]
   assert a == -0.2
@@ -96,6 +104,61 @@ def test_final_output_selection_does_not_raw_or_model_stop_in_scc_or_acc():
   assert a == -3.0
   assert should_stop is True
   assert e2e_source is True
+
+
+def test_standstill_release_planner_clears_only_mpc_stop_and_applies_floor():
+  sp = fake_planner(LongitudinalMode.SCC, should_stop=False, release=True)
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, -3.0, False)  # type: ignore[arg-type]
+  assert a >= 0.15
+  assert should_stop is False
+
+
+def test_standstill_release_vetoes_real_mpc_brake_and_raw_model_stop():
+  sp = fake_planner(LongitudinalMode.E2E, should_stop=False, release=True)
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, -3.0, True)  # type: ignore[arg-type]
+  assert a == -3.0
+  assert should_stop is True
+  a2, should_stop2, _ = sp.final_longitudinal_output(fake_sm(force_decel=True), 0.0, True, -3.0, True)  # type: ignore[arg-type]
+  assert a2 == -3.0
+  assert should_stop2 is True
+
+  sp.custom_long.mode = LongitudinalMode.SCC
+  a3, should_stop3, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, -3.0, True)  # type: ignore[arg-type]
+  assert a3 == 0.0
+  assert should_stop3 is True
+
+
+def test_standstill_release_vetoes_timid_e2e_model_accel():
+  sp = fake_planner(LongitudinalMode.E2E, should_stop=False, release=True)
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == 0.0
+  assert should_stop is True
+
+  a2, should_stop2, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert a2 >= 0.15
+  assert should_stop2 is False
+
+
+def test_standstill_release_vetoes_mpc_brake_driver_and_custom_stop():
+  sp = fake_planner(LongitudinalMode.SCC, should_stop=False, release=True)
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), -0.04, True, -3.0, False)  # type: ignore[arg-type]
+  assert a == -0.04
+  assert should_stop is True
+
+  for sm in (fake_sm(brake=True), fake_sm(gas=True)):
+    a, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, -3.0, False)  # type: ignore[arg-type]
+    assert a == 0.0
+    assert should_stop is True
+
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=True, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.2, standstill_release_reason="trusted", debug={},
+  )
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, -3.0, False)  # type: ignore[arg-type]
+  assert a == 0.0
+  assert should_stop is True
 
 
 def test_custom_target_filtering_by_mode_and_scc_source_toggles():

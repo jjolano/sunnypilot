@@ -144,6 +144,10 @@ _Avoid_: launch only, acceleration boost
 Planner-owned state for stopped-gap creep, gap fill, and launch candidate generation.
 _Avoid_: controller launch, MPC launch
 
+**Standstill Release**:
+Planner-owned withdrawal of stop commitment when confirmed evidence authorizes movement from rest.
+_Avoid_: controller resume hack, raw lead trigger, MPC launch
+
 **Planner Seed Candidate**:
 A planner-owned candidate used to seed custom-stack arbitration from existing retained behavior.
 _Avoid_: custom v1 candidate, legacy stack candidate
@@ -226,11 +230,15 @@ _Avoid_: ignoring curves, lateral safety
 - **Lead MPC** is authoritative physical-hazard evidence when lead confidence is sufficient.
 - Low-confidence, flickering, or transitioning lead evidence may restrict or hold acceleration, but only **Lead-confirmed Progress** may authorize positive lead progress.
 - **Fast Lead Motion Evidence** may shape custom **Stop/go Intent** and **Progress Core** timing after lead authority already exists, but it does not create **Lead-confirmed Progress** by itself or replace **Lead MPC** physics.
+- A **Standstill Release** may use **Fast Lead Motion Evidence** to react promptly, but only as timing evidence after **Lead-confirmed Progress** already exists.
+- A **Standstill Release** may be pre-armed while stopped behind a stable known lead, so the first confirmed opening motion can fire release without re-earning authority.
+- A **Standstill Release** does not relax a **Lead MPC** physical hazard; only a tiny near-zero acceleration deadband may be classified as non-braking/timid planner output.
 - **Closing-rate Risk** belongs to **Longitudinal MPC** or planner lead guards rather than a competing **Custom Stack** physics model.
 - A **Lead Speed-up Guard** caps planner seeds; **Longitudinal MPC** owns lead braking, time-gap, danger-gap, and stop-runway shaping.
 - A **Lead Flicker Safety Cap** may hold acceleration during risky flicker; it does not create **Lead-confirmed Progress** or a **Lead MPC** physical hazard.
 - A **Slower Lead Approach** is **Closing-rate Risk** handling inside lead-follow behavior; it may use bounded moving-follow runway comfort, but it is not **Stop Approach**.
-- **Stop/go Intent** belongs to the **Longitudinal Planner**; **Longitudinal MPC** owns physical lead/runway constraints and controller logic only shapes release.
+- A **Clear Launch Pulse** requires **Runway-confirmed** clear-path evidence; absence of a lead alone does not authorize movement from rest.
+- **Stop/go Intent** belongs to the **Longitudinal Planner**; **Longitudinal MPC** owns physical lead/runway constraints and controller logic only executes the planner's release/start request.
 - A **Planner Seed Candidate** is planner-owned input to custom-stack arbitration, not a selectable stack version.
 - A **Planner Stack** is selected above **Longitudinal Stack** so a new planner family can start with longitudinal authority and later include lateral planner authority without redefining **Longitudinal Mode**.
 - **Planner Stack Selection** is latched for an onroad cycle and is not a per-tick behavior arbiter.

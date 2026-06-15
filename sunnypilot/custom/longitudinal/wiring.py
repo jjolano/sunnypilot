@@ -17,7 +17,7 @@ by ``StopTrustLearner``, which learns how much to trust it from real driver disa
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from openpilot.sunnypilot.custom.longitudinal.model_trust import StopTrustLearner
@@ -70,7 +70,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        scc_map_active: bool, scc_map_a_target: float,
                        sla_active: bool, sla_v_target: float, sla_a_target: float,
                        mode: LongitudinalMode, personality: Personality, sources: SourceToggles,
-                       brake_pressed: bool = False, gas_pressed: bool = False,
+                       brake_pressed: bool = False, gas_pressed: bool = False, force_slow_decel: bool = False,
                        model_should_stop: bool = False, model_desired_accel: float = 0.0,
                        model_stop_prob: float = 1.0, model_stop_distance: float | None = None,
                        accel_coast: float = 0.0) -> LongitudinalStackInputs:
@@ -102,7 +102,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     model_desired_accel=float(model_desired_accel), model_stop_prob=float(model_stop_prob), stop_threat=False,
     speed_limit_active=bool(sla_active), speed_limit_v_target=float(sla_v_target), speed_limit_a_target=float(sla_a_target),
     curve_active=curve_active, curve_a_target=float(curve_a_target), curve_source=curve_source,
-    brake_pressed=brake_pressed, gas_pressed=gas_pressed,
+    force_slow_decel=bool(force_slow_decel), brake_pressed=brake_pressed, gas_pressed=gas_pressed,
     mode=mode, sources=sources, personality=personality,
   )
 
@@ -154,7 +154,8 @@ class CustomLongitudinalAdapter:
       )
     try:
       radar = sm['radarState']
-      cs = sm['carState']
+      cs = sm.get('carState') if hasattr(sm, "get") else sm['carState']
+      controls_state = sm.get('controlsState') if hasattr(sm, "get") else sm['controlsState']
       gas_pressed = bool(getattr(cs, "gasPressed", False))
 
       model = sm['modelV2']
@@ -178,13 +179,20 @@ class CustomLongitudinalAdapter:
         sla_a_target=float(getattr(sla, "output_a_target", 0.0)),
         mode=self.mode, personality=self.personality, sources=self.sources,
         brake_pressed=bool(getattr(cs, "brakePressed", False)), gas_pressed=gas_pressed,
+        force_slow_decel=bool(getattr(controls_state, "forceDecel", False)),
         model_should_stop=model_should_stop, model_desired_accel=model_desired_accel,
         model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance, accel_coast=accel_coast,
       )
       result = self._stack.update(inputs, dt)
+      debug = dict(result.debug or {})
       return CustomLongitudinalOutput(
         a_target=float(result.a_target), should_stop=bool(result.should_stop), enabled=True, mode=self.mode,
-        selected_intent=result.debug.get("intent"), reason=result.debug.get("reason"), debug=result.debug,
+        selected_intent=debug.get("intent"), reason=debug.get("reason"),
+        standstill_release_allowed=bool(result.standstill_release_allowed),
+        standstill_release_source=str(result.standstill_release_source),
+        standstill_release_a_target=float(result.standstill_release_a_target),
+        standstill_release_reason=str(result.standstill_release_reason),
+        debug=debug,
       )
     except Exception:
       return CustomLongitudinalOutput(
@@ -207,4 +215,8 @@ class CustomLongitudinalOutput:
   mode: LongitudinalMode
   selected_intent: object | None
   reason: object | None
-  debug: dict[str, Any]
+  standstill_release_allowed: bool = False
+  standstill_release_source: str = ""
+  standstill_release_a_target: float = 0.0
+  standstill_release_reason: str = ""
+  debug: dict[str, Any] = field(default_factory=dict)
