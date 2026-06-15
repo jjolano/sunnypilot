@@ -109,6 +109,42 @@ def test_gating_recovery_quarantines_and_recovers():
   assert any(o.decision == "accept" for o in result.outputs[-20:])
 
 
+# ---------- explicit control/jitter follow-ups ----------
+
+
+def test_control_limit_flag_rejects_with_control_limit():
+  config = TransitionFuzzerConfig(seed=1, cases=1, kind="control_limit_flag")
+  scenario = generate_scenarios(config)[0]
+  result = evaluate_scenario(scenario)
+  assert result.valid
+  limited = [o for o, f in zip(result.outputs, scenario.frames) if f.curvature_limited]
+  assert limited
+  assert all(o.decision == "reject_shadow" and "CONTROL_LIMIT" in o.reasons for o in limited)
+  unlimited_late = [o for o, f in zip(result.outputs, scenario.frames) if not f.curvature_limited and f.t > 0.5]
+  assert any(o.decision == "accept" for o in unlimited_late[-20:])
+
+
+def test_model_demand_jitter_pulse_quarantines_and_recovers():
+  config = TransitionFuzzerConfig(seed=1, cases=1, kind="model_demand_jitter_pulse")
+  scenario = generate_scenarios(config)[0]
+  result = evaluate_scenario(scenario)
+  assert result.valid
+  base_curvature = scenario.frames[0].raw_curvature
+  pulse = [o for o, f in zip(result.outputs, scenario.frames) if abs(f.raw_curvature - base_curvature) > 1e-12]
+  assert pulse
+  assert any(o.decision == "quarantine" and "MODEL_DEMAND_JITTER" in o.reasons for o in pulse)
+  assert all(not o.gated and "MODEL_PATH_LOW_QUALITY" not in o.reasons for o in pulse)
+  assert any(o.decision == "accept" for o in result.outputs[-20:])
+
+
+def test_default_random_generation_excludes_explicit_only_kinds():
+  config = TransitionFuzzerConfig(seed=1, cases=200)
+  scenarios = generate_scenarios(config)
+  explicit_kinds = {"control_limit_flag", "model_demand_jitter_pulse"}
+  generated_kinds = {s.kind for s in scenarios}
+  assert not (generated_kinds & explicit_kinds)
+
+
 # ---------- cooldown hysteresis ----------
 
 
@@ -227,6 +263,20 @@ def test_main_json_output_is_stable():
   assert payload["seed"] == 2
   assert payload["cases"] == 3
   assert "failures" in payload
+
+
+def test_cli_explicit_kinds_report_zero_failures():
+  for kind in ("control_limit_flag", "model_demand_jitter_pulse"):
+    stdout = io.StringIO()
+    previous_argv = sys.argv
+    try:
+      sys.argv = ["fuzz_lateral_transitions.py", "--seed", "1", "--cases", "5", "--kind", kind]
+      with contextlib.redirect_stdout(stdout):
+        main()
+    finally:
+      sys.argv = previous_argv
+    output = stdout.getvalue()
+    assert "failures=0" in output, f"{kind} produced failures: {output[:500]}"
 
 
 def test_main_exits_nonzero_on_injected_failure():

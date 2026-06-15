@@ -2,10 +2,11 @@
 """Synthetic transition structural fuzzer for LateralDemandPipeline + DisturbanceClassifier.
 
 This tool generates deterministic synthetic transition scenarios (lat_active toggles,
-driver override pulses, lane-change sessions, gating recovery, cooldown hysteresis) and
-replays them through ``LateralDemandPipeline`` and ``DisturbanceClassifier``. It is a
-structural fuzzer for demand/classifier behavior, not a proof of production lateral
-control. Each scenario stores its full frame sequence so replay needs no RNG.
+driver override pulses, lane-change sessions, gating recovery, cooldown hysteresis,
+and explicit control-limit / demand-jitter pulses) and replays them through
+``LateralDemandPipeline`` and ``DisturbanceClassifier``. It is a structural fuzzer for
+demand/classifier behavior, not a proof of production lateral control. Each scenario
+stores its full frame sequence so replay needs no RNG.
 """
 from __future__ import annotations
 
@@ -28,13 +29,10 @@ from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
 )
 from openpilot.sunnypilot.custom.lateral.demand.types import (
   DEMAND_SOURCE_FALLBACK_MEASURED,
-  DEMAND_SOURCE_MODEL_PATH,
 )
 from openpilot.sunnypilot.custom.lateral.disturbance_classifier import (
   DisturbanceClassifier,
-  DisturbanceReason,
   LateralSample,
-  LearningDecision,
   decision_name,
   reason_names,
 )
@@ -44,7 +42,7 @@ ARTIFACT_SCHEMA = "drive-lab-lateral-transition-fuzzer-artifact"
 ARTIFACT_VERSION = 1
 DT = 0.01
 N_PATH_POINTS = 33
-KINDS = (
+DEFAULT_KINDS = (
   "clean_baseline",
   "lat_active_toggle",
   "driver_override_pulse",
@@ -52,6 +50,11 @@ KINDS = (
   "gating_recovery",
   "cooldown_hysteresis",
 )
+EXPLICIT_KINDS = (
+  "control_limit_flag",
+  "model_demand_jitter_pulse",
+)
+KINDS = DEFAULT_KINDS + EXPLICIT_KINDS
 LANE_CHANGE_STATE_OFF = int(log.LaneChangeState.off)
 LANE_CHANGE_STATE_STARTING = int(log.LaneChangeState.laneChangeStarting)
 LANE_CHANGE_STATE_FINISHING = int(log.LaneChangeState.laneChangeFinishing)
@@ -278,6 +281,7 @@ def _base_frame(
   lane_change_direction: int = 0,
   lane_line_probs: tuple[float, ...] = (0.9, 0.9, 0.9, 0.9),
   path_curvature: float | None = None,
+  curvature_limited: bool = False,
 ) -> TransitionFrame:
   k = float(curvature)
   mk = float(measured_curvature) if measured_curvature is not None else k
@@ -304,6 +308,7 @@ def _base_frame(
     left_lane_y0=-1.8,
     right_lane_y0=1.8,
     smooth_model_path_curvature=False,
+    curvature_limited=curvature_limited,
   )
 
 
@@ -377,6 +382,7 @@ def _sample_from_frame(
     actual_lateral_accel=actual_lateral_accel,
     model_path_quality=path_quality,
     model_path_gated=gated,
+    steer_limited=frame.curvature_limited,
   )
 
 
@@ -575,6 +581,59 @@ def _generate_cooldown_hysteresis(
   )
 
 
+def _generate_control_limit_flag(
+  rng: random.Random,
+  duration_s: float,
+  v_ego: float,
+  curvature: float,
+  index: int,
+) -> TransitionScenario:
+  t = _time_array(duration_s)
+  n = len(t)
+  limit_start = rng.randint(int(0.25 * n), int(0.45 * n))
+  limit_end = rng.randint(int(0.55 * n), int(0.75 * n))
+  frames: list[TransitionFrame] = []
+  for i, ti in enumerate(t):
+    curvature_limited = limit_start <= i < limit_end
+    frames.append(_base_frame(float(ti), v_ego, curvature, curvature_limited=curvature_limited))
+  return TransitionScenario(
+    kind="control_limit_flag",
+    title=f"control limit flag #{index}",
+    index=index,
+    frames=tuple(frames),
+    event_windows=_merge_windows([(max(0, limit_start - 5), min(n, limit_end + 5))]),
+  )
+
+
+def _generate_model_demand_jitter_pulse(
+  rng: random.Random,
+  duration_s: float,
+  v_ego: float,
+  curvature: float,
+  index: int,
+) -> TransitionScenario:
+  t = _time_array(duration_s)
+  n = len(t)
+  pulse_start = rng.randint(int(0.25 * n), int(0.40 * n))
+  pulse_end = rng.randint(int(0.45 * n), int(0.60 * n))
+  # Curvature bump large enough for classifier jerk > 1.2 but mild enough to avoid path gating.
+  # At v=20, delta_k=8e-5 -> jerk ~ 400 * 8e-5 / 0.01 = 3.2 m/s^3.
+  delta_k = rng.uniform(7e-5, 1.3e-4) * (1.0 if curvature >= 0.0 else -1.0)
+  if curvature == 0.0:
+    delta_k = abs(delta_k)
+  frames: list[TransitionFrame] = []
+  for i, ti in enumerate(t):
+    k = curvature + (delta_k if pulse_start <= i < pulse_end else 0.0)
+    frames.append(_base_frame(float(ti), v_ego, k))
+  return TransitionScenario(
+    kind="model_demand_jitter_pulse",
+    title=f"model demand jitter pulse #{index}",
+    index=index,
+    frames=tuple(frames),
+    event_windows=_merge_windows([(max(0, pulse_start - 5), min(n, pulse_end + 5))]),
+  )
+
+
 _GENERATORS = {
   "clean_baseline": _generate_clean_baseline,
   "lat_active_toggle": _generate_lat_active_toggle,
@@ -582,6 +641,8 @@ _GENERATORS = {
   "lane_change_session": _generate_lane_change_session,
   "gating_recovery": _generate_gating_recovery,
   "cooldown_hysteresis": _generate_cooldown_hysteresis,
+  "control_limit_flag": _generate_control_limit_flag,
+  "model_demand_jitter_pulse": _generate_model_demand_jitter_pulse,
 }
 
 
@@ -595,7 +656,7 @@ class TransitionFuzzerConfig:
 
 def generate_scenarios(config: TransitionFuzzerConfig) -> list[TransitionScenario]:
   rng = random.Random(config.seed)
-  kinds = [config.kind] if config.kind else list(KINDS)
+  kinds = [config.kind] if config.kind else list(DEFAULT_KINDS)
   scenarios: list[TransitionScenario] = []
   for idx in range(config.cases):
     kind = rng.choice(kinds)
@@ -801,6 +862,28 @@ def _evaluate_events(
       if not cooldown_frames:
         failures.append({"check": "cooldown_hysteresis_accept", "detail": "post-trigger clean frames did not show ACCEPT + positive cooldown"})
 
+  elif kind == "control_limit_flag":
+    limited_outputs = [o for o, f in zip(outputs, frames) if f.curvature_limited]
+    if not limited_outputs:
+      failures.append({"check": "missing_limit", "detail": "control_limit_flag had no curvature_limited frames"})
+    elif not all(o.decision == "reject_shadow" and "CONTROL_LIMIT" in o.reasons for o in limited_outputs):
+      failures.append({"check": "limit_classifier", "detail": "curvature_limited frames were not REJECT_SHADOW with CONTROL_LIMIT"})
+    unlimited_late = [o for o, f in zip(outputs, frames) if not f.curvature_limited and f.t > 0.5]
+    if unlimited_late and not any(o.decision == "accept" for o in unlimited_late[-20:]):
+      failures.append({"check": "limit_recovery_accept", "detail": "post-limit frames did not return to ACCEPT"})
+
+  elif kind == "model_demand_jitter_pulse":
+    base_curvature = frames[0].raw_curvature if frames else 0.0
+    pulse_outputs = [o for o, f in zip(outputs, frames) if abs(f.raw_curvature - base_curvature) > 1e-12]
+    if not pulse_outputs:
+      failures.append({"check": "missing_pulse", "detail": "model_demand_jitter_pulse had no perturbed-curvature frames"})
+    elif not any(o.decision == "quarantine" and "MODEL_DEMAND_JITTER" in o.reasons for o in pulse_outputs):
+      failures.append({"check": "jitter_classifier", "detail": "pulse frames did not produce QUARANTINE with MODEL_DEMAND_JITTER"})
+    if any(o.gated or "MODEL_PATH_LOW_QUALITY" in o.reasons for o in pulse_outputs):
+      failures.append({"check": "jitter_not_path_quality", "detail": "model_demand_jitter_pulse relied on path gating/low-quality instead of demand jitter"})
+    if outputs and not any(o.decision == "accept" for o in outputs[-20:]):
+      failures.append({"check": "jitter_recovery_accept", "detail": "final frames did not return to ACCEPT"})
+
   return failures
 
 
@@ -988,7 +1071,7 @@ def main() -> None:
   else:
     print(
       f"Drive Lab lateral transition fuzz seed={args.seed} cases={len(results)} "
-      f"kind={args.kind or 'all'} duration={args.duration}s dt={DT}s failures={len(failures)}"
+      f"kind={args.kind or 'default'} duration={args.duration}s dt={DT}s failures={len(failures)}"
     )
     for result in failures[:10]:
       print(f"\nFAILED: {result.scenario.title}")
