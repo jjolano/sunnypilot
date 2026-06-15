@@ -16,11 +16,12 @@ from __future__ import annotations
 import pytest
 
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.encoding import (
-  contiguous_int_options, encode_numeric_option, sequential_int_labels, value_mapped_option,
+  contiguous_int_options, encode_numeric_option, homogeneous_string_options, sequential_int_labels, string_option_index, value_mapped_option,
 )
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import find_item, get_panel, load_schema
 
 STEERING = get_panel(load_schema(), "steering")
+CRUISE = get_panel(load_schema(), "cruise")
 
 
 def real_step(item):
@@ -80,17 +81,30 @@ def test_zero_based_enum_is_also_contiguous():
   assert (enum.min_value, enum.max_value) == (0, 2)
 
 
-@pytest.mark.parametrize("key", [
-  "LiveTorqueSpeedAdaptiveMode",  # values off/shadow/apply (strings)
-  "TorqueControlTune",            # values '', 1.0, 0.0 (string + floats)
-])
-def test_string_float_enums_remain_escape_hatch(key):
-  # No contiguous-int and no zero-based-button-row encoding -> needs a custom
-  # selector (string/float values; deferred to the dialog custom widget).
+def test_homogeneous_string_enum_yields_mapped_button_row():
+  item = find_item(CRUISE, "CustomLongitudinalMode")  # values acc/e2e/scc (strings)
+  enum = homogeneous_string_options(item)
+  assert enum is not None
+  assert enum.values == ["acc", "e2e", "scc"]
+  assert enum.labels == ["ACC", "E2E", "SCC"]
+
+
+def test_custom_longitudinal_string_index_matches_planner_fallbacks():
+  enum = homogeneous_string_options(find_item(CRUISE, "CustomLongitudinalMode"))
+  assert enum is not None
+  assert string_option_index("", enum, "CustomLongitudinalMode") == 2       # missing/empty -> default SCC
+  assert string_option_index("0", enum, "CustomLongitudinalMode") == 0      # legacy ACC
+  assert string_option_index(b"1", enum, "CustomLongitudinalMode") == 1     # legacy E2E bytes-safe
+  assert string_option_index("bad", enum, "CustomLongitudinalMode") == 0    # invalid -> planner ACC fallback
+
+
+def test_mixed_string_float_enum_remains_escape_hatch():
+  key = "TorqueControlTune"  # values '', 1.0, 0.0 (string + floats)
   item = find_item(STEERING, key)
   assert contiguous_int_options(item) is None
   assert sequential_int_labels(item) is None
   assert value_mapped_option(item) is None  # value_mapped only handles ints
+  assert homogeneous_string_options(item) is None
 
 
 def test_value_mapped_option_for_gapped_ints():

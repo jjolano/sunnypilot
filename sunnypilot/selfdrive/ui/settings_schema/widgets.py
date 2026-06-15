@@ -13,11 +13,11 @@ enablement rules. It is the whole device-side replacement for a hand-coded
 panel's _initialize_items() + _update_state(): one ~40-line class instead of
 ~160 lines per panel.
 
-Scope (prototype): toggle, numeric option, and sequential-int multiple_button
-are rendered fully. Enumerated string/float selectors (e.g. the speed-aware
-curve, the dialog-backed tune-version picker) and custom widgets are the
-declared escape-hatch residue — they are collected in `unsupported` rather than
-mis-rendered, matching the "named provider / custom widget registry" design.
+Scope (prototype): toggle, numeric option, sequential-int multiple_button, and
+homogeneous string multiple_button selectors are rendered fully. Float/mixed/
+dynamic selectors and custom widgets remain the declared escape-hatch residue —
+they are collected in `unsupported` rather than mis-rendered, matching the
+"named provider / custom widget registry" design.
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.encoding import (
-  contiguous_int_options, encode_numeric_option, sequential_int_labels, value_mapped_option,
+  contiguous_int_options, encode_numeric_option, homogeneous_string_options, sequential_int_labels, string_option_index, value_mapped_option,
 )
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.registry import custom_widget_factory, resolve_options
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.rules import RuleContext, rules_pass
@@ -102,7 +102,31 @@ def build_control(item: dict, unsupported: list[dict], is_metric_fn: Callable[[]
     options = resolve_options(item)
     labels = sequential_int_labels({**item, "options": options}) if options else None
     if labels is None:
-      unsupported.append(item)  # string/float/non-sequential enum -> custom selector
+      string_enum = homogeneous_string_options({**item, "options": options}) if options else None
+      if string_enum is not None:
+        values = string_enum.values
+        from openpilot.common.params import Params
+        selected_index = string_option_index(Params().get(key, return_default=True), string_enum, key)
+
+        def on_change(index: int, pkey: str = key, vals: list[str] = values):
+          if 0 <= index < len(vals):
+            from openpilot.common.params import Params
+            Params().put(pkey, vals[index])
+
+        def sync_selected(action, pkey: str = key, vals: list[str] = values):
+          if action is not None:
+            from openpilot.common.params import Params
+            action.set_selected_button(string_option_index(Params().get(pkey, return_default=True), string_enum, pkey))
+
+        item_out = multiple_button_item_sp(
+          title=title, description=desc,
+          buttons=[_t(label) for label in string_enum.labels],
+          selected_index=selected_index,
+          callback=on_change,
+        )
+        item_out.sync_hook = lambda: sync_selected(item_out.action_item)  # type: ignore[attr-defined]
+        return item_out
+      unsupported.append(item)  # float/mixed/dynamic enum -> custom selector
       return None
     return multiple_button_item_sp(
       title=title, description=desc, param=key,
@@ -205,6 +229,9 @@ class SchemaPanel(Widget):
       control.set_visible(rules_pass(item.get("visibility"), ctx))
       if control.action_item is not None:
         control.action_item.set_enabled(rules_pass(item.get("enablement"), ctx))
+      sync_hook = getattr(control, "sync_hook", None)
+      if callable(sync_hook):
+        sync_hook()
 
   def _render(self, rect: rl.Rectangle):
     self._scroller.render(rect)

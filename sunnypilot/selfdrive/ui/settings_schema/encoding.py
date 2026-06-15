@@ -7,11 +7,12 @@ See the LICENSE.md file in the root directory for more details.
 Pure schema -> OptionControlSP encoding (no pyray import; headless-testable).
 
 OptionControlSP works in integers (with an optional /100 fixed-point mode), so a
-float-valued numeric setting must be encoded as an int range + scale. Today each
-panel hand-encodes this, and the encodings have drifted from the schema (the
-torque sliders are 0.01-step on-device but 0.1-step in the schema). Deriving the
-encoding from the schema's min/max/step in ONE place is what removes that class
-of bug — and keeping it pure means the derivation is itself unit-tested.
+float-valued numeric setting must be encoded as an int range + scale. Button-row
+selectors have their own safe subset: sequential integer enums can use the
+widget's built-in param=index shortcut, while homogeneous string enums need an
+explicit value mapping. Deriving these encodings from the schema in ONE place is
+what removes drift from hand-coded panels — and keeping it pure means the
+derivation is itself unit-tested.
 """
 from __future__ import annotations
 
@@ -135,14 +136,66 @@ def value_mapped_option(item: dict) -> ValueMappedOption | None:
   return ValueMappedOption(value_map=value_map, labels_by_value=labels_by_value)
 
 
+@dataclass(frozen=True)
+class StringEnum:
+  """Homogeneous string enum options for a mapped MultipleButtonActionSP row."""
+  values: list[str]
+  labels: list[str]
+
+
+def homogeneous_string_options(item: dict) -> StringEnum | None:
+  """Detect an enumerated option whose values are all strings.
+
+  Mixed string/float selectors stay in the escape hatch because they often need
+  dialog/custom-widget behavior, while homogeneous strings can be faithfully
+  rendered by writing the selected schema value through an explicit callback.
+  """
+  options = item.get("options")
+  if not options:
+    return None
+  values: list[str] = []
+  labels: list[str] = []
+  for opt in options:
+    if not isinstance(opt, dict):
+      return None
+    value = opt.get("value")
+    if not isinstance(value, str):
+      return None
+    values.append(value)
+    labels.append(str(opt.get("label", value)))
+  return StringEnum(values=values, labels=labels)
+
+
+def string_option_index(value: object, enum: StringEnum, key: str) -> int:
+  """Resolve a stored string-param value to a button index for a string enum.
+
+  `CustomLongitudinalMode` accepts legacy numeric values for restore/migration
+  compatibility. Missing/empty values keep the repo default SCC; invalid non-empty
+  values fall back to ACC to match `LongitudinalMode.from_value()` fail-safe
+  behavior in the planner.
+  """
+  if isinstance(value, bytes):
+    value = value.decode(errors="ignore")
+  text = str(value or "").strip()
+  if key == "CustomLongitudinalMode":
+    if not text:
+      return enum.values.index("scc") if "scc" in enum.values else 0
+    text = {"0": "acc", "1": "e2e", "2": "scc"}.get(text.lower(), text.lower())
+    for i, option_value in enumerate(enum.values):
+      if option_value.lower() == text:
+        return i
+    return enum.values.index("acc") if "acc" in enum.values else 0
+  return enum.values.index(text) if text in enum.values else 0
+
+
 def sequential_int_labels(item: dict) -> list[str] | None:
   """Return option labels iff the option values are exactly 0..n-1 ints.
 
   MultipleButtonActionSP writes the selected *index* to the param, so it only
   faithfully represents enums whose stored values are sequential from zero.
-  Negative, string, or float values (e.g. the off/shadow/apply speed-aware
-  curve, or the -1..5 lane-change timer) return None — escape-hatch cases that
-  need a value-mapped or custom selector.
+  Negative, string, or float values return None. Gapped/negative integers use
+  other encodings; homogeneous strings use homogeneous_string_options(); mixed
+  enums remain escape-hatch cases that need a custom selector.
   """
   options = item.get("options")
   if not options:

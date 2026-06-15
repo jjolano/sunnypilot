@@ -26,12 +26,20 @@ def test_cruise_top_level_controls_render_inline():
               "SmartCruiseControlVision", "SmartCruiseControlMap"):
     assert CONTROLS.get(key) == "toggle", f"{key} missing/wrong widget"
   assert CONTROLS.get("LongitudinalPersonality") == "multiple_button"
+  assert CONTROLS.get("CustomLongitudinalMode") == "multiple_button"
 
 
 def test_custom_acc_increments_inlined_as_subitems():
   # Inlined to match the device (not behind a sub-panel button).
   assert CONTROLS.get("CustomAccShortPressIncrement") == "option"
   assert CONTROLS.get("CustomAccLongPressIncrement") == "option"
+
+
+def test_custom_longitudinal_mode_is_string_multiple_button():
+  item = find_item(CRUISE, "CustomLongitudinalMode")
+  assert item is not None
+  assert "options" in item
+  assert [opt["value"] for opt in item["options"]] == ["acc", "e2e", "scc"]
 
 
 def test_speed_limit_is_a_delegated_subpanel():

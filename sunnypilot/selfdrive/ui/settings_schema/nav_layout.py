@@ -94,6 +94,9 @@ class SchemaNavLayout(Widget):
       control.set_visible(rules_pass(item.get("visibility"), ctx))
       if control.action_item is not None:
         control.action_item.set_enabled(rules_pass(item.get("enablement"), ctx))
+      sync_hook = getattr(control, "sync_hook", None)
+      if callable(sync_hook):
+        sync_hook()
     for trigger, button in self._nav_gates:
       if button.action_item is not None:
         button.action_item.set_enabled(evaluate_rule(trigger, ctx))

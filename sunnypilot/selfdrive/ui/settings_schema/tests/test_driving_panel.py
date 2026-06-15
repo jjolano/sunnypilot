@@ -30,7 +30,13 @@ def test_lateral_controls_present():
 
 def test_longitudinal_controls_present():
   assert {"ExperimentalMode", "DisengageOnAccelerator", "LongitudinalPersonality",
-          "CustomAccIncrementsEnabled", "SmartCruiseControlVision"} <= CONTROLS
+          "CustomAccIncrementsEnabled", "CustomLongitudinalMode", "SmartCruiseControlVision"} <= CONTROLS
+
+
+def test_custom_longitudinal_mode_is_multiple_button():
+  item = next(e["item"] for e in PLAN if e["kind"] == "control" and e["item"].get("key") == "CustomLongitudinalMode")
+  assert item["widget"] == "multiple_button"
+  assert [opt["value"] for opt in item["options"]] == ["acc", "e2e", "scc"]
 
 
 def test_subpanels_preserved():

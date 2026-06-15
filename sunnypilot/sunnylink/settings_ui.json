@@ -1127,12 +1127,8 @@
                   "key": "CustomLongitudinalMode",
                   "widget": "multiple_button",
                   "title": "Longitudinal Mode",
-                  "description": "SCC is the intelligent blend (recommended) and the custom-2.0 replacement for Dynamic Experimental Control, adding the model's trust-gated stops and map/speed-limit caps on top of cruise + lead. ACC forces OEM-like cruise + lead only; E2E forces the model's stops/slowdowns without the map/speed-limit caps.",
+                  "description": "Select the custom longitudinal policy mode while offroad. ACC keeps cruise + lead behavior, E2E relies on model stops/slowdowns, and SCC blends both.",
                   "options": [
-                    {
-                      "value": "scc",
-                      "label": "SCC"
-                    },
                     {
                       "value": "acc",
                       "label": "ACC"
@@ -1140,9 +1136,21 @@
                     {
                       "value": "e2e",
                       "label": "E2E"
+                    },
+                    {
+                      "value": "scc",
+                      "label": "SCC"
                     }
                   ],
                   "enablement": [
+                    {
+                      "type": "offroad_only"
+                    },
+                    {
+                      "type": "capability",
+                      "field": "has_longitudinal_control",
+                      "equals": true
+                    },
                     {
                       "type": "param",
                       "key": "CustomLongitudinalEnabled",
