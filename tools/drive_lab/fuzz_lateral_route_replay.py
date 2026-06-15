@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Synthetic / serialized route-like lateral replay perturbation fuzzer.
+"""Synthetic or route-extracted lateral replay perturbation fuzzer.
 
-This tool generates deterministic synthetic lateral "route" sequences, perturbs
-them with causal, materialized perturbations, and replays both the baseline and
-perturbed sequences through ``LateralDemandPipeline``. It is *not* real route
-loading (that is deferred); everything is synthesized and fully serialized so
-replay needs no RNG or generator behavior.
+This tool defaults to deterministic synthetic lateral "route" sequences. It can
+also optionally extract route-derived frames from logs, serialize those frames,
+perturb them with causal materialized perturbations, and replay both baseline
+and perturbed sequences through ``LateralDemandPipeline``. Route extraction uses
+latest available context and fixed-DT normalization; it is not faithful timing
+replay or proof of production lateral-control safety. Serialized replay needs no
+route file, RNG, or generator behavior.
 
 Each scenario stores:
   - baseline frames
@@ -41,6 +43,56 @@ N_PATH_POINTS = 33
 PRESETS = ("synthetic_straight", "synthetic_curve", "synthetic_sine", "synthetic_reversal")
 PERTURBATION_KINDS = ("noise", "dropout", "delay", "stale", "scale", "offset")
 CLI_PERTURBATION_KINDS = PERTURBATION_KINDS + ("none",)
+ROUTE_EXTRACTED_PRESET = "route_extracted"
+
+
+@dataclass(frozen=True)
+class RouteExtractionSummary:
+  """Metadata describing how route-derived frames were extracted."""
+
+  route: str | None
+  qlog: bool
+  window_start_s: float | None
+  window_end_s: float | None
+  max_frames: int | None
+  extracted_count: int
+  original_time_span_s: float | None
+  dt: float
+
+  def to_dict(self) -> dict[str, Any]:
+    return {
+      "route": self.route,
+      "qlog": self.qlog,
+      "window_start_s": self.window_start_s,
+      "window_end_s": self.window_end_s,
+      "max_frames": self.max_frames,
+      "extracted_count": self.extracted_count,
+      "original_time_span_s": self.original_time_span_s,
+      "dt": self.dt,
+    }
+
+  @classmethod
+  def from_dict(cls, data: dict[str, Any]) -> RouteExtractionSummary:
+    return cls(
+      route=data.get("route"),
+      qlog=bool(data.get("qlog", False)),
+      window_start_s=_float_or_none(data.get("window_start_s")),
+      window_end_s=_float_or_none(data.get("window_end_s")),
+      max_frames=int(data["max_frames"]) if data.get("max_frames") is not None else None,
+      extracted_count=int(data.get("extracted_count", 0)),
+      original_time_span_s=_float_or_none(data.get("original_time_span_s")),
+      dt=float(data.get("dt", DT)),
+    )
+
+
+def _float_or_none(value: Any) -> float | None:
+  if value is None:
+    return None
+  try:
+    f = float(value)
+    return f if math.isfinite(f) else None
+  except (TypeError, ValueError):
+    return None
 
 
 @dataclass(frozen=True)
@@ -180,6 +232,7 @@ class RouteReplayScenario:
   recipe: PerturbationRecipe
   thresholds: RouteReplayThresholds | None = None
   perturbed_frames: tuple[LateralRouteFrame, ...] = ()
+  route_metadata: RouteExtractionSummary | None = None
 
   @property
   def metric_thresholds(self) -> RouteReplayThresholds:
@@ -260,6 +313,7 @@ def _frame_to_inputs(frame: LateralRouteFrame) -> LateralDemandPipelineInputs:
     frame_drop_perc=frame.frame_drop_perc,
     left_blinker=frame.left_blinker,
     right_blinker=frame.right_blinker,
+    steering_pressed=frame.steering_pressed,
     lane_change_state=frame.lane_change_state,
     lane_change_direction=frame.lane_change_direction,
   )
@@ -278,6 +332,274 @@ def _output_from_result(frame: LateralRouteFrame, pipeline_result: Any) -> Route
     gated=pipeline_result.model_path_result.gated,
     demand_source=d.demand_source,
   )
+
+
+# ---------- route extraction ----------
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+  if value is None:
+    return default
+  try:
+    f = float(value)
+    return f if math.isfinite(f) else default
+  except (TypeError, ValueError):
+    return default
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+  if value is None:
+    return default
+  return bool(value)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+  if value is None:
+    return default
+  try:
+    return int(value)
+  except (TypeError, ValueError):
+    return default
+
+
+def _as_tuple(values: Any, n: int | None = None) -> tuple[float, ...]:
+  if values is None:
+    return ()
+  try:
+    iterable = list(values)
+  except TypeError:
+    return ()
+  out_values: list[float] = []
+  for value in iterable:
+    try:
+      finite = float(value)
+    except (TypeError, ValueError):
+      return ()
+    if not math.isfinite(finite):
+      return ()
+    out_values.append(finite)
+  out = tuple(out_values)
+  if n is not None and len(out) != n:
+    return ()
+  return out
+
+
+def _extract_raw_curvature(lat_active: bool, state: dict[str, Any]) -> float:
+  measured = _safe_float(getattr(state.get("controlsState"), "curvature", None))
+  if not lat_active:
+    return measured
+  model_v2 = state.get("modelV2")
+  if model_v2 is not None:
+    action = getattr(model_v2, "action", None)
+    if action is not None:
+      desired = _safe_float(getattr(action, "desiredCurvature", None))
+      if desired != 0.0 or getattr(action, "desiredCurvature", None) is not None:
+        return desired
+  controls_state = state.get("controlsState")
+  if controls_state is not None:
+    model_path_state = getattr(controls_state, "modelPathState", None)
+    if model_path_state is not None:
+      raw_desired = _safe_float(getattr(model_path_state, "rawDesiredCurvature", None))
+      if raw_desired != 0.0 or getattr(model_path_state, "rawDesiredCurvature", None) is not None:
+        return raw_desired
+    desired = _safe_float(getattr(controls_state, "desiredCurvature", None))
+    if desired != 0.0 or getattr(controls_state, "desiredCurvature", None) is not None:
+      return desired
+  car_control = state.get("carControl")
+  if car_control is not None:
+    actuators = getattr(car_control, "actuators", None)
+    if actuators is not None:
+      return _safe_float(getattr(actuators, "curvature", None), default=measured)
+  return measured
+
+
+def _extract_measured_curvature(state: dict[str, Any]) -> float:
+  controls_state = state.get("controlsState")
+  if controls_state is not None:
+    curvature = _safe_float(getattr(controls_state, "curvature", None))
+    if curvature != 0.0 or getattr(controls_state, "curvature", None) is not None:
+      return curvature
+  car_control = state.get("carControl")
+  if car_control is not None:
+    actuators = getattr(car_control, "actuators", None)
+    if actuators is not None:
+      return _safe_float(getattr(actuators, "curvature", None))
+  return 0.0
+
+
+def _frame_from_controls_state(t: float, state: dict[str, Any]) -> LateralRouteFrame:
+  car_state = state.get("carState")
+  car_control = state.get("carControl")
+  model_v2 = state.get("modelV2")
+  live_parameters = state.get("liveParameters")
+
+  v_ego = _safe_float(getattr(car_state, "vEgo", None) if car_state is not None else None)
+  lat_active = _safe_bool(getattr(car_control, "latActive", None) if car_control is not None else None, default=True)
+  measured_curvature = _extract_measured_curvature(state)
+  raw_curvature = _extract_raw_curvature(lat_active, state)
+  roll = _safe_float(getattr(live_parameters, "roll", None) if live_parameters is not None else None)
+
+  steering_pressed = _safe_bool(getattr(car_state, "steeringPressed", None) if car_state is not None else None)
+  left_blinker = _safe_bool(getattr(car_state, "leftBlinker", None) if car_state is not None else None)
+  right_blinker = _safe_bool(getattr(car_state, "rightBlinker", None) if car_state is not None else None)
+
+  lane_change_state = 0
+  lane_change_direction = 0
+  if model_v2 is not None:
+    meta = getattr(model_v2, "meta", None)
+    if meta is not None:
+      lane_change_state = _safe_int(getattr(meta, "laneChangeState", None))
+      lane_change_direction = _safe_int(getattr(meta, "laneChangeDirection", None))
+
+  position_x = ()
+  position_y = ()
+  position_y_std = ()
+  orientation_z = ()
+  orientation_rate_z = ()
+  lane_line_probs = ()
+  if model_v2 is not None:
+    position = getattr(model_v2, "position", None)
+    if position is not None:
+      position_x = _as_tuple(getattr(position, "x", None), N_PATH_POINTS)
+      position_y = _as_tuple(getattr(position, "y", None), N_PATH_POINTS)
+      position_y_std = _as_tuple(getattr(position, "yStd", None), N_PATH_POINTS)
+    orientation = getattr(model_v2, "orientation", None)
+    if orientation is not None:
+      orientation_z = _as_tuple(getattr(orientation, "z", None), N_PATH_POINTS)
+    orientation_rate = getattr(model_v2, "orientationRate", None)
+    if orientation_rate is not None:
+      orientation_rate_z = _as_tuple(getattr(orientation_rate, "z", None), N_PATH_POINTS)
+    lane_line_probs = _as_tuple(getattr(model_v2, "laneLineProbs", None))
+
+  frame_drop_perc = _safe_float(getattr(model_v2, "frameDropPerc", None) if model_v2 is not None else None)
+
+  return LateralRouteFrame(
+    t=t,
+    v_ego=v_ego,
+    lat_active=lat_active,
+    raw_curvature=raw_curvature,
+    measured_curvature=measured_curvature,
+    roll=roll,
+    steering_pressed=steering_pressed,
+    left_blinker=left_blinker,
+    right_blinker=right_blinker,
+    lane_change_state=lane_change_state,
+    lane_change_direction=lane_change_direction,
+    position_x=position_x,
+    position_y=position_y,
+    position_y_std=position_y_std,
+    orientation_z=orientation_z,
+    orientation_rate_z=orientation_rate_z,
+    lane_line_probs=lane_line_probs,
+    frame_drop_perc=frame_drop_perc,
+  )
+
+
+def extract_lateral_route_frames_with_summary(
+  messages: Any,
+  *,
+  route: str | None = None,
+  qlog: bool = False,
+  start_s: float | None = None,
+  end_s: float | None = None,
+  max_frames: int | None = None,
+) -> tuple[tuple[LateralRouteFrame, ...], RouteExtractionSummary]:
+  """Extract fixed-DT lateral replay frames from raw route messages.
+
+  Iterates raw messages (with ``logMonoTime`` and ``which()``), maintains latest
+  carState/carControl/modelV2/liveParameters, and emits one LateralRouteFrame per
+  controlsState. Applies the original-time window, truncates to ``max_frames``,
+  then normalizes ``frame.t = index * DT``.
+  """
+  from openpilot.tools.drive_lab.route_analysis import build_route_messages
+
+  route_messages = build_route_messages(messages)
+  latest_state: dict[str, Any] = {}
+  extracted: list[LateralRouteFrame] = []
+  original_times: list[float] = []
+
+  for rm in route_messages:
+    if rm.typ in ("carState", "carControl", "modelV2", "liveParameters", "controlsState"):
+      latest_state[rm.typ] = rm.payload
+    if rm.typ != "controlsState":
+      continue
+    if latest_state.get("carState") is None:
+      continue
+    if start_s is not None and rm.t < start_s:
+      continue
+    if end_s is not None and rm.t >= end_s:
+      continue
+    extracted.append(_frame_from_controls_state(rm.t, latest_state))
+    original_times.append(rm.t)
+    if max_frames is not None and len(extracted) >= max_frames:
+      break
+
+  normalized = tuple(
+    LateralRouteFrame.from_dict({**frame.to_dict(), "t": float(i) * DT})
+    for i, frame in enumerate(extracted)
+  )
+  original_span = original_times[-1] - original_times[0] if len(original_times) > 1 else None
+  summary = RouteExtractionSummary(
+    route=route,
+    qlog=qlog,
+    window_start_s=start_s,
+    window_end_s=end_s,
+    max_frames=max_frames,
+    extracted_count=len(normalized),
+    original_time_span_s=original_span,
+    dt=DT,
+  )
+  return normalized, summary
+
+
+def extract_lateral_route_frames(
+  messages: Any,
+  *,
+  start_s: float | None = None,
+  end_s: float | None = None,
+  max_frames: int | None = None,
+) -> tuple[LateralRouteFrame, ...]:
+  frames, _ = extract_lateral_route_frames_with_summary(messages, start_s=start_s, end_s=end_s, max_frames=max_frames)
+  return frames
+
+
+def _load_route_frames_with_summary(
+  route: str,
+  *,
+  qlog: bool = False,
+  start_s: float | None = None,
+  end_s: float | None = None,
+  max_frames: int | None = None,
+) -> tuple[tuple[LateralRouteFrame, ...], RouteExtractionSummary]:
+  from openpilot.tools.drive_lab.route_io import load_route_msgs
+
+  messages = load_route_msgs(route, qlog=qlog)
+  return extract_lateral_route_frames_with_summary(
+    messages,
+    route=route,
+    qlog=qlog,
+    start_s=start_s,
+    end_s=end_s,
+    max_frames=max_frames,
+  )
+
+
+def _load_route_frames(
+  route: str,
+  *,
+  qlog: bool = False,
+  start_s: float | None = None,
+  end_s: float | None = None,
+  max_frames: int | None = None,
+) -> tuple[LateralRouteFrame, ...]:
+  frames, _ = _load_route_frames_with_summary(
+    route,
+    qlog=qlog,
+    start_s=start_s,
+    end_s=end_s,
+    max_frames=max_frames,
+  )
+  return frames
 
 
 # ---------- presets ----------
@@ -589,9 +911,49 @@ class RouteReplayFuzzerConfig:
   preset: str | None = None
   perturbation: str | None = None
   duration_s: float = 2.0
+  route: str | None = None
+  qlog: bool = False
+  window_start_s: float | None = None
+  window_end_s: float | None = None
+  max_frames: int | None = None
+
+
+def _generate_route_scenarios(
+  baseline: tuple[LateralRouteFrame, ...],
+  metadata: RouteExtractionSummary,
+  config: RouteReplayFuzzerConfig,
+) -> list[RouteReplayScenario]:
+  if not baseline:
+    return []
+  rng = random.Random(config.seed)
+  n = len(baseline)
+  scenarios: list[RouteReplayScenario] = []
+  for idx in range(config.cases):
+    recipe = _generate_recipe(rng, n, config.perturbation)
+    perturbed = _apply_recipe(recipe, baseline)
+    title = f"route replay {ROUTE_EXTRACTED_PRESET} with {recipe.kind} #{idx}"
+    scenarios.append(RouteReplayScenario(
+      preset=ROUTE_EXTRACTED_PRESET,
+      title=title,
+      frames=baseline,
+      recipe=recipe,
+      perturbed_frames=perturbed,
+      route_metadata=metadata,
+    ))
+  return scenarios
 
 
 def generate_scenarios(config: RouteReplayFuzzerConfig) -> list[RouteReplayScenario]:
+  if config.route is not None:
+    baseline, metadata = _load_route_frames_with_summary(
+      config.route,
+      qlog=config.qlog,
+      start_s=config.window_start_s,
+      end_s=config.window_end_s,
+      max_frames=config.max_frames,
+    )
+    return _generate_route_scenarios(baseline, metadata, config)
+
   rng = random.Random(config.seed)
   presets = [config.preset] if config.preset else list(PRESETS)
   scenarios: list[RouteReplayScenario] = []
@@ -777,6 +1139,8 @@ def scenario_to_dict(scenario: RouteReplayScenario, seed: int | None = None, ind
     "recipe": scenario.recipe.to_dict(),
     "thresholds": scenario.metric_thresholds.to_dict(),
   }
+  if scenario.route_metadata is not None:
+    payload["route_metadata"] = scenario.route_metadata.to_dict()
   if seed is not None:
     payload["seed"] = seed
   if index is not None:
@@ -791,6 +1155,7 @@ def _sign_flip_count(values: np.ndarray, eps: float) -> int:
 
 
 def scenario_from_dict(data: dict[str, Any]) -> RouteReplayScenario:
+  route_metadata = data.get("route_metadata")
   return RouteReplayScenario(
     preset=str(data["preset"]),
     title=str(data["title"]),
@@ -798,6 +1163,7 @@ def scenario_from_dict(data: dict[str, Any]) -> RouteReplayScenario:
     recipe=PerturbationRecipe.from_dict(data["recipe"]),
     thresholds=RouteReplayThresholds.from_dict(data.get("thresholds", {})),
     perturbed_frames=tuple(LateralRouteFrame.from_dict(frame) for frame in data.get("perturbed_frames", ())),
+    route_metadata=RouteExtractionSummary.from_dict(route_metadata) if route_metadata else None,
   )
 
 
@@ -818,7 +1184,7 @@ def scenario_summary_to_dict(scenario: RouteReplayScenario, seed: int | None = N
 
 def artifact_to_dict(result: RouteReplayResult, seed: int | None, index: int | None) -> dict[str, Any]:
   perturbed_frames = result.scenario.perturbed_frames or _apply_recipe(result.scenario.recipe, result.scenario.frames)
-  return {
+  payload: dict[str, Any] = {
     "schema": ARTIFACT_SCHEMA,
     "version": ARTIFACT_VERSION,
     "seed": seed,
@@ -844,6 +1210,9 @@ def artifact_to_dict(result: RouteReplayResult, seed: int | None, index: int | N
     "metrics": _sanitize(result.metrics),
     "overall_valid": result.valid,
   }
+  if result.scenario.route_metadata is not None:
+    payload["route_metadata"] = result.scenario.route_metadata.to_dict()
+  return payload
 
 
 def write_artifact(result: RouteReplayResult, artifact_dir: Path, seed: int | None, index: int | None) -> Path:
@@ -868,6 +1237,24 @@ def _render_scenario_snippet(scenario: RouteReplayScenario) -> str:
   return f"# preset: {scenario.preset} perturbation: {scenario.recipe.kind}\nRouteReplayScenario(title={scenario.title!r}, frames=[...{len(scenario.frames)} frames...])"
 
 
+def _parse_window(window: str | None) -> tuple[float | None, float | None]:
+  if window is None:
+    return (None, None)
+  parts = window.split(",")
+  if len(parts) != 2:
+    raise argparse.ArgumentTypeError("--window must be START,END")
+  try:
+    start = float(parts[0])
+    end = float(parts[1])
+  except ValueError as exc:
+    raise argparse.ArgumentTypeError(f"--window values must be numeric: {exc}") from exc
+  if not (math.isfinite(start) and math.isfinite(end)):
+    raise argparse.ArgumentTypeError("--window values must be finite")
+  if end <= start:
+    raise argparse.ArgumentTypeError("--window START must be less than END")
+  return (start, end)
+
+
 def main() -> None:
   parser = argparse.ArgumentParser(description="Synthetic / serialized route-like lateral replay perturbation fuzzer.")
   parser.add_argument("--seed", type=int, default=1)
@@ -879,12 +1266,52 @@ def main() -> None:
   parser.add_argument("--fail-fast", action="store_true", help="Stop after the first failure")
   parser.add_argument("--artifact-dir", type=str, default=None, help="Directory to write failure artifacts")
   parser.add_argument("--replay", type=str, default=None, help="Replay a route-replay artifact JSON file")
+  parser.add_argument("--route", type=str, default=None, help="Route identifier or log file to extract frames from")
+  parser.add_argument("--qlog", action="store_true", help="Use qlog when loading route")
+  parser.add_argument("--window", type=str, default=None, help="Original-time window START,END in seconds")
+  parser.add_argument("--max-frames", type=int, default=None, help="Maximum route frames to extract")
+  parser.add_argument("--list-only", action="store_true", help="Only extract and summarize route frames; skip fuzzing")
   args = parser.parse_args()
 
   if args.cases < 0:
     parser.error("--cases must be >= 0")
   if args.duration <= 0.0:
     parser.error("--duration must be > 0")
+  if args.max_frames is not None and args.max_frames <= 0:
+    parser.error("--max-frames must be > 0")
+  try:
+    window_start_s, window_end_s = _parse_window(args.window)
+  except argparse.ArgumentTypeError as exc:
+    parser.error(str(exc))
+
+  if args.route and args.preset:
+    parser.error("--route and --preset are mutually exclusive")
+  if args.list_only and not args.route:
+    parser.error("--list-only requires --route")
+  if args.route and args.cases <= 0:
+    parser.error("--route requires --cases > 0")
+
+  if args.route and args.list_only:
+    frames, summary = _load_route_frames_with_summary(
+      args.route,
+      qlog=args.qlog,
+      start_s=window_start_s,
+      end_s=window_end_s,
+      max_frames=args.max_frames,
+    )
+    if args.json:
+      print(json.dumps(_sanitize(summary.to_dict()), indent=2, sort_keys=True, allow_nan=False))
+    else:
+      print(f"Route extraction summary for {args.route}:")
+      print(f"  extracted_frames={summary.extracted_count}")
+      print(f"  qlog={summary.qlog}")
+      print(f"  window={summary.window_start_s},{summary.window_end_s}")
+      print(f"  max_frames={summary.max_frames}")
+      print(f"  original_time_span_s={summary.original_time_span_s}")
+      print(f"  dt={summary.dt}")
+    if not frames:
+      raise SystemExit(1)
+    return
 
   if args.replay:
     result = replay_artifact(args.replay)
@@ -900,8 +1327,21 @@ def main() -> None:
         print(f"  comparison: {failure['check']}: {failure['detail']}")
     sys.exit(0 if result.valid else 1)
 
-  config = RouteReplayFuzzerConfig(seed=args.seed, cases=args.cases, preset=args.preset, perturbation=args.perturbation, duration_s=args.duration)
+  config = RouteReplayFuzzerConfig(
+    seed=args.seed,
+    cases=args.cases,
+    preset=args.preset,
+    perturbation=args.perturbation,
+    duration_s=args.duration,
+    route=args.route,
+    qlog=args.qlog,
+    window_start_s=window_start_s,
+    window_end_s=window_end_s,
+    max_frames=args.max_frames,
+  )
   scenarios = list(generate_scenarios(config))
+  if args.route and not scenarios:
+    parser.error(f"no route frames extracted from {args.route}")
   results: list[tuple[int, RouteReplayResult]] = []
   for idx, scenario in enumerate(scenarios):
     result = evaluate_scenario(scenario)
@@ -918,12 +1358,12 @@ def main() -> None:
       artifact_paths.append(str(path))
 
   if args.json:
-    payload = {
+    payload: dict[str, Any] = {
       "seed": args.seed,
       "cases": len(results),
       "preset": args.preset,
       "perturbation": args.perturbation,
-      "duration": args.duration,
+      "duration": None if args.route else args.duration,
       "dt": DT,
       "failures": [
         {
@@ -936,12 +1376,26 @@ def main() -> None:
         for result_idx, result in failures
       ],
     }
+    if args.route:
+      if results and results[0][1].scenario.route_metadata is not None:
+        payload["route_metadata"] = results[0][1].scenario.route_metadata.to_dict()
+      else:
+        payload["route"] = args.route
+        payload["qlog"] = args.qlog
+        payload["window"] = args.window
+        payload["max_frames"] = args.max_frames
     print(json.dumps(_sanitize(payload), indent=2, sort_keys=True, allow_nan=False))
   else:
+    source = args.route or (args.preset or "all")
+    route_span = None
+    if args.route and results and results[0][1].scenario.route_metadata is not None:
+      meta = results[0][1].scenario.route_metadata
+      route_span = max(0.0, (meta.extracted_count - 1) * DT)
+    span_text = f"route_fixed_dt_span={route_span}s" if args.route else f"duration={args.duration}s"
     print(
       f"Drive Lab lateral route replay fuzz seed={args.seed} cases={len(results)} "
-      f"preset={args.preset or 'all'} perturbation={args.perturbation or 'random'} "
-      f"duration={args.duration}s dt={DT}s failures={len(failures)}"
+      + f"preset={source} perturbation={args.perturbation or 'random'} "
+      + f"{span_text} dt={DT}s failures={len(failures)}"
     )
     for idx, result in failures[:10]:
       print(f"\nFAILED: {result.scenario.title}")
