@@ -102,10 +102,12 @@ def test_no_lead_is_passthrough_value():
   assert out.leadOne.aLeadK == -3.0                   # status False -> untouched
 
 
-def test_bool_compatibility_when_mode_missing():
+def test_bool_only_missing_mode_is_shadow_passthrough():
   la = LeadAnticipation(FakeParams(LeadAnticipationEnabled=True, CustomLongitudinalEnabled=True))
-  out = la.shape(radar(lead(-3.0)), DT)
-  assert out.leadOne.aLeadK == pytest.approx(-3.0 * DISCOUNT_FLOOR)
+  rs = radar(lead(-3.0))
+  assert la.mode == "shadow"
+  assert not la.enabled
+  assert la.shape(rs, DT) is rs
 
 
 def test_param_default_shadow_is_exact_passthrough():
@@ -115,17 +117,17 @@ def test_param_default_shadow_is_exact_passthrough():
   assert la.shape(rs, DT) is rs
 
 
-def test_bool_compatibility_wins_when_mode_missing_even_if_default_exists():
-  # Real Params.get(key) returns None for an unset key unless return_default=True is requested; this
-  # pins compatibility before the code-level default shadow fallback.
-  la = LeadAnticipation(FakeParams(LeadAnticipationEnabled=True, CustomLongitudinalEnabled=True))
-  assert la.mode == "apply"
+def test_explicit_apply_still_shapes():
+  la = LeadAnticipation(FakeParams(LeadAnticipationMode="apply", CustomLongitudinalEnabled=True))
+  out = la.shape(radar(lead(-3.0)), DT)
+  assert out.leadOne.aLeadK == pytest.approx(-3.0 * DISCOUNT_FLOOR)
 
 
 def test_invalid_mode_falls_back_to_passthrough():
   la = LeadAnticipation(FakeParams(LeadAnticipationMode="bogus", LeadAnticipationEnabled=True, CustomLongitudinalEnabled=True))
   rs = radar(lead(-3.0))
   assert la.shape(rs, DT) is rs
+  assert la.last_result is None
 
 
 def test_custom_long_disabled_blocks_apply():

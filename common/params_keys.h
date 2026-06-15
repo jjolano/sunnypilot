@@ -92,10 +92,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // bounded by the MPC / clip_curvature safety floors — they only shape feel, never relax safety)
     {"CustomLongitudinalEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"CustomLongitudinalMode", {PERSISTENT | BACKUP, STRING, "scc"}},
-    // LeadAnticipationMode defaults to shadow/pass-through telemetry. apply can reduce MPC braking,
-    // so it is explicit opt-in and runtime-gated by CustomLongitudinalEnabled.
+    // LeadAnticipationMode defaults to shadow/pass-through telemetry. Legacy LeadAnticipationEnabled
+    // is kept for storage compatibility only; apply is explicit opt-in and runtime-gated by CustomLongitudinalEnabled.
     {"LeadAnticipationMode", {PERSISTENT | BACKUP, STRING, "shadow"}},
-    {"LeadAnticipationEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // compatibility bool; apply is gated by mode + custom long
+    {"LeadAnticipationEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // compatibility bool; inert for planner behavior
     {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CurveMemoryEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},

@@ -49,6 +49,9 @@ description, read that skill's `SKILL.md` before acting.
 - `deploy-workflow`: commit/test/deploy/health-check workflow. Use when the user asks to
   deploy, rebuild, "commit rebuild deploy", push to the device, or validate a deployed
   branch.
+- `device-route-log-analysis`: access route logs from the configured deployment target and
+  analyze recent drives with drive_lab. Use when the user asks to inspect device route logs
+  or analyze lateral/longitudinal control from logs.
 - `device-comm-diagnostics`: read-only diagnosis for on-device "Communication Issue Between
   Processes", "Low Communication Rate Between Processes", process-not-running, IPC/msgq, and
   manager/process health alerts.

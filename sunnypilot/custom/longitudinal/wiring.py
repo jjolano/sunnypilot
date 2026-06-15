@@ -75,7 +75,8 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        model_stop_prob: float = 1.0, model_stop_distance: float | None = None,
                        accel_coast: float = 0.0) -> LongitudinalStackInputs:
   has_lead = lead_one is not None and bool(getattr(lead_one, "status", False))
-  # MPC owns lead-follow physics; carry the planner's a_target as the lead-follow accel.
+  # Pre-MPC lead-present seed: carry the currently selected planner a_target into the custom
+  # policy. Final lead-follow physics remains owned by the downstream MPC solve.
   lead_a_target = float(seed_a_target) if has_lead else 0.0
   # SCC vision/map are curve-speed sources -> the curve advisory cap (most restrictive wins). Tag
   # the cap by the source that bound it so the mode gate admits it correctly (a map-only curve must

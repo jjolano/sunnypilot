@@ -5,6 +5,7 @@ import math
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
@@ -18,9 +19,10 @@ DT = 0.05
 LIMITS = (-4.0, 2.0)
 
 
-def lead(d_rel=30.0, v_lead=12.0, y_rel=0.0, status=True, track_id=3):
-  return SimpleNamespace(status=status, dRel=d_rel, vLead=v_lead, vLeadK=v_lead, aLeadK=0.0,
-                         yRel=y_rel, radarTrackId=track_id, radar=True, modelProb=0.9, aLeadTau=1.0)
+def lead(d_rel=30.0, v_lead=12.0, v_rel=0.0, y_rel=0.0, status=True, track_id=3):
+  return SimpleNamespace(status=status, dRel=d_rel, vLead=v_lead, vLeadK=v_lead, vRel=v_rel,
+                         aLeadK=0.0, yRel=y_rel, radarTrackId=track_id, radar=True,
+                         modelProb=0.9, aLeadTau=1.0)
 
 
 def base(**kw):
@@ -218,3 +220,45 @@ def test_model_stop_distance_closed_loop_comes_to_comfortable_rest():
   assert min_a >= LIMITS[0] - 1e-9          # never demands harder than the decel limit
   # Raw-policy jerk (pre-MPC-smoothing); one comfort-decel candidate step is expected.
   assert max_abs_jerk <= 12.0, f"uncomfortable jerk {max_abs_jerk:.2f} m/s^3"
+
+
+def test_far_non_closing_lead_raises_pre_mpc_target_via_soft_path():
+  # wiring.py sets lead_a_target from seed_a_target when a lead is present, so the seed equals
+  # the lead-influenced target. The soft pair should raise the pre-MPC target from -0.3 to -0.05.
+  s = CustomLongitudinalStack()
+  r = s.update(base(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=-0.3,
+    leads=(lead(d_rel=100.0, v_lead=25.0), None),
+    lead_a_target=-0.3, mode=LongitudinalMode.ACC,
+  ), DT)
+  assert r.debug["has_lead"] is True
+  assert r.a_target == pytest.approx(-0.05)
+  assert r.decision.reason == "advisory_capped"
+  assert r.decision.selected_intent == "lead_follow_soft_desire"
+
+
+def test_lead_softening_mode_admission_unchanged():
+  # LEAD evidence is admitted in every mode; the soft path should raise the target in all three.
+  for mode in (LongitudinalMode.ACC, LongitudinalMode.E2E, LongitudinalMode.SCC):
+    s = CustomLongitudinalStack()
+    r = s.update(base(
+      v_ego=25.0, v_cruise=25.0, seed_a_target=-0.3,
+      leads=(lead(d_rel=100.0, v_lead=25.0), None),
+      lead_a_target=-0.3, mode=mode,
+    ), DT)
+    assert r.a_target == pytest.approx(-0.05), mode
+
+
+def test_invalid_raw_live_kinematics_do_not_trigger_softening():
+  # Missing vRel on the live lead object makes raw kinematics invalid; _f still provides a
+  # fallback value, but softening must reject and the original lead-follow seed stands.
+  bad_lead = SimpleNamespace(status=True, dRel=100.0, vLead=25.0, vLeadK=25.0,
+                             yRel=0.0, radarTrackId=3, radar=True, modelProb=0.9, aLeadTau=1.0)
+  assert not hasattr(bad_lead, "vRel")
+  s = CustomLongitudinalStack()
+  r = s.update(base(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=-0.3,
+    leads=(bad_lead, None), lead_a_target=-0.3, mode=LongitudinalMode.ACC,
+  ), DT)
+  assert r.a_target == pytest.approx(-0.3)
+  assert "lead_follow_soft" not in r.debug.get("intent", "")

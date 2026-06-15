@@ -119,3 +119,46 @@ def test_fail_closed_on_bad_limits_and_nonfinite():
 
 def test_returns_decision_type():
   assert isinstance(decide([cruise(1.0)], LongitudinalMode.ACC, LIMITS), Decision)
+
+
+def test_physical_hazards_still_bind_despite_lead_soft_pair():
+  # A lead-soft advisory + progress pair does not override a separate physical hazard.
+  cands = [
+    cruise(-0.3),
+    C(-0.05, CandidateRole.ADVISORY_CAP, EvidenceClass.LEAD, "lead_follow_soft"),
+    C(-0.05, CandidateRole.PROGRESS, EvidenceClass.LEAD, "lead_follow_soft_desire", authorized=True),
+    C(-2.0, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP, "stop_approach"),
+  ]
+  d = decide(cands, LongitudinalMode.E2E, LIMITS)
+  assert d.a_target == pytest.approx(-2.0)
+  assert d.reason == "physical_hazard"
+
+
+def test_lead_soft_pair_changes_output_only_through_lead_evidence():
+  # Same advisory/progress values, but sourced as LEAD (admitted in ACC) vs MODEL_STOP (excluded
+  # in ACC). The output only changes when the evidence class is admitted.
+  soft_lead = [
+    cruise(-0.3),
+    C(-0.05, CandidateRole.ADVISORY_CAP, EvidenceClass.LEAD, "lead_follow_soft"),
+    C(-0.05, CandidateRole.PROGRESS, EvidenceClass.LEAD, "lead_follow_soft_desire", authorized=True),
+  ]
+  soft_model_stop = [
+    cruise(-0.3),
+    C(-0.05, CandidateRole.ADVISORY_CAP, EvidenceClass.MODEL_STOP, "lead_follow_soft"),
+    C(-0.05, CandidateRole.PROGRESS, EvidenceClass.MODEL_STOP, "lead_follow_soft_desire", authorized=True),
+  ]
+  assert decide(soft_lead, LongitudinalMode.ACC, LIMITS).a_target == pytest.approx(-0.05)
+  assert decide(soft_model_stop, LongitudinalMode.ACC, LIMITS).a_target == pytest.approx(-0.3)
+
+
+def test_unrelated_scc_caps_still_bind_with_lead_soft_pair():
+  # The lead-soft path must not weaken unrelated SCC advisory caps.
+  cands = [
+    cruise(-0.3),
+    C(-0.05, CandidateRole.ADVISORY_CAP, EvidenceClass.LEAD, "lead_follow_soft"),
+    C(-0.05, CandidateRole.PROGRESS, EvidenceClass.LEAD, "lead_follow_soft_desire", authorized=True),
+    C(-0.35, CandidateRole.ADVISORY_CAP, EvidenceClass.CURVE_VISION, "curve_policy"),
+  ]
+  d = decide(cands, LongitudinalMode.SCC, LIMITS, SourceToggles(scc_curve_vision_enabled=True))
+  assert d.a_target == pytest.approx(-0.35)
+  assert d.reason == "advisory_capped"

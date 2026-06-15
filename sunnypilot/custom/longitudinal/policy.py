@@ -46,6 +46,18 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
 
 SAFETY_FORCE_SLOW_DECEL = -0.2
 
+# Lead-softening thresholds (Phase 4): narrow pre-MPC shaping for far/medium low-risk
+# lead-follow decel. Conservative first cut; before/deploy validation must replay engaged routes.
+_LEAD_SOFTEN_MAX_LEAD_DECEL = -0.7          # never soften a lead that already wants real braking
+_LEAD_SOFTEN_MIN_V_EGO = 8.0                # m/s; avoid stop-and-go / low-speed context
+_LEAD_SOFTEN_MIN_LEAD_V = 5.0               # m/s; avoid stopped/crawling leads
+_LEAD_SOFTEN_FOLLOW_TIME_GAP_S = 2.2        # seconds; stricter than steady follow gap
+_LEAD_SOFTEN_MIN_DISTANCE_BASE_M = 45.0     # m; fixed medium-bin boundary
+_LEAD_SOFTEN_USABLE_EXCESS_MARGIN_M = 3.0   # m; small safety margin on excess gap
+_LEAD_SOFTEN_MAX_REQUIRED_DECEL = 0.25      # m/s^2; low-risk closing threshold
+_LEAD_SOFTEN_RAISE_DELTA = 0.4              # m/s^2; bounded raise over the lead target
+_LEAD_SOFTEN_CEILING = -0.05                # m/s^2; near-coast ceiling, never positive
+
 
 @dataclass(frozen=True)
 class LongitudinalScene:
@@ -54,7 +66,7 @@ class LongitudinalScene:
   seed_a_target: float          # planner baseline (MPC cruise/seed) accel
   accel_coast: float = 0.0      # current coast-down accel (negative downhill)
   personality: Personality = Personality.STANDARD
-  # lead (MPC physical hazard)
+  # lead (pre-MPC lead-present seed shaping; final MPC lead physics remains downstream)
   has_lead: bool = False
   lead_a_target: float = 0.0
   lead_should_stop: bool = False
@@ -65,6 +77,7 @@ class LongitudinalScene:
   lead_d_rel: float = 0.0
   lead_v_rel: float = 0.0
   follow_gap: float = 0.0
+  lead_kinematics_valid: bool = True
   # model stop (E2E)
   model_should_stop: bool = False
   model_stop_distance: float | None = None
@@ -146,6 +159,67 @@ def comfort_relax_allowed(scene: LongitudinalScene) -> bool:
               and not scene.brake_pressed and not scene.gas_pressed)
 
 
+def _scene_fields_finite(scene: LongitudinalScene) -> bool:
+  """All lead kinematic fields used by the softening helper are finite."""
+  return all(math.isfinite(v) for v in (
+    scene.v_ego, scene.lead_d_rel, scene.lead_v_rel, scene.lead_v,
+    scene.lead_a_target, scene.follow_gap,
+  ))
+
+
+def _lead_softening_target(scene: LongitudinalScene) -> float | None:
+  """Return a bounded soft pre-MPC lead-follow target for low-risk far/medium leads.
+
+  None means: keep the normal lead-follow PHYSICAL_HAZARD. The helper is deliberately
+  conservative: it rejects anything close, anything requiring meaningful braking, any
+  stop/override condition, and any non-finite or invalid raw lead kinematics.
+  """
+  if not scene.has_lead:
+    return None
+  if not (scene.lead_a_target < 0.0 and scene.lead_a_target >= _LEAD_SOFTEN_MAX_LEAD_DECEL):
+    return None
+  if scene.v_ego < _LEAD_SOFTEN_MIN_V_EGO:
+    return None
+  if scene.lead_v <= _LEAD_SOFTEN_MIN_LEAD_V:
+    return None
+  if not _scene_fields_finite(scene):
+    return None
+  if not scene.lead_kinematics_valid:
+    return None
+  if scene.lead_should_stop or scene.model_should_stop or scene.stop_threat:
+    return None
+  if scene.force_slow_decel or scene.brake_pressed or scene.gas_pressed:
+    return None
+
+  # near model stop: if a stop distance is present/non-finite or within the dynamic clearance
+  if scene.model_stop_distance is not None:
+    if not math.isfinite(scene.model_stop_distance):
+      return None
+    min_distance = max(_LEAD_SOFTEN_MIN_DISTANCE_BASE_M, _LEAD_SOFTEN_FOLLOW_TIME_GAP_S * scene.v_ego)
+    if scene.model_stop_distance < min_distance:
+      return None
+
+  desired_gap = max(scene.follow_gap, _LEAD_SOFTEN_FOLLOW_TIME_GAP_S * scene.v_ego)
+  min_distance = max(_LEAD_SOFTEN_MIN_DISTANCE_BASE_M, _LEAD_SOFTEN_FOLLOW_TIME_GAP_S * scene.v_ego)
+  if scene.lead_d_rel < min_distance:
+    return None
+
+  usable_excess = scene.lead_d_rel - desired_gap
+  if usable_excess <= _LEAD_SOFTEN_USABLE_EXCESS_MARGIN_M:
+    return None
+
+  closing = max(0.0, -scene.lead_v_rel)
+  required = (closing * closing) / (2.0 * usable_excess)
+  if required > _LEAD_SOFTEN_MAX_REQUIRED_DECEL:
+    return None
+
+  soft = min(_LEAD_SOFTEN_CEILING, scene.lead_a_target + _LEAD_SOFTEN_RAISE_DELTA)
+  if soft <= scene.lead_a_target:
+    return None
+  # Final safety clamps: never positive, never harden the original target.
+  return float(max(scene.lead_a_target, min(soft, 0.0)))
+
+
 def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   """Produce the custom-2.0 candidate set; the decision core arbitrates and the mode gate
   admits them. Personality is normalized to a known value."""
@@ -201,16 +275,28 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
     cands.append(LongitudinalCandidate(COMFORT_RELAX_ACCEL_MIN, CandidateRole.COMFORT_RELAX,
                                        EvidenceClass.CRUISE, "comfort_relax"))
 
-  # Lead-follow hazard: the MPC owns the physics; we carry its a_target as the binding follow
-  # DECEL. A braking seed always binds (the shaper never reduces the MPC's follow decel). Only in
-  # the authorized launch case, when the MPC is *not* braking for the lead, does the non-braking
-  # seed impose no floor — so the speedup-guarded launch pulse can follow an opening lead off the
-  # line. (A positive "hazard" is not a hazard; it would otherwise clamp the PROGRESS layer that
-  # is designed to raise accel when authorized. The instant the lead requires braking the seed
-  # goes negative and re-binds.)
+  # Lead-present pre-MPC seed: before the MPC solves final lead physics, a braking lead-present
+  # seed normally binds as a physical hazard. Phase 4 allows only low-risk far/medium cases to be
+  # softened into a bounded advisory/desire pair; final MPC lead output remains authoritative
+  # downstream. In the authorized launch case, when the seed is non-braking, the non-braking seed
+  # imposes no floor so the speedup-guarded launch pulse can follow an opening lead off the line.
+  # (A positive "hazard" is not a hazard; it would otherwise clamp the PROGRESS layer that is
+  # designed to raise accel when authorized. The instant the seed goes negative and is not a
+  # low-risk soft case, it re-binds.)
   if scene.has_lead and (scene.lead_a_target < 0.0 or not opening_pullaway):
-    cands.append(LongitudinalCandidate(float(scene.lead_a_target), CandidateRole.PHYSICAL_HAZARD,
-                                       EvidenceClass.LEAD, "lead_follow", is_stop=bool(scene.lead_should_stop)))
+    soft_target = _lead_softening_target(scene)
+    if soft_target is not None:
+      # Phase 4: low-risk far/medium lead-follow decel is softened from a binding hazard to an
+      # advisory cap plus an authorized LEAD progress/desire candidate at the same target. This
+      # raises the pre-MPC seed when it equals the lead-influenced target, while other caps
+      # (curve/SLA/model stop) and the lead-following cushion remain free to bind lower.
+      cands.append(LongitudinalCandidate(soft_target, CandidateRole.ADVISORY_CAP,
+                                         EvidenceClass.LEAD, "lead_follow_soft"))
+      cands.append(LongitudinalCandidate(soft_target, CandidateRole.PROGRESS,
+                                         EvidenceClass.LEAD, "lead_follow_soft_desire", authorized=True))
+    else:
+      cands.append(LongitudinalCandidate(float(scene.lead_a_target), CandidateRole.PHYSICAL_HAZARD,
+                                         EvidenceClass.LEAD, "lead_follow", is_stop=bool(scene.lead_should_stop)))
     # lead-following cushion: anticipatory gentle coast to a slower moving lead while runway
     # allows, as an advisory cap. The MPC hazard above still binds when it must brake harder
     # (tighten = safe; this only relaxes the approach, never overrides the physics floor).

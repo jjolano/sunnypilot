@@ -9,11 +9,11 @@ Ties the longitudinal components together behind one update():
                           policy.build_candidates -> decision.decide -> a_target
 
 This is the longitudinal analog of the lateral ``torque_v2_1`` adapter: plannerd builds the
-inputs (from the MPC baseline, radarState leads, modelV2, SCC/map/speed-limit providers, and
-the Longitudinal Mode / personality params) and calls ``update``. The custom policy shapes
-the planner's a_target within the MPC's physical envelope; the MPC keeps lead-follow physics
-(ADR 0001). End-to-end feel is validated against the engaged corpus; the composition itself
-is integration-tested with fakes.
+pre-MPC target inputs (radarState leads, modelV2, SCC/map/speed-limit providers, and the
+Longitudinal Mode / personality params) and calls ``update``. The custom policy shapes that
+pre-MPC target; the MPC still owns final lead-follow physics and stop output downstream
+(ADR 0001). End-to-end feel is validated against the engaged corpus; the composition itself is
+integration-tested with fakes.
 """
 from __future__ import annotations
 
@@ -41,6 +41,18 @@ def _f(value: object, default: float = 0.0) -> float:
   return v if math.isfinite(v) else default
 
 
+def _raw_lead_kinematics_valid(lead0: Any) -> bool:
+  """True only when the raw radarState lead0 kinematic fields are all present and finite."""
+  for attr in ("dRel", "vLead", "vLeadK", "vRel"):
+    v = getattr(lead0, attr, None)
+    try:
+      if v is None or not math.isfinite(float(v)):
+        return False
+    except (TypeError, ValueError):
+      return False
+  return True
+
+
 @dataclass(frozen=True)
 class LongitudinalStackInputs:
   v_ego: float
@@ -49,7 +61,7 @@ class LongitudinalStackInputs:
   accel_limits: tuple[float, float]
   accel_coast: float = 0.0
   leads: tuple[Any, Any] = (None, None)  # duck-typed radar/model leads (lead0, lead1)
-  lead_a_target: float = 0.0           # MPC lead-follow accel (physics owned by MPC)
+  lead_a_target: float = 0.0           # lead-present pre-MPC seed accel; final MPC lead physics is downstream
   lead_should_stop: bool = False
   # model stop (E2E)
   model_should_stop: bool = False
@@ -110,7 +122,12 @@ class CustomLongitudinalStack:
     lead_gap_excess = float(getattr(lead_ctx, "lead_gap_excess", 0.0) or 0.0)
 
     # Lead kinematics for the cushion / speedup guard / radar corroboration (from radarState).
+    # Preserve raw validity *before* _f sanitizes missing/non-finite values so the policy can
+    # reject softening on bad live data.
     lead0 = inp.leads[0]
+    lead_kinematics_valid = True
+    if has_lead and lead0 is not None:
+      lead_kinematics_valid = _raw_lead_kinematics_valid(lead0)
     lead_v = _f(getattr(lead0, "vLeadK", getattr(lead0, "vLead", 0.0))) if has_lead else 0.0
     lead_d_rel = _f(getattr(lead0, "dRel", 0.0)) if has_lead else 0.0
     lead_v_rel = _f(getattr(lead0, "vRel", lead_v - inp.v_ego)) if has_lead else 0.0
@@ -122,6 +139,7 @@ class CustomLongitudinalStack:
       has_lead=has_lead, lead_a_target=inp.lead_a_target, lead_should_stop=inp.lead_should_stop,
       lead_gap_excess=lead_gap_excess, lead_progress_allowed=lead_progress_allowed,
       lead_v=lead_v, lead_d_rel=lead_d_rel, lead_v_rel=lead_v_rel, follow_gap=follow_gap,
+      lead_kinematics_valid=lead_kinematics_valid,
       model_should_stop=inp.model_should_stop, model_stop_distance=inp.model_stop_distance,
       model_desired_accel=inp.model_desired_accel, model_stop_prob=inp.model_stop_prob,
       stop_threat=inp.stop_threat,
@@ -133,8 +151,9 @@ class CustomLongitudinalStack:
     candidates = build_candidates(scene)
     decision = decide(candidates, inp.mode, inp.accel_limits, inp.sources)
 
-    # The custom policy never relaxes the MPC's physical envelope: clamp to the seed when the
-    # seed is more conservative than a non-hazard policy choice would allow.
+    # Decision output is a pre-MPC target. Most lead-present braking seeds bind as hazards;
+    # only explicitly approved low-risk soft cases raise the seed before the downstream MPC
+    # solves final lead-follow physics.
     a_target = decision.a_target
     release_source = str(decision.selected_intent)
     lead_release_context = bool(release_source == "lead_pullaway" and raw_lead_present and lead_progress_allowed

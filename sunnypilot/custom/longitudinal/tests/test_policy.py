@@ -224,3 +224,127 @@ def test_no_lead_stop_clear_gate():
                                 model_stop_distance=5.0, model_desired_accel=-1.0)
   assert no_lead_stop_clear(clear) is True
   assert no_lead_stop_clear(not_clear) is False
+
+
+# -----------------------------------------------------------------------------
+# Phase 4 lead-softening policy tests
+# -----------------------------------------------------------------------------
+
+def _soft_scene(**over):
+  # Far, non-closing, low-risk lead-follow decel baseline.
+  base = dict(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=-0.3,
+    has_lead=True, lead_a_target=-0.3, lead_should_stop=False,
+    lead_v=25.0, lead_d_rel=100.0, lead_v_rel=0.0, follow_gap=37.5,
+    lead_kinematics_valid=True,
+    model_should_stop=False, model_stop_distance=None,
+    stop_threat=False, force_slow_decel=False, brake_pressed=False, gas_pressed=False,
+  )
+  base.update(over)
+  return LongitudinalScene(**base)
+
+
+def test_far_non_closing_lead_softens_to_advisory_and_progress():
+  scene = _soft_scene()
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" not in intents          # physical hazard suppressed
+  assert "lead_follow_soft" in intents
+  assert "lead_follow_soft_desire" in intents
+  assert intents["lead_follow_soft"].role is CandidateRole.ADVISORY_CAP
+  assert intents["lead_follow_soft"].source is EvidenceClass.LEAD
+  assert intents["lead_follow_soft_desire"].role is CandidateRole.PROGRESS
+  assert intents["lead_follow_soft_desire"].authorized is True
+  assert intents["lead_follow_soft"].a_target == pytest.approx(-0.05)
+  # Output is raised from the -0.3 seed to the soft near-coast target.
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-0.05)
+  assert d.reason == "advisory_capped"
+
+
+def test_mid_gentle_closing_accepted_only_with_dynamic_excess_gap():
+  # v_ego=20 -> desired/min gap 44 m; closing 1 m/s at 60 m gives tiny required decel.
+  accepted = _soft_scene(v_ego=20.0, lead_v=19.0, lead_v_rel=-1.0, lead_d_rel=60.0,
+                         follow_gap=30.0, lead_a_target=-0.3, seed_a_target=-0.3)
+  cands = build_candidates(accepted)
+  assert "lead_follow_soft" in sources_of(cands)
+
+  # Just enough distance to pass min_distance (45 m) but not enough usable excess.
+  rejected_margin = _soft_scene(v_ego=20.0, lead_v=19.0, lead_v_rel=-1.0, lead_d_rel=47.0,
+                                follow_gap=30.0, lead_a_target=-0.3)
+  assert "lead_follow" in sources_of(build_candidates(rejected_margin))
+  assert "lead_follow_soft" not in sources_of(build_candidates(rejected_margin))
+
+
+def test_close_headway_rejected():
+  # Same speed, well below the dynamic min distance for v_ego=25 (55 m).
+  scene = _soft_scene(lead_d_rel=40.0)
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" in intents
+  assert "lead_follow_soft" not in intents
+
+
+def test_high_required_decel_rejected():
+  # 4 m/s closing over 16 m excess -> 0.5 m/s^2 required, above the 0.25 threshold.
+  scene = _soft_scene(lead_v_rel=-4.0, lead_d_rel=60.0, follow_gap=30.0)
+  assert "lead_follow_soft" not in sources_of(build_candidates(scene))
+
+
+def test_strong_lead_decel_rejected():
+  scene = _soft_scene(lead_a_target=-0.8)
+  assert "lead_follow_soft" not in sources_of(build_candidates(scene))
+
+
+def test_stopped_or_crawling_lead_rejected():
+  for lead_v in (0.0, 3.0):
+    scene = _soft_scene(lead_v=lead_v)
+    assert "lead_follow_soft" not in sources_of(build_candidates(scene))
+
+
+def test_lead_softening_rejected_by_stop_and_override_blockers():
+  blockers = (
+    "lead_should_stop",
+    "model_should_stop",
+    "stop_threat",
+    "force_slow_decel",
+    "brake_pressed",
+    "gas_pressed",
+  )
+  for name in blockers:
+    assert "lead_follow_soft" not in sources_of(build_candidates(_soft_scene(**{name: True}))), name
+
+
+def test_lead_softening_rejected_near_model_stop():
+  # model stop distance inside the dynamic clearance -> reject
+  scene = _soft_scene(model_should_stop=False, model_stop_distance=30.0)
+  assert "lead_follow_soft" not in sources_of(build_candidates(scene))
+  # non-finite model stop distance -> reject
+  scene = _soft_scene(model_should_stop=False, model_stop_distance=float("nan"))
+  assert "lead_follow_soft" not in sources_of(build_candidates(scene))
+
+
+def test_lead_softening_rejected_on_bad_kinematics():
+  # non-finite lead_d_rel
+  assert "lead_follow_soft" not in sources_of(build_candidates(_soft_scene(lead_d_rel=float("nan"))))
+  # raw live kinematics flagged invalid
+  assert "lead_follow_soft" not in sources_of(build_candidates(_soft_scene(lead_kinematics_valid=False)))
+
+
+def test_lead_cushion_can_still_bind_below_soft_target():
+  # Slower lead with just enough runway: softening accepts (closing is gentle), but the
+  # lead-following cushion advisory cap is stronger and binds lower.
+  scene = LongitudinalScene(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=-0.3,
+    has_lead=True, lead_a_target=-0.3,
+    lead_v=24.7, lead_d_rel=70.0, lead_v_rel=-0.3, follow_gap=37.5,
+    lead_kinematics_valid=True, accel_coast=-0.25,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow_soft" in intents
+  assert "lead_cushion" in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  # The stronger cushion cap (around -0.25) binds below the soft -0.05 target.
+  assert d.a_target < intents["lead_follow_soft"].a_target
+  assert d.a_target < -0.1

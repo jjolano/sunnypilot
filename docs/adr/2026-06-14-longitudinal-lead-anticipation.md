@@ -103,8 +103,9 @@ softenings.** The gate **failed on benefit**, so actuated lead anticipation stay
 **Mode control updated (2026-06-15):** `LeadAnticipationMode=off|shadow|apply` replaces the
 binary enable as the source of truth. The default is `shadow`, which warms the same tracker and
 records what would have been shaped but returns the exact raw `radarState` to the MPC. `apply` is
-explicit opt-in and is runtime-gated by `CustomLongitudinalEnabled`; the compatibility
-`LeadAnticipationEnabled` bool only maps to apply when the string mode is absent/empty.
+explicit opt-in and is runtime-gated by `CustomLongitudinalEnabled`. The compatibility
+`LeadAnticipationEnabled` bool is storage-only/inert; missing or empty string mode resolves to
+`shadow`, never to `apply`.
 
 Why it's inert: real radar leads are continuously-tracked → high confidence, and §3 by design never
 discounts a confident lead. The confidence gate that makes it *safe* makes it do *nothing* exactly

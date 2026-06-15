@@ -11,7 +11,8 @@ SAFETY — unlike the a_target shaper, this reaches the MPC *input* and can redu
   (never positive, never beyond the raw measurement, so the lead is never predicted faster/closer);
 - never discounts a non-braking lead, a high-confidence lead, or a sustained brake;
 - floors the discount at ``DISCOUNT_FLOOR``;
-- is opt-in via mode (``LeadAnticipationMode`` / compatibility ``LeadAnticipationEnabled``) and fails closed to the raw radarState.
+- is opt-in via ``LeadAnticipationMode=apply``; legacy ``LeadAnticipationEnabled`` is storage-only,
+  and all missing/invalid modes fail closed to raw radarState passthrough.
 
 Validate via ``profile_lead_following`` replay (reactive-brake + decel-peak down, headway not up,
 zero new close-approaches) before any default-on.
@@ -110,8 +111,9 @@ class LeadAnticipation:
     try:
       mode_raw = (_param_string(self._params, "LeadAnticipationMode") or "").strip().lower()
       if mode_raw == "":
-        self.enabled = bool(self._params.get_bool("LeadAnticipationEnabled"))
-        self.mode = MODE_APPLY if self.enabled else MODE_SHADOW
+        # Legacy bool is inert for behavior; missing mode resolves to shadow.
+        self.mode = MODE_SHADOW
+        self.enabled = False
       elif mode_raw in VALID_MODES:
         self.mode = mode_raw
         self.enabled = self.mode == MODE_APPLY
