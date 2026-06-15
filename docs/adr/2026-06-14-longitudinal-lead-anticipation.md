@@ -1,6 +1,6 @@
 # Longitudinal §3 — lead-motion anticipation at the planner↔MPC boundary
 
-Status: implemented default-off/inert; validation harness hardened; not default-on
+Status: implemented default-shadow/inert; validation harness hardened; apply not default-on
 Date: 2026-06-14
 Relates to: [hypermile tuning ADR §3](2026-06-13-longitudinal-hypermile-tuning.md),
 [clean-room longitudinal architecture](2026-06-13-clean-room-longitudinal-architecture.md),
@@ -44,7 +44,7 @@ spike is discounted and/or decayed faster, so it does not drive a reactive brake
 This is **NOT a shaper-only change.** Unlike §1/§2, it can *reduce* the braking the MPC would otherwise
 command — it feeds the MPC a less-alarming lead. That makes it **safety-relevant**: if a lead really is
 decelerating and we wrongly discount it, we under-brake. Hence its own ADR, a conservative confidence
-model, default-off, and replay validation before any default-on.
+model, apply-default-off, and replay validation before any apply default-on.
 
 ### Mechanism
 
@@ -67,7 +67,8 @@ corroboration, `modelProb`, and on-path score — all already in `lead_context.L
 2. **Touch-point in `process_lead`:** apply the discount inside the MPC lib. Smaller blast radius in code
    but edits an upstream file (record in `docs/touch-points.md`).
 
-Either way it is gated by a new param (default-off) and falls back to raw `aLeadK` on any fault.
+Either way it is gated by a mode param (default-shadow/raw passthrough; apply-default-off) and
+falls back to raw `aLeadK` on any fault.
 
 ## Invariants (must not move)
 
@@ -93,11 +94,17 @@ Either way it is gated by a new param (default-off) and falls back to raw `aLead
 
 ## Implementation + validation status (2026-06-14)
 
-**Implemented (commit `c16fd328`, default-off) and validated INERT — not enabled.** Built the
+**Implemented (commit `c16fd328`, originally default-off) and validated INERT — not enabled for apply.** Built the
 `LeadAnticipation` adapter + the `tools/drive_lab/replay_lead_anticipation.py` MPC A/B gate (commit
 `b795484a`). The gate ran the real `LongitudinalMpc` over 6 routes / ~7000 moving-with-lead frames
 (c7/b4/b5/c4/c8/c9) with raw vs §3-shaped leads: **0 softened frames, decel peak unchanged, 0 risky
-softenings.** The gate **failed on benefit**, so `LeadAnticipationEnabled` stays off.
+softenings.** The gate **failed on benefit**, so actuated lead anticipation stayed off.
+
+**Mode control updated (2026-06-15):** `LeadAnticipationMode=off|shadow|apply` replaces the
+binary enable as the source of truth. The default is `shadow`, which warms the same tracker and
+records what would have been shaped but returns the exact raw `radarState` to the MPC. `apply` is
+explicit opt-in and is runtime-gated by `CustomLongitudinalEnabled`; the compatibility
+`LeadAnticipationEnabled` bool only maps to apply when the string mode is absent/empty.
 
 Why it's inert: real radar leads are continuously-tracked → high confidence, and §3 by design never
 discounts a confident lead. The confidence gate that makes it *safe* makes it do *nothing* exactly
@@ -108,8 +115,8 @@ tested, but absent from the corpus).
 **The real lever** for the felt reactive braking is temporal smoothing / a shorter `aLeadTau` applied
 to **all** leads (not confidence-gated) — but that reduces braking responsiveness for confident leads
 too, so it is a distinct, higher-risk change needing its own scoping + a closed-loop "still brakes for
-a real decel" gate. §3 stays committed default-off as the foundation (the `LeadAnticipation` adapter
-can host the temporal-smoothing path).
+a real decel" gate. §3 stays committed default-shadow/raw-passthrough as the foundation (the
+`LeadAnticipation` adapter can host the temporal-smoothing path).
 
 **Validation harness hardened (2026-06-14) but corpus rerun blocked in this checkout.** The replay gate
 now emits machine-readable evidence fields (`benefit_detected`, `safety_pass`, `invalid_metric`) and has

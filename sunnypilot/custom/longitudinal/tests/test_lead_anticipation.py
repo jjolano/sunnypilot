@@ -22,6 +22,9 @@ class FakeParams:
   def get_bool(self, k):
     return bool(self._d.get(k, False))
 
+  def get(self, k, default=None, return_default=False):
+    return self._d.get(k, default)
+
 
 def lead(a_lead, d_rel=30.0, v_lead=18.0, status=True, tid=3):
   return SimpleNamespace(status=status, dRel=d_rel, vLead=v_lead, vLeadK=v_lead, aLeadK=a_lead,
@@ -33,13 +36,24 @@ def radar(l1, l2=None):
 
 
 def _on():
-  return LeadAnticipation(FakeParams(LeadAnticipationEnabled=True))
+  return LeadAnticipation(FakeParams(LeadAnticipationMode="apply", CustomLongitudinalEnabled=True))
 
 
 def test_disabled_is_passthrough():
-  la = LeadAnticipation(FakeParams(LeadAnticipationEnabled=False))
+  la = LeadAnticipation(FakeParams(LeadAnticipationMode="off", CustomLongitudinalEnabled=True))
   rs = radar(lead(-3.0))
   assert la.shape(rs, DT) is rs                       # exact same object, no wrapping
+  assert la.last_result is None
+
+
+def test_shadow_passthrough_and_records_summary():
+  la = LeadAnticipation(FakeParams(LeadAnticipationMode="shadow", CustomLongitudinalEnabled=False))
+  rs = radar(lead(-3.0))
+  assert la.shape(rs, DT) is rs
+  assert la.last_result and la.last_result["mode"] == "shadow"
+  assert la.last_result["apply"] is False
+  assert la.last_result["leadOneRaw"] == pytest.approx(-3.0)
+  assert la.last_result["leadOneShaped"] == pytest.approx(-3.0 * DISCOUNT_FLOOR)
 
 
 def test_non_braking_lead_unchanged():
@@ -86,3 +100,36 @@ def test_shaped_accel_invariant_in_raw_to_zero():
 def test_no_lead_is_passthrough_value():
   out = _on().shape(radar(lead(-3.0, status=False)), DT)
   assert out.leadOne.aLeadK == -3.0                   # status False -> untouched
+
+
+def test_bool_compatibility_when_mode_missing():
+  la = LeadAnticipation(FakeParams(LeadAnticipationEnabled=True, CustomLongitudinalEnabled=True))
+  out = la.shape(radar(lead(-3.0)), DT)
+  assert out.leadOne.aLeadK == pytest.approx(-3.0 * DISCOUNT_FLOOR)
+
+
+def test_param_default_shadow_is_exact_passthrough():
+  la = LeadAnticipation(FakeParams(CustomLongitudinalEnabled=True))
+  rs = radar(lead(-3.0))
+  assert la.mode == "shadow"
+  assert la.shape(rs, DT) is rs
+
+
+def test_bool_compatibility_wins_when_mode_missing_even_if_default_exists():
+  # Real Params.get(key) returns None for an unset key unless return_default=True is requested; this
+  # pins compatibility before the code-level default shadow fallback.
+  la = LeadAnticipation(FakeParams(LeadAnticipationEnabled=True, CustomLongitudinalEnabled=True))
+  assert la.mode == "apply"
+
+
+def test_invalid_mode_falls_back_to_passthrough():
+  la = LeadAnticipation(FakeParams(LeadAnticipationMode="bogus", LeadAnticipationEnabled=True, CustomLongitudinalEnabled=True))
+  rs = radar(lead(-3.0))
+  assert la.shape(rs, DT) is rs
+
+
+def test_custom_long_disabled_blocks_apply():
+  la = LeadAnticipation(FakeParams(LeadAnticipationMode="apply", CustomLongitudinalEnabled=False))
+  rs = radar(lead(-3.0))
+  assert la.shape(rs, DT) is rs
+  assert la.last_result and la.last_result["apply"] is False

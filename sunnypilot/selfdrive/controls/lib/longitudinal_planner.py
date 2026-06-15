@@ -40,8 +40,9 @@ class LongitudinalPlannerSP:
     # Custom-2.0 longitudinal policy (default-on in this fork; fail-closed to stock output).
     self.custom_long = CustomLongitudinalAdapter(Params())
     self.custom_long_output = None
-    # §3 lead-motion anticipation: confidence-shape the lead accel fed to the MPC (opt-in via
-    # LeadAnticipationEnabled; default off, fail-closed to the raw radarState).
+    # §3 lead-motion anticipation: mode-gated shadow/apply shaping of lead accel fed to the MPC
+    # (off/shadow/apply via LeadAnticipationMode; compatibility LeadAnticipationEnabled only when
+    # mode is absent, fail-closed to the raw radarState).
     self.lead_anticipation = LeadAnticipation(Params())
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:

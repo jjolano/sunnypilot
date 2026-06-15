@@ -1,6 +1,7 @@
 import json
 
-from openpilot.tools.drive_lab.replay_lead_anticipation import LeadReplayRow, render, render_reports, summarize_rows
+from openpilot.sunnypilot.custom.longitudinal.lead_anticipation import LeadAnticipation
+from openpilot.tools.drive_lab.replay_lead_anticipation import LeadReplayRow, _AlwaysOn, render, render_reports, summarize_rows
 
 
 def test_no_following_frames_is_explicit_and_not_safe():
@@ -9,6 +10,12 @@ def test_no_following_frames_is_explicit_and_not_safe():
   assert "no lead-following frames" in report["note"]
   assert report["benefit_detected"] is False
   assert report["safety_pass"] is False
+
+
+def test_replay_forces_apply_mode():
+  la = LeadAnticipation(_AlwaysOn())
+  assert la.mode == "apply"
+  assert _AlwaysOn().get_bool("CustomLongitudinalEnabled") is True
 
 
 def test_summarization_counts_softened_and_peaks():

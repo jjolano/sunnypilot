@@ -44,6 +44,11 @@ class _AlwaysOn:
   def get_bool(self, k):
     return True
 
+  def get(self, k, default=None, return_default=False):
+    if k == "LeadAnticipationMode":
+      return "apply"
+    return default
+
 
 @dataclass(frozen=True)
 class LeadReplayRow:

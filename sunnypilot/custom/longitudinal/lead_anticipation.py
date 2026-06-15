@@ -11,7 +11,7 @@ SAFETY — unlike the a_target shaper, this reaches the MPC *input* and can redu
   (never positive, never beyond the raw measurement, so the lead is never predicted faster/closer);
 - never discounts a non-braking lead, a high-confidence lead, or a sustained brake;
 - floors the discount at ``DISCOUNT_FLOOR``;
-- is opt-in (``LeadAnticipationEnabled``, default-off) and fails closed to the raw radarState.
+- is opt-in via mode (``LeadAnticipationMode`` / compatibility ``LeadAnticipationEnabled``) and fails closed to the raw radarState.
 
 Validate via ``profile_lead_following`` replay (reactive-brake + decel-peak down, headway not up,
 zero new close-approaches) before any default-on.
@@ -28,6 +28,26 @@ DISCOUNT_FLOOR = 0.5         # never discount a measured decel below this fracti
 SUSTAINED_BRAKE_S = 0.6      # consecutive braking this long => a real brake, no discount
 SUSTAINED_BRAKE_A = -0.5     # m/s^2; aLeadK at/below this counts as a meaningful brake
 PARAMS_REFRESH_PERIOD = 50   # planner ticks
+MODE_OFF = "off"
+MODE_SHADOW = "shadow"
+MODE_APPLY = "apply"
+VALID_MODES = {MODE_OFF, MODE_SHADOW, MODE_APPLY}
+
+
+def _param_string(params: Any, key: str) -> str | None:
+  """Read the explicitly stored string param; defaults are applied by LeadAnticipation."""
+  try:
+    raw = params.get(key)
+  except TypeError:
+    raw = params.get(key, None)
+  if raw is None:
+    return None
+  if isinstance(raw, bytes):
+    try:
+      raw = raw.decode()
+    except Exception:
+      return None
+  return str(raw)
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -78,7 +98,9 @@ class LeadAnticipation:
     self._conf = (LeadConfidenceTracker(), LeadConfidenceTracker())
     self._brake_s = [0.0, 0.0]
     self._tick = 0
+    self.mode = MODE_OFF
     self.enabled = False
+    self.last_result = None
     if params is not None:
       self.refresh_params()
 
@@ -86,22 +108,54 @@ class LeadAnticipation:
     if self._params is None:
       return
     try:
-      self.enabled = bool(self._params.get_bool("LeadAnticipationEnabled"))
+      mode_raw = (_param_string(self._params, "LeadAnticipationMode") or "").strip().lower()
+      if mode_raw == "":
+        self.enabled = bool(self._params.get_bool("LeadAnticipationEnabled"))
+        self.mode = MODE_APPLY if self.enabled else MODE_SHADOW
+      elif mode_raw in VALID_MODES:
+        self.mode = mode_raw
+        self.enabled = self.mode == MODE_APPLY
+      else:
+        self.mode = MODE_OFF
+        self.enabled = False
     except Exception:
+      self.mode = MODE_OFF
       self.enabled = False
 
   def shape(self, radarstate: Any, dt: float) -> Any:
-    """Return radarstate unchanged when disabled, else a wrapper with confidence-shaped lead accel."""
+    """Return radarstate unchanged unless apply mode is enabled and custom longitudinal is on."""
     self._tick += 1
     if self._params is not None and self._tick % PARAMS_REFRESH_PERIOD == 0:
       self.refresh_params()
-    if not self.enabled:
+    custom_long_enabled = False
+    if self._params is not None:
+      try:
+        custom_long_enabled = bool(self._params.get_bool("CustomLongitudinalEnabled"))
+      except Exception:
+        custom_long_enabled = False
+    should_apply = self.mode == MODE_APPLY and self.enabled and custom_long_enabled
+    should_shadow = self.mode in (MODE_SHADOW, MODE_APPLY)
+    if not should_shadow and not self.enabled:
+      self.last_result = None
       return radarstate
     try:
       one = self._shape_lead(getattr(radarstate, "leadOne", None), 0, dt)
       two = self._shape_lead(getattr(radarstate, "leadTwo", None), 1, dt)
+      raw_one = getattr(radarstate, "leadOne", None)
+      raw_two = getattr(radarstate, "leadTwo", None)
+      self.last_result = {
+        "mode": self.mode,
+        "apply": should_apply,
+        "leadOneRaw": _f(getattr(raw_one, "aLeadK", 0.0)) if raw_one is not None else None,
+        "leadOneShaped": _f(getattr(one, "aLeadK", 0.0)) if one is not None else None,
+        "leadTwoRaw": _f(getattr(raw_two, "aLeadK", 0.0)) if raw_two is not None else None,
+        "leadTwoShaped": _f(getattr(two, "aLeadK", 0.0)) if two is not None else None,
+      }
+      if not should_apply:
+        return radarstate
       return _ShapedRadarState(radarstate, one, two)
     except Exception:   # fail closed: never let anticipation break the planner
+      self.last_result = None
       return radarstate
 
   def _shape_lead(self, lead: Any, idx: int, dt: float) -> Any:

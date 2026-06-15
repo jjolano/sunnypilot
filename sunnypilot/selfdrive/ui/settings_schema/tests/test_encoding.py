@@ -88,6 +88,11 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert enum.values == ["acc", "e2e", "scc"]
   assert enum.labels == ["ACC", "E2E", "SCC"]
 
+  lead_enum = homogeneous_string_options(find_item(CRUISE, "LeadAnticipationMode"))
+  assert lead_enum is not None
+  assert lead_enum.values == ["off", "shadow", "apply"]
+  assert lead_enum.labels == ["Off", "Monitor only", "Apply lead smoothing"]
+
 
 def test_custom_longitudinal_string_index_matches_planner_fallbacks():
   enum = homogeneous_string_options(find_item(CRUISE, "CustomLongitudinalMode"))
