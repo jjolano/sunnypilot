@@ -194,6 +194,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  customLongitudinal @8 :CustomLongitudinal;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -203,6 +204,21 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     enum DynamicExperimentalControlState {
       acc @0;
       blended @1;
+    }
+  }
+
+  struct CustomLongitudinal {
+    mode @0 :CustomLongitudinalMode;
+    enabled @1 :Bool;
+    active @2 :Bool;
+    shouldStop @3 :Bool;
+    selectedIntent @4 :Text;
+    reason @5 :Text;
+
+    enum CustomLongitudinalMode {
+      acc @0;
+      e2e @1;
+      scc @2;
     }
   }
 

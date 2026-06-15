@@ -2,8 +2,8 @@
 
 ``CustomLongitudinalAdapter`` is held by ``LongitudinalPlannerSP``; when
 ``CustomLongitudinalEnabled`` is set it shapes the planner's baseline ``output_a_target``
-with the custom policy. Default off => stock planner behavior, so this can never change
-default driving.
+with the custom policy and returns the policy-owned stop commitment. The shaper is
+default-on in this fork, but fail-closed to the stock planner output on faults.
 
 Evidence mapping — all from verified upstream signals (no guessing): leads from
 ``radarState`` LeadData; advisory caps from the planner's own SCC vision/map and
@@ -17,6 +17,7 @@ by ``StopTrustLearner``, which learns how much to trust it from real driver disa
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any
 
 from openpilot.sunnypilot.custom.longitudinal.model_trust import StopTrustLearner
@@ -89,12 +90,9 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     v_ego=v_ego, v_cruise=v_cruise, seed_a_target=seed_a_target, accel_limits=accel_limits,
     accel_coast=float(accel_coast),
     leads=(lead_one, lead_two),
-    # lead_should_stop is intentionally inert: the adapter shapes only a_target (ADR 0001 —
-    # the MPC owns lead-follow physics), and the base planner already derives the actuated
-    # `shouldStop` by OR-ing the MPC's own stopping detection with modelV2.action.shouldStop
-    # (longitudinal_planner.py). The custom stack's should_stop is built from those same two
-    # cases, so routing it back would only re-assert signals already consumed — no unique
-    # information. Leaving it False keeps the redundant stop path out of actuation.
+    # lead_should_stop is intentionally inert: MPC owns lead-follow stop physics and the base
+    # planner carries the MPC stop bit into final actuation separately. The custom stack's
+    # should_stop is reserved for model-stop commitment under the active mode gate.
     lead_a_target=lead_a_target, lead_should_stop=False,
     model_should_stop=bool(model_should_stop),
     model_stop_distance=(float(model_stop_distance) if model_stop_distance is not None else None),
@@ -120,17 +118,18 @@ class CustomLongitudinalAdapter:
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     if params is not None:
-      self.refresh_params()
+      self.refresh_params(initial=True)
 
-  def refresh_params(self) -> None:
+  def refresh_params(self, initial: bool = False) -> None:
     p = self._params
     if p is None:
       return
     try:
-      self.enabled = bool(p.get_bool("CustomLongitudinalEnabled"))
-      # SCC is the default: the custom-2.0 intelligent ACC/E2E blend (the DEC replacement). acc/e2e
-      # force OEM-like cruise or the model's stops respectively.
-      self.mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc")
+      if initial:
+        self.enabled = bool(p.get_bool("CustomLongitudinalEnabled"))
+        # SCC is the default: the custom-2.0 intelligent ACC/E2E blend (the DEC replacement). acc/e2e
+        # force OEM-like cruise or the model's stops respectively.
+        self.mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc")
       self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
       # SCC curve sources are gated by the existing upstream SCC enable toggles.
       self.sources = SourceToggles(
@@ -138,30 +137,31 @@ class CustomLongitudinalAdapter:
         scc_curve_map_enabled=bool(p.get_bool("SmartCruiseControlMap")),
       )
     except Exception:  # params are advisory; never fault the planner on a read error
-      self.enabled = False
+      if initial:
+        self.enabled = False
 
-  def apply(self, sm: Any, v_ego: float, a_ego: float, v_cruise: float, seed_a_target: float,
-            scc: Any, sla: Any, dt: float = 0.05) -> float:
-    """Return the shaped a_target, or the unchanged seed when disabled or on any fault."""
+  def maybe_refresh_params(self) -> None:
     self._tick += 1
     if self._params is not None and self._tick % PARAMS_REFRESH_PERIOD == 0:
-      self.refresh_params()
+      self.refresh_params(initial=False)
+
+  def evaluate(self, sm: Any, v_ego: float, a_ego: float, v_cruise: float, seed_a_target: float,
+               scc: Any, sla: Any, dt: float = 0.05) -> 'CustomLongitudinalOutput':
     if not self.enabled:
-      return seed_a_target
+      return CustomLongitudinalOutput(
+        a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
+        selected_intent="disabled", reason="disabled", debug={"seed_a_target": seed_a_target},
+      )
     try:
       radar = sm['radarState']
       cs = sm['carState']
       gas_pressed = bool(getattr(cs, "gasPressed", False))
 
-      # Upstream's verified model stop (the same signal the base planner uses), with trust
-      # learned from driver disagreement: gas during a model stop = the driver countermanding it.
       model = sm['modelV2']
       action = getattr(model, "action", None)
       model_should_stop = bool(getattr(action, "shouldStop", False)) if action is not None else False
       model_desired_accel = _f(getattr(action, "desiredAcceleration", 0.0)) if action is not None else 0.0
       model_stop_prob = self._stop_trust.update(model_should_stop, driver_disagrees=gas_pressed, dt=dt)
-      # Distance to the model's predicted rest point, enabling the early/gentle stop-approach
-      # + runway-comfort governor (the distance-aware path is inert while this is None).
       model_stop_distance = _model_stop_distance(model)
 
       cc = sm['carControl']
@@ -182,6 +182,29 @@ class CustomLongitudinalAdapter:
         model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance, accel_coast=accel_coast,
       )
       result = self._stack.update(inputs, dt)
-      return float(result.a_target)
-    except Exception:  # fail-closed: never let the custom stack break the planner
-      return seed_a_target
+      return CustomLongitudinalOutput(
+        a_target=float(result.a_target), should_stop=bool(result.should_stop), enabled=True, mode=self.mode,
+        selected_intent=result.debug.get("intent"), reason=result.debug.get("reason"), debug=result.debug,
+      )
+    except Exception:
+      return CustomLongitudinalOutput(
+        a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
+        selected_intent="fault", reason="fault", debug={},
+      )
+
+  def apply(self, sm: Any, v_ego: float, a_ego: float, v_cruise: float, seed_a_target: float,
+            scc: Any, sla: Any, dt: float = 0.05) -> float:
+    """Return the shaped a_target, or the unchanged seed when disabled or on any fault."""
+    self.maybe_refresh_params()
+    return self.evaluate(sm, v_ego, a_ego, v_cruise, seed_a_target, scc, sla, dt).a_target
+
+
+@dataclass(frozen=True)
+class CustomLongitudinalOutput:
+  a_target: float
+  should_stop: bool
+  enabled: bool
+  mode: LongitudinalMode
+  selected_intent: object | None
+  reason: object | None
+  debug: dict[str, Any]

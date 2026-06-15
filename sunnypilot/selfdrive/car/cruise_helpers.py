@@ -16,7 +16,7 @@ DISTANCE_LONG_PRESS = 50
 
 
 class CruiseHelper:
-  def __init__(self, CP: structs.CarParams):
+  def __init__(self, CP):
     self.CP = CP
     self.params = Params()
 
@@ -43,6 +43,8 @@ class CruiseHelper:
         self.button_frame_counts[button] = int(button_event.pressed)
 
   def update_experimental_mode(self, events, experimental_mode) -> None:
+    if self.params.get_bool("CustomLongitudinalEnabled"):
+      return
     if self.button_frame_counts[ButtonType.gapAdjustCruise] >= DISTANCE_LONG_PRESS and not self.experimental_mode_switched:
       self._experimental_mode = not experimental_mode
       self.params.put_bool("ExperimentalMode", self._experimental_mode)

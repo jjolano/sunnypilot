@@ -65,6 +65,8 @@ class ExpButton(Widget):
   def _is_toggle_allowed(self):
     if not self._params.get_bool("ExperimentalModeConfirmed"):
       return False
+    if self._params.get_bool("CustomLongitudinalEnabled"):
+      return False
 
     # Mirror exp mode toggle using persistent car params
     return ui_state.has_longitudinal_control

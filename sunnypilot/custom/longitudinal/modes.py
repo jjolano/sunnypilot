@@ -30,6 +30,8 @@ class LongitudinalMode(Enum):
     default = default if default is not None else cls.ACC
     if isinstance(value, cls):
       return value
+    if isinstance(value, bytes):
+      value = value.decode(errors="ignore")
     text = str(value or "").strip().lower()
     for mode in cls:
       if text == mode.value:

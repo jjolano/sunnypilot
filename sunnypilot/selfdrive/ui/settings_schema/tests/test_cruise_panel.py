@@ -23,7 +23,7 @@ SUBPANELS = [e["id"] for e in PLAN if e["kind"] == "subpanel"]
 def test_cruise_top_level_controls_render_inline():
   for key in ("ExperimentalMode", "DynamicExperimentalControl", "DisengageOnAccelerator",
               "IntelligentCruiseButtonManagement", "CustomAccIncrementsEnabled",
-              "SmartCruiseControlVision", "SmartCruiseControlMap"):
+              "CustomLongitudinalEnabled", "SmartCruiseControlVision", "SmartCruiseControlMap"):
     assert CONTROLS.get(key) == "toggle", f"{key} missing/wrong widget"
   assert CONTROLS.get("LongitudinalPersonality") == "multiple_button"
   assert CONTROLS.get("CustomLongitudinalMode") == "multiple_button"
@@ -36,6 +36,8 @@ def test_custom_acc_increments_inlined_as_subitems():
 
 
 def test_custom_longitudinal_mode_is_string_multiple_button():
+  enabled = find_item(CRUISE, "CustomLongitudinalEnabled")
+  assert enabled is not None and enabled["widget"] == "toggle"
   item = find_item(CRUISE, "CustomLongitudinalMode")
   assert item is not None
   assert "options" in item

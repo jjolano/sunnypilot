@@ -17,6 +17,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolve
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.common.params import Params
 from openpilot.sunnypilot.custom.longitudinal.lead_anticipation import LeadAnticipation
+from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
@@ -24,7 +25,7 @@ LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
 
 class LongitudinalPlannerSP:
-  def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
+  def __init__(self, CP, CP_SP, mpc):
     self.events_sp = EventsSP()
     self.dec = DynamicExperimentalController(CP, mpc)
     self.scc = SmartCruiseControl()
@@ -36,18 +37,20 @@ class LongitudinalPlannerSP:
     self.output_v_target = 0.
     self.output_a_target = 0.
 
-    # Custom-2.0 longitudinal policy (opt-in via CustomLongitudinalEnabled; default off).
+    # Custom-2.0 longitudinal policy (default-on in this fork; fail-closed to stock output).
     self.custom_long = CustomLongitudinalAdapter(Params())
+    self.custom_long_output = None
     # §3 lead-motion anticipation: confidence-shape the lead accel fed to the MPC (opt-in via
     # LeadAnticipationEnabled; default off, fail-closed to the raw radarState).
     self.lead_anticipation = LeadAnticipation(Params())
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
-    # The custom-2.0 stack's SCC mode is the DEC replacement, so when the custom policy is enabled
-    # DEC is bypassed: the base MPC just follows Experimental Mode and the custom SCC blend owns the
-    # ACC/E2E decision (avoids stacking two ACC/E2E deciders).
-    if self.custom_long.enabled or not self.dec.active():
+    if self.custom_long.enabled:
+      return self.custom_long.mode is LongitudinalMode.E2E
+
+    # Custom off: preserve legacy ExperimentalMode + DEC behavior unchanged.
+    if not self.dec.active():
       return experimental_mode
 
     return experimental_mode and self.dec.mode() == "blended"
@@ -59,6 +62,7 @@ class LongitudinalPlannerSP:
 
     long_enabled = sm['carControl'].enabled
     long_override = sm['carControl'].cruiseControl.override
+    self.custom_long.maybe_refresh_params()
 
     # Smart Cruise Control
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
@@ -78,15 +82,50 @@ class LongitudinalPlannerSP:
       LongitudinalPlanSource.speedLimitAssist: (self.sla.output_v_target, self.sla.output_a_target),
     }
 
-    self.source = min(targets, key=lambda k: targets[k][0])
-    self.output_v_target, self.output_a_target = targets[self.source]
+    filtered_targets = self.custom_longitudinal_targets(targets)
+    self.source = min(filtered_targets, key=lambda k: filtered_targets[k][0])
+    self.output_v_target, self.output_a_target = filtered_targets[self.source]
 
     # Opt-in: shape the baseline a_target with the custom-2.0 policy (fail-closed; returns the
     # unchanged target when disabled or on any fault, so default behavior is never affected).
-    self.output_a_target = self.custom_long.apply(
+    self.custom_long_output = self.custom_long.evaluate(
       sm, v_ego, a_ego, v_cruise, self.output_a_target, self.scc, self.sla,
     )
+    self.output_a_target = self.custom_long_output.a_target
     return self.output_v_target, self.output_a_target
+
+  def custom_longitudinal_should_stop(self, mpc_should_stop: bool, raw_model_should_stop: bool) -> bool | None:
+    if not self.custom_long.enabled or self.custom_long_output is None:
+      return None
+    if self.custom_long.mode is LongitudinalMode.ACC:
+      return bool(mpc_should_stop)
+    if self.custom_long.mode is LongitudinalMode.E2E:
+      return bool(mpc_should_stop or raw_model_should_stop)
+    return bool(mpc_should_stop or self.custom_long_output.should_stop)
+
+  def custom_longitudinal_targets(self, targets: dict) -> dict:
+    if not self.custom_long.enabled:
+      return targets
+    admitted = admitted_evidence(self.custom_long.mode, self.custom_long.sources)
+    source_to_evidence = {
+      LongitudinalPlanSource.cruise: EvidenceClass.CRUISE,
+      LongitudinalPlanSource.sccVision: EvidenceClass.CURVE_VISION,
+      LongitudinalPlanSource.sccMap: EvidenceClass.CURVE_MAP,
+      LongitudinalPlanSource.speedLimitAssist: EvidenceClass.SPEED_LIMIT,
+    }
+    filtered = {src: target for src, target in targets.items() if source_to_evidence[src] in admitted}
+    filtered[LongitudinalPlanSource.cruise] = targets[LongitudinalPlanSource.cruise]
+    return filtered
+
+  def final_longitudinal_output(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
+                                raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[float, bool, bool]:
+    custom_should_stop = self.custom_longitudinal_should_stop(mpc_should_stop, raw_model_should_stop)
+    if self.is_e2e(sm):
+      a_target = min(raw_model_a_target, mpc_a_target)
+      should_stop = custom_should_stop if custom_should_stop is not None else (raw_model_should_stop or mpc_should_stop)
+      return float(a_target), bool(should_stop), bool(a_target < mpc_a_target)
+    should_stop = custom_should_stop if custom_should_stop is not None else mpc_should_stop
+    return float(mpc_a_target), bool(should_stop), False
 
   def update(self, sm: messaging.SubMaster) -> None:
     self.events_sp.clear()
@@ -105,11 +144,17 @@ class LongitudinalPlannerSP:
     longitudinalPlanSP.aTarget = float(self.output_a_target)
     longitudinalPlanSP.events = self.events_sp.to_msg()
 
-    # Dynamic Experimental Control
+    # Dynamic Experimental Control compatibility alias. Custom longitudinal owns mode selection
+    # when enabled, so DEC is reported inactive to avoid implying legacy DEC is driving actuation.
     dec = longitudinalPlanSP.dec
-    dec.state = DecState.blended if self.dec.mode() == 'blended' else DecState.acc
-    dec.enabled = self.dec.enabled()
-    dec.active = self.dec.active()
+    if self.custom_long.enabled:
+      dec.state = DecState.blended if self.custom_long.mode is LongitudinalMode.SCC else DecState.acc
+      dec.enabled = False
+      dec.active = False
+    else:
+      dec.state = DecState.blended if self.dec.mode() == 'blended' else DecState.acc
+      dec.enabled = self.dec.enabled()
+      dec.active = self.dec.active()
 
     # Smart Cruise Control
     smartCruiseControl = longitudinalPlanSP.smartCruiseControl
@@ -154,4 +199,19 @@ class LongitudinalPlannerSP:
     e2eAlerts.greenLightAlert = self.e2e_alerts_helper.green_light_alert
     e2eAlerts.leadDepartAlert = self.e2e_alerts_helper.lead_depart_alert
 
+    custom_long = longitudinalPlanSP.customLongitudinal
+    custom_long.enabled = bool(self.custom_long.enabled)
+    custom_long.active = bool(self.custom_long_output.enabled) if self.custom_long_output is not None else bool(self.custom_long.enabled)
+    custom_long.shouldStop = bool(self.custom_long_output.should_stop) if self.custom_long_output is not None else False
+    custom_long.mode = self._custom_longitudinal_mode_to_telemetry()
+    custom_long.selectedIntent = str(getattr(self.custom_long_output, "selected_intent", "" ) or "")
+    custom_long.reason = str(getattr(self.custom_long_output, "reason", "" ) or "")
+
     pm.send('longitudinalPlanSP', plan_sp_send)
+
+  def _custom_longitudinal_mode_to_telemetry(self):
+    if self.custom_long.mode is LongitudinalMode.ACC:
+      return custom.LongitudinalPlanSP.CustomLongitudinal.CustomLongitudinalMode.acc
+    if self.custom_long.mode is LongitudinalMode.E2E:
+      return custom.LongitudinalPlanSP.CustomLongitudinal.CustomLongitudinalMode.e2e
+    return custom.LongitudinalPlanSP.CustomLongitudinal.CustomLongitudinalMode.scc

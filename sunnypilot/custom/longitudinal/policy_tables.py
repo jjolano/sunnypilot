@@ -21,6 +21,8 @@ class Personality(Enum):
     default = default if default is not None else cls.STANDARD
     if isinstance(value, cls):
       return value
+    if isinstance(value, bytes):
+      value = value.decode(errors="ignore")
     text = str(value if value is not None else "").strip().lower()
     for p in cls:
       if text in (p.value, p.name.lower()):

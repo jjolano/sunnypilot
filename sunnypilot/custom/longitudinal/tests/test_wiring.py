@@ -215,3 +215,18 @@ def test_explicit_mode_from_param():
                             ("scc", LongitudinalMode.SCC)):
     a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode=setting))
     assert a.mode is expected
+
+
+def test_mode_and_enable_latch_after_init():
+  params = FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
+                      LongitudinalPersonality="1", SmartCruiseControlVision=True, SmartCruiseControlMap=False)
+  a = CustomLongitudinalAdapter(params)
+  params._v.update(CustomLongitudinalEnabled=False, CustomLongitudinalMode="e2e",
+                   LongitudinalPersonality="2", SmartCruiseControlVision=False, SmartCruiseControlMap=True)
+  for _ in range(50):
+    a.maybe_refresh_params()
+  assert a.enabled is True
+  assert a.mode is LongitudinalMode.ACC
+  assert a.personality is not None
+  assert a.sources.scc_curve_vision_enabled is False
+  assert a.sources.scc_curve_map_enabled is True

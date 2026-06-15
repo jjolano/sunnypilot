@@ -193,11 +193,16 @@ class BackupManagerSP:
     """Applies configuration data from a backup, but only for parameters marked as backupable."""
     backupable_params = [k.decode('utf-8') for k in self.params.all_keys(ParamKeyFlag.BACKUP)]
     backupable_set_lower = {p.lower() for p in backupable_params}
+    skip_legacy_longitudinal = self._backup_contains_custom_longitudinal(config_data)
 
     restored_count = 0
     skipped_count = 0
 
     for param, encoded_value in config_data.items():
+      if skip_legacy_longitudinal and param.lower() in ("experimentalmode", "dynamicexperimentalcontrol"):
+        skipped_count += 1
+        cloudlog.info(f"Skipped restoring param {param}: custom longitudinal restore keeps legacy mode params disabled")
+        continue
       if param.lower() in backupable_set_lower:
         # Find real param name (with correct casing)
         real_param = next(p for p in backupable_params if p.lower() == param.lower())
@@ -212,7 +217,19 @@ class BackupManagerSP:
 
     cloudlog.info(f"Restore complete: {restored_count} params restored, {skipped_count} params skipped")
 
-  def _get_current_version(self) -> custom.BackupManagerSP.Version:
+  @staticmethod
+  def _backup_contains_custom_longitudinal(config_data: dict[str, str]) -> bool:
+    lowered = {key.lower(): value for key, value in config_data.items()}
+    enabled_value = lowered.get("customlongitudinalenabled")
+    if enabled_value is not None:
+      try:
+        decoded = base64.b64decode(enabled_value).decode(errors="ignore").strip().lower()
+      except Exception:
+        decoded = ""
+      return decoded in ("1", "true", "yes", "on")
+    return "customlongitudinalmode" in lowered
+
+  def _get_current_version(self):
     """Gets current sunnypilot version information."""
     version_obj = custom.BackupManagerSP.Version()
     version_str = get_version()

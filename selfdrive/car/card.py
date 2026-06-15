@@ -23,6 +23,7 @@ from openpilot.selfdrive.car.helpers import convert_carControlSP, convert_to_cap
 
 from openpilot.sunnypilot.mads.helpers import set_alternative_experience, set_car_specific_params
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
+from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 
 REPLAY = "REPLAY" in os.environ
 
@@ -126,8 +127,8 @@ class Car:
     set_alternative_experience(self.CP, self.CP_SP, self.params)
     set_car_specific_params(self.CP, self.CP_SP, self.params)
 
-    # Dynamic Experimental Control
-    self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
+    # Legacy DEC/ExperimentalMode are compatibility inputs only when custom longitudinal is off.
+    self.dynamic_experimental_control = self._effective_dynamic_experimental_control()
 
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
     controller_available = self.CI.CC is not None and openpilot_enabled_toggle and not self.CP.dashcamOnly
@@ -180,7 +181,7 @@ class Car:
     self.v_cruise_helper = VCruiseHelper(self.CP, self.CP_SP)
 
     self.is_metric = self.params.get_bool("IsMetric")
-    self.experimental_mode = self.params.get_bool("ExperimentalMode")
+    self.experimental_mode = self._effective_experimental_mode()
 
     # card is driven by can recv, expected at 100Hz
     self.rk = Ratekeeper(100, print_delay_threshold=None)
@@ -301,13 +302,24 @@ class Car:
   def params_thread(self, evt):
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
-      self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
+      self.experimental_mode = self._effective_experimental_mode()
 
       # sunnypilot
-      self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
+      self.dynamic_experimental_control = self._effective_dynamic_experimental_control()
       self.v_cruise_helper.read_custom_set_speed_params()
 
       time.sleep(0.1)
+
+  def _effective_custom_longitudinal_mode(self) -> LongitudinalMode:
+    return LongitudinalMode.from_value(self.params.get("CustomLongitudinalMode") or "scc")
+
+  def _effective_experimental_mode(self) -> bool:
+    if self.params.get_bool("CustomLongitudinalEnabled"):
+      return bool(self.CP.openpilotLongitudinalControl and self._effective_custom_longitudinal_mode() is LongitudinalMode.E2E)
+    return bool(self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl)
+
+  def _effective_dynamic_experimental_control(self) -> bool:
+    return bool(False if self.params.get_bool("CustomLongitudinalEnabled") else self.params.get_bool("DynamicExperimentalControl"))
 
   def card_thread(self):
     e = threading.Event()

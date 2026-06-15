@@ -5,6 +5,7 @@ from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl, BigMulti
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
 
@@ -73,7 +74,7 @@ class TogglesLayoutMici(NavScroller):
     # CP gating for experimental mode
     if ui_state.CP is not None:
       if ui_state.has_longitudinal_control:
-        self._experimental_btn.set_visible(True)
+        self._experimental_btn.set_visible(not ui_state.params.get_bool("CustomLongitudinalEnabled"))
         self._personality_toggle.set_visible(True)
       else:
         # no long for now
@@ -84,4 +85,7 @@ class TogglesLayoutMici(NavScroller):
 
     # Refresh toggles from params to mirror external changes
     for key, item in self._refresh_toggles:
-      item.set_checked(ui_state.params.get_bool(key))
+      if key == "ExperimentalMode" and ui_state.params.get_bool("CustomLongitudinalEnabled"):
+        item.set_checked(LongitudinalMode.from_value(ui_state.params.get("CustomLongitudinalMode") or "scc") is LongitudinalMode.E2E)
+      else:
+        item.set_checked(ui_state.params.get_bool(key))

@@ -7,6 +7,18 @@ ButtonEvent = car.CarState.ButtonEvent
 ButtonType = car.CarState.ButtonEvent.Type
 
 
+class FakeParams:
+  def __init__(self, *, custom_longitudinal_enabled=False):
+    self.custom_longitudinal_enabled = custom_longitudinal_enabled
+    self.writes = []
+
+  def get_bool(self, key):
+    return bool(self.custom_longitudinal_enabled) if key == "CustomLongitudinalEnabled" else False
+
+  def put_bool(self, key, value):
+    self.writes.append((key, value))
+
+
 @parameterized_class(('openpilot_longitudinal',), [(True,)])
 class TestCruiseHelper:
   def setup_method(self):
@@ -64,3 +76,17 @@ class TestCruiseHelper:
         # mode should not be toggled
         assert self.cruise_helper._experimental_mode == experimental_mode
         assert self.cruise_helper.experimental_mode_switched is False
+
+  def test_gap_adjust_long_press_noops_under_custom_longitudinal(self) -> None:
+    params = FakeParams(custom_longitudinal_enabled=True)
+    self.cruise_helper.params = params
+    self.cruise_helper._experimental_mode = False
+
+    for i in range(DISTANCE_LONG_PRESS):
+      CS = car.CarState(cruiseState={"available": True})
+      CS.buttonEvents = [ButtonEvent(type=ButtonType.gapAdjustCruise, pressed=True)] if i == 0 else []
+      self.cruise_helper.update(CS, self.events, False)
+
+    assert self.cruise_helper._experimental_mode is False
+    assert self.cruise_helper.experimental_mode_switched is False
+    assert params.writes == []

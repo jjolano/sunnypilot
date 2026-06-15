@@ -8,6 +8,7 @@ from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.widgets import DialogResult
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 
 if gui_app.sunnypilot_ui():
   from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp as toggle_item
@@ -173,8 +174,13 @@ class TogglesLayout(Widget):
 
     if ui_state.CP is not None:
       if ui_state.has_longitudinal_control:
-        self._toggles["ExperimentalMode"].action_item.set_enabled(True)
-        self._toggles["ExperimentalMode"].set_description(e2e_description)
+        if self._params.get_bool("CustomLongitudinalEnabled"):
+          self._toggles["ExperimentalMode"].action_item.set_enabled(False)
+          self._toggles["ExperimentalMode"].set_description(
+            tr("Experimental Mode is controlled by Custom Longitudinal Mode while Custom Longitudinal is enabled."))
+        else:
+          self._toggles["ExperimentalMode"].action_item.set_enabled(True)
+          self._toggles["ExperimentalMode"].set_description(e2e_description)
         self._long_personality_setting.action_item.set_enabled(True)
       else:
         # no long for now
@@ -202,7 +208,11 @@ class TogglesLayout(Widget):
     # TODO: make a param control list item so we don't need to manage internal state as much here
     # refresh toggles from params to mirror external changes
     for param in self._toggle_defs:
-      self._toggles[param].action_item.set_state(self._params.get_bool(param))
+      if param == "ExperimentalMode" and self._params.get_bool("CustomLongitudinalEnabled"):
+        mode = LongitudinalMode.from_value(self._params.get("CustomLongitudinalMode") or "scc")
+        self._toggles[param].action_item.set_state(mode is LongitudinalMode.E2E)
+      else:
+        self._toggles[param].action_item.set_state(self._params.get_bool(param))
 
     # these toggles need restart, block while engaged
     for toggle_def in self._toggle_defs:
@@ -217,6 +227,11 @@ class TogglesLayout(Widget):
     self._toggles["ExperimentalMode"].set_icon(icon)
 
   def _handle_experimental_mode_toggle(self, state: bool):
+    if self._params.get_bool("CustomLongitudinalEnabled"):
+      mode = LongitudinalMode.from_value(self._params.get("CustomLongitudinalMode") or "scc")
+      self._toggles["ExperimentalMode"].action_item.set_state(mode is LongitudinalMode.E2E)
+      self._update_experimental_mode_icon()
+      return
     confirmed = self._params.get_bool("ExperimentalModeConfirmed")
     if state and not confirmed:
       def confirm_callback(result: DialogResult):

@@ -72,6 +72,7 @@ def test_is_admitted_matches_set():
 
 @pytest.mark.parametrize("value,expected", [
   ("acc", LongitudinalMode.ACC), ("E2E", LongitudinalMode.E2E), ("scc", LongitudinalMode.SCC),
+  (b"acc", LongitudinalMode.ACC), (b"e2e", LongitudinalMode.E2E), (b"scc", LongitudinalMode.SCC),
   ("0", LongitudinalMode.ACC), ("1", LongitudinalMode.E2E), ("2", LongitudinalMode.SCC),
   ("", LongitudinalMode.ACC), (None, LongitudinalMode.ACC), ("garbage", LongitudinalMode.ACC),
   (LongitudinalMode.SCC, LongitudinalMode.SCC),
