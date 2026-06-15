@@ -385,9 +385,8 @@ def _as_tuple(values: Any, n: int | None = None) -> tuple[float, ...]:
 
 
 def _extract_raw_curvature(lat_active: bool, state: dict[str, Any]) -> float:
-  measured = _safe_float(getattr(state.get("controlsState"), "curvature", None))
   if not lat_active:
-    return measured
+    return _extract_measured_curvature(state)
   model_v2 = state.get("modelV2")
   if model_v2 is not None:
     action = getattr(model_v2, "action", None)
@@ -405,12 +404,7 @@ def _extract_raw_curvature(lat_active: bool, state: dict[str, Any]) -> float:
     desired = _safe_float(getattr(controls_state, "desiredCurvature", None))
     if desired != 0.0 or getattr(controls_state, "desiredCurvature", None) is not None:
       return desired
-  car_control = state.get("carControl")
-  if car_control is not None:
-    actuators = getattr(car_control, "actuators", None)
-    if actuators is not None:
-      return _safe_float(getattr(actuators, "curvature", None), default=measured)
-  return measured
+  return _extract_measured_curvature(state)
 
 
 def _extract_measured_curvature(state: dict[str, Any]) -> float:

@@ -377,6 +377,37 @@ def _controls_state(t_s: float, curvature: float = 0.001, desired_curvature: flo
   )
 
 
+def _controls_state_with_model_path(t_s: float, raw_desired_curvature: float) -> SimpleNamespace:
+  return _route_msg(
+    "controlsState",
+    t_s,
+    SimpleNamespace(
+      curvature=0.0,
+      desiredCurvature=0.0,
+      modelPathState=SimpleNamespace(rawDesiredCurvature=raw_desired_curvature),
+    ),
+  )
+
+
+def _model_v2_no_action(t_s: float, desired_curvature: float, v_ego: float = 20.0) -> SimpleNamespace:
+  path = _coherent_path(desired_curvature, v_ego)
+  return _route_msg(
+    "modelV2",
+    t_s,
+    SimpleNamespace(
+      position=SimpleNamespace(
+        x=path["position_x"],
+        y=path["position_y"],
+        yStd=path["position_y_std"],
+      ),
+      orientation=SimpleNamespace(z=path["orientation_z"]),
+      orientationRate=SimpleNamespace(z=path["orientation_rate_z"]),
+      laneLineProbs=[0.9, 0.9, 0.9, 0.9],
+      meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
+    ),
+  )
+
+
 def _fake_route_messages(n: int, desired_curvature: float = 0.001, start_t: float = 0.0) -> list[SimpleNamespace]:
   msgs: list[SimpleNamespace] = []
   for i in range(n):
@@ -494,6 +525,49 @@ def test_extract_lateral_route_frames_skips_without_car_state():
   assert extract_lateral_route_frames(msgs) == ()
 
 
+def test_extract_lateral_route_frames_uses_controls_state_model_path_raw_desired():
+  k_raw = 0.0025
+  msgs = [
+    _car_state(0.0),
+    _car_control(0.0),
+    _live_parameters(0.0),
+    _model_v2_no_action(0.0, desired_curvature=0.001),
+    _controls_state_with_model_path(0.0, raw_desired_curvature=k_raw),
+  ]
+  frames = extract_lateral_route_frames(msgs)
+  assert len(frames) == 1
+  assert frames[0].raw_curvature == pytest.approx(k_raw)
+
+
+def test_extract_lateral_route_frames_active_fallback_uses_actuator_curvature():
+  k = 0.0018
+  msgs = [
+    _car_state(0.0),
+    _car_control(0.0, actuator_curvature=k),
+    _live_parameters(0.0),
+    _model_v2_no_action(0.0, desired_curvature=0.001),
+    _route_msg("controlsState", 0.0, SimpleNamespace()),
+  ]
+  frames = extract_lateral_route_frames(msgs)
+  assert len(frames) == 1
+  assert frames[0].raw_curvature == pytest.approx(k)
+  assert frames[0].measured_curvature == pytest.approx(k)
+
+
+def test_extract_lateral_route_frames_inactive_fallback_uses_actuator_curvature():
+  k = 0.0016
+  msgs = [
+    _car_state(0.0),
+    _car_control(0.0, lat_active=False, actuator_curvature=k),
+    _live_parameters(0.0),
+    _route_msg("controlsState", 0.0, SimpleNamespace()),
+  ]
+  frames = extract_lateral_route_frames(msgs)
+  assert len(frames) == 1
+  assert frames[0].raw_curvature == pytest.approx(k)
+  assert frames[0].lat_active is False
+
+
 # ---------- route-derived scenario tests ----------
 
 
@@ -601,3 +675,112 @@ def test_main_route_and_preset_are_mutually_exclusive(monkeypatch):
   finally:
     route_io_module.load_route_msgs = original_load_route_msgs
     sys.argv = previous_argv
+
+
+def test_main_bad_window_format_exits_before_route_loading():
+  loaded: list[bool] = []
+  original_load_route_msgs = route_io_module.load_route_msgs
+  def capture_load(route, qlog=False):
+    loaded.append(True)
+    return []
+  route_io_module.load_route_msgs = capture_load
+  previous_argv = sys.argv
+  try:
+    sys.argv = ["fuzz_lateral_route_replay.py", "--route", "fake/route", "--window", "bad", "--cases", "1"]
+    with pytest.raises(SystemExit):
+      main()
+    assert not loaded
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+
+def test_main_window_start_greater_or_equal_end_exits():
+  previous_argv = sys.argv
+  try:
+    sys.argv = ["fuzz_lateral_route_replay.py", "--route", "fake/route", "--window", "1.0,1.0", "--cases", "1"]
+    with pytest.raises(SystemExit):
+      main()
+    sys.argv = ["fuzz_lateral_route_replay.py", "--route", "fake/route", "--window", "2.0,1.0", "--cases", "1"]
+    with pytest.raises(SystemExit):
+      main()
+  finally:
+    sys.argv = previous_argv
+
+
+def test_main_max_frames_zero_exits():
+  previous_argv = sys.argv
+  try:
+    sys.argv = ["fuzz_lateral_route_replay.py", "--route", "fake/route", "--max-frames", "0", "--cases", "1"]
+    with pytest.raises(SystemExit):
+      main()
+  finally:
+    sys.argv = previous_argv
+
+
+def test_main_route_cases_zero_exits():
+  previous_argv = sys.argv
+  try:
+    sys.argv = ["fuzz_lateral_route_replay.py", "--route", "fake/route", "--cases", "0"]
+    with pytest.raises(SystemExit):
+      main()
+  finally:
+    sys.argv = previous_argv
+
+
+def test_main_route_json_output_has_null_duration_and_route_metadata(monkeypatch):
+  baseline = _fake_route_messages(8, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  previous_argv = sys.argv
+  stdout = io.StringIO()
+  try:
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "fake/route",
+      "--qlog",
+      "--window", "0.0,0.1",
+      "--max-frames", "8",
+      "--cases", "1",
+      "--perturbation", "none",
+      "--json",
+    ]
+    with contextlib.redirect_stdout(stdout):
+      main()
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+  payload = json.loads(stdout.getvalue())
+  assert payload["duration"] is None
+  assert payload["route_metadata"]["route"] == "fake/route"
+  assert payload["route_metadata"]["qlog"] is True
+  assert payload["route_metadata"]["window_start_s"] == pytest.approx(0.0)
+  assert payload["route_metadata"]["window_end_s"] == pytest.approx(0.1)
+  assert payload["route_metadata"]["max_frames"] == 8
+  assert payload["route_metadata"]["extracted_count"] == 8
+  assert payload["route_metadata"]["dt"] == DT
+
+
+def test_main_route_text_output_uses_fixed_dt_span(monkeypatch):
+  baseline = _fake_route_messages(8, desired_curvature=0.0005)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  previous_argv = sys.argv
+  stdout = io.StringIO()
+  try:
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "fake/route",
+      "--cases", "1",
+      "--perturbation", "none",
+    ]
+    with contextlib.redirect_stdout(stdout):
+      main()
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+  output = stdout.getvalue()
+  assert "route_fixed_dt_span=" in output
+  assert " duration=" not in output
