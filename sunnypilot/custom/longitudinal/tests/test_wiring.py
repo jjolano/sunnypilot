@@ -89,6 +89,7 @@ def test_build_stack_inputs_maps_evidence():
     sla_active=True, sla_v_target=18.0, sla_a_target=-0.5,
     mode=LongitudinalMode.SCC, personality=Personality.STANDARD, sources=SourceToggles(True, False),
   )
+  assert inp.a_ego == pytest.approx(0.1)           # ego accel wired through
   assert inp.curve_active is True and inp.curve_a_target == pytest.approx(-0.7)
   assert inp.curve_source is EvidenceClass.CURVE_VISION   # vision-bound curve
   assert inp.speed_limit_active is True and inp.speed_limit_a_target == pytest.approx(-0.5)

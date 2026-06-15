@@ -21,6 +21,10 @@ from dataclasses import dataclass, replace
 
 from openpilot.sunnypilot.custom.longitudinal.decision import CandidateRole, LongitudinalCandidate
 from openpilot.sunnypilot.custom.longitudinal.lead_cushion import lead_following_cushion, lead_speedup_guard
+from openpilot.sunnypilot.custom.longitudinal.lead_speed_alignment import (
+  AlignmentAction,
+  lead_speed_alignment,
+)
 from openpilot.sunnypilot.custom.longitudinal.model_trust import gate_model_stop
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass
 from openpilot.sunnypilot.custom.longitudinal.runway_governor import runway_comfort_governor
@@ -62,8 +66,9 @@ _LEAD_SOFTEN_CEILING = -0.05                # m/s^2; near-coast ceiling, never p
 @dataclass(frozen=True)
 class LongitudinalScene:
   v_ego: float
-  v_cruise: float
-  seed_a_target: float          # planner baseline (MPC cruise/seed) accel
+  a_ego: float = 0.0            # current ego accel (wired for future smoothing; Phase 1 unused)
+  v_cruise: float = 0.0
+  seed_a_target: float = 0.0    # planner baseline (MPC cruise/seed) accel
   accel_coast: float = 0.0      # current coast-down accel (negative downhill)
   personality: Personality = Personality.STANDARD
   # lead (pre-MPC lead-present seed shaping; final MPC lead physics remains downstream)
@@ -76,8 +81,14 @@ class LongitudinalScene:
   lead_v: float = 0.0
   lead_d_rel: float = 0.0
   lead_v_rel: float = 0.0
+  lead_a_k: float = 0.0
   follow_gap: float = 0.0
   lead_kinematics_valid: bool = True
+  # lead context (alignment gating)
+  lead_confidence: float = 0.0
+  lead_stable: bool = False
+  lead_shadow_active: bool = False
+  alternate_threat_active: bool = False
   # model stop (E2E)
   model_should_stop: bool = False
   model_stop_distance: float | None = None
@@ -270,6 +281,36 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
     cands.append(LongitudinalCandidate(pullaway, CandidateRole.PROGRESS,
                                        EvidenceClass.LEAD, "lead_pullaway", authorized=True))
 
+  # Phase 1 bidirectional lead-speed alignment: additional guarded advisory/progress candidates.
+  # The existing physical hazard and lead_pullaway above are preserved; these only add behavior.
+  alignment = lead_speed_alignment(
+    v_ego=scene.v_ego, a_ego=scene.a_ego, v_cruise=scene.v_cruise,
+    lead_d_rel=scene.lead_d_rel, lead_v=scene.lead_v, lead_v_rel=scene.lead_v_rel,
+    lead_a_k=scene.lead_a_k, follow_gap=scene.follow_gap,
+    lead_confidence=scene.lead_confidence, lead_stable=scene.lead_stable,
+    lead_progress_allowed=scene.lead_progress_allowed,
+    lead_shadow_active=scene.lead_shadow_active,
+    alternate_threat_active=scene.alternate_threat_active,
+    model_should_stop=scene.model_should_stop,
+    force_slow_decel=scene.force_slow_decel,
+    brake_pressed=scene.brake_pressed, gas_pressed=scene.gas_pressed,
+    personality=personality, lead_kinematics_valid=scene.lead_kinematics_valid,
+    has_lead=scene.has_lead,
+  )
+  if alignment.action is AlignmentAction.COAST:
+    cands.append(LongitudinalCandidate(alignment.a_target, CandidateRole.ADVISORY_CAP,
+                                       EvidenceClass.LEAD, "lead_alignment_coast"))
+  elif alignment.action is AlignmentAction.GENTLE_BRAKE:
+    cands.append(LongitudinalCandidate(alignment.a_target, CandidateRole.ADVISORY_CAP,
+                                       EvidenceClass.LEAD, "lead_alignment_gentle_brake"))
+  elif alignment.action is AlignmentAction.PULLAWAY:
+    cands.append(LongitudinalCandidate(alignment.a_target, CandidateRole.PROGRESS,
+                                       EvidenceClass.LEAD, "lead_pullaway_alignment", authorized=True))
+  elif alignment.action is AlignmentAction.STANDSTILL_LAUNCH:
+    cands.append(LongitudinalCandidate(alignment.a_target, CandidateRole.PROGRESS,
+                                       EvidenceClass.LEAD, "lead_standstill_launch", authorized=True))
+  alignment_pullaway = alignment.action in (AlignmentAction.PULLAWAY, AlignmentAction.STANDSTILL_LAUNCH)
+
   # comfort relax: soften advisory braking when clear
   if comfort_relax_allowed(scene):
     cands.append(LongitudinalCandidate(COMFORT_RELAX_ACCEL_MIN, CandidateRole.COMFORT_RELAX,
@@ -283,7 +324,7 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   # (A positive "hazard" is not a hazard; it would otherwise clamp the PROGRESS layer that is
   # designed to raise accel when authorized. The instant the seed goes negative and is not a
   # low-risk soft case, it re-binds.)
-  if scene.has_lead and (scene.lead_a_target < 0.0 or not opening_pullaway):
+  if scene.has_lead and (scene.lead_a_target < 0.0 or not (opening_pullaway or alignment_pullaway)):
     soft_target = _lead_softening_target(scene)
     if soft_target is not None:
       # Phase 4: low-risk far/medium lead-follow decel is softened from a binding hazard to an

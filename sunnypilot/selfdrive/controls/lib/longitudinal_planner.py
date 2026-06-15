@@ -122,7 +122,7 @@ class LongitudinalPlannerSP:
                                           raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[bool, float]:
     if not self.custom_long.enabled or self.custom_long_output is None or not bool(getattr(self.custom_long_output, "standstill_release_allowed", False)):
       return False, float(mpc_a_target)
-    if str(getattr(self.custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "no_lead_launch"):
+    if str(getattr(self.custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch"):
       return False, float(mpc_a_target)
     if bool(getattr(self.custom_long_output, "should_stop", False)):
       return False, float(mpc_a_target)

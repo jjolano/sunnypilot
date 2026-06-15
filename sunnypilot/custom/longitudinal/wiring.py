@@ -88,8 +88,8 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
   curve_source = EvidenceClass.CURVE_MAP if (scc_map_active and (not scc_vision_active or m_curve <= v_curve)) \
       else EvidenceClass.CURVE_VISION
   return LongitudinalStackInputs(
-    v_ego=v_ego, v_cruise=v_cruise, seed_a_target=seed_a_target, accel_limits=accel_limits,
-    accel_coast=float(accel_coast),
+    v_ego=v_ego, a_ego=float(a_ego), v_cruise=v_cruise, seed_a_target=seed_a_target,
+    accel_limits=accel_limits, accel_coast=float(accel_coast),
     leads=(lead_one, lead_two),
     # lead_should_stop is intentionally inert: MPC owns lead-follow stop physics and the base
     # planner carries the MPC stop bit into final actuation separately. The custom stack's

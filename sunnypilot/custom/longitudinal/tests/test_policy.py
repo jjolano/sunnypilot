@@ -348,3 +348,71 @@ def test_lead_cushion_can_still_bind_below_soft_target():
   # The stronger cushion cap (around -0.25) binds below the soft -0.05 target.
   assert d.a_target < intents["lead_follow_soft"].a_target
   assert d.a_target < -0.1
+
+
+# -----------------------------------------------------------------------------
+# Phase 1 lead-speed alignment policy integration tests
+# -----------------------------------------------------------------------------
+
+def _alignment_scene(**over):
+  base = dict(
+    v_ego=25.0, a_ego=0.0, v_cruise=25.0, seed_a_target=0.0,
+    has_lead=True, lead_a_target=0.0, lead_should_stop=False,
+    lead_v=25.0, lead_d_rel=100.0, lead_v_rel=0.0, lead_a_k=0.0,
+    follow_gap=37.5, lead_kinematics_valid=True,
+    lead_confidence=0.9, lead_stable=True, lead_progress_allowed=True,
+    lead_shadow_active=False, alternate_threat_active=False,
+    model_should_stop=False, model_stop_distance=None,
+    force_slow_decel=False, brake_pressed=False, gas_pressed=False,
+    personality=Personality.STANDARD,
+  )
+  base.update(over)
+  return LongitudinalScene(**base)
+
+
+def test_far_slower_lead_adds_alignment_coast_candidate():
+  scene = _alignment_scene(lead_v=24.0, lead_v_rel=-1.0)
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_alignment_coast" in intents
+  assert intents["lead_alignment_coast"].role is CandidateRole.ADVISORY_CAP
+  assert intents["lead_alignment_coast"].source is EvidenceClass.LEAD
+  assert intents["lead_alignment_coast"].a_target == pytest.approx(0.0)
+
+
+def test_standstill_stable_lead_adds_standstill_launch_candidate():
+  scene = _alignment_scene(
+    v_ego=0.0, lead_v=1.5, lead_v_rel=1.5, lead_d_rel=8.0,
+    follow_gap=6.0, lead_a_target=0.0, seed_a_target=0.0,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_standstill_launch" in intents
+  assert intents["lead_standstill_launch"].role is CandidateRole.PROGRESS
+  assert intents["lead_standstill_launch"].authorized is True
+  assert 0.0 < intents["lead_standstill_launch"].a_target <= launch_accel_max(Personality.STANDARD)
+
+
+def test_mid_speed_pullaway_alignment_is_not_clamped_by_non_braking_seed():
+  scene = _alignment_scene(
+    v_ego=12.0, v_cruise=20.0, seed_a_target=0.1,
+    lead_a_target=0.1, lead_v=15.0, lead_v_rel=3.0,
+    lead_d_rel=45.0, follow_gap=18.0, lead_gap_excess=0.0,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_pullaway_alignment" in intents
+  assert "lead_follow" not in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target > scene.seed_a_target
+
+
+def test_alignment_blocked_by_model_stop():
+  scene = _alignment_scene(
+    v_ego=0.0, lead_v=1.5, lead_v_rel=1.5, lead_d_rel=8.0,
+    follow_gap=6.0, model_should_stop=True,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_standstill_launch" not in intents
+  assert "lead_alignment_coast" not in intents

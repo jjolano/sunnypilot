@@ -56,9 +56,10 @@ def _raw_lead_kinematics_valid(lead0: Any) -> bool:
 @dataclass(frozen=True)
 class LongitudinalStackInputs:
   v_ego: float
-  v_cruise: float
-  seed_a_target: float                 # MPC/planner baseline accel
-  accel_limits: tuple[float, float]
+  a_ego: float = 0.0                   # current ego accel (wired for future smoothing; Phase 1 unused)
+  v_cruise: float = 0.0
+  seed_a_target: float = 0.0           # MPC/planner baseline accel
+  accel_limits: tuple[float, float] = (-4.0, 2.0)
   accel_coast: float = 0.0
   leads: tuple[Any, Any] = (None, None)  # duck-typed radar/model leads (lead0, lead1)
   lead_a_target: float = 0.0           # lead-present pre-MPC seed accel; final MPC lead physics is downstream
@@ -148,15 +149,22 @@ class CustomLongitudinalStack:
     lead_v = _f(getattr(lead0, "vLeadK", getattr(lead0, "vLead", 0.0))) if has_lead else 0.0
     lead_d_rel = _f(getattr(lead0, "dRel", 0.0)) if has_lead else 0.0
     lead_v_rel = _f(getattr(lead0, "vRel", lead_v - inp.v_ego)) if has_lead else 0.0
+    lead_a_k = _f(getattr(lead0, "aLeadK", 0.0)) if has_lead else 0.0
     follow_gap = max(FOLLOW_GAP_MIN_M, FOLLOW_TIME_GAP_S * max(0.0, inp.v_ego))
+    primary_state = lead_ctx.behavior or lead_ctx.physical
+    alignment_state = primary_state if primary_state is not None and primary_state.lead_idx == 0 else None
+    lead_confidence = float(alignment_state.confidence) if alignment_state is not None else 0.0
+    lead_stable = bool(alignment_state.stable) if alignment_state is not None else False
 
     scene = LongitudinalScene(
-      v_ego=inp.v_ego, v_cruise=inp.v_cruise, seed_a_target=inp.seed_a_target,
+      v_ego=inp.v_ego, a_ego=inp.a_ego, v_cruise=inp.v_cruise, seed_a_target=inp.seed_a_target,
       accel_coast=inp.accel_coast, personality=inp.personality,
       has_lead=has_lead, lead_a_target=inp.lead_a_target, lead_should_stop=inp.lead_should_stop,
       lead_gap_excess=lead_gap_excess, lead_progress_allowed=lead_progress_allowed,
-      lead_v=lead_v, lead_d_rel=lead_d_rel, lead_v_rel=lead_v_rel, follow_gap=follow_gap,
-      lead_kinematics_valid=lead_kinematics_valid,
+      lead_v=lead_v, lead_d_rel=lead_d_rel, lead_v_rel=lead_v_rel, lead_a_k=lead_a_k,
+      follow_gap=follow_gap, lead_kinematics_valid=lead_kinematics_valid,
+      lead_confidence=lead_confidence, lead_stable=lead_stable,
+      lead_shadow_active=lead_shadow_active, alternate_threat_active=alternate_threat_active,
       model_should_stop=inp.model_should_stop, model_stop_distance=inp.model_stop_distance,
       model_desired_accel=inp.model_desired_accel, model_stop_prob=inp.model_stop_prob,
       stop_threat=inp.stop_threat,
@@ -173,11 +181,12 @@ class CustomLongitudinalStack:
     # solves final lead-follow physics.
     a_target = decision.a_target
     release_source = str(decision.selected_intent)
-    lead_release_context = bool(release_source == "lead_pullaway" and raw_lead_present and lead_progress_allowed
+    lead_release_context = bool(release_source in ("lead_pullaway", "lead_standstill_launch")
+                                and raw_lead_present and lead_progress_allowed
                                 and not lead_shadow_active and not alternate_threat_active)
     clear_release_context = bool(release_source == "no_lead_launch" and not raw_lead_present and not lead_threat_active)
     standstill_release_allowed = bool(
-      release_source in ("lead_pullaway", "no_lead_launch")
+      release_source in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch")
       and (lead_release_context or clear_release_context)
       and decision.reason != "physical_hazard"
       and not decision.should_stop
