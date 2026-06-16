@@ -30,6 +30,11 @@ from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
   LateralDemandPipelineResult,
 )
 from openpilot.sunnypilot.custom.lateral.demand.types import DEMAND_SOURCE_LATERAL_MANEUVER
+from openpilot.tools.drive_lab.lateral_scenarios import (
+  LATERAL_PRESETS,
+  LateralPresetRequest,
+  generate_preset_scenarios,
+)
 
 
 ARTIFACT_SCHEMA = "drive-lab-lateral-demand-fuzzer-artifact"
@@ -629,6 +634,15 @@ def main() -> None:
   parser.add_argument("--seed", type=int, default=1)
   parser.add_argument("--cases", type=int, default=100)
   parser.add_argument("--kind", choices=SCENARIO_KINDS, help="Run only one scenario kind")
+  parser.add_argument("--preset", choices=LATERAL_PRESETS, help="Public lateral benchmark preset")
+  parser.add_argument("--nhtsa-family", choices=("primary", "secondary"), help="NHTSA LKA test family filter")
+  parser.add_argument("--nhtsa-line-type", help="NHTSA LKA line type filter")
+  parser.add_argument("--nhtsa-drift-rate", type=float, help="NHTSA LKA drift rate filter (m/s)")
+  parser.add_argument("--euroncap-family", choices=("lka", "elk", "sbend", "alc"), help="Euro NCAP LSS family filter")
+  parser.add_argument("--nuplan-focus", choices=("error", "jerk", "oscillation"), help="nuPlan lateral focus filter")
+  parser.add_argument("--stress-grid-sample", type=int, default=None, help="Number of random stress-grid cells (None=full grid)")
+  parser.add_argument("--profile", type=str, default=None, help="LateralProfile JSON for profile-guided fuzzing")
+  parser.add_argument("--export-specs", type=str, default=None, help="Export scenarios as ScenarioSpec JSON for behavior_change_gate")
   parser.add_argument("--duration", type=float, default=2.0, help="Scenario duration in seconds")
   parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
   parser.add_argument("--fail-fast", action="store_true", help="Stop after the first failure")
@@ -651,8 +665,41 @@ def main() -> None:
         print(f"  {failure['check']}: {failure['detail']}")
     sys.exit(0 if result.valid else 1)
 
-  config = DemandFuzzerConfig(seed=args.seed, cases=args.cases, kind=args.kind, duration_s=args.duration)
-  scenarios = generate_scenarios(config)
+  if args.preset:
+    profile = None
+    if args.profile:
+        from openpilot.tools.drive_lab.log_profile import load_lateral_profile
+        profile = load_lateral_profile(args.profile)
+    request = LateralPresetRequest(
+      preset=args.preset,
+      seed=args.seed,
+      cases=args.cases,
+      duration_s=args.duration,
+      profile=profile,
+      nhtsa_family=args.nhtsa_family,
+      nhtsa_line_type=args.nhtsa_line_type,
+      nhtsa_drift_rate=args.nhtsa_drift_rate,
+      euroncap_family=args.euroncap_family,
+      nuplan_focus=args.nuplan_focus,
+      stress_grid_sample=args.stress_grid_sample,
+    )
+    scenarios = generate_preset_scenarios(request)
+  else:
+    config = DemandFuzzerConfig(seed=args.seed, cases=args.cases, kind=args.kind, duration_s=args.duration)
+    scenarios = generate_scenarios(config)
+
+  if args.export_specs:
+    from openpilot.tools.drive_lab.lateral_scenarios import lateral_scenario_to_spec
+    source = args.preset or "fuzz"
+    specs = [lateral_scenario_to_spec(s, source=source, seed=args.seed, index=i)
+             for i, s in enumerate(scenarios)]
+    payload: dict[str, Any] = {"scenarios": [spec.to_dict() for spec in specs]}
+    path = Path(args.export_specs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_sanitize(payload), indent=2, sort_keys=True, allow_nan=False))
+    print(f"Exported {len(specs)} ScenarioSpec(s) to {args.export_specs}")
+    return
+
   results: list[tuple[int, DemandScenarioResult]] = []
   for idx, scenario in enumerate(scenarios):
     result = evaluate_scenario(scenario)
@@ -685,11 +732,14 @@ def main() -> None:
         for result_idx, result in failures
       ],
     }
+    if args.preset:
+      payload["preset"] = args.preset
     print(json.dumps(_sanitize(payload), indent=2, sort_keys=True, allow_nan=False))
   else:
     print(
       f"Drive Lab lateral demand fuzz seed={args.seed} cases={len(results)} "
-      f"kind={args.kind or 'all'} duration={args.duration}s dt={DT}s failures={len(failures)}"
+      f"kind={args.kind or 'all'} preset={args.preset or 'none'} "
+      f"duration={args.duration}s dt={DT}s failures={len(failures)}"
     )
     for idx, result in failures[:10]:
       print(f"\nFAILED: {result.scenario.title} [{result.scenario.kind}]")

@@ -16,7 +16,7 @@ import math
 import random
 import sys
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +35,11 @@ from openpilot.sunnypilot.custom.lateral.disturbance_classifier import (
   LateralSample,
   decision_name,
   reason_names,
+)
+from openpilot.tools.drive_lab.lateral_scenarios import (
+  LATERAL_PRESETS,
+  LateralPresetRequest,  # noqa: F401
+  generate_preset_scenarios,  # noqa: F401
 )
 
 
@@ -408,6 +413,20 @@ def _merge_windows(windows: list[tuple[int, int]]) -> tuple[tuple[int, int], ...
 
 def _inside_any_window(idx: int, windows: tuple[tuple[int, int], ...]) -> bool:
   return any(start <= idx < end for start, end in windows)
+
+
+def _post_trigger_release(
+  outputs: tuple[TransitionFrameOutput, ...],
+  frames: tuple[TransitionFrame, ...],
+  triggered,
+) -> list[tuple[TransitionFrameOutput, TransitionFrame]]:
+  saw_trigger = False
+  for idx, frame in enumerate(frames):
+    if triggered(frame):
+      saw_trigger = True
+    elif saw_trigger:
+      return list(zip(outputs[idx:], frames[idx:]))
+  return []
 
 
 # ---------- scenario generators ----------
@@ -824,7 +843,7 @@ def _evaluate_events(
       failures.append({"check": "missing_override", "detail": "driver_override_pulse had no steering_pressed frames"})
     elif not all(o.decision == "reject_shadow" and "DRIVER_OVERRIDE" in o.reasons for o in press_outputs):
       failures.append({"check": "override_classifier", "detail": "steering_pressed frames were not REJECT_SHADOW with DRIVER_OVERRIDE"})
-    post_release = [(o, f) for o, f in zip(outputs, frames) if not f.steering_pressed and f.t > 0.5]
+    post_release = _post_trigger_release(outputs, frames, lambda frame: frame.steering_pressed)
     if post_release:
       # Look for at least one cooldown ACCEPT frame soon after release.
       cooldown_frames = [o for o, f in post_release[: int(1.5 / DT)] if o.cooldown_remaining > 0.0 and o.decision == "accept"]
@@ -856,7 +875,7 @@ def _evaluate_events(
       failures.append({"check": "missing_trigger", "detail": "cooldown_hysteresis had no trigger frames"})
     elif not all(o.decision == "reject_shadow" for o in press_outputs):
       failures.append({"check": "trigger_reject", "detail": "trigger frames were not REJECT_SHADOW"})
-    post_trigger = [(o, f) for o, f in zip(outputs, frames) if not f.steering_pressed and f.t > 0.5]
+    post_trigger = _post_trigger_release(outputs, frames, lambda frame: frame.steering_pressed)
     if post_trigger:
       cooldown_frames = [o for o, f in post_trigger[: int(1.5 / DT)] if o.cooldown_remaining > 0.0 and o.decision == "accept"]
       if not cooldown_frames:
@@ -1009,12 +1028,18 @@ def main() -> None:
   parser.add_argument("--seed", type=int, default=1)
   parser.add_argument("--cases", type=int, default=100)
   parser.add_argument("--kind", choices=KINDS, help="Transition kind")
+  parser.add_argument("--preset", choices=LATERAL_PRESETS, help="Public lateral benchmark preset (fuzz mode only)")
   parser.add_argument("--duration", type=float, default=2.0, help="Scenario duration in seconds")
   parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
   parser.add_argument("--fail-fast", action="store_true", help="Stop after the first failure")
   parser.add_argument("--artifact-dir", type=str, default=None, help="Directory to write failure artifacts")
   parser.add_argument("--replay", type=str, default=None, help="Replay a transition artifact JSON file")
   args = parser.parse_args()
+
+  if args.preset and args.preset != "fuzz":
+    print(f"Preset '{args.preset}' is designed for fuzz_lateral_demand / fuzz_lateral_closed_loop.")
+    print("The transition fuzzer currently supports --preset fuzz only.")
+    raise SystemExit(1)
 
   if args.cases < 0:
     parser.error("--cases must be >= 0")
@@ -1055,6 +1080,7 @@ def main() -> None:
       "seed": args.seed,
       "cases": len(results),
       "kind": args.kind,
+      "preset": args.preset,
       "duration": args.duration,
       "dt": DT,
       "failures": [
@@ -1069,9 +1095,10 @@ def main() -> None:
     }
     print(json.dumps(_sanitize(payload), indent=2, sort_keys=True, allow_nan=False))
   else:
+    preset_str = f"preset={args.preset} " if args.preset else ""
     print(
       f"Drive Lab lateral transition fuzz seed={args.seed} cases={len(results)} "
-      f"kind={args.kind or 'default'} duration={args.duration}s dt={DT}s failures={len(failures)}"
+      f"{preset_str}kind={args.kind or 'default'} duration={args.duration}s dt={DT}s failures={len(failures)}"
     )
     for result in failures[:10]:
       print(f"\nFAILED: {result.scenario.title}")
