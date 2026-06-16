@@ -115,6 +115,19 @@ def test_debug_records_each_stage():
   assert r.debug["raw_curvature"] == pytest.approx(0.002)
 
 
+def test_nonfinite_processed_curvature_falls_back_to_zero_and_resets_memory():
+  p = LateralDemandPipeline(DT)
+  for _ in range(5):
+    p.update(valid_inputs(curvature=0.003))
+  r = p.update(valid_inputs(curvature=0.003, lateral_maneuver_curvature=float('nan')))
+  assert r.demand.processed_curvature == 0.0
+  assert math.isfinite(r.demand.processed_curvature)
+  assert p.previous_desired_curvature == 0.0
+  r2 = p.update(valid_inputs(curvature=0.003))
+  assert math.isfinite(r2.demand.processed_curvature)
+  assert r2.demand.demand_source == DEMAND_SOURCE_MODEL_PATH
+
+
 def test_curve_memory_resumes_corner_after_standstill():
   # corner -> stop mid-corner -> launch, through the pipeline (which manages prev curvature across
   # the stop). With curve memory the gated launch resumes the corner; without it, it starts cold.

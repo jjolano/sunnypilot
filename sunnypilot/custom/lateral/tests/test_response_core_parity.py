@@ -112,8 +112,12 @@ def _oracle_update(s, inp: ResponseCoreInputs):
   measurement = _oracle_smoother(s, inp.active, v, inp.steering_pressed, raw_measurement, raw_actual_lateral_jerk)
 
   future = inp.desired_curvature * v ** 2
+  if not math.isfinite(future):
+    future = 0.0
+    s.buf.clear()
+    s.buf.extend([0.0] * s.buf_len)
   s.buf.append(future)
-  eff_delay = max(inp.lat_delay, DT)
+  eff_delay = DT if (not math.isfinite(inp.lat_delay) or inp.lat_delay <= 0) else max(inp.lat_delay, DT)
   delay_frames = int(np.clip(eff_delay / DT, 1, s.buf_len))
   expected = s.buf[-delay_frames]
   gravity_adjusted = future - roll_compensation
@@ -252,3 +256,15 @@ def test_same_sign_unwind_triggers_on_overshoot_at_low_speed():
   for c in [0.02, 0.005, 0.0, 0.0]:
     r = core.update(ResponseCoreInputs(True, 6.0, 40.0, 0.0, False, 0.0, 0.0, c, 0.2, False))
   assert isinstance(r.same_sign_unwind, bool)  # exercised; exact trigger asserted in oracle parity
+
+
+def test_nonfinite_desired_curvature_resets_buffer():
+  # A NaN desired curvature must not contaminate the delay buffer; the core should reset it
+  # to zeros and still produce finite torque.
+  core = make_core()
+  for i in range(10):
+    core.update(ResponseCoreInputs(True, 20.0, 0.0, 0.0, False, 0.0, 0.0, 0.001 * i, 0.1, False))
+  r = core.update(ResponseCoreInputs(True, 20.0, 0.0, 0.0, False, 0.0, 0.0, float('nan'), 0.1, False))
+  assert math.isfinite(r.output_torque)
+  assert r.future_desired_lateral_accel == 0.0
+  assert all(math.isfinite(x) and x == 0.0 for x in core.lat_accel_request_buffer)

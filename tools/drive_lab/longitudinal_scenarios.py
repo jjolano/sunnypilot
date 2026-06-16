@@ -525,7 +525,7 @@ def generate_iso15622_acc_scenarios(mode: str = "comfort") -> list[Scenario]:
             "speed_lead_values": [80 * KPH_TO_MS, 80 * KPH_TO_MS, 0.0, 0.0],
             "prob_lead_values": [1.0, 1.0, 1.0, 1.0],
             "cruise_values": [80 * KPH_TO_MS] * 4,
-            "breakpoints": [0.0, 5.0, 10.0, 30.0],  # 2.5 m/s² decel
+            "breakpoints": [0.0, 5.0, 10.0, 30.0],  # ~4.44 m/s² decel (80 km/h -> 0 in 5 s)
         }),
         Scenario(mode, "iso15622_steady_following", "ISO 15622 steady following", 20.0, {
             "initial_speed": 100 * KPH_TO_MS,

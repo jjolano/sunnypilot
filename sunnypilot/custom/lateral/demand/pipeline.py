@@ -215,8 +215,10 @@ class LateralDemandPipeline:
         self._lane_centering_assist.reset()
 
     processed_curvature = float(new_desired_curvature)
-    # Stress guardrail: flag anomalous curvature before it reaches the controller.
-    # 0.05 1/m is 2× the stress-grid-validated envelope (0.025 max across 1,848 cells).
+    # Stress guardrail: anomalous / non-finite curvature is contained before it reaches
+    # the controller. Non-finite values fall back to straight-ahead (0.0) and reset the
+    # previous-curvature memory so the next valid frame starts from a clean state.
+    # Values beyond 0.05 1/m are logged but passed through unchanged.
     if not math.isfinite(processed_curvature):
       from openpilot.common.swaglog import cloudlog
       cloudlog.warning(f"lateral_demand nonfinite processed curvature: {processed_curvature}")

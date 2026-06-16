@@ -183,6 +183,7 @@ class ResponseCore:
     self.previous_measurement = 0.0
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
     self.measurement_smoother = LateralAccelMeasurementSmoother(self.dt)
+    self._v_ego_invalid_logged = False
 
   def update_limits(self) -> None:
     self.pid.set_limits(self._lateral_accel_from_torque(self.steer_max, self.torque_params),
@@ -191,6 +192,13 @@ class ResponseCore:
   def update(self, inp: ResponseCoreInputs) -> ResponseCoreResult:
     tp = self.torque_params
     v_ego = inp.v_ego
+
+    if not math.isfinite(v_ego) or v_ego < 0:
+      if not self._v_ego_invalid_logged:
+        from openpilot.common.swaglog import cloudlog
+        cloudlog.warning(f"response_core invalid v_ego: {v_ego}, using 0.0")
+        self._v_ego_invalid_logged = True
+      v_ego = 0.0
 
     measured_curvature = -self._calc_curvature(math.radians(inp.steering_angle_deg - inp.angle_offset_deg), v_ego, inp.roll)
     raw_measurement = measured_curvature * v_ego ** 2
@@ -202,12 +210,15 @@ class ResponseCore:
                                                    raw_measurement, raw_actual_lateral_jerk)
 
     future_desired_lateral_accel = inp.desired_curvature * v_ego ** 2
-    self.lat_accel_request_buffer.append(future_desired_lateral_accel)
-    # State health: flag nonfinite buffer entries (catch planner/math errors early).
     if not math.isfinite(future_desired_lateral_accel):
       from openpilot.common.swaglog import cloudlog
-      cloudlog.warning(f"response_core nonfinite buffer entry: v_ego={v_ego:.1f} curvature={inp.desired_curvature:.4f}")
-    effective_lat_delay = max(inp.lat_delay, self.dt)
+      cloudlog.warning(f"response_core nonfinite desired lateral accel: v_ego={v_ego:.1f} curvature={inp.desired_curvature:.4f}")
+      future_desired_lateral_accel = 0.0
+      self.lat_accel_request_buffer.clear()
+      self.lat_accel_request_buffer.extend([0.0] * self.lat_accel_request_buffer_len)
+    self.lat_accel_request_buffer.append(future_desired_lateral_accel)
+
+    effective_lat_delay = self.dt if (not math.isfinite(inp.lat_delay) or inp.lat_delay <= 0) else max(inp.lat_delay, self.dt)
     delay_frames = int(np.clip(effective_lat_delay / self.dt, 1, self.lat_accel_request_buffer_len))
     expected_lateral_accel = self.lat_accel_request_buffer[-delay_frames]
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation

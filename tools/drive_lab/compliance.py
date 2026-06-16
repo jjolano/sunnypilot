@@ -45,6 +45,11 @@ from openpilot.tools.drive_lab.fuzz_lateral_controller import (
     _curvature_to_steering_deg,
     _make_controller,
 )
+from openpilot.tools.drive_lab.longitudinal_scenarios import generate_iso15622_acc_scenarios
+from openpilot.tools.drive_lab.fuzz_longitudinal import (
+    run_scenario,
+    shipped_longitudinal_config,
+)
 
 # ── Compliance test registry ─────────────────────────────────────────────────
 
@@ -174,25 +179,34 @@ class ComplianceVehicleModel:
         self.bicycle = BicycleModel(dt)
         self.lane = LaneModel()
         self.last_torque = 0.0
+        self.last_error: Exception | str | None = None
+        self._prev_steering_angle_deg = 0.0
 
-    def step(self, desired_curvature: float, v_ego: float, roll: float = 0.0):
+    def step(self, lane_curvature: float, command_curvature: float, v_ego: float, roll: float = 0.0) -> bool:
         from types import SimpleNamespace
 
-        # Lane center follows desired curvature.
-        self.lane.step(desired_curvature, v_ego, self.dt)
+        # Lane center follows the reference lane curvature.
+        self.lane.step(lane_curvature, v_ego, self.dt)
+
+        # Compute actual steering rate before the bicycle model is updated.
+        steering_rate_deg = (self.bicycle.steering_angle_deg - self._prev_steering_angle_deg) / self.dt
+        self._prev_steering_angle_deg = self.bicycle.steering_angle_deg
 
         # Controller: curvature command → torque output.
         cs = SimpleNamespace(vEgo=v_ego,
                               steeringAngleDeg=self.bicycle.steering_angle_deg,
-                              steeringRateDeg=0.0, steeringPressed=False)
+                              steeringRateDeg=steering_rate_deg, steeringPressed=False)
         params = SimpleNamespace(roll=roll, angleOffsetDeg=0.0)
         try:
             torque, _, _ = self.controller.update(
                 True, cs, self.car_vm, params, False,
-                desired_curvature, None, False, 0.2)
+                command_curvature, None, False, 0.2)
             self.last_torque = float(torque) if math.isfinite(torque) else 0.0
-        except Exception:
+            self.last_error = None
+        except Exception as exc:
             self.last_torque = 0.0
+            self.last_error = exc
+            return False
 
         # Steering plant: torque → steering angle rate.
         # Controller returns -output_torque (left-is-positive convention).
@@ -203,6 +217,7 @@ class ComplianceVehicleModel:
 
         # Bicycle model: steering angle → curvature → position.
         self.bicycle.step(steer_angle, v_ego)
+        return True
 
     @property
     def cross_track_error(self) -> float:
@@ -220,6 +235,8 @@ class ComplianceVehicleModel:
         self.bicycle.reset()
         self.lane.reset()
         self.last_torque = 0.0
+        self.last_error = None
+        self._prev_steering_angle_deg = 0.0
 
 
 # Legacy alias for backward compat with non-controller checks
@@ -334,12 +351,13 @@ def _check_lane_change_compliance(scenario: DemandScenario) -> ScenarioComplianc
 
     # Extract lateral acceleration from processed curvature.
     max_lat_accel = 0.0
-    max_lat_jerk = 0.0
+    lat_accels: list[float] = []
     for i, out in enumerate(result.outputs):
         if i < len(scenario.frames):
             v = scenario.frames[i].get("v_ego", 20.0)
-            a_lat = abs(v * v * out.processed_curvature)
-            max_lat_accel = max(max_lat_accel, a_lat)
+            a_lat = v * v * out.processed_curvature
+            lat_accels.append(a_lat)
+            max_lat_accel = max(max_lat_accel, abs(a_lat))
 
     # Check lat accel.
     accel_pass = max_lat_accel <= _UNR79_LAT_ACCEL_LIMIT
@@ -349,9 +367,14 @@ def _check_lane_change_compliance(scenario: DemandScenario) -> ScenarioComplianc
     if not accel_pass:
         violations.append(f"lateral acceleration {max_lat_accel:.3f} m/s² exceeds {_UNR79_LAT_ACCEL_LIMIT}")
 
-    # Check lat jerk from result metrics.
-    lat_jerk = result.metrics.get("max_abs_lat_jerk", 0.0)
-    max_lat_jerk = float(lat_jerk) if lat_jerk else 0.0
+    # Check lat jerk: 0.5 s moving-average jerk from the accel series.
+    max_lat_jerk = 0.0
+    jerk_window = max(1, round(0.5 / DT))
+    if len(lat_accels) > jerk_window:
+        for i in range(len(lat_accels) - jerk_window):
+            avg_jerk = (lat_accels[i + jerk_window] - lat_accels[i]) / (jerk_window * DT)
+            max_lat_jerk = max(max_lat_jerk, abs(avg_jerk))
+
     jerk_pass = max_lat_jerk <= _UNR79_LAT_JERK_LIMIT
     checks.append(ComplianceCheck("lat_jerk", jerk_pass, max_lat_jerk,
                                    _UNR79_LAT_JERK_LIMIT, "m/s³",
@@ -421,9 +444,12 @@ def _check_controller_tracking(scenario: DemandScenario) -> ScenarioCompliance:
             break
         frame = scenario.frames[i]
         v = frame.get("v_ego", 20.0)
-        k_desired = out.processed_curvature
+        k_lane = frame.get("desired_curvature", 0.0)
+        k_command = out.processed_curvature
         r = frame.get("roll", 0.0)
-        model.step(k_desired, v, roll=r)
+        ok = model.step(k_lane, k_command, v, roll=r)
+        if not ok:
+            violations.append(f"controller error: {model.last_error}")
         min_dtle = min(min_dtle, model.dtle)
 
     dtle_pass = min_dtle >= -_DTLE_LIMIT
@@ -451,12 +477,25 @@ def _check_sbend_tracking(scenario: DemandScenario) -> ScenarioCompliance:
     return _check_dtle_compliance(scenario)
 
 
-def _check_auto_stop(scenario: DemandScenario) -> ScenarioCompliance:
-    """ISO 15622: verify pipeline handles auto-stop scenario structurally."""
-    result = evaluate_demand_scenario(scenario)
-    passed = result.valid
-    return ScenarioCompliance(scenario.title, scenario.kind, passed, [],
-                               [] if passed else ["demand pipeline structural failure"])
+def _check_auto_stop(scenario) -> ScenarioCompliance:
+    """ISO 15622: run the longitudinal simulator and report pass/fail."""
+    with shipped_longitudinal_config():
+        result = run_scenario(scenario)
+
+    checks: list[ComplianceCheck] = []
+    violations: list[str] = []
+
+    checks.append(ComplianceCheck("valid", result.valid, 0.0, 0.0, "",
+                                   f"maneuver valid={result.valid}"))
+    if not result.valid:
+        violations.append("longitudinal maneuver structural failure")
+
+    for failure in result.failures:
+        checks.append(ComplianceCheck(failure.check, False, 0.0, 0.0, "", failure.detail))
+        violations.append(failure.detail)
+
+    passed = result.valid and not result.failures
+    return ScenarioCompliance(scenario.title, scenario.kind, passed, checks, violations)
 
 
 # ── Compliance runner ────────────────────────────────────────────────────────
@@ -480,22 +519,16 @@ def run_compliance_test(test_name: str) -> ComplianceReport:
     # Generate scenarios from the preset.
     if test_name == "euroncap-lss-lka":
         request = LateralPresetRequest(preset=preset, euroncap_family="lka")
+        scenarios = generate_preset_scenarios(request)
     elif test_name == "iso15622-auto-stop":
-        from openpilot.tools.drive_lab.longitudinal_scenarios import generate_iso15622_acc_scenarios
-        scenarios_lon = generate_iso15622_acc_scenarios()
-        # For longitudinal, we return a simple structural report.
-        # Convert to demand-like compliance report.
-        report = ComplianceReport(test_name, regulation, preset, len(scenarios_lon), len(scenarios_lon))
-        for s in scenarios_lon:
-            report.scenarios.append(ScenarioCompliance(s.title, s.kind, True))
-        report.overall_passed = True
-        return report
+        scenarios = generate_iso15622_acc_scenarios()
     elif test_name == "euroncap-ad-sbend":
         request = LateralPresetRequest(preset=preset, euroncap_family="sbend")
+        scenarios = generate_preset_scenarios(request)
     else:
         request = LateralPresetRequest(preset=preset)
+        scenarios = generate_preset_scenarios(request)
 
-    scenarios = generate_preset_scenarios(request)
     check_fn = _CHECK_MAP[test_name]
     report = ComplianceReport(test_name, regulation, preset, len(scenarios), 0)
 
