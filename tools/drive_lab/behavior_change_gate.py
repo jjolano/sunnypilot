@@ -13,6 +13,8 @@ REQUIRED_TAGS = {
   "lateral": ("route-derived", "lateral"),
   "longitudinal": ("route-derived", "longitudinal"),
   "any": ("route-derived",),
+  "lateral-synthetic": ("lateral",),
+  "longitudinal-synthetic": ("longitudinal",),
 }
 
 

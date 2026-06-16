@@ -189,3 +189,95 @@ def _finite_positive(value: Any, allow_zero: bool = False) -> bool:
 
 def _finite_number(value: Any) -> bool:
   return isinstance(value, int | float) and isfinite(float(value))
+
+
+# ── Lateral profile ──────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class LateralProfile:
+  source: str
+  sample_count: int
+  ego_speed: ProfileRange
+  curvature: ProfileRange
+  lane_confidence: ProfileRange
+  roll: ProfileRange
+
+  def to_dict(self) -> dict[str, Any]:
+    return asdict(self)
+
+  @classmethod
+  def from_dict(cls, data: dict[str, Any]) -> LateralProfile:
+    return cls(
+      source=str(data.get("source", "unknown")),
+      sample_count=int(data.get("sample_count", data.get("sampleCount", 0))),
+      ego_speed=_profile_range_from_dict(data["ego_speed"] if "ego_speed" in data else data["egoSpeed"]),
+      curvature=_profile_range_from_dict(data["curvature"]),
+      lane_confidence=_profile_range_from_dict(data["lane_confidence"] if "lane_confidence" in data else data["laneConfidence"]),
+      roll=_profile_range_from_dict(data["roll"]),
+    )
+
+
+def build_lateral_profile(msgs: list[Any], source: str = "unknown", already_sorted: bool = False) -> LateralProfile:
+  msgs = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
+  route_msgs = build_route_messages(msgs)
+  ego_speeds: list[float] = []
+  curvatures: list[float] = []
+  lane_confidences: list[float] = []
+  rolls: list[float] = []
+
+  for route_msg in route_msgs:
+    typ = route_msg.typ
+    payload = route_msg.payload
+    if typ == "carState":
+      v_ego = safe_get(payload, "vEgo")
+      if _finite_positive(v_ego, allow_zero=True):
+        ego_speeds.append(float(v_ego))
+    elif typ == "controlsState":
+      k = safe_get(payload, "desiredCurvature")
+      if _finite_number(k):
+        curvatures.append(abs(float(k)))
+      k_actual = safe_get(payload, "curvature")
+      if _finite_number(k_actual):
+        curvatures.append(abs(float(k_actual)))
+    elif typ == "modelV2":
+      probs = safe_get(payload, "laneLineProbs")
+      if probs is not None and len(probs) >= 2:
+        left = float(probs[0]) if _finite_number(probs[0]) else 0.0
+        right = float(probs[1]) if _finite_number(probs[1]) else 0.0
+        conf = min(max(left, right), 1.0)
+        if conf > 0.0:
+          lane_confidences.append(conf)
+    elif typ == "liveParameters":
+      r = safe_get(payload, "roll")
+      if _finite_number(r):
+        rolls.append(abs(float(r)))
+
+  return LateralProfile(
+    source=source,
+    sample_count=len(msgs),
+    ego_speed=_percentile_range(ego_speeds, (10.0, 25.0), low_pct=5.0, high_pct=95.0),
+    curvature=_percentile_range(curvatures, (0.0005, 0.003), low_pct=5.0, high_pct=95.0),
+    lane_confidence=_percentile_range(lane_confidences, (0.5, 1.0), low_pct=5.0, high_pct=95.0),
+    roll=_percentile_range(rolls, (0.0, 0.05), low_pct=5.0, high_pct=95.0),
+  )
+
+
+def render_lateral_profile(profile: LateralProfile) -> str:
+  lines = [f"Drive Lab lateral profile: {profile.source}", f"Samples: {profile.sample_count}", ""]
+  for name in ("ego_speed", "curvature", "lane_confidence", "roll"):
+    value = getattr(profile, name)
+    lines.append(f"{name:20s} {value.low:8.4f} to {value.high:8.4f}")
+  return "\n".join(lines)
+
+
+def load_lateral_profile(path: str | Path) -> LateralProfile:
+  with open(path) as f:
+    return LateralProfile.from_dict(json.load(f))
+
+
+def save_lateral_profile(profile: LateralProfile, path: str | Path) -> None:
+  with open(path, "w") as f:
+    json.dump(profile.to_dict(), f, indent=2)
+    f.write("\n")
+
+
