@@ -124,8 +124,11 @@ class LongitudinalPlannerSP:
       elif lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id != self._lead_stop_hold_lead_id:
         # A different lead appeared while latched.
         if lead_v <= 0.3 and lead_d_rel <= arm_distance:
-          # Valid stopped hold candidate: reset cleanly; next tick's arm check picks it up.
-          self._reset_lead_stop_hold()
+          # Valid stopped hold candidate: transfer latch immediately (no one-cycle gap).
+          self._lead_stop_hold_lead_id = lead_id
+          self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
+          self._lead_stop_hold_missing_s = 0.0
+          self._lead_stop_hold_gap_increasing_s = 0.0
         else:
           # Non-stopped transient: treat as dropout within the 0.5 s grace window.
           self._lead_stop_hold_missing_s += dt
@@ -296,7 +299,7 @@ class LongitudinalPlannerSP:
     return float(release_a_target if release_mpc_stop else mpc_a_target), bool(should_stop), False
 
   def update(self, sm: messaging.SubMaster) -> None:
-    self.custom_long.maybe_refresh_params()
+    self.custom_long.refresh_params(mode_only=True)  # enabled/mode every tick; tuning on slow cadence via update_targets
     self.events_sp.clear()
     if not self.custom_long.enabled:   # custom SCC mode replaces DEC; keep DEC dormant when custom is on
       self.dec.update(sm)

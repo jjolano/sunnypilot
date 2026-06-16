@@ -301,6 +301,40 @@ def test_stop_hold_survives_transient_different_moving_lead():
   assert sp._lead_stop_hold_active is False
 
 
+def test_stop_hold_transfers_to_new_stopped_lead_without_drop():
+  """Arm on leadOne (id 7), switch to stopped leadTwo (id 8) — latch transfers immediately (finding #2)."""
+  sp = fake_planner(LongitudinalMode.ACC)
+  # Arm with stopped leadOne id 7.
+  for _ in range(6):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(
+        status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7,
+      )),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert sp._lead_stop_hold_lead_id == 7
+
+  # Switch to stopped leadTwo id 8 — latch must stay active on the same tick (no one-cycle gap).
+  sm = {
+    'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+    'controlsState': SimpleNamespace(forceDecel=False),
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'radarState': SimpleNamespace(
+      leadOne=SimpleNamespace(status=False, dRel=0.0, vLead=0.0, vRel=0.0, radarTrackId=7),
+      leadTwo=SimpleNamespace(status=True, dRel=6.0, vLead=0.0, vRel=0.0, radarTrackId=8),
+    ),
+  }
+  a_target, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True, "latch must not drop on stopped lead ID change"
+  assert sp._lead_stop_hold_lead_id == 8
+  assert should_stop is True
+  assert a_target <= -0.5
+
+
 def test_stop_hold_telemetry_shows_latch_intent():
   sp = fake_planner(LongitudinalMode.ACC)
   sm = {

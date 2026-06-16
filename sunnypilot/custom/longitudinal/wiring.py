@@ -121,7 +121,7 @@ class CustomLongitudinalAdapter:
     if params is not None:
       self.refresh_params(initial=True)
 
-  def refresh_params(self, initial: bool = False) -> None:
+  def refresh_params(self, initial: bool = False, mode_only: bool = False) -> None:
     p = self._params
     if p is None:
       return
@@ -130,7 +130,7 @@ class CustomLongitudinalAdapter:
       # SCC is the default: the custom-2.0 intelligent ACC/E2E blend (the DEC replacement). acc/e2e
       # force OEM-like cruise or the model's stops respectively. Mode is refreshed live each cycle.
       mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc", default=LongitudinalMode.SCC)
-    except Exception:  # params are advisory; never fault the planner on a read error
+    except Exception:  # params are advisory; never fault the planner on a failed read
       if initial:
         self.enabled = False
       return
@@ -141,6 +141,9 @@ class CustomLongitudinalAdapter:
     self.mode = mode
     if mode is not prev_mode or (enabled and not was_enabled):
       self._stack.reset()
+
+    if mode_only:
+      return
 
     # Slower refresh for tuning params.
     if initial or self._tick % PARAMS_REFRESH_PERIOD == 0:
