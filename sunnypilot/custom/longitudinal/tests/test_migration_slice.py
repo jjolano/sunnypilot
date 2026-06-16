@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
 import math
 
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
@@ -25,11 +24,21 @@ def fake_sm(exp_mode=False, brake=False, gas=False, force_decel=False):
   }
 
 
+def fake_cp():
+  return SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+
+
 def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceToggles(), release=False):
   sp = object.__new__(LongitudinalPlannerSP)
+  sp.__dict__['CP'] = fake_cp()
   sp.__dict__['custom_long'] = SimpleNamespace(enabled=True, mode=mode, sources=sources,
-                                               maybe_refresh_params=lambda: None)
+                                                maybe_refresh_params=lambda: None)
   sp.__dict__['dec'] = SimpleNamespace(active=lambda: True, mode=lambda: 'blended')
+  sp.__dict__['dt'] = 0.05
+  sp.__dict__['_lead_stop_hold_active'] = False
+  sp.__dict__['_lead_stop_hold_gap_increasing_s'] = 0.0
+  sp.__dict__['_lead_stop_hold_lead_id'] = None
+  sp.__dict__['_lead_stop_hold_gap_prev_d_rel'] = None
   sp.__dict__['custom_long_output'] = CustomLongitudinalOutput(
     a_target=0.0, should_stop=should_stop, enabled=True, mode=mode,
     selected_intent=("lead_pullaway" if release else None), reason=("trusted" if release else None),
@@ -137,6 +146,59 @@ def test_standstill_release_vetoes_timid_e2e_model_accel():
   a2, should_stop2, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert a2 >= 0.15
   assert should_stop2 is False
+
+
+def test_sticky_lead_stop_hold_latches_and_releases_on_pullaway():
+  sp = fake_planner(LongitudinalMode.ACC)
+  v_ego = 0.0
+  x_ego = 0.0
+  x_lead = 6.2
+  v_lead = 0.0
+  lead_v_rel = 0.0
+  a_seen = []
+
+  for _ in range(12):
+    sm = {
+      'carState': SimpleNamespace(vEgo=v_ego, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(
+        status=True, dRel=x_lead - x_ego, vLead=v_lead, vRel=lead_v_rel, radarTrackId=7,
+      )),
+    }
+    a_target, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+    a_seen.append(a_target)
+    assert should_stop is True
+    assert a_target <= -0.5
+    v_ego = max(0.0, v_ego + a_target * 0.05)
+    x_ego += v_ego * 0.05
+
+  assert sp._lead_stop_hold_active is True
+  assert min(a_seen) <= -0.5
+
+  released = False
+  for _ in range(20):
+    v_lead = min(2.0, v_lead + 0.4)
+    lead_v_rel = v_lead - v_ego
+    x_lead += v_lead * 0.05
+    sm = {
+      'carState': SimpleNamespace(vEgo=v_ego, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(
+        status=True, dRel=x_lead - x_ego, vLead=v_lead, vRel=lead_v_rel, radarTrackId=7,
+      )),
+    }
+    a_target, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+    v_ego = max(0.0, v_ego + a_target * 0.05)
+    x_ego += v_ego * 0.05
+    if not sp._lead_stop_hold_active:
+      assert a_target > -0.5
+      released = True
+      break
+
+  assert released is True
+  assert sp._lead_stop_hold_active is False
 
 
 def test_standstill_release_vetoes_mpc_brake_driver_and_custom_stop():

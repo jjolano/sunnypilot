@@ -416,3 +416,62 @@ def test_alignment_blocked_by_model_stop():
   intents = sources_of(cands)
   assert "lead_standstill_launch" not in intents
   assert "lead_alignment_coast" not in intents
+
+
+# -----------------------------------------------------------------------------
+# Phase 3 inside-gap compression/recovery
+# -----------------------------------------------------------------------------
+
+def test_inside_gap_stable_lead_recovery_coasts():
+  scene = _alignment_scene(
+    v_ego=20.0, v_cruise=20.0, seed_a_target=-0.3,
+    lead_a_target=-0.3, lead_v=20.0, lead_v_rel=0.0, lead_d_rel=25.0,
+    follow_gap=30.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" not in intents          # physical hazard suppressed
+  assert "lead_gap_recovery_coast" in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(0.0)
+  assert d.reason == "advisory_capped"
+
+
+def test_inside_gap_gentle_closing_caps_hazard():
+  scene = _alignment_scene(
+    v_ego=20.0, v_cruise=20.0, seed_a_target=-0.8,
+    lead_a_target=-0.8, lead_v=19.8, lead_v_rel=-0.2, lead_d_rel=25.0,
+    follow_gap=30.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" not in intents
+  assert "lead_gap_compression" in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert -0.3 <= d.a_target <= -0.15          # gentle brake, not raw -0.8
+  assert d.reason == "physical_hazard"
+
+
+def test_inside_gap_fast_closing_stays_hazard():
+  scene = _alignment_scene(
+    v_ego=20.0, v_cruise=20.0, seed_a_target=-1.5,
+    lead_a_target=-1.5, lead_v=18.0, lead_v_rel=-2.0, lead_d_rel=25.0,
+    follow_gap=30.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" in intents
+  assert "lead_gap_compression" not in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.5)
+
+
+def test_too_close_inside_gap_stays_hazard():
+  scene = _alignment_scene(
+    v_ego=20.0, v_cruise=20.0, seed_a_target=-1.0,
+    lead_a_target=-1.0, lead_v=20.0, lead_v_rel=0.0, lead_d_rel=4.0,
+    follow_gap=6.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  assert "lead_follow" in sources_of(cands)
+  assert "lead_gap_recovery_coast" not in sources_of(cands)

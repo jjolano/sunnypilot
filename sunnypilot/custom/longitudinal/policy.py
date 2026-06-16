@@ -62,6 +62,10 @@ _LEAD_SOFTEN_MAX_REQUIRED_DECEL = 0.25      # m/s^2; low-risk closing threshold
 _LEAD_SOFTEN_RAISE_DELTA = 0.4              # m/s^2; bounded raise over the lead target
 _LEAD_SOFTEN_CEILING = -0.05                # m/s^2; near-coast ceiling, never positive
 
+# Inside-gap compression/recovery thresholds (Phase 3): only for low-risk braking seeds;
+# strong lead decel is left to the normal lead-follow physical hazard.
+_LEAD_INSIDE_GAP_MAX_LEAD_DECEL = -1.0      # m/s^2; cap below which recovery is allowed
+
 
 @dataclass(frozen=True)
 class LongitudinalScene:
@@ -231,6 +235,45 @@ def _lead_softening_target(scene: LongitudinalScene) -> float | None:
   return float(max(scene.lead_a_target, min(soft, 0.0)))
 
 
+def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | None:
+  """For low-risk inside-gap compression/recovery, return (target, is_hazard).
+
+  Returns:
+    (0.0, False)      -> coast; caller should emit advisory cap + progress, no physical hazard.
+    (negative, True)  -> gentle closing; caller should emit physical hazard at this target.
+    None              -> not applicable; fall back to normal lead-follow hazard / softening.
+  """
+  if not (scene.has_lead and scene.lead_kinematics_valid):
+    return None
+  if not _scene_fields_finite(scene):
+    return None
+  if not (scene.lead_a_target < 0.0 and scene.lead_a_target >= _LEAD_INSIDE_GAP_MAX_LEAD_DECEL):
+    return None
+  if scene.lead_should_stop or scene.model_should_stop or scene.stop_threat:
+    return None
+  if scene.force_slow_decel or scene.brake_pressed or scene.gas_pressed:
+    return None
+  if scene.lead_shadow_active or scene.alternate_threat_active:
+    return None
+  if scene.v_ego < 5.0:
+    return None
+  if scene.lead_v < 3.0:
+    return None
+  if not (5.0 <= scene.lead_d_rel <= scene.follow_gap + 2.0):
+    return None
+  if not (-0.5 <= scene.lead_v_rel <= 0.5):
+    return None
+  if scene.lead_a_k < -0.5:
+    return None
+  required_decel = (max(0.0, -scene.lead_v_rel) ** 2) / (2.0 * max(scene.lead_d_rel, 1.0))
+  if required_decel > 0.5:
+    return None
+
+  if scene.lead_v_rel >= -0.1:
+    return (0.0, False)
+  return (float(max(scene.lead_a_target, -0.25)), True)
+
+
 def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   """Produce the custom-2.0 candidate set; the decision core arbitrates and the mode gate
   admits them. Personality is normalized to a known value."""
@@ -325,19 +368,38 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   # designed to raise accel when authorized. The instant the seed goes negative and is not a
   # low-risk soft case, it re-binds.)
   if scene.has_lead and (scene.lead_a_target < 0.0 or not (opening_pullaway or alignment_pullaway)):
-    soft_target = _lead_softening_target(scene)
-    if soft_target is not None:
-      # Phase 4: low-risk far/medium lead-follow decel is softened from a binding hazard to an
-      # advisory cap plus an authorized LEAD progress/desire candidate at the same target. This
-      # raises the pre-MPC seed when it equals the lead-influenced target, while other caps
-      # (curve/SLA/model stop) and the lead-following cushion remain free to bind lower.
-      cands.append(LongitudinalCandidate(soft_target, CandidateRole.ADVISORY_CAP,
-                                         EvidenceClass.LEAD, "lead_follow_soft"))
-      cands.append(LongitudinalCandidate(soft_target, CandidateRole.PROGRESS,
-                                         EvidenceClass.LEAD, "lead_follow_soft_desire", authorized=True))
+    recovery = _lead_inside_gap_recovery(scene)
+    if recovery is not None:
+      target, is_hazard = recovery
+      if is_hazard:
+        # Gentle inside-gap closing: keep a binding hazard but cap it, never harden the seed.
+        cands.append(LongitudinalCandidate(float(target), CandidateRole.PHYSICAL_HAZARD,
+                                           EvidenceClass.LEAD, "lead_gap_compression",
+                                           is_stop=bool(scene.lead_should_stop)))
+        # Express the coast/recovery desire so the capped hazard binds instead of a more
+        # negative cruise seed.
+        cands.append(LongitudinalCandidate(0.0, CandidateRole.PROGRESS,
+                                           EvidenceClass.LEAD, "lead_gap_compression_desire", authorized=True))
+      else:
+        # Stable/opening inside the gap: suppress the physical hazard and coast.
+        cands.append(LongitudinalCandidate(float(target), CandidateRole.ADVISORY_CAP,
+                                           EvidenceClass.LEAD, "lead_gap_recovery_coast"))
+        cands.append(LongitudinalCandidate(float(target), CandidateRole.PROGRESS,
+                                           EvidenceClass.LEAD, "lead_gap_recovery_coast_desire", authorized=True))
     else:
-      cands.append(LongitudinalCandidate(float(scene.lead_a_target), CandidateRole.PHYSICAL_HAZARD,
-                                         EvidenceClass.LEAD, "lead_follow", is_stop=bool(scene.lead_should_stop)))
+      soft_target = _lead_softening_target(scene)
+      if soft_target is not None:
+        # Phase 4: low-risk far/medium lead-follow decel is softened from a binding hazard to an
+        # advisory cap plus an authorized LEAD progress/desire candidate at the same target. This
+        # raises the pre-MPC seed when it equals the lead-influenced target, while other caps
+        # (curve/SLA/model stop) and the lead-following cushion remain free to bind lower.
+        cands.append(LongitudinalCandidate(soft_target, CandidateRole.ADVISORY_CAP,
+                                           EvidenceClass.LEAD, "lead_follow_soft"))
+        cands.append(LongitudinalCandidate(soft_target, CandidateRole.PROGRESS,
+                                           EvidenceClass.LEAD, "lead_follow_soft_desire", authorized=True))
+      else:
+        cands.append(LongitudinalCandidate(float(scene.lead_a_target), CandidateRole.PHYSICAL_HAZARD,
+                                           EvidenceClass.LEAD, "lead_follow", is_stop=bool(scene.lead_should_stop)))
     # lead-following cushion: anticipatory gentle coast to a slower moving lead while runway
     # allows, as an advisory cap. The MPC hazard above still binds when it must brake harder
     # (tighten = safe; this only relaxes the approach, never overrides the physics floor).

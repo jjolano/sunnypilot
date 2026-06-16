@@ -92,3 +92,36 @@ policy consumes.
   model-stop/lead evidence and the curve toggles are inert (admitted set simply omits them).
 - Map/OSM and speed-limit evidence providers are Phase 6; the mode gate already names their
   evidence classes so wiring them later is additive.
+
+## Telemetry / UI keying
+
+`longitudinalPlanSP.dec` is a **legacy compatibility alias** only. When custom longitudinal is
+enabled, `dec.enabled`/`dec.active` are `False` and `dec.state` is reduced to a coarse
+ACC-vs-blended indicator. The actual source of truth is `longitudinalPlanSP.customLongitudinal`:
+
+- `customLongitudinal.mode` — `acc`, `e2e`, or `scc`.
+- `customLongitudinal.selectedIntent` / `reason` — current policy intent and arbitration reason.
+- `customLongitudinal.shouldStop` — custom stack stop commitment.
+
+UI and telemetry must key the 3-button display and SCC sub-intent off these fields, not off
+legacy DEC active/blended icons. SCC is **not** simply "DEC renamed": it is the intelligent
+ACC/E2E blend (`CRUISE` + `LEAD` + `MODEL_STOP` + `SPEED_LIMIT` + optional curve sources),
+whereas legacy DEC was the experimental/blended toggle.
+
+## Stop-hold and gap-compression behavior
+
+Two behavior additions live above the policy layer:
+
+1. **Sticky lead stop-hold latch** (`LongitudinalPlannerSP`). While ego is stopped behind a
+   stopped lead, the latch forces `should_stop=True` and caps `a_target` to `stopAccel`,
+   overriding the MPC/standstill-release path. It releases only on stable pullaway evidence.
+   This state belongs in the planner (which owns `CP` and the final output blend), not in the
+   policy stack, so the policy stack stays a pure pre-MPC target shaper.
+
+2. **Inside-gap compression/recovery** (`policy.py`). When ego is inside the desired follow
+   gap but the kinematic risk is low (lead not crawling, closing gentle/same-speed/opening,
+   no stop threat), the raw MPC lead-follow seed is too conservative. Instead of emitting a
+   binding `PHYSICAL_HAZARD` at the raw seed, the policy emits either an advisory cap +
+   authorized desire at 0.0 (coast / allow the lead to recover the gap) or a gentle
+   `PHYSICAL_HAZARD` capped at a low threshold. This preserves safety for genuine closing
+   threats while reducing the "braking for a lead that is not slowing" overreaction.

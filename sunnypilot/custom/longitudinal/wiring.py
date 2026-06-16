@@ -126,20 +126,29 @@ class CustomLongitudinalAdapter:
     if p is None:
       return
     try:
-      if initial:
-        self.enabled = bool(p.get_bool("CustomLongitudinalEnabled"))
-        # SCC is the default: the custom-2.0 intelligent ACC/E2E blend (the DEC replacement). acc/e2e
-        # force OEM-like cruise or the model's stops respectively.
-        self.mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc")
-      self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
+      enabled = bool(p.get_bool("CustomLongitudinalEnabled"))
+      # SCC is the default: the custom-2.0 intelligent ACC/E2E blend (the DEC replacement). acc/e2e
+      # force OEM-like cruise or the model's stops respectively. Mode is refreshed live each cycle.
+      mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc", default=LongitudinalMode.SCC)
+      personality = Personality.from_value(p.get("LongitudinalPersonality"))
       # SCC curve sources are gated by the existing upstream SCC enable toggles.
-      self.sources = SourceToggles(
+      sources = SourceToggles(
         scc_curve_vision_enabled=bool(p.get_bool("SmartCruiseControlVision")),
         scc_curve_map_enabled=bool(p.get_bool("SmartCruiseControlMap")),
       )
     except Exception:  # params are advisory; never fault the planner on a read error
       if initial:
         self.enabled = False
+      return
+
+    prev_mode = self.mode
+    was_enabled = self.enabled
+    self.enabled = enabled
+    self.mode = mode
+    if mode is not prev_mode or (enabled and not was_enabled):
+      self._stack.reset()
+    self.personality = personality
+    self.sources = sources
 
   def maybe_refresh_params(self) -> None:
     self._tick += 1
