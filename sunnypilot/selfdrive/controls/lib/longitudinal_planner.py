@@ -96,17 +96,16 @@ class LongitudinalPlannerSP:
                              lead_d_rel: float, lead_v: float, lead_v_rel: float, gas_pressed: bool) -> bool:
     dt = float(getattr(self, 'dt', DT_MDL))
     lead_id = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
-    if self._lead_stop_hold_lead_id is not None and lead_id is not None and lead_id != self._lead_stop_hold_lead_id:
-      self._reset_lead_stop_hold()
 
     stopping_distance = float(getattr(self.CP, 'stoppingDistance', 6.0) or 6.0)
     arm_distance = max(stopping_distance + 2.0, 10.0)
     release_distance = stopping_distance + 1.0
     v_ego_stopping = float(getattr(self.CP, 'vEgoStopping', 0.0))
 
+    # Arm check (only when not already latched).
     stop_hold_set = bool(
-      has_lead and
       not self._lead_stop_hold_active and
+      has_lead and
       v_ego < v_ego_stopping + 0.2 and
       lead_d_rel <= arm_distance and
       lead_v <= 0.3 and
@@ -122,6 +121,16 @@ class LongitudinalPlannerSP:
     if self._lead_stop_hold_active:
       if gas_pressed:
         self._reset_lead_stop_hold()
+      elif lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id != self._lead_stop_hold_lead_id:
+        # A different lead appeared while latched.
+        if lead_v <= 0.3 and lead_d_rel <= arm_distance:
+          # Valid stopped hold candidate: reset cleanly; next tick's arm check picks it up.
+          self._reset_lead_stop_hold()
+        else:
+          # Non-stopped transient: treat as dropout within the 0.5 s grace window.
+          self._lead_stop_hold_missing_s += dt
+          if not (self._lead_stop_hold_missing_s < 0.5 and v_ego < v_ego_stopping + 0.2 and not gas_pressed):
+            self._reset_lead_stop_hold()
       elif not has_lead:
         self._lead_stop_hold_missing_s += dt
         if not (self._lead_stop_hold_missing_s < 0.5 and v_ego < v_ego_stopping + 0.2 and not gas_pressed):
@@ -279,7 +288,7 @@ class LongitudinalPlannerSP:
       else:
         a_target = min(float(mpc_a_target), stop_accel)
       if self.custom_long_output is not None:
-        self.custom_long_output = replace(self.custom_long_output, selected_intent="lead_stop_hold", reason="stopped_lead_latch")
+        self.custom_long_output = replace(self.custom_long_output, should_stop=True, selected_intent="lead_stop_hold", reason="stopped_lead_latch")
       return float(a_target), True, bool(is_e2e and a_target < mpc_a_target)
     if is_e2e:
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)

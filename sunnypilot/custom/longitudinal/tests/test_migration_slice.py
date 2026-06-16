@@ -259,6 +259,48 @@ def test_stop_hold_survives_brief_lead_dropout():
   assert sp._lead_stop_hold_active is False
 
 
+def test_stop_hold_survives_transient_different_moving_lead():
+  """A one-frame moving leadTwo does not clear a stopped-lead latch (finding #2)."""
+  sp = fake_planner(LongitudinalMode.ACC)
+  # Arm with stopped leadOne id 7.
+  for _ in range(6):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(
+        status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7,
+      )),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+
+  # Brief transient: leadOne gone, moving leadTwo appears (different id 8).
+  for _ in range(3):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(
+        leadOne=SimpleNamespace(status=False, dRel=0.0, vLead=0.0, vRel=0.0, radarTrackId=7),
+        leadTwo=SimpleNamespace(status=True, dRel=15.0, vLead=5.0, vRel=5.0, radarTrackId=8),
+      ),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+    assert sp._lead_stop_hold_active is True, "transient moving leadTwo must not clear latch"
+
+  # Prolonged dropout (> 0.5 s without any stopped lead) releases.
+  for _ in range(15):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=False, dRel=0.0, vLead=0.0, vRel=0.0, radarTrackId=7)),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+
+
 def test_stop_hold_telemetry_shows_latch_intent():
   sp = fake_planner(LongitudinalMode.ACC)
   sm = {
@@ -274,6 +316,7 @@ def test_stop_hold_telemetry_shows_latch_intent():
   assert sp.custom_long_output is not None
   assert sp.custom_long_output.selected_intent == "lead_stop_hold"
   assert sp.custom_long_output.reason == "stopped_lead_latch"
+  assert sp.custom_long_output.should_stop is True
 
 
 def test_standstill_release_vetoes_mpc_brake_driver_and_custom_stop():

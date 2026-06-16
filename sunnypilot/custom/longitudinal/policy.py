@@ -255,6 +255,8 @@ def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | 
     return None
   if scene.lead_shadow_active or scene.alternate_threat_active:
     return None
+  if not scene.lead_stable or scene.lead_confidence < 0.55:
+    return None
   if scene.v_ego < 5.0:
     return None
   if scene.lead_v < 3.0:

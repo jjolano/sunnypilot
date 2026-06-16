@@ -500,3 +500,25 @@ def test_inside_gap_boundary_just_safe():
   )
   cands = build_candidates(scene)
   assert "lead_gap_recovery_coast" in sources_of(cands)
+
+
+def test_inside_gap_unstable_lead_rejected():
+  scene = _alignment_scene(
+    v_ego=20.0, v_cruise=20.0, seed_a_target=-0.3,
+    lead_a_target=-0.3, lead_v=20.0, lead_v_rel=0.0, lead_d_rel=25.0,
+    follow_gap=30.0, lead_progress_allowed=False, lead_stable=False,
+  )
+  cands = build_candidates(scene)
+  assert "lead_gap_recovery_coast" not in sources_of(cands)
+  assert "lead_follow" in sources_of(cands)
+
+
+def test_inside_gap_low_confidence_lead_rejected():
+  scene = _alignment_scene(
+    v_ego=20.0, v_cruise=20.0, seed_a_target=-0.3,
+    lead_a_target=-0.3, lead_v=20.0, lead_v_rel=0.0, lead_d_rel=25.0,
+    follow_gap=30.0, lead_progress_allowed=False, lead_confidence=0.5,
+  )
+  cands = build_candidates(scene)
+  assert "lead_gap_recovery_coast" not in sources_of(cands)
+  assert "lead_follow" in sources_of(cands)
