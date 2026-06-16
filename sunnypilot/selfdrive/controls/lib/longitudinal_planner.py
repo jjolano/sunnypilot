@@ -5,6 +5,9 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+import math
+from dataclasses import replace
+
 from cereal import messaging, custom
 from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
@@ -41,6 +44,7 @@ class LongitudinalPlannerSP:
     self.output_a_target = 0.
     self._lead_stop_hold_active = False
     self._lead_stop_hold_gap_increasing_s = 0.0
+    self._lead_stop_hold_missing_s = 0.0
     self._lead_stop_hold_lead_id = None
     self._lead_stop_hold_gap_prev_d_rel = None
 
@@ -61,57 +65,86 @@ class LongitudinalPlannerSP:
     except Exception:
       return None
 
+  @staticmethod
+  def _select_stop_hold_lead(radar_state):
+    candidates = []
+    for lead in (getattr(radar_state, 'leadOne', None), getattr(radar_state, 'leadTwo', None)):
+      if lead is None or not getattr(lead, 'status', False):
+        continue
+      d_rel = float(getattr(lead, 'dRel', 0.0) or 0.0)
+      v = float(getattr(lead, 'vLead', 0.0) or 0.0)
+      v_rel = float(getattr(lead, 'vRel', 0.0) or 0.0)
+      if not math.isfinite(d_rel) or d_rel <= 0.0:
+        continue
+      candidates.append((d_rel, v, v_rel, lead))
+    if not candidates:
+      return None
+    # Prefer closest stopped/crawling lead; otherwise closest lead
+    stopped = [c for c in candidates if c[1] <= 0.5]
+    if stopped:
+      return min(stopped, key=lambda c: c[0])[3]
+    return min(candidates, key=lambda c: c[0])[3]
+
   def _reset_lead_stop_hold(self) -> None:
     self._lead_stop_hold_active = False
     self._lead_stop_hold_gap_increasing_s = 0.0
+    self._lead_stop_hold_missing_s = 0.0
     self._lead_stop_hold_lead_id = None
     self._lead_stop_hold_gap_prev_d_rel = None
 
-  def _update_lead_stop_hold(self, sm: messaging.SubMaster, v_ego: float, has_lead: bool, lead_d_rel: float,
-                             lead_v: float, lead_v_rel: float, gas_pressed: bool) -> bool:
-    lead_one = None
-    radar_state = self._sm_item(sm, 'radarState')
-    if radar_state is not None:
-      lead_one = getattr(radar_state, 'leadOne', None)
-
-    lead_id = getattr(lead_one, 'radarTrackId', None) if lead_one is not None else None
+  def _update_lead_stop_hold(self, sm: messaging.SubMaster, v_ego: float, has_lead: bool, selected_lead,
+                             lead_d_rel: float, lead_v: float, lead_v_rel: float, gas_pressed: bool) -> bool:
+    dt = float(getattr(self, 'dt', DT_MDL))
+    lead_id = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
     if self._lead_stop_hold_lead_id is not None and lead_id is not None and lead_id != self._lead_stop_hold_lead_id:
       self._reset_lead_stop_hold()
 
     stopping_distance = float(getattr(self.CP, 'stoppingDistance', 6.0) or 6.0)
+    arm_distance = max(stopping_distance + 2.0, 10.0)
+    release_distance = stopping_distance + 1.0
+    v_ego_stopping = float(getattr(self.CP, 'vEgoStopping', 0.0))
+
     stop_hold_set = bool(
       has_lead and
-      v_ego < float(getattr(self.CP, 'vEgoStopping', 0.0)) + 0.2 and
-      lead_d_rel <= stopping_distance + 1.0 and
+      not self._lead_stop_hold_active and
+      v_ego < v_ego_stopping + 0.2 and
+      lead_d_rel <= arm_distance and
       lead_v <= 0.3 and
       not gas_pressed,
     )
     if stop_hold_set:
       self._lead_stop_hold_active = True
       self._lead_stop_hold_gap_increasing_s = 0.0
+      self._lead_stop_hold_missing_s = 0.0
       self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
       self._lead_stop_hold_lead_id = lead_id
 
     if self._lead_stop_hold_active:
-      if gas_pressed or not has_lead:
+      if gas_pressed:
         self._reset_lead_stop_hold()
+      elif not has_lead:
+        self._lead_stop_hold_missing_s += dt
+        if not (self._lead_stop_hold_missing_s < 0.5 and v_ego < v_ego_stopping + 0.2 and not gas_pressed):
+          self._reset_lead_stop_hold()
       else:
+        self._lead_stop_hold_missing_s = 0.0
         gap_increasing = self._lead_stop_hold_gap_prev_d_rel is not None and float(lead_d_rel) > float(self._lead_stop_hold_gap_prev_d_rel)
         if gap_increasing:
-          self._lead_stop_hold_gap_increasing_s += float(getattr(self, 'dt', DT_MDL))
+          self._lead_stop_hold_gap_increasing_s += dt
         else:
           self._lead_stop_hold_gap_increasing_s = 0.0
         self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
         if (
           float(lead_v) > 0.5 and
           float(lead_v_rel) > 0.2 and
-          float(lead_d_rel) > stopping_distance + 1.0 and
+          float(lead_d_rel) > release_distance and
           self._lead_stop_hold_gap_increasing_s >= 0.3
         ):
           self._reset_lead_stop_hold()
     else:
       self._lead_stop_hold_gap_increasing_s = 0.0
       self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel) if has_lead else None
+      self._lead_stop_hold_missing_s = 0.0
 
     return self._lead_stop_hold_active
 
@@ -127,13 +160,14 @@ class LongitudinalPlannerSP:
     return experimental_mode and self.dec.mode() == "blended"
 
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
+    self.custom_long.maybe_refresh_params()
+
     CS = sm['carState']
     v_cruise_cluster_kph = min(CS.vCruiseCluster, V_CRUISE_MAX)
     v_cruise_cluster = v_cruise_cluster_kph * CV.KPH_TO_MS
 
     long_enabled = sm['carControl'].enabled
     long_override = sm['carControl'].cruiseControl.override
-    self.custom_long.maybe_refresh_params()
 
     # Smart Cruise Control
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
@@ -217,14 +251,14 @@ class LongitudinalPlannerSP:
                                 raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[float, bool, bool]:
     car_state = self._sm_item(sm, 'carState')
     radar_state = self._sm_item(sm, 'radarState')
-    lead_one = getattr(radar_state, 'leadOne', None) if radar_state is not None else None
-    has_lead = bool(getattr(lead_one, 'status', False)) if lead_one is not None else False
-    lead_d_rel = float(getattr(lead_one, 'dRel', 0.0) or 0.0) if lead_one is not None else 0.0
-    lead_v = float(getattr(lead_one, 'vLead', 0.0) or 0.0) if lead_one is not None else 0.0
-    lead_v_rel = float(getattr(lead_one, 'vRel', 0.0) or 0.0) if lead_one is not None else 0.0
+    selected_lead = self._select_stop_hold_lead(radar_state) if radar_state is not None else None
+    has_lead = selected_lead is not None
+    lead_d_rel = float(getattr(selected_lead, 'dRel', 0.0) or 0.0) if selected_lead is not None else 0.0
+    lead_v = float(getattr(selected_lead, 'vLead', 0.0) or 0.0) if selected_lead is not None else 0.0
+    lead_v_rel = float(getattr(selected_lead, 'vRel', 0.0) or 0.0) if selected_lead is not None else 0.0
     gas_pressed = bool(getattr(car_state, 'gasPressed', False)) if car_state is not None else False
     v_ego = float(getattr(car_state, 'vEgo', 0.0) or 0.0) if car_state is not None else 0.0
-    lead_stop_hold_active = self._update_lead_stop_hold(sm, v_ego, has_lead, lead_d_rel, lead_v, lead_v_rel, gas_pressed)
+    lead_stop_hold_active = self._update_lead_stop_hold(sm, v_ego, has_lead, selected_lead, lead_d_rel, lead_v, lead_v_rel, gas_pressed)
 
     if lead_stop_hold_active:
       mpc_stop = True
@@ -244,6 +278,8 @@ class LongitudinalPlannerSP:
         a_target = min(float(raw_model_a_target), float(mpc_a_target), stop_accel)
       else:
         a_target = min(float(mpc_a_target), stop_accel)
+      if self.custom_long_output is not None:
+        self.custom_long_output = replace(self.custom_long_output, selected_intent="lead_stop_hold", reason="stopped_lead_latch")
       return float(a_target), True, bool(is_e2e and a_target < mpc_a_target)
     if is_e2e:
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)

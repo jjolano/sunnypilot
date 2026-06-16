@@ -475,3 +475,28 @@ def test_too_close_inside_gap_stays_hazard():
   cands = build_candidates(scene)
   assert "lead_follow" in sources_of(cands)
   assert "lead_gap_recovery_coast" not in sources_of(cands)
+
+
+def test_inside_gap_short_gap_at_speed_rejected():
+  scene = _alignment_scene(
+    v_ego=20.0, v_cruise=20.0, seed_a_target=-0.8,
+    lead_a_target=-0.8, lead_v=20.0, lead_v_rel=0.0, lead_d_rel=5.0,
+    follow_gap=30.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" in intents
+  assert "lead_gap_recovery_coast" not in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-0.8)
+
+
+def test_inside_gap_boundary_just_safe():
+  # v_ego=20 -> min_recovery_gap = max(8, 15, 15) = 15 and time_gap = 16/20 = 0.8
+  scene = _alignment_scene(
+    v_ego=20.0, v_cruise=20.0, seed_a_target=-0.3,
+    lead_a_target=-0.3, lead_v=20.0, lead_v_rel=0.0, lead_d_rel=16.0,
+    follow_gap=30.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  assert "lead_gap_recovery_coast" in sources_of(cands)

@@ -37,6 +37,7 @@ def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceTog
   sp.__dict__['dt'] = 0.05
   sp.__dict__['_lead_stop_hold_active'] = False
   sp.__dict__['_lead_stop_hold_gap_increasing_s'] = 0.0
+  sp.__dict__['_lead_stop_hold_missing_s'] = 0.0
   sp.__dict__['_lead_stop_hold_lead_id'] = None
   sp.__dict__['_lead_stop_hold_gap_prev_d_rel'] = None
   sp.__dict__['custom_long_output'] = CustomLongitudinalOutput(
@@ -199,6 +200,80 @@ def test_sticky_lead_stop_hold_latches_and_releases_on_pullaway():
 
   assert released is True
   assert sp._lead_stop_hold_active is False
+
+
+def test_stop_hold_uses_lead_two_when_lead_one_missing():
+  sp = fake_planner(LongitudinalMode.ACC)
+  for _ in range(12):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(
+        leadOne=SimpleNamespace(status=False, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7),
+        leadTwo=SimpleNamespace(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=8),
+      ),
+    }
+    a_target, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+    assert should_stop is True
+    assert a_target <= -0.5
+
+  assert sp._lead_stop_hold_active is True
+
+
+def test_stop_hold_survives_brief_lead_dropout():
+  sp = fake_planner(LongitudinalMode.ACC)
+  # Arm latch with a stopped lead.
+  for _ in range(6):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(
+        status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7,
+      )),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+
+  # Brief dropout (< 0.5 s) keeps latch active.
+  for _ in range(3):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=False, dRel=0.0, vLead=0.0, vRel=0.0, radarTrackId=7)),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+    assert sp._lead_stop_hold_active is True
+
+  # Prolonged dropout (> 0.5 s) releases latch.
+  for _ in range(15):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=False, dRel=0.0, vLead=0.0, vRel=0.0, radarTrackId=7)),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+
+
+def test_stop_hold_telemetry_shows_latch_intent():
+  sp = fake_planner(LongitudinalMode.ACC)
+  sm = {
+    'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+    'controlsState': SimpleNamespace(forceDecel=False),
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(
+      status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7,
+    )),
+  }
+  sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert sp.custom_long_output is not None
+  assert sp.custom_long_output.selected_intent == "lead_stop_hold"
+  assert sp.custom_long_output.reason == "stopped_lead_latch"
 
 
 def test_standstill_release_vetoes_mpc_brake_driver_and_custom_stop():

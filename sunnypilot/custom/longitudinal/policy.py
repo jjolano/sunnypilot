@@ -259,7 +259,12 @@ def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | 
     return None
   if scene.lead_v < 3.0:
     return None
-  if not (5.0 <= scene.lead_d_rel <= scene.follow_gap + 2.0):
+  if scene.lead_d_rel > scene.follow_gap + 2.0:
+    return None
+  v_ego_safe = max(scene.v_ego, 0.1)
+  time_gap = scene.lead_d_rel / v_ego_safe
+  min_recovery_gap = max(8.0, 0.75 * scene.v_ego, 0.5 * scene.follow_gap)
+  if scene.lead_d_rel < min_recovery_gap or time_gap < 0.8:
     return None
   if not (-0.5 <= scene.lead_v_rel <= 0.5):
     return None

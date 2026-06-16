@@ -278,10 +278,25 @@ def test_mode_and_enable_refresh_live():
   a = CustomLongitudinalAdapter(params)
   params._v.update(CustomLongitudinalEnabled=False, CustomLongitudinalMode="e2e",
                    LongitudinalPersonality="2", SmartCruiseControlVision=False, SmartCruiseControlMap=True)
-  for _ in range(50):
-    a.maybe_refresh_params()
+  a.maybe_refresh_params()
   assert a.enabled is False
   assert a.mode is LongitudinalMode.E2E
+
+
+def test_personality_and_toggles_refresh_every_params_period():
+  params = FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
+                      LongitudinalPersonality="1", SmartCruiseControlVision=True, SmartCruiseControlMap=False)
+  a = CustomLongitudinalAdapter(params)
+  params._v.update(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
+                   LongitudinalPersonality="2", SmartCruiseControlVision=False, SmartCruiseControlMap=True)
+  # Tuning params do not change before the refresh period elapses.
+  for _ in range(49):
+    a.maybe_refresh_params()
+  assert a.personality is Personality.STANDARD
+  assert a.sources.scc_curve_vision_enabled is True
+  assert a.sources.scc_curve_map_enabled is False
+  # They take effect on the tick that hits the refresh period.
+  a.maybe_refresh_params()
   assert a.personality is Personality.AGGRESSIVE
   assert a.sources.scc_curve_vision_enabled is False
   assert a.sources.scc_curve_map_enabled is True
