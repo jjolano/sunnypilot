@@ -203,6 +203,10 @@ class ResponseCore:
 
     future_desired_lateral_accel = inp.desired_curvature * v_ego ** 2
     self.lat_accel_request_buffer.append(future_desired_lateral_accel)
+    # State health: flag nonfinite buffer entries (catch planner/math errors early).
+    if not math.isfinite(future_desired_lateral_accel):
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.warning(f"response_core nonfinite buffer entry: v_ego={v_ego:.1f} curvature={inp.desired_curvature:.4f}")
     effective_lat_delay = max(inp.lat_delay, self.dt)
     delay_frames = int(np.clip(effective_lat_delay / self.dt, 1, self.lat_accel_request_buffer_len))
     expected_lateral_accel = self.lat_accel_request_buffer[-delay_frames]
@@ -218,6 +222,12 @@ class ResponseCore:
 
     setpoint = effective_lat_delay * desired_lateral_jerk + expected_lateral_accel
     error = setpoint - measurement
+    # State health: flag implausible tracking error.
+    # 15 m/s² threshold avoids false positives from synthetic/simplified plants
+    # while catching genuine production anomalies (normal lateral accel ≤ 5 m/s²).
+    if abs(error) > 15.0:
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.warning(f"response_core large tracking error: {error:.2f} m/s² (setpoint={setpoint:.2f} meas={measurement:.2f})")
     same_sign_unwind = (
       v_ego < LOW_SPEED_UNWIND_VEGO
       and abs(setpoint) < LOW_SPEED_UNWIND_SETPOINT
@@ -244,6 +254,10 @@ class ResponseCore:
       output_lataccel = self.pid.update(error, -measurement_rate, feedforward=ff, speed=control_speed,
                                         freeze_integrator=freeze_integrator)
       output_torque = self._torque_from_lateral_accel(output_lataccel, tp)
+      # State health: flag output exceeding steer_max (wiring or gain error).
+      if abs(output_torque) > self.steer_max * 1.01 and not math.isclose(abs(output_torque), self.steer_max, rel_tol=0.02):
+        from openpilot.common.swaglog import cloudlog
+        cloudlog.warning(f"response_core output {output_torque:.3f} exceeds steer_max={self.steer_max}")
 
     return ResponseCoreResult(
       output_torque=output_torque,

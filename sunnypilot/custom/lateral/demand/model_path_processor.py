@@ -25,6 +25,18 @@ TURN_INTENT_MAX_PATH_CURVATURE_DISAGREEMENT = 0.75
 LOW_LANE_LINE_PROB = 0.35
 LOW_LANE_CONFIDENCE_SUSTAIN_FRAMES = 3
 LOW_LANE_CONFIDENCE_SUSTAINED_QUALITY = 0.65
+
+# SAE J3240-inspired degradation tiers (from published NCHRP/SAE lane-marking research).
+# These provide named references for common environmental conditions:
+#   - Worn markings: lane_line_probs 0.40–0.75
+#   - Wet night:      lane_line_probs 0.30–0.70
+#   - Night rain:     lane_line_probs 0.10–0.40
+#   - Heavy fog:      lane_line_probs 0.00–0.10
+# LOW_LANE_LINE_PROB (0.35) sits between wet-night and night-rain — reasonable for
+# onset of confidence reduction. The tiers below document the envelope for future tuning.
+SAE_WET_NIGHT_PROB = 0.30     # lane_line_probs expected in wet night driving
+SAE_HEAVY_FOG_PROB = 0.10    # lane_line_probs expected in fog < 50 m visibility
+SAE_FOG_SUSTAIN_FRAMES = 30  # frames before heavy-fog fallback (300ms at 100Hz)
 HIGH_FRAME_DROP_PERC = 20.0
 LOW_QUALITY_BLEND_THRESHOLD = 0.75
 LOW_QUALITY_BLEND_MIN_ALPHA = 0.4

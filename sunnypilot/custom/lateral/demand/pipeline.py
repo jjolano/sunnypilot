@@ -19,6 +19,7 @@ caller's prior clip.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -214,6 +215,15 @@ class LateralDemandPipeline:
         self._lane_centering_assist.reset()
 
     processed_curvature = float(new_desired_curvature)
+    # Stress guardrail: flag anomalous curvature before it reaches the controller.
+    # 0.05 1/m is 2× the stress-grid-validated envelope (0.025 max across 1,848 cells).
+    if not math.isfinite(processed_curvature):
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.warning(f"lateral_demand nonfinite processed curvature: {processed_curvature}")
+      processed_curvature = 0.0
+    elif abs(processed_curvature) > 0.05:
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.warning(f"lateral_demand extreme processed curvature: {processed_curvature:.4f}")
     self._previous_desired_curvature = processed_curvature
 
     demand = ProcessedLateralDemand(
@@ -251,5 +261,21 @@ class LateralDemandPipeline:
         "curve_memory_remembered": float(curve_memory_result.remembered) if inputs.lateral_maneuver_curvature is None else float("nan"),
         "processed_curvature": processed_curvature,
         "demand_source": demand_source,
+        "dtle_estimate": _compute_dtle(inputs.left_lane_y0, inputs.right_lane_y0),
       },
     )
+
+
+def _compute_dtle(left_lane_y0: float | None, right_lane_y0: float | None) -> float:
+    """Curvature-independent DTLE estimate from lane-line near-point positions.
+
+    Positive = vehicle right of lane center. Normalized to [-1, 1] where
+    ±1 = at lane edge. Returns NaN if lane data unavailable.
+    """
+    if left_lane_y0 is None or right_lane_y0 is None:
+        return float("nan")
+    lane_center = (float(left_lane_y0) + float(right_lane_y0)) / 2.0
+    half_width = abs(float(right_lane_y0) - float(left_lane_y0)) / 2.0
+    if half_width < 0.1:
+        return float("nan")
+    return -lane_center / half_width

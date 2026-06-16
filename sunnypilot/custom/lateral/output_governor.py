@@ -63,6 +63,13 @@ ISO_ACCEL_MARGIN = 2.6
 NEAR_ISO_ACCEL_CAP = 0.85
 OVER_ISO_ACCEL_CAP = 0.80
 
+# nuPlan comfort bounds (84th %ile of 1,282 hours expert human driving, arXiv:2403.04133).
+# These are reference thresholds — the ISO-derived caps above remain the active limits.
+# Future: consider replacing ISO_LATERAL_ACCEL with NUPLAN_COMFORT_LAT_ACCEL after
+# engaged-route validation.
+NUPLAN_COMFORT_LAT_ACCEL = 4.89    # m/s² — lateral acceleration comfort bound
+NUPLAN_COMFORT_JERK = 8.37         # m/s³ — jerk vector magnitude comfort bound
+
 # --- AUGMENT: under-response floor ---
 UNDER_RESPONSE_MARGIN = 0.12
 UNDER_RESPONSE_FULL_SPEED = 9.0
