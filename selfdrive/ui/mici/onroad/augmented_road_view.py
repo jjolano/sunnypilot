@@ -1,6 +1,6 @@
 import numpy as np
 import pyray as rl
-from cereal import car, log
+from cereal import car, custom, log
 from msgq.visionipc import VisionStreamType
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
@@ -248,7 +248,16 @@ class AugmentedRoadView(CameraView):
     self._bookmark_icon.render(self.rect)
 
   def _switch_stream_if_needed(self, sm):
-    if sm['selfdriveState'].experimentalMode and WIDE_CAM in self.available_streams:
+    use_wide = sm['selfdriveState'].experimentalMode
+    if not use_wide:
+      try:
+        cl = sm['longitudinalPlanSP'].customLongitudinal
+        scc = custom.LongitudinalPlanSP.CustomLongitudinal.CustomLongitudinalMode.scc
+        e2e = custom.LongitudinalPlanSP.CustomLongitudinal.CustomLongitudinalMode.e2e
+        use_wide = cl.enabled and cl.mode in (scc, e2e)
+      except Exception:
+        pass
+    if use_wide and WIDE_CAM in self.available_streams:
       v_ego = sm['carState'].vEgo
       if v_ego < WIDE_CAM_MAX_SPEED:
         target = WIDE_CAM
