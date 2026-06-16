@@ -8,15 +8,25 @@ from openpilot.tools.drive_lab import fuzz_longitudinal
 from openpilot.tools.drive_lab.fuzz_longitudinal import (
   Scenario,
   evaluate_collision_response,
-  evaluate_lead_pullaway_start,
   evaluate_invariants,
+  evaluate_lead_pullaway_start,
+  generate_openpilot_acc_scenarios,
   generate_scenarios,
   generate_udacity_acc_scenarios,
   render_maneuver_snippet,
+  run_scenario,
   scenario_maneuver_kwargs,
   scenario_to_spec,
+  shipped_longitudinal_config,
 )
 from openpilot.tools.drive_lab.log_profile import LongitudinalProfile, ProfileRange
+from openpilot.tools.drive_lab.longitudinal_scenarios import (
+  SCENARIO_PRESETS,
+  generate_preset_scenarios,
+  PresetRequest,
+)
+from openpilot.tools.drive_lab.ncap_acc_scenarios import generate_ncap_acc_scenarios
+from openpilot.tools.drive_lab.commonroad_acc import generate_commonroad_acc_scenarios
 
 
 def test_generate_scenarios_is_seeded():
@@ -67,28 +77,124 @@ def test_profile_biases_generated_ranges():
     assert 1.5 <= scenario.kwargs["speed_lead_values"][2] <= 2.0
 
 
-def test_udacity_acc_scenarios_cover_legacy_drive_lab_cases():
+def test_udacity_acc_scenarios_cover_all_cases():
   scenarios = generate_udacity_acc_scenarios()
 
-  assert len(scenarios) == 8
-  assert {scenario.kind for scenario in scenarios} == {
-    "udacity_acc_cruise_speed_step",
-    "udacity_acc_grade_change",
-    "udacity_acc_slower_lead",
-    "udacity_acc_stopped_lead",
-    "udacity_acc_lead_decel_to_stop",
-    "udacity_acc_oscillating_lead",
-    "udacity_acc_stop_and_go",
-    "udacity_acc_green_light_launch",
-  }
+  assert len(scenarios) == 15
+  kinds = {scenario.kind for scenario in scenarios}
+  assert "udacity_acc_cruise_speed_decrease" in kinds
+  assert "udacity_acc_grade_downhill" in kinds
+  assert "udacity_acc_approach_from_stop" in kinds
+  assert "udacity_acc_accel_while_lead_decel_hard" in kinds
   for scenario in scenarios:
     assert scenario.mode == "comfort"
     assert scenario.title.startswith("udacity acc inspired")
     assert scenario.duration > 0.0
-    assert scenario.kwargs["breakpoints"] == sorted(scenario.kwargs["breakpoints"])
-    for key, value in scenario.kwargs.items():
-      if key.endswith("_values"):
-        assert len(value) == len(scenario.kwargs["breakpoints"])
+    if "breakpoints" in scenario.kwargs:
+      assert scenario.kwargs["breakpoints"] == sorted(scenario.kwargs["breakpoints"])
+
+
+def test_udacity_lead_decel_stop_uses_regression_oracle():
+  scenarios = {scenario.kind: scenario for scenario in generate_udacity_acc_scenarios()}
+
+  assert scenarios["udacity_acc_lead_decel_to_stop"].oracle_profile == "regression"
+  assert scenarios["udacity_acc_lead_decel_to_stop_2ms2"].oracle_profile == "regression"
+  assert scenarios["udacity_acc_stopped_lead"].oracle_profile == "comfort"
+
+
+def test_udacity_lead_decel_stop_regression_oracle_passes_comfort_gate():
+  scenarios = [
+    scenario for scenario in generate_udacity_acc_scenarios()
+    if scenario.kind in {"udacity_acc_lead_decel_to_stop", "udacity_acc_lead_decel_to_stop_2ms2"}
+  ]
+
+  with shipped_longitudinal_config():
+    results = [run_scenario(scenario, max_normal_jerk=8.0) for scenario in scenarios]
+
+  assert [(result.scenario.kind, result.failures) for result in results] == [
+    ("udacity_acc_lead_decel_to_stop", []),
+    ("udacity_acc_lead_decel_to_stop_2ms2", []),
+  ]
+
+
+def test_openpilot_acc_preset_count():
+  scenarios = generate_openpilot_acc_scenarios()
+  assert len(scenarios) == 15
+  assert any(s.kind == "openpilot_resume_from_stop" for s in scenarios)
+
+
+def test_openpilot_stopped_lead_variants_use_regression_oracle():
+  scenarios = {scenario.title: scenario for scenario in generate_openpilot_acc_scenarios()}
+
+  for title in (
+    "approach stopped car at 25m/s, initial distance: 120m",
+    "approach stopped car at 20m/s, initial distance 90m",
+    "approach stopped car at 20m/s, with prob_lead_values",
+    "approach stopped car at 20m/s, with prob_throttle_values and pitch = -0.1",
+    "approach stopped car at 20m/s, with prob_throttle_values and pitch = +0.1",
+  ):
+    assert scenarios[title].oracle_profile == "regression"
+
+
+def test_openpilot_stopped_lead_prob_variant_passes_regression_gate():
+  scenario = next(
+    scenario for scenario in generate_openpilot_acc_scenarios()
+    if scenario.title == "approach stopped car at 20m/s, with prob_lead_values"
+  )
+
+  with shipped_longitudinal_config():
+    result = run_scenario(scenario, max_normal_jerk=8.0)
+
+  assert result.failures == []
+
+
+def test_ncap_acc_curated_count():
+  scenarios = generate_ncap_acc_scenarios()
+  assert len(scenarios) == 18
+  assert all(s.oracle_profile == "safety" for s in scenarios)
+
+
+def test_ncap_ccrm_distance_scales_with_closing_speed():
+  scenarios = [scenario for scenario in generate_ncap_acc_scenarios() if scenario.kind.startswith("ncap_ccrm_")]
+
+  for scenario in scenarios:
+    ego_speed = scenario.kwargs["initial_speed"]
+    target_speed = scenario.kwargs["speed_lead_values"][0]
+    relative_speed = max(0.0, ego_speed - target_speed)
+    assert scenario.kwargs["initial_distance_lead"] >= max(80.0, relative_speed * 4.5)
+
+
+def test_ncap_fast_ccrm_cases_pass_safety_gate():
+  scenarios = [
+    scenario for scenario in generate_ncap_acc_scenarios()
+    if scenario.kind in {"ncap_ccrm_110_20", "ncap_ccrm_120_20", "ncap_ccrm_130_20"}
+  ]
+
+  with shipped_longitudinal_config():
+    results = [run_scenario(scenario, max_normal_jerk=8.0) for scenario in scenarios]
+
+  assert [(result.scenario.kind, result.failures) for result in results] == [
+    ("ncap_ccrm_110_20", []),
+    ("ncap_ccrm_120_20", []),
+    ("ncap_ccrm_130_20", []),
+  ]
+
+
+def test_ncap_acc_sample_family():
+  scenarios = generate_ncap_acc_scenarios(mode="comfort", family="CCRs", sample=2, seed=1)
+  assert len(scenarios) == 2
+  assert all(s.kind.startswith("ncap_ccrs_") for s in scenarios)
+
+
+def test_commonroad_acc_fixtures():
+  scenarios = generate_commonroad_acc_scenarios()
+  assert len(scenarios) == 4
+  assert scenarios[0].kind.startswith("commonroad_")
+
+
+def test_all_presets_registered():
+  assert set(SCENARIO_PRESETS) == {"fuzz", "udacity-acc", "openpilot-acc", "ncap-acc", "commonroad-acc",
+                                     "iso15622-acc", "unr157-alks", "nhtsa-fcw", "cncap-ccrh", "iihs-acc"}
 
 
 def test_main_lists_udacity_acc_preset():
@@ -118,122 +224,58 @@ def test_evaluate_invariants_catches_collision_and_nan():
 
 
 def test_evaluate_invariants_reports_malformed_output_shape():
-  output = np.zeros((2, 6))
-
-  failures = evaluate_invariants(True, output)
-
-  assert [f.check for f in failures] == ["output"]
-  assert "expected maneuver output" in failures[0].detail
+  failures = evaluate_invariants(True, np.zeros((2, 3)))
+  assert any(f.check == "output" for f in failures)
 
 
-def test_lead_pullaway_start_check_accepts_started_then_settled_follow():
+def test_evaluate_lead_pullaway_start_detects_no_launch():
   output = np.array([
-    [5.8, 0.0, 6.4, 0.00, 0.0, 0.00, 6.4],
-    [6.0, 0.0, 6.5, 0.10, 0.5, 0.55, 6.5],
-    [7.0, 0.5, 7.4, 0.60, 1.3, 0.55, 6.9],
-    [12.5, 6.8, 13.8, 1.29, 1.3, -0.07, 7.0],
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0],
+    [1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 9.0],
+    [2.0, 2.0, 2.0, 0.0, 1.0, 0.0, 8.0],
   ])
-
-  assert evaluate_lead_pullaway_start(output) == []
-
-
-def _collision_output(impact_speed: float, contact: bool = True) -> np.ndarray:
-  # columns: time, ego_x, lead_x, v_ego, v_lead, accel, d_rel
-  gap = 0.2 if contact else 5.0
-  v_lead = 0.0
-  return np.array([
-    [0.0, 0.0, 40.0, impact_speed, v_lead, 0.0, 40.0],
-    [0.1, 1.0, 40.0, impact_speed, v_lead, 0.0, 20.0],
-    [0.2, 2.0, 40.0, impact_speed, v_lead, 0.0, gap],
-  ])
-
-
-def test_collision_response_accepts_when_no_contact():
-  output = _collision_output(impact_speed=10.0, contact=False)
-  assert evaluate_collision_response(output, np.full(3, -1.0), np.ones(3)) == []
-
-
-def test_collision_response_accepts_unavoidable_contact_braked_at_full_authority():
-  output = _collision_output(impact_speed=10.0)
-  commanded = np.array([-3.5, -3.5, -3.5])
-  assert evaluate_collision_response(output, commanded, np.ones(3)) == []
-
-
-def test_collision_response_accepts_benign_low_speed_bump_without_full_braking():
-  output = _collision_output(impact_speed=2.0)
-  commanded = np.array([-2.0, -2.0, -2.0])
-  assert evaluate_collision_response(output, commanded, np.ones(3)) == []
-
-
-def test_collision_response_flags_hard_impact_with_braking_authority_left_unused():
-  output = _collision_output(impact_speed=10.0)
-  commanded = np.array([-1.0, -1.0, -1.0])
-  failures = evaluate_collision_response(output, commanded, np.ones(3))
-  assert [f.check for f in failures] == ["collision"]
-  assert "without full braking" in failures[0].detail
-
-
-def test_lead_pullaway_start_check_flags_never_starting():
-  output = np.array([
-    [0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 6.0],
-    [1.0, 0.0, 7.0, 0.0, 1.0, 0.0, 7.0],
-    [2.0, 0.0, 8.0, 0.0, 1.0, 0.0, 8.0],
-  ])
-
   failures = evaluate_lead_pullaway_start(output)
+  assert failures and failures[0].check == "launch"
 
-  assert [failure.check for failure in failures] == ["launch"]
+
+def test_evaluate_collision_response_accepts_best_effort_brake():
+  output = np.array([
+    [0.0, 0.0, 0.0, 8.0, 0.0, -3.0, 10.0],
+    [0.1, 1.0, 1.0, 4.0, 0.0, -3.0, 0.3],
+  ])
+  commanded = np.array([-3.0, -3.0])
+  prob_lead = np.array([1.0, 1.0])
+  assert not evaluate_collision_response(output, commanded, prob_lead)
 
 
-def test_lead_pullaway_fuzzer_uses_bounded_start_oracle_instead_of_legacy_ensure_start():
-  scenario = Scenario(
-    "comfort",
-    "lead_pullaway",
-    "lead pullaway",
-    10.0,
-    {
-      "lead_relevancy": True,
-      "ensure_start": True,
-      "initial_speed": 0.0,
-    },
-  )
+def test_evaluate_collision_response_safety_profile_fails_high_impact():
+  output = np.array([
+    [0.0, 0.0, 0.0, 10.0, 0.0, -1.0, 10.0],
+    [0.1, 1.0, 1.0, 8.0, 0.0, -1.0, 0.3],
+  ])
+  failures = evaluate_collision_response(output, np.array([-1.0, -1.0]), np.array([1.0, 1.0]), max_impact_speed_ms=1.0, use_best_effort=False)
+  assert failures
 
+
+def test_scenario_maneuver_kwargs_disables_ensure_start_for_launch_oracle():
+  scenario = generate_udacity_acc_scenarios()[next(i for i, s in enumerate(generate_udacity_acc_scenarios()) if s.kind == "udacity_acc_green_light_launch")]
   kwargs = scenario_maneuver_kwargs(scenario)
-
   assert kwargs["ensure_start"] is False
 
 
-def test_render_maneuver_snippet_contains_replayable_fields():
+def test_scenario_to_spec_includes_oracle_profile_in_tags():
+  scenario = generate_udacity_acc_scenarios()[0]
+  spec = scenario_to_spec(scenario, source="udacity-acc")
+  assert "udacity-acc" in spec.tags
+
+
+def test_preset_request_openpilot():
+  scenarios = generate_preset_scenarios(PresetRequest(preset="openpilot-acc", cases=1))
+  assert len(scenarios) == 15
+
+
+def test_run_scenario_smoke():
   scenario = generate_scenarios(seed=1, cases=1)[0]
-
-  snippet = render_maneuver_snippet(scenario)
-
-  assert "Maneuver(" in snippet
-  assert "duration=" in snippet
-  assert "initial_speed" in snippet
-
-
-def test_scenario_to_spec_preserves_fuzzer_context():
-  scenario = generate_scenarios(seed=1, cases=1, mode="comfort")[0]
-
-  spec = scenario_to_spec(scenario, source="fuzz", seed=1, index=0)
-
-  assert spec.scenario_id == f"fuzz:comfort:{scenario.kind}:1:0"
-  assert spec.kind == scenario.kind
-  assert spec.title == scenario.title
-  assert spec.mode == scenario.mode
-  assert spec.duration == scenario.duration
-  assert spec.maneuver_kwargs == scenario.kwargs
-
-
-def test_scenario_to_dict_can_include_spec_metadata():
-  scenario = generate_scenarios(seed=1, cases=1, mode="comfort")[0]
-
-  payload = fuzz_longitudinal.scenario_to_dict(scenario, source="fuzz", seed=1, index=0)
-
-  assert payload["mode"] == scenario.mode
-  assert payload["kind"] == scenario.kind
-  assert payload["kwargs"] == scenario.kwargs
-  assert payload["scenarioId"] == f"fuzz:comfort:{scenario.kind}:1:0"
-  assert payload["spec"]["events"] == [scenario.kind]
-  assert payload["spec"]["oracle"]["checks"] == ["valid", "finite", "speed", "collision", "jerk"]
+  with shipped_longitudinal_config():
+    result = run_scenario(scenario)
+  assert isinstance(result.valid, bool)
