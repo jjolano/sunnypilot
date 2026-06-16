@@ -1,0 +1,16 @@
+{
+  "kind": "commonroad_zam_acc_1_3",
+  "title": "commonroad ZAM_ACC-1_3 cut-in style closing",
+  "duration": 20.0,
+  "oracle_profile": "comfort",
+  "provenance": {"source": "commonroad", "scenario_id": "ZAM_ACC-1_3_T-1"},
+  "kwargs": {
+    "initial_speed": 22.0,
+    "lead_relevancy": true,
+    "initial_distance_lead": 55.0,
+    "speed_lead_values": [18.0, 18.0, 18.0],
+    "prob_lead_values": [0.0, 0.0, 1.0],
+    "cruise_values": [22.0, 22.0, 22.0],
+    "breakpoints": [0.0, 2.0, 2.01]
+  }
+}

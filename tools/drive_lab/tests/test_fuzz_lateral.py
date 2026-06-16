@@ -134,6 +134,50 @@ def test_metric_catches_steering_rate_and_jerk():
   assert any(f.check == "lateral_jerk" for f in evaluation.failures)
 
 
+def test_metric_allows_normal_highway_speed_lateral_jerk():
+  config = FuzzerConfig(seed=17, cases=4, speed_mps=30.0)
+  scenario = generate_scenarios(config)[3]
+
+  result = run_scenario(scenario)
+
+  assert scenario.kind == "noisy_model_curvature"
+  assert result.valid
+
+
+def test_metric_still_catches_highway_speed_lateral_jerk_when_threshold_is_tight():
+  config = FuzzerConfig(
+    seed=17,
+    cases=4,
+    speed_mps=30.0,
+    thresholds=LateralMetricThresholds(max_abs_lateral_jerk=1.0),
+  )
+  scenario = generate_scenarios(config)[3]
+
+  result = run_scenario(scenario)
+
+  assert any(f.check == "lateral_jerk" for f in result.failures)
+
+
+def test_metric_allows_normal_very_high_speed_s_curve_lateral_jerk():
+  config = FuzzerConfig(seed=25, cases=114, duration=6.0, speed_mps=40.0)
+  scenario = generate_scenarios(config)[113]
+
+  result = run_scenario(scenario)
+
+  assert scenario.kind == "s_curve_reversal"
+  assert result.valid
+
+
+def test_metric_allows_normal_extreme_speed_straight_disturbance_lateral_jerk():
+  config = FuzzerConfig(seed=28, cases=1, duration=6.0, speed_mps=55.0)
+  scenario = generate_scenarios(config)[0]
+
+  result = run_scenario(scenario)
+
+  assert scenario.kind == "straight_disturbance"
+  assert result.valid
+
+
 def test_metric_catches_saturation():
   config = LateralPlantConfig(duration_s=3.0, controller_gain=20.0, max_steering_angle_deg=10.0)
   t = np.arange(0.0, 3.0, config.dt_s)
@@ -160,6 +204,16 @@ def test_zero_input_stays_near_zero():
   desired = np.zeros_like(t)
   result = run_lateral_plant(desired, config=LateralPlantConfig(duration_s=10.0))
   assert np.max(np.abs(result.trace.actual_curvature)) < 1e-6
+
+
+def test_coarse_requested_dt_uses_stable_internal_plant_step():
+  config = FuzzerConfig(seed=18, cases=1, dt_s=0.1)
+  scenario = generate_scenarios(config)[0]
+
+  result = run_scenario(scenario)
+
+  assert result.valid
+  assert result.result.config.dt_s == pytest.approx(0.05)
 
 
 # ---------- CLI smoke ----------

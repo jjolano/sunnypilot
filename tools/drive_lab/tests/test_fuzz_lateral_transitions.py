@@ -83,6 +83,15 @@ def test_driver_override_pulse_rejects_and_cooldown_accepts():
   assert any(o.decision == "accept" and o.cooldown_remaining > 0.0 for o in post_release[:150])
 
 
+def test_long_driver_override_pulse_anchors_cooldown_check_after_release():
+  scenario = generate_scenarios(TransitionFuzzerConfig(seed=19, cases=7, duration_s=5.0))[6]
+  assert scenario.kind == "driver_override_pulse"
+
+  result = evaluate_scenario(scenario)
+
+  assert result.valid
+
+
 # ---------- lane change session ----------
 
 

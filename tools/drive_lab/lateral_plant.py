@@ -14,10 +14,13 @@ near zero.
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 import numpy as np
+
+
+MAX_SIMULATION_DT_S = 0.05
 
 
 @dataclass(frozen=True)
@@ -132,7 +135,9 @@ def run_lateral_plant(
   saturation converts actuator angle back to actual curvature.
   """
   config = config or LateralPlantConfig()
-  dt = max(config.dt_s, 1e-6)
+  dt = min(max(config.dt_s, 1e-6), MAX_SIMULATION_DT_S)
+  if dt != config.dt_s:
+    config = replace(config, dt_s=dt)
   duration = max(config.duration_s, dt)
   t = np.arange(0.0, duration + dt * 0.5, dt, dtype=float)
   n = t.size

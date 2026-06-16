@@ -103,9 +103,43 @@ BEHAVIOR_OUTLINE = (
   ),
 )
 
-LAUNCH_KINDS = {"lead_pullaway", "udacity_acc_green_light_launch"}
-LEAD_APPROACH_KINDS = {"slower_cut_in", "lead_occlusion", "udacity_acc_slower_lead", "udacity_acc_oscillating_lead"}
-STOP_KINDS = {"stopped_lead_approach", "udacity_acc_stopped_lead", "udacity_acc_lead_decel_to_stop", "udacity_acc_stop_and_go"}
+LAUNCH_KINDS = {
+  "lead_pullaway",
+  "udacity_acc_green_light_launch",
+  "openpilot_resume_from_stop",
+  "udacity_acc_approach_from_stop",
+  "route_replay_none",
+}
+STOP_KINDS = {
+  "stopped_lead_approach",
+  "udacity_acc_stopped_lead",
+  "udacity_acc_lead_decel_to_stop",
+  "udacity_acc_lead_decel_to_stop_2ms2",
+  "udacity_acc_stop_and_go",
+  "udacity_acc_stop_and_go_10mph",
+  "openpilot_stopped_lead_25ms_120m",
+  "openpilot_stopped_lead_20ms_90m",
+  "openpilot_lead_decel_1ms2",
+  "openpilot_lead_decel_2ms2",
+  "openpilot_lead_decel_3ms2",
+  "openpilot_lead_decel_3plus_ms2",
+  "commonroad_zam_acc_1_1",
+  "ncap_ccrs_70",
+  "ncap_ccrs_90",
+  "ncap_ccrs_110",
+  "ncap_ccrs_130",
+}
+LEAD_APPROACH_KINDS = {
+  "slower_cut_in",
+  "lead_occlusion",
+  "udacity_acc_slower_lead",
+  "udacity_acc_oscillating_lead",
+  "udacity_acc_accel_while_lead_decel_mild",
+  "udacity_acc_accel_while_lead_decel_hard",
+  "openpilot_slower_cut_in",
+  "commonroad_zam_acc_1_2",
+  "commonroad_zam_acc_1_3",
+}
 
 
 def compare_scenario_output(kind: str, output: np.ndarray) -> list[MetricComparison]:

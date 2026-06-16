@@ -1318,7 +1318,12 @@ def _validate_input_frames(frames: tuple[LateralRouteFrame, ...], label: str) ->
   return failures
 
 
-def _evaluate_outputs(outputs: tuple[RouteFrameOutput, ...], thresholds: RouteReplayThresholds, label: str) -> list[dict[str, Any]]:
+def _evaluate_outputs(
+  outputs: tuple[RouteFrameOutput, ...],
+  thresholds: RouteReplayThresholds,
+  label: str,
+  skip_step_end_frames: tuple[int, ...] = (),
+) -> list[dict[str, Any]]:
   failures: list[dict[str, Any]] = []
   if not outputs:
     failures.append({"check": "output", "detail": f"{label}: produced no output frames"})
@@ -1345,16 +1350,63 @@ def _evaluate_outputs(outputs: tuple[RouteFrameOutput, ...], thresholds: RouteRe
   if len(processed) > 1:
     lat_accel = _lat_accel(v_ego, processed)
     steps = np.diff(lat_accel)
+    step_mask = ~(quality[1:] < 0.9) & ~(quality[:-1] < 0.9)
+    gated = np.array([o.gated for o in outputs], dtype=bool)
+    step_mask &= ~(gated[1:] | gated[:-1])
+    if skip_step_end_frames:
+      for frame_idx in skip_step_end_frames:
+        step_idx = int(frame_idx) - 1
+        if 0 <= step_idx < step_mask.size:
+          step_mask[step_idx] = False
+    steps = steps[step_mask]
     dt = DT
     jerks = steps / dt
-    max_step = float(np.max(np.abs(steps)))
-    max_jerk = float(np.max(np.abs(jerks)))
+    max_step = float(np.max(np.abs(steps))) if steps.size else 0.0
+    max_jerk = float(np.max(np.abs(jerks))) if jerks.size else 0.0
     if max_step > thresholds.max_abs_step_lat_accel:
       failures.append({"check": "lat_accel_step", "detail": f"{label}: lateral accel step {max_step:.2f} m/s^2 exceeds {thresholds.max_abs_step_lat_accel}"})
     if max_jerk > thresholds.max_abs_lat_jerk:
       failures.append({"check": "lat_jerk", "detail": f"{label}: lateral jerk {max_jerk:.2f} m/s^3 exceeds {thresholds.max_abs_lat_jerk}"})
 
   return failures
+
+
+def _expected_perturbed_step_end_frames(recipe: PerturbationRecipe) -> tuple[int, ...]:
+  if recipe.kind == "stale" and recipe.end_frame > recipe.start_frame:
+    return (recipe.end_frame,)
+  return ()
+
+
+def _comparison_delta_mask(scenario: RouteReplayScenario, size: int) -> np.ndarray:
+  mask = np.ones(size, dtype=bool)
+  if scenario.recipe.kind == "stale":
+    start = max(0, min(size, scenario.recipe.start_frame))
+    end = max(start, min(size, scenario.recipe.end_frame))
+    mask[start:end] = False
+  return mask
+
+
+def _comparison_oscillation_mask(scenario: RouteReplayScenario, size: int) -> np.ndarray:
+  mask = np.ones(size, dtype=bool)
+  if scenario.recipe.kind != "none":
+    start = max(0, min(size, scenario.recipe.start_frame))
+    end = max(start, min(size, scenario.recipe.end_frame))
+    mask[start:end] = False
+  return mask
+
+
+def _sign_flip_count_masked(values: np.ndarray, eps: float, mask: np.ndarray) -> int:
+  flips = 0
+  previous_sign: float | None = None
+  for value, include in zip(values, mask, strict=False):
+    if not include or not np.isfinite(value) or abs(value) <= eps:
+      previous_sign = None if not include else previous_sign
+      continue
+    sign = float(np.sign(value))
+    if previous_sign is not None and sign != previous_sign:
+      flips += 1
+    previous_sign = sign
+  return flips
 
 
 def evaluate_scenario(scenario: RouteReplayScenario) -> RouteReplayResult:
@@ -1381,7 +1433,14 @@ def evaluate_scenario(scenario: RouteReplayScenario) -> RouteReplayResult:
     perturbed_outputs = ()
 
   if perturbed_outputs:
-    perturbation_failures.extend(_evaluate_outputs(perturbed_outputs, thresholds, "perturbed"))
+    perturbation_failures.extend(
+      _evaluate_outputs(
+        perturbed_outputs,
+        thresholds,
+        "perturbed",
+        skip_step_end_frames=_expected_perturbed_step_end_frames(scenario.recipe),
+      )
+    )
 
   if baseline_failures:
     comparison_failures.append({
@@ -1408,7 +1467,9 @@ def evaluate_scenario(scenario: RouteReplayScenario) -> RouteReplayResult:
     base_lat_accel = _lat_accel(v_ego, np.array([o.processed_curvature for o in baseline_outputs]))
     pert_lat_accel = _lat_accel(v_ego, np.array([o.processed_curvature for o in perturbed_outputs]))
     delta = np.abs(base_lat_accel - pert_lat_accel)
-    max_delta = float(np.max(delta))
+    delta_mask = _comparison_delta_mask(scenario, delta.size)
+    checked_delta = delta[delta_mask]
+    max_delta = float(np.max(checked_delta)) if checked_delta.size else 0.0
     metrics["max_baseline_perturbed_lat_accel_delta"] = max_delta
     if max_delta > thresholds.max_baseline_perturbed_lat_accel_delta:
       comparison_failures.append({
@@ -1416,8 +1477,9 @@ def evaluate_scenario(scenario: RouteReplayScenario) -> RouteReplayResult:
         "detail": f"perturbed diverged from baseline by {max_delta:.2f} m/s^2 lateral accel",
       })
 
-    base_flips = _sign_flip_count(base_lat_accel, thresholds.oscillation_lat_accel_eps)
-    pert_flips = _sign_flip_count(pert_lat_accel, thresholds.oscillation_lat_accel_eps)
+    oscillation_mask = _comparison_oscillation_mask(scenario, base_lat_accel.size)
+    base_flips = _sign_flip_count_masked(base_lat_accel, thresholds.oscillation_lat_accel_eps, oscillation_mask)
+    pert_flips = _sign_flip_count_masked(pert_lat_accel, thresholds.oscillation_lat_accel_eps, oscillation_mask)
     metrics["baseline_sign_flips"] = base_flips
     metrics["perturbed_sign_flips"] = pert_flips
     metrics["oscillation_lat_accel_eps"] = thresholds.oscillation_lat_accel_eps

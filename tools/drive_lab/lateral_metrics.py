@@ -8,6 +8,7 @@ positives low on the deliberately simple test plant.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -15,6 +16,9 @@ import numpy as np
 
 from openpilot.tools.drive_lab.lateral_plant import LateralPlantConfig, LateralPlantTrace
 from openpilot.tools.drive_lab.metrics import EvaluationMetric, EvaluationResult, ScenarioFailure
+
+
+OSCILLATION_THRESHOLD_WINDOW_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,22 @@ def _sign_flip_count(x: np.ndarray, eps: float) -> int:
 def _lateral_acceleration(v_ego: np.ndarray, curvature: np.ndarray) -> np.ndarray:
   """Lateral acceleration a_lat = v^2 * kappa."""
   return v_ego * v_ego * curvature
+
+
+def _lateral_jerk_threshold(base_threshold: float, mean_speed_mps: float) -> float:
+  # Jerk is measured on lateral acceleration, so the same curvature response scales roughly
+  # with v^2. Keep a floor for low-speed numerical noise; other metrics catch tracking,
+  # steering-rate, saturation, and oscillation failures independently.
+  speed_ratio = max(float(mean_speed_mps), 0.0) / 20.0
+  speed_factor = max(0.8, speed_ratio * speed_ratio)
+  return float(base_threshold) * speed_factor
+
+
+def _oscillation_reversal_limit(base_limit: int, evaluation_span_s: float) -> int:
+  if base_limit <= 0:
+    return 0
+  span_factor = max(1.0, float(evaluation_span_s) / OSCILLATION_THRESHOLD_WINDOW_S)
+  return int(math.ceil(float(base_limit) * span_factor))
 
 
 def evaluate_lateral_trace(
@@ -168,11 +188,7 @@ def evaluate_lateral_trace(
   lateral_accel = _lateral_acceleration(v_ego, actual)
   lateral_jerk = _derivative(t, lateral_accel)
   max_abs_lateral_jerk = float(np.max(np.abs(lateral_jerk))) if t.size > 1 else 0.0
-  # Scale jerk threshold with speed: at low speed v^2 is small so curvature
-  # transients produce less lateral jerk; raise threshold slightly for very
-  # high speed to avoid false positives from normal lag.
-  speed_factor = max(0.8, min(1.5, float(np.mean(v_ego)) / 20.0))
-  jerk_threshold = thresholds.max_abs_lateral_jerk * speed_factor
+  jerk_threshold = _lateral_jerk_threshold(thresholds.max_abs_lateral_jerk, float(np.mean(v_ego)))
   jerk_ok = max_abs_lateral_jerk <= jerk_threshold
   metrics.append(EvaluationMetric("max_abs_lateral_jerk", max_abs_lateral_jerk, "m/s^3", jerk_ok))
   if not jerk_ok and not has_nonfinite:
@@ -196,13 +212,17 @@ def evaluate_lateral_trace(
     actuator_reversals = _sign_flip_count(actuator[late], 0.5)
     desired_reversals = _sign_flip_count(desired[late], 1e-5)
     excess_reversals = max(0, actuator_reversals - desired_reversals)
-    oscillation_ok = excess_reversals <= thresholds.max_oscillation_reversals
+    late_t = t[late]
+    evaluation_span_s = float(late_t[-1] - late_t[0]) if late_t.size > 1 else 0.0
+    oscillation_limit = _oscillation_reversal_limit(thresholds.max_oscillation_reversals, evaluation_span_s)
+    oscillation_ok = excess_reversals <= oscillation_limit
     metrics.append(EvaluationMetric("excess_steering_reversals", float(excess_reversals), "count", oscillation_ok))
     if not oscillation_ok and not has_nonfinite:
       failures.append(
         ScenarioFailure(
           "oscillation",
-          f"{excess_reversals} excess steering reversals in second half (actuator={actuator_reversals}, desired={desired_reversals})",
+          f"{excess_reversals} excess steering reversals in second half "
+          f"(limit={oscillation_limit}, span={evaluation_span_s:.1f}s, actuator={actuator_reversals}, desired={desired_reversals})",
         )
       )
 

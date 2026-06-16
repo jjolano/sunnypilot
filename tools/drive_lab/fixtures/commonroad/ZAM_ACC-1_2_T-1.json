@@ -1,0 +1,16 @@
+{
+  "kind": "commonroad_zam_acc_1_2",
+  "title": "commonroad ZAM_ACC-1_2 slower lead approach",
+  "duration": 35.0,
+  "oracle_profile": "comfort",
+  "provenance": {"source": "commonroad", "scenario_id": "ZAM_ACC-1_2_T-1"},
+  "kwargs": {
+    "initial_speed": 30.0,
+    "lead_relevancy": true,
+    "initial_distance_lead": 70.0,
+    "speed_lead_values": [20.0, 20.0],
+    "prob_lead_values": [1.0, 1.0],
+    "cruise_values": [30.0, 30.0],
+    "breakpoints": [0.0, 35.0]
+  }
+}

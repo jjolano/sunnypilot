@@ -1,0 +1,13 @@
+{
+  "kind": "commonroad_zam_cc_1_1",
+  "title": "commonroad ZAM_CC-1_1 cruise speed step",
+  "duration": 30.0,
+  "oracle_profile": "comfort",
+  "provenance": {"source": "commonroad", "scenario_id": "ZAM_CC-1_1_T-1"},
+  "kwargs": {
+    "initial_speed": 20.0,
+    "lead_relevancy": false,
+    "cruise_values": [20.0, 20.0, 25.0, 25.0],
+    "breakpoints": [0.0, 10.0, 10.01, 30.0]
+  }
+}

@@ -14,9 +14,9 @@ from openpilot.tools.drive_lab.manual_longitudinal_baseline import (
 
 
 def test_cli_prints_synthetic_baseline_report(monkeypatch):
-  scenario = SimpleNamespace(kind="lead_pullaway", title="synthetic lead pullaway", duration=3.0, kwargs={})
+  scenario = SimpleNamespace(kind="lead_pullaway", title="synthetic lead pullaway", duration=3.0, kwargs={}, oracle_profile="comfort")
   comparison = MetricComparison("Launch", "launch_delay", "launch delay", 0.4, ExpectedRange(0.0, 1.2, "s"), True)
-  monkeypatch.setattr(baseline_cli, "generate_scenarios", lambda seed, cases, mode, profile=None: [scenario])
+  monkeypatch.setattr(baseline_cli, "generate_preset_scenarios", lambda request: [scenario])
   monkeypatch.setattr(baseline_cli, "load_profile", lambda path: None)
   monkeypatch.setattr(
     baseline_cli,
@@ -39,9 +39,9 @@ def test_cli_prints_synthetic_baseline_report(monkeypatch):
 
 
 def test_cli_strict_exits_when_comparison_fails(monkeypatch):
-  scenario = SimpleNamespace(kind="lead_pullaway", title="synthetic lead pullaway", duration=3.0, kwargs={})
+  scenario = SimpleNamespace(kind="lead_pullaway", title="synthetic lead pullaway", duration=3.0, kwargs={}, oracle_profile="comfort")
   comparison = MetricComparison("Launch", "launch_delay", "launch delay", 2.0, ExpectedRange(0.0, 1.2, "s"), False)
-  monkeypatch.setattr(baseline_cli, "generate_scenarios", lambda seed, cases, mode, profile=None: [scenario])
+  monkeypatch.setattr(baseline_cli, "generate_preset_scenarios", lambda request: [scenario])
   monkeypatch.setattr(baseline_cli, "load_profile", lambda path: None)
   monkeypatch.setattr(
     baseline_cli,
@@ -77,6 +77,7 @@ def test_evaluate_scenario_uses_bounded_lead_pullaway_start_oracle(monkeypatch):
     title="synthetic lead pullaway",
     duration=3.0,
     kwargs={"ensure_start": True},
+    oracle_profile="comfort",
   )
   monkeypatch.setattr(maneuver_module, "Maneuver", FakeManeuver)
   monkeypatch.setattr(baseline_cli, "compare_scenario_output", lambda kind, output: [])

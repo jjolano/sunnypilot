@@ -5,14 +5,14 @@ import argparse
 import contextlib
 import io
 
-from openpilot.tools.drive_lab.fuzz_longitudinal import (
+from openpilot.tools.drive_lab.fuzz_longitudinal import scenario_maneuver_kwargs
+from openpilot.tools.drive_lab.log_profile import load_profile
+from openpilot.tools.drive_lab.longitudinal_scenarios import (
   REALISM_MODES,
   SCENARIO_PRESETS,
-  generate_scenarios,
-  generate_udacity_acc_scenarios,
-  scenario_maneuver_kwargs,
+  PresetRequest,
+  generate_preset_scenarios,
 )
-from openpilot.tools.drive_lab.log_profile import load_profile
 from openpilot.tools.drive_lab.manual_longitudinal_baseline import (
   ScenarioComparison,
   compare_scenario_output,
@@ -27,16 +27,26 @@ def main() -> None:
   parser.add_argument("--cases", type=int, default=25)
   parser.add_argument("--mode", choices=REALISM_MODES, default="comfort")
   parser.add_argument("--preset", choices=SCENARIO_PRESETS, default="fuzz")
-  parser.add_argument("--profile", help="Optional JSON profile from profile_route.py to bias generated ranges")
+  parser.add_argument("--profile", help="Optional JSON profile from profile_route.py or openacc_segments.py")
+  parser.add_argument("--e2e", action="store_true")
+  parser.add_argument("--force-decel", action="store_true")
+  parser.add_argument("--ncap-family", choices=("CCRs", "CCRm", "CCRb"))
+  parser.add_argument("--ncap-sample", type=int)
   parser.add_argument("--strict", action="store_true", help="Exit non-zero when any baseline comparison fails")
   args = parser.parse_args()
 
   profile = load_profile(args.profile) if args.profile else None
-  scenarios = (
-    generate_udacity_acc_scenarios(args.mode)
-    if args.preset == "udacity-acc"
-    else generate_scenarios(args.seed, args.cases, args.mode, profile)
-  )
+  scenarios = generate_preset_scenarios(PresetRequest(
+    preset=args.preset,
+    mode=args.mode,
+    seed=args.seed,
+    cases=args.cases,
+    profile=profile,
+    e2e=args.e2e,
+    force_decel=args.force_decel,
+    ncap_family=args.ncap_family,
+    ncap_sample=args.ncap_sample,
+  ))
   results = [evaluate_scenario(scenario) for scenario in scenarios]
   print(render_report(results, args.seed, args.mode, args.preset))
   if args.strict and any(not result.passed for result in results):
@@ -49,7 +59,10 @@ def evaluate_scenario(scenario) -> ScenarioComparison:
   maneuver = Maneuver(scenario.title, scenario.duration, **scenario_maneuver_kwargs(scenario))
   with contextlib.redirect_stdout(io.StringIO()):
     valid, output = maneuver.evaluate()
-  return ScenarioComparison(scenario.title, scenario.kind, bool(valid), compare_scenario_output(scenario.kind, output))
+  comparisons = compare_scenario_output(scenario.kind, output)
+  if scenario.oracle_profile == "safety" and not comparisons:
+    return ScenarioComparison(scenario.title, scenario.kind, bool(valid), comparisons)
+  return ScenarioComparison(scenario.title, scenario.kind, bool(valid), comparisons)
 
 
 def render_report(results: list[ScenarioComparison], seed: int, mode: str, preset: str) -> str:

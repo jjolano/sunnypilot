@@ -1,0 +1,31 @@
+{
+  "schema": "drive-lab-longitudinal-route-replay-fuzzer-artifact",
+  "version": 1,
+  "title": "synthetic fixture window",
+  "frames": [
+    {
+      "t": 0.0,
+      "source_t": 100.0,
+      "v_ego": 12.0,
+      "v_cruise": 12.0,
+      "pitch": 0.0,
+      "lead_active": true,
+      "d_rel": 35.0,
+      "v_lead": 11.0,
+      "prob_lead": 1.0,
+      "prob_throttle": 1.0
+    },
+    {
+      "t": 0.05,
+      "source_t": 100.05,
+      "v_ego": 12.0,
+      "v_cruise": 12.0,
+      "pitch": 0.0,
+      "lead_active": true,
+      "d_rel": 34.5,
+      "v_lead": 11.0,
+      "prob_lead": 1.0,
+      "prob_throttle": 1.0
+    }
+  ]
+}

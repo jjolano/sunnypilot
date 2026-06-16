@@ -12,6 +12,7 @@ from openpilot.tools.drive_lab.fuzz_lateral_closed_loop import (
   ClosedLoopResult,
   ClosedLoopThresholds,
   _run_closed_loop,
+  _unexpected_plant_failures,
   generate_closed_loop_scenarios,
   main,
   replay_artifact,
@@ -56,6 +57,38 @@ def test_high_quality_path_closed_loop_passes():
   assert not result.plant_skipped
   assert result.plant_result is not None
   assert result.plant_evaluation is not None
+
+
+def test_lateral_maneuver_override_allows_expected_tracking_transient():
+  scenarios = generate_closed_loop_scenarios(seed=1, cases=1, kind="lateral_maneuver_override", duration_s=2.0)
+  result = _run_closed_loop(scenarios[0])
+  assert result.valid
+  assert not result.plant_skipped
+  assert result.plant_evaluation is not None
+  assert any(metric.name == "max_abs_tracking_error" and not metric.passed for metric in result.plant_evaluation.metrics)
+
+
+def test_lateral_maneuver_override_keeps_structural_plant_failures_hard():
+  from openpilot.tools.drive_lab.metrics import ScenarioFailure
+
+  failures = [
+    ScenarioFailure("tracking", "expected override step lag"),
+    ScenarioFailure("lateral_jerk", "structural instability"),
+  ]
+
+  filtered = _unexpected_plant_failures("lateral_maneuver_override", failures)
+
+  assert [failure.check for failure in filtered] == ["lateral_jerk"]
+
+
+def test_long_low_lane_confidence_does_not_fail_only_from_duration_scaled_oscillation_count():
+  scenarios = generate_closed_loop_scenarios(seed=25, cases=1, duration_s=12.0)
+  scenario = scenarios[0]
+
+  result = _run_closed_loop(scenario)
+
+  assert scenario.kind == "low_lane_confidence"
+  assert result.valid
 
 
 # ---------- demand failure skips plant ----------

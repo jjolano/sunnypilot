@@ -129,6 +129,25 @@ def test_dropout_produces_invalid_path_or_reduced_quality():
   assert found, "dropout did not produce expected invalid_path or reduced quality in any case"
 
 
+def test_dropout_recovery_boundary_is_not_scored_as_structural_jerk_failure():
+  scenario = generate_scenarios(RouteReplayFuzzerConfig(seed=20, cases=61, duration_s=3.0, perturbation="dropout"))[60]
+  assert scenario.recipe.kind == "dropout"
+
+  result = evaluate_scenario(scenario)
+
+  assert result.valid
+
+
+def test_noise_window_sign_flips_are_not_scored_as_residual_oscillation():
+  scenario = generate_scenarios(RouteReplayFuzzerConfig(seed=29, cases=35, duration_s=30.0, perturbation="noise"))[34]
+  assert scenario.preset == "synthetic_sine"
+  assert scenario.recipe.kind == "noise"
+
+  result = evaluate_scenario(scenario)
+
+  assert result.valid
+
+
 # ---------- delay/stale causality ----------
 
 
@@ -151,6 +170,24 @@ def test_stale_uses_only_start_frame_value():
   stale_value = scenario.frames[start].raw_curvature
   for i in range(start, scenario.recipe.end_frame):
     assert perturbed[i].raw_curvature == stale_value
+
+
+def test_stale_exit_boundary_is_not_scored_as_structural_jerk_failure():
+  scenario = generate_scenarios(RouteReplayFuzzerConfig(seed=19, cases=14, duration_s=3.0))[13]
+  assert scenario.recipe.kind == "stale"
+
+  result = evaluate_scenario(scenario)
+
+  assert result.valid
+
+
+def test_stale_window_divergence_is_not_scored_inside_materialized_window():
+  scenario = generate_scenarios(RouteReplayFuzzerConfig(seed=20, cases=115, duration_s=3.0, perturbation="stale"))[114]
+  assert scenario.recipe.kind == "stale"
+
+  result = evaluate_scenario(scenario)
+
+  assert result.valid
 
 
 # ---------- baseline failure skips comparison ----------

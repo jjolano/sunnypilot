@@ -97,6 +97,12 @@ uv run python -m openpilot.tools.drive_lab.fuzz_longitudinal --seed 1 --mode com
 Analyses that decode the old fork's custom log structs must run from a `custom`-branch
 checkout, which has the matching cereal schema.
 
+Longitudinal fuzz presets (`fuzz_longitudinal --preset`): `fuzz` (seeded random),
+`udacity-acc` (15 fixed ACC cases), `openpilot-acc` (upstream pytest maneuvers),
+`ncap-acc` (Euro NCAP ACC grid), `commonroad-acc` (bundled ZAM fixtures).
+Route replay: `fuzz_longitudinal_route_replay --route ROUTE`. OpenACC CSV profiling:
+`openacc_segments.py` → use with `--profile` on the fuzzer.
+
 ## Deploy Health Check
 
 Run after deploys when validating the branch. Config values come from `.deploy-config`.
