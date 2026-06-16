@@ -296,6 +296,7 @@ class LongitudinalPlannerSP:
     return float(release_a_target if release_mpc_stop else mpc_a_target), bool(should_stop), False
 
   def update(self, sm: messaging.SubMaster) -> None:
+    self.custom_long.maybe_refresh_params()
     self.events_sp.clear()
     if not self.custom_long.enabled:   # custom SCC mode replaces DEC; keep DEC dormant when custom is on
       self.dec.update(sm)
