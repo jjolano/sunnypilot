@@ -81,12 +81,40 @@ def test_close_risky_lead_with_high_speed_light_brake():
   assert r.a_target == pytest.approx(-0.35, abs=1e-9)
 
 
+def test_close_risky_lead_high_speed_below_strong_prep_ttc_stays_hazard():
+  # Highway high-decel cases only get capped advisory when TTC >= 6s. Below that,
+  # even with comfortable headway, MPC/lead physics owns the response.
+  r = align(v_ego=30.0, lead_v=21.5, lead_v_rel=-8.5, lead_d_rel=50.0, follow_gap=15.0)
+  assert r.action is AlignmentAction.IGNORE
+  assert r.required_decel > 0.80
+  assert r.reason == "high_required_decel"
+
+
 def test_close_risky_lead_low_speed_stays_hazard():
   # Low-speed hard closing: 12 m/s ego, 6 m/s closing at 25 m.
   # TTC = 25/6 = 4.2s (> 4, so clears hazard gate).
   # required_decel >> MAX, but v_ego=12 < 18, TTC=4.2 < 8 → defer to MPC.
   r = align(v_ego=12.0, lead_v=6.0, lead_v_rel=-6.0, lead_d_rel=25.0, follow_gap=15.0)
   assert r.action is AlignmentAction.IGNORE
+  assert r.reason == "high_required_decel"
+
+
+def test_close_risky_lead_mid_speed_ttc_alone_stays_hazard():
+  # Real-log-shaped mid-speed case: TTC looks mild (31/3.5 = 8.9s), but the usable
+  # gap above desired following distance is consumed in ~1.6s, so TTC alone must
+  # not authorize a capped gentle advisory.
+  r = align(v_ego=17.0, lead_v=13.5, lead_v_rel=-3.5, lead_d_rel=31.0, follow_gap=25.5)
+  assert r.action is AlignmentAction.IGNORE
+  assert r.required_decel > 0.80
+  assert r.reason == "high_required_decel"
+
+
+def test_close_risky_lead_low_speed_ttc_alone_stays_hazard():
+  # Low-speed extrapolated case outside the highway analysis: TTC >= 8 is still
+  # not enough to replace MPC authority when required_decel is above MAX.
+  r = align(v_ego=12.0, lead_v=9.5, lead_v_rel=-2.5, lead_d_rel=21.0, follow_gap=15.0)
+  assert r.action is AlignmentAction.IGNORE
+  assert r.required_decel > 0.80
   assert r.reason == "high_required_decel"
 
 

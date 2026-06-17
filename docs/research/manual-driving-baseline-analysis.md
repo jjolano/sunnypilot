@@ -215,8 +215,6 @@ _ALIGN_COAST_A_TARGET         = 0.0
 
 _ALIGN_NO_ADVISORY_TTC        = 24.0
 _ALIGN_COAST_TTC_MAIN         = 20.0
-_ALIGN_BRAKE_TTC_ENTER        = 10.0
-_ALIGN_BRAKE_TTC_MAIN         = 8.0
 _ALIGN_STRONG_PREP_TTC        = 6.0
 _ALIGN_HAZARD_TTC             = 4.0
 ```

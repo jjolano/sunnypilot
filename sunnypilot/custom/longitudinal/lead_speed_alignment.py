@@ -55,8 +55,6 @@ _ALIGN_COAST_A_TARGET = 0.0           # lift to neutral
 # TTC / THW gates (Phase 1b, derived from manual-driving baseline analysis)
 _ALIGN_NO_ADVISORY_TTC = 24.0         # s; above this, don't block progress with advisory
 _ALIGN_COAST_TTC_MAIN = 20.0          # s; below this, coast preference
-_ALIGN_BRAKE_TTC_ENTER = 10.0         # s; below this, gentle brake enters
-_ALIGN_BRAKE_TTC_MAIN = 8.0           # s; below this, brake active
 _ALIGN_STRONG_PREP_TTC = 6.0          # s; firm brake prep threshold
 _ALIGN_HAZARD_TTC = 4.0               # s; below this, defer to MPC physical hazard
 
@@ -196,9 +194,9 @@ def lead_speed_alignment(
       if v_ego >= 18.0 and ttc >= _ALIGN_STRONG_PREP_TTC and thw >= 1.2:
         return _result(AlignmentAction.GENTLE_BRAKE, _ALIGN_GENTLE_BRAKE_MAX, required_decel,
                        desired_gap, excess_gap, closing, "high_decel_high_speed_mild")
-      if ttc >= _ALIGN_BRAKE_TTC_MAIN:
-        return _result(AlignmentAction.GENTLE_BRAKE, _ALIGN_GENTLE_BRAKE_MAX, required_decel,
-                       desired_gap, excess_gap, closing, "high_decel_ttc_mild")
+      # TTC alone is not enough to authorize a capped advisory: mid-speed real-log
+      # cases can have TTC >= 8s while consuming the usable follow-gap buffer in
+      # ~1-2s. Leave those high-required-decel cases to MPC/lead physics.
       return _result(AlignmentAction.IGNORE, 0.0, required_decel, desired_gap,
                      excess_gap, closing, "high_required_decel")
     return _result(AlignmentAction.IGNORE, 0.0, required_decel, desired_gap,
