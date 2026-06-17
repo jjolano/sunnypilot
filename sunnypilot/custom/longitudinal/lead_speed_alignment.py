@@ -54,10 +54,10 @@ _ALIGN_COAST_A_TARGET = 0.0           # lift to neutral
 
 # TTC / THW gates (Phase 1b, derived from manual-driving baseline analysis)
 _ALIGN_NO_ADVISORY_TTC = 24.0         # s; above this, don't block progress with advisory
-_ALIGN_COAST_TTC_MAIN = 15.0          # s; below this, coast preference
+_ALIGN_COAST_TTC_MAIN = 20.0          # s; below this, coast preference
 _ALIGN_BRAKE_TTC_ENTER = 10.0         # s; below this, gentle brake enters
 _ALIGN_BRAKE_TTC_MAIN = 8.0           # s; below this, brake active
-_ALIGN_STRONG_BRAKE_TTC = 5.0         # s; firm brake prep
+_ALIGN_STRONG_PREP_TTC = 6.0          # s; firm brake prep threshold
 _ALIGN_HAZARD_TTC = 4.0               # s; below this, defer to MPC physical hazard
 
 # Pullaway / launch thresholds
@@ -188,8 +188,15 @@ def lead_speed_alignment(
       if required_decel < _ALIGN_MAX_REQUIRED_DECEL:
         return _result(AlignmentAction.GENTLE_BRAKE, _ALIGN_GENTLE_BRAKE_MAX, required_decel,
                        desired_gap, excess_gap, closing, "capped_advisory_brake")
-      # reqDecel >= MAX (0.80): check TTC to avoid wall from tiny excess at highway speeds.
-      if ttc > _ALIGN_BRAKE_TTC_MAIN:
+      # reqDecel >= MAX (0.80): use TTC/speed/THW to distinguish true hazard from
+      # high-speed light-brake cases. Corrected aEgo analysis: at >=18 m/s humans
+      # brake 83% of the time but 71% is light braking only.
+      # High-speed light-brake zone: moderate TTC with comfortable headway
+      # → capped gentle advisory instead of MPC wall.
+      if v_ego >= 18.0 and ttc >= _ALIGN_STRONG_PREP_TTC and thw >= 1.2:
+        return _result(AlignmentAction.GENTLE_BRAKE, _ALIGN_GENTLE_BRAKE_MAX, required_decel,
+                       desired_gap, excess_gap, closing, "high_decel_high_speed_mild")
+      if ttc >= _ALIGN_BRAKE_TTC_MAIN:
         return _result(AlignmentAction.GENTLE_BRAKE, _ALIGN_GENTLE_BRAKE_MAX, required_decel,
                        desired_gap, excess_gap, closing, "high_decel_ttc_mild")
       return _result(AlignmentAction.IGNORE, 0.0, required_decel, desired_gap,

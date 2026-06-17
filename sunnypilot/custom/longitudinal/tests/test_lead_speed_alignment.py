@@ -70,12 +70,24 @@ def test_medium_slower_lead_produces_gentle_brake():
   assert r.required_decel > 0.0
 
 
-def test_close_risky_lead_returns_ignore():
-  # Hard closing: 8 m/s closing with minimal excess -> required decel >> MAX, TTC < BRAKE_TTC_MAIN.
-  # TTC = 55/8 = 6.9s < BRAKE_TTC_MAIN(8) -> IGNORE, defer to MPC.
+def test_close_risky_lead_with_high_speed_light_brake():
+  # Hard closing at highway speed: 30 m/s ego, 8 m/s closing at 55 m.
+  # TTC = 55/8 = 6.9s. vEgo >= 18, TTC >= 6, THW = 55/30 = 1.83 >= 1.2
+  # → high-speed light-brake zone: gentle brake, not MPC wall.
   r = align(v_ego=30.0, lead_v=22.0, lead_v_rel=-8.0, lead_d_rel=55.0, follow_gap=15.0)
-  assert r.action is AlignmentAction.IGNORE
+  assert r.action is AlignmentAction.GENTLE_BRAKE
   assert r.required_decel > 0.50
+  assert r.reason == "high_decel_high_speed_mild"
+  assert r.a_target == pytest.approx(-0.35, abs=1e-9)
+
+
+def test_close_risky_lead_low_speed_stays_hazard():
+  # Low-speed hard closing: 12 m/s ego, 6 m/s closing at 25 m.
+  # TTC = 25/6 = 4.2s (> 4, so clears hazard gate).
+  # required_decel >> MAX, but v_ego=12 < 18, TTC=4.2 < 8 → defer to MPC.
+  r = align(v_ego=12.0, lead_v=6.0, lead_v_rel=-6.0, lead_d_rel=25.0, follow_gap=15.0)
+  assert r.action is AlignmentAction.IGNORE
+  assert r.reason == "high_required_decel"
 
 
 def test_unstable_lead_does_not_pullaway():
