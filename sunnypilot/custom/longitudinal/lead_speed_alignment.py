@@ -47,10 +47,18 @@ _ALIGN_MIN_V_EGO = 5.0                # m/s; avoid stop-and-go context
 _ALIGN_MIN_LEAD_V = 3.0               # m/s; avoid stopped/crawling leads
 _ALIGN_MIN_EXCESS_GAP = 3.0           # m
 _ALIGN_TINY_REQUIRED_DECEL = 0.10     # m/s^2
-_ALIGN_COMFORT_REQUIRED_DECEL = 0.35  # m/s^2
+_ALIGN_COMFORT_REQUIRED_DECEL = 0.50  # m/s^2; full gentle brake reached at this point
 _ALIGN_MAX_REQUIRED_DECEL = 0.80      # m/s^2; above this, MPC stays authoritative
-_ALIGN_GENTLE_BRAKE_MAX = -0.25       # m/s^2
+_ALIGN_GENTLE_BRAKE_MAX = -0.35       # m/s^2
 _ALIGN_COAST_A_TARGET = 0.0           # lift to neutral
+
+# TTC / THW gates (Phase 1b, derived from manual-driving baseline analysis)
+_ALIGN_NO_ADVISORY_TTC = 24.0         # s; above this, don't block progress with advisory
+_ALIGN_COAST_TTC_MAIN = 15.0          # s; below this, coast preference
+_ALIGN_BRAKE_TTC_ENTER = 10.0         # s; below this, gentle brake enters
+_ALIGN_BRAKE_TTC_MAIN = 8.0           # s; below this, brake active
+_ALIGN_STRONG_BRAKE_TTC = 5.0         # s; firm brake prep
+_ALIGN_HAZARD_TTC = 4.0               # s; below this, defer to MPC physical hazard
 
 # Pullaway / launch thresholds
 _ALIGN_STANDSTILL_V_EGO = 0.3         # m/s
@@ -144,23 +152,46 @@ def lead_speed_alignment(
   else:
     required_decel = 0.0
 
+  # Compute TTC and THW for behavioral gating.
+  ttc = lead_d_rel / max(closing, 0.01) if closing > 0.05 else float('inf')
+  thw = lead_d_rel / max(v_ego, 1.0)
+
+  # True hazard zone (< 4s TTC): defer to MPC regardless of lead confidence.
+  if ttc < _ALIGN_HAZARD_TTC:
+    return _result(AlignmentAction.IGNORE, 0.0, required_decel, desired_gap,
+                   excess_gap, closing, "ttc_hazard")
+
   # Slowdown side: we are closing on a slower lead.
   ego_faster = v_ego > lead_v + 0.1
   if ego_faster and v_ego >= _ALIGN_MIN_V_EGO and lead_v >= _ALIGN_MIN_LEAD_V:
     if lead_stable and lead_confidence >= _ALIGN_MIN_CONFIDENCE and excess_gap >= _ALIGN_MIN_EXCESS_GAP:
-      if required_decel < _ALIGN_MAX_REQUIRED_DECEL:
-        if required_decel <= _ALIGN_TINY_REQUIRED_DECEL:
+      # Very far / comfortable: don't block progress with advisory.
+      if ttc > _ALIGN_NO_ADVISORY_TTC and thw >= 1.5:
+        return _result(AlignmentAction.IGNORE, 0.0, required_decel, desired_gap,
+                       excess_gap, closing, "ttc_far_comfort")
+      # Decel-band routing with TTC gating.
+      if required_decel <= _ALIGN_TINY_REQUIRED_DECEL:
+        if ttc < _ALIGN_COAST_TTC_MAIN:
           return _result(AlignmentAction.COAST, _ALIGN_COAST_A_TARGET, required_decel,
                          desired_gap, excess_gap, closing, "tiny_decel_coast")
-        if required_decel <= _ALIGN_COMFORT_REQUIRED_DECEL:
-          t = (required_decel - _ALIGN_TINY_REQUIRED_DECEL) / (
-            _ALIGN_COMFORT_REQUIRED_DECEL - _ALIGN_TINY_REQUIRED_DECEL
-          )
-          a_target = (1.0 - t) * _ALIGN_COAST_A_TARGET + t * _ALIGN_GENTLE_BRAKE_MAX
-          return _result(AlignmentAction.GENTLE_BRAKE, a_target, required_decel,
-                         desired_gap, excess_gap, closing, "comfort_gentle_brake")
         return _result(AlignmentAction.IGNORE, 0.0, required_decel, desired_gap,
-                       excess_gap, closing, "high_risk_ignore")
+                       excess_gap, closing, "tiny_decel_ttc_far")
+      if required_decel <= _ALIGN_COMFORT_REQUIRED_DECEL:
+        t = (required_decel - _ALIGN_TINY_REQUIRED_DECEL) / (
+          _ALIGN_COMFORT_REQUIRED_DECEL - _ALIGN_TINY_REQUIRED_DECEL
+        )
+        a_target = (1.0 - t) * _ALIGN_COAST_A_TARGET + t * _ALIGN_GENTLE_BRAKE_MAX
+        return _result(AlignmentAction.GENTLE_BRAKE, a_target, required_decel,
+                       desired_gap, excess_gap, closing, "comfort_gentle_brake")
+      # reqDecel in (COMFORT, MAX): capped advisory instead of silence.
+      # This removes the "nothing ... nothing ... full MPC wall" behavior.
+      if required_decel < _ALIGN_MAX_REQUIRED_DECEL:
+        return _result(AlignmentAction.GENTLE_BRAKE, _ALIGN_GENTLE_BRAKE_MAX, required_decel,
+                       desired_gap, excess_gap, closing, "capped_advisory_brake")
+      # reqDecel >= MAX (0.80): check TTC to avoid wall from tiny excess at highway speeds.
+      if ttc > _ALIGN_BRAKE_TTC_MAIN:
+        return _result(AlignmentAction.GENTLE_BRAKE, _ALIGN_GENTLE_BRAKE_MAX, required_decel,
+                       desired_gap, excess_gap, closing, "high_decel_ttc_mild")
       return _result(AlignmentAction.IGNORE, 0.0, required_decel, desired_gap,
                      excess_gap, closing, "high_required_decel")
     return _result(AlignmentAction.IGNORE, 0.0, required_decel, desired_gap,

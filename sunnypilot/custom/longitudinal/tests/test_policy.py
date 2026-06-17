@@ -371,7 +371,10 @@ def _alignment_scene(**over):
 
 
 def test_far_slower_lead_adds_alignment_coast_candidate():
-  scene = _alignment_scene(lead_v=24.0, lead_v_rel=-1.0)
+  scene = _alignment_scene(
+    v_ego=6.0, v_cruise=6.0, lead_v=5.0, lead_v_rel=-1.0,
+    lead_d_rel=14.0, follow_gap=8.0, lead_progress_allowed=False,
+  )
   cands = build_candidates(scene)
   intents = sources_of(cands)
   assert "lead_alignment_coast" in intents

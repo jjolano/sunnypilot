@@ -52,27 +52,30 @@ def align(
 
 def test_far_slower_lead_with_tiny_required_decel_coasts():
   # 25 m/s ego, 24 m/s lead -> 1 m/s closing at 80 m -> tiny required decel.
+  # TTC = 80/1 = 80s > NO_ADVISORY_TTC (24s) and THW >= 1.5 -> IGNORE (no block).
   r = align(v_ego=25.0, lead_v=24.0, lead_v_rel=-1.0, lead_d_rel=80.0, follow_gap=37.5)
   assert r.action in (AlignmentAction.COAST, AlignmentAction.IGNORE)
   assert r.a_target <= 0.0 + 1e-9
   assert r.required_decel < 0.10
-  assert r.reason in ("tiny_decel_coast", "no_alignment")
+  assert r.reason in ("tiny_decel_coast", "ttc_far_comfort")
 
 
 def test_medium_slower_lead_produces_gentle_brake():
-  # 25 m/s ego, 23 m/s lead -> 2 m/s closing at 60 m -> required decel in comfort band.
-  r = align(v_ego=25.0, lead_v=23.0, lead_v_rel=-2.0, lead_d_rel=60.0, follow_gap=37.5)
-  assert r.action in (AlignmentAction.COAST, AlignmentAction.GENTLE_BRAKE)
+  # 25 m/s ego, 23 m/s lead -> 2 m/s closing at 45 m -> reqDecel ~0.27 in comfort band.
+  # TTC = 45/2 = 22.5s < NO_ADVISORY_TTC(24) so enters decel routing.
+  r = align(v_ego=25.0, lead_v=23.0, lead_v_rel=-2.0, lead_d_rel=45.0, follow_gap=37.5)
+  assert r.action is AlignmentAction.GENTLE_BRAKE
   assert r.a_target <= 0.0 + 1e-9
-  assert r.a_target >= -0.25 - 1e-9
+  assert r.a_target >= -0.35 - 1e-9
   assert r.required_decel > 0.0
 
 
 def test_close_risky_lead_returns_ignore():
-  # Hard closing: 5 m/s closing with just enough excess -> required decel above comfort threshold.
-  r = align(v_ego=25.0, lead_v=20.0, lead_v_rel=-5.0, lead_d_rel=45.0, follow_gap=15.0)
+  # Hard closing: 8 m/s closing with minimal excess -> required decel >> MAX, TTC < BRAKE_TTC_MAIN.
+  # TTC = 55/8 = 6.9s < BRAKE_TTC_MAIN(8) -> IGNORE, defer to MPC.
+  r = align(v_ego=30.0, lead_v=22.0, lead_v_rel=-8.0, lead_d_rel=55.0, follow_gap=15.0)
   assert r.action is AlignmentAction.IGNORE
-  assert r.required_decel > 0.35
+  assert r.required_decel > 0.50
 
 
 def test_unstable_lead_does_not_pullaway():
