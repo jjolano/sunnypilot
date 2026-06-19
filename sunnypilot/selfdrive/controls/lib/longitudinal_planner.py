@@ -236,28 +236,59 @@ class LongitudinalPlannerSP:
 
   def _standstill_release_clears_mpc_stop(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
                                           raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[bool, float]:
-    if not self.custom_long.enabled or self.custom_long_output is None or not bool(getattr(self.custom_long_output, "standstill_release_allowed", False)):
-      return False, float(mpc_a_target)
-    if str(getattr(self.custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch"):
-      return False, float(mpc_a_target)
-    if bool(getattr(self.custom_long_output, "should_stop", False)):
-      return False, float(mpc_a_target)
-    if raw_model_should_stop:
-      return False, float(mpc_a_target)
-    if self.custom_long.mode is LongitudinalMode.E2E and float(raw_model_a_target) < 0.15:
-      return False, float(mpc_a_target)
-    cs = sm["carState"]
-    controls_state = sm["controlsState"]
-    if bool(getattr(cs, "brakePressed", False)) or bool(getattr(cs, "gasPressed", False)):
-      return False, float(mpc_a_target)
-    if bool(getattr(controls_state, "forceDecel", False)):
-      return False, float(mpc_a_target)
-    if float(mpc_a_target) < -0.03:
+    if not self._standstill_release_request_valid(sm, mpc_a_target, raw_model_a_target, raw_model_should_stop):
       return False, float(mpc_a_target)
     if not mpc_should_stop:
       return False, float(mpc_a_target)
     release_a = max(float(mpc_a_target), 0.15, float(getattr(self.custom_long_output, "standstill_release_a_target", 0.0)))
     return True, release_a
+
+  def _standstill_release_request_valid(self, sm: messaging.SubMaster, mpc_a_target: float,
+                                        raw_model_a_target: float, raw_model_should_stop: bool) -> bool:
+    if not self.custom_long.enabled or self.custom_long_output is None or not bool(getattr(self.custom_long_output, "standstill_release_allowed", False)):
+      return False
+    if str(getattr(self.custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch"):
+      return False
+    if bool(getattr(self.custom_long_output, "should_stop", False)):
+      return False
+    if raw_model_should_stop:
+      return False
+    if self.custom_long.mode is LongitudinalMode.E2E and float(raw_model_a_target) < 0.15:
+      return False
+    cs = sm["carState"]
+    controls_state = sm["controlsState"]
+    if bool(getattr(cs, "brakePressed", False)) or bool(getattr(cs, "gasPressed", False)):
+      return False
+    if bool(getattr(controls_state, "forceDecel", False)):
+      return False
+    if float(mpc_a_target) < -0.03:
+      return False
+    return True
+
+  def _lead_stop_hold_release_accepts(self, sm: messaging.SubMaster, mpc_a_target: float, raw_model_a_target: float,
+                                      raw_model_should_stop: bool, selected_lead, lead_d_rel: float, lead_v: float,
+                                      lead_v_rel: float) -> tuple[bool, float]:
+    if selected_lead is None:
+      return False, float(lead_d_rel)
+    release_source = str(getattr(self.custom_long_output, "standstill_release_source", ""))
+    if release_source not in ("lead_pullaway", "lead_standstill_launch"):
+      return False, float(lead_d_rel)
+    lead_id = getattr(selected_lead, 'radarTrackId', None)
+    if lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id != self._lead_stop_hold_lead_id:
+      return False, float(lead_d_rel)
+    stopping_distance = float(getattr(self.CP, 'stoppingDistance', 6.0) or 6.0)
+    if float(lead_v) < 0.30 or float(lead_v_rel) < 0.15:
+      return False, float(lead_d_rel)
+    if float(lead_d_rel) <= stopping_distance + 0.1:
+      return False, float(lead_d_rel)
+    if self._lead_stop_hold_gap_increasing_s < 0.15:
+      return False, float(lead_d_rel)
+    if lead_id is None or self._lead_stop_hold_lead_id is None:
+      if self._lead_stop_hold_gap_increasing_s < 0.30:
+        return False, float(lead_d_rel)
+    if not self._standstill_release_request_valid(sm, mpc_a_target, raw_model_a_target, raw_model_should_stop):
+      return False, float(lead_d_rel)
+    return True, min(max(float(getattr(self.custom_long_output, "standstill_release_a_target", 0.15)), 0.15), 0.35)
 
   def final_longitudinal_output(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
                                 raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[float, bool, bool]:
@@ -271,11 +302,23 @@ class LongitudinalPlannerSP:
     gas_pressed = bool(getattr(car_state, 'gasPressed', False)) if car_state is not None else False
     v_ego = float(getattr(car_state, 'vEgo', 0.0) or 0.0) if car_state is not None else 0.0
     lead_stop_hold_active = self._update_lead_stop_hold(sm, v_ego, has_lead, selected_lead, lead_d_rel, lead_v, lead_v_rel, gas_pressed)
+    release_mpc_stop = False
+    release_a_target = float(mpc_a_target)
+    mpc_stop = bool(mpc_should_stop)
 
     if lead_stop_hold_active:
-      mpc_stop = True
-      release_mpc_stop = False
-      release_a_target = float(mpc_a_target)
+      latch_release_ok, latch_release_a = self._lead_stop_hold_release_accepts(
+        sm, mpc_a_target, raw_model_a_target, raw_model_should_stop, selected_lead, lead_d_rel, lead_v, lead_v_rel)
+      if latch_release_ok:
+        self._reset_lead_stop_hold()
+        lead_stop_hold_active = False
+        mpc_stop = False
+        release_mpc_stop = True
+        release_a_target = latch_release_a
+      else:
+        mpc_stop = True
+        release_mpc_stop = False
+        release_a_target = float(mpc_a_target)
     else:
       release_mpc_stop, release_a_target = self._standstill_release_clears_mpc_stop(
         sm, mpc_a_target, mpc_should_stop, raw_model_a_target, raw_model_should_stop)

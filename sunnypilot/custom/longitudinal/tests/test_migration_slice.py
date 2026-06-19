@@ -375,6 +375,158 @@ def test_standstill_release_vetoes_mpc_brake_driver_and_custom_stop():
   assert should_stop is True
 
 
+def _arm_stop_hold(sp):
+  for _ in range(6):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(
+        status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7,
+      )),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+
+
+def _release_sm(d_rel=6.5, v_lead=0.4, v_rel=0.2, radar_id=7, brake=False, gas=False, force_decel=False):
+  return {
+    'carState': SimpleNamespace(vEgo=0.0, brakePressed=brake, gasPressed=gas, vCruise=12.0),
+    'controlsState': SimpleNamespace(forceDecel=force_decel),
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(
+      status=True, dRel=d_rel, vLead=v_lead, vRel=v_rel, radarTrackId=radar_id,
+    )),
+  }
+
+
+def _set_lead_pullaway_release(sp):
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=sp.custom_long.mode,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )
+
+
+def test_latch_release_same_lead_clears_earlier_with_bounded_accel():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )
+  sp._lead_stop_hold_gap_increasing_s = 0.20
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.35, v_lead=0.32, v_rel=0.16), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.15 <= a <= 0.35
+
+
+def test_latch_release_rejects_no_lead_launch():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="no_lead_launch", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="no_lead_launch",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )
+  sp.final_longitudinal_output(_release_sm(), 0.0, False, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+
+
+def test_latch_release_rejects_different_moving_lead():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )
+  sp.final_longitudinal_output(_release_sm(radar_id=8, d_rel=15.0, v_lead=5.0, v_rel=5.0), 0.0, False, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+
+
+def test_latch_release_rejects_raw_model_stop_and_low_mpc_accel_and_driver_inputs():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  assert sp.final_longitudinal_output(_release_sm(), 0.0, True, 0.2, True)[1] is True  # type: ignore[arg-type]  # raw model stop
+  assert sp._lead_stop_hold_active is True
+  _set_lead_pullaway_release(sp)
+  assert sp.final_longitudinal_output(_release_sm(), -0.04, True, 0.2, False)[1] is True  # type: ignore[arg-type]  # mpc brake veto
+  assert sp._lead_stop_hold_active is True
+
+
+def test_latch_release_rejects_driver_and_force_decel_inputs():
+  for sm, expect_latch_active in (
+    (_release_sm(brake=True), True),
+    (_release_sm(force_decel=True), True),
+    # Gas is a driver override: preserve the original behavior that cancels the latch, while
+    # still vetoing any automatic standstill-release clear of the MPC stop bit.
+    (_release_sm(gas=True), False),
+  ):
+    sp = fake_planner(LongitudinalMode.ACC)
+    _arm_stop_hold(sp)
+    sp.custom_long_output = CustomLongitudinalOutput(
+      a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+      selected_intent="lead_pullaway", reason="trusted",
+      standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+      standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+    )
+    sp._lead_stop_hold_gap_increasing_s = 0.30
+    _, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, 0.2, False)  # type: ignore[arg-type]
+    assert should_stop is True
+    assert sp._lead_stop_hold_active is expect_latch_active
+
+
+def test_latch_release_rejects_timid_e2e_model_accel():
+  sp = fake_planner(LongitudinalMode.E2E)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.E2E,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(), 0.0, True, 0.1, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a <= 0.0
+
+
+def test_latch_release_requires_sustained_gap_increase_without_ids():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_lead_id = None
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )
+  sp._lead_stop_hold_gap_increasing_s = 0.05
+  sp.final_longitudinal_output(_release_sm(radar_id=None, d_rel=6.45), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(radar_id=None, d_rel=6.55), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.15 <= a <= 0.35
+
+
 def test_custom_target_filtering_by_mode_and_scc_source_toggles():
   targets = {
     LongitudinalPlanSource.cruise: (20.0, 0.1),
