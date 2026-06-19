@@ -145,7 +145,7 @@ def test_lateral_torque_event_report_decodes_shaper_and_governor_reasons_separat
       unshaped=0.22 * sign,
       steering_angle=0.8 * sign,
       shaping_reason=512,
-      governor_reason=(1 << 1) | (1 << 7),
+      governor_reason=(1 << 1) | (1 << 9),
       shaping_active=True,
       steer_limited=True,
       torque_version=21,
@@ -161,6 +161,28 @@ def test_lateral_torque_event_report_decodes_shaper_and_governor_reasons_separat
   assert event.governor_reason_counts["UNDER_RESPONSE_FLOOR"] > 0
   assert "shaper_reasons=" in rendered
   assert "governor_reasons=" in rendered
+
+
+def test_lateral_torque_event_report_decodes_v21_governor_reason_names():
+  msgs = []
+  for i in range(80):
+    t = i * 0.1
+    sign = 1.0 if (i // 2) % 2 == 0 else -1.0
+    msgs.extend(sample_msgs(
+      t,
+      output=0.12 * sign,
+      unshaped=0.18 * sign,
+      steering_angle=0.6 * sign,
+      governor_reason=(1 << 5) | (1 << 9),
+      torque_version=21,
+    ))
+
+  report = build_lateral_torque_event_report(msgs, source="synthetic", max_events=2)
+
+  assert report.top_events
+  event = report.top_events[0]
+  assert event.governor_reason_counts["OVER_RESPONSE"] > 0
+  assert event.governor_reason_counts["UNDER_RESPONSE_FLOOR"] > 0
 
 
 def test_lateral_torque_event_report_decodes_v3_governor_reason_not_v2_shaper_reason():

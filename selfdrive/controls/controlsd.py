@@ -137,10 +137,15 @@ class Controls(ControlsExt):
     # Reset desired curvature to current to avoid violating the limits on engage
     if self.sm.valid['lateralManeuverPlan']:
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
+      raw_desired_curvature = new_desired_curvature
+      if hasattr(self, 'lateral_demand'):
+        self.lateral_demand.clear()
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+      raw_desired_curvature = new_desired_curvature
       # Opt-in custom-2.0 lateral demand pipeline (fail-closed; returns the raw curvature when disabled).
       new_desired_curvature = self.lateral_demand.process(CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2)
+    self.raw_desired_curvature = raw_desired_curvature
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
@@ -216,6 +221,58 @@ class Controls(ControlsExt):
     cs.ufAccelCmd = float(self.LoC.pid.f)
     cs.forceDecel = bool((self.sm['driverMonitoringState'].alertLevel == log.DriverMonitoringState.AlertLevel.three) or
                          (self.sm['selfdriveState'].state == State.softDisabling))
+    if hasattr(self, 'lateral_demand'):
+      model_path_state = cs.modelPathState
+      raw_curvature_for_log = getattr(self, 'raw_desired_curvature', self.desired_curvature)
+      model_path_state.active = False
+      model_path_state.gated = False
+      model_path_state.quality = 0.0
+      model_path_state.reason = "disabled"
+      model_path_state.rawDesiredCurvature = raw_curvature_for_log
+      model_path_state.processedDesiredCurvature = raw_curvature_for_log
+      model_path_state.modelPathCurvature = raw_curvature_for_log
+      model_path_state.laneCenteringActive = False
+      model_path_state.laneCenteringReason = "disabled"
+      model_path_state.laneCenteringLateralError = 0.0
+      model_path_state.laneCenteringHeadingError = 0.0
+      model_path_state.laneCenteringPredictedError = 0.0
+      model_path_state.laneCenteringCurvatureNudge = 0.0
+      model_path_state.laneCenteringConfidence = 0.0
+      model_path_state.curveMemoryActive = False
+      model_path_state.curveMemoryRemembered = float('nan')
+      model_path_state.laneChangeBlend = 0.0
+      model_path_state.laneChangeShapingActive = False
+      model_path_state.demandSource = "disabled"
+      model_path_state.dtleEstimate = float('nan')
+      last_result = getattr(self.lateral_demand, 'last_result', None)
+      if last_result is not None:
+        try:
+          d = last_result.demand
+          model_path = last_result.model_path_result
+          debug = getattr(last_result, 'debug', {}) or {}
+          model_path_state.active = bool(self.lateral_demand.enabled)
+          model_path_state.gated = bool(model_path.gated)
+          model_path_state.quality = float(model_path.quality)
+          model_path_state.reason = str(model_path.reason)
+          model_path_state.rawDesiredCurvature = float(d.raw_curvature)
+          model_path_state.processedDesiredCurvature = float(d.processed_curvature)
+          model_path_state.modelPathCurvature = float(debug.get('model_path_curvature', d.processed_curvature))
+          model_path_state.laneCenteringActive = bool(d.lane_centering_assist_active)
+          model_path_state.laneCenteringReason = str(d.lane_centering_reason)
+          model_path_state.laneCenteringLateralError = float(d.lane_centering_lateral_error)
+          model_path_state.laneCenteringHeadingError = float(d.lane_centering_heading_error)
+          model_path_state.laneCenteringPredictedError = float(d.lane_centering_predicted_error)
+          model_path_state.laneCenteringCurvatureNudge = float(d.lane_centering_curvature_nudge)
+          model_path_state.laneCenteringConfidence = float(d.lane_centering_confidence)
+          model_path_state.curveMemoryActive = bool(debug.get('curve_memory_active', False))
+          model_path_state.curveMemoryRemembered = float(debug.get('curve_memory_remembered', float('nan')))
+          model_path_state.laneChangeBlend = float(debug.get('lane_change_blend', 0.0))
+          model_path_state.laneChangeShapingActive = bool(debug.get('lane_change_shaping_active', False))
+          model_path_state.demandSource = str(debug.get('demand_source', 'model_path'))
+          model_path_state.dtleEstimate = float(debug.get('dtle_estimate', float('nan')))
+        except Exception:
+          cloudlog.exception("failed to publish lateral modelPathState telemetry")
+          self.lateral_demand.clear()
 
     lat_tuning = self.CP.lateralTuning.which()
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:

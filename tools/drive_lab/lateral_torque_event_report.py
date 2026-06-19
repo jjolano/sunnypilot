@@ -39,6 +39,20 @@ GOVERNOR_REASON_NAMES = {
   1 << 7: "UNDER_RESPONSE_FLOOR",
 }
 
+V21_GOVERNOR_REASON_NAMES = {
+  1 << 0: "CLIPPED",
+  1 << 1: "SLEW_LIMITED",
+  1 << 2: "SIGN_CHANGE_LIMITED",
+  1 << 3: "SAME_DIRECTION_LIMIT",
+  1 << 4: "HIGH_STEERING_RATE",
+  1 << 5: "OVER_RESPONSE",
+  1 << 6: "SIGN_CONFLICT",
+  1 << 7: "NEAR_ISO_ACCEL",
+  1 << 8: "OVERRIDE_RELEASE",
+  1 << 9: "UNDER_RESPONSE_FLOOR",
+  1 << 10: "INVALID",
+}
+
 V3_GOVERNOR_REASON_NAMES = {
   **GOVERNOR_REASON_NAMES,
   1 << 5: "TOYOTA_HIGH_RATE",
@@ -752,6 +766,8 @@ def _governor_reason_counts(reasons: np.ndarray, versions: np.ndarray) -> dict[s
       names = V3_GOVERNOR_REASON_NAMES
     elif version == 4:
       names = V4_GOVERNOR_REASON_NAMES
+    elif version == 21:
+      names = V21_GOVERNOR_REASON_NAMES
     else:
       names = GOVERNOR_REASON_NAMES
     for bit, name in names.items():

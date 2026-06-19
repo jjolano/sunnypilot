@@ -810,6 +810,7 @@ struct ControlsState @0x97ff69c53601abf1 {
   ufAccelCmd @33 :Float32;
   curvature @37 :Float32;  # path curvature from vehicle model
   desiredCurvature @61 :Float32;  # lag adjusted curvatures used by lateral controllers
+  modelPathState @67 :ModelPathState;
   forceDecel @51 :Bool;
 
   lateralControlState :union {
@@ -850,6 +851,68 @@ struct ControlsState @0x97ff69c53601abf1 {
     desiredLateralAccel @10 :Float32;
     desiredLateralJerk @11 :Float32;
     version @12 :Int32;
+    adaptiveTorqueState @13 :AdaptiveTorqueState;
+
+    struct AdaptiveTorqueState {
+      active @0 :Bool;
+      enum Phase @0xdd0ab28a74b46aa1 {
+        idle @0;
+        engage @1;
+        hold @2;
+        release @3;
+      }
+      phase @1 :Phase;
+      releaseActive @2 :Bool;
+      phaseGain @3 :Float32;
+      nominalOutput @4 :Float32;
+      assistOutput @5 :Float32;
+      biasOutput @6 :Float32;
+      responseDeficit @7 :Float32;
+      learningFrozen @8 :Bool;
+      freezeReason @9 :UInt32;
+      blockReason @10 :UInt32;
+      shapingActive @11 :Bool;
+      shapingReason @12 :UInt32;
+      shapingConfidence @13 :Float32;
+      unshapedOutput @14 :Float32;
+      outputCap @15 :Float32;
+      modelMode @16 :UInt8;
+      modelConfidence @17 :Float32;
+      authorityBand @18 :UInt8;
+      authorityScale @19 :Float32;
+      fallbackActive @20 :Bool;
+      learnedLatAccelFactor @21 :Float32;
+      learnedFriction @22 :Float32;
+      learnedLatAccelOffset @23 :Float32;
+      learnedResponseDelay @24 :Float32;
+      residualError @25 :Float32;
+      sampleAccepted @26 :Bool;
+      sampleRejectReason @27 :UInt32;
+      disturbanceState @28 :UInt8;
+      disturbanceReason @29 :UInt32;
+      disturbanceConfidence @30 :Float32;
+      steerLimitValid @31 :Bool;
+      steerLimitLimited @32 :Bool;
+      steerLimitReason @33 :UInt32;
+      steerLimitRequested @34 :Float32;
+      steerLimitApplied @35 :Float32;
+      steerLimitError @36 :Float32;
+      steerLimitSameDirection @37 :Bool;
+      steerLimitUnwind @38 :Bool;
+      rawTargetLateralAccel @39 :Float32;
+      delayLeadLateralAccel @40 :Float32;
+      feedbackCorrection @41 :Float32;
+      trimCorrection @42 :Float32;
+      learnerResponseScale @43 :Float32;
+      governorReason @44 :UInt32;
+      actualLateralJerk @45 :Float32;
+      demandMode @46 :UInt8;
+      demandModeConfidence @47 :Float32;
+      oscillationClassification @48 :UInt8;
+      governorFloor @49 :Float32;
+      lowSpeedOutputMax @50 :Bool;
+      rawActualLateralAccel @51 :Float32;
+    }
    }
 
   struct LateralAngleState {
@@ -858,6 +921,29 @@ struct ControlsState @0x97ff69c53601abf1 {
     output @2 :Float32;
     saturated @3 :Bool;
     steeringAngleDesiredDeg @4 :Float32;
+  }
+
+  struct ModelPathState {
+    active @0 :Bool;
+    gated @1 :Bool;
+    quality @2 :Float32;
+    reason @3 :Text;
+    rawDesiredCurvature @4 :Float32;
+    processedDesiredCurvature @5 :Float32;
+    modelPathCurvature @6 :Float32;
+    laneCenteringActive @7 :Bool;
+    laneCenteringReason @8 :Text;
+    laneCenteringLateralError @9 :Float32;
+    laneCenteringHeadingError @10 :Float32;
+    laneCenteringPredictedError @11 :Float32;
+    laneCenteringCurvatureNudge @12 :Float32;
+    laneCenteringConfidence @13 :Float32;
+    curveMemoryActive @14 :Bool;
+    curveMemoryRemembered @15 :Float32;
+    laneChangeBlend @16 :Float32;
+    laneChangeShapingActive @17 :Bool;
+    demandSource @18 :Text;
+    dtleEstimate @19 :Float32;
   }
 
   struct LateralDebugState {

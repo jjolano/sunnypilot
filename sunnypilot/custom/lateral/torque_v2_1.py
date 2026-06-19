@@ -87,11 +87,12 @@ class LatControlTorqueV21(LatControl):
       output_torque,
     )
 
+    nominal_output_torque = output_torque
     governed = self.governor.update(OutputGovernorInputs(
       active=True,
       v_ego=CS.vEgo,
       steering_rate_deg=-CS.steeringRateDeg,
-      nominal_torque=output_torque,
+      nominal_torque=nominal_output_torque,
       max_output=self.steer_max,
       desired_lateral_accel=rc.setpoint,
       actual_lateral_accel=rc.measurement,
@@ -99,6 +100,23 @@ class LatControlTorqueV21(LatControl):
       release_active=bool(CS.steeringPressed),
     ))
     output_torque = governed.output_torque
+    adaptive = pid_log.adaptiveTorqueState
+    adaptive.active = True
+    adaptive.releaseActive = bool(CS.steeringPressed)
+    adaptive.nominalOutput = float(-nominal_output_torque)
+    adaptive.shapingActive = False
+    adaptive.shapingReason = 0
+    adaptive.unshapedOutput = float(-nominal_output_torque)
+    adaptive.outputCap = float(governed.cap)
+    adaptive.modelConfidence = float(getattr(rc, "model_confidence", 0.0) or 0.0)
+    adaptive.steerLimitLimited = bool(steer_limited_by_safety)
+    adaptive.steerLimitError = float(max(0.0, abs(nominal_output_torque) - (self.steer_max * governed.cap)))
+    adaptive.steerLimitSameDirection = bool(steer_limited_by_safety)
+    adaptive.governorReason = int(governed.reason)
+    adaptive.actualLateralJerk = float(rc.raw_actual_lateral_jerk)
+    adaptive.governorFloor = float(governed.floor)
+    adaptive.lowSpeedOutputMax = bool(CS.vEgo < self.sat_check_min_speed and abs(output_torque) >= self.steer_max * governed.cap - 1e-3)
+    adaptive.rawActualLateralAccel = float(rc.raw_measurement)
 
     pid_log.active = True
     pid_log.p = float(self.response_core.pid.p)

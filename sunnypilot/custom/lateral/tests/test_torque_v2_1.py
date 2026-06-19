@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from cereal import log
 from openpilot.sunnypilot.custom.lateral.torque_v2_1 import LatControlTorqueV21, VERSION_V21
 
 DT = 0.01
@@ -100,6 +101,40 @@ def test_return_torque_is_negated_governor_output():
   for _ in range(100):
     out, _, _ = c.update(True, make_cs(v_ego=15.0, angle=20.0), vm, make_params(), False, 0.03, None, False, 0.2)
   assert abs(out) == pytest.approx(abs(c.governor.previous_output), abs=1e-9)
+
+
+def test_populates_adaptive_torque_telemetry():
+  c = make_controller()
+  vm = FakeVM()
+  out, _, pid_log = c.update(True, make_cs(v_ego=12.0, angle=15.0, rate=90.0, pressed=True), vm,
+                             make_params(), True, 0.05, None, False, 0.2)
+
+  adaptive = pid_log.adaptiveTorqueState
+  assert pid_log.output == pytest.approx(out)
+  assert adaptive.active is True
+  assert adaptive.releaseActive is True
+  assert abs(adaptive.nominalOutput) >= abs(pid_log.output)
+  assert adaptive.unshapedOutput == pytest.approx(adaptive.nominalOutput)
+  assert adaptive.outputCap <= 1.0
+  assert adaptive.steerLimitLimited is True
+  assert adaptive.steerLimitSameDirection is True
+  assert adaptive.governorReason != 0
+  assert adaptive.rawActualLateralAccel == pytest.approx(pid_log.actualLateralAccel)
+
+
+def test_lateral_observability_schema_fields_are_writable():
+  msg = log.ControlsState.new_message()
+  msg.modelPathState.active = True
+  msg.modelPathState.reason = "ok"
+  msg.modelPathState.rawDesiredCurvature = 0.001
+  torque_state = msg.lateralControlState.init('torqueState')
+  torque_state.version = VERSION_V21
+  torque_state.adaptiveTorqueState.governorReason = 1 << 9
+  torque_state.adaptiveTorqueState.lowSpeedOutputMax = True
+
+  assert msg.modelPathState.reason == "ok"
+  assert torque_state.adaptiveTorqueState.governorReason == 1 << 9
+  assert torque_state.adaptiveTorqueState.lowSpeedOutputMax is True
 
 
 def test_live_torque_params_update_limits():

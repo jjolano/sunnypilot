@@ -55,6 +55,8 @@ class LateralDemandAdapter:
     self.enabled = False
     self.lane_centering_assist_enabled = False
     self.curve_memory_enabled = False
+    self.last_result = None
+    self.last_debug = {}
     if params is not None:
       self.refresh_params()
 
@@ -69,6 +71,10 @@ class LateralDemandAdapter:
     except Exception:
       self.enabled = False
 
+  def clear(self) -> None:
+    self.last_result = None
+    self.last_debug = {}
+
   def process(self, lat_active: bool, v_ego: float, roll: float, raw_curvature: float,
               measured_curvature: float, model_v2: Any) -> float:
     """Return the processed desired curvature, or the unchanged raw curvature when disabled
@@ -77,6 +83,7 @@ class LateralDemandAdapter:
     if self._params is not None and self._tick % PARAMS_REFRESH_PERIOD == 0:
       self.refresh_params()
     if not self.enabled or model_v2 is None:
+      self.clear()
       return raw_curvature
     try:
       inputs = build_pipeline_inputs(
@@ -86,6 +93,10 @@ class LateralDemandAdapter:
         curve_memory_enabled=self.curve_memory_enabled,
       )
       inputs = replace(inputs, smooth_model_path_curvature=True)
-      return float(self._pipeline.update(inputs).demand.processed_curvature)
+      result = self._pipeline.update(inputs)
+      self.last_result = result
+      self.last_debug = dict(result.debug)
+      return float(result.demand.processed_curvature)
     except Exception:
+      self.clear()
       return raw_curvature

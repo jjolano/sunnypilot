@@ -36,7 +36,10 @@ class SpyPipeline:
 
   def update(self, inputs):
     self.inputs = inputs
-    return SimpleNamespace(demand=SimpleNamespace(processed_curvature=inputs.desired_curvature))
+    return SimpleNamespace(
+      demand=SimpleNamespace(processed_curvature=inputs.desired_curvature),
+      debug={"raw_curvature": inputs.desired_curvature},
+    )
 
 
 def test_build_pipeline_inputs_extracts_model_arrays():
@@ -69,9 +72,25 @@ def test_adapter_enabled_turns_on_model_path_smoothing():
   assert out == pytest.approx(0.001)
   assert spy.inputs is not None
   assert spy.inputs.smooth_model_path_curvature is True
+  assert a.last_result is not None
+  assert a.last_debug.get("raw_curvature") == pytest.approx(0.001)
 
 
 def test_adapter_fail_closed_on_bad_model():
   a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
   out = a.process(True, 20.0, 0.0, 0.005, 0.005, None)  # None model -> must not raise
   assert out == 0.005
+  assert a.last_result is None
+
+
+def test_adapter_disabled_clears_previous_result():
+  a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
+  assert math.isfinite(a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001)))
+  assert a.last_result is not None
+
+  a.enabled = False
+  out = a.process(True, 20.0, 0.0, 0.002, 0.001, fake_model(0.002))
+
+  assert out == 0.002
+  assert a.last_result is None
+  assert a.last_debug == {}
