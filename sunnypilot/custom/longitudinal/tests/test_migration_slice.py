@@ -116,6 +116,42 @@ def test_final_output_selection_does_not_raw_or_model_stop_in_scc_or_acc():
   assert e2e_source is True
 
 
+def test_scc_stop_approach_custom_cap_applies_only_for_trusted_stop_intent():
+  sp = fake_planner(LongitudinalMode.SCC, should_stop=True)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=-1.2, should_stop=True, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="stop_approach", reason="model_stop", debug={},
+  )  # type: ignore[assignment]
+  a, should_stop, e2e_source = sp.final_longitudinal_output(fake_sm(True), -0.2, True, -0.3, True)  # type: ignore[arg-type]
+  assert a == -1.2
+  assert should_stop is True
+  assert e2e_source is False
+
+
+def test_scc_ignores_custom_stop_cap_when_not_stop_approach():
+  sp = fake_planner(LongitudinalMode.SCC, should_stop=True)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=-1.2, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_follow", reason="trusted", debug={},
+  )  # type: ignore[assignment]
+  a, should_stop, e2e_source = sp.final_longitudinal_output(fake_sm(True), -0.2, True, -0.3, True)  # type: ignore[arg-type]
+  assert a == -0.2
+  assert should_stop is True
+  assert e2e_source is False
+
+
+def test_acc_ignores_custom_stop_cap():
+  sp = fake_planner(LongitudinalMode.ACC, should_stop=True)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=-1.2, should_stop=True, enabled=True, mode=LongitudinalMode.ACC,
+    selected_intent="stop_approach", reason="model_stop", debug={},
+  )  # type: ignore[assignment]
+  a, should_stop, e2e_source = sp.final_longitudinal_output(fake_sm(True), -0.2, True, -0.3, True)  # type: ignore[arg-type]
+  assert a == -0.2
+  assert should_stop is True
+  assert e2e_source is False
+
+
 def test_standstill_release_planner_clears_only_mpc_stop_and_applies_floor():
   sp = fake_planner(LongitudinalMode.SCC, should_stop=False, release=True)
   a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, -3.0, False)  # type: ignore[arg-type]
@@ -423,6 +459,40 @@ def test_latch_release_same_lead_clears_earlier_with_bounded_accel():
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
   assert 0.15 <= a <= 0.35
+
+
+def test_latch_release_same_lead_allows_slightly_negative_mpc_with_tighter_gap_confirm():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )
+  sp._lead_stop_hold_gap_increasing_s = 0.10
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.21, v_lead=0.32, v_rel=0.16), -0.08, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.15 <= a <= 0.35
+
+
+def test_latch_release_same_lead_rejects_too_negative_mpc_or_non_opening_or_below_distance():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )
+  sp._lead_stop_hold_gap_increasing_s = 0.10
+  assert sp.final_longitudinal_output(_release_sm(d_rel=6.21, v_lead=0.32, v_rel=0.16), -0.2, True, 0.2, False)[1] is True  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert sp.final_longitudinal_output(_release_sm(d_rel=6.21, v_lead=0.29, v_rel=0.16), -0.08, True, 0.2, False)[1] is True  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert sp.final_longitudinal_output(_release_sm(d_rel=6.0, v_lead=0.32, v_rel=0.16), -0.08, True, 0.2, False)[1] is True  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
 
 
 def test_latch_release_rejects_no_lead_launch():

@@ -46,6 +46,9 @@ class LaunchEvent:
   min_speed: float
   recovery_speed: float
   recovery_time: float
+  lead_move_time: float | None
+  lead_wait_time: float | None
+  reaction_time: float | None
   op_engaged: bool
   lead_present: bool
   lead_d_rel: float | None
@@ -59,6 +62,9 @@ class LaunchEvent:
       "min_speed": _r(self.min_speed, 3),
       "recovery_speed": _r(self.recovery_speed, 3),
       "recovery_time": _r(self.recovery_time, 3),
+      "lead_move_time": _r(self.lead_move_time, 3),
+      "lead_wait_time": _r(self.lead_wait_time, 3),
+      "reaction_time": _r(self.reaction_time, 3),
       "op_engaged": self.op_engaged,
       "lead_present": self.lead_present,
       "lead_d_rel": _r(self.lead_d_rel, 1),
@@ -79,6 +85,7 @@ class LaunchReport:
   manual_events: int
   op_lead_median_recovery_s: float | None
   op_nolead_median_recovery_s: float | None
+  op_lead_median_reaction_s: float | None
   op_lead_median_accel: float | None
   op_nolead_median_accel: float | None
   events: list[LaunchEvent]
@@ -95,6 +102,7 @@ class LaunchReport:
       "manual_events": self.manual_events,
       "op_lead_median_recovery_s": _r(self.op_lead_median_recovery_s, 3),
       "op_nolead_median_recovery_s": _r(self.op_nolead_median_recovery_s, 3),
+      "op_lead_median_reaction_s": _r(self.op_lead_median_reaction_s, 3),
       "op_lead_median_accel": _r(self.op_lead_median_accel, 3),
       "op_nolead_median_accel": _r(self.op_nolead_median_accel, 3),
       "events": [event.to_dict() for event in self.events],
@@ -130,7 +138,7 @@ def _nearest(series: list[tuple[float, Any]], t: float, window_s: float) -> Any:
 
 def _collect(msgs: list[Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list, list]:
   cs_t, cs_v, cs_a = [], [], []
-  radar: list[tuple[float, tuple[float, float, bool]]] = []
+  radar: list[tuple[float, tuple[float, float, float, bool]]] = []
   enabled: list[tuple[float, bool]] = []
   for record in build_route_messages(msgs):
     typ, payload, t = record.typ, record.payload, record.t
@@ -141,7 +149,8 @@ def _collect(msgs: list[Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list,
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne")
       if lead is not None:
-        radar.append((t, (_f(safe_get(lead, "dRel")), _f(safe_get(lead, "vLead")), bool(safe_get(lead, "status", False)))))
+        radar.append((t, (_f(safe_get(lead, "dRel")), _f(safe_get(lead, "vLead")),
+                          _f(safe_get(lead, "vRel")), bool(safe_get(lead, "status", False)))))
     elif typ == "selfdriveState":
       enabled.append((t, bool(safe_get(payload, "enabled", False))))
   return np.array(cs_t), np.array(cs_v), np.array(cs_a), radar, enabled
@@ -151,7 +160,7 @@ def _make_event(t, v, a, min_idx, rec_idx, radar, enabled, p) -> LaunchEvent:
   dip_t = float(t[min_idx])
   op_engaged = bool(_nearest(enabled, dip_t, p.match_window_s) or False)
   lead = _nearest(radar, dip_t, p.match_window_s)
-  lead_present = bool(lead is not None and lead[2] and math.isfinite(lead[0]) and lead[0] < p.lead_d_rel_max)
+  lead_present = bool(lead is not None and lead[3] and math.isfinite(lead[0]) and lead[0] < p.lead_d_rel_max)
   accel_win = a[min_idx:rec_idx + 1]
   accel_win = accel_win[np.isfinite(accel_win)]
   positive = accel_win[accel_win > 0]
@@ -159,11 +168,37 @@ def _make_event(t, v, a, min_idx, rec_idx, radar, enabled, p) -> LaunchEvent:
   da = np.diff(a[min_idx:rec_idx + 1])
   jerk = np.abs(da / np.maximum(dt, 1e-3))
   jerk = jerk[np.isfinite(jerk)]
+  lead_move_time = None
+  lead_wait_time = None
+  reaction_time = None
+  prev_v_lead: float | None = None
+  if lead_present:
+    for st, (d_rel, v_lead, v_rel, status) in radar:
+      if st <= dip_t or st > float(t[rec_idx]):
+        continue
+      if not status or not math.isfinite(v_lead) or not math.isfinite(d_rel):
+        continue
+      moved = v_lead >= 0.5 or (math.isfinite(v_rel) and v_rel >= 0.5) or (prev_v_lead is not None and v_lead - prev_v_lead >= 0.5)
+      if moved:
+        lead_move_time = float(st)
+        lead_wait_time = float(lead_move_time - dip_t)
+        break
+      prev_v_lead = float(v_lead)
+  if lead_move_time is not None:
+    for st, v_ego, a_ego in zip(t[min_idx:rec_idx + 1], v[min_idx:rec_idx + 1], a[min_idx:rec_idx + 1]):
+      if float(st) <= lead_move_time:
+        continue
+      if (math.isfinite(v_ego) and v_ego > float(v[min_idx]) + 0.1) or (math.isfinite(a_ego) and a_ego > 0.2):
+        reaction_time = float(st - lead_move_time)
+        break
   return LaunchEvent(
     time=dip_t,
     min_speed=float(v[min_idx]),
     recovery_speed=float(v[rec_idx]),
     recovery_time=float(t[rec_idx] - t[min_idx]),
+    lead_move_time=lead_move_time,
+    lead_wait_time=lead_wait_time,
+    reaction_time=reaction_time,
     op_engaged=op_engaged,
     lead_present=lead_present,
     lead_d_rel=(float(lead[0]) if lead is not None and math.isfinite(lead[0]) else None),
@@ -179,7 +214,7 @@ def analyze_route(msgs: list[Any], source: str = "unknown", params: LaunchParams
   notes: list[str] = []
   if t.size == 0:
     notes.append("no carState samples found (need rlogs with carState)")
-    return LaunchReport(source, 0.0, 0, 0, 0, 0, 0, None, None, None, None, [], notes)
+    return LaunchReport(source, 0.0, 0, 0, 0, 0, 0, None, None, None, None, None, [], notes)
 
   events: list[LaunchEvent] = []
   i, n = 0, len(v)
@@ -216,6 +251,7 @@ def analyze_route(msgs: list[Any], source: str = "unknown", params: LaunchParams
     manual_events=len(events) - len(op),
     op_lead_median_recovery_s=_opt_median([e.recovery_time for e in op_lead]),
     op_nolead_median_recovery_s=_opt_median([e.recovery_time for e in op_nolead]),
+    op_lead_median_reaction_s=_opt_median([e.reaction_time for e in op_lead if e.reaction_time is not None]),
     op_lead_median_accel=_opt_median([e.accel_mean for e in op_lead]),
     op_nolead_median_accel=_opt_median([e.accel_mean for e in op_nolead]),
     events=sorted(op, key=lambda e: e.time),
@@ -240,6 +276,7 @@ def render_report(report: LaunchReport) -> str:
       "  engaged launch recovery (dip → +0.5 m/s):",
       (f"    median recovery:  lead {_fmt(report.op_lead_median_recovery_s, 2)} s   "
        + f"no-lead {_fmt(report.op_nolead_median_recovery_s, 2)} s"),
+      f"    median reaction:  lead {_fmt(report.op_lead_median_reaction_s, 2)} s",
       (f"    median accel:     lead {_fmt(report.op_lead_median_accel, 3)} m/s^2   "
        + f"no-lead {_fmt(report.op_nolead_median_accel, 3)} m/s^2"),
     ]
