@@ -281,6 +281,11 @@ def _canon_navigation(nav_doc: dict, panels_by_id: set[str]) -> tuple[dict, list
       raise CompileError(f"duplicate page id: {pid}")
 
     out: dict = {"id": pid, "title": title}
+    if "new_shell_hidden" in page:
+      hidden = page["new_shell_hidden"]
+      if not isinstance(hidden, bool):
+        raise CompileError(f"page {pid}: new_shell_hidden must be a boolean")
+      out["new_shell_hidden"] = hidden
     if "icon" in page:
       if not isinstance(page["icon"], str) or not page["icon"]:
         raise CompileError(f"page {pid}: icon must be a non-empty string")

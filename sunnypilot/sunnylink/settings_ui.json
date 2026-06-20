@@ -2459,6 +2459,7 @@
     {
       "id": "driving.steering",
       "title": "Lateral Control",
+      "new_shell_hidden": true,
       "icon": "steering_wheel",
       "content": {
         "kind": "panel_ref",
@@ -2468,6 +2469,7 @@
     {
       "id": "driving.cruise",
       "title": "Longitudinal Control",
+      "new_shell_hidden": true,
       "icon": "cruise_control",
       "content": {
         "kind": "panel_ref",
@@ -2477,6 +2479,7 @@
     {
       "id": "driving.toggles",
       "title": "Core Toggles",
+      "new_shell_hidden": true,
       "icon": "toggles",
       "content": {
         "kind": "custom_page",
@@ -2514,6 +2517,7 @@
     {
       "id": "interface.osm",
       "title": "OpenStreetMap",
+      "new_shell_hidden": true,
       "icon": "osm",
       "content": {
         "kind": "custom_page",
@@ -2523,6 +2527,7 @@
     {
       "id": "vehicle",
       "title": "Vehicle",
+      "new_shell_hidden": true,
       "icon": "vehicle",
       "content": {
         "kind": "custom_page",
@@ -2556,6 +2561,7 @@
     {
       "id": "system.network",
       "title": "Network",
+      "new_shell_hidden": true,
       "icon": "network",
       "content": {
         "kind": "custom_page",
@@ -2565,6 +2571,7 @@
     {
       "id": "system.software",
       "title": "Software",
+      "new_shell_hidden": true,
       "icon": "software",
       "content": {
         "kind": "custom_page",
@@ -2574,6 +2581,7 @@
     {
       "id": "system.sunnylink",
       "title": "sunnylink",
+      "new_shell_hidden": true,
       "icon": "sunnylink",
       "content": {
         "kind": "custom_page",
@@ -2583,6 +2591,7 @@
     {
       "id": "system.models",
       "title": "Models",
+      "new_shell_hidden": true,
       "icon": "models",
       "content": {
         "kind": "custom_page",
@@ -2592,6 +2601,7 @@
     {
       "id": "system.trips",
       "title": "Trips",
+      "new_shell_hidden": true,
       "icon": "trips",
       "content": {
         "kind": "custom_page",
@@ -2601,6 +2611,7 @@
     {
       "id": "system.firehose",
       "title": "Firehose",
+      "new_shell_hidden": true,
       "icon": "firehose",
       "content": {
         "kind": "custom_page",
@@ -2610,6 +2621,7 @@
     {
       "id": "system.developer",
       "title": "Developer",
+      "new_shell_hidden": true,
       "icon": "developer",
       "content": {
         "kind": "custom_page",

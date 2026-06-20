@@ -114,6 +114,52 @@ def _page_path_ids(schema: dict, target_page_id: str) -> list[str]:
   return []
 
 
+def _is_page_hidden(schema: dict, page_id: str) -> bool:
+  page = get_page(schema, page_id)
+  return isinstance(page, dict) and page.get("new_shell_hidden") is True
+
+
+def _page_row_visible(schema: dict, page_id: str, memo: dict[str, bool] | None = None) -> bool:
+  """Return whether a navigation page should render as a row in the new shell.
+
+  Leaf pages are visible unless marked new_shell_hidden. Category pages are
+  visible only when they are not hidden and have at least one visible descendant.
+  """
+  if memo is None:
+    memo = {}
+  if page_id in memo:
+    return memo[page_id]
+  if _is_page_hidden(schema, page_id):
+    memo[page_id] = False
+    return False
+  page = get_page(schema, page_id)
+  if not isinstance(page, dict):
+    memo[page_id] = False
+    return False
+  children = page.get("children")
+  if not isinstance(children, list) or not children:
+    memo[page_id] = True
+    return True
+  visible = any(_page_row_visible(schema, child_id, memo) for child_id in children)
+  memo[page_id] = visible
+  return visible
+
+
+def _visible_child_pages(schema: dict, page_id: str) -> list[dict]:
+  page = get_page(schema, page_id)
+  if not isinstance(page, dict):
+    return []
+  children = page.get("children")
+  if not isinstance(children, list):
+    return []
+  return [child for child in (get_page(schema, child_id) for child_id in children)
+          if child is not None and _page_row_visible(schema, child["id"])]
+
+
+def _stack_route_visible(schema: dict, page_id: str) -> bool:
+  return page_id == ROOT_PAGE_ID or _page_row_visible(schema, page_id)
+
+
 class SettingsRowItem(Widget):
   HEIGHT = ROW_HEIGHT
 
@@ -197,6 +243,8 @@ class SettingsStackLayout(Widget):
 
   def set_current_panel(self, panel_type: LegacyPanelType):
     page_id = _PANEL_TO_PAGE_ID.get(panel_type.name, ROOT_PAGE_ID)
+    if not _stack_route_visible(self._schema, page_id):
+      page_id = ROOT_PAGE_ID
     self._navigate_to(page_id, replace=True)
 
   def _root_view(self) -> Widget:
@@ -208,14 +256,9 @@ class SettingsStackLayout(Widget):
       return self._page_views[key]
 
     if page_id is None:
-      pages = get_root_navigation(self._schema)
+      pages = [p for p in get_root_navigation(self._schema) if _page_row_visible(self._schema, p["id"])]
     else:
-      page = get_page(self._schema, page_id)
-      pages = []
-      for child_id in page.get("children", []) if isinstance(page, dict) and isinstance(page.get("children"), list) else []:
-        child = get_page(self._schema, child_id)
-        if child is not None:
-          pages.append(child)
+      pages = _visible_child_pages(self._schema, page_id)
 
     rows: list[Widget] = []
     for page in pages:
@@ -241,7 +284,7 @@ class SettingsStackLayout(Widget):
     key = SEARCH_PAGE_ID
     if key not in self._page_views:
       self._page_views[key] = SearchLayout(
-        index=build_index(self._schema),
+        index=build_index(self._schema, include_new_shell_hidden=False),
         record_callback=self._handle_search_record,
         result_context_label=search_result_context_label,
       )
@@ -323,6 +366,10 @@ class SettingsStackLayout(Widget):
       self._active_view.show_event()
 
   def _navigate_to(self, page_id: str, replace: bool):
+    if not _stack_route_visible(self._schema, page_id):
+      page_id = ROOT_PAGE_ID
+      replace = True
+
     if replace:
       next_history = [] if page_id == ROOT_PAGE_ID else _page_path_ids(self._schema, page_id)
     else:

@@ -15,18 +15,21 @@ pages:
   - id: driving.steering
     title: Lateral Control
     icon: steering_wheel
+    new_shell_hidden: true
     content:
       kind: panel_ref
       panel: steering
   - id: driving.cruise
     title: Longitudinal Control
     icon: cruise_control
+    new_shell_hidden: true
     content:
       kind: panel_ref
       panel: cruise
   - id: driving.toggles
     title: Core Toggles
     icon: toggles
+    new_shell_hidden: true
     content:
       kind: custom_page
       component: toggles
@@ -52,12 +55,14 @@ pages:
   - id: interface.osm
     title: OpenStreetMap
     icon: osm
+    new_shell_hidden: true
     content:
       kind: custom_page
       component: osm
   - id: vehicle
     title: Vehicle
     icon: vehicle
+    new_shell_hidden: true
     content:
       kind: custom_page
       component: vehicle
@@ -82,42 +87,49 @@ pages:
   - id: system.network
     title: Network
     icon: network
+    new_shell_hidden: true
     content:
       kind: custom_page
       component: network
   - id: system.software
     title: Software
     icon: software
+    new_shell_hidden: true
     content:
       kind: custom_page
       component: software
   - id: system.sunnylink
     title: sunnylink
     icon: sunnylink
+    new_shell_hidden: true
     content:
       kind: custom_page
       component: sunnylink
   - id: system.models
     title: Models
     icon: models
+    new_shell_hidden: true
     content:
       kind: custom_page
       component: models
   - id: system.trips
     title: Trips
     icon: trips
+    new_shell_hidden: true
     content:
       kind: custom_page
       component: trips
   - id: system.firehose
     title: Firehose
     icon: firehose
+    new_shell_hidden: true
     content:
       kind: custom_page
       component: firehose
   - id: system.developer
     title: Developer
     icon: developer
+    new_shell_hidden: true
     content:
       kind: custom_page
       component: developer
