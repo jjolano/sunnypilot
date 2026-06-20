@@ -27,12 +27,14 @@ MAX = 1.0
 
 
 def benign(nominal=0.0, v=20.0, rate=0.0, desired=0.0, actual=0.0,
-           same_dir=False, release=False, active=True):
+           same_dir=False, release=False, active=True, path_valid=True, controller_stable=True):
   """An input with no cap/floor triggers unless overridden."""
   return OutputGovernorInputs(active=active, v_ego=v, steering_rate_deg=rate,
                               nominal_torque=nominal, max_output=MAX,
                               desired_lateral_accel=desired, actual_lateral_accel=actual,
-                              same_direction_limit=same_dir, release_active=release)
+                              same_direction_limit=same_dir, release_active=release,
+                              path_evidence_valid=path_valid,
+                              controller_evidence_stable=controller_stable)
 
 
 def test_output_never_exceeds_max_output():
@@ -88,19 +90,60 @@ def test_slew_bounds_rate_of_change():
   assert prev == pytest.approx(MAX, abs=1e-6)  # eventually reaches the command
 
 
-def test_floor_relaxes_cap_only_upward():
+def test_floor_allows_clean_low_speed_catchup_and_fades_at_speed():
   gov_lo = OutputGovernor(DT)
   gov_hi = OutputGovernor(DT)
-  # Under-response at low speed (floor=1.0) with a same-direction cap (0.85) -> cap_eff = 1.0.
-  floored = benign(nominal=0.9, v=8.0, desired=2.0, actual=0.5, same_dir=True)
-  unfloored = benign(nominal=0.9, v=15.0, desired=2.0, actual=0.5, same_dir=True)  # v>=12 -> floor 0
+  # Under-response at low speed gets the floor; at higher speed it fades out.
+  floored = benign(nominal=0.9, v=8.0, desired=2.0, actual=0.5)
+  unfloored = benign(nominal=0.9, v=15.0, desired=2.0, actual=0.5)  # v>=12 -> floor 0
   r_lo = gov_lo.update(floored)
   r_hi = gov_hi.update(unfloored)
   assert r_lo.floor == 1.0
-  assert r_lo.cap == pytest.approx(1.0)            # fully relaxed
   assert r_hi.floor == 0.0
-  assert r_hi.cap == pytest.approx(SAME_DIRECTION_LIMIT_CAP)
-  assert r_lo.cap >= r_hi.cap                       # floor only relaxes (never tightens)
+  assert r_lo.reason & GovernorReason.UNDER_RESPONSE_FLOOR
+  assert not (r_hi.reason & GovernorReason.UNDER_RESPONSE_FLOOR)
+
+
+@pytest.mark.parametrize("kwargs", [
+  {"same_dir": True},
+  {"release": True},
+  {"rate": 80.0},
+  {"desired": 1.0, "actual": -0.2},
+  {"path_valid": False},
+  {"controller_stable": False},
+  {"nominal": 1.0},
+])
+def test_floor_guarded_for_unstable_evidence(kwargs):
+  gov = OutputGovernor(DT)
+  base = dict(nominal=0.9, v=8.0, desired=2.0, actual=0.5)
+  base.update(kwargs)
+  r = gov.update(benign(**base))
+  assert r.reason & GovernorReason.UNDER_RESPONSE_GUARDED
+  assert not (r.reason & GovernorReason.UNDER_RESPONSE_FLOOR)
+  assert r.floor == 0.0
+
+
+def test_clean_same_sign_lag_still_gets_floor():
+  gov = OutputGovernor(DT)
+  r = gov.update(benign(nominal=0.9, v=8.0, desired=2.0, actual=0.5))
+  assert r.reason & GovernorReason.UNDER_RESPONSE_FLOOR
+  assert not (r.reason & GovernorReason.UNDER_RESPONSE_GUARDED)
+  assert r.floor > 0.0
+
+
+def test_high_rate_boundary_guards_floor_at_threshold_only():
+  below = OutputGovernor(DT).update(benign(nominal=0.9, v=8.0, rate=79.9, desired=2.0, actual=0.5))
+  at = OutputGovernor(DT).update(benign(nominal=0.9, v=8.0, rate=80.0, desired=2.0, actual=0.5))
+  assert below.reason & GovernorReason.UNDER_RESPONSE_FLOOR
+  assert not (below.reason & GovernorReason.UNDER_RESPONSE_GUARDED)
+  assert at.reason & GovernorReason.UNDER_RESPONSE_GUARDED
+  assert not (at.reason & GovernorReason.UNDER_RESPONSE_FLOOR)
+
+
+def test_over_response_does_not_trigger_under_response_floor():
+  r = OutputGovernor(DT).update(benign(nominal=0.5, v=8.0, desired=1.0, actual=1.3))
+  assert not (r.reason & GovernorReason.UNDER_RESPONSE_FLOOR)
+  assert not (r.reason & GovernorReason.UNDER_RESPONSE_GUARDED)
 
 
 def test_over_response_cap_monotonic():

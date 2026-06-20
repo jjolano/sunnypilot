@@ -38,6 +38,19 @@ class LatControlTorqueV21(LatControl):
     )
     self.governor = OutputGovernor(dt)
     self.extension = extension if extension is not None else LatControlTorqueExt(self, CP, CP_SP, CI)
+    self._under_response_path_evidence_valid = True
+
+  def set_under_response_path_evidence(self, valid: bool) -> None:
+    self._under_response_path_evidence_valid = bool(valid)
+
+  def set_under_response_path_evidence_from_lateral_demand(self, lateral_demand_result) -> None:
+    if lateral_demand_result is None:
+      self.set_under_response_path_evidence(True)
+      return
+    model_path = getattr(lateral_demand_result, "model_path_result", None)
+    self.set_under_response_path_evidence(
+      model_path is not None and not bool(getattr(model_path, "gated", True)) and str(getattr(model_path, "reason", "")) == "ok"
+    )
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -98,6 +111,8 @@ class LatControlTorqueV21(LatControl):
       actual_lateral_accel=rc.measurement,
       same_direction_limit=bool(steer_limited_by_safety),
       release_active=bool(CS.steeringPressed),
+      path_evidence_valid=self._under_response_path_evidence_valid,
+      controller_evidence_stable=not (rc.same_sign_unwind or rc.measurement_reset),
     ))
     output_torque = governed.output_torque
     adaptive = pid_log.adaptiveTorqueState

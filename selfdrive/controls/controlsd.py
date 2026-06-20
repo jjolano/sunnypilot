@@ -145,11 +145,14 @@ class Controls(ControlsExt):
       raw_desired_curvature = new_desired_curvature
       # Opt-in custom-2.0 lateral demand pipeline (fail-closed; returns the raw curvature when disabled).
       new_desired_curvature = self.lateral_demand.process(CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2)
+    last_lateral_demand_result = getattr(self.lateral_demand, 'last_result', None) if hasattr(self, 'lateral_demand') else None
     self.raw_desired_curvature = raw_desired_curvature
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
+    if hasattr(self.LaC, 'set_under_response_path_evidence_from_lateral_demand'):
+      self.LaC.set_under_response_path_evidence_from_lateral_demand(last_lateral_demand_result)
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
                                                        self.calibrated_pose, curvature_limited, lat_delay)

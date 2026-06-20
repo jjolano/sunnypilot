@@ -13,8 +13,8 @@ one observation struct, structured as three operations with one reason bitfield:
               slew scaling), with AUGMENT permitted to relax the slew toward the command.
 
 Application order per tick: floor (augment) -> cap+clip (restrict) -> slew (rate-limit),
-with the floor relaxing both the cap and the slew toward the unclipped command exactly as
-the legacy refined governor's under-response floor does.
+with the floor relaxing both the cap and the slew toward the unclipped command only for
+clean same-sign lag cases.
 
 SCOPE — this is a structural first cut. It carries v2.1's namesake refined-governor
 behaviors plus the principal hard caps (over-response from the attenuator/shaper, sign
@@ -101,6 +101,7 @@ class GovernorReason(IntFlag):
   OVERRIDE_RELEASE = 1 << 8
   UNDER_RESPONSE_FLOOR = 1 << 9
   INVALID = 1 << 10
+  UNDER_RESPONSE_GUARDED = 1 << 11
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,8 @@ class OutputGovernorInputs:
   actual_lateral_accel: float
   same_direction_limit: bool  # steer-limited in the command direction and not unwinding
   release_active: bool        # driver override / unwind release
+  path_evidence_valid: bool = True
+  controller_evidence_stable: bool = True
 
 
 @dataclass(frozen=True)
@@ -145,8 +148,22 @@ class OutputGovernor:
 
     # --- AUGMENT ---
     floor = self._under_response_floor(inp)
+    floor_guarded = floor > 0.0 and (
+      not inp.path_evidence_valid or
+      not inp.controller_evidence_stable or
+      inp.release_active or
+      inp.same_direction_limit or
+      abs(inp.steering_rate_deg) >= HIGH_RATE_START_DEG or
+      self._sign_conflict(inp) or
+      self._over_response_scale(inp) < 1.0 or
+      abs(inp.nominal_torque) >= inp.max_output - 1e-6
+    )
     if floor > 0.0:
-      reason |= GovernorReason.UNDER_RESPONSE_FLOOR
+      if floor_guarded:
+        reason |= GovernorReason.UNDER_RESPONSE_GUARDED
+        floor = 0.0
+      else:
+        reason |= GovernorReason.UNDER_RESPONSE_FLOOR
 
     # --- RESTRICT: build cap as a fraction of max_output (binding cap = min) ---
     cap = 1.0

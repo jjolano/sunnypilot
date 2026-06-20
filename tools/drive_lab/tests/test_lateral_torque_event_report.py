@@ -185,6 +185,26 @@ def test_lateral_torque_event_report_decodes_v21_governor_reason_names():
   assert event.governor_reason_counts["UNDER_RESPONSE_FLOOR"] > 0
 
 
+def test_lateral_torque_event_report_decodes_v21_guarded_under_response_reason():
+  msgs = []
+  for i in range(80):
+    t = i * 0.1
+    sign = 1.0 if (i // 2) % 2 == 0 else -1.0
+    msgs.extend(sample_msgs(
+      t,
+      output=0.12 * sign,
+      unshaped=0.18 * sign,
+      steering_angle=0.6 * sign,
+      governor_reason=(1 << 11),
+      torque_version=21,
+    ))
+
+  report = build_lateral_torque_event_report(msgs, source="synthetic", max_events=2)
+
+  assert report.top_events
+  assert report.top_events[0].governor_reason_counts["UNDER_RESPONSE_GUARDED"] > 0
+
+
 def test_lateral_torque_event_report_decodes_v3_governor_reason_not_v2_shaper_reason():
   msgs = []
   for i in range(80):

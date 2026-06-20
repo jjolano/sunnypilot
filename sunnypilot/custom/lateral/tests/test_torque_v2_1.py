@@ -122,6 +122,54 @@ def test_populates_adaptive_torque_telemetry():
   assert adaptive.rawActualLateralAccel == pytest.approx(pid_log.actualLateralAccel)
 
 
+def test_controller_passes_controller_evidence_to_governor():
+  c = make_controller()
+  vm = FakeVM()
+  captured = {}
+  original_update = c.governor.update
+
+  def capture_update(inp):
+    captured["inp"] = inp
+    return original_update(inp)
+
+  c.governor.update = capture_update
+  c.update(True, make_cs(v_ego=12.0, angle=15.0), vm, make_params(), False, 0.05, None, False, 0.2)
+
+  assert captured["inp"].controller_evidence_stable is True
+
+
+def test_controller_passes_path_evidence_to_governor():
+  c = make_controller()
+  vm = FakeVM()
+  captured = {}
+  original_update = c.governor.update
+
+  def capture_update(inp):
+    captured["inp"] = inp
+    return original_update(inp)
+
+  c.governor.update = capture_update
+  c.set_under_response_path_evidence(False)
+  c.update(True, make_cs(v_ego=12.0, angle=15.0), vm, make_params(), False, 0.05, None, False, 0.2)
+
+  assert captured["inp"].path_evidence_valid is False
+
+
+@pytest.mark.parametrize("model_path, expected", [
+  (None, True),
+  (SimpleNamespace(gated=False, reason="ok"), True),
+  (SimpleNamespace(gated=True, reason="ok"), False),
+  (SimpleNamespace(gated=False, reason="low_lane_confidence"), False),
+  (SimpleNamespace(gated=False, reason="high_path_std"), False),
+  (SimpleNamespace(gated=False, reason="invalid_path"), False),
+])
+def test_path_evidence_from_lateral_demand_mapping(model_path, expected):
+  c = make_controller()
+  result = None if model_path is None else SimpleNamespace(model_path_result=model_path)
+  c.set_under_response_path_evidence_from_lateral_demand(result)
+  assert c._under_response_path_evidence_valid is expected
+
+
 def test_lateral_observability_schema_fields_are_writable():
   msg = log.ControlsState.new_message()
   msg.modelPathState.active = True
