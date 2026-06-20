@@ -16,16 +16,250 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from collections.abc import Iterator
 
 from openpilot.common.basedir import BASEDIR
 
 SETTINGS_UI_JSON = os.path.join(BASEDIR, "sunnypilot", "sunnylink", "settings_ui.json")
+MAX_NAV_DEPTH = 3
+
+
+@dataclass(frozen=True)
+class FocusAnchor:
+  panel: str | None = None
+  section: str | None = None
+  sub_panel: str | None = None
+  key: str | None = None
+
+
+@dataclass(frozen=True)
+class SettingsRoute:
+  page_id: str
+  breadcrumbs: tuple[str, ...] = ()
+  focus: FocusAnchor | None = None
 
 
 def load_schema(path: str | None = None) -> dict:
   with open(path or SETTINGS_UI_JSON) as f:
     return json.load(f)
+
+
+def _pages(schema: dict) -> list[dict]:
+  pages = schema.get("pages", [])
+  return pages if isinstance(pages, list) else []
+
+
+def get_page(schema: dict, page_id: str) -> dict | None:
+  return next((p for p in _pages(schema) if p.get("id") == page_id), None)
+
+
+def get_root_navigation(schema: dict) -> list[dict]:
+  if navigation_errors(schema):
+    return []
+  nav = schema.get("navigation")
+  if not isinstance(nav, dict):
+    return []
+  root = nav.get("root")
+  if not isinstance(root, list):
+    return []
+  pages = []
+  for page_id in root:
+    if not isinstance(page_id, str):
+      return []
+    page = get_page(schema, page_id)
+    if page is None:
+      return []
+    pages.append(page)
+  return pages
+
+
+def _page_title(page: dict) -> str | None:
+  title = page.get("title")
+  return title if isinstance(title, str) and title else None
+
+
+def _page_content(page: dict) -> dict | None:
+  content = page.get("content")
+  return content if isinstance(content, dict) else None
+
+
+def navigation_errors(schema: dict) -> list[str]:
+  errors: list[str] = []
+  nav = schema.get("navigation")
+  pages = schema.get("pages")
+  if not isinstance(nav, dict):
+    errors.append("missing navigation")
+    nav = {}
+  if not isinstance(pages, list) or not pages:
+    errors.append("missing pages")
+    return errors
+
+  page_by_id: dict[str, dict] = {}
+  for page in pages:
+    if not isinstance(page, dict):
+      errors.append("invalid page")
+      continue
+    pid = page.get("id")
+    if not isinstance(pid, str) or not pid:
+      errors.append("invalid page id")
+      continue
+    if pid in page_by_id:
+      errors.append(f"duplicate page id: {pid}")
+    page_by_id[pid] = page
+    if not isinstance(page.get("title"), str) or not page.get("title"):
+      errors.append(f"invalid page title: {pid}")
+    has_children = "children" in page
+    has_content = "content" in page
+    if has_children == has_content:
+      errors.append(f"invalid page shape: {pid}")
+    if has_children:
+      children = page.get("children")
+      if not isinstance(children, list) or not children or not all(isinstance(child, str) and child for child in children):
+        errors.append(f"invalid category children: {pid}")
+      elif len(set(children)) != len(children):
+        errors.append(f"duplicate children: {pid}")
+    elif has_content:
+      content = _page_content(page)
+      if content is None:
+        errors.append(f"invalid leaf shape: {pid}")
+      else:
+        kind = content.get("kind")
+        if kind == "panel_ref":
+          panel = content.get("panel")
+          if not isinstance(panel, str) or not panel or get_panel(schema, panel) is None:
+            errors.append(f"unknown panel_ref panel: {pid}")
+        elif kind == "custom_page":
+          component = content.get("component")
+          if not isinstance(component, str) or not component:
+            errors.append(f"invalid custom_page: {pid}")
+        else:
+          errors.append(f"invalid content kind: {pid}")
+
+  roots = nav.get("root", []) if isinstance(nav, dict) else []
+  if not isinstance(roots, list) or not roots or not all(isinstance(root, str) and root for root in roots):
+    errors.append("missing roots")
+    return errors
+  if len(set(roots)) != len(roots):
+    errors.append("duplicate roots")
+  parents: dict[str, str] = {}
+  for root in roots:
+    if root not in page_by_id:
+      errors.append(f"unknown root: {root}")
+
+  for page in pages:
+    pid = page.get("id") if isinstance(page, dict) else None
+    if not isinstance(pid, str) or pid not in page_by_id:
+      continue
+    children = page.get("children")
+    if not isinstance(children, list):
+      continue
+    for child in children:
+      if not isinstance(child, str):
+        continue
+      if child in parents:
+        errors.append(f"multiple parents: {child}")
+      parents[child] = pid
+      if child not in page_by_id:
+        errors.append(f"unknown child: {child}")
+  root_set = set(roots)
+  for child in parents:
+    if child in root_set:
+      errors.append(f"root-as-child: {child}")
+  for pid, page in page_by_id.items():
+    if pid not in roots and pid not in parents:
+      errors.append(f"orphan page: {pid}")
+
+  visited: set[str] = set()
+  visiting: set[str] = set()
+
+  def walk(page_id: str, depth: int) -> None:
+    if depth > MAX_NAV_DEPTH:
+      errors.append(f"max depth > {MAX_NAV_DEPTH}: {page_id}")
+      return
+    if page_id in visiting:
+      errors.append(f"cycle: {page_id}")
+      return
+    if page_id in visited:
+      return
+    page = page_by_id.get(page_id)
+    if page is None:
+      return
+    visiting.add(page_id)
+    children = page.get("children")
+    if isinstance(children, list):
+      for child in children:
+        if isinstance(child, str):
+          walk(child, depth + 1)
+    visiting.remove(page_id)
+    visited.add(page_id)
+
+  for root in roots:
+    if isinstance(root, str):
+      walk(root, 1)
+  return errors
+
+
+def navigation_available(schema: dict) -> bool:
+  return not navigation_errors(schema)
+
+
+def _walk_routes(schema: dict, page_id: str, breadcrumbs: tuple[str, ...], seen: set[str]) -> list[SettingsRoute]:
+  page = get_page(schema, page_id)
+  if page is None or page_id in seen:
+    return []
+  seen = set(seen)
+  seen.add(page_id)
+  title = _page_title(page)
+  next_breadcrumbs = breadcrumbs + ((title,) if title and title != "Settings" else ())
+  routes = [SettingsRoute(page_id=page_id, breadcrumbs=next_breadcrumbs)]
+  for child in page.get("children", []) if isinstance(page.get("children"), list) else []:
+    if isinstance(child, str):
+      routes.extend(_walk_routes(schema, child, next_breadcrumbs, seen))
+  return routes
+
+
+def breadcrumbs_for(schema: dict, page_id: str) -> tuple[str, ...]:
+  for route in flatten_routes(schema):
+    if route.page_id == page_id:
+      return route.breadcrumbs
+  return ()
+
+
+def resolve_page_content(schema: dict, page_id: str) -> dict | None:
+  if navigation_errors(schema):
+    return None
+  page = get_page(schema, page_id)
+  if page is None:
+    return None
+  content = _page_content(page)
+  if content is None:
+    return None
+  kind = content.get("kind")
+  if kind in ("panel_ref", "custom_page"):
+    return content
+  return None
+
+
+def panel_for_page(schema: dict, page_id: str) -> dict | None:
+  content = resolve_page_content(schema, page_id)
+  if not content or content.get("kind") != "panel_ref":
+    return None
+  panel = content.get("panel")
+  return get_panel(schema, panel) if isinstance(panel, str) else None
+
+
+def flatten_routes(schema: dict) -> list[SettingsRoute]:
+  if not navigation_available(schema):
+    return []
+  routes: list[SettingsRoute] = []
+  for root in get_root_navigation(schema):
+    routes.extend(_walk_routes(schema, root["id"], (), set()))
+  return routes
+
+
+def routes_for_panel(schema: dict, panel_id: str) -> list[SettingsRoute]:
+  return [route for route in flatten_routes(schema) if (content := resolve_page_content(schema, route.page_id)) and content.get("kind") == "panel_ref" and content.get("panel") == panel_id]
 
 
 def get_panel(schema: dict, panel_id: str) -> dict | None:

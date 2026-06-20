@@ -7,7 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 Tests for the settings_ui_src/ -> settings_ui.json compiler. Covers:
   - Roundtrip: compiled output matches the checked-in settings_ui.json
   - $ref macro resolution semantics (list-splice, scalar-substitute, depth, cycles)
-  - Per-page tree integrity (every page has id; vehicle page emits to vehicle_settings)
+  - Passive navigation tree integrity and additive-only emission
 
 Does not cover device-side generator (test_settings_schema.py) or per-bug
 regression (test_settings_changes.py); those continue to validate the
@@ -26,9 +26,13 @@ from openpilot.sunnypilot.sunnylink.tools.compile_settings_ui import (
   CompileError,
   DEFAULT_OUT,
   DEFAULT_SRC,
+  _canon_navigation,
   _resolve_refs,
   compile_schema,
 )
+
+
+SCHEMA_PATH = os.path.join(os.path.dirname(DEFAULT_OUT), "settings_ui.schema.json")
 
 
 @pytest.fixture(scope="module")
@@ -55,6 +59,18 @@ class TestRoundtrip:
       lineterm="",
     ))
     pytest.fail(f"settings_ui.json schema mismatch — run compile_settings_ui.py\n\n{diff}")
+
+  def test_additive_top_level_shape(self, compiled, committed):
+    assert compiled["panels"] == committed["panels"]
+    assert compiled["vehicle_settings"] == committed["vehicle_settings"]
+    assert compiled["navigation"]
+    assert compiled["pages"]
+
+  def test_committed_file_validates_against_json_schema(self, committed):
+    jsonschema = pytest.importorskip("jsonschema")
+    with open(SCHEMA_PATH) as f:
+      validator = json.load(f)
+    jsonschema.validate(instance=committed, schema=validator)
 
   def test_committed_file_is_canonical(self):
     """Compiled output must byte-match the checked-in file (including trailing newline).
@@ -142,6 +158,12 @@ class TestCompiledShape:
     item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "LongitudinalDebugTraceMode")
     assert [opt["value"] for opt in item["options"]] == ["off", "log"]
 
+  def test_shadow_observability_modes_are_off_shadow_only(self, compiled):
+    cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
+    for key in ("CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "StandstillReleaseConfidenceMode"):
+      item = next(i for i in cruise["sections"][0]["items"] if i["key"] == key)
+      assert [opt["value"] for opt in item["options"]] == ["off", "shadow"]
+
   def test_vehicle_settings_consistent_shape(self, compiled):
     """Each brand in vehicle_settings must have {title, description, items}."""
     for brand, data in compiled["vehicle_settings"].items():
@@ -162,6 +184,96 @@ class TestCompiledShape:
         for x in node:
           walk(x)
     walk(compiled)
+
+  def test_navigation_tree_is_valid(self, compiled):
+    nav = compiled["navigation"]
+    pages = compiled["pages"]
+    page_ids = [p["id"] for p in pages]
+    assert len(page_ids) == len(set(page_ids))
+    assert nav["root"] == ["driving", "interface", "vehicle", "system"]
+    assert set(nav["root"]).issubset(page_ids)
+
+    page_map = {p["id"]: p for p in pages}
+    panel_ids = {p["id"] for p in compiled["panels"]}
+    allowed = {"device", "network", "sunnylink", "toggles", "software", "models", "osm", "trips", "vehicle", "firehose", "developer"}
+
+    def walk(pid, stack):
+      assert pid not in stack, f"cycle at {pid}"
+      stack = stack + [pid]
+      page = page_map[pid]
+      has_children = "children" in page
+      has_content = "content" in page
+      assert has_children ^ has_content
+      if has_children:
+        assert len(stack) <= 3
+        for child in page["children"]:
+          assert child in page_map
+          walk(child, stack)
+      else:
+        content = page["content"]
+        if content["kind"] == "custom_page":
+          assert content["component"] in allowed
+        elif content["kind"] == "panel_ref":
+          assert content["panel"] in panel_ids
+        else:
+          pytest.fail(f"unknown page content kind: {content['kind']}")
+
+    for root in nav["root"]:
+      walk(root, [])
+
+    reachable = set()
+    def collect(pid):
+      if pid in reachable:
+        return
+      reachable.add(pid)
+      for child in page_map[pid].get("children", []):
+        collect(child)
+    for root in nav["root"]:
+      collect(root)
+    assert reachable == set(page_ids)
+
+
+def _nav_leaf(pid: str = "root", panel: str = "steering") -> dict:
+  return {"id": pid, "title": pid, "content": {"kind": "panel_ref", "panel": panel}}
+
+
+class TestNavigationValidation:
+  PANELS = {"steering", "cruise", "display", "visuals", "toggles"}
+
+  def test_navigation_pages_are_canonicalized(self):
+    nav, pages = _canon_navigation({
+      "root": ["root"],
+      "pages": [{
+        "id": "root",
+        "title": "Root",
+        "source_only": "ignored",
+        "content": {"kind": "panel_ref", "panel": "steering", "source_only": "ignored"},
+      }],
+    }, self.PANELS)
+    assert nav == {"root": ["root"]}
+    assert pages == [{"id": "root", "title": "Root", "content": {"kind": "panel_ref", "panel": "steering"}}]
+
+  @pytest.mark.parametrize("nav_doc, match", [
+    ({"root": ["root", "root"], "pages": [_nav_leaf()]}, "duplicate"),
+    ({"root": ["root"], "pages": [{"id": "root", "title": "Root", "children": ["child", "child"]}, _nav_leaf("child")]}, "duplicate"),
+    ({"root": ["root"], "pages": [{"id": "root", "title": "Root", "children": ["missing"]}]}, "unknown child"),
+    ({"root": ["root"], "pages": [_nav_leaf(panel="missing")]}, "unknown panel"),
+    ({"root": ["root"], "pages": [{"id": "root", "title": "Root", "content": {"kind": "custom_page", "component": "missing"}}]}, "unknown custom"),
+    ({"root": ["a", "b"], "pages": [
+      {"id": "a", "title": "A", "children": ["shared"]},
+      {"id": "b", "title": "B", "children": ["shared"]},
+      _nav_leaf("shared"),
+    ]}, "multiple parents"),
+    ({"root": ["a"], "pages": [
+      {"id": "a", "title": "A", "children": ["b"]},
+      {"id": "b", "title": "B", "children": ["c"]},
+      {"id": "c", "title": "C", "children": ["d"]},
+      _nav_leaf("d"),
+    ]}, "depth"),
+  ])
+  def test_invalid_navigation_raises(self, nav_doc, match):
+    with pytest.raises(CompileError, match=match):
+      _canon_navigation(nav_doc, self.PANELS)
 
 
 class TestSourceTreeIntegrity:

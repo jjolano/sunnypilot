@@ -4,7 +4,7 @@
   "title": "sunnypilot Settings UI Schema",
   "description": "Defines the structure of the sunnypilot settings UI panels, items, rules, and vehicle-specific settings.",
   "type": "object",
-  "required": ["schema_version", "panels", "vehicle_settings"],
+  "required": ["schema_version", "navigation", "panels", "pages", "vehicle_settings"],
   "additionalProperties": false,
   "properties": {
     "$schema": {
@@ -12,15 +12,26 @@
       "description": "JSON Schema reference for editor support."
     },
     "schema_version": {
-      "type": "string",
+      "const": "1.1",
       "description": "Version of the settings UI schema format.",
-      "examples": ["1.0"]
+      "examples": ["1.1"]
+    },
+    "navigation": {
+      "$ref": "#/$defs/Navigation"
     },
     "panels": {
       "type": "array",
       "description": "Top-level settings panels displayed in the UI.",
       "items": {
         "$ref": "#/$defs/Panel"
+      }
+    },
+    "pages": {
+      "type": "array",
+      "description": "Ordered page definitions for the passive navigation tree.",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/Page"
       }
     },
     "vehicle_settings": {
@@ -32,6 +43,60 @@
     }
   },
   "$defs": {
+    "Navigation": {
+      "type": "object",
+      "required": ["root"],
+      "additionalProperties": false,
+      "properties": {
+        "root": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "Page": {
+      "type": "object",
+      "required": ["id", "title"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "icon": {"type": "string"},
+        "children": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "content": {"$ref": "#/$defs/PageContent"}
+      },
+      "oneOf": [
+        {"required": ["children"], "not": {"required": ["content"]}},
+        {"required": ["content"], "not": {"required": ["children"]}}
+      ]
+    },
+    "PageContent": {
+      "oneOf": [
+        {"$ref": "#/$defs/PagePanelRef"},
+        {"$ref": "#/$defs/PageCustomPage"}
+      ]
+    },
+    "PagePanelRef": {
+      "type": "object",
+      "required": ["kind", "panel"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"const": "panel_ref"},
+        "panel": {"type": "string"}
+      }
+    },
+    "PageCustomPage": {
+      "type": "object",
+      "required": ["kind", "component"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"const": "custom_page"},
+        "component": {
+          "enum": ["device", "network", "sunnylink", "toggles", "software", "models", "osm", "trips", "vehicle", "firehose", "developer"]
+        }
+      }
+    },
     "Panel": {
       "type": "object",
       "description": "A top-level settings panel (tab) in the UI.",

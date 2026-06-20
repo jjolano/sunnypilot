@@ -101,6 +101,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // LeadPathClearanceMode is Phase 1 shadow/debug only. Settings expose off|shadow; runtime accepts
     // stored apply values but downgrades them to shadow-only until an apply path is separately validated.
     {"LeadPathClearanceMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    {"CutInBrakeAssistMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    {"CurveSpeedConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    {"StandstillReleaseConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CurveMemoryEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},

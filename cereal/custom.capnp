@@ -265,6 +265,50 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     }
 
     leadPathClearance @18 :LeadPathClearance;
+    struct CutInBrakeAssistTrace {
+      mode @0 :Text;
+      effectiveMode @1 :Text;
+      applySupported @2 :Bool;
+      eligible @3 :Bool;
+      blockReason @4 :Text;
+      leadIdx @5 :Int32;
+      pathYRel @6 :Float32;
+      lateralVelocity @7 :Float32;
+      ttc @8 :Float32;
+      requiredDecel @9 :Float32;
+      proposedCap @10 :Float32;
+      confidence @11 :Float32;
+    }
+    struct CurveSpeedConfidenceTrace {
+      mode @0 :Text;
+      effectiveMode @1 :Text;
+      applySupported @2 :Bool;
+      eligible @3 :Bool;
+      blockReason @4 :Text;
+      confidence @5 :Float32;
+      proposedCap @6 :Float32;
+      source @7 :Text;
+      active @8 :Bool;
+      currentLatAccel @9 :Float32;
+      maxPredLatAccel @10 :Float32;
+      preEntryActive @11 :Bool;
+    }
+    struct StandstillReleaseConfidenceTrace {
+      mode @0 :Text;
+      effectiveMode @1 :Text;
+      applySupported @2 :Bool;
+      eligible @3 :Bool;
+      blockReason @4 :Text;
+      confidence @5 :Float32;
+      releaseAllowed @6 :Bool;
+      releaseSource @7 :Text;
+      releaseReason @8 :Text;
+      releaseATarget @9 :Float32;
+    }
+
+    cutInBrakeAssist @19 :CutInBrakeAssistTrace;
+    curveSpeedConfidence @20 :CurveSpeedConfidenceTrace;
+    standstillReleaseConfidence @21 :StandstillReleaseConfidenceTrace;
   }
 
   struct SmartCruiseControl {

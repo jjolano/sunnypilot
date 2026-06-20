@@ -150,8 +150,8 @@ sections:
       title: Speed-Aware Curve
       description: Choose how learned speed correction is used.
       options:
-      - value: off
-        label: Off
+      - value: 'off'
+        label: 'Off'
       - value: shadow
         label: Learn only
       - value: apply

@@ -1,0 +1,123 @@
+navigation:
+  root:
+    - driving
+    - interface
+    - vehicle
+    - system
+pages:
+  - id: driving
+    title: Driving
+    icon: steering_wheel
+    children:
+      - driving.steering
+      - driving.cruise
+      - driving.toggles
+  - id: driving.steering
+    title: Lateral Control
+    icon: steering_wheel
+    content:
+      kind: panel_ref
+      panel: steering
+  - id: driving.cruise
+    title: Longitudinal Control
+    icon: cruise_control
+    content:
+      kind: panel_ref
+      panel: cruise
+  - id: driving.toggles
+    title: Core Toggles
+    icon: toggles
+    content:
+      kind: custom_page
+      component: toggles
+  - id: interface
+    title: Interface
+    icon: display
+    children:
+      - interface.display
+      - interface.visuals
+      - interface.osm
+  - id: interface.display
+    title: Display
+    icon: display
+    content:
+      kind: panel_ref
+      panel: display
+  - id: interface.visuals
+    title: Visuals
+    icon: visuals
+    content:
+      kind: panel_ref
+      panel: visuals
+  - id: interface.osm
+    title: OpenStreetMap
+    icon: osm
+    content:
+      kind: custom_page
+      component: osm
+  - id: vehicle
+    title: Vehicle
+    icon: vehicle
+    content:
+      kind: custom_page
+      component: vehicle
+  - id: system
+    title: System
+    icon: settings
+    children:
+      - system.device
+      - system.network
+      - system.software
+      - system.sunnylink
+      - system.models
+      - system.trips
+      - system.firehose
+      - system.developer
+  - id: system.device
+    title: Device
+    icon: device
+    content:
+      kind: custom_page
+      component: device
+  - id: system.network
+    title: Network
+    icon: network
+    content:
+      kind: custom_page
+      component: network
+  - id: system.software
+    title: Software
+    icon: software
+    content:
+      kind: custom_page
+      component: software
+  - id: system.sunnylink
+    title: sunnylink
+    icon: sunnylink
+    content:
+      kind: custom_page
+      component: sunnylink
+  - id: system.models
+    title: Models
+    icon: models
+    content:
+      kind: custom_page
+      component: models
+  - id: system.trips
+    title: Trips
+    icon: trips
+    content:
+      kind: custom_page
+      component: trips
+  - id: system.firehose
+    title: Firehose
+    icon: firehose
+    content:
+      kind: custom_page
+      component: firehose
+  - id: system.developer
+    title: Developer
+    icon: developer
+    content:
+      kind: custom_page
+      component: developer

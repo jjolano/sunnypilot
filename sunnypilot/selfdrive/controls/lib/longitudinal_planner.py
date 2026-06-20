@@ -531,8 +531,8 @@ class LongitudinalPlannerSP:
       lpc.mode = str(debug.get(prefix + 'mode', 'off') or 'off')
       lpc.effectiveMode = str(debug.get(prefix + 'effective_mode', '') or ('shadow' if lpc.mode == 'apply' else lpc.mode))
       lpc.applySupported = bool(debug.get(prefix + 'apply_supported', False))
-      lpc.shadowEligible = bool(debug.get(prefix + 'shadow_eligible', False))
-      lpc.blockReason = str(debug.get(prefix + 'shadow_blocked_reason', '') or '')
+      lpc.shadowEligible = bool(debug.get(prefix + 'shadow_eligible', debug.get(prefix + 'eligible', False)))
+      lpc.blockReason = str(debug.get(prefix + 'shadow_blocked_reason', debug.get(prefix + 'block_reason', '')) or '')
       lpc.leadIdx = int(self._safe_float(debug.get(prefix + 'lead_idx', -1), -1))
       lpc.pathYRel = self._safe_float(debug.get(prefix + 'path_y_rel', 0.0))
       lpc.lateralVelocity = self._safe_float(debug.get(prefix + 'lateral_velocity', 0.0))
@@ -546,9 +546,50 @@ class LongitudinalPlannerSP:
       lpc.leadDRel = self._safe_float(debug.get('actual_primary_lead_d_rel', 0.0))
       lpc.leadVRel = self._safe_float(debug.get('actual_primary_lead_v_rel', 0.0))
       lpc.leadYRel = self._safe_float(debug.get('actual_primary_lead_y_rel', 0.0))
+      self._populate_cut_in_brake_assist_trace(msg.cutInBrakeAssist, debug)
+      self._populate_curve_speed_confidence_trace(msg.curveSpeedConfidence, debug)
+      self._populate_standstill_release_confidence_trace(msg.standstillReleaseConfidence, debug)
     except Exception:
       msg.enabled = False
       msg.traceMode = 'off'
+
+  def _populate_feature_trace_common(self, msg, debug: dict, prefix: str) -> None:
+    msg.mode = str(debug.get(prefix + 'mode', 'off') or 'off')
+    msg.effectiveMode = str(debug.get(prefix + 'effective_mode', msg.mode) or msg.mode)
+    msg.applySupported = bool(debug.get(prefix + 'apply_supported', False))
+    msg.eligible = bool(debug.get(prefix + 'eligible', False))
+    msg.blockReason = str(debug.get(prefix + 'block_reason', '') or '')
+
+  def _populate_cut_in_brake_assist_trace(self, msg, debug: dict) -> None:
+    prefix = 'cut_in_brake_assist_'
+    self._populate_feature_trace_common(msg, debug, prefix)
+    msg.leadIdx = int(self._safe_float(debug.get(prefix + 'lead_idx', -1), -1))
+    msg.pathYRel = self._safe_float(debug.get(prefix + 'path_y_rel', 0.0))
+    msg.lateralVelocity = self._safe_float(debug.get(prefix + 'lateral_velocity', 0.0))
+    msg.ttc = self._safe_float(debug.get(prefix + 'ttc', 0.0))
+    msg.requiredDecel = self._safe_float(debug.get(prefix + 'required_decel', 0.0))
+    msg.proposedCap = self._safe_float(debug.get(prefix + 'proposed_cap', 0.0))
+    msg.confidence = self._safe_float(debug.get(prefix + 'confidence', 0.0))
+
+  def _populate_curve_speed_confidence_trace(self, msg, debug: dict) -> None:
+    prefix = 'curve_speed_confidence_'
+    self._populate_feature_trace_common(msg, debug, prefix)
+    msg.confidence = self._safe_float(debug.get(prefix + 'confidence', 0.0))
+    msg.proposedCap = self._safe_float(debug.get(prefix + 'proposed_cap', 0.0))
+    msg.source = str(debug.get(prefix + 'source', '') or '')
+    msg.active = bool(debug.get(prefix + 'active', False))
+    msg.currentLatAccel = self._safe_float(debug.get(prefix + 'current_lat_acc', 0.0))
+    msg.maxPredLatAccel = self._safe_float(debug.get(prefix + 'max_pred_lat_acc', 0.0))
+    msg.preEntryActive = bool(debug.get(prefix + 'pre_entry_active', False))
+
+  def _populate_standstill_release_confidence_trace(self, msg, debug: dict) -> None:
+    prefix = 'standstill_release_confidence_'
+    self._populate_feature_trace_common(msg, debug, prefix)
+    msg.confidence = self._safe_float(debug.get(prefix + 'confidence', 0.0))
+    msg.releaseAllowed = bool(debug.get(prefix + 'release_allowed', False))
+    msg.releaseSource = str(debug.get(prefix + 'release_source', '') or '')
+    msg.releaseReason = str(debug.get(prefix + 'release_reason', '') or '')
+    msg.releaseATarget = self._safe_float(debug.get(prefix + 'release_a_target', 0.0))
 
   @staticmethod
   def _safe_float(value, default: float = 0.0) -> float:

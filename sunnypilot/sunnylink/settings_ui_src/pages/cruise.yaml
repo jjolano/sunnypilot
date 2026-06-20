@@ -81,6 +81,57 @@ sections:
     - type: param
       key: CustomLongitudinalEnabled
       equals: true
+  - key: CutInBrakeAssistMode
+    widget: multiple_button
+    title: Cut-in Brake Assist
+    description: Shadow-only observability for close cut-in style lead events. No actuation changes.
+    options:
+    - value: 'off'
+      label: 'Off'
+    - value: 'shadow'
+      label: Monitor only
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: capability
+      field: has_longitudinal_control
+      equals: true
+    - type: param
+      key: CustomLongitudinalEnabled
+      equals: true
+  - key: CurveSpeedConfidenceMode
+    widget: multiple_button
+    title: Curve Speed Confidence
+    description: Shadow-only observability for SCC curve evidence. No actuation changes.
+    options:
+    - value: 'off'
+      label: 'Off'
+    - value: 'shadow'
+      label: Monitor only
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: capability
+      field: has_longitudinal_control
+      equals: true
+    - type: param
+      key: CustomLongitudinalEnabled
+      equals: true
+  - key: StandstillReleaseConfidenceMode
+    widget: multiple_button
+    title: Standstill Release Confidence
+    description: Shadow-only observability for existing standstill release behavior. No actuation changes.
+    options:
+    - value: 'off'
+      label: 'Off'
+    - value: 'shadow'
+      label: Monitor only
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: capability
+      field: has_longitudinal_control
+      equals: true
+    - type: param
+      key: CustomLongitudinalEnabled
+      equals: true
   - key: DisengageOnAccelerator
     widget: toggle
     title: Disengage Cruise on Accelerator Pedal

@@ -16,7 +16,7 @@ from collections.abc import Callable
 
 from openpilot.sunnypilot.sunnylink.capabilities import CAPABILITY_FIELDS, CAPABILITY_LABELS
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 _DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFINITION_PATH = os.path.join(_DIR, "settings_ui.json")
 TORQUE_VERSIONS_PATH = os.path.normpath(

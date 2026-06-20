@@ -107,6 +107,40 @@ def test_debug_trace_populates_whitelisted_fields():
     'actual_primary_lead_d_rel': 20.0,
     'actual_primary_lead_v_rel': -2.0,
     'actual_primary_lead_y_rel': 0.1,
+    'cut_in_brake_assist_mode': 'shadow',
+    'cut_in_brake_assist_effective_mode': 'shadow',
+    'cut_in_brake_assist_apply_supported': False,
+    'cut_in_brake_assist_eligible': True,
+    'cut_in_brake_assist_block_reason': '',
+    'cut_in_brake_assist_lead_idx': 0,
+    'cut_in_brake_assist_path_y_rel': 0.3,
+    'cut_in_brake_assist_lateral_velocity': 0.0,
+    'cut_in_brake_assist_ttc': 3.5,
+    'cut_in_brake_assist_required_decel': 0.4,
+    'cut_in_brake_assist_proposed_cap': -0.7,
+    'cut_in_brake_assist_confidence': 0.8,
+    'curve_speed_confidence_mode': 'shadow',
+    'curve_speed_confidence_effective_mode': 'shadow',
+    'curve_speed_confidence_apply_supported': False,
+    'curve_speed_confidence_eligible': True,
+    'curve_speed_confidence_block_reason': '',
+    'curve_speed_confidence_confidence': 0.7,
+    'curve_speed_confidence_proposed_cap': -0.5,
+    'curve_speed_confidence_source': 'vision',
+    'curve_speed_confidence_active': True,
+    'curve_speed_confidence_current_lat_acc': 1.1,
+    'curve_speed_confidence_max_pred_lat_acc': 1.4,
+    'curve_speed_confidence_pre_entry_active': True,
+    'standstill_release_confidence_mode': 'shadow',
+    'standstill_release_confidence_effective_mode': 'shadow',
+    'standstill_release_confidence_apply_supported': False,
+    'standstill_release_confidence_eligible': True,
+    'standstill_release_confidence_block_reason': '',
+    'standstill_release_confidence_confidence': 0.9,
+    'standstill_release_confidence_release_allowed': True,
+    'standstill_release_confidence_release_source': 'lead_pullaway',
+    'standstill_release_confidence_release_reason': 'lead_opening',
+    'standstill_release_confidence_release_a_target': 0.25,
   }))
   planner._last_longitudinal_debug = {'v_cruise': 15.2, 'mpc_a_target': 1.0, 'mpc_should_stop': True, 'model_a_target': -1.0,
                                       'model_should_stop': False, 'final_a_target_unclipped': 0.9,
@@ -147,6 +181,21 @@ def test_debug_trace_populates_whitelisted_fields():
   assert msg.leadPathClearance.leadDRel == pytest.approx(20.0)
   assert msg.leadPathClearance.leadVRel == pytest.approx(-2.0)
   assert msg.leadPathClearance.leadYRel == pytest.approx(0.1)
+  assert msg.cutInBrakeAssist.mode == 'shadow'
+  assert msg.cutInBrakeAssist.applySupported is False
+  assert msg.cutInBrakeAssist.eligible is True
+  assert msg.cutInBrakeAssist.proposedCap == pytest.approx(-0.7)
+  assert msg.cutInBrakeAssist.ttc == pytest.approx(3.5)
+  assert msg.curveSpeedConfidence.mode == 'shadow'
+  assert msg.curveSpeedConfidence.source == 'vision'
+  assert msg.curveSpeedConfidence.proposedCap == pytest.approx(-0.5)
+  assert msg.curveSpeedConfidence.currentLatAccel == pytest.approx(1.1)
+  assert msg.curveSpeedConfidence.maxPredLatAccel == pytest.approx(1.4)
+  assert msg.curveSpeedConfidence.preEntryActive is True
+  assert msg.standstillReleaseConfidence.mode == 'shadow'
+  assert msg.standstillReleaseConfidence.releaseAllowed is True
+  assert msg.standstillReleaseConfidence.releaseSource == 'lead_pullaway'
+  assert msg.standstillReleaseConfidence.releaseATarget == pytest.approx(0.25)
 
 
 def test_debug_trace_sanitizes_non_finite_values_without_throwing():
@@ -155,6 +204,13 @@ def test_debug_trace_sanitizes_non_finite_values_without_throwing():
     'lead_path_clearance_lead_idx': math.nan,
     'lead_path_clearance_path_y_rel': math.inf,
     'lead_path_clearance_t_clear': 'bad',
+    'cut_in_brake_assist_mode': 'shadow',
+    'cut_in_brake_assist_lead_idx': math.nan,
+    'cut_in_brake_assist_proposed_cap': math.nan,
+    'curve_speed_confidence_mode': 'shadow',
+    'curve_speed_confidence_proposed_cap': math.inf,
+    'standstill_release_confidence_mode': 'shadow',
+    'standstill_release_confidence_release_a_target': math.nan,
   }))
   planner._last_longitudinal_debug = {
     'mpc_a_target': math.nan,
@@ -178,3 +234,7 @@ def test_debug_trace_sanitizes_non_finite_values_without_throwing():
   assert msg.leadPathClearance.leadIdx == -1
   assert msg.leadPathClearance.pathYRel == pytest.approx(0.0)
   assert msg.leadPathClearance.tClear == pytest.approx(0.0)
+  assert msg.cutInBrakeAssist.leadIdx == -1
+  assert msg.cutInBrakeAssist.proposedCap == pytest.approx(0.0)
+  assert msg.curveSpeedConfidence.proposedCap == pytest.approx(0.0)
+  assert msg.standstillReleaseConfidence.releaseATarget == pytest.approx(0.0)

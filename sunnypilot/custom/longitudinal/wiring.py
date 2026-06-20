@@ -20,6 +20,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs
 from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import MODE_APPLY as LEAD_PATH_CLEARANCE_MODE_APPLY, MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF, MODE_SHADOW as LEAD_PATH_CLEARANCE_MODE_SHADOW
 from openpilot.sunnypilot.custom.longitudinal.model_trust import StopTrustLearner
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
@@ -54,6 +55,15 @@ def _param_string(params: Any, key: str) -> str | None:
 def _lead_path_clearance_mode(value: Any) -> str:
   text = str(value or "").strip().lower()
   return text if text in (LEAD_PATH_CLEARANCE_MODE_OFF, LEAD_PATH_CLEARANCE_MODE_SHADOW, LEAD_PATH_CLEARANCE_MODE_APPLY) else LEAD_PATH_CLEARANCE_MODE_OFF
+
+
+def _shadow_mode(value: Any, future_values: tuple[str, ...] = ()) -> str:
+  text = str(value or "").strip().lower()
+  if text in ("off", "shadow"):
+    return text
+  if text in future_values:
+    return "shadow"
+  return "off"
 
 
 def _debug_trace_mode(value: Any) -> str:
@@ -97,7 +107,17 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        model_should_stop: bool = False, model_desired_accel: float = 0.0,
                        model_stop_prob: float = 1.0, model_stop_distance: float | None = None,
                        accel_coast: float = 0.0, model_msg: Any | None = None,
-                       lead_path_clearance_mode: str = LEAD_PATH_CLEARANCE_MODE_OFF) -> LongitudinalStackInputs:
+                       lead_path_clearance_mode: str = LEAD_PATH_CLEARANCE_MODE_OFF,
+                       cut_in_brake_assist_mode: str = "off",
+                       curve_speed_confidence_mode: str = "off",
+                       standstill_release_confidence_mode: str = "off",
+                       scc_vision_state: Any = None,
+                       scc_vision_current_lat_acc: float = 0.0,
+                       scc_vision_max_pred_lat_acc: float = 0.0,
+                       scc_vision_pre_entry_active: bool = False,
+                       scc_map_state: Any = None,
+                       scc_map_target_lat: float = 0.0,
+                       scc_map_target_lon: float = 0.0) -> LongitudinalStackInputs:
   has_lead = lead_one is not None and bool(getattr(lead_one, "status", False))
   # Pre-MPC lead-present seed: carry the currently selected planner a_target into the custom
   # policy. Final lead-follow physics remains owned by the downstream MPC solve.
@@ -130,6 +150,17 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     force_slow_decel=bool(force_slow_decel), brake_pressed=brake_pressed, gas_pressed=gas_pressed,
     mode=mode, sources=sources, personality=personality, model_msg=model_msg,
     lead_path_clearance_mode=lead_path_clearance_mode,
+    cut_in_brake_assist_mode=cut_in_brake_assist_mode,
+    curve_speed_confidence_mode=curve_speed_confidence_mode,
+    standstill_release_confidence_mode=standstill_release_confidence_mode,
+    curve_confidence=CurveSpeedConfidenceInputs(
+      vision_active=bool(scc_vision_active), vision_a_target=_f(scc_vision_a_target),
+      vision_state=scc_vision_state, vision_current_lat_acc=_f(scc_vision_current_lat_acc),
+      vision_max_pred_lat_acc=_f(scc_vision_max_pred_lat_acc),
+      vision_pre_entry_active=bool(scc_vision_pre_entry_active),
+      map_active=bool(scc_map_active), map_a_target=_f(scc_map_a_target), map_state=scc_map_state,
+      map_target_lat=_f(scc_map_target_lat), map_target_lon=_f(scc_map_target_lon),
+    ),
   )
 
 
@@ -143,6 +174,9 @@ class CustomLongitudinalAdapter:
     self.mode = LongitudinalMode.SCC
     self.lead_path_clearance_mode = LEAD_PATH_CLEARANCE_MODE_OFF
     self.debug_trace_mode = "off"
+    self.cut_in_brake_assist_mode = "off"
+    self.curve_speed_confidence_mode = "off"
+    self.standstill_release_confidence_mode = "off"
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     if params is not None:
@@ -158,6 +192,9 @@ class CustomLongitudinalAdapter:
       # force OEM-like cruise or the model's stops respectively. Mode is refreshed live each cycle.
       mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc", default=LongitudinalMode.SCC)
       self.debug_trace_mode = _debug_trace_mode(_param_string(p, "LongitudinalDebugTraceMode"))
+      self.cut_in_brake_assist_mode = _shadow_mode(_param_string(p, "CutInBrakeAssistMode"), ("apply",))
+      self.curve_speed_confidence_mode = _shadow_mode(_param_string(p, "CurveSpeedConfidenceMode"), ("apply_conservative",))
+      self.standstill_release_confidence_mode = _shadow_mode(_param_string(p, "StandstillReleaseConfidenceMode"), ("gate",))
     except Exception:  # params are advisory; never fault the planner on a failed read
       if initial:
         self.enabled = False
@@ -229,6 +266,16 @@ class CustomLongitudinalAdapter:
         model_should_stop=model_should_stop, model_desired_accel=model_desired_accel,
         model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance, accel_coast=accel_coast,
         model_msg=model, lead_path_clearance_mode=self.lead_path_clearance_mode,
+        cut_in_brake_assist_mode=self.cut_in_brake_assist_mode,
+        curve_speed_confidence_mode=self.curve_speed_confidence_mode,
+        standstill_release_confidence_mode=self.standstill_release_confidence_mode,
+        scc_vision_state=getattr(scc.vision, "state", None),
+        scc_vision_current_lat_acc=_f(getattr(scc.vision, "current_lat_acc", 0.0)),
+        scc_vision_max_pred_lat_acc=_f(getattr(scc.vision, "max_pred_lat_acc", 0.0)),
+        scc_vision_pre_entry_active=bool(getattr(scc.vision, "pre_entry_active", False)),
+        scc_map_state=getattr(scc.map, "state", None),
+        scc_map_target_lat=_f(getattr(scc.map, "target_lat", 0.0)),
+        scc_map_target_lon=_f(getattr(scc.map, "target_lon", 0.0)),
       )
       result = self._stack.update(inputs, dt)
       debug = dict(result.debug or {})

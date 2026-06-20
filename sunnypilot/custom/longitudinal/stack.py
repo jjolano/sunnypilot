@@ -20,10 +20,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import predict_cut_in_brake_assist
+from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs, predict_curve_speed_confidence
 from openpilot.sunnypilot.custom.longitudinal.decision import Decision, decide
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceState, LeadConfidenceTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF, predict_lead_path_clearance
+from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence import predict_standstill_release_confidence
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
@@ -74,6 +77,10 @@ class LongitudinalStackInputs:
   # shadow path-relative lead context (telemetry only; not used for actuation)
   model_msg: Any | None = None
   lead_path_clearance_mode: Any = LEAD_PATH_CLEARANCE_MODE_OFF
+  cut_in_brake_assist_mode: Any = "off"
+  curve_speed_confidence_mode: Any = "off"
+  standstill_release_confidence_mode: Any = "off"
+  curve_confidence: CurveSpeedConfidenceInputs = field(default_factory=CurveSpeedConfidenceInputs)
   # advisory evidence
   speed_limit_active: bool = False
   speed_limit_v_target: float = 0.0
@@ -144,6 +151,24 @@ class CustomLongitudinalStack:
     except Exception:
       lead_path_clearance_fault = True
 
+    cut_in_brake_assist_fault = False
+    cut_in_brake_assist_debug: dict[str, Any] = {}
+    try:
+      cut_in_brake_assist_debug = predict_cut_in_brake_assist(
+        inp.cut_in_brake_assist_mode, lead_ctx, shadow_ctx, inp.v_ego,
+      ).debug_dict()
+    except Exception:
+      cut_in_brake_assist_fault = True
+
+    curve_speed_confidence_fault = False
+    curve_speed_confidence_debug: dict[str, Any] = {}
+    try:
+      curve_speed_confidence_debug = predict_curve_speed_confidence(
+        inp.curve_speed_confidence_mode, inp.curve_confidence,
+      ).debug_dict()
+    except Exception:
+      curve_speed_confidence_fault = True
+
     raw_lead_present = _any_status(inp.leads)
     lead_shadow_active = bool(getattr(lead_ctx, "shadow_active", False))
     alternate_threat_active = bool(getattr(lead_ctx, "alternate_threat_active", False))
@@ -209,6 +234,26 @@ class CustomLongitudinalStack:
       and not inp.gas_pressed
       and not inp.model_should_stop
     )
+    standstill_release_confidence_fault = False
+    standstill_release_confidence_debug: dict[str, Any] = {}
+    try:
+      standstill_release_confidence_debug = predict_standstill_release_confidence(
+        mode=inp.standstill_release_confidence_mode,
+        release_allowed=standstill_release_allowed,
+        release_source=str(decision.selected_intent if standstill_release_allowed else ""),
+        release_reason=str(decision.reason if standstill_release_allowed else ""),
+        release_a_target=float(max(a_target, 0.15)) if standstill_release_allowed else 0.0,
+        lead_progress_allowed=lead_progress_allowed,
+        lead_gap_excess=lead_gap_excess,
+        lead_shadow_active=lead_shadow_active,
+        alternate_threat_active=alternate_threat_active,
+        force_slow_decel=inp.force_slow_decel,
+        brake_pressed=inp.brake_pressed,
+        gas_pressed=inp.gas_pressed,
+        model_should_stop=inp.model_should_stop,
+      ).debug_dict()
+    except Exception:
+      standstill_release_confidence_fault = True
     return LongitudinalStackResult(
       a_target=float(a_target),
       should_stop=bool(decision.should_stop),
@@ -232,6 +277,12 @@ class CustomLongitudinalStack:
         **shadow_debug,
         "lead_path_clearance_fault": lead_path_clearance_fault,
         **lead_path_clearance_debug,
+        "cut_in_brake_assist_fault": cut_in_brake_assist_fault,
+        **cut_in_brake_assist_debug,
+        "curve_speed_confidence_fault": curve_speed_confidence_fault,
+        **curve_speed_confidence_debug,
+        "standstill_release_confidence_fault": standstill_release_confidence_fault,
+        **standstill_release_confidence_debug,
       },
     )
 

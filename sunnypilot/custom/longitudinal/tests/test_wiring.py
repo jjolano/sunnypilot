@@ -52,10 +52,15 @@ CRUISE_TRAJ_V = [20.0] * 8
 CRUISE_TRAJ_X = [20.0 * i for i in range(8)]
 
 
-def fake_scc(vision_active=False, vision_a=0.0, map_active=False, map_a=0.0):
+def fake_scc(vision_active=False, vision_a=0.0, map_active=False, map_a=0.0,
+             vision_current_lat_acc=0.0, vision_max_pred_lat_acc=0.0, vision_pre_entry_active=False):
   return SimpleNamespace(
-    vision=SimpleNamespace(is_active=vision_active, output_a_target=vision_a),
-    map=SimpleNamespace(is_active=map_active, output_a_target=map_a),
+    vision=SimpleNamespace(is_active=vision_active, output_a_target=vision_a, state=0,
+                           current_lat_acc=vision_current_lat_acc,
+                           max_pred_lat_acc=vision_max_pred_lat_acc,
+                           pre_entry_active=vision_pre_entry_active),
+    map=SimpleNamespace(is_active=map_active, output_a_target=map_a, state=0,
+                        target_lat=0.0, target_lon=0.0),
   )
 
 
@@ -409,6 +414,81 @@ def test_adapter_refreshes_debug_trace_mode_on_mode_only():
   params._v["LongitudinalDebugTraceMode"] = "log"
   a.refresh_params(mode_only=True)
   assert a.debug_trace_mode == "log"
+
+
+def test_new_shadow_modes_parse_and_refresh():
+  params = FakeParams(
+    CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
+    CutInBrakeAssistMode="shadow", CurveSpeedConfidenceMode="apply_conservative",
+    StandstillReleaseConfidenceMode="gate",
+  )
+  a = CustomLongitudinalAdapter(params)
+  assert a.cut_in_brake_assist_mode == "shadow"
+  assert a.curve_speed_confidence_mode == "shadow"
+  assert a.standstill_release_confidence_mode == "shadow"
+  params._v.update(CutInBrakeAssistMode="bad", CurveSpeedConfidenceMode="bad", StandstillReleaseConfidenceMode="bad")
+  a.refresh_params(mode_only=True)
+  assert a.cut_in_brake_assist_mode == "off"
+  assert a.curve_speed_confidence_mode == "off"
+  assert a.standstill_release_confidence_mode == "off"
   params._v["LongitudinalDebugTraceMode"] = "bad"
   a.refresh_params(mode_only=True)
   assert a.debug_trace_mode == "off"
+
+
+def test_new_shadow_modes_are_exactly_non_actuating():
+  base_params = dict(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")
+  scenario = dict(
+    sm=fake_sm(lead(d_rel=22.0, v_lead=8.0, v_rel=-3.0),
+               model_x=[0.0, 20.0, 40.0], model_y=[0.0, 0.0, 0.0], model_v=[15.0, 15.0, 15.0]),
+    v_ego=15.0, a_ego=0.0, v_cruise=18.0, seed_a_target=-0.2,
+    scc=fake_scc(vision_active=True, vision_a=-0.4, vision_max_pred_lat_acc=1.4),
+    sla=fake_sla(), dt=0.05,
+  )
+  baseline = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(**scenario)
+
+  for key, debug_prefix in (
+    ("CutInBrakeAssistMode", "cut_in_brake_assist"),
+    ("CurveSpeedConfidenceMode", "curve_speed_confidence"),
+    ("StandstillReleaseConfidenceMode", "standstill_release_confidence"),
+  ):
+    params = dict(base_params)
+    params[key] = "shadow"
+    out = CustomLongitudinalAdapter(FakeParams(**params)).evaluate(**scenario)
+    assert out.a_target == pytest.approx(baseline.a_target)
+    assert out.should_stop == baseline.should_stop
+    assert out.selected_intent == baseline.selected_intent
+    assert out.reason == baseline.reason
+    assert out.standstill_release_allowed == baseline.standstill_release_allowed
+    assert out.standstill_release_source == baseline.standstill_release_source
+    assert out.standstill_release_a_target == pytest.approx(baseline.standstill_release_a_target)
+    assert out.standstill_release_reason == baseline.standstill_release_reason
+    assert out.debug[f"{debug_prefix}_mode"] == "shadow"
+    assert out.debug[f"{debug_prefix}_apply_supported"] is False
+
+
+def test_future_shadow_mode_values_are_non_actuating_and_report_shadow():
+  base_params = dict(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")
+  scenario = dict(
+    sm=fake_sm(lead(d_rel=22.0, v_lead=8.0, v_rel=-3.0),
+               model_x=[0.0, 20.0, 40.0], model_y=[0.0, 0.0, 0.0], model_v=[15.0, 15.0, 15.0]),
+    v_ego=15.0, a_ego=0.0, v_cruise=18.0, seed_a_target=-0.2,
+    scc=fake_scc(vision_active=True, vision_a=-0.4, vision_max_pred_lat_acc=1.4),
+    sla=fake_sla(), dt=0.05,
+  )
+  baseline = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(**scenario)
+  for key, value, debug_prefix in (
+    ("CutInBrakeAssistMode", "apply", "cut_in_brake_assist"),
+    ("CurveSpeedConfidenceMode", "apply_conservative", "curve_speed_confidence"),
+    ("StandstillReleaseConfidenceMode", "gate", "standstill_release_confidence"),
+  ):
+    params = dict(base_params)
+    params[key] = value
+    out = CustomLongitudinalAdapter(FakeParams(**params)).evaluate(**scenario)
+    assert out.a_target == pytest.approx(baseline.a_target)
+    assert out.should_stop == baseline.should_stop
+    assert out.selected_intent == baseline.selected_intent
+    assert out.reason == baseline.reason
+    assert out.standstill_release_allowed == baseline.standstill_release_allowed
+    assert out.debug[f"{debug_prefix}_mode"] == "shadow"
+    assert out.debug[f"{debug_prefix}_apply_supported"] is False

@@ -41,8 +41,13 @@ DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_SRC = os.path.join(DIR, "settings_ui_src")
 DEFAULT_OUT = os.path.join(DIR, "settings_ui.json")
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 MAX_MACRO_DEPTH = 3
+MAX_NAV_DEPTH = 3
+CUSTOM_PAGE_COMPONENTS = {
+  "device", "network", "sunnylink", "toggles", "software", "models", "osm",
+  "trips", "vehicle", "firehose", "developer",
+}
 
 
 class CompileError(Exception):
@@ -236,11 +241,137 @@ def _load_pages(src: str) -> list[dict]:
   return pages
 
 
+def _load_navigation(src: str) -> dict:
+  path = os.path.join(src, "navigation.yaml")
+  if not os.path.exists(path):
+    raise CompileError(f"{path}: missing navigation.yaml for schema version {SCHEMA_VERSION}")
+  doc = _load_yaml(path)
+  if not isinstance(doc, dict):
+    raise CompileError(f"{path}: navigation YAML must be an object")
+  nav = doc.get("navigation")
+  pages = doc.get("pages")
+  if not isinstance(nav, dict) or not isinstance(pages, list):
+    raise CompileError(f"{path}: invalid navigation structure")
+  root = nav.get("root")
+  if not isinstance(root, list) or not root or not all(isinstance(pid, str) for pid in root):
+    raise CompileError(f"{path}: navigation.root must be a non-empty list of page ids")
+  if not pages:
+    raise CompileError(f"{path}: pages must be non-empty")
+  return {"root": root, "pages": pages}
+
+
+def _canon_navigation(nav_doc: dict, panels_by_id: set[str]) -> tuple[dict, list[dict]]:
+  root = nav_doc.get("root") or []
+  nav_pages = nav_doc.get("pages") or []
+  page_map: dict[str, dict] = {}
+
+  if len(root) != len(set(root)):
+    raise CompileError("navigation.root contains duplicate page ids")
+
+  for page in nav_pages:
+    if not isinstance(page, dict):
+      raise CompileError("navigation page must be an object")
+    pid = page.get("id")
+    title = page.get("title")
+    if not isinstance(pid, str) or not pid:
+      raise CompileError("navigation page id must be a non-empty string")
+    if not isinstance(title, str) or not title:
+      raise CompileError(f"page {pid}: title must be a non-empty string")
+    if pid in page_map:
+      raise CompileError(f"duplicate page id: {pid}")
+
+    out: dict = {"id": pid, "title": title}
+    if "icon" in page:
+      if not isinstance(page["icon"], str) or not page["icon"]:
+        raise CompileError(f"page {pid}: icon must be a non-empty string")
+      out["icon"] = page["icon"]
+
+    has_children = "children" in page
+    has_content = "content" in page
+    if has_children == has_content:
+      raise CompileError(f"page {pid} must define exactly one of children or content")
+    if has_children:
+      children = page["children"]
+      if not isinstance(children, list) or not children or not all(isinstance(child, str) and child for child in children):
+        raise CompileError(f"page {pid}: children must be a non-empty list of page id strings")
+      if len(children) != len(set(children)):
+        raise CompileError(f"page {pid}: children contains duplicate page ids")
+      out["children"] = list(children)
+    else:
+      content = page["content"]
+      if not isinstance(content, dict):
+        raise CompileError(f"page {pid}: content must be an object")
+      kind = content.get("kind") if isinstance(content, dict) else None
+      if kind == "panel_ref":
+        panel = content.get("panel")
+        if panel not in panels_by_id:
+          raise CompileError(f"page {pid}: unknown panel ref {panel}")
+        out["content"] = {"kind": "panel_ref", "panel": panel}
+      elif kind == "custom_page":
+        component = content.get("component")
+        if component not in CUSTOM_PAGE_COMPONENTS:
+          raise CompileError(f"page {pid}: unknown custom component {component}")
+        out["content"] = {"kind": "custom_page", "component": component}
+      else:
+        raise CompileError(f"page {pid}: unsupported content kind {kind!r}")
+    page_map[pid] = out
+
+  for rid in root:
+    if rid not in page_map:
+      raise CompileError(f"root page id missing: {rid}")
+
+  parents: dict[str, str] = {}
+  for pid, page in page_map.items():
+    for child in page.get("children", []):
+      if child not in page_map:
+        raise CompileError(f"page {pid}: unknown child page id {child}")
+      if child in parents:
+        raise CompileError(f"page {child} has multiple parents: {parents[child]}, {pid}")
+      parents[child] = pid
+
+  root_set = set(root)
+  for rid in root_set:
+    if rid in parents:
+      raise CompileError(f"root page {rid} is also referenced as a child")
+  for pid in page_map:
+    if pid not in root_set and pid not in parents:
+      raise CompileError(f"page {pid} is not reachable from navigation.root")
+
+  visited: set[str] = set()
+  visiting: set[str] = set()
+  ordered: list[dict] = []
+
+  def walk(pid: str, depth: int):
+    if depth > MAX_NAV_DEPTH:
+      raise CompileError(f"page depth exceeds max depth {MAX_NAV_DEPTH} at {pid}")
+    if pid in visiting:
+      raise CompileError(f"page cycle detected: {pid}")
+    if pid in visited:
+      return
+    if pid not in page_map:
+      raise CompileError(f"unknown page id: {pid}")
+    visiting.add(pid)
+    page = page_map[pid]
+    ordered.append(page)
+    for child in page.get("children", []):
+      walk(child, depth + 1)
+    visiting.remove(pid)
+    visited.add(pid)
+
+  for rid in root:
+    walk(rid, 1)
+  if set(page_map) != visited:
+    missing = sorted(set(page_map) - visited)
+    raise CompileError(f"unreachable pages: {missing}")
+  return {"root": root}, ordered
+
+
 def compile_schema(src: str) -> dict:
   macros_doc = _load_yaml(os.path.join(src, "_macros.yaml"))
   macros = (macros_doc.get("macros") or {}) if isinstance(macros_doc, dict) else {}
 
   pages = _load_pages(src)
+  nav_doc = _load_navigation(src)
 
   panels_out = []
   vehicle_out: dict = {}
@@ -252,6 +383,9 @@ def compile_schema(src: str) -> dict:
   for page in panel_pages:
     panels_out.append(_canon_panel(page, macros))
 
+  panels_by_id = {p["id"] for p in panels_out}
+  nav_out, nav_pages_out = _canon_navigation(nav_doc, panels_by_id)
+
   for page in pages:
     if page.get("kind") == "vehicle":
       vehicle_out = _canon_vehicle(page, macros)
@@ -259,7 +393,9 @@ def compile_schema(src: str) -> dict:
   return {
     "$schema": "./settings_ui.schema.json",
     "schema_version": SCHEMA_VERSION,
+    "navigation": nav_out,
     "panels": panels_out,
+    "pages": nav_pages_out,
     "vehicle_settings": vehicle_out,
   }
 
