@@ -144,7 +144,7 @@ class Controls(ControlsExt):
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
       raw_desired_curvature = new_desired_curvature
       # Opt-in custom-2.0 lateral demand pipeline (fail-closed; returns the raw curvature when disabled).
-      new_desired_curvature = self.lateral_demand.process(CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2)
+      new_desired_curvature = self.lateral_demand.process(CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2, getattr(CS, 'steeringPressed', None))
     last_lateral_demand_result = getattr(self.lateral_demand, 'last_result', None) if hasattr(self, 'lateral_demand') else None
     self.raw_desired_curvature = raw_desired_curvature
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)

@@ -65,30 +65,31 @@ def replay_samples(msgs: list[Any]) -> tuple[list[Sample], list[Sample]]:
     roll = _f(safe_get(lp, "roll")) if lp is not None else 0.0
     model_curv = _f(safe_get(mv, "action.desiredCurvature"))
     raw = model_curv if lat_active else measured             # controlsd: raw is measured while inactive
-    common = dict(
-      v_ego=v_ego,
-      standstill=bool(safe_get(cs, "standstill", False)),
-      steering_pressed=bool(safe_get(cs, "steeringPressed", False)),
-      lane_change_active=_lane_change_active(mv),
-      lat_active=lat_active,
-      act_curv=measured,
-      model_curv=model_curv,
-    )
+    standstill = bool(safe_get(cs, "standstill", False))
+    steering_pressed = bool(safe_get(cs, "steeringPressed", False))
+    lane_change_active = _lane_change_active(mv)
     if mv is None or not math.isfinite(raw):
       proc_off = proc_on = raw
     else:
-      proc_off = _run(pipe_off, lat_active, v_ego, roll, raw, measured, mv, curve_memory=False)
-      proc_on = _run(pipe_on, lat_active, v_ego, roll, raw, measured, mv, curve_memory=True)
-    off.append(Sample(t=record.t, cmd_curv=proc_off, **common))
-    on.append(Sample(t=record.t, cmd_curv=proc_on, **common))
+      proc_off = _run(pipe_off, lat_active, v_ego, roll, raw, measured, mv, curve_memory=False,
+                      steering_pressed=steering_pressed)
+      proc_on = _run(pipe_on, lat_active, v_ego, roll, raw, measured, mv, curve_memory=True,
+                     steering_pressed=steering_pressed)
+    off.append(Sample(t=record.t, v_ego=v_ego, standstill=standstill, steering_pressed=steering_pressed,
+                      lane_change_active=lane_change_active, lat_active=lat_active, cmd_curv=proc_off,
+                      act_curv=measured, model_curv=model_curv))
+    on.append(Sample(t=record.t, v_ego=v_ego, standstill=standstill, steering_pressed=steering_pressed,
+                     lane_change_active=lane_change_active, lat_active=lat_active, cmd_curv=proc_on,
+                     act_curv=measured, model_curv=model_curv))
   return off, on
 
 
 def _run(pipe: LateralDemandPipeline, lat_active: bool, v_ego: float, roll: float, raw: float,
-         measured: float, model_v2: Any, curve_memory: bool) -> float:
+         measured: float, model_v2: Any, curve_memory: bool, steering_pressed: bool) -> float:
   inputs = build_pipeline_inputs(
     lat_active=lat_active, v_ego=v_ego, roll=roll, raw_curvature=raw, measured_curvature=measured,
     model_v2=model_v2, lane_centering_assist_enabled=False, curve_memory_enabled=curve_memory,
+    steering_pressed=steering_pressed,
   )
   return float(pipe.update(inputs).demand.processed_curvature)
 

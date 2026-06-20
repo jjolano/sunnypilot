@@ -31,15 +31,35 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
   ystd = [0.1] * N                                           # < MAX_PATH_Y_STD
   yaw = [curvature * x for x in range(N)]                     # heading ~ k*x
   yaw_rate = [curvature * v_ego] * N
-  base = dict(
-    lat_active=lat_active, v_ego=v_ego, roll=0.0,
-    desired_curvature=curvature, measured_curvature=curvature,
-    position_x=xs, position_y=ys, position_y_std=ystd,
-    orientation_z=yaw, orientation_rate_z=yaw_rate,
-    lane_line_probs=[0.9, 0.9, 0.9, 0.9],
+  return LateralDemandPipelineInputs(
+    lat_active=kwargs.get("lat_active", lat_active),
+    v_ego=kwargs.get("v_ego", v_ego),
+    roll=kwargs.get("roll", 0.0),
+    desired_curvature=kwargs.get("desired_curvature", curvature),
+    measured_curvature=kwargs.get("measured_curvature", curvature),
+    position_x=kwargs.get("position_x", xs),
+    position_y=kwargs.get("position_y", ys),
+    position_y_std=kwargs.get("position_y_std", ystd),
+    orientation_z=kwargs.get("orientation_z", yaw),
+    orientation_rate_z=kwargs.get("orientation_rate_z", yaw_rate),
+    lane_line_probs=kwargs.get("lane_line_probs", [0.9, 0.9, 0.9, 0.9]),
+    frame_drop_perc=kwargs.get("frame_drop_perc", 0.0),
+    model_data_v2_sp_valid=kwargs.get("model_data_v2_sp_valid", True),
+    turn_direction=kwargs.get("turn_direction", 0),
+    lane_change_state=kwargs.get("lane_change_state", 0),
+    lane_change_direction=kwargs.get("lane_change_direction", 0),
+    lane_change_state_valid=kwargs.get("lane_change_state_valid", True),
+    left_blinker=kwargs.get("left_blinker", False),
+    right_blinker=kwargs.get("right_blinker", False),
+    steering_pressed=kwargs.get("steering_pressed", False),
+    left_lane_y0=kwargs.get("left_lane_y0", None),
+    right_lane_y0=kwargs.get("right_lane_y0", None),
+    lateral_maneuver_curvature=kwargs.get("lateral_maneuver_curvature", None),
+    smooth_model_path_curvature=kwargs.get("smooth_model_path_curvature", False),
+    lane_centering_assist_enabled=kwargs.get("lane_centering_assist_enabled", False),
+    curve_memory_enabled=kwargs.get("curve_memory_enabled", False),
+    curvature_limited=kwargs.get("curvature_limited", False),
   )
-  base.update(kwargs)
-  return LateralDemandPipelineInputs(**base)
 
 
 def test_constructs_and_runs_bounded():
@@ -72,7 +92,8 @@ def test_lateral_maneuver_override_takes_pipeline():
 
 def test_lane_centering_toggle_off_means_no_nudge():
   p = LateralDemandPipeline(DT)
-  for _ in range(50):
+  r = p.update(valid_inputs(curvature=0.001, lane_centering_assist_enabled=False))
+  for _ in range(49):
     r = p.update(valid_inputs(curvature=0.001, lane_centering_assist_enabled=False))
   assert r.demand.lane_centering_curvature_nudge == 0.0
   assert r.demand.lane_centering_assist_active is False
@@ -82,7 +103,7 @@ def test_valid_path_high_quality_passthrough():
   # A clean, low-curvature path with smoothing off should pass through near the request and
   # report high quality / not gated.
   p = LateralDemandPipeline(DT)
-  r = None
+  r = p.update(valid_inputs(v_ego=20.0, curvature=0.001, smooth_model_path_curvature=False))
   for _ in range(20):
     r = p.update(valid_inputs(v_ego=20.0, curvature=0.001, smooth_model_path_curvature=False))
   assert r.demand.path_quality >= 0.7
@@ -133,15 +154,49 @@ def test_curve_memory_resumes_corner_after_standstill():
   # the stop). With curve memory the gated launch resumes the corner; without it, it starts cold.
   def run(curve_memory: bool) -> float:
     p = LateralDemandPipeline(DT)
-    for _ in range(5):                                        # driving the corner (k=0.02 at 8 m/s)
-      p.update(valid_inputs(v_ego=8.0, curvature=0.02, curve_memory_enabled=curve_memory))
+    for _ in range(60):                                       # driving a trusted corner (k=0.015 at 8 m/s)
+      p.update(valid_inputs(v_ego=8.0, curvature=0.015, curve_memory_enabled=curve_memory))
     p.update(valid_inputs(v_ego=0.0, curvature=0.0, lat_active=False, curve_memory_enabled=curve_memory))
     for _ in range(20):                                       # held at a stop
       p.update(valid_inputs(v_ego=0.0, curvature=0.0, lat_active=False, curve_memory_enabled=curve_memory))
     # gated launch: low speed, high path std, conservative ("forgotten") raw curvature
     r = p.update(valid_inputs(v_ego=3.0, curvature=0.005, position_y_std=[1.6] * N,
                               curve_memory_enabled=curve_memory))
+    if curve_memory:
+      assert r.debug["curve_memory_source"] in ("memory", "vision", "vetoed")
     return float(r.demand.processed_curvature)
 
   assert run(True) > 0.008                 # resumes the corner (vs 0.005 raw / 0.0025 cold start)
   assert run(True) > 3.0 * run(False)      # vs cold start without curve memory
+
+
+def test_curve_memory_steering_pressed_blocks_recall():
+  p = LateralDemandPipeline(DT)
+  for _ in range(5):
+    p.update(valid_inputs(v_ego=8.0, curvature=0.02, curve_memory_enabled=True, steering_pressed=False))
+  r = p.update(valid_inputs(v_ego=3.0, curvature=0.005, curve_memory_enabled=True, steering_pressed=True))
+  assert r.debug["curve_memory_source"] == "driver_override"
+  assert r.demand.processed_curvature >= 0.005
+
+
+def test_lane_change_state_propagates_and_resets_memory():
+  p = LateralDemandPipeline(DT)
+  for _ in range(5):
+    p.update(valid_inputs(v_ego=8.0, curvature=0.02, curve_memory_enabled=True, steering_pressed=False))
+  r = p.update(valid_inputs(v_ego=3.0, curvature=0.005, curve_memory_enabled=True,
+                            lane_change_state=1, lane_change_state_valid=True, steering_pressed=False))
+  assert r.debug["curve_memory_source"] == "lane_change"
+  r2 = p.update(valid_inputs(v_ego=3.0, curvature=0.005, curve_memory_enabled=True,
+                             lane_change_state=0, lane_change_state_valid=True, steering_pressed=False))
+  assert r2.demand.processed_curvature >= 0.005
+
+
+def test_unknown_lane_change_state_suppresses_curve_memory():
+  p = LateralDemandPipeline(DT)
+  for _ in range(60):
+    p.update(valid_inputs(v_ego=8.0, curvature=0.015, curve_memory_enabled=True, steering_pressed=False))
+  r = p.update(valid_inputs(v_ego=3.0, curvature=0.005, position_y_std=[1.6] * N,
+                            curve_memory_enabled=True, steering_pressed=False, lane_change_state_valid=False))
+  assert r.debug["curve_memory_source"] == "lane_change"
+  assert r.debug["curve_memory_active"] is False
+  assert r.debug["curve_memory_samples"] == 0

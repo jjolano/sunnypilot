@@ -32,6 +32,12 @@ MIN_CURVATURE = 0.008          # only remember/recall real corners (~125 m radiu
 MAX_RECALL_CURVATURE = 0.03    # safety clamp on the recalled curvature
 VETO_QUALITY = 0.85            # vision at/above this quality can veto a sign-disagreeing memory
 STALE_RESET_S = 4.0            # drop the buffer after this long without a valid path (pose drift)
+DRIVER_RECALL_INHIBIT_S = 0.4
+DEGRADED_RECALL_MIN_WEIGHT = 0.65
+HARD_INVALID_RECALL_MIN_WEIGHT = 0.80
+CAPTURE_BLOCK_REASONS = frozenset(("invalid_path", "path_disagreement", "frame_drop", "curvature_jump", "high_path_std"))
+TRUSTED_CAPTURE_REASONS = frozenset(("ok", "low_lane_confidence"))
+SOFT_DEGRADED_RECALL_REASONS = frozenset(("low_lane_confidence", "high_path_std", "frame_drop"))
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,10 @@ class CurveMemoryInputs:
   v_ego: float
   desired_curvature: float       # incoming (processed vision) curvature — memory supplements this
   path_quality: float
+  path_gated: bool = False
+  path_reason: str = "ok"
+  steering_pressed: bool | None = None
+  lane_change_active: bool = False
   position_x: Sequence[float] = ()
   position_y: Sequence[float] = ()
   orientation_z: Sequence[float] = ()
@@ -72,7 +82,10 @@ class CurveMemory:
   def reset(self) -> None:
     self._s_abs = 0.0
     self._kappa: dict[int, float] = {}   # bin index -> smoothed road curvature (confident captures)
+    self._trusted: dict[int, bool] = {}
     self._invalid_s = 0.0
+    self._driver_inhibit_s = 0.0
+    self._lane_change_active = False
 
   def update(self, inputs: CurveMemoryInputs, dt: float = DT_CTRL) -> CurveMemoryResult:
     base = _finite(inputs.desired_curvature)
@@ -84,6 +97,20 @@ class CurveMemory:
     v_ego = max(0.0, _finite(inputs.v_ego))
     self._s_abs += v_ego * dt
 
+    steering_pressed = inputs.steering_pressed
+    driver_unknown = steering_pressed is None
+    driver_pressed = bool(steering_pressed)
+    if driver_pressed:
+      self._driver_inhibit_s = DRIVER_RECALL_INHIBIT_S
+    elif self._driver_inhibit_s > 0.0:
+      self._driver_inhibit_s = max(0.0, self._driver_inhibit_s - dt)
+
+    if inputs.lane_change_active and not self._lane_change_active:
+      self._kappa.clear()
+      self._trusted.clear()
+      self._invalid_s = 0.0
+    self._lane_change_active = bool(inputs.lane_change_active)
+
     # Drop the buffer if the path has been invalid for a while (pose/geometry no longer trustworthy).
     if inputs.valid_path:
       self._invalid_s = 0.0
@@ -91,15 +118,18 @@ class CurveMemory:
       self._invalid_s += dt
       if self._invalid_s >= STALE_RESET_S:
         self._kappa.clear()
+        self._trusted.clear()
 
     # Capture kappa(s) ahead from confident, fast-enough frames (where vision is reliable).
-    if (inputs.valid_path and v_ego >= CAPTURE_MIN_V and inputs.path_quality >= CAPTURE_MIN_QUALITY):
+    if self._capture_allowed(inputs, driver_pressed, driver_unknown):
       self._capture(inputs)
 
     self._prune()
 
-    remembered = self._recall(self._s_abs)
-    out, active, source = self._apply(base, remembered, inputs)
+    recall = self._recall(self._s_abs)
+    remembered = recall[0] if recall is not None else None
+    remembered_trusted = recall[1] if recall is not None else False
+    out, active, source = self._apply(base, remembered, remembered_trusted, inputs, driver_pressed, driver_unknown)
     return CurveMemoryResult(out, active, source, remembered if remembered is not None else math.nan,
                              self._s_abs, len(self._kappa))
 
@@ -127,8 +157,22 @@ class CurveMemory:
       b = int(round((self._s_abs + s) / BIN_M))
       prev = self._kappa.get(b)
       self._kappa[b] = kappa if prev is None else (prev + CAPTURE_EMA * (kappa - prev))
+      self._trusted[b] = inputs.path_reason in TRUSTED_CAPTURE_REASONS
 
-  def _recall(self, s_abs: float) -> float | None:
+  def _capture_allowed(self, inputs: CurveMemoryInputs, driver_pressed: bool, driver_unknown: bool) -> bool:
+    if driver_pressed or driver_unknown or self._driver_inhibit_s > 0.0:
+      return False
+    if inputs.lane_change_active or not inputs.lat_active:
+      return False
+    if not inputs.valid_path or inputs.path_gated:
+      return False
+    if inputs.path_reason in CAPTURE_BLOCK_REASONS:
+      return False
+    if inputs.path_reason == "low_lane_confidence":
+      return inputs.path_quality >= CAPTURE_MIN_QUALITY
+    return inputs.path_quality >= CAPTURE_MIN_QUALITY
+
+  def _recall(self, s_abs: float) -> tuple[float, bool] | None:
     if not self._kappa:
       return None
     pos = s_abs / BIN_M
@@ -137,14 +181,23 @@ class CurveMemory:
     if klo is None and khi is None:
       return None
     if klo is None:
-      return khi
+      assert khi is not None
+      return khi, bool(self._trusted.get(hi, False))
     if khi is None or lo == hi:
-      return klo
+      return klo, bool(self._trusted.get(lo, False))
     frac = pos - lo
-    return klo + frac * (khi - klo)
+    trusted = bool(self._trusted.get(lo, False) and self._trusted.get(hi, False))
+    return klo + frac * (khi - klo), trusted
 
-  def _apply(self, base: float, remembered: float | None, inputs: CurveMemoryInputs) -> tuple[float, bool, str]:
+  def _apply(self, base: float, remembered: float | None, remembered_trusted: bool, inputs: CurveMemoryInputs,
+             driver_pressed: bool, driver_unknown: bool) -> tuple[float, bool, str]:
     v_ego = max(0.0, _finite(inputs.v_ego))
+    if driver_pressed or driver_unknown:
+      return base, False, "driver_override"
+    if self._driver_inhibit_s > 0.0:
+      return base, False, "driver_recall_inhibit"
+    if inputs.lane_change_active:
+      return base, False, "lane_change"
     if remembered is None or abs(remembered) < MIN_CURVATURE or v_ego > RECALL_MAX_V:
       return base, False, "vision"
     remembered = math.copysign(min(abs(remembered), MAX_RECALL_CURVATURE), remembered)
@@ -161,8 +214,12 @@ class CurveMemory:
     # Fill weight: full when vision is degraded, fading out as quality climbs toward the veto bar;
     # clamped between vision and the remembered corner. Downstream clip_curvature rate-limits.
     weight = 1.0 - max(0.0, min(1.0, inputs.path_quality / VETO_QUALITY))
+    if remembered_trusted and inputs.path_reason in SOFT_DEGRADED_RECALL_REASONS:
+      weight = max(weight, DEGRADED_RECALL_MIN_WEIGHT)
+    elif remembered_trusted and inputs.path_reason == "invalid_path" and self._invalid_s < STALE_RESET_S:
+      weight = max(weight, HARD_INVALID_RECALL_MIN_WEIGHT)
     out = math.copysign(min(abs(base + weight * (remembered - base)), abs(remembered)), remembered)
-    if abs(out) < abs(base):
+    if abs(out) <= abs(base) + 1e-9:
       return base, False, "vision"
     return out, True, "memory"
 
@@ -173,3 +230,4 @@ class CurveMemory:
     hi = int(math.ceil((self._s_abs + MAX_AHEAD_M + BIN_M) / BIN_M))
     for b in [b for b in self._kappa if b < lo or b > hi]:
       del self._kappa[b]
+      self._trusted.pop(b, None)

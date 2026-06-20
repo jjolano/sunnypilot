@@ -75,9 +75,10 @@ class LateralDemandPipelineInputs:
   # lane change
   lane_change_state: int = LANE_CHANGE_STATE_OFF
   lane_change_direction: int = 0
+  lane_change_state_valid: bool = False
   left_blinker: bool = False
   right_blinker: bool = False
-  steering_pressed: bool = False
+  steering_pressed: bool | None = None
   left_lane_y0: float | None = None
   right_lane_y0: float | None = None
   # lateral maneuver override (takes the whole pipeline)
@@ -123,6 +124,7 @@ class LateralDemandPipeline:
     lane_change_shaping_active = False
     lane_change_blend = 0.0
     lane_centering_result = inactive_lane_centering_assist_result("disabled")
+    curve_memory_result = None
 
     if inputs.lateral_maneuver_curvature is not None:
       self._model_path_processor.reset()
@@ -163,6 +165,9 @@ class LateralDemandPipeline:
       curve_memory_result = self._curve_memory.update(CurveMemoryInputs(
         enabled=inputs.curve_memory_enabled, lat_active=inputs.lat_active, v_ego=inputs.v_ego,
         desired_curvature=model_path_result.desired_curvature, path_quality=model_path_result.quality,
+        path_gated=model_path_result.gated, path_reason=model_path_result.reason,
+        steering_pressed=inputs.steering_pressed if inputs.steering_pressed is not None else None,
+        lane_change_active=(inputs.lane_change_state != LANE_CHANGE_STATE_OFF) if inputs.lane_change_state_valid else True,
         position_x=tuple(inputs.position_x), position_y=tuple(inputs.position_y),
         orientation_z=tuple(inputs.orientation_z),
         valid_path=ModelPathProcessor._valid_core_path(inputs.position_x, inputs.position_y),
@@ -176,7 +181,7 @@ class LateralDemandPipeline:
         v_ego=inputs.v_ego,
         left_blinker=inputs.left_blinker,
         right_blinker=inputs.right_blinker,
-        steering_pressed=inputs.steering_pressed,
+        steering_pressed=bool(inputs.steering_pressed),
         lane_change_state=inputs.lane_change_state,
         lane_change_direction=inputs.lane_change_direction,
         model_curvature=model_desired_curvature,
@@ -201,7 +206,7 @@ class LateralDemandPipeline:
           lane_change_shaping_active=lane_change_shaping_active,
           lane_change_blend=lane_change_blend,
           curvature_limited=inputs.curvature_limited,
-          steering_pressed=inputs.steering_pressed,
+          steering_pressed=bool(inputs.steering_pressed),
           left_blinker=inputs.left_blinker,
           right_blinker=inputs.right_blinker,
           position_x=tuple(inputs.position_x),
@@ -259,8 +264,10 @@ class LateralDemandPipeline:
         "lane_change_shaping_active": lane_change_shaping_active,
         "lane_centering_active": bool(lane_centering_result.active),
         "lane_centering_nudge": float(lane_centering_result.curvature_nudge),
-        "curve_memory_active": bool(curve_memory_result.active) if inputs.lateral_maneuver_curvature is None else False,
-        "curve_memory_remembered": float(curve_memory_result.remembered) if inputs.lateral_maneuver_curvature is None else float("nan"),
+        "curve_memory_active": bool(curve_memory_result.active) if curve_memory_result is not None else False,
+        "curve_memory_remembered": float(curve_memory_result.remembered) if curve_memory_result is not None else float("nan"),
+        "curve_memory_source": curve_memory_result.source if curve_memory_result is not None else "disabled",
+        "curve_memory_samples": int(curve_memory_result.samples) if curve_memory_result is not None else 0,
         "processed_curvature": processed_curvature,
         "demand_source": demand_source,
         "dtle_estimate": _compute_dtle(inputs.left_lane_y0, inputs.right_lane_y0),

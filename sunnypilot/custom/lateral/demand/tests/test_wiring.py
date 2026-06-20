@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -11,16 +12,19 @@ from openpilot.sunnypilot.custom.lateral.demand.wiring import LateralDemandAdapt
 N = 33
 
 
-def fake_model(curvature=0.001):
+def fake_model(curvature=0.001, include_meta=True):
   xs = [float(x) for x in range(N)]
   ys = [0.5 * curvature * x * x for x in range(N)]
-  return SimpleNamespace(
+  model = SimpleNamespace(
     position=SimpleNamespace(x=xs, y=ys, yStd=[0.1] * N),
     orientation=SimpleNamespace(z=[curvature * x for x in range(N)]),
     orientationRate=SimpleNamespace(z=[curvature * 20.0] * N),
     laneLineProbs=[0.9, 0.9, 0.9, 0.9],
     frameDropPerc=0.0,
   )
+  if include_meta:
+    model.meta = SimpleNamespace(laneChangeState=SimpleNamespace(value=0), laneChangeDirection=SimpleNamespace(value=0))
+  return model
 
 
 class FakeParams:
@@ -30,9 +34,17 @@ class FakeParams:
     return bool(self._v.get(k, False))
 
 
+class FakeCapnpEnum:
+  def __init__(self, name: str):
+    self._name = name
+
+  def __str__(self) -> str:
+    return self._name
+
+
 class SpyPipeline:
   def __init__(self):
-    self.inputs = None
+    self.inputs: Any | None = None
 
   def update(self, inputs):
     self.inputs = inputs
@@ -49,6 +61,41 @@ def test_build_pipeline_inputs_extracts_model_arrays():
   assert len(inp.position_x) == N
   assert inp.desired_curvature == 0.002
   assert inp.lane_change_state == 0  # conservative default (harness-gated)
+  assert inp.lane_change_state_valid is True
+
+
+def test_build_pipeline_inputs_marks_missing_lane_change_meta_unknown():
+  inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
+                              measured_curvature=0.0015, model_v2=fake_model(0.002, include_meta=False),
+                              lane_centering_assist_enabled=False, steering_pressed=False)
+  assert inp.lane_change_state_valid is False
+
+
+def test_build_pipeline_inputs_decodes_capnp_lane_change_enums():
+  model = fake_model(0.002)
+  model.meta = SimpleNamespace(laneChangeState=FakeCapnpEnum("laneChangeStarting"),
+                               laneChangeDirection=FakeCapnpEnum("left"))
+
+  inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
+                              measured_curvature=0.0015, model_v2=model,
+                              lane_centering_assist_enabled=False, steering_pressed=False)
+
+  assert inp.lane_change_state == 2
+  assert inp.lane_change_direction == 1
+  assert inp.lane_change_state_valid is True
+
+
+def test_build_pipeline_inputs_marks_unknown_lane_change_enum_invalid():
+  model = fake_model(0.002)
+  model.meta = SimpleNamespace(laneChangeState=FakeCapnpEnum("futureLaneChangeState"),
+                               laneChangeDirection=FakeCapnpEnum("none"))
+
+  inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
+                              measured_curvature=0.0015, model_v2=model,
+                              lane_centering_assist_enabled=False, steering_pressed=False)
+
+  assert inp.lane_change_state == 0
+  assert inp.lane_change_state_valid is False
 
 
 def test_adapter_disabled_passthrough():
@@ -62,6 +109,15 @@ def test_adapter_enabled_processes_curvature():
   out = a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001))
   assert math.isfinite(out)
   assert out == pytest.approx(0.001, abs=3e-3)  # high-quality straight path passes near through
+
+
+def test_adapter_forwards_steering_pressed_and_lane_change_state():
+  a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
+  spy = SpyPipeline()
+  setattr(a, "_pipeline", spy)
+  a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001), steering_pressed=True)
+  assert getattr(spy.inputs, "steering_pressed") is True
+  assert getattr(spy.inputs, "lane_change_state_valid") is True
 
 
 def test_adapter_enabled_turns_on_model_path_smoothing():

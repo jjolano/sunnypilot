@@ -14,13 +14,16 @@ N = 30
 DT = 0.01
 
 
-def cm_in(v_ego, kappa_path, base, quality, enabled=True, lat_active=True) -> CurveMemoryInputs:
+def cm_in(v_ego, kappa_path, base, quality, enabled=True, lat_active=True, steering_pressed: bool | None = False,
+          path_reason="ok", lane_change_active=False, path_gated=False, valid_path=True) -> CurveMemoryInputs:
   # constant-curvature corner geometry: heading theta(s) = kappa*s, y = 0.5*kappa*s^2, x = s
   xs = [float(i) for i in range(N)]
   ys = [0.5 * kappa_path * i * i for i in range(N)]
   th = [kappa_path * i for i in range(N)]
   return CurveMemoryInputs(enabled=enabled, lat_active=lat_active, v_ego=v_ego, desired_curvature=base,
-                           path_quality=quality, position_x=xs, position_y=ys, orientation_z=th, valid_path=True)
+                           path_quality=quality, path_reason=path_reason, path_gated=path_gated,
+                           steering_pressed=steering_pressed, lane_change_active=lane_change_active,
+                           position_x=xs, position_y=ys, orientation_z=th, valid_path=valid_path)
 
 
 def _drive_corner(cm: CurveMemory, kappa=0.02, v=5.0, frames=60) -> None:
@@ -81,3 +84,50 @@ def test_only_captures_from_fast_confident_frames():
     cm.update(cm_in(1.0, kappa_path=0.02, base=0.005, quality=0.5), DT)   # v<CAPTURE_MIN_V, low quality
   r = cm.update(cm_in(0.5, kappa_path=0.02, base=0.0, quality=0.3), DT)
   assert not r.active                                      # honest limit: can't remember what was never seen well
+
+
+def test_no_capture_or_recall_while_steering_pressed():
+  cm = CurveMemory()
+  for _ in range(30):
+    cm.update(cm_in(5.0, kappa_path=0.02, base=0.02, quality=1.0, steering_pressed=True), DT)
+  r = cm.update(cm_in(0.5, kappa_path=0.02, base=0.0, quality=0.3, steering_pressed=True), DT)
+  assert not r.active and r.source == "driver_override"
+
+
+def test_unknown_driver_state_inhibits_recall():
+  cm = CurveMemory()
+  _drive_corner(cm, kappa=0.02)
+  r = cm.update(cm_in(0.5, kappa_path=0.02, base=0.0, quality=0.3, steering_pressed=None), DT)
+  assert not r.active and r.source == "driver_override"
+
+
+def test_post_release_inhibit_blocks_recall():
+  cm = CurveMemory()
+  _drive_corner(cm, kappa=0.02)
+  cm.update(cm_in(0.5, 0.02, 0.0, 0.3, steering_pressed=True), DT)
+  r = cm.update(cm_in(0.5, 0.02, 0.0, 0.3, steering_pressed=False), DT)
+  assert not r.active and r.source == "driver_recall_inhibit"
+
+
+def test_lane_change_clears_and_suppresses_memory():
+  cm = CurveMemory()
+  _drive_corner(cm, kappa=0.02)
+  r = cm.update(cm_in(0.5, 0.02, 0.0, 0.3, lane_change_active=True), DT)
+  assert not r.active and r.source == "lane_change"
+  r2 = cm.update(cm_in(0.5, 0.02, 0.0, 0.3, lane_change_active=False), DT)
+  assert not r2.active
+
+
+def test_invalid_path_hard_weight_only_with_trusted_memory():
+  cm = CurveMemory()
+  _drive_corner(cm, kappa=0.02)
+  r = cm.update(cm_in(0.5, 0.02, 0.0, 0.2, path_reason="invalid_path"), DT)
+  assert r.active and r.desired_curvature > 0.01
+
+
+def test_hard_degraded_capture_is_blocked():
+  cm = CurveMemory()
+  for _ in range(30):
+    cm.update(cm_in(5.0, 0.02, 0.02, 1.0, path_reason="invalid_path"), DT)
+  r = cm.update(cm_in(0.5, 0.02, 0.0, 0.3), DT)
+  assert not r.active
