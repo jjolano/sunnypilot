@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 import pyray as rl  # type: ignore[import-not-found]
+from openpilot.common.params import Params
 from openpilot.selfdrive.ui.layouts.settings import settings as OP
 from openpilot.selfdrive.ui.layouts.settings.firehose import FirehoseLayout
 from openpilot.selfdrive.ui.layouts.settings.toggles import TogglesLayout
@@ -263,8 +264,15 @@ class SettingsLayoutSP(OP.SettingsLayout):
     self._sidebar_scroller.show_event()
 
 
+def settings_stack_nav_enabled(params: Params | None = None) -> bool:
+  env_override = os.getenv("SP_SETTINGS_STACK_NAV")
+  if env_override is not None:
+    return env_override == "1"
+  return (params or Params()).get_bool("SettingsStackNav")
+
+
 def make_settings_layout():
-  if os.getenv("SP_SETTINGS_STACK_NAV") != "1":
+  if not settings_stack_nav_enabled():
     return SettingsLayoutSP()
 
   try:

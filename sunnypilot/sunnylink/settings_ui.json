@@ -1950,6 +1950,12 @@
               ]
             },
             {
+              "key": "SettingsStackNav",
+              "widget": "toggle",
+              "title": "New Settings Shell",
+              "description": "Use the new multi-page Settings layout. Restarts the UI after confirmation."
+            },
+            {
               "key": "QuietMode",
               "widget": "toggle",
               "title": "Quiet Mode"

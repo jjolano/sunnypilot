@@ -11,7 +11,7 @@ from openpilot.system.hardware import HARDWARE
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import option_item_sp, multiple_button_item_sp, button_item_sp, \
-  dual_button_item_sp, Spacer
+  dual_button_item_sp, Spacer, toggle_item_sp
 from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.button import ButtonStyle
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
@@ -69,6 +69,13 @@ class DeviceLayoutSP(DeviceLayout):
       inline=True,
     )
 
+    self._settings_shell_toggle = toggle_item_sp(
+      title=lambda: tr("New Settings Shell"),
+      description=lambda: tr("Use the new multi-page Settings layout. Restarts the UI after confirmation."),
+      initial_state=ui_state.params.get_bool("SettingsStackNav"),
+      callback=self._on_settings_shell_toggled,
+    )
+
     self._quiet_mode_and_dcam = dual_button_item_sp(
       left_text=lambda: tr("Quiet Mode"),
       right_text=lambda: tr("Driver Camera Preview"),
@@ -111,6 +118,8 @@ class DeviceLayoutSP(DeviceLayout):
       button_item_sp(lambda: tr("Change Language"), lambda: tr("CHANGE"), callback=self._show_language_dialog),
       LineSeparator(),
       self._device_wake_mode,
+      LineSeparator(),
+      self._settings_shell_toggle,
       LineSeparator(),
       self._max_time_offroad,
       LineSeparator(height=10),
@@ -161,8 +170,25 @@ class DeviceLayoutSP(DeviceLayout):
     label += tr(" (Default)") if value == 1800 else ""
     return label
 
+  def _on_settings_shell_toggled(self, enabled: bool):
+    current = ui_state.params.get_bool("SettingsStackNav")
+    self._settings_shell_toggle.action_item.set_state(current)
+    if enabled == current:
+      return
+
+    message = tr("Restart the UI and switch to the new Settings shell?") if enabled else tr("Restart the UI and switch to the classic Settings shell?")
+
+    def _confirm(result: int):
+      self._settings_shell_toggle.action_item.set_state(current)
+      if result == DialogResult.CONFIRM:
+        ui_state.params.put_bool("SettingsStackNav", enabled)
+        gui_app.request_close()
+
+    gui_app.push_widget(ConfirmDialog(message, tr("Restart"), callback=_confirm))
+
   def _update_state(self):
     super()._update_state()
+    self._settings_shell_toggle.action_item.set_state(ui_state.params.get_bool("SettingsStackNav"))
 
     # Quiet Mode button
     self._quiet_mode_and_dcam.action_item.left_button.set_button_style(ButtonStyle.PRIMARY if ui_state.params.get_bool("QuietMode") else ButtonStyle.NORMAL)
