@@ -2459,7 +2459,6 @@
     {
       "id": "driving.steering",
       "title": "Lateral Control",
-      "new_shell_hidden": true,
       "icon": "steering_wheel",
       "content": {
         "kind": "panel_ref",
@@ -2469,7 +2468,6 @@
     {
       "id": "driving.cruise",
       "title": "Longitudinal Control",
-      "new_shell_hidden": true,
       "icon": "cruise_control",
       "content": {
         "kind": "panel_ref",

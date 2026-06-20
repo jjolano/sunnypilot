@@ -53,7 +53,35 @@ HEADER_TEXT_GAP = 24
 ROOT_PAGE_ID = "__root__"
 SEARCH_PAGE_ID = "__search__"
 
-_SCHEMA_RENDERED_PANEL_IDS = {"display", "visuals"}
+SchemaRendererFactory = Callable[[], Widget]
+
+
+def _flat_schema_renderer(panel_id: str) -> SchemaRendererFactory:
+  def build() -> Widget:
+    from openpilot.sunnypilot.selfdrive.ui.settings_schema.widgets import SchemaPanelLayout
+    return SchemaPanelLayout(panel_id)
+  return build
+
+
+def _steering_schema_renderer() -> Widget:
+  from openpilot.sunnypilot.selfdrive.ui.settings_schema.steering_panel import SchemaSteeringLayout
+  return SchemaSteeringLayout()
+
+
+def _cruise_schema_renderer() -> Widget:
+  from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_settings import (
+    SpeedLimitSettingsLayout,
+  )
+  from openpilot.sunnypilot.selfdrive.ui.settings_schema.nav_layout import SchemaNavLayout
+  return SchemaNavLayout("cruise", {"speed_limit_settings": SpeedLimitSettingsLayout})
+
+
+_SCHEMA_PANEL_RENDERERS: dict[str, SchemaRendererFactory] = {
+  "cruise": _cruise_schema_renderer,
+  "display": _flat_schema_renderer("display"),
+  "steering": _steering_schema_renderer,
+  "visuals": _flat_schema_renderer("visuals"),
+}
 
 _PANEL_TO_PAGE_ID = {
   "DEVICE": "system.device",
@@ -303,7 +331,8 @@ class SettingsStackLayout(Widget):
     self._swap_active_view(self._current_view())
 
   def _schema_panel_view(self, panel_id: str) -> Widget | None:
-    if panel_id not in _SCHEMA_RENDERED_PANEL_IDS or panel_id in self._failed_schema_panels:
+    factory = _SCHEMA_PANEL_RENDERERS.get(panel_id)
+    if factory is None or panel_id in self._failed_schema_panels:
       return None
 
     key = f"schema_panel:{panel_id}"
@@ -311,8 +340,11 @@ class SettingsStackLayout(Widget):
       return self._page_views[key]
 
     try:
-      from openpilot.sunnypilot.selfdrive.ui.settings_schema.widgets import SchemaPanelLayout
-      self._page_views[key] = SchemaPanelLayout(panel_id)
+      view = factory()
+      unsupported = getattr(view, "unsupported", [])
+      if unsupported:
+        raise ValueError(f"schema-rendered panel {panel_id!r} has unsupported controls: {unsupported}")
+      self._page_views[key] = view
     except Exception as e:
       self._failed_schema_panels.add(panel_id)
       print(f"[settings_stack] schema-rendered panel '{panel_id}' failed: {e}; falling back to registry")

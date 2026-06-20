@@ -15,14 +15,12 @@ pages:
   - id: driving.steering
     title: Lateral Control
     icon: steering_wheel
-    new_shell_hidden: true
     content:
       kind: panel_ref
       panel: steering
   - id: driving.cruise
     title: Longitudinal Control
     icon: cruise_control
-    new_shell_hidden: true
     content:
       kind: panel_ref
       panel: cruise

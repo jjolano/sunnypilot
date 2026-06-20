@@ -95,6 +95,7 @@ def test_limit_respected():
 
 def test_build_index_default_includes_new_shell_hidden_routes():
   schema = {
+    "navigation": {"root": ["visible", "hidden"]},
     "pages": [
       {"id": "visible", "title": "Visible", "content": {"kind": "panel_ref", "panel": "visible_panel"}},
       {"id": "hidden", "title": "Hidden", "new_shell_hidden": True,
@@ -112,10 +113,21 @@ def test_build_index_default_includes_new_shell_hidden_routes():
 
 
 def test_build_index_can_exclude_new_shell_hidden_routes():
-  from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import load_schema
-  schema = load_schema()
+  schema = {
+    "navigation": {"root": ["visible", "hidden"]},
+    "pages": [
+      {"id": "visible", "title": "Visible", "content": {"kind": "panel_ref", "panel": "visible_panel"}},
+      {"id": "hidden", "title": "Hidden", "new_shell_hidden": True,
+       "content": {"kind": "panel_ref", "panel": "hidden_panel"}},
+    ],
+    "panels": [
+      {"id": "visible_panel", "label": "Visible", "icon": "a", "order": 0,
+       "sections": [{"id": "s1", "title": "Section", "items": [{"key": "VisibleKey", "title": "Visible"}]}]},
+      {"id": "hidden_panel", "label": "Hidden", "icon": "b", "order": 1,
+       "sections": [{"id": "s2", "title": "Section", "items": [{"key": "HiddenKey", "title": "Hidden"}]}]},
+    ],
+  }
   hidden_ids = _hidden_page_ids(schema)
-  assert hidden_ids, "expected navigation.yaml pages marked new_shell_hidden"
   default = build_index(schema)
   filtered = build_index(schema, include_new_shell_hidden=False)
   assert len(filtered) < len(default)
@@ -123,11 +135,11 @@ def test_build_index_can_exclude_new_shell_hidden_routes():
   assert all(r.route_id not in hidden_ids for r in filtered), "filtered index should omit hidden routes"
 
 
-def test_stack_search_excludes_hidden_legacy_pages_but_keeps_visible_schema_pages():
+def test_stack_search_includes_visible_schema_pages():
   from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import load_schema
   schema = load_schema()
   keys = {r.key for r in build_index(schema, include_new_shell_hidden=False)}
-  assert "Mads" not in keys
-  assert "ExperimentalMode" not in keys
+  assert "Mads" in keys
+  assert "ExperimentalMode" in keys
   assert "OnroadScreenOffBrightness" in keys
   assert "BlindSpot" in keys
