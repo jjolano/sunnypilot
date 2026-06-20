@@ -80,6 +80,7 @@ _SCHEMA_PANEL_RENDERERS: dict[str, SchemaRendererFactory] = {
   "cruise": _cruise_schema_renderer,
   "display": _flat_schema_renderer("display"),
   "steering": _steering_schema_renderer,
+  "toggles": _flat_schema_renderer("toggles"),
   "visuals": _flat_schema_renderer("visuals"),
 }
 

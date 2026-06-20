@@ -19,6 +19,7 @@ from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import find
 
 VISUALS = get_panel(load_schema(), "visuals")
 DISPLAY = get_panel(load_schema(), "display")
+TOGGLES = get_panel(load_schema(), "toggles")
 
 # Transcribed from the retired visuals.py: 11 toggles + 2 enum button-rows.
 VISUALS_EXPECTED = {
@@ -82,3 +83,37 @@ def test_display_timer_gated_on_brightness_not_auto():
   assert enc is not None and enc.value_map[1] == 0  # "Default"
   timer = find_item(DISPLAY, "OnroadScreenOffTimer")
   assert timer.get("enablement"), "timer must carry the brightness gate"
+
+
+# --- toggles: core openpilot feature toggles ------------------------------
+
+TOGGLES_EXPECTED = {
+  "OpenpilotEnabledToggle": "toggle",
+  "IsLdwEnabled": "toggle",
+  "AlwaysOnDM": "toggle",
+  "IsMetric": "toggle",
+  "RecordFront": "toggle",
+  "RecordAudio": "toggle",
+}
+
+
+def test_toggles_parity_exact_keys_and_widgets():
+  got = {it["key"]: it["widget"] for it in iter_items(TOGGLES) if "key" in it}
+  assert got == TOGGLES_EXPECTED
+
+
+def test_toggles_onroad_cycle_items_marked():
+  # These toggles need an onroad cycle to take effect — the schema must declare
+  # needs_onroad_cycle so the renderer can show the restart warning and block
+  # while engaged.
+  for key in ("OpenpilotEnabledToggle", "RecordFront", "RecordAudio"):
+    item = find_item(TOGGLES, key)
+    assert item.get("needs_onroad_cycle") is True, f"{key} must declare needs_onroad_cycle"
+
+
+def test_toggles_openpilot_enabled_gated_offroad():
+  # Enable sunnypilot toggle is only adjustable offroad.
+  item = find_item(TOGGLES, "OpenpilotEnabledToggle")
+  rules = item.get("enablement") or []
+  assert any(r.get("type") == "offroad_only" for r in rules), \
+      "OpenpilotEnabledToggle must be gated offroad"

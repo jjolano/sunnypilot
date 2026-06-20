@@ -2477,7 +2477,6 @@
     {
       "id": "driving.toggles",
       "title": "Core Toggles",
-      "new_shell_hidden": true,
       "icon": "toggles",
       "content": {
         "kind": "custom_page",

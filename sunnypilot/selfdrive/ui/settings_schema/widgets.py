@@ -89,7 +89,48 @@ def build_control(item: dict, unsupported: list[dict], is_metric_fn: Callable[[]
   desc = item.get("description", "")
 
   if widget == "toggle":
-    return toggle_item_sp(title=title, description=desc, param=key)
+    needs_cycle = bool(item.get("needs_onroad_cycle"))
+
+    if needs_cycle:
+      # needs_onroad_cycle: augment description, block while engaged, write
+      # OnroadCycleRequested on change — matching the retired hand-coded toggles.
+      def _cycle_desc(base=desc):
+        warning = tr("Changing this setting will restart sunnypilot if the car is powered on.")
+        return (base + " " + warning) if base else warning
+
+      def _on_cycle_change(_state: bool):
+        from openpilot.common.params import Params
+        Params().put_bool("OnroadCycleRequested", True)
+
+      control = toggle_item_sp(title=title, description=_cycle_desc, param=key, callback=_on_cycle_change)
+
+      def _cycle_sync(action=control.action_item, pkey: str = key):
+        from openpilot.common.params import Params, UnknownKeyName
+        from openpilot.selfdrive.ui.ui_state import ui_state
+        params = Params()
+        try:
+          locked = params.get_bool(pkey + "Lock")
+        except UnknownKeyName:
+          locked = False
+        action.set_enabled(not locked and not ui_state.engaged)
+
+      control.sync_hook = _cycle_sync  # type: ignore[attr-defined]
+      return control
+
+    control = toggle_item_sp(title=title, description=desc, param=key)
+
+    def _lock_sync(action=control.action_item, pkey: str = key):
+      from openpilot.common.params import Params, UnknownKeyName
+      params = Params()
+      try:
+        locked = params.get_bool(pkey + "Lock")
+      except UnknownKeyName:
+        locked = False
+      if locked:
+        action.set_enabled(False)
+
+    control.sync_hook = _lock_sync  # type: ignore[attr-defined]
+    return control
 
   if widget == "custom":
     factory = custom_widget_factory(item.get("component", ""))

@@ -27,7 +27,6 @@ pages:
   - id: driving.toggles
     title: Core Toggles
     icon: toggles
-    new_shell_hidden: true
     content:
       kind: custom_page
       component: toggles
