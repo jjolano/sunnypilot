@@ -31,9 +31,10 @@ LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
 class LongitudinalPlannerSP:
   _STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN = 0.2
+  _STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR = 4.5
+  _STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING = 0.5
   _STOP_HOLD_SAME_ID_GAP_INCREASING_S = 0.10
   _STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET = -0.10
-  _STOP_HOLD_SAME_ID_MIN_D_REL_EPS = 0.0
   _STOP_HOLD_NEW_ID_GAP_INCREASING_S = 0.30
   _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
   _STOP_HOLD_RELEASE_A_MIN = 0.15
@@ -324,6 +325,9 @@ class LongitudinalPlannerSP:
       return False, float(lead_d_rel)
     same_id = lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id == self._lead_stop_hold_lead_id
     min_d_rel = stopping_distance + self._STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN if same_id else stopping_distance + 0.1
+    if same_id and self._lead_stop_hold_gap_baseline_d_rel is not None:
+      baseline_min_d_rel = float(self._lead_stop_hold_gap_baseline_d_rel) + self._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
+      min_d_rel = max(self._STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR, min(min_d_rel, baseline_min_d_rel))
     if float(lead_d_rel) <= min_d_rel:
       return False, float(lead_d_rel)
     min_gap_increasing_s = self._STOP_HOLD_SAME_ID_MIN_PULLAWAY_S if same_id else 0.15

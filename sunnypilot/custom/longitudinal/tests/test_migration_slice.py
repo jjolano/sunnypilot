@@ -564,14 +564,14 @@ def test_standstill_release_vetoes_mpc_brake_driver_and_custom_stop():
   assert should_stop is True
 
 
-def _arm_stop_hold(sp):
+def _arm_stop_hold(sp, d_rel=6.2):
   for _ in range(6):
     sm = {
       'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
       'controlsState': SimpleNamespace(forceDecel=False),
       'selfdriveState': SimpleNamespace(experimentalMode=False),
       'radarState': SimpleNamespace(leadOne=SimpleNamespace(
-        status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7,
+        status=True, dRel=d_rel, vLead=0.0, vRel=0.0, radarTrackId=7,
       )),
     }
     sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
@@ -630,6 +630,39 @@ def test_latch_release_same_lead_allows_slightly_negative_mpc_with_tighter_gap_c
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
   assert 0.15 <= a <= 0.35
+
+
+def test_latch_release_same_lead_uses_baseline_aware_close_gap_gate():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp, d_rel=4.56)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=5.32, v_lead=1.08, v_rel=1.08), 0.0, False, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.15 <= a <= 0.35
+
+
+def test_latch_release_same_lead_close_gap_keeps_absolute_floor():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp, d_rel=3.96)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=4.46, v_lead=0.70, v_rel=0.70), 0.0, False, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a <= -0.5
+
+
+def test_latch_release_no_id_keeps_conservative_distance_gate():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp, d_rel=4.56)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(radar_id=None, d_rel=5.32, v_lead=1.08, v_rel=1.08), 0.0, False, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a <= -0.5
 
 
 def test_latch_release_same_lead_rejects_too_negative_mpc_or_non_opening_or_below_distance():
