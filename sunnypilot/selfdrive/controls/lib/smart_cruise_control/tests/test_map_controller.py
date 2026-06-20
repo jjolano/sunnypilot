@@ -17,6 +17,30 @@ MapState = VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
 
 class TestSmartCruiseControlMap:
 
+  class _FakeSM:
+    def __init__(self, curvature=None, pred_lat_accels=None):
+      class _Vec:
+        def __init__(self, values):
+          self.z = values
+          self.x = values
+
+      class _ControlsState:
+        def __init__(self, curvature):
+          self.curvature = curvature
+
+      class _ModelV2:
+        def __init__(self, pred_lat_accels):
+          self.orientationRate = _Vec(pred_lat_accels)
+          self.velocity = _Vec([1.0 for _ in pred_lat_accels])
+
+      self._items = {
+        'controlsState': _ControlsState(curvature),
+        'modelV2': _ModelV2(pred_lat_accels),
+      }
+
+    def __getitem__(self, key):
+      return self._items[key]
+
   def setup_method(self):
     self.params = Params()
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
@@ -132,7 +156,8 @@ class TestSmartCruiseControlMap:
       {"latitude": 37.00014, "longitude": -122.00014, "velocity": 11.0},
     ])
 
-    self.scc_m.update(True, False, 22.0, 0.0, 30.0)
+    sm = self._FakeSM(curvature=0.0018, pred_lat_accels=[0.18, 0.18, 0.18, 0.18])
+    self.scc_m.update(True, False, 22.0, 0.0, 30.0, sm)
     assert self.scc_m.v_target == 18.0
 
   def test_out_of_order_route_point_fails_closed(self):
@@ -176,8 +201,9 @@ class TestSmartCruiseControlMap:
       {"latitude": 37.00014, "longitude": -122.00014, "velocity": 17.0},
     ])
 
-    self.scc_m.update(True, False, 24.0, 0.0, 30.0)
-    self.scc_m.update(True, False, 24.0, 0.0, 30.0)
+    sm = self._FakeSM(curvature=0.0018, pred_lat_accels=[0.18, 0.18, 0.18, 0.18])
+    self.scc_m.update(True, False, 24.0, 0.0, 30.0, sm)
+    self.scc_m.update(True, False, 24.0, 0.0, 30.0, sm)
     assert self.scc_m.v_target > 0.0
 
   def test_reasonable_nearby_lower_target_accepted(self):
@@ -188,8 +214,9 @@ class TestSmartCruiseControlMap:
       {"latitude": 37.00008, "longitude": -122.00008, "velocity": 18.5},
       {"latitude": 37.00012, "longitude": -122.00012, "velocity": 18.0},
     ])
-    self.scc_m.update(True, False, 23.8, 0., 30.)
-    self.scc_m.update(True, False, 23.8, 0., 30.)
+    sm = self._FakeSM(curvature=0.0018, pred_lat_accels=[0.18, 0.18, 0.18, 0.18])
+    self.scc_m.update(True, False, 23.8, 0., 30., sm)
+    self.scc_m.update(True, False, 23.8, 0., 30., sm)
     assert self.scc_m.v_target == 18.5
     assert self.scc_m.is_active
 
@@ -223,7 +250,122 @@ class TestSmartCruiseControlMap:
       {"latitude": 37.00018, "longitude": -122.00018, "velocity": 8.0},
       {"latitude": 37.00022, "longitude": -122.00022, "velocity": 7.5},
     ])
-    self.scc_m.update(True, False, 23.8, 0., 30.)
+    sm = self._FakeSM(curvature=0.0018, pred_lat_accels=[0.18, 0.18, 0.18, 0.18])
+    self.scc_m.update(True, False, 23.8, 0., 30., sm)
     assert self.scc_m.v_target == 18.0
+
+  def test_material_slowdown_rejected_on_straight_segment_without_corroboration(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 17.0},
+      {"latitude": 37.00004, "longitude": -122.00004, "velocity": 14.3},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 12.2},
+      {"latitude": 37.00012, "longitude": -122.00012, "velocity": 12.0},
+    ])
+
+    sm = self._FakeSM(curvature=0.0006, pred_lat_accels=[0.18, 0.18, 0.18, 0.18])
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    assert self.scc_m.v_target == 0.0
+
+  def test_material_slowdown_above_old_target_cutoff_rejected_without_corroboration(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 17.0},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 14.3},
+      {"latitude": 37.00012, "longitude": -122.00012, "velocity": 14.1},
+      {"latitude": 37.00016, "longitude": -122.00016, "velocity": 13.9},
+    ])
+
+    sm = self._FakeSM(curvature=0.0006, pred_lat_accels=[0.18, 0.18, 0.18, 0.18])
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    assert self.scc_m.v_target == 0.0
+
+  def test_material_slowdown_single_model_spike_does_not_corroborate(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 17.0},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 12.2},
+      {"latitude": 37.00012, "longitude": -122.00012, "velocity": 12.0},
+      {"latitude": 37.00016, "longitude": -122.00016, "velocity": 11.8},
+    ])
+
+    pred_lat_accels = [0.18] * 32 + [5.0]
+    sm = self._FakeSM(curvature=0.0006, pred_lat_accels=pred_lat_accels)
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    assert self.scc_m.v_target == 0.0
+
+  def test_material_slowdown_threshold_is_inclusive(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 17.1},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 14.6},
+      {"latitude": 37.00012, "longitude": -122.00012, "velocity": 14.5},
+      {"latitude": 37.00016, "longitude": -122.00016, "velocity": 14.4},
+    ])
+
+    sm = self._FakeSM(curvature=0.0006, pred_lat_accels=[0.18, 0.18, 0.18, 0.18])
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    assert self.scc_m.v_target == 0.0
+
+  def test_material_slowdown_accepted_when_model_corroborates(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 17.0},
+      {"latitude": 37.00004, "longitude": -122.00004, "velocity": 14.3},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 12.2},
+      {"latitude": 37.00012, "longitude": -122.00012, "velocity": 12.0},
+    ])
+
+    sm = self._FakeSM(curvature=0.0006, pred_lat_accels=[0.2, 0.3, 0.95, 1.0])
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    assert self.scc_m.v_target == 12.2
+
+  def test_material_slowdown_accepted_when_current_lateral_accel_corroborates(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 17.0},
+      {"latitude": 37.00004, "longitude": -122.00004, "velocity": 14.3},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 12.2},
+      {"latitude": 37.00012, "longitude": -122.00012, "velocity": 12.0},
+    ])
+
+    sm = self._FakeSM(curvature=0.0018, pred_lat_accels=[0.18, 0.18, 0.18, 0.18])
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, sm)
+    assert self.scc_m.v_target == 12.2
+
+  def test_small_non_material_slowdown_still_accepted_without_corroboration(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 24.0},
+      {"latitude": 37.00004, "longitude": -122.00004, "velocity": 23.0},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 22.8},
+      {"latitude": 37.00012, "longitude": -122.00012, "velocity": 22.5},
+    ])
+
+    self.scc_m.update(True, False, 24.0, 0.0, 30.0, None)
+    self.scc_m.update(True, False, 24.0, 0.0, 30.0, None)
+    assert self.scc_m.v_target == 22.8
+
+  def test_material_slowdown_missing_or_malformed_model_fails_closed(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 17.0},
+      {"latitude": 37.00004, "longitude": -122.00004, "velocity": 14.3},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 12.2},
+    ])
+
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, None)
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, None)
+    assert self.scc_m.v_target == 0.0
+
+    bad_sm = self._FakeSM(curvature=0.0006, pred_lat_accels=[])
+    self.scc_m.update(True, False, 17.1, 0.0, 30.0, bad_sm)
+    assert self.scc_m.v_target == 0.0
 
   # TODO-SP: mock data from modelV2 to test other states

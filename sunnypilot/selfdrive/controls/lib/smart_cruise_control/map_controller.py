@@ -2,6 +2,8 @@ import json
 import math
 import platform
 
+import numpy as np
+
 from cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
@@ -30,6 +32,9 @@ MAX_ROUTE_TARGET_DISTANCE = 20.0
 MAX_SHORT_DROP_DISTANCE = 30.0
 MAX_SHORT_DROP_DELTA_V = 6.0
 SHORT_DROP_CONFIRM_POINTS = 2
+MATERIAL_DROP_DELTA_V = 2.5
+MIN_CURRENT_LAT_ACCEL_CORROBORATION = 0.5
+MIN_MODEL_PRED_LAT_ACCEL_CORROBORATION = 0.9
 _ROUTE_POINT_EPS = 1e-6
 
 
@@ -129,11 +134,47 @@ class SmartCruiseControlMap:
   def get_a_target_from_control(self) -> float:
     return self.a_ego
 
+  def _material_drop_needs_corroboration(self, tv: float) -> bool:
+    return (self.v_ego - tv) >= MATERIAL_DROP_DELTA_V
+
+  def _model_corroborates(self, sm) -> bool:
+    if sm is None:
+      return False
+
+    try:
+      rate_plan = np.asarray(np.abs(sm['modelV2'].orientationRate.z), dtype=np.float64)
+      vel_plan = np.asarray(sm['modelV2'].velocity.x, dtype=np.float64)
+    except Exception:
+      return False
+
+    if rate_plan.size == 0 or vel_plan.size == 0 or rate_plan.shape != vel_plan.shape:
+      return False
+
+    pred_lat_accels = rate_plan * vel_plan
+    if not np.all(np.isfinite(pred_lat_accels)):
+      return False
+
+    return float(np.percentile(pred_lat_accels, 97)) >= MIN_MODEL_PRED_LAT_ACCEL_CORROBORATION
+
+  def _current_lateral_accel_corroborates(self, sm) -> bool:
+    if sm is None:
+      return False
+
+    try:
+      curvature = float(sm['controlsState'].curvature)
+    except Exception:
+      return False
+
+    if not math.isfinite(curvature) or not math.isfinite(self.v_ego):
+      return False
+
+    return abs(self.v_ego ** 2 * curvature) >= MIN_CURRENT_LAT_ACCEL_CORROBORATION
+
   def update_params(self):
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self.params.get_bool("SmartCruiseControlMap")
 
-  def update_calculations(self) -> None:
+  def update_calculations(self, sm=None) -> None:
     try:
       self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params)
     except (json.JSONDecodeError, TypeError, ValueError):
@@ -232,6 +273,9 @@ class SmartCruiseControlMap:
           confirm_count += 1
         if confirm_count < SHORT_DROP_CONFIRM_POINTS and not (self.v_target > 0 and self.target_lat == target_velocity["latitude"] and self.target_lon == target_velocity["longitude"]):
           continue
+
+      if self._material_drop_needs_corroboration(tv) and not (self._current_lateral_accel_corroborates(sm) or self._model_corroborates(sm)):
+        continue
 
       a_diff = (self.a_ego - TARGET_ACCEL)
       accel_t = abs(a_diff / TARGET_JERK)
@@ -340,7 +384,7 @@ class SmartCruiseControlMap:
 
     return enabled, active
 
-  def update(self, long_enabled: bool, long_override: bool, v_ego, a_ego, v_cruise) -> None:
+  def update(self, long_enabled: bool, long_override: bool, v_ego, a_ego, v_cruise, sm=None) -> None:
     self.long_enabled = long_enabled
     self.long_override = long_override
     self.v_ego = v_ego
@@ -348,7 +392,7 @@ class SmartCruiseControlMap:
     self.v_cruise = v_cruise
 
     self.update_params()
-    self.update_calculations()
+    self.update_calculations(sm)
 
     self.is_enabled, self.is_active = self._update_state_machine()
 
