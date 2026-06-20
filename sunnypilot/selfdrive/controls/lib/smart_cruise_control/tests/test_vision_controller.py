@@ -14,7 +14,12 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
-from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import SmartCruiseControlVision, _ENTERING_PRED_LAT_ACC_TH
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import (
+  SmartCruiseControlVision,
+  _ENTERING_PRED_LAT_ACC_TH,
+  _PRE_ENTRY_GENTLE_DECEL,
+  _PRE_ENTRY_PRED_LAT_ACC_TH,
+)
 
 VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
 
@@ -210,5 +215,126 @@ class TestSmartCruiseControlVision:
       assert float(np.max(pred_lat_accels)) >= th
       assert self.scc_v.max_pred_lat_acc < th
       assert self.scc_v.state == VisionState.enabled
+
+  def test_persistent_mild_curve_triggers_pre_entry(self):
+    n = len(ModelConstants.T_IDXS)
+    pred_lat_accels = np.full(n, np.float32(1.05), dtype=np.float32)
+
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    for _ in range(3):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.enabled
+    assert self.scc_v.is_active
+    assert self.scc_v.output_v_target != V_CRUISE_UNSET
+    assert np.isclose(self.scc_v.output_a_target, _PRE_ENTRY_GENTLE_DECEL)
+    assert self.scc_v.max_pred_lat_acc >= _PRE_ENTRY_PRED_LAT_ACC_TH
+    assert self.scc_v.max_pred_lat_acc < _ENTERING_PRED_LAT_ACC_TH
+
+  def test_pre_entry_does_not_act_while_overriding(self):
+    n = len(ModelConstants.T_IDXS)
+    pred_lat_accels = np.full(n, np.float32(1.05), dtype=np.float32)
+
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    for _ in range(3):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    assert self.scc_v.is_active
+
+    self.scc_v.update(self.sm, True, True, v_ego, 0.0, 0.0)
+    assert self.scc_v.state == VisionState.overriding
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_pre_entry_respects_min_speed_floor(self):
+    n = len(ModelConstants.T_IDXS)
+    pred_lat_accels = np.full(n, np.float32(1.05), dtype=np.float32)
+
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
+    self.sm["modelV2"] = mdl.modelV2
+
+    for _ in range(4):
+      self.scc_v.update(self.sm, True, False, float(MIN_V), 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.enabled
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_single_mild_spike_does_not_trigger_pre_entry(self):
+    n = len(ModelConstants.T_IDXS)
+    pred_lat_accels = np.full(n, np.float32(0.95), dtype=np.float32)
+    pred_lat_accels[-1] = np.float32(1.05)
+
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    for _ in range(2):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.enabled
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_straight_low_prediction_remains_inactive(self):
+    n = len(ModelConstants.T_IDXS)
+    pred_lat_accels = np.full(n, np.float32(0.2), dtype=np.float32)
+
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    for _ in range(4):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.enabled
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_full_threshold_still_enters(self):
+    n = len(ModelConstants.T_IDXS)
+    pred_lat_accels = np.full(n, np.float32(_ENTERING_PRED_LAT_ACC_TH + 0.2), dtype=np.float32)
+
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.entering
+    assert self.scc_v.is_active
+    assert self.scc_v.output_a_target != _PRE_ENTRY_GENTLE_DECEL
+
+  def test_nan_model_arrays_fail_closed(self):
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [float("nan")] * len(ModelConstants.T_IDXS)
+    mdl.modelV2.orientationRate.z = [1.0] * len(ModelConstants.T_IDXS)
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    for _ in range(4):
+      self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.enabled
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
 
   # TODO-SP: mock modelV2 data to test other states

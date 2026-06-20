@@ -25,10 +25,15 @@ class TestSmartCruiseControlMap:
 
   def reset_params(self):
     self.params.put_bool("SmartCruiseControlMap", True, block=True)
-
-    # TODO-SP: mock data from gpsLocation
     self.params.put("LastGPSPosition", "{}", block=True)
     self.params.put("MapTargetVelocities", "{}", block=True)
+
+  def set_gps(self, lat, lon):
+    self.mem_params.put("LastGPSPosition", f'{{"latitude": {lat}, "longitude": {lon}}}', block=True)
+
+  def set_targets(self, targets):
+    import json
+    self.mem_params.put("MapTargetVelocities", json.dumps(targets), block=True)
 
   def test_initial_state(self):
     assert self.scc_m.state == VisionState.disabled
@@ -54,5 +59,74 @@ class TestSmartCruiseControlMap:
     for _ in range(int(10. / DT_MDL)):
       self.scc_m.update(True, False, 0., 0., 0.)
     assert self.scc_m.state == VisionState.enabled
+
+  def test_malformed_targets_fail_closed(self):
+    self.set_gps(37.0, -122.0)
+    self.mem_params.put("MapTargetVelocities", '{"bad": true}', block=True)
+    self.scc_m.update(True, False, 10., 0., 20.)
+    assert self.scc_m.v_target == 0.0
+    assert self.scc_m.target_lat == 0.0
+    assert self.scc_m.target_lon == 0.0
+    assert not self.scc_m.is_active
+
+    self.mem_params.put("MapTargetVelocities", '{bad', block=True)
+    self.scc_m.update(True, False, 10., 0., 20.)
+    assert self.scc_m.v_target == 0.0
+
+  def test_malformed_gps_before_constructor_fails_closed(self):
+    self.mem_params.put("LastGPSPosition", '{bad', block=True)
+    self.set_targets([{"latitude": 37.0, "longitude": -122.0, "velocity": 10.0}])
+
+    controller = SmartCruiseControlMap()
+    controller.update(True, False, 10., 0., 20.)
+
+    assert controller.v_target == 0.0
+    assert not controller.is_active
+
+  def test_invalid_or_far_position_fail_closed(self):
+    self.mem_params.put("LastGPSPosition", '{"latitude": "nan", "longitude": -122.0}', block=True)
+    self.set_targets([{"latitude": 37.0, "longitude": -122.0, "velocity": 10.0}])
+    self.scc_m.update(True, False, 10., 0., 20.)
+    assert self.scc_m.v_target == 0.0
+
+    self.set_gps(0.0, 0.0)
+    self.set_targets([{"latitude": 37.0, "longitude": -122.0, "velocity": 10.0}])
+    self.scc_m.update(True, False, 10., 0., 20.)
+    assert self.scc_m.v_target == 0.0
+
+  def test_abrupt_short_distance_drop_rejected(self):
+    self.set_gps(37.0, -122.0)
+    self.set_targets([
+      {"latitude": 37.00015, "longitude": -122.00015, "velocity": 12.3},
+    ])
+    self.scc_m.update(True, False, 23.8, 0., 30.)
+    assert self.scc_m.v_target == 0.0
+    assert not self.scc_m.is_active
+
+    # Live-like short-range drop: ~24 m/s ego to ~16 m/s target at ~14 m should fail closed.
+    self.set_targets([
+      {"latitude": 37.00009, "longitude": -122.00009, "velocity": 16.0},
+    ])
+    self.scc_m.update(True, False, 23.8, 0., 30.)
+    assert self.scc_m.v_target == 0.0
+
+  def test_reasonable_nearby_lower_target_accepted(self):
+    self.set_gps(37.0, -122.0)
+    self.set_targets([
+      {"latitude": 37.00004, "longitude": -122.00004, "velocity": 19.0},
+    ])
+    self.scc_m.update(True, False, 23.8, 0., 30.)
+    self.scc_m.update(True, False, 23.8, 0., 30.)
+    assert self.scc_m.v_target == 19.0
+    assert self.scc_m.is_active
+
+  def test_nearer_valid_target_wins_over_farther_global_minimum(self):
+    self.set_gps(37.0, -122.0)
+    self.set_targets([
+      {"latitude": 37.00003, "longitude": -122.00003, "velocity": 18.0},
+      {"latitude": 37.00018, "longitude": -122.00018, "velocity": 8.0},
+    ])
+    self.scc_m.update(True, False, 23.8, 0., 30.)
+    assert self.scc_m.v_target == 18.0
 
   # TODO-SP: mock data from modelV2 to test other states

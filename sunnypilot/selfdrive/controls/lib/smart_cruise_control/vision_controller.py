@@ -36,6 +36,10 @@ _NO_OVERSHOOT_TIME_HORIZON = 4.  # s. Time to use for velocity desired based on 
 _ENTERING_SMOOTH_DECEL_V = [-0.2, -1.]  # min decel value allowed on ENTERING state
 _ENTERING_SMOOTH_DECEL_BP = [1.3, 3.]  # absolute value of lat acc ahead
 
+_PRE_ENTRY_PRED_LAT_ACC_TH = 1.0  # Mild predicted lat accel band for guarded pre-entry.
+_PRE_ENTRY_MIN_FRAMES = 3  # Require persistence before pre-entry activates.
+_PRE_ENTRY_GENTLE_DECEL = -0.25  # Gentle lift/coast warning, not a hard brake.
+
 # Lookup table for the acceleration for the TURNING state
 # depending on the current lateral acceleration of the vehicle.
 _TURNING_ACC_V = [0.5, 0., -0.4]  # acc value
@@ -65,6 +69,9 @@ class SmartCruiseControlVision:
     self.state = VisionState.disabled
     self.current_lat_acc = 0.
     self.max_pred_lat_acc = 0.
+    self._prev_max_pred_lat_acc = 0.
+    self.pre_entry_frames = 0
+    self.pre_entry_active = False
 
   def get_a_target_from_control(self) -> float:
     return self.a_target
@@ -81,16 +88,48 @@ class SmartCruiseControlVision:
 
   def _update_calculations(self, sm: messaging.SubMaster) -> None:
     if not self.long_enabled:
+      self.pre_entry_frames = 0
+      self.pre_entry_active = False
       return
     else:
-      rate_plan = np.array(np.abs(sm['modelV2'].orientationRate.z))
-      vel_plan = np.array(sm['modelV2'].velocity.x)
+      try:
+        rate_plan = np.asarray(np.abs(sm['modelV2'].orientationRate.z), dtype=np.float64)
+        vel_plan = np.asarray(sm['modelV2'].velocity.x, dtype=np.float64)
+      except Exception:
+        self.max_pred_lat_acc = 0.
+        self.pre_entry_frames = 0
+        self.pre_entry_active = False
+        return
+
+      if rate_plan.size == 0 or vel_plan.size == 0 or rate_plan.shape != vel_plan.shape:
+        self.max_pred_lat_acc = 0.
+        self.pre_entry_frames = 0
+        self.pre_entry_active = False
+        return
 
       self.current_lat_acc = self.v_ego ** 2 * abs(sm['controlsState'].curvature)
 
       # get the maximum lat accel from the model
       predicted_lat_accels = rate_plan * vel_plan
-      self.max_pred_lat_acc = np.percentile(predicted_lat_accels, 97)
+      if not np.all(np.isfinite(predicted_lat_accels)):
+        self.max_pred_lat_acc = 0.
+        self.pre_entry_frames = 0
+        self.pre_entry_active = False
+        return
+
+      self.max_pred_lat_acc = float(np.percentile(predicted_lat_accels, 97))
+
+      can_pre_entry = self.enabled and not self.long_override and self.v_ego > MIN_V
+      if can_pre_entry and _PRE_ENTRY_PRED_LAT_ACC_TH <= self.max_pred_lat_acc < _ENTERING_PRED_LAT_ACC_TH:
+        if self.pre_entry_frames == 0 or self.max_pred_lat_acc >= self._prev_max_pred_lat_acc:
+          self.pre_entry_frames += 1
+        else:
+          self.pre_entry_frames = 1
+      else:
+        self.pre_entry_frames = 0
+
+      self.pre_entry_active = can_pre_entry and self.pre_entry_frames >= _PRE_ENTRY_MIN_FRAMES
+      self._prev_max_pred_lat_acc = self.max_pred_lat_acc
 
       # get the maximum curve based on the current velocity
       v_ego = max(self.v_ego, 0.1)  # ensure a value greater than 0 for calculations
@@ -156,13 +195,17 @@ class SmartCruiseControlVision:
           self.state = VisionState.enabled
 
     enabled = self.state in ENABLED_STATES
-    active = self.state in ACTIVE_STATES
+    # Pre-entry keeps the public state enabled, but makes the controller gently active early.
+    # Disabled/overriding states must still fail closed even if the prediction buffer was mild.
+    active = self.state in ACTIVE_STATES or (self.state == VisionState.enabled and self.pre_entry_active)
 
     return enabled, active
 
   def _update_solution(self) -> float:
     # DISABLED, ENABLED, OVERRIDING
-    if self.state not in ACTIVE_STATES:
+    if self.pre_entry_active and self.state == VisionState.enabled:
+      a_target = _PRE_ENTRY_GENTLE_DECEL
+    elif self.state not in ACTIVE_STATES:
       # when not overshooting, calculate v_turn as the speed at the prediction horizon when following
       # the smooth deceleration.
       a_target = self.a_ego
