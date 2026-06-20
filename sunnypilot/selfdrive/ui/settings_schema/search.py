@@ -13,7 +13,7 @@ lives in so the UI can jump straight to it.
 """
 from dataclasses import dataclass
 
-from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import iter_items, load_schema
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import iter_items, load_schema, routes_for_panel
 
 
 # Source schema panel -> the consolidated panel it now lives in (device IA).
@@ -33,8 +33,18 @@ class SearchRecord:
   description: str
   panel_id: str         # source schema panel
   panel_label: str
+  route_id: str | None  # navigation page id when available
+  breadcrumbs: tuple[str, ...]
   live_panel_id: str    # consolidated panel the setting is reached through
   live_panel_label: str
+
+
+def _route_for_panel(schema: dict, panel_id: str) -> tuple[str | None, tuple[str, ...]]:
+  routes = routes_for_panel(schema, panel_id)
+  if not routes:
+    return None, ()
+  route = routes[0]
+  return route.page_id, route.breadcrumbs
 
 
 def build_index(schema: dict | None = None) -> list[SearchRecord]:
@@ -43,13 +53,15 @@ def build_index(schema: dict | None = None) -> list[SearchRecord]:
   for panel in schema.get("panels", []):
     pid = panel.get("id", "")
     plabel = panel.get("label", pid)
+    route_id, breadcrumbs = _route_for_panel(schema, pid)
     live_id, live_label = _CONSOLIDATION.get(pid, (pid, plabel))
     for item in iter_items(panel):
       if "key" not in item:
         continue
       records.append(SearchRecord(
         key=item["key"], title=item.get("title", ""), description=item.get("description", ""),
-        panel_id=pid, panel_label=plabel, live_panel_id=live_id, live_panel_label=live_label,
+        panel_id=pid, panel_label=plabel, route_id=route_id, breadcrumbs=breadcrumbs,
+        live_panel_id=live_id, live_panel_label=live_label,
       ))
   return records
 

@@ -31,10 +31,11 @@ _ROW_HEIGHT = 150
 
 
 class _SearchResultRow(Widget):
-  def __init__(self, rec: SearchRecord, on_click: Callable[[], None]):
+  def __init__(self, rec: SearchRecord, on_click: Callable[[], None], context_label: str):
     super().__init__()
     self._rec = rec
     self._on_click = on_click
+    self._context_label = context_label
     self.set_rect(rl.Rectangle(0, 0, 0, _ROW_HEIGHT))
 
   def set_parent_rect(self, parent_rect: rl.Rectangle) -> None:
@@ -43,7 +44,7 @@ class _SearchResultRow(Widget):
 
   def _render(self, rect: rl.Rectangle):
     font = gui_app.font(FontWeight.NORMAL)
-    label = self._rec.live_panel_label
+    label = self._context_label
     lsize = measure_text_cached(font, label, 40)
     rl.draw_text_ex(font, label, rl.Vector2(rect.x + rect.width - lsize.x - 30, rect.y + _ROW_HEIGHT / 2 - 20),
                     40, 0, style.ITEM_DESC_TEXT_COLOR)
@@ -57,9 +58,13 @@ class _SearchResultRow(Widget):
 
 class SearchLayout(Widget):
   def __init__(self, navigate_callback: Callable[[str, str], None] | None = None,
-               query: str = "", index=None):
+               query: str = "", index=None,
+               record_callback: Callable[[SearchRecord], None] | None = None,
+               result_context_label: Callable[[SearchRecord], str] | None = None):
     super().__init__()
     self._navigate = navigate_callback
+    self._record_callback = record_callback
+    self._result_context_label = result_context_label or (lambda rec: rec.live_panel_label)
     self._index = index if index is not None else build_index()
     self._query = ""
     self._box_rect = rl.Rectangle(0, 0, 0, 0)
@@ -74,12 +79,15 @@ class SearchLayout(Widget):
       self.set_query(text)
 
   def _navigate_to(self, rec: SearchRecord):
+    if self._record_callback:
+      self._record_callback(rec)
+      return
     if self._navigate:
       self._navigate(rec.live_panel_id, rec.key)
 
   def set_query(self, query: str):
     self._query = query
-    rows: list[Widget] = [_SearchResultRow(rec, lambda r=rec: self._navigate_to(r))
+    rows: list[Widget] = [_SearchResultRow(rec, lambda r=rec: self._navigate_to(r), self._result_context_label(rec))
                           for rec in search(query, self._index)]
     self._results = Scroller(rows, line_separator=True, spacing=0)
 

@@ -51,7 +51,7 @@ def _pages(schema: dict) -> list[dict]:
 
 
 def get_page(schema: dict, page_id: str) -> dict | None:
-  return next((p for p in _pages(schema) if p.get("id") == page_id), None)
+  return next((p for p in _pages(schema) if isinstance(p, dict) and p.get("id") == page_id), None)
 
 
 def get_root_navigation(schema: dict) -> list[dict]:
@@ -263,7 +263,10 @@ def routes_for_panel(schema: dict, panel_id: str) -> list[SettingsRoute]:
 
 
 def get_panel(schema: dict, panel_id: str) -> dict | None:
-  return next((p for p in schema.get("panels", []) if p.get("id") == panel_id), None)
+  panels = schema.get("panels", [])
+  if not isinstance(panels, list):
+    return None
+  return next((p for p in panels if isinstance(p, dict) and p.get("id") == panel_id), None)
 
 
 def _walk_item(item: dict) -> Iterator[dict]:

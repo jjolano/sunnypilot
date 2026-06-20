@@ -14,6 +14,7 @@ from copy import deepcopy
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import (
   breadcrumbs_for,
   flatten_routes,
+  get_page,
   get_root_navigation,
   navigation_available,
   navigation_errors,
@@ -80,6 +81,14 @@ def test_invalid_navigation_falls_back_safely():
   assert resolve_page_content(broken, "driving") is None
   assert panel_for_page(broken, "driving.steering") is None
   assert routes_for_panel(broken, "steering") == []
+
+
+def test_malformed_pages_fall_back_safely():
+  broken = deepcopy(SCHEMA)
+  broken["pages"] = [123]
+  assert navigation_available(broken) is False
+  assert get_page(broken, "driving") is None
+  assert flatten_routes(broken) == []
 
 
 def test_navigation_errors_cover_common_tree_issues():
