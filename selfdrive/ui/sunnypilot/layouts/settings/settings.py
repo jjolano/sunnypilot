@@ -13,6 +13,7 @@ from openpilot.selfdrive.ui.layouts.settings import settings as OP
 from openpilot.selfdrive.ui.layouts.settings.firehose import FirehoseLayout
 from openpilot.selfdrive.ui.layouts.settings.toggles import TogglesLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.developer import DeveloperLayoutSP
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.always_offroad_toggle import AlwaysOffroadToggle
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.device import DeviceLayoutSP
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.models import ModelsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.network import NetworkUISP
@@ -116,6 +117,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
 
     # Create sidebar scroller
     self._sidebar_scroller = Scroller([], spacing=0, line_separator=False, pad_end=False)
+    self._always_offroad_toggle = AlwaysOffroadToggle()
 
     # Panel configuration
     wifi_manager = WifiManager()
@@ -217,18 +219,23 @@ class SettingsLayoutSP(OP.SettingsLayout):
         self._sidebar_scroller.add_widget(nav_button)
 
     # Draw navigation section with scroller
-    nav_rect = rl.Rectangle(
-      rect.x,
-      self._search_btn_rect.y + self._search_btn_rect.height + style.ITEM_PADDING * 2,
-      rect.width,
-      rect.height - (self._search_btn_rect.y + self._search_btn_rect.height + style.ITEM_PADDING * 2 - rect.y)
+    footer_rect = rl.Rectangle(
+      rect.x + style.ITEM_PADDING,
+      rect.y + rect.height - self._always_offroad_toggle.HEIGHT - style.ITEM_PADDING,
+      min(self._always_offroad_toggle.WIDTH, rect.width - style.ITEM_PADDING * 2),
+      self._always_offroad_toggle.HEIGHT,
     )
+    nav_y = self._search_btn_rect.y + self._search_btn_rect.height + style.ITEM_PADDING * 2
+    nav_rect = rl.Rectangle(rect.x, nav_y, rect.width, max(0, footer_rect.y - nav_y - style.ITEM_PADDING))
 
     if self._nav_items:
       self._sidebar_scroller.render(nav_rect)
-      return
+    self._always_offroad_toggle.render(footer_rect)
 
   def _handle_mouse_release(self, mouse_pos: MousePos) -> bool:
+    if rl.check_collision_point_rec(mouse_pos, self._always_offroad_toggle.rect):
+      return True
+
     # Check close button
     if rl.check_collision_point_rec(mouse_pos, self._close_btn_rect):
       if self._close_callback:

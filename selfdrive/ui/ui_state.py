@@ -84,6 +84,7 @@ class UIState(UIStateSP):
     self.usbgpu_compiled: bool = self.params.get_bool("UsbGpuCompiled")
     self.started: bool = False
     self.ignition: bool = False
+    self.preserve_settings_on_next_onroad_transition: bool = False
     self.recording_audio: bool = False
     self.panda_type: log.PandaState.PandaType = log.PandaState.PandaType.unknown
     self.personality: log.LongitudinalPersonality = log.LongitudinalPersonality.standard

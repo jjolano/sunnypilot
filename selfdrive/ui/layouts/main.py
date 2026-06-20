@@ -80,6 +80,12 @@ class MainLayout(Widget):
     if ui_state.started != self._prev_onroad:
       self._prev_onroad = ui_state.started
 
+      if ui_state.started and ui_state.preserve_settings_on_next_onroad_transition:
+        ui_state.preserve_settings_on_next_onroad_transition = False
+        if self._current_mode == MainState.SETTINGS:
+          self._sidebar.set_visible(False)
+          return
+
       self._set_mode_for_state()
 
   def _set_mode_for_state(self):

@@ -15,6 +15,7 @@ from typing import cast
 import pyray as rl  # type: ignore[import-not-found]
 
 from openpilot.selfdrive.ui.layouts.settings.settings import PanelType as LegacyPanelType
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.always_offroad_toggle import AlwaysOffroadToggle
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.custom_page_registry import SettingsPageRegistry, get_settings_page_registry
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import (
   breadcrumbs_for,
@@ -186,6 +187,7 @@ class SettingsStackLayout(Widget):
     self._search_btn_rect = rl.Rectangle(0, 0, 0, 0)
     self._page_views: dict[str, Widget] = {}
     self._failed_schema_panels: set[str] = set()
+    self._always_offroad_toggle = AlwaysOffroadToggle()
     self._active_view: Widget = self._root_view()
     self._close_icon = gui_app.texture("icons/close2.png", 68, 68, keep_aspect_ratio=True)
     self._back_icon = gui_app.texture("icons/arrow-right.png", 68, 68, keep_aspect_ratio=True)
@@ -379,7 +381,8 @@ class SettingsStackLayout(Widget):
     return " / ".join(tr(c) for c in crumbs[:-1]), tr(crumbs[-1]), text_x, text_width
 
   def _content_rect(self, rect: rl.Rectangle) -> rl.Rectangle:
-    return rl.Rectangle(rect.x + HEADER_PAD, rect.y + HEADER_HEIGHT, rect.width - (HEADER_PAD * 2), rect.height - HEADER_HEIGHT - HEADER_PAD)
+    footer_space = self._always_offroad_toggle.HEIGHT + HEADER_PAD
+    return rl.Rectangle(rect.x + HEADER_PAD, rect.y + HEADER_HEIGHT, rect.width - (HEADER_PAD * 2), rect.height - HEADER_HEIGHT - footer_space)
 
   def _render_header_button(self, rect: rl.Rectangle, icon: str, pressed: bool):
     bg = SURFACE_PRESSED if pressed else SURFACE
@@ -434,8 +437,14 @@ class SettingsStackLayout(Widget):
 
     content_rect = self._content_rect(rect)
     self._active_view.render(content_rect)
+    footer_width = min(self._always_offroad_toggle.WIDTH, rect.width - (HEADER_PAD * 2))
+    footer_rect = rl.Rectangle(rect.x + HEADER_PAD, rect.y + rect.height - self._always_offroad_toggle.HEIGHT - HEADER_PAD,
+                               footer_width, self._always_offroad_toggle.HEIGHT)
+    self._always_offroad_toggle.render(footer_rect)
 
   def _handle_mouse_release(self, mouse_pos: MousePos) -> None:
+    if rl.check_collision_point_rec(mouse_pos, self._always_offroad_toggle.rect):
+      return
     if rl.check_collision_point_rec(mouse_pos, self._search_btn_rect):
       self._open_search()
       return

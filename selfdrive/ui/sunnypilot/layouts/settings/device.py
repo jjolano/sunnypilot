@@ -14,7 +14,7 @@ from openpilot.system.ui.sunnypilot.widgets.list_view import option_item_sp, mul
   dual_button_item_sp, Spacer
 from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.button import ButtonStyle
-from openpilot.system.ui.widgets.confirm_dialog import alert_dialog, ConfirmDialog
+from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.widgets.list_view import text_item
 from openpilot.system.ui.widgets.scroller_tici import LineSeparator
 
@@ -41,15 +41,6 @@ class DeviceLayoutSP(DeviceLayout):
 
   def _initialize_items(self):
     DeviceLayout._initialize_items(self)
-
-    # Using dual button with no right button for better alignment
-    self._always_offroad_btn = dual_button_item_sp(
-      left_text=lambda: tr("Enable Always Offroad"),
-      left_callback=self._handle_always_offroad,
-      right_text="",
-      right_callback=None,
-    )
-    self._always_offroad_btn.action_item.right_button.set_visible(False)
 
     self._max_time_offroad = option_item_sp(
       title=lambda: tr("Max Time Offroad"),
@@ -165,22 +156,6 @@ class DeviceLayoutSP(DeviceLayout):
     ))
 
   @staticmethod
-  def _handle_always_offroad():
-    if ui_state.engaged:
-      gui_app.push_widget(alert_dialog(tr("Disengage to Enter Always Offroad Mode")))
-      return
-
-    _offroad_mode_state = ui_state.params.get_bool("OffroadMode")
-    _offroad_mode_str = tr("Are you sure you want to exit Always Offroad mode?") if _offroad_mode_state else \
-                        tr("Are you sure you want to enter Always Offroad mode?")
-
-    def _set_always_offroad(result: int):
-      if result == DialogResult.CONFIRM and not ui_state.engaged:
-        ui_state.params.put_bool("OffroadMode", not _offroad_mode_state)
-
-    gui_app.push_widget(ConfirmDialog(_offroad_mode_str, tr("Confirm"), callback=lambda result: _set_always_offroad(result)))
-
-  @staticmethod
   def _update_max_time_offroad_label(value: int) -> str:
     label = tr("Always On") if value == 0 else f"{value}" + tr("m") if value < 60 else f"{value // 60}" + tr("h")
     label += tr(" (Default)") if value == 1800 else ""
@@ -188,23 +163,6 @@ class DeviceLayoutSP(DeviceLayout):
 
   def _update_state(self):
     super()._update_state()
-
-    # Handle Always Offroad button
-    always_offroad = ui_state.params.get_bool("OffroadMode")
-
-    # Text & Color
-    offroad_mode_btn_text = tr("Exit Always Offroad") if always_offroad else tr("Enable Always Offroad")
-    offroad_mode_btn_style = ButtonStyle.PRIMARY if always_offroad else ButtonStyle.DANGER
-    self._always_offroad_btn.action_item.left_button.set_text(offroad_mode_btn_text)
-    self._always_offroad_btn.action_item.left_button.set_button_style(offroad_mode_btn_style)
-
-    # Position
-    if self._scroller._items.__contains__(self._always_offroad_btn):
-      self._scroller._items.remove(self._always_offroad_btn)
-    if ui_state.is_offroad() and not always_offroad:
-      self._scroller._items.insert(len(self._scroller._items) - 1, self._always_offroad_btn)
-    else:
-      self._scroller._items.insert(0, self._always_offroad_btn)
 
     # Quiet Mode button
     self._quiet_mode_and_dcam.action_item.left_button.set_button_style(ButtonStyle.PRIMARY if ui_state.params.get_bool("QuietMode") else ButtonStyle.NORMAL)

@@ -30,7 +30,7 @@ class SubaruSettings(BrandSettings):
     if not self.has_stop_and_go:
       return tr("This feature is currently not available on this platform.")
     elif not ui_state.is_offroad():
-      return tr("Enable \"Always Offroad\" in Device panel, or turn vehicle off to toggle.")
+      return tr("Use the Always Offroad button at the bottom of Settings, or turn vehicle off to toggle.")
     return ""
 
   def update_settings(self):
