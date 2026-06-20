@@ -1,0 +1,82 @@
+name: fork-ci
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && github.run_id || github.head_ref || github.ref }}-${{ github.workflow }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  CI: 1
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  touch-points:
+    name: touch-points guard
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Fetch upstream master
+      run: git fetch --no-tags --depth=1 https://github.com/sunnypilot/sunnypilot.git master:refs/remotes/upstream/master
+    - name: Check touch points
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          BASE='${{ github.event.pull_request.base.sha }}'
+          HEAD='${{ github.event.pull_request.head.sha }}'
+          SCRIPT='scripts/ci/check_touch_points.py'
+          TMP_SCRIPT='/tmp/check_touch_points.py'
+          if git show "$BASE:scripts/ci/check_touch_points.py" > "$TMP_SCRIPT" 2>/dev/null; then
+            SCRIPT="$TMP_SCRIPT"
+          fi
+          MERGE_BASE_FLAG='--merge-base'
+        else
+          BASE='${{ github.event.before }}'
+          HEAD='${{ github.sha }}'
+          SCRIPT='scripts/ci/check_touch_points.py'
+          MERGE_BASE_FLAG=''
+          if [ "$BASE" = '0000000000000000000000000000000000000000' ]; then
+            BASE='HEAD~1'
+          fi
+        fi
+        python "$SCRIPT" --base "$BASE" --head "$HEAD" --upstream-ref upstream/master $MERGE_BASE_FLAG
+
+  focused-tests:
+    name: focused fork tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+        persist-credentials: false
+    - run: ./tools/op.sh setup
+    - name: Build prerequisites
+      timeout-minutes: 20
+      run: uv run --extra testing --extra tools scons -j$(nproc) common/params_pyx.so msgq_repo/msgq/ipc_pyx.so cereal selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so
+    - name: Run focused tests
+      timeout-minutes: 20
+      run: |
+        source selfdrive/test/setup_xvfb.sh
+        MAX_EXAMPLES=1 uv run --extra testing --extra tools python -m pytest \
+          sunnypilot/custom \
+          sunnypilot/selfdrive/ui/settings_schema/tests \
+          sunnypilot/sunnylink/tests/test_settings_changes.py \
+          tools/drive_lab/tests/test_fuzz_longitudinal.py \
+          tools/drive_lab/tests/test_behavior_change_gate.py \
+          tools/drive_lab/tests/test_lateral_torque_event_report.py \
+          tools/drive_lab/tests/test_fuzz_lateral_demand.py \
+          tools/drive_lab/tests/test_fuzz_lateral_controller.py \
+          tools/drive_lab/tests/test_compare_torque_versions.py \
+          tools/drive_lab/tests/test_replay_lead_anticipation.py \
+          tools/drive_lab/tests/test_signal_scorer.py
