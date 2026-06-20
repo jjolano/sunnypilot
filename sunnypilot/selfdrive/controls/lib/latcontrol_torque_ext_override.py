@@ -32,12 +32,14 @@ class LatControlTorqueExtOverride:
     self._speed_profile_raw = None
     self._speed_profile = None
     self._live_torque_enabled = self.params.get_bool("LiveTorqueParamsToggle")
+    self._custom_torque_params = self.params.get_bool("CustomTorqueParams")
     self._manual_latAccelFactor = None
     self._manual_friction = None
     self._manual_override_values_valid = False
 
   def _poll(self):
     self.torque_override_enabled = self.params.get_bool("TorqueParamsOverrideEnabled")
+    self._custom_torque_params = self.params.get_bool("CustomTorqueParams")
     self._live_torque_enabled = self.params.get_bool("LiveTorqueParamsToggle")
     if self.torque_override_enabled:
       self._manual_latAccelFactor = validate_torque_override_lat_accel_factor(self.params.get("TorqueParamsOverrideLatAccelFactor", return_default=True))
@@ -100,7 +102,7 @@ class LatControlTorqueExtOverride:
     if self.frame % 300 == 0:
       self._poll()
 
-    if self.torque_override_enabled:
+    if self.torque_override_enabled and self._custom_torque_params:
       if not self._manual_override_values_valid:
         return self._restore_manual_or_speed_base(torque_params)
       if self.base_latAccelFactor is None:

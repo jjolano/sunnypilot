@@ -168,6 +168,10 @@ class CurveMemory:
       return False
     if inputs.path_reason in CAPTURE_BLOCK_REASONS:
       return False
+    # Fail-closed speed gate: only capture from frames fast enough for reliable vision.
+    v_ego = max(0.0, _finite(inputs.v_ego))
+    if v_ego < CAPTURE_MIN_V:
+      return False
     if inputs.path_reason == "low_lane_confidence":
       return inputs.path_quality >= CAPTURE_MIN_QUALITY
     return inputs.path_quality >= CAPTURE_MIN_QUALITY

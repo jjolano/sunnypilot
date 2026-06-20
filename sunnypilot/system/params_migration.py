@@ -11,6 +11,7 @@ from openpilot.sunnypilot.selfdrive.car.sync_sunnylink_params import CAR_LIST_JS
 
 ONROAD_BRIGHTNESS_MIGRATION_VERSION: str = "1.0"
 ONROAD_BRIGHTNESS_TIMER_MIGRATION_VERSION: str = "1.0"
+LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION: str = "1.0"
 
 # index → seconds mapping for OnroadScreenOffTimer (SSoT)
 ONROAD_BRIGHTNESS_TIMER_VALUES = {0: 3, 1: 5, 2: 7, 3: 10, 4: 15, 5: 30, **{i: (i - 5) * 60 for i in range(6, 16)}}
@@ -78,5 +79,18 @@ def run_migration(_params):
       cloudlog.info(log_str + f" Setting OnroadScreenOffTimerMigrated to {ONROAD_BRIGHTNESS_TIMER_MIGRATION_VERSION}")
     except Exception as e:
       cloudlog.exception(f"Error migrating OnroadScreenOffTimer: {e}")
+
+  # Curve memory / custom lateral demand were briefly shipped default-on. Defaults only apply
+  # to missing params, so explicitly reset existing default-on values once for safe opt-in.
+  if _params.get("CustomLateralDemandDefaultOffMigrated") != LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION:
+    try:
+      if _params.get_bool("CustomLateralDemandEnabled"):
+        _params.put_bool("CustomLateralDemandEnabled", False, block=True)
+      if _params.get_bool("CurveMemoryEnabled"):
+        _params.put_bool("CurveMemoryEnabled", False, block=True)
+      _params.put("CustomLateralDemandDefaultOffMigrated", LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION, block=True)
+      cloudlog.info("params_migration: CustomLateralDemandEnabled/CurveMemoryEnabled reset default-off for opt-in")
+    except Exception as e:
+      cloudlog.exception(f"Error migrating lateral demand default-off params: {e}")
 
   _migrate_car_platform_bundle(_params)

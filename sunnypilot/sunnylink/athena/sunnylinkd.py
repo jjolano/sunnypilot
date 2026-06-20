@@ -65,6 +65,34 @@ BLOCKED_PARAMS = {
   "SshEnabled",           # Remote shell access must stay local-only
 }
 
+# Safety-critical torque/control settings that require the device to be offroad.
+# These are defense-in-depth checks on top of metadata policy (blocked/attestation/
+# min/max/options). Writes are rejected unless IsOffroad is true.
+SAFETY_CRITICAL_REMOTE_GATED_PARAMS = {
+  "TorqueParamsOverrideEnabled",
+  "TorqueParamsOverrideLatAccelFactor",
+  "TorqueParamsOverrideFriction",
+  "LiveTorqueParamsToggle",
+  "LiveTorqueParamsRelaxedToggle",
+  "LiveTorqueSpeedAdaptiveMode",
+  "EnforceTorqueControl",
+  "TorqueControlTune",
+  "CustomTorqueParams",
+  "NeuralNetworkLateralControl",
+  "CustomLateralDemandEnabled",
+  "CurveMemoryEnabled",
+  "LaneCenteringAssistEnabled",
+}
+
+# Manual override state and values must only be activated while CustomTorqueParams is
+# enabled. We allow the dependency to be satisfied by the current param value or by
+# an atomic CustomTorqueParams=true write in the same saveParams transaction.
+DEPENDS_ON_CUSTOM_TORQUE_PARAMS = {
+  "TorqueParamsOverrideEnabled",
+  "TorqueParamsOverrideLatAccelFactor",
+  "TorqueParamsOverrideFriction",
+}
+
 
 def _decode_param_value(value: str, compression: bool) -> str:
   raw = base64.b64decode(value, validate=True)
@@ -89,6 +117,27 @@ def _option_value_matches(option_value, candidate: str) -> bool:
     return math.isfinite(candidate_num) and candidate_num == float(option_value)
 
   return str(option_value) == candidate
+
+
+def _decoded_value_matches_policy(decoded_value: str, policy: dict[str, Any]) -> bool:
+  if "min" in policy or "max" in policy:
+    try:
+      numeric_value = float(decoded_value)
+    except ValueError:
+      return False
+    if not math.isfinite(numeric_value):
+      return False
+    if "min" in policy and numeric_value < float(policy["min"]):
+      return False
+    if "max" in policy and numeric_value > float(policy["max"]):
+      return False
+
+  if "options" in policy:
+    option_values = [opt.get("value") for opt in policy.get("options", []) if isinstance(opt, dict) and "value" in opt]
+    if not any(_option_value_matches(option_value, decoded_value) for option_value in option_values):
+      return False
+
+  return True
 
 
 def _collect_settings_policy() -> dict[str, dict[str, Any]]:
@@ -160,6 +209,54 @@ def _collect_settings_policy() -> dict[str, dict[str, Any]]:
 
 
 SETTINGS_POLICY = _collect_settings_policy()
+
+
+def _is_remote_value_true(value: str, compression: bool) -> bool:
+  """Decode a base64 (optionally gzipped) remote bool value and return whether it is true."""
+  try:
+    decoded = _decode_param_value(value, compression)
+  except Exception:
+    return False
+  return decoded.lower() in {"1", "true"}
+
+
+def _custom_torque_enabled_after_valid_request(params_to_update: dict[str, str], compression: bool,
+                                               attested_keys: set[str], offroad: bool) -> bool:
+  """Return whether this transaction validly satisfies the CustomTorqueParams dependency."""
+  if params.get_bool("CustomTorqueParams"):
+    return True
+  value = params_to_update.get("CustomTorqueParams")
+  if value is None or not offroad or not _torque_settings_allowed():
+    return False
+
+  policy: dict[str, Any] = SETTINGS_POLICY.get("CustomTorqueParams", {})
+  if policy.get("blocked"):
+    return False
+  if policy.get("attestation_required") and "CustomTorqueParams" not in attested_keys:
+    return False
+  try:
+    decoded_value = _decode_param_value(value, compression) if policy else value
+  except Exception:
+    return False
+  if not _decoded_value_matches_policy(decoded_value, policy):
+    return False
+  return decoded_value.strip().lower() in {"1", "true"}
+
+
+def _torque_settings_allowed() -> bool:
+  """Return True unless capability data explicitly indicates torque steering is not allowed.
+
+  When no CarParams or CarPlatformBundle is available yet, we default to True so
+  pre-fingerprint devices can still receive torque settings safely gated by other
+  checks (offroad, attestation, etc.).
+  """
+  if params.get("CarParamsPersistent") is None and params.get("CarPlatformBundle") is None:
+    return True
+  try:
+    return bool(generate_capabilities().get("torque_allowed"))
+  except Exception:
+    cloudlog.exception("sunnylinkd._torque_settings_allowed.exception")
+    return True
 
 
 def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
@@ -341,6 +438,9 @@ def saveParams(params_to_update: dict[str, str], compression: bool = False, atte
   if isinstance(attested_params, dict):
     attested_keys |= {key for key, value in attested_params.items() if value}
 
+  offroad = params.get_bool("IsOffroad")
+  custom_torque_being_enabled = _custom_torque_enabled_after_valid_request(params_to_update, compression, attested_keys, offroad)
+
   saved_any = False
   for key, value in params_to_update.items():
     # disallow modifications to blocked parameters
@@ -357,6 +457,24 @@ def saveParams(params_to_update: dict[str, str], compression: bool = False, atte
       cloudlog.warning(f"sunnylinkd.saveParams.attestation_required: Missing attestation for '{key}'")
       continue
 
+    # Defense-in-depth: safety-critical torque/control settings are only writable
+    # while the device is offroad. They are also subject to capability checks when
+    # vehicle information is available (e.g., torque steering must be allowed).
+    if key in SAFETY_CRITICAL_REMOTE_GATED_PARAMS:
+      if not offroad:
+        cloudlog.warning(f"sunnylinkd.saveParams.offroad_required: '{key}' rejected while onroad")
+        continue
+      if not _torque_settings_allowed():
+        cloudlog.warning(f"sunnylinkd.saveParams.capability_rejected: '{key}' rejected, torque not allowed for this vehicle")
+        continue
+
+    # Manual override state and values require CustomTorqueParams to be enabled.
+    # The dependency can be satisfied by the current value or by an atomic
+    # CustomTorqueParams=true write in the same transaction.
+    if key in DEPENDS_ON_CUSTOM_TORQUE_PARAMS and not custom_torque_being_enabled:
+      cloudlog.warning(f"sunnylinkd.saveParams.dependency_missing: '{key}' requires CustomTorqueParams")
+      continue
+
     decoded_value = value
     if policy:
       try:
@@ -365,23 +483,8 @@ def saveParams(params_to_update: dict[str, str], compression: bool = False, atte
         cloudlog.warning(f"sunnylinkd.saveParams.decode_failed: {key} {e}")
         continue
 
-    if "min" in policy or "max" in policy:
-      try:
-        numeric_value = float(decoded_value)
-      except ValueError:
-        cloudlog.warning(f"sunnylinkd.saveParams.range_invalid: Non-numeric value for '{key}'")
-        continue
-      if not math.isfinite(numeric_value):
-        continue
-      if "min" in policy and numeric_value < float(policy["min"]):
-        continue
-      if "max" in policy and numeric_value > float(policy["max"]):
-        continue
-
-    if "options" in policy:
-      option_values = [opt.get("value") for opt in policy.get("options", []) if isinstance(opt, dict) and "value" in opt]
-      if not any(_option_value_matches(option_value, decoded_value) for option_value in option_values):
-        continue
+    if not _decoded_value_matches_policy(decoded_value, policy):
+      continue
 
     try:
       save_param_from_base64_encoded_string(key, value, compression)

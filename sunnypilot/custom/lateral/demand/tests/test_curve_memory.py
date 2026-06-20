@@ -4,6 +4,7 @@ reduce a confident turn), vetoed by confident opposing vision. Default-off parit
 from __future__ import annotations
 
 from openpilot.sunnypilot.custom.lateral.demand.curve_memory import (
+  CAPTURE_MIN_V,
   MIN_CURVATURE,
   RECALL_MAX_V,
   CurveMemory,
@@ -131,3 +132,32 @@ def test_hard_degraded_capture_is_blocked():
     cm.update(cm_in(5.0, 0.02, 0.02, 1.0, path_reason="invalid_path"), DT)
   r = cm.update(cm_in(0.5, 0.02, 0.0, 0.3), DT)
   assert not r.active
+
+
+def test_capture_speed_gate_blocks_capture_below_min_speed():
+  cm = CurveMemory()
+  r = None
+  for _ in range(100):
+    r = cm.update(cm_in(CAPTURE_MIN_V - 1.0, kappa_path=0.02, base=0.02, quality=1.0), DT)
+  assert r is not None and r.samples == 0
+  r2 = cm.update(cm_in(0.5, kappa_path=0.02, base=0.0, quality=0.3), DT)
+  assert not r2.active and r2.source == "vision"
+
+
+def test_capture_speed_gate_allows_capture_at_min_speed():
+  cm = CurveMemory()
+  r = None
+  for _ in range(60):
+    r = cm.update(cm_in(CAPTURE_MIN_V, kappa_path=0.02, base=0.02, quality=1.0), DT)
+  assert r is not None and r.samples > 0
+  r2 = cm.update(cm_in(0.5, kappa_path=0.02, base=0.0, quality=0.3), DT)
+  assert r2.active and r2.source == "memory"
+
+
+def test_capture_speed_gate_is_fail_closed_for_nonfinite_speed():
+  cm = CurveMemory()
+  for v in (float("nan"), float("inf"), float("-inf")):
+    r = None
+    for _ in range(30):
+      r = cm.update(cm_in(v, kappa_path=0.02, base=0.02, quality=1.0), DT)
+    assert r is not None and r.samples == 0

@@ -27,6 +27,7 @@ FACTOR_SANITY = 0.3
 FACTOR_SANITY_QLOG = 0.5
 FRICTION_SANITY = 0.5
 FRICTION_SANITY_QLOG = 0.8
+MAX_LATACCEL_OFFSET = 1.0  # m/s^2
 STEER_MIN_THRESHOLD = 0.02
 MIN_FILTER_DECAY = 50
 MAX_FILTER_DECAY = 250
@@ -114,16 +115,22 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         with car.CarParams.from_bytes(params_cache) as msg:
           cache_CP = msg
         if self.get_restore_key(cache_CP, cache_ltp.version) == self.get_restore_key(CP, VERSION):
-          if cache_ltp.liveValid:
-            initial_params = {
-              'latAccelFactor': cache_ltp.latAccelFactorFiltered,
-              'latAccelOffset': cache_ltp.latAccelOffsetFiltered,
-              'frictionCoefficient': cache_ltp.frictionCoefficientFiltered
-            }
-          initial_params['points'] = cache_ltp.points
-          self.decay = cache_ltp.decay
-          self.filtered_points.load_points(initial_params['points'])
-          cloudlog.info("restored torque params from cache")
+          filtered_fields = (cache_ltp.latAccelFactorFiltered, cache_ltp.latAccelOffsetFiltered,
+                             cache_ltp.frictionCoefficientFiltered)
+          if cache_ltp.liveValid and not all(np.isfinite(v) for v in filtered_fields):
+            cloudlog.exception("cached LiveTorqueParameters has non-finite filtered fields; discarding cache")
+            params.remove("LiveTorqueParameters")
+          else:
+            if cache_ltp.liveValid:
+              initial_params = {
+                'latAccelFactor': cache_ltp.latAccelFactorFiltered,
+                'latAccelOffset': float(np.clip(cache_ltp.latAccelOffsetFiltered, -MAX_LATACCEL_OFFSET, MAX_LATACCEL_OFFSET)),
+                'frictionCoefficient': cache_ltp.frictionCoefficientFiltered
+              }
+            initial_params['points'] = cache_ltp.points
+            self.decay = cache_ltp.decay
+            self.filtered_points.load_points(initial_params['points'])
+            cloudlog.info("restored torque params from cache")
       except Exception:
         cloudlog.exception("failed to restore cached torque params")
         params.remove("LiveTorqueParameters")
@@ -244,18 +251,32 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
       liveTorqueParameters.frictionCoefficientRaw = float(frictionCoeff)
 
       if self.filtered_points.is_valid():
-        if any(val is None or np.isnan(val) for val in [latAccelFactor, latAccelOffset, frictionCoeff]):
-          cloudlog.exception("Live torque parameters are invalid.")
+        raw_estimates = [latAccelFactor, latAccelOffset, frictionCoeff]
+        if any(val is None or not np.isfinite(val) for val in raw_estimates):
+          cloudlog.exception("Live torque parameters are non-finite.")
+          liveTorqueParameters.liveValid = False
+          self.reset()
+        elif abs(latAccelOffset) > MAX_LATACCEL_OFFSET:
+          cloudlog.exception("Live torque offset exceeds sane bound.")
           liveTorqueParameters.liveValid = False
           self.reset()
         else:
           liveTorqueParameters.liveValid = True
           latAccelFactor = np.clip(latAccelFactor, self.min_lataccel_factor, self.max_lataccel_factor)
+          latAccelOffset = float(np.clip(latAccelOffset, -MAX_LATACCEL_OFFSET, MAX_LATACCEL_OFFSET))
           frictionCoeff = np.clip(frictionCoeff, self.min_friction, self.max_friction)
           self.update_params({'latAccelFactor': latAccelFactor, 'latAccelOffset': latAccelOffset, 'frictionCoefficient': frictionCoeff})
 
     if with_points:
       liveTorqueParameters.points = self.filtered_points.get_points()[:, [0, 2]].tolist()
+
+    if not all(np.isfinite(self.filtered_params[p].x) for p in ('latAccelFactor', 'latAccelOffset', 'frictionCoefficient')):
+      cloudlog.exception("Live torque filtered parameters are non-finite.")
+      liveTorqueParameters.liveValid = False
+      self.reset()
+      self.filtered_params['latAccelFactor'].x = self.offline_latAccelFactor
+      self.filtered_params['latAccelOffset'].x = 0.0
+      self.filtered_params['frictionCoefficient'].x = self.offline_friction
 
     liveTorqueParameters.latAccelFactorFiltered = float(self.filtered_params['latAccelFactor'].x)
     liveTorqueParameters.latAccelOffsetFiltered = float(self.filtered_params['latAccelOffset'].x)

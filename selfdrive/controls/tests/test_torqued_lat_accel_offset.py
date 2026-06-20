@@ -1,12 +1,26 @@
 import numpy as np
+import pytest
+
 from cereal import car, messaging
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
 from opendbc.car import structs
 from opendbc.car.lateral import get_friction, FRICTION_THRESHOLD
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.locationd.torqued import TorqueEstimator, MIN_BUCKET_POINTS, POINTS_PER_BUCKET, STEER_BUCKET_BOUNDS
+from openpilot.selfdrive.locationd.torqued import TorqueEstimator, MIN_BUCKET_POINTS, POINTS_PER_BUCKET, STEER_BUCKET_BOUNDS, VERSION
 
 np.random.seed(0)
+
+
+@pytest.fixture(autouse=True)
+def cleanup_torque_cache():
+  params = Params()
+  params.remove("CarParamsPrevRoute")
+  params.remove("LiveTorqueParameters")
+  yield
+  params.remove("CarParamsPrevRoute")
+  params.remove("LiveTorqueParameters")
+
 
 LA_ERR_STD = 1.0
 INPUT_NOISE_STD = 0.08
@@ -70,3 +84,58 @@ def test_straight_road_roll_bias():
   simulate_straight_road_msgs(est)
   msg = est.get_msg()
   assert (msg.liveTorqueParameters.latAccelOffsetRaw < -0.05) and np.isfinite(msg.liveTorqueParameters.latAccelOffsetRaw)
+
+
+def make_torque_cp():
+  cp = car.CarParams.new_message()
+  cp.brand = "toyota"
+  cp.carFingerprint = "TOYOTA_CAMRY"
+  cp.lateralTuning.init('torque')
+  cp.lateralTuning.torque.latAccelFactor = 2.0
+  cp.lateralTuning.torque.friction = 0.2
+  return cp
+
+
+def put_live_torque_cache(cp, offset_filtered, live_valid=True):
+  msg = messaging.new_message('liveTorqueParameters')
+  ltp = msg.liveTorqueParameters
+  ltp.version = VERSION
+  ltp.liveValid = live_valid
+  ltp.latAccelFactorFiltered = 2.0
+  ltp.latAccelOffsetFiltered = float(offset_filtered)
+  ltp.frictionCoefficientFiltered = 0.2
+  ltp.points = []
+  ltp.decay = 100
+  params = Params()
+  params.put("CarParamsPrevRoute", cp.to_bytes(), block=True)
+  params.put("LiveTorqueParameters", msg.to_bytes(), block=True)
+  return msg
+
+
+def test_non_finite_raw_offset_is_invalid():
+  steer_torques, lat_accels = generate_inputs(TORQUE_TUNE, la_err_std=LA_ERR_STD, input_noise_std=INPUT_NOISE_STD)
+  est = get_warmed_up_estimator(steer_torques, lat_accels)
+  est.estimate_params = lambda: (2.0, float('inf'), 0.15)
+  msg = est.get_msg()
+  assert not msg.liveTorqueParameters.liveValid
+  assert np.isinf(msg.liveTorqueParameters.latAccelOffsetRaw)
+  assert np.isfinite(msg.liveTorqueParameters.latAccelOffsetFiltered)
+  assert np.isfinite(msg.liveTorqueParameters.latAccelFactorFiltered)
+  assert np.isfinite(msg.liveTorqueParameters.frictionCoefficientFiltered)
+
+
+def test_cache_with_non_finite_filtered_offset_is_discarded():
+  cp = make_torque_cp()
+  put_live_torque_cache(cp, float('inf'))
+  est = TorqueEstimator(cp)
+  assert Params().get("LiveTorqueParameters") is None
+  assert np.isfinite(est.filtered_params['latAccelOffset'].x)
+  assert est.filtered_params['latAccelOffset'].x == 0.0
+
+
+def test_cache_with_finite_filtered_offset_is_restored():
+  cp = make_torque_cp()
+  put_live_torque_cache(cp, 0.25)
+  est = TorqueEstimator(cp)
+  assert Params().get("LiveTorqueParameters") is not None
+  assert est.filtered_params['latAccelOffset'].x == 0.25

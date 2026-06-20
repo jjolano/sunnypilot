@@ -30,7 +30,7 @@ def test_override_off_and_manual_priority():
   ext = LatControlTorqueExtOverride(cp())
   tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
   class P:
-    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled', 'LiveTorqueParamsToggle')
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled', 'LiveTorqueParamsToggle', 'CustomTorqueParams')
     def get(self, k, return_default=True):
       if k == 'LiveTorqueSpeedAdaptiveParams':
         return profile_payload(anchors=[20.0], ratios=[1.1], confidence=[1.0], points=[1])
@@ -138,7 +138,7 @@ def test_manual_override_accepts_valid_range_edges():
   ext = LatControlTorqueExtOverride(cp())
 
   class P:
-    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled')
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled', 'CustomTorqueParams')
     def get(self, k, return_default=True):
       if k == 'TorqueParamsOverrideLatAccelFactor':
         return '0.1'
@@ -158,7 +158,7 @@ def test_invalid_manual_override_values_do_not_apply_or_clamp():
   ext = LatControlTorqueExtOverride(cp())
 
   class P:
-    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled')
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled', 'CustomTorqueParams')
     def get(self, k, return_default=True):
       if k == 'TorqueParamsOverrideLatAccelFactor':
         return 'nan'
@@ -179,6 +179,26 @@ def test_invalid_manual_override_values_do_not_apply_or_clamp():
   assert tp.friction == 0.2
   assert ext.last_manual_applied is None
   assert ext.last_manual_friction_applied is None
+
+
+def test_manual_override_not_applied_without_custom_torque_params():
+  ext = LatControlTorqueExtOverride(cp())
+
+  class P:
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled')
+    def get(self, k, return_default=True):
+      if k == 'TorqueParamsOverrideLatAccelFactor':
+        return '0.5'
+      if k == 'TorqueParamsOverrideFriction':
+        return '0.3'
+      return 'off'
+
+  ext.params = P()
+  ext.enforce_torque_control_toggle = True
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  assert ext.update_override_torque_params(tp, 25.0) is False
+  assert tp.latAccelFactor == 2.0
+  assert tp.friction == 0.2
 
 
 def test_malformed_speed_aware_profile_rejected_for_non_monotonic_anchors():

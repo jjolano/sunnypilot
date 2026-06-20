@@ -180,6 +180,9 @@ class TorqueSettingsLayout(Widget):
     self._torque_friction.action_item.set_value(self._pending_friction)
 
   def _apply_manual_torque_pending(self) -> None:
+    # Manual torque values are safety-critical and must only be written while offroad.
+    if ui_state.is_onroad() or ui_state.engaged:
+      return
     ui_state.params.put("TorqueParamsOverrideLatAccelFactor", self._pending_lat_accel_factor / 100.0)
     ui_state.params.put("TorqueParamsOverrideFriction", self._pending_friction / 100.0)
 
@@ -202,10 +205,14 @@ class TorqueSettingsLayout(Widget):
     self._manual_torque_apply_revert.set_visible(custom_tune_enabled)
 
     self._torque_prams_override_toggle.action_item.set_enabled(ui_state.is_offroad())
-    sliders_enabled = self._torque_prams_override_toggle.action_item.get_state() or ui_state.is_offroad()
+    # Sliders and the Apply/Revert buttons are safety-critical and are only usable
+    # offroad. Do not let a pre-enabled Manual Real-Time Tuning toggle make the
+    # sliders writable while onroad.
+    sliders_enabled = ui_state.is_offroad()
     self._torque_lat_accel_factor.action_item.set_enabled(sliders_enabled)
     self._torque_friction.action_item.set_enabled(sliders_enabled)
-    self._manual_torque_apply_revert.action_item.set_enabled(custom_tune_enabled and self._manual_torque_pending_changed())
+    self._manual_torque_apply_revert.action_item.set_enabled(
+      ui_state.is_offroad() and custom_tune_enabled and self._manual_torque_pending_changed())
 
     title_text = tr("Real-Time & Offline") if ui_state.params.get("TorqueParamsOverrideEnabled") else tr("Offline Only")
     self._torque_lat_accel_factor.set_title(lambda: tr("Lateral Acceleration Factor") + " (" + title_text + ")")
@@ -219,6 +226,7 @@ class TorqueSettingsLayout(Widget):
       tr("Pending: ") + self._format_scaled(self._pending_friction) + "<br>" +
       tr("Press Apply to write both pending torque values."))
     self._torque_control_versions.action_item.set_value(self._get_current_torque_version_label())
+    self._torque_control_versions.action_item.set_enabled(ui_state.is_offroad())
     self._speed_adaptive_mode.action_item.set_value(self._get_current_speed_mode_label())
 
   def _render(self, rect):
@@ -261,6 +269,9 @@ class TorqueSettingsLayout(Widget):
     current_label = self._get_current_speed_mode_label()
 
     def handle_selection(result: int):
+      if ui_state.is_onroad() or ui_state.engaged:
+        self._speed_adaptive_mode_dialog = None
+        return
       if result == DialogResult.CONFIRM and self._speed_adaptive_mode_dialog:
         selected = self._speed_adaptive_mode_dialog.selection_ref
         mapping = {tr("Off"): "off", tr("Learn only"): "shadow", tr("Apply learned curve"): "apply"}
@@ -270,6 +281,10 @@ class TorqueSettingsLayout(Widget):
         else:
           ui_state.params.put("LiveTorqueSpeedAdaptiveMode", mode)
       self._speed_adaptive_mode_dialog = None
+
+    # Safety gate: speed-adaptive mode changes affect torque steering and are offroad-only.
+    if ui_state.is_onroad() or ui_state.engaged:
+      return
 
     self._speed_adaptive_mode_dialog = TreeOptionDialog(
       tr("Select Speed-Aware Curve Mode"),
@@ -300,6 +315,9 @@ class TorqueSettingsLayout(Widget):
     current_label = self._get_current_torque_version_label()
 
     def handle_selection(result: int):
+      if ui_state.is_onroad() or ui_state.engaged:
+        self._torque_version_dialog = None
+        return
       if result == DialogResult.CONFIRM and self._torque_version_dialog:
         selected_ref = self._torque_version_dialog.selection_ref
         if selected_ref == tr("Default"):
@@ -307,6 +325,10 @@ class TorqueSettingsLayout(Widget):
         elif selected_ref in options_map:
           ui_state.params.put("TorqueControlTune", options_map[selected_ref])
       self._torque_version_dialog = None
+
+    # Safety gate: version changes affect torque steering and are offroad-only.
+    if ui_state.is_onroad() or ui_state.engaged:
+      return
 
     self._torque_version_dialog = TreeOptionDialog(
       tr("Select Torque Control Tune Version"),

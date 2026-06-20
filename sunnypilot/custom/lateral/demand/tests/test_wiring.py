@@ -104,6 +104,14 @@ def test_adapter_disabled_passthrough():
   assert out == 0.0123
 
 
+def test_default_params_disable_adapter_and_curve_memory():
+  a = LateralDemandAdapter(FakeParams())
+  assert a.enabled is False
+  assert a.curve_memory_enabled is False
+  out = a.process(True, 20.0, 0.0, 0.0123, 0.0123, fake_model())
+  assert out == 0.0123
+
+
 def test_adapter_enabled_processes_curvature():
   a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
   out = a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001))

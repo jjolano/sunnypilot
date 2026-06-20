@@ -2,6 +2,8 @@
 import math
 from numbers import Number
 
+import numpy as np
+
 from cereal import car, log
 import cereal.messaging as messaging
 from openpilot.common.constants import CV
@@ -89,7 +91,10 @@ class Controls(ControlsExt):
     # Update Torque Params
     if self.CP.lateralTuning.which() == 'torque':
       torque_params = self.sm['liveTorqueParameters']
-      if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
+      live_torque_finite = all(np.isfinite(v) for v in (torque_params.latAccelFactorFiltered,
+                                                        torque_params.latAccelOffsetFiltered,
+                                                        torque_params.frictionCoefficientFiltered))
+      if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams and live_torque_finite:
         self.LaC.update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
                                            torque_params.frictionCoefficientFiltered)
 
