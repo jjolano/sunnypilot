@@ -15,11 +15,21 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.lib.utils import NoElideButtonAction
-from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, toggle_item_sp, option_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, toggle_item_sp, option_item_sp, dual_button_item_sp
 from openpilot.system.ui.sunnypilot.widgets.tree_dialog import TreeOptionDialog, TreeFolder, TreeNode
 from openpilot.system.ui.widgets import Widget, DialogResult
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
+from openpilot.sunnypilot.custom.lateral.torque_safety import (
+  TORQUE_OVERRIDE_LAT_ACCEL_FACTOR_MIN,
+  TORQUE_OVERRIDE_LAT_ACCEL_FACTOR_MAX,
+  TORQUE_OVERRIDE_LAT_ACCEL_FACTOR_DEFAULT,
+  TORQUE_OVERRIDE_FRICTION_MIN,
+  TORQUE_OVERRIDE_FRICTION_MAX,
+  TORQUE_OVERRIDE_FRICTION_DEFAULT,
+  validate_torque_override_friction,
+  validate_torque_override_lat_accel_factor,
+)
 
 TORQUE_VERSIONS_PATH = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "controls", "lib", "latcontrol_torque_versions.json")
 
@@ -33,6 +43,10 @@ class TorqueSettingsLayout(Widget):
     self._speed_adaptive_mode_dialog: TreeOptionDialog | None = None
     self.cached_torque_versions = {}
     self._load_versions()
+    self._pending_lat_accel_factor = self._read_scaled_torque_value(
+      "TorqueParamsOverrideLatAccelFactor", TORQUE_OVERRIDE_LAT_ACCEL_FACTOR_DEFAULT, validate_torque_override_lat_accel_factor)
+    self._pending_friction = self._read_scaled_torque_value(
+      "TorqueParamsOverrideFriction", TORQUE_OVERRIDE_FRICTION_DEFAULT, validate_torque_override_friction)
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
 
@@ -43,7 +57,7 @@ class TorqueSettingsLayout(Widget):
   def _initialize_items(self):
     self._torque_control_versions = ListItemSP(
       title=tr("Torque Control Tune Version"),
-      description="Select the version of Torque Control Tune to use.",
+      description=tr("Select the Torque Control Tune version. Changes apply to torque steering behavior; return to Default to use the standard tune."),
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_torque_version_dialog,
     )
@@ -51,17 +65,18 @@ class TorqueSettingsLayout(Widget):
       param="LiveTorqueParamsToggle",
       title=lambda: tr("Self-Tune"),
       description=lambda: tr("Enables self-tune for Torque lateral control for platforms that do not use " +
-                             "Torque lateral control by default."),
+                             "Torque lateral control by default. Learned values can change steering response over time; " +
+                             "disable to stop learning and return to fixed/offline torque tuning."),
     )
     self._relaxed_tune_toggle = toggle_item_sp(
       param="LiveTorqueParamsRelaxedToggle",
       title=lambda: tr("Less Restrict Settings for Self-Tune (Beta)"),
       description=lambda: tr("Less strict settings when using Self-Tune. This allows torqued to be more " +
-                             "forgiving when learning values."),
+                             "forgiving when learning values, but may accept noisier steering data. Disable to return to stricter learning."),
     )
     self._speed_adaptive_mode = ListItemSP(
       title=tr("Speed-Aware Curve"),
-      description="Choose how learned speed correction is used.",
+      description=tr("Choose how learned speed correction is used. Apply mode can change steering response by speed; Off returns to the base torque tune."),
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_speed_adaptive_mode_dialog,
     )
@@ -71,34 +86,50 @@ class TorqueSettingsLayout(Widget):
       description=lambda: tr("Enables custom tuning for Torque lateral control. " +
                              "Modifying Lateral Acceleration Factor and Friction below will override the offline values " +
                              "indicated in the YAML files within \"opendbc/car/torque_data\". " +
-                             "The values will also be used live when \"Manual Real-Time Tuning\" toggle is enabled."),
+                             "The values will also be used live when \"Manual Real-Time Tuning\" toggle is enabled. " +
+                             "Large changes can bias steering or degrade tracking; turn this off to return to the selected tune."),
     )
     self._torque_prams_override_toggle = toggle_item_sp(
       param="TorqueParamsOverrideEnabled",
       title=lambda: tr("Manual Real-Time Tuning"),
       description=lambda: tr("Enforces the torque lateral controller to use the fixed values instead of the learned " +
-                             "values from Self-Tune. Enabling this toggle overrides Self-Tune values."),
+                             "values from Self-Tune. Enabling this toggle applies the custom values live and overrides Self-Tune values. " +
+                             "Monitor steering response and disable to return to learned/offline values."),
     )
     self._torque_lat_accel_factor = option_item_sp(
       title=lambda: tr("Lateral Acceleration Factor"),
       param="TorqueParamsOverrideLatAccelFactor",
-      description="",
-      min_value=1,
-      max_value=500,
+      description=tr("Adjusts how strongly torque maps to lateral acceleration. In Real-Time mode this can affect steering immediately; revert by disabling Manual Real-Time Tuning or Custom Tuning."),
+      min_value=int(TORQUE_OVERRIDE_LAT_ACCEL_FACTOR_MIN * 100),
+      max_value=int(TORQUE_OVERRIDE_LAT_ACCEL_FACTOR_MAX * 100),
       value_change_step=1,
+      on_value_changed=self._on_pending_lat_accel_factor_changed,
       label_callback=(lambda x: f"{x/100} m/s^2"),
-      use_float_scaling=True
+      use_float_scaling=True,
+      write_param=False,
+      initial_value=self._pending_lat_accel_factor,
     )
 
     self._torque_friction = option_item_sp(
       title=lambda: tr("Friction"),
       param="TorqueParamsOverrideFriction",
-      description="",
-      min_value=1,
-      max_value=100,
+      description=tr("Adjusts friction compensation for torque steering. In Real-Time mode this can affect steering immediately; revert by disabling Manual Real-Time Tuning or Custom Tuning."),
+      min_value=int(TORQUE_OVERRIDE_FRICTION_MIN * 100),
+      max_value=int(TORQUE_OVERRIDE_FRICTION_MAX * 100),
       value_change_step=1,
+      on_value_changed=self._on_pending_friction_changed,
       label_callback=(lambda x: f"{x/100}"),
-      use_float_scaling=True
+      use_float_scaling=True,
+      write_param=False,
+      initial_value=self._pending_friction,
+    )
+
+    self._manual_torque_apply_revert = dual_button_item_sp(
+      tr("Revert"), tr("Apply"),
+      left_callback=self._revert_manual_torque_pending,
+      right_callback=self._apply_manual_torque_pending,
+      description=tr("Edit pending torque values above, then Apply to write both values together. Revert discards pending edits."),
+      border_radius=20,
     )
 
     items = [
@@ -110,8 +141,50 @@ class TorqueSettingsLayout(Widget):
       self._torque_prams_override_toggle,
       self._torque_lat_accel_factor,
       self._torque_friction,
+      self._manual_torque_apply_revert,
     ]
     return items
+
+  @staticmethod
+  def _format_scaled(value: int, suffix: str = "") -> str:
+    formatted = f"{value / 100:.2f}".rstrip("0").rstrip(".")
+    return f"{formatted}{suffix}"
+
+  def _read_scaled_torque_value(self, key: str, default: float, validator: Callable[[object], float | None]) -> int:
+    parsed = validator(ui_state.params.get(key, return_default=True))
+    if parsed is None:
+      parsed = default
+    return int(round(parsed * 100))
+
+  def _on_pending_lat_accel_factor_changed(self, value: int) -> None:
+    self._pending_lat_accel_factor = value
+
+  def _on_pending_friction_changed(self, value: int) -> None:
+    self._pending_friction = value
+
+  def _current_lat_accel_factor(self) -> int:
+    return self._read_scaled_torque_value(
+      "TorqueParamsOverrideLatAccelFactor", TORQUE_OVERRIDE_LAT_ACCEL_FACTOR_DEFAULT, validate_torque_override_lat_accel_factor)
+
+  def _current_friction(self) -> int:
+    return self._read_scaled_torque_value(
+      "TorqueParamsOverrideFriction", TORQUE_OVERRIDE_FRICTION_DEFAULT, validate_torque_override_friction)
+
+  def _manual_torque_pending_changed(self) -> bool:
+    return self._pending_lat_accel_factor != self._current_lat_accel_factor() or self._pending_friction != self._current_friction()
+
+  def _sync_pending_manual_torque_from_params(self) -> None:
+    self._pending_lat_accel_factor = self._current_lat_accel_factor()
+    self._pending_friction = self._current_friction()
+    self._torque_lat_accel_factor.action_item.set_value(self._pending_lat_accel_factor)
+    self._torque_friction.action_item.set_value(self._pending_friction)
+
+  def _apply_manual_torque_pending(self) -> None:
+    ui_state.params.put("TorqueParamsOverrideLatAccelFactor", self._pending_lat_accel_factor / 100.0)
+    ui_state.params.put("TorqueParamsOverrideFriction", self._pending_friction / 100.0)
+
+  def _revert_manual_torque_pending(self) -> None:
+    self._sync_pending_manual_torque_from_params()
 
   def _update_state(self):
     super()._update_state()
@@ -126,15 +199,25 @@ class TorqueSettingsLayout(Widget):
     self._torque_prams_override_toggle.set_visible(custom_tune_enabled)
     self._torque_lat_accel_factor.set_visible(custom_tune_enabled)
     self._torque_friction.set_visible(custom_tune_enabled)
+    self._manual_torque_apply_revert.set_visible(custom_tune_enabled)
 
     self._torque_prams_override_toggle.action_item.set_enabled(ui_state.is_offroad())
     sliders_enabled = self._torque_prams_override_toggle.action_item.get_state() or ui_state.is_offroad()
     self._torque_lat_accel_factor.action_item.set_enabled(sliders_enabled)
     self._torque_friction.action_item.set_enabled(sliders_enabled)
+    self._manual_torque_apply_revert.action_item.set_enabled(custom_tune_enabled and self._manual_torque_pending_changed())
 
     title_text = tr("Real-Time & Offline") if ui_state.params.get("TorqueParamsOverrideEnabled") else tr("Offline Only")
     self._torque_lat_accel_factor.set_title(lambda: tr("Lateral Acceleration Factor") + " (" + title_text + ")")
     self._torque_friction.set_title(lambda: tr("Friction") + " (" + title_text + ")")
+    self._torque_lat_accel_factor.set_description(
+      tr("Current: ") + self._format_scaled(self._current_lat_accel_factor(), " m/s^2") + "<br>" +
+      tr("Pending: ") + self._format_scaled(self._pending_lat_accel_factor, " m/s^2") + "<br>" +
+      tr("Press Apply to write both pending torque values."))
+    self._torque_friction.set_description(
+      tr("Current: ") + self._format_scaled(self._current_friction()) + "<br>" +
+      tr("Pending: ") + self._format_scaled(self._pending_friction) + "<br>" +
+      tr("Press Apply to write both pending torque values."))
     self._torque_control_versions.action_item.set_value(self._get_current_torque_version_label())
     self._speed_adaptive_mode.action_item.set_value(self._get_current_speed_mode_label())
 
@@ -146,6 +229,7 @@ class TorqueSettingsLayout(Widget):
     self._scroller.render(content_rect)
 
   def show_event(self):
+    self._sync_pending_manual_torque_from_params()
     self._scroller.show_event()
 
   def _get_current_torque_version_label(self):

@@ -22,7 +22,8 @@ class OptionControlSP(ItemAction):
                on_value_changed: Callable[[int], None] | None = None,
                value_map: dict[int, int] | None = None,
                label_width: int = LABEL_WIDTH,
-               use_float_scaling: bool = False, label_callback: Callable[[int], str] | None = None):
+               use_float_scaling: bool = False, label_callback: Callable[[int], str] | None = None,
+               write_param: bool = True, initial_value: int | None = None):
 
     super().__init__(enabled=enabled)
     self.params = Params()
@@ -36,14 +37,17 @@ class OptionControlSP(ItemAction):
     self.value_map = value_map
     self.label_width = label_width
     self.use_float_scaling = use_float_scaling
+    self.write_param = write_param
     self.current_value = min_value
     self.label_callback = label_callback
-    if self.value_map:
+    if initial_value is not None:
+      self.current_value = int(max(self.min_value, min(self.max_value, initial_value)))
+    elif self.value_map and self.write_param:
       for key in self.value_map:
         if self.value_map[key] == self.params.get(self.param_key, return_default=True):
           self.current_value = int(key)
           break
-    else:
+    elif self.write_param:
       value = self.params.get(self.param_key, return_default=True)
       self.current_value = int(float(value) * 100.0) if self.use_float_scaling else int(value)
 
@@ -65,12 +69,13 @@ class OptionControlSP(ItemAction):
     if value == self.current_value:
       return
     self.current_value = value
-    if self.value_map:
-      self.params.put(self.param_key, self.value_map[value])
-    elif self.use_float_scaling:
-      self.params.put(self.param_key, value / 100.0)
-    else:
-      self.params.put(self.param_key, value)
+    if self.write_param:
+      if self.value_map:
+        self.params.put(self.param_key, self.value_map[value])
+      elif self.use_float_scaling:
+        self.params.put(self.param_key, value / 100.0)
+      else:
+        self.params.put(self.param_key, value)
     if self.on_value_changed:
       self.on_value_changed(value)
 

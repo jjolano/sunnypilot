@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-20T00:00:00.000Z",
+  "title": "Design System: sunnypilot",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Sunnypilot Action Blue",
+        "canonical": "#465DEA",
+        "tonalRamp": ["oklch(20% 0.08 272)", "oklch(30% 0.12 272)", "oklch(40% 0.16 272)", "oklch(52% 0.20 272)", "oklch(62% 0.18 272)", "oklch(72% 0.13 272)", "oklch(84% 0.08 272)", "oklch(94% 0.03 272)"]
+      },
+      "state-on": {
+        "role": "primary",
+        "displayName": "Drive State Blue",
+        "canonical": "#1C65BA",
+        "tonalRamp": ["oklch(18% 0.06 254)", "oklch(28% 0.09 254)", "oklch(38% 0.12 254)", "oklch(48% 0.14 254)", "oklch(60% 0.12 254)", "oklch(72% 0.09 254)", "oklch(84% 0.05 254)", "oklch(94% 0.02 254)"]
+      },
+      "surface-base": {
+        "role": "neutral",
+        "displayName": "Base Charcoal",
+        "canonical": "#393939",
+        "tonalRamp": ["oklch(14% 0 0)", "oklch(20% 0 0)", "oklch(27% 0 0)", "oklch(34% 0 0)", "oklch(46% 0 0)", "oklch(60% 0 0)", "oklch(76% 0 0)", "oklch(92% 0 0)"]
+      },
+      "text-primary": {
+        "role": "neutral",
+        "displayName": "Primary Text",
+        "canonical": "#FFFFFF",
+        "tonalRamp": ["#121212", "#272727", "#393939", "#585858", "#808080", "#C9C9C9", "#E4E4E4", "#FFFFFF"]
+      },
+      "success": {
+        "role": "secondary",
+        "displayName": "Proceed Green",
+        "canonical": "#00F100",
+        "tonalRamp": ["oklch(18% 0.08 145)", "oklch(30% 0.12 145)", "oklch(42% 0.16 145)", "oklch(56% 0.19 145)", "oklch(68% 0.18 145)", "oklch(78% 0.13 145)", "oklch(88% 0.08 145)", "oklch(96% 0.03 145)"]
+      },
+      "warning": {
+        "role": "secondary",
+        "displayName": "Caution Yellow",
+        "canonical": "#FFD500",
+        "tonalRamp": ["oklch(22% 0.06 95)", "oklch(34% 0.09 95)", "oklch(48% 0.12 95)", "oklch(64% 0.15 95)", "oklch(78% 0.16 95)", "oklch(86% 0.12 95)", "oklch(92% 0.07 95)", "oklch(97% 0.03 95)"]
+      },
+      "danger": {
+        "role": "secondary",
+        "displayName": "Critical Red",
+        "canonical": "#E22C2C",
+        "tonalRamp": ["oklch(20% 0.08 28)", "oklch(30% 0.12 28)", "oklch(42% 0.16 28)", "oklch(54% 0.20 28)", "oklch(66% 0.17 28)", "oklch(78% 0.11 28)", "oklch(88% 0.06 28)", "oklch(96% 0.03 28)"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Rare top-level dialog or keyboard title moments." },
+      "headline": { "displayName": "Headline", "purpose": "Dialog titles, confirm prompts, major modal headings." },
+      "title": { "displayName": "Title", "purpose": "Button labels and prominent control labels." },
+      "body": { "displayName": "Body", "purpose": "List titles, values, search text, and explanatory text." },
+      "label": { "displayName": "Label", "purpose": "Segmented controls, compact states, and secondary metadata." },
+      "mono": { "displayName": "Diagnostic Mono", "purpose": "Code-like or diagnostic content only." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "toggle-state-blend", "value": "state-only, approximately 120ms equivalent", "purpose": "Blend toggle track color and knob position between off and on." },
+      { "name": "segmented-highlight-follow", "value": "lerp 0.2 per frame", "purpose": "Move the selected segment highlight without choreographing the page." },
+      { "name": "reduced-motion", "value": "snap state changes", "purpose": "Disable nonessential interpolation when reduced motion is requested." }
+    ],
+    "breakpoints": [
+      { "name": "native-canvas", "value": "raylib device canvas" },
+      { "name": "scaled-pc-preview", "value": "SCALE environment variable" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The default forward action: blue fill, strong text, large touch target.",
+      "html": "<button class=\"ds-btn-primary\">Select</button>",
+      "css": ".ds-btn-primary{height:120px;min-width:300px;padding:0 48px;border:0;border-radius:10px;background:#465DEA;color:#E4E4E4;font:500 60px/1.15 Inter,system-ui,sans-serif;transition:background-color 120ms ease-out,outline-color 120ms ease-out}.ds-btn-primary:hover{background:#3049F4}.ds-btn-primary:active{background:#3049F4}.ds-btn-primary:focus-visible{outline:4px solid #969696C8;outline-offset:4px}@media (prefers-reduced-motion:reduce){.ds-btn-primary{transition:none}}"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Destructive or safety-critical action; red is rare and explicit.",
+      "html": "<button class=\"ds-btn-danger\">Delete</button>",
+      "css": ".ds-btn-danger{height:120px;min-width:300px;padding:0 48px;border:0;border-radius:10px;background:#E22C2C;color:#E4E4E4;font:500 60px/1.15 Inter,system-ui,sans-serif;transition:background-color 120ms ease-out}.ds-btn-danger:hover,.ds-btn-danger:active{background:#FF2424}.ds-btn-danger:focus-visible{outline:4px solid #969696C8;outline-offset:4px}@media (prefers-reduced-motion:reduce){.ds-btn-danger{transition:none}}"
+    },
+    {
+      "name": "Transparent Border Button",
+      "kind": "button",
+      "refersTo": "button-neutral",
+      "description": "A restrained secondary action with black fill and white outline.",
+      "html": "<button class=\"ds-btn-outline\">Cancel</button>",
+      "css": ".ds-btn-outline{height:120px;min-width:300px;padding:0 48px;border:2px solid #FFFFFF;border-radius:10px;background:#000;color:#E4E4E4;font:500 60px/1.15 Inter,system-ui,sans-serif;transition:background-color 120ms ease-out}.ds-btn-outline:hover,.ds-btn-outline:active{background:#151515}.ds-btn-outline:focus-visible{outline:4px solid #969696C8;outline-offset:4px}@media (prefers-reduced-motion:reduce){.ds-btn-outline{transition:none}}"
+    },
+    {
+      "name": "Sunnypilot Toggle",
+      "kind": "button",
+      "refersTo": "toggle-on",
+      "description": "Pill track and circular knob for on/off settings.",
+      "html": "<button class=\"ds-toggle is-on\" aria-pressed=\"true\"><span></span></button>",
+      "css": ".ds-toggle{position:relative;width:210px;height:100px;border:0;border-radius:999px;background:#393939;padding:5px;transition:background-color 120ms ease-out}.ds-toggle span{position:absolute;top:5px;left:5px;width:90px;height:90px;border-radius:50%;background:#FFFFFF;transition:transform 120ms ease-out}.ds-toggle.is-on{background:#1C65BA}.ds-toggle.is-on span{transform:translateX(110px)}.ds-toggle:focus-visible{outline:4px solid #969696C8;outline-offset:4px}@media (prefers-reduced-motion:reduce){.ds-toggle,.ds-toggle span{transition:none}}"
+    },
+    {
+      "name": "Inline Option Control",
+      "kind": "input",
+      "refersTo": "option-control",
+      "description": "Minus/value/plus control for bounded numeric settings.",
+      "html": "<div class=\"ds-option\" role=\"group\" aria-label=\"Option value\"><button>-</button><output>3</output><button>+</button></div>",
+      "css": ".ds-option{display:inline-flex;align-items:center;height:150px;padding:0 20px;gap:25px;border-radius:30px;background:#393939;color:#FFFFFF;font-family:Inter,system-ui,sans-serif}.ds-option button{width:150px;height:150px;border:0;border-radius:30px;background:transparent;color:#FFFFFF;font:500 60px/1 Inter,system-ui,sans-serif}.ds-option button:active{background:#696868}.ds-option button:focus-visible{outline:4px solid #969696C8;outline-offset:-6px}.ds-option output{display:grid;place-items:center;width:350px;height:150px;font:500 50px/1.1 Inter,system-ui,sans-serif}@media (prefers-reduced-motion:reduce){.ds-option *{transition:none}}"
+    },
+    {
+      "name": "Segmented Selector",
+      "kind": "chip",
+      "refersTo": "segmented-selector",
+      "description": "Multi-button selector with a neutral animated selected highlight.",
+      "html": "<div class=\"ds-segments\" role=\"radiogroup\"><button>Low</button><button class=\"is-selected\">Med</button><button>High</button></div>",
+      "css": ".ds-segments{display:inline-flex;height:120px;border:2px solid #696868;border-radius:24px;overflow:hidden;background:transparent;color:#FFFFFF;font-family:Inter,system-ui,sans-serif}.ds-segments button{min-width:300px;border:0;background:transparent;color:#FFFFFF;font:500 40px/1 Inter,system-ui,sans-serif}.ds-segments button.is-selected{background:#696868}.ds-segments button:focus-visible{outline:4px solid #969696C8;outline-offset:-6px}@media (prefers-reduced-motion:reduce){.ds-segments *{transition:none}}"
+    },
+    {
+      "name": "Selectable List Row",
+      "kind": "card",
+      "refersTo": "list-row",
+      "description": "Large settings row with left title and right value.",
+      "html": "<div class=\"ds-list-row\"><span>Lane behavior</span><strong>Auto</strong></div>",
+      "css": ".ds-list-row{display:flex;align-items:center;justify-content:space-between;min-height:170px;padding:0 20px;background:#121212;color:#FFFFFF;font:400 50px/1.2 Inter,system-ui,sans-serif}.ds-list-row strong{color:#AAAAAA;font-weight:400}.ds-list-row.is-selected{background:#465DEA}.ds-list-row.is-disabled{background:#1E1E1E;color:#585858}"
+    },
+    {
+      "name": "Tree Search Field",
+      "kind": "input",
+      "refersTo": "tree-search",
+      "description": "Top-right search affordance inside tree dialogs.",
+      "html": "<label class=\"ds-search\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"11\" cy=\"11\" r=\"7\"></circle><path d=\"M16.5 16.5 22 22\"></path></svg><span>Search</span></label>",
+      "css": ".ds-search{display:flex;align-items:center;gap:32px;width:520px;height:110px;padding:0 44px;border:3px solid #969696C8;border-radius:32px;background:transparent;color:#FFFFFF;font:500 70px/1 Inter,system-ui,sans-serif}.ds-search svg{width:52px;height:52px;fill:none;stroke:#B4B4B4F0;stroke-width:3;stroke-linecap:round}.ds-search:focus-within{background:#696868}.ds-search span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+    },
+    {
+      "name": "Confirm Dialog",
+      "kind": "custom",
+      "refersTo": "dialog-panel",
+      "description": "Dark modal decision panel with centered prompt and bottom actions.",
+      "html": "<section class=\"ds-dialog\"><p>Apply this change?</p><div><button class=\"ds-dialog-cancel\">Cancel</button><button class=\"ds-dialog-confirm\">Confirm</button></div></section>",
+      "css": ".ds-dialog{width:980px;min-height:520px;display:flex;flex-direction:column;justify-content:space-between;padding:50px;background:#1B1B1B;color:#C9C9C9;font-family:Inter,system-ui,sans-serif}.ds-dialog p{margin:0;display:grid;place-items:center;min-height:260px;text-align:center;font:700 70px/1.1 Inter,system-ui,sans-serif}.ds-dialog div{display:flex;gap:50px}.ds-dialog button{flex:1;height:160px;border:0;border-radius:10px;color:#E4E4E4;font:500 60px/1.15 Inter,system-ui,sans-serif}.ds-dialog-cancel{background:#333333}.ds-dialog-confirm{background:#465DEA}.ds-dialog button:focus-visible{outline:4px solid #969696C8;outline-offset:4px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Calibrated Cockpit",
+    "overview": "sunnypilot's UI is a native raylib product surface for a car computer, not a decorative web app. It should feel like a calibrated instrument panel: dark, legible, direct, and tuned for the moment when a driver or installer needs to understand state quickly. The interface earns its sunnypilot distinction through confident blue action states, clear settings patterns, and consistent control geometry rather than ornamental branding. The system is large-scale and touch-first. Rows, buttons, toggles, dialogs, and search controls use generous physical targets, solid fills, and immediate pressed/disabled feedback. Typography is Inter-led, high-contrast, and practical; display personality is reserved for non-control moments, never for safety-critical labels. This design system explicitly rejects the PRODUCT.md anti-references: flashy, gamified, or decorative safety-critical surfaces; generic SaaS/AI tropes; ambiguous custom controls; low-contrast gray-on-dark body text; novelty motion; fork branding that distracts from driving context; and settings layouts that make experimental or dangerous adjustments look casual.",
+    "keyCharacteristics": [
+      "Dark cockpit surfaces with high-contrast text and restrained blue identity/action states.",
+      "Large touch targets built around 120–170px control rhythms for in-car use.",
+      "Flat by default: state, selection, overlays, and tonal layers do the work of depth.",
+      "Conservative component behavior: every setting should show current state, enabled state, and consequence before action.",
+      "sunnypilot distinction stays inside the control language; identity never competes with safety."
+    ],
+    "rules": [
+      { "name": "The Blue Means State Rule", "body": "Blue is for primary action, active selection, or on-state identity. If blue is used only to decorate a surface, remove it.", "section": "colors" },
+      { "name": "The Status Colors Are Evidence Rule", "body": "Green, yellow, and red are reserved for actual status, warning, or destructive meaning. They are not a palette expansion.", "section": "colors" },
+      { "name": "The Gray Text Audit Rule", "body": "#808080 on dark charcoal is acceptable only for large, secondary metadata; body text and safety explanations must use #C9C9C9, #E4E4E4, or #FFFFFF.", "section": "colors" },
+      { "name": "The Inter Carries the Product Rule", "body": "Use Inter for product UI. Do not introduce display fonts into controls, labels, values, settings, or safety text.", "section": "typography" },
+      { "name": "The Fixed Scale Rule", "body": "This is a raylib device UI; use fixed pixel scales and the app's existing SCALE behavior instead of fluid web-style type ramps.", "section": "typography" },
+      { "name": "The No Decorative Shadow Rule", "body": "Shadows are prohibited as ambient decoration. If a future surface needs separation, use a darker overlay, a clear panel edge, a border, or a state color first.", "section": "elevation" },
+      { "name": "The Pressed Tone Rule", "body": "Interaction feedback changes tone immediately: neutral controls move from #333333 to #4A4A4A, primary controls from #465DEA to #3049F4, and danger controls from #E22C2C to #FF2424.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do preserve the Calibrated Cockpit feel: dark, legible, direct, and tuned for fast comprehension.",
+      "Do use existing raylib tokens from system/ui/sunnypilot/lib/styles.py before inventing new values.",
+      "Do keep primary actions blue (#465DEA) and active/on states blue (#1C65BA) so users learn one consistent state language.",
+      "Do verify contrast for every body/explanatory text placement; use #C9C9C9, #E4E4E4, or #FFFFFF when copy carries meaning.",
+      "Do make experimental, dangerous, or tuning-related controls communicate consequence and current state before action.",
+      "Do include reduced-motion behavior for any animated toggle, segmented-selector, dialog, or progress transition."
+    ],
+    "donts": [
+      "Don't make safety-critical surfaces flashy, gamified, or decorative.",
+      "Don't use generic SaaS/AI visual tropes, gradient text, glassmorphism, hero metrics, side-stripe accents, or identical decorative card grids.",
+      "Don't use ambiguous custom controls for settings that can affect driving behavior.",
+      "Don't use low-contrast gray-on-dark body text; #808080 and #585858 are secondary/disabled treatments, not paragraph colors.",
+      "Don't add novelty motion, bounce, elastic easing, or choreographed page-load sequences.",
+      "Don't let fork branding distract from driving context.",
+      "Don't make experimental or dangerous adjustments look casual."
+    ]
+  }
+}

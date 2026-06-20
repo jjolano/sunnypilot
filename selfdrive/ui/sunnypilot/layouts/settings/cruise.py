@@ -20,12 +20,14 @@ class PanelType(IntEnum):
 
 
 ICBM_DESC = tr_noop("When enabled, sunnypilot will attempt to manage the built-in cruise control buttons " +
-                    "by emulating button presses for limited longitudinal control.")
+                    "by emulating button presses for limited longitudinal control. This can change how cruise speed is adjusted; " +
+                    "turn it off to return button behavior to the vehicle stock path.")
 ICMB_UNAVAILABLE = tr_noop("Intelligent Cruise Button Management is currently unavailable on this platform.")
 ICMB_UNAVAILABLE_LONG_AVAILABLE = tr_noop("Disable the sunnypilot Longitudinal Control (alpha) toggle to allow Intelligent Cruise Button Management.")
 ICMB_UNAVAILABLE_LONG_UNAVAILABLE = tr_noop("sunnypilot Longitudinal Control is the default longitudinal control for this platform.")
 
-ACC_ENABLED_DESCRIPTION = tr_noop("Enable custom Short & Long press increments for cruise speed increase/decrease.")
+ACC_ENABLED_DESCRIPTION = tr_noop("Enable custom Short & Long press increments for cruise speed increase/decrease. " +
+                                  "These values change each button press step; disable to return to the default increments.")
 ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot longitudinal control enabled.")
 ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on this platform due to vehicle limitations.")
 ONROAD_ONLY_DESCRIPTION = tr_noop("Start the vehicle to check vehicle compatibility.")
@@ -49,12 +51,14 @@ class CruiseLayout(Widget):
 
     self.scc_v_toggle = toggle_item_sp(
       title=tr("Smart Cruise Control - Vision"),
-      description=tr("Use vision path predictions to estimate the appropriate speed to drive through turns ahead."),
+      description=tr("Use vision path predictions to estimate an appropriate speed for turns ahead. " +
+                     "This can change speed planning before curves; turn it off to stop using vision curve speed evidence."),
       param="SmartCruiseControlVision")
 
     self.scc_m_toggle = toggle_item_sp(
       title=tr("Smart Cruise Control - Map"),
-      description=tr("Use map data to estimate the appropriate speed to drive through turns ahead."),
+      description=tr("Use map data to estimate an appropriate speed for turns ahead. " +
+                     "This can change speed planning before mapped curves; turn it off to stop using map curve speed evidence."),
       param="SmartCruiseControlMap")
 
     self.custom_acc_toggle = toggle_item_sp(
@@ -84,7 +88,8 @@ class CruiseLayout(Widget):
 
     self.dec_toggle = toggle_item_sp(
       title=tr("Enable Dynamic Experimental Control"),
-      description=tr("Enable toggle to allow the model to determine when to use sunnypilot ACC or sunnypilot End to End Longitudinal."),
+      description=tr("Allow the model to choose between sunnypilot ACC and sunnypilot End-to-End Longitudinal. " +
+                     "This can change acceleration and braking behavior; turn it off to keep the selected longitudinal mode."),
       param="DynamicExperimentalControl")
 
     items = [

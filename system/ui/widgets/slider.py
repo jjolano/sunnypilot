@@ -65,7 +65,7 @@ class SliderBase(Widget, abc.ABC):
     self._label.reset_shimmer(self._shimmer_offset)
 
   def set_opacity(self, opacity: float, smooth: bool = False):
-    if smooth:
+    if smooth and not gui_app.reduced_motion:
       self._opacity_filter.update(opacity)
     else:
       self._opacity_filter.x = opacity
@@ -113,7 +113,10 @@ class SliderBase(Widget, abc.ABC):
 
     if self.confirmed:
       # swiped left to confirm
-      self._scroll_x_circle_filter.update(activated_pos)
+      if gui_app.reduced_motion:
+        self._scroll_x_circle_filter.x = activated_pos
+      else:
+        self._scroll_x_circle_filter.update(activated_pos)
 
       # activate once animation completes, small threshold for small floats
       if self._scroll_x_circle_filter.x < (activated_pos + 1):
@@ -123,7 +126,10 @@ class SliderBase(Widget, abc.ABC):
 
     elif not self._is_dragging_circle:
       # reset back to right
-      self._scroll_x_circle_filter.update(0)
+      if gui_app.reduced_motion:
+        self._scroll_x_circle_filter.x = 0
+      else:
+        self._scroll_x_circle_filter.update(0)
     else:
       # not activated yet, keep movement 1:1
       self._scroll_x_circle_filter.x = self._scroll_x_circle
@@ -152,7 +158,11 @@ class SliderBase(Widget, abc.ABC):
     # circle and arrow with grow animation
     circle_pressed = self._is_dragging_circle or self.confirmed or (self._circle_press_time is not None and rl.get_time() - self._circle_press_time < 0.075)
     circle_bg_txt = self._circle_bg_pressed_txt if circle_pressed else self._circle_bg_txt
-    scale = self._circle_scale_filter.update(self.PRESSED_SCALE if circle_pressed else 1.0)
+    if gui_app.reduced_motion:
+      scale = self.PRESSED_SCALE if circle_pressed else 1.0
+      self._circle_scale_filter.x = scale
+    else:
+      scale = self._circle_scale_filter.update(self.PRESSED_SCALE if circle_pressed else 1.0)
     scaled_btn_x = btn_x + (self._circle_bg_txt.width * (1 - scale)) / 2
     scaled_btn_y = btn_y + (self._circle_bg_txt.height * (1 - scale)) / 2
     rl.draw_texture_ex(circle_bg_txt, rl.Vector2(scaled_btn_x, scaled_btn_y), 0.0, scale, white)

@@ -76,7 +76,8 @@ class ModelsLayout(Widget):
     self.cancel_download_item = button_item(tr("Cancel Download"), tr("Cancel"), "", lambda: ui_state.params.remove("ModelManager_DownloadIndex"))
 
     self.lane_turn_value_control = option_item_sp(tr("Adjust Lane Turn Speed"), "LaneTurnValue", 500, 2000,
-                                                  tr("Set the maximum speed for lane turn desires. Default is 19 mph."),
+                                                  tr("Set the maximum speed where lane turn desires may be used. " +
+                                                     "Raising this can make the model plan turn-like paths at higher speeds; default is 19 mph."),
                                                   int(round(100 / CV.MPH_TO_KPH)), None, True, "", style.BUTTON_ACTION_WIDTH, None, True,
                                                   lambda v: f"{int(round(v / 100 * (CV.MPH_TO_KPH if ui_state.is_metric else 1)))}" +
                                                             f" {'km/h' if ui_state.is_metric else 'mph'}")
@@ -84,11 +85,12 @@ class ModelsLayout(Widget):
     self.lane_turn_desire_toggle = toggle_item_sp(tr("Use Lane Turn Desires"),
                                                   tr("If you're driving at 20 mph (32 km/h) or below and have your blinker on," +
                                                      " the car will plan a turn in that direction at the nearest drivable path. " +
-                                                     "This prevents situations (like at red lights) where the car might plan the wrong turn direction."),
+                                                     "This changes model path intent at low speed; turn it off if the planned path looks wrong."),
                                                   param="LaneTurnDesire")
 
     self.delay_control = option_item_sp(tr("Adjust Software Delay"), "LagdToggleDelay", 5, 50,
-                                        tr("Adjust the software delay when Live Learning Steer Delay is toggled off. The default software delay value is 0.2"),
+                                        tr("Adjust the fixed software delay used when Live Learning Steer Delay is off. " +
+                                           "Wrong delay can make steering response feel early or late; default is 0.2 s."),
                                         1, None, True, "", style.BUTTON_ACTION_WIDTH, None, True, lambda v: f"{v / 100:.2f}s")
 
     self.lagd_toggle = toggle_item_sp(tr("Live Learning Steer Delay"), "", param="LagdToggle")
@@ -99,7 +101,7 @@ class ModelsLayout(Widget):
 
   def _update_lagd_description(self, lagd_toggle: bool):
     desc = tr("Enable this for the car to learn and adapt its steering response time. Disable to use a fixed steering response time. " +
-              "Keeping this on provides the stock openpilot experience.")
+              "Keeping this on provides the stock openpilot experience; disabling uses the fixed software delay below.")
     if lagd_toggle:
       desc += f"<br>{tr('Live Steer Delay:')} {ui_state.sm['liveDelay'].lateralDelay:.3f} s"
     elif ui_state.CP is not None:

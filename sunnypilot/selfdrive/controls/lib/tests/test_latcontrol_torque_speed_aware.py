@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_override import LatControlTorqueExtOverride
+from openpilot.sunnypilot.custom.lateral.speed_aware_torque import parse_speed_aware_torque_profile
 
 
 def profile_payload(anchors=None, ratios=None, confidence=None, points=None):
@@ -131,3 +132,66 @@ def test_speed_apply_does_not_freeze_live_friction_update():
   tp.friction = 0.25
   assert ext.update_override_torque_params(tp, 25.0) is True
   assert tp.friction == 0.25
+
+
+def test_manual_override_accepts_valid_range_edges():
+  ext = LatControlTorqueExtOverride(cp())
+
+  class P:
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled')
+    def get(self, k, return_default=True):
+      if k == 'TorqueParamsOverrideLatAccelFactor':
+        return '0.1'
+      if k == 'TorqueParamsOverrideFriction':
+        return '1.0'
+      return 'off'
+
+  ext.params = P()
+  ext.enforce_torque_control_toggle = True
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == 0.1
+  assert tp.friction == 1.0
+
+
+def test_invalid_manual_override_values_do_not_apply_or_clamp():
+  ext = LatControlTorqueExtOverride(cp())
+
+  class P:
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled')
+    def get(self, k, return_default=True):
+      if k == 'TorqueParamsOverrideLatAccelFactor':
+        return 'nan'
+      if k == 'TorqueParamsOverrideFriction':
+        return '2.0'
+      return 'off'
+
+  ext.params = P()
+  ext.enforce_torque_control_toggle = True
+  ext.last_manual_applied = 3.0
+  ext.last_manual_friction_applied = 0.5
+  ext.base_latAccelFactor = 2.0
+  ext.base_friction = 0.2
+  tp = SimpleNamespace(latAccelFactor=3.0, friction=0.5)
+
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == 2.0
+  assert tp.friction == 0.2
+  assert ext.last_manual_applied is None
+  assert ext.last_manual_friction_applied is None
+
+
+def test_malformed_speed_aware_profile_rejected_for_non_monotonic_anchors():
+  payload = json.loads(profile_payload(anchors=[30.0, 20.0], ratios=[1.0, 1.0], confidence=[1.0, 1.0], points=[500, 500]))
+  assert parse_speed_aware_torque_profile(cp(), payload) is None
+
+
+def test_malformed_speed_aware_profile_rejected_for_non_finite_global():
+  payload = json.loads(PROFILE)
+  payload['globalLatAccelFactor'] = float('nan')
+  assert parse_speed_aware_torque_profile(cp(), payload) is None
+
+
+def test_malformed_speed_aware_profile_rejected_for_out_of_bounds_ratio():
+  payload = json.loads(profile_payload(ratios=[0.5, 1.0]))
+  assert parse_speed_aware_torque_profile(cp(), payload) is None

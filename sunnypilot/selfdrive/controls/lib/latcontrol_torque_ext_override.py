@@ -8,6 +8,11 @@ import json
 
 from openpilot.common.params import Params
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import SpeedAwareTorqueRuntime, parse_speed_aware_torque_profile
+from openpilot.sunnypilot.custom.lateral.torque_safety import (
+  validate_live_torque_speed_adaptive_mode,
+  validate_torque_override_friction,
+  validate_torque_override_lat_accel_factor,
+)
 
 
 class LatControlTorqueExtOverride:
@@ -29,15 +34,21 @@ class LatControlTorqueExtOverride:
     self._live_torque_enabled = self.params.get_bool("LiveTorqueParamsToggle")
     self._manual_latAccelFactor = None
     self._manual_friction = None
+    self._manual_override_values_valid = False
 
   def _poll(self):
     self.torque_override_enabled = self.params.get_bool("TorqueParamsOverrideEnabled")
     self._live_torque_enabled = self.params.get_bool("LiveTorqueParamsToggle")
     if self.torque_override_enabled:
-      self._manual_latAccelFactor = float(self.params.get("TorqueParamsOverrideLatAccelFactor", return_default=True))
-      self._manual_friction = float(self.params.get("TorqueParamsOverrideFriction", return_default=True))
-    mode = self.params.get("LiveTorqueSpeedAdaptiveMode", return_default=True) or 'off'
-    self._speed_mode = mode if mode in ('off', 'shadow', 'apply') else 'off'
+      self._manual_latAccelFactor = validate_torque_override_lat_accel_factor(self.params.get("TorqueParamsOverrideLatAccelFactor", return_default=True))
+      self._manual_friction = validate_torque_override_friction(self.params.get("TorqueParamsOverrideFriction", return_default=True))
+      self._manual_override_values_valid = self._manual_latAccelFactor is not None and self._manual_friction is not None
+    else:
+      self._manual_latAccelFactor = None
+      self._manual_friction = None
+      self._manual_override_values_valid = False
+    mode = self.params.get("LiveTorqueSpeedAdaptiveMode", return_default=True)
+    self._speed_mode = validate_live_torque_speed_adaptive_mode(mode)
     self._speed_profile_raw = self.params.get("LiveTorqueSpeedAdaptiveParams", return_default=True) if self._speed_mode == 'apply' else None
     self._speed_profile = None
     if self._speed_profile_raw and self._live_torque_enabled:
@@ -90,15 +101,15 @@ class LatControlTorqueExtOverride:
       self._poll()
 
     if self.torque_override_enabled:
+      if not self._manual_override_values_valid:
+        return self._restore_manual_or_speed_base(torque_params)
       if self.base_latAccelFactor is None:
         self.base_latAccelFactor = float(torque_params.latAccelFactor)
         self.base_friction = float(torque_params.friction)
       elif self.last_speed_applied is not None and abs(float(torque_params.latAccelFactor) - self.last_speed_applied) < 1e-9:
         self._restore_base(torque_params)
-      manual_latAccelFactor = self._manual_latAccelFactor if self._manual_latAccelFactor is not None else float(torque_params.latAccelFactor)
-      manual_friction = self._manual_friction if self._manual_friction is not None else float(torque_params.friction)
-      torque_params.latAccelFactor = float(manual_latAccelFactor)
-      torque_params.friction = float(manual_friction)
+      torque_params.latAccelFactor = float(self._manual_latAccelFactor)
+      torque_params.friction = float(self._manual_friction)
       self.last_speed_applied = None
       self.last_manual_applied = float(torque_params.latAccelFactor)
       self.last_manual_friction_applied = float(torque_params.friction)

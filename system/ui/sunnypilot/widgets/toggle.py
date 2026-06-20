@@ -34,7 +34,6 @@ class ToggleSP(Toggle):
 
   def _render(self, rect: rl.Rectangle):
     self.update()
-    self._rect.y -= style.ITEM_PADDING / 2
     if self._enabled:
       bg_color = self._blend_color(style.TOGGLE_OFF_COLOR, style.TOGGLE_ON_COLOR, self._progress)
       knob_color = style.TOGGLE_KNOB_COLOR
@@ -43,7 +42,8 @@ class ToggleSP(Toggle):
       knob_color = style.TOGGLE_DISABLED_KNOB_COLOR
 
     # Draw background
-    bg_rect = rl.Rectangle(self._rect.x, self._rect.y, style.TOGGLE_WIDTH, style.TOGGLE_BG_HEIGHT)
+    bg_y = self._rect.y + (self._rect.height - style.TOGGLE_BG_HEIGHT) / 2
+    bg_rect = rl.Rectangle(self._rect.x, bg_y, style.TOGGLE_WIDTH, style.TOGGLE_BG_HEIGHT)
 
     # Draw actual background
     rl.draw_rectangle_rounded(bg_rect, 1.0, 10, bg_color)
@@ -54,7 +54,7 @@ class ToggleSP(Toggle):
     knob_travel_distance = right_edge - left_edge - 2 * KNOB_RADIUS
     min_knob_x = left_edge + KNOB_RADIUS
     knob_x = min_knob_x + knob_travel_distance * self._progress
-    knob_y = self._rect.y + style.TOGGLE_BG_HEIGHT / 2
+    knob_y = bg_rect.y + style.TOGGLE_BG_HEIGHT / 2
 
     rl.draw_circle(int(knob_x), int(knob_y), KNOB_RADIUS, knob_color)
 

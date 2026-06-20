@@ -19,8 +19,10 @@ sections:
   - key: DynamicExperimentalControl
     widget: toggle
     title: Dynamic Experimental Control
-    description: Let the model decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal. Superseded by
-      the custom Longitudinal Policy's SCC mode, so it is disabled while Custom Longitudinal is on.
+    description: Let the model decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal. This can change
+      acceleration and braking behavior; turn it off to keep the selected longitudinal mode. Superseded by the custom Longitudinal
+      Policy's SCC mode, so it is disabled while Custom Longitudinal is on.
+    requires_attestation: true
     visibility:
     - $ref: '#/macros/longitudinal'
     enablement:
@@ -31,7 +33,10 @@ sections:
   - key: LeadAnticipationMode
     widget: multiple_button
     title: Lead Anticipation
-    description: Monitor lead smoothing in the planner or apply it to the MPC lead input. Apply requires Custom Longitudinal and is disabled when longitudinal is off.
+    description: Monitor lead smoothing in the planner or apply it to the MPC lead input. Apply mode can change following
+      and braking response; Off returns to the base lead input. Apply requires Custom Longitudinal and is disabled when longitudinal
+      is off.
+    requires_attestation: true
     options:
     - value: 'off'
       label: 'Off'
@@ -135,7 +140,8 @@ sections:
   - key: DisengageOnAccelerator
     widget: toggle
     title: Disengage Cruise on Accelerator Pedal
-    description: When enabled, pressing the accelerator pedal will disengage longitudinal control.
+    description: When enabled, pressing the accelerator pedal will disengage longitudinal control. Turn it off to keep the
+      default accelerator override behavior.
   - key: LongitudinalPersonality
     widget: multiple_button
     title: Driving Personality
@@ -154,6 +160,9 @@ sections:
   - key: IntelligentCruiseButtonManagement
     widget: toggle
     title: Intelligent Cruise Button Management (ICBM) (Alpha)
+    description: Emulates built-in cruise-control button presses for limited longitudinal control. This can change how cruise
+      speed is adjusted; turn it off to return button behavior to the vehicle stock path.
+    requires_attestation: true
     visibility:
     - type: capability
       field: icbm_available
@@ -189,6 +198,8 @@ sections:
   - key: CustomAccIncrementsEnabled
     widget: toggle
     title: Enable Custom ACC Speed Intervals
+    description: Change short- and long-press cruise speed increments. Disable to return to the default increments.
+    requires_attestation: true
     enablement:
     - $ref: '#/macros/offroad'
     - type: any
@@ -210,6 +221,7 @@ sections:
     - key: CustomAccShortPressIncrement
       widget: option
       title: Short Press Increment
+      description: Speed change applied to each short cruise-speed button press while custom intervals are enabled.
       min: 1
       max: 10
       step: 1
@@ -220,6 +232,7 @@ sections:
     - key: CustomAccLongPressIncrement
       widget: option
       title: Long Press Increment
+      description: Speed change applied to each long cruise-speed button press while custom intervals are enabled.
       options:
       - value: 1
         label: '1'

@@ -14,7 +14,9 @@ sections:
   - key: Mads
     widget: toggle
     title: Enable Modular Assistive Driving System (MADS)
-    description: Enable MADS. Disable toggle to revert back to stock sunnypilot engagement/disengagement.
+    description: Enable MADS. This changes how lateral assist is engaged and disengaged. Disable toggle to revert back to
+      stock sunnypilot engagement/disengagement.
+    requires_attestation: true
     enablement:
     - $ref: '#/macros/offroad'
   sub_panels:
@@ -29,15 +31,19 @@ sections:
     - key: MadsMainCruiseAllowed
       widget: toggle
       title: Toggle with Main Cruise
-      description: 'Note: For vehicles without LFA/LKAS button, disabling this will prevent lateral control engagement.'
+      description: 'Allow the main cruise control to toggle MADS engagement. Note: For vehicles without LFA/LKAS button,
+        disabling this will prevent lateral control engagement.'
+      requires_attestation: true
       enablement:
       - $ref: '#/macros/offroad'
       - $ref: '#/macros/mads_full_platforms'
     - key: MadsUnifiedEngagementMode
       widget: toggle
       title: Unified Engagement Mode (UEM)
-      description: 'Engage lateral and longitudinal control with cruise control engagement. Note: Once lateral control is
-        engaged via UEM, it will remain engaged until it is manually disabled via the MADS button or car shut off.'
+      description: 'Engage lateral and longitudinal control with cruise control engagement. UEM changes when lateral assist
+        starts. Note: Once lateral control is engaged via UEM, it will remain engaged until it is manually disabled via the
+        MADS button or car shut off.'
+      requires_attestation: true
       enablement:
       - $ref: '#/macros/offroad'
       - $ref: '#/macros/mads_full_platforms'
@@ -45,6 +51,8 @@ sections:
       widget: multiple_button
       title: Steering Mode on Brake Pedal
       description: Choose how Automatic Lane Centering (ALC) behaves after the brake pedal is manually pressed in sunnypilot.
+        Disengage is the most conservative choice; Remain Active keeps lateral assist available after braking.
+      requires_attestation: true
       options:
       - value: 0
         label: Remain Active
@@ -61,15 +69,19 @@ sections:
 - id: blinker
   title: Blinker Control
   description: Lateral pause behavior during turn signals
+  attestation_required: true
   items:
   - key: BlinkerPauseLateralControl
     widget: toggle
     title: Pause Lateral Control with Blinker
-    description: Pause lateral control with blinker when traveling below the desired speed selected.
+    description: Pause lateral control with blinker when traveling below the selected speed. Lateral assist resumes after
+      the blinker ends and the post-blinker delay has elapsed.
     sub_items:
     - key: BlinkerMinLateralControlSpeed
       widget: option
       title: Minimum Speed to Pause Lateral Control
+      description: Below this speed, using the blinker can temporarily pause lateral assist. Set to 0 to allow the pause
+        at any speed.
       min: 0
       max: 255
       step: 5
@@ -83,7 +95,8 @@ sections:
     - key: BlinkerLateralReengageDelay
       widget: option
       title: Post-Blinker Delay
-      description: Delay before lateral control resumes after the turn signal ends.
+      description: Delay before lateral control resumes after the turn signal ends. Increase if re-engagement feels too
+        abrupt after signaling.
       min: 0
       max: 10
       step: 1
@@ -95,6 +108,7 @@ sections:
 - id: torque
   title: Torque Control
   description: Steering torque tuning and lateral control method
+  attestation_required: true
   enablement:
   - type: capability
     field: torque_allowed
@@ -103,7 +117,8 @@ sections:
   - key: EnforceTorqueControl
     widget: toggle
     title: Enforce Torque Lateral Control
-    description: Enable this to enforce sunnypilot to steer with Torque lateral control.
+    description: Use Torque lateral control instead of the platform default. This changes steering response and lane-centering
+      feel; turn it off to return to the default controller.
     visibility:
     - type: not
       condition:
@@ -121,7 +136,8 @@ sections:
   - key: NeuralNetworkLateralControl
     widget: toggle
     title: Neural Network Lateral Control (NNLC)
-    description: ''
+    description: Use the neural-network lateral controller when supported. This changes steering behavior; turn it off to
+      return to the default lateral controller.
     enablement:
     - $ref: '#/macros/offroad'
     - type: capability
@@ -142,13 +158,17 @@ sections:
     - key: LiveTorqueParamsToggle
       widget: toggle
       title: Self-Tune
-      description: Enables self-tune for Torque lateral control for platforms that do not use Torque lateral control by default.
+      description: Enables self-tune for Torque lateral control for platforms that do not use Torque lateral control by
+        default. Learned values can change steering response over time; disable to stop learning and return to fixed/offline
+        torque tuning.
       enablement:
       - $ref: '#/macros/offroad'
     - key: LiveTorqueSpeedAdaptiveMode
       widget: multiple_button
       title: Speed-Aware Curve
-      description: Choose how learned speed correction is used.
+      description: Choose how learned speed correction is used. Apply mode can change steering response by speed; Off returns
+        to the base torque tune.
+      requires_attestation: true
       options:
       - value: 'off'
         label: 'Off'
@@ -161,7 +181,9 @@ sections:
     - key: LiveTorqueParamsRelaxedToggle
       widget: toggle
       title: Less Restrict Settings for Self-Tune (Beta)
-      description: Less strict settings when using Self-Tune. This allows torqued to be more forgiving when learning values.
+      description: Less strict settings when using Self-Tune. This allows torqued to be more forgiving when learning values,
+        but may accept noisier steering data. Disable to return to stricter learning.
+      requires_attestation: true
       enablement:
       - $ref: '#/macros/offroad'
       - type: param
@@ -172,14 +194,18 @@ sections:
       title: Enable Custom Tuning
       description: Enables custom tuning for Torque lateral control. Modifying Lateral Acceleration Factor and Friction below
         will override the offline values indicated in the YAML files within "opendbc/car/torque_data". The values will also
-        be used live when "Manual Real-Time Tuning" toggle is enabled.
+        be used live when "Manual Real-Time Tuning" toggle is enabled. Large changes can bias steering or degrade tracking;
+        turn this off to return to the selected tune.
+      requires_attestation: true
       enablement:
       - $ref: '#/macros/offroad'
     - key: TorqueParamsOverrideEnabled
       widget: toggle
       title: Manual Real-Time Tuning
       description: Enforces the torque lateral controller to use the fixed values instead of the learned values from Self-Tune.
-        Enabling this toggle overrides Self-Tune values.
+        Enabling this toggle applies the custom values live and overrides Self-Tune values. Monitor steering response and
+        disable to return to learned/offline values.
+      requires_attestation: true
       enablement:
       - $ref: '#/macros/offroad'
       - type: param
@@ -188,6 +214,9 @@ sections:
     - key: TorqueParamsOverrideLatAccelFactor
       widget: option
       title: Lateral Acceleration Factor
+      description: Adjusts how strongly torque maps to lateral acceleration. In Real-Time mode this can affect steering
+        immediately; revert by disabling Manual Real-Time Tuning or Custom Tuning.
+      requires_attestation: true
       title_param_suffix:
         param: TorqueParamsOverrideEnabled
         values:
@@ -210,6 +239,9 @@ sections:
     - key: TorqueParamsOverrideFriction
       widget: option
       title: Friction
+      description: Adjusts friction compensation for torque steering. In Real-Time mode this can affect steering immediately;
+        revert by disabling Manual Real-Time Tuning or Custom Tuning.
+      requires_attestation: true
       title_param_suffix:
         param: TorqueParamsOverrideEnabled
         values:
@@ -231,7 +263,9 @@ sections:
     - key: TorqueControlTune
       widget: multiple_button
       title: Torque Control Tune Version
-      description: Select the version of Torque Control Tune to use.
+      description: Select the Torque Control Tune version. Changes apply to torque steering behavior; return to Default to
+        use the standard tune.
+      requires_attestation: true
       options:
       - value: ''
         label: Default
@@ -244,6 +278,7 @@ sections:
 - id: lane_change
   title: Lane Change
   description: Automatic lane change timing and behavior
+  attestation_required: true
   items:
   - key: AutoLaneChangeTimer
     widget: option
@@ -251,7 +286,7 @@ sections:
     description: |-
       Set a timer to delay the auto lane change operation when the blinker is used. No nudge on the steering wheel is required to auto lane change if a timer is set. Default is Nudge.
     details: |-
-      Please use caution when using this feature. Only use the blinker when traffic and road conditions permit.
+      This changes when the car may initiate a lane change after signaling. Please use caution and only use the blinker when traffic and road conditions permit. Set to Off or Nudge to require more driver input.
     options:
     - value: -1
       label: 'Off'
@@ -271,7 +306,7 @@ sections:
     widget: toggle
     title: 'Auto Lane Change: Delay with Blind Spot'
     description: Toggle to enable a delay timer for lane changes when blind spot monitoring (BSM) detects a vehicle in your blind
-      spot.
+      spot. This delays the lane-change attempt; it does not replace checking mirrors and traffic.
     enablement:
     - type: capability
       field: enable_bsm
@@ -283,18 +318,20 @@ sections:
 - id: custom_lateral_demand
   title: Custom Lateral Demand
   description: ''
+  attestation_required: true
   items:
   - key: CustomLateralDemandEnabled
     widget: toggle
     title: Custom Lateral Demand
     description: Process the driving model's steering curvature (quality gating + smoothing) before lateral control.
-      Fail-closed to the stock curvature and still clipped by the safety limiter; off uses the stock model curvature.
+      Fail-closed to the stock curvature and still bounded by existing controller limits; off uses the stock model curvature.
+      This can change the requested lane-centering path, so keep it off if tracking looks worse.
     sub_items:
     - key: LaneCenteringAssistEnabled
       widget: toggle
       title: Lane Centering Assist
       description: Nudge the processed model path toward the lane center when lane-line confidence is usable. Requires Custom
-        Lateral Demand.
+        Lateral Demand. Turn it off if the car appears to bias away from the intended lane position.
       enablement:
       - type: param
         key: CustomLateralDemandEnabled
@@ -303,7 +340,8 @@ sections:
       widget: toggle
       title: Corner Curve Memory
       description: Remember a corner's curvature seen at speed and hold it through low-speed stops so the car resumes the
-        turn instead of forgetting it. Supplement-only and vetoed by confident vision; requires Custom Lateral Demand.
+        turn instead of forgetting it. Supplement-only and vetoed by confident vision; requires Custom Lateral Demand. Turn
+        it off if stop-and-go turns feel over-predicted.
       enablement:
       - type: param
         key: CustomLateralDemandEnabled

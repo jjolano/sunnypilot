@@ -26,8 +26,9 @@
             {
               "key": "Mads",
               "widget": "toggle",
+              "requires_attestation": true,
               "title": "Enable Modular Assistive Driving System (MADS)",
-              "description": "Enable MADS. Disable toggle to revert back to stock sunnypilot engagement/disengagement.",
+              "description": "Enable MADS. This changes how lateral assist is engaged and disengaged. Disable toggle to revert back to stock sunnypilot engagement/disengagement.",
               "enablement": [
                 {
                   "type": "offroad_only"
@@ -49,8 +50,9 @@
                 {
                   "key": "MadsMainCruiseAllowed",
                   "widget": "toggle",
+                  "requires_attestation": true,
                   "title": "Toggle with Main Cruise",
-                  "description": "Note: For vehicles without LFA/LKAS button, disabling this will prevent lateral control engagement.",
+                  "description": "Allow the main cruise control to toggle MADS engagement. Note: For vehicles without LFA/LKAS button, disabling this will prevent lateral control engagement.",
                   "enablement": [
                     {
                       "type": "offroad_only"
@@ -91,8 +93,9 @@
                 {
                   "key": "MadsUnifiedEngagementMode",
                   "widget": "toggle",
+                  "requires_attestation": true,
                   "title": "Unified Engagement Mode (UEM)",
-                  "description": "Engage lateral and longitudinal control with cruise control engagement. Note: Once lateral control is engaged via UEM, it will remain engaged until it is manually disabled via the MADS button or car shut off.",
+                  "description": "Engage lateral and longitudinal control with cruise control engagement. UEM changes when lateral assist starts. Note: Once lateral control is engaged via UEM, it will remain engaged until it is manually disabled via the MADS button or car shut off.",
                   "enablement": [
                     {
                       "type": "offroad_only"
@@ -133,8 +136,9 @@
                 {
                   "key": "MadsSteeringMode",
                   "widget": "multiple_button",
+                  "requires_attestation": true,
                   "title": "Steering Mode on Brake Pedal",
-                  "description": "Choose how Automatic Lane Centering (ALC) behaves after the brake pedal is manually pressed in sunnypilot.",
+                  "description": "Choose how Automatic Lane Centering (ALC) behaves after the brake pedal is manually pressed in sunnypilot. Disengage is the most conservative choice; Remain Active keeps lateral assist available after braking.",
                   "options": [
                     {
                       "value": 0,
@@ -229,17 +233,19 @@
           "id": "blinker",
           "title": "Blinker Control",
           "description": "Lateral pause behavior during turn signals",
+          "attestation_required": true,
           "items": [
             {
               "key": "BlinkerPauseLateralControl",
               "widget": "toggle",
               "title": "Pause Lateral Control with Blinker",
-              "description": "Pause lateral control with blinker when traveling below the desired speed selected.",
+              "description": "Pause lateral control with blinker when traveling below the selected speed. Lateral assist resumes after the blinker ends and the post-blinker delay has elapsed.",
               "sub_items": [
                 {
                   "key": "BlinkerMinLateralControlSpeed",
                   "widget": "option",
                   "title": "Minimum Speed to Pause Lateral Control",
+                  "description": "Below this speed, using the blinker can temporarily pause lateral assist. Set to 0 to allow the pause at any speed.",
                   "min": 0,
                   "max": 255,
                   "step": 5,
@@ -259,7 +265,7 @@
                   "key": "BlinkerLateralReengageDelay",
                   "widget": "option",
                   "title": "Post-Blinker Delay",
-                  "description": "Delay before lateral control resumes after the turn signal ends.",
+                  "description": "Delay before lateral control resumes after the turn signal ends. Increase if re-engagement feels too abrupt after signaling.",
                   "min": 0,
                   "max": 10,
                   "step": 1,
@@ -287,12 +293,13 @@
               "equals": true
             }
           ],
+          "attestation_required": true,
           "items": [
             {
               "key": "EnforceTorqueControl",
               "widget": "toggle",
               "title": "Enforce Torque Lateral Control",
-              "description": "Enable this to enforce sunnypilot to steer with Torque lateral control.",
+              "description": "Use Torque lateral control instead of the platform default. This changes steering response and lane-centering feel; turn it off to return to the default controller.",
               "visibility": [
                 {
                   "type": "not",
@@ -323,7 +330,7 @@
               "key": "NeuralNetworkLateralControl",
               "widget": "toggle",
               "title": "Neural Network Lateral Control (NNLC)",
-              "description": "",
+              "description": "Use the neural-network lateral controller when supported. This changes steering behavior; turn it off to return to the default lateral controller.",
               "enablement": [
                 {
                   "type": "offroad_only"
@@ -356,7 +363,7 @@
                   "key": "LiveTorqueParamsToggle",
                   "widget": "toggle",
                   "title": "Self-Tune",
-                  "description": "Enables self-tune for Torque lateral control for platforms that do not use Torque lateral control by default.",
+                  "description": "Enables self-tune for Torque lateral control for platforms that do not use Torque lateral control by default. Learned values can change steering response over time; disable to stop learning and return to fixed/offline torque tuning.",
                   "enablement": [
                     {
                       "type": "offroad_only"
@@ -366,8 +373,9 @@
                 {
                   "key": "LiveTorqueSpeedAdaptiveMode",
                   "widget": "multiple_button",
+                  "requires_attestation": true,
                   "title": "Speed-Aware Curve",
-                  "description": "Choose how learned speed correction is used.",
+                  "description": "Choose how learned speed correction is used. Apply mode can change steering response by speed; Off returns to the base torque tune.",
                   "options": [
                     {
                       "value": "off",
@@ -391,8 +399,9 @@
                 {
                   "key": "LiveTorqueParamsRelaxedToggle",
                   "widget": "toggle",
+                  "requires_attestation": true,
                   "title": "Less Restrict Settings for Self-Tune (Beta)",
-                  "description": "Less strict settings when using Self-Tune. This allows torqued to be more forgiving when learning values.",
+                  "description": "Less strict settings when using Self-Tune. This allows torqued to be more forgiving when learning values, but may accept noisier steering data. Disable to return to stricter learning.",
                   "enablement": [
                     {
                       "type": "offroad_only"
@@ -407,8 +416,9 @@
                 {
                   "key": "CustomTorqueParams",
                   "widget": "toggle",
+                  "requires_attestation": true,
                   "title": "Enable Custom Tuning",
-                  "description": "Enables custom tuning for Torque lateral control. Modifying Lateral Acceleration Factor and Friction below will override the offline values indicated in the YAML files within \"opendbc/car/torque_data\". The values will also be used live when \"Manual Real-Time Tuning\" toggle is enabled.",
+                  "description": "Enables custom tuning for Torque lateral control. Modifying Lateral Acceleration Factor and Friction below will override the offline values indicated in the YAML files within \"opendbc/car/torque_data\". The values will also be used live when \"Manual Real-Time Tuning\" toggle is enabled. Large changes can bias steering or degrade tracking; turn this off to return to the selected tune.",
                   "enablement": [
                     {
                       "type": "offroad_only"
@@ -418,8 +428,9 @@
                 {
                   "key": "TorqueParamsOverrideEnabled",
                   "widget": "toggle",
+                  "requires_attestation": true,
                   "title": "Manual Real-Time Tuning",
-                  "description": "Enforces the torque lateral controller to use the fixed values instead of the learned values from Self-Tune. Enabling this toggle overrides Self-Tune values.",
+                  "description": "Enforces the torque lateral controller to use the fixed values instead of the learned values from Self-Tune. Enabling this toggle applies the custom values live and overrides Self-Tune values. Monitor steering response and disable to return to learned/offline values.",
                   "enablement": [
                     {
                       "type": "offroad_only"
@@ -434,7 +445,9 @@
                 {
                   "key": "TorqueParamsOverrideLatAccelFactor",
                   "widget": "option",
+                  "requires_attestation": true,
                   "title": "Lateral Acceleration Factor",
+                  "description": "Adjusts how strongly torque maps to lateral acceleration. In Real-Time mode this can affect steering immediately; revert by disabling Manual Real-Time Tuning or Custom Tuning.",
                   "title_param_suffix": {
                     "param": "TorqueParamsOverrideEnabled",
                     "values": {
@@ -470,7 +483,9 @@
                 {
                   "key": "TorqueParamsOverrideFriction",
                   "widget": "option",
+                  "requires_attestation": true,
                   "title": "Friction",
+                  "description": "Adjusts friction compensation for torque steering. In Real-Time mode this can affect steering immediately; revert by disabling Manual Real-Time Tuning or Custom Tuning.",
                   "title_param_suffix": {
                     "param": "TorqueParamsOverrideEnabled",
                     "values": {
@@ -505,8 +520,9 @@
                 {
                   "key": "TorqueControlTune",
                   "widget": "multiple_button",
+                  "requires_attestation": true,
                   "title": "Torque Control Tune Version",
-                  "description": "Select the version of Torque Control Tune to use.",
+                  "description": "Select the Torque Control Tune version. Changes apply to torque steering behavior; return to Default to use the standard tune.",
                   "options": [
                     {
                       "value": "",
@@ -535,13 +551,14 @@
           "id": "lane_change",
           "title": "Lane Change",
           "description": "Automatic lane change timing and behavior",
+          "attestation_required": true,
           "items": [
             {
               "key": "AutoLaneChangeTimer",
               "widget": "option",
               "title": "Auto Lane Change by Blinker",
               "description": "Set a timer to delay the auto lane change operation when the blinker is used. No nudge on the steering wheel is required to auto lane change if a timer is set. Default is Nudge.",
-              "details": "Please use caution when using this feature. Only use the blinker when traffic and road conditions permit.",
+              "details": "This changes when the car may initiate a lane change after signaling. Please use caution and only use the blinker when traffic and road conditions permit. Set to Off or Nudge to require more driver input.",
               "options": [
                 {
                   "value": -1,
@@ -577,7 +594,7 @@
               "key": "AutoLaneChangeBsmDelay",
               "widget": "toggle",
               "title": "Auto Lane Change: Delay with Blind Spot",
-              "description": "Toggle to enable a delay timer for lane changes when blind spot monitoring (BSM) detects a vehicle in your blind spot.",
+              "description": "Toggle to enable a delay timer for lane changes when blind spot monitoring (BSM) detects a vehicle in your blind spot. This delays the lane-change attempt; it does not replace checking mirrors and traffic.",
               "enablement": [
                 {
                   "type": "capability",
@@ -598,18 +615,19 @@
           "id": "custom_lateral_demand",
           "title": "Custom Lateral Demand",
           "description": "",
+          "attestation_required": true,
           "items": [
             {
               "key": "CustomLateralDemandEnabled",
               "widget": "toggle",
               "title": "Custom Lateral Demand",
-              "description": "Process the driving model's steering curvature (quality gating + smoothing) before lateral control. Fail-closed to the stock curvature and still clipped by the safety limiter; off uses the stock model curvature.",
+              "description": "Process the driving model's steering curvature (quality gating + smoothing) before lateral control. Fail-closed to the stock curvature and still bounded by existing controller limits; off uses the stock model curvature. This can change the requested lane-centering path, so keep it off if tracking looks worse.",
               "sub_items": [
                 {
                   "key": "LaneCenteringAssistEnabled",
                   "widget": "toggle",
                   "title": "Lane Centering Assist",
-                  "description": "Nudge the processed model path toward the lane center when lane-line confidence is usable. Requires Custom Lateral Demand.",
+                  "description": "Nudge the processed model path toward the lane center when lane-line confidence is usable. Requires Custom Lateral Demand. Turn it off if the car appears to bias away from the intended lane position.",
                   "enablement": [
                     {
                       "type": "param",
@@ -622,7 +640,7 @@
                   "key": "CurveMemoryEnabled",
                   "widget": "toggle",
                   "title": "Corner Curve Memory",
-                  "description": "Remember a corner's curvature seen at speed and hold it through low-speed stops so the car resumes the turn instead of forgetting it. Supplement-only and vetoed by confident vision; requires Custom Lateral Demand.",
+                  "description": "Remember a corner's curvature seen at speed and hold it through low-speed stops so the car resumes the turn instead of forgetting it. Supplement-only and vetoed by confident vision; requires Custom Lateral Demand. Turn it off if stop-and-go turns feel over-predicted.",
                   "enablement": [
                     {
                       "type": "param",
@@ -665,8 +683,9 @@
             {
               "key": "DynamicExperimentalControl",
               "widget": "toggle",
+              "requires_attestation": true,
               "title": "Dynamic Experimental Control",
-              "description": "Let the model decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal. Superseded by the custom Longitudinal Policy's SCC mode, so it is disabled while Custom Longitudinal is on.",
+              "description": "Let the model decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal. This can change acceleration and braking behavior; turn it off to keep the selected longitudinal mode. Superseded by the custom Longitudinal Policy's SCC mode, so it is disabled while Custom Longitudinal is on.",
               "visibility": [
                 {
                   "type": "capability",
@@ -690,8 +709,9 @@
             {
               "key": "LeadAnticipationMode",
               "widget": "multiple_button",
+              "requires_attestation": true,
               "title": "Lead Anticipation",
-              "description": "Monitor lead smoothing in the planner or apply it to the MPC lead input. Apply requires Custom Longitudinal and is disabled when longitudinal is off.",
+              "description": "Monitor lead smoothing in the planner or apply it to the MPC lead input. Apply mode can change following and braking response; Off returns to the base lead input. Apply requires Custom Longitudinal and is disabled when longitudinal is off.",
               "options": [
                 {
                   "value": "off",
@@ -881,7 +901,7 @@
               "key": "DisengageOnAccelerator",
               "widget": "toggle",
               "title": "Disengage Cruise on Accelerator Pedal",
-              "description": "When enabled, pressing the accelerator pedal will disengage longitudinal control."
+              "description": "When enabled, pressing the accelerator pedal will disengage longitudinal control. Turn it off to keep the default accelerator override behavior."
             },
             {
               "key": "LongitudinalPersonality",
@@ -913,7 +933,9 @@
             {
               "key": "IntelligentCruiseButtonManagement",
               "widget": "toggle",
+              "requires_attestation": true,
               "title": "Intelligent Cruise Button Management (ICBM) (Alpha)",
+              "description": "Emulates built-in cruise-control button presses for limited longitudinal control. This can change how cruise speed is adjusted; turn it off to return button behavior to the vehicle stock path.",
               "visibility": [
                 {
                   "type": "capability",
@@ -978,7 +1000,9 @@
             {
               "key": "CustomAccIncrementsEnabled",
               "widget": "toggle",
+              "requires_attestation": true,
               "title": "Enable Custom ACC Speed Intervals",
+              "description": "Change short- and long-press cruise speed increments. Disable to return to the default increments.",
               "enablement": [
                 {
                   "type": "offroad_only"
@@ -1017,6 +1041,7 @@
                   "key": "CustomAccShortPressIncrement",
                   "widget": "option",
                   "title": "Short Press Increment",
+                  "description": "Speed change applied to each short cruise-speed button press while custom intervals are enabled.",
                   "min": 1,
                   "max": 10,
                   "step": 1,
@@ -1032,6 +1057,7 @@
                   "key": "CustomAccLongPressIncrement",
                   "widget": "option",
                   "title": "Long Press Increment",
+                  "description": "Speed change applied to each long cruise-speed button press while custom intervals are enabled.",
                   "options": [
                     {
                       "value": 1,
@@ -2103,6 +2129,7 @@
             {
               "key": "JoystickDebugMode",
               "widget": "toggle",
+              "blocked": true,
               "title": "Joystick Debug Mode",
               "enablement": [
                 {
@@ -2114,6 +2141,7 @@
               "key": "AlphaLongitudinalEnabled",
               "widget": "toggle",
               "needs_onroad_cycle": true,
+              "blocked": true,
               "title": "sunnypilot Longitudinal Control (Alpha)",
               "description": "WARNING: sunnypilot longitudinal control is in alpha for this car and will disable Automatic Emergency Braking (AEB). On this car, sunnypilot defaults to the car's built-in ACC instead of sunnypilot's longitudinal control. Enable this to switch to sunnypilot longitudinal control. Enabling Experimental mode is recommended when enabling sunnypilot longitudinal control alpha. Changing this setting will restart sunnypilot if the car is powered on.",
               "visibility": [
@@ -2192,6 +2220,7 @@
             {
               "key": "LateralManeuverMode",
               "widget": "toggle",
+              "blocked": true,
               "title": "[TEST] Lateral Maneuver Mode",
               "description": "Replaces normal lateral control with a deterministic test sequence. NOT for road use.",
               "enablement": [
@@ -2208,6 +2237,7 @@
             {
               "key": "LongitudinalManeuverMode",
               "widget": "toggle",
+              "blocked": true,
               "title": "[TEST] Longitudinal Maneuver Mode",
               "description": "Replaces normal longitudinal control with a deterministic test sequence. NOT for road use.",
               "enablement": [
@@ -2328,13 +2358,13 @@
               "key": "LaneTurnDesire",
               "widget": "toggle",
               "title": "Use Lane Turn Desires",
-              "description": "If you are driving at 20 mph (32 km/h) or below and have your blinker on, the car will plan a turn in that direction at the nearest drivable path. This prevents situations (like at red lights) where the car might plan the wrong turn direction."
+              "description": "If you are driving at 20 mph (32 km/h) or below and have your blinker on, the car will plan a turn in that direction at the nearest drivable path. This changes model path intent at low speed; turn it off if the planned path looks wrong."
             },
             {
               "key": "LaneTurnValue",
               "widget": "option",
               "title": "Adjust Lane Turn Speed",
-              "description": "Set the maximum speed for lane turn desires.",
+              "description": "Set the maximum speed where lane turn desires may be used. Raising this can make the model plan turn-like paths at higher speeds.",
               "min": 0,
               "max": 20,
               "step": 1,
@@ -2359,13 +2389,13 @@
               "key": "LagdToggle",
               "widget": "toggle",
               "title": "Live Learning Steer Delay",
-              "description": "Allow device to learn and adapt car's steering response time"
+              "description": "Allow device to learn and adapt car's steering response time. Disable to use the fixed software delay below."
             },
             {
               "key": "LagdToggleDelay",
               "widget": "option",
               "title": "Adjust Software Delay",
-              "description": "Adjust the software delay when Live Learning Steer Delay is toggled off. The default software delay value is 0.2",
+              "description": "Adjust the fixed software delay when Live Learning Steer Delay is off. Wrong delay can make steering response feel early or late; default is 0.2 s.",
               "min": 0.05,
               "max": 0.5,
               "step": 0.01,
@@ -2395,8 +2425,9 @@
             {
               "key": "CameraOffset",
               "widget": "option",
+              "requires_attestation": true,
               "title": "Adjust Camera Offset",
-              "description": "Virtually shift camera's perspective to move model's center to Left(+ values) or Right (- values)",
+              "description": "Virtually shift camera perspective to move the model center left (+ values) or right (- values). Non-zero offsets can bias the perceived path; return to 0 if lane centering looks worse.",
               "min": -0.35,
               "max": 0.35,
               "step": 0.01,

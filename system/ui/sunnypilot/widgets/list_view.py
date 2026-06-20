@@ -40,6 +40,12 @@ class ToggleActionSP(ToggleAction):
     ToggleAction.__init__(self, initial_state, width, enabled, callback)
     self.toggle = ToggleSP(initial_state=initial_state, callback=callback, param=param)
 
+  def _render(self, rect: rl.Rectangle) -> bool:
+    self.toggle.set_enabled(self.enabled)
+    toggle_y = rect.y + (rect.height - style.TOGGLE_HEIGHT) / 2
+    clicked = self.toggle.render(rl.Rectangle(rect.x, toggle_y, self._rect.width, style.TOGGLE_HEIGHT))
+    return bool(clicked)
+
 
 class ButtonSP(Button):
   def _update_state(self):
@@ -105,6 +111,10 @@ class DualButtonActionSP(DualButtonAction):
     self.left_button._border_radius = self.right_button._border_radius = border_radius
 
   def _render(self, rect: rl.Rectangle):
+    enabled = self.enabled
+    self.left_button.set_enabled(enabled)
+    self.right_button.set_enabled(enabled)
+
     button_spacing = 20
     button_height = 150
     button_width = (rect.width - button_spacing) / 2
@@ -161,7 +171,10 @@ class MultipleButtonActionSP(MultipleButtonAction):
     target_x = rect.x + self.selected_button * self.button_width
     if not self._anim_x:
       self._anim_x = target_x
-    self._anim_x += (target_x - self._anim_x) * 0.2
+    if gui_app.reduced_motion:
+      self._anim_x = target_x
+    else:
+      self._anim_x += (target_x - self._anim_x) * 0.2
 
     highlight_rect = rl.Rectangle(self._anim_x, button_y, self.button_width, style.BUTTON_HEIGHT)
     rl.draw_rectangle_rounded(highlight_rect, 0.2, 20, highlight_color)
@@ -378,10 +391,12 @@ def option_item_sp(title: str | Callable[[], str], param: str,
                    value_change_step: int = 1, on_value_changed: Callable[[int], None] | None = None,
                    enabled: bool | Callable[[], bool] = True,
                    icon: str = "", label_width: int = LABEL_WIDTH, value_map: dict[int, int] | None = None,
-                   use_float_scaling: bool = False, label_callback: Callable[[int], str] | None = None, inline: bool = False) -> ListItemSP:
+                   use_float_scaling: bool = False, label_callback: Callable[[int], str] | None = None, inline: bool = False,
+                   write_param: bool = True, initial_value: int | None = None) -> ListItemSP:
   action = OptionControlSP(
     param, min_value, max_value, value_change_step,
-    enabled, on_value_changed, value_map, label_width, use_float_scaling, label_callback
+    enabled, on_value_changed, value_map, label_width, use_float_scaling, label_callback,
+    write_param, initial_value
   )
   return ListItemSP(title=title, description=description, action_item=action, icon=icon, inline=inline)
 

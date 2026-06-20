@@ -49,6 +49,11 @@ class GuiScrollPanel:
         self._offset_filter_y.x += mouse_wheel * MOUSE_WHEEL_SCROLL_SPEED
 
     max_scroll_distance = max(0, content.height - bounds.height)
+    if gui_app.reduced_motion:
+      self._velocity_filter_y.x = 0.0
+      self._offset_filter_y.x = max(-max_scroll_distance, min(0.0, self._offset_filter_y.x))
+      return
+
     if self._scroll_state == ScrollState.IDLE:
       above_bounds, below_bounds = self._check_bounds(bounds, content)
 

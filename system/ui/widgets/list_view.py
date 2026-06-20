@@ -186,6 +186,10 @@ class DualButtonAction(ItemAction):
     self.right_button.set_touch_valid_callback(touch_callback)
 
   def _render(self, rect: rl.Rectangle):
+    enabled = self.enabled
+    self.left_button.set_enabled(enabled)
+    self.right_button.set_enabled(enabled)
+
     button_spacing = 30
     button_height = 120
     button_width = (rect.width - button_spacing) / 2

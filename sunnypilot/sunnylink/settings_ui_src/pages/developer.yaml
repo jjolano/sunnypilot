@@ -25,11 +25,13 @@ sections:
     title: Enable SSH
   - key: JoystickDebugMode
     widget: toggle
+    blocked: true
     title: Joystick Debug Mode
     enablement:
     - $ref: '#/macros/offroad'
   - key: AlphaLongitudinalEnabled
     widget: toggle
+    blocked: true
     needs_onroad_cycle: true
     title: sunnypilot Longitudinal Control (Alpha)
     description: 'WARNING: sunnypilot longitudinal control is in alpha for this car and will disable Automatic Emergency Braking
@@ -78,6 +80,7 @@ sections:
   items:
   - key: LateralManeuverMode
     widget: toggle
+    blocked: true
     title: '[TEST] Lateral Maneuver Mode'
     description: Replaces normal lateral control with a deterministic test sequence. NOT for road use.
     enablement:
@@ -87,6 +90,7 @@ sections:
       equals: true
   - key: LongitudinalManeuverMode
     widget: toggle
+    blocked: true
     title: '[TEST] Longitudinal Maneuver Mode'
     description: Replaces normal longitudinal control with a deterministic test sequence. NOT for road use.
     enablement:

@@ -37,7 +37,8 @@ class SteeringLayout(Widget):
     self._scroller = Scroller(items, line_separator=False, spacing=0)
 
   def _initialize_items(self):
-    self._mads_base_desc = tr("Enable the beloved MADS feature. " +
+    self._mads_base_desc = tr("Enable MADS. " +
+                              "This changes how lateral assist is engaged and disengaged. " +
                               "Disable toggle to revert back to stock sunnypilot engagement/disengagement.")
     self._mads_limited_desc = tr("This platform supports limited MADS settings.")
     self._mads_full_desc = tr("This platform supports all MADS settings.")
@@ -60,7 +61,8 @@ class SteeringLayout(Widget):
     )
     self._blinker_control_toggle = toggle_item_sp(
       param="BlinkerPauseLateralControl",
-      description=lambda: tr("Pause lateral control with blinker when traveling below the desired speed selected."),
+      description=lambda: tr("Pause lateral control with blinker when traveling below the selected speed. " +
+                             "Lateral assist resumes after the blinker ends and the post-blinker delay has elapsed."),
       title=lambda: tr("Pause Lateral Control with Blinker"),
     )
     self._blinker_control_options = option_item_sp(
@@ -69,7 +71,8 @@ class SteeringLayout(Widget):
       min_value=0,
       max_value=255,
       value_change_step=5,
-      description="",
+      description=lambda: tr("Below this speed, using the blinker can temporarily pause lateral assist. " +
+                             "Set to 0 to allow the pause at any speed."),
       label_callback=lambda speed: f'{speed} {"km/h" if ui_state.is_metric else "mph"}',
     )
     self._blinker_reengage_delay = option_item_sp(
@@ -84,7 +87,8 @@ class SteeringLayout(Widget):
     self._torque_control_toggle = toggle_item_sp(
       param="EnforceTorqueControl",
       title=lambda: tr("Enforce Torque Lateral Control"),
-      description=lambda: tr("Enable this to enforce sunnypilot to steer with Torque lateral control."),
+      description=lambda: tr("Use Torque lateral control instead of the platform default. " +
+                             "This changes steering response and lane-centering feel; turn it off to return to the default controller."),
     )
     self._torque_customization_button = simple_button_item_sp(
       button_text=lambda: tr("Customize Torque Params"),
@@ -94,7 +98,8 @@ class SteeringLayout(Widget):
     self._nnlc_toggle = toggle_item_sp(
       param="NeuralNetworkLateralControl",
       title=lambda: tr("Neural Network Lateral Control (NNLC)"),
-      description=""
+      description=lambda: tr("Use the neural-network lateral controller when supported. " +
+                             "This changes steering behavior; turn it off to return to the default lateral controller.")
     )
 
     items = [

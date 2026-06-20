@@ -14,6 +14,7 @@ MAX_RATIO = 1.25
 MIN_BIN_POINTS = 200
 MIN_GLOBAL_POINTS = 500
 MIN_CONFIDENCE = 0.6
+MAX_SPEED_ANCHORS = 16
 
 
 def _finite_float(value):
@@ -164,13 +165,18 @@ def parse_speed_aware_torque_profile(CP: Any, payload):
   parsed = {}
   for k in ('globalLatAccelFactor', 'globalFriction'):
     v = _finite_float(payload.get(k))
-    if v is None or v <= 0:
+    if v is None or v < 0:
       return None
     parsed[k] = v
+  if parsed['globalLatAccelFactor'] <= 0:
+    return None
   parsed['anchors'] = []
   parsed['ratios'] = []
   parsed['confidence'] = []
   parsed['points'] = []
+  last_anchor = None
+  if len(anchors) > MAX_SPEED_ANCHORS:
+    return None
   for a, r, c, n in zip(anchors, ratios, confidence, points, strict=True):
     a = _finite_float(a)
     r = _finite_float(r)
@@ -179,10 +185,13 @@ def parse_speed_aware_torque_profile(CP: Any, payload):
       n = int(n)
     except (TypeError, ValueError):
       return None
-    if a is None or r is None or c is None or n < 0 or r <= 0 or c < 0 or c > 1:
+    if a is None or r is None or c is None or n < 0 or r < MIN_RATIO or r > MAX_RATIO or c < 0 or c > 1:
       return None
+    if last_anchor is not None and a <= last_anchor:
+      return None
+    last_anchor = a
     parsed['anchors'].append(a)
-    parsed['ratios'].append(float(np.clip(r, MIN_RATIO, MAX_RATIO)))
+    parsed['ratios'].append(r)
     parsed['confidence'].append(c)
     parsed['points'].append(n)
   return parsed

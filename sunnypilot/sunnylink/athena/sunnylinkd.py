@@ -12,9 +12,11 @@ import errno
 import gzip
 import json
 import os
+import math
 import ssl
 import threading
 import time
+from typing import Any
 
 from jsonrpc import dispatcher
 from functools import partial
@@ -53,9 +55,111 @@ BLOCKED_PARAMS = {
   "GithubSshKeys",   # Direct SSH key injection
   "HasAcceptedTerms",
   "HasAcceptedTermsSP",
+  "AlphaLongitudinalEnabled",   # Safety-critical control mode; needs local/offroad confirmation
+  "JoystickDebugMode",          # Can stop controls and start joystickd
+  "LateralManeuverMode",        # Test-only driving mode
+  "LongitudinalManeuverMode",   # Test-only driving mode
+  "LiveTorqueSpeedAdaptiveParams",  # Hidden live steering profile; generated locally only
   "OnroadCycleRequested",      # Prevent remote cycle trigger
   "ParamsVersion",         # Device-managed version counter
+  "SshEnabled",           # Remote shell access must stay local-only
 }
+
+
+def _decode_param_value(value: str, compression: bool) -> str:
+  raw = base64.b64decode(value, validate=True)
+  if compression:
+    raw = gzip.decompress(raw)
+  return raw.decode("utf-8")
+
+
+def _option_value_matches(option_value, candidate: str) -> bool:
+  if isinstance(option_value, bool):
+    if candidate.lower() in {"true", "1"}:
+      return option_value is True
+    if candidate.lower() in {"false", "0"}:
+      return option_value is False
+    return False
+
+  if isinstance(option_value, (int, float)) and not isinstance(option_value, bool):
+    try:
+      candidate_num = float(candidate)
+    except ValueError:
+      return False
+    return math.isfinite(candidate_num) and candidate_num == float(option_value)
+
+  return str(option_value) == candidate
+
+
+def _collect_settings_policy() -> dict[str, dict[str, Any]]:
+  schema = generate_schema()
+  policy: dict[str, dict[str, Any]] = {}
+
+  def record_item_policy(key: str, item_policy: dict[str, Any]) -> None:
+    current = policy.setdefault(str(key), {})
+    current["blocked"] = bool(current.get("blocked")) or bool(item_policy.get("blocked"))
+    current["attestation_required"] = bool(current.get("attestation_required")) or bool(item_policy.get("attestation_required"))
+    for field in ("min", "max", "options"):
+      if field in item_policy:
+        current[field] = item_policy[field]
+
+  def walk_item(item: dict, inherited_attestation: bool, remote_configurable: bool) -> None:
+    item_attestation = inherited_attestation or bool(item.get("requires_attestation"))
+    item_policy: dict[str, Any] = {
+      "blocked": bool(item.get("blocked")) or (not remote_configurable),
+      "attestation_required": item_attestation,
+    }
+    for field in ("min", "max", "options"):
+      if field in item:
+        item_policy[field] = item[field]
+
+    key = item.get("key")
+    if key:
+      record_item_policy(str(key), item_policy)
+
+    for sub_item in item.get("sub_items", []) or []:
+      if isinstance(sub_item, dict):
+        walk_item(sub_item, item_attestation, remote_configurable)
+
+  def walk_container(node: dict, inherited_attestation: bool = False, parent_remote_configurable: bool = True) -> None:
+    if not isinstance(node, dict):
+      return
+
+    current_attestation = inherited_attestation or bool(node.get("attestation_required"))
+    current_remote_configurable = parent_remote_configurable
+    if "remote_configurable" in node:
+      current_remote_configurable = bool(node.get("remote_configurable"))
+
+    for item in node.get("items", []) or []:
+      if isinstance(item, dict):
+        walk_item(item, current_attestation, current_remote_configurable)
+
+    for section in node.get("sections", []) or []:
+      if isinstance(section, dict):
+        walk_container(section, current_attestation, current_remote_configurable)
+
+    for sub_panel in node.get("sub_panels", []) or []:
+      if isinstance(sub_panel, dict):
+        walk_container(sub_panel, current_attestation, current_remote_configurable)
+
+  for panel in schema.get("panels", []) or []:
+    if isinstance(panel, dict):
+      walk_container(panel)
+
+  vehicle_settings = schema.get("vehicle_settings", {})
+  if isinstance(vehicle_settings, dict):
+    for vehicle_setting in vehicle_settings.values():
+      if isinstance(vehicle_setting, dict):
+        walk_container(vehicle_setting)
+      elif isinstance(vehicle_setting, list):
+        for item in vehicle_setting:
+          if isinstance(item, dict):
+            walk_item(item, False, True)
+
+  return policy
+
+
+SETTINGS_POLICY = _collect_settings_policy()
 
 
 def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
@@ -232,24 +336,66 @@ def getParams(params_keys: list[str], compression: bool = False) -> str | dict[s
 
 
 @dispatcher.add_method
-def saveParams(params_to_update: dict[str, str], compression: bool = False) -> None:
+def saveParams(params_to_update: dict[str, str], compression: bool = False, attested_params: list[str] | dict[str, bool] | None = None) -> None:
+  attested_keys = set(attested_params if isinstance(attested_params, (list, set, tuple)) else [])
+  if isinstance(attested_params, dict):
+    attested_keys |= {key for key, value in attested_params.items() if value}
+
+  saved_any = False
   for key, value in params_to_update.items():
     # disallow modifications to blocked parameters
     if key in BLOCKED_PARAMS:
       cloudlog.warning(f"sunnylinkd.saveParams.blocked: Attempted to modify blocked parameter '{key}'")
       continue
 
+    policy: dict[str, Any] = SETTINGS_POLICY.get(key, {})
+    if policy.get("blocked"):
+      cloudlog.warning(f"sunnylinkd.saveParams.blocked: Attempted to modify metadata-blocked parameter '{key}'")
+      continue
+
+    if policy.get("attestation_required") and key not in attested_keys:
+      cloudlog.warning(f"sunnylinkd.saveParams.attestation_required: Missing attestation for '{key}'")
+      continue
+
+    decoded_value = value
+    if policy:
+      try:
+        decoded_value = _decode_param_value(value, compression)
+      except Exception as e:
+        cloudlog.warning(f"sunnylinkd.saveParams.decode_failed: {key} {e}")
+        continue
+
+    if "min" in policy or "max" in policy:
+      try:
+        numeric_value = float(decoded_value)
+      except ValueError:
+        cloudlog.warning(f"sunnylinkd.saveParams.range_invalid: Non-numeric value for '{key}'")
+        continue
+      if not math.isfinite(numeric_value):
+        continue
+      if "min" in policy and numeric_value < float(policy["min"]):
+        continue
+      if "max" in policy and numeric_value > float(policy["max"]):
+        continue
+
+    if "options" in policy:
+      option_values = [opt.get("value") for opt in policy.get("options", []) if isinstance(opt, dict) and "value" in opt]
+      if not any(_option_value_matches(option_value, decoded_value) for option_value in option_values):
+        continue
+
     try:
       save_param_from_base64_encoded_string(key, value, compression)
+      saved_any = True
     except Exception as e:
       cloudlog.error(f"sunnylinkd.saveParams.exception {e}")
 
-  # Increment version counter for frontend change detection
-  try:
-    current = int(params.get("ParamsVersion") or "0")
-    params.put("ParamsVersion", str(current + 1), block=True)
-  except Exception:
-    pass
+  if saved_any:
+    # Increment version counter for frontend change detection
+    try:
+      current = int(params.get("ParamsVersion") or "0")
+      params.put("ParamsVersion", str(current + 1), block=True)
+    except Exception:
+      pass
 
 
 def startLocalProxy(global_end_event: threading.Event, remote_ws_uri: str, local_port: int) -> dict[str, int]:

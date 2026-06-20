@@ -47,6 +47,7 @@ RECORD_QUALITY = int(os.getenv("RECORD_QUALITY", "23"))  # Dynamic bitrate quali
 RECORD_BITRATE = os.getenv("RECORD_BITRATE", "")  # Target bitrate e.g. "2000k" (overrides RECORD_QUALITY when set)
 RECORD_SPEED = int(os.getenv("RECORD_SPEED", "1"))  # Speed multiplier
 OFFSCREEN = os.getenv("OFFSCREEN") == "1"  # Disable FPS limiting for fast offline rendering
+REDUCED_MOTION = os.getenv("REDUCED_MOTION", "0") == "1" or os.getenv("PREFER_REDUCED_MOTION", "0") == "1"
 
 GL_VERSION = """
 #version 300 es
@@ -235,6 +236,7 @@ class GuiApplication(GuiApplicationExt):
     self._last_mouse_event: MouseEvent = MouseEvent(MousePos(0, 0), 0, False, False, False, 0.0)
 
     self._should_render = True
+    self._reduced_motion = REDUCED_MOTION
 
     # Debug variables
     self._mouse_history: deque[MousePosWithTime] = deque(maxlen=MOUSE_THREAD_RATE)
@@ -257,9 +259,16 @@ class GuiApplication(GuiApplicationExt):
   def set_show_fps(self, show: bool):
     self._show_fps = show
 
+  def set_reduced_motion(self, reduced: bool):
+    self._reduced_motion = reduced
+
   @property
   def show_touches(self) -> bool:
     return self._show_touches
+
+  @property
+  def reduced_motion(self) -> bool:
+    return self._reduced_motion
 
   @property
   def target_fps(self):

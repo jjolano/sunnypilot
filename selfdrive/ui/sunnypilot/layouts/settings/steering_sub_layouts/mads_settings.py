@@ -22,10 +22,11 @@ MADS_STEERING_MODE_OPTIONS = [
   (tr("Disengage"), tr_noop("Disengage: ALC will disengage when the brake pedal is pressed.")),
 ]
 
-MADS_MAIN_CRUISE_BASE_DESC = tr("Note: For vehicles without LFA/LKAS button, disabling this will prevent lateral control engagement.")
+MADS_MAIN_CRUISE_BASE_DESC = tr("Allow the main cruise control to toggle MADS engagement. " +
+                                "Note: For vehicles without LFA/LKAS button, disabling this will prevent lateral control engagement.")
 MADS_UNIFIED_ENGAGEMENT_MODE_BASE_DESC = "{engage}<br><h4>{note}</h4>".format(
   engage=tr("Engage lateral and longitudinal control with cruise control engagement."),
-  note=tr("Note: Once lateral control is engaged via UEM, it will remain engaged until it is manually disabled via the MADS button or car shut off."),
+  note=tr("Note: UEM changes when lateral assist starts. Once lateral control is engaged via UEM, it will remain engaged until it is manually disabled via the MADS button or car shut off."),
 )
 
 STATUS_CHECK_COMPATIBILITY = tr("Start the vehicle to check vehicle compatibility.")
@@ -100,7 +101,8 @@ class MadsSettingsLayout(Widget):
     return False
 
   def _update_steering_mode_description(self, button_index: int):
-    base_desc = tr("Choose how Automatic Lane Centering (ALC) behaves after the brake pedal is manually pressed in sunnypilot.")
+    base_desc = tr("Choose how Automatic Lane Centering (ALC) behaves after the brake pedal is manually pressed in sunnypilot. " +
+                   "Disengage is the most conservative choice; Remain Active keeps lateral assist available after braking.")
     result = base_desc + "<br><br>"
     for opt in MADS_STEERING_MODE_OPTIONS:
       desc = "<b>" + opt[1] + "</b>" if button_index == MADS_STEERING_MODE_OPTIONS.index(opt) else opt[1]

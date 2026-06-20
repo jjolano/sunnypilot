@@ -380,7 +380,7 @@ class UnifiedLabel(Widget):
 
   def show_event(self):
     super().show_event()
-    if self._shimmer:
+    if self._shimmer and not gui_app.reduced_motion:
       self.reset_shimmer()
 
   def reset_shimmer(self, offset: float = 0.0):
@@ -597,7 +597,9 @@ class UnifiedLabel(Widget):
     current_y = start_y
     for idx, (line, size, emojis) in enumerate(zip(visible_lines, visible_sizes, visible_emojis, strict=True)):
       if self._needs_scroll:
-        if self._scroll_state == ScrollState.STARTING:
+        if gui_app.reduced_motion:
+          self.reset_scroll()
+        elif self._scroll_state == ScrollState.STARTING:
           if self._scroll_pause_t is None:
             self._scroll_pause_t = rl.get_time() + 2.0
           if rl.get_time() >= self._scroll_pause_t:
@@ -617,7 +619,7 @@ class UnifiedLabel(Widget):
       self._render_line(line, size, emojis, current_y)
 
       # Draw 2nd instance for scrolling
-      if self._needs_scroll and self._scroll_state != ScrollState.STARTING:
+      if self._needs_scroll and self._scroll_state != ScrollState.STARTING and not gui_app.reduced_motion:
         text2_scroll_offset = size.x + self._rect.width / 3
         self._render_line(line, size, emojis, current_y, text2_scroll_offset)
 
@@ -670,7 +672,7 @@ class UnifiedLabel(Widget):
       line_x = self._rect.x + self._text_padding
     line_x += self._scroll_offset + x_offset
 
-    if self._shimmer:
+    if self._shimmer and not gui_app.reduced_motion:
       self._render_line_shimmer(line, line_x, current_y)
     else:
       # Render line with emojis

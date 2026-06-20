@@ -15,12 +15,13 @@ sections:
     widget: toggle
     title: Use Lane Turn Desires
     description: If you are driving at 20 mph (32 km/h) or below and have your blinker on, the car will plan a turn in that
-      direction at the nearest drivable path. This prevents situations (like at red lights) where the car might plan the wrong
-      turn direction.
+      direction at the nearest drivable path. This changes model path intent at low speed; turn it off if the planned path
+      looks wrong.
   - key: LaneTurnValue
     widget: option
     title: Adjust Lane Turn Speed
-    description: Set the maximum speed for lane turn desires.
+    description: Set the maximum speed where lane turn desires may be used. Raising this can make the model plan turn-like
+      paths at higher speeds.
     min: 0
     max: 20
     step: 1
@@ -35,12 +36,12 @@ sections:
   - key: LagdToggle
     widget: toggle
     title: Live Learning Steer Delay
-    description: Allow device to learn and adapt car's steering response time
+    description: Allow device to learn and adapt car's steering response time. Disable to use the fixed software delay below.
   - key: LagdToggleDelay
     widget: option
     title: Adjust Software Delay
-    description: Adjust the software delay when Live Learning Steer Delay is toggled off. The default software delay value
-      is 0.2
+    description: Adjust the fixed software delay when Live Learning Steer Delay is off. Wrong delay can make steering response
+      feel early or late; default is 0.2 s.
     min: 0.05
     max: 0.5
     step: 0.01
@@ -58,7 +59,9 @@ sections:
   - key: CameraOffset
     widget: option
     title: Adjust Camera Offset
-    description: Virtually shift camera's perspective to move model's center to Left(+ values) or Right (- values)
+    description: Virtually shift camera perspective to move the model center left (+ values) or right (- values). Non-zero
+      offsets can bias the perceived path; return to 0 if lane centering looks worse.
+    requires_attestation: true
     min: -0.35
     max: 0.35
     step: 0.01

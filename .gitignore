@@ -42,6 +42,7 @@ bin/
 *.stats
 *.pkl
 *.pkl*
+core.*
 config.json
 compile_commands.json
 compare_runtime*.html
@@ -87,6 +88,10 @@ build/
 # agents
 .claude/
 .context/
+.impeccable/config.local.json
+.impeccable/live/sessions/
+.impeccable/critique/*.md
+!.impeccable/critique/ignore.md
 .slim/deepwork/
 PLAN.md
 TASK.md

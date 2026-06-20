@@ -21,6 +21,13 @@ class AlertFadeAnimator:
     self._duration_on = duration_on
 
   def update(self, active: bool):
+    from openpilot.system.ui.lib.application import gui_app
+
+    if gui_app.reduced_motion:
+      self._frame = 0
+      self._filter.x = 1.0
+      return
+
     if active:
       self._frame += 1
       if (self._frame % self._target_fps) < (self._target_fps * self._duration_on):

@@ -206,18 +206,20 @@ class TreeOptionDialog(MultiOptionDialog):
       self.scroller.scroll_panel.set_offset(0)
 
   def _render(self, rect):
-    dialog_content_rect = rl.Rectangle(rect.x + 50, rect.y + 50, rect.width - 100, rect.height - 100)
+    margin = min(50, max(12, min(rect.width, rect.height) * 0.08))
+    dialog_content_rect = rl.Rectangle(rect.x + margin, rect.y + margin, max(1, rect.width - 2 * margin), max(1, rect.height - 2 * margin))
     rl.draw_rectangle_rounded(dialog_content_rect, 0.02, 20, rl.BLACK)
 
     # Title on the left
-    title_rect = rl.Rectangle(dialog_content_rect.x + 50, dialog_content_rect.y + 50, dialog_content_rect.width * 0.5, 70)
+    inner_margin = min(50, max(12, dialog_content_rect.width * 0.04))
+    title_rect = rl.Rectangle(dialog_content_rect.x + inner_margin, dialog_content_rect.y + inner_margin, dialog_content_rect.width * 0.5, 70)
     gui_label(title_rect, self.title, 70, font_weight=FontWeight.BOLD)
 
     # Search bar on the top right
-    search_width = dialog_content_rect.width * self._search_width
-    search_height = 110
-    search_x = dialog_content_rect.x + dialog_content_rect.width - 50 - search_width
-    search_y = dialog_content_rect.y + 40  # align roughly with title
+    search_width = max(1, dialog_content_rect.width * self._search_width)
+    search_height = min(110, max(56, dialog_content_rect.height * 0.18))
+    search_x = dialog_content_rect.x + dialog_content_rect.width - inner_margin - search_width
+    search_y = dialog_content_rect.y + max(12, inner_margin - 10)  # align roughly with title
 
     self._search_rect = rl.Rectangle(search_x, search_y, search_width, search_height)
 
@@ -257,8 +259,9 @@ class TreeOptionDialog(MultiOptionDialog):
       gui_label(text_rect, self.query, 70, font_weight=FontWeight.MEDIUM)
 
     options_top = self._search_rect.y + self._search_rect.height + 40
-    options_area_rect = rl.Rectangle(dialog_content_rect.x + 50, options_top, dialog_content_rect.width - 100,
-                                     dialog_content_rect.height - (options_top - dialog_content_rect.y) - 210)
+    button_height = min(160, max(120, dialog_content_rect.height * 0.2))
+    options_area_rect = rl.Rectangle(dialog_content_rect.x + inner_margin, options_top, max(1, dialog_content_rect.width - 2 * inner_margin),
+                                     max(1, dialog_content_rect.height - (options_top - dialog_content_rect.y) - button_height - inner_margin))
 
     for index, option_text in enumerate(self.options):
       self.option_buttons[index].selected = (option_text == self.selection)
@@ -266,13 +269,14 @@ class TreeOptionDialog(MultiOptionDialog):
       self.option_buttons[index].set_rect(rl.Rectangle(0, 0, options_area_rect.width, 135))
     self.scroller.render(options_area_rect)
 
-    button_width = (dialog_content_rect.width - 150) / 2
-    button_y_position = dialog_content_rect.y + dialog_content_rect.height - 160
+    button_spacing = min(50, max(12, dialog_content_rect.width * 0.04))
+    button_width = max(1, (dialog_content_rect.width - 2 * inner_margin - button_spacing) / 2)
+    button_y_position = dialog_content_rect.y + dialog_content_rect.height - button_height
 
-    cancel_rect = rl.Rectangle(dialog_content_rect.x + 50, button_y_position, button_width, 160)
+    cancel_rect = rl.Rectangle(dialog_content_rect.x + inner_margin, button_y_position, button_width, button_height)
     self.cancel_button.render(cancel_rect)
 
-    select_rect = rl.Rectangle(dialog_content_rect.x + 100 + button_width, button_y_position, button_width, 160)
+    select_rect = rl.Rectangle(cancel_rect.x + button_width + button_spacing, button_y_position, button_width, button_height)
     self.select_button.set_enabled(self.selection != self.current)
     self.select_button.render(select_rect)
 
