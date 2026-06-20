@@ -26,7 +26,7 @@ def lead(d_rel=30.0, v_lead=12.0, v_rel=None, status=True):
 
 
 def fake_sm(lead_one=None, brake=False, gas=False, model_should_stop=False, model_accel=0.0, pitch=0.0,
-            model_x=None, model_y=None, model_v=None):
+            model_x=None, model_y=None, model_v=None, model_leads=None):
   position = SimpleNamespace()
   if model_x is not None:
     position.x = model_x
@@ -38,7 +38,8 @@ def fake_sm(lead_one=None, brake=False, gas=False, model_should_stop=False, mode
     'modelV2': SimpleNamespace(action=SimpleNamespace(shouldStop=model_should_stop,
                                                        desiredAcceleration=model_accel),
                                position=position,
-                               velocity=SimpleNamespace(x=model_v)),
+                               velocity=SimpleNamespace(x=model_v),
+                               leadsV3=list(model_leads or [])),
     'carControl': SimpleNamespace(orientationNED=[0.0, pitch, 0.0]),
     'controlsState': SimpleNamespace(forceDecel=False),
   }
@@ -359,3 +360,43 @@ def test_adapter_contains_path_shadow_fault_without_fail_closed():
   assert out.selected_intent != "fault"
   assert out.debug["path_shadow_model_path_available"] is False
   assert out.debug["path_shadow_fault"] is True
+
+
+def test_lead_path_clearance_modes_are_exactly_non_actuating():
+  model_leads = [SimpleNamespace(
+    x=[55.0, 60.0, 65.0, 70.0], y=[-0.4, -1.0, -1.8, -2.0], t=[0.0, 1.0, 2.0, 3.0],
+    xStd=[0.5, 0.5, 0.5, 0.5], yStd=[0.2, 0.2, 0.2, 0.2], prob=0.9,
+  )]
+  outputs = {}
+  for mode in ("off", "shadow", "apply"):
+    adapter = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
+                                                  LeadPathClearanceMode=mode))
+    sm = fake_sm(
+      lead(d_rel=55.0, v_lead=10.0, v_rel=-5.0),
+      model_x=[0.0, 40.0, 80.0], model_y=[0.0, 0.0, 0.0], model_v=[15.0, 15.0, 15.0],
+      model_leads=model_leads,
+    )
+    out = None
+    for _ in range(12):
+      out = adapter.evaluate(sm, 15.0, 0.0, 18.0, -0.3, fake_scc(), fake_sla(), dt=0.05)
+    assert out is not None
+    outputs[mode] = out
+
+  baseline = outputs["off"]
+  for mode in ("shadow", "apply"):
+    out = outputs[mode]
+    assert out.a_target == pytest.approx(baseline.a_target)
+    assert out.should_stop == baseline.should_stop
+    assert out.selected_intent == baseline.selected_intent
+    assert out.reason == baseline.reason
+    assert out.standstill_release_allowed == baseline.standstill_release_allowed
+    assert out.standstill_release_source == baseline.standstill_release_source
+    assert out.standstill_release_a_target == pytest.approx(baseline.standstill_release_a_target)
+    assert out.standstill_release_reason == baseline.standstill_release_reason
+
+  assert outputs["shadow"].debug["lead_path_clearance_mode"] == "shadow"
+  assert outputs["shadow"].debug["lead_path_clearance_shadow_eligible"] is True
+  assert outputs["apply"].debug["lead_path_clearance_mode"] == "apply"
+  assert outputs["apply"].debug["lead_path_clearance_effective_mode"] == "shadow"
+  assert outputs["apply"].debug["lead_path_clearance_apply_supported"] is False
+  assert outputs["apply"].debug["lead_path_clearance_shadow_eligible"] is True

@@ -715,6 +715,37 @@
               ]
             },
             {
+              "key": "LeadPathClearanceMode",
+              "widget": "multiple_button",
+              "title": "Lead Path Clearance",
+              "description": "Experimental monitor for leads predicted to leave your path. No braking changes yet.",
+              "options": [
+                {
+                  "value": "off",
+                  "label": "Off"
+                },
+                {
+                  "value": "shadow",
+                  "label": "Monitor only"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                },
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "CustomLongitudinalEnabled",
+                  "equals": true
+                }
+              ]
+            },
+            {
               "key": "DisengageOnAccelerator",
               "widget": "toggle",
               "title": "Disengage Cruise on Accelerator Pedal",
@@ -2213,44 +2244,6 @@
                   "type": "param",
                   "key": "ShowAdvancedControls",
                   "equals": true
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "id": "lateral_control",
-          "title": "Lateral Control",
-          "description": "Neural network lateral control for supported models",
-          "items": [
-            {
-              "key": "NeuralNetworkLateralControl",
-              "widget": "toggle",
-              "title": "Neural Network Lateral Control (NNLC)",
-              "description": "Use a neural network for lateral control instead of the default torque controller.",
-              "visibility": [
-                {
-                  "type": "not",
-                  "condition": {
-                    "type": "capability",
-                    "field": "steer_control_type",
-                    "equals": "angle"
-                  }
-                }
-              ],
-              "enablement": [
-                {
-                  "type": "offroad_only"
-                },
-                {
-                  "type": "capability",
-                  "field": "torque_allowed",
-                  "equals": true
-                },
-                {
-                  "type": "param",
-                  "key": "EnforceTorqueControl",
-                  "equals": false
                 }
               ]
             }

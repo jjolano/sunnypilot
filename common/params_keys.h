@@ -96,6 +96,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // is kept for storage compatibility only; apply is explicit opt-in and runtime-gated by CustomLongitudinalEnabled.
     {"LeadAnticipationMode", {PERSISTENT | BACKUP, STRING, "shadow"}},
     {"LeadAnticipationEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // compatibility bool; inert for planner behavior
+    // LeadPathClearanceMode is Phase 1 shadow/debug only. Settings expose off|shadow; runtime accepts
+    // stored apply values but downgrades them to shadow-only until an apply path is separately validated.
+    {"LeadPathClearanceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CurveMemoryEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},

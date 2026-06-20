@@ -185,6 +185,10 @@ def string_option_index(value: object, enum: StringEnum, key: str) -> int:
       if option_value.lower() == text:
         return i
     return enum.values.index("acc") if "acc" in enum.values else 0
+  if key == "LeadPathClearanceMode":
+    if text == "apply" and "shadow" in enum.values:
+      return enum.values.index("shadow")
+    return enum.values.index(text) if text in enum.values else 0
   return enum.values.index(text) if text in enum.values else 0
 
 

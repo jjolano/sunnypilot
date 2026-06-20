@@ -20,6 +20,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import MODE_APPLY as LEAD_PATH_CLEARANCE_MODE_APPLY, MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF, MODE_SHADOW as LEAD_PATH_CLEARANCE_MODE_SHADOW
 from openpilot.sunnypilot.custom.longitudinal.model_trust import StopTrustLearner
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
@@ -36,6 +37,23 @@ def _f(value: Any, default: float = 0.0) -> float:
   except (TypeError, ValueError):
     return default
   return v if math.isfinite(v) else default
+
+
+def _param_string(params: Any, key: str) -> str | None:
+  try:
+    raw = params.get(key)
+  except TypeError:
+    raw = params.get(key, None)
+  if raw is None:
+    return None
+  if isinstance(raw, bytes):
+    raw = raw.decode(errors="ignore")
+  return str(raw)
+
+
+def _lead_path_clearance_mode(value: Any) -> str:
+  text = str(value or "").strip().lower()
+  return text if text in (LEAD_PATH_CLEARANCE_MODE_OFF, LEAD_PATH_CLEARANCE_MODE_SHADOW, LEAD_PATH_CLEARANCE_MODE_APPLY) else LEAD_PATH_CLEARANCE_MODE_OFF
 
 
 def _coast_accel(pitch: float) -> float:
@@ -73,7 +91,8 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        brake_pressed: bool = False, gas_pressed: bool = False, force_slow_decel: bool = False,
                        model_should_stop: bool = False, model_desired_accel: float = 0.0,
                        model_stop_prob: float = 1.0, model_stop_distance: float | None = None,
-                       accel_coast: float = 0.0, model_msg: Any | None = None) -> LongitudinalStackInputs:
+                       accel_coast: float = 0.0, model_msg: Any | None = None,
+                       lead_path_clearance_mode: str = LEAD_PATH_CLEARANCE_MODE_OFF) -> LongitudinalStackInputs:
   has_lead = lead_one is not None and bool(getattr(lead_one, "status", False))
   # Pre-MPC lead-present seed: carry the currently selected planner a_target into the custom
   # policy. Final lead-follow physics remains owned by the downstream MPC solve.
@@ -105,6 +124,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     curve_active=curve_active, curve_a_target=float(curve_a_target), curve_source=curve_source,
     force_slow_decel=bool(force_slow_decel), brake_pressed=brake_pressed, gas_pressed=gas_pressed,
     mode=mode, sources=sources, personality=personality, model_msg=model_msg,
+    lead_path_clearance_mode=lead_path_clearance_mode,
   )
 
 
@@ -116,6 +136,7 @@ class CustomLongitudinalAdapter:
     self._tick = 0
     self.enabled = False
     self.mode = LongitudinalMode.SCC
+    self.lead_path_clearance_mode = LEAD_PATH_CLEARANCE_MODE_OFF
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     if params is not None:
@@ -149,6 +170,7 @@ class CustomLongitudinalAdapter:
     if initial or self._tick % PARAMS_REFRESH_PERIOD == 0:
       try:
         self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
+        self.lead_path_clearance_mode = _lead_path_clearance_mode(_param_string(p, "LeadPathClearanceMode") or LEAD_PATH_CLEARANCE_MODE_OFF)
         # SCC curve sources are gated by the existing upstream SCC enable toggles.
         self.sources = SourceToggles(
           scc_curve_vision_enabled=bool(p.get_bool("SmartCruiseControlVision")),
@@ -199,7 +221,7 @@ class CustomLongitudinalAdapter:
         force_slow_decel=bool(getattr(controls_state, "forceDecel", False)),
         model_should_stop=model_should_stop, model_desired_accel=model_desired_accel,
         model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance, accel_coast=accel_coast,
-        model_msg=model,
+        model_msg=model, lead_path_clearance_mode=self.lead_path_clearance_mode,
       )
       result = self._stack.update(inputs, dt)
       debug = dict(result.debug or {})

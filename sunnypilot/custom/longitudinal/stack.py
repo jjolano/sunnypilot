@@ -23,6 +23,7 @@ from typing import Any
 from openpilot.sunnypilot.custom.longitudinal.decision import Decision, decide
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceState, LeadConfidenceTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
+from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF, predict_lead_path_clearance
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
@@ -72,6 +73,7 @@ class LongitudinalStackInputs:
   stop_threat: bool = False
   # shadow path-relative lead context (telemetry only; not used for actuation)
   model_msg: Any | None = None
+  lead_path_clearance_mode: Any = LEAD_PATH_CLEARANCE_MODE_OFF
   # advisory evidence
   speed_limit_active: bool = False
   speed_limit_v_target: float = 0.0
@@ -123,6 +125,7 @@ class CustomLongitudinalStack:
     # telemetry/debug only. It must never change actuation or fail the adapter.
     path_shadow_model_path_available = False
     path_shadow_fault = False
+    shadow_ctx = None
     shadow_debug: dict[str, Any] = {}
     try:
       path_shadow_model_path_available = _model_path_available(inp.model_msg)
@@ -130,6 +133,16 @@ class CustomLongitudinalStack:
       shadow_debug = {f"path_shadow_{k}": v for k, v in shadow_ctx.debug_dict().items()}
     except Exception:
       path_shadow_fault = True
+
+    # Lead path clearance is Phase 1 shadow-only telemetry. It must not feed lead
+    # selection, stop commitment, or accel targets, and all failures are contained.
+    lead_path_clearance_fault = False
+    lead_path_clearance_debug: dict[str, Any] = {}
+    try:
+      clearance = predict_lead_path_clearance(inp.lead_path_clearance_mode, shadow_ctx, inp.model_msg, inp.v_ego)
+      lead_path_clearance_debug = clearance.debug_dict()
+    except Exception:
+      lead_path_clearance_fault = True
 
     raw_lead_present = _any_status(inp.leads)
     lead_shadow_active = bool(getattr(lead_ctx, "shadow_active", False))
@@ -217,6 +230,8 @@ class CustomLongitudinalStack:
         "path_shadow_model_path_available": path_shadow_model_path_available,
         "path_shadow_fault": path_shadow_fault,
         **shadow_debug,
+        "lead_path_clearance_fault": lead_path_clearance_fault,
+        **lead_path_clearance_debug,
       },
     )
 

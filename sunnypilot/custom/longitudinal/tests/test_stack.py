@@ -41,6 +41,11 @@ def malformed_model_path():
   return SimpleNamespace(position=RaisesOnY())
 
 
+class BadLeadPathClearanceMode:
+  def __str__(self):
+    raise RuntimeError("bad clearance mode")
+
+
 def base(**kw):
   d = dict(v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, accel_limits=LIMITS)
   d.update(kw)
@@ -321,3 +326,25 @@ def test_path_shadow_fault_is_contained_inside_stack_update():
   assert bad.standstill_release_allowed == raw.standstill_release_allowed
   assert bad.debug["path_shadow_model_path_available"] is False
   assert bad.debug["path_shadow_fault"] is True
+
+
+def test_lead_path_clearance_fault_is_contained_inside_stack_update():
+  raw_stack = CustomLongitudinalStack()
+  bad_stack = CustomLongitudinalStack()
+  common = dict(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=-0.3,
+    leads=(lead(d_rel=60.0, v_lead=20.0, v_rel=-5.0), None),
+    lead_a_target=-0.3, mode=LongitudinalMode.ACC, model_msg=model_path(),
+  )
+
+  raw = bad = None
+  for _ in range(12):
+    raw = raw_stack.update(base(**common, lead_path_clearance_mode="off"), DT)
+    bad = bad_stack.update(base(**common, lead_path_clearance_mode=BadLeadPathClearanceMode()), DT)
+
+  assert raw is not None and bad is not None
+  assert bad.a_target == pytest.approx(raw.a_target)
+  assert bad.decision.reason == raw.decision.reason
+  assert bad.should_stop == raw.should_stop
+  assert bad.standstill_release_allowed == raw.standstill_release_allowed
+  assert bad.debug["lead_path_clearance_fault"] is True

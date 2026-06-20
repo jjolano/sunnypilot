@@ -93,6 +93,11 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert lead_enum.values == ["off", "shadow", "apply"]
   assert lead_enum.labels == ["Off", "Monitor only", "Apply lead smoothing"]
 
+  path_enum = homogeneous_string_options(find_item(CRUISE, "LeadPathClearanceMode"))
+  assert path_enum is not None
+  assert path_enum.values == ["off", "shadow"]
+  assert path_enum.labels == ["Off", "Monitor only"]
+
 
 def test_custom_longitudinal_string_index_matches_planner_fallbacks():
   enum = homogeneous_string_options(find_item(CRUISE, "CustomLongitudinalMode"))
@@ -101,6 +106,16 @@ def test_custom_longitudinal_string_index_matches_planner_fallbacks():
   assert string_option_index("0", enum, "CustomLongitudinalMode") == 0      # legacy ACC
   assert string_option_index(b"1", enum, "CustomLongitudinalMode") == 1     # legacy E2E bytes-safe
   assert string_option_index("bad", enum, "CustomLongitudinalMode") == 0    # invalid -> planner ACC fallback
+
+
+def test_lead_path_clearance_string_index_maps_stored_apply_to_monitor():
+  enum = homogeneous_string_options(find_item(CRUISE, "LeadPathClearanceMode"))
+  assert enum is not None
+  assert string_option_index("", enum, "LeadPathClearanceMode") == 0
+  assert string_option_index("off", enum, "LeadPathClearanceMode") == 0
+  assert string_option_index("shadow", enum, "LeadPathClearanceMode") == 1
+  assert string_option_index("apply", enum, "LeadPathClearanceMode") == 1
+  assert string_option_index("bad", enum, "LeadPathClearanceMode") == 0
 
 
 def test_mixed_string_float_enum_remains_escape_hatch():
