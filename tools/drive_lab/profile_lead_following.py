@@ -10,7 +10,7 @@ the regression gate those longitudinal-policy changes must beat. Three views, al
   of the approach (early vs late), and how often the lead then *sped back up* (braked for nothing).
 - **Braking while following**: how much of the braking happens while the lead is actually accelerating.
 
-Reference (openpilot `T_FOLLOW`): ~1.25 s aggressive / ~1.45 s normal / ~1.75 s relaxed.
+Reference (fork `T_FOLLOW`): ~1.20 s aggressive / ~1.45 s normal / ~1.75 s relaxed.
 
 Ported from a `/btw` analysis script onto drive_lab conventions.
 Signals: carState.vEgo/aEgo, carControl.longActive, radarState.leadOne.{dRel,vRel,vLead,aLeadK,status,modelProb}.

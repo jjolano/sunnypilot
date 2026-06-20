@@ -55,7 +55,7 @@ FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0      # g_stop: standstill gap behind a lead (the stop buffer)
-MOVING_GAP = 1.5        # g_move: the moving follow constant the stop gap fades to (decoupled)
+MOVING_GAP = 1.25       # g_move: the moving follow constant the stop gap fades to (decoupled)
 GAP_FADE_V = 4.0        # m/s; speed scale over which the stop gap fades to the moving gap
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
@@ -78,7 +78,7 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
   elif personality==log.LongitudinalPersonality.standard:
     return 1.45
   elif personality==log.LongitudinalPersonality.aggressive:
-    return 1.25
+    return 1.20
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
