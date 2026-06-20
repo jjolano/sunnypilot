@@ -195,6 +195,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
   customLongitudinal @8 :CustomLongitudinal;
+  longitudinalDebug @9 :LongitudinalDebug;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -220,6 +221,50 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       e2e @1;
       scc @2;
     }
+  }
+
+  struct LongitudinalDebug {
+    enabled @0 :Bool;
+    traceMode @1 :Text;
+    vEgo @2 :Float32;
+    vCruise @3 :Float32;
+    customATarget @4 :Float32;
+    customShouldStop @5 :Bool;
+    customIntent @6 :Text;
+    customReason @7 :Text;
+    mpcATarget @8 :Float32;
+    mpcShouldStop @9 :Bool;
+    modelATarget @10 :Float32;
+    modelShouldStop @11 :Bool;
+    finalATargetUnclipped @12 :Float32;
+    finalATargetClipped @13 :Float32;
+    finalShouldStop @14 :Bool;
+    accelClipMin @15 :Float32;
+    accelClipMax @16 :Float32;
+    e2eSource @17 :Bool;
+
+    struct LeadPathClearance {
+      mode @0 :Text;
+      effectiveMode @1 :Text;
+      applySupported @2 :Bool;
+      shadowEligible @3 :Bool;
+      blockReason @4 :Text;
+      leadIdx @5 :Int32;
+      pathYRel @6 :Float32;
+      lateralVelocity @7 :Float32;
+      tClear @8 :Float32;
+      tConflict @9 :Float32;
+      confidence @10 :Float32;
+      modelProb @11 :Float32;
+      ttc @12 :Float32;
+      requiredDecel @13 :Float32;
+      leadStatus @14 :Bool;
+      leadDRel @15 :Float32;
+      leadVRel @16 :Float32;
+      leadYRel @17 :Float32;
+    }
+
+    leadPathClearance @18 :LeadPathClearance;
   }
 
   struct SmartCruiseControl {

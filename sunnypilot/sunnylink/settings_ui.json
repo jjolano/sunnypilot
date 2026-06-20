@@ -746,6 +746,37 @@
               ]
             },
             {
+              "key": "LongitudinalDebugTraceMode",
+              "widget": "multiple_button",
+              "title": "Longitudinal Debug Trace",
+              "description": "Add structured custom longitudinal diagnostics to route logs. Logging only; no driving changes.",
+              "options": [
+                {
+                  "value": "off",
+                  "label": "Off"
+                },
+                {
+                  "value": "log",
+                  "label": "Log"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                },
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "CustomLongitudinalEnabled",
+                  "equals": true
+                }
+              ]
+            },
+            {
               "key": "DisengageOnAccelerator",
               "widget": "toggle",
               "title": "Disengage Cruise on Accelerator Pedal",

@@ -92,6 +92,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // bounded by the MPC / clip_curvature safety floors — they only shape feel, never relax safety)
     {"CustomLongitudinalEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"CustomLongitudinalMode", {PERSISTENT | BACKUP, STRING, "scc"}},
+    // Route-log-only trace gate for validating custom longitudinal behavior; never affects actuation.
+    {"LongitudinalDebugTraceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     // LeadAnticipationMode defaults to shadow/pass-through telemetry. Legacy LeadAnticipationEnabled
     // is kept for storage compatibility only; apply is explicit opt-in and runtime-gated by CustomLongitudinalEnabled.
     {"LeadAnticipationMode", {PERSISTENT | BACKUP, STRING, "shadow"}},

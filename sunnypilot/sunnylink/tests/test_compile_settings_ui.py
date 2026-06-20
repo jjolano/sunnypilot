@@ -132,6 +132,16 @@ class TestCompiledShape:
     assert {"steering", "cruise", "display", "visuals", "toggles",
             "device", "software", "developer", "models"} <= panel_ids
 
+  def test_lead_path_clearance_mode_is_off_shadow_only(self, compiled):
+    cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
+    item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "LeadPathClearanceMode")
+    assert [opt["value"] for opt in item["options"]] == ["off", "shadow"]
+
+  def test_longitudinal_debug_trace_mode_is_off_log_only(self, compiled):
+    cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
+    item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "LongitudinalDebugTraceMode")
+    assert [opt["value"] for opt in item["options"]] == ["off", "log"]
+
   def test_vehicle_settings_consistent_shape(self, compiled):
     """Each brand in vehicle_settings must have {title, description, items}."""
     for brand, data in compiled["vehicle_settings"].items():

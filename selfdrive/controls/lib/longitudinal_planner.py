@@ -162,14 +162,31 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
                                                                         action_t=action_t, vEgoStopping=self.CP.vEgoStopping)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
+    self._last_longitudinal_debug = {
+      "v_cruise": float(v_cruise),
+      "mpc_a_target": float(output_a_target_mpc),
+      "mpc_should_stop": bool(output_should_stop_mpc),
+      "model_a_target": float(output_a_target_e2e),
+      "model_should_stop": bool(output_should_stop_e2e),
+    }
     output_a_target, self.output_should_stop, e2e_source = self.final_longitudinal_output(
       sm, output_a_target_mpc, output_should_stop_mpc, output_a_target_e2e, output_should_stop_e2e)
+    self._last_longitudinal_debug.update({
+      "final_a_target_unclipped": float(output_a_target),
+      "final_should_stop": bool(self.output_should_stop),
+      "e2e_source": e2e_source,
+    })
     if e2e_source:
       self.mpc.source = LongitudinalPlanSource.e2e
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
+    self._last_longitudinal_debug.update({
+      "final_a_target_clipped": float(self.output_a_target),
+      "accel_clip_min": float(accel_clip[0]),
+      "accel_clip_max": float(accel_clip[1]),
+    })
     self.prev_accel_clip = accel_clip
 
   def publish(self, sm, pm):

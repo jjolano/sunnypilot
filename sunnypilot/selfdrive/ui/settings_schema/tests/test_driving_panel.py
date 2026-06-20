@@ -31,7 +31,8 @@ def test_lateral_controls_present():
 def test_longitudinal_controls_present():
   assert {"ExperimentalMode", "DisengageOnAccelerator", "LongitudinalPersonality",
           "CustomAccIncrementsEnabled", "CustomLongitudinalEnabled", "CustomLongitudinalMode",
-          "LeadAnticipationMode", "LeadPathClearanceMode", "SmartCruiseControlVision"} <= CONTROLS
+          "LeadAnticipationMode", "LeadPathClearanceMode", "LongitudinalDebugTraceMode",
+          "SmartCruiseControlVision"} <= CONTROLS
 
 
 def test_custom_longitudinal_mode_is_multiple_button():

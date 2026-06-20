@@ -56,6 +56,11 @@ def _lead_path_clearance_mode(value: Any) -> str:
   return text if text in (LEAD_PATH_CLEARANCE_MODE_OFF, LEAD_PATH_CLEARANCE_MODE_SHADOW, LEAD_PATH_CLEARANCE_MODE_APPLY) else LEAD_PATH_CLEARANCE_MODE_OFF
 
 
+def _debug_trace_mode(value: Any) -> str:
+  text = str(value or "").strip().lower()
+  return text if text in ("off", "log") else "off"
+
+
 def _coast_accel(pitch: float) -> float:
   # Inlined from longitudinal_planner.get_coast_accel (importing it would be circular).
   return math.sin(_f(pitch)) * -5.65 - 0.3
@@ -137,6 +142,7 @@ class CustomLongitudinalAdapter:
     self.enabled = False
     self.mode = LongitudinalMode.SCC
     self.lead_path_clearance_mode = LEAD_PATH_CLEARANCE_MODE_OFF
+    self.debug_trace_mode = "off"
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     if params is not None:
@@ -151,6 +157,7 @@ class CustomLongitudinalAdapter:
       # SCC is the default: the custom-2.0 intelligent ACC/E2E blend (the DEC replacement). acc/e2e
       # force OEM-like cruise or the model's stops respectively. Mode is refreshed live each cycle.
       mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc", default=LongitudinalMode.SCC)
+      self.debug_trace_mode = _debug_trace_mode(_param_string(p, "LongitudinalDebugTraceMode"))
     except Exception:  # params are advisory; never fault the planner on a failed read
       if initial:
         self.enabled = False

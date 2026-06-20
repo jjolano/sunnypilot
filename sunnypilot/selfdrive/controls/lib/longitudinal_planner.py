@@ -490,6 +490,8 @@ class LongitudinalPlannerSP:
     custom_long.mode = self._custom_longitudinal_mode_to_telemetry()
     custom_long.selectedIntent = str(getattr(telemetry_custom_long_output, "selected_intent", "" ) or "")
     custom_long.reason = str(getattr(telemetry_custom_long_output, "reason", "" ) or "")
+    if getattr(self.custom_long, "debug_trace_mode", "off") == "log":
+      self._populate_longitudinal_debug_trace(longitudinalPlanSP.longitudinalDebug, sm, telemetry_custom_long_output)
     self._custom_long_output_telemetry = None
 
     pm.send('longitudinalPlanSP', plan_sp_send)
@@ -500,3 +502,58 @@ class LongitudinalPlannerSP:
     if self.custom_long.mode is LongitudinalMode.E2E:
       return custom.LongitudinalPlanSP.CustomLongitudinal.CustomLongitudinalMode.e2e
     return custom.LongitudinalPlanSP.CustomLongitudinal.CustomLongitudinalMode.scc
+
+  def _populate_longitudinal_debug_trace(self, msg, sm: messaging.SubMaster, custom_long_output) -> None:
+    try:
+      trace = dict(getattr(self, '_last_longitudinal_debug', {}) or {})
+      debug = dict(getattr(custom_long_output, 'debug', {}) or {})
+      msg.enabled = True
+      msg.traceMode = str(getattr(self.custom_long, "debug_trace_mode", "off"))
+      car_state = self._sm_item(sm, 'carState')
+      msg.vEgo = self._safe_float(getattr(car_state, 'vEgo', 0.0) if car_state is not None else 0.0)
+      msg.vCruise = self._safe_float(trace.get('v_cruise', 0.0))
+      msg.customATarget = self._safe_float(getattr(custom_long_output, 'a_target', 0.0))
+      msg.customShouldStop = bool(getattr(custom_long_output, 'should_stop', False))
+      msg.customIntent = str(getattr(custom_long_output, 'selected_intent', '') or '')
+      msg.customReason = str(getattr(custom_long_output, 'reason', '') or '')
+      msg.mpcATarget = self._safe_float(trace.get('mpc_a_target', 0.0))
+      msg.mpcShouldStop = bool(trace.get('mpc_should_stop', False))
+      msg.modelATarget = self._safe_float(trace.get('model_a_target', 0.0))
+      msg.modelShouldStop = bool(trace.get('model_should_stop', False))
+      msg.finalATargetUnclipped = self._safe_float(trace.get('final_a_target_unclipped', 0.0))
+      msg.finalATargetClipped = self._safe_float(trace.get('final_a_target_clipped', 0.0))
+      msg.finalShouldStop = bool(trace.get('final_should_stop', False))
+      msg.accelClipMin = self._safe_float(trace.get('accel_clip_min', 0.0))
+      msg.accelClipMax = self._safe_float(trace.get('accel_clip_max', 0.0))
+      msg.e2eSource = bool(trace.get('e2e_source', False))
+      lpc = msg.leadPathClearance
+      prefix = 'lead_path_clearance_'
+      lpc.mode = str(debug.get(prefix + 'mode', 'off') or 'off')
+      lpc.effectiveMode = str(debug.get(prefix + 'effective_mode', '') or ('shadow' if lpc.mode == 'apply' else lpc.mode))
+      lpc.applySupported = bool(debug.get(prefix + 'apply_supported', False))
+      lpc.shadowEligible = bool(debug.get(prefix + 'shadow_eligible', False))
+      lpc.blockReason = str(debug.get(prefix + 'shadow_blocked_reason', '') or '')
+      lpc.leadIdx = int(self._safe_float(debug.get(prefix + 'lead_idx', -1), -1))
+      lpc.pathYRel = self._safe_float(debug.get(prefix + 'path_y_rel', 0.0))
+      lpc.lateralVelocity = self._safe_float(debug.get(prefix + 'lateral_velocity', 0.0))
+      lpc.tClear = self._safe_float(debug.get(prefix + 't_clear', 0.0))
+      lpc.tConflict = self._safe_float(debug.get(prefix + 't_conflict', 0.0))
+      lpc.confidence = self._safe_float(debug.get(prefix + 'confidence', 0.0))
+      lpc.modelProb = self._safe_float(debug.get(prefix + 'model_prob', 0.0))
+      lpc.ttc = self._safe_float(debug.get(prefix + 'ttc', 0.0))
+      lpc.requiredDecel = self._safe_float(debug.get(prefix + 'required_decel', 0.0))
+      lpc.leadStatus = bool(debug.get('actual_primary_lead_authority', ''))
+      lpc.leadDRel = self._safe_float(debug.get('actual_primary_lead_d_rel', 0.0))
+      lpc.leadVRel = self._safe_float(debug.get('actual_primary_lead_v_rel', 0.0))
+      lpc.leadYRel = self._safe_float(debug.get('actual_primary_lead_y_rel', 0.0))
+    except Exception:
+      msg.enabled = False
+      msg.traceMode = 'off'
+
+  @staticmethod
+  def _safe_float(value, default: float = 0.0) -> float:
+    try:
+      v = float(value)
+    except (TypeError, ValueError):
+      return default
+    return v if math.isfinite(v) else default

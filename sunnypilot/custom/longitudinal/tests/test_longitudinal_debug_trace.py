@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+import math
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from cereal import messaging
+from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+
+
+class DummyPm:
+  def __init__(self):
+    self.msg = None
+
+  def send(self, name, msg):
+    assert name == 'longitudinalPlanSP'
+    self.msg = msg
+
+
+def fake_sm():
+  class SM:
+    def all_checks(self, service_list=None):
+      return True
+
+    def __getitem__(self, key):
+      return {
+        'carState': SimpleNamespace(vEgo=12.3, vCruise=123.0),
+        'controlsState': SimpleNamespace(),
+      }[key]
+  return SM()
+
+
+def custom_output(**kwargs):
+  defaults = dict(enabled=True, a_target=0.25, should_stop=True, selected_intent="intent", reason="reason", debug={})
+  defaults.update(kwargs)
+  return SimpleNamespace(**defaults)
+
+
+def make_planner(debug_trace_mode: str, custom_long_output: Any | None = None) -> Any:
+  planner: Any = object.__new__(LongitudinalPlannerSP)
+  planner.custom_long = SimpleNamespace(enabled=True, debug_trace_mode=debug_trace_mode, mode=LongitudinalMode.ACC)
+  planner._custom_long_output_telemetry = None
+  planner.custom_long_output = custom_long_output if custom_long_output is not None else custom_output()
+  planner._last_longitudinal_debug = {}
+  planner._sm_item = LongitudinalPlannerSP._sm_item
+  planner._custom_longitudinal_mode_to_telemetry = lambda: 0
+  planner.events_sp = SimpleNamespace(to_msg=lambda: [])
+  planner.source = 0
+  planner.output_v_target = 0.0
+  planner.output_a_target = 0.0
+  planner.dec = SimpleNamespace(mode=lambda: 'acc', enabled=lambda: False, active=lambda: False)
+  planner.scc = SimpleNamespace(
+    vision=SimpleNamespace(state=0, output_v_target=0.0, output_a_target=0.0, current_lat_acc=0.0,
+                           max_pred_lat_acc=0.0, is_enabled=False, is_active=False),
+    map=SimpleNamespace(state=0, output_v_target=0.0, output_a_target=0.0, is_enabled=False, is_active=False),
+  )
+  planner.resolver = SimpleNamespace(speed_limit=0.0, speed_limit_last=0.0, speed_limit_final=0.0,
+                                     speed_limit_final_last=0.0, speed_limit_valid=False,
+                                     speed_limit_last_valid=False, speed_limit_offset=0.0,
+                                     distance=0.0, source=0)
+  planner.sla = SimpleNamespace(state=0, is_enabled=False, is_active=False, output_v_target=0.0,
+                                output_a_target=0.0)
+  planner.e2e_alerts_helper = SimpleNamespace(green_light_alert=False, lead_depart_alert=False)
+  return planner
+
+
+def publish(planner: Any):
+  pm = DummyPm()
+  planner.publish_longitudinal_plan_sp(fake_sm(), pm)
+  assert pm.msg is not None
+  return pm.msg.longitudinalPlanSP
+
+
+def test_publish_trace_off_leaves_debug_disabled_and_preserves_custom_telemetry():
+  planner = make_planner("off", custom_output(a_target=-0.5, should_stop=True, selected_intent="hold", reason="lead"))
+
+  plan = publish(planner)
+
+  assert plan.longitudinalDebug.enabled is False
+  assert plan.customLongitudinal.enabled is True
+  assert plan.customLongitudinal.active is True
+  assert plan.customLongitudinal.shouldStop is True
+  assert plan.customLongitudinal.selectedIntent == "hold"
+  assert plan.customLongitudinal.reason == "lead"
+
+
+def test_debug_trace_populates_whitelisted_fields():
+  planner = make_planner("log", custom_output(debug={
+    'lead_path_clearance_mode': 'shadow',
+    'lead_path_clearance_effective_mode': 'shadow',
+    'lead_path_clearance_apply_supported': False,
+    'lead_path_clearance_shadow_eligible': True,
+    'lead_path_clearance_shadow_blocked_reason': '',
+    'lead_path_clearance_lead_idx': 0,
+    'lead_path_clearance_path_y_rel': -1.2,
+    'lead_path_clearance_lateral_velocity': -0.3,
+    'lead_path_clearance_t_clear': 3.4,
+    'lead_path_clearance_t_conflict': 2.1,
+    'lead_path_clearance_confidence': 0.7,
+    'lead_path_clearance_model_prob': 0.9,
+    'lead_path_clearance_ttc': 4.2,
+    'lead_path_clearance_required_decel': 0.3,
+    'actual_primary_lead_authority': 'physical',
+    'actual_primary_lead_d_rel': 20.0,
+    'actual_primary_lead_v_rel': -2.0,
+    'actual_primary_lead_y_rel': 0.1,
+  }))
+  planner._last_longitudinal_debug = {'v_cruise': 15.2, 'mpc_a_target': 1.0, 'mpc_should_stop': True, 'model_a_target': -1.0,
+                                      'model_should_stop': False, 'final_a_target_unclipped': 0.9,
+                                      'final_a_target_clipped': 0.4, 'final_should_stop': True,
+                                      'accel_clip_min': -2.0, 'accel_clip_max': 0.4, 'e2e_source': True}
+
+  msg = publish(planner).longitudinalDebug
+
+  assert msg.enabled is True
+  assert msg.traceMode == 'log'
+  assert msg.vEgo == pytest.approx(12.3)
+  assert msg.vCruise == pytest.approx(15.2)
+  assert msg.customATarget == pytest.approx(0.25)
+  assert msg.customShouldStop is True
+  assert msg.customIntent == "intent"
+  assert msg.customReason == "reason"
+  assert msg.mpcATarget == pytest.approx(1.0)
+  assert msg.mpcShouldStop is True
+  assert msg.modelATarget == pytest.approx(-1.0)
+  assert msg.modelShouldStop is False
+  assert msg.finalATargetUnclipped == pytest.approx(0.9)
+  assert msg.finalATargetClipped == pytest.approx(0.4)
+  assert msg.finalShouldStop is True
+  assert msg.accelClipMin == pytest.approx(-2.0)
+  assert msg.accelClipMax == pytest.approx(0.4)
+  assert msg.e2eSource is True
+  assert msg.leadPathClearance.mode == 'shadow'
+  assert msg.leadPathClearance.effectiveMode == 'shadow'
+  assert msg.leadPathClearance.shadowEligible is True
+  assert msg.leadPathClearance.pathYRel == pytest.approx(-1.2)
+  assert msg.leadPathClearance.lateralVelocity == pytest.approx(-0.3)
+  assert msg.leadPathClearance.tClear == pytest.approx(3.4)
+  assert msg.leadPathClearance.tConflict == pytest.approx(2.1)
+  assert msg.leadPathClearance.modelProb == pytest.approx(0.9)
+  assert msg.leadPathClearance.ttc == pytest.approx(4.2)
+  assert msg.leadPathClearance.requiredDecel == pytest.approx(0.3)
+  assert msg.leadPathClearance.leadStatus is True
+  assert msg.leadPathClearance.leadDRel == pytest.approx(20.0)
+  assert msg.leadPathClearance.leadVRel == pytest.approx(-2.0)
+  assert msg.leadPathClearance.leadYRel == pytest.approx(0.1)
+
+
+def test_debug_trace_sanitizes_non_finite_values_without_throwing():
+  planner = make_planner("log", custom_output(a_target=math.nan, debug={
+    'lead_path_clearance_mode': 'shadow',
+    'lead_path_clearance_lead_idx': math.nan,
+    'lead_path_clearance_path_y_rel': math.inf,
+    'lead_path_clearance_t_clear': 'bad',
+  }))
+  planner._last_longitudinal_debug = {
+    'mpc_a_target': math.nan,
+    'model_a_target': math.inf,
+    'final_a_target_unclipped': math.nan,
+    'final_a_target_clipped': math.inf,
+    'accel_clip_min': -math.inf,
+    'accel_clip_max': math.inf,
+  }
+
+  msg = publish(planner).longitudinalDebug
+
+  assert msg.enabled is True
+  assert msg.customATarget == pytest.approx(0.0)
+  assert msg.mpcATarget == pytest.approx(0.0)
+  assert msg.modelATarget == pytest.approx(0.0)
+  assert msg.finalATargetUnclipped == pytest.approx(0.0)
+  assert msg.finalATargetClipped == pytest.approx(0.0)
+  assert msg.accelClipMin == pytest.approx(0.0)
+  assert msg.accelClipMax == pytest.approx(0.0)
+  assert msg.leadPathClearance.leadIdx == -1
+  assert msg.leadPathClearance.pathYRel == pytest.approx(0.0)
+  assert msg.leadPathClearance.tClear == pytest.approx(0.0)

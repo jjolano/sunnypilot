@@ -400,3 +400,15 @@ def test_lead_path_clearance_modes_are_exactly_non_actuating():
   assert outputs["apply"].debug["lead_path_clearance_effective_mode"] == "shadow"
   assert outputs["apply"].debug["lead_path_clearance_apply_supported"] is False
   assert outputs["apply"].debug["lead_path_clearance_shadow_eligible"] is True
+
+
+def test_adapter_refreshes_debug_trace_mode_on_mode_only():
+  params = FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc", LongitudinalDebugTraceMode="off")
+  a = CustomLongitudinalAdapter(params)
+  assert a.debug_trace_mode == "off"
+  params._v["LongitudinalDebugTraceMode"] = "log"
+  a.refresh_params(mode_only=True)
+  assert a.debug_trace_mode == "log"
+  params._v["LongitudinalDebugTraceMode"] = "bad"
+  a.refresh_params(mode_only=True)
+  assert a.debug_trace_mode == "off"

@@ -29,6 +29,7 @@ def test_cruise_top_level_controls_render_inline():
   assert CONTROLS.get("CustomLongitudinalMode") == "multiple_button"
   assert CONTROLS.get("LeadAnticipationMode") == "multiple_button"
   assert CONTROLS.get("LeadPathClearanceMode") == "multiple_button"
+  assert CONTROLS.get("LongitudinalDebugTraceMode") == "multiple_button"
 
 
 def test_custom_acc_increments_inlined_as_subitems():
@@ -60,6 +61,14 @@ def test_lead_path_clearance_mode_is_string_multiple_button():
   assert item["widget"] == "multiple_button"
   assert [opt["value"] for opt in item["options"]] == ["off", "shadow"]
   assert [opt["label"] for opt in item["options"]] == ["Off", "Monitor only"]
+
+
+def test_longitudinal_debug_trace_mode_is_string_multiple_button():
+  item = find_item(CRUISE, "LongitudinalDebugTraceMode")
+  assert item is not None
+  assert item["widget"] == "multiple_button"
+  assert [opt["value"] for opt in item["options"]] == ["off", "log"]
+  assert [opt["label"] for opt in item["options"]] == ["Off", "Log"]
 
 
 def test_speed_limit_is_a_delegated_subpanel():
