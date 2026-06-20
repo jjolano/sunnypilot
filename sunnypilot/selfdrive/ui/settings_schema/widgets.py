@@ -30,6 +30,7 @@ from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.lib.styles import style
 from openpilot.system.ui.sunnypilot.widgets.list_view import (
   ListItemSP,
+  button_item_sp,
   multiple_button_item_sp,
   option_item_sp,
   toggle_item_sp,
@@ -198,7 +199,40 @@ def build_control(item: dict, unsupported: list[dict], is_metric_fn: Callable[[]
       return None
     return _numeric_option(item, is_metric_fn)
 
-  # info / unknown widgets -> custom registry territory.
+  if widget == "button":
+    # Button widgets route through the custom-widget registry using the
+    # `action` field as the component id. Pages register factories for
+    # their button actions (reboot, download, clear cache, etc.).
+    action_id = item.get("action", "")
+    factory = custom_widget_factory(action_id)
+    if factory is None:
+      unsupported.append(item)
+      return None
+    return factory(item)
+
+  if widget == "info":
+    # Read-only display of a param value. Uses ButtonActionSP in disabled
+    # mode with a sync_hook that reads the param each frame.
+    from openpilot.common.params import Params
+
+    def _info_value(pkey: str = key):
+      val = Params().get(pkey, return_default=True)
+      if isinstance(val, bytes):
+        val = val.decode("utf-8", "replace")
+      return val or ""
+
+    control = button_item_sp(title=title, button_text=_info_value, description=desc, enabled=False)
+
+    def _info_sync(action=control.action_item, pkey: str = key):
+      val = Params().get(pkey, return_default=True)
+      if isinstance(val, bytes):
+        val = val.decode("utf-8", "replace")
+      action.set_value(val or "")
+
+    control.sync_hook = _info_sync  # type: ignore[attr-defined]
+    return control
+
+  # unknown widgets -> custom registry territory.
   unsupported.append(item)
   return None
 
