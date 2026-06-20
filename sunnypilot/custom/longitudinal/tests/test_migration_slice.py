@@ -40,6 +40,7 @@ def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceTog
   sp.__dict__['_lead_stop_hold_missing_s'] = 0.0
   sp.__dict__['_lead_stop_hold_lead_id'] = None
   sp.__dict__['_lead_stop_hold_gap_prev_d_rel'] = None
+  sp.__dict__['_custom_long_output_telemetry'] = None
   sp.__dict__['custom_long_output'] = CustomLongitudinalOutput(
     a_target=0.0, should_stop=should_stop, enabled=True, mode=mode,
     selected_intent=("lead_pullaway" if release else None), reason=("trusted" if release else None),
@@ -47,6 +48,10 @@ def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceTog
     standstill_release_a_target=(0.2 if release else 0.0), standstill_release_reason=("trusted" if release else ""),
     debug={})
   return sp
+
+
+def lead(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7):
+  return SimpleNamespace(status=status, dRel=dRel, vLead=vLead, vRel=vRel, radarTrackId=radarTrackId)
 
 
 def test_adapter_evaluate_and_apply_keep_float_api():
@@ -159,6 +164,19 @@ def test_standstill_release_planner_clears_only_mpc_stop_and_applies_floor():
   assert should_stop is False
 
 
+def test_standstill_release_clamps_high_target():
+  sp = fake_planner(LongitudinalMode.SCC, should_stop=False, release=True)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent=None, reason=None, debug={},
+    standstill_release_allowed=True, standstill_release_source='lead_pullaway',
+    standstill_release_a_target=2.0, standstill_release_reason='trusted',
+  )  # type: ignore[assignment]
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert a <= 0.35
+  assert should_stop is False
+
+
 def test_standstill_release_vetoes_real_mpc_brake_and_raw_model_stop():
   sp = fake_planner(LongitudinalMode.E2E, should_stop=False, release=True)
   a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, -3.0, True)  # type: ignore[arg-type]
@@ -186,7 +204,7 @@ def test_standstill_release_vetoes_timid_e2e_model_accel():
 
 
 def test_sticky_lead_stop_hold_latches_and_releases_on_pullaway():
-  sp = fake_planner(LongitudinalMode.ACC)
+  sp = fake_planner(LongitudinalMode.ACC, release=True)
   v_ego = 0.0
   x_ego = 0.0
   x_lead = 6.2
@@ -236,6 +254,30 @@ def test_sticky_lead_stop_hold_latches_and_releases_on_pullaway():
 
   assert released is True
   assert sp._lead_stop_hold_active is False
+
+
+def test_stop_hold_rejects_nan_lead_kinematics_and_mpc_targets():
+  sp = fake_planner(LongitudinalMode.SCC, should_stop=False, release=True)
+  sp._lead_stop_hold_active = True
+  sp._lead_stop_hold_lead_id = 7
+  sm = {
+    'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+    'controlsState': SimpleNamespace(forceDecel=False),
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'radarState': SimpleNamespace(leadOne=lead(dRel=6.5, vLead=float('nan'), vRel=0.2)),
+  }
+  a, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop is True
+  assert math.isfinite(a)
+
+  sm['radarState'] = SimpleNamespace(leadOne=lead(dRel=6.5, vLead=0.4, vRel=float('nan')))
+  a, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop is True
+  assert math.isfinite(a)
+
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), float('nan'), True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop is True
+  assert math.isfinite(a)
 
 
 def test_stop_hold_uses_lead_two_when_lead_one_missing():
@@ -371,6 +413,116 @@ def test_stop_hold_transfers_to_new_stopped_lead_without_drop():
   assert a_target <= -0.5
 
 
+def test_same_id_tiny_gap_increases_do_not_release():
+  sp = fake_planner(LongitudinalMode.ACC)
+  for _ in range(6):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=lead(dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7)),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+
+  for d_rel in (6.21, 6.22):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=lead(dRel=d_rel, vLead=0.4, vRel=0.2, radarTrackId=7)),
+    }
+    a_target, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+    assert should_stop is True
+    assert a_target <= -0.5
+  assert sp._lead_stop_hold_active is True
+
+
+def test_same_id_pullaway_noise_without_release_permission_keeps_latch():
+  sp = fake_planner(LongitudinalMode.ACC, release=False)
+  for _ in range(6):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=lead(dRel=9.8, vLead=0.0, vRel=0.0, radarTrackId=7)),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+
+  for d_rel in (9.81, 9.83, 9.84, 9.86):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=lead(dRel=d_rel, vLead=0.51, vRel=0.21, radarTrackId=7)),
+    }
+    a_target, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, False, 0.0, False)  # type: ignore[arg-type]
+    assert should_stop is True
+    assert a_target <= -0.5
+
+  assert sp._lead_stop_hold_active is True
+
+
+def test_same_id_sustained_pullaway_releases():
+  sp = fake_planner(LongitudinalMode.ACC, release=True)
+  for _ in range(6):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=lead(dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7)),
+    }
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+
+  released = False
+  for d_rel in (7.00, 7.06, 7.12, 7.18, 7.24, 7.30):
+    sm = {
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=lead(dRel=d_rel, vLead=0.8, vRel=0.25, radarTrackId=7)),
+    }
+    a_target, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+    if not sp._lead_stop_hold_active:
+      assert a_target > -0.5
+      released = True
+      break
+  assert released is True
+
+
+def test_same_id_stale_release_permission_never_overrides_current_veto():
+  sp = fake_planner(LongitudinalMode.ACC, release=False)
+  _arm_stop_hold(sp)
+
+  # First pullaway tick: permission appears but release conditions are not yet met.
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.2, standstill_release_reason="trusted", debug={},
+  )  # type: ignore[assignment]
+  first_sm = _release_sm(d_rel=6.55, v_lead=0.35, v_rel=0.18)
+  a1, should_stop1, _ = sp.final_longitudinal_output(first_sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop1 is True
+  assert a1 <= -0.5
+  assert sp._lead_stop_hold_active is True
+
+  # Current tick now explicitly vetoes release; stale permission must not leak through.
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=True, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_follow", reason="veto",
+    standstill_release_allowed=False, standstill_release_source="", standstill_release_a_target=0.0,
+    standstill_release_reason="", debug={},
+  )  # type: ignore[assignment]
+  second_sm = _release_sm(d_rel=7.35, v_lead=0.8, v_rel=0.32)
+  a2, should_stop2, _ = sp.final_longitudinal_output(second_sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop2 is True
+  assert a2 <= -0.5
+  assert sp._lead_stop_hold_active is True
+
+
 def test_stop_hold_telemetry_shows_latch_intent():
   sp = fake_planner(LongitudinalMode.ACC)
   sm = {
@@ -383,10 +535,11 @@ def test_stop_hold_telemetry_shows_latch_intent():
   }
   sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
-  assert sp.custom_long_output is not None
-  assert sp.custom_long_output.selected_intent == "lead_stop_hold"
-  assert sp.custom_long_output.reason == "stopped_lead_latch"
-  assert sp.custom_long_output.should_stop is True
+  telemetry = getattr(sp, "_custom_long_output_telemetry", None)
+  assert telemetry is not None
+  assert telemetry.selected_intent == "lead_stop_hold"
+  assert telemetry.reason == "stopped_lead_latch"
+  assert telemetry.should_stop is True
 
 
 def test_standstill_release_vetoes_mpc_brake_driver_and_custom_stop():
@@ -454,8 +607,9 @@ def test_latch_release_same_lead_clears_earlier_with_bounded_accel():
     standstill_release_allowed=True, standstill_release_source="lead_pullaway",
     standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
   )
-  sp._lead_stop_hold_gap_increasing_s = 0.20
-  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.35, v_lead=0.32, v_rel=0.16), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.32, v_rel=0.16), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
   assert 0.15 <= a <= 0.35
@@ -470,8 +624,9 @@ def test_latch_release_same_lead_allows_slightly_negative_mpc_with_tighter_gap_c
     standstill_release_allowed=True, standstill_release_source="lead_pullaway",
     standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
   )
-  sp._lead_stop_hold_gap_increasing_s = 0.10
-  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.21, v_lead=0.32, v_rel=0.16), -0.08, True, 0.2, False)  # type: ignore[arg-type]
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.05, v_lead=0.32, v_rel=0.16), -0.08, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
   assert 0.15 <= a <= 0.35
@@ -486,12 +641,13 @@ def test_latch_release_same_lead_rejects_too_negative_mpc_or_non_opening_or_belo
     standstill_release_allowed=True, standstill_release_source="lead_pullaway",
     standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
   )
-  sp._lead_stop_hold_gap_increasing_s = 0.10
-  assert sp.final_longitudinal_output(_release_sm(d_rel=6.21, v_lead=0.32, v_rel=0.16), -0.2, True, 0.2, False)[1] is True  # type: ignore[arg-type]
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  assert sp.final_longitudinal_output(_release_sm(d_rel=7.05, v_lead=0.32, v_rel=0.16), -0.2, True, 0.2, False)[1] is True  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
-  assert sp.final_longitudinal_output(_release_sm(d_rel=6.21, v_lead=0.29, v_rel=0.16), -0.08, True, 0.2, False)[1] is True  # type: ignore[arg-type]
+  assert sp.final_longitudinal_output(_release_sm(d_rel=7.05, v_lead=0.29, v_rel=0.16), -0.08, True, 0.2, False)[1] is True  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
-  assert sp.final_longitudinal_output(_release_sm(d_rel=6.0, v_lead=0.32, v_rel=0.16), -0.08, True, 0.2, False)[1] is True  # type: ignore[arg-type]
+  assert sp.final_longitudinal_output(_release_sm(d_rel=7.0, v_lead=0.32, v_rel=0.16), -0.08, True, 0.2, False)[1] is True  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
 
 

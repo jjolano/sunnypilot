@@ -46,6 +46,7 @@ _TURNING_ACC_V = [0.5, 0., -0.4]  # acc value
 _TURNING_ACC_BP = [1.5, 2.3, 3.]  # absolute value of current lat acc
 
 _LEAVING_ACC = 0.5  # Conformable acceleration to regain speed while leaving a turn.
+_EPS = 1e-6
 
 
 class SmartCruiseControlVision:
@@ -76,9 +77,20 @@ class SmartCruiseControlVision:
   def get_a_target_from_control(self) -> float:
     return self.a_target
 
+  def _fail_closed(self) -> None:
+    self.max_pred_lat_acc = 0.
+    self.current_lat_acc = 0.
+    self.v_target = 0.
+    self.pre_entry_frames = 0
+    self.pre_entry_active = False
+    self.state = VisionState.enabled if self.long_enabled and self.enabled else VisionState.disabled
+
   def get_v_target_from_control(self) -> float:
     if self.is_active:
-      return max(self.v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
+      v = max(self.v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
+      if not np.isfinite(v):
+        return MIN_V
+      return max(v, MIN_V)
 
     return V_CRUISE_UNSET
 
@@ -96,28 +108,43 @@ class SmartCruiseControlVision:
         rate_plan = np.asarray(np.abs(sm['modelV2'].orientationRate.z), dtype=np.float64)
         vel_plan = np.asarray(sm['modelV2'].velocity.x, dtype=np.float64)
       except Exception:
-        self.max_pred_lat_acc = 0.
-        self.pre_entry_frames = 0
-        self.pre_entry_active = False
+        self._fail_closed()
         return
 
       if rate_plan.size == 0 or vel_plan.size == 0 or rate_plan.shape != vel_plan.shape:
-        self.max_pred_lat_acc = 0.
-        self.pre_entry_frames = 0
-        self.pre_entry_active = False
+        self._fail_closed()
         return
 
-      self.current_lat_acc = self.v_ego ** 2 * abs(sm['controlsState'].curvature)
+      if not np.isfinite(self.v_ego) or not np.isfinite(self.a_ego):
+        self._fail_closed()
+        return
+
+      curvature = sm['controlsState'].curvature
+      if not np.isfinite(curvature):
+        self._fail_closed()
+        return
+
+      self.current_lat_acc = self.v_ego ** 2 * abs(curvature)
+      if not np.isfinite(self.current_lat_acc):
+        self._fail_closed()
+        return
 
       # get the maximum lat accel from the model
+      rate_plan = np.abs(rate_plan)
+      vel_plan = np.abs(vel_plan)
+      if not np.all(np.isfinite(rate_plan)) or not np.all(np.isfinite(vel_plan)):
+        self._fail_closed()
+        return
+
       predicted_lat_accels = rate_plan * vel_plan
       if not np.all(np.isfinite(predicted_lat_accels)):
-        self.max_pred_lat_acc = 0.
-        self.pre_entry_frames = 0
-        self.pre_entry_active = False
+        self._fail_closed()
         return
 
       self.max_pred_lat_acc = float(np.percentile(predicted_lat_accels, 97))
+      if not np.isfinite(self.max_pred_lat_acc) or self.max_pred_lat_acc <= _EPS:
+        self._fail_closed()
+        return
 
       can_pre_entry = self.enabled and not self.long_override and self.v_ego > MIN_V
       if can_pre_entry and _PRE_ENTRY_PRED_LAT_ACC_TH <= self.max_pred_lat_acc < _ENTERING_PRED_LAT_ACC_TH:
@@ -132,11 +159,16 @@ class SmartCruiseControlVision:
       self._prev_max_pred_lat_acc = self.max_pred_lat_acc
 
       # get the maximum curve based on the current velocity
-      v_ego = max(self.v_ego, 0.1)  # ensure a value greater than 0 for calculations
+      v_ego = max(abs(self.v_ego), 0.1)  # ensure a value greater than 0 for calculations
       max_curve = self.max_pred_lat_acc / (v_ego**2)
+      if not np.isfinite(max_curve) or max_curve <= _EPS:
+        self._fail_closed()
+        return
 
       # Get the target velocity for the maximum curve
-      self.v_target = (_A_LAT_REG_MAX / max_curve) ** 0.5
+      self.v_target = float((_A_LAT_REG_MAX / max_curve) ** 0.5)
+      if not np.isfinite(self.v_target) or self.v_target < 0.:
+        self.v_target = 0.
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, ENTERING, TURNING, LEAVING, OVERRIDING

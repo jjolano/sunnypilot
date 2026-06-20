@@ -43,9 +43,14 @@ class LatControlTorqueV21(LatControl):
   def set_under_response_path_evidence(self, valid: bool) -> None:
     self._under_response_path_evidence_valid = bool(valid)
 
-  def set_under_response_path_evidence_from_lateral_demand(self, lateral_demand_result) -> None:
-    if lateral_demand_result is None:
+  def set_under_response_path_evidence_from_lateral_demand(self, lateral_demand_result,
+                                                           *, active: bool | None = None,
+                                                           evidence_expected: bool | None = None) -> None:
+    if active is False or evidence_expected is False:
       self.set_under_response_path_evidence(True)
+      return
+    if lateral_demand_result is None:
+      self.set_under_response_path_evidence(False)
       return
     model_path = getattr(lateral_demand_result, "model_path_result", None)
     self.set_under_response_path_evidence(

@@ -62,6 +62,7 @@ ISO_LATERAL_ACCEL = 3.0
 ISO_ACCEL_MARGIN = 2.6
 NEAR_ISO_ACCEL_CAP = 0.85
 OVER_ISO_ACCEL_CAP = 0.80
+UNDER_RESPONSE_MAX_TORQUE_FRACTION = 0.90
 
 # nuPlan comfort bounds (84th %ile of 1,282 hours expert human driving, arXiv:2403.04133).
 # These are reference thresholds — the ISO-derived caps above remain the active limits.
@@ -146,6 +147,8 @@ class OutputGovernor:
       self.reset()
       return OutputGovernorResult(0.0, True, int(GovernorReason.INVALID), 1.0, 0.0)
 
+    iso_cap = self._iso_cap(inp)
+
     # --- AUGMENT ---
     floor = self._under_response_floor(inp)
     floor_guarded = floor > 0.0 and (
@@ -156,7 +159,8 @@ class OutputGovernor:
       abs(inp.steering_rate_deg) >= HIGH_RATE_START_DEG or
       self._sign_conflict(inp) or
       self._over_response_scale(inp) < 1.0 or
-      abs(inp.nominal_torque) >= inp.max_output - 1e-6
+      iso_cap < 1.0 or
+      abs(inp.nominal_torque) >= UNDER_RESPONSE_MAX_TORQUE_FRACTION * inp.max_output
     )
     if floor > 0.0:
       if floor_guarded:
@@ -182,7 +186,6 @@ class OutputGovernor:
     if self._sign_conflict(inp):
       cap = min(cap, SIGN_CONFLICT_CAP)
       reason |= GovernorReason.SIGN_CONFLICT
-    iso_cap = self._iso_cap(inp)
     if iso_cap < 1.0:
       cap = min(cap, iso_cap)
       reason |= GovernorReason.NEAR_ISO_ACCEL

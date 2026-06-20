@@ -110,21 +110,118 @@ class TestSmartCruiseControlMap:
     self.scc_m.update(True, False, 23.8, 0., 30.)
     assert self.scc_m.v_target == 0.0
 
-  def test_reasonable_nearby_lower_target_accepted(self):
+  def test_jerk_only_time_uses_correct_quadratic_roots(self):
+    self.set_gps(37.00010, -122.0)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.0, "velocity": 24.0},
+      {"latitude": 37.00010, "longitude": -122.0, "velocity": 19.5},
+      {"latitude": 37.00020, "longitude": -122.0, "velocity": 19.0},
+    ])
+
+    self.scc_m.update(True, False, 20.0, 0.0, 30.0)
+    self.scc_m.update(True, False, 20.0, 0.0, 30.0)
+    assert self.scc_m.v_target == 19.5
+
+  def test_duplicate_same_location_keeps_faster_target(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 24.0},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 18.0},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 12.0},
+      {"latitude": 37.00011, "longitude": -122.00011, "velocity": 11.5},
+      {"latitude": 37.00014, "longitude": -122.00014, "velocity": 11.0},
+    ])
+
+    self.scc_m.update(True, False, 22.0, 0.0, 30.0)
+    assert self.scc_m.v_target == 18.0
+
+  def test_out_of_order_route_point_fails_closed(self):
     self.set_gps(37.0, -122.0)
     self.set_targets([
+      {"latitude": 37.00012, "longitude": -122.00012, "velocity": 18.0},
+      {"latitude": 37.00005, "longitude": -122.00005, "velocity": 10.0},
+    ])
+
+    self.scc_m.update(True, False, 22.0, 0.0, 30.0)
+    assert self.scc_m.v_target == 0.0
+
+  def test_terminal_stale_selected_point_clears(self):
+    self.set_gps(37.0, -122.0)
+    self.set_targets([
+      {"latitude": 37.00008, "longitude": -122.0, "velocity": 19.0},
+      {"latitude": 37.00012, "longitude": -122.0, "velocity": 18.6},
+      {"latitude": 37.00016, "longitude": -122.0, "velocity": 18.4},
+    ])
+
+    self.scc_m.update(True, False, 20.0, 0.0, 30.0)
+    assert self.scc_m.v_target == 0.0
+
+    self.set_gps(37.00010, -122.0)
+    self.set_targets([
+      {"latitude": 37.00008, "longitude": -122.0, "velocity": 19.0},
+      {"latitude": 37.00012, "longitude": -122.0, "velocity": 18.5},
+    ])
+
+    self.scc_m.update(True, False, 20.0, 0.0, 30.0)
+    assert self.scc_m.v_target == 0.0
+    assert not self.scc_m.is_active
+
+  def test_clustered_short_drop_is_accepted(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 24.0},
+      {"latitude": 37.00005, "longitude": -122.00005, "velocity": 18.5},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 18.0},
+      {"latitude": 37.00011, "longitude": -122.00011, "velocity": 17.5},
+      {"latitude": 37.00014, "longitude": -122.00014, "velocity": 17.0},
+    ])
+
+    self.scc_m.update(True, False, 24.0, 0.0, 30.0)
+    self.scc_m.update(True, False, 24.0, 0.0, 30.0)
+    assert self.scc_m.v_target > 0.0
+
+  def test_reasonable_nearby_lower_target_accepted(self):
+    self.set_gps(37.00008, -122.00008)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00008, "velocity": 24.0},
       {"latitude": 37.00004, "longitude": -122.00004, "velocity": 19.0},
+      {"latitude": 37.00008, "longitude": -122.00008, "velocity": 18.5},
+      {"latitude": 37.00012, "longitude": -122.00012, "velocity": 18.0},
     ])
     self.scc_m.update(True, False, 23.8, 0., 30.)
     self.scc_m.update(True, False, 23.8, 0., 30.)
-    assert self.scc_m.v_target == 19.0
+    assert self.scc_m.v_target == 18.5
     assert self.scc_m.is_active
 
-  def test_nearer_valid_target_wins_over_farther_global_minimum(self):
-    self.set_gps(37.0, -122.0)
+  def test_stale_terminal_single_point_rejected(self):
+    self.set_gps(37.00010, -122.0)
     self.set_targets([
+      {"latitude": 37.00008, "longitude": -122.0, "velocity": 19.0},
+    ])
+
+    self.scc_m.update(True, False, 23.8, 0., 30.)
+    assert self.scc_m.v_target == 0.0
+    assert not self.scc_m.is_active
+
+  def test_three_point_behind_slice_clears(self):
+    self.set_gps(37.00010, -122.0)
+    self.set_targets([
+      {"latitude": 37.00008, "longitude": -122.0, "velocity": 19.0},
+      {"latitude": 37.00006, "longitude": -122.0, "velocity": 18.5},
+      {"latitude": 37.00004, "longitude": -122.0, "velocity": 18.0},
+    ])
+
+    self.scc_m.update(True, False, 23.8, 0.0, 30.0)
+    assert self.scc_m.v_target == 0.0
+    assert not self.scc_m.is_active
+
+  def test_nearer_valid_target_wins_over_farther_global_minimum(self):
+    self.set_gps(37.00003, -122.00003)
+    self.set_targets([
+      {"latitude": 37.00000, "longitude": -122.00003, "velocity": 24.0},
       {"latitude": 37.00003, "longitude": -122.00003, "velocity": 18.0},
       {"latitude": 37.00018, "longitude": -122.00018, "velocity": 8.0},
+      {"latitude": 37.00022, "longitude": -122.00022, "velocity": 7.5},
     ])
     self.scc_m.update(True, False, 23.8, 0., 30.)
     assert self.scc_m.v_target == 18.0

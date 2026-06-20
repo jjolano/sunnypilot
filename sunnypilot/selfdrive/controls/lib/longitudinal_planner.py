@@ -30,10 +30,14 @@ LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
 
 class LongitudinalPlannerSP:
+  _STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN = 0.2
   _STOP_HOLD_SAME_ID_GAP_INCREASING_S = 0.10
   _STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET = -0.10
   _STOP_HOLD_SAME_ID_MIN_D_REL_EPS = 0.0
   _STOP_HOLD_NEW_ID_GAP_INCREASING_S = 0.30
+  _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
+  _STOP_HOLD_RELEASE_A_MIN = 0.15
+  _STOP_HOLD_RELEASE_A_MAX = 0.35
   def __init__(self, CP, CP_SP, mpc):
     self.CP = CP
     self.events_sp = EventsSP()
@@ -51,10 +55,13 @@ class LongitudinalPlannerSP:
     self._lead_stop_hold_missing_s = 0.0
     self._lead_stop_hold_lead_id = None
     self._lead_stop_hold_gap_prev_d_rel = None
+    self._lead_stop_hold_gap_baseline_d_rel = None
+    self._custom_long_output_telemetry = None
 
     # Custom-2.0 longitudinal policy (default-on in this fork; fail-closed to stock output).
     self.custom_long = CustomLongitudinalAdapter(Params())
     self.custom_long_output = None
+    self._custom_long_output_telemetry = None
     # §3 lead-motion anticipation: mode-gated shadow/apply shaping of lead accel fed to the MPC
     # (off/shadow/apply via LeadAnticipationMode; compatibility LeadAnticipationEnabled only when
     # mode is absent, fail-closed to the raw radarState).
@@ -75,10 +82,13 @@ class LongitudinalPlannerSP:
     for lead in (getattr(radar_state, 'leadOne', None), getattr(radar_state, 'leadTwo', None)):
       if lead is None or not getattr(lead, 'status', False):
         continue
-      d_rel = float(getattr(lead, 'dRel', 0.0) or 0.0)
-      v = float(getattr(lead, 'vLead', 0.0) or 0.0)
-      v_rel = float(getattr(lead, 'vRel', 0.0) or 0.0)
-      if not math.isfinite(d_rel) or d_rel <= 0.0:
+      try:
+        d_rel = float(getattr(lead, 'dRel', 0.0))
+        v = float(getattr(lead, 'vLead', 0.0))
+        v_rel = float(getattr(lead, 'vRel', 0.0))
+      except (TypeError, ValueError):
+        continue
+      if not (math.isfinite(d_rel) and math.isfinite(v) and math.isfinite(v_rel)) or d_rel <= 0.0:
         continue
       candidates.append((d_rel, v, v_rel, lead))
     if not candidates:
@@ -95,6 +105,7 @@ class LongitudinalPlannerSP:
     self._lead_stop_hold_missing_s = 0.0
     self._lead_stop_hold_lead_id = None
     self._lead_stop_hold_gap_prev_d_rel = None
+    self._lead_stop_hold_gap_baseline_d_rel = None
 
   def _update_lead_stop_hold(self, sm: messaging.SubMaster, v_ego: float, has_lead: bool, selected_lead,
                              lead_d_rel: float, lead_v: float, lead_v_rel: float, gas_pressed: bool) -> bool:
@@ -120,6 +131,7 @@ class LongitudinalPlannerSP:
       self._lead_stop_hold_gap_increasing_s = 0.0
       self._lead_stop_hold_missing_s = 0.0
       self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
+      self._lead_stop_hold_gap_baseline_d_rel = float(lead_d_rel)
       self._lead_stop_hold_lead_id = lead_id
 
     if self._lead_stop_hold_active:
@@ -131,6 +143,7 @@ class LongitudinalPlannerSP:
           # Valid stopped hold candidate: transfer latch immediately (no one-cycle gap).
           self._lead_stop_hold_lead_id = lead_id
           self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
+          self._lead_stop_hold_gap_baseline_d_rel = float(lead_d_rel)
           self._lead_stop_hold_missing_s = 0.0
           self._lead_stop_hold_gap_increasing_s = 0.0
         else:
@@ -150,16 +163,12 @@ class LongitudinalPlannerSP:
         else:
           self._lead_stop_hold_gap_increasing_s = 0.0
         self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
-        if (
-          float(lead_v) > 0.5 and
-          float(lead_v_rel) > 0.2 and
-          float(lead_d_rel) > release_distance and
-          self._lead_stop_hold_gap_increasing_s >= 0.3
-        ):
-          self._reset_lead_stop_hold()
+        if self._lead_stop_hold_gap_baseline_d_rel is None:
+          self._lead_stop_hold_gap_baseline_d_rel = float(lead_d_rel)
     else:
       self._lead_stop_hold_gap_increasing_s = 0.0
       self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel) if has_lead else None
+      self._lead_stop_hold_gap_baseline_d_rel = float(lead_d_rel) if has_lead else None
       self._lead_stop_hold_missing_s = 0.0
 
     return self._lead_stop_hold_active
@@ -260,24 +269,30 @@ class LongitudinalPlannerSP:
 
   def _standstill_release_clears_mpc_stop(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
                                           raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[bool, float]:
-    if not self._standstill_release_request_valid(sm, mpc_a_target, raw_model_a_target, raw_model_should_stop):
+    if not self._standstill_release_request_valid(sm, self.custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop):
       return False, float(mpc_a_target)
     if not mpc_should_stop:
       return False, float(mpc_a_target)
-    release_a = max(float(mpc_a_target), 0.15, float(getattr(self.custom_long_output, "standstill_release_a_target", 0.0)))
+    release_a = min(
+      max(float(mpc_a_target), self._STOP_HOLD_RELEASE_A_MIN, float(getattr(self.custom_long_output, "standstill_release_a_target", 0.0))),
+      self._STOP_HOLD_RELEASE_A_MAX,
+    )
     return True, release_a
 
-  def _standstill_release_request_valid(self, sm: messaging.SubMaster, mpc_a_target: float,
-                                        raw_model_a_target: float, raw_model_should_stop: bool,
+  def _standstill_release_request_valid(self, sm: messaging.SubMaster, custom_long_output,
+                                        mpc_a_target: float, raw_model_a_target: float, raw_model_should_stop: bool,
                                         min_mpc_a_target: float = -0.03) -> bool:
-    if not self.custom_long.enabled or self.custom_long_output is None or not bool(getattr(self.custom_long_output, "standstill_release_allowed", False)):
+    if not self.custom_long.enabled or custom_long_output is None or not bool(getattr(custom_long_output, "standstill_release_allowed", False)):
       return False
-    if str(getattr(self.custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch"):
+    if str(getattr(custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch"):
       return False
-    if bool(getattr(self.custom_long_output, "should_stop", False)):
+    if bool(getattr(custom_long_output, "should_stop", False)):
       return False
     if raw_model_should_stop:
       return False
+    for value in (mpc_a_target, raw_model_a_target):
+      if not math.isfinite(float(value)):
+        return False
     if self.custom_long.mode is LongitudinalMode.E2E and float(raw_model_a_target) < 0.15:
       return False
     cs = sm["carState"]
@@ -290,36 +305,42 @@ class LongitudinalPlannerSP:
       return False
     return True
 
-  def _lead_stop_hold_release_accepts(self, sm: messaging.SubMaster, mpc_a_target: float, raw_model_a_target: float,
+  def _lead_stop_hold_release_accepts(self, sm: messaging.SubMaster, custom_long_output, mpc_a_target: float, raw_model_a_target: float,
                                       raw_model_should_stop: bool, selected_lead, lead_d_rel: float, lead_v: float,
                                       lead_v_rel: float) -> tuple[bool, float]:
     if selected_lead is None:
       return False, float(lead_d_rel)
-    release_source = str(getattr(self.custom_long_output, "standstill_release_source", ""))
+    release_source = str(getattr(custom_long_output, "standstill_release_source", ""))
     if release_source not in ("lead_pullaway", "lead_standstill_launch"):
       return False, float(lead_d_rel)
     lead_id = getattr(selected_lead, 'radarTrackId', None)
     if lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id != self._lead_stop_hold_lead_id:
       return False, float(lead_d_rel)
+    for value in (lead_d_rel, lead_v, lead_v_rel, mpc_a_target, raw_model_a_target):
+      if not math.isfinite(float(value)):
+        return False, float(lead_d_rel)
     stopping_distance = float(getattr(self.CP, 'stoppingDistance', 6.0) or 6.0)
     if float(lead_v) < 0.30 or float(lead_v_rel) < 0.15:
       return False, float(lead_d_rel)
     same_id = lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id == self._lead_stop_hold_lead_id
-    min_d_rel = stopping_distance + self._STOP_HOLD_SAME_ID_MIN_D_REL_EPS if same_id else stopping_distance + 0.1
+    min_d_rel = stopping_distance + self._STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN if same_id else stopping_distance + 0.1
     if float(lead_d_rel) <= min_d_rel:
       return False, float(lead_d_rel)
-    min_gap_increasing_s = self._STOP_HOLD_SAME_ID_GAP_INCREASING_S if same_id else 0.15
+    min_gap_increasing_s = self._STOP_HOLD_SAME_ID_MIN_PULLAWAY_S if same_id else 0.15
     if self._lead_stop_hold_gap_increasing_s < min_gap_increasing_s:
       return False, float(lead_d_rel)
+    if same_id and self._lead_stop_hold_gap_baseline_d_rel is not None:
+      if float(lead_d_rel) - float(self._lead_stop_hold_gap_baseline_d_rel) < 0.3:
+        return False, float(lead_d_rel)
     if lead_id is None or self._lead_stop_hold_lead_id is None:
       if self._lead_stop_hold_gap_increasing_s < self._STOP_HOLD_NEW_ID_GAP_INCREASING_S:
         return False, float(lead_d_rel)
     if not self._standstill_release_request_valid(
-      sm, mpc_a_target, raw_model_a_target, raw_model_should_stop,
+      sm, custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop,
       self._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET if same_id else -0.03,
     ):
       return False, float(lead_d_rel)
-    return True, min(max(float(getattr(self.custom_long_output, "standstill_release_a_target", 0.15)), 0.15), 0.35)
+    return True, min(max(float(getattr(custom_long_output, "standstill_release_a_target", 0.15)), self._STOP_HOLD_RELEASE_A_MIN), self._STOP_HOLD_RELEASE_A_MAX)
 
   def final_longitudinal_output(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
                                 raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[float, bool, bool]:
@@ -338,8 +359,9 @@ class LongitudinalPlannerSP:
     mpc_stop = bool(mpc_should_stop)
 
     if lead_stop_hold_active:
+      current_custom_long_output = self.custom_long_output
       latch_release_ok, latch_release_a = self._lead_stop_hold_release_accepts(
-        sm, mpc_a_target, raw_model_a_target, raw_model_should_stop, selected_lead, lead_d_rel, lead_v, lead_v_rel)
+        sm, current_custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop, selected_lead, lead_d_rel, lead_v, lead_v_rel)
       if latch_release_ok:
         self._reset_lead_stop_hold()
         lead_stop_hold_active = False
@@ -360,13 +382,15 @@ class LongitudinalPlannerSP:
     if lead_stop_hold_active:
       stop_accel = getattr(self.CP, 'stopAccel', None)
       stop_accel = -0.5 if stop_accel is None else float(stop_accel)
+      hold_a_target = float(mpc_a_target) if math.isfinite(float(mpc_a_target)) else stop_accel
       if is_e2e:
-        a_target = min(float(raw_model_a_target), float(mpc_a_target), stop_accel)
+        raw_a_target = float(raw_model_a_target) if math.isfinite(float(raw_model_a_target)) else stop_accel
+        a_target = min(raw_a_target, hold_a_target, stop_accel)
       else:
-        a_target = min(float(mpc_a_target), stop_accel)
+        a_target = min(hold_a_target, stop_accel)
       if self.custom_long_output is not None:
-        self.custom_long_output = replace(self.custom_long_output, should_stop=True, selected_intent="lead_stop_hold", reason="stopped_lead_latch")
-      return float(a_target), True, bool(is_e2e and a_target < mpc_a_target)
+        self._custom_long_output_telemetry = replace(self.custom_long_output, should_stop=True, selected_intent="lead_stop_hold", reason="stopped_lead_latch")
+      return float(a_target), True, bool(is_e2e and a_target < hold_a_target)
     if is_e2e:
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
       return float(a_target), should_stop, bool(a_target < mpc_a_target)
@@ -460,11 +484,13 @@ class LongitudinalPlannerSP:
 
     custom_long = longitudinalPlanSP.customLongitudinal
     custom_long.enabled = bool(self.custom_long.enabled)
-    custom_long.active = bool(self.custom_long_output.enabled) if self.custom_long_output is not None else bool(self.custom_long.enabled)
-    custom_long.shouldStop = bool(self.custom_long_output.should_stop) if self.custom_long_output is not None else False
+    telemetry_custom_long_output = self._custom_long_output_telemetry if self._custom_long_output_telemetry is not None else self.custom_long_output
+    custom_long.active = bool(telemetry_custom_long_output.enabled) if telemetry_custom_long_output is not None else bool(self.custom_long.enabled)
+    custom_long.shouldStop = bool(telemetry_custom_long_output.should_stop) if telemetry_custom_long_output is not None else False
     custom_long.mode = self._custom_longitudinal_mode_to_telemetry()
-    custom_long.selectedIntent = str(getattr(self.custom_long_output, "selected_intent", "" ) or "")
-    custom_long.reason = str(getattr(self.custom_long_output, "reason", "" ) or "")
+    custom_long.selectedIntent = str(getattr(telemetry_custom_long_output, "selected_intent", "" ) or "")
+    custom_long.reason = str(getattr(telemetry_custom_long_output, "reason", "" ) or "")
+    self._custom_long_output_telemetry = None
 
     pm.send('longitudinalPlanSP', plan_sp_send)
 

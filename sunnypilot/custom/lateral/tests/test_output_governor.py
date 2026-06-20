@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from typing import cast
 
 from openpilot.sunnypilot.custom.lateral.output_governor import (
   HIGH_RATE_SLEW_SCALE,
@@ -94,8 +95,8 @@ def test_floor_allows_clean_low_speed_catchup_and_fades_at_speed():
   gov_lo = OutputGovernor(DT)
   gov_hi = OutputGovernor(DT)
   # Under-response at low speed gets the floor; at higher speed it fades out.
-  floored = benign(nominal=0.9, v=8.0, desired=2.0, actual=0.5)
-  unfloored = benign(nominal=0.9, v=15.0, desired=2.0, actual=0.5)  # v>=12 -> floor 0
+  floored = benign(nominal=0.89, v=8.0, desired=2.0, actual=0.5)
+  unfloored = benign(nominal=0.89, v=15.0, desired=2.0, actual=0.5)  # v>=12 -> floor 0
   r_lo = gov_lo.update(floored)
   r_hi = gov_hi.update(unfloored)
   assert r_lo.floor == 1.0
@@ -111,29 +112,39 @@ def test_floor_allows_clean_low_speed_catchup_and_fades_at_speed():
   {"desired": 1.0, "actual": -0.2},
   {"path_valid": False},
   {"controller_stable": False},
-  {"nominal": 1.0},
+  {"nominal": 0.90},
 ])
 def test_floor_guarded_for_unstable_evidence(kwargs):
   gov = OutputGovernor(DT)
-  base = dict(nominal=0.9, v=8.0, desired=2.0, actual=0.5)
-  base.update(kwargs)
-  r = gov.update(benign(**base))
+  base = dict(nominal=0.89, v=8.0, desired=2.0, actual=0.5)
+  base.update(kwargs)  # type: ignore[arg-type]
+  r = gov.update(benign(**base))  # type: ignore[arg-type]
   assert r.reason & GovernorReason.UNDER_RESPONSE_GUARDED
   assert not (r.reason & GovernorReason.UNDER_RESPONSE_FLOOR)
   assert r.floor == 0.0
 
 
+def test_iso_near_limit_guards_floor_and_caps_output():
+  gov = OutputGovernor(DT)
+  r = gov.update(benign(nominal=0.89, v=8.0, desired=3.0, actual=2.7))
+  assert r.reason & GovernorReason.NEAR_ISO_ACCEL
+  assert r.reason & GovernorReason.UNDER_RESPONSE_GUARDED
+  assert not (r.reason & GovernorReason.UNDER_RESPONSE_FLOOR)
+  assert r.floor == 0.0
+  assert r.cap <= 0.85 + 1e-9
+
+
 def test_clean_same_sign_lag_still_gets_floor():
   gov = OutputGovernor(DT)
-  r = gov.update(benign(nominal=0.9, v=8.0, desired=2.0, actual=0.5))
+  r = gov.update(benign(nominal=0.89, v=8.0, desired=2.0, actual=0.5))
   assert r.reason & GovernorReason.UNDER_RESPONSE_FLOOR
   assert not (r.reason & GovernorReason.UNDER_RESPONSE_GUARDED)
   assert r.floor > 0.0
 
 
 def test_high_rate_boundary_guards_floor_at_threshold_only():
-  below = OutputGovernor(DT).update(benign(nominal=0.9, v=8.0, rate=79.9, desired=2.0, actual=0.5))
-  at = OutputGovernor(DT).update(benign(nominal=0.9, v=8.0, rate=80.0, desired=2.0, actual=0.5))
+  below = OutputGovernor(DT).update(benign(nominal=0.89, v=8.0, rate=79.9, desired=2.0, actual=0.5))
+  at = OutputGovernor(DT).update(benign(nominal=0.89, v=8.0, rate=80.0, desired=2.0, actual=0.5))
   assert below.reason & GovernorReason.UNDER_RESPONSE_FLOOR
   assert not (below.reason & GovernorReason.UNDER_RESPONSE_GUARDED)
   assert at.reason & GovernorReason.UNDER_RESPONSE_GUARDED
@@ -184,6 +195,7 @@ def test_high_steering_rate_caps_and_scales_slew():
 
 def test_steady_state_passthrough():
   gov = OutputGovernor(DT)
+  r = gov.update(benign(nominal=0.3, v=25.0))
   for _ in range(500):
     r = gov.update(benign(nominal=0.3, v=25.0))  # benign, no caps/floor
   assert r.output_torque == pytest.approx(0.3, abs=1e-6)

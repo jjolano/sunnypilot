@@ -306,6 +306,54 @@ class TestSmartCruiseControlVision:
     assert not self.scc_v.is_active
     assert self.scc_v.output_v_target == V_CRUISE_UNSET
 
+  def test_zero_prediction_fails_closed(self):
+    n = len(ModelConstants.T_IDXS)
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [0.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [0.0 for _ in range(n)]
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.enabled
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_negative_model_velocity_clamped_safe(self):
+    n = len(ModelConstants.T_IDXS)
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [-1.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [1.0 for _ in range(n)]
+    self.sm["modelV2"] = mdl.modelV2
+
+    v_ego = float(MIN_V + 5.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert np.isfinite(self.scc_v.v_target)
+    assert self.scc_v.v_target >= 0.0
+
+  def test_nan_ego_or_curvature_fails_closed(self):
+    self.scc_v.update(self.sm, True, False, float("nan"), 0.0, 0.0)
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+    self.scc_v.update(self.sm, True, False, float(MIN_V + 5.0), 0.0, 0.0)
+    self.sm["controlsState"].curvature = float("nan")
+    self.scc_v.update(self.sm, True, False, float(MIN_V + 5.0), 0.0, 0.0)
+    assert not self.scc_v.is_active
+    assert self.scc_v.output_v_target == V_CRUISE_UNSET
+
+  def test_negative_target_clamps_to_min_floor(self):
+    self.scc_v.state = VisionState.entering
+    self.scc_v.is_active = True
+    self.scc_v.v_target = float(MIN_V + 1.0)
+    self.scc_v.a_target = -10.0
+
+    assert self.scc_v.get_v_target_from_control() == MIN_V
+
   def test_full_threshold_still_enters(self):
     n = len(ModelConstants.T_IDXS)
     pred_lat_accels = np.full(n, np.float32(_ENTERING_PRED_LAT_ACC_TH + 0.2), dtype=np.float32)

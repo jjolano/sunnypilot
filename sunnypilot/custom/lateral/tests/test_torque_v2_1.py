@@ -59,6 +59,10 @@ def make_params(roll=0.0, angle_offset=0.0):
   return SimpleNamespace(roll=roll, angleOffsetDeg=angle_offset)
 
 
+def make_pose():
+  return SimpleNamespace()
+
+
 def make_controller():
   return LatControlTorqueV21(make_cp(), SimpleNamespace(), make_ci(), DT, extension=NoOpExtension())
 
@@ -72,7 +76,7 @@ def test_constructs_and_runs_bounded():
                  rate=float(rng.uniform(-40, 40)), pressed=bool(rng.random() > 0.85))
     params = make_params(roll=float(rng.uniform(-0.08, 0.08)))
     out, _, pid_log = c.update(True, cs, vm, params, bool(rng.random() > 0.8),
-                               float(rng.uniform(-0.05, 0.05)), None, False, 0.2)
+                               float(rng.uniform(-0.05, 0.05)), make_pose(), False, 0.2)  # type: ignore[arg-type]
     assert math.isfinite(out)
     assert abs(out) <= c.steer_max + 1e-9
     assert pid_log.version == VERSION_V21
@@ -83,9 +87,9 @@ def test_inactive_returns_zero_and_resets_governor():
   c = make_controller()
   vm = FakeVM()
   for _ in range(30):
-    c.update(True, make_cs(), vm, make_params(), False, 0.02, None, False, 0.2)
+    c.update(True, make_cs(), vm, make_params(), False, 0.02, make_pose(), False, 0.2)  # type: ignore[arg-type]
   assert c.governor.previous_output != 0.0
-  out, zero, pid_log = c.update(False, make_cs(), vm, make_params(), False, 0.02, None, False, 0.2)
+  out, zero, pid_log = c.update(False, make_cs(), vm, make_params(), False, 0.02, make_pose(), False, 0.2)  # type: ignore[arg-type]
   assert out == 0.0
   assert zero == 0.0
   assert pid_log.active is False
@@ -99,7 +103,7 @@ def test_return_torque_is_negated_governor_output():
   vm = FakeVM()
   out = 0.0
   for _ in range(100):
-    out, _, _ = c.update(True, make_cs(v_ego=15.0, angle=20.0), vm, make_params(), False, 0.03, None, False, 0.2)
+    out, _, _ = c.update(True, make_cs(v_ego=15.0, angle=20.0), vm, make_params(), False, 0.03, make_pose(), False, 0.2)  # type: ignore[arg-type]
   assert abs(out) == pytest.approx(abs(c.governor.previous_output), abs=1e-9)
 
 
@@ -107,7 +111,7 @@ def test_populates_adaptive_torque_telemetry():
   c = make_controller()
   vm = FakeVM()
   out, _, pid_log = c.update(True, make_cs(v_ego=12.0, angle=15.0, rate=90.0, pressed=True), vm,
-                             make_params(), True, 0.05, None, False, 0.2)
+                             make_params(), True, 0.05, make_pose(), False, 0.2)  # type: ignore[arg-type]
 
   adaptive = pid_log.adaptiveTorqueState
   assert pid_log.output == pytest.approx(out)
@@ -133,7 +137,7 @@ def test_controller_passes_controller_evidence_to_governor():
     return original_update(inp)
 
   c.governor.update = capture_update
-  c.update(True, make_cs(v_ego=12.0, angle=15.0), vm, make_params(), False, 0.05, None, False, 0.2)
+  c.update(True, make_cs(v_ego=12.0, angle=15.0), vm, make_params(), False, 0.05, make_pose(), False, 0.2)  # type: ignore[arg-type]
 
   assert captured["inp"].controller_evidence_stable is True
 
@@ -150,24 +154,43 @@ def test_controller_passes_path_evidence_to_governor():
 
   c.governor.update = capture_update
   c.set_under_response_path_evidence(False)
-  c.update(True, make_cs(v_ego=12.0, angle=15.0), vm, make_params(), False, 0.05, None, False, 0.2)
+  c.update(True, make_cs(v_ego=12.0, angle=15.0), vm, make_params(), False, 0.05, make_pose(), False, 0.2)  # type: ignore[arg-type]
 
   assert captured["inp"].path_evidence_valid is False
 
 
-@pytest.mark.parametrize("model_path, expected", [
-  (None, True),
-  (SimpleNamespace(gated=False, reason="ok"), True),
-  (SimpleNamespace(gated=True, reason="ok"), False),
-  (SimpleNamespace(gated=False, reason="low_lane_confidence"), False),
-  (SimpleNamespace(gated=False, reason="high_path_std"), False),
-  (SimpleNamespace(gated=False, reason="invalid_path"), False),
-])
-def test_path_evidence_from_lateral_demand_mapping(model_path, expected):
+def test_path_evidence_from_lateral_demand_mapping():
   c = make_controller()
-  result = None if model_path is None else SimpleNamespace(model_path_result=model_path)
-  c.set_under_response_path_evidence_from_lateral_demand(result)
-  assert c._under_response_path_evidence_valid is expected
+  c.set_under_response_path_evidence_from_lateral_demand(
+    SimpleNamespace(model_path_result=SimpleNamespace(gated=False, reason="ok"))
+  )
+  assert c._under_response_path_evidence_valid is True
+
+
+def test_path_evidence_from_lateral_demand_fail_closed_when_expected_but_missing():
+  c = make_controller()
+  c.set_under_response_path_evidence_from_lateral_demand(None)
+  assert c._under_response_path_evidence_valid is False
+
+
+def test_path_evidence_from_lateral_demand_valid_when_inactive_or_not_expected():
+  c = make_controller()
+  c.set_under_response_path_evidence_from_lateral_demand(None, active=False)
+  assert c._under_response_path_evidence_valid is True
+  c.set_under_response_path_evidence_from_lateral_demand(None, evidence_expected=False)
+  assert c._under_response_path_evidence_valid is True
+
+
+@pytest.mark.parametrize("model_path", [
+  SimpleNamespace(gated=True, reason="ok"),
+  SimpleNamespace(gated=False, reason="low_lane_confidence"),
+  SimpleNamespace(gated=False, reason="high_path_std"),
+  SimpleNamespace(gated=False, reason="invalid_path"),
+])
+def test_path_evidence_from_lateral_demand_invalid_mapping(model_path):
+  c = make_controller()
+  c.set_under_response_path_evidence_from_lateral_demand(SimpleNamespace(model_path_result=model_path))
+  assert c._under_response_path_evidence_valid is False
 
 
 def test_lateral_observability_schema_fields_are_writable():

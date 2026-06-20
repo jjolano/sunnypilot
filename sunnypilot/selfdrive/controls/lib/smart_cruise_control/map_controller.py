@@ -29,6 +29,8 @@ TARGET_OFFSET = 1.0  # seconds - This controls how soon before the curve you rea
 MAX_ROUTE_TARGET_DISTANCE = 20.0
 MAX_SHORT_DROP_DISTANCE = 30.0
 MAX_SHORT_DROP_DELTA_V = 6.0
+SHORT_DROP_CONFIRM_POINTS = 2
+_ROUTE_POINT_EPS = 1e-6
 
 
 def velocities_from_param(param: str, params: Params):
@@ -54,6 +56,19 @@ def _is_finite_number(value) -> bool:
 def _valid_velocity_entry(entry) -> bool:
   return (isinstance(entry, dict) and all(_is_finite_number(entry.get(k)) for k in ("latitude", "longitude", "velocity"))
           and entry["velocity"] > 0.0)
+
+
+def _dedupe_route_points(route_points: list[dict]) -> list[dict]:
+  deduped = []
+  for point in route_points:
+    if deduped:
+      prev = deduped[-1]
+      if abs(point["latitude"] - prev["latitude"]) <= _ROUTE_POINT_EPS and abs(point["longitude"] - prev["longitude"]) <= _ROUTE_POINT_EPS:
+        if point["velocity"] > prev["velocity"]:
+          deduped[-1] = point
+        continue
+    deduped.append(point)
+  return deduped
 
 
 def calculate_accel(t, target_jerk, a_ego):
@@ -145,7 +160,7 @@ class SmartCruiseControlMap:
       self.target_lon = 0.0
       return
 
-    route_points = [tv for tv in self.target_velocities if _valid_velocity_entry(tv)]
+    route_points = _dedupe_route_points([tv for tv in self.target_velocities if _valid_velocity_entry(tv)])
     if not route_points:
       self.v_target = 0.0
       self.target_lat = 0.0
@@ -176,6 +191,26 @@ class SmartCruiseControlMap:
     forward_points = route_points[nearest_idx:]
     forward_distances = distances[nearest_idx:]
 
+    # Require route progression/bracketing evidence around the nearest point.
+    # Boundary slices are ambiguous and can be entirely stale behind/ahead segments.
+    if nearest_idx == 0 or nearest_idx == len(route_points) - 1:
+      self.v_target = 0.0
+      self.target_lat = 0.0
+      self.target_lon = 0.0
+      return
+
+    if not (distances[nearest_idx - 1] >= nearest_dist and distances[nearest_idx + 1] >= nearest_dist):
+      self.v_target = 0.0
+      self.target_lat = 0.0
+      self.target_lon = 0.0
+      return
+
+    if any(forward_distances[i] + _ROUTE_POINT_EPS < forward_distances[i - 1] for i in range(1, len(forward_distances))):
+      self.v_target = 0.0
+      self.target_lat = 0.0
+      self.target_lon = 0.0
+      return
+
     # find velocities that we are within the distance we need to adjust for
     valid_velocities = []
     for i in range(len(forward_points)):
@@ -188,7 +223,15 @@ class SmartCruiseControlMap:
       # Reject abrupt short-range drops from noisy or stale map data. A >6 m/s drop within
       # ~30 m is already a strong brake request; without model/route corroboration, fail closed.
       if d < MAX_SHORT_DROP_DISTANCE and (self.v_ego - tv) > MAX_SHORT_DROP_DELTA_V and tv < 0.7 * self.v_ego:
-        continue
+        confirm_count = 1
+        for j in range(i + 1, len(forward_points)):
+          next_tv = forward_points[j]["velocity"]
+          next_d = forward_distances[j]
+          if next_d >= MAX_SHORT_DROP_DISTANCE or next_tv > self.v_ego or next_tv >= 0.7 * self.v_ego:
+            break
+          confirm_count += 1
+        if confirm_count < SHORT_DROP_CONFIRM_POINTS and not (self.v_target > 0 and self.target_lat == target_velocity["latitude"] and self.target_lon == target_velocity["longitude"]):
+          continue
 
       a_diff = (self.a_ego - TARGET_ACCEL)
       accel_t = abs(a_diff / TARGET_JERK)
@@ -204,14 +247,13 @@ class SmartCruiseControlMap:
         if disc < 0:
           continue
         sqrt_disc = disc ** 0.5
-        t_a = -1 * (sqrt_disc + b) / 2 * a
-        t_b = (sqrt_disc - b) / 2 * a
-        if not isinstance(t_a, complex) and t_a > 0:
-          t = t_a
-        else:
-          t = t_b
-        if isinstance(t, complex) or t <= 0:
+        den = 2.0 * a
+        t_a = (-b + sqrt_disc) / den
+        t_b = (-b - sqrt_disc) / den
+        roots = [t for t in (t_a, t_b) if _is_finite_number(t) and t > 0]
+        if not roots:
           continue
+        t = min(roots)
 
         max_d = max_d + calculate_distance(t, TARGET_JERK, self.a_ego, self.v_ego)
       else:
