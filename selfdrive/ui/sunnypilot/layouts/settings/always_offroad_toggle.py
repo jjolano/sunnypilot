@@ -69,7 +69,7 @@ class AlwaysOffroadToggle(Widget):
       if result == DialogResult.CONFIRM and not ui_state.engaged:
         ui_state.params.put_bool("OffroadMode", target_state)
         ui_state.always_offroad = target_state
-        ui_state.preserve_settings_on_next_onroad_transition = not target_state
+        ui_state.preserve_settings_on_next_onroad_transition = True
 
     gui_app.push_widget(ConfirmDialog(confirm_text, confirm_label, callback=_set_offroad_mode))
 
