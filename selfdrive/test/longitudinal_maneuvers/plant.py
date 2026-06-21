@@ -102,6 +102,7 @@ class Plant:
     lead.aLeadTau = float(_LEAD_ACCEL_TAU)
     lead.status = status
     lead.modelProb = float(prob_lead)
+    lead.radarTrackId = 1 if status else -1
     if not self.only_lead2:
       radar.radarState.leadOne = lead
     radar.radarState.leadTwo = lead

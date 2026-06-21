@@ -193,13 +193,18 @@ def _frame_release_gate_context(frame: CommandFrame, prev_frame: CommandFrame | 
   v_rel = v_lead - v_ego
   lead_id = custom.get("selected_lead_id")
   latch_id = custom.get("lead_stop_hold_lead_id")
-  same_id = lead_id is not None and latch_id is not None and lead_id == latch_id
+  effective_latch_id = latch_id if latch_id is not None else custom.get("lead_stop_hold_lead_id_before_reset")
+  same_id = lead_id is not None and effective_latch_id is not None and lead_id == effective_latch_id
   baseline = custom.get("lead_stop_hold_gap_baseline_d_rel")
+  if baseline is None:
+    baseline = custom.get("lead_stop_hold_gap_baseline_d_rel_before_reset")
   prev_d_rel = custom.get("lead_stop_hold_gap_prev_d_rel")
-  gap_increasing_s = float(custom.get("lead_stop_hold_gap_increasing_s", 0.0))
+  if prev_d_rel is None:
+    prev_d_rel = custom.get("lead_stop_hold_gap_prev_d_rel_before_reset")
+  gap_increasing_s = float(custom.get("lead_stop_hold_gap_increasing_s_before_reset", custom.get("lead_stop_hold_gap_increasing_s", 0.0)))
   current_active = bool(custom.get("lead_stop_hold_active", False))
   prev_active = bool(prev_frame.custom.get("lead_stop_hold_active", False)) if prev_frame is not None else False
-  latch_reset = prev_active and not current_active
+  latch_reset = bool(custom.get("lead_stop_hold_reset_on_frame", False)) or (prev_active and not current_active)
 
   release_min = stopping_distance + (0.2 if same_id else 0.1)
   baseline_opening: float | None = None
@@ -231,6 +236,7 @@ def _frame_release_gate_context(frame: CommandFrame, prev_frame: CommandFrame | 
 
   prep_block_reason = "different_or_missing_lead_id"
   prep_applies = False
+  prep_gate_would_apply = False
   if not custom.get("custom_output_enabled", False) or not custom.get("custom_long_enabled", False):
     prep_block_reason = "custom_output_unavailable"
   elif not release_allowed:
@@ -249,7 +255,7 @@ def _frame_release_gate_context(frame: CommandFrame, prev_frame: CommandFrame | 
     prep_block_reason = "force_decel"
   elif v_ego >= 0.7:
     prep_block_reason = "not_near_standstill"
-  elif lead_id is None or latch_id is None or lead_id != latch_id:
+  elif lead_id is None or effective_latch_id is None or lead_id != effective_latch_id:
     prep_block_reason = "different_or_missing_lead_id"
   elif not all(math.isfinite(x) for x in (d_rel, v_lead, v_rel, mpc_a, model_a)):
     prep_block_reason = "non_finite_values"
@@ -262,12 +268,17 @@ def _frame_release_gate_context(frame: CommandFrame, prev_frame: CommandFrame | 
   elif d_rel <= prep_min:
     prep_block_reason = "distance_gate"
   else:
-    prep_block_reason = "applies"
-    prep_applies = True
+    prep_gate_would_apply = True
+    if current_active:
+      prep_block_reason = "applies"
+      prep_applies = True
+    else:
+      prep_block_reason = "not_hold_branch"
 
   return {
     "selected_lead_id": lead_id,
     "lead_stop_hold_lead_id": latch_id,
+    "effective_lead_stop_hold_lead_id": effective_latch_id,
     "lead_stop_hold_gap_increasing_s": gap_increasing_s,
     "lead_stop_hold_gap_baseline_d_rel": baseline,
     "lead_stop_hold_gap_prev_d_rel": prev_d_rel,
@@ -277,6 +288,7 @@ def _frame_release_gate_context(frame: CommandFrame, prev_frame: CommandFrame | 
     "d_rel_minus_release_min_d_rel": d_rel - release_min,
     "d_rel_minus_prep_min_d_rel": d_rel - prep_min,
     "prep_applies": prep_applies,
+    "prep_gate_would_apply": prep_gate_would_apply,
     "prep_block_reason": prep_block_reason,
     "release_path": release_path,
     "latch_reset_on_frame": latch_reset,
@@ -319,6 +331,7 @@ class CommandCapture:
   mpc_solution_status_counts: dict[int, int] = field(default_factory=dict)
   frames: list[CommandFrame] = field(default_factory=list)
   slew_calls: list[SlewCall] = field(default_factory=list)
+  lead_stop_hold_reset_contexts: dict[int, dict[str, Any]] = field(default_factory=dict)
   current_frame_idx: int = 0
 
 
@@ -374,11 +387,18 @@ def capture_commanded_accel():
     custom["release_block_reason"] = str(getattr(self.planner, "_last_release_block_reason", "") or "")
     custom["lead_stop_hold_active"] = bool(getattr(self.planner, "_lead_stop_hold_active", False))
     custom["lead_stop_hold_lead_id"] = getattr(self.planner, "_lead_stop_hold_lead_id", None)
-    custom["selected_lead_id"] = None
+    lead_active = bool(getattr(self, "lead_relevancy", False) and (float(prob_lead) > 0.5 or getattr(self, "only_radar", False)))
+    custom["selected_lead_id"] = 1 if lead_active else None
     custom["lead_stop_hold_gap_increasing_s"] = float(getattr(self.planner, "_lead_stop_hold_gap_increasing_s", 0.0))
     gap_baseline = getattr(self.planner, "_lead_stop_hold_gap_baseline_d_rel", None)
     custom["lead_stop_hold_gap_baseline_d_rel"] = gap_baseline
     custom["lead_stop_hold_gap_prev_d_rel"] = getattr(self.planner, "_lead_stop_hold_gap_prev_d_rel", None)
+    reset_context = capture.lead_stop_hold_reset_contexts.get(idx)
+    if reset_context is not None:
+      custom.update(reset_context)
+      custom["lead_stop_hold_reset_on_frame"] = True
+    else:
+      custom["lead_stop_hold_reset_on_frame"] = False
     custom["stop_hold_release_slew_a_target"] = getattr(self.planner, "_stop_hold_release_slew_a_target", None)
 
     frame = CommandFrame(
@@ -414,6 +434,7 @@ def capture_commanded_accel():
     pass
 
   original_apply_slew = None
+  original_reset_lead_stop_hold = None
   if apply_slew_module is not None and hasattr(apply_slew_module, "_apply_stop_hold_release_slew"):
     original_apply_slew = apply_slew_module._apply_stop_hold_release_slew
 
@@ -427,6 +448,22 @@ def capture_commanded_accel():
 
     apply_slew_module._apply_stop_hold_release_slew = apply_stop_hold_release_slew
 
+  if apply_slew_module is not None and hasattr(apply_slew_module, "_reset_lead_stop_hold"):
+    original_reset_lead_stop_hold = apply_slew_module._reset_lead_stop_hold
+
+    def reset_lead_stop_hold(self):
+      idx = capture.current_frame_idx
+      capture.lead_stop_hold_reset_contexts[idx] = {
+        "lead_stop_hold_active_before_reset": bool(getattr(self, "_lead_stop_hold_active", False)),
+        "lead_stop_hold_lead_id_before_reset": getattr(self, "_lead_stop_hold_lead_id", None),
+        "lead_stop_hold_gap_increasing_s_before_reset": float(getattr(self, "_lead_stop_hold_gap_increasing_s", 0.0)),
+        "lead_stop_hold_gap_baseline_d_rel_before_reset": getattr(self, "_lead_stop_hold_gap_baseline_d_rel", None),
+        "lead_stop_hold_gap_prev_d_rel_before_reset": getattr(self, "_lead_stop_hold_gap_prev_d_rel", None),
+      }
+      return original_reset_lead_stop_hold(self)
+
+    apply_slew_module._reset_lead_stop_hold = reset_lead_stop_hold
+
   Plant.step = step
   plant_module.time.sleep = lambda *a, **k: None
   LongitudinalMpc.reset = reset
@@ -438,6 +475,8 @@ def capture_commanded_accel():
     LongitudinalMpc.reset = original_reset
     if original_apply_slew is not None and apply_slew_module is not None:
       apply_slew_module._apply_stop_hold_release_slew = original_apply_slew
+    if original_reset_lead_stop_hold is not None and apply_slew_module is not None:
+      apply_slew_module._reset_lead_stop_hold = original_reset_lead_stop_hold
 
 
 def evaluate_lead_pullaway_start(output: np.ndarray) -> list[ScenarioFailure]:
@@ -600,7 +639,7 @@ def scenario_to_dict(scenario: Scenario, source: str | None = None, seed: int | 
 
 
 def render_jerk_diagnosis(d: JerkDiagnosis) -> str:
-  frame = d.frames[-1] if d.frames else None
+  frame = next((f for f in d.frames if f.custom.get("latch_reset_on_frame", False)), d.frames[-1] if d.frames else None)
   debug = frame.debug if frame else {}
   custom = frame.custom if frame else {}
   release_parts = [
@@ -620,6 +659,8 @@ def render_jerk_diagnosis(d: JerkDiagnosis) -> str:
   gate_parts = []
   if "prep_applies" in custom or "prep_block_reason" in custom:
     gate_parts.append(f"prep={custom.get('prep_applies', False)}")
+    if custom.get("prep_gate_would_apply", False):
+      gate_parts.append("prepWouldApply")
     gate_parts.append(f"prepBlock={custom.get('prep_block_reason', '-')}")
   if frame is not None:
     gate_parts.append(f"dRel={frame.d_rel:.2f}")
@@ -628,7 +669,7 @@ def render_jerk_diagnosis(d: JerkDiagnosis) -> str:
   gate_parts.append(f"releaseMin={custom.get('release_min_d_rel', 0.0):.2f}")
   gate_parts.append(f"gapS={custom.get('lead_stop_hold_gap_increasing_s', 0.0):.2f}")
   gate_parts.append(f"leadId={custom.get('selected_lead_id', '-')}")
-  gate_parts.append(f"latchId={custom.get('lead_stop_hold_lead_id', '-')}")
+  gate_parts.append(f"latchId={custom.get('effective_lead_stop_hold_lead_id', custom.get('lead_stop_hold_lead_id', '-'))}")
   gate_parts.append(f"path={custom.get('release_path', '-')}")
   if custom.get("latch_reset_on_frame"):
     gate_parts.append("latchReset")

@@ -466,8 +466,9 @@ def _make_jerk_frame_with_gate():
     "standstill_release_allowed": True,
     "same_id": True,
     "baseline_opening": 0.5,
-    "prep_applies": True,
-    "prep_block_reason": "applies",
+    "prep_applies": False,
+    "prep_gate_would_apply": True,
+    "prep_block_reason": "not_hold_branch",
     "release_path": "standstill_release_clear",
     "latch_reset_on_frame": False,
     "release_min_d_rel": 6.2,
@@ -512,8 +513,9 @@ def test_frame_release_gate_context_computes_release_and_prep_min():
   assert ctx["baseline_opening"] == pytest.approx(0.55)
   assert ctx["release_min_d_rel"] == pytest.approx(6.2)
   assert ctx["prep_min_d_rel"] == pytest.approx(6.2)
-  assert ctx["prep_applies"] is True
-  assert ctx["prep_block_reason"] == "applies"
+  assert ctx["prep_applies"] is False
+  assert ctx["prep_gate_would_apply"] is True
+  assert ctx["prep_block_reason"] == "not_hold_branch"
 
 
 def test_render_jerk_diagnosis_shows_gate_context():
@@ -523,8 +525,9 @@ def test_render_jerk_diagnosis_shows_gate_context():
     a0=-2.0, a1=0.0, delta_a=2.0, jerk=40.0, frames=[frame],
   )
   text = render_jerk_diagnosis(diag)
-  assert "prep=True" in text
-  assert "prepBlock=applies" in text
+  assert "prep=False" in text
+  assert "prepWouldApply" in text
+  assert "prepBlock=not_hold_branch" in text
   assert "dRel=6.20" in text
   assert "prepMin=6.20" in text
   assert "releaseMin=6.20" in text
@@ -568,7 +571,8 @@ def test_main_json_includes_gate_fields(monkeypatch):
   payload = json.loads(stdout.getvalue())
   failure = payload["failures"][0]
   diag_dict = failure["jerkDiagnosis"]
-  assert diag_dict["frames"][0]["custom"]["prepApplies"] is True
+  assert diag_dict["frames"][0]["custom"]["prepApplies"] is False
+  assert diag_dict["frames"][0]["custom"]["prepGateWouldApply"] is True
   assert diag_dict["frames"][0]["custom"]["releasePath"] == "standstill_release_clear"
   assert diag_dict["frames"][0]["custom"]["latchResetOnFrame"] is False
   assert diag_dict["frames"][0]["custom"]["dRelMinusPrepMinDRel"] == pytest.approx(0.0)
