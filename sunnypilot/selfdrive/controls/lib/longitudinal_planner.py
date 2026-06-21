@@ -40,9 +40,11 @@ class LongitudinalPlannerSP:
   _STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S = 0.15
   _STOP_HOLD_RELEASE_A_MIN = 0.15
   _STOP_HOLD_RELEASE_A_MAX = 0.35
+  _STOP_HOLD_RELEASE_MAX_UP_JERK = 6.0
   _CURVE_CONFIDENCE_APPLY_MIN_V_EGO = 8.0
   _CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE = 0.70
   _CURVE_CONFIDENCE_APPLY_MIN_CAP = -0.85
+  _stop_hold_release_slew_a_target: float | None
   def __init__(self, CP, CP_SP, mpc):
     self.CP = CP
     self.events_sp = EventsSP()
@@ -63,6 +65,7 @@ class LongitudinalPlannerSP:
     self._lead_stop_hold_gap_baseline_d_rel = None
     self._custom_long_output_telemetry = None
     self._last_release_block_reason = ""
+    self._stop_hold_release_slew_a_target: float | None = None
 
     # Custom-2.0 longitudinal policy (default-on in this fork; fail-closed to stock output).
     self.custom_long = CustomLongitudinalAdapter(Params())
@@ -112,6 +115,7 @@ class LongitudinalPlannerSP:
     self._lead_stop_hold_lead_id = None
     self._lead_stop_hold_gap_prev_d_rel = None
     self._lead_stop_hold_gap_baseline_d_rel = None
+    self._stop_hold_release_slew_a_target = None
 
   def _update_lead_stop_hold(self, sm: messaging.SubMaster, v_ego: float, has_lead: bool, selected_lead,
                              lead_d_rel: float, lead_v: float, lead_v_rel: float, gas_pressed: bool) -> bool:
@@ -284,6 +288,54 @@ class LongitudinalPlannerSP:
       return float(base_a_target)
     conservative_cap = max(proposed_cap, self._CURVE_CONFIDENCE_APPLY_MIN_CAP)
     return float(min(float(base_a_target), conservative_cap))
+
+  def _apply_stop_hold_release_slew(self, sm: messaging.SubMaster, a_target: float, release_mpc_stop: bool,
+                                    mpc_stop: bool, raw_model_should_stop: bool, should_stop: bool) -> float:
+    """Narrow upward-only slew limiter for stop-hold release pullaways.
+
+    Seeds on the first positive release tick with the actual final output returned, then
+    caps only upward increases to reduce launch jerk. Downward/braking changes pass through
+    unmodified so hazard responses are not delayed. Cleared on any stop/override/hazard.
+    """
+    dt = float(getattr(self, 'dt', DT_MDL))
+    car_state = self._sm_item(sm, 'carState')
+    controls_state = self._sm_item(sm, 'controlsState')
+    brake_pressed = bool(getattr(car_state, 'brakePressed', False)) if car_state is not None else False
+    gas_pressed = bool(getattr(car_state, 'gasPressed', False)) if car_state is not None else False
+    force_decel = bool(getattr(controls_state, 'forceDecel', False)) if controls_state is not None else False
+
+    clear = (
+      not math.isfinite(a_target) or
+      not math.isfinite(dt) or dt <= 0.0 or
+      (self._stop_hold_release_slew_a_target is not None and not math.isfinite(self._stop_hold_release_slew_a_target)) or
+      bool(should_stop) or
+      bool(mpc_stop) or
+      bool(raw_model_should_stop) or
+      brake_pressed or gas_pressed or force_decel or
+      a_target <= 0.0
+    )
+    if clear:
+      self._stop_hold_release_slew_a_target = None
+      return float(a_target)
+
+    # First positive release tick seeds the slew state with the actual final output returned.
+    if release_mpc_stop and self._stop_hold_release_slew_a_target is None:
+      self._stop_hold_release_slew_a_target = float(a_target)
+      return float(a_target)
+
+    # Active slew: cap only upward increases; downward/braking changes pass through.
+    if self._stop_hold_release_slew_a_target is not None:
+      max_step = self._STOP_HOLD_RELEASE_MAX_UP_JERK * dt
+      last_slew = self._stop_hold_release_slew_a_target
+      if a_target > last_slew + max_step:
+        a_target = last_slew + max_step
+        self._stop_hold_release_slew_a_target = float(a_target)
+      elif a_target > last_slew:
+        self._stop_hold_release_slew_a_target = None
+      else:
+        self._stop_hold_release_slew_a_target = float(a_target)
+
+    return float(a_target)
 
   def _standstill_release_gate_enabled(self) -> bool:
     return bool(
@@ -503,6 +555,7 @@ class LongitudinalPlannerSP:
     is_e2e = self.is_e2e(sm)
     should_stop = bool(custom_should_stop if custom_should_stop is not None else (mpc_stop or (raw_model_should_stop and is_e2e and not model_stale)))
     if lead_stop_hold_active:
+      self._stop_hold_release_slew_a_target = None
       stop_accel = getattr(self.CP, 'stopAccel', None)
       stop_accel = -0.5 if stop_accel is None else float(stop_accel)
       hold_a_target = float(mpc_a_target) if math.isfinite(float(mpc_a_target)) else stop_accel
@@ -516,10 +569,13 @@ class LongitudinalPlannerSP:
       return float(a_target), True, bool(is_e2e and not model_stale and a_target < hold_a_target)
     if is_e2e and not model_stale:
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
-      return float(a_target), should_stop, bool(a_target < mpc_a_target)
+      e2e_source = bool(a_target < mpc_a_target)
+      a_target = self._apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, raw_model_should_stop, should_stop)
+      return float(a_target), should_stop, e2e_source
     a_target = float(release_a_target if release_mpc_stop else mpc_a_target)
     a_target = self._scc_custom_stop_cap(a_target)
     a_target = self._scc_curve_confidence_final_cap(a_target, sm, release_mpc_stop=release_mpc_stop)
+    a_target = self._apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, raw_model_should_stop, should_stop)
     return a_target, bool(should_stop), False
 
   def update(self, sm: messaging.SubMaster) -> None:

@@ -52,6 +52,7 @@ def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceTog
   sp.__dict__['_lead_stop_hold_lead_id'] = None
   sp.__dict__['_lead_stop_hold_gap_prev_d_rel'] = None
   sp.__dict__['_custom_long_output_telemetry'] = None
+  sp.__dict__['_stop_hold_release_slew_a_target'] = None
   sp.__dict__['custom_long_output'] = CustomLongitudinalOutput(
     a_target=0.0, should_stop=should_stop, enabled=True, mode=mode,
     selected_intent=("lead_pullaway" if release else None), reason=("trusted" if release else None),
@@ -1082,6 +1083,109 @@ def test_custom_target_filtering_by_mode_and_scc_source_toggles():
     LongitudinalPlanSource.cruise, LongitudinalPlanSource.speedLimitAssist}
   assert LongitudinalPlanSource.sccVision in fake_planner(LongitudinalMode.SCC, sources=SourceToggles(True, False)).custom_longitudinal_targets(targets)
   assert LongitudinalPlanSource.sccMap in fake_planner(LongitudinalMode.SCC, sources=SourceToggles(False, True)).custom_longitudinal_targets(targets)
+
+
+def test_stop_hold_release_slew_first_release_seeds_state_and_stays_floored():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert 0.15 <= a <= 0.35
+  assert should_stop is False
+  assert sp._stop_hold_release_slew_a_target == a
+
+
+def test_stop_hold_release_slew_caps_second_upward_jump():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  dt = 0.05
+  first, _, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 2.0, False, 0.0, False)  # type: ignore[arg-type]
+  assert math.isclose(a, first + sp._STOP_HOLD_RELEASE_MAX_UP_JERK * dt)
+  assert should_stop is False
+
+
+def test_stop_hold_release_slew_clears_when_upward_target_catches_without_cap():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  first, _, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), first + 0.1, False, 0.0, False)  # type: ignore[arg-type]
+  assert math.isclose(a, first + 0.1)
+  assert should_stop is False
+  assert sp._stop_hold_release_slew_a_target is None
+
+
+def test_stop_hold_release_slew_downward_braking_passes_through_and_clears():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  sp._stop_hold_release_slew_a_target = 1.0  # artificial high-water state
+  a, _, _ = sp.final_longitudinal_output(fake_sm(), -0.5, False, 0.0, False)  # type: ignore[arg-type]
+  assert a == -0.5
+  assert sp._stop_hold_release_slew_a_target is None
+
+
+def test_stop_hold_release_slew_positive_dip_then_upward_jump_still_capped():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  first, _, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  # tiny positive dip passes through but keeps the slew active
+  a_dip, _, _ = sp.final_longitudinal_output(fake_sm(), 0.05, False, 0.0, False)  # type: ignore[arg-type]
+  assert a_dip == 0.05
+  assert sp._stop_hold_release_slew_a_target is not None
+  # subsequent upward jump is still capped
+  a, _, _ = sp.final_longitudinal_output(fake_sm(), 2.0, False, 0.0, False)  # type: ignore[arg-type]
+  assert math.isclose(a, 0.05 + sp._STOP_HOLD_RELEASE_MAX_UP_JERK * 0.05)
+
+
+def test_stop_hold_release_slew_brake_clears_and_passes_through():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  a, _, _ = sp.final_longitudinal_output(fake_sm(brake=True), 2.0, False, 0.0, False)  # type: ignore[arg-type]
+  assert a == 2.0
+  assert sp._stop_hold_release_slew_a_target is None
+
+
+def test_stop_hold_release_slew_gas_clears_and_passes_through():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  a, _, _ = sp.final_longitudinal_output(fake_sm(gas=True), 2.0, False, 0.0, False)  # type: ignore[arg-type]
+  assert a == 2.0
+  assert sp._stop_hold_release_slew_a_target is None
+
+
+def test_stop_hold_release_slew_force_decel_clears_and_passes_through():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  a, _, _ = sp.final_longitudinal_output(fake_sm(force_decel=True), 2.0, False, 0.0, False)  # type: ignore[arg-type]
+  assert a == 2.0
+  assert sp._stop_hold_release_slew_a_target is None
+
+
+def test_stop_hold_release_slew_raw_model_stop_clears_and_passes_through():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  a, _, _ = sp.final_longitudinal_output(fake_sm(), 2.0, False, -3.0, True)  # type: ignore[arg-type]
+  assert a == 2.0
+  assert sp._stop_hold_release_slew_a_target is None
+
+
+def test_stop_hold_release_slew_custom_should_stop_clears_and_passes_through():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=True, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.2, standstill_release_reason="trusted", debug={},
+  )  # type: ignore[assignment]
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 2.0, False, 0.0, False)  # type: ignore[arg-type]
+  assert a == 2.0
+  assert should_stop is True
+  assert sp._stop_hold_release_slew_a_target is None
+
+
+def test_stop_hold_release_slew_e2e_preserves_source_when_limited():
+  sp = fake_planner(LongitudinalMode.E2E, release=True)
+  first, _, _ = sp.final_longitudinal_output(fake_sm(False), 0.0, True, 2.0, False)  # type: ignore[arg-type]
+  assert 0.15 <= first <= 0.35
+  a, _, e2e_source = sp.final_longitudinal_output(fake_sm(False), 0.6, False, 2.0, False)  # type: ignore[arg-type]
+  assert math.isclose(a, first + sp._STOP_HOLD_RELEASE_MAX_UP_JERK * 0.05)
+  assert e2e_source is False  # source decided before slew limiting
 
 
 def test_target_filtering_keeps_cruise_fallback():
