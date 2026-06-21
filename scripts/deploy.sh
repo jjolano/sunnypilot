@@ -4,6 +4,7 @@ set -euo pipefail
 
 DRY_RUN=false
 REBOOT=true
+ALLOW_ONROAD=false
 CONFIG_FILE=".deploy-config"
 CLI_DEPLOY_HOST=""
 CLI_DEPLOY_REMOTE=""
@@ -23,6 +24,7 @@ Options:
   --path <path>     Override DEPLOY_PATH from config
   --reboot          Reboot the device after deployment (default)
   --no-reboot       Skip reboot after deployment
+  --allow-onroad    Allow deploy while device reports IsOnroad=true (dangerous)
   --remote <name>   Override DEPLOY_REMOTE from config
   --help            Show this help message
 EOF
@@ -103,6 +105,10 @@ while [[ $# -gt 0 ]]; do
       REBOOT=false
       shift
       ;;
+    --allow-onroad)
+      ALLOW_ONROAD=true
+      shift
+      ;;
     --remote)
       [[ $# -ge 2 ]] || fail "Missing value for --remote"
       CLI_DEPLOY_REMOTE="$2"
@@ -164,14 +170,37 @@ REMOTE_DEPLOY_REMOTE="$(remote_quote "$DEPLOY_REMOTE")"
 REMOTE_DEPLOY_REF="$(remote_quote "$DEPLOY_REMOTE/$DEPLOY_BRANCH")"
 REMOTE_UPDATE_CMD="cd $REMOTE_DEPLOY_PATH && git fetch $REMOTE_DEPLOY_REMOTE && git reset --hard $REMOTE_DEPLOY_REF && git submodule sync --recursive && git submodule update --init --recursive"
 REMOTE_REBOOT_CMD="sudo reboot"
+REMOTE_ONROAD_CHECK_CMD="cd $REMOTE_DEPLOY_PATH && /usr/local/venv/bin/python - <<'PY'
+from openpilot.common.params import Params
+
+is_onroad = Params().get_bool('IsOnroad')
+print(f'IsOnroad={is_onroad}')
+raise SystemExit(42 if is_onroad else 0)
+PY"
 
 if $DRY_RUN; then
   print_cmd env GIT_LFS_SKIP_PUSH=1 git push --force-with-lease origin "$DEPLOY_BRANCH"
+  if ! $ALLOW_ONROAD; then
+    print_cmd ssh "$DEPLOY_HOST" "$REMOTE_ONROAD_CHECK_CMD"
+  fi
   print_cmd ssh "$DEPLOY_HOST" "$REMOTE_UPDATE_CMD"
   if $REBOOT; then
     print_cmd ssh "$DEPLOY_HOST" "$REMOTE_REBOOT_CMD"
   fi
 else
+  if ! $ALLOW_ONROAD; then
+    info "Checking device is offroad before update/reboot"
+    set +e
+    ssh "$DEPLOY_HOST" "$REMOTE_ONROAD_CHECK_CMD"
+    onroad_rc=$?
+    set -e
+    if [[ $onroad_rc -eq 42 ]]; then
+      fail "Device reports IsOnroad=true; refusing to deploy. Stop/offroad first, or pass --allow-onroad if you intentionally accept the risk."
+    elif [[ $onroad_rc -ne 0 ]]; then
+      fail "Unable to verify device offroad state; refusing to deploy. Use --allow-onroad only if you have confirmed the car is safely offroad."
+    fi
+  fi
+
   info "Pushing $DEPLOY_BRANCH to origin"
   retry env GIT_LFS_SKIP_PUSH=1 git push --force-with-lease origin "$DEPLOY_BRANCH"
 
