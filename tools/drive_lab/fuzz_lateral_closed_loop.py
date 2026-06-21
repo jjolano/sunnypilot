@@ -61,6 +61,10 @@ EXPECTED_PLANT_TRANSIENT_FAILURES_BY_KIND = {
   # pass the override curvature through exactly, so the simple plant's steady tracking checks are
   # expected to lag the step. Keep the structural plant checks hard.
   "lateral_maneuver_override": {"tracking", "settle"},
+  # ISO 3888-1 double lane change is an aggressive open-loop maneuver: the simple test plant is
+  # expected to lag the reference path during the transient, so tracking error is informational.
+  # Structural plant checks (jerk, saturation, oscillation, finite outputs) remain hard failures.
+  "iso_3888_lane_change": {"tracking"},
 }
 
 

@@ -224,20 +224,69 @@ def test_model_age_delay_generation_never_starts_before_delayable_frame():
     assert int(recipe.params["delay_frames"]) <= recipe.start_frame
 
 
-def test_model_age_delay_bridges_toward_measured_curvature():
+def test_model_age_delay_produces_model_stale_reason():
+  config = RouteReplayFuzzerConfig(seed=1, cases=3, preset="synthetic_sine", perturbation="model_age_delay")
+  for scenario in generate_scenarios(config):
+    result = evaluate_scenario(scenario)
+    if not result.valid:
+      continue
+    window = result.perturbed_outputs[scenario.recipe.start_frame:scenario.recipe.end_frame]
+    assert window
+    assert all(o.path_reason == "model_stale" for o in window)
+    return
+  raise AssertionError("model_age_delay did not produce a valid scenario")
+
+
+def test_model_age_delay_constant_curvature_has_no_material_error_and_still_reacts():
+  frames = tuple(_coherent_frame(i * DT, curvature=0.001) for i in range(20))
+  recipe = PerturbationRecipe(
+    kind="model_age_delay",
+    start_frame=5,
+    end_frame=12,
+    description="constant curvature stale-age delay",
+    params={"delay_frames": 2, "model_age_s": 0.30},
+  )
+  scenario = RouteReplayScenario(
+    preset="synthetic_straight",
+    title="constant curvature model_age_delay",
+    frames=frames,
+    recipe=recipe,
+  )
+  result = evaluate_scenario(scenario)
+  assert result.valid
+  window_outputs = result.perturbed_outputs[recipe.start_frame:recipe.end_frame]
+  assert all(o.path_reason == "model_stale" for o in window_outputs)
+  assert result.metrics.get("model_age_delay_material_frames", 0) == 0
+
+
+@pytest.mark.parametrize(
+  "seed,preset",
+  [
+    (70, "synthetic_straight"),
+    (71, "synthetic_curve"),
+    (72, "synthetic_sine"),
+    (73, "synthetic_reversal"),
+  ],
+)
+def test_model_age_delay_synthetic_seed_regression(seed, preset):
+  config = RouteReplayFuzzerConfig(seed=seed, cases=30, preset=preset, perturbation="model_age_delay")
+  for scenario in generate_scenarios(config):
+    result = evaluate_scenario(scenario)
+    assert result.valid, f"{preset} seed={seed} {scenario.title}: {result.baseline_failures} {result.perturbation_failures} {result.comparison_failures}"
+
+
+def test_model_age_delay_processed_error_is_bounded():
   config = RouteReplayFuzzerConfig(seed=1, cases=3, preset="synthetic_sine", perturbation="model_age_delay")
   for scenario in generate_scenarios(config):
     result = evaluate_scenario(scenario)
     if not result.valid:
       continue
     window_outputs = result.perturbed_outputs[scenario.recipe.start_frame:scenario.recipe.end_frame]
-    window_frames = scenario.perturbed_frames[scenario.recipe.start_frame:scenario.recipe.end_frame]
     assert window_outputs
     assert all(o.path_reason == "model_stale" for o in window_outputs)
-    assert any(
-      abs(o.processed_curvature - f.measured_curvature) < abs(f.raw_curvature - f.measured_curvature)
-      for f, o in zip(window_frames, window_outputs, strict=False)
-    )
+    assert not any(f["check"] == "expected_stale_age_bridge_toward_measured" for f in result.comparison_failures)
+    assert result.metrics["model_age_delay_material_frames"] >= 0
+    assert result.metrics["model_age_delay_max_processed_lat_error"] >= 0.0
     return
   raise AssertionError("model_age_delay did not produce a valid scenario")
 

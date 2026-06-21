@@ -81,6 +81,37 @@ def test_lateral_maneuver_override_keeps_structural_plant_failures_hard():
   assert [failure.check for failure in filtered] == ["lateral_jerk"]
 
 
+def test_iso_3888_lane_change_allows_expected_tracking_transient():
+  from openpilot.tools.drive_lab.metrics import ScenarioFailure
+
+  failures = [ScenarioFailure("tracking", "expected ISO 3888 plant lag")]
+  filtered = _unexpected_plant_failures("iso_3888_lane_change", failures)
+
+  assert filtered == []
+
+
+def test_iso_3888_lane_change_keeps_structural_failures_hard():
+  from openpilot.tools.drive_lab.metrics import ScenarioFailure
+
+  failures = [
+    ScenarioFailure("tracking", "expected ISO 3888 plant lag"),
+    ScenarioFailure("lateral_jerk", "structural instability"),
+  ]
+
+  filtered = _unexpected_plant_failures("iso_3888_lane_change", failures)
+
+  assert [failure.check for failure in filtered] == ["lateral_jerk"]
+
+
+def test_non_iso_tracking_failure_still_fails():
+  from openpilot.tools.drive_lab.metrics import ScenarioFailure
+
+  failures = [ScenarioFailure("tracking", "should not be filtered for non-ISO kind")]
+  filtered = _unexpected_plant_failures("high_quality_path", failures)
+
+  assert [failure.check for failure in filtered] == ["tracking"]
+
+
 def test_long_low_lane_confidence_does_not_fail_only_from_duration_scaled_oscillation_count():
   scenarios = generate_closed_loop_scenarios(seed=25, cases=1, duration_s=12.0)
   scenario = scenarios[0]
@@ -246,6 +277,21 @@ def test_main_json_output_is_stable():
   assert payload["seed"] == 2
   assert payload["cases"] == 3
   assert "failures" in payload
+
+
+def test_iso_3888_preset_closed_loop_passes():
+  stdout = io.StringIO()
+  previous_argv = sys.argv
+  try:
+    sys.argv = ["fuzz_lateral_closed_loop.py", "--preset", "iso-3888", "--seed", "42", "--cases", "50"]
+    with contextlib.redirect_stdout(stdout):
+      main()
+  finally:
+    sys.argv = previous_argv
+
+  output = stdout.getvalue()
+  assert "preset=iso-3888" in output
+  assert "failures=0" in output
 
 
 def test_main_exits_nonzero_on_injected_failure():
