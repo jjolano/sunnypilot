@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from openpilot.sunnypilot.system.params_migration import LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION, run_migration
+from openpilot.sunnypilot.system.params_migration import (
+  LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION,
+  LONGITUDINAL_MODE_MIGRATION_VERSION,
+  run_migration,
+)
 
 
 class FakeParams:
-  def __init__(self):
-    self.values = {
-      "CustomLateralDemandEnabled": True,
-      "CurveMemoryEnabled": True,
-      "CustomLateralDemandDefaultOffMigrated": None,
-    }
+  def __init__(self, **initial):
+    self.values = dict(initial)
 
   def get(self, key, return_default=False):
     return self.values.get(key)
@@ -25,7 +25,7 @@ class FakeParams:
 
 
 def test_lateral_demand_default_off_migration_resets_existing_default_on_values():
-  params = FakeParams()
+  params = FakeParams(CustomLateralDemandEnabled=True, CurveMemoryEnabled=True, CustomLateralDemandDefaultOffMigrated=None)
 
   run_migration(params)
 
@@ -35,10 +35,66 @@ def test_lateral_demand_default_off_migration_resets_existing_default_on_values(
 
 
 def test_lateral_demand_default_off_migration_is_one_shot():
-  params = FakeParams()
-  params.values["CustomLateralDemandDefaultOffMigrated"] = LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION
+  params = FakeParams(CustomLateralDemandEnabled=True, CurveMemoryEnabled=True, CustomLateralDemandDefaultOffMigrated=LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION)
 
   run_migration(params)
 
   assert params.values["CustomLateralDemandEnabled"] is True
   assert params.values["CurveMemoryEnabled"] is True
+
+
+def test_longitudinal_mode_migration_from_legacy_int_acc():
+  params = FakeParams(LongitudinalMode="0", LongitudinalModeMigrationVersion=None)
+  run_migration(params)
+  assert params.values["CustomLongitudinalMode"] == "acc"
+  assert params.values["LongitudinalModeMigrationVersion"] == LONGITUDINAL_MODE_MIGRATION_VERSION
+
+
+def test_longitudinal_mode_migration_from_legacy_int_e2e():
+  params = FakeParams(LongitudinalMode="1", LongitudinalModeMigrationVersion=None)
+  run_migration(params)
+  assert params.values["CustomLongitudinalMode"] == "e2e"
+
+
+def test_longitudinal_mode_migration_from_legacy_int_scc():
+  params = FakeParams(LongitudinalMode="2", LongitudinalModeMigrationVersion=None)
+  run_migration(params)
+  assert params.values["CustomLongitudinalMode"] == "scc"
+
+
+def test_longitudinal_mode_migration_from_experimental_and_dec():
+  params = FakeParams(ExperimentalMode=True, DynamicExperimentalControl=True, LongitudinalModeMigrationVersion=None)
+  run_migration(params)
+  assert params.values["CustomLongitudinalMode"] == "scc"
+
+
+def test_longitudinal_mode_migration_from_experimental_only():
+  params = FakeParams(ExperimentalMode=True, DynamicExperimentalControl=False, LongitudinalModeMigrationVersion=None)
+  run_migration(params)
+  assert params.values["CustomLongitudinalMode"] == "e2e"
+
+
+def test_longitudinal_mode_migration_fresh_install_does_not_write_mode():
+  params = FakeParams(LongitudinalModeMigrationVersion=None)
+  run_migration(params)
+  assert "CustomLongitudinalMode" not in params.values
+  assert params.values["LongitudinalModeMigrationVersion"] == LONGITUDINAL_MODE_MIGRATION_VERSION
+
+
+def test_longitudinal_mode_migration_respects_existing_choice():
+  params = FakeParams(CustomLongitudinalMode="acc", LongitudinalMode="2", LongitudinalModeMigrationVersion=None)
+  run_migration(params)
+  assert params.values["CustomLongitudinalMode"] == "acc"
+
+
+def test_longitudinal_mode_migration_is_one_shot():
+  params = FakeParams(LongitudinalMode="0", LongitudinalModeMigrationVersion=LONGITUDINAL_MODE_MIGRATION_VERSION)
+  run_migration(params)
+  assert "CustomLongitudinalMode" not in params.values
+
+
+def test_longitudinal_mode_migration_upgrades_from_legacy_version():
+  params = FakeParams(LongitudinalMode="1", LongitudinalModeMigrationVersion="1.1")
+  run_migration(params)
+  assert params.values["CustomLongitudinalMode"] == "e2e"
+  assert params.values["LongitudinalModeMigrationVersion"] == LONGITUDINAL_MODE_MIGRATION_VERSION

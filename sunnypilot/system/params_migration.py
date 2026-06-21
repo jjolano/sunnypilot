@@ -12,6 +12,7 @@ from openpilot.sunnypilot.selfdrive.car.sync_sunnylink_params import CAR_LIST_JS
 ONROAD_BRIGHTNESS_MIGRATION_VERSION: str = "1.0"
 ONROAD_BRIGHTNESS_TIMER_MIGRATION_VERSION: str = "1.0"
 LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION: str = "1.0"
+LONGITUDINAL_MODE_MIGRATION_VERSION: str = "2.0"
 
 # index → seconds mapping for OnroadScreenOffTimer (SSoT)
 ONROAD_BRIGHTNESS_TIMER_VALUES = {0: 3, 1: 5, 2: 7, 3: 10, 4: 15, 5: 30, **{i: (i - 5) * 60 for i in range(6, 16)}}
@@ -48,7 +49,47 @@ def _migrate_car_platform_bundle(_params):
   cloudlog.info(f"params_migration: CarPlatformBundle migrated {old_platform!r} -> {new_platform!r}")
 
 
+def _migrate_longitudinal_mode(_params):
+  if _params.get("LongitudinalModeMigrationVersion") == LONGITUDINAL_MODE_MIGRATION_VERSION:
+    return
+
+  try:
+    # Only migrate if the new source-of-truth param isn't already set (user may have chosen manually)
+    if _params.get("CustomLongitudinalMode") is None:
+      new_mode = None
+
+      # Strongest signal: legacy INT LongitudinalMode (set by old fork's migration)
+      legacy_mode = _params.get("LongitudinalMode")
+      if legacy_mode is not None:
+        if isinstance(legacy_mode, bytes):
+          legacy_mode = legacy_mode.decode("utf-8")
+        mode_map = {"0": "acc", "1": "e2e", "2": "scc"}
+        new_mode = mode_map.get(str(legacy_mode).strip())
+
+      # Fall back to ExperimentalMode + DynamicExperimentalControl (pre-migration old fork)
+      if new_mode is None:
+        experimental = _params.get_bool("ExperimentalMode")
+        dec = _params.get_bool("DynamicExperimentalControl")
+        if experimental and dec:
+          new_mode = "scc"
+        elif experimental:
+          new_mode = "e2e"
+        elif dec:
+          new_mode = "acc"
+        # else: fresh install — leave unset, default "scc" applies
+
+      if new_mode is not None:
+        _params.put("CustomLongitudinalMode", new_mode, block=True)
+
+    _params.put("LongitudinalModeMigrationVersion", LONGITUDINAL_MODE_MIGRATION_VERSION, block=True)
+    cloudlog.info(f"params_migration: LongitudinalMode migrated to version {LONGITUDINAL_MODE_MIGRATION_VERSION}")
+  except Exception as e:
+    cloudlog.exception(f"Error migrating LongitudinalMode: {e}")
+
+
 def run_migration(_params):
+  _migrate_longitudinal_mode(_params)
+
   # migrate OnroadScreenOffBrightness
   if _params.get("OnroadScreenOffBrightnessMigrated") != ONROAD_BRIGHTNESS_MIGRATION_VERSION:
     try:

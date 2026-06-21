@@ -106,6 +106,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"StandstillReleaseConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CustomLateralDemandDefaultOffMigrated", {PERSISTENT | BACKUP, STRING, ""}},
+    {"LongitudinalModeMigrationVersion", {PERSISTENT | BACKUP, STRING, ""}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CurveMemoryEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"NetworkMetered", {PERSISTENT | BACKUP, BOOL}},
