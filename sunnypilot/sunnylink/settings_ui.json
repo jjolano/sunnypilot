@@ -2164,6 +2164,64 @@
       ]
     },
     {
+      "id": "sunnylink",
+      "label": "sunnylink",
+      "icon": "sunnylink",
+      "order": 8,
+      "remote_configurable": true,
+      "description": "Remote backup, restore, and configuration",
+      "sections": [
+        {
+          "id": "general",
+          "title": "",
+          "description": "",
+          "items": [
+            {
+              "key": "SunnylinkEnabled",
+              "widget": "toggle",
+              "title": "Enable sunnylink",
+              "description": "This is the master switch, it will allow you to cutoff any sunnylink requests should you want to do that.",
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                }
+              ]
+            },
+            {
+              "key": "SponsorStatus",
+              "widget": "button",
+              "blocked": true,
+              "title": "Sponsor Status",
+              "description": "Become a sponsor of sunnypilot to get early access to sunnylink features when they become available.",
+              "action": "sunnylink_sponsor"
+            },
+            {
+              "key": "PairGitHub",
+              "widget": "button",
+              "blocked": true,
+              "title": "Pair GitHub Account",
+              "description": "Pair your GitHub account to grant your device sponsor benefits, including API access on sunnylink.",
+              "action": "sunnylink_pair"
+            },
+            {
+              "key": "EnableSunnylinkUploader",
+              "widget": "toggle",
+              "title": "Enable sunnylink uploader (infrastructure test)",
+              "description": "Enable sunnylink uploader to allow sunnypilot to upload your driving data to sunnypilot servers. (Only for highest tiers, and does NOT bring ANY benefit to you yet. We are just testing data volume.)"
+            },
+            {
+              "key": "BackupRestore",
+              "widget": "button",
+              "blocked": true,
+              "title": "Backup and Restore",
+              "description": "",
+              "action": "sunnylink_backup_restore"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "developer",
       "label": "Developer",
       "icon": "developer",
@@ -2768,11 +2826,10 @@
     {
       "id": "system.sunnylink",
       "title": "sunnylink",
-      "new_shell_hidden": true,
       "icon": "sunnylink",
       "content": {
-        "kind": "custom_page",
-        "component": "sunnylink"
+        "kind": "panel_ref",
+        "panel": "sunnylink"
       }
     },
     {

@@ -97,10 +97,9 @@ pages:
   - id: system.sunnylink
     title: sunnylink
     icon: sunnylink
-    new_shell_hidden: true
     content:
-      kind: custom_page
-      component: sunnylink
+      kind: panel_ref
+      panel: sunnylink
   - id: system.models
     title: Models
     icon: models

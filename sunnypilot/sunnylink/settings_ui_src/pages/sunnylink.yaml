@@ -1,0 +1,42 @@
+# Page: sunnylink
+# Edit this file. Run compile_settings_ui.py to emit settings_ui.json.
+id: sunnylink
+label: sunnylink
+icon: sunnylink
+order: 8
+remote_configurable: true
+description: Remote backup, restore, and configuration
+sections:
+- id: general
+  title: ''
+  description: ''
+  items:
+  - key: SunnylinkEnabled
+    widget: toggle
+    title: Enable sunnylink
+    description: This is the master switch, it will allow you to cutoff any sunnylink requests should you want to do that.
+    enablement:
+    - $ref: '#/macros/offroad'
+  - key: SponsorStatus
+    widget: button
+    blocked: true
+    action: sunnylink_sponsor
+    title: Sponsor Status
+    description: Become a sponsor of sunnypilot to get early access to sunnylink features when they become available.
+  - key: PairGitHub
+    widget: button
+    blocked: true
+    action: sunnylink_pair
+    title: Pair GitHub Account
+    description: Pair your GitHub account to grant your device sponsor benefits, including API access on sunnylink.
+  - key: EnableSunnylinkUploader
+    widget: toggle
+    title: Enable sunnylink uploader (infrastructure test)
+    description: Enable sunnylink uploader to allow sunnypilot to upload your driving data to sunnypilot servers. (Only for highest
+      tiers, and does NOT bring ANY benefit to you yet. We are just testing data volume.)
+  - key: BackupRestore
+    widget: button
+    blocked: true
+    action: sunnylink_backup_restore
+    title: Backup and Restore
+    description: ''

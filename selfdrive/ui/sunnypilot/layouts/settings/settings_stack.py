@@ -84,6 +84,11 @@ def _cruise_schema_renderer() -> Widget:
   return SchemaNavLayout("cruise", {"speed_limit_settings": SpeedLimitSettingsLayout})
 
 
+def _sunnylink_schema_renderer() -> Widget:
+  from openpilot.sunnypilot.selfdrive.ui.settings_schema.sunnylink_panel import SunnylinkSchemaPanelLayout
+  return SunnylinkSchemaPanelLayout()
+
+
 _SCHEMA_PANEL_RENDERERS: dict[str, SchemaRendererFactory] = {
   "cruise": _cruise_schema_renderer,
   "developer": _flat_schema_renderer("developer"),
@@ -91,6 +96,7 @@ _SCHEMA_PANEL_RENDERERS: dict[str, SchemaRendererFactory] = {
   "models": _flat_schema_renderer("models"),
   "software": _flat_schema_renderer("software"),
   "steering": _steering_schema_renderer,
+  "sunnylink": _sunnylink_schema_renderer,
   "toggles": _flat_schema_renderer("toggles"),
   "visuals": _flat_schema_renderer("visuals"),
 }
