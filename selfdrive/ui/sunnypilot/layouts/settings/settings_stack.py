@@ -27,6 +27,7 @@ from openpilot.sunnypilot.selfdrive.ui.settings_schema.search import SearchRecor
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.search_view import SearchLayout
 from openpilot.system.ui.lib.application import FontWeight, MousePos, gui_app
 from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.sunnypilot.lib.styles import style
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -50,8 +51,50 @@ ROW_PAD_X = 30
 ROW_PAD_Y = 20
 HEADER_TEXT_GAP = 24
 
+CATEGORY_STRIP_HEIGHT = 72
+CATEGORY_BTN_HEIGHT = 58
+CATEGORY_BTN_GAP = 12
+CATEGORY_STRIP_PAD_BOTTOM = 8
+
+ROW_ICON_SIZE = 52
+ROW_ICON_GAP = 18
+CATEGORY_ICON_SIZE = 28
+CATEGORY_ICON_GAP = 8
+
 ROOT_PAGE_ID = "__root__"
 SEARCH_PAGE_ID = "__search__"
+
+# Schema page icon names -> texture paths relative to selfdrive/assets/
+_ICON_PATHS: dict[str, str] = {
+  "steering_wheel": "../../sunnypilot/selfdrive/assets/offroad/icon_lateral.png",
+  "cruise_control": "icons/speed_limit.png",
+  "toggles": "../../sunnypilot/selfdrive/assets/offroad/icon_toggle.png",
+  "display": "../../sunnypilot/selfdrive/assets/offroad/icon_display.png",
+  "visuals": "../../sunnypilot/selfdrive/assets/offroad/icon_visuals.png",
+  "osm": "../../sunnypilot/selfdrive/assets/offroad/icon_map.png",
+  "vehicle": "../../sunnypilot/selfdrive/assets/offroad/icon_vehicle.png",
+  "settings": "icons/settings.png",
+  "device": "../../sunnypilot/selfdrive/assets/offroad/icon_home.png",
+  "network": "icons/network.png",
+  "software": "../../sunnypilot/selfdrive/assets/offroad/icon_software.png",
+  "sunnylink": "icons/wifi_strength_full.png",
+  "models": "../../sunnypilot/selfdrive/assets/offroad/icon_models.png",
+  "trips": "../../sunnypilot/selfdrive/assets/offroad/icon_trips.png",
+  "firehose": "../../sunnypilot/selfdrive/assets/offroad/icon_firehose.png",
+  "developer": "icons/shell.png",
+}
+
+
+def _load_icon_texture(icon_name: str | None, size: int) -> rl.Texture | None:
+  if not icon_name:
+    return None
+  path = _ICON_PATHS.get(icon_name)
+  if not path:
+    return None
+  try:
+    return gui_app.texture(path, size, size, keep_aspect_ratio=True)
+  except Exception:
+    return None
 
 SchemaRendererFactory = Callable[[], Widget]
 
@@ -218,13 +261,14 @@ def _stack_route_visible(schema: dict, page_id: str) -> bool:
 class SettingsRowItem(Widget):
   HEIGHT = ROW_HEIGHT
 
-  def __init__(self, title: str | Callable[[], str], subtitle: str | Callable[[], str] | None, callback: Callable[[], None]):
+  def __init__(self, title: str | Callable[[], str], subtitle: str | Callable[[], str] | None, callback: Callable[[], None], icon_name: str | None = None):
     super().__init__()
     self._title = title
     self._subtitle = subtitle
     self.set_click_callback(callback)
     self.set_rect(rl.Rectangle(0, 0, 0, self.HEIGHT))
     self._chevron = gui_app.texture("icons/arrow-right.png", 52, 52, keep_aspect_ratio=True)
+    self._icon = _load_icon_texture(icon_name, ROW_ICON_SIZE)
 
   def _render(self, rect: rl.Rectangle):
     bg = SURFACE_PRESSED if self.is_pressed else SURFACE
@@ -237,9 +281,15 @@ class SettingsRowItem(Widget):
     title = _resolve_text(self._title)
     subtitle = _resolve_text(self._subtitle)
 
-    content_left = rect.x + ROW_PAD_X
+    icon_width = self._icon.width if self._icon else 0
+    icon_offset = ROW_ICON_GAP + icon_width if self._icon else 0
+    content_left = rect.x + ROW_PAD_X + icon_offset
     content_right = rect.x + rect.width - ROW_PAD_X - self._chevron.width - 24
     content_width = max(0, content_right - content_left)
+
+    if self._icon:
+      icon_y = rect.y + (rect.height - self._icon.height) / 2
+      rl.draw_texture_ex(self._icon, rl.Vector2(rect.x + ROW_PAD_X, icon_y), 0.0, 1.0, rl.WHITE)
 
     title_y = rect.y + 24 if subtitle else rect.y + (rect.height - 50) / 2 - 6
     title_rect = rl.Rectangle(content_left, title_y, content_width, 50)
@@ -292,6 +342,7 @@ class SettingsStackLayout(Widget):
     self._active_view: Widget = self._root_view()
     self._close_icon = gui_app.texture("icons/close2.png", 68, 68, keep_aspect_ratio=True)
     self._back_icon = gui_app.texture("icons/arrow-right.png", 68, 68, keep_aspect_ratio=True)
+    self._category_btn_rects: list[tuple[str, rl.Rectangle]] = []
 
   def set_callbacks(self, on_close: Callable):
     self._close_callback = on_close
@@ -322,8 +373,10 @@ class SettingsStackLayout(Widget):
         continue
       title = page.get("title", pid)
       subtitle = page.get("description")
+      icon = page.get("icon")
       rows.append(SettingsRowItem(title=tr(title), subtitle=tr(subtitle) if isinstance(subtitle, str) and subtitle else None,
-                                  callback=lambda target=pid: self._navigate_to(target, replace=False)))
+                                  callback=lambda target=pid: self._navigate_to(target, replace=False),
+                                  icon_name=icon if isinstance(icon, str) else None))
 
     view = PageRowsView(rows)
     self._page_views[key] = view
@@ -523,6 +576,51 @@ class SettingsStackLayout(Widget):
   def _header_button_pressed(self, rect: rl.Rectangle) -> bool:
     return rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT) and rl.check_collision_point_rec(rl.get_mouse_position(), rect)
 
+  def _root_category_pages(self) -> list[dict]:
+    return [p for p in get_root_navigation(self._schema) if _page_row_visible(self._schema, p["id"])]
+
+  def _active_root_category(self) -> str | None:
+    return self._history[0] if self._history else None
+
+  def _render_category_strip(self, strip_rect: rl.Rectangle):
+    categories = self._root_category_pages()
+    if not categories:
+      return
+    n = len(categories)
+    total_gap = (n - 1) * CATEGORY_BTN_GAP
+    btn_width = (strip_rect.width - total_gap) / n
+    btn_y = strip_rect.y + (strip_rect.height - CATEGORY_BTN_HEIGHT) / 2
+    self._category_btn_rects = []
+    mouse_pos = rl.get_mouse_position()
+    for i, page in enumerate(categories):
+      pid = page.get("id", "")
+      title = tr(page.get("title", pid))
+      btn_x = strip_rect.x + i * (btn_width + CATEGORY_BTN_GAP)
+      btn_rect = rl.Rectangle(btn_x, btn_y, btn_width, CATEGORY_BTN_HEIGHT)
+      is_active = pid == self._active_root_category()
+      is_pressed = rl.check_collision_point_rec(mouse_pos, btn_rect) and rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT)
+      bg = SURFACE_PRESSED if (is_active or is_pressed) else SURFACE
+      rl.draw_rectangle_rounded(btn_rect, 0.18, 16, bg)
+      if is_active:
+        underline_y = int(btn_rect.y + btn_rect.height - 4)
+        rl.draw_rectangle(int(btn_rect.x + btn_rect.width * 0.15), underline_y, int(btn_rect.width * 0.7), 4, ACCENT)
+      text_color = rl.WHITE if (is_active or is_pressed) else TEXT_MUTED
+      icon = _load_icon_texture(page.get("icon") if isinstance(page.get("icon"), str) else None, CATEGORY_ICON_SIZE)
+      if icon:
+        font_medium = gui_app.font(FontWeight.MEDIUM)
+        text_size = measure_text_cached(font_medium, title, 36)
+        group_width = icon.width + CATEGORY_ICON_GAP + text_size.x
+        group_x = btn_rect.x + (btn_rect.width - group_width) / 2
+        icon_y = btn_rect.y + (btn_rect.height - icon.height) / 2
+        rl.draw_texture_ex(icon, rl.Vector2(group_x, icon_y), 0.0, 1.0, text_color)
+        label_rect = rl.Rectangle(group_x + icon.width + CATEGORY_ICON_GAP, btn_rect.y, text_size.x + 4, btn_rect.height)
+        gui_label(label_rect, title, font_size=36, color=text_color, font_weight=FontWeight.MEDIUM,
+                  alignment=rl.GuiTextAlignment.TEXT_ALIGN_LEFT, alignment_vertical=rl.GuiTextAlignmentVertical.TEXT_ALIGN_MIDDLE)
+      else:
+        gui_label(btn_rect, title, font_size=36, color=text_color, font_weight=FontWeight.MEDIUM,
+                  alignment=rl.GuiTextAlignment.TEXT_ALIGN_CENTER, alignment_vertical=rl.GuiTextAlignmentVertical.TEXT_ALIGN_MIDDLE)
+      self._category_btn_rects.append((pid, btn_rect))
+
   def _render(self, rect: rl.Rectangle):
     rl.draw_rectangle_rec(rect, BACKGROUND)
     self._header_rect = rl.Rectangle(rect.x, rect.y, rect.width, HEADER_HEIGHT)
@@ -546,6 +644,10 @@ class SettingsStackLayout(Widget):
               font_size=72, color=rl.WHITE, font_weight=FontWeight.BOLD,
               alignment=rl.GuiTextAlignment.TEXT_ALIGN_LEFT, alignment_vertical=rl.GuiTextAlignmentVertical.TEXT_ALIGN_TOP)
 
+    if self._history:
+      strip_y = rect.y + HEADER_HEIGHT - CATEGORY_STRIP_HEIGHT - CATEGORY_STRIP_PAD_BOTTOM
+      self._render_category_strip(rl.Rectangle(text_x, strip_y, text_width, CATEGORY_STRIP_HEIGHT))
+
     content_rect = self._content_rect(rect)
     self._active_view.render(content_rect)
     footer_width = min(self._always_offroad_toggle.WIDTH, rect.width - (HEADER_PAD * 2))
@@ -562,6 +664,10 @@ class SettingsStackLayout(Widget):
     if self._history and rl.check_collision_point_rec(mouse_pos, self._back_btn_rect):
       self._go_back()
       return
+    for pid, btn_rect in self._category_btn_rects:
+      if rl.check_collision_point_rec(mouse_pos, btn_rect):
+        self._navigate_to(pid, replace=True)
+        return
     if rl.check_collision_point_rec(mouse_pos, self._close_btn_rect):
       if self._close_callback:
         self._close_callback()

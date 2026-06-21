@@ -26,6 +26,7 @@ from openpilot.sunnypilot.selfdrive.ui.settings_schema.search_view import Search
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings_stack import SettingsStackLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings_stack import search_result_context_label
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings_stack import SettingsRowItem
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings_stack import _load_icon_texture
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import load_schema
 
 
@@ -70,10 +71,13 @@ def main() -> None:
   original_texture = gui_app.texture
   original_row_render = SettingsRowItem._render
   original_header_button = SettingsStackLayout._render_header_button
+  original_load_icon = _load_icon_texture
   try:
     gui_app.texture = lambda *args, **kwargs: DummyTexture()  # type: ignore[method-assign]
     SettingsRowItem._render = lambda self, rect: None  # type: ignore[method-assign]
     SettingsStackLayout._render_header_button = lambda self, rect, icon, pressed: None  # type: ignore[method-assign]
+    import openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings_stack as _ssmod
+    _ssmod._load_icon_texture = lambda icon_name, size: None  # type: ignore[method-assign]
     schema = load_schema()
     registry = DummyRegistry()
     stack = SettingsStackLayout(schema, registry=registry)  # type: ignore[arg-type]
@@ -139,6 +143,30 @@ def main() -> None:
     ))
     assert stack._history == before
 
+    # Category shortcut strip: deep in one category, tap another root category to jump.
+    stack._navigate_to("driving.steering", replace=True)
+    assert stack._history == ["driving", "driving.steering"]
+    _render_stack(stack)
+    system_rect = next((btn_rect for pid, btn_rect in stack._category_btn_rects if pid == "system"), None)
+    assert system_rect is not None, "system category button not found in strip"
+    stack._handle_mouse_release(rl.Vector2(system_rect.x + system_rect.width / 2, system_rect.y + system_rect.height / 2))
+    assert stack._history == ["system"], f"expected ['system'], got {stack._history}"
+
+    # Icon metadata coverage: every page icon in the schema has a path mapping.
+    import openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings_stack as _ssmod
+    schema_icon_names: set[str] = set()
+    for p in schema.get("pages", []):
+      if isinstance(p, dict):
+        icon = p.get("icon")
+        if isinstance(icon, str):
+          schema_icon_names.add(icon)
+    missing_paths = schema_icon_names - set(_ssmod._ICON_PATHS)
+    assert not missing_paths, f"schema icon names missing from _ICON_PATHS: {sorted(missing_paths)}"
+
+    # Graceful fallback for unknown icon names.
+    assert _ssmod._load_icon_texture("nonexistent_icon", 32) is None
+    assert _ssmod._load_icon_texture(None, 32) is None
+
     # Legacy navigate callback still works.
     calls: list[tuple[str, str]] = []
     legacy = SearchLayout(navigate_callback=lambda live_panel_id, key: calls.append((live_panel_id, key)), query="brightness")
@@ -185,6 +213,8 @@ def main() -> None:
     gui_app.texture = original_texture  # type: ignore[method-assign]
     SettingsRowItem._render = original_row_render  # type: ignore[method-assign]
     SettingsStackLayout._render_header_button = original_header_button  # type: ignore[method-assign]
+    import openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings_stack as _ssmod
+    _ssmod._load_icon_texture = original_load_icon  # type: ignore[method-assign]
     rl.close_window()
 
 
