@@ -2063,6 +2063,81 @@
       ]
     },
     {
+      "id": "osm",
+      "label": "OpenStreetMap",
+      "icon": "osm",
+      "order": 6,
+      "remote_configurable": false,
+      "description": "Offline map downloads and database updates",
+      "sections": [
+        {
+          "id": "maps",
+          "title": "",
+          "description": "",
+          "items": [
+            {
+              "key": "MapdVersion",
+              "widget": "info",
+              "blocked": true,
+              "title": "Mapd Version",
+              "description": ""
+            },
+            {
+              "key": "DeleteMaps",
+              "widget": "button",
+              "blocked": true,
+              "title": "Downloaded Maps",
+              "description": "",
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                }
+              ],
+              "action": "osm_delete_maps"
+            },
+            {
+              "key": "OsmProgress",
+              "widget": "custom",
+              "title": "",
+              "description": "",
+              "component": "osm_progress"
+            },
+            {
+              "key": "DatabaseUpdate",
+              "widget": "button",
+              "blocked": true,
+              "title": "Database Update",
+              "description": "",
+              "action": "osm_update_db"
+            },
+            {
+              "key": "CountrySelect",
+              "widget": "button",
+              "blocked": true,
+              "title": "Country",
+              "description": "",
+              "action": "osm_select_country"
+            },
+            {
+              "key": "StateSelect",
+              "widget": "button",
+              "blocked": true,
+              "title": "State",
+              "description": "",
+              "visibility": [
+                {
+                  "type": "param",
+                  "key": "OsmLocationName",
+                  "equals": "US"
+                }
+              ],
+              "action": "osm_select_state"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "software",
       "label": "Software",
       "icon": "software",
@@ -2763,11 +2838,10 @@
     {
       "id": "interface.osm",
       "title": "OpenStreetMap",
-      "new_shell_hidden": true,
       "icon": "osm",
       "content": {
-        "kind": "custom_page",
-        "component": "osm"
+        "kind": "panel_ref",
+        "panel": "osm"
       }
     },
     {

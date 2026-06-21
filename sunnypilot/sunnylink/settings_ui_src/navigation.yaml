@@ -52,10 +52,9 @@ pages:
   - id: interface.osm
     title: OpenStreetMap
     icon: osm
-    new_shell_hidden: true
     content:
-      kind: custom_page
-      component: osm
+      kind: panel_ref
+      panel: osm
   - id: vehicle
     title: Vehicle
     icon: vehicle

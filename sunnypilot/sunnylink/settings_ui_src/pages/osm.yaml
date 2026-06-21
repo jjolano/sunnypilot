@@ -1,0 +1,53 @@
+# Page: osm
+# Edit this file. Run compile_settings_ui.py to emit settings_ui.json.
+id: osm
+label: OpenStreetMap
+icon: osm
+order: 6
+remote_configurable: false
+description: Offline map downloads and database updates
+sections:
+- id: maps
+  title: ''
+  description: ''
+  items:
+  - key: MapdVersion
+    widget: info
+    blocked: true
+    title: Mapd Version
+    description: ''
+  - key: DeleteMaps
+    widget: button
+    blocked: true
+    action: osm_delete_maps
+    title: Downloaded Maps
+    description: ''
+    enablement:
+    - $ref: '#/macros/offroad'
+  - key: OsmProgress
+    widget: custom
+    component: osm_progress
+    title: ''
+    description: ''
+  - key: DatabaseUpdate
+    widget: button
+    blocked: true
+    action: osm_update_db
+    title: Database Update
+    description: ''
+  - key: CountrySelect
+    widget: button
+    blocked: true
+    action: osm_select_country
+    title: Country
+    description: ''
+  - key: StateSelect
+    widget: button
+    blocked: true
+    action: osm_select_state
+    title: State
+    description: ''
+    visibility:
+    - type: param
+      key: OsmLocationName
+      equals: US

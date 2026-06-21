@@ -47,7 +47,7 @@ def test_panel_for_page_resolves_panel_refs_only():
   assert steering is not None and steering["id"] == "steering"
   assert cruise is not None and cruise["id"] == "cruise"
   assert panel_for_page(SCHEMA, "driving.toggles") is None
-  assert panel_for_page(SCHEMA, "interface.osm") is None
+  assert panel_for_page(SCHEMA, "interface.osm") is not None
 
 
 def test_flatten_routes_depth_first_and_breadcrumbed():
