@@ -18,6 +18,10 @@ from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
   LateralDemandPipeline,
   LateralDemandPipelineInputs,
 )
+from openpilot.sunnypilot.custom.lateral.demand.sensor_confidence import (
+  SensorConfidenceInputs,
+  evaluate_sensor_confidence,
+)
 
 PARAMS_REFRESH_PERIOD = 100  # control ticks (100Hz -> ~1s)
 LANE_CHANGE_STATE_VALUES = {
@@ -98,6 +102,33 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
   )
 
 
+def build_sensor_confidence_inputs(*, lat_active: bool, v_ego: float, raw_curvature: float,
+                                   measured_curvature: float, model_v2: Any,
+                                   steering_pressed: bool | None = None,
+                                   model_age_s: float = 0.0,
+                                   yaw_rate: float | None = None,
+                                   steering_rate_deg: float | None = None,
+                                   steer_limited: bool = False) -> SensorConfidenceInputs:
+  meta = getattr(model_v2, "meta", None)
+  lane_change_state = getattr(meta, "laneChangeState", None)
+  lane_change_state_value, lane_change_state_valid = _enum_to_int(lane_change_state, LANE_CHANGE_STATE_VALUES)
+  return SensorConfidenceInputs(
+    lat_active=lat_active,
+    v_ego=v_ego,
+    model_curvature=raw_curvature,
+    measured_curvature=measured_curvature,
+    model_path_gated=False,
+    model_path_reason="ok",
+    model_age_s=sanitized_model_age_s(model_age_s),
+    steering_pressed=steering_pressed,
+    steering_rate_deg=steering_rate_deg,
+    yaw_rate=yaw_rate,
+    steer_limited=bool(steer_limited),
+    lane_change_active=lane_change_state_valid and lane_change_state_value != LANE_CHANGE_STATE_VALUES["off"],
+    lane_change_state_valid=lane_change_state_valid,
+  )
+
+
 class LateralDemandAdapter:
   def __init__(self, params: Any = None):
     self._params = params
@@ -126,6 +157,36 @@ class LateralDemandAdapter:
     self.last_result = None
     self.last_debug = {}
 
+  def _observe_sensor_confidence(self, lat_active: bool, v_ego: float, raw_curvature: float,
+                                 measured_curvature: float, model_v2: Any,
+                                 steering_pressed: bool | None, model_age_s: float,
+                                 yaw_rate: float | None, steering_rate_deg: float | None,
+                                 steer_limited: bool) -> dict[str, float | str | bool]:
+    if model_v2 is None:
+      return {}
+    try:
+      inputs = build_sensor_confidence_inputs(
+        lat_active=lat_active,
+        v_ego=v_ego,
+        raw_curvature=raw_curvature,
+        measured_curvature=measured_curvature,
+        model_v2=model_v2,
+        steering_pressed=steering_pressed,
+        model_age_s=model_age_s,
+        yaw_rate=yaw_rate,
+        steering_rate_deg=steering_rate_deg,
+        steer_limited=steer_limited,
+      )
+      return evaluate_sensor_confidence(inputs).debug_dict()
+    except Exception:
+      return {
+        "sensor_confidence_available": False,
+        "sensor_confidence_block_reason": "fault",
+        "sensor_confidence_score": 0.0,
+        "sensor_disagreement_level": "blocked",
+        "sensor_suppress_candidate": False,
+      }
+
   def process(self, lat_active: bool, v_ego: float, roll: float, raw_curvature: float,
               measured_curvature: float, model_v2: Any, steering_pressed: bool | None = None,
               model_age_s: float = 0.0, yaw_rate: float | None = None,
@@ -136,7 +197,11 @@ class LateralDemandAdapter:
     if self._params is not None and self._tick % PARAMS_REFRESH_PERIOD == 0:
       self.refresh_params()
     if not self.enabled or model_v2 is None:
-      self.clear()
+      self.last_result = None
+      self.last_debug = self._observe_sensor_confidence(
+        lat_active, v_ego, raw_curvature, measured_curvature, model_v2,
+        steering_pressed, model_age_s, yaw_rate, steering_rate_deg, steer_limited,
+      )
       return raw_curvature
     try:
       inputs = build_pipeline_inputs(

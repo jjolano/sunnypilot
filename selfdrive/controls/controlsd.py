@@ -318,6 +318,10 @@ class Controls(ControlsExt):
         except Exception:
           cloudlog.exception("failed to publish lateral modelPathState telemetry")
           self.lateral_demand.clear()
+      else:
+        debug = getattr(self.lateral_demand, 'last_debug', {}) or {}
+        if debug:
+          set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
 
     lat_tuning = self.CP.lateralTuning.which()
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:

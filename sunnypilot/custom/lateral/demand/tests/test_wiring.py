@@ -108,15 +108,21 @@ def test_build_pipeline_inputs_marks_unknown_lane_change_enum_invalid():
 
 def test_adapter_disabled_passthrough():
   a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=False))
-  out = a.process(True, 20.0, 0.0, 0.0123, 0.0123, fake_model())
+  out = a.process(True, 20.0, 0.0, 0.0123, 0.0123, fake_model(), steering_pressed=False,
+                  model_age_s=0.01, yaw_rate=0.0, steering_rate_deg=0.0)
   assert out == 0.0123
+  assert a.last_result is None
+  assert a.last_debug["sensor_confidence_available"] is True
+  assert a.last_debug["sensor_disagreement_level"] == "high"
+  assert a.last_debug["sensor_suppress_candidate"] is True
 
 
 def test_default_params_disable_adapter_and_curve_memory():
   a = LateralDemandAdapter(FakeParams())
   assert a.enabled is False
   assert a.curve_memory_enabled is False
-  out = a.process(True, 20.0, 0.0, 0.0123, 0.0123, fake_model())
+  out = a.process(True, 20.0, 0.0, 0.0123, 0.0123, fake_model(), steering_pressed=False,
+                  model_age_s=0.01, yaw_rate=0.246, steering_rate_deg=0.0)
   assert out == 0.0123
 
 
@@ -153,6 +159,37 @@ def test_adapter_enabled_turns_on_model_path_smoothing():
   assert a.last_debug.get("raw_curvature") == pytest.approx(0.001)
 
 
+def test_adapter_disabled_does_not_call_pipeline():
+  class RaisingPipeline:
+    def update(self, _inputs):
+      raise AssertionError("disabled adapter must not run the demand pipeline")
+
+  a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=False))
+  setattr(a, "_pipeline", RaisingPipeline())
+
+  out = a.process(True, 10.0, 0.0, 0.02, 0.02, fake_model(), steering_pressed=False,
+                  model_age_s=0.01, yaw_rate=0.0, steering_rate_deg=0.0)
+
+  assert out == 0.02
+  assert a.last_result is None
+  assert a.last_debug["sensor_confidence_available"] is True
+  assert a.last_debug["sensor_disagreement_level"] == "high"
+  assert a.last_debug["sensor_suppress_candidate"] is True
+
+
+def test_adapter_disabled_shadow_blocks_driver_override():
+  a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=False))
+
+  out = a.process(True, 10.0, 0.0, 0.02, 0.02, fake_model(), steering_pressed=True,
+                  model_age_s=0.01, yaw_rate=0.0, steering_rate_deg=0.0)
+
+  assert out == 0.02
+  assert a.last_result is None
+  assert a.last_debug["sensor_confidence_available"] is False
+  assert a.last_debug["sensor_confidence_block_reason"] == "driver_override"
+  assert a.last_debug["sensor_suppress_candidate"] is False
+
+
 def test_build_pipeline_inputs_allows_harness_demand_jerk_smoothing():
   inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.001,
                               measured_curvature=0.001, model_v2=fake_model(0.001),
@@ -179,4 +216,5 @@ def test_adapter_disabled_clears_previous_result():
 
   assert out == 0.002
   assert a.last_result is None
-  assert a.last_debug == {}
+  assert a.last_debug["sensor_confidence_available"] is False
+  assert a.last_debug["sensor_confidence_block_reason"] == "driver_override"
