@@ -58,6 +58,7 @@ class LongitudinalPlannerSP:
     self._lead_stop_hold_gap_prev_d_rel = None
     self._lead_stop_hold_gap_baseline_d_rel = None
     self._custom_long_output_telemetry = None
+    self._last_release_block_reason = ""
 
     # Custom-2.0 longitudinal policy (default-on in this fork; fail-closed to stock output).
     self.custom_long = CustomLongitudinalAdapter(Params())
@@ -284,44 +285,62 @@ class LongitudinalPlannerSP:
                                         mpc_a_target: float, raw_model_a_target: float, raw_model_should_stop: bool,
                                         min_mpc_a_target: float = -0.03) -> bool:
     if not self.custom_long.enabled or custom_long_output is None or not bool(getattr(custom_long_output, "standstill_release_allowed", False)):
+      self._last_release_block_reason = "no_release_permission"
       return False
     if str(getattr(custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch"):
+      self._last_release_block_reason = "invalid_release_source"
       return False
     if bool(getattr(custom_long_output, "should_stop", False)):
+      self._last_release_block_reason = "custom_should_stop"
       return False
     if raw_model_should_stop:
+      self._last_release_block_reason = "raw_model_stop"
       return False
     for value in (mpc_a_target, raw_model_a_target):
       if not math.isfinite(float(value)):
+        self._last_release_block_reason = "non_finite_target"
         return False
     if self.custom_long.mode is LongitudinalMode.E2E and float(raw_model_a_target) < 0.15:
+      self._last_release_block_reason = "e2e_model_accel_too_low"
       return False
     cs = sm["carState"]
     controls_state = sm["controlsState"]
-    if bool(getattr(cs, "brakePressed", False)) or bool(getattr(cs, "gasPressed", False)):
+    if bool(getattr(cs, "brakePressed", False)):
+      self._last_release_block_reason = "driver_brake"
+      return False
+    if bool(getattr(cs, "gasPressed", False)):
+      self._last_release_block_reason = "driver_gas"
       return False
     if bool(getattr(controls_state, "forceDecel", False)):
+      self._last_release_block_reason = "force_decel"
       return False
     if float(mpc_a_target) < min_mpc_a_target:
+      self._last_release_block_reason = "mpc_brake_veto"
       return False
+    self._last_release_block_reason = ""
     return True
 
   def _lead_stop_hold_release_accepts(self, sm: messaging.SubMaster, custom_long_output, mpc_a_target: float, raw_model_a_target: float,
                                       raw_model_should_stop: bool, selected_lead, lead_d_rel: float, lead_v: float,
                                       lead_v_rel: float) -> tuple[bool, float]:
     if selected_lead is None:
+      self._last_release_block_reason = "no_lead"
       return False, float(lead_d_rel)
     release_source = str(getattr(custom_long_output, "standstill_release_source", ""))
     if release_source not in ("lead_pullaway", "lead_standstill_launch"):
+      self._last_release_block_reason = "invalid_release_source"
       return False, float(lead_d_rel)
     lead_id = getattr(selected_lead, 'radarTrackId', None)
     if lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id != self._lead_stop_hold_lead_id:
+      self._last_release_block_reason = "different_lead_id"
       return False, float(lead_d_rel)
     for value in (lead_d_rel, lead_v, lead_v_rel, mpc_a_target, raw_model_a_target):
       if not math.isfinite(float(value)):
+        self._last_release_block_reason = "non_finite_values"
         return False, float(lead_d_rel)
     stopping_distance = float(getattr(self.CP, 'stoppingDistance', 6.0) or 6.0)
     if float(lead_v) < 0.30 or float(lead_v_rel) < 0.15:
+      self._last_release_block_reason = "lead_not_moving"
       return False, float(lead_d_rel)
     same_id = lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id == self._lead_stop_hold_lead_id
     min_d_rel = stopping_distance + self._STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN if same_id else stopping_distance + 0.1
@@ -329,21 +348,27 @@ class LongitudinalPlannerSP:
       baseline_min_d_rel = float(self._lead_stop_hold_gap_baseline_d_rel) + self._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
       min_d_rel = max(self._STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR, min(min_d_rel, baseline_min_d_rel))
     if float(lead_d_rel) <= min_d_rel:
+      self._last_release_block_reason = "distance_gate"
       return False, float(lead_d_rel)
     min_gap_increasing_s = self._STOP_HOLD_SAME_ID_MIN_PULLAWAY_S if same_id else 0.15
     if self._lead_stop_hold_gap_increasing_s < min_gap_increasing_s:
+      self._last_release_block_reason = "gap_increasing_time"
       return False, float(lead_d_rel)
     if same_id and self._lead_stop_hold_gap_baseline_d_rel is not None:
       if float(lead_d_rel) - float(self._lead_stop_hold_gap_baseline_d_rel) < 0.3:
+        self._last_release_block_reason = "baseline_opening"
         return False, float(lead_d_rel)
     if lead_id is None or self._lead_stop_hold_lead_id is None:
       if self._lead_stop_hold_gap_increasing_s < self._STOP_HOLD_NEW_ID_GAP_INCREASING_S:
+        self._last_release_block_reason = "new_id_gap_increasing_time"
         return False, float(lead_d_rel)
     if not self._standstill_release_request_valid(
       sm, custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop,
       self._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET if same_id else -0.03,
     ):
+      # block_reason already set by _standstill_release_request_valid
       return False, float(lead_d_rel)
+    self._last_release_block_reason = ""
     return True, min(max(float(getattr(custom_long_output, "standstill_release_a_target", 0.15)), self._STOP_HOLD_RELEASE_A_MIN), self._STOP_HOLD_RELEASE_A_MAX)
 
   def final_longitudinal_output(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
@@ -497,6 +522,7 @@ class LongitudinalPlannerSP:
     if getattr(self.custom_long, "debug_trace_mode", "off") == "log":
       self._populate_longitudinal_debug_trace(longitudinalPlanSP.longitudinalDebug, sm, telemetry_custom_long_output)
     self._custom_long_output_telemetry = None
+    self._last_release_block_reason = ""
 
     pm.send('longitudinalPlanSP', plan_sp_send)
 
@@ -511,6 +537,9 @@ class LongitudinalPlannerSP:
     try:
       trace = dict(getattr(self, '_last_longitudinal_debug', {}) or {})
       debug = dict(getattr(custom_long_output, 'debug', {}) or {})
+      # Inject planner-level release block reason into the standstill_release_confidence trace
+      if self._last_release_block_reason:
+        debug['standstill_release_confidence_block_reason'] = self._last_release_block_reason
       msg.enabled = True
       msg.traceMode = str(getattr(self.custom_long, "debug_trace_mode", "off"))
       car_state = self._sm_item(sm, 'carState')

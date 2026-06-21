@@ -542,6 +542,55 @@ def test_stop_hold_telemetry_shows_latch_intent():
   assert telemetry.should_stop is True
 
 
+def test_release_block_reason_logged_when_lead_not_moving():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.10, v_rel=0.05), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._last_release_block_reason == "lead_not_moving"
+
+
+def test_release_block_reason_cleared_on_successful_release():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.32, v_rel=0.16), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._last_release_block_reason == ""
+
+
+def test_release_block_reason_distance_gate():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp, d_rel=4.56)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp.final_longitudinal_output(_release_sm(d_rel=4.46, v_lead=0.70, v_rel=0.70), 0.0, False, 0.2, False)  # type: ignore[arg-type]
+  assert sp._last_release_block_reason == "distance_gate"
+
+
+def test_release_block_reason_mpc_brake_veto():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.32, v_rel=0.16), -0.2, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._last_release_block_reason == "mpc_brake_veto"
+
+
+def test_release_block_reason_driver_brake():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.32, v_rel=0.16, brake=True), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._last_release_block_reason == "driver_brake"
+
+
 def test_standstill_release_vetoes_mpc_brake_driver_and_custom_stop():
   sp = fake_planner(LongitudinalMode.SCC, should_stop=False, release=True)
   a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), -0.04, True, -3.0, False)  # type: ignore[arg-type]
