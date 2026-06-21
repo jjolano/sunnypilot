@@ -91,6 +91,11 @@ def _sunnylink_schema_renderer() -> Widget:
   return SunnylinkSchemaPanelLayout()
 
 
+def _vehicle_schema_renderer() -> Widget:
+  from openpilot.sunnypilot.selfdrive.ui.settings_schema.vehicle_panel import VehicleSchemaPanelLayout
+  return VehicleSchemaPanelLayout()
+
+
 _SCHEMA_PANEL_RENDERERS: dict[str, SchemaRendererFactory] = {
   "cruise": _cruise_schema_renderer,
   "developer": _flat_schema_renderer("developer"),
@@ -101,6 +106,7 @@ _SCHEMA_PANEL_RENDERERS: dict[str, SchemaRendererFactory] = {
   "steering": _steering_schema_renderer,
   "sunnylink": _sunnylink_schema_renderer,
   "toggles": _flat_schema_renderer("toggles"),
+  "vehicle": _vehicle_schema_renderer,
   "visuals": _flat_schema_renderer("visuals"),
 }
 
@@ -403,6 +409,11 @@ class SettingsStackLayout(Widget):
     if content.get("kind") == "custom_page":
       component = content.get("component")
       if isinstance(component, str):
+        # Check schema renderers first (for custom_page components that have
+        # been migrated to schema-driven rendering, like vehicle).
+        schema_view = self._schema_panel_view(component)
+        if schema_view is not None:
+          return schema_view
         try:
           return cast(Widget, self._registry.get(component))
         except KeyError:

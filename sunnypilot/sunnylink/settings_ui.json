@@ -2847,7 +2847,6 @@
     {
       "id": "vehicle",
       "title": "Vehicle",
-      "new_shell_hidden": true,
       "icon": "vehicle",
       "content": {
         "kind": "custom_page",

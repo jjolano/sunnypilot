@@ -58,7 +58,6 @@ pages:
   - id: vehicle
     title: Vehicle
     icon: vehicle
-    new_shell_hidden: true
     content:
       kind: custom_page
       component: vehicle
