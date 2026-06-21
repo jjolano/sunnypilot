@@ -15,14 +15,14 @@ from __future__ import annotations
 import os
 import time
 
-from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
-from openpilot.system.ui.lib.multilang import tr, trn
+from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, button_item_sp
 from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.action_helpers import deferred_tr as _t, time_ago
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.registry import register_custom_widget
 
 UPDATED_TIMEOUT = 10
@@ -32,41 +32,6 @@ STATE_TO_DISPLAY_TEXT = {
   "downloading...": "downloading...",
   "finalizing update...": "finalizing update...",
 }
-
-
-def _t(text: str):
-  return lambda: tr(text)
-
-
-def _time_ago(date_str: str | None) -> str:
-  import datetime
-  if not date_str:
-    return tr("never")
-  try:
-    date = datetime.datetime.fromisoformat(date_str)
-  except (ValueError, TypeError):
-    return tr("never")
-
-  if not system_time_valid():
-    return date.strftime("%a %b %d %Y")
-
-  now = datetime.datetime.now(datetime.UTC)
-  if date.tzinfo is None:
-    date = date.replace(tzinfo=datetime.UTC)
-
-  diff_seconds = int((now - date).total_seconds())
-  if diff_seconds < 60:
-    return tr("now")
-  if diff_seconds < 3600:
-    m = diff_seconds // 60
-    return trn("{} minute ago", "{} minutes ago", m).format(m)
-  if diff_seconds < 86400:
-    h = diff_seconds // 3600
-    return trn("{} hour ago", "{} hours ago", h).format(h)
-  if diff_seconds < 604800:
-    d = diff_seconds // 86400
-    return trn("{} day ago", "{} days ago", d).format(d)
-  return date.strftime("%a %b %d %Y")
 
 
 def _version_info_factory(item: dict) -> ListItemSP:
@@ -129,7 +94,7 @@ def _download_factory(item: dict) -> ListItemSP:
       else:
         last_update = ui_state.params.get("LastUpdateTime")
         if last_update:
-          formatted = _time_ago(last_update if isinstance(last_update, str) else None)
+          formatted = time_ago(last_update if isinstance(last_update, str) else None)
           action.set_value(tr("up to date, last checked {}").format(formatted))
         else:
           action.set_value(tr("up to date, last checked never"))

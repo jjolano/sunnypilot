@@ -2803,8 +2803,8 @@
       "title": "Core Toggles",
       "icon": "toggles",
       "content": {
-        "kind": "custom_page",
-        "component": "toggles"
+        "kind": "panel_ref",
+        "panel": "toggles"
       }
     },
     {

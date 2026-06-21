@@ -10,6 +10,7 @@ confirmation dialogs and cross-toggle dependencies.
 from __future__ import annotations
 
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.action_helpers import deferred_tr as _t
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.registry import register_custom_widget
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr, tr_noop
@@ -30,10 +31,6 @@ DESCRIPTIONS = {
     "This feature is only applicable to certain models that are able to use longitudinal control. This is an alpha feature. Use at your own risk."
   ),
 }
-
-
-def _t(text: str):
-  return lambda: tr(text)
 
 
 def _toyota_enforce_stock_factory(item: dict) -> ListItemSP:

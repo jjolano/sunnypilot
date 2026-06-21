@@ -25,13 +25,10 @@ from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, button_
 from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.action_helpers import deferred_tr as _t
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.registry import register_custom_widget
 
 PREBUILT_PATH = os.path.join(Paths.comma_home(), "prebuilt") if PC else "/data/openpilot/prebuilt"
-
-
-def _t(text: str):
-  return lambda: tr(text)
 
 
 def _error_log_factory(item: dict) -> ListItemSP:

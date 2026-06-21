@@ -31,13 +31,10 @@ from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
 from openpilot.system.ui.widgets.toggle import ON_COLOR
 
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.action_helpers import deferred_tr as _t
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.registry import register_custom_widget
 
 _state = {}
-
-
-def _t(text: str):
-  return lambda: tr(text)
 
 
 def _show_reset_params_dialog():

@@ -24,13 +24,10 @@ from openpilot.system.ui.widgets.button import ButtonStyle
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
 from openpilot.system.version import sunnylink_consent_version
 
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.action_helpers import deferred_tr as _t
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.registry import register_custom_widget
 
 _state = {}
-
-
-def _t(text: str):
-  return lambda: tr(text)
 
 
 def _get_sunnylink_dongle_id() -> str:

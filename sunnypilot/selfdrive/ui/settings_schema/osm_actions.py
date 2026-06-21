@@ -25,11 +25,10 @@ from time import monotonic
 import pyray as rl
 import requests
 from openpilot.common.params import Params
-from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.ui.ui_state import ui_state, device
 from openpilot.system.hardware.hw import Paths
 from openpilot.system.ui.lib.application import gui_app
-from openpilot.system.ui.lib.multilang import tr, trn
+from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.lib.utils import NoElideButtonAction
 from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, button_item_sp
 from openpilot.system.ui.sunnypilot.widgets.progress_bar import ProgressBarAction
@@ -37,46 +36,12 @@ from openpilot.system.ui.sunnypilot.widgets.tree_dialog import TreeFolder, TreeN
 from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.action_helpers import deferred_tr as _t, time_ago
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.registry import register_custom_widget
 
 MAP_PATH = Path(Paths.mapd_root()) / "offline"
 _mem_params = Params("/dev/shm/params") if platform_system() != "Darwin" else Params()
 _state: dict = {}
-
-
-def _time_ago(date_str: str | None) -> str:
-  import datetime
-  if not date_str:
-    return tr("never")
-  try:
-    date = datetime.datetime.fromisoformat(date_str)
-  except (ValueError, TypeError):
-    return tr("never")
-
-  if not system_time_valid():
-    return date.strftime("%a %b %d %Y")
-
-  now = datetime.datetime.now(datetime.UTC)
-  if date.tzinfo is None:
-    date = date.replace(tzinfo=datetime.UTC)
-
-  diff_seconds = int((now - date).total_seconds())
-  if diff_seconds < 60:
-    return tr("now")
-  if diff_seconds < 3600:
-    m = diff_seconds // 60
-    return trn("{} minute ago", "{} minutes ago", m).format(m)
-  if diff_seconds < 86400:
-    h = diff_seconds // 3600
-    return trn("{} hour ago", "{} hours ago", h).format(h)
-  if diff_seconds < 604800:
-    d = diff_seconds // 86400
-    return trn("{} day ago", "{} days ago", d).format(d)
-  return date.strftime("%a %b %d %Y")
-
-
-def _t(text: str):
-  return lambda: tr(text)
 
 
 def _calculate_size():
@@ -339,7 +304,7 @@ def _database_update_factory(item: dict) -> ListItemSP:
         except (ValueError, TypeError):
           dt = None
 
-      formatted = _time_ago(dt.isoformat() if dt else None)
+      formatted = time_ago(dt.isoformat() if dt else None)
       last_checked = tr("Last checked {}").format(formatted)
       _state["last_checked"] = last_checked
       _state["update_value"] = last_checked
