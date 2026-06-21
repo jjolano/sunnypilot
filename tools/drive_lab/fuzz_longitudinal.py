@@ -296,7 +296,7 @@ def main() -> None:
     "--preset",
     choices=SCENARIO_PRESETS,
     default="fuzz",
-    help="Scenario source: fuzz, udacity-acc, openpilot-acc, ncap-acc, or commonroad-acc",
+    help="Scenario source: fuzz, udacity-acc, openpilot-acc, ncap-acc, commonroad-acc, or nuscenes-acc",
   )
   parser.add_argument("--profile", help="Optional JSON profile from profile_route.py or openacc_segments.py")
   parser.add_argument("--e2e", action="store_true", help="openpilot-acc: run maneuvers in e2e mode")
@@ -304,6 +304,7 @@ def main() -> None:
   parser.add_argument("--ncap-family", choices=("CCRs", "CCRm", "CCRb"), help="ncap-acc: sample from one family")
   parser.add_argument("--ncap-sample", type=int, help="ncap-acc: number of grid points to sample")
   parser.add_argument("--commonroad-scenario", help="commonroad-acc: import a CommonRoad XML scenario")
+  parser.add_argument("--nuscenes-scenario", help="nuscenes-acc: path to a nuScenes JSON export")
   parser.add_argument("--max-normal-jerk", type=float, help="Override the mode's jerk threshold")
   parser.add_argument("--max-failures", type=int, default=10)
   parser.add_argument("--list-only", action="store_true", help="Print generated scenarios without running the simulator")
@@ -322,6 +323,7 @@ def main() -> None:
     ncap_family=args.ncap_family,
     ncap_sample=args.ncap_sample,
     commonroad_scenario=args.commonroad_scenario,
+    nuscenes_scenario=args.nuscenes_scenario,
   )
   scenarios = generate_preset_scenarios(request)
   if args.list_only:

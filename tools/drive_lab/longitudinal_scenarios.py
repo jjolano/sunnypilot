@@ -13,7 +13,8 @@ KPH_TO_MS = 1.0 / 3.6
 REALISM_MODES = ("comfort", "emergency", "adversarial")
 SCENARIO_PRESETS = (
     "fuzz", "udacity-acc", "openpilot-acc", "ncap-acc", "commonroad-acc",
-    "iso15622-acc", "unr157-alks", "nhtsa-fcw", "cncap-ccrh", "iihs-acc",
+    "nuscenes-acc", "iso15622-acc", "unr157-alks", "nhtsa-fcw", "cncap-ccrh",
+    "iihs-acc",
 )
 
 LAUNCH_START_ORACLE_KINDS = (
@@ -69,6 +70,7 @@ class PresetRequest:
   ncap_family: str | None = None
   ncap_sample: int | None = None
   commonroad_scenario: str | None = None
+  nuscenes_scenario: str | None = None
 
 
 def _validate_mode(mode: str) -> None:
@@ -306,6 +308,11 @@ def generate_preset_scenarios(request: PresetRequest) -> list[Scenario]:
   if request.preset == "commonroad-acc":
     from openpilot.tools.drive_lab.commonroad_acc import generate_commonroad_acc_scenarios
     return generate_commonroad_acc_scenarios(request.mode, scenario_path=request.commonroad_scenario)
+  if request.preset == "nuscenes-acc":
+    from openpilot.tools.drive_lab.nuscenes_acc import generate_nuscenes_acc_scenarios
+    if request.nuscenes_scenario is None:
+      raise ValueError("nuscenes-acc preset requires --nuscenes-scenario")
+    return generate_nuscenes_acc_scenarios(request.mode, scenario_path=request.nuscenes_scenario)
   if request.preset == "iso15622-acc":
     return generate_iso15622_acc_scenarios(request.mode)
   if request.preset == "unr157-alks":
