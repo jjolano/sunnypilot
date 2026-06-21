@@ -126,7 +126,6 @@ pages:
   - id: system.developer
     title: Developer
     icon: developer
-    new_shell_hidden: true
     content:
-      kind: custom_page
-      component: developer
+      kind: panel_ref
+      panel: developer

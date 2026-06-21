@@ -2336,6 +2336,83 @@
                   "equals": true
                 }
               ]
+            },
+            {
+              "key": "ErrorLog",
+              "widget": "button",
+              "blocked": true,
+              "title": "Error Log",
+              "description": "View the error log for sunnypilot crashes.",
+              "visibility": [
+                {
+                  "type": "not",
+                  "condition": {
+                    "type": "capability",
+                    "field": "is_sp_release",
+                    "equals": true
+                  }
+                }
+              ],
+              "action": "developer_error_log"
+            },
+            {
+              "key": "TailscaleInstall",
+              "widget": "button",
+              "blocked": true,
+              "title": "Tailscale VPN",
+              "description": "Download and manage the Tailscale VPN binary for remote SSH access.",
+              "visibility": [
+                {
+                  "type": "param",
+                  "key": "ShowAdvancedControls",
+                  "equals": true
+                }
+              ],
+              "action": "developer_tailscale_install"
+            },
+            {
+              "key": "EnableTailscale",
+              "widget": "toggle",
+              "blocked": true,
+              "title": "Enable Tailscale",
+              "description": "Start the Tailscale daemon for always-on VPN connectivity.",
+              "visibility": [
+                {
+                  "type": "param",
+                  "key": "ShowAdvancedControls",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "TailscaleLogin",
+              "widget": "button",
+              "blocked": true,
+              "title": "Tailscale Login",
+              "description": "Authentication required. Tap LOGIN to pair this device.",
+              "visibility": [
+                {
+                  "type": "param",
+                  "key": "ShowAdvancedControls",
+                  "equals": true
+                }
+              ],
+              "action": "developer_tailscale_login"
+            },
+            {
+              "key": "TailscaleLogout",
+              "widget": "button",
+              "blocked": true,
+              "title": "Tailscale Logout",
+              "description": "Log out of Tailscale. You will need to re-authenticate to reconnect.",
+              "visibility": [
+                {
+                  "type": "param",
+                  "key": "ShowAdvancedControls",
+                  "equals": true
+                }
+              ],
+              "action": "developer_tailscale_logout"
             }
           ]
         }
@@ -2618,11 +2695,10 @@
     {
       "id": "system.developer",
       "title": "Developer",
-      "new_shell_hidden": true,
       "icon": "developer",
       "content": {
-        "kind": "custom_page",
-        "component": "developer"
+        "kind": "panel_ref",
+        "panel": "developer"
       }
     }
   ],

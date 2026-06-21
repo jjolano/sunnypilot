@@ -89,6 +89,14 @@ def build_control(item: dict, unsupported: list[dict], is_metric_fn: Callable[[]
   title = _t(item.get("title", key))
   desc = item.get("description", "")
 
+  # Key-based override: if a custom widget factory is registered for this
+  # item's key, it takes precedence over the declared widget type. This lets
+  # device-specific side effects (file creation, complex state) override a
+  # toggle/button without changing the schema's declared widget type.
+  key_override = custom_widget_factory(key)
+  if key_override is not None:
+    return key_override(item)
+
   if widget == "toggle":
     needs_cycle = bool(item.get("needs_onroad_cycle"))
 

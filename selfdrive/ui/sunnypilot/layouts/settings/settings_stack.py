@@ -59,6 +59,10 @@ SchemaRendererFactory = Callable[[], Widget]
 def _flat_schema_renderer(panel_id: str) -> SchemaRendererFactory:
   def build() -> Widget:
     from openpilot.sunnypilot.selfdrive.ui.settings_schema.widgets import SchemaPanelLayout
+    # Import developer_actions so button/toggle factories are registered before
+    # build_control is called for the developer panel.
+    if panel_id == "developer":
+      import openpilot.sunnypilot.selfdrive.ui.settings_schema.developer_actions  # noqa: F401
     return SchemaPanelLayout(panel_id)
   return build
 
@@ -78,6 +82,7 @@ def _cruise_schema_renderer() -> Widget:
 
 _SCHEMA_PANEL_RENDERERS: dict[str, SchemaRendererFactory] = {
   "cruise": _cruise_schema_renderer,
+  "developer": _flat_schema_renderer("developer"),
   "display": _flat_schema_renderer("display"),
   "steering": _steering_schema_renderer,
   "toggles": _flat_schema_renderer("toggles"),

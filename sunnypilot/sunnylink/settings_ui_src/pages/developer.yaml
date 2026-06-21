@@ -139,3 +139,46 @@ sections:
       key: DisableUpdates
       equals: true
     - $ref: '#/macros/advanced_only'
+  - key: ErrorLog
+    widget: button
+    blocked: true
+    action: developer_error_log
+    title: Error Log
+    description: View the error log for sunnypilot crashes.
+    visibility:
+    - type: not
+      condition:
+        type: capability
+        field: is_sp_release
+        equals: true
+  - key: TailscaleInstall
+    widget: button
+    blocked: true
+    action: developer_tailscale_install
+    title: Tailscale VPN
+    description: Download and manage the Tailscale VPN binary for remote SSH access.
+    visibility:
+    - $ref: '#/macros/advanced_only'
+  - key: EnableTailscale
+    widget: toggle
+    blocked: true
+    title: Enable Tailscale
+    description: Start the Tailscale daemon for always-on VPN connectivity.
+    visibility:
+    - $ref: '#/macros/advanced_only'
+  - key: TailscaleLogin
+    widget: button
+    blocked: true
+    action: developer_tailscale_login
+    title: Tailscale Login
+    description: Authentication required. Tap LOGIN to pair this device.
+    visibility:
+    - $ref: '#/macros/advanced_only'
+  - key: TailscaleLogout
+    widget: button
+    blocked: true
+    action: developer_tailscale_logout
+    title: Tailscale Logout
+    description: Log out of Tailscale. You will need to re-authenticate to reconnect.
+    visibility:
+    - $ref: '#/macros/advanced_only'
