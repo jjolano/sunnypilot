@@ -3,18 +3,21 @@ import io
 import sys
 
 import numpy as np
+import pytest
 
 from openpilot.tools.drive_lab import fuzz_longitudinal
 from openpilot.tools.drive_lab.fuzz_longitudinal import (
   Scenario,
   aggregate_mpc_solution_status_counts,
   capture_commanded_accel,
+  diagnose_max_jerk,
   evaluate_collision_response,
   evaluate_invariants,
   evaluate_lead_pullaway_start,
   generate_openpilot_acc_scenarios,
   generate_scenarios,
   generate_udacity_acc_scenarios,
+  render_jerk_diagnosis,
   render_maneuver_snippet,
   run_scenario,
   scenario_maneuver_kwargs,
@@ -335,3 +338,114 @@ def test_main_json_includes_mpc_resets(monkeypatch):
   assert payload["totalMpcResets"] == 4
   assert payload["scenarioResults"][0]["mpcSolutionStatusCounts"] == {"4": 3, "2": 1}
   assert payload["failures"] == []
+
+
+def test_diagnose_max_jerk_identifies_peak_window_and_slew_call():
+  frames = [
+    fuzz_longitudinal.CommandFrame(idx=0, time_s=0.0, a_cmd=0.0, a_plant=0.0, v_ego=0.0, v_lead=0.0, d_rel=10.0, prob_lead=1.0, output_should_stop=False),
+    fuzz_longitudinal.CommandFrame(idx=1, time_s=0.1, a_cmd=0.0, a_plant=0.0, v_ego=0.0, v_lead=0.0, d_rel=10.0, prob_lead=1.0, output_should_stop=False),
+    fuzz_longitudinal.CommandFrame(idx=2, time_s=0.2, a_cmd=2.0, a_plant=0.0, v_ego=0.0, v_lead=0.0, d_rel=10.0, prob_lead=1.0, output_should_stop=False),
+    fuzz_longitudinal.CommandFrame(idx=3, time_s=0.3, a_cmd=2.0, a_plant=0.0, v_ego=0.0, v_lead=0.0, d_rel=10.0, prob_lead=1.0, output_should_stop=False),
+  ]
+  slew_calls = [
+    fuzz_longitudinal.SlewCall(0, 0.0, 0.0, False),
+    fuzz_longitudinal.SlewCall(1, 0.0, 0.0, False),
+    fuzz_longitudinal.SlewCall(2, 2.0, 1.0, True),
+    fuzz_longitudinal.SlewCall(3, 2.0, 2.0, False),
+  ]
+  diag = diagnose_max_jerk(frames, jerk_window=1, slew_calls=slew_calls)
+  assert diag is not None
+  assert diag.idx0 == 1
+  assert diag.idx1 == 2
+  assert diag.jerk == pytest.approx(20.0)
+  assert diag.slew_input == pytest.approx(2.0)
+  assert diag.slew_output == pytest.approx(1.0)
+  assert diag.slew_capped is True
+
+
+def test_render_jerk_diagnosis_includes_key_fields():
+  frame = fuzz_longitudinal.CommandFrame(
+    idx=2, time_s=0.2, a_cmd=2.0, a_plant=0.0, v_ego=0.5, v_lead=1.0, d_rel=8.0, prob_lead=1.0,
+    output_should_stop=False,
+    debug={"final_should_stop": True},
+    custom={
+      "release_block_reason": "custom_should_stop",
+      "lead_stop_hold_active": True,
+      "standstill_release_source": "lead_pullaway",
+      "standstill_release_allowed": True,
+      "stop_hold_release_slew_a_target": 0.1,
+    },
+  )
+  diag = fuzz_longitudinal.JerkDiagnosis(
+    idx0=1, idx1=2, time0=0.1, time1=0.2, dt=0.1, jerk_window=1,
+    a0=0.0, a1=2.0, delta_a=2.0, jerk=20.0, frames=[frame],
+    slew_input=2.0, slew_output=1.0, slew_capped=True,
+  )
+  text = render_jerk_diagnosis(diag)
+  assert "jerk diagnosis:" in text
+  assert "jerk=20.000" in text
+  assert "should_stop=True" in text
+  assert "custom_should_stop" in text
+  assert "lead_stop_hold=True" in text
+  assert "2.000->1.000 capped=True" in text
+
+
+def _make_jerk_scenario_result(scenario, jerk=100.0):
+  diag = fuzz_longitudinal.JerkDiagnosis(
+    idx0=0, idx1=1, time0=0.0, time1=0.1, dt=0.1, jerk_window=1,
+    a0=0.0, a1=10.0, delta_a=10.0, jerk=jerk, frames=[],
+    slew_input=10.0, slew_output=5.0, slew_capped=True,
+  )
+  return fuzz_longitudinal.ScenarioResult(
+    scenario=scenario,
+    valid=False,
+    failures=[fuzz_longitudinal.ScenarioFailure("jerk", f"maximum absolute jerk {jerk:.3f} m/s^3")],
+    mpc_solution_status_counts={},
+    jerk_diagnosis=diag,
+  )
+
+
+def test_main_json_includes_jerk_diagnosis(monkeypatch):
+  import json
+  scenario = Scenario(mode="comfort", kind="test", title="jerk scenario", duration=1.0, kwargs={})
+
+  monkeypatch.setattr(fuzz_longitudinal, "generate_preset_scenarios", lambda request: [scenario])
+  monkeypatch.setattr(fuzz_longitudinal, "run_scenario", lambda s, max_normal_jerk=8.0: _make_jerk_scenario_result(s))
+
+  stdout = io.StringIO()
+  previous_argv = sys.argv
+  try:
+    sys.argv = ["fuzz_longitudinal.py", "--preset", "fuzz", "--cases", "1", "--json"]
+    with contextlib.redirect_stdout(stdout):
+      with pytest.raises(SystemExit):
+        fuzz_longitudinal.main()
+  finally:
+    sys.argv = previous_argv
+
+  payload = json.loads(stdout.getvalue())
+  failure = payload["failures"][0]
+  assert failure["checks"][0]["check"] == "jerk"
+  assert failure["jerkDiagnosis"]["jerk"] == pytest.approx(100.0)
+  assert failure["jerkDiagnosis"]["slewCapped"] is True
+
+
+def test_main_text_includes_jerk_diagnosis(monkeypatch):
+  scenario = Scenario(mode="comfort", kind="test", title="jerk scenario", duration=1.0, kwargs={})
+
+  monkeypatch.setattr(fuzz_longitudinal, "generate_preset_scenarios", lambda request: [scenario])
+  monkeypatch.setattr(fuzz_longitudinal, "run_scenario", lambda s, max_normal_jerk=8.0: _make_jerk_scenario_result(s))
+
+  stdout = io.StringIO()
+  previous_argv = sys.argv
+  try:
+    sys.argv = ["fuzz_longitudinal.py", "--preset", "fuzz", "--cases", "1"]
+    with contextlib.redirect_stdout(stdout):
+      with pytest.raises(SystemExit):
+        fuzz_longitudinal.main()
+  finally:
+    sys.argv = previous_argv
+
+  output = stdout.getvalue()
+  assert "jerk diagnosis:" in output
+  assert "should_stop=" in output
+  assert "slew=" in output

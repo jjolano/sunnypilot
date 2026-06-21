@@ -5,7 +5,8 @@ import argparse
 import contextlib
 import io
 import json
-from dataclasses import dataclass, field
+import math
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import numpy as np
@@ -65,11 +66,53 @@ BENIGN_IMPACT_SPEED = 3.0
 
 
 @dataclass(frozen=True)
+class SlewCall:
+  idx: int
+  input_a: float
+  output_a: float
+  capped: bool
+
+
+@dataclass(frozen=True)
+class CommandFrame:
+  idx: int
+  time_s: float
+  a_cmd: float
+  a_plant: float
+  v_ego: float
+  v_lead: float
+  d_rel: float
+  prob_lead: float
+  output_should_stop: bool
+  debug: dict[str, Any] = field(default_factory=dict)
+  custom: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class JerkDiagnosis:
+  idx0: int
+  idx1: int
+  time0: float
+  time1: float
+  dt: float
+  jerk_window: int
+  a0: float
+  a1: float
+  delta_a: float
+  jerk: float
+  frames: list[CommandFrame] = field(default_factory=list)
+  slew_input: float | None = None
+  slew_output: float | None = None
+  slew_capped: bool | None = None
+
+
+@dataclass(frozen=True)
 class ScenarioResult:
   scenario: Scenario
   valid: bool
   failures: list[ScenarioFailure]
   mpc_solution_status_counts: dict[int, int] = field(default_factory=dict)
+  jerk_diagnosis: JerkDiagnosis | None = None
 
 
 def aggregate_mpc_solution_status_counts(results: list[ScenarioResult]) -> dict[int, int]:
@@ -78,6 +121,66 @@ def aggregate_mpc_solution_status_counts(results: list[ScenarioResult]) -> dict[
     for status, count in result.mpc_solution_status_counts.items():
       total[status] = total.get(status, 0) + count
   return total
+
+
+def diagnose_max_jerk(frames: list[CommandFrame], jerk_window: int,
+                      slew_calls: list[SlewCall] | None = None) -> JerkDiagnosis | None:
+  if not frames or jerk_window < 1:
+    return None
+  window = max(1, int(jerk_window))
+  n = len(frames)
+  if n <= window:
+    return None
+
+  times = np.array([f.time_s for f in frames], dtype=float)
+  cmds = np.array([f.a_cmd for f in frames], dtype=float)
+  dt_arr = times[window:] - times[:-window]
+  valid_dt = np.isfinite(dt_arr) & (dt_arr > 1e-6)
+  delta_arr = cmds[window:] - cmds[:-window]
+  valid = valid_dt & np.isfinite(delta_arr)
+  if not np.any(valid):
+    return None
+
+  jerk_arr = np.full(delta_arr.shape, np.nan, dtype=float)
+  jerk_arr[valid] = delta_arr[valid] / dt_arr[valid]
+  max_idx = int(np.nanargmax(np.abs(jerk_arr)))
+  idx0 = max_idx
+  idx1 = max_idx + window
+
+  a0 = float(cmds[idx0])
+  a1 = float(cmds[idx1])
+  dt = float(times[idx1] - times[idx0])
+  delta_a = a1 - a0
+  jerk = delta_a / dt if dt > 1e-6 else 0.0
+
+  window_frames = list(frames[idx0:idx1 + 1])
+
+  slew_input: float | None = None
+  slew_output: float | None = None
+  slew_capped: bool | None = None
+  calls = slew_calls or []
+  if calls:
+    window_calls = [c for c in calls if idx0 <= c.idx <= idx1]
+    call = next((c for c in window_calls if c.idx == idx1), window_calls[-1] if window_calls else None)
+    if call is not None:
+      slew_input, slew_output, slew_capped = call.input_a, call.output_a, call.capped
+
+  return JerkDiagnosis(
+    idx0=idx0,
+    idx1=idx1,
+    time0=float(times[idx0]),
+    time1=float(times[idx1]),
+    dt=dt,
+    jerk_window=window,
+    a0=a0,
+    a1=a1,
+    delta_a=delta_a,
+    jerk=jerk,
+    frames=window_frames,
+    slew_input=slew_input,
+    slew_output=slew_output,
+    slew_capped=slew_capped,
+  )
 
 
 def evaluate_invariants(
@@ -113,6 +216,9 @@ class CommandCapture:
   prob_lead: list[float] = field(default_factory=list)
   actuator_delay: float | None = None
   mpc_solution_status_counts: dict[int, int] = field(default_factory=dict)
+  frames: list[CommandFrame] = field(default_factory=list)
+  slew_calls: list[SlewCall] = field(default_factory=list)
+  current_frame_idx: int = 0
 
 
 @contextlib.contextmanager
@@ -127,12 +233,51 @@ def capture_commanded_accel():
   original_reset = LongitudinalMpc.reset
 
   def step(self, *step_args, **step_kwargs):
+    capture.current_frame_idx = len(capture.frames)
     result = original_step(self, *step_args, **step_kwargs)
-    capture.commanded.append(float(self.planner.output_a_target))
+    idx = capture.current_frame_idx
+    a_cmd = float(self.planner.output_a_target)
     prob_lead = step_kwargs.get("prob_lead", step_args[1] if len(step_args) > 1 else 1.0)
-    capture.prob_lead.append(float(prob_lead))
+    prob_lead = float(prob_lead)
+    capture.commanded.append(a_cmd)
+    capture.prob_lead.append(prob_lead)
     if capture.actuator_delay is None:
       capture.actuator_delay = float(self.planner.CP.longitudinalActuatorDelay)
+
+    v_lead = float(step_kwargs.get("v_lead", step_args[0] if step_args else 0.0))
+    a_plant = float(self.acceleration)
+    v_ego = float(self.speed)
+    if getattr(self, "lead_relevancy", False):
+      d_rel = max(0.0, float(self.distance_lead - self.distance))
+    else:
+      d_rel = 200.0
+
+    debug = dict(getattr(self.planner, "_last_longitudinal_debug", {}) or {})
+    custom: dict[str, Any] = {}
+    custom_output = getattr(self.planner, "custom_long_output", None)
+    if custom_output is not None:
+      custom["selected_intent"] = str(getattr(custom_output, "selected_intent", "") or "")
+      custom["reason"] = str(getattr(custom_output, "reason", "") or "")
+      custom["standstill_release_allowed"] = bool(getattr(custom_output, "standstill_release_allowed", False))
+      custom["standstill_release_source"] = str(getattr(custom_output, "standstill_release_source", "") or "")
+      custom["standstill_release_a_target"] = float(getattr(custom_output, "standstill_release_a_target", 0.0))
+    custom["release_block_reason"] = str(getattr(self.planner, "_last_release_block_reason", "") or "")
+    custom["lead_stop_hold_active"] = bool(getattr(self.planner, "_lead_stop_hold_active", False))
+    custom["stop_hold_release_slew_a_target"] = getattr(self.planner, "_stop_hold_release_slew_a_target", None)
+
+    capture.frames.append(CommandFrame(
+      idx=idx,
+      time_s=float(self.current_time),
+      a_cmd=a_cmd,
+      a_plant=a_plant,
+      v_ego=v_ego,
+      v_lead=v_lead,
+      d_rel=d_rel,
+      prob_lead=prob_lead,
+      output_should_stop=bool(self.planner.output_should_stop),
+      debug=debug,
+      custom=custom,
+    ))
     return result
 
   def reset(self, *reset_args, **reset_kwargs):
@@ -140,6 +285,27 @@ def capture_commanded_accel():
     if isinstance(status, (int, np.integer)) and status != 0:
       capture.mpc_solution_status_counts[int(status)] = capture.mpc_solution_status_counts.get(int(status), 0) + 1
     return original_reset(self, *reset_args, **reset_kwargs)
+
+  apply_slew_module = None
+  try:
+    from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+    apply_slew_module = LongitudinalPlannerSP
+  except Exception:
+    pass
+
+  original_apply_slew = None
+  if apply_slew_module is not None and hasattr(apply_slew_module, "_apply_stop_hold_release_slew"):
+    original_apply_slew = apply_slew_module._apply_stop_hold_release_slew
+
+    def apply_stop_hold_release_slew(self, sm, a_target, release_mpc_stop, mpc_stop, raw_model_should_stop, should_stop):
+      input_a = float(a_target)
+      output_a = original_apply_slew(self, sm, a_target, release_mpc_stop, mpc_stop, raw_model_should_stop, should_stop)
+      output_a = float(output_a)
+      capped = bool(math.isfinite(input_a) and math.isfinite(output_a) and abs(output_a - input_a) > 1e-6)
+      capture.slew_calls.append(SlewCall(capture.current_frame_idx, input_a, output_a, capped))
+      return output_a
+
+    apply_slew_module._apply_stop_hold_release_slew = apply_stop_hold_release_slew
 
   Plant.step = step
   plant_module.time.sleep = lambda *a, **k: None
@@ -150,6 +316,8 @@ def capture_commanded_accel():
     Plant.step = original_step
     plant_module.time.sleep = original_sleep
     LongitudinalMpc.reset = original_reset
+    if original_apply_slew is not None and apply_slew_module is not None:
+      apply_slew_module._apply_stop_hold_release_slew = original_apply_slew
 
 
 def evaluate_lead_pullaway_start(output: np.ndarray) -> list[ScenarioFailure]:
@@ -266,7 +434,11 @@ def run_scenario(scenario: Scenario, max_normal_jerk: float = 8.0) -> ScenarioRe
     else:
       failures = [f for f in failures if f.check != "collision"] + oracle
 
-  return ScenarioResult(scenario, not failures, failures, capture.mpc_solution_status_counts)
+  jerk_diagnosis: JerkDiagnosis | None = None
+  if any(f.check == "jerk" for f in failures):
+    jerk_diagnosis = diagnose_max_jerk(capture.frames, jerk_window, capture.slew_calls)
+
+  return ScenarioResult(scenario, not failures, failures, capture.mpc_solution_status_counts, jerk_diagnosis)
 
 
 def render_maneuver_snippet(scenario: Scenario) -> str:
@@ -305,6 +477,54 @@ def scenario_to_dict(scenario: Scenario, source: str | None = None, seed: int | 
     payload["scenarioId"] = spec.scenario_id
     payload["spec"] = spec.to_dict()
   return payload
+
+
+def render_jerk_diagnosis(d: JerkDiagnosis) -> str:
+  frame = d.frames[-1] if d.frames else None
+  debug = frame.debug if frame else {}
+  custom = frame.custom if frame else {}
+  release_parts = [
+    f"src={custom.get('standstill_release_source', '-')}",
+    f"allowed={custom.get('standstill_release_allowed', False)}",
+  ]
+  release_block = custom.get("release_block_reason", "")
+  if release_block:
+    release_parts.append(f"block={release_block}")
+  slew_state = custom.get("stop_hold_release_slew_a_target")
+  if slew_state is not None:
+    release_parts.append(f"slew_state={slew_state:.3f}")
+  slew_text = "none"
+  if d.slew_capped is not None:
+    slew_text = f"{d.slew_input:.3f}->{d.slew_output:.3f} capped={d.slew_capped}"
+  return (
+    f"jerk diagnosis: t={d.time0:.2f}->{d.time1:.2f} a={d.a0:.3f}->{d.a1:.3f} "
+    f"delta={d.delta_a:.3f} jerk={d.jerk:.3f} "
+    f"v={frame.v_ego if frame else 0.0:.2f} "
+    f"lead={frame.v_lead if frame else 0.0:.2f}@{frame.d_rel if frame else 0.0:.2f} "
+    f"should_stop={debug.get('final_should_stop', frame.output_should_stop if frame else False)} "
+    f"release={' '.join(release_parts)} "
+    f"lead_stop_hold={custom.get('lead_stop_hold_active', False)} "
+    f"slew={slew_text}"
+  )
+
+
+def _snake_to_camel(s: str) -> str:
+  parts = s.split('_')
+  return parts[0] + ''.join(part.capitalize() for part in parts[1:])
+
+
+def _to_camel_dict(obj: Any) -> Any:
+  if isinstance(obj, dict):
+    return {_snake_to_camel(k): _to_camel_dict(v) for k, v in obj.items()}
+  if isinstance(obj, list):
+    return [_to_camel_dict(v) for v in obj]
+  return obj
+
+
+def _jerk_diagnosis_to_dict(d: JerkDiagnosis | None) -> dict[str, Any] | None:
+  if d is None:
+    return None
+  return _to_camel_dict(asdict(d))
 
 
 def main() -> None:
@@ -387,6 +607,7 @@ def main() -> None:
           "scenario": scenario_to_dict(result.scenario),
           "checks": [failure.__dict__ for failure in result.failures],
           "mpcSolutionStatusCounts": dict(result.mpc_solution_status_counts),
+          "jerkDiagnosis": _jerk_diagnosis_to_dict(result.jerk_diagnosis),
         }
         for result in failures
       ],
@@ -405,6 +626,8 @@ def main() -> None:
       print(f"\nFAILED: {result.scenario.title} [{result.scenario.mode}/{result.scenario.kind}]")
       for failure in result.failures:
         print(f"  {failure.check}: {failure.detail}")
+        if failure.check == "jerk" and result.jerk_diagnosis is not None:
+          print(f"    {render_jerk_diagnosis(result.jerk_diagnosis)}")
       print(render_maneuver_snippet(result.scenario))
     mpc_results = [r for r in results if r.mpc_solution_status_counts]
     for result in mpc_results[:args.max_failures]:
