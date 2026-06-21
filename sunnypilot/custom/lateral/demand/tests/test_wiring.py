@@ -131,9 +131,13 @@ def test_adapter_forwards_steering_pressed_and_lane_change_state():
   a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
   spy = SpyPipeline()
   setattr(a, "_pipeline", spy)
-  a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001), steering_pressed=True)
+  a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001), steering_pressed=True,
+            yaw_rate=0.02, steering_rate_deg=4.0, steer_limited=True)
   assert getattr(spy.inputs, "steering_pressed") is True
   assert getattr(spy.inputs, "lane_change_state_valid") is True
+  assert getattr(spy.inputs, "yaw_rate") == pytest.approx(0.02)
+  assert getattr(spy.inputs, "steering_rate_deg") == pytest.approx(4.0)
+  assert getattr(spy.inputs, "steer_limited") is True
 
 
 def test_adapter_enabled_turns_on_model_path_smoothing():

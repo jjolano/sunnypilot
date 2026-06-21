@@ -45,6 +45,9 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
     lane_line_probs=kwargs.get("lane_line_probs", [0.9, 0.9, 0.9, 0.9]),
     frame_drop_perc=kwargs.get("frame_drop_perc", 0.0),
     model_age_s=kwargs.get("model_age_s", 0.0),
+    yaw_rate=kwargs.get("yaw_rate", None),
+    steering_rate_deg=kwargs.get("steering_rate_deg", None),
+    steer_limited=kwargs.get("steer_limited", False),
     model_data_v2_sp_valid=kwargs.get("model_data_v2_sp_valid", True),
     turn_direction=kwargs.get("turn_direction", 0),
     lane_change_state=kwargs.get("lane_change_state", 0),
@@ -111,6 +114,34 @@ def test_valid_path_high_quality_passthrough():
   assert r.demand.path_quality >= 0.7
   assert r.demand.processed_curvature == pytest.approx(0.001, abs=2e-3)
   assert r.demand.demand_source == DEMAND_SOURCE_MODEL_PATH
+
+
+def test_sensor_confidence_shadow_metrics_do_not_change_actuation_or_path_gate():
+  baseline = LateralDemandPipeline(DT)
+  candidate = LateralDemandPipeline(DT)
+  base = baseline.update(valid_inputs(v_ego=20.0, curvature=0.001, measured_curvature=0.001))
+  with_sensor = candidate.update(valid_inputs(v_ego=20.0, curvature=0.001, measured_curvature=0.001,
+                                             yaw_rate=0.02, steering_rate_deg=3.0, steering_pressed=False))
+
+  assert with_sensor.demand.processed_curvature == pytest.approx(base.demand.processed_curvature)
+  assert with_sensor.model_path_result.reason == base.model_path_result.reason
+  assert with_sensor.model_path_result.gated == base.model_path_result.gated
+  assert with_sensor.debug["sensor_confidence_available"] is True
+  assert with_sensor.debug["sensor_confidence_block_reason"] == "ok"
+  assert "sensor_model_measured_lat_accel_delta" in with_sensor.debug
+
+
+def test_sensor_suppress_candidate_is_debug_only():
+  baseline = LateralDemandPipeline(DT)
+  candidate = LateralDemandPipeline(DT)
+  base = baseline.update(valid_inputs(v_ego=20.0, curvature=0.003, measured_curvature=0.0))
+  with_sensor = candidate.update(valid_inputs(v_ego=20.0, curvature=0.003, measured_curvature=0.0,
+                                             yaw_rate=0.0, steering_rate_deg=3.0, steering_pressed=False))
+
+  assert with_sensor.debug["sensor_suppress_candidate"] is True
+  assert with_sensor.demand.processed_curvature == pytest.approx(base.demand.processed_curvature)
+  assert with_sensor.model_path_result.reason == base.model_path_result.reason
+  assert with_sensor.model_path_result.gated == base.model_path_result.gated
 
 
 def test_stale_model_bridges_to_previous_and_measured_curvature():

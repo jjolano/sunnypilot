@@ -48,6 +48,10 @@ from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   ModelPathProcessorInputs,
   ModelPathProcessorResult,
 )
+from openpilot.sunnypilot.custom.lateral.demand.sensor_confidence import (
+  SensorConfidenceInputs,
+  evaluate_sensor_confidence,
+)
 
 # turn_curvature_sign convention (matches legacy: TurnDirection.turnRight=1, turnLeft=2)
 TURN_DIRECTION_RIGHT = 1
@@ -71,6 +75,9 @@ class LateralDemandPipelineInputs:
   lane_line_probs: Sequence[float] = ()
   frame_drop_perc: float = 0.0
   model_age_s: float = 0.0
+  yaw_rate: float | None = None
+  steering_rate_deg: float | None = None
+  steer_limited: bool = False
   model_data_v2_sp_valid: bool = True
   turn_direction: int = 0
   # lane change
@@ -230,6 +237,24 @@ class LateralDemandPipeline:
       elif not inputs.lane_centering_assist_enabled:
         self._lane_centering_assist.reset()
 
+    sensor_confidence = evaluate_sensor_confidence(SensorConfidenceInputs(
+      lat_active=inputs.lat_active,
+      v_ego=inputs.v_ego,
+      model_curvature=raw_curvature,
+      measured_curvature=inputs.measured_curvature,
+      model_path_gated=bool(model_path_result.gated),
+      model_path_reason=str(model_path_result.reason),
+      model_age_s=inputs.model_age_s,
+      steering_pressed=inputs.steering_pressed,
+      steering_rate_deg=inputs.steering_rate_deg,
+      yaw_rate=inputs.yaw_rate,
+      steer_limited=bool(inputs.steer_limited),
+      lane_change_active=inputs.lane_change_state != LANE_CHANGE_STATE_OFF,
+      lane_change_state_valid=bool(inputs.lane_change_state_valid),
+      left_blinker=inputs.left_blinker,
+      right_blinker=inputs.right_blinker,
+    ))
+
     processed_curvature = float(new_desired_curvature)
     # Stress guardrail: anomalous / non-finite curvature is contained before it reaches
     # the controller. Non-finite values fall back to straight-ahead (0.0) and reset the
@@ -272,6 +297,7 @@ class LateralDemandPipeline:
         "model_path_reason": model_path_result.reason,
         "model_path_quality": float(model_path_result.quality),
         "model_age_s": float(inputs.model_age_s),
+        **sensor_confidence.debug_dict(),
         "demand_jerk_smoothing_active": bool(model_path_result.demand_jerk_smoothing_active),
         "demand_jerk_smoothing_step": float(model_path_result.demand_jerk_smoothing_step),
         "demand_jerk_smoothing_lag": float(model_path_result.demand_jerk_smoothing_lag),

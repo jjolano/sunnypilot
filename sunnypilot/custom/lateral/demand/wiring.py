@@ -62,6 +62,9 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
                           curve_memory_enabled: bool = False,
                           steering_pressed: bool | None = None,
                           model_age_s: float = 0.0,
+                          yaw_rate: float | None = None,
+                          steering_rate_deg: float | None = None,
+                          steer_limited: bool = False,
                           demand_jerk_smoothing_enabled: bool = False) -> LateralDemandPipelineInputs:
   pos = getattr(model_v2, "position", None)
   ori = getattr(model_v2, "orientation", None)
@@ -82,6 +85,9 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
     lane_line_probs=tuple(getattr(model_v2, "laneLineProbs", ()) or ()),
     frame_drop_perc=float(getattr(model_v2, "frameDropPerc", 0.0) or 0.0),
     model_age_s=sanitized_model_age_s(model_age_s),
+    yaw_rate=yaw_rate,
+    steering_rate_deg=steering_rate_deg,
+    steer_limited=bool(steer_limited),
     lane_change_state=lane_change_state_value,
     lane_change_direction=lane_change_direction_value,
     lane_change_state_valid=lane_change_state_valid,
@@ -122,7 +128,8 @@ class LateralDemandAdapter:
 
   def process(self, lat_active: bool, v_ego: float, roll: float, raw_curvature: float,
               measured_curvature: float, model_v2: Any, steering_pressed: bool | None = None,
-              model_age_s: float = 0.0) -> float:
+              model_age_s: float = 0.0, yaw_rate: float | None = None,
+              steering_rate_deg: float | None = None, steer_limited: bool = False) -> float:
     """Return the processed desired curvature, or the unchanged raw curvature when disabled
     or on any fault (fail-closed)."""
     self._tick += 1
@@ -139,6 +146,9 @@ class LateralDemandAdapter:
         curve_memory_enabled=self.curve_memory_enabled,
         steering_pressed=steering_pressed,
         model_age_s=model_age_s,
+        yaw_rate=yaw_rate,
+        steering_rate_deg=steering_rate_deg,
+        steer_limited=steer_limited,
       )
       inputs = replace(inputs, smooth_model_path_curvature=True)
       result = self._pipeline.update(inputs)

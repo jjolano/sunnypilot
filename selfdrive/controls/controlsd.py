@@ -155,7 +155,20 @@ class Controls(ControlsExt):
       except (TypeError, ValueError):
         model_recv_time = 0.0
       model_age_s = max(0.0, time.monotonic() - model_recv_time) if math.isfinite(model_recv_time) and model_recv_time > 0.0 else float("inf")
-      new_desired_curvature = self.lateral_demand.process(CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2, getattr(CS, 'steeringPressed', None), model_age_s)
+      live_pose = self.sm['livePose']
+      live_pose_yaw_valid = bool(
+        self.sm.alive['livePose'] and self.sm.valid['livePose']
+        and getattr(live_pose, 'inputsOK', False)
+        and getattr(live_pose, 'sensorsOK', False)
+        and getattr(live_pose, 'posenetOK', False)
+        and getattr(getattr(live_pose, 'angularVelocityDevice', None), 'valid', False)
+      )
+      yaw_rate = self.calibrated_pose.angular_velocity.z if self.calibrated_pose is not None and live_pose_yaw_valid else None
+      new_desired_curvature = self.lateral_demand.process(
+        CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2,
+        getattr(CS, 'steeringPressed', None), model_age_s, yaw_rate,
+        getattr(CS, 'steeringRateDeg', None), self.steer_limited_by_safety,
+      )
     last_lateral_demand_result = getattr(self.lateral_demand, 'last_result', None) if hasattr(self, 'lateral_demand') else None
     self.raw_desired_curvature = raw_desired_curvature
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
