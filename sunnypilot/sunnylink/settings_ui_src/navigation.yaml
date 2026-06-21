@@ -82,7 +82,6 @@ pages:
   - id: system.network
     title: Network
     icon: network
-    new_shell_hidden: true
     content:
       kind: custom_page
       component: network
@@ -107,14 +106,12 @@ pages:
   - id: system.trips
     title: Trips
     icon: trips
-    new_shell_hidden: true
     content:
       kind: custom_page
       component: trips
   - id: system.firehose
     title: Firehose
     icon: firehose
-    new_shell_hidden: true
     content:
       kind: custom_page
       component: firehose

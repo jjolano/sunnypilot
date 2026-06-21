@@ -2880,7 +2880,6 @@
     {
       "id": "system.network",
       "title": "Network",
-      "new_shell_hidden": true,
       "icon": "network",
       "content": {
         "kind": "custom_page",
@@ -2917,7 +2916,6 @@
     {
       "id": "system.trips",
       "title": "Trips",
-      "new_shell_hidden": true,
       "icon": "trips",
       "content": {
         "kind": "custom_page",
@@ -2927,7 +2925,6 @@
     {
       "id": "system.firehose",
       "title": "Firehose",
-      "new_shell_hidden": true,
       "icon": "firehose",
       "content": {
         "kind": "custom_page",
