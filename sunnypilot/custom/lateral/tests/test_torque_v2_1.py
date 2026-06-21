@@ -195,8 +195,21 @@ def test_path_evidence_from_lateral_demand_valid_when_inactive_or_not_expected()
   c = make_controller()
   c.set_under_response_path_evidence_from_lateral_demand(None, active=False)
   assert c._under_response_path_evidence_valid is True
-  c.set_under_response_path_evidence_from_lateral_demand(None, evidence_expected=False)
+  c.set_under_response_path_evidence_from_lateral_demand(None, active=True, evidence_expected=False)
   assert c._under_response_path_evidence_valid is True
+
+
+def test_missing_evidence_is_valid_when_lateral_demand_pipeline_disabled():
+  """Regression: controlsd only expects path evidence when CustomLateralDemandEnabled is on.
+
+  When the custom lateral demand pipeline is disabled (evidence_expected=False), a missing
+  evidence object must not fail-closed. It must still fail-closed when evidence is expected.
+  """
+  c = make_controller()
+  c.set_under_response_path_evidence_from_lateral_demand(None, active=True, evidence_expected=False)
+  assert c._under_response_path_evidence_valid is True
+  c.set_under_response_path_evidence_from_lateral_demand(None, active=True, evidence_expected=True)
+  assert c._under_response_path_evidence_valid is False
 
 
 @pytest.mark.parametrize("model_path", [

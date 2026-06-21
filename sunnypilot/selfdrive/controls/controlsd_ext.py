@@ -37,8 +37,13 @@ def read_torque_control_tune(params: Params) -> float:
     return TORQUE_TUNE_V0
 
 
-def select_torque_controller(CP: structs.CarParams, CP_SP, CI, dt, lac, tune: float):
+def select_torque_controller(CP: structs.CarParams, CP_SP, CI, dt, lac, tune: float, params: Params):
   if CP.lateralTuning.which() != 'torque':
+    return lac
+
+  enforce_torque = params.get_bool("EnforceTorqueControl")
+  if not enforce_torque:
+    # When EnforceTorqueControl is off, ignore the stored tune and keep the platform default controller.
     return lac
 
   if isclose(tune, TORQUE_TUNE_V0):
@@ -70,7 +75,7 @@ class ControlsExt(ModelStateBase):
     self.pm_services_ext = ['carControlSP']
 
   def initialize_lateral_control(self, lac, CI, dt):
-    return select_torque_controller(self.CP, self.CP_SP, CI, dt, lac, read_torque_control_tune(self.params))
+    return select_torque_controller(self.CP, self.CP_SP, CI, dt, lac, read_torque_control_tune(self.params), self.params)
 
   def get_params_sp(self, sm: messaging.SubMaster) -> None:
     if time.monotonic() - self._param_update_time > PARAMS_UPDATE_PERIOD:

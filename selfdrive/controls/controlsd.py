@@ -190,7 +190,12 @@ class Controls(ControlsExt):
 
     actuators.curvature = self.desired_curvature
     if hasattr(self.LaC, 'set_under_response_path_evidence_from_lateral_demand'):
-      self.LaC.set_under_response_path_evidence_from_lateral_demand(last_lateral_demand_result)
+      lateral_demand_adapter = getattr(self, 'lateral_demand', None)
+      active = CC.latActive
+      evidence_expected = getattr(lateral_demand_adapter, 'enabled', False) if lateral_demand_adapter is not None else False
+      self.LaC.set_under_response_path_evidence_from_lateral_demand(
+        last_lateral_demand_result, active=active, evidence_expected=evidence_expected
+      )
     if hasattr(self.LaC, 'set_torque_override_refresh_allowed'):
       self.LaC.set_torque_override_refresh_allowed(not CC.enabled)
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
