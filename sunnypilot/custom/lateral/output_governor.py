@@ -49,6 +49,10 @@ SAME_DIRECTION_LIMIT_RATE_V = [1.30, 1.30, 2.10, 3.20, 3.60]
 
 # --- RESTRICT: caps ---
 SAME_DIRECTION_LIMIT_CAP = 0.85
+STEERING_RATE_COMFORT_START_DEG = 25.0
+STEERING_RATE_COMFORT_FULL_DEG = 80.0
+STEERING_RATE_COMFORT_MIN_CAP = 0.88
+STEERING_RATE_COMFORT_MIN_SLEW_SCALE = 0.75
 HIGH_RATE_START_DEG = 80.0
 HIGH_RATE_FULL_DEG = 100.0
 HIGH_RATE_MIN_CAP = 0.62
@@ -63,6 +67,7 @@ ISO_ACCEL_MARGIN = 2.6
 NEAR_ISO_ACCEL_CAP = 0.85
 OVER_ISO_ACCEL_CAP = 0.80
 UNDER_RESPONSE_MAX_TORQUE_FRACTION = 0.90
+TRACKING_CORRECTION_MARGIN = 0.06
 
 # nuPlan comfort bounds (84th %ile of 1,282 hours expert human driving, arXiv:2403.04133).
 # These are reference thresholds — the ISO-derived caps above remain the active limits.
@@ -103,6 +108,7 @@ class GovernorReason(IntFlag):
   UNDER_RESPONSE_FLOOR = 1 << 9
   INVALID = 1 << 10
   UNDER_RESPONSE_GUARDED = 1 << 11
+  STEERING_RATE_COMFORT = 1 << 12
 
 
 @dataclass(frozen=True)
@@ -171,6 +177,10 @@ class OutputGovernor:
 
     # --- RESTRICT: build cap as a fraction of max_output (binding cap = min) ---
     cap = 1.0
+    comfort_blend = self._steering_rate_comfort_blend(inp)
+    if comfort_blend > 0.0:
+      cap = min(cap, 1.0 + comfort_blend * (STEERING_RATE_COMFORT_MIN_CAP - 1.0))
+      reason |= GovernorReason.STEERING_RATE_COMFORT
     high_rate_blend = float(np.clip((abs(inp.steering_rate_deg) - HIGH_RATE_START_DEG) /
                                     max(HIGH_RATE_FULL_DEG - HIGH_RATE_START_DEG, 1e-3), 0.0, 1.0))
     if high_rate_blend > 0.0:
@@ -209,6 +219,8 @@ class OutputGovernor:
       reason |= GovernorReason.SIGN_CHANGE_LIMITED
     else:
       slew_rate = float(np.interp(inp.v_ego, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V))
+    if comfort_blend > 0.0:
+      slew_rate *= 1.0 + comfort_blend * (STEERING_RATE_COMFORT_MIN_SLEW_SCALE - 1.0)
     if high_rate_blend > 0.0:
       slew_rate *= HIGH_RATE_SLEW_SCALE
     if inp.same_direction_limit:
@@ -279,3 +291,32 @@ class OutputGovernor:
       return 1.0
     span = UNDER_RESPONSE_FADE_SPEED - UNDER_RESPONSE_FULL_SPEED
     return float(np.clip((UNDER_RESPONSE_FADE_SPEED - inp.v_ego) / max(span, 1e-3), 0.0, 1.0))
+
+  @staticmethod
+  def _tracking_correction_needed(inp: OutputGovernorInputs) -> bool:
+    output_sign = sign(inp.nominal_torque)
+    lateral_accel_error = inp.desired_lateral_accel - inp.actual_lateral_accel
+    if abs(lateral_accel_error) > TRACKING_CORRECTION_MARGIN and output_sign == sign(lateral_accel_error):
+      return True
+
+    desired_sign = sign(inp.desired_lateral_accel)
+    actual_sign = 0.0 if abs(inp.actual_lateral_accel) <= SIGN_THRESHOLD else sign(inp.actual_lateral_accel)
+    under_response = desired_sign * (inp.desired_lateral_accel - inp.actual_lateral_accel)
+    same_sign_lag = desired_sign != 0.0 and output_sign == desired_sign and actual_sign in (0.0, desired_sign)
+    corrective_reversal = (desired_sign != 0.0 and actual_sign != 0.0 and actual_sign != desired_sign
+                           and output_sign == desired_sign)
+    return under_response > UNDER_RESPONSE_MARGIN and (same_sign_lag or corrective_reversal)
+
+  @classmethod
+  def _steering_rate_comfort_blend(cls, inp: OutputGovernorInputs) -> float:
+    # Comfort shaping is deliberately one-sided: trim torque that reinforces already-fast
+    # steering wheel motion, but do not interfere with tracking catch-up, driver-release
+    # unwind, or torque that opposes/stabilizes the current wheel motion.
+    torque_sign = sign(inp.nominal_torque)
+    steering_rate_sign = sign(inp.steering_rate_deg)
+    if torque_sign == 0.0 or torque_sign != steering_rate_sign:
+      return 0.0
+    if inp.release_active or cls._tracking_correction_needed(inp):
+      return 0.0
+    return float(np.clip((abs(inp.steering_rate_deg) - STEERING_RATE_COMFORT_START_DEG) /
+                         max(STEERING_RATE_COMFORT_FULL_DEG - STEERING_RATE_COMFORT_START_DEG, 1e-3), 0.0, 1.0))

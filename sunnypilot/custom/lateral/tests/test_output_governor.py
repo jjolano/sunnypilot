@@ -18,6 +18,8 @@ from openpilot.sunnypilot.custom.lateral.output_governor import (
   SAME_DIRECTION_LIMIT_CAP,
   SIGN_CHANGE_SLEW_RATE_BP,
   SIGN_CHANGE_SLEW_RATE_V,
+  STEERING_RATE_COMFORT_MIN_CAP,
+  STEERING_RATE_COMFORT_MIN_SLEW_SCALE,
   GovernorReason,
   OutputGovernor,
   OutputGovernorInputs,
@@ -191,6 +193,73 @@ def test_high_steering_rate_caps_and_scales_slew():
   # first step from 0 with scaled slew rate
   scaled_slew = float(np.interp(v, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V)) * HIGH_RATE_SLEW_SCALE
   assert abs(r.output_torque) <= scaled_slew * DT + 1e-9
+
+
+def test_steering_rate_comfort_softly_caps_reinforcing_torque():
+  gov = OutputGovernor(DT)
+  v = 20.0
+  r = gov.update(benign(nominal=MAX, v=v, rate=80.0, desired=0.2, actual=0.2))
+  assert r.reason & GovernorReason.STEERING_RATE_COMFORT
+  assert not (r.reason & GovernorReason.HIGH_STEERING_RATE)
+  assert r.cap == pytest.approx(STEERING_RATE_COMFORT_MIN_CAP, abs=1e-9)
+  comfort_slew = float(np.interp(v, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V)) * STEERING_RATE_COMFORT_MIN_SLEW_SCALE
+  assert abs(r.output_torque) <= comfort_slew * DT + 1e-9
+
+
+def test_steering_rate_comfort_ignores_torque_opposing_wheel_motion():
+  r = OutputGovernor(DT).update(benign(nominal=-MAX, v=20.0, rate=80.0, desired=-0.2, actual=-0.2))
+  assert not (r.reason & GovernorReason.STEERING_RATE_COMFORT)
+  assert r.cap == pytest.approx(1.0, abs=1e-9)
+
+
+def test_steering_rate_comfort_applies_symmetrically_negative():
+  r = OutputGovernor(DT).update(benign(nominal=-MAX, v=20.0, rate=-80.0, desired=-0.2, actual=-0.2))
+  assert r.reason & GovernorReason.STEERING_RATE_COMFORT
+  assert not (r.reason & GovernorReason.HIGH_STEERING_RATE)
+  assert r.cap == pytest.approx(STEERING_RATE_COMFORT_MIN_CAP, abs=1e-9)
+
+
+def test_steering_rate_comfort_preserves_tracking_correction():
+  # Actual lateral accel is lagging desired response in the commanded direction. Even with a
+  # high steering rate, this is a tracking catch-up case and must not be comfort-throttled.
+  r = OutputGovernor(DT).update(benign(nominal=MAX, v=20.0, rate=80.0, desired=1.0, actual=0.2))
+  assert not (r.reason & GovernorReason.STEERING_RATE_COMFORT)
+  assert r.cap == pytest.approx(1.0, abs=1e-9)
+
+
+def test_steering_rate_comfort_preserves_over_response_correction():
+  r = OutputGovernor(DT).update(benign(nominal=-MAX, v=20.0, rate=-80.0, desired=0.5, actual=0.8))
+  assert not (r.reason & GovernorReason.STEERING_RATE_COMFORT)
+  assert r.cap == pytest.approx(1.0, abs=1e-9)
+
+
+def test_steering_rate_comfort_preserves_centering_correction():
+  r = OutputGovernor(DT).update(benign(nominal=-MAX, v=20.0, rate=-80.0, desired=0.0, actual=0.3))
+  assert not (r.reason & GovernorReason.STEERING_RATE_COMFORT)
+  assert r.cap == pytest.approx(1.0, abs=1e-9)
+
+
+def test_steering_rate_comfort_bypasses_release():
+  r = OutputGovernor(DT).update(benign(nominal=MAX, v=20.0, rate=80.0, desired=0.2, actual=0.2, release=True))
+  assert not (r.reason & GovernorReason.STEERING_RATE_COMFORT)
+
+
+def test_steering_rate_comfort_stacks_with_hard_high_rate_guard():
+  r = OutputGovernor(DT).update(benign(nominal=MAX, v=20.0, rate=100.0, desired=0.2, actual=0.2))
+  assert r.reason & GovernorReason.STEERING_RATE_COMFORT
+  assert r.reason & GovernorReason.HIGH_STEERING_RATE
+  assert r.cap < STEERING_RATE_COMFORT_MIN_CAP
+
+
+def test_steering_rate_comfort_does_not_slow_unwind():
+  gov = OutputGovernor(DT)
+  for _ in range(300):
+    gov.update(benign(nominal=MAX, v=20.0))
+  assert gov.previous_output == pytest.approx(MAX, abs=1e-6)
+  r = gov.update(benign(nominal=0.2, v=20.0, rate=80.0, desired=0.2, actual=0.2))
+  assert r.reason & GovernorReason.STEERING_RATE_COMFORT
+  assert r.output_torque == pytest.approx(0.2, abs=1e-9)
+  assert not (r.reason & GovernorReason.SLEW_LIMITED)
 
 
 def test_steady_state_passthrough():
