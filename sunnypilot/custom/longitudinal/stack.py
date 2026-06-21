@@ -73,6 +73,7 @@ class LongitudinalStackInputs:
   model_stop_distance: float | None = None
   model_desired_accel: float = 0.0
   model_stop_prob: float = 1.0   # model confidence in the stop (trust gate); 1.0 = fully trusted
+  model_stale: bool = False
   stop_threat: bool = False
   # shadow path-relative lead context (telemetry only; not used for actuation)
   model_msg: Any | None = None
@@ -89,6 +90,7 @@ class LongitudinalStackInputs:
   curve_a_target: float = 0.0
   curve_source: EvidenceClass = EvidenceClass.CURVE_VISION   # which SCC curve source bound the cap
   # driver / safety
+  long_active: bool = False
   force_slow_decel: bool = False
   brake_pressed: bool = False
   gas_pressed: bool = False
@@ -156,6 +158,7 @@ class CustomLongitudinalStack:
     try:
       cut_in_brake_assist_debug = predict_cut_in_brake_assist(
         inp.cut_in_brake_assist_mode, lead_ctx, shadow_ctx, inp.v_ego,
+        long_active=inp.long_active,
       ).debug_dict()
     except Exception:
       cut_in_brake_assist_fault = True
@@ -205,6 +208,7 @@ class CustomLongitudinalStack:
       lead_shadow_active=lead_shadow_active, alternate_threat_active=alternate_threat_active,
       model_should_stop=inp.model_should_stop, model_stop_distance=inp.model_stop_distance,
       model_desired_accel=inp.model_desired_accel, model_stop_prob=inp.model_stop_prob,
+      model_stale=inp.model_stale,
       stop_threat=inp.stop_threat,
       speed_limit_active=inp.speed_limit_active, speed_limit_v_target=inp.speed_limit_v_target,
       speed_limit_a_target=inp.speed_limit_a_target,
@@ -270,6 +274,7 @@ class CustomLongitudinalStack:
         "lead_shadow_active": lead_shadow_active,
         "alternate_threat_active": alternate_threat_active,
         "n_candidates": len(candidates),
+        "model_stale": bool(inp.model_stale),
         "rejected": decision.rejected,
         **{f"actual_{k}": v for k, v in lead_ctx.debug_dict().items()},
         "path_shadow_model_path_available": path_shadow_model_path_available,

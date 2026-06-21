@@ -34,6 +34,15 @@ def test_low_confidence_stop_softened_and_not_committed():
   assert r.desired_accel <= 0.0
 
 
+def test_stale_model_stop_only_allows_gentle_caution():
+  r = gate_model_stop(model_should_stop=True, model_desired_accel=-3.0, stop_prob=0.95,
+                      model_stale=True)
+  assert r.should_stop is False
+  assert r.desired_accel == pytest.approx(GENTLE_CAUTION_DECEL)
+  assert r.trust == 0.0
+  assert r.reason == "model_stale"
+
+
 def test_radar_corroboration_raises_trust():
   # a closing radar lead corroborates the slowdown -> higher trust than model_prob alone
   weak = gate_model_stop(True, -2.5, stop_prob=0.3, has_radar_lead=False, lead_v_rel=0.0)

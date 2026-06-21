@@ -103,6 +103,18 @@ def test_build_stack_inputs_maps_evidence():
   assert inp.model_should_stop is False            # conservatively defaulted (harness-gated)
 
 
+def test_build_stack_inputs_carries_model_stale_flag():
+  inp = build_stack_inputs(
+    v_ego=15.0, a_ego=0.0, v_cruise=15.0, seed_a_target=0.0, accel_limits=DEFAULT_ACCEL_LIMITS,
+    lead_one=None, lead_two=None,
+    scc_vision_active=False, scc_vision_a_target=0.0, scc_map_active=False, scc_map_a_target=0.0,
+    sla_active=False, sla_v_target=0.0, sla_a_target=0.0,
+    mode=LongitudinalMode.E2E, personality=Personality.STANDARD, sources=SourceToggles(),
+    model_should_stop=True, model_desired_accel=-2.0, model_stale=True,
+  )
+  assert inp.model_stale is True
+
+
 def test_map_only_curve_tags_curve_map_and_is_admitted_in_scc():
   # #18: a map-sourced curve was always tagged CURVE_VISION, so with only the map toggle on it was
   # silently dropped under SCC. Tag by binding source so SCC admits it.

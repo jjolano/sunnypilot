@@ -11,7 +11,6 @@ PATH_NEAR_Y_M = 1.7
 MAX_CLOSE_DISTANCE_M = 45.0
 MAX_TTC_S = 5.0
 MIN_CLOSING_SPEED_MS = 0.4
-MIN_CONFIDENCE = 0.25
 MAX_PROPOSED_DECEL = 2.5
 
 
@@ -68,17 +67,22 @@ def _primary(ctx: Any) -> Any | None:
 
 
 def predict_cut_in_brake_assist(mode: Any, actual_ctx: Any | None, shadow_ctx: Any | None,
-                                v_ego: float) -> CutInBrakeAssistResult:
+                                v_ego: float, long_active: bool = False) -> CutInBrakeAssistResult:
   """Compute debug-only close cut-in brake-assist evidence.
 
   This helper never changes lead authority, MPC input, stop bits, or accel targets. The
-  proposed cap is a route-log/debug value only.
+  proposed cap is a route-log/debug value only. Apply is not supported; shadow telemetry is
+  gated by long_active and a stable/confidence threshold so confidence alone is not enough.
   """
   mode_s = str(mode or "").strip().lower()
   if mode_s not in (MODE_OFF, MODE_SHADOW):
     mode_s = MODE_OFF
   if mode_s == MODE_OFF:
     return CutInBrakeAssistResult(mode=MODE_OFF, effective_mode=MODE_OFF)
+  if not long_active:
+    return CutInBrakeAssistResult(mode=MODE_SHADOW, effective_mode=MODE_SHADOW,
+                                  apply_supported=False, eligible=False,
+                                  block_reason="long_inactive")
 
   state = _primary(shadow_ctx) or _primary(actual_ctx)
   if state is None or not bool(getattr(state, "status", False)):
@@ -89,6 +93,14 @@ def predict_cut_in_brake_assist(mode: Any, actual_ctx: Any | None, shadow_ctx: A
   v_rel = _f(getattr(state, "v_rel", 0.0))
   closing_speed = max(0.0, -v_rel)
   confidence = _f(getattr(state, "confidence", 0.0))
+  # Shadow-only eligibility: if the lead state explicitly carries a stable attribute, require it;
+  # otherwise fall back to a high-confidence threshold. Confidence alone is not enough when
+  # stability information is available.
+  stable = getattr(state, "stable", None)
+  if stable is None:
+    stable_ok = confidence >= 0.6
+  else:
+    stable_ok = bool(stable)
   risk_model = getattr(state, "risk_model", None)
   ttc = _time_value(getattr(risk_model, "ttc", getattr(state, "ttc", 0.0)))
   required_decel = max(0.0, _f(getattr(risk_model, "required_decel", getattr(state, "required_decel", 0.0))))
@@ -99,8 +111,8 @@ def predict_cut_in_brake_assist(mode: Any, actual_ctx: Any | None, shadow_ctx: A
     block = "not_close"
   elif closing_speed < MIN_CLOSING_SPEED_MS and (ttc <= 0.0 or ttc > MAX_TTC_S):
     block = "not_closing"
-  elif confidence < MIN_CONFIDENCE:
-    block = "low_confidence"
+  elif not stable_ok:
+    block = "unstable_low_confidence"
   else:
     block = ""
 

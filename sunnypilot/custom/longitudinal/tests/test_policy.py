@@ -13,6 +13,7 @@ from openpilot.sunnypilot.custom.longitudinal.policy import (
   stop_approach_accel,
   stopping_decel,
 )
+from openpilot.sunnypilot.custom.longitudinal.model_trust import GENTLE_CAUTION_DECEL
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   CRUISE_LEEWAY_MAX,
   CRUISE_LEEWAY_MIN,
@@ -120,6 +121,16 @@ def test_model_stop_trust_gated_in_policy():
   assert low.should_stop is False          # not committed on a low-confidence model stop
   assert high.should_stop is True
   assert low.a_target > high.a_target       # softer braking than the trusted stop
+
+
+def test_stale_model_stop_distance_does_not_reharden_stop_approach():
+  scene = LongitudinalScene(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0,
+                            model_should_stop=True, model_stop_distance=18.0,
+                            model_desired_accel=-3.0, model_stop_prob=0.95,
+                            model_stale=True)
+  d = decide(build_candidates(scene), LongitudinalMode.E2E, LIMITS)
+  assert d.a_target == pytest.approx(GENTLE_CAUTION_DECEL)
+  assert d.should_stop is False
 
 
 def test_committed_far_stop_coasts_first():

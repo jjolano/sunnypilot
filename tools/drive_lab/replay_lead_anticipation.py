@@ -125,7 +125,16 @@ def analyze_route(msgs: list[Any], source: str) -> dict[str, Any]:
       continue
     v_ego = _f(safe_get(cs, "vEgo"))
     a_ego = _f(safe_get(cs, "aEgo"))
-    shaped = la.shape(payload, DT_MDL)                 # run every frame to keep track continuity warm
+    # Force the offline apply-candidate context so replay still measures the §3 shaping effect after
+    # live apply was made fail-closed without planner safety context.
+    shaped = la.shape(
+      payload, DT_MDL,
+      long_active=True,
+      brake_pressed=False,
+      gas_pressed=False,
+      force_decel=False,
+      v_ego=v_ego,
+    )                                                  # run every frame to keep track continuity warm
     lead = safe_get(payload, "leadOne")
     # score any moving frame with a real lead — the MPC solve is valid whether or not the device was
     # engaged (the radar aLeadK §3 shapes is present regardless); engagement only gates actuation.

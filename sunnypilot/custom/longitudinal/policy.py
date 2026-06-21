@@ -25,7 +25,7 @@ from openpilot.sunnypilot.custom.longitudinal.lead_speed_alignment import (
   AlignmentAction,
   lead_speed_alignment,
 )
-from openpilot.sunnypilot.custom.longitudinal.model_trust import gate_model_stop
+from openpilot.sunnypilot.custom.longitudinal.model_trust import GENTLE_CAUTION_DECEL, gate_model_stop
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass
 from openpilot.sunnypilot.custom.longitudinal.runway_governor import runway_comfort_governor
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
@@ -98,6 +98,7 @@ class LongitudinalScene:
   model_stop_distance: float | None = None
   model_desired_accel: float = 0.0
   model_stop_prob: float = 1.0   # model confidence in the stop (trust gate); 1.0 = fully trusted
+  model_stale: bool = False
   stop_threat: bool = False
   # advisory sources
   speed_limit_active: bool = False
@@ -421,17 +422,22 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   # or uncorroborated model stop is softened toward a gentle precautionary decel and is not
   # committed as a stop until trusted (anti-quirk: don't slam on a flickery model stop).
   if scene.model_should_stop or (scene.model_stop_distance is not None and scene.model_stop_distance > 0.0):
-    trust = gate_model_stop(scene.model_should_stop, scene.model_desired_accel, scene.model_stop_prob,
-                            has_radar_lead=scene.has_lead, lead_v_rel=scene.lead_v_rel)
-    trusted_scene = replace(scene, model_should_stop=trust.should_stop, model_desired_accel=trust.desired_accel)
-    stop_a, hard = stop_approach_accel(trusted_scene)
-    # Coast-first for a long stop runway: only for a COMMITTED (trusted) stop, so the trust
-    # gate's softening of a low-confidence stop is never re-hardened by stop kinematics.
-    if trust.should_stop and not hard and scene.model_stop_distance is not None and scene.model_stop_distance > 0.0:
-      stop_a = runway_comfort_governor(scene.v_ego, 0.0, scene.model_stop_distance, stop_a,
-                                       _scene_coast_decel(scene))
-    cands.append(LongitudinalCandidate(stop_a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP,
-                                       "stop_approach", is_stop=bool(trust.should_stop and hard)))
+    if scene.model_stale:
+      cands.append(LongitudinalCandidate(GENTLE_CAUTION_DECEL, CandidateRole.PHYSICAL_HAZARD,
+                                         EvidenceClass.MODEL_STOP, "stop_approach", is_stop=False))
+    else:
+      trust = gate_model_stop(scene.model_should_stop, scene.model_desired_accel, scene.model_stop_prob,
+                              has_radar_lead=scene.has_lead, lead_v_rel=scene.lead_v_rel,
+                              model_stale=scene.model_stale)
+      trusted_scene = replace(scene, model_should_stop=trust.should_stop, model_desired_accel=trust.desired_accel)
+      stop_a, hard = stop_approach_accel(trusted_scene)
+      # Coast-first for a long stop runway: only for a COMMITTED (trusted) stop, so the trust
+      # gate's softening of a low-confidence stop is never re-hardened by stop kinematics.
+      if trust.should_stop and not hard and scene.model_stop_distance is not None and scene.model_stop_distance > 0.0:
+        stop_a = runway_comfort_governor(scene.v_ego, 0.0, scene.model_stop_distance, stop_a,
+                                         _scene_coast_decel(scene))
+      cands.append(LongitudinalCandidate(stop_a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP,
+                                         "stop_approach", is_stop=bool(trust.should_stop and hard)))
 
   # advisory caps
   if scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego:

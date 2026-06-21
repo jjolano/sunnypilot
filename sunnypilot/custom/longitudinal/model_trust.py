@@ -46,7 +46,8 @@ def _clip(v: float, lo: float, hi: float) -> float:
 
 
 def gate_model_stop(model_should_stop: bool, model_desired_accel: float, stop_prob: float,
-                    has_radar_lead: bool = False, lead_v_rel: float = 0.0) -> ModelStopTrustResult:
+                    has_radar_lead: bool = False, lead_v_rel: float = 0.0,
+                    model_stale: bool = False) -> ModelStopTrustResult:
   """Trust-gate the model's stop/slowdown.
 
   ``stop_prob`` is the model's confidence in the stop (modelV2). ``lead_v_rel`` < 0 means a
@@ -58,6 +59,11 @@ def gate_model_stop(model_should_stop: bool, model_desired_accel: float, stop_pr
   # curve) binds independently in the decision core, so we never relax safety here.
   if not model_should_stop and model_decel >= 0.0:
     return ModelStopTrustResult(False, float(model_desired_accel), 1.0, "model_clear")
+
+  # A stale model stop is semantic evidence that arrived too late. Do not commit a stop or
+  # honor hard model decel from it; radar/MPC lead physics remains a separate safety floor.
+  if model_stale:
+    return ModelStopTrustResult(False, GENTLE_CAUTION_DECEL, 0.0, "model_stale")
 
   # Caution: the model wants to slow/stop. Earn trust from model confidence, raised by radar
   # corroboration (a closing radar lead physically agrees with slowing down).

@@ -25,18 +25,45 @@ def ctx(primary):
 
 
 def test_cut_in_shadow_eligible_and_blocked_cases():
-  r = predict_cut_in_brake_assist("shadow", ctx(state()), None, 15.0)
+  r = predict_cut_in_brake_assist("shadow", ctx(state()), None, 15.0, long_active=True)
   assert r.eligible is True
   assert r.apply_supported is False
   assert r.proposed_cap < 0.0
 
-  far = predict_cut_in_brake_assist("shadow", ctx(state(d_rel=80.0)), None, 15.0)
+  far = predict_cut_in_brake_assist("shadow", ctx(state(d_rel=80.0)), None, 15.0, long_active=True)
   assert far.eligible is False
   assert far.block_reason == "not_close"
 
-  off = predict_cut_in_brake_assist("bad", ctx(state()), None, 15.0)
+  off = predict_cut_in_brake_assist("bad", ctx(state()), None, 15.0, long_active=True)
   assert off.mode == "off"
   assert off.eligible is False
+
+
+def test_cut_in_shadow_blocked_when_long_inactive():
+  r = predict_cut_in_brake_assist("shadow", ctx(state()), None, 15.0, long_active=False)
+  assert r.mode == "shadow"
+  assert r.effective_mode == "shadow"
+  assert r.apply_supported is False
+  assert r.eligible is False
+  assert r.block_reason == "long_inactive"
+
+
+def test_cut_in_eligibility_requires_stable_or_high_confidence():
+  # Absent stable attribute, confidence >= 0.6 is required.
+  ok = predict_cut_in_brake_assist("shadow", ctx(state(confidence=0.6)), None, 15.0, long_active=True)
+  assert ok.eligible is True
+
+  low_conf = predict_cut_in_brake_assist("shadow", ctx(state(confidence=0.5)), None, 15.0, long_active=True)
+  assert low_conf.eligible is False
+  assert low_conf.block_reason == "unstable_low_confidence"
+
+  # Explicit stable=False with low confidence is still blocked; explicit stable=True passes.
+  unstable = predict_cut_in_brake_assist("shadow", ctx(state(confidence=0.5, stable=False)), None, 15.0, long_active=True)
+  assert unstable.eligible is False
+  assert unstable.block_reason == "unstable_low_confidence"
+
+  stable = predict_cut_in_brake_assist("shadow", ctx(state(confidence=0.5, stable=True)), None, 15.0, long_active=True)
+  assert stable.eligible is True
 
 
 def test_curve_confidence_shadow_uses_negative_active_caps_only():

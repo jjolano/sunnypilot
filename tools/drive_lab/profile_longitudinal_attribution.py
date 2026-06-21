@@ -111,11 +111,21 @@ def _build_lead_anticipation_summary(msgs: list[Any]) -> dict[str, Any]:
   deltas: list[float] = []
   softened_deltas: list[float] = []
   last_radar_t: float | None = None
+  latest: dict[str, Any] = {}
   for rec in build_route_messages(msgs):
+    latest[rec.typ] = rec.payload
     if rec.typ != "radarState":
       continue
     radar = rec.payload
-    shaped = la.shape(radar, _radar_dt(rec.t, last_radar_t))
+    v_ego = _finite(safe_get(latest.get("carState"), "vEgo"))
+    shaped = la.shape(
+      radar, _radar_dt(rec.t, last_radar_t),
+      long_active=True,
+      brake_pressed=False,
+      gas_pressed=False,
+      force_decel=False,
+      v_ego=0.0 if v_ego is None else v_ego,
+    )
     last_radar_t = rec.t
     lead = safe_get(radar, "leadOne")
     if lead is None or not bool(safe_get(lead, "status", False)):
@@ -199,7 +209,15 @@ def analyze_route(msgs: list[Any], source: str = "unknown", include_replay: bool
   for rec in records:
     latest[rec.typ] = rec.payload
     if rec.typ == "radarState":
-      shaped = lead_anticipation.shape(rec.payload, _radar_dt(rec.t, last_radar_t))
+      v_ego = _finite(safe_get(latest.get("carState"), "vEgo"))
+      shaped = lead_anticipation.shape(
+        rec.payload, _radar_dt(rec.t, last_radar_t),
+        long_active=True,
+        brake_pressed=False,
+        gas_pressed=False,
+        force_decel=False,
+        v_ego=0.0 if v_ego is None else v_ego,
+      )
       last_radar_t = rec.t
       latest_lead_anticipation = _lead_anticipation_delta(rec.payload, shaped)
     elif rec.typ == "selfdriveState":

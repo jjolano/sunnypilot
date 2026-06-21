@@ -17,6 +17,7 @@ by ``StopTrustLearner``, which learns how much to trust it from real driver disa
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,6 +31,7 @@ from openpilot.sunnypilot.custom.longitudinal.stack import CustomLongitudinalSta
 PARAMS_REFRESH_PERIOD = 50  # planner ticks (~20Hz -> ~2.5s)
 DEFAULT_ACCEL_LIMITS = (-4.0, 2.0)
 MODEL_STOP_SPEED = 0.3  # m/s; predicted speed at/below this marks the trajectory's rest point
+MODEL_STALE_AGE_S = 0.20
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -50,6 +52,13 @@ def _param_string(params: Any, key: str) -> str | None:
   if isinstance(raw, bytes):
     raw = raw.decode(errors="ignore")
   return str(raw)
+
+
+def _message_age_s(sm: Any, service: str) -> float:
+  recv_time = getattr(sm, "recv_time", None)
+  if not isinstance(recv_time, dict) or service not in recv_time:
+    return 0.0
+  return max(0.0, time.monotonic() - float(recv_time[service]))
 
 
 def _lead_path_clearance_mode(value: Any) -> str:
@@ -103,9 +112,10 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        scc_map_active: bool, scc_map_a_target: float,
                        sla_active: bool, sla_v_target: float, sla_a_target: float,
                        mode: LongitudinalMode, personality: Personality, sources: SourceToggles,
-                       brake_pressed: bool = False, gas_pressed: bool = False, force_slow_decel: bool = False,
+                       long_active: bool = False, brake_pressed: bool = False, gas_pressed: bool = False, force_slow_decel: bool = False,
                        model_should_stop: bool = False, model_desired_accel: float = 0.0,
                        model_stop_prob: float = 1.0, model_stop_distance: float | None = None,
+                       model_stale: bool = False,
                        accel_coast: float = 0.0, model_msg: Any | None = None,
                        lead_path_clearance_mode: str = LEAD_PATH_CLEARANCE_MODE_OFF,
                        cut_in_brake_assist_mode: str = "off",
@@ -144,10 +154,12 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     # stop_threat is intentionally inert: every policy consumer (coast/launch/comfort-relax)
     # is already gated by has_lead, and the only lead-derived stop-threat signal is itself
     # lead-coupled, making it fully redundant with has_lead (zero observable effect).
-    model_desired_accel=float(model_desired_accel), model_stop_prob=float(model_stop_prob), stop_threat=False,
+    model_desired_accel=float(model_desired_accel), model_stop_prob=float(model_stop_prob),
+    model_stale=bool(model_stale), stop_threat=False,
     speed_limit_active=bool(sla_active), speed_limit_v_target=float(sla_v_target), speed_limit_a_target=float(sla_a_target),
     curve_active=curve_active, curve_a_target=float(curve_a_target), curve_source=curve_source,
-    force_slow_decel=bool(force_slow_decel), brake_pressed=brake_pressed, gas_pressed=gas_pressed,
+    long_active=bool(long_active), force_slow_decel=bool(force_slow_decel),
+    brake_pressed=brake_pressed, gas_pressed=gas_pressed,
     mode=mode, sources=sources, personality=personality, model_msg=model_msg,
     lead_path_clearance_mode=lead_path_clearance_mode,
     cut_in_brake_assist_mode=cut_in_brake_assist_mode,
@@ -242,6 +254,8 @@ class CustomLongitudinalAdapter:
       gas_pressed = bool(getattr(cs, "gasPressed", False))
 
       model = sm['modelV2']
+      model_age_s = _message_age_s(sm, 'modelV2')
+      model_stale = model_age_s > MODEL_STALE_AGE_S
       action = getattr(model, "action", None)
       model_should_stop = bool(getattr(action, "shouldStop", False)) if action is not None else False
       model_desired_accel = _f(getattr(action, "desiredAcceleration", 0.0)) if action is not None else 0.0
@@ -261,10 +275,12 @@ class CustomLongitudinalAdapter:
         sla_active=bool(getattr(sla, "is_active", False)), sla_v_target=float(getattr(sla, "output_v_target", 0.0)),
         sla_a_target=float(getattr(sla, "output_a_target", 0.0)),
         mode=self.mode, personality=self.personality, sources=self.sources,
+        long_active=bool(getattr(cc, "longActive", False)),
         brake_pressed=bool(getattr(cs, "brakePressed", False)), gas_pressed=gas_pressed,
         force_slow_decel=bool(getattr(controls_state, "forceDecel", False)),
         model_should_stop=model_should_stop, model_desired_accel=model_desired_accel,
-        model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance, accel_coast=accel_coast,
+        model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance,
+        model_stale=model_stale, accel_coast=accel_coast,
         model_msg=model, lead_path_clearance_mode=self.lead_path_clearance_mode,
         cut_in_brake_assist_mode=self.cut_in_brake_assist_mode,
         curve_speed_confidence_mode=self.curve_speed_confidence_mode,

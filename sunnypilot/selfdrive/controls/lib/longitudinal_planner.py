@@ -23,7 +23,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.sunnypilot.custom.longitudinal.lead_anticipation import LeadAnticipation
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, admitted_evidence
-from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter
+from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, MODEL_STALE_AGE_S, _message_age_s
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
@@ -226,13 +226,14 @@ class LongitudinalPlannerSP:
     self.output_a_target = self.custom_long_output.a_target
     return self.output_v_target, self.output_a_target
 
-  def custom_longitudinal_should_stop(self, mpc_should_stop: bool, raw_model_should_stop: bool) -> bool | None:
+  def custom_longitudinal_should_stop(self, mpc_should_stop: bool, raw_model_should_stop: bool,
+                                      model_stale: bool = False) -> bool | None:
     if not self.custom_long.enabled or self.custom_long_output is None:
       return None
     if self.custom_long.mode is LongitudinalMode.ACC:
       return bool(mpc_should_stop)
     if self.custom_long.mode is LongitudinalMode.E2E:
-      return bool(mpc_should_stop or raw_model_should_stop)
+      return bool(mpc_should_stop or (raw_model_should_stop and not model_stale))
     return bool(mpc_should_stop or self.custom_long_output.should_stop)
 
   def _scc_custom_stop_cap(self, base_a_target: float) -> float:
@@ -403,9 +404,10 @@ class LongitudinalPlannerSP:
       release_mpc_stop, release_a_target = self._standstill_release_clears_mpc_stop(
         sm, mpc_a_target, mpc_should_stop, raw_model_a_target, raw_model_should_stop)
       mpc_stop = bool(mpc_should_stop and not release_mpc_stop)
-    custom_should_stop = self.custom_longitudinal_should_stop(mpc_stop, raw_model_should_stop)
+    model_stale = _message_age_s(sm, 'modelV2') > MODEL_STALE_AGE_S
+    custom_should_stop = self.custom_longitudinal_should_stop(mpc_stop, raw_model_should_stop, model_stale)
     is_e2e = self.is_e2e(sm)
-    should_stop = bool(custom_should_stop if custom_should_stop is not None else (mpc_stop or (raw_model_should_stop and is_e2e)))
+    should_stop = bool(custom_should_stop if custom_should_stop is not None else (mpc_stop or (raw_model_should_stop and is_e2e and not model_stale)))
     if lead_stop_hold_active:
       stop_accel = getattr(self.CP, 'stopAccel', None)
       stop_accel = -0.5 if stop_accel is None else float(stop_accel)
@@ -418,7 +420,7 @@ class LongitudinalPlannerSP:
       if self.custom_long_output is not None:
         self._custom_long_output_telemetry = replace(self.custom_long_output, should_stop=True, selected_intent="lead_stop_hold", reason="stopped_lead_latch")
       return float(a_target), True, bool(is_e2e and a_target < hold_a_target)
-    if is_e2e:
+    if is_e2e and not model_stale:
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
       return float(a_target), should_stop, bool(a_target < mpc_a_target)
     a_target = float(release_a_target if release_mpc_stop else mpc_a_target)
@@ -536,8 +538,9 @@ class LongitudinalPlannerSP:
       trace = dict(getattr(self, '_last_longitudinal_debug', {}) or {})
       debug = dict(getattr(custom_long_output, 'debug', {}) or {})
       # Inject planner-level release block reason into the standstill_release_confidence trace
-      if self._last_release_block_reason:
-        debug['standstill_release_confidence_block_reason'] = self._last_release_block_reason
+      release_block_reason = str(getattr(self, '_last_release_block_reason', '') or '')
+      if release_block_reason:
+        debug['standstill_release_confidence_block_reason'] = release_block_reason
       msg.enabled = True
       msg.traceMode = str(getattr(self.custom_long, "debug_trace_mode", "off"))
       car_state = self._sm_item(sm, 'carState')

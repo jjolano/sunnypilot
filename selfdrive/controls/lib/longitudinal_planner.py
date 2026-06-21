@@ -146,7 +146,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     # §3: mode-gated lead-motion anticipation shadow/apply shapes lead accel before the MPC and
     # returns the raw radarState when off/shadow or on any fault.
-    radar_state = self.lead_anticipation.shape(sm['radarState'], self.dt)
+    long_active_for_anticipation = sm['carControl'].longActive and not reset_state and not long_control_off
+    radar_state = self.lead_anticipation.shape(
+      sm['radarState'], self.dt,
+      long_active=long_active_for_anticipation,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+      force_decel=force_slow_decel,
+      v_ego=v_ego,
+    )
     self.mpc.update(radar_state, v_cruise, personality=sm['selfdriveState'].personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
