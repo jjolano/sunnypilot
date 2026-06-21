@@ -142,6 +142,29 @@ def test_lead_follow_decel_binds():
   assert r.a_target <= -1.5 + 1e-9
 
 
+def test_acc_envelope_shadow_debug_does_not_change_stack_output():
+  raw_stack = CustomLongitudinalStack()
+  envelope_stack = CustomLongitudinalStack()
+  kwargs = dict(
+    v_ego=20.0,
+    v_cruise=25.0,
+    seed_a_target=0.4,
+    leads=(lead(d_rel=20.0, v_lead=15.0, v_rel=-5.0), None),
+    lead_a_target=0.4,
+    mode=LongitudinalMode.ACC,
+  )
+
+  raw = raw_stack.update(base(**kwargs), DT)
+  observed = envelope_stack.update(base(**kwargs), DT)
+
+  assert observed.a_target == pytest.approx(raw.a_target)
+  assert observed.should_stop == raw.should_stop
+  assert observed.debug["acc_envelope_active"] is True
+  assert observed.debug["acc_envelope_would_cap"] is True
+  assert "inside_time_gap" in observed.debug["acc_envelope_cap_reason"]
+  assert observed.debug["acc_envelope_delta_a"] <= 0.0
+
+
 def test_personality_changes_launch():
   results = {}
   for p in (Personality.RELAXED, Personality.AGGRESSIVE):

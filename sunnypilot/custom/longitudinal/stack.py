@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.acc_envelope import AccEnvelopeInputs, evaluate_acc_envelope
 from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import predict_cut_in_brake_assist
 from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs, predict_curve_speed_confidence
 from openpilot.sunnypilot.custom.longitudinal.decision import Decision, decide
@@ -217,6 +218,32 @@ class CustomLongitudinalStack:
     )
     candidates = build_candidates(scene)
     decision = decide(candidates, inp.mode, inp.accel_limits, inp.sources)
+    acc_envelope_debug: dict[str, Any] = {}
+    try:
+      model_progress_candidate = str(decision.selected_intent) in ("no_lead_launch", "lead_pullaway", "lead_standstill_launch")
+      acc_envelope_debug = evaluate_acc_envelope(AccEnvelopeInputs(
+        v_ego=inp.v_ego,
+        candidate_a_target=decision.a_target,
+        previous_a_target=inp.seed_a_target,
+        dt=dt,
+        openpilot_longitudinal_control=True,
+        has_lead=has_lead,
+        lead_d_rel=lead_d_rel,
+        lead_v_rel=lead_v_rel,
+        lead_v_lead=lead_v,
+        lead_a_lead_k=lead_a_k,
+        lead_kinematics_valid=lead_kinematics_valid,
+        model_stale=inp.model_stale,
+        model_progress_candidate=model_progress_candidate,
+        radar_stale=False,
+        lead_required=has_lead,
+      )).debug_dict()
+    except Exception:
+      acc_envelope_debug = {
+        "acc_envelope_active": False,
+        "acc_envelope_would_cap": True,
+        "acc_envelope_cap_reason": "fault",
+      }
 
     # Decision output is a pre-MPC target. Most lead-present braking seeds bind as hazards;
     # only explicitly approved low-risk soft cases raise the seed before the downstream MPC
@@ -288,6 +315,7 @@ class CustomLongitudinalStack:
         **curve_speed_confidence_debug,
         "standstill_release_confidence_fault": standstill_release_confidence_fault,
         **standstill_release_confidence_debug,
+        **acc_envelope_debug,
       },
     )
 

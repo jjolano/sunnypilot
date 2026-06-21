@@ -305,10 +305,25 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       releaseReason @8 :Text;
       releaseATarget @9 :Float32;
     }
+    struct AccEnvelopeTrace {
+      active @0 :Bool;
+      wouldCap @1 :Bool;
+      capReason @2 :Text;
+      allowedATarget @3 :Float32;
+      deltaA @4 :Float32;
+      desiredGap @5 :Float32;
+      timeGap @6 :Float32;
+      ttc @7 :Float32;
+      usableStoppingGap @8 :Float32;
+      requiredStoppingDecel @9 :Float32;
+      closingSpeedDecel @10 :Float32;
+      jerkLimitedATarget @11 :Float32;
+    }
 
     cutInBrakeAssist @19 :CutInBrakeAssistTrace;
     curveSpeedConfidence @20 :CurveSpeedConfidenceTrace;
     standstillReleaseConfidence @21 :StandstillReleaseConfidenceTrace;
+    accEnvelope @22 :AccEnvelopeTrace;
   }
 
   struct SmartCruiseControl {

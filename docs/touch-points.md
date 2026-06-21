@@ -18,6 +18,7 @@ upstream updates.
 | `system/manager/process_config.py` | `manage_tailscaled` daemon process entry (2 lines) |
 | `selfdrive/ui/sunnypilot/layouts/settings/developer.py` | Tailscale install/enable/login/logout settings items |
 | `cereal/log.capnp` | Phase 0b shadow-only lateral disturbance counters on `LiveTorqueParametersData`; observability-only lateral `ControlsState.modelPathState`, Torque v2.1 `adaptiveTorqueState`, and v0 underresponse telemetry fields on `ControlsState.LateralTorqueState` |
+| `cereal/custom.capnp` | Custom longitudinal observability on `LongitudinalPlanSP`, including debug-trace feature telemetry and shadow-only ACC envelope audit fields |
 | `sunnypilot/selfdrive/controls/controlsd_ext.py` | Dispatch torque v2.1 when `TorqueControlTune == 2.1` (import + 1 `elif`); hold the opt-in `LateralDemandAdapter` |
 | `sunnypilot/selfdrive/controls/lib/latcontrol_torque_versions.json` | Register `v2.1` in the native torque-selector manifest |
 | `selfdrive/controls/radard.py` | Cut-in override: 1 fail-closed call (`apply_cut_in_override`) wrapping `get_lead()` for `leadOne` — promotes high-risk on-path radar tracks (closing speed ≥ 2 m/s, TTC ≤ 8 s, on-path, moving, persistent) to `leadOne` when the vision model hasn't confirmed them. Gated by `CustomLongitudinalEnabled`; never overrides a confirmed lead |

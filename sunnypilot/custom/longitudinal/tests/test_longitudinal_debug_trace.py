@@ -141,6 +141,18 @@ def test_debug_trace_populates_whitelisted_fields():
     'standstill_release_confidence_release_source': 'lead_pullaway',
     'standstill_release_confidence_release_reason': 'lead_opening',
     'standstill_release_confidence_release_a_target': 0.25,
+    'acc_envelope_active': True,
+    'acc_envelope_would_cap': True,
+    'acc_envelope_cap_reason': 'inside_time_gap,ttc_low',
+    'acc_envelope_allowed_a_target': -0.4,
+    'acc_envelope_delta_a': -0.6,
+    'acc_envelope_desired_gap': 18.0,
+    'acc_envelope_time_gap': 1.2,
+    'acc_envelope_ttc': 2.5,
+    'acc_envelope_usable_stopping_gap': -3.0,
+    'acc_envelope_required_stopping_decel': 1.4,
+    'acc_envelope_closing_speed_decel': 1.4,
+    'acc_envelope_jerk_limited_a_target': 0.3,
   }))
   planner._last_longitudinal_debug = {'v_cruise': 15.2, 'mpc_a_target': 1.0, 'mpc_should_stop': True, 'model_a_target': -1.0,
                                       'model_should_stop': False, 'final_a_target_unclipped': 0.9,
@@ -196,6 +208,18 @@ def test_debug_trace_populates_whitelisted_fields():
   assert msg.standstillReleaseConfidence.releaseAllowed is True
   assert msg.standstillReleaseConfidence.releaseSource == 'lead_pullaway'
   assert msg.standstillReleaseConfidence.releaseATarget == pytest.approx(0.25)
+  assert msg.accEnvelope.active is True
+  assert msg.accEnvelope.wouldCap is True
+  assert msg.accEnvelope.capReason == 'inside_time_gap,ttc_low'
+  assert msg.accEnvelope.allowedATarget == pytest.approx(-0.4)
+  assert msg.accEnvelope.deltaA == pytest.approx(-0.6)
+  assert msg.accEnvelope.desiredGap == pytest.approx(18.0)
+  assert msg.accEnvelope.timeGap == pytest.approx(1.2)
+  assert msg.accEnvelope.ttc == pytest.approx(2.5)
+  assert msg.accEnvelope.usableStoppingGap == pytest.approx(-3.0)
+  assert msg.accEnvelope.requiredStoppingDecel == pytest.approx(1.4)
+  assert msg.accEnvelope.closingSpeedDecel == pytest.approx(1.4)
+  assert msg.accEnvelope.jerkLimitedATarget == pytest.approx(0.3)
 
 
 def test_debug_trace_sanitizes_non_finite_values_without_throwing():
@@ -211,6 +235,10 @@ def test_debug_trace_sanitizes_non_finite_values_without_throwing():
     'curve_speed_confidence_proposed_cap': math.inf,
     'standstill_release_confidence_mode': 'shadow',
     'standstill_release_confidence_release_a_target': math.nan,
+    'acc_envelope_active': True,
+    'acc_envelope_allowed_a_target': math.nan,
+    'acc_envelope_ttc': math.inf,
+    'acc_envelope_required_stopping_decel': -math.inf,
   }))
   planner._last_longitudinal_debug = {
     'mpc_a_target': math.nan,
@@ -238,3 +266,7 @@ def test_debug_trace_sanitizes_non_finite_values_without_throwing():
   assert msg.cutInBrakeAssist.proposedCap == pytest.approx(0.0)
   assert msg.curveSpeedConfidence.proposedCap == pytest.approx(0.0)
   assert msg.standstillReleaseConfidence.releaseATarget == pytest.approx(0.0)
+  assert msg.accEnvelope.active is True
+  assert msg.accEnvelope.allowedATarget == pytest.approx(0.0)
+  assert msg.accEnvelope.ttc == pytest.approx(0.0)
+  assert msg.accEnvelope.requiredStoppingDecel == pytest.approx(0.0)

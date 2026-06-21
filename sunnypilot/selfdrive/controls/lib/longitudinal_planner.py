@@ -583,6 +583,7 @@ class LongitudinalPlannerSP:
       self._populate_cut_in_brake_assist_trace(msg.cutInBrakeAssist, debug)
       self._populate_curve_speed_confidence_trace(msg.curveSpeedConfidence, debug)
       self._populate_standstill_release_confidence_trace(msg.standstillReleaseConfidence, debug)
+      self._populate_acc_envelope_trace(msg.accEnvelope, debug)
     except Exception:
       msg.enabled = False
       msg.traceMode = 'off'
@@ -624,6 +625,21 @@ class LongitudinalPlannerSP:
     msg.releaseSource = str(debug.get(prefix + 'release_source', '') or '')
     msg.releaseReason = str(debug.get(prefix + 'release_reason', '') or '')
     msg.releaseATarget = self._safe_float(debug.get(prefix + 'release_a_target', 0.0))
+
+  def _populate_acc_envelope_trace(self, msg, debug: dict) -> None:
+    prefix = 'acc_envelope_'
+    msg.active = bool(debug.get(prefix + 'active', False))
+    msg.wouldCap = bool(debug.get(prefix + 'would_cap', False))
+    msg.capReason = str(debug.get(prefix + 'cap_reason', '') or '')
+    msg.allowedATarget = self._safe_float(debug.get(prefix + 'allowed_a_target', 0.0))
+    msg.deltaA = self._safe_float(debug.get(prefix + 'delta_a', 0.0))
+    msg.desiredGap = self._safe_float(debug.get(prefix + 'desired_gap', 0.0))
+    msg.timeGap = self._safe_float(debug.get(prefix + 'time_gap', 0.0))
+    msg.ttc = self._safe_float(debug.get(prefix + 'ttc', 0.0))
+    msg.usableStoppingGap = self._safe_float(debug.get(prefix + 'usable_stopping_gap', 0.0))
+    msg.requiredStoppingDecel = self._safe_float(debug.get(prefix + 'required_stopping_decel', 0.0))
+    msg.closingSpeedDecel = self._safe_float(debug.get(prefix + 'closing_speed_decel', 0.0))
+    msg.jerkLimitedATarget = self._safe_float(debug.get(prefix + 'jerk_limited_a_target', 0.0))
 
   @staticmethod
   def _safe_float(value, default: float = 0.0) -> float:
