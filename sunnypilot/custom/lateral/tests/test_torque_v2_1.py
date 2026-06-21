@@ -129,6 +129,26 @@ def test_populates_adaptive_torque_telemetry():
   assert adaptive.rawActualLateralAccel == pytest.approx(pid_log.actualLateralAccel)
 
 
+def test_same_direction_limit_requires_tracking_correction_direction():
+  c = make_controller()
+  assert c._same_direction_limit(True, 0.5, 1.0, 0.5) is True
+  assert c._same_direction_limit(True, -0.5, 1.0, 0.5) is False
+  assert c._same_direction_limit(True, 0.5, 0.5, 1.0) is False
+  assert c._same_direction_limit(False, 0.5, 1.0, 0.5) is False
+
+
+def test_same_direction_limit_uses_requested_and_applied_torque_signs_when_available():
+  c = make_controller()
+  c.set_steer_limited_output_context(0.8, 0.6)
+  assert c._same_direction_limit(True, 0.5, 1.0, 0.5) is True
+
+  c.set_steer_limited_output_context(0.8, -0.2)
+  assert c._same_direction_limit(True, 0.5, 1.0, 0.5) is False
+
+  c.set_steer_limited_output_context(-0.8, -0.6)
+  assert c._same_direction_limit(True, 0.5, 1.0, 0.5) is False
+
+
 def test_populates_underresponse_shadow_telemetry_without_changing_output():
   c = make_controller()
   vm = FakeVM()

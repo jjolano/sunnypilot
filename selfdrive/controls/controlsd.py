@@ -250,6 +250,8 @@ class Controls(ControlsExt):
                                               STEER_ANGLE_SATURATION_THRESHOLD
       else:
         self.steer_limited_by_safety = abs(CC.actuators.torque - CO.actuatorsOutput.torque) > 1e-2
+        if hasattr(self.LaC, 'set_steer_limited_output_context'):
+          self.LaC.set_steer_limited_output_context(CC.actuators.torque, CO.actuatorsOutput.torque)
 
     # TODO: both controlsState and carControl valids should be set by
     #       sm.all_checks(), but this creates a circular dependency

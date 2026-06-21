@@ -6,12 +6,13 @@ when ``TorqueControlTune == 2.1``. See
 ``docs/adr/2026-06-13-clean-room-torque-v2-1-architecture.md``.
 
 First-cut approximations (land with engaged-route tuning / the steering-actuator-feedback
-port): the governor's ``same_direction_limit`` is approximated by ``steer_limited_by_safety``
-and ``release_active`` by ``steering_pressed``; the governor's deferred comfort behaviors and
+port): the governor's ``release_active`` is approximated by ``steering_pressed``; the governor's deferred comfort behaviors and
 the additive assist learning are not yet present. End-to-end feel is validated against the
 engaged-route corpus, not here.
 """
 from __future__ import annotations
+
+import math
 
 from cereal import log
 from opendbc.car.lateral import get_friction
@@ -23,6 +24,16 @@ from openpilot.sunnypilot.custom.lateral.output_governor import OutputGovernor, 
 from openpilot.sunnypilot.custom.lateral.response_core import ResponseCore, ResponseCoreInputs
 
 VERSION_V21 = 21
+SAME_DIRECTION_TORQUE_EPS = 1e-3
+SAME_DIRECTION_ERROR_EPS = 0.02
+
+
+def _sign(value: float, eps: float) -> int:
+  if value > eps:
+    return 1
+  if value < -eps:
+    return -1
+  return 0
 
 
 class LatControlTorqueV21(LatControl):
@@ -41,6 +52,8 @@ class LatControlTorqueV21(LatControl):
     self.underresponse_sentinel = UnderresponseSentinel(dt)
     self.extension = extension if extension is not None else LatControlTorqueExt(self, CP, CP_SP, CI)
     self._under_response_path_evidence_valid = True
+    self._limited_requested_torque = None
+    self._limited_applied_torque = None
 
   def reset(self):
     super().reset()
@@ -53,6 +66,31 @@ class LatControlTorqueV21(LatControl):
 
   def set_under_response_path_evidence(self, valid: bool) -> None:
     self._under_response_path_evidence_valid = bool(valid)
+
+  def set_steer_limited_output_context(self, requested_torque, applied_torque) -> None:
+    try:
+      requested = float(requested_torque)
+      applied = float(applied_torque)
+    except (TypeError, ValueError):
+      requested = math.nan
+      applied = math.nan
+    self._limited_requested_torque = requested if math.isfinite(requested) else None
+    self._limited_applied_torque = applied if math.isfinite(applied) else None
+
+  def _same_direction_limit(self, steer_limited_by_safety: bool, nominal_torque: float,
+                            desired_lateral_accel: float, actual_lateral_accel: float) -> bool:
+    if not steer_limited_by_safety:
+      return False
+    nominal_sign = _sign(float(nominal_torque), SAME_DIRECTION_TORQUE_EPS)
+    correction_sign = _sign(float(desired_lateral_accel) - float(actual_lateral_accel), SAME_DIRECTION_ERROR_EPS)
+    if nominal_sign == 0 or nominal_sign != correction_sign:
+      return False
+
+    if self._limited_requested_torque is None or self._limited_applied_torque is None:
+      return True
+    requested_sign = _sign(self._limited_requested_torque, SAME_DIRECTION_TORQUE_EPS)
+    applied_sign = _sign(self._limited_applied_torque, SAME_DIRECTION_TORQUE_EPS)
+    return requested_sign == nominal_sign and applied_sign == requested_sign
 
   def set_under_response_path_evidence_from_lateral_demand(self, lateral_demand_result,
                                                            *, active: bool | None = None,
@@ -118,6 +156,9 @@ class LatControlTorqueV21(LatControl):
     )
 
     nominal_output_torque = output_torque
+    same_direction_limit = self._same_direction_limit(
+      bool(steer_limited_by_safety), nominal_output_torque, rc.setpoint, rc.measurement
+    )
     governed = self.governor.update(OutputGovernorInputs(
       active=True,
       v_ego=CS.vEgo,
@@ -126,7 +167,7 @@ class LatControlTorqueV21(LatControl):
       max_output=self.steer_max,
       desired_lateral_accel=rc.setpoint,
       actual_lateral_accel=rc.measurement,
-      same_direction_limit=bool(steer_limited_by_safety),
+      same_direction_limit=same_direction_limit,
       release_active=bool(CS.steeringPressed),
       path_evidence_valid=self._under_response_path_evidence_valid,
       controller_evidence_stable=not (rc.same_sign_unwind or rc.measurement_reset),
@@ -157,7 +198,7 @@ class LatControlTorqueV21(LatControl):
     adaptive.modelConfidence = float(getattr(rc, "model_confidence", 0.0) or 0.0)
     adaptive.steerLimitLimited = bool(steer_limited_by_safety)
     adaptive.steerLimitError = float(max(0.0, abs(nominal_output_torque) - (self.steer_max * governed.cap)))
-    adaptive.steerLimitSameDirection = bool(steer_limited_by_safety)
+    adaptive.steerLimitSameDirection = bool(same_direction_limit)
     adaptive.governorReason = int(governed.reason)
     adaptive.actualLateralJerk = float(rc.raw_actual_lateral_jerk)
     adaptive.governorFloor = float(governed.floor)
