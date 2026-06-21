@@ -1248,7 +1248,7 @@ def test_stop_hold_release_prep_upward_ramp_bounded_by_jerk():
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
   for i in range(2):
     sp.final_longitudinal_output(_prep_sm(d_rel=6.25 + i * 0.01, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  prev = float(sp._stop_hold_release_prep_a_target) if sp._stop_hold_release_prep_a_target is not None else -2.0
+  prev = float(sp._stop_hold_release_prep_a_target) if sp._stop_hold_release_prep_a_target is not None else sp._STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET
   for i in range(6):
     sm = _prep_sm(d_rel=6.27 + i * 0.02, v_lead=0.25, v_rel=0.10)
     a, should_stop, _ = sp.final_longitudinal_output(sm, -0.05, True, 0.0, False)  # type: ignore[arg-type]
@@ -1298,27 +1298,27 @@ def test_stop_hold_release_prep_vetoes_weak_release_evidence():
 
   # Lead not moving enough.
   a, _, _ = sp.final_longitudinal_output(_prep_sm(v_lead=0.15, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  assert a == -2.0
+  assert a == -0.5
   assert sp._stop_hold_release_prep_a_target is None
 
   # Lead not opening.
   a, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.2, v_lead=0.25, v_rel=0.0), -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  assert a == -2.0
+  assert a == -0.5
   assert sp._stop_hold_release_prep_a_target is None
 
   # Gap opening too briefly.
   a, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.21, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  assert a == -2.0
+  assert a == -0.5
   assert sp._stop_hold_release_prep_a_target is None
 
   # Too close.
   a, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.15, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  assert a == -2.0
+  assert a == -0.5
   assert sp._stop_hold_release_prep_a_target is None
 
   # Hard-brake situation (MPC target too negative).
   a, _, _ = sp.final_longitudinal_output(_prep_sm(), -1.0, True, 0.0, False)  # type: ignore[arg-type]
-  assert a == -2.0
+  assert a == -0.5
   assert sp._stop_hold_release_prep_a_target is None
 
 
@@ -1351,7 +1351,7 @@ def test_stop_hold_release_prep_vetoes_bad_release_source_and_custom_stop():
     standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
   )  # type: ignore[assignment]
   a, _, _ = sp.final_longitudinal_output(_prep_sm(), -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  assert a == -2.0
+  assert a == -0.5
   assert sp._stop_hold_release_prep_a_target is None
 
   # Custom should_stop vetoes prep even with release permission.
@@ -1363,7 +1363,7 @@ def test_stop_hold_release_prep_vetoes_bad_release_source_and_custom_stop():
     standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
   )  # type: ignore[assignment]
   a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(), -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  assert a == -2.0
+  assert a == -0.5
   assert should_stop is True
   assert sp._stop_hold_release_prep_a_target is None
 
@@ -1394,15 +1394,15 @@ def test_stop_hold_release_prep_downward_braking_passes_through():
     sp.final_longitudinal_output(_prep_sm(d_rel=6.25 + i * 0.01, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
   sm = _prep_sm(d_rel=6.28, v_lead=0.25, v_rel=0.10)
   a1, _, _ = sp.final_longitudinal_output(sm, -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  # raw_hold = -0.6; first active prep tick ramps upward by jerk budget.
-  assert math.isclose(a1, -0.30)
+  # raw_hold is normalized to -0.5; first active prep tick ramps upward by jerk budget.
+  assert math.isclose(a1, -0.20)
   a2, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.29, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
   assert math.isclose(a2, -0.20)
   # Make the hold command more negative while keeping MPC above the hard-brake veto.
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-1.0, openpilotLongitudinalControl=True)
   a3, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.30, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  assert math.isclose(a3, -1.0)
-  assert sp._stop_hold_release_prep_a_target == -1.0
+  assert math.isclose(a3, -0.2)
+  assert sp._stop_hold_release_prep_a_target == -0.2
 
 
 def test_stop_hold_release_prep_does_not_block_first_positive_release():
@@ -1436,3 +1436,147 @@ def test_stop_hold_release_prep_state_resets_with_stop_hold():
   sp._reset_lead_stop_hold()
   assert sp._stop_hold_release_prep_a_target is None
   assert sp._stop_hold_release_prep_raw_prev is None
+
+
+def test_stop_hold_standstill_normalize_same_id_harsh_to_mild_target():
+  sp = fake_planner(LongitudinalMode.SCC)
+  sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-2.0, openpilotLongitudinalControl=True)
+  _arm_stop_hold(sp, d_rel=6.2)
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=False, gasPressed=False, vCruise=12.0),
+    'controlsState': SimpleNamespace(forceDecel=False),
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7)),
+  })
+  a, should_stop, _ = sp.final_longitudinal_output(sm, -2.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop is True
+  assert a == -0.5
+
+
+def test_stop_hold_standstill_normalize_v_ego_fallback():
+  sp = fake_planner(LongitudinalMode.SCC)
+  sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-2.0, openpilotLongitudinalControl=True)
+  _arm_stop_hold(sp, d_rel=6.2)
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vEgo=0.015, brakePressed=False, gasPressed=False, vCruise=12.0),
+    'controlsState': SimpleNamespace(forceDecel=False),
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7)),
+  })
+  a, _, _ = sp.final_longitudinal_output(sm, -2.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -0.5
+
+
+def test_stop_hold_standstill_normalize_rolling_creeping_unchanged():
+  sp = fake_planner(LongitudinalMode.SCC)
+  sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  _arm_stop_hold(sp, d_rel=6.2)
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vEgo=0.05, standstill=False, brakePressed=False, gasPressed=False, vCruise=12.0),
+    'controlsState': SimpleNamespace(forceDecel=False),
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7)),
+  })
+  a, _, _ = sp.final_longitudinal_output(sm, -2.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+
+
+def test_stop_hold_standstill_normalize_vetoes_different_lead_id():
+  sp = fake_planner(LongitudinalMode.SCC)
+  sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  _arm_stop_hold(sp, d_rel=6.2)
+  # Use a moving different lead so the latch does not auto-transfer.
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=False, gasPressed=False, vCruise=12.0),
+    'controlsState': SimpleNamespace(forceDecel=False),
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.2, vLead=1.0, vRel=1.0, radarTrackId=8)),
+  })
+  a, _, _ = sp.final_longitudinal_output(sm, -2.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+
+
+def test_stop_hold_standstill_normalize_vetoes_missing_lead_id():
+  sp = fake_planner(LongitudinalMode.SCC)
+  sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  _arm_stop_hold(sp, d_rel=6.2)
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=False, gasPressed=False, vCruise=12.0),
+    'controlsState': SimpleNamespace(forceDecel=False),
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=None)),
+  })
+  a, _, _ = sp.final_longitudinal_output(sm, -2.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+
+
+def test_stop_hold_standstill_normalize_vetoes_raw_model_stop():
+  sp = fake_planner(LongitudinalMode.SCC)
+  sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  _arm_stop_hold(sp, d_rel=6.2)
+  sm = FakeSubMaster({
+    'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=False, gasPressed=False, vCruise=12.0),
+    'controlsState': SimpleNamespace(forceDecel=False),
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7)),
+  })
+  a, _, _ = sp.final_longitudinal_output(sm, -2.0, True, 0.0, True)  # type: ignore[arg-type]
+  assert a == -2.0
+
+
+def test_stop_hold_standstill_normalize_vetoes_driver_and_force_inputs():
+  for brake, gas, force in ((True, False, False), (False, True, False), (False, False, True)):
+    sp = fake_planner(LongitudinalMode.SCC)
+    sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+    _arm_stop_hold(sp, d_rel=6.2)
+    sm = FakeSubMaster({
+      'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=brake, gasPressed=gas, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=force),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7)),
+    })
+    a, should_stop, _ = sp.final_longitudinal_output(sm, -2.0, True, 0.0, False)  # type: ignore[arg-type]
+    assert a == -2.0, f"brake={brake} gas={gas} force={force}"
+    assert should_stop is True
+
+
+def test_stop_hold_standstill_normalize_allows_prep_to_relax():
+  """Normalization to stop_accel does not prevent release prep from ramping further."""
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  _arm_stop_hold(sp, d_rel=6.0)
+  # harsh MPC while stopped gets normalized to -0.5
+  a1, _, _ = sp.final_longitudinal_output(
+    FakeSubMaster({
+      'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.0, vLead=0.0, vRel=0.0, radarTrackId=7)),
+    }), -2.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert a1 == -0.5
+  # prep can still relax from the normalized hold
+  for i in range(2):
+    sp.final_longitudinal_output(_prep_sm(d_rel=6.21 + i * 0.01, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  a2, should_stop, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.23, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop is True
+  assert -0.5 < a2 <= -0.20
+
+
+def test_stop_hold_standstill_normalize_first_positive_release_still_clears():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  _arm_stop_hold(sp, d_rel=6.2)
+  a_hold, _, _ = sp.final_longitudinal_output(
+    FakeSubMaster({
+      'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7)),
+    }), -2.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert a_hold == -0.5
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.0, v_lead=0.8, v_rel=0.3), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert a > 0.0
+  assert should_stop is False
+  assert sp._lead_stop_hold_active is False
+  assert sp._stop_hold_release_slew_a_target == a

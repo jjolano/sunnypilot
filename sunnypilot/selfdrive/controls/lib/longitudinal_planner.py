@@ -49,6 +49,8 @@ class LongitudinalPlannerSP:
   _STOP_HOLD_RELEASE_PREP_MIN_MPC_A_TARGET = -0.10
   _STOP_HOLD_RELEASE_PREP_MIN_GAP_INCREASING_S = 0.15
   _STOP_HOLD_RELEASE_PREP_MIN_D_REL_MARGIN = 0.20
+  _STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET = -0.50
+  _STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO = 0.02
   _CURVE_CONFIDENCE_APPLY_MIN_V_EGO = 8.0
   _CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE = 0.70
   _CURVE_CONFIDENCE_APPLY_MIN_CAP = -0.85
@@ -682,6 +684,28 @@ class LongitudinalPlannerSP:
       else:
         raw_hold = min(hold_a_target, stop_accel)
       e2e_source = bool(is_e2e and not model_stale and raw_hold < hold_a_target)
+
+      # Standstill stop-hold command normalization: clamp harsh hold commands up to a
+      # local mild hold target when already stopped, avoiding an artificial jump to the
+      # first positive release. Does not delay braking or affect rolling stops.
+      controls_state_sp = self._sm_item(sm, 'controlsState')
+      brake_pressed_sp = bool(getattr(car_state, 'brakePressed', False)) if car_state is not None else False
+      force_decel_sp = bool(getattr(controls_state_sp, 'forceDecel', False)) if controls_state_sp is not None else False
+      lead_id_sp = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
+      same_id_sp = lead_id_sp is not None and self._lead_stop_hold_lead_id is not None and lead_id_sp == self._lead_stop_hold_lead_id
+      standstill_sp = bool(getattr(car_state, 'standstill', False)) if car_state is not None else False
+      if (
+        (standstill_sp or v_ego <= self._STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO) and
+        selected_lead is not None and
+        same_id_sp and
+        math.isfinite(raw_hold) and
+        not brake_pressed_sp and
+        not gas_pressed and
+        not force_decel_sp and
+        not raw_model_should_stop
+      ):
+        raw_hold = max(float(raw_hold), self._STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET)
+
       a_target = self._apply_stop_hold_release_prep(
         sm, raw_hold, selected_lead, lead_d_rel, lead_v, lead_v_rel,
         mpc_a_target, raw_model_a_target, raw_model_should_stop,
