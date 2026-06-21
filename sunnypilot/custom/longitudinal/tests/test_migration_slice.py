@@ -53,6 +53,8 @@ def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceTog
   sp.__dict__['_lead_stop_hold_gap_prev_d_rel'] = None
   sp.__dict__['_custom_long_output_telemetry'] = None
   sp.__dict__['_stop_hold_release_slew_a_target'] = None
+  sp.__dict__['_stop_hold_release_prep_a_target'] = None
+  sp.__dict__['_stop_hold_release_prep_raw_prev'] = None
   sp.__dict__['custom_long_output'] = CustomLongitudinalOutput(
     a_target=0.0, should_stop=should_stop, enabled=True, mode=mode,
     selected_intent=("lead_pullaway" if release else None), reason=("trusted" if release else None),
@@ -1213,3 +1215,224 @@ def test_target_filtering_keeps_cruise_fallback():
   v, a = sp.update_targets(sm, 10.0, 0.0, 8.0)  # type: ignore[arg-type]
   assert math.isclose(v, 8.0)
   assert math.isclose(a, 0.0)
+
+
+def _prep_sm(d_rel=6.25, v_lead=0.20, v_rel=0.10, **kwargs):
+  return _release_sm(d_rel=d_rel, v_lead=v_lead, v_rel=v_rel, **kwargs)
+
+
+def _prep_planner(stop_accel=-2.0, mode=LongitudinalMode.SCC, release=True):
+  sp = fake_planner(mode, release=release)
+  sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=stop_accel, openpilotLongitudinalControl=True)
+  return sp
+
+
+def test_stop_hold_release_prep_relaxes_harsh_hold_toward_target():
+  sp = _prep_planner(stop_accel=-2.0)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  # Prime the gap-opening timer to just below the prep threshold while keeping lead below full-release speed.
+  for i in range(2):
+    sp.final_longitudinal_output(_prep_sm(d_rel=6.25 + i * 0.01, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  # Lead is moving/opening enough for prep, but not enough for full release (vLead < 0.30).
+  a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.28, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop is True
+  assert sp._lead_stop_hold_active is True
+  assert -2.0 < a <= -0.20
+  assert sp._stop_hold_release_prep_a_target == a
+
+
+def test_stop_hold_release_prep_upward_ramp_bounded_by_jerk():
+  sp = _prep_planner(stop_accel=-2.0)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  for i in range(2):
+    sp.final_longitudinal_output(_prep_sm(d_rel=6.25 + i * 0.01, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  prev = float(sp._stop_hold_release_prep_a_target) if sp._stop_hold_release_prep_a_target is not None else -2.0
+  for i in range(6):
+    sm = _prep_sm(d_rel=6.27 + i * 0.02, v_lead=0.25, v_rel=0.10)
+    a, should_stop, _ = sp.final_longitudinal_output(sm, -0.05, True, 0.0, False)  # type: ignore[arg-type]
+    assert should_stop is True
+    assert a - prev <= sp._STOP_HOLD_RELEASE_PREP_MAX_UP_JERK * sp.dt + 1e-9
+    assert a >= prev
+    if math.isclose(a, -0.20, abs_tol=1e-6):
+      break
+    prev = a
+
+
+def test_stop_hold_release_prep_vetoes_raw_model_stop_and_driver_inputs():
+  sp = _prep_planner(stop_accel=-2.0)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+
+  # Raw model stop keeps harsh hold and clears prep state.
+  a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(), -0.05, True, 0.0, True)  # type: ignore[arg-type]
+  assert should_stop is True
+  assert a == -2.0
+  assert sp._stop_hold_release_prep_a_target is None
+
+  # Driver brake.
+  a, _, _ = sp.final_longitudinal_output(_prep_sm(brake=True), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+  assert sp._stop_hold_release_prep_a_target is None
+
+  # Force decel.
+  a, _, _ = sp.final_longitudinal_output(_prep_sm(force_decel=True), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+  assert sp._stop_hold_release_prep_a_target is None
+
+
+def test_stop_hold_release_prep_vetoes_driver_gas():
+  sp = _prep_planner(stop_accel=-2.0)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(gas=True), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+  assert sp._stop_hold_release_prep_a_target is None
+
+
+def test_stop_hold_release_prep_vetoes_weak_release_evidence():
+  sp = _prep_planner(stop_accel=-2.0)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+
+  # Lead not moving enough.
+  a, _, _ = sp.final_longitudinal_output(_prep_sm(v_lead=0.15, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+  assert sp._stop_hold_release_prep_a_target is None
+
+  # Lead not opening.
+  a, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.2, v_lead=0.25, v_rel=0.0), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+  assert sp._stop_hold_release_prep_a_target is None
+
+  # Gap opening too briefly.
+  a, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.21, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+  assert sp._stop_hold_release_prep_a_target is None
+
+  # Too close.
+  a, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.15, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+  assert sp._stop_hold_release_prep_a_target is None
+
+  # Hard-brake situation (MPC target too negative).
+  a, _, _ = sp.final_longitudinal_output(_prep_sm(), -1.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+  assert sp._stop_hold_release_prep_a_target is None
+
+
+def test_stop_hold_release_prep_vetoes_different_moving_lead():
+  sp = _prep_planner(stop_accel=-2.0)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+
+  a, should_stop, _ = sp.final_longitudinal_output(
+    _prep_sm(d_rel=7.0, v_lead=0.35, v_rel=0.10, radar_id=8), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+
+  assert a == -2.0
+  assert should_stop is True
+  assert sp._lead_stop_hold_active is True
+  assert sp._lead_stop_hold_lead_id == 7
+  assert sp._stop_hold_release_prep_a_target is None
+
+
+def test_stop_hold_release_prep_vetoes_bad_release_source_and_custom_stop():
+  sp = _prep_planner(stop_accel=-2.0)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+
+  # Wrong release source.
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="no_lead_launch", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="no_lead_launch",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )  # type: ignore[assignment]
+  a, _, _ = sp.final_longitudinal_output(_prep_sm(), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+  assert sp._stop_hold_release_prep_a_target is None
+
+  # Custom should_stop vetoes prep even with release permission.
+  _set_lead_pullaway_release(sp)
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=True, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="lead_pullaway", reason="trusted",
+    standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.4, standstill_release_reason="trusted", debug={},
+  )  # type: ignore[assignment]
+  a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert a == -2.0
+  assert should_stop is True
+  assert sp._stop_hold_release_prep_a_target is None
+
+
+def test_stop_hold_release_prep_handles_non_finite_targets():
+  sp = _prep_planner(stop_accel=-2.0)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(), float('nan'), True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop is True
+  assert math.isfinite(a)
+  assert a <= -0.5
+  assert sp._stop_hold_release_prep_a_target is None
+
+  sp._stop_hold_release_prep_a_target = float('nan')
+  a2, should_stop2, _ = sp.final_longitudinal_output(_prep_sm(), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop2 is True
+  assert math.isfinite(a2)
+  assert sp._stop_hold_release_prep_a_target is None
+
+
+def test_stop_hold_release_prep_downward_braking_passes_through():
+  sp = _prep_planner(stop_accel=-0.6)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  # Prime the gap-opening timer to just below the prep threshold.
+  for i in range(2):
+    sp.final_longitudinal_output(_prep_sm(d_rel=6.25 + i * 0.01, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  sm = _prep_sm(d_rel=6.28, v_lead=0.25, v_rel=0.10)
+  a1, _, _ = sp.final_longitudinal_output(sm, -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  # raw_hold = -0.6; first active prep tick ramps upward by jerk budget.
+  assert math.isclose(a1, -0.30)
+  a2, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.29, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert math.isclose(a2, -0.20)
+  # Make the hold command more negative while keeping MPC above the hard-brake veto.
+  sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-1.0, openpilotLongitudinalControl=True)
+  a3, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.30, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert math.isclose(a3, -1.0)
+  assert sp._stop_hold_release_prep_a_target == -1.0
+
+
+def test_stop_hold_release_prep_does_not_block_first_positive_release():
+  sp = _prep_planner(stop_accel=-2.0)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(d_rel=7.0, v_lead=0.8, v_rel=0.3), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert 0.15 <= a <= 0.35
+  assert should_stop is False
+  assert sp._lead_stop_hold_active is False
+  assert sp._stop_hold_release_prep_a_target is None
+  assert sp._stop_hold_release_slew_a_target == a
+
+
+def test_stop_hold_release_prep_does_not_interfere_with_standstill_release_slew_seed():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  # No lead stop-hold latch; MPC still says stop; custom release allowed clears it.
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert a > 0.0
+  assert should_stop is False
+  assert sp._stop_hold_release_slew_a_target == a
+  assert sp._stop_hold_release_prep_a_target is None
+  assert sp._lead_stop_hold_active is False
+
+
+def test_stop_hold_release_prep_state_resets_with_stop_hold():
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  sp._stop_hold_release_prep_a_target = -0.5
+  sp._stop_hold_release_prep_raw_prev = -0.5
+  sp._reset_lead_stop_hold()
+  assert sp._stop_hold_release_prep_a_target is None
+  assert sp._stop_hold_release_prep_raw_prev is None
