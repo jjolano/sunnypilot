@@ -158,11 +158,16 @@ class TestCompiledShape:
     item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "LongitudinalDebugTraceMode")
     assert [opt["value"] for opt in item["options"]] == ["off", "log"]
 
-  def test_shadow_observability_modes_are_off_shadow_only(self, compiled):
+  def test_shadow_observability_modes_include_promoted_apply_options(self, compiled):
     cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
-    for key in ("CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "StandstillReleaseConfidenceMode"):
+    expected = {
+      "CutInBrakeAssistMode": ["off", "shadow"],
+      "CurveSpeedConfidenceMode": ["off", "shadow", "apply_conservative"],
+      "StandstillReleaseConfidenceMode": ["off", "shadow", "gate"],
+    }
+    for key, values in expected.items():
       item = next(i for i in cruise["sections"][0]["items"] if i["key"] == key)
-      assert [opt["value"] for opt in item["options"]] == ["off", "shadow"]
+      assert [opt["value"] for opt in item["options"]] == values
 
   def test_vehicle_settings_consistent_shape(self, compiled):
     """Each brand in vehicle_settings must have {title, description, items}."""

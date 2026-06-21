@@ -36,10 +36,13 @@ def fake_cp():
   return SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
 
 
-def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceToggles(), release=False):
+def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceToggles(), release=False,
+                 curve_mode="off", standstill_mode="off"):
   sp = object.__new__(LongitudinalPlannerSP)
   sp.__dict__['CP'] = fake_cp()
   sp.__dict__['custom_long'] = SimpleNamespace(enabled=True, mode=mode, sources=sources,
+                                                curve_speed_confidence_mode=curve_mode,
+                                                standstill_release_confidence_mode=standstill_mode,
                                                 maybe_refresh_params=lambda: None)
   sp.__dict__['dec'] = SimpleNamespace(active=lambda: True, mode=lambda: 'blended')
   sp.__dict__['dt'] = 0.05
@@ -170,6 +173,100 @@ def test_scc_ignores_custom_stop_cap_when_not_stop_approach():
   assert a == -0.2
   assert should_stop is True
   assert e2e_source is False
+
+
+def test_scc_curve_confidence_apply_conservative_caps_final_accel():
+  sp = fake_planner(LongitudinalMode.SCC, curve_mode="apply_conservative")
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="cruise", reason="cruise",
+    debug={
+      "curve_speed_confidence_mode": "apply_conservative",
+      "curve_speed_confidence_effective_mode": "apply_conservative",
+      "curve_speed_confidence_apply_supported": True,
+      "curve_speed_confidence_eligible": True,
+      "curve_speed_confidence_confidence": 0.75,
+      "curve_speed_confidence_proposed_cap": -0.4,
+    },
+  )  # type: ignore[assignment]
+  sm = FakeSubMaster({
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'carState': SimpleNamespace(vEgo=15.0, brakePressed=False, gasPressed=False),
+    'controlsState': SimpleNamespace(forceDecel=False),
+  })
+  a, should_stop, e2e_source = sp.final_longitudinal_output(sm, 0.2, False, 0.0, False)  # type: ignore[arg-type]
+  assert a == -0.4
+  assert should_stop is False
+  assert e2e_source is False
+
+
+def test_curve_confidence_shadow_and_low_speed_do_not_cap_final_accel():
+  for curve_mode, v_ego in (("shadow", 15.0), ("apply_conservative", 5.0)):
+    sp = fake_planner(LongitudinalMode.SCC, curve_mode=curve_mode)
+    sp.custom_long_output = CustomLongitudinalOutput(
+      a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+      selected_intent="cruise", reason="cruise",
+      debug={
+        "curve_speed_confidence_apply_supported": curve_mode == "apply_conservative",
+        "curve_speed_confidence_eligible": True,
+        "curve_speed_confidence_confidence": 0.85,
+        "curve_speed_confidence_proposed_cap": -0.4,
+      },
+    )  # type: ignore[assignment]
+    sm = FakeSubMaster({
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'carState': SimpleNamespace(vEgo=v_ego, brakePressed=False, gasPressed=False),
+      'controlsState': SimpleNamespace(forceDecel=False),
+    })
+    a, should_stop, _ = sp.final_longitudinal_output(sm, 0.2, False, 0.3, False)  # type: ignore[arg-type]
+    assert a == 0.2
+    assert should_stop is False
+
+
+def test_curve_confidence_apply_conservative_requires_scc_and_healthy_output():
+  for mode, enabled in ((LongitudinalMode.ACC, True), (LongitudinalMode.E2E, True), (LongitudinalMode.SCC, False)):
+    sp = fake_planner(mode, curve_mode="apply_conservative")
+    sp.custom_long_output = CustomLongitudinalOutput(
+      a_target=0.0, should_stop=False, enabled=enabled, mode=mode,
+      selected_intent="cruise", reason="cruise",
+      debug={
+        "curve_speed_confidence_apply_supported": True,
+        "curve_speed_confidence_eligible": True,
+        "curve_speed_confidence_confidence": 0.85,
+        "curve_speed_confidence_proposed_cap": -0.4,
+      },
+    )  # type: ignore[assignment]
+    sm = FakeSubMaster({
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'carState': SimpleNamespace(vEgo=15.0, brakePressed=False, gasPressed=False),
+      'controlsState': SimpleNamespace(forceDecel=False),
+    })
+    a, should_stop, _ = sp.final_longitudinal_output(sm, 0.2, False, 0.3, False)  # type: ignore[arg-type]
+    assert a == 0.2
+    assert should_stop is False
+
+
+def test_curve_confidence_apply_conservative_rejects_nonfinite_and_clamps_floor():
+  for confidence, proposed, expected in ((float('nan'), -0.4, 0.2), (0.85, float('nan'), 0.2), (0.85, -2.0, -0.85)):
+    sp = fake_planner(LongitudinalMode.SCC, curve_mode="apply_conservative")
+    sp.custom_long_output = CustomLongitudinalOutput(
+      a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+      selected_intent="cruise", reason="cruise",
+      debug={
+        "curve_speed_confidence_apply_supported": True,
+        "curve_speed_confidence_eligible": True,
+        "curve_speed_confidence_confidence": confidence,
+        "curve_speed_confidence_proposed_cap": proposed,
+      },
+    )  # type: ignore[assignment]
+    sm = FakeSubMaster({
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'carState': SimpleNamespace(vEgo=15.0, brakePressed=False, gasPressed=False),
+      'controlsState': SimpleNamespace(forceDecel=False),
+    })
+    a, should_stop, _ = sp.final_longitudinal_output(sm, 0.2, False, 0.0, False)  # type: ignore[arg-type]
+    assert a == expected
+    assert should_stop is False
 
 
 def test_acc_ignores_custom_stop_cap():
@@ -476,6 +573,99 @@ def test_same_id_pullaway_noise_without_release_permission_keeps_latch():
     }
     sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
+
+
+def test_same_id_pullaway_gate_mode_releases_without_custom_permission():
+  sp = fake_planner(LongitudinalMode.SCC, release=False, standstill_mode="gate")
+  _arm_stop_hold(sp, d_rel=6.2)
+  sp._lead_stop_hold_gap_increasing_s = 0.15
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="cruise", reason="cruise",
+    standstill_release_allowed=False, standstill_release_source="", standstill_release_a_target=0.0,
+    standstill_release_reason="", debug={},
+  )  # type: ignore[assignment]
+  a, should_stop, _ = sp.final_longitudinal_output(
+    _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.15 <= a <= 0.35
+
+
+def test_same_id_pullaway_gate_mode_requires_positive_planner_evidence():
+  sp = fake_planner(LongitudinalMode.SCC, release=False, standstill_mode="gate")
+  _arm_stop_hold(sp, d_rel=6.2)
+  sp._lead_stop_hold_gap_increasing_s = 0.15
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="cruise", reason="cruise",
+    standstill_release_allowed=False, standstill_release_source="", standstill_release_a_target=0.0,
+    standstill_release_reason="", debug={},
+  )  # type: ignore[assignment]
+  a, should_stop, _ = sp.final_longitudinal_output(
+    _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.00, True, -0.05, True)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a <= -0.5
+
+
+def test_same_id_pullaway_gate_mode_preserves_raw_model_stop_veto():
+  sp = fake_planner(LongitudinalMode.SCC, release=False, standstill_mode="gate")
+  _arm_stop_hold(sp, d_rel=6.2)
+  sp._lead_stop_hold_gap_increasing_s = 0.15
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
+    selected_intent="cruise", reason="cruise",
+    standstill_release_allowed=False, standstill_release_source="", standstill_release_a_target=0.0,
+    standstill_release_reason="", debug={},
+  )  # type: ignore[assignment]
+  a, should_stop, _ = sp.final_longitudinal_output(
+    _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, True)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a <= -0.5
+
+
+def test_same_id_pullaway_gate_mode_is_scc_only():
+  for mode in (LongitudinalMode.ACC, LongitudinalMode.E2E):
+    sp = fake_planner(mode, release=False, standstill_mode="gate")
+    _arm_stop_hold(sp, d_rel=6.2)
+    sp._lead_stop_hold_gap_increasing_s = 0.15
+    sp.custom_long_output = CustomLongitudinalOutput(
+      a_target=0.0, should_stop=False, enabled=True, mode=mode,
+      selected_intent="cruise", reason="cruise",
+      standstill_release_allowed=False, standstill_release_source="", standstill_release_a_target=0.0,
+      standstill_release_reason="", debug={},
+    )  # type: ignore[assignment]
+    a, should_stop, _ = sp.final_longitudinal_output(
+      _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
+    assert sp._lead_stop_hold_active is True
+    assert should_stop is True
+    assert a <= -0.5
+
+
+def test_same_id_pullaway_gate_mode_requires_healthy_custom_output():
+  sp = fake_planner(LongitudinalMode.SCC, release=False, standstill_mode="gate")
+  _arm_stop_hold(sp, d_rel=6.2)
+  sp._lead_stop_hold_gap_increasing_s = 0.15
+  sp.custom_long_output = CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=False, mode=LongitudinalMode.SCC,
+    selected_intent="cruise", reason="fault",
+    standstill_release_allowed=False, standstill_release_source="", standstill_release_a_target=0.0,
+    standstill_release_reason="", debug={},
+  )  # type: ignore[assignment]
+  a, should_stop, _ = sp.final_longitudinal_output(
+    _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a <= -0.5
+
+  sp.custom_long_output = None  # type: ignore[assignment]
+  a, should_stop, _ = sp.final_longitudinal_output(
+    _release_sm(d_rel=6.90, v_lead=0.60, v_rel=0.40), 0.20, True, 0.05, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a <= -0.5
 
   for d_rel in (9.81, 9.83, 9.84, 9.86):
     sm = {

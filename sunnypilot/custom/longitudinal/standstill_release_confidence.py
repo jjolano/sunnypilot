@@ -5,6 +5,7 @@ from typing import Any
 
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
+MODE_GATE = "gate"
 
 
 @dataclass(frozen=True)
@@ -48,10 +49,11 @@ def predict_standstill_release_confidence(*, mode: Any, release_allowed: bool, r
   existing decision looks well-supported.
   """
   mode_s = str(mode or "").strip().lower()
-  if mode_s not in (MODE_OFF, MODE_SHADOW):
+  if mode_s not in (MODE_OFF, MODE_SHADOW, MODE_GATE):
     mode_s = MODE_OFF
   if mode_s == MODE_OFF:
     return StandstillReleaseConfidenceResult(mode=MODE_OFF, effective_mode=MODE_OFF)
+  apply_supported = mode_s == MODE_GATE
 
   confidence = 0.0
   if release_allowed:
@@ -80,7 +82,7 @@ def predict_standstill_release_confidence(*, mode: Any, release_allowed: bool, r
     block = ""
 
   return StandstillReleaseConfidenceResult(
-    mode=MODE_SHADOW, effective_mode=MODE_SHADOW, apply_supported=False,
+    mode=mode_s, effective_mode=mode_s, apply_supported=apply_supported,
     eligible=block == "", block_reason=block, confidence=confidence,
     release_allowed=bool(release_allowed), release_source=str(release_source or ""),
     release_reason=str(release_reason or ""), release_a_target=float(release_a_target),

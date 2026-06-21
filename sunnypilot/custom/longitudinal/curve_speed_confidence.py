@@ -6,6 +6,7 @@ from typing import Any
 
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
+MODE_APPLY_CONSERVATIVE = "apply_conservative"
 
 
 @dataclass(frozen=True)
@@ -70,10 +71,11 @@ def _state_name(state: Any) -> str:
 
 def predict_curve_speed_confidence(mode: Any, data: CurveSpeedConfidenceInputs) -> CurveSpeedConfidenceResult:
   mode_s = str(mode or "").strip().lower()
-  if mode_s not in (MODE_OFF, MODE_SHADOW):
+  if mode_s not in (MODE_OFF, MODE_SHADOW, MODE_APPLY_CONSERVATIVE):
     mode_s = MODE_OFF
   if mode_s == MODE_OFF:
     return CurveSpeedConfidenceResult(mode=MODE_OFF, effective_mode=MODE_OFF)
+  apply_supported = mode_s == MODE_APPLY_CONSERVATIVE
 
   vision_a = _f(data.vision_a_target)
   map_a = _f(data.map_a_target)
@@ -84,7 +86,8 @@ def predict_curve_speed_confidence(mode: Any, data: CurveSpeedConfidenceInputs) 
     caps.append(("map", map_a))
   if not caps:
     active = bool(data.vision_active or data.map_active)
-    return CurveSpeedConfidenceResult(mode=MODE_SHADOW, effective_mode=MODE_SHADOW,
+    return CurveSpeedConfidenceResult(mode=mode_s, effective_mode=mode_s,
+                                      apply_supported=apply_supported,
                                       block_reason="no_negative_curve_cap" if active else "inactive",
                                       active=active,
                                       current_lat_acc=_f(data.vision_current_lat_acc),
@@ -103,7 +106,7 @@ def predict_curve_speed_confidence(mode: Any, data: CurveSpeedConfidenceInputs) 
     confidence = max(confidence, 0.85)
 
   return CurveSpeedConfidenceResult(
-    mode=MODE_SHADOW, effective_mode=MODE_SHADOW, apply_supported=False, eligible=True,
+    mode=mode_s, effective_mode=mode_s, apply_supported=apply_supported, eligible=True,
     block_reason="", confidence=confidence, proposed_cap=proposed_cap,
     source="+".join(name for name, _ in caps) or source, active=True,
     current_lat_acc=_f(data.vision_current_lat_acc), max_pred_lat_acc=_f(data.vision_max_pred_lat_acc),

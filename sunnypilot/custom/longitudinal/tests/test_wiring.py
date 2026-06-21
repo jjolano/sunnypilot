@@ -447,8 +447,8 @@ def test_new_shadow_modes_parse_and_refresh():
   )
   a = CustomLongitudinalAdapter(params)
   assert a.cut_in_brake_assist_mode == "shadow"
-  assert a.curve_speed_confidence_mode == "shadow"
-  assert a.standstill_release_confidence_mode == "shadow"
+  assert a.curve_speed_confidence_mode == "apply_conservative"
+  assert a.standstill_release_confidence_mode == "gate"
   params._v.update(CutInBrakeAssistMode="bad", CurveSpeedConfidenceMode="bad", StandstillReleaseConfidenceMode="bad")
   a.refresh_params(mode_only=True)
   assert a.cut_in_brake_assist_mode == "off"
@@ -513,5 +513,6 @@ def test_future_shadow_mode_values_are_non_actuating_and_report_shadow():
     assert out.selected_intent == baseline.selected_intent
     assert out.reason == baseline.reason
     assert out.standstill_release_allowed == baseline.standstill_release_allowed
-    assert out.debug[f"{debug_prefix}_mode"] == "shadow"
-    assert out.debug[f"{debug_prefix}_apply_supported"] is False
+    expected_mode = "shadow" if key == "CutInBrakeAssistMode" else value
+    assert out.debug[f"{debug_prefix}_mode"] == expected_mode
+    assert out.debug[f"{debug_prefix}_apply_supported"] is (key != "CutInBrakeAssistMode")

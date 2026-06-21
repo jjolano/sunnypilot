@@ -37,8 +37,12 @@ class LongitudinalPlannerSP:
   _STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET = -0.10
   _STOP_HOLD_NEW_ID_GAP_INCREASING_S = 0.30
   _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
+  _STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S = 0.15
   _STOP_HOLD_RELEASE_A_MIN = 0.15
   _STOP_HOLD_RELEASE_A_MAX = 0.35
+  _CURVE_CONFIDENCE_APPLY_MIN_V_EGO = 8.0
+  _CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE = 0.70
+  _CURVE_CONFIDENCE_APPLY_MIN_CAP = -0.85
   def __init__(self, CP, CP_SP, mpc):
     self.CP = CP
     self.events_sp = EventsSP()
@@ -254,6 +258,40 @@ class LongitudinalPlannerSP:
       return float(base_a_target)
     return float(min(float(base_a_target), custom_a))
 
+  def _scc_curve_confidence_final_cap(self, base_a_target: float, sm: messaging.SubMaster,
+                                      release_mpc_stop: bool = False) -> float:
+    if release_mpc_stop:
+      return float(base_a_target)
+    if self.custom_long.mode is not LongitudinalMode.SCC or not self.custom_long.enabled or self.custom_long_output is None:
+      return float(base_a_target)
+    if not bool(getattr(self.custom_long_output, "enabled", False)):
+      return float(base_a_target)
+    if str(getattr(self.custom_long, "curve_speed_confidence_mode", "off") or "off") != "apply_conservative":
+      return float(base_a_target)
+    debug = dict(getattr(self.custom_long_output, "debug", {}) or {})
+    prefix = "curve_speed_confidence_"
+    if not bool(debug.get(prefix + "eligible", False)) or not bool(debug.get(prefix + "apply_supported", False)):
+      return float(base_a_target)
+    confidence = self._finite_float_or_none(debug.get(prefix + "confidence", 0.0))
+    if confidence is None or confidence < self._CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE:
+      return float(base_a_target)
+    proposed_cap = self._finite_float_or_none(debug.get(prefix + "proposed_cap", 0.0))
+    if proposed_cap is None or proposed_cap >= float(base_a_target):
+      return float(base_a_target)
+    car_state = self._sm_item(sm, 'carState')
+    v_ego = self._safe_float(getattr(car_state, 'vEgo', 0.0) if car_state is not None else 0.0)
+    if v_ego < self._CURVE_CONFIDENCE_APPLY_MIN_V_EGO:
+      return float(base_a_target)
+    conservative_cap = max(proposed_cap, self._CURVE_CONFIDENCE_APPLY_MIN_CAP)
+    return float(min(float(base_a_target), conservative_cap))
+
+  def _standstill_release_gate_enabled(self) -> bool:
+    return bool(
+      self.custom_long.enabled and
+      self.custom_long.mode is LongitudinalMode.SCC and
+      str(getattr(self.custom_long, "standstill_release_confidence_mode", "off") or "off") == "gate"
+    )
+
   def custom_longitudinal_targets(self, targets: dict) -> dict:
     if not self.custom_long.enabled:
       return targets
@@ -319,6 +357,51 @@ class LongitudinalPlannerSP:
     self._last_release_block_reason = ""
     return True
 
+  def _standstill_release_planner_gate_valid(self, sm: messaging.SubMaster, custom_long_output,
+                                            mpc_a_target: float, raw_model_a_target: float, raw_model_should_stop: bool,
+                                            selected_lead, lead_d_rel: float, lead_v: float,
+                                            lead_v_rel: float, same_id: bool) -> bool:
+    if not self._standstill_release_gate_enabled() or not same_id:
+      return False
+    if custom_long_output is None or not bool(getattr(custom_long_output, "enabled", False)):
+      self._last_release_block_reason = "custom_output_unavailable"
+      return False
+    if bool(getattr(custom_long_output, "should_stop", False)):
+      self._last_release_block_reason = "custom_should_stop"
+      return False
+    cs = sm["carState"]
+    controls_state = sm["controlsState"]
+    if bool(getattr(cs, "brakePressed", False)):
+      self._last_release_block_reason = "driver_brake"
+      return False
+    if bool(getattr(cs, "gasPressed", False)):
+      self._last_release_block_reason = "driver_gas"
+      return False
+    if bool(getattr(controls_state, "forceDecel", False)):
+      self._last_release_block_reason = "force_decel"
+      return False
+    if raw_model_should_stop:
+      self._last_release_block_reason = "raw_model_stop"
+      return False
+    for value in (lead_d_rel, lead_v, lead_v_rel, mpc_a_target, raw_model_a_target):
+      if not math.isfinite(float(value)):
+        self._last_release_block_reason = "non_finite_values"
+        return False
+    if float(lead_v) < 0.30 or float(lead_v_rel) < 0.25:
+      self._last_release_block_reason = "lead_not_moving"
+      return False
+    if float(mpc_a_target) < 0.05 or float(raw_model_a_target) < 0.0:
+      self._last_release_block_reason = "planner_accel_too_low"
+      return False
+    if self._lead_stop_hold_gap_baseline_d_rel is None:
+      self._last_release_block_reason = "no_baseline_gap"
+      return False
+    if float(lead_d_rel) - float(self._lead_stop_hold_gap_baseline_d_rel) < 0.5:
+      self._last_release_block_reason = "baseline_opening"
+      return False
+    self._last_release_block_reason = ""
+    return True
+
   def _lead_stop_hold_release_accepts(self, sm: messaging.SubMaster, custom_long_output, mpc_a_target: float, raw_model_a_target: float,
                                       raw_model_should_stop: bool, selected_lead, lead_d_rel: float, lead_v: float,
                                       lead_v_rel: float) -> tuple[bool, float]:
@@ -326,10 +409,13 @@ class LongitudinalPlannerSP:
       self._last_release_block_reason = "no_lead"
       return False, float(lead_d_rel)
     release_source = str(getattr(custom_long_output, "standstill_release_source", ""))
-    if release_source not in ("lead_pullaway", "lead_standstill_launch"):
-      self._last_release_block_reason = "invalid_release_source"
-      return False, float(lead_d_rel)
     lead_id = getattr(selected_lead, 'radarTrackId', None)
+    same_id = lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id == self._lead_stop_hold_lead_id
+    gate_fallback_candidate = bool(self._standstill_release_gate_enabled() and same_id and release_source not in ("lead_pullaway", "lead_standstill_launch"))
+    if release_source not in ("lead_pullaway", "lead_standstill_launch"):
+      if not gate_fallback_candidate:
+        self._last_release_block_reason = "invalid_release_source"
+        return False, float(lead_d_rel)
     if lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id != self._lead_stop_hold_lead_id:
       self._last_release_block_reason = "different_lead_id"
       return False, float(lead_d_rel)
@@ -341,7 +427,6 @@ class LongitudinalPlannerSP:
     if float(lead_v) < 0.30 or float(lead_v_rel) < 0.15:
       self._last_release_block_reason = "lead_not_moving"
       return False, float(lead_d_rel)
-    same_id = lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id == self._lead_stop_hold_lead_id
     min_d_rel = stopping_distance + self._STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN if same_id else stopping_distance + 0.1
     if same_id and self._lead_stop_hold_gap_baseline_d_rel is not None:
       baseline_min_d_rel = float(self._lead_stop_hold_gap_baseline_d_rel) + self._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
@@ -350,6 +435,8 @@ class LongitudinalPlannerSP:
       self._last_release_block_reason = "distance_gate"
       return False, float(lead_d_rel)
     min_gap_increasing_s = self._STOP_HOLD_SAME_ID_MIN_PULLAWAY_S if same_id else 0.15
+    if gate_fallback_candidate:
+      min_gap_increasing_s = self._STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S
     if self._lead_stop_hold_gap_increasing_s < min_gap_increasing_s:
       self._last_release_block_reason = "gap_increasing_time"
       return False, float(lead_d_rel)
@@ -365,10 +452,17 @@ class LongitudinalPlannerSP:
       sm, custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop,
       self._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET if same_id else -0.03,
     ):
-      # block_reason already set by _standstill_release_request_valid
-      return False, float(lead_d_rel)
+      if not self._standstill_release_planner_gate_valid(
+        sm, custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop,
+        selected_lead, lead_d_rel, lead_v, lead_v_rel, same_id,
+      ):
+        # block_reason already set by one of the release validators
+        return False, float(lead_d_rel)
+      self._last_release_block_reason = ""
+      return True, min(max(float(mpc_a_target), self._STOP_HOLD_RELEASE_A_MIN), self._STOP_HOLD_RELEASE_A_MAX)
     self._last_release_block_reason = ""
-    return True, min(max(float(getattr(custom_long_output, "standstill_release_a_target", 0.15)), self._STOP_HOLD_RELEASE_A_MIN), self._STOP_HOLD_RELEASE_A_MAX)
+    requested_release_a = float(getattr(custom_long_output, "standstill_release_a_target", 0.0)) if custom_long_output is not None else 0.0
+    return True, min(max(requested_release_a, self._STOP_HOLD_RELEASE_A_MIN), self._STOP_HOLD_RELEASE_A_MAX)
 
   def final_longitudinal_output(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
                                 raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[float, bool, bool]:
@@ -425,6 +519,7 @@ class LongitudinalPlannerSP:
       return float(a_target), should_stop, bool(a_target < mpc_a_target)
     a_target = float(release_a_target if release_mpc_stop else mpc_a_target)
     a_target = self._scc_custom_stop_cap(a_target)
+    a_target = self._scc_curve_confidence_final_cap(a_target, sm, release_mpc_stop=release_mpc_stop)
     return a_target, bool(should_stop), False
 
   def update(self, sm: messaging.SubMaster) -> None:
@@ -640,6 +735,14 @@ class LongitudinalPlannerSP:
     msg.requiredStoppingDecel = self._safe_float(debug.get(prefix + 'required_stopping_decel', 0.0))
     msg.closingSpeedDecel = self._safe_float(debug.get(prefix + 'closing_speed_decel', 0.0))
     msg.jerkLimitedATarget = self._safe_float(debug.get(prefix + 'jerk_limited_a_target', 0.0))
+
+  @staticmethod
+  def _finite_float_or_none(value) -> float | None:
+    try:
+      v = float(value)
+    except (TypeError, ValueError):
+      return None
+    return v if math.isfinite(v) else None
 
   @staticmethod
   def _safe_float(value, default: float = 0.0) -> float:

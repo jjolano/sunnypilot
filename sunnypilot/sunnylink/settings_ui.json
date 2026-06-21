@@ -839,7 +839,7 @@
               "key": "CurveSpeedConfidenceMode",
               "widget": "multiple_button",
               "title": "Curve Speed Confidence",
-              "description": "Shadow-only observability for SCC curve evidence. No actuation changes.",
+              "description": "Monitor SCC curve evidence, or apply a conservative final accel cap when confidence is high.",
               "options": [
                 {
                   "value": "off",
@@ -848,6 +848,10 @@
                 {
                   "value": "shadow",
                   "label": "Monitor only"
+                },
+                {
+                  "value": "apply_conservative",
+                  "label": "Apply conservative"
                 }
               ],
               "enablement": [
@@ -870,7 +874,7 @@
               "key": "StandstillReleaseConfidenceMode",
               "widget": "multiple_button",
               "title": "Standstill Release Confidence",
-              "description": "Shadow-only observability for existing standstill release behavior. No actuation changes.",
+              "description": "Monitor launch-release evidence, or let the stopped-lead latch release earlier when the same lead is clearly pulling away.",
               "options": [
                 {
                   "value": "off",
@@ -879,6 +883,10 @@
                 {
                   "value": "shadow",
                   "label": "Monitor only"
+                },
+                {
+                  "value": "gate",
+                  "label": "Release gate"
                 }
               ],
               "enablement": [

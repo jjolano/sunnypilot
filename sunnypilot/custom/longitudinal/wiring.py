@@ -81,6 +81,16 @@ def _shadow_mode(value: Any, future_values: tuple[str, ...] = ()) -> str:
   return "off"
 
 
+def _curve_speed_confidence_mode(value: Any) -> str:
+  text = str(value or "").strip().lower()
+  return text if text in ("off", "shadow", "apply_conservative") else "off"
+
+
+def _standstill_release_confidence_mode(value: Any) -> str:
+  text = str(value or "").strip().lower()
+  return text if text in ("off", "shadow", "gate") else "off"
+
+
 def _debug_trace_mode(value: Any) -> str:
   text = str(value or "").strip().lower()
   return text if text in ("off", "log") else "off"
@@ -211,8 +221,8 @@ class CustomLongitudinalAdapter:
       mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc", default=LongitudinalMode.SCC)
       self.debug_trace_mode = _debug_trace_mode(_param_string(p, "LongitudinalDebugTraceMode"))
       self.cut_in_brake_assist_mode = _shadow_mode(_param_string(p, "CutInBrakeAssistMode"), ("apply",))
-      self.curve_speed_confidence_mode = _shadow_mode(_param_string(p, "CurveSpeedConfidenceMode"), ("apply_conservative",))
-      self.standstill_release_confidence_mode = _shadow_mode(_param_string(p, "StandstillReleaseConfidenceMode"), ("gate",))
+      self.curve_speed_confidence_mode = _curve_speed_confidence_mode(_param_string(p, "CurveSpeedConfidenceMode"))
+      self.standstill_release_confidence_mode = _standstill_release_confidence_mode(_param_string(p, "StandstillReleaseConfidenceMode"))
     except Exception:  # params are advisory; never fault the planner on a failed read
       if initial:
         self.enabled = False

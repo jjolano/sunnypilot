@@ -103,11 +103,20 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert debug_enum.values == ["off", "log"]
   assert debug_enum.labels == ["Off", "Log"]
 
-  for key in ("CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "StandstillReleaseConfidenceMode"):
-    shadow_enum = homogeneous_string_options(find_item(CRUISE, key))
-    assert shadow_enum is not None
-    assert shadow_enum.values == ["off", "shadow"]
-    assert shadow_enum.labels == ["Off", "Monitor only"]
+  cut_in_enum = homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode"))
+  assert cut_in_enum is not None
+  assert cut_in_enum.values == ["off", "shadow"]
+  assert cut_in_enum.labels == ["Off", "Monitor only"]
+
+  curve_enum = homogeneous_string_options(find_item(CRUISE, "CurveSpeedConfidenceMode"))
+  assert curve_enum is not None
+  assert curve_enum.values == ["off", "shadow", "apply_conservative"]
+  assert curve_enum.labels == ["Off", "Monitor only", "Apply conservative"]
+
+  release_enum = homogeneous_string_options(find_item(CRUISE, "StandstillReleaseConfidenceMode"))
+  assert release_enum is not None
+  assert release_enum.values == ["off", "shadow", "gate"]
+  assert release_enum.labels == ["Off", "Monitor only", "Release gate"]
 
 
 def test_custom_longitudinal_string_index_matches_planner_fallbacks():
@@ -139,19 +148,16 @@ def test_longitudinal_debug_trace_string_index_defaults_to_off():
 
 
 def test_shadow_observability_string_indexes_default_to_off():
-  future_values = {
-    "CutInBrakeAssistMode": "apply",
-    "CurveSpeedConfidenceMode": "apply_conservative",
-    "StandstillReleaseConfidenceMode": "gate",
-  }
-  for key, future_value in future_values.items():
+  for key in ("CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "StandstillReleaseConfidenceMode"):
     enum = homogeneous_string_options(find_item(CRUISE, key))
     assert enum is not None
     assert string_option_index("", enum, key) == 0
     assert string_option_index("off", enum, key) == 0
     assert string_option_index("shadow", enum, key) == 1
-    assert string_option_index(future_value, enum, key) == 1
     assert string_option_index("bad", enum, key) == 0
+  assert string_option_index("apply", homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode")), "CutInBrakeAssistMode") == 1
+  assert string_option_index("apply_conservative", homogeneous_string_options(find_item(CRUISE, "CurveSpeedConfidenceMode")), "CurveSpeedConfidenceMode") == 2
+  assert string_option_index("gate", homogeneous_string_options(find_item(CRUISE, "StandstillReleaseConfidenceMode")), "StandstillReleaseConfidenceMode") == 2
 
 
 def test_mixed_string_float_enum_remains_escape_hatch():

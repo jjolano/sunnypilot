@@ -80,6 +80,17 @@ def test_curve_confidence_shadow_uses_negative_active_caps_only():
   assert inactive.block_reason == "inactive"
 
 
+def test_curve_confidence_apply_conservative_reports_apply_supported():
+  r = predict_curve_speed_confidence("apply_conservative", CurveSpeedConfidenceInputs(
+    vision_active=True, vision_a_target=-0.5, vision_max_pred_lat_acc=1.4,
+  ))
+  assert r.mode == "apply_conservative"
+  assert r.effective_mode == "apply_conservative"
+  assert r.apply_supported is True
+  assert r.eligible is True
+  assert r.proposed_cap == pytest.approx(-0.5)
+
+
 def test_standstill_release_confidence_scores_existing_release_only():
   r = predict_standstill_release_confidence(
     mode="shadow", release_allowed=True, release_source="lead_pullaway", release_reason="lead_opening",
@@ -100,3 +111,16 @@ def test_standstill_release_confidence_scores_existing_release_only():
   )
   assert blocked.eligible is False
   assert blocked.block_reason == "release_not_allowed"
+
+
+def test_standstill_release_gate_reports_apply_supported():
+  r = predict_standstill_release_confidence(
+    mode="gate", release_allowed=True, release_source="lead_pullaway", release_reason="lead_opening",
+    release_a_target=0.25, lead_progress_allowed=True, lead_gap_excess=1.0,
+    lead_shadow_active=False, alternate_threat_active=False, force_slow_decel=False,
+    brake_pressed=False, gas_pressed=False, model_should_stop=False,
+  )
+  assert r.mode == "gate"
+  assert r.effective_mode == "gate"
+  assert r.apply_supported is True
+  assert r.eligible is True

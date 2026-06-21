@@ -74,13 +74,18 @@ def test_longitudinal_debug_trace_mode_is_string_multiple_button():
   assert [opt["label"] for opt in item["options"]] == ["Off", "Log"]
 
 
-def test_shadow_observability_modes_are_off_shadow_only():
-  for key in ("CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "StandstillReleaseConfidenceMode"):
+def test_shadow_observability_modes_include_promoted_apply_options():
+  expected = {
+    "CutInBrakeAssistMode": (["off", "shadow"], ["Off", "Monitor only"]),
+    "CurveSpeedConfidenceMode": (["off", "shadow", "apply_conservative"], ["Off", "Monitor only", "Apply conservative"]),
+    "StandstillReleaseConfidenceMode": (["off", "shadow", "gate"], ["Off", "Monitor only", "Release gate"]),
+  }
+  for key, (values, labels) in expected.items():
     item = find_item(CRUISE, key)
     assert item is not None
     assert item["widget"] == "multiple_button"
-    assert [opt["value"] for opt in item["options"]] == ["off", "shadow"]
-    assert [opt["label"] for opt in item["options"]] == ["Off", "Monitor only"]
+    assert [opt["value"] for opt in item["options"]] == values
+    assert [opt["label"] for opt in item["options"]] == labels
 
 
 def test_speed_limit_is_a_delegated_subpanel():
