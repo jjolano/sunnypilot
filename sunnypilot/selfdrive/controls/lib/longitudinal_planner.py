@@ -240,8 +240,6 @@ class LongitudinalPlannerSP:
       return float(base_a_target)
     if not bool(getattr(self.custom_long_output, "enabled", False)):
       return float(base_a_target)
-    if not bool(getattr(self.custom_long_output, "should_stop", False)):
-      return float(base_a_target)
     if str(getattr(self.custom_long_output, "selected_intent", "") or "") != "stop_approach":
       return float(base_a_target)
     raw_custom_a = getattr(self.custom_long_output, "a_target", None)

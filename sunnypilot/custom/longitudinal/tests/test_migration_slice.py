@@ -121,15 +121,15 @@ def test_final_output_selection_does_not_raw_or_model_stop_in_scc_or_acc():
   assert e2e_source is True
 
 
-def test_scc_stop_approach_custom_cap_applies_only_for_trusted_stop_intent():
+def test_scc_stop_approach_custom_cap_applies_before_full_stop_commitment():
   sp = fake_planner(LongitudinalMode.SCC, should_stop=True)
   sp.custom_long_output = CustomLongitudinalOutput(
-    a_target=-1.2, should_stop=True, enabled=True, mode=LongitudinalMode.SCC,
+    a_target=-1.2, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
     selected_intent="stop_approach", reason="model_stop", debug={},
   )  # type: ignore[assignment]
-  a, should_stop, e2e_source = sp.final_longitudinal_output(fake_sm(True), -0.2, True, -0.3, True)  # type: ignore[arg-type]
+  a, should_stop, e2e_source = sp.final_longitudinal_output(fake_sm(True), -0.2, False, -0.3, False)  # type: ignore[arg-type]
   assert a == -1.2
-  assert should_stop is True
+  assert should_stop is False
   assert e2e_source is False
 
 
