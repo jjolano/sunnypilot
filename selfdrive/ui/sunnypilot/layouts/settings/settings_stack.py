@@ -341,7 +341,7 @@ class SettingsStackLayout(Widget):
     self._always_offroad_toggle = AlwaysOffroadToggle()
     self._active_view: Widget = self._root_view()
     self._close_icon = gui_app.texture("icons/close2.png", 68, 68, keep_aspect_ratio=True)
-    self._back_icon = gui_app.texture("icons/arrow-right.png", 68, 68, keep_aspect_ratio=True)
+    self._back_icon = gui_app.texture("icons/arrow-right.png", 68, 68, keep_aspect_ratio=True, flip_x=True)
     self._category_btn_rects: list[tuple[str, rl.Rectangle]] = []
 
   def set_callbacks(self, on_close: Callable):
@@ -559,7 +559,7 @@ class SettingsStackLayout(Widget):
     elif icon == "back":
       texture = self._back_icon
       dest = rl.Rectangle(rect.x + (rect.width - texture.width) / 2, rect.y + (rect.height - texture.height) / 2, texture.width, texture.height)
-      rl.draw_texture_pro(texture, rl.Rectangle(0, 0, texture.width, texture.height), dest, rl.Vector2(0, 0), 180, color)
+      rl.draw_texture_pro(texture, rl.Rectangle(0, 0, texture.width, texture.height), dest, rl.Vector2(0, 0), 0, color)
     elif icon == "search":
       cx = rect.x + rect.width * 0.43
       cy = rect.y + rect.height * 0.43

@@ -84,6 +84,9 @@ def main() -> None:
     stack.show_event()
     _render_stack(stack)
 
+    # Back button is hidden at root; rect should be zeroed.
+    assert stack._back_btn_rect.width == 0, "back button should be hidden at root"
+
     # root -> search -> back returns root.
     _click(stack, stack._search_btn_rect)
     assert stack._history == ["__search__"]
@@ -95,6 +98,7 @@ def main() -> None:
     stack._navigate_to("interface", replace=True)
     assert stack._history == ["interface"]
     _render_stack(stack)
+    assert stack._back_btn_rect.width > 0 and stack._back_btn_rect.height > 0, "back button should be visible when not at root"
     _click(stack, stack._search_btn_rect)
     assert stack._history == ["interface", "__search__"]
     _render_stack(stack)
