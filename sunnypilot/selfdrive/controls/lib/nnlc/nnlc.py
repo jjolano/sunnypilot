@@ -18,6 +18,10 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_base impo
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.model import NNTorqueModel
 
+
+def _is_real_model_path(model_path: str) -> bool:
+  return bool(model_path) and model_path != MOCK_MODEL_PATH
+
 LOW_SPEED_X = [0, 10, 20, 30]
 LOW_SPEED_Y = [12, 3, 1, 0]
 
@@ -36,12 +40,13 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
     super().__init__(lac_torque, CP, CP_SP, CI)
     self.params = Params()
     self.enabled = self.params.get_bool("NeuralNetworkLateralControl")
-    self.has_nn_model = CP_SP.neuralNetworkLateralControl.model.path != MOCK_MODEL_PATH
+    model_path = str(CP_SP.neuralNetworkLateralControl.model.path)
+    self.has_nn_model = _is_real_model_path(model_path)
 
     # NN model takes current v_ego, lateral_accel, lat accel/jerk error, roll, and past/future/planned data
     # of lat accel and roll
     # Past value is computed using previous desired lat accel and observed roll
-    self.model = NNTorqueModel(CP_SP.neuralNetworkLateralControl.model.path)
+    self.model = NNTorqueModel(model_path) if self.has_nn_model else None
 
     self.pitch = FirstOrderFilter(0.0, 0.5, 0.01)
     self.pitch_last = 0.0
@@ -61,7 +66,7 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
 
   @property
   def _nnlc_enabled(self):
-    return self.enabled and self.model_valid and self.has_nn_model
+    return self.enabled and self.model_valid and self.has_nn_model and self.model is not None
 
   def update_limits(self):
     if not self._nnlc_enabled:
@@ -92,7 +97,7 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
                                            freeze_integrator=freeze_integrator)
 
   def update_neural_network_feedforward(self, CS, params, calibrated_pose) -> None:
-    if not self._nnlc_enabled:
+    if not self._nnlc_enabled or self.model is None:
       return
 
     self.update_feedforward_torque_space(CS)

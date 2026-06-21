@@ -29,3 +29,4 @@ class TestNNTorqueModel:
     controller = LatControlTorque(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
 
     assert controller.extension.has_nn_model
+    assert controller.extension.model is not None

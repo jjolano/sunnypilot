@@ -100,3 +100,23 @@ class TestNeuralNetworkLateralControl:
       controller.extension.update_limits()
       _, _, lac_log = controller.update(True, CS, VM, params, False, 1, pose, False, 0.2)
     assert lac_log.saturated
+
+  def test_empty_model_path_does_not_crash(self):
+    params = Params()
+    params.put_bool("NeuralNetworkLateralControl", True, block=True)
+
+    CarInterface = interfaces[TOYOTA.TOYOTA_RAV4]
+    CP = CarInterface.get_non_essential_params(TOYOTA.TOYOTA_RAV4)
+    CP_SP = CarInterface.get_non_essential_params_sp(CP, TOYOTA.TOYOTA_RAV4)
+    CI = CarInterface(CP, CP_SP)
+
+    sunnypilot_interfaces.setup_interfaces(CI, params)
+
+    CP_SP.neuralNetworkLateralControl.model.path = ""
+
+    CP_SP = convert_to_capnp(CP_SP)
+    controller = LatControlTorque(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+
+    assert not controller.extension.has_nn_model
+    assert controller.extension.model is None
+    assert not controller.extension._nnlc_enabled
