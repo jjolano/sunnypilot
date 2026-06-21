@@ -32,6 +32,20 @@ LaneChangeDirection = log.LaneChangeDirection
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
 
+def set_model_path_state_sensor_confidence(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
+  debug = debug or {}
+  model_path_state.sensorConfidenceAvailable = bool(debug.get('sensor_confidence_available', False))
+  model_path_state.sensorConfidenceBlockReason = str(debug.get('sensor_confidence_block_reason', default_reason))
+  model_path_state.sensorConfidenceScore = float(debug.get('sensor_confidence_score', 0.0))
+  model_path_state.sensorDisagreementLevel = str(debug.get('sensor_disagreement_level', 'blocked'))
+  model_path_state.sensorSuppressCandidate = bool(debug.get('sensor_suppress_candidate', False))
+  model_path_state.sensorModelMeasuredCurvatureDelta = float(debug.get('sensor_model_measured_curvature_delta', float('nan')))
+  model_path_state.sensorModelMeasuredLatAccelDelta = float(debug.get('sensor_model_measured_lat_accel_delta', float('nan')))
+  model_path_state.sensorYawCurvature = float(debug.get('sensor_yaw_curvature', float('nan')))
+  model_path_state.sensorModelYawLatAccelDelta = float(debug.get('sensor_model_yaw_lat_accel_delta', float('nan')))
+  model_path_state.sensorSteeringYawLatAccelDelta = float(debug.get('sensor_steering_yaw_lat_accel_delta', float('nan')))
+
+
 class Controls(ControlsExt):
   def __init__(self) -> None:
     self.params = Params()
@@ -273,6 +287,7 @@ class Controls(ControlsExt):
       model_path_state.laneChangeShapingActive = False
       model_path_state.demandSource = "disabled"
       model_path_state.dtleEstimate = float('nan')
+      set_model_path_state_sensor_confidence(model_path_state)
       last_result = getattr(self.lateral_demand, 'last_result', None)
       if last_result is not None:
         try:
@@ -299,6 +314,7 @@ class Controls(ControlsExt):
           model_path_state.laneChangeShapingActive = bool(debug.get('lane_change_shaping_active', False))
           model_path_state.demandSource = str(debug.get('demand_source', 'model_path'))
           model_path_state.dtleEstimate = float(debug.get('dtle_estimate', float('nan')))
+          set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
         except Exception:
           cloudlog.exception("failed to publish lateral modelPathState telemetry")
           self.lateral_demand.clear()

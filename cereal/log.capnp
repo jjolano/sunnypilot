@@ -944,6 +944,16 @@ struct ControlsState @0x97ff69c53601abf1 {
     laneChangeShapingActive @17 :Bool;
     demandSource @18 :Text;
     dtleEstimate @19 :Float32;
+    sensorConfidenceAvailable @20 :Bool;
+    sensorConfidenceBlockReason @21 :Text;
+    sensorConfidenceScore @22 :Float32;
+    sensorDisagreementLevel @23 :Text;
+    sensorSuppressCandidate @24 :Bool;
+    sensorModelMeasuredCurvatureDelta @25 :Float32;
+    sensorModelMeasuredLatAccelDelta @26 :Float32;
+    sensorYawCurvature @27 :Float32;
+    sensorModelYawLatAccelDelta @28 :Float32;
+    sensorSteeringYawLatAccelDelta @29 :Float32;
   }
 
   struct LateralDebugState {
