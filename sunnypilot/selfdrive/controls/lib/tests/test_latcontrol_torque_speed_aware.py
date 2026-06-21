@@ -134,7 +134,7 @@ def test_speed_apply_does_not_freeze_live_friction_update():
   assert tp.friction == 0.25
 
 
-def test_manual_override_accepts_valid_range_edges():
+def test_manual_override_rejects_large_deviation_from_base():
   ext = LatControlTorqueExtOverride(cp())
 
   class P:
@@ -149,9 +149,29 @@ def test_manual_override_accepts_valid_range_edges():
   ext.params = P()
   ext.enforce_torque_control_toggle = True
   tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  assert ext.update_override_torque_params(tp, 25.0) is False
+  assert tp.latAccelFactor == 2.0
+  assert tp.friction == 0.2
+
+
+def test_manual_override_accepts_bounded_deviation_from_base():
+  ext = LatControlTorqueExtOverride(cp())
+
+  class P:
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled', 'CustomTorqueParams')
+    def get(self, k, return_default=True):
+      if k == 'TorqueParamsOverrideLatAccelFactor':
+        return '3.0'
+      if k == 'TorqueParamsOverrideFriction':
+        return '0.45'
+      return 'off'
+
+  ext.params = P()
+  ext.enforce_torque_control_toggle = True
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
   assert ext.update_override_torque_params(tp, 25.0) is True
-  assert tp.latAccelFactor == 0.1
-  assert tp.friction == 1.0
+  assert tp.latAccelFactor == 3.0
+  assert tp.friction == 0.45
 
 
 def test_invalid_manual_override_values_do_not_apply_or_clamp():
@@ -240,7 +260,7 @@ def test_manual_override_changes_deferred_while_refresh_disallowed():
   assert tp.friction == 0.2
 
   p.factor = '4.0'
-  p.friction = '0.5'
+  p.friction = '0.35'
   ext.set_torque_override_refresh_allowed(False)
   ext.frame = 299
   assert ext.update_override_torque_params(tp, 25.0) is True
@@ -250,7 +270,7 @@ def test_manual_override_changes_deferred_while_refresh_disallowed():
   ext.set_torque_override_refresh_allowed(True)
   assert ext.update_override_torque_params(tp, 25.0) is True
   assert tp.latAccelFactor == 4.0
-  assert tp.friction == 0.5
+  assert tp.friction == 0.35
 
 
 def test_disabling_manual_override_restores_only_after_refresh_allowed():

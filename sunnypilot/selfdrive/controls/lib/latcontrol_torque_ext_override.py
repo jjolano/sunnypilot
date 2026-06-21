@@ -10,6 +10,7 @@ from openpilot.common.params import Params
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import SpeedAwareTorqueRuntime, parse_speed_aware_torque_profile
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
   validate_live_torque_speed_adaptive_mode,
+  validate_manual_torque_override_against_base,
   validate_torque_override_friction,
   validate_torque_override_lat_accel_factor,
 )
@@ -135,6 +136,9 @@ class LatControlTorqueExtOverride:
         self.base_friction = float(torque_params.friction)
       elif self.last_speed_applied is not None and abs(float(torque_params.latAccelFactor) - self.last_speed_applied) < 1e-9:
         self._restore_base(torque_params)
+      if not validate_manual_torque_override_against_base(
+          manual_lat_accel_factor, manual_friction, self.base_latAccelFactor, self.base_friction):
+        return self._restore_manual_or_speed_base(torque_params)
       torque_params.latAccelFactor = float(manual_lat_accel_factor)
       torque_params.friction = float(manual_friction)
       self.last_speed_applied = None
