@@ -7,6 +7,8 @@ import numpy as np
 from openpilot.tools.drive_lab import fuzz_longitudinal
 from openpilot.tools.drive_lab.fuzz_longitudinal import (
   Scenario,
+  aggregate_mpc_solution_status_counts,
+  capture_commanded_accel,
   evaluate_collision_response,
   evaluate_invariants,
   evaluate_lead_pullaway_start,
@@ -194,7 +196,7 @@ def test_commonroad_acc_fixtures():
 
 def test_all_presets_registered():
   assert set(SCENARIO_PRESETS) == {"fuzz", "udacity-acc", "openpilot-acc", "ncap-acc", "commonroad-acc",
-                                     "iso15622-acc", "unr157-alks", "nhtsa-fcw", "cncap-ccrh", "iihs-acc"}
+                                     "nuscenes-acc", "iso15622-acc", "unr157-alks", "nhtsa-fcw", "cncap-ccrh", "iihs-acc"}
 
 
 def test_main_lists_udacity_acc_preset():
@@ -279,3 +281,57 @@ def test_run_scenario_smoke():
   with shipped_longitudinal_config():
     result = run_scenario(scenario)
   assert isinstance(result.valid, bool)
+
+
+def test_aggregate_mpc_solution_status_counts_sums_per_status():
+  dummy = Scenario(mode="comfort", kind="test", title="dummy", duration=1.0, kwargs={})
+  results = [
+    fuzz_longitudinal.ScenarioResult(scenario=dummy, valid=True, failures=[], mpc_solution_status_counts={4: 2, 5: 1}),
+    fuzz_longitudinal.ScenarioResult(scenario=dummy, valid=True, failures=[], mpc_solution_status_counts={4: 1}),
+    fuzz_longitudinal.ScenarioResult(scenario=dummy, valid=True, failures=[], mpc_solution_status_counts={}),
+  ]
+  assert aggregate_mpc_solution_status_counts(results) == {4: 3, 5: 1}
+
+
+def test_capture_commanded_accel_records_mpc_reset_status():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
+  with capture_commanded_accel() as capture:
+    mpc = LongitudinalMpc()
+    mpc.solution_status = 4
+    mpc.reset()
+    mpc.solution_status = 4
+    mpc.reset()
+    mpc.solution_status = 2
+    mpc.reset()
+  assert capture.mpc_solution_status_counts == {4: 2, 2: 1}
+
+
+def test_main_json_includes_mpc_resets(monkeypatch):
+  import json
+  scenarios = [Scenario(mode="comfort", kind="test", title="test scenario", duration=1.0, kwargs={})]
+
+  def fake_run_scenario(scenario, max_normal_jerk=8.0):
+    return fuzz_longitudinal.ScenarioResult(
+      scenario=scenario,
+      valid=True,
+      failures=[],
+      mpc_solution_status_counts={4: 3, 2: 1},
+    )
+
+  monkeypatch.setattr(fuzz_longitudinal, "generate_preset_scenarios", lambda request: scenarios)
+  monkeypatch.setattr(fuzz_longitudinal, "run_scenario", fake_run_scenario)
+
+  stdout = io.StringIO()
+  previous_argv = sys.argv
+  try:
+    sys.argv = ["fuzz_longitudinal.py", "--preset", "fuzz", "--cases", "1", "--json"]
+    with contextlib.redirect_stdout(stdout):
+      fuzz_longitudinal.main()
+  finally:
+    sys.argv = previous_argv
+
+  payload = json.loads(stdout.getvalue())
+  assert payload["mpcSolutionStatusCounts"] == {"4": 3, "2": 1}
+  assert payload["totalMpcResets"] == 4
+  assert payload["scenarioResults"][0]["mpcSolutionStatusCounts"] == {"4": 3, "2": 1}
+  assert payload["failures"] == []

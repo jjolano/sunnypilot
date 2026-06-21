@@ -69,6 +69,15 @@ class ScenarioResult:
   scenario: Scenario
   valid: bool
   failures: list[ScenarioFailure]
+  mpc_solution_status_counts: dict[int, int] = field(default_factory=dict)
+
+
+def aggregate_mpc_solution_status_counts(results: list[ScenarioResult]) -> dict[int, int]:
+  total: dict[int, int] = {}
+  for result in results:
+    for status, count in result.mpc_solution_status_counts.items():
+      total[status] = total.get(status, 0) + count
+  return total
 
 
 def evaluate_invariants(
@@ -103,16 +112,19 @@ class CommandCapture:
   commanded: list[float] = field(default_factory=list)
   prob_lead: list[float] = field(default_factory=list)
   actuator_delay: float | None = None
+  mpc_solution_status_counts: dict[int, int] = field(default_factory=dict)
 
 
 @contextlib.contextmanager
 def capture_commanded_accel():
   from openpilot.selfdrive.test.longitudinal_maneuvers import plant as plant_module
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
   Plant = plant_module.Plant
 
   capture = CommandCapture()
   original_step = Plant.step
   original_sleep = plant_module.time.sleep
+  original_reset = LongitudinalMpc.reset
 
   def step(self, *step_args, **step_kwargs):
     result = original_step(self, *step_args, **step_kwargs)
@@ -123,13 +135,21 @@ def capture_commanded_accel():
       capture.actuator_delay = float(self.planner.CP.longitudinalActuatorDelay)
     return result
 
+  def reset(self, *reset_args, **reset_kwargs):
+    status = getattr(self, "solution_status", 0)
+    if isinstance(status, (int, np.integer)) and status != 0:
+      capture.mpc_solution_status_counts[int(status)] = capture.mpc_solution_status_counts.get(int(status), 0) + 1
+    return original_reset(self, *reset_args, **reset_kwargs)
+
   Plant.step = step
   plant_module.time.sleep = lambda *a, **k: None
+  LongitudinalMpc.reset = reset
   try:
     yield capture
   finally:
     Plant.step = original_step
     plant_module.time.sleep = original_sleep
+    LongitudinalMpc.reset = original_reset
 
 
 def evaluate_lead_pullaway_start(output: np.ndarray) -> list[ScenarioFailure]:
@@ -246,7 +266,7 @@ def run_scenario(scenario: Scenario, max_normal_jerk: float = 8.0) -> ScenarioRe
     else:
       failures = [f for f in failures if f.check != "collision"] + oracle
 
-  return ScenarioResult(scenario, not failures, failures)
+  return ScenarioResult(scenario, not failures, failures, capture.mpc_solution_status_counts)
 
 
 def render_maneuver_snippet(scenario: Scenario) -> str:
@@ -343,6 +363,7 @@ def main() -> None:
   with shipped_longitudinal_config():
     results = [run_scenario(s, max_normal_jerk) for s in scenarios]
   failures = [r for r in results if r.failures]
+  mpc_counts = aggregate_mpc_solution_status_counts(results)
   if args.json:
     print(json.dumps({
       "seed": args.seed,
@@ -351,25 +372,43 @@ def main() -> None:
       "preset": args.preset,
       "profile": profile.source if profile is not None else None,
       "maxNormalJerk": max_normal_jerk,
+      "mpcSolutionStatusCounts": dict(mpc_counts),
+      "totalMpcResets": sum(mpc_counts.values()),
+      "scenarioResults": [
+        {
+          "title": result.scenario.title,
+          "kind": result.scenario.kind,
+          "mpcSolutionStatusCounts": dict(result.mpc_solution_status_counts),
+        }
+        for result in results
+      ],
       "failures": [
         {
           "scenario": scenario_to_dict(result.scenario),
           "checks": [failure.__dict__ for failure in result.failures],
+          "mpcSolutionStatusCounts": dict(result.mpc_solution_status_counts),
         }
         for result in failures
       ],
     }, indent=2))
   else:
     profile_text = f" profile={profile.source}" if profile is not None else ""
+    mpc_resets_total = sum(mpc_counts.values())
+    mpc_text = f" mpc_resets={mpc_resets_total}"
+    if mpc_counts:
+      mpc_text += f" mpc_statuses={mpc_counts}"
     print(
       f"Drive Lab fuzz preset={args.preset} seed={args.seed} mode={args.mode}{profile_text} "
-      f"cases={len(scenarios)} max_normal_jerk={max_normal_jerk:g} failures={len(failures)}"
+      f"cases={len(scenarios)} max_normal_jerk={max_normal_jerk:g} failures={len(failures)}{mpc_text}"
     )
     for result in failures[:args.max_failures]:
       print(f"\nFAILED: {result.scenario.title} [{result.scenario.mode}/{result.scenario.kind}]")
       for failure in result.failures:
         print(f"  {failure.check}: {failure.detail}")
       print(render_maneuver_snippet(result.scenario))
+    mpc_results = [r for r in results if r.mpc_solution_status_counts]
+    for result in mpc_results[:args.max_failures]:
+      print(f"\nMPC RESET: {result.scenario.title} [{result.scenario.mode}/{result.scenario.kind}]: {result.mpc_solution_status_counts}")
 
   if failures:
     raise SystemExit(1)
