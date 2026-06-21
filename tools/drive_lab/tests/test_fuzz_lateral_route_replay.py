@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import random
 import sys
 import tempfile
 from pathlib import Path
@@ -23,6 +24,7 @@ from openpilot.tools.drive_lab.fuzz_lateral_route_replay import (
   _apply_recipe,
   _coherent_path,
   _frame_to_inputs,
+  _generate_recipe,
   evaluate_scenario,
   extract_lateral_route_frames,
   extract_lateral_route_frames_with_summary,
@@ -104,7 +106,10 @@ def test_identity_recipe_produces_identical_outputs():
 
 def test_all_presets_and_perturbations_pass_mild_cases():
   for preset in ("synthetic_straight", "synthetic_curve", "synthetic_sine", "synthetic_reversal"):
-    for pert in ("noise", "dropout", "delay", "stale", "scale", "offset"):
+    perturbations = ["noise", "dropout", "delay", "stale", "model_age_stale", "scale", "offset"]
+    if preset in ("synthetic_sine", "synthetic_reversal"):
+      perturbations.append("model_age_delay")
+    for pert in perturbations:
       config = RouteReplayFuzzerConfig(seed=1, cases=3, preset=preset, perturbation=pert)
       for scenario in generate_scenarios(config):
         result = evaluate_scenario(scenario)
@@ -172,8 +177,82 @@ def test_stale_uses_only_start_frame_value():
     assert perturbed[i].raw_curvature == stale_value
 
 
+def test_model_age_stale_marks_window_without_changing_curvature():
+  config = RouteReplayFuzzerConfig(seed=1, cases=1, preset="synthetic_curve", perturbation="model_age_stale")
+  scenario = generate_scenarios(config)[0]
+  perturbed = _apply_recipe(scenario.recipe, scenario.frames)
+  start = scenario.recipe.start_frame
+  end = scenario.recipe.end_frame
+  stale_age_s = float(scenario.recipe.params["model_age_s"])
+  for i in range(start, end):
+    assert perturbed[i].model_age_s == pytest.approx(stale_age_s)
+    assert perturbed[i].raw_curvature == scenario.frames[i].raw_curvature
+
+
+def test_model_age_stale_produces_model_stale_reason():
+  config = RouteReplayFuzzerConfig(seed=1, cases=3, preset="synthetic_curve", perturbation="model_age_stale")
+  for scenario in generate_scenarios(config):
+    result = evaluate_scenario(scenario)
+    if not result.valid:
+      continue
+    window = result.perturbed_outputs[scenario.recipe.start_frame:scenario.recipe.end_frame]
+    assert window
+    assert all(o.path_reason == "model_stale" for o in window)
+    return
+  raise AssertionError("model_age_stale did not produce a valid scenario")
+
+
+def test_model_age_delay_combines_delayed_raw_with_stale_age():
+  config = RouteReplayFuzzerConfig(seed=1, cases=1, preset="synthetic_sine", perturbation="model_age_delay")
+  scenario = generate_scenarios(config)[0]
+  perturbed = _apply_recipe(scenario.recipe, scenario.frames)
+  start = scenario.recipe.start_frame
+  end = scenario.recipe.end_frame
+  delay_frames = int(scenario.recipe.params["delay_frames"])
+  stale_age_s = float(scenario.recipe.params["model_age_s"])
+  for i in range(start, end):
+    assert perturbed[i].model_age_s == pytest.approx(stale_age_s)
+    assert perturbed[i].raw_curvature == scenario.frames[i - delay_frames].raw_curvature
+    assert perturbed[i].measured_curvature == scenario.frames[i].measured_curvature
+
+
+def test_model_age_delay_generation_never_starts_before_delayable_frame():
+  for seed in range(50):
+    recipe = _generate_recipe(random.Random(seed), 30, "model_age_delay")
+    assert recipe.start_frame >= 2
+    assert int(recipe.params["delay_frames"]) >= 1
+    assert int(recipe.params["delay_frames"]) <= recipe.start_frame
+
+
+def test_model_age_delay_bridges_toward_measured_curvature():
+  config = RouteReplayFuzzerConfig(seed=1, cases=3, preset="synthetic_sine", perturbation="model_age_delay")
+  for scenario in generate_scenarios(config):
+    result = evaluate_scenario(scenario)
+    if not result.valid:
+      continue
+    window_outputs = result.perturbed_outputs[scenario.recipe.start_frame:scenario.recipe.end_frame]
+    window_frames = scenario.perturbed_frames[scenario.recipe.start_frame:scenario.recipe.end_frame]
+    assert window_outputs
+    assert all(o.path_reason == "model_stale" for o in window_outputs)
+    assert any(
+      abs(o.processed_curvature - f.measured_curvature) < abs(f.raw_curvature - f.measured_curvature)
+      for f, o in zip(window_frames, window_outputs, strict=False)
+    )
+    return
+  raise AssertionError("model_age_delay did not produce a valid scenario")
+
+
+def test_perturbations_preserve_model_age_unless_explicitly_stale():
+  frames = tuple(_coherent_frame(i * DT).__class__(**{**_coherent_frame(i * DT).to_dict(), "model_age_s": 0.07}) for i in range(20))
+  for kind in ("noise", "dropout", "delay", "stale", "scale", "offset"):
+    recipe = PerturbationRecipe(kind=kind, start_frame=5, end_frame=12, description=kind,
+                                params={"delay_frames": 2, "noise_seed": 1, "scale_seed": 1, "offset_seed": 1})
+    perturbed = _apply_recipe(recipe, frames)
+    assert all(frame.model_age_s == pytest.approx(0.07) for frame in perturbed)
+
+
 def test_stale_exit_boundary_is_not_scored_as_structural_jerk_failure():
-  scenario = generate_scenarios(RouteReplayFuzzerConfig(seed=19, cases=14, duration_s=3.0))[13]
+  scenario = generate_scenarios(RouteReplayFuzzerConfig(seed=19, cases=14, duration_s=3.0, perturbation="stale"))[13]
   assert scenario.recipe.kind == "stale"
 
   result = evaluate_scenario(scenario)

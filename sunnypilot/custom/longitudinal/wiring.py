@@ -57,8 +57,14 @@ def _param_string(params: Any, key: str) -> str | None:
 def _message_age_s(sm: Any, service: str) -> float:
   recv_time = getattr(sm, "recv_time", None)
   if not isinstance(recv_time, dict) or service not in recv_time:
-    return 0.0
-  return max(0.0, time.monotonic() - float(recv_time[service]))
+    return float("inf")
+  try:
+    received_at = float(recv_time[service])
+  except (TypeError, ValueError):
+    return float("inf")
+  if not math.isfinite(received_at) or received_at <= 0.0:
+    return float("inf")
+  return max(0.0, time.monotonic() - received_at)
 
 
 def _lead_path_clearance_mode(value: Any) -> str:

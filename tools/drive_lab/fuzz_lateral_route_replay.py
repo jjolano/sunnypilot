@@ -23,7 +23,7 @@ import math
 import random
 import sys
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +41,7 @@ ARTIFACT_VERSION = 1
 DT = 0.01
 N_PATH_POINTS = 33
 PRESETS = ("synthetic_straight", "synthetic_curve", "synthetic_sine", "synthetic_reversal")
-PERTURBATION_KINDS = ("noise", "dropout", "delay", "stale", "scale", "offset")
+PERTURBATION_KINDS = ("noise", "dropout", "delay", "stale", "model_age_stale", "model_age_delay", "scale", "offset")
 CLI_PERTURBATION_KINDS = PERTURBATION_KINDS + ("none",)
 ROUTE_EXTRACTED_PRESET = "route_extracted"
 SAMPLE_MODES = ("prefix", "random-window", "uniform-windows")
@@ -212,6 +212,7 @@ class LateralRouteFrame:
   orientation_rate_z: tuple[float, ...]
   lane_line_probs: tuple[float, ...]
   frame_drop_perc: float
+  model_age_s: float = 0.0
   source_t: float | None = None
 
   def to_dict(self) -> dict[str, Any]:
@@ -234,6 +235,7 @@ class LateralRouteFrame:
       "orientation_rate_z": list(self.orientation_rate_z),
       "lane_line_probs": list(self.lane_line_probs),
       "frame_drop_perc": self.frame_drop_perc,
+      "model_age_s": self.model_age_s,
     }
     if self.source_t is not None:
       payload["source_t"] = self.source_t
@@ -260,8 +262,13 @@ class LateralRouteFrame:
       orientation_rate_z=tuple(float(v) for v in data["orientation_rate_z"]),
       lane_line_probs=tuple(float(v) for v in data["lane_line_probs"]),
       frame_drop_perc=float(data["frame_drop_perc"]),
+      model_age_s=float(data.get("model_age_s", 0.0)),
       source_t=_float_or_none(data.get("source_t")),
     )
+
+
+def _copy_frame(frame: LateralRouteFrame, **overrides: Any) -> LateralRouteFrame:
+  return replace(frame, **overrides)
 
 
 @dataclass(frozen=True)
@@ -411,6 +418,7 @@ def _frame_to_inputs(frame: LateralRouteFrame) -> LateralDemandPipelineInputs:
     orientation_rate_z=frame.orientation_rate_z,
     lane_line_probs=frame.lane_line_probs,
     frame_drop_perc=frame.frame_drop_perc,
+    model_age_s=frame.model_age_s,
     left_blinker=frame.left_blinker,
     right_blinker=frame.right_blinker,
     steering_pressed=frame.steering_pressed,
@@ -821,26 +829,13 @@ def _apply_noise(rng: random.Random, frames: tuple[LateralRouteFrame, ...], star
     if start <= i < end:
       k = frame.raw_curvature + noise[i - start]
       path = _coherent_path(k, frame.v_ego)
-      out.append(frame.__class__(
-        t=frame.t,
-        v_ego=frame.v_ego,
-        lat_active=frame.lat_active,
+      out.append(_copy_frame(
+        frame,
         raw_curvature=k,
-        measured_curvature=frame.measured_curvature,
-        roll=frame.roll,
-        steering_pressed=frame.steering_pressed,
-        left_blinker=frame.left_blinker,
-        right_blinker=frame.right_blinker,
-        lane_change_state=frame.lane_change_state,
-        lane_change_direction=frame.lane_change_direction,
         position_x=path["position_x"],
         position_y=path["position_y"],
-        position_y_std=frame.position_y_std,
         orientation_z=path["orientation_z"],
         orientation_rate_z=path["orientation_rate_z"],
-        lane_line_probs=frame.lane_line_probs,
-        frame_drop_perc=frame.frame_drop_perc,
-        source_t=frame.source_t,
       ))
     else:
       out.append(frame)
@@ -851,26 +846,13 @@ def _apply_dropout(frames: tuple[LateralRouteFrame, ...], start: int, end: int) 
   out: list[LateralRouteFrame] = []
   for i, frame in enumerate(frames):
     if start <= i < end:
-      out.append(frame.__class__(
-        t=frame.t,
-        v_ego=frame.v_ego,
-        lat_active=frame.lat_active,
-        raw_curvature=frame.raw_curvature,
-        measured_curvature=frame.measured_curvature,
-        roll=frame.roll,
-        steering_pressed=frame.steering_pressed,
-        left_blinker=frame.left_blinker,
-        right_blinker=frame.right_blinker,
-        lane_change_state=frame.lane_change_state,
-        lane_change_direction=frame.lane_change_direction,
+      out.append(_copy_frame(
+        frame,
         position_x=(),
         position_y=(),
         position_y_std=(),
         orientation_z=(),
         orientation_rate_z=(),
-        lane_line_probs=frame.lane_line_probs,
-        frame_drop_perc=frame.frame_drop_perc,
-        source_t=frame.source_t,
       ))
     else:
       out.append(frame)
@@ -884,26 +866,13 @@ def _apply_delay(frames: tuple[LateralRouteFrame, ...], start: int, end: int, de
     src = frames[i - delay_frames]
     k = src.raw_curvature
     path = _coherent_path(k, frames[i].v_ego)
-    out[i] = frames[i].__class__(
-      t=frames[i].t,
-      v_ego=frames[i].v_ego,
-      lat_active=frames[i].lat_active,
+    out[i] = _copy_frame(
+      frames[i],
       raw_curvature=k,
-      measured_curvature=frames[i].measured_curvature,
-      roll=frames[i].roll,
-      steering_pressed=frames[i].steering_pressed,
-      left_blinker=frames[i].left_blinker,
-      right_blinker=frames[i].right_blinker,
-      lane_change_state=frames[i].lane_change_state,
-      lane_change_direction=frames[i].lane_change_direction,
       position_x=path["position_x"],
       position_y=path["position_y"],
-      position_y_std=frames[i].position_y_std,
       orientation_z=path["orientation_z"],
       orientation_rate_z=path["orientation_rate_z"],
-      lane_line_probs=frames[i].lane_line_probs,
-      frame_drop_perc=frames[i].frame_drop_perc,
-      source_t=frames[i].source_t,
     )
   return tuple(out)
 
@@ -914,26 +883,13 @@ def _apply_stale(frames: tuple[LateralRouteFrame, ...], start: int, end: int) ->
   out = list(frames)
   for i in range(start, end):
     path = _coherent_path(k, frames[i].v_ego)
-    out[i] = frames[i].__class__(
-      t=frames[i].t,
-      v_ego=frames[i].v_ego,
-      lat_active=frames[i].lat_active,
+    out[i] = _copy_frame(
+      frames[i],
       raw_curvature=k,
-      measured_curvature=frames[i].measured_curvature,
-      roll=frames[i].roll,
-      steering_pressed=frames[i].steering_pressed,
-      left_blinker=frames[i].left_blinker,
-      right_blinker=frames[i].right_blinker,
-      lane_change_state=frames[i].lane_change_state,
-      lane_change_direction=frames[i].lane_change_direction,
       position_x=path["position_x"],
       position_y=path["position_y"],
-      position_y_std=frames[i].position_y_std,
       orientation_z=path["orientation_z"],
       orientation_rate_z=path["orientation_rate_z"],
-      lane_line_probs=frames[i].lane_line_probs,
-      frame_drop_perc=frames[i].frame_drop_perc,
-      source_t=frames[i].source_t,
     )
   return tuple(out)
 
@@ -945,26 +901,13 @@ def _apply_scale(rng: random.Random, frames: tuple[LateralRouteFrame, ...], star
     if start <= i < end:
       k = frame.raw_curvature * factor
       path = _coherent_path(k, frame.v_ego)
-      out.append(frame.__class__(
-        t=frame.t,
-        v_ego=frame.v_ego,
-        lat_active=frame.lat_active,
+      out.append(_copy_frame(
+        frame,
         raw_curvature=k,
-        measured_curvature=frame.measured_curvature,
-        roll=frame.roll,
-        steering_pressed=frame.steering_pressed,
-        left_blinker=frame.left_blinker,
-        right_blinker=frame.right_blinker,
-        lane_change_state=frame.lane_change_state,
-        lane_change_direction=frame.lane_change_direction,
         position_x=path["position_x"],
         position_y=path["position_y"],
-        position_y_std=frame.position_y_std,
         orientation_z=path["orientation_z"],
         orientation_rate_z=path["orientation_rate_z"],
-        lane_line_probs=frame.lane_line_probs,
-        frame_drop_perc=frame.frame_drop_perc,
-        source_t=frame.source_t,
       ))
     else:
       out.append(frame)
@@ -978,26 +921,13 @@ def _apply_offset(rng: random.Random, frames: tuple[LateralRouteFrame, ...], sta
     if start <= i < end:
       k = frame.raw_curvature + offset
       path = _coherent_path(k, frame.v_ego)
-      out.append(frame.__class__(
-        t=frame.t,
-        v_ego=frame.v_ego,
-        lat_active=frame.lat_active,
+      out.append(_copy_frame(
+        frame,
         raw_curvature=k,
-        measured_curvature=frame.measured_curvature,
-        roll=frame.roll,
-        steering_pressed=frame.steering_pressed,
-        left_blinker=frame.left_blinker,
-        right_blinker=frame.right_blinker,
-        lane_change_state=frame.lane_change_state,
-        lane_change_direction=frame.lane_change_direction,
         position_x=path["position_x"],
         position_y=path["position_y"],
-        position_y_std=frame.position_y_std,
         orientation_z=path["orientation_z"],
         orientation_rate_z=path["orientation_rate_z"],
-        lane_line_probs=frame.lane_line_probs,
-        frame_drop_perc=frame.frame_drop_perc,
-        source_t=frame.source_t,
       ))
     else:
       out.append(frame)
@@ -1020,6 +950,30 @@ def _apply_recipe(recipe: PerturbationRecipe, frames: tuple[LateralRouteFrame, .
     return _apply_delay(frames, start, end, int(recipe.params.get("delay_frames", 3)))
   if recipe.kind == "stale":
     return _apply_stale(frames, start, end)
+  if recipe.kind == "model_age_stale":
+    stale_age_s = float(recipe.params.get("model_age_s", 0.30))
+    return tuple(
+      _copy_frame(frame, model_age_s=stale_age_s) if start <= i < end else frame
+      for i, frame in enumerate(frames)
+    )
+  if recipe.kind == "model_age_delay":
+    delay_frames = min(int(recipe.params.get("delay_frames", 3)), start)
+    stale_age_s = float(recipe.params.get("model_age_s", 0.30))
+    out = list(frames)
+    for i in range(start, end):
+      src = frames[i - delay_frames]
+      k = src.raw_curvature
+      path = _coherent_path(k, frames[i].v_ego)
+      out[i] = _copy_frame(
+        frames[i],
+        raw_curvature=k,
+        position_x=path["position_x"],
+        position_y=path["position_y"],
+        orientation_z=path["orientation_z"],
+        orientation_rate_z=path["orientation_rate_z"],
+        model_age_s=stale_age_s,
+      )
+    return tuple(out)
   if recipe.kind == "scale":
     rng = random.Random(recipe.params.get("scale_seed", 0))
     return _apply_scale(rng, frames, start, end)
@@ -1053,6 +1007,16 @@ def _generate_recipe(rng: random.Random, n: int, kind: str | None) -> Perturbati
   elif kind == "stale":
     params = {}
     desc = f"stale curvature freeze frames {start}-{end}"
+  elif kind == "model_age_stale":
+    params = {"model_age_s": rng.uniform(0.25, 0.45)}
+    desc = f"stale model age {params['model_age_s']:.2f}s frames {start}-{end}"
+  elif kind == "model_age_delay":
+    if start < 2:
+      start = min(max(2, start), max(0, n - window - 1))
+      end = min(n, start + window)
+    max_delay = max(1, min(10, start))
+    params = {"delay_frames": rng.randint(1, max_delay), "model_age_s": rng.uniform(0.25, 0.45)}
+    desc = f"stale model age + causal delay {params['delay_frames']} frames {start}-{end}"
   elif kind == "scale":
     params = {"scale_seed": rng.randint(0, 1_000_000)}
     desc = f"coherent scale factor frames {start}-{end}"
@@ -1372,14 +1336,14 @@ def _evaluate_outputs(
 
 
 def _expected_perturbed_step_end_frames(recipe: PerturbationRecipe) -> tuple[int, ...]:
-  if recipe.kind == "stale" and recipe.end_frame > recipe.start_frame:
+  if recipe.kind in ("stale", "model_age_stale", "model_age_delay") and recipe.end_frame > recipe.start_frame:
     return (recipe.end_frame,)
   return ()
 
 
 def _comparison_delta_mask(scenario: RouteReplayScenario, size: int) -> np.ndarray:
   mask = np.ones(size, dtype=bool)
-  if scenario.recipe.kind == "stale":
+  if scenario.recipe.kind in ("stale", "model_age_stale", "model_age_delay"):
     start = max(0, min(size, scenario.recipe.start_frame))
     end = max(start, min(size, scenario.recipe.end_frame))
     mask[start:end] = False
@@ -1424,6 +1388,7 @@ def evaluate_scenario(scenario: RouteReplayScenario) -> RouteReplayResult:
 
   baseline_failures.extend(_evaluate_outputs(baseline_outputs, thresholds, "baseline"))
 
+  perturbed_frames = scenario.perturbed_frames or ()
   try:
     perturbed_frames = scenario.perturbed_frames or _apply_recipe(scenario.recipe, scenario.frames)
     perturbation_failures.extend(_validate_input_frames(perturbed_frames, "perturbed"))
@@ -1497,6 +1462,35 @@ def evaluate_scenario(scenario: RouteReplayScenario) -> RouteReplayResult:
           "check": "expected_dropout_reaction",
           "detail": "dropout window did not produce invalid_path or reduced quality",
         })
+
+    # Targeted stale-age check.
+    if scenario.recipe.kind in ("model_age_stale", "model_age_delay"):
+      window = perturbed_outputs[scenario.recipe.start_frame:scenario.recipe.end_frame]
+      active_window = [o for o in window if o.v_ego > 0.1]
+      stale_count = sum(1 for o in active_window if o.path_reason == "model_stale")
+      required = max(1, int(0.9 * len(active_window))) if active_window else 0
+      if stale_count < required:
+        comparison_failures.append({
+          "check": "expected_model_age_stale_reaction",
+          "detail": f"stale model-age window produced {stale_count}/{len(active_window)} model_stale frames",
+        })
+      if scenario.recipe.kind == "model_age_delay" and window:
+        closer_to_measured = 0
+        material_frames = 0
+        material_eps = 1e-7
+        for frame, output in zip(perturbed_frames[scenario.recipe.start_frame:scenario.recipe.end_frame], window, strict=False):
+          raw_error = abs(float(frame.raw_curvature) - float(frame.measured_curvature))
+          if raw_error <= material_eps:
+            continue
+          material_frames += 1
+          processed_error = abs(float(output.processed_curvature) - float(frame.measured_curvature))
+          if processed_error < raw_error - 1e-9:
+            closer_to_measured += 1
+        if material_frames == 0 or closer_to_measured < max(1, int(0.9 * material_frames)):
+          comparison_failures.append({
+            "check": "expected_stale_age_bridge_toward_measured",
+            "detail": f"stale-age delayed window only improved {closer_to_measured}/{material_frames} material frames toward measured curvature",
+          })
 
   return RouteReplayResult(
     scenario=scenario,

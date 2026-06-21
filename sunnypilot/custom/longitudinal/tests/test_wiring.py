@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import math
+import time
 
 import pytest
 
@@ -14,6 +16,7 @@ from openpilot.sunnypilot.custom.longitudinal.wiring import (
   CustomLongitudinalAdapter,
   build_stack_inputs,
   _model_stop_distance,
+  _message_age_s,
 )
 
 
@@ -77,6 +80,14 @@ class FakeParams:
     return self._v.get(k)
   def all_keys(self):
     return [k.encode() for k in self._v]
+
+
+def test_message_age_missing_zero_nonfinite_are_stale():
+  assert math.isinf(_message_age_s(SimpleNamespace(), 'modelV2'))
+  assert math.isinf(_message_age_s(SimpleNamespace(recv_time={}), 'modelV2'))
+  assert math.isinf(_message_age_s(SimpleNamespace(recv_time={'modelV2': 0.0}), 'modelV2'))
+  assert math.isinf(_message_age_s(SimpleNamespace(recv_time={'modelV2': float('nan')}), 'modelV2'))
+  assert _message_age_s(SimpleNamespace(recv_time={'modelV2': time.monotonic()}), 'modelV2') < 0.05
 
 
 class BadModelPathPosition:

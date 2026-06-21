@@ -126,6 +126,13 @@ def test_stale_model_bridges_to_previous_and_measured_curvature():
   assert abs(r.demand.processed_curvature - 0.001) < abs(0.02 - 0.001)
 
 
+@pytest.mark.parametrize("age, stale", [(0.19, False), (0.20, False), (0.21, True), (float("inf"), True)])
+def test_model_age_stale_threshold_boundary(age, stale):
+  p = LateralDemandPipeline(DT)
+  r = p.update(valid_inputs(v_ego=20.0, curvature=0.001, model_age_s=age))
+  assert (r.model_path_result.reason == "model_stale") is stale
+
+
 def test_invalid_path_is_gated_and_falls_back():
   p = LateralDemandPipeline(DT)
   # prime a previous curvature, then feed an empty/invalid path

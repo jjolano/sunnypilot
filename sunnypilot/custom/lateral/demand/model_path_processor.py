@@ -190,7 +190,7 @@ class ModelPathProcessor:
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature", 0, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
-    if math.isfinite(inputs.model_age_s) and inputs.model_age_s > MODEL_STALE_AGE_S:
+    if not math.isfinite(inputs.model_age_s) or inputs.model_age_s > MODEL_STALE_AGE_S:
       self._recovering_from_hard_invalid = False
       self._low_lane_confidence_frames = 0
       self._clear_retained_curve()

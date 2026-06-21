@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 import math
+import time
 
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal import wiring as long_wiring
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, CustomLongitudinalOutput
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanSource
@@ -16,12 +18,18 @@ class FakeParams:
   def get(self, k): return self._v.get(k)
 
 
-def fake_sm(exp_mode=False, brake=False, gas=False, force_decel=False):
-  return {  # type: ignore[return-value]
+class FakeSubMaster(dict):
+  def __init__(self, *args, model_age_s=0.0, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.recv_time = {'modelV2': time.monotonic() - float(model_age_s)}
+
+
+def fake_sm(exp_mode=False, brake=False, gas=False, force_decel=False, model_age_s=0.0):
+  return FakeSubMaster({  # type: ignore[return-value]
     'selfdriveState': SimpleNamespace(experimentalMode=exp_mode),
     'carState': SimpleNamespace(brakePressed=brake, gasPressed=gas),
     'controlsState': SimpleNamespace(forceDecel=force_decel),
-  }
+  }, model_age_s=model_age_s)
 
 
 def fake_cp():
@@ -95,6 +103,7 @@ def test_custom_should_stop_ownership():
   sp.custom_long.mode = LongitudinalMode.E2E
   assert sp.custom_longitudinal_should_stop(True, False) is True
   assert sp.custom_longitudinal_should_stop(False, True) is True
+  assert sp.custom_longitudinal_should_stop(False, True, model_stale=True) is False
 
 
 def test_final_output_selection_does_not_raw_or_model_stop_in_scc_or_acc():
@@ -119,6 +128,24 @@ def test_final_output_selection_does_not_raw_or_model_stop_in_scc_or_acc():
   assert a == -3.0
   assert should_stop is True
   assert e2e_source is True
+
+  a, should_stop, e2e_source = sp.final_longitudinal_output(fake_sm(False, model_age_s=0.30), -0.2, False, -3.0, True)  # type: ignore[arg-type]
+  assert a == -0.2
+  assert should_stop is False
+  assert e2e_source is False
+
+
+def test_e2e_raw_model_stale_threshold_boundary(monkeypatch):
+  monkeypatch.setattr(long_wiring.time, "monotonic", lambda: 100.0)
+  for age, expected_stop in ((0.19, True), (0.199, True), (0.201, False), (0.21, False)):
+    sp = fake_planner(LongitudinalMode.E2E)
+    sm = fake_sm(False)
+    sm.recv_time['modelV2'] = 100.0 - age
+    a, should_stop, e2e_source = sp.final_longitudinal_output(
+      sm, -0.2, False, -3.0, True)  # type: ignore[arg-type]
+    assert should_stop is expected_stop
+    assert e2e_source is expected_stop
+    assert a == (-3.0 if expected_stop else -0.2)
 
 
 def test_scc_stop_approach_custom_cap_applies_before_full_stop_commitment():
@@ -613,29 +640,46 @@ def test_standstill_release_vetoes_mpc_brake_driver_and_custom_stop():
   assert should_stop is True
 
 
+def test_stale_e2e_raw_model_accel_does_not_harden_stopped_lead_latch():
+  sp = fake_planner(LongitudinalMode.E2E)
+  _arm_stop_hold(sp)
+
+  fresh_a, fresh_should_stop, fresh_e2e_source = sp.final_longitudinal_output(
+    _release_sm(model_age_s=0.0), 0.0, True, -3.0, True)  # type: ignore[arg-type]
+  assert fresh_a == -3.0
+  assert fresh_should_stop is True
+  assert fresh_e2e_source is True
+
+  stale_a, stale_should_stop, stale_e2e_source = sp.final_longitudinal_output(
+    _release_sm(model_age_s=0.30), 0.0, True, -3.0, True)  # type: ignore[arg-type]
+  assert stale_a == -0.5
+  assert stale_should_stop is True  # radar/MPC stopped-lead latch still binds
+  assert stale_e2e_source is False
+
+
 def _arm_stop_hold(sp, d_rel=6.2):
   for _ in range(6):
-    sm = {
+    sm = FakeSubMaster({
       'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
       'controlsState': SimpleNamespace(forceDecel=False),
       'selfdriveState': SimpleNamespace(experimentalMode=False),
       'radarState': SimpleNamespace(leadOne=SimpleNamespace(
         status=True, dRel=d_rel, vLead=0.0, vRel=0.0, radarTrackId=7,
       )),
-    }
+    })
     sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
 
 
-def _release_sm(d_rel=6.5, v_lead=0.4, v_rel=0.2, radar_id=7, brake=False, gas=False, force_decel=False):
-  return {
+def _release_sm(d_rel=6.5, v_lead=0.4, v_rel=0.2, radar_id=7, brake=False, gas=False, force_decel=False, model_age_s=0.0):
+  return FakeSubMaster({
     'carState': SimpleNamespace(vEgo=0.0, brakePressed=brake, gasPressed=gas, vCruise=12.0),
     'controlsState': SimpleNamespace(forceDecel=force_decel),
     'selfdriveState': SimpleNamespace(experimentalMode=False),
     'radarState': SimpleNamespace(leadOne=SimpleNamespace(
       status=True, dRel=d_rel, vLead=v_lead, vRel=v_rel, radarTrackId=radar_id,
     )),
-  }
+  }, model_age_s=model_age_s)
 
 
 def _set_lead_pullaway_release(sp):

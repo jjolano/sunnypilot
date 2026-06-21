@@ -11,6 +11,7 @@ for curve memory. See docs/touch-points.md.
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 from typing import Any
 
 from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
@@ -30,6 +31,14 @@ LANE_CHANGE_DIRECTION_VALUES = {
   "left": 1,
   "right": 2,
 }
+
+
+def sanitized_model_age_s(model_age_s: float | None) -> float:
+  try:
+    age = float(model_age_s) if model_age_s is not None else float("inf")
+  except (TypeError, ValueError):
+    return float("inf")
+  return age if math.isfinite(age) and age >= 0.0 else float("inf")
 
 
 def _enum_to_int(value: Any, name_values: dict[str, int]) -> tuple[int, bool]:
@@ -72,7 +81,7 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
     orientation_rate_z=tuple(getattr(ori_rate, "z", ()) or ()),
     lane_line_probs=tuple(getattr(model_v2, "laneLineProbs", ()) or ()),
     frame_drop_perc=float(getattr(model_v2, "frameDropPerc", 0.0) or 0.0),
-    model_age_s=float(model_age_s or 0.0),
+    model_age_s=sanitized_model_age_s(model_age_s),
     lane_change_state=lane_change_state_value,
     lane_change_direction=lane_change_direction_value,
     lane_change_state_valid=lane_change_state_valid,

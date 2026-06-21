@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from openpilot.sunnypilot.custom.lateral.demand.wiring import LateralDemandAdapter, build_pipeline_inputs
+from openpilot.sunnypilot.custom.lateral.demand.wiring import LateralDemandAdapter, build_pipeline_inputs, sanitized_model_age_s
 
 N = 33
 
@@ -63,6 +63,13 @@ def test_build_pipeline_inputs_extracts_model_arrays():
   assert inp.model_age_s == pytest.approx(0.25)
   assert inp.lane_change_state == 0  # conservative default (harness-gated)
   assert inp.lane_change_state_valid is True
+
+
+def test_sanitized_model_age_fails_nonfinite_missing_negative_to_stale():
+  assert math.isinf(sanitized_model_age_s(None))
+  assert math.isinf(sanitized_model_age_s(float("nan")))
+  assert math.isinf(sanitized_model_age_s(-0.1))
+  assert sanitized_model_age_s(0.19) == pytest.approx(0.19)
 
 
 def test_build_pipeline_inputs_marks_missing_lane_change_meta_unknown():

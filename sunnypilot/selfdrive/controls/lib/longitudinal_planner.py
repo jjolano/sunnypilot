@@ -412,14 +412,14 @@ class LongitudinalPlannerSP:
       stop_accel = getattr(self.CP, 'stopAccel', None)
       stop_accel = -0.5 if stop_accel is None else float(stop_accel)
       hold_a_target = float(mpc_a_target) if math.isfinite(float(mpc_a_target)) else stop_accel
-      if is_e2e:
+      if is_e2e and not model_stale:
         raw_a_target = float(raw_model_a_target) if math.isfinite(float(raw_model_a_target)) else stop_accel
         a_target = min(raw_a_target, hold_a_target, stop_accel)
       else:
         a_target = min(hold_a_target, stop_accel)
       if self.custom_long_output is not None:
         self._custom_long_output_telemetry = replace(self.custom_long_output, should_stop=True, selected_intent="lead_stop_hold", reason="stopped_lead_latch")
-      return float(a_target), True, bool(is_e2e and a_target < hold_a_target)
+      return float(a_target), True, bool(is_e2e and not model_stale and a_target < hold_a_target)
     if is_e2e and not model_stale:
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
       return float(a_target), should_stop, bool(a_target < mpc_a_target)
