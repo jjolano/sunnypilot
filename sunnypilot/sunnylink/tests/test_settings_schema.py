@@ -18,7 +18,7 @@ from openpilot.sunnypilot.sunnylink.tools.generate_settings_schema import (
 from openpilot.sunnypilot.sunnylink.capabilities import CAPABILITY_FIELDS
 
 
-VALID_WIDGET_TYPES = {"toggle", "option", "multiple_button", "button", "info"}
+VALID_WIDGET_TYPES = {"toggle", "option", "multiple_button", "button", "info", "custom"}
 VALID_RULE_TYPES = {"offroad_only", "not_engaged", "capability", "param", "param_compare", "not", "any", "all"}
 VALID_COMPARE_OPS = {">", "<", ">=", "<="}
 MAX_ALLOWED_MISSING_TITLES = 0  # All items must have titles (metadata is inline in settings_ui.json)

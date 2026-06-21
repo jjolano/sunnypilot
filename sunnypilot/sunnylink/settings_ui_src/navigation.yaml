@@ -104,10 +104,9 @@ pages:
   - id: system.models
     title: Models
     icon: models
-    new_shell_hidden: true
     content:
-      kind: custom_page
-      component: models
+      kind: panel_ref
+      panel: models
   - id: system.trips
     title: Trips
     icon: trips

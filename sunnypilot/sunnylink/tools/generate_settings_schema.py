@@ -152,7 +152,7 @@ def collect_all_keys(schema: dict) -> set[str]:
       keys.add(rule["key"])
 
   def _visit_item(item: dict) -> None:
-    if "key" in item and item.get("widget") not in ("button", "info"):
+    if "key" in item and item.get("widget") not in ("button", "info", "custom"):
       keys.add(item["key"])
     _walk_rules(item.get("visibility"), _visit_rule)
     _walk_rules(item.get("enablement"), _visit_rule)
