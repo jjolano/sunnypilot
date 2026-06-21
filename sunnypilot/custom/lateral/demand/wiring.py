@@ -51,7 +51,9 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
                           measured_curvature: float, model_v2: Any,
                           lane_centering_assist_enabled: bool,
                           curve_memory_enabled: bool = False,
-                          steering_pressed: bool | None = None) -> LateralDemandPipelineInputs:
+                          steering_pressed: bool | None = None,
+                          model_age_s: float = 0.0,
+                          demand_jerk_smoothing_enabled: bool = False) -> LateralDemandPipelineInputs:
   pos = getattr(model_v2, "position", None)
   ori = getattr(model_v2, "orientation", None)
   ori_rate = getattr(model_v2, "orientationRate", None)
@@ -70,10 +72,12 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
     orientation_rate_z=tuple(getattr(ori_rate, "z", ()) or ()),
     lane_line_probs=tuple(getattr(model_v2, "laneLineProbs", ()) or ()),
     frame_drop_perc=float(getattr(model_v2, "frameDropPerc", 0.0) or 0.0),
+    model_age_s=float(model_age_s or 0.0),
     lane_change_state=lane_change_state_value,
     lane_change_direction=lane_change_direction_value,
     lane_change_state_valid=lane_change_state_valid,
     steering_pressed=steering_pressed,
+    demand_jerk_smoothing_enabled=bool(demand_jerk_smoothing_enabled),
     lane_centering_assist_enabled=bool(lane_centering_assist_enabled),
     curve_memory_enabled=bool(curve_memory_enabled),
   )
@@ -108,7 +112,8 @@ class LateralDemandAdapter:
     self.last_debug = {}
 
   def process(self, lat_active: bool, v_ego: float, roll: float, raw_curvature: float,
-              measured_curvature: float, model_v2: Any, steering_pressed: bool | None = None) -> float:
+              measured_curvature: float, model_v2: Any, steering_pressed: bool | None = None,
+              model_age_s: float = 0.0) -> float:
     """Return the processed desired curvature, or the unchanged raw curvature when disabled
     or on any fault (fail-closed)."""
     self._tick += 1
@@ -124,6 +129,7 @@ class LateralDemandAdapter:
         lane_centering_assist_enabled=self.lane_centering_assist_enabled,
         curve_memory_enabled=self.curve_memory_enabled,
         steering_pressed=steering_pressed,
+        model_age_s=model_age_s,
       )
       inputs = replace(inputs, smooth_model_path_curvature=True)
       result = self._pipeline.update(inputs)

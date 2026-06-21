@@ -56,10 +56,11 @@ class SpyPipeline:
 
 def test_build_pipeline_inputs_extracts_model_arrays():
   inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
-                              measured_curvature=0.0015, model_v2=fake_model(0.002),
-                              lane_centering_assist_enabled=False)
+                               measured_curvature=0.0015, model_v2=fake_model(0.002),
+                              lane_centering_assist_enabled=False, model_age_s=0.25)
   assert len(inp.position_x) == N
   assert inp.desired_curvature == 0.002
+  assert inp.model_age_s == pytest.approx(0.25)
   assert inp.lane_change_state == 0  # conservative default (harness-gated)
   assert inp.lane_change_state_valid is True
 
@@ -136,8 +137,18 @@ def test_adapter_enabled_turns_on_model_path_smoothing():
   assert out == pytest.approx(0.001)
   assert spy.inputs is not None
   assert spy.inputs.smooth_model_path_curvature is True
+  assert spy.inputs.demand_jerk_smoothing_enabled is False
   assert a.last_result is not None
   assert a.last_debug.get("raw_curvature") == pytest.approx(0.001)
+
+
+def test_build_pipeline_inputs_allows_harness_demand_jerk_smoothing():
+  inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.001,
+                              measured_curvature=0.001, model_v2=fake_model(0.001),
+                              lane_centering_assist_enabled=False, steering_pressed=False,
+                              demand_jerk_smoothing_enabled=True)
+
+  assert inp.demand_jerk_smoothing_enabled is True
 
 
 def test_adapter_fail_closed_on_bad_model():

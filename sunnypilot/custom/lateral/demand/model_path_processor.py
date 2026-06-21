@@ -38,6 +38,7 @@ SAE_WET_NIGHT_PROB = 0.30     # lane_line_probs expected in wet night driving
 SAE_HEAVY_FOG_PROB = 0.10    # lane_line_probs expected in fog < 50 m visibility
 SAE_FOG_SUSTAIN_FRAMES = 30  # frames before heavy-fog fallback (300ms at 100Hz)
 HIGH_FRAME_DROP_PERC = 20.0
+MODEL_STALE_AGE_S = 0.20
 LOW_QUALITY_BLEND_THRESHOLD = 0.75
 LOW_QUALITY_BLEND_MIN_ALPHA = 0.4
 HARD_INVALID_FALLBACK_MEASURED_ALPHA = 0.25
@@ -45,7 +46,7 @@ SOFT_GATE_HOLD_FRAMES = 2
 LOW_SPEED_SOFT_GATE_SPEED = 12.0
 LOW_SPEED_SOFT_GATE_MAX_EXTRA_FRAMES = 3
 SOFT_GATE_HOLD_QUALITY = 0.70
-SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "path_disagreement", "low_lane_confidence"))
+SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "model_stale", "path_disagreement", "low_lane_confidence"))
 LOW_SPEED_UNTRUSTED_CURVATURE_STEP = 0.0025
 LOW_SPEED_CURVE_RETENTION_FRAMES = 12
 LOW_SPEED_CURVE_RETENTION_MIN_CURVATURE = 0.008
@@ -63,6 +64,23 @@ SMOOTHED_CURVATURE_MAX_RAW_LAT_ACCEL_DISAGREEMENT = 1.25
 # Temporal damping: tau (s) vs speed — larger tau at low speed (more smoothing).
 DAMPING_TAU_SPEED_BP = [5.0, 15.0, 30.0]
 DAMPING_TAU_S = [0.16, 0.10, 0.055]
+
+# Experimental, default-off pre-governor demand smoothing. This is intentionally narrow: only
+# high-confidence, near-straight, no-lane-change frames get curvature rate limiting, and the output
+# is bounded close to the current damped target in lateral-accel units so it cannot hold stale turn
+# demand through a real curve entry/exit.
+DEMAND_JERK_SMOOTH_MIN_SPEED = 8.0
+DEMAND_JERK_SMOOTH_MAX_SPEED = 22.0
+DEMAND_JERK_SMOOTH_MIN_QUALITY = 0.95
+DEMAND_JERK_SMOOTH_MAX_FRAME_DROP_PERC = 5.0
+DEMAND_JERK_SMOOTH_MIN_LANE_PROB = 0.65
+DEMAND_JERK_SMOOTH_MAX_PATH_Y_STD = 0.45
+DEMAND_JERK_SMOOTH_MAX_PATH_DISAGREEMENT = 0.35
+DEMAND_JERK_SMOOTH_MAX_CURVATURE = 0.0012
+DEMAND_JERK_SMOOTH_MAX_LAT_ACCEL = 0.35
+DEMAND_JERK_SMOOTH_LAG_LAT_ACCEL = 0.08
+DEMAND_JERK_SMOOTH_SPEED_BP = [8.0, 15.0, 22.0]
+DEMAND_JERK_SMOOTH_MAX_LAT_JERK = [1.0, 1.4, 1.8]
 
 # Straight-road damping: larger tau and deadband when driving straight at high speed.
 STRAIGHT_ROAD_DAMPING_MIN_SPEED = 20.0  # m/s — only activate above this speed
@@ -100,7 +118,10 @@ class ModelPathProcessorInputs:
   lane_line_probs: Sequence[float]
   turn_curvature_sign: int = 0
   frame_drop_perc: float = 0.0
+  model_age_s: float = 0.0
   smooth_model_path_curvature: bool = False
+  demand_jerk_smoothing_enabled: bool = False
+  demand_jerk_smoothing_allowed: bool = False
   lane_change_active: bool = False
 
 
@@ -117,6 +138,9 @@ class ModelPathProcessorResult:
   spatial_smoothed_curvature: float = 0.0
   lane_change_fade: float = 0.0
   straight_road_damping_active: bool = False
+  demand_jerk_smoothing_active: bool = False
+  demand_jerk_smoothing_step: float = 0.0
+  demand_jerk_smoothing_lag: float = 0.0
 
 
 class ModelPathProcessor:
@@ -139,11 +163,17 @@ class ModelPathProcessor:
     self._last_damping_alpha = 0.0
     self._last_spatial_curvature = 0.0
     self._straight_road_damping_active = False
+    self._demand_jerk_smoothed_curvature: float | None = None
+    self._demand_jerk_smoothing_active = False
+    self._last_demand_jerk_smoothing_step = 0.0
+    self._last_demand_jerk_smoothing_lag = 0.0
 
   def update(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult:
     self._last_smoothing_tau_s = 0.0
     self._last_damping_alpha = 0.0
     self._last_spatial_curvature = 0.0
+    self._last_demand_jerk_smoothing_step = 0.0
+    self._last_demand_jerk_smoothing_lag = 0.0
     lc_fade_report = 0.0
 
     if not inputs.lat_active:
@@ -159,6 +189,26 @@ class ModelPathProcessor:
       self._clear_retained_curve()
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature", 0, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
+
+    if math.isfinite(inputs.model_age_s) and inputs.model_age_s > MODEL_STALE_AGE_S:
+      self._recovering_from_hard_invalid = False
+      self._low_lane_confidence_frames = 0
+      self._clear_retained_curve()
+      self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
+      fallback_curvature = self._hard_invalid_fallback_curvature(
+        inputs.previous_desired_curvature,
+        inputs.measured_curvature,
+      )
+      fallback_curvature = self._limit_low_speed_untrusted_curvature_step(
+        inputs.v_ego,
+        fallback_curvature,
+        self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature),
+      )
+      return ModelPathProcessorResult(
+        fallback_curvature, 0.0, True, "model_stale", 0,
+        trust_penalty=self._trust_penalty,
+        straight_road_damping_active=self._straight_road_damping_active,
+      )
 
     if not self._valid_core_path(inputs.position_x, inputs.position_y):
       self._recovering_from_hard_invalid = True
@@ -273,7 +323,14 @@ class ModelPathProcessor:
     self._last_smoothing_tau_s = tau_s
     self._last_damping_alpha = damp_alpha
 
-    desired_curvature = damped
+    desired_curvature, demand_jerk_active, demand_jerk_step, demand_jerk_lag = self._apply_demand_jerk_smoothing(
+      inputs,
+      raw_base,
+      damped,
+      quality,
+      reason,
+      path_disagreement,
+    )
 
     # Lane change: fade from fully smoothed (k=1) toward raw_base (k=0).
     if inputs.smooth_model_path_curvature and inputs.lane_change_active:
@@ -303,6 +360,9 @@ class ModelPathProcessor:
         spatial_smoothed_curvature=self._last_spatial_curvature,
         lane_change_fade=lc_fade_report,
         straight_road_damping_active=straight_road_active,
+        demand_jerk_smoothing_active=demand_jerk_active,
+        demand_jerk_smoothing_step=demand_jerk_step,
+        demand_jerk_smoothing_lag=demand_jerk_lag,
       )
 
     recovery_result = self._limit_hard_invalid_recovery(inputs, desired_curvature)
@@ -315,6 +375,9 @@ class ModelPathProcessor:
         spatial_smoothed_curvature=self._last_spatial_curvature,
         lane_change_fade=lc_fade_report,
         straight_road_damping_active=straight_road_active,
+        demand_jerk_smoothing_active=demand_jerk_active,
+        demand_jerk_smoothing_step=demand_jerk_step,
+        demand_jerk_smoothing_lag=demand_jerk_lag,
       )
 
     return ModelPathProcessorResult(
@@ -329,7 +392,110 @@ class ModelPathProcessor:
       spatial_smoothed_curvature=self._last_spatial_curvature,
       lane_change_fade=lc_fade_report,
       straight_road_damping_active=straight_road_active,
+      demand_jerk_smoothing_active=demand_jerk_active,
+      demand_jerk_smoothing_step=demand_jerk_step,
+      demand_jerk_smoothing_lag=demand_jerk_lag,
     )
+
+  def _apply_demand_jerk_smoothing(
+    self,
+    inputs: ModelPathProcessorInputs,
+    raw_base: float,
+    target: float,
+    quality: float,
+    reason: str,
+    path_disagreement: float | None,
+  ) -> tuple[float, bool, float, float]:
+    if not self._demand_jerk_smoothing_eligible(inputs, raw_base, target, quality, reason, path_disagreement):
+      self._reset_demand_jerk_smoothing()
+      return float(target), False, 0.0, 0.0
+
+    v_ego = max(float(inputs.v_ego), 1.0)
+    max_lat_jerk = float(np.interp(v_ego, DEMAND_JERK_SMOOTH_SPEED_BP, DEMAND_JERK_SMOOTH_MAX_LAT_JERK))
+    max_step = max_lat_jerk * DT_CTRL / (v_ego * v_ego)
+    lag_limit = DEMAND_JERK_SMOOTH_LAG_LAT_ACCEL / (v_ego * v_ego)
+
+    if self._demand_jerk_smoothed_curvature is None or not math.isfinite(self._demand_jerk_smoothed_curvature):
+      self._demand_jerk_smoothed_curvature = float(target)
+      self._demand_jerk_smoothing_active = False
+      return float(target), False, max_step, 0.0
+
+    prev = float(self._demand_jerk_smoothed_curvature)
+    delta = float(target) - prev
+    if abs(delta) <= max_step:
+      candidate = float(target)
+    else:
+      candidate = prev + math.copysign(max_step, delta)
+
+    lag = candidate - float(target)
+    if abs(lag) > lag_limit:
+      candidate = float(target) + math.copysign(lag_limit, lag)
+      lag = candidate - float(target)
+
+    self._demand_jerk_smoothed_curvature = candidate
+    active = abs(candidate - float(target)) > 1e-9
+    self._demand_jerk_smoothing_active = active
+    self._last_demand_jerk_smoothing_step = max_step
+    self._last_demand_jerk_smoothing_lag = abs(lag)
+    return candidate, active, max_step, abs(lag)
+
+  def _demand_jerk_smoothing_eligible(
+    self,
+    inputs: ModelPathProcessorInputs,
+    raw_base: float,
+    target: float,
+    quality: float,
+    reason: str,
+    path_disagreement: float | None,
+  ) -> bool:
+    if not inputs.demand_jerk_smoothing_enabled or not inputs.demand_jerk_smoothing_allowed:
+      return False
+    if not inputs.smooth_model_path_curvature or inputs.lane_change_active:
+      return False
+    if reason != "ok" or quality < DEMAND_JERK_SMOOTH_MIN_QUALITY:
+      return False
+    v_ego = float(inputs.v_ego)
+    if not math.isfinite(v_ego) or v_ego < DEMAND_JERK_SMOOTH_MIN_SPEED or v_ego > DEMAND_JERK_SMOOTH_MAX_SPEED:
+      return False
+    if not math.isfinite(raw_base) or not math.isfinite(target):
+      return False
+    if inputs.turn_curvature_sign != 0:
+      return False
+    if math.isfinite(inputs.frame_drop_perc) and inputs.frame_drop_perc > DEMAND_JERK_SMOOTH_MAX_FRAME_DROP_PERC:
+      return False
+    if path_disagreement is not None and path_disagreement > DEMAND_JERK_SMOOTH_MAX_PATH_DISAGREEMENT:
+      return False
+    if not self._central_lane_confidence_ok(inputs.lane_line_probs):
+      return False
+    if not self._path_y_std_ok(inputs.position_y_std):
+      return False
+    if max(abs(raw_base), abs(target)) > DEMAND_JERK_SMOOTH_MAX_CURVATURE:
+      return False
+    if max(abs(raw_base), abs(target)) * v_ego * v_ego > DEMAND_JERK_SMOOTH_MAX_LAT_ACCEL:
+      return False
+    return True
+
+  def _reset_demand_jerk_smoothing(self) -> None:
+    self._demand_jerk_smoothed_curvature = None
+    self._demand_jerk_smoothing_active = False
+    self._last_demand_jerk_smoothing_step = 0.0
+    self._last_demand_jerk_smoothing_lag = 0.0
+
+  @staticmethod
+  def _central_lane_confidence_ok(lane_line_probs: Sequence[float]) -> bool:
+    probs = list(lane_line_probs)
+    if len(probs) >= 4:
+      return min(float(probs[1]), float(probs[2])) >= DEMAND_JERK_SMOOTH_MIN_LANE_PROB
+    if len(probs) >= 2:
+      return min(float(v) for v in probs) >= DEMAND_JERK_SMOOTH_MIN_LANE_PROB
+    return False
+
+  @staticmethod
+  def _path_y_std_ok(position_y_std: Sequence[float]) -> bool:
+    values = list(position_y_std[:PATH_VALID_MIN_LEN])
+    if len(values) < PATH_VALID_MIN_LEN:
+      return False
+    return max(float(v) for v in values) <= DEMAND_JERK_SMOOTH_MAX_PATH_Y_STD
 
   def _temporal_damp_curvature(
     self,

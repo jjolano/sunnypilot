@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import time
 from numbers import Number
 
 import numpy as np
@@ -149,7 +150,8 @@ class Controls(ControlsExt):
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
       raw_desired_curvature = new_desired_curvature
       # Opt-in custom-2.0 lateral demand pipeline (fail-closed; returns the raw curvature when disabled).
-      new_desired_curvature = self.lateral_demand.process(CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2, getattr(CS, 'steeringPressed', None))
+      model_age_s = max(0.0, time.monotonic() - self.sm.recv_time.get('modelV2', time.monotonic()))
+      new_desired_curvature = self.lateral_demand.process(CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2, getattr(CS, 'steeringPressed', None), model_age_s)
     last_lateral_demand_result = getattr(self.lateral_demand, 'last_result', None) if hasattr(self, 'lateral_demand') else None
     self.raw_desired_curvature = raw_desired_curvature
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)

@@ -44,6 +44,7 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
     orientation_rate_z=kwargs.get("orientation_rate_z", yaw_rate),
     lane_line_probs=kwargs.get("lane_line_probs", [0.9, 0.9, 0.9, 0.9]),
     frame_drop_perc=kwargs.get("frame_drop_perc", 0.0),
+    model_age_s=kwargs.get("model_age_s", 0.0),
     model_data_v2_sp_valid=kwargs.get("model_data_v2_sp_valid", True),
     turn_direction=kwargs.get("turn_direction", 0),
     lane_change_state=kwargs.get("lane_change_state", 0),
@@ -56,6 +57,7 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
     right_lane_y0=kwargs.get("right_lane_y0", None),
     lateral_maneuver_curvature=kwargs.get("lateral_maneuver_curvature", None),
     smooth_model_path_curvature=kwargs.get("smooth_model_path_curvature", False),
+    demand_jerk_smoothing_enabled=kwargs.get("demand_jerk_smoothing_enabled", False),
     lane_centering_assist_enabled=kwargs.get("lane_centering_assist_enabled", False),
     curve_memory_enabled=kwargs.get("curve_memory_enabled", False),
     curvature_limited=kwargs.get("curvature_limited", False),
@@ -109,6 +111,19 @@ def test_valid_path_high_quality_passthrough():
   assert r.demand.path_quality >= 0.7
   assert r.demand.processed_curvature == pytest.approx(0.001, abs=2e-3)
   assert r.demand.demand_source == DEMAND_SOURCE_MODEL_PATH
+
+
+def test_stale_model_bridges_to_previous_and_measured_curvature():
+  p = LateralDemandPipeline(DT)
+  for _ in range(5):
+    p.update(valid_inputs(v_ego=20.0, curvature=0.001, measured_curvature=0.001))
+
+  r = p.update(valid_inputs(v_ego=20.0, curvature=0.02, desired_curvature=0.02,
+                            measured_curvature=0.001, model_age_s=0.30))
+
+  assert r.model_path_result.gated is True
+  assert r.model_path_result.reason == "model_stale"
+  assert abs(r.demand.processed_curvature - 0.001) < abs(0.02 - 0.001)
 
 
 def test_invalid_path_is_gated_and_falls_back():
@@ -200,3 +215,66 @@ def test_unknown_lane_change_state_suppresses_curve_memory():
   assert r.debug["curve_memory_source"] == "lane_change"
   assert r.debug["curve_memory_active"] is False
   assert r.debug["curve_memory_samples"] == 0
+
+
+def test_demand_jerk_smoothing_default_off_matches_existing_smoothing():
+  baseline = LateralDemandPipeline(DT)
+  candidate = LateralDemandPipeline(DT)
+  sequence = [0.0, 0.0008, -0.0007, 0.0009, -0.0006, 0.0005]
+
+  for k in sequence:
+    b = baseline.update(valid_inputs(v_ego=15.0, curvature=k, smooth_model_path_curvature=True,
+                                     demand_jerk_smoothing_enabled=False, steering_pressed=False))
+    c = candidate.update(valid_inputs(v_ego=15.0, curvature=k, smooth_model_path_curvature=True,
+                                      demand_jerk_smoothing_enabled=False, steering_pressed=False))
+    assert c.demand.processed_curvature == pytest.approx(b.demand.processed_curvature)
+    assert c.debug["demand_jerk_smoothing_active"] is False
+
+
+def test_demand_jerk_smoothing_requires_model_path_smoothing():
+  p = LateralDemandPipeline(DT)
+
+  r = p.update(valid_inputs(v_ego=15.0, curvature=0.001, smooth_model_path_curvature=False,
+                            demand_jerk_smoothing_enabled=True, steering_pressed=False))
+
+  assert r.debug["demand_jerk_smoothing_active"] is False
+  assert r.demand.processed_curvature == pytest.approx(0.001)
+
+
+def test_demand_jerk_smoothing_bounds_near_straight_changes():
+  p = LateralDemandPipeline(DT)
+  outputs = []
+  active_count = 0
+  for k in ([0.0] * 5 + [0.001] * 8 + [-0.001] * 8 + [0.001] * 8):
+    r = p.update(valid_inputs(v_ego=15.0, curvature=k, smooth_model_path_curvature=True,
+                              demand_jerk_smoothing_enabled=True, steering_pressed=False))
+    outputs.append(float(r.demand.processed_curvature))
+    active_count += int(bool(r.debug["demand_jerk_smoothing_active"]))
+    assert float(r.debug["demand_jerk_smoothing_lag"]) <= 0.00036
+
+  assert active_count > 0
+  assert max(abs(b - a) for a, b in zip(outputs, outputs[1:])) < 0.00055
+
+
+def test_demand_jerk_smoothing_bypasses_and_resets_on_lane_change():
+  p = LateralDemandPipeline(DT)
+  for k in ([0.0] * 5 + [0.001] * 8):
+    p.update(valid_inputs(v_ego=15.0, curvature=k, smooth_model_path_curvature=True,
+                          demand_jerk_smoothing_enabled=True, steering_pressed=False))
+
+  lane_change = p.update(valid_inputs(v_ego=15.0, curvature=-0.001, smooth_model_path_curvature=True,
+                                      demand_jerk_smoothing_enabled=True, steering_pressed=False,
+                                      lane_change_state=1, lane_change_state_valid=True))
+  after = p.update(valid_inputs(v_ego=15.0, curvature=-0.001, smooth_model_path_curvature=True,
+                                demand_jerk_smoothing_enabled=True, steering_pressed=False))
+
+  assert lane_change.debug["demand_jerk_smoothing_active"] is False
+  assert after.debug["demand_jerk_smoothing_active"] is False
+
+
+def test_demand_jerk_smoothing_bypasses_when_driver_state_unknown():
+  p = LateralDemandPipeline(DT)
+  r = p.update(valid_inputs(v_ego=15.0, curvature=0.001, smooth_model_path_curvature=True,
+                            demand_jerk_smoothing_enabled=True, steering_pressed=None))
+
+  assert r.debug["demand_jerk_smoothing_active"] is False

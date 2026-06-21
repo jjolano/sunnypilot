@@ -70,6 +70,7 @@ class LateralDemandPipelineInputs:
   orientation_rate_z: Sequence[float] = ()
   lane_line_probs: Sequence[float] = ()
   frame_drop_perc: float = 0.0
+  model_age_s: float = 0.0
   model_data_v2_sp_valid: bool = True
   turn_direction: int = 0
   # lane change
@@ -85,6 +86,7 @@ class LateralDemandPipelineInputs:
   lateral_maneuver_curvature: float | None = None
   # toggles
   smooth_model_path_curvature: bool = False
+  demand_jerk_smoothing_enabled: bool = False
   lane_centering_assist_enabled: bool = False
   curve_memory_enabled: bool = False
   # passed through (downstream clip result)
@@ -156,7 +158,16 @@ class LateralDemandPipeline:
         lane_line_probs=tuple(inputs.lane_line_probs),
         turn_curvature_sign=turn_curvature_sign,
         frame_drop_perc=inputs.frame_drop_perc,
+        model_age_s=inputs.model_age_s,
         smooth_model_path_curvature=inputs.smooth_model_path_curvature,
+        demand_jerk_smoothing_enabled=inputs.demand_jerk_smoothing_enabled,
+        demand_jerk_smoothing_allowed=(
+          inputs.steering_pressed is False
+          and inputs.lane_change_state_valid
+          and inputs.lane_change_state == LANE_CHANGE_STATE_OFF
+          and not inputs.left_blinker
+          and not inputs.right_blinker
+        ),
         lane_change_active=inputs.lane_change_state != LANE_CHANGE_STATE_OFF,
       ))
       # Pose-anchored CurveMemory stage: remember road curvature seen ahead with good vision and
@@ -260,6 +271,10 @@ class LateralDemandPipeline:
         "model_path_curvature": float(model_path_result.desired_curvature),
         "model_path_reason": model_path_result.reason,
         "model_path_quality": float(model_path_result.quality),
+        "model_age_s": float(inputs.model_age_s),
+        "demand_jerk_smoothing_active": bool(model_path_result.demand_jerk_smoothing_active),
+        "demand_jerk_smoothing_step": float(model_path_result.demand_jerk_smoothing_step),
+        "demand_jerk_smoothing_lag": float(model_path_result.demand_jerk_smoothing_lag),
         "lane_change_blend": lane_change_blend,
         "lane_change_shaping_active": lane_change_shaping_active,
         "lane_centering_active": bool(lane_centering_result.active),
