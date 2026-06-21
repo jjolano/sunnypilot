@@ -215,3 +215,140 @@ def test_malformed_speed_aware_profile_rejected_for_non_finite_global():
 def test_malformed_speed_aware_profile_rejected_for_out_of_bounds_ratio():
   payload = json.loads(profile_payload(ratios=[0.5, 1.0]))
   assert parse_speed_aware_torque_profile(cp(), payload) is None
+
+
+def test_manual_override_changes_deferred_while_refresh_disallowed():
+  ext = LatControlTorqueExtOverride(cp())
+
+  class P:
+    factor = '2.0'
+    friction = '0.2'
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled', 'CustomTorqueParams')
+    def get(self, k, return_default=True):
+      if k == 'TorqueParamsOverrideLatAccelFactor':
+        return self.factor
+      if k == 'TorqueParamsOverrideFriction':
+        return self.friction
+      return 'off'
+
+  p = P()
+  ext.params = p
+  tp = SimpleNamespace(latAccelFactor=2.5, friction=0.1)
+  ext.set_torque_override_refresh_allowed(True)
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == 2.0
+  assert tp.friction == 0.2
+
+  p.factor = '4.0'
+  p.friction = '0.5'
+  ext.set_torque_override_refresh_allowed(False)
+  ext.frame = 299
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == 2.0
+  assert tp.friction == 0.2
+
+  ext.set_torque_override_refresh_allowed(True)
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == 4.0
+  assert tp.friction == 0.5
+
+
+def test_disabling_manual_override_restores_only_after_refresh_allowed():
+  ext = LatControlTorqueExtOverride(cp())
+
+  class P:
+    enabled = True
+    def get_bool(self, k):
+      if k == 'TorqueParamsOverrideEnabled':
+        return self.enabled
+      return k in ('EnforceTorqueControl', 'CustomTorqueParams')
+    def get(self, k, return_default=True):
+      if k == 'TorqueParamsOverrideLatAccelFactor':
+        return '3.0'
+      if k == 'TorqueParamsOverrideFriction':
+        return '0.4'
+      return 'off'
+
+  p = P()
+  ext.params = p
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  ext.set_torque_override_refresh_allowed(True)
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == 3.0
+  assert tp.friction == 0.4
+
+  p.enabled = False
+  ext.set_torque_override_refresh_allowed(False)
+  ext.frame = 299
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == 3.0
+  assert tp.friction == 0.4
+
+  ext.set_torque_override_refresh_allowed(True)
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == 2.0
+  assert tp.friction == 0.2
+
+
+def test_no_control_affecting_param_reads_while_refresh_disallowed():
+  ext = LatControlTorqueExtOverride(cp())
+
+  class P:
+    reads = 0
+    def get_bool(self, k):
+      self.reads += 1
+      return k in ('EnforceTorqueControl', 'TorqueParamsOverrideEnabled', 'CustomTorqueParams')
+    def get(self, k, return_default=True):
+      self.reads += 1
+      if k == 'TorqueParamsOverrideLatAccelFactor':
+        return '4.0'
+      if k == 'TorqueParamsOverrideFriction':
+        return '0.5'
+      return 'off'
+
+  p = P()
+  ext.params = p
+  ext.enforce_torque_control_toggle = True
+  ext.torque_override_enabled = True
+  ext._custom_torque_params = True
+  ext._manual_latAccelFactor = 2.0
+  ext._manual_friction = 0.2
+  ext._manual_override_values_valid = True
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  ext.set_torque_override_refresh_allowed(False)
+  ext.frame = 299
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert p.reads == 0
+  assert tp.latAccelFactor == 2.0
+  assert tp.friction == 0.2
+
+
+def test_speed_aware_profile_changes_deferred_while_refresh_disallowed():
+  ext = LatControlTorqueExtOverride(cp())
+
+  class P:
+    profile = profile_payload(anchors=[20.0], ratios=[1.1], confidence=[1.0], points=[1])
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'LiveTorqueParamsToggle')
+    def get(self, k, return_default=True):
+      if k == 'LiveTorqueSpeedAdaptiveMode':
+        return 'apply'
+      if k == 'LiveTorqueSpeedAdaptiveParams':
+        return self.profile
+      return ''
+
+  p = P()
+  ext.params = p
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  ext.set_torque_override_refresh_allowed(True)
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  applied = tp.latAccelFactor
+
+  p.profile = profile_payload(anchors=[20.0], ratios=[1.2], confidence=[1.0], points=[1])
+  ext.set_torque_override_refresh_allowed(False)
+  ext.frame = 299
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor == applied
+
+  ext.set_torque_override_refresh_allowed(True)
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor != applied

@@ -40,6 +40,10 @@ class LatControlTorqueV21(LatControl):
     self.extension = extension if extension is not None else LatControlTorqueExt(self, CP, CP_SP, CI)
     self._under_response_path_evidence_valid = True
 
+  def set_torque_override_refresh_allowed(self, allowed: bool) -> None:
+    if hasattr(self.extension, 'set_torque_override_refresh_allowed'):
+      self.extension.set_torque_override_refresh_allowed(allowed)
+
   def set_under_response_path_evidence(self, valid: bool) -> None:
     self._under_response_path_evidence_valid = bool(valid)
 

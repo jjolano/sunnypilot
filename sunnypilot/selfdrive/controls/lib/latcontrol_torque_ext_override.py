@@ -36,8 +36,15 @@ class LatControlTorqueExtOverride:
     self._manual_latAccelFactor = None
     self._manual_friction = None
     self._manual_override_values_valid = False
+    self._refresh_allowed = True
+    self._refresh_deferred = False
+    self._poll()
+
+  def set_torque_override_refresh_allowed(self, allowed: bool) -> None:
+    self._refresh_allowed = bool(allowed)
 
   def _poll(self):
+    self.enforce_torque_control_toggle = self.params.get_bool("EnforceTorqueControl")
     self.torque_override_enabled = self.params.get_bool("TorqueParamsOverrideEnabled")
     self._custom_torque_params = self.params.get_bool("CustomTorqueParams")
     self._live_torque_enabled = self.params.get_bool("LiveTorqueParamsToggle")
@@ -94,24 +101,42 @@ class LatControlTorqueExtOverride:
       return True
     return False
 
-  def update_override_torque_params(self, torque_params, v_ego=None) -> bool:
+  def _maybe_poll(self, allow_refresh: bool | None) -> None:
+    if allow_refresh is not None:
+      self._refresh_allowed = bool(allow_refresh)
+    self.frame += 1
+
+    should_poll = self.frame % 300 == 0 or (self._refresh_allowed and self._refresh_deferred)
+    if not should_poll:
+      return
+
+    if not self._refresh_allowed:
+      self._refresh_deferred = True
+      return
+
+    self._poll()
+    self._refresh_deferred = False
+
+  def update_override_torque_params(self, torque_params, v_ego=None, *, allow_refresh: bool | None = None) -> bool:
+    self._maybe_poll(allow_refresh)
+
     if not self.enforce_torque_control_toggle:
       return False
 
-    self.frame += 1
-    if self.frame % 300 == 0:
-      self._poll()
-
     if self.torque_override_enabled and self._custom_torque_params:
       if not self._manual_override_values_valid:
+        return self._restore_manual_or_speed_base(torque_params)
+      manual_lat_accel_factor = self._manual_latAccelFactor
+      manual_friction = self._manual_friction
+      if manual_lat_accel_factor is None or manual_friction is None:
         return self._restore_manual_or_speed_base(torque_params)
       if self.base_latAccelFactor is None:
         self.base_latAccelFactor = float(torque_params.latAccelFactor)
         self.base_friction = float(torque_params.friction)
       elif self.last_speed_applied is not None and abs(float(torque_params.latAccelFactor) - self.last_speed_applied) < 1e-9:
         self._restore_base(torque_params)
-      torque_params.latAccelFactor = float(self._manual_latAccelFactor)
-      torque_params.friction = float(self._manual_friction)
+      torque_params.latAccelFactor = float(manual_lat_accel_factor)
+      torque_params.friction = float(manual_friction)
       self.last_speed_applied = None
       self.last_manual_applied = float(torque_params.latAccelFactor)
       self.last_manual_friction_applied = float(torque_params.friction)

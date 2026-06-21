@@ -50,6 +50,10 @@ class LatControlTorque(LatControl):
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
 
+  def set_torque_override_refresh_allowed(self, allowed: bool) -> None:
+    if hasattr(self.extension, 'set_torque_override_refresh_allowed'):
+      self.extension.set_torque_override_refresh_allowed(allowed)
+
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
     self.torque_params.latAccelOffset = latAccelOffset

@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import time
+from math import isclose
 
 import cereal.messaging as messaging
 from cereal import log, custom
@@ -19,6 +20,36 @@ from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import Bl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.custom.lateral.torque_v2_1 import LatControlTorqueV21
 from openpilot.sunnypilot.custom.lateral.demand.wiring import LateralDemandAdapter
+
+TORQUE_TUNE_V0 = 0.0
+TORQUE_TUNE_V1 = 1.0
+TORQUE_TUNE_V21 = 2.1
+
+
+def read_torque_control_tune(params: Params) -> float:
+  tune = params.get("TorqueControlTune")
+  if tune is None:
+    return TORQUE_TUNE_V0
+  try:
+    return float(tune)
+  except (TypeError, ValueError):
+    cloudlog.warning(f"invalid TorqueControlTune={tune!r}; falling back to v0")
+    return TORQUE_TUNE_V0
+
+
+def select_torque_controller(CP: structs.CarParams, CP_SP, CI, dt, lac, tune: float):
+  if CP.lateralTuning.which() != 'torque':
+    return lac
+
+  if isclose(tune, TORQUE_TUNE_V0):
+    return LatControlTorqueV0(CP, CP_SP, CI, dt)
+  if isclose(tune, TORQUE_TUNE_V1):
+    return lac
+  if isclose(tune, TORQUE_TUNE_V21):
+    return LatControlTorqueV21(CP, CP_SP, CI, dt)
+
+  cloudlog.warning(f"unknown TorqueControlTune={tune!r}; falling back to v0")
+  return LatControlTorqueV0(CP, CP_SP, CI, dt)
 
 
 class ControlsExt(ModelStateBase):
@@ -39,19 +70,7 @@ class ControlsExt(ModelStateBase):
     self.pm_services_ext = ['carControlSP']
 
   def initialize_lateral_control(self, lac, CI, dt):
-    enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
-    torque_versions = self.params.get("TorqueControlTune")
-    if not enforce_torque_control:
-      if self.CP.lateralTuning.which() == 'torque':
-        return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)  # FIXME-SP: revert when upstream fixes tuning issues with v1
-      return lac
-
-    if torque_versions == 0.0:  # v0
-      return LatControlTorqueV0(self.CP, self.CP_SP, CI, dt)
-    elif torque_versions == 2.1:  # v2.1 (custom clean-room: response core + unified governor)
-      return LatControlTorqueV21(self.CP, self.CP_SP, CI, dt)
-    else:
-      return lac
+    return select_torque_controller(self.CP, self.CP_SP, CI, dt, lac, read_torque_control_tune(self.params))
 
   def get_params_sp(self, sm: messaging.SubMaster) -> None:
     if time.monotonic() - self._param_update_time > PARAMS_UPDATE_PERIOD:
