@@ -11,6 +11,50 @@ sections:
   title: Updates
   description: Control software updates
   items:
+  - key: OnroadUpdateNotice
+    widget: info
+    blocked: true
+    title: ''
+    description: Updates are only downloaded while the car is off.
+    visibility:
+    - type: not
+      condition:
+        type: offroad_only
+  - key: UpdaterCurrentDescription
+    widget: info
+    blocked: true
+    title: Current Version
+  - key: DownloadUpdate
+    widget: button
+    blocked: true
+    action: software_download
+    title: Download
+    description: ''
+    visibility:
+    - $ref: '#/macros/offroad'
+  - key: InstallUpdate
+    widget: button
+    blocked: true
+    action: software_install
+    title: Install Update
+    description: ''
+    visibility:
+    - $ref: '#/macros/offroad'
+    - type: param
+      key: UpdateAvailable
+      equals: true
+  - key: UpdaterTargetBranch
+    widget: button
+    blocked: true
+    action: software_branch
+    title: Target Branch
+    description: ''
+  - key: Uninstall
+    widget: button
+    blocked: true
+    action: software_uninstall
+    title: Remove sunnypilot
+    description: ''
   - key: DisableUpdates
     widget: toggle
     title: Disable Updates

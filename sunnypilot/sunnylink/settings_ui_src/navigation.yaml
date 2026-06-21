@@ -91,10 +91,9 @@ pages:
   - id: system.software
     title: Software
     icon: software
-    new_shell_hidden: true
     content:
-      kind: custom_page
-      component: software
+      kind: panel_ref
+      panel: software
   - id: system.sunnylink
     title: sunnylink
     icon: sunnylink

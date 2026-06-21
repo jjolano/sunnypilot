@@ -63,6 +63,8 @@ def _flat_schema_renderer(panel_id: str) -> SchemaRendererFactory:
     # build_control is called for the developer panel.
     if panel_id == "developer":
       import openpilot.sunnypilot.selfdrive.ui.settings_schema.developer_actions  # noqa: F401
+    if panel_id == "software":
+      import openpilot.sunnypilot.selfdrive.ui.settings_schema.software_actions  # noqa: F401
     return SchemaPanelLayout(panel_id)
   return build
 
@@ -84,6 +86,7 @@ _SCHEMA_PANEL_RENDERERS: dict[str, SchemaRendererFactory] = {
   "cruise": _cruise_schema_renderer,
   "developer": _flat_schema_renderer("developer"),
   "display": _flat_schema_renderer("display"),
+  "software": _flat_schema_renderer("software"),
   "steering": _steering_schema_renderer,
   "toggles": _flat_schema_renderer("toggles"),
   "visuals": _flat_schema_renderer("visuals"),

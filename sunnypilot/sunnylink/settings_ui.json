@@ -2076,6 +2076,74 @@
           "description": "Control software updates",
           "items": [
             {
+              "key": "OnroadUpdateNotice",
+              "widget": "info",
+              "blocked": true,
+              "title": "",
+              "description": "Updates are only downloaded while the car is off.",
+              "visibility": [
+                {
+                  "type": "not",
+                  "condition": {
+                    "type": "offroad_only"
+                  }
+                }
+              ]
+            },
+            {
+              "key": "UpdaterCurrentDescription",
+              "widget": "info",
+              "blocked": true,
+              "title": "Current Version"
+            },
+            {
+              "key": "DownloadUpdate",
+              "widget": "button",
+              "blocked": true,
+              "title": "Download",
+              "description": "",
+              "visibility": [
+                {
+                  "type": "offroad_only"
+                }
+              ],
+              "action": "software_download"
+            },
+            {
+              "key": "InstallUpdate",
+              "widget": "button",
+              "blocked": true,
+              "title": "Install Update",
+              "description": "",
+              "visibility": [
+                {
+                  "type": "offroad_only"
+                },
+                {
+                  "type": "param",
+                  "key": "UpdateAvailable",
+                  "equals": true
+                }
+              ],
+              "action": "software_install"
+            },
+            {
+              "key": "UpdaterTargetBranch",
+              "widget": "button",
+              "blocked": true,
+              "title": "Target Branch",
+              "description": "",
+              "action": "software_branch"
+            },
+            {
+              "key": "Uninstall",
+              "widget": "button",
+              "blocked": true,
+              "title": "Remove sunnypilot",
+              "description": "",
+              "action": "software_uninstall"
+            },
+            {
               "key": "DisableUpdates",
               "widget": "toggle",
               "title": "Disable Updates",
@@ -2645,11 +2713,10 @@
     {
       "id": "system.software",
       "title": "Software",
-      "new_shell_hidden": true,
       "icon": "software",
       "content": {
-        "kind": "custom_page",
-        "component": "software"
+        "kind": "panel_ref",
+        "panel": "software"
       }
     },
     {
