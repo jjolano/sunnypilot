@@ -183,6 +183,107 @@ def diagnose_max_jerk(frames: list[CommandFrame], jerk_window: int,
   )
 
 
+def _frame_release_gate_context(frame: CommandFrame, prev_frame: CommandFrame | None,
+                                stopping_distance: float = 6.0) -> dict[str, Any]:
+  custom = frame.custom
+  debug = frame.debug
+  d_rel = frame.d_rel
+  v_lead = frame.v_lead
+  v_ego = frame.v_ego
+  v_rel = v_lead - v_ego
+  lead_id = custom.get("selected_lead_id")
+  latch_id = custom.get("lead_stop_hold_lead_id")
+  same_id = lead_id is not None and latch_id is not None and lead_id == latch_id
+  baseline = custom.get("lead_stop_hold_gap_baseline_d_rel")
+  prev_d_rel = custom.get("lead_stop_hold_gap_prev_d_rel")
+  gap_increasing_s = float(custom.get("lead_stop_hold_gap_increasing_s", 0.0))
+  current_active = bool(custom.get("lead_stop_hold_active", False))
+  prev_active = bool(prev_frame.custom.get("lead_stop_hold_active", False)) if prev_frame is not None else False
+  latch_reset = prev_active and not current_active
+
+  release_min = stopping_distance + (0.2 if same_id else 0.1)
+  baseline_opening: float | None = None
+  if same_id and baseline is not None and math.isfinite(float(baseline)):
+    baseline = float(baseline)
+    baseline_opening = d_rel - baseline
+    baseline_min_d_rel = baseline + 0.5
+    release_min = max(4.5, min(release_min, baseline_min_d_rel))
+
+  prep_min = stopping_distance + 0.20
+
+  mpc_a = float(debug.get("mpc_a_target", 0.0)) if debug else 0.0
+  model_a = float(debug.get("model_a_target", 0.0)) if debug else 0.0
+  model_stop = bool(debug.get("model_should_stop", False)) if debug else False
+
+  release_source = str(custom.get("standstill_release_source", ""))
+  release_allowed = bool(custom.get("standstill_release_allowed", False))
+  output_should_stop = bool(debug.get("final_should_stop", frame.output_should_stop))
+
+  release_path = "normal_mpc"
+  if current_active:
+    release_path = "lead_stop_hold_active"
+  elif latch_reset:
+    release_path = "lead_stop_hold_release"
+  elif release_allowed and release_source in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch"):
+    release_path = "standstill_release_clear"
+  elif not output_should_stop:
+    release_path = "normal_mpc"
+
+  prep_block_reason = "different_or_missing_lead_id"
+  prep_applies = False
+  if not custom.get("custom_output_enabled", False) or not custom.get("custom_long_enabled", False):
+    prep_block_reason = "custom_output_unavailable"
+  elif not release_allowed:
+    prep_block_reason = "no_release_permission"
+  elif release_source not in ("lead_pullaway", "lead_standstill_launch"):
+    prep_block_reason = "invalid_release_source"
+  elif custom.get("custom_should_stop", False):
+    prep_block_reason = "custom_should_stop"
+  elif model_stop:
+    prep_block_reason = "raw_model_stop"
+  elif custom.get("driver_brake", False):
+    prep_block_reason = "driver_brake"
+  elif custom.get("driver_gas", False):
+    prep_block_reason = "driver_gas"
+  elif custom.get("force_decel", False):
+    prep_block_reason = "force_decel"
+  elif v_ego >= 0.7:
+    prep_block_reason = "not_near_standstill"
+  elif lead_id is None or latch_id is None or lead_id != latch_id:
+    prep_block_reason = "different_or_missing_lead_id"
+  elif not all(math.isfinite(x) for x in (d_rel, v_lead, v_rel, mpc_a, model_a)):
+    prep_block_reason = "non_finite_values"
+  elif mpc_a < -0.10:
+    prep_block_reason = "mpc_brake_veto"
+  elif v_lead < 0.25 or v_rel < 0.10:
+    prep_block_reason = "lead_not_moving"
+  elif gap_increasing_s < 0.15:
+    prep_block_reason = "gap_increasing_time"
+  elif d_rel <= prep_min:
+    prep_block_reason = "distance_gate"
+  else:
+    prep_block_reason = "applies"
+    prep_applies = True
+
+  return {
+    "selected_lead_id": lead_id,
+    "lead_stop_hold_lead_id": latch_id,
+    "lead_stop_hold_gap_increasing_s": gap_increasing_s,
+    "lead_stop_hold_gap_baseline_d_rel": baseline,
+    "lead_stop_hold_gap_prev_d_rel": prev_d_rel,
+    "baseline_opening": baseline_opening,
+    "release_min_d_rel": release_min,
+    "prep_min_d_rel": prep_min,
+    "d_rel_minus_release_min_d_rel": d_rel - release_min,
+    "d_rel_minus_prep_min_d_rel": d_rel - prep_min,
+    "prep_applies": prep_applies,
+    "prep_block_reason": prep_block_reason,
+    "release_path": release_path,
+    "latch_reset_on_frame": latch_reset,
+    "same_id": same_id,
+  }
+
+
 def evaluate_invariants(
   valid: bool,
   output: np.ndarray,
@@ -261,11 +362,26 @@ def capture_commanded_accel():
       custom["standstill_release_allowed"] = bool(getattr(custom_output, "standstill_release_allowed", False))
       custom["standstill_release_source"] = str(getattr(custom_output, "standstill_release_source", "") or "")
       custom["standstill_release_a_target"] = float(getattr(custom_output, "standstill_release_a_target", 0.0))
+      custom["custom_should_stop"] = bool(getattr(custom_output, "should_stop", False))
+      custom["custom_output_enabled"] = bool(getattr(custom_output, "enabled", False))
+    custom_long = getattr(self.planner, "custom_long", None)
+    custom["custom_long_enabled"] = bool(custom_long is not None and getattr(custom_long, "enabled", False))
+    custom["custom_long_mode"] = str(getattr(custom_long, "mode", ""))
+    custom["standstill_release_confidence_mode"] = str(getattr(custom_long, "standstill_release_confidence_mode", "off"))
+    custom["driver_brake"] = False
+    custom["driver_gas"] = False
+    custom["force_decel"] = bool(getattr(self, "force_decel", False))
     custom["release_block_reason"] = str(getattr(self.planner, "_last_release_block_reason", "") or "")
     custom["lead_stop_hold_active"] = bool(getattr(self.planner, "_lead_stop_hold_active", False))
+    custom["lead_stop_hold_lead_id"] = getattr(self.planner, "_lead_stop_hold_lead_id", None)
+    custom["selected_lead_id"] = None
+    custom["lead_stop_hold_gap_increasing_s"] = float(getattr(self.planner, "_lead_stop_hold_gap_increasing_s", 0.0))
+    gap_baseline = getattr(self.planner, "_lead_stop_hold_gap_baseline_d_rel", None)
+    custom["lead_stop_hold_gap_baseline_d_rel"] = gap_baseline
+    custom["lead_stop_hold_gap_prev_d_rel"] = getattr(self.planner, "_lead_stop_hold_gap_prev_d_rel", None)
     custom["stop_hold_release_slew_a_target"] = getattr(self.planner, "_stop_hold_release_slew_a_target", None)
 
-    capture.frames.append(CommandFrame(
+    frame = CommandFrame(
       idx=idx,
       time_s=float(self.current_time),
       a_cmd=a_cmd,
@@ -277,7 +393,11 @@ def capture_commanded_accel():
       output_should_stop=bool(self.planner.output_should_stop),
       debug=debug,
       custom=custom,
-    ))
+    )
+    prev_frame = capture.frames[-1] if capture.frames else None
+    stopping_distance = float(getattr(self.planner.CP, 'stoppingDistance', 6.0) or 6.0)
+    frame.custom.update(_frame_release_gate_context(frame, prev_frame, stopping_distance))
+    capture.frames.append(frame)
     return result
 
   def reset(self, *reset_args, **reset_kwargs):
@@ -496,6 +616,23 @@ def render_jerk_diagnosis(d: JerkDiagnosis) -> str:
   slew_text = "none"
   if d.slew_capped is not None:
     slew_text = f"{d.slew_input:.3f}->{d.slew_output:.3f} capped={d.slew_capped}"
+
+  gate_parts = []
+  if "prep_applies" in custom or "prep_block_reason" in custom:
+    gate_parts.append(f"prep={custom.get('prep_applies', False)}")
+    gate_parts.append(f"prepBlock={custom.get('prep_block_reason', '-')}")
+  if frame is not None:
+    gate_parts.append(f"dRel={frame.d_rel:.2f}")
+  if custom.get("prep_min_d_rel") is not None:
+    gate_parts.append(f"prepMin={custom['prep_min_d_rel']:.2f}")
+  gate_parts.append(f"releaseMin={custom.get('release_min_d_rel', 0.0):.2f}")
+  gate_parts.append(f"gapS={custom.get('lead_stop_hold_gap_increasing_s', 0.0):.2f}")
+  gate_parts.append(f"leadId={custom.get('selected_lead_id', '-')}")
+  gate_parts.append(f"latchId={custom.get('lead_stop_hold_lead_id', '-')}")
+  gate_parts.append(f"path={custom.get('release_path', '-')}")
+  if custom.get("latch_reset_on_frame"):
+    gate_parts.append("latchReset")
+
   return (
     f"jerk diagnosis: t={d.time0:.2f}->{d.time1:.2f} a={d.a0:.3f}->{d.a1:.3f} "
     f"delta={d.delta_a:.3f} jerk={d.jerk:.3f} "
@@ -504,7 +641,8 @@ def render_jerk_diagnosis(d: JerkDiagnosis) -> str:
     f"should_stop={debug.get('final_should_stop', frame.output_should_stop if frame else False)} "
     f"release={' '.join(release_parts)} "
     f"lead_stop_hold={custom.get('lead_stop_hold_active', False)} "
-    f"slew={slew_text}"
+    f"slew={slew_text} "
+    f"gate={' '.join(gate_parts)}"
   )
 
 

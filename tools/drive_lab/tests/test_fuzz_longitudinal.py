@@ -449,3 +449,126 @@ def test_main_text_includes_jerk_diagnosis(monkeypatch):
   assert "jerk diagnosis:" in output
   assert "should_stop=" in output
   assert "slew=" in output
+
+
+def _make_jerk_frame_with_gate():
+  custom = {
+    "selected_lead_id": 7,
+    "lead_stop_hold_lead_id": 7,
+    "lead_stop_hold_active": False,
+    "lead_stop_hold_gap_increasing_s": 0.25,
+    "lead_stop_hold_gap_baseline_d_rel": 5.7,
+    "standstill_release_confidence_mode": "gate",
+    "custom_long_enabled": True,
+    "custom_output_enabled": True,
+    "custom_should_stop": False,
+    "standstill_release_source": "lead_pullaway",
+    "standstill_release_allowed": True,
+    "same_id": True,
+    "baseline_opening": 0.5,
+    "prep_applies": True,
+    "prep_block_reason": "applies",
+    "release_path": "standstill_release_clear",
+    "latch_reset_on_frame": False,
+    "release_min_d_rel": 6.2,
+    "prep_min_d_rel": 6.2,
+    "d_rel_minus_release_min_d_rel": 0.0,
+    "d_rel_minus_prep_min_d_rel": 0.0,
+  }
+  debug = {"mpc_a_target": 0.2, "model_a_target": 0.1, "model_should_stop": False}
+  return fuzz_longitudinal.CommandFrame(
+    idx=5, time_s=0.25, a_cmd=0.0, a_plant=0.0, v_ego=0.16, v_lead=1.93, d_rel=6.2,
+    prob_lead=1.0, output_should_stop=False, debug=debug, custom=custom,
+  )
+
+
+def test_frame_release_gate_context_computes_release_and_prep_min():
+  custom = {
+    "selected_lead_id": 7,
+    "lead_stop_hold_lead_id": 7,
+    "lead_stop_hold_active": False,
+    "lead_stop_hold_gap_increasing_s": 0.25,
+    "lead_stop_hold_gap_baseline_d_rel": 5.7,
+    "standstill_release_confidence_mode": "gate",
+    "custom_long_enabled": True,
+    "custom_output_enabled": True,
+    "custom_should_stop": False,
+    "standstill_release_source": "lead_pullaway",
+    "standstill_release_allowed": True,
+  }
+  debug = {"mpc_a_target": 0.2, "model_a_target": 0.1, "model_should_stop": False}
+  frame = fuzz_longitudinal.CommandFrame(
+    idx=5, time_s=0.25, a_cmd=0.0, a_plant=0.0, v_ego=0.0, v_lead=1.0, d_rel=6.25,
+    prob_lead=1.0, output_should_stop=False, debug=debug, custom=custom,
+  )
+  prev = fuzz_longitudinal.CommandFrame(
+    idx=4, time_s=0.20, a_cmd=-2.0, a_plant=-2.0, v_ego=0.0, v_lead=0.0, d_rel=6.0,
+    prob_lead=1.0, output_should_stop=False, custom={"lead_stop_hold_active": True},
+  )
+  ctx = fuzz_longitudinal._frame_release_gate_context(frame, prev, 6.0)
+  assert ctx["same_id"] is True
+  assert ctx["latch_reset_on_frame"] is True
+  assert ctx["release_path"] == "lead_stop_hold_release"
+  assert ctx["baseline_opening"] == pytest.approx(0.55)
+  assert ctx["release_min_d_rel"] == pytest.approx(6.2)
+  assert ctx["prep_min_d_rel"] == pytest.approx(6.2)
+  assert ctx["prep_applies"] is True
+  assert ctx["prep_block_reason"] == "applies"
+
+
+def test_render_jerk_diagnosis_shows_gate_context():
+  frame = _make_jerk_frame_with_gate()
+  diag = fuzz_longitudinal.JerkDiagnosis(
+    idx0=4, idx1=5, time0=0.20, time1=0.25, dt=0.05, jerk_window=1,
+    a0=-2.0, a1=0.0, delta_a=2.0, jerk=40.0, frames=[frame],
+  )
+  text = render_jerk_diagnosis(diag)
+  assert "prep=True" in text
+  assert "prepBlock=applies" in text
+  assert "dRel=6.20" in text
+  assert "prepMin=6.20" in text
+  assert "releaseMin=6.20" in text
+  assert "path=standstill_release_clear" in text
+  assert "leadId=7" in text
+  assert "latchId=7" in text
+
+
+def test_main_json_includes_gate_fields(monkeypatch):
+  import json
+  scenario = Scenario(mode="comfort", kind="test", title="jerk gate scenario", duration=1.0, kwargs={})
+  frame = _make_jerk_frame_with_gate()
+  diag = fuzz_longitudinal.JerkDiagnosis(
+    idx0=4, idx1=5, time0=0.20, time1=0.25, dt=0.05, jerk_window=1,
+    a0=-2.0, a1=0.0, delta_a=2.0, jerk=40.0, frames=[frame],
+    slew_input=-2.0, slew_output=-2.0, slew_capped=False,
+  )
+
+  def fake_run_scenario(s, max_normal_jerk=8.0):
+    return fuzz_longitudinal.ScenarioResult(
+      scenario=s,
+      valid=False,
+      failures=[fuzz_longitudinal.ScenarioFailure("jerk", "maximum absolute jerk 40.000 m/s^3")],
+      mpc_solution_status_counts={},
+      jerk_diagnosis=diag,
+    )
+
+  monkeypatch.setattr(fuzz_longitudinal, "generate_preset_scenarios", lambda request: [scenario])
+  monkeypatch.setattr(fuzz_longitudinal, "run_scenario", fake_run_scenario)
+
+  stdout = io.StringIO()
+  previous_argv = sys.argv
+  try:
+    sys.argv = ["fuzz_longitudinal.py", "--preset", "fuzz", "--cases", "1", "--json"]
+    with contextlib.redirect_stdout(stdout):
+      with pytest.raises(SystemExit):
+        fuzz_longitudinal.main()
+  finally:
+    sys.argv = previous_argv
+
+  payload = json.loads(stdout.getvalue())
+  failure = payload["failures"][0]
+  diag_dict = failure["jerkDiagnosis"]
+  assert diag_dict["frames"][0]["custom"]["prepApplies"] is True
+  assert diag_dict["frames"][0]["custom"]["releasePath"] == "standstill_release_clear"
+  assert diag_dict["frames"][0]["custom"]["latchResetOnFrame"] is False
+  assert diag_dict["frames"][0]["custom"]["dRelMinusPrepMinDRel"] == pytest.approx(0.0)
