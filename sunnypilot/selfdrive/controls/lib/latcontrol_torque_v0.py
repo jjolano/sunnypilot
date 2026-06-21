@@ -10,6 +10,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.common.pid import PIDController
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
+from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import UnderresponseSentinel, write_underresponse_debug
 
 # At higher speeds (25+mph) we can assume:
 # Lateral acceleration achieved by a specific car correlates to
@@ -49,6 +50,11 @@ class LatControlTorque(LatControl):
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
+    self.underresponse_sentinel = UnderresponseSentinel(self.dt)
+
+  def reset(self):
+    super().reset()
+    self.underresponse_sentinel.reset()
 
   def set_torque_override_refresh_allowed(self, allowed: bool) -> None:
     if hasattr(self.extension, 'set_torque_override_refresh_allowed'):
@@ -74,6 +80,7 @@ class LatControlTorque(LatControl):
     if not active:
       output_torque = 0.0
       pid_log.active = False
+      write_underresponse_debug(pid_log, self.underresponse_sentinel.reset())
     else:
       measured_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)
       roll_compensation = params.roll * ACCELERATION_DUE_TO_GRAVITY
@@ -116,6 +123,21 @@ class LatControlTorque(LatControl):
       pid_log, output_torque = self.extension.update(CS, VM, self.pid, params, ff, pid_log, setpoint, measurement, calibrated_pose, roll_compensation,
                                                      future_desired_lateral_accel, measurement, lateral_accel_deadzone, gravity_adjusted_future_lateral_accel,
                                                      desired_curvature, measured_curvature, steer_limited_by_safety, output_torque)
+
+      ur_debug = self.underresponse_sentinel.update(
+        active=active,
+        v_ego=CS.vEgo,
+        steering_pressed=CS.steeringPressed,
+        steer_limited_by_safety=steer_limited_by_safety,
+        curvature_limited=curvature_limited,
+        setpoint=setpoint,
+        measurement=measurement,
+        lateral_accel_deadzone=lateral_accel_deadzone,
+        output_torque=output_torque,
+        steer_max=self.steer_max,
+        roll=params.roll,
+      )
+      write_underresponse_debug(pid_log, ur_debug)
 
       pid_log.active = True
       pid_log.p = float(self.pid.p)

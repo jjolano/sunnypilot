@@ -18,6 +18,7 @@ from opendbc.car.lateral import get_friction
 
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
+from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import UnderresponseSentinel, write_underresponse_debug
 from openpilot.sunnypilot.custom.lateral.output_governor import OutputGovernor, OutputGovernorInputs
 from openpilot.sunnypilot.custom.lateral.response_core import ResponseCore, ResponseCoreInputs
 
@@ -37,8 +38,14 @@ class LatControlTorqueV21(LatControl):
       get_friction=get_friction,
     )
     self.governor = OutputGovernor(dt)
+    self.underresponse_sentinel = UnderresponseSentinel(dt)
     self.extension = extension if extension is not None else LatControlTorqueExt(self, CP, CP_SP, CI)
     self._under_response_path_evidence_valid = True
+
+  def reset(self):
+    super().reset()
+    self.governor.reset()
+    self.underresponse_sentinel.reset()
 
   def set_torque_override_refresh_allowed(self, allowed: bool) -> None:
     if hasattr(self.extension, 'set_torque_override_refresh_allowed'):
@@ -95,6 +102,7 @@ class LatControlTorqueV21(LatControl):
 
     if not active:
       self.governor.reset()
+      write_underresponse_debug(pid_log, self.underresponse_sentinel.reset())
       pid_log.active = False
       return 0.0, 0.0, pid_log
 
@@ -124,6 +132,20 @@ class LatControlTorqueV21(LatControl):
       controller_evidence_stable=not (rc.same_sign_unwind or rc.measurement_reset),
     ))
     output_torque = governed.output_torque
+    ur_debug = self.underresponse_sentinel.update(
+      active=True,
+      v_ego=CS.vEgo,
+      steering_pressed=CS.steeringPressed,
+      steer_limited_by_safety=steer_limited_by_safety,
+      curvature_limited=curvature_limited,
+      setpoint=rc.setpoint,
+      measurement=rc.measurement,
+      lateral_accel_deadzone=rc.lateral_accel_deadzone,
+      output_torque=output_torque,
+      steer_max=self.steer_max,
+      roll=params.roll,
+    )
+    write_underresponse_debug(pid_log, ur_debug)
     adaptive = pid_log.adaptiveTorqueState
     adaptive.active = True
     adaptive.releaseActive = bool(CS.steeringPressed)

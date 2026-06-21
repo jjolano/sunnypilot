@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from cereal import log
+from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import BLOCK_INACTIVE, BLOCK_STEERING_PRESSED
 from openpilot.sunnypilot.custom.lateral.torque_v2_1 import LatControlTorqueV21, VERSION_V21
 
 DT = 0.01
@@ -94,6 +95,8 @@ def test_inactive_returns_zero_and_resets_governor():
   assert zero == 0.0
   assert pid_log.active is False
   assert c.governor.previous_output == 0.0
+  assert pid_log.underresponseActive is False
+  assert pid_log.underresponseBlockMask & BLOCK_INACTIVE
 
 
 def test_return_torque_is_negated_governor_output():
@@ -124,6 +127,21 @@ def test_populates_adaptive_torque_telemetry():
   assert adaptive.steerLimitSameDirection is True
   assert adaptive.governorReason != 0
   assert adaptive.rawActualLateralAccel == pytest.approx(pid_log.actualLateralAccel)
+
+
+def test_populates_underresponse_shadow_telemetry_without_changing_output():
+  c = make_controller()
+  vm = FakeVM()
+
+  out, _, pid_log = c.update(True, make_cs(v_ego=20.0, angle=15.0, pressed=True), vm,
+                             make_params(), False, 0.04, make_pose(), False, 0.2)  # type: ignore[arg-type]
+
+  assert pid_log.output == pytest.approx(out)
+  assert pid_log.underresponseActive is False
+  assert pid_log.underresponseEligible is False
+  assert pid_log.underresponseBlockMask & BLOCK_STEERING_PRESSED
+  assert math.isfinite(pid_log.underresponseError)
+  assert math.isfinite(pid_log.underresponseShadowLatAccel)
 
 
 def test_controller_passes_controller_evidence_to_governor():

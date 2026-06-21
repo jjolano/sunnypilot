@@ -852,6 +852,16 @@ struct ControlsState @0x97ff69c53601abf1 {
     desiredLateralJerk @11 :Float32;
     version @12 :Int32;
     adaptiveTorqueState @13 :AdaptiveTorqueState;
+    # Shadow-only underresponse sentinel debug. Does not affect control output.
+    underresponseActive @14 :Bool;
+    underresponseEligible @15 :Bool;
+    underresponseBlockMask @16 :UInt32;
+    underresponseError @17 :Float32;              # m/s^2
+    underresponseErrorFiltered @18 :Float32;      # m/s^2
+    underresponseDuration @19 :Float32;           # s
+    underresponseClosingRate @20 :Float32;        # m/s^3
+    underresponseShadowLatAccel @21 :Float32;     # m/s^2, not applied
+    underresponseSeverity @22 :Float32;           # 0..1 heuristic
 
     struct AdaptiveTorqueState {
       active @0 :Bool;
