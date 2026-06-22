@@ -142,7 +142,7 @@ def test_lead_follow_decel_binds():
   assert r.a_target <= -1.5 + 1e-9
 
 
-def test_acc_envelope_shadow_debug_does_not_change_stack_output():
+def test_acc_envelope_gap_caps_remain_telemetry_only():
   raw_stack = CustomLongitudinalStack()
   envelope_stack = CustomLongitudinalStack()
   kwargs = dict(
@@ -163,6 +163,150 @@ def test_acc_envelope_shadow_debug_does_not_change_stack_output():
   assert observed.debug["acc_envelope_would_cap"] is True
   assert "inside_time_gap" in observed.debug["acc_envelope_cap_reason"]
   assert observed.debug["acc_envelope_delta_a"] <= 0.0
+  assert observed.debug["target_smoothing_applied"] is False
+
+
+def test_upward_accel_rise_is_slew_limited_when_active():
+  s = CustomLongitudinalStack()
+
+  first = s.update(base(seed_a_target=0.0, mode=LongitudinalMode.ACC, long_active=True), DT)
+  assert first.a_target == pytest.approx(0.0)
+
+  second = s.update(base(seed_a_target=1.0, mode=LongitudinalMode.ACC, long_active=True), DT)
+  assert second.a_target == pytest.approx(0.05)
+  assert second.debug["target_smoothing_applied"] is True
+  assert second.debug["target_smoothing_raw_a_target"] == pytest.approx(1.0)
+
+
+def test_downward_hazard_decel_is_not_slew_limited():
+  s = CustomLongitudinalStack()
+  s.update(base(seed_a_target=1.0, mode=LongitudinalMode.ACC, long_active=True), DT)
+
+  r = s.update(base(
+    seed_a_target=1.0,
+    leads=(lead(d_rel=15.0), None),
+    lead_a_target=-1.5,
+    mode=LongitudinalMode.ACC,
+    long_active=True,
+  ), DT)
+
+  assert r.a_target == pytest.approx(-1.5)
+  assert r.debug["reason"] == "physical_hazard"
+  assert r.debug["target_smoothing_applied"] is False
+  assert r.debug["target_smoothing_reason"] == "downward_passthrough"
+
+
+def test_small_comfort_decel_is_slew_limited_faster_than_accel():
+  s = CustomLongitudinalStack()
+  s.update(base(seed_a_target=0.4, mode=LongitudinalMode.ACC, long_active=True), DT)
+
+  r = s.update(base(seed_a_target=0.2, mode=LongitudinalMode.ACC, long_active=True), DT)
+
+  assert r.a_target == pytest.approx(0.2)  # -4 m/s^3 * 0.05s allows this whole 0.2 step
+  assert r.debug["target_smoothing_direction"] == "downward"
+  assert r.debug["target_smoothing_applied"] is False
+
+
+def test_small_comfort_decel_larger_than_one_tick_is_smoothed():
+  s = CustomLongitudinalStack()
+  s.update(base(seed_a_target=0.4, mode=LongitudinalMode.ACC, long_active=True), DT)
+
+  r = s.update(base(seed_a_target=0.15, mode=LongitudinalMode.ACC, long_active=True), DT)
+
+  assert r.a_target == pytest.approx(0.2)
+  assert r.debug["target_smoothing_direction"] == "downward"
+  assert r.debug["target_smoothing_applied"] is True
+  assert r.debug["target_smoothing_reason"] == "downward_slew_limited"
+
+
+def test_large_or_strong_decel_bypasses_smoothing():
+  s = CustomLongitudinalStack()
+  s.update(base(seed_a_target=0.4, mode=LongitudinalMode.ACC, long_active=True), DT)
+
+  r = s.update(base(seed_a_target=-0.5, mode=LongitudinalMode.ACC, long_active=True), DT)
+
+  assert r.a_target == pytest.approx(-0.5)
+  assert r.debug["target_smoothing_direction"] == "downward"
+  assert r.debug["target_smoothing_applied"] is False
+  assert r.debug["target_smoothing_reason"] == "downward_passthrough"
+
+
+def test_closing_lead_decel_bypasses_smoothing():
+  s = CustomLongitudinalStack()
+  s.update(base(seed_a_target=0.2, mode=LongitudinalMode.ACC, long_active=True), DT)
+
+  r = s.update(base(
+    seed_a_target=0.0,
+    leads=(lead(d_rel=80.0, v_lead=19.4, v_rel=-0.6), None),
+    lead_a_target=0.0,
+    mode=LongitudinalMode.ACC,
+    long_active=True,
+  ), DT)
+
+  assert r.a_target == pytest.approx(-0.25)
+  assert r.debug["target_smoothing_direction"] == "downward"
+  assert r.debug["target_smoothing_applied"] is False
+  assert r.debug["target_smoothing_reason"] == "downward_passthrough"
+
+
+def test_decel_smoothing_never_raises_above_nonselected_hazard():
+  s = CustomLongitudinalStack()
+  s.update(base(seed_a_target=0.0, mode=LongitudinalMode.SCC, long_active=True), DT)
+
+  r = s.update(base(
+    v_ego=20.0,
+    v_cruise=22.0,
+    seed_a_target=0.0,
+    accel_coast=-1.0,
+    leads=(lead(d_rel=80.0, v_lead=4.0, v_rel=0.0), None),
+    lead_a_target=-0.25,
+    speed_limit_active=True,
+    speed_limit_v_target=10.0,
+    speed_limit_a_target=-0.30,
+    mode=LongitudinalMode.SCC,
+    long_active=True,
+  ), DT)
+
+  assert r.debug["reason"] == "advisory_capped"
+  assert r.debug["target_smoothing_applied"] is True
+  assert r.debug["target_smoothing_hazard_floor"] == pytest.approx(-0.25)
+  assert r.a_target == pytest.approx(-0.25)
+
+
+def test_target_smoothing_reset_clears_stale_previous():
+  s = CustomLongitudinalStack()
+  s.update(base(seed_a_target=0.0, mode=LongitudinalMode.ACC, long_active=True), DT)
+  capped = s.update(base(seed_a_target=1.0, mode=LongitudinalMode.ACC, long_active=True), DT)
+  assert capped.a_target == pytest.approx(0.05)
+
+  inactive = s.update(base(seed_a_target=1.0, mode=LongitudinalMode.ACC, long_active=False), DT)
+  assert inactive.debug["target_smoothing_reason"] == "long_inactive"
+
+  after_reset = s.update(base(seed_a_target=1.0, mode=LongitudinalMode.ACC, long_active=True), DT)
+  assert after_reset.a_target == pytest.approx(1.0)
+  assert after_reset.debug["target_smoothing_reason"] == "primed"
+
+
+def test_target_smoothing_does_not_block_standstill_release_authorization():
+  s = CustomLongitudinalStack()
+  primed = s.update(base(v_ego=20.0, v_cruise=10.0, seed_a_target=-1.0, mode=LongitudinalMode.ACC, long_active=True), DT)
+  assert primed.a_target == pytest.approx(-1.0)
+
+  r = s.update(base(
+    v_ego=0.0,
+    v_cruise=12.0,
+    seed_a_target=0.4,
+    leads=(None, None),
+    mode=LongitudinalMode.E2E,
+    long_active=True,
+    model_should_stop=False,
+    model_stop_distance=None,
+    model_desired_accel=0.4,
+  ), DT)
+
+  assert r.standstill_release_allowed is True
+  assert r.standstill_release_a_target >= 0.15
+  assert r.debug["target_smoothing_applied"] is True
 
 
 def test_personality_changes_launch():

@@ -23,7 +23,7 @@ from typing import Any
 from openpilot.sunnypilot.custom.longitudinal.acc_envelope import AccEnvelopeInputs, evaluate_acc_envelope
 from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import predict_cut_in_brake_assist
 from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs, predict_curve_speed_confidence
-from openpilot.sunnypilot.custom.longitudinal.decision import Decision, decide
+from openpilot.sunnypilot.custom.longitudinal.decision import CandidateRole, Decision, decide
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceState, LeadConfidenceTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF, predict_lead_path_clearance
@@ -36,6 +36,22 @@ import math
 
 FOLLOW_TIME_GAP_S = 1.5   # steady-state follow time gap proxy
 FOLLOW_GAP_MIN_M = 6.0
+UPWARD_TARGET_SLEW_MAX_DT_S = 0.20
+UPWARD_TARGET_SLEW_MAX_LAG = 0.50
+DOWNWARD_TARGET_SLEW_JERK = -4.0  # faster comfort decel smoothing; never used for hazards
+DOWNWARD_TARGET_SMOOTH_MAX_DELTA = 0.30
+DOWNWARD_TARGET_SMOOTH_MIN_RAW_A = -0.40
+DOWNWARD_TARGET_SMOOTH_CLOSING_V_REL = -0.50
+DOWNWARD_TARGET_SMOOTH_LEAD_A_K = -0.50
+DOWNWARD_TARGET_SMOOTH_RISK_REASONS = frozenset((
+  "inside_time_gap",
+  "ttc_low",
+  "closing_decel_high",
+  "invalid_lead_kinematics",
+  "invalid_lead_distance",
+  "invalid_data",
+  "fault",
+))
 
 
 def _f(value: object, default: float = 0.0) -> float:
@@ -118,11 +134,13 @@ class CustomLongitudinalStack:
     self._lead_confidence = (LeadConfidenceTracker(), LeadConfidenceTracker())
     self._lead_context = LeadContextTracker()
     self._shadow_lead_context = LeadContextTracker()
+    self._prev_smoothed_a_target: float | None = None
 
   def reset(self) -> None:
     self._lead_confidence = (LeadConfidenceTracker(), LeadConfidenceTracker())
     self._lead_context = LeadContextTracker()
     self._shadow_lead_context = LeadContextTracker()
+    self._prev_smoothed_a_target = None
 
   def update(self, inp: LongitudinalStackInputs, dt: float) -> LongitudinalStackResult:
     confidence_states = (
@@ -219,12 +237,14 @@ class CustomLongitudinalStack:
     candidates = build_candidates(scene)
     decision = decide(candidates, inp.mode, inp.accel_limits, inp.sources)
     acc_envelope_debug: dict[str, Any] = {}
+    acc_envelope_result: Any | None = None
     try:
       model_progress_candidate = str(decision.selected_intent) in ("no_lead_launch", "lead_pullaway", "lead_standstill_launch")
-      acc_envelope_debug = evaluate_acc_envelope(AccEnvelopeInputs(
+      previous_for_envelope = self._prev_smoothed_a_target if self._prev_smoothed_a_target is not None else inp.seed_a_target
+      acc_envelope_result = evaluate_acc_envelope(AccEnvelopeInputs(
         v_ego=inp.v_ego,
         candidate_a_target=decision.a_target,
-        previous_a_target=inp.seed_a_target,
+        previous_a_target=previous_for_envelope,
         dt=dt,
         openpilot_longitudinal_control=True,
         has_lead=has_lead,
@@ -237,7 +257,8 @@ class CustomLongitudinalStack:
         model_progress_candidate=model_progress_candidate,
         radar_stale=False,
         lead_required=has_lead,
-      )).debug_dict()
+      ))
+      acc_envelope_debug = acc_envelope_result.debug_dict()
     except Exception:
       acc_envelope_debug = {
         "acc_envelope_active": False,
@@ -248,7 +269,8 @@ class CustomLongitudinalStack:
     # Decision output is a pre-MPC target. Most lead-present braking seeds bind as hazards;
     # only explicitly approved low-risk soft cases raise the seed before the downstream MPC
     # solves final lead-follow physics.
-    a_target = decision.a_target
+    raw_a_target = float(decision.a_target)
+    a_target = raw_a_target
     release_source = str(decision.selected_intent)
     lead_release_context = bool(release_source in ("lead_pullaway", "lead_standstill_launch")
                                 and raw_lead_present and lead_progress_allowed
@@ -259,7 +281,7 @@ class CustomLongitudinalStack:
       and (lead_release_context or clear_release_context)
       and decision.reason != "physical_hazard"
       and not decision.should_stop
-      and a_target >= 0.15
+      and raw_a_target >= 0.15
       and not inp.force_slow_decel
       and not inp.brake_pressed
       and not inp.gas_pressed
@@ -273,7 +295,7 @@ class CustomLongitudinalStack:
         release_allowed=standstill_release_allowed,
         release_source=str(decision.selected_intent if standstill_release_allowed else ""),
         release_reason=str(decision.reason if standstill_release_allowed else ""),
-        release_a_target=float(max(a_target, 0.15)) if standstill_release_allowed else 0.0,
+        release_a_target=float(max(raw_a_target, 0.15)) if standstill_release_allowed else 0.0,
         lead_progress_allowed=lead_progress_allowed,
         lead_gap_excess=lead_gap_excess,
         lead_shadow_active=lead_shadow_active,
@@ -285,13 +307,22 @@ class CustomLongitudinalStack:
       ).debug_dict()
     except Exception:
       standstill_release_confidence_fault = True
+
+    admitted_hazard_targets = [float(c.a_target) for c in candidates
+                               if c.role is CandidateRole.PHYSICAL_HAZARD
+                               and c.source in decision.admitted_sources
+                               and math.isfinite(float(c.a_target))]
+    strongest_admitted_hazard_a = min(admitted_hazard_targets) if admitted_hazard_targets else None
+    target_smoothing_debug = self._apply_target_smoothing(raw_a_target, dt, inp, decision, acc_envelope_result,
+                                                          strongest_admitted_hazard_a)
+    a_target = float(target_smoothing_debug["target_smoothing_a_target"])
     return LongitudinalStackResult(
       a_target=float(a_target),
       should_stop=bool(decision.should_stop),
       decision=decision,
       standstill_release_allowed=standstill_release_allowed,
       standstill_release_source=str(decision.selected_intent if standstill_release_allowed else ""),
-      standstill_release_a_target=float(max(a_target, 0.15)) if standstill_release_allowed else 0.0,
+      standstill_release_a_target=float(max(raw_a_target, 0.15)) if standstill_release_allowed else 0.0,
       standstill_release_reason=str(decision.reason if standstill_release_allowed else ""),
       debug={
         "intent": decision.selected_intent,
@@ -316,8 +347,138 @@ class CustomLongitudinalStack:
         "standstill_release_confidence_fault": standstill_release_confidence_fault,
         **standstill_release_confidence_debug,
         **acc_envelope_debug,
+        **target_smoothing_debug,
       },
     )
+
+  def _apply_target_smoothing(self, raw_a_target: float, dt: float, inp: LongitudinalStackInputs,
+                              decision: Decision, acc_envelope_result: Any | None,
+                              strongest_admitted_hazard_a: float | None = None) -> dict[str, Any]:
+    debug = {
+      "target_smoothing_active": False,
+      "target_smoothing_applied": False,
+      "target_smoothing_direction": "none",
+      "target_smoothing_reason": "inactive",
+      "target_smoothing_raw_a_target": float(raw_a_target) if math.isfinite(raw_a_target) else 0.0,
+      "target_smoothing_prev_a_target": float("nan"),
+      "target_smoothing_hazard_floor": float(strongest_admitted_hazard_a) if strongest_admitted_hazard_a is not None else float("nan"),
+      "target_smoothing_a_target": float(raw_a_target) if math.isfinite(raw_a_target) else 0.0,
+    }
+
+    reset_reason = ""
+    try:
+      a_min, a_max = float(inp.accel_limits[0]), float(inp.accel_limits[1])
+      prev = self._prev_smoothed_a_target
+      if not inp.long_active:
+        reset_reason = "long_inactive"
+      elif inp.brake_pressed or inp.gas_pressed:
+        reset_reason = "driver_override"
+      elif inp.force_slow_decel:
+        reset_reason = "force_slow"
+      elif bool(decision.should_stop):
+        reset_reason = "should_stop"
+      elif inp.model_should_stop:
+        reset_reason = "model_stop"
+      elif acc_envelope_result is None or not bool(getattr(acc_envelope_result, "active", False)):
+        reset_reason = "acc_envelope_inactive"
+      elif not math.isfinite(float(raw_a_target)):
+        reset_reason = "nonfinite_raw"
+      elif not (math.isfinite(float(dt)) and 0.0 < float(dt) <= UPWARD_TARGET_SLEW_MAX_DT_S):
+        reset_reason = "invalid_dt"
+      elif not (math.isfinite(a_min) and math.isfinite(a_max) and a_min <= a_max):
+        reset_reason = "invalid_accel_limits"
+      elif prev is not None and not math.isfinite(float(prev)):
+        reset_reason = "nonfinite_previous"
+
+      if reset_reason:
+        self._prev_smoothed_a_target = None
+        debug["target_smoothing_reason"] = reset_reason
+        return debug
+
+      raw = min(max(float(raw_a_target), a_min), a_max)
+      if prev is None:
+        self._prev_smoothed_a_target = raw
+        debug.update({
+          "target_smoothing_active": True,
+          "target_smoothing_reason": "primed",
+          "target_smoothing_a_target": raw,
+        })
+        return debug
+
+      prev_f = min(max(float(prev), a_min), a_max)
+      debug["target_smoothing_prev_a_target"] = prev_f
+      debug["target_smoothing_active"] = True
+
+      if raw < prev_f:
+        if not self._downward_smoothing_allowed(raw, prev_f, inp, decision, acc_envelope_result):
+          self._prev_smoothed_a_target = raw
+          debug.update({
+            "target_smoothing_direction": "downward",
+            "target_smoothing_reason": "downward_passthrough",
+            "target_smoothing_a_target": raw,
+          })
+          return debug
+
+        max_down_step = abs(DOWNWARD_TARGET_SLEW_JERK) * float(dt)
+        smoothed = max(raw, prev_f - max_down_step)
+        if strongest_admitted_hazard_a is not None and math.isfinite(float(strongest_admitted_hazard_a)):
+          smoothed = min(smoothed, float(strongest_admitted_hazard_a))
+        smoothed = min(max(smoothed, a_min), a_max)
+        self._prev_smoothed_a_target = smoothed
+        debug.update({
+          "target_smoothing_applied": bool(smoothed > raw + 1e-9),
+          "target_smoothing_direction": "downward",
+          "target_smoothing_reason": "downward_slew_limited" if smoothed > raw + 1e-9 else "downward_passthrough",
+          "target_smoothing_a_target": smoothed,
+        })
+        return debug
+
+      if raw == prev_f:
+        self._prev_smoothed_a_target = raw
+        debug.update({
+          "target_smoothing_reason": "equal_passthrough",
+          "target_smoothing_a_target": raw,
+        })
+        return debug
+
+      jerk_limited = getattr(acc_envelope_result, "jerk_limited_a_target", raw)
+      if not math.isfinite(float(jerk_limited)):
+        jerk_limited = raw
+      smoothed = min(raw, max(prev_f, float(jerk_limited)))
+      if prev_f < -0.5 and raw >= 0.0:
+        smoothed = max(smoothed, raw - UPWARD_TARGET_SLEW_MAX_LAG)
+      smoothed = min(max(smoothed, a_min), a_max)
+      self._prev_smoothed_a_target = smoothed
+      debug.update({
+        "target_smoothing_applied": bool(smoothed < raw - 1e-9),
+        "target_smoothing_direction": "upward",
+        "target_smoothing_reason": "upward_slew_limited" if smoothed < raw - 1e-9 else "upward_passthrough",
+        "target_smoothing_a_target": smoothed,
+      })
+      return debug
+    except Exception:
+      self._prev_smoothed_a_target = None
+      debug["target_smoothing_reason"] = "fault"
+      return debug
+
+  def _downward_smoothing_allowed(self, raw: float, prev: float, inp: LongitudinalStackInputs,
+                                  decision: Decision, acc_envelope_result: Any | None) -> bool:
+    if decision.reason == "physical_hazard" or bool(decision.should_stop) or inp.model_should_stop:
+      return False
+    if raw < DOWNWARD_TARGET_SMOOTH_MIN_RAW_A:
+      return False
+    if prev - raw > DOWNWARD_TARGET_SMOOTH_MAX_DELTA:
+      return False
+    reasons = set(getattr(acc_envelope_result, "cap_reasons", ()) or ())
+    if reasons & DOWNWARD_TARGET_SMOOTH_RISK_REASONS:
+      return False
+    lead0 = inp.leads[0] if inp.leads else None
+    if lead0 is not None and bool(getattr(lead0, "status", False)):
+      lead_v_rel = _f(getattr(lead0, "vRel", 0.0))
+      lead_a_k = _f(getattr(lead0, "aLeadK", 0.0))
+      if lead_v_rel < DOWNWARD_TARGET_SMOOTH_CLOSING_V_REL or lead_a_k < DOWNWARD_TARGET_SMOOTH_LEAD_A_K:
+        return False
+    return True
 
 
 def _any_status(leads: tuple[Any, Any]) -> bool:
