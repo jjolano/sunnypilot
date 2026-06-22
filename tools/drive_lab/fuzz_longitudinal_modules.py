@@ -561,10 +561,14 @@ def _evaluate_decision_matrix(case: ModuleCase) -> tuple[list[dict[str, Any]], d
     cruise = [c for c in candidates if c.role is decision_mod.CandidateRole.CRUISE and c.source in admitted]
     if unauthorized_progress:
       baseline_desire = max((c.a_target for c in cruise + authorized_progress), default=a_max)
-      if decision.a_target > baseline_desire + EPS:
+      # Final arbitration is clipped to accel limits, so a conservative baseline below
+      # a_min can legitimately be raised to the limit floor without unauthorized progress
+      # contributing authority.
+      baseline_ceiling = min(max(baseline_desire, a_min), a_max)
+      if decision.a_target > baseline_ceiling + EPS:
         failures.append({
           "check": "unauthorized_progress_no_raise",
-          "detail": f"a_target={decision.a_target:.4f} raised by unauthorized progress above baseline {baseline_desire:.4f}",
+          "detail": f"a_target={decision.a_target:.4f} raised by unauthorized progress above clamped baseline {baseline_ceiling:.4f} (raw {baseline_desire:.4f})",
         })
   else:
     if decision.reason != "invalid_accel_limits":
