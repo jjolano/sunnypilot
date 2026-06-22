@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import math
 import time
 
+from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal import wiring as long_wiring
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, CustomLongitudinalOutput
@@ -41,20 +42,14 @@ def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceTog
   sp = object.__new__(LongitudinalPlannerSP)
   sp.__dict__['CP'] = fake_cp()
   sp.__dict__['custom_long'] = SimpleNamespace(enabled=True, mode=mode, sources=sources,
-                                                curve_speed_confidence_mode=curve_mode,
-                                                standstill_release_confidence_mode=standstill_mode,
-                                                maybe_refresh_params=lambda: None)
+                                                 curve_speed_confidence_mode=curve_mode,
+                                                 standstill_release_confidence_mode=standstill_mode,
+                                                 maybe_refresh_params=lambda: None)
   sp.__dict__['dec'] = SimpleNamespace(active=lambda: True, mode=lambda: 'blended')
   sp.__dict__['dt'] = 0.05
-  sp.__dict__['_lead_stop_hold_active'] = False
-  sp.__dict__['_lead_stop_hold_gap_increasing_s'] = 0.0
-  sp.__dict__['_lead_stop_hold_missing_s'] = 0.0
-  sp.__dict__['_lead_stop_hold_lead_id'] = None
-  sp.__dict__['_lead_stop_hold_gap_prev_d_rel'] = None
-  sp.__dict__['_custom_long_output_telemetry'] = None
-  sp.__dict__['_stop_hold_release_slew_a_target'] = None
-  sp.__dict__['_stop_hold_release_prep_a_target'] = None
-  sp.__dict__['_stop_hold_release_prep_raw_prev'] = None
+  # Finalizer owns the stop-hold/release state; keep the fake planner consistent with the
+  # real __init__ by constructing it explicitly here.
+  sp.__dict__['custom_long_finalizer'] = CustomLongitudinalFinalizer(sp.CP)
   sp.__dict__['custom_long_output'] = CustomLongitudinalOutput(
     a_target=0.0, should_stop=should_stop, enabled=True, mode=mode,
     selected_intent=("lead_pullaway" if release else None), reason=("trusted" if release else None),
@@ -1167,7 +1162,7 @@ def test_stop_hold_release_slew_caps_second_upward_jump():
   dt = 0.05
   first, _, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
   a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 2.0, False, 0.0, False)  # type: ignore[arg-type]
-  assert math.isclose(a, first + sp._STOP_HOLD_RELEASE_MAX_UP_JERK * dt)
+  assert math.isclose(a, first + sp.custom_long_finalizer._STOP_HOLD_RELEASE_MAX_UP_JERK * dt)
   assert should_stop is False
 
 
@@ -1198,7 +1193,7 @@ def test_stop_hold_release_slew_positive_dip_then_upward_jump_still_capped():
   assert sp._stop_hold_release_slew_a_target is not None
   # subsequent upward jump is still capped
   a, _, _ = sp.final_longitudinal_output(fake_sm(), 2.0, False, 0.0, False)  # type: ignore[arg-type]
-  assert math.isclose(a, 0.05 + sp._STOP_HOLD_RELEASE_MAX_UP_JERK * 0.05)
+  assert math.isclose(a, 0.05 + sp.custom_long_finalizer._STOP_HOLD_RELEASE_MAX_UP_JERK * 0.05)
 
 
 def test_stop_hold_release_slew_brake_clears_and_passes_through():
@@ -1253,7 +1248,7 @@ def test_stop_hold_release_slew_e2e_preserves_source_when_limited():
   first, _, _ = sp.final_longitudinal_output(fake_sm(False), 0.0, True, 2.0, False)  # type: ignore[arg-type]
   assert 0.15 <= first <= 0.35
   a, _, e2e_source = sp.final_longitudinal_output(fake_sm(False), 0.6, False, 2.0, False)  # type: ignore[arg-type]
-  assert math.isclose(a, first + sp._STOP_HOLD_RELEASE_MAX_UP_JERK * 0.05)
+  assert math.isclose(a, first + sp.custom_long_finalizer._STOP_HOLD_RELEASE_MAX_UP_JERK * 0.05)
   assert e2e_source is False  # source decided before slew limiting
 
 
@@ -1291,6 +1286,7 @@ def _prep_sm(d_rel=6.25, v_lead=0.20, v_rel=0.10, **kwargs):
 def _prep_planner(stop_accel=-2.0, mode=LongitudinalMode.SCC, release=True):
   sp = fake_planner(mode, release=release)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=stop_accel, openpilotLongitudinalControl=True)
+  sp.custom_long_finalizer.CP = sp.CP
   return sp
 
 
@@ -1315,12 +1311,12 @@ def test_stop_hold_release_prep_upward_ramp_bounded_by_jerk():
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
   for i in range(2):
     sp.final_longitudinal_output(_prep_sm(d_rel=6.25 + i * 0.01, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  prev = float(sp._stop_hold_release_prep_a_target) if sp._stop_hold_release_prep_a_target is not None else sp._STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET
+  prev = float(sp._stop_hold_release_prep_a_target) if sp._stop_hold_release_prep_a_target is not None else sp.custom_long_finalizer._STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET
   for i in range(6):
     sm = _prep_sm(d_rel=6.27 + i * 0.02, v_lead=0.25, v_rel=0.10)
     a, should_stop, _ = sp.final_longitudinal_output(sm, -0.05, True, 0.0, False)  # type: ignore[arg-type]
     assert should_stop is True
-    assert a - prev <= sp._STOP_HOLD_RELEASE_PREP_MAX_UP_JERK * sp.dt + 1e-9
+    assert a - prev <= sp.custom_long_finalizer._STOP_HOLD_RELEASE_PREP_MAX_UP_JERK * sp.dt + 1e-9
     assert a >= prev
     if math.isclose(a, -0.20, abs_tol=1e-6):
       break
@@ -1467,6 +1463,7 @@ def test_stop_hold_release_prep_downward_braking_passes_through():
   assert math.isclose(a2, -0.20)
   # Make the hold command more negative while keeping MPC above the hard-brake veto.
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-1.0, openpilotLongitudinalControl=True)
+  sp.custom_long_finalizer.CP = sp.CP
   a3, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.30, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
   assert math.isclose(a3, -0.2)
   assert sp._stop_hold_release_prep_a_target == -0.2
@@ -1508,6 +1505,7 @@ def test_stop_hold_release_prep_state_resets_with_stop_hold():
 def test_stop_hold_standstill_normalize_same_id_harsh_to_mild_target():
   sp = fake_planner(LongitudinalMode.SCC)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-2.0, openpilotLongitudinalControl=True)
+  sp.custom_long_finalizer.CP = sp.CP
   _arm_stop_hold(sp, d_rel=6.2)
   sm = FakeSubMaster({
     'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=False, gasPressed=False, vCruise=12.0),
@@ -1523,6 +1521,7 @@ def test_stop_hold_standstill_normalize_same_id_harsh_to_mild_target():
 def test_stop_hold_standstill_normalize_v_ego_fallback():
   sp = fake_planner(LongitudinalMode.SCC)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-2.0, openpilotLongitudinalControl=True)
+  sp.custom_long_finalizer.CP = sp.CP
   _arm_stop_hold(sp, d_rel=6.2)
   sm = FakeSubMaster({
     'carState': SimpleNamespace(vEgo=0.015, brakePressed=False, gasPressed=False, vCruise=12.0),
@@ -1537,6 +1536,7 @@ def test_stop_hold_standstill_normalize_v_ego_fallback():
 def test_stop_hold_standstill_normalize_rolling_creeping_unchanged():
   sp = fake_planner(LongitudinalMode.SCC)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  sp.custom_long_finalizer.CP = sp.CP
   _arm_stop_hold(sp, d_rel=6.2)
   sm = FakeSubMaster({
     'carState': SimpleNamespace(vEgo=0.05, standstill=False, brakePressed=False, gasPressed=False, vCruise=12.0),
@@ -1551,6 +1551,7 @@ def test_stop_hold_standstill_normalize_rolling_creeping_unchanged():
 def test_stop_hold_standstill_normalize_vetoes_different_lead_id():
   sp = fake_planner(LongitudinalMode.SCC)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  sp.custom_long_finalizer.CP = sp.CP
   _arm_stop_hold(sp, d_rel=6.2)
   # Use a moving different lead so the latch does not auto-transfer.
   sm = FakeSubMaster({
@@ -1566,6 +1567,7 @@ def test_stop_hold_standstill_normalize_vetoes_different_lead_id():
 def test_stop_hold_standstill_normalize_vetoes_missing_lead_id():
   sp = fake_planner(LongitudinalMode.SCC)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  sp.custom_long_finalizer.CP = sp.CP
   _arm_stop_hold(sp, d_rel=6.2)
   sm = FakeSubMaster({
     'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=False, gasPressed=False, vCruise=12.0),
@@ -1580,6 +1582,7 @@ def test_stop_hold_standstill_normalize_vetoes_missing_lead_id():
 def test_stop_hold_standstill_normalize_vetoes_raw_model_stop():
   sp = fake_planner(LongitudinalMode.SCC)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  sp.custom_long_finalizer.CP = sp.CP
   _arm_stop_hold(sp, d_rel=6.2)
   sm = FakeSubMaster({
     'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=False, gasPressed=False, vCruise=12.0),
@@ -1595,6 +1598,7 @@ def test_stop_hold_standstill_normalize_vetoes_driver_and_force_inputs():
   for brake, gas, force in ((True, False, False), (False, True, False), (False, False, True)):
     sp = fake_planner(LongitudinalMode.SCC)
     sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+    sp.custom_long_finalizer.CP = sp.CP
     _arm_stop_hold(sp, d_rel=6.2)
     sm = FakeSubMaster({
       'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=brake, gasPressed=gas, vCruise=12.0),
@@ -1611,6 +1615,7 @@ def test_stop_hold_standstill_normalize_allows_prep_to_relax():
   """Normalization to stop_accel does not prevent release prep from ramping further."""
   sp = fake_planner(LongitudinalMode.SCC, release=True)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  sp.custom_long_finalizer.CP = sp.CP
   _arm_stop_hold(sp, d_rel=6.0)
   # harsh MPC while stopped gets normalized to -0.5
   a1, _, _ = sp.final_longitudinal_output(
@@ -1632,6 +1637,7 @@ def test_stop_hold_standstill_normalize_allows_prep_to_relax():
 def test_stop_hold_standstill_normalize_first_positive_release_still_clears():
   sp = fake_planner(LongitudinalMode.SCC, release=True)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  sp.custom_long_finalizer.CP = sp.CP
   _arm_stop_hold(sp, d_rel=6.2)
   a_hold, _, _ = sp.final_longitudinal_output(
     FakeSubMaster({

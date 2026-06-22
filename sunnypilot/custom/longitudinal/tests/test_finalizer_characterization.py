@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalOutput
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
@@ -84,6 +85,7 @@ def make_planner(mode=LongitudinalMode.SCC, custom_long_output=None) -> Any:
   planner: Any = object.__new__(LongitudinalPlannerSP)
   planner.CP = make_cp()
   planner.dt = 0.05
+  planner.custom_long_finalizer = CustomLongitudinalFinalizer(planner.CP)
   planner.custom_long = make_custom_long(mode=mode)
   planner.custom_long_output = custom_long_output
   planner._custom_long_output_telemetry = None
@@ -206,6 +208,42 @@ def test_reset_lead_stop_hold_clears_latch_slew_and_prep_state():
   assert planner._stop_hold_release_slew_a_target is None
   assert planner._stop_hold_release_prep_a_target is None
   assert planner._stop_hold_release_prep_raw_prev is None
+
+
+def test_internal_stop_hold_reset_uses_planner_monkeypatch_seam():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  lead = make_lead(d_rel=5.0, v_lead=0.0, v_rel=0.0)
+  planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead),
+    mpc_a_target=-0.3, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+  assert planner._lead_stop_hold_active is True
+
+  original_reset = planner._reset_lead_stop_hold
+  reset_snapshots = []
+
+  def reset_hook():
+    reset_snapshots.append({
+      "active": planner._lead_stop_hold_active,
+      "lead_id": planner._lead_stop_hold_lead_id,
+      "gap_increasing_s": planner._lead_stop_hold_gap_increasing_s,
+    })
+    return original_reset()
+
+  planner._reset_lead_stop_hold = reset_hook
+
+  planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, gas_pressed=True, lead_one=lead),
+    mpc_a_target=-0.3, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert reset_snapshots == [{"active": True, "lead_id": 1, "gap_increasing_s": 0.0}]
+  assert planner._lead_stop_hold_active is False
 
 
 def test_e2e_fresh_model_selects_raw_accel_below_mpc():

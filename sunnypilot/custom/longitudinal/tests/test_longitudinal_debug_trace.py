@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from cereal import messaging
+from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
@@ -41,6 +42,8 @@ def custom_output(**kwargs):
 
 def make_planner(debug_trace_mode: str, custom_long_output: Any | None = None) -> Any:
   planner: Any = object.__new__(LongitudinalPlannerSP)
+  planner.CP = SimpleNamespace(stoppingDistance=6.0, vEgoStopping=0.5, stopAccel=-0.5, openpilotLongitudinalControl=True)
+  planner.custom_long_finalizer = CustomLongitudinalFinalizer(planner.CP)
   planner.custom_long = SimpleNamespace(enabled=True, debug_trace_mode=debug_trace_mode, mode=LongitudinalMode.ACC)
   planner._custom_long_output_telemetry = None
   planner.custom_long_output = custom_long_output if custom_long_output is not None else custom_output()

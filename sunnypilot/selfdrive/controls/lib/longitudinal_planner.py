@@ -6,7 +6,6 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import math
-from dataclasses import replace
 
 from cereal import messaging, custom
 from openpilot.common.constants import CV
@@ -21,6 +20,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
+from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.lead_anticipation import LeadAnticipation
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, MODEL_STALE_AGE_S, _message_age_s
@@ -30,41 +30,6 @@ LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
 
 class LongitudinalPlannerSP:
-  _STOP_HOLD_MAX_BASELINE_D_REL = 6.0
-  _STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN = 0.2
-  _STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR = 4.5
-  _STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING = 0.5
-  _STOP_HOLD_SAME_ID_GAP_INCREASING_S = 0.10
-  _STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET = -0.10
-  _STOP_HOLD_NEW_ID_GAP_INCREASING_S = 0.30
-  _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
-  _STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S = 0.15
-  _STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S = 0.15
-  _STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V = 5.0
-  _STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL = 1.0
-  _STOP_HOLD_CRAWL_DEADBAND_M = 0.50
-  _STOP_HOLD_CRAWL_GAP_TAU = 2.0
-  _STOP_HOLD_CRAWL_RELEASE_A_MIN = 0.05
-  _STOP_HOLD_CRAWL_RELEASE_A_MAX = 0.25
-  _STOP_HOLD_RELEASE_A_MIN = 0.15
-  _STOP_HOLD_RELEASE_A_MAX = 0.35
-  _STOP_HOLD_RELEASE_MAX_UP_JERK = 6.0
-  # Pre-release only: relax harsh stopped-lead hold when the same latched lead is pulling away.
-  _STOP_HOLD_RELEASE_PREP_A_TARGET = -0.20
-  _STOP_HOLD_RELEASE_PREP_MAX_UP_JERK = 6.0
-  _STOP_HOLD_RELEASE_PREP_MIN_LEAD_V = 0.25
-  _STOP_HOLD_RELEASE_PREP_MIN_LEAD_V_REL = 0.10
-  _STOP_HOLD_RELEASE_PREP_MIN_MPC_A_TARGET = -0.10
-  _STOP_HOLD_RELEASE_PREP_MIN_GAP_INCREASING_S = 0.10
-  _STOP_HOLD_RELEASE_PREP_MIN_D_REL_MARGIN = 0.20
-  _STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET = -0.50
-  _STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO = 0.02
-  _CURVE_CONFIDENCE_APPLY_MIN_V_EGO = 8.0
-  _CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE = 0.70
-  _CURVE_CONFIDENCE_APPLY_MIN_CAP = -0.85
-  _stop_hold_release_slew_a_target: float | None
-  _stop_hold_release_prep_a_target: float | None
-  _stop_hold_release_prep_raw_prev: float | None
   def __init__(self, CP, CP_SP, mpc):
     self.CP = CP
     self.events_sp = EventsSP()
@@ -77,6 +42,10 @@ class LongitudinalPlannerSP:
 
     self.output_v_target = 0.
     self.output_a_target = 0.
+
+    # Finalizer owns post-MPC stop-hold/release arbitration state.
+    self.custom_long_finalizer = CustomLongitudinalFinalizer(CP)
+
     self._lead_stop_hold_active = False
     self._lead_stop_hold_gap_increasing_s = 0.0
     self._lead_stop_hold_missing_s = 0.0
@@ -85,18 +54,107 @@ class LongitudinalPlannerSP:
     self._lead_stop_hold_gap_baseline_d_rel = None
     self._custom_long_output_telemetry = None
     self._last_release_block_reason = ""
-    self._stop_hold_release_slew_a_target: float | None = None
-    self._stop_hold_release_prep_a_target: float | None = None
-    self._stop_hold_release_prep_raw_prev: float | None = None
+    self._stop_hold_release_slew_a_target = None
+    self._stop_hold_release_prep_a_target = None
+    self._stop_hold_release_prep_raw_prev = None
 
     # Custom-2.0 longitudinal policy (default-on in this fork; fail-closed to stock output).
     self.custom_long = CustomLongitudinalAdapter(Params())
     self.custom_long_output = None
-    self._custom_long_output_telemetry = None
     # §3 lead-motion anticipation: mode-gated shadow/apply shaping of lead accel fed to the MPC
     # (off/shadow/apply via LeadAnticipationMode; compatibility LeadAnticipationEnabled only when
     # mode is absent, fail-closed to the raw radarState).
     self.lead_anticipation = LeadAnticipation(Params())
+
+  # Forwarding accessors: finalizer owns the state; planner exposes it for
+  # backward-compatible instrumentation (drive_lab, unit tests, debug trace).
+  @property
+  def _lead_stop_hold_active(self) -> bool:
+    return self.custom_long_finalizer.lead_stop_hold_active
+
+  @_lead_stop_hold_active.setter
+  def _lead_stop_hold_active(self, value: bool) -> None:
+    self.custom_long_finalizer.lead_stop_hold_active = bool(value)
+
+  @property
+  def _lead_stop_hold_gap_increasing_s(self) -> float:
+    return self.custom_long_finalizer.lead_stop_hold_gap_increasing_s
+
+  @_lead_stop_hold_gap_increasing_s.setter
+  def _lead_stop_hold_gap_increasing_s(self, value: float) -> None:
+    self.custom_long_finalizer.lead_stop_hold_gap_increasing_s = float(value)
+
+  @property
+  def _lead_stop_hold_missing_s(self) -> float:
+    return self.custom_long_finalizer.lead_stop_hold_missing_s
+
+  @_lead_stop_hold_missing_s.setter
+  def _lead_stop_hold_missing_s(self, value: float) -> None:
+    self.custom_long_finalizer.lead_stop_hold_missing_s = float(value)
+
+  @property
+  def _lead_stop_hold_lead_id(self):
+    return self.custom_long_finalizer.lead_stop_hold_lead_id
+
+  @_lead_stop_hold_lead_id.setter
+  def _lead_stop_hold_lead_id(self, value) -> None:
+    self.custom_long_finalizer.lead_stop_hold_lead_id = value
+
+  @property
+  def _lead_stop_hold_gap_prev_d_rel(self):
+    return self.custom_long_finalizer.lead_stop_hold_gap_prev_d_rel
+
+  @_lead_stop_hold_gap_prev_d_rel.setter
+  def _lead_stop_hold_gap_prev_d_rel(self, value) -> None:
+    self.custom_long_finalizer.lead_stop_hold_gap_prev_d_rel = value
+
+  @property
+  def _lead_stop_hold_gap_baseline_d_rel(self):
+    return self.custom_long_finalizer.lead_stop_hold_gap_baseline_d_rel
+
+  @_lead_stop_hold_gap_baseline_d_rel.setter
+  def _lead_stop_hold_gap_baseline_d_rel(self, value) -> None:
+    self.custom_long_finalizer.lead_stop_hold_gap_baseline_d_rel = value
+
+  @property
+  def _stop_hold_release_slew_a_target(self):
+    return self.custom_long_finalizer.stop_hold_release_slew_a_target
+
+  @_stop_hold_release_slew_a_target.setter
+  def _stop_hold_release_slew_a_target(self, value) -> None:
+    self.custom_long_finalizer.stop_hold_release_slew_a_target = value
+
+  @property
+  def _stop_hold_release_prep_a_target(self):
+    return self.custom_long_finalizer.stop_hold_release_prep_a_target
+
+  @_stop_hold_release_prep_a_target.setter
+  def _stop_hold_release_prep_a_target(self, value) -> None:
+    self.custom_long_finalizer.stop_hold_release_prep_a_target = value
+
+  @property
+  def _stop_hold_release_prep_raw_prev(self):
+    return self.custom_long_finalizer.stop_hold_release_prep_raw_prev
+
+  @_stop_hold_release_prep_raw_prev.setter
+  def _stop_hold_release_prep_raw_prev(self, value) -> None:
+    self.custom_long_finalizer.stop_hold_release_prep_raw_prev = value
+
+  @property
+  def _last_release_block_reason(self) -> str:
+    return self.custom_long_finalizer.last_release_block_reason
+
+  @_last_release_block_reason.setter
+  def _last_release_block_reason(self, value: str) -> None:
+    self.custom_long_finalizer.last_release_block_reason = str(value)
+
+  @property
+  def _custom_long_output_telemetry(self):
+    return self.custom_long_finalizer.custom_long_output_telemetry
+
+  @_custom_long_output_telemetry.setter
+  def _custom_long_output_telemetry(self, value) -> None:
+    self.custom_long_finalizer.custom_long_output_telemetry = value
 
   @staticmethod
   def _sm_item(sm, key):
@@ -107,112 +165,14 @@ class LongitudinalPlannerSP:
     except Exception:
       return None
 
-  @staticmethod
-  def _select_stop_hold_lead(radar_state):
-    candidates = []
-    for lead in (getattr(radar_state, 'leadOne', None), getattr(radar_state, 'leadTwo', None)):
-      if lead is None or not getattr(lead, 'status', False):
-        continue
-      try:
-        d_rel = float(getattr(lead, 'dRel', 0.0))
-        v = float(getattr(lead, 'vLead', 0.0))
-        v_rel = float(getattr(lead, 'vRel', 0.0))
-      except (TypeError, ValueError):
-        continue
-      if not (math.isfinite(d_rel) and math.isfinite(v) and math.isfinite(v_rel)) or d_rel <= 0.0:
-        continue
-      candidates.append((d_rel, v, v_rel, lead))
-    if not candidates:
-      return None
-    # Prefer closest stopped/crawling lead; otherwise closest lead
-    stopped = [c for c in candidates if c[1] <= 0.5]
-    if stopped:
-      return min(stopped, key=lambda c: c[0])[3]
-    return min(candidates, key=lambda c: c[0])[3]
-
-  @classmethod
-  def _routine_lead_launch_breakout(cls, lead_v: float, lead_v_rel: float) -> bool:
-    return bool(
-      float(lead_v) >= cls._STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V or
-      float(lead_v_rel) >= cls._STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL
-    )
-
   def _reset_lead_stop_hold(self) -> None:
-    self._lead_stop_hold_active = False
-    self._lead_stop_hold_gap_increasing_s = 0.0
-    self._lead_stop_hold_missing_s = 0.0
-    self._lead_stop_hold_lead_id = None
-    self._lead_stop_hold_gap_prev_d_rel = None
-    self._lead_stop_hold_gap_baseline_d_rel = None
-    self._stop_hold_release_slew_a_target = None
-    self._stop_hold_release_prep_a_target = None
-    self._stop_hold_release_prep_raw_prev = None
+    self.custom_long_finalizer.reset_lead_stop_hold()
 
-  def _update_lead_stop_hold(self, sm: messaging.SubMaster, v_ego: float, has_lead: bool, selected_lead,
-                             lead_d_rel: float, lead_v: float, lead_v_rel: float, gas_pressed: bool) -> bool:
+  def _apply_stop_hold_release_slew(self, sm: messaging.SubMaster, a_target: float, release_mpc_stop: bool,
+                                    mpc_stop: bool, raw_model_should_stop: bool, should_stop: bool) -> float:
     dt = float(getattr(self, 'dt', DT_MDL))
-    lead_id = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
-
-    stopping_distance = float(getattr(self.CP, 'stoppingDistance', 6.0) or 6.0)
-    arm_distance = max(stopping_distance + 2.0, 10.0)
-    release_distance = stopping_distance + 1.0
-    v_ego_stopping = float(getattr(self.CP, 'vEgoStopping', 0.0))
-
-    # Arm check (only when not already latched).
-    stop_hold_set = bool(
-      not self._lead_stop_hold_active and
-      has_lead and
-      v_ego < v_ego_stopping + 0.2 and
-      lead_d_rel <= arm_distance and
-      lead_v <= 0.3 and
-      not gas_pressed,
-    )
-    if stop_hold_set:
-      self._lead_stop_hold_active = True
-      self._lead_stop_hold_gap_increasing_s = 0.0
-      self._lead_stop_hold_missing_s = 0.0
-      self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
-      self._lead_stop_hold_gap_baseline_d_rel = min(float(lead_d_rel), self._STOP_HOLD_MAX_BASELINE_D_REL)
-      self._lead_stop_hold_lead_id = lead_id
-
-    if self._lead_stop_hold_active:
-      if gas_pressed:
-        self._reset_lead_stop_hold()
-      elif lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id != self._lead_stop_hold_lead_id:
-        # A different lead appeared while latched.
-        if lead_v <= 0.3 and lead_d_rel <= arm_distance:
-          # Valid stopped hold candidate: transfer latch immediately (no one-cycle gap).
-          self._lead_stop_hold_lead_id = lead_id
-          self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
-          self._lead_stop_hold_gap_baseline_d_rel = min(float(lead_d_rel), self._STOP_HOLD_MAX_BASELINE_D_REL)
-          self._lead_stop_hold_missing_s = 0.0
-          self._lead_stop_hold_gap_increasing_s = 0.0
-        else:
-          # Non-stopped transient: treat as dropout within the 0.5 s grace window.
-          self._lead_stop_hold_missing_s += dt
-          if not (self._lead_stop_hold_missing_s < 0.5 and v_ego < v_ego_stopping + 0.2 and not gas_pressed):
-            self._reset_lead_stop_hold()
-      elif not has_lead:
-        self._lead_stop_hold_missing_s += dt
-        if not (self._lead_stop_hold_missing_s < 0.5 and v_ego < v_ego_stopping + 0.2 and not gas_pressed):
-          self._reset_lead_stop_hold()
-      else:
-        self._lead_stop_hold_missing_s = 0.0
-        gap_increasing = self._lead_stop_hold_gap_prev_d_rel is not None and float(lead_d_rel) > float(self._lead_stop_hold_gap_prev_d_rel)
-        if gap_increasing:
-          self._lead_stop_hold_gap_increasing_s += dt
-        else:
-          self._lead_stop_hold_gap_increasing_s = 0.0
-        self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
-        if self._lead_stop_hold_gap_baseline_d_rel is None:
-          self._lead_stop_hold_gap_baseline_d_rel = float(lead_d_rel)
-    else:
-      self._lead_stop_hold_gap_increasing_s = 0.0
-      self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel) if has_lead else None
-      self._lead_stop_hold_gap_baseline_d_rel = min(float(lead_d_rel), self._STOP_HOLD_MAX_BASELINE_D_REL) if has_lead else None
-      self._lead_stop_hold_missing_s = 0.0
-
-    return self._lead_stop_hold_active
+    return self.custom_long_finalizer._apply_stop_hold_release_slew(
+      sm, dt, a_target, release_mpc_stop, mpc_stop, raw_model_should_stop, should_stop)
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -267,214 +227,8 @@ class LongitudinalPlannerSP:
 
   def custom_longitudinal_should_stop(self, mpc_should_stop: bool, raw_model_should_stop: bool,
                                       model_stale: bool = False) -> bool | None:
-    if not self.custom_long.enabled or self.custom_long_output is None:
-      return None
-    if self.custom_long.mode is LongitudinalMode.ACC:
-      return bool(mpc_should_stop)
-    if self.custom_long.mode is LongitudinalMode.E2E:
-      return bool(mpc_should_stop or (raw_model_should_stop and not model_stale))
-    return bool(mpc_should_stop or self.custom_long_output.should_stop)
-
-  def _scc_custom_stop_cap(self, base_a_target: float) -> float:
-    if self.custom_long.mode is not LongitudinalMode.SCC or not self.custom_long.enabled or self.custom_long_output is None:
-      return float(base_a_target)
-    if not bool(getattr(self.custom_long_output, "enabled", False)):
-      return float(base_a_target)
-    if str(getattr(self.custom_long_output, "selected_intent", "") or "") != "stop_approach":
-      return float(base_a_target)
-    raw_custom_a = getattr(self.custom_long_output, "a_target", None)
-    if raw_custom_a is None:
-      return float(base_a_target)
-    try:
-      custom_a = float(raw_custom_a)
-    except (TypeError, ValueError):
-      return float(base_a_target)
-    if not math.isfinite(custom_a):
-      return float(base_a_target)
-    return float(min(float(base_a_target), custom_a))
-
-  def _scc_curve_confidence_final_cap(self, base_a_target: float, sm: messaging.SubMaster,
-                                      release_mpc_stop: bool = False) -> float:
-    if release_mpc_stop:
-      return float(base_a_target)
-    if self.custom_long.mode is not LongitudinalMode.SCC or not self.custom_long.enabled or self.custom_long_output is None:
-      return float(base_a_target)
-    if not bool(getattr(self.custom_long_output, "enabled", False)):
-      return float(base_a_target)
-    if str(getattr(self.custom_long, "curve_speed_confidence_mode", "off") or "off") != "apply_conservative":
-      return float(base_a_target)
-    debug = dict(getattr(self.custom_long_output, "debug", {}) or {})
-    prefix = "curve_speed_confidence_"
-    if not bool(debug.get(prefix + "eligible", False)) or not bool(debug.get(prefix + "apply_supported", False)):
-      return float(base_a_target)
-    confidence = self._finite_float_or_none(debug.get(prefix + "confidence", 0.0))
-    if confidence is None or confidence < self._CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE:
-      return float(base_a_target)
-    proposed_cap = self._finite_float_or_none(debug.get(prefix + "proposed_cap", 0.0))
-    if proposed_cap is None or proposed_cap >= float(base_a_target):
-      return float(base_a_target)
-    car_state = self._sm_item(sm, 'carState')
-    v_ego = self._safe_float(getattr(car_state, 'vEgo', 0.0) if car_state is not None else 0.0)
-    if v_ego < self._CURVE_CONFIDENCE_APPLY_MIN_V_EGO:
-      return float(base_a_target)
-    conservative_cap = max(proposed_cap, self._CURVE_CONFIDENCE_APPLY_MIN_CAP)
-    return float(min(float(base_a_target), conservative_cap))
-
-  def _apply_stop_hold_release_slew(self, sm: messaging.SubMaster, a_target: float, release_mpc_stop: bool,
-                                    mpc_stop: bool, raw_model_should_stop: bool, should_stop: bool) -> float:
-    """Narrow upward-only slew limiter for stop-hold release pullaways.
-
-    Seeds on the first positive release tick with the actual final output returned, then
-    caps only upward increases to reduce launch jerk. Downward/braking changes pass through
-    unmodified so hazard responses are not delayed. Cleared on any stop/override/hazard.
-    """
-    dt = float(getattr(self, 'dt', DT_MDL))
-    car_state = self._sm_item(sm, 'carState')
-    controls_state = self._sm_item(sm, 'controlsState')
-    brake_pressed = bool(getattr(car_state, 'brakePressed', False)) if car_state is not None else False
-    gas_pressed = bool(getattr(car_state, 'gasPressed', False)) if car_state is not None else False
-    force_decel = bool(getattr(controls_state, 'forceDecel', False)) if controls_state is not None else False
-
-    clear = (
-      not math.isfinite(a_target) or
-      not math.isfinite(dt) or dt <= 0.0 or
-      (self._stop_hold_release_slew_a_target is not None and not math.isfinite(self._stop_hold_release_slew_a_target)) or
-      bool(should_stop) or
-      bool(mpc_stop) or
-      bool(raw_model_should_stop) or
-      brake_pressed or gas_pressed or force_decel or
-      a_target <= 0.0
-    )
-    if clear:
-      self._stop_hold_release_slew_a_target = None
-      return float(a_target)
-
-    # First positive release tick seeds the slew state with the actual final output returned.
-    if release_mpc_stop and self._stop_hold_release_slew_a_target is None:
-      self._stop_hold_release_slew_a_target = float(a_target)
-      return float(a_target)
-
-    # Active slew: cap only upward increases; downward/braking changes pass through.
-    if self._stop_hold_release_slew_a_target is not None:
-      max_step = self._STOP_HOLD_RELEASE_MAX_UP_JERK * dt
-      last_slew = self._stop_hold_release_slew_a_target
-      if a_target > last_slew + max_step:
-        a_target = last_slew + max_step
-        self._stop_hold_release_slew_a_target = float(a_target)
-      elif a_target > last_slew:
-        self._stop_hold_release_slew_a_target = None
-      else:
-        self._stop_hold_release_slew_a_target = float(a_target)
-
-    return float(a_target)
-
-  def _stop_hold_release_prep_applies(self, sm: messaging.SubMaster, selected_lead,
-                                      lead_d_rel: float, lead_v: float, lead_v_rel: float,
-                                      mpc_a_target: float, raw_model_a_target: float,
-                                      raw_model_should_stop: bool) -> bool:
-    """Return True when early release evidence justifies relaxing the stop-hold accel."""
-    if not self.custom_long.enabled or self.custom_long_output is None:
-      return False
-    if not bool(getattr(self.custom_long_output, "standstill_release_allowed", False)):
-      return False
-    if str(getattr(self.custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch"):
-      return False
-    if bool(getattr(self.custom_long_output, "should_stop", False)):
-      return False
-    if raw_model_should_stop:
-      return False
-
-    car_state = self._sm_item(sm, 'carState')
-    controls_state = self._sm_item(sm, 'controlsState')
-    if car_state is None or controls_state is None:
-      return False
-    if bool(getattr(car_state, "brakePressed", False)) or bool(getattr(car_state, "gasPressed", False)):
-      return False
-    if bool(getattr(controls_state, "forceDecel", False)):
-      return False
-
-    v_ego = float(getattr(car_state, 'vEgo', 0.0))
-    v_ego_stopping = float(getattr(self.CP, 'vEgoStopping', 0.5))
-    if v_ego >= v_ego_stopping + 0.2:
-      return False
-
-    if selected_lead is None:
-      return False
-    lead_id = getattr(selected_lead, 'radarTrackId', None)
-    if lead_id is None or self._lead_stop_hold_lead_id is None or lead_id != self._lead_stop_hold_lead_id:
-      return False
-    for value in (lead_d_rel, lead_v, lead_v_rel, mpc_a_target, raw_model_a_target):
-      if not math.isfinite(float(value)):
-        return False
-
-    if float(mpc_a_target) < self._STOP_HOLD_RELEASE_PREP_MIN_MPC_A_TARGET:
-      return False
-    if float(lead_v) < self._STOP_HOLD_RELEASE_PREP_MIN_LEAD_V or float(lead_v_rel) < self._STOP_HOLD_RELEASE_PREP_MIN_LEAD_V_REL:
-      return False
-    if self._lead_stop_hold_gap_increasing_s < self._STOP_HOLD_RELEASE_PREP_MIN_GAP_INCREASING_S:
-      return False
-
-    stopping_distance = float(getattr(self.CP, 'stoppingDistance', 6.0) or 6.0)
-    if float(lead_d_rel) <= stopping_distance + self._STOP_HOLD_RELEASE_PREP_MIN_D_REL_MARGIN:
-      return False
-
-    return True
-
-  def _apply_stop_hold_release_prep(self, sm: messaging.SubMaster, raw_hold: float, selected_lead,
-                                    lead_d_rel: float, lead_v: float, lead_v_rel: float,
-                                    mpc_a_target: float, raw_model_a_target: float,
-                                    raw_model_should_stop: bool) -> float:
-    """Relax a harsh stop-hold accel toward a mild negative target before the first positive release.
-
-    Applied only while the lead stop-hold latch is active. Upward changes are limited by a
-    jerk cap; downward/braking changes pass through immediately so hazard responses are not
-    delayed.
-    """
-    dt = float(getattr(self, 'dt', DT_MDL))
-    state = self._stop_hold_release_prep_a_target
-    raw_prev = self._stop_hold_release_prep_raw_prev
-
-    clear = (
-      not math.isfinite(raw_hold) or
-      not math.isfinite(dt) or dt <= 0.0 or
-      (state is not None and not math.isfinite(state)) or
-      (raw_prev is not None and not math.isfinite(raw_prev)) or
-      not self._stop_hold_release_prep_applies(
-        sm, selected_lead, lead_d_rel, lead_v, lead_v_rel,
-        mpc_a_target, raw_model_a_target, raw_model_should_stop,
-      )
-    )
-    if clear:
-      self._stop_hold_release_prep_a_target = None
-      self._stop_hold_release_prep_raw_prev = None
-      return float(raw_hold)
-
-    prev_output = float(state) if state is not None else float(raw_hold)
-    prev_raw = float(raw_prev) if raw_prev is not None else float(raw_hold)
-
-    # Downward / braking change: raw hold became more negative than last cycle.
-    if raw_hold < prev_raw:
-      self._stop_hold_release_prep_a_target = float(raw_hold)
-      self._stop_hold_release_prep_raw_prev = float(raw_hold)
-      return float(raw_hold)
-
-    desired = max(float(raw_hold), self._STOP_HOLD_RELEASE_PREP_A_TARGET)
-    max_step = self._STOP_HOLD_RELEASE_PREP_MAX_UP_JERK * dt
-    if desired > prev_output + max_step:
-      limited = prev_output + max_step
-    else:
-      limited = desired
-    limited = max(limited, prev_output)  # never drift downward
-    self._stop_hold_release_prep_a_target = float(limited)
-    self._stop_hold_release_prep_raw_prev = float(raw_hold)
-    return float(limited)
-
-  def _standstill_release_gate_enabled(self) -> bool:
-    return bool(
-      self.custom_long.enabled and
-      self.custom_long.mode is LongitudinalMode.SCC and
-      str(getattr(self.custom_long, "standstill_release_confidence_mode", "off") or "off") == "gate"
-    )
+    return self.custom_long_finalizer.custom_longitudinal_should_stop(
+      self.custom_long, self.custom_long_output, mpc_should_stop, raw_model_should_stop, model_stale)
 
   def custom_longitudinal_targets(self, targets: dict) -> dict:
     if not self.custom_long.enabled:
@@ -490,282 +244,21 @@ class LongitudinalPlannerSP:
     filtered[LongitudinalPlanSource.cruise] = targets[LongitudinalPlanSource.cruise]
     return filtered
 
-  def _standstill_release_clears_mpc_stop(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
-                                          raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[bool, float]:
-    if not self._standstill_release_request_valid(sm, self.custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop):
-      return False, float(mpc_a_target)
-    if not mpc_should_stop:
-      return False, float(mpc_a_target)
-    release_a = min(
-      max(float(mpc_a_target), self._STOP_HOLD_RELEASE_A_MIN, float(getattr(self.custom_long_output, "standstill_release_a_target", 0.0))),
-      self._STOP_HOLD_RELEASE_A_MAX,
-    )
-    return True, release_a
-
-  def _standstill_release_request_valid(self, sm: messaging.SubMaster, custom_long_output,
-                                        mpc_a_target: float, raw_model_a_target: float, raw_model_should_stop: bool,
-                                        min_mpc_a_target: float = -0.03) -> bool:
-    if not self.custom_long.enabled or custom_long_output is None or not bool(getattr(custom_long_output, "standstill_release_allowed", False)):
-      self._last_release_block_reason = "no_release_permission"
-      return False
-    if str(getattr(custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch"):
-      self._last_release_block_reason = "invalid_release_source"
-      return False
-    if bool(getattr(custom_long_output, "should_stop", False)):
-      self._last_release_block_reason = "custom_should_stop"
-      return False
-    if raw_model_should_stop:
-      self._last_release_block_reason = "raw_model_stop"
-      return False
-    for value in (mpc_a_target, raw_model_a_target):
-      if not math.isfinite(float(value)):
-        self._last_release_block_reason = "non_finite_target"
-        return False
-    if self.custom_long.mode is LongitudinalMode.E2E and float(raw_model_a_target) < 0.15:
-      self._last_release_block_reason = "e2e_model_accel_too_low"
-      return False
-    cs = sm["carState"]
-    controls_state = sm["controlsState"]
-    if bool(getattr(cs, "brakePressed", False)):
-      self._last_release_block_reason = "driver_brake"
-      return False
-    if bool(getattr(cs, "gasPressed", False)):
-      self._last_release_block_reason = "driver_gas"
-      return False
-    if bool(getattr(controls_state, "forceDecel", False)):
-      self._last_release_block_reason = "force_decel"
-      return False
-    if float(mpc_a_target) < min_mpc_a_target:
-      self._last_release_block_reason = "mpc_brake_veto"
-      return False
-    self._last_release_block_reason = ""
-    return True
-
-  def _standstill_release_planner_gate_valid(self, sm: messaging.SubMaster, custom_long_output,
-                                            mpc_a_target: float, raw_model_a_target: float, raw_model_should_stop: bool,
-                                            selected_lead, lead_d_rel: float, lead_v: float,
-                                            lead_v_rel: float, same_id: bool) -> bool:
-    if not self._standstill_release_gate_enabled() or not same_id:
-      return False
-    if custom_long_output is None or not bool(getattr(custom_long_output, "enabled", False)):
-      self._last_release_block_reason = "custom_output_unavailable"
-      return False
-    if bool(getattr(custom_long_output, "should_stop", False)):
-      self._last_release_block_reason = "custom_should_stop"
-      return False
-    cs = sm["carState"]
-    controls_state = sm["controlsState"]
-    if bool(getattr(cs, "brakePressed", False)):
-      self._last_release_block_reason = "driver_brake"
-      return False
-    if bool(getattr(cs, "gasPressed", False)):
-      self._last_release_block_reason = "driver_gas"
-      return False
-    if bool(getattr(controls_state, "forceDecel", False)):
-      self._last_release_block_reason = "force_decel"
-      return False
-    if raw_model_should_stop:
-      self._last_release_block_reason = "raw_model_stop"
-      return False
-    for value in (lead_d_rel, lead_v, lead_v_rel, mpc_a_target, raw_model_a_target):
-      if not math.isfinite(float(value)):
-        self._last_release_block_reason = "non_finite_values"
-        return False
-    if float(lead_v) < 0.30 or float(lead_v_rel) < 0.25:
-      self._last_release_block_reason = "lead_not_moving"
-      return False
-    if float(mpc_a_target) < 0.05 or float(raw_model_a_target) < 0.0:
-      self._last_release_block_reason = "planner_accel_too_low"
-      return False
-    if self._lead_stop_hold_gap_baseline_d_rel is None:
-      self._last_release_block_reason = "no_baseline_gap"
-      return False
-    if float(lead_d_rel) - float(self._lead_stop_hold_gap_baseline_d_rel) < 0.5:
-      self._last_release_block_reason = "baseline_opening"
-      return False
-    self._last_release_block_reason = ""
-    return True
-
-  def _stop_hold_release_accel_for_gap(self, requested_a: float, lead_d_rel: float,
-                                       lead_v: float, lead_v_rel: float, same_id: bool) -> float:
-    release_a = min(max(float(requested_a), self._STOP_HOLD_RELEASE_A_MIN), self._STOP_HOLD_RELEASE_A_MAX)
-    if self._routine_lead_launch_breakout(float(lead_v), float(lead_v_rel)):
-      return float(release_a)
-    if not same_id or self._lead_stop_hold_gap_baseline_d_rel is None:
-      return float(release_a)
-
-    # Crawl mode maintains the original stopped gap with a deadband instead of chasing each
-    # small lead pulse. Only the gap beyond the deadband can ask for positive crawl accel.
-    gap_error = float(lead_d_rel) - float(self._lead_stop_hold_gap_baseline_d_rel)
-    if gap_error <= self._STOP_HOLD_CRAWL_DEADBAND_M:
-      return 0.0
-    gap_limited_a = (gap_error - self._STOP_HOLD_CRAWL_DEADBAND_M) / self._STOP_HOLD_CRAWL_GAP_TAU
-    if gap_limited_a < self._STOP_HOLD_CRAWL_RELEASE_A_MIN:
-      return 0.0
-    return float(min(release_a, self._STOP_HOLD_CRAWL_RELEASE_A_MAX, gap_limited_a))
-
-  def _lead_stop_hold_release_accepts(self, sm: messaging.SubMaster, custom_long_output, mpc_a_target: float, raw_model_a_target: float,
-                                      raw_model_should_stop: bool, selected_lead, lead_d_rel: float, lead_v: float,
-                                      lead_v_rel: float) -> tuple[bool, float]:
-    if selected_lead is None:
-      self._last_release_block_reason = "no_lead"
-      return False, float(lead_d_rel)
-    release_source = str(getattr(custom_long_output, "standstill_release_source", ""))
-    lead_id = getattr(selected_lead, 'radarTrackId', None)
-    same_id = lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id == self._lead_stop_hold_lead_id
-    gate_fallback_candidate = bool(self._standstill_release_gate_enabled() and same_id and release_source not in ("lead_pullaway", "lead_standstill_launch"))
-    if release_source not in ("lead_pullaway", "lead_standstill_launch"):
-      if not gate_fallback_candidate:
-        self._last_release_block_reason = "invalid_release_source"
-        return False, float(lead_d_rel)
-    if lead_id is not None and self._lead_stop_hold_lead_id is not None and lead_id != self._lead_stop_hold_lead_id:
-      self._last_release_block_reason = "different_lead_id"
-      return False, float(lead_d_rel)
-    for value in (lead_d_rel, lead_v, lead_v_rel, mpc_a_target, raw_model_a_target):
-      if not math.isfinite(float(value)):
-        self._last_release_block_reason = "non_finite_values"
-        return False, float(lead_d_rel)
-    stopping_distance = float(getattr(self.CP, 'stoppingDistance', 6.0) or 6.0)
-    if float(lead_v) < 0.30 or float(lead_v_rel) < 0.15:
-      self._last_release_block_reason = "lead_not_moving"
-      return False, float(lead_d_rel)
-    min_d_rel = stopping_distance + self._STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN if same_id else stopping_distance + 0.1
-    if same_id and self._lead_stop_hold_gap_baseline_d_rel is not None:
-      baseline_min_d_rel = float(self._lead_stop_hold_gap_baseline_d_rel) + self._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
-      min_d_rel = max(self._STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR, min(min_d_rel, baseline_min_d_rel))
-    if float(lead_d_rel) <= min_d_rel:
-      self._last_release_block_reason = "distance_gate"
-      return False, float(lead_d_rel)
-    min_gap_increasing_s = self._STOP_HOLD_SAME_ID_MIN_PULLAWAY_S if same_id else 0.15
-    if same_id and self._routine_lead_launch_breakout(float(lead_v), float(lead_v_rel)):
-      min_gap_increasing_s = self._STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S
-    if gate_fallback_candidate:
-      min_gap_increasing_s = self._STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S
-    if self._lead_stop_hold_gap_increasing_s < min_gap_increasing_s:
-      self._last_release_block_reason = "gap_increasing_time"
-      return False, float(lead_d_rel)
-    if same_id and self._lead_stop_hold_gap_baseline_d_rel is not None:
-      if float(lead_d_rel) - float(self._lead_stop_hold_gap_baseline_d_rel) < 0.3:
-        self._last_release_block_reason = "baseline_opening"
-        return False, float(lead_d_rel)
-    if lead_id is None or self._lead_stop_hold_lead_id is None:
-      if self._lead_stop_hold_gap_increasing_s < self._STOP_HOLD_NEW_ID_GAP_INCREASING_S:
-        self._last_release_block_reason = "new_id_gap_increasing_time"
-        return False, float(lead_d_rel)
-    if not self._standstill_release_request_valid(
-      sm, custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop,
-      self._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET if same_id else -0.03,
-    ):
-      if not self._standstill_release_planner_gate_valid(
-        sm, custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop,
-        selected_lead, lead_d_rel, lead_v, lead_v_rel, same_id,
-      ):
-        # block_reason already set by one of the release validators
-        return False, float(lead_d_rel)
-      self._last_release_block_reason = ""
-      release_a = self._stop_hold_release_accel_for_gap(float(mpc_a_target), lead_d_rel, lead_v, lead_v_rel, same_id)
-      if release_a <= 0.0:
-        self._last_release_block_reason = "crawl_deadband"
-        return False, float(lead_d_rel)
-      return True, release_a
-    self._last_release_block_reason = ""
-    requested_release_a = float(getattr(custom_long_output, "standstill_release_a_target", 0.0)) if custom_long_output is not None else 0.0
-    release_a = self._stop_hold_release_accel_for_gap(requested_release_a, lead_d_rel, lead_v, lead_v_rel, same_id)
-    if release_a <= 0.0:
-      self._last_release_block_reason = "crawl_deadband"
-      return False, float(lead_d_rel)
-    return True, release_a
-
   def final_longitudinal_output(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
                                 raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[float, bool, bool]:
-    car_state = self._sm_item(sm, 'carState')
-    radar_state = self._sm_item(sm, 'radarState')
-    selected_lead = self._select_stop_hold_lead(radar_state) if radar_state is not None else None
-    has_lead = selected_lead is not None
-    lead_d_rel = float(getattr(selected_lead, 'dRel', 0.0) or 0.0) if selected_lead is not None else 0.0
-    lead_v = float(getattr(selected_lead, 'vLead', 0.0) or 0.0) if selected_lead is not None else 0.0
-    lead_v_rel = float(getattr(selected_lead, 'vRel', 0.0) or 0.0) if selected_lead is not None else 0.0
-    gas_pressed = bool(getattr(car_state, 'gasPressed', False)) if car_state is not None else False
-    v_ego = float(getattr(car_state, 'vEgo', 0.0) or 0.0) if car_state is not None else 0.0
-    lead_stop_hold_active = self._update_lead_stop_hold(sm, v_ego, has_lead, selected_lead, lead_d_rel, lead_v, lead_v_rel, gas_pressed)
-    release_mpc_stop = False
-    release_a_target = float(mpc_a_target)
-    mpc_stop = bool(mpc_should_stop)
-
-    if lead_stop_hold_active:
-      current_custom_long_output = self.custom_long_output
-      latch_release_ok, latch_release_a = self._lead_stop_hold_release_accepts(
-        sm, current_custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop, selected_lead, lead_d_rel, lead_v, lead_v_rel)
-      if latch_release_ok:
-        self._reset_lead_stop_hold()
-        lead_stop_hold_active = False
-        mpc_stop = False
-        release_mpc_stop = True
-        release_a_target = latch_release_a
-      else:
-        mpc_stop = True
-        release_mpc_stop = False
-        release_a_target = float(mpc_a_target)
-    else:
-      self._stop_hold_release_prep_a_target = None
-      self._stop_hold_release_prep_raw_prev = None
-      release_mpc_stop, release_a_target = self._standstill_release_clears_mpc_stop(
-        sm, mpc_a_target, mpc_should_stop, raw_model_a_target, raw_model_should_stop)
-      mpc_stop = bool(mpc_should_stop and not release_mpc_stop)
     model_stale = _message_age_s(sm, 'modelV2') > MODEL_STALE_AGE_S
-    custom_should_stop = self.custom_longitudinal_should_stop(mpc_stop, raw_model_should_stop, model_stale)
     is_e2e = self.is_e2e(sm)
-    should_stop = bool(custom_should_stop if custom_should_stop is not None else (mpc_stop or (raw_model_should_stop and is_e2e and not model_stale)))
-    if lead_stop_hold_active:
-      self._stop_hold_release_slew_a_target = None
-      stop_accel = getattr(self.CP, 'stopAccel', None)
-      stop_accel = -0.5 if stop_accel is None else float(stop_accel)
-      hold_a_target = float(mpc_a_target) if math.isfinite(float(mpc_a_target)) else stop_accel
-      if is_e2e and not model_stale:
-        raw_a_target = float(raw_model_a_target) if math.isfinite(float(raw_model_a_target)) else stop_accel
-        raw_hold = min(raw_a_target, hold_a_target, stop_accel)
-      else:
-        raw_hold = min(hold_a_target, stop_accel)
-      e2e_source = bool(is_e2e and not model_stale and raw_hold < hold_a_target)
-
-      # Standstill stop-hold command normalization: clamp harsh hold commands up to a
-      # local mild hold target when already stopped, avoiding an artificial jump to the
-      # first positive release. Does not delay braking or affect rolling stops.
-      controls_state_sp = self._sm_item(sm, 'controlsState')
-      brake_pressed_sp = bool(getattr(car_state, 'brakePressed', False)) if car_state is not None else False
-      force_decel_sp = bool(getattr(controls_state_sp, 'forceDecel', False)) if controls_state_sp is not None else False
-      lead_id_sp = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
-      same_id_sp = lead_id_sp is not None and self._lead_stop_hold_lead_id is not None and lead_id_sp == self._lead_stop_hold_lead_id
-      standstill_sp = bool(getattr(car_state, 'standstill', False)) if car_state is not None else False
-      if (
-        (standstill_sp or v_ego <= self._STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO) and
-        selected_lead is not None and
-        same_id_sp and
-        math.isfinite(raw_hold) and
-        not brake_pressed_sp and
-        not gas_pressed and
-        not force_decel_sp and
-        not raw_model_should_stop
-      ):
-        raw_hold = max(float(raw_hold), self._STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET)
-
-      a_target = self._apply_stop_hold_release_prep(
-        sm, raw_hold, selected_lead, lead_d_rel, lead_v, lead_v_rel,
-        mpc_a_target, raw_model_a_target, raw_model_should_stop,
-      )
-      if self.custom_long_output is not None:
-        self._custom_long_output_telemetry = replace(self.custom_long_output, should_stop=True, selected_intent="lead_stop_hold", reason="stopped_lead_latch")
-      return float(a_target), True, e2e_source
-    if is_e2e and not model_stale:
-      a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
-      e2e_source = bool(a_target < mpc_a_target)
-      a_target = self._apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, raw_model_should_stop, should_stop)
-      return float(a_target), should_stop, e2e_source
-    a_target = float(release_a_target if release_mpc_stop else mpc_a_target)
-    a_target = self._scc_custom_stop_cap(a_target)
-    a_target = self._scc_curve_confidence_final_cap(a_target, sm, release_mpc_stop=release_mpc_stop)
-    a_target = self._apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, raw_model_should_stop, should_stop)
-    return a_target, bool(should_stop), False
+    dt = float(getattr(self, 'dt', DT_MDL))
+    self.custom_long_finalizer.CP = self.CP
+    result = self.custom_long_finalizer.finalize(
+      sm, self.custom_long, self.custom_long_output, is_e2e, model_stale, dt,
+      mpc_a_target, mpc_should_stop, raw_model_a_target, raw_model_should_stop,
+      apply_stop_hold_release_slew=self._apply_stop_hold_release_slew,
+      reset_lead_stop_hold=self._reset_lead_stop_hold,
+    )
+    self._custom_long_output_telemetry = result.custom_long_output_telemetry
+    self._last_release_block_reason = result.last_release_block_reason
+    return result.a_target, result.should_stop, result.e2e_source
 
   def update(self, sm: messaging.SubMaster) -> None:
     self.custom_long.refresh_params(mode_only=True)  # enabled/mode every tick; tuning on slow cadence via update_targets
