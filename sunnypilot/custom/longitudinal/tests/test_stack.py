@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.stack import (
   CustomLongitudinalStack,
@@ -515,3 +516,170 @@ def test_lead_path_clearance_fault_is_contained_inside_stack_update():
   assert bad.should_stop == raw.should_stop
   assert bad.standstill_release_allowed == raw.standstill_release_allowed
   assert bad.debug["lead_path_clearance_fault"] is True
+
+
+def test_acc_polluted_evidence_invariance():
+  """ACC must be identical whether or not mode-excluded evidence is injected."""
+  common = dict(v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, mode=LongitudinalMode.ACC, long_active=False)
+  clean = CustomLongitudinalStack().update(base(**common), DT)
+  polluted = CustomLongitudinalStack().update(base(
+    **common,
+    model_should_stop=True, model_stop_distance=10.0, model_desired_accel=-2.0,
+    model_stale=True, stop_threat=True,
+    speed_limit_active=True, speed_limit_v_target=10.0, speed_limit_a_target=-1.0,
+    curve_active=True, curve_a_target=-0.8, curve_source=EvidenceClass.CURVE_VISION,
+    sources=SourceToggles(scc_curve_vision_enabled=True, scc_curve_map_enabled=True),
+  ), DT)
+
+  assert polluted.a_target == pytest.approx(clean.a_target)
+  assert polluted.should_stop == clean.should_stop
+  assert polluted.decision.reason == clean.decision.reason
+  assert polluted.decision.selected_intent == clean.decision.selected_intent
+  assert polluted.standstill_release_allowed == clean.standstill_release_allowed
+
+
+def test_acc_smoothing_not_contaminated_by_excluded_model_stop():
+  """Raw model-stop fields are invisible to ACC smoothing and must not reset it."""
+  clean = CustomLongitudinalStack()
+  polluted = CustomLongitudinalStack()
+  prime = dict(v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, mode=LongitudinalMode.ACC, long_active=True)
+  clean.update(base(**prime), DT)
+  polluted.update(base(**prime), DT)
+
+  step = dict(v_ego=20.0, v_cruise=22.0, seed_a_target=0.15, mode=LongitudinalMode.ACC, long_active=True)
+  clean_r = clean.update(base(**step), DT)
+  polluted_r = polluted.update(base(
+    **step,
+    model_should_stop=True, model_stop_distance=10.0, model_desired_accel=-2.0,
+    model_stale=True, stop_threat=True,
+  ), DT)
+
+  assert polluted_r.a_target == pytest.approx(clean_r.a_target)
+  assert polluted_r.should_stop == clean_r.should_stop
+  assert polluted_r.decision.reason == clean_r.decision.reason
+  assert polluted_r.decision.selected_intent == clean_r.decision.selected_intent
+  assert polluted_r.debug["target_smoothing_reason"] != "model_stop"
+  assert polluted_r.debug["target_smoothing_reason"] == clean_r.debug["target_smoothing_reason"]
+
+
+def test_e2e_ignores_speed_limit_and_curve_model_stop_binds():
+  """E2E admits model stop but must ignore speed-limit/curve evidence."""
+  stop = dict(
+    model_should_stop=True, model_stop_distance=18.0, model_desired_accel=-2.5,
+    stop_threat=True, model_stop_prob=1.0,
+  )
+  extras = dict(
+    speed_limit_active=True, speed_limit_v_target=10.0, speed_limit_a_target=-1.0,
+    curve_active=True, curve_a_target=-1.0, curve_source=EvidenceClass.CURVE_VISION,
+  )
+
+  e2e_clean = CustomLongitudinalStack().update(base(mode=LongitudinalMode.E2E, long_active=False, **stop), DT)
+  e2e_mixed = CustomLongitudinalStack().update(base(mode=LongitudinalMode.E2E, long_active=False, **stop, **extras), DT)
+
+  assert e2e_clean.should_stop is True
+  assert e2e_mixed.should_stop is True
+  assert e2e_mixed.a_target == pytest.approx(e2e_clean.a_target)
+  assert e2e_mixed.decision.reason == e2e_clean.decision.reason
+  assert e2e_mixed.decision.selected_intent == e2e_clean.decision.selected_intent
+
+
+def test_scc_source_gates_speed_limit_and_curve():
+  """SCC admits speed-limit and curve sources only when their toggles are on."""
+  r_scc_speed = CustomLongitudinalStack().update(base(
+    v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, mode=LongitudinalMode.SCC, long_active=False,
+    speed_limit_active=True, speed_limit_v_target=10.0, speed_limit_a_target=-0.3,
+  ), DT)
+  assert r_scc_speed.a_target == pytest.approx(0.0)
+  assert r_scc_speed.decision.reason == "advisory_capped"
+
+  for mode in (LongitudinalMode.ACC, LongitudinalMode.E2E):
+    r = CustomLongitudinalStack().update(base(
+      v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, mode=mode, long_active=False,
+      speed_limit_active=True, speed_limit_v_target=10.0, speed_limit_a_target=-0.3,
+    ), DT)
+    assert r.a_target == pytest.approx(0.4), mode
+    assert r.decision.reason == "cruise"
+
+  # Curve vision toggle
+  r_vision_off = CustomLongitudinalStack().update(base(
+    v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, mode=LongitudinalMode.SCC, long_active=False,
+    curve_active=True, curve_a_target=-1.0, curve_source=EvidenceClass.CURVE_VISION,
+    sources=SourceToggles(scc_curve_vision_enabled=False),
+  ), DT)
+  assert r_vision_off.a_target == pytest.approx(0.4)
+  assert r_vision_off.decision.reason == "cruise"
+
+  r_vision_on = CustomLongitudinalStack().update(base(
+    v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, mode=LongitudinalMode.SCC, long_active=False,
+    curve_active=True, curve_a_target=-1.0, curve_source=EvidenceClass.CURVE_VISION,
+    sources=SourceToggles(scc_curve_vision_enabled=True),
+  ), DT)
+  assert r_vision_on.a_target == pytest.approx(-0.5)
+  assert r_vision_on.decision.reason == "advisory_capped"
+
+  # Curve map toggle
+  r_map_off = CustomLongitudinalStack().update(base(
+    v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, mode=LongitudinalMode.SCC, long_active=False,
+    curve_active=True, curve_a_target=-0.9, curve_source=EvidenceClass.CURVE_MAP,
+    sources=SourceToggles(scc_curve_map_enabled=False),
+  ), DT)
+  assert r_map_off.a_target == pytest.approx(0.4)
+  assert r_map_off.decision.reason == "cruise"
+
+  r_map_on = CustomLongitudinalStack().update(base(
+    v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, mode=LongitudinalMode.SCC, long_active=False,
+    curve_active=True, curve_a_target=-0.9, curve_source=EvidenceClass.CURVE_MAP,
+    sources=SourceToggles(scc_curve_map_enabled=True),
+  ), DT)
+  assert r_map_on.a_target == pytest.approx(-0.5)
+  assert r_map_on.decision.reason == "advisory_capped"
+
+
+def test_scc_curve_confidence_respects_source_gates():
+  vision_confidence = CurveSpeedConfidenceInputs(
+    vision_active=True,
+    vision_a_target=-1.0,
+    vision_max_pred_lat_acc=1.5,
+    vision_pre_entry_active=True,
+  )
+  vision_off = CustomLongitudinalStack().update(base(
+    mode=LongitudinalMode.SCC,
+    curve_speed_confidence_mode="apply_conservative",
+    curve_confidence=vision_confidence,
+    sources=SourceToggles(scc_curve_vision_enabled=False),
+  ), DT)
+  assert vision_off.debug["curve_speed_confidence_eligible"] is False
+  assert vision_off.debug["curve_speed_confidence_block_reason"] == "inactive"
+
+  vision_on = CustomLongitudinalStack().update(base(
+    mode=LongitudinalMode.SCC,
+    curve_speed_confidence_mode="apply_conservative",
+    curve_confidence=vision_confidence,
+    sources=SourceToggles(scc_curve_vision_enabled=True),
+  ), DT)
+  assert vision_on.debug["curve_speed_confidence_eligible"] is True
+  assert vision_on.debug["curve_speed_confidence_proposed_cap"] == pytest.approx(-1.0)
+
+  map_confidence = CurveSpeedConfidenceInputs(
+    map_active=True,
+    map_a_target=-0.8,
+    map_target_lat=37.0,
+    map_target_lon=-122.0,
+  )
+  map_off = CustomLongitudinalStack().update(base(
+    mode=LongitudinalMode.SCC,
+    curve_speed_confidence_mode="apply_conservative",
+    curve_confidence=map_confidence,
+    sources=SourceToggles(scc_curve_map_enabled=False),
+  ), DT)
+  assert map_off.debug["curve_speed_confidence_eligible"] is False
+  assert map_off.debug["curve_speed_confidence_block_reason"] == "inactive"
+
+  map_on = CustomLongitudinalStack().update(base(
+    mode=LongitudinalMode.SCC,
+    curve_speed_confidence_mode="apply_conservative",
+    curve_confidence=map_confidence,
+    sources=SourceToggles(scc_curve_map_enabled=True),
+  ), DT)
+  assert map_on.debug["curve_speed_confidence_eligible"] is True
+  assert map_on.debug["curve_speed_confidence_proposed_cap"] == pytest.approx(-0.8)

@@ -17,7 +17,7 @@ integration-tested with fakes.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from openpilot.sunnypilot.custom.longitudinal.acc_envelope import AccEnvelopeInputs, evaluate_acc_envelope
@@ -28,7 +28,7 @@ from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfide
 from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF, predict_lead_path_clearance
 from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence import predict_standstill_release_confidence
-from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 
@@ -72,6 +72,61 @@ def _raw_lead_kinematics_valid(lead0: Any) -> bool:
     except (TypeError, ValueError):
       return False
   return True
+
+
+def _sanitize_inputs_for_mode(inp: LongitudinalStackInputs) -> LongitudinalStackInputs:
+  """Return a sanitized copy of inputs with mode-excluded evidence neutralized.
+
+  Raw ``inp`` is left untouched for telemetry/shadow/debug paths.
+  """
+  admitted = admitted_evidence(inp.mode, inp.sources)
+  updates: dict[str, Any] = {}
+
+  if EvidenceClass.MODEL_STOP not in admitted:
+    updates.update(
+      model_should_stop=False,
+      model_stop_distance=None,
+      model_desired_accel=0.0,
+      model_stale=False,
+      stop_threat=False,
+      model_stop_prob=1.0,  # neutral; not consulted when MODEL_STOP is excluded
+    )
+
+  if EvidenceClass.SPEED_LIMIT not in admitted:
+    updates.update(
+      speed_limit_active=False,
+      speed_limit_v_target=0.0,
+      speed_limit_a_target=0.0,
+    )
+
+  curve_confidence_updates: dict[str, Any] = {}
+  if EvidenceClass.CURVE_VISION not in admitted:
+    curve_confidence_updates.update(
+      vision_active=False,
+      vision_a_target=0.0,
+      vision_current_lat_acc=0.0,
+      vision_max_pred_lat_acc=0.0,
+      vision_pre_entry_active=False,
+    )
+  if EvidenceClass.CURVE_MAP not in admitted:
+    curve_confidence_updates.update(
+      map_active=False,
+      map_a_target=0.0,
+      map_target_lat=0.0,
+      map_target_lon=0.0,
+    )
+  if curve_confidence_updates:
+    updates["curve_confidence"] = replace(inp.curve_confidence, **curve_confidence_updates)
+
+  if inp.curve_source not in admitted:
+    updates.update(
+      curve_active=False,
+      curve_a_target=0.0,
+    )
+
+  if updates:
+    return replace(inp, **updates)
+  return inp
 
 
 @dataclass(frozen=True)
@@ -148,6 +203,7 @@ class CustomLongitudinalStack:
       self._lead_confidence[1].update(inp.leads[1], dt),
     )
     lead_ctx = self._lead_context.update(inp.leads, confidence_states, inp.v_ego, dt)
+    act_inp = _sanitize_inputs_for_mode(inp)
 
     # Shadow path-relative lead context is computed in an exception-isolated tracker for
     # telemetry/debug only. It must never change actuation or fail the adapter.
@@ -186,7 +242,7 @@ class CustomLongitudinalStack:
     curve_speed_confidence_debug: dict[str, Any] = {}
     try:
       curve_speed_confidence_debug = predict_curve_speed_confidence(
-        inp.curve_speed_confidence_mode, inp.curve_confidence,
+        inp.curve_speed_confidence_mode, act_inp.curve_confidence,
       ).debug_dict()
     except Exception:
       curve_speed_confidence_fault = True
@@ -217,22 +273,22 @@ class CustomLongitudinalStack:
     lead_stable = bool(alignment_state.stable) if alignment_state is not None else False
 
     scene = LongitudinalScene(
-      v_ego=inp.v_ego, a_ego=inp.a_ego, v_cruise=inp.v_cruise, seed_a_target=inp.seed_a_target,
-      accel_coast=inp.accel_coast, personality=inp.personality,
-      has_lead=has_lead, lead_a_target=inp.lead_a_target, lead_should_stop=inp.lead_should_stop,
+      v_ego=act_inp.v_ego, a_ego=act_inp.a_ego, v_cruise=act_inp.v_cruise, seed_a_target=act_inp.seed_a_target,
+      accel_coast=act_inp.accel_coast, personality=act_inp.personality,
+      has_lead=has_lead, lead_a_target=act_inp.lead_a_target, lead_should_stop=act_inp.lead_should_stop,
       lead_gap_excess=lead_gap_excess, lead_progress_allowed=lead_progress_allowed,
       lead_v=lead_v, lead_d_rel=lead_d_rel, lead_v_rel=lead_v_rel, lead_a_k=lead_a_k,
       follow_gap=follow_gap, lead_kinematics_valid=lead_kinematics_valid,
       lead_confidence=lead_confidence, lead_stable=lead_stable,
       lead_shadow_active=lead_shadow_active, alternate_threat_active=alternate_threat_active,
-      model_should_stop=inp.model_should_stop, model_stop_distance=inp.model_stop_distance,
-      model_desired_accel=inp.model_desired_accel, model_stop_prob=inp.model_stop_prob,
-      model_stale=inp.model_stale,
-      stop_threat=inp.stop_threat,
-      speed_limit_active=inp.speed_limit_active, speed_limit_v_target=inp.speed_limit_v_target,
-      speed_limit_a_target=inp.speed_limit_a_target,
-      curve_active=inp.curve_active, curve_a_target=inp.curve_a_target, curve_source=inp.curve_source,
-      force_slow_decel=inp.force_slow_decel, brake_pressed=inp.brake_pressed, gas_pressed=inp.gas_pressed,
+      model_should_stop=act_inp.model_should_stop, model_stop_distance=act_inp.model_stop_distance,
+      model_desired_accel=act_inp.model_desired_accel, model_stop_prob=act_inp.model_stop_prob,
+      model_stale=act_inp.model_stale,
+      stop_threat=act_inp.stop_threat,
+      speed_limit_active=act_inp.speed_limit_active, speed_limit_v_target=act_inp.speed_limit_v_target,
+      speed_limit_a_target=act_inp.speed_limit_a_target,
+      curve_active=act_inp.curve_active, curve_a_target=act_inp.curve_a_target, curve_source=act_inp.curve_source,
+      force_slow_decel=act_inp.force_slow_decel, brake_pressed=act_inp.brake_pressed, gas_pressed=act_inp.gas_pressed,
     )
     candidates = build_candidates(scene)
     decision = decide(candidates, inp.mode, inp.accel_limits, inp.sources)
@@ -253,7 +309,7 @@ class CustomLongitudinalStack:
         lead_v_lead=lead_v,
         lead_a_lead_k=lead_a_k,
         lead_kinematics_valid=lead_kinematics_valid,
-        model_stale=inp.model_stale,
+        model_stale=act_inp.model_stale,
         model_progress_candidate=model_progress_candidate,
         radar_stale=False,
         lead_required=has_lead,
@@ -282,10 +338,10 @@ class CustomLongitudinalStack:
       and decision.reason != "physical_hazard"
       and not decision.should_stop
       and raw_a_target >= 0.15
-      and not inp.force_slow_decel
-      and not inp.brake_pressed
-      and not inp.gas_pressed
-      and not inp.model_should_stop
+      and not act_inp.force_slow_decel
+      and not act_inp.brake_pressed
+      and not act_inp.gas_pressed
+      and not act_inp.model_should_stop
     )
     standstill_release_confidence_fault = False
     standstill_release_confidence_debug: dict[str, Any] = {}
@@ -300,10 +356,10 @@ class CustomLongitudinalStack:
         lead_gap_excess=lead_gap_excess,
         lead_shadow_active=lead_shadow_active,
         alternate_threat_active=alternate_threat_active,
-        force_slow_decel=inp.force_slow_decel,
-        brake_pressed=inp.brake_pressed,
-        gas_pressed=inp.gas_pressed,
-        model_should_stop=inp.model_should_stop,
+        force_slow_decel=act_inp.force_slow_decel,
+        brake_pressed=act_inp.brake_pressed,
+        gas_pressed=act_inp.gas_pressed,
+        model_should_stop=act_inp.model_should_stop,
       ).debug_dict()
     except Exception:
       standstill_release_confidence_fault = True
@@ -313,7 +369,7 @@ class CustomLongitudinalStack:
                                and c.source in decision.admitted_sources
                                and math.isfinite(float(c.a_target))]
     strongest_admitted_hazard_a = min(admitted_hazard_targets) if admitted_hazard_targets else None
-    target_smoothing_debug = self._apply_target_smoothing(raw_a_target, dt, inp, decision, acc_envelope_result,
+    target_smoothing_debug = self._apply_target_smoothing(raw_a_target, dt, act_inp, decision, acc_envelope_result,
                                                           strongest_admitted_hazard_a)
     a_target = float(target_smoothing_debug["target_smoothing_a_target"])
     return LongitudinalStackResult(
