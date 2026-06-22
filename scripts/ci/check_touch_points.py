@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import re
 import subprocess
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 
@@ -53,6 +54,23 @@ def changed_files(base: str, head: str, merge_base: bool) -> list[tuple[str, str
     return result
 
 
+def missing_touch_points(
+    changed_files: Sequence[tuple[str, str, str | None]],
+    touched: set[str],
+    upstream_exists_predicate: Callable[[str], bool],
+    touch_points_path: str,
+) -> list[str]:
+    """Return sorted, deduplicated upstream paths missing from the touch-points list."""
+    missing: list[str] = []
+    for _, path, source in changed_files:
+        if path == touch_points_path:
+            continue
+        for candidate in [path, source] if source else [path]:
+            if candidate and upstream_exists_predicate(candidate) and candidate not in touched:
+                missing.append(candidate)
+    return sorted(set(missing))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="Base git ref")
@@ -63,18 +81,17 @@ def main() -> int:
     args = parser.parse_args()
 
     touched = parse_touch_points(ROOT / args.touch_points)
-    missing: list[str] = []
-
-    for _, path, source in changed_files(args.base, args.head, args.merge_base):
-        if path == args.touch_points:
-            continue
-        for candidate in [path, source] if source else [path]:
-            if candidate and upstream_exists(args.upstream_ref, candidate) and candidate not in touched:
-                missing.append(candidate)
+    files = changed_files(args.base, args.head, args.merge_base)
+    missing = missing_touch_points(
+        files,
+        touched,
+        lambda p: upstream_exists(args.upstream_ref, p),
+        args.touch_points,
+    )
 
     if missing:
         print("Missing upstream touch-points entries for:")
-        for path in sorted(set(missing)):
+        for path in missing:
             print(f"- `{path}`")
         print(f"\nAdd the paths above to `{args.touch_points}` with a short why.")
         return 1
