@@ -26,7 +26,7 @@ from openpilot.sunnypilot.custom.longitudinal.coast_horizon import (
 # steady follow gap ~ a time-gap; speedup guard keeps the post-speedup required decel comfortable
 SPEEDUP_GUARD_MAX_REQUIRED_DECEL = -1.2
 LEAD_MOVING_MIN_SPEED = 0.5
-CUSHION_MIN_CLOSING = 0.3  # m/s; below this the lead isn't meaningfully slower
+CUSHION_MIN_CLOSING = 0.2  # m/s; below this the lead isn't meaningfully slower
 
 
 @dataclass(frozen=True)

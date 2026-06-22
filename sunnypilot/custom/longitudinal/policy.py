@@ -34,6 +34,12 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   CRUISE_LEEWAY_MAX,
   CRUISE_LEEWAY_MIN,
   CRUISE_LEEWAY_RECOVERY,
+  LEAD_CRAWL_ACCEL_MAX,
+  LEAD_CRAWL_BREAKOUT_MIN_OPENING,
+  LEAD_CRAWL_LAUNCH_TAU,
+  LEAD_CRAWL_MAX_D_REL,
+  LEAD_CRAWL_MAX_V_EGO,
+  LEAD_CRAWL_MAX_V_LEAD,
   LEAD_LAUNCH_MAX_V_EGO,
   LEAD_LAUNCH_TAU,
   LEAD_PULLAWAY_MIN_OPENING,
@@ -147,6 +153,22 @@ def no_lead_stop_clear(scene: LongitudinalScene) -> bool:
   d = scene.model_stop_distance
   return bool(not scene.model_should_stop and (d is None or d > NO_LEAD_STOP_CLEAR_DISTANCE)
               and scene.model_desired_accel >= NO_LEAD_STOP_CLEAR_ACCEL_MIN)
+
+
+def _lead_crawl_launch_context(scene: LongitudinalScene) -> bool:
+  return bool(
+    scene.v_ego < LEAD_CRAWL_MAX_V_EGO and
+    scene.lead_v < LEAD_CRAWL_MAX_V_LEAD and
+    scene.lead_d_rel < LEAD_CRAWL_MAX_D_REL and
+    scene.lead_v_rel < LEAD_CRAWL_BREAKOUT_MIN_OPENING
+  )
+
+
+def lead_pullaway_accel(scene: LongitudinalScene, personality: Personality) -> float:
+  delta_v = max(0.0, scene.lead_v - scene.v_ego)
+  if _lead_crawl_launch_context(scene):
+    return min(LEAD_CRAWL_ACCEL_MAX, delta_v / LEAD_CRAWL_LAUNCH_TAU)
+  return min(launch_accel_max(personality), delta_v / LEAD_LAUNCH_TAU)
 
 
 def stop_approach_accel(scene: LongitudinalScene) -> tuple[float, bool]:
@@ -325,7 +347,7 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
     if opening_pullaway:
       # Match the lead's speed over the launch time constant: gentle for a crawling lead, brisk
       # when it genuinely goes, never a fixed lurch. Capped by the personality launch accel.
-      proposed = min(launch_accel_max(personality), max(0.0, scene.lead_v - scene.v_ego) / LEAD_LAUNCH_TAU)
+      proposed = lead_pullaway_accel(scene, personality)
     else:
       proposed = max(0.0, float(scene.seed_a_target))
     pullaway = lead_speedup_guard(scene.v_ego, scene.lead_v, scene.lead_d_rel, scene.follow_gap, proposed)

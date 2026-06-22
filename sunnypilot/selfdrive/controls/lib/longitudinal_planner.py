@@ -30,6 +30,7 @@ LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
 
 class LongitudinalPlannerSP:
+  _STOP_HOLD_MAX_BASELINE_D_REL = 6.0
   _STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN = 0.2
   _STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR = 4.5
   _STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING = 0.5
@@ -37,7 +38,14 @@ class LongitudinalPlannerSP:
   _STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET = -0.10
   _STOP_HOLD_NEW_ID_GAP_INCREASING_S = 0.30
   _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
+  _STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S = 0.15
   _STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S = 0.15
+  _STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V = 5.0
+  _STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL = 1.0
+  _STOP_HOLD_CRAWL_DEADBAND_M = 0.50
+  _STOP_HOLD_CRAWL_GAP_TAU = 2.0
+  _STOP_HOLD_CRAWL_RELEASE_A_MIN = 0.05
+  _STOP_HOLD_CRAWL_RELEASE_A_MAX = 0.25
   _STOP_HOLD_RELEASE_A_MIN = 0.15
   _STOP_HOLD_RELEASE_A_MAX = 0.35
   _STOP_HOLD_RELEASE_MAX_UP_JERK = 6.0
@@ -47,7 +55,7 @@ class LongitudinalPlannerSP:
   _STOP_HOLD_RELEASE_PREP_MIN_LEAD_V = 0.25
   _STOP_HOLD_RELEASE_PREP_MIN_LEAD_V_REL = 0.10
   _STOP_HOLD_RELEASE_PREP_MIN_MPC_A_TARGET = -0.10
-  _STOP_HOLD_RELEASE_PREP_MIN_GAP_INCREASING_S = 0.15
+  _STOP_HOLD_RELEASE_PREP_MIN_GAP_INCREASING_S = 0.10
   _STOP_HOLD_RELEASE_PREP_MIN_D_REL_MARGIN = 0.20
   _STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET = -0.50
   _STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO = 0.02
@@ -122,6 +130,13 @@ class LongitudinalPlannerSP:
       return min(stopped, key=lambda c: c[0])[3]
     return min(candidates, key=lambda c: c[0])[3]
 
+  @classmethod
+  def _routine_lead_launch_breakout(cls, lead_v: float, lead_v_rel: float) -> bool:
+    return bool(
+      float(lead_v) >= cls._STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V or
+      float(lead_v_rel) >= cls._STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL
+    )
+
   def _reset_lead_stop_hold(self) -> None:
     self._lead_stop_hold_active = False
     self._lead_stop_hold_gap_increasing_s = 0.0
@@ -157,7 +172,7 @@ class LongitudinalPlannerSP:
       self._lead_stop_hold_gap_increasing_s = 0.0
       self._lead_stop_hold_missing_s = 0.0
       self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
-      self._lead_stop_hold_gap_baseline_d_rel = float(lead_d_rel)
+      self._lead_stop_hold_gap_baseline_d_rel = min(float(lead_d_rel), self._STOP_HOLD_MAX_BASELINE_D_REL)
       self._lead_stop_hold_lead_id = lead_id
 
     if self._lead_stop_hold_active:
@@ -169,7 +184,7 @@ class LongitudinalPlannerSP:
           # Valid stopped hold candidate: transfer latch immediately (no one-cycle gap).
           self._lead_stop_hold_lead_id = lead_id
           self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
-          self._lead_stop_hold_gap_baseline_d_rel = float(lead_d_rel)
+          self._lead_stop_hold_gap_baseline_d_rel = min(float(lead_d_rel), self._STOP_HOLD_MAX_BASELINE_D_REL)
           self._lead_stop_hold_missing_s = 0.0
           self._lead_stop_hold_gap_increasing_s = 0.0
         else:
@@ -194,7 +209,7 @@ class LongitudinalPlannerSP:
     else:
       self._lead_stop_hold_gap_increasing_s = 0.0
       self._lead_stop_hold_gap_prev_d_rel = float(lead_d_rel) if has_lead else None
-      self._lead_stop_hold_gap_baseline_d_rel = float(lead_d_rel) if has_lead else None
+      self._lead_stop_hold_gap_baseline_d_rel = min(float(lead_d_rel), self._STOP_HOLD_MAX_BASELINE_D_REL) if has_lead else None
       self._lead_stop_hold_missing_s = 0.0
 
     return self._lead_stop_hold_active
@@ -571,6 +586,24 @@ class LongitudinalPlannerSP:
     self._last_release_block_reason = ""
     return True
 
+  def _stop_hold_release_accel_for_gap(self, requested_a: float, lead_d_rel: float,
+                                       lead_v: float, lead_v_rel: float, same_id: bool) -> float:
+    release_a = min(max(float(requested_a), self._STOP_HOLD_RELEASE_A_MIN), self._STOP_HOLD_RELEASE_A_MAX)
+    if self._routine_lead_launch_breakout(float(lead_v), float(lead_v_rel)):
+      return float(release_a)
+    if not same_id or self._lead_stop_hold_gap_baseline_d_rel is None:
+      return float(release_a)
+
+    # Crawl mode maintains the original stopped gap with a deadband instead of chasing each
+    # small lead pulse. Only the gap beyond the deadband can ask for positive crawl accel.
+    gap_error = float(lead_d_rel) - float(self._lead_stop_hold_gap_baseline_d_rel)
+    if gap_error <= self._STOP_HOLD_CRAWL_DEADBAND_M:
+      return 0.0
+    gap_limited_a = (gap_error - self._STOP_HOLD_CRAWL_DEADBAND_M) / self._STOP_HOLD_CRAWL_GAP_TAU
+    if gap_limited_a < self._STOP_HOLD_CRAWL_RELEASE_A_MIN:
+      return 0.0
+    return float(min(release_a, self._STOP_HOLD_CRAWL_RELEASE_A_MAX, gap_limited_a))
+
   def _lead_stop_hold_release_accepts(self, sm: messaging.SubMaster, custom_long_output, mpc_a_target: float, raw_model_a_target: float,
                                       raw_model_should_stop: bool, selected_lead, lead_d_rel: float, lead_v: float,
                                       lead_v_rel: float) -> tuple[bool, float]:
@@ -604,6 +637,8 @@ class LongitudinalPlannerSP:
       self._last_release_block_reason = "distance_gate"
       return False, float(lead_d_rel)
     min_gap_increasing_s = self._STOP_HOLD_SAME_ID_MIN_PULLAWAY_S if same_id else 0.15
+    if same_id and self._routine_lead_launch_breakout(float(lead_v), float(lead_v_rel)):
+      min_gap_increasing_s = self._STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S
     if gate_fallback_candidate:
       min_gap_increasing_s = self._STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S
     if self._lead_stop_hold_gap_increasing_s < min_gap_increasing_s:
@@ -628,10 +663,18 @@ class LongitudinalPlannerSP:
         # block_reason already set by one of the release validators
         return False, float(lead_d_rel)
       self._last_release_block_reason = ""
-      return True, min(max(float(mpc_a_target), self._STOP_HOLD_RELEASE_A_MIN), self._STOP_HOLD_RELEASE_A_MAX)
+      release_a = self._stop_hold_release_accel_for_gap(float(mpc_a_target), lead_d_rel, lead_v, lead_v_rel, same_id)
+      if release_a <= 0.0:
+        self._last_release_block_reason = "crawl_deadband"
+        return False, float(lead_d_rel)
+      return True, release_a
     self._last_release_block_reason = ""
     requested_release_a = float(getattr(custom_long_output, "standstill_release_a_target", 0.0)) if custom_long_output is not None else 0.0
-    return True, min(max(requested_release_a, self._STOP_HOLD_RELEASE_A_MIN), self._STOP_HOLD_RELEASE_A_MAX)
+    release_a = self._stop_hold_release_accel_for_gap(requested_release_a, lead_d_rel, lead_v, lead_v_rel, same_id)
+    if release_a <= 0.0:
+      self._last_release_block_reason = "crawl_deadband"
+      return False, float(lead_d_rel)
+    return True, release_a
 
   def final_longitudinal_output(self, sm: messaging.SubMaster, mpc_a_target: float, mpc_should_stop: bool,
                                 raw_model_a_target: float, raw_model_should_stop: bool) -> tuple[float, bool, bool]:

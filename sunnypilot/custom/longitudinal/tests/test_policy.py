@@ -177,8 +177,23 @@ def test_launch_tracks_lead_speed_gently_when_crawling():
   d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.3, lead_v_rel=0.3, lead_d_rel=6.5,
                                             seed_a_target=0.0, lead_a_target=0.0)),
              LongitudinalMode.ACC, LIMITS)
-  assert d.a_target == pytest.approx(0.3)                  # ~ (v_lead - v_ego)/tau, well below the cap
+  assert d.a_target == pytest.approx(0.3 / 2.5)            # crawl-damped lead tracking, well below the cap
   assert 0.0 < d.a_target < launch_accel_max(Personality.STANDARD)
+
+
+def test_close_crawl_pulse_is_damped_to_reduce_accordion():
+  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.8, lead_d_rel=7.0,
+                                            seed_a_target=0.0, lead_a_target=0.0)),
+             LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(0.8 / 2.5)
+  assert d.a_target < 0.55
+
+
+def test_clear_low_speed_breakout_uses_normal_launch_response():
+  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=2.0, lead_v_rel=1.2, lead_d_rel=7.0,
+                                            seed_a_target=0.0, lead_a_target=0.0)),
+             LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(launch_accel_max(Personality.STANDARD))
 
 
 def test_launch_does_not_override_a_braking_seed():
@@ -381,17 +396,17 @@ def _alignment_scene(**over):
   return LongitudinalScene(**base)
 
 
-def test_far_slower_lead_adds_alignment_coast_candidate():
+def test_far_slower_lead_adds_alignment_gentle_brake_candidate():
   scene = _alignment_scene(
     v_ego=6.0, v_cruise=6.0, lead_v=5.0, lead_v_rel=-1.0,
     lead_d_rel=14.0, follow_gap=8.0, lead_progress_allowed=False,
   )
   cands = build_candidates(scene)
   intents = sources_of(cands)
-  assert "lead_alignment_coast" in intents
-  assert intents["lead_alignment_coast"].role is CandidateRole.ADVISORY_CAP
-  assert intents["lead_alignment_coast"].source is EvidenceClass.LEAD
-  assert intents["lead_alignment_coast"].a_target == pytest.approx(0.0)
+  assert "lead_alignment_gentle_brake" in intents
+  assert intents["lead_alignment_gentle_brake"].role is CandidateRole.ADVISORY_CAP
+  assert intents["lead_alignment_gentle_brake"].source is EvidenceClass.LEAD
+  assert -0.35 <= intents["lead_alignment_gentle_brake"].a_target <= 0.0
 
 
 def test_standstill_stable_lead_adds_standstill_launch_candidate():

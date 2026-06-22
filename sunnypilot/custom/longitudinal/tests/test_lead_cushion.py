@@ -33,6 +33,12 @@ def test_cushion_inactive_when_lead_not_slower():
   assert r.action is CoastAction.CRUISE
 
 
+def test_cushion_reacts_to_small_stable_speed_drop():
+  r = lead_following_cushion(v_ego=18.0, v_lead=17.75, d_rel=70.0, follow_gap=27.0, coast_decel=-0.25)
+  assert r.coast_first is True
+  assert r.a_target <= 0.0
+
+
 def test_speedup_guard_allows_when_gap_large():
   # huge gap -> a modest speed-up stays comfortable -> unchanged
   out = lead_speedup_guard(v_ego=18.0, v_lead=20.0, d_rel=120.0, follow_gap=20.0, proposed_accel=0.8)

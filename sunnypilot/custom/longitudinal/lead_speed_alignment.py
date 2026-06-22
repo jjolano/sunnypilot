@@ -46,7 +46,7 @@ class LeadSpeedAlignment:
 _ALIGN_MIN_V_EGO = 5.0                # m/s; avoid stop-and-go context
 _ALIGN_MIN_LEAD_V = 3.0               # m/s; avoid stopped/crawling leads
 _ALIGN_MIN_EXCESS_GAP = 3.0           # m
-_ALIGN_TINY_REQUIRED_DECEL = 0.10     # m/s^2
+_ALIGN_TINY_REQUIRED_DECEL = 0.07     # m/s^2
 _ALIGN_COMFORT_REQUIRED_DECEL = 0.50  # m/s^2; full gentle brake reached at this point
 _ALIGN_MAX_REQUIRED_DECEL = 0.80      # m/s^2; above this, MPC stays authoritative
 _ALIGN_GENTLE_BRAKE_MAX = -0.35       # m/s^2
@@ -54,7 +54,7 @@ _ALIGN_COAST_A_TARGET = 0.0           # lift to neutral
 
 # TTC / THW gates (Phase 1b, derived from manual-driving baseline analysis)
 _ALIGN_NO_ADVISORY_TTC = 24.0         # s; above this, don't block progress with advisory
-_ALIGN_COAST_TTC_MAIN = 20.0          # s; below this, coast preference
+_ALIGN_COAST_TTC_MAIN = 24.0          # s; below this, coast preference
 _ALIGN_STRONG_PREP_TTC = 6.0          # s; firm brake prep threshold
 _ALIGN_HAZARD_TTC = 4.0               # s; below this, defer to MPC physical hazard
 

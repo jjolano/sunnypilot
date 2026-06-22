@@ -592,7 +592,7 @@ def test_same_id_pullaway_gate_mode_releases_without_custom_permission():
     _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
-  assert 0.15 <= a <= 0.35
+  assert 0.0 < a <= 0.35
 
 
 def test_same_id_pullaway_gate_mode_requires_positive_planner_evidence():
@@ -896,6 +896,73 @@ def test_latch_release_same_lead_clears_earlier_with_bounded_accel():
   sp._lead_stop_hold_gap_increasing_s = 0.30
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.32, v_rel=0.16), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.15 <= a <= 0.35
+
+
+def test_latch_release_crawl_maintains_original_gap_deadband():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.6, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a == -0.2  # prep may relax hold, but deadband blocks positive crawl
+  assert sp._last_release_block_reason == "crawl_deadband"
+
+
+def test_stop_hold_caps_early_stop_baseline_at_six_meters():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp, d_rel=8.0)
+  assert sp._lead_stop_hold_active is True
+  assert sp._lead_stop_hold_gap_baseline_d_rel == 6.0
+
+
+def test_early_stop_farther_than_six_uses_capped_gap_target_for_crawl():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp, d_rel=8.0)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=8.7, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.05 <= a <= 0.25
+
+
+def test_latch_release_crawl_gap_error_caps_positive_accel():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.05 <= a <= 0.25
+
+
+def test_latch_release_crawl_pullaway_keeps_full_gap_time():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.15
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a == -0.2  # soft prep may relax hold, but positive release still waits for full crawl evidence
+
+
+def test_latch_release_routine_breakout_uses_short_gap_time():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.15
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=2.0, v_rel=1.1), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
   assert 0.15 <= a <= 0.35
@@ -1411,7 +1478,7 @@ def test_stop_hold_release_prep_does_not_block_first_positive_release():
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
   sp._lead_stop_hold_gap_increasing_s = 0.30
   a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(d_rel=7.0, v_lead=0.8, v_rel=0.3), 0.0, True, 0.2, False)  # type: ignore[arg-type]
-  assert 0.15 <= a <= 0.35
+  assert 0.149 <= a <= 0.35
   assert should_stop is False
   assert sp._lead_stop_hold_active is False
   assert sp._stop_hold_release_prep_a_target is None

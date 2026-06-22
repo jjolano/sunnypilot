@@ -198,7 +198,7 @@ def test_launch_behind_opening_lead_tracks_off_the_line():
   """Stop-and-go launch through the full stateful stack: stopped ~6.5 m behind a stopped lead,
   then the lead launches. Unlike the policy unit tests (which inject lead_progress_allowed), this
   drives the real lead-confidence tracker, which must *earn* the pull-away authorisation over
-  ~0.45 s. Once stable, the stack should pull away off the line — commanding well above a timid
+  ~0.35 s. Once stable, the stack should pull away off the line — commanding well above a timid
   MPC seed — instead of hanging back (ADR hypermile §1)."""
   from types import SimpleNamespace
   s = CustomLongitudinalStack()

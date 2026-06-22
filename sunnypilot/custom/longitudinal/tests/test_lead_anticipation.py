@@ -97,7 +97,7 @@ def test_hard_cap_limits_softening_for_braking_leads():
 
 def test_stable_confident_brake_passes_full():
   la = _on()
-  for _ in range(15):                                 # warm the track to stable (> 0.45 s)
+  for _ in range(15):                                 # warm the track to stable (> 0.35 s)
     _shape_apply(la, radar(lead(0.0)))
   out = _shape_apply(la, radar(lead(-3.0)))
   assert out.leadOne.aLeadK == pytest.approx(-3.0)    # confident -> full weight, no discount

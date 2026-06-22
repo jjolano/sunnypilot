@@ -55,6 +55,14 @@ LEAD_LAUNCH_MAX_V_EGO = 8.0
 LEAD_LAUNCH_TAU = 1.0               # s; time constant to match the lead's speed off the line
 LEAD_PULLAWAY_MIN_V_LEAD = 0.2     # m/s; lead considered moving (mirror of the close-stop gate)
 LEAD_PULLAWAY_MIN_OPENING = 0.15   # m/s; lead considered opening (mirror of the close-stop gate)
+# Close, low-speed stop-and-go is damped so we don't chase every lead twitch in an accordion.
+# A stronger opening or faster lead is treated as a normal launch breakout instead.
+LEAD_CRAWL_MAX_V_EGO = 5.0
+LEAD_CRAWL_MAX_V_LEAD = 5.0
+LEAD_CRAWL_MAX_D_REL = 25.0
+LEAD_CRAWL_BREAKOUT_MIN_OPENING = 1.0
+LEAD_CRAWL_LAUNCH_TAU = 2.5
+LEAD_CRAWL_ACCEL_MAX = 0.55
 NO_LEAD_STOP_CLEAR_DISTANCE = 20.0
 NO_LEAD_STOP_CLEAR_ACCEL_MIN = -0.5
 MAP_ONLY_CAUTION_ACCEL_MIN = -0.3
