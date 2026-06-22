@@ -2349,6 +2349,15 @@ struct LiveTorqueParametersData {
   shadowQuarantined @15 :UInt32;
   shadowRejected @16 :UInt32;
   shadowReasons @17 :UInt32;
+
+  # Phase 0b shadow-only EPS torque observability. These metrics never affect
+  # live parameter fitting, useParams, or control in this phase.
+  epsObserved @18 :Bool;
+  epsSampleCount @19 :UInt32;
+  epsTorqueLatest @20 :Float32;
+  epsCommandTorqueLatest @21 :Float32;
+  epsDeltaMean @22 :Float32;
+  epsDeltaMax @23 :Float32;
 }
 
 struct LiveDelayData {

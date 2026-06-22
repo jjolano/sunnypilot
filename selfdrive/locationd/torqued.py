@@ -38,6 +38,7 @@ MIN_ENGAGE_BUFFER = 2  # secs
 
 VERSION = 1  # bump this to invalidate old parameter caches
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda', 'volkswagen']
+EPS_TORQUE_CARS = ['chrysler', 'gm', 'hyundai', 'mazda', 'psa', 'subaru', 'toyota']
 
 
 def slope2rot(slope):
@@ -158,6 +159,38 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
                                          rowsize=3)
     self.all_torque_points = []
 
+    # Phase 0b shadow-only EPS torque observability. These metrics never affect
+    # live parameter fitting, useParams, or control in this phase.
+    self.eps_observed = False
+    self.eps_sample_count = 0
+    self.eps_torque_latest = 0.0
+    self.eps_command_torque_latest = 0.0
+    self.eps_delta_sum = 0.0
+    self.eps_delta_max = 0.0
+
+  def update_eps_shadow_stats(self, t, steer):
+    # Interpolate EPS torque at the learning-point timestamp, ignoring any
+    # missing or non-finite samples so they do not contaminate the stats.
+    eps_torque = None
+    if len(self.raw_points.get('steering_torque_eps', [])):
+      times = []
+      values = []
+      for tt, vv in zip(self.raw_points['carState_t'], self.raw_points['steering_torque_eps']):
+        if np.isfinite(vv):
+          times.append(tt)
+          values.append(vv)
+      if times:
+        eps_torque = float(np.interp(t, times, values))
+
+    self.eps_command_torque_latest = float(steer)
+    if self.CP.brand in EPS_TORQUE_CARS and eps_torque is not None and np.isfinite(eps_torque):
+      delta = abs(float(steer) - eps_torque)
+      self.eps_observed = True
+      self.eps_torque_latest = eps_torque
+      self.eps_sample_count += 1
+      self.eps_delta_sum += delta
+      self.eps_delta_max = max(self.eps_delta_max, delta)
+
   def estimate_params(self):
     points = self.filtered_points.get_points(self.fit_points)
     # total least square solution as both x and y are noisy observations
@@ -191,6 +224,7 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
       self.raw_points["vego"].append(msg.vEgo)
       self.raw_points["steer_override"].append(msg.steeringPressed)
       self.raw_points["steering_rate_deg"].append(msg.steeringRateDeg)
+      self.raw_points["steering_torque_eps"].append(float(msg.steeringTorqueEps))
     elif which == "liveCalibration":
       self.calibrator.feed_live_calib(msg)
     elif which == "liveDelay":
@@ -218,6 +252,7 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
           if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
             self.add_torque_learning_point(steer, lateral_acc, vego)
             self.filtered_points.add_point(steer, lateral_acc)
+            self.update_eps_shadow_stats(t, steer)
 
           # Phase 0b: shadow-only disturbance classification. Does not suppress
           # learning points; only updates observability counters.
@@ -291,6 +326,14 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.shadowQuarantined = self.shadow_quarantined
     liveTorqueParameters.shadowRejected = self.shadow_rejected
     liveTorqueParameters.shadowReasons = self.shadow_reasons
+
+    # Phase 0b shadow-only EPS torque observability.
+    liveTorqueParameters.epsObserved = self.eps_observed
+    liveTorqueParameters.epsSampleCount = self.eps_sample_count
+    liveTorqueParameters.epsTorqueLatest = float(self.eps_torque_latest)
+    liveTorqueParameters.epsCommandTorqueLatest = float(self.eps_command_torque_latest)
+    liveTorqueParameters.epsDeltaMean = float(self.eps_delta_sum / self.eps_sample_count if self.eps_sample_count > 0 else 0.0)
+    liveTorqueParameters.epsDeltaMax = float(self.eps_delta_max)
     return msg
 
 
