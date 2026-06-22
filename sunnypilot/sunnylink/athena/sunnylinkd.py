@@ -93,6 +93,65 @@ DEPENDS_ON_CUSTOM_TORQUE_PARAMS = {
   "TorqueParamsOverrideFriction",
 }
 
+# Service/action toggles and request params that must only be changed locally,
+# never remotely. These control on-device services or trigger device-side actions.
+SERVICE_ACTION_WRITE_DENY_SET = {
+  "EnableCopyparty",
+  "EnableGithubRunner",
+  "EnableSunnylinkUploader",
+  "EnableTailscale",
+  "TailscaleLoginRequested",
+  "TailscaleLogoutRequested",
+  "TailscaleInstallRequested",
+}
+
+# Sensitive/DONT_LOG param keys that must never be returned by getParams.
+SENSITIVE_READ_DENY_SET = {
+  "AccessToken",
+  "LivestreamEncoderBitrate",
+  "LiveTorqueParameters",
+  "LiveTorqueSpeedAdaptiveParams",
+  "SecOCKey",
+  "TailscaleAuthURL",
+}
+
+
+def remote_read_allowed(key: str) -> bool:
+  """Return True only if the key may be read remotely.
+
+  Default-deny: only keys with a non-blocked SETTINGS_POLICY entry are allowed.
+  BLOCKED_PARAMS, sensitive/DONT_LOG keys, and service/action keys are rejected.
+  """
+  if key in BLOCKED_PARAMS:
+    return False
+  if key in SENSITIVE_READ_DENY_SET:
+    return False
+  if key in SERVICE_ACTION_WRITE_DENY_SET:
+    return False
+  policy = SETTINGS_POLICY.get(key)
+  if policy is None or policy.get("blocked"):
+    return False
+  return True
+
+
+def remote_write_policy(key: str) -> dict[str, Any] | None:
+  """Return the SETTINGS_POLICY entry for the key if remote writes are allowed.
+
+  Default-deny: blocked params, service/action params, and unlisted/unknown keys
+  return None. Known schema keys return their policy dict for attestation,
+  offroad, range, and option validation.
+  """
+  if key in BLOCKED_PARAMS:
+    return None
+  if key in SERVICE_ACTION_WRITE_DENY_SET:
+    return None
+  policy = SETTINGS_POLICY.get(key)
+  if policy is None:
+    return None
+  if policy.get("blocked"):
+    return None
+  return policy
+
 
 def _decode_param_value(value: str, compression: bool) -> str:
   raw = base64.b64decode(value, validate=True)
@@ -229,13 +288,13 @@ def _custom_torque_enabled_after_valid_request(params_to_update: dict[str, str],
   if value is None or not offroad or not _torque_settings_allowed():
     return False
 
-  policy: dict[str, Any] = SETTINGS_POLICY.get("CustomTorqueParams", {})
-  if policy.get("blocked"):
+  policy = remote_write_policy("CustomTorqueParams")
+  if policy is None:
     return False
   if policy.get("attestation_required") and "CustomTorqueParams" not in attested_keys:
     return False
   try:
-    decoded_value = _decode_param_value(value, compression) if policy else value
+    decoded_value = _decode_param_value(value, compression)
   except Exception:
     return False
   if not _decoded_value_matches_policy(decoded_value, policy):
@@ -366,7 +425,7 @@ def toggleLogUpload(enabled: bool):
 
 @dispatcher.add_method
 def getParamsAllKeys() -> list[str]:
-  keys: list[str] = [k.decode('utf-8') for k in Params().all_keys()]
+  keys: list[str] = [k.decode('utf-8') for k in Params().all_keys() if remote_read_allowed(k.decode('utf-8'))]
   return keys
 
 
@@ -406,7 +465,7 @@ def getParams(params_keys: list[str], compression: bool = False) -> str | dict[s
       ParamKeyType.BYTES.value: b"",
     }
 
-    param_keys_validated = [key for key in params_keys if key in available_keys]
+    param_keys_validated = [key for key in params_keys if key in available_keys and remote_read_allowed(key)]
     params_dict: dict[str, list[dict[str, str | bool | int]]] = {"params": []}
     for key in param_keys_validated:
       value = get_param_as_byte(key)
@@ -443,14 +502,9 @@ def saveParams(params_to_update: dict[str, str], compression: bool = False, atte
 
   saved_any = False
   for key, value in params_to_update.items():
-    # disallow modifications to blocked parameters
-    if key in BLOCKED_PARAMS:
-      cloudlog.warning(f"sunnylinkd.saveParams.blocked: Attempted to modify blocked parameter '{key}'")
-      continue
-
-    policy: dict[str, Any] = SETTINGS_POLICY.get(key, {})
-    if policy.get("blocked"):
-      cloudlog.warning(f"sunnylinkd.saveParams.blocked: Attempted to modify metadata-blocked parameter '{key}'")
+    policy = remote_write_policy(key)
+    if policy is None:
+      cloudlog.warning(f"sunnylinkd.saveParams.denied: '{key}' is not remotely writable")
       continue
 
     if policy.get("attestation_required") and key not in attested_keys:

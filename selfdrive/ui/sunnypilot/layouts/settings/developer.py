@@ -47,9 +47,9 @@ class DeveloperLayoutSP(DeveloperLayout):
                                                       param="EnableGithubRunner")
 
     self.enable_copyparty_toggle = toggle_item_sp(tr("copyparty Service"),
-                                                  tr("copyparty is a very capable file server, you can use it to download your routes, view your logs " +
-                                                     "and even make some edits on some files from your browser. " +
-                                                     "Requires you to connect to your comma locally via its IP address."), param="EnableCopyparty")
+                                                  tr("copyparty is a local file server that lets you view and download route and crash logs from a " +
+                                                     "browser that can reach the device on port 8080 while offroad. It is unauthenticated and read-only " +
+                                                     "while enabled."), param="EnableCopyparty")
 
     self.prebuilt_toggle = toggle_item_sp(tr("Quickboot Mode"), "", param="QuickBootToggle", callback=self._on_prebuilt_toggled)
 

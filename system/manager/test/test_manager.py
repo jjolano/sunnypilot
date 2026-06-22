@@ -34,6 +34,19 @@ class TestManager:
   def test_duplicate_procs(self):
     assert len(procs) == len(managed_processes), "Duplicate process names"
 
+  def test_copyparty_exposes_only_readonly_logs(self):
+    if "copyparty-sfx" not in managed_processes:
+      pytest.skip("copyparty-sfx process is not configured in this build")
+
+    args = [str(a) for a in managed_processes["copyparty-sfx"].cmdline]
+    flat = " ".join(args)
+
+    assert any("/swaglogs:r" in a for a in args), "missing read-only crash-log mount"
+    assert any("/routes:r" in a for a in args), "missing read-only route-log mount"
+    assert ":rw" not in flat, "copyparty args contain a writable mount"
+    assert "/models" not in flat, "copyparty args expose /models"
+    assert "/sunnypilot" not in flat, "copyparty args expose repo root"
+
   def test_blacklisted_procs(self):
     # TODO: ensure there are blacklisted procs until we have a dedicated test
     assert len(BLACKLIST_PROCS), "No blacklisted procs to test not_run"
