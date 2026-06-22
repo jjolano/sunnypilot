@@ -133,6 +133,19 @@ def test_adapter_enabled_processes_curvature():
   assert out == pytest.approx(0.001, abs=3e-3)  # high-quality straight path passes near through
 
 
+@pytest.mark.parametrize("curvature", [0.002, -0.002])
+def test_adapter_preserves_curvature_sign(curvature):
+  """A nonzero demand curvature must not have its sign flipped by the wiring adapter."""
+  a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
+  spy = SpyPipeline()
+  setattr(a, "_pipeline", spy)
+  out = a.process(True, 20.0, 0.0, curvature, curvature, fake_model(curvature))
+  assert out != 0.0
+  assert math.copysign(1.0, out) == math.copysign(1.0, curvature)
+  assert spy.inputs is not None
+  assert spy.inputs.desired_curvature == pytest.approx(curvature, abs=1e-9)
+
+
 def test_adapter_forwards_steering_pressed_and_lane_change_state():
   a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
   spy = SpyPipeline()

@@ -267,3 +267,53 @@ def test_live_torque_params_update_limits():
   # PID limits track lateral_accel_from_torque(steer_max) = steer_max * latAccelFactor
   assert c.response_core.pid.pos_limit == pytest.approx(3.0)
   assert c.response_core.pid.neg_limit == pytest.approx(-3.0)
+
+
+@pytest.mark.parametrize("desired_curvature", [0.005, -0.005])
+def test_controller_sign_contract_for_desired_curvature(desired_curvature):
+  """Positive desired curvature must produce positive internal/governor torque and a negative
+  returned actuator torque; negative curvature must produce the opposite sign. pid_log.output must equal the
+  returned torque."""
+  c = make_controller()
+  vm = FakeVM()
+  last_out = 0.0
+  last_pid_log = None
+  # Run long enough for slew and response-core state to settle; high speed avoids low-speed
+  # under-response floor and low-speed unwind confounds.
+  for _ in range(300):
+    last_out, _, last_pid_log = c.update(
+      True, make_cs(v_ego=25.0, angle=0.0, rate=0.0, pressed=False), vm,
+      make_params(roll=0.0, angle_offset=0.0), False, desired_curvature, make_pose(), False, 0.2,
+    )  # type: ignore[arg-type]
+
+  expected_internal_sign = 1.0 if desired_curvature > 0 else -1.0
+  # Internal governor torque retains the command-side sign.
+  assert c.governor.previous_output != 0.0
+  assert math.copysign(1.0, c.governor.previous_output) == expected_internal_sign
+  # Returned actuator torque is negated (upstream convention).
+  assert last_out != 0.0
+  assert math.copysign(1.0, last_out) == -expected_internal_sign
+  # Logged output matches the returned actuator torque.
+  assert last_pid_log is not None
+  assert last_pid_log.output == pytest.approx(last_out, abs=1e-9)
+
+
+@pytest.mark.parametrize("steering_rate", [5.0, -10.0, 25.0])
+def test_steering_rate_is_negated_before_governor(steering_rate):
+  """The governor receives the steering rate with the sign flipped from carState."""
+  c = make_controller()
+  vm = FakeVM()
+  captured = {}
+  original_update = c.governor.update
+
+  def capture_update(inp):
+    captured["inp"] = inp
+    return original_update(inp)
+
+  c.governor.update = capture_update
+  c.update(
+    True, make_cs(v_ego=20.0, angle=0.0, rate=steering_rate, pressed=False), vm,
+    make_params(), False, 0.0, make_pose(), False, 0.2,
+  )  # type: ignore[arg-type]
+
+  assert captured["inp"].steering_rate_deg == pytest.approx(-steering_rate, abs=1e-9)

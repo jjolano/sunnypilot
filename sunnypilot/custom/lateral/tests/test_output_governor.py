@@ -171,6 +171,46 @@ def test_over_response_cap_monotonic():
   assert caps[-1] == pytest.approx(OVER_RESPONSE_MIN_SCALE, abs=1e-6)  # saturates at min scale
 
 
+def test_over_response_cap_triggers_in_both_directions():
+  # Same-direction over-response caps the command regardless of sign.
+  r_pos = OutputGovernor(DT).update(benign(nominal=0.5, v=25.0, desired=1.0, actual=1.8))
+  assert r_pos.reason & GovernorReason.OVER_RESPONSE
+
+  r_neg = OutputGovernor(DT).update(benign(nominal=-0.5, v=25.0, desired=-1.0, actual=-1.8))
+  assert r_neg.reason & GovernorReason.OVER_RESPONSE
+
+
+def test_over_response_skipped_when_torque_opposes_actual():
+  # A same-direction excess is only dangerous when the command reinforces it.
+  r = OutputGovernor(DT).update(benign(nominal=-0.5, v=25.0, desired=1.0, actual=1.8))
+  assert not (r.reason & GovernorReason.OVER_RESPONSE)
+
+  r = OutputGovernor(DT).update(benign(nominal=0.5, v=25.0, desired=-1.0, actual=-1.8))
+  assert not (r.reason & GovernorReason.OVER_RESPONSE)
+
+
+def test_sign_conflict_detected_both_directions():
+  # Opposite signs of desired and actual lateral accel are a safety conflict.
+  r = OutputGovernor(DT).update(benign(nominal=0.5, v=25.0, desired=1.0, actual=-0.5))
+  assert r.reason & GovernorReason.SIGN_CONFLICT
+
+  r = OutputGovernor(DT).update(benign(nominal=-0.5, v=25.0, desired=-1.0, actual=0.5))
+  assert r.reason & GovernorReason.SIGN_CONFLICT
+
+
+@pytest.mark.parametrize("desired,actual", [
+  (1.0, 0.5),   # same sign
+  (-1.0, -0.5), # same sign
+  (0.0, -0.5),  # desired is zero
+  (1.0, 0.0),   # actual is zero
+  (1.0, -0.03), # actual too small to count as opposite sign
+  (-1.0, 0.03), # actual too small to count as opposite sign
+])
+def test_no_sign_conflict_for_same_sign_or_zero(desired, actual):
+  r = OutputGovernor(DT).update(benign(nominal=0.5, v=25.0, desired=desired, actual=actual))
+  assert not (r.reason & GovernorReason.SIGN_CONFLICT)
+
+
 def test_sign_change_uses_slower_slew():
   gov = OutputGovernor(DT)
   v = 20.0
