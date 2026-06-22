@@ -60,6 +60,12 @@ GAP_FADE_V = 4.0        # m/s; speed scale over which the stop gap fades to the 
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
+LEAD_ACCEL_MIN = -10.0
+LEAD_ACCEL_MAX = 5.0
+LEAD_PULLAWAY_ACCEL_MAX = 2.0
+LEAD_ACCEL_TAU_MIN = 0.1
+LEAD_PULLAWAY_ACCEL_TAU_MIN = _LEAD_ACCEL_TAU
+MODEL_ONLY_PULLAWAY_PROB_MIN = 0.8
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
@@ -294,11 +300,40 @@ class LongitudinalMpc:
 
   @staticmethod
   def extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau):
+    a_lead = float(a_lead)
+    if not np.isfinite(a_lead):
+      a_lead = 0.0
+    tau_floor = LEAD_PULLAWAY_ACCEL_TAU_MIN if a_lead > 0.0 else LEAD_ACCEL_TAU_MIN
+    a_lead_tau = float(a_lead_tau)
+    if not np.isfinite(a_lead_tau):
+      a_lead_tau = tau_floor
+    else:
+      a_lead_tau = max(a_lead_tau, tau_floor)
     a_lead_traj = a_lead * np.exp(-a_lead_tau * (T_IDXS**2)/2.)
     v_lead_traj = np.clip(v_lead + np.cumsum(T_DIFFS * a_lead_traj), 0.0, 1e8)
     x_lead_traj = x_lead + np.cumsum(T_DIFFS * v_lead_traj)
     lead_xv = np.column_stack((x_lead_traj, v_lead_traj))
     return lead_xv
+
+  @staticmethod
+  def limit_lead_accel_for_prediction(a_lead, lead=None):
+    # aLeadK is a noisy double derivative. Let braking propagate promptly, but avoid optimistic
+    # pullaway extrapolation from making the MPC assume the gap will open unless the measurement
+    # keeps proving it over subsequent frames.
+    a_lead = float(a_lead)
+    if not np.isfinite(a_lead):
+      return 0.0
+    a_lead = float(np.clip(a_lead, LEAD_ACCEL_MIN, LEAD_ACCEL_MAX))
+    if a_lead > 0.0:
+      pullaway_confidence = 1.0
+      if lead is not None and not getattr(lead, "radar", True):
+        model_prob = float(getattr(lead, "modelProb", 0.0))
+        if not np.isfinite(model_prob):
+          model_prob = 0.0
+        pullaway_confidence = float(np.clip((model_prob - MODEL_ONLY_PULLAWAY_PROB_MIN) /
+                                            (1.0 - MODEL_ONLY_PULLAWAY_PROB_MIN), 0.0, 1.0))
+      a_lead = min(a_lead, LEAD_PULLAWAY_ACCEL_MAX * pullaway_confidence)
+    return a_lead
 
   def process_lead(self, lead):
     v_ego = self.x0[1]
@@ -319,7 +354,7 @@ class LongitudinalMpc:
     min_x_lead = MIN_X_LEAD_FACTOR * (v_ego + v_lead) * (v_ego - v_lead) / (-ACCEL_MIN * 2)
     x_lead = np.clip(x_lead, min_x_lead, 1e8)
     v_lead = np.clip(v_lead, 0.0, 1e8)
-    a_lead = np.clip(a_lead, -10., 5.)
+    a_lead = self.limit_lead_accel_for_prediction(a_lead, lead)
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
