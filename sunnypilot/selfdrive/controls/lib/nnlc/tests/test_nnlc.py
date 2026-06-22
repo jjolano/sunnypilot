@@ -16,6 +16,7 @@ from openpilot.selfdrive.locationd.helpers import Pose
 from openpilot.common.mock.generators import generate_livePose
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
 from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.nnlc import NeuralNetworkLateralControl
 
 
 def generate_modelV2():
@@ -120,3 +121,29 @@ class TestNeuralNetworkLateralControl:
     assert not controller.extension.has_nn_model
     assert controller.extension.model is None
     assert not controller.extension._nnlc_enabled
+
+  def test_error_response_blend_is_bounded_and_monotonic(self):
+    pid_error = 0.2
+    stronger_error = 0.8
+    outputs = [NeuralNetworkLateralControl._blend_error_response(pid_error, stronger_error, blend)
+               for blend in (0.0, 0.25, 0.5, 1.0)]
+    negative_outputs = [NeuralNetworkLateralControl._blend_error_response(-pid_error, -stronger_error, blend)
+                        for blend in (0.0, 0.25, 0.5, 1.0)]
+
+    assert outputs == sorted(outputs)
+    assert outputs[0] == pid_error
+    assert outputs[2] == 0.5
+    assert outputs[-1] == stronger_error
+    assert all(pid_error <= output <= stronger_error for output in outputs)
+    assert negative_outputs == sorted(negative_outputs, reverse=True)
+    assert negative_outputs[0] == -pid_error
+    assert negative_outputs[2] == -0.5
+    assert negative_outputs[-1] == -stronger_error
+    assert all(-stronger_error <= output <= -pid_error for output in negative_outputs)
+
+  def test_error_response_blend_rejects_opposite_or_weaker_response(self):
+    pid_error = 0.8
+
+    assert NeuralNetworkLateralControl._blend_error_response(pid_error, -1.0, 1.0) == pid_error
+    assert NeuralNetworkLateralControl._blend_error_response(pid_error, 0.2, 1.0) == pid_error
+    assert NeuralNetworkLateralControl._blend_error_response(-pid_error, -0.2, 1.0) == -pid_error

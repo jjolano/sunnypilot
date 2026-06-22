@@ -11,6 +11,16 @@ import math
 import numpy as np
 import pytest
 
+from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
+  LOW_QUALITY_BLEND_THRESHOLD,
+  NEAR_ZERO_BLEND_SCALE,
+  NEAR_ZERO_CURVATURE_BP,
+  SMOOTHED_CURVATURE_MAX_LAT_ACCEL_DELTA,
+  SMOOTHED_CURVATURE_SPEED_BP,
+  ModelPathProcessor,
+  ModelPathProcessorInputs,
+)
 from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
   LateralDemandPipeline,
   LateralDemandPipelineInputs,
@@ -64,6 +74,24 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
     lane_centering_assist_enabled=kwargs.get("lane_centering_assist_enabled", False),
     curve_memory_enabled=kwargs.get("curve_memory_enabled", False),
     curvature_limited=kwargs.get("curvature_limited", False),
+  )
+
+
+def spatial_smoothing_inputs(v_ego=20.0, desired_curvature=0.001, candidate_curvature=0.002):
+  t_idxs = ModelConstants.T_IDXS
+  return ModelPathProcessorInputs(
+    lat_active=True,
+    v_ego=v_ego,
+    desired_curvature=desired_curvature,
+    measured_curvature=desired_curvature,
+    previous_desired_curvature=desired_curvature,
+    position_x=[float(x) for x in range(len(t_idxs))],
+    position_y=[0.0] * len(t_idxs),
+    position_y_std=[0.1] * len(t_idxs),
+    orientation_z=[float(candidate_curvature * v_ego * t) for t in t_idxs],
+    orientation_rate_z=[float(candidate_curvature * v_ego)] * len(t_idxs),
+    lane_line_probs=[0.9, 0.9, 0.9, 0.9],
+    smooth_model_path_curvature=True,
   )
 
 
@@ -316,3 +344,80 @@ def test_demand_jerk_smoothing_bypasses_when_driver_state_unknown():
                             demand_jerk_smoothing_enabled=True, steering_pressed=None))
 
   assert r.debug["demand_jerk_smoothing_active"] is False
+
+
+def test_spatial_smoothing_blend_is_bounded_by_quality_and_trust():
+  v_ego = 20.0
+  desired_curvature = 0.001
+
+  for candidate_curvature in (0.002, 0.0):
+    candidate_delta_lat_accel = (candidate_curvature - desired_curvature) * v_ego * v_ego
+    for quality in (0.80, 0.90, 1.00):
+      quality_alpha = float(np.interp(quality, [LOW_QUALITY_BLEND_THRESHOLD, 1.0], [0.0, 1.0]))
+      max_delta_lat_accel = float(np.interp(v_ego, SMOOTHED_CURVATURE_SPEED_BP,
+                                            SMOOTHED_CURVATURE_MAX_LAT_ACCEL_DELTA)) * quality_alpha
+      for trust_penalty in (0.0, 0.4, 0.8):
+        result = ModelPathProcessor._smoothed_path_curvature(
+          spatial_smoothing_inputs(v_ego, desired_curvature, candidate_curvature),
+          desired_curvature,
+          quality,
+          trust_penalty,
+        )
+
+        assert result is not None
+        correction_lat_accel = (result - desired_curvature) * v_ego * v_ego
+        assert math.copysign(1.0, correction_lat_accel) == math.copysign(1.0, candidate_delta_lat_accel)
+        assert abs(correction_lat_accel) <= min(abs(candidate_delta_lat_accel), max_delta_lat_accel)
+
+  assert ModelPathProcessor._smoothed_path_curvature(
+    spatial_smoothing_inputs(v_ego, desired_curvature, candidate_curvature),
+    desired_curvature,
+    LOW_QUALITY_BLEND_THRESHOLD,
+    0.0,
+  ) is None
+  assert ModelPathProcessor._smoothed_path_curvature(
+    spatial_smoothing_inputs(v_ego, desired_curvature, candidate_curvature),
+    desired_curvature,
+    1.0,
+    1.0,
+  ) is None
+
+
+def test_spatial_smoothing_correction_shrinks_as_trust_penalty_grows():
+  v_ego = 20.0
+  desired_curvature = 0.001
+  candidate_curvature = 0.002
+  corrections = []
+
+  for trust_penalty in (0.0, 0.25, 0.50, 0.75):
+    result = ModelPathProcessor._smoothed_path_curvature(
+      spatial_smoothing_inputs(v_ego, desired_curvature, candidate_curvature),
+      desired_curvature,
+      1.0,
+      trust_penalty,
+    )
+    assert result is not None
+    corrections.append((result - desired_curvature) * v_ego * v_ego)
+
+  assert all(earlier > later for earlier, later in zip(corrections, corrections[1:]))
+
+
+def test_spatial_smoothing_near_zero_scale_is_monotonic():
+  v_ego = 20.0
+  curvature_values = [0.0, NEAR_ZERO_CURVATURE_BP[1] / 2.0, NEAR_ZERO_CURVATURE_BP[1], 0.001]
+  corrections = []
+
+  for desired_curvature in curvature_values:
+    candidate_curvature = desired_curvature + 0.001
+    result = ModelPathProcessor._smoothed_path_curvature(
+      spatial_smoothing_inputs(v_ego, desired_curvature, candidate_curvature),
+      desired_curvature,
+      1.0,
+      0.0,
+    )
+    assert result is not None
+    corrections.append((result - desired_curvature) * v_ego * v_ego)
+
+  assert all(earlier <= later for earlier, later in zip(corrections, corrections[1:]))
+  assert corrections[0] < corrections[-1]
+  assert corrections[0] == pytest.approx(corrections[-1] * NEAR_ZERO_BLEND_SCALE[0], rel=1e-6)

@@ -68,6 +68,14 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
   def _nnlc_enabled(self):
     return self.enabled and self.model_valid and self.has_nn_model and self.model is not None
 
+  @staticmethod
+  def _blend_error_response(pid_error: float, torque_from_error: float, error_blend_factor: float) -> float:
+    if error_blend_factor <= 0.0:
+      return pid_error
+    if sign(pid_error) == sign(torque_from_error) and abs(pid_error) < abs(torque_from_error):
+      return pid_error * (1.0 - error_blend_factor) + torque_from_error * error_blend_factor
+    return pid_error
+
   def update_limits(self):
     if not self._nnlc_enabled:
       return
@@ -152,8 +160,7 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
       # NNFF inputs 5+ are optional, and if left out are replaced with 0.0 inside the NNFF class
       nnff_error_input = [CS.vEgo, self._setpoint - self._measurement, self.lateral_jerk_setpoint - self.lateral_jerk_measurement, 0.0]
       torque_from_error = self.model.evaluate(nnff_error_input)
-      if sign(self._pid_log.error) == sign(torque_from_error) and abs(self._pid_log.error) < abs(torque_from_error):
-        self._pid_log.error = self._pid_log.error * (1.0 - error_blend_factor) + torque_from_error * error_blend_factor
+      self._pid_log.error = self._blend_error_response(self._pid_log.error, torque_from_error, error_blend_factor)
 
     # compute feedforward (same as nn setpoint output)
     friction_input = self.update_friction_input(self._setpoint, self._measurement)
