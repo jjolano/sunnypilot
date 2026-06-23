@@ -430,16 +430,18 @@ def test_lead_path_clearance_modes_are_exactly_non_actuating():
   assert outputs["apply"].debug["lead_path_clearance_shadow_eligible"] is True
 
 
-def test_adapter_refreshes_debug_trace_mode_on_mode_only():
+def test_debug_trace_mode_does_not_refresh_on_mode_only():
   params = FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc", LongitudinalDebugTraceMode="off")
   a = CustomLongitudinalAdapter(params)
   assert a.debug_trace_mode == "off"
   params._v["LongitudinalDebugTraceMode"] = "log"
   a.refresh_params(mode_only=True)
-  assert a.debug_trace_mode == "log"
+  assert a.debug_trace_mode == "off"  # mode_only must not touch advisory params
+  a.refresh_params()
+  assert a.debug_trace_mode == "log"  # full/slow-cadence refresh picks up the change
 
 
-def test_new_shadow_modes_parse_and_refresh():
+def test_new_shadow_modes_parse_and_refresh_on_slow_cadence():
   params = FakeParams(
     CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
     CutInBrakeAssistMode="shadow", CurveSpeedConfidenceMode="apply_conservative",
@@ -449,14 +451,48 @@ def test_new_shadow_modes_parse_and_refresh():
   assert a.cut_in_brake_assist_mode == "shadow"
   assert a.curve_speed_confidence_mode == "apply_conservative"
   assert a.standstill_release_confidence_mode == "gate"
+
+  # mode_only must not touch advisory/shadow params.
   params._v.update(CutInBrakeAssistMode="bad", CurveSpeedConfidenceMode="bad", StandstillReleaseConfidenceMode="bad")
   a.refresh_params(mode_only=True)
+  assert a.cut_in_brake_assist_mode == "shadow"
+  assert a.curve_speed_confidence_mode == "apply_conservative"
+  assert a.standstill_release_confidence_mode == "gate"
+
+  # A full/slow-cadence refresh applies the new (invalid -> off) values.
+  a.refresh_params()
   assert a.cut_in_brake_assist_mode == "off"
   assert a.curve_speed_confidence_mode == "off"
   assert a.standstill_release_confidence_mode == "off"
   params._v["LongitudinalDebugTraceMode"] = "bad"
-  a.refresh_params(mode_only=True)
+  a.refresh_params()
   assert a.debug_trace_mode == "off"
+
+
+def test_debug_and_shadow_modes_refresh_every_params_period():
+  params = FakeParams(
+    CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
+    LongitudinalDebugTraceMode="off", CutInBrakeAssistMode="off",
+    CurveSpeedConfidenceMode="off", StandstillReleaseConfidenceMode="off",
+  )
+  a = CustomLongitudinalAdapter(params)
+  params._v.update(
+    LongitudinalDebugTraceMode="log", CutInBrakeAssistMode="shadow",
+    CurveSpeedConfidenceMode="apply_conservative", StandstillReleaseConfidenceMode="gate",
+  )
+  # Advisory/shadow params do not change before the refresh period elapses.
+  for _ in range(49):
+    a.maybe_refresh_params()
+  assert a.debug_trace_mode == "off"
+  assert a.cut_in_brake_assist_mode == "off"
+  assert a.curve_speed_confidence_mode == "off"
+  assert a.standstill_release_confidence_mode == "off"
+  # They take effect on the tick that hits the refresh period.
+  a.maybe_refresh_params()
+  assert a.debug_trace_mode == "log"
+  assert a.cut_in_brake_assist_mode == "shadow"
+  assert a.curve_speed_confidence_mode == "apply_conservative"
+  assert a.standstill_release_confidence_mode == "gate"
 
 
 def test_new_shadow_modes_are_exactly_non_actuating():

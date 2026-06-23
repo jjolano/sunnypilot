@@ -219,10 +219,6 @@ class CustomLongitudinalAdapter:
       # SCC is the default: the custom-2.0 intelligent ACC/E2E blend (the DEC replacement). acc/e2e
       # force OEM-like cruise or the model's stops respectively. Mode is refreshed live each cycle.
       mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc", default=LongitudinalMode.SCC)
-      self.debug_trace_mode = _debug_trace_mode(_param_string(p, "LongitudinalDebugTraceMode"))
-      self.cut_in_brake_assist_mode = _shadow_mode(_param_string(p, "CutInBrakeAssistMode"), ("apply",))
-      self.curve_speed_confidence_mode = _curve_speed_confidence_mode(_param_string(p, "CurveSpeedConfidenceMode"))
-      self.standstill_release_confidence_mode = _standstill_release_confidence_mode(_param_string(p, "StandstillReleaseConfidenceMode"))
     except Exception:  # params are advisory; never fault the planner on a failed read
       if initial:
         self.enabled = False
@@ -238,11 +234,15 @@ class CustomLongitudinalAdapter:
     if mode_only:
       return
 
-    # Slower refresh for tuning params.
+    # Slower refresh for tuning/advisory params.
     if initial or self._tick % PARAMS_REFRESH_PERIOD == 0:
       try:
         self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
         self.lead_path_clearance_mode = _lead_path_clearance_mode(_param_string(p, "LeadPathClearanceMode") or LEAD_PATH_CLEARANCE_MODE_OFF)
+        self.debug_trace_mode = _debug_trace_mode(_param_string(p, "LongitudinalDebugTraceMode"))
+        self.cut_in_brake_assist_mode = _shadow_mode(_param_string(p, "CutInBrakeAssistMode"), ("apply",))
+        self.curve_speed_confidence_mode = _curve_speed_confidence_mode(_param_string(p, "CurveSpeedConfidenceMode"))
+        self.standstill_release_confidence_mode = _standstill_release_confidence_mode(_param_string(p, "StandstillReleaseConfidenceMode"))
         # SCC curve sources are gated by the existing upstream SCC enable toggles.
         self.sources = SourceToggles(
           scc_curve_vision_enabled=bool(p.get_bool("SmartCruiseControlVision")),
