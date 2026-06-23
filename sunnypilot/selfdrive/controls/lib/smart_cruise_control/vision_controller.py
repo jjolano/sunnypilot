@@ -267,7 +267,10 @@ class SmartCruiseControlVision:
     self.v_cruise_setpoint = v_cruise_setpoint
 
     self._update_params()
-    self._update_calculations(sm)
+    if not (self.long_enabled and self.enabled):
+      self._fail_closed()
+    else:
+      self._update_calculations(sm)
 
     self.is_enabled, self.is_active = self._update_state_machine()
     self.a_target = self._update_solution()

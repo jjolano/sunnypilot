@@ -134,6 +134,11 @@ class SmartCruiseControlMap:
   def get_a_target_from_control(self) -> float:
     return self.a_ego
 
+  def _clear_targets(self) -> None:
+    self.v_target = 0.0
+    self.target_lat = 0.0
+    self.target_lon = 0.0
+
   def _material_drop_needs_corroboration(self, tv: float) -> bool:
     return (self.v_ego - tv) >= MATERIAL_DROP_DELTA_V
 
@@ -392,7 +397,10 @@ class SmartCruiseControlMap:
     self.v_cruise = v_cruise
 
     self.update_params()
-    self.update_calculations(sm)
+    if not (self.long_enabled and self.enabled):
+      self._clear_targets()
+    else:
+      self.update_calculations(sm)
 
     self.is_enabled, self.is_active = self._update_state_machine()
 

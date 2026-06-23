@@ -368,4 +368,74 @@ class TestSmartCruiseControlMap:
     self.scc_m.update(True, False, 17.1, 0.0, 30.0, bad_sm)
     assert self.scc_m.v_target == 0.0
 
+  def _patch_update_calculations(self, controller):
+    called = []
+    original = controller.update_calculations
+    controller.update_calculations = lambda sm=None: called.append(True)
+    return called, original
+
+  def _restore_update_calculations(self, controller, original):
+    controller.update_calculations = original
+
+  def _seed_stale_map_state(self):
+    self.scc_m.state = VisionState.turning
+    self.scc_m.v_target = 15.0
+    self.scc_m.target_lat = 37.0
+    self.scc_m.target_lon = -122.0
+
+  def _assert_target_fail_closed(self):
+    assert self.scc_m.v_target == 0.0
+    assert self.scc_m.target_lat == 0.0
+    assert self.scc_m.target_lon == 0.0
+
+  def test_disabled_long_skips_calculations_and_clears_stale_state(self):
+    self.scc_m.enabled = True
+    self._seed_stale_map_state()
+    called, original = self._patch_update_calculations(self.scc_m)
+    try:
+      self.scc_m.update(False, False, 20.0, 0.0, 30.0)
+    finally:
+      self._restore_update_calculations(self.scc_m, original)
+
+    assert not called
+    assert self.scc_m.state == VisionState.disabled
+    assert not self.scc_m.is_enabled
+    assert not self.scc_m.is_active
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+    assert self.scc_m.output_a_target == 0.
+    self._assert_target_fail_closed()
+    assert self.scc_m.frame == 0
+
+  def test_feature_disabled_skips_calculations_and_clears_stale_state(self):
+    self.scc_m.enabled = False
+    self._seed_stale_map_state()
+    called, original = self._patch_update_calculations(self.scc_m)
+    try:
+      self.scc_m.update(True, False, 20.0, 0.0, 30.0)
+    finally:
+      self._restore_update_calculations(self.scc_m, original)
+
+    assert not called
+    assert self.scc_m.state == VisionState.disabled
+    assert not self.scc_m.is_enabled
+    assert not self.scc_m.is_active
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+    assert self.scc_m.output_a_target == 0.
+    self._assert_target_fail_closed()
+    assert self.scc_m.frame == 0
+
+  def test_override_still_runs_calculations(self):
+    self.scc_m.state = VisionState.turning
+    self.scc_m.v_target = 15.0
+    called, original = self._patch_update_calculations(self.scc_m)
+    try:
+      self.scc_m.update(True, True, 20.0, 0.0, 30.0)
+    finally:
+      self._restore_update_calculations(self.scc_m, original)
+
+    assert called
+    assert self.scc_m.state == VisionState.overriding
+    assert not self.scc_m.is_active
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
   # TODO-SP: mock data from modelV2 to test other states
