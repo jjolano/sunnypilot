@@ -598,6 +598,27 @@ class CustomLongitudinalFinalizer:
     planner so that live instrumentation (e.g. ``tools/drive_lab`` monkeypatches against
     ``LongitudinalPlannerSP`` methods) remains in the loop.
     """
+    if not bool(getattr(custom_long, "enabled", False)):
+      reset_lead_stop_hold()
+      self.custom_long_output_telemetry = None
+      self.last_release_block_reason = ""
+      if is_e2e and not model_stale:
+        a_target = min(raw_model_a_target, mpc_a_target)
+        return FinalizerResult(
+          a_target=float(a_target),
+          should_stop=bool(mpc_should_stop or raw_model_should_stop),
+          e2e_source=bool(a_target < mpc_a_target),
+          custom_long_output_telemetry=None,
+          last_release_block_reason="",
+        )
+      return FinalizerResult(
+        a_target=float(mpc_a_target),
+        should_stop=bool(mpc_should_stop),
+        e2e_source=False,
+        custom_long_output_telemetry=None,
+        last_release_block_reason="",
+      )
+
     car_state = self._sm_item(sm, 'carState')
     radar_state = self._sm_item(sm, 'radarState')
     selected_lead = self._select_stop_hold_lead(radar_state) if radar_state is not None else None

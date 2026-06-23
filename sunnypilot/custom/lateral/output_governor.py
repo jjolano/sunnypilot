@@ -240,7 +240,10 @@ class OutputGovernor:
 
   @staticmethod
   def _finite(*values: float) -> bool:
-    return all(math.isfinite(float(v)) for v in values)
+    try:
+      return all(math.isfinite(float(v)) for v in values)
+    except (TypeError, ValueError):
+      return False
 
   @staticmethod
   def _over_response_scale(inp: OutputGovernorInputs) -> float:

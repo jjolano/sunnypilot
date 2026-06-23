@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import math
 import time
 
 import cereal.messaging as messaging
@@ -19,6 +20,22 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Polic
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 
 ALL_SOURCES = tuple(SpeedLimitSource.schema.enumerants.values())
+
+
+def _finite_positive(value) -> float:
+  try:
+    v = float(value)
+  except (TypeError, ValueError):
+    return 0.
+  return v if math.isfinite(v) and v > 0. else 0.
+
+
+def _finite_nonnegative_or_none(value) -> float | None:
+  try:
+    v = float(value)
+  except (TypeError, ValueError):
+    return None
+  return v if math.isfinite(v) and v >= 0. else None
 
 
 class SpeedLimitResolver:
@@ -41,7 +58,6 @@ class SpeedLimitResolver:
     self.limit_solutions = {}  # Store for speed limit solutions from different sources
     self.distance_solutions = {}  # Store for distance to current speed limit start for different sources
 
-    self.policy = self.params.get("SpeedLimitPolicy", return_default=True)
     self.policy = get_sanitize_int_param(
       "SpeedLimitPolicy",
       Policy.min().value,
@@ -77,6 +93,10 @@ class SpeedLimitResolver:
   def update_speed_limit_states(self) -> None:
     self.speed_limit_final = self.speed_limit + self.speed_limit_offset
 
+    if not math.isfinite(self.speed_limit_final) or self.speed_limit_final <= 0.:
+      self.speed_limit_offset = 0.
+      self.speed_limit_final = self.speed_limit if self.speed_limit > 0. else 0.
+
     if self.speed_limit > 0.:
       self.speed_limit_last = self.speed_limit
       self.speed_limit_final_last = self.speed_limit_final
@@ -91,20 +111,37 @@ class SpeedLimitResolver:
 
   def update_params(self):
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      self.policy = self.params.get("SpeedLimitPolicy", return_default=True)
+      self.policy = get_sanitize_int_param(
+        "SpeedLimitPolicy",
+        Policy.min().value,
+        Policy.max().value,
+        self.params
+      )
       self.is_metric = self.params.get_bool("IsMetric")
-      self.offset_type = self.params.get("SpeedLimitOffsetType", return_default=True)
+      self.offset_type = get_sanitize_int_param(
+        "SpeedLimitOffsetType",
+        OffsetType.min().value,
+        OffsetType.max().value,
+        self.params
+      )
       self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
 
   def _get_speed_limit_offset(self) -> float:
+    try:
+      offset_value = float(self.offset_value)
+    except (TypeError, ValueError):
+      return 0.
+
     if self.offset_type == OffsetType.off:
       return 0
     elif self.offset_type == OffsetType.fixed:
-      return float(self.offset_value * (CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS))
+      offset = float(offset_value * (CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS))
     elif self.offset_type == OffsetType.percentage:
-      return float(self.offset_value * 0.01 * self.speed_limit)
+      offset = float(offset_value * 0.01 * self.speed_limit)
     else:
-      raise NotImplementedError("Offset not supported")
+      return 0.
+
+    return offset if math.isfinite(offset) else 0.
 
   def _reset_limit_sources(self, source: custom.LongitudinalPlanSP.SpeedLimit.Source) -> None:
     self.limit_solutions[source] = 0.
@@ -112,7 +149,7 @@ class SpeedLimitResolver:
 
   def _get_from_car_state(self, sm: messaging.SubMaster) -> None:
     self._reset_limit_sources(SpeedLimitSource.car)
-    self.limit_solutions[SpeedLimitSource.car] = sm['carStateSP'].speedLimit
+    self.limit_solutions[SpeedLimitSource.car] = _finite_positive(getattr(sm['carStateSP'], "speedLimit", 0.))
     self.distance_solutions[SpeedLimitSource.car] = 0.
 
   def _get_from_map_data(self, sm: messaging.SubMaster) -> None:
@@ -123,12 +160,15 @@ class SpeedLimitResolver:
     gps_data = sm[self._gps_location_service]
     map_data = sm['liveMapDataSP']
 
-    gps_fix_age = time.monotonic() - gps_data.unixTimestampMillis * 1e-3
-    if gps_fix_age > LIMIT_MAX_MAP_DATA_AGE:
+    try:
+      gps_fix_age = time.monotonic() - float(gps_data.unixTimestampMillis) * 1e-3
+    except (TypeError, ValueError):
+      return
+    if not math.isfinite(gps_fix_age) or gps_fix_age > LIMIT_MAX_MAP_DATA_AGE:
       return
 
-    speed_limit = map_data.speedLimit if map_data.speedLimitValid else 0.
-    next_speed_limit = map_data.speedLimitAhead if map_data.speedLimitAheadValid else 0.
+    speed_limit = _finite_positive(getattr(map_data, "speedLimit", 0.)) if map_data.speedLimitValid else 0.
+    next_speed_limit = _finite_positive(getattr(map_data, "speedLimitAhead", 0.)) if map_data.speedLimitAheadValid else 0.
 
     self._calculate_map_data_limits(sm, speed_limit, next_speed_limit)
 
@@ -136,14 +176,20 @@ class SpeedLimitResolver:
     gps_data = sm[self._gps_location_service]
     map_data = sm['liveMapDataSP']
 
-    distance_since_fix = self.v_ego * (time.monotonic() - gps_data.unixTimestampMillis * 1e-3)
-    distance_to_speed_limit_ahead = max(0., map_data.speedLimitAheadDistance - distance_since_fix)
+    try:
+      distance_since_fix = float(self.v_ego) * (time.monotonic() - float(gps_data.unixTimestampMillis) * 1e-3)
+    except (TypeError, ValueError):
+      distance_since_fix = 0.
+    if not math.isfinite(distance_since_fix):
+      distance_since_fix = 0.
+    speed_limit_ahead_distance = _finite_nonnegative_or_none(getattr(map_data, "speedLimitAheadDistance", 0.))
+    distance_to_speed_limit_ahead = None if speed_limit_ahead_distance is None else max(0., speed_limit_ahead_distance - distance_since_fix)
 
     self.limit_solutions[SpeedLimitSource.map] = speed_limit
     self.distance_solutions[SpeedLimitSource.map] = 0.
 
     # FIXME-SP: this is not working as expected
-    if 0. < next_speed_limit < self.v_ego:
+    if distance_to_speed_limit_ahead is not None and 0. < next_speed_limit < self.v_ego:
       adapt_time = (next_speed_limit - self.v_ego) / LIMIT_ADAPT_ACC
       adapt_distance = self.v_ego * adapt_time + 0.5 * LIMIT_ADAPT_ACC * adapt_time ** 2
 

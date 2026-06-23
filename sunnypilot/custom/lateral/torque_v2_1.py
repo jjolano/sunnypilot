@@ -36,6 +36,14 @@ def _sign(value: float, eps: float) -> int:
   return 0
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+  try:
+    v = float(value)
+  except (TypeError, ValueError):
+    return default
+  return v if math.isfinite(v) else default
+
+
 class LatControlTorqueV21(LatControl):
   def __init__(self, CP, CP_SP, CI, dt, extension=None):
     super().__init__(CP, CP_SP, CI, dt)
@@ -81,8 +89,11 @@ class LatControlTorqueV21(LatControl):
                             desired_lateral_accel: float, actual_lateral_accel: float) -> bool:
     if not steer_limited_by_safety:
       return False
-    nominal_sign = _sign(float(nominal_torque), SAME_DIRECTION_TORQUE_EPS)
-    correction_sign = _sign(float(desired_lateral_accel) - float(actual_lateral_accel), SAME_DIRECTION_ERROR_EPS)
+    try:
+      nominal_sign = _sign(float(nominal_torque), SAME_DIRECTION_TORQUE_EPS)
+      correction_sign = _sign(float(desired_lateral_accel) - float(actual_lateral_accel), SAME_DIRECTION_ERROR_EPS)
+    except (TypeError, ValueError):
+      return False
     if nominal_sign == 0 or nominal_sign != correction_sign:
       return False
 
@@ -159,6 +170,7 @@ class LatControlTorqueV21(LatControl):
     same_direction_limit = self._same_direction_limit(
       bool(steer_limited_by_safety), nominal_output_torque, rc.setpoint, rc.measurement
     )
+    nominal_output_torque_log = _safe_float(nominal_output_torque)
     governed = self.governor.update(OutputGovernorInputs(
       active=True,
       v_ego=CS.vEgo,
@@ -190,14 +202,14 @@ class LatControlTorqueV21(LatControl):
     adaptive = pid_log.adaptiveTorqueState
     adaptive.active = True
     adaptive.releaseActive = bool(CS.steeringPressed)
-    adaptive.nominalOutput = float(-nominal_output_torque)
+    adaptive.nominalOutput = float(-nominal_output_torque_log)
     adaptive.shapingActive = False
     adaptive.shapingReason = 0
-    adaptive.unshapedOutput = float(-nominal_output_torque)
+    adaptive.unshapedOutput = float(-nominal_output_torque_log)
     adaptive.outputCap = float(governed.cap)
     adaptive.modelConfidence = float(getattr(rc, "model_confidence", 0.0) or 0.0)
     adaptive.steerLimitLimited = bool(steer_limited_by_safety)
-    adaptive.steerLimitError = float(max(0.0, abs(nominal_output_torque) - (self.steer_max * governed.cap)))
+    adaptive.steerLimitError = float(max(0.0, abs(nominal_output_torque_log) - (self.steer_max * governed.cap)))
     adaptive.steerLimitSameDirection = bool(same_direction_limit)
     adaptive.governorReason = int(governed.reason)
     adaptive.actualLateralJerk = float(rc.raw_actual_lateral_jerk)

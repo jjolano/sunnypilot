@@ -81,6 +81,18 @@ def test_invalid_inputs_flagged_and_safe():
   assert gov.previous_output == 0.0
 
 
+def test_uncastable_invalid_inputs_flagged_and_safe():
+  gov = OutputGovernor(DT)
+  gov.update(benign(nominal=0.5))
+  bad = cast(OutputGovernorInputs, benign(nominal=None))
+
+  r = gov.update(bad)
+
+  assert r.output_torque == 0.0
+  assert r.reason & GovernorReason.INVALID
+  assert gov.previous_output == 0.0
+
+
 def test_slew_bounds_rate_of_change():
   gov = OutputGovernor(DT)
   v = 20.0

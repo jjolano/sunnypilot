@@ -67,6 +67,15 @@ LEAD_ACCEL_TAU_MIN = 0.1
 LEAD_PULLAWAY_ACCEL_TAU_MIN = _LEAD_ACCEL_TAU
 MODEL_ONLY_PULLAWAY_PROB_MIN = 0.8
 
+
+def _finite_float(value, default=None):
+  try:
+    v = float(value)
+  except (TypeError, ValueError):
+    return default
+  return v if np.isfinite(v) else default
+
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -300,12 +309,12 @@ class LongitudinalMpc:
 
   @staticmethod
   def extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau):
-    a_lead = float(a_lead)
-    if not np.isfinite(a_lead):
-      a_lead = 0.0
+    x_lead = _finite_float(x_lead, 50.0)
+    v_lead = _finite_float(v_lead, 0.0)
+    a_lead = _finite_float(a_lead, 0.0)
     tau_floor = LEAD_PULLAWAY_ACCEL_TAU_MIN if a_lead > 0.0 else LEAD_ACCEL_TAU_MIN
-    a_lead_tau = float(a_lead_tau)
-    if not np.isfinite(a_lead_tau):
+    a_lead_tau = _finite_float(a_lead_tau)
+    if a_lead_tau is None:
       a_lead_tau = tau_floor
     else:
       a_lead_tau = max(a_lead_tau, tau_floor)
@@ -320,8 +329,8 @@ class LongitudinalMpc:
     # aLeadK is a noisy double derivative. Let braking propagate promptly, but avoid optimistic
     # pullaway extrapolation from making the MPC assume the gap will open unless the measurement
     # keeps proving it over subsequent frames.
-    a_lead = float(a_lead)
-    if not np.isfinite(a_lead):
+    a_lead = _finite_float(a_lead)
+    if a_lead is None:
       return 0.0
     a_lead = float(np.clip(a_lead, LEAD_ACCEL_MIN, LEAD_ACCEL_MAX))
     if a_lead > 0.0:
@@ -338,10 +347,16 @@ class LongitudinalMpc:
   def process_lead(self, lead):
     v_ego = self.x0[1]
     if lead is not None and lead.status:
-      x_lead = lead.dRel
-      v_lead = lead.vLead
-      a_lead = lead.aLeadK
-      a_lead_tau = lead.aLeadTau
+      x_lead = _finite_float(getattr(lead, "dRel", None))
+      v_lead = _finite_float(getattr(lead, "vLead", None))
+      if x_lead is None or v_lead is None:
+        x_lead = 50.0
+        v_lead = v_ego + 10.0
+        a_lead = 0.0
+        a_lead_tau = _LEAD_ACCEL_TAU
+      else:
+        a_lead = _finite_float(getattr(lead, "aLeadK", None), 0.0)
+        a_lead_tau = _finite_float(getattr(lead, "aLeadTau", None), _LEAD_ACCEL_TAU)
     else:
       # Fake a fast lead car, so mpc can keep running in the same mode
       x_lead = 50.0

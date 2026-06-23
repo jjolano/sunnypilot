@@ -397,6 +397,13 @@ class LateralDemandAdapter:
     self.last_result = None
     self.last_debug = {}
 
+  def reset(self) -> None:
+    try:
+      self._pipeline.reset()
+    except Exception:
+      pass
+    self.clear()
+
   def _observe_sensor_confidence(self, lat_active: bool, v_ego: float, raw_curvature: float,
                                  measured_curvature: float, model_v2: Any,
                                  steering_pressed: bool | None, model_age_s: float,
@@ -452,7 +459,7 @@ class LateralDemandAdapter:
     )
 
     if not self.enabled or model_v2 is None:
-      self.last_result = None
+      self.reset()
       self.last_debug = self._observe_sensor_confidence(
         lat_active, v_ego, raw_curvature, measured_curvature, model_v2,
         steering_pressed, model_age_s, yaw_rate, steering_rate_deg, steer_limited,

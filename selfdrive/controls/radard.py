@@ -122,13 +122,71 @@ def laplacian_pdf(x: float, mu: float, b: float):
   return math.exp(-abs(x-mu)/b)
 
 
+def _first_finite(msg: capnp._DynamicStructReader, field: str) -> float | None:
+  try:
+    values = getattr(msg, field)
+    if len(values) == 0:
+      return None
+    value = float(values[0])
+  except (TypeError, ValueError, IndexError):
+    return None
+  return value if math.isfinite(value) else None
+
+
+def _finite_float(value: Any) -> float | None:
+  try:
+    value_f = float(value)
+  except (TypeError, ValueError):
+    return None
+  return value_f if math.isfinite(value_f) else None
+
+
+def _clean_lead_prob(value: Any) -> float:
+  value_f = _finite_float(value)
+  if value_f is None:
+    return 0.0
+  return float(np.clip(value_f, 0.0, 1.0))
+
+
+def _model_lead_values(lead_msg: capnp._DynamicStructReader, model_v_ego: float) -> dict[str, float] | None:
+  x = _first_finite(lead_msg, "x")
+  y = _first_finite(lead_msg, "y")
+  v = _first_finite(lead_msg, "v")
+  a = _first_finite(lead_msg, "a")
+  x_std = _first_finite(lead_msg, "xStd")
+  y_std = _first_finite(lead_msg, "yStd")
+  v_std = _first_finite(lead_msg, "vStd")
+  model_v_ego = _finite_float(model_v_ego)
+  if model_v_ego is None:
+    return None
+  if any(value is None for value in (x, y, v, a, x_std, y_std, v_std)):
+    return None
+  d_rel = float(x) - RADAR_TO_CAMERA
+  if d_rel <= 0.0:
+    return None
+  return {
+    "dRel": d_rel,
+    "yRel": -float(y),
+    "vRel": float(v) - model_v_ego,
+    "vLeadModel": float(v),
+    "aLeadK": float(a),
+    "xStd": max(float(x_std), 1e-4),
+    "yStd": max(float(y_std), 1e-4),
+    "vStd": max(float(v_std), 1e-4),
+  }
+
+
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track]):
-  offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
+  lead_values = _model_lead_values(lead, v_ego)
+  if lead_values is None:
+    return None
+  v_ego = float(v_ego)
+  offset_vision_dist = lead_values["dRel"]
 
   def prob(c):
-    prob_d = laplacian_pdf(c.dRel, offset_vision_dist, lead.xStd[0])
-    prob_y = laplacian_pdf(c.yRel, -lead.y[0], lead.yStd[0])
-    prob_v = laplacian_pdf(c.vRel + v_ego, lead.v[0], lead.vStd[0])
+    prob_d = laplacian_pdf(c.dRel, offset_vision_dist, lead_values["xStd"])
+    prob_y = laplacian_pdf(c.yRel, lead_values["yRel"], lead_values["yStd"])
+    prob_v = laplacian_pdf(c.vRel + v_ego, lead_values["vLeadModel"], lead_values["vStd"])
 
     # This isn't exactly right, but it's a good heuristic
     return prob_d * prob_y * prob_v
@@ -138,7 +196,7 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   # if no 'sane' match is found return -1
   # stationary radar points can be false positives
   dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.25, 5.0])
-  vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
+  vel_sane = (abs(track.vRel + v_ego - lead_values["vLeadModel"]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
     return track
   else:
@@ -146,14 +204,19 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
 
 
 def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float, lead_prob: float):
-  lead_v_rel_pred = lead_msg.v[0] - model_v_ego
+  lead_values = _model_lead_values(lead_msg, model_v_ego)
+  v_ego = _finite_float(v_ego)
+  lead_prob = _clean_lead_prob(lead_prob)
+  if lead_values is None or v_ego is None:
+    return {'status': False}
+  lead_v_rel_pred = lead_values["vRel"]
   return {
-    "dRel": float(lead_msg.x[0] - RADAR_TO_CAMERA),
-    "yRel": float(-lead_msg.y[0]),
+    "dRel": float(lead_values["dRel"]),
+    "yRel": float(lead_values["yRel"]),
     "vRel": float(lead_v_rel_pred),
     "vLead": float(v_ego + lead_v_rel_pred),
     "vLeadK": float(v_ego + lead_v_rel_pred),
-    "aLeadK": float(lead_msg.a[0]),
+    "aLeadK": float(lead_values["aLeadK"]),
     "aLeadTau": 0.3,
     "fcw": False,
     "modelProb": float(lead_prob),
@@ -167,6 +230,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
              model_v_ego: float, lead_prob: float, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
              low_speed_override: bool = True) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
+  lead_prob = _clean_lead_prob(lead_prob)
   if len(tracks) > 0 and ready and lead_prob > .5:
     track = match_vision_to_track(v_ego, lead_msg, tracks)
   else:
@@ -274,7 +338,7 @@ class RadarD:
     if len(leads_v3) > 1:
       for i in range(2):
         # Asymmetric filter on lead prob to keep lead when uncertain
-        lead_prob = leads_v3[i].prob
+        lead_prob = _clean_lead_prob(leads_v3[i].prob)
         if lead_prob > self.lead_prob_filters[i].x:
           self.lead_prob_filters[i].x = lead_prob
         else:

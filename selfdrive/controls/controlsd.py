@@ -159,7 +159,7 @@ class Controls(ControlsExt):
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
       raw_desired_curvature = new_desired_curvature
       if hasattr(self, 'lateral_demand'):
-        self.lateral_demand.clear()
+        self.lateral_demand.reset()
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
       raw_desired_curvature = new_desired_curvature

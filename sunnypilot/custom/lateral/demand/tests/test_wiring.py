@@ -279,6 +279,32 @@ def test_adapter_disabled_clears_previous_result():
   assert a.last_debug["sensor_confidence_block_reason"] == "driver_override"
 
 
+def test_adapter_disabled_resets_pipeline_state():
+  a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
+  assert math.isfinite(a.process(True, 20.0, 0.0, 0.003, 0.003, fake_model(0.003)))
+  assert a._pipeline.previous_desired_curvature != 0.0
+
+  a.enabled = False
+  out = a.process(True, 20.0, 0.0, 0.002, 0.002, fake_model(0.002),
+                  steering_pressed=False, model_age_s=0.01, yaw_rate=0.0, steering_rate_deg=0.0)
+
+  assert out == 0.002
+  assert a._pipeline.previous_desired_curvature == 0.0
+
+
+def test_adapter_reset_clears_result_and_pipeline_state():
+  a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
+  assert math.isfinite(a.process(True, 20.0, 0.0, 0.003, 0.003, fake_model(0.003)))
+  assert a.last_result is not None
+  assert a._pipeline.previous_desired_curvature != 0.0
+
+  a.reset()
+
+  assert a.last_result is None
+  assert a.last_debug == {}
+  assert a._pipeline.previous_desired_curvature == 0.0
+
+
 # --- LateralDebugTraceMode shadow telemetry tests ---
 
 

@@ -136,6 +136,47 @@ def test_final_output_selection_does_not_raw_or_model_stop_in_scc_or_acc():
   assert e2e_source is False
 
 
+def test_custom_disabled_finalizer_bypasses_custom_stop_hold_and_clears_latch():
+  sp = fake_planner(LongitudinalMode.SCC)
+  sp.custom_long.enabled = False
+  sm = FakeSubMaster({
+    'selfdriveState': SimpleNamespace(experimentalMode=False),
+    'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False),
+    'controlsState': SimpleNamespace(forceDecel=False),
+    'radarState': SimpleNamespace(leadOne=lead(dRel=5.0, vLead=0.0, vRel=0.0), leadTwo=None),
+  })
+
+  a, should_stop, e2e_source = sp.final_longitudinal_output(sm, 0.2, False, -3.0, True)  # type: ignore[arg-type]
+  assert a == 0.2
+  assert should_stop is False
+  assert e2e_source is False
+  assert sp._lead_stop_hold_active is False
+
+  sp._lead_stop_hold_active = True
+  sp._lead_stop_hold_lead_id = 7
+  sp._lead_stop_hold_gap_baseline_d_rel = 5.0
+  sp._lead_stop_hold_gap_prev_d_rel = 5.0
+  sp._stop_hold_release_slew_a_target = 0.15
+
+  a, should_stop, e2e_source = sp.final_longitudinal_output(sm, -0.1, False, -3.0, True)  # type: ignore[arg-type]
+  assert a == -0.1
+  assert should_stop is False
+  assert e2e_source is False
+  assert sp._lead_stop_hold_active is False
+  assert sp._stop_hold_release_slew_a_target is None
+
+
+def test_custom_disabled_finalizer_preserves_legacy_dec_e2e_output():
+  sp = fake_planner(LongitudinalMode.SCC)
+  sp.custom_long.enabled = False
+
+  a, should_stop, e2e_source = sp.final_longitudinal_output(fake_sm(True), -0.2, False, -3.0, True)  # type: ignore[arg-type]
+
+  assert a == -3.0
+  assert should_stop is True
+  assert e2e_source is True
+
+
 def test_e2e_raw_model_stale_threshold_boundary(monkeypatch):
   monkeypatch.setattr(long_wiring.time, "monotonic", lambda: 100.0)
   for age, expected_stop in ((0.19, True), (0.199, True), (0.201, False), (0.21, False)):

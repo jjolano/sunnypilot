@@ -94,6 +94,16 @@ class TestBlinkerPauseLateral:
     }
     self._test_should_blinker_pause_lateral(expected_results)
 
+  def test_invalid_threshold_values_fail_closed(self):
+    self.blinker_pause_lateral.min_speed = "nan"
+    self.blinker_pause_lateral.reengage_delay = float("inf")
+    self.CS.vEgo = 0.0
+    self.CS.leftBlinker = True
+    self.CS.rightBlinker = False
+
+    assert self.blinker_pause_lateral.update(self.CS) is False
+    assert self.blinker_pause_lateral.blinker_off_timer == 0.0
+
   def test_metric_units_below_min_speed(self):
     self.blinker_pause_lateral.is_metric = True
     self.CS.vEgo = 5.0  # ~18 km/h

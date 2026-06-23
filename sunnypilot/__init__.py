@@ -30,10 +30,14 @@ class IntEnumBase(IntEnum):
 
 
 def get_sanitize_int_param(key: str, min_val: int, max_val: int, params) -> int:
-  val: int = params.get(key, return_default=True)
+  raw_val = params.get(key, return_default=True)
+  try:
+    val = int(raw_val)
+  except (TypeError, ValueError, OverflowError):
+    val = min_val
   clipped_val = max(min_val, min(max_val, val))
 
-  if clipped_val != val:
+  if clipped_val != raw_val:
     params.put(key, clipped_val, block=True)
 
   return clipped_val

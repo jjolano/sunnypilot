@@ -3,7 +3,11 @@ from cereal import log, custom
 from openpilot.common.params import Params
 
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
-from openpilot.sunnypilot.selfdrive.controls.lib.lane_turn_desire import LaneTurnController, LANE_CHANGE_SPEED_MIN
+from openpilot.sunnypilot.selfdrive.controls.lib.lane_turn_desire import (
+  LaneTurnController,
+  LANE_CHANGE_SPEED_MIN,
+  _lane_turn_speed_from_param,
+)
 from openpilot.sunnypilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeMode
 
 TurnDirection = custom.ModelDataV2SP.TurnDirection
@@ -35,6 +39,20 @@ def test_lane_turn_desire_disabled():
   controller.lane_turn_value = LANE_CHANGE_SPEED_MIN
   controller.turn_direction = TurnDirection.none
   controller.update_lane_turn(False, False, True, False, 7)
+  assert controller.get_turn_direction() == TurnDirection.none
+
+
+@pytest.mark.parametrize("bad_value", ["nan", float("nan"), float("inf"), -1.0, None])
+def test_invalid_lane_turn_speed_param_fails_closed(bad_value):
+  dh = DesireHelper()
+  controller = LaneTurnController(dh)
+  controller.enabled = True
+  controller.lane_turn_value = _lane_turn_speed_from_param(bad_value)
+  controller.turn_direction = TurnDirection.none
+
+  controller.update_lane_turn(False, False, True, False, 0.0)
+
+  assert controller.lane_turn_value == 0.0
   assert controller.get_turn_direction() == TurnDirection.none
 
 

@@ -178,6 +178,16 @@ def test_override_empty_tracks(MockParams):
   assert result is NO_LEAD
 
 
+@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
+def test_override_fail_closed_on_malformed_track_fields(MockParams):
+  MockParams.return_value.get_bool.return_value = True
+  track = FakeTrack(dRel=None, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
+
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
+
+  assert result is NO_LEAD
+
+
 def test_is_high_risk_cut_in_gates():
   assert _is_high_risk_cut_in(FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3), 12.0) is True
   assert _is_high_risk_cut_in(FakeTrack(dRel=15.0, yRel=2.0, vRel=-3.0, vLead=8.0, cnt=3), 12.0) is False
@@ -185,8 +195,10 @@ def test_is_high_risk_cut_in_gates():
   assert _is_high_risk_cut_in(FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=1.0, cnt=3), 12.0) is False
   assert _is_high_risk_cut_in(FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=1), 12.0) is False
   assert _is_high_risk_cut_in(FakeTrack(dRel=35.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3), 12.0) is False
+  assert _is_high_risk_cut_in(FakeTrack(dRel=None, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3), 12.0) is False
 
 
 def test_track_ttc():
   assert _track_ttc(FakeTrack(dRel=15.0, vRel=-3.0)) == 5.0
   assert _track_ttc(FakeTrack(dRel=9.0, vRel=-3.0)) == 3.0
+  assert math.isinf(_track_ttc(FakeTrack(dRel=None, vRel=-3.0)))

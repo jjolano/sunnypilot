@@ -81,6 +81,36 @@ class TestLongitudinalLeadExtrapolation:
 
     assert np.allclose(lead_xv[:, 1], 15.0)
 
+  @pytest.mark.parametrize("bad_d_rel", [np.inf, -np.inf, np.nan, None])
+  def test_non_finite_lead_distance_falls_back_to_fake_lead(self, bad_d_rel):
+    mpc = _FakeLongitudinalMpc(v_ego=15.0)
+
+    lead_xv = mpc.process_lead(_fake_lead(d_rel=bad_d_rel, v_lead=12.0, a_lead=-2.0))
+
+    assert np.all(np.isfinite(lead_xv))
+    assert lead_xv[0, 0] == pytest.approx(50.0)
+    assert lead_xv[0, 1] == pytest.approx(25.0)
+
+  @pytest.mark.parametrize("bad_v_lead", [np.inf, -np.inf, np.nan, None])
+  def test_non_finite_lead_speed_falls_back_to_fake_lead(self, bad_v_lead):
+    mpc = _FakeLongitudinalMpc(v_ego=15.0)
+
+    lead_xv = mpc.process_lead(_fake_lead(d_rel=40.0, v_lead=bad_v_lead, a_lead=-2.0))
+
+    assert np.all(np.isfinite(lead_xv))
+    assert lead_xv[0, 0] == pytest.approx(50.0)
+    assert lead_xv[0, 1] == pytest.approx(25.0)
+
+  @pytest.mark.parametrize("bad_tau", [np.inf, -np.inf, np.nan, None])
+  def test_non_finite_lead_tau_uses_default_decay(self, bad_tau):
+    mpc = _FakeLongitudinalMpc(v_ego=15.0)
+
+    lead_xv = mpc.process_lead(_fake_lead(d_rel=40.0, v_lead=15.0, a_lead=-2.0, a_lead_tau=bad_tau))
+
+    assert np.all(np.isfinite(lead_xv))
+    assert lead_xv[0, 0] == pytest.approx(40.0)
+    assert lead_xv[0, 1] == pytest.approx(15.0)
+
   def test_positive_pullaway_uses_default_decay_even_with_low_tau(self):
     x_lead, v_lead = 50.0, 15.0
 

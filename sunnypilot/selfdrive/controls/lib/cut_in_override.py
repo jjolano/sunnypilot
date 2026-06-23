@@ -43,10 +43,13 @@ def _is_high_risk_cut_in(track: Any, v_ego: float) -> bool:
     return False
   if track.cnt < _MIN_TRACK_CNT:
     return False
-  d_rel = float(getattr(track, "dRel", 0.0))
-  y_rel = float(getattr(track, "yRel", 0.0))
-  v_rel = float(getattr(track, "vRel", 0.0))
-  v_lead = float(getattr(track, "vLead", 0.0))
+  try:
+    d_rel = float(getattr(track, "dRel", 0.0))
+    y_rel = float(getattr(track, "yRel", 0.0))
+    v_rel = float(getattr(track, "vRel", 0.0))
+    v_lead = float(getattr(track, "vLead", 0.0))
+  except (TypeError, ValueError):
+    return False
   if not all(math.isfinite(x) for x in (d_rel, y_rel, v_rel, v_lead)):
     return False
   if d_rel <= 0 or d_rel > _MAX_D_REL:
@@ -66,8 +69,11 @@ def _is_high_risk_cut_in(track: Any, v_ego: float) -> bool:
 
 def _track_ttc(track: Any) -> float:
   """Compute TTC for a track (lower = more dangerous)."""
-  d_rel = float(getattr(track, "dRel", 0.0))
-  v_rel = float(getattr(track, "vRel", 0.0))
+  try:
+    d_rel = float(getattr(track, "dRel", 0.0))
+    v_rel = float(getattr(track, "vRel", 0.0))
+  except (TypeError, ValueError):
+    return math.inf
   closing = max(0.1, -v_rel)
   return d_rel / closing
 

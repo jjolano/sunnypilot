@@ -15,6 +15,7 @@ import pytest
 
 from cereal import log
 from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import BLOCK_INACTIVE, BLOCK_STEERING_PRESSED
+from openpilot.sunnypilot.custom.lateral.output_governor import GovernorReason
 from openpilot.sunnypilot.custom.lateral.torque_v2_1 import LatControlTorqueV21, VERSION_V21
 
 DT = 0.01
@@ -27,6 +28,11 @@ class NoOpExtension:
 
   def update(self, CS, VM, pid, params, ff, pid_log, *rest):
     return pid_log, rest[-1]  # rest[-1] is output_torque (last positional arg)
+
+
+class BadTorqueExtension(NoOpExtension):
+  def update(self, CS, VM, pid, params, ff, pid_log, *rest):
+    return pid_log, None
 
 
 def make_torque_params():
@@ -66,6 +72,10 @@ def make_pose():
 
 def make_controller():
   return LatControlTorqueV21(make_cp(), SimpleNamespace(), make_ci(), DT, extension=NoOpExtension())
+
+
+def make_bad_extension_controller():
+  return LatControlTorqueV21(make_cp(), SimpleNamespace(), make_ci(), DT, extension=BadTorqueExtension())
 
 
 def test_constructs_and_runs_bounded():
@@ -135,6 +145,7 @@ def test_same_direction_limit_requires_tracking_correction_direction():
   assert c._same_direction_limit(True, -0.5, 1.0, 0.5) is False
   assert c._same_direction_limit(True, 0.5, 0.5, 1.0) is False
   assert c._same_direction_limit(False, 0.5, 1.0, 0.5) is False
+  assert c._same_direction_limit(True, None, 1.0, 0.5) is False
 
 
 def test_same_direction_limit_uses_requested_and_applied_torque_signs_when_available():
@@ -267,6 +278,22 @@ def test_live_torque_params_update_limits():
   # PID limits track lateral_accel_from_torque(steer_max) = steer_max * latAccelFactor
   assert c.response_core.pid.pos_limit == pytest.approx(3.0)
   assert c.response_core.pid.neg_limit == pytest.approx(-3.0)
+
+
+def test_bad_extension_torque_fails_closed_without_crashing():
+  c = make_bad_extension_controller()
+  vm = FakeVM()
+
+  out, _, pid_log = c.update(
+    True, make_cs(v_ego=20.0, angle=10.0), vm,
+    make_params(), False, 0.02, make_pose(), False, 0.2,
+  )  # type: ignore[arg-type]
+
+  assert out == 0.0
+  assert pid_log.output == 0.0
+  assert pid_log.active is True
+  assert pid_log.adaptiveTorqueState.governorReason & GovernorReason.INVALID
+  assert c.governor.previous_output == 0.0
 
 
 @pytest.mark.parametrize("desired_curvature", [0.005, -0.005])
