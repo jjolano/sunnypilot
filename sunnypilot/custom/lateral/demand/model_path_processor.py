@@ -47,6 +47,7 @@ LOW_SPEED_SOFT_GATE_SPEED = 12.0
 LOW_SPEED_SOFT_GATE_MAX_EXTRA_FRAMES = 3
 SOFT_GATE_HOLD_QUALITY = 0.70
 SOFT_GATE_REASONS = frozenset(("high_path_std", "frame_drop", "model_stale", "path_disagreement", "low_lane_confidence"))
+SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA = 0.04  # m/s^2
 LOW_SPEED_UNTRUSTED_CURVATURE_STEP = 0.0025
 LOW_SPEED_CURVE_RETENTION_FRAMES = 12
 LOW_SPEED_CURVE_RETENTION_MIN_CURVATURE = 0.008
@@ -228,6 +229,7 @@ class ModelPathProcessor:
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path", 0, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
     desired_curvature = float(inputs.desired_curvature)
+    raw_desired_curvature = desired_curvature
     fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
     quality = 1.0
     reason = "ok"
@@ -292,8 +294,10 @@ class ModelPathProcessor:
     if quality < LOW_QUALITY_BLEND_THRESHOLD:
       self._recovering_from_hard_invalid = False
       retained_fallback = self._retained_curve_fallback(inputs, desired_curvature, fallback_curvature)
+      retained_fallback_used = False
       if retained_fallback is not None:
         fallback_curvature = retained_fallback
+        retained_fallback_used = True
       alpha = float(np.interp(quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0]))
       desired_curvature = self._blend(fallback_curvature, desired_curvature, alpha)
       if reason in SOFT_GATE_REASONS:
@@ -301,6 +305,13 @@ class ModelPathProcessor:
           inputs.v_ego,
           desired_curvature,
           fallback_curvature,
+        )
+      if reason in SOFT_GATE_REASONS and not retained_fallback_used:
+        desired_curvature = self._limit_same_sign_amplification(
+          raw_desired_curvature,
+          desired_curvature,
+          inputs.v_ego,
+          SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA,
         )
       return ModelPathProcessorResult(
         desired_curvature, quality, True, reason, hold_frames_remaining, trust_penalty=self._trust_penalty,
@@ -593,6 +604,24 @@ class ModelPathProcessor:
     if abs(curvature_delta) <= LOW_SPEED_UNTRUSTED_CURVATURE_STEP:
       return desired_curvature
     return fallback_curvature + math.copysign(LOW_SPEED_UNTRUSTED_CURVATURE_STEP, curvature_delta)
+
+  @staticmethod
+  def _limit_same_sign_amplification(
+    raw_curvature: float,
+    processed_curvature: float,
+    v_ego: float,
+    max_lat_accel_delta: float,
+  ) -> float:
+    """Clamp same-sign processed curvature so it does not amplify the raw demand beyond a small lateral-accel margin."""
+    if not math.isfinite(raw_curvature) or not math.isfinite(processed_curvature) or not math.isfinite(v_ego):
+      return processed_curvature
+    if raw_curvature * processed_curvature < 0.0:
+      return processed_curvature
+    max_delta_curvature = max_lat_accel_delta / max(abs(v_ego), 1.0) ** 2
+    max_magnitude = abs(raw_curvature) + max_delta_curvature
+    if abs(processed_curvature) <= max_magnitude:
+      return processed_curvature
+    return math.copysign(max_magnitude, processed_curvature)
 
   def _age_retained_curve(self) -> None:
     if self._retained_curve_frames <= 0:

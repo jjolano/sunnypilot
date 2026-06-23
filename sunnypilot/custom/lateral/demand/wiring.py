@@ -215,7 +215,7 @@ class LateralDemandAdapter:
         steering_rate_deg=steering_rate_deg,
         steer_limited=steer_limited,
       )
-      inputs = replace(inputs, smooth_model_path_curvature=True)
+      inputs = replace(inputs, smooth_model_path_curvature=True, demand_jerk_smoothing_enabled=True)
       result = self._pipeline.update(inputs)
       self.last_result = result
       self.last_debug = dict(result.debug)

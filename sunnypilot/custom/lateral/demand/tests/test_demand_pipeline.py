@@ -12,12 +12,19 @@ import numpy as np
 import pytest
 
 from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.sunnypilot.custom.lateral.demand.lane_centering_assist import (
+  LANE_CENTERING_ASSIST_OK_REASON,
+  LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_REASON,
+  LaneCenteringAssistInputs,
+  LaneCenteringAssistTracker,
+)
 from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   LOW_QUALITY_BLEND_THRESHOLD,
   NEAR_ZERO_BLEND_SCALE,
   NEAR_ZERO_CURVATURE_BP,
   SMOOTHED_CURVATURE_MAX_LAT_ACCEL_DELTA,
   SMOOTHED_CURVATURE_SPEED_BP,
+  SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA,
   ModelPathProcessor,
   ModelPathProcessorInputs,
 )
@@ -421,3 +428,92 @@ def test_spatial_smoothing_near_zero_scale_is_monotonic():
   assert all(earlier <= later for earlier, later in zip(corrections, corrections[1:]))
   assert corrections[0] < corrections[-1]
   assert corrections[0] == pytest.approx(corrections[-1] * NEAR_ZERO_BLEND_SCALE[0], rel=1e-6)
+
+
+def test_lane_centering_assist_path_reason_cooldown_blocks_reactivation():
+  tracker = LaneCenteringAssistTracker()
+  xs = [float(x) for x in range(N)]
+  ys = [0.01 * x for x in xs]
+  yaws = [0.0] * N
+
+  def make_inputs(path_reason: str) -> LaneCenteringAssistInputs:
+    return LaneCenteringAssistInputs(
+      lat_active=True,
+      v_ego=20.0,
+      measured_curvature=0.0,
+      model_curvature=0.0,
+      previous_processed_curvature=0.0,
+      path_quality=1.0,
+      path_reason=path_reason,
+      lane_change_shaping_active=False,
+      lane_change_blend=0.0,
+      curvature_limited=False,
+      steering_pressed=False,
+      left_blinker=False,
+      right_blinker=False,
+      position_x=xs,
+      position_y=ys,
+      orientation_z=yaws,
+      lane_line_probs=[0.9, 0.9, 0.9, 0.9],
+    )
+
+  ok = make_inputs(LANE_CENTERING_ASSIST_OK_REASON)
+  r = tracker.update(ok, DT)
+  assert r.active is True
+  assert r.reason == "growing_lateral_error"
+  assert r.curvature_nudge > 0.0
+
+  bad = make_inputs("low_lane_confidence")
+  r = tracker.update(bad, DT)
+  assert r.active is False
+  assert r.reason == "path_reason"
+  assert r.curvature_nudge == pytest.approx(0.0)
+
+  r = tracker.update(ok, DT)
+  assert r.active is False
+  assert r.reason == LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_REASON
+
+  for _ in range(49):
+    r = tracker.update(ok, DT)
+  assert r.active is False
+  assert r.reason == LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_REASON
+
+  for _ in range(10):
+    r = tracker.update(ok, DT)
+  assert r.active is True
+  assert r.curvature_nudge > 0.0
+
+
+def test_low_lane_confidence_soft_gate_does_not_amplify_raw_curvature():
+  proc = ModelPathProcessor()
+  t_idxs = ModelConstants.T_IDXS
+  n = len(t_idxs)
+
+  def make_inputs(desired_curvature: float, previous_desired_curvature: float) -> ModelPathProcessorInputs:
+    v_ego = 10.0
+    return ModelPathProcessorInputs(
+      lat_active=True,
+      v_ego=v_ego,
+      desired_curvature=desired_curvature,
+      measured_curvature=0.0,
+      previous_desired_curvature=previous_desired_curvature,
+      position_x=[float(x) for x in range(n)],
+      position_y=[0.0] * n,
+      position_y_std=[0.1] * n,
+      orientation_z=[float(desired_curvature * v_ego * t) for t in t_idxs],
+      orientation_rate_z=[float(desired_curvature * v_ego)] * n,
+      lane_line_probs=[0.9, 0.1, 0.1, 0.9],
+      smooth_model_path_curvature=False,
+    )
+
+  for _ in range(2):
+    proc.update(make_inputs(0.0, 0.0))
+
+  raw = 0.005
+  previous = 0.01
+  result = proc.update(make_inputs(raw, previous))
+  assert result.reason == "low_lane_confidence"
+  assert result.gated is True
+  margin = SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA / (10.0 ** 2)
+  assert abs(result.desired_curvature) <= abs(raw) + margin + 1e-9
+  assert math.copysign(1.0, result.desired_curvature) == math.copysign(1.0, raw)

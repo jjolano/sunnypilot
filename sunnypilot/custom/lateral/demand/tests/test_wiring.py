@@ -167,7 +167,7 @@ def test_adapter_enabled_turns_on_model_path_smoothing():
   assert out == pytest.approx(0.001)
   assert spy.inputs is not None
   assert spy.inputs.smooth_model_path_curvature is True
-  assert spy.inputs.demand_jerk_smoothing_enabled is False
+  assert spy.inputs.demand_jerk_smoothing_enabled is True
   assert a.last_result is not None
   assert a.last_debug.get("raw_curvature") == pytest.approx(0.001)
 

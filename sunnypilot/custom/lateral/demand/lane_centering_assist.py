@@ -10,6 +10,8 @@ from openpilot.sunnypilot.custom.lateral.demand.types import DEMAND_SOURCE_MODEL
 LANE_CENTERING_ASSIST_MIN_SPEED = 5.0
 LANE_CENTERING_ASSIST_MIN_PATH_QUALITY = 0.85
 LANE_CENTERING_ASSIST_OK_REASON = "ok"
+LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_FRAMES = 50  # 0.5 s at 100 Hz
+LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_REASON = "path_reason_cooldown"
 LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_T = 0.35
 LANE_CENTERING_ASSIST_PREVIEW_T = 1.20
 LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_MIN_M = 3.0
@@ -78,6 +80,7 @@ class LaneCenteringAssistTracker:
   def reset(self) -> None:
     self._filtered_nudge = 0.0
     self._active_sign = 0
+    self._reason_cooldown_ticks = 0
 
   def update(self, inputs: LaneCenteringAssistInputs, dt: float) -> LaneCenteringAssistResult:
     dt = max(_finite_float(dt), 0.0)
@@ -86,9 +89,16 @@ class LaneCenteringAssistTracker:
       return self._hard_block("invalid_path")
 
     lateral_error, heading_error, predicted_lateral_error = metrics
+    if inputs.path_reason != LANE_CENTERING_ASSIST_OK_REASON:
+      self._reason_cooldown_ticks = LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_FRAMES
+
     gate_reason = _gate_reason(inputs)
     if gate_reason is not None:
       return self._hard_block(gate_reason, lateral_error, heading_error, predicted_lateral_error)
+
+    if self._reason_cooldown_ticks > 0:
+      self._reason_cooldown_ticks -= 1
+      return self._release(LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_REASON, dt, lateral_error, heading_error, predicted_lateral_error)
 
     straight_cruise = _straight_cruise(inputs)
     lateral_deadband = _lateral_deadband(straight_cruise)
@@ -152,7 +162,8 @@ class LaneCenteringAssistTracker:
 
   def _hard_block(self, reason: str, lateral_error: float = 0.0, heading_error: float = 0.0,
                   predicted_lateral_error: float = 0.0) -> LaneCenteringAssistResult:
-    self.reset()
+    self._filtered_nudge = 0.0
+    self._active_sign = 0
     return LaneCenteringAssistResult(
       False, 0.0, lateral_error, heading_error, predicted_lateral_error, 0.0, reason,
       _debug(reason=reason, lateral_error=lateral_error, heading_error=heading_error,
