@@ -11,6 +11,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
+from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 
 from opendbc.car import structs
 from opendbc.car.hyundai.values import HyundaiFlags
@@ -205,6 +206,7 @@ class RadarD:
     self.CP_SP = CP_SP
 
     self.current_time = 0.0
+    self.frame = 0
 
     self.tracks: dict[int, Track] = {}
     self.kalman_params = KalmanParams(DT_MDL)
@@ -218,10 +220,20 @@ class RadarD:
     self.radar_state_valid = False
 
     self.ready = False
+    self.custom_long_enabled = False
+    self._update_custom_long_enabled()
+
+  def _update_custom_long_enabled(self) -> None:
+    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+      try:
+        self.custom_long_enabled = Params().get_bool("CustomLongitudinalEnabled")
+      except Exception:
+        self.custom_long_enabled = False
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
     self.current_time = 1e-9*max(sm.logMonoTime.values())
+    self._update_custom_long_enabled()
 
     if sm.recv_frame['carState'] != self.last_v_ego_frame:
       self.v_ego = sm['carState'].vEgo
@@ -271,9 +283,12 @@ class RadarD:
       self.radar_state.leadOne = apply_cut_in_override(
         get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
                  self.CP, self.CP_SP, low_speed_override=True),
-        self.tracks, self.v_ego, self.CP, self.CP_SP)
+        self.tracks, self.v_ego, self.CP, self.CP_SP,
+        custom_longitudinal_enabled=self.custom_long_enabled)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
                                           self.CP, self.CP_SP, low_speed_override=False)
+
+    self.frame += 1
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None

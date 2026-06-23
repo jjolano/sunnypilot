@@ -73,7 +73,8 @@ def _track_ttc(track: Any) -> float:
 
 
 def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
-                          v_ego: float, CP: Any = None, CP_SP: Any = None) -> dict[str, Any]:
+                          v_ego: float, CP: Any = None, CP_SP: Any = None,
+                          *, custom_longitudinal_enabled: bool | None = None) -> dict[str, Any]:
   """Promote a high-risk on-path radar track to leadOne when vision hasn't confirmed.
 
   Called after ``get_lead()`` returns. If the result has ``status=False`` (no lead found),
@@ -86,6 +87,8 @@ def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
     v_ego: Current ego speed.
     CP: CarParams (unused, for signature compatibility).
     CP_SP: CarParamsSP (unused, for signature compatibility).
+    custom_longitudinal_enabled: Optional cached flag from RadarD. None falls back to
+      reading ``CustomLongitudinalEnabled`` from Params; False returns the lead unchanged.
 
   Returns:
     The original lead_dict if no override applies, or a new lead dict with the
@@ -96,10 +99,13 @@ def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
     return lead_dict
 
   # Only active when custom longitudinal is enabled
-  try:
-    if not Params().get_bool("CustomLongitudinalEnabled"):
+  if custom_longitudinal_enabled is None:
+    try:
+      if not Params().get_bool("CustomLongitudinalEnabled"):
+        return lead_dict
+    except Exception:
       return lead_dict
-  except Exception:
+  elif not custom_longitudinal_enabled:
     return lead_dict
 
   if not tracks or v_ego < _MIN_V_EGO:

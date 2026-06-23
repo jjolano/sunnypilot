@@ -155,6 +155,23 @@ def test_override_fail_closed_on_exception(MockParams):
 
 
 @patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
+def test_override_true_skips_params_and_promotes(MockParams):
+  track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True)
+  MockParams.assert_not_called()
+  assert result["status"] is True
+  assert result["radarTrackId"] == 1
+
+
+@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
+def test_override_false_returns_original_and_skips_params(MockParams):
+  track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=False)
+  MockParams.assert_not_called()
+  assert result is NO_LEAD
+
+
+@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
 def test_override_empty_tracks(MockParams):
   MockParams.return_value.get_bool.return_value = True
   result = apply_cut_in_override(NO_LEAD, {}, v_ego=12.0)
