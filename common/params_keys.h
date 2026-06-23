@@ -94,6 +94,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CustomLongitudinalMode", {PERSISTENT | BACKUP, STRING, "scc"}},
     // Route-log-only trace gate for validating custom longitudinal behavior; never affects actuation.
     {"LongitudinalDebugTraceMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    // Route-log-only trace gate for validating lateral demand shadow geometry; never affects actuation.
+    {"LateralDebugTraceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     // LeadAnticipationMode defaults to shadow/pass-through telemetry. Legacy LeadAnticipationEnabled
     // is kept for storage compatibility only; apply is explicit opt-in and runtime-gated by CustomLongitudinalEnabled.
     {"LeadAnticipationMode", {PERSISTENT | BACKUP, STRING, "shadow"}},
