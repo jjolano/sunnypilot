@@ -28,7 +28,8 @@ def lead(d_rel=30.0, v_lead=12.0, v_rel=None, status=True):
   return ld
 
 
-def fake_sm(lead_one=None, brake=False, gas=False, model_should_stop=False, model_accel=0.0, pitch=0.0,
+def fake_sm(lead_one=None, brake=False, gas=False, standstill=False, steering_angle_deg=0.0,
+            steering_torque=0.0, model_should_stop=False, model_accel=0.0, pitch=0.0,
             model_x=None, model_y=None, model_v=None, model_leads=None):
   position = SimpleNamespace()
   if model_x is not None:
@@ -37,7 +38,8 @@ def fake_sm(lead_one=None, brake=False, gas=False, model_should_stop=False, mode
     position.y = model_y
   return {
     'radarState': SimpleNamespace(leadOne=lead_one, leadTwo=None),
-    'carState': SimpleNamespace(brakePressed=brake, gasPressed=gas),
+    'carState': SimpleNamespace(brakePressed=brake, gasPressed=gas, standstill=standstill,
+                                steeringAngleDeg=steering_angle_deg, steeringTorque=steering_torque),
     'modelV2': SimpleNamespace(action=SimpleNamespace(shouldStop=model_should_stop,
                                                        desiredAcceleration=model_accel),
                                position=position,
@@ -524,6 +526,63 @@ def test_new_shadow_modes_are_exactly_non_actuating():
     assert out.standstill_release_reason == baseline.standstill_release_reason
     assert out.debug[f"{debug_prefix}_mode"] == "shadow"
     assert out.debug[f"{debug_prefix}_apply_supported"] is False
+
+
+def test_scenario_context_mode_is_non_actuating_and_wired():
+  base_params = dict(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")
+  scenario = dict(
+    sm=fake_sm(standstill=True, steering_angle_deg=5.0, steering_torque=2.0),
+    v_ego=0.0, a_ego=0.0, v_cruise=12.0, seed_a_target=0.2,
+    scc=fake_scc(), sla=fake_sla(), dt=0.05,
+  )
+  off = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(**scenario)
+  shadow = CustomLongitudinalAdapter(FakeParams(ScenarioContextMode="shadow", **base_params)).evaluate(**scenario)
+  assert shadow.a_target == pytest.approx(off.a_target)
+  assert shadow.should_stop == off.should_stop
+  assert shadow.selected_intent == off.selected_intent
+  assert shadow.reason == off.reason
+  assert off.debug["scenario_context_mode"] == "off"
+  assert shadow.debug["scenario_context_mode"] == "shadow"
+  assert shadow.debug["scenario_context_scenario"] == "standstill"
+  assert shadow.debug["scenario_context_road_grade"] == "flat"
+  assert shadow.debug["scenario_context_fault"] is False
+
+
+def test_absent_scenario_context_mode_does_not_block_source_refresh():
+  class ParamsMissingScenarioKey:
+    def __init__(self, **vals):
+      self._v = vals
+    def get_bool(self, k):
+      return bool(self._v.get(k, False))
+    def get(self, k):
+      if k == "ScenarioContextMode":
+        raise KeyError("unregistered param")
+      return self._v.get(k)
+    def all_keys(self):
+      return [k.encode() for k in self._v]
+
+  a = CustomLongitudinalAdapter(ParamsMissingScenarioKey(
+    CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc",
+    SmartCruiseControlVision=True, SmartCruiseControlMap=True,
+  ))
+  assert a.mode is LongitudinalMode.SCC
+  assert a.scenario_context_mode == "off"
+  assert a.sources.scc_curve_vision_enabled is True
+  assert a.sources.scc_curve_map_enabled is True
+
+
+def test_malformed_steering_telemetry_is_fail_soft():
+  base_params = dict(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")
+  baseline_sm = fake_sm(steering_angle_deg=5.0, steering_torque=2.0)
+  malformed_sm = fake_sm(steering_angle_deg="bad", steering_torque=None)
+  baseline = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(
+    baseline_sm, 20.0, 0.0, 22.0, 0.4, fake_scc(), fake_sla(), dt=0.05,
+  )
+  malformed = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(
+    malformed_sm, 20.0, 0.0, 22.0, 0.4, fake_scc(), fake_sla(), dt=0.05,
+  )
+  assert malformed.enabled is True
+  assert malformed.a_target == pytest.approx(baseline.a_target)
 
 
 def test_future_shadow_mode_values_are_non_actuating_and_report_shadow():

@@ -31,6 +31,7 @@ from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence impo
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
+from openpilot.sunnypilot.custom.longitudinal.scenario_context import predict_scenario_context
 
 import math
 
@@ -153,6 +154,10 @@ class LongitudinalStackInputs:
   cut_in_brake_assist_mode: Any = "off"
   curve_speed_confidence_mode: Any = "off"
   standstill_release_confidence_mode: Any = "off"
+  scenario_context_mode: Any = "off"
+  standstill: bool = False
+  steering_angle_deg: float = 0.0
+  steering_torque: float = 0.0
   curve_confidence: CurveSpeedConfidenceInputs = field(default_factory=CurveSpeedConfidenceInputs)
   # advisory evidence
   speed_limit_active: bool = False
@@ -364,6 +369,32 @@ class CustomLongitudinalStack:
     except Exception:
       standstill_release_confidence_fault = True
 
+    # Scenario context is intentionally shadow-only: it classifies the situation for telemetry
+    # and future phases but must not touch actuation, candidates, a_target, or should_stop.
+    scenario_context_fault = False
+    scenario_context_debug: dict[str, Any] = {}
+    try:
+      # Use mode-sanitized actuation inputs for evidence that is mode-gated, so the shadow
+      # classifier does not report ACC-excluded model/curve/speed evidence as potential effects.
+      scenario_context_debug = predict_scenario_context(
+        mode=inp.scenario_context_mode,
+        v_ego=act_inp.v_ego,
+        a_ego=act_inp.a_ego,
+        accel_coast=act_inp.accel_coast,
+        standstill=inp.standstill,
+        steering_angle_deg=inp.steering_angle_deg,
+        steering_torque=inp.steering_torque,
+        leads=inp.leads,
+        model_should_stop=act_inp.model_should_stop,
+        model_stop_distance=act_inp.model_stop_distance,
+        speed_limit_active=act_inp.speed_limit_active,
+        curve_active=act_inp.curve_active,
+        gas_pressed=act_inp.gas_pressed,
+        brake_pressed=act_inp.brake_pressed,
+      ).debug_dict()
+    except Exception:
+      scenario_context_fault = True
+
     admitted_hazard_targets = [float(c.a_target) for c in candidates
                                if c.role is CandidateRole.PHYSICAL_HAZARD
                                and c.source in decision.admitted_sources
@@ -402,6 +433,8 @@ class CustomLongitudinalStack:
         **curve_speed_confidence_debug,
         "standstill_release_confidence_fault": standstill_release_confidence_fault,
         **standstill_release_confidence_debug,
+        "scenario_context_fault": scenario_context_fault,
+        **scenario_context_debug,
         **acc_envelope_debug,
         **target_smoothing_debug,
       },

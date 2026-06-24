@@ -137,6 +137,10 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        cut_in_brake_assist_mode: str = "off",
                        curve_speed_confidence_mode: str = "off",
                        standstill_release_confidence_mode: str = "off",
+                       scenario_context_mode: str = "off",
+                       standstill: bool = False,
+                       steering_angle_deg: float = 0.0,
+                       steering_torque: float = 0.0,
                        scc_vision_state: Any = None,
                        scc_vision_current_lat_acc: float = 0.0,
                        scc_vision_max_pred_lat_acc: float = 0.0,
@@ -181,6 +185,10 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     cut_in_brake_assist_mode=cut_in_brake_assist_mode,
     curve_speed_confidence_mode=curve_speed_confidence_mode,
     standstill_release_confidence_mode=standstill_release_confidence_mode,
+    scenario_context_mode=scenario_context_mode,
+    standstill=bool(standstill),
+    steering_angle_deg=_f(steering_angle_deg),
+    steering_torque=_f(steering_torque),
     curve_confidence=CurveSpeedConfidenceInputs(
       vision_active=bool(scc_vision_active), vision_a_target=_f(scc_vision_a_target),
       vision_state=scc_vision_state, vision_current_lat_acc=_f(scc_vision_current_lat_acc),
@@ -205,6 +213,7 @@ class CustomLongitudinalAdapter:
     self.cut_in_brake_assist_mode = "off"
     self.curve_speed_confidence_mode = "off"
     self.standstill_release_confidence_mode = "off"
+    self.scenario_context_mode = "off"
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     if params is not None:
@@ -236,6 +245,14 @@ class CustomLongitudinalAdapter:
 
     # Slower refresh for tuning/advisory params.
     if initial or self._tick % PARAMS_REFRESH_PERIOD == 0:
+      # Telemetry-only scenario-context mode is read safely on its own so an unregistered
+      # or malformed key cannot block the source-toggle refresh below.
+      try:
+        scenario_context_value = _param_string(p, "ScenarioContextMode")
+      except Exception:
+        scenario_context_value = None
+      self.scenario_context_mode = _shadow_mode(scenario_context_value or "off")
+
       try:
         self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
         self.lead_path_clearance_mode = _lead_path_clearance_mode(_param_string(p, "LeadPathClearanceMode") or LEAD_PATH_CLEARANCE_MODE_OFF)
@@ -301,6 +318,10 @@ class CustomLongitudinalAdapter:
         cut_in_brake_assist_mode=self.cut_in_brake_assist_mode,
         curve_speed_confidence_mode=self.curve_speed_confidence_mode,
         standstill_release_confidence_mode=self.standstill_release_confidence_mode,
+        scenario_context_mode=self.scenario_context_mode,
+        standstill=bool(getattr(cs, "standstill", False)),
+        steering_angle_deg=_f(getattr(cs, "steeringAngleDeg", 0.0)),
+        steering_torque=_f(getattr(cs, "steeringTorque", 0.0)),
         scc_vision_state=getattr(scc.vision, "state", None),
         scc_vision_current_lat_acc=_f(getattr(scc.vision, "current_lat_acc", 0.0)),
         scc_vision_max_pred_lat_acc=_f(getattr(scc.vision, "max_pred_lat_acc", 0.0)),

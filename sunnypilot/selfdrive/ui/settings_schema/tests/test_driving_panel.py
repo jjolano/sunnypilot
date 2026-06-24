@@ -31,7 +31,7 @@ def test_lateral_controls_present():
 def test_longitudinal_controls_present():
   assert {"ExperimentalMode", "DisengageOnAccelerator", "LongitudinalPersonality",
           "CustomAccIncrementsEnabled", "CustomLongitudinalEnabled", "CustomLongitudinalMode",
-          "LeadAnticipationMode", "LeadPathClearanceMode", "LongitudinalDebugTraceMode",
+          "LeadAnticipationMode", "LeadPathClearanceMode", "ScenarioContextMode", "LongitudinalDebugTraceMode",
           "CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "StandstillReleaseConfidenceMode",
           "SmartCruiseControlVision"} <= CONTROLS
 

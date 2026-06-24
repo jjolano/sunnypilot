@@ -106,6 +106,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CutInBrakeAssistMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CurveSpeedConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"StandstillReleaseConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    // Shadow-only scenario attribution for route-log/debug analysis; never affects actuation.
+    {"ScenarioContextMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CustomLateralDemandDefaultOffMigrated", {PERSISTENT | BACKUP, STRING, ""}},
     {"LongitudinalModeMigrationVersion", {PERSISTENT | BACKUP, STRING, ""}},
