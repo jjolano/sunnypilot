@@ -1498,7 +1498,7 @@ def test_stop_hold_release_prep_downward_braking_passes_through():
     sp.final_longitudinal_output(_prep_sm(d_rel=6.25 + i * 0.01, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
   sm = _prep_sm(d_rel=6.28, v_lead=0.25, v_rel=0.10)
   a1, _, _ = sp.final_longitudinal_output(sm, -0.05, True, 0.0, False)  # type: ignore[arg-type]
-  # raw_hold is normalized to -0.5; first active prep tick ramps upward by jerk budget.
+  # raw_hold is normalized to the mild stopped-lead hold; first active prep tick ramps upward.
   assert math.isclose(a1, -0.20)
   a2, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.29, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
   assert math.isclose(a2, -0.20)
@@ -1574,7 +1574,7 @@ def test_stop_hold_standstill_normalize_v_ego_fallback():
   assert a == -0.5
 
 
-def test_stop_hold_standstill_normalize_rolling_creeping_unchanged():
+def test_stop_hold_standstill_normalize_creeping_landing_clamped():
   sp = fake_planner(LongitudinalMode.SCC)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
   sp.custom_long_finalizer.CP = sp.CP
@@ -1586,7 +1586,7 @@ def test_stop_hold_standstill_normalize_rolling_creeping_unchanged():
     'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7)),
   })
   a, _, _ = sp.final_longitudinal_output(sm, -2.0, True, 0.0, False)  # type: ignore[arg-type]
-  assert a == -2.0
+  assert a == -0.5
 
 
 def test_stop_hold_standstill_normalize_vetoes_different_lead_id():
@@ -1658,7 +1658,7 @@ def test_stop_hold_standstill_normalize_allows_prep_to_relax():
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
   sp.custom_long_finalizer.CP = sp.CP
   _arm_stop_hold(sp, d_rel=6.0)
-  # harsh MPC while stopped gets normalized to -0.5
+  # harsh MPC while stopped gets normalized to the mild stopped-lead hold
   a1, _, _ = sp.final_longitudinal_output(
     FakeSubMaster({
       'carState': SimpleNamespace(vEgo=0.0, standstill=True, brakePressed=False, gasPressed=False, vCruise=12.0),

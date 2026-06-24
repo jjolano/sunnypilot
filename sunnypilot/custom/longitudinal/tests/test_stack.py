@@ -179,6 +179,17 @@ def test_upward_accel_rise_is_slew_limited_when_active():
   assert second.debug["target_smoothing_raw_a_target"] == pytest.approx(1.0)
 
 
+def test_upward_accel_rise_uses_max_lag_from_stop_hold_target():
+  s = CustomLongitudinalStack()
+
+  first = s.update(base(seed_a_target=-0.5, mode=LongitudinalMode.ACC, long_active=True), DT)
+  assert first.a_target == pytest.approx(-0.5)
+
+  second = s.update(base(seed_a_target=1.25, mode=LongitudinalMode.ACC, long_active=True), DT)
+  assert second.a_target <= 0.75 + 1e-9
+  assert second.debug["target_smoothing_applied"] is True
+
+
 def test_downward_hazard_decel_is_not_slew_limited():
   s = CustomLongitudinalStack()
   s.update(base(seed_a_target=1.0, mode=LongitudinalMode.ACC, long_active=True), DT)

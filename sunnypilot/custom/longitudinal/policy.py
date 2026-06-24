@@ -49,6 +49,8 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   NO_LEAD_STOP_CLEAR_DISTANCE,
   PROGRESS_CRUISE_SPEED_MARGIN,
   STOP_APPROACH_DECEL_MIN,
+  STOP_LANDING_DECEL_MIN,
+  STOP_LANDING_SOFTEN_MAX_V_EGO,
   Personality,
   launch_accel_max,
   stop_approach_comfort_decel,
@@ -189,7 +191,20 @@ def stop_approach_accel(scene: LongitudinalScene) -> tuple[float, bool]:
     a = min(a, scene.model_desired_accel)
   if hard:
     return a, True
-  return max(STOP_APPROACH_DECEL_MIN, a), False
+  return max(_stop_landing_decel_floor(scene.v_ego), a), False
+
+
+def _stop_landing_decel_floor(v_ego: float) -> float:
+  """Soften only the final routine stop landing.
+
+  The full stop-approach decel floor remains unchanged above the landing band.
+  Below ``STOP_LANDING_SOFTEN_MAX_V_EGO`` ramp the floor toward a gentler hold so
+  the last few mph do not carry a needless -1.5 m/s^2 command into standstill.
+  """
+  if not math.isfinite(v_ego) or v_ego >= STOP_LANDING_SOFTEN_MAX_V_EGO:
+    return STOP_APPROACH_DECEL_MIN
+  ratio = _clip(max(0.0, v_ego) / STOP_LANDING_SOFTEN_MAX_V_EGO, 0.0, 1.0)
+  return STOP_LANDING_DECEL_MIN + ratio * (STOP_APPROACH_DECEL_MIN - STOP_LANDING_DECEL_MIN)
 
 
 def comfort_relax_allowed(scene: LongitudinalScene) -> bool:

@@ -501,7 +501,7 @@ class CustomLongitudinalStack:
       if not math.isfinite(float(jerk_limited)):
         jerk_limited = raw
       smoothed = min(raw, max(prev_f, float(jerk_limited)))
-      if prev_f < -0.5 and raw >= 0.0:
+      if prev_f <= -0.5 and raw >= 0.0:
         smoothed = max(smoothed, raw - UPWARD_TARGET_SLEW_MAX_LAG)
       smoothed = min(max(smoothed, a_min), a_max)
       self._prev_smoothed_a_target = smoothed

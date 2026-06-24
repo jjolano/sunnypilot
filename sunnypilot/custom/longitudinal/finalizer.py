@@ -54,7 +54,7 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_RELEASE_PREP_MIN_GAP_INCREASING_S = 0.10
   _STOP_HOLD_RELEASE_PREP_MIN_D_REL_MARGIN = 0.20
   _STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET = -0.50
-  _STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO = 0.02
+  _STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO = 0.35
   _CURVE_CONFIDENCE_APPLY_MIN_V_EGO = 8.0
   _CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE = 0.70
   _CURVE_CONFIDENCE_APPLY_MIN_CAP = -0.85
@@ -675,9 +675,9 @@ class CustomLongitudinalFinalizer:
         raw_hold = min(hold_a_target, stop_accel)
       e2e_source = bool(is_e2e and not model_stale and raw_hold < hold_a_target)
 
-      # Standstill stop-hold command normalization: clamp harsh hold commands up to a
-      # local mild hold target when already stopped, avoiding an artificial jump to the
-      # first positive release. Does not delay braking or affect rolling stops.
+      # Stop-hold command normalization: clamp harsh hold commands up to a local mild
+      # hold target when stopped or creeping into the final stop, avoiding an artificial
+      # jump to the first positive release. Does not delay braking above creeping speed.
       controls_state_sp = self._sm_item(sm, 'controlsState')
       brake_pressed_sp = bool(getattr(car_state, 'brakePressed', False)) if car_state is not None else False
       force_decel_sp = bool(getattr(controls_state_sp, 'forceDecel', False)) if controls_state_sp is not None else False

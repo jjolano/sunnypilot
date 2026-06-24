@@ -72,6 +72,12 @@ CRUISE_LEEWAY_MAX = 10.0 * MPH_TO_MS
 CRUISE_LEEWAY_DOWNHILL_ACCEL = 0.25
 CRUISE_LEEWAY_RECOVERY = 2.0 * MPH_TO_MS
 STOP_APPROACH_DECEL_MIN = -1.5
+# Final low-speed landing floor. The normal stop-approach floor remains available
+# above walking speed and for genuinely hard-stop kinematics; this only prevents a
+# trusted stop approach from carrying the full -1.5 m/s^2 floor into the last few
+# mph of a routine landing.
+STOP_LANDING_SOFTEN_MAX_V_EGO = 2.5
+STOP_LANDING_DECEL_MIN = -0.85
 EXCESS_GAP_MIN = 1.0
 
 

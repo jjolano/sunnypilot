@@ -76,6 +76,14 @@ def test_stop_approach_hardens_when_runway_short():
   assert a < -1.5
 
 
+def test_stop_approach_softens_final_low_speed_landing_floor():
+  scene = LongitudinalScene(v_ego=1.5, v_cruise=15.0, seed_a_target=0.0,
+                            model_should_stop=False, model_stop_distance=0.38, model_desired_accel=-0.2)
+  a, hard = stop_approach_accel(scene)
+  assert hard is False
+  assert -1.5 < a < -0.85
+
+
 def test_acc_is_oem_like_excludes_model_stop_curve():
   scene = LongitudinalScene(
     v_ego=20.0, v_cruise=20.0, seed_a_target=0.3,
