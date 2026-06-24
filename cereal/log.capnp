@@ -964,7 +964,16 @@ struct ControlsState @0x97ff69c53601abf1 {
     sensorYawCurvature @27 :Float32;
     sensorModelYawLatAccelDelta @28 :Float32;
     sensorSteeringYawLatAccelDelta @29 :Float32;
+    laneCenteringRelaxActive @30 :Bool;
+    laneCenteringRelaxReasonBits @31 :UInt8;
+    laneCenteringRelaxEnvelope @32 :Float32;
+    laneCenteringRelaxLateralError @33 :Float32;
+    laneCenteringRelaxPredictedError @34 :Float32;
+    laneCenteringRelaxAge @35 :Float32;
+    laneCenteringRelaxNudgeFlipScore @36 :Float32;
+    laneCenteringRelaxErrorCrossScore @37 :Float32;
   }
+
 
   struct LateralDebugState {
     active @0 :Bool;

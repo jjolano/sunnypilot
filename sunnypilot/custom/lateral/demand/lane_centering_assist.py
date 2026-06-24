@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Sequence
 
 import numpy as np
@@ -34,6 +34,38 @@ LANE_CENTERING_ASSIST_STRAIGHT_LATERAL_DEADBAND = 0.06
 LANE_CENTERING_ASSIST_STRAIGHT_GROWTH_DEADBAND = 0.035
 LANE_CENTERING_ASSIST_STRAIGHT_BUILD_RATE = 0.00008
 
+# Center-chase relaxation: temporary soft deadband around lane-centering error to avoid
+# rapid exact-center chasing during fast lateral reversals. Triggered only under strict
+# preconditions and never adds steering bias or freezes a nonzero nudge.
+LANE_CENTERING_RELAX_MIN_SPEED = 8.0
+LANE_CENTERING_RELAX_MIN_PATH_QUALITY = 0.90
+LANE_CENTERING_RELAX_MIN_CONFIDENCE = 0.90
+LANE_CENTERING_RELAX_ENVELOPE_MIN = 0.08
+LANE_CENTERING_RELAX_ENVELOPE_MAX = 0.12
+LANE_CENTERING_RELAX_NEAR_CENTER = 0.18
+LANE_CENTERING_RELAX_TRIGGER_PREDICTED = 0.20
+LANE_CENTERING_RELAX_ABORT_LATERAL = 0.30
+LANE_CENTERING_RELAX_ABORT_PREDICTED = 0.35
+LANE_CENTERING_RELAX_ABORT_HEADING = 0.025
+LANE_CENTERING_RELAX_MAX_CURVE_LAT_ACCEL = 0.70
+LANE_CENTERING_RELAX_HOLD_TIME = 0.40
+LANE_CENTERING_RELAX_DECAY_TIME = 1.80
+LANE_CENTERING_RELAX_MAX_ACTIVE_TIME = 3.00
+LANE_CENTERING_RELAX_COOLDOWN_TIME = 0.70
+LANE_CENTERING_RELAX_FLIP_WINDOW_TIME = 1.00
+LANE_CENTERING_RELAX_MIN_FLIPS = 2
+
+# Relaxation reason bits (UInt8) for telemetry.
+LANE_CENTERING_RELAX_REASON_NONE = 0
+LANE_CENTERING_RELAX_REASON_DRIVER = 1
+LANE_CENTERING_RELAX_REASON_LANE_CHANGE = 2
+LANE_CENTERING_RELAX_REASON_QUALITY = 4
+LANE_CENTERING_RELAX_REASON_CURVE = 8
+LANE_CENTERING_RELAX_REASON_LARGE_ERROR = 16
+LANE_CENTERING_RELAX_REASON_HEADING = 32
+LANE_CENTERING_RELAX_REASON_LOW_SPEED = 64
+LANE_CENTERING_RELAX_REASON_OTHER = 128
+
 
 @dataclass(frozen=True)
 class LaneCenteringAssistInputs:
@@ -67,6 +99,14 @@ class LaneCenteringAssistResult:
   confidence: float
   reason: str
   debug: dict[str, float | str | bool] = field(default_factory=dict)
+  relaxed_lateral_error: float = 0.0
+  relaxed_predicted_error: float = 0.0
+  relax_active: bool = False
+  relax_reason_bits: int = 0
+  relax_envelope: float = 0.0
+  relax_age: float = 0.0
+  relax_nudge_flip_score: float = 0.0
+  relax_error_cross_score: float = 0.0
 
 
 def inactive_lane_centering_assist_result(reason: str = "inactive") -> LaneCenteringAssistResult:
@@ -81,6 +121,7 @@ class LaneCenteringAssistTracker:
     self._filtered_nudge = 0.0
     self._active_sign = 0
     self._reason_cooldown_ticks = 0
+    self._relax = _CenterChaseRelaxation()
 
   def update(self, inputs: LaneCenteringAssistInputs, dt: float) -> LaneCenteringAssistResult:
     dt = max(_finite_float(dt), 0.0)
@@ -92,6 +133,29 @@ class LaneCenteringAssistTracker:
     if inputs.path_reason != LANE_CENTERING_ASSIST_OK_REASON:
       self._reason_cooldown_ticks = LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_FRAMES
 
+    # Compute confidence and an unrelaxed raw nudge before any gating so the relaxation
+    # tracker can monitor nudge sign flips even when the assist is temporarily gated.
+    confidence = _confidence(inputs)
+    straight_cruise = _straight_cruise(inputs)
+    max_nudge = _max_nudge_curvature(inputs.v_ego, straight_cruise)
+    unrelaxed_raw_nudge = confidence * (
+      LANE_CENTERING_ASSIST_LATERAL_GAIN * lateral_error +
+      LANE_CENTERING_ASSIST_HEADING_GAIN * heading_error +
+      LANE_CENTERING_ASSIST_GROWTH_GAIN * (predicted_lateral_error - lateral_error)
+    )
+    unrelaxed_raw_nudge = float(np.clip(unrelaxed_raw_nudge, -max_nudge, max_nudge))
+
+    self._relax.update(
+      lateral_error=lateral_error,
+      predicted_lateral_error=predicted_lateral_error,
+      heading_error=heading_error,
+      inputs=inputs,
+      confidence=confidence,
+      current_raw_nudge_sign=_sign(unrelaxed_raw_nudge, LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE),
+      dt=dt,
+    )
+    lateral_error_eff, predicted_lateral_error_eff = self._relax.effective_errors(lateral_error, predicted_lateral_error)
+
     gate_reason = _gate_reason(inputs)
     if gate_reason is not None:
       return self._hard_block(gate_reason, lateral_error, heading_error, predicted_lateral_error)
@@ -100,26 +164,23 @@ class LaneCenteringAssistTracker:
       self._reason_cooldown_ticks -= 1
       return self._release(LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_REASON, dt, lateral_error, heading_error, predicted_lateral_error)
 
-    straight_cruise = _straight_cruise(inputs)
     lateral_deadband = _lateral_deadband(straight_cruise)
     growth_deadband = _growth_deadband(straight_cruise)
-    error_sign = _sign(predicted_lateral_error, lateral_deadband)
-    now_sign = _sign(lateral_error, lateral_deadband)
+    error_sign = _sign(predicted_lateral_error_eff, lateral_deadband)
+    now_sign = _sign(lateral_error_eff, lateral_deadband)
     if error_sign == 0:
       error_sign = now_sign
     same_direction = error_sign != 0 and (now_sign == 0 or now_sign == error_sign)
-    error_growth = abs(predicted_lateral_error) - abs(lateral_error)
+    error_growth = abs(predicted_lateral_error_eff) - abs(lateral_error_eff)
     growing = same_direction and error_growth > growth_deadband
     if not growing:
       return self._release("error_not_growing", dt, lateral_error, heading_error, predicted_lateral_error)
 
-    confidence = _confidence(inputs)
     raw_nudge = confidence * (
-      LANE_CENTERING_ASSIST_LATERAL_GAIN * lateral_error +
+      LANE_CENTERING_ASSIST_LATERAL_GAIN * lateral_error_eff +
       LANE_CENTERING_ASSIST_HEADING_GAIN * heading_error +
-      LANE_CENTERING_ASSIST_GROWTH_GAIN * (predicted_lateral_error - lateral_error)
+      LANE_CENTERING_ASSIST_GROWTH_GAIN * (predicted_lateral_error_eff - lateral_error_eff)
     )
-    max_nudge = _max_nudge_curvature(inputs.v_ego, straight_cruise)
     target_nudge = float(np.clip(raw_nudge, -max_nudge, max_nudge))
     target_sign = _sign(target_nudge, LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE)
     current_sign = _sign(self._filtered_nudge, LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE)
@@ -129,12 +190,12 @@ class LaneCenteringAssistTracker:
       if abs(nudge) <= LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE:
         self._filtered_nudge = 0.0
         self._active_sign = 0
-      return LaneCenteringAssistResult(
+      return self._with_relax(LaneCenteringAssistResult(
         abs(self._filtered_nudge) > 0.0, self._filtered_nudge, lateral_error, heading_error, predicted_lateral_error,
         confidence, "sign_hysteresis", _debug(inputs, lateral_error, heading_error, predicted_lateral_error,
                                                confidence, raw_nudge, target_nudge, self._filtered_nudge,
                                                "sign_hysteresis", max_nudge, straight_cruise),
-      )
+      ))
 
     build_rate = _build_rate(straight_cruise)
     nudge = _approach(self._filtered_nudge, target_nudge, build_rate * dt)
@@ -142,10 +203,35 @@ class LaneCenteringAssistTracker:
     self._active_sign = _sign(nudge, LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE)
     active = abs(nudge) > 0.0
     reason = "growing_lateral_error" if active else "below_deadband"
-    return LaneCenteringAssistResult(
+    return self._with_relax(LaneCenteringAssistResult(
       active, nudge, lateral_error, heading_error, predicted_lateral_error, confidence, reason,
       _debug(inputs, lateral_error, heading_error, predicted_lateral_error, confidence, raw_nudge, target_nudge, nudge, reason,
              max_nudge, straight_cruise),
+    ))
+
+  def _with_relax(self, result: LaneCenteringAssistResult) -> LaneCenteringAssistResult:
+    debug = dict(result.debug)
+    debug.update({
+      "lane_centering_relax_active": self._relax.active,
+      "lane_centering_relax_reason_bits": self._relax.reason_bits,
+      "lane_centering_relax_envelope": self._relax.envelope,
+      "lane_centering_relax_lateral_error": self._relax.relaxed_lateral_error,
+      "lane_centering_relax_predicted_error": self._relax.relaxed_predicted_error,
+      "lane_centering_relax_age": self._relax.age,
+      "lane_centering_relax_nudge_flip_score": self._relax.nudge_flip_score,
+      "lane_centering_relax_error_cross_score": self._relax.error_cross_score,
+    })
+    return replace(
+      result,
+      relaxed_lateral_error=self._relax.relaxed_lateral_error,
+      relaxed_predicted_error=self._relax.relaxed_predicted_error,
+      relax_active=self._relax.active,
+      relax_reason_bits=self._relax.reason_bits,
+      relax_envelope=self._relax.envelope,
+      relax_age=self._relax.age,
+      relax_nudge_flip_score=self._relax.nudge_flip_score,
+      relax_error_cross_score=self._relax.error_cross_score,
+      debug=debug,
     )
 
   def _release(self, reason: str, dt: float, lateral_error: float = 0.0, heading_error: float = 0.0,
@@ -154,21 +240,235 @@ class LaneCenteringAssistTracker:
     if abs(self._filtered_nudge) <= LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE:
       self._filtered_nudge = 0.0
       self._active_sign = 0
-    return LaneCenteringAssistResult(
+    return self._with_relax(LaneCenteringAssistResult(
       abs(self._filtered_nudge) > 0.0, self._filtered_nudge, lateral_error, heading_error, predicted_lateral_error, 0.0, reason,
       _debug(reason=reason, lateral_error=lateral_error, heading_error=heading_error,
              predicted_lateral_error=predicted_lateral_error, filtered_nudge=self._filtered_nudge),
-    )
+    ))
 
   def _hard_block(self, reason: str, lateral_error: float = 0.0, heading_error: float = 0.0,
                   predicted_lateral_error: float = 0.0) -> LaneCenteringAssistResult:
+    # Safety gates must clear any stale relaxation state so it cannot re-arm immediately
+    # once the gate condition clears (e.g. invalid path, driver override, lane change).
+    self._relax.safety_abort(lateral_error, predicted_lateral_error, _relax_reason_bits_for_gate(reason))
     self._filtered_nudge = 0.0
     self._active_sign = 0
-    return LaneCenteringAssistResult(
+    return self._with_relax(LaneCenteringAssistResult(
       False, 0.0, lateral_error, heading_error, predicted_lateral_error, 0.0, reason,
       _debug(reason=reason, lateral_error=lateral_error, heading_error=heading_error,
              predicted_lateral_error=predicted_lateral_error, filtered_nudge=0.0),
-    )
+    ))
+
+
+class _CenterChaseRelaxation:
+  """Bounded center-chase relaxation for fast lateral reversals.
+
+  Maintains a temporary soft deadband around lane-centering error when repeated
+  near-center sign flips are detected. The deadband is held, then decays, and has a
+  cooldown before it can re-arm. It never freezes a nonzero nudge or adds steering bias.
+  """
+
+  def __init__(self) -> None:
+    self.reset()
+
+  def reset(self) -> None:
+    self._state = "idle"
+    self._timer = 0.0
+    self._clk = 0.0
+    self._active_age = 0.0
+    self._envelope = 0.0
+    self._decay_from = 0.0
+    self._cross_history: list[float] = []
+    self._nudge_history: list[float] = []
+    self._last_error_sign = 0
+    self._last_nudge_sign = 0
+    self._reason_bits = 0
+    self._flip_score = 0
+    self._cross_score = 0
+    self._relaxed_lateral_error = 0.0
+    self._relaxed_predicted_error = 0.0
+
+  @property
+  def active(self) -> bool:
+    return self._state == "active"
+
+  @property
+  def envelope(self) -> float:
+    return self._envelope
+
+  @property
+  def age(self) -> float:
+    return self._active_age if self._state == "active" else 0.0
+
+  @property
+  def reason_bits(self) -> int:
+    return self._reason_bits
+
+  @property
+  def nudge_flip_score(self) -> float:
+    return float(self._flip_score)
+
+  @property
+  def error_cross_score(self) -> float:
+    return float(self._cross_score)
+
+  @property
+  def relaxed_lateral_error(self) -> float:
+    return self._relaxed_lateral_error
+
+  @property
+  def relaxed_predicted_error(self) -> float:
+    return self._relaxed_predicted_error
+
+  def update(self, *, lateral_error: float, predicted_lateral_error: float, heading_error: float,
+             inputs: LaneCenteringAssistInputs, confidence: float, current_raw_nudge_sign: int, dt: float) -> None:
+    dt = max(_finite_float(dt), 0.0)
+    self._clk += dt
+
+    error_sign = _sign(lateral_error, LANE_CENTERING_ASSIST_LATERAL_DEADBAND)
+    if self._last_error_sign != 0 and error_sign != 0 and error_sign != self._last_error_sign:
+      self._cross_history.append(self._clk)
+    if error_sign != 0:
+      self._last_error_sign = error_sign
+
+    if self._last_nudge_sign != 0 and current_raw_nudge_sign != 0 and current_raw_nudge_sign != self._last_nudge_sign:
+      self._nudge_history.append(self._clk)
+    if current_raw_nudge_sign != 0:
+      self._last_nudge_sign = current_raw_nudge_sign
+
+    self._prune_histories()
+
+    self._flip_score = len(self._nudge_history)
+    self._cross_score = len(self._cross_history)
+
+    self._reason_bits = self._compute_abort_bits(inputs, lateral_error, predicted_lateral_error, heading_error, confidence)
+    near_center = (abs(lateral_error) <= LANE_CENTERING_RELAX_NEAR_CENTER and
+                   abs(predicted_lateral_error) <= LANE_CENTERING_RELAX_TRIGGER_PREDICTED)
+    curve_lat_accel = _curve_lat_accel(inputs)
+    curve_ok = curve_lat_accel <= LANE_CENTERING_RELAX_MAX_CURVE_LAT_ACCEL
+    quality_ok = (float(inputs.path_quality) >= LANE_CENTERING_RELAX_MIN_PATH_QUALITY and
+                  confidence >= LANE_CENTERING_RELAX_MIN_CONFIDENCE and
+                  inputs.path_reason == LANE_CENTERING_ASSIST_OK_REASON)
+    speed_ok = inputs.v_ego >= LANE_CENTERING_RELAX_MIN_SPEED
+    conditions_ok = self._reason_bits == 0 and near_center and curve_ok and quality_ok and speed_ok
+    can_trigger = self._flip_score >= LANE_CENTERING_RELAX_MIN_FLIPS and self._cross_score >= LANE_CENTERING_RELAX_MIN_FLIPS
+
+    target_envelope = self._envelope_size(inputs.path_quality, confidence) if conditions_ok else 0.0
+
+    # Safety abort: any guarded abort condition must kill the deadband immediately,
+    # clear stale flip history, and enter cooldown. Do not pass through decay.
+    if self._reason_bits != 0:
+      self.safety_abort(lateral_error, predicted_lateral_error, self._reason_bits)
+    elif self._state == "idle":
+      self._timer += dt
+      if can_trigger and conditions_ok:
+        self._state = "active"
+        self._timer = 0.0
+        self._active_age = 0.0
+        self._envelope = target_envelope
+
+    elif self._state == "active":
+      self._timer += dt
+      self._active_age += dt
+      if self._active_age >= LANE_CENTERING_RELAX_MAX_ACTIVE_TIME:
+        self._state = "decay"
+        self._timer = 0.0
+        self._decay_from = self._envelope
+      elif self._active_age >= LANE_CENTERING_RELAX_HOLD_TIME:
+        # After the guaranteed hold, stay active only while the reversal pattern persists.
+        if can_trigger and conditions_ok:
+          self._envelope = target_envelope
+        else:
+          self._state = "decay"
+          self._timer = 0.0
+          self._decay_from = self._envelope
+      else:
+        self._envelope = target_envelope
+
+    elif self._state == "decay":
+      self._timer += dt
+      self._envelope = max(0.0, self._decay_from * (1.0 - self._timer / LANE_CENTERING_RELAX_DECAY_TIME))
+      if self._envelope <= 0.0 or self._timer >= LANE_CENTERING_RELAX_DECAY_TIME:
+        self._state = "cooldown"
+        self._timer = 0.0
+        self._envelope = 0.0
+
+    elif self._state == "cooldown":
+      self._timer += dt
+      self._envelope = 0.0
+      if self._timer >= LANE_CENTERING_RELAX_COOLDOWN_TIME:
+        self._state = "idle"
+        self._timer = 0.0
+
+    self._relaxed_lateral_error = _soft_deadband(lateral_error, self._envelope)
+    self._relaxed_predicted_error = _soft_deadband(predicted_lateral_error, self._envelope)
+
+  def _prune_histories(self) -> None:
+    cutoff = self._clk - LANE_CENTERING_RELAX_FLIP_WINDOW_TIME
+    self._cross_history = [t for t in self._cross_history if t >= cutoff]
+    self._nudge_history = [t for t in self._nudge_history if t >= cutoff]
+
+  def safety_abort(self, lateral_error: float = 0.0, predicted_lateral_error: float = 0.0,
+                   reason_bits: int = LANE_CENTERING_RELAX_REASON_OTHER) -> None:
+    """Hard abort: zero the envelope, clear flip history, and enter cooldown.
+
+    Safety aborts must not decay; the deadband must stop immediately so stale
+    relaxation cannot re-arm from old history on recovery. The effective errors
+    are reset to the raw values so the deadband is not applied this frame.
+    """
+    self._state = "cooldown"
+    self._timer = 0.0
+    self._envelope = 0.0
+    self._decay_from = 0.0
+    self._active_age = 0.0
+    self._cross_history.clear()
+    self._nudge_history.clear()
+    self._last_error_sign = 0
+    self._last_nudge_sign = 0
+    self._reason_bits = reason_bits
+    self._flip_score = 0
+    self._cross_score = 0
+    self._relaxed_lateral_error = lateral_error
+    self._relaxed_predicted_error = predicted_lateral_error
+
+  def _compute_abort_bits(self, inputs: LaneCenteringAssistInputs, lateral_error: float,
+                          predicted_lateral_error: float, heading_error: float, confidence: float) -> int:
+    bits = LANE_CENTERING_RELAX_REASON_NONE
+    if inputs.steering_pressed:
+      bits |= LANE_CENTERING_RELAX_REASON_DRIVER
+    lane_change_blend = _finite_optional_float(inputs.lane_change_blend)
+    if inputs.left_blinker or inputs.right_blinker or inputs.lane_change_shaping_active or (lane_change_blend is not None and abs(lane_change_blend) > 1e-3):
+      bits |= LANE_CENTERING_RELAX_REASON_LANE_CHANGE
+    if inputs.curvature_limited:
+      bits |= LANE_CENTERING_RELAX_REASON_CURVE
+    if float(inputs.path_quality) < LANE_CENTERING_RELAX_MIN_PATH_QUALITY:
+      bits |= LANE_CENTERING_RELAX_REASON_QUALITY
+    if inputs.path_reason != LANE_CENTERING_ASSIST_OK_REASON:
+      bits |= LANE_CENTERING_RELAX_REASON_QUALITY
+    if confidence < LANE_CENTERING_RELAX_MIN_CONFIDENCE:
+      bits |= LANE_CENTERING_RELAX_REASON_QUALITY
+    if abs(lateral_error) > LANE_CENTERING_RELAX_ABORT_LATERAL:
+      bits |= LANE_CENTERING_RELAX_REASON_LARGE_ERROR
+    if abs(predicted_lateral_error) > LANE_CENTERING_RELAX_ABORT_PREDICTED:
+      bits |= LANE_CENTERING_RELAX_REASON_LARGE_ERROR
+    if abs(heading_error) > LANE_CENTERING_RELAX_ABORT_HEADING:
+      bits |= LANE_CENTERING_RELAX_REASON_HEADING
+    if inputs.v_ego < LANE_CENTERING_RELAX_MIN_SPEED:
+      bits |= LANE_CENTERING_RELAX_REASON_LOW_SPEED
+    curve_lat_accel = _curve_lat_accel(inputs)
+    if curve_lat_accel > LANE_CENTERING_RELAX_MAX_CURVE_LAT_ACCEL:
+      bits |= LANE_CENTERING_RELAX_REASON_CURVE
+    return bits
+
+  def _envelope_size(self, path_quality: float, confidence: float) -> float:
+    pq = _finite_float(path_quality)
+    cf = _finite_float(confidence)
+    quality_factor = float(np.clip((1.0 - pq) / 0.1, 0.0, 1.0))
+    confidence_factor = float(np.clip(max(0.0, LANE_CENTERING_RELAX_MIN_CONFIDENCE - cf) / 0.1, 0.0, 1.0))
+    return LANE_CENTERING_RELAX_ENVELOPE_MIN + (LANE_CENTERING_RELAX_ENVELOPE_MAX - LANE_CENTERING_RELAX_ENVELOPE_MIN) * max(quality_factor, confidence_factor)
+
+  def effective_errors(self, lateral_error: float, predicted_lateral_error: float) -> tuple[float, float]:
+    return self._relaxed_lateral_error, self._relaxed_predicted_error
 
 
 def _gate_reason(inputs: LaneCenteringAssistInputs) -> str | None:
@@ -192,6 +492,20 @@ def _gate_reason(inputs: LaneCenteringAssistInputs) -> str | None:
   if not _finite(inputs.path_quality) or float(inputs.path_quality) < LANE_CENTERING_ASSIST_MIN_PATH_QUALITY:
     return "low_path_quality"
   return None
+
+
+def _relax_reason_bits_for_gate(reason: str) -> int:
+  if reason == "driver_steering":
+    return LANE_CENTERING_RELAX_REASON_DRIVER
+  if reason == "lane_change":
+    return LANE_CENTERING_RELAX_REASON_LANE_CHANGE
+  if reason == "curvature_limited":
+    return LANE_CENTERING_RELAX_REASON_CURVE
+  if reason in ("low_path_quality", "path_reason", "invalid_path"):
+    return LANE_CENTERING_RELAX_REASON_QUALITY
+  if reason == "low_speed":
+    return LANE_CENTERING_RELAX_REASON_LOW_SPEED
+  return LANE_CENTERING_RELAX_REASON_OTHER
 
 
 def _lane_centering_metrics(inputs: LaneCenteringAssistInputs) -> tuple[float, float, float] | None:
@@ -248,6 +562,21 @@ def _growth_deadband(straight_cruise: bool) -> float:
 
 def _build_rate(straight_cruise: bool) -> float:
   return LANE_CENTERING_ASSIST_STRAIGHT_BUILD_RATE if straight_cruise else LANE_CENTERING_ASSIST_BUILD_RATE
+
+
+def _curve_lat_accel(inputs: LaneCenteringAssistInputs) -> float:
+  curvatures = [inputs.model_curvature, inputs.measured_curvature, inputs.previous_processed_curvature]
+  max_curvature = max(abs(_finite_float(c)) for c in curvatures)
+  speed = max(abs(_finite_float(inputs.v_ego)), LANE_CENTERING_ASSIST_SPEED_FLOOR)
+  return max_curvature * speed**2
+
+
+def _soft_deadband(value: float, threshold: float) -> float:
+  if threshold <= 0.0:
+    return value
+  if abs(value) <= threshold:
+    return 0.0
+  return math.copysign(abs(value) - threshold, value)
 
 
 def _finite_array(values: Sequence[float]) -> list[float]:

@@ -287,6 +287,14 @@ class LateralDemandPipeline:
       lane_centering_predicted_error=lane_centering_result.predicted_lateral_error,
       lane_centering_curvature_nudge=lane_centering_result.curvature_nudge,
       lane_centering_confidence=lane_centering_result.confidence,
+      lane_centering_relax_active=lane_centering_result.relax_active,
+      lane_centering_relax_reason_bits=lane_centering_result.relax_reason_bits,
+      lane_centering_relax_envelope=lane_centering_result.relax_envelope,
+      lane_centering_relax_lateral_error=lane_centering_result.relaxed_lateral_error,
+      lane_centering_relax_predicted_error=lane_centering_result.relaxed_predicted_error,
+      lane_centering_relax_age=lane_centering_result.relax_age,
+      lane_centering_relax_nudge_flip_score=lane_centering_result.relax_nudge_flip_score,
+      lane_centering_relax_error_cross_score=lane_centering_result.relax_error_cross_score,
     )
     return LateralDemandPipelineResult(
       demand=demand,

@@ -25,3 +25,11 @@ class ProcessedLateralDemand:
   lane_centering_predicted_error: float = 0.0
   lane_centering_curvature_nudge: float = 0.0
   lane_centering_confidence: float = 0.0
+  lane_centering_relax_active: bool = False
+  lane_centering_relax_reason_bits: int = 0
+  lane_centering_relax_envelope: float = 0.0
+  lane_centering_relax_lateral_error: float = 0.0
+  lane_centering_relax_predicted_error: float = 0.0
+  lane_centering_relax_age: float = 0.0
+  lane_centering_relax_nudge_flip_score: float = 0.0
+  lane_centering_relax_error_cross_score: float = 0.0
