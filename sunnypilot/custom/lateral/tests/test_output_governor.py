@@ -192,6 +192,30 @@ def test_over_response_cap_triggers_in_both_directions():
   assert r_neg.reason & GovernorReason.OVER_RESPONSE
 
 
+def test_over_response_attenuates_non_binding_nominal_torque():
+  # Route logs showed OVER_RESPONSE caps often did not bind because nominal torque was
+  # below cap*max_output. Same-direction overresponse should still reduce the command.
+  gov = OutputGovernor(DT)
+  gov.previous_output = 0.5
+
+  r = gov.update(benign(nominal=0.5, v=20.0, desired=1.0, actual=1.3))
+
+  assert r.reason & GovernorReason.OVER_RESPONSE
+  assert r.reason & GovernorReason.CLIPPED
+  assert r.cap > 0.5  # max-output cap alone would not have clipped nominal=0.5
+  assert 0.0 < r.output_torque < 0.5
+
+
+def test_over_response_attenuation_preserves_command_sign():
+  gov = OutputGovernor(DT)
+  gov.previous_output = -0.5
+
+  r = gov.update(benign(nominal=-0.5, v=20.0, desired=-1.0, actual=-1.3))
+
+  assert r.reason & GovernorReason.OVER_RESPONSE
+  assert -0.5 < r.output_torque < 0.0
+
+
 def test_over_response_skipped_when_torque_opposes_actual():
   # A same-direction excess is only dangerous when the command reinforces it.
   r = OutputGovernor(DT).update(benign(nominal=-0.5, v=25.0, desired=1.0, actual=1.8))

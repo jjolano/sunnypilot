@@ -206,7 +206,18 @@ class OutputGovernor:
     # floor relaxes the cap toward 1.0 (never tightens)
     cap_eff = cap + floor * (1.0 - cap)
     output_cap_abs = cap_eff * inp.max_output
-    clipped = float(np.clip(inp.nominal_torque, -output_cap_abs, output_cap_abs))
+    capped = float(np.clip(inp.nominal_torque, -output_cap_abs, output_cap_abs))
+
+    # A cap expressed as a fraction of max_output may not bind low/mid nominal commands,
+    # exactly where route logs show comfort over-response. When actual lateral accel is
+    # already beyond the target and the command reinforces it, attenuate the nominal torque
+    # itself while preserving sign and all hard caps. This is a restriction only: it never
+    # creates corrective opposite-side torque, and it remains rate-limited below.
+    attenuated = inp.nominal_torque
+    if over_scale < 1.0:
+      attenuated = inp.nominal_torque * over_scale
+    clipped = capped if abs(capped) <= abs(attenuated) else attenuated
+
     if abs(clipped - inp.nominal_torque) > 1e-6:
       reason |= GovernorReason.CLIPPED
 

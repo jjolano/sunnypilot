@@ -140,6 +140,65 @@ def test_engaged_underresponse_candidate():
   assert ev.peak_ratio < 0.7
 
 
+def test_engaged_lag_with_higher_peak_is_not_underresponse():
+  """A transient early deficit with higher eventual response should not be underresponse."""
+  dt = 0.05
+  frames = _frames(
+    0.0, 1.6, dt,
+    mode="engaged",
+    ref_signal="controller_desired",
+    ref_func=lambda t: _ramp_up_hold_down(t, t_onset=0.0, t_peak=0.4, t_release=0.9, peak=0.60),
+    actual_func=lambda t: _ramp_up_hold_down(t, t_onset=0.35, t_peak=0.8, t_release=1.3, peak=0.78),
+  )
+  events = detect_lateral_events(frames, DEFAULT_PARAMS)
+  assert len(events) == 1
+  ev = events[0]
+  assert ev.mode == "engaged"
+  assert ev.gates_passed
+  assert "engaged_underresponse_candidate" not in ev.classifications
+  assert ev.peak_ratio is not None
+  assert ev.peak_ratio > 1.0
+
+
+def test_engaged_sustained_overresponse_candidate():
+  """Sustained larger actual response should be flagged for overresponse analysis."""
+  dt = 0.05
+  frames = _frames(
+    0.0, 1.4, dt,
+    mode="engaged",
+    ref_signal="controller_desired",
+    ref_func=lambda t: _ramp_up_hold_down(t, t_onset=0.0, t_peak=0.4, t_release=0.9, peak=0.70),
+    actual_func=lambda t: _ramp_up_hold_down(t, t_onset=0.0, t_peak=0.4, t_release=0.9, peak=0.90),
+  )
+  events = detect_lateral_events(frames, DEFAULT_PARAMS)
+  assert len(events) == 1
+  ev = events[0]
+  assert ev.gates_passed
+  assert "engaged_overresponse_candidate" in ev.classifications
+  assert "engaged_underresponse_candidate" not in ev.classifications
+  assert ev.peak_ratio is not None and ev.peak_ratio > 1.1
+  assert ev.area_ratio is not None and ev.area_ratio > 1.05
+
+
+def test_engaged_tiny_reference_overshoot_is_not_overresponse():
+  """Ratio explosions on tiny references should not be considered tune-worthy."""
+  dt = 0.05
+  params = EventDetectionParams(onset_threshold=0.10, release_threshold=0.05)
+  frames = _frames(
+    0.0, 1.0, dt,
+    mode="engaged",
+    ref_signal="controller_desired",
+    ref_func=lambda t: _ramp_up_hold_down(t, t_onset=0.0, t_peak=0.3, t_release=0.7, peak=0.20),
+    actual_func=lambda t: _ramp_up_hold_down(t, t_onset=0.0, t_peak=0.3, t_release=0.7, peak=0.35),
+  )
+  events = detect_lateral_events(frames, params)
+  assert len(events) == 1
+  ev = events[0]
+  assert ev.gates_passed
+  assert ev.peak_ratio is not None and ev.peak_ratio > 1.4
+  assert "engaged_overresponse_candidate" not in ev.classifications
+
+
 def test_path_gated_marks_invalid_gate():
   """A gated model path should produce an invalid_gate classification."""
   dt = 0.05

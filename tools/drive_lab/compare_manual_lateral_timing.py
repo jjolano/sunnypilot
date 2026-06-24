@@ -47,6 +47,13 @@ class EventDetectionParams:
   max_roll_abs: float = 0.05               # rad
   underresponse_min_deficit: float = 0.10  # m/s^2
   underresponse_min_peak_deficit: float = 0.15  # m/s^2
+  underresponse_max_peak_ratio: float = 0.95
+  underresponse_max_area_ratio: float = 0.95
+  overresponse_min_reference_peak: float = 0.50
+  overresponse_min_mean_overshoot: float = 0.08
+  overresponse_min_peak_overshoot: float = 0.15
+  overresponse_min_peak_ratio: float = 1.10
+  overresponse_min_area_ratio: float = 1.05
   tracking_rms_threshold: float = 0.30     # m/s^2
 
   def to_dict(self) -> dict[str, Any]:
@@ -364,6 +371,8 @@ def _classify_event(
   ref_peak = metrics["reference_peak"]
   actual_peak = metrics["actual_peak"]
   rms = metrics["rms_tracking_error"]
+  peak_ratio = metrics.get("peak_ratio")
+  area_ratio = metrics.get("area_ratio")
 
   if mode == "manual":
     if actual_onset is not None and ref_onset is not None:
@@ -418,11 +427,20 @@ def _classify_event(
     and not high_roll
     and mean_deficit > params.underresponse_min_deficit
     and peak_deficit > params.underresponse_min_peak_deficit
+    and peak_ratio is not None
+    and area_ratio is not None
+    and peak_ratio <= params.underresponse_max_peak_ratio
+    and area_ratio <= params.underresponse_max_area_ratio
   )
   is_overresponse = (
-    mean_overshoot > 0.10
-    or peak_overshoot > 0.15
-    or (actual_peak is not None and ref_peak is not None and ref_peak != 0 and abs(actual_peak) > abs(ref_peak) * 1.4)
+    ref_peak is not None
+    and abs(ref_peak) >= params.overresponse_min_reference_peak
+    and peak_ratio is not None
+    and area_ratio is not None
+    and mean_overshoot > params.overresponse_min_mean_overshoot
+    and peak_overshoot > params.overresponse_min_peak_overshoot
+    and peak_ratio >= params.overresponse_min_peak_ratio
+    and area_ratio >= params.overresponse_min_area_ratio
   )
 
   if is_underresponse:
@@ -554,6 +572,8 @@ def _build_event(
     "actual_onset_t": actual_onset_t,
     "reference_peak": ref_peak,
     "actual_peak": actual_peak,
+    "peak_ratio": peak_ratio,
+    "area_ratio": area_ratio,
     "rms_tracking_error": rms_tracking_error,
   }
   classifications = _classify_event(segment[start_idx:end_idx + 1], metrics, params)
