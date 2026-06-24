@@ -232,6 +232,8 @@ def _openpilot_kind(title: str) -> str:
 
 
 def _openpilot_oracle_profile(kind: str) -> str:
+  if kind in LAUNCH_START_ORACLE_KINDS:
+    return "comfort"
   if kind in REGRESSION_ORACLE_KINDS:
     return "regression"
   return "comfort"

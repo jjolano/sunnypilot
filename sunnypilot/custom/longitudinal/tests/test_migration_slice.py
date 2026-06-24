@@ -1416,7 +1416,7 @@ def test_stop_hold_release_prep_vetoes_weak_release_evidence():
   assert sp._stop_hold_release_prep_a_target is None
 
   # Too close.
-  a, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.15, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  a, _, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.05, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
   assert a == -0.5
   assert sp._stop_hold_release_prep_a_target is None
 

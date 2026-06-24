@@ -155,6 +155,27 @@ def test_stopped_close_lead_latches_hold_and_forces_stop():
   assert a_target <= -0.4
 
 
+def test_stopped_close_lead_normalizes_harsh_hold_through_creep_band():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  planner.CP = make_cp(v_ego_stopping=0.5, stop_accel=-2.0)
+  planner.custom_long_finalizer.CP = planner.CP
+  lead = make_lead(d_rel=5.9, v_lead=0.0, v_rel=-0.65)
+  sm = make_sm(v_ego=0.65, lead_one=lead)
+
+  a_target, should_stop, e2e_source = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.4, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert e2e_source is False
+  assert a_target == pytest.approx(-0.5)
+
+
 def test_authorized_release_clears_mpc_stop_and_returns_bounded_positive_accel():
   planner = make_planner(
     mode=LongitudinalMode.SCC,

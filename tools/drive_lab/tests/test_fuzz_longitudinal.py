@@ -122,6 +122,15 @@ def test_udacity_lead_decel_stop_regression_oracle_passes_comfort_gate():
   ]
 
 
+def test_udacity_approach_from_stop_passes_comfort_gate():
+  scenario = next(s for s in generate_udacity_acc_scenarios() if s.kind == "udacity_acc_approach_from_stop")
+
+  with shipped_longitudinal_config():
+    result = run_scenario(scenario, max_normal_jerk=8.0)
+
+  assert result.failures == []
+
+
 def test_openpilot_acc_preset_count():
   scenarios = generate_openpilot_acc_scenarios()
   assert len(scenarios) == 15
@@ -141,6 +150,13 @@ def test_openpilot_stopped_lead_variants_use_regression_oracle():
     assert scenarios[title].oracle_profile == "regression"
 
 
+def test_openpilot_resume_from_stop_uses_launch_oracle():
+  scenario = next(s for s in generate_openpilot_acc_scenarios() if s.kind == "openpilot_resume_from_stop")
+
+  assert scenario.oracle_profile == "comfort"
+  assert scenario_maneuver_kwargs(scenario)["ensure_start"] is False
+
+
 def test_openpilot_stopped_lead_prob_variant_passes_regression_gate():
   scenario = next(
     scenario for scenario in generate_openpilot_acc_scenarios()
@@ -151,6 +167,32 @@ def test_openpilot_stopped_lead_prob_variant_passes_regression_gate():
     result = run_scenario(scenario, max_normal_jerk=8.0)
 
   assert result.failures == []
+
+
+def test_openpilot_resume_from_stop_passes_launch_gate():
+  scenario = next(s for s in generate_openpilot_acc_scenarios() if s.kind == "openpilot_resume_from_stop")
+
+  with shipped_longitudinal_config():
+    result = run_scenario(scenario, max_normal_jerk=8.0)
+
+  assert result.failures == []
+
+
+def test_seeded_pullaway_cases_pass_comfort_jerk_gate():
+  scenarios = [
+    scenario for scenario in generate_scenarios(seed=1, cases=100, mode="comfort")
+    if scenario.title in {"fuzz lead pullaway #20", "fuzz lead pullaway #56", "fuzz lead pullaway #78"}
+  ]
+
+  assert len(scenarios) == 3
+  with shipped_longitudinal_config():
+    results = [run_scenario(scenario, max_normal_jerk=8.0) for scenario in scenarios]
+
+  assert [(result.scenario.title, result.failures) for result in results] == [
+    ("fuzz lead pullaway #20", []),
+    ("fuzz lead pullaway #56", []),
+    ("fuzz lead pullaway #78", []),
+  ]
 
 
 def test_ncap_acc_curated_count():
