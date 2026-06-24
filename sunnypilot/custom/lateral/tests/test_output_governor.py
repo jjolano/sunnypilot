@@ -14,6 +14,8 @@ from openpilot.sunnypilot.custom.lateral.output_governor import (
   HIGH_RATE_SLEW_SCALE,
   OUTPUT_SLEW_RATE_BP,
   OUTPUT_SLEW_RATE_V,
+  OVER_RESPONSE_FULL_EXCESS,
+  OVER_RESPONSE_MARGIN,
   OVER_RESPONSE_MIN_SCALE,
   SAME_DIRECTION_LIMIT_CAP,
   SIGN_CHANGE_SLEW_RATE_BP,
@@ -181,6 +183,19 @@ def test_over_response_cap_monotonic():
   for a, b in zip(caps, caps[1:], strict=False):
     assert b <= a + 1e-9
   assert caps[-1] == pytest.approx(OVER_RESPONSE_MIN_SCALE, abs=1e-6)  # saturates at min scale
+
+
+def test_moderate_over_response_attenuates_before_large_error():
+  gov = OutputGovernor(DT)
+  gov.previous_output = 0.5
+
+  r = gov.update(benign(nominal=0.5, v=20.0, desired=1.0, actual=1.2))
+
+  assert OVER_RESPONSE_MARGIN < 0.12
+  assert OVER_RESPONSE_FULL_EXCESS < 0.60
+  assert r.reason & GovernorReason.OVER_RESPONSE
+  assert r.reason & GovernorReason.CLIPPED
+  assert r.output_torque < 0.4
 
 
 def test_over_response_cap_triggers_in_both_directions():
