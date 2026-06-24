@@ -23,6 +23,10 @@ DESCRIPTIONS = {
   'stop_and_go_hack': tr_noop(
     'sunnypilot will allow some Toyota/Lexus cars to auto resume during stop and go traffic. ' +
     'This feature is only applicable to certain models that are able to use longitudinal control. This is an alpha feature. Use at your own risk.'
+  ),
+  'tss2_smooth_longitudinal': tr_noop(
+    'Use a softer Toyota TSS2 longitudinal tune for smoother traffic following and stops. ' +
+    'This changes gas and brake tuning only; steering is unchanged.'
   )
 }
 
@@ -47,8 +51,17 @@ class ToyotaSettings(BrandSettings):
       enabled=lambda: not ui_state.engaged,
     )
 
+    self.tss2_smooth_longitudinal = toggle_item_sp(
+      lambda: tr("TSS2 Smooth Longitudinal (Beta)"),
+      description=lambda: tr(DESCRIPTIONS["tss2_smooth_longitudinal"]),
+      initial_state=ui_state.params.get_bool("ToyotaTSS2SmoothLongitudinal"),
+      callback=self._on_enable_tss2_smooth_longitudinal,
+      enabled=lambda: not ui_state.engaged,
+    )
+
     self.items = [
       self.enforce_stock_longitudinal,
+      self.tss2_smooth_longitudinal,
       self.stop_and_go_hack,
     ]
 
@@ -75,6 +88,10 @@ class ToyotaSettings(BrandSettings):
       ui_state.params.put_bool("ToyotaEnforceStockLongitudinal", False)
       ui_state.params.put_bool("OnroadCycleRequested", True)
 
+  def _on_enable_tss2_smooth_longitudinal(self, state: bool):
+    ui_state.params.put_bool("ToyotaTSS2SmoothLongitudinal", state)
+    ui_state.params.put_bool("OnroadCycleRequested", True)
+
   def _on_enable_stop_and_go_hack(self, state: bool):
     if state:
       def confirm_callback(result: int):
@@ -100,6 +117,22 @@ class ToyotaSettings(BrandSettings):
       enforce_stock = self.enforce_stock_longitudinal.action_item.get_state()
 
       if longitudinal and not enforce_stock:
+        self.tss2_smooth_longitudinal.action_item.set_enabled(not ui_state.engaged)
+        self.tss2_smooth_longitudinal.action_item.set_state(ui_state.params.get_bool("ToyotaTSS2SmoothLongitudinal"))
+        tss2_desc = tr(DESCRIPTIONS["tss2_smooth_longitudinal"])
+        show_tss2_desc = False
+      else:
+        self.tss2_smooth_longitudinal.action_item.set_enabled(False)
+        self.tss2_smooth_longitudinal.action_item.set_state(False)
+        tss2_desc = "<b>" + tr(SNG_HACK_UNAVAILABLE) + "</b>\n\n" + tr(DESCRIPTIONS["tss2_smooth_longitudinal"])
+        show_tss2_desc = True
+
+      if self.tss2_smooth_longitudinal.description != tss2_desc:
+        self.tss2_smooth_longitudinal.set_description(tss2_desc)
+        if show_tss2_desc:
+          self.tss2_smooth_longitudinal.show_description(True)
+
+      if longitudinal and not enforce_stock:
         self.stop_and_go_hack.action_item.set_enabled(not ui_state.engaged)
         new_desc = tr(DESCRIPTIONS["stop_and_go_hack"])
         show_desc = False
@@ -114,6 +147,11 @@ class ToyotaSettings(BrandSettings):
         if show_desc:
           self.stop_and_go_hack.show_description(True)
     else:
+      self.tss2_smooth_longitudinal.action_item.set_enabled(False)
+      new_tss2_desc = "<b>" + tr(ONROAD_ONLY_DESCRIPTION) + "</b>\n\n" + tr(DESCRIPTIONS["tss2_smooth_longitudinal"])
+      if self.tss2_smooth_longitudinal.description != new_tss2_desc:
+        self.tss2_smooth_longitudinal.set_description(new_tss2_desc)
+
       self.stop_and_go_hack.action_item.set_enabled(False)
       new_desc = "<b>" + tr(ONROAD_ONLY_DESCRIPTION) + "</b>\n\n" + tr(DESCRIPTIONS["stop_and_go_hack"])
       if self.stop_and_go_hack.description != new_desc:

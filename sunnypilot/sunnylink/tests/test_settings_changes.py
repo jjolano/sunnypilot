@@ -208,6 +208,7 @@ class TestNotEngagedReplacement:
   @pytest.mark.parametrize("key", [
     "AlphaLongitudinalEnabled",
     "ToyotaEnforceStockLongitudinal",
+    "ToyotaTSS2SmoothLongitudinal",
     "ToyotaStopAndGoHack",
   ])
   def test_offroad_only_replaced_with_not_engaged(self, schema, key):

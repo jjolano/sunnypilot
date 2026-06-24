@@ -281,6 +281,7 @@ class TestKnownVehicleSettings:
   def test_toyota_has_enforce_stock_and_stop_go(self, schema):
     keys = {i["key"] for i in _brand_items(schema["vehicle_settings"].get("toyota"))}
     assert "ToyotaEnforceStockLongitudinal" in keys
+    assert "ToyotaTSS2SmoothLongitudinal" in keys
     assert "ToyotaStopAndGoHack" in keys
 
   def test_tesla_has_coop_steering(self, schema):

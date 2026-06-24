@@ -26,6 +26,7 @@ VEHICLE_EXPECTED = {
   },
   "toyota": {
     "ToyotaEnforceStockLongitudinal": "toggle",
+    "ToyotaTSS2SmoothLongitudinal": "toggle",
     "ToyotaStopAndGoHack": "toggle",
   },
 }
@@ -54,5 +55,5 @@ def test_vehicle_settings_parity_exact_keys_and_widgets():
 def test_vehicle_settings_toyota_needs_onroad_cycle():
   brand_data = VEHICLE_SETTINGS.get("toyota", {})
   for item in _items_iter(brand_data):
-    if item.get("key") in ("ToyotaEnforceStockLongitudinal", "ToyotaStopAndGoHack"):
+    if item.get("key") in ("ToyotaEnforceStockLongitudinal", "ToyotaTSS2SmoothLongitudinal", "ToyotaStopAndGoHack"):
       assert item.get("needs_onroad_cycle") is True, f"{item['key']} must declare needs_onroad_cycle"
