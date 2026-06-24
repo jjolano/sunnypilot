@@ -515,6 +515,59 @@ class CustomLongitudinalFinalizer:
       return 0.0
     return float(min(release_a, self._STOP_HOLD_CRAWL_RELEASE_A_MAX, gap_limited_a))
 
+  def _lead_stop_hold_crawl_fallback_applies(self, sm: Any, custom_long: Any, custom_long_output: Any,
+                                             mpc_a_target: float, raw_model_a_target: float,
+                                             raw_model_should_stop: bool, selected_lead: Any,
+                                             lead_d_rel: float, lead_v: float, lead_v_rel: float,
+                                             same_id: bool) -> bool:
+    """Finalizer-owned crawl fallback when the same latched lead is physically opening
+    but the stack's selected release source is absent or invalid.
+
+    This is intentionally narrow: it does not bypass driver/system/model/MPC brake vetoes
+    and only emits a small, gap-limited crawl release. It does not override the explicit
+    gate-mode planner path, which is preserved unchanged.
+    """
+    if self._standstill_release_gate_enabled(custom_long):
+      return False
+    if not custom_long.enabled or custom_long_output is None:
+      return False
+    if not bool(getattr(custom_long_output, "enabled", False)):
+      return False
+    if bool(getattr(custom_long_output, "should_stop", False)):
+      return False
+    if raw_model_should_stop:
+      return False
+    cs = self._sm_item(sm, 'carState')
+    controls_state = self._sm_item(sm, 'controlsState')
+    if cs is None or controls_state is None:
+      return False
+    if bool(getattr(cs, "brakePressed", False)):
+      return False
+    if bool(getattr(cs, "gasPressed", False)):
+      return False
+    if bool(getattr(controls_state, "forceDecel", False)):
+      return False
+    if selected_lead is None or not same_id:
+      return False
+    lead_id = getattr(selected_lead, 'radarTrackId', None)
+    if lead_id is None or self.lead_stop_hold_lead_id is None or lead_id != self.lead_stop_hold_lead_id:
+      return False
+    if self.lead_stop_hold_gap_baseline_d_rel is None:
+      return False
+    for value in (lead_d_rel, lead_v, lead_v_rel, mpc_a_target, raw_model_a_target):
+      if not math.isfinite(float(value)):
+        return False
+    if float(raw_model_a_target) < 0.0:
+      return False
+    if float(mpc_a_target) < self._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET:
+      return False
+    if float(lead_v_rel) < 0.05:
+      return False
+    baseline_opening = float(lead_d_rel) - float(self.lead_stop_hold_gap_baseline_d_rel)
+    if float(lead_v) < 0.20 and baseline_opening < 0.6:
+      return False
+    return True
+
   def _lead_stop_hold_release_accepts(self, sm: Any, custom_long: Any, custom_long_output: Any,
                                       mpc_a_target: float, raw_model_a_target: float,
                                       raw_model_should_stop: bool, selected_lead: Any, lead_d_rel: float,
@@ -525,22 +578,33 @@ class CustomLongitudinalFinalizer:
     release_source = str(getattr(custom_long_output, "standstill_release_source", ""))
     lead_id = getattr(selected_lead, 'radarTrackId', None)
     same_id = lead_id is not None and self.lead_stop_hold_lead_id is not None and lead_id == self.lead_stop_hold_lead_id
-    gate_fallback_candidate = bool(self._standstill_release_gate_enabled(custom_long) and same_id and release_source not in ("lead_pullaway", "lead_standstill_launch"))
-    if release_source not in ("lead_pullaway", "lead_standstill_launch"):
-      if not gate_fallback_candidate:
-        self.last_release_block_reason = "invalid_release_source"
-        return False, float(lead_d_rel)
+    source_valid = release_source in ("lead_pullaway", "lead_standstill_launch")
     if lead_id is not None and self.lead_stop_hold_lead_id is not None and lead_id != self.lead_stop_hold_lead_id:
       self.last_release_block_reason = "different_lead_id"
+      return False, float(lead_d_rel)
+    crawl_fallback = bool(
+      not source_valid and
+      self._lead_stop_hold_crawl_fallback_applies(
+        sm, custom_long, custom_long_output, mpc_a_target, raw_model_a_target,
+        raw_model_should_stop, selected_lead, lead_d_rel, lead_v, lead_v_rel, same_id,
+      )
+    )
+    gate_fallback_candidate = bool(
+      not source_valid and not crawl_fallback and
+      self._standstill_release_gate_enabled(custom_long) and same_id
+    )
+    if not source_valid and not crawl_fallback and not gate_fallback_candidate:
+      self.last_release_block_reason = "invalid_release_source"
       return False, float(lead_d_rel)
     for value in (lead_d_rel, lead_v, lead_v_rel, mpc_a_target, raw_model_a_target):
       if not math.isfinite(float(value)):
         self.last_release_block_reason = "non_finite_values"
         return False, float(lead_d_rel)
     stopping_distance = float(getattr(self.CP, 'stoppingDistance', 6.0) or 6.0)
-    if float(lead_v) < 0.30 or float(lead_v_rel) < 0.15:
-      self.last_release_block_reason = "lead_not_moving"
-      return False, float(lead_d_rel)
+    if not crawl_fallback:
+      if float(lead_v) < 0.30 or float(lead_v_rel) < 0.15:
+        self.last_release_block_reason = "lead_not_moving"
+        return False, float(lead_d_rel)
     min_d_rel = stopping_distance + self._STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN if same_id else stopping_distance + 0.1
     if same_id and self.lead_stop_hold_gap_baseline_d_rel is not None:
       baseline_min_d_rel = float(self.lead_stop_hold_gap_baseline_d_rel) + self._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
@@ -557,17 +621,29 @@ class CustomLongitudinalFinalizer:
       self.last_release_block_reason = "gap_increasing_time"
       return False, float(lead_d_rel)
     if same_id and self.lead_stop_hold_gap_baseline_d_rel is not None:
-      if float(lead_d_rel) - float(self.lead_stop_hold_gap_baseline_d_rel) < 0.3:
+      min_baseline_opening = 0.5 if crawl_fallback else 0.3
+      if float(lead_d_rel) - float(self.lead_stop_hold_gap_baseline_d_rel) < min_baseline_opening:
         self.last_release_block_reason = "baseline_opening"
         return False, float(lead_d_rel)
     if lead_id is None or self.lead_stop_hold_lead_id is None:
       if self.lead_stop_hold_gap_increasing_s < self._STOP_HOLD_NEW_ID_GAP_INCREASING_S:
         self.last_release_block_reason = "new_id_gap_increasing_time"
         return False, float(lead_d_rel)
+    if crawl_fallback:
+      self.last_release_block_reason = ""
+      requested_a = max(float(mpc_a_target), self._STOP_HOLD_CRAWL_RELEASE_A_MIN)
+      release_a = self._stop_hold_release_accel_for_gap(requested_a, lead_d_rel, lead_v, lead_v_rel, same_id)
+      if release_a <= 0.0:
+        self.last_release_block_reason = "crawl_deadband"
+        return False, float(lead_d_rel)
+      return True, release_a
     if not self._standstill_release_request_valid(
       sm, custom_long, custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop,
       self._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET if same_id else -0.03,
     ):
+      if not gate_fallback_candidate:
+        # block_reason already set by one of the release validators
+        return False, float(lead_d_rel)
       if not self._standstill_release_planner_gate_valid(
         sm, custom_long, custom_long_output, mpc_a_target, raw_model_a_target, raw_model_should_stop,
         selected_lead, lead_d_rel, lead_v, lead_v_rel, same_id,

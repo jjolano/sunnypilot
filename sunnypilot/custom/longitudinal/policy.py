@@ -70,9 +70,14 @@ _LEAD_SOFTEN_MAX_REQUIRED_DECEL = 0.25      # m/s^2; low-risk closing threshold
 _LEAD_SOFTEN_RAISE_DELTA = 0.4              # m/s^2; bounded raise over the lead target
 _LEAD_SOFTEN_CEILING = -0.05                # m/s^2; near-coast ceiling, never positive
 
-# Inside-gap compression/recovery thresholds (Phase 3): only for low-risk braking seeds;
-# strong lead decel is left to the normal lead-follow physical hazard.
-_LEAD_INSIDE_GAP_MAX_LEAD_DECEL = -1.0      # m/s^2; cap below which recovery is allowed
+# Inside-gap compression/recovery thresholds (Phase 3): controlled compression for
+# stable/confident same-lead braking when projected collision risk is low/moderate.
+# Strong/flickery/new-stop threats are left to the normal lead-follow physical hazard.
+_LEAD_INSIDE_GAP_MIN_TIME_GAP_S = 1.1
+_LEAD_INSIDE_GAP_MIN_TTC_S = 5.0
+_LEAD_INSIDE_GAP_MAX_REQUIRED_DECEL = 0.45  # m/s^2; kinematic closing demand ceiling
+_LEAD_INSIDE_GAP_MAX_CLOSING_MPS = 2.0      # m/s; moderate closing only
+_LEAD_INSIDE_GAP_MIN_LEAD_A_K = -1.2        # m/s^2; reject compression if lead is braking harder
 
 
 @dataclass(frozen=True)
@@ -274,7 +279,7 @@ def _lead_softening_target(scene: LongitudinalScene) -> float | None:
 
 
 def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | None:
-  """For low-risk inside-gap compression/recovery, return (target, is_hazard).
+  """For low/moderate-risk inside-gap compression/recovery, return (target, is_hazard).
 
   Returns:
     (0.0, False)      -> coast; caller should emit advisory cap + progress, no physical hazard.
@@ -285,7 +290,7 @@ def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | 
     return None
   if not _scene_fields_finite(scene):
     return None
-  if not (scene.lead_a_target < 0.0 and scene.lead_a_target >= _LEAD_INSIDE_GAP_MAX_LEAD_DECEL):
+  if scene.lead_a_target >= 0.0:
     return None
   if scene.lead_should_stop or scene.model_should_stop or scene.stop_threat:
     return None
@@ -293,7 +298,7 @@ def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | 
     return None
   if scene.lead_shadow_active or scene.alternate_threat_active:
     return None
-  if not scene.lead_stable or scene.lead_confidence < 0.55:
+  if not math.isfinite(scene.lead_confidence) or not scene.lead_stable or scene.lead_confidence < 0.55:
     return None
   if scene.v_ego < 5.0:
     return None
@@ -301,22 +306,41 @@ def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | 
     return None
   if scene.lead_d_rel > scene.follow_gap + 2.0:
     return None
+
+  closing = max(0.0, -scene.lead_v_rel)
   v_ego_safe = max(scene.v_ego, 0.1)
   time_gap = scene.lead_d_rel / v_ego_safe
-  min_recovery_gap = max(8.0, 0.75 * scene.v_ego, 0.5 * scene.follow_gap)
-  if scene.lead_d_rel < min_recovery_gap or time_gap < 0.8:
+  if closing > 0.05:
+    ttc = scene.lead_d_rel / max(closing, 0.01)
+  else:
+    ttc = float("inf")
+  usable_gap = max(scene.lead_d_rel - max(5.0, 0.5 * scene.follow_gap), 0.1)
+  required_decel = (closing * closing) / (2.0 * usable_gap)
+
+  if time_gap < _LEAD_INSIDE_GAP_MIN_TIME_GAP_S:
     return None
-  if not (-0.5 <= scene.lead_v_rel <= 0.5):
+  if ttc < _LEAD_INSIDE_GAP_MIN_TTC_S:
     return None
-  if scene.lead_a_k < -0.5:
+  if closing > _LEAD_INSIDE_GAP_MAX_CLOSING_MPS:
     return None
-  required_decel = (max(0.0, -scene.lead_v_rel) ** 2) / (2.0 * max(scene.lead_d_rel, 1.0))
-  if required_decel > 0.5:
+  if required_decel > _LEAD_INSIDE_GAP_MAX_REQUIRED_DECEL:
+    return None
+  if not math.isfinite(scene.lead_a_k) or scene.lead_a_k < _LEAD_INSIDE_GAP_MIN_LEAD_A_K:
     return None
 
-  if scene.lead_v_rel >= -0.1:
+  # Stable/opening inside the gap: suppress the physical hazard and coast.
+  if closing <= 0.1:
     return (0.0, False)
-  return (float(max(scene.lead_a_target, -0.25)), True)
+
+  # Moderate closing: keep a binding hazard but ramp the target gently with the
+  # kinematic demand. Never harden the original lead target (fail-closed) and
+  # never exceed a mild compression floor.
+  raw_magnitude = max(
+    0.15,
+    min(0.45, required_decel + 0.10, 0.15 + 0.15 * closing),
+  )
+  target = float(max(scene.lead_a_target, -raw_magnitude))
+  return (target, True)
 
 
 def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:

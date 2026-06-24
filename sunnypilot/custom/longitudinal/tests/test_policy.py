@@ -485,14 +485,14 @@ def test_inside_gap_gentle_closing_caps_hazard():
   assert "lead_follow" not in intents
   assert "lead_gap_compression" in intents
   d = decide(cands, LongitudinalMode.ACC, LIMITS)
-  assert -0.3 <= d.a_target <= -0.15          # gentle brake, not raw -0.8
+  assert d.a_target == pytest.approx(-0.15)   # tiny closing -> gentle, not floor
   assert d.reason == "physical_hazard"
 
 
 def test_inside_gap_fast_closing_stays_hazard():
   scene = _alignment_scene(
     v_ego=20.0, v_cruise=20.0, seed_a_target=-1.5,
-    lead_a_target=-1.5, lead_v=18.0, lead_v_rel=-2.0, lead_d_rel=25.0,
+    lead_a_target=-1.5, lead_v=17.5, lead_v_rel=-2.5, lead_d_rel=25.0,
     follow_gap=30.0, lead_progress_allowed=False,
   )
   cands = build_candidates(scene)
@@ -529,10 +529,10 @@ def test_inside_gap_short_gap_at_speed_rejected():
 
 
 def test_inside_gap_boundary_just_safe():
-  # v_ego=20 -> min_recovery_gap = max(8, 15, 15) = 15 and time_gap = 16/20 = 0.8
+  # v_ego=20 -> time_gap = 22.1/20 = 1.105, just above the 1.1 s floor.
   scene = _alignment_scene(
     v_ego=20.0, v_cruise=20.0, seed_a_target=-0.3,
-    lead_a_target=-0.3, lead_v=20.0, lead_v_rel=0.0, lead_d_rel=16.0,
+    lead_a_target=-0.3, lead_v=20.0, lead_v_rel=0.0, lead_d_rel=22.1,
     follow_gap=30.0, lead_progress_allowed=False,
   )
   cands = build_candidates(scene)
@@ -559,3 +559,182 @@ def test_inside_gap_low_confidence_lead_rejected():
   cands = build_candidates(scene)
   assert "lead_gap_recovery_coast" not in sources_of(cands)
   assert "lead_follow" in sources_of(cands)
+
+
+# -----------------------------------------------------------------------------
+# Phase 3b: controlled lead-compression expansion
+# -----------------------------------------------------------------------------
+
+def test_inside_gap_moderate_braking_compresses_gently():
+  # Stable/confident same lead braking moderately; low collision risk -> ramped cap rather than raw seed.
+  scene = _alignment_scene(
+    v_ego=10.0, v_cruise=10.0, seed_a_target=-1.5,
+    lead_a_target=-1.5, lead_v=8.8, lead_v_rel=-1.2, lead_a_k=-0.8,
+    lead_d_rel=15.0, follow_gap=15.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" not in intents
+  assert "lead_gap_compression" in intents
+  assert intents["lead_gap_compression"].role is CandidateRole.PHYSICAL_HAZARD
+  assert intents["lead_gap_compression"].source is EvidenceClass.LEAD
+  # Kinematic demand is low -> target scales with closing, not the full -0.45 floor.
+  assert intents["lead_gap_compression"].a_target == pytest.approx(-0.20, abs=0.02)
+  assert "lead_gap_compression_desire" in intents
+  assert intents["lead_gap_compression_desire"].role is CandidateRole.PROGRESS
+  assert intents["lead_gap_compression_desire"].authorized is True
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-0.20, abs=0.02)
+  assert d.reason == "physical_hazard"
+
+
+def test_inside_gap_short_time_gap_stays_hazard():
+  scene = _alignment_scene(
+    v_ego=13.0, v_cruise=13.0, seed_a_target=-1.5,
+    lead_a_target=-1.5, lead_v=11.8, lead_v_rel=-1.2, lead_a_k=-0.8,
+    lead_d_rel=14.0, follow_gap=15.0, lead_progress_allowed=False,
+  )
+  # time_gap = 14/13 ~ 1.077 < 1.1
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" in intents
+  assert "lead_gap_compression" not in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.5)
+
+
+def test_inside_gap_excess_closing_stays_hazard():
+  scene = _alignment_scene(
+    v_ego=20.0, v_cruise=20.0, seed_a_target=-1.5,
+    lead_a_target=-1.5, lead_v=17.5, lead_v_rel=-2.5, lead_a_k=-1.2,
+    lead_d_rel=25.0, follow_gap=30.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" in intents
+  assert "lead_gap_compression" not in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.5)
+
+
+def test_inside_gap_hazardous_kinematics_stays_hazard():
+  # TTC ~ 3.6 s and required decel ~ 0.72 m/s^2 both exceed safe floors.
+  scene = _alignment_scene(
+    v_ego=5.0, v_cruise=5.0, seed_a_target=-2.0,
+    lead_a_target=-2.0, lead_v=3.2, lead_v_rel=-1.8, lead_a_k=-1.0,
+    lead_d_rel=6.5, follow_gap=4.5, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" in intents
+  assert "lead_gap_compression" not in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-2.0)
+
+
+@pytest.mark.parametrize("flag", ["lead_stable", "lead_confidence"])
+def test_inside_gap_moderate_braking_rejected_when_unstable_or_low_confidence(flag):
+  over = {"lead_stable": False} if flag == "lead_stable" else {"lead_confidence": 0.5}
+  scene = _alignment_scene(
+    v_ego=10.0, v_cruise=10.0, seed_a_target=-1.5,
+    lead_a_target=-1.5, lead_v=8.8, lead_v_rel=-1.2, lead_a_k=-0.8,
+    lead_d_rel=15.0, follow_gap=15.0, lead_progress_allowed=False,
+    **over,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" in intents
+  assert "lead_gap_compression" not in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.5)
+
+
+def test_inside_gap_moderate_braking_rejected_when_confidence_nonfinite():
+  scene = _alignment_scene(
+    v_ego=10.0, v_cruise=10.0, seed_a_target=-1.5,
+    lead_a_target=-1.5, lead_v=8.8, lead_v_rel=-1.2, lead_a_k=-0.8,
+    lead_d_rel=15.0, follow_gap=15.0, lead_progress_allowed=False,
+    lead_confidence=float("nan"),
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" in intents
+  assert "lead_gap_compression" not in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.5)
+
+
+@pytest.mark.parametrize("flag", ["model_should_stop", "force_slow_decel", "brake_pressed", "gas_pressed"])
+def test_inside_gap_moderate_braking_rejected_when_stop_or_driver_override(flag):
+  scene = _alignment_scene(
+    v_ego=10.0, v_cruise=10.0, seed_a_target=-1.5,
+    lead_a_target=-1.5, lead_v=8.8, lead_v_rel=-1.2, lead_a_k=-0.8,
+    lead_d_rel=15.0, follow_gap=15.0, lead_progress_allowed=False,
+    **{flag: True},
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" in intents
+  assert "lead_gap_compression" not in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.5)
+
+
+def test_inside_gap_tiny_closing_is_gentle_not_full_floor():
+  # Tiny 0.11 m/s closing with safe kinematics must not jump to the -0.45 floor.
+  scene = _alignment_scene(
+    v_ego=20.0, v_cruise=20.0, seed_a_target=-0.3,
+    lead_a_target=-0.3, lead_v=19.89, lead_v_rel=-0.11, lead_a_k=-0.5,
+    lead_d_rel=25.0, follow_gap=30.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_gap_compression" in intents
+  assert intents["lead_gap_compression"].a_target == pytest.approx(-0.15)
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-0.15)
+
+
+def test_inside_gap_hard_lead_a_k_rejects_compression():
+  # A lead that is already braking hard must not be softened, even with low closing.
+  scene = _alignment_scene(
+    v_ego=10.0, v_cruise=10.0, seed_a_target=-1.5,
+    lead_a_target=-1.5, lead_v=9.0, lead_v_rel=-1.0, lead_a_k=-3.0,
+    lead_d_rel=15.0, follow_gap=15.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  assert "lead_follow" in sources_of(cands)
+  assert "lead_gap_compression" not in sources_of(cands)
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.5)
+
+
+def test_inside_gap_required_decel_above_ceiling_rejected():
+  # required_decel ~0.60 is above the 0.45 ceiling while speed/time-gap/TTC gates pass
+  # -> keep raw hazard, do not coast/cap.
+  scene = _alignment_scene(
+    v_ego=5.0, v_cruise=5.0, seed_a_target=-1.2,
+    lead_a_target=-1.2, lead_v=3.9, lead_v_rel=-1.1, lead_a_k=-0.5,
+    lead_d_rel=6.0, follow_gap=6.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  assert "lead_follow" in sources_of(cands)
+  assert "lead_gap_compression" not in sources_of(cands)
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.2)
+
+
+def test_inside_gap_max_closing_hits_mild_floor():
+  # At the maximum allowed closing (2.0 m/s) with high kinematic demand, the ramped
+  # target should approach but not exceed the gentle compression floor.
+  scene = _alignment_scene(
+    v_ego=5.0, v_cruise=5.0, seed_a_target=-1.5,
+    lead_a_target=-1.5, lead_v=3.0, lead_v_rel=-2.0, lead_a_k=-0.5,
+    lead_d_rel=10.0, follow_gap=8.0, lead_progress_allowed=False,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_gap_compression" in intents
+  assert intents["lead_gap_compression"].a_target == pytest.approx(-0.45)
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-0.45)

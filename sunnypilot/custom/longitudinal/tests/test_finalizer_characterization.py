@@ -379,3 +379,183 @@ def test_blocked_release_attempt_leaves_persisted_block_reason():
 
   assert planner._lead_stop_hold_active is True
   assert planner._last_release_block_reason == "lead_not_moving"
+
+
+def _arm_stop_hold(planner, d_rel: float = 6.2, lead_id: int = 1, gap_increasing_s: float = 0.30):
+  planner._lead_stop_hold_active = True
+  planner._lead_stop_hold_lead_id = lead_id
+  planner._lead_stop_hold_gap_baseline_d_rel = d_rel
+  planner._lead_stop_hold_gap_prev_d_rel = d_rel
+  planner._lead_stop_hold_gap_increasing_s = gap_increasing_s
+
+
+def test_crawl_fallback_releases_same_latched_lead_with_invalid_source():
+  # Stack provides no valid release source, but the same latched lead is physically opening.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1)
+  lead = make_lead(d_rel=7.0, v_lead=0.4, v_rel=0.2, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=True,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.0 < a_target <= planner.custom_long_finalizer._STOP_HOLD_CRAWL_RELEASE_A_MAX
+
+
+def test_crawl_fallback_rejects_brief_gap_increase():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.05)
+  lead = make_lead(d_rel=7.0, v_lead=0.4, v_rel=0.2, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=True,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a_target <= -0.4
+
+
+def test_crawl_fallback_rejects_different_lead_id():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1)
+  lead = make_lead(d_rel=7.0, v_lead=0.4, v_rel=0.2, lead_id=2)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=True,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert planner._last_release_block_reason == "different_lead_id"
+
+
+def test_crawl_fallback_rejects_raw_model_stop():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1)
+  lead = make_lead(d_rel=7.0, v_lead=0.4, v_rel=0.2, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=True,
+    raw_model_a_target=-0.5, raw_model_should_stop=True,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a_target <= -0.4
+
+
+def test_crawl_fallback_rejects_negative_raw_model_accel():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1)
+  lead = make_lead(d_rel=7.0, v_lead=0.4, v_rel=0.2, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=True,
+    raw_model_a_target=-0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a_target <= -0.4
+
+
+def test_crawl_fallback_rejects_mpc_brake():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1)
+  lead = make_lead(d_rel=7.0, v_lead=0.4, v_rel=0.2, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.2, mpc_should_stop=True,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a_target <= -0.4
+
+
+def test_crawl_fallback_rejects_driver_brake():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1)
+  lead = make_lead(d_rel=7.0, v_lead=0.4, v_rel=0.2, lead_id=1)
+  sm = make_sm(v_ego=0.0, brake_pressed=True, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=True,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+
+
+def test_crawl_fallback_respects_deadband_until_baseline_opens():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1)
+  # Small opening below the 0.5 m cumulative baseline threshold; should stay held.
+  lead = make_lead(d_rel=6.5, v_lead=0.4, v_rel=0.2, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=True,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a_target <= -0.4
+
+
+def test_crawl_fallback_large_latched_gap_requires_capped_baseline_opening():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  # Runtime latch baselines are capped at 6m even if the lead is stopped farther away.
+  _arm_stop_hold(planner, d_rel=6.0, lead_id=1)
+  lead = make_lead(d_rel=6.3, v_lead=0.4, v_rel=0.2, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=True,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a_target <= -0.4
