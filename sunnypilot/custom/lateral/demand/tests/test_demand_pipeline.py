@@ -102,6 +102,32 @@ def spatial_smoothing_inputs(v_ego=20.0, desired_curvature=0.001, candidate_curv
   )
 
 
+def temporal_smoothing_inputs(
+  desired_curvature: float,
+  measured_curvature: float,
+  lane_line_probs: list[float],
+  previous_desired_curvature: float | None = None,
+  v_ego: float = 10.0,
+) -> ModelPathProcessorInputs:
+  t_idxs = ModelConstants.T_IDXS
+  n = len(t_idxs)
+  previous = desired_curvature if previous_desired_curvature is None else previous_desired_curvature
+  return ModelPathProcessorInputs(
+    lat_active=True,
+    v_ego=v_ego,
+    desired_curvature=desired_curvature,
+    measured_curvature=measured_curvature,
+    previous_desired_curvature=previous,
+    position_x=[float(x) for x in range(n)],
+    position_y=[0.0] * n,
+    position_y_std=[0.1] * n,
+    orientation_z=[float(desired_curvature * v_ego * t) for t in t_idxs],
+    orientation_rate_z=[float(desired_curvature * v_ego)] * n,
+    lane_line_probs=lane_line_probs,
+    smooth_model_path_curvature=True,
+  )
+
+
 def test_constructs_and_runs_bounded():
   p = LateralDemandPipeline(DT)
   rng = np.random.default_rng(20260613)
@@ -517,3 +543,56 @@ def test_low_lane_confidence_soft_gate_does_not_amplify_raw_curvature():
   margin = SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA / (10.0 ** 2)
   assert abs(result.desired_curvature) <= abs(raw) + margin + 1e-9
   assert math.copysign(1.0, result.desired_curvature) == math.copysign(1.0, raw)
+
+
+def test_low_lane_confidence_at_threshold_does_not_inherit_stale_temporal_curvature():
+  proc = ModelPathProcessor()
+  stale_curvature = -0.02
+  good_confidence = [0.9, 0.9, 0.9, 0.9]
+  low_confidence = [0.9, 0.1, 0.1, 0.9]
+
+  for _ in range(10):
+    proc.update(temporal_smoothing_inputs(stale_curvature, stale_curvature, good_confidence))
+
+  raw = 0.005
+  for _ in range(2):
+    proc.update(temporal_smoothing_inputs(raw, raw, low_confidence))
+
+  result = proc.update(temporal_smoothing_inputs(raw, raw, low_confidence))
+
+  assert result.reason == "low_lane_confidence"
+  assert result.quality == pytest.approx(LOW_QUALITY_BLEND_THRESHOLD)
+  assert result.desired_curvature > 0.0
+  assert abs(result.desired_curvature - raw) < abs(stale_curvature - raw) * 0.25
+
+
+def test_clean_frame_after_soft_gate_reseeds_temporal_curvature():
+  proc = ModelPathProcessor()
+  stale_curvature = -0.02
+  good_confidence = [0.9, 0.9, 0.9, 0.9]
+  low_confidence = [0.9, 0.1, 0.1, 0.9]
+
+  for _ in range(10):
+    proc.update(temporal_smoothing_inputs(stale_curvature, stale_curvature, good_confidence))
+
+  raw = 0.005
+  degraded = None
+  for _ in range(3):
+    degraded = proc.update(temporal_smoothing_inputs(raw, 0.0, low_confidence))
+
+  assert degraded is not None
+  assert degraded.reason == "low_lane_confidence"
+  assert degraded.gated is True
+  assert degraded.quality < LOW_QUALITY_BLEND_THRESHOLD
+
+  clean = None
+  for _ in range(5):
+    clean = proc.update(temporal_smoothing_inputs(raw, raw, good_confidence))
+    if clean.reason == "ok":
+      break
+
+  assert clean is not None
+  assert clean.reason == "ok"
+  assert clean.gated is False
+  assert clean.desired_curvature > 0.0
+  assert abs(clean.desired_curvature - raw) < abs(stale_curvature - raw) * 0.25

@@ -168,6 +168,7 @@ class ModelPathProcessor:
     self._demand_jerk_smoothing_active = False
     self._last_demand_jerk_smoothing_step = 0.0
     self._last_demand_jerk_smoothing_lag = 0.0
+    self._prev_temporal_soft_boundary = False
 
   def update(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult:
     self._last_smoothing_tau_s = 0.0
@@ -196,6 +197,7 @@ class ModelPathProcessor:
       self._low_lane_confidence_frames = 0
       self._clear_retained_curve()
       self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
+      self._apply_temporal_soft_boundary(True)
       fallback_curvature = self._hard_invalid_fallback_curvature(
         inputs.previous_desired_curvature,
         inputs.measured_curvature,
@@ -287,6 +289,7 @@ class ModelPathProcessor:
     self._refresh_retained_curve(inputs, desired_curvature, quality, reason, path_disagreement)
 
     quality, reason, hold_frames_remaining = self._apply_soft_gate_hold(quality, reason, inputs.v_ego)
+    self._apply_temporal_soft_boundary(self._soft_temporal_boundary(quality, reason))
 
     if reason in TRUST_BUMP_REASONS:
       self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
@@ -491,6 +494,20 @@ class ModelPathProcessor:
     self._demand_jerk_smoothing_active = False
     self._last_demand_jerk_smoothing_step = 0.0
     self._last_demand_jerk_smoothing_lag = 0.0
+
+  def _reset_temporal_curvature_smoothing(self) -> None:
+    self._temporal_smoothed_curvature = None
+    self._straight_road_damping_active = False
+
+  @staticmethod
+  def _soft_temporal_boundary(quality: float, reason: str) -> bool:
+    return reason in SOFT_GATE_REASONS and quality <= LOW_QUALITY_BLEND_THRESHOLD
+
+  def _apply_temporal_soft_boundary(self, active: bool) -> None:
+    if active or active != self._prev_temporal_soft_boundary:
+      self._reset_temporal_curvature_smoothing()
+      self._reset_demand_jerk_smoothing()
+    self._prev_temporal_soft_boundary = active
 
   @staticmethod
   def _central_lane_confidence_ok(lane_line_probs: Sequence[float]) -> bool:
