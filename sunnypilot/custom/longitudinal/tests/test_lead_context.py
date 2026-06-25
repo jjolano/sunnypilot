@@ -137,6 +137,29 @@ def _relevance_state(authority, *, gap_excess=0.0):
   )
 
 
+def _state(idx: int, authority: str, *, track_id: int | None = None, risk: float = 0.0,
+           on_path: float = 1.0, d_rel: float = 20.0, v_lead: float = 10.0,
+           v_rel: float = 0.0, ttc: float = math.inf, required_decel: float = 0.0,
+           time_gap: float = 2.0, path_y_rel: float = 0.0, confidence: float = 0.9,
+           stable: bool = True, new_lead: bool = False, flicker_guard_timer: float = 0.0,
+           model_prob: float = 0.9, radar: bool = True, reason: str = "test"):
+  tid = idx + 10 if track_id is None else track_id
+  return lc.LeadRelevanceState(
+    lead_idx=idx, status=True, shadow=False, stable=stable, new_lead=new_lead,
+    flicker_guard_timer=flicker_guard_timer, track_id=tid, d_rel=d_rel, y_rel=path_y_rel,
+    path_y_rel=path_y_rel, v_lead=v_lead, v_rel=v_rel, model_prob=model_prob,
+    radar=radar, ttc=ttc, required_decel=required_decel, time_gap=time_gap,
+    on_path_score=on_path, risk_score=risk, ghost_score=0.0, confidence=confidence,
+    authority=authority, reason=reason,
+    risk_model=lc.LeadRiskModel(required_decel=required_decel, ttc=ttc, time_gap=time_gap,
+                                closing_speed=max(0.0, -v_rel), on_path_score=on_path,
+                                model_prob=model_prob, radar_valid=radar),
+    progress_model=lc.LeadProgressModel(gap_excess=5.0 if authority == lc.LEAD_AUTHORITY_PROGRESS_ALLOWED else 0.0,
+                                        allowed=authority == lc.LEAD_AUTHORITY_PROGRESS_ALLOWED,
+                                        reason="test_progress"),
+  )
+
+
 def _primary_ctx(behavior):
   return lc.PrimaryLeadContext(
     physical_idx=None, behavior_idx=0 if behavior is not None else None,
@@ -154,6 +177,63 @@ def test_primary_context_surfaces_lead_gap_excess():
 
 def test_primary_context_lead_gap_excess_zero_with_no_lead():
   assert _primary_ctx(None).lead_gap_excess == 0.0
+
+
+def test_physical_hysteresis_keeps_previous_without_material_threat():
+  previous = _state(0, lc.LEAD_AUTHORITY_PHYSICAL, track_id=10, risk=0.40)
+  challenger = _state(1, lc.LEAD_AUTHORITY_PHYSICAL, track_id=11, risk=0.42)
+  ctx = lc.select_primary_lead_context(
+    (previous, challenger), previous_physical_idx=0, previous_physical_track_id=10,
+    previous_physical_dwell_s=0.10,
+  )
+  assert ctx.physical_idx == 0
+  assert ctx.physical_switch_reason == "hysteresis_keep_previous"
+  assert ctx.physical_switched is False
+
+
+def test_physical_hysteresis_switches_for_immediate_threat():
+  previous = _state(0, lc.LEAD_AUTHORITY_PHYSICAL, track_id=10, risk=0.40, ttc=8.0)
+  challenger = _state(1, lc.LEAD_AUTHORITY_PHYSICAL, track_id=11, risk=0.80, ttc=2.5, required_decel=0.4)
+  ctx = lc.select_primary_lead_context(
+    (previous, challenger), previous_physical_idx=0, previous_physical_track_id=10,
+    previous_physical_dwell_s=0.10,
+  )
+  assert ctx.physical_idx == 1
+  assert ctx.physical_switch_reason == "immediate_threat"
+  assert ctx.physical_switched is True
+
+
+def test_physical_hysteresis_switches_after_dwell_elapsed():
+  previous = _state(0, lc.LEAD_AUTHORITY_PHYSICAL, track_id=10, risk=0.40)
+  challenger = _state(1, lc.LEAD_AUTHORITY_PHYSICAL, track_id=11, risk=0.42)
+  ctx = lc.select_primary_lead_context(
+    (previous, challenger), previous_physical_idx=0, previous_physical_track_id=10,
+    previous_physical_dwell_s=lc.LEAD_CONTEXT_SWITCH_MIN_DWELL_S,
+  )
+  assert ctx.physical_idx == 1
+  assert ctx.physical_switch_reason == "dwell_elapsed"
+  assert ctx.physical_switched is True
+
+
+def test_replacement_candidate_blocks_progress_suppress_only():
+  exiting_behavior = _state(
+    0, lc.LEAD_AUTHORITY_PROGRESS_ALLOWED, track_id=10, risk=0.0, on_path=0.3,
+    path_y_rel=1.2, v_rel=1.0, time_gap=2.5, reason="stable_progress_authorized_lead",
+  )
+  replacement = _state(
+    1, lc.LEAD_AUTHORITY_PHYSICAL, track_id=11, risk=0.55, on_path=1.0,
+    d_rel=20.0, v_rel=-4.0, ttc=5.0, required_decel=0.35, time_gap=1.5,
+    confidence=0.9, stable=True, reason="close_or_closing_lead",
+  )
+  ctx = lc.select_primary_lead_context((exiting_behavior, replacement))
+  assert ctx.replacement_candidate.active is True
+  assert ctx.replacement_candidate.candidate_idx == 1
+  assert ctx.alternate_threat_active is True
+  assert ctx.lead_progress_allowed is False
+  assert ctx.lead_release_blocked_reason == "replacement_threat"
+  debug = ctx.debug_dict()
+  assert debug["lead_replacement_active"] is True
+  assert debug["lead_replacement_candidate_idx"] == 1
 
 
 def test_shadow_tracker_benign_far_dropout_is_normal():

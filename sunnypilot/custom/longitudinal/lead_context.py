@@ -43,6 +43,18 @@ LEAD_CONTEXT_PREVIEW_T = (0.0, 0.2, 0.6, 1.0)
 LEAD_CONTEXT_DUPLICATE_D_REL_TOL = 0.15
 LEAD_CONTEXT_DUPLICATE_V_TOL = 0.05
 LEAD_CONTEXT_DUPLICATE_Y_TOL = 0.05
+LEAD_CONTEXT_SWITCH_MIN_DWELL_S = 0.30
+LEAD_CONTEXT_SWITCH_SCORE_MARGIN = 0.35
+LEAD_CONTEXT_SWITCH_REQUIRED_DECEL_MARGIN = 0.15
+LEAD_CONTEXT_SWITCH_TTC_MARGIN_S = 0.75
+LEAD_CONTEXT_SWITCH_IMMEDIATE_TTC_S = 3.0
+LEAD_CONTEXT_REPLACEMENT_EXIT_Y = 1.0
+LEAD_CONTEXT_REPLACEMENT_ON_PATH_MIN = 0.5
+LEAD_CONTEXT_REPLACEMENT_CONFIDENCE_MIN = 0.55
+LEAD_CONTEXT_REPLACEMENT_MODEL_PROB_MIN = 0.5
+LEAD_CONTEXT_REPLACEMENT_TTC = 5.0
+LEAD_CONTEXT_REPLACEMENT_REQUIRED_DECEL = 0.20
+LEAD_CONTEXT_REPLACEMENT_DISTANCE = 45.0
 
 
 @dataclass(frozen=True)
@@ -82,6 +94,16 @@ class LeadProgressModel:
   confidence_stability_sufficient: bool = False
   allowed: bool = False
   reason: str = "no_progress_evidence"
+
+
+@dataclass(frozen=True)
+class LeadReplacementCandidate:
+  active: bool = False
+  replacing_idx: int = -1
+  candidate_idx: int = -1
+  score: float = 0.0
+  reason: str = ""
+  block_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -144,6 +166,13 @@ class PrimaryLeadContext:
   states: tuple[LeadRelevanceState, ...] = ()
   lead_progress_allowed: bool = False
   lead_release_blocked_reason: str = ""
+  replacement_candidate: LeadReplacementCandidate = field(default_factory=LeadReplacementCandidate)
+  physical_switch_reason: str = ""
+  physical_switch_dwell_s: float = 0.0
+  physical_switch_prev_idx: int = -1
+  physical_switch_prev_track_id: int = LEAD_CONFIDENCE_TRACK_UNKNOWN
+  physical_switched: bool = False
+  physical_switch_score_delta: float = 0.0
 
   @property
   def has_physical_lead(self) -> bool:
@@ -177,6 +206,18 @@ class PrimaryLeadContext:
       "shadow_lead_active": bool(self.shadow_active),
       "lead_progress_allowed": bool(self.lead_progress_allowed),
       "lead_release_blocked_reason": str(self.lead_release_blocked_reason),
+      "lead_replacement_active": bool(self.replacement_candidate.active),
+      "lead_replacement_replacing_idx": int(self.replacement_candidate.replacing_idx),
+      "lead_replacement_candidate_idx": int(self.replacement_candidate.candidate_idx),
+      "lead_replacement_score": float(self.replacement_candidate.score),
+      "lead_replacement_reason": str(self.replacement_candidate.reason),
+      "lead_replacement_block_reason": str(self.replacement_candidate.block_reason),
+      "primary_physical_switch_reason": str(self.physical_switch_reason),
+      "primary_physical_switch_dwell_s": float(self.physical_switch_dwell_s),
+      "primary_physical_prev_idx": int(self.physical_switch_prev_idx),
+      "primary_physical_prev_track_id": int(self.physical_switch_prev_track_id),
+      "primary_physical_switched": bool(self.physical_switched),
+      "primary_physical_score_delta": float(self.physical_switch_score_delta),
       "primary_lead_d_rel": 0.0 if primary is None else float(primary.d_rel),
       "primary_lead_v_rel": 0.0 if primary is None else float(primary.v_rel),
       "primary_lead_y_rel": 0.0 if primary is None else float(primary.y_rel),
@@ -647,12 +688,18 @@ class LeadContextTracker:
     self.shadow_trackers = (LeadShadowTracker(0), LeadShadowTracker(1))
     self._false_positive_release_timers = [0.0, 0.0]
     self._prev_path_y_rel = [0.0, 0.0]
+    self._prev_physical_idx: int | None = None
+    self._prev_physical_track_id: int = LEAD_CONFIDENCE_TRACK_UNKNOWN
+    self._physical_dwell_s: float = 0.0
 
   def reset(self) -> None:
     for tracker in self.shadow_trackers:
       tracker.reset()
     self._false_positive_release_timers = [0.0, 0.0]
     self._prev_path_y_rel = [0.0, 0.0]
+    self._prev_physical_idx = None
+    self._prev_physical_track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
+    self._physical_dwell_s = 0.0
 
   def update(self, leads: tuple[Any, Any], confidence_states: tuple[LeadConfidenceState, LeadConfidenceState] | list[LeadConfidenceState],
              v_ego: float, dt: float, model_msg: Any | None = None, dominant_idx: int | None = None,
@@ -679,7 +726,33 @@ class LeadContextTracker:
     for idx, state in enumerate(states):
       if state.status:
         self._prev_path_y_rel[idx] = state.path_y_rel
-    return select_primary_lead_context(tuple(states), dominant_idx=dominant_idx, lead_dominant_idx=lead_dominant_idx)
+    ctx = select_primary_lead_context(
+      tuple(states), dominant_idx=dominant_idx, lead_dominant_idx=lead_dominant_idx,
+      previous_physical_idx=self._prev_physical_idx,
+      previous_physical_track_id=self._prev_physical_track_id,
+      previous_physical_dwell_s=self._physical_dwell_s,
+    )
+    self._update_physical_memory(ctx, dt)
+    return ctx
+
+  def _update_physical_memory(self, ctx: PrimaryLeadContext, dt: float) -> None:
+    physical = ctx.physical
+    if physical is None or not physical.suppressive:
+      self._prev_physical_idx = None
+      self._prev_physical_track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
+      self._physical_dwell_s = 0.0
+      return
+    same_idx = self._prev_physical_idx == physical.lead_idx
+    same_track = bool(
+      self._prev_physical_track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN and
+      self._prev_physical_track_id == physical.track_id
+    )
+    if same_idx or same_track:
+      self._physical_dwell_s += max(0.0, dt)
+    else:
+      self._physical_dwell_s = 0.0
+    self._prev_physical_idx = physical.lead_idx
+    self._prev_physical_track_id = physical.track_id
 
   def _real_state(self, idx: int, lead: Any, confidence_state: LeadConfidenceState, v_ego: float,
                   model_msg: Any | None, dt: float) -> LeadRelevanceState:
@@ -874,10 +947,18 @@ def _empty_state(idx: int) -> LeadRelevanceState:
 
 
 def select_primary_lead_context(states: tuple[LeadRelevanceState, ...], dominant_idx: int | None = None,
-                                lead_dominant_idx: int | None = None) -> PrimaryLeadContext:
-  physical = max((state for state in states if state.suppressive), key=lambda state: _physical_rank(state, dominant_idx, lead_dominant_idx), default=None)
+                                lead_dominant_idx: int | None = None,
+                                previous_physical_idx: int | None = None,
+                                previous_physical_track_id: int = LEAD_CONFIDENCE_TRACK_UNKNOWN,
+                                previous_physical_dwell_s: float = 0.0) -> PrimaryLeadContext:
+  raw_physical = max((state for state in states if state.suppressive), key=lambda state: _physical_rank(state, dominant_idx, lead_dominant_idx), default=None)
+  physical, switch_reason, switched, switch_score_delta = _apply_physical_hysteresis(
+    states, raw_physical, dominant_idx, lead_dominant_idx,
+    previous_physical_idx, previous_physical_track_id, previous_physical_dwell_s,
+  )
   behavior = max((state for state in states if state.progress_allowed), key=lambda state: _behavior_rank(state, lead_dominant_idx), default=None)
-  alternate_threat_active = any(_alternate_threat(state, behavior) for state in states)
+  replacement = _replacement_candidate(states, physical, behavior)
+  alternate_threat_active = bool(any(_alternate_threat(state, behavior) for state in states) or replacement.active)
   physical_conflicts_with_behavior = bool(
     physical is not None and behavior is not None and physical.lead_idx != behavior.lead_idx and (
       physical.shadow or physical.authority != LEAD_AUTHORITY_PROGRESS_ALLOWED or _is_close_or_closing(physical) or physical.v_lead <= 0.2
@@ -887,6 +968,8 @@ def select_primary_lead_context(states: tuple[LeadRelevanceState, ...], dominant
   lead_progress_allowed = bool(behavior is not None and not alternate_threat_active and not physical_conflicts_with_behavior)
   if behavior is None:
     blocked_reason = "no_behavior_lead" if physical is not None else ""
+  elif replacement.active:
+    blocked_reason = "replacement_threat"
   elif alternate_threat_active:
     blocked_reason = "alternate_lead_threat"
   elif physical_conflicts_with_behavior:
@@ -905,6 +988,13 @@ def select_primary_lead_context(states: tuple[LeadRelevanceState, ...], dominant
     states=states,
     lead_progress_allowed=lead_progress_allowed,
     lead_release_blocked_reason=blocked_reason,
+    replacement_candidate=replacement,
+    physical_switch_reason=switch_reason,
+    physical_switch_dwell_s=float(previous_physical_dwell_s),
+    physical_switch_prev_idx=-1 if previous_physical_idx is None else int(previous_physical_idx),
+    physical_switch_prev_track_id=int(previous_physical_track_id),
+    physical_switched=switched,
+    physical_switch_score_delta=switch_score_delta,
   )
 
 
@@ -916,6 +1006,121 @@ def _physical_rank(state: LeadRelevanceState, dominant_idx: int | None, lead_dom
     hint += 0.6
   shadow_penalty = 0.4 if state.shadow else 0.0
   return 4.0 * state.risk_score + 1.5 * state.on_path_score + state.confidence + hint - state.ghost_score - shadow_penalty
+
+
+def _apply_physical_hysteresis(states: tuple[LeadRelevanceState, ...], raw_physical: LeadRelevanceState | None,
+                               dominant_idx: int | None, lead_dominant_idx: int | None,
+                               previous_idx: int | None, previous_track_id: int,
+                               previous_dwell_s: float) -> tuple[LeadRelevanceState | None, str, bool, float]:
+  if raw_physical is None or previous_idx is None:
+    return raw_physical, "no_previous" if raw_physical is not None else "no_physical", raw_physical is not None, 0.0
+  previous = _previous_physical_state(states, previous_idx, previous_track_id)
+  if previous is None or not previous.suppressive:
+    return raw_physical, "previous_unavailable", raw_physical.lead_idx != previous_idx, 0.0
+  if raw_physical.lead_idx == previous.lead_idx or _same_physical_identity(raw_physical, previous):
+    return raw_physical, "same_physical", False, 0.0
+
+  raw_score = _physical_rank(raw_physical, dominant_idx, lead_dominant_idx)
+  previous_score = _physical_rank(previous, dominant_idx, lead_dominant_idx)
+  score_delta = raw_score - previous_score
+  immediate = bool(
+    raw_physical.ttc <= LEAD_CONTEXT_SWITCH_IMMEDIATE_TTC_S or
+    raw_physical.required_decel >= previous.required_decel + LEAD_CONTEXT_SWITCH_REQUIRED_DECEL_MARGIN or
+    (not math.isinf(previous.ttc) and raw_physical.ttc <= previous.ttc - LEAD_CONTEXT_SWITCH_TTC_MARGIN_S)
+  )
+  previous_released = bool(
+    previous.authority == LEAD_AUTHORITY_NONE or
+    (previous.on_path_score <= 0.0 and not _is_close_or_closing(previous)) or
+    previous.reason in ("lateral_exit_confirmed", "path_relevance_low")
+  )
+  if previous_released:
+    return raw_physical, "previous_released", True, score_delta
+  if immediate:
+    return raw_physical, "immediate_threat", True, score_delta
+  if previous_dwell_s < LEAD_CONTEXT_SWITCH_MIN_DWELL_S and score_delta < LEAD_CONTEXT_SWITCH_SCORE_MARGIN:
+    return previous, "hysteresis_keep_previous", False, score_delta
+  if previous_dwell_s >= LEAD_CONTEXT_SWITCH_MIN_DWELL_S:
+    return raw_physical, "dwell_elapsed", True, score_delta
+  if score_delta >= LEAD_CONTEXT_SWITCH_SCORE_MARGIN:
+    return raw_physical, "score_margin", True, score_delta
+  return previous, "hysteresis_keep_previous", False, score_delta
+
+
+def _previous_physical_state(states: tuple[LeadRelevanceState, ...], previous_idx: int,
+                             previous_track_id: int) -> LeadRelevanceState | None:
+  if previous_track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN:
+    for state in states:
+      if state.track_id == previous_track_id and state.suppressive:
+        return state
+  for state in states:
+    if state.lead_idx == previous_idx and state.suppressive:
+      return state
+  return None
+
+
+def _same_physical_identity(a: LeadRelevanceState, b: LeadRelevanceState) -> bool:
+  a_track_known = a.track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN
+  b_track_known = b.track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN
+  if a_track_known or b_track_known:
+    return bool(a_track_known and b_track_known and a.track_id == b.track_id)
+  return bool(
+    abs(a.d_rel - b.d_rel) <= 1.0 and
+    abs(a.v_lead - b.v_lead) <= 1.0 and
+    abs(a.v_rel - b.v_rel) <= 1.0 and
+    abs(a.path_y_rel - b.path_y_rel) <= 0.75
+  )
+
+
+def _replacement_candidate(states: tuple[LeadRelevanceState, ...], physical: LeadRelevanceState | None,
+                           behavior: LeadRelevanceState | None) -> LeadReplacementCandidate:
+  replacing = behavior or physical
+  if replacing is None or replacing.shadow or not replacing.status:
+    return LeadReplacementCandidate(reason="no_replacing_lead")
+  exiting = bool(
+    abs(replacing.path_y_rel) >= LEAD_CONTEXT_REPLACEMENT_EXIT_Y or
+    replacing.on_path_score < LEAD_CONTEXT_REPLACEMENT_ON_PATH_MIN or
+    replacing.reason in ("path_exit_pending_release", "lateral_exit_confirmed")
+  )
+  if not exiting:
+    return LeadReplacementCandidate(replacing_idx=replacing.lead_idx, reason="replacing_not_exiting")
+
+  best: LeadReplacementCandidate | None = None
+  for candidate in states:
+    if candidate.lead_idx == replacing.lead_idx or candidate.shadow or not candidate.status:
+      continue
+    if _same_lead_duplicate(candidate, replacing):
+      continue
+    if candidate.new_lead or candidate.flicker_guard_timer > 0.0:
+      continue
+    if candidate.on_path_score < LEAD_CONTEXT_REPLACEMENT_ON_PATH_MIN and abs(candidate.path_y_rel) > LEAD_CONTEXT_ON_PATH_Y:
+      continue
+    credible = bool(
+      (candidate.stable and candidate.confidence >= LEAD_CONTEXT_REPLACEMENT_CONFIDENCE_MIN) or
+      (candidate.radar and candidate.model_prob >= LEAD_CONTEXT_REPLACEMENT_MODEL_PROB_MIN)
+    )
+    if not credible:
+      continue
+    threat = bool(
+      candidate.ttc <= LEAD_CONTEXT_REPLACEMENT_TTC or
+      candidate.required_decel >= LEAD_CONTEXT_REPLACEMENT_REQUIRED_DECEL or
+      candidate.time_gap <= LEAD_CONTEXT_CLOSE_TIME_GAP
+    )
+    if not threat:
+      continue
+    if candidate.d_rel > LEAD_CONTEXT_REPLACEMENT_DISTANCE and candidate.time_gap > LEAD_CONTEXT_CLOSE_TIME_GAP:
+      continue
+    score = _clip(candidate.risk_score + 0.5 * candidate.on_path_score + 0.25 * candidate.confidence, 0.0, 2.0)
+    replacement = LeadReplacementCandidate(
+      active=True,
+      replacing_idx=replacing.lead_idx,
+      candidate_idx=candidate.lead_idx,
+      score=score,
+      reason="exiting_lead_replacement",
+      block_reason="replacement_threat_suppress_only",
+    )
+    if best is None or replacement.score > best.score:
+      best = replacement
+  return best if best is not None else LeadReplacementCandidate(replacing_idx=replacing.lead_idx, reason="no_candidate")
 
 
 def _behavior_rank(state: LeadRelevanceState, lead_dominant_idx: int | None) -> float:
