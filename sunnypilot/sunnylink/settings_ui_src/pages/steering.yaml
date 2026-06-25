@@ -346,3 +346,16 @@ sections:
       - type: param
         key: CustomLateralDemandEnabled
         equals: true
+    - key: LateralDebugTraceMode
+      widget: multiple_button
+      title: Lateral Debug Trace
+      description: Add route-log-only lateral demand shadow diagnostics for path geometry validation. Logging only; no steering changes.
+      options:
+      - value: 'off'
+        label: 'Off'
+      - value: 'log'
+        label: Log
+      enablement:
+      - type: param
+        key: CustomLateralDemandEnabled
+        equals: true

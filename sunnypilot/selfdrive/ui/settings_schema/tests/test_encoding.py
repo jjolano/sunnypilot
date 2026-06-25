@@ -103,6 +103,11 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert debug_enum.values == ["off", "log"]
   assert debug_enum.labels == ["Off", "Log"]
 
+  lateral_debug_enum = homogeneous_string_options(find_item(STEERING, "LateralDebugTraceMode"))
+  assert lateral_debug_enum is not None
+  assert lateral_debug_enum.values == ["off", "log"]
+  assert lateral_debug_enum.labels == ["Off", "Log"]
+
   cut_in_enum = homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode"))
   assert cut_in_enum is not None
   assert cut_in_enum.values == ["off", "shadow"]
@@ -145,6 +150,15 @@ def test_longitudinal_debug_trace_string_index_defaults_to_off():
   assert string_option_index("off", enum, "LongitudinalDebugTraceMode") == 0
   assert string_option_index("log", enum, "LongitudinalDebugTraceMode") == 1
   assert string_option_index("bad", enum, "LongitudinalDebugTraceMode") == 0
+
+
+def test_lateral_debug_trace_string_index_defaults_to_off():
+  enum = homogeneous_string_options(find_item(STEERING, "LateralDebugTraceMode"))
+  assert enum is not None
+  assert string_option_index("", enum, "LateralDebugTraceMode") == 0
+  assert string_option_index("off", enum, "LateralDebugTraceMode") == 0
+  assert string_option_index("log", enum, "LateralDebugTraceMode") == 1
+  assert string_option_index("bad", enum, "LateralDebugTraceMode") == 0
 
 
 def test_shadow_observability_string_indexes_default_to_off():
