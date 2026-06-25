@@ -768,3 +768,42 @@ def test_non_compression_lead_hazard_still_hardened_by_inside_time_gap():
   assert "inside_time_gap" in r.debug.get("acc_envelope_cap_reason", "")
   assert "closing_decel_high" in r.debug.get("acc_envelope_cap_reason", "")
   assert r.a_target <= -1.5
+
+
+def test_cutout_shadow_blocks_no_lead_launch_then_clears():
+  """A stable lead that laterally exits near the lane edge creates a cutout shadow.
+  The shadow must suppress no-lead launch/standstill release, then clear after expiry."""
+  s = CustomLongitudinalStack()
+  v_lead = 2.0
+  track_id = 8
+  for i in range(15):
+    y = min(1.3, 0.0 + i * 0.1)
+    ld = SimpleNamespace(status=True, dRel=20.0, vLead=v_lead, vLeadK=v_lead, vRel=v_lead,
+                         aLeadK=0.0, yRel=y, radarTrackId=track_id, radar=True,
+                         modelProb=0.9, aLeadTau=1.0)
+    s.update(base(v_ego=0.0, v_cruise=12.0, seed_a_target=0.2, leads=(ld, None),
+                  mode=LongitudinalMode.E2E), DT)
+
+  dropped = s.update(base(
+    v_ego=0.0, v_cruise=12.0, seed_a_target=0.2, leads=(None, None),
+    mode=LongitudinalMode.E2E,
+    model_should_stop=False, model_stop_distance=None, model_desired_accel=0.2,
+  ), DT)
+  assert dropped.debug["lead_shadow_active"] is True
+  assert dropped.debug.get("actual_shadow_lead_reason") == "cutout_exit"
+  assert dropped.standstill_release_allowed is False
+
+  final = dropped
+  for _ in range(30):
+    final = s.update(base(
+      v_ego=0.0, v_cruise=12.0, seed_a_target=0.2, leads=(None, None),
+      mode=LongitudinalMode.E2E,
+      model_should_stop=False, model_stop_distance=None, model_desired_accel=0.2,
+    ), DT)
+    if final.debug["lead_shadow_active"]:
+      assert final.standstill_release_allowed is False
+    else:
+      break
+  assert final.debug["lead_shadow_active"] is False
+  assert final.standstill_release_allowed is True
+  assert final.standstill_release_source == "no_lead_launch"

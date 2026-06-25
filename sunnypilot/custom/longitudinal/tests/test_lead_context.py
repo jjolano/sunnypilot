@@ -154,3 +154,71 @@ def test_primary_context_surfaces_lead_gap_excess():
 
 def test_primary_context_lead_gap_excess_zero_with_no_lead():
   assert _primary_ctx(None).lead_gap_excess == 0.0
+
+
+def test_shadow_tracker_benign_far_dropout_is_normal():
+  trk = lc.LeadShadowTracker(0)
+  stable = LeadConfidenceState(status=True, stable=True, age=1.0)
+  ld = lead(d_rel=60.0, v_lead=15.0, y_rel=0.0)
+  trk.update(ld, stable, v_ego=15.0, dt=0.05, path_y_rel=0.0)
+  shadow = trk.update(None, LeadConfidenceState(), v_ego=15.0, dt=0.05, path_y_rel=0.0)
+  assert shadow.active is True
+  assert shadow.duration == pytest.approx(lc.LEAD_CONTEXT_SHADOW_NORMAL_TIME)
+  assert shadow.reason == "dropout"
+  assert shadow.occlusion_risk == pytest.approx(0.0)
+
+
+def test_shadow_tracker_cutout_exit_is_risk_duration_and_occlusion():
+  trk = lc.LeadShadowTracker(0)
+  stable = LeadConfidenceState(status=True, stable=True, age=1.0)
+  # Move outward across several ticks to satisfy lateral-exit evidence.
+  for path_y_rel in (0.0, 0.5, 0.8, 1.1, 1.3):
+    ld = lead(d_rel=20.0, v_lead=10.0, y_rel=path_y_rel, a_lead=-2.0)
+    trk.update(ld, stable, v_ego=15.0, dt=0.05, path_y_rel=path_y_rel)
+  shadow = trk.update(None, LeadConfidenceState(), v_ego=15.0, dt=0.05, path_y_rel=1.3)
+  assert shadow.active is True
+  assert shadow.duration == pytest.approx(lc.LEAD_CONTEXT_SHADOW_RISK_TIME)
+  assert shadow.reason == "cutout_exit"
+  assert shadow.occlusion_risk == pytest.approx(1.0)
+  assert shadow.stable_at_loss is True
+  assert abs(shadow.path_y_rel_at_loss) >= lc.LEAD_CONTEXT_SHADOW_CUTOUT_EXIT_Y_REL
+
+
+def test_shadow_tracker_close_stop_go_dropout_is_stop_go_duration():
+  trk = lc.LeadShadowTracker(0)
+  stable = LeadConfidenceState(status=True, stable=True, age=1.0)
+  ld = lead(d_rel=8.0, v_lead=0.0, y_rel=0.0)
+  trk.update(ld, stable, v_ego=0.0, dt=0.05, path_y_rel=0.0)
+  shadow = trk.update(None, LeadConfidenceState(), v_ego=0.0, dt=0.05, path_y_rel=0.0)
+  assert shadow.active is True
+  assert shadow.duration == pytest.approx(lc.LEAD_CONTEXT_SHADOW_STOP_GO_TIME)
+  assert shadow.reason == "stop_go_dropout"
+
+
+def test_cutout_shadow_state_has_suppress_only_authority():
+  t = lc.LeadContextTracker()
+  stable = LeadConfidenceState(status=True, stable=True, age=1.0)
+  ld = lead(d_rel=22.0, v_lead=10.0, y_rel=1.3, a_lead=-1.5)
+  for _ in range(10):
+    ctx = t.update(
+      leads=(ld, None),
+      confidence_states=(stable, LeadConfidenceState()),
+      v_ego=15.0, dt=0.05,
+    )
+  ctx = t.update(
+    leads=(None, None),
+    confidence_states=(LeadConfidenceState(), LeadConfidenceState()),
+    v_ego=15.0, dt=0.05,
+  )
+  shadow_state = ctx.states[0]
+  assert shadow_state.shadow is True
+  assert shadow_state.status is False
+  assert shadow_state.authority == lc.LEAD_AUTHORITY_SUPPRESS_ONLY
+  assert shadow_state.reason == "cutout_exit"
+  assert shadow_state.shadow_occlusion_risk == pytest.approx(1.0)
+  assert ctx.shadow_active is True
+  debug = ctx.debug_dict()
+  assert debug["shadow_lead_reason"] == "cutout_exit"
+  assert debug["shadow_lead_duration"] == pytest.approx(lc.LEAD_CONTEXT_SHADOW_RISK_TIME)
+  assert debug["shadow_lead_occlusion_risk"] == pytest.approx(1.0)
+  assert debug["shadow_lead_stable_at_loss"] is True

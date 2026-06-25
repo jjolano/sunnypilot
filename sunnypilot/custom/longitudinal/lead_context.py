@@ -35,6 +35,10 @@ LEAD_CONTEXT_RISK_TTC = 4.0
 LEAD_CONTEXT_SHADOW_NORMAL_TIME = 0.4
 LEAD_CONTEXT_SHADOW_RISK_TIME = 1.0
 LEAD_CONTEXT_SHADOW_STOP_GO_TIME = 1.5
+LEAD_CONTEXT_SHADOW_CUTOUT_EXIT_Y_REL = 1.2  # near-lane-edge threshold for plausible occlusion
+LEAD_CONTEXT_SHADOW_CUTOUT_OUTWARD_TICKS = 2
+LEAD_CONTEXT_SHADOW_CUTOUT_STABLE_TIME = 0.35
+LEAD_CONTEXT_SHADOW_RECENT_CONSTRAIN_TIME = 1.0
 LEAD_CONTEXT_PREVIEW_T = (0.0, 0.2, 0.6, 1.0)
 LEAD_CONTEXT_DUPLICATE_D_REL_TOL = 0.15
 LEAD_CONTEXT_DUPLICATE_V_TOL = 0.05
@@ -105,6 +109,12 @@ class LeadRelevanceState:
   confidence: float
   authority: str
   reason: str
+  shadow_reason: str = ""
+  shadow_occlusion_risk: float = 0.0
+  shadow_path_y_rel_at_loss: float = 0.0
+  shadow_stable_at_loss: bool = False
+  shadow_age: float = 0.0
+  shadow_duration: float = 0.0
   prediction: LeadTrajectoryPrediction = LeadTrajectoryPrediction((), (), (), False)
   risk_model: LeadRiskModel = field(default_factory=LeadRiskModel)
   progress_model: LeadProgressModel = field(default_factory=LeadProgressModel)
@@ -157,6 +167,7 @@ class PrimaryLeadContext:
     physical = self.physical
     behavior = self.behavior
     primary = behavior or physical
+    active_shadow = next((state for state in self.states if state.shadow and state.suppressive), None)
     return {
       "primary_physical_lead_idx": -1 if self.physical_idx is None else int(self.physical_idx),
       "primary_behavior_lead_idx": -1 if self.behavior_idx is None else int(self.behavior_idx),
@@ -182,6 +193,12 @@ class PrimaryLeadContext:
       "primary_lead_progress_reason": "" if primary is None else str(primary.progress_model.reason),
       "primary_lead_progress_gap_excess": 0.0 if primary is None else float(primary.progress_model.gap_excess),
       "primary_lead_predicted_gap_opening": False if primary is None else bool(primary.progress_model.predicted_gap_opening),
+      "shadow_lead_reason": "" if active_shadow is None else str(active_shadow.shadow_reason),
+      "shadow_lead_duration": 0.0 if active_shadow is None else float(active_shadow.shadow_duration),
+      "shadow_lead_age": 0.0 if active_shadow is None else float(active_shadow.shadow_age),
+      "shadow_lead_occlusion_risk": 0.0 if active_shadow is None else float(active_shadow.shadow_occlusion_risk),
+      "shadow_lead_path_y_rel_at_loss": 0.0 if active_shadow is None else float(active_shadow.shadow_path_y_rel_at_loss),
+      "shadow_lead_stable_at_loss": False if active_shadow is None else bool(active_shadow.shadow_stable_at_loss),
     }
 
 
@@ -200,6 +217,10 @@ class LeadShadowState:
   model_prob: float = 0.0
   radar: bool = False
   confidence: float = 0.0
+  reason: str = ""
+  occlusion_risk: float = 0.0
+  path_y_rel_at_loss: float = 0.0
+  stable_at_loss: bool = False
 
 
 def _lead_data_for_state(state: LeadRelevanceState | None, leads: tuple[Any, Any]) -> Any | None:
@@ -437,11 +458,19 @@ class LeadShadowTracker:
     self._shadow = LeadShadowState(lead_idx=self.lead_idx)
     self._last_real = LeadShadowState(lead_idx=self.lead_idx)
     self._was_status = False
+    self._prev_path_y_rel = 0.0
+    self._outward_tick_count = 0
+    self._stable_at_loss = False
+    self._constraining_timer = 0.0
 
   def reset(self) -> LeadShadowState:
     self._shadow = LeadShadowState(lead_idx=self.lead_idx)
     self._last_real = LeadShadowState(lead_idx=self.lead_idx)
     self._was_status = False
+    self._prev_path_y_rel = 0.0
+    self._outward_tick_count = 0
+    self._stable_at_loss = False
+    self._constraining_timer = 0.0
     return self._shadow
 
   def update(self, lead: Any, confidence_state: LeadConfidenceState | None, v_ego: float, dt: float,
@@ -452,6 +481,8 @@ class LeadShadowTracker:
       return self.reset()
 
     if status:
+      path_y_rel = finite_float(path_y_rel)
+      self._update_real_history(lead, confidence_state, v_ego, path_y_rel, dt)
       self._last_real = self._snapshot_from_lead(lead, confidence_state, v_ego)
       self._shadow = LeadShadowState(lead_idx=self.lead_idx)
       self._was_status = True
@@ -461,6 +492,7 @@ class LeadShadowTracker:
       self._shadow = self._start_shadow(self._last_real, path_y_rel)
     self._was_status = False
     if not self._shadow.active:
+      self._constraining_timer = max(0.0, self._constraining_timer - dt)
       return self._shadow
 
     age = self._shadow.age + dt
@@ -483,8 +515,48 @@ class LeadShadowTracker:
       model_prob=self._shadow.model_prob,
       radar=self._shadow.radar,
       confidence=confidence,
+      reason=self._shadow.reason,
+      occlusion_risk=self._shadow.occlusion_risk,
+      path_y_rel_at_loss=self._shadow.path_y_rel_at_loss,
+      stable_at_loss=self._shadow.stable_at_loss,
     )
     return self._shadow
+
+  def _update_real_history(self, lead: Any, confidence_state: LeadConfidenceState | None,
+                           v_ego: float, path_y_rel: float, dt: float) -> None:
+    if confidence_state is not None:
+      self._stable_at_loss = bool(
+        confidence_state.stable or confidence_state.age >= LEAD_CONTEXT_SHADOW_CUTOUT_STABLE_TIME
+      )
+    else:
+      self._stable_at_loss = False
+
+    d_rel = finite_float(getattr(lead, "dRel", 0.0))
+    v_lead = finite_float(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
+    v_rel = finite_float(getattr(lead, "vRel", v_lead - v_ego), v_lead - v_ego)
+    required_decel = _required_decel(d_rel, v_rel)
+    ttc = _ttc(d_rel, v_rel)
+    time_gap = _time_gap(d_rel, v_ego)
+    risk = _risk_score(d_rel, v_rel, v_lead, v_ego, required_decel, ttc, time_gap)
+    constraining = bool(
+      required_decel >= LEAD_CONTEXT_RISK_REQUIRED_DECEL or
+      ttc <= LEAD_CONTEXT_RISK_TTC or
+      risk >= 0.35
+    )
+    if constraining:
+      self._constraining_timer = LEAD_CONTEXT_SHADOW_RECENT_CONSTRAIN_TIME
+    else:
+      self._constraining_timer = max(0.0, self._constraining_timer - dt)
+
+    if self._was_status:
+      outward = abs(path_y_rel) > abs(self._prev_path_y_rel) + 0.02
+      if outward and abs(path_y_rel) >= LEAD_CONTEXT_ON_PATH_Y:
+        self._outward_tick_count = min(self._outward_tick_count + 1, 10)
+      else:
+        self._outward_tick_count = 0
+    else:
+      self._outward_tick_count = 0
+    self._prev_path_y_rel = path_y_rel
 
   def _snapshot_from_lead(self, lead: Any, confidence_state: LeadConfidenceState | None, v_ego: float) -> LeadShadowState:
     v_lead = finite_float(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
@@ -512,12 +584,43 @@ class LeadShadowTracker:
     risk = _risk_score(last.d_rel, last.v_rel, last.v_lead, last.v_lead - last.v_rel, required_decel, ttc, time_gap)
     close_stop_go = 0.0 < last.d_rel <= LEAD_CONTEXT_CLOSE_STOP_D_REL and 0.0 <= last.v_lead <= LEAD_CONTEXT_CLOSE_STOP_V
     close_or_closing = bool(required_decel >= LEAD_CONTEXT_RISK_REQUIRED_DECEL or ttc <= LEAD_CONTEXT_RISK_TTC or risk >= 0.35)
+
+    v_ego_at_loss = max(0.1, last.v_lead - last.v_rel)
+    cutout_time_gap = _time_gap(last.d_rel, v_ego_at_loss)
+    path_y_rel = finite_float(path_y_rel)
+    near_exit = abs(path_y_rel) >= LEAD_CONTEXT_SHADOW_CUTOUT_EXIT_Y_REL
+    outward_exit = bool(
+      self._outward_tick_count >= LEAD_CONTEXT_SHADOW_CUTOUT_OUTWARD_TICKS and
+      abs(path_y_rel) >= LEAD_CONTEXT_ON_PATH_Y
+    )
+    lateral_exit = bool(near_exit or outward_exit or abs(path_y_rel) >= LEAD_CONTEXT_PATH_EXIT_Y)
+    occlusive = bool(
+      close_or_closing or
+      close_stop_go or
+      last.d_rel <= LEAD_CONTEXT_CLOSE_DISTANCE or
+      cutout_time_gap <= LEAD_CONTEXT_CLOSE_TIME_GAP or
+      last.v_lead <= LEAD_CONTEXT_CLOSE_STOP_V or
+      last.a_lead <= -1.5 or
+      self._constraining_timer > 0.0
+    )
+    cutout_exit = bool(self._stable_at_loss and occlusive and lateral_exit)
+
     if close_stop_go:
       duration = LEAD_CONTEXT_SHADOW_STOP_GO_TIME
+      reason = "stop_go_dropout"
+      occlusion_risk = 0.0
+    elif cutout_exit:
+      duration = LEAD_CONTEXT_SHADOW_RISK_TIME
+      reason = "cutout_exit"
+      occlusion_risk = 1.0
     elif close_or_closing:
       duration = LEAD_CONTEXT_SHADOW_RISK_TIME
+      reason = "risk_dropout"
+      occlusion_risk = 0.0
     else:
       duration = LEAD_CONTEXT_SHADOW_NORMAL_TIME
+      reason = "dropout"
+      occlusion_risk = 0.0
     return LeadShadowState(
       active=True,
       age=0.0,
@@ -532,6 +635,10 @@ class LeadShadowTracker:
       model_prob=last.model_prob,
       radar=last.radar,
       confidence=last.confidence,
+      reason=reason,
+      occlusion_risk=occlusion_risk,
+      path_y_rel_at_loss=path_y_rel,
+      stable_at_loss=self._stable_at_loss,
     )
 
 
@@ -673,7 +780,13 @@ class LeadContextTracker:
       ghost_score=ghost,
       confidence=confidence,
       authority=LEAD_AUTHORITY_SUPPRESS_ONLY,
-      reason="shadow_lead_suppress_only",
+      reason=shadow.reason if shadow.reason else "shadow_lead_suppress_only",
+      shadow_reason=shadow.reason,
+      shadow_occlusion_risk=shadow.occlusion_risk,
+      shadow_path_y_rel_at_loss=shadow.path_y_rel_at_loss,
+      shadow_stable_at_loss=shadow.stable_at_loss,
+      shadow_age=shadow.age,
+      shadow_duration=shadow.duration,
       prediction=prediction,
       risk_model=risk_model,
       progress_model=progress_model,
