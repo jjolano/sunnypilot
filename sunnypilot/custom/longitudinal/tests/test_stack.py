@@ -261,6 +261,81 @@ def test_closing_lead_decel_bypasses_smoothing():
   assert r.debug["target_smoothing_reason"] == "downward_passthrough"
 
 
+def test_selected_lead_two_supplies_policy_kinematics_without_stop_commitment():
+  s = CustomLongitudinalStack()
+  r = None
+  for _ in range(8):
+    r = s.update(base(v_ego=20.0, v_cruise=25.0, seed_a_target=0.4,
+                      leads=(None, lead(d_rel=18.0, v_lead=15.0, v_rel=-5.0, track_id=22)),
+                      lead_a_target=0.4, mode=LongitudinalMode.ACC), DT)
+  assert r is not None
+  assert r.debug["lead_kinematics_source"] == "physical"
+  assert r.debug["lead_kinematics_source_idx"] == 1
+  assert r.debug["lead_kinematics_source_track_id"] == 22
+  assert r.debug["lead_kinematics_valid"] is True
+  assert r.debug["acc_envelope_time_gap"] == pytest.approx(18.0 / 20.0)
+  assert r.debug["acc_envelope_ttc"] == pytest.approx(18.0 / 5.0)
+  assert r.should_stop is False
+
+
+def test_selected_lead_two_caps_positive_lead_seed_instead_of_synthesizing_progress():
+  r = CustomLongitudinalStack().update(base(v_ego=20.0, v_cruise=25.0, seed_a_target=0.4,
+                                            leads=(None, lead(d_rel=30.0, v_lead=18.0, v_rel=-2.0, track_id=23)),
+                                            lead_a_target=0.4, mode=LongitudinalMode.ACC), DT)
+  assert r.debug["lead_kinematics_source_idx"] == 1
+  assert r.debug["intent"] == "lead_follow"
+  assert r.a_target <= 0.0
+  assert r.should_stop is False
+
+
+def test_selected_lead_two_positive_seed_suppresses_pullaway_progress():
+  s = CustomLongitudinalStack()
+  r = None
+  for _ in range(12):
+    r = s.update(base(v_ego=0.0, v_cruise=12.0, seed_a_target=0.4,
+                      leads=(None, lead(d_rel=8.0, v_lead=3.0, v_rel=3.0, track_id=25)),
+                      lead_a_target=0.4, mode=LongitudinalMode.ACC), DT)
+  assert r is not None
+  assert r.debug["lead_kinematics_source_idx"] == 1
+  assert r.debug["lead_context_progress_allowed"] is True
+  assert r.debug["lead_progress_allowed"] is False
+  assert r.debug["intent"] != "lead_pullaway"
+  assert r.standstill_release_allowed is False
+  assert r.should_stop is False
+
+
+def test_selected_lead_two_does_not_inherit_lead0_stop_seed():
+  r = CustomLongitudinalStack().update(base(v_ego=0.0, v_cruise=12.0, seed_a_target=0.0,
+                                            leads=(None, lead(d_rel=8.0, v_lead=0.0, v_rel=0.0, track_id=26)),
+                                            lead_a_target=0.0, lead_should_stop=True, mode=LongitudinalMode.ACC), DT)
+  assert r.debug["lead_kinematics_source_idx"] == 1
+  assert r.should_stop is False
+
+
+def test_downward_smoothing_uses_selected_lead_not_only_lead0():
+  s = CustomLongitudinalStack()
+  selected_closing_lead = lead(d_rel=80.0, v_lead=19.4, v_rel=-0.6, track_id=24)
+  assert s._downward_smoothing_allowed(
+    raw=0.0, prev=0.2, inp=base(leads=(None, selected_closing_lead)),
+    decision=SimpleNamespace(reason="cruise", should_stop=False),
+    acc_envelope_result=SimpleNamespace(cap_reasons=()), selected_lead=selected_closing_lead,
+  ) is False
+
+
+def test_shadow_suppresses_release_without_becoming_kinematic_source():
+  s = CustomLongitudinalStack()
+  for _ in range(12):
+    s.update(base(v_ego=0.0, v_cruise=12.0, seed_a_target=0.2,
+                  leads=(lead(d_rel=6.5, v_lead=0.0), None), mode=LongitudinalMode.ACC), DT)
+  lost = s.update(base(v_ego=0.0, v_cruise=12.0, seed_a_target=0.2,
+                       leads=(None, None), mode=LongitudinalMode.ACC), DT)
+  assert lost.debug["lead_shadow_active"] is True
+  assert lost.debug["lead_kinematics_source"] == "none"
+  assert lost.debug["lead_kinematics_source_idx"] == -1
+  assert lost.standstill_release_allowed is False
+  assert lost.should_stop is False
+
+
 def test_decel_smoothing_never_raises_above_nonselected_hazard():
   s = CustomLongitudinalStack()
   s.update(base(seed_a_target=0.0, mode=LongitudinalMode.SCC, long_active=True), DT)

@@ -63,16 +63,79 @@ def _f(value: object, default: float = 0.0) -> float:
   return v if math.isfinite(v) else default
 
 
-def _raw_lead_kinematics_valid(lead0: Any) -> bool:
-  """True only when the raw radarState lead0 kinematic fields are all present and finite."""
+def _raw_lead_kinematics_valid(lead: Any) -> bool:
+  """True only when the raw radarState lead kinematic fields are all present and finite."""
   for attr in ("dRel", "vLead", "vLeadK", "vRel"):
-    v = getattr(lead0, attr, None)
+    v = getattr(lead, attr, None)
     try:
       if v is None or not math.isfinite(float(v)):
         return False
     except (TypeError, ValueError):
       return False
   return True
+
+
+@dataclass(frozen=True)
+class SelectedLeadKinematics:
+  lead: Any | None = None
+  state: Any | None = None
+  idx: int = -1
+  track_id: int = -1
+  source: str = "none"
+  valid: bool = False
+  v: float = 0.0
+  d_rel: float = 0.0
+  v_rel: float = 0.0
+  a_k: float = 0.0
+
+
+def _lead_kinematics(lead: Any | None, v_ego: float) -> tuple[bool, float, float, float, float]:
+  if lead is None or not bool(getattr(lead, "status", False)):
+    return False, 0.0, 0.0, 0.0, 0.0
+  valid = _raw_lead_kinematics_valid(lead)
+  v = _f(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
+  d_rel = _f(getattr(lead, "dRel", 0.0))
+  v_rel = _f(getattr(lead, "vRel", v - v_ego))
+  a_k = _f(getattr(lead, "aLeadK", 0.0))
+  return valid, v, d_rel, v_rel, a_k
+
+
+def _lead_idx_for_state(state: Any | None) -> int:
+  try:
+    return int(getattr(state, "lead_idx", -1))
+  except (TypeError, ValueError):
+    return -1
+
+
+def _lead_track_id_for_state(state: Any | None) -> int:
+  try:
+    return int(getattr(state, "track_id", -1))
+  except (TypeError, ValueError):
+    return -1
+
+
+def _select_lead_kinematics(lead_ctx: Any, leads: tuple[Any, Any], v_ego: float) -> SelectedLeadKinematics:
+  candidates = (
+    ("physical", getattr(lead_ctx, "physical", None), lead_ctx.physical_lead_data(leads)),
+    ("behavior", getattr(lead_ctx, "behavior", None), lead_ctx.behavior_lead_data(leads)),
+  )
+  for source, state, lead in candidates:
+    if lead is not None:
+      valid, v, d_rel, v_rel, a_k = _lead_kinematics(lead, v_ego)
+      return SelectedLeadKinematics(
+        lead=lead, state=state, idx=_lead_idx_for_state(state), track_id=_lead_track_id_for_state(state),
+        source=source, valid=valid, v=v, d_rel=d_rel, v_rel=v_rel, a_k=a_k,
+      )
+  lead0 = leads[0] if leads else None
+  if lead0 is not None and bool(getattr(lead0, "status", False)):
+    states = tuple(getattr(lead_ctx, "states", ()) or ())
+    state = states[0] if states else None
+    valid, v, d_rel, v_rel, a_k = _lead_kinematics(lead0, v_ego)
+    return SelectedLeadKinematics(
+      lead=lead0, state=state, idx=0, track_id=_lead_track_id_for_state(state),
+      source="lead0_fallback", valid=valid, v=v, d_rel=d_rel, v_rel=v_rel, a_k=a_k,
+    )
+  return SelectedLeadKinematics()
 
 
 def _sanitize_inputs_for_mode(inp: LongitudinalStackInputs) -> LongitudinalStackInputs:
@@ -261,27 +324,35 @@ class CustomLongitudinalStack:
     lead_gap_excess = float(getattr(lead_ctx, "lead_gap_excess", 0.0) or 0.0)
 
     # Lead kinematics for the cushion / speedup guard / radar corroboration (from radarState).
-    # Preserve raw validity *before* _f sanitizes missing/non-finite values so the policy can
-    # reject softening on bad live data.
-    lead0 = inp.leads[0]
-    lead_kinematics_valid = True
-    if has_lead and lead0 is not None:
-      lead_kinematics_valid = _raw_lead_kinematics_valid(lead0)
-    lead_v = _f(getattr(lead0, "vLeadK", getattr(lead0, "vLead", 0.0))) if has_lead else 0.0
-    lead_d_rel = _f(getattr(lead0, "dRel", 0.0)) if has_lead else 0.0
-    lead_v_rel = _f(getattr(lead0, "vRel", lead_v - inp.v_ego)) if has_lead else 0.0
-    lead_a_k = _f(getattr(lead0, "aLeadK", 0.0)) if has_lead else 0.0
+    # Use the selected real physical/behavior lead instead of blindly using lead0; shadows still
+    # suppress progress, but never provide fake physical kinematics.
+    selected_lead = _select_lead_kinematics(lead_ctx, inp.leads, inp.v_ego)
+    lead_kinematics_valid = selected_lead.valid if selected_lead.lead is not None else True
+    lead_v = selected_lead.v if has_lead else 0.0
+    lead_d_rel = selected_lead.d_rel if has_lead else 0.0
+    lead_v_rel = selected_lead.v_rel if has_lead else 0.0
+    lead_a_k = selected_lead.a_k if has_lead else 0.0
     follow_gap = max(FOLLOW_GAP_MIN_M, FOLLOW_TIME_GAP_S * max(0.0, inp.v_ego))
-    primary_state = lead_ctx.behavior or lead_ctx.physical
-    alignment_state = primary_state if primary_state is not None and primary_state.lead_idx == 0 else None
-    lead_confidence = float(alignment_state.confidence) if alignment_state is not None else 0.0
-    lead_stable = bool(alignment_state.stable) if alignment_state is not None else False
+    alignment_state = selected_lead.state
+    lead_confidence = float(getattr(alignment_state, "confidence", 0.0)) if selected_lead.lead is not None else 0.0
+    lead_stable = bool(getattr(alignment_state, "stable", False)) if selected_lead.lead is not None else False
+    policy_lead_a_target = float(act_inp.lead_a_target)
+    policy_lead_progress_allowed = lead_progress_allowed
+    policy_lead_gap_excess = lead_gap_excess
+    policy_lead_should_stop = bool(act_inp.lead_should_stop)
+    non_lead0_positive_seed = bool(selected_lead.idx != 0 and policy_lead_a_target > 0.0)
+    if selected_lead.idx != 0:
+      policy_lead_should_stop = False
+    if non_lead0_positive_seed:
+      policy_lead_a_target = 0.0
+      policy_lead_progress_allowed = False
+      policy_lead_gap_excess = 0.0
 
     scene = LongitudinalScene(
       v_ego=act_inp.v_ego, a_ego=act_inp.a_ego, v_cruise=act_inp.v_cruise, seed_a_target=act_inp.seed_a_target,
       accel_coast=act_inp.accel_coast, personality=act_inp.personality,
-      has_lead=has_lead, lead_a_target=act_inp.lead_a_target, lead_should_stop=act_inp.lead_should_stop,
-      lead_gap_excess=lead_gap_excess, lead_progress_allowed=lead_progress_allowed,
+      has_lead=has_lead, lead_a_target=policy_lead_a_target, lead_should_stop=policy_lead_should_stop,
+      lead_gap_excess=policy_lead_gap_excess, lead_progress_allowed=policy_lead_progress_allowed,
       lead_v=lead_v, lead_d_rel=lead_d_rel, lead_v_rel=lead_v_rel, lead_a_k=lead_a_k,
       follow_gap=follow_gap, lead_kinematics_valid=lead_kinematics_valid,
       lead_confidence=lead_confidence, lead_stable=lead_stable,
@@ -336,7 +407,7 @@ class CustomLongitudinalStack:
     a_target = raw_a_target
     release_source = str(decision.selected_intent)
     lead_release_context = bool(release_source in ("lead_pullaway", "lead_standstill_launch")
-                                and raw_lead_present and lead_progress_allowed
+                                and raw_lead_present and policy_lead_progress_allowed
                                 and not lead_shadow_active and not alternate_threat_active)
     clear_release_context = bool(release_source == "no_lead_launch" and not raw_lead_present and not lead_threat_active)
     standstill_release_allowed = bool(
@@ -359,8 +430,8 @@ class CustomLongitudinalStack:
         release_source=str(decision.selected_intent if standstill_release_allowed else ""),
         release_reason=str(decision.reason if standstill_release_allowed else ""),
         release_a_target=float(max(raw_a_target, 0.15)) if standstill_release_allowed else 0.0,
-        lead_progress_allowed=lead_progress_allowed,
-        lead_gap_excess=lead_gap_excess,
+        lead_progress_allowed=policy_lead_progress_allowed,
+        lead_gap_excess=policy_lead_gap_excess,
         lead_shadow_active=lead_shadow_active,
         alternate_threat_active=alternate_threat_active,
         force_slow_decel=act_inp.force_slow_decel,
@@ -403,7 +474,7 @@ class CustomLongitudinalStack:
                                and math.isfinite(float(c.a_target))]
     strongest_admitted_hazard_a = min(admitted_hazard_targets) if admitted_hazard_targets else None
     target_smoothing_debug = self._apply_target_smoothing(raw_a_target, dt, act_inp, decision, acc_envelope_result,
-                                                          strongest_admitted_hazard_a)
+                                                          strongest_admitted_hazard_a, selected_lead.lead)
     a_target = float(target_smoothing_debug["target_smoothing_a_target"])
     return LongitudinalStackResult(
       a_target=float(a_target),
@@ -417,9 +488,18 @@ class CustomLongitudinalStack:
         "intent": decision.selected_intent,
         "reason": decision.reason,
         "has_lead": has_lead,
-        "lead_progress_allowed": lead_progress_allowed,
+        "lead_progress_allowed": policy_lead_progress_allowed,
+        "lead_context_progress_allowed": lead_progress_allowed,
+        "lead_gap_excess": policy_lead_gap_excess,
+        "lead_context_gap_excess": lead_gap_excess,
         "lead_shadow_active": lead_shadow_active,
         "alternate_threat_active": alternate_threat_active,
+        "lead_kinematics_source": selected_lead.source,
+        "lead_kinematics_source_idx": selected_lead.idx,
+        "lead_kinematics_source_track_id": selected_lead.track_id,
+        "lead_kinematics_source_authority": "" if selected_lead.state is None else str(getattr(selected_lead.state, "authority", "")),
+        "lead_kinematics_source_reason": "" if selected_lead.state is None else str(getattr(selected_lead.state, "reason", "")),
+        "lead_kinematics_valid": bool(selected_lead.valid),
         "n_candidates": len(candidates),
         "model_stale": bool(inp.model_stale),
         "rejected": decision.rejected,
@@ -444,7 +524,8 @@ class CustomLongitudinalStack:
 
   def _apply_target_smoothing(self, raw_a_target: float, dt: float, inp: LongitudinalStackInputs,
                               decision: Decision, acc_envelope_result: Any | None,
-                              strongest_admitted_hazard_a: float | None = None) -> dict[str, Any]:
+                              strongest_admitted_hazard_a: float | None = None,
+                              selected_lead: Any | None = None) -> dict[str, Any]:
     debug = {
       "target_smoothing_active": False,
       "target_smoothing_applied": False,
@@ -501,7 +582,7 @@ class CustomLongitudinalStack:
       debug["target_smoothing_active"] = True
 
       if raw < prev_f:
-        if not self._downward_smoothing_allowed(raw, prev_f, inp, decision, acc_envelope_result):
+        if not self._downward_smoothing_allowed(raw, prev_f, inp, decision, acc_envelope_result, selected_lead):
           self._prev_smoothed_a_target = raw
           debug.update({
             "target_smoothing_direction": "downward",
@@ -553,7 +634,8 @@ class CustomLongitudinalStack:
       return debug
 
   def _downward_smoothing_allowed(self, raw: float, prev: float, inp: LongitudinalStackInputs,
-                                  decision: Decision, acc_envelope_result: Any | None) -> bool:
+                                  decision: Decision, acc_envelope_result: Any | None,
+                                  selected_lead: Any | None = None) -> bool:
     if decision.reason == "physical_hazard" or bool(decision.should_stop) or inp.model_should_stop:
       return False
     if raw < DOWNWARD_TARGET_SMOOTH_MIN_RAW_A:
@@ -563,10 +645,10 @@ class CustomLongitudinalStack:
     reasons = set(getattr(acc_envelope_result, "cap_reasons", ()) or ())
     if reasons & DOWNWARD_TARGET_SMOOTH_RISK_REASONS:
       return False
-    lead0 = inp.leads[0] if inp.leads else None
-    if lead0 is not None and bool(getattr(lead0, "status", False)):
-      lead_v_rel = _f(getattr(lead0, "vRel", 0.0))
-      lead_a_k = _f(getattr(lead0, "aLeadK", 0.0))
+    lead = selected_lead if selected_lead is not None else (inp.leads[0] if inp.leads else None)
+    if lead is not None and bool(getattr(lead, "status", False)):
+      lead_v_rel = _f(getattr(lead, "vRel", 0.0))
+      lead_a_k = _f(getattr(lead, "aLeadK", 0.0))
       if lead_v_rel < DOWNWARD_TARGET_SMOOTH_CLOSING_V_REL or lead_a_k < DOWNWARD_TARGET_SMOOTH_LEAD_A_K:
         return False
     return True
