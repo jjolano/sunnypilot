@@ -22,7 +22,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs
-from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import MODE_APPLY as LEAD_PATH_CLEARANCE_MODE_APPLY, MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF, MODE_SHADOW as LEAD_PATH_CLEARANCE_MODE_SHADOW
+from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
+  MODE_APPLY_CONSERVATIVE as CURVE_TRAFFIC_MODE_APPLY_CONSERVATIVE,
+  MODE_OFF as CURVE_TRAFFIC_MODE_OFF,
+  MODE_SHADOW as CURVE_TRAFFIC_MODE_SHADOW,
+)
+from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import (
+  MODE_APPLY as LEAD_PATH_CLEARANCE_MODE_APPLY,
+  MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF,
+  MODE_SHADOW as LEAD_PATH_CLEARANCE_MODE_SHADOW,
+)
 from openpilot.sunnypilot.custom.longitudinal.model_trust import StopTrustLearner
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
@@ -86,6 +95,13 @@ def _curve_speed_confidence_mode(value: Any) -> str:
   return text if text in ("off", "shadow", "apply_conservative") else "off"
 
 
+def _curve_traffic_advisor_mode(value: Any) -> str:
+  text = str(value or "").strip().lower()
+  if text in (CURVE_TRAFFIC_MODE_OFF, CURVE_TRAFFIC_MODE_SHADOW, CURVE_TRAFFIC_MODE_APPLY_CONSERVATIVE):
+    return text
+  return CURVE_TRAFFIC_MODE_OFF
+
+
 def _standstill_release_confidence_mode(value: Any) -> str:
   text = str(value or "").strip().lower()
   return text if text in ("off", "shadow", "gate") else "off"
@@ -133,11 +149,12 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        model_stop_prob: float = 1.0, model_stop_distance: float | None = None,
                        model_stale: bool = False,
                        accel_coast: float = 0.0, model_msg: Any | None = None,
-                       lead_path_clearance_mode: str = LEAD_PATH_CLEARANCE_MODE_OFF,
-                       cut_in_brake_assist_mode: str = "off",
-                       curve_speed_confidence_mode: str = "off",
-                       standstill_release_confidence_mode: str = "off",
-                       scenario_context_mode: str = "off",
+                        lead_path_clearance_mode: str = LEAD_PATH_CLEARANCE_MODE_OFF,
+                        cut_in_brake_assist_mode: str = "off",
+                        curve_speed_confidence_mode: str = "off",
+                        curve_traffic_advisor_mode: str = CURVE_TRAFFIC_MODE_OFF,
+                        standstill_release_confidence_mode: str = "off",
+                        scenario_context_mode: str = "off",
                        standstill: bool = False,
                        steering_angle_deg: float = 0.0,
                        steering_torque: float = 0.0,
@@ -184,6 +201,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     lead_path_clearance_mode=lead_path_clearance_mode,
     cut_in_brake_assist_mode=cut_in_brake_assist_mode,
     curve_speed_confidence_mode=curve_speed_confidence_mode,
+    curve_traffic_advisor_mode=curve_traffic_advisor_mode,
     standstill_release_confidence_mode=standstill_release_confidence_mode,
     scenario_context_mode=scenario_context_mode,
     standstill=bool(standstill),
@@ -212,6 +230,7 @@ class CustomLongitudinalAdapter:
     self.debug_trace_mode = "off"
     self.cut_in_brake_assist_mode = "off"
     self.curve_speed_confidence_mode = "off"
+    self.curve_traffic_advisor_mode = CURVE_TRAFFIC_MODE_OFF
     self.standstill_release_confidence_mode = "off"
     self.scenario_context_mode = "off"
     self.personality = Personality.STANDARD
@@ -253,6 +272,14 @@ class CustomLongitudinalAdapter:
         scenario_context_value = None
       self.scenario_context_mode = _shadow_mode(scenario_context_value or "off")
 
+      # Shadow-only advisory mode is isolated so stale/unregistered params cannot block
+      # SCC source-toggle refresh or any existing longitudinal behavior.
+      try:
+        curve_traffic_advisor_value = _param_string(p, "CurveTrafficAdvisorMode")
+      except Exception:
+        curve_traffic_advisor_value = None
+      self.curve_traffic_advisor_mode = _curve_traffic_advisor_mode(curve_traffic_advisor_value)
+
       try:
         self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
         self.lead_path_clearance_mode = _lead_path_clearance_mode(_param_string(p, "LeadPathClearanceMode") or LEAD_PATH_CLEARANCE_MODE_OFF)
@@ -274,7 +301,7 @@ class CustomLongitudinalAdapter:
       self.refresh_params(initial=False)
 
   def evaluate(self, sm: Any, v_ego: float, a_ego: float, v_cruise: float, seed_a_target: float,
-               scc: Any, sla: Any, dt: float = 0.05) -> 'CustomLongitudinalOutput':
+               scc: Any, sla: Any, dt: float = 0.05) -> CustomLongitudinalOutput:
     if not self.enabled:
       return CustomLongitudinalOutput(
         a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
@@ -317,6 +344,7 @@ class CustomLongitudinalAdapter:
         model_msg=model, lead_path_clearance_mode=self.lead_path_clearance_mode,
         cut_in_brake_assist_mode=self.cut_in_brake_assist_mode,
         curve_speed_confidence_mode=self.curve_speed_confidence_mode,
+        curve_traffic_advisor_mode=self.curve_traffic_advisor_mode,
         standstill_release_confidence_mode=self.standstill_release_confidence_mode,
         scenario_context_mode=self.scenario_context_mode,
         standstill=bool(getattr(cs, "standstill", False)),

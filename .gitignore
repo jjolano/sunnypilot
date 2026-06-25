@@ -97,6 +97,7 @@ PLAN.md
 TASK.md
 CLAUDE.md
 SKILL.md
+!.agents/skills/param-settings-ui/SKILL.md
 
 ### JetBrains ###
 !.idea/customTargets.xml

@@ -105,6 +105,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LeadPathClearanceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CutInBrakeAssistMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CurveSpeedConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    {"CurveTrafficAdvisorMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"StandstillReleaseConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     // Shadow-only scenario attribution for route-log/debug analysis; never affects actuation.
     {"ScenarioContextMode", {PERSISTENT | BACKUP, STRING, "off"}},

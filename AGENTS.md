@@ -55,6 +55,9 @@ description, read that skill's `SKILL.md` before acting.
 - `device-comm-diagnostics`: read-only diagnosis for on-device "Communication Issue Between
   Processes", "Low Communication Rate Between Processes", process-not-running, IPC/msgq, and
   manager/process health alerts.
+- `param-settings-ui`: checklist for adding Params keys with matching Settings UI controls,
+  generated schema JSON, encoding tests, and runtime fail-closed behavior. Use whenever adding
+  or changing a user/tester-facing param, feature flag, or shadow/apply mode.
 
 ## Workflow Keywords
 

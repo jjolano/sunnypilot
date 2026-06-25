@@ -175,6 +175,7 @@ class TestCompiledShape:
     expected = {
       "CutInBrakeAssistMode": ["off", "shadow"],
       "CurveSpeedConfidenceMode": ["off", "shadow", "apply_conservative"],
+      "CurveTrafficAdvisorMode": ["off", "shadow", "apply_conservative"],
       "StandstillReleaseConfidenceMode": ["off", "shadow", "gate"],
     }
     for key, values in expected.items():

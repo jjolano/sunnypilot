@@ -30,7 +30,8 @@ def lead(d_rel=30.0, v_lead=12.0, v_rel=None, status=True):
 
 def fake_sm(lead_one=None, brake=False, gas=False, standstill=False, steering_angle_deg=0.0,
             steering_torque=0.0, model_should_stop=False, model_accel=0.0, pitch=0.0,
-            model_x=None, model_y=None, model_v=None, model_leads=None):
+            model_x=None, model_y=None, model_v=None, model_leads=None,
+            long_active=False):
   position = SimpleNamespace()
   if model_x is not None:
     position.x = model_x
@@ -45,7 +46,7 @@ def fake_sm(lead_one=None, brake=False, gas=False, standstill=False, steering_an
                                position=position,
                                velocity=SimpleNamespace(x=model_v),
                                leadsV3=list(model_leads or [])),
-    'carControl': SimpleNamespace(orientationNED=[0.0, pitch, 0.0]),
+    'carControl': SimpleNamespace(orientationNED=[0.0, pitch, 0.0], longActive=long_active),
     'controlsState': SimpleNamespace(forceDecel=False),
   }
 
@@ -512,6 +513,7 @@ def test_new_shadow_modes_are_exactly_non_actuating():
     ("CutInBrakeAssistMode", "cut_in_brake_assist"),
     ("CurveSpeedConfidenceMode", "curve_speed_confidence"),
     ("StandstillReleaseConfidenceMode", "standstill_release_confidence"),
+    ("CurveTrafficAdvisorMode", "curve_traffic"),
   ):
     params = dict(base_params)
     params[key] = "shadow"
@@ -571,6 +573,29 @@ def test_absent_scenario_context_mode_does_not_block_source_refresh():
   assert a.sources.scc_curve_map_enabled is True
 
 
+def test_absent_curve_traffic_advisor_mode_does_not_block_source_refresh():
+  class ParamsMissingCurveTrafficKey:
+    def __init__(self, **vals):
+      self._v = vals
+    def get_bool(self, k):
+      return bool(self._v.get(k, False))
+    def get(self, k):
+      if k == "CurveTrafficAdvisorMode":
+        raise KeyError("unregistered param")
+      return self._v.get(k)
+    def all_keys(self):
+      return [k.encode() for k in self._v]
+
+  a = CustomLongitudinalAdapter(ParamsMissingCurveTrafficKey(
+    CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc",
+    SmartCruiseControlVision=True, SmartCruiseControlMap=True,
+  ))
+  assert a.mode is LongitudinalMode.SCC
+  assert a.curve_traffic_advisor_mode == "off"
+  assert a.sources.scc_curve_vision_enabled is True
+  assert a.sources.scc_curve_map_enabled is True
+
+
 def test_malformed_steering_telemetry_is_fail_soft():
   base_params = dict(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")
   baseline_sm = fake_sm(steering_angle_deg=5.0, steering_torque=2.0)
@@ -598,6 +623,7 @@ def test_future_shadow_mode_values_are_non_actuating_and_report_shadow():
   for key, value, debug_prefix in (
     ("CutInBrakeAssistMode", "apply", "cut_in_brake_assist"),
     ("CurveSpeedConfidenceMode", "apply_conservative", "curve_speed_confidence"),
+    ("CurveTrafficAdvisorMode", "apply_conservative", "curve_traffic"),
     ("StandstillReleaseConfidenceMode", "gate", "standstill_release_confidence"),
   ):
     params = dict(base_params)
@@ -610,4 +636,36 @@ def test_future_shadow_mode_values_are_non_actuating_and_report_shadow():
     assert out.standstill_release_allowed == baseline.standstill_release_allowed
     expected_mode = "shadow" if key == "CutInBrakeAssistMode" else value
     assert out.debug[f"{debug_prefix}_mode"] == expected_mode
-    assert out.debug[f"{debug_prefix}_apply_supported"] is (key != "CutInBrakeAssistMode")
+    assert out.debug[f"{debug_prefix}_apply_supported"] is (key not in ("CutInBrakeAssistMode", "CurveTrafficAdvisorMode"))
+    if key == "CurveTrafficAdvisorMode":
+      assert out.debug["curve_traffic_effective_mode"] == "shadow"
+
+
+def test_curve_traffic_advisor_mode_is_non_actuating_and_wired():
+  base_params = dict(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")
+  # A gentle left arc modeled as an n-sample circular arc; long_active is required for activation.
+  n = 20
+  radius = 120.0
+  thetas = [i * 7.0 / radius for i in range(n)]
+  model_x = [radius * math.sin(t) for t in thetas]
+  model_y = [radius * (1.0 - math.cos(t)) for t in thetas]
+  class FreshFakeSM(dict):
+    recv_time = {'modelV2': time.monotonic()}
+  sm = FreshFakeSM(fake_sm(model_x=model_x, model_y=model_y, model_v=[15.0] * n, long_active=True))
+  scenario = dict(
+    sm=sm,
+    v_ego=15.0, a_ego=0.0, v_cruise=18.0, seed_a_target=0.2,
+    scc=fake_scc(), sla=fake_sla(), dt=0.05,
+  )
+  off = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(**scenario)
+  shadow = CustomLongitudinalAdapter(FakeParams(CurveTrafficAdvisorMode="shadow", **base_params)).evaluate(**scenario)
+  assert shadow.a_target == pytest.approx(off.a_target)
+  assert shadow.should_stop == off.should_stop
+  assert shadow.selected_intent == off.selected_intent
+  assert shadow.reason == off.reason
+  assert off.debug["curve_traffic_mode"] == "off"
+  assert off.debug["curve_traffic_active"] is False
+  assert shadow.debug["curve_traffic_mode"] == "shadow"
+  assert shadow.debug["curve_traffic_active"] is True
+  assert shadow.debug["curve_traffic_advisor_fault"] is False
+  assert shadow.debug["curve_traffic_apply_supported"] is False

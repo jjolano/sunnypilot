@@ -23,8 +23,9 @@ from typing import Any
 from openpilot.sunnypilot.custom.longitudinal.acc_envelope import AccEnvelopeInputs, evaluate_acc_envelope
 from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import predict_cut_in_brake_assist
 from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs, predict_curve_speed_confidence
+from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import CurveTrafficAdvisorInputs, predict_curve_traffic_advisor
 from openpilot.sunnypilot.custom.longitudinal.decision import CandidateRole, Decision, decide
-from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceState, LeadConfidenceTracker
+from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF, predict_lead_path_clearance
 from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence import predict_standstill_release_confidence
@@ -218,6 +219,7 @@ class LongitudinalStackInputs:
   curve_speed_confidence_mode: Any = "off"
   standstill_release_confidence_mode: Any = "off"
   scenario_context_mode: Any = "off"
+  curve_traffic_advisor_mode: Any = "off"
   standstill: bool = False
   steering_angle_deg: float = 0.0
   steering_torque: float = 0.0
@@ -468,6 +470,28 @@ class CustomLongitudinalStack:
     except Exception:
       scenario_context_fault = True
 
+    curve_traffic_advisor_fault = False
+    curve_traffic_advisor_debug: dict[str, Any] = {}
+    try:
+      curve_traffic_advisor_debug = predict_curve_traffic_advisor(
+        mode=inp.curve_traffic_advisor_mode,
+        data=CurveTrafficAdvisorInputs(
+          v_ego=act_inp.v_ego,
+          a_ego=act_inp.a_ego,
+          model_msg=inp.model_msg,
+          leads=inp.leads,
+          lead_shadow_active=lead_shadow_active,
+          alternate_threat_active=alternate_threat_active,
+          long_active=inp.long_active,
+          model_stale=inp.model_stale,
+          brake_pressed=act_inp.brake_pressed,
+          gas_pressed=act_inp.gas_pressed,
+          force_slow_decel=act_inp.force_slow_decel,
+        ),
+      ).debug_dict()
+    except Exception:
+      curve_traffic_advisor_fault = True
+
     admitted_hazard_targets = [float(c.a_target) for c in candidates
                                if c.role is CandidateRole.PHYSICAL_HAZARD
                                and c.source in decision.admitted_sources
@@ -517,6 +541,8 @@ class CustomLongitudinalStack:
         **standstill_release_confidence_debug,
         "scenario_context_fault": scenario_context_fault,
         **scenario_context_debug,
+        "curve_traffic_advisor_fault": curve_traffic_advisor_fault,
+        **curve_traffic_advisor_debug,
         **acc_envelope_debug,
         **target_smoothing_debug,
       },

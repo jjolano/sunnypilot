@@ -139,6 +139,25 @@ sections:
     - type: param
       key: CustomLongitudinalEnabled
       equals: true
+  - key: CurveTrafficAdvisorMode
+    widget: multiple_button
+    title: Curve Traffic Advisor
+    description: Logs curve shape and traffic context for route validation. Apply conservative is staged for testing and currently remains telemetry-only.
+    options:
+    - value: 'off'
+      label: 'Off'
+    - value: 'shadow'
+      label: Monitor only
+    - value: 'apply_conservative'
+      label: Apply conservative
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: capability
+      field: has_longitudinal_control
+      equals: true
+    - type: param
+      key: CustomLongitudinalEnabled
+      equals: true
   - key: StandstillReleaseConfidenceMode
     widget: multiple_button
     title: Standstill Release Confidence
