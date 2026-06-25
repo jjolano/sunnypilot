@@ -91,3 +91,46 @@ def test_jerk_limiter_clips_braking_step():
 
   assert r.would_cap is False  # decel limiting is shadow telemetry, not a safety cap upward
   assert r.jerk_limited_a_target == pytest.approx(-0.1)
+
+
+def test_inside_time_gap_hardens_beyond_mild_candidate_without_compression_flag():
+  # Inside the desired gap with mild closing: the raw kinematic demand (-required_decel)
+  # is stronger than the candidate compression target, so it hardens without the flag.
+  r = evaluate_acc_envelope(base(
+    v_ego=20.0, candidate_a_target=-0.15, previous_a_target=-0.15, dt=0.05,
+    has_lead=True, lead_d_rel=25.0, lead_v_rel=-0.2, lead_v_lead=19.8,
+  ))
+
+  assert r.would_cap is True
+  assert "inside_time_gap" in reasons(r)
+  assert "ttc_low" not in reasons(r)
+  assert "closing_decel_high" not in reasons(r)
+  assert r.allowed_a_target < -0.15
+
+
+def test_lead_compression_candidate_skips_inside_time_gap_hardening():
+  # Same kinematics as above, but identified as a controlled compression candidate:
+  # inside_time_gap is still reported but the candidate target is allowed to bind.
+  r = evaluate_acc_envelope(base(
+    v_ego=20.0, candidate_a_target=-0.15, previous_a_target=-0.15, dt=0.05,
+    has_lead=True, lead_d_rel=25.0, lead_v_rel=-0.2, lead_v_lead=19.8,
+    lead_compression_candidate=True,
+  ))
+
+  assert r.would_cap is True
+  assert "inside_time_gap" in reasons(r)
+  assert r.allowed_a_target == pytest.approx(-0.15)
+
+
+def test_lead_compression_candidate_still_bound_by_real_risk_reasons():
+  # High closing/high required decel must still override the compression allowance.
+  r = evaluate_acc_envelope(base(
+    v_ego=20.0, candidate_a_target=-0.15, previous_a_target=-0.15, dt=0.05,
+    has_lead=True, lead_d_rel=20.0, lead_v_rel=-4.0, lead_v_lead=16.0,
+    lead_compression_candidate=True,
+  ))
+
+  assert r.would_cap is True
+  assert "inside_time_gap" in reasons(r)
+  assert ("closing_decel_high" in reasons(r)) or ("ttc_low" in reasons(r))
+  assert r.allowed_a_target < -0.15

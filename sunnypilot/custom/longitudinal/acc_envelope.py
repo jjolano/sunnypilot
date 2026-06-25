@@ -28,6 +28,7 @@ class AccEnvelopeInputs:
   lead_kinematics_valid: bool = True
   model_stale: bool = False
   model_progress_candidate: bool = False
+  lead_compression_candidate: bool = False
   radar_stale: bool = False
   lead_required: bool = False
   min_gap_m: float = MIN_GAP_M
@@ -122,8 +123,15 @@ def evaluate_acc_envelope(inp: AccEnvelopeInputs) -> AccEnvelopeResult:
     reasons.append("jerk_limited")
 
   allowed_a = min(candidate_a, jerk_limited)
-  if inp.has_lead and ("inside_time_gap" in reasons or "ttc_low" in reasons or "closing_decel_high" in reasons):
+  lead_binding_reasons = {"ttc_low", "closing_decel_high", "invalid_lead_kinematics", "invalid_lead_distance"}
+  if inp.has_lead and bool(lead_binding_reasons & set(reasons)):
     allowed_a = min(allowed_a, 0.0, -required_decel)
+  elif inp.has_lead and "inside_time_gap" in reasons:
+    if not inp.lead_compression_candidate:
+      allowed_a = min(allowed_a, 0.0, -required_decel)
+    # For lead_gap_compression candidates, the inside_time_gap reason is still recorded for
+    # telemetry, but the mild compression target is allowed to bind instead of hardening to
+    # the raw kinematic -required_decel.
 
   would_cap = bool(allowed_a < candidate_a - 1e-6 or reasons)
   return AccEnvelopeResult(

@@ -324,6 +324,20 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     curveSpeedConfidence @20 :CurveSpeedConfidenceTrace;
     standstillReleaseConfidence @21 :StandstillReleaseConfidenceTrace;
     accEnvelope @22 :AccEnvelopeTrace;
+    struct ScenarioContextTrace {
+      mode @0 :Text;
+      effectiveMode @1 :Text;
+      applySupported @2 :Bool;
+      active @3 :Bool;
+      scenario @4 :Text;
+      confidence @5 :Float32;
+      allowedEffect @6 :Text;
+      currentEffect @7 :Text;
+      roadGrade @8 :Text;
+      reason @9 :Text;
+    }
+
+    scenarioContext @23 :ScenarioContextTrace;
   }
 
   struct SmartCruiseControl {

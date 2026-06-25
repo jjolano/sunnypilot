@@ -694,3 +694,58 @@ def test_scc_curve_confidence_respects_source_gates():
   ), DT)
   assert map_on.debug["curve_speed_confidence_eligible"] is True
   assert map_on.debug["curve_speed_confidence_proposed_cap"] == pytest.approx(-0.8)
+
+
+def _stable_lead_compression_stack(seed_a: float, lead_d: float, v_lead: float, v_rel: float, n: int = 30):
+  s = CustomLongitudinalStack()
+  r = None
+  for _ in range(n):
+    r = s.update(base(
+      v_ego=15.0, v_cruise=15.0, seed_a_target=seed_a,
+      leads=(lead(d_rel=lead_d, v_lead=v_lead, v_rel=v_rel), None),
+      lead_a_target=seed_a,
+      mode=LongitudinalMode.ACC,
+      long_active=True,
+    ), DT)
+  return r
+
+
+def test_lead_gap_compression_not_hardened_by_inside_time_gap():
+  # Stable, confident, low-risk inside-gap compression. d_rel is inside the ACC desired gap
+  # (1.5 s) but closing is small enough that no binding ttc/closing_decel risk exists.
+  # The ACC envelope reports inside_time_gap but the final target stays at the compression target.
+  seed = -0.15
+  r = _stable_lead_compression_stack(
+    seed_a=seed,
+    lead_d=22.0,
+    v_lead=14.8,
+    v_rel=-0.2,
+    n=35,
+  )
+
+  assert r.debug["intent"] == "lead_gap_compression", f"got intent={r.debug['intent']}"
+  assert "inside_time_gap" in r.debug.get("acc_envelope_cap_reason", "")
+  assert "closing_decel_high" not in r.debug.get("acc_envelope_cap_reason", "")
+  assert "ttc_low" not in r.debug.get("acc_envelope_cap_reason", "")
+  # Should stay near the ramped compression target, not harden to raw -required_decel
+  assert r.a_target == pytest.approx(seed, abs=0.03)
+
+
+def test_non_compression_lead_hazard_still_hardened_by_inside_time_gap():
+  # Inside-time-gap with high closing is not a controlled compression candidate;
+  # the raw lead-follow hazard must remain binding and not be softened.
+  s = CustomLongitudinalStack()
+  r = None
+  for _ in range(35):
+    r = s.update(base(
+      v_ego=20.0, v_cruise=20.0, seed_a_target=0.0,
+      leads=(lead(d_rel=22.0, v_lead=17.5, v_rel=-2.5), None),
+      lead_a_target=-1.5,
+      mode=LongitudinalMode.ACC,
+      long_active=True,
+    ), DT)
+
+  assert r.debug["intent"] == "lead_follow"
+  assert "inside_time_gap" in r.debug.get("acc_envelope_cap_reason", "")
+  assert "closing_decel_high" in r.debug.get("acc_envelope_cap_reason", "")
+  assert r.a_target <= -1.5

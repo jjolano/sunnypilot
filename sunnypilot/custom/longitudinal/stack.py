@@ -301,6 +301,7 @@ class CustomLongitudinalStack:
     acc_envelope_result: Any | None = None
     try:
       model_progress_candidate = str(decision.selected_intent) in ("no_lead_launch", "lead_pullaway", "lead_standstill_launch")
+      lead_compression_candidate = str(decision.selected_intent) == "lead_gap_compression"
       previous_for_envelope = self._prev_smoothed_a_target if self._prev_smoothed_a_target is not None else inp.seed_a_target
       acc_envelope_result = evaluate_acc_envelope(AccEnvelopeInputs(
         v_ego=inp.v_ego,
@@ -316,6 +317,7 @@ class CustomLongitudinalStack:
         lead_kinematics_valid=lead_kinematics_valid,
         model_stale=act_inp.model_stale,
         model_progress_candidate=model_progress_candidate,
+        lead_compression_candidate=lead_compression_candidate,
         radar_stale=False,
         lead_required=has_lead,
       ))
