@@ -1,6 +1,7 @@
 import numpy as np
 from numbers import Number
 
+
 class PIDController:
   def __init__(self, k_p, k_i, k_d=0., pos_limit=1e308, neg_limit=-1e308, rate=100):
     self._k_p: list[list[float]] = [[0], [k_p]] if isinstance(k_p, Number) else k_p
@@ -55,3 +56,13 @@ class PIDController:
     control = self.p + self.i + self.d + self.f
     self.control = np.clip(control, self.neg_limit, self.pos_limit)
     return self.control
+
+
+PythonPIDController = PIDController
+
+try:
+  from openpilot.common.pid_pyx import PIDController as CythonPIDController
+except ImportError:
+  pass
+else:
+  PIDController = CythonPIDController
