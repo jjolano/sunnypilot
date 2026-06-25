@@ -123,9 +123,15 @@ def evaluate_acc_envelope(inp: AccEnvelopeInputs) -> AccEnvelopeResult:
     reasons.append("jerk_limited")
 
   allowed_a = min(candidate_a, jerk_limited)
-  lead_binding_reasons = {"ttc_low", "closing_decel_high", "invalid_lead_kinematics", "invalid_lead_distance"}
-  if inp.has_lead and bool(lead_binding_reasons & set(reasons)):
+  # True collision-risk / invalid-lead reasons are always binding.
+  binding_risks = {"ttc_low", "invalid_lead_kinematics", "invalid_lead_distance"}
+  if inp.has_lead and bool(binding_risks & set(reasons)):
     allowed_a = min(allowed_a, 0.0, -required_decel)
+  elif inp.has_lead and "closing_decel_high" in reasons:
+    # For controlled compression candidates, the policy already gates both desired-gap
+    # and collision-buffer decel; closing_decel_high alone is not allowed to harden here.
+    if not inp.lead_compression_candidate:
+      allowed_a = min(allowed_a, 0.0, -required_decel)
   elif inp.has_lead and "inside_time_gap" in reasons:
     if not inp.lead_compression_candidate:
       allowed_a = min(allowed_a, 0.0, -required_decel)

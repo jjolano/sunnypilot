@@ -731,6 +731,25 @@ def test_lead_gap_compression_not_hardened_by_inside_time_gap():
   assert r.a_target == pytest.approx(seed, abs=0.03)
 
 
+def test_routine_compression_not_hardened_by_closing_decel_high():
+  # Routine compression: desired-gap demand is above the comfort tier but TTC/time-gap
+  # are safe and collision-buffer demand is controlled. ACC envelope reports
+  # closing_decel_high but must not harden the final target.
+  r = _stable_lead_compression_stack(
+    seed_a=-1.2,
+    lead_d=18.0,
+    v_lead=12.5,
+    v_rel=-2.5,
+    n=35,
+  )
+
+  assert r.debug["intent"] == "lead_gap_compression", f"got intent={r.debug['intent']}"
+  assert "closing_decel_high" in r.debug.get("acc_envelope_cap_reason", "")
+  assert "ttc_low" not in r.debug.get("acc_envelope_cap_reason", "")
+  # Final target should sit in the routine range, not snap back to seed -1.2.
+  assert -0.85 <= r.a_target <= -0.45
+
+
 def test_non_compression_lead_hazard_still_hardened_by_inside_time_gap():
   # Inside-time-gap with high closing is not a controlled compression candidate;
   # the raw lead-follow hazard must remain binding and not be softened.

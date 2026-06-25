@@ -123,14 +123,43 @@ def test_lead_compression_candidate_skips_inside_time_gap_hardening():
 
 
 def test_lead_compression_candidate_still_bound_by_real_risk_reasons():
-  # High closing/high required decel must still override the compression allowance.
+  # True low TTC must still override the compression allowance.
   r = evaluate_acc_envelope(base(
     v_ego=20.0, candidate_a_target=-0.15, previous_a_target=-0.15, dt=0.05,
-    has_lead=True, lead_d_rel=20.0, lead_v_rel=-4.0, lead_v_lead=16.0,
+    has_lead=True, lead_d_rel=10.0, lead_v_rel=-4.0, lead_v_lead=16.0,
     lead_compression_candidate=True,
   ))
 
   assert r.would_cap is True
   assert "inside_time_gap" in reasons(r)
-  assert ("closing_decel_high" in reasons(r)) or ("ttc_low" in reasons(r))
+  assert "ttc_low" in reasons(r)
   assert r.allowed_a_target < -0.15
+
+
+def test_lead_compression_candidate_closing_decel_high_safe_ttc_does_not_harden():
+  # closing_decel_high due to being inside the desired gap, but TTC is safe and kinematics
+  # are valid. For a controlled compression candidate the target must not harden.
+  r = evaluate_acc_envelope(base(
+    v_ego=20.0, candidate_a_target=-0.60, previous_a_target=-0.60, dt=0.05,
+    has_lead=True, lead_d_rel=25.0, lead_v_rel=-0.5, lead_v_lead=19.5,
+    lead_compression_candidate=True,
+  ))
+
+  assert r.would_cap is True
+  assert "inside_time_gap" in reasons(r)
+  assert "closing_decel_high" in reasons(r)
+  assert "ttc_low" not in reasons(r)
+  assert r.allowed_a_target == pytest.approx(-0.60)
+
+
+def test_non_compression_closing_decel_high_still_hardens():
+  # Same closing_decel_high condition without the compression flag must harden.
+  r = evaluate_acc_envelope(base(
+    v_ego=20.0, candidate_a_target=-0.60, previous_a_target=-0.60, dt=0.05,
+    has_lead=True, lead_d_rel=25.0, lead_v_rel=-0.5, lead_v_lead=19.5,
+    lead_compression_candidate=False,
+  ))
+
+  assert r.would_cap is True
+  assert "closing_decel_high" in reasons(r)
+  assert r.allowed_a_target < -0.60

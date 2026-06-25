@@ -490,9 +490,10 @@ def test_inside_gap_gentle_closing_caps_hazard():
 
 
 def test_inside_gap_fast_closing_stays_hazard():
+  # Closing above the routine tier limit (2.5 m/s) must stay raw hazard.
   scene = _alignment_scene(
     v_ego=20.0, v_cruise=20.0, seed_a_target=-1.5,
-    lead_a_target=-1.5, lead_v=17.5, lead_v_rel=-2.5, lead_d_rel=25.0,
+    lead_a_target=-1.5, lead_v=17.4, lead_v_rel=-2.6, lead_d_rel=25.0,
     follow_gap=30.0, lead_progress_allowed=False,
   )
   cands = build_candidates(scene)
@@ -604,9 +605,10 @@ def test_inside_gap_short_time_gap_stays_hazard():
 
 
 def test_inside_gap_excess_closing_stays_hazard():
+  # Closing above the routine tier limit keeps the raw lead-follow hazard.
   scene = _alignment_scene(
     v_ego=20.0, v_cruise=20.0, seed_a_target=-1.5,
-    lead_a_target=-1.5, lead_v=17.5, lead_v_rel=-2.5, lead_a_k=-1.2,
+    lead_a_target=-1.5, lead_v=17.4, lead_v_rel=-2.6, lead_a_k=-1.2,
     lead_d_rel=25.0, follow_gap=30.0, lead_progress_allowed=False,
   )
   cands = build_candidates(scene)
@@ -738,3 +740,91 @@ def test_inside_gap_max_closing_hits_mild_floor():
   assert intents["lead_gap_compression"].a_target == pytest.approx(-0.45)
   d = decide(cands, LongitudinalMode.ACC, LIMITS)
   assert d.a_target == pytest.approx(-0.45)
+
+
+# -----------------------------------------------------------------------------
+# Phase 3c: routine-braking compression tier
+# -----------------------------------------------------------------------------
+
+def _routine_scene(**over):
+  base = dict(
+    v_ego=15.0, v_cruise=15.0, seed_a_target=-1.2,
+    has_lead=True, lead_a_target=-1.2, lead_should_stop=False,
+    lead_v=12.5, lead_d_rel=18.0, lead_v_rel=-2.5, lead_a_k=-1.0,
+    follow_gap=22.5, lead_progress_allowed=False,
+    lead_kinematics_valid=True, lead_confidence=0.9, lead_stable=True,
+    lead_shadow_active=False, alternate_threat_active=False,
+    model_should_stop=False, model_stop_distance=None,
+    stop_threat=False, force_slow_decel=False, brake_pressed=False, gas_pressed=False,
+  )
+  base.update(over)
+  return LongitudinalScene(**base)
+
+
+def test_routine_tier_compresses_at_moderate_required_decel():
+  # required_decel ~0.46 exceeds the comfort ceiling (0.45) but is safe for routine tier.
+  scene = _routine_scene()
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_gap_compression" in intents
+  assert "lead_follow" not in intents
+  # Ramp target should be in the routine -0.45..-0.85 range, not raw -1.2.
+  target = intents["lead_gap_compression"].a_target
+  assert -0.85 <= target <= -0.45
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert -0.85 <= d.a_target <= -0.45
+
+
+def test_routine_tier_rejected_when_ttc_too_low():
+  # TTC just below the 6.0 s routine floor while time-gap, closing, and decel gates pass
+  # -> fall back to raw lead-follow hazard.
+  scene = _routine_scene(v_ego=10.0, lead_d_rel=12.0, follow_gap=10.0, lead_v=7.9, lead_v_rel=-2.1)
+  # TTC = 12 / 2.1 ~ 5.7 s; time_gap = 12 / 10 = 1.2 s (OK).
+  cands = build_candidates(scene)
+  assert "lead_follow" in sources_of(cands)
+  assert "lead_gap_compression" not in sources_of(cands)
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.2)
+
+
+def test_routine_tier_rejected_when_time_gap_too_short():
+  scene = _routine_scene(v_ego=18.0, lead_d_rel=18.0, lead_v=15.5, lead_v_rel=-2.5)
+  # time_gap = 18 / 18 = 1.0 s < 1.2 s, TTC fine.
+  cands = build_candidates(scene)
+  assert "lead_follow" in sources_of(cands)
+  assert "lead_gap_compression" not in sources_of(cands)
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.2)
+
+
+def test_routine_tier_rejected_when_lead_braking_hard():
+  scene = _routine_scene(lead_a_k=-2.5)
+  cands = build_candidates(scene)
+  assert "lead_follow" in sources_of(cands)
+  assert "lead_gap_compression" not in sources_of(cands)
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.2)
+
+
+def test_routine_tier_rejected_when_collision_buffer_tight():
+  # Tight collision-buffer cases must stay raw hazard. This also trips the TTC gate, which is
+  # expected: near-collision-buffer cases should have redundant fail-closed reasons.
+  scene = _routine_scene(
+    v_ego=6.0, lead_d_rel=7.5, follow_gap=6.0,
+    lead_v=3.7, lead_v_rel=-2.3, lead_a_k=-1.0,
+  )
+  cands = build_candidates(scene)
+  assert "lead_follow" in sources_of(cands)
+  assert "lead_gap_compression" not in sources_of(cands)
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-1.2)
+
+
+def test_routine_tier_never_hardens_milder_raw_lead_target():
+  scene = _routine_scene(lead_a_target=-0.50, seed_a_target=-0.50)
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_gap_compression" in intents
+  assert intents["lead_gap_compression"].a_target == pytest.approx(-0.50)
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(-0.50)

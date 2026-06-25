@@ -79,6 +79,18 @@ _LEAD_INSIDE_GAP_MAX_REQUIRED_DECEL = 0.45  # m/s^2; kinematic closing demand ce
 _LEAD_INSIDE_GAP_MAX_CLOSING_MPS = 2.0      # m/s; moderate closing only
 _LEAD_INSIDE_GAP_MIN_LEAD_A_K = -1.2        # m/s^2; reject compression if lead is braking harder
 
+# Routine-braking compression tier (Phase 3b): allows a stronger but still bounded
+# compression target when the desired-gap kinematic demand is higher, as long as the
+# true collision-buffer demand and TTC remain safe.
+_LEAD_ROUTINE_GAP_MIN_TIME_GAP_S = 1.2
+_LEAD_ROUTINE_GAP_MIN_TTC_S = 6.0
+_LEAD_ROUTINE_GAP_MAX_CLOSING_MPS = 2.5
+_LEAD_ROUTINE_GAP_MIN_LEAD_A_K = -2.0
+_LEAD_ROUTINE_GAP_MAX_REQUIRED_DECEL = 0.90
+_LEAD_ROUTINE_GAP_MAX_COLLISION_DECEL = 1.0
+_LEAD_ROUTINE_GAP_TARGET_MIN = 0.45
+_LEAD_ROUTINE_GAP_TARGET_MAX = 0.85
+
 
 @dataclass(frozen=True)
 class LongitudinalScene:
@@ -316,31 +328,46 @@ def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | 
     ttc = float("inf")
   usable_gap = max(scene.lead_d_rel - max(5.0, 0.5 * scene.follow_gap), 0.1)
   required_decel = (closing * closing) / (2.0 * usable_gap)
+  collision_gap = max(scene.lead_d_rel - 5.0, 0.1)
+  collision_required_decel = (closing * closing) / (2.0 * collision_gap)
 
-  if time_gap < _LEAD_INSIDE_GAP_MIN_TIME_GAP_S:
-    return None
-  if ttc < _LEAD_INSIDE_GAP_MIN_TTC_S:
-    return None
-  if closing > _LEAD_INSIDE_GAP_MAX_CLOSING_MPS:
-    return None
-  if required_decel > _LEAD_INSIDE_GAP_MAX_REQUIRED_DECEL:
-    return None
-  if not math.isfinite(scene.lead_a_k) or scene.lead_a_k < _LEAD_INSIDE_GAP_MIN_LEAD_A_K:
-    return None
-
-  # Stable/opening inside the gap: suppress the physical hazard and coast.
-  if closing <= 0.1:
-    return (0.0, False)
-
-  # Moderate closing: keep a binding hazard but ramp the target gently with the
-  # kinematic demand. Never harden the original lead target (fail-closed) and
-  # never exceed a mild compression floor.
-  raw_magnitude = max(
-    0.15,
-    min(0.45, required_decel + 0.10, 0.15 + 0.15 * closing),
+  # Comfort tier: very low kinematic demand -> very mild compression target.
+  comfort_ok = bool(
+    time_gap >= _LEAD_INSIDE_GAP_MIN_TIME_GAP_S and
+    ttc >= _LEAD_INSIDE_GAP_MIN_TTC_S and
+    closing <= _LEAD_INSIDE_GAP_MAX_CLOSING_MPS and
+    required_decel <= _LEAD_INSIDE_GAP_MAX_REQUIRED_DECEL and
+    math.isfinite(scene.lead_a_k) and scene.lead_a_k >= _LEAD_INSIDE_GAP_MIN_LEAD_A_K
   )
-  target = float(max(scene.lead_a_target, -raw_magnitude))
-  return (target, True)
+  if comfort_ok:
+    # Stable/opening inside the gap: suppress the physical hazard and coast.
+    if closing <= 0.1:
+      return (0.0, False)
+    raw_magnitude = max(
+      0.15,
+      min(0.45, required_decel + 0.10, 0.15 + 0.15 * closing),
+    )
+    return (float(max(scene.lead_a_target, -raw_magnitude)), True)
+
+  # Routine tier: moderate desired-gap demand but collision risk still controlled.
+  routine_ok = bool(
+    time_gap >= _LEAD_ROUTINE_GAP_MIN_TIME_GAP_S and
+    ttc >= _LEAD_ROUTINE_GAP_MIN_TTC_S and
+    closing <= _LEAD_ROUTINE_GAP_MAX_CLOSING_MPS and
+    required_decel <= _LEAD_ROUTINE_GAP_MAX_REQUIRED_DECEL and
+    collision_required_decel <= _LEAD_ROUTINE_GAP_MAX_COLLISION_DECEL and
+    math.isfinite(scene.lead_a_k) and scene.lead_a_k >= _LEAD_ROUTINE_GAP_MIN_LEAD_A_K
+  )
+  if routine_ok:
+    if closing <= 0.1:
+      return (0.0, False)
+    raw_magnitude = max(
+      _LEAD_ROUTINE_GAP_TARGET_MIN,
+      min(_LEAD_ROUTINE_GAP_TARGET_MAX, required_decel + 0.15, 0.20 + 0.25 * closing),
+    )
+    return (float(max(scene.lead_a_target, -raw_magnitude)), True)
+
+  return None
 
 
 def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
