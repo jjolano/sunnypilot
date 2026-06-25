@@ -1,0 +1,5 @@
+Import('envCython')
+
+nnlc_model_python = envCython.Program('nnlc_model_pyx.so', 'nnlc_model_pyx.pyx', LIBS=envCython['LIBS'])
+
+Export('nnlc_model_python')

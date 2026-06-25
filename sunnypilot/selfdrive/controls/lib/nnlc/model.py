@@ -13,7 +13,7 @@ from openpilot.selfdrive.modeld.parse_model_outputs import safe_exp
 ACTIVATION_FUNCTION_NAMES = {'σ': 'sigmoid'}
 
 
-class NNTorqueModel:
+class PythonNNTorqueModel:
   def __init__(self, params_file, zero_bias=False):
     with open(params_file) as f:
       params = load(f)
@@ -81,3 +81,17 @@ class NNTorqueModel:
   def check_for_friction_override(self):
     y = self.evaluate([10.0, 0.0, 0.2])
     self.friction_override = (y < 0.1)
+
+
+try:
+  from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.nnlc_model_pyx import _forward as _cy_forward
+  from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.nnlc_model_pyx import _evaluate as _cy_evaluate
+
+  class NNTorqueModel(PythonNNTorqueModel):
+    def forward(self, x):
+      return _cy_forward(x, self.layers)
+
+    def evaluate(self, input_array):
+      return _cy_evaluate(input_array, self.input_size, self.input_mean, self.input_std, self.layers)
+except ImportError:
+  NNTorqueModel = PythonNNTorqueModel

@@ -1,0 +1,5 @@
+Import('envCython')
+
+output_governor_python = envCython.Program('output_governor_pyx.so', 'output_governor_pyx.pyx', LIBS=envCython['LIBS'])
+
+Export('output_governor_python')

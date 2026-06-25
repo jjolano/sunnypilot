@@ -1,3 +1,5 @@
 SConscript(['common/transformations/SConscript'])
 SConscript(['modeld_v2/SConscript'])
 SConscript(['selfdrive/locationd/SConscript'])
+SConscript(['selfdrive/controls/lib/nnlc/SConscript'])
+SConscript(['custom/lateral/SConscript'])
