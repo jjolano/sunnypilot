@@ -15,6 +15,11 @@ MODE_OFF = "off"
 MODE_SHADOW = "shadow"
 
 
+FLAT_COAST_BASELINE = -0.3
+GRADE_COMPENSATION_MAX_MS2 = 0.15
+GRADE_FLAT_BAND_HALF_WIDTH = 0.35
+
+
 @dataclass(frozen=True)
 class ScenarioContextResult:
   mode: str = MODE_OFF
@@ -27,6 +32,11 @@ class ScenarioContextResult:
   current_effect: str = "none"
   road_grade: str = "flat"
   reason: str = "mode_off"
+  accel_coast: float = 0.0
+  grade_confidence: float = 0.0
+  estimated_accel_bias: float = 0.0
+  proposed_compensation: float = 0.0
+  block_reason: str = "ok"
 
   def debug_dict(self) -> dict[str, Any]:
     prefix = "scenario_context"
@@ -41,6 +51,11 @@ class ScenarioContextResult:
       f"{prefix}_current_effect": self.current_effect,
       f"{prefix}_road_grade": self.road_grade,
       f"{prefix}_reason": self.reason,
+      f"{prefix}_accel_coast": self.accel_coast,
+      f"{prefix}_grade_confidence": self.grade_confidence,
+      f"{prefix}_estimated_accel_bias": self.estimated_accel_bias,
+      f"{prefix}_proposed_compensation": self.proposed_compensation,
+      f"{prefix}_block_reason": self.block_reason,
     }
 
 
@@ -81,6 +96,32 @@ def _road_grade(accel_coast: float) -> str:
   if accel_coast < -0.6:
     return "uphill"
   return "flat"
+
+
+# Scenarios that take precedence over grade-based compensation; these are reported as the
+# blockReason so telemetry can separate grade opportunity from prevailing situation.
+GRADE_COMPENSATION_BLOCKED_SCENARIOS = frozenset({
+  "driver_override",
+  "standstill",
+  "approach_stop",
+  "stop_and_go",
+  "closing_lead",
+  "curve_approach",
+  "speed_limit_drop",
+  "turning",
+})
+
+
+def _grade_telemetry(accel_coast: float, scenario: str) -> tuple[float, float, float, float, str]:
+  """Return grade telemetry: coast, confidence, bias, proposed compensation, block reason."""
+  estimated_bias = accel_coast - FLAT_COAST_BASELINE
+  distance_outside_band = max(0.0, abs(estimated_bias) - GRADE_FLAT_BAND_HALF_WIDTH)
+  confidence = min(1.0, distance_outside_band / GRADE_FLAT_BAND_HALF_WIDTH) if GRADE_FLAT_BAND_HALF_WIDTH > 0.0 else 0.0
+  block_reason = scenario if scenario in GRADE_COMPENSATION_BLOCKED_SCENARIOS else "ok"
+  proposed_compensation = 0.0
+  if block_reason == "ok" and confidence > 0.0 and _road_grade(accel_coast) != "flat":
+    proposed_compensation = max(-GRADE_COMPENSATION_MAX_MS2, min(GRADE_COMPENSATION_MAX_MS2, -estimated_bias))
+  return accel_coast, confidence, estimated_bias, proposed_compensation, block_reason
 
 
 def predict_scenario_context(
@@ -133,6 +174,7 @@ def predict_scenario_context(
   grade = _road_grade(coast)
 
   def result(label: str, confidence: float, effect: str, reason: str) -> ScenarioContextResult:
+    accel_coast_t, grade_confidence, estimated_bias, proposed_compensation, block_reason = _grade_telemetry(coast, label)
     return ScenarioContextResult(
       mode=mode_s,
       effective_mode=mode_s,
@@ -144,6 +186,11 @@ def predict_scenario_context(
       current_effect="none",  # shadow-only today: never an actuation effect
       road_grade=grade,
       reason=reason,
+      accel_coast=accel_coast_t,
+      grade_confidence=grade_confidence,
+      estimated_accel_bias=estimated_bias,
+      proposed_compensation=proposed_compensation,
+      block_reason=block_reason,
     )
 
   # 1. Driver/safety layers always take precedence and are marked effect=none so they cannot

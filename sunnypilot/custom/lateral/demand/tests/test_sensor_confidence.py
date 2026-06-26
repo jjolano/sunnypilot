@@ -42,6 +42,9 @@ def test_clean_case_computes_shadow_deltas():
   assert result.yaw_curvature == pytest.approx(0.001)
   assert result.model_yaw_lat_accel_delta == pytest.approx(0.8)
   assert result.steering_yaw_lat_accel_delta == pytest.approx(0.0)
+  assert result.model_yaw_lat_accel_signed_delta == pytest.approx(0.8)
+  assert result.steering_yaw_lat_accel_signed_delta == pytest.approx(0.0)
+  assert result.response_classification == "medium_disagreement"
   assert result.disagreement_level == "medium"
 
 
@@ -74,4 +77,29 @@ def test_high_disagreement_is_debug_only_suppress_candidate():
   assert result.available is True
   assert result.disagreement_level == "high"
   assert result.suppress_candidate is True
+  assert result.response_classification == "underresponse_candidate"
   assert math.isfinite(result.score)
+
+
+def test_negative_turn_underresponse_candidate_uses_requested_direction():
+  result = evaluate_sensor_confidence(base_inputs(model_curvature=-0.008, measured_curvature=-0.001, yaw_rate=-0.02))
+
+  assert result.available is True
+  assert result.model_yaw_lat_accel_signed_delta < -1.0
+  assert result.response_classification == "underresponse_candidate"
+
+
+def test_negative_turn_overresponse_candidate_uses_requested_direction():
+  result = evaluate_sensor_confidence(base_inputs(model_curvature=-0.001, measured_curvature=-0.008, yaw_rate=-0.16))
+
+  assert result.available is True
+  assert result.model_yaw_lat_accel_signed_delta > 1.0
+  assert result.response_classification == "overresponse_candidate"
+
+
+def test_low_disagreement_no_response_candidate():
+  result = evaluate_sensor_confidence(base_inputs(model_curvature=0.001, measured_curvature=0.001, yaw_rate=0.02))
+
+  assert result.available is True
+  assert result.response_classification == "low_disagreement"
+  assert result.suppress_candidate is False

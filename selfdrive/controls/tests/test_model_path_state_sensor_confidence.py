@@ -35,6 +35,15 @@ def test_custom_default_reason_when_debug_missing():
   assert mps.sensorConfidenceBlockReason == "missing"
 
 
+def test_default_signed_and_response_fields_are_nan_and_blocked():
+  mps = _new_model_path_state()
+  set_model_path_state_sensor_confidence(mps)
+
+  assert math.isnan(mps.sensorModelYawLatAccelSignedDelta)
+  assert math.isnan(mps.sensorSteeringYawLatAccelSignedDelta)
+  assert mps.sensorResponseClassification == "blocked"
+
+
 def test_populated_debug_maps_all_fields():
   mps = _new_model_path_state()
   debug = {
@@ -43,11 +52,14 @@ def test_populated_debug_maps_all_fields():
     "sensor_confidence_score": 0.72,
     "sensor_disagreement_level": "medium",
     "sensor_suppress_candidate": True,
+    "sensor_response_classification": "underresponse_candidate",
     "sensor_model_measured_curvature_delta": 0.002,
     "sensor_model_measured_lat_accel_delta": 0.8,
     "sensor_yaw_curvature": 0.001,
     "sensor_model_yaw_lat_accel_delta": 0.6,
     "sensor_steering_yaw_lat_accel_delta": 0.1,
+    "sensor_model_yaw_lat_accel_signed_delta": 0.6,
+    "sensor_steering_yaw_lat_accel_signed_delta": 0.1,
   }
   set_model_path_state_sensor_confidence(mps, debug)
 
@@ -56,11 +68,14 @@ def test_populated_debug_maps_all_fields():
   assert mps.sensorConfidenceScore == pytest.approx(0.72)
   assert mps.sensorDisagreementLevel == "medium"
   assert mps.sensorSuppressCandidate is True
+  assert mps.sensorResponseClassification == "underresponse_candidate"
   assert mps.sensorModelMeasuredCurvatureDelta == pytest.approx(0.002)
   assert mps.sensorModelMeasuredLatAccelDelta == pytest.approx(0.8)
   assert mps.sensorYawCurvature == pytest.approx(0.001)
   assert mps.sensorModelYawLatAccelDelta == pytest.approx(0.6)
   assert mps.sensorSteeringYawLatAccelDelta == pytest.approx(0.1)
+  assert mps.sensorModelYawLatAccelSignedDelta == pytest.approx(0.6)
+  assert mps.sensorSteeringYawLatAccelSignedDelta == pytest.approx(0.1)
 
 
 def test_partial_debug_fills_defaults_for_missing_keys():
@@ -72,3 +87,6 @@ def test_partial_debug_fills_defaults_for_missing_keys():
   assert mps.sensorConfidenceScore == 0.0
   assert mps.sensorDisagreementLevel == "blocked"
   assert mps.sensorSuppressCandidate is False
+  assert mps.sensorResponseClassification == "blocked"
+  assert math.isnan(mps.sensorModelYawLatAccelSignedDelta)
+  assert math.isnan(mps.sensorSteeringYawLatAccelSignedDelta)

@@ -266,6 +266,11 @@ def test_debug_trace_scenario_context_defaults_safely():
   assert msg.scenarioContext.allowedEffect == ''
   assert msg.scenarioContext.roadGrade == ''
   assert msg.scenarioContext.reason == ''
+  assert msg.scenarioContext.accelCoast == pytest.approx(0.0)
+  assert msg.scenarioContext.gradeConfidence == pytest.approx(0.0)
+  assert msg.scenarioContext.estimatedAccelBias == pytest.approx(0.0)
+  assert msg.scenarioContext.proposedCompensation == pytest.approx(0.0)
+  assert msg.scenarioContext.blockReason == ''
 
 
 def test_debug_trace_sanitizes_non_finite_values_without_throwing():

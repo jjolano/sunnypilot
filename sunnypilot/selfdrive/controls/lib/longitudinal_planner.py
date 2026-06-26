@@ -487,6 +487,11 @@ class LongitudinalPlannerSP:
     msg.currentEffect = str(debug.get(prefix + 'current_effect', 'none') or 'none')
     msg.roadGrade = str(debug.get(prefix + 'road_grade', '') or '')
     msg.reason = str(debug.get(prefix + 'reason', '') or '')
+    msg.accelCoast = self._safe_float(debug.get(prefix + 'accel_coast', 0.0))
+    msg.gradeConfidence = self._safe_float(debug.get(prefix + 'grade_confidence', 0.0))
+    msg.estimatedAccelBias = self._safe_float(debug.get(prefix + 'estimated_accel_bias', 0.0))
+    msg.proposedCompensation = self._safe_float(debug.get(prefix + 'proposed_compensation', 0.0))
+    msg.blockReason = str(debug.get(prefix + 'block_reason', '') or '')
 
   @staticmethod
   def _finite_float_or_none(value) -> float | None:

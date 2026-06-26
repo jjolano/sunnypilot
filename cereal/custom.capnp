@@ -335,6 +335,11 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       currentEffect @7 :Text;
       roadGrade @8 :Text;
       reason @9 :Text;
+      accelCoast @10 :Float32;
+      gradeConfidence @11 :Float32;
+      estimatedAccelBias @12 :Float32;
+      proposedCompensation @13 :Float32;
+      blockReason @14 :Text;
     }
 
     scenarioContext @23 :ScenarioContextTrace;

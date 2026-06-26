@@ -972,6 +972,9 @@ struct ControlsState @0x97ff69c53601abf1 {
     laneCenteringRelaxAge @35 :Float32;
     laneCenteringRelaxNudgeFlipScore @36 :Float32;
     laneCenteringRelaxErrorCrossScore @37 :Float32;
+    sensorModelYawLatAccelSignedDelta @38 :Float32;
+    sensorSteeringYawLatAccelSignedDelta @39 :Float32;
+    sensorResponseClassification @40 :Text;
   }
 
 

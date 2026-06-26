@@ -46,6 +46,9 @@ class SensorConfidenceResult:
   yaw_curvature: float
   model_yaw_lat_accel_delta: float
   steering_yaw_lat_accel_delta: float
+  model_yaw_lat_accel_signed_delta: float
+  steering_yaw_lat_accel_signed_delta: float
+  response_classification: str
   disagreement_level: str
   score: float
   suppress_candidate: bool
@@ -57,11 +60,14 @@ class SensorConfidenceResult:
       "sensor_confidence_score": self.score,
       "sensor_disagreement_level": self.disagreement_level,
       "sensor_suppress_candidate": self.suppress_candidate,
+      "sensor_response_classification": self.response_classification,
       "sensor_model_measured_curvature_delta": self.model_measured_curvature_delta,
       "sensor_model_measured_lat_accel_delta": self.model_measured_lat_accel_delta,
       "sensor_yaw_curvature": self.yaw_curvature,
       "sensor_model_yaw_lat_accel_delta": self.model_yaw_lat_accel_delta,
       "sensor_steering_yaw_lat_accel_delta": self.steering_yaw_lat_accel_delta,
+      "sensor_model_yaw_lat_accel_signed_delta": self.model_yaw_lat_accel_signed_delta,
+      "sensor_steering_yaw_lat_accel_signed_delta": self.steering_yaw_lat_accel_signed_delta,
     }
 
 
@@ -77,6 +83,8 @@ def evaluate_sensor_confidence(inputs: SensorConfidenceInputs) -> SensorConfiden
   yaw_curvature = yaw_rate / v_ego if yaw_rate is not None and v_ego is not None and v_ego >= LOW_SPEED_MIN_MPS else None
   model_yaw_lat_accel_delta = _lat_accel_delta(_abs_delta(model_curvature, yaw_curvature), v_ego)
   steering_yaw_lat_accel_delta = _lat_accel_delta(_abs_delta(measured_curvature, yaw_curvature), v_ego)
+  model_yaw_lat_accel_signed_delta = _signed_lat_accel_delta(model_curvature, yaw_curvature, v_ego)
+  steering_yaw_lat_accel_signed_delta = _signed_lat_accel_delta(measured_curvature, yaw_curvature, v_ego)
 
   block_reason = _block_reason(inputs, v_ego, model_curvature, measured_curvature, yaw_rate, steering_rate_deg)
   available = block_reason == "ok"
@@ -84,9 +92,11 @@ def evaluate_sensor_confidence(inputs: SensorConfidenceInputs) -> SensorConfiden
     _or_zero(model_measured_lat_accel_delta),
     _or_zero(model_yaw_lat_accel_delta),
   )
+  signed_model_yaw_delta = _or_zero(model_yaw_lat_accel_signed_delta)
   disagreement_level = _disagreement_level(observed_delta) if available else "blocked"
   score = max(0.0, min(1.0, 1.0 - observed_delta / HIGH_DISAGREEMENT_LAT_ACCEL_DELTA)) if available else 0.0
   suppress_candidate = bool(available and observed_delta >= SUPPRESS_CANDIDATE_LAT_ACCEL_DELTA)
+  response_classification = _response_classification(available, observed_delta, signed_model_yaw_delta, model_curvature)
 
   return SensorConfidenceResult(
     available=available,
@@ -96,6 +106,9 @@ def evaluate_sensor_confidence(inputs: SensorConfidenceInputs) -> SensorConfiden
     yaw_curvature=_or_nan(yaw_curvature),
     model_yaw_lat_accel_delta=_or_nan(model_yaw_lat_accel_delta),
     steering_yaw_lat_accel_delta=_or_nan(steering_yaw_lat_accel_delta),
+    model_yaw_lat_accel_signed_delta=_or_nan(model_yaw_lat_accel_signed_delta),
+    steering_yaw_lat_accel_signed_delta=_or_nan(steering_yaw_lat_accel_signed_delta),
+    response_classification=response_classification,
     disagreement_level=disagreement_level,
     score=float(score),
     suppress_candidate=suppress_candidate,
@@ -152,6 +165,29 @@ def _lat_accel_delta(curvature_delta: float | None, v_ego: float | None) -> floa
   if curvature_delta is None or v_ego is None:
     return None
   return curvature_delta * v_ego * v_ego
+
+
+def _signed_lat_accel_delta(a: float | None, b: float | None, v_ego: float | None) -> float | None:
+  if a is None or b is None or v_ego is None:
+    return None
+  return (a - b) * v_ego * v_ego
+
+
+def _response_classification(available: bool, observed_delta: float, signed_model_yaw_delta: float, model_curvature: float | None) -> str:
+  if not available:
+    return "blocked"
+  if observed_delta >= SUPPRESS_CANDIDATE_LAT_ACCEL_DELTA and abs(signed_model_yaw_delta) >= SUPPRESS_CANDIDATE_LAT_ACCEL_DELTA:
+    requested_direction = 1.0 if model_curvature is None or model_curvature >= 0.0 else -1.0
+    directional_delta = signed_model_yaw_delta * requested_direction
+    if directional_delta > 0:
+      return "underresponse_candidate"
+    if directional_delta < 0:
+      return "overresponse_candidate"
+  if observed_delta >= HIGH_DISAGREEMENT_LAT_ACCEL_DELTA:
+    return "high_disagreement"
+  if observed_delta >= MEDIUM_DISAGREEMENT_LAT_ACCEL_DELTA:
+    return "medium_disagreement"
+  return "low_disagreement"
 
 
 def _disagreement_level(lat_accel_delta: float) -> str:

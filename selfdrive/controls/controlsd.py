@@ -39,11 +39,14 @@ def set_model_path_state_sensor_confidence(model_path_state, debug: dict | None 
   model_path_state.sensorConfidenceScore = float(debug.get('sensor_confidence_score', 0.0))
   model_path_state.sensorDisagreementLevel = str(debug.get('sensor_disagreement_level', 'blocked'))
   model_path_state.sensorSuppressCandidate = bool(debug.get('sensor_suppress_candidate', False))
+  model_path_state.sensorResponseClassification = str(debug.get('sensor_response_classification', 'blocked'))
   model_path_state.sensorModelMeasuredCurvatureDelta = float(debug.get('sensor_model_measured_curvature_delta', float('nan')))
   model_path_state.sensorModelMeasuredLatAccelDelta = float(debug.get('sensor_model_measured_lat_accel_delta', float('nan')))
   model_path_state.sensorYawCurvature = float(debug.get('sensor_yaw_curvature', float('nan')))
   model_path_state.sensorModelYawLatAccelDelta = float(debug.get('sensor_model_yaw_lat_accel_delta', float('nan')))
   model_path_state.sensorSteeringYawLatAccelDelta = float(debug.get('sensor_steering_yaw_lat_accel_delta', float('nan')))
+  model_path_state.sensorModelYawLatAccelSignedDelta = float(debug.get('sensor_model_yaw_lat_accel_signed_delta', float('nan')))
+  model_path_state.sensorSteeringYawLatAccelSignedDelta = float(debug.get('sensor_steering_yaw_lat_accel_signed_delta', float('nan')))
 
 
 class Controls(ControlsExt):

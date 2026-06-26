@@ -189,6 +189,44 @@ def test_debug_dict_uses_prefix():
   assert all(k.startswith("scenario_context_") for k in d)
   assert d["scenario_context_scenario"] == "open_road"
   assert d["scenario_context_current_effect"] == "none"
+  assert "scenario_context_accel_coast" in d
+  assert "scenario_context_grade_confidence" in d
+  assert "scenario_context_estimated_accel_bias" in d
+  assert "scenario_context_proposed_compensation" in d
+  assert "scenario_context_block_reason" in d
+
+
+def test_grade_telemetry_on_uphill_open_road():
+  r = predict(mode=MODE_SHADOW, v_ego=20.0, accel_coast=-1.0)
+  assert r.road_grade == "uphill"
+  assert r.accel_coast == pytest.approx(-1.0)
+  assert r.estimated_accel_bias == pytest.approx(-0.7)
+  assert r.grade_confidence > 0.0
+  assert r.proposed_compensation == pytest.approx(0.15)
+  assert r.block_reason == "ok"
+
+
+def test_grade_telemetry_blocked_by_closing_lead():
+  r = predict(mode=MODE_SHADOW, leads=(lead(d_rel=22.0, v_rel=-3.0), None), accel_coast=-1.0)
+  assert r.scenario == "closing_lead"
+  assert r.proposed_compensation == 0.0
+  assert r.block_reason == "closing_lead"
+
+
+def test_grade_telemetry_flat_road_zero_compensation():
+  r = predict(mode=MODE_SHADOW, v_ego=20.0, accel_coast=-0.3)
+  assert r.road_grade == "flat"
+  assert r.estimated_accel_bias == pytest.approx(0.0)
+  assert r.grade_confidence == pytest.approx(0.0)
+  assert r.proposed_compensation == pytest.approx(0.0)
+
+
+def test_grade_telemetry_flat_grade_never_proposes_compensation():
+  r = predict(mode=MODE_SHADOW, v_ego=20.0, accel_coast=0.08)
+  assert r.road_grade == "flat"
+  assert r.grade_confidence > 0.0
+  assert r.proposed_compensation == pytest.approx(0.0)
+  assert r.block_reason == "ok"
 
 
 # --- Stack integration tests ---
