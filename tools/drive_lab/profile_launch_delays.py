@@ -16,6 +16,7 @@ Run:
   uv run python -m openpilot.tools.drive_lab.profile_launch_delays ROUTE
   uv run python -m openpilot.tools.drive_lab.profile_launch_delays ROUTE --json --output /tmp/x.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,11 +33,11 @@ from openpilot.tools.drive_lab.timeline import safe_get
 
 @dataclass(frozen=True)
 class LaunchParams:
-  speed_threshold: float = 5.0   # m/s; below this we may be approaching a stop
-  near_stop_speed: float = 2.0   # m/s; min speed must dip below this to count as a launch
-  recovery_delta: float = 0.5    # m/s; "recovered" once speed rises this far above the dip
-  recovery_max_s: float = 20.0   # give up looking for recovery after this long
-  match_window_s: float = 1.0    # how close (s) an enabled/lead sample must be to the dip time
+  speed_threshold: float = 5.0  # m/s; below this we may be approaching a stop
+  near_stop_speed: float = 2.0  # m/s; min speed must dip below this to count as a launch
+  recovery_delta: float = 0.5  # m/s; "recovered" once speed rises this far above the dip
+  recovery_max_s: float = 20.0  # give up looking for recovery after this long
+  match_window_s: float = 1.0  # how close (s) an enabled/lead sample must be to the dip time
   lead_d_rel_max: float = 199.0  # m; a lead counts as present only within this distance
 
 
@@ -49,6 +50,10 @@ class LaunchEvent:
   lead_move_time: float | None
   lead_wait_time: float | None
   reaction_time: float | None
+  planner_release_time: float | None
+  planner_release_delay: float | None
+  ego_start_time: float | None
+  ego_start_delay: float | None
   op_engaged: bool
   lead_present: bool
   lead_d_rel: float | None
@@ -65,6 +70,10 @@ class LaunchEvent:
       "lead_move_time": _r(self.lead_move_time, 3),
       "lead_wait_time": _r(self.lead_wait_time, 3),
       "reaction_time": _r(self.reaction_time, 3),
+      "planner_release_time": _r(self.planner_release_time, 3),
+      "planner_release_delay": _r(self.planner_release_delay, 3),
+      "ego_start_time": _r(self.ego_start_time, 3),
+      "ego_start_delay": _r(self.ego_start_delay, 3),
       "op_engaged": self.op_engaged,
       "lead_present": self.lead_present,
       "lead_d_rel": _r(self.lead_d_rel, 1),
@@ -86,6 +95,8 @@ class LaunchReport:
   op_lead_median_recovery_s: float | None
   op_nolead_median_recovery_s: float | None
   op_lead_median_reaction_s: float | None
+  op_lead_median_planner_release_s: float | None
+  op_lead_median_ego_start_s: float | None
   op_lead_median_accel: float | None
   op_nolead_median_accel: float | None
   events: list[LaunchEvent]
@@ -103,6 +114,8 @@ class LaunchReport:
       "op_lead_median_recovery_s": _r(self.op_lead_median_recovery_s, 3),
       "op_nolead_median_recovery_s": _r(self.op_nolead_median_recovery_s, 3),
       "op_lead_median_reaction_s": _r(self.op_lead_median_reaction_s, 3),
+      "op_lead_median_planner_release_s": _r(self.op_lead_median_planner_release_s, 3),
+      "op_lead_median_ego_start_s": _r(self.op_lead_median_ego_start_s, 3),
       "op_lead_median_accel": _r(self.op_lead_median_accel, 3),
       "op_nolead_median_accel": _r(self.op_nolead_median_accel, 3),
       "events": [event.to_dict() for event in self.events],
@@ -136,10 +149,11 @@ def _nearest(series: list[tuple[float, Any]], t: float, window_s: float) -> Any:
   return best
 
 
-def _collect(msgs: list[Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list, list]:
+def _collect(msgs: list[Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list, list, list]:
   cs_t, cs_v, cs_a = [], [], []
   radar: list[tuple[float, tuple[float, float, float, bool]]] = []
   enabled: list[tuple[float, bool]] = []
+  plan_sp: list[tuple[float, tuple[float, bool | None]]] = []
   for record in build_route_messages(msgs):
     typ, payload, t = record.typ, record.payload, record.t
     if typ == "carState":
@@ -149,28 +163,34 @@ def _collect(msgs: list[Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list,
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne")
       if lead is not None:
-        radar.append((t, (_f(safe_get(lead, "dRel")), _f(safe_get(lead, "vLead")),
-                          _f(safe_get(lead, "vRel")), bool(safe_get(lead, "status", False)))))
+        radar.append((t, (_f(safe_get(lead, "dRel")), _f(safe_get(lead, "vLead")), _f(safe_get(lead, "vRel")), bool(safe_get(lead, "status", False)))))
     elif typ == "selfdriveState":
       enabled.append((t, bool(safe_get(payload, "enabled", False))))
-  return np.array(cs_t), np.array(cs_v), np.array(cs_a), radar, enabled
+    elif typ == "longitudinalPlanSP":
+      should_stop = safe_get(payload, "customLongitudinal.shouldStop")
+      plan_sp.append((t, (_f(safe_get(payload, "aTarget")), bool(should_stop) if should_stop is not None else None)))
+  return np.array(cs_t), np.array(cs_v), np.array(cs_a), radar, enabled, plan_sp
 
 
-def _make_event(t, v, a, min_idx, rec_idx, radar, enabled, p) -> LaunchEvent:
+def _make_event(t, v, a, min_idx, rec_idx, radar, enabled, plan_sp, p) -> LaunchEvent:
   dip_t = float(t[min_idx])
   op_engaged = bool(_nearest(enabled, dip_t, p.match_window_s) or False)
   lead = _nearest(radar, dip_t, p.match_window_s)
   lead_present = bool(lead is not None and lead[3] and math.isfinite(lead[0]) and lead[0] < p.lead_d_rel_max)
-  accel_win = a[min_idx:rec_idx + 1]
+  accel_win = a[min_idx : rec_idx + 1]
   accel_win = accel_win[np.isfinite(accel_win)]
   positive = accel_win[accel_win > 0]
-  dt = np.diff(t[min_idx:rec_idx + 1])
-  da = np.diff(a[min_idx:rec_idx + 1])
+  dt = np.diff(t[min_idx : rec_idx + 1])
+  da = np.diff(a[min_idx : rec_idx + 1])
   jerk = np.abs(da / np.maximum(dt, 1e-3))
   jerk = jerk[np.isfinite(jerk)]
   lead_move_time = None
   lead_wait_time = None
   reaction_time = None
+  planner_release_time = None
+  planner_release_delay = None
+  ego_start_time = None
+  ego_start_delay = None
   prev_v_lead: float | None = None
   if lead_present:
     for st, (d_rel, v_lead, v_rel, status) in radar:
@@ -185,11 +205,24 @@ def _make_event(t, v, a, min_idx, rec_idx, radar, enabled, p) -> LaunchEvent:
         break
       prev_v_lead = float(v_lead)
   if lead_move_time is not None:
-    for st, v_ego, a_ego in zip(t[min_idx:rec_idx + 1], v[min_idx:rec_idx + 1], a[min_idx:rec_idx + 1]):
+    for st, v_ego, a_ego in zip(t[min_idx : rec_idx + 1], v[min_idx : rec_idx + 1], a[min_idx : rec_idx + 1], strict=True):
       if float(st) <= lead_move_time:
         continue
       if (math.isfinite(v_ego) and v_ego > float(v[min_idx]) + 0.1) or (math.isfinite(a_ego) and a_ego > 0.2):
-        reaction_time = float(st - lead_move_time)
+        ego_start_time = float(st)
+        ego_start_delay = float(st - lead_move_time)
+        reaction_time = ego_start_delay
+        break
+    rec_t = float(t[rec_idx])
+    for st, (a_target, should_stop) in plan_sp:
+      if st <= lead_move_time or st > rec_t:
+        continue
+      has_positive_target = math.isfinite(a_target) and a_target > 0.05
+      has_non_holding_target = math.isfinite(a_target) and a_target > -0.05
+      released = has_positive_target or (should_stop is False and has_non_holding_target)
+      if released:
+        planner_release_time = float(st)
+        planner_release_delay = float(st - lead_move_time)
         break
   return LaunchEvent(
     time=dip_t,
@@ -199,6 +232,10 @@ def _make_event(t, v, a, min_idx, rec_idx, radar, enabled, p) -> LaunchEvent:
     lead_move_time=lead_move_time,
     lead_wait_time=lead_wait_time,
     reaction_time=reaction_time,
+    planner_release_time=planner_release_time,
+    planner_release_delay=planner_release_delay,
+    ego_start_time=ego_start_time,
+    ego_start_delay=ego_start_delay,
     op_engaged=op_engaged,
     lead_present=lead_present,
     lead_d_rel=(float(lead[0]) if lead is not None and math.isfinite(lead[0]) else None),
@@ -210,11 +247,11 @@ def _make_event(t, v, a, min_idx, rec_idx, radar, enabled, p) -> LaunchEvent:
 
 def analyze_route(msgs: list[Any], source: str = "unknown", params: LaunchParams | None = None) -> LaunchReport:
   p = params or LaunchParams()
-  t, v, a, radar, enabled = _collect(msgs)
+  t, v, a, radar, enabled, plan_sp = _collect(msgs)
   notes: list[str] = []
   if t.size == 0:
     notes.append("no carState samples found (need rlogs with carState)")
-    return LaunchReport(source, 0.0, 0, 0, 0, 0, 0, None, None, None, None, None, [], notes)
+    return LaunchReport(source, 0.0, 0, 0, 0, 0, 0, None, None, None, None, None, None, None, [], notes)
 
   events: list[LaunchEvent] = []
   i, n = 0, len(v)
@@ -235,7 +272,7 @@ def analyze_route(msgs: list[Any], source: str = "unknown", params: LaunchParams
         break
       k += 1
     if rec_idx is not None and min_v < p.near_stop_speed:
-      events.append(_make_event(t, v, a, min_idx, rec_idx, radar, enabled, p))
+      events.append(_make_event(t, v, a, min_idx, rec_idx, radar, enabled, plan_sp, p))
     i = max(j, min_idx + 1)
 
   op = [e for e in events if e.op_engaged]
@@ -252,6 +289,8 @@ def analyze_route(msgs: list[Any], source: str = "unknown", params: LaunchParams
     op_lead_median_recovery_s=_opt_median([e.recovery_time for e in op_lead]),
     op_nolead_median_recovery_s=_opt_median([e.recovery_time for e in op_nolead]),
     op_lead_median_reaction_s=_opt_median([e.reaction_time for e in op_lead if e.reaction_time is not None]),
+    op_lead_median_planner_release_s=_opt_median([e.planner_release_delay for e in op_lead if e.planner_release_delay is not None]),
+    op_lead_median_ego_start_s=_opt_median([e.ego_start_delay for e in op_lead if e.ego_start_delay is not None]),
     op_lead_median_accel=_opt_median([e.accel_mean for e in op_lead]),
     op_nolead_median_accel=_opt_median([e.accel_mean for e in op_nolead]),
     events=sorted(op, key=lambda e: e.time),
@@ -266,19 +305,21 @@ def _opt_median(values: list[float]) -> float | None:
 def render_report(report: LaunchReport) -> str:
   lines = [
     f"Launch-delay profile: {report.source}",
-    (f"  duration {report.duration_s:.1f}s, {report.total_events} near-stop launches "
-     + f"({report.op_engaged_events} engaged: {report.op_lead_events} lead, {report.op_nolead_events} no-lead; "
-     + f"{report.manual_events} manual)"),
+    (
+      f"  duration {report.duration_s:.1f}s, {report.total_events} near-stop launches "
+      + f"({report.op_engaged_events} engaged: {report.op_lead_events} lead, {report.op_nolead_events} no-lead; "
+      + f"{report.manual_events} manual)"
+    ),
   ]
   if report.op_lead_events or report.op_nolead_events:
     lines += [
       "",
       "  engaged launch recovery (dip → +0.5 m/s):",
-      (f"    median recovery:  lead {_fmt(report.op_lead_median_recovery_s, 2)} s   "
-       + f"no-lead {_fmt(report.op_nolead_median_recovery_s, 2)} s"),
+      (f"    median recovery:  lead {_fmt(report.op_lead_median_recovery_s, 2)} s   " + f"no-lead {_fmt(report.op_nolead_median_recovery_s, 2)} s"),
       f"    median reaction:  lead {_fmt(report.op_lead_median_reaction_s, 2)} s",
-      (f"    median accel:     lead {_fmt(report.op_lead_median_accel, 3)} m/s^2   "
-       + f"no-lead {_fmt(report.op_nolead_median_accel, 3)} m/s^2"),
+      f"    median planner release: lead {_fmt(report.op_lead_median_planner_release_s, 2)} s",
+      f"    median ego start:       lead {_fmt(report.op_lead_median_ego_start_s, 2)} s",
+      (f"    median accel:     lead {_fmt(report.op_lead_median_accel, 3)} m/s^2   " + f"no-lead {_fmt(report.op_nolead_median_accel, 3)} m/s^2"),
     ]
   for note in report.notes:
     lines.append(f"  note: {note}")

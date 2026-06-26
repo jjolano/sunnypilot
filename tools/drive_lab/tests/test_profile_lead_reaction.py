@@ -13,8 +13,7 @@ def msg(kind, t_s, **payload):
 
 
 def _lead(status=True, dRel=10.0, vLead=5.0, vRel=0.0, aLeadK=0.0, radarTrackId=7, modelProb=0.9):
-  return SimpleNamespace(status=status, dRel=dRel, vLead=vLead, vLeadK=vLead, vRel=vRel,
-                         aLeadK=aLeadK, radarTrackId=radarTrackId, modelProb=modelProb)
+  return SimpleNamespace(status=status, dRel=dRel, vLead=vLead, vLeadK=vLead, vRel=vRel, aLeadK=aLeadK, radarTrackId=radarTrackId, modelProb=modelProb)
 
 
 def build_lead_decel_reaction(*, op_engaged: bool, reaction_delay_s: float):
@@ -111,6 +110,61 @@ def build_cut_in(*, op_engaged: bool, brake_delay_s: float):
   return msgs
 
 
+def build_cut_in_with_lead_id_churn(*, n_churn: int = 5):
+  """Repeated radar lead-id changes inside the cluster window should count as one cut-in."""
+  msgs = []
+  t = [0.0]
+
+  def emit(v, a, lead_status, lead_id=7, d_rel=15.0, v_rel=-2.0, a_target=0.0):
+    msgs.append(msg("carState", t[0], vEgo=v, aEgo=a, brakePressed=False, gasPressed=False))
+    msgs.append(msg("carControl", t[0] + 0.001, longActive=True))
+    msgs.append(msg("radarState", t[0] + 0.002, leadOne=_lead(status=lead_status, dRel=d_rel, vLead=v + v_rel, vRel=v_rel, radarTrackId=lead_id)))
+    msgs.append(msg("longitudinalPlanSP", t[0] + 0.003, aTarget=a_target))
+    t[0] += 0.1
+
+  # No lead
+  for _ in range(10):
+    emit(12.0, 0.0, False)
+
+  # Initial cut-in
+  emit(12.0, 0.0, True, lead_id=42, d_rel=15.0, v_rel=-2.0, a_target=0.0)
+
+  # Rapid lead-id churn inside the cluster window
+  for i in range(n_churn):
+    emit(12.0, 0.0, True, lead_id=100 + i, d_rel=15.0, v_rel=-2.0, a_target=0.0)
+
+  # Stable lead afterward
+  for _ in range(10):
+    emit(12.0, -0.5, True, lead_id=200, d_rel=15.0, v_rel=-2.0, a_target=-0.5)
+
+  return msgs
+
+
+def build_cut_in_already_braking(*, op_engaged: bool = True):
+  """Cut-in appears while the ego is already braking; should not count as a reaction event."""
+  msgs = []
+  t = [0.0]
+
+  def emit(v, a, lead_status, lead_id=7, d_rel=15.0, v_rel=-2.0, a_target=None):
+    msgs.append(msg("carState", t[0], vEgo=v, aEgo=a, brakePressed=False, gasPressed=False))
+    msgs.append(msg("carControl", t[0] + 0.001, longActive=op_engaged))
+    msgs.append(msg("radarState", t[0] + 0.002, leadOne=_lead(status=lead_status, dRel=d_rel, vLead=v + v_rel, vRel=v_rel, radarTrackId=lead_id)))
+    if op_engaged:
+      at = a_target if a_target is not None else a
+      msgs.append(msg("longitudinalPlanSP", t[0] + 0.003, aTarget=at))
+    t[0] += 0.1
+
+  # No lead, already braking
+  for _ in range(10):
+    emit(12.0, -0.5, False, a_target=-0.5)
+
+  # Cut-in appears while already braking
+  for _ in range(20):
+    emit(12.0, -0.5, True, lead_id=42, d_rel=15.0, v_rel=-2.0, a_target=-0.5)
+
+  return msgs
+
+
 def build_creep_while_braked():
   """brakePressed + vEgo > creep_speed should be counted as creep, not stopped."""
   msgs = []
@@ -180,6 +234,7 @@ def test_no_radar_returns_note():
 
 def test_report_json_serializable():
   import json
+
   report = analyze_route(build_lead_decel_reaction(op_engaged=True, reaction_delay_s=0.5), source="json")
   d = report.to_dict()
   json.dumps(d)  # must not raise
@@ -188,5 +243,47 @@ def test_report_json_serializable():
 def test_render_report_does_not_crash():
   report = analyze_route(build_lead_decel_reaction(op_engaged=True, reaction_delay_s=0.5), source="render")
   from openpilot.tools.drive_lab.profile_lead_reaction import render_report
+
   text = render_report(report)
   assert "Lead-reaction profile" in text
+
+
+def test_cut_in_lead_id_churn_clustered_to_one_event():
+  report = analyze_route(build_cut_in_with_lead_id_churn(n_churn=5), source="churn")
+  assert len(report.cut_ins) == 1
+  assert report.cut_ins[0].lead_id == 42
+  summary = report.to_dict()["summary"]
+  assert summary["op_cut_in_count"] == 1
+  assert summary["op_cut_in_valid_count"] == 1
+
+
+def test_cut_in_already_braking_excluded_from_valid_reaction():
+  report = analyze_route(build_cut_in_already_braking(op_engaged=True), source="already-braking")
+  assert len(report.cut_ins) == 1
+  event = report.cut_ins[0]
+  assert event.op_engaged
+  assert event.already_braking
+  assert not event.valid_reaction
+  assert event.brake_reaction_time is None
+
+  summary = report.to_dict()["summary"]
+  assert summary["op_cut_in_count"] == 1
+  assert summary["op_cut_in_valid_count"] == 0
+  assert summary["op_cut_in_already_braking_count"] == 1
+  assert summary["op_cut_in_brake_median_s"] is None
+  assert summary["op_cut_in_peak_decel_median"] is None
+
+
+def test_cut_in_immediate_response_not_classified_as_already_braking():
+  report = analyze_route(build_cut_in(op_engaged=True, brake_delay_s=0.0), source="immediate-cutin")
+  assert len(report.cut_ins) == 1
+  event = report.cut_ins[0]
+  assert event.op_engaged
+  assert not event.already_braking
+  assert event.valid_reaction
+  assert event.brake_reaction_time is not None
+  assert event.brake_reaction_time < 0.2
+
+  summary = report.to_dict()["summary"]
+  assert summary["op_cut_in_valid_count"] == 1
+  assert summary["op_cut_in_already_braking_count"] == 0
