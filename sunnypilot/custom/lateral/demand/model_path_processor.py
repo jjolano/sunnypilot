@@ -66,10 +66,10 @@ SMOOTHED_CURVATURE_MAX_RAW_LAT_ACCEL_DISAGREEMENT = 1.25
 DAMPING_TAU_SPEED_BP = [5.0, 15.0, 30.0]
 DAMPING_TAU_S = [0.16, 0.10, 0.055]
 
-# Experimental, default-off pre-governor demand smoothing. This is intentionally narrow: only
-# high-confidence, near-straight, no-lane-change frames get curvature rate limiting, and the output
-# is bounded close to the current damped target in lateral-accel units so it cannot hold stale turn
-# demand through a real curve entry/exit.
+# Experimental, default-off pre-governor demand smoothing. This is intentionally narrow:
+# high-confidence, near-straight frames get curvature rate limiting, and clean curve exits
+# get a raw-reference-bounded stale-demand guard. The output is bounded in lateral-accel
+# units so it cannot hold stale turn demand through a real curve entry/exit.
 DEMAND_JERK_SMOOTH_MIN_SPEED = 8.0
 DEMAND_JERK_SMOOTH_MAX_SPEED = 22.0
 DEMAND_JERK_SMOOTH_MIN_QUALITY = 0.95
@@ -80,6 +80,18 @@ DEMAND_JERK_SMOOTH_MAX_PATH_DISAGREEMENT = 0.35
 DEMAND_JERK_SMOOTH_MAX_CURVATURE = 0.0012
 DEMAND_JERK_SMOOTH_MAX_LAT_ACCEL = 0.35
 DEMAND_JERK_SMOOTH_LAG_LAT_ACCEL = 0.08
+# Conservative cap for the optional curve-exit guard.  Keeps the guard well below the
+# lateral accel range where overresponse/reversal events have been observed.
+DEMAND_JERK_SMOOTH_CURVE_EXIT_MAX_LAT_ACCEL = 1.0  # m/s^2
+# The guard must see sustained raw/reference curvature magnitude falls before it can
+# activate.  A fall frame counts only when the current raw magnitude has dropped by at
+# least this lateral-accel delta versus the previous frame (same sign, or current raw
+# is already near zero).
+DEMAND_JERK_SMOOTH_CURVE_EXIT_FALL_MIN_LAT_ACCEL_DELTA = 0.03  # m/s^2
+DEMAND_JERK_SMOOTH_CURVE_EXIT_FALL_MIN_FRAMES = 2
+# For opposite-sign handling, "near zero" is a lateral-accel threshold, not curvature,
+# so high-speed shallow curvature is still treated as a meaningful crossing.
+DEMAND_JERK_SMOOTH_CURVE_EXIT_NEAR_ZERO_LAT_ACCEL = 0.08  # m/s^2
 DEMAND_JERK_SMOOTH_SPEED_BP = [8.0, 15.0, 22.0]
 DEMAND_JERK_SMOOTH_MAX_LAT_JERK = [1.0, 1.4, 1.8]
 
@@ -168,6 +180,8 @@ class ModelPathProcessor:
     self._demand_jerk_smoothing_active = False
     self._last_demand_jerk_smoothing_step = 0.0
     self._last_demand_jerk_smoothing_lag = 0.0
+    self._curve_exit_prev_raw_base: float | None = None
+    self._curve_exit_fall_frames: int = 0
     self._prev_temporal_soft_boundary = False
 
   def update(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult:
@@ -189,6 +203,7 @@ class ModelPathProcessor:
       self._recovering_from_hard_invalid = False
       self._low_lane_confidence_frames = 0
       self._clear_retained_curve()
+      self._reset_curve_exit_history()
       hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature", 0, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
@@ -196,6 +211,7 @@ class ModelPathProcessor:
       self._recovering_from_hard_invalid = False
       self._low_lane_confidence_frames = 0
       self._clear_retained_curve()
+      self._reset_curve_exit_history()
       self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
       self._apply_temporal_soft_boundary(True)
       fallback_curvature = self._hard_invalid_fallback_curvature(
@@ -216,6 +232,7 @@ class ModelPathProcessor:
     if not self._valid_core_path(inputs.position_x, inputs.position_y):
       self._recovering_from_hard_invalid = True
       self._low_lane_confidence_frames = 0
+      self._reset_curve_exit_history()
       self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
       fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
       retained_fallback = self._retained_curve_fallback(inputs, float(inputs.desired_curvature), fallback_curvature)
@@ -238,6 +255,7 @@ class ModelPathProcessor:
 
     if inputs.turn_curvature_sign != 0 and desired_curvature * inputs.turn_curvature_sign < 0.0:
       self._recovering_from_hard_invalid = False
+      self._reset_curve_exit_history()
       turn_fallback_curvature = self._turn_compatible_fallback_curvature(
         inputs.previous_desired_curvature,
         inputs.measured_curvature,
@@ -284,6 +302,7 @@ class ModelPathProcessor:
     jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
     if jump_result is not None:
       self._recovering_from_hard_invalid = False
+      self._reset_curve_exit_history()
       return replace(jump_result, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
     self._refresh_retained_curve(inputs, desired_curvature, quality, reason, path_disagreement)
@@ -316,6 +335,7 @@ class ModelPathProcessor:
           inputs.v_ego,
           SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA,
         )
+      self._reset_curve_exit_history()
       return ModelPathProcessorResult(
         desired_curvature, quality, True, reason, hold_frames_remaining, trust_penalty=self._trust_penalty,
         straight_road_damping_active=self._straight_road_damping_active,
@@ -362,6 +382,7 @@ class ModelPathProcessor:
     jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
     if jump_result is not None:
       self._recovering_from_hard_invalid = False
+      self._reset_curve_exit_history()
       return ModelPathProcessorResult(
         jump_result.desired_curvature,
         jump_result.quality,
@@ -381,6 +402,7 @@ class ModelPathProcessor:
 
     recovery_result = self._limit_hard_invalid_recovery(inputs, desired_curvature)
     if recovery_result is not None:
+      self._reset_curve_exit_history()
       return replace(
         recovery_result,
         smoothing_tau_s=tau_s,
@@ -429,31 +451,71 @@ class ModelPathProcessor:
     max_step = max_lat_jerk * DT_CTRL / (v_ego * v_ego)
     lag_limit = DEMAND_JERK_SMOOTH_LAG_LAT_ACCEL / (v_ego * v_ego)
 
+    max_abs = max(abs(raw_base), abs(target))
+    near_straight = (max_abs <= DEMAND_JERK_SMOOTH_MAX_CURVATURE and
+                     max_abs * v_ego * v_ego <= DEMAND_JERK_SMOOTH_MAX_LAT_ACCEL)
+    curve_exit = (not near_straight and
+                  self._curve_exit_smoothing_eligible(raw_base, target, v_ego))
+
+    # In curve exit the current raw/reference curvature has already fallen; the stale
+    # damped target is the authority we would otherwise follow.  Clamp that stale
+    # target to within lag_limit of the current raw reference so tracking stays honest.
+    if curve_exit:
+      effective_target = float(np.clip(target, raw_base - lag_limit, raw_base + lag_limit))
+    else:
+      effective_target = float(target)
+
     if self._demand_jerk_smoothed_curvature is None or not math.isfinite(self._demand_jerk_smoothed_curvature):
-      self._demand_jerk_smoothed_curvature = float(target)
-      self._demand_jerk_smoothing_active = False
-      return float(target), False, max_step, 0.0
+      self._demand_jerk_smoothed_curvature = effective_target
+      active = abs(effective_target - float(target)) > 1e-9
+      self._demand_jerk_smoothing_active = active
+      return effective_target, active, max_step, abs(effective_target - float(target))
 
     prev = float(self._demand_jerk_smoothed_curvature)
-    delta = float(target) - prev
+    delta = effective_target - prev
     if abs(delta) <= max_step:
-      candidate = float(target)
+      candidate = effective_target
     else:
       candidate = prev + math.copysign(max_step, delta)
 
-    lag = candidate - float(target)
-    if abs(lag) > lag_limit:
-      candidate = float(target) + math.copysign(lag_limit, lag)
-      lag = candidate - float(target)
+    candidate = self._clamp_demand_jerk_candidate(
+      prev, candidate, effective_target, float(raw_base), lag_limit,
+      raw_cap_active=curve_exit,
+    )
 
+    lag = candidate - float(target)
     self._demand_jerk_smoothed_curvature = candidate
-    active = abs(candidate - float(target)) > 1e-9
+    active = abs(lag) > 1e-9 or (curve_exit and abs(candidate - float(raw_base)) > 1e-9)
     self._demand_jerk_smoothing_active = active
     self._last_demand_jerk_smoothing_step = max_step
     self._last_demand_jerk_smoothing_lag = abs(lag)
     return candidate, active, max_step, abs(lag)
 
   def _demand_jerk_smoothing_eligible(
+    self,
+    inputs: ModelPathProcessorInputs,
+    raw_base: float,
+    target: float,
+    quality: float,
+    reason: str,
+    path_disagreement: float | None,
+  ) -> bool:
+    gates_ok = self._demand_jerk_smoothing_gates_ok(
+      inputs, raw_base, target, quality, reason, path_disagreement
+    )
+    if not gates_ok:
+      self._reset_curve_exit_history()
+      return False
+
+    v_ego = float(inputs.v_ego)
+    self._update_curve_exit_fall_history(raw_base, v_ego)
+
+    max_abs = max(abs(raw_base), abs(target))
+    if max_abs <= DEMAND_JERK_SMOOTH_MAX_CURVATURE and max_abs * v_ego * v_ego <= DEMAND_JERK_SMOOTH_MAX_LAT_ACCEL:
+      return True
+    return self._curve_exit_smoothing_eligible(raw_base, target, v_ego)
+
+  def _demand_jerk_smoothing_gates_ok(
     self,
     inputs: ModelPathProcessorInputs,
     raw_base: float,
@@ -483,9 +545,70 @@ class ModelPathProcessor:
       return False
     if not self._path_y_std_ok(inputs.position_y_std):
       return False
-    if max(abs(raw_base), abs(target)) > DEMAND_JERK_SMOOTH_MAX_CURVATURE:
+    return True
+
+  @staticmethod
+  def _clamp_demand_jerk_candidate(
+    prev: float,
+    candidate: float,
+    target: float,
+    raw_base: float,
+    lag_limit: float,
+    raw_cap_active: bool,
+  ) -> float:
+    """Clamp jerk-limited candidate to stay within lag_limit of target, preserving
+    monotonic movement toward target. When raw_cap_active is True (curve-exit guard),
+    the candidate is also clamped to stay within lag_limit of raw_base; if that raw
+    cap conflicts with the target/monotonic bounds, the raw cap wins so tracking
+    accuracy is not sacrificed.
+    """
+    mono_lo = min(prev, target)
+    mono_hi = max(prev, target)
+    target_lo = target - lag_limit
+    target_hi = target + lag_limit
+
+    lo = max(mono_lo, target_lo)
+    hi = min(mono_hi, target_hi)
+
+    if raw_cap_active:
+      raw_lo = raw_base - lag_limit
+      raw_hi = raw_base + lag_limit
+      lo2 = max(lo, raw_lo)
+      hi2 = min(hi, raw_hi)
+      if lo2 <= hi2:
+        lo, hi = lo2, hi2
+      else:
+        # Raw cap and target/monotonic bounds conflict: raw reference cap wins.
+        lo, hi = raw_lo, raw_hi
+
+    if candidate < lo:
+      return lo
+    if candidate > hi:
+      return hi
+    return candidate
+
+  def _curve_exit_smoothing_eligible(self, raw_base: float, target: float, v_ego: float) -> bool:
+    """Narrow curve-exit eligibility: the current raw/reference curvature magnitude has
+    already fallen below the stale damped target for a sustained number of frames.  The
+    unwind must stay same-sign (or the current raw reference lateral accel is already
+    near zero), and the peak stale demand must sit inside a conservative lateral-accel
+    cap.
+    """
+    if not math.isfinite(raw_base) or not math.isfinite(target) or not math.isfinite(v_ego):
       return False
-    if max(abs(raw_base), abs(target)) * v_ego * v_ego > DEMAND_JERK_SMOOTH_MAX_LAT_ACCEL:
+    if v_ego < 1.0:
+      return False
+    # Curve exit: raw/reference has fallen, damped target is the stale high value.
+    if abs(raw_base) >= abs(target):
+      return False
+    curr_lat_accel = abs(raw_base) * v_ego * v_ego
+    near_zero = curr_lat_accel <= DEMAND_JERK_SMOOTH_CURVE_EXIT_NEAR_ZERO_LAT_ACCEL
+    if raw_base * target < 0.0 and not near_zero:
+      # Current reference has crossed into a meaningful opposite-sign curve: do not smooth.
+      return False
+    if max(abs(raw_base), abs(target)) * v_ego * v_ego > DEMAND_JERK_SMOOTH_CURVE_EXIT_MAX_LAT_ACCEL:
+      return False
+    if self._curve_exit_fall_frames < DEMAND_JERK_SMOOTH_CURVE_EXIT_FALL_MIN_FRAMES:
       return False
     return True
 
@@ -494,6 +617,31 @@ class ModelPathProcessor:
     self._demand_jerk_smoothing_active = False
     self._last_demand_jerk_smoothing_step = 0.0
     self._last_demand_jerk_smoothing_lag = 0.0
+
+  def _reset_curve_exit_history(self) -> None:
+    self._curve_exit_prev_raw_base = None
+    self._curve_exit_fall_frames = 0
+
+  def _update_curve_exit_fall_history(self, raw_base: float, v_ego: float) -> None:
+    """Track sustained raw/reference curvature magnitude falls.  A frame counts as a
+    fall only if the current raw magnitude dropped by at least the configured lateral
+    accel delta versus the previous frame while staying same-sign (or the current raw
+    lateral accel is already near zero).
+    """
+    speed_sq = max(v_ego, 1.0) ** 2
+    prev_raw = self._curve_exit_prev_raw_base
+    if prev_raw is None or not math.isfinite(prev_raw):
+      self._curve_exit_fall_frames = 0
+    else:
+      prev_lat_accel = abs(prev_raw) * speed_sq
+      curr_lat_accel = abs(raw_base) * speed_sq
+      same_sign = raw_base * prev_raw >= 0.0
+      near_zero = curr_lat_accel <= DEMAND_JERK_SMOOTH_CURVE_EXIT_NEAR_ZERO_LAT_ACCEL
+      if (same_sign or near_zero) and curr_lat_accel + DEMAND_JERK_SMOOTH_CURVE_EXIT_FALL_MIN_LAT_ACCEL_DELTA <= prev_lat_accel:
+        self._curve_exit_fall_frames = min(self._curve_exit_fall_frames + 1, DEMAND_JERK_SMOOTH_CURVE_EXIT_FALL_MIN_FRAMES)
+      else:
+        self._curve_exit_fall_frames = 0
+    self._curve_exit_prev_raw_base = float(raw_base)
 
   def _reset_temporal_curvature_smoothing(self) -> None:
     self._temporal_smoothed_curvature = None

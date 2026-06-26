@@ -25,6 +25,11 @@ from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   SMOOTHED_CURVATURE_MAX_LAT_ACCEL_DELTA,
   SMOOTHED_CURVATURE_SPEED_BP,
   SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA,
+  DEMAND_JERK_SMOOTH_CURVE_EXIT_FALL_MIN_FRAMES,
+  DEMAND_JERK_SMOOTH_CURVE_EXIT_MAX_LAT_ACCEL,
+  DEMAND_JERK_SMOOTH_CURVE_EXIT_NEAR_ZERO_LAT_ACCEL,
+  DEMAND_JERK_SMOOTH_LAG_LAT_ACCEL,
+  DEMAND_JERK_SMOOTH_MAX_CURVATURE,
   ModelPathProcessor,
   ModelPathProcessorInputs,
 )
@@ -125,6 +130,33 @@ def temporal_smoothing_inputs(
     orientation_rate_z=[float(desired_curvature * v_ego)] * n,
     lane_line_probs=lane_line_probs,
     smooth_model_path_curvature=True,
+  )
+
+
+def _mpp_inputs(v_ego: float = 15.0, curvature: float = 0.001, **kwargs) -> ModelPathProcessorInputs:
+  t_idxs = ModelConstants.T_IDXS
+  n = len(t_idxs)
+  v = kwargs.get("v_ego", v_ego)
+  k = kwargs.get("desired_curvature", curvature)
+  return ModelPathProcessorInputs(
+    lat_active=True,
+    v_ego=v,
+    desired_curvature=k,
+    measured_curvature=kwargs.get("measured_curvature", k),
+    previous_desired_curvature=kwargs.get("previous_desired_curvature", k),
+    position_x=kwargs.get("position_x", [float(x) for x in range(n)]),
+    position_y=kwargs.get("position_y", [0.0] * n),
+    position_y_std=kwargs.get("position_y_std", [0.1] * n),
+    orientation_z=kwargs.get("orientation_z", [float(k * v * t) for t in t_idxs]),
+    orientation_rate_z=kwargs.get("orientation_rate_z", [float(k * v)] * n),
+    lane_line_probs=kwargs.get("lane_line_probs", [0.9, 0.9, 0.9, 0.9]),
+    frame_drop_perc=kwargs.get("frame_drop_perc", 0.0),
+    model_age_s=kwargs.get("model_age_s", 0.0),
+    turn_curvature_sign=kwargs.get("turn_curvature_sign", 0),
+    smooth_model_path_curvature=kwargs.get("smooth_model_path_curvature", True),
+    demand_jerk_smoothing_enabled=kwargs.get("demand_jerk_smoothing_enabled", True),
+    demand_jerk_smoothing_allowed=kwargs.get("demand_jerk_smoothing_allowed", True),
+    lane_change_active=kwargs.get("lane_change_active", False),
   )
 
 
@@ -377,6 +409,179 @@ def test_demand_jerk_smoothing_bypasses_when_driver_state_unknown():
                             demand_jerk_smoothing_enabled=True, steering_pressed=None))
 
   assert r.debug["demand_jerk_smoothing_active"] is False
+
+
+def _prime_curve_exit_fall(proc: ModelPathProcessor, raw_base: float, delta: float = 0.0005) -> None:
+  """Set history so that one more valid falling frame satisfies the sustained-fall requirement."""
+  proc._curve_exit_prev_raw_base = raw_base + math.copysign(delta, raw_base)
+  proc._curve_exit_fall_frames = DEMAND_JERK_SMOOTH_CURVE_EXIT_FALL_MIN_FRAMES - 1
+
+
+@pytest.mark.parametrize("v_ego,raw_base,target", [
+  (15.0, 0.0015, 0.0025),
+  (15.0, -0.0015, -0.0025),
+])
+def test_curve_exit_smoothing_activates_falling_and_bounds_raw_lag(v_ego, raw_base, target):
+  proc = ModelPathProcessor()
+  inputs = _mpp_inputs(v_ego=v_ego)
+  v_sq = v_ego * v_ego
+  assert abs(target) > DEMAND_JERK_SMOOTH_MAX_CURVATURE
+  assert abs(raw_base) < abs(target)
+  assert max(abs(raw_base), abs(target)) * v_sq <= DEMAND_JERK_SMOOTH_CURVE_EXIT_MAX_LAT_ACCEL
+
+  _prime_curve_exit_fall(proc, raw_base=raw_base)
+  proc._demand_jerk_smoothed_curvature = target
+  candidate, active, step, lag = proc._apply_demand_jerk_smoothing(
+    inputs, raw_base, target, 1.0, "ok", 0.0
+  )
+  assert active is True
+  assert abs(candidate - raw_base) * v_sq <= DEMAND_JERK_SMOOTH_LAG_LAT_ACCEL + 1e-9
+  assert abs(candidate) <= max(abs(raw_base), abs(target))
+
+
+def test_curve_entry_smoothing_inactive_above_near_straight():
+  proc = ModelPathProcessor()
+  inputs = _mpp_inputs(v_ego=15.0)
+  # Curve-entry shape: raw has risen above the still-low damped target.
+  raw_base = 0.0025
+  target = 0.0015
+  _prime_curve_exit_fall(proc, raw_base=raw_base)
+  proc._demand_jerk_smoothed_curvature = target
+  candidate, active, step, lag = proc._apply_demand_jerk_smoothing(
+    inputs, raw_base, target, 1.0, "ok", 0.0
+  )
+  assert active is False
+  assert candidate == pytest.approx(target)
+
+
+@pytest.mark.parametrize("raw_base,target", [
+  (0.0020, -0.0025),
+  (-0.0020, 0.0025),
+])
+def test_curve_exit_opposite_sign_not_smoothed(raw_base, target):
+  proc = ModelPathProcessor()
+  inputs = _mpp_inputs(v_ego=15.0)
+  # raw_base is below the curvature threshold but represents meaningful lateral accel.
+  assert abs(raw_base) * (15.0 ** 2) > DEMAND_JERK_SMOOTH_CURVE_EXIT_NEAR_ZERO_LAT_ACCEL
+  _prime_curve_exit_fall(proc, raw_base=raw_base)
+  proc._demand_jerk_smoothed_curvature = target
+  candidate, active, step, lag = proc._apply_demand_jerk_smoothing(
+    inputs, raw_base, target, 1.0, "ok", 0.0
+  )
+  assert active is False
+  assert candidate == pytest.approx(target)
+
+
+@pytest.mark.parametrize("gate", [
+  {"lane_change_active": True},
+  {"demand_jerk_smoothing_allowed": False},
+  {"turn_curvature_sign": 1},
+])
+def test_curve_exit_blocked_by_lane_change_or_steering_gate(gate):
+  proc = ModelPathProcessor()
+  inputs = _mpp_inputs(v_ego=15.0, **gate)
+  raw_base = 0.0015
+  target = 0.0025
+  _prime_curve_exit_fall(proc, raw_base=raw_base)
+  proc._demand_jerk_smoothed_curvature = target
+  candidate, active, step, lag = proc._apply_demand_jerk_smoothing(
+    inputs, raw_base, target, 1.0, "ok", 0.0
+  )
+  assert active is False
+  assert candidate == pytest.approx(target)
+
+
+def test_curve_exit_raw_reference_cap_wins_over_stale_smoothed():
+  proc = ModelPathProcessor()
+  inputs = _mpp_inputs(v_ego=15.0)
+  raw_base = 0.0010
+  target = 0.0025
+  stale_high = 0.0030
+  v_sq = 15.0 * 15.0
+  assert max(abs(stale_high), abs(target)) * v_sq <= DEMAND_JERK_SMOOTH_CURVE_EXIT_MAX_LAT_ACCEL
+
+  _prime_curve_exit_fall(proc, raw_base=raw_base)
+  proc._demand_jerk_smoothed_curvature = stale_high
+  candidate, active, step, lag = proc._apply_demand_jerk_smoothing(
+    inputs, raw_base, target, 1.0, "ok", 0.0
+  )
+  assert active is True
+  raw_lag_limit = DEMAND_JERK_SMOOTH_LAG_LAT_ACCEL / v_sq
+  assert abs(candidate - raw_base) <= raw_lag_limit + 1e-9
+  assert abs(candidate) <= abs(stale_high)
+
+
+def test_curve_exit_steady_curve_no_guard():
+  proc = ModelPathProcessor()
+  inputs = _mpp_inputs(v_ego=15.0)
+  raw_base = 0.0015
+  target = 0.0025
+  # No sustained fall history: raw is below target but not recently falling.
+  proc._curve_exit_prev_raw_base = raw_base
+  proc._curve_exit_fall_frames = 0
+  proc._demand_jerk_smoothed_curvature = target
+  candidate, active, step, lag = proc._apply_demand_jerk_smoothing(
+    inputs, raw_base, target, 1.0, "ok", 0.0
+  )
+  assert active is False
+  assert candidate == pytest.approx(target)
+
+
+def test_curve_exit_one_frame_dip_no_guard():
+  proc = ModelPathProcessor()
+  inputs = _mpp_inputs(v_ego=15.0)
+  raw_base = 0.0015
+  target = 0.0025
+  # Only a single-frame dip from the previous raw magnitude; history should count one
+  # fall and therefore not yet satisfy the sustained-fall requirement.
+  proc._curve_exit_prev_raw_base = raw_base + 0.0005
+  proc._curve_exit_fall_frames = 0
+  proc._demand_jerk_smoothed_curvature = target
+  candidate, active, step, lag = proc._apply_demand_jerk_smoothing(
+    inputs, raw_base, target, 1.0, "ok", 0.0
+  )
+  assert active is False
+
+
+def test_curve_exit_high_speed_shallow_opposite_sign_no_guard():
+  proc = ModelPathProcessor()
+  v_ego = 22.0
+  inputs = _mpp_inputs(v_ego=v_ego)
+  raw_base = 0.0005  # below curvature threshold but meaningful lateral accel at high speed
+  target = -0.0020
+  v_sq = v_ego ** 2
+  # Curvature is shallow but lateral accel is well above the near-zero threshold.
+  assert abs(raw_base) < DEMAND_JERK_SMOOTH_MAX_CURVATURE
+  assert abs(raw_base) * v_sq > DEMAND_JERK_SMOOTH_CURVE_EXIT_NEAR_ZERO_LAT_ACCEL
+  _prime_curve_exit_fall(proc, raw_base=raw_base)
+  proc._demand_jerk_smoothed_curvature = target
+  candidate, active, step, lag = proc._apply_demand_jerk_smoothing(
+    inputs, raw_base, target, 1.0, "ok", 0.0
+  )
+  assert active is False
+  assert candidate == pytest.approx(target)
+
+
+def test_curve_exit_guard_activates_through_pipeline():
+  p = LateralDemandPipeline(DT)
+  v_ego = 15.0
+  v_sq = v_ego * v_ego
+  sequence = [0.003] * 10 + [0.0025, 0.0020, 0.0016, 0.0012, 0.0008, 0.0004]
+  active_above_ns = False
+  lag_violations = 0
+
+  for k in sequence:
+    r = p.update(valid_inputs(v_ego=v_ego, curvature=k, smooth_model_path_curvature=True,
+                              demand_jerk_smoothing_enabled=True, steering_pressed=False))
+    raw_k = float(r.debug["raw_curvature"])
+    if r.debug["demand_jerk_smoothing_active"] and abs(raw_k) > DEMAND_JERK_SMOOTH_MAX_CURVATURE:
+      active_above_ns = True
+      raw_lag_lat_accel = abs(r.demand.processed_curvature - raw_k) * v_sq
+      if raw_lag_lat_accel > DEMAND_JERK_SMOOTH_LAG_LAT_ACCEL + 1e-9:
+        lag_violations += 1
+
+  assert active_above_ns is True
+  assert lag_violations == 0
 
 
 def test_spatial_smoothing_blend_is_bounded_by_quality_and_trust():
