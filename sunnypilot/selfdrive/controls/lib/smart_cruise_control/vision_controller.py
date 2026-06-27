@@ -11,6 +11,7 @@ from cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
@@ -23,6 +24,8 @@ _ENTERING_PRED_LAT_ACC_TH = 1.3  # Predicted Lat Acc threshold to trigger enteri
 _ABORT_ENTERING_PRED_LAT_ACC_TH = 1.1  # Predicted Lat Acc threshold to abort entering state if speed drops.
 
 _TURNING_LAT_ACC_TH = 1.6  # Lat Acc threshold to trigger turning state.
+
+_CURRENT_LAT_ACC_BLEED_TH = 2.8  # High current lateral acceleration forces turning even if prediction is weak.
 
 _LEAVING_LAT_ACC_TH = 1.3  # Lat Acc threshold to trigger leaving turn state.
 _FINISH_LAT_ACC_TH = 1.1  # Lat Acc threshold to trigger the end of the turn cycle.
@@ -73,6 +76,9 @@ class SmartCruiseControlVision:
     self._prev_max_pred_lat_acc = 0.
     self.pre_entry_frames = 0
     self.pre_entry_active = False
+    self._required_decel = 0.
+    self._t_risk = 0.
+    self._current_curvature = 0.
 
   def get_a_target_from_control(self) -> float:
     return self.a_target
@@ -81,13 +87,28 @@ class SmartCruiseControlVision:
     self.max_pred_lat_acc = 0.
     self.current_lat_acc = 0.
     self.v_target = 0.
+    self._required_decel = 0.
+    self._t_risk = 0.
+    self._current_curvature = 0.
     self.pre_entry_frames = 0
     self.pre_entry_active = False
     self.state = VisionState.enabled if self.long_enabled and self.enabled else VisionState.disabled
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
-      v = max(self.v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
+      if self.state == VisionState.leaving and self.max_pred_lat_acc < _ENTERING_PRED_LAT_ACC_TH:
+        return V_CRUISE_UNSET
+
+      if self.state == VisionState.turning:
+        # When already in the turn, derive the target speed from the actual current curve
+        # rather than a potentially stale or prediction-weak v_target.
+        current_curvature = max(self._current_curvature, _EPS)
+        v_target = float((_A_LAT_REG_MAX / current_curvature) ** 0.5)
+      else:
+        v_target = self.v_target
+      if not np.isfinite(v_target):
+        v_target = 0.
+      v = max(v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
       if not np.isfinite(v):
         return MIN_V
       return max(v, MIN_V)
@@ -99,76 +120,123 @@ class SmartCruiseControlVision:
       self.enabled = self.params.get_bool("SmartCruiseControlVision")
 
   def _update_calculations(self, sm: messaging.SubMaster) -> None:
+    self._required_decel = 0.
+    self._t_risk = float(ModelConstants.T_IDXS[-1])
+
     if not self.long_enabled:
       self.pre_entry_frames = 0
       self.pre_entry_active = False
       return
-    else:
-      try:
-        rate_plan = np.asarray(np.abs(sm['modelV2'].orientationRate.z), dtype=np.float64)
-        vel_plan = np.asarray(sm['modelV2'].velocity.x, dtype=np.float64)
-      except Exception:
-        self._fail_closed()
-        return
 
-      if rate_plan.size == 0 or vel_plan.size == 0 or rate_plan.shape != vel_plan.shape:
-        self._fail_closed()
-        return
+    try:
+      rate_plan = np.asarray(sm['modelV2'].orientationRate.z, dtype=np.float64)
+      vel_plan = np.asarray(sm['modelV2'].velocity.x, dtype=np.float64)
+    except Exception:
+      self._fail_closed()
+      return
 
-      if not np.isfinite(self.v_ego) or not np.isfinite(self.a_ego):
-        self._fail_closed()
-        return
+    # Fail closed unless model arrays are 1D, same length as the horizon, non-empty, and finite.
+    if (rate_plan.ndim != 1 or vel_plan.ndim != 1 or
+        rate_plan.size == 0 or rate_plan.shape != vel_plan.shape or
+        rate_plan.shape[0] != len(ModelConstants.T_IDXS)):
+      self._fail_closed()
+      return
 
-      curvature = sm['controlsState'].curvature
-      if not np.isfinite(curvature):
-        self._fail_closed()
-        return
+    if not np.isfinite(self.v_ego) or not np.isfinite(self.a_ego):
+      self._fail_closed()
+      return
 
-      self.current_lat_acc = self.v_ego ** 2 * abs(curvature)
-      if not np.isfinite(self.current_lat_acc):
-        self._fail_closed()
-        return
+    curvature = sm['controlsState'].curvature
+    if not np.isfinite(curvature):
+      self._fail_closed()
+      return
 
-      # get the maximum lat accel from the model
-      rate_plan = np.abs(rate_plan)
-      vel_plan = np.abs(vel_plan)
-      if not np.all(np.isfinite(rate_plan)) or not np.all(np.isfinite(vel_plan)):
-        self._fail_closed()
-        return
+    self._current_curvature = float(abs(curvature))
+    self.current_lat_acc = self.v_ego ** 2 * self._current_curvature
+    if not np.isfinite(self.current_lat_acc):
+      self._fail_closed()
+      return
 
-      predicted_lat_accels = rate_plan * vel_plan
-      if not np.all(np.isfinite(predicted_lat_accels)):
-        self._fail_closed()
-        return
+    rate_plan = np.abs(rate_plan)
+    vel_plan = np.abs(vel_plan)
+    if not np.all(np.isfinite(rate_plan)) or not np.all(np.isfinite(vel_plan)):
+      self._fail_closed()
+      return
 
-      self.max_pred_lat_acc = float(np.percentile(predicted_lat_accels, 97))
-      if not np.isfinite(self.max_pred_lat_acc) or self.max_pred_lat_acc <= _EPS:
-        self._fail_closed()
-        return
+    # Predicted curvature from model yaw rate / model velocity, then re-projected at ego speed.
+    predicted_curvatures = rate_plan / np.maximum(vel_plan, 0.1)
+    if not np.all(np.isfinite(predicted_curvatures)):
+      self._fail_closed()
+      return
 
-      can_pre_entry = self.enabled and not self.long_override and self.v_ego > MIN_V
-      if can_pre_entry and _PRE_ENTRY_PRED_LAT_ACC_TH <= self.max_pred_lat_acc < _ENTERING_PRED_LAT_ACC_TH:
-        if self.pre_entry_frames == 0 or self.max_pred_lat_acc >= self._prev_max_pred_lat_acc:
-          self.pre_entry_frames += 1
-        else:
-          self.pre_entry_frames = 1
+    v_ego = max(abs(self.v_ego), 0.1)
+    predicted_lat_accels = predicted_curvatures * (v_ego ** 2)
+    if not np.all(np.isfinite(predicted_lat_accels)):
+      self._fail_closed()
+      return
+
+    self.max_pred_lat_acc = float(np.percentile(predicted_lat_accels, 97))
+    if not np.isfinite(self.max_pred_lat_acc) or self.max_pred_lat_acc <= _EPS:
+      self.max_pred_lat_acc = 0.
+      self.v_target = 0.
+      self._required_decel = 0.
+      self._t_risk = float(ModelConstants.T_IDXS[-1])
+      self.pre_entry_frames = 0
+      self.pre_entry_active = False
+      self._prev_max_pred_lat_acc = 0.
+      return
+
+    # Maximum predicted curvature aligned with the p97 risk accel source.
+    max_predicted_curvature = self.max_pred_lat_acc / (v_ego ** 2)
+    if not np.isfinite(max_predicted_curvature) or max_predicted_curvature <= _EPS:
+      self._fail_closed()
+      return
+
+    # Binding point: among predicted points above the entering threshold, choose the
+    # point whose own target speed and horizon time require the strongest decel now.
+    # p97 severity remains available for state triggering, telemetry, and spike filtering.
+    crossing = predicted_lat_accels >= _ENTERING_PRED_LAT_ACC_TH
+    if np.any(crossing):
+      indices = np.where(crossing)[0]
+      t_cross = np.asarray(ModelConstants.T_IDXS, dtype=np.float64)[indices]
+      curvatures_cross = predicted_curvatures[indices]
+      valid = np.isfinite(curvatures_cross) & (curvatures_cross > _EPS) & np.isfinite(t_cross)
+      if np.any(valid):
+        indices = indices[valid]
+        t_cross = t_cross[valid]
+        curvatures_cross = curvatures_cross[valid]
+        v_targets_cross = np.sqrt(_A_LAT_REG_MAX / curvatures_cross)
+        required_decels_cross = (v_targets_cross - self.v_ego) / np.maximum(t_cross, DT_MDL)
+        binding = int(np.argmin(required_decels_cross))
+        binding_idx = indices[binding]
+        self._t_risk = float(ModelConstants.T_IDXS[binding_idx])
+        self.v_target = float(v_targets_cross[binding])
+        self._required_decel = float(required_decels_cross[binding])
       else:
-        self.pre_entry_frames = 0
+        self._t_risk = float(ModelConstants.T_IDXS[-1])
+        self.v_target = float((_A_LAT_REG_MAX / max_predicted_curvature) ** 0.5)
+        self._required_decel = 0.
+    else:
+      self._t_risk = float(ModelConstants.T_IDXS[-1])
+      self.v_target = float((_A_LAT_REG_MAX / max_predicted_curvature) ** 0.5)
+      self._required_decel = 0.
 
-      self.pre_entry_active = can_pre_entry and self.pre_entry_frames >= _PRE_ENTRY_MIN_FRAMES
-      self._prev_max_pred_lat_acc = self.max_pred_lat_acc
+    if not np.isfinite(self.v_target) or self.v_target < 0.:
+      self.v_target = 0.
+    if not np.isfinite(self._required_decel):
+      self._required_decel = 0.
 
-      # get the maximum curve based on the current velocity
-      v_ego = max(abs(self.v_ego), 0.1)  # ensure a value greater than 0 for calculations
-      max_curve = self.max_pred_lat_acc / (v_ego**2)
-      if not np.isfinite(max_curve) or max_curve <= _EPS:
-        self._fail_closed()
-        return
+    can_pre_entry = self.enabled and not self.long_override and self.v_ego > MIN_V
+    if can_pre_entry and _PRE_ENTRY_PRED_LAT_ACC_TH <= self.max_pred_lat_acc < _ENTERING_PRED_LAT_ACC_TH:
+      if self.pre_entry_frames == 0 or self.max_pred_lat_acc >= self._prev_max_pred_lat_acc:
+        self.pre_entry_frames += 1
+      else:
+        self.pre_entry_frames = 1
+    else:
+      self.pre_entry_frames = 0
 
-      # Get the target velocity for the maximum curve
-      self.v_target = float((_A_LAT_REG_MAX / max_curve) ** 0.5)
-      if not np.isfinite(self.v_target) or self.v_target < 0.:
-        self.v_target = 0.
+    self.pre_entry_active = can_pre_entry and self.pre_entry_frames >= _PRE_ENTRY_MIN_FRAMES
+    self._prev_max_pred_lat_acc = self.max_pred_lat_acc
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, ENTERING, TURNING, LEAVING, OVERRIDING
@@ -188,6 +256,9 @@ class SmartCruiseControlVision:
           # If significant lateral acceleration is predicted ahead, then move to Entering turn state.
           elif self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
             self.state = VisionState.entering
+          # High current lateral acceleration forces turning even with weak prediction.
+          elif self.current_lat_acc >= _CURRENT_LAT_ACC_BLEED_TH:
+            self.state = VisionState.turning
 
         # OVERRIDING
         elif self.state == VisionState.overriding:
@@ -243,16 +314,22 @@ class SmartCruiseControlVision:
       a_target = self.a_ego
     # ENTERING
     elif self.state == VisionState.entering:
-      # when not overshooting, target a smooth deceleration in preparation for a sharp turn to come.
-      a_target = np.interp(self.max_pred_lat_acc, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V)
+      # Horizon-aware deceleration, bounded by the existing smooth-decel table so far curves stay gentle
+      # and near curves do not command more decel than the table allows.
+      smooth_decel = float(np.interp(self.max_pred_lat_acc, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V))
+      a_target = min(0.0, max(self._required_decel, smooth_decel))
     # TURNING
     elif self.state == VisionState.turning:
       # When turning, we provide a target acceleration that is comfortable for the lateral acceleration felt.
-      a_target = np.interp(self.current_lat_acc, _TURNING_ACC_BP, _TURNING_ACC_V)
+      a_target = float(np.interp(self.current_lat_acc, _TURNING_ACC_BP, _TURNING_ACC_V))
     # LEAVING
     elif self.state == VisionState.leaving:
-      # When leaving, we provide a comfortable acceleration to regain speed.
-      a_target = _LEAVING_ACC
+      # If another curve is predicted ahead, suppress positive acceleration and only allow braking
+      # when the horizon still requires it.
+      if self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
+        a_target = min(0.0, self._required_decel)
+      else:
+        a_target = _LEAVING_ACC
     else:
       raise NotImplementedError(f"SCC-V state not supported: {self.state}")
 
