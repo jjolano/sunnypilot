@@ -57,6 +57,8 @@ class LeadReplayRow:
   a_lead: float
   v_rel: float
   d_rel: float
+  far_proposal: float | None = None
+  far_eligible: bool = False
 
 
 def summarize_rows(rows: list[LeadReplayRow], source: str) -> dict[str, Any]:
@@ -67,6 +69,8 @@ def summarize_rows(rows: list[LeadReplayRow], source: str) -> dict[str, Any]:
       "note": f"no lead-following frames >= {V_MIN:g} m/s",
       "benefit_detected": False,
       "safety_pass": False,
+      "far_proposal_frames": 0,
+      "far_proposal_safety_pass": False,
       "invalid_metric": False,
     }
 
@@ -79,6 +83,9 @@ def summarize_rows(rows: list[LeadReplayRow], source: str) -> dict[str, Any]:
   delta = a_shaped - a_raw
   softened = delta > 0.02
   risky = softened & (v_rel < -1.5) & (delta > 0.3)
+  far_rows = [(r, float(r.far_proposal)) for r in rows if r.far_eligible and r.far_proposal is not None]
+  far_delta = np.array([proposal - r.a_lead for r, proposal in far_rows]) if far_rows else np.array([])
+  far_risky = [r for r, _ in far_rows if r.v_rel < -1.5]
   braking = a_raw < BRAKE_A
   benefit_detected = bool(np.any(softened) and float(np.sum(delta[softened])) > 0.0)
   invalid_metric = not valid or any(not math.isfinite(x) for x in (float(np.min(a_raw)), float(np.min(a_shaped)), float(np.max(delta))))
@@ -96,6 +103,11 @@ def summarize_rows(rows: list[LeadReplayRow], source: str) -> dict[str, Any]:
     "p90_brake_reduction": round(float(np.percentile(delta[softened], 90)), 4) if softened.any() else 0.0,
     "max_brake_reduction": round(float(delta.max()), 4),
     "risky_softenings": int(np.sum(risky)),
+    "far_proposal_frames": len(far_rows),
+    "far_proposal_mean_aleadk_reduction": round(float(far_delta.mean()), 4) if far_rows else 0.0,
+    "far_proposal_max_aleadk_reduction": round(float(far_delta.max()), 4) if far_rows else 0.0,
+    "far_proposal_risky_frames": len(far_risky),
+    "far_proposal_safety_pass": len(far_risky) == 0,
     "benefit_detected": benefit_detected,
     "invalid_metric": invalid_metric,
     "safety_pass": bool(valid and int(np.sum(risky)) == 0),
@@ -145,9 +157,11 @@ def analyze_route(msgs: list[Any], source: str) -> dict[str, Any]:
       mpc.update(rs, V_CRUISE_HIGH)
     if not following:
       continue
+    last = la.last_result or {}
     rows.append(LeadReplayRow(float(mpc_raw.a_solution[0]), float(mpc_shaped.a_solution[0]),
                               _f(safe_get(lead, "aLeadK")), _f(safe_get(lead, "vRel")),
-                              _f(safe_get(lead, "dRel"))))
+                              _f(safe_get(lead, "dRel")), last.get("leadOneFarProposal"),
+                              bool(last.get("leadOneFarEligible", False))))
 
   return summarize_rows(rows, source)
 
@@ -163,6 +177,9 @@ def render(r: dict[str, Any]) -> str:
     + f"mean {r['mean_brake_reduction']:+.3f}, p90 {r['p90_brake_reduction']:.3f}, max {r['max_brake_reduction']:.3f} m/s^2\n"
     + f"  decel peak: raw {r['decel_peak_raw']} -> shaped {r['decel_peak_shaped']} m/s^2  "
     + f"(reactive-brake reduction = {r['decel_peak_shaped'] - r['decel_peak_raw']:+.3f})\n"
+    + f"  far-lead shadow proposal: {r['far_proposal_frames']} frames, "
+    + f"mean aLeadK reduction {r['far_proposal_mean_aleadk_reduction']:+.3f}, "
+    + f"risky frames {r['far_proposal_risky_frames']}\n"
     + f"  SAFETY — risky softenings (eased braking while lead closing >1.5 m/s): {r['risky_softenings']}"
   )
 

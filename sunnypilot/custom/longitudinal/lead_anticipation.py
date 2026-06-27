@@ -38,6 +38,13 @@ MIN_D_REL_M = 8.0            # m; absolute minimum lead distance for apply
 MIN_D_REL_TIME_GAP = 0.8     # s; lead distance must also exceed this * v_ego
 MAX_CLOSING_V_REL = -4.0     # m/s; block shaping for fast-closing leads
 MIN_TTC_S = 3.0              # s; conservative time-to-collision gate for closing leads
+FAR_LEAD_DESIRED_TIME_GAP = 2.2   # s; match lead_context's close-progress gap model
+FAR_LEAD_MIN_D_REL = 25.0         # m; medium/far lead boundary
+FAR_LEAD_MIN_TTC = 6.0            # s; only shadow-soften when urgency is low
+FAR_LEAD_MAX_REQUIRED_DECEL = 0.15 # m/s^2; closing can be cancelled gently
+FAR_LEAD_MAX_CLOSING_SPEED = 2.5  # m/s; faster closure remains fully trusted
+FAR_LEAD_MAX_SHADOW_SOFTENING = 0.35 # m/s^2; telemetry proposal only, not applied
+FAR_LEAD_TTC_INF = 99.0           # telemetry cap for non-closing leads
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
 MODE_APPLY = "apply"
@@ -88,6 +95,24 @@ def _confidence(state: Any) -> float:
   if state.stable:
     return 1.0
   return max(0.0, min(0.9, _f(state.age) / NEW_LEAD_STABLE_TIME))
+
+
+def _ttc(d_rel: float, closing_speed: float) -> float:
+  if closing_speed <= 0.05:
+    return math.inf
+  return max(0.0, d_rel) / closing_speed
+
+
+def _required_decel(distance_available: float, closing_speed: float) -> float:
+  return closing_speed * closing_speed / (2.0 * max(distance_available, 0.1))
+
+
+def _desired_gap(v_ego: float) -> float:
+  return max(FAR_LEAD_MIN_D_REL, max(0.0, v_ego) * FAR_LEAD_DESIRED_TIME_GAP)
+
+
+def _clamped_brake_softening(raw_a: float, proposed_a: float, cap: float) -> float:
+  return max(raw_a, min(proposed_a, raw_a + cap, 0.0))
 
 
 class _ShapedLead:
@@ -166,8 +191,8 @@ class LeadAnticipation:
       self.last_result = None
       return radarstate
     try:
-      one = self._shape_lead(getattr(radarstate, "leadOne", None), 0, dt)
-      two = self._shape_lead(getattr(radarstate, "leadTwo", None), 1, dt)
+      one, one_info = self._shape_lead(getattr(radarstate, "leadOne", None), 0, dt, v_ego)
+      two, two_info = self._shape_lead(getattr(radarstate, "leadTwo", None), 1, dt, v_ego)
       raw_one = getattr(radarstate, "leadOne", None)
       raw_two = getattr(radarstate, "leadTwo", None)
       apply_allowed, block_reason = self._apply_gate(should_apply, (raw_one, raw_two),
@@ -181,6 +206,8 @@ class LeadAnticipation:
         "leadOneShaped": _f(getattr(one, "aLeadK", 0.0)) if one is not None else None,
         "leadTwoRaw": _f(getattr(raw_two, "aLeadK", 0.0)) if raw_two is not None else None,
         "leadTwoShaped": _f(getattr(two, "aLeadK", 0.0)) if two is not None else None,
+        **one_info,
+        **two_info,
       }
       if not apply_allowed:
         return radarstate
@@ -226,21 +253,95 @@ class LeadAnticipation:
         return False, f"lead_{idx}_low_ttc"
     return True, ""
 
-  def _shape_lead(self, lead: Any, idx: int, dt: float) -> Any:
+  def _shape_lead(self, lead: Any, idx: int, dt: float, v_ego: float) -> tuple[Any, dict[str, Any]]:
     state = self._conf[idx].update(lead, dt)
+    prefix = "leadOneFar" if idx == 0 else "leadTwoFar"
     if lead is None or not bool(getattr(lead, "status", False)):
       self._brake_s[idx] = 0.0
-      return lead
+      return lead, self._far_shadow_result(prefix, lead, v_ego, 0.0, _confidence(state), "no_lead")
     a_lead = _f(getattr(lead, "aLeadK", 0.0))
     # sustained-brake tracker: count consecutive time the lead has been meaningfully braking.
     self._brake_s[idx] = self._brake_s[idx] + max(0.0, _f(dt)) if a_lead <= SUSTAINED_BRAKE_A else 0.0
+    info = self._far_shadow_result(prefix, lead, v_ego, self._brake_s[idx], _confidence(state), "")
     if a_lead >= 0.0:
-      return lead                                  # never touch a non-braking lead
+      return lead, info                            # never touch a non-braking lead
     if _confidence(state) >= HIGH_CONFIDENCE or self._brake_s[idx] >= SUSTAINED_BRAKE_S:
-      return lead                                  # trust a confident or sustained decel fully
+      return lead, info                            # trust a confident or sustained decel fully
     discount = max(DISCOUNT_FLOOR, _confidence(state))
     a_shaped = a_lead * discount                   # a_lead < 0, discount in (0,1] -> in [a_lead, 0]
     # Hard safety cap: the softening delta is bounded so the lead can never look meaningfully
     # faster/closer. Shaped aLeadK stays in [raw, 0] and is at most raw + AL_CAP_MAX_SOFTENING.
-    a_shaped = max(a_lead, min(a_shaped, a_lead + AL_CAP_MAX_SOFTENING, 0.0))
-    return _ShapedLead(lead, a_shaped, _f(getattr(lead, "aLeadTau", 1.5)))
+    a_shaped = _clamped_brake_softening(a_lead, a_shaped, AL_CAP_MAX_SOFTENING)
+    return _ShapedLead(lead, a_shaped, _f(getattr(lead, "aLeadTau", 1.5))), info
+
+  def _far_shadow_result(self, prefix: str, lead: Any, v_ego: float, brake_s: float,
+                         confidence: float, preset_block: str) -> dict[str, Any]:
+    """Telemetry-only far-lead proposal. It never feeds MPC/apply output.
+
+    The proposal answers: if a medium/far lead briefly decelerates while still outside the desired
+    gap, with high TTC and tiny required decel, what aLeadK would a risk-aware shaper have used?
+    """
+    result = {
+      f"{prefix}Eligible": False,
+      f"{prefix}BlockReason": preset_block,
+      f"{prefix}Proposal": None,
+      f"{prefix}RequiredDecel": 0.0,
+      f"{prefix}Ttc": 0.0,
+      f"{prefix}TimeGap": 0.0,
+      f"{prefix}GapExcess": 0.0,
+      f"{prefix}Confidence": float(confidence),
+      f"{prefix}BrakeS": float(brake_s),
+    }
+    if preset_block:
+      return result
+    a_lead_raw = getattr(lead, "aLeadK", None)
+    d_rel_raw = getattr(lead, "dRel", None)
+    v_rel_raw = getattr(lead, "vRel", None)
+    if not (_is_finite(a_lead_raw) and _is_finite(d_rel_raw) and _is_finite(v_rel_raw) and _is_finite(v_ego)):
+      result[f"{prefix}BlockReason"] = "non_finite"
+      return result
+    a_lead = _f(a_lead_raw)
+    d_rel = _f(d_rel_raw)
+    v_rel = _f(v_rel_raw)
+    closing_speed = max(0.0, -v_rel)
+    ttc = _ttc(d_rel, closing_speed)
+    desired_gap = _desired_gap(_f(v_ego))
+    gap_excess = d_rel - desired_gap
+    required_decel = _required_decel(gap_excess, closing_speed)
+    time_gap = d_rel / max(_f(v_ego), 0.1)
+    result.update({
+      f"{prefix}RequiredDecel": float(required_decel),
+      f"{prefix}Ttc": FAR_LEAD_TTC_INF if math.isinf(ttc) else float(ttc),
+      f"{prefix}TimeGap": float(time_gap),
+      f"{prefix}GapExcess": float(gap_excess),
+    })
+    if a_lead >= 0.0:
+      result[f"{prefix}BlockReason"] = "not_braking"
+      return result
+    if d_rel < desired_gap:
+      result[f"{prefix}BlockReason"] = "inside_desired_gap"
+      return result
+    if d_rel < FAR_LEAD_MIN_D_REL:
+      result[f"{prefix}BlockReason"] = "not_far"
+      return result
+    if closing_speed > FAR_LEAD_MAX_CLOSING_SPEED:
+      result[f"{prefix}BlockReason"] = "closing_fast"
+      return result
+    if ttc < FAR_LEAD_MIN_TTC:
+      result[f"{prefix}BlockReason"] = "ttc_low"
+      return result
+    if required_decel > FAR_LEAD_MAX_REQUIRED_DECEL:
+      result[f"{prefix}BlockReason"] = "required_decel_high"
+      return result
+    if brake_s >= SUSTAINED_BRAKE_S:
+      result[f"{prefix}BlockReason"] = "sustained_brake"
+      return result
+
+    urgency = max(required_decel / FAR_LEAD_MAX_REQUIRED_DECEL,
+                  closing_speed / FAR_LEAD_MAX_CLOSING_SPEED,
+                  0.15)
+    proposed = _clamped_brake_softening(a_lead, a_lead * urgency, FAR_LEAD_MAX_SHADOW_SOFTENING)
+    result[f"{prefix}Eligible"] = proposed > a_lead + 1e-6
+    result[f"{prefix}BlockReason"] = "" if result[f"{prefix}Eligible"] else "no_softening"
+    result[f"{prefix}Proposal"] = float(proposed)
+    return result

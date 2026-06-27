@@ -84,6 +84,46 @@ def test_new_low_confidence_brake_is_discounted_and_capped():
   assert out.leadOne.dRel == 30.0 and out.leadOne.vLead == 18.0
 
 
+def test_far_lead_shadow_proposal_is_recorded_but_not_applied():
+  la = _on()
+  rs = radar(lead(-0.6, d_rel=50.0, v_rel=-1.0))
+  out = _shape_apply(la, rs, v_ego=15.0)
+  assert out.leadOne.aLeadK == pytest.approx(min(-0.6 * DISCOUNT_FLOOR, -0.6 + AL_CAP_MAX_SOFTENING))
+  assert la.last_result["leadOneFarEligible"] is True
+  assert la.last_result["leadOneFarBlockReason"] == ""
+  assert la.last_result["leadOneFarProposal"] > out.leadOne.aLeadK
+  assert la.last_result["leadOneFarRequiredDecel"] < 0.15
+
+
+def test_far_lead_shadow_blocks_inside_desired_gap():
+  la = _on()
+  _shape_apply(la, radar(lead(-0.6, d_rel=30.0, v_rel=-0.5)), v_ego=20.0)
+  assert la.last_result["leadOneFarEligible"] is False
+  assert la.last_result["leadOneFarBlockReason"] == "inside_desired_gap"
+
+
+def test_far_lead_shadow_blocks_when_decel_to_desired_gap_is_high():
+  la = _on()
+  _shape_apply(la, radar(lead(-0.6, d_rel=47.0, v_rel=-2.0)), v_ego=20.0)
+  assert la.last_result["leadOneFarEligible"] is False
+  assert la.last_result["leadOneFarBlockReason"] == "required_decel_high"
+
+
+def test_far_lead_shadow_blocks_sustained_brake():
+  la = _on()
+  for _ in range(13):
+    _shape_apply(la, radar(lead(-0.6, d_rel=50.0, v_rel=-1.0)), v_ego=15.0)
+  assert la.last_result["leadOneFarEligible"] is False
+  assert la.last_result["leadOneFarBlockReason"] == "sustained_brake"
+
+
+def test_far_lead_shadow_non_closing_uses_capped_ttc():
+  la = _on()
+  _shape_apply(la, radar(lead(-0.6, d_rel=50.0, v_rel=0.0)), v_ego=15.0)
+  assert la.last_result["leadOneFarEligible"] is True
+  assert la.last_result["leadOneFarTtc"] == pytest.approx(99.0)
+
+
 def test_hard_cap_limits_softening_for_braking_leads():
   for raw_a in (-0.6, -2.0, -5.0, -10.0):
     la = _on()
