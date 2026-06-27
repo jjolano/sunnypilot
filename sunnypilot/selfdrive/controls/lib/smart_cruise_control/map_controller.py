@@ -10,7 +10,6 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.navd.helpers import coordinate_from_param, Coordinate
-from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
 MapState = VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
 
@@ -126,13 +125,13 @@ class SmartCruiseControlMap:
     self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
 
   def get_v_target_from_control(self) -> float:
-    if self.is_active:
-      return max(self.v_target, MIN_V)
-
+    # SCC-M is evidence-only in this fork: keep state/v_target for telemetry and curve
+    # confidence, but never let it win planner arbitration until a bounded apply tier exists.
     return V_CRUISE_UNSET
 
   def get_a_target_from_control(self) -> float:
-    return self.a_ego
+    # Return a neutral acceleration request; map evidence must not directly slow the car.
+    return 0.0
 
   def _clear_targets(self) -> None:
     self.v_target = 0.0

@@ -1187,7 +1187,7 @@ def test_custom_target_filtering_by_mode_and_scc_source_toggles():
   assert set(fake_planner(LongitudinalMode.SCC, sources=SourceToggles()).custom_longitudinal_targets(targets)) == {
     LongitudinalPlanSource.cruise, LongitudinalPlanSource.speedLimitAssist}
   assert LongitudinalPlanSource.sccVision in fake_planner(LongitudinalMode.SCC, sources=SourceToggles(True, False)).custom_longitudinal_targets(targets)
-  assert LongitudinalPlanSource.sccMap in fake_planner(LongitudinalMode.SCC, sources=SourceToggles(False, True)).custom_longitudinal_targets(targets)
+  assert LongitudinalPlanSource.sccMap not in fake_planner(LongitudinalMode.SCC, sources=SourceToggles(False, True)).custom_longitudinal_targets(targets)
 
 
 def test_stop_hold_release_slew_first_release_seeds_state_and_stays_floored():

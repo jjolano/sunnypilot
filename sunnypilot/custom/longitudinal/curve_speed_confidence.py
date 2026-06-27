@@ -78,12 +78,9 @@ def predict_curve_speed_confidence(mode: Any, data: CurveSpeedConfidenceInputs) 
   apply_supported = mode_s == MODE_APPLY_CONSERVATIVE
 
   vision_a = _f(data.vision_a_target)
-  map_a = _f(data.map_a_target)
   caps: list[tuple[str, float]] = []
   if data.vision_active and vision_a < 0.0:
     caps.append(("vision", vision_a))
-  if data.map_active and map_a < 0.0:
-    caps.append(("map", map_a))
   if not caps:
     active = bool(data.vision_active or data.map_active)
     return CurveSpeedConfidenceResult(mode=mode_s, effective_mode=mode_s,

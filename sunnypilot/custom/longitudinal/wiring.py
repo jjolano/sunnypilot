@@ -169,15 +169,13 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
   # Pre-MPC lead-present seed: carry the currently selected planner a_target into the custom
   # policy. Final lead-follow physics remains owned by the downstream MPC solve.
   lead_a_target = float(seed_a_target) if has_lead else 0.0
-  # SCC vision/map are curve-speed sources -> the curve advisory cap (most restrictive wins). Tag
-  # the cap by the source that bound it so the mode gate admits it correctly (a map-only curve must
-  # be admitted under CURVE_MAP, not CURVE_VISION).
-  curve_active = bool(scc_vision_active or scc_map_active)
+  # Actuator curve cap is built from SCC-Vision only. SCC-Map evidence is kept for telemetry and
+  # curve-speed confidence, but must not directly reduce planner speed/accel until a bounded
+  # apply tier is validated.
+  curve_active = bool(scc_vision_active)
   v_curve = scc_vision_a_target if scc_vision_active else float("inf")
-  m_curve = scc_map_a_target if scc_map_active else float("inf")
-  curve_a_target = min(v_curve, m_curve) if curve_active else 0.0
-  curve_source = EvidenceClass.CURVE_MAP if (scc_map_active and (not scc_vision_active or m_curve <= v_curve)) \
-      else EvidenceClass.CURVE_VISION
+  curve_a_target = v_curve if curve_active else 0.0
+  curve_source = EvidenceClass.CURVE_VISION
   return LongitudinalStackInputs(
     v_ego=v_ego, a_ego=float(a_ego), v_cruise=v_cruise, seed_a_target=seed_a_target,
     accel_limits=accel_limits, accel_coast=float(accel_coast),
@@ -212,7 +210,8 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
       vision_state=scc_vision_state, vision_current_lat_acc=_f(scc_vision_current_lat_acc),
       vision_max_pred_lat_acc=_f(scc_vision_max_pred_lat_acc),
       vision_pre_entry_active=bool(scc_vision_pre_entry_active),
-      map_active=bool(scc_map_active), map_a_target=_f(scc_map_a_target), map_state=scc_map_state,
+      # Map may boost confidence/context, but cannot provide a braking cap in the evidence-only tier.
+      map_active=bool(scc_map_active), map_a_target=0.0, map_state=scc_map_state,
       map_target_lat=_f(scc_map_target_lat), map_target_lon=_f(scc_map_target_lon),
     ),
   )

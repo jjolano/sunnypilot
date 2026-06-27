@@ -129,9 +129,9 @@ def test_build_stack_inputs_carries_model_stale_flag():
   assert inp.model_stale is True
 
 
-def test_map_only_curve_tags_curve_map_and_is_admitted_in_scc():
-  # #18: a map-sourced curve was always tagged CURVE_VISION, so with only the map toggle on it was
-  # silently dropped under SCC. Tag by binding source so SCC admits it.
+def test_map_only_populates_curve_confidence_but_not_actuator_cap():
+  # SCC-M is evidence-only at the wiring layer: it feeds curve-speed confidence (telemetry) but
+  # must not create an actuator curve advisory cap unless SCC-Vision is also active.
   inp = build_stack_inputs(
     v_ego=20.0, a_ego=0.0, v_cruise=22.0, seed_a_target=0.4, accel_limits=DEFAULT_ACCEL_LIMITS,
     lead_one=None, lead_two=None,
@@ -139,14 +139,16 @@ def test_map_only_curve_tags_curve_map_and_is_admitted_in_scc():
     sla_active=False, sla_v_target=0.0, sla_a_target=0.0,
     mode=LongitudinalMode.SCC, personality=Personality.STANDARD, sources=SourceToggles(False, True),
   )
-  assert inp.curve_source is EvidenceClass.CURVE_MAP and inp.curve_a_target == pytest.approx(-0.8)
+  assert inp.curve_active is False
+  assert inp.curve_a_target == pytest.approx(0.0)
+  assert inp.curve_source is not EvidenceClass.CURVE_MAP
+  assert inp.curve_confidence.map_active is True
+  assert inp.curve_confidence.map_a_target == pytest.approx(0.0)
   scene = LongitudinalScene(v_ego=20.0, v_cruise=22.0, seed_a_target=0.4,
-                            curve_active=True, curve_a_target=-0.8, curve_source=EvidenceClass.CURVE_MAP)
+                            curve_active=False, curve_a_target=0.0, curve_source=EvidenceClass.CURVE_VISION)
   cands = build_candidates(scene)
   on = decide(cands, LongitudinalMode.SCC, DEFAULT_ACCEL_LIMITS, SourceToggles(False, True))
-  off = decide(cands, LongitudinalMode.SCC, DEFAULT_ACCEL_LIMITS, SourceToggles(False, False))
-  assert on.a_target < 0.4                          # map-curve admitted -> caps the cruise
-  assert off.a_target == pytest.approx(0.4)         # map toggle off -> curve not admitted, cruise stands
+  assert on.a_target == pytest.approx(0.4)          # map-only evidence cannot cap cruise
 
 
 def test_adapter_disabled_passthrough():

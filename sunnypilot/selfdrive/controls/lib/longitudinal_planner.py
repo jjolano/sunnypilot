@@ -231,13 +231,15 @@ class LongitudinalPlannerSP:
       self.custom_long, self.custom_long_output, mpc_should_stop, raw_model_should_stop, model_stale)
 
   def custom_longitudinal_targets(self, targets: dict) -> dict:
+    # SCC-Map is evidence-only for now. Keep its telemetry published separately, but never let it
+    # participate in actuator target arbitration until a bounded apply tier exists.
+    targets = {src: target for src, target in targets.items() if src != LongitudinalPlanSource.sccMap}
     if not self.custom_long.enabled:
       return targets
     admitted = admitted_evidence(self.custom_long.mode, self.custom_long.sources)
     source_to_evidence = {
       LongitudinalPlanSource.cruise: EvidenceClass.CRUISE,
       LongitudinalPlanSource.sccVision: EvidenceClass.CURVE_VISION,
-      LongitudinalPlanSource.sccMap: EvidenceClass.CURVE_MAP,
       LongitudinalPlanSource.speedLimitAssist: EvidenceClass.SPEED_LIMIT,
     }
     filtered = {src: target for src, target in targets.items() if source_to_evidence[src] in admitted}

@@ -767,8 +767,8 @@ def test_scc_curve_confidence_respects_source_gates():
     curve_confidence=map_confidence,
     sources=SourceToggles(scc_curve_map_enabled=True),
   ), DT)
-  assert map_on.debug["curve_speed_confidence_eligible"] is True
-  assert map_on.debug["curve_speed_confidence_proposed_cap"] == pytest.approx(-0.8)
+  assert map_on.debug["curve_speed_confidence_eligible"] is False
+  assert map_on.debug["curve_speed_confidence_block_reason"] == "no_negative_curve_cap"
 
 
 def _stable_lead_compression_stack(seed_a: float, lead_d: float, v_lead: float, v_rel: float, n: int = 30):

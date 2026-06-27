@@ -219,6 +219,8 @@ class TestSmartCruiseControlMap:
     self.scc_m.update(True, False, 23.8, 0., 30., sm)
     assert self.scc_m.v_target == 18.5
     assert self.scc_m.is_active
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+    assert self.scc_m.output_a_target == 0.
 
   def test_stale_terminal_single_point_rejected(self):
     self.set_gps(37.00010, -122.0)
