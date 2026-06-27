@@ -175,6 +175,26 @@ def test_populates_underresponse_shadow_telemetry_without_changing_output():
   assert math.isfinite(pid_log.underresponseShadowLatAccel)
 
 
+def test_populates_oscillation_classification_in_active_path():
+  c = make_controller()
+  vm = FakeVM()
+  _, _, pid_log = c.update(True, make_cs(v_ego=20.0, angle=15.0, pressed=True), vm,
+                           make_params(), False, 0.04, make_pose(), False, 0.2)  # type: ignore[arg-type]
+  assert hasattr(pid_log.adaptiveTorqueState, 'oscillationClassification')
+  assert isinstance(pid_log.adaptiveTorqueState.oscillationClassification, int)
+
+
+def test_oscillation_observer_resets_on_inactive():
+  c = make_controller()
+  vm = FakeVM()
+  for _ in range(20):
+    c.update(True, make_cs(v_ego=20.0, angle=0.0, rate=0.0), vm,
+             make_params(), False, 0.0, make_pose(), False, 0.2)  # type: ignore[arg-type]
+  c.update(False, make_cs(v_ego=20.0), vm, make_params(), False, 0.0, make_pose(), False, 0.2)  # type: ignore[arg-type]
+  assert len(c.oscillation_observer.torque_history) == 0
+  assert c.oscillation_observer.last_debug.classification == 0
+
+
 def test_controller_passes_controller_evidence_to_governor():
   c = make_controller()
   vm = FakeVM()

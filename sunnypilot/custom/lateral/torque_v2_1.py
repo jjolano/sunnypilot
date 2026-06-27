@@ -21,6 +21,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import UnderresponseSentinel, write_underresponse_debug
 from openpilot.sunnypilot.custom.lateral.output_governor import OutputGovernor, OutputGovernorInputs
+from openpilot.sunnypilot.custom.lateral.oscillation_observer import OscillationObserver
 from openpilot.sunnypilot.custom.lateral.response_core import ResponseCore, ResponseCoreInputs
 
 VERSION_V21 = 21
@@ -58,6 +59,7 @@ class LatControlTorqueV21(LatControl):
     )
     self.governor = OutputGovernor(dt)
     self.underresponse_sentinel = UnderresponseSentinel(dt)
+    self.oscillation_observer = OscillationObserver(dt)
     self.extension = extension if extension is not None else LatControlTorqueExt(self, CP, CP_SP, CI)
     self._under_response_path_evidence_valid = True
     self._limited_requested_torque = None
@@ -67,6 +69,7 @@ class LatControlTorqueV21(LatControl):
     super().reset()
     self.governor.reset()
     self.underresponse_sentinel.reset()
+    self.oscillation_observer.reset()
 
   def set_torque_override_refresh_allowed(self, allowed: bool) -> None:
     if hasattr(self.extension, 'set_torque_override_refresh_allowed'):
@@ -152,6 +155,7 @@ class LatControlTorqueV21(LatControl):
     if not active:
       self.governor.reset()
       write_underresponse_debug(pid_log, self.underresponse_sentinel.reset())
+      self.oscillation_observer.reset()
       pid_log.active = False
       return 0.0, 0.0, pid_log
 
@@ -199,8 +203,21 @@ class LatControlTorqueV21(LatControl):
       roll=params.roll,
     )
     write_underresponse_debug(pid_log, ur_debug)
+    osc_debug = self.oscillation_observer.update(
+      active=True,
+      v_ego=CS.vEgo,
+      steering_pressed=CS.steeringPressed,
+      steer_limited_by_safety=steer_limited_by_safety,
+      curvature_limited=curvature_limited,
+      output_torque=output_torque,
+      steer_max=self.steer_max,
+      desired_lateral_accel=rc.setpoint,
+      actual_lateral_accel=rc.measurement,
+      steering_rate_deg=CS.steeringRateDeg,
+    )
     adaptive = pid_log.adaptiveTorqueState
     adaptive.active = True
+    adaptive.oscillationClassification = int(osc_debug.classification)
     adaptive.releaseActive = bool(CS.steeringPressed)
     adaptive.nominalOutput = float(-nominal_output_torque_log)
     adaptive.shapingActive = False
