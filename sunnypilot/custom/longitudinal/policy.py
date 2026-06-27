@@ -34,6 +34,8 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   CRUISE_LEEWAY_MAX,
   CRUISE_LEEWAY_MIN,
   CRUISE_LEEWAY_RECOVERY,
+  FLAT_COAST_BASELINE,
+  GRADE_FLAT_BAND_HALF_WIDTH,
   LEAD_CRAWL_ACCEL_MAX,
   LEAD_CRAWL_BREAKOUT_MIN_OPENING,
   LEAD_CRAWL_LAUNCH_TAU,
@@ -57,6 +59,14 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
 )
 
 SAFETY_FORCE_SLOW_DECEL = -0.2
+
+# Conservative uphill grade recovery: small extra cruise accel only when the grade signal is
+# clearly uphill and there are no lead/stop/curve/speed-limit/override contexts. The gain is
+# additive to the cruise seed; a measured-accel guard backs it off after a surge/downshift.
+_UPHILL_RECOVERY_MAX_MS2 = 0.15
+_UPHILL_RECOVERY_TARGET_MAX_MS2 = 0.80
+_UPHILL_RECOVERY_MIN_V_EGO = 2.0
+_UPHILL_A_EGO_SURGE_MARGIN = 0.25
 
 # Lead-softening thresholds (Phase 4): narrow pre-MPC shaping for far/medium low-risk
 # lead-follow decel. Conservative first cut; before/deploy validation must replay engaged routes.
@@ -166,6 +176,42 @@ def dynamic_cruise_coast_accel(scene: LongitudinalScene, a_target: float) -> flo
   recovery = _clip((overspeed - leeway) / CRUISE_LEEWAY_RECOVERY, 0.0, 1.0)
   coast_target = (1.0 - recovery) * min(0.0, scene.accel_coast) + recovery * a_target
   return min(0.0, max(a_target, coast_target))
+
+
+def uphill_grade_recovery_accel(scene: LongitudinalScene) -> float | None:
+  """Return a small authorized PROGRESS accel target for clear uphill cruise recovery.
+
+  Returns None when the context is not a clean no-lead cruise recovery or when the car has
+  already surged enough that extra gain is unnecessary (transient / downshift guard).
+  """
+  if (scene.has_lead or scene.stop_threat or scene.model_should_stop or scene.force_slow_decel
+      or scene.brake_pressed or scene.gas_pressed):
+    return None
+  if scene.speed_limit_active or scene.curve_active:
+    return None
+  if not (scene.v_cruise > scene.v_ego + PROGRESS_CRUISE_SPEED_MARGIN):
+    return None
+  if scene.v_ego < _UPHILL_RECOVERY_MIN_V_EGO:
+    return None
+  if not math.isfinite(scene.accel_coast) or not math.isfinite(scene.a_ego):
+    return None
+  estimated_bias = scene.accel_coast - FLAT_COAST_BASELINE
+  if estimated_bias >= -GRADE_FLAT_BAND_HALF_WIDTH:
+    return None
+  seed = float(scene.seed_a_target)
+  if seed <= 0.0 or seed >= _UPHILL_RECOVERY_TARGET_MAX_MS2:
+    return None
+  gain = _UPHILL_RECOVERY_MAX_MS2
+  candidate = min(seed + gain, _UPHILL_RECOVERY_TARGET_MAX_MS2, launch_accel_max(scene.personality))
+  # Downshift / transient guard: if measured accel already exceeds what we would ask for, or
+  # is already well above the cruise seed, skip the extra gain.
+  if scene.a_ego > seed + _UPHILL_A_EGO_SURGE_MARGIN:
+    return None
+  if scene.a_ego > candidate:
+    return None
+  if candidate <= seed or candidate <= 0.0:
+    return None
+  return float(candidate)
 
 
 def no_lead_stop_clear(scene: LongitudinalScene) -> bool:
@@ -386,6 +432,12 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   if coast_a > float(scene.seed_a_target):
     cands.append(LongitudinalCandidate(coast_a, CandidateRole.PROGRESS, EvidenceClass.CRUISE,
                                        "dynamic_overspeed_coast_leeway", authorized=True))
+
+  # conservative uphill grade recovery: small authorized cruise-progress bump on clear grades
+  recovery_a = uphill_grade_recovery_accel(scene)
+  if recovery_a is not None and recovery_a > float(scene.seed_a_target):
+    cands.append(LongitudinalCandidate(recovery_a, CandidateRole.PROGRESS, EvidenceClass.CRUISE,
+                                       "uphill_grade_recovery", authorized=True))
 
   wants_progress = scene.v_cruise > scene.v_ego + PROGRESS_CRUISE_SPEED_MARGIN
 

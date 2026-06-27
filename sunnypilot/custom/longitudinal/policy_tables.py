@@ -71,6 +71,9 @@ CRUISE_LEEWAY_MIN = 5.0 * MPH_TO_MS
 CRUISE_LEEWAY_MAX = 10.0 * MPH_TO_MS
 CRUISE_LEEWAY_DOWNHILL_ACCEL = 0.25
 CRUISE_LEEWAY_RECOVERY = 2.0 * MPH_TO_MS
+FLAT_COAST_BASELINE = -0.3
+GRADE_COMPENSATION_MAX_MS2 = 0.15
+GRADE_FLAT_BAND_HALF_WIDTH = 0.35
 STOP_APPROACH_DECEL_MIN = -1.5
 # Final low-speed landing floor. The normal stop-approach floor remains available
 # above walking speed and for genuinely hard-stop kinematics; this only prevents a

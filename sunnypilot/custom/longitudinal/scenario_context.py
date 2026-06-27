@@ -11,13 +11,14 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
+  FLAT_COAST_BASELINE,
+  GRADE_COMPENSATION_MAX_MS2,
+  GRADE_FLAT_BAND_HALF_WIDTH,
+)
+
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
-
-
-FLAT_COAST_BASELINE = -0.3
-GRADE_COMPENSATION_MAX_MS2 = 0.15
-GRADE_FLAT_BAND_HALF_WIDTH = 0.35
 
 
 @dataclass(frozen=True)

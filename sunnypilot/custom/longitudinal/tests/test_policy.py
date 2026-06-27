@@ -251,6 +251,95 @@ def test_lead_cushion_advisory_when_runway():
   assert cushion[0].a_target < 0.0          # anticipatory gentle coast cap
 
 
+# -----------------------------------------------------------------------------
+# Uphill grade recovery
+# -----------------------------------------------------------------------------
+
+def _uphill_scene(**over):
+  base = dict(
+    v_ego=15.0, v_cruise=22.0, seed_a_target=0.4, a_ego=0.1,
+    accel_coast=-0.8, has_lead=False, stop_threat=False,
+    model_should_stop=False, model_stop_distance=None,
+    speed_limit_active=False, curve_active=False,
+    force_slow_decel=False, brake_pressed=False, gas_pressed=False,
+    personality=Personality.STANDARD,
+  )
+  base.update(over)
+  return LongitudinalScene(**base)
+
+
+def test_uphill_recovery_progress_candidate_conservative():
+  scene = _uphill_scene()
+  cands = build_candidates(scene)
+  up = [c for c in cands if c.intent == "uphill_grade_recovery"]
+  assert len(up) == 1
+  c = up[0]
+  assert c.role is CandidateRole.PROGRESS
+  assert c.source is EvidenceClass.CRUISE
+  assert c.authorized is True
+  # additive gain is capped at +0.15 above the cruise seed
+  assert c.a_target == pytest.approx(scene.seed_a_target + 0.15)
+  assert c.a_target <= launch_accel_max(Personality.STANDARD)
+
+
+def test_uphill_recovery_disabled_with_lead_present():
+  assert not [c for c in build_candidates(_uphill_scene(has_lead=True)) if c.intent == "uphill_grade_recovery"]
+
+
+def test_uphill_recovery_disabled_when_a_ego_surged():
+  assert not [c for c in build_candidates(_uphill_scene(a_ego=0.8)) if c.intent == "uphill_grade_recovery"]
+
+
+@pytest.mark.parametrize("accel_coast,label", [
+  (-0.30, "flat_baseline"),
+  (-0.55, "within_flat_band"),
+  (0.10, "downhill"),
+])
+def test_uphill_recovery_no_flat_or_downhill(accel_coast, label):
+  assert not [c for c in build_candidates(_uphill_scene(accel_coast=accel_coast)) if c.intent == "uphill_grade_recovery"], label
+
+
+def test_uphill_recovery_disabled_without_progress_demand():
+  assert not [c for c in build_candidates(_uphill_scene(v_cruise=15.0)) if c.intent == "uphill_grade_recovery"]
+
+
+def test_uphill_recovery_does_not_turn_coast_seed_into_positive_accel():
+  assert not [c for c in build_candidates(_uphill_scene(seed_a_target=0.0)) if c.intent == "uphill_grade_recovery"]
+  assert not [c for c in build_candidates(_uphill_scene(seed_a_target=-0.1)) if c.intent == "uphill_grade_recovery"]
+
+
+def test_uphill_recovery_absolute_target_cap():
+  up = [c for c in build_candidates(_uphill_scene(seed_a_target=0.7)) if c.intent == "uphill_grade_recovery"]
+  assert len(up) == 1
+  assert up[0].a_target == pytest.approx(0.8)
+
+
+def test_uphill_recovery_disabled_at_or_above_absolute_cap():
+  assert not [c for c in build_candidates(_uphill_scene(seed_a_target=0.8)) if c.intent == "uphill_grade_recovery"]
+
+
+def test_uphill_recovery_disabled_below_min_speed():
+  assert not [c for c in build_candidates(_uphill_scene(v_ego=1.0)) if c.intent == "uphill_grade_recovery"]
+
+
+@pytest.mark.parametrize("field", ["a_ego", "accel_coast"])
+def test_uphill_recovery_disabled_on_nonfinite_inputs(field):
+  assert not [c for c in build_candidates(_uphill_scene(**{field: float("nan")})) if c.intent == "uphill_grade_recovery"]
+
+
+@pytest.mark.parametrize("flag", ["speed_limit_active", "curve_active", "model_should_stop", "force_slow_decel", "brake_pressed", "gas_pressed"])
+def test_uphill_recovery_disabled_by_restrictive_contexts(flag):
+  assert not [c for c in build_candidates(_uphill_scene(**{flag: True})) if c.intent == "uphill_grade_recovery"]
+
+
+def test_uphill_recovery_decision_raises_target_in_cruise_mode():
+  scene = _uphill_scene()
+  cands = build_candidates(scene)
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert d.a_target > scene.seed_a_target
+  assert d.a_target <= LIMITS[1]
+
+
 def test_no_lead_stop_clear_gate():
   clear = LongitudinalScene(v_ego=1.0, v_cruise=12.0, seed_a_target=0.0, model_should_stop=False,
                             model_stop_distance=50.0, model_desired_accel=0.0)
