@@ -61,7 +61,7 @@ deployed commit, dirty/untracked checkout state, relevant processes, IPC/log pat
 
 ## Next probe for planner-output-only alerts
 
-Find the matching route/qlog/rlog window and inspect validity/frequency for:
+Find the matching route window and inspect validity/frequency for:
 
 ```text
 carState, controlsState, carControl, modelV2, liveParameters, radarState, selfdriveState,
@@ -72,6 +72,12 @@ Falsify the `carState` hypothesis if `carState` is valid/alive/frequency-ok thro
 another `plannerd` dependency is bad. If route logs cannot answer it, inspect `plannerd_validity` logs
 or add temporary change-only `plannerd` instrumentation for failed `sm.all_checks(...)` inputs, then
 remove or demote it after diagnosis.
+
+Log choice:
+
+- Use `qlog.zst` only for coarse correlation: route/segment, alert timing, engagement windows, and whether expected messages appear at all.
+- Use `rlog.zst` for the actual comm diagnosis: exact `valid`/`alive`/`freq_ok` behavior, dropped/update timing, rate checks, and any conclusion about planner dependencies.
+- Prefer `plannerd_validity` swaglog records over route logs when available because they capture `plannerd`'s receive-side `SubMaster` state at publish time.
 
 `plannerd_validity` should include output booleans, failed lists by category, and per-service
 `valid`/`alive`/`freqOk`/`updated`/`frameAge`/frequency tracker stats for:

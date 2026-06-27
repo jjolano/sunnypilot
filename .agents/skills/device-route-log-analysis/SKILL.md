@@ -38,8 +38,10 @@ PY'
 
 ## Pull logs safely
 
-- Prefer `qlog.zst` first; it is much smaller and usually enough for planner/control summaries.
-- Pull `rlog.zst` only when a signal is missing from qlogs or high-fidelity replay is required.
+- Choose the lightest log that can answer the question:
+  - Use `qlog.zst` for quick route triage: events, timelines, engagement windows, broad lead-following/launch-delay summaries, and “what happened?” checks.
+  - Use `rlog.zst` for high-fidelity analysis: exact controller/model/planner timing, replay, rate/validity debugging, signal-frequency checks, or any tuning decision where downsampling could hide behavior.
+- Start with qlogs only when the question is summary-level; escalate to rlogs as soon as a needed signal is missing, downsampled, or timing-sensitive.
 - Use `/tmp/opencode/sunnypilot-route-logs` for local copies.
 - Device SSH over Tailscale can drop. Copy file-by-file with size checks/retries instead of one huge tar stream.
 
@@ -85,6 +87,8 @@ PY
 
 ## Analyze locally
 
+Use `--qlog` only for qlog-derived summaries. Drop `--qlog` and point tools/harnesses at `rlog.zst` files when validating exact control behavior.
+
 Run local tools with repo deps:
 
 ```bash
@@ -99,5 +103,6 @@ For device route bases like `000001d3--...`, local route strings are not canonic
 
 - On-device `python3` may lack `numpy`/`capnp`; do not rely on running drive_lab there.
 - Avoid `uv run` on the device unless disk space is confirmed; it can try to build a venv and fill `/home`.
+- Do not use qlogs to make fine controller-tuning conclusions unless confirmed against rlogs.
 - If all-at-once analysis is killed on very large routes, stream one qlog segment at a time and aggregate carState/radarState/plan signals.
 - Record which routes had `carControl.longActive`; long routes with zero engagement are not useful for longitudinal-control behavior.
