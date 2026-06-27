@@ -126,7 +126,8 @@ def build_cut_in_with_lead_id_churn(*, n_churn: int = 5):
   for _ in range(10):
     emit(12.0, 0.0, False)
 
-  # Initial cut-in
+  # Initial cut-in, stable for two samples before churn starts
+  emit(12.0, 0.0, True, lead_id=42, d_rel=15.0, v_rel=-2.0, a_target=0.0)
   emit(12.0, 0.0, True, lead_id=42, d_rel=15.0, v_rel=-2.0, a_target=0.0)
 
   # Rapid lead-id churn inside the cluster window
@@ -161,6 +162,135 @@ def build_cut_in_already_braking(*, op_engaged: bool = True):
   # Cut-in appears while already braking
   for _ in range(20):
     emit(12.0, -0.5, True, lead_id=42, d_rel=15.0, v_rel=-2.0, a_target=-0.5)
+
+  return msgs
+
+
+def build_soft_cut_in(*, op_engaged: bool = True):
+  """Lead appears nearly co-speed (soft following); not a real closing cut-in."""
+  msgs = []
+  t = [0.0]
+
+  def emit(v, a, lead_status, lead_id=7, d_rel=15.0, v_rel=0.0, a_target=None):
+    msgs.append(msg("carState", t[0], vEgo=v, aEgo=a, brakePressed=False, gasPressed=False))
+    msgs.append(msg("carControl", t[0] + 0.001, longActive=op_engaged))
+    msgs.append(msg("radarState", t[0] + 0.002, leadOne=_lead(status=lead_status, dRel=d_rel, vLead=v + v_rel, vRel=v_rel, radarTrackId=lead_id)))
+    if op_engaged:
+      at = a_target if a_target is not None else a
+      msgs.append(msg("longitudinalPlanSP", t[0] + 0.003, aTarget=at))
+    t[0] += 0.1
+
+  # No lead
+  for _ in range(10):
+    emit(12.0, 0.0, False, a_target=0.0)
+
+  # Soft "cut-in" with near-zero closing velocity
+  for _ in range(20):
+    emit(12.0, 0.0, True, lead_id=42, d_rel=15.0, v_rel=-0.1, a_target=0.0)
+
+  return msgs
+
+
+def build_distant_cut_in(*, op_engaged: bool = True):
+  """Lead closes slowly from far away; TTC too long to count as an immediate cut-in."""
+  msgs = []
+  t = [0.0]
+
+  def emit(v, a, lead_status, lead_id=7, d_rel=15.0, v_rel=0.0, a_target=None):
+    msgs.append(msg("carState", t[0], vEgo=v, aEgo=a, brakePressed=False, gasPressed=False))
+    msgs.append(msg("carControl", t[0] + 0.001, longActive=op_engaged))
+    msgs.append(msg("radarState", t[0] + 0.002, leadOne=_lead(status=lead_status, dRel=d_rel, vLead=v + v_rel, vRel=v_rel, radarTrackId=lead_id)))
+    if op_engaged:
+      at = a_target if a_target is not None else a
+      msgs.append(msg("longitudinalPlanSP", t[0] + 0.003, aTarget=at))
+    t[0] += 0.1
+
+  # No lead
+  for _ in range(10):
+    emit(12.0, 0.0, False, a_target=0.0)
+
+  # Closing lead is far enough that TTC exceeds the validity window
+  for _ in range(20):
+    emit(12.0, 0.0, True, lead_id=42, d_rel=30.0, v_rel=-2.0, a_target=0.0)
+
+  return msgs
+
+
+def build_cut_in_repeated_detections(*, op_engaged: bool = True):
+  """Two detected cut-ins 2s apart should collapse into one summary cluster."""
+  msgs = []
+  t = [0.0]
+
+  def emit(v, a, lead_status, lead_id=7, d_rel=15.0, v_rel=-2.0, a_target=None):
+    msgs.append(msg("carState", t[0], vEgo=v, aEgo=a, brakePressed=False, gasPressed=False))
+    msgs.append(msg("carControl", t[0] + 0.001, longActive=op_engaged))
+    msgs.append(msg("radarState", t[0] + 0.002, leadOne=_lead(status=lead_status, dRel=d_rel, vLead=v + v_rel, vRel=v_rel, radarTrackId=lead_id)))
+    if op_engaged:
+      at = a_target if a_target is not None else a
+      msgs.append(msg("longitudinalPlanSP", t[0] + 0.003, aTarget=at))
+    t[0] += 0.1
+
+  # No lead
+  for _ in range(10):
+    emit(12.0, 0.0, False, a_target=0.0)
+
+  # First cut-in, then brief disappearance (>1s from last True to re-detect)
+  for _ in range(11):
+    emit(12.0, 0.0, True, lead_id=42, d_rel=15.0, v_rel=-2.0, a_target=0.0)
+  for _ in range(10):
+    emit(12.0, 0.0, False, a_target=0.0)
+  for _ in range(15):
+    emit(12.0, -0.5, True, lead_id=42, d_rel=15.0, v_rel=-2.0, a_target=-0.5)
+
+  return msgs
+
+
+def build_cut_in_no_brake_response(*, op_engaged: bool = True):
+  """Plausible cut-in, but OP/manual never brakes; valid cluster but no reaction metric."""
+  msgs = []
+  t = [0.0]
+
+  def emit(v, a, lead_status, lead_id=7, d_rel=15.0, v_rel=-2.0, a_target=None):
+    msgs.append(msg("carState", t[0], vEgo=v, aEgo=a, brakePressed=False, gasPressed=False))
+    msgs.append(msg("carControl", t[0] + 0.001, longActive=op_engaged))
+    msgs.append(msg("radarState", t[0] + 0.002, leadOne=_lead(status=lead_status, dRel=d_rel, vLead=v + v_rel, vRel=v_rel, radarTrackId=lead_id)))
+    if op_engaged:
+      at = a_target if a_target is not None else a
+      msgs.append(msg("longitudinalPlanSP", t[0] + 0.003, aTarget=at))
+    t[0] += 0.1
+
+  # No lead
+  for _ in range(10):
+    emit(12.0, 0.0, False, a_target=0.0)
+
+  # Cut-in with no ego braking response
+  for _ in range(25):
+    emit(12.0, 0.0, True, lead_id=42, d_rel=15.0, v_rel=-2.0, a_target=0.0)
+
+  return msgs
+
+
+def build_cut_in_with_positive_accel(*, op_engaged: bool = True):
+  """Plausible cut-in but ego accelerates; peak decel is positive and must not be median'd."""
+  msgs = []
+  t = [0.0]
+
+  def emit(v, a, lead_status, lead_id=7, d_rel=15.0, v_rel=-2.0, a_target=None):
+    msgs.append(msg("carState", t[0], vEgo=v, aEgo=a, brakePressed=False, gasPressed=False))
+    msgs.append(msg("carControl", t[0] + 0.001, longActive=op_engaged))
+    msgs.append(msg("radarState", t[0] + 0.002, leadOne=_lead(status=lead_status, dRel=d_rel, vLead=v + v_rel, vRel=v_rel, radarTrackId=lead_id)))
+    if op_engaged:
+      at = a_target if a_target is not None else a
+      msgs.append(msg("longitudinalPlanSP", t[0] + 0.003, aTarget=at))
+    t[0] += 0.1
+
+  # Establish a mildly positive baseline so peak_decel stays positive
+  for _ in range(10):
+    emit(12.0, 0.1, False, a_target=0.1)
+
+  # Cut-in, but ego accelerates instead of braking
+  for _ in range(25):
+    emit(12.0, 0.5, True, lead_id=42, d_rel=15.0, v_rel=-2.0, a_target=0.5)
 
   return msgs
 
@@ -255,6 +385,8 @@ def test_cut_in_lead_id_churn_clustered_to_one_event():
   summary = report.to_dict()["summary"]
   assert summary["op_cut_in_count"] == 1
   assert summary["op_cut_in_valid_count"] == 1
+  assert summary["op_cut_in_cluster_count"] == 1
+  assert summary["op_cut_in_valid_cluster_count"] == 1
 
 
 def test_cut_in_already_braking_excluded_from_valid_reaction():
@@ -287,3 +419,66 @@ def test_cut_in_immediate_response_not_classified_as_already_braking():
   summary = report.to_dict()["summary"]
   assert summary["op_cut_in_valid_count"] == 1
   assert summary["op_cut_in_already_braking_count"] == 0
+
+
+def test_soft_cut_in_is_invalid_reaction():
+  report = analyze_route(build_soft_cut_in(op_engaged=True), source="soft-cutin")
+  assert len(report.cut_ins) == 1
+  event = report.cut_ins[0]
+  assert event.op_engaged
+  assert not event.valid_reaction
+
+  summary = report.to_dict()["summary"]
+  assert summary["op_cut_in_count"] == 1
+  assert summary["op_cut_in_valid_count"] == 0
+  assert summary["op_cut_in_valid_cluster_count"] == 0
+  assert summary["op_cut_in_brake_median_s"] is None
+
+
+def test_distant_cut_in_is_invalid_reaction():
+  report = analyze_route(build_distant_cut_in(op_engaged=True), source="distant-cutin")
+  assert len(report.cut_ins) == 1
+  event = report.cut_ins[0]
+  assert event.op_engaged
+  assert not event.valid_reaction
+
+  summary = report.to_dict()["summary"]
+  assert summary["op_cut_in_count"] == 1
+  assert summary["op_cut_in_valid_count"] == 0
+  assert summary["op_cut_in_valid_cluster_count"] == 0
+  assert summary["op_cut_in_brake_median_s"] is None
+
+
+def test_cut_in_repeated_detections_form_one_summary_cluster():
+  report = analyze_route(build_cut_in_repeated_detections(op_engaged=True), source="repeated")
+  assert len(report.cut_ins) == 2
+  summary = report.to_dict()["summary"]
+  assert summary["op_cut_in_count"] == 2
+  assert summary["op_cut_in_cluster_count"] == 1
+  assert summary["op_cut_in_valid_cluster_count"] == 1
+
+
+def test_cut_in_cluster_without_brake_response_has_no_median():
+  report = analyze_route(build_cut_in_no_brake_response(op_engaged=True), source="no-brake")
+  assert len(report.cut_ins) == 1
+  event = report.cut_ins[0]
+  assert event.valid_reaction
+  assert event.brake_reaction_time is None
+
+  summary = report.to_dict()["summary"]
+  assert summary["op_cut_in_valid_cluster_count"] == 1
+  assert summary["op_cut_in_brake_median_s"] is None
+  assert summary["op_cut_in_peak_decel_median"] is None
+
+
+def test_cut_in_positive_peak_decel_not_in_median():
+  report = analyze_route(build_cut_in_with_positive_accel(op_engaged=True), source="positive-peak")
+  assert len(report.cut_ins) == 1
+  event = report.cut_ins[0]
+  assert event.valid_reaction
+  assert event.brake_reaction_time is None
+  assert event.peak_decel is None or event.peak_decel >= 0
+
+  summary = report.to_dict()["summary"]
+  assert summary["op_cut_in_valid_cluster_count"] == 1
+  assert summary["op_cut_in_peak_decel_median"] is None

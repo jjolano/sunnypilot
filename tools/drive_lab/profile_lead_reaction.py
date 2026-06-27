@@ -70,7 +70,12 @@ class LeadReactionParams:
   cut_in_brake_threshold: float = -0.3  # m/s^2; ego decel below this = "braked for cut-in"
   cut_in_window_s: float = 5.0  # window to look for brake response
   cut_in_cluster_window_s: float = 1.0  # s; ignore repeated cut-in detections within window (lead-id churn)
+  cut_in_event_gap_s: float = 5.0  # s; adjacent detected cut-ins within this gap are the same cluster in summaries
   cut_in_already_braking_threshold: float = -0.2  # m/s^2; ego already braking when cut-in appears
+  cut_in_min_v_rel: float = -0.5  # m/s; require lead closing at least this fast (more negative = faster)
+  cut_in_max_ttc_s: float = 8.0  # s; plausible time-to-collision when closing
+  cut_in_min_stable_s: float = 0.15  # s; lead ID/status must not churn immediately after detection
+  cut_in_min_model_prob: float = 0.5  # minimum radar modelProb; rejects detector noise
 
   # Lead tracking
   min_model_prob: float = 0.0  # minimum modelProb (0 = accept all status=True leads)
@@ -148,6 +153,16 @@ class LeadReactionReport:
     op_valid_cut_ins = [e for e in op_cut_ins if e.valid_reaction]
     manual_valid_cut_ins = [e for e in manual_cut_ins if e.valid_reaction]
 
+    gap_s = LeadReactionParams().cut_in_event_gap_s
+    op_clusters = _cluster_cut_ins(op_cut_ins, gap_s)
+    manual_clusters = _cluster_cut_ins(manual_cut_ins, gap_s)
+    op_canonical = [_canonical_cut_in(c) for c in op_clusters]
+    manual_canonical = [_canonical_cut_in(c) for c in manual_clusters]
+
+    # Clusters that are physically valid and actually produced a measured brake response.
+    op_braking = [c for c in op_canonical if c.valid_reaction and c.brake_reaction_time is not None]
+    manual_braking = [c for c in manual_canonical if c.valid_reaction and c.brake_reaction_time is not None]
+
     return {
       "source": self.source,
       "duration_s": _r(self.duration_s, 2),
@@ -167,16 +182,32 @@ class LeadReactionReport:
           _opt_median([e.accel_reaction_time for e in self.lead_exits if not e.op_engaged and e.accel_reaction_time is not None]),
           3,
         ),
-        "op_cut_in_brake_median_s": _r(_opt_median([e.brake_reaction_time for e in op_valid_cut_ins if e.brake_reaction_time is not None]), 3),
-        "manual_cut_in_brake_median_s": _r(_opt_median([e.brake_reaction_time for e in manual_valid_cut_ins if e.brake_reaction_time is not None]), 3),
-        "op_cut_in_peak_decel_median": _r(_opt_median([e.peak_decel for e in op_valid_cut_ins if e.peak_decel is not None]), 3),
-        "manual_cut_in_peak_decel_median": _r(_opt_median([e.peak_decel for e in manual_valid_cut_ins if e.peak_decel is not None]), 3),
+        "op_cut_in_brake_median_s": _r(
+          _opt_median([e.brake_reaction_time for e in op_braking if e.brake_reaction_time is not None]), 3
+        ),
+        "manual_cut_in_brake_median_s": _r(
+          _opt_median([e.brake_reaction_time for e in manual_braking if e.brake_reaction_time is not None]), 3
+        ),
+        "op_cut_in_peak_decel_median": _r(
+          _opt_median([e.peak_decel for e in op_braking if e.peak_decel is not None and e.peak_decel < 0]), 3
+        ),
+        "manual_cut_in_peak_decel_median": _r(
+          _opt_median([e.peak_decel for e in manual_braking if e.peak_decel is not None and e.peak_decel < 0]), 3
+        ),
+        # Event-level counts (preserved)
         "op_cut_in_count": len(op_cut_ins),
         "manual_cut_in_count": len(manual_cut_ins),
         "op_cut_in_valid_count": len(op_valid_cut_ins),
         "manual_cut_in_valid_count": len(manual_valid_cut_ins),
         "op_cut_in_already_braking_count": len([e for e in op_cut_ins if e.already_braking]),
         "manual_cut_in_already_braking_count": len([e for e in manual_cut_ins if e.already_braking]),
+        # Cluster-level counts (adjacent events within cut_in_event_gap_s)
+        "op_cut_in_cluster_count": len(op_clusters),
+        "manual_cut_in_cluster_count": len(manual_clusters),
+        "op_cut_in_valid_cluster_count": len([c for c in op_canonical if c.valid_reaction]),
+        "manual_cut_in_valid_cluster_count": len([c for c in manual_canonical if c.valid_reaction]),
+        "op_cut_in_already_braking_cluster_count": len([c for c in op_canonical if c.already_braking]),
+        "manual_cut_in_already_braking_cluster_count": len([c for c in manual_canonical if c.already_braking]),
       },
       "lead_speed_changes": [_change_to_dict(c) for c in self.lead_speed_changes],
       "op_reactions": [_reaction_to_dict(e) for e in self.op_reactions],
@@ -611,6 +642,47 @@ def _record_exit(ego: list[_EgoSample], exits: list[LeadExitEvent], t: float, le
 # ---------------------------------------------------------------------------
 
 
+def _cut_in_stable(radar: list[_RadarSample], start_idx: int, event_t: float, event_id: int | None, p: LeadReactionParams) -> bool:
+  """Return True if the same lead ID and status remain True for at least cut_in_min_stable_s."""
+  if event_id is None:
+    return False
+  for j in range(start_idx + 1, len(radar)):
+    if radar[j].t > event_t + p.cut_in_min_stable_s:
+      # Reached end of the stability window without finding a churn, so it's stable.
+      return True
+    if not radar[j].status or radar[j].lead_id != event_id:
+      return False
+  # No churn and no more samples; be conservative and call it unstable.
+  return False
+
+
+def _cluster_cut_ins(cut_ins: list[CutInEvent], gap_s: float) -> list[list[CutInEvent]]:
+  """Group detected cut-ins into clusters where adjacent events are within gap_s."""
+  sorted_events = sorted(cut_ins, key=lambda e: e.t)
+  clusters: list[list[CutInEvent]] = []
+  for e in sorted_events:
+    if not clusters or (e.t - clusters[-1][-1].t) > gap_s:
+      clusters.append([e])
+    else:
+      clusters[-1].append(e)
+  return clusters
+
+
+def _canonical_cut_in(cluster: list[CutInEvent]) -> CutInEvent:
+  """Pick one representative event per cluster for summary medians/counts.
+
+  Prefer the first event that is physically valid and has a measured brake reaction.
+  Fall back to the first valid event, then the first event in the cluster.
+  """
+  for e in cluster:
+    if e.valid_reaction and e.brake_reaction_time is not None:
+      return e
+  for e in cluster:
+    if e.valid_reaction:
+      return e
+  return cluster[0]
+
+
 def _detect_cut_ins(radar: list[_RadarSample], ego: list[_EgoSample], p: LeadReactionParams) -> list[CutInEvent]:
   cut_ins: list[CutInEvent] = []
   if len(radar) < 3:
@@ -620,7 +692,7 @@ def _detect_cut_ins(radar: list[_RadarSample], ego: list[_EgoSample], p: LeadRea
   prev_status = False
   last_cut_in_t: float | None = None
 
-  for s in radar:
+  for i, s in enumerate(radar):
     if not s.status or s.d_rel > p.cut_in_d_rel_max or s.d_rel <= 0:
       prev_id = s.lead_id
       prev_status = s.status
@@ -645,6 +717,15 @@ def _detect_cut_ins(radar: list[_RadarSample], ego: list[_EgoSample], p: LeadRea
         v_ego = event_ego.v
         op_engaged = event_ego.long_active
         if math.isfinite(v_ego) and v_ego >= p.min_ego_speed:
+          # Stricter event validity: real closing, plausible TTC, stable lead ID, model confidence.
+          closing = math.isfinite(s.v_rel) and s.v_rel <= p.cut_in_min_v_rel
+          ttc_ok = False
+          if closing and s.v_rel < 0:
+            ttc = -s.d_rel / s.v_rel
+            ttc_ok = 0.0 < ttc <= p.cut_in_max_ttc_s
+          stable = _cut_in_stable(radar, i, s.t, s.lead_id, p)
+          model_ok = math.isfinite(s.model_prob) and s.model_prob >= p.cut_in_min_model_prob
+
           # Signal at/before event time: planner target when OP is engaged, otherwise actual ego accel.
           # Avoid peeking one carState sample into the future, which would classify an immediate
           # response as "already braking" instead of a fast reaction.
@@ -660,22 +741,24 @@ def _detect_cut_ins(radar: list[_RadarSample], ego: list[_EgoSample], p: LeadRea
           # Determine whether the ego was already braking before this cut-in.
           already_braking = current_signal <= p.cut_in_already_braking_threshold or (a_before - current_signal) >= abs(p.cut_in_already_braking_threshold)
 
+          valid_reaction = (not already_braking) and closing and ttc_ok and stable and model_ok
+
           # Measure time to brake and peak decel over the response window
           end_t = s.t + p.cut_in_window_s
           brake_time = None
           peak_decel = None
 
-          for i in range(idx, len(ego)):
-            if ego[i].t > end_t:
+          for j in range(idx, len(ego)):
+            if ego[j].t > end_t:
               break
-            raw_signal = ego[i].a_target if (op_engaged and ego[i].a_target is not None) else ego[i].a
+            raw_signal = ego[j].a_target if (op_engaged and ego[j].a_target is not None) else ego[j].a
             if raw_signal is None or not math.isfinite(raw_signal):
               continue
             signal = float(raw_signal)
             if peak_decel is None or signal < peak_decel:
               peak_decel = signal
-            if (not already_braking) and (signal - a_before < p.cut_in_brake_threshold) and brake_time is None:
-              brake_time = float(ego[i].t - s.t)
+            if valid_reaction and (signal - a_before < p.cut_in_brake_threshold) and brake_time is None:
+              brake_time = float(ego[j].t - s.t)
 
           if already_braking:
             brake_time = None
@@ -691,7 +774,7 @@ def _detect_cut_ins(radar: list[_RadarSample], ego: list[_EgoSample], p: LeadRea
               brake_reaction_time=brake_time,
               peak_decel=peak_decel,
               already_braking=already_braking,
-              valid_reaction=not already_braking,
+              valid_reaction=valid_reaction,
             )
           )
           last_cut_in_t = s.t
@@ -764,9 +847,11 @@ def render_report(report: LeadReactionReport) -> str:
     "",
     "  cut-in brake reaction (median):",
     f"    OP:      {s['op_cut_in_brake_median_s']} s  peak decel {s['op_cut_in_peak_decel_median']} m/s^2",
-    f"             ({s['op_cut_in_valid_count']} valid / {s['op_cut_in_count']} total, {s['op_cut_in_already_braking_count']} already braking)",
+    f"             ({s['op_cut_in_valid_cluster_count']} valid / "
+    + f"{s['op_cut_in_cluster_count']} clusters, {s['op_cut_in_already_braking_cluster_count']} already braking)",
     f"    manual:  {s['manual_cut_in_brake_median_s']} s  peak decel {s['manual_cut_in_peak_decel_median']} m/s^2",
-    f"             ({s['manual_cut_in_valid_count']} valid / {s['manual_cut_in_count']} total, {s['manual_cut_in_already_braking_count']} already braking)",
+    f"             ({s['manual_cut_in_valid_cluster_count']} valid / "
+    + f"{s['manual_cut_in_cluster_count']} clusters, {s['manual_cut_in_already_braking_cluster_count']} already braking)",
   ]
 
   # Per-event detail for small counts
