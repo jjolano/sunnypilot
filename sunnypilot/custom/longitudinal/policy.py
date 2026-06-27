@@ -31,6 +31,8 @@ from openpilot.sunnypilot.custom.longitudinal.runway_governor import runway_comf
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   COMFORT_RELAX_ACCEL_MIN,
   CRUISE_LEEWAY_DOWNHILL_ACCEL,
+  CRUISE_LEEWAY_HIGHWAY_MAX,
+  CRUISE_LEEWAY_HIGHWAY_MIN_V_EGO,
   CRUISE_LEEWAY_MAX,
   CRUISE_LEEWAY_MIN,
   CRUISE_LEEWAY_RECOVERY,
@@ -59,6 +61,16 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
 )
 
 SAFETY_FORCE_SLOW_DECEL = -0.2
+
+# Overspeed coast leeway guards.
+_OVERSPEED_RATE_GUARD_ACCEL = -0.25          # mild braking floor when climbing above leeway
+_OVERSPEED_RATE_GUARD_A_EGO_THRESHOLD = 0.05
+_OVERSPEED_FAR_LEAD_MARGIN_M = 10.0
+_OVERSPEED_FAR_LEAD_TIME_GAP_S = 3.0
+_OVERSPEED_LEAD_CONFIDENCE_MIN = 0.55
+_OVERSPEED_LEAD_CRAWL_V_MAX = 1.0
+_OVERSPEED_LEAD_TARGET_EPS = 0.05
+_OVERSPEED_LEAD_HARD_BRAKE_A_K = -0.5
 
 # Conservative uphill grade recovery: small extra cruise accel only when the grade signal is
 # clearly uphill and there are no lead/stop/curve/speed-limit/override contexts. The gain is
@@ -157,24 +169,57 @@ def stopping_decel(v_ego: float, distance: float, min_distance: float = 1.0) -> 
   return -(float(v_ego) ** 2) / (2.0 * max(float(distance), min_distance))
 
 
-def dynamic_cruise_overspeed_leeway(accel_coast: float) -> float:
+def dynamic_cruise_overspeed_leeway(accel_coast: float, v_ego: float = 0.0) -> float:
   confidence = _clip(float(accel_coast) / CRUISE_LEEWAY_DOWNHILL_ACCEL, 0.0, 1.0)
-  return CRUISE_LEEWAY_MIN + confidence * (CRUISE_LEEWAY_MAX - CRUISE_LEEWAY_MIN)
+  leeway_max = CRUISE_LEEWAY_HIGHWAY_MAX if v_ego >= CRUISE_LEEWAY_HIGHWAY_MIN_V_EGO else CRUISE_LEEWAY_MAX
+  return CRUISE_LEEWAY_MIN + confidence * (leeway_max - CRUISE_LEEWAY_MIN)
+
+
+def _lead_allows_overspeed_coast(scene: LongitudinalScene) -> bool:
+  """Treat only far, stable, opening/faster leads as effectively no-lead for overspeed coast."""
+  if not scene.has_lead:
+    return True
+  if scene.lead_should_stop or not scene.lead_kinematics_valid or not scene.lead_stable:
+    return False
+  if scene.lead_shadow_active or scene.alternate_threat_active:
+    return False
+  if not all(math.isfinite(v) for v in (scene.v_ego, scene.v_cruise, scene.lead_v,
+                                        scene.lead_v_rel, scene.lead_d_rel, scene.follow_gap,
+                                        scene.lead_confidence, scene.lead_a_k, scene.lead_a_target,
+                                        scene.seed_a_target)):
+    return False
+  if scene.lead_a_target < scene.seed_a_target - _OVERSPEED_LEAD_TARGET_EPS:
+    return False
+  if scene.lead_a_k < _OVERSPEED_LEAD_HARD_BRAKE_A_K:
+    return False
+  if scene.lead_confidence < _OVERSPEED_LEAD_CONFIDENCE_MIN:
+    return False
+  if scene.lead_v <= _OVERSPEED_LEAD_CRAWL_V_MAX:
+    return False
+  if scene.lead_v_rel < 0.0 or scene.lead_v < max(scene.v_ego, scene.v_cruise):
+    return False
+  far_gate = max(scene.follow_gap + _OVERSPEED_FAR_LEAD_MARGIN_M,
+                 _OVERSPEED_FAR_LEAD_TIME_GAP_S * scene.v_ego)
+  return bool(scene.lead_d_rel > far_gate)
 
 
 def dynamic_cruise_coast_accel(scene: LongitudinalScene, a_target: float) -> float:
   """Let speed bleed off naturally (coast) instead of braking, within a downhill-scaled
   overspeed leeway — the hypermile free-coast behavior."""
-  if scene.has_lead or scene.stop_threat or scene.force_slow_decel or scene.v_cruise <= 0.0:
+  if scene.stop_threat or scene.force_slow_decel or scene.v_cruise <= 0.0:
+    return a_target
+  if not _lead_allows_overspeed_coast(scene):
     return a_target
   overspeed = scene.v_ego - scene.v_cruise
   if overspeed <= 0.0:
     return a_target
-  leeway = dynamic_cruise_overspeed_leeway(scene.accel_coast)
+  leeway = dynamic_cruise_overspeed_leeway(scene.accel_coast, scene.v_ego)
   if overspeed <= leeway:
     return min(0.0, max(a_target, scene.accel_coast))
   recovery = _clip((overspeed - leeway) / CRUISE_LEEWAY_RECOVERY, 0.0, 1.0)
   coast_target = (1.0 - recovery) * min(0.0, scene.accel_coast) + recovery * a_target
+  if scene.a_ego > _OVERSPEED_RATE_GUARD_A_EGO_THRESHOLD:
+    coast_target = min(coast_target, _OVERSPEED_RATE_GUARD_ACCEL)
   return min(0.0, max(a_target, coast_target))
 
 
@@ -429,7 +474,8 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
 
   # downhill free-coast leeway (raises a_target toward coast)
   coast_a = dynamic_cruise_coast_accel(scene, float(scene.seed_a_target))
-  if coast_a > float(scene.seed_a_target):
+  coast_candidate_active = coast_a > float(scene.seed_a_target)
+  if coast_candidate_active:
     cands.append(LongitudinalCandidate(coast_a, CandidateRole.PROGRESS, EvidenceClass.CRUISE,
                                        "dynamic_overspeed_coast_leeway", authorized=True))
 
@@ -515,7 +561,8 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   # (A positive "hazard" is not a hazard; it would otherwise clamp the PROGRESS layer that is
   # designed to raise accel when authorized. The instant the seed goes negative and is not a
   # low-risk soft case, it re-binds.)
-  if scene.has_lead and (scene.lead_a_target < 0.0 or not (opening_pullaway or alignment_pullaway)):
+  if (scene.has_lead and not coast_candidate_active
+      and (scene.lead_a_target < 0.0 or not (opening_pullaway or alignment_pullaway))):
     recovery = _lead_inside_gap_recovery(scene)
     if recovery is not None:
       target, is_hazard = recovery
