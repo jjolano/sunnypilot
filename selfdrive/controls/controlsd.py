@@ -14,12 +14,13 @@ from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
-from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
+from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
@@ -30,6 +31,7 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
+CONTROL_N_T_IDXS = ModelConstants.T_IDXS[:CONTROL_N]
 
 
 def set_model_path_state_sensor_confidence(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
@@ -47,6 +49,40 @@ def set_model_path_state_sensor_confidence(model_path_state, debug: dict | None 
   model_path_state.sensorSteeringYawLatAccelDelta = float(debug.get('sensor_steering_yaw_lat_accel_delta', float('nan')))
   model_path_state.sensorModelYawLatAccelSignedDelta = float(debug.get('sensor_model_yaw_lat_accel_signed_delta', float('nan')))
   model_path_state.sensorSteeringYawLatAccelSignedDelta = float(debug.get('sensor_steering_yaw_lat_accel_signed_delta', float('nan')))
+
+
+def set_model_path_state_speed_shadow(model_path_state, curvature: float, v_ego: float, a_ego: float,
+                                      plan_speeds, plan_accels, lat_delay: float, *, plan_valid: bool = True) -> None:
+  def finite_or_nan(value) -> float:
+    try:
+      value = float(value)
+    except (TypeError, ValueError):
+      return float('nan')
+    return value if math.isfinite(value) else float('nan')
+
+  curvature = finite_or_nan(curvature)
+  v_ego = finite_or_nan(v_ego)
+  a_ego = finite_or_nan(a_ego)
+
+  def predicted(seq, t: float) -> float:
+    t = finite_or_nan(t)
+    if not plan_valid or not math.isfinite(t) or len(seq) != len(CONTROL_N_T_IDXS):
+      return float('nan')
+    values = np.asarray(seq, dtype=float)
+    if not np.all(np.isfinite(values)):
+      return float('nan')
+    return float(np.interp(max(0.0, float(t)), CONTROL_N_T_IDXS, values))
+
+  model_path_state.shadowCurrentLatAccel = curvature * v_ego ** 2
+  model_path_state.shadowCurrentJerkSpeedTerm = 2.0 * curvature * v_ego * a_ego
+
+  v_delay = predicted(plan_speeds, lat_delay)
+  model_path_state.shadowLatDelayLatAccel = curvature * v_delay ** 2
+  model_path_state.shadow05sLatAccel = curvature * predicted(plan_speeds, 0.5) ** 2
+  model_path_state.shadow10sLatAccel = curvature * predicted(plan_speeds, 1.0) ** 2
+  model_path_state.shadowLatDelayJerkSpeedTerm = 2.0 * curvature * v_delay * predicted(
+    plan_accels, lat_delay,
+  )
 
 
 class Controls(ControlsExt):
@@ -277,6 +313,13 @@ class Controls(ControlsExt):
     if hasattr(self, 'lateral_demand'):
       model_path_state = cs.modelPathState
       raw_curvature_for_log = getattr(self, 'raw_desired_curvature', self.desired_curvature)
+      long_plan = self.sm['longitudinalPlan']
+      lat_delay = self.sm['liveDelay'].lateralDelay + LAT_SMOOTH_SECONDS
+      long_plan_valid = (
+        self.sm.valid['longitudinalPlan'] and
+        self.sm.alive['longitudinalPlan'] and
+        self.sm.freq_ok['longitudinalPlan']
+      )
       model_path_state.active = False
       model_path_state.gated = False
       model_path_state.quality = 0.0
@@ -306,6 +349,9 @@ class Controls(ControlsExt):
       model_path_state.demandSource = "disabled"
       model_path_state.dtleEstimate = float('nan')
       set_model_path_state_sensor_confidence(model_path_state)
+      set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
+                                        long_plan.speeds, long_plan.accels, lat_delay,
+                                        plan_valid=long_plan_valid)
       last_result = getattr(self.lateral_demand, 'last_result', None)
       if last_result is not None:
         try:
@@ -341,6 +387,9 @@ class Controls(ControlsExt):
           model_path_state.demandSource = str(debug.get('demand_source', 'model_path'))
           model_path_state.dtleEstimate = float(debug.get('dtle_estimate', float('nan')))
           set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
+          set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
+                                            long_plan.speeds, long_plan.accels, lat_delay,
+                                            plan_valid=long_plan_valid)
         except Exception:
           cloudlog.exception("failed to publish lateral modelPathState telemetry")
           self.lateral_demand.clear()

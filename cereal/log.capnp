@@ -975,6 +975,14 @@ struct ControlsState @0x97ff69c53601abf1 {
     sensorModelYawLatAccelSignedDelta @38 :Float32;
     sensorSteeringYawLatAccelSignedDelta @39 :Float32;
     sensorResponseClassification @40 :Text;
+    # Shadow-only metrics using post-clip controlsState.desiredCurvature.
+    # Used to compare current-v lateral demand against longitudinalPlan predicted speed.
+    shadowCurrentLatAccel @41 :Float32;
+    shadowLatDelayLatAccel @42 :Float32;
+    shadow05sLatAccel @43 :Float32;
+    shadow10sLatAccel @44 :Float32;
+    shadowCurrentJerkSpeedTerm @45 :Float32;
+    shadowLatDelayJerkSpeedTerm @46 :Float32;
   }
 
 

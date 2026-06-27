@@ -5,7 +5,11 @@ import math
 
 import pytest
 import cereal.messaging as messaging
-from openpilot.selfdrive.controls.controlsd import set_model_path_state_sensor_confidence
+from openpilot.selfdrive.controls.controlsd import (
+  CONTROL_N_T_IDXS,
+  set_model_path_state_sensor_confidence,
+  set_model_path_state_speed_shadow,
+)
 
 
 def _new_model_path_state():
@@ -90,3 +94,70 @@ def test_partial_debug_fills_defaults_for_missing_keys():
   assert mps.sensorResponseClassification == "blocked"
   assert math.isnan(mps.sensorModelYawLatAccelSignedDelta)
   assert math.isnan(mps.sensorSteeringYawLatAccelSignedDelta)
+
+
+def test_speed_shadow_uses_current_and_predicted_speed():
+  mps = _new_model_path_state()
+  speeds = [10.0 + t for t in CONTROL_N_T_IDXS]
+  accels = [0.5 for _ in CONTROL_N_T_IDXS]
+
+  set_model_path_state_speed_shadow(mps, 0.01, 10.0, 0.2, speeds, accels, 0.5)
+
+  assert mps.shadowCurrentLatAccel == pytest.approx(1.0)
+  assert mps.shadowCurrentJerkSpeedTerm == pytest.approx(0.04)
+  assert mps.shadowLatDelayLatAccel == pytest.approx(0.01 * 10.5 ** 2)
+  assert mps.shadow05sLatAccel == pytest.approx(0.01 * 10.5 ** 2)
+  assert mps.shadow10sLatAccel == pytest.approx(0.01 * 11.0 ** 2)
+  assert mps.shadowLatDelayJerkSpeedTerm == pytest.approx(2.0 * 0.01 * 10.5 * 0.5)
+
+
+def test_speed_shadow_missing_plan_writes_nan_for_predicted_fields():
+  mps = _new_model_path_state()
+
+  set_model_path_state_speed_shadow(mps, 0.01, 10.0, 0.2, [], [], 0.5)
+
+  assert mps.shadowCurrentLatAccel == pytest.approx(1.0)
+  assert mps.shadowCurrentJerkSpeedTerm == pytest.approx(0.04)
+  assert math.isnan(mps.shadowLatDelayLatAccel)
+  assert math.isnan(mps.shadow05sLatAccel)
+  assert math.isnan(mps.shadow10sLatAccel)
+  assert math.isnan(mps.shadowLatDelayJerkSpeedTerm)
+
+
+def test_speed_shadow_invalid_plan_writes_nan_for_predicted_fields():
+  mps = _new_model_path_state()
+  speeds = [10.0 for _ in CONTROL_N_T_IDXS]
+  accels = [0.5 for _ in CONTROL_N_T_IDXS]
+
+  set_model_path_state_speed_shadow(mps, 0.01, 10.0, 0.2, speeds, accels, 0.5, plan_valid=False)
+
+  assert mps.shadowCurrentLatAccel == pytest.approx(1.0)
+  assert math.isnan(mps.shadowLatDelayLatAccel)
+  assert math.isnan(mps.shadow05sLatAccel)
+  assert math.isnan(mps.shadow10sLatAccel)
+  assert math.isnan(mps.shadowLatDelayJerkSpeedTerm)
+
+
+def test_speed_shadow_nonfinite_inputs_do_not_look_valid():
+  mps = _new_model_path_state()
+  speeds = [10.0 for _ in CONTROL_N_T_IDXS]
+  accels = [0.5 for _ in CONTROL_N_T_IDXS]
+  speeds[3] = float('inf')
+
+  set_model_path_state_speed_shadow(mps, 0.01, 10.0, 0.2, speeds, accels, float('nan'))
+
+  assert mps.shadowCurrentLatAccel == pytest.approx(1.0)
+  assert math.isnan(mps.shadowLatDelayLatAccel)
+  assert math.isnan(mps.shadow05sLatAccel)
+  assert math.isnan(mps.shadow10sLatAccel)
+  assert math.isnan(mps.shadowLatDelayJerkSpeedTerm)
+
+
+def test_speed_shadow_mismatched_accels_only_nan_jerk():
+  mps = _new_model_path_state()
+  speeds = [10.0 for _ in CONTROL_N_T_IDXS]
+
+  set_model_path_state_speed_shadow(mps, 0.01, 10.0, 0.2, speeds, [], 0.5)
+
+  assert mps.shadowLatDelayLatAccel == pytest.approx(1.0)
+  assert math.isnan(mps.shadowLatDelayJerkSpeedTerm)
