@@ -32,6 +32,10 @@ V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
 RADAR_TO_CENTER = 2.7   # (deprecated) RADAR is ~ 2.7m ahead from center of car
 RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame
 
+# lead model probability gates
+VISION_ONLY_PROB_THRESHOLD = 0.5        # vision-only fallback requires high confidence
+RADAR_CONFIRMED_PROB_THRESHOLD = 0.25   # radar-confirmed match can use lower confidence
+
 
 class KalmanParams:
   def __init__(self, dt: float):
@@ -231,16 +235,15 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
              low_speed_override: bool = True) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   lead_prob = _clean_lead_prob(lead_prob)
-  if len(tracks) > 0 and ready and lead_prob > .5:
+  track = None
+  if len(tracks) > 0 and ready and lead_prob > RADAR_CONFIRMED_PROB_THRESHOLD:
     track = match_vision_to_track(v_ego, lead_msg, tracks)
-  else:
-    track = None
 
   lead_dict = {'status': False}
   if track is not None:
     lead_dict = track.get_RadarState(lead_prob)
     lead_dict = get_custom_yrel(CP, CP_SP, lead_dict, lead_msg)
-  elif (track is None) and ready and (lead_prob > .5):
+  elif ready and lead_prob > VISION_ONLY_PROB_THRESHOLD:
     lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob)
 
   if low_speed_override:

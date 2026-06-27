@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from openpilot.selfdrive.controls.radard import _clean_lead_prob, get_RadarState_from_vision, get_lead, match_vision_to_track
+from openpilot.selfdrive.controls.radard import _clean_lead_prob, get_RadarState_from_vision, get_lead, match_vision_to_track, KalmanParams, Track
 
 
 def model_lead(x=20.0, y=0.0, v=12.0, a=0.0, x_std=1.0, y_std=1.0, v_std=1.0):
@@ -12,6 +12,13 @@ def model_lead(x=20.0, y=0.0, v=12.0, a=0.0, x_std=1.0, y_std=1.0, v_std=1.0):
 
 def car_params():
   return SimpleNamespace(brand="toyota", flags=0), SimpleNamespace(flags=0)
+
+
+def radar_track(identifier=1, d_rel=20.0, y_rel=0.0, v_rel=1.0, v_lead=11.0, measured=True):
+  params = KalmanParams(0.02)
+  track = Track(identifier, v_lead, params)
+  track.update(d_rel, y_rel, v_rel, v_lead, measured)
+  return track
 
 
 def test_vision_only_lead_requires_finite_model_fields():
@@ -85,3 +92,48 @@ def test_clean_lead_probability_is_finite_and_bounded():
   assert _clean_lead_prob(-0.2) == 0.0
   assert _clean_lead_prob(1.2) == 1.0
   assert _clean_lead_prob(0.7) == 0.7
+
+
+def test_low_prob_model_with_matching_radar_track_is_confirmed():
+  cp, cp_sp = car_params()
+  tracks = {1: radar_track(d_rel=22.0, y_rel=0.0, v_rel=1.0, v_lead=11.0)}
+
+  lead = get_lead(10.0, True, tracks, model_lead(x=23.52, v=11.0), 10.0, 0.3, cp, cp_sp, low_speed_override=False)
+
+  assert lead["status"] is True
+  assert lead["radar"] is True
+  assert lead["modelProb"] == 0.3
+
+
+def test_low_prob_model_without_radar_track_remains_rejected():
+  cp, cp_sp = car_params()
+
+  lead = get_lead(10.0, True, {}, model_lead(x=23.52, v=11.0), 10.0, 0.3, cp, cp_sp, low_speed_override=False)
+
+  assert lead == {"status": False}
+
+
+def test_low_prob_model_with_bad_radar_match_remains_rejected():
+  cp, cp_sp = car_params()
+  tracks = {1: radar_track(d_rel=80.0, y_rel=0.0, v_rel=1.0, v_lead=11.0)}
+
+  lead = get_lead(10.0, True, tracks, model_lead(x=23.52, v=11.0), 10.0, 0.3, cp, cp_sp, low_speed_override=False)
+
+  assert lead == {"status": False}
+
+
+def test_vision_only_lead_still_requires_high_probability():
+  cp, cp_sp = car_params()
+
+  lead = get_lead(10.0, True, {}, model_lead(x=20.0, v=11.0), 10.0, 0.5, cp, cp_sp, low_speed_override=False)
+
+  assert lead == {"status": False}
+
+
+def test_nonfinite_prob_with_radar_track_still_rejected():
+  cp, cp_sp = car_params()
+  tracks = {1: radar_track(d_rel=22.0, y_rel=0.0, v_rel=1.0, v_lead=11.0)}
+
+  lead = get_lead(10.0, True, tracks, model_lead(x=23.52, v=11.0), 10.0, float("nan"), cp, cp_sp, low_speed_override=False)
+
+  assert lead == {"status": False}
