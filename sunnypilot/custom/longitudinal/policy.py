@@ -274,10 +274,20 @@ def _lead_crawl_launch_context(scene: LongitudinalScene) -> bool:
   )
 
 
+def _crawl_launch_accel(delta_v: float) -> float:
+  """Gentle for tiny twitches, stronger once the lead is clearly walking, capped."""
+  gentle = delta_v / LEAD_CRAWL_LAUNCH_TAU
+  if delta_v <= 0.4:
+    return gentle
+  # ramp up from (0.4 m/s -> 0.16 m/s^2) with a shorter tau once the lead is genuinely moving
+  stronger = 0.16 + (delta_v - 0.4) / 1.5
+  return min(LEAD_CRAWL_ACCEL_MAX, max(gentle, stronger))
+
+
 def lead_pullaway_accel(scene: LongitudinalScene, personality: Personality) -> float:
   delta_v = max(0.0, scene.lead_v - scene.v_ego)
   if _lead_crawl_launch_context(scene):
-    return min(LEAD_CRAWL_ACCEL_MAX, delta_v / LEAD_CRAWL_LAUNCH_TAU)
+    return _crawl_launch_accel(delta_v)
   return min(launch_accel_max(personality), delta_v / LEAD_LAUNCH_TAU)
 
 

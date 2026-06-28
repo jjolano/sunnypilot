@@ -412,12 +412,15 @@ class CustomLongitudinalStack:
                                 and raw_lead_present and policy_lead_progress_allowed
                                 and not lead_shadow_active and not alternate_threat_active)
     clear_release_context = bool(release_source == "no_lead_launch" and not raw_lead_present and not lead_threat_active)
+    # Lead release sources need only small positive evidence; no-lead release still needs a
+    # clear 0.15 m/s^2 launch pulse so it does not creep on sensor noise.
+    release_a_evidence_threshold = 0.05 if lead_release_context else 0.15
     standstill_release_allowed = bool(
       release_source in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch")
       and (lead_release_context or clear_release_context)
       and decision.reason != "physical_hazard"
       and not decision.should_stop
-      and raw_a_target >= 0.15
+      and raw_a_target >= release_a_evidence_threshold
       and not act_inp.force_slow_decel
       and not act_inp.brake_pressed
       and not act_inp.gas_pressed

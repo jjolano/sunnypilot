@@ -559,3 +559,145 @@ def test_crawl_fallback_large_latched_gap_requires_capped_baseline_opening():
   assert planner._lead_stop_hold_active is True
   assert should_stop is True
   assert a_target <= -0.4
+
+
+def _make_valid_release_custom_output(a_target: float = 0.25):
+  return make_custom_output(
+    standstill_release_allowed=True,
+    standstill_release_source="lead_pullaway",
+    standstill_release_a_target=a_target,
+  )
+
+
+def test_valid_source_releases_before_large_crawl_deadband():
+  # Same latched lead moving with only a small baseline opening; valid source should release
+  # immediately instead of waiting for the 0.5 m crawl deadband.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.15)
+  lead = make_lead(d_rel=6.45, v_lead=0.8, v_rel=0.5, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.05, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert a_target == pytest.approx(0.25)
+  assert planner._last_release_block_reason == ""
+
+
+def test_valid_source_blocked_by_driver_brake():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.15)
+  lead = make_lead(d_rel=6.45, v_lead=0.8, v_rel=0.5, lead_id=1)
+  sm = make_sm(v_ego=0.0, brake_pressed=True, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.05, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert planner._last_release_block_reason == "driver_brake"
+
+
+def test_valid_source_blocked_by_raw_model_stop():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.15)
+  lead = make_lead(d_rel=6.45, v_lead=0.8, v_rel=0.5, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.05, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=True,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert planner._last_release_block_reason == "raw_model_stop"
+
+
+def test_valid_source_blocked_by_mpc_brake():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.15)
+  lead = make_lead(d_rel=6.45, v_lead=0.8, v_rel=0.5, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.2, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert planner._last_release_block_reason == "mpc_brake_veto"
+
+
+def test_valid_source_blocked_by_weak_opening_rate():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.15)
+  lead = make_lead(d_rel=6.45, v_lead=0.8, v_rel=0.10, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.05, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert planner._last_release_block_reason == "lead_not_moving"
+
+
+def test_valid_source_blocked_until_min_baseline_opening():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.15)
+  lead = make_lead(d_rel=6.35, v_lead=0.8, v_rel=0.5, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.05, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert planner._last_release_block_reason == "baseline_opening"
+
+
+def test_valid_source_blocked_by_stopped_closing_lead():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.15)
+  # Lead reports zero speed / closing -> not a real pullaway.
+  lead = make_lead(d_rel=6.45, v_lead=0.0, v_rel=-0.1, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.05, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert planner._last_release_block_reason == "lead_not_moving"

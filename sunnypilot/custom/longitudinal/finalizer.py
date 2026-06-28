@@ -11,7 +11,6 @@ import math
 from dataclasses import dataclass, replace
 from typing import Any
 
-from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalOutput
 
@@ -30,11 +29,13 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN = 0.2
   _STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR = 4.5
   _STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING = 0.5
+  _STOP_HOLD_SAME_ID_VALID_BASELINE_OPENING_M = 0.20
   _STOP_HOLD_SAME_ID_GAP_INCREASING_S = 0.10
+  _STOP_HOLD_SAME_ID_VALID_GAP_INCREASING_S = 0.10
   _STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET = -0.10
   _STOP_HOLD_NEW_ID_GAP_INCREASING_S = 0.30
   _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
-  _STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S = 0.15
+  _STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S = 0.10
   _STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S = 0.15
   _STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V = 5.0
   _STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL = 1.0
@@ -498,7 +499,8 @@ class CustomLongitudinalFinalizer:
     return True
 
   def _stop_hold_release_accel_for_gap(self, requested_a: float, lead_d_rel: float,
-                                       lead_v: float, lead_v_rel: float, same_id: bool) -> float:
+                                       lead_v: float, lead_v_rel: float, same_id: bool,
+                                       valid_source: bool = False) -> float:
     release_a = min(max(float(requested_a), self._STOP_HOLD_RELEASE_A_MIN), self._STOP_HOLD_RELEASE_A_MAX)
     if self._routine_lead_launch_breakout(float(lead_v), float(lead_v_rel)):
       return float(release_a)
@@ -508,10 +510,17 @@ class CustomLongitudinalFinalizer:
     # Crawl mode maintains the original stopped gap with a deadband instead of chasing each
     # small lead pulse. Only the gap beyond the deadband can ask for positive crawl accel.
     gap_error = float(lead_d_rel) - float(self.lead_stop_hold_gap_baseline_d_rel)
+    crawl_release_a = float(min(release_a, self._STOP_HOLD_CRAWL_RELEASE_A_MAX))
     if gap_error <= self._STOP_HOLD_CRAWL_DEADBAND_M:
+      # Valid source with a clearly moving lead: do not let the deadband suppress the
+      # release entirely, but still keep the crawl launch cap for proportionality.
+      if valid_source and float(lead_v) >= 0.30 and float(lead_v_rel) >= 0.15:
+        return crawl_release_a
       return 0.0
     gap_limited_a = (gap_error - self._STOP_HOLD_CRAWL_DEADBAND_M) / self._STOP_HOLD_CRAWL_GAP_TAU
     if gap_limited_a < self._STOP_HOLD_CRAWL_RELEASE_A_MIN:
+      if valid_source and float(lead_v) >= 0.30 and float(lead_v_rel) >= 0.15:
+        return crawl_release_a
       return 0.0
     return float(min(release_a, self._STOP_HOLD_CRAWL_RELEASE_A_MAX, gap_limited_a))
 
@@ -607,21 +616,28 @@ class CustomLongitudinalFinalizer:
         return False, float(lead_d_rel)
     min_d_rel = stopping_distance + self._STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN if same_id else stopping_distance + 0.1
     if same_id and self.lead_stop_hold_gap_baseline_d_rel is not None:
-      baseline_min_d_rel = float(self.lead_stop_hold_gap_baseline_d_rel) + self._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
+      baseline_opening = self._STOP_HOLD_SAME_ID_VALID_BASELINE_OPENING_M if source_valid else self._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
+      baseline_min_d_rel = float(self.lead_stop_hold_gap_baseline_d_rel) + baseline_opening
       min_d_rel = max(self._STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR, min(min_d_rel, baseline_min_d_rel))
     if float(lead_d_rel) <= min_d_rel:
       self.last_release_block_reason = "distance_gate"
       return False, float(lead_d_rel)
-    min_gap_increasing_s = self._STOP_HOLD_SAME_ID_MIN_PULLAWAY_S if same_id else 0.15
-    if same_id and self._routine_lead_launch_breakout(float(lead_v), float(lead_v_rel)):
-      min_gap_increasing_s = self._STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S
-    if gate_fallback_candidate:
-      min_gap_increasing_s = self._STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S
+    if same_id:
+      if source_valid:
+        min_gap_increasing_s = self._STOP_HOLD_SAME_ID_VALID_GAP_INCREASING_S
+      elif self._routine_lead_launch_breakout(float(lead_v), float(lead_v_rel)):
+        min_gap_increasing_s = self._STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S
+      elif gate_fallback_candidate:
+        min_gap_increasing_s = self._STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S
+      else:
+        min_gap_increasing_s = self._STOP_HOLD_SAME_ID_MIN_PULLAWAY_S
+    else:
+      min_gap_increasing_s = 0.15
     if self.lead_stop_hold_gap_increasing_s < min_gap_increasing_s:
       self.last_release_block_reason = "gap_increasing_time"
       return False, float(lead_d_rel)
     if same_id and self.lead_stop_hold_gap_baseline_d_rel is not None:
-      min_baseline_opening = 0.5 if crawl_fallback else 0.3
+      min_baseline_opening = 0.5 if crawl_fallback else (self._STOP_HOLD_SAME_ID_VALID_BASELINE_OPENING_M if source_valid else 0.3)
       if float(lead_d_rel) - float(self.lead_stop_hold_gap_baseline_d_rel) < min_baseline_opening:
         self.last_release_block_reason = "baseline_opening"
         return False, float(lead_d_rel)
@@ -632,7 +648,7 @@ class CustomLongitudinalFinalizer:
     if crawl_fallback:
       self.last_release_block_reason = ""
       requested_a = max(float(mpc_a_target), self._STOP_HOLD_CRAWL_RELEASE_A_MIN)
-      release_a = self._stop_hold_release_accel_for_gap(requested_a, lead_d_rel, lead_v, lead_v_rel, same_id)
+      release_a = self._stop_hold_release_accel_for_gap(requested_a, lead_d_rel, lead_v, lead_v_rel, same_id, valid_source=False)
       if release_a <= 0.0:
         self.last_release_block_reason = "crawl_deadband"
         return False, float(lead_d_rel)
@@ -651,14 +667,14 @@ class CustomLongitudinalFinalizer:
         # block_reason already set by one of the release validators
         return False, float(lead_d_rel)
       self.last_release_block_reason = ""
-      release_a = self._stop_hold_release_accel_for_gap(float(mpc_a_target), lead_d_rel, lead_v, lead_v_rel, same_id)
+      release_a = self._stop_hold_release_accel_for_gap(float(mpc_a_target), lead_d_rel, lead_v, lead_v_rel, same_id, valid_source=False)
       if release_a <= 0.0:
         self.last_release_block_reason = "crawl_deadband"
         return False, float(lead_d_rel)
       return True, release_a
     self.last_release_block_reason = ""
     requested_release_a = float(getattr(custom_long_output, "standstill_release_a_target", 0.0)) if custom_long_output is not None else 0.0
-    release_a = self._stop_hold_release_accel_for_gap(requested_release_a, lead_d_rel, lead_v, lead_v_rel, same_id)
+    release_a = self._stop_hold_release_accel_for_gap(requested_release_a, lead_d_rel, lead_v, lead_v_rel, same_id, valid_source=True)
     if release_a <= 0.0:
       self.last_release_block_reason = "crawl_deadband"
       return False, float(lead_d_rel)

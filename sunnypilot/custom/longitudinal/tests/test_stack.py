@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from openpilot.sunnypilot.custom.longitudinal.decision import Decision
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
@@ -123,6 +124,52 @@ def test_standstill_release_blocked_by_physical_hazard_and_brake_seed():
   ), DT)
   assert haz.standstill_release_allowed is False
   assert haz.standstill_release_source == ""
+
+
+def _warm_lead_progress_allowed(s: CustomLongitudinalStack, ld):
+  for _ in range(12):
+    s.update(base(v_ego=0.0, v_cruise=12.0, seed_a_target=0.0,
+                  leads=(ld, None), mode=LongitudinalMode.ACC), DT)
+
+
+def test_lead_release_allows_small_positive_evidence(monkeypatch):
+  s = CustomLongitudinalStack()
+  ld = lead(d_rel=8.0, v_lead=0.5, v_rel=0.5)
+  _warm_lead_progress_allowed(s, ld)
+
+  def fake_decide(candidates, mode, accel_limits, sources=None):
+    return Decision(a_target=0.08, should_stop=False, selected_intent="lead_pullaway", reason="cruise")
+  monkeypatch.setattr("openpilot.sunnypilot.custom.longitudinal.stack.decide", fake_decide)
+
+  r = s.update(base(v_ego=0.0, v_cruise=12.0, leads=(ld, None), mode=LongitudinalMode.ACC), DT)
+  assert r.standstill_release_allowed is True
+  assert r.standstill_release_source == "lead_pullaway"
+  assert r.standstill_release_a_target == pytest.approx(0.15)
+
+
+def test_no_lead_release_keeps_stronger_evidence_threshold(monkeypatch):
+  def fake_decide(candidates, mode, accel_limits, sources=None):
+    return Decision(a_target=0.08, should_stop=False, selected_intent="no_lead_launch", reason="cruise")
+  monkeypatch.setattr("openpilot.sunnypilot.custom.longitudinal.stack.decide", fake_decide)
+
+  s = CustomLongitudinalStack()
+  r = s.update(base(v_ego=0.0, v_cruise=12.0, leads=(None, None), mode=LongitudinalMode.E2E,
+                    model_should_stop=False, model_stop_distance=None, model_desired_accel=0.08), DT)
+  assert r.standstill_release_allowed is False
+  assert r.standstill_release_source == ""
+
+
+def test_lead_release_rejects_tiny_positive_evidence(monkeypatch):
+  s = CustomLongitudinalStack()
+  ld = lead(d_rel=8.0, v_lead=0.5, v_rel=0.5)
+  _warm_lead_progress_allowed(s, ld)
+
+  def fake_decide(candidates, mode, accel_limits, sources=None):
+    return Decision(a_target=0.04, should_stop=False, selected_intent="lead_pullaway", reason="cruise")
+  monkeypatch.setattr("openpilot.sunnypilot.custom.longitudinal.stack.decide", fake_decide)
+
+  r = s.update(base(v_ego=0.0, v_cruise=12.0, leads=(ld, None), mode=LongitudinalMode.ACC), DT)
+  assert r.standstill_release_allowed is False
 
 
 def test_e2e_model_stop_brakes_acc_does_not():

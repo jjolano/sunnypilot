@@ -937,17 +937,18 @@ def test_latch_release_same_lead_clears_earlier_with_bounded_accel():
   assert 0.15 <= a <= 0.35
 
 
-def test_latch_release_crawl_maintains_original_gap_deadband():
+def test_valid_source_crawl_releases_below_deadband_with_cap():
   sp = fake_planner(LongitudinalMode.ACC)
   _arm_stop_hold(sp)
   _set_lead_pullaway_release(sp)
+  # Valid source with a moving lead no longer waits for the 0.5 m crawl deadband,
+  # but the crawl launch cap still limits authority.
   sp._lead_stop_hold_gap_increasing_s = 0.30
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.6, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
-  assert sp._lead_stop_hold_active is True
-  assert should_stop is True
-  assert a == -0.2  # prep may relax hold, but deadband blocks positive crawl
-  assert sp._last_release_block_reason == "crawl_deadband"
+  assert sp._lead_stop_hold_active is False
+  assert should_stop is False
+  assert math.isclose(a, 0.25, abs_tol=1e-9)
 
 
 def test_stop_hold_caps_early_stop_baseline_at_six_meters():
@@ -980,16 +981,19 @@ def test_latch_release_crawl_gap_error_caps_positive_accel():
   assert 0.05 <= a <= 0.25
 
 
-def test_latch_release_crawl_pullaway_keeps_full_gap_time():
+def test_latch_release_crawl_pullaway_waits_for_valid_gap_time():
   sp = fake_planner(LongitudinalMode.ACC)
   _arm_stop_hold(sp)
   _set_lead_pullaway_release(sp)
-  sp._lead_stop_hold_gap_increasing_s = 0.15
+  # Valid-source same-lead release now uses a shorter gap-confirm timer (0.10 s), but it
+  # still requires evidence; starting from zero with an opening gap gives only one tick
+  # (0.05 s) of evidence and must not release.
+  sp._lead_stop_hold_gap_increasing_s = 0.0
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
   assert should_stop is True
-  assert a == -0.2  # soft prep may relax hold, but positive release still waits for full crawl evidence
+  assert a <= -0.20  # still held; prep may be softening if above its own threshold
 
 
 def test_latch_release_routine_breakout_uses_short_gap_time():

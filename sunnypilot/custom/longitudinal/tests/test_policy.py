@@ -17,6 +17,7 @@ from openpilot.sunnypilot.custom.longitudinal.model_trust import GENTLE_CAUTION_
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   CRUISE_LEEWAY_MAX,
   CRUISE_LEEWAY_MIN,
+  LEAD_CRAWL_ACCEL_MAX,
   Personality,
   launch_accel_max,
 )
@@ -193,8 +194,20 @@ def test_close_crawl_pulse_is_damped_to_reduce_accordion():
   d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.8, lead_d_rel=7.0,
                                             seed_a_target=0.0, lead_a_target=0.0)),
              LongitudinalMode.ACC, LIMITS)
-  assert d.a_target == pytest.approx(0.8 / 2.5)
+  # 0.8 m/s crawl is now stronger than the old v/2.5=0.32 but still capped and guarded.
+  assert d.a_target > 0.8 / 2.5
   assert d.a_target < 0.55
+
+
+@pytest.mark.parametrize("lead_v", [0.6, 0.8, 1.0])
+def test_crawl_launch_is_stronger_than_old_damping_and_capped(lead_v):
+  # Use a fixed opening v_rel below the 1.0 m/s crawl breakout so all cases stay in the
+  # crawl-launch regime and compare against the old v/2.5 damping.
+  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=lead_v, lead_v_rel=0.9, lead_d_rel=7.0,
+                                            seed_a_target=0.0, lead_a_target=0.0)),
+             LongitudinalMode.ACC, LIMITS)
+  assert d.a_target > lead_v / 2.5
+  assert 0.0 < d.a_target <= LEAD_CRAWL_ACCEL_MAX
 
 
 def test_clear_low_speed_breakout_uses_normal_launch_response():
