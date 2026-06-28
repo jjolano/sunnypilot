@@ -6,7 +6,6 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import math
-from typing import cast
 
 from cereal import messaging, custom
 from openpilot.common.constants import CV
@@ -24,32 +23,10 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.lead_anticipation import LeadAnticipation
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, admitted_evidence
-from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, CustomLongitudinalOutput, MODEL_STALE_AGE_S, _message_age_s
+from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, MODEL_STALE_AGE_S, _message_age_s
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
-
-
-class _ProxyToFinalizer:
-  """Descriptor that forwards a private planner attribute to the finalizer.
-
-  Keeps ``LongitudinalPlannerSP`` backwards-compatible for drive_lab/tests/debug trace
-  while the finalizer owns the actual state.
-  """
-
-  def __init__(self, attr: str, converter=None):
-    self.attr = attr
-    self.converter = converter
-
-  def __get__(self, obj, objtype=None):
-    if obj is None:
-      return self
-    return getattr(obj.custom_long_finalizer, self.attr)
-
-  def __set__(self, obj, value):
-    if self.converter is not None:
-      value = self.converter(value)
-    setattr(obj.custom_long_finalizer, self.attr, value)
 
 
 class LongitudinalPlannerSP:
@@ -91,17 +68,93 @@ class LongitudinalPlannerSP:
 
   # Forwarding accessors: finalizer owns the state; planner exposes it for
   # backward-compatible instrumentation (drive_lab, unit tests, debug trace).
-  _lead_stop_hold_active = _ProxyToFinalizer("lead_stop_hold_active", bool)
-  _lead_stop_hold_gap_increasing_s = _ProxyToFinalizer("lead_stop_hold_gap_increasing_s", float)
-  _lead_stop_hold_missing_s = _ProxyToFinalizer("lead_stop_hold_missing_s", float)
-  _lead_stop_hold_lead_id = _ProxyToFinalizer("lead_stop_hold_lead_id")
-  _lead_stop_hold_gap_prev_d_rel = _ProxyToFinalizer("lead_stop_hold_gap_prev_d_rel")
-  _lead_stop_hold_gap_baseline_d_rel = _ProxyToFinalizer("lead_stop_hold_gap_baseline_d_rel")
-  _stop_hold_release_slew_a_target = _ProxyToFinalizer("stop_hold_release_slew_a_target")
-  _stop_hold_release_prep_a_target = _ProxyToFinalizer("stop_hold_release_prep_a_target")
-  _stop_hold_release_prep_raw_prev = _ProxyToFinalizer("stop_hold_release_prep_raw_prev")
-  _last_release_block_reason = _ProxyToFinalizer("last_release_block_reason", str)
-  _custom_long_output_telemetry = _ProxyToFinalizer("custom_long_output_telemetry")
+  @property
+  def _lead_stop_hold_active(self) -> bool:
+    return self.custom_long_finalizer.lead_stop_hold_active
+
+  @_lead_stop_hold_active.setter
+  def _lead_stop_hold_active(self, value: bool) -> None:
+    self.custom_long_finalizer.lead_stop_hold_active = bool(value)
+
+  @property
+  def _lead_stop_hold_gap_increasing_s(self) -> float:
+    return self.custom_long_finalizer.lead_stop_hold_gap_increasing_s
+
+  @_lead_stop_hold_gap_increasing_s.setter
+  def _lead_stop_hold_gap_increasing_s(self, value: float) -> None:
+    self.custom_long_finalizer.lead_stop_hold_gap_increasing_s = float(value)
+
+  @property
+  def _lead_stop_hold_missing_s(self) -> float:
+    return self.custom_long_finalizer.lead_stop_hold_missing_s
+
+  @_lead_stop_hold_missing_s.setter
+  def _lead_stop_hold_missing_s(self, value: float) -> None:
+    self.custom_long_finalizer.lead_stop_hold_missing_s = float(value)
+
+  @property
+  def _lead_stop_hold_lead_id(self):
+    return self.custom_long_finalizer.lead_stop_hold_lead_id
+
+  @_lead_stop_hold_lead_id.setter
+  def _lead_stop_hold_lead_id(self, value) -> None:
+    self.custom_long_finalizer.lead_stop_hold_lead_id = value
+
+  @property
+  def _lead_stop_hold_gap_prev_d_rel(self):
+    return self.custom_long_finalizer.lead_stop_hold_gap_prev_d_rel
+
+  @_lead_stop_hold_gap_prev_d_rel.setter
+  def _lead_stop_hold_gap_prev_d_rel(self, value) -> None:
+    self.custom_long_finalizer.lead_stop_hold_gap_prev_d_rel = value
+
+  @property
+  def _lead_stop_hold_gap_baseline_d_rel(self):
+    return self.custom_long_finalizer.lead_stop_hold_gap_baseline_d_rel
+
+  @_lead_stop_hold_gap_baseline_d_rel.setter
+  def _lead_stop_hold_gap_baseline_d_rel(self, value) -> None:
+    self.custom_long_finalizer.lead_stop_hold_gap_baseline_d_rel = value
+
+  @property
+  def _stop_hold_release_slew_a_target(self):
+    return self.custom_long_finalizer.stop_hold_release_slew_a_target
+
+  @_stop_hold_release_slew_a_target.setter
+  def _stop_hold_release_slew_a_target(self, value) -> None:
+    self.custom_long_finalizer.stop_hold_release_slew_a_target = value
+
+  @property
+  def _stop_hold_release_prep_a_target(self):
+    return self.custom_long_finalizer.stop_hold_release_prep_a_target
+
+  @_stop_hold_release_prep_a_target.setter
+  def _stop_hold_release_prep_a_target(self, value) -> None:
+    self.custom_long_finalizer.stop_hold_release_prep_a_target = value
+
+  @property
+  def _stop_hold_release_prep_raw_prev(self):
+    return self.custom_long_finalizer.stop_hold_release_prep_raw_prev
+
+  @_stop_hold_release_prep_raw_prev.setter
+  def _stop_hold_release_prep_raw_prev(self, value) -> None:
+    self.custom_long_finalizer.stop_hold_release_prep_raw_prev = value
+
+  @property
+  def _last_release_block_reason(self) -> str:
+    return self.custom_long_finalizer.last_release_block_reason
+
+  @_last_release_block_reason.setter
+  def _last_release_block_reason(self, value: str) -> None:
+    self.custom_long_finalizer.last_release_block_reason = str(value)
+
+  @property
+  def _custom_long_output_telemetry(self):
+    return self.custom_long_finalizer.custom_long_output_telemetry
+
+  @_custom_long_output_telemetry.setter
+  def _custom_long_output_telemetry(self, value) -> None:
+    self.custom_long_finalizer.custom_long_output_telemetry = value
 
   @staticmethod
   def _sm_item(sm, key):
@@ -295,10 +348,7 @@ class LongitudinalPlannerSP:
 
     custom_long = longitudinalPlanSP.customLongitudinal
     custom_long.enabled = bool(self.custom_long.enabled)
-    telemetry_custom_long_output = (
-      cast(CustomLongitudinalOutput | None, self._custom_long_output_telemetry)
-      if self._custom_long_output_telemetry is not None else self.custom_long_output
-    )
+    telemetry_custom_long_output = self._custom_long_output_telemetry if self._custom_long_output_telemetry is not None else self.custom_long_output
     custom_long.active = bool(telemetry_custom_long_output.enabled) if telemetry_custom_long_output is not None else bool(self.custom_long.enabled)
     custom_long.shouldStop = bool(telemetry_custom_long_output.should_stop) if telemetry_custom_long_output is not None else False
     custom_long.mode = self._custom_longitudinal_mode_to_telemetry()
