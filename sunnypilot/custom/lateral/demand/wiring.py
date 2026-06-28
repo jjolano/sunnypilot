@@ -96,6 +96,8 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
     orientation_z=tuple(getattr(ori, "z", ()) or ()),
     orientation_rate_z=tuple(getattr(ori_rate, "z", ()) or ()),
     lane_line_probs=tuple(getattr(model_v2, "laneLineProbs", ()) or ()),
+    lane_line_stds=tuple(getattr(model_v2, "laneLineStds", ()) or ()),
+    lane_lines=tuple(getattr(model_v2, "laneLines", ()) or ()),
     frame_drop_perc=float(getattr(model_v2, "frameDropPerc", 0.0) or 0.0),
     model_age_s=sanitized_model_age_s(model_age_s),
     yaw_rate=yaw_rate,

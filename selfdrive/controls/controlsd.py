@@ -34,6 +34,18 @@ ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 CONTROL_N_T_IDXS = ModelConstants.T_IDXS[:CONTROL_N]
 
 
+def set_model_path_state_geometry(model_path_state, debug: dict | None = None) -> None:
+  debug = debug or {}
+  model_path_state.geometryMode = bool(debug.get('lane_centering_geometry_mode', False))
+  model_path_state.geometryValid = bool(debug.get('lane_centering_geometry_valid', False))
+  model_path_state.geometryReason = str(debug.get('lane_centering_geometry_reason', 'disabled'))
+  model_path_state.geometryConfidence = float(debug.get('lane_centering_geometry_confidence', 0.0))
+  model_path_state.geometryOffsetNear = float(debug.get('lane_centering_geometry_offset_near', 0.0))
+  model_path_state.geometryOffsetPreview = float(debug.get('lane_centering_geometry_offset_preview', 0.0))
+  model_path_state.geometryWidthNear = float(debug.get('lane_centering_geometry_width_near', 0.0))
+  model_path_state.geometryWidthPreview = float(debug.get('lane_centering_geometry_width_preview', 0.0))
+
+
 def set_model_path_state_sensor_confidence(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
   debug = debug or {}
   model_path_state.sensorConfidenceAvailable = bool(debug.get('sensor_confidence_available', False))
@@ -348,6 +360,7 @@ class Controls(ControlsExt):
       model_path_state.laneChangeShapingActive = False
       model_path_state.demandSource = "disabled"
       model_path_state.dtleEstimate = float('nan')
+      set_model_path_state_geometry(model_path_state)
       set_model_path_state_sensor_confidence(model_path_state)
       set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
                                         long_plan.speeds, long_plan.accels, lat_delay,
@@ -386,6 +399,7 @@ class Controls(ControlsExt):
           model_path_state.laneChangeShapingActive = bool(debug.get('lane_change_shaping_active', False))
           model_path_state.demandSource = str(debug.get('demand_source', 'model_path'))
           model_path_state.dtleEstimate = float(debug.get('dtle_estimate', float('nan')))
+          set_model_path_state_geometry(model_path_state, debug)
           set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
           set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
                                             long_plan.speeds, long_plan.accels, lat_delay,

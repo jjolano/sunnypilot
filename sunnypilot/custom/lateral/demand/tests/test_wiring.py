@@ -21,17 +21,19 @@ N = 33
 
 def fake_model(curvature=0.001, include_meta=True):
   xs = [float(x) for x in range(N)]
-  ys = [0.5 * curvature * x * x for x in range(N)]
+  ys = [0.5 * curvature * x * x for x in xs]
   model = SimpleNamespace(
     position=SimpleNamespace(x=xs, y=ys, yStd=[0.1] * N),
     orientation=SimpleNamespace(z=[curvature * x for x in range(N)]),
     orientationRate=SimpleNamespace(z=[curvature * 20.0] * N),
     laneLineProbs=[0.9, 0.9, 0.9, 0.9],
+    laneLineStds=[0.1, 0.1, 0.1, 0.1],
     frameDropPerc=0.0,
   )
   if include_meta:
     model.meta = SimpleNamespace(laneChangeState=SimpleNamespace(value=0), laneChangeDirection=SimpleNamespace(value=0))
   return model
+
 
 
 def fake_model_shadow(offset=0.0, prob=0.9, width=4.0, curvature=0.0):
@@ -109,6 +111,22 @@ def test_build_pipeline_inputs_extracts_model_arrays():
   assert inp.model_age_s == pytest.approx(0.25)
   assert inp.lane_change_state == 0  # conservative default (harness-gated)
   assert inp.lane_change_state_valid is True
+
+
+def test_build_pipeline_inputs_extracts_lane_lines_and_stds():
+  model = fake_model(0.002)
+  model.laneLines = [
+    SimpleNamespace(x=range(N), y=[0.0] * N),
+    SimpleNamespace(x=range(N), y=[2.0] * N),
+    SimpleNamespace(x=range(N), y=[-2.0] * N),
+    SimpleNamespace(x=range(N), y=[0.0] * N),
+  ]
+  inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
+                              measured_curvature=0.0015, model_v2=model,
+                              lane_centering_assist_enabled=False)
+  assert len(inp.lane_lines) == 4
+  assert len(inp.lane_line_stds) == 4
+  assert inp.lane_line_stds[1] == pytest.approx(0.1)
 
 
 def test_sanitized_model_age_fails_nonfinite_missing_negative_to_stale():

@@ -7,6 +7,7 @@ feel value is gated on the engaged corpus.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -65,6 +66,8 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
     orientation_z=kwargs.get("orientation_z", yaw),
     orientation_rate_z=kwargs.get("orientation_rate_z", yaw_rate),
     lane_line_probs=kwargs.get("lane_line_probs", [0.9, 0.9, 0.9, 0.9]),
+    lane_line_stds=kwargs.get("lane_line_stds", [0.1, 0.1, 0.1, 0.1]),
+    lane_lines=kwargs.get("lane_lines", ()),
     frame_drop_perc=kwargs.get("frame_drop_perc", 0.0),
     model_age_s=kwargs.get("model_age_s", 0.0),
     yaw_rate=kwargs.get("yaw_rate", None),
@@ -801,3 +804,142 @@ def test_clean_frame_after_soft_gate_reseeds_temporal_curvature():
   assert clean.gated is False
   assert clean.desired_curvature > 0.0
   assert abs(clean.desired_curvature - raw) < abs(stale_curvature - raw) * 0.25
+
+
+def _lane_lines(center_offset: float = 0.0, width: float = 4.0, curvature: float = 0.0):
+  xs = [float(x) for x in range(N)]
+  left_y = [center_offset - width * 0.5 + 0.5 * curvature * x * x for x in xs]
+  right_y = [center_offset + width * 0.5 + 0.5 * curvature * x * x for x in xs]
+  return (
+    SimpleNamespace(x=xs, y=[y - width for y in left_y]),
+    SimpleNamespace(x=xs, y=left_y),
+    SimpleNamespace(x=xs, y=right_y),
+    SimpleNamespace(x=xs, y=[y + width for y in right_y]),
+  )
+
+
+def _run_with_geometry(path_curvature: float, lane_center_offset: float, frames: int = 80):
+  p = LateralDemandPipeline(DT)
+  lane_lines = _lane_lines(center_offset=lane_center_offset)
+  for _ in range(frames):
+    r = p.update(valid_inputs(
+      v_ego=20.0,
+      curvature=path_curvature,
+      lane_centering_assist_enabled=True,
+      lane_lines=lane_lines,
+      lane_line_stds=[0.1, 0.1, 0.1, 0.1],
+      lane_line_probs=[0.9, 0.9, 0.9, 0.9],
+      smooth_model_path_curvature=False,
+    ))
+  return r
+
+
+def test_lane_centering_geometry_path_right_negative_nudge():
+  # Positive path curvature gives positive model y (right of lane center with y+ right convention).
+  r = _run_with_geometry(path_curvature=0.005, lane_center_offset=0.0)
+  assert r.debug["lane_centering_geometry_valid"] is True
+  assert r.debug["lane_centering_geometry_mode"] is True
+  assert r.debug["lane_centering_geometry_offset_near"] < -0.1
+  assert r.demand.lane_centering_curvature_nudge < 0.0
+  assert r.demand.lane_centering_assist_active is True
+
+
+def test_lane_centering_geometry_path_left_positive_nudge():
+  r = _run_with_geometry(path_curvature=-0.005, lane_center_offset=0.0)
+  assert r.debug["lane_centering_geometry_valid"] is True
+  assert r.debug["lane_centering_geometry_mode"] is True
+  assert r.debug["lane_centering_geometry_offset_near"] > 0.1
+  assert r.demand.lane_centering_curvature_nudge > 0.0
+  assert r.demand.lane_centering_assist_active is True
+
+
+def test_lane_centering_geometry_no_nudge_inside_leeway():
+  # Tiny curvature keeps geometric offset inside the geometry deadband.
+  r = _run_with_geometry(path_curvature=0.0002, lane_center_offset=0.0, frames=80)
+  assert r.debug["lane_centering_geometry_valid"] is True
+  assert r.debug["lane_centering_geometry_mode"] is True
+  assert abs(r.debug["lane_centering_geometry_offset_near"]) < 0.06
+  assert r.demand.lane_centering_curvature_nudge == pytest.approx(0.0, abs=1e-6)
+
+
+def test_lane_centering_invalid_geometry_preserves_model_path_behavior():
+  p = LateralDemandPipeline(DT)
+  # No lane lines: geometry invalid, model-path LCA should still activate for a ramp.
+  for _ in range(80):
+    r = p.update(valid_inputs(
+      v_ego=20.0,
+      curvature=0.001,
+      lane_centering_assist_enabled=True,
+      lane_lines=(),
+      lane_line_stds=[0.1, 0.1, 0.1, 0.1],
+      lane_line_probs=[0.9, 0.9, 0.9, 0.9],
+      smooth_model_path_curvature=False,
+    ))
+  assert r.debug["lane_centering_geometry_valid"] is False
+  assert r.debug["lane_centering_geometry_mode"] is False
+  assert r.demand.lane_centering_assist_active is True
+  assert abs(r.demand.lane_centering_curvature_nudge) > 1e-5
+
+
+def test_lane_centering_geometry_steady_off_center_nudge():
+  # Parallel off-center path: near≈preview, no growth. Geometry mode should still
+  # rate-limit a same-sign nudge under the shared cap.
+  p = LateralDemandPipeline(DT)
+  xs = [float(x) for x in range(N)]
+  # Path is a constant +0.5 m offset (right of lane center, y+ right convention).
+  # A constant offset gives the model path a slight heading, so also bend it back
+  # gently to keep orientation_z small and avoid triggering high-curvature gating.
+  path_y = [0.5 + 0.0001 * x for x in xs]
+  yaw = [0.0001] * N
+  lane_lines = _lane_lines(center_offset=0.0)
+  for _ in range(80):
+    r = p.update(valid_inputs(
+      v_ego=20.0,
+      curvature=0.0,
+      position_x=xs,
+      position_y=path_y,
+      orientation_z=yaw,
+      lane_centering_assist_enabled=True,
+      lane_lines=lane_lines,
+      lane_line_stds=[0.1, 0.1, 0.1, 0.1],
+      lane_line_probs=[0.9, 0.9, 0.9, 0.9],
+      smooth_model_path_curvature=False,
+    ))
+  assert r.debug["lane_centering_geometry_valid"] is True
+  assert r.debug["lane_centering_geometry_mode"] is True
+  assert r.debug["lane_centering_geometry_offset_near"] < -0.45
+  assert r.demand.lane_centering_curvature_nudge < -1e-5
+  assert r.demand.lane_centering_assist_active is True
+
+
+def test_lane_centering_geometry_heading_cannot_flip_offset_correction():
+  tracker = LaneCenteringAssistTracker()
+  xs = [float(x) for x in range(N)]
+  inputs = LaneCenteringAssistInputs(
+    lat_active=True,
+    v_ego=20.0,
+    measured_curvature=0.0,
+    model_curvature=0.0,
+    previous_processed_curvature=0.0,
+    path_quality=1.0,
+    path_reason=LANE_CENTERING_ASSIST_OK_REASON,
+    lane_change_shaping_active=False,
+    lane_change_blend=0.0,
+    curvature_limited=False,
+    steering_pressed=False,
+    left_blinker=False,
+    right_blinker=False,
+    position_x=xs,
+    position_y=[0.5] * N,  # path right of lane center => geometry offset negative
+    orientation_z=[0.2] * N,  # raw model heading points right and must not flip correction
+    lane_line_probs=[0.9, 0.9, 0.9, 0.9],
+    lane_lines=_lane_lines(center_offset=0.0),
+    lane_line_stds=[0.1, 0.1, 0.1, 0.1],
+  )
+  for _ in range(80):
+    result = tracker.update(inputs, DT)
+
+  assert result.debug["lane_centering_geometry_mode"] is True
+  assert result.debug["lane_centering_geometry_offset_near"] < -0.45
+  assert result.heading_error == pytest.approx(0.0)
+  assert result.curvature_nudge < 0.0

@@ -983,6 +983,14 @@ struct ControlsState @0x97ff69c53601abf1 {
     shadow10sLatAccel @44 :Float32;
     shadowCurrentJerkSpeedTerm @45 :Float32;
     shadowLatDelayJerkSpeedTerm @46 :Float32;
+    geometryMode @47 :Bool;
+    geometryValid @48 :Bool;
+    geometryReason @49 :Text;
+    geometryConfidence @50 :Float32;
+    geometryOffsetNear @51 :Float32;
+    geometryOffsetPreview @52 :Float32;
+    geometryWidthNear @53 :Float32;
+    geometryWidthPreview @54 :Float32;
   }
 
 

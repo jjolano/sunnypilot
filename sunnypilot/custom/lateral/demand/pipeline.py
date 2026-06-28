@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
 from openpilot.common.realtime import DT_CTRL
 from openpilot.sunnypilot.custom.lateral.demand.types import (
@@ -73,6 +73,8 @@ class LateralDemandPipelineInputs:
   orientation_z: Sequence[float] = ()
   orientation_rate_z: Sequence[float] = ()
   lane_line_probs: Sequence[float] = ()
+  lane_line_stds: Sequence[float] = ()
+  lane_lines: Sequence[Any] = ()
   frame_drop_perc: float = 0.0
   model_age_s: float = 0.0
   yaw_rate: float | None = None
@@ -231,6 +233,8 @@ class LateralDemandPipeline:
           position_y=tuple(inputs.position_y),
           orientation_z=tuple(inputs.orientation_z),
           lane_line_probs=tuple(inputs.lane_line_probs),
+          lane_lines=tuple(inputs.lane_lines),
+          lane_line_stds=tuple(inputs.lane_line_stds),
           demand_source=demand_source,
         ), self.dt)
         new_desired_curvature += lane_centering_result.curvature_nudge
@@ -313,6 +317,7 @@ class LateralDemandPipeline:
         "lane_change_shaping_active": lane_change_shaping_active,
         "lane_centering_active": bool(lane_centering_result.active),
         "lane_centering_nudge": float(lane_centering_result.curvature_nudge),
+        **lane_centering_result.debug,
         "curve_memory_active": bool(curve_memory_result.active) if curve_memory_result is not None else False,
         "curve_memory_remembered": float(curve_memory_result.remembered) if curve_memory_result is not None else float("nan"),
         "curve_memory_source": curve_memory_result.source if curve_memory_result is not None else "disabled",

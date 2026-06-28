@@ -1,10 +1,14 @@
 import math
 from dataclasses import dataclass, field, replace
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
 from openpilot.sunnypilot.custom.lateral.demand.types import DEMAND_SOURCE_MODEL_PATH
+from openpilot.sunnypilot.custom.lateral.demand.lane_geometry import (
+  LaneGeometryResult,
+  evaluate_lane_geometry,
+)
 
 
 LANE_CENTERING_ASSIST_MIN_SPEED = 5.0
@@ -18,6 +22,11 @@ LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_MIN_M = 3.0
 LANE_CENTERING_ASSIST_PREVIEW_MIN_M = 8.0
 LANE_CENTERING_ASSIST_LATERAL_DEADBAND = 0.03
 LANE_CENTERING_ASSIST_GROWTH_DEADBAND = 0.015
+LANE_CENTERING_ASSIST_GEOMETRY_LATERAL_DEADBAND = 0.12
+LANE_CENTERING_ASSIST_GEOMETRY_GROWTH_DEADBAND = 0.06
+LANE_CENTERING_ASSIST_GEOMETRY_STRAIGHT_LATERAL_DEADBAND = 0.18
+LANE_CENTERING_ASSIST_GEOMETRY_STRAIGHT_GROWTH_DEADBAND = 0.10
+LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES = 20  # 0.2 s at 100 Hz
 LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE = 1e-6
 LANE_CENTERING_ASSIST_MAX_LAT_ACCEL = 0.08
 LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_BP = [10.0, 20.0, 30.0]
@@ -87,6 +96,8 @@ class LaneCenteringAssistInputs:
   orientation_z: Sequence[float]
   lane_line_probs: Sequence[float]
   demand_source: str = DEMAND_SOURCE_MODEL_PATH
+  lane_lines: Sequence[Any] = ()
+  lane_line_stds: Sequence[float] = ()
 
 
 @dataclass(frozen=True)
@@ -113,6 +124,31 @@ def inactive_lane_centering_assist_result(reason: str = "inactive") -> LaneCente
   return LaneCenteringAssistResult(False, 0.0, 0.0, 0.0, 0.0, 0.0, reason, _debug(reason=reason))
 
 
+def _evaluate_geometry(
+  inputs: LaneCenteringAssistInputs,
+  lateral_error: float,
+  predicted_lateral_error: float,
+) -> LaneGeometryResult:
+  """Compute inner-lane geometry, falling back to model path when unavailable."""
+  near_x = min(
+    max(inputs.v_ego * LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_T, LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_MIN_M),
+    max(float(x) for x in inputs.position_x) if inputs.position_x else LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_MIN_M,
+  )
+  preview_x = min(
+    max(inputs.v_ego * LANE_CENTERING_ASSIST_PREVIEW_T, LANE_CENTERING_ASSIST_PREVIEW_MIN_M),
+    max(float(x) for x in inputs.position_x) if inputs.position_x else LANE_CENTERING_ASSIST_PREVIEW_MIN_M,
+  )
+  return evaluate_lane_geometry(
+    lane_lines=inputs.lane_lines,
+    lane_line_probs=inputs.lane_line_probs,
+    lane_line_stds=inputs.lane_line_stds,
+    position_x=inputs.position_x,
+    position_y=inputs.position_y,
+    near_x=near_x,
+    preview_x=preview_x,
+  )
+
+
 class LaneCenteringAssistTracker:
   def __init__(self) -> None:
     self.reset()
@@ -121,6 +157,8 @@ class LaneCenteringAssistTracker:
     self._filtered_nudge = 0.0
     self._active_sign = 0
     self._reason_cooldown_ticks = 0
+    self._geometry_persistence_ticks = 0
+    self._geometry_active = False
     self._relax = _CenterChaseRelaxation()
 
   def update(self, inputs: LaneCenteringAssistInputs, dt: float) -> LaneCenteringAssistResult:
@@ -130,12 +168,40 @@ class LaneCenteringAssistTracker:
       return self._hard_block("invalid_path")
 
     lateral_error, heading_error, predicted_lateral_error = metrics
+    geometry = _evaluate_geometry(inputs, lateral_error, predicted_lateral_error)
+
+    # Apply geometry-corrected errors only after a short persistence period and only
+    # while the harder geometry gates are satisfied. Existing LCA gates still apply.
+    gate_reason = _gate_reason(inputs)
+    if geometry.valid and gate_reason is None:
+      if self._geometry_active:
+        self._geometry_persistence_ticks = LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES
+      else:
+        self._geometry_persistence_ticks = min(
+          self._geometry_persistence_ticks + 1,
+          LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES,
+        )
+      if self._geometry_persistence_ticks >= LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES:
+        self._geometry_active = True
+    else:
+      self._geometry_persistence_ticks = 0
+      self._geometry_active = False
+
+    geometry_mode = self._geometry_active
+    if geometry_mode:
+      lateral_error = geometry.lateral_error
+      predicted_lateral_error = geometry.predicted_lateral_error
+      # Geometry errors are lane-center-relative (`lane_center_y - model_y`). Do not
+      # mix in raw model-path heading here; it can oppose or flip the lane-center
+      # correction when the model path is biased off-center.
+      heading_error = 0.0
+
     if inputs.path_reason != LANE_CENTERING_ASSIST_OK_REASON:
       self._reason_cooldown_ticks = LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_FRAMES
 
     # Compute confidence and an unrelaxed raw nudge before any gating so the relaxation
     # tracker can monitor nudge sign flips even when the assist is temporarily gated.
-    confidence = _confidence(inputs)
+    confidence = _confidence(inputs, geometry_mode, geometry.confidence if geometry_mode else 0.0)
     straight_cruise = _straight_cruise(inputs)
     max_nudge = _max_nudge_curvature(inputs.v_ego, straight_cruise)
     unrelaxed_raw_nudge = confidence * (
@@ -156,16 +222,17 @@ class LaneCenteringAssistTracker:
     )
     lateral_error_eff, predicted_lateral_error_eff = self._relax.effective_errors(lateral_error, predicted_lateral_error)
 
-    gate_reason = _gate_reason(inputs)
     if gate_reason is not None:
-      return self._hard_block(gate_reason, lateral_error, heading_error, predicted_lateral_error)
+      return self._hard_block(gate_reason, lateral_error, heading_error, predicted_lateral_error,
+                              geometry=geometry, geometry_mode=geometry_mode)
 
     if self._reason_cooldown_ticks > 0:
       self._reason_cooldown_ticks -= 1
-      return self._release(LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_REASON, dt, lateral_error, heading_error, predicted_lateral_error)
+      return self._release(LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_REASON, dt, lateral_error, heading_error,
+                           predicted_lateral_error, geometry=geometry, geometry_mode=geometry_mode)
 
-    lateral_deadband = _lateral_deadband(straight_cruise)
-    growth_deadband = _growth_deadband(straight_cruise)
+    lateral_deadband = _lateral_deadband(straight_cruise, geometry_mode)
+    growth_deadband = _growth_deadband(straight_cruise, geometry_mode)
     error_sign = _sign(predicted_lateral_error_eff, lateral_deadband)
     now_sign = _sign(lateral_error_eff, lateral_deadband)
     if error_sign == 0:
@@ -173,8 +240,18 @@ class LaneCenteringAssistTracker:
     same_direction = error_sign != 0 and (now_sign == 0 or now_sign == error_sign)
     error_growth = abs(predicted_lateral_error_eff) - abs(lateral_error_eff)
     growing = same_direction and error_growth > growth_deadband
-    if not growing:
-      return self._release("error_not_growing", dt, lateral_error, heading_error, predicted_lateral_error)
+    # Geometry mode may also act on a persisted same-sign steady offset (near≈preview)
+    # as long as the offset is outside the wider geometry leeway. This preserves the
+    # model-path mode's growth-only behavior unchanged.
+    steady_offset = (
+      geometry_mode and
+      error_sign != 0 and
+      now_sign == error_sign and
+      abs(lateral_error_eff) > lateral_deadband
+    )
+    if not growing and not steady_offset:
+      return self._release("error_not_growing", dt, lateral_error, heading_error, predicted_lateral_error,
+                           geometry=geometry, geometry_mode=geometry_mode)
 
     raw_nudge = confidence * (
       LANE_CENTERING_ASSIST_LATERAL_GAIN * lateral_error_eff +
@@ -194,7 +271,8 @@ class LaneCenteringAssistTracker:
         abs(self._filtered_nudge) > 0.0, self._filtered_nudge, lateral_error, heading_error, predicted_lateral_error,
         confidence, "sign_hysteresis", _debug(inputs, lateral_error, heading_error, predicted_lateral_error,
                                                confidence, raw_nudge, target_nudge, self._filtered_nudge,
-                                               "sign_hysteresis", max_nudge, straight_cruise),
+                                               "sign_hysteresis", max_nudge, straight_cruise,
+                                               geometry=geometry, geometry_mode=geometry_mode),
       ))
 
     build_rate = _build_rate(straight_cruise)
@@ -206,7 +284,7 @@ class LaneCenteringAssistTracker:
     return self._with_relax(LaneCenteringAssistResult(
       active, nudge, lateral_error, heading_error, predicted_lateral_error, confidence, reason,
       _debug(inputs, lateral_error, heading_error, predicted_lateral_error, confidence, raw_nudge, target_nudge, nudge, reason,
-             max_nudge, straight_cruise),
+             max_nudge, straight_cruise, geometry=geometry, geometry_mode=geometry_mode),
     ))
 
   def _with_relax(self, result: LaneCenteringAssistResult) -> LaneCenteringAssistResult:
@@ -235,7 +313,8 @@ class LaneCenteringAssistTracker:
     )
 
   def _release(self, reason: str, dt: float, lateral_error: float = 0.0, heading_error: float = 0.0,
-               predicted_lateral_error: float = 0.0) -> LaneCenteringAssistResult:
+               predicted_lateral_error: float = 0.0,
+               geometry: LaneGeometryResult | None = None, geometry_mode: bool = False) -> LaneCenteringAssistResult:
     self._filtered_nudge = _approach(self._filtered_nudge, 0.0, LANE_CENTERING_ASSIST_RELEASE_RATE * dt)
     if abs(self._filtered_nudge) <= LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE:
       self._filtered_nudge = 0.0
@@ -243,20 +322,25 @@ class LaneCenteringAssistTracker:
     return self._with_relax(LaneCenteringAssistResult(
       abs(self._filtered_nudge) > 0.0, self._filtered_nudge, lateral_error, heading_error, predicted_lateral_error, 0.0, reason,
       _debug(reason=reason, lateral_error=lateral_error, heading_error=heading_error,
-             predicted_lateral_error=predicted_lateral_error, filtered_nudge=self._filtered_nudge),
+             predicted_lateral_error=predicted_lateral_error, filtered_nudge=self._filtered_nudge,
+             geometry=geometry, geometry_mode=geometry_mode),
     ))
 
   def _hard_block(self, reason: str, lateral_error: float = 0.0, heading_error: float = 0.0,
-                  predicted_lateral_error: float = 0.0) -> LaneCenteringAssistResult:
+                  predicted_lateral_error: float = 0.0,
+                  geometry: LaneGeometryResult | None = None, geometry_mode: bool = False) -> LaneCenteringAssistResult:
     # Safety gates must clear any stale relaxation state so it cannot re-arm immediately
     # once the gate condition clears (e.g. invalid path, driver override, lane change).
     self._relax.safety_abort(lateral_error, predicted_lateral_error, _relax_reason_bits_for_gate(reason))
     self._filtered_nudge = 0.0
     self._active_sign = 0
+    self._geometry_persistence_ticks = 0
+    self._geometry_active = False
     return self._with_relax(LaneCenteringAssistResult(
       False, 0.0, lateral_error, heading_error, predicted_lateral_error, 0.0, reason,
       _debug(reason=reason, lateral_error=lateral_error, heading_error=heading_error,
-             predicted_lateral_error=predicted_lateral_error, filtered_nudge=0.0),
+             predicted_lateral_error=predicted_lateral_error, filtered_nudge=0.0,
+             geometry=geometry, geometry_mode=geometry_mode),
     ))
 
 
@@ -524,7 +608,12 @@ def _lane_centering_metrics(inputs: LaneCenteringAssistInputs) -> tuple[float, f
   return lateral_error, heading_error, predicted_lateral_error
 
 
-def _confidence(inputs: LaneCenteringAssistInputs) -> float:
+def _confidence(inputs: LaneCenteringAssistInputs, geometry_mode: bool = False,
+                geometry_confidence: float = 0.0) -> float:
+  if geometry_mode:
+    # Geometry confidence already blends prob/std/width; still cap by path quality.
+    path_confidence = float(np.clip((float(inputs.path_quality) - LANE_CENTERING_ASSIST_MIN_PATH_QUALITY) / 0.15, 0.0, 1.0))
+    return min(path_confidence, float(np.clip(geometry_confidence, 0.0, 1.0)))
   lane_probs = [_finite_float(prob) for prob in inputs.lane_line_probs]
   lane_probs = [prob for prob in lane_probs if math.isfinite(prob)]
   lane_confidence = min(lane_probs[1], lane_probs[2]) if len(lane_probs) >= 3 else 0.0
@@ -552,11 +641,15 @@ def _straight_cruise(inputs: LaneCenteringAssistInputs) -> bool:
   )
 
 
-def _lateral_deadband(straight_cruise: bool) -> float:
+def _lateral_deadband(straight_cruise: bool, geometry_mode: bool = False) -> float:
+  if geometry_mode:
+    return LANE_CENTERING_ASSIST_GEOMETRY_STRAIGHT_LATERAL_DEADBAND if straight_cruise else LANE_CENTERING_ASSIST_GEOMETRY_LATERAL_DEADBAND
   return LANE_CENTERING_ASSIST_STRAIGHT_LATERAL_DEADBAND if straight_cruise else LANE_CENTERING_ASSIST_LATERAL_DEADBAND
 
 
-def _growth_deadband(straight_cruise: bool) -> float:
+def _growth_deadband(straight_cruise: bool, geometry_mode: bool = False) -> float:
+  if geometry_mode:
+    return LANE_CENTERING_ASSIST_GEOMETRY_STRAIGHT_GROWTH_DEADBAND if straight_cruise else LANE_CENTERING_ASSIST_GEOMETRY_GROWTH_DEADBAND
   return LANE_CENTERING_ASSIST_STRAIGHT_GROWTH_DEADBAND if straight_cruise else LANE_CENTERING_ASSIST_GROWTH_DEADBAND
 
 
@@ -629,8 +722,9 @@ def _approach(value: float, target: float, step: float) -> float:
 def _debug(inputs: LaneCenteringAssistInputs | None = None, lateral_error: float = 0.0, heading_error: float = 0.0,
            predicted_lateral_error: float = 0.0, confidence: float = 0.0, raw_nudge: float = 0.0,
            target_nudge: float = 0.0, filtered_nudge: float = 0.0, reason: str = "inactive",
-           max_nudge: float = 0.0, straight_cruise: bool = False) -> dict[str, float | str | bool]:
-  return {
+           max_nudge: float = 0.0, straight_cruise: bool = False,
+           geometry: LaneGeometryResult | None = None, geometry_mode: bool = False) -> dict[str, float | str | bool]:
+  debug: dict[str, float | str | bool] = {
     "lane_centering_assist_active": abs(filtered_nudge) > 0.0,
     "lane_centering_reason": reason,
     "lane_centering_lateral_error": lateral_error,
@@ -643,4 +737,14 @@ def _debug(inputs: LaneCenteringAssistInputs | None = None, lateral_error: float
     "lane_centering_max_nudge": max_nudge,
     "lane_centering_straight_cruise": straight_cruise,
     "lane_centering_v_ego": float(inputs.v_ego) if inputs is not None else 0.0,
+    "lane_centering_geometry_mode": geometry_mode,
+    "lane_centering_geometry_source": geometry.source if geometry is not None else "model_path",
+    "lane_centering_geometry_valid": geometry.valid if geometry is not None else False,
+    "lane_centering_geometry_reason": geometry.reason if geometry is not None else "none",
+    "lane_centering_geometry_confidence": geometry.confidence if geometry is not None else 0.0,
+    "lane_centering_geometry_offset_near": geometry.offset_near if geometry is not None else 0.0,
+    "lane_centering_geometry_offset_preview": geometry.offset_preview if geometry is not None else 0.0,
+    "lane_centering_geometry_width_near": geometry.width_near if geometry is not None else 0.0,
+    "lane_centering_geometry_width_preview": geometry.width_preview if geometry is not None else 0.0,
   }
+  return debug
