@@ -19,14 +19,14 @@ MIN_V_EGO = 10.0                    # m/s
 MAX_DESIRED_LAT_ACCEL = 0.35        # m/s^2
 MAX_STEERING_RATE = 100.0           # deg/s
 MAX_TORQUE_FRAC = 0.95              # reject saturated output
-WINDOW_TIME = 1.0                   # s
+WINDOW_TIME = 4.0                   # s, catches slower 0.5-1 Hz ping-pong seen in route logs
 TORQUE_EPS = 0.05                   # to ignore noise in alternating sign
 ERROR_EPS = 0.03                    # m/s^2, to ignore noise in alternating sign
 MAX_CURRENT_ERROR_AMP = 0.45        # m/s^2, instant escape hatch
 MAX_AVG_ERROR_AMP = 0.35            # m/s^2, small average error required
-MIN_REVERSALS_MILD = 2              # sign reversals in window
-MIN_REVERSALS_MODERATE = 3
-MIN_REVERSALS_SEVERE = 4
+MIN_REVERSALS_MILD = 2              # sign reversals in window; one full alternating cycle
+MIN_REVERSALS_MODERATE = 4
+MIN_REVERSALS_SEVERE = 6
 
 
 @dataclass

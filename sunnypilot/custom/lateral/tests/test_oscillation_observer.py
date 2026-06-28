@@ -43,12 +43,12 @@ def update(observer: OscillationObserver, *, active: bool = True, v_ego: float =
 
 
 def feed_alternating(observer: OscillationObserver, periods: float, amp: float = 0.18,
-                     desired_lateral_accel: float = 0.0,
-                     *, output_amp: float | None = None) -> None:
+                      desired_lateral_accel: float = 0.0,
+                      *, output_amp: float | None = None, half_period_s: float = 0.20) -> None:
   """Feed alternating-sign output torque and lateral accel error in square-wave steps."""
   output_amp = output_amp if output_amp is not None else amp
   steps = int(periods / DT)
-  half_period_steps = max(1, int(0.20 / DT))
+  half_period_steps = max(1, int(half_period_s / DT))
   for i in range(steps):
     sign = 1.0 if (i // half_period_steps) % 2 == 0 else -1.0
     actual = desired_lateral_accel + sign * amp
@@ -70,6 +70,12 @@ def test_repeated_alternating_near_straight_classifies():
   feed_alternating(obs, 5)
   result = update(obs)
   assert result in (OSCILLATION_MILD, OSCILLATION_MODERATE, OSCILLATION_SEVERE)
+
+
+def test_slow_repeated_alternating_near_straight_classifies():
+  obs = make_observer()
+  feed_alternating(obs, 6, half_period_s=1.0)
+  assert update(obs) in (OSCILLATION_MILD, OSCILLATION_MODERATE)
 
 
 def test_insufficient_reversals_returns_none():
