@@ -18,6 +18,7 @@ from opendbc.car.hyundai.values import HyundaiFlags
 from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
 
 from openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override import apply_cut_in_override
+from openpilot.sunnypilot.custom.longitudinal.lead_context import _path_relative_y
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -34,7 +35,7 @@ RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame
 
 # lead model probability gates
 VISION_ONLY_PROB_THRESHOLD = 0.5        # vision-only fallback requires high confidence
-RADAR_CONFIRMED_PROB_THRESHOLD = 0.25   # radar-confirmed match can use lower confidence
+RADAR_CONFIRMED_PROB_THRESHOLD = 0.25   # radar-confirmed match can use lower confidence (custom long only)
 
 
 class KalmanParams:
@@ -232,11 +233,15 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, lead_prob: float, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
-             low_speed_override: bool = True) -> dict[str, Any]:
+             low_speed_override: bool = True,
+             custom_longitudinal_enabled: bool = False) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   lead_prob = _clean_lead_prob(lead_prob)
   track = None
-  if len(tracks) > 0 and ready and lead_prob > RADAR_CONFIRMED_PROB_THRESHOLD:
+  # Custom long can confirm a radar track at lower model probability; otherwise keep the
+  # stricter vision-only threshold to avoid false radar matches.
+  radar_confirmed_threshold = RADAR_CONFIRMED_PROB_THRESHOLD if custom_longitudinal_enabled else VISION_ONLY_PROB_THRESHOLD
+  if len(tracks) > 0 and ready and lead_prob > radar_confirmed_threshold:
     track = match_vision_to_track(v_ego, lead_msg, tracks)
 
   lead_dict = {'status': False}
@@ -265,6 +270,19 @@ def get_custom_yrel(CP: structs.CarParams, CP_SP: structs.CarParamsSP, lead_dict
     lead_dict['yRel'] = float(-lead_msg.y[0])
 
   return lead_dict
+
+
+def _track_path_relative_y(track: Track, model_msg: Any) -> float | None:
+  """Return track yRel relative to the model path at track.dRel.
+
+  Falls back to the original yRel on missing/invalid model path data, which makes the
+  downstream cut-in override fall back to ego-frame on-pathness safely.
+  Returns None only if the track itself lacks the required fields.
+  """
+  try:
+    return _path_relative_y(float(track.yRel), float(track.dRel), model_msg)
+  except Exception:
+    return None
 
 
 class RadarD:
@@ -347,13 +365,17 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
+      model_msg = sm['modelV2']
       self.radar_state.leadOne = apply_cut_in_override(
         get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
-                 self.CP, self.CP_SP, low_speed_override=True),
+                 self.CP, self.CP_SP, low_speed_override=True,
+                 custom_longitudinal_enabled=self.custom_long_enabled),
         self.tracks, self.v_ego, self.CP, self.CP_SP,
-        custom_longitudinal_enabled=self.custom_long_enabled)
+        custom_longitudinal_enabled=self.custom_long_enabled,
+        path_y_rel=lambda track: _track_path_relative_y(track, model_msg))
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
-                                          self.CP, self.CP_SP, low_speed_override=False)
+                                          self.CP, self.CP_SP, low_speed_override=False,
+                                          custom_longitudinal_enabled=self.custom_long_enabled)
 
     self.frame += 1
 

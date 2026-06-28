@@ -1,6 +1,11 @@
 from types import SimpleNamespace
 
-from openpilot.selfdrive.controls.radard import _clean_lead_prob, get_RadarState_from_vision, get_lead, match_vision_to_track, KalmanParams, Track
+import pytest
+
+from openpilot.selfdrive.controls.radard import (
+  _clean_lead_prob, _track_path_relative_y, get_RadarState_from_vision, get_lead,
+  match_vision_to_track, KalmanParams, Track,
+)
 
 
 def model_lead(x=20.0, y=0.0, v=12.0, a=0.0, x_std=1.0, y_std=1.0, v_std=1.0):
@@ -94,15 +99,38 @@ def test_clean_lead_probability_is_finite_and_bounded():
   assert _clean_lead_prob(0.7) == 0.7
 
 
-def test_low_prob_model_with_matching_radar_track_is_confirmed():
+def test_low_prob_model_with_matching_radar_track_is_confirmed_with_custom_long():
   cp, cp_sp = car_params()
   tracks = {1: radar_track(d_rel=22.0, y_rel=0.0, v_rel=1.0, v_lead=11.0)}
 
-  lead = get_lead(10.0, True, tracks, model_lead(x=23.52, v=11.0), 10.0, 0.3, cp, cp_sp, low_speed_override=False)
+  lead = get_lead(10.0, True, tracks, model_lead(x=23.52, v=11.0), 10.0, 0.3, cp, cp_sp,
+                  low_speed_override=False, custom_longitudinal_enabled=True)
 
   assert lead["status"] is True
   assert lead["radar"] is True
   assert lead["modelProb"] == 0.3
+
+
+def test_low_prob_model_radar_confirmed_requires_custom_long_on():
+  cp, cp_sp = car_params()
+  tracks = {1: radar_track(d_rel=22.0, y_rel=0.0, v_rel=1.0, v_lead=11.0)}
+
+  lead = get_lead(10.0, True, tracks, model_lead(x=23.52, v=11.0), 10.0, 0.3, cp, cp_sp,
+                  low_speed_override=False, custom_longitudinal_enabled=False)
+
+  assert lead == {"status": False}
+
+
+def test_high_prob_radar_confirmed_works_with_custom_long_off():
+  cp, cp_sp = car_params()
+  tracks = {1: radar_track(d_rel=22.0, y_rel=0.0, v_rel=1.0, v_lead=11.0)}
+
+  lead = get_lead(10.0, True, tracks, model_lead(x=23.52, v=11.0), 10.0, 0.6, cp, cp_sp,
+                  low_speed_override=False, custom_longitudinal_enabled=False)
+
+  assert lead["status"] is True
+  assert lead["radar"] is True
+  assert lead["modelProb"] == 0.6
 
 
 def test_low_prob_model_without_radar_track_remains_rejected():
@@ -137,3 +165,44 @@ def test_nonfinite_prob_with_radar_track_still_rejected():
   lead = get_lead(10.0, True, tracks, model_lead(x=23.52, v=11.0), 10.0, float("nan"), cp, cp_sp, low_speed_override=False)
 
   assert lead == {"status": False}
+
+
+def test_track_path_relative_y_on_straight_path():
+  track = radar_track(d_rel=30.0, y_rel=0.0)
+  model = SimpleNamespace(position=SimpleNamespace(x=[0.0, 30.0, 60.0], y=[0.0, 0.0, 0.0]))
+
+  assert _track_path_relative_y(track, model) == pytest.approx(0.0)
+
+
+def test_track_path_relative_y_on_curved_path():
+  track = radar_track(d_rel=45.0, y_rel=0.0)
+  model = SimpleNamespace(position=SimpleNamespace(x=[0.0, 30.0, 60.0], y=[0.0, 1.5, 2.0]))
+
+  assert _track_path_relative_y(track, model) == pytest.approx(-1.75)
+
+
+def test_track_path_relative_y_returns_none_on_bad_track():
+  model = SimpleNamespace(position=SimpleNamespace(x=[0.0, 30.0, 60.0], y=[0.0, 1.5, 2.0]))
+
+  assert _track_path_relative_y(SimpleNamespace(), model) is None
+
+
+def test_track_path_relative_y_falls_back_to_y_rel_when_path_invalid():
+  track = radar_track(d_rel=30.0, y_rel=2.0)
+
+  assert _track_path_relative_y(track, None) == pytest.approx(2.0)
+
+
+def test_cut_in_override_rejects_ego_centerline_when_path_curves():
+  from openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override import apply_cut_in_override
+  track = radar_track(d_rel=45.0, y_rel=0.0, v_rel=-3.0, v_lead=8.0)
+  track.cnt = 3  # satisfy persistence gate
+  model = SimpleNamespace(position=SimpleNamespace(x=[0.0, 30.0, 60.0], y=[0.0, 1.5, 2.0]))
+
+  result = apply_cut_in_override(
+    {"status": False}, {1: track}, v_ego=12.0,
+    custom_longitudinal_enabled=True,
+    path_y_rel=lambda t: _track_path_relative_y(t, model),
+  )
+
+  assert result == {"status": False}

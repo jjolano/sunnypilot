@@ -1,28 +1,38 @@
 """Cut-in override: promote high-risk on-path radar tracks to leadOne when the vision model
 hasn't confirmed them yet.
 
-The vision gate in ``radard.get_lead()`` requires ``lead_prob > 0.5`` before a radar track
-becomes ``leadOne``. For cut-ins, the radar sees the track immediately but the vision model
-takes 0.5–2.0 s to confirm it. This override bridges that gap: when no lead is found and a
-radar track has high closing speed, is on-path, moving, and persistent, promote it to
-``leadOne`` so the MPC can brake immediately.
+`radard.get_lead()` normally requires ``lead_prob > 0.5`` before a radar track becomes
+``leadOne``. When custom longitudinal is enabled the radar-confirmed gate is lowered to
+0.25 so cut-ins are acquired sooner; this override bridges the remaining gap where the
+radar already sees a threat but vision has not confirmed it at all.
+
+Because the override only runs when no lead was found and custom longitudinal is on, it
+is purely a radar-only, custom-long action.
 
 Safety gates (all must pass):
   - No existing leadOne (status=False) — never override a confirmed lead
   - Track persistence (cnt >= 2) — not a one-frame ghost
-  - On-path (abs(yRel) < 1.2 m) — not an adjacent-lane target
+  - On-path (abs(yRel) <= 1.2 m in ego frame, or path-relative if provided) — not an
+    adjacent-lane target
   - Moving object (vLead > 2.0 m/s) — not a stationary object
   - High closing speed (vRel < -2.0 m/s) — genuine cut-in threat
   - Within distance (dRel <= 30 m) — close enough to matter
   - Low TTC (dRel / closing_speed <= 8.0 s) — urgent enough to override
   - Custom longitudinal enabled — only active when custom policy is on
 
+By default the on-path check is ego-frame only (``abs(yRel)``). A caller can supply the
+optional ``path_y_rel`` argument, either as a scalar or as ``callable(track) -> float | None``,
+to tighten the check to ``abs(path_y_rel)`` where ``path_y_rel`` is the track's lateral
+offset relative to the planned path (``yRel - path_y_at(dRel)``). When not supplied or when
+the callable returns ``None`` the fallback remains ego-frame; this is documented so the
+limitation is explicit.
+
 The override is fail-closed: any exception returns the original lead dict unchanged.
 """
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Callable
 
 from openpilot.common.params import Params
 
@@ -37,8 +47,17 @@ _MIN_TRACK_CNT = 2              # frames (persistence)
 _MIN_V_EGO = 1.0               # m/s
 
 
-def _is_high_risk_cut_in(track: Any, v_ego: float) -> bool:
-  """Return True if a radar track is a high-risk cut-in candidate."""
+def _is_high_risk_cut_in(track: Any, v_ego: float,
+                         path_y_rel: float | Callable[[Any], float | None] | None = None) -> bool:
+  """Return True if a radar track is a high-risk cut-in candidate.
+
+  Args:
+    track: Radar track with dRel, yRel, vRel, vLead, and cnt fields.
+    v_ego: Current ego speed.
+    path_y_rel: Optional path-relative lateral offset (``yRel - path_y_at(dRel)``), either as
+      a scalar or as ``callable(track) -> float | None``. When provided/returned, on-pathness
+      is checked as ``abs(path_y_rel)``; otherwise the ego-frame ``abs(yRel)`` is used.
+  """
   if v_ego < _MIN_V_EGO:
     return False
   if track.cnt < _MIN_TRACK_CNT:
@@ -54,7 +73,21 @@ def _is_high_risk_cut_in(track: Any, v_ego: float) -> bool:
     return False
   if d_rel <= 0 or d_rel > _MAX_D_REL:
     return False
-  if abs(y_rel) > _MAX_Y_REL:
+  # Use path-relative lateral offset if supplied; otherwise fall back to ego-frame.
+  # `path_y_rel` is the track's deviation from the planned path (yRel - path_y_at(dRel));
+  # a callable lets the caller evaluate it per-track based on dRel.
+  raw_offset = path_y_rel(track) if callable(path_y_rel) else path_y_rel
+  if raw_offset is None:
+    lateral_error = abs(y_rel)
+  else:
+    try:
+      offset = float(raw_offset)
+    except (TypeError, ValueError):
+      return False
+    if not math.isfinite(offset):
+      return False
+    lateral_error = abs(offset)
+  if lateral_error > _MAX_Y_REL:
     return False
   if v_lead < _MIN_V_LEAD:
     return False
@@ -80,7 +113,8 @@ def _track_ttc(track: Any) -> float:
 
 def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
                           v_ego: float, CP: Any = None, CP_SP: Any = None,
-                          *, custom_longitudinal_enabled: bool | None = None) -> dict[str, Any]:
+                          *, custom_longitudinal_enabled: bool | None = None,
+                          path_y_rel: float | Callable[[Any], float | None] | None = None) -> dict[str, Any]:
   """Promote a high-risk on-path radar track to leadOne when vision hasn't confirmed.
 
   Called after ``get_lead()`` returns. If the result has ``status=False`` (no lead found),
@@ -95,6 +129,9 @@ def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
     CP_SP: CarParamsSP (unused, for signature compatibility).
     custom_longitudinal_enabled: Optional cached flag from RadarD. None falls back to
       reading ``CustomLongitudinalEnabled`` from Params; False returns the lead unchanged.
+    path_y_rel: Optional path-relative lateral offset (``yRel - path_y_at(dRel)``), either
+      as a scalar or as ``callable(track) -> float | None``. When provided/returned,
+      on-pathness is checked as ``abs(path_y_rel)``; ``None`` falls back to ego-frame.
 
   Returns:
     The original lead_dict if no override applies, or a new lead dict with the
@@ -118,7 +155,7 @@ def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
     return lead_dict
 
   # Find the most dangerous cut-in candidate (lowest TTC)
-  candidates = [t for t in tracks.values() if _is_high_risk_cut_in(t, v_ego)]
+  candidates = [t for t in tracks.values() if _is_high_risk_cut_in(t, v_ego, path_y_rel=path_y_rel)]
   if not candidates:
     return lead_dict
 

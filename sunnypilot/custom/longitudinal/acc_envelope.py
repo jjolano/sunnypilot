@@ -1,3 +1,12 @@
+"""ACC envelope: advisory/telemetry guard for lead-follow comfort.
+
+This module estimates whether the current acceleration target keeps the ego vehicle inside
+a comfortable gap/time-to-collision envelope relative to a lead. It is intentionally
+advisory: the computed `allowed_a_target` is exposed as telemetry/debug fields and may be
+used downstream for smoothing/telemetry, but it is NOT a hard safety cap. Binding emergency
+braking and collision-avoidance remain the responsibility of the upstream lead-follow
+controller and the vehicle's safety limits.
+"""
 from __future__ import annotations
 
 import math
@@ -41,6 +50,8 @@ class AccEnvelopeInputs:
 
 @dataclass(frozen=True)
 class AccEnvelopeResult:
+  # All fields are advisory/telemetry. The envelope never acts as a hard safety cap;
+  # downstream code may smooth toward allowed_a_target but must not treat it as binding.
   active: bool
   would_cap: bool
   cap_reasons: tuple[str, ...] = field(default_factory=tuple)

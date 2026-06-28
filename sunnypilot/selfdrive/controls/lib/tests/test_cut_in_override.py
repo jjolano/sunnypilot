@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 from openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override import (
@@ -14,8 +15,9 @@ from openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override import (
 
 class FakeTrack:
   """Minimal Track stub matching the real Track interface."""
-  def __init__(self, identifier=1, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0,
-               vLeadK=8.0, aLeadK=0.0, cnt=3):
+  def __init__(self, identifier: int = 1, dRel: Any = 15.0, yRel: Any = 0.5,
+               vRel: Any = -3.0, vLead: Any = 8.0, vLeadK: Any = 8.0,
+               aLeadK: Any = 0.0, cnt: int = 3):
     self.identifier = identifier
     self.dRel = dRel
     self.yRel = yRel
@@ -202,3 +204,58 @@ def test_track_ttc():
   assert _track_ttc(FakeTrack(dRel=15.0, vRel=-3.0)) == 5.0
   assert _track_ttc(FakeTrack(dRel=9.0, vRel=-3.0)) == 3.0
   assert math.isinf(_track_ttc(FakeTrack(dRel=None, vRel=-3.0)))
+
+
+@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
+def test_override_path_relative_rejects_ego_centerline_match(MockParams):
+  # Track is on the ego centerline but well off the planned path; `path_y_rel` is the
+  # path-relative deviation (yRel - path_y) and rejects what ego-frame alone would accept.
+  MockParams.return_value.get_bool.return_value = True
+  track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True,
+                                 path_y_rel=-1.5)
+  assert result is NO_LEAD
+
+
+@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
+def test_override_path_relative_accepts_track_aligned_with_path(MockParams):
+  # Track looks off the ego centerline but is actually aligned with the planned path.
+  MockParams.return_value.get_bool.return_value = True
+  track = FakeTrack(dRel=15.0, yRel=1.5, vRel=-3.0, vLead=8.0, cnt=3)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True,
+                                 path_y_rel=0.0)
+  assert result["status"] is True
+  assert result["radarTrackId"] == 1
+
+
+@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
+def test_override_path_relative_fn_per_track(MockParams):
+  # Callable mapper lets the override evaluate path-relative offset per track.
+  MockParams.return_value.get_bool.return_value = True
+  t1 = FakeTrack(identifier=1, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
+  t2 = FakeTrack(identifier=2, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
+  result = apply_cut_in_override(
+    NO_LEAD, {1: t1, 2: t2}, v_ego=12.0, custom_longitudinal_enabled=True,
+    path_y_rel=lambda track: -1.5 if track.identifier == 1 else 0.0,
+  )
+  assert result["status"] is True
+  assert result["radarTrackId"] == 2
+
+
+def test_is_high_risk_cut_in_path_relative():
+  # `path_y_rel` is path-relative deviation (yRel - path_y).
+  track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
+  assert _is_high_risk_cut_in(track, 12.0, path_y_rel=None) is True
+  assert _is_high_risk_cut_in(track, 12.0, path_y_rel=-1.5) is False
+  assert _is_high_risk_cut_in(FakeTrack(dRel=15.0, yRel=1.5, vRel=-3.0, vLead=8.0, cnt=3),
+                              12.0, path_y_rel=0.0) is True
+  assert _is_high_risk_cut_in(FakeTrack(dRel=15.0, yRel=1.5, vRel=-3.0, vLead=8.0, cnt=3),
+                              12.0, path_y_rel=lambda track: 0.0) is True
+
+
+def test_is_high_risk_cut_in_invalid_path_relative_fails_closed():
+  track = FakeTrack(dRel=15.0, yRel=0.0, vRel=-3.0, vLead=8.0, cnt=3)
+  bad_path: Any = "bad"
+  assert _is_high_risk_cut_in(track, 12.0, path_y_rel=float("nan")) is False
+  assert _is_high_risk_cut_in(track, 12.0, path_y_rel=float("inf")) is False
+  assert _is_high_risk_cut_in(track, 12.0, path_y_rel=bad_path) is False
