@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 import math
-from typing import Any, cast
+from typing import Any
 
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LEAD_CONFIDENCE_TRACK_UNKNOWN, LeadConfidenceState
 
@@ -264,342 +263,6 @@ class LeadShadowState:
   path_y_rel_at_loss: float = 0.0
   stable_at_loss: bool = False
 
-
-# ---------------------------------------------------------------------------
-# Observation stage
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class _LeadObservation:
-  status: bool = False
-  d_rel: float = 0.0
-  y_rel: float = 0.0
-  path_y_rel: float = 0.0
-  v_lead: float = 0.0
-  v_rel: float = 0.0
-  a_lead: float = 0.0
-  a_lead_tau: float = 1.5
-  model_prob: float = 0.0
-  radar: bool = False
-  track_id: int = LEAD_CONFIDENCE_TRACK_UNKNOWN
-
-
-class _ObservationStage:
-  """Sanitizes raw lead inputs and computes model-path-relative lateral offset."""
-
-  def __init__(self):
-    self._prev_path_y_rel: list[float] = [0.0, 0.0]
-
-  def reset(self) -> None:
-    self._prev_path_y_rel = [0.0, 0.0]
-
-  def observe(self, lead_idx: int, lead: Any, model_msg: Any | None, v_ego: float) -> _LeadObservation:
-    status = bool(getattr(lead, "status", False)) if lead is not None else False
-    if not status:
-      return _LeadObservation(status=False, path_y_rel=self._prev_path_y_rel[lead_idx])
-    d_rel = finite_float(getattr(lead, "dRel", 0.0))
-    y_rel = finite_float(getattr(lead, "yRel", 0.0))
-    path_y_rel = _path_relative_y(y_rel, d_rel, model_msg)
-    v_lead = finite_float(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
-    v_rel = finite_float(getattr(lead, "vRel", v_lead - v_ego), v_lead - v_ego)
-    return _LeadObservation(
-      status=True,
-      d_rel=d_rel,
-      y_rel=y_rel,
-      path_y_rel=path_y_rel,
-      v_lead=v_lead,
-      v_rel=v_rel,
-      a_lead=finite_float(getattr(lead, "aLeadK", 0.0)),
-      a_lead_tau=finite_float(getattr(lead, "aLeadTau", A_LEAD_TAU_DEFAULT), A_LEAD_TAU_DEFAULT),
-      model_prob=finite_float(getattr(lead, "modelProb", 0.0)),
-      radar=bool(getattr(lead, "radar", False)),
-      track_id=_lead_track_id(lead),
-    )
-
-  def observe_for_tracker(self, lead_idx: int, lead: Any, model_msg: Any | None) -> float:
-    """Returns the path_y_rel value the shadow tracker needs for this lead slot."""
-    status = bool(getattr(lead, "status", False)) if lead is not None else False
-    if status:
-      return _path_relative_y(
-        finite_float(getattr(lead, "yRel", 0.0)),
-        finite_float(getattr(lead, "dRel", 0.0)),
-        model_msg,
-      )
-    return self._prev_path_y_rel[lead_idx]
-
-  def commit(self, states: Sequence[LeadRelevanceState]) -> None:
-    for state in states:
-      if state.status:
-        self._prev_path_y_rel[state.lead_idx] = state.path_y_rel
-
-
-# ---------------------------------------------------------------------------
-# Kinematics / risk stage
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class _KinematicsResult:
-  required_decel: float
-  ttc: float
-  time_gap: float
-  on_path_score: float
-  risk_score: float
-  confidence: float
-  ghost_score: float
-  risk_model: LeadRiskModel
-
-
-class _KinematicsStage:
-  """Pure math: required decel, TTC, time gap, risk, confidence, ghost scores."""
-
-  @staticmethod
-  def compute(status: bool, observation: _LeadObservation, shadow: LeadShadowState | None,
-              v_ego: float, confidence_state: LeadConfidenceState | None) -> _KinematicsResult:
-    if status:
-      d_rel = observation.d_rel
-      v_lead = observation.v_lead
-      v_rel = observation.v_rel
-      path_y_rel = observation.path_y_rel
-      model_prob = observation.model_prob
-      radar = observation.radar
-      is_shadow = False
-    elif shadow is not None and shadow.active:
-      path_y_rel = observation.path_y_rel
-      d_rel = shadow.d_rel
-      v_lead = shadow.v_lead
-      v_rel = shadow.v_rel
-      model_prob = shadow.model_prob
-      radar = shadow.radar
-      is_shadow = True
-    else:
-      raise ValueError("_KinematicsStage.compute requires a real or active shadow observation")
-
-    required_decel = _required_decel(d_rel, v_rel)
-    ttc = _ttc(d_rel, v_rel)
-    time_gap = _time_gap(d_rel, v_ego)
-    on_path = _on_path_score(path_y_rel)
-    risk = _risk_score(d_rel, v_rel, v_lead, v_ego, required_decel, ttc, time_gap)
-    if shadow is not None and is_shadow:
-      confidence = _clip(shadow.confidence)
-    else:
-      confidence = _confidence_score(True, False, confidence_state, model_prob, radar)
-    ghost = _ghost_score(on_path, risk, confidence, model_prob, radar)
-    risk_model = _lead_risk_model(
-      required_decel, ttc, time_gap, d_rel, v_ego, v_lead, v_rel, path_y_rel, on_path,
-      confidence_state, model_prob, radar, ghost,
-    )
-    return _KinematicsResult(
-      required_decel=required_decel,
-      ttc=ttc,
-      time_gap=time_gap,
-      on_path_score=on_path,
-      risk_score=risk,
-      confidence=confidence,
-      ghost_score=ghost,
-      risk_model=risk_model,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Progress stage
-# ---------------------------------------------------------------------------
-
-class _ProgressStage:
-  """Builds LeadProgressModel from kinematics, confidence, and prediction."""
-
-  @staticmethod
-  def compute_real(observation: _LeadObservation, v_ego: float, kinematics: _KinematicsResult,
-                   confidence_state: LeadConfidenceState | None,
-                   prediction: LeadTrajectoryPrediction) -> LeadProgressModel:
-    return _lead_progress_model(
-      observation.d_rel, v_ego, observation.v_lead, observation.v_rel, observation.a_lead,
-      kinematics.on_path_score, kinematics.confidence, confidence_state, kinematics.ghost_score,
-      kinematics.risk_model, prediction,
-    )
-
-  @staticmethod
-  def compute_shadow(shadow: LeadShadowState, v_ego: float, kinematics: _KinematicsResult,
-                     prediction: LeadTrajectoryPrediction) -> LeadProgressModel:
-    return _lead_progress_model(
-      shadow.d_rel, v_ego, shadow.v_lead, shadow.v_rel, shadow.a_lead,
-      kinematics.on_path_score, kinematics.confidence, None, kinematics.ghost_score,
-      kinematics.risk_model, prediction, shadow=True,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Authority stage
-# ---------------------------------------------------------------------------
-
-class _AuthorityStage:
-  """Maps evidence to the existing authority values and reason strings."""
-
-  @staticmethod
-  def evaluate_real(idx: int, observation: _LeadObservation, kinematics: _KinematicsResult,
-                    progress_model: LeadProgressModel,
-                    confidence_state: LeadConfidenceState | None,
-                    release_timer: float) -> tuple[str, str]:
-    if confidence_state is None:
-      confidence_state = LeadConfidenceState()
-    close_or_closing = bool(
-      kinematics.required_decel >= LEAD_CONTEXT_RISK_REQUIRED_DECEL or
-      kinematics.ttc <= LEAD_CONTEXT_RISK_TTC or
-      kinematics.risk_score >= 0.35
-    )
-    low_risk_path_exit = release_timer >= LEAD_CONTEXT_FALSE_POSITIVE_HOLD
-    if low_risk_path_exit and (not close_or_closing or abs(observation.path_y_rel) >= LEAD_CONTEXT_PATH_EXIT_Y):
-      return LEAD_AUTHORITY_NONE, "lateral_exit_confirmed"
-    if abs(observation.path_y_rel) >= LEAD_CONTEXT_NEW_FAR_Y_REL and not close_or_closing and observation.model_prob < LEAD_CONTEXT_NEW_FAR_MODEL_PROB:
-      return LEAD_AUTHORITY_NONE, "path_relevance_low"
-    if confidence_state.flicker_guard_timer > 0.0:
-      return LEAD_AUTHORITY_SUPPRESS_ONLY, "flicker_guard_suppress_only"
-    if confidence_state.new_lead or confidence_state.guard_timer > 0.0:
-      if close_or_closing or kinematics.on_path_score > 0.0:
-        return LEAD_AUTHORITY_SUPPRESS_ONLY, "new_lead_suppress_only"
-      return LEAD_AUTHORITY_NONE, "new_low_relevance_lead"
-    if kinematics.on_path_score <= 0.0 and not close_or_closing:
-      return LEAD_AUTHORITY_SUPPRESS_ONLY, "path_exit_pending_release"
-    if _close_stop_pullaway_progress_allowed(observation.d_rel, observation.v_lead, observation.v_rel, progress_model):
-      return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_close_stop_pullaway_authorized_lead"
-    if _stopped_gap_creep_progress_allowed(observation.d_rel, observation.v_lead, observation.v_rel, progress_model):
-      return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_stopped_gap_creep_authorized_lead"
-    if close_or_closing:
-      return LEAD_AUTHORITY_PHYSICAL, "close_or_closing_lead"
-    if progress_model.allowed:
-      return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_progress_authorized_lead"
-    if kinematics.on_path_score > 0.0 and kinematics.confidence >= 0.45:
-      return LEAD_AUTHORITY_PHYSICAL, "path_relevant_physical_lead"
-    return LEAD_AUTHORITY_NONE, "weak_lead_evidence"
-
-
-# ---------------------------------------------------------------------------
-# Shadow lifecycle stage
-# ---------------------------------------------------------------------------
-
-class _ShadowLifecycleStage:
-  """Owns the per-slot LeadShadowTracker instances and their reset/update cycle."""
-
-  def __init__(self, trackers: tuple[LeadShadowTracker, LeadShadowTracker]):
-    self._trackers = trackers
-
-  def reset(self) -> None:
-    for tracker in self._trackers:
-      tracker.reset()
-
-  def update(self, lead_idx: int, lead: Any, confidence_state: LeadConfidenceState | None,
-             v_ego: float, dt: float, path_y_rel: float, reset_state: bool) -> LeadShadowState:
-    return self._trackers[lead_idx].update(lead, confidence_state, v_ego, dt, path_y_rel, reset_state=reset_state)
-
-
-# ---------------------------------------------------------------------------
-# False-positive release stage
-# ---------------------------------------------------------------------------
-
-class _FalsePositiveReleaseStage:
-  """Lateral-exit release timer behavior; preserves prior frame timer state."""
-
-  def __init__(self):
-    self._timers: list[float] = [0.0, 0.0]
-    self._prev_path_y_rel: list[float] = [0.0, 0.0]
-
-  def reset(self) -> None:
-    self._timers = [0.0, 0.0]
-    self._prev_path_y_rel = [0.0, 0.0]
-
-  def prev_timer(self, idx: int) -> float:
-    return self._timers[idx]
-
-  def apply(self, idx: int, state: LeadRelevanceState, dt: float, had_signal: bool) -> LeadRelevanceState:
-    if not state.status or state.shadow:
-      self._timers[idx] = 0.0
-      return state
-    prev_abs_y = abs(self._prev_path_y_rel[idx])
-    abs_y = abs(state.path_y_rel)
-    moving_out = abs_y >= prev_abs_y - 0.02
-    low_risk = state.required_decel < LEAD_CONTEXT_NEW_FAR_REQUIRED_DECEL and (math.isinf(state.ttc) or state.ttc > LEAD_CONTEXT_RISK_TTC)
-    weak_signal = state.model_prob < 0.6 or state.confidence < 0.55
-    previously_released = self._timers[idx] >= LEAD_CONTEXT_FALSE_POSITIVE_HOLD
-    release_evidence = abs_y >= LEAD_CONTEXT_PATH_EXIT_Y and moving_out and ((low_risk and weak_signal) or previously_released)
-    if release_evidence:
-      self._timers[idx] += dt
-    else:
-      self._timers[idx] = 0.0
-    if self._timers[idx] < LEAD_CONTEXT_FALSE_POSITIVE_HOLD:
-      return state
-    return LeadRelevanceState(
-      **{**state.__dict__, "authority": LEAD_AUTHORITY_NONE, "reason": "lateral_exit_confirmed"}
-    )
-
-  def commit(self, states: Sequence[LeadRelevanceState]) -> None:
-    for state in states:
-      if state.status:
-        self._prev_path_y_rel[state.lead_idx] = state.path_y_rel
-
-
-# ---------------------------------------------------------------------------
-# Primary selection stage
-# ---------------------------------------------------------------------------
-
-class _PrimarySelectionStage:
-  """Wraps select_primary_lead_context to keep update() as orchestration."""
-
-  @staticmethod
-  def select(states: tuple[LeadRelevanceState, ...], dominant_idx: int | None,
-             lead_dominant_idx: int | None, previous_physical_idx: int | None,
-             previous_physical_track_id: int, previous_physical_dwell_s: float) -> PrimaryLeadContext:
-    return select_primary_lead_context(
-      states,
-      dominant_idx=dominant_idx,
-      lead_dominant_idx=lead_dominant_idx,
-      previous_physical_idx=previous_physical_idx,
-      previous_physical_track_id=previous_physical_track_id,
-      previous_physical_dwell_s=previous_physical_dwell_s,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Physical-lead memory stage
-# ---------------------------------------------------------------------------
-
-class _PhysicalLeadMemory:
-  """Tracks previous physical lead identity and dwell for hysteresis."""
-
-  def __init__(self):
-    self._prev_idx: int | None = None
-    self._prev_track_id: int = LEAD_CONFIDENCE_TRACK_UNKNOWN
-    self._dwell_s: float = 0.0
-
-  def reset(self) -> None:
-    self._prev_idx = None
-    self._prev_track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
-    self._dwell_s = 0.0
-
-  def snapshot(self) -> tuple[int | None, int, float]:
-    return self._prev_idx, self._prev_track_id, self._dwell_s
-
-  def update(self, ctx: PrimaryLeadContext, dt: float) -> None:
-    physical = ctx.physical
-    if physical is None or not physical.suppressive:
-      self._prev_idx = None
-      self._prev_track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
-      self._dwell_s = 0.0
-      return
-    same_idx = self._prev_idx == physical.lead_idx
-    same_track = bool(
-      self._prev_track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN and
-      self._prev_track_id == physical.track_id
-    )
-    if same_idx or same_track:
-      self._dwell_s += max(0.0, dt)
-    else:
-      self._dwell_s = 0.0
-    self._prev_idx = physical.lead_idx
-    self._prev_track_id = physical.track_id
-
-
-# ---------------------------------------------------------------------------
-# Low-level helpers (preserved for callers/tests and used by stages above)
-# ---------------------------------------------------------------------------
 
 def _lead_data_for_state(state: LeadRelevanceState | None, leads: tuple[Any, Any]) -> Any | None:
   if state is None or state.shadow or state.lead_idx < 0 or state.lead_idx >= len(leads):
@@ -1020,126 +683,106 @@ class LeadShadowTracker:
     )
 
 
-# ---------------------------------------------------------------------------
-# Progress-authority helpers (kept at top level for parity)
-# ---------------------------------------------------------------------------
-
-def _close_stop_pullaway_progress_allowed(d_rel: float, v_lead: float, v_rel: float,
-                                          progress_model: LeadProgressModel) -> bool:
-  # Close stopped/crawling leads stay suppressive unless the same stable,
-  # on-path progress model already says the lead is safely opening.
-  return bool(
-    progress_model.allowed and
-    progress_model.stop_threat_absent and
-    0.0 < d_rel <= LEAD_CONTEXT_CLOSE_STOP_D_REL and
-    LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD < v_lead <= LEAD_CONTEXT_CLOSE_STOP_V and
-    v_rel > LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_OPENING
-  )
-
-
-def _stopped_gap_creep_progress_allowed(d_rel: float, v_lead: float, v_rel: float,
-                                        progress_model: LeadProgressModel) -> bool:
-  stopped_gap_excess = d_rel - LEAD_CONTEXT_STOP_DISTANCE
-  return bool(
-    progress_model.confidence_stability_sufficient and
-    progress_model.alternate_threat_absent and
-    progress_model.shadow_absent and
-    0.0 <= v_lead <= LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD and
-    v_rel >= LEAD_CONTEXT_STOP_GAP_CREEP_MIN_V_REL and
-    LEAD_CONTEXT_STOP_GAP_CREEP_ARM_EXCESS <= stopped_gap_excess <= LEAD_CONTEXT_STOP_GAP_CREEP_MAX_EXCESS
-  )
-
-
 class LeadContextTracker:
   def __init__(self):
     self.shadow_trackers = (LeadShadowTracker(0), LeadShadowTracker(1))
-    self._observation_stage = _ObservationStage()
-    self._kinematics_stage = _KinematicsStage()
-    self._progress_stage = _ProgressStage()
-    self._authority_stage = _AuthorityStage()
-    self._shadow_lifecycle = _ShadowLifecycleStage(self.shadow_trackers)
-    self._false_positive_stage = _FalsePositiveReleaseStage()
-    self._primary_stage = _PrimarySelectionStage()
-    self._physical_memory = _PhysicalLeadMemory()
+    self._false_positive_release_timers = [0.0, 0.0]
+    self._prev_path_y_rel = [0.0, 0.0]
+    self._prev_physical_idx: int | None = None
+    self._prev_physical_track_id: int = LEAD_CONFIDENCE_TRACK_UNKNOWN
+    self._physical_dwell_s: float = 0.0
 
   def reset(self) -> None:
-    self._shadow_lifecycle.reset()
-    self._observation_stage.reset()
-    self._false_positive_stage.reset()
-    self._physical_memory.reset()
+    for tracker in self.shadow_trackers:
+      tracker.reset()
+    self._false_positive_release_timers = [0.0, 0.0]
+    self._prev_path_y_rel = [0.0, 0.0]
+    self._prev_physical_idx = None
+    self._prev_physical_track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
+    self._physical_dwell_s = 0.0
 
   def update(self, leads: tuple[Any, Any], confidence_states: tuple[LeadConfidenceState, LeadConfidenceState] | list[LeadConfidenceState],
              v_ego: float, dt: float, model_msg: Any | None = None, dominant_idx: int | None = None,
              lead_dominant_idx: int | None = None, reset_state: bool = False) -> PrimaryLeadContext:
     dt = max(0.0, finite_float(dt))
     v_ego = finite_float(v_ego)
-
-    observations = self._observe(leads, model_msg, v_ego)
-    shadows = self._update_shadows(leads, confidence_states, v_ego, dt, model_msg, observations, reset_state)
-    states = self._build_states(observations, shadows, confidence_states, v_ego, model_msg, dt)
-
-    self._observation_stage.commit(states)
-    self._false_positive_stage.commit(states)
-
-    prev_idx, prev_track_id, prev_dwell = self._physical_memory.snapshot()
-    ctx = self._primary_stage.select(
-      tuple(states),
-      dominant_idx=dominant_idx,
-      lead_dominant_idx=lead_dominant_idx,
-      previous_physical_idx=prev_idx,
-      previous_physical_track_id=prev_track_id,
-      previous_physical_dwell_s=prev_dwell,
-    )
-    self._physical_memory.update(ctx, dt)
-    return ctx
-
-  def _observe(self, leads: tuple[Any, Any], model_msg: Any | None, v_ego: float) -> tuple[_LeadObservation, _LeadObservation]:
-    observations: list[_LeadObservation] = []
-    for idx, lead in enumerate(leads):
-      observations.append(self._observation_stage.observe(idx, lead, model_msg, v_ego))
-    return cast(tuple[_LeadObservation, _LeadObservation], tuple(observations))
-
-  def _update_shadows(self, leads: tuple[Any, Any],
-                      confidence_states: tuple[LeadConfidenceState, LeadConfidenceState] | list[LeadConfidenceState],
-                      v_ego: float, dt: float, model_msg: Any | None,
-                      observations: tuple[_LeadObservation, _LeadObservation],
-                      reset_state: bool) -> tuple[LeadShadowState, LeadShadowState]:
-    shadows: list[LeadShadowState] = []
-    for idx, lead in enumerate(leads):
-      confidence_state = confidence_states[idx] if idx < len(confidence_states) else LeadConfidenceState()
-      path_y_rel = self._observation_stage.observe_for_tracker(idx, lead, model_msg)
-      shadows.append(self._shadow_lifecycle.update(idx, lead, confidence_state, v_ego, dt, path_y_rel, reset_state))
-    return cast(tuple[LeadShadowState, LeadShadowState], tuple(shadows))
-
-  def _build_states(self, observations: tuple[_LeadObservation, _LeadObservation],
-                    shadows: tuple[LeadShadowState, LeadShadowState],
-                    confidence_states: tuple[LeadConfidenceState, LeadConfidenceState] | list[LeadConfidenceState],
-                    v_ego: float, model_msg: Any | None, dt: float) -> list[LeadRelevanceState]:
     states: list[LeadRelevanceState] = []
-    for idx, obs in enumerate(observations):
+    for idx, lead in enumerate(leads):
       confidence_state = confidence_states[idx] if idx < len(confidence_states) else LeadConfidenceState()
-      if obs.status:
-        state = self._build_real_state(idx, obs, confidence_state, v_ego)
-      elif shadows[idx].active:
-        state = self._build_shadow_state(idx, shadows[idx], v_ego, model_msg)
+      status = bool(getattr(lead, "status", False)) if lead is not None else False
+      raw_y_rel = finite_float(getattr(lead, "yRel", 0.0)) if status else self._prev_path_y_rel[idx]
+      raw_d_rel = finite_float(getattr(lead, "dRel", 0.0)) if status else 0.0
+      path_y_rel = _path_relative_y(raw_y_rel, raw_d_rel, model_msg) if status else self._prev_path_y_rel[idx]
+      shadow = self.shadow_trackers[idx].update(lead, confidence_state, v_ego, dt, path_y_rel, reset_state=reset_state)
+      if status:
+        state = self._real_state(idx, lead, confidence_state, v_ego, model_msg, dt)
+      elif shadow.active:
+        state = self._shadow_state(shadow, v_ego, model_msg)
       else:
         state = _empty_state(idx)
-      had_signal = obs.status or shadows[idx].active
-      state = self._false_positive_stage.apply(idx, state, dt, had_signal)
       states.append(state)
-    return states
 
-  def _build_real_state(self, idx: int, observation: _LeadObservation,
-                        confidence_state: LeadConfidenceState, v_ego: float) -> LeadRelevanceState:
-    kinematics = self._kinematics_stage.compute(True, observation, None, v_ego, confidence_state)
-    prediction = lead_prediction(
-      observation.d_rel, observation.v_lead, observation.a_lead, v_ego, True, observation.a_lead_tau,
+    states = [self._apply_false_positive_release(idx, state, dt) for idx, state in enumerate(states)]
+    for idx, state in enumerate(states):
+      if state.status:
+        self._prev_path_y_rel[idx] = state.path_y_rel
+    ctx = select_primary_lead_context(
+      tuple(states), dominant_idx=dominant_idx, lead_dominant_idx=lead_dominant_idx,
+      previous_physical_idx=self._prev_physical_idx,
+      previous_physical_track_id=self._prev_physical_track_id,
+      previous_physical_dwell_s=self._physical_dwell_s,
     )
-    progress_model = self._progress_stage.compute_real(observation, v_ego, kinematics, confidence_state, prediction)
-    release_timer = self._false_positive_stage.prev_timer(idx)
-    authority, reason = self._authority_stage.evaluate_real(
-      idx, observation, kinematics, progress_model, confidence_state, release_timer,
+    self._update_physical_memory(ctx, dt)
+    return ctx
+
+  def _update_physical_memory(self, ctx: PrimaryLeadContext, dt: float) -> None:
+    physical = ctx.physical
+    if physical is None or not physical.suppressive:
+      self._prev_physical_idx = None
+      self._prev_physical_track_id = LEAD_CONFIDENCE_TRACK_UNKNOWN
+      self._physical_dwell_s = 0.0
+      return
+    same_idx = self._prev_physical_idx == physical.lead_idx
+    same_track = bool(
+      self._prev_physical_track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN and
+      self._prev_physical_track_id == physical.track_id
     )
+    if same_idx or same_track:
+      self._physical_dwell_s += max(0.0, dt)
+    else:
+      self._physical_dwell_s = 0.0
+    self._prev_physical_idx = physical.lead_idx
+    self._prev_physical_track_id = physical.track_id
+
+  def _real_state(self, idx: int, lead: Any, confidence_state: LeadConfidenceState, v_ego: float,
+                  model_msg: Any | None, dt: float) -> LeadRelevanceState:
+    d_rel = finite_float(getattr(lead, "dRel", 0.0))
+    y_rel = finite_float(getattr(lead, "yRel", 0.0))
+    path_y_rel = _path_relative_y(y_rel, d_rel, model_msg)
+    v_lead = finite_float(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
+    v_rel = finite_float(getattr(lead, "vRel", v_lead - v_ego), v_lead - v_ego)
+    model_prob = finite_float(getattr(lead, "modelProb", 0.0))
+    radar = bool(getattr(lead, "radar", False))
+    required_decel = _required_decel(d_rel, v_rel)
+    ttc = _ttc(d_rel, v_rel)
+    time_gap = _time_gap(d_rel, v_ego)
+    on_path = _on_path_score(path_y_rel)
+    risk = _risk_score(d_rel, v_rel, v_lead, v_ego, required_decel, ttc, time_gap)
+    confidence = _confidence_score(True, False, confidence_state, model_prob, radar)
+    ghost = _ghost_score(on_path, risk, confidence, model_prob, radar)
+    a_lead = finite_float(getattr(lead, "aLeadK", 0.0))
+    a_lead_tau = finite_float(getattr(lead, "aLeadTau", A_LEAD_TAU_DEFAULT), A_LEAD_TAU_DEFAULT)
+    prediction = lead_prediction(d_rel, v_lead, a_lead, v_ego, True, a_lead_tau)
+    risk_model = _lead_risk_model(
+      required_decel, ttc, time_gap, d_rel, v_ego, v_lead, v_rel, path_y_rel, on_path,
+      confidence_state, model_prob, radar, ghost,
+    )
+    progress_model = _lead_progress_model(
+      d_rel, v_ego, v_lead, v_rel, a_lead, on_path, confidence, confidence_state, ghost, risk_model, prediction,
+    )
+    authority, reason = self._authority_for_real_lead(idx, confidence_state, path_y_rel, on_path, risk, required_decel, ttc,
+                                                      d_rel, v_lead, v_rel, time_gap, model_prob, confidence, ghost,
+                                                      progress_model)
     return LeadRelevanceState(
       lead_idx=idx,
       status=True,
@@ -1147,41 +790,46 @@ class LeadContextTracker:
       stable=bool(confidence_state.stable),
       new_lead=bool(confidence_state.new_lead or confidence_state.guard_timer > 0.0),
       flicker_guard_timer=finite_float(confidence_state.flicker_guard_timer),
-      track_id=observation.track_id,
-      d_rel=observation.d_rel,
-      y_rel=observation.y_rel,
-      path_y_rel=observation.path_y_rel,
-      v_lead=observation.v_lead,
-      v_rel=observation.v_rel,
-      model_prob=observation.model_prob,
-      radar=observation.radar,
-      ttc=kinematics.ttc,
-      required_decel=kinematics.required_decel,
-      time_gap=kinematics.time_gap,
-      on_path_score=kinematics.on_path_score,
-      risk_score=kinematics.risk_score,
-      ghost_score=kinematics.ghost_score,
-      confidence=kinematics.confidence,
+      track_id=_lead_track_id(lead),
+      d_rel=d_rel,
+      y_rel=y_rel,
+      path_y_rel=path_y_rel,
+      v_lead=v_lead,
+      v_rel=v_rel,
+      model_prob=model_prob,
+      radar=radar,
+      ttc=ttc,
+      required_decel=required_decel,
+      time_gap=time_gap,
+      on_path_score=on_path,
+      risk_score=risk,
+      ghost_score=ghost,
+      confidence=confidence,
       authority=authority,
       reason=reason,
       prediction=prediction,
-      risk_model=kinematics.risk_model,
+      risk_model=risk_model,
       progress_model=progress_model,
     )
 
-  def _build_shadow_state(self, idx: int, shadow: LeadShadowState, v_ego: float,
-                          model_msg: Any | None) -> LeadRelevanceState:
-    # Shadow kinematics recompute path-relative y against the current model path so the
-    # context reflects the latest lateral correspondence even while the lead is occluded.
+  def _shadow_state(self, shadow: LeadShadowState, v_ego: float, model_msg: Any | None) -> LeadRelevanceState:
     path_y_rel = _path_relative_y(shadow.y_rel, shadow.d_rel, model_msg)
-    observation = _LeadObservation(
-      status=False, d_rel=shadow.d_rel, y_rel=shadow.y_rel, path_y_rel=path_y_rel,
-      v_lead=shadow.v_lead, v_rel=shadow.v_rel, a_lead=shadow.a_lead,
-      model_prob=shadow.model_prob, radar=shadow.radar, track_id=shadow.track_id,
-    )
-    kinematics = self._kinematics_stage.compute(False, observation, shadow, v_ego, None)
+    required_decel = _required_decel(shadow.d_rel, shadow.v_rel)
+    ttc = _ttc(shadow.d_rel, shadow.v_rel)
+    time_gap = _time_gap(shadow.d_rel, v_ego)
+    on_path = _on_path_score(path_y_rel)
+    risk = _risk_score(shadow.d_rel, shadow.v_rel, shadow.v_lead, v_ego, required_decel, ttc, time_gap)
+    confidence = _clip(shadow.confidence)
+    ghost = _ghost_score(on_path, risk, confidence, shadow.model_prob, shadow.radar)
     prediction = lead_prediction(shadow.d_rel, shadow.v_lead, shadow.a_lead, v_ego, True)
-    progress_model = self._progress_stage.compute_shadow(shadow, v_ego, kinematics, prediction)
+    risk_model = _lead_risk_model(
+      required_decel, ttc, time_gap, shadow.d_rel, v_ego, shadow.v_lead, shadow.v_rel, path_y_rel, on_path,
+      None, shadow.model_prob, shadow.radar, ghost,
+    )
+    progress_model = _lead_progress_model(
+      shadow.d_rel, v_ego, shadow.v_lead, shadow.v_rel, shadow.a_lead, on_path, confidence, None,
+      ghost, risk_model, prediction, shadow=True,
+    )
     return LeadRelevanceState(
       lead_idx=shadow.lead_idx,
       status=False,
@@ -1197,13 +845,13 @@ class LeadContextTracker:
       v_rel=shadow.v_rel,
       model_prob=shadow.model_prob,
       radar=shadow.radar,
-      ttc=kinematics.ttc,
-      required_decel=kinematics.required_decel,
-      time_gap=kinematics.time_gap,
-      on_path_score=kinematics.on_path_score,
-      risk_score=kinematics.risk_score,
-      ghost_score=kinematics.ghost_score,
-      confidence=kinematics.confidence,
+      ttc=ttc,
+      required_decel=required_decel,
+      time_gap=time_gap,
+      on_path_score=on_path,
+      risk_score=risk,
+      ghost_score=ghost,
+      confidence=confidence,
       authority=LEAD_AUTHORITY_SUPPRESS_ONLY,
       reason=shadow.reason if shadow.reason else "shadow_lead_suppress_only",
       shadow_reason=shadow.reason,
@@ -1213,8 +861,59 @@ class LeadContextTracker:
       shadow_age=shadow.age,
       shadow_duration=shadow.duration,
       prediction=prediction,
-      risk_model=kinematics.risk_model,
+      risk_model=risk_model,
       progress_model=progress_model,
+    )
+
+  def _authority_for_real_lead(self, idx: int, confidence_state: LeadConfidenceState, path_y_rel: float, on_path: float,
+                               risk: float, required_decel: float, ttc: float, d_rel: float, v_lead: float,
+                               v_rel: float, time_gap: float, model_prob: float, confidence: float,
+                               ghost: float, progress_model: LeadProgressModel) -> tuple[str, str]:
+    close_or_closing = bool(required_decel >= LEAD_CONTEXT_RISK_REQUIRED_DECEL or ttc <= LEAD_CONTEXT_RISK_TTC or risk >= 0.35)
+    low_risk_path_exit = self._false_positive_release_timers[idx] >= LEAD_CONTEXT_FALSE_POSITIVE_HOLD
+    if low_risk_path_exit and (not close_or_closing or abs(path_y_rel) >= LEAD_CONTEXT_PATH_EXIT_Y):
+      return LEAD_AUTHORITY_NONE, "lateral_exit_confirmed"
+    if abs(path_y_rel) >= LEAD_CONTEXT_NEW_FAR_Y_REL and not close_or_closing and model_prob < LEAD_CONTEXT_NEW_FAR_MODEL_PROB:
+      return LEAD_AUTHORITY_NONE, "path_relevance_low"
+    if confidence_state.flicker_guard_timer > 0.0:
+      return LEAD_AUTHORITY_SUPPRESS_ONLY, "flicker_guard_suppress_only"
+    if confidence_state.new_lead or confidence_state.guard_timer > 0.0:
+      if close_or_closing or on_path > 0.0:
+        return LEAD_AUTHORITY_SUPPRESS_ONLY, "new_lead_suppress_only"
+      return LEAD_AUTHORITY_NONE, "new_low_relevance_lead"
+    if on_path <= 0.0 and not close_or_closing:
+      return LEAD_AUTHORITY_SUPPRESS_ONLY, "path_exit_pending_release"
+    if _close_stop_pullaway_progress_allowed(d_rel, v_lead, v_rel, progress_model):
+      return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_close_stop_pullaway_authorized_lead"
+    if _stopped_gap_creep_progress_allowed(d_rel, v_lead, v_rel, progress_model):
+      return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_stopped_gap_creep_authorized_lead"
+    if close_or_closing:
+      return LEAD_AUTHORITY_PHYSICAL, "close_or_closing_lead"
+    if progress_model.allowed:
+      return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_progress_authorized_lead"
+    if on_path > 0.0 and confidence >= 0.45:
+      return LEAD_AUTHORITY_PHYSICAL, "path_relevant_physical_lead"
+    return LEAD_AUTHORITY_NONE, "weak_lead_evidence"
+
+  def _apply_false_positive_release(self, idx: int, state: LeadRelevanceState, dt: float) -> LeadRelevanceState:
+    if not state.status or state.shadow:
+      self._false_positive_release_timers[idx] = 0.0
+      return state
+    prev_abs_y = abs(self._prev_path_y_rel[idx])
+    abs_y = abs(state.path_y_rel)
+    moving_out = abs_y >= prev_abs_y - 0.02
+    low_risk = state.required_decel < LEAD_CONTEXT_NEW_FAR_REQUIRED_DECEL and (math.isinf(state.ttc) or state.ttc > LEAD_CONTEXT_RISK_TTC)
+    weak_signal = state.model_prob < 0.6 or state.confidence < 0.55
+    previously_released = self._false_positive_release_timers[idx] >= LEAD_CONTEXT_FALSE_POSITIVE_HOLD
+    release_evidence = abs_y >= LEAD_CONTEXT_PATH_EXIT_Y and moving_out and ((low_risk and weak_signal) or previously_released)
+    if release_evidence:
+      self._false_positive_release_timers[idx] += dt
+    else:
+      self._false_positive_release_timers[idx] = 0.0
+    if self._false_positive_release_timers[idx] < LEAD_CONTEXT_FALSE_POSITIVE_HOLD:
+      return state
+    return LeadRelevanceState(
+      **{**state.__dict__, "authority": LEAD_AUTHORITY_NONE, "reason": "lateral_exit_confirmed"}
     )
 
 
@@ -1465,3 +1164,29 @@ def _context_reason(physical: LeadRelevanceState | None, behavior: LeadRelevance
   if physical is not None:
     return f"physical_{physical.reason}"
   return "no_lead"
+
+
+def _close_stop_pullaway_progress_allowed(d_rel: float, v_lead: float, v_rel: float,
+                                          progress_model: LeadProgressModel) -> bool:
+  # Close stopped/crawling leads stay suppressive unless the same stable,
+  # on-path progress model already says the lead is safely opening.
+  return bool(
+    progress_model.allowed and
+    progress_model.stop_threat_absent and
+    0.0 < d_rel <= LEAD_CONTEXT_CLOSE_STOP_D_REL and
+    LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD < v_lead <= LEAD_CONTEXT_CLOSE_STOP_V and
+    v_rel > LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_OPENING
+  )
+
+
+def _stopped_gap_creep_progress_allowed(d_rel: float, v_lead: float, v_rel: float,
+                                        progress_model: LeadProgressModel) -> bool:
+  stopped_gap_excess = d_rel - LEAD_CONTEXT_STOP_DISTANCE
+  return bool(
+    progress_model.confidence_stability_sufficient and
+    progress_model.alternate_threat_absent and
+    progress_model.shadow_absent and
+    0.0 <= v_lead <= LEAD_CONTEXT_CLOSE_STOP_PULLAWAY_MIN_V_LEAD and
+    v_rel >= LEAD_CONTEXT_STOP_GAP_CREEP_MIN_V_REL and
+    LEAD_CONTEXT_STOP_GAP_CREEP_ARM_EXCESS <= stopped_gap_excess <= LEAD_CONTEXT_STOP_GAP_CREEP_MAX_EXCESS
+  )
