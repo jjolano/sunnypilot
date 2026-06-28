@@ -27,7 +27,6 @@ from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import Curve
 from openpilot.sunnypilot.custom.longitudinal.decision import CandidateRole, Decision, decide
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
-from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF, predict_lead_path_clearance
 from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence import predict_standstill_release_confidence
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
@@ -214,7 +213,6 @@ class LongitudinalStackInputs:
   stop_threat: bool = False
   # shadow path-relative lead context (telemetry only; not used for actuation)
   model_msg: Any | None = None
-  lead_path_clearance_mode: Any = LEAD_PATH_CLEARANCE_MODE_OFF
   cut_in_brake_assist_mode: Any = "off"
   curve_speed_confidence_mode: Any = "off"
   standstill_release_confidence_mode: Any = "off"
@@ -287,16 +285,6 @@ class CustomLongitudinalStack:
       shadow_debug = {f"path_shadow_{k}": v for k, v in shadow_ctx.debug_dict().items()}
     except Exception:
       path_shadow_fault = True
-
-    # Lead path clearance is Phase 1 shadow-only telemetry. It must not feed lead
-    # selection, stop commitment, or accel targets, and all failures are contained.
-    lead_path_clearance_fault = False
-    lead_path_clearance_debug: dict[str, Any] = {}
-    try:
-      clearance = predict_lead_path_clearance(inp.lead_path_clearance_mode, shadow_ctx, inp.model_msg, inp.v_ego)
-      lead_path_clearance_debug = clearance.debug_dict()
-    except Exception:
-      lead_path_clearance_fault = True
 
     cut_in_brake_assist_fault = False
     cut_in_brake_assist_debug: dict[str, Any] = {}
@@ -534,8 +522,6 @@ class CustomLongitudinalStack:
         "path_shadow_model_path_available": path_shadow_model_path_available,
         "path_shadow_fault": path_shadow_fault,
         **shadow_debug,
-        "lead_path_clearance_fault": lead_path_clearance_fault,
-        **lead_path_clearance_debug,
         "cut_in_brake_assist_fault": cut_in_brake_assist_fault,
         **cut_in_brake_assist_debug,
         "curve_speed_confidence_fault": curve_speed_confidence_fault,

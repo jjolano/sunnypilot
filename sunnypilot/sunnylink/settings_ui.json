@@ -648,29 +648,6 @@
                       "equals": true
                     }
                   ]
-                },
-                {
-                  "key": "LateralDebugTraceMode",
-                  "widget": "multiple_button",
-                  "title": "Lateral Debug Trace",
-                  "description": "Add route-log-only lateral demand shadow diagnostics for path geometry validation. Logging only; no steering changes.",
-                  "options": [
-                    {
-                      "value": "off",
-                      "label": "Off"
-                    },
-                    {
-                      "value": "log",
-                      "label": "Log"
-                    }
-                  ],
-                  "enablement": [
-                    {
-                      "type": "param",
-                      "key": "CustomLateralDemandEnabled",
-                      "equals": true
-                    }
-                  ]
                 }
               ]
             }
@@ -747,37 +724,6 @@
                 {
                   "value": "apply",
                   "label": "Apply lead smoothing"
-                }
-              ],
-              "enablement": [
-                {
-                  "type": "offroad_only"
-                },
-                {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
-                },
-                {
-                  "type": "param",
-                  "key": "CustomLongitudinalEnabled",
-                  "equals": true
-                }
-              ]
-            },
-            {
-              "key": "LeadPathClearanceMode",
-              "widget": "multiple_button",
-              "title": "Lead Path Clearance",
-              "description": "Experimental monitor for leads predicted to leave your path. No braking changes yet.",
-              "options": [
-                {
-                  "value": "off",
-                  "label": "Off"
-                },
-                {
-                  "value": "shadow",
-                  "label": "Monitor only"
                 }
               ],
               "enablement": [

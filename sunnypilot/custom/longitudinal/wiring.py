@@ -27,11 +27,6 @@ from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
   MODE_OFF as CURVE_TRAFFIC_MODE_OFF,
   MODE_SHADOW as CURVE_TRAFFIC_MODE_SHADOW,
 )
-from openpilot.sunnypilot.custom.longitudinal.lead_path_clearance import (
-  MODE_APPLY as LEAD_PATH_CLEARANCE_MODE_APPLY,
-  MODE_OFF as LEAD_PATH_CLEARANCE_MODE_OFF,
-  MODE_SHADOW as LEAD_PATH_CLEARANCE_MODE_SHADOW,
-)
 from openpilot.sunnypilot.custom.longitudinal.model_trust import StopTrustLearner
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
@@ -74,11 +69,6 @@ def _message_age_s(sm: Any, service: str) -> float:
   if not math.isfinite(received_at) or received_at <= 0.0:
     return float("inf")
   return max(0.0, time.monotonic() - received_at)
-
-
-def _lead_path_clearance_mode(value: Any) -> str:
-  text = str(value or "").strip().lower()
-  return text if text in (LEAD_PATH_CLEARANCE_MODE_OFF, LEAD_PATH_CLEARANCE_MODE_SHADOW, LEAD_PATH_CLEARANCE_MODE_APPLY) else LEAD_PATH_CLEARANCE_MODE_OFF
 
 
 def _shadow_mode(value: Any, future_values: tuple[str, ...] = ()) -> str:
@@ -149,12 +139,11 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        model_stop_prob: float = 1.0, model_stop_distance: float | None = None,
                        model_stale: bool = False,
                        accel_coast: float = 0.0, model_msg: Any | None = None,
-                        lead_path_clearance_mode: str = LEAD_PATH_CLEARANCE_MODE_OFF,
-                        cut_in_brake_assist_mode: str = "off",
-                        curve_speed_confidence_mode: str = "off",
-                        curve_traffic_advisor_mode: str = CURVE_TRAFFIC_MODE_OFF,
-                        standstill_release_confidence_mode: str = "off",
-                        scenario_context_mode: str = "off",
+                       cut_in_brake_assist_mode: str = "off",
+                       curve_speed_confidence_mode: str = "off",
+                       curve_traffic_advisor_mode: str = CURVE_TRAFFIC_MODE_OFF,
+                       standstill_release_confidence_mode: str = "off",
+                       scenario_context_mode: str = "off",
                        standstill: bool = False,
                        steering_angle_deg: float = 0.0,
                        steering_torque: float = 0.0,
@@ -196,7 +185,6 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     long_active=bool(long_active), force_slow_decel=bool(force_slow_decel),
     brake_pressed=brake_pressed, gas_pressed=gas_pressed,
     mode=mode, sources=sources, personality=personality, model_msg=model_msg,
-    lead_path_clearance_mode=lead_path_clearance_mode,
     cut_in_brake_assist_mode=cut_in_brake_assist_mode,
     curve_speed_confidence_mode=curve_speed_confidence_mode,
     curve_traffic_advisor_mode=curve_traffic_advisor_mode,
@@ -225,7 +213,6 @@ class CustomLongitudinalAdapter:
     self._tick = 0
     self.enabled = False
     self.mode = LongitudinalMode.SCC
-    self.lead_path_clearance_mode = LEAD_PATH_CLEARANCE_MODE_OFF
     self.debug_trace_mode = "off"
     self.cut_in_brake_assist_mode = "off"
     self.curve_speed_confidence_mode = "off"
@@ -281,7 +268,6 @@ class CustomLongitudinalAdapter:
 
       try:
         self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
-        self.lead_path_clearance_mode = _lead_path_clearance_mode(_param_string(p, "LeadPathClearanceMode") or LEAD_PATH_CLEARANCE_MODE_OFF)
         self.debug_trace_mode = _debug_trace_mode(_param_string(p, "LongitudinalDebugTraceMode"))
         self.cut_in_brake_assist_mode = _shadow_mode(_param_string(p, "CutInBrakeAssistMode"), ("apply",))
         self.curve_speed_confidence_mode = _curve_speed_confidence_mode(_param_string(p, "CurveSpeedConfidenceMode"))
@@ -340,7 +326,7 @@ class CustomLongitudinalAdapter:
         model_should_stop=model_should_stop, model_desired_accel=model_desired_accel,
         model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance,
         model_stale=model_stale, accel_coast=accel_coast,
-        model_msg=model, lead_path_clearance_mode=self.lead_path_clearance_mode,
+        model_msg=model,
         cut_in_brake_assist_mode=self.cut_in_brake_assist_mode,
         curve_speed_confidence_mode=self.curve_speed_confidence_mode,
         curve_traffic_advisor_mode=self.curve_traffic_advisor_mode,

@@ -52,23 +52,6 @@ sections:
     - type: param
       key: CustomLongitudinalEnabled
       equals: true
-  - key: LeadPathClearanceMode
-    widget: multiple_button
-    title: Lead Path Clearance
-    description: Experimental monitor for leads predicted to leave your path. No braking changes yet.
-    options:
-    - value: 'off'
-      label: 'Off'
-    - value: 'shadow'
-      label: Monitor only
-    enablement:
-    - $ref: '#/macros/offroad'
-    - type: capability
-      field: has_longitudinal_control
-      equals: true
-    - type: param
-      key: CustomLongitudinalEnabled
-      equals: true
   - key: ScenarioContextMode
     widget: multiple_button
     title: Scenario Context

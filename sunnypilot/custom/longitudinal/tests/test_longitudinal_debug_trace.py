@@ -5,8 +5,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
-from cereal import messaging
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
@@ -50,7 +48,7 @@ def make_planner(debug_trace_mode: str, custom_long_output: Any | None = None) -
   planner._last_longitudinal_debug = {}
   planner._sm_item = LongitudinalPlannerSP._sm_item
   planner._custom_longitudinal_mode_to_telemetry = lambda: 0
-  planner.events_sp = SimpleNamespace(to_msg=lambda: [])
+  planner.events_sp = SimpleNamespace(to_msg=list)
   planner.source = 0
   planner.output_v_target = 0.0
   planner.output_a_target = 0.0
@@ -92,20 +90,6 @@ def test_publish_trace_off_leaves_debug_disabled_and_preserves_custom_telemetry(
 
 def test_debug_trace_populates_whitelisted_fields():
   planner = make_planner("log", custom_output(debug={
-    'lead_path_clearance_mode': 'shadow',
-    'lead_path_clearance_effective_mode': 'shadow',
-    'lead_path_clearance_apply_supported': False,
-    'lead_path_clearance_shadow_eligible': True,
-    'lead_path_clearance_shadow_blocked_reason': '',
-    'lead_path_clearance_lead_idx': 0,
-    'lead_path_clearance_path_y_rel': -1.2,
-    'lead_path_clearance_lateral_velocity': -0.3,
-    'lead_path_clearance_t_clear': 3.4,
-    'lead_path_clearance_t_conflict': 2.1,
-    'lead_path_clearance_confidence': 0.7,
-    'lead_path_clearance_model_prob': 0.9,
-    'lead_path_clearance_ttc': 4.2,
-    'lead_path_clearance_required_decel': 0.3,
     'actual_primary_lead_authority': 'physical',
     'actual_primary_lead_d_rel': 20.0,
     'actual_primary_lead_v_rel': -2.0,
@@ -192,20 +176,6 @@ def test_debug_trace_populates_whitelisted_fields():
   assert msg.accelClipMin == pytest.approx(-2.0)
   assert msg.accelClipMax == pytest.approx(0.4)
   assert msg.e2eSource is True
-  assert msg.leadPathClearance.mode == 'shadow'
-  assert msg.leadPathClearance.effectiveMode == 'shadow'
-  assert msg.leadPathClearance.shadowEligible is True
-  assert msg.leadPathClearance.pathYRel == pytest.approx(-1.2)
-  assert msg.leadPathClearance.lateralVelocity == pytest.approx(-0.3)
-  assert msg.leadPathClearance.tClear == pytest.approx(3.4)
-  assert msg.leadPathClearance.tConflict == pytest.approx(2.1)
-  assert msg.leadPathClearance.modelProb == pytest.approx(0.9)
-  assert msg.leadPathClearance.ttc == pytest.approx(4.2)
-  assert msg.leadPathClearance.requiredDecel == pytest.approx(0.3)
-  assert msg.leadPathClearance.leadStatus is True
-  assert msg.leadPathClearance.leadDRel == pytest.approx(20.0)
-  assert msg.leadPathClearance.leadVRel == pytest.approx(-2.0)
-  assert msg.leadPathClearance.leadYRel == pytest.approx(0.1)
   assert msg.cutInBrakeAssist.mode == 'shadow'
   assert msg.cutInBrakeAssist.applySupported is False
   assert msg.cutInBrakeAssist.eligible is True
@@ -275,10 +245,6 @@ def test_debug_trace_scenario_context_defaults_safely():
 
 def test_debug_trace_sanitizes_non_finite_values_without_throwing():
   planner = make_planner("log", custom_output(a_target=math.nan, debug={
-    'lead_path_clearance_mode': 'shadow',
-    'lead_path_clearance_lead_idx': math.nan,
-    'lead_path_clearance_path_y_rel': math.inf,
-    'lead_path_clearance_t_clear': 'bad',
     'cut_in_brake_assist_mode': 'shadow',
     'cut_in_brake_assist_lead_idx': math.nan,
     'cut_in_brake_assist_proposed_cap': math.nan,
@@ -310,9 +276,6 @@ def test_debug_trace_sanitizes_non_finite_values_without_throwing():
   assert msg.finalATargetClipped == pytest.approx(0.0)
   assert msg.accelClipMin == pytest.approx(0.0)
   assert msg.accelClipMax == pytest.approx(0.0)
-  assert msg.leadPathClearance.leadIdx == -1
-  assert msg.leadPathClearance.pathYRel == pytest.approx(0.0)
-  assert msg.leadPathClearance.tClear == pytest.approx(0.0)
   assert msg.cutInBrakeAssist.leadIdx == -1
   assert msg.cutInBrakeAssist.proposedCap == pytest.approx(0.0)
   assert msg.curveSpeedConfidence.proposedCap == pytest.approx(0.0)

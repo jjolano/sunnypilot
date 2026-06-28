@@ -148,11 +148,6 @@ class TestCompiledShape:
     assert {"steering", "cruise", "display", "visuals", "toggles",
             "device", "software", "developer", "models"} <= panel_ids
 
-  def test_lead_path_clearance_mode_is_off_shadow_only(self, compiled):
-    cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
-    item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "LeadPathClearanceMode")
-    assert [opt["value"] for opt in item["options"]] == ["off", "shadow"]
-
   def test_scenario_context_mode_is_off_shadow_only(self, compiled):
     cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
     item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "ScenarioContextMode")
@@ -161,13 +156,6 @@ class TestCompiledShape:
   def test_longitudinal_debug_trace_mode_is_off_log_only(self, compiled):
     cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
     item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "LongitudinalDebugTraceMode")
-    assert [opt["value"] for opt in item["options"]] == ["off", "log"]
-
-  def test_lateral_debug_trace_mode_is_off_log_only(self, compiled):
-    steering = next(p for p in compiled["panels"] if p["id"] == "steering")
-    custom_lateral = next(s for s in steering["sections"] if s["id"] == "custom_lateral_demand")
-    custom_toggle = next(i for i in custom_lateral["items"] if i["key"] == "CustomLateralDemandEnabled")
-    item = next(i for i in custom_toggle["sub_items"] if i["key"] == "LateralDebugTraceMode")
     assert [opt["value"] for opt in item["options"]] == ["off", "log"]
 
   def test_shadow_observability_modes_include_promoted_apply_options(self, compiled):

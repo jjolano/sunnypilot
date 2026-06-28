@@ -26,13 +26,13 @@ def test_exactly_two_group_headers():
 def test_lateral_controls_present():
   assert {"Mads", "BlinkerPauseLateralControl", "EnforceTorqueControl",
           "NeuralNetworkLateralControl", "AutoLaneChangeTimer",
-          "CustomLateralDemandEnabled", "LateralDebugTraceMode"} <= CONTROLS
+          "CustomLateralDemandEnabled"} <= CONTROLS
 
 
 def test_longitudinal_controls_present():
   assert {"ExperimentalMode", "DisengageOnAccelerator", "LongitudinalPersonality",
           "CustomAccIncrementsEnabled", "CustomLongitudinalEnabled", "CustomLongitudinalMode",
-          "LeadAnticipationMode", "LeadPathClearanceMode", "ScenarioContextMode", "LongitudinalDebugTraceMode",
+          "LeadAnticipationMode", "ScenarioContextMode", "LongitudinalDebugTraceMode",
           "CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "CurveTrafficAdvisorMode", "StandstillReleaseConfidenceMode",
           "SmartCruiseControlVision"} <= CONTROLS
 

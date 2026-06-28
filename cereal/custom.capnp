@@ -243,6 +243,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     accelClipMax @16 :Float32;
     e2eSource @17 :Bool;
 
+    # Retired/unwritten compatibility slot. Keep @18 so later fields retain their original ordinals.
     struct LeadPathClearance {
       mode @0 :Text;
       effectiveMode @1 :Text;
@@ -264,7 +265,6 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       leadYRel @17 :Float32;
     }
 
-    leadPathClearance @18 :LeadPathClearance;
     struct CutInBrakeAssistTrace {
       mode @0 :Text;
       effectiveMode @1 :Text;
@@ -320,6 +320,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       jerkLimitedATarget @11 :Float32;
     }
 
+    leadPathClearance @18 :LeadPathClearance;
     cutInBrakeAssist @19 :CutInBrakeAssistTrace;
     curveSpeedConfidence @20 :CurveSpeedConfidenceTrace;
     standstillReleaseConfidence @21 :StandstillReleaseConfidenceTrace;

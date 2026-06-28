@@ -28,7 +28,6 @@ def test_cruise_top_level_controls_render_inline():
   assert CONTROLS.get("LongitudinalPersonality") == "multiple_button"
   assert CONTROLS.get("CustomLongitudinalMode") == "multiple_button"
   assert CONTROLS.get("LeadAnticipationMode") == "multiple_button"
-  assert CONTROLS.get("LeadPathClearanceMode") == "multiple_button"
   assert CONTROLS.get("ScenarioContextMode") == "multiple_button"
   assert CONTROLS.get("LongitudinalDebugTraceMode") == "multiple_button"
   assert CONTROLS.get("CutInBrakeAssistMode") == "multiple_button"
@@ -58,14 +57,6 @@ def test_lead_anticipation_mode_is_string_multiple_button():
   assert item["widget"] == "multiple_button"
   assert [opt["value"] for opt in item["options"]] == ["off", "shadow", "apply"]
   assert [opt["label"] for opt in item["options"]] == ["Off", "Monitor only", "Apply lead smoothing"]
-
-
-def test_lead_path_clearance_mode_is_string_multiple_button():
-  item = find_item(CRUISE, "LeadPathClearanceMode")
-  assert item is not None
-  assert item["widget"] == "multiple_button"
-  assert [opt["value"] for opt in item["options"]] == ["off", "shadow"]
-  assert [opt["label"] for opt in item["options"]] == ["Off", "Monitor only"]
 
 
 def test_scenario_context_mode_is_string_multiple_button():

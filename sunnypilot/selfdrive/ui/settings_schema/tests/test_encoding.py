@@ -93,20 +93,10 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert lead_enum.values == ["off", "shadow", "apply"]
   assert lead_enum.labels == ["Off", "Monitor only", "Apply lead smoothing"]
 
-  path_enum = homogeneous_string_options(find_item(CRUISE, "LeadPathClearanceMode"))
-  assert path_enum is not None
-  assert path_enum.values == ["off", "shadow"]
-  assert path_enum.labels == ["Off", "Monitor only"]
-
   debug_enum = homogeneous_string_options(find_item(CRUISE, "LongitudinalDebugTraceMode"))
   assert debug_enum is not None
   assert debug_enum.values == ["off", "log"]
   assert debug_enum.labels == ["Off", "Log"]
-
-  lateral_debug_enum = homogeneous_string_options(find_item(STEERING, "LateralDebugTraceMode"))
-  assert lateral_debug_enum is not None
-  assert lateral_debug_enum.values == ["off", "log"]
-  assert lateral_debug_enum.labels == ["Off", "Log"]
 
   cut_in_enum = homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode"))
   assert cut_in_enum is not None
@@ -138,16 +128,6 @@ def test_custom_longitudinal_string_index_matches_planner_fallbacks():
   assert string_option_index("bad", enum, "CustomLongitudinalMode") == 0    # invalid -> planner ACC fallback
 
 
-def test_lead_path_clearance_string_index_maps_stored_apply_to_monitor():
-  enum = homogeneous_string_options(find_item(CRUISE, "LeadPathClearanceMode"))
-  assert enum is not None
-  assert string_option_index("", enum, "LeadPathClearanceMode") == 0
-  assert string_option_index("off", enum, "LeadPathClearanceMode") == 0
-  assert string_option_index("shadow", enum, "LeadPathClearanceMode") == 1
-  assert string_option_index("apply", enum, "LeadPathClearanceMode") == 1
-  assert string_option_index("bad", enum, "LeadPathClearanceMode") == 0
-
-
 def test_longitudinal_debug_trace_string_index_defaults_to_off():
   enum = homogeneous_string_options(find_item(CRUISE, "LongitudinalDebugTraceMode"))
   assert enum is not None
@@ -155,15 +135,6 @@ def test_longitudinal_debug_trace_string_index_defaults_to_off():
   assert string_option_index("off", enum, "LongitudinalDebugTraceMode") == 0
   assert string_option_index("log", enum, "LongitudinalDebugTraceMode") == 1
   assert string_option_index("bad", enum, "LongitudinalDebugTraceMode") == 0
-
-
-def test_lateral_debug_trace_string_index_defaults_to_off():
-  enum = homogeneous_string_options(find_item(STEERING, "LateralDebugTraceMode"))
-  assert enum is not None
-  assert string_option_index("", enum, "LateralDebugTraceMode") == 0
-  assert string_option_index("off", enum, "LateralDebugTraceMode") == 0
-  assert string_option_index("log", enum, "LateralDebugTraceMode") == 1
-  assert string_option_index("bad", enum, "LateralDebugTraceMode") == 0
 
 
 def test_shadow_observability_string_indexes_default_to_off():
