@@ -51,6 +51,44 @@ def build_lead_decel_reaction(*, op_engaged: bool, reaction_delay_s: float):
   return msgs
 
 
+def build_lead_accel_to_decel_reaction(*, op_engaged: bool, braking_at_event: bool):
+  """Lead transitions from accel to decel; ego may already be braking at the event."""
+  msgs = []
+  t = [0.0]
+
+  def emit(v, a, lead_v, lead_a, a_target=None, lead_id=7, lead_status=True):
+    msgs.append(msg("carState", t[0], vEgo=v, aEgo=a, brakePressed=False, gasPressed=False))
+    msgs.append(msg("carControl", t[0] + 0.001, longActive=op_engaged))
+    msgs.append(msg("radarState", t[0] + 0.002, leadOne=_lead(vLead=lead_v, aLeadK=lead_a, radarTrackId=lead_id, status=lead_status)))
+    if op_engaged:
+      at = a_target if a_target is not None else a
+      msgs.append(msg("longitudinalPlanSP", t[0] + 0.003, aTarget=at))
+    t[0] += 0.1
+
+  # Steady cruise with lead
+  for _ in range(10):
+    emit(10.0, 0.0, 10.0, 0.0, a_target=0.0)
+
+  # Lead accelerates first to establish a positive sign
+  for _ in range(3):
+    emit(10.0, 0.0, 10.5, 1.0, a_target=0.0)
+
+  # Next positive-accel samples pre-arm the planner target if we want already-responding.
+  for _ in range(3):
+    at = -0.5 if braking_at_event else 0.0
+    emit(10.0, 0.0, 10.5, 1.0, a_target=at)
+
+  # Lead decelerates — direction change detected here
+  for i in range(30):
+    if braking_at_event:
+      at = -0.5
+    else:
+      at = 0.0 if i < 3 else -0.5
+    emit(10.0, 0.0, 9.5 + 0.1 * i, -1.0, a_target=at)
+
+  return msgs
+
+
 def build_lead_exit(*, op_engaged: bool, accel_delay_s: float):
   """Lead disappears; ego accelerates after a delay from the exit."""
   msgs = []
@@ -482,3 +520,18 @@ def test_cut_in_positive_peak_decel_not_in_median():
   summary = report.to_dict()["summary"]
   assert summary["op_cut_in_valid_cluster_count"] == 1
   assert summary["op_cut_in_peak_decel_median"] is None
+
+
+def test_op_decel_reaction_ignores_already_responding():
+  report = analyze_route(build_lead_accel_to_decel_reaction(op_engaged=True, braking_at_event=True), source="already-resp")
+  decel_events = [r for r in report.op_reactions if r.lead_change.direction == "accel_to_decel"]
+  assert len(decel_events) == 1
+  event = decel_events[0]
+  assert event.already_responding
+  assert not event.valid_reaction
+  assert event.reaction_time is None
+
+  summary = report.to_dict()["summary"]
+  assert summary["op_already_responding_count"] == 1
+  assert summary["op_reaction_count"] == 0
+  assert summary["op_reaction_median_s"] is None

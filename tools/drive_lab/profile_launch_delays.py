@@ -60,6 +60,9 @@ class LaunchEvent:
   accel_mean: float
   accel_peak: float
   jerk_peak: float
+  long_active: bool
+  driver_override: bool
+  enabled: bool
 
   def to_dict(self) -> dict[str, Any]:
     return {
@@ -80,6 +83,9 @@ class LaunchEvent:
       "accel_mean": _r(self.accel_mean, 3),
       "accel_peak": _r(self.accel_peak, 3),
       "jerk_peak": _r(self.jerk_peak, 2),
+      "long_active": self.long_active,
+      "driver_override": self.driver_override,
+      "enabled": self.enabled,
     }
 
 
@@ -149,10 +155,24 @@ def _nearest(series: list[tuple[float, Any]], t: float, window_s: float) -> Any:
   return best
 
 
-def _collect(msgs: list[Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list, list, list]:
+def _any_true_in_window(series: list[tuple[float, bool]], start_t: float, end_t: float) -> bool:
+  """Return True if any sample in [start_t, end_t] is True."""
+  for st, value in series:
+    if st < start_t:
+      continue
+    if st > end_t:
+      break
+    if value:
+      return True
+  return False
+
+
+def _collect(msgs: list[Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list, list, list, list, list]:
   cs_t, cs_v, cs_a = [], [], []
   radar: list[tuple[float, tuple[float, float, float, bool]]] = []
   enabled: list[tuple[float, bool]] = []
+  long_active: list[tuple[float, bool]] = []
+  driver_override: list[tuple[float, bool]] = []
   plan_sp: list[tuple[float, tuple[float, bool | None]]] = []
   for record in build_route_messages(msgs):
     typ, payload, t = record.typ, record.payload, record.t
@@ -160,6 +180,11 @@ def _collect(msgs: list[Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list,
       cs_t.append(t)
       cs_v.append(_f(safe_get(payload, "vEgo")))
       cs_a.append(_f(safe_get(payload, "aEgo")))
+      driver_override.append(
+        (t, bool(safe_get(payload, "gasPressed", False)) or bool(safe_get(payload, "brakePressed", False)))
+      )
+    elif typ == "carControl":
+      long_active.append((t, bool(safe_get(payload, "longActive", False))))
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne")
       if lead is not None:
@@ -169,12 +194,17 @@ def _collect(msgs: list[Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list,
     elif typ == "longitudinalPlanSP":
       should_stop = safe_get(payload, "customLongitudinal.shouldStop")
       plan_sp.append((t, (_f(safe_get(payload, "aTarget")), bool(should_stop) if should_stop is not None else None)))
-  return np.array(cs_t), np.array(cs_v), np.array(cs_a), radar, enabled, plan_sp
+  return np.array(cs_t), np.array(cs_v), np.array(cs_a), radar, enabled, long_active, driver_override, plan_sp
 
 
-def _make_event(t, v, a, min_idx, rec_idx, radar, enabled, plan_sp, p) -> LaunchEvent:
+def _make_event(t, v, a, min_idx, rec_idx, radar, enabled, long_active, driver_override, plan_sp, p) -> LaunchEvent:
   dip_t = float(t[min_idx])
-  op_engaged = bool(_nearest(enabled, dip_t, p.match_window_s) or False)
+  enabled_at_dip = bool(_nearest(enabled, dip_t, p.match_window_s) or False)
+  long_active_at_dip = bool(_nearest(long_active, dip_t, p.match_window_s) or False)
+  # Prefer carControl.longActive over selfdriveState.enabled when available.
+  has_long_active = bool(long_active)
+  driver_override_any = _any_true_in_window(driver_override, dip_t, float(t[rec_idx])) if driver_override else False
+  op_engaged = (long_active_at_dip if has_long_active else enabled_at_dip) and not driver_override_any
   lead = _nearest(radar, dip_t, p.match_window_s)
   lead_present = bool(lead is not None and lead[3] and math.isfinite(lead[0]) and lead[0] < p.lead_d_rel_max)
   accel_win = a[min_idx : rec_idx + 1]
@@ -242,12 +272,15 @@ def _make_event(t, v, a, min_idx, rec_idx, radar, enabled, plan_sp, p) -> Launch
     accel_mean=float(np.mean(positive)) if positive.size else 0.0,
     accel_peak=float(np.max(accel_win)) if accel_win.size else 0.0,
     jerk_peak=float(np.max(jerk)) if jerk.size else 0.0,
+    long_active=long_active_at_dip,
+    driver_override=driver_override_any,
+    enabled=enabled_at_dip,
   )
 
 
 def analyze_route(msgs: list[Any], source: str = "unknown", params: LaunchParams | None = None) -> LaunchReport:
   p = params or LaunchParams()
-  t, v, a, radar, enabled, plan_sp = _collect(msgs)
+  t, v, a, radar, enabled, long_active, driver_override, plan_sp = _collect(msgs)
   notes: list[str] = []
   if t.size == 0:
     notes.append("no carState samples found (need rlogs with carState)")
@@ -272,7 +305,7 @@ def analyze_route(msgs: list[Any], source: str = "unknown", params: LaunchParams
         break
       k += 1
     if rec_idx is not None and min_v < p.near_stop_speed:
-      events.append(_make_event(t, v, a, min_idx, rec_idx, radar, enabled, plan_sp, p))
+      events.append(_make_event(t, v, a, min_idx, rec_idx, radar, enabled, long_active, driver_override, plan_sp, p))
     i = max(j, min_idx + 1)
 
   op = [e for e in events if e.op_engaged]
@@ -293,7 +326,7 @@ def analyze_route(msgs: list[Any], source: str = "unknown", params: LaunchParams
     op_lead_median_ego_start_s=_opt_median([e.ego_start_delay for e in op_lead if e.ego_start_delay is not None]),
     op_lead_median_accel=_opt_median([e.accel_mean for e in op_lead]),
     op_nolead_median_accel=_opt_median([e.accel_mean for e in op_nolead]),
-    events=sorted(op, key=lambda e: e.time),
+    events=sorted(events, key=lambda e: e.time),
     notes=notes,
   )
 

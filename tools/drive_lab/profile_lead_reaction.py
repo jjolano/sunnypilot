@@ -56,6 +56,9 @@ class LeadReactionParams:
   reaction_window_s: float = 5.0  # max window to look for ego response after lead change
   ego_response_threshold: float = 0.2  # m/s^2; minimum |aEgo| or |aTarget| change to count as response
   min_ego_speed: float = 1.0  # m/s; ignore reactions at very low speed (parking, etc.)
+  already_responding_decel_threshold: float = -0.2  # m/s^2; aTarget/aEgo already this low on a decel lead-change
+  already_responding_accel_threshold: float = 0.2  # m/s^2; aTarget/aEgo already this high on an accel lead-change
+  already_responding_delta_threshold: float = 0.2  # m/s^2; baseline-to-current drop/rise before event counts as responding
 
   # Creep filtering
   creep_speed: float = 0.1  # m/s; brakePressed + vEgo > this = creeping, not stopped
@@ -106,6 +109,8 @@ class ReactionEvent:
   ego_a_before: float
   ego_a_after: float
   response_type: str  # "accel", "brake", "none"
+  already_responding: bool = False
+  valid_reaction: bool = True
 
 
 @dataclass
@@ -170,10 +175,16 @@ class LeadReactionReport:
       "manual_moving_s": _r(self.manual_moving_s, 2),
       "creep_filtered_samples": self.creep_filtered_samples,
       "summary": {
-        "op_reaction_median_s": _r(_opt_median([e.reaction_time for e in self.op_reactions if e.reaction_time is not None]), 3),
-        "manual_reaction_median_s": _r(_opt_median([e.reaction_time for e in self.manual_reactions if e.reaction_time is not None]), 3),
-        "op_reaction_count": len([e for e in self.op_reactions if e.reaction_time is not None]),
-        "manual_reaction_count": len([e for e in self.manual_reactions if e.reaction_time is not None]),
+        "op_reaction_median_s": _r(
+          _opt_median([e.reaction_time for e in self.op_reactions if e.valid_reaction and e.reaction_time is not None]), 3
+        ),
+        "manual_reaction_median_s": _r(
+          _opt_median([e.reaction_time for e in self.manual_reactions if e.valid_reaction and e.reaction_time is not None]), 3
+        ),
+        "op_reaction_count": len([e for e in self.op_reactions if e.valid_reaction and e.reaction_time is not None]),
+        "manual_reaction_count": len([e for e in self.manual_reactions if e.valid_reaction and e.reaction_time is not None]),
+        "op_already_responding_count": len([e for e in self.op_reactions if e.already_responding]),
+        "manual_already_responding_count": len([e for e in self.manual_reactions if e.already_responding]),
         "op_lead_exit_accel_median_s": _r(
           _opt_median([e.accel_reaction_time for e in self.lead_exits if e.op_engaged and e.accel_reaction_time is not None]),
           3,
@@ -264,6 +275,8 @@ def _reaction_to_dict(e: ReactionEvent) -> dict[str, Any]:
     "ego_a_after": _r(e.ego_a_after, 3),
     "response_type": e.response_type,
     "op_engaged": e.lead_change.op_engaged,
+    "already_responding": e.already_responding,
+    "valid_reaction": e.valid_reaction,
   }
 
 
@@ -502,49 +515,79 @@ def _latest_index_at_or_before(samples: list, t: float) -> int | None:
 
 
 def _measure_reaction(ego: list[_EgoSample], change: LeadSpeedChange, p: LeadReactionParams) -> ReactionEvent:
-  """Measure ego reaction time after a lead speed change."""
+  """Measure ego reaction time after a lead speed change; exclude cases already responding at event time."""
   idx = _nearest_index(ego, change.t)
   if idx is None:
-    return ReactionEvent(change, None, 0.0, 0.0, "none")
+    return ReactionEvent(change, None, 0.0, 0.0, "none", already_responding=False, valid_reaction=True)
 
-  # Baseline ego accel before the change
-  baseline_a = ego[max(0, idx - 3) : idx + 1]
-  baseline_a = [e.a for e in baseline_a if math.isfinite(e.a)]
-  a_before = float(np.median(baseline_a)) if baseline_a else 0.0
+  # Use the latest ego sample at or before the event so we don't peek into a response.
+  event_idx = _latest_index_at_or_before(ego, change.t) or idx
+  event_ego = ego[event_idx]
 
   # For OP, use aTarget; for manual, use aEgo
   use_target = change.op_engaged
 
+  # Signal at event time
+  current_signal = event_ego.a_target if (use_target and event_ego.a_target is not None) else event_ego.a
+  if current_signal is None or not math.isfinite(current_signal):
+    current_signal = 0.0
+
+  # Baseline from samples strictly before the event
+  baseline_a = ego[max(0, event_idx - 3) : event_idx]
+  baseline_a = [e.a for e in baseline_a if math.isfinite(e.a)]
+  a_before = float(np.median(baseline_a)) if baseline_a else 0.0
+
+  # Detect whether ego/planner was already responding before the marker.
+  if change.direction == "decel_to_accel":
+    already_responding = (
+      current_signal >= p.already_responding_accel_threshold
+      or (current_signal - a_before) >= p.already_responding_delta_threshold
+    )
+  else:
+    already_responding = (
+      current_signal <= p.already_responding_decel_threshold
+      or (a_before - current_signal) >= p.already_responding_delta_threshold
+    )
+
   # Look for direction response in the window
   end_t = change.t + p.reaction_window_s
   response_time = None
-  a_after = a_before
+  a_after = current_signal
   response_type = "none"
 
-  for i in range(idx, len(ego)):
-    if ego[i].t > end_t:
-      break
-    raw_signal = ego[i].a_target if (use_target and ego[i].a_target is not None) else ego[i].a
-    if raw_signal is None or not math.isfinite(raw_signal):
-      continue
-    signal = float(raw_signal)
-    delta = signal - a_before
-    if change.direction == "decel_to_accel":
-      # Lead is accelerating; ego should accelerate
-      if delta > p.ego_response_threshold:
-        response_time = float(ego[i].t - change.t)
-        a_after = signal
-        response_type = "accel"
+  if not already_responding:
+    for i in range(idx, len(ego)):
+      if ego[i].t > end_t:
         break
-    else:
-      # Lead is decelerating; ego should brake
-      if delta < -p.ego_response_threshold:
-        response_time = float(ego[i].t - change.t)
-        a_after = signal
-        response_type = "brake"
-        break
+      raw_signal = ego[i].a_target if (use_target and ego[i].a_target is not None) else ego[i].a
+      if raw_signal is None or not math.isfinite(raw_signal):
+        continue
+      signal = float(raw_signal)
+      delta = signal - a_before
+      if change.direction == "decel_to_accel":
+        # Lead is accelerating; ego should accelerate
+        if delta > p.ego_response_threshold:
+          response_time = float(ego[i].t - change.t)
+          a_after = signal
+          response_type = "accel"
+          break
+      else:
+        # Lead is decelerating; ego should brake
+        if delta < -p.ego_response_threshold:
+          response_time = float(ego[i].t - change.t)
+          a_after = signal
+          response_type = "brake"
+          break
 
-  return ReactionEvent(change, response_time, a_before, float(a_after), response_type)
+  return ReactionEvent(
+    change,
+    response_time,
+    a_before,
+    float(a_after),
+    response_type,
+    already_responding=already_responding,
+    valid_reaction=not already_responding,
+  )
 
 
 # ---------------------------------------------------------------------------
@@ -838,8 +881,8 @@ def render_report(report: LeadReactionReport) -> str:
   lines += [
     "",
     "  lead speed change reaction (median):",
-    f"    OP:      {s['op_reaction_median_s']} s  ({s['op_reaction_count']} events)",
-    f"    manual:  {s['manual_reaction_median_s']} s  ({s['manual_reaction_count']} events)",
+    f"    OP:      {s['op_reaction_median_s']} s  ({s['op_reaction_count']} valid events, {s['op_already_responding_count']} already responding)",
+    f"    manual:  {s['manual_reaction_median_s']} s  ({s['manual_reaction_count']} valid events, {s['manual_already_responding_count']} already responding)",
     "",
     "  lead exit accel reaction (median):",
     f"    OP:      {s['op_lead_exit_accel_median_s']} s",

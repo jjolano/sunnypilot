@@ -12,15 +12,18 @@ def msg(kind, t_s, **payload):
   return FakeMsg(kind=kind, logMonoTime=int(t_s * 1e9), **{kind: SimpleNamespace(**payload)})
 
 
-def build_stream(*, engaged=True, lead=False):
+def build_stream(*, engaged=True, lead=False, long_active=None, gas_pressed=False, brake_pressed=False):
   """Cruise, decelerate to a near-stop, then launch away — one recoverable launch event."""
+  if long_active is None:
+    long_active = engaged
   msgs = []
   clock = [0.0]
 
   def emit(v, a, should_stop=False, a_target=0.0):
     t = clock[0]
-    msgs.append(msg("carState", t, vEgo=v, aEgo=a))
+    msgs.append(msg("carState", t, vEgo=v, aEgo=a, gasPressed=gas_pressed, brakePressed=brake_pressed))
     msgs.append(msg("selfdriveState", t + 0.001, enabled=engaged))
+    msgs.append(msg("carControl", t + 0.0015, longActive=long_active))
     d_rel = 8.0 if lead else 250.0
     msgs.append(msg("radarState", t + 0.002, leadOne=SimpleNamespace(dRel=d_rel, vLead=v, status=lead)))
     msgs.append(msg("longitudinalPlanSP", t + 0.003, aTarget=a_target, customLongitudinal=SimpleNamespace(shouldStop=should_stop)))
@@ -112,3 +115,15 @@ def test_no_carstate_returns_note():
   report = analyze_route([msg("selfdriveState", 0.0, enabled=True)], source="empty")
   assert report.total_events == 0
   assert any("carState" in note for note in report.notes)
+
+
+def test_driver_override_prefers_long_active_over_enabled():
+  report = analyze_route(build_stream(engaged=True, long_active=False, gas_pressed=True), source="override")
+  assert report.total_events == 1
+  assert report.op_engaged_events == 0
+  assert report.manual_events == 1
+  event = report.events[0]
+  assert event.enabled
+  assert not event.long_active
+  assert event.driver_override
+  assert not event.op_engaged
