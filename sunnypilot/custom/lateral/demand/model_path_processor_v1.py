@@ -66,7 +66,10 @@ SMOOTHED_CURVATURE_MAX_RAW_LAT_ACCEL_DISAGREEMENT = 1.25
 DAMPING_TAU_SPEED_BP = [5.0, 15.0, 30.0]
 DAMPING_TAU_S = [0.16, 0.10, 0.055]
 
-# Experimental, default-off pre-governor demand smoothing.
+# Experimental, default-off pre-governor demand smoothing. This is intentionally narrow:
+# high-confidence, near-straight frames get curvature rate limiting, and clean curve exits
+# get a raw-reference-bounded stale-demand guard. The output is bounded in lateral-accel
+# units so it cannot hold stale turn demand through a real curve entry/exit.
 DEMAND_JERK_SMOOTH_MIN_SPEED = 8.0
 DEMAND_JERK_SMOOTH_MAX_SPEED = 22.0
 DEMAND_JERK_SMOOTH_MIN_QUALITY = 0.95
@@ -77,22 +80,30 @@ DEMAND_JERK_SMOOTH_MAX_PATH_DISAGREEMENT = 0.35
 DEMAND_JERK_SMOOTH_MAX_CURVATURE = 0.0012
 DEMAND_JERK_SMOOTH_MAX_LAT_ACCEL = 0.35
 DEMAND_JERK_SMOOTH_LAG_LAT_ACCEL = 0.08
+# Conservative cap for the optional curve-exit guard.  Keeps the guard well below the
+# lateral accel range where overresponse/reversal events have been observed.
 DEMAND_JERK_SMOOTH_CURVE_EXIT_MAX_LAT_ACCEL = 1.0  # m/s^2
+# The guard must see sustained raw/reference curvature magnitude falls before it can
+# activate.  A fall frame counts only when the current raw magnitude has dropped by at
+# least this lateral-accel delta versus the previous frame (same sign, or current raw
+# is already near zero).
 DEMAND_JERK_SMOOTH_CURVE_EXIT_FALL_MIN_LAT_ACCEL_DELTA = 0.03  # m/s^2
 DEMAND_JERK_SMOOTH_CURVE_EXIT_FALL_MIN_FRAMES = 2
+# For opposite-sign handling, "near zero" is a lateral-accel threshold, not curvature,
+# so high-speed shallow curvature is still treated as a meaningful crossing.
 DEMAND_JERK_SMOOTH_CURVE_EXIT_NEAR_ZERO_LAT_ACCEL = 0.08  # m/s^2
 DEMAND_JERK_SMOOTH_SPEED_BP = [8.0, 15.0, 22.0]
 DEMAND_JERK_SMOOTH_MAX_LAT_JERK = [1.0, 1.4, 1.8]
 
 # Straight-road damping: larger tau and deadband when driving straight at high speed.
-STRAIGHT_ROAD_DAMPING_MIN_SPEED = 20.0
-STRAIGHT_ROAD_DAMPING_MAX_CURVATURE = 3e-4
-STRAIGHT_ROAD_DAMPING_TAU_S = 0.35
-STRAIGHT_ROAD_DAMPING_DEADBAND = 1.5e-4
-STRAIGHT_ROAD_DAMPING_BLEND_BP = [0.0, 1.5e-4, 3e-4]
-STRAIGHT_ROAD_DAMPING_BLEND_SCALE = [1.0, 0.0, 0.0]
+STRAIGHT_ROAD_DAMPING_MIN_SPEED = 20.0  # m/s — only activate above this speed
+STRAIGHT_ROAD_DAMPING_MAX_CURVATURE = 3e-4  # 1/m — only activate when curvature is near-zero
+STRAIGHT_ROAD_DAMPING_TAU_S = 0.35  # seconds — much larger tau for straight-road smoothing
+STRAIGHT_ROAD_DAMPING_DEADBAND = 1.5e-4  # 1/m — ignore curvature changes smaller than this on straight roads
+STRAIGHT_ROAD_DAMPING_BLEND_BP = [0.0, 1.5e-4, 3e-4]  # curvature breakpoints for blend
+STRAIGHT_ROAD_DAMPING_BLEND_SCALE = [1.0, 0.0, 0.0]  # full straight-road damping at zero curvature, none at 3e-4
 
-# Trust penalty after unstable frames.
+# Trust penalty after unstable frames (decay then bump on same frame when applicable).
 TRUST_DECAY = 0.92
 TRUST_BUMP = 0.38
 TRUST_BUMP_REASONS = frozenset({"invalid_path", "frame_drop", "path_disagreement"})
@@ -101,7 +112,7 @@ TRUST_BUMP_REASONS = frozenset({"invalid_path", "frame_drop", "path_disagreement
 NEAR_ZERO_CURVATURE_BP = [0.0, 0.00045]
 NEAR_ZERO_BLEND_SCALE = [0.32, 1.0]
 
-# Lane change: fade (smoothed - raw) correction toward raw.
+# Lane change: fade (smoothed - raw) correction toward raw so LaneChangePathShaper does not see a step.
 LANE_CHANGE_OFFSET_FADE_S = 0.5
 
 
@@ -145,32 +156,6 @@ class ModelPathProcessorResult:
   demand_jerk_smoothing_lag: float = 0.0
 
 
-@dataclass
-class _PathEvidence:
-  """Quality/decision evidence produced from path observations."""
-  quality: float
-  reason: str
-  path_disagreement: float | None
-
-
-@dataclass
-class _ReferenceSelection:
-  """Fallback and retained-curve reference chosen for the current frame."""
-  fallback: float
-  retained_used: bool
-
-
-@dataclass
-class _ShapedCurvature:
-  """Curvature after spatial and temporal shaping."""
-  raw_base: float
-  damped: float
-  tau_s: float
-  damping_alpha: float
-  straight_road_active: bool
-  spatial_smoothed: float
-
-
 class ModelPathProcessor:
   def __init__(self) -> None:
     self.reset()
@@ -199,140 +184,17 @@ class ModelPathProcessor:
     self._curve_exit_fall_frames: int = 0
     self._prev_temporal_soft_boundary = False
 
-  # ---------------------------------------------------------------------------
-  # Orchestration
-  # ---------------------------------------------------------------------------
   def update(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult:
     self._last_smoothing_tau_s = 0.0
     self._last_damping_alpha = 0.0
     self._last_spatial_curvature = 0.0
     self._last_demand_jerk_smoothing_step = 0.0
     self._last_demand_jerk_smoothing_lag = 0.0
+    lc_fade_report = 0.0
 
-    # 1. inactive/nonfinite/stale/invalid terminal fallbacks
-    early = self._terminal_fallbacks(inputs)
-    if early is not None:
-      return early
-
-    desired_curvature = float(inputs.desired_curvature)
-    raw_base = desired_curvature
-    fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
-
-    # turn opposite curvature
-    if inputs.turn_curvature_sign != 0 and desired_curvature * inputs.turn_curvature_sign < 0.0:
-      self._recovering_from_hard_invalid = False
-      self._reset_curve_exit_history()
-      turn_fallback = self._turn_compatible_fallback_curvature(
-        inputs.previous_desired_curvature,
-        inputs.measured_curvature,
-        inputs.turn_curvature_sign,
-      )
-      return ModelPathProcessorResult(
-        turn_fallback, 0.5, True, "turn_opposite_curvature", 0,
-        trust_penalty=self._trust_penalty,
-        straight_road_damping_active=self._straight_road_damping_active,
-      )
-
-    # 2. quality scoring
-    evidence = self._evaluate_path_evidence(inputs, desired_curvature)
-
-    # 3. pre-smoothing implausible jump
-    pre_jump = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
-    if pre_jump is not None:
-      self._recovering_from_hard_invalid = False
-      self._reset_curve_exit_history()
-      return replace(pre_jump, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
-
-    # 4. retained-curve refresh
-    self._refresh_retained_curve(inputs, desired_curvature, evidence.quality, evidence.reason, evidence.path_disagreement)
-
-    # 5. soft-gate hold/trust penalty
-    quality, reason, hold_frames_remaining = self._apply_soft_gate_hold(evidence.quality, evidence.reason, inputs.v_ego)
-    self._apply_temporal_soft_boundary(self._soft_temporal_boundary(quality, reason))
-    if reason in TRUST_BUMP_REASONS:
-      self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
-
-    # 6. low-quality early return
-    if quality < LOW_QUALITY_BLEND_THRESHOLD:
-      return self._handle_low_quality(inputs, raw_base, fallback_curvature, quality, reason, hold_frames_remaining)
-
-    # 7. spatial + temporal smoothing
-    shaped = self._shape_curvature(inputs, raw_base, quality)
-
-    # 8. demand-jerk smoothing
-    demand_curvature, demand_active, demand_step, demand_lag = self._apply_demand_jerk_smoothing(
-      inputs,
-      shaped.raw_base,
-      shaped.damped,
-      quality,
-      reason,
-      evidence.path_disagreement,
-    )
-    curvature = demand_curvature
-
-    # 9. lane-change fade
-    curvature, lc_fade_report = self._apply_lane_change_fade(curvature, shaped.damped, shaped.raw_base, inputs)
-
-    # 10. post-smoothing jump
-    post_jump = self._limit_implausible_jump(inputs.v_ego, curvature, fallback_curvature)
-    if post_jump is not None:
-      self._recovering_from_hard_invalid = False
-      self._reset_curve_exit_history()
-      return replace(
-        post_jump,
-        smoothing_tau_s=shaped.tau_s,
-        damping_alpha=shaped.damping_alpha,
-        trust_penalty=self._trust_penalty,
-        spatial_smoothed_curvature=shaped.spatial_smoothed,
-        lane_change_fade=lc_fade_report,
-        straight_road_damping_active=shaped.straight_road_active,
-        demand_jerk_smoothing_active=demand_active,
-        demand_jerk_smoothing_step=demand_step,
-        demand_jerk_smoothing_lag=demand_lag,
-      )
-
-    # 11. hard-invalid recovery
-    recovery = self._limit_hard_invalid_recovery(inputs, curvature)
-    if recovery is not None:
-      self._reset_curve_exit_history()
-      return replace(
-        recovery,
-        smoothing_tau_s=shaped.tau_s,
-        damping_alpha=shaped.damping_alpha,
-        trust_penalty=self._trust_penalty,
-        spatial_smoothed_curvature=shaped.spatial_smoothed,
-        lane_change_fade=lc_fade_report,
-        straight_road_damping_active=shaped.straight_road_active,
-        demand_jerk_smoothing_active=demand_active,
-        demand_jerk_smoothing_step=demand_step,
-        demand_jerk_smoothing_lag=demand_lag,
-      )
-
-    return ModelPathProcessorResult(
-      curvature,
-      quality,
-      False,
-      reason,
-      hold_frames_remaining,
-      smoothing_tau_s=shaped.tau_s,
-      damping_alpha=shaped.damping_alpha,
-      trust_penalty=self._trust_penalty,
-      spatial_smoothed_curvature=shaped.spatial_smoothed,
-      lane_change_fade=lc_fade_report,
-      straight_road_damping_active=shaped.straight_road_active,
-      demand_jerk_smoothing_active=demand_active,
-      demand_jerk_smoothing_step=demand_step,
-      demand_jerk_smoothing_lag=demand_lag,
-    )
-
-  def _terminal_fallbacks(self, inputs: ModelPathProcessorInputs) -> ModelPathProcessorResult | None:
-    """Handle lat_active/inactive and nonfinite/stale/invalid terminal states."""
     if not inputs.lat_active:
       self.reset()
-      return ModelPathProcessorResult(
-        float(inputs.measured_curvature), 0.0, True, "inactive",
-        straight_road_damping_active=self._straight_road_damping_active,
-      )
+      return ModelPathProcessorResult(float(inputs.measured_curvature), 0.0, True, "inactive", straight_road_damping_active=self._straight_road_damping_active)
 
     self._trust_penalty *= TRUST_DECAY
     self._age_retained_curve()
@@ -342,15 +204,8 @@ class ModelPathProcessor:
       self._low_lane_confidence_frames = 0
       self._clear_retained_curve()
       self._reset_curve_exit_history()
-      hard_invalid_fallback = self._hard_invalid_fallback_curvature(
-        inputs.previous_desired_curvature,
-        inputs.measured_curvature,
-      )
-      return ModelPathProcessorResult(
-        hard_invalid_fallback, 0.0, True, "nonfinite_curvature", 0,
-        trust_penalty=self._trust_penalty,
-        straight_road_damping_active=self._straight_road_damping_active,
-      )
+      hard_invalid_fallback = self._hard_invalid_fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
+      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "nonfinite_curvature", 0, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
     if not math.isfinite(inputs.model_age_s) or inputs.model_age_s > MODEL_STALE_AGE_S:
       self._recovering_from_hard_invalid = False
@@ -390,25 +245,28 @@ class ModelPathProcessor:
         hard_invalid_fallback,
         fallback_curvature,
       )
-      return ModelPathProcessorResult(
-        hard_invalid_fallback, 0.0, True, "invalid_path", 0,
-        trust_penalty=self._trust_penalty,
-        straight_road_damping_active=self._straight_road_damping_active,
+      return ModelPathProcessorResult(hard_invalid_fallback, 0.0, True, "invalid_path", 0, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
+
+    desired_curvature = float(inputs.desired_curvature)
+    raw_desired_curvature = desired_curvature
+    fallback_curvature = self._fallback_curvature(inputs.previous_desired_curvature, inputs.measured_curvature)
+    quality = 1.0
+    reason = "ok"
+
+    if inputs.turn_curvature_sign != 0 and desired_curvature * inputs.turn_curvature_sign < 0.0:
+      self._recovering_from_hard_invalid = False
+      self._reset_curve_exit_history()
+      turn_fallback_curvature = self._turn_compatible_fallback_curvature(
+        inputs.previous_desired_curvature,
+        inputs.measured_curvature,
+        inputs.turn_curvature_sign,
       )
+      return ModelPathProcessorResult(turn_fallback_curvature, 0.5, True, "turn_opposite_curvature", 0, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
-    return None
-
-  # ---------------------------------------------------------------------------
-  # Staged internals
-  # ---------------------------------------------------------------------------
-  def _evaluate_path_evidence(self, inputs: ModelPathProcessorInputs, desired_curvature: float) -> _PathEvidence:
     path_curvature = self._path_curvature(inputs.orientation_z, inputs.orientation_rate_z, inputs.v_ego)
     path_disagreement = None
     if path_curvature is not None:
       path_disagreement = abs(desired_curvature - path_curvature) * max(inputs.v_ego, 1.0) ** 2
-
-    quality = 1.0
-    reason = "ok"
 
     path_std_quality = self._path_std_quality(
       inputs.position_y_std,
@@ -436,24 +294,54 @@ class ModelPathProcessor:
       quality = min(quality, SOFT_GATE_HOLD_QUALITY)
       reason = "frame_drop"
 
-    if path_disagreement is not None and path_disagreement > MAX_PATH_CURVATURE_DISAGREEMENT:
-      quality = min(quality, 0.65)
-      reason = "path_disagreement"
+    if path_disagreement is not None:
+      if path_disagreement > MAX_PATH_CURVATURE_DISAGREEMENT:
+        quality = min(quality, 0.65)
+        reason = "path_disagreement"
 
-    return _PathEvidence(quality=quality, reason=reason, path_disagreement=path_disagreement)
+    jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
+    if jump_result is not None:
+      self._recovering_from_hard_invalid = False
+      self._reset_curve_exit_history()
+      return replace(jump_result, trust_penalty=self._trust_penalty, straight_road_damping_active=self._straight_road_damping_active)
 
-  def _select_reference_curvature(
-    self,
-    inputs: ModelPathProcessorInputs,
-    desired_curvature: float,
-    fallback_curvature: float,
-  ) -> _ReferenceSelection:
-    retained_fallback = self._retained_curve_fallback(inputs, desired_curvature, fallback_curvature)
-    if retained_fallback is not None:
-      return _ReferenceSelection(fallback=retained_fallback, retained_used=True)
-    return _ReferenceSelection(fallback=fallback_curvature, retained_used=False)
+    self._refresh_retained_curve(inputs, desired_curvature, quality, reason, path_disagreement)
 
-  def _shape_curvature(self, inputs: ModelPathProcessorInputs, raw_base: float, quality: float) -> _ShapedCurvature:
+    quality, reason, hold_frames_remaining = self._apply_soft_gate_hold(quality, reason, inputs.v_ego)
+    self._apply_temporal_soft_boundary(self._soft_temporal_boundary(quality, reason))
+
+    if reason in TRUST_BUMP_REASONS:
+      self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
+
+    if quality < LOW_QUALITY_BLEND_THRESHOLD:
+      self._recovering_from_hard_invalid = False
+      retained_fallback = self._retained_curve_fallback(inputs, desired_curvature, fallback_curvature)
+      retained_fallback_used = False
+      if retained_fallback is not None:
+        fallback_curvature = retained_fallback
+        retained_fallback_used = True
+      alpha = float(np.interp(quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0]))
+      desired_curvature = self._blend(fallback_curvature, desired_curvature, alpha)
+      if reason in SOFT_GATE_REASONS:
+        desired_curvature = self._limit_low_speed_untrusted_curvature_step(
+          inputs.v_ego,
+          desired_curvature,
+          fallback_curvature,
+        )
+      if reason in SOFT_GATE_REASONS and not retained_fallback_used:
+        desired_curvature = self._limit_same_sign_amplification(
+          raw_desired_curvature,
+          desired_curvature,
+          inputs.v_ego,
+          SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA,
+        )
+      self._reset_curve_exit_history()
+      return ModelPathProcessorResult(
+        desired_curvature, quality, True, reason, hold_frames_remaining, trust_penalty=self._trust_penalty,
+        straight_road_damping_active=self._straight_road_damping_active,
+      )
+
+    raw_base = desired_curvature
     spatial_curvature: float | None = None
     if inputs.smooth_model_path_curvature:
       spatial_curvature = self._smoothed_path_curvature(inputs, raw_base, quality, self._trust_penalty)
@@ -461,89 +349,90 @@ class ModelPathProcessor:
     if spatial_curvature is not None:
       self._last_spatial_curvature = float(spatial_curvature)
       after_spatial = float(spatial_curvature)
-      spatial_report = float(spatial_curvature)
     else:
       after_spatial = raw_base
-      spatial_report = raw_base
       self._last_spatial_curvature = raw_base
 
-    tau_s, damp_alpha, damped, straight_road_active = self._temporal_damp_curvature(
-      inputs, after_spatial, bool(inputs.smooth_model_path_curvature),
-    )
+    tau_s, damp_alpha, damped, straight_road_active = self._temporal_damp_curvature(inputs, after_spatial, bool(inputs.smooth_model_path_curvature))
     self._last_smoothing_tau_s = tau_s
     self._last_damping_alpha = damp_alpha
 
-    return _ShapedCurvature(
-      raw_base=raw_base,
-      damped=damped,
-      tau_s=tau_s,
-      damping_alpha=damp_alpha,
-      straight_road_active=straight_road_active,
-      spatial_smoothed=spatial_report,
-    )
-
-  def _handle_low_quality(
-    self,
-    inputs: ModelPathProcessorInputs,
-    raw_base: float,
-    fallback_curvature: float,
-    quality: float,
-    reason: str,
-    hold_frames_remaining: int,
-  ) -> ModelPathProcessorResult:
-    self._recovering_from_hard_invalid = False
-    selection = self._select_reference_curvature(inputs, raw_base, fallback_curvature)
-    desired_curvature = self._blend(selection.fallback, raw_base, float(np.interp(
-      quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0],
-    )))
-    if reason in SOFT_GATE_REASONS:
-      desired_curvature = self._limit_low_speed_untrusted_curvature_step(
-        inputs.v_ego,
-        desired_curvature,
-        selection.fallback,
-      )
-    if reason in SOFT_GATE_REASONS and not selection.retained_used:
-      desired_curvature = self._limit_same_sign_amplification(
-        raw_base,
-        desired_curvature,
-        inputs.v_ego,
-        SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA,
-      )
-    self._reset_curve_exit_history()
-    return ModelPathProcessorResult(
-      desired_curvature,
+    desired_curvature, demand_jerk_active, demand_jerk_step, demand_jerk_lag = self._apply_demand_jerk_smoothing(
+      inputs,
+      raw_base,
+      damped,
       quality,
-      True,
       reason,
-      hold_frames_remaining,
-      trust_penalty=self._trust_penalty,
-      straight_road_damping_active=self._straight_road_damping_active,
+      path_disagreement,
     )
 
-  def _apply_lane_change_fade(
-    self,
-    curvature: float,
-    damped: float,
-    raw_base: float,
-    inputs: ModelPathProcessorInputs,
-  ) -> tuple[float, float]:
-    fade_report = 0.0
+    # Lane change: fade from fully smoothed (k=1) toward raw_base (k=0).
     if inputs.smooth_model_path_curvature and inputs.lane_change_active:
       if not self._prev_lane_change_active or self._lane_change_fade is None:
         self._lane_change_fade = 1.0
       fade = float(self._lane_change_fade)
-      fade_report = fade
-      curvature = float(raw_base + (damped - raw_base) * fade)
+      lc_fade_report = fade
+      desired_curvature = float(raw_base + (damped - raw_base) * fade)
       self._lane_change_fade = max(0.0, fade - DT_CTRL / LANE_CHANGE_OFFSET_FADE_S)
     else:
       self._lane_change_fade = None
 
     self._prev_lane_change_active = bool(inputs.lane_change_active)
-    return curvature, fade_report
 
-  # ---------------------------------------------------------------------------
-  # Helpers used by tests / callers (stable signatures)
-  # ---------------------------------------------------------------------------
+    jump_result = self._limit_implausible_jump(inputs.v_ego, desired_curvature, fallback_curvature)
+    if jump_result is not None:
+      self._recovering_from_hard_invalid = False
+      self._reset_curve_exit_history()
+      return ModelPathProcessorResult(
+        jump_result.desired_curvature,
+        jump_result.quality,
+        jump_result.gated,
+        jump_result.reason,
+        jump_result.hold_frames_remaining,
+        smoothing_tau_s=tau_s,
+        damping_alpha=damp_alpha,
+        trust_penalty=self._trust_penalty,
+        spatial_smoothed_curvature=self._last_spatial_curvature,
+        lane_change_fade=lc_fade_report,
+        straight_road_damping_active=straight_road_active,
+        demand_jerk_smoothing_active=demand_jerk_active,
+        demand_jerk_smoothing_step=demand_jerk_step,
+        demand_jerk_smoothing_lag=demand_jerk_lag,
+      )
+
+    recovery_result = self._limit_hard_invalid_recovery(inputs, desired_curvature)
+    if recovery_result is not None:
+      self._reset_curve_exit_history()
+      return replace(
+        recovery_result,
+        smoothing_tau_s=tau_s,
+        damping_alpha=damp_alpha,
+        trust_penalty=self._trust_penalty,
+        spatial_smoothed_curvature=self._last_spatial_curvature,
+        lane_change_fade=lc_fade_report,
+        straight_road_damping_active=straight_road_active,
+        demand_jerk_smoothing_active=demand_jerk_active,
+        demand_jerk_smoothing_step=demand_jerk_step,
+        demand_jerk_smoothing_lag=demand_jerk_lag,
+      )
+
+    return ModelPathProcessorResult(
+      desired_curvature,
+      quality,
+      False,
+      reason,
+      hold_frames_remaining,
+      smoothing_tau_s=tau_s,
+      damping_alpha=damp_alpha,
+      trust_penalty=self._trust_penalty,
+      spatial_smoothed_curvature=self._last_spatial_curvature,
+      lane_change_fade=lc_fade_report,
+      straight_road_damping_active=straight_road_active,
+      demand_jerk_smoothing_active=demand_jerk_active,
+      demand_jerk_smoothing_step=demand_jerk_step,
+      demand_jerk_smoothing_lag=demand_jerk_lag,
+    )
+
   def _apply_demand_jerk_smoothing(
     self,
     inputs: ModelPathProcessorInputs,
@@ -568,6 +457,9 @@ class ModelPathProcessor:
     curve_exit = (not near_straight and
                   self._curve_exit_smoothing_eligible(raw_base, target, v_ego))
 
+    # In curve exit the current raw/reference curvature has already fallen; the stale
+    # damped target is the authority we would otherwise follow.  Clamp that stale
+    # target to within lag_limit of the current raw reference so tracking stays honest.
     if curve_exit:
       effective_target = float(np.clip(target, raw_base - lag_limit, raw_base + lag_limit))
     else:

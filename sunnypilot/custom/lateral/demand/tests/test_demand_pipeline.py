@@ -33,7 +33,9 @@ from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   DEMAND_JERK_SMOOTH_MAX_CURVATURE,
   ModelPathProcessor,
   ModelPathProcessorInputs,
+  ModelPathProcessorResult,
 )
+from openpilot.sunnypilot.custom.lateral.demand import model_path_processor_v1
 from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
   LateralDemandPipeline,
   LateralDemandPipelineInputs,
@@ -943,3 +945,93 @@ def test_lane_centering_geometry_heading_cannot_flip_offset_correction():
   assert result.debug["lane_centering_geometry_offset_near"] < -0.45
   assert result.heading_error == pytest.approx(0.0)
   assert result.curvature_nudge < 0.0
+
+
+def test_v1_backup_module_imports_and_matches_api():
+  assert hasattr(model_path_processor_v1, "ModelPathProcessor")
+  assert hasattr(model_path_processor_v1, "ModelPathProcessorInputs")
+  assert hasattr(model_path_processor_v1, "ModelPathProcessorResult")
+  v1 = model_path_processor_v1.ModelPathProcessor()
+  result = v1.update(_mpp_inputs())
+  assert math.isfinite(result.desired_curvature)
+  assert model_path_processor_v1.MODEL_STALE_AGE_S == 0.20
+
+
+def _assert_v1_v2_sequence_parity(sequence: list[ModelPathProcessorInputs]) -> None:
+  p1 = model_path_processor_v1.ModelPathProcessor()
+  p2 = ModelPathProcessor()
+  fields = (
+    "desired_curvature", "quality", "gated", "reason", "hold_frames_remaining",
+    "smoothing_tau_s", "damping_alpha", "trust_penalty", "spatial_smoothed_curvature",
+    "lane_change_fade", "straight_road_damping_active", "demand_jerk_smoothing_active",
+    "demand_jerk_smoothing_step", "demand_jerk_smoothing_lag",
+  )
+  for frame, inputs in enumerate(sequence):
+    kwargs = dict(vars(inputs))
+    r1 = p1.update(model_path_processor_v1.ModelPathProcessorInputs(**kwargs))
+    r2 = p2.update(ModelPathProcessorInputs(**kwargs))
+    for field in fields:
+      expected = getattr(r1, field)
+      actual = getattr(r2, field)
+      if isinstance(expected, float):
+        assert actual == pytest.approx(expected, abs=1e-12), (frame, field)
+      else:
+        assert actual == expected, (frame, field)
+
+
+def test_v2_matches_v1_characterization_sequences():
+  low_conf = [0.9, 0.1, 0.1, 0.9]
+  _assert_v1_v2_sequence_parity([
+    *[_mpp_inputs(v_ego=20.0, desired_curvature=k, measured_curvature=k,
+                  smooth_model_path_curvature=True)
+      for k in (0.0, 0.0004, 0.0010, 0.0014)],
+    _mpp_inputs(v_ego=20.0, desired_curvature=0.0014, measured_curvature=0.0014,
+                smooth_model_path_curvature=True, lane_change_active=True),
+  ])
+  _assert_v1_v2_sequence_parity([
+    *[_mpp_inputs(v_ego=10.0, desired_curvature=0.005, measured_curvature=0.0,
+                  lane_line_probs=low_conf, smooth_model_path_curvature=True)
+      for _ in range(5)],
+    _mpp_inputs(v_ego=10.0, desired_curvature=0.005, measured_curvature=0.0,
+                model_age_s=0.21),
+    _mpp_inputs(v_ego=10.0, desired_curvature=0.005, measured_curvature=0.0,
+                position_x=(), position_y=(), position_y_std=(), orientation_z=(), orientation_rate_z=()),
+  ])
+  _assert_v1_v2_sequence_parity([
+    *[_mpp_inputs(v_ego=15.0, desired_curvature=k, measured_curvature=k,
+                  smooth_model_path_curvature=True, demand_jerk_smoothing_enabled=True,
+                  demand_jerk_smoothing_allowed=True)
+      for k in ([0.003] * 8 + [0.0025, 0.0020, 0.0016, 0.0012, 0.0008, 0.0004])],
+  ])
+
+
+def test_model_path_processor_api_returns_finite():
+  proc = ModelPathProcessor()
+  result = proc.update(_mpp_inputs())
+  assert isinstance(result, ModelPathProcessorResult)
+  assert math.isfinite(result.desired_curvature)
+  assert 0.0 <= result.quality <= 1.0
+  assert result.reason in ("ok", "high_path_std", "low_lane_confidence", "frame_drop", "path_disagreement")
+
+
+def test_model_path_processor_random_inputs_stay_finite():
+  rng = np.random.default_rng(20260628)
+  proc = ModelPathProcessor()
+  for _ in range(200):
+    k = float(rng.uniform(-0.02, 0.02))
+    v = float(rng.uniform(0.0, 35.0))
+    ystd = [float(rng.uniform(0.0, 2.0)) for _ in range(len(ModelConstants.T_IDXS))]
+    lane_probs = [float(rng.uniform(0.0, 1.0)) for _ in range(4)]
+    result = proc.update(_mpp_inputs(
+      v_ego=v,
+      desired_curvature=k,
+      measured_curvature=k,
+      previous_desired_curvature=k,
+      position_y_std=ystd,
+      lane_line_probs=lane_probs,
+      smooth_model_path_curvature=bool(rng.integers(0, 2)),
+      demand_jerk_smoothing_enabled=bool(rng.integers(0, 2)),
+      lane_change_active=bool(rng.integers(0, 2)),
+    ))
+    assert math.isfinite(result.desired_curvature)
+    assert abs(result.desired_curvature) <= 0.5
