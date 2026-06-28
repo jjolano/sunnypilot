@@ -43,6 +43,16 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_CRAWL_GAP_TAU = 2.0
   _STOP_HOLD_CRAWL_RELEASE_A_MIN = 0.05
   _STOP_HOLD_CRAWL_RELEASE_A_MAX = 0.25
+  # Settle-hold arm: catch nearly-stopped leads at very low speed before the
+  # legacy vEgoStopping-based latch would fire. Prevents small crawl/brake
+  # oscillations when stopping behind a stationary lead on vehicles with a low
+  # vEgoStopping value.
+  _STOP_HOLD_SETTLE_ARM_V_EGO_FLOOR = 0.7
+  _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V = 0.5
+  _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V_REL = 0.1
+  _STOP_HOLD_SETTLE_ARM_DISTANCE_MARGIN = 0.5
+  _STOP_HOLD_SETTLE_ARM_BRAKE_DIST_DECEL = 2.0
+  _STOP_HOLD_SETTLE_ARM_BRAKE_DIST_MAX = 1.0
   _STOP_HOLD_RELEASE_A_MIN = 0.15
   _STOP_HOLD_RELEASE_A_MAX = 0.35
   _STOP_HOLD_RELEASE_MAX_UP_JERK = 6.0
@@ -107,6 +117,28 @@ class CustomLongitudinalFinalizer:
       return min(stopped, key=lambda c: c[0])[3]
     return min(candidates, key=lambda c: c[0])[3]
 
+  def _settle_stop_hold_arm_applies(self, v_ego: float, v_ego_stopping: float,
+                                    lead_v: float, lead_v_rel: float,
+                                    lead_d_rel: float, gas_pressed: bool,
+                                    has_lead: bool) -> bool:
+    if not has_lead or gas_pressed:
+      return False
+    if not all(math.isfinite(v) for v in (v_ego, v_ego_stopping, lead_v, lead_v_rel, lead_d_rel)):
+      return False
+    if v_ego > max(v_ego_stopping + 0.2, self._STOP_HOLD_SETTLE_ARM_V_EGO_FLOOR):
+      return False
+    if lead_v > self._STOP_HOLD_SETTLE_ARM_MAX_LEAD_V:
+      return False
+    if lead_v_rel > self._STOP_HOLD_SETTLE_ARM_MAX_LEAD_V_REL:
+      return False
+    stopping_distance = float(getattr(self.CP, 'stoppingDistance', 6.0) or 6.0)
+    braking_dist = min(
+      v_ego ** 2 / (2.0 * self._STOP_HOLD_SETTLE_ARM_BRAKE_DIST_DECEL),
+      self._STOP_HOLD_SETTLE_ARM_BRAKE_DIST_MAX,
+    )
+    settle_distance = stopping_distance + self._STOP_HOLD_SETTLE_ARM_DISTANCE_MARGIN + braking_dist
+    return lead_d_rel <= settle_distance
+
   @classmethod
   def _routine_lead_launch_breakout(cls, lead_v: float, lead_v_rel: float) -> bool:
     return bool(
@@ -143,7 +175,13 @@ class CustomLongitudinalFinalizer:
       lead_v <= 0.3 and
       not gas_pressed,
     )
-    if stop_hold_set:
+    settle_hold_set = bool(
+      not self.lead_stop_hold_active and
+      self._settle_stop_hold_arm_applies(
+        v_ego, v_ego_stopping, lead_v, lead_v_rel, lead_d_rel, gas_pressed, has_lead,
+      )
+    )
+    if stop_hold_set or settle_hold_set:
       self.lead_stop_hold_active = True
       self.lead_stop_hold_gap_increasing_s = 0.0
       self.lead_stop_hold_missing_s = 0.0

@@ -701,3 +701,109 @@ def test_valid_source_blocked_by_stopped_closing_lead():
 
   assert planner._lead_stop_hold_active is True
   assert planner._last_release_block_reason == "lead_not_moving"
+
+
+def test_settle_hold_arms_low_v_ego_stopping_stationary_lead_near_stop_target():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  planner.CP = make_cp(v_ego_stopping=0.1)
+  planner.custom_long_finalizer.CP = planner.CP
+  lead = make_lead(d_rel=6.2, v_lead=0.0, v_rel=0.0)
+  sm = make_sm(v_ego=0.55, lead_one=lead)
+
+  a_target, should_stop, e2e_source = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.3, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert e2e_source is False
+  assert a_target <= -0.4
+
+
+def test_settle_hold_does_not_rearm_existing_latch():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  planner.CP = make_cp(v_ego_stopping=0.1)
+  planner.custom_long_finalizer.CP = planner.CP
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.20)
+  lead = make_lead(d_rel=6.25, v_lead=0.0, v_rel=0.0, lead_id=1)
+  sm = make_sm(v_ego=0.55, lead_one=lead)
+
+  planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.3, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert planner._lead_stop_hold_gap_baseline_d_rel == pytest.approx(6.2)
+  assert planner._lead_stop_hold_gap_increasing_s == pytest.approx(0.20 + planner.dt)
+
+
+@pytest.mark.parametrize("d_rel", [9.0, 10.0])
+def test_settle_hold_rejects_far_lead(d_rel):
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  planner.CP = make_cp(v_ego_stopping=0.1)
+  planner.custom_long_finalizer.CP = planner.CP
+  lead = make_lead(d_rel=d_rel, v_lead=0.0, v_rel=0.0)
+  sm = make_sm(v_ego=0.55, lead_one=lead)
+
+  a_target, should_stop, e2e_source = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.3, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert e2e_source is False
+  assert a_target == pytest.approx(-0.3)
+
+
+@pytest.mark.parametrize("v_lead,v_rel", [(1.0, 0.5), (0.0, 0.2)])
+def test_settle_hold_rejects_moving_or_opening_lead(v_lead, v_rel):
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  planner.CP = make_cp(v_ego_stopping=0.1)
+  planner.custom_long_finalizer.CP = planner.CP
+  lead = make_lead(d_rel=6.2, v_lead=v_lead, v_rel=v_rel)
+  sm = make_sm(v_ego=0.55, lead_one=lead)
+
+  a_target, should_stop, e2e_source = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.3, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert e2e_source is False
+
+
+def test_settle_hold_preserves_legacy_close_stopped_latch():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  planner.CP = make_cp(v_ego_stopping=0.1)
+  planner.custom_long_finalizer.CP = planner.CP
+  lead = make_lead(d_rel=5.0, v_lead=0.0, v_rel=0.0)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, e2e_source = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.3, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert e2e_source is False
+  assert a_target <= -0.4
