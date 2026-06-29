@@ -249,6 +249,17 @@ class OutputGovernorDiagnostics:
   signConflictBinding: bool = False       # sign-conflict cap would tighten before later caps/slew
   signConflictFloorGuarded: bool = False  # sign-conflict was one guard for the under-response floor
 
+  # Shadow-only under-response floor guard diagnostics. No output changes.
+  underResponseGuardPathEvidenceInvalid: bool = False
+  underResponseGuardControllerUnstable: bool = False
+  underResponseGuardRelease: bool = False
+  underResponseGuardSameDirectionLimit: bool = False
+  underResponseGuardHighSteeringRate: bool = False
+  underResponseGuardSignConflict: bool = False
+  underResponseGuardOverResponse: bool = False
+  underResponseGuardIsoAccel: bool = False
+  underResponseGuardTorqueFraction: bool = False
+
 
 @dataclass(frozen=True)
 class OutputGovernorResult:
@@ -289,16 +300,28 @@ class OutputGovernor:
     floor = h.under_response_floor(inp)
     initial_floor = floor
     sign_conflict_active = h.sign_conflict(inp)
+    over_scale = h.over_response_scale(inp)
+
+    path_evidence_invalid = not inp.path_evidence_valid
+    controller_unstable = not inp.controller_evidence_stable
+    release_guard = inp.release_active
+    same_direction_guard = inp.same_direction_limit
+    high_steering_rate_guard = abs(inp.steering_rate_deg) >= HIGH_RATE_START_DEG
+    sign_conflict_guard = sign_conflict_active
+    over_response_guard = over_scale < 1.0
+    iso_accel_guard = iso_cap < 1.0
+    torque_fraction_guard = abs(inp.nominal_torque) >= UNDER_RESPONSE_MAX_TORQUE_FRACTION * inp.max_output
+
     floor_guarded = floor > 0.0 and (
-      not inp.path_evidence_valid or
-      not inp.controller_evidence_stable or
-      inp.release_active or
-      inp.same_direction_limit or
-      abs(inp.steering_rate_deg) >= HIGH_RATE_START_DEG or
-      sign_conflict_active or
-      h.over_response_scale(inp) < 1.0 or
-      iso_cap < 1.0 or
-      abs(inp.nominal_torque) >= UNDER_RESPONSE_MAX_TORQUE_FRACTION * inp.max_output
+      path_evidence_invalid or
+      controller_unstable or
+      release_guard or
+      same_direction_guard or
+      high_steering_rate_guard or
+      sign_conflict_guard or
+      over_response_guard or
+      iso_accel_guard or
+      torque_fraction_guard
     )
     if floor > 0.0:
       if floor_guarded:
@@ -321,7 +344,6 @@ class OutputGovernor:
     if inp.same_direction_limit:
       cap = min(cap, SAME_DIRECTION_LIMIT_CAP)
       reason |= GovernorReason.SAME_DIRECTION_LIMIT
-    over_scale = h.over_response_scale(inp)
     if over_scale < 1.0:
       cap = min(cap, over_scale)
       reason |= GovernorReason.OVER_RESPONSE
@@ -351,6 +373,7 @@ class OutputGovernor:
 
     cap_eff_without_sign_conflict = cap_without_sign_conflict + floor * (1.0 - cap_without_sign_conflict)
     abs_nominal = abs(inp.nominal_torque)
+    floor_context = initial_floor > 0.0
     diagnostics = OutputGovernorDiagnostics(
       signConflictActive=bool(sign_conflict_active),
       signConflictBinding=bool(
@@ -359,7 +382,16 @@ class OutputGovernor:
         (abs_nominal > cap_eff_without_sign_conflict * inp.max_output or
          abs_nominal > SIGN_CONFLICT_CAP * inp.max_output)
       ),
-      signConflictFloorGuarded=bool(initial_floor > 0.0 and sign_conflict_active and floor_guarded),
+      signConflictFloorGuarded=bool(floor_context and sign_conflict_active and floor_guarded),
+      underResponseGuardPathEvidenceInvalid=bool(floor_context and path_evidence_invalid),
+      underResponseGuardControllerUnstable=bool(floor_context and controller_unstable),
+      underResponseGuardRelease=bool(floor_context and release_guard),
+      underResponseGuardSameDirectionLimit=bool(floor_context and same_direction_guard),
+      underResponseGuardHighSteeringRate=bool(floor_context and high_steering_rate_guard),
+      underResponseGuardSignConflict=bool(floor_context and sign_conflict_guard),
+      underResponseGuardOverResponse=bool(floor_context and over_response_guard),
+      underResponseGuardIsoAccel=bool(floor_context and iso_accel_guard),
+      underResponseGuardTorqueFraction=bool(floor_context and torque_fraction_guard),
     )
 
     # --- RATE-LIMIT ---

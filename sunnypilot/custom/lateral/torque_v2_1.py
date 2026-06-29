@@ -252,6 +252,15 @@ class LatControlTorqueV21(LatControl):
     adaptive.signConflictActive = governed.diagnostics.signConflictActive
     adaptive.signConflictBinding = governed.diagnostics.signConflictBinding
     adaptive.signConflictFloorGuarded = governed.diagnostics.signConflictFloorGuarded
+    adaptive.underResponseGuardPathEvidenceInvalid = governed.diagnostics.underResponseGuardPathEvidenceInvalid
+    adaptive.underResponseGuardControllerUnstable = governed.diagnostics.underResponseGuardControllerUnstable
+    adaptive.underResponseGuardRelease = governed.diagnostics.underResponseGuardRelease
+    adaptive.underResponseGuardSameDirectionLimit = governed.diagnostics.underResponseGuardSameDirectionLimit
+    adaptive.underResponseGuardHighSteeringRate = governed.diagnostics.underResponseGuardHighSteeringRate
+    adaptive.underResponseGuardSignConflict = governed.diagnostics.underResponseGuardSignConflict
+    adaptive.underResponseGuardOverResponse = governed.diagnostics.underResponseGuardOverResponse
+    adaptive.underResponseGuardIsoAccel = governed.diagnostics.underResponseGuardIsoAccel
+    adaptive.underResponseGuardTorqueFraction = governed.diagnostics.underResponseGuardTorqueFraction
     adaptive.nearZeroRecenterConflict = nz_debug.conflict
     adaptive.nearZeroRecenterError = nz_debug.error
     adaptive.nearZeroRecenterClosingRate = nz_debug.closingRate

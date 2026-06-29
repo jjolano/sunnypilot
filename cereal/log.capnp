@@ -931,6 +931,17 @@ struct ControlsState @0x97ff69c53601abf1 {
       nearZeroRecenterError @56 :Float32;           # m/s^2, desired - actual lateral accel
       nearZeroRecenterClosingRate @57 :Float32;     # m/s^3, positive means abs(error) is shrinking
       nearZeroRecenterDuration @58 :Float32;        # s
+
+      # Shadow-only under-response floor guard diagnostics. No output changes.
+      underResponseGuardPathEvidenceInvalid @59 :Bool;
+      underResponseGuardControllerUnstable @60 :Bool;
+      underResponseGuardRelease @61 :Bool;
+      underResponseGuardSameDirectionLimit @62 :Bool;
+      underResponseGuardHighSteeringRate @63 :Bool;
+      underResponseGuardSignConflict @64 :Bool;
+      underResponseGuardOverResponse @65 :Bool;
+      underResponseGuardIsoAccel @66 :Bool;
+      underResponseGuardTorqueFraction @67 :Bool;
     }
    }
 

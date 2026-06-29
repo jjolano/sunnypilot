@@ -306,12 +306,23 @@ def test_lateral_observability_schema_fields_are_writable():
   torque_state.adaptiveTorqueState.nearZeroRecenterError = -0.12
   torque_state.adaptiveTorqueState.nearZeroRecenterClosingRate = 0.3
   torque_state.adaptiveTorqueState.nearZeroRecenterDuration = 0.2
+  torque_state.adaptiveTorqueState.underResponseGuardPathEvidenceInvalid = True
+  torque_state.adaptiveTorqueState.underResponseGuardControllerUnstable = True
+  torque_state.adaptiveTorqueState.underResponseGuardRelease = True
+  torque_state.adaptiveTorqueState.underResponseGuardSameDirectionLimit = True
+  torque_state.adaptiveTorqueState.underResponseGuardHighSteeringRate = True
+  torque_state.adaptiveTorqueState.underResponseGuardSignConflict = True
+  torque_state.adaptiveTorqueState.underResponseGuardOverResponse = True
+  torque_state.adaptiveTorqueState.underResponseGuardIsoAccel = True
+  torque_state.adaptiveTorqueState.underResponseGuardTorqueFraction = True
 
   assert msg.modelPathState.reason == "ok"
   assert torque_state.adaptiveTorqueState.governorReason == 1 << 9
   assert torque_state.adaptiveTorqueState.lowSpeedOutputMax is True
   assert torque_state.adaptiveTorqueState.signConflictActive is True
   assert torque_state.adaptiveTorqueState.nearZeroRecenterConflict is True
+  assert torque_state.adaptiveTorqueState.underResponseGuardPathEvidenceInvalid is True
+  assert torque_state.adaptiveTorqueState.underResponseGuardTorqueFraction is True
 
 
 def test_near_zero_observer_receives_pre_governor_torque():
@@ -346,7 +357,11 @@ def test_copies_shadow_diagnostics_to_adaptive_torque_state():
       reason=int(GovernorReason.SIGN_CONFLICT),
       cap=0.8,
       floor=0.0,
-      diagnostics=OutputGovernorDiagnostics(True, True, True),
+      diagnostics=OutputGovernorDiagnostics(
+        True, True, True,
+        underResponseGuardHighSteeringRate=True,
+        underResponseGuardSignConflict=True,
+      ),
     )
 
   def fake_near_zero(**_kwargs):
@@ -360,6 +375,10 @@ def test_copies_shadow_diagnostics_to_adaptive_torque_state():
   assert adaptive.signConflictActive is True
   assert adaptive.signConflictBinding is True
   assert adaptive.signConflictFloorGuarded is True
+  assert adaptive.underResponseGuardHighSteeringRate is True
+  assert adaptive.underResponseGuardSignConflict is True
+  assert adaptive.underResponseGuardPathEvidenceInvalid is False
+  assert adaptive.underResponseGuardTorqueFraction is False
   assert adaptive.nearZeroRecenterConflict is True
   assert adaptive.nearZeroRecenterError == pytest.approx(-0.12)
   assert adaptive.nearZeroRecenterClosingRate == pytest.approx(0.3)

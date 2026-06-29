@@ -261,6 +261,75 @@ def test_sign_conflict_diagnostics_distinguish_active_from_binding():
   assert binding.diagnostics.signConflictBinding is True
 
 
+_UNDER_RESPONSE_GUARD_FIELDS = (
+  "underResponseGuardPathEvidenceInvalid",
+  "underResponseGuardControllerUnstable",
+  "underResponseGuardRelease",
+  "underResponseGuardSameDirectionLimit",
+  "underResponseGuardHighSteeringRate",
+  "underResponseGuardSignConflict",
+  "underResponseGuardOverResponse",
+  "underResponseGuardIsoAccel",
+  "underResponseGuardTorqueFraction",
+)
+
+
+def _all_under_response_guards_false(diag):
+  for field in _UNDER_RESPONSE_GUARD_FIELDS:
+    assert getattr(diag, field) is False, field
+
+
+def test_under_response_guard_source_diagnostics_all_false_for_clean_floor():
+  r = OutputGovernor(DT).update(benign(nominal=0.89, v=8.0, desired=2.0, actual=0.5))
+  assert r.floor > 0.0
+  assert r.reason & GovernorReason.UNDER_RESPONSE_FLOOR
+  _all_under_response_guards_false(r.diagnostics)
+
+
+@pytest.mark.parametrize("kwargs, expected_field", [
+  ({"path_valid": False}, "underResponseGuardPathEvidenceInvalid"),
+  ({"controller_stable": False}, "underResponseGuardControllerUnstable"),
+  ({"release": True}, "underResponseGuardRelease"),
+  ({"same_dir": True}, "underResponseGuardSameDirectionLimit"),
+  ({"rate": 80.0}, "underResponseGuardHighSteeringRate"),
+  ({"nominal": 0.90}, "underResponseGuardTorqueFraction"),
+])
+def test_under_response_guard_source_diagnostics_individual_guard(kwargs, expected_field):
+  base = dict(nominal=0.89, v=8.0, desired=2.0, actual=0.5)
+  base.update(kwargs)
+  r = OutputGovernor(DT).update(benign(**base))
+  assert r.floor == 0.0
+  assert r.reason & GovernorReason.UNDER_RESPONSE_GUARDED
+  for field in _UNDER_RESPONSE_GUARD_FIELDS:
+    if field == expected_field:
+      assert getattr(r.diagnostics, field) is True
+    else:
+      assert getattr(r.diagnostics, field) is False, field
+
+
+def test_under_response_guard_source_diagnostics_sign_conflict_and_high_rate():
+  r = OutputGovernor(DT).update(benign(nominal=0.89, v=8.0, rate=80.0, desired=1.0, actual=-0.2))
+  assert r.floor == 0.0
+  assert r.reason & GovernorReason.UNDER_RESPONSE_GUARDED
+  assert r.reason & GovernorReason.SIGN_CONFLICT
+  assert r.diagnostics.underResponseGuardSignConflict is True
+  assert r.diagnostics.underResponseGuardHighSteeringRate is True
+  for field in _UNDER_RESPONSE_GUARD_FIELDS:
+    if field not in ("underResponseGuardSignConflict", "underResponseGuardHighSteeringRate"):
+      assert getattr(r.diagnostics, field) is False, field
+
+
+def test_under_response_guard_source_diagnostics_iso_accel():
+  r = OutputGovernor(DT).update(benign(nominal=0.89, v=8.0, desired=3.5, actual=2.7))
+  assert r.floor == 0.0
+  assert r.reason & GovernorReason.UNDER_RESPONSE_GUARDED
+  assert r.reason & GovernorReason.NEAR_ISO_ACCEL
+  assert r.diagnostics.underResponseGuardIsoAccel is True
+  for field in _UNDER_RESPONSE_GUARD_FIELDS:
+    if field != "underResponseGuardIsoAccel":
+      assert getattr(r.diagnostics, field) is False, field
+
+
 def test_sign_conflict_diagnostics_report_floor_guard():
   r = OutputGovernor(DT).update(benign(nominal=0.89, v=8.0, desired=1.0, actual=-0.2))
 
