@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass, replace
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -84,13 +84,15 @@ DEMAND_JERK_SMOOTH_CURVE_EXIT_NEAR_ZERO_LAT_ACCEL = 0.08  # m/s^2
 DEMAND_JERK_SMOOTH_SPEED_BP = [8.0, 15.0, 22.0]
 DEMAND_JERK_SMOOTH_MAX_LAT_JERK = [1.0, 1.4, 1.8]
 
-# Straight-road damping: larger tau and deadband when driving straight at high speed.
-STRAIGHT_ROAD_DAMPING_MIN_SPEED = 20.0
-STRAIGHT_ROAD_DAMPING_MAX_CURVATURE = 3e-4
+# Straight-road damping: larger tau and deadband when driving near-straight.
+# Gated by lateral acceleration so it does not over-damp at high speed.
+STRAIGHT_ROAD_DAMPING_MIN_SPEED = 12.0
+STRAIGHT_ROAD_DAMPING_FULL_SPEED = 20.0
+STRAIGHT_ROAD_DAMPING_MAX_LAT_ACCEL = 0.20
 STRAIGHT_ROAD_DAMPING_TAU_S = 0.35
-STRAIGHT_ROAD_DAMPING_DEADBAND = 1.5e-4
-STRAIGHT_ROAD_DAMPING_BLEND_BP = [0.0, 1.5e-4, 3e-4]
-STRAIGHT_ROAD_DAMPING_BLEND_SCALE = [1.0, 0.0, 0.0]
+STRAIGHT_ROAD_DAMPING_DEADBAND_LAT_ACCEL = 0.06
+STRAIGHT_ROAD_DAMPING_BLEND_BP_LAT_ACCEL = [0.0, 0.20]
+STRAIGHT_ROAD_DAMPING_BLEND_SCALE = [1.0, 0.0]
 
 # Trust penalty after unstable frames.
 TRUST_DECAY = 0.92
@@ -802,24 +804,34 @@ class ModelPathProcessor:
     tau_s = float(np.interp(v_ego, DAMPING_TAU_SPEED_BP, DAMPING_TAU_S))
     tau_s = max(tau_s, 1e-4)
 
-    # Straight-road damping: increase tau and apply deadband when driving straight.
+    # Straight-road damping: increase tau and apply deadband when near-straight.
+    # Gated by lateral acceleration so it is not over-applied at high speed.
     straight_road_active = False
     if v_ego >= STRAIGHT_ROAD_DAMPING_MIN_SPEED and not inputs.lane_change_active:
-      abs_curvature = abs(target)
-      if abs_curvature < STRAIGHT_ROAD_DAMPING_MAX_CURVATURE:
-        blend = float(np.interp(abs_curvature, STRAIGHT_ROAD_DAMPING_BLEND_BP, STRAIGHT_ROAD_DAMPING_BLEND_SCALE))
-        if blend > 0.0:
-          # Blend between base tau and straight-road tau
-          tau_s = tau_s * (1.0 - blend) + STRAIGHT_ROAD_DAMPING_TAU_S * blend
-          straight_road_active = True
+      speed_factor = float(np.interp(
+        v_ego,
+        [STRAIGHT_ROAD_DAMPING_MIN_SPEED, STRAIGHT_ROAD_DAMPING_FULL_SPEED],
+        [0.0, 1.0],
+      ))
+      if speed_factor > 0.0:
+        lat_accel = abs(target) * v_ego * v_ego
+        if lat_accel < STRAIGHT_ROAD_DAMPING_MAX_LAT_ACCEL:
+          blend = float(np.interp(
+            lat_accel, STRAIGHT_ROAD_DAMPING_BLEND_BP_LAT_ACCEL, STRAIGHT_ROAD_DAMPING_BLEND_SCALE,
+          ))
+          blend *= speed_factor
+          if blend > 0.0:
+            # Blend between base tau and straight-road tau
+            tau_s = tau_s * (1.0 - blend) + STRAIGHT_ROAD_DAMPING_TAU_S * blend
+            straight_road_active = True
 
-          # Apply deadband: if curvature change is within deadband, hold previous value
-          if self._temporal_smoothed_curvature is not None and math.isfinite(self._temporal_smoothed_curvature):
-            delta = abs(target - self._temporal_smoothed_curvature)
-            if delta < STRAIGHT_ROAD_DAMPING_DEADBAND * blend:
-              # Within deadband — hold previous smoothed value
-              self._straight_road_damping_active = True
-              return tau_s, float(DT_CTRL / (DT_CTRL + tau_s)), float(self._temporal_smoothed_curvature), True
+            # Apply deadband: if curvature change in lateral accel is within deadband, hold previous value
+            if self._temporal_smoothed_curvature is not None and math.isfinite(self._temporal_smoothed_curvature):
+              delta_lat_accel = abs(target - self._temporal_smoothed_curvature) * v_ego * v_ego
+              if delta_lat_accel < STRAIGHT_ROAD_DAMPING_DEADBAND_LAT_ACCEL * blend:
+                # Within deadband — hold previous smoothed value
+                self._straight_road_damping_active = True
+                return tau_s, float(DT_CTRL / (DT_CTRL + tau_s)), float(self._temporal_smoothed_curvature), True
 
     alpha = float(DT_CTRL / (DT_CTRL + tau_s))
 

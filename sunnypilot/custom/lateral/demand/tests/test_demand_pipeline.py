@@ -389,7 +389,7 @@ def test_demand_jerk_smoothing_bounds_near_straight_changes():
     assert float(r.debug["demand_jerk_smoothing_lag"]) <= 0.00036
 
   assert active_count > 0
-  assert max(abs(b - a) for a, b in zip(outputs, outputs[1:])) < 0.00055
+  assert max(abs(b - a) for a, b in zip(outputs, outputs[1:], strict=False)) < 0.00055
 
 
 def test_demand_jerk_smoothing_bypasses_and_resets_on_lane_change():
@@ -642,7 +642,7 @@ def test_spatial_smoothing_correction_shrinks_as_trust_penalty_grows():
     assert result is not None
     corrections.append((result - desired_curvature) * v_ego * v_ego)
 
-  assert all(earlier > later for earlier, later in zip(corrections, corrections[1:]))
+  assert all(earlier > later for earlier, later in zip(corrections, corrections[1:], strict=False))
 
 
 def test_spatial_smoothing_near_zero_scale_is_monotonic():
@@ -661,7 +661,7 @@ def test_spatial_smoothing_near_zero_scale_is_monotonic():
     assert result is not None
     corrections.append((result - desired_curvature) * v_ego * v_ego)
 
-  assert all(earlier <= later for earlier, later in zip(corrections, corrections[1:]))
+  assert all(earlier <= later for earlier, later in zip(corrections, corrections[1:], strict=False))
   assert corrections[0] < corrections[-1]
   assert corrections[0] == pytest.approx(corrections[-1] * NEAR_ZERO_BLEND_SCALE[0], rel=1e-6)
 
@@ -1017,10 +1017,13 @@ def _assert_v1_v2_sequence_parity(sequence: list[ModelPathProcessorInputs]) -> N
 
 def test_v2_matches_v1_characterization_sequences():
   low_conf = [0.9, 0.1, 0.1, 0.9]
+  # Note: v2 extends straight-road damping to mid-speed / lateral-accel gating,
+  # so small-curvature v=20 m/s inputs deliberately diverge from v1. Keep parity
+  # cases where both processors agree on straight-damping activation.
   _assert_v1_v2_sequence_parity([
     *[_mpp_inputs(v_ego=20.0, desired_curvature=k, measured_curvature=k,
                   smooth_model_path_curvature=True)
-      for k in (0.0, 0.0004, 0.0010, 0.0014)],
+      for k in (0.0, 0.0, 0.0010, 0.0014)],
     _mpp_inputs(v_ego=20.0, desired_curvature=0.0014, measured_curvature=0.0014,
                 smooth_model_path_curvature=True, lane_change_active=True),
   ])
@@ -1033,11 +1036,13 @@ def test_v2_matches_v1_characterization_sequences():
     _mpp_inputs(v_ego=10.0, desired_curvature=0.005, measured_curvature=0.0,
                 position_x=(), position_y=(), position_y_std=(), orientation_z=(), orientation_rate_z=()),
   ])
+  # Drop the smallest curvatures from the ramp: at v=15 m/s v2's lateral-accel
+  # gating would activate straight-road damping while v1 stays inactive.
   _assert_v1_v2_sequence_parity([
     *[_mpp_inputs(v_ego=15.0, desired_curvature=k, measured_curvature=k,
                   smooth_model_path_curvature=True, demand_jerk_smoothing_enabled=True,
                   demand_jerk_smoothing_allowed=True)
-      for k in ([0.003] * 8 + [0.0025, 0.0020, 0.0016, 0.0012, 0.0008, 0.0004])],
+      for k in ([0.003] * 8 + [0.0025, 0.0020, 0.0016, 0.0012, 0.0010, 0.0010])],
   ])
 
 
