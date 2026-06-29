@@ -4,7 +4,6 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
 
 from openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override import (
   apply_cut_in_override,
@@ -52,9 +51,34 @@ CONFIRMED_LEAD = {"status": True, "dRel": 10.0, "vRel": 0.0, "vLead": 10.0,
                   "yRel": 0.0, "fcw": False}
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_promotes_high_risk_cut_in(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+
+def _stub_params(monkeypatch, return_value=True, side_effect=None):
+  class MockParams:
+    def get_bool(self, _key):
+      if side_effect is not None:
+        raise side_effect
+      return return_value
+  monkeypatch.setattr(
+    "openpilot.sunnypilot.custom.longitudinal.radar_cut_in.override.Params",
+    MockParams,
+  )
+
+
+def _recording_params(monkeypatch, return_value=True):
+  calls = []
+  class MockParams:
+    def __init__(self):
+      calls.append(True)
+    def get_bool(self, _key):
+      return return_value
+  monkeypatch.setattr(
+    "openpilot.sunnypilot.custom.longitudinal.radar_cut_in.override.Params",
+    MockParams,
+  )
+  return calls
+
+def test_override_promotes_high_risk_cut_in(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
   assert result["status"] is True
@@ -64,82 +88,72 @@ def test_override_promotes_high_risk_cut_in(MockParams):
   assert result["radar"] is True
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_does_not_replace_confirmed_lead(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_does_not_replace_confirmed_lead(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(CONFIRMED_LEAD, {1: track}, v_ego=12.0)
   assert result is CONFIRMED_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_disabled_when_custom_longitudinal_off(MockParams):
-  MockParams.return_value.get_bool.return_value = False
+def test_override_disabled_when_custom_longitudinal_off(monkeypatch):
+  _stub_params(monkeypatch, return_value=False)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_rejects_off_path_track(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_rejects_off_path_track(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=2.0, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_rejects_stationary_object(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_rejects_stationary_object(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=1.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_rejects_low_closing_speed(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_rejects_low_closing_speed(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-1.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_rejects_far_track(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_rejects_far_track(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=35.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_rejects_high_ttc(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_rejects_high_ttc(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   # dRel=30, vRel=-2.0 → TTC = 15s (too high)
   track = FakeTrack(dRel=30.0, yRel=0.5, vRel=-2.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_rejects_low_persistence(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_rejects_low_persistence(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=1)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_rejects_low_speed(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_rejects_low_speed(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=0.5)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_picks_most_dangerous_track(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_picks_most_dangerous_track(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   # Two candidates: track 1 has TTC=5s, track 2 has TTC=3s
   t1 = FakeTrack(identifier=1, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   t2 = FakeTrack(identifier=2, dRel=9.0, yRel=0.3, vRel=-3.0, vLead=8.0, cnt=3)
@@ -148,41 +162,38 @@ def test_override_picks_most_dangerous_track(MockParams):
   assert result["radarTrackId"] == 2  # lower TTC
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_fail_closed_on_exception(MockParams):
-  MockParams.return_value.get_bool.side_effect = Exception("params error")
+def test_override_fail_closed_on_exception(monkeypatch):
+  _stub_params(monkeypatch, side_effect=Exception("params error"))
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_true_skips_params_and_promotes(MockParams):
+def test_override_true_skips_params_and_promotes(monkeypatch):
+  calls = _recording_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True)
-  MockParams.assert_not_called()
+  assert len(calls) == 0
   assert result["status"] is True
   assert result["radarTrackId"] == 1
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_false_returns_original_and_skips_params(MockParams):
+def test_override_false_returns_original_and_skips_params(monkeypatch):
+  calls = _recording_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=False)
-  MockParams.assert_not_called()
+  assert len(calls) == 0
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_empty_tracks(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_empty_tracks(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   result = apply_cut_in_override(NO_LEAD, {}, v_ego=12.0)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_fail_closed_on_malformed_track_fields(MockParams):
-  MockParams.return_value.get_bool.return_value = True
+def test_override_fail_closed_on_malformed_track_fields(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=None, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
 
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
@@ -206,21 +217,19 @@ def test_track_ttc():
   assert math.isinf(_track_ttc(FakeTrack(dRel=None, vRel=-3.0)))
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_path_relative_rejects_ego_centerline_match(MockParams):
+def test_override_path_relative_rejects_ego_centerline_match(monkeypatch):
   # Track is on the ego centerline but well off the planned path; `path_y_rel` is the
   # path-relative deviation (yRel - path_y) and rejects what ego-frame alone would accept.
-  MockParams.return_value.get_bool.return_value = True
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True,
                                  path_y_rel=-1.5)
   assert result is NO_LEAD
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_path_relative_accepts_track_aligned_with_path(MockParams):
+def test_override_path_relative_accepts_track_aligned_with_path(monkeypatch):
   # Track looks off the ego centerline but is actually aligned with the planned path.
-  MockParams.return_value.get_bool.return_value = True
+  _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=1.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True,
                                  path_y_rel=0.0)
@@ -228,10 +237,9 @@ def test_override_path_relative_accepts_track_aligned_with_path(MockParams):
   assert result["radarTrackId"] == 1
 
 
-@patch("openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override.Params")
-def test_override_path_relative_fn_per_track(MockParams):
+def test_override_path_relative_fn_per_track(monkeypatch):
   # Callable mapper lets the override evaluate path-relative offset per track.
-  MockParams.return_value.get_bool.return_value = True
+  _stub_params(monkeypatch, return_value=True)
   t1 = FakeTrack(identifier=1, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   t2 = FakeTrack(identifier=2, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(
