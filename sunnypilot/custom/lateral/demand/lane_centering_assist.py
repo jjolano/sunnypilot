@@ -260,6 +260,11 @@ class LaneCenteringAssistTracker:
     )
     target_nudge = float(np.clip(raw_nudge, -max_nudge, max_nudge))
     target_sign = _sign(target_nudge, LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE)
+    geometry_sign = _sign(lateral_error_eff, lateral_deadband) if geometry_mode else 0
+    if geometry_sign != 0 and target_sign != 0 and target_sign != geometry_sign:
+      return self._release("geometry_sign_veto", dt, lateral_error, heading_error, predicted_lateral_error,
+                           geometry=geometry, geometry_mode=geometry_mode)
+
     current_sign = _sign(self._filtered_nudge, LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE)
     if current_sign != 0 and target_sign != 0 and current_sign != target_sign:
       nudge = _approach(self._filtered_nudge, 0.0, LANE_CENTERING_ASSIST_RELEASE_RATE * dt)

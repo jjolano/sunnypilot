@@ -947,6 +947,42 @@ def test_lane_centering_geometry_heading_cannot_flip_offset_correction():
   assert result.curvature_nudge < 0.0
 
 
+def test_lane_centering_geometry_growth_term_cannot_flip_offset_correction():
+  tracker = LaneCenteringAssistTracker()
+  xs = [float(x) for x in range(N)]
+  # Geometry offset is positive at near and preview, but shrinks enough that the
+  # growth term would make the raw nudge negative without the geometry sign veto.
+  path_y = [-0.18 + 0.006 * x for x in xs]
+  inputs = LaneCenteringAssistInputs(
+    lat_active=True,
+    v_ego=20.0,
+    measured_curvature=0.0,
+    model_curvature=0.0,
+    previous_processed_curvature=0.0,
+    path_quality=1.0,
+    path_reason=LANE_CENTERING_ASSIST_OK_REASON,
+    lane_change_shaping_active=False,
+    lane_change_blend=0.0,
+    curvature_limited=False,
+    steering_pressed=False,
+    left_blinker=False,
+    right_blinker=False,
+    position_x=xs,
+    position_y=path_y,
+    orientation_z=[0.0] * N,
+    lane_line_probs=[0.9, 0.9, 0.9, 0.9],
+    lane_lines=_lane_lines(center_offset=0.0),
+    lane_line_stds=[0.1, 0.1, 0.1, 0.1],
+  )
+  for _ in range(80):
+    result = tracker.update(inputs, DT)
+
+  assert result.debug["lane_centering_geometry_mode"] is True
+  assert result.debug["lane_centering_geometry_offset_near"] > 0.12
+  assert result.curvature_nudge == pytest.approx(0.0, abs=1e-9)
+  assert result.reason == "geometry_sign_veto"
+
+
 def test_v1_backup_module_imports_and_matches_api():
   assert hasattr(model_path_processor_v1, "ModelPathProcessor")
   assert hasattr(model_path_processor_v1, "ModelPathProcessorInputs")
