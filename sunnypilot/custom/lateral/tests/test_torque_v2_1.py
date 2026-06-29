@@ -15,7 +15,7 @@ import pytest
 
 from cereal import log
 from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import BLOCK_INACTIVE, BLOCK_STEERING_PRESSED
-from openpilot.sunnypilot.custom.lateral.output_governor import GovernorReason
+from openpilot.sunnypilot.custom.lateral.output_governor import GovernorReason, OutputGovernorDiagnostics, OutputGovernorResult
 from openpilot.sunnypilot.custom.lateral.torque_v2_1 import LatControlTorqueV21, VERSION_V21
 
 DT = 0.01
@@ -195,6 +195,21 @@ def test_oscillation_observer_resets_on_inactive():
   assert c.oscillation_observer.last_debug.classification == 0
 
 
+def test_near_zero_observer_resets_on_inactive():
+  c = make_controller()
+  vm = FakeVM()
+  c.near_zero_recenter_observer.update(
+    active=True, v_ego=20.0, steering_pressed=False, steer_limited_by_safety=False,
+    curvature_limited=False, desired_lateral_accel=-0.04, actual_lateral_accel=0.10,
+    steering_rate_deg=0.0, output_torque=-0.2, steer_max=1.0,
+  )
+  assert c.near_zero_recenter_observer._duration > 0.0
+
+  c.update(False, make_cs(v_ego=20.0), vm, make_params(), False, 0.0, make_pose(), False, 0.2)  # type: ignore[arg-type]
+
+  assert c.near_zero_recenter_observer._duration == 0.0
+
+
 def test_controller_passes_controller_evidence_to_governor():
   c = make_controller()
   vm = FakeVM()
@@ -284,10 +299,71 @@ def test_lateral_observability_schema_fields_are_writable():
   torque_state.version = VERSION_V21
   torque_state.adaptiveTorqueState.governorReason = 1 << 9
   torque_state.adaptiveTorqueState.lowSpeedOutputMax = True
+  torque_state.adaptiveTorqueState.signConflictActive = True
+  torque_state.adaptiveTorqueState.signConflictBinding = True
+  torque_state.adaptiveTorqueState.signConflictFloorGuarded = True
+  torque_state.adaptiveTorqueState.nearZeroRecenterConflict = True
+  torque_state.adaptiveTorqueState.nearZeroRecenterError = -0.12
+  torque_state.adaptiveTorqueState.nearZeroRecenterClosingRate = 0.3
+  torque_state.adaptiveTorqueState.nearZeroRecenterDuration = 0.2
 
   assert msg.modelPathState.reason == "ok"
   assert torque_state.adaptiveTorqueState.governorReason == 1 << 9
   assert torque_state.adaptiveTorqueState.lowSpeedOutputMax is True
+  assert torque_state.adaptiveTorqueState.signConflictActive is True
+  assert torque_state.adaptiveTorqueState.nearZeroRecenterConflict is True
+
+
+def test_near_zero_observer_receives_pre_governor_torque():
+  c = make_controller()
+  vm = FakeVM()
+  captured = {}
+  original_governor_update = c.governor.update
+
+  def capture_governor(inp):
+    captured["nominal_torque"] = inp.nominal_torque
+    return original_governor_update(inp)
+
+  def capture_near_zero(**kwargs):
+    captured["near_zero_torque"] = kwargs["output_torque"]
+    return SimpleNamespace(conflict=False, error=0.0, closingRate=0.0, duration=0.0)
+
+  c.governor.update = capture_governor
+  c.near_zero_recenter_observer.update = capture_near_zero
+  c.update(True, make_cs(v_ego=20.0, angle=15.0), vm, make_params(), False, 0.04, make_pose(), False, 0.2)  # type: ignore[arg-type]
+
+  assert captured["near_zero_torque"] == pytest.approx(captured["nominal_torque"], abs=1e-9)
+
+
+def test_copies_shadow_diagnostics_to_adaptive_torque_state():
+  c = make_controller()
+  vm = FakeVM()
+
+  def fake_governor_update(_inp):
+    return OutputGovernorResult(
+      output_torque=0.0,
+      active=True,
+      reason=int(GovernorReason.SIGN_CONFLICT),
+      cap=0.8,
+      floor=0.0,
+      diagnostics=OutputGovernorDiagnostics(True, True, True),
+    )
+
+  def fake_near_zero(**_kwargs):
+    return SimpleNamespace(conflict=True, error=-0.12, closingRate=0.3, duration=0.2)
+
+  c.governor.update = fake_governor_update
+  c.near_zero_recenter_observer.update = fake_near_zero
+  _, _, pid_log = c.update(True, make_cs(v_ego=20.0, angle=15.0), vm, make_params(), False, 0.04, make_pose(), False, 0.2)  # type: ignore[arg-type]
+
+  adaptive = pid_log.adaptiveTorqueState
+  assert adaptive.signConflictActive is True
+  assert adaptive.signConflictBinding is True
+  assert adaptive.signConflictFloorGuarded is True
+  assert adaptive.nearZeroRecenterConflict is True
+  assert adaptive.nearZeroRecenterError == pytest.approx(-0.12)
+  assert adaptive.nearZeroRecenterClosingRate == pytest.approx(0.3)
+  assert adaptive.nearZeroRecenterDuration == pytest.approx(0.2)
 
 
 def test_live_torque_params_update_limits():

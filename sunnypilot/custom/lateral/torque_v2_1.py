@@ -20,6 +20,7 @@ from opendbc.car.lateral import get_friction
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import UnderresponseSentinel, write_underresponse_debug
+from openpilot.sunnypilot.custom.lateral.near_zero_recenter_observer import NearZeroRecenterObserver
 from openpilot.sunnypilot.custom.lateral.output_governor import OutputGovernor, OutputGovernorInputs
 from openpilot.sunnypilot.custom.lateral.oscillation_observer import OscillationObserver
 from openpilot.sunnypilot.custom.lateral.response_core import ResponseCore, ResponseCoreInputs
@@ -60,6 +61,7 @@ class LatControlTorqueV21(LatControl):
     self.governor = OutputGovernor(dt)
     self.underresponse_sentinel = UnderresponseSentinel(dt)
     self.oscillation_observer = OscillationObserver(dt)
+    self.near_zero_recenter_observer = NearZeroRecenterObserver(dt)
     self.extension = extension if extension is not None else LatControlTorqueExt(self, CP, CP_SP, CI)
     self._under_response_path_evidence_valid = True
     self._limited_requested_torque = None
@@ -70,6 +72,7 @@ class LatControlTorqueV21(LatControl):
     self.governor.reset()
     self.underresponse_sentinel.reset()
     self.oscillation_observer.reset()
+    self.near_zero_recenter_observer.reset()
 
   def set_torque_override_refresh_allowed(self, allowed: bool) -> None:
     if hasattr(self.extension, 'set_torque_override_refresh_allowed'):
@@ -156,6 +159,7 @@ class LatControlTorqueV21(LatControl):
       self.governor.reset()
       write_underresponse_debug(pid_log, self.underresponse_sentinel.reset())
       self.oscillation_observer.reset()
+      self.near_zero_recenter_observer.reset()
       pid_log.active = False
       return 0.0, 0.0, pid_log
 
@@ -215,6 +219,18 @@ class LatControlTorqueV21(LatControl):
       actual_lateral_accel=rc.measurement,
       steering_rate_deg=CS.steeringRateDeg,
     )
+    nz_debug = self.near_zero_recenter_observer.update(
+      active=True,
+      v_ego=CS.vEgo,
+      steering_pressed=CS.steeringPressed,
+      steer_limited_by_safety=steer_limited_by_safety,
+      curvature_limited=curvature_limited,
+      desired_lateral_accel=rc.setpoint,
+      actual_lateral_accel=rc.measurement,
+      steering_rate_deg=CS.steeringRateDeg,
+      output_torque=nominal_output_torque_log,
+      steer_max=self.steer_max,
+    )
     adaptive = pid_log.adaptiveTorqueState
     adaptive.active = True
     adaptive.oscillationClassification = int(osc_debug.classification)
@@ -233,6 +249,13 @@ class LatControlTorqueV21(LatControl):
     adaptive.governorFloor = float(governed.floor)
     adaptive.lowSpeedOutputMax = bool(CS.vEgo < self.sat_check_min_speed and abs(output_torque) >= self.steer_max * governed.cap - 1e-3)
     adaptive.rawActualLateralAccel = float(rc.raw_measurement)
+    adaptive.signConflictActive = governed.diagnostics.signConflictActive
+    adaptive.signConflictBinding = governed.diagnostics.signConflictBinding
+    adaptive.signConflictFloorGuarded = governed.diagnostics.signConflictFloorGuarded
+    adaptive.nearZeroRecenterConflict = nz_debug.conflict
+    adaptive.nearZeroRecenterError = nz_debug.error
+    adaptive.nearZeroRecenterClosingRate = nz_debug.closingRate
+    adaptive.nearZeroRecenterDuration = nz_debug.duration
 
     pid_log.active = True
     pid_log.p = float(self.response_core.pid.p)

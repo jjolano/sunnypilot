@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import bisect
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntFlag
 
 from openpilot.sunnypilot.custom.lateral._output_governor_constants import *
@@ -244,12 +244,20 @@ class OutputGovernorInputs:
 
 
 @dataclass(frozen=True)
+class OutputGovernorDiagnostics:
+  signConflictActive: bool = False        # sign-conflict condition is true
+  signConflictBinding: bool = False       # sign-conflict cap would tighten before later caps/slew
+  signConflictFloorGuarded: bool = False  # sign-conflict was one guard for the under-response floor
+
+
+@dataclass(frozen=True)
 class OutputGovernorResult:
   output_torque: float
   active: bool
   reason: int
   cap: float    # effective RESTRICT cap as a fraction of max_output (post floor relax)
   floor: float  # AUGMENT under-response floor in [0, 1]
+  diagnostics: OutputGovernorDiagnostics = field(default_factory=OutputGovernorDiagnostics)
 
 
 class OutputGovernor:
@@ -279,13 +287,15 @@ class OutputGovernor:
 
     # --- AUGMENT ---
     floor = h.under_response_floor(inp)
+    initial_floor = floor
+    sign_conflict_active = h.sign_conflict(inp)
     floor_guarded = floor > 0.0 and (
       not inp.path_evidence_valid or
       not inp.controller_evidence_stable or
       inp.release_active or
       inp.same_direction_limit or
       abs(inp.steering_rate_deg) >= HIGH_RATE_START_DEG or
-      h.sign_conflict(inp) or
+      sign_conflict_active or
       h.over_response_scale(inp) < 1.0 or
       iso_cap < 1.0 or
       abs(inp.nominal_torque) >= UNDER_RESPONSE_MAX_TORQUE_FRACTION * inp.max_output
@@ -315,7 +325,8 @@ class OutputGovernor:
     if over_scale < 1.0:
       cap = min(cap, over_scale)
       reason |= GovernorReason.OVER_RESPONSE
-    if h.sign_conflict(inp):
+    cap_without_sign_conflict = cap
+    if sign_conflict_active:
       cap = min(cap, SIGN_CONFLICT_CAP)
       reason |= GovernorReason.SIGN_CONFLICT
     if iso_cap < 1.0:
@@ -337,6 +348,19 @@ class OutputGovernor:
 
     if abs(clipped - inp.nominal_torque) > 1e-6:
       reason |= GovernorReason.CLIPPED
+
+    cap_eff_without_sign_conflict = cap_without_sign_conflict + floor * (1.0 - cap_without_sign_conflict)
+    abs_nominal = abs(inp.nominal_torque)
+    diagnostics = OutputGovernorDiagnostics(
+      signConflictActive=bool(sign_conflict_active),
+      signConflictBinding=bool(
+        sign_conflict_active and
+        cap < cap_without_sign_conflict and
+        (abs_nominal > cap_eff_without_sign_conflict * inp.max_output or
+         abs_nominal > SIGN_CONFLICT_CAP * inp.max_output)
+      ),
+      signConflictFloorGuarded=bool(initial_floor > 0.0 and sign_conflict_active and floor_guarded),
+    )
 
     # --- RATE-LIMIT ---
     previous_sign = h.sign(self.previous_output)
@@ -363,4 +387,4 @@ class OutputGovernor:
 
     self.previous_output = output
     active = abs(output - inp.nominal_torque) > 1e-6 or reason != GovernorReason.NONE
-    return OutputGovernorResult(output, active, int(reason), cap_eff, floor)
+    return OutputGovernorResult(output, active, int(reason), cap_eff, floor, diagnostics)

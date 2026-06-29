@@ -244,9 +244,29 @@ def test_sign_conflict_detected_both_directions():
   # Opposite signs of desired and actual lateral accel are a safety conflict.
   r = OutputGovernor(DT).update(benign(nominal=0.5, v=25.0, desired=1.0, actual=-0.5))
   assert r.reason & GovernorReason.SIGN_CONFLICT
+  assert r.diagnostics.signConflictActive is True
 
   r = OutputGovernor(DT).update(benign(nominal=-0.5, v=25.0, desired=-1.0, actual=0.5))
   assert r.reason & GovernorReason.SIGN_CONFLICT
+  assert r.diagnostics.signConflictActive is True
+
+
+def test_sign_conflict_diagnostics_distinguish_active_from_binding():
+  active_only = OutputGovernor(DT).update(benign(nominal=0.2, v=25.0, desired=1.0, actual=-0.5))
+  binding = OutputGovernor(DT).update(benign(nominal=0.95, v=25.0, desired=1.0, actual=-0.5))
+
+  assert active_only.diagnostics.signConflictActive is True
+  assert active_only.diagnostics.signConflictBinding is False
+  assert binding.diagnostics.signConflictActive is True
+  assert binding.diagnostics.signConflictBinding is True
+
+
+def test_sign_conflict_diagnostics_report_floor_guard():
+  r = OutputGovernor(DT).update(benign(nominal=0.89, v=8.0, desired=1.0, actual=-0.2))
+
+  assert r.reason & GovernorReason.SIGN_CONFLICT
+  assert r.reason & GovernorReason.UNDER_RESPONSE_GUARDED
+  assert r.diagnostics.signConflictFloorGuarded is True
 
 
 @pytest.mark.parametrize("desired,actual", [
@@ -260,6 +280,7 @@ def test_sign_conflict_detected_both_directions():
 def test_no_sign_conflict_for_same_sign_or_zero(desired, actual):
   r = OutputGovernor(DT).update(benign(nominal=0.5, v=25.0, desired=desired, actual=actual))
   assert not (r.reason & GovernorReason.SIGN_CONFLICT)
+  assert r.diagnostics.signConflictActive is False
 
 
 def test_sign_change_uses_slower_slew():

@@ -922,6 +922,15 @@ struct ControlsState @0x97ff69c53601abf1 {
       governorFloor @49 :Float32;
       lowSpeedOutputMax @50 :Bool;
       rawActualLateralAccel @51 :Float32;
+
+      # Shadow-only sign-conflict / near-zero recenter diagnostics. Do not affect control output.
+      signConflictActive @52 :Bool;
+      signConflictBinding @53 :Bool;
+      signConflictFloorGuarded @54 :Bool;
+      nearZeroRecenterConflict @55 :Bool;
+      nearZeroRecenterError @56 :Float32;           # m/s^2, desired - actual lateral accel
+      nearZeroRecenterClosingRate @57 :Float32;     # m/s^3, positive means abs(error) is shrinking
+      nearZeroRecenterDuration @58 :Float32;        # s
     }
    }
 
