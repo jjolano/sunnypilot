@@ -12,7 +12,16 @@ description: Access route logs from the configured deployment target and analyze
    ```bash
    ssh -o ConnectTimeout=20 "$DEPLOY_HOST" "uptime"
    ```
-3. List recent routes on-device:
+3. If validating a local commit, check whether the device HEAD **contains** it; do not
+   require the device HEAD to equal the local commit, because separate deploys may add
+   newer commits on top:
+   ```bash
+   COMMIT=$(git rev-parse --short=10 HEAD)  # or the specific commit under test
+   ssh "$DEPLOY_HOST" "cd '$DEPLOY_PATH' && git merge-base --is-ancestor '$COMMIT' HEAD && echo included || echo missing; git log -1 --oneline"
+   ```
+   Treat an exact-HEAD mismatch as "newer device commit" only after the ancestry check says
+   `included`. If route timing matters, confirm the route mtime is after that deploy.
+4. List recent routes on-device:
    ```bash
    ssh "$DEPLOY_HOST" 'python3 - <<'"'"'PY'"'"'
 import os, time
