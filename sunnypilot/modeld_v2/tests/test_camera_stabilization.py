@@ -9,6 +9,7 @@ Focused helper tests for the global-shutter gyro EIS core. No process replay.
 import numpy as np
 import pytest
 
+import cereal.messaging as messaging
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE, get_warp_matrix
 from openpilot.sunnypilot.modeld_v2.camera_stabilization import (
@@ -98,7 +99,7 @@ class TestIntegration:
 
   def test_virtual_lags_actual_under_constant_rate(self):
     stabilizer = CameraStabilizer()
-    feed_constant_gyro(stabilizer, [0.5, 0.0, 0.0], 0, 500_000_000)
+    feed_constant_gyro(stabilizer, [0.05, 0.0, 0.0], 0, 500_000_000)
     state = stabilizer._buffer[-1]
     actual_vec = rotvec_from_rot(state.actual_R)
     virtual_vec = rotvec_from_rot(state.virtual_R)
@@ -238,3 +239,34 @@ class TestWarpMatrix:
     assert abs(roll_center[1] - base[1]) < 0.01
     assert pitch_center[1] < base[1] - 1e-3
     assert abs(pitch_center[0] - base[0]) < 0.01
+
+
+class TestModelDataV2SPTelemetry:
+  def test_camera_stabilization_fields_roundtrip(self):
+    stabilizer = CameraStabilizer()
+    feed_constant_gyro(stabilizer, [0.05, 0.0, 0.0], 0, 500_000_000)
+    stabilizer.update("apply", 200_000_000, 300_000_000)
+
+    msg = messaging.new_message("modelDataV2SP")
+    sp = msg.modelDataV2SP
+    sp.cameraStabilizationMode = stabilizer.last_mode
+    sp.cameraStabilizationApplied = True
+    sp.cameraStabilizationMainReason = stabilizer.last_reason
+    sp.cameraStabilizationExtraReason = "ok"
+    sp.cameraStabilizationMainCorrectionRoll = float(stabilizer.last_correction[0])
+    sp.cameraStabilizationMainCorrectionPitch = float(stabilizer.last_correction[1])
+    sp.cameraStabilizationExtraCorrectionRoll = 0.0
+    sp.cameraStabilizationExtraCorrectionPitch = 0.0
+    sp.cameraStabilizationMainClipped = bool(stabilizer.last_clipped[0] or stabilizer.last_clipped[1])
+    sp.cameraStabilizationExtraClipped = False
+
+    with messaging.log.Event.from_bytes(msg.to_bytes()) as decoded:
+      out = decoded.modelDataV2SP
+      assert out.cameraStabilizationMode == "apply"
+      assert out.cameraStabilizationApplied
+      assert out.cameraStabilizationMainReason == "ok"
+      assert out.cameraStabilizationExtraReason == "ok"
+      assert abs(out.cameraStabilizationMainCorrectionRoll) > 1e-4
+      assert abs(out.cameraStabilizationMainCorrectionPitch) < 1e-8
+      assert out.cameraStabilizationMainClipped == bool(stabilizer.last_clipped[0] or stabilizer.last_clipped[1])
+      assert not out.cameraStabilizationExtraClipped

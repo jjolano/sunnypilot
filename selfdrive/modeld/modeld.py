@@ -329,6 +329,10 @@ def main(demo=False):
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
       mdv2sp_send.modelDataV2SP.laneTurnDirection = DH.lane_turn_direction
+      mdv2sp_send.modelDataV2SP.cameraStabilizationMode = "off"
+      mdv2sp_send.modelDataV2SP.cameraStabilizationApplied = False
+      mdv2sp_send.modelDataV2SP.cameraStabilizationMainReason = "not_implemented"
+      mdv2sp_send.modelDataV2SP.cameraStabilizationExtraReason = "not_implemented"
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 

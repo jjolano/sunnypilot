@@ -27,6 +27,8 @@ from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, toggle_
 from openpilot.system.ui.sunnypilot.widgets.progress_bar import progress_item
 from openpilot.system.ui.sunnypilot.widgets.tree_dialog import TreeOptionDialog, TreeNode, TreeFolder
 
+CAMERA_STABILIZATION_OPTIONS = {0: "off", 1: "shadow", 2: "apply"}
+
 if gui_app.sunnypilot_ui():
   from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp as button_item
 
@@ -95,9 +97,17 @@ class ModelsLayout(Widget):
 
     self.lagd_toggle = toggle_item_sp(tr("Live Learning Steer Delay"), "", param="LagdToggle")
 
+    self.camera_stabilization_control = option_item_sp(
+      tr("Experimental Camera Stabilization"), "CameraStabilizationMode", 0, 2,
+      tr("Monitor computes gyro-assisted roll/pitch corrections without changing driving. " +
+         "Apply feeds corrected camera warp to the model; disable if the path looks wrong."),
+      value_map=CAMERA_STABILIZATION_OPTIONS, label_width=style.BUTTON_ACTION_WIDTH,
+      label_callback=lambda v: {"off": tr("Off"), "shadow": tr("Monitor"), "apply": tr("Apply")}.get(v, str(v))
+    )
+
     self.items = [self.current_model_item, self.cancel_download_item, self.supercombo_label, self.vision_label,
-                  self.policy_label, self.off_policy_label, self.on_policy_label, self.refresh_item, self.clear_cache_item, self.lane_turn_desire_toggle,
-                  self.lane_turn_value_control, self.lagd_toggle, self.delay_control]
+                   self.policy_label, self.off_policy_label, self.on_policy_label, self.refresh_item, self.clear_cache_item, self.lane_turn_desire_toggle,
+                  self.lane_turn_value_control, self.lagd_toggle, self.delay_control, self.camera_stabilization_control]
 
   def _update_lagd_description(self, lagd_toggle: bool):
     desc = tr("Enable this for the car to learn and adapt its steering response time. Disable to use a fixed steering response time. " +
@@ -239,6 +249,7 @@ class ModelsLayout(Widget):
     self.lane_turn_value_control.set_visible(turn_desire and advanced_controls)
     self.lagd_toggle.action_item.set_state(live_delay)
     self.delay_control.set_visible(not live_delay and advanced_controls)
+    self.camera_stabilization_control.set_visible(advanced_controls)
     new_step = int(round(100 / CV.MPH_TO_KPH)) if ui_state.is_metric else 100
     if self.lane_turn_value_control.action_item.value_change_step != new_step:
       self.lane_turn_value_control.action_item.value_change_step = new_step

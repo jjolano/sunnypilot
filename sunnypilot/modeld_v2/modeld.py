@@ -373,6 +373,12 @@ def main(demo=False):
     frame_id = sm["roadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
     stabilization_applied = False
+    main_reason = "no_live_calibration"
+    extra_reason = "no_live_calibration"
+    main_correction = np.zeros(3, dtype=np.float64)
+    extra_correction = np.zeros(3, dtype=np.float64)
+    main_clipped = np.zeros(3, dtype=bool)
+    extra_clipped = np.zeros(3, dtype=bool)
     if sm.frame % 60 == 0:
       model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
       model.PLANPLUS_CONTROL = params.get("PlanplusControl", return_default=True)
@@ -412,6 +418,9 @@ def main(demo=False):
       camera_stabilizer.update(camera_stabilization_mode, meta_extra.timestamp_sof, meta_extra.timestamp_eof)
       extra_correction_valid = camera_stabilizer.correction_valid
       extra_correction_R = camera_stabilizer.correction_for_model_rot()
+      extra_reason = camera_stabilizer.last_reason
+      extra_correction = camera_stabilizer.last_correction.copy()
+      extra_clipped = camera_stabilizer.last_clipped.copy()
       model_transform_main = base_model_transform_main
       model_transform_extra = base_model_transform_extra
 
@@ -433,9 +442,9 @@ def main(demo=False):
       if camera_stabilization_mode != "off" and run_count % 100 == 0:
         cloudlog.info("camera stabilization mode=%s main_reason=%s extra_reason=%s main_correction=%s extra_correction=%s " +
                       "main_clipped=%s extra_clipped=%s",
-                      camera_stabilization_mode, main_reason, camera_stabilizer.last_reason,
-                      main_correction.tolist(), camera_stabilizer.last_correction.tolist(),
-                      main_clipped.tolist(), camera_stabilizer.last_clipped.tolist())
+                      camera_stabilization_mode, main_reason, extra_reason,
+                      main_correction.tolist(), extra_correction.tolist(),
+                      main_clipped.tolist(), extra_clipped.tolist())
 
     traffic_convention = np.zeros(2)
     traffic_convention[int(is_rhd)] = 1
@@ -492,6 +501,16 @@ def main(demo=False):
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
       mdv2sp_send.modelDataV2SP.laneTurnDirection = DH.lane_turn_direction
+      mdv2sp_send.modelDataV2SP.cameraStabilizationMode = camera_stabilization_mode
+      mdv2sp_send.modelDataV2SP.cameraStabilizationApplied = stabilization_applied
+      mdv2sp_send.modelDataV2SP.cameraStabilizationMainReason = main_reason or ""
+      mdv2sp_send.modelDataV2SP.cameraStabilizationExtraReason = extra_reason or ""
+      mdv2sp_send.modelDataV2SP.cameraStabilizationMainCorrectionRoll = float(main_correction[0])
+      mdv2sp_send.modelDataV2SP.cameraStabilizationMainCorrectionPitch = float(main_correction[1])
+      mdv2sp_send.modelDataV2SP.cameraStabilizationExtraCorrectionRoll = float(extra_correction[0])
+      mdv2sp_send.modelDataV2SP.cameraStabilizationExtraCorrectionPitch = float(extra_correction[1])
+      mdv2sp_send.modelDataV2SP.cameraStabilizationMainClipped = bool(main_clipped[0] or main_clipped[1])
+      mdv2sp_send.modelDataV2SP.cameraStabilizationExtraClipped = bool(extra_clipped[0] or extra_clipped[1])
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 
