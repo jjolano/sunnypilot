@@ -101,3 +101,18 @@ sections:
     unit: meters
     enablement:
     - $ref: '#/macros/advanced_only'
+  - key: CameraStabilizationMode
+    widget: multiple_button
+    title: Experimental Camera Stabilization
+    description: Monitor only computes gyro-assisted roll/pitch corrections without changing driving behavior. Apply feeds
+      gyro-assisted roll/pitch corrected camera warp to the model and is experimental; disable if the path looks wrong.
+    requires_attestation: true
+    options:
+    - value: 'off'
+      label: 'Off'
+    - value: 'shadow'
+      label: Monitor only
+    - value: 'apply'
+      label: Apply
+    enablement:
+    - $ref: '#/macros/advanced_only'

@@ -27,7 +27,7 @@ from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import config_realtime_process, DT_MDL
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
-from openpilot.common.transformations.model import get_warp_matrix
+from openpilot.common.transformations.orientation import rot_from_euler
 from openpilot.system import sentry
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value
@@ -36,6 +36,7 @@ from openpilot.sunnypilot.modeld_v2.fill_model_msg import fill_model_msg, fill_p
 from openpilot.sunnypilot.modeld_v2.constants import Plan
 from openpilot.sunnypilot.modeld_v2.meta_helper import load_meta_constants
 from openpilot.sunnypilot.modeld_v2.camera_offset_helper import CameraOffsetHelper
+from openpilot.sunnypilot.modeld_v2.camera_stabilization import CameraStabilizer, sanitize_camera_stabilization_mode, warp_matrix_from_device_from_calib_rot
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
@@ -294,6 +295,7 @@ def main(demo=False):
   # messaging
   pm = PubMaster(["modelV2", "drivingModelData", "cameraOdometry", "modelDataV2SP"])
   sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
+  gyro_sock = messaging.sub_sock('gyroscope', timeout=20, conflate=False)
 
   publish_state = PublishState()
   params = Params()
@@ -306,11 +308,17 @@ def main(demo=False):
 
   model_transform_main = np.zeros((3, 3), dtype=np.float32)
   model_transform_extra = np.zeros((3, 3), dtype=np.float32)
+  base_model_transform_main = np.zeros((3, 3), dtype=np.float32)
+  base_model_transform_extra = np.zeros((3, 3), dtype=np.float32)
   live_calib_seen = False
+  device_from_calib_euler = np.zeros(3, dtype=np.float32)
+  dc = None
   buf_main, buf_extra = None, None
   meta_main = FrameMeta()
   meta_extra = FrameMeta()
   camera_offset_helper = CameraOffsetHelper()
+  camera_stabilizer = CameraStabilizer()
+  camera_stabilization_mode = "off"
 
 
   if demo:
@@ -364,18 +372,70 @@ def main(demo=False):
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["roadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
+    stabilization_applied = False
     if sm.frame % 60 == 0:
       model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
       model.PLANPLUS_CONTROL = params.get("PlanplusControl", return_default=True)
       camera_offset_helper.set_offset(params.get("CameraOffset", return_default=True))
+      camera_stabilization_mode = sanitize_camera_stabilization_mode(params.get("CameraStabilizationMode", return_default=True))
     lat_delay = model.lat_delay + model.LAT_SMOOTH_SECONDS
+
+    # Drain raw gyro messages directly; SubMaster conflates and drops samples.
+    for gyro_msg in messaging.drain_sock(gyro_sock):
+      if camera_stabilization_mode != "off":
+        camera_stabilizer.ingest_gyro(gyro_msg.gyroscope, gyro_msg.valid, gyro_msg.logMonoTime)
+
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['roadCameraState'].sensor))]
-      model_transform_main = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics, False).astype(np.float32)
-      model_transform_extra = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics, True).astype(np.float32)
-      model_transform_main, model_transform_extra = camera_offset_helper.update(model_transform_main, model_transform_extra, sm, main_wide_camera)
       live_calib_seen = True
+
+    if live_calib_seen and dc is not None:
+      intrinsics_main = dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics
+      intrinsics_extra = dc.ecam.intrinsics
+      height = sm["liveCalibration"].height[0] if sm["liveCalibration"].height else 1.22
+
+      if sm.updated["liveCalibration"]:
+        R_base = rot_from_euler(device_from_calib_euler)
+        base_model_transform_main = warp_matrix_from_device_from_calib_rot(R_base, intrinsics_main, False).astype(np.float32)
+        base_model_transform_extra = warp_matrix_from_device_from_calib_rot(R_base, intrinsics_extra, True).astype(np.float32)
+        base_model_transform_main, base_model_transform_extra = camera_offset_helper.update(
+          base_model_transform_main, base_model_transform_extra, sm, main_wide_camera)
+
+      camera_stabilizer.update(camera_stabilization_mode, meta_main.timestamp_sof, meta_main.timestamp_eof)
+      main_correction_valid = camera_stabilizer.correction_valid
+      main_correction_R = camera_stabilizer.correction_for_model_rot()
+      main_reason = camera_stabilizer.last_reason
+      main_correction = camera_stabilizer.last_correction.copy()
+      main_clipped = camera_stabilizer.last_clipped.copy()
+
+      camera_stabilizer.update(camera_stabilization_mode, meta_extra.timestamp_sof, meta_extra.timestamp_eof)
+      extra_correction_valid = camera_stabilizer.correction_valid
+      extra_correction_R = camera_stabilizer.correction_for_model_rot()
+      model_transform_main = base_model_transform_main
+      model_transform_extra = base_model_transform_extra
+
+      if camera_stabilization_mode == "apply":
+        R_base = rot_from_euler(device_from_calib_euler)
+        if main_correction_valid:
+          R_corrected = main_correction_R @ R_base
+          model_transform_main = warp_matrix_from_device_from_calib_rot(R_corrected, intrinsics_main, False).astype(np.float32)
+          model_transform_main = camera_offset_helper.apply_camera_offset(
+            model_transform_main, intrinsics_main, height, camera_offset_helper.actual_camera_offset)
+          stabilization_applied = True
+        if extra_correction_valid:
+          R_corrected = extra_correction_R @ R_base
+          model_transform_extra = warp_matrix_from_device_from_calib_rot(R_corrected, intrinsics_extra, True).astype(np.float32)
+          model_transform_extra = camera_offset_helper.apply_camera_offset(
+            model_transform_extra, intrinsics_extra, height, camera_offset_helper.actual_camera_offset)
+          stabilization_applied = True
+
+      if camera_stabilization_mode != "off" and run_count % 100 == 0:
+        cloudlog.info("camera stabilization mode=%s main_reason=%s extra_reason=%s main_correction=%s extra_correction=%s " +
+                      "main_clipped=%s extra_clipped=%s",
+                      camera_stabilization_mode, main_reason, camera_stabilizer.last_reason,
+                      main_correction.tolist(), camera_stabilizer.last_correction.tolist(),
+                      main_clipped.tolist(), camera_stabilizer.last_clipped.tolist())
 
     traffic_convention = np.zeros(2)
     traffic_convention[int(is_rhd)] = 1
@@ -435,7 +495,8 @@ def main(demo=False):
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 
-      fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, live_calib_seen)
+      fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames,
+                    meta_main.timestamp_eof, live_calib_seen and not stabilization_applied)
       pm.send('modelV2', modelv2_send)
       pm.send('drivingModelData', drivingdata_send)
       pm.send('cameraOdometry', posenet_send)

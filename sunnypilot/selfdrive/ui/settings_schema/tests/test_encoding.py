@@ -22,6 +22,7 @@ from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import find
 
 STEERING = get_panel(load_schema(), "steering")
 CRUISE = get_panel(load_schema(), "cruise")
+MODELS = get_panel(load_schema(), "models")
 
 
 def real_step(item):
@@ -173,3 +174,20 @@ def test_value_mapped_option_for_gapped_ints():
 def test_value_mapped_option_rejects_non_ints():
   assert value_mapped_option({"options": [{"value": "a", "label": "A"}]}) is None
   assert value_mapped_option({"options": []}) is None
+
+
+def test_camera_stabilization_string_enum_matches_schema():
+  enum = homogeneous_string_options(find_item(MODELS, "CameraStabilizationMode"))
+  assert enum is not None
+  assert enum.values == ["off", "shadow", "apply"]
+  assert enum.labels == ["Off", "Monitor only", "Apply"]
+
+
+def test_camera_stabilization_string_index_fail_closed_to_off():
+  enum = homogeneous_string_options(find_item(MODELS, "CameraStabilizationMode"))
+  assert enum is not None
+  assert string_option_index("", enum, "CameraStabilizationMode") == 0
+  assert string_option_index("off", enum, "CameraStabilizationMode") == 0
+  assert string_option_index("shadow", enum, "CameraStabilizationMode") == 1
+  assert string_option_index("apply", enum, "CameraStabilizationMode") == 2
+  assert string_option_index("bad", enum, "CameraStabilizationMode") == 0
