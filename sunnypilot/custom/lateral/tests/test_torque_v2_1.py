@@ -150,14 +150,30 @@ def test_same_direction_limit_requires_tracking_correction_direction():
 
 def test_same_direction_limit_uses_requested_and_applied_torque_signs_when_available():
   c = make_controller()
-  c.set_steer_limited_output_context(0.8, 0.6)
+  # set_steer_limited_output_context receives actuator-sign torque from controlsd; the
+  # controller's nominal_torque argument below is the opposite internal governor sign.
+  c.set_steer_limited_output_context(-0.8, -0.6)
   assert c._same_direction_limit(True, 0.5, 1.0, 0.5) is True
 
-  c.set_steer_limited_output_context(0.8, -0.2)
+  c.set_steer_limited_output_context(-0.8, 0.2)
   assert c._same_direction_limit(True, 0.5, 1.0, 0.5) is False
 
-  c.set_steer_limited_output_context(-0.8, -0.6)
+  c.set_steer_limited_output_context(0.8, 0.6)
   assert c._same_direction_limit(True, 0.5, 1.0, 0.5) is False
+
+
+def test_same_direction_limit_accepts_returned_actuator_torque_context():
+  c = make_controller()
+  vm = FakeVM()
+
+  returned_torque, _, _ = c.update(True, make_cs(v_ego=12.0, angle=-20.0), vm,
+                                  make_params(), False, 0.08, make_pose(), False, 0.2)  # type: ignore[arg-type]
+  internal_nominal = c.governor.previous_output
+
+  c.set_steer_limited_output_context(returned_torque, returned_torque * 0.8)
+
+  assert returned_torque == pytest.approx(-internal_nominal)
+  assert c._same_direction_limit(True, internal_nominal, 1.0, 0.5) is True
 
 
 def test_populates_underresponse_shadow_telemetry_without_changing_output():

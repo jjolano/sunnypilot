@@ -88,8 +88,9 @@ class LatControlTorqueV21(LatControl):
     except (TypeError, ValueError):
       requested = math.nan
       applied = math.nan
-    self._limited_requested_torque = requested if math.isfinite(requested) else None
-    self._limited_applied_torque = applied if math.isfinite(applied) else None
+    # controlsd passes actuator-sign torque; v2.1's governor uses the opposite internal sign.
+    self._limited_requested_torque = -requested if math.isfinite(requested) else None
+    self._limited_applied_torque = -applied if math.isfinite(applied) else None
 
   def _same_direction_limit(self, steer_limited_by_safety: bool, nominal_torque: float,
                             desired_lateral_accel: float, actual_lateral_accel: float) -> bool:
