@@ -165,6 +165,15 @@ class LatControlTorqueV21(LatControl):
       return 0.0, 0.0, pid_log
 
     pid_log.error = float(rc.error)
+
+    # Response-core telemetry is captured before extension/governor mutation.
+    adaptive = pid_log.adaptiveTorqueState
+    adaptive.responseCoreError = float(rc.error)
+    adaptive.responseCoreMeasurementReset = bool(rc.measurement_reset)
+    adaptive.responseCoreSameSignUnwind = bool(rc.same_sign_unwind)
+    adaptive.responseCoreFreezeIntegrator = bool(rc.freeze_integrator)
+    adaptive.responseCoreFf = float(rc.ff)
+
     output_torque = rc.output_torque
 
     # NNLC / override extension (explicit injection point; overrides pid_log and output_torque)

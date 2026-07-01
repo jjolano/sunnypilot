@@ -144,6 +144,7 @@ def _oracle_update(s, inp: ResponseCoreInputs):
   ff += get_friction(error * friction_scale, lateral_accel_deadzone, FRICTION_THRESHOLD, tp) * friction_scale
 
   output_torque = 0.0
+  freeze = False
   if not inp.active:
     s.pid.reset()
   else:
@@ -153,7 +154,7 @@ def _oracle_update(s, inp: ResponseCoreInputs):
     control_speed = low_speed_pid_gain_speed(v, LOW_SPEED_UNWIND_GAIN_SPEED if same_sign_unwind else None)
     out_la = s.pid.update(error, -measurement_rate, feedforward=ff, speed=control_speed, freeze_integrator=freeze)
     output_torque = torque_from_lateral_accel(out_la, tp)
-  return output_torque, setpoint, measurement, error, desired_jerk, same_sign_unwind
+  return output_torque, setpoint, measurement, error, desired_jerk, same_sign_unwind, freeze
 
 
 def make_core():
@@ -183,13 +184,14 @@ def test_response_core_matches_oracle_over_random_sequence():
   for step in range(4000):
     inp = random_inputs(rng)
     r = core.update(inp)
-    o_torque, o_setpoint, o_meas, o_error, o_jerk, o_unwind = _oracle_update(oracle, inp)
+    o_torque, o_setpoint, o_meas, o_error, o_jerk, o_unwind, o_freeze = _oracle_update(oracle, inp)
     assert r.output_torque == pytest.approx(o_torque, abs=1e-9, rel=1e-9), f"torque step {step}"
     assert r.setpoint == pytest.approx(o_setpoint, abs=1e-9), f"setpoint step {step}"
     assert r.measurement == pytest.approx(o_meas, abs=1e-9), f"measurement step {step}"
     assert r.error == pytest.approx(o_error, abs=1e-9), f"error step {step}"
     assert r.desired_lateral_jerk == pytest.approx(o_jerk, abs=1e-9), f"jerk step {step}"
     assert r.same_sign_unwind == o_unwind, f"unwind step {step}"
+    assert r.freeze_integrator == o_freeze, f"freeze step {step}"
 
 
 def test_inactive_resets_pid_and_zero_torque():

@@ -25,7 +25,12 @@ class LateralWindow:
   desired_curvature_pp: float
   actual_curvature_pp: float
   output_pp: float
+  requested_torque_pp: float
   applied_torque_pp: float
+  eps_torque_pp: float
+  driver_torque_p95: float
+  command_eps_corr: float | None
+  command_applied_corr: float | None
   raw_actual_corr: float | None
   raw_steering_corr: float | None
   gated_percent: float
@@ -45,6 +50,11 @@ class LateralOscillationProfile:
   straight_processed_curvature_pp: float
   straight_desired_curvature_pp: float
   straight_actual_curvature_pp: float
+  straight_requested_torque_pp: float
+  straight_applied_torque_pp: float
+  straight_eps_torque_pp: float
+  straight_driver_torque_p95: float
+  straight_command_eps_corr: float | None
   raw_actual_corr: float | None
   raw_steering_corr: float | None
   desired_actual_corr: float | None
@@ -67,6 +77,11 @@ class LateralOscillationProfile:
       straight_processed_curvature_pp=float(data.get("straight_processed_curvature_pp", data.get("straightProcessedCurvaturePp", 0.0))),
       straight_desired_curvature_pp=float(data.get("straight_desired_curvature_pp", data.get("straightDesiredCurvaturePp", 0.0))),
       straight_actual_curvature_pp=float(data.get("straight_actual_curvature_pp", data.get("straightActualCurvaturePp", 0.0))),
+      straight_requested_torque_pp=float(data.get("straight_requested_torque_pp", data.get("straightRequestedTorquePp", 0.0))),
+      straight_applied_torque_pp=float(data.get("straight_applied_torque_pp", data.get("straightAppliedTorquePp", 0.0))),
+      straight_eps_torque_pp=float(data.get("straight_eps_torque_pp", data.get("straightEpsTorquePp", 0.0))),
+      straight_driver_torque_p95=float(data.get("straight_driver_torque_p95", data.get("straightDriverTorqueP95", 0.0))),
+      straight_command_eps_corr=_optional_float(data.get("straight_command_eps_corr", data.get("straightCommandEpsCorr"))),
       raw_actual_corr=_optional_float(data.get("raw_actual_corr", data.get("rawActualCorr"))),
       raw_steering_corr=_optional_float(data.get("raw_steering_corr", data.get("rawSteeringCorr"))),
       desired_actual_corr=_optional_float(data.get("desired_actual_corr", data.get("desiredActualCorr"))),
@@ -88,7 +103,10 @@ class _LateralSample:
   processed_desired_curvature: float
   desired_curvature: float
   lat_output: float
+  requested_torque: float
   applied_torque: float
+  eps_torque: float
+  driver_torque: float
   model_path_gated: bool
   model_path_quality: float
 
@@ -106,7 +124,8 @@ def build_lateral_oscillation_profile(
   ordered_msgs = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
   samples = _extract_lateral_samples(ordered_msgs)
   if not samples:
-    return LateralOscillationProfile(source, 0, 0.0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, None, None, None, [])
+    return LateralOscillationProfile(source, 0, 0.0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                     0.0, 0.0, 0.0, 0.0, None, None, None, None, [])
 
   cols = _columns(samples)
   straight = _straight_mask(cols, min_speed, max_raw_curvature)
@@ -126,6 +145,11 @@ def build_lateral_oscillation_profile(
     straight_processed_curvature_pp=_percentile_span(cols["processed_desired_curvature"][straight_idx]),
     straight_desired_curvature_pp=_percentile_span(cols["desired_curvature"][straight_idx]),
     straight_actual_curvature_pp=_percentile_span(cols["curvature"][straight_idx]),
+    straight_requested_torque_pp=_percentile_span(cols["requested_torque"][straight_idx]),
+    straight_applied_torque_pp=_percentile_span(cols["applied_torque"][straight_idx]),
+    straight_eps_torque_pp=_percentile_span(cols["eps_torque"][straight_idx]),
+    straight_driver_torque_p95=_p95_abs(cols["driver_torque"][straight_idx]),
+    straight_command_eps_corr=_correlation(cols["requested_torque"][straight_idx], cols["eps_torque"][straight_idx]),
     raw_actual_corr=_correlation(cols["raw_desired_curvature"][straight_idx], cols["curvature"][straight_idx]),
     raw_steering_corr=_correlation(cols["raw_desired_curvature"][straight_idx], cols["steering_angle_deg"][straight_idx]),
     desired_actual_corr=_correlation(cols["desired_curvature"][straight_idx], cols["curvature"][straight_idx]),
@@ -146,6 +170,10 @@ def render_lateral_profile(profile: LateralOscillationProfile) -> str:
     f"  processed curvature pp: {profile.straight_processed_curvature_pp:.6f}",
     f"  desired curvature pp: {profile.straight_desired_curvature_pp:.6f}",
     f"  actual curvature pp: {profile.straight_actual_curvature_pp:.6f}",
+    f"  requested/applied torque pp: {profile.straight_requested_torque_pp:.3f}/{profile.straight_applied_torque_pp:.3f}",
+    f"  eps torque pp: {profile.straight_eps_torque_pp:.3f}",
+    f"  driver torque p95: {profile.straight_driver_torque_p95:.3f}",
+    f"  corr command->eps: {_format_optional(profile.straight_command_eps_corr)}",
     f"  corr raw->actual: {_format_optional(profile.raw_actual_corr)}",
     f"  corr raw->steering: {_format_optional(profile.raw_steering_corr)}",
     f"  corr desired->actual: {_format_optional(profile.desired_actual_corr)}",
@@ -159,6 +187,10 @@ def render_lateral_profile(profile: LateralOscillationProfile) -> str:
         f"raw_pp={window.raw_curvature_pp:.6f} "
         f"desired_pp={window.desired_curvature_pp:.6f} "
         f"actual_pp={window.actual_curvature_pp:.6f} "
+        f"cmd_pp={window.requested_torque_pp:.3f} "
+        f"eps_pp={window.eps_torque_pp:.3f} "
+        f"driver95={window.driver_torque_p95:.3f} "
+        f"cmd_eps={_format_optional(window.command_eps_corr)} "
         f"corr_raw_actual={_format_optional(window.raw_actual_corr)} "
         f"gated={window.gated_percent:.1f}%"
       )
@@ -206,7 +238,10 @@ def _extract_lateral_samples(msgs: list[Any]) -> list[_LateralSample]:
       processed_desired_curvature=_finite_float(safe_get(model_path, "processedDesiredCurvature")),
       desired_curvature=_finite_float(safe_get(payload, "desiredCurvature")),
       lat_output=_finite_float(safe_get(lateral_payload, "output")),
+      requested_torque=_finite_float(safe_get(car_control, "actuators.torque")),
       applied_torque=_finite_float(safe_get(car_output, "actuatorsOutput.torque")),
+      eps_torque=_finite_float(safe_get(car_state, "steeringTorqueEps")),
+      driver_torque=_finite_float(safe_get(car_state, "steeringTorque")),
       model_path_gated=bool(safe_get(model_path, "gated", False)),
       model_path_quality=_finite_float(safe_get(model_path, "quality")),
     ))
@@ -221,13 +256,17 @@ def _columns(samples: list[_LateralSample]) -> dict[str, np.ndarray]:
     "steering_pressed": np.array([float(sample.steering_pressed) for sample in samples], dtype=float),
     "blinker_active": np.array([float(sample.blinker_active) for sample in samples], dtype=float),
     "lane_change_off": np.array([float(sample.lane_change_state == "off") for sample in samples], dtype=float),
+    "lane_change_unknown": np.array([float(sample.lane_change_state == "unknown") for sample in samples], dtype=float),
     "steering_angle_deg": np.array([sample.steering_angle_deg for sample in samples], dtype=float),
     "curvature": np.array([sample.curvature for sample in samples], dtype=float),
     "raw_desired_curvature": np.array([sample.raw_desired_curvature for sample in samples], dtype=float),
     "processed_desired_curvature": np.array([sample.processed_desired_curvature for sample in samples], dtype=float),
     "desired_curvature": np.array([sample.desired_curvature for sample in samples], dtype=float),
     "lat_output": np.array([sample.lat_output for sample in samples], dtype=float),
+    "requested_torque": np.array([sample.requested_torque for sample in samples], dtype=float),
     "applied_torque": np.array([sample.applied_torque for sample in samples], dtype=float),
+    "eps_torque": np.array([sample.eps_torque for sample in samples], dtype=float),
+    "driver_torque": np.array([sample.driver_torque for sample in samples], dtype=float),
     "model_path_gated": np.array([float(sample.model_path_gated) for sample in samples], dtype=float),
     "model_path_quality": np.array([sample.model_path_quality for sample in samples], dtype=float),
   }
@@ -239,7 +278,7 @@ def _straight_mask(cols: dict[str, np.ndarray], min_speed: float, max_raw_curvat
     & (cols["v_ego"] > min_speed)
     & (cols["steering_pressed"] < 0.5)
     & (cols["blinker_active"] < 0.5)
-    & (cols["lane_change_off"] > 0.5)
+    & ((cols["lane_change_off"] > 0.5) | (cols["lane_change_unknown"] > 0.5))
     & (np.abs(cols["raw_desired_curvature"]) < max_raw_curvature)
   )
 
@@ -268,7 +307,12 @@ def _rank_windows(cols: dict[str, np.ndarray], straight: np.ndarray, window_s: f
         desired_curvature_pp=_percentile_span(cols["desired_curvature"][idx]),
         actual_curvature_pp=_percentile_span(cols["curvature"][idx]),
         output_pp=_percentile_span(cols["lat_output"][idx]),
+        requested_torque_pp=_percentile_span(cols["requested_torque"][idx]),
         applied_torque_pp=_percentile_span(cols["applied_torque"][idx]),
+        eps_torque_pp=_percentile_span(cols["eps_torque"][idx]),
+        driver_torque_p95=_p95_abs(cols["driver_torque"][idx]),
+        command_eps_corr=_correlation(cols["requested_torque"][idx], cols["eps_torque"][idx]),
+        command_applied_corr=_correlation(cols["requested_torque"][idx], cols["applied_torque"][idx]),
         raw_actual_corr=_correlation(cols["raw_desired_curvature"][idx], cols["curvature"][idx]),
         raw_steering_corr=_correlation(cols["raw_desired_curvature"][idx], cols["steering_angle_deg"][idx]),
         gated_percent=_percent(cols["model_path_gated"][idx] > 0.5),
@@ -292,7 +336,12 @@ def _window_from_dict(data: dict[str, Any]) -> LateralWindow:
     desired_curvature_pp=float(data.get("desired_curvature_pp", data.get("desiredCurvaturePp", 0.0))),
     actual_curvature_pp=float(data.get("actual_curvature_pp", data.get("actualCurvaturePp", 0.0))),
     output_pp=float(data.get("output_pp", data.get("outputPp", 0.0))),
+    requested_torque_pp=float(data.get("requested_torque_pp", data.get("requestedTorquePp", 0.0))),
     applied_torque_pp=float(data.get("applied_torque_pp", data.get("appliedTorquePp", 0.0))),
+    eps_torque_pp=float(data.get("eps_torque_pp", data.get("epsTorquePp", 0.0))),
+    driver_torque_p95=float(data.get("driver_torque_p95", data.get("driverTorqueP95", 0.0))),
+    command_eps_corr=_optional_float(data.get("command_eps_corr", data.get("commandEpsCorr"))),
+    command_applied_corr=_optional_float(data.get("command_applied_corr", data.get("commandAppliedCorr"))),
     raw_actual_corr=_optional_float(data.get("raw_actual_corr", data.get("rawActualCorr"))),
     raw_steering_corr=_optional_float(data.get("raw_steering_corr", data.get("rawSteeringCorr"))),
     gated_percent=float(data.get("gated_percent", data.get("gatedPercent", 0.0))),
@@ -333,6 +382,11 @@ def _percentile_span(values: np.ndarray) -> float:
   if len(finite) == 0:
     return 0.0
   return float(np.percentile(finite, 95.0) - np.percentile(finite, 5.0))
+
+
+def _p95_abs(values: np.ndarray) -> float:
+  finite = np.abs(_finite_values(values))
+  return float(np.percentile(finite, 95.0)) if len(finite) else 0.0
 
 
 def _correlation(left: np.ndarray, right: np.ndarray) -> float | None:

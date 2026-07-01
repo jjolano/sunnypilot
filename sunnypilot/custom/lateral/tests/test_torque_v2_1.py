@@ -137,6 +137,11 @@ def test_populates_adaptive_torque_telemetry():
   assert adaptive.steerLimitSameDirection is True
   assert adaptive.governorReason != 0
   assert adaptive.rawActualLateralAccel == pytest.approx(pid_log.actualLateralAccel)
+  assert math.isfinite(adaptive.responseCoreError)
+  assert adaptive.responseCoreMeasurementReset is True
+  assert adaptive.responseCoreSameSignUnwind is False
+  assert adaptive.responseCoreFreezeIntegrator is True
+  assert math.isfinite(adaptive.responseCoreFf)
 
 
 def test_same_direction_limit_requires_tracking_correction_direction():
@@ -331,6 +336,11 @@ def test_lateral_observability_schema_fields_are_writable():
   torque_state.adaptiveTorqueState.underResponseGuardOverResponse = True
   torque_state.adaptiveTorqueState.underResponseGuardIsoAccel = True
   torque_state.adaptiveTorqueState.underResponseGuardTorqueFraction = True
+  torque_state.adaptiveTorqueState.responseCoreError = 0.34
+  torque_state.adaptiveTorqueState.responseCoreMeasurementReset = True
+  torque_state.adaptiveTorqueState.responseCoreSameSignUnwind = True
+  torque_state.adaptiveTorqueState.responseCoreFreezeIntegrator = True
+  torque_state.adaptiveTorqueState.responseCoreFf = 0.12
 
   assert msg.modelPathState.reason == "ok"
   assert torque_state.adaptiveTorqueState.governorReason == 1 << 9
@@ -339,6 +349,11 @@ def test_lateral_observability_schema_fields_are_writable():
   assert torque_state.adaptiveTorqueState.nearZeroRecenterConflict is True
   assert torque_state.adaptiveTorqueState.underResponseGuardPathEvidenceInvalid is True
   assert torque_state.adaptiveTorqueState.underResponseGuardTorqueFraction is True
+  assert torque_state.adaptiveTorqueState.responseCoreError == pytest.approx(0.34)
+  assert torque_state.adaptiveTorqueState.responseCoreMeasurementReset is True
+  assert torque_state.adaptiveTorqueState.responseCoreSameSignUnwind is True
+  assert torque_state.adaptiveTorqueState.responseCoreFreezeIntegrator is True
+  assert torque_state.adaptiveTorqueState.responseCoreFf == pytest.approx(0.12)
 
 
 def test_near_zero_observer_receives_pre_governor_torque():

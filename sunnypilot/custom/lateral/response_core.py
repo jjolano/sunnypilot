@@ -116,6 +116,7 @@ class ResponseCoreResult:
   lateral_accel_deadzone: float
   same_sign_unwind: bool
   measurement_reset: bool
+  freeze_integrator: bool
 
 
 class LateralAccelMeasurementSmoother:
@@ -255,6 +256,7 @@ class ResponseCore:
     ff += self._get_friction(error * friction_scale, lateral_accel_deadzone, FRICTION_THRESHOLD, tp) * friction_scale
 
     output_torque = 0.0
+    freeze_integrator = False
     if not inp.active:
       self.pid.reset()
     else:
@@ -286,4 +288,5 @@ class ResponseCore:
       lateral_accel_deadzone=lateral_accel_deadzone,
       same_sign_unwind=same_sign_unwind,
       measurement_reset=self.measurement_smoother.was_reset,
+      freeze_integrator=freeze_integrator,
     )

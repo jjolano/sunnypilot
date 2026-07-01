@@ -31,6 +31,12 @@ class LateralEvent:
   raw_reversals: int = 0
   pre_soft_percent: float = 0.0
   pre_attenuation_median: float = 0.0
+  requested_torque_pp: float = 0.0
+  applied_torque_pp: float = 0.0
+  eps_torque_pp: float = 0.0
+  driver_torque_p95: float = 0.0
+  command_eps_corr: float | None = None
+  command_applied_corr: float | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,8 @@ def render_lateral_event_report(report: LateralEventReport) -> str:
         f"  {event.kind} {event.start_s:.1f}-{event.end_s:.1f}s score={event.score:.2f} "
         f"steer_pp={event.steering_angle_pp:.3f}deg rate95={event.steering_rate_p95:.3f}deg/s "
         f"raw_pp={event.raw_curvature_pp:.6f} actual_pp={event.actual_curvature_pp:.6f} "
+        f"cmd_pp={event.requested_torque_pp:.3f} eps_pp={event.eps_torque_pp:.3f} "
+        f"driver95={event.driver_torque_p95:.3f} cmd_eps={_format_optional(event.command_eps_corr)} "
         f"gated={event.gated_percent:.1f}% q={event.quality_median:.2f}"
       )
   return "\n".join(lines)
@@ -232,6 +240,12 @@ def _make_event(kind: str, cols: dict[str, np.ndarray], idx: np.ndarray, score: 
     raw_reversals=raw_reversals,
     pre_soft_percent=float(pre_soft_percent),
     pre_attenuation_median=float(pre_attenuation_median),
+    requested_torque_pp=_percentile_span(cols["requested_torque"][idx]),
+    applied_torque_pp=_percentile_span(cols["applied_torque"][idx]),
+    eps_torque_pp=_percentile_span(cols["eps_torque"][idx]),
+    driver_torque_p95=_p95_abs(cols["driver_torque"][idx]),
+    command_eps_corr=_correlation(cols["requested_torque"][idx], cols["eps_torque"][idx]),
+    command_applied_corr=_correlation(cols["requested_torque"][idx], cols["applied_torque"][idx]),
   )
 
 
@@ -268,7 +282,7 @@ def _base_mask(cols: dict[str, np.ndarray]) -> np.ndarray:
     & (cols["v_ego"] > 8.0)
     & (cols["steering_pressed"] < 0.5)
     & (cols["blinker_active"] < 0.5)
-    & (cols["lane_change_off"] > 0.5)
+    & ((cols["lane_change_off"] > 0.5) | (cols["lane_change_unknown"] > 0.5))
     & np.isfinite(cols["raw_desired_curvature"])
     & np.isfinite(cols["processed_desired_curvature"])
     & np.isfinite(cols["curvature"])
@@ -307,6 +321,12 @@ def _event_from_dict(data: dict[str, Any]) -> LateralEvent:
     raw_reversals=int(data.get("raw_reversals", data.get("rawReversals", 0))),
     pre_soft_percent=float(data.get("pre_soft_percent", data.get("preSoftPercent", 0.0))),
     pre_attenuation_median=float(data.get("pre_attenuation_median", data.get("preAttenuationMedian", 0.0))),
+    requested_torque_pp=float(data.get("requested_torque_pp", data.get("requestedTorquePp", 0.0))),
+    applied_torque_pp=float(data.get("applied_torque_pp", data.get("appliedTorquePp", 0.0))),
+    eps_torque_pp=float(data.get("eps_torque_pp", data.get("epsTorquePp", 0.0))),
+    driver_torque_p95=float(data.get("driver_torque_p95", data.get("driverTorqueP95", 0.0))),
+    command_eps_corr=_optional_float(data.get("command_eps_corr", data.get("commandEpsCorr"))),
+    command_applied_corr=_optional_float(data.get("command_applied_corr", data.get("commandAppliedCorr"))),
   )
 
 
@@ -351,3 +371,11 @@ def _correlation(a: np.ndarray, b: np.ndarray) -> float | None:
   if int(np.sum(ok)) < 5 or np.nanstd(a[ok]) < 1e-9 or np.nanstd(b[ok]) < 1e-9:
     return None
   return float(np.corrcoef(a[ok], b[ok])[0, 1])
+
+
+def _optional_float(value: Any) -> float | None:
+  return None if value is None else float(value)
+
+
+def _format_optional(value: float | None) -> str:
+  return "n/a" if value is None else f"{value:.3f}"

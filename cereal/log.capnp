@@ -942,6 +942,13 @@ struct ControlsState @0x97ff69c53601abf1 {
       underResponseGuardOverResponse @65 :Bool;
       underResponseGuardIsoAccel @66 :Bool;
       underResponseGuardTorqueFraction @67 :Bool;
+
+      # Response-core telemetry (pre-extension, explains PID behavior). No output changes.
+      responseCoreError @68 :Float32;           # m/s^2, setpoint - measurement
+      responseCoreMeasurementReset @69 :Bool;    # measurement smoother was reset this cycle
+      responseCoreSameSignUnwind @70 :Bool;      # low-speed unwind active this cycle
+      responseCoreFreezeIntegrator @71 :Bool;    # integrator frozen this cycle
+      responseCoreFf @72 :Float32;               # pre-extension feedforward lateral accel
     }
    }
 
