@@ -244,11 +244,10 @@ class TestCompiledShape:
       collect(root)
     assert reachable == set(page_ids)
 
-  def test_new_shell_keeps_device_page_reachable(self, compiled):
+  def test_device_page_reachable(self, compiled):
     pages = {p["id"]: p for p in compiled["pages"]}
     system = pages["system"]
     assert "system.device" in system["children"]
-    assert pages["system.device"].get("new_shell_hidden") is not True
 
 
 def _nav_leaf(pid: str = "root", panel: str = "steering") -> dict:
@@ -270,32 +269,6 @@ class TestNavigationValidation:
     }, self.PANELS)
     assert nav == {"root": ["root"]}
     assert pages == [{"id": "root", "title": "Root", "content": {"kind": "panel_ref", "panel": "steering"}}]
-
-  def test_navigation_pages_preserve_new_shell_hidden(self):
-    nav, pages = _canon_navigation({
-      "root": ["root"],
-      "pages": [{
-        "id": "root",
-        "title": "Root",
-        "new_shell_hidden": True,
-        "content": {"kind": "panel_ref", "panel": "steering"},
-      }],
-    }, self.PANELS)
-    assert nav == {"root": ["root"]}
-    assert pages == [{"id": "root", "title": "Root", "new_shell_hidden": True,
-                      "content": {"kind": "panel_ref", "panel": "steering"}}]
-
-  def test_navigation_pages_reject_bad_new_shell_hidden(self):
-    with pytest.raises(CompileError, match="new_shell_hidden"):
-      _canon_navigation({
-        "root": ["root"],
-        "pages": [{
-          "id": "root",
-          "title": "Root",
-          "new_shell_hidden": "yes",
-          "content": {"kind": "panel_ref", "panel": "steering"},
-        }],
-      }, self.PANELS)
 
   @pytest.mark.parametrize("nav_doc, match", [
     ({"root": ["root", "root"], "pages": [_nav_leaf()]}, "duplicate"),

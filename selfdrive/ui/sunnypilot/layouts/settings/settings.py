@@ -4,12 +4,10 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-import os
 from dataclasses import dataclass
 from enum import IntEnum
 
 import pyray as rl  # type: ignore[import-not-found]
-from openpilot.common.params import Params
 from openpilot.selfdrive.ui.layouts.settings import settings as OP
 from openpilot.selfdrive.ui.layouts.settings.firehose import FirehoseLayout
 from openpilot.selfdrive.ui.layouts.settings.toggles import TogglesLayout
@@ -262,29 +260,3 @@ class SettingsLayoutSP(OP.SettingsLayout):
     super().show_event()
     self._panels[self._current_panel].instance.show_event()
     self._sidebar_scroller.show_event()
-
-
-def settings_stack_nav_enabled(params: Params | None = None) -> bool:
-  env_override = os.getenv("SP_SETTINGS_STACK_NAV")
-  if env_override is not None:
-    return env_override == "1"
-  return (params or Params()).get_bool("SettingsStackNav")
-
-
-def make_settings_layout():
-  if not settings_stack_nav_enabled():
-    return SettingsLayoutSP()
-
-  try:
-    from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import load_schema, navigation_available, navigation_errors
-
-    schema = load_schema()
-    if not navigation_available(schema):
-      print(f"SP_SETTINGS_STACK_NAV=1 disabled: {'; '.join(navigation_errors(schema))}")
-      return SettingsLayoutSP()
-
-    from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings_stack import SettingsStackLayout
-    return SettingsStackLayout(schema)
-  except Exception as exc:
-    print(f"SP_SETTINGS_STACK_NAV=1 disabled: {exc}")
-    return SettingsLayoutSP()

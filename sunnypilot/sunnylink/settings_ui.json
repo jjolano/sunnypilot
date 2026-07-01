@@ -2075,12 +2075,6 @@
               ]
             },
             {
-              "key": "SettingsStackNav",
-              "widget": "toggle",
-              "title": "New Settings Shell",
-              "description": "Use the new multi-page Settings layout. Restarts the UI after confirmation."
-            },
-            {
               "key": "QuietMode",
               "widget": "toggle",
               "title": "Quiet Mode"
@@ -3176,6 +3170,28 @@
           "enablement": [
             {
               "type": "not_engaged"
+            }
+          ]
+        },
+        {
+          "key": "ToyotaTSS2SmoothLongitudinal",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "TSS2 Smooth Longitudinal (Beta)",
+          "description": "Use a softer Toyota TSS2 longitudinal tune for smoother traffic following and stops. This changes gas and brake tuning only; steering is unchanged.",
+          "enablement": [
+            {
+              "type": "not_engaged"
+            },
+            {
+              "type": "capability",
+              "field": "has_longitudinal_control",
+              "equals": true
+            },
+            {
+              "type": "param",
+              "key": "ToyotaEnforceStockLongitudinal",
+              "equals": false
             }
           ]
         },

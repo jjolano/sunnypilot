@@ -67,6 +67,18 @@ sections:
     description: sunnypilot will not take over control of gas and brakes. Factory Toyota longitudinal control will be used.
     enablement:
     - $ref: '#/macros/not_engaged'
+  - key: ToyotaTSS2SmoothLongitudinal
+    widget: toggle
+    needs_onroad_cycle: true
+    title: TSS2 Smooth Longitudinal (Beta)
+    description: Use a softer Toyota TSS2 longitudinal tune for smoother traffic following and stops. This changes gas and brake tuning
+      only; steering is unchanged.
+    enablement:
+    - $ref: '#/macros/not_engaged'
+    - $ref: '#/macros/longitudinal'
+    - type: param
+      key: ToyotaEnforceStockLongitudinal
+      equals: false
   - key: ToyotaStopAndGoHack
     widget: toggle
     needs_onroad_cycle: true

@@ -13,7 +13,7 @@ lives in so the UI can jump straight to it.
 """
 from dataclasses import dataclass
 
-from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import get_page, get_root_navigation, iter_items, load_schema, routes_for_panel
+from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import iter_items, load_schema, routes_for_panel
 
 
 # Source schema panel -> the consolidated panel it now lives in (device IA).
@@ -47,56 +47,13 @@ def _route_for_panel(schema: dict, panel_id: str) -> tuple[str | None, tuple[str
   return route.page_id, route.breadcrumbs
 
 
-def _route_hidden_in_new_shell(schema: dict, route_id: str | None) -> bool:
-  if route_id is None:
-    return True
-  path = _page_path_ids(schema, route_id)
-  if not path:
-    return True
-  return any((page := get_page(schema, pid)) is None or page.get("new_shell_hidden") is True for pid in path)
-
-
-def _page_path_ids(schema: dict, target_page_id: str) -> list[str]:
-  def walk(page: dict, trail: list[str]) -> list[str] | None:
-    pid = page.get("id")
-    if not isinstance(pid, str):
-      return None
-
-    next_trail = trail + [pid]
-    if pid == target_page_id:
-      return next_trail
-
-    children = page.get("children")
-    if not isinstance(children, list):
-      return None
-
-    for child_id in children:
-      if not isinstance(child_id, str):
-        continue
-      child = get_page(schema, child_id)
-      if child is None:
-        continue
-      path = walk(child, next_trail)
-      if path is not None:
-        return path
-    return None
-
-  for root in get_root_navigation(schema):
-    path = walk(root, [])
-    if path is not None:
-      return path
-  return []
-
-
-def build_index(schema: dict | None = None, include_new_shell_hidden: bool = True) -> list[SearchRecord]:
+def build_index(schema: dict | None = None) -> list[SearchRecord]:
   schema = schema if schema is not None else load_schema()
   records: list[SearchRecord] = []
   for panel in schema.get("panels", []):
     pid = panel.get("id", "")
     plabel = panel.get("label", pid)
     route_id, breadcrumbs = _route_for_panel(schema, pid)
-    if not include_new_shell_hidden and _route_hidden_in_new_shell(schema, route_id):
-      continue
     live_id, live_label = _CONSOLIDATION.get(pid, (pid, plabel))
     for item in iter_items(panel):
       if "key" not in item:

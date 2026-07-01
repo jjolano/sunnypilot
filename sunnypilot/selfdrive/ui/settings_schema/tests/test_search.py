@@ -11,10 +11,6 @@ from __future__ import annotations
 from openpilot.sunnypilot.selfdrive.ui.settings_schema.search import build_index, search
 
 
-def _hidden_page_ids(schema):
-  return {p["id"] for p in schema.get("pages", []) if p.get("new_shell_hidden")}
-
-
 INDEX = build_index()
 
 
@@ -93,52 +89,28 @@ def test_limit_respected():
   assert len(search("control", INDEX, limit=3)) <= 3
 
 
-def test_build_index_default_includes_new_shell_hidden_routes():
+def test_build_index_includes_navigation_routes():
   schema = {
-    "navigation": {"root": ["visible", "hidden"]},
+    "navigation": {"root": ["visible", "other"]},
     "pages": [
       {"id": "visible", "title": "Visible", "content": {"kind": "panel_ref", "panel": "visible_panel"}},
-      {"id": "hidden", "title": "Hidden", "new_shell_hidden": True,
-       "content": {"kind": "panel_ref", "panel": "hidden_panel"}},
+      {"id": "other", "title": "Other", "content": {"kind": "panel_ref", "panel": "other_panel"}},
     ],
     "panels": [
       {"id": "visible_panel", "label": "Visible", "icon": "a", "order": 0,
-       "sections": [{"id": "s1", "title": "Section", "items": [{"key": "VisibleKey", "title": "Visible"}]}]},
-      {"id": "hidden_panel", "label": "Hidden", "icon": "b", "order": 1,
-       "sections": [{"id": "s2", "title": "Section", "items": [{"key": "HiddenKey", "title": "Hidden"}]}]},
+        "sections": [{"id": "s1", "title": "Section", "items": [{"key": "VisibleKey", "title": "Visible"}]}]},
+      {"id": "other_panel", "label": "Other", "icon": "b", "order": 1,
+       "sections": [{"id": "s2", "title": "Section", "items": [{"key": "OtherKey", "title": "Other"}]}]},
     ],
   }
   keys = {r.key for r in build_index(schema)}
-  assert {"VisibleKey", "HiddenKey"} <= keys
+  assert {"VisibleKey", "OtherKey"} <= keys
 
 
-def test_build_index_can_exclude_new_shell_hidden_routes():
-  schema = {
-    "navigation": {"root": ["visible", "hidden"]},
-    "pages": [
-      {"id": "visible", "title": "Visible", "content": {"kind": "panel_ref", "panel": "visible_panel"}},
-      {"id": "hidden", "title": "Hidden", "new_shell_hidden": True,
-       "content": {"kind": "panel_ref", "panel": "hidden_panel"}},
-    ],
-    "panels": [
-      {"id": "visible_panel", "label": "Visible", "icon": "a", "order": 0,
-       "sections": [{"id": "s1", "title": "Section", "items": [{"key": "VisibleKey", "title": "Visible"}]}]},
-      {"id": "hidden_panel", "label": "Hidden", "icon": "b", "order": 1,
-       "sections": [{"id": "s2", "title": "Section", "items": [{"key": "HiddenKey", "title": "Hidden"}]}]},
-    ],
-  }
-  hidden_ids = _hidden_page_ids(schema)
-  default = build_index(schema)
-  filtered = build_index(schema, include_new_shell_hidden=False)
-  assert len(filtered) < len(default)
-  assert any(r.route_id in hidden_ids for r in default), "default index should include hidden routes"
-  assert all(r.route_id not in hidden_ids for r in filtered), "filtered index should omit hidden routes"
-
-
-def test_stack_search_includes_visible_schema_pages():
+def test_search_includes_schema_pages():
   from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import load_schema
   schema = load_schema()
-  keys = {r.key for r in build_index(schema, include_new_shell_hidden=False)}
+  keys = {r.key for r in build_index(schema)}
   assert "Mads" in keys
   assert "ExperimentalMode" in keys
   assert "OnroadScreenOffBrightness" in keys
