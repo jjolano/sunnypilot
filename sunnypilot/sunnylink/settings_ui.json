@@ -835,8 +835,9 @@
             {
               "key": "CutInBrakeAssistMode",
               "widget": "multiple_button",
+              "requires_attestation": true,
               "title": "Cut-in Brake Assist",
-              "description": "Shadow-only observability for close cut-in style lead events. No actuation changes.",
+              "description": "Monitor close cut-in style lead events, or apply a bounded gentle braking cap when a close cut-in is detected. Apply mode can add gentle braking; Off returns to the base behavior. Requires Custom Longitudinal and is disabled when longitudinal is off.",
               "options": [
                 {
                   "value": "off",
@@ -845,6 +846,10 @@
                 {
                   "value": "shadow",
                   "label": "Monitor only"
+                },
+                {
+                  "value": "apply",
+                  "label": "Apply gentle cap"
                 }
               ],
               "enablement": [
@@ -901,8 +906,9 @@
             {
               "key": "CurveTrafficAdvisorMode",
               "widget": "multiple_button",
+              "requires_attestation": true,
               "title": "Curve Traffic Advisor",
-              "description": "Logs curve shape and traffic context for route validation. Apply conservative is staged for testing and currently remains telemetry-only.",
+              "description": "Logs curve shape and traffic context for route validation. Apply conservative can add a bounded braking cap before model-predicted curves when confidence is high and traffic gates are clear.",
               "options": [
                 {
                   "value": "off",

@@ -495,6 +495,57 @@ def test_parity_curve_confidence_cap():
   assert f2.last_release_block_reason == f1.last_release_block_reason
 
 
+def test_parity_cut_in_brake_assist_apply_cap():
+  frames = [
+    _frame(
+      custom_long=make_custom_long(mode=LongitudinalMode.SCC, cut_in_brake_assist_mode="apply"),
+      custom_long_output=make_custom_output(
+        selected_intent="cruise",
+        debug={
+          "path_shadow_model_path_available": True,
+          "cut_in_brake_assist_eligible": True,
+          "cut_in_brake_assist_apply_supported": True,
+          "cut_in_brake_assist_confidence": 0.80,
+          "cut_in_brake_assist_path_y_rel": 0.3,
+          "cut_in_brake_assist_proposed_cap": -2.0,
+        },
+      ),
+      sm=make_sm(v_ego=15.0),
+      mpc_a_target=0.0,
+      mpc_should_stop=False,
+      raw_model_a_target=0.0,
+      raw_model_should_stop=False,
+    ),
+  ]
+  f1, f2 = _run_parity(frames)
+  assert f1.lead_stop_hold_active is f2.lead_stop_hold_active is False
+
+
+def test_parity_curve_traffic_advisor_apply_cap():
+  frames = [
+    _frame(
+      custom_long=make_custom_long(mode=LongitudinalMode.SCC, curve_traffic_advisor_mode="apply_conservative"),
+      custom_long_output=make_custom_output(
+        selected_intent="cruise",
+        debug={
+          "curve_traffic_eligible": True,
+          "curve_traffic_apply_supported": True,
+          "curve_traffic_confidence": 0.50,
+          "curve_traffic_traffic_block_reason": "",
+          "curve_traffic_a_curve_cap_proposed": -1.0,
+        },
+      ),
+      sm=make_sm(v_ego=15.0),
+      mpc_a_target=0.0,
+      mpc_should_stop=False,
+      raw_model_a_target=0.0,
+      raw_model_should_stop=False,
+    ),
+  ]
+  f1, f2 = _run_parity(frames)
+  assert f1.lead_stop_hold_active is f2.lead_stop_hold_active is False
+
+
 def test_parity_prep_slew():
   # Same lead pulling away gently while still in hold.
   lead = make_lead(d_rel=6.4, v_lead=0.5, v_rel=0.2)

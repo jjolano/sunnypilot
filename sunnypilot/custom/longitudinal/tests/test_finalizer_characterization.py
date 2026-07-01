@@ -329,6 +329,210 @@ def test_scc_custom_stop_cap_and_curve_confidence_final_cap_apply():
   assert a_target == pytest.approx(-0.85)
 
 
+def test_scc_cut_in_brake_assist_apply_cap():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(
+      selected_intent="cruise",
+      debug={
+        "path_shadow_model_path_available": True,
+        "cut_in_brake_assist_eligible": True,
+        "cut_in_brake_assist_apply_supported": True,
+        "cut_in_brake_assist_confidence": 0.80,
+        "cut_in_brake_assist_path_y_rel": 0.3,
+        "cut_in_brake_assist_proposed_cap": -2.0,
+      },
+    ),
+  )
+  planner.custom_long.cut_in_brake_assist_mode = "apply"
+  sm = make_sm(v_ego=15.0)
+
+  a_target, should_stop, e2e_source = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert should_stop is False
+  assert e2e_source is False
+  # Proposed -2.0 is clamped to the gentle -0.6 floor.
+  assert a_target == pytest.approx(-0.60)
+
+
+def test_scc_cut_in_brake_assist_preserves_stronger_braking():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(
+      selected_intent="cruise",
+      debug={
+        "path_shadow_model_path_available": True,
+        "cut_in_brake_assist_eligible": True,
+        "cut_in_brake_assist_apply_supported": True,
+        "cut_in_brake_assist_confidence": 0.80,
+        "cut_in_brake_assist_path_y_rel": 0.3,
+        "cut_in_brake_assist_proposed_cap": -2.0,
+      },
+    ),
+  )
+  planner.custom_long.cut_in_brake_assist_mode = "apply"
+  sm = make_sm(v_ego=15.0)
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=-1.5, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  # The cap is restrict-only; stronger existing braking is preserved.
+  assert a_target == pytest.approx(-1.5)
+
+
+@pytest.mark.parametrize(
+  "blocker",
+  [
+    {"path_shadow_model_path_available": False},
+    {"cut_in_brake_assist_eligible": False},
+    {"cut_in_brake_assist_apply_supported": False},
+    {"cut_in_brake_assist_confidence": 0.50},
+    {"cut_in_brake_assist_path_y_rel": None},
+    {"cut_in_brake_assist_path_y_rel": 2.0},
+    {"cut_in_brake_assist_proposed_cap": 0.5},
+    {"cut_in_brake_assist_proposed_cap": float('nan')},
+  ],
+)
+def test_scc_cut_in_brake_assist_apply_noop_cases(blocker):
+  debug = {
+    "path_shadow_model_path_available": True,
+    "cut_in_brake_assist_eligible": True,
+    "cut_in_brake_assist_apply_supported": True,
+    "cut_in_brake_assist_confidence": 0.80,
+    "cut_in_brake_assist_path_y_rel": 0.3,
+    "cut_in_brake_assist_proposed_cap": -2.0,
+  }
+  debug.update(blocker)
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise", debug=debug),
+  )
+  planner.custom_long.cut_in_brake_assist_mode = "apply"
+  sm = make_sm(v_ego=15.0)
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert a_target == pytest.approx(0.0)
+
+
+def test_scc_cut_in_brake_assist_apply_blocked_by_driver_override():
+  debug = {
+    "path_shadow_model_path_available": True,
+    "cut_in_brake_assist_eligible": True,
+    "cut_in_brake_assist_apply_supported": True,
+    "cut_in_brake_assist_confidence": 0.80,
+    "cut_in_brake_assist_path_y_rel": 0.3,
+    "cut_in_brake_assist_proposed_cap": -2.0,
+  }
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise", debug=debug),
+  )
+  planner.custom_long.cut_in_brake_assist_mode = "apply"
+
+  for flag in ("brake_pressed", "gas_pressed", "force_decel"):
+    sm = make_sm(v_ego=15.0, **{flag: True})
+    a_target, _, _ = planner.final_longitudinal_output(
+      sm, mpc_a_target=0.0, mpc_should_stop=False,
+      raw_model_a_target=0.0, raw_model_should_stop=False,
+    )
+    assert a_target == pytest.approx(0.0), flag
+
+
+def test_scc_curve_traffic_advisor_apply_cap():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(
+      selected_intent="cruise",
+      debug={
+        "curve_traffic_eligible": True,
+        "curve_traffic_apply_supported": True,
+        "curve_traffic_confidence": 0.50,
+        "curve_traffic_traffic_block_reason": "",
+        "curve_traffic_a_curve_cap_proposed": -1.0,
+      },
+    ),
+  )
+  planner.custom_long.curve_traffic_advisor_mode = "apply_conservative"
+  sm = make_sm(v_ego=15.0)
+
+  a_target, should_stop, e2e_source = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert should_stop is False
+  assert e2e_source is False
+  assert a_target == pytest.approx(-0.85)
+
+
+@pytest.mark.parametrize(
+  "blocker",
+  [
+    {"curve_traffic_eligible": False},
+    {"curve_traffic_apply_supported": False},
+    {"curve_traffic_confidence": 0.40},
+    {"model_stale": True},
+    {"curve_traffic_traffic_block_reason": "closing_lead"},
+    {"curve_traffic_a_curve_cap_proposed": 0.1},
+    {"curve_traffic_a_curve_cap_proposed": float('inf')},
+  ],
+)
+def test_scc_curve_traffic_advisor_apply_noop_cases(blocker):
+  debug = {
+    "curve_traffic_eligible": True,
+    "curve_traffic_apply_supported": True,
+    "curve_traffic_confidence": 0.50,
+    "curve_traffic_traffic_block_reason": "",
+    "curve_traffic_a_curve_cap_proposed": -1.0,
+  }
+  debug.update(blocker)
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise", debug=debug),
+  )
+  planner.custom_long.curve_traffic_advisor_mode = "apply_conservative"
+  sm = make_sm(v_ego=15.0)
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert a_target == pytest.approx(0.0)
+
+
+def test_scc_curve_traffic_advisor_apply_blocked_by_driver_override():
+  debug = {
+    "curve_traffic_eligible": True,
+    "curve_traffic_apply_supported": True,
+    "curve_traffic_confidence": 0.50,
+    "curve_traffic_traffic_block_reason": "",
+    "curve_traffic_a_curve_cap_proposed": -1.0,
+  }
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise", debug=debug),
+  )
+  planner.custom_long.curve_traffic_advisor_mode = "apply_conservative"
+
+  for flag in ("brake_pressed", "gas_pressed", "force_decel"):
+    sm = make_sm(v_ego=15.0, **{flag: True})
+    a_target, _, _ = planner.final_longitudinal_output(
+      sm, mpc_a_target=0.0, mpc_should_stop=False,
+      raw_model_a_target=0.0, raw_model_should_stop=False,
+    )
+    assert a_target == pytest.approx(0.0), flag
+
+
 def test_latched_hold_replaces_custom_long_output_telemetry():
   planner = make_planner(
     mode=LongitudinalMode.SCC,

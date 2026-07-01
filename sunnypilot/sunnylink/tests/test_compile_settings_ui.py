@@ -161,7 +161,7 @@ class TestCompiledShape:
   def test_shadow_observability_modes_include_promoted_apply_options(self, compiled):
     cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
     expected = {
-      "CutInBrakeAssistMode": ["off", "shadow"],
+      "CutInBrakeAssistMode": ["off", "shadow", "apply"],
       "CurveSpeedConfidenceMode": ["off", "shadow", "apply_conservative"],
       "CurveTrafficAdvisorMode": ["off", "shadow", "apply_conservative"],
       "StandstillReleaseConfidenceMode": ["off", "shadow", "gate"],

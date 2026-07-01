@@ -6,6 +6,8 @@ from typing import Any
 
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
+MODE_APPLY = "apply"
+VALID_MODES = {MODE_OFF, MODE_SHADOW, MODE_APPLY}
 
 PATH_NEAR_Y_M = 1.7
 MAX_CLOSE_DISTANCE_M = 45.0
@@ -68,27 +70,30 @@ def _primary(ctx: Any) -> Any | None:
 
 def predict_cut_in_brake_assist(mode: Any, actual_ctx: Any | None, shadow_ctx: Any | None,
                                 v_ego: float, long_active: bool = False) -> CutInBrakeAssistResult:
-  """Compute debug-only close cut-in brake-assist evidence.
+  """Compute close cut-in brake-assist evidence.
 
-  This helper never changes lead authority, MPC input, stop bits, or accel targets. The
-  proposed cap is a route-log/debug value only. Apply is not supported; shadow telemetry is
-  gated by long_active and a stable/confidence threshold so confidence alone is not enough.
+  The helper never changes lead authority, MPC input, or stop bits. In apply mode it emits a
+  proposed negative cap that the finalizer may restrictively clamp onto the SCC output.
+  Shadow telemetry is gated by long_active and a stable/confidence threshold so confidence
+  alone is not enough.
   """
   mode_s = str(mode or "").strip().lower()
-  if mode_s not in (MODE_OFF, MODE_SHADOW):
+  if mode_s not in VALID_MODES:
     mode_s = MODE_OFF
+  apply_supported = mode_s == MODE_APPLY
   if mode_s == MODE_OFF:
     return CutInBrakeAssistResult(mode=MODE_OFF, effective_mode=MODE_OFF)
   if not long_active:
-    return CutInBrakeAssistResult(mode=MODE_SHADOW, effective_mode=MODE_SHADOW,
-                                  apply_supported=False, eligible=False,
+    return CutInBrakeAssistResult(mode=mode_s, effective_mode=mode_s,
+                                  apply_supported=apply_supported, eligible=False,
                                   block_reason="long_inactive")
 
   state = _primary(shadow_ctx) or _primary(actual_ctx)
   if state is None or not bool(getattr(state, "status", False)):
-    return CutInBrakeAssistResult(mode=MODE_SHADOW, effective_mode=MODE_SHADOW, block_reason="no_lead")
+    return CutInBrakeAssistResult(mode=mode_s, effective_mode=mode_s, apply_supported=apply_supported,
+                                  eligible=False, block_reason="no_lead")
 
-  path_y_rel = _f(getattr(state, "path_y_rel", getattr(state, "y_rel", 0.0)))
+  path_y_rel = _f(getattr(state, "path_y_rel", getattr(state, "y_rel", 0.0)), default=math.nan)
   d_rel = _f(getattr(state, "d_rel", 0.0))
   v_rel = _f(getattr(state, "v_rel", 0.0))
   closing_speed = max(0.0, -v_rel)
@@ -105,7 +110,7 @@ def predict_cut_in_brake_assist(mode: Any, actual_ctx: Any | None, shadow_ctx: A
   ttc = _time_value(getattr(risk_model, "ttc", getattr(state, "ttc", 0.0)))
   required_decel = max(0.0, _f(getattr(risk_model, "required_decel", getattr(state, "required_decel", 0.0))))
 
-  if abs(path_y_rel) > PATH_NEAR_Y_M:
+  if not math.isfinite(path_y_rel) or abs(path_y_rel) > PATH_NEAR_Y_M:
     block = "not_near_path"
   elif d_rel <= 0.0 or d_rel > MAX_CLOSE_DISTANCE_M:
     block = "not_close"
@@ -120,7 +125,7 @@ def predict_cut_in_brake_assist(mode: Any, actual_ctx: Any | None, shadow_ctx: A
   proposed_decel = max(required_decel + 0.2, min(MAX_PROPOSED_DECEL, closing_speed * 0.25)) if eligible else 0.0
   proposed_cap = -min(MAX_PROPOSED_DECEL, max(0.0, proposed_decel)) if eligible else 0.0
   return CutInBrakeAssistResult(
-    mode=MODE_SHADOW, effective_mode=MODE_SHADOW, apply_supported=False, eligible=eligible,
+    mode=mode_s, effective_mode=mode_s, apply_supported=apply_supported, eligible=eligible,
     block_reason=block, lead_idx=int(_f(getattr(state, "lead_idx", -1), -1)),
     path_y_rel=path_y_rel, lateral_velocity=0.0, ttc=ttc, required_decel=required_decel,
     proposed_cap=proposed_cap, confidence=confidence,

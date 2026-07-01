@@ -85,6 +85,13 @@ def _curve_speed_confidence_mode(value: Any) -> str:
   return text if text in ("off", "shadow", "apply_conservative") else "off"
 
 
+def _cut_in_brake_assist_mode(value: Any) -> str:
+  text = str(value or "").strip().lower()
+  if text in ("off", "shadow", "apply"):
+    return text
+  return "off"
+
+
 def _curve_traffic_advisor_mode(value: Any) -> str:
   text = str(value or "").strip().lower()
   if text in (CURVE_TRAFFIC_MODE_OFF, CURVE_TRAFFIC_MODE_SHADOW, CURVE_TRAFFIC_MODE_APPLY_CONSERVATIVE):
@@ -269,7 +276,7 @@ class CustomLongitudinalAdapter:
       try:
         self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
         self.debug_trace_mode = _debug_trace_mode(_param_string(p, "LongitudinalDebugTraceMode"))
-        self.cut_in_brake_assist_mode = _shadow_mode(_param_string(p, "CutInBrakeAssistMode"), ("apply",))
+        self.cut_in_brake_assist_mode = _cut_in_brake_assist_mode(_param_string(p, "CutInBrakeAssistMode"))
         self.curve_speed_confidence_mode = _curve_speed_confidence_mode(_param_string(p, "CurveSpeedConfidenceMode"))
         self.standstill_release_confidence_mode = _standstill_release_confidence_mode(_param_string(p, "StandstillReleaseConfidenceMode"))
         # SCC curve sources are gated by the existing upstream SCC enable toggles.

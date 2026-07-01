@@ -1,9 +1,9 @@
-"""Shadow-only curve-aware advisory + traffic context for the custom-2.0 longitudinal policy.
+"""Curve-aware advisory + traffic context for the custom-2.0 longitudinal policy.
 
-Phase 1 is intentionally non-actuating. It estimates path curvature from modelV2.position,
-proposes a speed/accel cap for telemetry, and classifies the traffic context around the ego
-vehicle. All outputs are debug-only; no value here is allowed to shape a_target, v_cruise,
-should_stop, release behavior, or policy candidates.
+It estimates path curvature from modelV2.position, proposes a speed/accel cap, and classifies
+the traffic context around the ego vehicle. Shadow mode is telemetry-only; apply_conservative
+may be used by the finalizer as a restrict-only SCC cap. Values here never feed MPC input,
+v_cruise, should_stop, release behavior, or policy candidates.
 
 The helper is pure: it reads mode, kinematics, model path, and lead state passed in by the
 stack/wiring and performs no Params I/O.
@@ -343,12 +343,11 @@ def predict_curve_traffic_advisor(mode: Any, data: CurveTrafficAdvisorInputs) ->
   if mode_s == MODE_OFF:
     return CurveTrafficAdvisorResult(mode=MODE_OFF, effective_mode=MODE_OFF)
 
-  # apply_conservative is accepted for storage compatibility but remains non-actuating.
-  effective_mode = MODE_SHADOW if mode_s == MODE_APPLY_CONSERVATIVE else mode_s
+  apply_supported = mode_s == MODE_APPLY_CONSERVATIVE
   base = CurveTrafficAdvisorResult(
     mode=mode_s,
-    effective_mode=effective_mode,
-    apply_supported=False,
+    effective_mode=mode_s,
+    apply_supported=apply_supported,
   )
 
   if not data.long_active:

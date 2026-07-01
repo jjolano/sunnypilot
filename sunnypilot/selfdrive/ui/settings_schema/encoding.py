@@ -185,13 +185,6 @@ def string_option_index(value: object, enum: StringEnum, key: str) -> int:
       if option_value.lower() == text:
         return i
     return enum.values.index("acc") if "acc" in enum.values else 0
-  future_shadow_values = {
-    "CutInBrakeAssistMode": {"apply"},
-  }
-  if key in future_shadow_values:
-    if text in future_shadow_values[key] and "shadow" in enum.values:
-      return enum.values.index("shadow")
-    return enum.values.index(text) if text in enum.values else 0
   return enum.values.index(text) if text in enum.values else 0
 
 

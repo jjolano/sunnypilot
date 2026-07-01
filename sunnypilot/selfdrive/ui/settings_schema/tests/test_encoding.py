@@ -101,8 +101,8 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
 
   cut_in_enum = homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode"))
   assert cut_in_enum is not None
-  assert cut_in_enum.values == ["off", "shadow"]
-  assert cut_in_enum.labels == ["Off", "Monitor only"]
+  assert cut_in_enum.values == ["off", "shadow", "apply"]
+  assert cut_in_enum.labels == ["Off", "Monitor only", "Apply gentle cap"]
 
   curve_enum = homogeneous_string_options(find_item(CRUISE, "CurveSpeedConfidenceMode"))
   assert curve_enum is not None
@@ -146,7 +146,7 @@ def test_shadow_observability_string_indexes_default_to_off():
     assert string_option_index("off", enum, key) == 0
     assert string_option_index("shadow", enum, key) == 1
     assert string_option_index("bad", enum, key) == 0
-  assert string_option_index("apply", homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode")), "CutInBrakeAssistMode") == 1
+  assert string_option_index("apply", homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode")), "CutInBrakeAssistMode") == 2
   assert string_option_index("apply_conservative", homogeneous_string_options(find_item(CRUISE, "CurveSpeedConfidenceMode")), "CurveSpeedConfidenceMode") == 2
   assert string_option_index("apply_conservative", homogeneous_string_options(find_item(CRUISE, "CurveTrafficAdvisorMode")), "CurveTrafficAdvisorMode") == 2
   assert string_option_index("gate", homogeneous_string_options(find_item(CRUISE, "StandstillReleaseConfidenceMode")), "StandstillReleaseConfidenceMode") == 2

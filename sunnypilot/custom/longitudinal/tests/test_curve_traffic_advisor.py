@@ -131,11 +131,11 @@ def test_invalid_mode_sanitizes_to_off():
   assert r.active is False
 
 
-def test_apply_conservative_is_downgraded_to_shadow():
+def test_apply_conservative_is_effective_apply():
   r = predict(MODE_APPLY_CONSERVATIVE, model_msg=circular_arc_path())
   assert r.mode == MODE_APPLY_CONSERVATIVE
-  assert r.effective_mode == MODE_SHADOW
-  assert r.apply_supported is False
+  assert r.effective_mode == MODE_APPLY_CONSERVATIVE
+  assert r.apply_supported is True
 
 
 def test_invalid_path_too_few_samples():

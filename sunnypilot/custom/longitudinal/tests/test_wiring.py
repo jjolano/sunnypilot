@@ -572,7 +572,7 @@ def test_malformed_steering_telemetry_is_fail_soft():
   assert malformed.a_target == pytest.approx(baseline.a_target)
 
 
-def test_future_shadow_mode_values_are_non_actuating_and_report_shadow():
+def test_apply_values_preserved_but_non_actuating_in_acc():
   base_params = dict(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")
   scenario = dict(
     sm=fake_sm(lead(d_rel=22.0, v_lead=8.0, v_rel=-3.0),
@@ -582,11 +582,11 @@ def test_future_shadow_mode_values_are_non_actuating_and_report_shadow():
     sla=fake_sla(), dt=0.05,
   )
   baseline = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(**scenario)
-  for key, value, debug_prefix in (
-    ("CutInBrakeAssistMode", "apply", "cut_in_brake_assist"),
-    ("CurveSpeedConfidenceMode", "apply_conservative", "curve_speed_confidence"),
-    ("CurveTrafficAdvisorMode", "apply_conservative", "curve_traffic"),
-    ("StandstillReleaseConfidenceMode", "gate", "standstill_release_confidence"),
+  for key, value, debug_prefix, apply_supported in (
+    ("CutInBrakeAssistMode", "apply", "cut_in_brake_assist", True),
+    ("CurveSpeedConfidenceMode", "apply_conservative", "curve_speed_confidence", True),
+    ("CurveTrafficAdvisorMode", "apply_conservative", "curve_traffic", True),
+    ("StandstillReleaseConfidenceMode", "gate", "standstill_release_confidence", True),
   ):
     params = dict(base_params)
     params[key] = value
@@ -596,11 +596,10 @@ def test_future_shadow_mode_values_are_non_actuating_and_report_shadow():
     assert out.selected_intent == baseline.selected_intent
     assert out.reason == baseline.reason
     assert out.standstill_release_allowed == baseline.standstill_release_allowed
-    expected_mode = "shadow" if key == "CutInBrakeAssistMode" else value
-    assert out.debug[f"{debug_prefix}_mode"] == expected_mode
-    assert out.debug[f"{debug_prefix}_apply_supported"] is (key not in ("CutInBrakeAssistMode", "CurveTrafficAdvisorMode"))
+    assert out.debug[f"{debug_prefix}_mode"] == value
+    assert out.debug[f"{debug_prefix}_apply_supported"] is apply_supported
     if key == "CurveTrafficAdvisorMode":
-      assert out.debug["curve_traffic_effective_mode"] == "shadow"
+      assert out.debug["curve_traffic_effective_mode"] == value
 
 
 def test_curve_traffic_advisor_mode_is_non_actuating_and_wired():

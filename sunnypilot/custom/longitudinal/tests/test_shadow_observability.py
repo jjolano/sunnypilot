@@ -8,7 +8,10 @@ from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import (
   CurveSpeedConfidenceInputs,
   predict_curve_speed_confidence,
 )
-from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import predict_cut_in_brake_assist
+from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import (
+  MODE_APPLY as CUT_IN_MODE_APPLY,
+  predict_cut_in_brake_assist,
+)
 from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence import predict_standstill_release_confidence
 
 
@@ -64,6 +67,30 @@ def test_cut_in_eligibility_requires_stable_or_high_confidence():
 
   stable = predict_cut_in_brake_assist("shadow", ctx(state(confidence=0.5, stable=True)), None, 15.0, long_active=True)
   assert stable.eligible is True
+
+
+def test_cut_in_apply_reports_supported_and_preserves_mode():
+  r = predict_cut_in_brake_assist(CUT_IN_MODE_APPLY, ctx(state()), None, 15.0, long_active=True)
+  assert r.mode == CUT_IN_MODE_APPLY
+  assert r.effective_mode == CUT_IN_MODE_APPLY
+  assert r.apply_supported is True
+  assert r.eligible is True
+  assert r.proposed_cap < 0.0
+
+
+def test_cut_in_apply_invalid_becomes_off():
+  r = predict_cut_in_brake_assist("aggressive", ctx(state()), None, 15.0, long_active=True)
+  assert r.mode == "off"
+  assert r.apply_supported is False
+
+
+def test_cut_in_apply_blocks_nonfinite_path_y_rel():
+  bad = predict_cut_in_brake_assist(CUT_IN_MODE_APPLY, ctx(state(path_y_rel=float('nan'))), None, 15.0, long_active=True)
+  assert bad.eligible is False
+  assert bad.block_reason == "not_near_path"
+  far_path = predict_cut_in_brake_assist(CUT_IN_MODE_APPLY, ctx(state(path_y_rel=2.5)), None, 15.0, long_active=True)
+  assert far_path.eligible is False
+  assert far_path.block_reason == "not_near_path"
 
 
 def test_curve_confidence_shadow_uses_negative_active_caps_only():

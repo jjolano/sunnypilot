@@ -70,6 +70,13 @@ class CustomLongitudinalFinalizer:
   _CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE = 0.70
   _CURVE_CONFIDENCE_APPLY_MIN_CAP = -0.85
 
+  _CUT_IN_BRAKE_ASSIST_APPLY_MIN_CONFIDENCE = 0.60
+  _CUT_IN_BRAKE_ASSIST_APPLY_MAX_DECEL = -0.60
+  _CUT_IN_BRAKE_ASSIST_PATH_NEAR_Y_M = 1.70
+
+  _CURVE_TRAFFIC_APPLY_MIN_CONFIDENCE = 0.45
+  _CURVE_TRAFFIC_APPLY_MIN_CAP = -0.85
+
   def __init__(self, CP: Any):
     self.CP = CP
 
@@ -282,6 +289,77 @@ class CustomLongitudinalFinalizer:
     if v_ego < self._CURVE_CONFIDENCE_APPLY_MIN_V_EGO:
       return float(base_a_target)
     conservative_cap = max(proposed_cap, self._CURVE_CONFIDENCE_APPLY_MIN_CAP)
+    return float(min(float(base_a_target), conservative_cap))
+
+  def _scc_cut_in_brake_assist_final_cap(self, base_a_target: float, sm: Any, custom_long: Any, custom_long_output: Any,
+                                         release_mpc_stop: bool = False) -> float:
+    if release_mpc_stop:
+      return float(base_a_target)
+    if custom_long.mode is not LongitudinalMode.SCC or not custom_long.enabled or custom_long_output is None:
+      return float(base_a_target)
+    if not bool(getattr(custom_long_output, "enabled", False)):
+      return float(base_a_target)
+    if str(getattr(custom_long, "cut_in_brake_assist_mode", "off") or "off") != "apply":
+      return float(base_a_target)
+    debug = dict(getattr(custom_long_output, "debug", {}) or {})
+    prefix = "cut_in_brake_assist_"
+    if not bool(debug.get(prefix + "eligible", False)) or not bool(debug.get(prefix + "apply_supported", False)):
+      return float(base_a_target)
+    if not bool(debug.get("path_shadow_model_path_available", False)):
+      return float(base_a_target)
+    confidence = self._finite_float_or_none(debug.get(prefix + "confidence", 0.0))
+    if confidence is None or confidence < self._CUT_IN_BRAKE_ASSIST_APPLY_MIN_CONFIDENCE:
+      return float(base_a_target)
+    path_y_rel = self._finite_float_or_none(debug.get(prefix + "path_y_rel"))
+    if path_y_rel is None or abs(path_y_rel) > self._CUT_IN_BRAKE_ASSIST_PATH_NEAR_Y_M:
+      return float(base_a_target)
+    car_state = self._sm_item(sm, 'carState')
+    controls_state = self._sm_item(sm, 'controlsState')
+    if bool(getattr(car_state, 'brakePressed', False)) or bool(getattr(car_state, 'gasPressed', False)):
+      return float(base_a_target)
+    if bool(getattr(controls_state, 'forceDecel', False)):
+      return float(base_a_target)
+    proposed_cap = self._finite_float_or_none(debug.get(prefix + "proposed_cap", 0.0))
+    if proposed_cap is None or proposed_cap >= 0.0:
+      return float(base_a_target)
+    gentle_cap = max(proposed_cap, self._CUT_IN_BRAKE_ASSIST_APPLY_MAX_DECEL)
+    if gentle_cap >= float(base_a_target):
+      return float(base_a_target)
+    return float(min(float(base_a_target), gentle_cap))
+
+  def _scc_curve_traffic_advisor_final_cap(self, base_a_target: float, sm: Any, custom_long: Any, custom_long_output: Any,
+                                           release_mpc_stop: bool = False) -> float:
+    if release_mpc_stop:
+      return float(base_a_target)
+    if custom_long.mode is not LongitudinalMode.SCC or not custom_long.enabled or custom_long_output is None:
+      return float(base_a_target)
+    if not bool(getattr(custom_long_output, "enabled", False)):
+      return float(base_a_target)
+    if str(getattr(custom_long, "curve_traffic_advisor_mode", "off") or "off") != "apply_conservative":
+      return float(base_a_target)
+    debug = dict(getattr(custom_long_output, "debug", {}) or {})
+    prefix = "curve_traffic_"
+    if not bool(debug.get(prefix + "eligible", False)) or not bool(debug.get(prefix + "apply_supported", False)):
+      return float(base_a_target)
+    if str(debug.get(prefix + "traffic_block_reason", "")) != "":
+      return float(base_a_target)
+    confidence = self._finite_float_or_none(debug.get(prefix + "confidence", 0.0))
+    if confidence is None or confidence < self._CURVE_TRAFFIC_APPLY_MIN_CONFIDENCE:
+      return float(base_a_target)
+    if bool(debug.get("model_stale", False)):
+      return float(base_a_target)
+    car_state = self._sm_item(sm, 'carState')
+    controls_state = self._sm_item(sm, 'controlsState')
+    if bool(getattr(car_state, 'brakePressed', False)) or bool(getattr(car_state, 'gasPressed', False)):
+      return float(base_a_target)
+    if bool(getattr(controls_state, 'forceDecel', False)):
+      return float(base_a_target)
+    proposed_cap = self._finite_float_or_none(debug.get(prefix + "a_curve_cap_proposed", 0.0))
+    if proposed_cap is None or proposed_cap >= 0.0:
+      return float(base_a_target)
+    conservative_cap = max(proposed_cap, self._CURVE_TRAFFIC_APPLY_MIN_CAP)
+    if conservative_cap >= float(base_a_target):
+      return float(base_a_target)
     return float(min(float(base_a_target), conservative_cap))
 
   def _apply_stop_hold_release_slew(self, sm: Any, dt: float, a_target: float, release_mpc_stop: bool,
@@ -855,6 +933,8 @@ class CustomLongitudinalFinalizer:
     a_target = float(release_a_target if release_mpc_stop else mpc_a_target)
     a_target = self._scc_custom_stop_cap(a_target, custom_long, custom_long_output)
     a_target = self._scc_curve_confidence_final_cap(a_target, sm, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop)
+    a_target = self._scc_cut_in_brake_assist_final_cap(a_target, sm, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop)
+    a_target = self._scc_curve_traffic_advisor_final_cap(a_target, sm, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop)
     a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, raw_model_should_stop, should_stop)
     return FinalizerResult(
       a_target=a_target,
