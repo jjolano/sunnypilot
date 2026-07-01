@@ -37,9 +37,9 @@ def sanitize_camera_stabilization_mode(value):
   return text if text in _CAMERA_STABILIZATION_MODES else "off"
 
 
-def camera_stabilization_blocks_camera_odometry(value):
+def camera_stabilization_blocks_camera_odometry(value, calibration_ready=True):
   """Apply mode can make camera odometry virtual-camera motion."""
-  return sanitize_camera_stabilization_mode(value) == "apply"
+  return sanitize_camera_stabilization_mode(value) == "apply" and calibration_ready
 
 
 def skew(v):

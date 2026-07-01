@@ -69,6 +69,7 @@ class TestSanitizeCameraStabilizationMode:
 
   def test_camera_odometry_blocked_only_in_apply(self):
     assert camera_stabilization_blocks_camera_odometry("apply")
+    assert not camera_stabilization_blocks_camera_odometry("apply", calibration_ready=False)
     assert not camera_stabilization_blocks_camera_odometry("shadow")
     assert not camera_stabilization_blocks_camera_odometry("off")
     assert not camera_stabilization_blocks_camera_odometry("bad")

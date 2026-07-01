@@ -276,7 +276,7 @@ def main() -> NoReturn:
     timeout = 0 if sm.frame == -1 else 100
     sm.update(timeout)
     camera_odometry_blocked = camera_stabilization_blocks_camera_odometry(
-      params_reader.get("CameraStabilizationMode", return_default=True))
+      params_reader.get("CameraStabilizationMode", return_default=True), calibrator.cal_status == log.LiveCalibrationData.Status.calibrated)
 
     if sm.updated['cameraOdometry'] and sm.valid['cameraOdometry'] and not camera_odometry_blocked:
       calibrator.handle_v_ego(sm['carState'].vEgo)
@@ -292,7 +292,7 @@ def main() -> NoReturn:
 
     # 4Hz driven by cameraOdometry
     if sm.frame % 5 == 0:
-      valid = sm.all_checks() or (camera_odometry_blocked and sm.all_checks(['carState']))
+      valid = True if camera_odometry_blocked else sm.all_checks()
       calibrator.send_data(pm, valid)
 
 

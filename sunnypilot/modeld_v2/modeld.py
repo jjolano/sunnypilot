@@ -372,6 +372,7 @@ def main(demo=False):
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["roadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
+    camera_stabilization_calibrated = sm["liveCalibration"].calStatus == log.LiveCalibrationData.Status.calibrated
     stabilization_applied = False
     main_reason = "no_live_calibration"
     extra_reason = "no_live_calibration"
@@ -421,10 +422,16 @@ def main(demo=False):
       extra_reason = camera_stabilizer.last_reason
       extra_correction = camera_stabilizer.last_correction.copy()
       extra_clipped = camera_stabilizer.last_clipped.copy()
+
+      if camera_stabilization_mode == "apply" and not camera_stabilization_calibrated:
+        main_correction_valid = False
+        extra_correction_valid = False
+        main_reason = "calibration_not_ready"
+        extra_reason = "calibration_not_ready"
       model_transform_main = base_model_transform_main
       model_transform_extra = base_model_transform_extra
 
-      if camera_stabilization_mode == "apply":
+      if camera_stabilization_mode == "apply" and camera_stabilization_calibrated:
         R_base = rot_from_euler(device_from_calib_euler)
         if main_correction_valid:
           R_corrected = main_correction_R @ R_base
