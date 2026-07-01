@@ -23,6 +23,7 @@ A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
+GAS_OVERRIDE_COAST_EPS = 0.5  # m/s; hysteresis for coast-after-gas-override
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -67,6 +68,23 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
+
+    # Let speed coast back to the cruise target after driver gas override pushes ego above it,
+    # instead of having the cruise virtual obstacle command active decel.
+    self._gas_override_coast_active = False
+
+  def _update_gas_override_coast(self, gas_pressed, brake_pressed, force_slow_decel,
+                                  v_ego, v_cruise, v_cruise_initialized):
+    if not v_cruise_initialized or v_cruise <= 0.0 or force_slow_decel or brake_pressed:
+      self._gas_override_coast_active = False
+      return
+    if gas_pressed and v_ego > v_cruise:
+      self._gas_override_coast_active = True
+    if self._gas_override_coast_active and v_ego <= v_cruise + GAS_OVERRIDE_COAST_EPS:
+      self._gas_override_coast_active = False
+
+  def _effective_v_cruise(self, v_cruise, v_ego):
+    return max(v_cruise, v_ego) if self._gas_override_coast_active else v_cruise
 
   @staticmethod
   def parse_model(model_msg):
@@ -141,6 +159,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     if force_slow_decel:
       v_cruise = 0.0
+
+    self._update_gas_override_coast(
+      sm['carState'].gasPressed, sm['carState'].brakePressed, force_slow_decel,
+      v_ego, v_cruise, v_cruise_initialized,
+    )
+    v_cruise = self._effective_v_cruise(v_cruise, v_ego)
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
