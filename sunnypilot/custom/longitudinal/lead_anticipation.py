@@ -149,8 +149,10 @@ class LeadAnticipation:
 
   def shape(self, radarstate: Any, dt: float, *, long_active: bool = False,
             brake_pressed: bool = False, gas_pressed: bool = False,
-            force_decel: bool = False, v_ego: float = 0.0) -> Any:
-    """Return radarstate unchanged unless apply mode is enabled and custom longitudinal is on.
+            force_decel: bool = False, v_ego: float = 0.0,
+            research_actuation_allowed: bool = False) -> Any:
+    """Return radarstate unchanged unless apply mode is enabled, custom longitudinal is on, and
+    research actuation is allowed.
 
     The optional apply-context keyword arguments default fail-closed (no actuation). Shadow mode
     still computes and records shaped candidates for telemetry regardless of context.
@@ -164,7 +166,7 @@ class LeadAnticipation:
         custom_long_enabled = bool(self._params.get_bool("CustomLongitudinalEnabled"))
       except Exception:
         custom_long_enabled = False
-    should_apply = self.mode == MODE_APPLY and self.enabled and custom_long_enabled
+    should_apply = self.mode == MODE_APPLY and self.enabled and custom_long_enabled and research_actuation_allowed
     should_shadow = self.mode in (MODE_SHADOW, MODE_APPLY)
     if not should_shadow and not self.enabled:
       self.last_result = None

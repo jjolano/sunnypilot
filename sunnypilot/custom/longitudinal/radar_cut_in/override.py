@@ -115,12 +115,17 @@ def _track_ttc(track: Any) -> float:
 def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
                           v_ego: float, CP: Any = None, CP_SP: Any = None,
                           *, custom_longitudinal_enabled: bool | None = None,
+                          research_actuation_allowed: bool = False,
                           path_y_rel: float | Callable[[Any], float | None] | None = None) -> dict[str, Any]:
   """Promote a high-risk on-path radar track to leadOne when vision hasn't confirmed.
 
   Called after ``get_lead()`` returns. If the result has ``status=False`` (no lead found),
   scans radar tracks for a high-risk cut-in candidate. If found, returns that track's
   RadarState with a low modelProb (vision hasn't confirmed it).
+
+  The radar-only promotion is research actuation and is gated by
+  ``research_actuation_allowed``; the lowered radar-confirmed threshold lives in
+  ``radard.get_lead()`` and remains active with custom longitudinal enabled.
 
   Args:
     lead_dict: The lead dict from ``get_lead()``.
@@ -130,6 +135,9 @@ def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
     CP_SP: CarParamsSP (unused, for signature compatibility).
     custom_longitudinal_enabled: Optional cached flag from RadarD. None falls back to
       reading ``CustomLongitudinalEnabled`` from Params; False returns the lead unchanged.
+    research_actuation_allowed: Radar-only promotion is gated by the research actuation
+      switch (CustomLongitudinalEnabled && AllowLongitudinalResearchActuation &&
+      CP.openpilotLongitudinalControl). False by default for fail-closed behavior.
     path_y_rel: Optional path-relative lateral offset (``yRel - path_y_at(dRel)``), either
       as a scalar or as ``callable(track) -> float | None``. When provided/returned,
       on-pathness is checked as ``abs(path_y_rel)``; ``None`` falls back to ego-frame.
@@ -150,6 +158,10 @@ def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
     except Exception:
       return lead_dict
   elif not custom_longitudinal_enabled:
+    return lead_dict
+
+  # Radar-only promotion is research actuation, gated by AllowLongitudinalResearchActuation.
+  if not research_actuation_allowed:
     return lead_dict
 
   if not tracks or v_ego < _MIN_V_EGO:

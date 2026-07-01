@@ -422,7 +422,8 @@ class _ReleaseGate:
     )
     gate_fallback_candidate = bool(
       not source_valid and not crawl_fallback and
-      _ReleaseGate.standstill_release_gate_enabled(finalizer, custom_long) and same_id
+      _ReleaseGate.standstill_release_gate_enabled(finalizer, custom_long) and same_id and
+      bool(getattr(custom_long_output, "research_actuation_allowed", False))
     )
     if not source_valid and not crawl_fallback and not gate_fallback_candidate:
       finalizer.last_release_block_reason = "invalid_release_source"
@@ -726,6 +727,8 @@ class _FinalArbitration:
       return float(base_a_target)
     if not bool(getattr(custom_long_output, "enabled", False)):
       return float(base_a_target)
+    if not bool(getattr(custom_long_output, "research_actuation_allowed", False)):
+      return float(base_a_target)
     if str(getattr(custom_long, "curve_speed_confidence_mode", "off") or "off") != "apply_conservative":
       return float(base_a_target)
     debug = dict(getattr(custom_long_output, "debug", {}) or {})
@@ -754,6 +757,8 @@ class _FinalArbitration:
     if custom_long.mode is not LongitudinalMode.SCC or not custom_long.enabled or custom_long_output is None:
       return float(base_a_target)
     if not bool(getattr(custom_long_output, "enabled", False)):
+      return float(base_a_target)
+    if not bool(getattr(custom_long_output, "research_actuation_allowed", False)):
       return float(base_a_target)
     if str(getattr(custom_long, "cut_in_brake_assist_mode", "off") or "off") != "apply":
       return float(base_a_target)
@@ -792,6 +797,8 @@ class _FinalArbitration:
     if custom_long.mode is not LongitudinalMode.SCC or not custom_long.enabled or custom_long_output is None:
       return float(base_a_target)
     if not bool(getattr(custom_long_output, "enabled", False)):
+      return float(base_a_target)
+    if not bool(getattr(custom_long_output, "research_actuation_allowed", False)):
       return float(base_a_target)
     if str(getattr(custom_long, "curve_traffic_advisor_mode", "off") or "off") != "apply_conservative":
       return float(base_a_target)
@@ -865,11 +872,11 @@ class _FinalArbitration:
   def standstill_release_clears_mpc_stop(finalizer: CustomLongitudinalFinalizer, snapshot: _InputSnapshot) -> tuple[bool, float]:
     mpc_a_target = snapshot.mpc_a_target
     mpc_should_stop = snapshot.mpc_should_stop
+    custom_long_output = snapshot.custom_long_output
     if not _ReleaseGate.standstill_release_request_valid(finalizer, snapshot, min_mpc_a_target=-0.03):
       return False, float(mpc_a_target)
     if not mpc_should_stop:
       return False, float(mpc_a_target)
-    custom_long_output = snapshot.custom_long_output
     release_a = min(
       max(float(mpc_a_target), finalizer._STOP_HOLD_RELEASE_A_MIN, float(getattr(custom_long_output, "standstill_release_a_target", 0.0))),
       finalizer._STOP_HOLD_RELEASE_A_MAX,

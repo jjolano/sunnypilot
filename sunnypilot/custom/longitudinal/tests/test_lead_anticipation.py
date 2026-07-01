@@ -41,10 +41,11 @@ def _on():
   return LeadAnticipation(FakeParams(LeadAnticipationMode="apply", CustomLongitudinalEnabled=True))
 
 
-def _shape_apply(la, rs, dt=DT, **ctx):
+def _shape_apply(la, rs, dt=DT, research_actuation_allowed=True, **ctx):
   """Call shape with the apply context that satisfies the default safety gates."""
   defaults = dict(long_active=True, brake_pressed=False, gas_pressed=False,
-                  force_decel=False, v_ego=15.0)
+                  force_decel=False, v_ego=15.0,
+                  research_actuation_allowed=research_actuation_allowed)
   defaults.update(ctx)
   return la.shape(rs, dt, **defaults)
 
@@ -173,8 +174,17 @@ def test_missing_context_is_fail_closed():
   out = la.shape(rs, DT)                              # no long_active, v_ego, etc.
   assert out is rs
   assert la.last_result and la.last_result["apply"] is False
-  assert la.last_result["block_reason"] == "long_inactive"
+  assert la.last_result["block_reason"] == "mode_or_enabled"
   assert la.last_result["leadOneShaped"] is not None
+
+
+def test_missing_context_long_inactive_when_research_allowed():
+  la = LeadAnticipation(FakeParams(LeadAnticipationMode="apply", CustomLongitudinalEnabled=True))
+  rs = radar(lead(-3.0))
+  out = la.shape(rs, DT, research_actuation_allowed=True)
+  assert out is rs
+  assert la.last_result and la.last_result["apply"] is False
+  assert la.last_result["block_reason"] == "long_inactive"
 
 
 def test_apply_blocked_when_long_inactive():
@@ -302,3 +312,21 @@ def test_apply_passes_through_distance_time_gap():
   out = _shape_apply(la, rs, v_ego=20.0)
   assert out is not rs
   assert la.last_result and la.last_result["apply"] is True
+
+
+def test_apply_blocked_without_research_actuation():
+  la = _on()
+  rs = radar(lead(-3.0))
+  out = _shape_apply(la, rs, research_actuation_allowed=False)
+  assert out is rs
+  assert la.last_result and la.last_result["apply"] is False
+  assert la.last_result["block_reason"] == "mode_or_enabled"
+
+
+def test_shadow_still_records_summary_without_research_actuation():
+  la = LeadAnticipation(FakeParams(LeadAnticipationMode="shadow", CustomLongitudinalEnabled=True))
+  rs = radar(lead(-3.0))
+  out = la.shape(rs, DT, long_active=True, v_ego=15.0, research_actuation_allowed=False)
+  assert out is rs
+  assert la.last_result and la.last_result["mode"] == "shadow"
+  assert la.last_result["apply"] is False

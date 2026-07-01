@@ -155,9 +155,11 @@ def test_override_promotes_and_results_match():
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
 
   result_v1 = v1.apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0,
-                                       custom_longitudinal_enabled=True)
+                                       custom_longitudinal_enabled=True,
+                                       research_actuation_allowed=True)
   result_canon = canon.apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0,
-                                             custom_longitudinal_enabled=True)
+                                             custom_longitudinal_enabled=True,
+                                             research_actuation_allowed=True)
 
   for result in (result_v1, result_canon):
     assert result["status"] is True
@@ -173,9 +175,11 @@ def test_override_picks_most_dangerous_match():
   t1 = FakeTrack(identifier=1, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   t2 = FakeTrack(identifier=2, dRel=9.0, yRel=0.3, vRel=-3.0, vLead=8.0, cnt=3)
   result_v1 = v1.apply_cut_in_override(NO_LEAD, {1: t1, 2: t2}, v_ego=12.0,
-                                       custom_longitudinal_enabled=True)
+                                       custom_longitudinal_enabled=True,
+                                       research_actuation_allowed=True)
   result_canon = canon.apply_cut_in_override(NO_LEAD, {1: t1, 2: t2}, v_ego=12.0,
-                                             custom_longitudinal_enabled=True)
+                                             custom_longitudinal_enabled=True,
+                                             research_actuation_allowed=True)
   assert result_v1["radarTrackId"] == 2
   assert result_canon["radarTrackId"] == 2
   assert result_v1 == result_canon
@@ -192,9 +196,11 @@ def test_path_relative_y_parity(path_y_rel, expected_promoted):
   track = FakeTrack(dRel=15.0, yRel=1.5, vRel=-3.0, vLead=8.0, cnt=3)
   result_v1 = v1.apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0,
                                        custom_longitudinal_enabled=True,
+                                       research_actuation_allowed=True,
                                        path_y_rel=path_y_rel)
   result_canon = canon.apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0,
                                              custom_longitudinal_enabled=True,
+                                             research_actuation_allowed=True,
                                              path_y_rel=path_y_rel)
   if expected_promoted:
     assert result_v1["status"] is True
@@ -210,9 +216,13 @@ def test_path_relative_per_track_selected_candidate_match():
   t2 = FakeTrack(identifier=2, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   mapper = lambda track: -1.5 if track.identifier == 1 else 0.0  # noqa: E731
   result_v1 = v1.apply_cut_in_override(NO_LEAD, {1: t1, 2: t2}, v_ego=12.0,
-                                       custom_longitudinal_enabled=True, path_y_rel=mapper)
+                                       custom_longitudinal_enabled=True,
+                                       research_actuation_allowed=True,
+                                       path_y_rel=mapper)
   result_canon = canon.apply_cut_in_override(NO_LEAD, {1: t1, 2: t2}, v_ego=12.0,
-                                             custom_longitudinal_enabled=True, path_y_rel=mapper)
+                                             custom_longitudinal_enabled=True,
+                                             research_actuation_allowed=True,
+                                             path_y_rel=mapper)
   assert result_v1["radarTrackId"] == 2
   assert result_canon["radarTrackId"] == 2
   assert result_v1 == result_canon

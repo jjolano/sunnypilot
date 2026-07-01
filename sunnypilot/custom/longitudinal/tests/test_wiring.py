@@ -129,6 +129,51 @@ def test_build_stack_inputs_carries_model_stale_flag():
   assert inp.model_stale is True
 
 
+def test_build_stack_inputs_carries_dynamic_floor_inputs():
+  inp = build_stack_inputs(
+    v_ego=15.0, a_ego=0.0, v_cruise=15.0, seed_a_target=0.0, accel_limits=DEFAULT_ACCEL_LIMITS,
+    lead_one=None, lead_two=None,
+    scc_vision_active=True, scc_vision_a_target=0.0, scc_vision_current_lat_acc=1.2,
+    scc_map_active=False, scc_map_a_target=0.0,
+    sla_active=False, sla_v_target=0.0, sla_a_target=0.0,
+    mode=LongitudinalMode.SCC, personality=Personality.STANDARD, sources=SourceToggles(),
+    current_lat_accel=1.2, pitch=-0.05,
+  )
+  assert inp.current_lat_accel == pytest.approx(1.2)
+  assert inp.pitch == pytest.approx(-0.05)
+
+
+def test_adapter_evaluate_includes_dynamic_safety_floor_debug_without_changing_output():
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode='scc'))
+  out = a.evaluate(fake_sm(lead(d_rel=8.0), pitch=-0.03, long_active=True),
+                   15.0, 0.0, 22.0, 0.4, fake_scc(vision_active=True, vision_current_lat_acc=1.0), fake_sla())
+  debug = dict(out.debug or {})
+  assert debug.get("dynamic_safety_floor_active") is True
+  assert "dynamic_safety_floor_current_safe_distance" in debug
+  assert "dynamic_safety_floor_proposed_safe_distance" in debug
+  assert "dynamic_safety_floor_delta_safe_distance" in debug
+  assert "dynamic_safety_floor_dynamic_floor_value" in debug
+  assert "dynamic_safety_floor_kinematic_floor_violation" in debug
+  assert "dynamic_safety_floor_comfort_brake_effective" in debug
+  assert out.a_target == pytest.approx(0.4)
+  assert out.should_stop is False
+
+
+def test_dynamic_floor_missing_lat_accel_does_not_fault_adapter():
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode='scc'))
+  scc = SimpleNamespace(
+    vision=SimpleNamespace(is_active=True, output_a_target=0.0, state=0,
+                           max_pred_lat_acc=0.0, pre_entry_active=False),
+    map=SimpleNamespace(is_active=False, output_a_target=0.0, state=0,
+                        target_lat=0.0, target_lon=0.0),
+  )
+  out = a.evaluate(fake_sm(lead(d_rel=8.0), pitch=-0.03, long_active=True),
+                   15.0, 0.0, 22.0, 0.4, scc, fake_sla())
+  assert out.selected_intent != "fault"
+  assert out.a_target == pytest.approx(0.4)
+  assert out.debug["dynamic_safety_floor_active"] is True
+
+
 def test_map_only_populates_curve_confidence_but_not_actuator_cap():
   # SCC-M is evidence-only at the wiring layer: it feeds curve-speed confidence (telemetry) but
   # must not create an actuator curve advisory cap unless SCC-Vision is also active.
@@ -582,11 +627,43 @@ def test_apply_values_preserved_but_non_actuating_in_acc():
     sla=fake_sla(), dt=0.05,
   )
   baseline = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(**scenario)
-  for key, value, debug_prefix, apply_supported in (
-    ("CutInBrakeAssistMode", "apply", "cut_in_brake_assist", True),
-    ("CurveSpeedConfidenceMode", "apply_conservative", "curve_speed_confidence", True),
-    ("CurveTrafficAdvisorMode", "apply_conservative", "curve_traffic", True),
-    ("StandstillReleaseConfidenceMode", "gate", "standstill_release_confidence", True),
+  for key, value, debug_prefix in (
+    ("CutInBrakeAssistMode", "apply", "cut_in_brake_assist"),
+    ("CurveSpeedConfidenceMode", "apply_conservative", "curve_speed_confidence"),
+    ("CurveTrafficAdvisorMode", "apply_conservative", "curve_traffic"),
+    ("StandstillReleaseConfidenceMode", "gate", "standstill_release_confidence"),
+  ):
+    params = dict(base_params)
+    params[key] = value
+    adapter = CustomLongitudinalAdapter(FakeParams(**params))
+    adapter.research_actuation_allowed = True
+    out = adapter.evaluate(**scenario)
+    assert out.a_target == pytest.approx(baseline.a_target)
+    assert out.should_stop == baseline.should_stop
+    assert out.selected_intent == baseline.selected_intent
+    assert out.reason == baseline.reason
+    assert out.standstill_release_allowed == baseline.standstill_release_allowed
+    assert out.debug[f"{debug_prefix}_mode"] == value
+    assert out.debug[f"{debug_prefix}_apply_supported"] is True
+    if key == "CurveTrafficAdvisorMode":
+      assert out.debug["curve_traffic_effective_mode"] == value
+
+
+def test_apply_modes_degrade_to_shadow_when_research_gate_false():
+  base_params = dict(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")
+  scenario = dict(
+    sm=fake_sm(lead(d_rel=22.0, v_lead=8.0, v_rel=-3.0),
+               model_x=[0.0, 20.0, 40.0], model_y=[0.0, 0.0, 0.0], model_v=[15.0, 15.0, 15.0]),
+    v_ego=15.0, a_ego=0.0, v_cruise=18.0, seed_a_target=-0.2,
+    scc=fake_scc(vision_active=True, vision_a=-0.4, vision_max_pred_lat_acc=1.4),
+    sla=fake_sla(), dt=0.05,
+  )
+  baseline = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(**scenario)
+  for key, value, debug_prefix in (
+    ("CutInBrakeAssistMode", "apply", "cut_in_brake_assist"),
+    ("CurveSpeedConfidenceMode", "apply_conservative", "curve_speed_confidence"),
+    ("CurveTrafficAdvisorMode", "apply_conservative", "curve_traffic"),
+    ("StandstillReleaseConfidenceMode", "gate", "standstill_release_confidence"),
   ):
     params = dict(base_params)
     params[key] = value
@@ -597,9 +674,9 @@ def test_apply_values_preserved_but_non_actuating_in_acc():
     assert out.reason == baseline.reason
     assert out.standstill_release_allowed == baseline.standstill_release_allowed
     assert out.debug[f"{debug_prefix}_mode"] == value
-    assert out.debug[f"{debug_prefix}_apply_supported"] is apply_supported
-    if key == "CurveTrafficAdvisorMode":
-      assert out.debug["curve_traffic_effective_mode"] == value
+    assert out.debug[f"{debug_prefix}_effective_mode"] == "shadow"
+    assert out.debug[f"{debug_prefix}_apply_supported"] is False
+    assert out.debug[f"{debug_prefix}_eligible"] is False
 
 
 def test_curve_traffic_advisor_mode_is_non_actuating_and_wired():

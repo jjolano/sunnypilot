@@ -19,6 +19,7 @@ from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
 
 from openpilot.sunnypilot.selfdrive.controls.lib.cut_in_override import apply_cut_in_override
 from openpilot.sunnypilot.custom.longitudinal.lead_context import _path_relative_y
+from openpilot.sunnypilot.custom.longitudinal.research_actuation import research_actuation_allowed
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -306,7 +307,9 @@ class RadarD:
 
     self.ready = False
     self.custom_long_enabled = False
+    self.research_actuation_allowed = False
     self._update_custom_long_enabled()
+    self._update_research_actuation_allowed()
 
   def _update_custom_long_enabled(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
@@ -315,10 +318,15 @@ class RadarD:
       except Exception:
         self.custom_long_enabled = False
 
+  def _update_research_actuation_allowed(self) -> None:
+    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+      self.research_actuation_allowed = research_actuation_allowed(Params(), self.CP)
+
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
     self.current_time = 1e-9*max(sm.logMonoTime.values())
     self._update_custom_long_enabled()
+    self._update_research_actuation_allowed()
 
     if sm.recv_frame['carState'] != self.last_v_ego_frame:
       self.v_ego = sm['carState'].vEgo
@@ -372,6 +380,7 @@ class RadarD:
                  custom_longitudinal_enabled=self.custom_long_enabled),
         self.tracks, self.v_ego, self.CP, self.CP_SP,
         custom_longitudinal_enabled=self.custom_long_enabled,
+        research_actuation_allowed=self.research_actuation_allowed,
         path_y_rel=lambda track: _track_path_relative_y(track, model_msg))
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
                                           self.CP, self.CP_SP, low_speed_override=False,

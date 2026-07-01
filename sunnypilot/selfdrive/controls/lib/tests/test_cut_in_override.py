@@ -80,7 +80,7 @@ def _recording_params(monkeypatch, return_value=True):
 def test_override_promotes_high_risk_cut_in(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
-  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
   assert result["status"] is True
   assert result["dRel"] == 15.0
   assert result["vRel"] == -3.0
@@ -105,28 +105,28 @@ def test_override_disabled_when_custom_longitudinal_off(monkeypatch):
 def test_override_rejects_off_path_track(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=2.0, vRel=-3.0, vLead=8.0, cnt=3)
-  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
   assert result is NO_LEAD
 
 
 def test_override_rejects_stationary_object(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=1.0, cnt=3)
-  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
   assert result is NO_LEAD
 
 
 def test_override_rejects_low_closing_speed(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-1.0, vLead=8.0, cnt=3)
-  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
   assert result is NO_LEAD
 
 
 def test_override_rejects_far_track(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=35.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
-  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
   assert result is NO_LEAD
 
 
@@ -134,21 +134,21 @@ def test_override_rejects_high_ttc(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   # dRel=30, vRel=-2.0 → TTC = 15s (too high)
   track = FakeTrack(dRel=30.0, yRel=0.5, vRel=-2.0, vLead=8.0, cnt=3)
-  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
   assert result is NO_LEAD
 
 
 def test_override_rejects_low_persistence(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=1)
-  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
   assert result is NO_LEAD
 
 
 def test_override_rejects_low_speed(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
-  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=0.5)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=0.5, research_actuation_allowed=True)
   assert result is NO_LEAD
 
 
@@ -157,7 +157,7 @@ def test_override_picks_most_dangerous_track(monkeypatch):
   # Two candidates: track 1 has TTC=5s, track 2 has TTC=3s
   t1 = FakeTrack(identifier=1, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   t2 = FakeTrack(identifier=2, dRel=9.0, yRel=0.3, vRel=-3.0, vLead=8.0, cnt=3)
-  result = apply_cut_in_override(NO_LEAD, {1: t1, 2: t2}, v_ego=12.0)
+  result = apply_cut_in_override(NO_LEAD, {1: t1, 2: t2}, v_ego=12.0, research_actuation_allowed=True)
   assert result["status"] is True
   assert result["radarTrackId"] == 2  # lower TTC
 
@@ -172,7 +172,8 @@ def test_override_fail_closed_on_exception(monkeypatch):
 def test_override_true_skips_params_and_promotes(monkeypatch):
   calls = _recording_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
-  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True,
+                                 research_actuation_allowed=True)
   assert len(calls) == 0
   assert result["status"] is True
   assert result["radarTrackId"] == 1
@@ -223,7 +224,7 @@ def test_override_path_relative_rejects_ego_centerline_match(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True,
-                                 path_y_rel=-1.5)
+                                 research_actuation_allowed=True, path_y_rel=-1.5)
   assert result is NO_LEAD
 
 
@@ -232,7 +233,7 @@ def test_override_path_relative_accepts_track_aligned_with_path(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=1.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True,
-                                 path_y_rel=0.0)
+                                 research_actuation_allowed=True, path_y_rel=0.0)
   assert result["status"] is True
   assert result["radarTrackId"] == 1
 
@@ -244,6 +245,7 @@ def test_override_path_relative_fn_per_track(monkeypatch):
   t2 = FakeTrack(identifier=2, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(
     NO_LEAD, {1: t1, 2: t2}, v_ego=12.0, custom_longitudinal_enabled=True,
+    research_actuation_allowed=True,
     path_y_rel=lambda track: -1.5 if track.identifier == 1 else 0.0,
   )
   assert result["status"] is True
@@ -267,3 +269,18 @@ def test_is_high_risk_cut_in_invalid_path_relative_fails_closed():
   assert _is_high_risk_cut_in(track, 12.0, path_y_rel=float("nan")) is False
   assert _is_high_risk_cut_in(track, 12.0, path_y_rel=float("inf")) is False
   assert _is_high_risk_cut_in(track, 12.0, path_y_rel=bad_path) is False
+
+
+def test_override_blocked_without_research_actuation(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
+  track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0)
+  assert result is NO_LEAD
+
+
+def test_override_allowed_with_research_actuation(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
+  track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
+  result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
+  assert result["status"] is True
+  assert result["radarTrackId"] == 1

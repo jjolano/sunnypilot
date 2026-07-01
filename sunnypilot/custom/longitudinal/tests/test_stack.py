@@ -44,7 +44,8 @@ def malformed_model_path():
 
 
 def base(**kw):
-  d = dict(v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, accel_limits=LIMITS)
+  d = dict(v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, accel_limits=LIMITS,
+           research_actuation_allowed=True)
   d.update(kw)
   return LongitudinalStackInputs(**d)
 
@@ -789,6 +790,38 @@ def test_scc_curve_confidence_respects_source_gates():
   ), DT)
   assert map_on.debug["curve_speed_confidence_eligible"] is False
   assert map_on.debug["curve_speed_confidence_block_reason"] == "no_negative_curve_cap"
+
+
+def test_research_apply_modes_degrade_to_shadow_when_gate_closed():
+  vision_confidence = CurveSpeedConfidenceInputs(
+    vision_active=True,
+    vision_a_target=-1.0,
+    vision_max_pred_lat_acc=1.5,
+    vision_pre_entry_active=True,
+  )
+  allowed = CustomLongitudinalStack().update(base(
+    mode=LongitudinalMode.SCC,
+    curve_speed_confidence_mode="apply_conservative",
+    curve_confidence=vision_confidence,
+    sources=SourceToggles(scc_curve_vision_enabled=True),
+    research_actuation_allowed=True,
+  ), DT)
+  gated = CustomLongitudinalStack().update(base(
+    mode=LongitudinalMode.SCC,
+    curve_speed_confidence_mode="apply_conservative",
+    curve_confidence=vision_confidence,
+    sources=SourceToggles(scc_curve_vision_enabled=True),
+    research_actuation_allowed=False,
+  ), DT)
+  assert allowed.debug["curve_speed_confidence_mode"] == "apply_conservative"
+  assert allowed.debug["curve_speed_confidence_effective_mode"] == "apply_conservative"
+  assert allowed.debug["curve_speed_confidence_apply_supported"] is True
+  assert allowed.debug["curve_speed_confidence_eligible"] is True
+
+  assert gated.debug["curve_speed_confidence_mode"] == "apply_conservative"
+  assert gated.debug["curve_speed_confidence_effective_mode"] == "shadow"
+  assert gated.debug["curve_speed_confidence_apply_supported"] is False
+  assert gated.debug["curve_speed_confidence_eligible"] is False
 
 
 def _stable_lead_compression_stack(seed_a: float, lead_d: float, v_lead: float, v_rel: float, n: int = 30):

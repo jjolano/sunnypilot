@@ -284,3 +284,54 @@ def test_debug_trace_sanitizes_non_finite_values_without_throwing():
   assert msg.accEnvelope.allowedATarget == pytest.approx(0.0)
   assert msg.accEnvelope.ttc == pytest.approx(0.0)
   assert msg.accEnvelope.requiredStoppingDecel == pytest.approx(0.0)
+
+
+def test_debug_trace_dynamic_safety_floor_serializes_fields():
+  planner = make_planner("log", custom_output(debug={
+    'dynamic_safety_floor_active': True,
+    'dynamic_safety_floor_block_reason': 'pitch_unavailable',
+    'dynamic_safety_floor_current_safe_distance': 18.5,
+    'dynamic_safety_floor_proposed_safe_distance': 21.2,
+    'dynamic_safety_floor_delta_safe_distance': 2.7,
+    'dynamic_safety_floor_dynamic_floor_value': 4.0,
+    'dynamic_safety_floor_kinematic_floor_violation': True,
+    'dynamic_safety_floor_comfort_brake_effective': 2.1,
+    'dynamic_safety_floor_latency_s': 0.35,
+    'dynamic_safety_floor_lat_accel': 1.2,
+    'dynamic_safety_floor_pitch': -0.03,
+  }))
+
+  msg = publish(planner).longitudinalDebug.dynamicSafetyFloor
+
+  assert msg.active is True
+  assert msg.blockReason == 'pitch_unavailable'
+  assert msg.currentSafeDistance == pytest.approx(18.5)
+  assert msg.proposedSafeDistance == pytest.approx(21.2)
+  assert msg.deltaSafeDistance == pytest.approx(2.7)
+  assert msg.dynamicFloorValue == pytest.approx(4.0)
+  assert msg.kinematicFloorViolation is True
+  assert msg.comfortBrakeEffective == pytest.approx(2.1)
+  assert msg.latencyS == pytest.approx(0.35)
+  assert msg.latAccel == pytest.approx(1.2)
+  assert msg.pitch == pytest.approx(-0.03)
+
+
+def test_debug_trace_dynamic_safety_floor_defaults_safely():
+  planner = make_planner("log", custom_output(debug={
+    'dynamic_safety_floor_active': True,
+    # all numeric fields intentionally missing
+  }))
+
+  msg = publish(planner).longitudinalDebug.dynamicSafetyFloor
+
+  assert msg.active is True
+  assert msg.blockReason == ''
+  assert msg.currentSafeDistance == pytest.approx(0.0)
+  assert msg.proposedSafeDistance == pytest.approx(0.0)
+  assert msg.deltaSafeDistance == pytest.approx(0.0)
+  assert msg.dynamicFloorValue == pytest.approx(0.0)
+  assert msg.kinematicFloorViolation is False
+  assert msg.comfortBrakeEffective == pytest.approx(0.0)
+  assert msg.latencyS == pytest.approx(0.0)
+  assert msg.latAccel == pytest.approx(0.0)
+  assert msg.pitch == pytest.approx(0.0)

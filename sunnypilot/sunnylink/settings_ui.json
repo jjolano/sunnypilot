@@ -833,6 +833,28 @@
               ]
             },
             {
+              "key": "AllowLongitudinalResearchActuation",
+              "widget": "toggle",
+              "requires_attestation": true,
+              "title": "Allow Longitudinal Research Actuation",
+              "description": "Enables apply/gate behavior for non-baseline longitudinal research features, such as radar-only cut-in promotion and experimental lead, curve, cut-in, and standstill release gates. Off keeps those features monitor-only or inactive.",
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                },
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "CustomLongitudinalEnabled",
+                  "equals": true
+                }
+              ]
+            },
+            {
               "key": "CutInBrakeAssistMode",
               "widget": "multiple_button",
               "requires_attestation": true,

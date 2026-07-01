@@ -60,6 +60,7 @@ def make_custom_output(
     standstill_release_source: str = "",
     standstill_release_a_target: float = 0.0,
     standstill_release_reason: str = "",
+    research_actuation_allowed: bool = True,
     debug: dict[str, Any] | None = None,
     **overrides: Any,
 ) -> CustomLongitudinalOutput:
@@ -76,6 +77,7 @@ def make_custom_output(
     standstill_release_source=standstill_release_source,
     standstill_release_a_target=standstill_release_a_target,
     standstill_release_reason=standstill_release_reason,
+    research_actuation_allowed=research_actuation_allowed,
     debug=debug,
     **overrides,
   )

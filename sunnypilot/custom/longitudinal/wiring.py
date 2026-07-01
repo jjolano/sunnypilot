@@ -160,7 +160,10 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        scc_vision_pre_entry_active: bool = False,
                        scc_map_state: Any = None,
                        scc_map_target_lat: float = 0.0,
-                       scc_map_target_lon: float = 0.0) -> LongitudinalStackInputs:
+                       scc_map_target_lon: float = 0.0,
+                       research_actuation_allowed: bool = False,
+                       current_lat_accel: float | None = None,
+                       pitch: float | None = None) -> LongitudinalStackInputs:
   has_lead = lead_one is not None and bool(getattr(lead_one, "status", False))
   # Pre-MPC lead-present seed: carry the currently selected planner a_target into the custom
   # policy. Final lead-follow physics remains owned by the downstream MPC solve.
@@ -209,6 +212,9 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
       map_active=bool(scc_map_active), map_a_target=0.0, map_state=scc_map_state,
       map_target_lat=_f(scc_map_target_lat), map_target_lon=_f(scc_map_target_lon),
     ),
+    research_actuation_allowed=research_actuation_allowed,
+    current_lat_accel=current_lat_accel,
+    pitch=pitch,
   )
 
 
@@ -228,6 +234,7 @@ class CustomLongitudinalAdapter:
     self.scenario_context_mode = "off"
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
+    self.research_actuation_allowed = False
     if params is not None:
       self.refresh_params(initial=True)
 
@@ -316,7 +323,8 @@ class CustomLongitudinalAdapter:
 
       cc = sm['carControl']
       ned = getattr(cc, "orientationNED", None)
-      accel_coast = _coast_accel(ned[1]) if ned is not None and len(ned) == 3 else 0.0
+      pitch = ned[1] if ned is not None and len(ned) == 3 else None
+      accel_coast = _coast_accel(pitch) if pitch is not None else 0.0
 
       inputs = build_stack_inputs(
         v_ego=v_ego, a_ego=a_ego, v_cruise=v_cruise, seed_a_target=seed_a_target,
@@ -349,6 +357,9 @@ class CustomLongitudinalAdapter:
         scc_map_state=getattr(scc.map, "state", None),
         scc_map_target_lat=_f(getattr(scc.map, "target_lat", 0.0)),
         scc_map_target_lon=_f(getattr(scc.map, "target_lon", 0.0)),
+        research_actuation_allowed=self.research_actuation_allowed,
+        current_lat_accel=(_f(getattr(scc.vision, "current_lat_acc", 0.0)) if getattr(scc.vision, "is_active", False) else None),
+        pitch=pitch,
       )
       result = self._stack.update(inputs, dt)
       debug = dict(result.debug or {})
@@ -359,6 +370,7 @@ class CustomLongitudinalAdapter:
         standstill_release_source=str(result.standstill_release_source),
         standstill_release_a_target=float(result.standstill_release_a_target),
         standstill_release_reason=str(result.standstill_release_reason),
+        research_actuation_allowed=self.research_actuation_allowed,
         debug=debug,
       )
     except Exception:
@@ -386,4 +398,5 @@ class CustomLongitudinalOutput:
   standstill_release_source: str = ""
   standstill_release_a_target: float = 0.0
   standstill_release_reason: str = ""
+  research_actuation_allowed: bool = False
   debug: dict[str, Any] = field(default_factory=dict)

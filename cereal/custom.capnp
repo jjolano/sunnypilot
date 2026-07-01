@@ -344,6 +344,20 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     }
 
     scenarioContext @23 :ScenarioContextTrace;
+    struct DynamicSafetyFloorTrace {
+      active @0 :Bool;
+      blockReason @1 :Text;
+      currentSafeDistance @2 :Float32;
+      proposedSafeDistance @3 :Float32;
+      deltaSafeDistance @4 :Float32;
+      dynamicFloorValue @5 :Float32;
+      kinematicFloorViolation @6 :Bool;
+      comfortBrakeEffective @7 :Float32;
+      latencyS @8 :Float32;
+      latAccel @9 :Float32;
+      pitch @10 :Float32;
+    }
+    dynamicSafetyFloor @24 :DynamicSafetyFloorTrace;
   }
 
   struct SmartCruiseControl {

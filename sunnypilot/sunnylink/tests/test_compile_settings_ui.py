@@ -158,6 +158,12 @@ class TestCompiledShape:
     item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "LongitudinalDebugTraceMode")
     assert [opt["value"] for opt in item["options"]] == ["off", "log"]
 
+  def test_longitudinal_research_actuation_gate_is_attested_toggle(self, compiled):
+    cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
+    item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "AllowLongitudinalResearchActuation")
+    assert item["widget"] == "toggle"
+    assert item["requires_attestation"] is True
+
   def test_shadow_observability_modes_include_promoted_apply_options(self, compiled):
     cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
     expected = {

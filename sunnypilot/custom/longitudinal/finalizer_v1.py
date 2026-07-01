@@ -272,6 +272,8 @@ class CustomLongitudinalFinalizer:
       return float(base_a_target)
     if not bool(getattr(custom_long_output, "enabled", False)):
       return float(base_a_target)
+    if not bool(getattr(custom_long_output, "research_actuation_allowed", False)):
+      return float(base_a_target)
     if str(getattr(custom_long, "curve_speed_confidence_mode", "off") or "off") != "apply_conservative":
       return float(base_a_target)
     debug = dict(getattr(custom_long_output, "debug", {}) or {})
@@ -298,6 +300,8 @@ class CustomLongitudinalFinalizer:
     if custom_long.mode is not LongitudinalMode.SCC or not custom_long.enabled or custom_long_output is None:
       return float(base_a_target)
     if not bool(getattr(custom_long_output, "enabled", False)):
+      return float(base_a_target)
+    if not bool(getattr(custom_long_output, "research_actuation_allowed", False)):
       return float(base_a_target)
     if str(getattr(custom_long, "cut_in_brake_assist_mode", "off") or "off") != "apply":
       return float(base_a_target)
@@ -334,6 +338,8 @@ class CustomLongitudinalFinalizer:
     if custom_long.mode is not LongitudinalMode.SCC or not custom_long.enabled or custom_long_output is None:
       return float(base_a_target)
     if not bool(getattr(custom_long_output, "enabled", False)):
+      return float(base_a_target)
+    if not bool(getattr(custom_long_output, "research_actuation_allowed", False)):
       return float(base_a_target)
     if str(getattr(custom_long, "curve_traffic_advisor_mode", "off") or "off") != "apply_conservative":
       return float(base_a_target)
@@ -716,7 +722,8 @@ class CustomLongitudinalFinalizer:
     )
     gate_fallback_candidate = bool(
       not source_valid and not crawl_fallback and
-      self._standstill_release_gate_enabled(custom_long) and same_id
+      self._standstill_release_gate_enabled(custom_long) and same_id and
+      bool(getattr(custom_long_output, "research_actuation_allowed", False))
     )
     if not source_valid and not crawl_fallback and not gate_fallback_candidate:
       self.last_release_block_reason = "invalid_release_source"

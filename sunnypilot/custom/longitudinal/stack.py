@@ -32,6 +32,10 @@ from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, Longit
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.scenario_context import predict_scenario_context
+from openpilot.sunnypilot.custom.longitudinal.dynamic_safety_floor import (
+  compute_dynamic_safety_floor,
+  debug_dict as dynamic_safety_floor_debug_dict,
+)
 
 import math
 
@@ -238,6 +242,11 @@ class LongitudinalStackInputs:
   mode: LongitudinalMode = LongitudinalMode.ACC
   sources: SourceToggles = SourceToggles()
   personality: Personality = Personality.STANDARD
+  # research actuation gate (default-off; only non-baseline apply paths consult this)
+  research_actuation_allowed: bool = False
+  # dynamic safety-floor shadow telemetry inputs (no actuation)
+  current_lat_accel: float | None = None
+  pitch: float | None = None
 
 
 @dataclass(frozen=True)
@@ -289,19 +298,31 @@ class CustomLongitudinalStack:
     cut_in_brake_assist_fault = False
     cut_in_brake_assist_debug: dict[str, Any] = {}
     try:
-      cut_in_brake_assist_debug = predict_cut_in_brake_assist(
+      cut_in_brake_assist_result = predict_cut_in_brake_assist(
         inp.cut_in_brake_assist_mode, lead_ctx, shadow_ctx, inp.v_ego,
         long_active=inp.long_active,
-      ).debug_dict()
+      )
+      cut_in_brake_assist_result = _downgrade_research_apply(
+        cut_in_brake_assist_result, inp.research_actuation_allowed,
+        apply_value="apply", mode_key="mode", effective_mode_key="effective_mode",
+        apply_supported_key="apply_supported", eligible_key="eligible",
+      )
+      cut_in_brake_assist_debug = cut_in_brake_assist_result.debug_dict()
     except Exception:
       cut_in_brake_assist_fault = True
 
     curve_speed_confidence_fault = False
     curve_speed_confidence_debug: dict[str, Any] = {}
     try:
-      curve_speed_confidence_debug = predict_curve_speed_confidence(
+      curve_speed_confidence_result = predict_curve_speed_confidence(
         inp.curve_speed_confidence_mode, act_inp.curve_confidence,
-      ).debug_dict()
+      )
+      curve_speed_confidence_result = _downgrade_research_apply(
+        curve_speed_confidence_result, inp.research_actuation_allowed,
+        apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
+        apply_supported_key="apply_supported", eligible_key="eligible",
+      )
+      curve_speed_confidence_debug = curve_speed_confidence_result.debug_dict()
     except Exception:
       curve_speed_confidence_fault = True
 
@@ -417,7 +438,7 @@ class CustomLongitudinalStack:
     standstill_release_confidence_fault = False
     standstill_release_confidence_debug: dict[str, Any] = {}
     try:
-      standstill_release_confidence_debug = predict_standstill_release_confidence(
+      standstill_release_confidence_result = predict_standstill_release_confidence(
         mode=inp.standstill_release_confidence_mode,
         release_allowed=standstill_release_allowed,
         release_source=str(decision.selected_intent if standstill_release_allowed else ""),
@@ -431,7 +452,13 @@ class CustomLongitudinalStack:
         brake_pressed=act_inp.brake_pressed,
         gas_pressed=act_inp.gas_pressed,
         model_should_stop=act_inp.model_should_stop,
-      ).debug_dict()
+      )
+      standstill_release_confidence_result = _downgrade_research_apply(
+        standstill_release_confidence_result, inp.research_actuation_allowed,
+        apply_value="gate", mode_key="mode", effective_mode_key="effective_mode",
+        apply_supported_key="apply_supported", eligible_key="eligible",
+      )
+      standstill_release_confidence_debug = standstill_release_confidence_result.debug_dict()
     except Exception:
       standstill_release_confidence_fault = True
 
@@ -464,7 +491,7 @@ class CustomLongitudinalStack:
     curve_traffic_advisor_fault = False
     curve_traffic_advisor_debug: dict[str, Any] = {}
     try:
-      curve_traffic_advisor_debug = predict_curve_traffic_advisor(
+      curve_traffic_advisor_result = predict_curve_traffic_advisor(
         mode=inp.curve_traffic_advisor_mode,
         data=CurveTrafficAdvisorInputs(
           v_ego=act_inp.v_ego,
@@ -479,9 +506,30 @@ class CustomLongitudinalStack:
           gas_pressed=act_inp.gas_pressed,
           force_slow_decel=act_inp.force_slow_decel,
         ),
-      ).debug_dict()
+      )
+      curve_traffic_advisor_result = _downgrade_research_apply(
+        curve_traffic_advisor_result, inp.research_actuation_allowed,
+        apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
+        apply_supported_key="apply_supported", eligible_key="eligible",
+      )
+      curve_traffic_advisor_debug = curve_traffic_advisor_result.debug_dict()
     except Exception:
       curve_traffic_advisor_fault = True
+
+    dynamic_safety_floor_fault = False
+    dynamic_safety_floor_debug: dict[str, Any] = {}
+    try:
+      lead_d_rel_for_floor = lead_d_rel if has_lead else None
+      dynamic_safety_floor_result = compute_dynamic_safety_floor(
+        v_ego=inp.v_ego,
+        t_follow=FOLLOW_TIME_GAP_S,
+        lead_d_rel=lead_d_rel_for_floor,
+        a_lat=inp.current_lat_accel,
+        pitch=inp.pitch,
+      )
+      dynamic_safety_floor_debug = dynamic_safety_floor_debug_dict(dynamic_safety_floor_result)
+    except Exception:
+      dynamic_safety_floor_fault = True
 
     admitted_hazard_targets = [float(c.a_target) for c in candidates
                                if c.role is CandidateRole.PHYSICAL_HAZARD
@@ -532,6 +580,8 @@ class CustomLongitudinalStack:
         **scenario_context_debug,
         "curve_traffic_advisor_fault": curve_traffic_advisor_fault,
         **curve_traffic_advisor_debug,
+        "dynamic_safety_floor_fault": dynamic_safety_floor_fault,
+        **dynamic_safety_floor_debug,
         **acc_envelope_debug,
         **target_smoothing_debug,
       },
@@ -671,6 +721,31 @@ class CustomLongitudinalStack:
 
 def _any_status(leads: tuple[Any, Any]) -> bool:
   return any(lead is not None and bool(getattr(lead, "status", False)) for lead in leads)
+
+
+def _downgrade_research_apply(result: Any, research_actuation_allowed: bool,
+                              apply_value: str, mode_key: str = "mode",
+                              effective_mode_key: str = "effective_mode",
+                              apply_supported_key: str = "apply_supported",
+                              eligible_key: str = "eligible") -> Any:
+  """Degrade a research apply/gate result to shadow telemetry when the gate is closed.
+
+  Keeps the original user mode so telemetry shows the setting, but marks effective_mode as
+  shadow and disables apply_supported/eligible so downstream finalizer caps do not actuate.
+  """
+  if research_actuation_allowed:
+    return result
+  mode = str(getattr(result, mode_key, "off")).strip().lower()
+  if mode != apply_value:
+    return result
+  return replace(
+    result,
+    **{
+      apply_supported_key: False,
+      eligible_key: False,
+      effective_mode_key: "shadow",
+    }
+  )
 
 
 def _model_path_available(model_msg: Any | None) -> bool:

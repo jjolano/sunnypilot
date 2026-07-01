@@ -350,6 +350,7 @@ class LongitudinalPlannerSP:
       self._populate_standstill_release_confidence_trace(msg.standstillReleaseConfidence, debug)
       self._populate_acc_envelope_trace(msg.accEnvelope, debug)
       self._populate_scenario_context_trace(msg.scenarioContext, debug)
+      self._populate_dynamic_safety_floor_trace(msg.dynamicSafetyFloor, debug)
     except Exception:
       msg.enabled = False
       msg.traceMode = 'off'
@@ -424,6 +425,20 @@ class LongitudinalPlannerSP:
     msg.estimatedAccelBias = self._safe_float(debug.get(prefix + 'estimated_accel_bias', 0.0))
     msg.proposedCompensation = self._safe_float(debug.get(prefix + 'proposed_compensation', 0.0))
     msg.blockReason = str(debug.get(prefix + 'block_reason', '') or '')
+
+  def _populate_dynamic_safety_floor_trace(self, msg, debug: dict) -> None:
+    prefix = 'dynamic_safety_floor_'
+    msg.active = bool(debug.get(prefix + 'active', False))
+    msg.blockReason = str(debug.get(prefix + 'block_reason', '') or '')
+    msg.currentSafeDistance = self._safe_float(debug.get(prefix + 'current_safe_distance', 0.0))
+    msg.proposedSafeDistance = self._safe_float(debug.get(prefix + 'proposed_safe_distance', 0.0))
+    msg.deltaSafeDistance = self._safe_float(debug.get(prefix + 'delta_safe_distance', 0.0))
+    msg.dynamicFloorValue = self._safe_float(debug.get(prefix + 'dynamic_floor_value', 0.0))
+    msg.kinematicFloorViolation = bool(debug.get(prefix + 'kinematic_floor_violation', False))
+    msg.comfortBrakeEffective = self._safe_float(debug.get(prefix + 'comfort_brake_effective', 0.0))
+    msg.latencyS = self._safe_float(debug.get(prefix + 'latency_s', 0.0))
+    msg.latAccel = self._safe_float(debug.get(prefix + 'lat_accel', 0.0))
+    msg.pitch = self._safe_float(debug.get(prefix + 'pitch', 0.0))
 
   @staticmethod
   def _finite_float_or_none(value) -> float | None:
