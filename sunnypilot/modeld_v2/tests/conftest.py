@@ -92,7 +92,10 @@ def _make_supercombo_metadata(input_shapes, output_slices):
 
 
 SPLIT_VISION_INPUT_SHAPES = {'img': (1, 12, 128, 256), 'big_img': (1, 12, 128, 256)}
-SPLIT_POLICY_INPUT_SHAPES = {'features_buffer': (1, 25, 512), 'desire_pulse': (1, 25, 8), 'traffic_convention': (1, 2)}
+SPLIT_POLICY_INPUT_SHAPES = {
+  'features_buffer': (1, 25, 512), 'desire_pulse': (1, 25, 8),
+  'traffic_convention': (1, 2), 'action_t': (1, 2),
+}
 SPLIT_VISION_SLICES = {'hidden_state': slice(0, 512), 'pose': slice(512, 524)}
 SPLIT_POLICY_SLICES = {'plan': slice(0, 495), 'meta': slice(495, 550)}
 

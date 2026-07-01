@@ -197,7 +197,7 @@ class ModelState(ModelStateBase):
     inputs[desire_key][0] = 0
     self.numpy_inputs[desire_key][:] = np.where(inputs[desire_key] - self.prev_desire > .99, inputs[desire_key], 0)
     self.prev_desire[:] = inputs[desire_key]
-    for key in ('traffic_convention', 'lateral_control_params'):
+    for key in ('traffic_convention', 'lateral_control_params', 'action_t'):
       if key in self.numpy_inputs and key in inputs:
         self.numpy_inputs[key][:] = inputs[key]
 
@@ -473,8 +473,17 @@ def main(demo=False):
       'traffic_convention': traffic_convention,
     }
 
+    lat_action_t = lat_delay + DT_MDL
+    long_action_t = long_delay + DT_MDL
+
     if 'lateral_control_params' in model.numpy_inputs:
       inputs['lateral_control_params'] = np.array([v_ego, lat_delay], dtype=np.float32)
+
+    if 'action_t' in model.numpy_inputs:
+      action_delay = DT_MDL / 2
+      lat_action_t += action_delay
+      long_action_t += action_delay
+      inputs['action_t'] = np.array([lat_action_t, long_action_t], dtype=np.float32)
 
     mt1 = time.perf_counter()
     model_output = model.run(bufs, transforms, inputs, prepare_only)
@@ -487,7 +496,7 @@ def main(demo=False):
       posenet_send = messaging.new_message('cameraOdometry')
       mdv2sp_send = messaging.new_message('modelDataV2SP')
 
-      action = model.get_action_from_model(model_output, prev_action, lat_delay + DT_MDL, long_delay + DT_MDL, v_ego)
+      action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,

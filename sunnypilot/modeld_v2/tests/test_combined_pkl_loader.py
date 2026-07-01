@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+import numpy as np
 import pytest
 
 import openpilot.sunnypilot.models.helpers as helpers
@@ -70,12 +71,29 @@ class TestStockEquivalence:
     stock_queues, stock_npy = make_input_queues(SPLIT_VISION_INPUT_SHAPES, SPLIT_POLICY_INPUT_SHAPES, frame_skip,
                                                 device='NPY')
 
-    # TODO-SP: remove action_t skip once SP adds prerequisite for deep models (action_t input queue)
-    skip_keys = {'action_t'}
-    assert set(state.input_queues.keys()) == set(stock_queues.keys()) - skip_keys, \
+    assert set(state.input_queues.keys()) == set(stock_queues.keys()), \
       f"Queue keys differ: v2={set(state.input_queues.keys())}, stock={set(stock_queues.keys())}"
-    assert set(state.numpy_inputs.keys()) == set(stock_npy.keys()) - skip_keys, \
+    assert set(state.numpy_inputs.keys()) == set(stock_npy.keys()), \
       f"Npy keys differ: v2={set(state.numpy_inputs.keys())}, stock={set(stock_npy.keys())}"
+
+  def test_action_t_runtime_input_is_copied(self, model_state_factory):
+    class DummyBuf:
+      def __init__(self, size):
+        self.data = bytearray(size)
+
+    state = model_state_factory(ARCHETYPES['vision_policy_split'])
+    yuv_size = state.frame_buf_params['img'][3]
+    bufs = {'img': DummyBuf(yuv_size), 'big_img': DummyBuf(yuv_size)}
+    transforms = {'img': np.eye(3, dtype=np.float32), 'big_img': np.eye(3, dtype=np.float32)}
+    inputs = {
+      state.desire_key: np.zeros(state.constants.DESIRE_LEN, dtype=np.float32),
+      'traffic_convention': np.array([1., 0.], dtype=np.float32),
+      'action_t': np.array([0.175, 0.475], dtype=np.float32),
+    }
+
+    state.run(bufs, transforms, inputs, prepare_only=True)
+
+    np.testing.assert_allclose(state.numpy_inputs['action_t'], [[0.175, 0.475]])
 
   def test_split_queue_keys_work_with_desire_key(self, model_state_factory):
     from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, make_split_input_queues
