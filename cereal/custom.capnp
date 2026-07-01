@@ -598,6 +598,10 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   cameraStabilizationExtraCorrectionPitch @8 :Float32;
   cameraStabilizationMainClipped @9 :Bool;
   cameraStabilizationExtraClipped @10 :Bool;
+  cameraStabilizationMainValidRate @11 :Float32;
+  cameraStabilizationExtraValidRate @12 :Float32;
+  cameraStabilizationMainClippedRate @13 :Float32;
+  cameraStabilizationExtraClippedRate @14 :Float32;
 
   enum TurnDirection {
     none @0;

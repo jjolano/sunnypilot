@@ -27,7 +27,10 @@ from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
-from openpilot.sunnypilot.modeld_v2.camera_stabilization import CameraStabilizer, sanitize_camera_stabilization_mode, warp_matrix_from_device_from_calib_rot
+from openpilot.sunnypilot.modeld_v2.camera_stabilization import (
+  CameraStabilizationHealth, CameraStabilizer, sanitize_camera_stabilization_mode,
+  warp_matrix_from_device_from_calib_rot,
+)
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 
 PROCESS_NAME = "selfdrive.modeld.modeld"
@@ -217,6 +220,8 @@ def main(demo=False):
   meta_main = FrameMeta()
   meta_extra = FrameMeta()
   camera_stabilizer = CameraStabilizer()
+  camera_stabilization_main_health = CameraStabilizationHealth()
+  camera_stabilization_extra_health = CameraStabilizationHealth()
   camera_stabilization_mode = "off"
 
   if demo:
@@ -278,6 +283,10 @@ def main(demo=False):
     extra_correction = np.zeros(3, dtype=np.float64)
     main_clipped = np.zeros(3, dtype=bool)
     extra_clipped = np.zeros(3, dtype=bool)
+    main_valid_rate = 0.0
+    extra_valid_rate = 0.0
+    main_clipped_rate = 0.0
+    extra_clipped_rate = 0.0
     camera_stabilization_mode = sanitize_camera_stabilization_mode(params.get("CameraStabilizationMode", return_default=True))
     if sm.frame % 60 == 0:
       model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
@@ -321,6 +330,13 @@ def main(demo=False):
         extra_correction_valid = False
         main_reason = "calibration_not_ready"
         extra_reason = "calibration_not_ready"
+
+      camera_stabilization_main_health.update(camera_stabilization_mode, main_correction_valid, main_clipped)
+      camera_stabilization_extra_health.update(camera_stabilization_mode, extra_correction_valid, extra_clipped)
+      main_valid_rate = camera_stabilization_main_health.valid_rate
+      extra_valid_rate = camera_stabilization_extra_health.valid_rate
+      main_clipped_rate = camera_stabilization_main_health.clipped_rate
+      extra_clipped_rate = camera_stabilization_extra_health.clipped_rate
 
       model_transform_main = base_model_transform_main
       model_transform_extra = base_model_transform_extra
@@ -410,6 +426,10 @@ def main(demo=False):
       mdv2sp_send.modelDataV2SP.cameraStabilizationExtraCorrectionPitch = float(extra_correction[1])
       mdv2sp_send.modelDataV2SP.cameraStabilizationMainClipped = bool(main_clipped[0] or main_clipped[1])
       mdv2sp_send.modelDataV2SP.cameraStabilizationExtraClipped = bool(extra_clipped[0] or extra_clipped[1])
+      mdv2sp_send.modelDataV2SP.cameraStabilizationMainValidRate = float(main_valid_rate)
+      mdv2sp_send.modelDataV2SP.cameraStabilizationExtraValidRate = float(extra_valid_rate)
+      mdv2sp_send.modelDataV2SP.cameraStabilizationMainClippedRate = float(main_clipped_rate)
+      mdv2sp_send.modelDataV2SP.cameraStabilizationExtraClippedRate = float(extra_clipped_rate)
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 

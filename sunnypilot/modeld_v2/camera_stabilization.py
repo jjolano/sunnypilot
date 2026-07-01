@@ -11,6 +11,7 @@ computes a high-pass roll/pitch correction, and exposes it as a rotation matrix.
 Row-wise rolling shutter is intentionally not implemented.
 """
 import math
+from collections import deque
 
 import numpy as np
 
@@ -27,6 +28,7 @@ _TAU_S = 0.30
 _MAX_BUFFER_AGE_NS = 2_000_000_000
 _MAX_GYRO_GAP_NS = 200_000_000
 _MAX_EXTRAPOLATE_NS = 20_000_000
+_HEALTH_WINDOW = 100
 
 
 def sanitize_camera_stabilization_mode(value):
@@ -115,6 +117,29 @@ def warp_matrix_from_device_from_calib_rot(device_from_calib_rot, intrinsics, bi
   calib_from_model = calib_from_sbigmodel if bigmodel_frame else calib_from_medmodel
   camera_from_calib = intrinsics @ view_frame_from_device_frame @ device_from_calib_rot
   return camera_from_calib @ calib_from_model
+
+
+class CameraStabilizationHealth:
+  def __init__(self, window=_HEALTH_WINDOW):
+    self._valid = deque(maxlen=window)
+    self._clipped = deque(maxlen=window)
+    self.valid_rate = 0.0
+    self.clipped_rate = 0.0
+
+  def update(self, mode_or_current, correction_valid, clipped):
+    if sanitize_camera_stabilization_mode(mode_or_current) == "off":
+      self._valid.clear()
+      self._clipped.clear()
+      self.valid_rate = 0.0
+      self.clipped_rate = 0.0
+      return
+
+    valid = bool(correction_valid)
+    clipped = valid and bool(np.any(np.asarray(clipped, dtype=bool).reshape(-1)[:2]))
+    self._valid.append(valid)
+    self._clipped.append(clipped)
+    self.valid_rate = sum(self._valid) / len(self._valid)
+    self.clipped_rate = sum(self._clipped) / len(self._clipped)
 
 
 class _State:

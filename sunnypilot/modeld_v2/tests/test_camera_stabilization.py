@@ -13,6 +13,7 @@ import cereal.messaging as messaging
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE, get_warp_matrix
 from openpilot.sunnypilot.modeld_v2.camera_stabilization import (
+  CameraStabilizationHealth,
   CameraStabilizer,
   CAMERA_STABILIZATION_PARAM,
   camera_stabilization_blocks_camera_odometry,
@@ -217,6 +218,29 @@ class TestCorrection:
     np.testing.assert_array_equal(a, b)
 
 
+class TestCameraStabilizationHealth:
+  def test_rates_track_recent_valid_and_clipped_frames(self):
+    health = CameraStabilizationHealth(window=4)
+    health.update("apply", True, [True, False, False])
+    health.update("apply", True, [False, False, False])
+    health.update("apply", False, [True, False, False])
+
+    assert health.valid_rate == pytest.approx(2 / 3)
+    assert health.clipped_rate == pytest.approx(1 / 3)
+
+    health.update("apply", True, [False, True, False])
+    health.update("apply", True, [False, False, False])
+    assert health.valid_rate == pytest.approx(3 / 4)
+    assert health.clipped_rate == pytest.approx(1 / 4)
+
+  def test_off_clears_rates(self):
+    health = CameraStabilizationHealth(window=4)
+    health.update("shadow", True, [True, False, False])
+    health.update("off", True, [True, False, False])
+    assert health.valid_rate == 0.0
+    assert health.clipped_rate == 0.0
+
+
 class TestWarpMatrix:
   def test_warp_from_identity_matches_get_warp_matrix_zeros(self):
     intrinsics = DEVICE_CAMERAS[("tici", "unknown")].fcam.intrinsics
@@ -267,6 +291,10 @@ class TestModelDataV2SPTelemetry:
     sp.cameraStabilizationExtraCorrectionPitch = 0.0
     sp.cameraStabilizationMainClipped = bool(stabilizer.last_clipped[0] or stabilizer.last_clipped[1])
     sp.cameraStabilizationExtraClipped = False
+    sp.cameraStabilizationMainValidRate = 1.0
+    sp.cameraStabilizationExtraValidRate = 0.5
+    sp.cameraStabilizationMainClippedRate = 0.25
+    sp.cameraStabilizationExtraClippedRate = 0.0
 
     with messaging.log.Event.from_bytes(msg.to_bytes()) as decoded:
       out = decoded.modelDataV2SP
@@ -278,3 +306,7 @@ class TestModelDataV2SPTelemetry:
       assert abs(out.cameraStabilizationMainCorrectionPitch) < 1e-8
       assert out.cameraStabilizationMainClipped == bool(stabilizer.last_clipped[0] or stabilizer.last_clipped[1])
       assert not out.cameraStabilizationExtraClipped
+      assert out.cameraStabilizationMainValidRate == pytest.approx(1.0)
+      assert out.cameraStabilizationExtraValidRate == pytest.approx(0.5)
+      assert out.cameraStabilizationMainClippedRate == pytest.approx(0.25)
+      assert out.cameraStabilizationExtraClippedRate == pytest.approx(0.0)
