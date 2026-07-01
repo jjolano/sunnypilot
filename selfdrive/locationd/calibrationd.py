@@ -292,7 +292,8 @@ def main() -> NoReturn:
 
     # 4Hz driven by cameraOdometry
     if sm.frame % 5 == 0:
-      calibrator.send_data(pm, sm.all_checks())
+      valid = sm.all_checks() or (camera_odometry_blocked and sm.all_checks(['carState']))
+      calibrator.send_data(pm, valid)
 
 
 if __name__ == "__main__":

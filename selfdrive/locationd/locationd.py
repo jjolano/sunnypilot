@@ -274,6 +274,7 @@ def main():
 
   params = Params()
   camera_odometry_blocked = False
+  prev_camera_odometry_blocked = False
 
   estimator = LocationEstimator(DEBUG)
 
@@ -297,6 +298,11 @@ def main():
     sm.update()
     camera_odometry_blocked = camera_stabilization_blocks_camera_odometry(
       params.get("CameraStabilizationMode", return_default=True))
+    if camera_odometry_blocked:
+      estimator.camodo_yawrate_distribution = np.array([0.0, 10.0])
+      if not prev_camera_odometry_blocked:
+        observation_input_invalid["gyroscope"] = 0
+    prev_camera_odometry_blocked = camera_odometry_blocked
 
     acc_msgs, gyro_msgs = (messaging.drain_sock(sock) for sock in sensor_sockets)
 
