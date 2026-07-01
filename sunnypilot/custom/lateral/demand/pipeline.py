@@ -80,6 +80,7 @@ class LateralDemandPipelineInputs:
   yaw_rate: float | None = None
   steering_rate_deg: float | None = None
   steer_limited: bool = False
+  straight_path_stabilization_mode: str = "off"
   model_data_v2_sp_valid: bool = True
   turn_direction: int = 0
   # lane change
@@ -168,6 +169,11 @@ class LateralDemandPipeline:
         turn_curvature_sign=turn_curvature_sign,
         frame_drop_perc=inputs.frame_drop_perc,
         model_age_s=inputs.model_age_s,
+        left_blinker=inputs.left_blinker,
+        right_blinker=inputs.right_blinker,
+        steering_pressed=inputs.steering_pressed,
+        steer_limited=inputs.steer_limited,
+        straight_path_stabilization_mode=inputs.straight_path_stabilization_mode,
         smooth_model_path_curvature=inputs.smooth_model_path_curvature,
         demand_jerk_smoothing_enabled=inputs.demand_jerk_smoothing_enabled,
         demand_jerk_smoothing_allowed=(
@@ -313,6 +319,12 @@ class LateralDemandPipeline:
         "demand_jerk_smoothing_active": bool(model_path_result.demand_jerk_smoothing_active),
         "demand_jerk_smoothing_step": float(model_path_result.demand_jerk_smoothing_step),
         "demand_jerk_smoothing_lag": float(model_path_result.demand_jerk_smoothing_lag),
+        "straight_path_stabilization_mode": str(model_path_result.straight_path_stabilization_mode),
+        "straight_path_stabilization_active": bool(model_path_result.straight_path_stabilization_active),
+        "straight_path_stabilization_applied": bool(model_path_result.straight_path_stabilization_applied),
+        "straight_path_stabilization_candidate_curvature": float(model_path_result.straight_path_stabilization_candidate_curvature),
+        "straight_path_stabilization_anchor_lat_accel": float(model_path_result.straight_path_stabilization_anchor_lat_accel),
+        "straight_path_stabilization_reason": str(model_path_result.straight_path_stabilization_reason),
         "lane_change_blend": lane_change_blend,
         "lane_change_shaping_active": lane_change_shaping_active,
         "lane_centering_active": bool(lane_centering_result.active),

@@ -18,6 +18,7 @@ from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
   LateralDemandPipeline,
   LateralDemandPipelineInputs,
 )
+from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import sanitize_straight_path_stabilization_mode
 from openpilot.sunnypilot.custom.lateral.demand.sensor_confidence import (
   SensorConfidenceInputs,
   evaluate_sensor_confidence,
@@ -69,7 +70,8 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
                           yaw_rate: float | None = None,
                           steering_rate_deg: float | None = None,
                           steer_limited: bool = False,
-                          demand_jerk_smoothing_enabled: bool = False) -> LateralDemandPipelineInputs:
+                          demand_jerk_smoothing_enabled: bool = False,
+                          straight_path_stabilization_mode: str = "off") -> LateralDemandPipelineInputs:
   pos = getattr(model_v2, "position", None)
   ori = getattr(model_v2, "orientation", None)
   ori_rate = getattr(model_v2, "orientationRate", None)
@@ -101,6 +103,7 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
     demand_jerk_smoothing_enabled=bool(demand_jerk_smoothing_enabled),
     lane_centering_assist_enabled=bool(lane_centering_assist_enabled),
     curve_memory_enabled=bool(curve_memory_enabled),
+    straight_path_stabilization_mode=sanitize_straight_path_stabilization_mode(straight_path_stabilization_mode),
   )
 
 
@@ -151,6 +154,7 @@ class LateralDemandAdapter:
     self.enabled = False
     self.lane_centering_assist_enabled = False
     self.curve_memory_enabled = False
+    self.straight_path_stabilization_mode = "off"
     self.last_result = None
     self.last_debug = {}
     if params is not None:
@@ -164,8 +168,11 @@ class LateralDemandAdapter:
       self.enabled = bool(p.get_bool("CustomLateralDemandEnabled"))
       self.lane_centering_assist_enabled = bool(p.get_bool("LaneCenteringAssistEnabled"))
       self.curve_memory_enabled = bool(p.get_bool("CurveMemoryEnabled"))
+      mode = _param_string(p, "StraightPathStabilizationMode")
+      self.straight_path_stabilization_mode = sanitize_straight_path_stabilization_mode(mode)
     except Exception:
       self.enabled = False
+      self.straight_path_stabilization_mode = "off"
 
   def clear(self) -> None:
     self.last_result = None
@@ -236,6 +243,7 @@ class LateralDemandAdapter:
         yaw_rate=yaw_rate,
         steering_rate_deg=steering_rate_deg,
         steer_limited=steer_limited,
+        straight_path_stabilization_mode=self.straight_path_stabilization_mode,
       )
       inputs = replace(inputs, smooth_model_path_curvature=True, demand_jerk_smoothing_enabled=True)
       result = self._pipeline.update(inputs)

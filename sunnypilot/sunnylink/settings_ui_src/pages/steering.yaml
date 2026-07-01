@@ -336,6 +336,24 @@ sections:
       - type: param
         key: CustomLateralDemandEnabled
         equals: true
+    - key: StraightPathStabilizationMode
+      widget: multiple_button
+      title: Straight Path Stabilization
+      description: Anchor the requested curvature near straight roads to reduce small lane-centering wiggles. Monitor only
+        computes the candidate without changing steering; Apply uses it live. Keep off unless straight-road tracking feels busy.
+      options:
+      - value: 'off'
+        label: 'Off'
+      - value: shadow
+        label: Monitor only
+      - value: apply
+        label: Apply
+        description: Live anchoring may straighten the requested path on gentle curves; watch lane-centering behavior and
+          switch to Monitor only if tracking degrades.
+      enablement:
+      - type: param
+        key: CustomLateralDemandEnabled
+        equals: true
     - key: CurveMemoryEnabled
       widget: toggle
       title: Corner Curve Memory

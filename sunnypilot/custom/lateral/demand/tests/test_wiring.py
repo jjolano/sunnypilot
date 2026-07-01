@@ -284,3 +284,23 @@ def test_adapter_reset_clears_result_and_pipeline_state():
   assert a.last_result is None
   assert a.last_debug == {}
   assert a._pipeline.previous_desired_curvature == 0.0
+
+
+def test_adapter_sanitizes_unknown_straight_path_stabilization_mode():
+  a = LateralDemandAdapter(FakeParams(
+    CustomLateralDemandEnabled=True,
+    StraightPathStabilizationMode="banana",
+  ))
+  assert a.straight_path_stabilization_mode == "off"
+
+
+def test_adapter_forwards_straight_path_stabilization_mode():
+  a = LateralDemandAdapter(FakeParams(
+    CustomLateralDemandEnabled=True,
+    StraightPathStabilizationMode="apply",
+  ))
+  spy = SpyPipeline()
+  object.__setattr__(a, "_pipeline", spy)
+  a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001))
+  assert spy.inputs is not None
+  assert spy.inputs.straight_path_stabilization_mode == "apply"

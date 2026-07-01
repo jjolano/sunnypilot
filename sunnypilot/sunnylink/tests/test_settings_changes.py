@@ -164,6 +164,25 @@ class TestValidator:
     jsonschema.validate(instance=data, schema=validator)
 
 
+class TestStraightPathStabilizationMode:
+  def test_straight_path_stabilization_mode_options(self, schema):
+    item = _find_item(schema, "StraightPathStabilizationMode")
+    assert item is not None, "StraightPathStabilizationMode item must be present"
+    assert [opt["value"] for opt in item["options"]] == ["off", "shadow", "apply"]
+
+  def test_straight_path_stabilization_mode_gated_by_custom_lateral_demand(self, schema):
+    item = _find_item(schema, "StraightPathStabilizationMode")
+    assert item is not None
+    enablement = item.get("enablement") or []
+    assert any(r.get("type") == "param" and r.get("key") == "CustomLateralDemandEnabled" for r in enablement)
+
+  def test_straight_path_stabilization_default_is_off(self, schema):
+    item = _find_item(schema, "StraightPathStabilizationMode")
+    assert item is not None
+    off_option = next(opt for opt in item["options"] if opt["value"] == "off")
+    assert off_option["label"].lower() == "off"
+
+
 class TestTorqueOptionGeneration:
   def test_torque_versions_match_generated_options(self, schema):
     versions = _load_torque_versions()

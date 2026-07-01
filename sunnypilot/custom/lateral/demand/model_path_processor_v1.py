@@ -136,6 +136,11 @@ class ModelPathProcessorInputs:
   demand_jerk_smoothing_enabled: bool = False
   demand_jerk_smoothing_allowed: bool = False
   lane_change_active: bool = False
+  left_blinker: bool = False
+  right_blinker: bool = False
+  steering_pressed: bool | None = None
+  steer_limited: bool = False
+  straight_path_stabilization_mode: str = "off"
 
 
 @dataclass

@@ -106,6 +106,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Shadow-only scenario attribution for route-log/debug analysis; never affects actuation.
     {"ScenarioContextMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"StraightPathStabilizationMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandDefaultOffMigrated", {PERSISTENT | BACKUP, STRING, ""}},
     {"LongitudinalModeMigrationVersion", {PERSISTENT | BACKUP, STRING, ""}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
