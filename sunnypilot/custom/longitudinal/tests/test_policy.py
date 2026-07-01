@@ -217,6 +217,21 @@ def test_clear_low_speed_breakout_uses_normal_launch_response():
   assert d.a_target == pytest.approx(launch_accel_max(Personality.STANDARD))
 
 
+def test_crawl_launch_ramps_toward_launch_cap_as_lead_opens_gap():
+  # Initial close gap stays on the old damped crawl curve.
+  close = _launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.8, lead_d_rel=7.0,
+                        follow_gap=6.0, seed_a_target=0.0, lead_a_target=0.0)
+  close_d = decide(build_candidates(close), LongitudinalMode.ACC, LIMITS)
+  assert close_d.a_target == pytest.approx(0.16 + (0.8 - 0.4) / 1.5)
+
+  # Same opening lead after it creates usable gap: ramp reaches normal launch accel.
+  open_gap = _launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.8, lead_d_rel=10.0,
+                           follow_gap=6.0, seed_a_target=0.0, lead_a_target=0.0)
+  open_d = decide(build_candidates(open_gap), LongitudinalMode.ACC, LIMITS)
+  assert open_d.a_target > close_d.a_target
+  assert open_d.a_target == pytest.approx(min(launch_accel_max(Personality.STANDARD), LIMITS[1]))
+
+
 def test_launch_does_not_override_a_braking_seed():
   # Safety invariant: even with an opening, authorized lead, a braking MPC seed still binds —
   # the shaper never reduces the MPC's follow decel.

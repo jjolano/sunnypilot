@@ -62,6 +62,11 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
 
 SAFETY_FORCE_SLOW_DECEL = -0.2
 
+# Lead crawl pull-away: keep the damped close-crawl behavior at the initial close gap, but
+# ramp toward the normal personality launch accel once the lead opens usable follow-gap space.
+_LEAD_CRAWL_RAMP_START_EXCESS_M = 1.0
+_LEAD_CRAWL_RAMP_FULL_EXCESS_M = 4.0
+
 # Overspeed coast leeway guards.
 _OVERSPEED_RATE_GUARD_ACCEL = -0.25          # mild braking floor when climbing above leeway
 _OVERSPEED_RATE_GUARD_A_EGO_THRESHOLD = 0.05
@@ -274,21 +279,34 @@ def _lead_crawl_launch_context(scene: LongitudinalScene) -> bool:
   )
 
 
-def _crawl_launch_accel(delta_v: float) -> float:
-  """Gentle for tiny twitches, stronger once the lead is clearly walking, capped."""
+def _crawl_launch_accel(delta_v: float, gap_excess: float, launch_cap: float) -> float:
+  """Gentle for tiny twitches; ramp up when the lead keeps opening usable gap."""
   gentle = delta_v / LEAD_CRAWL_LAUNCH_TAU
   if delta_v <= 0.4:
-    return gentle
-  # ramp up from (0.4 m/s -> 0.16 m/s^2) with a shorter tau once the lead is genuinely moving
-  stronger = 0.16 + (delta_v - 0.4) / 1.5
-  return min(LEAD_CRAWL_ACCEL_MAX, max(gentle, stronger))
+    base = gentle
+  else:
+    # ramp up from (0.4 m/s -> 0.16 m/s^2) with a shorter tau once the lead is genuinely moving
+    stronger = 0.16 + (delta_v - 0.4) / 1.5
+    base = min(LEAD_CRAWL_ACCEL_MAX, max(gentle, stronger))
+  base = min(base, launch_cap)
+  if base >= launch_cap or not math.isfinite(gap_excess) or gap_excess <= _LEAD_CRAWL_RAMP_START_EXCESS_M:
+    return base
+
+  ramp = _clip((gap_excess - _LEAD_CRAWL_RAMP_START_EXCESS_M) /
+               (_LEAD_CRAWL_RAMP_FULL_EXCESS_M - _LEAD_CRAWL_RAMP_START_EXCESS_M), 0.0, 1.0)
+  return base + ramp * (launch_cap - base)
 
 
 def lead_pullaway_accel(scene: LongitudinalScene, personality: Personality) -> float:
   delta_v = max(0.0, scene.lead_v - scene.v_ego)
+  launch_cap = launch_accel_max(personality)
   if _lead_crawl_launch_context(scene):
-    return _crawl_launch_accel(delta_v)
-  return min(launch_accel_max(personality), delta_v / LEAD_LAUNCH_TAU)
+    if math.isfinite(scene.lead_d_rel) and math.isfinite(scene.follow_gap) and scene.follow_gap > 0.0:
+      gap_excess = scene.lead_d_rel - scene.follow_gap
+    else:
+      gap_excess = 0.0
+    return _crawl_launch_accel(delta_v, max(0.0, gap_excess), launch_cap)
+  return min(launch_cap, delta_v / LEAD_LAUNCH_TAU)
 
 
 def stop_approach_accel(scene: LongitudinalScene) -> tuple[float, bool]:
