@@ -70,15 +70,16 @@ SPS_MAX_PATH_Y_STD = 0.45
 SPS_MAX_PATH_DISAGREEMENT = 0.35
 SPS_MIN_SPEED = 12.0
 SPS_MAX_SPEED = 26.0
-SPS_MAX_RAW_LAT_ACCEL = 0.40
-SPS_MAX_TARGET_LAT_ACCEL = 0.40
-SPS_MAX_RAW_TARGET_LAT_ACCEL_DELTA = 0.20
+SPS_MAX_RAW_LAT_ACCEL = 0.60
+SPS_MAX_TARGET_LAT_ACCEL = 0.60
+SPS_MAX_RAW_TARGET_LAT_ACCEL_DELTA = 0.30
 SPS_ENTRY_MAX_RAW_LAT_JERK = 0.8
 SPS_RELEASE_MAX_RAW_LAT_JERK = 1.0
-SPS_MAX_SUPPRESSION_LAT_ACCEL = 0.22
-SPS_ANCHOR_CLIP_LAT_ACCEL = 0.12
+SPS_MAX_SUPPRESSION_LAT_ACCEL = 0.35
+SPS_ANCHOR_CLIP_LAT_ACCEL = 0.02
 SPS_ANCHOR_WINDOW_S = 0.5
 SPS_ANCHOR_WINDOW_FRAMES = int(round(SPS_ANCHOR_WINDOW_S / DT_CTRL))
+SPS_MAX_PAUSE_FRAMES = int(round(1.5 / DT_CTRL))
 SPS_ENTRY_MIN_FRAMES = int(round(0.3 / DT_CTRL))
 SPS_SIGN_FLIP_EXEMPT_LAT_ACCEL = 0.05
 SPS_RISING_FRAMES_THRESHOLD = 3
@@ -249,6 +250,7 @@ class ModelPathProcessor:
     self._sp_rising_count: int = 0
     self._sp_rising_sum: float = 0.0
     self._sp_rising_sign: int = 0
+    self._sp_pause_frames: int = 0
 
   # ---------------------------------------------------------------------------
   # Orchestration
@@ -559,7 +561,6 @@ class ModelPathProcessor:
     hold_frames_remaining: int,
   ) -> ModelPathProcessorResult:
     self._recovering_from_hard_invalid = False
-    self._reset_straight_path_stabilization_state()
     selection = self._select_reference_curvature(inputs, raw_base, fallback_curvature)
     desired_curvature = self._blend(selection.fallback, raw_base, float(np.interp(
       quality, [0.0, LOW_QUALITY_BLEND_THRESHOLD], [LOW_QUALITY_BLEND_MIN_ALPHA, 1.0],
@@ -577,6 +578,10 @@ class ModelPathProcessor:
         inputs.v_ego,
         SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA,
       )
+    if reason in ("low_lane_confidence", "frame_drop"):
+      self._pause_straight_path_stabilization(desired_curvature, f"pause_{reason}")
+    else:
+      self._reset_straight_path_stabilization_state()
     self._reset_curve_exit_history()
     return ModelPathProcessorResult(
       desired_curvature,
@@ -657,12 +662,13 @@ class ModelPathProcessor:
     self._sp_prev_raw_lat_accel = float(a_raw)
 
     # Release gates (wider than entry gates).
-    if abs(a_raw) > 0.50 or abs(a_target) > 0.50:
-      return self._release_straight_path_stabilization(target, "release_large_accel")
-    if abs(a_raw - a_target) > 0.30:
-      return self._release_straight_path_stabilization(target, "release_raw_target_divergence")
-    if abs(raw_jerk) > SPS_RELEASE_MAX_RAW_LAT_JERK:
-      return self._release_straight_path_stabilization(target, "release_high_jerk")
+    has_anchor = len(self._sp_anchor_buffer) >= SPS_ENTRY_MIN_FRAMES
+    if abs(a_raw) > 0.75 or abs(a_target) > 0.75:
+      return self._pause_straight_path_stabilization(target, "release_large_accel")
+    if abs(a_raw - a_target) > 0.45:
+      return self._pause_straight_path_stabilization(target, "release_raw_target_divergence")
+    if abs(raw_jerk) > SPS_RELEASE_MAX_RAW_LAT_JERK and not has_anchor:
+      return self._pause_straight_path_stabilization(target, "release_high_jerk")
     if (self._sp_rising_count >= SPS_RISING_FRAMES_THRESHOLD and
         self._sp_rising_sum > SPS_RISING_CUMULATIVE_LAT_ACCEL):
       return self._release_straight_path_stabilization(target, "release_rising_frames")
@@ -679,7 +685,7 @@ class ModelPathProcessor:
     if inputs.turn_curvature_sign != 0:
       return self._release_straight_path_stabilization(target, "gate_turn_intent")
     if inputs.steer_limited:
-      return self._release_straight_path_stabilization(target, "gate_steer_limited")
+      return self._pause_straight_path_stabilization(target, "gate_steer_limited")
     if reason not in ("ok", "low_lane_confidence"):
       return self._release_straight_path_stabilization(target, f"gate_reason_{reason}")
     if path_disagreement is None:
@@ -695,15 +701,16 @@ class ModelPathProcessor:
     if path_disagreement is not None and path_disagreement > SPS_MAX_PATH_DISAGREEMENT:
       return self._release_straight_path_stabilization(target, "gate_path_disagreement")
     if abs(a_raw) > SPS_MAX_RAW_LAT_ACCEL:
-      return self._release_straight_path_stabilization(target, "gate_raw_accel")
+      return self._pause_straight_path_stabilization(target, "gate_raw_accel")
     if abs(a_target) > SPS_MAX_TARGET_LAT_ACCEL:
-      return self._release_straight_path_stabilization(target, "gate_target_accel")
+      return self._pause_straight_path_stabilization(target, "gate_target_accel")
     if abs(a_raw - a_target) > SPS_MAX_RAW_TARGET_LAT_ACCEL_DELTA:
-      return self._release_straight_path_stabilization(target, "gate_raw_target_delta")
-    if abs(raw_jerk) > SPS_ENTRY_MAX_RAW_LAT_JERK:
-      return self._release_straight_path_stabilization(target, "gate_jerk")
+      return self._pause_straight_path_stabilization(target, "gate_raw_target_delta")
+    if abs(raw_jerk) > SPS_ENTRY_MAX_RAW_LAT_JERK and not has_anchor:
+      return self._pause_straight_path_stabilization(target, "gate_jerk")
 
     # Require sustained clean evidence before anchoring can affect output.
+    self._sp_pause_frames = 0
     if len(self._sp_anchor_buffer) < SPS_ENTRY_MIN_FRAMES:
       self._sp_anchor_buffer.append(a_raw)
       return target, False, False, target, 0.0, "warming"
@@ -719,11 +726,13 @@ class ModelPathProcessor:
     candidate_curvature = a_candidate / speed_sq
 
     # Sign-flip guard vs raw (allowed only when raw lat accel is near zero).
-    if candidate_curvature * raw_base < 0.0 and abs(a_raw) >= SPS_SIGN_FLIP_EXEMPT_LAT_ACCEL:
+    if (candidate_curvature * raw_base < 0.0 and
+        min(abs(a_raw), abs(a_candidate)) >= SPS_SIGN_FLIP_EXEMPT_LAT_ACCEL):
       return self._release_straight_path_stabilization(target, "release_sign_flip")
 
-    # Commit current sample now that it passed all gates.
-    self._sp_anchor_buffer.append(a_raw)
+    # Commit the bounded candidate, not raw wobble, so the anchor does not chase
+    # the same near-zero sign flips it is suppressing.
+    self._sp_anchor_buffer.append(a_candidate)
 
     applied = mode == "apply"
     output = candidate_curvature if applied else target
@@ -735,6 +744,16 @@ class ModelPathProcessor:
     reason: str,
   ) -> tuple[float, bool, bool, float, float, str]:
     self._reset_straight_path_stabilization_state()
+    return target, False, False, 0.0, 0.0, reason
+
+  def _pause_straight_path_stabilization(
+    self,
+    target: float,
+    reason: str,
+  ) -> tuple[float, bool, bool, float, float, str]:
+    self._sp_pause_frames += 1
+    if self._sp_pause_frames > SPS_MAX_PAUSE_FRAMES:
+      return self._release_straight_path_stabilization(target, "pause_timeout")
     return target, False, False, 0.0, 0.0, reason
 
   # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   DT_CTRL,
   ModelPathProcessor,
   ModelPathProcessorInputs,
+  SPS_ANCHOR_CLIP_LAT_ACCEL,
   STRAIGHT_ROAD_DAMPING_BLEND_BP_LAT_ACCEL,
   STRAIGHT_ROAD_DAMPING_FULL_SPEED,
   STRAIGHT_ROAD_DAMPING_MAX_LAT_ACCEL,
@@ -172,6 +173,7 @@ def _sps_inputs(
   right_blinker: bool = False,
   steer_limited: bool = False,
   y_std: float = 0.05,
+  lane_probs: list[float] | None = None,
   frame_drop_perc: float = 0.0,
   model_age_s: float = 0.0,
   smooth_model_path_curvature: bool = False,
@@ -181,7 +183,7 @@ def _sps_inputs(
   y_stds = [y_std] * N
   yaws = [curvature * x for x in xs]
   yaw_rates = [curvature * v_ego] * N
-  lane_probs = [0.9, 0.9, 0.9, 0.9]
+  lane_probs = lane_probs if lane_probs is not None else [0.9, 0.9, 0.9, 0.9]
 
   return ModelPathProcessorInputs(
     lat_active=True,
@@ -248,7 +250,9 @@ def test_sps_shadow_computes_candidate_but_unchanged():
   assert result.straight_path_stabilization_candidate_curvature != pytest.approx(0.0, abs=1e-9)
   # Shadow mode leaves the processed curvature unchanged.
   assert result.desired_curvature == pytest.approx(k, abs=1e-9)
-  assert abs(result.straight_path_stabilization_candidate_curvature * speed_sq) <= 0.12 + 1e-6
+  assert abs(
+    result.straight_path_stabilization_candidate_curvature * speed_sq - result.straight_path_stabilization_anchor_lat_accel
+  ) <= SPS_ANCHOR_CLIP_LAT_ACCEL + 1e-6
 
 
 def test_sps_apply_uses_candidate_when_active():
@@ -267,7 +271,9 @@ def test_sps_apply_uses_candidate_when_active():
   assert result.straight_path_stabilization_applied is True
   assert result.straight_path_stabilization_reason == "ok"
   assert result.desired_curvature == pytest.approx(k, abs=1e-9)
-  assert abs(result.straight_path_stabilization_candidate_curvature * speed_sq) <= 0.12 + 1e-6
+  assert abs(
+    result.straight_path_stabilization_candidate_curvature * speed_sq - result.straight_path_stabilization_anchor_lat_accel
+  ) <= SPS_ANCHOR_CLIP_LAT_ACCEL + 1e-6
 
 
 def test_sps_apply_waits_for_sustained_clean_path():
@@ -305,9 +311,49 @@ def test_sps_apply_reduces_slow_near_straight_wiggle():
     max_out_lat_accel = max(max_out_lat_accel, abs(result.desired_curvature * speed_sq))
 
   assert active_count > n_frames // 2
-  # Clipped deviation from anchor is at most 0.12; allow small overshoot for the
+  # Clipped deviation from anchor is bounded; allow small overshoot for the
   # first frame before the anchor is populated.
-  assert max_out_lat_accel <= amplitude + 0.12 + 0.02
+  assert max_out_lat_accel <= amplitude + SPS_ANCHOR_CLIP_LAT_ACCEL + 0.02
+
+
+def test_sps_preserves_anchor_through_transient_steer_limit():
+  proc = ModelPathProcessor()
+  v_ego = 20.0
+  k = 0.0002
+
+  for _ in range(55):
+    proc.update(_sps_inputs(v_ego=v_ego, curvature=k, mode="apply"))
+  assert proc.update(_sps_inputs(v_ego=v_ego, curvature=k, mode="apply")).straight_path_stabilization_active is True
+
+  limited = proc.update(_sps_inputs(v_ego=v_ego, curvature=k, mode="apply", steer_limited=True))
+  assert limited.straight_path_stabilization_active is False
+  assert limited.straight_path_stabilization_reason == "gate_steer_limited"
+
+  clean = proc.update(_sps_inputs(v_ego=v_ego, curvature=k, mode="apply"))
+  assert clean.straight_path_stabilization_active is True
+  assert clean.straight_path_stabilization_reason == "ok"
+
+
+def test_sps_anchors_first_near_straight_redetect_after_lane_dropout():
+  proc = ModelPathProcessor()
+  v_ego = 20.0
+  speed_sq = v_ego * v_ego
+  straight_k = 0.0001  # 0.04 m/s^2
+  redetect_k = -0.0006  # -0.24 m/s^2: near-straight but a visible jump
+
+  for _ in range(55):
+    proc.update(_sps_inputs(v_ego=v_ego, curvature=straight_k, mode="apply"))
+  active = proc.update(_sps_inputs(v_ego=v_ego, curvature=straight_k, mode="apply"))
+  assert active.straight_path_stabilization_active is True
+
+  for _ in range(10):
+    dropout = proc.update(_sps_inputs(v_ego=v_ego, curvature=straight_k, mode="apply", lane_probs=[0.9, 0.0, 0.0, 0.9]))
+    assert dropout.reason == "low_lane_confidence"
+
+  redetect = proc.update(_sps_inputs(v_ego=v_ego, curvature=redetect_k, mode="apply"))
+  assert redetect.straight_path_stabilization_active is True
+  assert redetect.straight_path_stabilization_reason == "ok"
+  assert abs(redetect.desired_curvature * speed_sq) < abs(redetect_k * speed_sq)
 
 
 def test_sps_releases_on_curve_entry():
