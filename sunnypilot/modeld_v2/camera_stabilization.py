@@ -37,6 +37,11 @@ def sanitize_camera_stabilization_mode(value):
   return text if text in _CAMERA_STABILIZATION_MODES else "off"
 
 
+def camera_stabilization_blocks_camera_odometry(value):
+  """Apply mode can make camera odometry virtual-camera motion."""
+  return sanitize_camera_stabilization_mode(value) == "apply"
+
+
 def skew(v):
   """3x3 skew-symmetric matrix from a length-3 vector."""
   v = np.asarray(v, dtype=np.float64)

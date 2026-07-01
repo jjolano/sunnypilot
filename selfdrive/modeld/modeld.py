@@ -277,9 +277,9 @@ def main(demo=False):
     extra_correction = np.zeros(3, dtype=np.float64)
     main_clipped = np.zeros(3, dtype=bool)
     extra_clipped = np.zeros(3, dtype=bool)
+    camera_stabilization_mode = sanitize_camera_stabilization_mode(params.get("CameraStabilizationMode", return_default=True))
     if sm.frame % 60 == 0:
       model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
-      camera_stabilization_mode = sanitize_camera_stabilization_mode(params.get("CameraStabilizationMode", return_default=True))
     lat_delay = model.lat_delay + LAT_SMOOTH_SECONDS
 
     # Drain raw gyro messages directly; SubMaster conflates and drops samples.
@@ -406,8 +406,7 @@ def main(demo=False):
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 
-      fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames,
-                    meta_main.timestamp_eof, live_calib_seen and not stabilization_applied)
+      fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, live_calib_seen)
       pm.send('modelV2', modelv2_send)
       pm.send('drivingModelData', drivingdata_send)
       pm.send('cameraOdometry', posenet_send)

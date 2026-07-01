@@ -15,6 +15,7 @@ from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE, get_warp
 from openpilot.sunnypilot.modeld_v2.camera_stabilization import (
   CameraStabilizer,
   CAMERA_STABILIZATION_PARAM,
+  camera_stabilization_blocks_camera_odometry,
   rot_from_rotvec,
   rotvec_from_rot,
   sanitize_camera_stabilization_mode,
@@ -65,6 +66,12 @@ class TestSanitizeCameraStabilizationMode:
     assert sanitize_camera_stabilization_mode("SHADOW") == "shadow"
     assert sanitize_camera_stabilization_mode("apply") == "apply"
     assert sanitize_camera_stabilization_mode(" Apply ") == "apply"
+
+  def test_camera_odometry_blocked_only_in_apply(self):
+    assert camera_stabilization_blocks_camera_odometry("apply")
+    assert not camera_stabilization_blocks_camera_odometry("shadow")
+    assert not camera_stabilization_blocks_camera_odometry("off")
+    assert not camera_stabilization_blocks_camera_odometry("bad")
 
 
 class TestRodriguesHelpers:

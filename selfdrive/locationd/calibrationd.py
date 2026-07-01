@@ -19,6 +19,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process
 from openpilot.common.transformations.orientation import rot_from_euler, euler_from_rot
 from openpilot.common.swaglog import cloudlog
+from openpilot.sunnypilot.modeld_v2.camera_stabilization import camera_stabilization_blocks_camera_odometry
 
 MIN_SPEED_FILTER = 15 * CV.MPH_TO_MS
 MAX_VEL_ANGLE_STD = np.radians(0.25)
@@ -266,6 +267,7 @@ def main() -> NoReturn:
 
   params_reader = Params()
   CP = messaging.log_from_bytes(params_reader.get("CarParams", block=True), car.CarParams)
+  camera_odometry_blocked = False
 
   calibrator = Calibrator(param_put=True)
   calibrator.not_car = CP.notCar
@@ -273,8 +275,10 @@ def main() -> NoReturn:
   while 1:
     timeout = 0 if sm.frame == -1 else 100
     sm.update(timeout)
+    camera_odometry_blocked = camera_stabilization_blocks_camera_odometry(
+      params_reader.get("CameraStabilizationMode", return_default=True))
 
-    if sm.updated['cameraOdometry'] and sm.valid['cameraOdometry']:
+    if sm.updated['cameraOdometry'] and sm.valid['cameraOdometry'] and not camera_odometry_blocked:
       calibrator.handle_v_ego(sm['carState'].vEgo)
       new_rpy = calibrator.handle_cam_odom(sm['cameraOdometry'].trans,
                                            sm['cameraOdometry'].rot,

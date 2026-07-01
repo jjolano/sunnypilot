@@ -15,6 +15,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.locationd.helpers import rotate_std
 from openpilot.selfdrive.locationd.models.pose_kf import PoseKalman, States
 from openpilot.selfdrive.locationd.models.constants import ObservationKind, GENERATED_DIR
+from openpilot.sunnypilot.modeld_v2.camera_stabilization import camera_stabilization_blocks_camera_odometry
 
 ACCEL_SANITY_CHECK = 100.0  # m/s^2
 ROTATION_SANITY_CHECK = 10.0  # rad/s
@@ -272,6 +273,7 @@ def main():
   sensor_alive, sensor_valid, sensor_recv_time = defaultdict(bool), defaultdict(bool), defaultdict(float)
 
   params = Params()
+  camera_odometry_blocked = False
 
   estimator = LocationEstimator(DEBUG)
 
@@ -293,6 +295,8 @@ def main():
 
   while True:
     sm.update()
+    camera_odometry_blocked = camera_stabilization_blocks_camera_odometry(
+      params.get("CameraStabilizationMode", return_default=True))
 
     acc_msgs, gyro_msgs = (messaging.drain_sock(sock) for sock in sensor_sockets)
 
@@ -303,6 +307,9 @@ def main():
         msgs.append((t, valid, which, data))
       for which, updated in sm.updated.items():
         if not updated:
+          continue
+        if which == "cameraOdometry" and camera_odometry_blocked:
+          observation_input_invalid[which] = 0
           continue
         t, valid, data = sm.logMonoTime[which], sm.valid[which], sm[which]
         msgs.append((t, valid, which, data))
