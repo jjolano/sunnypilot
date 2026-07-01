@@ -70,6 +70,7 @@ DAMPING_TAU_S = [0.16, 0.10, 0.055]
 DEMAND_JERK_SMOOTH_MIN_SPEED = 8.0
 DEMAND_JERK_SMOOTH_MAX_SPEED = 22.0
 DEMAND_JERK_SMOOTH_MIN_QUALITY = 0.95
+DEMAND_JERK_SMOOTH_LOW_LANE_CONFIDENCE_MIN_QUALITY = 0.85
 DEMAND_JERK_SMOOTH_MAX_FRAME_DROP_PERC = 5.0
 DEMAND_JERK_SMOOTH_MIN_LANE_PROB = 0.65
 DEMAND_JERK_SMOOTH_MAX_PATH_Y_STD = 0.45
@@ -621,8 +622,11 @@ class ModelPathProcessor:
     self._update_curve_exit_fall_history(raw_base, v_ego)
 
     max_abs = max(abs(raw_base), abs(target))
-    if max_abs <= DEMAND_JERK_SMOOTH_MAX_CURVATURE and max_abs * v_ego * v_ego <= DEMAND_JERK_SMOOTH_MAX_LAT_ACCEL:
+    near_straight = max_abs <= DEMAND_JERK_SMOOTH_MAX_CURVATURE and max_abs * v_ego * v_ego <= DEMAND_JERK_SMOOTH_MAX_LAT_ACCEL
+    if near_straight:
       return True
+    if reason == "low_lane_confidence":
+      return False
     return self._curve_exit_smoothing_eligible(raw_base, target, v_ego)
 
   def _demand_jerk_smoothing_gates_ok(
@@ -638,7 +642,14 @@ class ModelPathProcessor:
       return False
     if not inputs.smooth_model_path_curvature or inputs.lane_change_active:
       return False
-    if reason != "ok" or quality < DEMAND_JERK_SMOOTH_MIN_QUALITY:
+    low_lane_confidence = reason == "low_lane_confidence"
+    if reason == "ok":
+      if quality < DEMAND_JERK_SMOOTH_MIN_QUALITY or not self._central_lane_confidence_ok(inputs.lane_line_probs):
+        return False
+    elif low_lane_confidence:
+      if quality < DEMAND_JERK_SMOOTH_LOW_LANE_CONFIDENCE_MIN_QUALITY:
+        return False
+    else:
       return False
     v_ego = float(inputs.v_ego)
     if not math.isfinite(v_ego) or v_ego < DEMAND_JERK_SMOOTH_MIN_SPEED or v_ego > DEMAND_JERK_SMOOTH_MAX_SPEED:
@@ -650,8 +661,6 @@ class ModelPathProcessor:
     if math.isfinite(inputs.frame_drop_perc) and inputs.frame_drop_perc > DEMAND_JERK_SMOOTH_MAX_FRAME_DROP_PERC:
       return False
     if path_disagreement is not None and path_disagreement > DEMAND_JERK_SMOOTH_MAX_PATH_DISAGREEMENT:
-      return False
-    if not self._central_lane_confidence_ok(inputs.lane_line_probs):
       return False
     if not self._path_y_std_ok(inputs.position_y_std):
       return False

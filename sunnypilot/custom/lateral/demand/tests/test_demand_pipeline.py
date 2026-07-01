@@ -589,6 +589,48 @@ def test_curve_exit_guard_activates_through_pipeline():
   assert lag_violations == 0
 
 
+def test_low_lane_confidence_near_straight_demand_smoothing_reduces_wobble():
+  p = LateralDemandPipeline(DT)
+  v_ego = 15.0
+  raw_values = [0.0] * 3 + [0.0012, -0.0012] * 12
+  processed_values = []
+  smoothing_active = False
+  reasons = set()
+
+  for raw in raw_values:
+    r = p.update(valid_inputs(
+      v_ego=v_ego,
+      curvature=raw,
+      measured_curvature=0.0,
+      lane_line_probs=[0.9, 0.2, 0.2, 0.9],
+      smooth_model_path_curvature=True,
+      demand_jerk_smoothing_enabled=True,
+      steering_pressed=False,
+    ))
+    processed_values.append(float(r.demand.processed_curvature))
+    smoothing_active = smoothing_active or bool(r.debug["demand_jerk_smoothing_active"])
+    reasons.add(str(r.debug["model_path_reason"]))
+
+  raw_pp = max(raw_values) - min(raw_values)
+  processed_pp = max(processed_values[3:]) - min(processed_values[3:])
+
+  assert "low_lane_confidence" in reasons
+  assert smoothing_active is True
+  assert processed_pp < raw_pp
+
+
+def test_low_lane_confidence_demand_smoothing_does_not_smooth_larger_curve():
+  proc = ModelPathProcessor()
+  inputs = _mpp_inputs(v_ego=15.0, lane_line_probs=[0.9, 0.2, 0.2, 0.9])
+
+  candidate, active, _, _ = proc._apply_demand_jerk_smoothing(
+    inputs, raw_base=0.0030, target=0.0030, quality=0.90, reason="low_lane_confidence", path_disagreement=0.0,
+  )
+
+  assert active is False
+  assert candidate == pytest.approx(0.0030)
+
+
 def test_spatial_smoothing_blend_is_bounded_by_quality_and_trust():
   v_ego = 20.0
   desired_curvature = 0.001
