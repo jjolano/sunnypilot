@@ -35,6 +35,7 @@ def test_plan_order_matches_device_top_level():
     ("control", "AutoLaneChangeBsmDelay"),
     ("control", "CustomLateralDemandEnabled"),
     ("control", "LaneCenteringAssistEnabled"),
+    ("control", "StraightPathStabilizationMode"),
     ("control", "CurveMemoryEnabled"),       # sub_items, inlined after their parent toggle
   ]
 
