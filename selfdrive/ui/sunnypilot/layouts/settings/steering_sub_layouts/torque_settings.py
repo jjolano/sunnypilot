@@ -29,6 +29,7 @@ from openpilot.sunnypilot.custom.lateral.torque_safety import (
   TORQUE_OVERRIDE_FRICTION_DEFAULT,
   validate_torque_override_friction,
   validate_torque_override_lat_accel_factor,
+  validate_roll_comp_gain_mode,
 )
 
 TORQUE_VERSIONS_PATH = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "controls", "lib", "latcontrol_torque_versions.json")
@@ -41,6 +42,7 @@ class TorqueSettingsLayout(Widget):
     self._back_button.set_click_callback(back_btn_callback)
     self._torque_version_dialog: TreeOptionDialog | None = None
     self._speed_adaptive_mode_dialog: TreeOptionDialog | None = None
+    self._roll_comp_gain_mode_dialog: TreeOptionDialog | None = None
     self.cached_torque_versions = {}
     self._load_versions()
     self._pending_lat_accel_factor = self._read_scaled_torque_value(
@@ -80,6 +82,13 @@ class TorqueSettingsLayout(Widget):
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_speed_adaptive_mode_dialog,
     )
+    self._roll_comp_gain_mode = ListItemSP(
+      title=tr("Roll Compensation Gain"),
+      description=tr("Learn how much extra torque is needed to hold lane on roads with crown or cross-slope. " +
+                     "Monitor only mode collects data without changing steering; turn Off to stop learning."),
+      action_item=NoElideButtonAction(tr("SELECT")),
+      callback=self._show_roll_comp_gain_mode_dialog,
+    )
     self._custom_tune_toggle = toggle_item_sp(
       param="CustomTorqueParams",
       title=lambda: tr("Enable Custom Tuning"),
@@ -99,7 +108,8 @@ class TorqueSettingsLayout(Widget):
     self._torque_lat_accel_factor = option_item_sp(
       title=lambda: tr("Lateral Acceleration Factor"),
       param="TorqueParamsOverrideLatAccelFactor",
-      description=tr("Adjusts how strongly torque maps to lateral acceleration. In Real-Time mode this can affect steering immediately; revert by disabling Manual Real-Time Tuning or Custom Tuning."),
+      description=tr("Adjusts how strongly torque maps to lateral acceleration. In Real-Time mode this can affect steering " +
+                     "immediately; revert by disabling Manual Real-Time Tuning or Custom Tuning."),
       min_value=int(TORQUE_OVERRIDE_LAT_ACCEL_FACTOR_MIN * 100),
       max_value=int(TORQUE_OVERRIDE_LAT_ACCEL_FACTOR_MAX * 100),
       value_change_step=1,
@@ -113,7 +123,8 @@ class TorqueSettingsLayout(Widget):
     self._torque_friction = option_item_sp(
       title=lambda: tr("Friction"),
       param="TorqueParamsOverrideFriction",
-      description=tr("Adjusts friction compensation for torque steering. In Real-Time mode this can affect steering immediately; revert by disabling Manual Real-Time Tuning or Custom Tuning."),
+      description=tr("Adjusts friction compensation for torque steering. In Real-Time mode this can affect steering " +
+                     "immediately; revert by disabling Manual Real-Time Tuning or Custom Tuning."),
       min_value=int(TORQUE_OVERRIDE_FRICTION_MIN * 100),
       max_value=int(TORQUE_OVERRIDE_FRICTION_MAX * 100),
       value_change_step=1,
@@ -137,6 +148,7 @@ class TorqueSettingsLayout(Widget):
       self._self_tune_toggle,
       self._relaxed_tune_toggle,
       self._speed_adaptive_mode,
+      self._roll_comp_gain_mode,
       self._custom_tune_toggle,
       self._torque_prams_override_toggle,
       self._torque_lat_accel_factor,
@@ -197,6 +209,7 @@ class TorqueSettingsLayout(Widget):
     self._self_tune_toggle.action_item.set_enabled(ui_state.is_offroad())
     self._relaxed_tune_toggle.action_item.set_enabled(ui_state.is_offroad() and self._self_tune_toggle.action_item.get_state())
     self._speed_adaptive_mode.action_item.set_enabled(ui_state.is_offroad())
+    self._roll_comp_gain_mode.action_item.set_enabled(ui_state.is_offroad())
     self._custom_tune_toggle.action_item.set_enabled(ui_state.is_offroad())
     custom_tune_enabled = self._custom_tune_toggle.action_item.get_state()
     self._torque_prams_override_toggle.set_visible(custom_tune_enabled)
@@ -228,6 +241,8 @@ class TorqueSettingsLayout(Widget):
     self._torque_control_versions.action_item.set_value(self._get_current_torque_version_label())
     self._torque_control_versions.action_item.set_enabled(ui_state.is_offroad())
     self._speed_adaptive_mode.action_item.set_value(self._get_current_speed_mode_label())
+    self._roll_comp_gain_mode.action_item.set_value(self._get_current_roll_comp_mode_label())
+
 
   def _render(self, rect):
     self._back_button.set_position(self._rect.x, self._rect.y + 20)
@@ -263,6 +278,15 @@ class TorqueSettingsLayout(Widget):
       mode = "off"
     return {"off": tr("Off"), "shadow": tr("Learn only"), "apply": tr("Apply learned curve")}.get(mode, tr("Off"))
 
+  def _get_current_roll_comp_mode_label(self):
+    mode = ui_state.params.get("RollCompGainMode") or b"off"
+    try:
+      mode = mode.decode() if isinstance(mode, bytes) else str(mode)
+    except Exception:
+      mode = "off"
+    mode = validate_roll_comp_gain_mode(mode)
+    return {"off": tr("Off"), "shadow": tr("Learn only")}.get(mode, tr("Off"))
+
   def _show_speed_adaptive_mode_dialog(self):
     nodes = [TreeNode(tr("Off")), TreeNode(tr("Learn only")), TreeNode(tr("Apply learned curve"))]
     folders = [TreeFolder("", nodes)]
@@ -294,6 +318,38 @@ class TorqueSettingsLayout(Widget):
       on_exit=handle_selection,
     )
     gui_app.push_widget(self._speed_adaptive_mode_dialog)
+
+  def _show_roll_comp_gain_mode_dialog(self):
+    nodes = [TreeNode(tr("Off")), TreeNode(tr("Learn only"))]
+    folders = [TreeFolder("", nodes)]
+    current_label = self._get_current_roll_comp_mode_label()
+
+    def handle_selection(result: int):
+      if ui_state.is_onroad() or ui_state.engaged:
+        self._roll_comp_gain_mode_dialog = None
+        return
+      if result == DialogResult.CONFIRM and self._roll_comp_gain_mode_dialog:
+        selected = self._roll_comp_gain_mode_dialog.selection_ref
+        mapping = {tr("Off"): "off", tr("Learn only"): "shadow"}
+        mode = mapping.get(selected, "off")
+        if mode == "off":
+          ui_state.params.remove("RollCompGainMode")
+        else:
+          ui_state.params.put("RollCompGainMode", mode)
+      self._roll_comp_gain_mode_dialog = None
+
+    # Safety gate: roll-comp gain mode changes affect torque steering and are offroad-only.
+    if ui_state.is_onroad() or ui_state.engaged:
+      return
+
+    self._roll_comp_gain_mode_dialog = TreeOptionDialog(
+      tr("Select Roll Compensation Gain Mode"),
+      folders,
+      current_ref=current_label,
+      option_font_weight=FontWeight.UNIFONT,
+      on_exit=handle_selection,
+    )
+    gui_app.push_widget(self._roll_comp_gain_mode_dialog)
 
   def _show_torque_version_dialog(self):
     options_map = {}

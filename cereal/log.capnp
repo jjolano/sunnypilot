@@ -2413,6 +2413,12 @@ struct LiveTorqueParametersData {
   epsCommandTorqueLatest @21 :Float32;
   epsDeltaMean @22 :Float32;
   epsDeltaMax @23 :Float32;
+
+  # Phase 3 shadow-only roll-compensation gain learner telemetry.
+  rollCompGainLearned @24 :Float32;
+  rollCompGainPoints @25 :UInt32;
+  rollCompGainSpan @26 :Float32;
+  rollCompGainValid @27 :Bool;
 }
 
 struct LiveDelayData {

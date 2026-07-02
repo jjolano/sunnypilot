@@ -104,6 +104,11 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert debug_enum.values == ["off", "log"]
   assert debug_enum.labels == ["Off", "Log"]
 
+  roll_enum = homogeneous_string_options(find_item(STEERING, "RollCompGainMode"))
+  assert roll_enum is not None
+  assert roll_enum.values == ["off", "shadow"]
+  assert roll_enum.labels == ["Off", "Learn only"]
+
   cut_in_enum = homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode"))
   assert cut_in_enum is not None
   assert cut_in_enum.values == ["off", "shadow", "apply"]
@@ -141,6 +146,16 @@ def test_longitudinal_debug_trace_string_index_defaults_to_off():
   assert string_option_index("off", enum, "LongitudinalDebugTraceMode") == 0
   assert string_option_index("log", enum, "LongitudinalDebugTraceMode") == 1
   assert string_option_index("bad", enum, "LongitudinalDebugTraceMode") == 0
+
+
+def test_roll_comp_gain_string_index_defaults_to_off():
+  enum = homogeneous_string_options(find_item(STEERING, "RollCompGainMode"))
+  assert enum is not None
+  assert string_option_index("", enum, "RollCompGainMode") == 0
+  assert string_option_index("off", enum, "RollCompGainMode") == 0
+  assert string_option_index("shadow", enum, "RollCompGainMode") == 1
+  assert string_option_index("apply", enum, "RollCompGainMode") == 0  # apply not exposed yet
+  assert string_option_index("bad", enum, "RollCompGainMode") == 0
 
 
 def test_shadow_observability_string_indexes_default_to_off():

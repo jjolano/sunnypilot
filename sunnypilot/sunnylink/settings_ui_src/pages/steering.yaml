@@ -178,6 +178,19 @@ sections:
         label: Apply learned curve
       enablement:
       - $ref: '#/macros/offroad'
+    - key: RollCompGainMode
+      widget: multiple_button
+      title: Roll Compensation Gain
+      description: Learn how much extra torque is needed to hold lane on roads with crown or cross-slope. Monitor only mode
+        collects data without changing steering; turn Off to stop learning.
+      requires_attestation: true
+      options:
+      - value: 'off'
+        label: 'Off'
+      - value: shadow
+        label: Learn only
+      enablement:
+      - $ref: '#/macros/offroad'
     - key: LiveTorqueParamsRelaxedToggle
       widget: toggle
       title: Less Restrict Settings for Self-Tune (Beta)

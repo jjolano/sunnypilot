@@ -175,7 +175,7 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     if len(self.raw_points.get('steering_torque_eps', [])):
       times = []
       values = []
-      for tt, vv in zip(self.raw_points['carState_t'], self.raw_points['steering_torque_eps']):
+      for tt, vv in zip(self.raw_points['carState_t'], self.raw_points['steering_torque_eps'], strict=True):
         if np.isfinite(vv):
           times.append(tt)
           values.append(vv)
@@ -248,28 +248,37 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         vego = np.interp(t, self.raw_points['carState_t'], self.raw_points['vego'])
         steer = np.interp(t, self.raw_points['carOutput_t'], self.raw_points['steer_torque']).item()
         lateral_acc = (vego * yaw_rate) - (np.sin(roll) * ACCELERATION_DUE_TO_GRAVITY).item()
-        if all(lat_active) and not any(steer_override) and (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
-          if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
-            self.add_torque_learning_point(steer, lateral_acc, vego)
-            self.filtered_points.add_point(steer, lateral_acc)
-            self.update_eps_shadow_stats(t, steer)
+        if all(lat_active) and not any(steer_override):
+          # Phase 3: shadow-only roll-compensation gain learning. Runs under the
+          # same outer lat-active/no-override gate and applies its own steady,
+          # high-speed collection rules inside the extension.
+          if len(self.raw_points['steering_rate_deg']):
+            steering_rate = np.interp(t, self.raw_points['carState_t'], self.raw_points['steering_rate_deg']).item()
+          else:
+            steering_rate = None
+          self.collect_shadow_learning_points(steer, lateral_acc, vego, roll, yaw_rate, steering_rate)
 
-          # Phase 0b: shadow-only disturbance classification. Does not suppress
-          # learning points; only updates observability counters.
-          steering_rate = np.interp(t, self.raw_points['carState_t'], self.raw_points['steering_rate_deg']).item() if len(self.raw_points['steering_rate_deg']) else None
-          sample = LateralSample.from_torqued_inputs(
-            t=t,
-            v_ego=vego,
-            lat_active=True,
-            steering_pressed=any(steer_override),
-            lateral_acc=lateral_acc,
-            steer=steer,
-            steering_rate_deg=steering_rate,
-          )
-          self.shadow_classify_learning_point(sample)
+          if (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
+            if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
+              self.add_torque_learning_point(steer, lateral_acc, vego)
+              self.filtered_points.add_point(steer, lateral_acc)
+              self.update_eps_shadow_stats(t, steer)
 
-          if self.track_all_points:
-            self.all_torque_points.append([steer, lateral_acc])
+            # Phase 0b: shadow-only disturbance classification. Does not suppress
+            # learning points; only updates observability counters.
+            sample = LateralSample.from_torqued_inputs(
+              t=t,
+              v_ego=vego,
+              lat_active=True,
+              steering_pressed=any(steer_override),
+              lateral_acc=lateral_acc,
+              steer=steer,
+              steering_rate_deg=steering_rate,
+            )
+            self.shadow_classify_learning_point(sample)
+
+            if self.track_all_points:
+              self.all_torque_points.append([steer, lateral_acc])
 
   def get_msg(self, valid=True, with_points=False):
     msg = messaging.new_message('liveTorqueParameters')
@@ -334,6 +343,13 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.epsCommandTorqueLatest = float(self.eps_command_torque_latest)
     liveTorqueParameters.epsDeltaMean = float(self.eps_delta_sum / self.eps_sample_count if self.eps_sample_count > 0 else 0.0)
     liveTorqueParameters.epsDeltaMax = float(self.eps_delta_max)
+
+    # Phase 3 shadow-only roll-compensation gain telemetry.
+    self.update_roll_comp_telemetry()
+    liveTorqueParameters.rollCompGainLearned = self.roll_comp_profile['gain']
+    liveTorqueParameters.rollCompGainPoints = self.roll_comp_profile['points']
+    liveTorqueParameters.rollCompGainSpan = self.roll_comp_profile['span']
+    liveTorqueParameters.rollCompGainValid = self.roll_comp_profile['valid']
     return msg
 
 

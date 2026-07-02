@@ -60,6 +60,7 @@ BLOCKED_PARAMS = {
   "LateralManeuverMode",        # Test-only driving mode
   "LongitudinalManeuverMode",   # Test-only driving mode
   "LiveTorqueSpeedAdaptiveParams",  # Hidden live steering profile; generated locally only
+  "RollCompGainParams",       # Hidden live roll-compensation profile; generated locally only
   "OnroadCycleRequested",      # Prevent remote cycle trigger
   "ParamsVersion",         # Device-managed version counter
   "SshEnabled",           # Remote shell access must stay local-only
@@ -75,6 +76,7 @@ SAFETY_CRITICAL_REMOTE_GATED_PARAMS = {
   "LiveTorqueParamsToggle",
   "LiveTorqueParamsRelaxedToggle",
   "LiveTorqueSpeedAdaptiveMode",
+  "RollCompGainMode",
   "EnforceTorqueControl",
   "TorqueControlTune",
   "CustomTorqueParams",
@@ -111,6 +113,7 @@ SENSITIVE_READ_DENY_SET = {
   "LivestreamEncoderBitrate",
   "LiveTorqueParameters",
   "LiveTorqueSpeedAdaptiveParams",
+  "RollCompGainParams",
   "SecOCKey",
   "TailscaleAuthURL",
 }
