@@ -62,6 +62,11 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
 
 SAFETY_FORCE_SLOW_DECEL = -0.2
 
+# Early, non-committing model-slowdown caution: fresh model desired decel below this
+# threshold, before shouldStop / stop distance are available, produces a bounded
+# stop_approach candidate capped at the existing precautionary decel.
+EARLY_MODEL_SLOWDOWN_DECEL_THRESHOLD = -0.2
+
 # Lead crawl pull-away: keep the damped close-crawl behavior at the initial close gap, but
 # ramp toward the normal personality launch accel once the lead opens usable follow-gap space.
 _LEAD_CRAWL_RAMP_START_EXCESS_M = 1.0
@@ -657,6 +662,15 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
                                          _scene_coast_decel(scene))
       cands.append(LongitudinalCandidate(stop_a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP,
                                          "stop_approach", is_stop=bool(trust.should_stop and hard)))
+  # Early, non-committing model-slowdown caution from fresh model decel before shouldStop or
+  # stop distance are available. Bounded to be no stronger than the existing precautionary
+  # decel and never committed as a stop.
+  elif (not scene.model_stale and scene.model_stop_distance is None
+        and math.isfinite(scene.model_desired_accel)
+        and scene.model_desired_accel < EARLY_MODEL_SLOWDOWN_DECEL_THRESHOLD):
+    early_a = max(scene.model_desired_accel, GENTLE_CAUTION_DECEL)
+    cands.append(LongitudinalCandidate(early_a, CandidateRole.PHYSICAL_HAZARD,
+                                       EvidenceClass.MODEL_STOP, "stop_approach", is_stop=False))
 
   # advisory caps
   if scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego:

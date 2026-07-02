@@ -142,6 +142,72 @@ def test_stale_model_stop_distance_does_not_reharden_stop_approach():
   assert d.should_stop is False
 
 
+# -----------------------------------------------------------------------------
+# Early, non-committing model slowdown caution
+# -----------------------------------------------------------------------------
+
+def test_early_model_slowdown_caution_before_stop_commitment():
+  # Fresh model evidence shows meaningful slowdown before shouldStop / stop distance exist.
+  scene = LongitudinalScene(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0,
+                            model_should_stop=False, model_stop_distance=None,
+                            model_desired_accel=-0.6, model_stop_prob=0.95)
+  cands = build_candidates(scene)
+  stop = [c for c in cands if c.intent == "stop_approach"]
+  assert len(stop) == 1
+  assert stop[0].role is CandidateRole.PHYSICAL_HAZARD
+  assert stop[0].source is EvidenceClass.MODEL_STOP
+  assert stop[0].is_stop is False
+  # Capped at the existing precautionary decel.
+  assert stop[0].a_target == pytest.approx(GENTLE_CAUTION_DECEL)
+
+  scc = decide(cands, LongitudinalMode.SCC, LIMITS)
+  assert scc.should_stop is False
+  assert scc.selected_intent == "stop_approach"
+  assert scc.a_target == pytest.approx(GENTLE_CAUTION_DECEL)
+
+  # ACC ignores model-stop evidence entirely.
+  acc = decide(cands, LongitudinalMode.ACC, LIMITS)
+  assert acc.a_target == pytest.approx(0.0)
+  assert acc.selected_intent == "cruise"
+
+
+def test_early_model_slowdown_uses_raw_decel_within_cap():
+  scene = LongitudinalScene(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0,
+                            model_should_stop=False, model_stop_distance=None,
+                            model_desired_accel=-0.25)
+  cands = build_candidates(scene)
+  stop = [c for c in cands if c.intent == "stop_approach"]
+  assert len(stop) == 1
+  # Within the precautionary cap -> raw model decel is used.
+  assert stop[0].a_target == pytest.approx(-0.25)
+  assert stop[0].is_stop is False
+
+
+def test_tiny_model_decel_does_not_trigger_early_slowdown_caution():
+  scene = LongitudinalScene(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0,
+                            model_should_stop=False, model_stop_distance=None,
+                            model_desired_accel=-0.1)
+  cands = build_candidates(scene)
+  assert not [c for c in cands if c.intent == "stop_approach"]
+  d = decide(cands, LongitudinalMode.SCC, LIMITS)
+  assert d.a_target == pytest.approx(0.0)
+  assert d.should_stop is False
+
+
+def test_committed_model_stop_takes_precedence_over_early_slowdown():
+  # Once real stop evidence exists, the existing trust/runway logic is preserved.
+  scene = LongitudinalScene(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0,
+                            model_should_stop=True, model_stop_distance=20.0,
+                            model_desired_accel=-2.5, model_stop_prob=0.95)
+  cands = build_candidates(scene)
+  stop = [c for c in cands if c.intent == "stop_approach"]
+  assert len(stop) == 1
+  assert stop[0].is_stop is True
+  d = decide(cands, LongitudinalMode.SCC, LIMITS)
+  assert d.should_stop is True
+  assert d.a_target < -1.0
+
+
 def test_committed_far_stop_coasts_first():
   # high-confidence model stop 1 km away -> coast-first (hold/coast), not early braking
   far = LongitudinalScene(v_ego=20.0, v_cruise=20.0, seed_a_target=0.0, model_should_stop=True,
