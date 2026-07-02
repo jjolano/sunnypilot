@@ -10,7 +10,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, get_T_FOLLOW
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -187,7 +187,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       v_ego=v_ego,
       research_actuation_allowed=research_allowed,
     )
-    self.mpc.update(radar_state, v_cruise, personality=sm['selfdriveState'].personality)
+    # Dynamic follow-gap: bounded, research-gated T_FOLLOW compression during a low-risk
+    # approach (fail-closed to the personality baseline in off/shadow or on any fault).
+    t_follow = self.follow_gap.scheduled(
+      radar_state, v_ego, get_T_FOLLOW(sm['selfdriveState'].personality), self.dt,
+      long_active=long_active_for_anticipation,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+      force_decel=force_slow_decel,
+      research_actuation_allowed=research_allowed,
+    )
+    self.mpc.update(radar_state, v_cruise, personality=sm['selfdriveState'].personality, t_follow=t_follow)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)

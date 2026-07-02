@@ -102,6 +102,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // is kept for storage compatibility only; apply is explicit opt-in and runtime-gated by CustomLongitudinalEnabled.
     {"LeadAnticipationMode", {PERSISTENT | BACKUP, STRING, "shadow"}},
     {"LeadAnticipationEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // compatibility bool; inert for planner behavior
+    // Dynamic follow-gap (bounded T_FOLLOW compression on approach); apply is explicit opt-in and
+    // runtime-gated by CustomLongitudinalEnabled + AllowLongitudinalResearchActuation.
+    {"DynamicFollowGapMode", {PERSISTENT | BACKUP, STRING, "shadow"}},
     {"CutInBrakeAssistMode", {PERSISTENT | BACKUP, STRING, "off"}},
 
     {"CurveSpeedConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
