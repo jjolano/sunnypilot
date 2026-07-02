@@ -8,6 +8,7 @@ from openpilot.selfdrive.locationd.helpers import PointBuckets
 
 SPEED_AWARE_TORQUE_PARAMS_VERSION = 1
 SPEED_BUCKET_BP = [15.0, 20.0, 25.0, 30.0, 40.0]
+LOW_SPEED_BUCKET_BP = [5.0, 10.0]
 SPEED_BUCKET_LABELS = [f"{int(bp)}_plus" for bp in SPEED_BUCKET_BP]
 MIN_RATIO = 0.75
 MAX_RATIO = 1.25
@@ -95,7 +96,57 @@ class SpeedAwareTorqueBuckets:
     return list(self.buckets.items())
 
 
-def fit_speed_aware_torque_profile(CP: Any, buckets: SpeedAwareTorqueBuckets):
+def _fit_speed_aware_section(buckets: SpeedAwareTorqueBuckets, global_slope: float, *, clamp_ratios: bool = True):
+  anchors = []
+  ratios = []
+  slopes = []
+  confidence = []
+  points = []
+  for idx, (_speed, bucket) in enumerate(buckets.bucket_items()):
+    pts = bucket.get_points()
+    n = int(len(pts))
+    slope = _fit_slope(pts) if n >= MIN_BIN_POINTS else None
+    if slope is None or not np.isfinite(slope) or slope <= 0:
+      ratio = 1.0
+      conf = 0.0
+    else:
+      ratio = float(slope / global_slope)
+      if clamp_ratios:
+        ratio = float(np.clip(ratio, MIN_RATIO, MAX_RATIO))
+      conf = float(min(1.0, n / (MIN_BIN_POINTS * 2)))
+    anchors.append(float(buckets.speed_bp[idx]))
+    ratios.append(float(ratio))
+    slopes.append(slope)
+    confidence.append(float(conf))
+    points.append(int(n))
+  return {'anchors': anchors, 'ratios': ratios, 'slopes': slopes, 'confidence': confidence, 'points': points}
+
+
+def fit_low_speed_section(CP: Any, buckets: SpeedAwareTorqueBuckets, global_slope: float | None = None):
+  """Fit an evidence-oriented low-speed section from a separate bucket set.
+
+  Runtime/apply paths ignore this section by construction; it is reported only.
+  """
+  if CP.lateralTuning.which() != 'torque':
+    return None
+  if global_slope is None:
+    global_points = []
+    for _, bucket in buckets.bucket_items():
+      pts = bucket.get_points()
+      if len(pts) > 0:
+        global_points.append(pts)
+    if not global_points:
+      return None
+    global_points = np.vstack(global_points)
+    if len(global_points) < MIN_GLOBAL_POINTS:
+      return None
+    global_slope = _fit_slope(global_points)
+    if global_slope is None or not np.isfinite(global_slope) or global_slope <= 0:
+      return None
+  return _fit_speed_aware_section(buckets, global_slope, clamp_ratios=False)
+
+
+def fit_speed_aware_torque_profile(CP: Any, buckets: SpeedAwareTorqueBuckets, low_speed_buckets: SpeedAwareTorqueBuckets | None = None):
   if CP.lateralTuning.which() != 'torque':
     return None
   global_points = []
@@ -112,35 +163,22 @@ def fit_speed_aware_torque_profile(CP: Any, buckets: SpeedAwareTorqueBuckets):
   if global_slope is None or not np.isfinite(global_slope) or global_slope <= 0:
     return None
 
-  anchors = []
-  ratios = []
-  confidence = []
-  points = []
-  for idx, (_speed, bucket) in enumerate(buckets.bucket_items()):
-    pts = bucket.get_points()
-    n = int(len(pts))
-    slope = _fit_slope(pts) if n >= MIN_BIN_POINTS else None
-    if slope is None or not np.isfinite(slope) or slope <= 0:
-      ratio = 1.0
-      conf = 0.0
-    else:
-      ratio = float(np.clip(slope / global_slope, MIN_RATIO, MAX_RATIO))
-      conf = float(min(1.0, n / (MIN_BIN_POINTS * 2)))
-    anchors.append(float(buckets.speed_bp[idx]))
-    ratios.append(float(ratio))
-    confidence.append(float(conf))
-    points.append(int(n))
-
-  return {
+  section = _fit_speed_aware_section(buckets, global_slope)
+  profile = {
     'version': SPEED_AWARE_TORQUE_PARAMS_VERSION,
     'restoreKey': _restore_key(CP),
-    'anchors': anchors,
-    'ratios': ratios,
-    'confidence': confidence,
-    'points': points,
+    'anchors': section['anchors'],
+    'ratios': section['ratios'],
+    'confidence': section['confidence'],
+    'points': section['points'],
     'globalLatAccelFactor': float(CP.lateralTuning.torque.latAccelFactor),
     'globalFriction': float(CP.lateralTuning.torque.friction),
   }
+  if low_speed_buckets is not None:
+    low_section = fit_low_speed_section(CP, low_speed_buckets, global_slope=global_slope)
+    if low_section is not None:
+      profile['lowSpeed'] = low_section
+  return profile
 
 
 def format_speed_aware_torque_profile(profile: dict) -> str:

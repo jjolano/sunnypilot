@@ -20,7 +20,7 @@ from openpilot.sunnypilot.custom.lateral.roll_comp_learning import (
 )
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   SpeedAwareTorqueBuckets, fit_speed_aware_torque_profile, format_speed_aware_torque_profile,
-  parse_speed_aware_torque_profile, SpeedAwareTorqueRuntime, SPEED_BUCKET_BP,
+  parse_speed_aware_torque_profile, SpeedAwareTorqueRuntime, SPEED_BUCKET_BP, LOW_SPEED_BUCKET_BP,
 )
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
   validate_live_torque_speed_adaptive_mode,
@@ -56,6 +56,10 @@ class TorqueEstimatorExt:
     self.speed_learning_buckets = SpeedAwareTorqueBuckets(
       x_bounds=[(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5)],
       speed_bp=SPEED_BUCKET_BP, min_points=1, min_points_total=1, points_per_bucket=1500, rowsize=3)
+    self.low_speed_shadow = False
+    self.low_speed_buckets = SpeedAwareTorqueBuckets(
+      x_bounds=[(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5)],
+      speed_bp=LOW_SPEED_BUCKET_BP, min_points=1, min_points_total=1, points_per_bucket=1500, rowsize=3)
     self.speed_profile_cache = None
     self._last_speed_profile_write = -1
 
@@ -99,6 +103,7 @@ class TorqueEstimatorExt:
       self.custom_torque_params = self._params.get_bool("CustomTorqueParams")
       self.torque_override_enabled = self._params.get_bool("TorqueParamsOverrideEnabled")
       self.speed_adaptive_mode = validate_live_torque_speed_adaptive_mode(self._params.get("LiveTorqueSpeedAdaptiveMode", return_default=True))
+      self.low_speed_shadow = self._params.get_bool("LiveTorqueLowSpeedShadow")
       payload = self._params.get("LiveTorqueSpeedAdaptiveParams", return_default=True)
       if payload:
         try:
@@ -136,12 +141,20 @@ class TorqueEstimatorExt:
       self.speed_learning_buckets.add_point(steer, lateral_acc, v_ego)
 
   def collect_shadow_learning_points(self, steer, lateral_acc, v_ego, roll, yaw_rate, steering_rate_deg):
-    """Shadow-only roll-compensation gain learning. No steering changes in Phase 3.
+    """Shadow-only learning hooks. No steering changes in these phases.
 
-    Gated on base torque learner validity and straight-road steady-state conditions
-    so the learned gain maps roll-induced lateral acceleration to the torque
-    controller's predicted lateral acceleration response.
+    - Phase 6 low-speed shadow buckets: collect city/low-speed cornering evidence
+      when the user has enabled low-speed shadow collection.
+    - Phase 3 roll-compensation gain learning: gated on base torque learner validity
+      and straight-road steady-state conditions so the learned gain maps
+      roll-induced lateral acceleration to the torque controller's predicted
+      lateral acceleration response.
     """
+    # Phase 6: collection-only low-speed shadow buckets.
+    if self.speed_adaptive_mode in ('shadow', 'apply') and self.low_speed_shadow:
+      if v_ego < ROLL_COMP_MIN_V_EGO and abs(steer) > 0.02 and abs(lateral_acc) <= 2.5:
+        self.low_speed_buckets.add_point(steer, lateral_acc, v_ego)
+
     if self.roll_comp_mode not in ('shadow', 'apply'):
       return
     if not self.filtered_points.is_valid():
@@ -188,11 +201,12 @@ class TorqueEstimatorExt:
     if not cache_write:
       return
     if self.speed_adaptive_mode in ('shadow', 'apply'):
-      profile = fit_speed_aware_torque_profile(self.CP, self.speed_learning_buckets)
+      low_speed_buckets = self.low_speed_buckets if self.low_speed_shadow else None
+      profile = fit_speed_aware_torque_profile(self.CP, self.speed_learning_buckets, low_speed_buckets=low_speed_buckets)
       if profile is not None:
         self.speed_profile_cache = profile
         self.speed_adaptive_runtime.profile = profile
-        self._params.put("LiveTorqueSpeedAdaptiveParams", format_speed_aware_torque_profile(profile))
+        self._params.put("LiveTorqueSpeedAdaptiveParams", format_speed_aware_torque_profile(profile), block=True)
 
     if self.roll_comp_mode in ('shadow', 'apply'):
       profile = fit_roll_comp_profile(self.CP, self.roll_comp_buckets)

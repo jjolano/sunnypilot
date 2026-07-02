@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from cereal import messaging
 from openpilot.common.realtime import DT_MDL
-from openpilot.sunnypilot.custom.lateral.speed_aware_torque import SPEED_BUCKET_BP, _restore_key, format_speed_aware_torque_profile
+from openpilot.sunnypilot.custom.lateral.speed_aware_torque import LOW_SPEED_BUCKET_BP, SPEED_BUCKET_BP, _restore_key, format_speed_aware_torque_profile
 from openpilot.tools.drive_lab.speed_adaptive_verdict import (
   SpeedAdaptiveRouteProfile,
   analyze_route,
@@ -135,6 +135,13 @@ def test_speed_adaptive_profile_json_bypasses_fitting(tmp_path: Path):
     'points': [1000] * len(fitted_profile.anchors),
     'globalLatAccelFactor': BASE_LAT_ACCEL_FACTOR,
     'globalFriction': 0.2,
+    'lowSpeed': {
+      'anchors': [5.0, 10.0],
+      'ratios': [1.4, 1.1],
+      'slopes': [2.8, 2.2],
+      'confidence': [1.0, 1.0],
+      'points': [600, 600],
+    },
   }
   profile_path.write_text(format_speed_aware_torque_profile(raw_profile))
 
@@ -143,6 +150,7 @@ def test_speed_adaptive_profile_json_bypasses_fitting(tmp_path: Path):
   assert applied_profile.profile_source == str(profile_path)
   assert applied_profile.ratios == pytest.approx(fitted_profile.ratios, abs=0.02)
   assert applied_profile.ratio_active_percent > 0.0
+  assert applied_profile.low_speed == raw_profile['lowSpeed']
 
 
 def test_speed_adaptive_verdict_rejects_verdict_report_as_profile(tmp_path: Path):
@@ -199,3 +207,34 @@ def test_speed_adaptive_verdict_does_not_promote_partial_anchor_overlap():
   report = build_speed_adaptive_verdict_report(profiles)
 
   assert report.verdict == "insufficient_evidence"
+
+
+def test_speed_adaptive_verdict_includes_low_speed_when_present():
+  profile = SpeedAdaptiveRouteProfile(
+    source="low_speed_route",
+    anchors=list(SPEED_BUCKET_BP),
+    ratios=[1.0] * len(SPEED_BUCKET_BP),
+    confidence=[1.0] * len(SPEED_BUCKET_BP),
+    points=[500] * len(SPEED_BUCKET_BP),
+    global_slope=2.0,
+    bin_slopes=[2.0] * len(SPEED_BUCKET_BP),
+    engaged_frames=100,
+    ratio_active_frames=10,
+    ratio_active_percent=10.0,
+    base_lat_accel_factor=BASE_LAT_ACCEL_FACTOR,
+    lat_accel_deltas=[0.0] * len(SPEED_BUCKET_BP),
+    fitted=True,
+    profile_source="fit",
+    low_speed={
+      "anchors": list(LOW_SPEED_BUCKET_BP),
+      "ratios": [1.05, 1.02],
+      "slopes": [2.1, 2.04],
+      "confidence": [0.8, 0.9],
+      "points": [300, 400],
+    },
+  )
+  report = build_speed_adaptive_verdict_report([profile])
+  rendered = render_speed_adaptive_verdict_report(report)
+  assert "lowSpeed section" in rendered
+  assert report.routes[0].low_speed is not None
+  assert report.routes[0].low_speed["anchors"] == list(LOW_SPEED_BUCKET_BP)

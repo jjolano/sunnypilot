@@ -177,6 +177,13 @@ def test_bsm_delay_param_compare(enable_bsm, timer):
   assert rules_pass(enablement_of("AutoLaneChangeBsmDelay"), ctx) == (enable_bsm and timer > 0)
 
 
+@pytest.mark.parametrize("is_offroad,speed_mode", list(itertools.product([True, False], ["off", "shadow", "apply"])))
+def test_low_speed_shadow_enablement_tracks_speed_aware_mode(is_offroad, speed_mode):
+  # torque_settings.py: low-speed shadow toggle enabled offroad and when speed-aware mode is active.
+  ctx = make_ctx(is_offroad=is_offroad, params=FakeParams(LiveTorqueSpeedAdaptiveMode=speed_mode))
+  assert rules_pass(enablement_of("LiveTorqueLowSpeedShadow"), ctx) == (is_offroad and speed_mode != "off")
+
+
 # --- Hygiene / guardrails ----------------------------------------------------
 
 def test_compiled_schema_has_no_unresolved_macros():

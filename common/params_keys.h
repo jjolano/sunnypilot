@@ -84,6 +84,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LiveTorqueParameters", {PERSISTENT | DONT_LOG, BYTES}},
     {"LiveTorqueSpeedAdaptiveMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"LiveTorqueSpeedAdaptiveParams", {PERSISTENT | DONT_LOG, STRING, ""}},
+    {"LiveTorqueLowSpeedShadow", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"RollCompGainMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"RollCompGainParams", {PERSISTENT | DONT_LOG, STRING, ""}},
     {"LocationFilterInitialState", {PERSISTENT, BYTES}},

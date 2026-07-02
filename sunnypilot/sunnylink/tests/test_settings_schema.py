@@ -272,6 +272,13 @@ class TestKnownPanels:
     nnlc_enable_keys = {r.get("key") for r in nnlc.get("enablement", []) if r.get("type") == "param"}
     assert "EnforceTorqueControl" in nnlc_enable_keys
 
+  def test_low_speed_shadow_toggle_in_steering(self, schema):
+    steering = next(p for p in schema["panels"] if p["id"] == "steering")
+    item = next(i for i in _iter_panel_items(steering) if i["key"] == "LiveTorqueLowSpeedShadow")
+    assert item["widget"] == "toggle"
+    assert any(r.get("type") == "not" and r.get("condition", {}).get("key") == "LiveTorqueSpeedAdaptiveMode"
+               for r in item.get("enablement", []))
+
 
 class TestKnownVehicleSettings:
   def test_hyundai_has_longitudinal_tuning(self, schema):

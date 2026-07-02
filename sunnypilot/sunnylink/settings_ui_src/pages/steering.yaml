@@ -178,6 +178,17 @@ sections:
         label: Apply learned curve
       enablement:
       - $ref: '#/macros/offroad'
+    - key: LiveTorqueLowSpeedShadow
+      widget: toggle
+      title: Low-Speed Shadow Collection
+      description: Monitor only — collects low-speed steering data; no driving changes.
+      enablement:
+      - $ref: '#/macros/offroad'
+      - type: not
+        condition:
+          type: param
+          key: LiveTorqueSpeedAdaptiveMode
+          equals: 'off'
     - key: RollCompGainMode
       widget: multiple_button
       title: Roll Compensation Gain

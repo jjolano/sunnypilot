@@ -1,3 +1,4 @@
+import json
 import numpy as np
 import pytest
 
@@ -12,9 +13,15 @@ def cleanup_roll_comp_params():
   params = Params()
   params.remove("RollCompGainMode")
   params.remove("RollCompGainParams")
+  params.remove("LiveTorqueSpeedAdaptiveMode")
+  params.remove("LiveTorqueLowSpeedShadow")
+  params.remove("LiveTorqueSpeedAdaptiveParams")
   yield
   params.remove("RollCompGainMode")
   params.remove("RollCompGainParams")
+  params.remove("LiveTorqueSpeedAdaptiveMode")
+  params.remove("LiveTorqueLowSpeedShadow")
+  params.remove("LiveTorqueSpeedAdaptiveParams")
 
 
 def make_torque_cp():
@@ -259,3 +266,94 @@ def test_torqued_strict_collection_gate_unchanged():
     _feed(est3, i * DT_MDL, steer=STEER_MIN_THRESHOLD / 2.0, lateral_accel=0.5, v_ego=MIN_VEL + 1.0)
   assert len(est3.filtered_points) == 0
   assert est3.shadow_accepted == 0
+
+
+def _make_estimator_speed_aware(mode="shadow", low_speed_shadow=False):
+  params = Params()
+  params.put("LiveTorqueSpeedAdaptiveMode", mode, block=True)
+  params.put_bool("LiveTorqueLowSpeedShadow", low_speed_shadow, block=True)
+  est = TorqueEstimator(make_torque_cp())
+  est.update_use_params()
+  return est
+
+
+def _low_speed_feed(est, t, steer, lateral_accel, v_ego):
+  # Low-speed shadow collection happens inside collect_shadow_learning_points, which
+  # is called under the same lat_active/no-override gate as the strict path.
+  _feed(est, t, steer=steer, lateral_accel=lateral_accel, v_ego=v_ego)
+
+
+def test_low_speed_shadow_off_collects_nothing():
+  est = _make_estimator_speed_aware("shadow", low_speed_shadow=False)
+  n = _warmup_samples()
+  for i in range(n):
+    _low_speed_feed(est, i * DT_MDL, steer=0.3, lateral_accel=0.5, v_ego=MIN_VEL - 1.0)
+  assert all(len(b.get_points()) == 0 for _, b in est.low_speed_buckets.bucket_items())
+
+
+def test_low_speed_shadow_requires_speed_aware_mode():
+  est = _make_estimator_speed_aware("off", low_speed_shadow=True)
+  n = _warmup_samples()
+  for i in range(n):
+    _low_speed_feed(est, i * DT_MDL, steer=0.3, lateral_accel=0.5, v_ego=MIN_VEL - 1.0)
+  assert all(len(b.get_points()) == 0 for _, b in est.low_speed_buckets.bucket_items())
+
+
+def test_low_speed_shadow_collects_5_to_15_mps():
+  est = _make_estimator_speed_aware("shadow", low_speed_shadow=True)
+  n = _warmup_samples()
+  for i in range(n):
+    v_ego = 7.0 + (i % 8)  # 7..14 m/s
+    _low_speed_feed(est, i * DT_MDL, steer=0.3, lateral_accel=0.5, v_ego=v_ego)
+  assert any(len(b.get_points()) > 0 for _, b in est.low_speed_buckets.bucket_items())
+
+
+def test_low_speed_shadow_rejects_at_or_above_min_vel():
+  est = _make_estimator_speed_aware("shadow", low_speed_shadow=True)
+  n = _warmup_samples()
+  for i in range(n):
+    _low_speed_feed(est, i * DT_MDL, steer=0.3, lateral_accel=0.5, v_ego=MIN_VEL + float(i))
+  assert all(len(b.get_points()) == 0 for _, b in est.low_speed_buckets.bucket_items())
+
+
+def test_low_speed_shadow_rejects_low_steer():
+  est = _make_estimator_speed_aware("shadow", low_speed_shadow=True)
+  n = _warmup_samples()
+  for i in range(n):
+    _low_speed_feed(est, i * DT_MDL, steer=0.01, lateral_accel=0.5, v_ego=MIN_VEL - 1.0)
+  assert all(len(b.get_points()) == 0 for _, b in est.low_speed_buckets.bucket_items())
+
+
+def test_low_speed_shadow_rejects_high_lateral_accel():
+  est = _make_estimator_speed_aware("shadow", low_speed_shadow=True)
+  n = _warmup_samples()
+  for i in range(n):
+    _low_speed_feed(est, i * DT_MDL, steer=0.3, lateral_accel=2.6, v_ego=MIN_VEL - 1.0)
+  assert all(len(b.get_points()) == 0 for _, b in est.low_speed_buckets.bucket_items())
+
+
+def test_low_speed_shadow_keeps_high_curvature_frames():
+  est = _make_estimator_speed_aware("shadow", low_speed_shadow=True)
+  n = _warmup_samples()
+  for i in range(n):
+    # Moderate lateral accel (>1.0, <=2.5) should still be collected.
+    _low_speed_feed(est, i * DT_MDL, steer=0.3, lateral_accel=1.5, v_ego=MIN_VEL - 1.0)
+  assert any(len(b.get_points()) > 0 for _, b in est.low_speed_buckets.bucket_items())
+
+
+def test_low_speed_persisted_in_speed_profile():
+  est = _make_estimator_speed_aware("shadow", low_speed_shadow=True)
+  # Need enough normal-speed points (>= MIN_GLOBAL_POINTS) for the speed-aware
+  # profile to fit, plus alternating low-speed frames for the lowSpeed section.
+  # Vary steer so SVD can fit a non-degenerate slope.
+  n = int(65.0 / DT_MDL)
+  for i in range(n):
+    v_ego = (MIN_VEL - 1.0) if i % 2 == 0 else (MIN_VEL + 5.0)
+    steer = -0.4 + 0.8 * ((i // 2) % 100) / 99.0
+    lateral_accel = 2.0 * steer
+    _low_speed_feed(est, i * DT_MDL, steer=steer, lateral_accel=lateral_accel, v_ego=v_ego)
+  est.maybe_persist_speed_profile(cache_write=True)
+  payload = Params().get("LiveTorqueSpeedAdaptiveParams")
+  assert payload is not None
+  data = json.loads(payload)
+  assert "lowSpeed" in data

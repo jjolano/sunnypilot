@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   format_speed_aware_torque_profile,
   SpeedAwareTorqueBuckets, SpeedAwareTorqueRuntime, fit_speed_aware_torque_profile,
-  parse_speed_aware_torque_profile,
+  parse_speed_aware_torque_profile, fit_low_speed_section, LOW_SPEED_BUCKET_BP,
 )
 
 X_BOUNDS = [(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5)]
@@ -62,3 +62,44 @@ def test_degenerate_fit_rejected():
 def test_format_rejects_non_finite_json():
   with pytest.raises(ValueError):
     format_speed_aware_torque_profile({'bad': float('nan')})
+
+
+def test_low_speed_section_is_ignored_by_parse_and_runtime():
+  buckets = SpeedAwareTorqueBuckets(X_BOUNDS, [15, 20, 30], [1] * len(X_BOUNDS), 1, 5000)
+  low_buckets = SpeedAwareTorqueBuckets(X_BOUNDS, LOW_SPEED_BUCKET_BP, [1] * len(X_BOUNDS), 1, 5000)
+  for i in range(2500):
+    steer = -0.4 + 0.0003 * i
+    buckets.add_point(steer, 2.0 * steer, 15.1)
+    low_buckets.add_point(steer, 2.0 * steer, 7.0)
+  profile = fit_speed_aware_torque_profile(cp(), buckets, low_speed_buckets=low_buckets)
+  assert profile is not None
+  assert 'lowSpeed' in profile
+  parsed = parse_speed_aware_torque_profile(cp(), profile)
+  assert parsed is not None
+  assert 'lowSpeed' not in parsed
+  runtime = SpeedAwareTorqueRuntime(profile=parsed)
+  assert runtime.ratio(7.0) == 1.0
+  assert runtime.ratio(12.0) == 1.0
+
+
+def test_low_speed_section_reports_evidence_fields():
+  buckets = SpeedAwareTorqueBuckets(X_BOUNDS, [15, 20, 30], [1] * len(X_BOUNDS), 1, 5000)
+  low_buckets = SpeedAwareTorqueBuckets(X_BOUNDS, LOW_SPEED_BUCKET_BP, [1] * len(X_BOUNDS), 1, 5000)
+  for i in range(2500):
+    steer = -0.4 + 0.0003 * i
+    buckets.add_point(steer, 2.0 * steer, 15.1)
+    low_buckets.add_point(steer, 3.0 * steer, 7.0)
+  profile = fit_speed_aware_torque_profile(cp(), buckets, low_speed_buckets=low_buckets)
+  low = profile['lowSpeed']
+  assert low['anchors'] == list(LOW_SPEED_BUCKET_BP)
+  assert 'ratios' in low
+  assert 'slopes' in low
+  assert 'confidence' in low
+  assert 'points' in low
+  assert len(low['slopes']) == len(LOW_SPEED_BUCKET_BP)
+  assert max(low['ratios']) > 1.25
+
+
+def test_fit_low_speed_section_empty_returns_none():
+  low_buckets = SpeedAwareTorqueBuckets(X_BOUNDS, LOW_SPEED_BUCKET_BP, [1] * len(X_BOUNDS), 1, 5000)
+  assert fit_low_speed_section(cp(), low_buckets) is None

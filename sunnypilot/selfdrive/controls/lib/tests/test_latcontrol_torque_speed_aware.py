@@ -237,6 +237,34 @@ def test_malformed_speed_aware_profile_rejected_for_out_of_bounds_ratio():
   assert parse_speed_aware_torque_profile(cp(), payload) is None
 
 
+def test_low_speed_profile_does_not_apply_below_normal_anchor():
+  ext = LatControlTorqueExtOverride(cp())
+  low_profile = profile_payload(anchors=[20.0, 30.0], ratios=[1.1, 1.2], confidence=[1.0, 1.0], points=[500, 500])
+  payload = json.loads(low_profile)
+  payload['lowSpeed'] = {
+    'anchors': [5.0, 10.0],
+    'ratios': [1.3, 1.1],
+    'slopes': [2.6, 2.2],
+    'confidence': [1.0, 1.0],
+    'points': [500, 500],
+  }
+  class P:
+    def get_bool(self, k): return k in ('EnforceTorqueControl', 'LiveTorqueParamsToggle')
+    def get(self, k, return_default=True):
+      if k == 'LiveTorqueSpeedAdaptiveMode':
+        return 'apply'
+      if k == 'LiveTorqueSpeedAdaptiveParams':
+        return json.dumps(payload)
+      return ''
+  ext.params = P()
+  ext.enforce_torque_control_toggle = True
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  assert ext.update_override_torque_params(tp, 10.0) is False
+  assert tp.latAccelFactor == 2.0
+  assert ext.update_override_torque_params(tp, 25.0) is True
+  assert tp.latAccelFactor != 2.0
+
+
 def test_manual_override_changes_deferred_while_refresh_disallowed():
   ext = LatControlTorqueExtOverride(cp())
 

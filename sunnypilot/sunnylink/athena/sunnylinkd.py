@@ -76,6 +76,7 @@ SAFETY_CRITICAL_REMOTE_GATED_PARAMS = {
   "LiveTorqueParamsToggle",
   "LiveTorqueParamsRelaxedToggle",
   "LiveTorqueSpeedAdaptiveMode",
+  "LiveTorqueLowSpeedShadow",
   "RollCompGainMode",
   "EnforceTorqueControl",
   "TorqueControlTune",

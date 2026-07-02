@@ -25,6 +25,7 @@ from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   MIN_CONFIDENCE,
   SpeedAwareTorqueRuntime,
   _fit_slope,
+  fit_low_speed_section,
   fit_speed_aware_torque_profile,
   parse_speed_aware_torque_profile,
 )
@@ -48,6 +49,7 @@ class SpeedAdaptiveRouteProfile:
   lat_accel_deltas: list[float | None]
   fitted: bool
   profile_source: str
+  low_speed: dict[str, Any] | None = None
 
   def to_dict(self) -> dict[str, Any]:
     return asdict(self)
@@ -114,6 +116,8 @@ def _load_profile_json(CP: car.CarParams, path: str | Path) -> dict:
   profile = parse_speed_aware_torque_profile(CP, data)
   if profile is None:
     raise ValueError(f"profile JSON does not match CP restore key or is invalid: {path}")
+  if isinstance(data.get("lowSpeed"), dict):
+    profile["lowSpeed"] = data["lowSpeed"]
   return profile
 
 
@@ -153,6 +157,7 @@ def _empty_route_profile(source: str, fitted: bool, profile_source: str) -> Spee
     lat_accel_deltas=[None] * len(SPEED_BUCKET_BP),
     fitted=fitted,
     profile_source=profile_source,
+    low_speed=None,
   )
 
 
@@ -196,9 +201,11 @@ def analyze_route(
     params = Params()
     # Force shadow collection so the replay populates speed_learning_buckets fresh.
     params.put("LiveTorqueSpeedAdaptiveMode", "shadow", block=True)
+    params.put_bool("LiveTorqueLowSpeedShadow", True)
     estimator = TorqueEstimator(CP)
     # _update_params does not run on the init frame, so set the mode directly.
     estimator.speed_adaptive_mode = 'shadow'
+    estimator.low_speed_shadow = True
     estimator.speed_adaptive_runtime.profile = None
 
     for msg in msgs:
@@ -224,7 +231,7 @@ def analyze_route(
       fitted = False
       profile_source = str(profile_json)
     else:
-      profile = fit_speed_aware_torque_profile(CP, estimator.speed_learning_buckets)
+      profile = fit_speed_aware_torque_profile(CP, estimator.speed_learning_buckets, low_speed_buckets=estimator.low_speed_buckets)
       fitted = True
       profile_source = "fit"
 
@@ -236,6 +243,10 @@ def analyze_route(
     ratio_active_percent = 100.0 * active / engaged if engaged > 0 else 0.0
 
     lat_accel_deltas = [(r - 1.0) * base_factor if base_factor is not None else None for r in profile['ratios']]
+
+    low_speed = profile.get('lowSpeed')
+    if low_speed is None and not fitted:
+      low_speed = fit_low_speed_section(CP, estimator.low_speed_buckets, global_slope=_global_slope(estimator.speed_learning_buckets))
 
     return SpeedAdaptiveRouteProfile(
       source=source,
@@ -252,6 +263,7 @@ def analyze_route(
       lat_accel_deltas=lat_accel_deltas,
       fitted=fitted,
       profile_source=profile_source,
+      low_speed=low_speed,
     )
 
 
@@ -324,6 +336,15 @@ def render_speed_adaptive_route_profile(profile: SpeedAdaptiveRouteProfile) -> s
     f"  base latAccelFactor: {_fmt_optional(profile.base_lat_accel_factor)}",
     f"  latAccelFactor deltas: {_fmt_slope_list(profile.lat_accel_deltas)}",
   ]
+  if profile.low_speed is not None:
+    lines.extend([
+      "  lowSpeed section:",
+      f"    anchors:    {profile.low_speed.get('anchors')}",
+      f"    ratios:     {profile.low_speed.get('ratios')}",
+      f"    slopes:     {_fmt_slope_list(profile.low_speed.get('slopes', []))}",
+      f"    confidence: {profile.low_speed.get('confidence')}",
+      f"    points:     {profile.low_speed.get('points')}",
+    ])
   return "\n".join(lines)
 
 

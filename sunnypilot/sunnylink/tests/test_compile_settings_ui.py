@@ -164,6 +164,13 @@ class TestCompiledShape:
     item = next(i for i in torque_section["sub_panels"][0]["items"] if i["key"] == "RollCompGainMode")
     assert [opt["value"] for opt in item["options"]] == ["off", "shadow", "apply"]
 
+  def test_low_speed_shadow_toggle_is_under_torque_settings(self, compiled):
+    steering = next(p for p in compiled["panels"] if p["id"] == "steering")
+    torque_section = next(s for s in steering["sections"] if s["id"] == "torque")
+    item = next(i for i in torque_section["sub_panels"][0]["items"] if i["key"] == "LiveTorqueLowSpeedShadow")
+    assert item["widget"] == "toggle"
+    assert "no driving changes" in item["description"].lower() or "monitor only" in item["description"].lower()
+
   def test_longitudinal_research_actuation_gate_is_attested_toggle(self, compiled):
     cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
     item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "AllowLongitudinalResearchActuation")

@@ -397,6 +397,25 @@
                   ]
                 },
                 {
+                  "key": "LiveTorqueLowSpeedShadow",
+                  "widget": "toggle",
+                  "title": "Low-Speed Shadow Collection",
+                  "description": "Monitor only \u2014 collects low-speed steering data; no driving changes.",
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    },
+                    {
+                      "type": "not",
+                      "condition": {
+                        "type": "param",
+                        "key": "LiveTorqueSpeedAdaptiveMode",
+                        "equals": "off"
+                      }
+                    }
+                  ]
+                },
+                {
                   "key": "RollCompGainMode",
                   "widget": "multiple_button",
                   "requires_attestation": true,
