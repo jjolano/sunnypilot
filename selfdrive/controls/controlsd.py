@@ -118,6 +118,7 @@ class Controls(ControlsExt):
     self.steer_limited_by_safety = False
     self.curvature = 0.0
     self.desired_curvature = 0.0
+    self.curvature_limited = False
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -233,10 +234,11 @@ class Controls(ControlsExt):
         CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2,
         getattr(CS, 'steeringPressed', None), model_age_s, yaw_rate,
         getattr(CS, 'steeringRateDeg', None), self.steer_limited_by_safety,
+        bool(CS.leftBlinker), bool(CS.rightBlinker), self.curvature_limited,
       )
     last_lateral_demand_result = getattr(self.lateral_demand, 'last_result', None) if hasattr(self, 'lateral_demand') else None
     self.raw_desired_curvature = raw_desired_curvature
-    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
+    self.desired_curvature, self.curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
@@ -251,7 +253,7 @@ class Controls(ControlsExt):
       self.LaC.set_torque_override_refresh_allowed(not CC.enabled)
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
-                                                       self.calibrated_pose, curvature_limited, lat_delay)
+                                                       self.calibrated_pose, self.curvature_limited, lat_delay)
     actuators.torque = float(steer)
     actuators.steeringAngleDeg = float(steeringAngleDeg)
     # Ensure no NaNs/Infs

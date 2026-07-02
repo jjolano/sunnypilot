@@ -304,3 +304,82 @@ def test_adapter_forwards_straight_path_stabilization_mode():
   a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001))
   assert spy.inputs is not None
   assert spy.inputs.straight_path_stabilization_mode == "apply"
+
+
+def test_build_pipeline_inputs_extracts_lane_y0():
+  model = fake_model(0.002)
+  model.laneLines = [
+    SimpleNamespace(x=range(N), y=[0.0] * N),
+    SimpleNamespace(x=range(N), y=[1.8] * N),
+    SimpleNamespace(x=range(N), y=[-1.8] * N),
+    SimpleNamespace(x=range(N), y=[0.0] * N),
+  ]
+  inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
+                              measured_curvature=0.0015, model_v2=model,
+                              lane_centering_assist_enabled=False)
+  assert inp.left_lane_y0 == pytest.approx(1.8)
+  assert inp.right_lane_y0 == pytest.approx(-1.8)
+
+
+@pytest.mark.parametrize("lane_lines,left_none,right_none", [
+  ([], True, True),
+  ([SimpleNamespace(x=range(N), y=[0.0] * N)], True, True),
+  ([SimpleNamespace(x=range(N), y=[0.0] * N), SimpleNamespace(x=range(N), y=[1.8] * N)], True, True),
+  ([SimpleNamespace(x=range(N), y=[0.0] * N), SimpleNamespace(x=range(N), y=[1.8] * N),
+    SimpleNamespace(x=range(N), y=[-1.8] * N)], False, False),
+  ([SimpleNamespace(x=range(N), y=[0.0] * N), SimpleNamespace(x=range(N), y=[]),
+    SimpleNamespace(x=range(N), y=[-1.8] * N), SimpleNamespace(x=range(N), y=[0.0] * N)], True, False),
+  ([SimpleNamespace(x=range(N), y=[0.0] * N), SimpleNamespace(x=range(N), y=[1.8] * N),
+    SimpleNamespace(x=range(N), y=[]), SimpleNamespace(x=range(N), y=[0.0] * N)], False, True),
+])
+def test_build_pipeline_inputs_fails_closed_on_missing_or_short_lane_y0(lane_lines, left_none, right_none):
+  model = fake_model(0.002)
+  model.laneLines = lane_lines
+  inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
+                              measured_curvature=0.0015, model_v2=model,
+                              lane_centering_assist_enabled=False)
+  assert (inp.left_lane_y0 is None) is left_none
+  assert (inp.right_lane_y0 is None) is right_none
+
+
+def test_build_pipeline_inputs_fails_closed_on_nonfinite_lane_y0():
+  model = fake_model(0.002)
+  model.laneLines = [
+    SimpleNamespace(x=range(N), y=[0.0] * N),
+    SimpleNamespace(x=range(N), y=[float("nan")] * N),
+    SimpleNamespace(x=range(N), y=[float("inf")] * N),
+    SimpleNamespace(x=range(N), y=[0.0] * N),
+  ]
+  inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
+                              measured_curvature=0.0015, model_v2=model,
+                              lane_centering_assist_enabled=False)
+  assert inp.left_lane_y0 is None
+  assert inp.right_lane_y0 is None
+
+
+def test_build_pipeline_inputs_forwards_blinkers():
+  inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
+                              measured_curvature=0.0015, model_v2=fake_model(0.002),
+                              lane_centering_assist_enabled=False,
+                              left_blinker=True, right_blinker=False)
+  assert inp.left_blinker is True
+  assert inp.right_blinker is False
+
+
+def test_adapter_forwards_blinkers_and_curvature_limited():
+  a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=True))
+  spy = SpyPipeline()
+  object.__setattr__(a, "_pipeline", spy)
+  a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001),
+            left_blinker=True, right_blinker=False, curvature_limited=True)
+  assert spy.inputs is not None
+  assert spy.inputs.left_blinker is True
+  assert spy.inputs.right_blinker is False
+  assert spy.inputs.curvature_limited is True
+
+
+def test_build_pipeline_inputs_forwards_curvature_limited():
+  inp = build_pipeline_inputs(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
+                              measured_curvature=0.0015, model_v2=fake_model(0.002),
+                              lane_centering_assist_enabled=False, curvature_limited=True)
+  assert inp.curvature_limited is True

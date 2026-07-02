@@ -46,6 +46,19 @@ def sanitized_model_age_s(model_age_s: float | None) -> float:
   return age if math.isfinite(age) and age >= 0.0 else float("inf")
 
 
+def _lane_y0(lane_lines: Any, index: int) -> float | None:
+  """Extract near-point y0 for a lane line, returning None on missing/short/nonfinite data."""
+  try:
+    line = lane_lines[index]
+    ys = getattr(line, "y", None)
+    if ys is None or len(ys) == 0:
+      return None
+    y0 = float(ys[0])
+  except (TypeError, IndexError, ValueError, AttributeError):
+    return None
+  return y0 if math.isfinite(y0) else None
+
+
 def _enum_to_int(value: Any, name_values: dict[str, int]) -> tuple[int, bool]:
   if value is None:
     return 0, False
@@ -70,6 +83,9 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
                           yaw_rate: float | None = None,
                           steering_rate_deg: float | None = None,
                           steer_limited: bool = False,
+                          left_blinker: bool = False,
+                          right_blinker: bool = False,
+                          curvature_limited: bool = False,
                           demand_jerk_smoothing_enabled: bool = False,
                           straight_path_stabilization_mode: str = "off") -> LateralDemandPipelineInputs:
   pos = getattr(model_v2, "position", None)
@@ -80,6 +96,9 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
   lane_change_direction = getattr(meta, "laneChangeDirection", None)
   lane_change_state_value, lane_change_state_valid = _enum_to_int(lane_change_state, LANE_CHANGE_STATE_VALUES)
   lane_change_direction_value, _ = _enum_to_int(lane_change_direction, LANE_CHANGE_DIRECTION_VALUES)
+  lane_lines = tuple(getattr(model_v2, "laneLines", ()) or ())
+  left_lane_y0 = _lane_y0(lane_lines, 1) if len(lane_lines) > 2 else None
+  right_lane_y0 = _lane_y0(lane_lines, 2) if len(lane_lines) > 2 else None
   return LateralDemandPipelineInputs(
     lat_active=lat_active, v_ego=v_ego, roll=roll,
     desired_curvature=raw_curvature, measured_curvature=measured_curvature,
@@ -90,20 +109,25 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
     orientation_rate_z=tuple(getattr(ori_rate, "z", ()) or ()),
     lane_line_probs=tuple(getattr(model_v2, "laneLineProbs", ()) or ()),
     lane_line_stds=tuple(getattr(model_v2, "laneLineStds", ()) or ()),
-    lane_lines=tuple(getattr(model_v2, "laneLines", ()) or ()),
+    lane_lines=lane_lines,
     frame_drop_perc=float(getattr(model_v2, "frameDropPerc", 0.0) or 0.0),
     model_age_s=sanitized_model_age_s(model_age_s),
     yaw_rate=yaw_rate,
     steering_rate_deg=steering_rate_deg,
     steer_limited=bool(steer_limited),
+    left_blinker=bool(left_blinker),
+    right_blinker=bool(right_blinker),
     lane_change_state=lane_change_state_value,
     lane_change_direction=lane_change_direction_value,
     lane_change_state_valid=lane_change_state_valid,
     steering_pressed=steering_pressed,
+    left_lane_y0=left_lane_y0,
+    right_lane_y0=right_lane_y0,
     demand_jerk_smoothing_enabled=bool(demand_jerk_smoothing_enabled),
     lane_centering_assist_enabled=bool(lane_centering_assist_enabled),
     curve_memory_enabled=bool(curve_memory_enabled),
     straight_path_stabilization_mode=sanitize_straight_path_stabilization_mode(straight_path_stabilization_mode),
+    curvature_limited=bool(curvature_limited),
   )
 
 
@@ -218,7 +242,9 @@ class LateralDemandAdapter:
   def process(self, lat_active: bool, v_ego: float, roll: float, raw_curvature: float,
               measured_curvature: float, model_v2: Any, steering_pressed: bool | None = None,
               model_age_s: float = 0.0, yaw_rate: float | None = None,
-              steering_rate_deg: float | None = None, steer_limited: bool = False) -> float:
+              steering_rate_deg: float | None = None, steer_limited: bool = False,
+              left_blinker: bool = False, right_blinker: bool = False,
+              curvature_limited: bool = False) -> float:
     """Return the processed desired curvature, or the unchanged raw curvature when disabled
     or on any fault (fail-closed)."""
     self._tick += 1
@@ -243,6 +269,9 @@ class LateralDemandAdapter:
         yaw_rate=yaw_rate,
         steering_rate_deg=steering_rate_deg,
         steer_limited=steer_limited,
+        left_blinker=left_blinker,
+        right_blinker=right_blinker,
+        curvature_limited=curvature_limited,
         straight_path_stabilization_mode=self.straight_path_stabilization_mode,
       )
       inputs = replace(inputs, smooth_model_path_curvature=True, demand_jerk_smoothing_enabled=True)

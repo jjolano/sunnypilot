@@ -202,6 +202,20 @@ def test_lane_centering_toggle_off_means_no_nudge():
   assert r.demand.lane_centering_assist_active is False
 
 
+def test_curvature_limited_passes_through_to_demand():
+  p = LateralDemandPipeline(DT)
+  r = p.update(valid_inputs(curvature=0.001, curvature_limited=True))
+  assert r.demand.curvature_limited is True
+
+
+def test_lane_y0_reaches_debug_dtle():
+  p = LateralDemandPipeline(DT)
+  r = p.update(valid_inputs(curvature=0.001, left_lane_y0=1.8, right_lane_y0=-1.8))
+  dtle = float(r.debug["dtle_estimate"])
+  assert math.isfinite(dtle)
+  assert abs(dtle) < 0.01
+
+
 def test_valid_path_high_quality_passthrough():
   # A clean, low-curvature path with smoothing off should pass through near the request and
   # report high quality / not gated.
