@@ -42,7 +42,7 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_CRAWL_DEADBAND_M = 0.50
   _STOP_HOLD_CRAWL_GAP_TAU = 2.0
   _STOP_HOLD_CRAWL_RELEASE_A_MIN = 0.05
-  _STOP_HOLD_CRAWL_RELEASE_A_MAX = 0.25
+  _STOP_HOLD_CRAWL_RELEASE_A_MAX = 0.35
   # Settle-hold arm: catch nearly-stopped leads at very low speed before the
   # legacy vEgoStopping-based latch would fire. Prevents small crawl/brake
   # oscillations when stopping behind a stationary lead on vehicles with a low
@@ -54,7 +54,7 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_SETTLE_ARM_BRAKE_DIST_DECEL = 2.0
   _STOP_HOLD_SETTLE_ARM_BRAKE_DIST_MAX = 1.0
   _STOP_HOLD_RELEASE_A_MIN = 0.15
-  _STOP_HOLD_RELEASE_A_MAX = 0.35
+  _STOP_HOLD_RELEASE_A_MAX = 0.50
   _STOP_HOLD_RELEASE_MAX_UP_JERK = 6.0
   # Pre-release only: relax harsh stopped-lead hold when the same latched lead is pulling away.
   _STOP_HOLD_RELEASE_PREP_A_TARGET = -0.20

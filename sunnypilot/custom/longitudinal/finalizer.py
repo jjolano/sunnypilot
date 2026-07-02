@@ -933,7 +933,9 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_CRAWL_DEADBAND_M = 0.50
   _STOP_HOLD_CRAWL_GAP_TAU = 2.0
   _STOP_HOLD_CRAWL_RELEASE_A_MIN = 0.05
-  _STOP_HOLD_CRAWL_RELEASE_A_MAX = 0.25
+  # Raised with _STOP_HOLD_RELEASE_A_MAX (route 00000246): the close-crawl cap still stays
+  # below the breakout cap, and the gap governor above continues to bound crawl accel.
+  _STOP_HOLD_CRAWL_RELEASE_A_MAX = 0.35
   _STOP_HOLD_SETTLE_ARM_V_EGO_FLOOR = 0.7
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V = 0.5
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V_REL = 0.1
@@ -941,7 +943,11 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_SETTLE_ARM_BRAKE_DIST_DECEL = 2.0
   _STOP_HOLD_SETTLE_ARM_BRAKE_DIST_MAX = 1.0
   _STOP_HOLD_RELEASE_A_MIN = 0.15
-  _STOP_HOLD_RELEASE_A_MAX = 0.35
+  # Route 00000246 t=4454: at the old 0.35 cap the TSS2 PCM took ~1.3 s of commanded
+  # +0.25-0.30 m/s^2 before the car moved off brake hold; the driver's own launches on the
+  # same route averaged 0.31-0.47 m/s^2 from the first second. 0.50 clears the PCM
+  # standstill lag while staying inside driver-demonstrated comfort.
+  _STOP_HOLD_RELEASE_A_MAX = 0.50
   _STOP_HOLD_RELEASE_MAX_UP_JERK = 6.0
   _STOP_HOLD_RELEASE_PREP_A_TARGET = -0.20
   _STOP_HOLD_RELEASE_PREP_MAX_UP_JERK = 6.0
