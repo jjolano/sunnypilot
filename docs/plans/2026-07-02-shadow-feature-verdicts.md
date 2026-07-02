@@ -15,6 +15,7 @@ written; run the harvest after the next few shadow-collecting drives.
 
 | Feature (param) | Default | Evidence source | Decide by |
 |---|---|---|---|
+| Speed-aware torque (`LiveTorqueSpeedAdaptiveMode`) | off | `speed_adaptive_verdict` route replay + cross-route ratio spread | 2026-08-15 |
 | Scenario context (`ScenarioContextMode`) | shadow | `profile_shadow_heuristics` grade summary | 2026-07-20 |
 | Curve traffic advisor (`CurveTrafficAdvisorMode`) | off | debug trace `curveSpeedConfidence`/advisor fields vs SCC vision caps | 2026-07-20 |
 | Lead anticipation (`LeadAnticipationMode`) | shadow | `replay_lead_anticipation` (already run: 0 softenings) | 2026-07-20 |
@@ -25,6 +26,20 @@ written; run the harvest after the next few shadow-collecting drives.
 | Roll-compensation gain (`RollCompGainMode`) | off | engaged-route replay: straight-cruise tracking, crown transitions, banked curves | 2026-08-15 |
 
 ## Per-feature procedure
+
+### Speed-aware torque
+- Harvest: `uv run python -m openpilot.tools.drive_lab.speed_adaptive_verdict ROUTE [ROUTE ...]`.
+- Flip `LiveTorqueSpeedAdaptiveMode` to `shadow` on-device for the collection window; the code default stays `off`.
+- The analyzer forces shadow collection, replays each route through the real
+  `TorqueEstimator`, fits the speed-aware profile from the collected buckets, and
+  computes the per-route anchors/ratios/confidence/points plus the would-be
+  `latAccelFactor` deltas.
+- **Promote** (to `apply`) if >=3 routes produce confident anchors and the
+  cross-route ratio spread at every confident anchor is < 0.05.
+- **Park** if >=3 routes are confident but the spread is >= 0.05 (the speed
+  dependency is not consistent enough to apply safely).
+- **Delete** if the learner rarely meets its point/confidence thresholds in
+  normal engaged driving — shadow code that never graduates is debt.
 
 ### Scenario context (grade compensation proposal)
 - Harvest: `uv run python -m openpilot.tools.drive_lab.profile_shadow_heuristics ROUTE`.
