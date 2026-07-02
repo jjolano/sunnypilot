@@ -4,7 +4,7 @@ from typing import Any
 import numpy as np
 
 from openpilot.selfdrive.locationd.helpers import PointBuckets
-from openpilot.sunnypilot.custom.lateral.speed_aware_torque import _restore_key, _fit_slope
+from openpilot.sunnypilot.custom.lateral.speed_aware_torque import _restore_key
 
 ROLL_COMP_PARAMS_VERSION = 1
 ROLL_GAIN_MIN = 0.3
@@ -16,6 +16,23 @@ MIN_CONFIDENCE = 0.5
 # x = -sin(roll)*g in lat-accel units (m/s^2); bounds straddle zero so both
 # crown directions are represented.
 ROLL_COMP_BUCKET_BOUNDS = [(-1.0, -0.5), (-0.5, -0.25), (-0.25, 0.0), (0.0, 0.25), (0.25, 0.5), (0.5, 1.0)]
+
+
+# OLS, not the TLS fit speed_aware_torque uses: here x (-sin(roll)*g from the filtered
+# localizer roll) is near noise-free while y carries control-activity noise of comparable
+# magnitude to the x span, and TLS attributes that y-noise to the line — on route-246
+# rlogs it read slope 1.15 where OLS reads 0.55 (the diagnosed vehicle response).
+def _fit_slope_ols(points: np.ndarray):
+  if points.shape[0] < 2:
+    return None
+  try:
+    if float(np.var(points[:, 0].astype(float))) <= 1e-12:
+      return None
+    coef, *_ = np.linalg.lstsq(points[:, :2].astype(float), points[:, 2].astype(float), rcond=None)
+    slope = float(coef[0])
+    return slope if np.isfinite(slope) else None
+  except Exception:
+    return None
 
 
 def _finite_float(value):
@@ -75,7 +92,7 @@ def fit_roll_comp_profile(CP: Any, buckets: RollCompBuckets):
   span = float(hi_x - lo_x)
   if lo_x >= 0 or hi_x <= 0 or span < MIN_X_SPAN:
     return None
-  slope = _fit_slope(points)
+  slope = _fit_slope_ols(points)
   if slope is None or not np.isfinite(slope) or slope <= 0:
     return None
   gain = float(np.clip(slope, ROLL_GAIN_MIN, ROLL_GAIN_MAX))

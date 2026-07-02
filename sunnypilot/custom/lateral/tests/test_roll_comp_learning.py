@@ -42,6 +42,21 @@ def test_synthetic_slope_recovery():
   assert 0 <= profile['confidence'] <= 1
 
 
+def test_slope_recovery_under_control_noise():
+  # Regression for the TLS→OLS estimator fix: with y-noise comparable to the x span
+  # (route-246 straight frames: y std 0.149 vs x std 0.142), the previous TLS fit
+  # read the 0.55 vehicle response as ~1.15 and would have learned a wrong gain.
+  buckets = RollCompBuckets(points_per_bucket=MIN_POINTS * 2)
+  rng = np.random.default_rng(1)
+  rolls = np.linspace(-0.06, 0.06, MIN_POINTS * 2)
+  for roll in rolls:
+    x = -np.sin(roll) * 9.81
+    buckets.add_point(roll, 0.55 * x + rng.normal(scale=0.13), 20.0)
+  profile = fit_roll_comp_profile(cp(), buckets)
+  assert profile is not None
+  assert profile['gain'] == pytest.approx(0.55, abs=0.05)
+
+
 def test_clamp_low_gain():
   buckets = RollCompBuckets(points_per_bucket=MIN_POINTS * 2)
   _fill_buckets(buckets, MIN_POINTS * 2, gain=0.1)

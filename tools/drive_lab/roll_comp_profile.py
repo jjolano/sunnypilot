@@ -12,7 +12,7 @@ import numpy as np
 
 from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 from openpilot.tools.drive_lab.timeline import msg_payload, msg_time_s, msg_type, safe_get
-from sunnypilot.custom.lateral.speed_aware_torque import _fit_slope
+from sunnypilot.custom.lateral.roll_comp_learning import _fit_slope_ols
 
 GRAVITY = 9.81
 MIN_V_EGO = 15.0
@@ -157,7 +157,7 @@ def build_roll_comp_profile(msgs: list[Any], source: str = "unknown", already_so
 
   points = np.column_stack([xs, np.ones_like(xs), ys])
   span = float(np.max(xs) - np.min(xs))
-  slope = _fit_slope(points) if span >= MIN_X_SPAN and len(points) >= 2 else None
+  slope = _fit_slope_ols(points) if span >= MIN_X_SPAN and len(points) >= 2 else None
 
   return RollCompProfileReport(
     source=source,
