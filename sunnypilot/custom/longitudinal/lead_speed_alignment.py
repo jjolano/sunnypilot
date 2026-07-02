@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from openpilot.sunnypilot.custom.longitudinal.lead_cushion import lead_speedup_guard
+from openpilot.sunnypilot.custom.longitudinal.lead_prediction import predict_lead_trajectory
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   LEAD_LAUNCH_TAU,
   Personality,
@@ -66,6 +67,13 @@ _ALIGN_MIN_V_LEAD_PULLAWAY = 0.3      # m/s; lead considered moving
 _ALIGN_PROGRESS_CRUISE_MARGIN = 0.2   # m/s
 _ALIGN_MIN_CONFIDENCE = 0.55          # enough confidence to react to a far lead
 
+# Predictive lookahead for early, gentle slowdown (Phase 5)
+# Use only the short horizons: long horizons amplify noisy lead accel.
+_ALIGN_PREDICT_HORIZON_T = (1.0, 1.5)
+# Only let prediction nudge the routing when the current-state demand is tiny and
+# the lead is stable/confident enough for the trajectory to be meaningful.
+_ALIGN_PREDICT_MIN_EXCESS_GAP = 5.0   # m
+
 
 def _finite(value: object) -> bool:
   try:
@@ -78,6 +86,45 @@ def _normalize_personality(personality: Personality) -> Personality:
   if isinstance(personality, Personality):
     return personality
   return Personality.from_value(personality)
+
+
+def _predicted_required_decel(d_rel: float, v_rel: float, v_lead: float, a_lead: float,
+                              a_lead_tau: float, v_ego: float, a_ego: float,
+                              accel_confidence: float, desired_gap: float) -> float:
+  """Max required decel over short horizons if the lead's trajectory compresses the gap.
+
+  Returns 0.0 when prediction is invalid, the lead is not braking, or the gap never compresses
+  enough to matter. The value is used only to nudge the decel-band routing earlier; the existing
+  TTC/safety gates still decide when to defer to MPC.
+  """
+  if not all(_finite(v) for v in (d_rel, v_rel, v_lead, a_lead, a_lead_tau, v_ego, a_ego,
+                                  accel_confidence, desired_gap)):
+    return 0.0
+  if a_lead_tau <= 0.0 or desired_gap <= 0.0:
+    return 0.0
+  if a_lead >= 0.0:
+    return 0.0  # only nudge for genuinely worsening (braking) lead motion
+  try:
+    pred = predict_lead_trajectory(
+      d_rel=d_rel, v_rel=v_rel, v_lead=v_lead, a_lead=a_lead,
+      a_lead_tau=a_lead_tau, v_ego=v_ego, a_ego=a_ego,
+      accel_confidence=accel_confidence,
+      horizon_t=_ALIGN_PREDICT_HORIZON_T,
+    )
+  except Exception:
+    return 0.0
+  if not pred.valid:
+    return 0.0
+  max_required = 0.0
+  for t, gap_t, v_lead_t in zip(pred.t, pred.gap, pred.v_lead, strict=True):
+    excess = gap_t - desired_gap
+    v_ego_t = max(0.0, v_ego + a_ego * t)
+    closing = max(0.0, v_ego_t - v_lead_t)
+    if excess > 0.1 and closing > 0.05:
+      required = (closing * closing) / (2.0 * excess)
+      if required > max_required:
+        max_required = required
+  return max_required
 
 
 def _result(action: AlignmentAction, a_target: float, required: float, desired_gap: float,
@@ -114,6 +161,7 @@ def lead_speed_alignment(
   personality: Personality,
   lead_kinematics_valid: bool,
   has_lead: bool = False,
+  a_lead_tau: float = 1.5,
 ) -> LeadSpeedAlignment:
   """Return a soft recommendation for lead speed alignment.
 
@@ -163,29 +211,48 @@ def lead_speed_alignment(
   ego_faster = v_ego > lead_v + 0.1
   if ego_faster and v_ego >= _ALIGN_MIN_V_EGO and lead_v >= _ALIGN_MIN_LEAD_V:
     if lead_stable and lead_confidence >= _ALIGN_MIN_CONFIDENCE and excess_gap >= _ALIGN_MIN_EXCESS_GAP:
+      # Predictive early reaction: current kinematics look comfortable but a stable,
+      # high-confidence lead is predicted to compress the gap soon. Keep the action
+      # advisory-only; hard-hazard handoff stays intact for genuinely high-risk cases.
+      predicted_required = 0.0
+      if (required_decel <= _ALIGN_COMFORT_REQUIRED_DECEL and
+          excess_gap >= _ALIGN_PREDICT_MIN_EXCESS_GAP):
+        predicted_required = _predicted_required_decel(
+          d_rel=lead_d_rel, v_rel=lead_v_rel, v_lead=lead_v, a_lead=lead_a_k,
+          a_lead_tau=a_lead_tau, v_ego=v_ego, a_ego=a_ego,
+          accel_confidence=lead_confidence, desired_gap=desired_gap,
+        )
+      effective_required = max(required_decel, min(predicted_required, _ALIGN_MAX_REQUIRED_DECEL))
+
       # Very far / comfortable: don't block progress with advisory.
-      if ttc > _ALIGN_NO_ADVISORY_TTC and thw >= 1.5:
+      if ttc > _ALIGN_NO_ADVISORY_TTC and thw >= 1.5 and effective_required <= _ALIGN_TINY_REQUIRED_DECEL:
         return _result(AlignmentAction.IGNORE, 0.0, required_decel, desired_gap,
                        excess_gap, closing, "ttc_far_comfort")
       # Decel-band routing with TTC gating.
-      if required_decel <= _ALIGN_TINY_REQUIRED_DECEL:
+      if effective_required <= _ALIGN_TINY_REQUIRED_DECEL:
         if ttc < _ALIGN_COAST_TTC_MAIN:
           return _result(AlignmentAction.COAST, _ALIGN_COAST_A_TARGET, required_decel,
                          desired_gap, excess_gap, closing, "tiny_decel_coast")
         return _result(AlignmentAction.IGNORE, 0.0, required_decel, desired_gap,
                        excess_gap, closing, "tiny_decel_ttc_far")
-      if required_decel <= _ALIGN_COMFORT_REQUIRED_DECEL:
-        t = (required_decel - _ALIGN_TINY_REQUIRED_DECEL) / (
+      if effective_required <= _ALIGN_COMFORT_REQUIRED_DECEL:
+        t = (effective_required - _ALIGN_TINY_REQUIRED_DECEL) / (
           _ALIGN_COMFORT_REQUIRED_DECEL - _ALIGN_TINY_REQUIRED_DECEL
         )
         a_target = (1.0 - t) * _ALIGN_COAST_A_TARGET + t * _ALIGN_GENTLE_BRAKE_MAX
+        reason = "comfort_gentle_brake"
+        if predicted_required > required_decel + 1e-9:
+          reason = "predicted_comfort_gentle_brake"
         return _result(AlignmentAction.GENTLE_BRAKE, a_target, required_decel,
-                       desired_gap, excess_gap, closing, "comfort_gentle_brake")
+                       desired_gap, excess_gap, closing, reason)
       # reqDecel in (COMFORT, MAX): capped advisory instead of silence.
       # This removes the "nothing ... nothing ... full MPC wall" behavior.
-      if required_decel < _ALIGN_MAX_REQUIRED_DECEL:
+      if effective_required < _ALIGN_MAX_REQUIRED_DECEL:
+        reason = "capped_advisory_brake"
+        if predicted_required > required_decel + 1e-9:
+          reason = "predicted_capped_advisory_brake"
         return _result(AlignmentAction.GENTLE_BRAKE, _ALIGN_GENTLE_BRAKE_MAX, required_decel,
-                       desired_gap, excess_gap, closing, "capped_advisory_brake")
+                       desired_gap, excess_gap, closing, reason)
       # reqDecel >= MAX (0.80): use TTC/speed/THW to distinguish true hazard from
       # high-speed light-brake cases. Corrected aEgo analysis: at >=18 m/s humans
       # brake 83% of the time but 71% is light braking only.

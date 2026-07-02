@@ -38,6 +38,7 @@ def align(
   personality: Personality = Personality.STANDARD,
   lead_kinematics_valid: bool = True,
   has_lead: bool = True,
+  a_lead_tau: float = 1.5,
 ) -> LeadSpeedAlignment:
   return lead_speed_alignment(
     v_ego=v_ego, a_ego=a_ego, v_cruise=v_cruise,
@@ -47,6 +48,7 @@ def align(
     alternate_threat_active=alternate_threat_active, model_should_stop=model_should_stop,
     force_slow_decel=force_slow_decel, brake_pressed=brake_pressed, gas_pressed=gas_pressed,
     personality=personality, lead_kinematics_valid=lead_kinematics_valid, has_lead=has_lead,
+    a_lead_tau=a_lead_tau,
   )
 
 
@@ -275,3 +277,65 @@ def test_personality_scaling_in_launch():
   assert rel.action is AlignmentAction.STANDSTILL_LAUNCH
   assert agg.action is AlignmentAction.STANDSTILL_LAUNCH
   assert agg.a_target >= rel.a_target
+
+
+# -----------------------------------------------------------------------------
+# Predictive early, gentle lead reaction (Phase 5)
+# -----------------------------------------------------------------------------
+
+def test_predicted_compression_emits_early_gentle_brake():
+  # Current-state demand is tiny (closing 0.5 m/s) but a stable, braking lead will
+  # compress the gap over the next 1-1.5 s. Without prediction this returns IGNORE.
+  r = align(
+    v_ego=25.0, lead_v=24.5, lead_v_rel=-0.5, lead_a_k=-2.5,
+    lead_d_rel=50.0, follow_gap=37.5, lead_progress_allowed=False,
+    lead_stable=True, lead_confidence=0.9, a_lead_tau=1.5,
+  )
+  assert r.action is AlignmentAction.GENTLE_BRAKE
+  assert -0.35 <= r.a_target <= 0.0
+  assert "predicted" in r.reason
+
+
+def test_no_false_advisory_when_prediction_does_not_compress():
+  # Same comfortable initial state but the lead is not braking, so the predicted
+  # trajectory does not compress the gap -> remain advisory-silent.
+  r = align(
+    v_ego=25.0, lead_v=24.5, lead_v_rel=-0.5, lead_a_k=0.0,
+    lead_d_rel=50.0, follow_gap=37.5, lead_progress_allowed=False,
+    lead_stable=True, lead_confidence=0.9, a_lead_tau=1.5,
+  )
+  assert r.action is AlignmentAction.IGNORE
+  assert "predicted" not in r.reason
+
+
+def test_predicted_early_coast_when_mild_compression():
+  # Very mild predicted compression only lifts the routing into the tiny-decel band,
+  # producing an early coast rather than waiting.
+  r = align(
+    v_ego=25.0, lead_v=24.8, lead_v_rel=-0.2, lead_a_k=-2.0,
+    lead_d_rel=60.0, follow_gap=37.5, lead_progress_allowed=False,
+    lead_stable=True, lead_confidence=0.9, a_lead_tau=1.5,
+  )
+  # TTC is far (60/0.2 = 300 s) so without prediction this would IGNORE; with a
+  # mild predicted compression we should at least see COAST.
+  assert r.action in (AlignmentAction.COAST, AlignmentAction.GENTLE_BRAKE)
+  assert r.a_target <= 0.0 + 1e-9
+
+
+def test_prediction_respects_fail_closed_gates():
+  # Even with strong predicted compression, the usual safety gates still win.
+  for kwargs in (
+    {"lead_shadow_active": True},
+    {"alternate_threat_active": True},
+    {"model_should_stop": True},
+    {"force_slow_decel": True},
+    {"brake_pressed": True},
+    {"gas_pressed": True},
+    {"lead_kinematics_valid": False},
+  ):
+    r = align(
+      v_ego=25.0, lead_v=24.5, lead_v_rel=-0.5, lead_a_k=-2.5,
+      lead_d_rel=50.0, follow_gap=37.5, lead_progress_allowed=False,
+      lead_stable=True, lead_confidence=0.9, a_lead_tau=1.5, **kwargs,
+    )
+    assert r.action is AlignmentAction.IGNORE
