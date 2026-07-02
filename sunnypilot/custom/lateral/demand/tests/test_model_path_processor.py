@@ -475,3 +475,59 @@ def test_sps_no_sign_flip_except_tiny_raw():
   for sign in (1.0, -1.0):
     result = proc2.update(_sps_inputs(v_ego=v_ego, curvature=sign * large_k, mode="apply"))
     assert result.desired_curvature * (sign * large_k) >= 0.0
+
+
+# --- tight-corner gate escapes (city intersection turns) ---
+
+def _corner_inputs(v_ego: float, curvature: float, measured_curvature: float, y_std: float = 0.05):
+  # _inputs() indexes the path by point number; corners need geometry consistent with
+  # T_IDXS at the given speed so get_curvature_from_plan recovers the same curvature.
+  from dataclasses import replace
+  ts = list(ModelConstants.T_IDXS)
+  xs = [v_ego * t for t in ts]
+  return replace(
+    _inputs(v_ego=v_ego, curvature=curvature, measured_curvature=measured_curvature, y_std=y_std),
+    position_x=xs,
+    position_y=[0.5 * curvature * x * x for x in xs],
+    orientation_z=[curvature * x for x in xs],
+    orientation_rate_z=[curvature * v_ego] * N,
+  )
+
+
+def test_high_path_std_forgiven_when_measured_turn_confirms():
+  proc = ModelPathProcessor()
+  # Tight city corner: high path y-std, but the car is measurably turning the same way.
+  result = proc.update(_corner_inputs(v_ego=5.0, curvature=0.05, measured_curvature=0.05, y_std=1.5))
+  assert not result.gated
+  assert result.quality == pytest.approx(0.75)
+
+
+def test_high_path_std_still_gates_without_measured_confirmation():
+  proc = ModelPathProcessor()
+  result = proc.update(_corner_inputs(v_ego=5.0, curvature=0.05, measured_curvature=0.0, y_std=1.5))
+  assert result.gated
+  assert result.reason == "high_path_std"
+
+
+def test_steep_turn_path_valid_when_measured_turn_confirms():
+  proc = ModelPathProcessor()
+  # Parabolic 0.1 1/m path exceeds dy/dx of 1.0 within the core points at 5 m/s.
+  result = proc.update(_corner_inputs(v_ego=5.0, curvature=0.1, measured_curvature=0.1))
+  assert result.reason != "invalid_path"
+
+
+def test_steep_path_still_invalid_without_measured_turn():
+  proc = ModelPathProcessor()
+  result = proc.update(_corner_inputs(v_ego=5.0, curvature=0.1, measured_curvature=0.0))
+  assert result.gated
+  assert result.reason == "invalid_path"
+
+
+def test_core_path_slope_limit_stays_tight_at_speed():
+  # Widened slope allowance is low-speed + measured-turn only.
+  fast = _corner_inputs(v_ego=20.0, curvature=0.08, measured_curvature=0.08)
+  slow_straight = _corner_inputs(v_ego=5.0, curvature=0.08, measured_curvature=0.0)
+  slow_turning = _corner_inputs(v_ego=5.0, curvature=0.08, measured_curvature=0.06)
+  assert ModelPathProcessor._core_path_slope_limit(fast) == pytest.approx(1.0)
+  assert ModelPathProcessor._core_path_slope_limit(slow_straight) == pytest.approx(1.0)
+  assert ModelPathProcessor._core_path_slope_limit(slow_turning) == pytest.approx(2.0)

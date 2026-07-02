@@ -14,6 +14,11 @@ PATH_VALID_MIN_LEN = 17
 PATH_VALID_MIN_X_SPAN = 1.0
 MIN_CORE_PATH_X_STEP = 1e-3
 MAX_CORE_PATH_LATERAL_SLOPE = 1.0
+# A tight city turn legitimately bends the core path past 45 deg of lateral slope
+# (measured p90 ~1.5 on intersection turns). Widen the slope limit only while the car
+# is measurably turning at low speed, so garbage paths on straights still fail closed.
+TURN_CONFIRMED_CORE_PATH_SLOPE_BP = [0.02, 0.06]  # |measured curvature| 1/m
+TURN_CONFIRMED_CORE_PATH_SLOPE_LIMIT = [MAX_CORE_PATH_LATERAL_SLOPE, 2.0]
 PATH_CURVATURE_ACTION_T = 0.25
 MIN_JUMP_CHECK_SPEED = 4.0
 MAX_LAT_ACCEL_JUMP = 3.0
@@ -443,7 +448,7 @@ class ModelPathProcessor:
         straight_road_damping_active=self._straight_road_damping_active,
       )
 
-    if not self._valid_core_path(inputs.position_x, inputs.position_y):
+    if not self._valid_core_path(inputs.position_x, inputs.position_y, self._core_path_slope_limit(inputs)):
       self._recovering_from_hard_invalid = True
       self._low_lane_confidence_frames = 0
       self._reset_curve_exit_history()
@@ -494,7 +499,7 @@ class ModelPathProcessor:
       quality = lane_quality
       reason = "low_lane_confidence"
 
-    if reason == "low_lane_confidence" and quality < LOW_QUALITY_BLEND_THRESHOLD and self._low_speed_measured_turn_confirms_curvature(
+    if reason in ("low_lane_confidence", "high_path_std") and quality < LOW_QUALITY_BLEND_THRESHOLD and self._low_speed_measured_turn_confirms_curvature(
       inputs,
       desired_curvature,
       path_disagreement,
@@ -1299,7 +1304,8 @@ class ModelPathProcessor:
     return arr
 
   @classmethod
-  def _valid_core_path(cls, position_x: Sequence[float], position_y: Sequence[float]) -> bool:
+  def _valid_core_path(cls, position_x: Sequence[float], position_y: Sequence[float],
+                       slope_limit: float = MAX_CORE_PATH_LATERAL_SLOPE) -> bool:
     x_vals = cls._as_finite_array(position_x)
     y_vals = cls._as_finite_array(position_y)
     if x_vals is None or y_vals is None or x_vals.size != y_vals.size or x_vals.size < PATH_VALID_MIN_LEN:
@@ -1311,8 +1317,15 @@ class ModelPathProcessor:
     return bool(
       np.all(core_x_steps >= MIN_CORE_PATH_X_STEP) and
       core_x_vals[-1] - core_x_vals[0] >= PATH_VALID_MIN_X_SPAN and
-      np.max(np.abs(core_y_steps) / core_x_steps) <= MAX_CORE_PATH_LATERAL_SLOPE
+      np.max(np.abs(core_y_steps) / core_x_steps) <= slope_limit
     )
+
+  @classmethod
+  def _core_path_slope_limit(cls, inputs: ModelPathProcessorInputs) -> float:
+    if not cls._low_speed_curve_retention_active(inputs.v_ego) or not math.isfinite(inputs.measured_curvature):
+      return MAX_CORE_PATH_LATERAL_SLOPE
+    return float(np.interp(abs(inputs.measured_curvature),
+                           TURN_CONFIRMED_CORE_PATH_SLOPE_BP, TURN_CONFIRMED_CORE_PATH_SLOPE_LIMIT))
 
   @classmethod
   def _path_std_quality(
