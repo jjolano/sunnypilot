@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
 import numpy as np
 
@@ -191,6 +192,8 @@ class ResponseCore:
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
     self.measurement_smoother = LateralAccelMeasurementSmoother(self.dt)
     self._v_ego_invalid_logged = False
+    # ponytail: instance attr lets the controller inject a learned gain without mutating torque_params.
+    self.roll_compensation_gain = ROLL_COMPENSATION_GAIN
 
   def update_limits(self) -> None:
     self.pid.set_limits(self._lateral_accel_from_torque(self.steer_max, self.torque_params),
@@ -209,7 +212,7 @@ class ResponseCore:
 
     measured_curvature = -self._calc_curvature(math.radians(inp.steering_angle_deg - inp.angle_offset_deg), v_ego, inp.roll)
     raw_measurement = measured_curvature * v_ego ** 2
-    roll_compensation = ROLL_COMPENSATION_GAIN * inp.roll * ACCELERATION_DUE_TO_GRAVITY
+    roll_compensation = self.roll_compensation_gain * inp.roll * ACCELERATION_DUE_TO_GRAVITY
     curvature_deadzone = abs(self._calc_curvature(math.radians(self.steering_angle_deadzone_deg), v_ego, 0.0))
     lateral_accel_deadzone = curvature_deadzone * v_ego ** 2
     raw_actual_lateral_jerk = -self._calc_curvature(math.radians(inp.steering_rate_deg), v_ego, 0.0) * v_ego ** 2

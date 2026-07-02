@@ -106,8 +106,8 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
 
   roll_enum = homogeneous_string_options(find_item(STEERING, "RollCompGainMode"))
   assert roll_enum is not None
-  assert roll_enum.values == ["off", "shadow"]
-  assert roll_enum.labels == ["Off", "Learn only"]
+  assert roll_enum.values == ["off", "shadow", "apply"]
+  assert roll_enum.labels == ["Off", "Learn only", "Apply learned gain"]
 
   cut_in_enum = homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode"))
   assert cut_in_enum is not None
@@ -154,7 +154,7 @@ def test_roll_comp_gain_string_index_defaults_to_off():
   assert string_option_index("", enum, "RollCompGainMode") == 0
   assert string_option_index("off", enum, "RollCompGainMode") == 0
   assert string_option_index("shadow", enum, "RollCompGainMode") == 1
-  assert string_option_index("apply", enum, "RollCompGainMode") == 0  # apply not exposed yet
+  assert string_option_index("apply", enum, "RollCompGainMode") == 2
   assert string_option_index("bad", enum, "RollCompGainMode") == 0
 
 

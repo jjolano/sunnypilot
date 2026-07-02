@@ -16,6 +16,7 @@ import pytest
 from cereal import log
 from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import BLOCK_INACTIVE, BLOCK_STEERING_PRESSED
 from openpilot.sunnypilot.custom.lateral.output_governor import GovernorReason, OutputGovernorDiagnostics, OutputGovernorResult
+from openpilot.sunnypilot.custom.lateral.response_core import ROLL_COMPENSATION_GAIN
 from openpilot.sunnypilot.custom.lateral.torque_v2_1 import LatControlTorqueV21, VERSION_V21
 
 DT = 0.01
@@ -490,3 +491,22 @@ def test_steering_rate_is_negated_before_governor(steering_rate):
   )  # type: ignore[arg-type]
 
   assert captured["inp"].steering_rate_deg == pytest.approx(-steering_rate, abs=1e-9)
+
+
+def test_default_extension_uses_constant_roll_compensation_gain():
+  c = make_controller()
+  assert c.response_core.roll_compensation_gain == ROLL_COMPENSATION_GAIN
+  c.update(True, make_cs(v_ego=20.0, angle=5.0), FakeVM(), make_params(roll=-0.04), False, 0.0, make_pose(), False, 0.2)  # type: ignore[arg-type]
+  assert c.response_core.roll_compensation_gain == ROLL_COMPENSATION_GAIN
+
+
+class RollGainExtension(NoOpExtension):
+  def __init__(self, learned_roll_gain):
+    self.learned_roll_gain = learned_roll_gain
+
+
+def test_valid_learned_roll_gain_copied_to_response_core():
+  c = LatControlTorqueV21(make_cp(), SimpleNamespace(), make_ci(), DT, extension=RollGainExtension(0.62))
+  assert c.response_core.roll_compensation_gain == ROLL_COMPENSATION_GAIN
+  c.update(True, make_cs(v_ego=20.0, angle=5.0), FakeVM(), make_params(roll=-0.04), False, 0.0, make_pose(), False, 0.2)  # type: ignore[arg-type]
+  assert c.response_core.roll_compensation_gain == 0.62

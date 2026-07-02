@@ -26,6 +26,7 @@ from openpilot.common.params import Params
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.sunnypilot.custom.lateral.roll_comp_learning import parse_roll_comp_profile
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   SpeedAwareTorqueRuntime,
   parse_speed_aware_torque_profile,
@@ -33,6 +34,7 @@ from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
   validate_live_torque_speed_adaptive_mode,
   validate_manual_torque_override_against_base,
+  validate_roll_comp_gain_mode,
   validate_torque_override_friction,
   validate_torque_override_lat_accel_factor,
 )
@@ -187,6 +189,9 @@ class TorqueParameterOverridePolicy:
     self._manual_override_values_valid = False
     self._refresh_allowed = True
     self._refresh_deferred = False
+    self._roll_comp_mode = 'off'
+    self._roll_comp_profile_raw: bytes | None = None
+    self.learned_roll_gain: float | None = None
     self._poll()
     self._torque_parameter_override_policy_initialized = True
 
@@ -215,6 +220,16 @@ class TorqueParameterOverridePolicy:
         self._speed_profile = parse_speed_aware_torque_profile(self.CP, json.loads(self._speed_profile_raw))
       except Exception:
         self._speed_profile = None
+
+    self._roll_comp_mode = validate_roll_comp_gain_mode(self.params.get("RollCompGainMode", return_default=True))
+    self._roll_comp_profile_raw = self.params.get("RollCompGainParams", return_default=True) if self._roll_comp_mode == 'apply' else None
+    self.learned_roll_gain = None
+    if self._roll_comp_profile_raw:
+      try:
+        parsed = parse_roll_comp_profile(self.CP, json.loads(self._roll_comp_profile_raw))
+        self.learned_roll_gain = parsed['gain'] if parsed is not None else None
+      except Exception:
+        self.learned_roll_gain = None
 
   def _capture_base(self, torque_params: Any) -> float:
     cur = float(torque_params.latAccelFactor)

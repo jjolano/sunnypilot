@@ -22,6 +22,7 @@ written; run the harvest after the next few shadow-collecting drives.
 | Curve speed confidence (`CurveSpeedConfidenceMode`) | off | debug trace + curve routes | 2026-08-01 |
 | Standstill release confidence (`StandstillReleaseConfidenceMode`) | off | stop-and-go routes, release block reasons | 2026-08-01 |
 | Dynamic follow gap (`DynamicFollowGapMode`) | shadow | `profile_lead_following` A/B gate | new — collect first |
+| Roll-compensation gain (`RollCompGainMode`) | off | engaged-route replay: straight-cruise tracking, crown transitions, banked curves | 2026-08-15 |
 
 ## Per-feature procedure
 
@@ -61,3 +62,16 @@ written; run the harvest after the next few shadow-collecting drives.
   matched routes must show approach decel peak **down**, zero new close approaches
   (min time gap ≥ 1.05 s), and headway recovery after the approach. This is a deliberate
   headway tradeoff — it only ships with that replay evidence.
+
+### Roll-compensation gain
+- Learning is already shadow-capable; this runbook covers the apply gate now that the live
+  path exists. Flip `RollCompGainMode` to `apply` only after replay evidence exists.
+- Harvest: engaged-route replay comparing fixed `ROLL_COMPENSATION_GAIN` (0.55) versus the
+  learned gain on routes with sustained crown/cross-slope and gentle banked curves.
+- **Promote** (to a recommended apply default per platform or globally) if learned-gain replay
+  shows lower straight-cruise tracking error, smaller crown-transition transients, and no
+  degradation on banked curves across ≥3 cars with meaningful crown.
+- **Delete the apply path and keep shadow** if the fixed constant is indistinguishable or more
+  consistent; keep the learner as observability only.
+- **Delete the feature entirely** if shadow telemetry shows the learned gain is noisy or the
+  fit span/confidence thresholds are rarely met in normal driving.

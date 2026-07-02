@@ -85,7 +85,8 @@ class TorqueSettingsLayout(Widget):
     self._roll_comp_gain_mode = ListItemSP(
       title=tr("Roll Compensation Gain"),
       description=tr("Learn how much extra torque is needed to hold lane on roads with crown or cross-slope. " +
-                     "Monitor only mode collects data without changing steering; turn Off to stop learning."),
+                     "Monitor only mode collects data without changing steering; Apply learned gain can change steering " +
+                     "response on crowned roads; turn Off to stop learning."),
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_roll_comp_gain_mode_dialog,
     )
@@ -285,7 +286,7 @@ class TorqueSettingsLayout(Widget):
     except Exception:
       mode = "off"
     mode = validate_roll_comp_gain_mode(mode)
-    return {"off": tr("Off"), "shadow": tr("Learn only")}.get(mode, tr("Off"))
+    return {"off": tr("Off"), "shadow": tr("Learn only"), "apply": tr("Apply learned gain")}.get(mode, tr("Off"))
 
   def _show_speed_adaptive_mode_dialog(self):
     nodes = [TreeNode(tr("Off")), TreeNode(tr("Learn only")), TreeNode(tr("Apply learned curve"))]
@@ -320,7 +321,7 @@ class TorqueSettingsLayout(Widget):
     gui_app.push_widget(self._speed_adaptive_mode_dialog)
 
   def _show_roll_comp_gain_mode_dialog(self):
-    nodes = [TreeNode(tr("Off")), TreeNode(tr("Learn only"))]
+    nodes = [TreeNode(tr("Off")), TreeNode(tr("Learn only")), TreeNode(tr("Apply learned gain"))]
     folders = [TreeFolder("", nodes)]
     current_label = self._get_current_roll_comp_mode_label()
 
@@ -330,7 +331,7 @@ class TorqueSettingsLayout(Widget):
         return
       if result == DialogResult.CONFIRM and self._roll_comp_gain_mode_dialog:
         selected = self._roll_comp_gain_mode_dialog.selection_ref
-        mapping = {tr("Off"): "off", tr("Learn only"): "shadow"}
+        mapping = {tr("Off"): "off", tr("Learn only"): "shadow", tr("Apply learned gain"): "apply"}
         mode = mapping.get(selected, "off")
         if mode == "off":
           ui_state.params.remove("RollCompGainMode")

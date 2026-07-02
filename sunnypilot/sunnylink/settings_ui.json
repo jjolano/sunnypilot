@@ -401,7 +401,7 @@
                   "widget": "multiple_button",
                   "requires_attestation": true,
                   "title": "Roll Compensation Gain",
-                  "description": "Learn how much extra torque is needed to hold lane on roads with crown or cross-slope. Monitor only mode collects data without changing steering; turn Off to stop learning.",
+                  "description": "Learn how much extra torque is needed to hold lane on roads with crown or cross-slope. Monitor only mode collects data without changing steering; Apply learned gain can change steering response on crowned roads; turn Off to stop learning.",
                   "options": [
                     {
                       "value": "off",
@@ -410,6 +410,10 @@
                     {
                       "value": "shadow",
                       "label": "Learn only"
+                    },
+                    {
+                      "value": "apply",
+                      "label": "Apply learned gain"
                     }
                   ],
                   "enablement": [

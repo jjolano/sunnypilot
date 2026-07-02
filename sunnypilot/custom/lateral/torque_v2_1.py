@@ -23,7 +23,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import U
 from openpilot.sunnypilot.custom.lateral.near_zero_recenter_observer import NearZeroRecenterObserver
 from openpilot.sunnypilot.custom.lateral.output_governor import OutputGovernor, OutputGovernorInputs
 from openpilot.sunnypilot.custom.lateral.oscillation_observer import OscillationObserver
-from openpilot.sunnypilot.custom.lateral.response_core import ResponseCore, ResponseCoreInputs
+from openpilot.sunnypilot.custom.lateral.response_core import ResponseCore, ResponseCoreInputs, ROLL_COMPENSATION_GAIN
 
 VERSION_V21 = 21
 SAME_DIRECTION_TORQUE_EPS = 1e-3
@@ -148,6 +148,8 @@ class LatControlTorqueV21(LatControl):
     self._vm = VM
     if self.extension.update_override_torque_params(self.torque_params, CS.vEgo):
       self.response_core.update_limits()
+    # ponytail: learned roll gain is an extra exposed attr, never part of torque_params capture/restore.
+    self.response_core.roll_compensation_gain = getattr(self.extension, 'learned_roll_gain', None) or ROLL_COMPENSATION_GAIN
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION_V21
