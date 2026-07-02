@@ -59,6 +59,7 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   launch_accel_max,
   stop_approach_comfort_decel,
 )
+from openpilot.sunnypilot.custom.longitudinal.coast_horizon import MAX_COAST_DECEL
 
 SAFETY_FORCE_SLOW_DECEL = -0.2
 
@@ -130,7 +131,7 @@ class LongitudinalScene:
   a_ego: float = 0.0            # current ego accel (wired for future smoothing; Phase 1 unused)
   v_cruise: float = 0.0
   seed_a_target: float = 0.0    # planner baseline (MPC cruise/seed) accel
-  accel_coast: float = 0.0      # current coast-down accel (negative downhill)
+  accel_coast: float = 0.0      # natural coast estimate (negative downhill; can be non-negative when no useful coast)
   personality: Personality = Personality.STANDARD
   # lead (pre-MPC lead-present seed shaping; final MPC lead physics remains downstream)
   has_lead: bool = False
@@ -706,8 +707,8 @@ def _with_personality(scene: LongitudinalScene, personality: Personality) -> Lon
 
 
 def _scene_coast_decel(scene: LongitudinalScene) -> float:
-  """A usable (negative) natural coast decel for the cushion; falls back to a flat-road proxy."""
-  return scene.accel_coast if scene.accel_coast < -0.02 else -0.25
+  """A usable (negative) natural coast decel for the cushion; falls back when no useful coast is available."""
+  return scene.accel_coast if scene.accel_coast < MAX_COAST_DECEL else MAX_COAST_DECEL
 
 
 def _advisory_speed_limit_cap(scene: LongitudinalScene) -> float:

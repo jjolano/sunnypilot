@@ -1034,6 +1034,26 @@ def test_speed_limit_runway_governor_shapes_long_runway_cap():
   assert shaped.a_target == pytest.approx(0.0)        # long runway -> cruise (no advisory braking)
 
 
+def test_speed_limit_runway_governor_degrades_non_negative_accel_to_no_useful_coast_cap():
+  # With a non-negative natural coast estimate, no useful coast should be assumed and the
+  # governor should not relax the cap via a flat-road -0.25 proxy.
+  down_hill = LongitudinalScene(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=0.0,
+    speed_limit_active=True, speed_limit_v_target=15.0, speed_limit_a_target=-0.5,
+    speed_limit_distance=1000.0,
+    accel_coast=-0.25,
+  )
+  flat_no_coast = LongitudinalScene(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=0.0,
+    speed_limit_active=True, speed_limit_v_target=15.0, speed_limit_a_target=-0.5,
+    speed_limit_distance=1000.0, accel_coast=0.0,
+  )
+  down_cap = [c for c in build_candidates(down_hill) if c.intent == "speed_policy"][0]
+  no_coast_cap = [c for c in build_candidates(flat_no_coast) if c.intent == "speed_policy"][0]
+  assert down_cap.a_target == pytest.approx(0.0)
+  assert no_coast_cap.a_target == pytest.approx(-0.5)
+
+
 def test_speed_limit_runway_governor_short_runway_stays_braking():
   # Short runway: governor should keep a braking cap (at least as strong as fallback).
   scene = LongitudinalScene(

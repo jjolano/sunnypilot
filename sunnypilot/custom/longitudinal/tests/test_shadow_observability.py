@@ -69,6 +69,14 @@ def test_cut_in_eligibility_requires_stable_or_high_confidence():
   assert stable.eligible is True
 
 
+def test_cut_in_not_closing_blocks_small_ttc_without_ignoring_ttc_plumbing():
+  # Non-closing with valid short TTC is blocked purely on closing-speed gating.
+  r = predict_cut_in_brake_assist("shadow", ctx(state(v_rel=1.5, ttc=1.0)), None, 15.0, long_active=True)
+  assert r.eligible is False
+  assert r.block_reason == "not_closing"
+  assert r.ttc == pytest.approx(1.0)
+
+
 def test_cut_in_apply_reports_supported_and_preserves_mode():
   r = predict_cut_in_brake_assist(CUT_IN_MODE_APPLY, ctx(state()), None, 15.0, long_active=True)
   assert r.mode == CUT_IN_MODE_APPLY

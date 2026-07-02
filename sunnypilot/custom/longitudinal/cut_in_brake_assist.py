@@ -114,7 +114,7 @@ def predict_cut_in_brake_assist(mode: Any, actual_ctx: Any | None, shadow_ctx: A
     block = "not_near_path"
   elif d_rel <= 0.0 or d_rel > MAX_CLOSE_DISTANCE_M:
     block = "not_close"
-  elif closing_speed < MIN_CLOSING_SPEED_MS and (ttc <= 0.0 or ttc > MAX_TTC_S):
+  elif closing_speed < MIN_CLOSING_SPEED_MS:
     block = "not_closing"
   elif not stable_ok:
     block = "unstable_low_confidence"
