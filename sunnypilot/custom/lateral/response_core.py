@@ -51,6 +51,12 @@ MEASUREMENT_SMOOTHER_IMPLAUSIBLE_JERK = 80.0
 MEASUREMENT_SMOOTHER_MAX_RAW_ERROR = 1.0
 
 ACCELERATION_DUE_TO_GRAVITY = 9.81
+# Deliberate deviation from the legacy full-gravity roll feedforward (see
+# docs/adr/2026-07-02-scale-roll-compensation-gain.md). Route 00000246: regressing steady
+# straight-cruise torque need against crown over 22.7k frames gives slope 0.56 — full
+# g*sin(roll) over-injects ~44%, which the integrator permanently cancels and re-converges
+# after every crown change (the 0.15-0.2 Hz lane wander). Tune per-platform if needed.
+ROLL_COMPENSATION_GAIN = 0.55
 
 
 def sign(value: float) -> float:
@@ -203,7 +209,7 @@ class ResponseCore:
 
     measured_curvature = -self._calc_curvature(math.radians(inp.steering_angle_deg - inp.angle_offset_deg), v_ego, inp.roll)
     raw_measurement = measured_curvature * v_ego ** 2
-    roll_compensation = inp.roll * ACCELERATION_DUE_TO_GRAVITY
+    roll_compensation = ROLL_COMPENSATION_GAIN * inp.roll * ACCELERATION_DUE_TO_GRAVITY
     curvature_deadzone = abs(self._calc_curvature(math.radians(self.steering_angle_deadzone_deg), v_ego, 0.0))
     lateral_accel_deadzone = curvature_deadzone * v_ego ** 2
     raw_actual_lateral_jerk = -self._calc_curvature(math.radians(inp.steering_rate_deg), v_ego, 0.0) * v_ego ** 2

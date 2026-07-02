@@ -30,6 +30,7 @@ from openpilot.sunnypilot.custom.lateral.response_core import (
   LOW_DEMAND_FRICTION_FULL_LAT_ACCEL,
   LOW_SPEED_UNWIND_GAIN_SPEED,
   LP_FILTER_CUTOFF_HZ,
+  ROLL_COMPENSATION_GAIN,
   ResponseCore,
   ResponseCoreInputs,
   low_speed_pid_gain_speed,
@@ -105,7 +106,8 @@ def _oracle_update(s, inp: ResponseCoreInputs):
   v = inp.v_ego
   measured_curvature = -calc_curvature(math.radians(inp.steering_angle_deg - inp.angle_offset_deg), v, inp.roll)
   raw_measurement = measured_curvature * v ** 2
-  roll_compensation = inp.roll * ACCELERATION_DUE_TO_GRAVITY
+  # Intentional deviation from legacy v2 (full gravity): see ROLL_COMPENSATION_GAIN.
+  roll_compensation = ROLL_COMPENSATION_GAIN * inp.roll * ACCELERATION_DUE_TO_GRAVITY
   curvature_deadzone = abs(calc_curvature(math.radians(0.5), v, 0.0))
   lateral_accel_deadzone = curvature_deadzone * v ** 2
   raw_actual_lateral_jerk = -calc_curvature(math.radians(inp.steering_rate_deg), v, 0.0) * v ** 2
@@ -270,3 +272,13 @@ def test_nonfinite_desired_curvature_resets_buffer():
   assert math.isfinite(r.output_torque)
   assert r.future_desired_lateral_accel == 0.0
   assert all(math.isfinite(x) and x == 0.0 for x in core.lat_accel_request_buffer)
+
+
+def test_roll_compensation_gain_scales_crown_feedforward():
+  # Guard the deliberate deviation from legacy full-gravity roll comp: the crown term in the
+  # feedforward must be scaled by ROLL_COMPENSATION_GAIN (route 00000246 regression, slope 0.56).
+  core = make_core()
+  roll = -0.04
+  r = core.update(ResponseCoreInputs(True, 30.0, 0.0, 0.0, False, 0.0, roll, 0.0, 0.2, False))
+  assert r.roll_compensation == pytest.approx(ROLL_COMPENSATION_GAIN * roll * ACCELERATION_DUE_TO_GRAVITY)
+  assert abs(r.roll_compensation) < abs(roll * ACCELERATION_DUE_TO_GRAVITY)
