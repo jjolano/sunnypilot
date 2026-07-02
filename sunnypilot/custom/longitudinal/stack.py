@@ -165,6 +165,7 @@ def _sanitize_inputs_for_mode(inp: LongitudinalStackInputs) -> LongitudinalStack
       speed_limit_active=False,
       speed_limit_v_target=0.0,
       speed_limit_a_target=0.0,
+      speed_limit_distance=None,
     )
 
   curve_confidence_updates: dict[str, Any] = {}
@@ -190,6 +191,8 @@ def _sanitize_inputs_for_mode(inp: LongitudinalStackInputs) -> LongitudinalStack
     updates.update(
       curve_active=False,
       curve_a_target=0.0,
+      curve_v_target=0.0,
+      curve_distance=None,
     )
 
   if updates:
@@ -230,8 +233,11 @@ class LongitudinalStackInputs:
   speed_limit_active: bool = False
   speed_limit_v_target: float = 0.0
   speed_limit_a_target: float = 0.0
+  speed_limit_distance: float | None = None
   curve_active: bool = False
   curve_a_target: float = 0.0
+  curve_v_target: float = 0.0
+  curve_distance: float | None = None
   curve_source: EvidenceClass = EvidenceClass.CURVE_VISION   # which SCC curve source bound the cap
   # driver / safety
   long_active: bool = False
@@ -343,6 +349,7 @@ class CustomLongitudinalStack:
     lead_d_rel = selected_lead.d_rel if has_lead else 0.0
     lead_v_rel = selected_lead.v_rel if has_lead else 0.0
     lead_a_k = selected_lead.a_k if has_lead else 0.0
+    lead_a_tau = _f(getattr(selected_lead.lead, "aLeadTau", 1.5), 1.5) if selected_lead.lead is not None else 1.5
     follow_gap = max(FOLLOW_GAP_MIN_M, FOLLOW_TIME_GAP_S * max(0.0, inp.v_ego))
     alignment_state = selected_lead.state
     lead_confidence = float(getattr(alignment_state, "confidence", 0.0)) if selected_lead.lead is not None else 0.0
@@ -365,7 +372,7 @@ class CustomLongitudinalStack:
       has_lead=has_lead, lead_a_target=policy_lead_a_target, lead_should_stop=policy_lead_should_stop,
       lead_gap_excess=policy_lead_gap_excess, lead_progress_allowed=policy_lead_progress_allowed,
       lead_v=lead_v, lead_d_rel=lead_d_rel, lead_v_rel=lead_v_rel, lead_a_k=lead_a_k,
-      follow_gap=follow_gap, lead_kinematics_valid=lead_kinematics_valid,
+      lead_a_tau=lead_a_tau, follow_gap=follow_gap, lead_kinematics_valid=lead_kinematics_valid,
       lead_confidence=lead_confidence, lead_stable=lead_stable,
       lead_shadow_active=lead_shadow_active, alternate_threat_active=alternate_threat_active,
       model_should_stop=act_inp.model_should_stop, model_stop_distance=act_inp.model_stop_distance,
@@ -373,8 +380,10 @@ class CustomLongitudinalStack:
       model_stale=act_inp.model_stale,
       stop_threat=act_inp.stop_threat,
       speed_limit_active=act_inp.speed_limit_active, speed_limit_v_target=act_inp.speed_limit_v_target,
-      speed_limit_a_target=act_inp.speed_limit_a_target,
-      curve_active=act_inp.curve_active, curve_a_target=act_inp.curve_a_target, curve_source=act_inp.curve_source,
+      speed_limit_a_target=act_inp.speed_limit_a_target, speed_limit_distance=act_inp.speed_limit_distance,
+      curve_active=act_inp.curve_active, curve_a_target=act_inp.curve_a_target,
+      curve_v_target=act_inp.curve_v_target, curve_distance=act_inp.curve_distance,
+      curve_source=act_inp.curve_source,
       force_slow_decel=act_inp.force_slow_decel, brake_pressed=act_inp.brake_pressed, gas_pressed=act_inp.gas_pressed,
     )
     candidates = build_candidates(scene)

@@ -945,3 +945,100 @@ def test_routine_tier_never_hardens_milder_raw_lead_target():
   assert intents["lead_gap_compression"].a_target == pytest.approx(-0.50)
   d = decide(cands, LongitudinalMode.ACC, LIMITS)
   assert d.a_target == pytest.approx(-0.50)
+
+
+# -----------------------------------------------------------------------------
+# Runway-aware advisory caps (Phase 5)
+# -----------------------------------------------------------------------------
+
+def test_speed_limit_runway_governor_shapes_long_runway_cap():
+  # Far speed-limit change: with a known distance the cap should coast-first (much higher than
+  # the raw kinematic decel); without distance it falls back to the coast-biased raw cap.
+  base = dict(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=0.0,
+    speed_limit_active=True, speed_limit_v_target=15.0, speed_limit_a_target=-1.0,
+    accel_coast=-0.25,
+  )
+  with_dist = LongitudinalScene(speed_limit_distance=1000.0, **base)
+  without_dist = LongitudinalScene(speed_limit_distance=None, **base)
+  shaped = [c for c in build_candidates(with_dist) if c.intent == "speed_policy"][0]
+  fallback = [c for c in build_candidates(without_dist) if c.intent == "speed_policy"][0]
+  assert shaped.a_target > fallback.a_target          # coast-first is gentler
+  assert fallback.a_target == pytest.approx(-0.25)    # coast-biased raw cap
+  assert shaped.a_target == pytest.approx(0.0)        # long runway -> cruise (no advisory braking)
+
+
+def test_speed_limit_runway_governor_short_runway_stays_braking():
+  # Short runway: governor should keep a braking cap (at least as strong as fallback).
+  scene = LongitudinalScene(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=0.0,
+    speed_limit_active=True, speed_limit_v_target=15.0, speed_limit_a_target=-1.0,
+    speed_limit_distance=80.0, accel_coast=-0.25,
+  )
+  cap = [c for c in build_candidates(scene) if c.intent == "speed_policy"][0]
+  # 80 m is well inside the 800 m coast distance -> BRAKE, shaped to required decel (~-2.0),
+  # clamped to min(0.0, shaped).
+  assert cap.a_target < -1.0
+
+
+def test_curve_runway_governor_shapes_long_runway_cap():
+  base = dict(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=0.0,
+    curve_active=True, curve_a_target=-1.0, curve_source=EvidenceClass.CURVE_VISION,
+    accel_coast=-0.25,
+  )
+  with_dist = LongitudinalScene(curve_v_target=15.0, curve_distance=1000.0, **base)
+  without_dist = LongitudinalScene(curve_v_target=0.0, curve_distance=None, **base)
+  shaped = [c for c in build_candidates(with_dist) if c.intent == "curve_policy"][0]
+  fallback = [c for c in build_candidates(without_dist) if c.intent == "curve_policy"][0]
+  assert shaped.a_target > fallback.a_target
+  assert shaped.a_target == pytest.approx(0.0)
+
+
+def test_curve_runway_governor_short_runway_stays_braking():
+  scene = LongitudinalScene(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=0.0,
+    curve_active=True, curve_a_target=-1.0, curve_v_target=15.0,
+    curve_distance=80.0, curve_source=EvidenceClass.CURVE_VISION,
+    accel_coast=-0.25,
+  )
+  cap = [c for c in build_candidates(scene) if c.intent == "curve_policy"][0]
+  assert cap.a_target < -1.0
+
+
+def test_curve_runway_governor_ignored_when_target_not_slower():
+  # curve_v_target >= v_ego -> governor not applied, raw curve cap preserved.
+  scene = LongitudinalScene(
+    v_ego=15.0, v_cruise=25.0, seed_a_target=0.0,
+    curve_active=True, curve_a_target=-0.5, curve_v_target=20.0,
+    curve_distance=1000.0, curve_source=EvidenceClass.CURVE_VISION,
+    accel_coast=-0.25,
+  )
+  cap = [c for c in build_candidates(scene) if c.intent == "curve_policy"][0]
+  assert cap.a_target == pytest.approx(-0.5)
+
+
+def test_speed_limit_runway_governor_raises_decision_above_raw_seed():
+  # When the planner seed already came from the speed-limit source, the runway-shaped
+  # (coast-first) cap must still raise the final decide() output above the raw seed.
+  scene = LongitudinalScene(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=-1.0,
+    speed_limit_active=True, speed_limit_v_target=15.0, speed_limit_a_target=-1.0,
+    speed_limit_distance=1000.0, accel_coast=-0.25,
+  )
+  d = decide(build_candidates(scene), LongitudinalMode.SCC, LIMITS)
+  assert d.a_target > -1.0
+  assert d.a_target == pytest.approx(0.0)
+
+
+def test_curve_runway_governor_raises_decision_above_raw_seed():
+  scene = LongitudinalScene(
+    v_ego=25.0, v_cruise=25.0, seed_a_target=-1.0,
+    curve_active=True, curve_a_target=-1.0, curve_v_target=15.0,
+    curve_distance=1000.0, curve_source=EvidenceClass.CURVE_VISION,
+    accel_coast=-0.25,
+  )
+  d = decide(build_candidates(scene), LongitudinalMode.SCC, LIMITS,
+             SourceToggles(scc_curve_vision_enabled=True))
+  assert d.a_target > -1.0
+  assert d.a_target == pytest.approx(0.0)

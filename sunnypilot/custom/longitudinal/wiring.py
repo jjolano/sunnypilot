@@ -158,9 +158,12 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        scc_vision_current_lat_acc: float = 0.0,
                        scc_vision_max_pred_lat_acc: float = 0.0,
                        scc_vision_pre_entry_active: bool = False,
+                       scc_vision_v_target: float = 0.0,
+                       scc_vision_t_risk: float = 0.0,
                        scc_map_state: Any = None,
                        scc_map_target_lat: float = 0.0,
                        scc_map_target_lon: float = 0.0,
+                       sla_distance: float | None = None,
                        research_actuation_allowed: bool = False,
                        current_lat_accel: float | None = None,
                        pitch: float | None = None) -> LongitudinalStackInputs:
@@ -175,6 +178,18 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
   v_curve = scc_vision_a_target if scc_vision_active else float("inf")
   curve_a_target = v_curve if curve_active else 0.0
   curve_source = EvidenceClass.CURVE_VISION
+  # Runway-aware advisory shaping: when SCC-Vision exposes a binding target speed and time-to-risk,
+  # approximate the distance to the constraint. This is intentionally the least-invasive source.
+  curve_v_target = float(scc_vision_v_target) if (curve_active and _f(scc_vision_v_target) > 0.0
+                                                  and _f(scc_vision_v_target) < 100.0) else 0.0
+  curve_distance = (_f(scc_vision_t_risk) * max(0.0, v_ego)
+                    if curve_active and _f(scc_vision_t_risk) > 0.0 else None)
+  # Speed-limit distance: SLA carries the resolver distance privately; treat non-positive as unknown.
+  speed_limit_distance = None
+  if sla_active:
+    d = _f(sla_distance, default=-1.0)
+    if d > 0.0:
+      speed_limit_distance = d
   return LongitudinalStackInputs(
     v_ego=v_ego, a_ego=float(a_ego), v_cruise=v_cruise, seed_a_target=seed_a_target,
     accel_limits=accel_limits, accel_coast=float(accel_coast),
@@ -191,7 +206,9 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     model_desired_accel=float(model_desired_accel), model_stop_prob=float(model_stop_prob),
     model_stale=bool(model_stale), stop_threat=False,
     speed_limit_active=bool(sla_active), speed_limit_v_target=float(sla_v_target), speed_limit_a_target=float(sla_a_target),
-    curve_active=curve_active, curve_a_target=float(curve_a_target), curve_source=curve_source,
+    speed_limit_distance=speed_limit_distance,
+    curve_active=curve_active, curve_a_target=float(curve_a_target), curve_v_target=curve_v_target,
+    curve_distance=curve_distance, curve_source=curve_source,
     long_active=bool(long_active), force_slow_decel=bool(force_slow_decel),
     brake_pressed=brake_pressed, gas_pressed=gas_pressed,
     mode=mode, sources=sources, personality=personality, model_msg=model_msg,
@@ -354,9 +371,12 @@ class CustomLongitudinalAdapter:
         scc_vision_current_lat_acc=_f(getattr(scc.vision, "current_lat_acc", 0.0)),
         scc_vision_max_pred_lat_acc=_f(getattr(scc.vision, "max_pred_lat_acc", 0.0)),
         scc_vision_pre_entry_active=bool(getattr(scc.vision, "pre_entry_active", False)),
+        scc_vision_v_target=float(getattr(scc.vision, "v_target", 0.0)),
+        scc_vision_t_risk=float(getattr(scc.vision, "_t_risk", 0.0)),
         scc_map_state=getattr(scc.map, "state", None),
         scc_map_target_lat=_f(getattr(scc.map, "target_lat", 0.0)),
         scc_map_target_lon=_f(getattr(scc.map, "target_lon", 0.0)),
+        sla_distance=(getattr(sla, "_distance", None) or None),
         research_actuation_allowed=self.research_actuation_allowed,
         current_lat_accel=(_f(getattr(scc.vision, "current_lat_acc", 0.0)) if getattr(scc.vision, "is_active", False) else None),
         pitch=pitch,

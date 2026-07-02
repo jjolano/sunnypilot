@@ -138,6 +138,7 @@ class LongitudinalScene:
   lead_d_rel: float = 0.0
   lead_v_rel: float = 0.0
   lead_a_k: float = 0.0
+  lead_a_tau: float = 1.5
   follow_gap: float = 0.0
   lead_kinematics_valid: bool = True
   # lead context (alignment gating)
@@ -156,8 +157,11 @@ class LongitudinalScene:
   speed_limit_active: bool = False
   speed_limit_v_target: float = 0.0
   speed_limit_a_target: float = 0.0
+  speed_limit_distance: float | None = None  # m to the limit change (resolver), when known
   curve_active: bool = False
   curve_a_target: float = 0.0
+  curve_v_target: float = 0.0                # required speed at the binding curve point
+  curve_distance: float | None = None        # m to the binding curve point, when known
   curve_source: EvidenceClass = EvidenceClass.CURVE_VISION   # which SCC curve source bound the cap
   # driver / safety
   force_slow_decel: bool = False
@@ -560,7 +564,7 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
     force_slow_decel=scene.force_slow_decel,
     brake_pressed=scene.brake_pressed, gas_pressed=scene.gas_pressed,
     personality=personality, lead_kinematics_valid=scene.lead_kinematics_valid,
-    has_lead=scene.has_lead,
+    has_lead=scene.has_lead, a_lead_tau=scene.lead_a_tau,
   )
   if alignment.action is AlignmentAction.COAST:
     cands.append(LongitudinalCandidate(alignment.a_target, CandidateRole.ADVISORY_CAP,
@@ -656,11 +660,24 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
 
   # advisory caps
   if scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego:
-    cap = min(0.0, max(scene.speed_limit_a_target, scene.accel_coast))  # coast-biased
-    cands.append(LongitudinalCandidate(cap, CandidateRole.ADVISORY_CAP, EvidenceClass.SPEED_LIMIT, "speed_policy"))
+    raw_cap = min(0.0, max(scene.speed_limit_a_target, scene.accel_coast))
+    shaped_cap = _advisory_speed_limit_cap(scene)
+    cands.append(LongitudinalCandidate(shaped_cap, CandidateRole.ADVISORY_CAP,
+                                       EvidenceClass.SPEED_LIMIT, "speed_policy"))
+    # Source-local desire: if the runway-shaped cap is gentler than the raw source cap,
+    # raise the baseline so decide() reflects the shaped target even when the seed already
+    # came from this source. Hazards still bind lower.
+    if shaped_cap > raw_cap:
+      cands.append(LongitudinalCandidate(shaped_cap, CandidateRole.PROGRESS,
+                                         EvidenceClass.SPEED_LIMIT, "speed_policy_desire", authorized=True))
   if scene.curve_active:
-    cands.append(LongitudinalCandidate(float(scene.curve_a_target), CandidateRole.ADVISORY_CAP,
+    raw_cap = float(scene.curve_a_target)
+    shaped_cap = _advisory_curve_cap(scene)
+    cands.append(LongitudinalCandidate(shaped_cap, CandidateRole.ADVISORY_CAP,
                                        scene.curve_source, "curve_policy"))
+    if shaped_cap > raw_cap:
+      cands.append(LongitudinalCandidate(shaped_cap, CandidateRole.PROGRESS,
+                                         scene.curve_source, "curve_policy_desire", authorized=True))
 
   # force-slow safety hazard (driver/system force)
   if scene.force_slow_decel:
@@ -677,3 +694,30 @@ def _with_personality(scene: LongitudinalScene, personality: Personality) -> Lon
 def _scene_coast_decel(scene: LongitudinalScene) -> float:
   """A usable (negative) natural coast decel for the cushion; falls back to a flat-road proxy."""
   return scene.accel_coast if scene.accel_coast < -0.02 else -0.25
+
+
+def _advisory_speed_limit_cap(scene: LongitudinalScene) -> float:
+  """Speed-limit advisory cap shaped by the runway comfort governor when distance is known."""
+  if not (scene.speed_limit_active and scene.speed_limit_v_target > 0.0 and scene.speed_limit_v_target < scene.v_ego):
+    return min(0.0, max(scene.speed_limit_a_target, scene.accel_coast))
+  if scene.speed_limit_distance is not None and scene.speed_limit_distance > 0.0:
+    shaped = runway_comfort_governor(
+      scene.v_ego, scene.speed_limit_v_target, scene.speed_limit_distance,
+      scene.speed_limit_a_target, _scene_coast_decel(scene),
+    )
+    return min(0.0, shaped)
+  return min(0.0, max(scene.speed_limit_a_target, scene.accel_coast))
+
+
+def _advisory_curve_cap(scene: LongitudinalScene) -> float:
+  """Curve advisory cap shaped by the runway comfort governor when target speed and runway are known."""
+  if not scene.curve_active:
+    return float(scene.curve_a_target)
+  if (scene.curve_distance is not None and scene.curve_distance > 0.0
+      and scene.curve_v_target > 0.0 and scene.curve_v_target < scene.v_ego):
+    shaped = runway_comfort_governor(
+      scene.v_ego, scene.curve_v_target, scene.curve_distance,
+      scene.curve_a_target, _scene_coast_decel(scene),
+    )
+    return min(0.0, shaped)
+  return float(scene.curve_a_target)
