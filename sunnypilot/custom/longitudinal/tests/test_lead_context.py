@@ -5,7 +5,6 @@ tracker smoke test. The model's *policy use* is validated downstream against the
 """
 from __future__ import annotations
 
-import dataclasses
 import math
 from types import SimpleNamespace
 from typing import Any
@@ -13,7 +12,6 @@ from typing import Any
 import pytest
 
 from openpilot.sunnypilot.custom.longitudinal import lead_context as lc
-from openpilot.sunnypilot.custom.longitudinal import lead_context_v1 as lc_v1
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceState
 
 
@@ -308,112 +306,17 @@ def test_cutout_shadow_state_has_suppress_only_authority():
 
 
 # ---------------------------------------------------------------------------
-# V1 / V2 parity characterization tests
+# End-to-end tracker scenario characterization
+# (formerly v1/v2 parity; the v1 rollback copy is retired — git history has it)
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module")
-def v1_v2_public_symbols() -> set[str]:
-  v1_names = {name for name in dir(lc_v1) if not name.startswith("__")}
-  v2_names = {name for name in dir(lc) if not name.startswith("__")}
-  return v1_names & v2_names
-
-
-def test_lead_context_v1_backup_exists_and_api_matches(v1_v2_public_symbols):
-  """The v1 backup is an exact rollback reference and exposes the same public API."""
-  required = {
-    "LeadContextTracker", "LeadShadowTracker", "select_primary_lead_context",
-    "lead_prediction", "LeadRelevanceState", "PrimaryLeadContext", "LeadRiskModel",
-    "LeadProgressModel", "LeadTrajectoryPrediction", "LeadReplacementCandidate",
-    "LeadShadowState",
-    "LEAD_AUTHORITY_NONE", "LEAD_AUTHORITY_SUPPRESS_ONLY", "LEAD_AUTHORITY_PHYSICAL",
-    "LEAD_AUTHORITY_PROGRESS_ALLOWED",
-  }
-  assert required.issubset(v1_v2_public_symbols)
-  # Top-level helpers exercised by the existing tests must remain importable.
-  for helper in (
-    "finite_float", "_required_decel", "_ttc", "_time_gap", "_desired_progress_gap",
-    "_gap_shortage", "_gap_excess", "_on_path_score", "_risk_score", "_confidence_score",
-    "_ghost_score", "_path_relative_y", "_is_close_or_closing",
-  ):
-    assert hasattr(lc, helper)
-    assert hasattr(lc_v1, helper)
-
-
-def _float_eq(a: float, b: float, *, rel: float = 1e-9, abs_tol: float = 1e-12) -> bool:
-  if math.isnan(a) and math.isnan(b):
-    return True
-  if math.isinf(a) and math.isinf(b):
-    return (a > 0) == (b > 0)
-  return math.isclose(a, b, rel_tol=rel, abs_tol=abs_tol)
-
-
-def _assert_value_eq(a: Any, b: Any, path: str = "root", *, rel: float = 1e-9, abs_tol: float = 1e-12) -> None:
-  if a is b:
-    return
-  if a is None or b is None:
-    assert a is b, f"{path}: {a!r} != {b!r}"
-    return
-  if isinstance(a, (str, bool, int)) and type(a) is type(b):
-    assert a == b, f"{path}: {a!r} != {b!r}"
-    return
-  if isinstance(a, float) or isinstance(b, float):
-    assert _float_eq(float(a), float(b), rel=rel, abs_tol=abs_tol), f"{path}: {a!r} != {b!r}"
-    return
-  if dataclasses.is_dataclass(a) and dataclasses.is_dataclass(b):
-    a_fields = {f.name for f in dataclasses.fields(a)}
-    b_fields = {f.name for f in dataclasses.fields(b)}
-    assert a_fields == b_fields, f"{path}: dataclass field mismatch {a_fields} vs {b_fields}"
-    for field_name in sorted(a_fields):
-      _assert_value_eq(
-        getattr(a, field_name), getattr(b, field_name),
-        f"{path}.{field_name}", rel=rel, abs_tol=abs_tol,
-      )
-    return
-  if isinstance(a, tuple) and isinstance(b, tuple):
-    assert len(a) == len(b), f"{path}: tuple length {len(a)} != {len(b)}"
-    for i, (av, bv) in enumerate(zip(a, b, strict=True)):
-      _assert_value_eq(av, bv, f"{path}[{i}]", rel=rel, abs_tol=abs_tol)
-    return
-  assert a == b, f"{path}: {a!r} != {b!r}"
-
-
-def _run_v1_v2_comparison(frames: list[dict[str, Any]]) -> tuple[lc.PrimaryLeadContext, lc_v1.PrimaryLeadContext]:
-  """Steps two fresh trackers through the same frames and asserts parity."""
-  tracker_v1 = lc_v1.LeadContextTracker()
-  tracker_v2 = lc.LeadContextTracker()
-  ctx_v1 = ctx_v2 = None
-  last_frame: dict[str, Any] = {}
+def _run_frames(frames: list[dict[str, Any]]) -> lc.PrimaryLeadContext:
+  tracker = lc.LeadContextTracker()
+  ctx = None
   for frame in frames:
-    last_frame = frame
-    ctx_v1 = tracker_v1.update(**frame)
-    ctx_v2 = tracker_v2.update(**frame)
-  assert ctx_v1 is not None
-  assert ctx_v2 is not None
-
-  # Top-level context fields and debug dict.
-  _assert_value_eq(ctx_v2.physical_idx, ctx_v1.physical_idx, "physical_idx", abs_tol=0.0)
-  _assert_value_eq(ctx_v2.behavior_idx, ctx_v1.behavior_idx, "behavior_idx", abs_tol=0.0)
-  _assert_value_eq(ctx_v2.alternate_threat_active, ctx_v1.alternate_threat_active, "alternate_threat_active")
-  _assert_value_eq(ctx_v2.shadow_active, ctx_v1.shadow_active, "shadow_active")
-  _assert_value_eq(ctx_v2.reason, ctx_v1.reason, "reason")
-  _assert_value_eq(ctx_v2.lead_progress_allowed, ctx_v1.lead_progress_allowed, "lead_progress_allowed")
-  _assert_value_eq(ctx_v2.lead_release_blocked_reason, ctx_v1.lead_release_blocked_reason, "lead_release_blocked_reason")
-  _assert_value_eq(ctx_v2.replacement_candidate, ctx_v1.replacement_candidate, "replacement_candidate")
-  _assert_value_eq(ctx_v2.physical_switch_reason, ctx_v1.physical_switch_reason, "physical_switch_reason")
-  _assert_value_eq(ctx_v2.physical_switched, ctx_v1.physical_switched, "physical_switched")
-  _assert_value_eq(ctx_v2.debug_dict(), ctx_v1.debug_dict(), "debug_dict", rel=1e-7)
-
-  # Per-state parity.
-  assert len(ctx_v2.states) == len(ctx_v1.states), "state count mismatch"
-  for i, (s2, s1) in enumerate(zip(ctx_v2.states, ctx_v1.states, strict=True)):
-    _assert_value_eq(s2, s1, f"state[{i}]", rel=1e-7)
-
-  # physical_lead_data / behavior_lead_data identity behavior is unchanged.
-  leads = last_frame.get("leads", (None, None))
-  _assert_value_eq(ctx_v2.physical_lead_data(leads), ctx_v1.physical_lead_data(leads), "physical_lead_data")
-  _assert_value_eq(ctx_v2.behavior_lead_data(leads), ctx_v1.behavior_lead_data(leads), "behavior_lead_data")
-
-  return ctx_v2, ctx_v1
+    ctx = tracker.update(**frame)
+  assert ctx is not None
+  return ctx
 
 
 def _stable_confidence(**kwargs):
@@ -428,152 +331,86 @@ def _flicker_confidence():
   return LeadConfidenceState(status=True, stable=False, flicker_guard_timer=0.15)
 
 
-def test_v1v2_no_lead():
-  frames = [
-    {"leads": (None, None), "confidence_states": (LeadConfidenceState(), LeadConfidenceState()),
-     "v_ego": 20.0, "dt": 0.05},
-  ]
-  _run_v1_v2_comparison(frames)
-
-
-def test_v1v2_far_stable_lead():
+def test_far_stable_lead_progress_allowed():
   frames = [
     {"leads": (lead(d_rel=100.0, v_lead=20.0), None),
      "confidence_states": (_stable_confidence(), LeadConfidenceState()),
      "v_ego": 20.0, "dt": 0.05},
   ] * 5
-  ctx2, ctx1 = _run_v1_v2_comparison(frames)
-  assert ctx2.physical is not None
-  assert ctx2.physical.authority == lc.LEAD_AUTHORITY_PROGRESS_ALLOWED
+  ctx = _run_frames(frames)
+  assert ctx.physical is not None
+  assert ctx.physical.authority == lc.LEAD_AUTHORITY_PROGRESS_ALLOWED
 
 
-def test_v1v2_medium_far_slowing_lead():
-  frames = [
-    {"leads": (lead(d_rel=55.0, v_lead=18.0, a_lead=-0.8), None),
-     "confidence_states": (_stable_confidence(), LeadConfidenceState()),
-     "v_ego": 20.0, "dt": 0.05},
-  ] * 5
-  _run_v1_v2_comparison(frames)
-
-
-def test_v1v2_close_closing_lead():
+def test_close_closing_lead_physical_authority():
   frames = [
     {"leads": (lead(d_rel=15.0, v_lead=5.0), None),
      "confidence_states": (_stable_confidence(), LeadConfidenceState()),
      "v_ego": 20.0, "dt": 0.05},
   ] * 5
-  ctx2, ctx1 = _run_v1_v2_comparison(frames)
-  assert ctx2.physical is not None
-  assert ctx2.physical.authority == lc.LEAD_AUTHORITY_PHYSICAL
+  ctx = _run_frames(frames)
+  assert ctx.physical is not None
+  assert ctx.physical.authority == lc.LEAD_AUTHORITY_PHYSICAL
 
 
-def test_v1v2_stopped_lead():
-  frames = [
-    {"leads": (lead(d_rel=8.0, v_lead=0.0), None),
-     "confidence_states": (_stable_confidence(), LeadConfidenceState()),
-     "v_ego": 0.0, "dt": 0.05},
-  ] * 5
-  _run_v1_v2_comparison(frames)
-
-
-def test_v1v2_lead_pullaway():
-  frames = [
-    {"leads": (lead(d_rel=25.0, v_lead=22.0, a_lead=0.8), None),
-     "confidence_states": (_stable_confidence(), LeadConfidenceState()),
-     "v_ego": 20.0, "dt": 0.05},
-  ] * 5
-  _run_v1_v2_comparison(frames)
-
-
-def test_v1v2_new_lead_guard_blocks_progress():
+def test_new_lead_guard_blocks_progress():
   frames = [
     {"leads": (lead(d_rel=30.0, v_lead=12.0), None),
      "confidence_states": (_new_confidence(), LeadConfidenceState()),
      "v_ego": 20.0, "dt": 0.05},
   ] * 5
-  ctx2, ctx1 = _run_v1_v2_comparison(frames)
-  assert ctx2.physical is not None
-  assert ctx2.physical.new_lead is True
+  ctx = _run_frames(frames)
+  assert ctx.physical is not None
+  assert ctx.physical.new_lead is True
 
 
-def test_v1v2_flicker_guard():
+def test_flicker_guard_suppress_only():
   frames = [
     {"leads": (lead(d_rel=30.0, v_lead=12.0), None),
      "confidence_states": (_flicker_confidence(), LeadConfidenceState()),
      "v_ego": 20.0, "dt": 0.05},
   ] * 5
-  ctx2, ctx1 = _run_v1_v2_comparison(frames)
-  assert ctx2.physical is not None
-  assert ctx2.physical.reason == "flicker_guard_suppress_only"
+  ctx = _run_frames(frames)
+  assert ctx.physical is not None
+  assert ctx.physical.reason == "flicker_guard_suppress_only"
 
 
-def test_v1v2_lead_replacement():
-  # First establish a stable lead in slot 0 that is laterally exiting.
-  frames = [
-    {"leads": (lead(d_rel=35.0, v_lead=15.0, y_rel=0.0, track_id=10),
-               lead(d_rel=40.0, v_lead=15.0, y_rel=0.0, track_id=11)),
-     "confidence_states": (_stable_confidence(), _stable_confidence()),
-     "v_ego": 15.0, "dt": 0.05},
-  ] * 6
-  # Then move slot 0 outward while slot 1 closes the gap.
-  frames.extend([
-    {"leads": (lead(d_rel=35.0, v_lead=15.0, y_rel=1.3, track_id=10),
-               lead(d_rel=20.0, v_lead=10.0, y_rel=0.0, track_id=11)),
-     "confidence_states": (_stable_confidence(), _stable_confidence()),
-     "v_ego": 15.0, "dt": 0.05},
-  ] * 5)
-  _run_v1_v2_comparison(frames)
-
-
-def test_v1v2_shadow_dropout():
+def test_shadow_dropout_normal_duration():
   frames = [
     {"leads": (lead(d_rel=60.0, v_lead=15.0), None),
      "confidence_states": (_stable_confidence(), LeadConfidenceState()),
      "v_ego": 15.0, "dt": 0.05},
   ] * 5
-  # Lead drops out; shadow should become active with normal duration.
   frames.append(
     {"leads": (None, None), "confidence_states": (LeadConfidenceState(), LeadConfidenceState()),
      "v_ego": 15.0, "dt": 0.05},
   )
-  ctx2, ctx1 = _run_v1_v2_comparison(frames)
-  assert ctx2.shadow_active is True
-  assert ctx2.states[0].shadow is True
-  assert ctx2.states[0].shadow_duration == pytest.approx(lc.LEAD_CONTEXT_SHADOW_NORMAL_TIME)
+  ctx = _run_frames(frames)
+  assert ctx.shadow_active is True
+  assert ctx.states[0].shadow is True
+  assert ctx.states[0].shadow_duration == pytest.approx(lc.LEAD_CONTEXT_SHADOW_NORMAL_TIME)
 
 
-def test_v1v2_shadow_cutout_exit():
-  tracker_v1 = lc_v1.LeadContextTracker()
-  tracker_v2 = lc.LeadContextTracker()
+def test_shadow_cutout_exit_risk_duration():
   stable = _stable_confidence()
-  # Move lead outward across several ticks to satisfy lateral-exit evidence.
-  path_y_values = (0.0, 0.5, 0.8, 1.1, 1.3)
-  ctx_v1 = ctx_v2 = None
-  for path_y_rel in path_y_values:
-    frame = {
-      "leads": (lead(d_rel=20.0, v_lead=10.0, y_rel=path_y_rel, a_lead=-2.0), None),
-      "confidence_states": (stable, LeadConfidenceState()),
-      "v_ego": 15.0, "dt": 0.05, "model_msg": None,
-    }
-    ctx_v1 = tracker_v1.update(**frame)
-    ctx_v2 = tracker_v2.update(**frame)
-
-  # Dropout frame.
-  dropout_frame = {
-    "leads": (None, None), "confidence_states": (LeadConfidenceState(), LeadConfidenceState()),
-    "v_ego": 15.0, "dt": 0.05, "model_msg": None,
-  }
-  ctx_v1 = tracker_v1.update(**dropout_frame)
-  ctx_v2 = tracker_v2.update(**dropout_frame)
-
-  _assert_value_eq(ctx_v2.states[0], ctx_v1.states[0], "cutout_state[0]")
-  assert ctx_v2.states[0].shadow is True
-  assert ctx_v2.states[0].reason == "cutout_exit"
-  assert ctx_v2.states[0].shadow_occlusion_risk == pytest.approx(1.0)
-  assert ctx_v2.states[0].shadow_duration == pytest.approx(lc.LEAD_CONTEXT_SHADOW_RISK_TIME)
+  frames = [
+    {"leads": (lead(d_rel=20.0, v_lead=10.0, y_rel=path_y_rel, a_lead=-2.0), None),
+     "confidence_states": (stable, LeadConfidenceState()),
+     "v_ego": 15.0, "dt": 0.05, "model_msg": None}
+    for path_y_rel in (0.0, 0.5, 0.8, 1.1, 1.3)
+  ]
+  frames.append(
+    {"leads": (None, None), "confidence_states": (LeadConfidenceState(), LeadConfidenceState()),
+     "v_ego": 15.0, "dt": 0.05, "model_msg": None},
+  )
+  ctx = _run_frames(frames)
+  assert ctx.states[0].shadow is True
+  assert ctx.states[0].reason == "cutout_exit"
+  assert ctx.states[0].shadow_occlusion_risk == pytest.approx(1.0)
+  assert ctx.states[0].shadow_duration == pytest.approx(lc.LEAD_CONTEXT_SHADOW_RISK_TIME)
 
 
-def test_v1v2_shadow_model_path_relative_y():
+def test_shadow_model_path_relative_y_offset():
   frames = [
     {"leads": (lead(d_rel=45.0, y_rel=0.0), None),
      "confidence_states": (_stable_confidence(), LeadConfidenceState()),
@@ -583,31 +420,13 @@ def test_v1v2_shadow_model_path_relative_y():
     {"leads": (None, None), "confidence_states": (LeadConfidenceState(), LeadConfidenceState()),
      "v_ego": 20.0, "dt": 0.05, "model_msg": model_path()},
   )
-  ctx2, _ = _run_v1_v2_comparison(frames)
-  assert ctx2.states[0].shadow is True
-  assert ctx2.states[0].path_y_rel < -1.7
-  assert ctx2.states[0].risk_model.path_y_rel == pytest.approx(ctx2.states[0].path_y_rel)
+  ctx = _run_frames(frames)
+  assert ctx.states[0].shadow is True
+  assert ctx.states[0].path_y_rel < -1.7
+  assert ctx.states[0].risk_model.path_y_rel == pytest.approx(ctx.states[0].path_y_rel)
 
 
-def test_v1v2_false_positive_release_uses_last_real_path_y_after_dropout():
-  frames = [
-    {"leads": (lead(d_rel=80.0, v_lead=20.0, y_rel=2.0, model_prob=0.4), None),
-     "confidence_states": (_stable_confidence(), LeadConfidenceState()),
-     "v_ego": 20.0, "dt": 0.05},
-  ] * 3
-  frames.extend([
-    {"leads": (None, None), "confidence_states": (LeadConfidenceState(), LeadConfidenceState()),
-     "v_ego": 20.0, "dt": 0.05},
-  ] * 30)
-  frames.extend([
-    {"leads": (lead(d_rel=80.0, v_lead=20.0, y_rel=1.7, model_prob=0.4), None),
-     "confidence_states": (_stable_confidence(), LeadConfidenceState()),
-     "v_ego": 20.0, "dt": 0.05},
-  ] * 5)
-  _run_v1_v2_comparison(frames)
-
-
-def test_v1v2_shadow_stop_go():
+def test_shadow_stop_go_duration():
   frames = [
     {"leads": (lead(d_rel=8.0, v_lead=0.0), None),
      "confidence_states": (_stable_confidence(), LeadConfidenceState()),
@@ -617,75 +436,21 @@ def test_v1v2_shadow_stop_go():
     {"leads": (None, None), "confidence_states": (LeadConfidenceState(), LeadConfidenceState()),
      "v_ego": 0.0, "dt": 0.05},
   )
-  ctx2, ctx1 = _run_v1_v2_comparison(frames)
-  assert ctx2.states[0].shadow is True
-  assert ctx2.states[0].reason == "stop_go_dropout"
-  assert ctx2.states[0].shadow_duration == pytest.approx(lc.LEAD_CONTEXT_SHADOW_STOP_GO_TIME)
+  ctx = _run_frames(frames)
+  assert ctx.states[0].shadow is True
+  assert ctx.states[0].reason == "stop_go_dropout"
+  assert ctx.states[0].shadow_duration == pytest.approx(lc.LEAD_CONTEXT_SHADOW_STOP_GO_TIME)
 
 
-def test_v1v2_model_path_relative_y():
-  raw_frames = [
-    {"leads": (lead(d_rel=45.0, y_rel=0.0), None),
-     "confidence_states": (_stable_confidence(), LeadConfidenceState()),
-     "v_ego": 20.0, "dt": 0.05},
-  ]
-  model_frames = [
-    {"leads": (lead(d_rel=45.0, y_rel=0.0), None),
-     "confidence_states": (_stable_confidence(), LeadConfidenceState()),
-     "v_ego": 20.0, "dt": 0.05, "model_msg": model_path()},
-  ]
-  # Raw path_y_rel should be ~0; model-relative should be offset by interpolated path y.
-  _run_v1_v2_comparison(raw_frames)
-  _run_v1_v2_comparison(model_frames)
-
-
-def test_v1v2_physical_hysteresis_keeps_previous():
-  # Warm up previous physical memory on idx 0.
-  frames = [
-    {"leads": (lead(d_rel=20.0, v_lead=10.0, track_id=10), None),
-     "confidence_states": (_stable_confidence(), LeadConfidenceState()),
-     "v_ego": 15.0, "dt": 0.05},
-  ] * 4
-  # Present a slightly stronger challenger that should be held by hysteresis.
-  frames.append(
-    {"leads": (lead(d_rel=20.0, v_lead=10.0, track_id=10),
-               lead(d_rel=18.0, v_lead=9.5, track_id=11)),
-     "confidence_states": (_stable_confidence(), _stable_confidence()),
-     "v_ego": 15.0, "dt": 0.05},
+def test_reset_clears_state():
+  tracker = lc.LeadContextTracker()
+  tracker.update(
+    leads=(lead(d_rel=30.0, v_lead=12.0), None),
+    confidence_states=(_stable_confidence(), LeadConfidenceState()),
+    v_ego=20.0, dt=0.05,
   )
-  ctx2, ctx1 = _run_v1_v2_comparison(frames)
-  assert ctx2.physical_switch_reason == ctx1.physical_switch_reason
-  assert ctx2.physical_idx == ctx1.physical_idx
-
-
-def test_v1v2_dominant_hints():
-  frames = [
-    {"leads": (lead(d_rel=25.0, v_lead=12.0, track_id=10),
-               lead(d_rel=22.0, v_lead=11.0, track_id=11)),
-     "confidence_states": (_stable_confidence(), _stable_confidence()),
-     "v_ego": 15.0, "dt": 0.05, "lead_dominant_idx": 1},
-  ] * 5
-  _run_v1_v2_comparison(frames)
-
-
-def test_v1v2_reset_clears_state():
-  tracker_v1 = lc_v1.LeadContextTracker()
-  tracker_v2 = lc.LeadContextTracker()
-  frame = {
-    "leads": (lead(d_rel=30.0, v_lead=12.0), None),
-    "confidence_states": (_stable_confidence(), LeadConfidenceState()),
-    "v_ego": 20.0, "dt": 0.05,
-  }
-  ctx_v1 = tracker_v1.update(**frame)
-  ctx_v2 = tracker_v2.update(**frame)
-  _assert_value_eq(ctx_v2, ctx_v1, "before_reset")
-
-  reset_frame = {
-    "leads": (None, None), "confidence_states": (LeadConfidenceState(), LeadConfidenceState()),
-    "v_ego": 20.0, "dt": 0.05, "reset_state": True,
-  }
-  ctx_v1 = tracker_v1.update(**reset_frame)
-  ctx_v2 = tracker_v2.update(**reset_frame)
-  _assert_value_eq(ctx_v2, ctx_v1, "after_reset")
-  assert ctx_v2.physical is None
-  assert ctx_v2.shadow_active is False
+  ctx = tracker.update(
+    leads=(None, None), confidence_states=(LeadConfidenceState(), LeadConfidenceState()),
+    v_ego=20.0, dt=0.05, reset_state=True,
+  )
+  assert ctx.physical is None
