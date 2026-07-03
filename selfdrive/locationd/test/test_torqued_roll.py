@@ -6,6 +6,13 @@ from cereal import car, messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.locationd.torqued import TorqueEstimator, MIN_BUCKET_POINTS, MIN_VEL, STEER_BUCKET_BOUNDS, STEER_MIN_THRESHOLD
+from openpilot.sunnypilot.custom.lateral.roll_comp_learning import (
+  blend_roll_comp_profile,
+  format_roll_comp_profile,
+  fit_roll_comp_profile,
+  MIN_POINTS,
+  parse_roll_comp_profile,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +81,15 @@ def _bootstrap_filtered_points(est):
       est.filtered_points.add_point(steer, lat_accel)
   # Run one get_msg so filtered_params settle and liveValid becomes true.
   est.get_msg()
+
+
+def _fill_roll_comp_buckets(buckets, n, gain=0.55, roll_min=-0.12, roll_max=0.12):
+  rng = np.random.default_rng(1)
+  rolls = roll_min + (roll_max - roll_min) * (0.5 + 0.5 * np.linspace(-1, 1, n) ** 3)
+  for roll in rolls:
+    x = -np.sin(roll) * 9.81
+    torque_lat = gain * x + rng.normal(scale=0.02)
+    buckets.add_point(roll, torque_lat, 20.0)
 
 
 def _make_estimator(mode="off"):
@@ -218,6 +234,54 @@ def test_roll_comp_persist_only_when_cache_write_enabled():
 
   est.maybe_persist_speed_profile(cache_write=True)
   assert Params().get("RollCompGainParams") is not None
+
+
+def test_roll_comp_persist_blends_existing_cache_and_overwrites_on_restore_key_mismatch():
+  params = Params()
+  cp = make_torque_cp()
+  restore_key = {
+    'carFingerprint': cp.carFingerprint,
+    'lateralTuning': cp.lateralTuning.which(),
+    'latAccelFactor': float(cp.lateralTuning.torque.latAccelFactor),
+    'friction': float(cp.lateralTuning.torque.friction),
+  }
+  old_profile = {
+    'version': 1,
+    'restoreKey': restore_key,
+    'gain': 0.9,
+    'points': 6000,
+    'span': 0.5,
+    'confidence': 1.0,
+  }
+  params.put("RollCompGainParams", format_roll_comp_profile(old_profile), block=True)
+
+  est = _make_estimator("shadow")
+  _fill_roll_comp_buckets(est.roll_comp_buckets, MIN_POINTS * 2, gain=0.55)
+  new_profile = fit_roll_comp_profile(make_torque_cp(), est.roll_comp_buckets)
+  assert new_profile is not None
+
+  est.maybe_persist_speed_profile(cache_write=True)
+  blended = parse_roll_comp_profile(make_torque_cp(), json.loads(params.get("RollCompGainParams")))
+  assert blended is not None
+
+  expected = blend_roll_comp_profile(old_profile, new_profile)
+  assert blended['gain'] == pytest.approx(expected['gain'])
+  assert blended['points'] == expected['points']
+  assert blended['span'] == pytest.approx(expected['span'])
+  assert blended['confidence'] == pytest.approx(expected['confidence'])
+
+  bad_profile = {**old_profile, 'restoreKey': {**restore_key, 'carFingerprint': 'other'}}
+  params.put("RollCompGainParams", format_roll_comp_profile(bad_profile), block=True)
+
+  est2 = _make_estimator("shadow")
+  _fill_roll_comp_buckets(est2.roll_comp_buckets, MIN_POINTS * 2, gain=0.55)
+  est2.maybe_persist_speed_profile(cache_write=True)
+  overwritten = parse_roll_comp_profile(make_torque_cp(), json.loads(params.get("RollCompGainParams")))
+  assert overwritten is not None
+  assert overwritten['gain'] == pytest.approx(new_profile['gain'])
+  assert overwritten['points'] == new_profile['points']
+  assert overwritten['span'] == pytest.approx(new_profile['span'])
+  assert overwritten['confidence'] == pytest.approx(new_profile['confidence'])
 
 
 def test_roll_comp_telemetry_populated_after_valid_fit():

@@ -1,9 +1,11 @@
+import json
 import numpy as np
 import pytest
 
 from types import SimpleNamespace
 
 from openpilot.sunnypilot.custom.lateral.roll_comp_learning import (
+  blend_roll_comp_profile,
   ROLL_GAIN_MIN,
   ROLL_GAIN_MAX,
   MIN_CONFIDENCE,
@@ -29,6 +31,24 @@ def _fill_buckets(buckets, n, gain=0.55, roll_min=-0.12, roll_max=0.12):
     # add small noise so SVD is well-conditioned
     torque_lat += rng.normal(scale=0.02)
     buckets.add_point(roll, torque_lat, 20.0)
+
+
+def _profile(gain, points, span, confidence):
+  car = cp()
+  torque = car.lateralTuning.torque
+  return {
+    'version': 1,
+    'restoreKey': {
+      'carFingerprint': car.carFingerprint,
+      'lateralTuning': car.lateralTuning.which(),
+      'latAccelFactor': float(torque.latAccelFactor),
+      'friction': float(torque.friction),
+    },
+    'gain': gain,
+    'points': points,
+    'span': span,
+    'confidence': confidence,
+  }
 
 
 def test_synthetic_slope_recovery():
@@ -153,3 +173,23 @@ def test_parse_rejects_missing_fields():
     incomplete['version'] = profile['version']
     incomplete['restoreKey'] = profile['restoreKey']
     assert parse_roll_comp_profile(cp(), incomplete) is None
+
+
+def test_blend_profile_caps_and_round_trips():
+  old = _profile(0.4, 6000, 0.4, 1.0)
+  new = _profile(0.8, 3000, 0.6, 0.75)
+  blended = blend_roll_comp_profile(old, new)
+  old_weight = min(old['points'], 2 * MIN_POINTS)
+  new_weight = min(new['points'], 2 * MIN_POINTS)
+
+  assert blended['gain'] == pytest.approx((old_weight * old['gain'] + new_weight * new['gain']) / (old_weight + new_weight))
+  assert blended['points'] == 4 * MIN_POINTS
+  assert blended['span'] == pytest.approx(max(old['span'], new['span']))
+  assert blended['confidence'] == pytest.approx(1.0)
+
+  parsed = parse_roll_comp_profile(cp(), json.loads(format_roll_comp_profile(blended)))
+  assert parsed is not None
+  assert parsed['gain'] == pytest.approx(blended['gain'])
+  assert parsed['points'] == blended['points']
+  assert parsed['span'] == pytest.approx(blended['span'])
+  assert parsed['confidence'] == pytest.approx(blended['confidence'])

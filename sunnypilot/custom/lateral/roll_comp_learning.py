@@ -107,6 +107,26 @@ def fit_roll_comp_profile(CP: Any, buckets: RollCompBuckets):
   }
 
 
+def blend_roll_comp_profile(old_profile, new_profile):
+  if old_profile is None:
+    return dict(new_profile)
+
+  old_points = int(old_profile['points'])
+  new_points = int(new_profile['points'])
+  old_weight = float(min(old_points, 2 * MIN_POINTS))
+  new_weight = float(min(new_points, 2 * MIN_POINTS))
+  weight_sum = old_weight + new_weight
+  if weight_sum <= 0:
+    return dict(new_profile)
+
+  blended = dict(new_profile)
+  blended['gain'] = float((old_weight * float(old_profile['gain']) + new_weight * float(new_profile['gain'])) / weight_sum)
+  blended['points'] = int(min(old_points + new_points, 4 * MIN_POINTS))
+  blended['span'] = float(max(float(old_profile['span']), float(new_profile['span'])))
+  blended['confidence'] = float(min(1.0, blended['points'] / (MIN_POINTS * 2)))
+  return blended
+
+
 def format_roll_comp_profile(profile: dict) -> str:
   return json.dumps(profile, separators=(',', ':'), sort_keys=True, allow_nan=False)
 

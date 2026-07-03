@@ -16,11 +16,12 @@ from openpilot.sunnypilot.custom.lateral.disturbance_classifier import (
   DisturbanceClassifier, LateralSample, LearningDecision,
 )
 from openpilot.sunnypilot.custom.lateral.roll_comp_learning import (
-  RollCompBuckets, fit_roll_comp_profile, format_roll_comp_profile, parse_roll_comp_profile,
+  RollCompBuckets, blend_roll_comp_profile, fit_roll_comp_profile, format_roll_comp_profile, parse_roll_comp_profile,
 )
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
-  SpeedAwareTorqueBuckets, fit_speed_aware_torque_profile, format_speed_aware_torque_profile,
-  parse_speed_aware_torque_profile, SpeedAwareTorqueRuntime, SPEED_BUCKET_BP, LOW_SPEED_BUCKET_BP,
+  SpeedAwareTorqueBuckets, blend_speed_aware_torque_profile, fit_speed_aware_torque_profile,
+  format_speed_aware_torque_profile, parse_speed_aware_torque_profile, SpeedAwareTorqueRuntime,
+  SPEED_BUCKET_BP, LOW_SPEED_BUCKET_BP,
 )
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
   validate_live_torque_speed_adaptive_mode,
@@ -204,6 +205,8 @@ class TorqueEstimatorExt:
       low_speed_buckets = self.low_speed_buckets if self.low_speed_shadow else None
       profile = fit_speed_aware_torque_profile(self.CP, self.speed_learning_buckets, low_speed_buckets=low_speed_buckets)
       if profile is not None:
+        if self.speed_profile_cache is not None:
+          profile = blend_speed_aware_torque_profile(self.speed_profile_cache, profile)
         self.speed_profile_cache = profile
         self.speed_adaptive_runtime.profile = profile
         self._params.put("LiveTorqueSpeedAdaptiveParams", format_speed_aware_torque_profile(profile), block=True)
@@ -211,5 +214,7 @@ class TorqueEstimatorExt:
     if self.roll_comp_mode in ('shadow', 'apply'):
       profile = fit_roll_comp_profile(self.CP, self.roll_comp_buckets)
       if profile is not None:
+        if self.roll_comp_profile_cache is not None:
+          profile = blend_roll_comp_profile(self.roll_comp_profile_cache, profile)
         self.roll_comp_profile_cache = profile
         self._params.put("RollCompGainParams", format_roll_comp_profile(profile), block=True)

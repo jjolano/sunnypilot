@@ -181,6 +181,42 @@ def fit_speed_aware_torque_profile(CP: Any, buckets: SpeedAwareTorqueBuckets, lo
   return profile
 
 
+def blend_speed_aware_torque_profile(old_profile: dict, new_profile: dict):
+  if old_profile is None:
+    return dict(new_profile)
+
+  blended = dict(new_profile)
+  ratios = []
+  confidence = []
+  points = []
+  for old_ratio, old_conf, old_points, new_ratio, new_conf, new_points in zip(
+      old_profile['ratios'], old_profile['confidence'], old_profile['points'],
+      new_profile['ratios'], new_profile['confidence'], new_profile['points'], strict=True):
+    old_points = int(old_points)
+    new_points = int(new_points)
+    blended_points = int(min(old_points + new_points, 4 * MIN_BIN_POINTS))
+    points.append(blended_points)
+    confidence.append(float(min(1.0, blended_points / (MIN_BIN_POINTS * 2))))
+    if old_conf > 0 and new_conf > 0:
+      old_weight = float(min(old_points, 2 * MIN_BIN_POINTS))
+      new_weight = float(min(new_points, 2 * MIN_BIN_POINTS))
+      weight_sum = old_weight + new_weight
+      ratio = float((old_weight * float(old_ratio) + new_weight * float(new_ratio)) / weight_sum) if weight_sum > 0 else float(new_ratio)
+    elif new_conf > 0:
+      ratio = float(new_ratio)
+    elif old_conf > 0:
+      ratio = float(old_ratio)
+    else:
+      ratio = float(new_ratio)
+    ratios.append(ratio)
+
+  blended['anchors'] = list(new_profile['anchors'])
+  blended['ratios'] = ratios
+  blended['confidence'] = confidence
+  blended['points'] = points
+  return blended
+
+
 def format_speed_aware_torque_profile(profile: dict) -> str:
   return json.dumps(profile, separators=(',', ':'), sort_keys=True, allow_nan=False)
 
