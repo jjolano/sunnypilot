@@ -150,6 +150,7 @@ class LeadAnticipation:
   def shape(self, radarstate: Any, dt: float, *, long_active: bool = False,
             brake_pressed: bool = False, gas_pressed: bool = False,
             force_decel: bool = False, v_ego: float = 0.0,
+            custom_long_enabled: bool | None = None,
             research_actuation_allowed: bool = False) -> Any:
     """Return radarstate unchanged unless apply mode is enabled, custom longitudinal is on, and
     research actuation is allowed.
@@ -160,12 +161,15 @@ class LeadAnticipation:
     self._tick += 1
     if self._params is not None and self._tick % PARAMS_REFRESH_PERIOD == 0:
       self.refresh_params()
-    custom_long_enabled = False
-    if self._params is not None:
-      try:
-        custom_long_enabled = bool(self._params.get_bool("CustomLongitudinalEnabled"))
-      except Exception:
-        custom_long_enabled = False
+    if custom_long_enabled is None:
+      custom_long_enabled = False
+      if self._params is not None:
+        try:
+          custom_long_enabled = bool(self._params.get_bool("CustomLongitudinalEnabled"))
+        except Exception:
+          custom_long_enabled = False
+    else:
+      custom_long_enabled = bool(custom_long_enabled)
     should_apply = self.mode == MODE_APPLY and self.enabled and custom_long_enabled and research_actuation_allowed
     should_shadow = self.mode in (MODE_SHADOW, MODE_APPLY)
     if not should_shadow and not self.enabled:

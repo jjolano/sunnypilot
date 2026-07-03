@@ -201,6 +201,13 @@ class Controls(ControlsExt):
     if not CC.longActive:
       self.LoC.reset()
 
+    lateral_demand = getattr(self, 'lateral_demand', None)
+    lateral_demand_enabled = bool(lateral_demand.enabled) if lateral_demand is not None else False
+    if lateral_demand is not None:
+      if self._lateral_demand_enabled and not lateral_demand_enabled:
+        lateral_demand.reset()
+      self._lateral_demand_enabled = lateral_demand_enabled
+
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
@@ -210,42 +217,42 @@ class Controls(ControlsExt):
     if self.sm.valid['lateralManeuverPlan']:
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
       raw_desired_curvature = new_desired_curvature
-      if hasattr(self, 'lateral_demand'):
-        self.lateral_demand.reset()
+      if lateral_demand is not None and lateral_demand_enabled:
+        lateral_demand.reset()
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
       raw_desired_curvature = new_desired_curvature
-      # Opt-in custom-2.0 lateral demand pipeline (fail-closed; returns the raw curvature when disabled).
-      try:
-        model_recv_time = float(self.sm.recv_time.get('modelV2', 0.0) or 0.0)
-      except (TypeError, ValueError):
-        model_recv_time = 0.0
-      model_age_s = max(0.0, time.monotonic() - model_recv_time) if math.isfinite(model_recv_time) and model_recv_time > 0.0 else float("inf")
-      live_pose = self.sm['livePose']
-      live_pose_yaw_valid = bool(
-        self.sm.alive['livePose'] and self.sm.valid['livePose']
-        and getattr(live_pose, 'inputsOK', False)
-        and getattr(live_pose, 'sensorsOK', False)
-        and getattr(live_pose, 'posenetOK', False)
-        and getattr(getattr(live_pose, 'angularVelocityDevice', None), 'valid', False)
-      )
-      yaw_rate = self.calibrated_pose.angular_velocity.z if self.calibrated_pose is not None and live_pose_yaw_valid else None
-      new_desired_curvature = self.lateral_demand.process(
-        CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2,
-        getattr(CS, 'steeringPressed', None), model_age_s, yaw_rate,
-        getattr(CS, 'steeringRateDeg', None), self.steer_limited_by_safety,
-        bool(CS.leftBlinker), bool(CS.rightBlinker), self.curvature_limited,
-      )
-    last_lateral_demand_result = getattr(self.lateral_demand, 'last_result', None) if hasattr(self, 'lateral_demand') else None
+      if lateral_demand is not None and lateral_demand_enabled:
+        # Opt-in custom-2.0 lateral demand pipeline (fail-closed; returns the raw curvature when disabled).
+        try:
+          model_recv_time = float(self.sm.recv_time.get('modelV2', 0.0) or 0.0)
+        except (TypeError, ValueError):
+          model_recv_time = 0.0
+        model_age_s = max(0.0, time.monotonic() - model_recv_time) if math.isfinite(model_recv_time) and model_recv_time > 0.0 else float("inf")
+        live_pose = self.sm['livePose']
+        live_pose_yaw_valid = bool(
+          self.sm.alive['livePose'] and self.sm.valid['livePose']
+          and getattr(live_pose, 'inputsOK', False)
+          and getattr(live_pose, 'sensorsOK', False)
+          and getattr(live_pose, 'posenetOK', False)
+          and getattr(getattr(live_pose, 'angularVelocityDevice', None), 'valid', False)
+        )
+        yaw_rate = self.calibrated_pose.angular_velocity.z if self.calibrated_pose is not None and live_pose_yaw_valid else None
+        new_desired_curvature = lateral_demand.process(
+          CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2,
+          getattr(CS, 'steeringPressed', None), model_age_s, yaw_rate,
+          getattr(CS, 'steeringRateDeg', None), self.steer_limited_by_safety,
+          bool(CS.leftBlinker), bool(CS.rightBlinker), self.curvature_limited,
+        )
+    last_lateral_demand_result = getattr(lateral_demand, 'last_result', None) if lateral_demand is not None else None
     self.raw_desired_curvature = raw_desired_curvature
     self.desired_curvature, self.curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
     if hasattr(self.LaC, 'set_under_response_path_evidence_from_lateral_demand'):
-      lateral_demand_adapter = getattr(self, 'lateral_demand', None)
       active = CC.latActive
-      evidence_expected = getattr(lateral_demand_adapter, 'enabled', False) if lateral_demand_adapter is not None else False
+      evidence_expected = lateral_demand_enabled if lateral_demand is not None else False
       self.LaC.set_under_response_path_evidence_from_lateral_demand(
         last_lateral_demand_result, active=active, evidence_expected=evidence_expected
       )
@@ -325,6 +332,7 @@ class Controls(ControlsExt):
     cs.forceDecel = bool((self.sm['driverMonitoringState'].alertLevel == log.DriverMonitoringState.AlertLevel.three) or
                          (self.sm['selfdriveState'].state == State.softDisabling))
     if hasattr(self, 'lateral_demand'):
+      lateral_demand_adapter = getattr(self, 'lateral_demand', None)
       model_path_state = cs.modelPathState
       raw_curvature_for_log = getattr(self, 'raw_desired_curvature', self.desired_curvature)
       long_plan = self.sm['longitudinalPlan']
@@ -367,13 +375,13 @@ class Controls(ControlsExt):
       set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
                                         long_plan.speeds, long_plan.accels, lat_delay,
                                         plan_valid=long_plan_valid)
-      last_result = getattr(self.lateral_demand, 'last_result', None)
+      last_result = getattr(lateral_demand_adapter, 'last_result', None) if lateral_demand_adapter is not None else None
       if last_result is not None:
         try:
           d = last_result.demand
           model_path = last_result.model_path_result
           debug = getattr(last_result, 'debug', {}) or {}
-          model_path_state.active = bool(self.lateral_demand.enabled)
+          model_path_state.active = bool(getattr(lateral_demand_adapter, 'enabled', False))
           model_path_state.gated = bool(model_path.gated)
           model_path_state.quality = float(model_path.quality)
           model_path_state.reason = str(model_path.reason)
@@ -403,9 +411,6 @@ class Controls(ControlsExt):
           model_path_state.dtleEstimate = float(debug.get('dtle_estimate', float('nan')))
           set_model_path_state_geometry(model_path_state, debug)
           set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
-          set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
-                                            long_plan.speeds, long_plan.accels, lat_delay,
-                                            plan_valid=long_plan_valid)
         except Exception:
           cloudlog.exception("failed to publish lateral modelPathState telemetry")
           self.lateral_demand.clear()

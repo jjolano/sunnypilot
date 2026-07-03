@@ -61,6 +61,18 @@ def test_no_relaxation_for_steady_offset():
   assert r.relax_error_cross_score == 0.0
 
 
+def test_lane_geometry_is_not_evaluated_when_a_gate_blocks(monkeypatch):
+  tracker = LaneCenteringAssistTracker()
+  monkeypatch.setattr(
+    "openpilot.sunnypilot.custom.lateral.demand.lane_centering_assist.evaluate_lane_geometry",
+    lambda *args, **kwargs: pytest.fail("geometry should not be evaluated when gated"),
+  )
+
+  r = tracker.update(_tracker_inputs(steering_pressed=True), DT)
+
+  assert r.reason == "driver_steering"
+
+
 def test_relaxation_triggers_on_repeated_near_center_flips():
   tracker = LaneCenteringAssistTracker()
   active_frames: list[bool] = []

@@ -136,8 +136,10 @@ class LongitudinalPlannerSP:
 
     return experimental_mode and self.dec.mode() == "blended"
 
-  def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
-    self.custom_long.maybe_refresh_params()
+  def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float,
+                     refresh_custom_long: bool = True) -> tuple[float, float]:
+    if refresh_custom_long:
+      self.custom_long.maybe_refresh_params()
 
     CS = sm['carState']
     v_cruise_cluster_kph = min(CS.vCruiseCluster, V_CRUISE_MAX)
@@ -214,9 +216,10 @@ class LongitudinalPlannerSP:
     return result.a_target, result.should_stop, result.e2e_source
 
   def update(self, sm: messaging.SubMaster) -> None:
-    self.custom_long.refresh_params(mode_only=True)  # enabled/mode every tick; tuning on slow cadence via update_targets
+    self.custom_long.maybe_refresh_params()  # enabled/mode every tick; tuning on slow cadence inside the adapter
     self.events_sp.clear()
-    if not self.custom_long.enabled:   # custom SCC mode replaces DEC; keep DEC dormant when custom is on
+    custom_long_enabled = bool(self.custom_long.enabled)
+    if not custom_long_enabled:   # custom SCC mode replaces DEC; keep DEC dormant when custom is on
       self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
     controls_state = self._sm_item(sm, 'controlsState')

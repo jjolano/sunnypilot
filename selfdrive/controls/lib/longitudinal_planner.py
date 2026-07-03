@@ -158,13 +158,24 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     # §3: mode-gated lead-motion anticipation shadow/apply shapes lead accel before the MPC and
     # returns the raw radarState when off/shadow or on any fault. Apply is further gated by the
-    # default-off research actuation switch; shadow telemetry is unaffected. Compute and set
-    # before update_targets() so the custom adapter stack sees the current gate on the same tick.
-    research_allowed = research_actuation_allowed(Params(), self.CP)
+    # default-off research actuation switch; shadow telemetry is unaffected. Cache the planner
+    # booleans once, then pass them down so the helpers do not reread Params on every call.
+    custom_long_enabled = bool(self.custom_long.enabled)
+    try:
+      allow_longitudinal_research_actuation = bool(
+        Params().get_bool("AllowLongitudinalResearchActuation"))
+    except Exception:
+      allow_longitudinal_research_actuation = False
+    research_allowed = research_actuation_allowed(
+      None, self.CP,
+      custom_long_enabled=custom_long_enabled,
+      allow_longitudinal_research_actuation=allow_longitudinal_research_actuation,
+    )
     self.custom_long.research_actuation_allowed = research_allowed
 
     # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist
-    v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired, v_cruise)
+    v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(
+      self, sm, self.v_desired_filter.x, self.a_desired, v_cruise, refresh_custom_long=False)
 
     if force_slow_decel:
       v_cruise = 0.0
@@ -185,6 +196,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       gas_pressed=sm['carState'].gasPressed,
       force_decel=force_slow_decel,
       v_ego=v_ego,
+      custom_long_enabled=custom_long_enabled,
       research_actuation_allowed=research_allowed,
     )
     # Dynamic follow-gap: bounded, research-gated T_FOLLOW compression during a low-risk
@@ -195,6 +207,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       brake_pressed=sm['carState'].brakePressed,
       gas_pressed=sm['carState'].gasPressed,
       force_decel=force_slow_decel,
+      custom_long_enabled=custom_long_enabled,
       research_actuation_allowed=research_allowed,
     )
     self.mpc.update(radar_state, v_cruise, personality=sm['selfdriveState'].personality, t_follow=t_follow)

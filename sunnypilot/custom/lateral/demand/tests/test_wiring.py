@@ -143,6 +143,25 @@ def test_adapter_disabled_passthrough():
   assert a.last_debug["sensor_suppress_candidate"] is True
 
 
+def test_adapter_disabled_caches_sensor_confidence_until_reenabled():
+  a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=False))
+  calls = 0
+
+  def observe(*args, **kwargs):
+    nonlocal calls
+    calls += 1
+    return {}
+
+  a._observe_sensor_confidence = observe
+
+  a.process(True, 20.0, 0.0, 0.0123, 0.0123, fake_model(), steering_pressed=False,
+            model_age_s=0.01, yaw_rate=0.0, steering_rate_deg=0.0)
+  a.process(True, 20.0, 0.0, 0.0123, 0.0123, fake_model(), steering_pressed=False,
+            model_age_s=0.02, yaw_rate=0.0, steering_rate_deg=0.0)
+
+  assert calls == 1
+
+
 def test_default_params_disable_adapter_and_curve_memory():
   a = LateralDemandAdapter(FakeParams())
   assert a.enabled is False

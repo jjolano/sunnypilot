@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from openpilot.common.realtime import DT_CTRL
+from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.custom.lateral.demand.types import (
   DEMAND_SOURCE_FALLBACK_MEASURED,
   DEMAND_SOURCE_LATERAL_MANEUVER,
@@ -118,6 +119,7 @@ class LateralDemandPipeline:
     self._lane_change_path_shaper = LaneChangePathShaper(dt)
     self._lane_centering_assist = LaneCenteringAssistTracker()
     self._previous_desired_curvature = 0.0
+    self._last_extreme_processed_curvature = False
 
   @property
   def previous_desired_curvature(self) -> float:
@@ -129,6 +131,7 @@ class LateralDemandPipeline:
     self._lane_change_path_shaper.reset()
     self._lane_centering_assist.reset()
     self._previous_desired_curvature = 0.0
+    self._last_extreme_processed_curvature = False
 
   def update(self, inputs: LateralDemandPipelineInputs) -> LateralDemandPipelineResult:
     raw_curvature = float(inputs.desired_curvature)
@@ -271,12 +274,15 @@ class LateralDemandPipeline:
     # previous-curvature memory so the next valid frame starts from a clean state.
     # Values beyond 0.05 1/m are logged but passed through unchanged.
     if not math.isfinite(processed_curvature):
-      from openpilot.common.swaglog import cloudlog
       cloudlog.warning(f"lateral_demand nonfinite processed curvature: {processed_curvature}")
+      self._last_extreme_processed_curvature = False
       processed_curvature = 0.0
     elif abs(processed_curvature) > 0.05:
-      from openpilot.common.swaglog import cloudlog
-      cloudlog.warning(f"lateral_demand extreme processed curvature: {processed_curvature:.4f}")
+      if not self._last_extreme_processed_curvature:
+        cloudlog.warning(f"lateral_demand extreme processed curvature: {processed_curvature:.4f}")
+      self._last_extreme_processed_curvature = True
+    else:
+      self._last_extreme_processed_curvature = False
     self._previous_desired_curvature = processed_curvature
 
     demand = ProcessedLateralDemand(

@@ -208,6 +208,20 @@ def test_curvature_limited_passes_through_to_demand():
   assert r.demand.curvature_limited is True
 
 
+def test_extreme_curvature_warning_logs_once_per_transition(monkeypatch):
+  warnings: list[str] = []
+  monkeypatch.setattr(
+    "openpilot.sunnypilot.custom.lateral.demand.pipeline.cloudlog.warning",
+    lambda msg: warnings.append(str(msg)),
+  )
+
+  p = LateralDemandPipeline(DT)
+  for _ in range(2):
+    p.update(valid_inputs(curvature=0.001, lateral_maneuver_curvature=0.06))
+
+  assert sum("extreme processed curvature" in msg for msg in warnings) == 1
+
+
 def test_lane_y0_reaches_debug_dtle():
   p = LateralDemandPipeline(DT)
   r = p.update(valid_inputs(curvature=0.001, left_lane_y0=1.8, right_lane_y0=-1.8))

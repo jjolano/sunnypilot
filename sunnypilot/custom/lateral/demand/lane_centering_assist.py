@@ -171,27 +171,33 @@ class LaneCenteringAssistTracker:
       return self._hard_block("invalid_path")
 
     lateral_error, heading_error, predicted_lateral_error = metrics
-    geometry = _evaluate_geometry(inputs, lateral_error, predicted_lateral_error)
+    gate_reason = _gate_reason(inputs)
+    geometry: LaneGeometryResult | None = None
 
     # Apply geometry-corrected errors only after a short persistence period and only
     # while the harder geometry gates are satisfied. Existing LCA gates still apply.
-    gate_reason = _gate_reason(inputs)
-    if geometry.valid and gate_reason is None:
-      if self._geometry_active:
-        self._geometry_persistence_ticks = LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES
+    if gate_reason is None:
+      geometry = _evaluate_geometry(inputs, lateral_error, predicted_lateral_error)
+      if geometry.valid:
+        if self._geometry_active:
+          self._geometry_persistence_ticks = LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES
+        else:
+          self._geometry_persistence_ticks = min(
+            self._geometry_persistence_ticks + 1,
+            LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES,
+          )
+        if self._geometry_persistence_ticks >= LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES:
+          self._geometry_active = True
       else:
-        self._geometry_persistence_ticks = min(
-          self._geometry_persistence_ticks + 1,
-          LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES,
-        )
-      if self._geometry_persistence_ticks >= LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES:
-        self._geometry_active = True
+        self._geometry_persistence_ticks = 0
+        self._geometry_active = False
     else:
       self._geometry_persistence_ticks = 0
       self._geometry_active = False
 
     geometry_mode = self._geometry_active
     if geometry_mode:
+      assert geometry is not None
       lateral_error = geometry.lateral_error
       predicted_lateral_error = geometry.predicted_lateral_error
       # Geometry errors are lane-center-relative (`lane_center_y - model_y`). Do not
@@ -204,7 +210,8 @@ class LaneCenteringAssistTracker:
 
     # Compute confidence and an unrelaxed raw nudge before any gating so the relaxation
     # tracker can monitor nudge sign flips even when the assist is temporarily gated.
-    confidence = _confidence(inputs, geometry_mode, geometry.confidence if geometry_mode else 0.0)
+    geometry_confidence = geometry.confidence if geometry is not None and geometry_mode else 0.0
+    confidence = _confidence(inputs, geometry_mode, geometry_confidence)
     straight_cruise = _straight_cruise(inputs)
     max_nudge = _max_nudge_curvature(inputs.v_ego, straight_cruise)
     unrelaxed_raw_nudge = confidence * (
