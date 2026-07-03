@@ -7,9 +7,12 @@ import pytest
 from openpilot.tools.drive_lab.roll_comp_profile import (
   GRAVITY,
   build_roll_comp_profile,
+  build_roll_comp_verdict_report,
   load_roll_comp_profile,
   render_roll_comp_profile,
+  render_roll_comp_verdict_report,
   save_roll_comp_profile,
+  RollCompProfileReport,
 )
 
 
@@ -48,6 +51,17 @@ def _frame(t_s: float, *, roll: float = 0.0, p: float = 0.0, i: float = 0.0, f: 
 
 def _roll_to_x(roll: float) -> float:
   return -math.sin(roll) * GRAVITY
+
+
+def _verdict_report(source: str, slope: float, roll_span: float) -> RollCompProfileReport:
+  return RollCompProfileReport(
+    source=source,
+    slope=slope,
+    integrator_mean=0.0,
+    integrator_std=0.0,
+    point_count=20,
+    roll_span=roll_span,
+  )
 
 
 def test_roll_comp_profile_recovers_known_slope():
@@ -106,6 +120,48 @@ def test_roll_comp_profile_delta_gate_excludes_large_transitions():
   ]
   report = build_roll_comp_profile(msgs, source="delta-gate")
   assert report.point_count == 2
+
+
+def test_roll_comp_profile_strict_straight_tightens_desired_lateral_accel_gate():
+  rolls = np.linspace(-0.04, 0.04, 12)
+  loose_msgs = []
+  strict_msgs = []
+
+  for i, roll in enumerate(rolls):
+    x = _roll_to_x(roll)
+    loose_msgs.extend(_frame(i * 0.05, roll=roll, p=0.4 * x, i=-0.02, desired_lateral_accel=0.10))
+    strict_msgs.extend(_frame(i * 0.05, roll=roll, p=0.4 * x, i=-0.02, desired_lateral_accel=0.05))
+
+  loose_report = build_roll_comp_profile(loose_msgs, source="loose")
+  strict_blocked_report = build_roll_comp_profile(loose_msgs, source="strict-blocked", strict_straight=True)
+  strict_allowed_report = build_roll_comp_profile(strict_msgs, source="strict-allowed", strict_straight=True)
+
+  assert loose_report.point_count == len(rolls)
+  assert loose_report.slope == pytest.approx(0.4, rel=1e-2)
+  assert strict_blocked_report.point_count == 0
+  assert strict_blocked_report.slope is None
+  assert strict_allowed_report.point_count == len(rolls)
+  assert strict_allowed_report.slope == pytest.approx(0.4, rel=1e-2)
+
+
+def test_roll_comp_verdict_report_promotes_consistent_multi_route_gain():
+  routes = [
+    _verdict_report("route-a", 0.50, 0.42),
+    _verdict_report("route-b", 0.52, 0.41),
+    _verdict_report("route-c", 0.53, 0.40),
+  ]
+
+  report = build_roll_comp_verdict_report(routes)
+  rendered = render_roll_comp_verdict_report(report)
+
+  assert report.routes == routes
+  assert report.qualifying_route_count == 3
+  assert report.slope_spread == pytest.approx(0.03, abs=1e-6)
+  assert report.verdict == "promote"
+  assert "verdict: promote" in rendered
+  assert "route-a" in rendered
+  assert "route-b" in rendered
+  assert "route-c" in rendered
 
 
 def test_roll_comp_profile_degenerate_span_no_slope():

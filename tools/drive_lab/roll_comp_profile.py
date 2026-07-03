@@ -125,9 +125,10 @@ def _extract_frames(msgs: list[Any]) -> list[_Frame]:
   return frames
 
 
-def _select_straight_frames(frames: list[_Frame]) -> list[_Frame]:
+def _select_straight_frames(frames: list[_Frame], strict_straight: bool = False) -> list[_Frame]:
   selected: list[_Frame] = []
   previous_desired: float | None = None
+  max_desired = MAX_DESIRED_LATERAL_ACCEL_DELTA if strict_straight else MAX_DESIRED_LATERAL_ACCEL
 
   for frame in frames:
     delta_ok = previous_desired is None or abs(frame.desired_lateral_accel - previous_desired) <= MAX_DESIRED_LATERAL_ACCEL_DELTA
@@ -138,7 +139,7 @@ def _select_straight_frames(frames: list[_Frame]) -> list[_Frame]:
       continue
     if frame.v_ego <= MIN_V_EGO:
       continue
-    if abs(frame.desired_lateral_accel) > MAX_DESIRED_LATERAL_ACCEL:
+    if abs(frame.desired_lateral_accel) > max_desired:
       continue
     if not delta_ok:
       continue
@@ -149,12 +150,17 @@ def _select_straight_frames(frames: list[_Frame]) -> list[_Frame]:
   return selected
 
 
-def build_roll_comp_profile(msgs: list[Any], source: str = "unknown", already_sorted: bool = False) -> RollCompProfileReport:
+def build_roll_comp_profile(
+  msgs: list[Any],
+  source: str = "unknown",
+  already_sorted: bool = False,
+  strict_straight: bool = False,
+) -> RollCompProfileReport:
   if not already_sorted:
     msgs = sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
 
   frames = _extract_frames(msgs)
-  straight = _select_straight_frames(frames)
+  straight = _select_straight_frames(frames, strict_straight=strict_straight)
 
   if not straight:
     return RollCompProfileReport(
@@ -198,10 +204,18 @@ def build_roll_comp_verdict_report(route_reports: list[RollCompProfileReport]) -
     reason = f"{qualifying_route_count} route(s) meet the roll span gate, but only {len(finite_slopes)} have a finite slope"
   elif slope_spread is not None and slope_spread < ROLL_COMP_VERDICT_MAX_GAIN_SPREAD:
     verdict = "promote"
-    reason = f"{qualifying_route_count} routes with roll span >= {ROLL_COMP_VERDICT_MIN_ROLL_SPAN:.1f} m/s^2 and learned gain spread {slope_spread:.4f} < {ROLL_COMP_VERDICT_MAX_GAIN_SPREAD:.2f}"
+    reason = (
+      f"{qualifying_route_count} routes with roll span >= "
+      + f"{ROLL_COMP_VERDICT_MIN_ROLL_SPAN:.1f} m/s^2 and learned gain spread "
+      + f"{slope_spread:.4f} < {ROLL_COMP_VERDICT_MAX_GAIN_SPREAD:.2f}"
+    )
   else:
     verdict = "park"
-    reason = f"{qualifying_route_count} routes with roll span >= {ROLL_COMP_VERDICT_MIN_ROLL_SPAN:.1f} m/s^2 but learned gain spread {slope_spread:.4f} >= {ROLL_COMP_VERDICT_MAX_GAIN_SPREAD:.2f}"
+    reason = (
+      f"{qualifying_route_count} routes with roll span >= "
+      + f"{ROLL_COMP_VERDICT_MIN_ROLL_SPAN:.1f} m/s^2 but learned gain spread "
+      + f"{slope_spread:.4f} >= {ROLL_COMP_VERDICT_MAX_GAIN_SPREAD:.2f}"
+    )
 
   return RollCompVerdictReport(
     routes=route_reports,
@@ -283,10 +297,16 @@ def main() -> None:
   parser.add_argument("--output", help="Write report JSON to this path")
   parser.add_argument("--json", action="store_true", help="Print JSON instead of a text summary")
   parser.add_argument("--qlog", action="store_true", help="Prefer qlogs instead of rlogs")
+  parser.add_argument("--strict-straight", action="store_true", help="Use the tighter 0.05 m/s^2 straightness gate")
   args = parser.parse_args()
 
   route_reports = [
-    build_roll_comp_profile(load_route_msgs(route, qlog=args.qlog), source=route, already_sorted=True)
+    build_roll_comp_profile(
+      load_route_msgs(route, qlog=args.qlog),
+      source=route,
+      already_sorted=True,
+      strict_straight=args.strict_straight,
+    )
     for route in args.routes
   ]
 
