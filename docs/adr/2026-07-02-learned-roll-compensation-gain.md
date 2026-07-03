@@ -41,6 +41,14 @@ Wire the learned gain into the live torque v2.1 response core, gated by `RollCom
 The learned gain is kept out of `torque_params` capture/restore entirely. It is only an
 extra exposed attribute that the controller injects into the response core.
 
+## Limits
+
+- The gain is learned only on straight, steady-state driving with `v > 15 m/s` and
+  `|roll| <= 0.1 rad`, but it is applied at all speeds and curvatures.
+- Linearity beyond ±0.1 rad is an assumption; banked-curve validation is replay-side only.
+- Keep the learned gain within `[ROLL_GAIN_MIN, ROLL_GAIN_MAX]`; the clamp exists because
+  the learner cannot see the regimes where bad extrapolation would hurt most.
+
 ## Consequences
 
 - Users can enable a platform-specific roll-compensation scale once the learner has collected

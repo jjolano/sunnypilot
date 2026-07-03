@@ -83,10 +83,13 @@ written; run the harvest after the next few shadow-collecting drives.
   path exists. Flip `RollCompGainMode` to `apply` only after replay evidence exists.
 - Harvest: engaged-route replay comparing fixed `ROLL_COMPENSATION_GAIN` (0.55) versus the
   learned gain on routes with sustained crown/cross-slope and gentle banked curves.
-- **Promote** (to a recommended apply default per platform or globally) if learned-gain replay
-  shows lower straight-cruise tracking error, smaller crown-transition transients, and no
-  degradation on banked curves across ≥3 cars with meaningful crown.
+- **Promote** (to a recommended apply default) if this single fleet's replay on ≥3 routes
+  shows straight-cruise tracking error no worse than fixed 0.55, each route's
+  `roll_comp_profile` `roll_span` is ≥ 0.3 m/s², and the learned gain spread across those
+  routes is < 0.05.
 - **Delete the apply path and keep shadow** if the fixed constant is indistinguishable or more
   consistent; keep the learner as observability only.
 - **Delete the feature entirely** if shadow telemetry shows the learned gain is noisy or the
   fit span/confidence thresholds are rarely met in normal driving.
+- This gate is intentionally single-fleet and route-based; per-platform generalization is
+  deferred until the fleet grows.
