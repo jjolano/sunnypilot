@@ -62,6 +62,7 @@ class TorqueEstimatorExt:
       x_bounds=[(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5), (-1.0, -0.5), (0.5, 1.0)],
       speed_bp=LOW_SPEED_BUCKET_BP, min_points=1, min_points_total=1, points_per_bucket=1500, rowsize=3)
     self.speed_profile_cache = None
+    self._speed_profile_blend_base = None
     self._last_speed_profile_write = -1
 
     # Phase 3 shadow-only roll-compensation gain learner. No steering changes
@@ -69,7 +70,9 @@ class TorqueEstimatorExt:
     self.roll_comp_mode = 'off'
     self.roll_comp_buckets = RollCompBuckets()
     self.roll_comp_profile_cache = None
+    self._roll_comp_blend_base = None
     self.roll_comp_profile = {'gain': 0.0, 'points': 0, 'span': 0.0, 'valid': False}
+    self._profile_blend_base_frozen = False
 
     # Phase 0b shadow-only disturbance classifier observability. These counters
     # never suppress learning points in this phase.
@@ -99,7 +102,8 @@ class TorqueEstimatorExt:
           self.custom_torque_params = False
 
   def _update_params(self):
-    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
+    did_update = self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0
+    if did_update:
       self.use_live_torque_params = self._params.get_bool("LiveTorqueParamsToggle")
       self.custom_torque_params = self._params.get_bool("CustomTorqueParams")
       self.torque_override_enabled = self._params.get_bool("TorqueParamsOverrideEnabled")
@@ -111,6 +115,8 @@ class TorqueEstimatorExt:
           parsed = json.loads(payload)
           self.speed_profile_cache = parse_speed_aware_torque_profile(self.CP, parsed)
           self.speed_adaptive_runtime.profile = self.speed_profile_cache
+          if not self._profile_blend_base_frozen and self.speed_profile_cache is not None:
+            self._speed_profile_blend_base = self.speed_profile_cache
         except Exception:
           self.speed_profile_cache = None
           self.speed_adaptive_runtime.profile = None
@@ -121,13 +127,16 @@ class TorqueEstimatorExt:
         try:
           parsed = json.loads(roll_payload)
           self.roll_comp_profile_cache = parse_roll_comp_profile(self.CP, parsed)
+          if not self._profile_blend_base_frozen and self.roll_comp_profile_cache is not None:
+            self._roll_comp_blend_base = self.roll_comp_profile_cache
         except Exception:
           self.roll_comp_profile_cache = None
       else:
         self.roll_comp_profile_cache = None
+    return did_update
 
   def update_use_params(self):
-    self._update_params()
+    did_update = self._update_params()
 
     if self.enforce_torque_control_toggle:
       if self.custom_torque_params and self.torque_override_enabled:
@@ -135,6 +144,8 @@ class TorqueEstimatorExt:
       else:
         self.use_params = self.use_live_torque_params
 
+    if did_update:
+      self._profile_blend_base_frozen = True
     self.frame += 1
 
   def add_torque_learning_point(self, steer, lateral_acc, v_ego):
@@ -205,8 +216,8 @@ class TorqueEstimatorExt:
       low_speed_buckets = self.low_speed_buckets if self.low_speed_shadow else None
       profile = fit_speed_aware_torque_profile(self.CP, self.speed_learning_buckets, low_speed_buckets=low_speed_buckets)
       if profile is not None:
-        if self.speed_profile_cache is not None:
-          profile = blend_speed_aware_torque_profile(self.speed_profile_cache, profile)
+        if self._speed_profile_blend_base is not None:
+          profile = blend_speed_aware_torque_profile(self._speed_profile_blend_base, profile)
         self.speed_profile_cache = profile
         self.speed_adaptive_runtime.profile = profile
         self._params.put("LiveTorqueSpeedAdaptiveParams", format_speed_aware_torque_profile(profile), block=True)
@@ -214,7 +225,7 @@ class TorqueEstimatorExt:
     if self.roll_comp_mode in ('shadow', 'apply'):
       profile = fit_roll_comp_profile(self.CP, self.roll_comp_buckets)
       if profile is not None:
-        if self.roll_comp_profile_cache is not None:
-          profile = blend_roll_comp_profile(self.roll_comp_profile_cache, profile)
+        if self._roll_comp_blend_base is not None:
+          profile = blend_roll_comp_profile(self._roll_comp_blend_base, profile)
         self.roll_comp_profile_cache = profile
         self._params.put("RollCompGainParams", format_roll_comp_profile(profile), block=True)

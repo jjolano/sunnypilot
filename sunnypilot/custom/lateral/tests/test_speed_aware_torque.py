@@ -91,6 +91,22 @@ def test_blend_profile_caps_single_sided_confidence_and_round_trips():
   assert parsed['confidence'] == pytest.approx(blended['confidence'])
 
 
+def test_blend_profile_anchor_mismatch_overwrites():
+  old = _profile(
+    ratios=[0.80, 0.90, 0.95, 1.05, 1.00],
+    confidence=[1.0, 1.0, 1.0, 1.0, 1.0],
+    points=[500, 500, 500, 500, 500],
+  )
+  new = _profile(
+    ratios=[0.85, 1.10, 1.20, 0.95, 1.00],
+    confidence=[0.2, 0.2, 0.2, 0.2, 0.2],
+    points=[100, 100, 100, 100, 100],
+  )
+  new['anchors'] = [bp + 0.5 for bp in SPEED_BUCKET_BP]
+
+  assert blend_speed_aware_torque_profile(old, new) == new
+
+
 def test_parse_rejects_wrong_identity():
   p = {'version': 1, 'restoreKey': {'carFingerprint': 'test', 'lateralTuning': 'torque', 'latAccelFactor': 2.0, 'friction': 0.2},
        'anchors': [15.0], 'ratios': [1.0], 'confidence': [1.0], 'points': [1], 'globalLatAccelFactor': 2.0, 'globalFriction': 0.2}

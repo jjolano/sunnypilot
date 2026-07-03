@@ -182,7 +182,7 @@ def fit_speed_aware_torque_profile(CP: Any, buckets: SpeedAwareTorqueBuckets, lo
 
 
 def blend_speed_aware_torque_profile(old_profile: dict, new_profile: dict):
-  if old_profile is None:
+  if old_profile is None or old_profile.get('anchors') != new_profile.get('anchors'):
     return dict(new_profile)
 
   blended = dict(new_profile)

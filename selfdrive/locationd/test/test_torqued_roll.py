@@ -261,8 +261,12 @@ def test_roll_comp_persist_blends_existing_cache_and_overwrites_on_restore_key_m
   assert new_profile is not None
 
   est.maybe_persist_speed_profile(cache_write=True)
-  blended = parse_roll_comp_profile(make_torque_cp(), json.loads(params.get("RollCompGainParams")))
+  first_payload = json.loads(params.get("RollCompGainParams"))
+  blended = parse_roll_comp_profile(make_torque_cp(), first_payload)
   assert blended is not None
+
+  est.maybe_persist_speed_profile(cache_write=True)
+  assert json.loads(params.get("RollCompGainParams")) == first_payload
 
   expected = blend_roll_comp_profile(old_profile, new_profile)
   assert blended['gain'] == pytest.approx(expected['gain'])
@@ -427,6 +431,23 @@ def test_low_speed_shadow_keeps_high_curvature_frames():
 
 
 def test_low_speed_persisted_in_speed_profile():
+  params = Params()
+  cp = make_torque_cp()
+  params.put("LiveTorqueSpeedAdaptiveParams", json.dumps({
+    'version': 1,
+    'restoreKey': {
+      'carFingerprint': cp.carFingerprint,
+      'lateralTuning': cp.lateralTuning.which(),
+      'latAccelFactor': float(cp.lateralTuning.torque.latAccelFactor),
+      'friction': float(cp.lateralTuning.torque.friction),
+    },
+    'anchors': [15.0, 20.0, 25.0, 30.0, 40.0],
+    'ratios': [0.8, 0.8, 0.8, 0.8, 0.8],
+    'confidence': [1.0, 1.0, 1.0, 1.0, 1.0],
+    'points': [500, 500, 500, 500, 500],
+    'globalLatAccelFactor': 2.0,
+    'globalFriction': 0.2,
+  }), block=True)
   est = _make_estimator_speed_aware("shadow", low_speed_shadow=True)
   # Need enough normal-speed points (>= MIN_GLOBAL_POINTS) for the speed-aware
   # profile to fit, plus alternating low-speed frames for the lowSpeed section.
@@ -442,3 +463,5 @@ def test_low_speed_persisted_in_speed_profile():
   assert payload is not None
   data = json.loads(payload)
   assert "lowSpeed" in data
+  est.maybe_persist_speed_profile(cache_write=True)
+  assert Params().get("LiveTorqueSpeedAdaptiveParams") == payload
