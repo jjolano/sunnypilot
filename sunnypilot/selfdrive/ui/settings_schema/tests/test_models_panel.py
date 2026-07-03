@@ -24,7 +24,6 @@ MODELS_EXPECTED = {
   "LagdToggle": "toggle",
   "LagdToggleDelay": "option",
   "CameraOffset": "option",
-  "CameraStabilizationMode": "multiple_button",
 }
 
 

@@ -602,20 +602,6 @@ struct LiveMapDataSP @0xf416ec09499d9d19 {
 
 struct ModelDataV2SP @0xa1680744031fdb2d {
   laneTurnDirection @0 :TurnDirection;
-  cameraStabilizationMode @1 :Text;
-  cameraStabilizationApplied @2 :Bool;
-  cameraStabilizationMainReason @3 :Text;
-  cameraStabilizationExtraReason @4 :Text;
-  cameraStabilizationMainCorrectionRoll @5 :Float32;
-  cameraStabilizationMainCorrectionPitch @6 :Float32;
-  cameraStabilizationExtraCorrectionRoll @7 :Float32;
-  cameraStabilizationExtraCorrectionPitch @8 :Float32;
-  cameraStabilizationMainClipped @9 :Bool;
-  cameraStabilizationExtraClipped @10 :Bool;
-  cameraStabilizationMainValidRate @11 :Float32;
-  cameraStabilizationExtraValidRate @12 :Float32;
-  cameraStabilizationMainClippedRate @13 :Float32;
-  cameraStabilizationExtraClippedRate @14 :Float32;
 
   enum TurnDirection {
     none @0;
