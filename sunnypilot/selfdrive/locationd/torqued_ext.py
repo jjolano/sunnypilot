@@ -59,7 +59,7 @@ class TorqueEstimatorExt:
       speed_bp=SPEED_BUCKET_BP, min_points=1, min_points_total=1, points_per_bucket=1500, rowsize=3)
     self.low_speed_shadow = False
     self.low_speed_buckets = SpeedAwareTorqueBuckets(
-      x_bounds=[(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5)],
+      x_bounds=[(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5), (-1.0, -0.5), (0.5, 1.0)],
       speed_bp=LOW_SPEED_BUCKET_BP, min_points=1, min_points_total=1, points_per_bucket=1500, rowsize=3)
     self.speed_profile_cache = None
     self._last_speed_profile_write = -1
@@ -153,7 +153,7 @@ class TorqueEstimatorExt:
     """
     # Phase 6: collection-only low-speed shadow buckets.
     if self.speed_adaptive_mode in ('shadow', 'apply') and self.low_speed_shadow:
-      if v_ego < ROLL_COMP_MIN_V_EGO and abs(steer) > 0.02 and abs(lateral_acc) <= 2.5:
+      if v_ego < ROLL_COMP_MIN_V_EGO and abs(steer) > 0.02 and abs(lateral_acc) <= 3.0:
         self.low_speed_buckets.add_point(steer, lateral_acc, v_ego)
 
     if self.roll_comp_mode not in ('shadow', 'apply'):

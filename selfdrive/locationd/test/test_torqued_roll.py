@@ -392,15 +392,36 @@ def test_low_speed_shadow_rejects_high_lateral_accel():
   est = _make_estimator_speed_aware("shadow", low_speed_shadow=True)
   n = _warmup_samples()
   for i in range(n):
-    _low_speed_feed(est, i * DT_MDL, steer=0.3, lateral_accel=2.6, v_ego=MIN_VEL - 1.0)
+    _low_speed_feed(est, i * DT_MDL, steer=0.3, lateral_accel=3.1, v_ego=MIN_VEL - 1.0)
   assert all(len(b.get_points()) == 0 for _, b in est.low_speed_buckets.bucket_items())
+
+
+def test_low_speed_shadow_routes_outer_buckets_and_accepts_high_lateral_accel():
+  est = _make_estimator_speed_aware("shadow", low_speed_shadow=True)
+  assert est.low_speed_buckets.x_bounds == [
+    (-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5),
+    (-1.0, -0.5), (0.5, 1.0),
+  ]
+
+  n = _warmup_samples()
+  for i in range(n):
+    _low_speed_feed(est, i * DT_MDL, steer=0.0, lateral_accel=0.0, v_ego=MIN_VEL - 1.0)
+
+  _low_speed_feed(est, n * DT_MDL, steer=0.75, lateral_accel=2.9, v_ego=MIN_VEL - 1.0)
+  _low_speed_feed(est, (n + 1) * DT_MDL, steer=-0.75, lateral_accel=2.9, v_ego=MIN_VEL - 1.0)
+
+  bucket = est.low_speed_buckets.buckets[1]
+  outer_buckets = {(-1.0, -0.5), (0.5, 1.0)}
+  assert len(bucket.buckets[(0.5, 1.0)].arr) == 1
+  assert len(bucket.buckets[(-1.0, -0.5)].arr) == 1
+  assert all(len(b.arr) == 0 for bounds, b in bucket.buckets.items() if bounds not in outer_buckets)
 
 
 def test_low_speed_shadow_keeps_high_curvature_frames():
   est = _make_estimator_speed_aware("shadow", low_speed_shadow=True)
   n = _warmup_samples()
   for i in range(n):
-    # Moderate lateral accel (>1.0, <=2.5) should still be collected.
+    # Moderate lateral accel (>1.0, <=3.0) should still be collected.
     _low_speed_feed(est, i * DT_MDL, steer=0.3, lateral_accel=1.5, v_ego=MIN_VEL - 1.0)
   assert any(len(b.get_points()) > 0 for _, b in est.low_speed_buckets.bucket_items())
 
