@@ -19,6 +19,9 @@ MIN_V_EGO = 15.0
 MAX_DESIRED_LATERAL_ACCEL = 0.15
 MAX_DESIRED_LATERAL_ACCEL_DELTA = 0.05
 MIN_X_SPAN = 1e-6
+ROLL_COMP_VERDICT_MIN_ROLL_SPAN = 0.3
+ROLL_COMP_VERDICT_MAX_GAIN_SPREAD = 0.05
+ROLL_COMP_VERDICT_MIN_ROUTE_COUNT = 3
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,18 @@ class RollCompProfileReport:
   integrator_std: float | None
   point_count: int
   roll_span: float
+
+  def to_dict(self) -> dict[str, Any]:
+    return asdict(self)
+
+
+@dataclass(frozen=True)
+class RollCompVerdictReport:
+  routes: list[RollCompProfileReport]
+  qualifying_route_count: int
+  slope_spread: float | None
+  verdict: str
+  verdict_reason: str
 
   def to_dict(self) -> dict[str, Any]:
     return asdict(self)
@@ -169,6 +184,34 @@ def build_roll_comp_profile(msgs: list[Any], source: str = "unknown", already_so
   )
 
 
+def build_roll_comp_verdict_report(route_reports: list[RollCompProfileReport]) -> RollCompVerdictReport:
+  qualifying_routes = [report for report in route_reports if report.roll_span >= ROLL_COMP_VERDICT_MIN_ROLL_SPAN]
+  qualifying_route_count = len(qualifying_routes)
+  finite_slopes = [float(report.slope) for report in qualifying_routes if report.slope is not None and isfinite(report.slope)]
+  slope_spread = max(finite_slopes) - min(finite_slopes) if len(finite_slopes) >= 2 else None
+
+  if qualifying_route_count < ROLL_COMP_VERDICT_MIN_ROUTE_COUNT:
+    verdict = "insufficient-data"
+    reason = f"only {qualifying_route_count} route(s) with roll span >= {ROLL_COMP_VERDICT_MIN_ROLL_SPAN:.1f} m/s^2 (need >=3)"
+  elif len(finite_slopes) != qualifying_route_count:
+    verdict = "insufficient-data"
+    reason = f"{qualifying_route_count} route(s) meet the roll span gate, but only {len(finite_slopes)} have a finite slope"
+  elif slope_spread is not None and slope_spread < ROLL_COMP_VERDICT_MAX_GAIN_SPREAD:
+    verdict = "promote"
+    reason = f"{qualifying_route_count} routes with roll span >= {ROLL_COMP_VERDICT_MIN_ROLL_SPAN:.1f} m/s^2 and learned gain spread {slope_spread:.4f} < {ROLL_COMP_VERDICT_MAX_GAIN_SPREAD:.2f}"
+  else:
+    verdict = "park"
+    reason = f"{qualifying_route_count} routes with roll span >= {ROLL_COMP_VERDICT_MIN_ROLL_SPAN:.1f} m/s^2 but learned gain spread {slope_spread:.4f} >= {ROLL_COMP_VERDICT_MAX_GAIN_SPREAD:.2f}"
+
+  return RollCompVerdictReport(
+    routes=route_reports,
+    qualifying_route_count=qualifying_route_count,
+    slope_spread=slope_spread,
+    verdict=verdict,
+    verdict_reason=reason,
+  )
+
+
 def render_roll_comp_profile(report: RollCompProfileReport) -> str:
   slope_str = f"{report.slope:.4f}" if report.slope is not None else "n/a"
   mean_str = f"{report.integrator_mean:.4f}" if report.integrator_mean is not None else "n/a"
@@ -184,7 +227,41 @@ def render_roll_comp_profile(report: RollCompProfileReport) -> str:
   return "\n".join(lines)
 
 
+def _fmt_optional(value: float | None, precision: int = 4) -> str:
+  return "n/a" if value is None else f"{value:.{precision}f}"
+
+
+def render_roll_comp_profile_brief(report: RollCompProfileReport) -> str:
+  slope_str = _fmt_optional(report.slope)
+  lines = [
+    f"Roll compensation profile for {report.source}",
+    f"  slope:            {slope_str}",
+    f"  roll span (m/s^2): {report.roll_span:.4f}",
+    f"  point count:      {report.point_count}",
+  ]
+  return "\n".join(lines)
+
+
+def render_roll_comp_verdict_report(report: RollCompVerdictReport) -> str:
+  lines = [
+    "Roll compensation verdict (Phase 2 route gate)",
+    f"  routes: {len(report.routes)}",
+    f"  routes with roll span >= {ROLL_COMP_VERDICT_MIN_ROLL_SPAN:.1f} m/s^2: {report.qualifying_route_count}",
+    f"  slope spread: {_fmt_optional(report.slope_spread)}",
+    f"  verdict: {report.verdict}",
+    f"  reason: {report.verdict_reason}",
+    "",
+  ]
+  for route in report.routes:
+    lines.append(render_roll_comp_profile_brief(route))
+  return "\n\n".join(lines)
+
+
 def save_roll_comp_profile(report: RollCompProfileReport, path: str | Path) -> None:
+  Path(path).write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n")
+
+
+def save_roll_comp_verdict_report(report: RollCompVerdictReport, path: str | Path) -> None:
   Path(path).write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n")
 
 
@@ -202,21 +279,35 @@ def load_roll_comp_profile(path: str | Path) -> RollCompProfileReport:
 
 def main() -> None:
   parser = argparse.ArgumentParser(description="Profile roll-compensation gain from route logs.")
-  parser.add_argument("route", help="Route, segment range, log file, or URL accepted by LogReader")
+  parser.add_argument("routes", nargs="+", help="Route, segment range, log file, or URLs accepted by LogReader")
   parser.add_argument("--output", help="Write report JSON to this path")
   parser.add_argument("--json", action="store_true", help="Print JSON instead of a text summary")
   parser.add_argument("--qlog", action="store_true", help="Prefer qlogs instead of rlogs")
   args = parser.parse_args()
 
-  msgs = load_route_msgs(args.route, qlog=args.qlog)
-  report = build_roll_comp_profile(msgs, source=args.route, already_sorted=True)
+  route_reports = [
+    build_roll_comp_profile(load_route_msgs(route, qlog=args.qlog), source=route, already_sorted=True)
+    for route in args.routes
+  ]
+
+  if len(route_reports) == 1:
+    print(output_report(
+      route_reports[0],
+      json_output=args.json,
+      renderer=render_roll_comp_profile,
+      output_path=args.output,
+      save=save_roll_comp_profile,
+    ))
+    return
+
+  report = build_roll_comp_verdict_report(route_reports)
 
   print(output_report(
     report,
     json_output=args.json,
-    renderer=render_roll_comp_profile,
+    renderer=render_roll_comp_verdict_report,
     output_path=args.output,
-    save=save_roll_comp_profile,
+    save=save_roll_comp_verdict_report,
   ))
 
 
