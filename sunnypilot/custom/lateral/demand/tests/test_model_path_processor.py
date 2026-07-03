@@ -14,6 +14,8 @@ from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   ModelPathProcessor,
   ModelPathProcessorInputs,
   SPS_ANCHOR_CLIP_LAT_ACCEL,
+  SPS_RELEASE_RAMP_LAT_JERK,
+  SPS_TREND_RELEASE_LAT_JERK,
   STRAIGHT_ROAD_DAMPING_BLEND_BP_LAT_ACCEL,
   STRAIGHT_ROAD_DAMPING_FULL_SPEED,
   STRAIGHT_ROAD_DAMPING_MAX_LAT_ACCEL,
@@ -467,14 +469,84 @@ def test_sps_no_sign_flip_except_tiny_raw():
   result = proc.update(_sps_inputs(v_ego=v_ego, curvature=tiny_neg, mode="apply"))
   assert result.desired_curvature * tiny_neg >= 0.0
 
-  # Larger raw must keep the same sign as the raw demand.
+  # Larger raw must keep the same sign as the raw demand once the (rate-limited)
+  # release blend has run out; the transitional tail decays at the release ramp rate.
   proc2 = ModelPathProcessor()
   large_k = 0.00025  # lat accel 0.10, well inside gates when stable
+  speed_sq = v_ego * v_ego
   for _ in range(55):
     proc2.update(_sps_inputs(v_ego=v_ego, curvature=large_k, mode="apply"))
-  for sign in (1.0, -1.0):
-    result = proc2.update(_sps_inputs(v_ego=v_ego, curvature=sign * large_k, mode="apply"))
-    assert result.desired_curvature * (sign * large_k) >= 0.0
+  same = proc2.update(_sps_inputs(v_ego=v_ego, curvature=large_k, mode="apply"))
+  assert same.desired_curvature * large_k >= 0.0
+
+  flipped_k = -large_k
+  prev_a = same.desired_curvature * speed_sq
+  matched_sign = False
+  for _ in range(int(0.35 / DT_CTRL)):
+    result = proc2.update(_sps_inputs(v_ego=v_ego, curvature=flipped_k, mode="apply"))
+    a_out = result.desired_curvature * speed_sq
+    assert abs(a_out - prev_a) <= SPS_RELEASE_RAMP_LAT_JERK * DT_CTRL + 1e-6
+    prev_a = a_out
+    if a_out * flipped_k > 0.0:
+      matched_sign = True
+      break
+  assert matched_sign, "released demand never converged to the raw sign"
+
+
+def test_sps_release_is_rate_limited():
+  """Route 0000024b regression: a release while anchored must blend the demand out
+  at SPS_RELEASE_RAMP_LAT_JERK, not hand back the full suppressed delta in one frame."""
+  proc = ModelPathProcessor()
+  v_ego = 20.0
+  speed_sq = v_ego * v_ego
+  jump_k = 0.001  # lat accel 0.40 > max suppression 0.35 -> release_suppression
+
+  for _ in range(55):
+    proc.update(_sps_inputs(v_ego=v_ego, curvature=0.0, mode="apply"))
+
+  max_step = SPS_RELEASE_RAMP_LAT_JERK * DT_CTRL
+  prev_a = 0.0
+  released = False
+  converged_frame = None
+  for i in range(80):
+    result = proc.update(_sps_inputs(v_ego=v_ego, curvature=jump_k, mode="apply"))
+    a_out = result.desired_curvature * speed_sq
+    assert abs(a_out - prev_a) <= max_step + 1e-6, f"frame {i}: demand stepped {a_out - prev_a:+.3f}"
+    prev_a = a_out
+    if "release" in result.straight_path_stabilization_reason:
+      released = True
+    if converged_frame is None and abs(a_out - jump_k * speed_sq) < 0.03:
+      converged_frame = i
+  assert released
+  assert converged_frame is not None, "ramped demand never reached the raw target"
+
+
+def test_sps_trend_release_on_noisy_curve_entry():
+  """A sustained curve-entry ramp with frame-to-frame sign noise (which defeated the
+  old consecutive-rising-frames detector) must release via the trend EMA well before
+  the suppression cap is reached."""
+  proc = ModelPathProcessor()
+  v_ego = 20.0
+  speed_sq = v_ego * v_ego
+
+  for _ in range(55):
+    proc.update(_sps_inputs(v_ego=v_ego, curvature=0.0, mode="apply"))
+
+  # +0.007/-0.001 m/s^2 alternation: mean slope 0.3 m/s^3 > release threshold, but
+  # the per-frame delta sign flips every other frame.
+  a_raw = 0.0
+  release_reason = None
+  release_a_raw = None
+  for i in range(150):
+    a_raw += 0.007 if i % 2 == 0 else -0.001
+    result = proc.update(_sps_inputs(v_ego=v_ego, curvature=a_raw / speed_sq, mode="apply"))
+    if "release" in result.straight_path_stabilization_reason:
+      release_reason = result.straight_path_stabilization_reason
+      release_a_raw = a_raw
+      break
+  assert release_reason == "release_trend"
+  assert release_a_raw is not None and abs(release_a_raw) < 0.35
+  assert SPS_TREND_RELEASE_LAT_JERK < 0.3  # detector must be able to catch this slope
 
 
 # --- tight-corner gate escapes (city intersection turns) ---

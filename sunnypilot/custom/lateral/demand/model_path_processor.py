@@ -87,8 +87,17 @@ SPS_ANCHOR_WINDOW_FRAMES = int(round(SPS_ANCHOR_WINDOW_S / DT_CTRL))
 SPS_MAX_PAUSE_FRAMES = int(round(1.5 / DT_CTRL))
 SPS_ENTRY_MIN_FRAMES = int(round(0.3 / DT_CTRL))
 SPS_SIGN_FLIP_EXEMPT_LAT_ACCEL = 0.05
-SPS_RISING_FRAMES_THRESHOLD = 3
-SPS_RISING_CUMULATIVE_LAT_ACCEL = 0.15
+# Sustained-trend release: winsorized EMA of raw lat-accel slope. The clip bounds a
+# single-frame model jump to a ~0.05 EMA kick (stays suppressed), while a sustained
+# curve-entry ramp (~0.3 m/s^3) crosses the threshold in ~0.5 s. Calibrated on route
+# 0000024b rlogs: straight-cruise |EMA| p99 ~0.23, curve-entry peaks 0.18-0.26.
+SPS_TREND_TAU_S = 0.3
+SPS_TREND_JERK_CLIP = 1.5  # m/s^3
+SPS_TREND_RELEASE_LAT_JERK = 0.25  # m/s^3
+# Blend-out rate after SPS stops applying. Route 0000024b: one-frame release steps up
+# to ~0.45 m/s^2 (45 m/s^3) were felt as lateral jerks; 1.2 m/s^3 clears a full
+# max-suppression release in ~0.3 s.
+SPS_RELEASE_RAMP_LAT_JERK = 1.2  # m/s^3
 SPS_QUALITY_THRESHOLD = 0.85
 SPS_MODES = frozenset(("off", "shadow", "apply"))
 
@@ -250,11 +259,14 @@ class ModelPathProcessor:
     self._reset_straight_path_stabilization_state()
 
   def _reset_straight_path_stabilization_state(self) -> None:
+    self._reset_sps_anchor_state()
+    # Full reset only: releases keep this so the post-release blend survives.
+    self._sp_last_output_lat_accel: float | None = None
+
+  def _reset_sps_anchor_state(self) -> None:
     self._sp_anchor_buffer: collections.deque[float] = collections.deque(maxlen=SPS_ANCHOR_WINDOW_FRAMES)
     self._sp_prev_raw_lat_accel: float | None = None
-    self._sp_rising_count: int = 0
-    self._sp_rising_sum: float = 0.0
-    self._sp_rising_sign: int = 0
+    self._sp_trend_lat_jerk: float = 0.0
     self._sp_pause_frames: int = 0
 
   # ---------------------------------------------------------------------------
@@ -375,6 +387,7 @@ class ModelPathProcessor:
     sps_output, sps_active, sps_applied, sps_candidate, sps_anchor, sps_reason = self._apply_straight_path_stabilization(
       replace(inputs, straight_path_stabilization_mode=sps_mode), raw_base, curvature, quality, reason, evidence.path_disagreement,
     )
+    sps_output = self._slew_sps_transitions(float(inputs.v_ego), sps_output, sps_applied, sps_mode)
 
     return ModelPathProcessorResult(
       sps_output,
@@ -646,24 +659,16 @@ class ModelPathProcessor:
     a_raw = raw_base * speed_sq
     a_target = target * speed_sq
 
-    # Raw-jerk / same-sign rising-frame tracker (always update so release triggers).
+    # Raw-jerk / sustained-trend tracker (always update so release triggers).
+    # Winsorized EMA of the raw lat-accel slope: robust to single-frame model jumps
+    # (which SPS should keep suppressing) but converges on real curve-entry ramps
+    # that the anchor cannot follow.
     raw_jerk = 0.0
     if self._sp_prev_raw_lat_accel is not None and math.isfinite(self._sp_prev_raw_lat_accel):
       raw_jerk = (a_raw - self._sp_prev_raw_lat_accel) / DT_CTRL
-      delta = a_raw - self._sp_prev_raw_lat_accel
-      if abs(delta) > 1e-6:
-        sign = 1 if delta > 0 else -1
-        if sign == self._sp_rising_sign:
-          self._sp_rising_count += 1
-          self._sp_rising_sum += abs(delta)
-        else:
-          self._sp_rising_count = 1
-          self._sp_rising_sum = abs(delta)
-          self._sp_rising_sign = sign
-      else:
-        self._sp_rising_count = 0
-        self._sp_rising_sum = 0.0
-        self._sp_rising_sign = 0
+      alpha = DT_CTRL / SPS_TREND_TAU_S
+      clipped_jerk = float(np.clip(raw_jerk, -SPS_TREND_JERK_CLIP, SPS_TREND_JERK_CLIP))
+      self._sp_trend_lat_jerk = (1.0 - alpha) * self._sp_trend_lat_jerk + alpha * clipped_jerk
     self._sp_prev_raw_lat_accel = float(a_raw)
 
     # Release gates (wider than entry gates).
@@ -674,9 +679,8 @@ class ModelPathProcessor:
       return self._pause_straight_path_stabilization(target, "release_raw_target_divergence")
     if abs(raw_jerk) > SPS_RELEASE_MAX_RAW_LAT_JERK and not has_anchor:
       return self._pause_straight_path_stabilization(target, "release_high_jerk")
-    if (self._sp_rising_count >= SPS_RISING_FRAMES_THRESHOLD and
-        self._sp_rising_sum > SPS_RISING_CUMULATIVE_LAT_ACCEL):
-      return self._release_straight_path_stabilization(target, "release_rising_frames")
+    if abs(self._sp_trend_lat_jerk) > SPS_TREND_RELEASE_LAT_JERK:
+      return self._release_straight_path_stabilization(target, "release_trend")
 
     # Entry gates.
     if v_ego < SPS_MIN_SPEED or v_ego > SPS_MAX_SPEED:
@@ -748,8 +752,35 @@ class ModelPathProcessor:
     target: float,
     reason: str,
   ) -> tuple[float, bool, bool, float, float, str]:
-    self._reset_straight_path_stabilization_state()
+    # Anchor-only reset: _sp_last_output_lat_accel survives so _slew_sps_transitions
+    # can blend the released demand out instead of stepping in one frame.
+    self._reset_sps_anchor_state()
     return target, False, False, 0.0, 0.0, reason
+
+  def _slew_sps_transitions(self, v_ego: float, output_curvature: float, applied: bool, mode: str) -> float:
+    """Rate-limit the SPS output in lat-accel space across apply/release/pause
+    transitions. Route 0000024b: one-frame release_suppression steps of up to
+    ~0.45 m/s^2 were the dominant felt lateral jerk; this bounds any SPS-side
+    demand transition to SPS_RELEASE_RAMP_LAT_JERK."""
+    if mode != "apply" or not math.isfinite(v_ego) or v_ego < 1.0:
+      self._sp_last_output_lat_accel = None
+      return output_curvature
+    speed_sq = v_ego * v_ego
+    a_out = output_curvature * speed_sq
+    prev = self._sp_last_output_lat_accel
+    if prev is None or not math.isfinite(prev):
+      self._sp_last_output_lat_accel = a_out if applied else None
+      return output_curvature
+    max_step = SPS_RELEASE_RAMP_LAT_JERK * DT_CTRL
+    a_limited = prev + float(np.clip(a_out - prev, -max_step, max_step))
+    converged = abs(a_limited - a_out) <= 1e-9
+    if applied:
+      self._sp_last_output_lat_accel = a_limited
+    else:
+      self._sp_last_output_lat_accel = None if converged else a_limited
+    if converged:
+      return output_curvature
+    return a_limited / speed_sq
 
   def _pause_straight_path_stabilization(
     self,
