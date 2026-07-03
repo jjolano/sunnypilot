@@ -280,7 +280,7 @@ class CustomLongitudinalStack:
     self._shadow_lead_context = LeadContextTracker()
     self._prev_smoothed_a_target = None
 
-  def update(self, inp: LongitudinalStackInputs, dt: float) -> LongitudinalStackResult:
+  def update(self, inp: LongitudinalStackInputs, dt: float, *, collect_debug: bool = True) -> LongitudinalStackResult:
     confidence_states = (
       self._lead_confidence[0].update(inp.leads[0], dt),
       self._lead_confidence[1].update(inp.leads[1], dt),
@@ -288,49 +288,50 @@ class CustomLongitudinalStack:
     lead_ctx = self._lead_context.update(inp.leads, confidence_states, inp.v_ego, dt)
     act_inp = _sanitize_inputs_for_mode(inp)
 
-    # Shadow path-relative lead context is computed in an exception-isolated tracker for
-    # telemetry/debug only. It must never change actuation or fail the adapter.
+    # Shadow path-relative lead context and telemetry-only advisory classifiers are only built
+    # when the caller actually needs debug/shadow payloads.
     path_shadow_model_path_available = False
     path_shadow_fault = False
     shadow_ctx = None
     shadow_debug: dict[str, Any] = {}
-    try:
-      path_shadow_model_path_available = _model_path_available(inp.model_msg)
-      shadow_ctx = self._shadow_lead_context.update(inp.leads, confidence_states, inp.v_ego, dt, model_msg=inp.model_msg)
-      shadow_debug = {f"path_shadow_{k}": v for k, v in shadow_ctx.debug_dict().items()}
-    except Exception:
-      path_shadow_fault = True
-
     cut_in_brake_assist_fault = False
     cut_in_brake_assist_debug: dict[str, Any] = {}
-    try:
-      cut_in_brake_assist_result = predict_cut_in_brake_assist(
-        inp.cut_in_brake_assist_mode, lead_ctx, shadow_ctx, inp.v_ego,
-        long_active=inp.long_active,
-      )
-      cut_in_brake_assist_result = _downgrade_research_apply(
-        cut_in_brake_assist_result, inp.research_actuation_allowed,
-        apply_value="apply", mode_key="mode", effective_mode_key="effective_mode",
-        apply_supported_key="apply_supported", eligible_key="eligible",
-      )
-      cut_in_brake_assist_debug = cut_in_brake_assist_result.debug_dict()
-    except Exception:
-      cut_in_brake_assist_fault = True
-
     curve_speed_confidence_fault = False
     curve_speed_confidence_debug: dict[str, Any] = {}
-    try:
-      curve_speed_confidence_result = predict_curve_speed_confidence(
-        inp.curve_speed_confidence_mode, act_inp.curve_confidence,
-      )
-      curve_speed_confidence_result = _downgrade_research_apply(
-        curve_speed_confidence_result, inp.research_actuation_allowed,
-        apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
-        apply_supported_key="apply_supported", eligible_key="eligible",
-      )
-      curve_speed_confidence_debug = curve_speed_confidence_result.debug_dict()
-    except Exception:
-      curve_speed_confidence_fault = True
+    if collect_debug:
+      try:
+        path_shadow_model_path_available = _model_path_available(inp.model_msg)
+        shadow_ctx = self._shadow_lead_context.update(inp.leads, confidence_states, inp.v_ego, dt, model_msg=inp.model_msg)
+        shadow_debug = {f"path_shadow_{k}": v for k, v in shadow_ctx.debug_dict().items()}
+      except Exception:
+        path_shadow_fault = True
+
+      try:
+        cut_in_brake_assist_result = predict_cut_in_brake_assist(
+          inp.cut_in_brake_assist_mode, lead_ctx, shadow_ctx, inp.v_ego,
+          long_active=inp.long_active,
+        )
+        cut_in_brake_assist_result = _downgrade_research_apply(
+          cut_in_brake_assist_result, inp.research_actuation_allowed,
+          apply_value="apply", mode_key="mode", effective_mode_key="effective_mode",
+          apply_supported_key="apply_supported", eligible_key="eligible",
+        )
+        cut_in_brake_assist_debug = cut_in_brake_assist_result.debug_dict()
+      except Exception:
+        cut_in_brake_assist_fault = True
+
+      try:
+        curve_speed_confidence_result = predict_curve_speed_confidence(
+          inp.curve_speed_confidence_mode, act_inp.curve_confidence,
+        )
+        curve_speed_confidence_result = _downgrade_research_apply(
+          curve_speed_confidence_result, inp.research_actuation_allowed,
+          apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
+          apply_supported_key="apply_supported", eligible_key="eligible",
+        )
+        curve_speed_confidence_debug = curve_speed_confidence_result.debug_dict()
+      except Exception:
+        curve_speed_confidence_fault = True
 
     raw_lead_present = _any_status(inp.leads)
     lead_shadow_active = bool(getattr(lead_ctx, "shadow_active", False))
@@ -412,13 +413,15 @@ class CustomLongitudinalStack:
         radar_stale=False,
         lead_required=has_lead,
       ))
-      acc_envelope_debug = acc_envelope_result.debug_dict()
+      if collect_debug:
+        acc_envelope_debug = acc_envelope_result.debug_dict()
     except Exception:
-      acc_envelope_debug = {
-        "acc_envelope_active": False,
-        "acc_envelope_would_cap": True,
-        "acc_envelope_cap_reason": "fault",
-      }
+      if collect_debug:
+        acc_envelope_debug = {
+          "acc_envelope_active": False,
+          "acc_envelope_would_cap": True,
+          "acc_envelope_cap_reason": "fault",
+        }
 
     # Decision output is a pre-MPC target. Most lead-present braking seeds bind as hazards;
     # only explicitly approved low-risk soft cases raise the seed before the downstream MPC
@@ -446,99 +449,100 @@ class CustomLongitudinalStack:
     )
     standstill_release_confidence_fault = False
     standstill_release_confidence_debug: dict[str, Any] = {}
-    try:
-      standstill_release_confidence_result = predict_standstill_release_confidence(
-        mode=inp.standstill_release_confidence_mode,
-        release_allowed=standstill_release_allowed,
-        release_source=str(decision.selected_intent if standstill_release_allowed else ""),
-        release_reason=str(decision.reason if standstill_release_allowed else ""),
-        release_a_target=float(max(raw_a_target, 0.15)) if standstill_release_allowed else 0.0,
-        lead_progress_allowed=policy_lead_progress_allowed,
-        lead_gap_excess=policy_lead_gap_excess,
-        lead_shadow_active=lead_shadow_active,
-        alternate_threat_active=alternate_threat_active,
-        force_slow_decel=act_inp.force_slow_decel,
-        brake_pressed=act_inp.brake_pressed,
-        gas_pressed=act_inp.gas_pressed,
-        model_should_stop=act_inp.model_should_stop,
-      )
-      standstill_release_confidence_result = _downgrade_research_apply(
-        standstill_release_confidence_result, inp.research_actuation_allowed,
-        apply_value="gate", mode_key="mode", effective_mode_key="effective_mode",
-        apply_supported_key="apply_supported", eligible_key="eligible",
-      )
-      standstill_release_confidence_debug = standstill_release_confidence_result.debug_dict()
-    except Exception:
-      standstill_release_confidence_fault = True
-
-    # Scenario context is intentionally shadow-only: it classifies the situation for telemetry
-    # and future phases but must not touch actuation, candidates, a_target, or should_stop.
     scenario_context_fault = False
     scenario_context_debug: dict[str, Any] = {}
-    try:
-      # Use mode-sanitized actuation inputs for evidence that is mode-gated, so the shadow
-      # classifier does not report ACC-excluded model/curve/speed evidence as potential effects.
-      scenario_context_debug = predict_scenario_context(
-        mode=inp.scenario_context_mode,
-        v_ego=act_inp.v_ego,
-        a_ego=act_inp.a_ego,
-        accel_coast=act_inp.accel_coast,
-        standstill=inp.standstill,
-        steering_angle_deg=inp.steering_angle_deg,
-        steering_torque=inp.steering_torque,
-        leads=inp.leads,
-        model_should_stop=act_inp.model_should_stop,
-        model_stop_distance=act_inp.model_stop_distance,
-        speed_limit_active=act_inp.speed_limit_active,
-        curve_active=act_inp.curve_active,
-        gas_pressed=act_inp.gas_pressed,
-        brake_pressed=act_inp.brake_pressed,
-      ).debug_dict()
-    except Exception:
-      scenario_context_fault = True
-
     curve_traffic_advisor_fault = False
     curve_traffic_advisor_debug: dict[str, Any] = {}
-    try:
-      curve_traffic_advisor_result = predict_curve_traffic_advisor(
-        mode=inp.curve_traffic_advisor_mode,
-        data=CurveTrafficAdvisorInputs(
-          v_ego=act_inp.v_ego,
-          a_ego=act_inp.a_ego,
-          model_msg=inp.model_msg,
-          leads=inp.leads,
-          lead_shadow_active=lead_shadow_active,
-          alternate_threat_active=alternate_threat_active,
-          long_active=inp.long_active,
-          model_stale=inp.model_stale,
-          brake_pressed=act_inp.brake_pressed,
-          gas_pressed=act_inp.gas_pressed,
-          force_slow_decel=act_inp.force_slow_decel,
-        ),
-      )
-      curve_traffic_advisor_result = _downgrade_research_apply(
-        curve_traffic_advisor_result, inp.research_actuation_allowed,
-        apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
-        apply_supported_key="apply_supported", eligible_key="eligible",
-      )
-      curve_traffic_advisor_debug = curve_traffic_advisor_result.debug_dict()
-    except Exception:
-      curve_traffic_advisor_fault = True
-
     dynamic_safety_floor_fault = False
     dynamic_safety_floor_debug: dict[str, Any] = {}
-    try:
-      lead_d_rel_for_floor = lead_d_rel if has_lead else None
-      dynamic_safety_floor_result = compute_dynamic_safety_floor(
-        v_ego=inp.v_ego,
-        t_follow=FOLLOW_TIME_GAP_S,
-        lead_d_rel=lead_d_rel_for_floor,
-        a_lat=inp.current_lat_accel,
-        pitch=inp.pitch,
-      )
-      dynamic_safety_floor_debug = dynamic_safety_floor_debug_dict(dynamic_safety_floor_result)
-    except Exception:
-      dynamic_safety_floor_fault = True
+    if collect_debug:
+      try:
+        standstill_release_confidence_result = predict_standstill_release_confidence(
+          mode=inp.standstill_release_confidence_mode,
+          release_allowed=standstill_release_allowed,
+          release_source=str(decision.selected_intent if standstill_release_allowed else ""),
+          release_reason=str(decision.reason if standstill_release_allowed else ""),
+          release_a_target=float(max(raw_a_target, 0.15)) if standstill_release_allowed else 0.0,
+          lead_progress_allowed=policy_lead_progress_allowed,
+          lead_gap_excess=policy_lead_gap_excess,
+          lead_shadow_active=lead_shadow_active,
+          alternate_threat_active=alternate_threat_active,
+          force_slow_decel=act_inp.force_slow_decel,
+          brake_pressed=act_inp.brake_pressed,
+          gas_pressed=act_inp.gas_pressed,
+          model_should_stop=act_inp.model_should_stop,
+        )
+        standstill_release_confidence_result = _downgrade_research_apply(
+          standstill_release_confidence_result, inp.research_actuation_allowed,
+          apply_value="gate", mode_key="mode", effective_mode_key="effective_mode",
+          apply_supported_key="apply_supported", eligible_key="eligible",
+        )
+        standstill_release_confidence_debug = standstill_release_confidence_result.debug_dict()
+      except Exception:
+        standstill_release_confidence_fault = True
+
+      # Scenario context is intentionally shadow-only: it classifies the situation for telemetry
+      # and future phases but must not touch actuation, candidates, a_target, or should_stop.
+      try:
+        # Use mode-sanitized actuation inputs for evidence that is mode-gated, so the shadow
+        # classifier does not report ACC-excluded model/curve/speed evidence as potential effects.
+        scenario_context_debug = predict_scenario_context(
+          mode=inp.scenario_context_mode,
+          v_ego=act_inp.v_ego,
+          a_ego=act_inp.a_ego,
+          accel_coast=act_inp.accel_coast,
+          standstill=inp.standstill,
+          steering_angle_deg=inp.steering_angle_deg,
+          steering_torque=inp.steering_torque,
+          leads=inp.leads,
+          model_should_stop=act_inp.model_should_stop,
+          model_stop_distance=act_inp.model_stop_distance,
+          speed_limit_active=act_inp.speed_limit_active,
+          curve_active=act_inp.curve_active,
+          gas_pressed=act_inp.gas_pressed,
+          brake_pressed=act_inp.brake_pressed,
+        ).debug_dict()
+      except Exception:
+        scenario_context_fault = True
+
+      try:
+        curve_traffic_advisor_result = predict_curve_traffic_advisor(
+          mode=inp.curve_traffic_advisor_mode,
+          data=CurveTrafficAdvisorInputs(
+            v_ego=act_inp.v_ego,
+            a_ego=act_inp.a_ego,
+            model_msg=inp.model_msg,
+            leads=inp.leads,
+            lead_shadow_active=lead_shadow_active,
+            alternate_threat_active=alternate_threat_active,
+            long_active=inp.long_active,
+            model_stale=inp.model_stale,
+            brake_pressed=act_inp.brake_pressed,
+            gas_pressed=act_inp.gas_pressed,
+            force_slow_decel=act_inp.force_slow_decel,
+          ),
+        )
+        curve_traffic_advisor_result = _downgrade_research_apply(
+          curve_traffic_advisor_result, inp.research_actuation_allowed,
+          apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
+          apply_supported_key="apply_supported", eligible_key="eligible",
+        )
+        curve_traffic_advisor_debug = curve_traffic_advisor_result.debug_dict()
+      except Exception:
+        curve_traffic_advisor_fault = True
+
+      try:
+        lead_d_rel_for_floor = lead_d_rel if has_lead else None
+        dynamic_safety_floor_result = compute_dynamic_safety_floor(
+          v_ego=inp.v_ego,
+          t_follow=FOLLOW_TIME_GAP_S,
+          lead_d_rel=lead_d_rel_for_floor,
+          a_lat=inp.current_lat_accel,
+          pitch=inp.pitch,
+        )
+        dynamic_safety_floor_debug = dynamic_safety_floor_debug_dict(dynamic_safety_floor_result)
+      except Exception:
+        dynamic_safety_floor_fault = True
 
     admitted_hazard_targets = [float(c.a_target) for c in candidates
                                if c.role is CandidateRole.PHYSICAL_HAZARD
@@ -548,15 +552,9 @@ class CustomLongitudinalStack:
     target_smoothing_debug = self._apply_target_smoothing(raw_a_target, dt, act_inp, decision, acc_envelope_result,
                                                           strongest_admitted_hazard_a, selected_lead.lead)
     a_target = float(target_smoothing_debug["target_smoothing_a_target"])
-    return LongitudinalStackResult(
-      a_target=float(a_target),
-      should_stop=bool(decision.should_stop),
-      decision=decision,
-      standstill_release_allowed=standstill_release_allowed,
-      standstill_release_source=str(decision.selected_intent if standstill_release_allowed else ""),
-      standstill_release_a_target=float(max(raw_a_target, 0.15)) if standstill_release_allowed else 0.0,
-      standstill_release_reason=str(decision.reason if standstill_release_allowed else ""),
-      debug={
+    debug: dict[str, Any] = {}
+    if collect_debug:
+      debug = {
         "intent": decision.selected_intent,
         "reason": decision.reason,
         "has_lead": has_lead,
@@ -593,7 +591,16 @@ class CustomLongitudinalStack:
         **dynamic_safety_floor_debug,
         **acc_envelope_debug,
         **target_smoothing_debug,
-      },
+      }
+    return LongitudinalStackResult(
+      a_target=float(a_target),
+      should_stop=bool(decision.should_stop),
+      decision=decision,
+      standstill_release_allowed=standstill_release_allowed,
+      standstill_release_source=str(decision.selected_intent if standstill_release_allowed else ""),
+      standstill_release_a_target=float(max(raw_a_target, 0.15)) if standstill_release_allowed else 0.0,
+      standstill_release_reason=str(decision.reason if standstill_release_allowed else ""),
+      debug=debug,
     )
 
   def _apply_target_smoothing(self, raw_a_target: float, dt: float, inp: LongitudinalStackInputs,

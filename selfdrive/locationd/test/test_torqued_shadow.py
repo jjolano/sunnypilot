@@ -1,5 +1,7 @@
 import numpy as np
+import pytest
 from cereal import car, messaging
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.locationd.torqued import TorqueEstimator
 
@@ -40,8 +42,38 @@ def _warmup_samples() -> int:
   return int(6.0 / DT_MDL)
 
 
-def test_torqued_shadow_counters_increment_on_clean_samples():
+@pytest.fixture(autouse=True)
+def cleanup_shadow_mode_params():
+  params = Params()
+  for key in (
+    "LiveTorqueSpeedAdaptiveMode",
+    "LiveTorqueLowSpeedShadow",
+    "LiveTorqueSpeedAdaptiveParams",
+    "RollCompGainMode",
+    "RollCompGainParams",
+  ):
+    params.remove(key)
+  yield
+  for key in (
+    "LiveTorqueSpeedAdaptiveMode",
+    "LiveTorqueLowSpeedShadow",
+    "LiveTorqueSpeedAdaptiveParams",
+    "RollCompGainMode",
+    "RollCompGainParams",
+  ):
+    params.remove(key)
+
+
+def _make_estimator(speed_mode="shadow"):
+  params = Params()
+  params.put("LiveTorqueSpeedAdaptiveMode", speed_mode, block=True)
   est = TorqueEstimator(car.CarParams())
+  est.update_use_params()
+  return est
+
+
+def test_torqued_shadow_counters_increment_on_clean_samples():
+  est = _make_estimator("shadow")
   n = _warmup_samples()
   for i in range(n):
     _feed(est, i * DT_MDL, steer=0.1, lateral_accel=0.2)
@@ -52,8 +84,20 @@ def test_torqued_shadow_counters_increment_on_clean_samples():
   assert msg.liveTorqueParameters.shadowRejected == 0
 
 
-def test_torqued_shadow_quarantine_via_steering_rate():
+def test_torqued_shadow_counters_stay_zero_without_shadow_mode():
   est = TorqueEstimator(car.CarParams())
+  n = _warmup_samples()
+  for i in range(n):
+    _feed(est, i * DT_MDL, steer=0.1, lateral_accel=0.2)
+
+  msg = est.get_msg()
+  assert msg.liveTorqueParameters.shadowAccepted == 0
+  assert msg.liveTorqueParameters.shadowQuarantined == 0
+  assert msg.liveTorqueParameters.shadowRejected == 0
+
+
+def test_torqued_shadow_quarantine_via_steering_rate():
+  est = _make_estimator("shadow")
   n = _warmup_samples()
   for i in range(n):
     _feed(est, i * DT_MDL, steer=0.1, lateral_accel=0.2, steering_rate_deg=150.0)
@@ -64,7 +108,7 @@ def test_torqued_shadow_quarantine_via_steering_rate():
 
 
 def test_torqued_shadow_quarantine_does_not_suppress_bucket_insertion():
-  est = TorqueEstimator(car.CarParams())
+  est = _make_estimator("shadow")
   n = _warmup_samples()
   # High steering rate triggers a shadow quarantine, but the sample still passes
   # the existing |lateral_accel| <= LAT_ACC_THRESHOLD gate and is inserted.

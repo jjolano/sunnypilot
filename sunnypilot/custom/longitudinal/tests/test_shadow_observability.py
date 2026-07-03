@@ -4,6 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
+from openpilot.sunnypilot.custom.longitudinal.stack import CustomLongitudinalStack
 from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import (
   CurveSpeedConfidenceInputs,
   predict_curve_speed_confidence,
@@ -13,6 +16,7 @@ from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import (
   predict_cut_in_brake_assist,
 )
 from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence import predict_standstill_release_confidence
+from openpilot.sunnypilot.custom.longitudinal.wiring import DEFAULT_ACCEL_LIMITS, build_stack_inputs
 
 
 def state(**kwargs):
@@ -159,3 +163,24 @@ def test_standstill_release_gate_reports_apply_supported():
   assert r.effective_mode == "gate"
   assert r.apply_supported is True
   assert r.eligible is True
+
+
+def test_stack_can_skip_shadow_payload_when_not_collected():
+  lead = SimpleNamespace(status=True, dRel=28.0, vLead=17.0, vLeadK=17.0, vRel=-1.0,
+                         aLeadK=-0.4, aLeadTau=1.5, yRel=0.0, radarTrackId=1, radar=True, modelProb=0.9)
+  inp = build_stack_inputs(
+    v_ego=17.0, a_ego=0.0, v_cruise=18.0, seed_a_target=0.2, accel_limits=DEFAULT_ACCEL_LIMITS,
+    lead_one=lead, lead_two=None,
+    scc_vision_active=False, scc_vision_a_target=0.0, scc_map_active=False, scc_map_a_target=0.0,
+    sla_active=False, sla_v_target=0.0, sla_a_target=0.0,
+    mode=LongitudinalMode.ACC, personality=Personality.STANDARD, sources=SourceToggles(),
+    long_active=True,
+  )
+
+  rich = CustomLongitudinalStack().update(inp, 0.05)
+  lazy = CustomLongitudinalStack().update(inp, 0.05, collect_debug=False)
+
+  assert lazy.a_target == pytest.approx(rich.a_target)
+  assert lazy.should_stop == rich.should_stop
+  assert lazy.decision.selected_intent == rich.decision.selected_intent
+  assert lazy.debug == {}

@@ -81,6 +81,7 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     self.offline_latAccelFactor = 0.0
     self.resets = 0.0
     self.use_params = CP.brand in ALLOWED_CARS and CP.lateralTuning.which() == 'torque'
+    self.eps_shadow_stats_enabled = CP.brand in EPS_TORQUE_CARS
 
     if CP.lateralTuning.which() == 'torque':
       self.offline_friction = CP.lateralTuning.torque.friction
@@ -171,6 +172,10 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
   def update_eps_shadow_stats(self, t, steer):
     # Interpolate EPS torque at the learning-point timestamp, ignoring any
     # missing or non-finite samples so they do not contaminate the stats.
+    if not getattr(self, 'eps_shadow_stats_enabled', False):
+      self.eps_command_torque_latest = float(steer)
+      return
+
     eps_torque = None
     if len(self.raw_points.get('steering_torque_eps', [])):
       times = []
@@ -240,6 +245,10 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
 
         yaw_rate = angular_velocity_calibrated.yaw
         roll = device_pose.orientation.roll
+        speed_shadow_mode = self.speed_adaptive_mode in ('shadow', 'apply')
+        roll_comp_mode = self.roll_comp_mode in ('shadow', 'apply')
+        shadow_observability_mode = speed_shadow_mode or roll_comp_mode
+        shadow_collection_mode = roll_comp_mode or (speed_shadow_mode and self.low_speed_shadow)
         # check lat active up to now (without lag compensation)
         lat_active = np.interp(np.arange(t - MIN_ENGAGE_BUFFER, t + self.lag, DT_MDL),
                                self.raw_points['carControl_t'], self.raw_points['lat_active']).astype(bool)
@@ -249,33 +258,38 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         steer = np.interp(t, self.raw_points['carOutput_t'], self.raw_points['steer_torque']).item()
         lateral_acc = (vego * yaw_rate) - (np.sin(roll) * ACCELERATION_DUE_TO_GRAVITY).item()
         if all(lat_active) and not any(steer_override):
-          # Phase 3: shadow-only roll-compensation gain learning. Runs under the
-          # same outer lat-active/no-override gate and applies its own steady,
-          # high-speed collection rules inside the extension.
-          if len(self.raw_points['steering_rate_deg']):
-            steering_rate = np.interp(t, self.raw_points['carState_t'], self.raw_points['steering_rate_deg']).item()
-          else:
-            steering_rate = None
-          self.collect_shadow_learning_points(steer, lateral_acc, vego, roll, yaw_rate, steering_rate)
+          steering_rate = None
+          if shadow_observability_mode or shadow_collection_mode:
+            # Phase 3/0b shadow learning only needs steering-rate interpolation when
+            # one of the shadow/apply modes is active.
+            if len(self.raw_points['steering_rate_deg']):
+              steering_rate = np.interp(t, self.raw_points['carState_t'], self.raw_points['steering_rate_deg']).item()
+
+          if shadow_collection_mode:
+            self.collect_shadow_learning_points(steer, lateral_acc, vego, roll, yaw_rate, steering_rate)
 
           if (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
             if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
-              self.add_torque_learning_point(steer, lateral_acc, vego)
+              if speed_shadow_mode:
+                self.add_torque_learning_point(steer, lateral_acc, vego)
               self.filtered_points.add_point(steer, lateral_acc)
-              self.update_eps_shadow_stats(t, steer)
+              self.eps_command_torque_latest = float(steer)
+              if self.eps_shadow_stats_enabled:
+                self.update_eps_shadow_stats(t, steer)
 
-            # Phase 0b: shadow-only disturbance classification. Does not suppress
-            # learning points; only updates observability counters.
-            sample = LateralSample.from_torqued_inputs(
-              t=t,
-              v_ego=vego,
-              lat_active=True,
-              steering_pressed=any(steer_override),
-              lateral_acc=lateral_acc,
-              steer=steer,
-              steering_rate_deg=steering_rate,
-            )
-            self.shadow_classify_learning_point(sample)
+            if shadow_observability_mode:
+              # Phase 0b: shadow-only disturbance classification. Does not suppress
+              # learning points; only updates observability counters.
+              sample = LateralSample.from_torqued_inputs(
+                t=t,
+                v_ego=vego,
+                lat_active=True,
+                steering_pressed=any(steer_override),
+                lateral_acc=lateral_acc,
+                steer=steer,
+                steering_rate_deg=steering_rate,
+              )
+              self.shadow_classify_learning_point(sample)
 
             if self.track_all_points:
               self.all_torque_points.append([steer, lateral_acc])
@@ -345,7 +359,6 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.epsDeltaMax = float(self.eps_delta_max)
 
     # Phase 3 shadow-only roll-compensation gain telemetry.
-    self.update_roll_comp_telemetry()
     liveTorqueParameters.rollCompGainLearned = self.roll_comp_profile['gain']
     liveTorqueParameters.rollCompGainPoints = self.roll_comp_profile['points']
     liveTorqueParameters.rollCompGainSpan = self.roll_comp_profile['span']
@@ -382,7 +395,8 @@ def main(demo=False):
     if sm.frame % 240 == 0:
       msg = estimator.get_msg(valid=sm.all_checks(), with_points=True)
       params.put("LiveTorqueParameters", msg.to_bytes())
-      estimator.maybe_persist_speed_profile(cache_write=True)
+      if estimator.speed_adaptive_mode in ('shadow', 'apply') or estimator.roll_comp_mode in ('shadow', 'apply'):
+        estimator.maybe_persist_speed_profile(cache_write=True)
 
 
 if __name__ == "__main__":

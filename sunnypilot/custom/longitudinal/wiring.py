@@ -317,11 +317,12 @@ class CustomLongitudinalAdapter:
       self.refresh_params(initial=False)
 
   def evaluate(self, sm: Any, v_ego: float, a_ego: float, v_cruise: float, seed_a_target: float,
-               scc: Any, sla: Any, dt: float = 0.05) -> CustomLongitudinalOutput:
+               scc: Any, sla: Any, dt: float = 0.05, *, collect_debug: bool = True) -> CustomLongitudinalOutput:
     if not self.enabled:
       return CustomLongitudinalOutput(
         a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
-        selected_intent="disabled", reason="disabled", debug={"seed_a_target": seed_a_target},
+        selected_intent="disabled", reason="disabled",
+        debug={"seed_a_target": seed_a_target} if collect_debug else {},
       )
     try:
       radar = sm['radarState']
@@ -381,11 +382,12 @@ class CustomLongitudinalAdapter:
         current_lat_accel=(_f(getattr(scc.vision, "current_lat_acc", 0.0)) if getattr(scc.vision, "is_active", False) else None),
         pitch=pitch,
       )
-      result = self._stack.update(inputs, dt)
-      debug = dict(result.debug or {})
+      result = self._stack.update(inputs, dt, collect_debug=collect_debug)
+      debug = result.debug if collect_debug else {}
+      decision = result.decision
       return CustomLongitudinalOutput(
         a_target=float(result.a_target), should_stop=bool(result.should_stop), enabled=True, mode=self.mode,
-        selected_intent=debug.get("intent"), reason=debug.get("reason"),
+        selected_intent=decision.selected_intent, reason=decision.reason,
         standstill_release_allowed=bool(result.standstill_release_allowed),
         standstill_release_source=str(result.standstill_release_source),
         standstill_release_a_target=float(result.standstill_release_a_target),
@@ -400,10 +402,10 @@ class CustomLongitudinalAdapter:
       )
 
   def apply(self, sm: Any, v_ego: float, a_ego: float, v_cruise: float, seed_a_target: float,
-            scc: Any, sla: Any, dt: float = 0.05) -> float:
+            scc: Any, sla: Any, dt: float = 0.05, *, collect_debug: bool = True) -> float:
     """Return the shaped a_target, or the unchanged seed when disabled or on any fault."""
     self.maybe_refresh_params()
-    return self.evaluate(sm, v_ego, a_ego, v_cruise, seed_a_target, scc, sla, dt).a_target
+    return self.evaluate(sm, v_ego, a_ego, v_cruise, seed_a_target, scc, sla, dt, collect_debug=collect_debug).a_target
 
 
 @dataclass(frozen=True)

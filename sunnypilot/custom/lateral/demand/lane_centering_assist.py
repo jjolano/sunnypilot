@@ -123,33 +123,50 @@ class LaneCenteringAssistResult:
   relax_error_cross_score: float = 0.0
 
 
+@dataclass(frozen=True)
+class _LaneCenteringPathState:
+  position_x: Sequence[float]
+  position_y: Sequence[float]
+  near_x: float
+  preview_x: float
+  lateral_error: float
+  heading_error: float
+  predicted_lateral_error: float
+
+
 def inactive_lane_centering_assist_result(reason: str = "inactive") -> LaneCenteringAssistResult:
   return LaneCenteringAssistResult(False, 0.0, 0.0, 0.0, 0.0, 0.0, reason, _debug(reason=reason))
 
 
-def _evaluate_geometry(
-  inputs: LaneCenteringAssistInputs,
-  lateral_error: float,
-  predicted_lateral_error: float,
-) -> LaneGeometryResult:
+def _evaluate_geometry(inputs: LaneCenteringAssistInputs, path_state: _LaneCenteringPathState) -> LaneGeometryResult:
   """Compute inner-lane geometry, falling back to model path when unavailable."""
-  near_x = min(
-    max(inputs.v_ego * LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_T, LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_MIN_M),
-    max(float(x) for x in inputs.position_x) if inputs.position_x else LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_MIN_M,
-  )
-  preview_x = min(
-    max(inputs.v_ego * LANE_CENTERING_ASSIST_PREVIEW_T, LANE_CENTERING_ASSIST_PREVIEW_MIN_M),
-    max(float(x) for x in inputs.position_x) if inputs.position_x else LANE_CENTERING_ASSIST_PREVIEW_MIN_M,
-  )
   return evaluate_lane_geometry(
     lane_lines=inputs.lane_lines,
     lane_line_probs=inputs.lane_line_probs,
     lane_line_stds=inputs.lane_line_stds,
-    position_x=inputs.position_x,
-    position_y=inputs.position_y,
-    near_x=near_x,
-    preview_x=preview_x,
+    position_x=path_state.position_x,
+    position_y=path_state.position_y,
+    near_x=path_state.near_x,
+    preview_x=path_state.preview_x,
+    model_y_near=path_state.lateral_error,
+    model_y_preview=path_state.predicted_lateral_error,
   )
+
+
+def _lane_centering_path_state(inputs: LaneCenteringAssistInputs) -> _LaneCenteringPathState | None:
+  xs = _finite_array(inputs.position_x)
+  ys = _finite_array(inputs.position_y)
+  headings = _finite_array(inputs.orientation_z)
+  if len(xs) < 2 or len(ys) != len(xs) or len(headings) != len(xs):
+    return None
+  if xs[-1] <= xs[0]:
+    return None
+  near_x = min(max(inputs.v_ego * LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_T, LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_MIN_M), xs[-1])
+  preview_x = min(max(inputs.v_ego * LANE_CENTERING_ASSIST_PREVIEW_T, LANE_CENTERING_ASSIST_PREVIEW_MIN_M), xs[-1])
+  lateral_error = float(np.interp(near_x, xs, ys))
+  predicted_lateral_error = float(np.interp(preview_x, xs, ys))
+  heading_error = float(np.interp(near_x, xs, headings))
+  return _LaneCenteringPathState(xs, ys, near_x, preview_x, lateral_error, heading_error, predicted_lateral_error)
 
 
 class LaneCenteringAssistTracker:
@@ -166,31 +183,34 @@ class LaneCenteringAssistTracker:
 
   def update(self, inputs: LaneCenteringAssistInputs, dt: float) -> LaneCenteringAssistResult:
     dt = max(_finite_float(dt), 0.0)
-    metrics = _lane_centering_metrics(inputs)
-    if metrics is None:
+    gate_reason = _gate_reason(inputs)
+    if gate_reason is not None:
+      if inputs.path_reason != LANE_CENTERING_ASSIST_OK_REASON:
+        self._reason_cooldown_ticks = LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_FRAMES
+      return self._hard_block(gate_reason)
+
+    path_state = _lane_centering_path_state(inputs)
+    if path_state is None:
       return self._hard_block("invalid_path")
 
-    lateral_error, heading_error, predicted_lateral_error = metrics
-    gate_reason = _gate_reason(inputs)
+    lateral_error = path_state.lateral_error
+    heading_error = path_state.heading_error
+    predicted_lateral_error = path_state.predicted_lateral_error
     geometry: LaneGeometryResult | None = None
 
     # Apply geometry-corrected errors only after a short persistence period and only
     # while the harder geometry gates are satisfied. Existing LCA gates still apply.
-    if gate_reason is None:
-      geometry = _evaluate_geometry(inputs, lateral_error, predicted_lateral_error)
-      if geometry.valid:
-        if self._geometry_active:
-          self._geometry_persistence_ticks = LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES
-        else:
-          self._geometry_persistence_ticks = min(
-            self._geometry_persistence_ticks + 1,
-            LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES,
-          )
-        if self._geometry_persistence_ticks >= LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES:
-          self._geometry_active = True
+    geometry = _evaluate_geometry(inputs, path_state)
+    if geometry.valid:
+      if self._geometry_active:
+        self._geometry_persistence_ticks = LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES
       else:
-        self._geometry_persistence_ticks = 0
-        self._geometry_active = False
+        self._geometry_persistence_ticks = min(
+          self._geometry_persistence_ticks + 1,
+          LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES,
+        )
+      if self._geometry_persistence_ticks >= LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES:
+        self._geometry_active = True
     else:
       self._geometry_persistence_ticks = 0
       self._geometry_active = False
@@ -607,31 +627,16 @@ def _relax_reason_bits_for_gate(reason: str) -> int:
   return LANE_CENTERING_RELAX_REASON_OTHER
 
 
-def _lane_centering_metrics(inputs: LaneCenteringAssistInputs) -> tuple[float, float, float] | None:
-  xs = _finite_array(inputs.position_x)
-  ys = _finite_array(inputs.position_y)
-  headings = _finite_array(inputs.orientation_z)
-  if len(xs) < 2 or len(ys) != len(xs) or len(headings) != len(xs):
-    return None
-  if xs[-1] <= xs[0]:
-    return None
-  near_x = min(max(inputs.v_ego * LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_T, LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_MIN_M), xs[-1])
-  preview_x = min(max(inputs.v_ego * LANE_CENTERING_ASSIST_PREVIEW_T, LANE_CENTERING_ASSIST_PREVIEW_MIN_M), xs[-1])
-  lateral_error = float(np.interp(near_x, xs, ys))
-  predicted_lateral_error = float(np.interp(preview_x, xs, ys))
-  heading_error = float(np.interp(near_x, xs, headings))
-  return lateral_error, heading_error, predicted_lateral_error
-
-
 def _confidence(inputs: LaneCenteringAssistInputs, geometry_mode: bool = False,
                 geometry_confidence: float = 0.0) -> float:
   if geometry_mode:
     # Geometry confidence already blends prob/std/width; still cap by path quality.
     path_confidence = float(np.clip((float(inputs.path_quality) - LANE_CENTERING_ASSIST_MIN_PATH_QUALITY) / 0.15, 0.0, 1.0))
     return min(path_confidence, float(np.clip(geometry_confidence, 0.0, 1.0)))
-  lane_probs = [_finite_float(prob) for prob in inputs.lane_line_probs]
-  lane_probs = [prob for prob in lane_probs if math.isfinite(prob)]
-  lane_confidence = min(lane_probs[1], lane_probs[2]) if len(lane_probs) >= 3 else 0.0
+  if len(inputs.lane_line_probs) < 3:
+    lane_confidence = 0.0
+  else:
+    lane_confidence = min(_finite_float(inputs.lane_line_probs[1]), _finite_float(inputs.lane_line_probs[2]))
   path_confidence = float(np.clip((float(inputs.path_quality) - LANE_CENTERING_ASSIST_MIN_PATH_QUALITY) / 0.15, 0.0, 1.0))
   lane_confidence = float(np.clip((lane_confidence - 0.5) / 0.4, 0.0, 1.0))
   return min(path_confidence, lane_confidence)
@@ -756,10 +761,13 @@ def _debug(inputs: LaneCenteringAssistInputs | None = None, lateral_error: float
     "lane_centering_geometry_source": geometry.source if geometry is not None else "model_path",
     "lane_centering_geometry_valid": geometry.valid if geometry is not None else False,
     "lane_centering_geometry_reason": geometry.reason if geometry is not None else "none",
-    "lane_centering_geometry_confidence": geometry.confidence if geometry is not None else 0.0,
-    "lane_centering_geometry_offset_near": geometry.offset_near if geometry is not None else 0.0,
-    "lane_centering_geometry_offset_preview": geometry.offset_preview if geometry is not None else 0.0,
-    "lane_centering_geometry_width_near": geometry.width_near if geometry is not None else 0.0,
-    "lane_centering_geometry_width_preview": geometry.width_preview if geometry is not None else 0.0,
   }
+  if geometry is not None:
+    debug.update({
+      "lane_centering_geometry_confidence": geometry.confidence,
+      "lane_centering_geometry_offset_near": geometry.offset_near,
+      "lane_centering_geometry_offset_preview": geometry.offset_preview,
+      "lane_centering_geometry_width_near": geometry.width_near,
+      "lane_centering_geometry_width_preview": geometry.width_preview,
+    })
   return debug

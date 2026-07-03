@@ -133,6 +133,7 @@ class TorqueEstimatorExt:
           self.roll_comp_profile_cache = None
       else:
         self.roll_comp_profile_cache = None
+      self.update_roll_comp_telemetry()
     return did_update
 
   def update_use_params(self):
@@ -228,4 +229,5 @@ class TorqueEstimatorExt:
         if self._roll_comp_blend_base is not None:
           profile = blend_roll_comp_profile(self._roll_comp_blend_base, profile)
         self.roll_comp_profile_cache = profile
+        self.update_roll_comp_telemetry()
         self._params.put("RollCompGainParams", format_roll_comp_profile(profile), block=True)

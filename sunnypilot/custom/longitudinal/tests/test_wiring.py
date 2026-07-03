@@ -440,6 +440,21 @@ def test_adapter_contains_path_shadow_fault_without_fail_closed():
   assert out.debug["path_shadow_fault"] is True
 
 
+def test_adapter_can_skip_debug_collection_when_not_needed():
+  sm = fake_sm(lead(d_rel=30.0, v_lead=18.0, v_rel=-1.0), long_active=True)
+  rich = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")).evaluate(
+    sm, 18.0, 0.0, 18.0, 0.2, fake_scc(), fake_sla(), dt=0.05,
+  )
+  lazy = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")).evaluate(
+    sm, 18.0, 0.0, 18.0, 0.2, fake_scc(), fake_sla(), dt=0.05, collect_debug=False,
+  )
+  assert lazy.a_target == pytest.approx(rich.a_target)
+  assert lazy.should_stop == rich.should_stop
+  assert lazy.selected_intent == rich.selected_intent
+  assert lazy.reason == rich.reason
+  assert lazy.debug == {}
+
+
 def test_debug_trace_mode_does_not_refresh_on_mode_only():
   params = FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc", LongitudinalDebugTraceMode="off")
   a = CustomLongitudinalAdapter(params)

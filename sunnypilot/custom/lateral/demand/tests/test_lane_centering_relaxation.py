@@ -6,6 +6,7 @@ act as a temporary soft deadband on lane-centering error, never as a steering bi
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,6 +51,18 @@ def _tracker_inputs(lat_error: float = 0.0, pred_bias: float = 0.0, v_ego: float
   )
 
 
+def _lane_lines(center_offset: float = 0.0, width: float = 4.0, curvature: float = 0.0):
+  xs = [float(x) for x in range(N)]
+  left_y = [center_offset - width * 0.5 + 0.5 * curvature * x * x for x in xs]
+  right_y = [center_offset + width * 0.5 + 0.5 * curvature * x * x for x in xs]
+  return [
+    SimpleNamespace(x=xs, y=[y - width for y in left_y]),
+    SimpleNamespace(x=xs, y=left_y),
+    SimpleNamespace(x=xs, y=right_y),
+    SimpleNamespace(x=xs, y=[y + width for y in right_y]),
+  ]
+
+
 def test_no_relaxation_for_steady_offset():
   tracker = LaneCenteringAssistTracker()
   for _ in range(200):
@@ -64,6 +77,10 @@ def test_no_relaxation_for_steady_offset():
 def test_lane_geometry_is_not_evaluated_when_a_gate_blocks(monkeypatch):
   tracker = LaneCenteringAssistTracker()
   monkeypatch.setattr(
+    "openpilot.sunnypilot.custom.lateral.demand.lane_centering_assist._lane_centering_path_state",
+    lambda *args, **kwargs: pytest.fail("path interpolation should not run when gated"),
+  )
+  monkeypatch.setattr(
     "openpilot.sunnypilot.custom.lateral.demand.lane_centering_assist.evaluate_lane_geometry",
     lambda *args, **kwargs: pytest.fail("geometry should not be evaluated when gated"),
   )
@@ -71,6 +88,46 @@ def test_lane_geometry_is_not_evaluated_when_a_gate_blocks(monkeypatch):
   r = tracker.update(_tracker_inputs(steering_pressed=True), DT)
 
   assert r.reason == "driver_steering"
+
+
+def test_geometry_reuses_cached_path_samples(monkeypatch):
+  tracker = LaneCenteringAssistTracker()
+  monkeypatch.setattr(
+    "openpilot.sunnypilot.custom.lateral.demand.lane_geometry._path_y_at",
+    lambda *args, **kwargs: pytest.fail("geometry should reuse cached model path samples"),
+  )
+
+  xs = [float(x) for x in range(N)]
+  path_y = [0.5 + 0.0001 * x for x in xs]
+  yaw = [0.0001] * N
+  inputs = LaneCenteringAssistInputs(
+    lat_active=True,
+    v_ego=20.0,
+    measured_curvature=0.0,
+    model_curvature=0.0,
+    previous_processed_curvature=0.0,
+    path_quality=1.0,
+    path_reason="ok",
+    lane_change_shaping_active=False,
+    lane_change_blend=0.0,
+    curvature_limited=False,
+    steering_pressed=False,
+    left_blinker=False,
+    right_blinker=False,
+    position_x=xs,
+    position_y=path_y,
+    orientation_z=yaw,
+    lane_line_probs=[0.9, 0.9, 0.9, 0.9],
+    lane_lines=_lane_lines(center_offset=0.0),
+    lane_line_stds=[0.1, 0.1, 0.1, 0.1],
+  )
+
+  result = None
+  for _ in range(80):
+    result = tracker.update(inputs, DT)
+
+  assert result is not None
+  assert result.debug["lane_centering_geometry_mode"] is True
 
 
 def test_relaxation_triggers_on_repeated_near_center_flips():

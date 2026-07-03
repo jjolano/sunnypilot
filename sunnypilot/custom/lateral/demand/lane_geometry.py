@@ -111,6 +111,8 @@ def evaluate_lane_geometry(
   position_y: Sequence[float],
   near_x: float,
   preview_x: float,
+  model_y_near: float | None = None,
+  model_y_preview: float | None = None,
 ) -> LaneGeometryResult:
   """Evaluate inner-lane geometry for advisory lane centering.
 
@@ -189,8 +191,12 @@ def evaluate_lane_geometry(
   center_y_near = (float(left_y_near) + float(right_y_near)) * 0.5
   center_y_preview = (float(left_y_preview) + float(right_y_preview)) * 0.5
 
-  model_y_near = _path_y_at(position_x, position_y, near_x)
-  model_y_preview = _path_y_at(position_x, position_y, preview_x)
+  if model_y_near is None or model_y_preview is None:
+    model_y_near = _path_y_at(position_x, position_y, near_x)
+    model_y_preview = _path_y_at(position_x, position_y, preview_x)
+  else:
+    model_y_near = _finite(model_y_near)
+    model_y_preview = _finite(model_y_preview)
   if model_y_near is None or model_y_preview is None:
     return failure(LANE_GEOMETRY_REASON_BAD_PATH)
 

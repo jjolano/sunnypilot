@@ -170,10 +170,22 @@ class LongitudinalPlannerSP:
     self.source = min(filtered_targets, key=lambda k: filtered_targets[k][0])
     self.output_v_target, self.output_a_target = filtered_targets[self.source]
 
+    # Build the custom-long debug payload only when trace mode or an active apply path needs it.
+    collect_custom_long_debug = getattr(self.custom_long, "debug_trace_mode", "off") == "log"
+    if not collect_custom_long_debug and bool(getattr(self.custom_long, "research_actuation_allowed", False)):
+      collect_custom_long_debug = bool(
+        self.custom_long.enabled and self.custom_long.mode is LongitudinalMode.SCC and (
+          self.custom_long.cut_in_brake_assist_mode == "apply" or
+          self.custom_long.curve_speed_confidence_mode == "apply_conservative" or
+          self.custom_long.curve_traffic_advisor_mode == "apply_conservative"
+        )
+      )
+
     # Opt-in: shape the baseline a_target with the custom-2.0 policy (fail-closed; returns the
     # unchanged target when disabled or on any fault, so default behavior is never affected).
     self.custom_long_output = self.custom_long.evaluate(
       sm, v_ego, a_ego, v_cruise, self.output_a_target, self.scc, self.sla,
+      collect_debug=collect_custom_long_debug,
     )
     self.output_a_target = self.custom_long_output.a_target
     return self.output_v_target, self.output_a_target
