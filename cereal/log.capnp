@@ -1018,6 +1018,15 @@ struct ControlsState @0x97ff69c53601abf1 {
     geometryOffsetPreview @52 :Float32;
     geometryWidthNear @53 :Float32;
     geometryWidthPreview @54 :Float32;
+    laneRateDampingMode @55 :Text;
+    laneRateDampingActive @56 :Bool;
+    laneRateDampingApplied @57 :Bool;
+    laneRateDampingReason @58 :Text;
+    laneRateDampingLaneCenter @59 :Float32;
+    laneRateDampingLaneCenterRate @60 :Float32;
+    laneRateDampingLatAccel @61 :Float32;
+    laneRateDampingCurvature @62 :Float32;
+    laneRateDampingCapLatAccel @63 :Float32;
   }
 
 

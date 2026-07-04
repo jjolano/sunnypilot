@@ -117,6 +117,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ScenarioContextMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"StraightPathStabilizationMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    // Lane-center-rate damping: shadow logs the candidate, apply changes the requested lateral path.
+    {"LaneRateDampingMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandDefaultOffMigrated", {PERSISTENT | BACKUP, STRING, ""}},
     {"LongitudinalModeMigrationVersion", {PERSISTENT | BACKUP, STRING, ""}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},

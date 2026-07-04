@@ -17,6 +17,7 @@ from typing import Any
 from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
   LateralDemandPipeline,
   LateralDemandPipelineInputs,
+  sanitize_lane_rate_damping_mode,
 )
 from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import sanitize_straight_path_stabilization_mode
 from openpilot.sunnypilot.custom.lateral.demand.sensor_confidence import (
@@ -179,6 +180,7 @@ class LateralDemandAdapter:
     self.lane_centering_assist_enabled = False
     self.curve_memory_enabled = False
     self.straight_path_stabilization_mode = "off"
+    self.lane_rate_damping_mode = "off"
     self.last_result = None
     self.last_debug = {}
     if params is not None:
@@ -197,9 +199,11 @@ class LateralDemandAdapter:
       self.curve_memory_enabled = bool(p.get_bool("CurveMemoryEnabled"))
       mode = _param_string(p, "StraightPathStabilizationMode")
       self.straight_path_stabilization_mode = sanitize_straight_path_stabilization_mode(mode)
+      self.lane_rate_damping_mode = sanitize_lane_rate_damping_mode(_param_string(p, "LaneRateDampingMode"))
     except Exception:
       self.enabled = False
       self.straight_path_stabilization_mode = "off"
+      self.lane_rate_damping_mode = "off"
 
   def clear(self) -> None:
     self.last_result = None
@@ -291,7 +295,7 @@ class LateralDemandAdapter:
         curvature_limited=curvature_limited,
         straight_path_stabilization_mode=self.straight_path_stabilization_mode,
       )
-      inputs = replace(inputs, smooth_model_path_curvature=True, demand_jerk_smoothing_enabled=True)
+      inputs = replace(inputs, lane_rate_damping_mode=self.lane_rate_damping_mode, smooth_model_path_curvature=True, demand_jerk_smoothing_enabled=True)
       result = self._pipeline.update(inputs)
       self.last_result = result
       self.last_debug = dict(result.debug)

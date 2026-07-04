@@ -90,8 +90,28 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
     demand_jerk_smoothing_enabled=kwargs.get("demand_jerk_smoothing_enabled", False),
     lane_centering_assist_enabled=kwargs.get("lane_centering_assist_enabled", False),
     curve_memory_enabled=kwargs.get("curve_memory_enabled", False),
+    lane_rate_damping_mode=kwargs.get("lane_rate_damping_mode", "off"),
     curvature_limited=kwargs.get("curvature_limited", False),
   )
+
+
+def lane_rate_damping_inputs(lane_center_y0: float, *, lane_width: float = 3.6, lane_rate_damping_mode: str = "off", **kwargs):
+  half_width = lane_width / 2.0
+  return valid_inputs(
+    left_lane_y0=lane_center_y0 + half_width,
+    right_lane_y0=lane_center_y0 - half_width,
+    lane_rate_damping_mode=lane_rate_damping_mode,
+    **kwargs,
+  )
+
+
+def run_lane_rate_damping_sequence(mode: str, lane_centers: list[float], **kwargs) -> tuple[LateralDemandPipeline, object]:
+  p = LateralDemandPipeline(DT)
+  result = None
+  for lane_center_y0 in lane_centers:
+    result = p.update(lane_rate_damping_inputs(lane_center_y0, lane_rate_damping_mode=mode, **kwargs))
+  assert result is not None
+  return p, result
 
 
 def spatial_smoothing_inputs(v_ego=20.0, desired_curvature=0.001, candidate_curvature=0.002):
@@ -206,6 +226,82 @@ def test_curvature_limited_passes_through_to_demand():
   p = LateralDemandPipeline(DT)
   r = p.update(valid_inputs(curvature=0.001, curvature_limited=True))
   assert r.demand.curvature_limited is True
+
+
+def test_lane_rate_damping_shadow_logs_candidate_without_changing_curvature():
+  centers = [i * 0.01 for i in range(60)]
+  shadow = LateralDemandPipeline(DT)
+  off = LateralDemandPipeline(DT)
+  shadow_result = None
+  off_result = None
+  for lane_center_y0 in centers:
+    shadow_result = shadow.update(lane_rate_damping_inputs(lane_center_y0, lane_rate_damping_mode="shadow"))
+    off_result = off.update(lane_rate_damping_inputs(lane_center_y0, lane_rate_damping_mode="off"))
+
+  assert shadow_result is not None
+  assert off_result is not None
+  assert shadow_result.debug["lane_rate_damping_mode"] == "shadow"
+  assert shadow_result.debug["lane_rate_damping_active"] is True
+  assert shadow_result.debug["lane_rate_damping_applied"] is False
+  assert float(shadow_result.debug["lane_rate_damping_lat_accel"]) < 0.0
+  assert shadow_result.demand.processed_curvature == pytest.approx(off_result.demand.processed_curvature)
+
+
+def test_lane_rate_damping_off_is_disabled_without_lane_lines():
+  result = LateralDemandPipeline(DT).update(valid_inputs(lane_rate_damping_mode="off", left_lane_y0=None, right_lane_y0=None))
+  assert result.debug["lane_rate_damping_mode"] == "off"
+  assert result.debug["lane_rate_damping_reason"] == "disabled"
+  assert result.debug["lane_rate_damping_active"] is False
+  assert result.debug["lane_rate_damping_curvature"] == 0.0
+
+
+def test_lane_rate_damping_apply_changes_curvature_and_caps_lat_accel():
+  centers = [i * 0.01 for i in range(60)]
+  shadow = LateralDemandPipeline(DT)
+  apply = LateralDemandPipeline(DT)
+  shadow_result = None
+  apply_result = None
+  for lane_center_y0 in centers:
+    shadow_result = shadow.update(lane_rate_damping_inputs(lane_center_y0, lane_rate_damping_mode="shadow"))
+    apply_result = apply.update(lane_rate_damping_inputs(lane_center_y0, lane_rate_damping_mode="apply"))
+
+  assert shadow_result is not None
+  assert apply_result is not None
+  assert apply_result.debug["lane_rate_damping_mode"] == "apply"
+  assert apply_result.debug["lane_rate_damping_active"] is True
+  assert apply_result.debug["lane_rate_damping_applied"] is True
+  assert apply_result.debug["lane_rate_damping_reason"] == "ok"
+  assert float(apply_result.debug["lane_rate_damping_lat_accel"]) == pytest.approx(-0.05, abs=1e-6)
+  assert float(apply_result.debug["lane_rate_damping_curvature"]) == pytest.approx(-0.05 / (20.0 ** 2), abs=1e-6)
+  assert apply_result.demand.processed_curvature == pytest.approx(
+    shadow_result.demand.processed_curvature + float(apply_result.debug["lane_rate_damping_curvature"]),
+    abs=1e-9,
+  )
+  assert apply_result.demand.processed_curvature < shadow_result.demand.processed_curvature
+
+
+@pytest.mark.parametrize("blocked_kwargs, expected_reason", [
+  ({"steering_pressed": True}, "driver_override"),
+  ({"curvature_limited": True}, "curvature_limited"),
+  ({"steer_limited": True}, "steer_limited"),
+  ({"lane_change_state": 1}, "lane_change"),
+  ({"model_age_s": 0.3}, "model_stale"),
+])
+def test_lane_rate_damping_blocks_and_resets_history(blocked_kwargs, expected_reason):
+  p = LateralDemandPipeline(DT)
+  for lane_center_y0 in [i * 0.01 for i in range(60)]:
+    p.update(lane_rate_damping_inputs(lane_center_y0, lane_rate_damping_mode="shadow"))
+
+  blocked = p.update(lane_rate_damping_inputs(0.60, lane_rate_damping_mode="shadow", **blocked_kwargs))
+  assert blocked.debug["lane_rate_damping_active"] is False
+  assert blocked.debug["lane_rate_damping_applied"] is False
+  assert blocked.debug["lane_rate_damping_curvature"] == 0.0
+  assert blocked.debug["lane_rate_damping_reason"] == expected_reason
+
+  resumed = p.update(lane_rate_damping_inputs(0.61, lane_rate_damping_mode="shadow"))
+  assert resumed.debug["lane_rate_damping_reason"] == "warming_up"
+  assert resumed.debug["lane_rate_damping_active"] is False
+  assert resumed.debug["lane_rate_damping_curvature"] == 0.0
 
 
 def test_extreme_curvature_warning_logs_once_per_transition(monkeypatch):

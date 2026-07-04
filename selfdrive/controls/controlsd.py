@@ -46,6 +46,19 @@ def set_model_path_state_geometry(model_path_state, debug: dict | None = None) -
   model_path_state.geometryWidthPreview = float(debug.get('lane_centering_geometry_width_preview', 0.0))
 
 
+def set_model_path_state_lane_rate_damping(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
+  debug = debug or {}
+  model_path_state.laneRateDampingMode = str(debug.get('lane_rate_damping_mode', 'off'))
+  model_path_state.laneRateDampingActive = bool(debug.get('lane_rate_damping_active', False))
+  model_path_state.laneRateDampingApplied = bool(debug.get('lane_rate_damping_applied', False))
+  model_path_state.laneRateDampingReason = str(debug.get('lane_rate_damping_reason', default_reason))
+  model_path_state.laneRateDampingLaneCenter = float(debug.get('lane_rate_damping_lane_center', 0.0))
+  model_path_state.laneRateDampingLaneCenterRate = float(debug.get('lane_rate_damping_lane_center_rate', 0.0))
+  model_path_state.laneRateDampingLatAccel = float(debug.get('lane_rate_damping_lat_accel', 0.0))
+  model_path_state.laneRateDampingCurvature = float(debug.get('lane_rate_damping_curvature', 0.0))
+  model_path_state.laneRateDampingCapLatAccel = float(debug.get('lane_rate_damping_cap_lat_accel', 0.05))
+
+
 def set_model_path_state_sensor_confidence(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
   debug = debug or {}
   model_path_state.sensorConfidenceAvailable = bool(debug.get('sensor_confidence_available', False))
@@ -371,6 +384,7 @@ class Controls(ControlsExt):
       model_path_state.demandSource = "disabled"
       model_path_state.dtleEstimate = float('nan')
       set_model_path_state_geometry(model_path_state)
+      set_model_path_state_lane_rate_damping(model_path_state)
       set_model_path_state_sensor_confidence(model_path_state)
       set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
                                         long_plan.speeds, long_plan.accels, lat_delay,
@@ -411,6 +425,7 @@ class Controls(ControlsExt):
           model_path_state.dtleEstimate = float(debug.get('dtle_estimate', float('nan')))
           set_model_path_state_geometry(model_path_state, debug)
           set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
+          set_model_path_state_lane_rate_damping(model_path_state, debug, default_reason="missing")
         except Exception:
           cloudlog.exception("failed to publish lateral modelPathState telemetry")
           self.lateral_demand.clear()
@@ -418,6 +433,7 @@ class Controls(ControlsExt):
         debug = getattr(self.lateral_demand, 'last_debug', {}) or {}
         if debug:
           set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
+        set_model_path_state_lane_rate_damping(model_path_state, debug, default_reason="missing")
 
     lat_tuning = self.CP.lateralTuning.which()
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:

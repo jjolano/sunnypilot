@@ -108,6 +108,11 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert roll_enum.values == ["off", "shadow", "apply"]
   assert roll_enum.labels == ["Off", "Learn only", "Apply learned gain"]
 
+  lane_rate_enum = homogeneous_string_options(find_item(STEERING, "LaneRateDampingMode"))
+  assert lane_rate_enum is not None
+  assert lane_rate_enum.values == ["off", "shadow", "apply"]
+  assert lane_rate_enum.labels == ["Off", "Monitor only", "Apply"]
+
   cut_in_enum = homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode"))
   assert cut_in_enum is not None
   assert cut_in_enum.values == ["off", "shadow", "apply"]
@@ -157,6 +162,16 @@ def test_roll_comp_gain_string_index_defaults_to_off():
   assert string_option_index("bad", enum, "RollCompGainMode") == 0
 
 
+def test_lane_rate_damping_string_index_defaults_to_off():
+  enum = homogeneous_string_options(find_item(STEERING, "LaneRateDampingMode"))
+  assert enum is not None
+  assert string_option_index("", enum, "LaneRateDampingMode") == 0
+  assert string_option_index("off", enum, "LaneRateDampingMode") == 0
+  assert string_option_index("shadow", enum, "LaneRateDampingMode") == 1
+  assert string_option_index("apply", enum, "LaneRateDampingMode") == 2
+  assert string_option_index("bad", enum, "LaneRateDampingMode") == 0
+
+
 def test_shadow_observability_string_indexes_default_to_off():
   for key in ("CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "CurveTrafficAdvisorMode", "StandstillReleaseConfidenceMode"):
     enum = homogeneous_string_options(find_item(CRUISE, key))
@@ -193,4 +208,3 @@ def test_value_mapped_option_for_gapped_ints():
 def test_value_mapped_option_rejects_non_ints():
   assert value_mapped_option({"options": [{"value": "a", "label": "A"}]}) is None
   assert value_mapped_option({"options": []}) is None
-

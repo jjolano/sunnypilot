@@ -166,6 +166,7 @@ def test_default_params_disable_adapter_and_curve_memory():
   a = LateralDemandAdapter(FakeParams())
   assert a.enabled is False
   assert a.curve_memory_enabled is False
+  assert a.lane_rate_damping_mode == "off"
   out = a.process(True, 20.0, 0.0, 0.0123, 0.0123, fake_model(), steering_pressed=False,
                   model_age_s=0.01, yaw_rate=0.246, steering_rate_deg=0.0)
   assert out == 0.0123
@@ -311,6 +312,26 @@ def test_adapter_sanitizes_unknown_straight_path_stabilization_mode():
     StraightPathStabilizationMode="banana",
   ))
   assert a.straight_path_stabilization_mode == "off"
+
+
+def test_adapter_sanitizes_unknown_lane_rate_damping_mode():
+  a = LateralDemandAdapter(FakeParams(
+    CustomLateralDemandEnabled=True,
+    LaneRateDampingMode="banana",
+  ))
+  assert a.lane_rate_damping_mode == "off"
+
+
+def test_adapter_forwards_lane_rate_damping_mode():
+  a = LateralDemandAdapter(FakeParams(
+    CustomLateralDemandEnabled=True,
+    LaneRateDampingMode="apply",
+  ))
+  spy = SpyPipeline()
+  object.__setattr__(a, "_pipeline", spy)
+  a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001))
+  assert spy.inputs is not None
+  assert spy.inputs.lane_rate_damping_mode == "apply"
 
 
 def test_adapter_forwards_straight_path_stabilization_mode():

@@ -122,6 +122,15 @@ COLUMNS = (
   "model_path_raw_curvature",
   "model_path_processed_curvature",
   "model_path_lane_change_fade",
+  "model_path_lane_rate_damping_mode",
+  "model_path_lane_rate_damping_active",
+  "model_path_lane_rate_damping_applied",
+  "model_path_lane_rate_damping_reason",
+  "model_path_lane_rate_damping_lane_center",
+  "model_path_lane_rate_damping_lane_center_rate",
+  "model_path_lane_rate_damping_lat_accel",
+  "model_path_lane_rate_damping_curvature",
+  "model_path_lane_rate_damping_cap_lat_accel",
 )
 
 
@@ -428,6 +437,15 @@ def _update_model_path_state(state: dict[str, Any], path_state: Any) -> None:
     ("model_path_raw_curvature", "rawDesiredCurvature"),
     ("model_path_processed_curvature", "processedDesiredCurvature"),
     ("model_path_lane_change_fade", "laneChangeFade"),
+    ("model_path_lane_rate_damping_mode", "laneRateDampingMode"),
+    ("model_path_lane_rate_damping_active", "laneRateDampingActive"),
+    ("model_path_lane_rate_damping_applied", "laneRateDampingApplied"),
+    ("model_path_lane_rate_damping_reason", "laneRateDampingReason"),
+    ("model_path_lane_rate_damping_lane_center", "laneRateDampingLaneCenter"),
+    ("model_path_lane_rate_damping_lane_center_rate", "laneRateDampingLaneCenterRate"),
+    ("model_path_lane_rate_damping_lat_accel", "laneRateDampingLatAccel"),
+    ("model_path_lane_rate_damping_curvature", "laneRateDampingCurvature"),
+    ("model_path_lane_rate_damping_cap_lat_accel", "laneRateDampingCapLatAccel"),
   ):
     value = _safe_get(path_state, path)
     _set(state, column, _enum(value) if column == "model_path_reason" else value)

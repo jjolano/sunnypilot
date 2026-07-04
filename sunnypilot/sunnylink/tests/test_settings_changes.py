@@ -183,6 +183,27 @@ class TestStraightPathStabilizationMode:
     assert off_option["label"].lower() == "off"
 
 
+class TestLaneRateDampingMode:
+  def test_lane_rate_damping_mode_options(self, schema):
+    item = _find_item(schema, "LaneRateDampingMode")
+    assert item is not None, "LaneRateDampingMode item must be present"
+    assert [opt["value"] for opt in item["options"]] == ["off", "shadow", "apply"]
+
+  def test_lane_rate_damping_mode_gated_by_custom_lateral_demand(self, schema):
+    item = _find_item(schema, "LaneRateDampingMode")
+    assert item is not None
+    enablement = item.get("enablement") or []
+    assert any(r.get("type") == "param" and r.get("key") == "CustomLateralDemandEnabled" for r in enablement)
+
+  def test_lane_rate_damping_mode_copy_mentions_monitor_only_and_requested_path(self, schema):
+    item = _find_item(schema, "LaneRateDampingMode")
+    assert item is not None
+    description = item.get("description", "").lower()
+    assert "monitor only" in description
+    assert "no driving changes" in description
+    assert "requested lateral path" in description
+
+
 class TestTorqueOptionGeneration:
   def test_torque_versions_match_generated_options(self, schema):
     versions = _load_torque_versions()
