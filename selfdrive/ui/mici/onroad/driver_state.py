@@ -19,6 +19,12 @@ LOOKING_CENTER_THRESHOLD_LOWER = math.radians(3)
 CONE_COLOR_GREEN = (0, 255, 64)
 CONE_COLOR_ORANGE = (255, 115, 0)
 
+# ponytail: fixed 5° buckets, cache trig once.
+LINE_TRIG_BY_ANGLE = {
+  angle: (math.cos(math.radians(angle)), math.sin(math.radians(angle)))
+  for angle in range(0, 360, 5)
+}
+
 
 class DriverStateRenderer(Widget):
   BASE_SIZE = 60
@@ -96,6 +102,9 @@ class DriverStateRenderer(Widget):
     if DEBUG:
       rl.draw_rectangle_lines_ex(self._rect, 1, rl.RED)
 
+    if not DEBUG and self._fade_filter.x < 1e-2:
+      return
+
     rl.draw_texture_ex(self._dm_background,
                        rl.Vector2(self._rect.x, self._rect.y), 0.0, 1.0,
                        rl.Color(255, 255, 255, int(255 * self._fade_filter.x)))
@@ -138,21 +147,22 @@ class DriverStateRenderer(Widget):
 
           # Reduce all line lengths when looking center
           if self._looking_center:
-            target = np.interp(self._looking_center_filter.x, [0.0, 1.0], [target, 0.45])
+            target = target + (0.45 - target) * self._looking_center_filter.x
 
           f.update(target)
           self._draw_line(angle, f, self._looking_center)
 
   def _draw_line(self, angle: int, f: FirstOrderFilter, grey: bool):
     line_length = self._rect.width / 6
-    line_length = round(np.interp(f.x, [0.0, 1.0], [0, line_length]))
+    line_length = round(line_length * min(max(f.x, 0.0), 1.0))
     line_offset = self._rect.width / 2 - line_length * 2  # ensure line ends within rect
     center_x = self._rect.x + self._rect.width / 2
     center_y = self._rect.y + self._rect.height / 2
-    start_x = center_x + (line_offset + line_length) * math.cos(math.radians(angle))
-    start_y = center_y + (line_offset + line_length) * math.sin(math.radians(angle))
-    end_x = start_x + line_length * math.cos(math.radians(angle))
-    end_y = start_y + line_length * math.sin(math.radians(angle))
+    cos_angle, sin_angle = LINE_TRIG_BY_ANGLE[angle]
+    start_x = center_x + (line_offset + line_length) * cos_angle
+    start_y = center_y + (line_offset + line_length) * sin_angle
+    end_x = start_x + line_length * cos_angle
+    end_y = start_y + line_length * sin_angle
     color = rl.Color(0, 255, 64, 255)
 
     if grey:
@@ -177,6 +187,10 @@ class DriverStateRenderer(Widget):
     return driver_data
 
   def _update_state(self):
+    if not self.should_draw:
+      self._fade_filter.update(0.0)
+      return
+
     # Get monitoring state
     _ = self.get_driver_data()
     pitch = self._pitch_filter.update(self._face_pitch)
@@ -208,9 +222,7 @@ class DriverStateRenderer(Widget):
     angle_diff = ((angle_diff + 180) % 360) - 180
     self._rotation_filter.update(self._rotation_filter.x + angle_diff)
 
-    if not self.should_draw:
-      self._fade_filter.update(0.0)
-    elif not self.effective_active:
+    if not self.effective_active:
       self._fade_filter.update(0.35)
     else:
       self._fade_filter.update(1.0)

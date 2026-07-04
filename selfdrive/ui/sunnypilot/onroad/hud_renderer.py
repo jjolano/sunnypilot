@@ -16,6 +16,7 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.smart_cruise_control import SmartC
 from openpilot.selfdrive.ui.sunnypilot.onroad.turn_signal import TurnSignalController
 from openpilot.selfdrive.ui.sunnypilot.onroad.circular_alerts import CircularAlertsRenderer
 from openpilot.selfdrive.ui.sunnypilot.onroad.speed_renderer import SpeedRenderer
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode as SpeedLimitMode
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.onroad.hud_renderer import HudRenderer, UI_CONFIG, FONT_SIZES, COLORS, CRUISE_DISABLED_CHAR
 from openpilot.system.ui.lib.application import gui_app
@@ -43,6 +44,18 @@ class HudRendererSP(HudRenderer):
     self.icbm_active_counter: int = 0
     self.speed_cluster: float = 0.0
     self.speed_conv: float = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
+    self._last_is_metric = ui_state.is_metric
+    self._last_turn_signals = ui_state.turn_signals
+    self._last_blindspot = ui_state.blindspot
+    self._text_width_cache: dict[tuple[int, str, int], float] = {}
+
+  def _measure_text_width(self, font: rl.Font, text: str, size: int) -> float:
+    key = (font.texture.id, text, size)
+    width = self._text_width_cache.get(key)
+    if width is None:
+      width = measure_text_cached(font, text, size).x
+      self._text_width_cache[key] = width
+    return width
 
   def _update_state(self) -> None:
     if ui_state.sm.recv_frame["carState"] < ui_state.started_frame:
@@ -50,16 +63,30 @@ class HudRendererSP(HudRenderer):
 
     if ui_state.CP_SP is not None:
       self.pcm_cruise_speed = ui_state.CP_SP.pcmCruiseSpeed
-    self.speed_conv = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
-    self.speed_cluster = ui_state.sm['carState'].cruiseState.speedCluster * self.speed_conv
 
-    super()._update_state()
-    self.road_name_renderer.update()
+    is_metric = ui_state.is_metric
+    metric_changed = is_metric != self._last_is_metric
+    self._last_is_metric = is_metric
+    self.speed_conv = CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH
+
+    if ui_state.sm.updated["carState"] or metric_changed:
+      self.speed_cluster = ui_state.sm['carState'].cruiseState.speedCluster * self.speed_conv
+
+    if ui_state.sm.updated["carState"] or ui_state.sm.updated["controlsState"] or ui_state.sm.updated["selfdriveState"] or metric_changed:
+      super()._update_state()
+
+    if ui_state.sm.updated["liveMapDataSP"]:
+      self.road_name_renderer.update()
     self.speed_limit_renderer.update()
     self.smart_cruise_control_renderer.update()
-    self.turn_signal_controller.update()
+    turn_signal_flags_changed = ui_state.turn_signals != self._last_turn_signals or ui_state.blindspot != self._last_blindspot
+    self._last_turn_signals = ui_state.turn_signals
+    self._last_blindspot = ui_state.blindspot
+    if ui_state.sm.updated["carState"] or turn_signal_flags_changed:
+      self.turn_signal_controller.update()
     self.circular_alerts_renderer.update()
-    self.speed_renderer.update()
+    if ui_state.sm.updated["carState"] or metric_changed:
+      self.speed_renderer.update()
 
   def _get_icbm_status(self):
     if not self.pcm_cruise_speed and ui_state.sm['carControl'].enabled:
@@ -104,7 +131,7 @@ class HudRendererSP(HudRenderer):
     max_str_y = 15 if self.show_icbm_status else 27
 
     max_text = str(round(self.speed_cluster)) if self.show_icbm_status else tr("MAX")
-    max_text_width = measure_text_cached(self._font_semi_bold, max_text, max_str_size).x
+    max_text_width = self._measure_text_width(self._font_semi_bold, max_text, max_str_size)
     rl.draw_text_ex(
       self._font_semi_bold,
       max_text,
@@ -115,7 +142,7 @@ class HudRendererSP(HudRenderer):
     )
 
     set_speed_text = CRUISE_DISABLED_CHAR if not self.is_cruise_set else str(round(self.set_speed))
-    speed_text_width = measure_text_cached(self._font_bold, set_speed_text, FONT_SIZES.set_speed).x
+    speed_text_width = self._measure_text_width(self._font_bold, set_speed_text, FONT_SIZES.set_speed)
     rl.draw_text_ex(
       self._font_bold,
       set_speed_text,
@@ -137,10 +164,22 @@ class HudRendererSP(HudRenderer):
         torque_rect = rl.Rectangle(rect.x, rect.y, rect.width, rect.height - get_bottom_dev_ui_offset())
       self._torque_bar.render(torque_rect)
 
-    self.developer_ui.render(rect)
-    self.road_name_renderer.render(rect)
-    self.speed_limit_renderer.render(rect)
-    self.smart_cruise_control_renderer.render(rect)
-    self.turn_signal_controller.render(rect)
+    if ui_state.developer_ui != DeveloperUiState.OFF:
+      self.developer_ui.render(rect)
+
+    if ui_state.road_name_toggle and self.road_name_renderer.road_name:
+      self.road_name_renderer.render(rect)
+
+    if ui_state.speed_limit_mode != SpeedLimitMode.off:
+      self.speed_limit_renderer.render(rect)
+
+    if self.smart_cruise_control_renderer.vision_enabled or self.smart_cruise_control_renderer.map_enabled:
+      self.smart_cruise_control_renderer.render(rect)
+
+    if ui_state.turn_signals or ui_state.blindspot:
+      self.turn_signal_controller.render(rect)
+
     self.circular_alerts_renderer.render(rect)
-    self.rocket_fuel.render(rect, ui_state.sm)
+
+    if ui_state.rocket_fuel:
+      self.rocket_fuel.render(rect, ui_state.sm)

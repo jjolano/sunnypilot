@@ -66,8 +66,17 @@ class TurnIntent(Widget):
   def _update_state(self) -> None:
     sm = ui_state.sm
 
-    left = any(e.name == EventName.preLaneChangeLeft for e in sm['onroadEvents'])
-    right = any(e.name == EventName.preLaneChangeRight for e in sm['onroadEvents'])
+    left = False
+    right = False
+    lane_change = False
+    for e in sm['onroadEvents']:
+      if e.name == EventName.preLaneChangeLeft:
+        left = True
+      elif e.name == EventName.preLaneChangeRight:
+        right = True
+      elif e.name == EventName.laneChange:
+        lane_change = True
+
     if left or right:
       # pre lane change
       if not self._pre:
@@ -77,7 +86,7 @@ class TurnIntent(Widget):
       self._turn_intent_direction = -1 if left else 1
       self._turn_intent_alpha_filter.update(1)
       self._turn_intent_rotation_filter.update(0)
-    elif any(e.name == EventName.laneChange for e in sm['onroadEvents']):
+    elif lane_change:
       # fade out and rotate away
       self._pre = False
       self._turn_intent_alpha_filter.update(0)
@@ -126,6 +135,16 @@ class HudRenderer(Widget):
     self._wheel_y_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
 
     self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+    self._last_is_metric = ui_state.is_metric
+    self._text_width_cache: dict[tuple[int, str, int], rl.Vector2] = {}
+
+  def _measure_text_width(self, font: rl.Font, text: str, size: int) -> rl.Vector2:
+    key = (font.texture.id, text, size)
+    size_vec = self._text_width_cache.get(key)
+    if size_vec is None:
+      size_vec = measure_text_cached(font, text, size)
+      self._text_width_cache[key] = size_vec
+    return size_vec
 
   def set_wheel_critical_icon(self, critical: bool):
     """Set the wheel icon to critical or normal state."""
@@ -146,6 +165,13 @@ class HudRenderer(Widget):
       self.is_cruise_set = False
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
+      return
+
+    is_metric = ui_state.is_metric
+    metric_changed = is_metric != self._last_is_metric
+    self._last_is_metric = is_metric
+
+    if not (sm.updated["carState"] or sm.updated["controlsState"] or sm.updated["selfdriveState"] or metric_changed):
       return
 
     controls_state = sm['controlsState']
@@ -182,7 +208,9 @@ class HudRenderer(Widget):
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
 
-    bsm_detected = self._has_blind_spot_detected() if gui_app.sunnypilot_ui() else False
+    bsm_detected = False
+    if gui_app.sunnypilot_ui() and not self._show_wheel_critical and ui_state.status != UIStatus.DISENGAGED:
+      bsm_detected = self._has_blind_spot_detected()
 
     if self._show_wheel_critical:
       self._wheel_alpha_filter.update(255)
@@ -267,12 +295,15 @@ class HudRenderer(Widget):
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""
+    if ui_state.hide_v_ego_ui:
+      return
+
     speed_text = str(round(self.speed))
-    speed_text_size = measure_text_cached(self._font_bold, speed_text, FONT_SIZES.current_speed)
+    speed_text_size = self._measure_text_width(self._font_bold, speed_text, FONT_SIZES.current_speed)
     speed_pos = rl.Vector2(rect.x + rect.width / 2 - speed_text_size.x / 2, 180 - speed_text_size.y / 2)
     rl.draw_text_ex(self._font_bold, speed_text, speed_pos, FONT_SIZES.current_speed, 0, COLORS.WHITE)
 
     unit_text = tr("km/h") if ui_state.is_metric else tr("mph")
-    unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
+    unit_text_size = self._measure_text_width(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)

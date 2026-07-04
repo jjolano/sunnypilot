@@ -147,6 +147,14 @@ def arc_bar_pts(r_mid: float, thickness: float,
 DEFAULT_MAX_LAT_ACCEL = 3.0  # m/s^2
 
 
+def _lerp_clamped(value: float, start: float, end: float, out_start: float, out_end: float) -> float:
+  if value <= start:
+    return out_start
+  if value >= end:
+    return out_end
+  return out_start + (out_end - out_start) * ((value - start) / (end - start))
+
+
 class TorqueBar(Widget):
   def __init__(self, demo: bool = False, scale: float = 1.0, always: bool = False):
     super().__init__()
@@ -178,29 +186,33 @@ class TorqueBar(Widget):
 
       # Include road roll in estimated torque utilization
       # Roll is less accurate near standstill, so reduce its effect at low speed
-      roll_compensation = live_parameters.roll * ACCELERATION_DUE_TO_GRAVITY * np.interp(car_state.vEgo, [5, 15], [0.0, 1.0])
+      roll_compensation = live_parameters.roll * ACCELERATION_DUE_TO_GRAVITY * _lerp_clamped(car_state.vEgo, 5, 15, 0.0, 1.0)
       lateral_acceleration = actual_lateral_accel - roll_compensation
       max_lateral_acceleration = ui_state.CP.maxLateralAccel if ui_state.CP else DEFAULT_MAX_LAT_ACCEL
 
       if not car_control.latActive:
         self._torque_filter.update(0.0)
       else:
-        self._torque_filter.update(np.clip((lateral_acceleration + accel_diff) / max_lateral_acceleration, -1, 1))
+        torque = (lateral_acceleration + accel_diff) / max_lateral_acceleration
+        self._torque_filter.update(max(-1.0, min(1.0, torque)))
     else:
       self._torque_filter.update(-ui_state.sm['carOutput'].actuatorsOutput.torque)
 
   def _render(self, rect: rl.Rectangle) -> None:
-    # adjust y pos with torque
-    torque_line_offset = np.interp(abs(self._torque_filter.x), [0.5, 1], [22 * self._scale, 26 * self._scale])
-    torque_line_height = np.interp(abs(self._torque_filter.x), [0.5, 1], [14 * self._scale, 56 * self._scale])
-
-    # animate alpha and angle span
     if not self._demo:
       self._torque_line_alpha_filter.update(ui_state.status not in (UIStatus.DISENGAGED, UIStatus.LONG_ONLY))
     else:
       self._torque_line_alpha_filter.update(1.0)
 
-    torque_line_bg_alpha = np.interp(abs(self._torque_filter.x), [0.5, 1.0], [0.25, 0.5])
+    if self._torque_line_alpha_filter.x < 1e-2:
+      return
+
+    # adjust y pos with torque
+    torque_abs = abs(self._torque_filter.x)
+    torque_line_offset = _lerp_clamped(torque_abs, 0.5, 1.0, 22 * self._scale, 26 * self._scale)
+    torque_line_height = _lerp_clamped(torque_abs, 0.5, 1.0, 14 * self._scale, 56 * self._scale)
+
+    torque_line_bg_alpha = _lerp_clamped(torque_abs, 0.5, 1.0, 0.25, 0.5)
     torque_line_bg_color = rl.Color(255, 255, 255, int(255 * torque_line_bg_alpha * self._torque_line_alpha_filter.x))
     if ui_state.status not in (UIStatus.ENGAGED, UIStatus.LAT_ONLY) and not self._demo:
       torque_line_bg_color = rl.Color(255, 255, 255, int(255 * 0.15 * self._torque_line_alpha_filter.x))

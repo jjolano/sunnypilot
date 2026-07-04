@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 from enum import IntEnum
+from collections import OrderedDict
 
 import pyray as rl
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -38,6 +39,8 @@ class DeveloperUiRenderer(Widget):
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self.dev_ui_mode = DeveloperUiState.OFF
+    self._text_width_cache: OrderedDict[tuple[int, str, int, float], float] = OrderedDict()
+    self._element_measure_cache: dict[tuple[str, int], tuple[str, str, float, float, float, float]] = {}
 
     self.rel_dist_elem = RelDistElement()
     self.rel_speed_elem = RelSpeedElement()
@@ -53,6 +56,37 @@ class DeveloperUiRenderer(Widget):
     self.steering_torque_elem = SteeringTorqueEpsElement()
     self.bearing_elem = BearingDegElement()
     self.altitude_elem = AltitudeElement()
+
+  def _measure_text_width(self, text: str, size: int, spacing: float = 0.0) -> float:
+    key = (self._font_bold.texture.id, text, size, spacing)
+    width = self._text_width_cache.get(key)
+    if width is None:
+      width = measure_text_cached(self._font_bold, text, size, spacing).x
+      self._text_width_cache[key] = width
+      if len(self._text_width_cache) > 128:
+        self._text_width_cache.popitem(last=False)
+    else:
+      self._text_width_cache.move_to_end(key)
+    return width
+
+  def _measure_element(self, element: UiElement, font_size: int) -> UiElement:
+    cache_key = (element.label, font_size)
+    cached = self._element_measure_cache.get(cache_key)
+
+    element.label_text = f"{element.label} "
+    element.val_text = element.value
+    element.unit_text = f" {element.unit}" if element.unit else ""
+
+    if cached is not None and cached[0] == element.value and cached[1] == element.unit:
+      element.label_width, element.val_width, element.unit_width, element.total_width = cached[2:]
+      return element
+
+    element.label_width = self._measure_text_width(element.label_text, font_size)
+    element.val_width = self._measure_text_width(element.val_text, font_size)
+    element.unit_width = self._measure_text_width(element.unit_text, font_size) if element.unit else 0
+    element.total_width = element.label_width + element.val_width + element.unit_width
+    self._element_measure_cache[cache_key] = (element.value, element.unit, element.label_width, element.val_width, element.unit_width, element.total_width)
+    return element
 
   def _update_state(self) -> None:
     self.dev_ui_mode = ui_state.developer_ui
@@ -107,17 +141,17 @@ class DeveloperUiRenderer(Widget):
     label_size = 28
     value_size = 60
     unit_size = 28
-    label_width = measure_text_cached(self._font_bold, element.label, label_size, 0).x
+    label_width = self._measure_text_width(element.label, label_size, 0)
     centered_label_x = x + (container_width - label_width) / 2
     rl.draw_text_ex(self._font_bold, element.label, rl.Vector2(centered_label_x, y), label_size, 0, rl.WHITE)
 
     y += 45
-    value_width = measure_text_cached(self._font_bold, element.value, value_size, 0).x
+    value_width = self._measure_text_width(element.value, value_size, 0)
     centered_value_x = x + (container_width - value_width) / 2
     rl.draw_text_ex(self._font_bold, element.value, rl.Vector2(centered_value_x, y), value_size, 0, element.color)
 
     if element.unit:
-      units_height = measure_text_cached(self._font_bold, element.unit, unit_size, 0).x
+      units_height = self._measure_text_width(element.unit, unit_size, 0)
 
       units_x = x + container_width
       units_y = y + (value_size / 2) + (units_height / 2)
@@ -164,7 +198,7 @@ class DeveloperUiRenderer(Widget):
     font_size = 38
     element_widths = []
     for element in elements:
-      element.measure(self._font_bold, font_size)
+      self._measure_element(element, font_size)
       element_widths.append(element.total_width)
 
     total_element_width = sum(element_widths)

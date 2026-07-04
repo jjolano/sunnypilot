@@ -59,33 +59,50 @@ class SpeedLimitAlertRenderer:
     rl.unload_image(blank_image)
 
     self._pre_active_fade = AlertFadeAnimator(gui_app.target_fps, duration_on=0.75, rc=0.05)
+    self._pre_active_icon_key = None
+    self._pre_active_txt_icon = self.arrow_blank
+
+  def _update_pre_active_icon(self, set_speed: float, speed_limit_final_last: float):
+    key = (ui_state.is_metric, round(set_speed), round(speed_limit_final_last))
+    if key == self._pre_active_icon_key:
+      return
+
+    txt_icon = self.arrow_blank
+    set_speed_round = round(set_speed)
+    speed_limit_round = round(speed_limit_final_last)
+    if set_speed_round < speed_limit_round:
+      txt_icon = self.arrow_up
+    elif set_speed_round > speed_limit_round:
+      txt_icon = self.arrow_down
+
+    self._pre_active_icon_key = key
+    self._pre_active_txt_icon = txt_icon
+
+  def _pre_active_icon_inputs(self) -> tuple[float, float]:
+    sm = ui_state.sm
+    controls_state = sm['controlsState']
+    car_state = sm['carState']
+    resolver = sm['longitudinalPlanSP'].speedLimit.resolver
+
+    set_speed = controls_state.deprecated.vCruise if car_state.vCruiseCluster == 0.0 else car_state.vCruiseCluster
+    if not ui_state.is_metric:
+      set_speed *= KM_TO_MILE
+
+    speed_conv = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
+    return set_speed, resolver.speedLimitFinalLast * speed_conv
 
   def update(self):
     assist_state = ui_state.sm['longitudinalPlanSP'].speedLimit.assist.state
-    self._pre_active_fade.update(assist_state == AssistState.preActive)
+    pre_active = assist_state == AssistState.preActive
+    self._pre_active_fade.update(pre_active)
+    if pre_active:
+      self._update_pre_active_icon(*self._pre_active_icon_inputs())
 
   def speed_limit_pre_active_icon_helper(self):
     icon_alpha = max(0.0, min(self._pre_active_fade.alpha * 255.0, 255.0))
-    txt_icon = self.arrow_blank
+    txt_icon = self._pre_active_txt_icon if icon_alpha > 0 else self.arrow_blank
     icon_margin_x = 10
     icon_margin_y = 18
-
-    if icon_alpha > 0:
-      speed_conv = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
-      speed_limit_final_last = ui_state.sm['longitudinalPlanSP'].speedLimit.resolver.speedLimitFinalLast
-
-      v_cruise_cluster = ui_state.sm['carState'].vCruiseCluster
-      set_speed = ui_state.sm['controlsState'].deprecated.vCruise if v_cruise_cluster == 0.0 else v_cruise_cluster
-      if not ui_state.is_metric:
-        set_speed *= KM_TO_MILE
-
-      set_speed_round = round(set_speed)
-      speed_limit_round = round(speed_limit_final_last * speed_conv)
-
-      if set_speed_round < speed_limit_round:
-        txt_icon = self.arrow_up
-      elif set_speed_round > speed_limit_round:
-        txt_icon = self.arrow_down
 
     return IconSide.right, txt_icon, icon_alpha, icon_margin_x, icon_margin_y
 
@@ -119,6 +136,18 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
     self.font_bold = gui_app.font(FontWeight.BOLD)
     self.font_demi = gui_app.font(FontWeight.SEMI_BOLD)
     self.font_norm = gui_app.font(FontWeight.NORMAL)
+    self._last_is_metric = ui_state.is_metric
+    self._format_dist_cache_key = None
+    self._format_dist_cache_value = ""
+    self._text_width_cache: dict[tuple[int, str, int, float], rl.Vector2] = {}
+
+  def _measure_text_width(self, font: rl.Font, text: str, size: int, spacing: float = 0.0) -> rl.Vector2:
+    key = (font.texture.id, text, size, spacing)
+    size_vec = self._text_width_cache.get(key)
+    if size_vec is None:
+      size_vec = measure_text_cached(font, text, size, spacing)
+      self._text_width_cache[key] = size_vec
+    return size_vec
 
   @property
   def speed_conv(self):
@@ -132,7 +161,11 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
       self.speed = 0.0
       return
 
-    if sm.updated["longitudinalPlanSP"]:
+    is_metric = ui_state.is_metric
+    metric_changed = is_metric != self._last_is_metric
+    self._last_is_metric = is_metric
+
+    if sm.updated["longitudinalPlanSP"] or metric_changed:
       lp_sp = sm["longitudinalPlanSP"]
       resolver = lp_sp.speedLimit.resolver
       assist = lp_sp.speedLimit.assist
@@ -146,7 +179,7 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
       self.speed_limit_source = resolver.source
       self.speed_limit_assist_state = assist.state
 
-    if sm.updated["liveMapDataSP"]:
+    if sm.updated["liveMapDataSP"] or metric_changed:
       lmd = sm["liveMapDataSP"]
       self.speed_limit_ahead_valid = lmd.speedLimitAheadValid
       self.speed_limit_ahead = lmd.speedLimitAhead * self.speed_conv
@@ -159,26 +192,31 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
 
       self.speed_limit_ahead_dist_prev = self.speed_limit_ahead_dist
 
-    controls_state = sm['controlsState']
-    car_state = sm["carState"]
+    updated_speed = False
+    if sm.updated["carState"] or sm.updated["controlsState"] or metric_changed:
+      controls_state = sm['controlsState']
+      car_state = sm["carState"]
 
-    v_cruise_cluster = car_state.vCruiseCluster
-    self.set_speed = (
-      controls_state.deprecated.vCruise if v_cruise_cluster == 0.0 else v_cruise_cluster
-    )
-    self.is_cruise_set = 0 < self.set_speed < SET_SPEED_NA
-    self.is_cruise_available = self.set_speed != -1
+      v_cruise_cluster = car_state.vCruiseCluster
+      self.set_speed = (
+        controls_state.deprecated.vCruise if v_cruise_cluster == 0.0 else v_cruise_cluster
+      )
+      self.is_cruise_set = 0 < self.set_speed < SET_SPEED_NA
+      self.is_cruise_available = self.set_speed != -1
 
-    if self.is_cruise_set and not ui_state.is_metric:
-      self.set_speed *= KM_TO_MILE
+      if self.is_cruise_set and not ui_state.is_metric:
+        self.set_speed *= KM_TO_MILE
 
-    self.v_ego_cluster_seen = self.v_ego_cluster_seen or car_state.vEgoCluster != 0.0
-    v_ego = car_state.vEgoCluster if self.v_ego_cluster_seen else car_state.vEgo
-    self.speed = max(0.0, v_ego * self.speed_conv)
+      self.v_ego_cluster_seen = self.v_ego_cluster_seen or car_state.vEgoCluster != 0.0
+      v_ego = car_state.vEgoCluster if self.v_ego_cluster_seen else car_state.vEgo
+      self.speed = max(0.0, v_ego * self.speed_conv)
+      updated_speed = True
 
-  @staticmethod
-  def _draw_text_centered(font, text, size, pos_center, color):
-    sz = measure_text_cached(font, text, size)
+    if updated_speed or sm.updated["longitudinalPlanSP"]:
+      self._update_pre_active_icon(self.set_speed, self.speed_limit_final_last)
+
+  def _draw_text_centered(self, font, text, size, pos_center, color):
+    sz = self._measure_text_width(font, text, size)
     rl.draw_text_ex(font, text, rl.Vector2(pos_center.x - sz.x / 2, pos_center.y - sz.y / 2), size, 0, color)
 
   def _render(self, rect: rl.Rectangle):
@@ -301,28 +339,32 @@ class SpeedLimitRenderer(Widget, SpeedLimitAlertRenderer):
     self._draw_text_centered(self.font_bold, str(round(self.speed_limit_ahead)), 70, rl.Vector2(mid_x, rect.y + 82), Colors.WHITE)
     self._draw_text_centered(self.font_norm, self._format_dist(self.speed_limit_ahead_dist), 36, rl.Vector2(mid_x, rect.y + 134), Colors.GREY)
 
-  @staticmethod
-  def _format_dist(d):
+  def _format_dist(self, d):
+    key = (ui_state.is_metric, d)
+    if key == self._format_dist_cache_key:
+      return self._format_dist_cache_value
+
     # metric
     if ui_state.is_metric:
       if d < 50:
-        return tr("Near")
+        value = tr("Near")
+      elif d >= 1000:
+        value = f"{d / 1000:.1f} km"
+      else:
+        d_rounded = round(d, -1) if d < 200 else round(d, -2)
+        value = f"{int(d_rounded)} m"
+    else:
+      # imperial
+      d_ft = d * METER_TO_FOOT
+      if d_ft < 100:
+        value = tr("Near")
+      elif d_ft >= 900:
+        value = f"{d * METER_TO_MILE:.1f} mi"
+      elif d_ft < 500:
+        value = f"{int(round(d_ft / 50) * 50)} ft"
+      else:
+        value = f"{int(round(d_ft / 100) * 100)} ft"
 
-      if d >= 1000:
-        return f"{d / 1000:.1f} km"
-
-      d_rounded = round(d, -1) if d < 200 else round(d, -2)
-      return f"{int(d_rounded)} m"
-
-    # imperial
-    d_ft = d * METER_TO_FOOT
-    if d_ft < 100:
-      return tr("Near")
-
-    if d_ft >= 900:
-      return f"{d * METER_TO_MILE:.1f} mi"
-
-    if d_ft < 500:
-      return f"{int(round(d_ft / 50) * 50)} ft"
-
-    return f"{int(round(d_ft / 100) * 100)} ft"
+    self._format_dist_cache_key = key
+    self._format_dist_cache_value = value
+    return value

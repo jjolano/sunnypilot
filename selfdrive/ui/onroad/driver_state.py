@@ -35,6 +35,16 @@ SCALES_NEG = np.array([0.7, 0.4, 0.4], dtype=np.float32)
 ARC_POINT_COUNT = 37  # Number of points in the arc
 ARC_ANGLES = np.linspace(0.0, np.pi, ARC_POINT_COUNT, dtype=np.float32)
 
+# ponytail: fixed arc start angles, cache trig tables once.
+ARC_COS_BY_START = {
+  angle: np.cos(ARC_ANGLES + np.deg2rad(angle)).astype(np.float32)
+  for angle in (-90, 0, 90, 180)
+}
+ARC_SIN_BY_START = {
+  angle: np.sin(ARC_ANGLES + np.deg2rad(angle)).astype(np.float32)
+  for angle in (-90, 0, 90, 180)
+}
+
 
 @dataclass
 class ArcData:
@@ -58,6 +68,10 @@ class DriverStateRenderer(Widget):
     self.driver_pose_diff = np.zeros(3, dtype=np.float32)
     self.driver_pose_sins = np.zeros(3, dtype=np.float32)
     self.driver_pose_coss = np.zeros(3, dtype=np.float32)
+    self._rotation_matrix = np.empty((3, 3), dtype=np.float32)
+    self._rotation_amount = np.zeros(3, dtype=np.float32)
+    self._driver_pose_target = np.zeros(3, dtype=np.float32)
+    self._kp_depth = np.zeros(DEFAULT_FACE_KPTS_3D.shape[0], dtype=np.float32)
     self.face_keypoints_transformed = np.zeros((DEFAULT_FACE_KPTS_3D.shape[0], 2), dtype=np.float32)
     self.position_x: float = 0.0
     self.position_y: float = 0.0
@@ -127,35 +141,45 @@ class DriverStateRenderer(Widget):
     driver_orient = driver_data.faceOrientation
 
     # Update pose values with scaling and smoothing
-    driver_orient = np.array(driver_orient)
-    scales = np.where(driver_orient < 0, SCALES_NEG, SCALES_POS)
-    v_this = driver_orient * scales
-    self.driver_pose_diff = np.abs(self.driver_pose_vals - v_this)
-    self.driver_pose_vals = 0.8 * v_this + 0.2 * self.driver_pose_vals  # Smooth changes
+    driver_orient = np.asarray(driver_orient, dtype=np.float32)
+    np.multiply(driver_orient, SCALES_POS, out=self._driver_pose_target)
+    negative = driver_orient < 0
+    if np.any(negative):
+      self._driver_pose_target[negative] = driver_orient[negative] * SCALES_NEG[negative]
+
+    self.driver_pose_diff[:] = np.abs(self.driver_pose_vals - self._driver_pose_target)
+    np.multiply(self._driver_pose_target, 0.8, out=self._rotation_amount)
+    self.driver_pose_vals *= 0.2
+    self.driver_pose_vals += self._rotation_amount
 
     # Apply fade to rotation and compute sin/cos
-    rotation_amount = self.driver_pose_vals * (1.0 - self.dm_fade_state)
-    self.driver_pose_sins = np.sin(rotation_amount)
-    self.driver_pose_coss = np.cos(rotation_amount)
+    np.multiply(self.driver_pose_vals, 1.0 - self.dm_fade_state, out=self._rotation_amount)
+    np.sin(self._rotation_amount, out=self.driver_pose_sins)
+    np.cos(self._rotation_amount, out=self.driver_pose_coss)
 
     # Create rotation matrix for 3D face model
     sin_y, sin_x, sin_z = self.driver_pose_sins
     cos_y, cos_x, cos_z = self.driver_pose_coss
-    r_xyz = np.array(
-      [
-        [cos_x * cos_z, cos_x * sin_z, -sin_x],
-        [-sin_y * sin_x * cos_z - cos_y * sin_z, -sin_y * sin_x * sin_z + cos_y * cos_z, -sin_y * cos_x],
-        [cos_y * sin_x * cos_z - sin_y * sin_z, cos_y * sin_x * sin_z + sin_y * cos_z, cos_y * cos_x],
-      ]
-    )
+    r_xyz = self._rotation_matrix
+    r_xyz[0, 0] = cos_x * cos_z
+    r_xyz[0, 1] = cos_x * sin_z
+    r_xyz[0, 2] = -sin_x
+    r_xyz[1, 0] = -sin_y * sin_x * cos_z - cos_y * sin_z
+    r_xyz[1, 1] = -sin_y * sin_x * sin_z + cos_y * cos_z
+    r_xyz[1, 2] = -sin_y * cos_x
+    r_xyz[2, 0] = cos_y * sin_x * cos_z - sin_y * sin_z
+    r_xyz[2, 1] = cos_y * sin_x * sin_z + sin_y * cos_z
+    r_xyz[2, 2] = cos_y * cos_x
 
     # Transform face keypoints using vectorized matrix multiplication
-    self.face_kpts_draw = DEFAULT_FACE_KPTS_3D @ r_xyz.T
+    np.matmul(DEFAULT_FACE_KPTS_3D, r_xyz.T, out=self.face_kpts_draw)
     self.face_kpts_draw[:, 2] = self.face_kpts_draw[:, 2] * (1.0 - self.dm_fade_state) + 8 * self.dm_fade_state
 
     # Pre-calculate the transformed keypoints
-    kp_depth = (self.face_kpts_draw[:, 2] - 8) / 120.0 + 1.0
-    self.face_keypoints_transformed = self.face_kpts_draw[:, :2] * kp_depth[:, None]
+    np.subtract(self.face_kpts_draw[:, 2], 8, out=self._kp_depth)
+    self._kp_depth *= 1.0 / 120.0
+    self._kp_depth += 1.0
+    np.multiply(self.face_kpts_draw[:, :2], self._kp_depth[:, None], out=self.face_keypoints_transformed)
 
     # Pre-calculate all drawing elements
     self._pre_calculate_drawing_elements()
@@ -169,10 +193,9 @@ class DriverStateRenderer(Widget):
     self.position_y = self._rect.y + height - offset
 
     # Pre-calculate the face lines positions
-    positioned_keypoints = self.face_keypoints_transformed + np.array([self.position_x, self.position_y])
-    for i in range(len(positioned_keypoints)):
-      self.face_lines[i].x = positioned_keypoints[i][0]
-      self.face_lines[i].y = positioned_keypoints[i][1]
+    for i, keypoint in enumerate(self.face_keypoints_transformed):
+      self.face_lines[i].x = keypoint[0] + self.position_x
+      self.face_lines[i].y = keypoint[1] + self.position_y
 
     # Calculate arc dimensions based on head rotation
     delta_x = -self.driver_pose_sins[1] * ARC_LENGTH / 2.0  # Horizontal movement
@@ -213,15 +236,16 @@ class DriverStateRenderer(Widget):
     )
 
     # Pre-calculate arc points
-    angles = ARC_ANGLES + np.deg2rad(start_angle)
+    arc_cos = ARC_COS_BY_START[start_angle]
+    arc_sin = ARC_SIN_BY_START[start_angle]
 
     center_x = x + arc_data.width / 2
     center_y = y + arc_data.height / 2
     radius_x = arc_data.width / 2
     radius_y = arc_data.height / 2
 
-    x_coords = center_x + np.cos(angles) * radius_x
-    y_coords = center_y - np.sin(angles) * radius_y
+    x_coords = center_x + arc_cos * radius_x
+    y_coords = center_y - arc_sin * radius_y
 
     arc_lines = self.h_arc_lines if is_horizontal else self.v_arc_lines
     for i, (x_coord, y_coord) in enumerate(zip(x_coords, y_coords, strict=True)):

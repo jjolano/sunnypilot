@@ -8,7 +8,7 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
-from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
+from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient, MAX_GRADIENT_COLORS
 from openpilot.system.ui.widgets import Widget
 
 from openpilot.selfdrive.ui.sunnypilot.onroad.model_renderer import ChevronMetrics, ModelRendererSP
@@ -74,6 +74,12 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       end=(0.0, 0.0),  # Top of path
       colors=[],
       stops=[],
+    )
+    self._path_gradient = Gradient(
+      start=(0.0, 1.0),  # Bottom of path
+      end=(0.0, 0.0),  # Top of path
+      colors=[],
+      stops=[0.0, 0.5, 1.0],
     )
 
     # Get longitudinal control setting from car parameters
@@ -141,17 +147,30 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
-    self._path.raw_points = np.array([model.position.x, np.array(model.position.y) + self._camera_offset, model.position.z], dtype=np.float32).T
+    camera_offset = np.float32(self._camera_offset)
+    self._path.raw_points = np.column_stack((
+      np.asarray(model.position.x, dtype=np.float32),
+      np.asarray(model.position.y, dtype=np.float32) + camera_offset,
+      np.asarray(model.position.z, dtype=np.float32),
+    ))
 
     for i, lane_line in enumerate(model.laneLines):
-      self._lane_lines[i].raw_points = np.array([lane_line.x, np.array(lane_line.y) + self._camera_offset, lane_line.z], dtype=np.float32).T
+      self._lane_lines[i].raw_points = np.column_stack((
+        np.asarray(lane_line.x, dtype=np.float32),
+        np.asarray(lane_line.y, dtype=np.float32) + camera_offset,
+        np.asarray(lane_line.z, dtype=np.float32),
+      ))
 
     for i, road_edge in enumerate(model.roadEdges):
-      self._road_edges[i].raw_points = np.array([road_edge.x, np.array(road_edge.y) + self._camera_offset, road_edge.z], dtype=np.float32).T
+      self._road_edges[i].raw_points = np.column_stack((
+        np.asarray(road_edge.x, dtype=np.float32),
+        np.asarray(road_edge.y, dtype=np.float32) + camera_offset,
+        np.asarray(road_edge.z, dtype=np.float32),
+      ))
 
-    self._lane_line_probs = np.array(model.laneLineProbs, dtype=np.float32)
-    self._road_edge_stds = np.array(model.roadEdgeStds, dtype=np.float32)
-    self._acceleration_x = np.array(model.acceleration.x, dtype=np.float32)
+    self._lane_line_probs = np.asarray(model.laneLineProbs, dtype=np.float32)
+    self._road_edge_stds = np.asarray(model.roadEdgeStds, dtype=np.float32)
+    self._acceleration_x = np.asarray(model.acceleration.x, dtype=np.float32)
 
   def _update_leads(self, radar_state, path_x_array):
     """Update positions of lead vehicles"""
@@ -234,12 +253,8 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       i += 1 + (1 if (i + 2) < max_len else 0)
 
     # Store the gradient in the path object
-    self._exp_gradient = Gradient(
-      start=(0.0, 1.0),  # Bottom of path
-      end=(0.0, 0.0),  # Top of path
-      colors=segment_colors,
-      stops=gradient_stops,
-    )
+    self._exp_gradient.colors = segment_colors[:MAX_GRADIENT_COLORS]
+    self._exp_gradient.stops = gradient_stops[:MAX_GRADIENT_COLORS]
 
   def _update_lead_vehicle(self, d_rel, v_rel, point, rect):
     speed_buff, lead_buff = 10.0, 40.0
@@ -304,14 +319,8 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     else:
       # Blend throttle/no throttle colors based on transition
       blend_factor = round(self._blend_filter.x * 100) / 100
-      blended_colors = self._blend_colors(NO_THROTTLE_COLORS, THROTTLE_COLORS, blend_factor)
-      gradient = Gradient(
-        start=(0.0, 1.0),  # Bottom of path
-        end=(0.0, 0.0),  # Top of path
-        colors=blended_colors,
-        stops=[0.0, 0.5, 1.0],
-      )
-      draw_polygon(self._rect, self._path.projected_points, gradient=gradient)
+      self._path_gradient.colors = self._blend_colors(NO_THROTTLE_COLORS, THROTTLE_COLORS, blend_factor)
+      draw_polygon(self._rect, self._path.projected_points, gradient=self._path_gradient)
 
   def _draw_lead_indicator(self):
     # Draw lead vehicles if available
@@ -327,8 +336,7 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     """Get the index corresponding to the given path distance"""
     if len(pos_x_array) == 0:
       return 0
-    indices = np.where(pos_x_array <= path_distance)[0]
-    return indices[-1] if indices.size > 0 else 0
+    return int(max(np.searchsorted(pos_x_array, path_distance, side="right") - 1, 0))
 
   def _map_to_screen(self, in_x, in_y, in_z):
     """Project a point in car space to screen space"""
@@ -368,21 +376,17 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     if points.shape[0] == 0:
       return np.empty((0, 2), dtype=np.float32)
 
-    N = points.shape[0]
-    # Generate left and right 3D points in one array using broadcasting
-    offsets = np.array([[0, -y_off, z_off], [0, y_off, z_off]], dtype=np.float32)
-    points_3d = points[None, :, :] + offsets[:, None, :]  # Shape: 2xNx3
-    points_3d = points_3d.reshape(2 * N, 3)  # Shape: (2*N)x3
-
-    # Transform all points to projected space in one operation
-    proj = self._car_space_transform @ points_3d.T  # Shape: 3x(2*N)
-    proj = proj.reshape(3, 2, N)
-    left_proj = proj[:, 0, :]
-    right_proj = proj[:, 1, :]
+    y_off = np.float32(y_off)
+    z_off = np.float32(z_off)
+    proj = self._car_space_transform @ points.T
+    y_offset = self._car_space_transform[:, 1] * y_off
+    z_offset = self._car_space_transform[:, 2] * z_off
+    left_proj = proj + z_offset[:, None] - y_offset[:, None]
+    right_proj = proj + z_offset[:, None] + y_offset[:, None]
 
     # Filter points where z is sufficiently large
     valid_proj = (np.abs(left_proj[2]) >= 1e-6) & (np.abs(right_proj[2]) >= 1e-6)
-    if not np.any(valid_proj):
+    if not valid_proj.any():
       return np.empty((0, 2), dtype=np.float32)
 
     # Compute screen coordinates

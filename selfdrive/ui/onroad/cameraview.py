@@ -91,6 +91,7 @@ class CameraView(Widget):
     # EGL resources
     self.egl_images: dict[int, EGLImage] = {}
     self.egl_texture: rl.Texture | None = None
+    self._last_egl_idx: int | None = None
 
     self._placeholder_color: rl.Color | None = None
 
@@ -190,7 +191,8 @@ class CameraView(Widget):
     # Try to get a new buffer without blocking
     buffer = self.client.recv(timeout_ms=0)
     if buffer:
-      self._texture_needs_update = True
+      if self.frame is None or buffer.frame_id != self.frame.frame_id:
+        self._texture_needs_update = True
       self.frame = buffer
     elif not self.client.is_connected():
       # ensure we clear the displayed frame when the connection is lost
@@ -246,11 +248,13 @@ class CameraView(Widget):
         return
 
     # Update texture dimensions to match current frame
-    self.egl_texture.width = self.frame.width
-    self.egl_texture.height = self.frame.height
+    if idx != self._last_egl_idx:
+      self.egl_texture.width = self.frame.width
+      self.egl_texture.height = self.frame.height
 
-    # Bind the EGL image to our texture
-    bind_egl_image_to_texture(self.egl_texture.id, egl_image)
+      # Bind the EGL image to our texture
+      bind_egl_image_to_texture(self.egl_texture.id, egl_image)
+      self._last_egl_idx = idx
 
     # Render with shader
     rl.begin_shader_mode(self.shader)
@@ -357,6 +361,7 @@ class CameraView(Widget):
       for data in self.egl_images.values():
         destroy_egl_image(data)
       self.egl_images = {}
+      self._last_egl_idx = None
 
 
 if __name__ == "__main__":
