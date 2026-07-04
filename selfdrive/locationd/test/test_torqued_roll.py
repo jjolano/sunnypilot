@@ -5,7 +5,14 @@ import pytest
 from cereal import car, messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.locationd.torqued import TorqueEstimator, MIN_BUCKET_POINTS, MIN_VEL, STEER_BUCKET_BOUNDS, STEER_MIN_THRESHOLD
+from openpilot.selfdrive.locationd.helpers import NPQueue
+from openpilot.selfdrive.locationd.torqued import (
+  MIN_BUCKET_POINTS,
+  MIN_VEL,
+  STEER_BUCKET_BOUNDS,
+  STEER_MIN_THRESHOLD,
+  TorqueEstimator,
+)
 from openpilot.sunnypilot.custom.lateral.roll_comp_learning import (
   blend_roll_comp_profile,
   format_roll_comp_profile,
@@ -98,6 +105,15 @@ def _make_estimator(mode="off"):
   est = TorqueEstimator(make_torque_cp())
   est.update_use_params()
   return est
+
+
+def test_npqueue_wraparound_keeps_insertion_order():
+  queue = NPQueue(maxlen=3, rowsize=2)
+  for i in range(5):
+    queue.append([float(i), float(-i)])
+
+  np.testing.assert_array_equal(queue.arr, np.array([[2.0, -2.0], [3.0, -3.0], [4.0, -4.0]]))
+  assert len(queue) == 3
 
 
 def test_roll_comp_off_collects_nothing():

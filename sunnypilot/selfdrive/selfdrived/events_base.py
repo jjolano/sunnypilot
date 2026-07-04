@@ -2,6 +2,7 @@ import bisect
 from enum import IntEnum
 from abc import abstractmethod
 from collections.abc import Callable
+from typing import cast
 
 from cereal import log, car
 import cereal.messaging as messaging
@@ -99,6 +100,10 @@ class EventsBase:
     self.events: list[int] = []
     self.static_events: list[int] = []
     self.event_counters = {}
+    self._event_counts: dict[int, int] = {}
+    self._static_event_counts: dict[int, int] = {}
+    self._event_type_counts: dict[str, int] = {}
+    self._static_event_type_counts: dict[str, int] = {}
 
   @property
   def names(self) -> list[int]:
@@ -107,32 +112,67 @@ class EventsBase:
   def __len__(self) -> int:
     return len(self.events)
 
+  @staticmethod
+  def _remove_sorted(items: list[int], event_name: int) -> bool:
+    idx = bisect.bisect_left(items, event_name)
+    if idx < len(items) and items[idx] == event_name:
+      items.pop(idx)
+      return True
+    return False
+
+  def _adjust_cache(self, counts: dict[int, int], type_counts: dict[str, int],
+                    event_name: int, delta: int, event_types: dict[str, Alert | Callable[..., Alert]]) -> None:
+    count = counts.get(event_name, 0) + delta
+    if count > 0:
+      counts[event_name] = count
+    else:
+      counts.pop(event_name, None)
+
+    for event_type in event_types:
+      type_count = type_counts.get(event_type, 0) + delta
+      if type_count > 0:
+        type_counts[event_type] = type_count
+      else:
+        type_counts.pop(event_type, None)
+
   def add(self, event_name: int, static: bool = False) -> None:
+    event_types = self.get_events_mapping().get(event_name, {})
+    self.event_counters.setdefault(event_name, 0)
     if static:
       bisect.insort(self.static_events, event_name)
+      self._adjust_cache(self._static_event_counts, self._static_event_type_counts, event_name, 1, event_types)
+
     bisect.insort(self.events, event_name)
+    self._adjust_cache(self._event_counts, self._event_type_counts, event_name, 1, event_types)
 
   def clear(self) -> None:
-    self.event_counters = {k: (v + 1 if k in self.events else 0) for k, v in self.event_counters.items()}
+    current_counts = self._event_counts
+    for event_name in current_counts:
+      self.event_counters.setdefault(event_name, 0)
+    self.event_counters = {k: (v + 1 if current_counts.get(k, 0) else 0) for k, v in self.event_counters.items()}
     self.events = self.static_events.copy()
+    self._event_counts = self._static_event_counts.copy()
+    self._event_type_counts = self._static_event_type_counts.copy()
 
   def contains(self, event_type: str) -> bool:
-    return any(event_type in self.get_events_mapping().get(e, {}) for e in self.events)
+    return self._event_type_counts.get(event_type, 0) > 0
 
   def create_alerts(self, event_types: list[str], callback_args=None):
     if callback_args is None:
       callback_args = []
 
     ret = []
+    mapping = self.get_events_mapping()
     for e in self.events:
-      types = self.get_events_mapping()[e].keys()
+      event_alerts = mapping[e]
+      event_count = self.event_counters.get(e, 0)
       for et in event_types:
-        if et in types:
-          alert = self.get_events_mapping()[e][et]
+        if et in event_alerts:
+          alert = event_alerts[et]
           if not isinstance(alert, Alert):
-            alert = alert(*callback_args)
+            alert = cast(Callable[..., Alert], alert)(*callback_args)
 
-          if DT_CTRL * (self.event_counters[e] + 1) >= alert.creation_delay:
+          if DT_CTRL * (event_count + 1) >= alert.creation_delay:
             alert.alert_type = f"{self.get_event_name(e)}/{et}"
             alert.event_type = et
             ret.append(alert)
@@ -140,34 +180,41 @@ class EventsBase:
 
   def add_from_msg(self, events):
     for e in events:
-      bisect.insort(self.events, e.name.raw)
+      event_name = e.name.raw
+      event_types = self.get_events_mapping().get(event_name, {})
+      self.event_counters.setdefault(event_name, 0)
+      bisect.insort(self.events, event_name)
+      self._adjust_cache(self._event_counts, self._event_type_counts, event_name, 1, event_types)
 
   def to_msg(self):
     ret = []
+    mapping = self.get_events_mapping()
     for event_name in self.events:
       event = self.get_event_msg_type().new_message()
       event.name = event_name
-      for event_type in self.get_events_mapping().get(event_name, {}):
+      for event_type in mapping.get(event_name, {}):
         setattr(event, event_type, True)
       ret.append(event)
     return ret
 
   def has(self, event_name: int) -> bool:
-    return event_name in self.events
+    return self._event_counts.get(event_name, 0) > 0
 
   def contains_in_list(self, events_list: list[int]) -> bool:
-    return any(event_name in self.events for event_name in events_list)
+    return any(self._event_counts.get(event_name, 0) > 0 for event_name in events_list)
 
   def remove(self, event_name: int, static: bool = False) -> None:
-    if static and event_name in self.static_events:
-      self.static_events.remove(event_name)
+    event_types = self.get_events_mapping().get(event_name, {})
 
-    if event_name in self.events:
-      self.event_counters[event_name] = self.event_counters[event_name] + 1
-      self.events.remove(event_name)
+    if static and self._remove_sorted(self.static_events, event_name):
+      self._adjust_cache(self._static_event_counts, self._static_event_type_counts, event_name, -1, event_types)
+
+    if self._remove_sorted(self.events, event_name):
+      self.event_counters[event_name] = self.event_counters.get(event_name, 0) + 1
+      self._adjust_cache(self._event_counts, self._event_type_counts, event_name, -1, event_types)
 
   @abstractmethod
-  def get_events_mapping(self) -> dict[int, dict[str, Alert | AlertCallbackType]]:
+  def get_events_mapping(self) -> dict[int, dict[str, Alert | Callable[..., Alert]]]:
     raise NotImplementedError
 
   @abstractmethod

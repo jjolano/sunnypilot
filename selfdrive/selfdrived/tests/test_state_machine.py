@@ -90,3 +90,35 @@ class TestStateMachine:
         self.state_machine.update(self.events)
         assert self.state_machine.state == state
         self.events.clear()
+
+  def test_events_container_caches(self, monkeypatch):
+    events = Events()
+    event_name = max(EVENTS) + 1
+    monkeypatch.setitem(EVENTS, event_name, {ET.WARNING: NormalPermanentAlert("alert")})
+
+    events.add(event_name, static=True)
+    events.clear()
+
+    assert events.has(event_name)
+    assert events.contains(ET.WARNING)
+    assert events.contains_in_list([event_name])
+    assert events.names == [event_name]
+    assert events.event_counters[event_name] == 1
+
+    events.add(event_name)
+    events.add(event_name)
+    assert events.names == [event_name, event_name, event_name]
+
+    events.remove(event_name)
+    assert events.has(event_name)
+    events.remove(event_name)
+    assert events.has(event_name)
+    assert events.contains(ET.WARNING)
+
+    events.remove(event_name, static=True)
+    assert not events.has(event_name)
+    assert not events.contains(ET.WARNING)
+
+    events.clear()
+    assert not events.has(event_name)
+    assert events.event_counters[event_name] == 0

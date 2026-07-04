@@ -54,17 +54,46 @@ def rotate_std(rot_matrix, std_in):
 class NPQueue:
   def __init__(self, maxlen: int, rowsize: int) -> None:
     self.maxlen = maxlen
-    self.arr = np.empty((0, rowsize))
+    self.rowsize = rowsize
+    self._arr = np.empty((maxlen, rowsize))
+    self._len = 0
+    self._start = 0
 
   def __len__(self) -> int:
-    return len(self.arr)
+    return self._len
+
+  @property
+  def arr(self) -> np.ndarray:
+    if self._len == 0:
+      return self._arr[:0]
+    if self._len < self.maxlen or self._start == 0:
+      return self._arr[:self._len]
+    return np.concatenate((self._arr[self._start:], self._arr[:self._start]), axis=0)
+
+  @arr.setter
+  def arr(self, arr: Any) -> None:
+    arr = np.asarray(arr)
+    if arr.ndim != 2:
+      raise ValueError(f"expected 2D array, got shape {arr.shape}")
+    if arr.shape[1] != self.rowsize:
+      raise ValueError(f"expected rowsize {self.rowsize}, got {arr.shape[1]}")
+
+    if arr.shape[0] > self.maxlen:
+      arr = arr[-self.maxlen:]
+
+    self._arr = np.empty((self.maxlen, self.rowsize), dtype=arr.dtype)
+    self._len = int(arr.shape[0])
+    self._start = 0
+    if self._len:
+      self._arr[:self._len] = arr
 
   def append(self, pt: list[float]) -> None:
-    if len(self.arr) < self.maxlen:
-      self.arr = np.append(self.arr, [pt], axis=0)
+    idx = (self._start + self._len) % self.maxlen
+    self._arr[idx] = pt
+    if self._len < self.maxlen:
+      self._len += 1
     else:
-      self.arr[:-1] = self.arr[1:]
-      self.arr[-1] = pt
+      self._start = (self._start + 1) % self.maxlen
 
 
 class PointBuckets:
@@ -110,10 +139,10 @@ class ParameterEstimator:
   def reset(self) -> None:
     raise NotImplementedError
 
-  def handle_log(self, t: int, which: str, msg: log.Event) -> None:
+  def handle_log(self, t: int, which: str, msg: Any) -> None:
     raise NotImplementedError
 
-  def get_msg(self, valid: bool, with_points: bool) -> log.Event:
+  def get_msg(self, valid: bool, with_points: bool) -> Any:
     raise NotImplementedError
 
 
@@ -128,7 +157,7 @@ class Measurement:
     self.xyz_std: np.ndarray = xyz_std
 
   @classmethod
-  def from_measurement_xyz(cls, measurement: log.LivePose.XYZMeasurement) -> 'Measurement':
+  def from_measurement_xyz(cls, measurement: Any) -> 'Measurement':
     return cls(
       xyz=np.array([measurement.x, measurement.y, measurement.z]),
       xyz_std=np.array([measurement.xStd, measurement.yStd, measurement.zStd])
@@ -143,7 +172,7 @@ class Pose:
     self.angular_velocity = angular_velocity
 
   @classmethod
-  def from_live_pose(cls, live_pose: log.LivePose) -> 'Pose':
+  def from_live_pose(cls, live_pose: Any) -> 'Pose':
     return Pose(
       orientation=Measurement.from_measurement_xyz(live_pose.orientationNED),
       velocity=Measurement.from_measurement_xyz(live_pose.velocityDevice),
@@ -176,7 +205,7 @@ class PoseCalibrator:
 
     return Pose(ned_from_calib_euler, velocity_calib, acceleration_calib, angular_velocity_calib)
 
-  def feed_live_calib(self, live_calib: log.LiveCalibrationData):
+  def feed_live_calib(self, live_calib: Any):
     calib_rpy = np.array(live_calib.rpyCalib)
     device_from_calib = rot_from_euler(calib_rpy)
     self.calib_from_device = device_from_calib.T
