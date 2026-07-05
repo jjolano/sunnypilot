@@ -53,6 +53,7 @@ class UIStateSP:
     self.standstill_timer: bool = False
     self.sunnylink_enabled: bool = False
     self.torque_bar: bool = False
+    self.turn_signals: bool = False
     self.enforce_torque_control: bool = False
     self.custom_torque_params: bool = False
     self.torque_override_enabled: bool = False
