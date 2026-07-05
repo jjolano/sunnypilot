@@ -8,6 +8,7 @@ from openpilot.sunnypilot.custom.lateral.demand.types import DEMAND_SOURCE_MODEL
 from openpilot.sunnypilot.custom.lateral.demand.lane_geometry import (
   LaneGeometryResult,
   evaluate_lane_geometry,
+  evaluate_single_line_geometry,
 )
 
 
@@ -27,6 +28,27 @@ LANE_CENTERING_ASSIST_GEOMETRY_GROWTH_DEADBAND = 0.06
 LANE_CENTERING_ASSIST_GEOMETRY_STRAIGHT_LATERAL_DEADBAND = 0.18
 LANE_CENTERING_ASSIST_GEOMETRY_STRAIGHT_GROWTH_DEADBAND = 0.10
 LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES = 20  # 0.2 s at 100 Hz
+# Exit hysteresis: route 0000025a showed geometry mode flipping 12-50x/min because engage
+# has 0.2 s persistence but disengage was instantaneous on any validity flicker. Hold the
+# last valid geometry briefly through dropouts; hard gates still drop the mode instantly.
+LANE_CENTERING_ASSIST_GEOMETRY_EXIT_HOLD_FRAMES = 30  # 0.3 s at 100 Hz
+
+# One-confident-line centering (route 0000025a drift diagnosis): both-line geometry is off
+# in exactly the urban regime where slow off-center drift happens. One confident inner line
+# + a recently-learned lane width still defines lane center. Shadow mode logs the would-be
+# candidate nudge without touching demand; apply feeds the one-line geometry through the
+# unchanged geometry-mode machinery (persistence, deadbands, steady-offset, sign veto).
+LANE_CENTERING_ONE_LINE_MODES = frozenset(("off", "shadow", "apply"))
+LANE_CENTERING_ONE_LINE_WIDTH_TAU_S = 5.0
+LANE_CENTERING_ONE_LINE_WIDTH_MAX_AGE_S = 120.0
+
+
+def sanitize_one_line_centering_mode(mode: object) -> str:
+  try:
+    mode_s = str(mode).strip().lower()
+  except Exception:
+    return "off"
+  return mode_s if mode_s in LANE_CENTERING_ONE_LINE_MODES else "off"
 LANE_CENTERING_ASSIST_SIGN_HYSTERESIS_NUDGE = 1e-6
 LANE_CENTERING_ASSIST_MAX_LAT_ACCEL = 0.08
 LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_BP = [10.0, 20.0, 30.0]
@@ -101,6 +123,7 @@ class LaneCenteringAssistInputs:
   demand_source: str = DEMAND_SOURCE_MODEL_PATH
   lane_lines: Sequence[Any] = ()
   lane_line_stds: Sequence[float] = ()
+  one_line_mode: str = "off"
 
 
 @dataclass(frozen=True)
@@ -179,10 +202,17 @@ class LaneCenteringAssistTracker:
     self._reason_cooldown_ticks = 0
     self._geometry_persistence_ticks = 0
     self._geometry_active = False
+    self._geometry_hold_ticks = 0
+    self._last_valid_geometry: LaneGeometryResult | None = None
+    self._learned_width = float("nan")
+    self._learned_width_age_s = float("inf")
+    self._one_line_debug: dict[str, float | str | bool] = _inactive_one_line_debug("off")
     self._relax = _CenterChaseRelaxation()
 
   def update(self, inputs: LaneCenteringAssistInputs, dt: float) -> LaneCenteringAssistResult:
     dt = max(_finite_float(dt), 0.0)
+    one_line_mode = sanitize_one_line_centering_mode(inputs.one_line_mode)
+    self._one_line_debug = _inactive_one_line_debug(one_line_mode)
     gate_reason = _gate_reason(inputs)
     if gate_reason is not None:
       if inputs.path_reason != LANE_CENTERING_ASSIST_OK_REASON:
@@ -201,7 +231,20 @@ class LaneCenteringAssistTracker:
     # Apply geometry-corrected errors only after a short persistence period and only
     # while the harder geometry gates are satisfied. Existing LCA gates still apply.
     geometry = _evaluate_geometry(inputs, path_state)
+    self._update_learned_width(geometry, dt)
+
+    one_line: LaneGeometryResult | None = None
+    if one_line_mode != "off" and not geometry.valid:
+      one_line = self._evaluate_one_line(inputs, path_state)
+      if one_line_mode == "apply" and one_line.valid:
+        # One-line geometry substitutes for both-line geometry and flows through the
+        # unchanged persistence / deadband / steady-offset / sign-veto machinery below.
+        geometry = one_line
+
+    geometry_hold_active = False
     if geometry.valid:
+      self._geometry_hold_ticks = LANE_CENTERING_ASSIST_GEOMETRY_EXIT_HOLD_FRAMES
+      self._last_valid_geometry = geometry
       if self._geometry_active:
         self._geometry_persistence_ticks = LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES
       else:
@@ -211,9 +254,18 @@ class LaneCenteringAssistTracker:
         )
       if self._geometry_persistence_ticks >= LANE_CENTERING_ASSIST_GEOMETRY_PERSISTENCE_FRAMES:
         self._geometry_active = True
+    elif self._geometry_active and self._geometry_hold_ticks > 0 and self._last_valid_geometry is not None:
+      # Exit hysteresis: keep the last valid geometry basis through brief validity
+      # dropouts instead of flipping the error basis the same frame. Hard gates still
+      # drop geometry mode instantly via _hard_block.
+      self._geometry_hold_ticks -= 1
+      geometry = self._last_valid_geometry
+      geometry_hold_active = True
     else:
       self._geometry_persistence_ticks = 0
       self._geometry_active = False
+      self._geometry_hold_ticks = 0
+      self._last_valid_geometry = None
 
     geometry_mode = self._geometry_active
     if geometry_mode:
@@ -234,6 +286,22 @@ class LaneCenteringAssistTracker:
     confidence = _confidence(inputs, geometry_mode, geometry_confidence)
     straight_cruise = _straight_cruise(inputs)
     max_nudge = _max_nudge_curvature(inputs.v_ego, straight_cruise)
+
+    one_line_applied = (one_line_mode == "apply" and one_line is not None and one_line.valid and
+                        geometry_mode and geometry is not None and geometry.source == "single_line")
+    self._one_line_debug = {
+      "lane_centering_one_line_mode": one_line_mode,
+      "lane_centering_one_line_active": bool(one_line is not None and one_line.valid),
+      "lane_centering_one_line_applied": bool(one_line_applied),
+      "lane_centering_one_line_reason": one_line.reason if one_line is not None else "not_evaluated",
+      "lane_centering_one_line_lateral_error": one_line.lateral_error if one_line is not None else 0.0,
+      "lane_centering_one_line_predicted_error": one_line.predicted_lateral_error if one_line is not None else 0.0,
+      "lane_centering_one_line_candidate_nudge": _one_line_candidate_nudge(one_line, straight_cruise, max_nudge),
+      "lane_centering_one_line_learned_width": self._learned_width if math.isfinite(self._learned_width) else 0.0,
+      "lane_centering_one_line_confidence": one_line.confidence if one_line is not None else 0.0,
+      "lane_centering_geometry_hold_active": bool(geometry_hold_active),
+    }
+
     unrelaxed_raw_nudge = confidence * (
       LANE_CENTERING_ASSIST_LATERAL_GAIN * lateral_error +
       LANE_CENTERING_ASSIST_HEADING_GAIN * heading_error +
@@ -322,8 +390,38 @@ class LaneCenteringAssistTracker:
              max_nudge, straight_cruise, geometry=geometry, geometry_mode=geometry_mode),
     ))
 
+  def _update_learned_width(self, geometry: LaneGeometryResult, dt: float) -> None:
+    """Track lane width from valid both-line geometry for one-line center estimation."""
+    if geometry.valid and geometry.source == "lane_lines":
+      width = float(geometry.width_near)
+      if math.isfinite(width) and width > 0.0:
+        if not math.isfinite(self._learned_width):
+          self._learned_width = width
+        else:
+          alpha = dt / (LANE_CENTERING_ONE_LINE_WIDTH_TAU_S + dt)
+          self._learned_width += alpha * (width - self._learned_width)
+        self._learned_width_age_s = 0.0
+        return
+    self._learned_width_age_s += dt
+
+  def _evaluate_one_line(self, inputs: LaneCenteringAssistInputs, path_state: _LaneCenteringPathState) -> LaneGeometryResult:
+    stale = self._learned_width_age_s > LANE_CENTERING_ONE_LINE_WIDTH_MAX_AGE_S
+    return evaluate_single_line_geometry(
+      lane_lines=inputs.lane_lines,
+      lane_line_probs=inputs.lane_line_probs,
+      lane_line_stds=inputs.lane_line_stds,
+      position_x=path_state.position_x,
+      position_y=path_state.position_y,
+      near_x=path_state.near_x,
+      preview_x=path_state.preview_x,
+      learned_width=float("nan") if stale else self._learned_width,
+      model_y_near=path_state.lateral_error,
+      model_y_preview=path_state.predicted_lateral_error,
+    )
+
   def _with_relax(self, result: LaneCenteringAssistResult) -> LaneCenteringAssistResult:
     debug = dict(result.debug)
+    debug.update(self._one_line_debug)
     debug.update({
       "lane_centering_relax_active": self._relax.active,
       "lane_centering_relax_reason_bits": self._relax.reason_bits,
@@ -371,6 +469,8 @@ class LaneCenteringAssistTracker:
     self._active_sign = 0
     self._geometry_persistence_ticks = 0
     self._geometry_active = False
+    self._geometry_hold_ticks = 0
+    self._last_valid_geometry = None
     return self._with_relax(LaneCenteringAssistResult(
       False, 0.0, lateral_error, heading_error, predicted_lateral_error, 0.0, reason,
       _debug(reason=reason, lateral_error=lateral_error, heading_error=heading_error,
@@ -682,6 +782,41 @@ def _curve_lat_accel(inputs: LaneCenteringAssistInputs) -> float:
   max_curvature = max(abs(_finite_float(c)) for c in curvatures)
   speed = max(abs(_finite_float(inputs.v_ego)), LANE_CENTERING_ASSIST_SPEED_FLOOR)
   return max_curvature * speed**2
+
+
+def _inactive_one_line_debug(mode: str) -> dict[str, float | str | bool]:
+  return {
+    "lane_centering_one_line_mode": mode,
+    "lane_centering_one_line_active": False,
+    "lane_centering_one_line_applied": False,
+    "lane_centering_one_line_reason": "not_evaluated",
+    "lane_centering_one_line_lateral_error": 0.0,
+    "lane_centering_one_line_predicted_error": 0.0,
+    "lane_centering_one_line_candidate_nudge": 0.0,
+    "lane_centering_one_line_learned_width": 0.0,
+    "lane_centering_one_line_confidence": 0.0,
+    "lane_centering_geometry_hold_active": False,
+  }
+
+
+def _one_line_candidate_nudge(one_line: LaneGeometryResult | None, straight_cruise: bool, max_nudge: float) -> float:
+  """Stateless would-be steady-offset nudge for shadow telemetry.
+
+  Mirrors the geometry-mode raw-nudge formula and its wider deadband, without the
+  build/release filtering. Validation compares this candidate's direction and timing
+  against the drift the car subsequently corrected.
+  """
+  if one_line is None or not one_line.valid:
+    return 0.0
+  deadband = _lateral_deadband(straight_cruise, True)
+  err = one_line.lateral_error
+  if abs(err) <= deadband:
+    return 0.0
+  raw = one_line.confidence * (
+    LANE_CENTERING_ASSIST_LATERAL_GAIN * err +
+    LANE_CENTERING_ASSIST_GROWTH_GAIN * (one_line.predicted_lateral_error - err)
+  )
+  return float(np.clip(raw, -max_nudge, max_nudge))
 
 
 def _soft_deadband(value: float, threshold: float) -> float:

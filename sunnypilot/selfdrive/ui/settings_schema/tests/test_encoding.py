@@ -113,6 +113,16 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert lane_rate_enum.values == ["off", "shadow", "apply"]
   assert lane_rate_enum.labels == ["Off", "Monitor only", "Apply"]
 
+  lane_fit_enum = homogeneous_string_options(find_item(STEERING, "LaneFitSourceMode"))
+  assert lane_fit_enum is not None
+  assert lane_fit_enum.values == ["off", "shadow", "apply"]
+  assert lane_fit_enum.labels == ["Off", "Monitor only", "Apply"]
+
+  one_line_enum = homogeneous_string_options(find_item(STEERING, "LaneCenteringOneLineMode"))
+  assert one_line_enum is not None
+  assert one_line_enum.values == ["off", "shadow", "apply"]
+  assert one_line_enum.labels == ["Off", "Monitor only", "Apply"]
+
   cut_in_enum = homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode"))
   assert cut_in_enum is not None
   assert cut_in_enum.values == ["off", "shadow", "apply"]
@@ -170,6 +180,26 @@ def test_lane_rate_damping_string_index_defaults_to_off():
   assert string_option_index("shadow", enum, "LaneRateDampingMode") == 1
   assert string_option_index("apply", enum, "LaneRateDampingMode") == 2
   assert string_option_index("bad", enum, "LaneRateDampingMode") == 0
+
+
+def test_lane_fit_source_string_index_defaults_to_off():
+  enum = homogeneous_string_options(find_item(STEERING, "LaneFitSourceMode"))
+  assert enum is not None
+  assert string_option_index("", enum, "LaneFitSourceMode") == 0
+  assert string_option_index("off", enum, "LaneFitSourceMode") == 0
+  assert string_option_index("shadow", enum, "LaneFitSourceMode") == 1
+  assert string_option_index("apply", enum, "LaneFitSourceMode") == 2
+  assert string_option_index("bad", enum, "LaneFitSourceMode") == 0
+
+
+def test_lane_centering_one_line_string_index_defaults_to_off():
+  enum = homogeneous_string_options(find_item(STEERING, "LaneCenteringOneLineMode"))
+  assert enum is not None
+  assert string_option_index("", enum, "LaneCenteringOneLineMode") == 0
+  assert string_option_index("off", enum, "LaneCenteringOneLineMode") == 0
+  assert string_option_index("shadow", enum, "LaneCenteringOneLineMode") == 1
+  assert string_option_index("apply", enum, "LaneCenteringOneLineMode") == 2
+  assert string_option_index("bad", enum, "LaneCenteringOneLineMode") == 0
 
 
 def test_shadow_observability_string_indexes_default_to_off():

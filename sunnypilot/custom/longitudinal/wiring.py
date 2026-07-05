@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.coast_horizon import DEFAULT_COAST_DECEL, DragEstimator
 from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs
 from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
   MODE_APPLY_CONSERVATIVE as CURVE_TRAFFIC_MODE_APPLY_CONSERVATIVE,
@@ -109,9 +110,16 @@ def _debug_trace_mode(value: Any) -> str:
   return text if text in ("off", "log") else "off"
 
 
-def _coast_accel(pitch: float) -> float:
-  # Inlined from longitudinal_planner.get_coast_accel (importing it would be circular).
-  return math.sin(_f(pitch)) * -5.65 - 0.3
+def _map_coast_mode(value: Any) -> str:
+  text = str(value or "").strip().lower()
+  return text if text in ("off", "shadow", "apply") else "off"
+
+
+def _coast_accel(pitch: float, rolling_coast_decel: float = DEFAULT_COAST_DECEL) -> float:
+  # Grade term inlined from longitudinal_planner.get_coast_accel (importing it would be
+  # circular); the flat-road rolling+aero term comes from the online DragEstimator instead
+  # of that helper's fixed -0.3 proxy.
+  return math.sin(_f(pitch)) * -5.65 + _f(rolling_coast_decel, default=DEFAULT_COAST_DECEL)
 
 
 def _model_stop_distance(model: Any) -> float | None:
@@ -163,6 +171,9 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        scc_map_state: Any = None,
                        scc_map_target_lat: float = 0.0,
                        scc_map_target_lon: float = 0.0,
+                       scc_map_coast_v_target: float = 0.0,
+                       scc_map_coast_distance: float = 0.0,
+                       map_coast_mode: str = "off",
                        sla_distance: float | None = None,
                        research_actuation_allowed: bool = False,
                        current_lat_accel: float | None = None,
@@ -209,6 +220,11 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     speed_limit_distance=speed_limit_distance,
     curve_active=curve_active, curve_a_target=float(curve_a_target), curve_v_target=curve_v_target,
     curve_distance=curve_distance, curve_source=curve_source,
+    # Map-coast tier: targets flow regardless of mode (shadow needs them for telemetry);
+    # actuation eligibility is decided in the stack from mode + research gate.
+    map_coast_mode=map_coast_mode,
+    map_coast_v_target=max(0.0, _f(scc_map_coast_v_target)),
+    map_coast_distance=max(0.0, _f(scc_map_coast_distance)),
     long_active=bool(long_active), force_slow_decel=bool(force_slow_decel),
     brake_pressed=brake_pressed, gas_pressed=gas_pressed,
     mode=mode, sources=sources, personality=personality, model_msg=model_msg,
@@ -240,6 +256,7 @@ class CustomLongitudinalAdapter:
     self._params = params
     self._stack = CustomLongitudinalStack()
     self._stop_trust = StopTrustLearner()
+    self._drag = DragEstimator()
     self._tick = 0
     self.enabled = False
     self.mode = LongitudinalMode.SCC
@@ -249,6 +266,7 @@ class CustomLongitudinalAdapter:
     self.curve_traffic_advisor_mode = CURVE_TRAFFIC_MODE_OFF
     self.standstill_release_confidence_mode = "off"
     self.scenario_context_mode = "off"
+    self.map_coast_mode = "off"
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     self.research_actuation_allowed = False
@@ -297,6 +315,13 @@ class CustomLongitudinalAdapter:
         curve_traffic_advisor_value = None
       self.curve_traffic_advisor_mode = _curve_traffic_advisor_mode(curve_traffic_advisor_value)
 
+      # Map-coast tier mode, isolated for the same reason; unknown values fail closed to off.
+      try:
+        map_coast_value = _param_string(p, "MapCoastMode")
+      except Exception:
+        map_coast_value = None
+      self.map_coast_mode = _map_coast_mode(map_coast_value)
+
       try:
         self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
         self.debug_trace_mode = _debug_trace_mode(_param_string(p, "LongitudinalDebugTraceMode"))
@@ -340,9 +365,15 @@ class CustomLongitudinalAdapter:
       model_stop_distance = _model_stop_distance(model)
 
       cc = sm['carControl']
+      brake_pressed = bool(getattr(cs, "brakePressed", False))
+      long_active = bool(getattr(cc, "longActive", False))
       ned = getattr(cc, "orientationNED", None)
       pitch = ned[1] if ned is not None and len(ned) == 3 else None
-      accel_coast = _coast_accel(pitch) if pitch is not None else 0.0
+      if pitch is not None:
+        # Engaged frames count as on-throttle: system throttle/brake don't set the pedal
+        # flags, so only manual off-pedal coasting gives an unbiased drag sample.
+        self._drag.update(v_ego, a_ego, pitch, on_throttle=gas_pressed or long_active, on_brake=brake_pressed)
+      accel_coast = _coast_accel(pitch, self._drag.coast_decel) if pitch is not None else 0.0
 
       inputs = build_stack_inputs(
         v_ego=v_ego, a_ego=a_ego, v_cruise=v_cruise, seed_a_target=seed_a_target,
@@ -353,8 +384,8 @@ class CustomLongitudinalAdapter:
         sla_active=bool(getattr(sla, "is_active", False)), sla_v_target=float(getattr(sla, "output_v_target", 0.0)),
         sla_a_target=float(getattr(sla, "output_a_target", 0.0)),
         mode=self.mode, personality=self.personality, sources=self.sources,
-        long_active=bool(getattr(cc, "longActive", False)),
-        brake_pressed=bool(getattr(cs, "brakePressed", False)), gas_pressed=gas_pressed,
+        long_active=long_active,
+        brake_pressed=brake_pressed, gas_pressed=gas_pressed,
         force_slow_decel=bool(getattr(controls_state, "forceDecel", False)),
         model_should_stop=model_should_stop, model_desired_accel=model_desired_accel,
         model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance,
@@ -377,6 +408,9 @@ class CustomLongitudinalAdapter:
         scc_map_state=getattr(scc.map, "state", None),
         scc_map_target_lat=_f(getattr(scc.map, "target_lat", 0.0)),
         scc_map_target_lon=_f(getattr(scc.map, "target_lon", 0.0)),
+        scc_map_coast_v_target=_f(getattr(scc.map, "coast_v_target", 0.0)),
+        scc_map_coast_distance=_f(getattr(scc.map, "coast_distance", 0.0)),
+        map_coast_mode=self.map_coast_mode,
         sla_distance=(getattr(sla, "_distance", None) or None),
         research_actuation_allowed=self.research_actuation_allowed,
         current_lat_accel=(_f(getattr(scc.vision, "current_lat_acc", 0.0)) if getattr(scc.vision, "is_active", False) else None),

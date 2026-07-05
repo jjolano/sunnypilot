@@ -29,7 +29,7 @@ from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfide
 from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
 from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence import predict_standstill_release_confidence
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles, admitted_evidence
-from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
+from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates, map_coast_cap
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.scenario_context import predict_scenario_context
 from openpilot.sunnypilot.custom.longitudinal.dynamic_safety_floor import (
@@ -184,6 +184,10 @@ def _sanitize_inputs_for_mode(inp: LongitudinalStackInputs) -> LongitudinalStack
       map_target_lat=0.0,
       map_target_lon=0.0,
     )
+    updates.update(
+      map_coast_v_target=0.0,
+      map_coast_distance=0.0,
+    )
   if curve_confidence_updates:
     updates["curve_confidence"] = replace(inp.curve_confidence, **curve_confidence_updates)
 
@@ -239,6 +243,10 @@ class LongitudinalStackInputs:
   curve_v_target: float = 0.0
   curve_distance: float | None = None
   curve_source: EvidenceClass = EvidenceClass.CURVE_VISION   # which SCC curve source bound the cap
+  # SCC-Map coast tier (lift-off only; apply additionally gated by mode + research actuation)
+  map_coast_mode: Any = "off"
+  map_coast_v_target: float = 0.0
+  map_coast_distance: float = 0.0
   # driver / safety
   long_active: bool = False
   force_slow_decel: bool = False
@@ -385,6 +393,12 @@ class CustomLongitudinalStack:
       curve_active=act_inp.curve_active, curve_a_target=act_inp.curve_a_target,
       curve_v_target=act_inp.curve_v_target, curve_distance=act_inp.curve_distance,
       curve_source=act_inp.curve_source,
+      # Targets flow in every mode so shadow can compute the would-be cap; only apply mode
+      # behind the research gate marks the candidate active (shadow is exactly non-actuating).
+      map_coast_active=(str(act_inp.map_coast_mode) == "apply" and act_inp.research_actuation_allowed
+                        and act_inp.map_coast_v_target > 0.0 and act_inp.map_coast_distance > 0.0),
+      map_coast_v_target=act_inp.map_coast_v_target,
+      map_coast_distance=(act_inp.map_coast_distance if act_inp.map_coast_distance > 0.0 else None),
       force_slow_decel=act_inp.force_slow_decel, brake_pressed=act_inp.brake_pressed, gas_pressed=act_inp.gas_pressed,
     )
     candidates = build_candidates(scene)
@@ -553,6 +567,22 @@ class CustomLongitudinalStack:
                                                           strongest_admitted_hazard_a, selected_lead.lead)
     a_target = float(target_smoothing_debug["target_smoothing_a_target"])
     debug: dict[str, Any] = {}
+    map_coast_debug: dict[str, Any] = {}
+    map_coast_fault = False
+    if collect_debug and str(act_inp.map_coast_mode) in ("shadow", "apply"):
+      try:
+        would_be_cap = map_coast_cap(scene)
+        map_coast_debug = {
+          "map_coast_mode": str(act_inp.map_coast_mode),
+          "map_coast_v_target": float(act_inp.map_coast_v_target),
+          "map_coast_distance": float(act_inp.map_coast_distance),
+          "map_coast_eligible": would_be_cap is not None,
+          "map_coast_cap": float(would_be_cap) if would_be_cap is not None else 0.0,
+          "map_coast_applied": bool(scene.map_coast_active and would_be_cap is not None),
+        }
+      except Exception:
+        map_coast_fault = True
+
     if collect_debug:
       debug = {
         "intent": decision.selected_intent,
@@ -587,6 +617,8 @@ class CustomLongitudinalStack:
         **scenario_context_debug,
         "curve_traffic_advisor_fault": curve_traffic_advisor_fault,
         **curve_traffic_advisor_debug,
+        "map_coast_fault": map_coast_fault,
+        **map_coast_debug,
         "dynamic_safety_floor_fault": dynamic_safety_floor_fault,
         **dynamic_safety_floor_debug,
         **acc_envelope_debug,

@@ -1027,6 +1027,31 @@ struct ControlsState @0x97ff69c53601abf1 {
     laneRateDampingLatAccel @61 :Float32;
     laneRateDampingCurvature @62 :Float32;
     laneRateDampingCapLatAccel @63 :Float32;
+    laneFitSourceMode @64 :Text;
+    laneFitSourceActive @65 :Bool;
+    laneFitSourceApplied @66 :Bool;
+    laneFitSourceReason @67 :Text;
+    laneFitSourceCandidateCurvature @68 :Float32;
+    laneFitSourceAppliedCurvature @69 :Float32;
+    laneFitSourceLatAccelDelta @70 :Float32;
+    laneFitSourceConfidence @71 :Float32;
+    laneFitSourceSlewLimited @72 :Bool;
+    spsMode @73 :Text;
+    spsActive @74 :Bool;
+    spsApplied @75 :Bool;
+    spsCandidateCurvature @76 :Float32;
+    spsAnchorLatAccel @77 :Float32;
+    spsReason @78 :Text;
+    laneCenteringOneLineMode @79 :Text;
+    laneCenteringOneLineActive @80 :Bool;
+    laneCenteringOneLineApplied @81 :Bool;
+    laneCenteringOneLineReason @82 :Text;
+    laneCenteringOneLineLateralError @83 :Float32;
+    laneCenteringOneLinePredictedError @84 :Float32;
+    laneCenteringOneLineCandidateNudge @85 :Float32;
+    laneCenteringOneLineLearnedWidth @86 :Float32;
+    laneCenteringOneLineConfidence @87 :Float32;
+    laneCenteringGeometryHoldActive @88 :Bool;
   }
 
 

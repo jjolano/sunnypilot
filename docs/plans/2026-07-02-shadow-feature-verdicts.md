@@ -24,6 +24,7 @@ written; run the harvest after the next few shadow-collecting drives.
 | Standstill release confidence (`StandstillReleaseConfidenceMode`) | off | stop-and-go routes, release block reasons | 2026-08-01 |
 | Dynamic follow gap (`DynamicFollowGapMode`) | shadow | `profile_lead_following` A/B gate | new — collect first |
 | Roll-compensation gain (`RollCompGainMode`) | off | engaged-route replay: straight-cruise tracking, crown transitions, banked curves | 2026-08-15 |
+| Map coast (`MapCoastMode`) | off | debug trace `map_coast_*` fields vs manual lift-off points (`manual_longitudinal_profile`) | 2026-08-15 |
 
 ## Per-feature procedure
 
@@ -77,6 +78,21 @@ written; run the harvest after the next few shadow-collecting drives.
   matched routes must show approach decel peak **down**, zero new close approaches
   (min time gap ≥ 1.05 s), and headway recovery after the approach. This is a deliberate
   headway tradeoff — it only ships with that replay evidence.
+
+### Map coast (new)
+- Coast-only lift-off toward SCC-Map slowdowns beyond vision range: `coast_v_target`/`coast_distance`
+  from the map controller's coast pass (600 m lookahead, same route-hygiene gates as braking) feed
+  `coast_horizon` as an `ADVISORY_CAP` floored at the natural coast decel — map evidence never brakes.
+  Apply is gated by `CustomLongitudinalEnabled` + `AllowLongitudinalResearchActuation` + the
+  SmartCruiseControlMap toggle (CURVE_MAP admissibility) + SCC mode.
+- Shadow first: flip `MapCoastMode=shadow` with `LongitudinalDebugTraceMode=log`, drive mapped roads,
+  compare `map_coast_cap`/`map_coast_eligible` lift-off points against manual lift-off from
+  `manual_longitudinal_profile` on the same approaches.
+- **Promote** (to apply) if shadow lift-off points land within ~2 s of the manual baseline's on ≥3
+  routes with mapped slowdowns and there are no false targets (eligible firing with no real
+  slowdown ahead) — stale OSM data is the failure mode to catch.
+- **Delete** if OSM targets are too sparse/stale on the actual driven routes for the tier to fire,
+  or false targets appear that the route-hygiene gates don't catch.
 
 ### Roll-compensation gain
 - Learning is already shadow-capable; this runbook covers the apply gate now that the live

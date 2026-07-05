@@ -4,6 +4,7 @@ from dataclasses import dataclass
 DEMAND_SOURCE_MODEL_PATH = "model_path"
 DEMAND_SOURCE_LATERAL_MANEUVER = "lateral_maneuver"
 DEMAND_SOURCE_FALLBACK_MEASURED = "fallback_measured"
+DEMAND_SOURCE_LANE_FIT = "lane_fit"
 
 
 @dataclass(frozen=True)

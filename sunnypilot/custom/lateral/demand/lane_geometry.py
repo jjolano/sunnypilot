@@ -36,6 +36,17 @@ LANE_GEOMETRY_REASON_BAD_STRADDLE = "bad_straddle"
 LANE_GEOMETRY_REASON_BAD_PATH = "bad_path"
 LANE_GEOMETRY_REASON_BAD_GEOMETRY = "bad_geometry"
 
+# Single-confident-line geometry (route 0000025a drift diagnosis): both-line geometry is
+# unavailable in exactly the urban regime where slow off-center drift happens (one inner
+# line confident, the other dead). One confident line + a recently-learned lane width
+# still defines lane center. Fail-closed like the both-line path.
+LANE_GEOMETRY_ONE_LINE_MIN_ABS_Y = 0.5   # m; line must be plausibly beside ego, not under it
+LANE_GEOMETRY_ONE_LINE_MAX_ABS_Y = 4.0   # m; beyond this it is an adjacent-lane line
+LANE_GEOMETRY_ONE_LINE_CONFIDENCE_DISCOUNT = 0.7  # width is remembered, not observed
+LANE_GEOMETRY_REASON_NO_LEARNED_WIDTH = "no_learned_width"
+LANE_GEOMETRY_REASON_AMBIGUOUS_LINES = "ambiguous_lines"
+LANE_GEOMETRY_REASON_BAD_LINE_SIDE = "bad_line_side"
+
 
 @dataclass(frozen=True)
 class LaneGeometryResult:
@@ -242,3 +253,120 @@ def evaluate_lane_geometry(
 
 def _straddles_ego(left_y: float, right_y: float) -> bool:
   return left_y <= -LANE_GEOMETRY_MIN_STRADDLE_MARGIN and right_y >= LANE_GEOMETRY_MIN_STRADDLE_MARGIN
+
+
+def evaluate_single_line_geometry(
+  *,
+  lane_lines: Sequence[Any],
+  lane_line_probs: Sequence[float],
+  lane_line_stds: Sequence[float],
+  position_x: Sequence[float],
+  position_y: Sequence[float],
+  near_x: float,
+  preview_x: float,
+  learned_width: float,
+  model_y_near: float | None = None,
+  model_y_preview: float | None = None,
+) -> LaneGeometryResult:
+  """Lane-center geometry from exactly ONE confident inner line + a learned lane width.
+
+  Intended for the regime where both-line geometry is unavailable because one inner
+  line is dead. Fail-closed: requires an unambiguous single confident line (the other
+  inner line must be below the prob threshold), the line on the side its index claims,
+  and a plausible recently-learned width supplied by the caller. Same coordinate
+  convention as evaluate_lane_geometry (positive y right of vehicle; left inner line
+  has negative y). Confidence is discounted because width is remembered, not observed.
+  """
+  source = "single_line"
+  def failure(r: str) -> LaneGeometryResult:
+    return LaneGeometryResult(
+      valid=False, reason=r, confidence=0.0, source=source,
+      lateral_error=0.0, predicted_lateral_error=0.0, heading_error=0.0,
+      width_near=0.0, width_preview=0.0,
+      offset_near=0.0, offset_preview=0.0,
+      lane_center_y_near=0.0, lane_center_y_preview=0.0,
+      model_y_near=0.0, model_y_preview=0.0,
+      prob_left=0.0, prob_right=0.0, std_left=0.0, std_right=0.0,
+    )
+
+  width = _finite(learned_width)
+  if width is None or not (LANE_GEOMETRY_MIN_LANE_WIDTH <= width <= LANE_GEOMETRY_MAX_LANE_WIDTH):
+    return failure(LANE_GEOMETRY_REASON_NO_LEARNED_WIDTH)
+
+  if (lane_lines is None or len(lane_lines) < 4 or
+      lane_line_probs is None or len(lane_line_probs) < 4 or
+      lane_line_stds is None or len(lane_line_stds) < 4):
+    return failure(LANE_GEOMETRY_REASON_MISSING)
+
+  candidates = []
+  for idx in (1, 2):
+    prob = _finite(lane_line_probs[idx])
+    std = _finite(lane_line_stds[idx])
+    if (prob is not None and std is not None and
+        prob >= LANE_GEOMETRY_MIN_INNER_PROB and std <= LANE_GEOMETRY_MAX_INNER_STD and
+        lane_lines[idx] is not None):
+      candidates.append((idx, prob, std))
+  if len(candidates) != 1:
+    # Zero confident lines: nothing to anchor to. Two confident lines: the both-line
+    # path should own it; if it declined (bad width/straddle) the lines are suspect.
+    return failure(LANE_GEOMETRY_REASON_LOW_PROB if not candidates else LANE_GEOMETRY_REASON_AMBIGUOUS_LINES)
+
+  idx, prob, std = candidates[0]
+  line_y_near = _lane_line_y_at(lane_lines[idx], near_x)
+  line_y_preview = _lane_line_y_at(lane_lines[idx], preview_x)
+  if line_y_near is None or line_y_preview is None:
+    return failure(LANE_GEOMETRY_REASON_MISSING)
+
+  # The line must sit on the side its index claims (left inner y<0, right inner y>0)
+  # and at a plausible in-lane distance; otherwise it is an adjacent-lane or off-lane line.
+  side = -1.0 if idx == 1 else 1.0
+  for y in (line_y_near, line_y_preview):
+    if not (LANE_GEOMETRY_ONE_LINE_MIN_ABS_Y <= side * y <= LANE_GEOMETRY_ONE_LINE_MAX_ABS_Y):
+      return failure(LANE_GEOMETRY_REASON_BAD_LINE_SIDE)
+
+  half_width = width * 0.5
+  # Right inner line = left inner line + width in y, so center is line -/+ half width.
+  center_y_near = line_y_near - side * half_width
+  center_y_preview = line_y_preview - side * half_width
+
+  if model_y_near is None or model_y_preview is None:
+    model_y_near = _path_y_at(position_x, position_y, near_x)
+    model_y_preview = _path_y_at(position_x, position_y, preview_x)
+  else:
+    model_y_near = _finite(model_y_near)
+    model_y_preview = _finite(model_y_preview)
+  if model_y_near is None or model_y_preview is None:
+    return failure(LANE_GEOMETRY_REASON_BAD_PATH)
+
+  offset_near = center_y_near - model_y_near
+  offset_preview = center_y_preview - model_y_preview
+  if abs(offset_near) > LANE_GEOMETRY_SIGN_AGREEMENT_THRESHOLD and abs(offset_preview) > LANE_GEOMETRY_SIGN_AGREEMENT_THRESHOLD:
+    if math.copysign(1.0, offset_near) != math.copysign(1.0, offset_preview):
+      return failure(LANE_GEOMETRY_REASON_SIGN_MISMATCH)
+  if not all(math.isfinite(v) for v in (offset_near, offset_preview, center_y_near, center_y_preview)):
+    return failure(LANE_GEOMETRY_REASON_BAD_GEOMETRY)
+
+  std_confidence = max(0.0, 1.0 - (std / LANE_GEOMETRY_MAX_INNER_STD))
+  confidence = min(prob, std_confidence) * LANE_GEOMETRY_ONE_LINE_CONFIDENCE_DISCOUNT
+
+  return LaneGeometryResult(
+    valid=True,
+    reason=LANE_GEOMETRY_REASON_OK,
+    confidence=float(np.clip(confidence, 0.0, 1.0)),
+    source=source,
+    lateral_error=offset_near,
+    predicted_lateral_error=offset_preview,
+    heading_error=0.0,
+    width_near=width,
+    width_preview=width,
+    offset_near=offset_near,
+    offset_preview=offset_preview,
+    lane_center_y_near=center_y_near,
+    lane_center_y_preview=center_y_preview,
+    model_y_near=model_y_near,
+    model_y_preview=model_y_preview,
+    prob_left=prob if idx == 1 else 0.0,
+    prob_right=prob if idx == 2 else 0.0,
+    std_left=std if idx == 1 else 0.0,
+    std_right=std if idx == 2 else 0.0,
+  )

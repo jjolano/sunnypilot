@@ -112,6 +112,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     {"CurveSpeedConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CurveTrafficAdvisorMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    // SCC-Map coast tier (lift-off-only cap toward map slowdowns beyond vision range); apply is
+    // explicit opt-in and runtime-gated by CustomLongitudinalEnabled + AllowLongitudinalResearchActuation.
+    {"MapCoastMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"StandstillReleaseConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     // Shadow-only scenario attribution for route-log/debug analysis; never affects actuation.
     {"ScenarioContextMode", {PERSISTENT | BACKUP, STRING, "off"}},
@@ -119,6 +122,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"StraightPathStabilizationMode", {PERSISTENT | BACKUP, STRING, "off"}},
     // Lane-center-rate damping: shadow logs the candidate, apply changes the requested lateral path.
     {"LaneRateDampingMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    // Lane-fit source swap: shadow logs the candidate, apply can change the requested lateral path.
+    {"LaneFitSourceMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    // One-confident-line lane centering: shadow logs the candidate nudge, apply feeds one-line geometry.
+    {"LaneCenteringOneLineMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandDefaultOffMigrated", {PERSISTENT | BACKUP, STRING, ""}},
     {"LongitudinalModeMigrationVersion", {PERSISTENT | BACKUP, STRING, ""}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},

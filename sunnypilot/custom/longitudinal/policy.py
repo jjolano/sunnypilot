@@ -59,7 +59,13 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   launch_accel_max,
   stop_approach_comfort_decel,
 )
-from openpilot.sunnypilot.custom.longitudinal.coast_horizon import DEFAULT_COAST_DECEL, MAX_COAST_DECEL
+from openpilot.sunnypilot.custom.longitudinal.coast_horizon import (
+  DEFAULT_COAST_DECEL,
+  MAX_COAST_DECEL,
+  CoastAction,
+  CoastHorizonInputs,
+  coast_horizon,
+)
 
 SAFETY_FORCE_SLOW_DECEL = -0.2
 
@@ -169,6 +175,10 @@ class LongitudinalScene:
   curve_v_target: float = 0.0                # required speed at the binding curve point
   curve_distance: float | None = None        # m to the binding curve point, when known
   curve_source: EvidenceClass = EvidenceClass.CURVE_VISION   # which SCC curve source bound the cap
+  # map-coast tier (SCC-Map bounded apply: lift-off only, never a braking request)
+  map_coast_active: bool = False              # apply-eligible (mode/research/toggle gates upstream)
+  map_coast_v_target: float = 0.0             # required speed at the map slowdown
+  map_coast_distance: float | None = None     # m to the map slowdown, when known
   # driver / safety
   force_slow_decel: bool = False
   brake_pressed: bool = False
@@ -693,6 +703,13 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
     if shaped_cap > raw_cap:
       cands.append(LongitudinalCandidate(shaped_cap, CandidateRole.PROGRESS,
                                          scene.curve_source, "curve_policy_desire", authorized=True))
+  # map-coast tier: lift-off-only cap toward a map slowdown beyond vision range. Admissibility
+  # (SCC mode + SmartCruiseControlMap toggle) is enforced by decide() on CURVE_MAP evidence.
+  if scene.map_coast_active:
+    coast_cap = map_coast_cap(scene)
+    if coast_cap is not None:
+      cands.append(LongitudinalCandidate(coast_cap, CandidateRole.ADVISORY_CAP,
+                                         EvidenceClass.CURVE_MAP, "map_coast"))
 
   # force-slow safety hazard (driver/system force)
   if scene.force_slow_decel:
@@ -732,6 +749,25 @@ def _advisory_speed_limit_cap(scene: LongitudinalScene) -> float:
     )
     return min(0.0, shaped)
   return min(0.0, max(scene.speed_limit_a_target, scene.accel_coast))
+
+
+def map_coast_cap(scene: LongitudinalScene) -> float | None:
+  """Coast-only advisory cap toward an SCC-Map slowdown beyond vision range.
+
+  Lifts off early enough that natural coast bleeds speed to the map target, and is floored at
+  the natural coast decel — map evidence alone never brakes (worst case with wrong map data is
+  a mild unneeded coast). None while cruising is still fine or the target is invalid."""
+  if not (scene.map_coast_v_target > 0.0 and scene.map_coast_distance is not None
+          and scene.map_coast_distance > 0.0 and scene.map_coast_v_target < scene.v_ego):
+    return None
+  coast = _usable_coast_decel(scene)
+  r = coast_horizon(CoastHorizonInputs(
+    v_ego=scene.v_ego, v_target=scene.map_coast_v_target,
+    distance_to_constraint=scene.map_coast_distance, accel_coast=coast,
+  ))
+  if r.action is CoastAction.CRUISE:
+    return None
+  return min(0.0, max(r.recommended_accel, coast))
 
 
 def _advisory_curve_cap(scene: LongitudinalScene) -> float:

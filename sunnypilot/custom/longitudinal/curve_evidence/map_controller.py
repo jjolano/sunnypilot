@@ -34,6 +34,8 @@ TARGET_OFFSET = 1.0  # seconds - This controls how soon before the curve you rea
                      # time than specified depending on how much of a speed differential there is between v_ego and the
                      # target velocity.
 MAX_ROUTE_TARGET_DISTANCE = 20.0
+MAX_COAST_LOOKAHEAD = 600.0  # m; coast tier looks far beyond the braking window (coast decel
+                             # ~-0.25 needs ~5x the braking distance to bleed the same speed)
 MAX_SHORT_DROP_DISTANCE = 30.0
 MAX_SHORT_DROP_DELTA_V = 6.0
 SHORT_DROP_CONFIRM_POINTS = 2
@@ -122,6 +124,10 @@ class SmartCruiseControlMap:
     self.v_cruise = 0
     self.target_lat = 0.0
     self.target_lon = 0.0
+    # Coast-tier target: the most binding material slowdown within MAX_COAST_LOOKAHEAD,
+    # exposed for lift-off-only shaping (never a braking request).
+    self.coast_v_target = 0.0
+    self.coast_distance = 0.0
     self.frame = -1
 
     try:
@@ -185,6 +191,10 @@ class SmartCruiseControlMap:
       self.enabled = self.params.get_bool("SmartCruiseControlMap")
 
   def update_calculations(self, sm=None) -> None:
+    # Cleared up front so every early return (missing GPS, stale route, hygiene failure)
+    # leaves the coast tier inert.
+    self.coast_v_target = 0.0
+    self.coast_distance = 0.0
     try:
       self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params)
     except (json.JSONDecodeError, TypeError, ValueError):
@@ -261,6 +271,21 @@ class SmartCruiseControlMap:
       self.target_lat = 0.0
       self.target_lon = 0.0
       return
+
+    # Coast tier: the kinematically most binding material slowdown within the coast lookahead,
+    # past the same route-hygiene gates as the braking pass. It skips the short-drop and
+    # lateral-corroboration gates because it can only ever propose lifting off, never braking.
+    best_required = 0.0
+    for i in range(len(forward_points)):
+      tv = forward_points[i]["velocity"]
+      d = forward_distances[i]
+      if d <= 0.0 or d > MAX_COAST_LOOKAHEAD or tv > self.v_ego - MATERIAL_DROP_DELTA_V:
+        continue
+      required = (tv * tv - self.v_ego * self.v_ego) / (2.0 * d)
+      if required < best_required:
+        best_required = required
+        self.coast_v_target = float(tv)
+        self.coast_distance = float(d)
 
     # find velocities that we are within the distance we need to adjust for
     valid_velocities = []

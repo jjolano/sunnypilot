@@ -74,6 +74,31 @@ sections:
     - type: param
       key: CustomLongitudinalEnabled
       equals: true
+  - key: MapCoastMode
+    widget: multiple_button
+    title: Map Coast
+    description: Monitor early lift-off points toward map-known slowdowns (curves, lower limits) beyond camera range, or
+      apply them as coast-only speed shaping. Apply mode only eases off — it never brakes on map data — and requires Custom
+      Longitudinal, the Map curve source, plus the research actuation gate; Monitor only makes no driving changes.
+    requires_attestation: true
+    options:
+    - value: 'off'
+      label: 'Off'
+    - value: 'shadow'
+      label: Monitor only
+    - value: 'apply'
+      label: Apply coast
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: capability
+      field: has_longitudinal_control
+      equals: true
+    - type: param
+      key: CustomLongitudinalEnabled
+      equals: true
+    - type: param
+      key: SmartCruiseControlMap
+      equals: true
   - key: ScenarioContextMode
     widget: multiple_button
     title: Scenario Context

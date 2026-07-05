@@ -131,6 +131,15 @@ COLUMNS = (
   "model_path_lane_rate_damping_lat_accel",
   "model_path_lane_rate_damping_curvature",
   "model_path_lane_rate_damping_cap_lat_accel",
+  "model_path_lane_fit_source_mode",
+  "model_path_lane_fit_source_active",
+  "model_path_lane_fit_source_applied",
+  "model_path_lane_fit_source_reason",
+  "model_path_lane_fit_source_candidate_curvature",
+  "model_path_lane_fit_source_applied_curvature",
+  "model_path_lane_fit_source_lat_accel_delta",
+  "model_path_lane_fit_source_confidence",
+  "model_path_lane_fit_source_slew_limited",
 )
 
 
@@ -446,6 +455,15 @@ def _update_model_path_state(state: dict[str, Any], path_state: Any) -> None:
     ("model_path_lane_rate_damping_lat_accel", "laneRateDampingLatAccel"),
     ("model_path_lane_rate_damping_curvature", "laneRateDampingCurvature"),
     ("model_path_lane_rate_damping_cap_lat_accel", "laneRateDampingCapLatAccel"),
+    ("model_path_lane_fit_source_mode", "laneFitSourceMode"),
+    ("model_path_lane_fit_source_active", "laneFitSourceActive"),
+    ("model_path_lane_fit_source_applied", "laneFitSourceApplied"),
+    ("model_path_lane_fit_source_reason", "laneFitSourceReason"),
+    ("model_path_lane_fit_source_candidate_curvature", "laneFitSourceCandidateCurvature"),
+    ("model_path_lane_fit_source_applied_curvature", "laneFitSourceAppliedCurvature"),
+    ("model_path_lane_fit_source_lat_accel_delta", "laneFitSourceLatAccelDelta"),
+    ("model_path_lane_fit_source_confidence", "laneFitSourceConfidence"),
+    ("model_path_lane_fit_source_slew_limited", "laneFitSourceSlewLimited"),
   ):
     value = _safe_get(path_state, path)
     _set(state, column, _enum(value) if column == "model_path_reason" else value)

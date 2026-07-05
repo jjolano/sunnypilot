@@ -44,6 +44,30 @@ def set_model_path_state_geometry(model_path_state, debug: dict | None = None) -
   model_path_state.geometryOffsetPreview = float(debug.get('lane_centering_geometry_offset_preview', 0.0))
   model_path_state.geometryWidthNear = float(debug.get('lane_centering_geometry_width_near', 0.0))
   model_path_state.geometryWidthPreview = float(debug.get('lane_centering_geometry_width_preview', 0.0))
+  model_path_state.laneCenteringGeometryHoldActive = bool(debug.get('lane_centering_geometry_hold_active', False))
+
+
+def set_model_path_state_sps(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
+  debug = debug or {}
+  model_path_state.spsMode = str(debug.get('straight_path_stabilization_mode', 'off'))
+  model_path_state.spsActive = bool(debug.get('straight_path_stabilization_active', False))
+  model_path_state.spsApplied = bool(debug.get('straight_path_stabilization_applied', False))
+  model_path_state.spsCandidateCurvature = float(debug.get('straight_path_stabilization_candidate_curvature', 0.0))
+  model_path_state.spsAnchorLatAccel = float(debug.get('straight_path_stabilization_anchor_lat_accel', 0.0))
+  model_path_state.spsReason = str(debug.get('straight_path_stabilization_reason', default_reason))
+
+
+def set_model_path_state_one_line(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
+  debug = debug or {}
+  model_path_state.laneCenteringOneLineMode = str(debug.get('lane_centering_one_line_mode', 'off'))
+  model_path_state.laneCenteringOneLineActive = bool(debug.get('lane_centering_one_line_active', False))
+  model_path_state.laneCenteringOneLineApplied = bool(debug.get('lane_centering_one_line_applied', False))
+  model_path_state.laneCenteringOneLineReason = str(debug.get('lane_centering_one_line_reason', default_reason))
+  model_path_state.laneCenteringOneLineLateralError = float(debug.get('lane_centering_one_line_lateral_error', 0.0))
+  model_path_state.laneCenteringOneLinePredictedError = float(debug.get('lane_centering_one_line_predicted_error', 0.0))
+  model_path_state.laneCenteringOneLineCandidateNudge = float(debug.get('lane_centering_one_line_candidate_nudge', 0.0))
+  model_path_state.laneCenteringOneLineLearnedWidth = float(debug.get('lane_centering_one_line_learned_width', 0.0))
+  model_path_state.laneCenteringOneLineConfidence = float(debug.get('lane_centering_one_line_confidence', 0.0))
 
 
 def set_model_path_state_lane_rate_damping(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
@@ -57,6 +81,19 @@ def set_model_path_state_lane_rate_damping(model_path_state, debug: dict | None 
   model_path_state.laneRateDampingLatAccel = float(debug.get('lane_rate_damping_lat_accel', 0.0))
   model_path_state.laneRateDampingCurvature = float(debug.get('lane_rate_damping_curvature', 0.0))
   model_path_state.laneRateDampingCapLatAccel = float(debug.get('lane_rate_damping_cap_lat_accel', 0.05))
+
+
+def set_model_path_state_lane_fit_source(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
+  debug = debug or {}
+  model_path_state.laneFitSourceMode = str(debug.get('lane_fit_source_mode', 'off'))
+  model_path_state.laneFitSourceActive = bool(debug.get('lane_fit_source_active', False))
+  model_path_state.laneFitSourceApplied = bool(debug.get('lane_fit_source_applied', False))
+  model_path_state.laneFitSourceReason = str(debug.get('lane_fit_source_reason', default_reason))
+  model_path_state.laneFitSourceCandidateCurvature = float(debug.get('lane_fit_source_candidate_curvature', 0.0))
+  model_path_state.laneFitSourceAppliedCurvature = float(debug.get('lane_fit_source_applied_curvature', 0.0))
+  model_path_state.laneFitSourceLatAccelDelta = float(debug.get('lane_fit_source_lat_accel_delta', 0.0))
+  model_path_state.laneFitSourceConfidence = float(debug.get('lane_fit_source_confidence', 0.0))
+  model_path_state.laneFitSourceSlewLimited = bool(debug.get('lane_fit_source_slew_limited', False))
 
 
 def set_model_path_state_sensor_confidence(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
@@ -384,7 +421,10 @@ class Controls(ControlsExt):
       model_path_state.demandSource = "disabled"
       model_path_state.dtleEstimate = float('nan')
       set_model_path_state_geometry(model_path_state)
+      set_model_path_state_lane_fit_source(model_path_state)
       set_model_path_state_lane_rate_damping(model_path_state)
+      set_model_path_state_sps(model_path_state)
+      set_model_path_state_one_line(model_path_state)
       set_model_path_state_sensor_confidence(model_path_state)
       set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
                                         long_plan.speeds, long_plan.accels, lat_delay,
@@ -424,16 +464,24 @@ class Controls(ControlsExt):
           model_path_state.demandSource = str(debug.get('demand_source', 'model_path'))
           model_path_state.dtleEstimate = float(debug.get('dtle_estimate', float('nan')))
           set_model_path_state_geometry(model_path_state, debug)
+          set_model_path_state_lane_fit_source(model_path_state, debug, default_reason="missing")
           set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
           set_model_path_state_lane_rate_damping(model_path_state, debug, default_reason="missing")
+          set_model_path_state_sps(model_path_state, debug, default_reason="missing")
+          set_model_path_state_one_line(model_path_state, debug, default_reason="missing")
         except Exception:
           cloudlog.exception("failed to publish lateral modelPathState telemetry")
           self.lateral_demand.clear()
       else:
         debug = getattr(self.lateral_demand, 'last_debug', {}) or {}
         if debug:
+          set_model_path_state_lane_fit_source(model_path_state, debug, default_reason="missing")
           set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
+        else:
+          set_model_path_state_lane_fit_source(model_path_state)
         set_model_path_state_lane_rate_damping(model_path_state, debug, default_reason="missing")
+        set_model_path_state_sps(model_path_state, debug, default_reason="missing")
+        set_model_path_state_one_line(model_path_state, debug, default_reason="missing")
 
     lat_tuning = self.CP.lateralTuning.which()
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:

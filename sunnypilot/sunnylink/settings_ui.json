@@ -737,6 +737,60 @@
                   ]
                 },
                 {
+                  "key": "LaneFitSourceMode",
+                  "widget": "multiple_button",
+                  "title": "Lane Fit Source Swap",
+                  "description": "Monitor only has no driving changes. Apply can change the requested lateral path by swapping to conservative lane-line-center curvature when lane geometry is high-confidence.",
+                  "options": [
+                    {
+                      "value": "off",
+                      "label": "Off"
+                    },
+                    {
+                      "value": "shadow",
+                      "label": "Monitor only"
+                    },
+                    {
+                      "value": "apply",
+                      "label": "Apply"
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "param",
+                      "key": "CustomLateralDemandEnabled",
+                      "equals": true
+                    }
+                  ]
+                },
+                {
+                  "key": "LaneCenteringOneLineMode",
+                  "widget": "multiple_button",
+                  "title": "One-Line Lane Centering",
+                  "description": "Estimate lane center from a single confident lane line plus recently-learned lane width when the other line is not detected. Monitor only logs the would-be centering nudge with no driving changes. Apply lets the existing lane centering assist use the one-line estimate with its normal caps and deadbands.",
+                  "options": [
+                    {
+                      "value": "off",
+                      "label": "Off"
+                    },
+                    {
+                      "value": "shadow",
+                      "label": "Monitor only"
+                    },
+                    {
+                      "value": "apply",
+                      "label": "Apply"
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "param",
+                      "key": "CustomLateralDemandEnabled",
+                      "equals": true
+                    }
+                  ]
+                },
+                {
                   "key": "CurveMemoryEnabled",
                   "widget": "toggle",
                   "title": "Corner Curve Memory",
@@ -874,6 +928,47 @@
                 {
                   "type": "param",
                   "key": "CustomLongitudinalEnabled",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "MapCoastMode",
+              "widget": "multiple_button",
+              "requires_attestation": true,
+              "title": "Map Coast",
+              "description": "Monitor early lift-off points toward map-known slowdowns (curves, lower limits) beyond camera range, or apply them as coast-only speed shaping. Apply mode only eases off \u2014 it never brakes on map data \u2014 and requires Custom Longitudinal, the Map curve source, plus the research actuation gate; Monitor only makes no driving changes.",
+              "options": [
+                {
+                  "value": "off",
+                  "label": "Off"
+                },
+                {
+                  "value": "shadow",
+                  "label": "Monitor only"
+                },
+                {
+                  "value": "apply",
+                  "label": "Apply coast"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                },
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "CustomLongitudinalEnabled",
+                  "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "SmartCruiseControlMap",
                   "equals": true
                 }
               ]

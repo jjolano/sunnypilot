@@ -42,6 +42,7 @@ from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
 )
 from openpilot.sunnypilot.custom.lateral.demand.types import (
   DEMAND_SOURCE_FALLBACK_MEASURED,
+  DEMAND_SOURCE_LANE_FIT,
   DEMAND_SOURCE_LATERAL_MANEUVER,
   DEMAND_SOURCE_MODEL_PATH,
 )
@@ -91,6 +92,7 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
     lane_centering_assist_enabled=kwargs.get("lane_centering_assist_enabled", False),
     curve_memory_enabled=kwargs.get("curve_memory_enabled", False),
     lane_rate_damping_mode=kwargs.get("lane_rate_damping_mode", "off"),
+    lane_fit_source_mode=kwargs.get("lane_fit_source_mode", "off"),
     curvature_limited=kwargs.get("curvature_limited", False),
   )
 
@@ -110,6 +112,90 @@ def run_lane_rate_damping_sequence(mode: str, lane_centers: list[float], **kwarg
   result = None
   for lane_center_y0 in lane_centers:
     result = p.update(lane_rate_damping_inputs(lane_center_y0, lane_rate_damping_mode=mode, **kwargs))
+  assert result is not None
+  return p, result
+
+
+def _lane_lines(center_offset: float = 0.0, width: float = 4.0, curvature: float = 0.0):
+  xs = [float(x) for x in range(N)]
+  left_y = [center_offset - width * 0.5 + 0.5 * curvature * x * x for x in xs]
+  right_y = [center_offset + width * 0.5 + 0.5 * curvature * x * x for x in xs]
+  return [
+    SimpleNamespace(x=xs, y=[y - width for y in left_y]),
+    SimpleNamespace(x=xs, y=left_y),
+    SimpleNamespace(x=xs, y=right_y),
+    SimpleNamespace(x=xs, y=[y + width for y in right_y]),
+  ]
+
+
+def lane_fit_source_inputs(
+  *,
+  baseline_curvature: float = 0.0,
+  lane_curvature: float = 0.0008,
+  lane_fit_source_mode: str = "off",
+  lane_center_offset: float = 0.0,
+  lane_width: float = 4.0,
+  lane_lines=None,
+  lane_line_probs=None,
+  lane_line_stds=None,
+  **kwargs,
+):
+  params = dict(kwargs)
+  v_ego = params.pop("v_ego", 20.0)
+  lane_fit_source_mode = params.pop("lane_fit_source_mode", lane_fit_source_mode)
+  lane_lines = params.pop("lane_lines", lane_lines)
+  lane_line_probs = params.pop("lane_line_probs", lane_line_probs)
+  lane_line_stds = params.pop("lane_line_stds", lane_line_stds)
+  xs = [float(x) for x in range(N)]
+  ys = [0.5 * baseline_curvature * x * x for x in xs]
+  lane_lines = lane_lines if lane_lines is not None else _lane_lines(lane_center_offset, lane_width, lane_curvature)
+  lane_line_probs = lane_line_probs if lane_line_probs is not None else [0.95, 0.95, 0.95, 0.95]
+  lane_line_stds = lane_line_stds if lane_line_stds is not None else [0.05, 0.05, 0.05, 0.05]
+  return valid_inputs(
+    v_ego=v_ego,
+    curvature=baseline_curvature,
+    desired_curvature=baseline_curvature,
+    measured_curvature=baseline_curvature,
+    position_x=xs,
+    position_y=ys,
+    lane_lines=lane_lines,
+    lane_line_probs=lane_line_probs,
+    lane_line_stds=lane_line_stds,
+    lane_fit_source_mode=lane_fit_source_mode,
+    **params,
+  )
+
+
+def run_lane_fit_source_sequence(mode: str, *, frames: int = 25, **kwargs):
+  p = LateralDemandPipeline(DT)
+  result = None
+  for _ in range(frames):
+    result = p.update(lane_fit_source_inputs(lane_fit_source_mode=mode, **kwargs))
+  assert result is not None
+  return p, result
+
+
+def run_lane_fit_source_until_active(mode: str, *, max_frames: int = 120, **kwargs):
+  p = LateralDemandPipeline(DT)
+  result = None
+  for _ in range(max_frames):
+    result = p.update(lane_fit_source_inputs(lane_fit_source_mode=mode, **kwargs))
+    if bool(result.debug["lane_fit_source_active"]):
+      return p, result
+  assert result is not None
+  return p, result
+
+
+def run_lane_fit_source_until_applied(mode: str, *, max_frames: int = 120, **kwargs):
+  p = LateralDemandPipeline(DT)
+  result = None
+  applied_frames = 0
+  for _ in range(max_frames):
+    result = p.update(lane_fit_source_inputs(lane_fit_source_mode=mode, **kwargs))
+    if bool(result.debug["lane_fit_source_applied"]):
+      applied_frames += 1
+      if applied_frames >= 2:
+        return p, result
   assert result is not None
   return p, result
 
@@ -302,6 +388,104 @@ def test_lane_rate_damping_blocks_and_resets_history(blocked_kwargs, expected_re
   assert resumed.debug["lane_rate_damping_reason"] == "warming_up"
   assert resumed.debug["lane_rate_damping_active"] is False
   assert resumed.debug["lane_rate_damping_curvature"] == 0.0
+
+
+def test_lane_fit_source_shadow_logs_candidate_without_changing_curvature():
+  _, off_result = run_lane_fit_source_sequence("off", frames=120)
+  _, shadow_result = run_lane_fit_source_sequence("shadow", frames=120)
+
+  assert shadow_result.debug["lane_fit_source_mode"] == "shadow"
+  assert shadow_result.debug["lane_fit_source_active"] is True
+  assert shadow_result.debug["lane_fit_source_applied"] is False
+  assert shadow_result.debug["lane_fit_source_reason"] == "ok"
+  assert shadow_result.debug["lane_fit_source_candidate_curvature"] == pytest.approx(0.0008, abs=1e-6)
+  assert shadow_result.demand.processed_curvature == pytest.approx(off_result.demand.processed_curvature, abs=1e-9)
+
+
+@pytest.mark.parametrize("mode", ["shadow", "off"])
+def test_lane_fit_source_apply_then_shadow_or_off_returns_exact_baseline(mode):
+  p, _ = run_lane_fit_source_until_applied("apply")
+  result = p.update(lane_fit_source_inputs(lane_fit_source_mode=mode))
+
+  assert result.demand.processed_curvature == pytest.approx(0.0, abs=1e-12)
+  assert result.debug["lane_fit_source_applied_curvature"] == pytest.approx(0.0, abs=1e-12)
+  assert result.debug["lane_fit_source_slew_limited"] is False
+  if mode == "shadow":
+    assert result.debug["lane_fit_source_active"] is True
+    assert result.debug["lane_fit_source_applied"] is False
+    assert result.debug["lane_fit_source_reason"] == "ok"
+  else:
+    assert result.debug["lane_fit_source_active"] is False
+    assert result.debug["lane_fit_source_applied"] is False
+    assert result.debug["lane_fit_source_reason"] == "disabled"
+
+
+def test_lane_fit_source_apply_moves_curvature_after_persistence():
+  _, result = run_lane_fit_source_until_applied("apply")
+
+  assert result.debug["lane_fit_source_mode"] == "apply"
+  assert result.debug["lane_fit_source_active"] is True
+  assert result.debug["lane_fit_source_applied"] is True
+  assert result.debug["lane_fit_source_reason"] == "ok"
+  assert result.debug["lane_fit_source_slew_limited"] is True
+  assert result.debug["lane_fit_source_candidate_curvature"] == pytest.approx(0.0008, abs=1e-6)
+  assert 0.0 < float(result.debug["lane_fit_source_applied_curvature"]) < float(result.debug["lane_fit_source_candidate_curvature"])
+
+
+@pytest.mark.parametrize("blocked_kwargs, expected_reason", [
+  ({"lane_lines": ()}, "missing_lanes"),
+  ({"lane_line_probs": [0.95, 0.4, 0.4, 0.95]}, "low_prob"),
+  ({"lane_change_state": 1, "lane_change_state_valid": True}, "lane_change"),
+  ({"steer_limited": True}, "steer_limited"),
+])
+def test_lane_fit_source_blocks_and_slews_release(blocked_kwargs, expected_reason):
+  p, applied = run_lane_fit_source_until_applied("apply")
+  prev = float(applied.demand.processed_curvature)
+
+  blocked = p.update(lane_fit_source_inputs(lane_fit_source_mode="apply", **blocked_kwargs))
+
+  assert blocked.debug["lane_fit_source_active"] is False
+  assert blocked.debug["lane_fit_source_applied"] is False
+  assert blocked.debug["lane_fit_source_reason"] == expected_reason
+  assert blocked.debug["lane_fit_source_slew_limited"] is True
+  assert 0.0 < float(blocked.demand.processed_curvature) < prev
+
+
+def test_lane_fit_source_sign_conflict_blocks():
+  p, applied = run_lane_fit_source_until_applied(
+    "apply",
+    baseline_curvature=0.00025,
+    lane_curvature=0.0002,
+  )
+  blocked = p.update(lane_fit_source_inputs(
+    lane_fit_source_mode="apply",
+    baseline_curvature=0.00025,
+    lane_curvature=-0.00025,
+  ))
+
+  assert blocked.debug["lane_fit_source_active"] is False
+  assert blocked.debug["lane_fit_source_applied"] is False
+  assert blocked.debug["lane_fit_source_reason"] == "sign_conflict"
+  assert blocked.debug["lane_fit_source_slew_limited"] is True
+  assert float(blocked.demand.processed_curvature) > float(applied.demand.processed_curvature)
+  assert float(blocked.demand.processed_curvature) < 0.00025
+
+
+def test_lane_fit_source_apply_keeps_lca_running_and_marks_final_source():
+  _, result = run_lane_fit_source_sequence("apply", frames=80, lane_centering_assist_enabled=True)
+
+  assert result.debug["lane_fit_source_applied"] is True
+  assert result.demand.demand_source == DEMAND_SOURCE_LANE_FIT
+  assert result.demand.lane_centering_assist_active is True
+
+
+def test_lane_fit_source_apply_does_not_override_maneuver_curvature():
+  p, _ = run_lane_fit_source_until_applied("apply")
+  maneuver = p.update(valid_inputs(curvature=0.001, lateral_maneuver_curvature=0.037))
+
+  assert maneuver.demand.demand_source == DEMAND_SOURCE_LATERAL_MANEUVER
+  assert maneuver.demand.processed_curvature == pytest.approx(0.037, abs=1e-12)
+  assert maneuver.debug["lane_fit_source_slew_limited"] is False
 
 
 def test_extreme_curvature_warning_logs_once_per_transition(monkeypatch):

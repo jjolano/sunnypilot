@@ -396,6 +396,39 @@ sections:
       - type: param
         key: CustomLateralDemandEnabled
         equals: true
+    - key: LaneFitSourceMode
+      widget: multiple_button
+      title: Lane Fit Source Swap
+      description: Monitor only has no driving changes. Apply can change the requested lateral path by swapping to conservative
+        lane-line-center curvature when lane geometry is high-confidence.
+      options:
+      - value: 'off'
+        label: 'Off'
+      - value: shadow
+        label: Monitor only
+      - value: apply
+        label: Apply
+      enablement:
+      - type: param
+        key: CustomLateralDemandEnabled
+        equals: true
+    - key: LaneCenteringOneLineMode
+      widget: multiple_button
+      title: One-Line Lane Centering
+      description: Estimate lane center from a single confident lane line plus recently-learned lane width when the other
+        line is not detected. Monitor only logs the would-be centering nudge with no driving changes. Apply lets the existing
+        lane centering assist use the one-line estimate with its normal caps and deadbands.
+      options:
+      - value: 'off'
+        label: 'Off'
+      - value: shadow
+        label: Monitor only
+      - value: apply
+        label: Apply
+      enablement:
+      - type: param
+        key: CustomLateralDemandEnabled
+        equals: true
     - key: CurveMemoryEnabled
       widget: toggle
       title: Corner Curve Memory

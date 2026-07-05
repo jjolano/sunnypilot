@@ -334,6 +334,26 @@ def test_adapter_forwards_lane_rate_damping_mode():
   assert spy.inputs.lane_rate_damping_mode == "apply"
 
 
+def test_adapter_sanitizes_unknown_lane_fit_source_mode():
+  a = LateralDemandAdapter(FakeParams(
+    CustomLateralDemandEnabled=True,
+    LaneFitSourceMode="banana",
+  ))
+  assert a.lane_fit_source_mode == "off"
+
+
+def test_adapter_forwards_lane_fit_source_mode():
+  a = LateralDemandAdapter(FakeParams(
+    CustomLateralDemandEnabled=True,
+    LaneFitSourceMode="apply",
+  ))
+  spy = SpyPipeline()
+  object.__setattr__(a, "_pipeline", spy)
+  a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001))
+  assert spy.inputs is not None
+  assert spy.inputs.lane_fit_source_mode == "apply"
+
+
 def test_adapter_forwards_straight_path_stabilization_mode():
   a = LateralDemandAdapter(FakeParams(
     CustomLateralDemandEnabled=True,

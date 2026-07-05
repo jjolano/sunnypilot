@@ -24,10 +24,13 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+import numpy as np
+
 from openpilot.common.realtime import DT_CTRL
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.custom.lateral.demand.types import (
   DEMAND_SOURCE_FALLBACK_MEASURED,
+  DEMAND_SOURCE_LANE_FIT,
   DEMAND_SOURCE_LATERAL_MANEUVER,
   DEMAND_SOURCE_MODEL_PATH,
   ProcessedLateralDemand,
@@ -44,6 +47,10 @@ from openpilot.sunnypilot.custom.lateral.demand.lane_change_path_shaper import (
 from openpilot.sunnypilot.custom.lateral.demand.curve_memory import (
   CurveMemory,
   CurveMemoryInputs,
+)
+from openpilot.sunnypilot.custom.lateral.demand.lane_geometry import (
+  LANE_GEOMETRY_SAMPLE_XS,
+  evaluate_lane_geometry,
 )
 from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   ModelPathProcessor,
@@ -70,10 +77,26 @@ LANE_RATE_DAMPING_MIN_PATH_QUALITY = 0.85
 LANE_RATE_DAMPING_MAX_MODEL_LAT_ACCEL = 0.6
 LANE_RATE_DAMPING_V2_EPS = 1e-6
 
+LANE_FIT_SOURCE_MODES = frozenset(("off", "shadow", "apply"))
+LANE_FIT_SOURCE_MIN_SPEED = 15.0
+LANE_FIT_SOURCE_MIN_PATH_QUALITY = 0.85
+LANE_FIT_SOURCE_MIN_GEOMETRY_CONFIDENCE = 0.6
+LANE_FIT_SOURCE_MAX_LAT_ACCEL = 0.6
+LANE_FIT_SOURCE_MAX_LAT_ACCEL_DELTA = 0.35
+LANE_FIT_SOURCE_SIGN_CONFLICT_LAT_ACCEL = 0.05
+LANE_FIT_SOURCE_MIN_PERSIST_S = 0.2
+LANE_FIT_SOURCE_SLEW_LAT_JERK = 1.2
+LANE_FIT_SOURCE_RELEASE_SLEW_SCALE = 0.5
+
 
 def sanitize_lane_rate_damping_mode(mode: object) -> str:
   mode_s = str(mode).strip().lower()
   return mode_s if mode_s in LANE_RATE_DAMPING_MODES else "off"
+
+
+def sanitize_lane_fit_source_mode(mode: object) -> str:
+  mode_s = str(mode).strip().lower()
+  return mode_s if mode_s in LANE_FIT_SOURCE_MODES else "off"
 
 
 def _finite_float(value: Any) -> float | None:
@@ -96,6 +119,57 @@ def _deadband(value: float, threshold: float) -> float:
   if abs(value) <= threshold:
     return 0.0
   return value - math.copysign(threshold, value)
+
+
+def _finite_array(values: Sequence[Any]) -> list[float] | None:
+  result: list[float] = []
+  for value in values:
+    f = _finite_float(value)
+    if f is None:
+      return None
+    result.append(f)
+  return result
+
+
+def _lane_line_y_at(lane_line: Any, x: float) -> float | None:
+  raw_xs = getattr(lane_line, "x", None) or ()
+  raw_ys = getattr(lane_line, "y", None) or ()
+  xs = _finite_array(raw_xs)
+  ys = _finite_array(raw_ys)
+  if xs is None or ys is None or len(xs) < 2 or len(xs) != len(ys):
+    return None
+  if x < xs[0] or x > xs[-1]:
+    return None
+  return float(np.interp(x, xs, ys))
+
+
+def _lane_fit_candidate_curvature(lane_lines: Sequence[Any]) -> float | None:
+  if lane_lines is None or len(lane_lines) < 3:
+    return None
+  left_lane = lane_lines[1]
+  right_lane = lane_lines[2]
+  if left_lane is None or right_lane is None:
+    return None
+
+  sample_xs = np.asarray(LANE_GEOMETRY_SAMPLE_XS, dtype=float)
+  center_ys: list[float] = []
+  for x in sample_xs:
+    left_y = _lane_line_y_at(left_lane, float(x))
+    right_y = _lane_line_y_at(right_lane, float(x))
+    if left_y is None or right_y is None:
+      return None
+    center_y = (left_y + right_y) * 0.5
+    if not math.isfinite(center_y):
+      return None
+    center_ys.append(center_y)
+
+  try:
+    coeffs = np.polyfit(sample_xs, np.asarray(center_ys, dtype=float), deg=2)
+  except (TypeError, ValueError, np.linalg.LinAlgError):
+    return None
+
+  curvature = float(2.0 * coeffs[0])
+  return curvature if math.isfinite(curvature) else None
 
 
 @dataclass(frozen=True)
@@ -121,6 +195,8 @@ class LateralDemandPipelineInputs:
   steer_limited: bool = False
   straight_path_stabilization_mode: str = "off"
   lane_rate_damping_mode: str = "off"
+  lane_fit_source_mode: str = "off"
+  lane_centering_one_line_mode: str = "off"
   model_data_v2_sp_valid: bool = True
   turn_direction: int = 0
   # lane change
@@ -161,6 +237,19 @@ class LaneRateDampingResult:
   lat_accel: float
   curvature: float
   cap_lat_accel: float
+
+
+@dataclass(frozen=True)
+class LaneFitSourceResult:
+  mode: str
+  active: bool
+  applied: bool
+  reason: str
+  candidate_curvature: float
+  applied_curvature: float
+  lat_accel_delta: float
+  confidence: float
+  slew_limited: bool
 
 
 class _LaneRateDampingTracker:
@@ -272,6 +361,181 @@ class _LaneRateDampingTracker:
     return LaneRateDampingResult(mode, active, applied, reason, lane_center, lane_center_rate, lat_accel, curvature, cap_lat_accel)
 
 
+class _LaneFitSourceTracker:
+  def __init__(self, dt: float) -> None:
+    self.dt = max(float(dt), 1e-3)
+    self._min_frames = max(1, int(round(LANE_FIT_SOURCE_MIN_PERSIST_S / self.dt)))
+    self.reset()
+
+  def reset(self) -> None:
+    self._eligible_frames = 0
+    self._last_output_lat_accel: float | None = None
+
+  def _slew_output(self, baseline_lat_accel: float, target_lat_accel: float) -> tuple[float, bool]:
+    prev = self._last_output_lat_accel
+    if prev is None or not math.isfinite(prev):
+      prev = baseline_lat_accel
+    max_step = LANE_FIT_SOURCE_SLEW_LAT_JERK * DT_CTRL
+    if prev is not None and target_lat_accel == baseline_lat_accel:
+      # ponytail: release a touch slower than entry so an immediate apply->block still backs off.
+      max_step *= LANE_FIT_SOURCE_RELEASE_SLEW_SCALE
+    output_lat_accel = prev + float(np.clip(target_lat_accel - prev, -max_step, max_step))
+    slew_limited = abs(output_lat_accel - target_lat_accel) > 1e-9
+    if slew_limited or target_lat_accel != baseline_lat_accel:
+      self._last_output_lat_accel = output_lat_accel
+    else:
+      self._last_output_lat_accel = None
+    return output_lat_accel, slew_limited
+
+  def update(self, inputs: LateralDemandPipelineInputs, model_path_result: ModelPathProcessorResult,
+             demand_source: str, baseline_curvature: float) -> LaneFitSourceResult:
+    mode = sanitize_lane_fit_source_mode(inputs.lane_fit_source_mode)
+    baseline_curvature_f = _finite_float(baseline_curvature)
+    v_ego = _finite_float(inputs.v_ego)
+    if baseline_curvature_f is None or v_ego is None or v_ego < 1.0:
+      self.reset()
+      return LaneFitSourceResult(mode, False, False, "low_speed" if v_ego is not None and v_ego < 1.0 else "invalid", 0.0, baseline_curvature_f or 0.0, 0.0, 0.0, False)
+
+    speed_sq = max(v_ego * v_ego, 1e-6)
+    baseline_lat_accel = baseline_curvature_f * speed_sq
+    candidate_curvature = 0.0
+    confidence = 0.0
+    active = False
+    applied = False
+    reason = "disabled"
+
+    if mode == "off":
+      self.reset()
+      return LaneFitSourceResult(mode, False, False, reason, 0.0, baseline_curvature_f, 0.0, 0.0, False)
+
+    shadow_mode = mode == "shadow"
+    if shadow_mode:
+      self.reset()
+
+    if not inputs.lat_active:
+      reason = "inactive"
+    elif demand_source != DEMAND_SOURCE_MODEL_PATH:
+      reason = str(demand_source)
+    elif not inputs.lane_change_state_valid:
+      reason = "lane_change_unknown"
+    elif inputs.lane_change_state != LANE_CHANGE_STATE_OFF:
+      reason = "lane_change"
+    elif inputs.left_blinker or inputs.right_blinker:
+      reason = "blinker"
+    elif inputs.steering_pressed is not False:
+      reason = "driver_override"
+    elif inputs.curvature_limited:
+      reason = "curvature_limited"
+    elif inputs.steer_limited:
+      reason = "steer_limited"
+    elif model_path_result.reason != "ok":
+      reason = str(model_path_result.reason)
+    else:
+      path_quality = _finite_float(model_path_result.quality)
+      if path_quality is None or path_quality < LANE_FIT_SOURCE_MIN_PATH_QUALITY:
+        reason = "low_quality"
+      elif v_ego < LANE_FIT_SOURCE_MIN_SPEED:
+        reason = "low_speed"
+      else:
+        geometry = evaluate_lane_geometry(
+          lane_lines=inputs.lane_lines,
+          lane_line_probs=inputs.lane_line_probs,
+          lane_line_stds=inputs.lane_line_stds,
+          position_x=inputs.position_x,
+          position_y=inputs.position_y,
+          near_x=float(LANE_GEOMETRY_SAMPLE_XS[0]),
+          preview_x=float(LANE_GEOMETRY_SAMPLE_XS[-1]),
+        )
+        if not geometry.valid:
+          reason = geometry.reason
+        elif geometry.confidence < LANE_FIT_SOURCE_MIN_GEOMETRY_CONFIDENCE:
+          reason = "geometry_low_confidence"
+        else:
+          candidate_curvature_value = _lane_fit_candidate_curvature(inputs.lane_lines)
+          if candidate_curvature_value is None:
+            reason = "invalid"
+          else:
+            candidate_curvature = candidate_curvature_value
+            candidate_lat_accel = candidate_curvature * speed_sq
+            lat_accel_delta = candidate_lat_accel - baseline_lat_accel
+            if (not math.isfinite(candidate_lat_accel)
+                or abs(baseline_lat_accel) > LANE_FIT_SOURCE_MAX_LAT_ACCEL
+                or abs(candidate_lat_accel) > LANE_FIT_SOURCE_MAX_LAT_ACCEL):
+              reason = "lat_accel_limit"
+            else:
+              if abs(lat_accel_delta) > LANE_FIT_SOURCE_MAX_LAT_ACCEL_DELTA:
+                reason = "delta_lat_accel"
+              elif (candidate_lat_accel * baseline_lat_accel < 0.0 and
+                    min(abs(candidate_lat_accel), abs(baseline_lat_accel)) >= LANE_FIT_SOURCE_SIGN_CONFLICT_LAT_ACCEL):
+                reason = "sign_conflict"
+              else:
+                active = True
+                confidence = float(geometry.confidence)
+                if shadow_mode:
+                  self._eligible_frames = 0
+                  return LaneFitSourceResult(
+                    mode=mode,
+                    active=active,
+                    applied=False,
+                    reason="ok",
+                    candidate_curvature=candidate_curvature,
+                    applied_curvature=baseline_curvature_f,
+                    lat_accel_delta=lat_accel_delta,
+                    confidence=confidence,
+                    slew_limited=False,
+                  )
+                target_curvature = baseline_curvature_f
+                if mode == "apply":
+                  self._eligible_frames += 1
+                  if self._eligible_frames >= self._min_frames:
+                    applied = True
+                    target_curvature = candidate_curvature
+                    reason = "ok"
+                  else:
+                    reason = "warming_up"
+                else:
+                  self._eligible_frames = 0
+                  reason = "ok"
+                applied_curvature_lat_accel, slew_limited = self._slew_output(baseline_lat_accel, target_curvature * speed_sq)
+                return LaneFitSourceResult(
+                  mode=mode,
+                  active=active,
+                  applied=applied,
+                  reason=reason,
+                  candidate_curvature=candidate_curvature,
+                  applied_curvature=applied_curvature_lat_accel / speed_sq,
+                  lat_accel_delta=lat_accel_delta,
+                  confidence=confidence,
+                  slew_limited=slew_limited,
+                )
+
+    self._eligible_frames = 0
+    if shadow_mode:
+      return LaneFitSourceResult(
+        mode=mode,
+        active=active,
+        applied=False,
+        reason=reason,
+        candidate_curvature=0.0,
+        applied_curvature=baseline_curvature_f,
+        lat_accel_delta=0.0,
+        confidence=confidence,
+        slew_limited=False,
+      )
+    applied_curvature, slew_limited = self._slew_output(baseline_lat_accel, baseline_lat_accel)
+    return LaneFitSourceResult(
+      mode=mode,
+      active=active,
+      applied=applied,
+      reason=reason,
+      candidate_curvature=0.0,
+      applied_curvature=applied_curvature / speed_sq,
+      lat_accel_delta=0.0,
+      confidence=confidence,
+      slew_limited=slew_limited,
+    )
+
+
 class LateralDemandPipeline:
   def __init__(self, dt: float = DT_CTRL) -> None:
     self.dt = float(dt)
@@ -280,6 +544,7 @@ class LateralDemandPipeline:
     self._lane_change_path_shaper = LaneChangePathShaper(dt)
     self._lane_centering_assist = LaneCenteringAssistTracker()
     self._lane_rate_damping = _LaneRateDampingTracker(dt)
+    self._lane_fit_source = _LaneFitSourceTracker(dt)
     self._previous_desired_curvature = 0.0
     self._last_extreme_processed_curvature = False
 
@@ -293,6 +558,7 @@ class LateralDemandPipeline:
     self._lane_change_path_shaper.reset()
     self._lane_centering_assist.reset()
     self._lane_rate_damping.reset()
+    self._lane_fit_source.reset()
     self._previous_desired_curvature = 0.0
     self._last_extreme_processed_curvature = False
 
@@ -303,6 +569,7 @@ class LateralDemandPipeline:
     lane_change_blend = 0.0
     lane_centering_result = inactive_lane_centering_assist_result("disabled")
     lane_rate_damping_result = LaneRateDampingResult("off", False, False, "disabled", 0.0, 0.0, 0.0, 0.0, LANE_RATE_DAMPING_CAP_LAT_ACCEL)
+    lane_fit_source_result = LaneFitSourceResult("off", False, False, "disabled", 0.0, 0.0, 0.0, 0.0, False)
     curve_memory_result = None
 
     if inputs.lateral_maneuver_curvature is not None:
@@ -310,9 +577,22 @@ class LateralDemandPipeline:
       self._curve_memory.reset()
       self._lane_change_path_shaper.reset()
       self._lane_centering_assist.reset()
+      self._lane_fit_source.reset()
       new_desired_curvature = float(inputs.lateral_maneuver_curvature)
       model_path_result = ModelPathProcessorResult(new_desired_curvature, 0.0, True, "lateral_maneuver")
       demand_source = DEMAND_SOURCE_LATERAL_MANEUVER
+      lane_rate_damping_result = self._lane_rate_damping.update(inputs, model_path_result, demand_source)
+      lane_fit_source_result = LaneFitSourceResult(
+        mode=sanitize_lane_fit_source_mode(inputs.lane_fit_source_mode),
+        active=False,
+        applied=False,
+        reason="maneuver_override",
+        candidate_curvature=0.0,
+        applied_curvature=new_desired_curvature,
+        lat_accel_delta=0.0,
+        confidence=0.0,
+        slew_limited=False,
+      )
     else:
       turn_curvature_sign = 0
       if inputs.lane_change_state == LANE_CHANGE_STATE_OFF and inputs.model_data_v2_sp_valid:
@@ -390,6 +670,9 @@ class LateralDemandPipeline:
       if lane_rate_damping_result.applied:
         new_desired_curvature += lane_rate_damping_result.curvature
 
+      lane_fit_source_result = self._lane_fit_source.update(inputs, model_path_result, demand_source, new_desired_curvature)
+      new_desired_curvature = lane_fit_source_result.applied_curvature
+
       if inputs.lane_centering_assist_enabled and demand_source == DEMAND_SOURCE_MODEL_PATH:
         lane_centering_result = self._lane_centering_assist.update(LaneCenteringAssistInputs(
           lat_active=inputs.lat_active,
@@ -412,13 +695,14 @@ class LateralDemandPipeline:
           lane_lines=tuple(inputs.lane_lines),
           lane_line_stds=tuple(inputs.lane_line_stds),
           demand_source=demand_source,
+          one_line_mode=inputs.lane_centering_one_line_mode,
         ), self.dt)
         new_desired_curvature += lane_centering_result.curvature_nudge
       elif not inputs.lane_centering_assist_enabled:
         self._lane_centering_assist.reset()
 
-    if inputs.lateral_maneuver_curvature is not None:
-      lane_rate_damping_result = self._lane_rate_damping.update(inputs, model_path_result, demand_source)
+      if lane_fit_source_result.applied:
+        demand_source = DEMAND_SOURCE_LANE_FIT
 
     sensor_confidence = evaluate_sensor_confidence(SensorConfidenceInputs(
       lat_active=inputs.lat_active,
@@ -510,6 +794,15 @@ class LateralDemandPipeline:
         "lane_rate_damping_lat_accel": float(lane_rate_damping_result.lat_accel),
         "lane_rate_damping_curvature": float(lane_rate_damping_result.curvature),
         "lane_rate_damping_cap_lat_accel": float(lane_rate_damping_result.cap_lat_accel),
+        "lane_fit_source_mode": str(lane_fit_source_result.mode),
+        "lane_fit_source_active": bool(lane_fit_source_result.active),
+        "lane_fit_source_applied": bool(lane_fit_source_result.applied),
+        "lane_fit_source_reason": str(lane_fit_source_result.reason),
+        "lane_fit_source_candidate_curvature": float(lane_fit_source_result.candidate_curvature),
+        "lane_fit_source_applied_curvature": float(lane_fit_source_result.applied_curvature),
+        "lane_fit_source_lat_accel_delta": float(lane_fit_source_result.lat_accel_delta),
+        "lane_fit_source_confidence": float(lane_fit_source_result.confidence),
+        "lane_fit_source_slew_limited": bool(lane_fit_source_result.slew_limited),
         "lane_change_blend": lane_change_blend,
         "lane_change_shaping_active": lane_change_shaping_active,
         "lane_centering_active": bool(lane_centering_result.active),
