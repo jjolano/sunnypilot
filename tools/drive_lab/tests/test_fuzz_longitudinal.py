@@ -195,6 +195,23 @@ def test_seeded_pullaway_cases_pass_comfort_jerk_gate():
   ]
 
 
+def test_stop_hold_release_step_cases_pass_comfort_jerk_gate():
+  # Latch-release frames used to step from the hold command straight to the release accel,
+  # bypassing the finalizer's up-jerk slew (release-slew seed). These two cases caught it.
+  cases = [(3, "fuzz lead pullaway #91"), (7, "fuzz lead pullaway #55")]
+
+  results = []
+  with shipped_longitudinal_config():
+    for seed, title in cases:
+      scenario = next(s for s in generate_scenarios(seed=seed, cases=100, mode="comfort") if s.title == title)
+      results.append(run_scenario(scenario, max_normal_jerk=8.0))
+
+  assert [(result.scenario.title, result.failures) for result in results] == [
+    ("fuzz lead pullaway #91", []),
+    ("fuzz lead pullaway #55", []),
+  ]
+
+
 def test_ncap_acc_curated_count():
   scenarios = generate_ncap_acc_scenarios()
   assert len(scenarios) == 18

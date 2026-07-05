@@ -724,7 +724,7 @@ def test_same_id_pullaway_gate_mode_releases_with_research_actuation():
     _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
-  assert 0.0 < a <= 0.50
+  assert math.isclose(a, RELEASE_FIRST_STEP)
 
 
 def test_same_id_pullaway_gate_mode_blocked_without_research_actuation():
@@ -1034,6 +1034,12 @@ def _set_lead_pullaway_release(sp):
   )
 
 
+# First commanded accel on a latch-release frame: the -0.5 standstill hold plus one
+# release up-jerk slew step; later frames ramp toward the release accel.
+RELEASE_FIRST_STEP = (CustomLongitudinalFinalizer._STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET
+                      + CustomLongitudinalFinalizer._STOP_HOLD_RELEASE_MAX_UP_JERK * 0.05)
+
+
 def test_latch_release_same_lead_clears_earlier_with_bounded_accel():
   sp = fake_planner(LongitudinalMode.ACC)
   _arm_stop_hold(sp)
@@ -1048,7 +1054,7 @@ def test_latch_release_same_lead_clears_earlier_with_bounded_accel():
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.32, v_rel=0.16), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
-  assert 0.15 <= a <= 0.50
+  assert math.isclose(a, RELEASE_FIRST_STEP)
 
 
 def test_valid_source_crawl_releases_below_deadband_with_cap():
@@ -1059,6 +1065,8 @@ def test_valid_source_crawl_releases_below_deadband_with_cap():
   # but the crawl launch cap still limits authority.
   sp._lead_stop_hold_gap_increasing_s = 0.30
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  # bypass the release-step ramp (covered by the slew tests) so the crawl cap stays observable
+  sp.custom_long_finalizer.final_a_prev = 0.30
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.6, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
@@ -1077,6 +1085,8 @@ def test_early_stop_farther_than_six_uses_capped_gap_target_for_crawl():
   _arm_stop_hold(sp, d_rel=8.0)
   _set_lead_pullaway_release(sp)
   sp._lead_stop_hold_gap_increasing_s = 0.30
+  # bypass the release-step ramp (covered by the slew tests) so the crawl cap stays observable
+  sp.custom_long_finalizer.final_a_prev = 0.30
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=8.7, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
@@ -1089,6 +1099,8 @@ def test_latch_release_crawl_gap_error_caps_positive_accel():
   _set_lead_pullaway_release(sp)
   sp._lead_stop_hold_gap_increasing_s = 0.30
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  # bypass the release-step ramp (covered by the slew tests) so the crawl cap stays observable
+  sp.custom_long_finalizer.final_a_prev = 0.30
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
@@ -1119,7 +1131,7 @@ def test_latch_release_routine_breakout_uses_short_gap_time():
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=2.0, v_rel=1.1), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
-  assert 0.15 <= a <= 0.50
+  assert math.isclose(a, RELEASE_FIRST_STEP)
 
 
 def test_latch_release_same_lead_allows_slightly_negative_mpc_with_tighter_gap_confirm():
@@ -1136,7 +1148,7 @@ def test_latch_release_same_lead_allows_slightly_negative_mpc_with_tighter_gap_c
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.05, v_lead=0.32, v_rel=0.16), -0.08, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
-  assert 0.15 <= a <= 0.50
+  assert math.isclose(a, RELEASE_FIRST_STEP)
 
 
 def test_latch_release_same_lead_uses_baseline_aware_close_gap_gate():
@@ -1147,7 +1159,7 @@ def test_latch_release_same_lead_uses_baseline_aware_close_gap_gate():
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=5.32, v_lead=1.08, v_rel=1.08), 0.0, False, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
-  assert 0.15 <= a <= 0.50
+  assert math.isclose(a, RELEASE_FIRST_STEP)
 
 
 def test_latch_release_same_lead_close_gap_keeps_absolute_floor():
@@ -1290,7 +1302,7 @@ def test_latch_release_requires_sustained_gap_increase_without_ids():
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(radar_id=None, d_rel=6.55), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
-  assert 0.15 <= a <= 0.50
+  assert math.isclose(a, RELEASE_FIRST_STEP)
 
 
 def test_custom_target_filtering_by_mode_and_scc_source_toggles():
@@ -1313,6 +1325,24 @@ def test_stop_hold_release_slew_first_release_seeds_state_and_stays_floored():
   a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
   assert 0.15 <= a <= 0.50
   assert should_stop is False
+  assert sp._stop_hold_release_slew_a_target == a
+
+
+def test_stop_hold_release_slew_release_step_capped_from_prior_hold():
+  # The release frame must not step from the prior hold command straight to the release
+  # accel: that bypassed the up-jerk slew entirely (fuzz comfort lead-pullaway failures,
+  # seeds 3/7). The seed is bounded at prior command + one slew step.
+  sp = fake_planner(LongitudinalMode.SCC, release=True)
+  dt = 0.05
+  release_output = sp.custom_long_output
+  sp.__dict__['custom_long_output'] = fake_planner(LongitudinalMode.SCC, should_stop=True).custom_long_output
+  held, _, _ = sp.final_longitudinal_output(fake_sm(), -0.5, True, 0.0, False)  # type: ignore[arg-type]
+  assert held == -0.5
+  assert sp.custom_long_finalizer.final_a_prev == -0.5
+  sp.__dict__['custom_long_output'] = release_output
+  a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop is False
+  assert a <= -0.5 + sp.custom_long_finalizer._STOP_HOLD_RELEASE_MAX_UP_JERK * dt + 1e-9
   assert sp._stop_hold_release_slew_a_target == a
 
 
@@ -1634,7 +1664,7 @@ def test_stop_hold_release_prep_does_not_block_first_positive_release():
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
   sp._lead_stop_hold_gap_increasing_s = 0.30
   a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(d_rel=7.0, v_lead=0.8, v_rel=0.3), 0.0, True, 0.2, False)  # type: ignore[arg-type]
-  assert 0.149 <= a <= 0.50
+  assert math.isclose(a, RELEASE_FIRST_STEP)
   assert should_stop is False
   assert sp._lead_stop_hold_active is False
   assert sp._stop_hold_release_prep_a_target is None
@@ -1808,7 +1838,7 @@ def test_stop_hold_standstill_normalize_first_positive_release_still_clears():
   assert a_hold == -0.5
   sp._lead_stop_hold_gap_increasing_s = 0.30
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.0, v_lead=0.8, v_rel=0.3), 0.0, True, 0.2, False)  # type: ignore[arg-type]
-  assert a > 0.0
+  assert math.isclose(a, RELEASE_FIRST_STEP)
   assert should_stop is False
   assert sp._lead_stop_hold_active is False
   assert sp._stop_hold_release_slew_a_target == a

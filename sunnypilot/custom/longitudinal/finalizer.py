@@ -852,6 +852,13 @@ class _FinalArbitration:
       return float(a_target)
 
     if release_mpc_stop and finalizer.stop_hold_release_slew_a_target is None:
+      # Seed at the prior commanded accel + one slew step, not at the release accel:
+      # seeding at the release accel let the hold->release step (-0.5 -> +0.5) bypass
+      # the up-jerk slew entirely (fuzz comfort failures, lead pullaway seeds 3/7).
+      # Upward steps only — a prior command above the release target passes through.
+      prev = finalizer.final_a_prev
+      if prev is not None and prev < a_target:
+        a_target = min(a_target, prev + finalizer._STOP_HOLD_RELEASE_MAX_UP_JERK * dt)
       finalizer.stop_hold_release_slew_a_target = float(a_target)
       return float(a_target)
 
@@ -996,6 +1003,7 @@ class CustomLongitudinalFinalizer:
   stop_hold_release_prep_a_target: float | None
   stop_hold_release_prep_raw_prev: float | None
   approach_damp_a_prev: float | None
+  final_a_prev: float | None
 
   def __init__(self, CP: Any):
     self.CP = CP
@@ -1012,6 +1020,11 @@ class CustomLongitudinalFinalizer:
     self.stop_hold_release_prep_a_target = None
     self.stop_hold_release_prep_raw_prev = None
     self.approach_damp_a_prev = None
+    # Last commanded a_target across ALL finalize paths, including hold frames (which
+    # never route through the release slew). Deliberately NOT cleared in
+    # reset_lead_stop_hold: that runs on the release frame itself, and the release-slew
+    # seed needs the prior hold command to bound the release step.
+    self.final_a_prev = None
 
   @staticmethod
   def _sm_item(sm: Any, key: str) -> Any:
@@ -1283,10 +1296,20 @@ class CustomLongitudinalFinalizer:
       return default
     return v if math.isfinite(v) else default
 
-  def finalize(self, sm: Any, custom_long: Any, custom_long_output: Any, is_e2e: bool,
-               model_stale: bool, dt: float, mpc_a_target: float, mpc_should_stop: bool,
-               raw_model_a_target: float, raw_model_should_stop: bool,
-               apply_stop_hold_release_slew: Any, reset_lead_stop_hold: Any) -> FinalizerResult:
+  def finalize(self, *args: Any, **kwargs: Any) -> FinalizerResult:
+    """Run ``_finalize_impl`` and record the commanded accel for the next frame.
+
+    ``final_a_prev`` must see every commanded a_target — hold frames included —
+    so the release-slew seed can bound the hold->release step.
+    """
+    result = self._finalize_impl(*args, **kwargs)
+    self.final_a_prev = float(result.a_target) if math.isfinite(result.a_target) else None
+    return result
+
+  def _finalize_impl(self, sm: Any, custom_long: Any, custom_long_output: Any, is_e2e: bool,
+                     model_stale: bool, dt: float, mpc_a_target: float, mpc_should_stop: bool,
+                     raw_model_a_target: float, raw_model_should_stop: bool,
+                     apply_stop_hold_release_slew: Any, reset_lead_stop_hold: Any) -> FinalizerResult:
     """Return the final longitudinal arbitration tuple.
 
     ``apply_stop_hold_release_slew`` and ``reset_lead_stop_hold`` are supplied by the
