@@ -722,3 +722,100 @@ def test_curve_traffic_advisor_mode_is_non_actuating_and_wired():
   assert shadow.debug["curve_traffic_active"] is True
   assert shadow.debug["curve_traffic_advisor_fault"] is False
   assert shadow.debug["curve_traffic_apply_supported"] is False
+
+
+# --- DragEstimator wiring (learned flat-road coast decel) ---
+
+def test_coast_accel_uses_learned_rolling_term():
+  from openpilot.sunnypilot.custom.longitudinal.coast_horizon import DEFAULT_COAST_DECEL
+  from openpilot.sunnypilot.custom.longitudinal.wiring import _coast_accel
+  assert _coast_accel(0.0, -0.5) == pytest.approx(-0.5)
+  assert _coast_accel(0.0) == pytest.approx(DEFAULT_COAST_DECEL)
+  assert _coast_accel(0.1, -0.3) < -0.3  # uphill adds deceleration
+
+
+def test_drag_estimator_learns_only_on_manual_coast_frames():
+  from openpilot.sunnypilot.custom.longitudinal.coast_horizon import DEFAULT_COAST_DECEL
+  ad = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True))
+  scc, sla = fake_scc(), fake_sla()
+  assert ad._drag.coast_decel == pytest.approx(DEFAULT_COAST_DECEL)
+
+  # Manual off-pedal coasting (disengaged): the estimate moves toward the measured decel.
+  for _ in range(200):
+    ad.evaluate(fake_sm(pitch=0.0, long_active=False), 20.0, -0.6, 20.0, 0.0, scc, sla)
+  after_manual = ad._drag.coast_decel
+  assert after_manual < DEFAULT_COAST_DECEL
+
+  # Engaged frames count as on-throttle (system throttle/brake don't set pedal flags):
+  # even hard measured decel must not move the estimate.
+  for _ in range(200):
+    ad.evaluate(fake_sm(pitch=0.0, long_active=True), 20.0, -1.5, 20.0, 0.0, scc, sla)
+  assert ad._drag.coast_decel == pytest.approx(after_manual)
+
+  # Pedal frames are excluded too.
+  for _ in range(200):
+    ad.evaluate(fake_sm(pitch=0.0, gas=True), 20.0, -1.5, 20.0, 0.0, scc, sla)
+  assert ad._drag.coast_decel == pytest.approx(after_manual)
+
+
+# --- map-coast tier plumbing ---
+
+def test_build_stack_inputs_carries_map_coast_fields():
+  inp = build_stack_inputs(
+    v_ego=25.0, a_ego=0.0, v_cruise=25.0, seed_a_target=0.0, accel_limits=DEFAULT_ACCEL_LIMITS,
+    lead_one=None, lead_two=None,
+    scc_vision_active=False, scc_vision_a_target=0.0, scc_map_active=False, scc_map_a_target=0.0,
+    sla_active=False, sla_v_target=0.0, sla_a_target=0.0,
+    mode=LongitudinalMode.SCC, personality=Personality.STANDARD,
+    sources=SourceToggles(scc_curve_map_enabled=True),
+    scc_map_coast_v_target=15.0, scc_map_coast_distance=300.0, map_coast_mode="shadow",
+  )
+  assert inp.map_coast_mode == "shadow"
+  assert inp.map_coast_v_target == pytest.approx(15.0)
+  assert inp.map_coast_distance == pytest.approx(300.0)
+
+
+def _map_coast_adapter(mode, research=False):
+  params = FakeParams(CustomLongitudinalEnabled=True, SmartCruiseControlMap=True,
+                      **({"MapCoastMode": mode} if mode is not None else {}))
+  ad = CustomLongitudinalAdapter(params)
+  ad.research_actuation_allowed = research
+  scc = fake_scc()
+  scc.map.coast_v_target = 10.0
+  scc.map.coast_distance = 250.0
+  return ad, scc
+
+
+def test_map_coast_mode_param_fails_closed():
+  assert _map_coast_adapter("shadow")[0].map_coast_mode == "shadow"
+  assert _map_coast_adapter("apply")[0].map_coast_mode == "apply"
+  assert _map_coast_adapter("bogus")[0].map_coast_mode == "off"
+  assert _map_coast_adapter(None)[0].map_coast_mode == "off"
+
+
+def test_map_coast_shadow_is_non_actuating_and_observable():
+  sm = fake_sm(long_active=True)
+  ad_off, scc_off = _map_coast_adapter(None)
+  ad_shadow, scc_shadow = _map_coast_adapter("shadow")
+  out_off = ad_off.evaluate(sm, 25.0, 0.0, 25.0, 0.0, scc_off, fake_sla())
+  out_shadow = ad_shadow.evaluate(sm, 25.0, 0.0, 25.0, 0.0, scc_shadow, fake_sla())
+  assert out_shadow.a_target == pytest.approx(out_off.a_target)
+  assert out_shadow.debug.get("map_coast_eligible") is True
+  assert out_shadow.debug.get("map_coast_cap") < 0.0
+  assert out_shadow.debug.get("map_coast_applied") is False
+  assert "map_coast_eligible" not in out_off.debug
+
+
+def test_map_coast_apply_gated_by_research_actuation():
+  sm = fake_sm(long_active=True)
+  ad_ungated, scc_ungated = _map_coast_adapter("apply", research=False)
+  out_ungated = ad_ungated.evaluate(sm, 25.0, 0.0, 25.0, 0.0, scc_ungated, fake_sla())
+  ad_off, scc_off = _map_coast_adapter(None)
+  out_off = ad_off.evaluate(sm, 25.0, 0.0, 25.0, 0.0, scc_off, fake_sla())
+  assert out_ungated.a_target == pytest.approx(out_off.a_target)  # no research gate -> inert
+
+  ad_apply, scc_apply = _map_coast_adapter("apply", research=True)
+  out_apply = ad_apply.evaluate(sm, 25.0, 0.0, 25.0, 0.0, scc_apply, fake_sla())
+  assert out_apply.a_target < out_off.a_target        # coast cap binds
+  assert out_apply.a_target >= -0.3                   # never harder than natural coast
+  assert out_apply.debug.get("map_coast_applied") is True
