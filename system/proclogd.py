@@ -3,7 +3,7 @@ import os
 from typing import NoReturn, TypedDict
 
 from cereal import messaging
-from openpilot.common.realtime import Ratekeeper
+from openpilot.common.realtime import Ratekeeper, set_core_affinity
 from openpilot.common.swaglog import cloudlog
 
 JIFFY = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
@@ -273,6 +273,10 @@ def build_proc_log_message(msg) -> None:
 
 
 def main() -> NoReturn:
+  try:
+    set_core_affinity([0, 1, 2, 3])  # little cores; unpinned it drifts onto the big cores
+  except Exception:
+    cloudlog.exception("failed to set core affinity")
   pm = messaging.PubMaster(['procLog'])
   rk = Ratekeeper(0.5)
   while True:

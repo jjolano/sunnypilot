@@ -306,6 +306,9 @@ class Device(DeviceSP):
 
       clipped_brightness = float(np.interp(clipped_brightness, [0, 1], [min_brightness, 100]))
 
+    # target_fps is dynamic (set_fps_idle); keep the filter's wall-clock time constant honest
+    self._brightness_filter.dt = 1 / gui_app.target_fps
+    self._brightness_filter.update_alpha(10.00)
     brightness = round(self._brightness_filter.update(clipped_brightness))
 
     if gui_app.sunnypilot_ui():
@@ -337,6 +340,7 @@ class Device(DeviceSP):
     self._prev_timed_out = interaction_timeout
 
     self._set_awake(ui_state.ignition or not interaction_timeout or PC)
+    gui_app.set_fps_idle(ui_state.ignition and interaction_timeout)
 
   def _set_awake(self, on: bool):
     if on != self._awake:

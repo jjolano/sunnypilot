@@ -5,16 +5,40 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import os
+import time
 
 import pyray as rl
 
+from openpilot.system.hardware import HARDWARE
+
 SHOW_MOUSE_COORDS = os.getenv("SHOW_MOUSE_COORDS") == "1"
 SUNNYPILOT_UI = os.getenv("SUNNYPILOT_UI", "1") == "1"
+
+IDLE_FPS = 20
+# contexts that need a fixed frame rate: offscreen/recorded rendering, mici's vblank-paced display
+_FIXED_RATE = os.getenv("OFFSCREEN") == "1" or os.getenv("RECORD") == "1"
 
 
 class GuiApplicationExt:
   def __init__(self):
     self._show_mouse_coords = SHOW_MOUSE_COORDS
+    self._full_fps = 0
+
+  def set_fps_idle(self, idle: bool):
+    """Throttle to IDLE_FPS while onroad and untouched; camera content is 20Hz anyway.
+
+    Keeps big-core load (and thermals) at the pre-60fps baseline for the ~95% of
+    drive time the screen isn't being interacted with.
+    """
+    if not SUNNYPILOT_UI or _FIXED_RATE or HARDWARE.get_device_type() == 'mici':
+      return
+    if self._full_fps == 0:
+      self._full_fps = self._target_fps
+    want = min(IDLE_FPS, self._full_fps) if idle else self._full_fps
+    if want != self._target_fps:
+      rl.set_target_fps(want)
+      self._target_fps = want
+      self._last_fps_log_time = time.monotonic()  # grace so the drop monitor skips the rate change
 
   @staticmethod
   def sunnypilot_ui() -> bool:

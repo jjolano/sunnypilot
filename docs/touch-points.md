@@ -23,4 +23,6 @@ upstream updates.
 | `sunnypilot/selfdrive/controls/lib/latcontrol_torque_versions.json` | Register `v2.1` in the native torque-selector manifest |
 | `selfdrive/ui/ui.py` | UI core pin 5 → 6 (camerad's core, which outranks it): frees core 5 for plannerd/radard so the UI can run 60fps without contending with the planner |
 | `system/ui/lib/application.py` | Default UI FPS 60 on tizi (upstream caps tizi at 20); `FPS` env still overrides for rollback |
+| `selfdrive/ui/ui_state.py` | Interaction-gated FPS: 1 call (`gui_app.set_fps_idle`, fork-owned mixin method) throttling to 20fps while onroad+untouched for thermals, + live brightness-filter dt refresh since target_fps is now dynamic |
+| `system/proclogd.py` | Pin to little cores (0-3); unpinned it ran 100% of onroad samples on big cores |
 | `selfdrive/controls/radard.py` | Cut-in override: 1 fail-closed call (`apply_cut_in_override`) wrapping `get_lead()` for `leadOne` — promotes high-risk on-path radar tracks (closing speed ≥ 2 m/s, TTC ≤ 8 s, on-path, moving, persistent) to `leadOne` when the vision model hasn't confirmed them. Gated by `CustomLongitudinalEnabled`; never overrides a confirmed lead |
