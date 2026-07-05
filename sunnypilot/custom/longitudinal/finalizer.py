@@ -231,8 +231,8 @@ class _ReleaseGate:
   """Decides whether a stop-hold latch may release, and which accel to emit."""
 
   @staticmethod
-  def routine_breakout(lead_v: float, lead_v_rel: float) -> bool:
-    return CustomLongitudinalFinalizer._routine_lead_launch_breakout(lead_v, lead_v_rel)
+  def routine_breakout(lead_v_rel: float) -> bool:
+    return CustomLongitudinalFinalizer._routine_lead_launch_breakout(lead_v_rel)
 
   @staticmethod
   def standstill_release_gate_enabled(finalizer: CustomLongitudinalFinalizer, custom_long: Any) -> bool:
@@ -452,7 +452,7 @@ class _ReleaseGate:
     if same_id:
       if source_valid:
         min_gap_increasing_s = finalizer._STOP_HOLD_SAME_ID_VALID_GAP_INCREASING_S
-      elif _ReleaseGate.routine_breakout(float(lead_v), float(lead_v_rel)):
+      elif _ReleaseGate.routine_breakout(float(lead_v_rel)):
         min_gap_increasing_s = finalizer._STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S
       elif gate_fallback_candidate:
         min_gap_increasing_s = finalizer._STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S
@@ -524,7 +524,7 @@ class _ReleaseAccel:
                     lead_d_rel: float, lead_v: float, lead_v_rel: float,
                     same_id: bool, valid_source: bool = False) -> float:
     release_a = min(max(float(requested_a), finalizer._STOP_HOLD_RELEASE_A_MIN), finalizer._STOP_HOLD_RELEASE_A_MAX)
-    if _ReleaseGate.routine_breakout(float(lead_v), float(lead_v_rel)):
+    if _ReleaseGate.routine_breakout(float(lead_v_rel)):
       return float(release_a)
     if not same_id or finalizer.lead_stop_hold_gap_baseline_d_rel is None:
       return float(release_a)
@@ -935,11 +935,9 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
   _STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S = 0.10
   _STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S = 0.15
-  # NOTE: breakout is only consulted while the stop-hold latch is active (ego <= ~0.7 m/s), where
-  # v_rel ~= lead_v - v_ego, so the v_rel >= 1.0 arm of the OR always fires before any lead_v
-  # threshold above ~1.7 m/s — tuning MIN_LEAD_V below that is dead. Route 0000025a's crawl-launch
-  # improvement lives in _STOP_HOLD_CRAWL_GAP_TAU below, not here.
-  _STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V = 5.0
+  # Breakout is only consulted while the stop-hold latch is active (ego <= ~0.7 m/s), where
+  # v_rel ~= lead_v, so v_rel is the whole gate (a lead_v arm was subsumed and deleted).
+  # Crawl-launch feel is tuned via _STOP_HOLD_CRAWL_GAP_TAU below, not here.
   _STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL = 1.0
   _STOP_HOLD_CRAWL_DEADBAND_M = 0.50
   # Route 0000025a: below the breakout the release accel ramps as (gap_opened - deadband) / TAU; the old
@@ -1058,11 +1056,8 @@ class CustomLongitudinalFinalizer:
     return min(candidates, key=lambda c: c[0])[3]
 
   @staticmethod
-  def _routine_lead_launch_breakout(lead_v: float, lead_v_rel: float) -> bool:
-    return bool(
-      float(lead_v) >= CustomLongitudinalFinalizer._STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V or
-      float(lead_v_rel) >= CustomLongitudinalFinalizer._STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL
-    )
+  def _routine_lead_launch_breakout(lead_v_rel: float) -> bool:
+    return float(lead_v_rel) >= CustomLongitudinalFinalizer._STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL
 
   def reset_lead_stop_hold(self) -> None:
     self.lead_stop_hold_active = False
