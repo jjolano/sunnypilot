@@ -4,7 +4,7 @@ import time
 
 from cereal import messaging
 from openpilot.system.hardware import TICI
-from openpilot.common.realtime import Priority, config_realtime_process, set_core_affinity
+from openpilot.common.realtime import set_core_affinity
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.main import MainLayout
 from openpilot.selfdrive.ui.mici.layouts.main import MiciMainLayout
@@ -15,8 +15,10 @@ BIG_UI = gui_app.big_ui()
 
 def main():
   cores = {6, }
-  # camerad's core; it outranks us (54 > 53), and 60fps UI leaves core 5 to plannerd/radard
-  config_realtime_process(0, Priority.CTRL_HIGH)
+  try:
+    set_core_affinity(list(cores))
+  except OSError:
+    pass
 
   gui_app.init_window("UI")
   if BIG_UI:
