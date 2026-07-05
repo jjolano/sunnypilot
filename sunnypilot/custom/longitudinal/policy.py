@@ -59,7 +59,7 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   launch_accel_max,
   stop_approach_comfort_decel,
 )
-from openpilot.sunnypilot.custom.longitudinal.coast_horizon import MAX_COAST_DECEL
+from openpilot.sunnypilot.custom.longitudinal.coast_horizon import DEFAULT_COAST_DECEL, MAX_COAST_DECEL
 
 SAFETY_FORCE_SLOW_DECEL = -0.2
 
@@ -638,7 +638,7 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
     # (tighten = safe; this only relaxes the approach, never overrides the physics floor).
     if scene.lead_v > 0.0 and scene.lead_d_rel > 0.0 and scene.follow_gap > 0.0:
       cushion = lead_following_cushion(scene.v_ego, scene.lead_v, scene.lead_d_rel, scene.follow_gap,
-                                       coast_decel=_scene_coast_decel(scene))
+                                       coast_decel=_usable_coast_decel(scene))
       if cushion.coast_first and cushion.a_target < 0.0:
         cands.append(LongitudinalCandidate(cushion.a_target, CandidateRole.ADVISORY_CAP,
                                            EvidenceClass.LEAD, "lead_cushion"))
@@ -660,7 +660,7 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
       # gate's softening of a low-confidence stop is never re-hardened by stop kinematics.
       if trust.should_stop and not hard and scene.model_stop_distance is not None and scene.model_stop_distance > 0.0:
         stop_a = runway_comfort_governor(scene.v_ego, 0.0, scene.model_stop_distance, stop_a,
-                                         _scene_coast_decel(scene))
+                                         _usable_coast_decel(scene))
       cands.append(LongitudinalCandidate(stop_a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP,
                                          "stop_approach", is_stop=bool(trust.should_stop and hard)))
   # Early, non-committing model-slowdown caution from fresh model decel before shouldStop or
@@ -707,8 +707,18 @@ def _with_personality(scene: LongitudinalScene, personality: Personality) -> Lon
 
 
 def _scene_coast_decel(scene: LongitudinalScene) -> float:
-  """A usable (negative) natural coast decel for the cushion; falls back when no useful coast is available."""
+  """Honest natural-coast estimate for the advisory runway governors (speed-limit/curve): when no
+  useful coast is measured, report MAX_COAST_DECEL so a fabricated proxy never relaxes those caps."""
   return scene.accel_coast if scene.accel_coast < MAX_COAST_DECEL else MAX_COAST_DECEL
+
+
+def _usable_coast_decel(scene: LongitudinalScene) -> float:
+  """Coast decel for lead-cushion and committed-stop shaping. The pitch-only accel_coast reads ~0
+  on flat road and omits rolling+aero drag, so fall back to the flat-road proxy (DEFAULT_COAST_DECEL)
+  instead of "no coast" — otherwise coast-first vanishes on flat: no early cushion toward a slower
+  lead (then late reactive braking) and far committed stops brake immediately instead of coasting
+  (route 0000025a regression, introduced by the bb1d135b2d coast-fallback change)."""
+  return scene.accel_coast if scene.accel_coast < MAX_COAST_DECEL else DEFAULT_COAST_DECEL
 
 
 def _advisory_speed_limit_cap(scene: LongitudinalScene) -> float:

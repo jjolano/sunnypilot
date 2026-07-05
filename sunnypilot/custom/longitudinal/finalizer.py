@@ -928,11 +928,11 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
   _STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S = 0.10
   _STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S = 0.15
-  # Route 0000025a: close-lead launches crept (aMean ~0.08 m/s^2, recovery 7-12 s) because a
-  # normally-accelerating lead stayed under the 5.0 m/s breakout and got gap-crawl accel (~0.05 m/s^2)
-  # instead of the full release. 3.0 m/s (still paired with v_rel >= 1.0) is an unambiguous pull-away,
-  # not a creep, so the launch commits sooner without lunging at a lead that only inches forward.
-  _STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V = 3.0
+  # NOTE: breakout is only consulted while the stop-hold latch is active (ego <= ~0.7 m/s), where
+  # v_rel ~= lead_v - v_ego, so the v_rel >= 1.0 arm of the OR always fires before any lead_v
+  # threshold above ~1.7 m/s — tuning MIN_LEAD_V below that is dead. Route 0000025a's crawl-launch
+  # improvement lives in _STOP_HOLD_CRAWL_GAP_TAU below, not here.
+  _STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V = 5.0
   _STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL = 1.0
   _STOP_HOLD_CRAWL_DEADBAND_M = 0.50
   # Route 0000025a: below the breakout the release accel ramps as (gap_opened - deadband) / TAU; the old
@@ -965,10 +965,12 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_RELEASE_PREP_MIN_D_REL_MARGIN = 0.10
   _STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET = -0.50
   _STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO = 0.70
-  # Approach-cusp damping: the ACC-MPC limit-cycles +/-0.3 m/s^2 at ~2-3 Hz on a steady lead approach
-  # (route 0000025a) and it reaches the actuator. Rate-limit aTarget only inside this gentle authority
-  # band; strong accel/decel, stops and releases pass through untouched so brake authority is never
-  # delayed. ponytail: widen the band if the cusp shifts, do not lower the jerk cap.
+  # Approach damping: on route 0000025a the final aTarget limit-cycled +/-0.3 m/s^2 at ~2-3 Hz on
+  # steady lead approaches and reached the actuator. Primary cause was the policy coast-fallback
+  # regression (bb1d135b2d, fixed in policy._usable_coast_decel) toggling candidate caps through the
+  # MPC; this damp stays as a generic backstop against any in-band arbitration chatter. Rate-limit
+  # aTarget only inside the gentle authority band; strong accel/decel, stops and releases pass
+  # through untouched so brake authority is never delayed.
   _APPROACH_DAMP_BAND = 0.55
   _APPROACH_DAMP_MAX_JERK = 3.0
   _CURVE_CONFIDENCE_APPLY_MIN_V_EGO = 8.0

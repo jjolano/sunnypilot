@@ -54,11 +54,13 @@ T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
-STOP_DISTANCE = 5.5      # g_stop: standstill gap behind a lead (the stop buffer). Route 0000025a: 6.0
-                         # stopped so far back that a close lead had to pull ~1-2 m before the gap
-                         # reopened enough to launch; 5.5 stops slightly closer so the launch commits
-                         # sooner. NOTE: baked into the acados solver at codegen — a deploy must
-                         # regenerate c_generated_code (watch the /data/scons_cache mtime gotcha).
+STOP_DISTANCE = 5.5      # g_stop: standstill gap behind a lead (the stop buffer). Lowered from 6.0
+                         # after route 0000025a for a more compact standstill gap. Note: launch
+                         # reaction is roughly invariant to this value (the car stops closer by the
+                         # same amount the release threshold moves) — release timing is governed by
+                         # the finalizer stop-hold gates. NOTE: baked into the acados solver at
+                         # codegen — a deploy must regenerate c_generated_code (watch the
+                         # /data/scons_cache mtime gotcha).
 MOVING_GAP = 1.25       # g_move: the moving follow constant the stop gap fades to (decoupled)
 GAP_FADE_V = 4.0        # m/s; speed scale over which the stop gap fades to the moving gap
 CRUISE_MIN_ACCEL = -1.2
