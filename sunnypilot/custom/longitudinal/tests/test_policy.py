@@ -9,6 +9,7 @@ from openpilot.sunnypilot.custom.longitudinal.policy import (
   LongitudinalScene,
   build_candidates,
   dynamic_cruise_overspeed_leeway,
+  map_coast_cap,
   no_lead_stop_clear,
   stop_approach_accel,
   stopping_decel,
@@ -1128,3 +1129,42 @@ def test_curve_runway_governor_raises_decision_above_raw_seed():
              SourceToggles(scc_curve_vision_enabled=True))
   assert d.a_target > -1.0
   assert d.a_target == pytest.approx(0.0)
+
+
+# --- map-coast tier (coast-only SCC-Map advisory cap) ---
+
+def _map_coast_scene(v_ego=25.0, v_target=15.0, distance=400.0, active=True, accel_coast=0.0):
+  # accel_coast=0.0 -> no measured coast, so the cap uses the flat-road proxy (-0.25)
+  return LongitudinalScene(v_ego=v_ego, v_cruise=v_ego, seed_a_target=0.0, accel_coast=accel_coast,
+                           map_coast_active=active, map_coast_v_target=v_target, map_coast_distance=distance)
+
+
+def test_map_coast_cap_cruises_far_coasts_near_never_brakes():
+  # 25 -> 15 m/s at -0.25 coast needs 800 m; lift-off is 800 + 0.6*25 = 815 m.
+  assert map_coast_cap(_map_coast_scene(distance=900.0)) is None                       # still cruising
+  assert map_coast_cap(_map_coast_scene(distance=810.0)) == pytest.approx(-0.25)      # lift window: coast
+  # Well inside coast distance the kinematics ask for real braking (-1.0 here), but map
+  # evidence alone never brakes: the cap is floored at the natural coast decel.
+  assert map_coast_cap(_map_coast_scene(distance=200.0)) == pytest.approx(-0.25)
+
+
+def test_map_coast_cap_invalid_targets_are_none():
+  assert map_coast_cap(_map_coast_scene(v_target=0.0)) is None
+  assert map_coast_cap(_map_coast_scene(v_target=30.0)) is None       # not slower
+  assert map_coast_cap(_map_coast_scene(distance=None)) is None
+  assert map_coast_cap(_map_coast_scene(distance=0.0)) is None
+
+
+def test_map_coast_candidate_only_when_active_and_gated_by_map_toggle():
+  active = build_candidates(_map_coast_scene(distance=400.0))
+  intents = sources_of(active)
+  assert "map_coast" in intents
+  assert intents["map_coast"].role is CandidateRole.ADVISORY_CAP
+  assert intents["map_coast"].source is EvidenceClass.CURVE_MAP
+  assert "map_coast" not in sources_of(build_candidates(_map_coast_scene(active=False)))
+
+  # decide() admits CURVE_MAP only in SCC with the SmartCruiseControlMap toggle on.
+  admitted = decide(active, LongitudinalMode.SCC, LIMITS, SourceToggles(scc_curve_map_enabled=True))
+  assert admitted.a_target == pytest.approx(-0.25)
+  dropped = decide(active, LongitudinalMode.SCC, LIMITS, SourceToggles(scc_curve_map_enabled=False))
+  assert dropped.a_target == pytest.approx(0.0)

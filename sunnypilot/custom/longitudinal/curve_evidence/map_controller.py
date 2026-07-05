@@ -149,6 +149,8 @@ class SmartCruiseControlMap:
     self.v_target = 0.0
     self.target_lat = 0.0
     self.target_lon = 0.0
+    self.coast_v_target = 0.0
+    self.coast_distance = 0.0
 
   def _material_drop_needs_corroboration(self, tv: float) -> bool:
     return (self.v_ego - tv) >= MATERIAL_DROP_DELTA_V
