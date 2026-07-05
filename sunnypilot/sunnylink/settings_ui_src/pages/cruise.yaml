@@ -30,28 +30,6 @@ sections:
     - type: param
       key: CustomLongitudinalEnabled
       equals: false
-  - key: LeadAnticipationMode
-    widget: multiple_button
-    title: Lead Anticipation
-    description: Monitor lead smoothing in the planner or apply it to the MPC lead input. Apply mode can change following
-      and braking response; Off returns to the base lead input. Apply requires Custom Longitudinal and is disabled when longitudinal
-      is off.
-    requires_attestation: true
-    options:
-    - value: 'off'
-      label: 'Off'
-    - value: 'shadow'
-      label: Monitor only
-    - value: 'apply'
-      label: Apply lead smoothing
-    enablement:
-    - $ref: '#/macros/offroad'
-    - type: capability
-      field: has_longitudinal_control
-      equals: true
-    - type: param
-      key: CustomLongitudinalEnabled
-      equals: true
   - key: DynamicFollowGapMode
     widget: multiple_button
     title: Dynamic Follow Gap

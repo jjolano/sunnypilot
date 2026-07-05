@@ -6,7 +6,6 @@ no route parity / comfort tuning):
 
   - sunnypilot.custom.longitudinal.lead_confidence
   - sunnypilot.custom.longitudinal.model_trust
-  - sunnypilot.custom.longitudinal.lead_anticipation
 """
 from __future__ import annotations
 
@@ -14,16 +13,11 @@ import argparse
 import json
 import math
 import random
-import sys
 import traceback
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
-from openpilot.sunnypilot.custom.longitudinal.lead_anticipation import (
-  AL_CAP_MAX_SOFTENING,
-  LeadAnticipation,
-)
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import (
   LEAD_FLICKER_CLOSE_GUARD_TIME,
   LeadConfidenceState,
@@ -44,7 +38,6 @@ EPS = 1e-6
 DEFAULT_KINDS = (
   "lead_confidence_sequence",
   "model_trust_sequence",
-  "lead_anticipation_sequence",
 )
 
 
@@ -75,7 +68,7 @@ class StatefulCase:
     }
 
   @classmethod
-  def from_dict(cls, data: dict[str, Any]) -> "StatefulCase":
+  def from_dict(cls, data: dict[str, Any]) -> StatefulCase:
     return cls(
       kind=str(data["kind"]),
       index=int(data["index"]),
@@ -99,19 +92,6 @@ class StatefulResult:
   @property
   def failure_count(self) -> int:
     return len(self.failures)
-
-
-class FakeParams:
-  """In-memory params backend used by LeadAnticipation."""
-
-  def __init__(self, **kw: Any) -> None:
-    self._d = dict(kw)
-
-  def get_bool(self, key: str) -> bool:
-    return bool(self._d.get(key, False))
-
-  def get(self, key: str, default: Any = None, return_default: bool = False) -> Any:
-    return self._d.get(key, default)
 
 
 # ---------- helpers ----------
@@ -195,33 +175,6 @@ def _random_finite_accel(rng: random.Random) -> float:
   return rng.uniform(-5.0, 3.0)
 
 
-# ---------- lead-anticipation helpers ----------
-
-
-def _random_anticipation_lead_dict(rng: random.Random, a_lead: float | None = None, **overrides: Any) -> dict[str, Any]:
-  d = {
-    "status": True,
-    "dRel": rng.uniform(15.0, 40.0),
-    "vLead": rng.uniform(5.0, 25.0),
-    "vLeadK": rng.uniform(5.0, 25.0),
-    "vRel": rng.uniform(-2.0, 2.0),
-    "aLeadK": rng.uniform(-4.0, 2.0),
-    "aLeadTau": 1.5,
-    "yRel": rng.uniform(-1.0, 1.0),
-    "radarTrackId": rng.randint(0, 1000),
-    "radar": True,
-    "modelProb": 0.9,
-  }
-  if a_lead is not None:
-    d["aLeadK"] = a_lead
-  d.update(overrides)
-  return d
-
-
-def _radarstate_dict(rng: random.Random, one: dict[str, Any] | None, two: dict[str, Any] | None = None) -> dict[str, Any]:
-  return {"leadOne": one, "leadTwo": two}
-
-
 # ---------- scenario generators ----------
 
 
@@ -302,94 +255,9 @@ def _generate_model_trust_sequence_case(rng: random.Random, index: int) -> State
   )
 
 
-def _generate_lead_anticipation_sequence_case(rng: random.Random, index: int) -> StatefulCase:
-  scenarios = [
-    "off", "invalid", "missing", "shadow",
-    "apply_low_speed", "apply_brake_pressed", "apply_gas_pressed", "apply_force_decel",
-    "apply_too_close", "apply_fast_closing", "apply_low_ttc",
-    "apply_lead_two_too_close",
-    "apply_braking_new_lead", "apply_non_braking",
-    "apply_confident_brake", "apply_sustained_brake",
-    "apply_two_safe_leads",
-  ]
-  scenario = rng.choice(scenarios)
-
-  mode: str | None = "apply"
-  custom_long = True
-  context = {
-    "long_active": True,
-    "brake_pressed": False,
-    "gas_pressed": False,
-    "force_decel": False,
-    "v_ego": 15.0,
-  }
-  n_frames = 15
-  lead_one = _random_anticipation_lead_dict(rng, a_lead=-3.0)
-  lead_two: dict[str, Any] | None = None
-
-  if scenario == "off":
-    mode = "off"
-  elif scenario == "invalid":
-    mode = "bogus"
-  elif scenario == "missing":
-    mode = None
-  elif scenario == "shadow":
-    mode = "shadow"
-    custom_long = False
-  elif scenario == "apply_low_speed":
-    context["v_ego"] = 1.0
-  elif scenario == "apply_brake_pressed":
-    context["brake_pressed"] = True
-  elif scenario == "apply_gas_pressed":
-    context["gas_pressed"] = True
-  elif scenario == "apply_force_decel":
-    context["force_decel"] = True
-  elif scenario == "apply_too_close":
-    lead_one["dRel"] = 5.0
-  elif scenario == "apply_fast_closing":
-    lead_one["vRel"] = -6.0
-  elif scenario == "apply_low_ttc":
-    lead_one["dRel"] = 8.5
-    lead_one["vRel"] = -3.0
-    context["v_ego"] = 10.0
-  elif scenario == "apply_lead_two_too_close":
-    lead_two = _random_anticipation_lead_dict(rng, a_lead=-2.0, dRel=5.0, radarTrackId=rng.randint(0, 1000))
-  elif scenario == "apply_non_braking":
-    lead_one["aLeadK"] = 0.5
-  elif scenario == "apply_confident_brake":
-    n_frames = 20
-    lead_one["aLeadK"] = -3.0
-  elif scenario == "apply_sustained_brake":
-    n_frames = 20
-    lead_one["aLeadK"] = -0.6
-  elif scenario == "apply_two_safe_leads":
-    lead_two = _random_anticipation_lead_dict(rng, a_lead=-1.0, dRel=40.0, radarTrackId=rng.randint(0, 1000))
-
-  frames: list[dict[str, Any]] = []
-  for _ in range(n_frames):
-    dt = rng.uniform(0.03, 0.08)
-    frames.append({
-      "radarstate": _radarstate_dict(rng, lead_one, lead_two),
-      "dt": dt,
-      "context": dict(context),
-    })
-
-  params: dict[str, Any] = {"CustomLongitudinalEnabled": custom_long, "frames": frames, "scenario": scenario}
-  if mode is not None:
-    params["LeadAnticipationMode"] = mode
-
-  return StatefulCase(
-    kind="lead_anticipation_sequence",
-    index=index,
-    title=f"lead_anticipation_sequence #{index} {scenario}",
-    params=params,
-  )
-
-
 _GENERATORS = {
   "lead_confidence_sequence": _generate_lead_confidence_sequence_case,
   "model_trust_sequence": _generate_model_trust_sequence_case,
-  "lead_anticipation_sequence": _generate_lead_anticipation_sequence_case,
 }
 
 
@@ -664,137 +532,9 @@ def _evaluate_model_trust_sequence(case: StatefulCase) -> tuple[list[dict[str, A
   return failures, metrics
 
 
-def _evaluate_lead_anticipation_sequence(case: StatefulCase) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-  failures: list[dict[str, Any]] = []
-  params_dict = {k: v for k, v in case.params.items() if k not in ("frames", "scenario")}
-  la = LeadAnticipation(FakeParams(**params_dict))
-  metrics = {"frames": 0, "apply_frames": 0, "block_frames": 0}
-  scenario = case.params.get("scenario", "unknown")
-  expected_blocked_apply_scenarios = {
-    "apply_low_speed",
-    "apply_brake_pressed",
-    "apply_gas_pressed",
-    "apply_force_decel",
-    "apply_too_close",
-    "apply_fast_closing",
-    "apply_low_ttc",
-    "apply_lead_two_too_close",
-  }
-
-  for frame_idx, frame in enumerate(case.params["frames"]):
-    rs_dict = frame["radarstate"]
-    rs = SimpleNamespace(
-      leadOne=_simple_namespace(rs_dict.get("leadOne")),
-      leadTwo=_simple_namespace(rs_dict.get("leadTwo")),
-    )
-    dt = _to_float(frame["dt"])
-    context = {k: _to_float_or_passthrough(v) for k, v in frame["context"].items()}
-    metrics["frames"] += 1
-
-    try:
-      out = la.shape(rs, dt, **context)
-    except Exception as exc:
-      failures.append({
-        "check": "no_exception",
-        "detail": f"frame {frame_idx}: shape raised {type(exc).__name__}: {exc}",
-        "traceback": traceback.format_exc(),
-      })
-      continue
-
-    last = la.last_result
-    apply_allowed = last is not None and last.get("apply") is True
-    if apply_allowed:
-      metrics["apply_frames"] += 1
-    else:
-      metrics["block_frames"] += 1
-
-    # Object-identity consistency: apply allowed must wrap; blocked must return original.
-    if apply_allowed and out is rs:
-      failures.append({
-        "check": "apply_wrapped_output",
-        "detail": f"frame {frame_idx}: apply=True but original radarstate returned",
-      })
-    if not apply_allowed and out is not rs:
-      failures.append({
-        "check": "blocked_original_output",
-        "detail": f"frame {frame_idx}: apply=False but wrapped radarstate returned",
-      })
-
-    if scenario in expected_blocked_apply_scenarios:
-      if out is not rs:
-        failures.append({
-          "check": "expected_blocked_original_output",
-          "detail": f"frame {frame_idx}: {scenario} should return the original radarstate",
-        })
-      if last is not None and last.get("apply") is True:
-        failures.append({
-          "check": "expected_blocked_apply_false",
-          "detail": f"frame {frame_idx}: {scenario} unexpectedly allowed apply",
-        })
-
-    # Per-lead accel invariants when wrapped.
-    if apply_allowed:
-      for idx, attr in enumerate(("leadOne", "leadTwo")):
-        raw_dict = rs_dict.get(attr)
-        if raw_dict is None:
-          continue
-        raw_lead = _simple_namespace(raw_dict)
-        if raw_lead is None or not bool(getattr(raw_lead, "status", False)):
-          continue
-        raw_a = _finite_default(getattr(raw_lead, "aLeadK", 0.0), 0.0)
-        shaped_a = _finite_default(getattr(getattr(out, attr, None), "aLeadK", raw_a), raw_a)
-        if not math.isfinite(raw_a):
-          continue
-        if raw_a >= 0.0:
-          if not math.isclose(shaped_a, raw_a, abs_tol=1e-6):
-            failures.append({
-              "check": f"lead_{idx}_non_braking_unchanged",
-              "detail": f"frame {frame_idx}: raw={raw_a} shaped={shaped_a}",
-            })
-        else:
-          if shaped_a > EPS or shaped_a < raw_a - EPS:
-            failures.append({
-              "check": f"lead_{idx}_braking_bounds",
-              "detail": f"frame {frame_idx}: raw={raw_a} shaped={shaped_a}",
-            })
-          if shaped_a - raw_a > AL_CAP_MAX_SOFTENING + EPS:
-            failures.append({
-              "check": f"lead_{idx}_braking_cap",
-              "detail": f"frame {frame_idx}: delta={shaped_a - raw_a} cap={AL_CAP_MAX_SOFTENING}",
-            })
-
-    # Off / invalid modes must not produce last_result.
-    if scenario in ("off", "invalid") and last is not None:
-      failures.append({
-        "check": "off_invalid_no_last_result",
-        "detail": f"frame {frame_idx}: mode={scenario} but last_result set",
-      })
-
-    # Shadow should record a summary.
-    if scenario == "shadow" and last is None:
-      failures.append({
-        "check": "shadow_records_summary",
-        "detail": f"frame {frame_idx}: shadow mode produced no last_result",
-      })
-
-    # Confident / sustained scenarios should converge to full weight on the final frame.
-    if frame_idx == len(case.params["frames"]) - 1 and scenario in ("apply_confident_brake", "apply_sustained_brake"):
-      if apply_allowed and last is not None:
-        raw_val = last.get("leadOneRaw")
-        shaped_val = last.get("leadOneShaped")
-        if raw_val is not None and shaped_val is not None and not math.isclose(raw_val, shaped_val, abs_tol=1e-6):
-          failures.append({
-            "check": f"{scenario}_passes_full_weight",
-            "detail": f"final frame raw={raw_val} shaped={shaped_val}",
-          })
-
-  return failures, metrics
-
-
 _EVALUATORS = {
   "lead_confidence_sequence": _evaluate_lead_confidence_sequence,
   "model_trust_sequence": _evaluate_model_trust_sequence,
-  "lead_anticipation_sequence": _evaluate_lead_anticipation_sequence,
 }
 
 

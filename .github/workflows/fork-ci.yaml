@@ -78,5 +78,4 @@ jobs:
           tools/drive_lab/tests/test_fuzz_lateral_demand.py \
           tools/drive_lab/tests/test_fuzz_lateral_controller.py \
           tools/drive_lab/tests/test_compare_torque_versions.py \
-          tools/drive_lab/tests/test_replay_lead_anticipation.py \
           tools/drive_lab/tests/test_signal_scorer.py

@@ -889,42 +889,6 @@
               ]
             },
             {
-              "key": "LeadAnticipationMode",
-              "widget": "multiple_button",
-              "requires_attestation": true,
-              "title": "Lead Anticipation",
-              "description": "Monitor lead smoothing in the planner or apply it to the MPC lead input. Apply mode can change following and braking response; Off returns to the base lead input. Apply requires Custom Longitudinal and is disabled when longitudinal is off.",
-              "options": [
-                {
-                  "value": "off",
-                  "label": "Off"
-                },
-                {
-                  "value": "shadow",
-                  "label": "Monitor only"
-                },
-                {
-                  "value": "apply",
-                  "label": "Apply lead smoothing"
-                }
-              ],
-              "enablement": [
-                {
-                  "type": "offroad_only"
-                },
-                {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
-                },
-                {
-                  "type": "param",
-                  "key": "CustomLongitudinalEnabled",
-                  "equals": true
-                }
-              ]
-            },
-            {
               "key": "DynamicFollowGapMode",
               "widget": "multiple_button",
               "requires_attestation": true,

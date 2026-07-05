@@ -23,7 +23,6 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.follow_gap import FollowGapScheduler
-from openpilot.sunnypilot.custom.longitudinal.lead_anticipation import LeadAnticipation
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, CustomLongitudinalOutput, MODEL_STALE_AGE_S, _message_age_s
 
@@ -85,10 +84,6 @@ class LongitudinalPlannerSP:
     # Custom-2.0 longitudinal policy (default-on in this fork; fail-closed to stock output).
     self.custom_long = CustomLongitudinalAdapter(Params())
     self.custom_long_output = None
-    # §3 lead-motion anticipation: mode-gated shadow/apply shaping of lead accel fed to the MPC
-    # (off/shadow/apply via LeadAnticipationMode; compatibility LeadAnticipationEnabled only when
-    # mode is absent, fail-closed to the raw radarState).
-    self.lead_anticipation = LeadAnticipation(Params())
     # Dynamic follow-gap scheduler: mode-gated (DynamicFollowGapMode) bounded T_FOLLOW
     # compression on approach; apply is research-gated, fail-closed to the personality baseline.
     self.follow_gap = FollowGapScheduler(Params())

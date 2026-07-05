@@ -28,7 +28,7 @@ def test_counts_and_render_json_basic():
         customLongitudinal=SimpleNamespace(enabled=True, active=True, selectedIntent="follow", reason="lead_close", shouldStop=False)),
     msg("carState", 0.09, vEgo=20.0, aEgo=-0.6),
   ]
-  report = analyze_route(msgs, source="synthetic", include_replay=False)
+  report = analyze_route(msgs, source="synthetic")
   assert report["plan_source_counts"] == {"lead0": 1}
   assert report["sp_plan_source_counts"] == {"custom": 1}
   assert report["custom_intent_counts"] == {"follow": 1}
@@ -37,15 +37,11 @@ def test_counts_and_render_json_basic():
   worst = report["strong_decel_episodes"][0]["worst_sample"]
   assert worst["longitudinalPlan"]["source"] == "lead0"
   assert worst["longitudinalPlanSP"]["customLongitudinal"]["selectedIntent"] == "follow"
-  assert worst["leadAnticipation"]["softened"] is True
-  assert worst["leadAnticipation"]["leadOneRawALeadK"] == -0.8
-  assert worst["leadAnticipation"]["leadOneShapedALeadK"] > -0.8
-  assert report["lead_anticipation"]["softened_samples"] == 1
   json.loads(json.dumps(report))
   assert "Longitudinal attribution: synthetic" in render_report(report)
 
 
-def test_lead_anticipation_no_data_shape_is_stable():
-  report = analyze_route([msg("carState", 0.0, vEgo=0.0, aEgo=0.0)], source="empty", include_replay=False)
-  assert report["lead_anticipation"]["radar_samples"] == 0
-  assert "note" in report["lead_anticipation"]
+def test_no_data_shape_is_stable():
+  report = analyze_route([msg("carState", 0.0, vEgo=0.0, aEgo=0.0)], source="empty")
+  assert report["strong_decel_episodes"] == []
+  json.loads(json.dumps(report))

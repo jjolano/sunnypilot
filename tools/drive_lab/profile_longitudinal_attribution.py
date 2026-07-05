@@ -8,23 +8,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from openpilot.sunnypilot.custom.longitudinal.lead_anticipation import LeadAnticipation
-from openpilot.tools.drive_lab.replay_lead_anticipation import analyze_route as analyze_lead_replay
 from openpilot.tools.drive_lab.route_analysis import build_route_messages
 from openpilot.tools.drive_lab.route_io import load_route_msgs
 from openpilot.tools.drive_lab.timeline import safe_get
-
-
-class _AlwaysOnLeadAnticipationParams:
-  """Force §3 shaping on for offline attribution without depending on device params."""
-
-  def get_bool(self, key: str) -> bool:
-    return key == "CustomLongitudinalEnabled"
-
-  def get(self, key: str, default: Any = None, return_default: bool = False) -> Any:
-    if key == "LeadAnticipationMode":
-      return "apply"
-    return default
 
 
 def _finite(v: Any) -> float | None:
@@ -87,74 +73,7 @@ def _fmt_msg_value(msg: Any, path: str) -> float | None:
   return _round(_sample_value(msg, path))
 
 
-def _lead_anticipation_delta(raw_radar: Any, shaped_radar: Any) -> dict[str, Any]:
-  raw = _finite(safe_get(raw_radar, "leadOne.aLeadK"))
-  shaped = _finite(safe_get(shaped_radar, "leadOne.aLeadK"))
-  delta = None if raw is None or shaped is None else shaped - raw
-  return {
-    "leadOneRawALeadK": _round(raw),
-    "leadOneShapedALeadK": _round(shaped),
-    "leadOneDelta": _round(delta),
-    "softened": bool(delta is not None and delta > 0.02),
-  }
-
-
-def _radar_dt(t: float, last_t: float | None) -> float:
-  return 0.05 if last_t is None else max(0.0, min(0.5, t - last_t))
-
-
-def _build_lead_anticipation_summary(msgs: list[Any]) -> dict[str, Any]:
-  la = LeadAnticipation(_AlwaysOnLeadAnticipationParams())
-  radar_samples = 0
-  braking_samples = 0
-  softened_samples = 0
-  deltas: list[float] = []
-  softened_deltas: list[float] = []
-  last_radar_t: float | None = None
-  latest: dict[str, Any] = {}
-  for rec in build_route_messages(msgs):
-    latest[rec.typ] = rec.payload
-    if rec.typ != "radarState":
-      continue
-    radar = rec.payload
-    v_ego = _finite(safe_get(latest.get("carState"), "vEgo"))
-    shaped = la.shape(
-      radar, _radar_dt(rec.t, last_radar_t),
-      long_active=True,
-      brake_pressed=False,
-      gas_pressed=False,
-      force_decel=False,
-      v_ego=0.0 if v_ego is None else v_ego,
-    )
-    last_radar_t = rec.t
-    lead = safe_get(radar, "leadOne")
-    if lead is None or not bool(safe_get(lead, "status", False)):
-      continue
-    radar_samples += 1
-    raw = _finite(safe_get(lead, "aLeadK"))
-    shp = _finite(safe_get(shaped, "leadOne.aLeadK"))
-    if raw is None or shp is None:
-      continue
-    delta = shp - raw
-    deltas.append(delta)
-    if raw < -0.1:
-      braking_samples += 1
-    if delta > 0.02:
-      softened_samples += 1
-      softened_deltas.append(delta)
-  if not deltas:
-    return {"radar_samples": radar_samples, "lead_braking_samples": braking_samples, "softened_samples": softened_samples, "note": "no lead-anticipation deltas available"}
-  return {
-    "radar_samples": radar_samples,
-    "lead_braking_samples": braking_samples,
-    "softened_samples": softened_samples,
-    "max_delta": _round(max(deltas)),
-    "median_delta": _round(_percentile(deltas, 50.0)),
-    "median_soften_delta": _round(_percentile(softened_deltas, 50.0)),
-  }
-
-
-def _current_state(latest: dict[str, Any], rec: Any, lead_anticipation: dict[str, Any] | None) -> dict[str, Any]:
+def _current_state(latest: dict[str, Any], rec: Any) -> dict[str, Any]:
   cs = latest.get("carState")
   cc = latest.get("carControl")
   lp = latest.get("longitudinalPlan")
@@ -184,12 +103,11 @@ def _current_state(latest: dict[str, Any], rec: Any, lead_anticipation: dict[str
         "shouldStop": bool(safe_get(sp, "customLongitudinal.shouldStop", False)),
       },
     },
-    "leadAnticipation": lead_anticipation or {},
     "carControl": {"longActive": bool(safe_get(cc, "longActive", False))},
   }
 
 
-def analyze_route(msgs: list[Any], source: str = "unknown", include_replay: bool = True) -> dict[str, Any]:
+def analyze_route(msgs: list[Any], source: str = "unknown") -> dict[str, Any]:
   records = build_route_messages(msgs)
   duration_s = records[-1].t - records[0].t if records else 0.0
   plan_sources: list[str] = []
@@ -202,25 +120,10 @@ def analyze_route(msgs: list[Any], source: str = "unknown", include_replay: bool
   long_active_samples: list[tuple[float, bool]] = []
   custom_active_samples: list[tuple[float, bool]] = []
   latest: dict[str, Any] = {}
-  lead_anticipation = LeadAnticipation(_AlwaysOnLeadAnticipationParams())
-  latest_lead_anticipation: dict[str, Any] | None = None
-  last_radar_t: float | None = None
   decel_samples: list[dict[str, Any]] = []
   for rec in records:
     latest[rec.typ] = rec.payload
-    if rec.typ == "radarState":
-      v_ego = _finite(safe_get(latest.get("carState"), "vEgo"))
-      shaped = lead_anticipation.shape(
-        rec.payload, _radar_dt(rec.t, last_radar_t),
-        long_active=True,
-        brake_pressed=False,
-        gas_pressed=False,
-        force_decel=False,
-        v_ego=0.0 if v_ego is None else v_ego,
-      )
-      last_radar_t = rec.t
-      latest_lead_anticipation = _lead_anticipation_delta(rec.payload, shaped)
-    elif rec.typ == "selfdriveState":
+    if rec.typ == "selfdriveState":
       enabled_samples.append((rec.t, bool(safe_get(rec.payload, "enabled", False))))
     elif rec.typ == "carControl":
       long_active_samples.append((rec.t, bool(safe_get(rec.payload, "longActive", False))))
@@ -231,7 +134,7 @@ def analyze_route(msgs: list[Any], source: str = "unknown", include_replay: bool
       if bool(safe_get(cc, "longActive", False)) and lead and bool(safe_get(lead, "status", False)):
         a_ego = _finite(safe_get(cs, "aEgo"))
         if a_ego is not None and a_ego < -0.5:
-          decel_samples.append(_current_state(latest, rec, latest_lead_anticipation))
+          decel_samples.append(_current_state(latest, rec))
     if rec.typ == "longitudinalPlan":
       source_name = str(safe_get(rec.payload, "longitudinalPlanSource", "unknown"))
       plan_sources.append(source_name)
@@ -270,11 +173,8 @@ def analyze_route(msgs: list[Any], source: str = "unknown", include_replay: bool
     "custom_intent_counts": _counts([v for v in custom_intents if v]),
     "custom_reason_counts": _counts([v for v in custom_reasons if v]),
     "a_target": {"longitudinalPlan": _stats(plan_a), "longitudinalPlanSP": _stats(sp_a)},
-    "lead_anticipation": _build_lead_anticipation_summary(msgs),
     "strong_decel_episodes": episodes,
   }
-  if include_replay:
-    report["mpc_replay"] = analyze_lead_replay(msgs, source=source)
   return report
 
 
@@ -298,9 +198,6 @@ def render_report(report: dict[str, Any]) -> str:
   lines.append(f"  custom intents: {report.get('custom_intent_counts', {})}")
   lines.append(f"  custom reasons: {report.get('custom_reason_counts', {})}")
   lines.append(f"  aTarget: {report.get('a_target', {})}")
-  lines.append(f"  lead anticipation: {report.get('lead_anticipation', {})}")
-  if report.get("mpc_replay") is not None:
-    lines.append(f"  mpc replay: {report['mpc_replay']}")
   for idx, ep in enumerate(report.get("strong_decel_episodes", []), start=1):
     lines.append(f"  episode {idx}: {ep['start_s']}s->{ep['end_s']}s ({ep['sample_count']} samples)")
   return "\n".join(lines)
@@ -312,10 +209,9 @@ def main() -> None:
   p.add_argument("--qlog", action="store_true")
   p.add_argument("--json", action="store_true")
   p.add_argument("--output")
-  p.add_argument("--no-replay", action="store_true")
   args = p.parse_args()
   msgs = load_route_msgs(args.route, qlog=args.qlog)
-  report = analyze_route(msgs, source=args.route, include_replay=not args.no_replay)
+  report = analyze_route(msgs, source=args.route)
   rendered = json.dumps(report, indent=2, sort_keys=True) if args.json else render_report(report)
   if args.output:
     Path(args.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

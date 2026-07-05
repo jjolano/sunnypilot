@@ -83,17 +83,17 @@ def test_monkeypatched_model_trust_produces_failures():
     fuzz_longitudinal_stateful.gate_model_stop = original_gate
 
 
-def test_monkeypatched_lead_anticipation_produces_failures():
-  original = fuzz_longitudinal_stateful._EVALUATORS["lead_anticipation_sequence"]
-  config = StatefulFuzzerConfig(seed=1, cases=1, kind="lead_anticipation_sequence")
+def test_monkeypatched_evaluator_produces_failures():
+  original = fuzz_longitudinal_stateful._EVALUATORS["lead_confidence_sequence"]
+  config = StatefulFuzzerConfig(seed=1, cases=1, kind="lead_confidence_sequence")
   case = generate_cases(config)[0]
   try:
-    fuzz_longitudinal_stateful._EVALUATORS["lead_anticipation_sequence"] = lambda case: ([{"check": "injected", "detail": "injected"}], {})
+    fuzz_longitudinal_stateful._EVALUATORS["lead_confidence_sequence"] = lambda case: ([{"check": "injected", "detail": "injected"}], {})
     result = evaluate_case(case)
     assert not result.valid
     assert result.failure_count > 0
   finally:
-    fuzz_longitudinal_stateful._EVALUATORS["lead_anticipation_sequence"] = original
+    fuzz_longitudinal_stateful._EVALUATORS["lead_confidence_sequence"] = original
 
 
 # ---------- CLI smoke ----------
