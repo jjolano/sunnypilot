@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import os
-import time
 import threading
+import time
+from dataclasses import dataclass
 
 import cereal.messaging as messaging
 
@@ -28,6 +29,42 @@ from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 REPLAY = "REPLAY" in os.environ
 
 EventName = log.OnroadEvent.EventName
+
+
+@dataclass(frozen=True)
+class CardConfigSnapshot:
+  is_metric: bool
+  experimental_mode: bool
+  dynamic_experimental_control: bool
+
+
+def _read_card_config_snapshot(
+  params: Params,
+  cp: car.CarParams,
+) -> CardConfigSnapshot:
+  is_metric = params.get_bool("IsMetric")
+
+  custom_longitudinal_enabled = params.get_bool("CustomLongitudinalEnabled")
+  if custom_longitudinal_enabled:
+    custom_longitudinal_mode = LongitudinalMode.from_value(
+      params.get("CustomLongitudinalMode") or "scc"
+    )
+    experimental_mode = bool(
+      cp.openpilotLongitudinalControl
+      and custom_longitudinal_mode is LongitudinalMode.E2E
+    )
+    dynamic_experimental_control = False
+  else:
+    experimental_mode = bool(
+      params.get_bool("ExperimentalMode") and cp.openpilotLongitudinalControl
+    )
+    dynamic_experimental_control = bool(params.get_bool("DynamicExperimentalControl"))
+
+  return CardConfigSnapshot(
+    is_metric=is_metric,
+    experimental_mode=experimental_mode,
+    dynamic_experimental_control=dynamic_experimental_control,
+  )
 
 # forward
 carlog.addHandler(ForwardingHandler(cloudlog))
@@ -68,6 +105,7 @@ class Car:
   CP: car.CarParams
   CP_SP: structs.CarParamsSP
   CP_SP_capnp: custom.CarParamsSP
+  config: CardConfigSnapshot
 
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
@@ -127,9 +165,6 @@ class Car:
     set_alternative_experience(self.CP, self.CP_SP, self.params)
     set_car_specific_params(self.CP, self.CP_SP, self.params)
 
-    # Legacy DEC/ExperimentalMode are compatibility inputs only when custom longitudinal is off.
-    self.dynamic_experimental_control = self._effective_dynamic_experimental_control()
-
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
     controller_available = self.CI.CC is not None and openpilot_enabled_toggle and not self.CP.dashcamOnly
     self.CP.passive = not controller_available or self.CP.dashcamOnly
@@ -180,8 +215,7 @@ class Car:
 
     self.v_cruise_helper = VCruiseHelper(self.CP, self.CP_SP)
 
-    self.is_metric = self.params.get_bool("IsMetric")
-    self.experimental_mode = self._effective_experimental_mode()
+    self.config = _read_card_config_snapshot(self.params, self.CP)
 
     # card is driven by can recv, expected at 100Hz
     self.rk = Ratekeeper(100, print_delay_threshold=None)
@@ -191,6 +225,8 @@ class Car:
 
   def state_update(self) -> tuple[car.CarState, custom.CarStateSP, structs.RadarDataT | None]:
     """carState update loop, driven by can"""
+
+    config = self.config
 
     can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=True)
     can_list = can_capnp_to_list(can_strs)
@@ -213,11 +249,11 @@ class Car:
     if can_rcv_valid and REPLAY:
       self.can_log_mono_time = messaging.log_from_bytes(can_strs[0]).logMonoTime
 
-    self.v_cruise_helper.update_speed_limit_assist(self.is_metric, self.sm['longitudinalPlanSP'])
-    self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric)
+    self.v_cruise_helper.update_speed_limit_assist(config.is_metric, self.sm['longitudinalPlanSP'])
+    self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, config.is_metric)
     if self.sm['carControl'].enabled and not self.CC_prev.enabled:
       # Use CarState w/ buttons from the step selfdrived enables on
-      self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode, self.dynamic_experimental_control)
+      self.v_cruise_helper.initialize_v_cruise(self.CS_prev, config.experimental_mode, config.dynamic_experimental_control)
 
     # TODO: mirror the carState.cruiseState struct?
     CS.vCruise = float(self.v_cruise_helper.v_cruise_kph)
@@ -301,25 +337,10 @@ class Car:
 
   def params_thread(self, evt):
     while not evt.is_set():
-      self.is_metric = self.params.get_bool("IsMetric")
-      self.experimental_mode = self._effective_experimental_mode()
-
-      # sunnypilot
-      self.dynamic_experimental_control = self._effective_dynamic_experimental_control()
+      self.config = _read_card_config_snapshot(self.params, self.CP)
       self.v_cruise_helper.read_custom_set_speed_params()
 
       time.sleep(0.1)
-
-  def _effective_custom_longitudinal_mode(self) -> LongitudinalMode:
-    return LongitudinalMode.from_value(self.params.get("CustomLongitudinalMode") or "scc")
-
-  def _effective_experimental_mode(self) -> bool:
-    if self.params.get_bool("CustomLongitudinalEnabled"):
-      return bool(self.CP.openpilotLongitudinalControl and self._effective_custom_longitudinal_mode() is LongitudinalMode.E2E)
-    return bool(self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl)
-
-  def _effective_dynamic_experimental_control(self) -> bool:
-    return bool(False if self.params.get_bool("CustomLongitudinalEnabled") else self.params.get_bool("DynamicExperimentalControl"))
 
   def card_thread(self):
     e = threading.Event()

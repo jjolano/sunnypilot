@@ -2,6 +2,7 @@
 import os
 import time
 import threading
+from dataclasses import dataclass, replace
 
 import cereal.messaging as messaging
 
@@ -37,6 +38,17 @@ SIMULATION = "SIMULATION" in os.environ
 TESTING_CLOSET = "TESTING_CLOSET" in os.environ
 
 LONGITUDINAL_PERSONALITY_MAP = {v: k for k, v in log.LongitudinalPersonality.schema.enumerants.items()}
+
+
+@dataclass(frozen=True)
+class SelfdriveConfigSnapshot:
+  is_metric: bool
+  is_ldw_enabled: bool
+  disengage_on_accelerator: bool
+  custom_longitudinal_enabled: bool
+  custom_longitudinal_mode: LongitudinalMode
+  experimental_mode: bool
+  personality: int
 
 ThermalStatus = log.DeviceState.ThermalStatus
 State = log.SelfdriveState.OpenpilotState
@@ -108,11 +120,21 @@ class SelfdriveD(CruiseHelper):
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
 
     # read params
-    self.is_metric = self.params.get_bool("IsMetric")
-    self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
-    self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
-    self.custom_longitudinal_enabled = self.params.get_bool("CustomLongitudinalEnabled")
-    self.custom_longitudinal_mode = LongitudinalMode.from_value(self.params.get("CustomLongitudinalMode") or "scc")
+    personality = get_sanitize_int_param(
+      "LongitudinalPersonality",
+      min(log.LongitudinalPersonality.schema.enumerants.values()),
+      max(log.LongitudinalPersonality.schema.enumerants.values()),
+      self.params
+    )
+    self.config: SelfdriveConfigSnapshot = SelfdriveConfigSnapshot(
+      is_metric=self.params.get_bool("IsMetric"),
+      is_ldw_enabled=self.params.get_bool("IsLdwEnabled"),
+      disengage_on_accelerator=self.params.get_bool("DisengageOnAccelerator"),
+      custom_longitudinal_enabled=self.params.get_bool("CustomLongitudinalEnabled"),
+      custom_longitudinal_mode=LongitudinalMode.from_value(self.params.get("CustomLongitudinalMode") or "scc"),
+      experimental_mode=False,
+      personality=personality,
+    )
 
     car_recognized = self.CP.brand != 'mock'
 
@@ -137,13 +159,6 @@ class SelfdriveD(CruiseHelper):
     self.events_prev = []
     self.logged_comm_issue = None
     self.not_running_prev = None
-    self.experimental_mode = False
-    self.personality = get_sanitize_int_param(
-      "LongitudinalPersonality",
-      min(log.LongitudinalPersonality.schema.enumerants.values()),
-      max(log.LongitudinalPersonality.schema.enumerants.values()),
-      self.params
-    )
     self.recalibrating_seen = False
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
@@ -180,8 +195,38 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.__init__(self, self.CP)
 
-  def update_events(self, CS):
+  @property
+  def is_metric(self) -> bool:
+    return self.config.is_metric
+
+  @property
+  def is_ldw_enabled(self) -> bool:
+    return self.config.is_ldw_enabled
+
+  @property
+  def disengage_on_accelerator(self) -> bool:
+    return self.config.disengage_on_accelerator
+
+  @property
+  def custom_longitudinal_enabled(self) -> bool:
+    return self.config.custom_longitudinal_enabled
+
+  @property
+  def custom_longitudinal_mode(self) -> LongitudinalMode:
+    return self.config.custom_longitudinal_mode
+
+  @property
+  def experimental_mode(self) -> bool:
+    return self.config.experimental_mode
+
+  @property
+  def personality(self) -> int:
+    return self.config.personality
+
+  def update_events(self, CS, config=None):
     """Compute onroadEvents from carState"""
+
+    config = self.config if config is None else config
 
     self.events.clear()
     self.events_sp.clear()
@@ -261,7 +306,7 @@ class SelfdriveD(CruiseHelper):
           self.events.add(EventName.pcmEnable)
 
       # Disable on rising edge of accelerator or brake. Also disable on brake when speed > 0
-      if (CS.gasPressed and not self.CS_prev.gasPressed and self.disengage_on_accelerator) or \
+      if (CS.gasPressed and not self.CS_prev.gasPressed and config.disengage_on_accelerator) or \
         (CS.brakePressed and (not self.CS_prev.brakePressed or not CS.standstill)) or \
         (CS.regenBraking and (not self.CS_prev.regenBraking or not CS.standstill)):
         self.events.add(EventName.pedalPressed)
@@ -297,7 +342,7 @@ class SelfdriveD(CruiseHelper):
         self.events.add(EventName.calibrationInvalid)
 
     # Lane departure warning
-    if self.is_ldw_enabled and self.sm.valid['driverAssistance']:
+    if config.is_ldw_enabled and self.sm.valid['driverAssistance']:
       if self.sm['driverAssistance'].leftLaneDeparture or self.sm['driverAssistance'].rightLaneDeparture:
         self.events.add(EventName.ldw)
 
@@ -473,18 +518,21 @@ class SelfdriveD(CruiseHelper):
     if CS.gearShifter == car.CarState.GearShifter.park and self.mads.enabled:
       self.events.remove(EventName.canBusMissing)
 
-    CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
+    CruiseHelper.update(self, CS, self.events_sp, config.experimental_mode)
 
     # decrement personality on distance button press
     if self.CP.openpilotLongitudinalControl:
       if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
         if not self.experimental_mode_switched:
-          self.personality = (self.personality - 1) % 3
-          self.params.put('LongitudinalPersonality', self.personality)
+          config = self.config
+          personality = (config.personality - 1) % 3
+          self.config = replace(config, personality=personality)
+          config = self.config
+          self.params.put('LongitudinalPersonality', personality)
           self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
 
-    self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
+    self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], config.is_metric)
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)
@@ -533,15 +581,16 @@ class SelfdriveD(CruiseHelper):
 
     return CS
 
-  def update_alerts(self, CS):
+  def update_alerts(self, CS, config=None):
+    config = self.config if config is None else config
     clear_event_types = set()
     if ET.WARNING not in self.state_machine.current_alert_types:
       clear_event_types.add(ET.WARNING)
     if self.enabled:
       clear_event_types.add(ET.NO_ENTRY)
 
-    pers = LONGITUDINAL_PERSONALITY_MAP[self.personality]
-    callback_args = [self.CP, CS, self.sm, self.is_metric,
+    pers = LONGITUDINAL_PERSONALITY_MAP[config.personality]
+    callback_args = [self.CP, CS, self.sm, config.is_metric,
                      self.state_machine.soft_disable_timer, pers]
 
     alerts = self.events.create_alerts(self.state_machine.current_alert_types, callback_args)
@@ -550,7 +599,8 @@ class SelfdriveD(CruiseHelper):
     self.AM.add_many(self.sm.frame, alerts + alerts_sp)
     self.AM.process_alerts(self.sm.frame, clear_event_types)
 
-  def publish_selfdriveState(self, CS):
+  def publish_selfdriveState(self, CS, config=None):
+    config = self.config if config is None else config
     # selfdriveState
     ss_msg = messaging.new_message('selfdriveState')
     ss_msg.valid = True
@@ -559,8 +609,8 @@ class SelfdriveD(CruiseHelper):
     ss.active = self.active
     ss.state = self.state_machine.state
     ss.engageable = not self.events.contains(ET.NO_ENTRY)
-    ss.experimentalMode = self.experimental_mode
-    ss.personality = self.personality
+    ss.experimentalMode = config.experimental_mode
+    ss.personality = config.personality
 
     ss.alertText1 = self.AM.current_alert.alert_text_1
     ss.alertText2 = self.AM.current_alert.alert_text_2
@@ -606,28 +656,36 @@ class SelfdriveD(CruiseHelper):
     self.events_sp_prev = self.events_sp.names.copy()
 
   def step(self):
+    config = self.config
     CS = self.data_sample()
-    self.update_events(CS)
+    self.update_events(CS, config)
+    config = self.config
     if not self.CP.passive and self.initialized:
       self.enabled, self.active = self.state_machine.update(self.events)
     if not self.CP.notCar:
       self.mads.update(CS)
-    self.update_alerts(CS)
+    self.update_alerts(CS, config)
 
-    self.publish_selfdriveState(CS)
+    self.publish_selfdriveState(CS, config)
 
     self.CS_prev = CS
 
   def params_thread(self, evt):
     while not evt.is_set():
-      self.is_metric = self.params.get_bool("IsMetric")
-      self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
-      self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
-      if self.custom_longitudinal_enabled:
-        self.experimental_mode = bool(self.CP.openpilotLongitudinalControl and self.custom_longitudinal_mode is LongitudinalMode.E2E)
+      config = self.config
+      if config.custom_longitudinal_enabled:
+        experimental_mode = bool(self.CP.openpilotLongitudinalControl and config.custom_longitudinal_mode is LongitudinalMode.E2E)
       else:
-        self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      self.personality = self.params.get("LongitudinalPersonality", return_default=True)
+        experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
+
+      self.config = replace(
+        config,
+        is_metric=self.params.get_bool("IsMetric"),
+        is_ldw_enabled=self.params.get_bool("IsLdwEnabled"),
+        disengage_on_accelerator=self.params.get_bool("DisengageOnAccelerator"),
+        experimental_mode=experimental_mode,
+        personality=self.params.get("LongitudinalPersonality", return_default=True),
+      )
 
       self.mads.read_params()
       time.sleep(0.1)
