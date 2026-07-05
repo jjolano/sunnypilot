@@ -99,8 +99,8 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
 def lane_rate_damping_inputs(lane_center_y0: float, *, lane_width: float = 3.6, lane_rate_damping_mode: str = "off", **kwargs):
   half_width = lane_width / 2.0
   return valid_inputs(
-    left_lane_y0=lane_center_y0 + half_width,
-    right_lane_y0=lane_center_y0 - half_width,
+    left_lane_y0=lane_center_y0 - half_width,
+    right_lane_y0=lane_center_y0 + half_width,
     lane_rate_damping_mode=lane_rate_damping_mode,
     **kwargs,
   )
@@ -328,7 +328,7 @@ def test_lane_rate_damping_shadow_logs_candidate_without_changing_curvature():
   assert shadow_result.debug["lane_rate_damping_mode"] == "shadow"
   assert shadow_result.debug["lane_rate_damping_active"] is True
   assert shadow_result.debug["lane_rate_damping_applied"] is False
-  assert float(shadow_result.debug["lane_rate_damping_lat_accel"]) < 0.0
+  assert float(shadow_result.debug["lane_rate_damping_lat_accel"]) > 0.0
   assert shadow_result.demand.processed_curvature == pytest.approx(off_result.demand.processed_curvature)
 
 
@@ -356,13 +356,13 @@ def test_lane_rate_damping_apply_changes_curvature_and_caps_lat_accel():
   assert apply_result.debug["lane_rate_damping_active"] is True
   assert apply_result.debug["lane_rate_damping_applied"] is True
   assert apply_result.debug["lane_rate_damping_reason"] == "ok"
-  assert float(apply_result.debug["lane_rate_damping_lat_accel"]) == pytest.approx(-0.05, abs=1e-6)
-  assert float(apply_result.debug["lane_rate_damping_curvature"]) == pytest.approx(-0.05 / (20.0 ** 2), abs=1e-6)
+  assert float(apply_result.debug["lane_rate_damping_lat_accel"]) == pytest.approx(0.05, abs=1e-6)
+  assert float(apply_result.debug["lane_rate_damping_curvature"]) == pytest.approx(0.05 / (20.0 ** 2), abs=1e-6)
   assert apply_result.demand.processed_curvature == pytest.approx(
     shadow_result.demand.processed_curvature + float(apply_result.debug["lane_rate_damping_curvature"]),
     abs=1e-9,
   )
-  assert apply_result.demand.processed_curvature < shadow_result.demand.processed_curvature
+  assert apply_result.demand.processed_curvature > shadow_result.demand.processed_curvature
 
 
 @pytest.mark.parametrize("blocked_kwargs, expected_reason", [

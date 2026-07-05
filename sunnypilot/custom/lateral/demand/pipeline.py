@@ -345,7 +345,8 @@ class _LaneRateDampingTracker:
       self.reset()
       return LaneRateDampingResult(mode, False, False, "invalid", 0.0, 0.0, 0.0, 0.0, cap_lat_accel)
 
-    lat_accel = -LANE_RATE_DAMPING_GAIN * _deadband(lane_center_rate, LANE_RATE_DAMPING_DEADBAND_MPS)
+    # y+right: positive lane-center rate means the car is drifting left, so positive accel damps it.
+    lat_accel = LANE_RATE_DAMPING_GAIN * _deadband(lane_center_rate, LANE_RATE_DAMPING_DEADBAND_MPS)
     if not math.isfinite(lat_accel):
       self.reset()
       return LaneRateDampingResult(mode, False, False, "invalid", 0.0, 0.0, 0.0, 0.0, cap_lat_accel)
