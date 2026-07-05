@@ -307,7 +307,7 @@ class Controls(ControlsExt):
         last_lateral_demand_result, active=active, evidence_expected=evidence_expected
       )
     if hasattr(self.LaC, 'set_torque_override_refresh_allowed'):
-      self.LaC.set_torque_override_refresh_allowed(not CC.enabled)
+      self.LaC.set_torque_override_refresh_allowed(not (CC.enabled or CC.latActive))
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
                                                        self.calibrated_pose, self.curvature_limited, lat_delay)
