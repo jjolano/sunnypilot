@@ -150,6 +150,14 @@ def test_debug_trace_populates_whitelisted_fields():
     'scenario_context_current_effect': 'none',
     'scenario_context_road_grade': 'flat',
     'scenario_context_reason': 'no_hazards_or_advisories',
+    'map_coast_mode': 'shadow',
+    'map_coast_v_target': 15.0,
+    'map_coast_distance': 320.0,
+    'map_coast_eligible': True,
+    'map_coast_cap': -0.25,
+    'map_coast_applied': False,
+    'map_coast_fault': False,
+    'map_coast_accel_coast': -0.28,
   }))
   planner._last_longitudinal_debug = {'v_cruise': 15.2, 'mpc_a_target': 1.0, 'mpc_should_stop': True, 'model_a_target': -1.0,
                                       'model_should_stop': False, 'final_a_target_unclipped': 0.9,
@@ -213,6 +221,14 @@ def test_debug_trace_populates_whitelisted_fields():
   assert msg.scenarioContext.currentEffect == 'none'
   assert msg.scenarioContext.roadGrade == 'flat'
   assert msg.scenarioContext.reason == 'no_hazards_or_advisories'
+  assert msg.mapCoast.mode == 'shadow'
+  assert msg.mapCoast.vTarget == pytest.approx(15.0)
+  assert msg.mapCoast.distance == pytest.approx(320.0)
+  assert msg.mapCoast.eligible is True
+  assert msg.mapCoast.cap == pytest.approx(-0.25)
+  assert msg.mapCoast.applied is False
+  assert msg.mapCoast.fault is False
+  assert msg.mapCoast.coastDecel == pytest.approx(-0.28)
 
 
 def test_debug_trace_scenario_context_defaults_safely():

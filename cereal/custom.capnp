@@ -358,6 +358,17 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       pitch @10 :Float32;
     }
     dynamicSafetyFloor @24 :DynamicSafetyFloorTrace;
+    struct MapCoastTrace {
+      mode @0 :Text;
+      vTarget @1 :Float32;
+      distance @2 :Float32;
+      eligible @3 :Bool;
+      cap @4 :Float32;
+      applied @5 :Bool;
+      fault @6 :Bool;
+      coastDecel @7 :Float32;
+    }
+    mapCoast @25 :MapCoastTrace;
   }
 
   struct SmartCruiseControl {

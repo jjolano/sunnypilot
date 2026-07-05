@@ -579,6 +579,7 @@ class CustomLongitudinalStack:
           "map_coast_eligible": would_be_cap is not None,
           "map_coast_cap": float(would_be_cap) if would_be_cap is not None else 0.0,
           "map_coast_applied": bool(scene.map_coast_active and would_be_cap is not None),
+          "map_coast_accel_coast": float(scene.accel_coast),
         }
       except Exception:
         map_coast_fault = True

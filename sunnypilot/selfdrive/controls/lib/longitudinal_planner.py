@@ -370,6 +370,7 @@ class LongitudinalPlannerSP:
       self._populate_acc_envelope_trace(msg.accEnvelope, debug)
       self._populate_scenario_context_trace(msg.scenarioContext, debug)
       self._populate_dynamic_safety_floor_trace(msg.dynamicSafetyFloor, debug)
+      self._populate_map_coast_trace(msg.mapCoast, debug)
     except Exception:
       msg.enabled = False
       msg.traceMode = 'off'
@@ -458,6 +459,17 @@ class LongitudinalPlannerSP:
     msg.latencyS = self._safe_float(debug.get(prefix + 'latency_s', 0.0))
     msg.latAccel = self._safe_float(debug.get(prefix + 'lat_accel', 0.0))
     msg.pitch = self._safe_float(debug.get(prefix + 'pitch', 0.0))
+
+  def _populate_map_coast_trace(self, msg, debug: dict) -> None:
+    prefix = 'map_coast_'
+    msg.mode = str(debug.get(prefix + 'mode', 'off') or 'off')
+    msg.vTarget = self._safe_float(debug.get(prefix + 'v_target', 0.0))
+    msg.distance = self._safe_float(debug.get(prefix + 'distance', 0.0))
+    msg.eligible = bool(debug.get(prefix + 'eligible', False))
+    msg.cap = self._safe_float(debug.get(prefix + 'cap', 0.0))
+    msg.applied = bool(debug.get(prefix + 'applied', False))
+    msg.fault = bool(debug.get(prefix + 'fault', False))
+    msg.coastDecel = self._safe_float(debug.get(prefix + 'accel_coast', 0.0))
 
   @staticmethod
   def _finite_float_or_none(value) -> float | None:
