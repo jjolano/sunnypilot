@@ -158,7 +158,6 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        curve_speed_confidence_mode: str = "off",
                        curve_traffic_advisor_mode: str = CURVE_TRAFFIC_MODE_OFF,
                        standstill_release_confidence_mode: str = "off",
-                       scenario_context_mode: str = "off",
                        standstill: bool = False,
                        steering_angle_deg: float = 0.0,
                        steering_torque: float = 0.0,
@@ -232,7 +231,6 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     curve_speed_confidence_mode=curve_speed_confidence_mode,
     curve_traffic_advisor_mode=curve_traffic_advisor_mode,
     standstill_release_confidence_mode=standstill_release_confidence_mode,
-    scenario_context_mode=scenario_context_mode,
     standstill=bool(standstill),
     steering_angle_deg=_f(steering_angle_deg),
     steering_torque=_f(steering_torque),
@@ -265,7 +263,6 @@ class CustomLongitudinalAdapter:
     self.curve_speed_confidence_mode = "off"
     self.curve_traffic_advisor_mode = CURVE_TRAFFIC_MODE_OFF
     self.standstill_release_confidence_mode = "off"
-    self.scenario_context_mode = "off"
     self.map_coast_mode = "off"
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
@@ -299,14 +296,6 @@ class CustomLongitudinalAdapter:
 
     # Slower refresh for tuning/advisory params.
     if initial or self._tick % PARAMS_REFRESH_PERIOD == 0:
-      # Telemetry-only scenario-context mode is read safely on its own so an unregistered
-      # or malformed key cannot block the source-toggle refresh below.
-      try:
-        scenario_context_value = _param_string(p, "ScenarioContextMode")
-      except Exception:
-        scenario_context_value = None
-      self.scenario_context_mode = _shadow_mode(scenario_context_value or "off")
-
       # Shadow-only advisory mode is isolated so stale/unregistered params cannot block
       # SCC source-toggle refresh or any existing longitudinal behavior.
       try:
@@ -395,7 +384,6 @@ class CustomLongitudinalAdapter:
         curve_speed_confidence_mode=self.curve_speed_confidence_mode,
         curve_traffic_advisor_mode=self.curve_traffic_advisor_mode,
         standstill_release_confidence_mode=self.standstill_release_confidence_mode,
-        scenario_context_mode=self.scenario_context_mode,
         standstill=bool(getattr(cs, "standstill", False)),
         steering_angle_deg=_f(getattr(cs, "steeringAngleDeg", 0.0)),
         steering_torque=_f(getattr(cs, "steeringTorque", 0.0)),

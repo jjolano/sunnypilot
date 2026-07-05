@@ -33,7 +33,7 @@ def test_shadow_heuristics_report_summarizes_lateral_and_grade() -> None:
       ),
     ), 0),
     _msg("longitudinalPlanSP", SimpleNamespace(
-      longitudinalDebug=SimpleNamespace(scenarioContext=SimpleNamespace(
+      longitudinalDebug=SimpleNamespace(scenarioContextDEPRECATED=SimpleNamespace(
         scenario="uphill_recovery",
         roadGrade="uphill",
         blockReason="ok",

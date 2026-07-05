@@ -552,49 +552,6 @@ def test_new_shadow_modes_are_exactly_non_actuating():
     assert out.debug[f"{debug_prefix}_apply_supported"] is False
 
 
-def test_scenario_context_mode_is_non_actuating_and_wired():
-  base_params = dict(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")
-  scenario = dict(
-    sm=fake_sm(standstill=True, steering_angle_deg=5.0, steering_torque=2.0),
-    v_ego=0.0, a_ego=0.0, v_cruise=12.0, seed_a_target=0.2,
-    scc=fake_scc(), sla=fake_sla(), dt=0.05,
-  )
-  off = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(**scenario)
-  shadow = CustomLongitudinalAdapter(FakeParams(ScenarioContextMode="shadow", **base_params)).evaluate(**scenario)
-  assert shadow.a_target == pytest.approx(off.a_target)
-  assert shadow.should_stop == off.should_stop
-  assert shadow.selected_intent == off.selected_intent
-  assert shadow.reason == off.reason
-  assert off.debug["scenario_context_mode"] == "off"
-  assert shadow.debug["scenario_context_mode"] == "shadow"
-  assert shadow.debug["scenario_context_scenario"] == "standstill"
-  assert shadow.debug["scenario_context_road_grade"] == "flat"
-  assert shadow.debug["scenario_context_fault"] is False
-
-
-def test_absent_scenario_context_mode_does_not_block_source_refresh():
-  class ParamsMissingScenarioKey:
-    def __init__(self, **vals):
-      self._v = vals
-    def get_bool(self, k):
-      return bool(self._v.get(k, False))
-    def get(self, k):
-      if k == "ScenarioContextMode":
-        raise KeyError("unregistered param")
-      return self._v.get(k)
-    def all_keys(self):
-      return [k.encode() for k in self._v]
-
-  a = CustomLongitudinalAdapter(ParamsMissingScenarioKey(
-    CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc",
-    SmartCruiseControlVision=True, SmartCruiseControlMap=True,
-  ))
-  assert a.mode is LongitudinalMode.SCC
-  assert a.scenario_context_mode == "off"
-  assert a.sources.scc_curve_vision_enabled is True
-  assert a.sources.scc_curve_map_enabled is True
-
-
 def test_absent_curve_traffic_advisor_mode_does_not_block_source_refresh():
   class ParamsMissingCurveTrafficKey:
     def __init__(self, **vals):

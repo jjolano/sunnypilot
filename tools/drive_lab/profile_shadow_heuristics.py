@@ -127,7 +127,9 @@ def _grade_summary(records: list[Any]) -> dict[str, Any]:
   for rec in records:
     if rec.typ != "longitudinalPlanSP":
       continue
-    ctx = safe_get(rec.payload, "longitudinalDebug.scenarioContext")
+    # Field renamed on feature deletion; capnp decodes old logs by field number, so the
+    # DEPRECATED name still reads historical scenario-context traces.
+    ctx = safe_get(rec.payload, "longitudinalDebug.scenarioContextDEPRECATED")
     if ctx is None:
       continue
     scenarios.append(str(safe_get(ctx, "scenario", "") or ""))

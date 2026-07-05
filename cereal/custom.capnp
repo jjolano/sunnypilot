@@ -343,7 +343,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       blockReason @14 :Text;
     }
 
-    scenarioContext @23 :ScenarioContextTrace;
+    scenarioContextDEPRECATED @23 :ScenarioContextTrace;
     struct DynamicSafetyFloorTrace {
       active @0 :Bool;
       blockReason @1 :Text;

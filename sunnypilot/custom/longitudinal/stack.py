@@ -31,7 +31,6 @@ from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence impo
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates, map_coast_cap
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
-from openpilot.sunnypilot.custom.longitudinal.scenario_context import predict_scenario_context
 from openpilot.sunnypilot.custom.longitudinal.dynamic_safety_floor import (
   compute_dynamic_safety_floor,
   debug_dict as dynamic_safety_floor_debug_dict,
@@ -227,7 +226,6 @@ class LongitudinalStackInputs:
   cut_in_brake_assist_mode: Any = "off"
   curve_speed_confidence_mode: Any = "off"
   standstill_release_confidence_mode: Any = "off"
-  scenario_context_mode: Any = "off"
   curve_traffic_advisor_mode: Any = "off"
   standstill: bool = False
   steering_angle_deg: float = 0.0
@@ -463,8 +461,6 @@ class CustomLongitudinalStack:
     )
     standstill_release_confidence_fault = False
     standstill_release_confidence_debug: dict[str, Any] = {}
-    scenario_context_fault = False
-    scenario_context_debug: dict[str, Any] = {}
     curve_traffic_advisor_fault = False
     curve_traffic_advisor_debug: dict[str, Any] = {}
     dynamic_safety_floor_fault = False
@@ -494,30 +490,6 @@ class CustomLongitudinalStack:
         standstill_release_confidence_debug = standstill_release_confidence_result.debug_dict()
       except Exception:
         standstill_release_confidence_fault = True
-
-      # Scenario context is intentionally shadow-only: it classifies the situation for telemetry
-      # and future phases but must not touch actuation, candidates, a_target, or should_stop.
-      try:
-        # Use mode-sanitized actuation inputs for evidence that is mode-gated, so the shadow
-        # classifier does not report ACC-excluded model/curve/speed evidence as potential effects.
-        scenario_context_debug = predict_scenario_context(
-          mode=inp.scenario_context_mode,
-          v_ego=act_inp.v_ego,
-          a_ego=act_inp.a_ego,
-          accel_coast=act_inp.accel_coast,
-          standstill=inp.standstill,
-          steering_angle_deg=inp.steering_angle_deg,
-          steering_torque=inp.steering_torque,
-          leads=inp.leads,
-          model_should_stop=act_inp.model_should_stop,
-          model_stop_distance=act_inp.model_stop_distance,
-          speed_limit_active=act_inp.speed_limit_active,
-          curve_active=act_inp.curve_active,
-          gas_pressed=act_inp.gas_pressed,
-          brake_pressed=act_inp.brake_pressed,
-        ).debug_dict()
-      except Exception:
-        scenario_context_fault = True
 
       try:
         curve_traffic_advisor_result = predict_curve_traffic_advisor(
@@ -614,8 +586,6 @@ class CustomLongitudinalStack:
         **curve_speed_confidence_debug,
         "standstill_release_confidence_fault": standstill_release_confidence_fault,
         **standstill_release_confidence_debug,
-        "scenario_context_fault": scenario_context_fault,
-        **scenario_context_debug,
         "curve_traffic_advisor_fault": curve_traffic_advisor_fault,
         **curve_traffic_advisor_debug,
         "map_coast_fault": map_coast_fault,

@@ -112,8 +112,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // explicit opt-in and runtime-gated by CustomLongitudinalEnabled + AllowLongitudinalResearchActuation.
     {"MapCoastMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"StandstillReleaseConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
-    // Shadow-only scenario attribution for route-log/debug analysis; never affects actuation.
-    {"ScenarioContextMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"StraightPathStabilizationMode", {PERSISTENT | BACKUP, STRING, "off"}},
     // Lane-center-rate damping: shadow logs the candidate, apply changes the requested lateral path.

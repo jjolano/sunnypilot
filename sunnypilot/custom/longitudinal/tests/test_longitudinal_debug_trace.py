@@ -140,16 +140,6 @@ def test_debug_trace_populates_whitelisted_fields():
     'acc_envelope_required_stopping_decel': 1.4,
     'acc_envelope_closing_speed_decel': 1.4,
     'acc_envelope_jerk_limited_a_target': 0.3,
-    'scenario_context_mode': 'shadow',
-    'scenario_context_effective_mode': 'shadow',
-    'scenario_context_apply_supported': False,
-    'scenario_context_active': True,
-    'scenario_context_scenario': 'open_road',
-    'scenario_context_confidence': 0.6,
-    'scenario_context_allowed_effect': 'progress_with_guard',
-    'scenario_context_current_effect': 'none',
-    'scenario_context_road_grade': 'flat',
-    'scenario_context_reason': 'no_hazards_or_advisories',
     'map_coast_mode': 'shadow',
     'map_coast_v_target': 15.0,
     'map_coast_distance': 320.0,
@@ -211,16 +201,6 @@ def test_debug_trace_populates_whitelisted_fields():
   assert msg.accEnvelope.requiredStoppingDecel == pytest.approx(1.4)
   assert msg.accEnvelope.closingSpeedDecel == pytest.approx(1.4)
   assert msg.accEnvelope.jerkLimitedATarget == pytest.approx(0.3)
-  assert msg.scenarioContext.mode == 'shadow'
-  assert msg.scenarioContext.effectiveMode == 'shadow'
-  assert msg.scenarioContext.applySupported is False
-  assert msg.scenarioContext.active is True
-  assert msg.scenarioContext.scenario == 'open_road'
-  assert msg.scenarioContext.confidence == pytest.approx(0.6)
-  assert msg.scenarioContext.allowedEffect == 'progress_with_guard'
-  assert msg.scenarioContext.currentEffect == 'none'
-  assert msg.scenarioContext.roadGrade == 'flat'
-  assert msg.scenarioContext.reason == 'no_hazards_or_advisories'
   assert msg.mapCoast.mode == 'shadow'
   assert msg.mapCoast.vTarget == pytest.approx(15.0)
   assert msg.mapCoast.distance == pytest.approx(320.0)
@@ -229,34 +209,6 @@ def test_debug_trace_populates_whitelisted_fields():
   assert msg.mapCoast.applied is False
   assert msg.mapCoast.fault is False
   assert msg.mapCoast.coastDecel == pytest.approx(-0.28)
-
-
-def test_debug_trace_scenario_context_defaults_safely():
-  planner = make_planner("log", custom_output(debug={
-    'scenario_context_mode': 'shadow',
-    'scenario_context_active': True,
-    'scenario_context_scenario': 'open_road',
-    'scenario_context_confidence': math.nan,
-    # effectiveMode / currentEffect / roadGrade / reason intentionally missing
-  }))
-
-  msg = publish(planner).longitudinalDebug
-
-  assert msg.enabled is True
-  assert msg.scenarioContext.mode == 'shadow'
-  assert msg.scenarioContext.effectiveMode == 'shadow'
-  assert msg.scenarioContext.active is True
-  assert msg.scenarioContext.scenario == 'open_road'
-  assert msg.scenarioContext.confidence == pytest.approx(0.0)
-  assert msg.scenarioContext.currentEffect == 'none'
-  assert msg.scenarioContext.allowedEffect == ''
-  assert msg.scenarioContext.roadGrade == ''
-  assert msg.scenarioContext.reason == ''
-  assert msg.scenarioContext.accelCoast == pytest.approx(0.0)
-  assert msg.scenarioContext.gradeConfidence == pytest.approx(0.0)
-  assert msg.scenarioContext.estimatedAccelBias == pytest.approx(0.0)
-  assert msg.scenarioContext.proposedCompensation == pytest.approx(0.0)
-  assert msg.scenarioContext.blockReason == ''
 
 
 def test_debug_trace_sanitizes_non_finite_values_without_throwing():

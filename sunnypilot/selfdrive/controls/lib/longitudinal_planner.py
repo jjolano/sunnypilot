@@ -363,7 +363,6 @@ class LongitudinalPlannerSP:
       self._populate_curve_speed_confidence_trace(msg.curveSpeedConfidence, debug)
       self._populate_standstill_release_confidence_trace(msg.standstillReleaseConfidence, debug)
       self._populate_acc_envelope_trace(msg.accEnvelope, debug)
-      self._populate_scenario_context_trace(msg.scenarioContext, debug)
       self._populate_dynamic_safety_floor_trace(msg.dynamicSafetyFloor, debug)
       self._populate_map_coast_trace(msg.mapCoast, debug)
     except Exception:
@@ -422,24 +421,6 @@ class LongitudinalPlannerSP:
     msg.requiredStoppingDecel = self._safe_float(debug.get(prefix + 'required_stopping_decel', 0.0))
     msg.closingSpeedDecel = self._safe_float(debug.get(prefix + 'closing_speed_decel', 0.0))
     msg.jerkLimitedATarget = self._safe_float(debug.get(prefix + 'jerk_limited_a_target', 0.0))
-
-  def _populate_scenario_context_trace(self, msg, debug: dict) -> None:
-    prefix = 'scenario_context_'
-    msg.mode = str(debug.get(prefix + 'mode', 'off') or 'off')
-    msg.effectiveMode = str(debug.get(prefix + 'effective_mode', msg.mode) or msg.mode)
-    msg.applySupported = bool(debug.get(prefix + 'apply_supported', False))
-    msg.active = bool(debug.get(prefix + 'active', False))
-    msg.scenario = str(debug.get(prefix + 'scenario', '') or '')
-    msg.confidence = self._safe_float(debug.get(prefix + 'confidence', 0.0))
-    msg.allowedEffect = str(debug.get(prefix + 'allowed_effect', '') or '')
-    msg.currentEffect = str(debug.get(prefix + 'current_effect', 'none') or 'none')
-    msg.roadGrade = str(debug.get(prefix + 'road_grade', '') or '')
-    msg.reason = str(debug.get(prefix + 'reason', '') or '')
-    msg.accelCoast = self._safe_float(debug.get(prefix + 'accel_coast', 0.0))
-    msg.gradeConfidence = self._safe_float(debug.get(prefix + 'grade_confidence', 0.0))
-    msg.estimatedAccelBias = self._safe_float(debug.get(prefix + 'estimated_accel_bias', 0.0))
-    msg.proposedCompensation = self._safe_float(debug.get(prefix + 'proposed_compensation', 0.0))
-    msg.blockReason = str(debug.get(prefix + 'block_reason', '') or '')
 
   def _populate_dynamic_safety_floor_trace(self, msg, debug: dict) -> None:
     prefix = 'dynamic_safety_floor_'
