@@ -928,10 +928,17 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
   _STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S = 0.10
   _STOP_HOLD_SAME_ID_GATE_MIN_PULLAWAY_S = 0.15
-  _STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V = 5.0
+  # Route 0000025a: close-lead launches crept (aMean ~0.08 m/s^2, recovery 7-12 s) because a
+  # normally-accelerating lead stayed under the 5.0 m/s breakout and got gap-crawl accel (~0.05 m/s^2)
+  # instead of the full release. 3.0 m/s (still paired with v_rel >= 1.0) is an unambiguous pull-away,
+  # not a creep, so the launch commits sooner without lunging at a lead that only inches forward.
+  _STOP_HOLD_ROUTINE_BREAKOUT_MIN_LEAD_V = 3.0
   _STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL = 1.0
   _STOP_HOLD_CRAWL_DEADBAND_M = 0.50
-  _STOP_HOLD_CRAWL_GAP_TAU = 2.0
+  # Route 0000025a: below the breakout the release accel ramps as (gap_opened - deadband) / TAU; the old
+  # 2.0 s TAU held the launch at ~0.05 m/s^2 well after the lead was clearly moving. 1.5 ramps 33% faster
+  # per metre of gap while the deadband + A_MAX cap still bound it. ponytail: knob, retune from logs.
+  _STOP_HOLD_CRAWL_GAP_TAU = 1.5
   _STOP_HOLD_CRAWL_RELEASE_A_MIN = 0.05
   # Raised with _STOP_HOLD_RELEASE_A_MAX (route 00000246): the close-crawl cap still stays
   # below the breakout cap, and the gap governor above continues to bound crawl accel.
@@ -958,6 +965,12 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_RELEASE_PREP_MIN_D_REL_MARGIN = 0.10
   _STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET = -0.50
   _STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO = 0.70
+  # Approach-cusp damping: the ACC-MPC limit-cycles +/-0.3 m/s^2 at ~2-3 Hz on a steady lead approach
+  # (route 0000025a) and it reaches the actuator. Rate-limit aTarget only inside this gentle authority
+  # band; strong accel/decel, stops and releases pass through untouched so brake authority is never
+  # delayed. ponytail: widen the band if the cusp shifts, do not lower the jerk cap.
+  _APPROACH_DAMP_BAND = 0.55
+  _APPROACH_DAMP_MAX_JERK = 3.0
   _CURVE_CONFIDENCE_APPLY_MIN_V_EGO = 8.0
   _CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE = 0.70
   _CURVE_CONFIDENCE_APPLY_MIN_CAP = -0.85
@@ -980,6 +993,7 @@ class CustomLongitudinalFinalizer:
   stop_hold_release_slew_a_target: float | None
   stop_hold_release_prep_a_target: float | None
   stop_hold_release_prep_raw_prev: float | None
+  approach_damp_a_prev: float | None
 
   def __init__(self, CP: Any):
     self.CP = CP
@@ -995,6 +1009,7 @@ class CustomLongitudinalFinalizer:
     self.stop_hold_release_slew_a_target = None
     self.stop_hold_release_prep_a_target = None
     self.stop_hold_release_prep_raw_prev = None
+    self.approach_damp_a_prev = None
 
   @staticmethod
   def _sm_item(sm: Any, key: str) -> Any:
@@ -1044,6 +1059,7 @@ class CustomLongitudinalFinalizer:
     self.stop_hold_release_slew_a_target = None
     self.stop_hold_release_prep_a_target = None
     self.stop_hold_release_prep_raw_prev = None
+    self.approach_damp_a_prev = None
 
   def _settle_stop_hold_arm_applies(self, v_ego: float, v_ego_stopping: float,
                                     lead_v: float, lead_v_rel: float,
@@ -1166,6 +1182,28 @@ class CustomLongitudinalFinalizer:
       raw_model_a_target=raw_model_a_target, raw_model_should_stop=raw_model_should_stop,
     )
     return _ReleaseGate.standstill_release_request_valid(self, snapshot, min_mpc_a_target)
+
+  def _apply_approach_damp(self, a_target: float, should_stop: bool, release_mpc_stop: bool, dt: float) -> float:
+    """Jerk-limit aTarget inside the gentle authority band to kill the ACC-MPC approach-cusp limit cycle.
+
+    Only active when the command is small (|a| <= band), not stopping, not releasing a stop hold, and no
+    stop-hold release ramp is in progress, so a developing strong brake or accel (or any stop/launch)
+    leaves the band and passes straight through with no added lag. In particular the launch ramp off a
+    stop hold must never be damped. Outside those cases the filter state is dropped so it re-seeds cleanly.
+    """
+    if (not math.isfinite(a_target) or not math.isfinite(dt) or dt <= 0.0
+        or should_stop or release_mpc_stop or abs(a_target) > self._APPROACH_DAMP_BAND
+        or self.stop_hold_release_slew_a_target is not None):
+      self.approach_damp_a_prev = None
+      return float(a_target)
+    prev = self.approach_damp_a_prev
+    if prev is None or not math.isfinite(prev) or abs(prev) > self._APPROACH_DAMP_BAND:
+      self.approach_damp_a_prev = float(a_target)
+      return float(a_target)
+    max_step = self._APPROACH_DAMP_MAX_JERK * dt
+    limited = min(max(float(a_target), prev - max_step), prev + max_step)
+    self.approach_damp_a_prev = float(limited)
+    return float(limited)
 
   def _standstill_release_planner_gate_valid(self, sm: Any, custom_long: Any, custom_long_output: Any,
                                              mpc_a_target: float, raw_model_a_target: float, raw_model_should_stop: bool,
@@ -1311,6 +1349,7 @@ class CustomLongitudinalFinalizer:
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
       e2e_source = bool(a_target < mpc_a_target)
       a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, raw_model_should_stop, should_stop)
+      a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt)
       return _TelemetryAdapter.result(
         a_target, should_stop, e2e_source, self.custom_long_output_telemetry, self.last_release_block_reason
       )
@@ -1327,6 +1366,7 @@ class CustomLongitudinalFinalizer:
       self, a_target, sm, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop
     )
     a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, raw_model_should_stop, should_stop)
+    a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt)
     return _TelemetryAdapter.result(
       a_target, should_stop, False, self.custom_long_output_telemetry, self.last_release_block_reason
     )
