@@ -19,7 +19,8 @@ upstream updates.
 | `selfdrive/ui/sunnypilot/layouts/settings/developer.py` | Tailscale install/enable/login/logout settings items |
 | `cereal/log.capnp` | Phase 0b shadow-only lateral disturbance counters on `LiveTorqueParametersData`; Phase 3 roll-compensation gain telemetry fields on `LiveTorqueParametersData`; observability-only lateral `ControlsState.modelPathState`, Torque v2.1 `adaptiveTorqueState`, and v0 underresponse telemetry fields on `ControlsState.LateralTorqueState` |
 | `cereal/custom.capnp` | Custom longitudinal observability on `LongitudinalPlanSP`, including debug-trace feature telemetry and shadow-only ACC envelope audit fields |
-| `sunnypilot/selfdrive/controls/controlsd_ext.py` | Dispatch torque v2.1 when `TorqueControlTune == 2.1` (import + 1 `elif`); hold the opt-in `LateralDemandAdapter` |
+| `sunnypilot/selfdrive/controls/controlsd_ext.py` | Dispatch torque v2.1 when `TorqueControlTune == 2.1` (import + 1 `elif`); hold the opt-in `LateralDemandAdapter`; CPU: skip the 100Hz CarControlSP lead copy on non-hyundai (only hyundai `lead_data_ext` consumes it) |
+| `sunnypilot/selfdrive/car/cruise_helpers.py` | CPU: `update_experimental_mode` reads the `CustomLongitudinalEnabled` gate only when a distance-button long-press toggle would fire, not at 100Hz (params reads hit the filesystem) |
 | `sunnypilot/selfdrive/controls/lib/latcontrol_torque_versions.json` | Register `v2.1` in the native torque-selector manifest |
 | `selfdrive/ui/ui.py` | UI core pin 5 → 6 (camerad's core, which outranks it): frees core 5 for plannerd/radard so the UI can run 60fps without contending with the planner |
 | `system/ui/lib/application.py` | Default UI FPS 60 on tizi (upstream caps tizi at 20); `FPS` env still overrides for rollback |

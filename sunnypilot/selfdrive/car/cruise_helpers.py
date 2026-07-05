@@ -43,10 +43,12 @@ class CruiseHelper:
         self.button_frame_counts[button] = int(button_event.pressed)
 
   def update_experimental_mode(self, events, experimental_mode) -> None:
+    if self.button_frame_counts[ButtonType.gapAdjustCruise] < DISTANCE_LONG_PRESS or self.experimental_mode_switched:
+      return
+    # params reads hit the filesystem; only consult the gate when a toggle would actually fire
     if self.params.get_bool("CustomLongitudinalEnabled"):
       return
-    if self.button_frame_counts[ButtonType.gapAdjustCruise] >= DISTANCE_LONG_PRESS and not self.experimental_mode_switched:
-      self._experimental_mode = not experimental_mode
-      self.params.put_bool("ExperimentalMode", self._experimental_mode)
-      events.add(EventNameSP.experimentalModeSwitched)
-      self.experimental_mode_switched = True
+    self._experimental_mode = not experimental_mode
+    self.params.put_bool("ExperimentalMode", self._experimental_mode)
+    events.add(EventNameSP.experimentalModeSwitched)
+    self.experimental_mode_switched = True

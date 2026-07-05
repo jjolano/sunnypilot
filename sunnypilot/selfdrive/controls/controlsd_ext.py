@@ -74,6 +74,8 @@ class ControlsExt(ModelStateBase):
 
     self.sm_services_ext = ['radarState', 'selfdriveStateSP']
     self.pm_services_ext = ['carControlSP']
+    # ponytail: only hyundai lead_data_ext consumes CC_SP leads; skip the 100Hz 30-field capnp copy elsewhere
+    self._cc_sp_wants_leads = CP.brand == 'hyundai'
 
   def initialize_lateral_control(self, lac, CI, dt):
     return select_torque_controller(self.CP, self.CP_SP, CI, dt, lac, read_torque_control_tune(self.params), self.params)
@@ -120,8 +122,9 @@ class ControlsExt(ModelStateBase):
   def state_control_ext(self, sm: messaging.SubMaster) -> custom.CarControlSP:
     CC_SP = custom.CarControlSP.new_message()
 
-    self.get_lead_data(CC_SP.leadOne, sm['radarState'].leadOne)
-    self.get_lead_data(CC_SP.leadTwo, sm['radarState'].leadTwo)
+    if self._cc_sp_wants_leads:
+      self.get_lead_data(CC_SP.leadOne, sm['radarState'].leadOne)
+      self.get_lead_data(CC_SP.leadTwo, sm['radarState'].leadTwo)
 
     # MADS state
     mads_src = sm['selfdriveStateSP'].mads

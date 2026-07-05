@@ -113,8 +113,12 @@ def set_model_path_state_sensor_confidence(model_path_state, debug: dict | None 
   model_path_state.sensorSteeringYawLatAccelSignedDelta = float(debug.get('sensor_steering_yaw_lat_accel_signed_delta', float('nan')))
 
 
+_speed_shadow_cache: tuple | None = None  # (key, v_delay, v_05, v_10, a_delay)
+
+
 def set_model_path_state_speed_shadow(model_path_state, curvature: float, v_ego: float, a_ego: float,
-                                      plan_speeds, plan_accels, lat_delay: float, *, plan_valid: bool = True) -> None:
+                                      plan_speeds, plan_accels, lat_delay: float, *, plan_valid: bool = True,
+                                      plan_key=None) -> None:
   def finite_or_nan(value) -> float:
     try:
       value = float(value)
@@ -138,13 +142,23 @@ def set_model_path_state_speed_shadow(model_path_state, curvature: float, v_ego:
   model_path_state.shadowCurrentLatAccel = curvature * v_ego ** 2
   model_path_state.shadowCurrentJerkSpeedTerm = 2.0 * curvature * v_ego * a_ego
 
-  v_delay = predicted(plan_speeds, lat_delay)
+  # the four interpolations depend only on the 20Hz plan + lat_delay; cache across 100Hz cycles
+  global _speed_shadow_cache
+  cache_key = (plan_key, lat_delay, plan_valid) if plan_key is not None else None
+  if cache_key is not None and _speed_shadow_cache is not None and _speed_shadow_cache[0] == cache_key:
+    v_delay, v_05, v_10, a_delay = _speed_shadow_cache[1:]
+  else:
+    v_delay = predicted(plan_speeds, lat_delay)
+    v_05 = predicted(plan_speeds, 0.5)
+    v_10 = predicted(plan_speeds, 1.0)
+    a_delay = predicted(plan_accels, lat_delay)
+    if cache_key is not None:
+      _speed_shadow_cache = (cache_key, v_delay, v_05, v_10, a_delay)
+
   model_path_state.shadowLatDelayLatAccel = curvature * v_delay ** 2
-  model_path_state.shadow05sLatAccel = curvature * predicted(plan_speeds, 0.5) ** 2
-  model_path_state.shadow10sLatAccel = curvature * predicted(plan_speeds, 1.0) ** 2
-  model_path_state.shadowLatDelayJerkSpeedTerm = 2.0 * curvature * v_delay * predicted(
-    plan_accels, lat_delay,
-  )
+  model_path_state.shadow05sLatAccel = curvature * v_05 ** 2
+  model_path_state.shadow10sLatAccel = curvature * v_10 ** 2
+  model_path_state.shadowLatDelayJerkSpeedTerm = 2.0 * curvature * v_delay * a_delay
 
 
 class Controls(ControlsExt):
@@ -428,7 +442,8 @@ class Controls(ControlsExt):
       set_model_path_state_sensor_confidence(model_path_state)
       set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
                                         long_plan.speeds, long_plan.accels, lat_delay,
-                                        plan_valid=long_plan_valid)
+                                        plan_valid=long_plan_valid,
+                                        plan_key=self.sm.logMonoTime['longitudinalPlan'])
       last_result = getattr(lateral_demand_adapter, 'last_result', None) if lateral_demand_adapter is not None else None
       if last_result is not None:
         try:
