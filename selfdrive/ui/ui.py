@@ -14,8 +14,8 @@ BIG_UI = gui_app.big_ui()
 
 
 def main():
-  cores = {5, }
-  # above plannerd and radard
+  cores = {6, }
+  # camerad's core; it outranks us (54 > 53), and 60fps UI leaves core 5 to plannerd/radard
   config_realtime_process(0, Priority.CTRL_HIGH)
 
   gui_app.init_window("UI")
