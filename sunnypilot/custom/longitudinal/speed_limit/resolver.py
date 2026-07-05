@@ -161,7 +161,11 @@ class SpeedLimitResolver:
     map_data = sm['liveMapDataSP']
 
     try:
-      gps_fix_age = time.monotonic() - float(gps_data.unixTimestampMillis) * 1e-3
+      # unixTimestampMillis is wall-clock epoch; compare against time.time(), not
+      # time.monotonic() (boot-relative). The upstream code compared domains, which made
+      # this age hugely negative — the staleness gate never tripped and the map-ahead
+      # adaptation below never fired (the inherited "FIXME-SP: not working as expected").
+      gps_fix_age = time.time() - float(gps_data.unixTimestampMillis) * 1e-3
     except (TypeError, ValueError):
       return
     if not math.isfinite(gps_fix_age) or gps_fix_age > LIMIT_MAX_MAP_DATA_AGE:
@@ -177,7 +181,7 @@ class SpeedLimitResolver:
     map_data = sm['liveMapDataSP']
 
     try:
-      distance_since_fix = float(self.v_ego) * (time.monotonic() - float(gps_data.unixTimestampMillis) * 1e-3)
+      distance_since_fix = float(self.v_ego) * (time.time() - float(gps_data.unixTimestampMillis) * 1e-3)
     except (TypeError, ValueError):
       distance_since_fix = 0.
     if not math.isfinite(distance_since_fix):
@@ -188,7 +192,6 @@ class SpeedLimitResolver:
     self.limit_solutions[SpeedLimitSource.map] = speed_limit
     self.distance_solutions[SpeedLimitSource.map] = 0.
 
-    # FIXME-SP: this is not working as expected
     if distance_to_speed_limit_ahead is not None and 0. < next_speed_limit < self.v_ego:
       adapt_time = (next_speed_limit - self.v_ego) / LIMIT_ADAPT_ACC
       adapt_distance = self.v_ego * adapt_time + 0.5 * LIMIT_ADAPT_ACC * adapt_time ** 2

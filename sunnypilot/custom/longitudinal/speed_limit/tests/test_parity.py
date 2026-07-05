@@ -147,8 +147,12 @@ def reset_params():
 
 @pytest.fixture(autouse=True)
 def fixed_time(monkeypatch):
+  # Pin both clocks to the same value: v1 (upstream) compares unixTimestampMillis against
+  # time.monotonic() (the inherited clock-domain bug), v2 against time.time() (fixed).
+  # With both pinned identically, the parity assertions stay valid for age-based logic.
   now = 1_000_000.
   monkeypatch.setattr(time, "monotonic", lambda: now)
+  monkeypatch.setattr(time, "time", lambda: now)
 
 
 class TestConstantsParity:
@@ -329,10 +333,11 @@ class TestResolverParity:
     assert v1_r.source == v2_r.source == SpeedLimitSource.none
     assert _resolver_snapshot(v1_r) == _resolver_snapshot(v2_r)
 
-  def test_map_ahead_adaptation_fixme(self, mocker: MockerFixture):
+  def test_map_ahead_adaptation(self, mocker: MockerFixture):
     """
-    Preserves the map-ahead FIXME behavior: when the upcoming speed limit is lower
-    than v_ego and close enough, the resolver uses the ahead limit/distance.
+    When the upcoming speed limit is lower than v_ego and close enough, the resolver
+    uses the ahead limit/distance. (v2 fixed the upstream clock-domain bug that kept
+    this from ever firing on-device; under pinned test clocks v1 behaves identically.)
     """
     Params().put("SpeedLimitPolicy", 1)
     sm = _setup_resolver_sm(
