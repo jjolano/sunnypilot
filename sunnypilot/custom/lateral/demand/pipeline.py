@@ -22,7 +22,8 @@ from __future__ import annotations
 import collections
 import math
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -56,6 +57,10 @@ from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   ModelPathProcessor,
   ModelPathProcessorInputs,
   ModelPathProcessorResult,
+)
+from openpilot.sunnypilot.custom.lateral.demand.preview import (
+  PreviewAssistTracker,
+  inactive_preview_assist_result,
 )
 from openpilot.sunnypilot.custom.lateral.demand.sensor_confidence import (
   SensorConfidenceInputs,
@@ -215,6 +220,8 @@ class LateralDemandPipelineInputs:
   demand_jerk_smoothing_enabled: bool = False
   lane_centering_assist_enabled: bool = False
   curve_memory_enabled: bool = False
+  lat_delay: float = 0.0
+  lateral_preview_assist_mode: str = "off"
   # passed through (downstream clip result)
   curvature_limited: bool = False
 
@@ -395,7 +402,8 @@ class _LaneFitSourceTracker:
     v_ego = _finite_float(inputs.v_ego)
     if baseline_curvature_f is None or v_ego is None or v_ego < 1.0:
       self.reset()
-      return LaneFitSourceResult(mode, False, False, "low_speed" if v_ego is not None and v_ego < 1.0 else "invalid", 0.0, baseline_curvature_f or 0.0, 0.0, 0.0, False)
+      reason = "low_speed" if v_ego is not None and v_ego < 1.0 else "invalid"
+      return LaneFitSourceResult(mode, False, False, reason, 0.0, baseline_curvature_f or 0.0, 0.0, 0.0, False)
 
     speed_sq = max(v_ego * v_ego, 1e-6)
     baseline_lat_accel = baseline_curvature_f * speed_sq
@@ -546,6 +554,7 @@ class LateralDemandPipeline:
     self._lane_centering_assist = LaneCenteringAssistTracker()
     self._lane_rate_damping = _LaneRateDampingTracker(dt)
     self._lane_fit_source = _LaneFitSourceTracker(dt)
+    self._preview_assist = PreviewAssistTracker(dt)
     self._previous_desired_curvature = 0.0
     self._last_extreme_processed_curvature = False
 
@@ -560,6 +569,7 @@ class LateralDemandPipeline:
     self._lane_centering_assist.reset()
     self._lane_rate_damping.reset()
     self._lane_fit_source.reset()
+    self._preview_assist.reset()
     self._previous_desired_curvature = 0.0
     self._last_extreme_processed_curvature = False
 
@@ -571,6 +581,7 @@ class LateralDemandPipeline:
     lane_centering_result = inactive_lane_centering_assist_result("disabled")
     lane_rate_damping_result = LaneRateDampingResult("off", False, False, "disabled", 0.0, 0.0, 0.0, 0.0, LANE_RATE_DAMPING_CAP_LAT_ACCEL)
     lane_fit_source_result = LaneFitSourceResult("off", False, False, "disabled", 0.0, 0.0, 0.0, 0.0, False)
+    preview_result = inactive_preview_assist_result()
     curve_memory_result = None
 
     if inputs.lateral_maneuver_curvature is not None:
@@ -594,6 +605,7 @@ class LateralDemandPipeline:
         confidence=0.0,
         slew_limited=False,
       )
+      preview_result = self._preview_assist.update(inputs, model_path_result, demand_source, new_desired_curvature)
     else:
       turn_curvature_sign = 0
       if inputs.lane_change_state == LANE_CHANGE_STATE_OFF and inputs.model_data_v2_sp_valid:
@@ -705,6 +717,10 @@ class LateralDemandPipeline:
       if lane_fit_source_result.applied:
         demand_source = DEMAND_SOURCE_LANE_FIT
 
+      preview_result = self._preview_assist.update(inputs, model_path_result, demand_source, new_desired_curvature)
+      if preview_result.applied:
+        new_desired_curvature += preview_result.curvature_nudge
+
     sensor_confidence = evaluate_sensor_confidence(SensorConfidenceInputs(
       lat_active=inputs.lat_active,
       v_ego=inputs.v_ego,
@@ -813,6 +829,7 @@ class LateralDemandPipeline:
         "curve_memory_remembered": float(curve_memory_result.remembered) if curve_memory_result is not None else float("nan"),
         "curve_memory_source": curve_memory_result.source if curve_memory_result is not None else "disabled",
         "curve_memory_samples": int(curve_memory_result.samples) if curve_memory_result is not None else 0,
+        **preview_result.debug_dict(),
         "processed_curvature": processed_curvature,
         "demand_source": demand_source,
         "dtle_estimate": _compute_dtle(inputs.left_lane_y0, inputs.right_lane_y0),

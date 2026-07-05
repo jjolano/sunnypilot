@@ -12,6 +12,7 @@ from openpilot.sunnypilot.custom.lateral.demand.wiring import (
   build_pipeline_inputs,
   sanitized_model_age_s,
 )
+from openpilot.sunnypilot.custom.lateral.demand.preview import sanitize_lateral_preview_assist_mode
 
 N = 33
 
@@ -96,6 +97,10 @@ def test_sanitized_model_age_fails_nonfinite_missing_negative_to_stale():
   assert math.isinf(sanitized_model_age_s(float("nan")))
   assert math.isinf(sanitized_model_age_s(-0.1))
   assert sanitized_model_age_s(0.19) == pytest.approx(0.19)
+
+
+def test_sanitize_lateral_preview_assist_mode_unknown_defaults_off():
+  assert sanitize_lateral_preview_assist_mode("banana") == "off"
 
 
 def test_build_pipeline_inputs_marks_missing_lane_change_meta_unknown():
@@ -364,6 +369,25 @@ def test_adapter_forwards_straight_path_stabilization_mode():
   a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001))
   assert spy.inputs is not None
   assert spy.inputs.straight_path_stabilization_mode == "apply"
+
+
+@pytest.mark.parametrize("param_mode, expected_mode", [
+  ("banana", "off"),
+  ("shadow", "shadow"),
+  ("apply", "apply"),
+])
+def test_adapter_forwards_lateral_preview_assist_mode_and_lat_delay(param_mode, expected_mode):
+  a = LateralDemandAdapter(FakeParams(
+    CustomLateralDemandEnabled=True,
+    LateralPreviewAssistMode=param_mode,
+  ))
+  spy = SpyPipeline()
+  object.__setattr__(a, "_pipeline", spy)
+  a.process(True, 20.0, 0.0, 0.001, 0.001, fake_model(0.001), lat_delay=0.37)
+  assert a.lateral_preview_assist_mode == expected_mode
+  assert spy.inputs is not None
+  assert spy.inputs.lateral_preview_assist_mode == expected_mode
+  assert spy.inputs.lat_delay == pytest.approx(0.37)
 
 
 def test_build_pipeline_inputs_extracts_lane_y0():

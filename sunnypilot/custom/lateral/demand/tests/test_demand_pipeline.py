@@ -90,6 +90,9 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
     demand_jerk_smoothing_enabled=kwargs.get("demand_jerk_smoothing_enabled", False),
     lane_centering_assist_enabled=kwargs.get("lane_centering_assist_enabled", False),
     curve_memory_enabled=kwargs.get("curve_memory_enabled", False),
+    lat_delay=kwargs.get("lat_delay", 0.0),
+    lateral_preview_assist_mode=kwargs.get("lateral_preview_assist_mode", "off"),
+    straight_path_stabilization_mode=kwargs.get("straight_path_stabilization_mode", "off"),
     lane_rate_damping_mode=kwargs.get("lane_rate_damping_mode", "off"),
     lane_fit_source_mode=kwargs.get("lane_fit_source_mode", "off"),
     curvature_limited=kwargs.get("curvature_limited", False),
@@ -162,6 +165,30 @@ def lane_fit_source_inputs(
     lane_line_stds=lane_line_stds,
     lane_fit_source_mode=lane_fit_source_mode,
     **params,
+  )
+
+
+def preview_assist_inputs(
+  *,
+  baseline_curvature: float = 0.0,
+  preview_curvature: float = 0.001,
+  v_ego: float = 20.0,
+  lat_delay: float = 0.4,
+  lateral_preview_assist_mode: str = "off",
+  **kwargs,
+):
+  t_idxs = ModelConstants.T_IDXS
+  n = len(t_idxs)
+  return valid_inputs(
+    v_ego=v_ego,
+    curvature=baseline_curvature,
+    desired_curvature=baseline_curvature,
+    measured_curvature=baseline_curvature,
+    orientation_z=kwargs.pop("orientation_z", [float(preview_curvature * v_ego * t) for t in t_idxs]),
+    orientation_rate_z=kwargs.pop("orientation_rate_z", [float(preview_curvature * v_ego)] * n),
+    lat_delay=lat_delay,
+    lateral_preview_assist_mode=lateral_preview_assist_mode,
+    **kwargs,
   )
 
 
@@ -311,6 +338,131 @@ def test_curvature_limited_passes_through_to_demand():
   p = LateralDemandPipeline(DT)
   r = p.update(valid_inputs(curvature=0.001, curvature_limited=True))
   assert r.demand.curvature_limited is True
+
+
+def test_preview_assist_off_is_disabled():
+  result = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="off"))
+  assert result.debug["lateral_preview_assist_mode"] == "off"
+  assert result.debug["lateral_preview_assist_active"] is False
+  assert result.debug["lateral_preview_assist_applied"] is False
+  assert result.debug["lateral_preview_assist_reason"] == "disabled"
+
+
+def test_preview_assist_shadow_logs_candidate_without_changing_curvature():
+  off = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="off"))
+  result = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="shadow"))
+
+  assert result.debug["lateral_preview_assist_mode"] == "shadow"
+  assert result.debug["lateral_preview_assist_active"] is True
+  assert result.debug["lateral_preview_assist_applied"] is False
+  assert result.debug["lateral_preview_assist_reason"] == "ok"
+  assert abs(float(result.debug["lateral_preview_assist_curvature_nudge"])) > 0.0
+  assert result.demand.processed_curvature == pytest.approx(off.demand.processed_curvature)
+
+
+def test_preview_assist_apply_changes_curvature_and_is_slew_limited():
+  off = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="off"))
+  result = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
+
+  diff = result.demand.processed_curvature - off.demand.processed_curvature
+  assert result.debug["lateral_preview_assist_mode"] == "apply"
+  assert result.debug["lateral_preview_assist_active"] is True
+  assert result.debug["lateral_preview_assist_applied"] is True
+  assert result.debug["lateral_preview_assist_reason"] == "ok"
+  assert result.debug["lateral_preview_assist_slew_limited"] is True
+  assert diff == pytest.approx(float(result.debug["lateral_preview_assist_curvature_nudge"]), abs=1e-9)
+  assert 0.0 < diff <= 0.05 / (20.0 ** 2) + 1e-9
+
+
+@pytest.mark.parametrize("blocked_kwargs, expected_reason", [
+  ({"lane_change_state_valid": False}, "lane_change_unknown"),
+  ({"lane_change_state": 1}, "lane_change"),
+  ({"left_blinker": True}, "blinker"),
+  ({"steer_limited": True}, "steer_limited"),
+  ({"curvature_limited": True}, "curvature_limited"),
+  ({"model_age_s": 0.3}, "model_stale"),
+])
+def test_preview_assist_blocks_common_gates(blocked_kwargs, expected_reason):
+  result = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="apply", **blocked_kwargs))
+  assert result.debug["lateral_preview_assist_active"] is False
+  assert result.debug["lateral_preview_assist_applied"] is False
+  assert result.debug["lateral_preview_assist_reason"] == expected_reason
+  assert result.debug["lateral_preview_assist_curvature_nudge"] == 0.0
+
+
+def test_preview_assist_blocks_sign_conflict():
+  result = LateralDemandPipeline(DT).update(preview_assist_inputs(
+    baseline_curvature=0.001,
+    preview_curvature=-0.001,
+    lateral_preview_assist_mode="apply",
+  ))
+
+  assert result.debug["lateral_preview_assist_active"] is False
+  assert result.debug["lateral_preview_assist_applied"] is False
+  assert result.debug["lateral_preview_assist_reason"] == "sign_conflict"
+  assert result.debug["lateral_preview_assist_curvature_nudge"] == 0.0
+
+
+def test_preview_assist_blocks_lane_fit_source_and_maneuver_override():
+  _, lane_fit_result = run_lane_fit_source_until_applied("apply", lateral_preview_assist_mode="apply")
+  maneuver_result = LateralDemandPipeline(DT).update(preview_assist_inputs(
+    lateral_preview_assist_mode="apply",
+    lateral_maneuver_curvature=0.02,
+  ))
+
+  assert lane_fit_result.debug["lateral_preview_assist_active"] is False
+  assert lane_fit_result.debug["lateral_preview_assist_applied"] is False
+  assert lane_fit_result.debug["lateral_preview_assist_reason"] == "lane_fit_source"
+  assert maneuver_result.debug["lateral_preview_assist_active"] is False
+  assert maneuver_result.debug["lateral_preview_assist_applied"] is False
+  assert maneuver_result.debug["lateral_preview_assist_reason"] == "maneuver_override"
+
+
+def test_preview_assist_blocks_straight_path_stabilization():
+  pipeline = LateralDemandPipeline(DT)
+  result = None
+  for _ in range(40):
+    result = pipeline.update(preview_assist_inputs(
+      baseline_curvature=0.00005,
+      preview_curvature=0.0002,
+      lateral_preview_assist_mode="apply",
+      straight_path_stabilization_mode="apply",
+    ))
+
+  assert result is not None
+  assert result.debug["straight_path_stabilization_active"] is True
+  assert result.debug["lateral_preview_assist_active"] is False
+  assert result.debug["lateral_preview_assist_applied"] is False
+  assert result.debug["lateral_preview_assist_reason"] == "straight_path_stabilization"
+
+
+def test_preview_assist_resets_after_block():
+  warm = LateralDemandPipeline(DT)
+  for _ in range(5):
+    warm.update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
+
+  blocked = warm.update(preview_assist_inputs(lateral_preview_assist_mode="apply", steering_pressed=True))
+  assert blocked.debug["lateral_preview_assist_active"] is False
+  assert blocked.debug["lateral_preview_assist_reason"] == "driver_override"
+
+  fresh = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
+  resumed = warm.update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
+  assert resumed.debug["lateral_preview_assist_curvature_nudge"] == pytest.approx(
+    fresh.debug["lateral_preview_assist_curvature_nudge"], abs=1e-12
+  )
+
+
+def test_preview_assist_resets_when_switching_to_apply():
+  warm = LateralDemandPipeline(DT)
+  for _ in range(5):
+    warm.update(preview_assist_inputs(lateral_preview_assist_mode="shadow"))
+
+  fresh = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
+  switched = warm.update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
+
+  assert switched.debug["lateral_preview_assist_curvature_nudge"] == pytest.approx(
+    fresh.debug["lateral_preview_assist_curvature_nudge"], abs=1e-12
+  )
 
 
 def test_lane_rate_damping_shadow_logs_candidate_without_changing_curvature():

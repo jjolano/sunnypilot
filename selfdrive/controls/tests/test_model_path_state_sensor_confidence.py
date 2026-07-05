@@ -7,6 +7,7 @@ import pytest
 import cereal.messaging as messaging
 from openpilot.selfdrive.controls.controlsd import (
   CONTROL_N_T_IDXS,
+  set_model_path_state_preview,
   set_model_path_state_sensor_confidence,
   set_model_path_state_speed_shadow,
 )
@@ -94,6 +95,51 @@ def test_partial_debug_fills_defaults_for_missing_keys():
   assert mps.sensorResponseClassification == "blocked"
   assert math.isnan(mps.sensorModelYawLatAccelSignedDelta)
   assert math.isnan(mps.sensorSteeringYawLatAccelSignedDelta)
+
+
+def test_preview_assist_default_debug_populates_disabled_state():
+  mps = _new_model_path_state()
+  set_model_path_state_preview(mps)
+
+  assert mps.previewAssistMode == "off"
+  assert mps.previewAssistActive is False
+  assert mps.previewAssistApplied is False
+  assert mps.previewAssistReason == "disabled"
+  assert mps.previewAssistConfidence == 0.0
+  assert mps.previewAssistCurvatureNudge == 0.0
+
+
+def test_preview_assist_debug_maps_all_fields():
+  mps = _new_model_path_state()
+  set_model_path_state_preview(mps, {
+    "lateral_preview_assist_mode": "apply",
+    "lateral_preview_assist_active": True,
+    "lateral_preview_assist_applied": True,
+    "lateral_preview_assist_reason": "ok",
+    "lateral_preview_assist_confidence": 0.91,
+    "lateral_preview_assist_t_preview": 0.75,
+    "lateral_preview_assist_base_curvature": 0.001,
+    "lateral_preview_assist_preview_curvature": 0.0012,
+    "lateral_preview_assist_curvature_nudge": 0.00001,
+    "lateral_preview_assist_ay_base": 0.4,
+    "lateral_preview_assist_ay_preview": 0.48,
+    "lateral_preview_assist_ay_delta": 0.05,
+    "lateral_preview_assist_slew_limited": True,
+  })
+
+  assert mps.previewAssistMode == "apply"
+  assert mps.previewAssistActive is True
+  assert mps.previewAssistApplied is True
+  assert mps.previewAssistReason == "ok"
+  assert mps.previewAssistConfidence == pytest.approx(0.91)
+  assert mps.previewAssistTPreview == pytest.approx(0.75)
+  assert mps.previewAssistBaseCurvature == pytest.approx(0.001)
+  assert mps.previewAssistPreviewCurvature == pytest.approx(0.0012)
+  assert mps.previewAssistCurvatureNudge == pytest.approx(0.00001)
+  assert mps.previewAssistAyBase == pytest.approx(0.4)
+  assert mps.previewAssistAyPreview == pytest.approx(0.48)
+  assert mps.previewAssistAyDelta == pytest.approx(0.05)
+  assert mps.previewAssistSlewLimited is True
 
 
 def test_speed_shadow_uses_current_and_predicted_speed():

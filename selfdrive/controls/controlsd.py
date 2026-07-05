@@ -70,6 +70,23 @@ def set_model_path_state_one_line(model_path_state, debug: dict | None = None, *
   model_path_state.laneCenteringOneLineConfidence = float(debug.get('lane_centering_one_line_confidence', 0.0))
 
 
+def set_model_path_state_preview(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
+  debug = debug or {}
+  model_path_state.previewAssistMode = str(debug.get('lateral_preview_assist_mode', 'off'))
+  model_path_state.previewAssistActive = bool(debug.get('lateral_preview_assist_active', False))
+  model_path_state.previewAssistApplied = bool(debug.get('lateral_preview_assist_applied', False))
+  model_path_state.previewAssistReason = str(debug.get('lateral_preview_assist_reason', default_reason))
+  model_path_state.previewAssistConfidence = float(debug.get('lateral_preview_assist_confidence', 0.0))
+  model_path_state.previewAssistTPreview = float(debug.get('lateral_preview_assist_t_preview', 0.0))
+  model_path_state.previewAssistBaseCurvature = float(debug.get('lateral_preview_assist_base_curvature', 0.0))
+  model_path_state.previewAssistPreviewCurvature = float(debug.get('lateral_preview_assist_preview_curvature', 0.0))
+  model_path_state.previewAssistCurvatureNudge = float(debug.get('lateral_preview_assist_curvature_nudge', 0.0))
+  model_path_state.previewAssistAyBase = float(debug.get('lateral_preview_assist_ay_base', 0.0))
+  model_path_state.previewAssistAyPreview = float(debug.get('lateral_preview_assist_ay_preview', 0.0))
+  model_path_state.previewAssistAyDelta = float(debug.get('lateral_preview_assist_ay_delta', 0.0))
+  model_path_state.previewAssistSlewLimited = bool(debug.get('lateral_preview_assist_slew_limited', False))
+
+
 def set_model_path_state_lane_rate_damping(model_path_state, debug: dict | None = None, *, default_reason: str = "disabled") -> None:
   debug = debug or {}
   model_path_state.laneRateDampingMode = str(debug.get('lane_rate_damping_mode', 'off'))
@@ -272,6 +289,8 @@ class Controls(ControlsExt):
         lateral_demand.reset()
       self._lateral_demand_enabled = lateral_demand_enabled
 
+    lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
@@ -306,12 +325,11 @@ class Controls(ControlsExt):
           CC.latActive, CS.vEgo, lp.roll, new_desired_curvature, self.curvature, model_v2,
           getattr(CS, 'steeringPressed', None), model_age_s, yaw_rate,
           getattr(CS, 'steeringRateDeg', None), self.steer_limited_by_safety,
-          bool(CS.leftBlinker), bool(CS.rightBlinker), self.curvature_limited,
+          bool(CS.leftBlinker), bool(CS.rightBlinker), self.curvature_limited, lat_delay=lat_delay,
         )
     last_lateral_demand_result = getattr(lateral_demand, 'last_result', None) if lateral_demand is not None else None
     self.raw_desired_curvature = raw_desired_curvature
     self.desired_curvature, self.curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
-    lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
     if hasattr(self.LaC, 'set_under_response_path_evidence_from_lateral_demand'):
@@ -439,6 +457,7 @@ class Controls(ControlsExt):
       set_model_path_state_lane_rate_damping(model_path_state)
       set_model_path_state_sps(model_path_state)
       set_model_path_state_one_line(model_path_state)
+      set_model_path_state_preview(model_path_state)
       set_model_path_state_sensor_confidence(model_path_state)
       set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
                                         long_plan.speeds, long_plan.accels, lat_delay,
@@ -480,6 +499,7 @@ class Controls(ControlsExt):
           model_path_state.dtleEstimate = float(debug.get('dtle_estimate', float('nan')))
           set_model_path_state_geometry(model_path_state, debug)
           set_model_path_state_lane_fit_source(model_path_state, debug, default_reason="missing")
+          set_model_path_state_preview(model_path_state, debug, default_reason="missing")
           set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
           set_model_path_state_lane_rate_damping(model_path_state, debug, default_reason="missing")
           set_model_path_state_sps(model_path_state, debug, default_reason="missing")
@@ -491,9 +511,14 @@ class Controls(ControlsExt):
         debug = getattr(self.lateral_demand, 'last_debug', {}) or {}
         if debug:
           set_model_path_state_lane_fit_source(model_path_state, debug, default_reason="missing")
+          if 'lateral_preview_assist_mode' in debug:
+            set_model_path_state_preview(model_path_state, debug, default_reason="missing")
+          else:
+            set_model_path_state_preview(model_path_state)
           set_model_path_state_sensor_confidence(model_path_state, debug, default_reason="missing")
         else:
           set_model_path_state_lane_fit_source(model_path_state)
+          set_model_path_state_preview(model_path_state)
         set_model_path_state_lane_rate_damping(model_path_state, debug, default_reason="missing")
         set_model_path_state_sps(model_path_state, debug, default_reason="missing")
         set_model_path_state_one_line(model_path_state, debug, default_reason="missing")

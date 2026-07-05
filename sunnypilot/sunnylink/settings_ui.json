@@ -791,6 +791,34 @@
                   ]
                 },
                 {
+                  "key": "LateralPreviewAssistMode",
+                  "widget": "multiple_button",
+                  "requires_attestation": true,
+                  "title": "Lateral Preview Assist",
+                  "description": "Lateral-only preview of the requested path. Monitor only has no driving changes. Apply can change the requested lateral path with a conservative preview nudge.",
+                  "options": [
+                    {
+                      "value": "off",
+                      "label": "Off"
+                    },
+                    {
+                      "value": "shadow",
+                      "label": "Monitor only"
+                    },
+                    {
+                      "value": "apply",
+                      "label": "Apply"
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "param",
+                      "key": "CustomLateralDemandEnabled",
+                      "equals": true
+                    }
+                  ]
+                },
+                {
                   "key": "CurveMemoryEnabled",
                   "widget": "toggle",
                   "title": "Corner Curve Memory",

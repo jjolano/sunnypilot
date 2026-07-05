@@ -1052,6 +1052,19 @@ struct ControlsState @0x97ff69c53601abf1 {
     laneCenteringOneLineLearnedWidth @86 :Float32;
     laneCenteringOneLineConfidence @87 :Float32;
     laneCenteringGeometryHoldActive @88 :Bool;
+    previewAssistMode @89 :Text;
+    previewAssistActive @90 :Bool;
+    previewAssistApplied @91 :Bool;
+    previewAssistReason @92 :Text;
+    previewAssistConfidence @93 :Float32;
+    previewAssistTPreview @94 :Float32;
+    previewAssistBaseCurvature @95 :Float32;
+    previewAssistPreviewCurvature @96 :Float32;
+    previewAssistCurvatureNudge @97 :Float32;
+    previewAssistAyBase @98 :Float32;
+    previewAssistAyPreview @99 :Float32;
+    previewAssistAyDelta @100 :Float32;
+    previewAssistSlewLimited @101 :Bool;
   }
 
 

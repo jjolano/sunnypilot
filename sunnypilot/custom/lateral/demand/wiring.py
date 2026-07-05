@@ -20,6 +20,7 @@ from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
   sanitize_lane_fit_source_mode,
   sanitize_lane_rate_damping_mode,
 )
+from openpilot.sunnypilot.custom.lateral.demand.preview import sanitize_lateral_preview_assist_mode
 from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import sanitize_straight_path_stabilization_mode
 from openpilot.sunnypilot.custom.lateral.demand.lane_centering_assist import sanitize_one_line_centering_mode
 from openpilot.sunnypilot.custom.lateral.demand.sensor_confidence import (
@@ -90,7 +91,9 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
                           right_blinker: bool = False,
                           curvature_limited: bool = False,
                           demand_jerk_smoothing_enabled: bool = False,
-                          straight_path_stabilization_mode: str = "off") -> LateralDemandPipelineInputs:
+                          straight_path_stabilization_mode: str = "off",
+                          lat_delay: float = 0.0,
+                          lateral_preview_assist_mode: str = "off") -> LateralDemandPipelineInputs:
   pos = getattr(model_v2, "position", None)
   ori = getattr(model_v2, "orientation", None)
   ori_rate = getattr(model_v2, "orientationRate", None)
@@ -129,6 +132,8 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
     demand_jerk_smoothing_enabled=bool(demand_jerk_smoothing_enabled),
     lane_centering_assist_enabled=bool(lane_centering_assist_enabled),
     curve_memory_enabled=bool(curve_memory_enabled),
+    lat_delay=lat_delay,
+    lateral_preview_assist_mode=sanitize_lateral_preview_assist_mode(lateral_preview_assist_mode),
     straight_path_stabilization_mode=sanitize_straight_path_stabilization_mode(straight_path_stabilization_mode),
     curvature_limited=bool(curvature_limited),
   )
@@ -185,6 +190,7 @@ class LateralDemandAdapter:
     self.lane_rate_damping_mode = "off"
     self.lane_fit_source_mode = "off"
     self.lane_centering_one_line_mode = "off"
+    self.lateral_preview_assist_mode = "off"
     self.last_result = None
     self.last_debug = {}
     if params is not None:
@@ -206,12 +212,14 @@ class LateralDemandAdapter:
       self.lane_rate_damping_mode = sanitize_lane_rate_damping_mode(_param_string(p, "LaneRateDampingMode"))
       self.lane_fit_source_mode = sanitize_lane_fit_source_mode(_param_string(p, "LaneFitSourceMode"))
       self.lane_centering_one_line_mode = sanitize_one_line_centering_mode(_param_string(p, "LaneCenteringOneLineMode"))
+      self.lateral_preview_assist_mode = sanitize_lateral_preview_assist_mode(_param_string(p, "LateralPreviewAssistMode"))
     except Exception:
       self.enabled = False
       self.straight_path_stabilization_mode = "off"
       self.lane_rate_damping_mode = "off"
       self.lane_fit_source_mode = "off"
       self.lane_centering_one_line_mode = "off"
+      self.lateral_preview_assist_mode = "off"
 
   def clear(self) -> None:
     self.last_result = None
@@ -261,7 +269,7 @@ class LateralDemandAdapter:
               model_age_s: float = 0.0, yaw_rate: float | None = None,
               steering_rate_deg: float | None = None, steer_limited: bool = False,
               left_blinker: bool = False, right_blinker: bool = False,
-              curvature_limited: bool = False) -> float:
+              curvature_limited: bool = False, lat_delay: float = 0.0) -> float:
     """Return the processed desired curvature, or the unchanged raw curvature when disabled
     or on any fault (fail-closed)."""
     self._tick += 1
@@ -302,6 +310,8 @@ class LateralDemandAdapter:
         right_blinker=right_blinker,
         curvature_limited=curvature_limited,
         straight_path_stabilization_mode=self.straight_path_stabilization_mode,
+        lat_delay=lat_delay,
+        lateral_preview_assist_mode=self.lateral_preview_assist_mode,
       )
       inputs = replace(inputs, lane_rate_damping_mode=self.lane_rate_damping_mode, lane_fit_source_mode=self.lane_fit_source_mode,
                        lane_centering_one_line_mode=self.lane_centering_one_line_mode,

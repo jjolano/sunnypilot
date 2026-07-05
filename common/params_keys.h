@@ -126,6 +126,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneFitSourceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     // One-confident-line lane centering: shadow logs the candidate nudge, apply feeds one-line geometry.
     {"LaneCenteringOneLineMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    // Preview assist: shadow logs the candidate, apply can add a tiny bounded curvature nudge.
+    {"LateralPreviewAssistMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CustomLateralDemandDefaultOffMigrated", {PERSISTENT | BACKUP, STRING, ""}},
     {"LongitudinalModeMigrationVersion", {PERSISTENT | BACKUP, STRING, ""}},
     {"LaneCenteringAssistEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},

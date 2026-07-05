@@ -429,6 +429,23 @@ sections:
       - type: param
         key: CustomLateralDemandEnabled
         equals: true
+    - key: LateralPreviewAssistMode
+      widget: multiple_button
+      title: Lateral Preview Assist
+      description: Lateral-only preview of the requested path. Monitor only has no driving changes. Apply can change the
+        requested lateral path with a conservative preview nudge.
+      requires_attestation: true
+      options:
+      - value: 'off'
+        label: 'Off'
+      - value: shadow
+        label: Monitor only
+      - value: apply
+        label: Apply
+      enablement:
+      - type: param
+        key: CustomLateralDemandEnabled
+        equals: true
     - key: CurveMemoryEnabled
       widget: toggle
       title: Corner Curve Memory
