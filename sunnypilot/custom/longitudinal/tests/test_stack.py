@@ -601,7 +601,7 @@ def test_path_shadow_model_offset_does_not_change_stack_actuation():
 
   assert raw is not None and with_model is not None
   assert with_model.debug["actual_primary_lead_path_y_rel"] == pytest.approx(0.0)
-  assert with_model.debug["path_shadow_primary_lead_path_y_rel"] == pytest.approx(-1.0)
+  assert with_model.debug["path_shadow_primary_lead_path_y_rel"] == pytest.approx(1.0)
   assert with_model.debug["path_shadow_model_path_available"] is True
   assert with_model.debug["path_shadow_fault"] is False
 

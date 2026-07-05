@@ -377,7 +377,7 @@ class CustomLongitudinalStack:
 
     scene = LongitudinalScene(
       v_ego=act_inp.v_ego, a_ego=act_inp.a_ego, v_cruise=act_inp.v_cruise, seed_a_target=act_inp.seed_a_target,
-      accel_coast=act_inp.accel_coast, personality=act_inp.personality,
+      accel_coast=act_inp.accel_coast, pitch=act_inp.pitch, personality=act_inp.personality,
       has_lead=has_lead, lead_a_target=policy_lead_a_target, lead_should_stop=policy_lead_should_stop,
       lead_gap_excess=policy_lead_gap_excess, lead_progress_allowed=policy_lead_progress_allowed,
       lead_v=lead_v, lead_d_rel=lead_d_rel, lead_v_rel=lead_v_rel, lead_a_k=lead_a_k,

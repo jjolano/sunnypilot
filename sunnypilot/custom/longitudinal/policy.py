@@ -138,6 +138,7 @@ class LongitudinalScene:
   v_cruise: float = 0.0
   seed_a_target: float = 0.0    # planner baseline (MPC cruise/seed) accel
   accel_coast: float = 0.0      # natural coast estimate (negative downhill; can be non-negative when no useful coast)
+  pitch: float | None = None    # optional road pitch; None means unavailable
   personality: Personality = Personality.STANDARD
   # lead (pre-MPC lead-present seed shaping; final MPC lead physics remains downstream)
   has_lead: bool = False
@@ -730,12 +731,14 @@ def _scene_coast_decel(scene: LongitudinalScene) -> float:
 
 
 def _usable_coast_decel(scene: LongitudinalScene) -> float:
-  """Coast decel for lead-cushion and committed-stop shaping. The pitch-only accel_coast reads ~0
-  on flat road and omits rolling+aero drag, so fall back to the flat-road proxy (DEFAULT_COAST_DECEL)
-  instead of "no coast" — otherwise coast-first vanishes on flat: no early cushion toward a slower
-  lead (then late reactive braking) and far committed stops brake immediately instead of coasting
-  (route 0000025a regression, introduced by the bb1d135b2d coast-fallback change)."""
-  return scene.accel_coast if scene.accel_coast < MAX_COAST_DECEL else DEFAULT_COAST_DECEL
+  """Coast decel for lead-cushion and committed-stop shaping.
+
+  Use the flat-road proxy only when pitch is unavailable; otherwise keep the honest clamped
+  coast estimate so downhill pitch does not get treated like flat-road drag.
+  """
+  if scene.pitch is None or not math.isfinite(scene.pitch):
+    return scene.accel_coast if scene.accel_coast < MAX_COAST_DECEL else DEFAULT_COAST_DECEL
+  return _scene_coast_decel(scene)
 
 
 def _advisory_speed_limit_cap(scene: LongitudinalScene) -> float:

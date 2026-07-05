@@ -111,9 +111,9 @@ def test_output_always_within_accel_limits():
 def test_fail_closed_on_bad_limits_and_nonfinite():
   bad = decide([cruise(1.0)], LongitudinalMode.ACC, (2.0, -2.0))
   assert bad.reason == "invalid_accel_limits"
-  # non-finite candidate is rejected, not propagated
-  d = decide([cruise(float("nan")), cruise(0.5)], LongitudinalMode.ACC, LIMITS)
-  assert d.a_target == pytest.approx(0.5)
+  # non-finite cruise seed/candidate defaults fail-closed to 0.0, not +a_max
+  d = decide([cruise(float("nan"))], LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(0.0)
   assert any("nonfinite" in r for r in d.rejected)
 
 

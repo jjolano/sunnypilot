@@ -94,7 +94,7 @@ def decide(candidates: list[LongitudinalCandidate], mode: LongitudinalMode, acce
   cruise = [c for c in usable if c.role is CandidateRole.CRUISE]
 
   # Baseline desire: the highest accel any cruise/authorized-progress candidate asks for.
-  desire = max((c.a_target for c in cruise + progress), default=a_max)
+  desire = max((c.a_target for c in cruise + progress), default=min(0.0, a_max))
 
   # Advisory caps restrict accel from above; comfort relax softens the binding cap toward its
   # (higher) floor but never removes it.

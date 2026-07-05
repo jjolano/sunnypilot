@@ -1133,10 +1133,12 @@ def test_curve_runway_governor_raises_decision_above_raw_seed():
 
 # --- map-coast tier (coast-only SCC-Map advisory cap) ---
 
-def _map_coast_scene(v_ego=25.0, v_target=15.0, distance=400.0, active=True, accel_coast=0.0):
-  # accel_coast=0.0 -> no measured coast, so the cap uses the flat-road proxy (-0.25)
+def _map_coast_scene(v_ego=25.0, v_target=15.0, distance=400.0, active=True,
+                     accel_coast=0.0, pitch=None):
+  # pitch=None + accel_coast=0.0 -> no measured coast, so the cap uses the flat-road proxy (-0.25)
   return LongitudinalScene(v_ego=v_ego, v_cruise=v_ego, seed_a_target=0.0, accel_coast=accel_coast,
-                           map_coast_active=active, map_coast_v_target=v_target, map_coast_distance=distance)
+                           pitch=pitch, map_coast_active=active, map_coast_v_target=v_target,
+                           map_coast_distance=distance)
 
 
 def test_map_coast_cap_cruises_far_coasts_near_never_brakes():
@@ -1146,6 +1148,11 @@ def test_map_coast_cap_cruises_far_coasts_near_never_brakes():
   # Well inside coast distance the kinematics ask for real braking (-1.0 here), but map
   # evidence alone never brakes: the cap is floored at the natural coast decel.
   assert map_coast_cap(_map_coast_scene(distance=200.0)) == pytest.approx(-0.25)
+
+
+def test_map_coast_cap_uses_honest_coast_when_pitch_available():
+  scene = _map_coast_scene(distance=810.0, accel_coast=0.02, pitch=-0.05)
+  assert map_coast_cap(scene) == pytest.approx(-0.02)
 
 
 def test_map_coast_cap_invalid_targets_are_none():

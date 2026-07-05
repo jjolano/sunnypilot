@@ -421,7 +421,7 @@ def test_adapter_passes_model_path_into_shadow_debug():
   assert out.debug["path_shadow_model_path_available"] is True
   assert out.debug["path_shadow_fault"] is False
   assert out.debug["actual_primary_lead_path_y_rel"] == pytest.approx(0.0)
-  assert out.debug["path_shadow_primary_lead_path_y_rel"] == pytest.approx(-1.0)
+  assert out.debug["path_shadow_primary_lead_path_y_rel"] == pytest.approx(1.0)
 
 
 def test_adapter_contains_path_shadow_fault_without_fail_closed():

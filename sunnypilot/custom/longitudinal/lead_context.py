@@ -642,9 +642,9 @@ def _path_relative_y(y_rel: float, d_rel: float, model_msg: Any | None) -> float
     x0, x1 = positions[idx], positions[idx + 1]
     if x0 <= d_rel <= x1:
       if x1 == x0:
-        return y_rel - path_y[idx + 1]
+        return y_rel + path_y[idx + 1]
       ratio = (d_rel - x0) / (x1 - x0)
-      return y_rel - (path_y[idx] + ratio * (path_y[idx + 1] - path_y[idx]))
+      return y_rel + (path_y[idx] + ratio * (path_y[idx + 1] - path_y[idx]))
   return y_rel
 
 

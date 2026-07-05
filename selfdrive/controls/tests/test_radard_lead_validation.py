@@ -175,10 +175,10 @@ def test_track_path_relative_y_on_straight_path():
 
 
 def test_track_path_relative_y_on_curved_path():
-  track = radar_track(d_rel=45.0, y_rel=0.0)
+  track = radar_track(d_rel=45.0, y_rel=0.5)
   model = SimpleNamespace(position=SimpleNamespace(x=[0.0, 30.0, 60.0], y=[0.0, 1.5, 2.0]))
 
-  assert _track_path_relative_y(track, model) == pytest.approx(-1.75)
+  assert _track_path_relative_y(track, model) == pytest.approx(2.25)
 
 
 def test_track_path_relative_y_returns_none_on_bad_track():

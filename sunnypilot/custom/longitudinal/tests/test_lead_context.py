@@ -125,7 +125,11 @@ def test_tracker_interpolates_model_path_for_path_relative_y_shadow_signal():
   )
 
   assert raw_ctx.states[0].path_y_rel == pytest.approx(0.0)
-  assert model_ctx.states[0].path_y_rel == pytest.approx(-1.75)
+  assert model_ctx.states[0].path_y_rel == pytest.approx(1.75)
+
+
+def test_path_relative_y_duplicate_x_keeps_model_sign():
+  assert lc._path_relative_y(0.5, 30.0, model_path(xs=(30.0, 30.0, 60.0), ys=(1.0, 2.0, 3.0))) == pytest.approx(2.5)
 
 
 def _relevance_state(authority, *, gap_excess=0.0):
@@ -422,7 +426,7 @@ def test_shadow_model_path_relative_y_offset():
   )
   ctx = _run_frames(frames)
   assert ctx.states[0].shadow is True
-  assert ctx.states[0].path_y_rel < -1.7
+  assert ctx.states[0].path_y_rel > 1.7
   assert ctx.states[0].risk_model.path_y_rel == pytest.approx(ctx.states[0].path_y_rel)
 
 
