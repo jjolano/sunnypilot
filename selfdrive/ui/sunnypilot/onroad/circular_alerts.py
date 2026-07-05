@@ -10,7 +10,7 @@ from cereal import log
 from openpilot.selfdrive.ui import UI_BORDER_SIZE
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui import DeveloperUiState
-from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
+from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE, font_fallback
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 
@@ -18,6 +18,9 @@ class CircularAlertsRenderer:
   def __init__(self):
     self._green_light_alert_img = gui_app.texture("../../sunnypilot/selfdrive/assets/images/green_light.png", 250, 250)
     self._lead_depart_alert_img = gui_app.texture("../../sunnypilot/selfdrive/assets/images/lead_depart.png", 250, 250)
+    self._font_bold = gui_app.font(FontWeight.BOLD)
+    self._text_layout_key = None
+    self._text_layout = ((), ())
 
     self._e2e_alert_display_timer = 0
     self._e2e_alert_frame = 0
@@ -28,6 +31,16 @@ class CircularAlertsRenderer:
     self._alert_text = ""
     self._alert_img = None
     self._allow_e2e_alerts = False
+
+  def _layout_text(self, text: str, font_size: int, spacing: float):
+    font = font_fallback(self._font_bold)
+    key = (font.texture.id, text, font_size, round(spacing, 4))
+    if key != self._text_layout_key:
+      lines = tuple(text.split('\n'))
+      sizes = tuple(measure_text_cached(self._font_bold, line, font_size, spacing) for line in lines)
+      self._text_layout_key = key
+      self._text_layout = (lines, sizes)
+    return self._text_layout
 
   def update(self) -> None:
     sm = ui_state.sm
@@ -107,17 +120,12 @@ class CircularAlertsRenderer:
 
     # Draw Text
     txt_color = rl.Color(255, 255, 255, 255) if is_pulsing else rl.Color(0, 255, 0, 190)
-    font = gui_app.font(FontWeight.BOLD)
+    font = self._font_bold
     text_size = 48
     spacing = 0
 
-    lines = self._alert_text.split('\n')
-
     # Position text at bottom of alert circle
     bottom_y = (alert_rect.y + alert_rect.height) - (alert_rect.height / 7)
-
-    # Draw lines upwards from bottom
-    current_y = bottom_y - (len(lines) * text_size * FONT_SCALE)
 
     if self._e2e_alert_display_timer == 0 and ui_state.standstill_timer and self._is_standstill:
       # Standstill Timer Text
@@ -133,8 +141,10 @@ class CircularAlertsRenderer:
       timer_y = (alert_rect.y + alert_rect.height) - (alert_rect.height / 5) - measure_timer.y
       rl.draw_text_ex(font, self._alert_text, rl.Vector2(center.x - measure_timer.x / 2, timer_y), timer_text_size, spacing, rl.WHITE)
     else:
-      for line in lines:
-        measure = measure_text_cached(font, line, text_size, spacing)
+      lines, line_sizes = self._layout_text(self._alert_text, text_size, spacing)
+      # Draw lines upwards from bottom
+      current_y = bottom_y - (len(lines) * text_size * FONT_SCALE)
+      for line, measure in zip(lines, line_sizes):
         line_x = center.x - measure.x / 2
         rl.draw_text_ex(font, line, rl.Vector2(line_x, current_y), text_size, spacing, txt_color)
         current_y += text_size * FONT_SCALE
