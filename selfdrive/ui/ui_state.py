@@ -340,7 +340,7 @@ class Device(DeviceSP):
     self._prev_timed_out = interaction_timeout
 
     self._set_awake(ui_state.ignition or not interaction_timeout or PC)
-    gui_app.set_fps_idle(ui_state.ignition and interaction_timeout)
+    gui_app.set_fps_idle(interaction_timeout)
 
   def _set_awake(self, on: bool):
     if on != self._awake:

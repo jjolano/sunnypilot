@@ -92,7 +92,15 @@ def is_stock_model(started, params, CP: car.CarParams) -> bool:
   return bool(get_active_model_runner(params, not started) == custom.ModelManagerSP.Runner.stock)
 
 def mapd_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return bool(os.path.exists(Paths.mapd_root()))
+  if not os.path.exists(Paths.mapd_root()):
+    return False
+  if started:
+    return True
+  # ponytail: the prebuilt mapd binary idles at ~19% CPU; offroad, run it only while an OSM download is pending
+  try:
+    return bool(Params("/dev/shm/params").get("OSMDownloadLocations"))
+  except Exception:
+    return True
 
 def uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
   if not params.get_bool("OnroadUploads"):

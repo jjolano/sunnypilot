@@ -235,14 +235,19 @@ class ModelManagerSP:
   def main_thread(self) -> None:
     """Main thread for model management"""
     rk = Ratekeeper(1, print_delay_threshold=None)
+    next_refresh = 0.0
 
     while True:
       try:
-        self.available_models = self.model_fetcher.get_available_bundles()
+        index_to_download = self.params.get("ModelManager_DownloadIndex")
+        if index_to_download is not None or time.monotonic() >= next_refresh:
+          # ponytail: reparsing the full catalog at 1Hz cost ~10% CPU; it only changes on the hourly cache refresh
+          self.available_models = self.model_fetcher.get_available_bundles()
+          next_refresh = time.monotonic() + 30.0
         validate_active_bundle(self.params, self.available_models)
         self.active_bundle = get_active_bundle(self.params)
 
-        if (index_to_download := self.params.get("ModelManager_DownloadIndex")) is not None:
+        if index_to_download is not None:
           if model_to_download := next((model for model in self.available_models if model.index == index_to_download), None):
             try:
               self.download(model_to_download, Paths.model_root())
@@ -251,6 +256,7 @@ class ModelManagerSP:
             finally:
               self.params.remove("ModelManager_DownloadIndex")
               self.selected_bundle = None
+              next_refresh = 0.0  # reparse next loop so published bundle statuses reset as before
 
         if self.params.get("ModelManager_ClearCache"):
           self.clear_model_cache()
