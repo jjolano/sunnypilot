@@ -631,7 +631,7 @@ def test_crawl_fallback_rejects_brief_gap_increase():
 
   assert planner._lead_stop_hold_active is True
   assert should_stop is True
-  assert a_target <= -0.4
+  assert a_target <= -0.2  # prep-softened hold (PCM pre-stage); latch above proves no release
 
 
 def test_crawl_fallback_rejects_different_lead_id():
@@ -687,7 +687,7 @@ def test_crawl_fallback_rejects_negative_raw_model_accel():
 
   assert planner._lead_stop_hold_active is True
   assert should_stop is True
-  assert a_target <= -0.4
+  assert a_target <= -0.2  # prep-softened hold (PCM pre-stage); latch above proves no release
 
 
 def test_crawl_fallback_rejects_mpc_brake():
@@ -744,7 +744,7 @@ def test_crawl_fallback_respects_deadband_until_baseline_opens():
 
   assert planner._lead_stop_hold_active is True
   assert should_stop is True
-  assert a_target <= -0.4
+  assert a_target <= -0.2  # prep-softened hold (PCM pre-stage); latch above proves no release
 
 
 def test_crawl_fallback_large_latched_gap_requires_capped_baseline_opening():
@@ -764,7 +764,7 @@ def test_crawl_fallback_large_latched_gap_requires_capped_baseline_opening():
 
   assert planner._lead_stop_hold_active is True
   assert should_stop is True
-  assert a_target <= -0.4
+  assert a_target <= -0.2  # prep-softened hold (PCM pre-stage); latch above proves no release
 
 
 def _make_valid_release_custom_output(a_target: float = 0.25):

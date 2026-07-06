@@ -431,7 +431,7 @@ def test_standstill_release_clamps_high_target():
     research_actuation_allowed=True,
   )  # type: ignore[assignment]
   a, should_stop, _ = sp.final_longitudinal_output(fake_sm(), 0.0, True, 0.0, False)  # type: ignore[arg-type]
-  assert a <= 0.50
+  assert a <= CustomLongitudinalFinalizer._STOP_HOLD_RELEASE_A_MAX
   assert should_stop is False
 
 
@@ -692,7 +692,7 @@ def test_same_id_tiny_gap_increases_do_not_release():
     }
     a_target, should_stop, _ = sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
     assert should_stop is True
-    assert a_target <= -0.5
+    assert a_target <= -0.2  # prep-softened hold; latch below proves no release
   assert sp._lead_stop_hold_active is True
 
 
@@ -742,7 +742,7 @@ def test_same_id_pullaway_gate_mode_blocked_without_research_actuation():
     _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
   assert should_stop is True
-  assert a <= -0.5
+  assert a <= -0.2  # prep-softened hold; latch proves the gate blocked the release
 
 
 def test_same_id_pullaway_gate_mode_requires_positive_planner_evidence():
@@ -794,7 +794,7 @@ def test_same_id_pullaway_gate_mode_is_scc_only():
       _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
     assert sp._lead_stop_hold_active is True
     assert should_stop is True
-    assert a <= -0.5
+    assert a <= -0.2  # prep-softened hold; latch proves no release in non-gate modes
 
 
 def test_same_id_pullaway_gate_mode_requires_healthy_custom_output():
@@ -1859,3 +1859,33 @@ def test_stop_hold_standstill_normalize_first_positive_release_still_clears():
   assert should_stop is False
   assert sp._lead_stop_hold_active is False
   assert sp._stop_hold_release_slew_a_target == a
+
+
+def test_stop_hold_release_prep_fires_without_release_permission():
+  # Route 261: prep must lead the release — early lead motion pre-stages the PCM brake-hold
+  # unwind even while the policy has not yet granted a pullaway release.
+  sp = _prep_planner(stop_accel=-2.0, release=False)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  for i in range(2):
+    sp.final_longitudinal_output(_prep_sm(d_rel=6.25 + i * 0.01, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.28, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop is True
+  assert sp._lead_stop_hold_active is True
+  assert -2.0 < a <= -0.20
+  assert sp._stop_hold_release_prep_a_target == a
+
+
+def test_stop_hold_release_prep_clears_when_lead_restops():
+  sp = _prep_planner(stop_accel=-2.0, release=False)
+  _arm_stop_hold(sp)
+  sp._lead_stop_hold_gap_baseline_d_rel = 6.2
+  for i in range(3):
+    sp.final_longitudinal_output(_prep_sm(d_rel=6.25 + i * 0.01, v_lead=0.25, v_rel=0.10), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._stop_hold_release_prep_a_target is not None
+  # Lead rocks back to a stop: prep clears; the restored hold lands on the standstill-
+  # normalized target (-0.5), not the raw stop accel.
+  a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(d_rel=6.25, v_lead=0.0, v_rel=0.0), -0.05, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop is True
+  assert a <= -0.4
+  assert sp._stop_hold_release_prep_a_target is None

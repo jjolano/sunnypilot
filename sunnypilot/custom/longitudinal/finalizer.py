@@ -578,9 +578,13 @@ class _HoldCommand:
 
     if not custom_long.enabled or custom_long_output is None:
       return False
-    if not bool(getattr(custom_long_output, "standstill_release_allowed", False)):
-      return False
-    if str(getattr(custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch"):
+    # Route 261: prep used to require the full release permission (pullaway source), so it
+    # could never lead the release and the TSS2 PCM ate ~1 s of brake-hold unwind AFTER the
+    # release fired. Prep is not a release — the car stays held at the prep target — so it
+    # keys on its own early-lead-motion thresholds below and runs the PCM unwind in
+    # parallel with the release decision. Any stop demand (model stop, custom should_stop,
+    # driver input, lead re-stopping) drops the hold straight back to the harsh target.
+    if not bool(getattr(custom_long_output, "enabled", False)):
       return False
     if bool(getattr(custom_long_output, "should_stop", False)):
       return False
@@ -975,10 +979,11 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_SETTLE_ARM_BRAKE_DIST_MAX = 1.0
   _STOP_HOLD_RELEASE_A_MIN = 0.15
   # Route 00000246 t=4454: at the old 0.35 cap the TSS2 PCM took ~1.3 s of commanded
-  # +0.25-0.30 m/s^2 before the car moved off brake hold; the driver's own launches on the
-  # same route averaged 0.31-0.47 m/s^2 from the first second. 0.50 clears the PCM
-  # standstill lag while staying inside driver-demonstrated comfort.
-  _STOP_HOLD_RELEASE_A_MAX = 0.50
+  # +0.25-0.30 m/s^2 before the car moved off brake hold; 0.50 cleared most of it. Route
+  # 00000261: the driver's launches sustain ~1.0 m/s^2 mean from the first second, so 0.65
+  # shaves the residual PCM lag while staying inside driver-demonstrated comfort. The gap
+  # governor and release slew still bound the profile.
+  _STOP_HOLD_RELEASE_A_MAX = 0.65
   _STOP_HOLD_RELEASE_MAX_UP_JERK = 6.0
   _STOP_HOLD_RELEASE_PREP_A_TARGET = -0.20
   _STOP_HOLD_RELEASE_PREP_MAX_UP_JERK = 6.0
