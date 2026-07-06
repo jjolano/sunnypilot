@@ -14,10 +14,14 @@ import pytest
 
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.custom.lateral.demand.lane_centering_assist import (
+  LANE_CENTERING_ASSIST_ESCALATION_ERR_BP,
+  LANE_CENTERING_ASSIST_ESCALATION_MAX_LAT_ACCEL,
+  LANE_CENTERING_ASSIST_MAX_LAT_ACCEL,
   LANE_CENTERING_ASSIST_OK_REASON,
   LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_REASON,
   LaneCenteringAssistInputs,
   LaneCenteringAssistTracker,
+  _max_nudge_curvature,
 )
 from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   LOW_QUALITY_BLEND_THRESHOLD,
@@ -1200,7 +1204,7 @@ def test_lane_centering_assist_path_reason_cooldown_blocks_reactivation():
   assert r.reason == "growing_lateral_error"
   assert r.curvature_nudge > 0.0
 
-  bad = make_inputs("low_lane_confidence")
+  bad = make_inputs("high_path_std")
   r = tracker.update(bad, DT)
   assert r.active is False
   assert r.reason == "path_reason"
@@ -1219,6 +1223,66 @@ def test_lane_centering_assist_path_reason_cooldown_blocks_reactivation():
     r = tracker.update(ok, DT)
   assert r.active is True
   assert r.curvature_nudge > 0.0
+
+
+def test_lane_centering_assist_runs_under_low_lane_confidence():
+  # Route 0000025e: `low_lane_confidence` held 81.6% of active time and hard-blocked
+  # LCA in exactly the one-weak-line regime one-line centering exists for. It must be
+  # treated like "ok"; per-line prob gating lives in _confidence()/geometry validity.
+  tracker = LaneCenteringAssistTracker()
+  xs = [float(x) for x in range(N)]
+  ys = [0.01 * x for x in xs]
+  yaws = [0.0] * N
+
+  inputs = LaneCenteringAssistInputs(
+    lat_active=True,
+    v_ego=20.0,
+    measured_curvature=0.0,
+    model_curvature=0.0,
+    previous_processed_curvature=0.0,
+    path_quality=1.0,
+    path_reason="low_lane_confidence",
+    lane_change_shaping_active=False,
+    lane_change_blend=0.0,
+    curvature_limited=False,
+    steering_pressed=False,
+    left_blinker=False,
+    right_blinker=False,
+    position_x=xs,
+    position_y=ys,
+    orientation_z=yaws,
+    lane_line_probs=[0.9, 0.9, 0.9, 0.9],
+  )
+  r = tracker.update(inputs, DT)
+  assert r.active is True
+  assert r.reason == "growing_lateral_error"
+  assert r.curvature_nudge > 0.0
+
+
+def test_lane_centering_nudge_cap_escalates_with_predicted_drift():
+  # Route 0000025e t=364-376s: the flat 0.08 m/s^2 cap saturated while predicted drift
+  # grew to 0.7 m and the driver overrode 1.0 m from the line.
+  v_ego = 11.0  # city speed of the observed drift
+  speed_sq = v_ego * v_ego
+  base = _max_nudge_curvature(v_ego) * speed_sq
+  assert base == pytest.approx(LANE_CENTERING_ASSIST_MAX_LAT_ACCEL)
+
+  # Small drift: unchanged.
+  small = _max_nudge_curvature(v_ego, predicted_lateral_error=LANE_CENTERING_ASSIST_ESCALATION_ERR_BP[0]) * speed_sq
+  assert small == pytest.approx(base)
+
+  # Full escalation at the upper breakpoint, symmetric in sign.
+  for err in (LANE_CENTERING_ASSIST_ESCALATION_ERR_BP[1], -LANE_CENTERING_ASSIST_ESCALATION_ERR_BP[1]):
+    full = _max_nudge_curvature(v_ego, predicted_lateral_error=err) * speed_sq
+    assert full == pytest.approx(LANE_CENTERING_ASSIST_ESCALATION_MAX_LAT_ACCEL)
+
+  # Straight-cruise damping still applies at small errors and escalates the same way.
+  v_hwy = 30.0
+  damped = _max_nudge_curvature(v_hwy, straight_cruise=True) * v_hwy * v_hwy
+  assert damped < LANE_CENTERING_ASSIST_MAX_LAT_ACCEL
+  escalated = _max_nudge_curvature(v_hwy, straight_cruise=True,
+                                   predicted_lateral_error=LANE_CENTERING_ASSIST_ESCALATION_ERR_BP[1]) * v_hwy * v_hwy
+  assert escalated == pytest.approx(LANE_CENTERING_ASSIST_ESCALATION_MAX_LAT_ACCEL)
 
 
 def test_low_lane_confidence_soft_gate_does_not_amplify_raw_curvature():

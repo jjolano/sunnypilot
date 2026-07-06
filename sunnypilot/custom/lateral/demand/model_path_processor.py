@@ -261,8 +261,9 @@ class ModelPathProcessor:
 
   def _reset_straight_path_stabilization_state(self) -> None:
     self._reset_sps_anchor_state()
-    # Full reset only: releases keep this so the post-release blend survives.
+    # Full reset only: releases keep these so the post-release blend survives.
     self._sp_last_output_lat_accel: float | None = None
+    self._sp_transition_blend_active: bool = False
 
   def _reset_sps_anchor_state(self) -> None:
     self._sp_anchor_buffer: collections.deque[float] = collections.deque(maxlen=SPS_ANCHOR_WINDOW_FRAMES)

@@ -15,6 +15,11 @@ from openpilot.sunnypilot.custom.lateral.demand.lane_geometry import (
 LANE_CENTERING_ASSIST_MIN_SPEED = 5.0
 LANE_CENTERING_ASSIST_MIN_PATH_QUALITY = 0.85
 LANE_CENTERING_ASSIST_OK_REASON = "ok"
+# Route 0000025e: `low_lane_confidence` held 81.6% of active time (one weak line on
+# city roads), hard-blocking LCA exactly where one-line centering is meant to work.
+# _confidence() and the geometry/one-line validity checks already gate on per-line
+# probs, so the reason gate does not need to double-count lane confidence.
+LANE_CENTERING_ASSIST_ALLOWED_PATH_REASONS = frozenset((LANE_CENTERING_ASSIST_OK_REASON, "low_lane_confidence"))
 LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_FRAMES = 50  # 0.5 s at 100 Hz
 LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_REASON = "path_reason_cooldown"
 LANE_CENTERING_ASSIST_NEAR_LOOKAHEAD_T = 0.35
@@ -56,6 +61,9 @@ LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_BP = [10.0, 20.0, 30.0]
 # car held a ~0.2 m offset the driver kept correcting; keep enough authority to out-pull the
 # measured ~0.02-0.03 m/s^2 steady execution deficit with margin.
 LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_V = [0.12, 0.08, 0.05]
+# Authority escalation with predicted drift (see _max_nudge_curvature).
+LANE_CENTERING_ASSIST_ESCALATION_ERR_BP = [0.30, 0.60]  # m
+LANE_CENTERING_ASSIST_ESCALATION_MAX_LAT_ACCEL = 0.18  # m/s^2 at full escalation
 LANE_CENTERING_ASSIST_SPEED_FLOOR = 5.0
 LANE_CENTERING_ASSIST_LATERAL_GAIN = 0.00045
 LANE_CENTERING_ASSIST_HEADING_GAIN = 0.0020
@@ -215,7 +223,7 @@ class LaneCenteringAssistTracker:
     self._one_line_debug = _inactive_one_line_debug(one_line_mode)
     gate_reason = _gate_reason(inputs)
     if gate_reason is not None:
-      if inputs.path_reason != LANE_CENTERING_ASSIST_OK_REASON:
+      if inputs.path_reason not in LANE_CENTERING_ASSIST_ALLOWED_PATH_REASONS:
         self._reason_cooldown_ticks = LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_FRAMES
       return self._hard_block(gate_reason)
 
@@ -277,7 +285,7 @@ class LaneCenteringAssistTracker:
       # correction when the model path is biased off-center.
       heading_error = 0.0
 
-    if inputs.path_reason != LANE_CENTERING_ASSIST_OK_REASON:
+    if inputs.path_reason not in LANE_CENTERING_ASSIST_ALLOWED_PATH_REASONS:
       self._reason_cooldown_ticks = LANE_CENTERING_ASSIST_PATH_REASON_COOLDOWN_FRAMES
 
     # Compute confidence and an unrelaxed raw nudge before any gating so the relaxation
@@ -285,7 +293,7 @@ class LaneCenteringAssistTracker:
     geometry_confidence = geometry.confidence if geometry is not None and geometry_mode else 0.0
     confidence = _confidence(inputs, geometry_mode, geometry_confidence)
     straight_cruise = _straight_cruise(inputs)
-    max_nudge = _max_nudge_curvature(inputs.v_ego, straight_cruise)
+    max_nudge = _max_nudge_curvature(inputs.v_ego, straight_cruise, predicted_lateral_error)
 
     one_line_applied = (one_line_mode == "apply" and one_line is not None and one_line.valid and
                         geometry_mode and geometry is not None and geometry.source == "single_line")
@@ -567,7 +575,7 @@ class _CenterChaseRelaxation:
     curve_ok = curve_lat_accel <= LANE_CENTERING_RELAX_MAX_CURVE_LAT_ACCEL
     quality_ok = (float(inputs.path_quality) >= LANE_CENTERING_RELAX_MIN_PATH_QUALITY and
                   confidence >= LANE_CENTERING_RELAX_MIN_CONFIDENCE and
-                  inputs.path_reason == LANE_CENTERING_ASSIST_OK_REASON)
+                  inputs.path_reason in LANE_CENTERING_ASSIST_ALLOWED_PATH_REASONS)
     speed_ok = inputs.v_ego >= LANE_CENTERING_RELAX_MIN_SPEED
     conditions_ok = self._reason_bits == 0 and near_center and curve_ok and quality_ok and speed_ok
     can_trigger = self._flip_score >= LANE_CENTERING_RELAX_MIN_FLIPS and self._cross_score >= LANE_CENTERING_RELAX_MIN_FLIPS
@@ -662,7 +670,7 @@ class _CenterChaseRelaxation:
       bits |= LANE_CENTERING_RELAX_REASON_CURVE
     if float(inputs.path_quality) < LANE_CENTERING_RELAX_MIN_PATH_QUALITY:
       bits |= LANE_CENTERING_RELAX_REASON_QUALITY
-    if inputs.path_reason != LANE_CENTERING_ASSIST_OK_REASON:
+    if inputs.path_reason not in LANE_CENTERING_ASSIST_ALLOWED_PATH_REASONS:
       bits |= LANE_CENTERING_RELAX_REASON_QUALITY
     if confidence < LANE_CENTERING_RELAX_MIN_CONFIDENCE:
       bits |= LANE_CENTERING_RELAX_REASON_QUALITY
@@ -706,7 +714,7 @@ def _gate_reason(inputs: LaneCenteringAssistInputs) -> str | None:
     return "lane_change"
   if inputs.curvature_limited:
     return "curvature_limited"
-  if inputs.path_reason != LANE_CENTERING_ASSIST_OK_REASON:
+  if inputs.path_reason not in LANE_CENTERING_ASSIST_ALLOWED_PATH_REASONS:
     return "path_reason"
   if not _finite(inputs.path_quality) or float(inputs.path_quality) < LANE_CENTERING_ASSIST_MIN_PATH_QUALITY:
     return "low_path_quality"
@@ -742,7 +750,7 @@ def _confidence(inputs: LaneCenteringAssistInputs, geometry_mode: bool = False,
   return min(path_confidence, lane_confidence)
 
 
-def _max_nudge_curvature(v_ego: float, straight_cruise: bool = False) -> float:
+def _max_nudge_curvature(v_ego: float, straight_cruise: bool = False, predicted_lateral_error: float = 0.0) -> float:
   speed = max(abs(_finite_float(v_ego)), LANE_CENTERING_ASSIST_SPEED_FLOOR)
   max_lat_accel = LANE_CENTERING_ASSIST_MAX_LAT_ACCEL
   if straight_cruise:
@@ -750,6 +758,15 @@ def _max_nudge_curvature(v_ego: float, straight_cruise: bool = False) -> float:
       max_lat_accel,
       float(np.interp(speed, LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_BP, LANE_CENTERING_ASSIST_MAX_LAT_ACCEL_V)),
     )
+  # Route 0000025e t=364-376s: the flat cap saturated while predicted drift grew
+  # 0 -> 0.7 m until driver override 1.0 m from the line. Escalate authority with
+  # predicted drift; behavior at small errors (including straight-cruise damping)
+  # is unchanged.
+  max_lat_accel = float(np.interp(
+    abs(_finite_float(predicted_lateral_error)),
+    LANE_CENTERING_ASSIST_ESCALATION_ERR_BP,
+    [max_lat_accel, LANE_CENTERING_ASSIST_ESCALATION_MAX_LAT_ACCEL],
+  ))
   return max_lat_accel / speed**2
 
 

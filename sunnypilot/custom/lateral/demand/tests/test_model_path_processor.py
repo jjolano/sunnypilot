@@ -318,7 +318,9 @@ def test_sps_apply_reduces_slow_near_straight_wiggle():
   assert max_out_lat_accel <= amplitude + SPS_ANCHOR_CLIP_LAT_ACCEL + 0.02
 
 
-def test_sps_preserves_anchor_through_transient_steer_limit():
+def test_sps_ignores_steer_limited():
+  # Route 0000025e: steer_limited chatters at ~8 Hz on HKG torque ramps and paused
+  # SPS 1569 times in 207 s of active driving. SPS must stay anchored through it.
   proc = ModelPathProcessor()
   v_ego = 20.0
   k = 0.0002
@@ -328,12 +330,38 @@ def test_sps_preserves_anchor_through_transient_steer_limit():
   assert proc.update(_sps_inputs(v_ego=v_ego, curvature=k, mode="apply")).straight_path_stabilization_active is True
 
   limited = proc.update(_sps_inputs(v_ego=v_ego, curvature=k, mode="apply", steer_limited=True))
-  assert limited.straight_path_stabilization_active is False
-  assert limited.straight_path_stabilization_reason == "gate_steer_limited"
+  assert limited.straight_path_stabilization_active is True
+  assert limited.straight_path_stabilization_reason == "ok"
 
-  clean = proc.update(_sps_inputs(v_ego=v_ego, curvature=k, mode="apply"))
-  assert clean.straight_path_stabilization_active is True
-  assert clean.straight_path_stabilization_reason == "ok"
+
+def test_sps_transition_slew_bounds_reapply_and_keeps_passthrough_transparent():
+  # Route 0000025e: after a release blend converged the next apply snapped demand
+  # straight to the anchor (up to 0.27 m/s^2 in one frame). Every SPS transition
+  # must be bounded by SPS_RELEASE_RAMP_LAT_JERK, while inactive passthrough must
+  # not rate-limit raw demand.
+  proc = ModelPathProcessor()
+  v_ego = 20.0
+  speed_sq = v_ego * v_ego
+  max_step = SPS_RELEASE_RAMP_LAT_JERK * DT_CTRL
+
+  for _ in range(10):
+    proc._slew_sps_transitions(v_ego, 0.3 / speed_sq, True, "apply")
+
+  # Release: blend from 0.3 m/s^2 toward raw 0.0, bounded per frame, until converged.
+  out = 0.3
+  for _ in range(int(0.3 / max_step) + 10):
+    new = proc._slew_sps_transitions(v_ego, 0.0, False, "apply") * speed_sq
+    assert abs(new - out) <= max_step + 1e-9
+    out = new
+  assert out == pytest.approx(0.0, abs=1e-9)
+
+  # Converged passthrough: a raw jump while SPS is inactive is NOT rate-limited.
+  assert proc._slew_sps_transitions(v_ego, 0.5 / speed_sq, False, "apply") * speed_sq == pytest.approx(0.5)
+  assert proc._slew_sps_transitions(v_ego, 0.0, False, "apply") == pytest.approx(0.0)
+
+  # Re-apply at the old anchor level: must ramp from tracked demand, not snap.
+  first = proc._slew_sps_transitions(v_ego, 0.3 / speed_sq, True, "apply") * speed_sq
+  assert abs(first) <= max_step + 1e-9
 
 
 def test_sps_anchors_first_near_straight_redetect_after_lane_dropout():
