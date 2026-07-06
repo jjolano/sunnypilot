@@ -52,6 +52,10 @@ description, read that skill's `SKILL.md` before acting.
 - `device-route-log-analysis`: access route logs from the configured deployment target and
   analyze recent drives with drive_lab. Use when the user asks to inspect device route logs
   or analyze lateral/longitudinal control from logs.
+- `route-drive-diagnosis`: deep rlog diagnosis of drive complaints — extract full-route
+  signals to numpy, detect episodes (stop gaps, launches, interventions, cut-outs, wander,
+  lane position), and correlate with the longitudinalDebug trace to name the owning
+  constant/module. Use when the user reports drive behavior complaints to root-cause.
 - `device-comm-diagnostics`: read-only diagnosis for on-device "Communication Issue Between
   Processes", "Low Communication Rate Between Processes", process-not-running, IPC/msgq, and
   manager/process health alerts.
