@@ -703,7 +703,7 @@ def test_same_id_pullaway_noise_without_release_permission_keeps_latch():
       'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
       'controlsState': SimpleNamespace(forceDecel=False),
       'selfdriveState': SimpleNamespace(experimentalMode=False),
-      'radarState': SimpleNamespace(leadOne=lead(dRel=9.8, vLead=0.0, vRel=0.0, radarTrackId=7)),
+      'radarState': SimpleNamespace(leadOne=lead(dRel=5.8, vLead=0.0, vRel=0.0, radarTrackId=7)),
     }
     sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
@@ -1073,21 +1073,38 @@ def test_valid_source_crawl_releases_below_deadband_with_cap():
   assert math.isclose(a, 0.35, abs_tol=1e-9)
 
 
-def test_stop_hold_caps_early_stop_baseline_at_six_meters():
+def test_stop_hold_does_not_latch_beyond_arm_envelope():
+  # Route 261: latching at 8-10 m froze a 9.3 m gap; beyond the arm envelope the MPC
+  # keeps creeping toward its stop buffer instead.
   sp = fake_planner(LongitudinalMode.ACC)
-  _arm_stop_hold(sp, d_rel=8.0)
+  for _ in range(6):
+    sm = FakeSubMaster({
+      'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
+      'controlsState': SimpleNamespace(forceDecel=False),
+      'selfdriveState': SimpleNamespace(experimentalMode=False),
+      'radarState': SimpleNamespace(leadOne=SimpleNamespace(
+        status=True, dRel=8.0, vLead=0.0, vRel=0.0, radarTrackId=7,
+      )),
+    })
+    sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+
+
+def test_stop_hold_caps_baseline_at_five_meters():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp, d_rel=6.2)
   assert sp._lead_stop_hold_active is True
-  assert sp._lead_stop_hold_gap_baseline_d_rel == 6.0
+  assert sp._lead_stop_hold_gap_baseline_d_rel == 5.0
 
 
-def test_early_stop_farther_than_six_uses_capped_gap_target_for_crawl():
+def test_early_stop_beyond_baseline_uses_capped_gap_target_for_crawl():
   sp = fake_planner(LongitudinalMode.ACC)
-  _arm_stop_hold(sp, d_rel=8.0)
+  _arm_stop_hold(sp, d_rel=6.2)
   _set_lead_pullaway_release(sp)
   sp._lead_stop_hold_gap_increasing_s = 0.30
   # bypass the release-step ramp (covered by the slew tests) so the crawl cap stays observable
   sp.custom_long_finalizer.final_a_prev = 0.30
-  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=8.7, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.9, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
   assert 0.05 <= a <= 0.35

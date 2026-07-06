@@ -25,6 +25,11 @@ TRUST_FULL_STOP = 0.7           # stop_prob/trust above which a hard should_stop
 RADAR_CORROBORATION_TRUST = 0.85
 LEAD_CLOSING_MIN = 0.5          # m/s relative closing to count as radar corroboration
 
+# CautionRamp: rate-limit how fast the caution floor may deepen below GENTLE_CAUTION_DECEL.
+CAUTION_RAMP_DEEPEN_RATE = 0.45   # m/s^2 per s of sustained model slowdown demand
+CAUTION_RAMP_RELEASE_RATE = 2.0   # m/s^2 per s back toward gentle once the demand lifts
+CAUTION_RAMP_FLOOR_MIN = -2.5
+
 # StopTrustLearner: learn how much to trust the upstream model stop from driver disagreement.
 STOP_TRUST_INITIAL = 0.8
 STOP_TRUST_MIN = 0.2
@@ -81,6 +86,31 @@ def gate_model_stop(model_should_stop: bool, model_desired_accel: float, stop_pr
   # decel (high trust). Never command less caution than the model asks if it is fully trusted.
   desired_accel = GENTLE_CAUTION_DECEL + trust * (model_decel - GENTLE_CAUTION_DECEL)
   return ModelStopTrustResult(should_stop, float(desired_accel), float(trust), reason)
+
+
+class CautionRamp:
+  """Rate-limited caution floor for sustained model slowdown demand.
+
+  Route 261: leadless stop approaches pinned the model-stop candidate at
+  GENTLE_CAUTION_DECEL (-0.4) while the model's demand ramped to -2.0 (no in-horizon
+  rest point => no stop distance), then banged to the -1.5 stop floor on single frames
+  when a rest point flickered in. This ramp lets the caution floor *earn* depth: it
+  deepens toward the model's demand only while the demand persists, and releases fast
+  the moment the model lifts. Flickers deepen it by ~0.1 m/s^2 and are then released;
+  a real 5-6 s urban stop approach tracks the model demand smoothly. Hard trusted stop
+  commits bypass the floor entirely."""
+
+  def __init__(self):
+    self.floor = GENTLE_CAUTION_DECEL
+
+  def update(self, model_desired_accel: float, dt: float) -> float:
+    target = _clip(float(model_desired_accel), CAUTION_RAMP_FLOOR_MIN, GENTLE_CAUTION_DECEL)
+    dt = max(0.0, float(dt))
+    if target < self.floor:
+      self.floor = max(target, self.floor - CAUTION_RAMP_DEEPEN_RATE * dt)
+    else:
+      self.floor = min(target, self.floor + CAUTION_RAMP_RELEASE_RATE * dt)
+    return self.floor
 
 
 class StopTrustLearner:

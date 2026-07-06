@@ -97,3 +97,40 @@ def test_stop_trust_learner_stays_bounded():
   for _ in range(5000):
     learner.update(True, False, 0.05)
   assert learner.confidence <= STOP_TRUST_MAX
+
+
+def test_caution_ramp_deepens_slowly_toward_sustained_demand():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import CAUTION_RAMP_DEEPEN_RATE, CautionRamp
+  ramp = CautionRamp()
+  # 1 s of sustained -2.0 demand deepens by exactly the deepen rate, not to the demand.
+  for _ in range(20):
+    floor = ramp.update(-2.0, 0.05)
+  assert floor == pytest.approx(GENTLE_CAUTION_DECEL - CAUTION_RAMP_DEEPEN_RATE, abs=1e-6)
+  # After ~4 s it tracks the demand.
+  for _ in range(80):
+    floor = ramp.update(-2.0, 0.05)
+  assert floor == pytest.approx(-2.0)
+
+
+def test_caution_ramp_flicker_stays_gentle_and_releases_fast():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import CautionRamp
+  ramp = CautionRamp()
+  # A 0.2 s flicker of deep demand barely moves the floor...
+  for _ in range(4):
+    floor = ramp.update(-2.0, 0.05)
+  assert floor > -0.5
+  # ...and releases back to gentle well under a second once the demand lifts.
+  for _ in range(6):
+    floor = ramp.update(0.0, 0.05)
+  assert floor == pytest.approx(GENTLE_CAUTION_DECEL)
+
+
+def test_caution_ramp_never_deeper_than_clamp_or_shallower_than_gentle():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import CAUTION_RAMP_FLOOR_MIN, CautionRamp
+  ramp = CautionRamp()
+  for _ in range(1000):
+    ramp.update(-10.0, 0.05)
+  assert ramp.floor == CAUTION_RAMP_FLOOR_MIN
+  for _ in range(100):
+    ramp.update(5.0, 0.05)
+  assert ramp.floor == GENTLE_CAUTION_DECEL

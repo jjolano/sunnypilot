@@ -201,7 +201,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       custom_long_enabled=custom_long_enabled,
       research_actuation_allowed=research_allowed,
     )
-    self.mpc.update(radar_state, v_cruise, personality=sm['selfdriveState'].personality, t_follow=t_follow)
+    # Cut-out lead release: MPC-input-only filter dropping a lead that has confidently
+    # exited the path sideways (fail-closed to the raw radarState; research-gated apply).
+    radar_state_for_mpc = self.cut_out_release.filtered(
+      radar_state, v_ego, self.dt,
+      long_active=long_active_for_follow_gap,
+      custom_long_enabled=custom_long_enabled,
+      research_actuation_allowed=research_allowed,
+    )
+    self.mpc.update(radar_state_for_mpc, v_cruise, personality=sm['selfdriveState'].personality, t_follow=t_follow)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)

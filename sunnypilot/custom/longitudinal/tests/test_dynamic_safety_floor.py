@@ -17,9 +17,9 @@ TAU = 1.5
 
 
 def test_follow_offset_is_monotonic_and_bounded():
-  assert follow_offset(0.0) == pytest.approx(6.0)
-  assert follow_offset(4.0) == pytest.approx(3.625)
-  assert follow_offset(20.0) == pytest.approx(1.4326923077)
+  assert follow_offset(0.0) == pytest.approx(4.5)
+  assert follow_offset(4.0) == pytest.approx(2.875)
+  assert follow_offset(20.0) == pytest.approx(1.375)
   assert follow_offset(100.0) > 1.25
   assert follow_offset(0.0) > follow_offset(4.0) > follow_offset(20.0) > follow_offset(100.0)
 

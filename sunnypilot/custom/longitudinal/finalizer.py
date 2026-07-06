@@ -163,7 +163,11 @@ class _StopHoldLatchLifecycle:
     gas_pressed = snapshot.gas_pressed
     lead_id = snapshot.lead_id
 
-    arm_distance = max(snapshot.stopping_distance + 2.0, 10.0)
+    # Route 261: the old max(stopping_distance+2, 10) armed the hold at 8-10 m, freezing
+    # whatever gap ego happened to rest at (9.3 m observed vs the driver's 1.6 m manual
+    # median). Arm only inside the MPC stop buffer envelope so the MPC finishes creeping
+    # to its stop gap before the hold latches.
+    arm_distance = finalizer._STOP_HOLD_ARM_GAP_M
     v_ego_stopping = snapshot.v_ego_stopping
 
     stop_hold_set = bool(
@@ -353,8 +357,19 @@ class _ReleaseGate:
     lead_v = snapshot.lead_v
     lead_v_rel = snapshot.lead_v_rel
 
+    # Route 261: with the confidence gate on, a stopped lead that crept +1 m left the car
+    # latched 9.3 m back with no crawl path at all (gate releases demand a moving lead).
+    # The bounded crawl tier (deadband + gap tau + 0.35 cap) stays available under the
+    # gate when research actuation is explicitly allowed; otherwise gate mode keeps the
+    # old fail-closed behavior.
     if _ReleaseGate.standstill_release_gate_enabled(finalizer, custom_long):
-      return False
+      if not bool(getattr(custom_long_output, "research_actuation_allowed", False)):
+        return False
+      # Moving leads stay on the (faster) confidence-gate release path; the crawl tier
+      # only handles the stationary-creep case the gate cannot (lead_v below its
+      # lead-moving threshold).
+      if math.isfinite(float(snapshot.lead_v)) and float(snapshot.lead_v) >= 0.30:
+        return False
     if not custom_long.enabled or custom_long_output is None:
       return False
     if not bool(getattr(custom_long_output, "enabled", False)):
@@ -923,7 +938,11 @@ class _TelemetryAdapter:
 # ---------------------------------------------------------------------------
 
 class CustomLongitudinalFinalizer:
-  _STOP_HOLD_MAX_BASELINE_D_REL = 6.0
+  # mirrors long_mpc STOP_DISTANCE (4.5) + 0.5 settle slack; the crawl-release governor
+  # closes any latched gap back toward this baseline
+  _STOP_HOLD_MAX_BASELINE_D_REL = 5.0
+  # latch arm envelope: MPC stop buffer (4.5) + 1.5 settle margin
+  _STOP_HOLD_ARM_GAP_M = 6.0
   _STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN = 0.2
   _STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR = 4.5
   _STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING = 0.5

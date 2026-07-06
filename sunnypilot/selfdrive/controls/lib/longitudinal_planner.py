@@ -22,6 +22,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
+from openpilot.sunnypilot.custom.longitudinal.cut_out_release import CutOutLeadRelease
 from openpilot.sunnypilot.custom.longitudinal.follow_gap import FollowGapScheduler
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, CustomLongitudinalOutput, MODEL_STALE_AGE_S, _message_age_s
@@ -87,6 +88,7 @@ class LongitudinalPlannerSP:
     # Dynamic follow-gap scheduler: mode-gated (DynamicFollowGapMode) bounded T_FOLLOW
     # compression on approach; apply is research-gated, fail-closed to the personality baseline.
     self.follow_gap = FollowGapScheduler(Params())
+    self.cut_out_release = CutOutLeadRelease()
 
   # Forwarding accessors: finalizer owns the state; planner exposes it for
   # backward-compatible instrumentation (drive_lab, unit tests, debug trace).
@@ -131,6 +133,24 @@ class LongitudinalPlannerSP:
 
     return experimental_mode and self.dec.mode() == "blended"
 
+  # Route 261: vision-only intersection slowdowns dragged the car toward MIN_V (20 km/h)
+  # at up to -1.0 m/s^2 for turns the map did not corroborate (one the driver took faster,
+  # one a model-path artifact after a lead exited). Rate-limit how fast an uncorroborated
+  # vision vTarget may undercut ego speed so the approach is a gentle glide; the model's own
+  # turn caution (custom stack / DEC) and map-corroborated curves keep full authority.
+  _SCC_VISION_UNCORROBORATED_A_MIN = -0.5   # max implied decel without map corroboration
+  _SCC_VISION_SOFTEN_TAU_S = 1.0            # lookahead horizon for the implied-decel bound
+
+  def _soften_uncorroborated_vision_slowdown(self, v_ego: float) -> None:
+    vision = self.scc.vision
+    if not bool(getattr(vision, "is_active", False)) or bool(getattr(self.scc.map, "is_active", False)):
+      return
+    floor_v = float(v_ego) + self._SCC_VISION_UNCORROBORATED_A_MIN * self._SCC_VISION_SOFTEN_TAU_S
+    if float(vision.output_v_target) < floor_v:
+      vision.output_v_target = floor_v
+    if float(vision.output_a_target) < self._SCC_VISION_UNCORROBORATED_A_MIN:
+      vision.output_a_target = self._SCC_VISION_UNCORROBORATED_A_MIN
+
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float,
                      refresh_custom_long: bool = True) -> tuple[float, float]:
     if refresh_custom_long:
@@ -145,6 +165,7 @@ class LongitudinalPlannerSP:
 
     # Smart Cruise Control
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
+    self._soften_uncorroborated_vision_slowdown(v_ego)
 
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm)

@@ -62,7 +62,9 @@ LEAD_CRAWL_MAX_V_LEAD = 5.0
 LEAD_CRAWL_MAX_D_REL = 25.0
 LEAD_CRAWL_BREAKOUT_MIN_OPENING = 1.0
 LEAD_CRAWL_LAUNCH_TAU = 2.5
-LEAD_CRAWL_ACCEL_MAX = 0.55
+# Route 261: 0.55 capped the first pull-away frames of an engaged launch while the driver
+# launches at ~1.0 immediately; the accordion case stays damped by the tau'd gentle branch.
+LEAD_CRAWL_ACCEL_MAX = 0.8
 NO_LEAD_STOP_CLEAR_DISTANCE = 20.0
 NO_LEAD_STOP_CLEAR_ACCEL_MIN = -0.5
 MAP_ONLY_CAUTION_ACCEL_MIN = -0.3

@@ -166,6 +166,9 @@ class LongitudinalScene:
   model_stop_prob: float = 1.0   # model confidence in the stop (trust gate); 1.0 = fully trusted
   model_stale: bool = False
   stop_threat: bool = False
+  # rate-limited caution floor (CautionRamp in wiring); non-committed model-stop decel
+  # may not exceed this, so sustained demand earns depth and flickers stay gentle
+  model_caution_floor: float = GENTLE_CAUTION_DECEL
   # advisory sources
   speed_limit_active: bool = False
   speed_limit_v_target: float = 0.0
@@ -672,6 +675,11 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
       if trust.should_stop and not hard and scene.model_stop_distance is not None and scene.model_stop_distance > 0.0:
         stop_a = runway_comfort_governor(scene.v_ego, 0.0, scene.model_stop_distance, stop_a,
                                          _usable_coast_decel(scene))
+      # Non-committed stop decel may not outrun the earned caution floor: a stop distance
+      # that flickers in for one frame no longer bangs from gentle straight to the stop
+      # floor. Trusted committed stops keep full stop physics.
+      if not trust.should_stop:
+        stop_a = max(stop_a, scene.model_caution_floor)
       cands.append(LongitudinalCandidate(stop_a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP,
                                          "stop_approach", is_stop=bool(trust.should_stop and hard)))
   # Early, non-committing model-slowdown caution from fresh model decel before shouldStop or
@@ -680,7 +688,7 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   elif (not scene.model_stale and scene.model_stop_distance is None
         and math.isfinite(scene.model_desired_accel)
         and scene.model_desired_accel < EARLY_MODEL_SLOWDOWN_DECEL_THRESHOLD):
-    early_a = max(scene.model_desired_accel, GENTLE_CAUTION_DECEL)
+    early_a = max(scene.model_desired_accel, scene.model_caution_floor)
     cands.append(LongitudinalCandidate(early_a, CandidateRole.PHYSICAL_HAZARD,
                                        EvidenceClass.MODEL_STOP, "stop_approach", is_stop=False))
 

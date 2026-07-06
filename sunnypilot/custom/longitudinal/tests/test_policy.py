@@ -1175,3 +1175,36 @@ def test_map_coast_candidate_only_when_active_and_gated_by_map_toggle():
   assert admitted.a_target == pytest.approx(-0.25)
   dropped = decide(active, LongitudinalMode.SCC, LIMITS, SourceToggles(scc_curve_map_enabled=False))
   assert dropped.a_target == pytest.approx(0.0)
+
+
+def test_early_model_slowdown_deepens_with_earned_caution_floor():
+  # Route 261: sustained model decel with no in-horizon rest point was pinned at -0.4.
+  # With an earned (ramped) floor the early candidate follows the model demand.
+  base = dict(v_ego=13.0, v_cruise=15.0, seed_a_target=-0.2,
+              model_should_stop=False, model_stop_distance=None, model_desired_accel=-1.6)
+  pinned = LongitudinalScene(model_caution_floor=-0.4, **base)
+  earned = LongitudinalScene(model_caution_floor=-1.4, **base)
+  d_pinned = decide(build_candidates(pinned), LongitudinalMode.SCC, LIMITS)
+  d_earned = decide(build_candidates(earned), LongitudinalMode.SCC, LIMITS)
+  assert d_pinned.a_target == pytest.approx(-0.4)
+  assert d_earned.a_target == pytest.approx(-1.4)
+
+
+def test_stop_distance_flicker_no_longer_bangs_to_stop_floor():
+  # A stop distance that appears while the caution floor is still gentle must not jump
+  # the non-committed candidate straight to the -1.5 stop-approach floor.
+  scene = LongitudinalScene(v_ego=12.0, v_cruise=15.0, seed_a_target=-0.2,
+                            model_should_stop=False, model_stop_distance=40.0,
+                            model_desired_accel=-1.6, model_caution_floor=-0.45)
+  d = decide(build_candidates(scene), LongitudinalMode.SCC, LIMITS)
+  assert d.a_target >= -0.45
+
+
+def test_hard_trusted_stop_commit_bypasses_caution_floor():
+  scene = LongitudinalScene(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0,
+                            model_should_stop=True, model_stop_distance=20.0,
+                            model_desired_accel=-2.5, model_stop_prob=0.9,
+                            model_caution_floor=-0.4)
+  d = decide(build_candidates(scene), LongitudinalMode.SCC, LIMITS)
+  assert d.a_target < -1.5
+  assert d.should_stop

@@ -154,6 +154,7 @@ def _sanitize_inputs_for_mode(inp: LongitudinalStackInputs) -> LongitudinalStack
       model_should_stop=False,
       model_stop_distance=None,
       model_desired_accel=0.0,
+      model_caution_floor=-0.4,
       model_stale=False,
       stop_threat=False,
       model_stop_prob=1.0,  # neutral; not consulted when MODEL_STOP is excluded
@@ -219,6 +220,7 @@ class LongitudinalStackInputs:
   model_stop_distance: float | None = None
   model_desired_accel: float = 0.0
   model_stop_prob: float = 1.0   # model confidence in the stop (trust gate); 1.0 = fully trusted
+  model_caution_floor: float = -0.4   # rate-limited caution floor from CautionRamp (wiring)
   model_stale: bool = False
   stop_threat: bool = False
   # shadow path-relative lead context (telemetry only; not used for actuation)
@@ -383,6 +385,7 @@ class CustomLongitudinalStack:
       lead_confidence=lead_confidence, lead_stable=lead_stable,
       lead_shadow_active=lead_shadow_active, alternate_threat_active=alternate_threat_active,
       model_should_stop=act_inp.model_should_stop, model_stop_distance=act_inp.model_stop_distance,
+      model_caution_floor=act_inp.model_caution_floor,
       model_desired_accel=act_inp.model_desired_accel, model_stop_prob=act_inp.model_stop_prob,
       model_stale=act_inp.model_stale,
       stop_threat=act_inp.stop_threat,

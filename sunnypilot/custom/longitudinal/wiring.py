@@ -28,7 +28,7 @@ from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
   MODE_OFF as CURVE_TRAFFIC_MODE_OFF,
   MODE_SHADOW as CURVE_TRAFFIC_MODE_SHADOW,
 )
-from openpilot.sunnypilot.custom.longitudinal.model_trust import StopTrustLearner
+from openpilot.sunnypilot.custom.longitudinal.model_trust import CautionRamp, StopTrustLearner
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.stack import CustomLongitudinalStack, LongitudinalStackInputs
@@ -152,6 +152,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        long_active: bool = False, brake_pressed: bool = False, gas_pressed: bool = False, force_slow_decel: bool = False,
                        model_should_stop: bool = False, model_desired_accel: float = 0.0,
                        model_stop_prob: float = 1.0, model_stop_distance: float | None = None,
+                       model_caution_floor: float = -0.4,
                        model_stale: bool = False,
                        accel_coast: float = 0.0, model_msg: Any | None = None,
                        cut_in_brake_assist_mode: str = "off",
@@ -214,6 +215,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     # is already gated by has_lead, and the only lead-derived stop-threat signal is itself
     # lead-coupled, making it fully redundant with has_lead (zero observable effect).
     model_desired_accel=float(model_desired_accel), model_stop_prob=float(model_stop_prob),
+    model_caution_floor=float(model_caution_floor),
     model_stale=bool(model_stale), stop_threat=False,
     speed_limit_active=bool(sla_active), speed_limit_v_target=float(sla_v_target), speed_limit_a_target=float(sla_a_target),
     speed_limit_distance=speed_limit_distance,
@@ -254,6 +256,7 @@ class CustomLongitudinalAdapter:
     self._params = params
     self._stack = CustomLongitudinalStack()
     self._stop_trust = StopTrustLearner()
+    self._caution_ramp = CautionRamp()
     self._drag = DragEstimator()
     self._tick = 0
     self.enabled = False
@@ -352,6 +355,7 @@ class CustomLongitudinalAdapter:
       model_desired_accel = _f(getattr(action, "desiredAcceleration", 0.0)) if action is not None else 0.0
       model_stop_prob = self._stop_trust.update(model_should_stop, driver_disagrees=gas_pressed, dt=dt)
       model_stop_distance = _model_stop_distance(model)
+      model_caution_floor = self._caution_ramp.update(model_desired_accel, dt)
 
       cc = sm['carControl']
       brake_pressed = bool(getattr(cs, "brakePressed", False))
@@ -378,6 +382,7 @@ class CustomLongitudinalAdapter:
         force_slow_decel=bool(getattr(controls_state, "forceDecel", False)),
         model_should_stop=model_should_stop, model_desired_accel=model_desired_accel,
         model_stop_prob=model_stop_prob, model_stop_distance=model_stop_distance,
+        model_caution_floor=model_caution_floor,
         model_stale=model_stale, accel_coast=accel_coast,
         model_msg=model,
         cut_in_brake_assist_mode=self.cut_in_brake_assist_mode,
