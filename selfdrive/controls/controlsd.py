@@ -130,6 +130,44 @@ def set_model_path_state_sensor_confidence(model_path_state, debug: dict | None 
   model_path_state.sensorSteeringYawLatAccelSignedDelta = float(debug.get('sensor_steering_yaw_lat_accel_signed_delta', float('nan')))
 
 
+def fill_model_path_state_disabled_defaults(model_path_state, raw_curvature_for_log: float) -> None:
+  model_path_state.active = False
+  model_path_state.gated = False
+  model_path_state.quality = 0.0
+  model_path_state.reason = "disabled"
+  model_path_state.rawDesiredCurvature = raw_curvature_for_log
+  model_path_state.processedDesiredCurvature = raw_curvature_for_log
+  model_path_state.modelPathCurvature = raw_curvature_for_log
+  model_path_state.laneCenteringActive = False
+  model_path_state.laneCenteringReason = "disabled"
+  model_path_state.laneCenteringLateralError = 0.0
+  model_path_state.laneCenteringHeadingError = 0.0
+  model_path_state.laneCenteringPredictedError = 0.0
+  model_path_state.laneCenteringCurvatureNudge = 0.0
+  model_path_state.laneCenteringConfidence = 0.0
+  model_path_state.laneCenteringRelaxActive = False
+  model_path_state.laneCenteringRelaxReasonBits = 0
+  model_path_state.laneCenteringRelaxEnvelope = 0.0
+  model_path_state.laneCenteringRelaxLateralError = 0.0
+  model_path_state.laneCenteringRelaxPredictedError = 0.0
+  model_path_state.laneCenteringRelaxAge = 0.0
+  model_path_state.laneCenteringRelaxNudgeFlipScore = 0.0
+  model_path_state.laneCenteringRelaxErrorCrossScore = 0.0
+  model_path_state.curveMemoryActive = False
+  model_path_state.curveMemoryRemembered = float('nan')
+  model_path_state.laneChangeBlend = 0.0
+  model_path_state.laneChangeShapingActive = False
+  model_path_state.demandSource = "disabled"
+  model_path_state.dtleEstimate = float('nan')
+  set_model_path_state_geometry(model_path_state)
+  set_model_path_state_lane_fit_source(model_path_state)
+  set_model_path_state_lane_rate_damping(model_path_state)
+  set_model_path_state_sps(model_path_state)
+  set_model_path_state_one_line(model_path_state)
+  set_model_path_state_preview(model_path_state)
+  set_model_path_state_sensor_confidence(model_path_state)
+
+
 _speed_shadow_cache: tuple | None = None  # (key, v_delay, v_05, v_10, a_delay)
 
 
@@ -424,41 +462,8 @@ class Controls(ControlsExt):
         self.sm.alive['longitudinalPlan'] and
         self.sm.freq_ok['longitudinalPlan']
       )
-      model_path_state.active = False
-      model_path_state.gated = False
-      model_path_state.quality = 0.0
-      model_path_state.reason = "disabled"
-      model_path_state.rawDesiredCurvature = raw_curvature_for_log
-      model_path_state.processedDesiredCurvature = raw_curvature_for_log
-      model_path_state.modelPathCurvature = raw_curvature_for_log
-      model_path_state.laneCenteringActive = False
-      model_path_state.laneCenteringReason = "disabled"
-      model_path_state.laneCenteringLateralError = 0.0
-      model_path_state.laneCenteringHeadingError = 0.0
-      model_path_state.laneCenteringPredictedError = 0.0
-      model_path_state.laneCenteringCurvatureNudge = 0.0
-      model_path_state.laneCenteringConfidence = 0.0
-      model_path_state.laneCenteringRelaxActive = False
-      model_path_state.laneCenteringRelaxReasonBits = 0
-      model_path_state.laneCenteringRelaxEnvelope = 0.0
-      model_path_state.laneCenteringRelaxLateralError = 0.0
-      model_path_state.laneCenteringRelaxPredictedError = 0.0
-      model_path_state.laneCenteringRelaxAge = 0.0
-      model_path_state.laneCenteringRelaxNudgeFlipScore = 0.0
-      model_path_state.laneCenteringRelaxErrorCrossScore = 0.0
-      model_path_state.curveMemoryActive = False
-      model_path_state.curveMemoryRemembered = float('nan')
-      model_path_state.laneChangeBlend = 0.0
-      model_path_state.laneChangeShapingActive = False
-      model_path_state.demandSource = "disabled"
-      model_path_state.dtleEstimate = float('nan')
-      set_model_path_state_geometry(model_path_state)
-      set_model_path_state_lane_fit_source(model_path_state)
-      set_model_path_state_lane_rate_damping(model_path_state)
-      set_model_path_state_sps(model_path_state)
-      set_model_path_state_one_line(model_path_state)
-      set_model_path_state_preview(model_path_state)
-      set_model_path_state_sensor_confidence(model_path_state)
+      # ponytail: no unconditional default pre-fill; the success path overwrites every default, so
+      # defaults are written only on the else/exception paths (was ~73 redundant capnp sets at 100Hz)
       set_model_path_state_speed_shadow(model_path_state, self.desired_curvature, CS.vEgo, CS.aEgo,
                                         long_plan.speeds, long_plan.accels, lat_delay,
                                         plan_valid=long_plan_valid,
@@ -507,7 +512,9 @@ class Controls(ControlsExt):
         except Exception:
           cloudlog.exception("failed to publish lateral modelPathState telemetry")
           self.lateral_demand.clear()
+          fill_model_path_state_disabled_defaults(model_path_state, raw_curvature_for_log)
       else:
+        fill_model_path_state_disabled_defaults(model_path_state, raw_curvature_for_log)
         debug = getattr(self.lateral_demand, 'last_debug', {}) or {}
         if debug:
           set_model_path_state_lane_fit_source(model_path_state, debug, default_reason="missing")

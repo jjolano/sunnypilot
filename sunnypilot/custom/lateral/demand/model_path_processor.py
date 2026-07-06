@@ -168,6 +168,7 @@ class ModelPathProcessorInputs:
   turn_curvature_sign: int = 0
   frame_drop_perc: float = 0.0
   model_age_s: float = 0.0
+  model_frame_id: int = 0  # 0 = unknown; enables per-model-frame memoization
   smooth_model_path_curvature: bool = False
   demand_jerk_smoothing_enabled: bool = False
   demand_jerk_smoothing_allowed: bool = False
@@ -693,8 +694,6 @@ class ModelPathProcessor:
       return self._release_straight_path_stabilization(target, "gate_blinker")
     if inputs.turn_curvature_sign != 0:
       return self._release_straight_path_stabilization(target, "gate_turn_intent")
-    if inputs.steer_limited:
-      return self._pause_straight_path_stabilization(target, "gate_steer_limited")
     if reason not in ("ok", "low_lane_confidence"):
       return self._release_straight_path_stabilization(target, f"gate_reason_{reason}")
     if path_disagreement is None:
@@ -760,24 +759,31 @@ class ModelPathProcessor:
   def _slew_sps_transitions(self, v_ego: float, output_curvature: float, applied: bool, mode: str) -> float:
     """Rate-limit the SPS output in lat-accel space across apply/release/pause
     transitions. Route 0000024b: one-frame release_suppression steps of up to
-    ~0.45 m/s^2 were the dominant felt lateral jerk; this bounds any SPS-side
-    demand transition to SPS_RELEASE_RAMP_LAT_JERK."""
+    ~0.45 m/s^2 were the dominant felt lateral jerk. Route 0000025e: re-applies
+    after a converged release snapped to the anchor the same way, so demand is
+    tracked while SPS is inactive and every transition, both directions, is
+    bounded by SPS_RELEASE_RAMP_LAT_JERK."""
     if mode != "apply" or not math.isfinite(v_ego) or v_ego < 1.0:
       self._sp_last_output_lat_accel = None
+      self._sp_transition_blend_active = False
       return output_curvature
     speed_sq = v_ego * v_ego
     a_out = output_curvature * speed_sq
     prev = self._sp_last_output_lat_accel
     if prev is None or not math.isfinite(prev):
-      self._sp_last_output_lat_accel = a_out if applied else None
+      self._sp_last_output_lat_accel = a_out
+      self._sp_transition_blend_active = applied
+      return output_curvature
+    if not applied and not self._sp_transition_blend_active:
+      # SPS inactive with no blend to finish: pass raw demand through untouched,
+      # but keep tracking it so a fresh apply ramps from here instead of snapping.
+      self._sp_last_output_lat_accel = a_out
       return output_curvature
     max_step = SPS_RELEASE_RAMP_LAT_JERK * DT_CTRL
     a_limited = prev + float(np.clip(a_out - prev, -max_step, max_step))
     converged = abs(a_limited - a_out) <= 1e-9
-    if applied:
-      self._sp_last_output_lat_accel = a_limited
-    else:
-      self._sp_last_output_lat_accel = None if converged else a_limited
+    self._sp_last_output_lat_accel = a_limited
+    self._sp_transition_blend_active = applied or not converged
     if converged:
       return output_curvature
     return a_limited / speed_sq
@@ -1418,21 +1424,23 @@ class ModelPathProcessor:
 
     return float(get_curvature_from_plan(yaws, yaw_rates, ModelConstants.T_IDXS, v_ego, PATH_CURVATURE_ACTION_T))
 
+  _psi_dot_frame_cache: tuple[int, float | None] | None = None  # (model_frame_id, psi_dot at action t)
+
+  def _psi_dot_at_action(self, inputs: ModelPathProcessorInputs, v_ego: float) -> float | None:
+    # ponytail: the yaw fit only changes with a new model frame (20Hz), so cache it across the
+    # 100Hz ticks; window_s is frozen at the frame's first tick (v_ego drifts <0.25 m/s in 40ms,
+    # far below the fit's own noise). frame_id 0 (tests, replay mocks) bypasses the cache.
+    frame_id = int(inputs.model_frame_id or 0)
+    cached = self._psi_dot_frame_cache
+    if frame_id and cached is not None and cached[0] == frame_id:
+      return cached[1]
+    psi_dot = self._compute_psi_dot_at_action(inputs, v_ego)
+    if frame_id:
+      self._psi_dot_frame_cache = (frame_id, psi_dot)
+    return psi_dot
+
   @classmethod
-  def _smoothed_path_curvature(
-    cls,
-    inputs: ModelPathProcessorInputs,
-    desired_curvature: float,
-    quality: float,
-    trust_penalty: float,
-  ) -> float | None:
-    if not inputs.smooth_model_path_curvature:
-      return None
-
-    v_ego = float(inputs.v_ego)
-    if not math.isfinite(v_ego) or v_ego < SMOOTHED_CURVATURE_MIN_SPEED:
-      return None
-
+  def _compute_psi_dot_at_action(cls, inputs: ModelPathProcessorInputs, v_ego: float) -> float | None:
     yaws = cls._as_finite_array(inputs.orientation_z)
     if yaws is None or yaws.size < PATH_VALID_MIN_LEN:
       return None
@@ -1461,7 +1469,25 @@ class ModelPathProcessor:
     weight_width = max(window_s * 0.5, 1e-3)
     weights = np.exp(-0.5 * ((fit_t - PATH_CURVATURE_ACTION_T) / weight_width) ** 2)
     coefficients = np.polyfit(fit_t, fit_yaws, deg=2, w=weights)
-    psi_dot_at_action = float(np.polyval(np.polyder(coefficients), PATH_CURVATURE_ACTION_T))
+    return float(np.polyval(np.polyder(coefficients), PATH_CURVATURE_ACTION_T))
+
+  def _smoothed_path_curvature(
+    self,
+    inputs: ModelPathProcessorInputs,
+    desired_curvature: float,
+    quality: float,
+    trust_penalty: float,
+  ) -> float | None:
+    if not inputs.smooth_model_path_curvature:
+      return None
+
+    v_ego = float(inputs.v_ego)
+    if not math.isfinite(v_ego) or v_ego < SMOOTHED_CURVATURE_MIN_SPEED:
+      return None
+
+    psi_dot_at_action = self._psi_dot_at_action(inputs, v_ego)
+    if psi_dot_at_action is None:
+      return None
     candidate_curvature = psi_dot_at_action / v_ego
     if not math.isfinite(candidate_curvature):
       return None

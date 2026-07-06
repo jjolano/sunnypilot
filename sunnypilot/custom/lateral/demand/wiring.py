@@ -78,6 +78,9 @@ def _enum_to_int(value: Any, name_values: dict[str, int]) -> tuple[int, bool]:
   return 0, False
 
 
+_model_extract_cache: tuple | None = None  # (frame_id, extracted model-array fields)
+
+
 def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_curvature: float,
                           measured_curvature: float, model_v2: Any,
                           lane_centering_assist_enabled: bool,
@@ -94,29 +97,42 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
                           straight_path_stabilization_mode: str = "off",
                           lat_delay: float = 0.0,
                           lateral_preview_assist_mode: str = "off") -> LateralDemandPipelineInputs:
-  pos = getattr(model_v2, "position", None)
-  ori = getattr(model_v2, "orientation", None)
-  ori_rate = getattr(model_v2, "orientationRate", None)
   meta = getattr(model_v2, "meta", None)
   lane_change_state = getattr(meta, "laneChangeState", None)
   lane_change_direction = getattr(meta, "laneChangeDirection", None)
   lane_change_state_value, lane_change_state_valid = _enum_to_int(lane_change_state, LANE_CHANGE_STATE_VALUES)
   lane_change_direction_value, _ = _enum_to_int(lane_change_direction, LANE_CHANGE_DIRECTION_VALUES)
-  lane_lines = tuple(getattr(model_v2, "laneLines", ()) or ())
-  left_lane_y0 = _lane_y0(lane_lines, 1) if len(lane_lines) > 2 else None
-  right_lane_y0 = _lane_y0(lane_lines, 2) if len(lane_lines) > 2 else None
+  # ponytail: model arrays only change with a new modelV2 (20Hz); cache the tuple conversions across
+  # the 100Hz ticks, keyed on frameId. frameId 0/absent (tests, mocks) bypasses the cache entirely.
+  global _model_extract_cache
+  frame_id = int(getattr(model_v2, "frameId", 0) or 0)
+  if frame_id and _model_extract_cache is not None and _model_extract_cache[0] == frame_id:
+    ext = _model_extract_cache[1]
+  else:
+    pos = getattr(model_v2, "position", None)
+    ori = getattr(model_v2, "orientation", None)
+    ori_rate = getattr(model_v2, "orientationRate", None)
+    lane_lines = tuple(getattr(model_v2, "laneLines", ()) or ())
+    ext = dict(
+      position_x=tuple(getattr(pos, "x", ()) or ()),
+      position_y=tuple(getattr(pos, "y", ()) or ()),
+      position_y_std=tuple(getattr(pos, "yStd", ()) or ()),
+      orientation_z=tuple(getattr(ori, "z", ()) or ()),
+      orientation_rate_z=tuple(getattr(ori_rate, "z", ()) or ()),
+      lane_line_probs=tuple(getattr(model_v2, "laneLineProbs", ()) or ()),
+      lane_line_stds=tuple(getattr(model_v2, "laneLineStds", ()) or ()),
+      lane_lines=lane_lines,
+      frame_drop_perc=float(getattr(model_v2, "frameDropPerc", 0.0) or 0.0),
+      left_lane_y0=_lane_y0(lane_lines, 1) if len(lane_lines) > 2 else None,
+      right_lane_y0=_lane_y0(lane_lines, 2) if len(lane_lines) > 2 else None,
+      model_frame_id=frame_id,
+    )
+    if frame_id:
+      _model_extract_cache = (frame_id, ext)
   return LateralDemandPipelineInputs(
     lat_active=lat_active, v_ego=v_ego, roll=roll,
     desired_curvature=raw_curvature, measured_curvature=measured_curvature,
-    position_x=tuple(getattr(pos, "x", ()) or ()),
-    position_y=tuple(getattr(pos, "y", ()) or ()),
-    position_y_std=tuple(getattr(pos, "yStd", ()) or ()),
-    orientation_z=tuple(getattr(ori, "z", ()) or ()),
-    orientation_rate_z=tuple(getattr(ori_rate, "z", ()) or ()),
-    lane_line_probs=tuple(getattr(model_v2, "laneLineProbs", ()) or ()),
-    lane_line_stds=tuple(getattr(model_v2, "laneLineStds", ()) or ()),
-    lane_lines=lane_lines,
-    frame_drop_perc=float(getattr(model_v2, "frameDropPerc", 0.0) or 0.0),
+    **ext,
     model_age_s=sanitized_model_age_s(model_age_s),
     yaw_rate=yaw_rate,
     steering_rate_deg=steering_rate_deg,
@@ -127,8 +143,6 @@ def build_pipeline_inputs(*, lat_active: bool, v_ego: float, roll: float, raw_cu
     lane_change_direction=lane_change_direction_value,
     lane_change_state_valid=lane_change_state_valid,
     steering_pressed=steering_pressed,
-    left_lane_y0=left_lane_y0,
-    right_lane_y0=right_lane_y0,
     demand_jerk_smoothing_enabled=bool(demand_jerk_smoothing_enabled),
     lane_centering_assist_enabled=bool(lane_centering_assist_enabled),
     curve_memory_enabled=bool(curve_memory_enabled),

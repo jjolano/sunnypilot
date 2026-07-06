@@ -467,3 +467,26 @@ def test_build_pipeline_inputs_forwards_curvature_limited():
                               measured_curvature=0.0015, model_v2=fake_model(0.002),
                               lane_centering_assist_enabled=False, curvature_limited=True)
   assert inp.curvature_limited is True
+
+
+def test_build_pipeline_inputs_caches_extraction_per_frame_id():
+  model = fake_model(curvature=0.001)
+  model.frameId = 771
+  kwargs = dict(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.002,
+                measured_curvature=0.001, model_v2=model, lane_centering_assist_enabled=True)
+  a = build_pipeline_inputs(**kwargs)
+  b = build_pipeline_inputs(**kwargs)
+  assert a.model_frame_id == 771
+  assert b.orientation_z is a.orientation_z  # cached, not re-extracted
+
+  model2 = fake_model(curvature=0.003)
+  model2.frameId = 772
+  c = build_pipeline_inputs(**{**kwargs, "model_v2": model2})
+  assert c.model_frame_id == 772
+  assert tuple(c.orientation_z) != tuple(a.orientation_z)
+
+  # no frameId (mocks/replays): bypass -- fresh extraction each call
+  d = build_pipeline_inputs(**{**kwargs, "model_v2": fake_model(curvature=0.001)})
+  assert d.model_frame_id == 0
+  assert d.orientation_z is not a.orientation_z
+  assert tuple(d.orientation_z) == tuple(a.orientation_z)

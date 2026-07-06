@@ -1101,7 +1101,7 @@ def test_spatial_smoothing_blend_is_bounded_by_quality_and_trust():
       max_delta_lat_accel = float(np.interp(v_ego, SMOOTHED_CURVATURE_SPEED_BP,
                                             SMOOTHED_CURVATURE_MAX_LAT_ACCEL_DELTA)) * quality_alpha
       for trust_penalty in (0.0, 0.4, 0.8):
-        result = ModelPathProcessor._smoothed_path_curvature(
+        result = ModelPathProcessor()._smoothed_path_curvature(
           spatial_smoothing_inputs(v_ego, desired_curvature, candidate_curvature),
           desired_curvature,
           quality,
@@ -1113,13 +1113,13 @@ def test_spatial_smoothing_blend_is_bounded_by_quality_and_trust():
         assert math.copysign(1.0, correction_lat_accel) == math.copysign(1.0, candidate_delta_lat_accel)
         assert abs(correction_lat_accel) <= min(abs(candidate_delta_lat_accel), max_delta_lat_accel)
 
-  assert ModelPathProcessor._smoothed_path_curvature(
+  assert ModelPathProcessor()._smoothed_path_curvature(
     spatial_smoothing_inputs(v_ego, desired_curvature, candidate_curvature),
     desired_curvature,
     LOW_QUALITY_BLEND_THRESHOLD,
     0.0,
   ) is None
-  assert ModelPathProcessor._smoothed_path_curvature(
+  assert ModelPathProcessor()._smoothed_path_curvature(
     spatial_smoothing_inputs(v_ego, desired_curvature, candidate_curvature),
     desired_curvature,
     1.0,
@@ -1134,7 +1134,7 @@ def test_spatial_smoothing_correction_shrinks_as_trust_penalty_grows():
   corrections = []
 
   for trust_penalty in (0.0, 0.25, 0.50, 0.75):
-    result = ModelPathProcessor._smoothed_path_curvature(
+    result = ModelPathProcessor()._smoothed_path_curvature(
       spatial_smoothing_inputs(v_ego, desired_curvature, candidate_curvature),
       desired_curvature,
       1.0,
@@ -1153,7 +1153,7 @@ def test_spatial_smoothing_near_zero_scale_is_monotonic():
 
   for desired_curvature in curvature_values:
     candidate_curvature = desired_curvature + 0.001
-    result = ModelPathProcessor._smoothed_path_curvature(
+    result = ModelPathProcessor()._smoothed_path_curvature(
       spatial_smoothing_inputs(v_ego, desired_curvature, candidate_curvature),
       desired_curvature,
       1.0,
@@ -1512,3 +1512,26 @@ def test_model_path_processor_random_inputs_stay_finite():
     ))
     assert math.isfinite(result.desired_curvature)
     assert abs(result.desired_curvature) <= 0.5
+
+
+def test_psi_dot_fit_is_cached_per_model_frame():
+  import dataclasses
+  v_ego = 20.0
+  proc = ModelPathProcessor()
+
+  inputs_a = dataclasses.replace(spatial_smoothing_inputs(v_ego, 0.001, 0.002), model_frame_id=991)
+  psi_a = proc._psi_dot_at_action(inputs_a, v_ego)
+  assert psi_a is not None
+
+  # same frame id: the cached fit is reused even if the arrays were to change
+  changed = dataclasses.replace(spatial_smoothing_inputs(v_ego, 0.001, 0.004), model_frame_id=991)
+  assert proc._psi_dot_at_action(changed, v_ego) == psi_a
+
+  # new frame id: recomputed from the new arrays
+  psi_b = proc._psi_dot_at_action(dataclasses.replace(changed, model_frame_id=992), v_ego)
+  assert psi_b is not None and psi_b != psi_a
+
+  # frame id 0 (tests/replays) bypasses the cache
+  fresh = ModelPathProcessor()
+  psi_bypass = fresh._psi_dot_at_action(dataclasses.replace(changed, model_frame_id=0), v_ego)
+  assert psi_bypass == pytest.approx(psi_b)

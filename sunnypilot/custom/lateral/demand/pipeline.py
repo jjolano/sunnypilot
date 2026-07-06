@@ -195,6 +195,7 @@ class LateralDemandPipelineInputs:
   lane_lines: Sequence[Any] = ()
   frame_drop_perc: float = 0.0
   model_age_s: float = 0.0
+  model_frame_id: int = 0  # 0 = unknown; enables per-model-frame memoization downstream
   yaw_rate: float | None = None
   steering_rate_deg: float | None = None
   steer_limited: bool = False
@@ -629,6 +630,7 @@ class LateralDemandPipeline:
         turn_curvature_sign=turn_curvature_sign,
         frame_drop_perc=inputs.frame_drop_perc,
         model_age_s=inputs.model_age_s,
+        model_frame_id=inputs.model_frame_id,
         left_blinker=inputs.left_blinker,
         right_blinker=inputs.right_blinker,
         steering_pressed=inputs.steering_pressed,
