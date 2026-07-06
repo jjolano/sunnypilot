@@ -57,6 +57,11 @@ class FakeParams:
       raise RuntimeError("injected params read fault")
     return bool(self._values.get(key, False))
 
+  def get(self, key: str, default: Any = None) -> Any:
+    if self._inject_fault:
+      raise RuntimeError("injected params read fault")
+    return self._values.get(key, default)
+
   def put_bool(self, key: str, value: bool) -> None:
     self._values[key] = bool(value)
 
