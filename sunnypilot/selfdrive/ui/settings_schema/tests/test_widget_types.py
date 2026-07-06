@@ -33,12 +33,11 @@ def test_info_items_have_key_field():
   """Every info widget in the schema must have a param key to display."""
   infos = _items_with_widget("info")
   for info in infos:
-    assert info.get("key"), f"info item missing key field"
+    assert info.get("key"), "info item missing key field"
 
 
 def test_button_widget_is_valid_schema_type():
   """The compiled schema must accept 'button' as a widget type."""
-  from openpilot.sunnypilot.sunnylink.tools.compile_settings_ui import compile_schema
   compiled = compile_schema(DEFAULT_SRC)
   # If button items exist in source, they must survive compilation.
   for panel in compiled.get("panels", []):
@@ -49,7 +48,6 @@ def test_button_widget_is_valid_schema_type():
 
 def test_info_widget_is_valid_schema_type():
   """The compiled schema must accept 'info' as a widget type."""
-  from openpilot.sunnypilot.sunnylink.tools.compile_settings_ui import compile_schema
   compiled = compile_schema(DEFAULT_SRC)
   for panel in compiled.get("panels", []):
     for item in iter_items(panel):
