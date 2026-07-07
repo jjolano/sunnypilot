@@ -71,6 +71,31 @@ class PanelInfo(OP.PanelInfo):
   icon: str = ""
 
 
+# Sidebar grouping: every non-Search panel slotted under a titled section so the
+# nav reads as ~4 groups instead of a flat 13-item scroll. Order here drives render order.
+_SIDEBAR_SECTIONS = [
+  (tr_noop("System"), [OP.PanelType.DEVICE, OP.PanelType.NETWORK, OP.PanelType.SUNNYLINK, OP.PanelType.SOFTWARE]),
+  (tr_noop("Driving"), [OP.PanelType.TOGGLES, OP.PanelType.DRIVING, OP.PanelType.INTERFACE, OP.PanelType.MODELS]),
+  (tr_noop("Car"), [OP.PanelType.VEHICLE, OP.PanelType.TRIPS, OP.PanelType.OSM]),
+  (tr_noop("Advanced"), [OP.PanelType.FIREHOSE, OP.PanelType.DEVELOPER]),
+]
+
+
+class NavSectionHeader(Widget):
+  HEIGHT = 96
+
+  def __init__(self, parent, title: str):
+    super().__init__()
+    self.parent = parent
+    self.title = title
+    self._rect.height = self.HEIGHT
+
+  def _render(self, rect):
+    # Small muted category label sitting just above its group's first nav item.
+    pos = rl.Vector2(rect.x + 90, rect.y + rect.height - 46)
+    rl.draw_text_ex(self.parent._font_medium, self.title.upper(), pos, 32, 1, OP.TEXT_NORMAL)
+
+
 class NavButton(Widget):
   def __init__(self, parent, p_type, p_info):
     super().__init__()
@@ -82,7 +107,7 @@ class NavButton(Widget):
     is_selected = self.panel_type == self.parent._current_panel
     text_color = OP.TEXT_SELECTED if is_selected else OP.TEXT_NORMAL
     content_x = rect.x + 90
-    text_size = measure_text_cached(self.parent._font_medium, self.panel_info.name, 65)
+    text_size = measure_text_cached(self.parent._font_medium, self.panel_info.name, 55)
 
     # Draw background if selected
     if is_selected:
@@ -206,16 +231,21 @@ class SettingsLayoutSP(OP.SettingsLayout):
     self._close_btn_rect = close_btn_rect
     self._search_btn_rect = search_btn_rect
 
-    # Navigation buttons with scroller
+    # Navigation buttons with scroller, grouped into titled sections
     if not self._nav_items:
-      for panel_type, panel_info in self._panels.items():
-        if panel_type == OP.PanelType.SEARCH:
-          continue
-        nav_button = NavButton(self, panel_type, panel_info)
-        nav_button.rect.width = rect.width - 100  # Full width minus padding
-        nav_button.rect.height = OP.NAV_BTN_HEIGHT
-        self._nav_items.append(nav_button)
-        self._sidebar_scroller.add_widget(nav_button)
+      for section_title, panel_types in _SIDEBAR_SECTIONS:
+        header = NavSectionHeader(self, section_title)
+        header.rect.width = rect.width - 100
+        self._sidebar_scroller.add_widget(header)
+        for panel_type in panel_types:
+          panel_info = self._panels.get(panel_type)
+          if panel_info is None:  # panel disabled/commented out
+            continue
+          nav_button = NavButton(self, panel_type, panel_info)
+          nav_button.rect.width = rect.width - 100  # Full width minus padding
+          nav_button.rect.height = OP.NAV_BTN_HEIGHT
+          self._nav_items.append(nav_button)
+          self._sidebar_scroller.add_widget(nav_button)
 
     # Draw navigation section with scroller
     footer_rect = rl.Rectangle(
