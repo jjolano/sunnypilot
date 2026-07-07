@@ -24,6 +24,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.cut_out_release import CutOutLeadRelease
 from openpilot.sunnypilot.custom.longitudinal.follow_gap import FollowGapScheduler
+from openpilot.sunnypilot.custom.longitudinal.moving_lead_cruise_cap import MovingLeadCruiseCap
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, CustomLongitudinalOutput, MODEL_STALE_AGE_S, _message_age_s
 
@@ -88,6 +89,9 @@ class LongitudinalPlannerSP:
     # Dynamic follow-gap scheduler: mode-gated (DynamicFollowGapMode) bounded T_FOLLOW
     # compression on approach; apply is research-gated, fail-closed to the personality baseline.
     self.follow_gap = FollowGapScheduler(Params())
+    # Moving-lead cruise cap: mode-gated (MovingLeadCruiseCapMode) bounded cruise-obstacle
+    # lowering behind a mildly braking lead; apply is research-gated, fail-closed to raw cruise.
+    self.moving_lead_cruise_cap = MovingLeadCruiseCap(Params())
     self.cut_out_release = CutOutLeadRelease()
 
   # Forwarding accessors: finalizer owns the state; planner exposes it for

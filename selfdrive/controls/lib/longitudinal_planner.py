@@ -209,7 +209,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       custom_long_enabled=custom_long_enabled,
       research_actuation_allowed=research_allowed,
     )
-    self.mpc.update(radar_state_for_mpc, v_cruise, personality=sm['selfdriveState'].personality, t_follow=t_follow)
+    # Moving-lead cruise cap: lower the MPC cruise obstacle before the solve on a mildly braking lead.
+    v_cruise_for_mpc = self.moving_lead_cruise_cap.capped(
+      radar_state, v_ego, v_cruise, self.dt,
+      long_active=long_active_for_follow_gap,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+      force_decel=force_slow_decel,
+      custom_long_enabled=custom_long_enabled,
+      research_actuation_allowed=research_allowed,
+    )
+    self.mpc.update(radar_state_for_mpc, v_cruise_for_mpc, personality=sm['selfdriveState'].personality, t_follow=t_follow)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)

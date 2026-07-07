@@ -93,6 +93,11 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert follow_gap_enum.values == ["off", "shadow", "apply"]
   assert follow_gap_enum.labels == ["Off", "Monitor only", "Apply follow gap"]
 
+  moving_lead_enum = homogeneous_string_options(find_item(CRUISE, "MovingLeadCruiseCapMode"))
+  assert moving_lead_enum is not None
+  assert moving_lead_enum.values == ["off", "shadow", "apply"]
+  assert moving_lead_enum.labels == ["Off", "Monitor only", "Apply"]
+
   debug_enum = homogeneous_string_options(find_item(CRUISE, "LongitudinalDebugTraceMode"))
   assert debug_enum is not None
   assert debug_enum.values == ["off", "log"]

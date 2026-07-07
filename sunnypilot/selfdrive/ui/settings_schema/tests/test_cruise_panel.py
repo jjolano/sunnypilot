@@ -29,6 +29,7 @@ def test_cruise_top_level_controls_render_inline():
   assert CONTROLS.get("LongitudinalPersonality") == "multiple_button"
   assert CONTROLS.get("CustomLongitudinalMode") == "multiple_button"
   assert CONTROLS.get("DynamicFollowGapMode") == "multiple_button"
+  assert CONTROLS.get("MovingLeadCruiseCapMode") == "multiple_button"
   assert CONTROLS.get("LongitudinalDebugTraceMode") == "multiple_button"
   assert CONTROLS.get("CutInBrakeAssistMode") == "multiple_button"
   assert CONTROLS.get("CurveSpeedConfidenceMode") == "multiple_button"
@@ -72,6 +73,7 @@ def test_shadow_observability_modes_include_promoted_apply_options():
     "CutInBrakeAssistMode": (["off", "shadow", "apply"], ["Off", "Monitor only", "Apply gentle cap"]),
     "CurveSpeedConfidenceMode": (["off", "shadow", "apply_conservative"], ["Off", "Monitor only", "Apply conservative"]),
     "CurveTrafficAdvisorMode": (["off", "shadow", "apply_conservative"], ["Off", "Monitor only", "Apply conservative"]),
+    "MovingLeadCruiseCapMode": (["off", "shadow", "apply"], ["Off", "Monitor only", "Apply"]),
     "StandstillReleaseConfidenceMode": (["off", "shadow", "gate"], ["Off", "Monitor only", "Release gate"]),
   }
   for key, (values, labels) in expected.items():

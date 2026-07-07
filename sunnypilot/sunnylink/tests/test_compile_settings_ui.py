@@ -178,6 +178,7 @@ class TestCompiledShape:
       "CutInBrakeAssistMode": ["off", "shadow", "apply"],
       "CurveSpeedConfidenceMode": ["off", "shadow", "apply_conservative"],
       "CurveTrafficAdvisorMode": ["off", "shadow", "apply_conservative"],
+      "MovingLeadCruiseCapMode": ["off", "shadow", "apply"],
       "StandstillReleaseConfidenceMode": ["off", "shadow", "gate"],
     }
     for key, values in expected.items():

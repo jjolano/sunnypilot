@@ -52,6 +52,27 @@ sections:
     - type: param
       key: CustomLongitudinalEnabled
       equals: true
+  - key: MovingLeadCruiseCapMode
+    widget: multiple_button
+    title: Moving Lead Cruise Cap
+    description: Monitor a bounded cruise cap behind a mildly braking moving lead, or apply it to the MPC cruise obstacle.
+      Apply mode requires Custom Longitudinal plus the research actuation gate; Monitor only makes no driving changes.
+    requires_attestation: true
+    options:
+    - value: 'off'
+      label: 'Off'
+    - value: 'shadow'
+      label: Monitor only
+    - value: 'apply'
+      label: Apply
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: capability
+      field: has_longitudinal_control
+      equals: true
+    - type: param
+      key: CustomLongitudinalEnabled
+      equals: true
   - key: MapCoastMode
     widget: multiple_button
     title: Map Coast

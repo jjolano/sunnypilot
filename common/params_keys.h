@@ -104,6 +104,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Dynamic follow-gap (bounded T_FOLLOW compression on approach); apply is explicit opt-in and
     // runtime-gated by CustomLongitudinalEnabled + AllowLongitudinalResearchActuation.
     {"DynamicFollowGapMode", {PERSISTENT | BACKUP, STRING, "shadow"}},
+    // Moving-lead cruise cap (bounded cruise-obstacle lowering behind a braking moving lead);
+    // apply is explicit opt-in and runtime-gated by CustomLongitudinalEnabled + AllowLongitudinalResearchActuation.
+    {"MovingLeadCruiseCapMode", {PERSISTENT | BACKUP, STRING, "shadow"}},
     {"CutInBrakeAssistMode", {PERSISTENT | BACKUP, STRING, "off"}},
 
     {"CurveSpeedConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
