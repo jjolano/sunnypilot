@@ -8,8 +8,8 @@ import math
 import numpy as np
 
 from openpilot.common.pid import PIDController
-from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.sunnypilot.custom.lateral.model_view import ModelView
 
 LAT_PLAN_MIN_IDX = 5
 LATERAL_LAG_MOD = 0.0  # seconds, modifies how far in the future we look ahead for the lateral plan
@@ -50,6 +50,7 @@ class LatControlTorqueExtBase:
   def __init__(self, lac_torque, CP, CP_SP, CI):
     self.model_v2 = None
     self.model_valid = False
+    self._model_accel_y: tuple[float, ...] = ()
     self.lac_torque = lac_torque
 
     self.actual_lateral_jerk: float = 0.0
@@ -99,7 +100,9 @@ class LatControlTorqueExtBase:
 
   def update_model_v2(self, model_v2):
     self.model_v2 = model_v2
-    self.model_valid = self.model_v2 is not None and len(self.model_v2.orientation.x) >= CONTROL_N
+    mv = ModelView.from_msg(model_v2)
+    self.model_valid = mv.valid
+    self._model_accel_y = mv.acceleration_y
 
   def update_lateral_lag(self, lag):
     self.desired_lat_jerk_time = max(0.01, lag) + LATERAL_LAG_MOD
@@ -123,9 +126,9 @@ class LatControlTorqueExtBase:
       # prepare "look-ahead" desired lateral jerk
       lookahead = np.interp(CS.vEgo, self.friction_look_ahead_bp, self.friction_look_ahead_v)
       friction_upper_idx = next((i for i, val in enumerate(ModelConstants.T_IDXS) if val > lookahead), 16)
-      predicted_lateral_jerk = get_predicted_lateral_jerk(self.model_v2.acceleration.y, self.t_diffs)
+      predicted_lateral_jerk = get_predicted_lateral_jerk(self._model_accel_y, self.t_diffs)
       desired_lateral_jerk = (np.interp(self.desired_lat_jerk_time, ModelConstants.T_IDXS,
-                              self.model_v2.acceleration.y) - desired_lateral_accel) / self.desired_lat_jerk_time
+                              self._model_accel_y) - desired_lateral_accel) / self.desired_lat_jerk_time
       self.lookahead_lateral_jerk = get_lookahead_value(predicted_lateral_jerk[LAT_PLAN_MIN_IDX:friction_upper_idx], desired_lateral_jerk)
       if self.lookahead_lateral_jerk == 0.0:
         self.actual_lateral_jerk = 0.0
