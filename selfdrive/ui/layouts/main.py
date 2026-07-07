@@ -12,7 +12,7 @@ from openpilot.selfdrive.ui.layouts.onboarding import OnboardingWindow
 from openpilot.selfdrive.ui.body.layouts.onroad import BodyLayout
 
 if gui_app.sunnypilot_ui():
-  from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings import SettingsLayoutSP as SettingsLayout
+  from openpilot.sunnypilot.custom.ui.settings import SettingsLayoutSP as SettingsLayout
 
 
 class MainState(IntEnum):
