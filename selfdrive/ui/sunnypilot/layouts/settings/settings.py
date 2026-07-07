@@ -152,7 +152,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
       OP.PanelType.DEVICE: PanelInfo(tr_noop("Device"), DeviceLayoutSP(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_home.png"),
       OP.PanelType.NETWORK: PanelInfo(tr_noop("Network"), NetworkUISP(wifi_manager), icon="icons/network.png"),
       OP.PanelType.SUNNYLINK: PanelInfo(tr_noop("sunnylink"), SunnylinkLayout(), icon="icons/wifi_strength_full.png"),
-      OP.PanelType.TOGGLES: PanelInfo(tr_noop("Toggles"), TogglesLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_toggle.png"),
+      OP.PanelType.TOGGLES: PanelInfo(tr_noop("General"), TogglesLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_toggle.png"),
       OP.PanelType.SOFTWARE: PanelInfo(tr_noop("Software"), SoftwareLayoutSP(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_software.png"),
       OP.PanelType.MODELS: PanelInfo(tr_noop("Models"), ModelsLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_models.png"),
       OP.PanelType.DRIVING: PanelInfo(tr_noop("Driving"), build_driving_layout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_lateral.png"),
@@ -285,6 +285,30 @@ class SettingsLayoutSP(OP.SettingsLayout):
         return True
 
     return False
+
+  def set_current_panel(self, panel_type):
+    changed = panel_type != self._current_panel
+    super().set_current_panel(panel_type)
+    if changed:
+      self._scroll_active_into_view(panel_type)
+
+  def _scroll_active_into_view(self, panel_type) -> None:
+    # Keep the selected nav item on screen: with 4 sections the list is taller than
+    # the sidebar, so a click from Search (or a bottom item) can leave it scrolled off.
+    scroller = self._sidebar_scroller
+    viewport = scroller.rect.height
+    if not scroller._items or viewport <= 0:  # not laid out yet
+      return
+    top = 0.0
+    for item in scroller._items:
+      if isinstance(item, NavButton) and item.panel_type == panel_type:
+        offset = scroller.scroll_panel.offset
+        if top + offset < 0:  # above viewport -> align to top
+          scroller.scroll_panel.set_offset(-top)
+        elif top + item.rect.height + offset > viewport:  # below -> align to bottom
+          scroller.scroll_panel.set_offset(viewport - (top + item.rect.height))
+        return
+      top += item.rect.height
 
   def show_event(self):
     super().show_event()
