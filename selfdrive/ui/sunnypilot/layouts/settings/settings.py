@@ -82,7 +82,7 @@ _SIDEBAR_SECTIONS = [
 
 
 class NavSectionHeader(Widget):
-  HEIGHT = 96
+  HEIGHT = 64
 
   def __init__(self, parent, title: str):
     super().__init__()
@@ -92,7 +92,7 @@ class NavSectionHeader(Widget):
 
   def _render(self, rect):
     # Small muted category label sitting just above its group's first nav item.
-    pos = rl.Vector2(rect.x + 90, rect.y + rect.height - 46)
+    pos = rl.Vector2(rect.x + 90, rect.y + rect.height - 40)
     rl.draw_text_ex(self.parent._font_medium, self.title.upper(), pos, 32, 1, OP.TEXT_NORMAL)
 
 
@@ -233,10 +233,11 @@ class SettingsLayoutSP(OP.SettingsLayout):
 
     # Navigation buttons with scroller, grouped into titled sections
     if not self._nav_items:
-      for section_title, panel_types in _SIDEBAR_SECTIONS:
-        header = NavSectionHeader(self, section_title)
-        header.rect.width = rect.width - 100
-        self._sidebar_scroller.add_widget(header)
+      for i, (section_title, panel_types) in enumerate(_SIDEBAR_SECTIONS):
+        if i > 0:  # leading group is obviously the top; skip its header to save vertical space
+          header = NavSectionHeader(self, section_title)
+          header.rect.width = rect.width - 100
+          self._sidebar_scroller.add_widget(header)
         for panel_type in panel_types:
           panel_info = self._panels.get(panel_type)
           if panel_info is None:  # panel disabled/commented out
