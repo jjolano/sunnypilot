@@ -198,8 +198,7 @@ class PreviewAssistTracker:
     if str(getattr(model_path_result, "reason", "invalid")) != "ok":
       self.reset()
       return _preview_result(mode, str(getattr(model_path_result, "reason", "invalid")))
-    if (bool(getattr(model_path_result, "straight_path_stabilization_active", False))
-        or bool(getattr(model_path_result, "straight_path_stabilization_applied", False))):
+    if bool(getattr(model_path_result, "straight_path_stabilization_applied", False)):
       self.reset()
       return _preview_result(mode, "straight_path_stabilization")
 

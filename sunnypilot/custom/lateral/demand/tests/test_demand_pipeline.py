@@ -422,7 +422,7 @@ def test_preview_assist_blocks_lane_fit_source_and_maneuver_override():
   assert maneuver_result.debug["lateral_preview_assist_reason"] == "maneuver_override"
 
 
-def test_preview_assist_blocks_straight_path_stabilization():
+def test_preview_assist_blocks_applied_straight_path_stabilization():
   pipeline = LateralDemandPipeline(DT)
   result = None
   for _ in range(40):
@@ -438,6 +438,25 @@ def test_preview_assist_blocks_straight_path_stabilization():
   assert result.debug["lateral_preview_assist_active"] is False
   assert result.debug["lateral_preview_assist_applied"] is False
   assert result.debug["lateral_preview_assist_reason"] == "straight_path_stabilization"
+
+
+def test_preview_assist_ignores_shadow_straight_path_stabilization():
+  pipeline = LateralDemandPipeline(DT)
+  result = None
+  for _ in range(40):
+    result = pipeline.update(preview_assist_inputs(
+      baseline_curvature=0.00005,
+      preview_curvature=0.0002,
+      lateral_preview_assist_mode="apply",
+      straight_path_stabilization_mode="shadow",
+    ))
+
+  assert result is not None
+  assert result.debug["straight_path_stabilization_active"] is True
+  assert result.debug["straight_path_stabilization_applied"] is False
+  assert result.debug["lateral_preview_assist_active"] is True
+  assert result.debug["lateral_preview_assist_applied"] is True
+  assert result.debug["lateral_preview_assist_reason"] == "ok"
 
 
 def test_preview_assist_resets_after_block():
