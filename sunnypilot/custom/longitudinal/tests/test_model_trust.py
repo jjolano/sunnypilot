@@ -46,10 +46,16 @@ def test_stale_model_stop_only_allows_gentle_caution():
 def test_radar_corroboration_raises_trust():
   # a closing radar lead corroborates the slowdown -> higher trust than model_prob alone
   weak = gate_model_stop(True, -2.5, stop_prob=0.3, has_radar_lead=False, lead_v_rel=0.0)
-  corrob = gate_model_stop(True, -2.5, stop_prob=0.3, has_radar_lead=True, lead_v_rel=-3.0)
+  corrob = gate_model_stop(True, -2.5, stop_prob=0.3, has_radar_lead=True, lead_v_rel=-0.3)
   assert corrob.trust > weak.trust
   assert corrob.desired_accel < weak.desired_accel  # more braking authority when corroborated
   assert corrob.reason == "radar_corroborated"
+
+
+def test_tiny_radar_closing_does_not_corroborate_stop():
+  r = gate_model_stop(True, -2.5, stop_prob=0.3, has_radar_lead=True, lead_v_rel=-0.1)
+  assert r.trust == pytest.approx(0.3)
+  assert r.reason == "model_only"
 
 
 def test_trust_monotonic_in_stop_prob():
@@ -103,6 +109,7 @@ def test_caution_ramp_deepens_slowly_toward_sustained_demand():
   from openpilot.sunnypilot.custom.longitudinal.model_trust import CAUTION_RAMP_DEEPEN_RATE, CautionRamp
   ramp = CautionRamp()
   # 1 s of sustained -2.0 demand deepens by exactly the deepen rate, not to the demand.
+  floor = ramp.floor
   for _ in range(20):
     floor = ramp.update(-2.0, 0.05)
   assert floor == pytest.approx(GENTLE_CAUTION_DECEL - CAUTION_RAMP_DEEPEN_RATE, abs=1e-6)
@@ -116,6 +123,7 @@ def test_caution_ramp_flicker_stays_gentle_and_releases_fast():
   from openpilot.sunnypilot.custom.longitudinal.model_trust import CautionRamp
   ramp = CautionRamp()
   # A 0.2 s flicker of deep demand barely moves the floor...
+  floor = ramp.floor
   for _ in range(4):
     floor = ramp.update(-2.0, 0.05)
   assert floor > -0.5

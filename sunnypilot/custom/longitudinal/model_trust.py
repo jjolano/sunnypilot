@@ -23,7 +23,7 @@ from dataclasses import dataclass
 GENTLE_CAUTION_DECEL = -0.4     # precautionary decel for a low-confidence model slowdown
 TRUST_FULL_STOP = 0.7           # stop_prob/trust above which a hard should_stop is honored
 RADAR_CORROBORATION_TRUST = 0.85
-LEAD_CLOSING_MIN = 0.5          # m/s relative closing to count as radar corroboration
+LEAD_CLOSING_MIN = 0.25         # m/s relative closing to count as radar corroboration
 
 # CautionRamp: rate-limit how fast the caution floor may deepen below GENTLE_CAUTION_DECEL.
 CAUTION_RAMP_DEEPEN_RATE = 0.45   # m/s^2 per s of sustained model slowdown demand

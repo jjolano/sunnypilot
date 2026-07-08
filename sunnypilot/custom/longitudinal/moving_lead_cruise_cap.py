@@ -11,6 +11,8 @@ MIN_CLOSING = 0.3
 MAX_CLOSING = 4.0
 MIN_A_LEAD = -1.5
 MAX_A_LEAD = -0.3
+RADAR_MAX_A_LEAD = 0.0
+MAX_ABS_Y_REL = 1.2
 MIN_D_REL_M = 10.0
 MIN_TIME_GAP_S = 1.2
 MIN_TTC_S = 8.0
@@ -156,18 +158,24 @@ class MovingLeadCruiseCap:
       return False, "no_lead", base_v_cruise
 
     d_rel = _finite_float(getattr(lead_one, "dRel", None))
+    y_rel = _finite_float(getattr(lead_one, "yRel", None))
     v_rel = _finite_float(getattr(lead_one, "vRel", None))
     v_lead = _finite_float(getattr(lead_one, "vLead", None))
     a_lead = _finite_float(getattr(lead_one, "aLeadK", None))
-    if d_rel is None or v_rel is None or v_lead is None or a_lead is None:
+    if d_rel is None or y_rel is None or v_rel is None or v_lead is None or a_lead is None:
       return False, "lead_non_finite", base_v_cruise
+
+    if abs(y_rel) > MAX_ABS_Y_REL:
+      return False, "lead_off_path", base_v_cruise
 
     if v_lead < MIN_V_LEAD:
       return False, "lead_slow", base_v_cruise
 
     if a_lead < MIN_A_LEAD:
       return False, "lead_hard_braking", base_v_cruise
-    if a_lead > MAX_A_LEAD:
+    radar_confirmed = bool(getattr(lead_one, "radar", False))
+    max_a_lead = RADAR_MAX_A_LEAD if radar_confirmed else MAX_A_LEAD
+    if a_lead > max_a_lead:
       return False, "lead_not_braking", base_v_cruise
 
     if d_rel < max(MIN_D_REL_M, MIN_TIME_GAP_S * v_ego_f):

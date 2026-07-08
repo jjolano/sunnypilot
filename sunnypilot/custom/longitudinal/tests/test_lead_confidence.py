@@ -39,7 +39,7 @@ def test_new_lead_then_stabilizes():
 def test_radar_lead_uses_shorter_stability_gate_than_model_only():
   radar_tracker = LeadConfidenceTracker()
   radar_state = radar_tracker.update(lead(radar=True, track_id=7), 0.05)
-  for _ in range(4):
+  for _ in range(3):
     radar_state = radar_tracker.update(lead(radar=True, track_id=7), 0.05)
   assert radar_state.stable is True
   assert radar_state.guard_timer <= 1e-9
