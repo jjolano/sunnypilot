@@ -293,7 +293,8 @@ class CustomLongitudinalStack:
       self._lead_confidence[0].update(inp.leads[0], dt),
       self._lead_confidence[1].update(inp.leads[1], dt),
     )
-    lead_ctx = self._lead_context.update(inp.leads, confidence_states, inp.v_ego, dt)
+    lead_ctx = self._lead_context.update(inp.leads, confidence_states, inp.v_ego, dt,
+                                         progress_model_msg=inp.model_msg)
     act_inp = _sanitize_inputs_for_mode(inp)
 
     # Shadow path-relative lead context and telemetry-only advisory classifiers are only built

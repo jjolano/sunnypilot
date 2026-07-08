@@ -168,6 +168,24 @@ def test_lead_release_rejects_tiny_positive_evidence(monkeypatch):
   assert r.standstill_release_allowed is False
 
 
+def test_model_path_arc_feeds_real_progress_gap_without_changing_raw_risk_distance():
+  s = CustomLongitudinalStack()
+  ld = lead(d_rel=43.0, v_lead=20.0, v_rel=0.0, y_rel=-20.0)
+  model = model_path(xs=(0.0, 43.0), ys=(0.0, 20.0))
+  r = None
+  for _ in range(5):
+    r = s.update(base(v_ego=20.0, v_cruise=22.0, seed_a_target=0.0,
+                      leads=(ld, None), model_msg=model, mode=LongitudinalMode.ACC), DT)
+
+  assert r is not None
+  assert r.debug["lead_context_progress_allowed"] is True
+  assert r.debug["lead_context_gap_excess"] == pytest.approx(math.hypot(43.0, 20.0) - 44.0)
+  assert r.debug["actual_primary_lead_path_y_rel"] == pytest.approx(-20.0)
+  assert r.debug["actual_primary_lead_progress_on_path_score"] == pytest.approx(1.0)
+  assert r.debug["actual_primary_lead_gap_shortage"] == pytest.approx(1.0)
+  assert r.debug["acc_envelope_time_gap"] == pytest.approx(43.0 / 20.0)
+
+
 def test_e2e_model_stop_brakes_acc_does_not():
   stop = dict(model_should_stop=True, model_stop_distance=18.0, model_desired_accel=-2.5, stop_threat=True)
   s_acc, s_e2e = CustomLongitudinalStack(), CustomLongitudinalStack()

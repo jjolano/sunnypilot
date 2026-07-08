@@ -132,6 +132,33 @@ def test_path_relative_y_duplicate_x_keeps_model_sign():
   assert lc._path_relative_y(0.5, 30.0, model_path(xs=(30.0, 30.0, 60.0), ys=(1.0, 2.0, 3.0))) == pytest.approx(2.5)
 
 
+def test_path_arc_distance_never_shortens_raw_distance():
+  curved = lc._path_arc_distance(43.0, model_path(xs=(0.0, 43.0), ys=(0.0, 20.0)))
+  assert curved == pytest.approx(math.hypot(43.0, 20.0))
+  assert curved > 43.0
+  assert lc._path_arc_distance(43.0, None) == 43.0
+
+
+def test_progress_gap_uses_path_arc_without_changing_raw_risk_gap():
+  confidence = (LeadConfidenceState(status=True, stable=True, accel_blend=1.0), LeadConfidenceState())
+  raw_ctx = lc.LeadContextTracker().update(
+    leads=(lead(d_rel=43.0, v_lead=20.0, y_rel=0.0), None),
+    confidence_states=confidence,
+    v_ego=20.0, dt=0.05,
+  )
+  curved_ctx = lc.LeadContextTracker().update(
+    leads=(lead(d_rel=43.0, v_lead=20.0, y_rel=-20.0), None),
+    confidence_states=confidence,
+    v_ego=20.0, dt=0.05,
+    model_msg=model_path(xs=(0.0, 43.0), ys=(0.0, 20.0)),
+  )
+
+  assert raw_ctx.lead_gap_excess == 0.0
+  assert curved_ctx.lead_progress_allowed is True
+  assert curved_ctx.lead_gap_excess == pytest.approx(math.hypot(43.0, 20.0) - lc._desired_progress_gap(20.0))
+  assert curved_ctx.states[0].risk_model.gap_shortage == pytest.approx(lc._desired_progress_gap(20.0) - 43.0)
+
+
 def _relevance_state(authority, *, gap_excess=0.0):
   return lc.LeadRelevanceState(
     lead_idx=0, status=True, shadow=False, stable=True, new_lead=False, flicker_guard_timer=0.0,

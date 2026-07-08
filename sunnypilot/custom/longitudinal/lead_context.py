@@ -88,6 +88,9 @@ class LeadProgressModel:
   lead_moving: bool = False
   lead_accel: float = 0.0
   predicted_gap_opening: bool = False
+  progress_distance: float = 0.0
+  progress_on_path_score: float = 0.0
+  progress_gap_shortage: float = 0.0
   gap_excess: float = 0.0
   stop_threat_absent: bool = False
   alternate_threat_absent: bool = True
@@ -233,6 +236,9 @@ class PrimaryLeadContext:
       "primary_lead_stopped_or_crawling": False if primary is None else bool(primary.risk_model.stopped_or_crawling),
       "primary_lead_ghost_score": 0.0 if primary is None else float(primary.risk_model.ghost_score),
       "primary_lead_progress_reason": "" if primary is None else str(primary.progress_model.reason),
+      "primary_lead_progress_d_rel": 0.0 if primary is None else float(primary.progress_model.progress_distance),
+      "primary_lead_progress_on_path_score": 0.0 if primary is None else float(primary.progress_model.progress_on_path_score),
+      "primary_lead_progress_gap_shortage": 0.0 if primary is None else float(primary.progress_model.progress_gap_shortage),
       "primary_lead_progress_gap_excess": 0.0 if primary is None else float(primary.progress_model.gap_excess),
       "primary_lead_predicted_gap_opening": False if primary is None else bool(primary.progress_model.predicted_gap_opening),
       "shadow_lead_reason": "" if active_shadow is None else str(active_shadow.shadow_reason),
@@ -273,8 +279,10 @@ class LeadShadowState:
 class _LeadObservation:
   status: bool = False
   d_rel: float = 0.0
+  path_d_rel: float = 0.0
   y_rel: float = 0.0
   path_y_rel: float = 0.0
+  progress_path_y_rel: float = 0.0
   v_lead: float = 0.0
   v_rel: float = 0.0
   a_lead: float = 0.0
@@ -293,20 +301,29 @@ class _ObservationStage:
   def reset(self) -> None:
     self._prev_path_y_rel = [0.0, 0.0]
 
-  def observe(self, lead_idx: int, lead: Any, model_msg: Any | None, v_ego: float) -> _LeadObservation:
+  def observe(self, lead_idx: int, lead: Any, model_msg: Any | None,
+              progress_model_msg: Any | None, v_ego: float) -> _LeadObservation:
     status = bool(getattr(lead, "status", False)) if lead is not None else False
     if not status:
       return _LeadObservation(status=False, path_y_rel=self._prev_path_y_rel[lead_idx])
     d_rel = finite_float(getattr(lead, "dRel", 0.0))
     y_rel = finite_float(getattr(lead, "yRel", 0.0))
     path_y_rel = _path_relative_y(y_rel, d_rel, model_msg)
+    try:
+      progress_path_y_rel = _path_relative_y(y_rel, d_rel, progress_model_msg)
+      path_d_rel = _path_arc_distance(d_rel, progress_model_msg)
+    except Exception:
+      progress_path_y_rel = y_rel
+      path_d_rel = d_rel
     v_lead = finite_float(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
     v_rel = finite_float(getattr(lead, "vRel", v_lead - v_ego), v_lead - v_ego)
     return _LeadObservation(
       status=True,
       d_rel=d_rel,
+      path_d_rel=path_d_rel,
       y_rel=y_rel,
       path_y_rel=path_y_rel,
+      progress_path_y_rel=progress_path_y_rel,
       v_lead=v_lead,
       v_rel=v_rel,
       a_lead=finite_float(getattr(lead, "aLeadK", 0.0)),
@@ -411,10 +428,12 @@ class _ProgressStage:
   def compute_real(observation: _LeadObservation, v_ego: float, kinematics: _KinematicsResult,
                    confidence_state: LeadConfidenceState | None,
                    prediction: LeadTrajectoryPrediction) -> LeadProgressModel:
+    progress_on_path = _on_path_score(observation.progress_path_y_rel)
     return _lead_progress_model(
       observation.d_rel, v_ego, observation.v_lead, observation.v_rel, observation.a_lead,
       kinematics.on_path_score, kinematics.confidence, confidence_state, kinematics.ghost_score,
-      kinematics.risk_model, prediction,
+      kinematics.risk_model, prediction, progress_d_rel=observation.path_d_rel,
+      progress_on_path=progress_on_path,
     )
 
   @staticmethod
@@ -453,12 +472,10 @@ class _AuthorityStage:
       return LEAD_AUTHORITY_NONE, "path_relevance_low"
     if confidence_state.flicker_guard_timer > 0.0:
       return LEAD_AUTHORITY_SUPPRESS_ONLY, "flicker_guard_suppress_only"
-    if confidence_state.new_lead or confidence_state.guard_timer > 0.0:
+    if confidence_state.new_lead or confidence_state.guard_timer > 1e-9:
       if close_or_closing or kinematics.on_path_score > 0.0:
         return LEAD_AUTHORITY_SUPPRESS_ONLY, "new_lead_suppress_only"
       return LEAD_AUTHORITY_NONE, "new_low_relevance_lead"
-    if kinematics.on_path_score <= 0.0 and not close_or_closing:
-      return LEAD_AUTHORITY_SUPPRESS_ONLY, "path_exit_pending_release"
     if _close_stop_pullaway_progress_allowed(observation.d_rel, observation.v_lead, observation.v_rel, progress_model):
       return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_close_stop_pullaway_authorized_lead"
     if _stopped_gap_creep_progress_allowed(observation.d_rel, observation.v_lead, observation.v_rel, progress_model):
@@ -467,6 +484,8 @@ class _AuthorityStage:
       return LEAD_AUTHORITY_PHYSICAL, "close_or_closing_lead"
     if progress_model.allowed:
       return LEAD_AUTHORITY_PROGRESS_ALLOWED, "stable_progress_authorized_lead"
+    if kinematics.on_path_score <= 0.0:
+      return LEAD_AUTHORITY_SUPPRESS_ONLY, "path_exit_pending_release"
     if kinematics.on_path_score > 0.0 and kinematics.confidence >= 0.45:
       return LEAD_AUTHORITY_PHYSICAL, "path_relevant_physical_lead"
     return LEAD_AUTHORITY_NONE, "weak_lead_evidence"
@@ -648,6 +667,37 @@ def _path_relative_y(y_rel: float, d_rel: float, model_msg: Any | None) -> float
   return y_rel
 
 
+def _path_arc_distance(d_rel: float, model_msg: Any | None) -> float:
+  if model_msg is None:
+    return d_rel
+  positions = tuple(finite_float(x, math.nan) for x in getattr(getattr(model_msg, "position", None), "x", ()))
+  path_y = tuple(finite_float(y, math.nan) for y in getattr(getattr(model_msg, "position", None), "y", ()))
+  if len(positions) < 2 or len(positions) != len(path_y):
+    return d_rel
+  if any(not math.isfinite(value) for value in (*positions, *path_y, d_rel)):
+    return d_rel
+  if d_rel < positions[0] or d_rel > positions[-1]:
+    return d_rel
+
+  arc = 0.0
+  for idx in range(len(positions) - 1):
+    x0, x1 = positions[idx], positions[idx + 1]
+    y0, y1 = path_y[idx], path_y[idx + 1]
+    if x1 < x0:
+      return d_rel
+    if x1 == x0:
+      continue
+    if d_rel >= x1:
+      arc += math.hypot(x1 - x0, y1 - y0)
+      continue
+    if x0 <= d_rel <= x1:
+      ratio = (d_rel - x0) / (x1 - x0)
+      y_at = y0 + ratio * (y1 - y0)
+      arc += math.hypot(d_rel - x0, y_at - y0)
+      return max(d_rel, arc)
+  return max(d_rel, arc) if arc > 0.0 else d_rel
+
+
 A_LEAD_TAU_DEFAULT = 1.5  # s; lead-accel decay time constant (matches the MPC's aLeadTau use)
 
 
@@ -777,26 +827,33 @@ def _lead_risk_model(required_decel: float, ttc: float, time_gap: float, d_rel: 
 def _lead_progress_model(d_rel: float, v_ego: float, v_lead: float, v_rel: float, a_lead: float,
                          on_path: float, confidence: float, confidence_state: LeadConfidenceState | None,
                          ghost: float, risk_model: LeadRiskModel, prediction: LeadTrajectoryPrediction,
-                         shadow: bool = False, alternate_threat_absent: bool = True) -> LeadProgressModel:
+                         shadow: bool = False, alternate_threat_absent: bool = True,
+                         progress_d_rel: float | None = None,
+                         progress_on_path: float | None = None) -> LeadProgressModel:
   opening_speed = max(0.0, v_rel)
   lead_moving = v_lead > 0.2
   predicted_gap_opening = bool(prediction.valid and prediction.x and prediction.x[-1] > d_rel + 0.2)
-  gap_excess = _gap_excess(d_rel, v_ego)
+  soft_d_rel = d_rel
+  soft_on_path = on_path if progress_on_path is None else progress_on_path
+  if progress_d_rel is not None and math.isfinite(progress_d_rel) and soft_on_path > 0.0:
+    soft_d_rel = max(d_rel, progress_d_rel)
+  progress_gap_shortage = _gap_shortage(soft_d_rel, v_ego)
+  gap_excess = _gap_excess(soft_d_rel, v_ego)
   closing_threat = bool(
     risk_model.required_decel >= LEAD_CONTEXT_RISK_REQUIRED_DECEL or
     risk_model.ttc <= LEAD_CONTEXT_RISK_TTC or
     risk_model.closing_speed > 0.05
   )
-  close_gap_without_opening = risk_model.gap_shortage > 0.0 and opening_speed <= 0.15 and not predicted_gap_opening
+  close_gap_without_opening = progress_gap_shortage > 0.0 and opening_speed <= 0.15 and not predicted_gap_opening
   stopped_without_pullaway = risk_model.stopped_or_crawling and opening_speed <= 0.15 and not predicted_gap_opening
   stop_threat_absent = not closing_threat and not close_gap_without_opening and not stopped_without_pullaway
   stable = bool(confidence_state is not None and confidence_state.stable)
   new_or_flicker = bool(
     confidence_state is not None and (
-      confidence_state.new_lead or confidence_state.guard_timer > 0.0 or confidence_state.flicker_guard_timer > 0.0
+      confidence_state.new_lead or confidence_state.guard_timer > 1e-9 or confidence_state.flicker_guard_timer > 0.0
     )
   )
-  confidence_stability_sufficient = bool(stable and confidence >= 0.55 and not new_or_flicker and on_path > 0.0 and ghost < 0.8)
+  confidence_stability_sufficient = bool(stable and confidence >= 0.55 and not new_or_flicker and soft_on_path > 0.0 and ghost < 0.8)
   opening_evidence = opening_speed > 0.15 or (lead_moving and opening_speed > 0.05) or (a_lead > 0.10 and predicted_gap_opening)
   gap_excess_evidence = gap_excess > 0.0 and lead_moving
   allowed = bool(
@@ -820,6 +877,9 @@ def _lead_progress_model(d_rel: float, v_ego: float, v_lead: float, v_rel: float
     lead_moving=lead_moving,
     lead_accel=a_lead,
     predicted_gap_opening=predicted_gap_opening,
+    progress_distance=soft_d_rel,
+    progress_on_path_score=soft_on_path,
+    progress_gap_shortage=progress_gap_shortage,
     gap_excess=gap_excess,
     stop_threat_absent=stop_threat_absent,
     alternate_threat_absent=alternate_threat_absent,
@@ -1069,12 +1129,14 @@ class LeadContextTracker:
     self._physical_memory.reset()
 
   def update(self, leads: tuple[Any, Any], confidence_states: tuple[LeadConfidenceState, LeadConfidenceState] | list[LeadConfidenceState],
-             v_ego: float, dt: float, model_msg: Any | None = None, dominant_idx: int | None = None,
-             lead_dominant_idx: int | None = None, reset_state: bool = False) -> PrimaryLeadContext:
+              v_ego: float, dt: float, model_msg: Any | None = None, dominant_idx: int | None = None,
+              lead_dominant_idx: int | None = None, reset_state: bool = False,
+              progress_model_msg: Any | None = None) -> PrimaryLeadContext:
     dt = max(0.0, finite_float(dt))
     v_ego = finite_float(v_ego)
+    progress_model_msg = model_msg if progress_model_msg is None else progress_model_msg
 
-    observations = self._observe(leads, model_msg, v_ego)
+    observations = self._observe(leads, model_msg, progress_model_msg, v_ego)
     shadows = self._update_shadows(leads, confidence_states, v_ego, dt, model_msg, observations, reset_state)
     states = self._build_states(observations, shadows, confidence_states, v_ego, model_msg, dt)
 
@@ -1093,10 +1155,11 @@ class LeadContextTracker:
     self._physical_memory.update(ctx, dt)
     return ctx
 
-  def _observe(self, leads: tuple[Any, Any], model_msg: Any | None, v_ego: float) -> tuple[_LeadObservation, _LeadObservation]:
+  def _observe(self, leads: tuple[Any, Any], model_msg: Any | None,
+               progress_model_msg: Any | None, v_ego: float) -> tuple[_LeadObservation, _LeadObservation]:
     observations: list[_LeadObservation] = []
     for idx, lead in enumerate(leads):
-      observations.append(self._observation_stage.observe(idx, lead, model_msg, v_ego))
+      observations.append(self._observation_stage.observe(idx, lead, model_msg, progress_model_msg, v_ego))
     return cast(tuple[_LeadObservation, _LeadObservation], tuple(observations))
 
   def _update_shadows(self, leads: tuple[Any, Any],
@@ -1145,7 +1208,7 @@ class LeadContextTracker:
       status=True,
       shadow=False,
       stable=bool(confidence_state.stable),
-      new_lead=bool(confidence_state.new_lead or confidence_state.guard_timer > 0.0),
+      new_lead=bool(confidence_state.new_lead or confidence_state.guard_timer > 1e-9),
       flicker_guard_timer=finite_float(confidence_state.flicker_guard_timer),
       track_id=observation.track_id,
       d_rel=observation.d_rel,
