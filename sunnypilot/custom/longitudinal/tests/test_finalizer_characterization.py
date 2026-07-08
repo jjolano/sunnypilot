@@ -615,6 +615,51 @@ def test_crawl_fallback_releases_same_latched_lead_with_invalid_source():
   assert 0.0 < a_target <= planner.custom_long_finalizer._STOP_HOLD_CRAWL_RELEASE_A_MAX
 
 
+def test_gate_confirmed_launch_releases_at_reduced_opening():
+  # Gate mode, no valid source, but the same latched lead is confirmed departing
+  # (lead_v>=0.30, v_rel>=0.25, mpc>=0.05, raw_model>=0). A 0.35 m opening now clears the
+  # aligned 0.30 m gate margin and the crawl actually commands accel instead of latching.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  planner.custom_long.standstill_release_confidence_mode = "gate"
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1)
+  lead = make_lead(d_rel=6.55, v_lead=0.4, v_rel=0.3, lead_id=1)  # +0.35 m opening
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.1, mpc_should_stop=True,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.0 < a_target <= planner.custom_long_finalizer._STOP_HOLD_CRAWL_RELEASE_A_MAX
+
+
+def test_gate_confirmed_launch_still_latched_below_opening_margin():
+  # Same confirmed-departing lead but only 0.25 m opened — below the 0.30 m gate margin,
+  # so the release stays fail-closed (proves the collision margin was not removed).
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  planner.custom_long.standstill_release_confidence_mode = "gate"
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1)
+  lead = make_lead(d_rel=6.45, v_lead=0.4, v_rel=0.3, lead_id=1)  # +0.25 m opening
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.1, mpc_should_stop=True,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert planner._last_release_block_reason == "baseline_opening"
+
+
 def test_crawl_fallback_rejects_brief_gap_increase():
   planner = make_planner(
     mode=LongitudinalMode.SCC,

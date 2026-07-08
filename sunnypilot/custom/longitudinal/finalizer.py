@@ -338,7 +338,7 @@ class _ReleaseGate:
     if finalizer.lead_stop_hold_gap_baseline_d_rel is None:
       finalizer.last_release_block_reason = "no_baseline_gap"
       return False
-    if float(lead_d_rel) - float(finalizer.lead_stop_hold_gap_baseline_d_rel) < 0.5:
+    if float(lead_d_rel) - float(finalizer.lead_stop_hold_gap_baseline_d_rel) < finalizer._STOP_HOLD_GATE_MIN_BASELINE_OPENING_M:
       finalizer.last_release_block_reason = "baseline_opening"
       return False
     finalizer.last_release_block_reason = ""
@@ -509,7 +509,8 @@ class _ReleaseGate:
         return False, float(lead_d_rel)
       finalizer.last_release_block_reason = ""
       release_a = _ReleaseAccel.accel_for_gap(
-        finalizer, float(mpc_a_target), lead_d_rel, lead_v, lead_v_rel, same_id, valid_source=False
+        finalizer, float(mpc_a_target), lead_d_rel, lead_v, lead_v_rel, same_id,
+        valid_source=False, gate_confirmed=True
       )
       if release_a <= 0.0:
         finalizer.last_release_block_reason = "crawl_deadband"
@@ -537,7 +538,7 @@ class _ReleaseAccel:
   @staticmethod
   def accel_for_gap(finalizer: CustomLongitudinalFinalizer, requested_a: float,
                     lead_d_rel: float, lead_v: float, lead_v_rel: float,
-                    same_id: bool, valid_source: bool = False) -> float:
+                    same_id: bool, valid_source: bool = False, gate_confirmed: bool = False) -> float:
     release_a = min(max(float(requested_a), finalizer._STOP_HOLD_RELEASE_A_MIN), finalizer._STOP_HOLD_RELEASE_A_MAX)
     if _ReleaseGate.routine_breakout(float(lead_v_rel)):
       return float(release_a)
@@ -547,12 +548,12 @@ class _ReleaseAccel:
     gap_error = float(lead_d_rel) - float(finalizer.lead_stop_hold_gap_baseline_d_rel)
     crawl_release_a = float(min(release_a, finalizer._STOP_HOLD_CRAWL_RELEASE_A_MAX))
     if gap_error <= finalizer._STOP_HOLD_CRAWL_DEADBAND_M:
-      if valid_source and float(lead_v) >= 0.30 and float(lead_v_rel) >= 0.15:
+      if (valid_source or gate_confirmed) and float(lead_v) >= 0.30 and float(lead_v_rel) >= 0.15:
         return crawl_release_a
       return 0.0
     gap_limited_a = (gap_error - finalizer._STOP_HOLD_CRAWL_DEADBAND_M) / finalizer._STOP_HOLD_CRAWL_GAP_TAU
     if gap_limited_a < finalizer._STOP_HOLD_CRAWL_RELEASE_A_MIN:
-      if valid_source and float(lead_v) >= 0.30 and float(lead_v_rel) >= 0.15:
+      if (valid_source or gate_confirmed) and float(lead_v) >= 0.30 and float(lead_v_rel) >= 0.15:
         return crawl_release_a
       return 0.0
     return float(min(release_a, finalizer._STOP_HOLD_CRAWL_RELEASE_A_MAX, gap_limited_a))
@@ -951,6 +952,13 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR = 4.5
   _STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING = 0.5
   _STOP_HOLD_SAME_ID_VALID_BASELINE_OPENING_M = 0.20
+  # Gate-fallback release: the planner gate already independently confirms a departing lead
+  # (lead_v>=0.30, v_rel>=0.25, mpc>=0.05, raw_model>=0), so a full 0.5 m physical opening on
+  # top of that just latches the car while the lead pulls away and the driver gasses. Sit
+  # between the designed valid-source path (0.20) and the old fail-closed 0.5. The distance
+  # floor (_STOP_HOLD_SAME_ID_MIN_D_REL_*) and the 0.35 crawl cap remain the hard margins.
+  # ponytail: 0.30 tuned by launch feel; lower toward valid-source 0.20 if launches still lag.
+  _STOP_HOLD_GATE_MIN_BASELINE_OPENING_M = 0.30
   _STOP_HOLD_SAME_ID_GAP_INCREASING_S = 0.10
   _STOP_HOLD_SAME_ID_VALID_GAP_INCREASING_S = 0.10
   _STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET = -0.10
