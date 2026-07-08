@@ -7,6 +7,9 @@ LEAD_CONFIDENCE_TRACK_UNKNOWN = -2
 NEW_LEAD_GUARD_TIME = 0.35
 NEW_LEAD_POS_ACCEL_HOLD_TIME = 0.25
 NEW_LEAD_STABLE_TIME = 0.35
+RADAR_LEAD_GUARD_TIME = 0.20
+RADAR_LEAD_POS_ACCEL_HOLD_TIME = 0.10
+RADAR_LEAD_STABLE_TIME = 0.20
 NEW_LEAD_CONTINUITY_MAX_D_REL_DELTA = 5.0
 NEW_LEAD_CONTINUITY_MAX_V_LEAD_DELTA = 5.0
 NEW_LEAD_CONTINUITY_MAX_Y_REL_DELTA = 1.0
@@ -71,12 +74,12 @@ def _lead_continuity(prev_d_rel, d_rel, prev_v_lead, v_lead, prev_y_rel, y_rel):
   )
 
 
-def _positive_accel_blend(age):
-  if age <= NEW_LEAD_POS_ACCEL_HOLD_TIME:
+def _positive_accel_blend(age, hold_time=NEW_LEAD_POS_ACCEL_HOLD_TIME, stable_time=NEW_LEAD_STABLE_TIME):
+  if age <= hold_time:
     return 0.0
-  if age >= NEW_LEAD_STABLE_TIME:
+  if age >= stable_time:
     return 1.0
-  return (age - NEW_LEAD_POS_ACCEL_HOLD_TIME) / (NEW_LEAD_STABLE_TIME - NEW_LEAD_POS_ACCEL_HOLD_TIME)
+  return (age - hold_time) / max(stable_time - hold_time, 1e-6)
 
 
 def adjust_new_lead_accel(a_lead, state: LeadConfidenceState):
@@ -148,10 +151,13 @@ class LeadConfidenceTracker:
     track_id, d_rel, v_lead, y_rel, radar, model_prob = _lead_values(lead)
     continuous = self.was_status and self._is_continuous(track_id, d_rel, v_lead, y_rel)
     new_lead = not continuous
+    guard_time = RADAR_LEAD_GUARD_TIME if radar else NEW_LEAD_GUARD_TIME
+    hold_time = RADAR_LEAD_POS_ACCEL_HOLD_TIME if radar else NEW_LEAD_POS_ACCEL_HOLD_TIME
+    stable_time = RADAR_LEAD_STABLE_TIME if radar else NEW_LEAD_STABLE_TIME
 
     if new_lead:
       self.age = 0.0
-      self.guard_timer = NEW_LEAD_GUARD_TIME
+      self.guard_timer = guard_time
     else:
       self.age += dt
 
@@ -161,7 +167,7 @@ class LeadConfidenceTracker:
     self.v_lead = v_lead
     self.y_rel = y_rel
 
-    accel_blend = _positive_accel_blend(self.age)
+    accel_blend = _positive_accel_blend(self.age, hold_time, stable_time)
     return LeadConfidenceState(
       status=True,
       new_lead=new_lead,
