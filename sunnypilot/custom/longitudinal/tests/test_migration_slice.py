@@ -1061,8 +1061,8 @@ def test_valid_source_crawl_releases_below_deadband_with_cap():
   sp = fake_planner(LongitudinalMode.ACC)
   _arm_stop_hold(sp)
   _set_lead_pullaway_release(sp)
-  # Valid source with a moving lead no longer waits for the 0.5 m crawl deadband,
-  # but the crawl launch cap still limits authority.
+  # Valid source with a moving lead no longer waits for the 0.35 m crawl deadband; route 00000274
+  # raised the crawl cap to 0.50, so the 0.40 pullaway request now passes through (was clipped to 0.35).
   sp._lead_stop_hold_gap_increasing_s = 0.30
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
   # bypass the release-step ramp (covered by the slew tests) so the crawl cap stays observable
@@ -1070,7 +1070,7 @@ def test_valid_source_crawl_releases_below_deadband_with_cap():
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.6, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
-  assert math.isclose(a, 0.35, abs_tol=1e-9)
+  assert math.isclose(a, 0.40, abs_tol=1e-9)
 
 
 def test_stop_hold_does_not_latch_beyond_arm_envelope():
@@ -1107,7 +1107,7 @@ def test_early_stop_beyond_baseline_uses_capped_gap_target_for_crawl():
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.9, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
-  assert 0.05 <= a <= 0.35
+  assert 0.05 <= a <= 0.50
 
 
 def test_latch_release_crawl_gap_error_caps_positive_accel():
@@ -1121,7 +1121,7 @@ def test_latch_release_crawl_gap_error_caps_positive_accel():
   a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=7.35, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is False
   assert should_stop is False
-  assert 0.05 <= a <= 0.35
+  assert 0.05 <= a <= 0.50
 
 
 def test_latch_release_crawl_pullaway_waits_for_valid_gap_time():

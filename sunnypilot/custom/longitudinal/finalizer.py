@@ -970,15 +970,18 @@ class CustomLongitudinalFinalizer:
   # v_rel ~= lead_v, so v_rel is the whole gate (a lead_v arm was subsumed and deleted).
   # Crawl-launch feel is tuned via _STOP_HOLD_CRAWL_GAP_TAU below, not here.
   _STOP_HOLD_ROUTINE_BREAKOUT_MIN_V_REL = 1.0
-  _STOP_HOLD_CRAWL_DEADBAND_M = 0.50
+  # Route 00000274: standstill launches behind a departing lead were still too weak to hold
+  # without a gas override — mpcA wanted ~+0.54 while the crawl cap trickled the command out.
+  # Shrink the deadband so accel starts building sooner, ramp faster per metre, and raise the cap.
+  _STOP_HOLD_CRAWL_DEADBAND_M = 0.35
   # Route 0000025a: below the breakout the release accel ramps as (gap_opened - deadband) / TAU; the old
-  # 2.0 s TAU held the launch at ~0.05 m/s^2 well after the lead was clearly moving. 1.5 ramps 33% faster
+  # 2.0 s TAU held the launch at ~0.05 m/s^2 well after the lead was clearly moving. 1.2 ramps faster
   # per metre of gap while the deadband + A_MAX cap still bound it. ponytail: knob, retune from logs.
-  _STOP_HOLD_CRAWL_GAP_TAU = 1.5
+  _STOP_HOLD_CRAWL_GAP_TAU = 1.2
   _STOP_HOLD_CRAWL_RELEASE_A_MIN = 0.05
-  # Raised with _STOP_HOLD_RELEASE_A_MAX (route 00000246): the close-crawl cap still stays
-  # below the breakout cap, and the gap governor above continues to bound crawl accel.
-  _STOP_HOLD_CRAWL_RELEASE_A_MAX = 0.35
+  # Raised with _STOP_HOLD_RELEASE_A_MAX (route 00000246, then 00000274): the close-crawl cap still
+  # stays below the breakout cap, and the gap governor above continues to bound crawl accel.
+  _STOP_HOLD_CRAWL_RELEASE_A_MAX = 0.50
   _STOP_HOLD_SETTLE_ARM_V_EGO_FLOOR = 0.7
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V = 0.5
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V_REL = 0.1
