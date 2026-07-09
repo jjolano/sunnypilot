@@ -172,6 +172,27 @@ def test_early_model_slowdown_caution_before_stop_commitment():
   assert acc.selected_intent == "cruise"
 
 
+def test_far_nonclosing_lead_caps_uncorroborated_model_caution():
+  # Route 00000274: a deepened caution floor (-0.7) applied to a far, same-speed lead is a
+  # phantom over-brake. With a far non-closing lead the non-committed caution is capped shallow.
+  common = dict(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0, model_should_stop=False,
+                model_stop_distance=None, model_desired_accel=-0.7, model_caution_floor=-0.7)
+  far = LongitudinalScene(has_lead=True, lead_d_rel=50.0, lead_v_rel=-0.5, **common)
+  stop = [c for c in build_candidates(far) if c.intent == "stop_approach"]
+  assert len(stop) == 1
+  assert stop[0].a_target == pytest.approx(-0.35)  # capped
+
+  # A closing lead (real approach) is NOT capped — the caution floor stands.
+  closing = LongitudinalScene(has_lead=True, lead_d_rel=50.0, lead_v_rel=-2.0, **common)
+  stop_c = [c for c in build_candidates(closing) if c.intent == "stop_approach"]
+  assert stop_c[0].a_target == pytest.approx(-0.7)
+
+  # A near lead (not far) is NOT capped either.
+  near = LongitudinalScene(has_lead=True, lead_d_rel=20.0, lead_v_rel=-0.5, **common)
+  stop_n = [c for c in build_candidates(near) if c.intent == "stop_approach"]
+  assert stop_n[0].a_target == pytest.approx(-0.7)
+
+
 def test_early_model_slowdown_uses_raw_decel_within_cap():
   scene = LongitudinalScene(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0,
                             model_should_stop=False, model_stop_distance=None,
