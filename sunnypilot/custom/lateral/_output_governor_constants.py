@@ -5,10 +5,13 @@ module share the same values without public API changes.
 """
 
 # --- RATE-LIMIT: slew schedules (refined governor) ---
+# Route 00000274: lateral measured smooth (jerk p99 ~1.0 m/s^3), but the mid/high-speed slew
+# ceilings were trimmed ~10% to soften fast transitions and direction reversals without hurting
+# low-speed maneuvering responsiveness (0 and 5 m/s entries left unchanged). Revert if tracking lags.
 OUTPUT_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
-OUTPUT_SLEW_RATE_V = [1.40, 2.00, 3.00, 4.20, 5.00, 5.60]
+OUTPUT_SLEW_RATE_V = [1.40, 2.00, 2.70, 3.80, 4.50, 5.05]
 SIGN_CHANGE_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
-SIGN_CHANGE_SLEW_RATE_V = [0.90, 1.20, 1.80, 2.40, 3.00, 3.40]
+SIGN_CHANGE_SLEW_RATE_V = [0.90, 1.20, 1.62, 2.16, 2.70, 3.06]
 SAME_DIRECTION_LIMIT_RATE_BP = [0.0, 10.0, 20.0, 30.0, 40.0]
 SAME_DIRECTION_LIMIT_RATE_V = [1.30, 1.30, 2.10, 3.20, 3.60]
 
