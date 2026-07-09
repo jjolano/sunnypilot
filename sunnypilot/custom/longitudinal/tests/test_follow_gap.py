@@ -119,7 +119,7 @@ def test_ineligible_contexts_return_base(bad_lead, reason):
   (dict(brake_pressed=True), "brake_pressed"),
   (dict(gas_pressed=True), "gas_pressed"),
   (dict(force_decel=True), "force_decel"),
-  (dict(v_ego=5.0), "low_speed"),
+  (dict(v_ego=4.0), "low_speed"),
 ])
 def test_driver_and_state_overrides_return_base(ctx, reason):
   fg = _apply_scheduler()

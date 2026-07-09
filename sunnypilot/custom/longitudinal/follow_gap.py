@@ -31,7 +31,10 @@ from typing import Any
 T_FOLLOW_COMPRESSED = 1.2   # s; hard floor of the compressed follow gap
 COMPRESS_RATE = 0.05        # s of t_follow per s; slow slide into compression
 RECOVER_RATE = 0.5          # s of t_follow per s; fast recovery to baseline
-MIN_V_EGO_FOR_APPLY = 8.0   # m/s; no stop-and-go / low-speed compression
+MIN_V_EGO_FOR_APPLY = 5.0   # m/s; route 00000274: 8.0 disabled the scheduler for most city
+                            # stop-and-go (mean 37 km/h), so moving-lead compression never engaged.
+                            # 5.0 (~18 km/h) lets it apply in city while the hard d_rel/time-gap
+                            # floors below still bound safety. Full standstill is excluded by MIN_LEAD_V.
 MIN_LEAD_V = 3.0            # m/s; only compress behind a genuinely moving lead
 MIN_CLOSING = 0.3           # m/s; below this there is no approach to compress into
 MAX_CLOSING = 4.0           # m/s; fast closing is a hazard, not an approach
