@@ -69,6 +69,9 @@ struct LeadData {
 struct SelfdriveStateSP @0x81c2f05a394cf4af {
   mads @0 :ModularAssistiveDrivingSystem;
   intelligentCruiseButtonManagement @1 :IntelligentCruiseButtonManagement;
+  # Engagement-Cycle Latch: the Longitudinal Mode captured by selfdrived when controls
+  # engage and held until disengagement. Planner consumers use this, not the Param.
+  activeLongitudinalMode @2 :LongitudinalPlanSP.CustomLongitudinal.CustomLongitudinalMode;
 
   enum AudibleAlert {
     none @0;
@@ -215,6 +218,8 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     shouldStop @3 :Bool;
     selectedIntent @4 :Text;
     reason @5 :Text;
+    # Stable Fault Class of a Fail-closed custom-longitudinal fault; never raw exception text.
+    faultClass @6 :Text;
 
     enum CustomLongitudinalMode {
       acc @0;
@@ -507,6 +512,7 @@ struct OnroadEventSP @0xda96579883444c35 {
     speedLimitChanged @21;
     speedLimitPending @22;
     e2eChime @23;
+    customLongitudinalFault @24;
   }
 }
 

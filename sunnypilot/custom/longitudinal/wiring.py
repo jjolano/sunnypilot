@@ -28,15 +28,20 @@ from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
   MODE_OFF as CURVE_TRAFFIC_MODE_OFF,
   MODE_SHADOW as CURVE_TRAFFIC_MODE_SHADOW,
 )
+from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.custom.longitudinal.model_trust import CautionRamp, StopTrustLearner
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
-from openpilot.sunnypilot.custom.longitudinal.stack import CustomLongitudinalStack, LongitudinalStackInputs
+from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts, CustomLongitudinalStack, LongitudinalStackInputs
 
 PARAMS_REFRESH_PERIOD = 50  # planner ticks (~20Hz -> ~2.5s)
 DEFAULT_ACCEL_LIMITS = (-4.0, 2.0)
 MODEL_STOP_SPEED = 0.3  # m/s; predicted speed at/below this marks the trajectory's rest point
 MODEL_STALE_AGE_S = 0.20
+
+# Stable Fault Class (CONTEXT.md): the only fault detail that crosses the interface.
+# Raw exception text stays log-only.
+FAULT_CLASS_INTERNAL = "customLongitudinalInternal"
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -270,32 +275,35 @@ class CustomLongitudinalAdapter:
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     self.research_actuation_allowed = False
+    # Fail-closed fault latch: set on an internal fault after Custom Authority begins,
+    # cleared automatically at the next engagement.
+    self.fault_class = ""
+    self._authority_began = False
+    self._long_active_prev = False
     if params is not None:
       self.refresh_params(initial=True)
 
-  def refresh_params(self, initial: bool = False, mode_only: bool = False) -> None:
+  def refresh_params(self, initial: bool = False) -> None:
     p = self._params
     if p is None:
       return
     try:
       enabled = bool(p.get_bool("CustomLongitudinalEnabled"))
-      # SCC is the default: the custom-2.0 intelligent ACC/E2E blend (the DEC replacement). acc/e2e
-      # force OEM-like cruise or the model's stops respectively. Mode is refreshed live each cycle.
-      mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc", default=LongitudinalMode.SCC)
+      if initial:
+        # Pre-engagement default only. The active mode is an Engagement-Cycle Latch owned by
+        # selfdrived (selfdriveStateSP.activeLongitudinalMode); plannerd never rereads the
+        # Param while engaged — set_active_mode() consumes the published value instead.
+        # SCC is the default: the custom-2.0 intelligent ACC/E2E blend (the DEC replacement).
+        self.mode = LongitudinalMode.from_value(p.get("CustomLongitudinalMode") or "scc", default=LongitudinalMode.SCC)
     except Exception:  # params are advisory; never fault the planner on a failed read
       if initial:
         self.enabled = False
       return
 
-    prev_mode = self.mode
     was_enabled = self.enabled
     self.enabled = enabled
-    self.mode = mode
-    if mode is not prev_mode or (enabled and not was_enabled):
+    if enabled and not was_enabled:
       self._stack.reset()
-
-    if mode_only:
-      return
 
     # Slower refresh for tuning/advisory params.
     if initial or self._tick % PARAMS_REFRESH_PERIOD == 0:
@@ -333,6 +341,27 @@ class CustomLongitudinalAdapter:
     if self._params is not None:
       self.refresh_params(initial=False)
 
+  def set_active_mode(self, value: Any) -> None:
+    """Adopt the active Longitudinal Mode published by selfdrived (Engagement-Cycle Latch)."""
+    mode = LongitudinalMode.from_value(value, default=self.mode)
+    if mode is not self.mode:
+      self.mode = mode
+      self._stack.reset()
+
+  def _degraded_output(self, seed_a_target: float, reason: str) -> CustomLongitudinalOutput:
+    """Degraded Evidence: withhold Custom Authority for this tick. Never a Fail-closed fault."""
+    return CustomLongitudinalOutput(
+      a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
+      selected_intent="degraded_evidence", reason=reason, debug={},
+    )
+
+  def _fault_output(self, seed_a_target: float) -> CustomLongitudinalOutput:
+    return CustomLongitudinalOutput(
+      a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
+      selected_intent="fault", reason=self.fault_class or "fault", fault_class=self.fault_class,
+      debug={},
+    )
+
   def evaluate(self, sm: Any, v_ego: float, a_ego: float, v_cruise: float, seed_a_target: float,
                scc: Any, sla: Any, dt: float = 0.05, *, collect_debug: bool = True) -> CustomLongitudinalOutput:
     if not self.enabled:
@@ -341,6 +370,11 @@ class CustomLongitudinalAdapter:
         selected_intent="disabled", reason="disabled",
         debug={"seed_a_target": seed_a_target} if collect_debug else {},
       )
+    # Non-finite core evidence is Degraded Evidence, not a fault.
+    if not all(math.isfinite(_f(v, default=math.nan)) for v in (v_ego, a_ego, v_cruise, seed_a_target)):
+      return self._degraded_output(seed_a_target, "non_finite_source")
+    # --- Source extraction: failures here are Degraded Evidence (missing/stale/invalid
+    # external sources) and only withhold Custom Authority.
     try:
       radar = sm['radarState']
       cs = sm.get('carState') if hasattr(sm, "get") else sm['carState']
@@ -353,15 +387,31 @@ class CustomLongitudinalAdapter:
       action = getattr(model, "action", None)
       model_should_stop = bool(getattr(action, "shouldStop", False)) if action is not None else False
       model_desired_accel = _f(getattr(action, "desiredAcceleration", 0.0)) if action is not None else 0.0
-      model_stop_prob = self._stop_trust.update(model_should_stop, driver_disagrees=gas_pressed, dt=dt)
       model_stop_distance = _model_stop_distance(model)
-      model_caution_floor = self._caution_ramp.update(model_desired_accel, dt)
 
       cc = sm['carControl']
       brake_pressed = bool(getattr(cs, "brakePressed", False))
       long_active = bool(getattr(cc, "longActive", False))
       ned = getattr(cc, "orientationNED", None)
       pitch = ned[1] if ned is not None and len(ned) == 3 else None
+    except Exception:
+      return self._degraded_output(seed_a_target, "source_unavailable")
+
+    # Engagement lifecycle: a Fail-closed fault ends only the current engagement; the latch
+    # resets automatically when the next engagement begins.
+    if long_active and not self._long_active_prev:
+      self.fault_class = ""
+      self._authority_began = False
+    self._long_active_prev = long_active
+    if not long_active:
+      self._authority_began = False
+    if self.fault_class:
+      # Never silently resume the Consumer-Local Baseline after a Fail-closed fault.
+      return self._fault_output(seed_a_target)
+
+    try:
+      model_stop_prob = self._stop_trust.update(model_should_stop, driver_disagrees=gas_pressed, dt=dt)
+      model_caution_floor = self._caution_ramp.update(model_desired_accel, dt)
       if pitch is not None:
         # Engaged frames count as on-throttle: system throttle/brake don't set the pedal
         # flags, so only manual off-pedal coasting gives an unbiased drag sample.
@@ -412,6 +462,8 @@ class CustomLongitudinalAdapter:
       result = self._stack.update(inputs, dt, collect_debug=collect_debug)
       debug = result.debug if collect_debug else {}
       decision = result.decision
+      if long_active:
+        self._authority_began = True
       return CustomLongitudinalOutput(
         a_target=float(result.a_target), should_stop=bool(result.should_stop), enabled=True, mode=self.mode,
         selected_intent=decision.selected_intent, reason=decision.reason,
@@ -420,9 +472,18 @@ class CustomLongitudinalAdapter:
         standstill_release_a_target=float(result.standstill_release_a_target),
         standstill_release_reason=str(result.standstill_release_reason),
         research_actuation_allowed=self.research_actuation_allowed,
+        actuation=result.actuation,
         debug=debug,
       )
     except Exception:
+      if self._authority_began:
+        # Fail-closed: unexpected internal fault after Custom Authority began. Latch the
+        # stable Fault Class and request immediateDisable via the planner event path;
+        # raw exception detail is log-only diagnostics.
+        self.fault_class = FAULT_CLASS_INTERNAL
+        cloudlog.exception("custom longitudinal fail-closed internal fault")
+        return self._fault_output(seed_a_target)
+      # Pre-authority compatibility: fall back to the consumer-local baseline.
       return CustomLongitudinalOutput(
         a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
         selected_intent="fault", reason="fault", debug={},
@@ -448,4 +509,8 @@ class CustomLongitudinalOutput:
   standstill_release_a_target: float = 0.0
   standstill_release_reason: str = ""
   research_actuation_allowed: bool = False
+  # Stable Fault Class of a latched Fail-closed fault ("" when healthy).
+  fault_class: str = ""
+  # Typed Actuation Verdicts; independent of the optional debug dict below.
+  actuation: ActuationVerdicts = field(default_factory=lambda: ActuationVerdicts())
   debug: dict[str, Any] = field(default_factory=dict)

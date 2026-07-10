@@ -72,6 +72,24 @@ def speed_limit_pre_active_alert(CP: car.CarParams, CS: car.CarState, sm: messag
     Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleLow, .1)
 
 
+class StateMachineEvents:
+  """contains() view for the main StateMachine over upstream Events plus the SP events
+  allowed to drive it.
+
+  Only the Fail-closed custom-longitudinal fault crosses into the main state machine;
+  every other SP event type (MADS enable/disable, warnings) stays owned by its own
+  consumer, so this must never blanket-merge event types."""
+
+  def __init__(self, events, events_sp: "EventsSP"):
+    self._events = events
+    self._events_sp = events_sp
+
+  def contains(self, event_type: str) -> bool:
+    if self._events.contains(event_type):
+      return True
+    return event_type == ET.IMMEDIATE_DISABLE and self._events_sp.has(EventNameSP.customLongitudinalFault)
+
+
 class EventsSP(EventsBase):
   def __init__(self):
     super().__init__()
@@ -242,5 +260,11 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       "",
       AlertStatus.normal, AlertSize.none,
       Priority.MID, VisualAlert.none, AudibleAlert.prompt, 3.),
+  },
+
+  # Fail-closed custom-longitudinal fault: distinct driver alert; the stable Fault Class
+  # rides longitudinalPlanSP.customLongitudinal.faultClass, never raw exception text.
+  EventNameSP.customLongitudinalFault: {
+    ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("Custom Longitudinal Fault"),
   },
 }

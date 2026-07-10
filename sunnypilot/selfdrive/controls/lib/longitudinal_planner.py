@@ -30,6 +30,7 @@ from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAd
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
+EventNameSP = custom.OnroadEventSP.EventName
 
 
 class _ProxyToFinalizer:
@@ -120,6 +121,30 @@ class LongitudinalPlannerSP:
   def _reset_lead_stop_hold(self) -> None:
     self.custom_long_finalizer.reset_lead_stop_hold()
 
+  def _sync_active_mode(self, sm) -> None:
+    """Adopt the Engagement-Cycle Latched Longitudinal Mode published by selfdrived.
+
+    plannerd never rereads the CustomLongitudinalMode Param while engaged; the active
+    value comes from selfdriveStateSP. Until the first message arrives (or in harnesses
+    without the service) the adapter keeps its boot-time default.
+    """
+    try:
+      recv_frame = getattr(sm, 'recv_frame', None)
+      if recv_frame is not None:
+        try:
+          if not recv_frame['selfdriveStateSP']:
+            return
+        except (KeyError, TypeError):
+          pass  # harness sm without recv tracking: fall through to the message itself
+      ss_sp = self._sm_item(sm, 'selfdriveStateSP')
+      if ss_sp is None:
+        return
+      value = getattr(ss_sp, 'activeLongitudinalMode', None)
+      if value is not None:
+        self.custom_long.set_active_mode(value)
+    except Exception:
+      pass
+
   def _apply_stop_hold_release_slew(self, sm: messaging.SubMaster, a_target: float, release_mpc_stop: bool,
                                     mpc_stop: bool, raw_model_should_stop: bool, should_stop: bool) -> float:
     dt = float(getattr(self, 'dt', DT_MDL))
@@ -159,6 +184,7 @@ class LongitudinalPlannerSP:
                      refresh_custom_long: bool = True) -> tuple[float, float]:
     if refresh_custom_long:
       self.custom_long.maybe_refresh_params()
+    self._sync_active_mode(sm)
 
     CS = sm['carState']
     v_cruise_cluster_kph = min(CS.vCruiseCluster, V_CRUISE_MAX)
@@ -190,16 +216,9 @@ class LongitudinalPlannerSP:
     self.source = min(filtered_targets, key=lambda k: filtered_targets[k][0])
     self.output_v_target, self.output_a_target = filtered_targets[self.source]
 
-    # Build the custom-long debug payload only when trace mode or an active apply path needs it.
+    # Debug/trace collection is diagnostics-only: apply-mode Actuation Verdicts are typed
+    # and computed inside the stack regardless of this flag.
     collect_custom_long_debug = getattr(self.custom_long, "debug_trace_mode", "off") == "log"
-    if not collect_custom_long_debug and bool(getattr(self.custom_long, "research_actuation_allowed", False)):
-      collect_custom_long_debug = bool(
-        self.custom_long.enabled and self.custom_long.mode is LongitudinalMode.SCC and (
-          self.custom_long.cut_in_brake_assist_mode == "apply" or
-          self.custom_long.curve_speed_confidence_mode == "apply_conservative" or
-          self.custom_long.curve_traffic_advisor_mode == "apply_conservative"
-        )
-      )
 
     # Opt-in: shape the baseline a_target with the custom-2.0 policy (fail-closed; returns the
     # unchanged target when disabled or on any fault, so default behavior is never affected).
@@ -208,6 +227,10 @@ class LongitudinalPlannerSP:
       collect_debug=collect_custom_long_debug,
     )
     self.output_a_target = self.custom_long_output.a_target
+    # Fail-closed fault: request the existing immediateDisable path via the SP event stream
+    # while the engagement is still active; the latch resets at the next engagement.
+    if self.custom_long.fault_class and bool(getattr(sm['carControl'], 'longActive', False)):
+      self.events_sp.add(EventNameSP.customLongitudinalFault)
     return self.output_v_target, self.output_a_target
 
   def custom_longitudinal_should_stop(self, mpc_should_stop: bool, raw_model_should_stop: bool,
@@ -248,7 +271,8 @@ class LongitudinalPlannerSP:
     return result.a_target, result.should_stop, result.e2e_source
 
   def update(self, sm: messaging.SubMaster) -> None:
-    self.custom_long.maybe_refresh_params()  # enabled/mode every tick; tuning on slow cadence inside the adapter
+    self.custom_long.maybe_refresh_params()  # enabled every tick; tuning on slow cadence inside the adapter
+    self._sync_active_mode(sm)  # active mode is selfdrived's Engagement-Cycle Latch, not a Param reread
     self.events_sp.clear()
     custom_long_enabled = bool(self.custom_long.enabled)
     if not custom_long_enabled:   # custom SCC mode replaces DEC; keep DEC dormant when custom is on
@@ -343,6 +367,7 @@ class LongitudinalPlannerSP:
     custom_long.mode = self._custom_longitudinal_mode_to_telemetry()
     custom_long.selectedIntent = str(getattr(telemetry_custom_long_output, "selected_intent", "" ) or "")
     custom_long.reason = str(getattr(telemetry_custom_long_output, "reason", "" ) or "")
+    custom_long.faultClass = str(getattr(self.custom_long, "fault_class", "") or "")
     if getattr(self.custom_long, "debug_trace_mode", "off") == "log":
       self._populate_longitudinal_debug_trace(longitudinalPlanSP.longitudinalDebug, sm, telemetry_custom_long_output)
     self._custom_long_output_telemetry = None

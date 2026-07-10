@@ -965,8 +965,8 @@ struct ControlsState @0x97ff69c53601abf1 {
     gated @1 :Bool;
     quality @2 :Float32;
     reason @3 :Text;
-    rawDesiredCurvature @4 :Float32;
-    processedDesiredCurvature @5 :Float32;
+    rawDesiredCurvature @4 :Float32;          # raw model/maneuver desired curvature (pre-pipeline)
+    processedDesiredCurvature @5 :Float32;    # Processed Lateral Demand: post-cap controller input
     modelPathCurvature @6 :Float32;
     laneCenteringActive @7 :Bool;
     laneCenteringReason @8 :Text;
@@ -1065,6 +1065,9 @@ struct ControlsState @0x97ff69c53601abf1 {
     previewAssistAyPreview @99 :Float32;
     previewAssistAyDelta @100 :Float32;
     previewAssistSlewLimited @101 :Bool;
+    # Conditioned Lateral Demand: pipeline result after custom conditioning, before hard
+    # curvature / lateral-acceleration caps.
+    conditionedDesiredCurvature @102 :Float32;
   }
 
 

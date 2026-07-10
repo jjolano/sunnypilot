@@ -12,10 +12,32 @@ from typing import Any
 
 import pytest
 
+from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import CutInBrakeAssistResult
+from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceResult
+from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import CurveTrafficAdvisorResult
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
+from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalOutput
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+
+
+def cut_in_verdicts(model_path_available: bool = True, **overrides) -> ActuationVerdicts:
+  fields: dict[str, Any] = dict(eligible=True, apply_supported=True, confidence=0.80, path_y_rel=0.3, proposed_cap=-2.0)
+  fields.update(overrides)
+  return ActuationVerdicts(cut_in_brake_assist=CutInBrakeAssistResult(**fields), model_path_available=model_path_available)
+
+
+def curve_confidence_verdicts(**overrides) -> ActuationVerdicts:
+  fields: dict[str, Any] = dict(eligible=True, apply_supported=True, confidence=0.80, proposed_cap=-1.0)
+  fields.update(overrides)
+  return ActuationVerdicts(curve_speed_confidence=CurveSpeedConfidenceResult(**fields))
+
+
+def curve_traffic_verdicts(model_stale: bool = False, **overrides) -> ActuationVerdicts:
+  fields: dict[str, Any] = dict(eligible=True, apply_supported=True, confidence=0.50, traffic_block_reason="", a_curve_cap_proposed=-1.0)
+  fields.update(overrides)
+  return ActuationVerdicts(curve_traffic_advisor=CurveTrafficAdvisorResult(**fields), model_stale=model_stale)
 
 
 class FakeSM:
@@ -309,12 +331,7 @@ def test_scc_custom_stop_cap_and_curve_confidence_final_cap_apply():
     custom_long_output=make_custom_output(
       selected_intent="stop_approach",
       a_target=-0.6,
-      debug={
-        "curve_speed_confidence_eligible": True,
-        "curve_speed_confidence_apply_supported": True,
-        "curve_speed_confidence_confidence": 0.80,
-        "curve_speed_confidence_proposed_cap": -1.0,
-      },
+      actuation=curve_confidence_verdicts(),
     ),
   )
   planner.custom_long.curve_speed_confidence_mode = "apply_conservative"
@@ -336,14 +353,9 @@ def test_scc_cut_in_brake_assist_apply_cap():
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(
       selected_intent="cruise",
-      debug={
-        "path_shadow_model_path_available": True,
-        "cut_in_brake_assist_eligible": True,
-        "cut_in_brake_assist_apply_supported": True,
-        "cut_in_brake_assist_confidence": 0.80,
-        "cut_in_brake_assist_path_y_rel": 0.3,
-        "cut_in_brake_assist_proposed_cap": -2.0,
-      },
+      actuation=cut_in_verdicts(),
+      # A debug dict alone must never actuate: verdicts are the only actuation interface.
+      debug={},
     ),
   )
   planner.custom_long.cut_in_brake_assist_mode = "apply"
@@ -365,14 +377,7 @@ def test_scc_cut_in_brake_assist_preserves_stronger_braking():
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(
       selected_intent="cruise",
-      debug={
-        "path_shadow_model_path_available": True,
-        "cut_in_brake_assist_eligible": True,
-        "cut_in_brake_assist_apply_supported": True,
-        "cut_in_brake_assist_confidence": 0.80,
-        "cut_in_brake_assist_path_y_rel": 0.3,
-        "cut_in_brake_assist_proposed_cap": -2.0,
-      },
+      actuation=cut_in_verdicts(),
     ),
   )
   planner.custom_long.cut_in_brake_assist_mode = "apply"
@@ -390,29 +395,20 @@ def test_scc_cut_in_brake_assist_preserves_stronger_braking():
 @pytest.mark.parametrize(
   "blocker",
   [
-    {"path_shadow_model_path_available": False},
-    {"cut_in_brake_assist_eligible": False},
-    {"cut_in_brake_assist_apply_supported": False},
-    {"cut_in_brake_assist_confidence": 0.50},
-    {"cut_in_brake_assist_path_y_rel": None},
-    {"cut_in_brake_assist_path_y_rel": 2.0},
-    {"cut_in_brake_assist_proposed_cap": 0.5},
-    {"cut_in_brake_assist_proposed_cap": float('nan')},
+    {"model_path_available": False},
+    {"eligible": False},
+    {"apply_supported": False},
+    {"confidence": 0.50},
+    {"path_y_rel": None},
+    {"path_y_rel": 2.0},
+    {"proposed_cap": 0.5},
+    {"proposed_cap": float('nan')},
   ],
 )
 def test_scc_cut_in_brake_assist_apply_noop_cases(blocker):
-  debug = {
-    "path_shadow_model_path_available": True,
-    "cut_in_brake_assist_eligible": True,
-    "cut_in_brake_assist_apply_supported": True,
-    "cut_in_brake_assist_confidence": 0.80,
-    "cut_in_brake_assist_path_y_rel": 0.3,
-    "cut_in_brake_assist_proposed_cap": -2.0,
-  }
-  debug.update(blocker)
   planner = make_planner(
     mode=LongitudinalMode.SCC,
-    custom_long_output=make_custom_output(selected_intent="cruise", debug=debug),
+    custom_long_output=make_custom_output(selected_intent="cruise", actuation=cut_in_verdicts(**blocker)),
   )
   planner.custom_long.cut_in_brake_assist_mode = "apply"
   sm = make_sm(v_ego=15.0)
@@ -426,17 +422,9 @@ def test_scc_cut_in_brake_assist_apply_noop_cases(blocker):
 
 
 def test_scc_cut_in_brake_assist_apply_blocked_by_driver_override():
-  debug = {
-    "path_shadow_model_path_available": True,
-    "cut_in_brake_assist_eligible": True,
-    "cut_in_brake_assist_apply_supported": True,
-    "cut_in_brake_assist_confidence": 0.80,
-    "cut_in_brake_assist_path_y_rel": 0.3,
-    "cut_in_brake_assist_proposed_cap": -2.0,
-  }
   planner = make_planner(
     mode=LongitudinalMode.SCC,
-    custom_long_output=make_custom_output(selected_intent="cruise", debug=debug),
+    custom_long_output=make_custom_output(selected_intent="cruise", actuation=cut_in_verdicts()),
   )
   planner.custom_long.cut_in_brake_assist_mode = "apply"
 
@@ -454,13 +442,7 @@ def test_scc_curve_traffic_advisor_apply_cap():
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(
       selected_intent="cruise",
-      debug={
-        "curve_traffic_eligible": True,
-        "curve_traffic_apply_supported": True,
-        "curve_traffic_confidence": 0.50,
-        "curve_traffic_traffic_block_reason": "",
-        "curve_traffic_a_curve_cap_proposed": -1.0,
-      },
+      actuation=curve_traffic_verdicts(),
     ),
   )
   planner.custom_long.curve_traffic_advisor_mode = "apply_conservative"
@@ -479,27 +461,19 @@ def test_scc_curve_traffic_advisor_apply_cap():
 @pytest.mark.parametrize(
   "blocker",
   [
-    {"curve_traffic_eligible": False},
-    {"curve_traffic_apply_supported": False},
-    {"curve_traffic_confidence": 0.40},
+    {"eligible": False},
+    {"apply_supported": False},
+    {"confidence": 0.40},
     {"model_stale": True},
-    {"curve_traffic_traffic_block_reason": "closing_lead"},
-    {"curve_traffic_a_curve_cap_proposed": 0.1},
-    {"curve_traffic_a_curve_cap_proposed": float('inf')},
+    {"traffic_block_reason": "closing_lead"},
+    {"a_curve_cap_proposed": 0.1},
+    {"a_curve_cap_proposed": float('inf')},
   ],
 )
 def test_scc_curve_traffic_advisor_apply_noop_cases(blocker):
-  debug = {
-    "curve_traffic_eligible": True,
-    "curve_traffic_apply_supported": True,
-    "curve_traffic_confidence": 0.50,
-    "curve_traffic_traffic_block_reason": "",
-    "curve_traffic_a_curve_cap_proposed": -1.0,
-  }
-  debug.update(blocker)
   planner = make_planner(
     mode=LongitudinalMode.SCC,
-    custom_long_output=make_custom_output(selected_intent="cruise", debug=debug),
+    custom_long_output=make_custom_output(selected_intent="cruise", actuation=curve_traffic_verdicts(**blocker)),
   )
   planner.custom_long.curve_traffic_advisor_mode = "apply_conservative"
   sm = make_sm(v_ego=15.0)
@@ -513,16 +487,9 @@ def test_scc_curve_traffic_advisor_apply_noop_cases(blocker):
 
 
 def test_scc_curve_traffic_advisor_apply_blocked_by_driver_override():
-  debug = {
-    "curve_traffic_eligible": True,
-    "curve_traffic_apply_supported": True,
-    "curve_traffic_confidence": 0.50,
-    "curve_traffic_traffic_block_reason": "",
-    "curve_traffic_a_curve_cap_proposed": -1.0,
-  }
   planner = make_planner(
     mode=LongitudinalMode.SCC,
-    custom_long_output=make_custom_output(selected_intent="cruise", debug=debug),
+    custom_long_output=make_custom_output(selected_intent="cruise", actuation=curve_traffic_verdicts()),
   )
   planner.custom_long.curve_traffic_advisor_mode = "apply_conservative"
 

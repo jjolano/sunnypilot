@@ -5,7 +5,7 @@ import math
 
 import pytest
 import cereal.messaging as messaging
-from openpilot.selfdrive.controls.controlsd import (
+from openpilot.sunnypilot.custom.lateral.demand.telemetry import (
   CONTROL_N_T_IDXS,
   set_model_path_state_preview,
   set_model_path_state_sensor_confidence,

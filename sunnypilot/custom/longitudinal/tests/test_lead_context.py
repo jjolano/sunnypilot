@@ -132,14 +132,12 @@ def test_path_relative_y_duplicate_x_keeps_model_sign():
   assert lc._path_relative_y(0.5, 30.0, model_path(xs=(30.0, 30.0, 60.0), ys=(1.0, 2.0, 3.0))) == pytest.approx(2.5)
 
 
-def test_path_arc_distance_never_shortens_raw_distance():
-  curved = lc._path_arc_distance(43.0, model_path(xs=(0.0, 43.0), ys=(0.0, 20.0)))
-  assert curved == pytest.approx(math.hypot(43.0, 20.0))
-  assert curved > 43.0
-  assert lc._path_arc_distance(43.0, None) == 43.0
+def test_model_path_geometry_cannot_extend_lead_progress():
+  """ADR 2026-07-10: raw modelV2 path geometry must not alter lead progress or gap excess.
 
-
-def test_progress_gap_uses_path_arc_without_changing_raw_risk_gap():
+  The same curved path that used to inflate the progress distance (path arc > straight-line
+  d_rel) now changes nothing: progress derives from radar-fused Lead Evidence only.
+  """
   confidence = (LeadConfidenceState(status=True, stable=True, accel_blend=1.0), LeadConfidenceState())
   raw_ctx = lc.LeadContextTracker().update(
     leads=(lead(d_rel=43.0, v_lead=20.0, y_rel=0.0), None),
@@ -154,8 +152,8 @@ def test_progress_gap_uses_path_arc_without_changing_raw_risk_gap():
   )
 
   assert raw_ctx.lead_gap_excess == 0.0
-  assert curved_ctx.lead_progress_allowed is True
-  assert curved_ctx.lead_gap_excess == pytest.approx(math.hypot(43.0, 20.0) - lc._desired_progress_gap(20.0))
+  assert curved_ctx.lead_gap_excess == 0.0
+  assert curved_ctx.states[0].progress_model.progress_distance == pytest.approx(43.0)
   assert curved_ctx.states[0].risk_model.gap_shortage == pytest.approx(lc._desired_progress_gap(20.0) - 43.0)
 
 

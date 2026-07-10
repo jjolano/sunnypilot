@@ -168,22 +168,60 @@ def test_lead_release_rejects_tiny_positive_evidence(monkeypatch):
   assert r.standstill_release_allowed is False
 
 
-def test_model_path_arc_feeds_real_progress_gap_without_changing_raw_risk_distance():
-  s = CustomLongitudinalStack()
-  ld = lead(d_rel=43.0, v_lead=20.0, v_rel=0.0, y_rel=-20.0)
-  model = model_path(xs=(0.0, 43.0), ys=(0.0, 20.0))
-  r = None
-  for _ in range(5):
-    r = s.update(base(v_ego=20.0, v_cruise=22.0, seed_a_target=0.0,
-                      leads=(ld, None), model_msg=model, mode=LongitudinalMode.ACC), DT)
+def test_acc_lead_progress_unaffected_by_raw_model_path_geometry():
+  """ADR 2026-07-10: raw modelV2 path geometry cannot authorize ACC lead progress.
 
-  assert r is not None
-  assert r.debug["lead_context_progress_allowed"] is True
-  assert r.debug["lead_context_gap_excess"] == pytest.approx(math.hypot(43.0, 20.0) - 44.0)
-  assert r.debug["actual_primary_lead_path_y_rel"] == pytest.approx(-20.0)
-  assert r.debug["actual_primary_lead_progress_on_path_score"] == pytest.approx(1.0)
-  assert r.debug["actual_primary_lead_gap_shortage"] == pytest.approx(1.0)
-  assert r.debug["acc_envelope_time_gap"] == pytest.approx(43.0 / 20.0)
+  A curved model path used to inflate the progress distance via the path-arc shortcut;
+  the actuation lead tracker now consumes radar-fused Lead Evidence only, so the same
+  scenario with and without the model path produces identical progress and targets.
+  """
+  ld = lead(d_rel=43.0, v_lead=20.0, v_rel=0.0, y_rel=0.0)
+  model = model_path(xs=(0.0, 43.0), ys=(0.0, 20.0))
+  s_with, s_without = CustomLongitudinalStack(), CustomLongitudinalStack()
+  r_with = r_without = None
+  for _ in range(5):
+    r_with = s_with.update(base(v_ego=20.0, v_cruise=22.0, seed_a_target=0.0,
+                                leads=(ld, None), model_msg=model, mode=LongitudinalMode.ACC), DT)
+    r_without = s_without.update(base(v_ego=20.0, v_cruise=22.0, seed_a_target=0.0,
+                                      leads=(ld, None), model_msg=None, mode=LongitudinalMode.ACC), DT)
+
+  assert r_with is not None and r_without is not None
+  assert r_with.a_target == pytest.approx(r_without.a_target)
+  assert r_with.debug["lead_context_progress_allowed"] == r_without.debug["lead_context_progress_allowed"]
+  assert r_with.debug["lead_context_gap_excess"] == 0.0
+  assert r_without.debug["lead_context_gap_excess"] == 0.0
+  assert r_with.debug["actual_primary_lead_gap_shortage"] == pytest.approx(1.0)
+  assert r_with.debug["acc_envelope_time_gap"] == pytest.approx(43.0 / 20.0)
+
+
+def test_apply_mode_actuation_verdicts_independent_of_debug():
+  """Turning debug off removes diagnostics only; apply-mode Actuation Verdicts persist."""
+  kwargs = dict(
+    mode=LongitudinalMode.SCC,
+    curve_speed_confidence_mode="apply_conservative",
+    curve_confidence=CurveSpeedConfidenceInputs(
+      vision_active=True, vision_a_target=-1.2,
+      vision_current_lat_acc=1.0, vision_max_pred_lat_acc=2.4,
+    ),
+    sources=SourceToggles(scc_curve_vision_enabled=True),
+  )
+  r_debug = CustomLongitudinalStack().update(base(**kwargs), DT, collect_debug=True)
+  r_quiet = CustomLongitudinalStack().update(base(**kwargs), DT, collect_debug=False)
+
+  assert r_debug.actuation.curve_speed_confidence is not None
+  assert r_quiet.actuation.curve_speed_confidence == r_debug.actuation.curve_speed_confidence
+  assert r_quiet.actuation.cut_in_brake_assist == r_debug.actuation.cut_in_brake_assist
+  assert r_quiet.actuation.curve_traffic_advisor == r_debug.actuation.curve_traffic_advisor
+  assert r_quiet.debug == {}
+  assert r_debug.debug
+
+
+def test_debug_off_without_apply_modes_skips_feature_verdicts():
+  r = CustomLongitudinalStack().update(base(mode=LongitudinalMode.SCC), DT, collect_debug=False)
+  assert r.actuation.curve_speed_confidence is None
+  assert r.actuation.cut_in_brake_assist is None
+  assert r.actuation.curve_traffic_advisor is None
+  assert r.debug == {}
 
 
 def test_e2e_model_stop_brakes_acc_does_not():

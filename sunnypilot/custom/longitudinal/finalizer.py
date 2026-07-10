@@ -751,14 +751,14 @@ class _FinalArbitration:
       return float(base_a_target)
     if str(getattr(custom_long, "curve_speed_confidence_mode", "off") or "off") != "apply_conservative":
       return float(base_a_target)
-    debug = dict(getattr(custom_long_output, "debug", {}) or {})
-    prefix = "curve_speed_confidence_"
-    if not bool(debug.get(prefix + "eligible", False)) or not bool(debug.get(prefix + "apply_supported", False)):
+    # Typed Actuation Verdict; a missing verdict (off/fault) conservatively skips the cap.
+    verdict = getattr(getattr(custom_long_output, "actuation", None), "curve_speed_confidence", None)
+    if verdict is None or not bool(getattr(verdict, "eligible", False)) or not bool(getattr(verdict, "apply_supported", False)):
       return float(base_a_target)
-    confidence = finalizer._finite_float_or_none(debug.get(prefix + "confidence", 0.0))
+    confidence = finalizer._finite_float_or_none(getattr(verdict, "confidence", 0.0))
     if confidence is None or confidence < finalizer._CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE:
       return float(base_a_target)
-    proposed_cap = finalizer._finite_float_or_none(debug.get(prefix + "proposed_cap", 0.0))
+    proposed_cap = finalizer._finite_float_or_none(getattr(verdict, "proposed_cap", 0.0))
     if proposed_cap is None or proposed_cap >= float(base_a_target):
       return float(base_a_target)
     car_state = finalizer._sm_item(sm, 'carState')
@@ -782,16 +782,16 @@ class _FinalArbitration:
       return float(base_a_target)
     if str(getattr(custom_long, "cut_in_brake_assist_mode", "off") or "off") != "apply":
       return float(base_a_target)
-    debug = dict(getattr(custom_long_output, "debug", {}) or {})
-    prefix = "cut_in_brake_assist_"
-    if not bool(debug.get(prefix + "eligible", False)) or not bool(debug.get(prefix + "apply_supported", False)):
+    actuation = getattr(custom_long_output, "actuation", None)
+    verdict = getattr(actuation, "cut_in_brake_assist", None)
+    if verdict is None or not bool(getattr(verdict, "eligible", False)) or not bool(getattr(verdict, "apply_supported", False)):
       return float(base_a_target)
-    if not bool(debug.get("path_shadow_model_path_available", False)):
+    if not bool(getattr(actuation, "model_path_available", False)):
       return float(base_a_target)
-    confidence = finalizer._finite_float_or_none(debug.get(prefix + "confidence", 0.0))
+    confidence = finalizer._finite_float_or_none(getattr(verdict, "confidence", 0.0))
     if confidence is None or confidence < finalizer._CUT_IN_BRAKE_ASSIST_APPLY_MIN_CONFIDENCE:
       return float(base_a_target)
-    path_y_rel = finalizer._finite_float_or_none(debug.get(prefix + "path_y_rel"))
+    path_y_rel = finalizer._finite_float_or_none(getattr(verdict, "path_y_rel", None))
     if path_y_rel is None or abs(path_y_rel) > finalizer._CUT_IN_BRAKE_ASSIST_PATH_NEAR_Y_M:
       return float(base_a_target)
     car_state = finalizer._sm_item(sm, 'carState')
@@ -800,7 +800,7 @@ class _FinalArbitration:
       return float(base_a_target)
     if bool(getattr(controls_state, 'forceDecel', False)):
       return float(base_a_target)
-    proposed_cap = finalizer._finite_float_or_none(debug.get(prefix + "proposed_cap", 0.0))
+    proposed_cap = finalizer._finite_float_or_none(getattr(verdict, "proposed_cap", 0.0))
     if proposed_cap is None or proposed_cap >= 0.0:
       return float(base_a_target)
     gentle_cap = max(proposed_cap, finalizer._CUT_IN_BRAKE_ASSIST_APPLY_MAX_DECEL)
@@ -822,16 +822,16 @@ class _FinalArbitration:
       return float(base_a_target)
     if str(getattr(custom_long, "curve_traffic_advisor_mode", "off") or "off") != "apply_conservative":
       return float(base_a_target)
-    debug = dict(getattr(custom_long_output, "debug", {}) or {})
-    prefix = "curve_traffic_"
-    if not bool(debug.get(prefix + "eligible", False)) or not bool(debug.get(prefix + "apply_supported", False)):
+    actuation = getattr(custom_long_output, "actuation", None)
+    verdict = getattr(actuation, "curve_traffic_advisor", None)
+    if verdict is None or not bool(getattr(verdict, "eligible", False)) or not bool(getattr(verdict, "apply_supported", False)):
       return float(base_a_target)
-    if str(debug.get(prefix + "traffic_block_reason", "")) != "":
+    if str(getattr(verdict, "traffic_block_reason", "") or "") != "":
       return float(base_a_target)
-    confidence = finalizer._finite_float_or_none(debug.get(prefix + "confidence", 0.0))
+    confidence = finalizer._finite_float_or_none(getattr(verdict, "confidence", 0.0))
     if confidence is None or confidence < finalizer._CURVE_TRAFFIC_APPLY_MIN_CONFIDENCE:
       return float(base_a_target)
-    if bool(debug.get("model_stale", False)):
+    if bool(getattr(actuation, "model_stale", False)):
       return float(base_a_target)
     car_state = finalizer._sm_item(sm, 'carState')
     controls_state = finalizer._sm_item(sm, 'controlsState')
@@ -839,7 +839,7 @@ class _FinalArbitration:
       return float(base_a_target)
     if bool(getattr(controls_state, 'forceDecel', False)):
       return float(base_a_target)
-    proposed_cap = finalizer._finite_float_or_none(debug.get(prefix + "a_curve_cap_proposed", 0.0))
+    proposed_cap = finalizer._finite_float_or_none(getattr(verdict, "a_curve_cap_proposed", 0.0))
     if proposed_cap is None or proposed_cap >= 0.0:
       return float(base_a_target)
     conservative_cap = max(proposed_cap, finalizer._CURVE_TRAFFIC_APPLY_MIN_CAP)

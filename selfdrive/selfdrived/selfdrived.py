@@ -30,7 +30,7 @@ from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
-from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
+from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP, StateMachineEvents
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 
 REPLAY = "REPLAY" in os.environ
@@ -135,6 +135,9 @@ class SelfdriveD(CruiseHelper):
       experimental_mode=False,
       personality=personality,
     )
+    # Engagement-Cycle Latch: the active Longitudinal Mode captured when controls engage
+    # and held until disengagement. Onroad Param writes update only the pending config value.
+    self.active_custom_longitudinal_mode: LongitudinalMode = self.config.custom_longitudinal_mode
 
     car_recognized = self.CP.brand != 'mock'
 
@@ -649,6 +652,8 @@ class SelfdriveD(CruiseHelper):
     icbm.sendButton = self.icbm.cruise_button
     icbm.vTarget = self.icbm.v_target
 
+    ss_sp.activeLongitudinalMode = self.active_custom_longitudinal_mode.value
+
     self.pm.send('selfdriveStateSP', ss_sp_msg)
 
     # onroadEventsSP - logged every second or on change
@@ -665,7 +670,13 @@ class SelfdriveD(CruiseHelper):
     self.update_events(CS, config)
     config = self.config
     if not self.CP.passive and self.initialized:
-      self.enabled, self.active = self.state_machine.update(self.events)
+      # StateMachineEvents also carries the SP Fail-closed custom-longitudinal fault
+      # into the main immediateDisable path.
+      self.enabled, self.active = self.state_machine.update(StateMachineEvents(self.events, self.events_sp))
+    if not self.enabled:
+      # Engagement-Cycle Latch: track the pending Param while disengaged, hold while engaged,
+      # so the value at the moment controls engage is the active mode for the whole engagement.
+      self.active_custom_longitudinal_mode = config.custom_longitudinal_mode
     if not self.CP.notCar:
       self.mads.update(CS)
     self.update_alerts(CS, config)
@@ -678,7 +689,8 @@ class SelfdriveD(CruiseHelper):
     while not evt.is_set():
       config = self.config
       if config.custom_longitudinal_enabled:
-        experimental_mode = bool(self.CP.openpilotLongitudinalControl and config.custom_longitudinal_mode is LongitudinalMode.E2E)
+        # Derive from the latched active mode so card's experimentalMode cannot flip mid-engagement.
+        experimental_mode = bool(self.CP.openpilotLongitudinalControl and self.active_custom_longitudinal_mode is LongitudinalMode.E2E)
       else:
         experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
 
@@ -687,6 +699,8 @@ class SelfdriveD(CruiseHelper):
         is_metric=self.params.get_bool("IsMetric"),
         is_ldw_enabled=self.params.get_bool("IsLdwEnabled"),
         disengage_on_accelerator=self.params.get_bool("DisengageOnAccelerator"),
+        # Onroad writes are accepted here but only become active at the next engagement.
+        custom_longitudinal_mode=LongitudinalMode.from_value(self.params.get("CustomLongitudinalMode") or "scc"),
         experimental_mode=experimental_mode,
         personality=self.params.get("LongitudinalPersonality", return_default=True),
       )

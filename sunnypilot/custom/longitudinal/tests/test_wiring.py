@@ -351,7 +351,7 @@ def test_explicit_mode_from_param():
     assert a.mode is expected
 
 
-def test_mode_and_enable_refresh_live():
+def test_enable_refreshes_live_but_mode_is_an_engagement_cycle_latch():
   params = FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
                       LongitudinalPersonality="1", SmartCruiseControlVision=True, SmartCruiseControlMap=False)
   a = CustomLongitudinalAdapter(params)
@@ -359,6 +359,10 @@ def test_mode_and_enable_refresh_live():
                    LongitudinalPersonality="2", SmartCruiseControlVision=False, SmartCruiseControlMap=True)
   a.maybe_refresh_params()
   assert a.enabled is False
+  # An onroad Param write never alters the adapter's active mode; only the value
+  # selfdrived publishes (captured at the next engagement) does.
+  assert a.mode is LongitudinalMode.ACC
+  a.set_active_mode("e2e")
   assert a.mode is LongitudinalMode.E2E
 
 
@@ -388,11 +392,13 @@ def test_stack_reset_on_mode_change_and_re_enable():
   resets = []
   a._stack.reset = lambda: resets.append(1)
 
-  # Mode change triggers a reset.
-  params._v["CustomLongitudinalMode"] = "acc"
-  a.refresh_params(initial=False)
+  # Active-mode change (published by selfdrived) triggers a reset.
+  a.set_active_mode("acc")
   assert len(resets) == 1
   assert a.mode is LongitudinalMode.ACC
+  # Re-adopting the same mode does not.
+  a.set_active_mode("acc")
+  assert len(resets) == 1
 
   # Disabling does not reset.
   params._v["CustomLongitudinalEnabled"] = False
@@ -455,15 +461,16 @@ def test_adapter_can_skip_debug_collection_when_not_needed():
   assert lazy.debug == {}
 
 
-def test_debug_trace_mode_does_not_refresh_on_mode_only():
+def test_refresh_params_never_rereads_mode():
   params = FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc", LongitudinalDebugTraceMode="off")
   a = CustomLongitudinalAdapter(params)
-  assert a.debug_trace_mode == "off"
-  params._v["LongitudinalDebugTraceMode"] = "log"
-  a.refresh_params(mode_only=True)
-  assert a.debug_trace_mode == "off"  # mode_only must not touch advisory params
+  assert a.mode is LongitudinalMode.ACC
+  params._v["CustomLongitudinalMode"] = "e2e"
   a.refresh_params()
-  assert a.debug_trace_mode == "log"  # full/slow-cadence refresh picks up the change
+  assert a.mode is LongitudinalMode.ACC  # deferred: applies only via the next-engagement capture
+  params._v["LongitudinalDebugTraceMode"] = "log"
+  a.refresh_params()
+  assert a.debug_trace_mode == "log"  # advisory params still refresh on the slow cadence
 
 
 def test_new_shadow_modes_parse_and_refresh_on_slow_cadence():
@@ -477,14 +484,8 @@ def test_new_shadow_modes_parse_and_refresh_on_slow_cadence():
   assert a.curve_speed_confidence_mode == "apply_conservative"
   assert a.standstill_release_confidence_mode == "gate"
 
-  # mode_only must not touch advisory/shadow params.
-  params._v.update(CutInBrakeAssistMode="bad", CurveSpeedConfidenceMode="bad", StandstillReleaseConfidenceMode="bad")
-  a.refresh_params(mode_only=True)
-  assert a.cut_in_brake_assist_mode == "shadow"
-  assert a.curve_speed_confidence_mode == "apply_conservative"
-  assert a.standstill_release_confidence_mode == "gate"
-
   # A full/slow-cadence refresh applies the new (invalid -> off) values.
+  params._v.update(CutInBrakeAssistMode="bad", CurveSpeedConfidenceMode="bad", StandstillReleaseConfidenceMode="bad")
   a.refresh_params()
   assert a.cut_in_brake_assist_mode == "off"
   assert a.curve_speed_confidence_mode == "off"

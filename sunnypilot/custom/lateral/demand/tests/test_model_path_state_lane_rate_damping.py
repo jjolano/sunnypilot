@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 import cereal.messaging as messaging
 
-from openpilot.selfdrive.controls.controlsd import set_model_path_state_lane_rate_damping
+from openpilot.sunnypilot.custom.lateral.demand.telemetry import set_model_path_state_lane_rate_damping
 
 
 def _new_model_path_state():

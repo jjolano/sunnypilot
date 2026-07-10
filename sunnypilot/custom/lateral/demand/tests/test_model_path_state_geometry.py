@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from cereal import log
-from openpilot.selfdrive.controls.controlsd import set_model_path_state_geometry
+from openpilot.sunnypilot.custom.lateral.demand.telemetry import set_model_path_state_geometry
 
 
 def _make_model_path_state():

@@ -21,9 +21,17 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from openpilot.sunnypilot.custom.longitudinal.acc_envelope import AccEnvelopeInputs, evaluate_acc_envelope
-from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import predict_cut_in_brake_assist
-from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs, predict_curve_speed_confidence
-from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import CurveTrafficAdvisorInputs, predict_curve_traffic_advisor
+from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import CutInBrakeAssistResult, predict_cut_in_brake_assist
+from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import (
+  CurveSpeedConfidenceInputs,
+  CurveSpeedConfidenceResult,
+  predict_curve_speed_confidence,
+)
+from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
+  CurveTrafficAdvisorInputs,
+  CurveTrafficAdvisorResult,
+  predict_curve_traffic_advisor,
+)
 from openpilot.sunnypilot.custom.longitudinal.decision import CandidateRole, Decision, decide
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceTracker
 from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
@@ -264,6 +272,22 @@ class LongitudinalStackInputs:
 
 
 @dataclass(frozen=True)
+class ActuationVerdicts:
+  """Typed Actuation Verdicts (CONTEXT.md) for the gated custom restrictions.
+
+  Built whenever an apply-tier mode is armed, independent of optional diagnostic
+  collection: turning trace/debug off may remove diagnostics only, never an apply-mode
+  restriction. ``None`` means the feature produced no verdict this tick (off or fault),
+  which downstream conservatively treats as no restriction — the same direction as the
+  old debug-dict behavior."""
+  curve_speed_confidence: CurveSpeedConfidenceResult | None = None
+  cut_in_brake_assist: CutInBrakeAssistResult | None = None
+  curve_traffic_advisor: CurveTrafficAdvisorResult | None = None
+  model_path_available: bool = False  # cut-in: path-shadow Model-Path Evidence present
+  model_stale: bool = False
+
+
+@dataclass(frozen=True)
 class LongitudinalStackResult:
   a_target: float
   should_stop: bool
@@ -273,6 +297,7 @@ class LongitudinalStackResult:
   standstill_release_source: str = ""
   standstill_release_a_target: float = 0.0
   standstill_release_reason: str = ""
+  actuation: ActuationVerdicts = field(default_factory=ActuationVerdicts)
 
 
 class CustomLongitudinalStack:
@@ -289,29 +314,47 @@ class CustomLongitudinalStack:
     self._prev_smoothed_a_target = None
 
   def update(self, inp: LongitudinalStackInputs, dt: float, *, collect_debug: bool = True) -> LongitudinalStackResult:
-    confidence_states = (
-      self._lead_confidence[0].update(inp.leads[0], dt),
-      self._lead_confidence[1].update(inp.leads[1], dt),
-    )
-    lead_ctx = self._lead_context.update(inp.leads, confidence_states, inp.v_ego, dt,
-                                         progress_model_msg=inp.model_msg)
+    # Mode admission happens first: no stateful tracker or candidate construction sees
+    # evidence the active Longitudinal Mode excludes.
     act_inp = _sanitize_inputs_for_mode(inp)
+    confidence_states = (
+      self._lead_confidence[0].update(act_inp.leads[0], dt),
+      self._lead_confidence[1].update(act_inp.leads[1], dt),
+    )
+    # Lead Evidence comes from the existing radarState fusion only. Raw modelV2 path
+    # geometry must not alter lead risk, progress, or candidate authority in any mode
+    # (ADR 2026-07-10-longitudinal-mode-engagement-cycle-latch).
+    lead_ctx = self._lead_context.update(act_inp.leads, confidence_states, act_inp.v_ego, dt)
 
-    # Shadow path-relative lead context and telemetry-only advisory classifiers are only built
-    # when the caller actually needs debug/shadow payloads.
+    # Advisory classifiers run whenever an apply-tier mode is armed OR debug is collected;
+    # their Actuation Verdicts must never depend on diagnostic collection. The shadow
+    # path-relative context is evidence for cut-in brake assist, so it shares that gate.
+    try:
+      apply_armed = (
+        str(inp.cut_in_brake_assist_mode) == "apply" or
+        str(inp.curve_speed_confidence_mode) == "apply_conservative" or
+        str(inp.curve_traffic_advisor_mode) == "apply_conservative"
+      )
+    except Exception:  # a broken mode value never faults the stack; it just yields no verdicts
+      apply_armed = False
+    evaluate_features = collect_debug or apply_armed
+
     path_shadow_model_path_available = False
     path_shadow_fault = False
     shadow_ctx = None
     shadow_debug: dict[str, Any] = {}
+    cut_in_brake_assist_result: CutInBrakeAssistResult | None = None
     cut_in_brake_assist_fault = False
     cut_in_brake_assist_debug: dict[str, Any] = {}
+    curve_speed_confidence_result: CurveSpeedConfidenceResult | None = None
     curve_speed_confidence_fault = False
     curve_speed_confidence_debug: dict[str, Any] = {}
-    if collect_debug:
+    if evaluate_features:
       try:
         path_shadow_model_path_available = _model_path_available(inp.model_msg)
         shadow_ctx = self._shadow_lead_context.update(inp.leads, confidence_states, inp.v_ego, dt, model_msg=inp.model_msg)
-        shadow_debug = {f"path_shadow_{k}": v for k, v in shadow_ctx.debug_dict().items()}
+        if collect_debug:
+          shadow_debug = {f"path_shadow_{k}": v for k, v in shadow_ctx.debug_dict().items()}
       except Exception:
         path_shadow_fault = True
 
@@ -325,9 +368,11 @@ class CustomLongitudinalStack:
           apply_value="apply", mode_key="mode", effective_mode_key="effective_mode",
           apply_supported_key="apply_supported", eligible_key="eligible",
         )
-        cut_in_brake_assist_debug = cut_in_brake_assist_result.debug_dict()
+        if collect_debug:
+          cut_in_brake_assist_debug = cut_in_brake_assist_result.debug_dict()
       except Exception:
         cut_in_brake_assist_fault = True
+        cut_in_brake_assist_result = None
 
       try:
         curve_speed_confidence_result = predict_curve_speed_confidence(
@@ -338,9 +383,11 @@ class CustomLongitudinalStack:
           apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
           apply_supported_key="apply_supported", eligible_key="eligible",
         )
-        curve_speed_confidence_debug = curve_speed_confidence_result.debug_dict()
+        if collect_debug:
+          curve_speed_confidence_debug = curve_speed_confidence_result.debug_dict()
       except Exception:
         curve_speed_confidence_fault = True
+        curve_speed_confidence_result = None
 
     raw_lead_present = _any_status(inp.leads)
     lead_shadow_active = bool(getattr(lead_ctx, "shadow_active", False))
@@ -465,10 +512,39 @@ class CustomLongitudinalStack:
     )
     standstill_release_confidence_fault = False
     standstill_release_confidence_debug: dict[str, Any] = {}
+    curve_traffic_advisor_result: CurveTrafficAdvisorResult | None = None
     curve_traffic_advisor_fault = False
     curve_traffic_advisor_debug: dict[str, Any] = {}
     dynamic_safety_floor_fault = False
     dynamic_safety_floor_debug: dict[str, Any] = {}
+    if evaluate_features:
+      try:
+        curve_traffic_advisor_result = predict_curve_traffic_advisor(
+          mode=inp.curve_traffic_advisor_mode,
+          data=CurveTrafficAdvisorInputs(
+            v_ego=act_inp.v_ego,
+            a_ego=act_inp.a_ego,
+            model_msg=inp.model_msg,
+            leads=inp.leads,
+            lead_shadow_active=lead_shadow_active,
+            alternate_threat_active=alternate_threat_active,
+            long_active=inp.long_active,
+            model_stale=inp.model_stale,
+            brake_pressed=act_inp.brake_pressed,
+            gas_pressed=act_inp.gas_pressed,
+            force_slow_decel=act_inp.force_slow_decel,
+          ),
+        )
+        curve_traffic_advisor_result = _downgrade_research_apply(
+          curve_traffic_advisor_result, inp.research_actuation_allowed,
+          apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
+          apply_supported_key="apply_supported", eligible_key="eligible",
+        )
+        if collect_debug:
+          curve_traffic_advisor_debug = curve_traffic_advisor_result.debug_dict()
+      except Exception:
+        curve_traffic_advisor_fault = True
+        curve_traffic_advisor_result = None
     if collect_debug:
       try:
         standstill_release_confidence_result = predict_standstill_release_confidence(
@@ -494,32 +570,6 @@ class CustomLongitudinalStack:
         standstill_release_confidence_debug = standstill_release_confidence_result.debug_dict()
       except Exception:
         standstill_release_confidence_fault = True
-
-      try:
-        curve_traffic_advisor_result = predict_curve_traffic_advisor(
-          mode=inp.curve_traffic_advisor_mode,
-          data=CurveTrafficAdvisorInputs(
-            v_ego=act_inp.v_ego,
-            a_ego=act_inp.a_ego,
-            model_msg=inp.model_msg,
-            leads=inp.leads,
-            lead_shadow_active=lead_shadow_active,
-            alternate_threat_active=alternate_threat_active,
-            long_active=inp.long_active,
-            model_stale=inp.model_stale,
-            brake_pressed=act_inp.brake_pressed,
-            gas_pressed=act_inp.gas_pressed,
-            force_slow_decel=act_inp.force_slow_decel,
-          ),
-        )
-        curve_traffic_advisor_result = _downgrade_research_apply(
-          curve_traffic_advisor_result, inp.research_actuation_allowed,
-          apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
-          apply_supported_key="apply_supported", eligible_key="eligible",
-        )
-        curve_traffic_advisor_debug = curve_traffic_advisor_result.debug_dict()
-      except Exception:
-        curve_traffic_advisor_fault = True
 
       try:
         lead_d_rel_for_floor = lead_d_rel if has_lead else None
@@ -607,6 +657,13 @@ class CustomLongitudinalStack:
       standstill_release_source=str(decision.selected_intent if standstill_release_allowed else ""),
       standstill_release_a_target=float(max(raw_a_target, 0.15)) if standstill_release_allowed else 0.0,
       standstill_release_reason=str(decision.reason if standstill_release_allowed else ""),
+      actuation=ActuationVerdicts(
+        curve_speed_confidence=curve_speed_confidence_result,
+        cut_in_brake_assist=cut_in_brake_assist_result,
+        curve_traffic_advisor=curve_traffic_advisor_result,
+        model_path_available=bool(path_shadow_model_path_available),
+        model_stale=bool(inp.model_stale),
+      ),
       debug=debug,
     )
 

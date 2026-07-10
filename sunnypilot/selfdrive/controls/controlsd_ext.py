@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import math
 import time
 from math import isclose
 
@@ -20,6 +21,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import Bl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.custom.lateral.torque_v2_1 import LatControlTorqueV21
 from openpilot.sunnypilot.custom.lateral.demand.wiring import LateralDemandAdapter
+from openpilot.sunnypilot.custom.lateral.demand.telemetry import publish_model_path_state
 
 TORQUE_TUNE_V0 = 0.0
 TORQUE_TUNE_V1 = 1.0
@@ -89,6 +91,70 @@ class ControlsExt(ModelStateBase):
         self.lat_delay = get_lat_delay(self.params, sm["liveDelay"].lateralDelay)
 
       self._param_update_time = time.monotonic()
+
+  def _update_lateral_demand_lifecycle(self) -> bool:
+    """Custom lateral lifecycle: reset the pipeline when the opt-in toggles off. Returns enabled."""
+    enabled = bool(self.lateral_demand.enabled)
+    if self._lateral_demand_enabled and not enabled:
+      self.lateral_demand.reset()
+    self._lateral_demand_enabled = enabled
+    return enabled
+
+  def conditioned_lateral_demand(self, sm: messaging.SubMaster, lat_active: bool, CS, roll: float,
+                                 new_desired_curvature: float, current_curvature: float,
+                                 calibrated_pose, steer_limited_by_safety: bool,
+                                 curvature_limited: bool, lat_delay: float,
+                                 maneuver_active: bool) -> float:
+    """Custom lateral pipeline: raw desired curvature in, Conditioned Lateral Demand out.
+
+    Returns the input unchanged when the pipeline is disabled or a lateral maneuver owns the
+    curvature; hard curvature/lat-accel caps stay in controlsd (clip_curvature) and turn this
+    into the Processed Lateral Demand. The pipeline itself is fail-closed to the raw curvature.
+    """
+    enabled = self._update_lateral_demand_lifecycle()
+    if not enabled:
+      return new_desired_curvature
+    if maneuver_active:
+      self.lateral_demand.reset()
+      return new_desired_curvature
+    # Model-Path / pose evidence extraction with source health: stale or unhealthy sources
+    # degrade to None rather than faulting the pipeline call.
+    try:
+      model_recv_time = float(sm.recv_time.get('modelV2', 0.0) or 0.0)
+    except (TypeError, ValueError):
+      model_recv_time = 0.0
+    model_age_s = max(0.0, time.monotonic() - model_recv_time) if math.isfinite(model_recv_time) and model_recv_time > 0.0 else float("inf")
+    live_pose = sm['livePose']
+    live_pose_yaw_valid = bool(
+      sm.alive['livePose'] and sm.valid['livePose']
+      and getattr(live_pose, 'inputsOK', False)
+      and getattr(live_pose, 'sensorsOK', False)
+      and getattr(live_pose, 'posenetOK', False)
+      and getattr(getattr(live_pose, 'angularVelocityDevice', None), 'valid', False)
+    )
+    yaw_rate = calibrated_pose.angular_velocity.z if calibrated_pose is not None and live_pose_yaw_valid else None
+    return self.lateral_demand.process(
+      lat_active, CS.vEgo, roll, new_desired_curvature, current_curvature, sm['modelV2'],
+      getattr(CS, 'steeringPressed', None), model_age_s, yaw_rate,
+      getattr(CS, 'steeringRateDeg', None), steer_limited_by_safety,
+      bool(CS.leftBlinker), bool(CS.rightBlinker), curvature_limited, lat_delay=lat_delay,
+    )
+
+  def lateral_control_handoff(self, LaC, enabled: bool, lat_active: bool) -> None:
+    """Torque v2.1-specific handoff: path evidence + override-refresh context."""
+    if hasattr(LaC, 'set_under_response_path_evidence_from_lateral_demand'):
+      LaC.set_under_response_path_evidence_from_lateral_demand(
+        getattr(self.lateral_demand, 'last_result', None),
+        active=lat_active, evidence_expected=self._lateral_demand_enabled,
+      )
+    if hasattr(LaC, 'set_torque_override_refresh_allowed'):
+      LaC.set_torque_override_refresh_allowed(not (enabled or lat_active))
+
+  def publish_lateral_telemetry(self, model_path_state, sm: messaging.SubMaster, CS,
+                                raw_desired_curvature: float, processed_desired_curvature: float,
+                                lat_delay: float) -> None:
+    publish_model_path_state(model_path_state, sm, self.lateral_demand, CS.vEgo, CS.aEgo,
+                             raw_desired_curvature, processed_desired_curvature, lat_delay)
 
   def get_lat_active(self, sm: messaging.SubMaster) -> bool:
     if self.blinker_pause_lateral.update(sm['carState']):

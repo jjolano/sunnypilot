@@ -5,8 +5,11 @@ from types import SimpleNamespace
 import math
 import time
 
+from cereal import custom
+from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceResult
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts
 from openpilot.sunnypilot.custom.longitudinal import wiring as long_wiring
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, CustomLongitudinalOutput
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
@@ -77,7 +80,7 @@ def test_adapter_evaluate_and_apply_keep_float_api():
     'carControl': SimpleNamespace(orientationNED=[0.0, 0.0, 0.0]),
     'controlsState': SimpleNamespace(forceDecel=False),
   }
-  a._stack.update = lambda *args, **kwargs: SimpleNamespace(a_target=-1.5, should_stop=True, standstill_release_allowed=False, standstill_release_source='', standstill_release_a_target=0.0, standstill_release_reason='', debug={'intent': 'e2e', 'reason': 'trusted'}, decision=SimpleNamespace(selected_intent='e2e', reason='trusted'))  # type: ignore[assignment]
+  a._stack.update = lambda *args, **kwargs: SimpleNamespace(a_target=-1.5, should_stop=True, standstill_release_allowed=False, standstill_release_source='', standstill_release_a_target=0.0, standstill_release_reason='', debug={'intent': 'e2e', 'reason': 'trusted'}, decision=SimpleNamespace(selected_intent='e2e', reason='trusted'), actuation=ActuationVerdicts())  # type: ignore[assignment]
   out = None
   for _ in range(20):
     out = a.evaluate(sm, 10.0, 0.0, 12.0, 0.3, SimpleNamespace(vision=SimpleNamespace(is_active=False, output_a_target=0.0), map=SimpleNamespace(is_active=False, output_a_target=0.0)), SimpleNamespace(is_active=False, output_v_target=0.0, output_a_target=0.0))
@@ -223,14 +226,11 @@ def test_scc_curve_confidence_apply_conservative_caps_final_accel():
     a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
     selected_intent="cruise", reason="cruise",
     research_actuation_allowed=True,
-    debug={
-      "curve_speed_confidence_mode": "apply_conservative",
-      "curve_speed_confidence_effective_mode": "apply_conservative",
-      "curve_speed_confidence_apply_supported": True,
-      "curve_speed_confidence_eligible": True,
-      "curve_speed_confidence_confidence": 0.75,
-      "curve_speed_confidence_proposed_cap": -0.4,
-    },
+    actuation=ActuationVerdicts(curve_speed_confidence=CurveSpeedConfidenceResult(
+      mode="apply_conservative", effective_mode="apply_conservative",
+      apply_supported=True, eligible=True, confidence=0.75, proposed_cap=-0.4,
+    )),
+    debug={},
   )  # type: ignore[assignment]
   sm = FakeSubMaster({
     'selfdriveState': SimpleNamespace(experimentalMode=False),
@@ -369,12 +369,10 @@ def test_curve_confidence_apply_conservative_rejects_nonfinite_and_clamps_floor(
       a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
       selected_intent="cruise", reason="cruise",
       research_actuation_allowed=True,
-      debug={
-        "curve_speed_confidence_apply_supported": True,
-        "curve_speed_confidence_eligible": True,
-        "curve_speed_confidence_confidence": confidence,
-        "curve_speed_confidence_proposed_cap": proposed,
-      },
+      actuation=ActuationVerdicts(curve_speed_confidence=CurveSpeedConfidenceResult(
+        apply_supported=True, eligible=True, confidence=confidence, proposed_cap=proposed,
+      )),
+      debug={},
     )  # type: ignore[assignment]
     sm = FakeSubMaster({
       'selfdriveState': SimpleNamespace(experimentalMode=False),
@@ -1461,7 +1459,7 @@ def test_stop_hold_release_slew_e2e_preserves_source_when_limited():
 def test_target_filtering_keeps_cruise_fallback():
   sp = object.__new__(LongitudinalPlannerSP)
   sp.__dict__['custom_long'] = SimpleNamespace(enabled=True, mode=LongitudinalMode.ACC, sources=SourceToggles(),
-                                               maybe_refresh_params=lambda: None)
+                                               maybe_refresh_params=lambda: None, fault_class="")
   sp.scc = SimpleNamespace(vision=SimpleNamespace(output_v_target=5.0, output_a_target=-0.5), map=SimpleNamespace(output_v_target=4.0, output_a_target=-0.7))  # type: ignore[assignment]
   sp.sla = SimpleNamespace(output_v_target=3.0, output_a_target=-1.0)  # type: ignore[assignment]
   sp.__dict__['resolver'] = SimpleNamespace(update=lambda *a, **k: None, speed_limit_valid=False, speed_limit_last_valid=False,
@@ -1483,6 +1481,81 @@ def test_target_filtering_keeps_cruise_fallback():
   v, a = sp.update_targets(sm, 10.0, 0.0, 8.0)  # type: ignore[arg-type]
   assert math.isclose(v, 8.0)
   assert math.isclose(a, 0.0)
+
+
+def _update_targets_planner(fault_class="", long_active=False):
+  sp = object.__new__(LongitudinalPlannerSP)
+  sp.__dict__['custom_long'] = SimpleNamespace(enabled=True, mode=LongitudinalMode.ACC, sources=SourceToggles(),
+                                               maybe_refresh_params=lambda: None, fault_class=fault_class,
+                                               debug_trace_mode="off")
+  sp.scc = SimpleNamespace(vision=SimpleNamespace(output_v_target=5.0, output_a_target=-0.5),
+                           map=SimpleNamespace(output_v_target=4.0, output_a_target=-0.7),
+                           update=lambda *a, **k: None)  # type: ignore[assignment]
+  sp.sla = SimpleNamespace(output_v_target=3.0, output_a_target=-1.0, update=lambda *a, **k: None)  # type: ignore[assignment]
+  sp.__dict__['resolver'] = SimpleNamespace(update=lambda *a, **k: None, speed_limit_valid=False, speed_limit_last_valid=False,
+                                            speed_limit=0.0, speed_limit_final_last=0.0, distance=0.0)
+  sp.output_a_target = 0.0
+  sp.output_v_target = 0.0
+  sp.source = LongitudinalPlanSource.cruise
+  added: list = []
+  sp.__dict__['events_sp'] = SimpleNamespace(clear=lambda: None, to_msg=lambda: None, add=added.append)
+  sp.custom_long.evaluate = lambda *a, **k: CustomLongitudinalOutput(
+    a_target=0.0, should_stop=False, enabled=not fault_class, mode=LongitudinalMode.ACC,
+    selected_intent="fault" if fault_class else None, reason=None, fault_class=fault_class, debug={})
+  sp.custom_long_output = None
+  sm = {
+    'carState': SimpleNamespace(vCruiseCluster=100.0, vCruise=100.0, aEgo=0.0),
+    'carControl': SimpleNamespace(enabled=False, cruiseControl=SimpleNamespace(override=False), longActive=long_active),
+    'selfdriveState': SimpleNamespace(enabled=False),
+  }
+  return sp, sm, added
+
+
+def test_fail_closed_fault_requests_immediate_disable_while_engaged():
+  sp, sm, added = _update_targets_planner(fault_class=long_wiring.FAULT_CLASS_INTERNAL, long_active=True)
+  sp.update_targets(sm, 10.0, 0.0, 8.0)  # type: ignore[arg-type]
+  assert added == [custom.OnroadEventSP.EventName.customLongitudinalFault]
+
+
+def test_fail_closed_fault_event_stops_when_disengaged():
+  sp, sm, added = _update_targets_planner(fault_class=long_wiring.FAULT_CLASS_INTERNAL, long_active=False)
+  sp.update_targets(sm, 10.0, 0.0, 8.0)  # type: ignore[arg-type]
+  assert added == []
+
+
+def test_healthy_planner_emits_no_fault_event():
+  sp, sm, added = _update_targets_planner(fault_class="", long_active=True)
+  sp.update_targets(sm, 10.0, 0.0, 8.0)  # type: ignore[arg-type]
+  assert added == []
+
+
+class _RecvFrameSM(dict):
+  recv_frame: dict
+
+
+def test_planner_adopts_published_active_mode_not_the_param():
+  sp = object.__new__(LongitudinalPlannerSP)
+  params = FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc")
+  adapter = CustomLongitudinalAdapter(params)
+  sp.__dict__['custom_long'] = adapter
+
+  sm = _RecvFrameSM()
+  sm.recv_frame = {'selfdriveStateSP': 0}
+  sm['selfdriveStateSP'] = SimpleNamespace(activeLongitudinalMode='e2e')
+
+  # Nothing received yet: keep the boot-time default.
+  sp._sync_active_mode(sm)
+  assert adapter.mode is LongitudinalMode.ACC
+
+  # First message received: adopt selfdrived's Engagement-Cycle Latched value.
+  sm.recv_frame['selfdriveStateSP'] = 5
+  sp._sync_active_mode(sm)
+  assert adapter.mode is LongitudinalMode.E2E
+
+  # An onroad Param rewrite alone never changes the active mode.
+  params._v['CustomLongitudinalMode'] = 'acc'
+  adapter.maybe_refresh_params()
+  assert adapter.mode is LongitudinalMode.E2E
 
 
 def _prep_sm(d_rel=6.25, v_lead=0.20, v_rel=0.10, **kwargs):
