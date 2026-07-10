@@ -77,6 +77,7 @@ LANE_RATE_DAMPING_SMOOTH_TAU_S = 0.4
 LANE_RATE_DAMPING_DEADBAND_MPS = 0.005
 LANE_RATE_DAMPING_GAIN = 1.0
 LANE_RATE_DAMPING_CAP_LAT_ACCEL = 0.05
+LANE_RATE_DAMPING_RELEASE_LAT_JERK = 0.30  # m/s^3; on/off edges decay instead of stepping
 LANE_RATE_DAMPING_MIN_SPEED = 12.0
 LANE_RATE_DAMPING_MIN_PATH_QUALITY = 0.85
 LANE_RATE_DAMPING_MAX_MODEL_LAT_ACCEL = 0.6
@@ -258,6 +259,77 @@ class LaneFitSourceResult:
   lat_accel_delta: float
   confidence: float
   slew_limited: bool
+
+
+class _AyReleaseSlew:
+  """Bounded-rate approach of an additive lat-accel nudge, both directions.
+
+  Every additive stage already slews in; this makes releases decay at the same rate
+  instead of vanishing in one frame (route 274: instant nudge removal was a top
+  lateral-jerk source). Pure state: feed the stage's target (0.0 when the stage stops
+  applying) and add the returned value."""
+
+  def __init__(self, dt: float, rate_lat_jerk: float) -> None:
+    self.dt = max(float(dt), 1e-3)
+    self.rate = float(rate_lat_jerk)
+    self.value = 0.0
+
+  def reset(self) -> None:
+    self.value = 0.0
+
+  def update(self, target_ay: float) -> float:
+    if not math.isfinite(target_ay):
+      target_ay = 0.0
+    step = self.rate * self.dt
+    self.value += float(np.clip(target_ay - self.value, -step, step))
+    return self.value
+
+
+MODEL_STEP_BLEND_FRAMES = 5           # 20 Hz model cadence at the 100 Hz control rate
+MODEL_STEP_BLEND_MAX_STEP_AY = 0.5    # m/s^2; larger steps pass through (urgent demand)
+
+
+class _ModelStepBlender:
+  """Linear cross-fade of the 20 Hz raw model-curvature steps at 100 Hz.
+
+  controlsd holds ``action.desiredCurvature`` constant between model frames, so every new
+  model frame lands as a step (route 274: 24% of high-jerk episodes were raw model jumps).
+  Fading the step over the inter-frame gap (~50 ms) bounds the single-frame jerk with a
+  mean added lag of ~25 ms on the step itself. Big steps pass through unfaded — comfort
+  shaping must never delay an urgent demand; ``clip_curvature`` still governs downstream.
+  """
+
+  def __init__(self) -> None:
+    self.reset()
+
+  def reset(self) -> None:
+    self._last_frame_id = 0
+    self._output: float | None = None
+    self._target: float = 0.0
+    self._step: float = 0.0
+
+  def update(self, raw_curvature: float, model_frame_id: int, v_ego: float, lat_active: bool) -> float:
+    if not lat_active or model_frame_id <= 0 or not math.isfinite(raw_curvature) or not math.isfinite(v_ego):
+      self.reset()
+      return raw_curvature
+    if self._output is None:
+      self._last_frame_id = model_frame_id
+      self._output = raw_curvature
+      self._target = raw_curvature
+      self._step = 0.0
+      return raw_curvature
+    if model_frame_id != self._last_frame_id:
+      self._last_frame_id = model_frame_id
+      step_ay = abs(raw_curvature - self._output) * max(v_ego * v_ego, 1.0)
+      if step_ay > MODEL_STEP_BLEND_MAX_STEP_AY:
+        self._output = raw_curvature   # urgent demand: no fade
+      self._target = raw_curvature
+      self._step = (raw_curvature - self._output) / MODEL_STEP_BLEND_FRAMES
+    if self._output != self._target:
+      self._output += self._step
+      if (self._step >= 0.0 and self._output >= self._target) or (self._step < 0.0 and self._output <= self._target):
+        self._output = self._target
+    return float(self._output)
 
 
 class _LaneRateDampingTracker:
@@ -554,8 +626,10 @@ class LateralDemandPipeline:
     self._lane_change_path_shaper = LaneChangePathShaper(dt)
     self._lane_centering_assist = LaneCenteringAssistTracker()
     self._lane_rate_damping = _LaneRateDampingTracker(dt)
+    self._lane_rate_damping_slew = _AyReleaseSlew(dt, LANE_RATE_DAMPING_RELEASE_LAT_JERK)
     self._lane_fit_source = _LaneFitSourceTracker(dt)
     self._preview_assist = PreviewAssistTracker(dt)
+    self._model_step_blender = _ModelStepBlender()
     self._previous_desired_curvature = 0.0
     self._last_extreme_processed_curvature = False
 
@@ -569,8 +643,10 @@ class LateralDemandPipeline:
     self._lane_change_path_shaper.reset()
     self._lane_centering_assist.reset()
     self._lane_rate_damping.reset()
+    self._lane_rate_damping_slew.reset()
     self._lane_fit_source.reset()
     self._preview_assist.reset()
+    self._model_step_blender.reset()
     self._previous_desired_curvature = 0.0
     self._last_extreme_processed_curvature = False
 
@@ -591,6 +667,8 @@ class LateralDemandPipeline:
       self._lane_change_path_shaper.reset()
       self._lane_centering_assist.reset()
       self._lane_fit_source.reset()
+      self._lane_rate_damping_slew.reset()
+      self._model_step_blender.reset()
       new_desired_curvature = float(inputs.lateral_maneuver_curvature)
       model_path_result = ModelPathProcessorResult(new_desired_curvature, 0.0, True, "lateral_maneuver")
       demand_source = DEMAND_SOURCE_LATERAL_MANEUVER
@@ -615,10 +693,13 @@ class LateralDemandPipeline:
         elif inputs.turn_direction == TURN_DIRECTION_LEFT:
           turn_curvature_sign = -1
 
+      # Cross-fade the 20 Hz model steps at 100 Hz before any conditioning sees them.
+      blended_desired_curvature = self._model_step_blender.update(
+        inputs.desired_curvature, inputs.model_frame_id, inputs.v_ego, inputs.lat_active)
       model_path_result = self._model_path_processor.update(ModelPathProcessorInputs(
         lat_active=inputs.lat_active,
         v_ego=inputs.v_ego,
-        desired_curvature=inputs.desired_curvature,
+        desired_curvature=blended_desired_curvature,
         measured_curvature=inputs.measured_curvature,
         previous_desired_curvature=self._previous_desired_curvature,
         position_x=tuple(inputs.position_x),
@@ -682,8 +763,15 @@ class LateralDemandPipeline:
       lane_change_blend = float(lane_change_result.blend)
       new_desired_curvature = lane_change_result.desired_curvature if inputs.lat_active else inputs.measured_curvature
       lane_rate_damping_result = self._lane_rate_damping.update(inputs, model_path_result, demand_source)
-      if lane_rate_damping_result.applied:
-        new_desired_curvature += lane_rate_damping_result.curvature
+      if inputs.lat_active:
+        # Release-slewed application: on/off edges decay at the shared rate instead of
+        # stepping the whole nudge in one frame.
+        lrd_ay = self._lane_rate_damping_slew.update(
+          lane_rate_damping_result.lat_accel if lane_rate_damping_result.applied else 0.0)
+        if lrd_ay != 0.0:
+          new_desired_curvature += lrd_ay / max(inputs.v_ego * inputs.v_ego, 1.0)
+      else:
+        self._lane_rate_damping_slew.reset()
 
       lane_fit_source_result = self._lane_fit_source.update(inputs, model_path_result, demand_source, new_desired_curvature)
       new_desired_curvature = lane_fit_source_result.applied_curvature

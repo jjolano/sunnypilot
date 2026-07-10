@@ -382,7 +382,6 @@ def test_preview_assist_apply_changes_curvature_and_is_slew_limited():
   ({"lane_change_state_valid": False}, "lane_change_unknown"),
   ({"lane_change_state": 1}, "lane_change"),
   ({"left_blinker": True}, "blinker"),
-  ({"steer_limited": True}, "steer_limited"),
   ({"curvature_limited": True}, "curvature_limited"),
   ({"model_age_s": 0.3}, "model_stale"),
 ])
@@ -392,6 +391,50 @@ def test_preview_assist_blocks_common_gates(blocked_kwargs, expected_reason):
   assert result.debug["lateral_preview_assist_applied"] is False
   assert result.debug["lateral_preview_assist_reason"] == expected_reason
   assert result.debug["lateral_preview_assist_curvature_nudge"] == 0.0
+
+
+def test_preview_assist_steer_limited_debounced_then_soft_blocks():
+  # Route 274: steer_limited flaps frame-to-frame; a single flapping frame must not drop
+  # the nudge. Sustained steer_limited (>=0.2 s) soft-blocks with a decaying release.
+  pipeline = LateralDemandPipeline(DT)
+  r = pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply", steer_limited=True))
+  assert r.debug["lateral_preview_assist_active"] is True
+  for _ in range(25):
+    r = pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply", steer_limited=True))
+  assert r.debug["lateral_preview_assist_active"] is False
+  assert str(r.debug["lateral_preview_assist_reason"]) in ("steer_limited", "releasing_steer_limited")
+
+
+def test_preview_assist_soft_release_decays_instead_of_stepping():
+  pipeline = LateralDemandPipeline(DT)
+  r = None
+  for _ in range(40):
+    r = pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
+  nudge = float(r.debug["lateral_preview_assist_curvature_nudge"])
+  assert abs(nudge) > 0.0
+
+  blocked = pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply", curvature_limited=True))
+  b_nudge = float(blocked.debug["lateral_preview_assist_curvature_nudge"])
+  assert blocked.debug["lateral_preview_assist_applied"] is True
+  assert blocked.debug["lateral_preview_assist_reason"] == "releasing_curvature_limited"
+  # One slew step at most (0.30 m/s^3 in ay space), never a one-frame drop to zero.
+  assert 0.0 < abs(b_nudge) < abs(nudge)
+  assert (abs(nudge) - abs(b_nudge)) * 20.0 ** 2 <= 0.30 * DT + 1e-9
+
+  # Sustained block decays all the way to zero and clears.
+  final = None
+  for _ in range(200):
+    final = pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply", curvature_limited=True))
+  assert final.debug["lateral_preview_assist_applied"] is False
+  assert final.debug["lateral_preview_assist_curvature_nudge"] == 0.0
+  assert final.debug["lateral_preview_assist_reason"] == "curvature_limited"
+
+  # Driver intent still drops the nudge immediately (hard reset).
+  for _ in range(40):
+    pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
+  dropped = pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply", steering_pressed=True))
+  assert dropped.debug["lateral_preview_assist_curvature_nudge"] == 0.0
+  assert dropped.debug["lateral_preview_assist_reason"] == "driver_override"
 
 
 def test_preview_assist_blocks_sign_conflict():
@@ -425,7 +468,9 @@ def test_preview_assist_blocks_lane_fit_source_and_maneuver_override():
 def test_preview_assist_blocks_applied_straight_path_stabilization():
   pipeline = LateralDemandPipeline(DT)
   result = None
-  for _ in range(40):
+  # Long enough for SPS to anchor AND for any preview nudge built during warmup to
+  # finish its soft release (decay at 0.30 m/s^3 instead of a one-frame drop).
+  for _ in range(200):
     result = pipeline.update(preview_assist_inputs(
       baseline_curvature=0.00005,
       preview_curvature=0.0002,
@@ -437,6 +482,7 @@ def test_preview_assist_blocks_applied_straight_path_stabilization():
   assert result.debug["straight_path_stabilization_active"] is True
   assert result.debug["lateral_preview_assist_active"] is False
   assert result.debug["lateral_preview_assist_applied"] is False
+  assert result.debug["lateral_preview_assist_curvature_nudge"] == 0.0
   assert result.debug["lateral_preview_assist_reason"] == "straight_path_stabilization"
 
 
@@ -516,7 +562,9 @@ def test_lane_rate_damping_off_is_disabled_without_lane_lines():
 
 
 def test_lane_rate_damping_apply_changes_curvature_and_caps_lat_accel():
-  centers = [i * 0.01 for i in range(60)]
+  # 120 frames: warmup + enough applied frames for the release-slewed nudge (0.30 m/s^3)
+  # to converge on the capped 0.05 m/s^2 target.
+  centers = [i * 0.01 for i in range(120)]
   shadow = LateralDemandPipeline(DT)
   apply = LateralDemandPipeline(DT)
   shadow_result = None
@@ -1618,3 +1666,49 @@ def test_psi_dot_fit_is_cached_per_model_frame():
   fresh = ModelPathProcessor()
   psi_bypass = fresh._psi_dot_at_action(dataclasses.replace(changed, model_frame_id=0), v_ego)
   assert psi_bypass == pytest.approx(psi_b)
+
+
+def test_lane_rate_damping_release_decays_instead_of_stepping():
+  centers = [i * 0.01 for i in range(120)]
+  shadow = LateralDemandPipeline(DT)
+  apply = LateralDemandPipeline(DT)
+  s = a = None
+  for c in centers:
+    s = shadow.update(lane_rate_damping_inputs(c, lane_rate_damping_mode="shadow"))
+    a = apply.update(lane_rate_damping_inputs(c, lane_rate_damping_mode="apply"))
+  full = a.demand.processed_curvature - s.demand.processed_curvature
+  assert full == pytest.approx(0.05 / (20.0 ** 2), abs=1e-9)
+
+  # Driver press blocks the stage; the nudge decays by one slew step, not to zero.
+  c2 = centers[-1] + 0.01
+  s = shadow.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="shadow", steering_pressed=True))
+  a = apply.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="apply", steering_pressed=True))
+  residual = a.demand.processed_curvature - s.demand.processed_curvature
+  assert 0.0 < residual < full
+  assert (full - residual) * 20.0 ** 2 <= 0.30 * DT + 1e-9
+
+  # Sustained block converges to zero difference.
+  for _ in range(200):
+    c2 += 0.01
+    s = shadow.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="shadow", steering_pressed=True))
+    a = apply.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="apply", steering_pressed=True))
+  assert a.demand.processed_curvature == pytest.approx(s.demand.processed_curvature, abs=1e-12)
+
+
+def test_model_step_blender_fades_20hz_steps_and_passes_urgent():
+  from openpilot.sunnypilot.custom.lateral.demand.pipeline import MODEL_STEP_BLEND_FRAMES, _ModelStepBlender
+  b = _ModelStepBlender()
+  assert b.update(0.001, 1, 20.0, True) == 0.001  # prime on first sight
+
+  # A new 20 Hz model frame fades in over the inter-frame gap instead of stepping.
+  outs = [b.update(0.002, 2, 20.0, True) for _ in range(MODEL_STEP_BLEND_FRAMES)]
+  assert outs[0] == pytest.approx(0.001 + 0.001 / MODEL_STEP_BLEND_FRAMES)
+  assert all(outs[i] <= outs[i + 1] + 1e-15 for i in range(len(outs) - 1))
+  assert outs[-1] == pytest.approx(0.002)
+
+  # Urgent demand (> 0.5 m/s^2 step at v=20) passes through unfaded.
+  assert b.update(0.02, 3, 20.0, True) == pytest.approx(0.02)
+
+  # Unknown model frame id or inactive lateral: passthrough, no state.
+  assert b.update(0.05, 0, 20.0, True) == 0.05
+  assert b.update(0.05, 4, 20.0, False) == 0.05
