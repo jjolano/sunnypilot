@@ -116,6 +116,10 @@ def predict_cut_in_brake_assist(mode: Any, actual_ctx: Any | None, shadow_ctx: A
     block = "not_close"
   elif closing_speed < MIN_CLOSING_SPEED_MS:
     block = "not_closing"
+  elif ttc <= 0.0 or ttc > MAX_TTC_S:
+    # Urgency gate: a barely-closing far lead (TTC well past MAX_TTC_S) is not a cut-in
+    # threat; without this, apply mode could impose a mild phantom cap on it.
+    block = "not_urgent"
   elif not stable_ok:
     block = "unstable_low_confidence"
   else:

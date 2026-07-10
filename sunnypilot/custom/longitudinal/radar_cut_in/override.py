@@ -61,9 +61,9 @@ def _is_high_risk_cut_in(track: Any, v_ego: float,
   """
   if v_ego < _MIN_V_EGO:
     return False
-  if track.cnt < _MIN_TRACK_CNT:
-    return False
   try:
+    if int(getattr(track, "cnt", 0)) < _MIN_TRACK_CNT:
+      return False
     d_rel = float(getattr(track, "dRel", 0.0))
     y_rel = float(getattr(track, "yRel", 0.0))
     v_rel = float(getattr(track, "vRel", 0.0))
@@ -167,16 +167,18 @@ def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
   if not tracks or v_ego < _MIN_V_EGO:
     return lead_dict
 
-  # Find the most dangerous cut-in candidate (lowest TTC)
-  candidates = [t for t in tracks.values() if _is_high_risk_cut_in(t, v_ego, path_y_rel=path_y_rel)]
-  if not candidates:
-    return lead_dict
-
-  best = min(candidates, key=_track_ttc)
-
-  # Promote the track to leadOne with a low modelProb
-  # (vision hasn't confirmed it, but the radar threat is real)
+  # Fail-closed as documented: any exception in the scan or the promotion (including a
+  # path_y_rel callable raising) returns the original lead dict unchanged.
   try:
+    # Find the most dangerous cut-in candidate (lowest TTC)
+    candidates = [t for t in tracks.values() if _is_high_risk_cut_in(t, v_ego, path_y_rel=path_y_rel)]
+    if not candidates:
+      return lead_dict
+
+    best = min(candidates, key=_track_ttc)
+
+    # Promote the track to leadOne with a low modelProb
+    # (vision hasn't confirmed it, but the radar threat is real)
     override = best.get_RadarState(model_prob=0.0)
     # Mark as radar-only (not vision-confirmed)
     override["modelProb"] = 0.0

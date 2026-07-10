@@ -184,3 +184,20 @@ def test_stack_can_skip_shadow_payload_when_not_collected():
   assert lazy.should_stop == rich.should_stop
   assert lazy.decision.selected_intent == rich.decision.selected_intent
   assert lazy.debug == {}
+
+
+def test_cut_in_blocked_when_ttc_not_urgent():
+  # A barely-closing lead inside the distance window (TTC far past MAX_TTC_S) is not a
+  # cut-in threat and must not propose any cap, even in apply mode.
+  slow = predict_cut_in_brake_assist(
+    CUT_IN_MODE_APPLY, ctx(state(d_rel=44.0, v_rel=-0.5, ttc=88.0, required_decel=0.01)),
+    None, 15.0, long_active=True,
+  )
+  assert slow.eligible is False
+  assert slow.block_reason == "not_urgent"
+  assert slow.proposed_cap == 0.0
+
+  # Unknown / non-positive TTC fails closed to not urgent as well.
+  unknown = predict_cut_in_brake_assist("shadow", ctx(state(ttc=0.0)), None, 15.0, long_active=True)
+  assert unknown.eligible is False
+  assert unknown.block_reason == "not_urgent"

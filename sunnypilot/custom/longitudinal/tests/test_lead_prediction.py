@@ -37,7 +37,7 @@ def test_vrel_drives_linear_gap():
   # pure closing, no accel: gap(t) = d_rel + v_rel*t
   p = predict_lead_trajectory(40.0, v_rel=-4.0, v_lead=11.0, a_lead=0.0, a_lead_tau=1.0,
                               v_ego=15.0, a_ego=0.0)
-  for t, g in zip(p.t, p.gap):
+  for t, g in zip(p.t, p.gap, strict=True):
     assert g == pytest.approx(max(0.0, 40.0 - 4.0 * t))
 
 
@@ -54,3 +54,29 @@ def test_gaps_non_negative_and_finite():
   p = predict_lead_trajectory(5.0, v_rel=-10.0, v_lead=0.0, a_lead=-3.0, a_lead_tau=0.5,
                               v_ego=10.0, a_ego=2.0)
   assert all(g >= 0.0 and math.isfinite(g) for g in p.gap)
+
+
+def test_braking_lead_holds_at_standstill_and_gap_freezes():
+  # Stationary ego (v_rel = +v_lead, opening): once the decaying decel brings the lead to
+  # rest (~1.05 s here), the gap must freeze. The old closed form kept integrating and
+  # "reversed" the lead, under-predicting the gap.
+  p = predict_lead_trajectory(20.0, v_rel=2.0, v_lead=2.0, a_lead=-2.0, a_lead_tau=10.0,
+                              v_ego=0.0, a_ego=0.0)
+  t_stop = -10.0 * math.log(1.0 + 2.0 / (-2.0 * 10.0))
+  assert 1.0 < t_stop < 1.5
+  assert p.v_lead[2] == 0.0 and p.v_lead[3] == 0.0
+  assert p.a_lead[2] == 0.0 and p.a_lead[3] == 0.0
+  assert p.gap[3] == pytest.approx(p.gap[2])  # frozen after the stop
+  # Exact physics: final gap = d_rel + lead displacement up to t_stop.
+  s_lead = 2.0 * t_stop + (-2.0) * 10.0 * (t_stop - 10.0 * (1.0 - math.exp(-t_stop / 10.0)))
+  assert p.gap[3] == pytest.approx(20.0 + s_lead)
+  assert p.gap[1] < p.gap[2]  # still opening while the lead moves
+
+
+def test_already_stopped_braking_lead_never_reverses():
+  # A stopped lead reporting residual negative accel must behave as pure standstill:
+  # gap(t) = d_rel + v_rel*t exactly, with no phantom reverse displacement.
+  p = predict_lead_trajectory(10.0, v_rel=-5.0, v_lead=0.0, a_lead=-3.0, a_lead_tau=1.0,
+                              v_ego=5.0, a_ego=0.0)
+  for t, g in zip(p.t, p.gap, strict=True):
+    assert g == pytest.approx(max(0.0, 10.0 - 5.0 * t))

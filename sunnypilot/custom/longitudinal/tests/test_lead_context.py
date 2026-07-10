@@ -483,3 +483,11 @@ def test_reset_clears_state():
     v_ego=20.0, dt=0.05, reset_state=True,
   )
   assert ctx.physical is None
+
+
+def test_lead_prediction_uses_measured_v_rel_over_derived():
+  """Consolidated predictor: measured radar vRel drives the gap, not vLeadK - vEgo."""
+  derived = lc.lead_prediction(20.0, v_lead=9.0, a_lead=0.0, v_ego=10.0)
+  measured = lc.lead_prediction(20.0, v_lead=9.0, a_lead=0.0, v_ego=10.0, v_rel=1.0)
+  assert derived.x[-1] == pytest.approx(19.0)   # fallback: v_lead - v_ego = -1 m/s closing
+  assert measured.x[-1] == pytest.approx(21.0)  # measured vRel says opening; it wins

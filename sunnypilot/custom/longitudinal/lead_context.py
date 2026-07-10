@@ -6,6 +6,7 @@ import math
 from typing import Any, cast
 
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LEAD_CONFIDENCE_TRACK_UNKNOWN, LeadConfidenceState
+from openpilot.sunnypilot.custom.longitudinal.lead_prediction import predict_lead_trajectory
 
 
 LEAD_AUTHORITY_NONE = "none"
@@ -13,7 +14,10 @@ LEAD_AUTHORITY_SUPPRESS_ONLY = "suppress_only"
 LEAD_AUTHORITY_PHYSICAL = "physical"
 LEAD_AUTHORITY_PROGRESS_ALLOWED = "progress_allowed"
 
-LEAD_CONTEXT_STOP_DISTANCE = 4.0  # aligned with long_mpc STOP_DISTANCE 4.5 (route 261 stop-gap step)
+# Fixed 4 m stop reserve for the risk math: between long_mpc's 4.5 m standstill STOP_DISTANCE
+# and its 1.25 m MOVING_GAP (the MPC offset fades with speed via follow_offset(v)); required
+# decel here is a first-order risk estimate, not the MPC's enforced gap.
+LEAD_CONTEXT_STOP_DISTANCE = 4.0
 LEAD_CONTEXT_ON_PATH_Y = 0.6
 LEAD_CONTEXT_PATH_EXIT_Y = 1.6
 LEAD_CONTEXT_FALSE_POSITIVE_HOLD = 0.25
@@ -658,22 +662,21 @@ A_LEAD_TAU_DEFAULT = 1.5  # s; lead-accel decay time constant (matches the MPC's
 
 
 def lead_prediction(d_rel: float, v_lead: float, a_lead: float, v_ego: float, valid: bool = True,
-                    a_lead_tau: float = A_LEAD_TAU_DEFAULT) -> LeadTrajectoryPrediction:
-  # Decay the (noisy) lead accel toward zero with aLeadTau instead of propagating it constant,
-  # as the MPC does — constant a_lead over the horizon was a likely lead-pullaway quirk source
-  # (it makes predicted_gap_opening over-eager when the lead briefly accelerates).
+                    a_lead_tau: float = A_LEAD_TAU_DEFAULT, v_rel: float | None = None) -> LeadTrajectoryPrediction:
+  """Short-horizon lead preview, delegated to the shared ``predict_lead_trajectory``.
+
+  One predictor for the whole stack (lead-math review, 2026-07-10): τ-decayed lead accel,
+  measured ``vRel`` for the linear gap term when the caller has it (falls back to the derived
+  ``v_lead − v_ego``), and a standstill clamp so a braking lead never "reverses" the gap.
+  Ego accel is not plumbed into the lead context, so the ego term stays zero here.
+  """
   tau = max(finite_float(a_lead_tau, A_LEAD_TAU_DEFAULT), 0.1)
-  xs: list[float] = []
-  vs: list[float] = []
-  accels: list[float] = []
-  for t in LEAD_CONTEXT_PREVIEW_T:
-    decay = math.exp(-t / tau)
-    v = max(0.0, v_lead + a_lead * tau * (1.0 - decay))
-    x = max(0.0, d_rel + (v_lead - v_ego) * t + a_lead * tau * (t - tau * (1.0 - decay)))
-    xs.append(float(x))
-    vs.append(float(v))
-    accels.append(float(a_lead * decay))
-  return LeadTrajectoryPrediction(tuple(xs), tuple(vs), tuple(accels), valid)
+  v_rel = (v_lead - v_ego) if v_rel is None else v_rel
+  pred = predict_lead_trajectory(
+    d_rel=d_rel, v_rel=v_rel, v_lead=v_lead, a_lead=a_lead,
+    a_lead_tau=tau, v_ego=v_ego, horizon_t=LEAD_CONTEXT_PREVIEW_T,
+  )
+  return LeadTrajectoryPrediction(pred.gap, pred.v_lead, pred.a_lead, valid)
 
 
 def _required_decel(d_rel: float, v_rel: float) -> float:
@@ -1149,6 +1152,7 @@ class LeadContextTracker:
     kinematics = self._kinematics_stage.compute(True, observation, None, v_ego, confidence_state)
     prediction = lead_prediction(
       observation.d_rel, observation.v_lead, observation.a_lead, v_ego, True, observation.a_lead_tau,
+      v_rel=observation.v_rel,
     )
     progress_model = self._progress_stage.compute_real(observation, v_ego, kinematics, confidence_state, prediction)
     release_timer = self._false_positive_stage.prev_timer(idx)
@@ -1195,7 +1199,7 @@ class LeadContextTracker:
       model_prob=shadow.model_prob, radar=shadow.radar, track_id=shadow.track_id,
     )
     kinematics = self._kinematics_stage.compute(False, observation, shadow, v_ego, None)
-    prediction = lead_prediction(shadow.d_rel, shadow.v_lead, shadow.a_lead, v_ego, True)
+    prediction = lead_prediction(shadow.d_rel, shadow.v_lead, shadow.a_lead, v_ego, True, v_rel=shadow.v_rel)
     progress_model = self._progress_stage.compute_shadow(shadow, v_ego, kinematics, prediction)
     return LeadRelevanceState(
       lead_idx=shadow.lead_idx,

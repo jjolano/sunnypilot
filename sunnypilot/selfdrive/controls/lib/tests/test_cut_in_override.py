@@ -284,3 +284,35 @@ def test_override_allowed_with_research_actuation(monkeypatch):
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
   assert result["status"] is True
   assert result["radarTrackId"] == 1
+
+
+def test_malformed_track_fields_skip_that_track_only(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
+  tracks = {1: FakeTrack(identifier=1, cnt="bogus"), 2: FakeTrack(identifier=2)}
+  result = apply_cut_in_override(NO_LEAD, tracks, v_ego=12.0, research_actuation_allowed=True)
+  assert result["status"] is True
+  assert result["radarTrackId"] == 2
+
+
+def test_raising_track_attribute_fails_closed_unchanged(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
+
+  class BrokenTrack:
+    @property
+    def cnt(self):
+      raise RuntimeError("broken track")
+
+  result = apply_cut_in_override(NO_LEAD, {1: BrokenTrack(), 2: FakeTrack()}, v_ego=12.0,
+                                 research_actuation_allowed=True)
+  assert result is NO_LEAD  # documented fail-closed: original lead dict unchanged
+
+
+def test_raising_path_y_rel_callable_fails_closed_unchanged(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
+
+  def boom(_track):
+    raise RuntimeError("path lookup failed")
+
+  result = apply_cut_in_override(NO_LEAD, {1: FakeTrack()}, v_ego=12.0,
+                                 research_actuation_allowed=True, path_y_rel=boom)
+  assert result is NO_LEAD
