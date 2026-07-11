@@ -5,7 +5,15 @@ import argparse
 import contextlib
 import io
 
-from openpilot.tools.drive_lab.fuzz_longitudinal import scenario_maneuver_kwargs
+import numpy as np
+
+from openpilot.common.realtime import DT_MDL
+
+from openpilot.tools.drive_lab.fuzz_longitudinal import (
+  capture_commanded_accel,
+  scenario_maneuver_kwargs,
+  shipped_longitudinal_config,
+)
 from openpilot.tools.drive_lab.log_profile import load_profile
 from openpilot.tools.drive_lab.longitudinal_scenarios import (
   REALISM_MODES,
@@ -47,7 +55,8 @@ def main() -> None:
     ncap_family=args.ncap_family,
     ncap_sample=args.ncap_sample,
   ))
-  results = [evaluate_scenario(scenario) for scenario in scenarios]
+  with shipped_longitudinal_config():
+    results = [evaluate_scenario(scenario) for scenario in scenarios]
   print(render_report(results, args.seed, args.mode, args.preset))
   if args.strict and any(not result.passed for result in results):
     raise SystemExit(1)
@@ -57,9 +66,14 @@ def evaluate_scenario(scenario) -> ScenarioComparison:
   from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
   maneuver = Maneuver(scenario.title, scenario.duration, **scenario_maneuver_kwargs(scenario))
-  with contextlib.redirect_stdout(io.StringIO()):
+  with contextlib.redirect_stdout(io.StringIO()), capture_commanded_accel() as capture:
     valid, output = maneuver.evaluate()
-  comparisons = compare_scenario_output(scenario.kind, output)
+  commanded_accel = np.asarray(capture.commanded) if len(capture.commanded) == len(output) else None
+  action_horizon = (capture.actuator_delay or 0.0) + DT_MDL
+  jerk_window = max(1, round(action_horizon / DT_MDL))
+  comparisons = compare_scenario_output(
+    scenario.kind, output, commanded_accel=commanded_accel, jerk_window=jerk_window,
+  )
   if scenario.oracle_profile == "safety" and not comparisons:
     return ScenarioComparison(scenario.title, scenario.kind, bool(valid), comparisons)
   return ScenarioComparison(scenario.title, scenario.kind, bool(valid), comparisons)

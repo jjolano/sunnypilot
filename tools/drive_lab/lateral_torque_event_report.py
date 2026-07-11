@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from openpilot.tools.drive_lab.route_analysis import conditioned_desired_curvature, lateral_demand_schema
 from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type, safe_get
 
 
@@ -450,6 +451,7 @@ def render_lateral_torque_ab_report(report: LateralTorqueABReport) -> str:
 def _extract_torque_samples(msgs: list[Any]) -> list[_TorqueSample]:
   if not msgs:
     return []
+  demand_schema = lateral_demand_schema(msgs)
   base_mono_time = int(getattr(msgs[0], "logMonoTime", 0))
   latest: dict[str, Any] = {}
   samples: list[_TorqueSample] = []
@@ -501,7 +503,7 @@ def _extract_torque_samples(msgs: list[Any]) -> list[_TorqueSample]:
       current_curvature=_finite_float(safe_get(payload, "curvature"), float("nan")),
       desired_curvature=_finite_float(safe_get(payload, "desiredCurvature"), float("nan")),
       raw_desired_curvature=_finite_float(safe_get(model_path_state, "rawDesiredCurvature"), float("nan")),
-      processed_desired_curvature=_finite_float(safe_get(model_path_state, "processedDesiredCurvature"), float("nan")),
+      processed_desired_curvature=_finite_float(conditioned_desired_curvature(model_path_state, demand_schema), float("nan")),
       model_path_quality=_finite_float(safe_get(model_path_state, "quality"), float("nan")),
       model_path_gated=bool(safe_get(model_path_state, "gated", False)),
       model_path_reason=format_enum(safe_get(model_path_state, "reason")),

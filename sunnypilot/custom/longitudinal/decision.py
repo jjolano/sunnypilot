@@ -94,7 +94,10 @@ def decide(candidates: list[LongitudinalCandidate], mode: LongitudinalMode, acce
   cruise = [c for c in usable if c.role is CandidateRole.CRUISE]
 
   # Baseline desire: the highest accel any cruise/authorized-progress candidate asks for.
-  desire = max((c.a_target for c in cruise + progress), default=min(0.0, a_max))
+  # Prefer progress on a tie because its evidence is what authorizes a standstill release.
+  desire_winner = max(cruise + progress,
+                      key=lambda c: (c.a_target, c.role is CandidateRole.PROGRESS), default=None)
+  desire = desire_winner.a_target if desire_winner is not None else min(0.0, a_max)
 
   # Advisory caps restrict accel from above; comfort relax softens the binding cap toward its
   # (higher) floor but never removes it.
@@ -106,7 +109,9 @@ def decide(candidates: list[LongitudinalCandidate], mode: LongitudinalMode, acce
   a_target = min(desire, advisory_cap)
 
   # Physical hazards always bind: the strongest decel wins and policy cannot raise above it.
-  selected_intent = "cruise" if not progress else (progress[0].intent or "progress")
+  selected_intent = (desire_winner.intent or "progress") if (
+    desire_winner is not None and desire_winner.role is CandidateRole.PROGRESS
+  ) else "cruise"
   reason = "cruise" if not caps else "advisory_capped"
   if hazards:
     hazard_a = min(c.a_target for c in hazards)

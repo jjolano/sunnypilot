@@ -43,6 +43,7 @@ from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
   LateralDemandPipeline,
   LateralDemandPipelineInputs,
 )
+from openpilot.sunnypilot.custom.lateral.demand.preview import LATERAL_PREVIEW_ASSIST_MAX_DELTA_AY
 from openpilot.sunnypilot.custom.lateral.demand.types import (
   DEMAND_SOURCE_FALLBACK_MEASURED,
   DEMAND_SOURCE_LANE_FIT,
@@ -76,6 +77,7 @@ def valid_inputs(v_ego=20.0, curvature=0.001, lat_active=True, **kwargs):
     lane_lines=kwargs.get("lane_lines", ()),
     frame_drop_perc=kwargs.get("frame_drop_perc", 0.0),
     model_age_s=kwargs.get("model_age_s", 0.0),
+    model_frame_id=kwargs.get("model_frame_id", 0),
     yaw_rate=kwargs.get("yaw_rate", None),
     steering_rate_deg=kwargs.get("steering_rate_deg", None),
     steer_limited=kwargs.get("steer_limited", False),
@@ -365,6 +367,7 @@ def test_preview_assist_shadow_logs_candidate_without_changing_curvature():
 
 
 def test_preview_assist_apply_changes_curvature_and_is_slew_limited():
+  assert LATERAL_PREVIEW_ASSIST_MAX_DELTA_AY == 0.05
   off = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="off"))
   result = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
 
@@ -438,9 +441,18 @@ def test_preview_assist_soft_release_decays_instead_of_stepping():
 
 
 def test_preview_assist_blocks_sign_conflict():
-  result = LateralDemandPipeline(DT).update(preview_assist_inputs(
-    baseline_curvature=0.001,
-    preview_curvature=-0.001,
+  pipeline = LateralDemandPipeline(DT)
+  for _ in range(40):
+    primed = pipeline.update(preview_assist_inputs(
+      baseline_curvature=0.001,
+      preview_curvature=0.002,
+      lateral_preview_assist_mode="apply",
+    ))
+  assert primed.debug["lateral_preview_assist_curvature_nudge"] > 0.0
+
+  result = pipeline.update(preview_assist_inputs(
+    baseline_curvature=-0.001,
+    preview_curvature=0.001,
     lateral_preview_assist_mode="apply",
   ))
 
@@ -1679,20 +1691,48 @@ def test_lane_rate_damping_release_decays_instead_of_stepping():
   full = a.demand.processed_curvature - s.demand.processed_curvature
   assert full == pytest.approx(0.05 / (20.0 ** 2), abs=1e-9)
 
-  # Driver press blocks the stage; the nudge decays by one slew step, not to zero.
+  # A transient limiter block releases smoothly and remains visible in telemetry.
   c2 = centers[-1] + 0.01
-  s = shadow.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="shadow", steering_pressed=True))
-  a = apply.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="apply", steering_pressed=True))
+  s = shadow.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="shadow", curvature_limited=True))
+  a = apply.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="apply", curvature_limited=True))
   residual = a.demand.processed_curvature - s.demand.processed_curvature
   assert 0.0 < residual < full
   assert (full - residual) * 20.0 ** 2 <= 0.30 * DT + 1e-9
+  assert a.debug["lane_rate_damping_applied"] is True
+  assert a.debug["lane_rate_damping_reason"] == "releasing_curvature_limited"
+  assert a.debug["lane_rate_damping_lat_accel"] == pytest.approx(residual * 20.0 ** 2)
 
   # Sustained block converges to zero difference.
   for _ in range(200):
     c2 += 0.01
-    s = shadow.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="shadow", steering_pressed=True))
-    a = apply.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="apply", steering_pressed=True))
+    s = shadow.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="shadow", curvature_limited=True))
+    a = apply.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="apply", curvature_limited=True))
   assert a.demand.processed_curvature == pytest.approx(s.demand.processed_curvature, abs=1e-12)
+
+  # Invalid/stale model evidence is fail-closed rather than release-slewed.
+  for _ in range(120):
+    c2 += 0.01
+    shadow.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="shadow"))
+    apply.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="apply"))
+  c2 += 0.01
+  shadow.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="shadow", model_age_s=0.3))
+  a = apply.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="apply", model_age_s=0.3))
+  assert a.debug["lane_rate_damping_applied"] is False
+  assert a.debug["lane_rate_damping_lat_accel"] == 0.0
+  assert a.debug["lane_rate_damping_reason"] == "model_stale"
+
+  # Re-prime, then confirm explicit driver intent drops authority immediately.
+  for _ in range(120):
+    c2 += 0.01
+    shadow.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="shadow"))
+    apply.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="apply"))
+  c2 += 0.01
+  s = shadow.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="shadow", steering_pressed=True))
+  a = apply.update(lane_rate_damping_inputs(c2, lane_rate_damping_mode="apply", steering_pressed=True))
+  assert a.demand.processed_curvature == pytest.approx(s.demand.processed_curvature, abs=1e-12)
+  assert a.debug["lane_rate_damping_applied"] is False
+  assert a.debug["lane_rate_damping_lat_accel"] == 0.0
+  assert a.debug["lane_rate_damping_reason"] == "driver_override"
 
 
 def test_model_step_blender_fades_20hz_steps_and_passes_urgent():
@@ -1709,6 +1749,27 @@ def test_model_step_blender_fades_20hz_steps_and_passes_urgent():
   # Urgent demand (> 0.5 m/s^2 step at v=20) passes through unfaded.
   assert b.update(0.02, 3, 20.0, True) == pytest.approx(0.02)
 
+  # A reversal during a partial blend starts from the current output and keeps moving
+  # monotonically toward the new target.
+  partial = b.update(0.021, 4, 20.0, True)
+  reversed_first = b.update(0.020, 5, 20.0, True)
+  assert 0.020 < reversed_first < partial
+  assert b.update(0.020, 5, 20.0, True) < reversed_first
+
   # Unknown model frame id or inactive lateral: passthrough, no state.
   assert b.update(0.05, 0, 20.0, True) == 0.05
   assert b.update(0.05, 4, 20.0, False) == 0.05
+
+
+def test_pipeline_applies_model_step_blender_with_advancing_frame_ids():
+  pipeline = LateralDemandPipeline(DT)
+  first = pipeline.update(valid_inputs(curvature=0.001, model_frame_id=1))
+  stepped = pipeline.update(valid_inputs(curvature=0.002, model_frame_id=2))
+
+  assert first.debug["model_path_curvature"] == pytest.approx(0.001)
+  assert 0.001 < stepped.debug["model_path_curvature"] < 0.002
+
+  settled = stepped
+  for _ in range(4):
+    settled = pipeline.update(valid_inputs(curvature=0.002, model_frame_id=2))
+  assert settled.debug["model_path_curvature"] == pytest.approx(0.002)

@@ -80,7 +80,7 @@ def test_evaluate_scenario_uses_bounded_lead_pullaway_start_oracle(monkeypatch):
     oracle_profile="comfort",
   )
   monkeypatch.setattr(maneuver_module, "Maneuver", FakeManeuver)
-  monkeypatch.setattr(baseline_cli, "compare_scenario_output", lambda kind, output: [])
+  monkeypatch.setattr(baseline_cli, "compare_scenario_output", lambda kind, output, **kwargs: [])
 
   baseline_cli.evaluate_scenario(scenario)
 

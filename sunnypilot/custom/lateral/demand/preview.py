@@ -20,10 +20,9 @@ LATERAL_PREVIEW_ASSIST_MODES = frozenset(("off", "shadow", "apply"))
 LATERAL_PREVIEW_ASSIST_MIN_SPEED = 5.0
 LATERAL_PREVIEW_ASSIST_MIN_PATH_QUALITY = 0.85
 LATERAL_PREVIEW_ASSIST_MAX_MODEL_AGE_S = 0.20
-# Route 274: the 0.05 cap saturated on 40% of applied frames — the preview wants more
-# authority than it was allowed. Raised after the graceful-release fix below; the slew
-# and the per-frame clip still bound every transition.
-LATERAL_PREVIEW_ASSIST_MAX_DELTA_AY = 0.08
+# Route 274 replay: 0.08 worsened p95 tracking error and pushed a hard-reset nudge
+# above 8 m/s^3. Keep the proven lower authority until an engaged A/B supports more.
+LATERAL_PREVIEW_ASSIST_MAX_DELTA_AY = 0.05
 LATERAL_PREVIEW_ASSIST_SLEW_LAT_JERK = 0.30
 LATERAL_PREVIEW_ASSIST_SIGN_CONFLICT_AY = 0.05
 # steer_limited flaps frame-to-frame on the EPS (route 274: ~19 applied-flag toggles per
@@ -254,7 +253,10 @@ class PreviewAssistTracker:
 
     if (abs(ay_base) >= LATERAL_PREVIEW_ASSIST_SIGN_CONFLICT_AY and abs(ay_preview) >= LATERAL_PREVIEW_ASSIST_SIGN_CONFLICT_AY
         and math.copysign(1.0, ay_base) != math.copysign(1.0, ay_preview)):
-      return self._soft_release(mode, "sign_conflict", baseline_curvature_f, v_ego)
+      # Direction reversals need fresh authority; never carry a stale opposite-sign nudge
+      # through the turn transition.
+      self.reset()
+      return _preview_result(mode, "sign_conflict")
 
     ay_delta = float(np.clip(ay_preview - ay_base, -LATERAL_PREVIEW_ASSIST_MAX_DELTA_AY, LATERAL_PREVIEW_ASSIST_MAX_DELTA_AY))
     if not math.isfinite(ay_delta):

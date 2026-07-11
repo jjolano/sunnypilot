@@ -94,6 +94,24 @@ def test_progress_only_when_authorized():
   assert auth.a_target == pytest.approx(1.5)
 
 
+def test_selected_intent_tracks_winning_desire_candidate():
+  def progress(a, intent):
+    return C(a, CandidateRole.PROGRESS, EvidenceClass.LEAD, intent)
+
+  winning_progress = decide([cruise(0.4), progress(0.2, "weak"), progress(0.8, "winner")],
+                            LongitudinalMode.ACC, LIMITS)
+  assert winning_progress.a_target == pytest.approx(0.8)
+  assert winning_progress.selected_intent == "winner"
+
+  winning_cruise = decide([cruise(1.0), progress(0.8, "pullaway")], LongitudinalMode.ACC, LIMITS)
+  assert winning_cruise.a_target == pytest.approx(1.0)
+  assert winning_cruise.selected_intent == "cruise"
+
+  tied = decide([cruise(0.8), progress(0.8, "pullaway")], LongitudinalMode.ACC, LIMITS)
+  assert tied.a_target == pytest.approx(0.8)
+  assert tied.selected_intent == "pullaway"
+
+
 def test_output_always_within_accel_limits():
   rng = np.random.default_rng(20260613)
   roles = list(CandidateRole)

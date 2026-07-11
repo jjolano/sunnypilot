@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import collections
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from collections.abc import Sequence
 
@@ -82,6 +82,9 @@ LANE_RATE_DAMPING_MIN_SPEED = 12.0
 LANE_RATE_DAMPING_MIN_PATH_QUALITY = 0.85
 LANE_RATE_DAMPING_MAX_MODEL_LAT_ACCEL = 0.6
 LANE_RATE_DAMPING_V2_EPS = 1e-6
+LANE_RATE_DAMPING_HARD_BLOCK_REASONS = frozenset((
+  "disabled", "inactive", "invalid", "lane_change_unknown", "lane_change", "blinker", "driver_override",
+))
 
 LANE_FIT_SOURCE_MODES = frozenset(("off", "shadow", "apply"))
 LANE_FIT_SOURCE_MIN_SPEED = 15.0
@@ -264,10 +267,9 @@ class LaneFitSourceResult:
 class _AyReleaseSlew:
   """Bounded-rate approach of an additive lat-accel nudge, both directions.
 
-  Every additive stage already slews in; this makes releases decay at the same rate
-  instead of vanishing in one frame (route 274: instant nudge removal was a top
-  lateral-jerk source). Pure state: feed the stage's target (0.0 when the stage stops
-  applying) and add the returned value."""
+  Transient releases decay at the entry rate instead of vanishing in one frame (route
+  274: instant nudge removal was a top lateral-jerk source). Callers reset on explicit
+  driver/mode hard stops. Pure state: feed the target and add the returned value."""
 
   def __init__(self, dt: float, rate_lat_jerk: float) -> None:
     self.dt = max(float(dt), 1e-3)
@@ -764,10 +766,28 @@ class LateralDemandPipeline:
       new_desired_curvature = lane_change_result.desired_curvature if inputs.lat_active else inputs.measured_curvature
       lane_rate_damping_result = self._lane_rate_damping.update(inputs, model_path_result, demand_source)
       if inputs.lat_active:
-        # Release-slewed application: on/off edges decay at the shared rate instead of
-        # stepping the whole nudge in one frame.
-        lrd_ay = self._lane_rate_damping_slew.update(
-          lane_rate_damping_result.lat_accel if lane_rate_damping_result.applied else 0.0)
+        hard_blocked = (
+          lane_rate_damping_result.mode != "apply"
+          or lane_rate_damping_result.reason in LANE_RATE_DAMPING_HARD_BLOCK_REASONS
+          or model_path_result.reason != "ok"
+        )
+        if hard_blocked:
+          self._lane_rate_damping_slew.reset()
+          lrd_ay = 0.0
+        else:
+          # Transient limiter/quality edges release smoothly. Report the slewed value that
+          # actually reaches the demand so telemetry never hides residual authority.
+          lrd_ay = self._lane_rate_damping_slew.update(
+            lane_rate_damping_result.lat_accel if lane_rate_damping_result.applied else 0.0)
+          if lrd_ay != 0.0:
+            releasing = not lane_rate_damping_result.applied
+            lane_rate_damping_result = replace(
+              lane_rate_damping_result,
+              applied=True,
+              reason=(f"releasing_{lane_rate_damping_result.reason}" if releasing else lane_rate_damping_result.reason),
+              lat_accel=lrd_ay,
+              curvature=lrd_ay / max(inputs.v_ego * inputs.v_ego, 1.0),
+            )
         if lrd_ay != 0.0:
           new_desired_curvature += lrd_ay / max(inputs.v_ego * inputs.v_ego, 1.0)
       else:

@@ -1,6 +1,8 @@
 """Tests for the custom-2.0 longitudinal policy mechanisms and their mode-gated arbitration."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from openpilot.sunnypilot.custom.longitudinal.decision import CandidateRole, decide
@@ -174,13 +176,13 @@ def test_early_model_slowdown_caution_before_stop_commitment():
 
 def test_far_nonclosing_lead_caps_uncorroborated_model_caution():
   # Route 00000274: a deepened caution floor (-0.7) applied to a far, same-speed lead is a
-  # phantom over-brake. With a far non-closing lead the non-committed caution is capped shallow.
+  # phantom over-brake. With a far non-closing lead the non-committed caution is coast-capped.
   common = dict(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0, model_should_stop=False,
                 model_stop_distance=None, model_desired_accel=-0.7, model_caution_floor=-0.7)
   far = LongitudinalScene(has_lead=True, lead_d_rel=50.0, lead_v_rel=-0.5, **common)
   stop = [c for c in build_candidates(far) if c.intent == "stop_approach"]
   assert len(stop) == 1
-  assert stop[0].a_target == pytest.approx(-0.35)  # capped
+  assert stop[0].a_target == pytest.approx(0.0)  # coast-capped
 
   # A closing lead (real approach) is NOT capped — the caution floor stands.
   closing = LongitudinalScene(has_lead=True, lead_d_rel=50.0, lead_v_rel=-2.0, **common)
@@ -191,6 +193,12 @@ def test_far_nonclosing_lead_caps_uncorroborated_model_caution():
   near = LongitudinalScene(has_lead=True, lead_d_rel=20.0, lead_v_rel=-0.5, **common)
   stop_n = [c for c in build_candidates(near) if c.intent == "stop_approach"]
   assert stop_n[0].a_target == pytest.approx(-0.7)
+
+  # A finite model stop point is independent evidence (for example, a traffic light) and
+  # must retain braking authority even with a far, non-closing lead.
+  finite_stop = replace(far, model_stop_distance=50.0)
+  stop_s = [c for c in build_candidates(finite_stop) if c.intent == "stop_approach"]
+  assert stop_s[0].a_target < 0.0
 
 
 def test_early_model_slowdown_uses_raw_decel_within_cap():

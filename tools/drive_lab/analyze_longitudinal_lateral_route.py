@@ -11,6 +11,11 @@ from typing import Any, cast
 
 import numpy as np
 
+from openpilot.tools.drive_lab.route_analysis import (
+  LATERAL_DEMAND_SCHEMA_LEGACY,
+  conditioned_desired_curvature,
+  lateral_demand_schema,
+)
 from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
@@ -286,6 +291,7 @@ def extract_rows(msgs: list[Any], window: AnalysisWindow) -> list[dict[str, Any]
   if not msgs:
     return []
   ordered = sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
+  demand_schema = lateral_demand_schema(ordered)
   base_mono_time = int(getattr(ordered[0], "logMonoTime", 0))
   state: dict[str, Any] = {column: "" for column in COLUMNS}
   rows: list[dict[str, Any]] = []
@@ -297,7 +303,7 @@ def extract_rows(msgs: list[Any], window: AnalysisWindow) -> list[dict[str, Any]
       break
     payload = msg_payload(msg)
     if _is_relevant_message(typ):
-      update_state(state, typ, payload)
+      update_state(state, typ, payload, demand_schema)
       if window.start_s <= t <= window.end_s:
         row = dict(state)
         row["time_s"] = round(t, 3)
@@ -322,7 +328,7 @@ def _is_relevant_message(typ: str) -> bool:
   }
 
 
-def update_state(state: dict[str, Any], typ: str, payload: Any) -> None:
+def update_state(state: dict[str, Any], typ: str, payload: Any, demand_schema: str = LATERAL_DEMAND_SCHEMA_LEGACY) -> None:
   if typ == "selfdriveState":
     _set(state, "selfdrive_active", _safe_get(payload, "active"))
   elif typ == "carState":
@@ -358,7 +364,7 @@ def update_state(state: dict[str, Any], typ: str, payload: Any) -> None:
     _set(state, "controls_curvature", _safe_get(payload, "curvature"))
     _set(state, "controls_desired_curvature", _safe_get(payload, "desiredCurvature"))
     _update_lateral_control_state(state, payload)
-    _update_model_path_state(state, _safe_get(payload, "modelPathState"))
+    _update_model_path_state(state, _safe_get(payload, "modelPathState"), demand_schema)
   elif typ == "longitudinalPlan":
     for column, path in (
       ("plan_a_target", "aTarget"),
@@ -437,14 +443,13 @@ def _update_lead(state: dict[str, Any], prefix: str, lead: Any) -> None:
     _set(state, f"{prefix}_{suffix}", _safe_get(lead, path))
 
 
-def _update_model_path_state(state: dict[str, Any], path_state: Any) -> None:
+def _update_model_path_state(state: dict[str, Any], path_state: Any, demand_schema: str) -> None:
   for column, path in (
     ("model_path_active", "active"),
     ("model_path_gated", "gated"),
     ("model_path_quality", "quality"),
     ("model_path_reason", "reason"),
     ("model_path_raw_curvature", "rawDesiredCurvature"),
-    ("model_path_processed_curvature", "processedDesiredCurvature"),
     ("model_path_lane_change_fade", "laneChangeFade"),
     ("model_path_lane_rate_damping_mode", "laneRateDampingMode"),
     ("model_path_lane_rate_damping_active", "laneRateDampingActive"),
@@ -467,6 +472,7 @@ def _update_model_path_state(state: dict[str, Any], path_state: Any) -> None:
   ):
     value = _safe_get(path_state, path)
     _set(state, column, _enum(value) if column == "model_path_reason" else value)
+  _set(state, "model_path_processed_curvature", conditioned_desired_curvature(path_state, demand_schema))
 
 
 def _update_lateral_control_state(state: dict[str, Any], payload: Any) -> None:

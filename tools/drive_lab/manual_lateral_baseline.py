@@ -8,7 +8,12 @@ from typing import Any
 
 import numpy as np
 
-from openpilot.tools.drive_lab.route_analysis import finite_or_none
+from openpilot.tools.drive_lab.route_analysis import (
+  LATERAL_DEMAND_SCHEMA_LEGACY,
+  conditioned_desired_curvature,
+  finite_or_none,
+  lateral_demand_schema,
+)
 from openpilot.tools.drive_lab.route_io import output_report
 from openpilot.tools.drive_lab.timeline import format_enum, safe_get
 
@@ -87,6 +92,7 @@ class _LateralState:
 
 def build_manual_lateral_samples(route: str, msgs: list[Any], *, already_sorted: bool = False) -> list[ManualLateralSample]:
   ordered = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
+  demand_schema = lateral_demand_schema(ordered)
   state = _LateralState()
   samples: list[ManualLateralSample] = []
   last_t_by_mode: dict[str, float] = {}
@@ -105,7 +111,7 @@ def build_manual_lateral_samples(route: str, msgs: list[Any], *, already_sorted:
       state.model_v2 = payload
     elif typ == "controlsState":
       state.controls_state = payload
-      sample = _sample_from_state(route, msg.t, state, last_t_by_mode, last_current_lat_accel, last_sample_steering_angle, last_t)
+      sample = _sample_from_state(route, msg.t, state, last_t_by_mode, last_current_lat_accel, last_sample_steering_angle, last_t, demand_schema)
       if sample is not None:
         samples.append(sample)
         last_t_by_mode[sample.mode] = sample.t
@@ -170,7 +176,16 @@ def iter_route_messages_from_msgs(msgs: list[Any]):
   return build_route_messages(msgs)
 
 
-def _sample_from_state(route: str, t: float, state: _LateralState, last_t_by_mode: dict[str, float], last_current_lat_accel: dict[str, float], last_steering_angle: float | None, last_t: float | None) -> ManualLateralSample | None:
+def _sample_from_state(
+  route: str,
+  t: float,
+  state: _LateralState,
+  last_t_by_mode: dict[str, float],
+  last_current_lat_accel: dict[str, float],
+  last_steering_angle: float | None,
+  last_t: float | None,
+  demand_schema: str = LATERAL_DEMAND_SCHEMA_LEGACY,
+) -> ManualLateralSample | None:
   car_state = state.car_state
   controls_state = state.controls_state
   car_control = state.car_control
@@ -196,7 +211,7 @@ def _sample_from_state(route: str, t: float, state: _LateralState, last_t_by_mod
     current_curvature = finite_or_none(safe_get(controls_state, "curvature")) or 0.0
   desired_curvature = finite_or_none(safe_get(controls_state, "desiredCurvature"))
   model_path = safe_get(controls_state, "modelPathState")
-  processed_desired = finite_or_none(safe_get(model_path, "processedDesiredCurvature"))
+  processed_desired = finite_or_none(conditioned_desired_curvature(model_path, demand_schema))
   raw_desired = finite_or_none(safe_get(model_path, "rawDesiredCurvature"))
   model_quality = finite_or_none(safe_get(model_path, "quality", safe_get(state.model_v2, "path.prob")))
   model_gated = safe_get(model_path, "gated")

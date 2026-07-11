@@ -94,6 +94,29 @@ def test_stopped_lead_approach_allows_valid_peak_decel_and_long_gap_from_fuzz():
   assert by_metric["final_lead_gap"].passed
 
 
+def test_stopped_lead_jerk_uses_windowed_command_instead_of_plant_stop_snap():
+  output = np.array([
+    [0.00, 0.0, 5.0, 0.8, 0.0, 0.0, 5.0],
+    [0.05, 0.0, 5.0, 0.5, 0.0, -0.5, 5.0],
+    [0.10, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0],
+    [0.15, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0],
+    [0.20, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0],
+  ])
+  commanded = np.array([-0.2, -0.25, -0.3, -0.35, -0.4])
+
+  raw = {c.metric: c for c in compare_scenario_output("stopped_lead_approach", output)}
+  commanded_result = {
+    c.metric: c for c in compare_scenario_output(
+      "stopped_lead_approach", output, commanded_accel=commanded, jerk_window=2,
+    )
+  }
+
+  assert raw["max_abs_jerk"].current == 10.0
+  assert not raw["max_abs_jerk"].passed
+  assert commanded_result["max_abs_jerk"].current == 1.0
+  assert commanded_result["max_abs_jerk"].passed
+
+
 def test_lead_approach_comparison_reports_closing_and_time_gap():
   output = np.array([
     [0.0, 0.0, 45.0, 15.0, 14.0, 0.0, 45.0],

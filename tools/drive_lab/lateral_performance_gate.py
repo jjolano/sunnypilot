@@ -14,6 +14,7 @@ from openpilot.tools.drive_lab.lateral_torque_event_report import (
   build_lateral_low_speed_report,
   build_lateral_torque_event_report,
 )
+from openpilot.tools.drive_lab.route_analysis import conditioned_desired_curvature, lateral_demand_schema
 from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type, safe_get
 
 
@@ -282,6 +283,7 @@ def load_lateral_performance_gate(path: str | Path) -> LateralPerformanceGateRep
 def _extract_gate_samples(msgs: list[Any]) -> list[_GateSample]:
   if not msgs:
     return []
+  demand_schema = lateral_demand_schema(msgs)
   base_mono_time = int(getattr(msgs[0], "logMonoTime", 0))
   latest: dict[str, Any] = {}
   samples: list[_GateSample] = []
@@ -309,7 +311,7 @@ def _extract_gate_samples(msgs: list[Any]) -> list[_GateSample]:
       steering_angle_deg=_finite_float(safe_get(car_state, "steeringAngleDeg")),
       curvature=_finite_float(safe_get(payload, "curvature")),
       raw_desired_curvature=_finite_float(safe_get(model_path, "rawDesiredCurvature")),
-      processed_desired_curvature=_finite_float(safe_get(model_path, "processedDesiredCurvature")),
+      processed_desired_curvature=_finite_float(conditioned_desired_curvature(model_path, demand_schema)),
       desired_curvature=_finite_float(safe_get(payload, "desiredCurvature")),
       model_path_gated=bool(safe_get(model_path, "gated", False)),
       model_path_quality=_finite_float(safe_get(model_path, "quality")),

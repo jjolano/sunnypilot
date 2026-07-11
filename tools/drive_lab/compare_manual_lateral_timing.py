@@ -21,7 +21,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from openpilot.tools.drive_lab.route_analysis import build_route_messages, finite_or_none
+from openpilot.tools.drive_lab.route_analysis import build_route_messages, conditioned_desired_curvature, finite_or_none, lateral_demand_schema
 from openpilot.tools.drive_lab.route_io import output_report
 from openpilot.tools.drive_lab.timeline import format_enum, safe_get
 
@@ -664,6 +664,7 @@ def build_lateral_timing_frames(
   already_sorted: bool = False,
 ) -> list[LateralTimingFrame]:
   ordered = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
+  demand_schema = lateral_demand_schema(ordered)
   frames: list[LateralTimingFrame] = []
   latest: dict[str, Any] = {}
   latest_mono: dict[str, int] = {}
@@ -714,7 +715,7 @@ def build_lateral_timing_frames(
     curvature = finite_or_none(safe_get(controls_state, "curvature"))
     desired_curvature = finite_or_none(safe_get(controls_state, "desiredCurvature"))
     model_path = safe_get(controls_state, "modelPathState")
-    processed_curvature = finite_or_none(safe_get(model_path, "processedDesiredCurvature"))
+    processed_curvature = finite_or_none(conditioned_desired_curvature(model_path, demand_schema))
     raw_curvature = finite_or_none(safe_get(model_path, "rawDesiredCurvature"))
     path_quality = finite_or_none(safe_get(model_path, "quality"))
     path_gated = safe_get(model_path, "gated")

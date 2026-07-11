@@ -90,19 +90,20 @@ _OVERSPEED_LEAD_TARGET_EPS = 0.05
 _OVERSPEED_LEAD_HARD_BRAKE_A_K = -0.5
 
 # Far, non-closing radar lead => the model's *uncorroborated* slowdown has no physical reason to
-# brake hard yet. Route 00000274: the non-committed model stop_approach caution floor deepened to
+# brake yet. Route 00000274: the early model stop_approach caution floor deepened to
 # ~-0.7 on same-speed leads 40-65 m out, then released within ~1 s (a spurious "overreaction to a
-# far lead"). Cap the non-committed caution decel in that context. A trusted committed model stop
-# bypasses this (only the softened, non-committed branch is capped), and the MPC lead hazard binds
-# independently downstream, so this can only reduce phantom braking, never a real stop/lead brake.
+# far lead"). Routes 00000275-0000027b: 72.9% of matching manual frames coasted and none used
+# medium braking. Coast only when desired acceleration is the sole model slowdown evidence; a
+# finite stop point (for example, a traffic-light stop) always keeps its braking authority. The
+# MPC lead hazard also binds independently downstream.
 _FAR_LEAD_CAUTION_MIN_D_REL = 35.0     # m; lead far enough that its slowdown isn't imminent
 _FAR_LEAD_CAUTION_MAX_CLOSING = 1.0    # m/s; closing slower than this is effectively same-speed
-_FAR_LEAD_CAUTION_DECEL_CAP = -0.35    # m/s^2; gentlest bound for uncorroborated far-lead caution
+_FAR_LEAD_CAUTION_DECEL_CAP = 0.0      # m/s^2; coast for uncorroborated far-lead caution
 
 
 def _uncorroborated_far_lead(scene: LongitudinalScene) -> bool:
   """A tracked lead that is far and not meaningfully closing — the model's non-committed slowdown
-  here is uncorroborated by lead kinematics, so its caution decel is capped shallow."""
+  here is uncorroborated by lead kinematics, so its caution decel is coast-capped."""
   return bool(scene.has_lead and math.isfinite(scene.lead_d_rel) and math.isfinite(scene.lead_v_rel)
               and scene.lead_d_rel > _FAR_LEAD_CAUTION_MIN_D_REL
               and scene.lead_v_rel > -_FAR_LEAD_CAUTION_MAX_CLOSING)
@@ -698,8 +699,6 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
       # floor. Trusted committed stops keep full stop physics.
       if not trust.should_stop:
         stop_a = max(stop_a, scene.model_caution_floor)
-        if _uncorroborated_far_lead(scene):
-          stop_a = max(stop_a, _FAR_LEAD_CAUTION_DECEL_CAP)
       cands.append(LongitudinalCandidate(stop_a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP,
                                          "stop_approach", is_stop=bool(trust.should_stop and hard)))
   # Early, non-committing model-slowdown caution from fresh model decel before shouldStop or

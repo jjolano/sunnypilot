@@ -142,15 +142,26 @@ LEAD_APPROACH_KINDS = {
 }
 
 
-def compare_scenario_output(kind: str, output: np.ndarray) -> list[MetricComparison]:
+def compare_scenario_output(
+  kind: str,
+  output: np.ndarray,
+  *,
+  commanded_accel: np.ndarray | None = None,
+  jerk_window: int = 1,
+) -> list[MetricComparison]:
   output = _validated_output(output)
+  jerk_accel = output[:, COL_ACCEL]
+  if commanded_accel is not None:
+    commanded_accel = np.asarray(commanded_accel, dtype=float)
+    if commanded_accel.shape == jerk_accel.shape:
+      jerk_accel = commanded_accel
   comparisons: list[MetricComparison] = []
   if kind in LAUNCH_KINDS:
-    comparisons.extend(_launch_comparisons(output))
+    comparisons.extend(_launch_comparisons(output, jerk_accel, jerk_window))
   if kind in LEAD_APPROACH_KINDS:
     comparisons.extend(_lead_approach_comparisons(output))
   if kind in STOP_KINDS:
-    comparisons.extend(_stop_comparisons(output))
+    comparisons.extend(_stop_comparisons(output, jerk_accel, jerk_window))
   return comparisons
 
 
@@ -182,7 +193,7 @@ def render_comparison_table(comparisons: list[MetricComparison]) -> str:
   return "\n".join(lines)
 
 
-def _launch_comparisons(output: np.ndarray) -> list[MetricComparison]:
+def _launch_comparisons(output: np.ndarray, jerk_accel: np.ndarray, jerk_window: int) -> list[MetricComparison]:
   t = output[:, COL_TIME]
   speed = output[:, COL_SPEED]
   lead_speed = output[:, COL_LEAD_SPEED]
@@ -201,7 +212,7 @@ def _launch_comparisons(output: np.ndarray) -> list[MetricComparison]:
     _comparison("Launch", "launch_delay", "launch delay", ego_move_time - lead_move_time),
     _comparison("Launch", "launch_mean_accel", "launch mean accel", float(np.mean(launch_accels))),
     _comparison("Launch", "launch_peak_accel", "launch peak accel", float(np.max(launch_accels))),
-    _comparison("Launch", "max_abs_jerk", "max jerk", _max_abs_jerk(t, accel)),
+    _comparison("Launch", "max_abs_jerk", "max jerk", _max_abs_jerk(t, jerk_accel, jerk_window)),
   ]
 
 
@@ -232,7 +243,7 @@ def _lead_approach_comparisons(output: np.ndarray) -> list[MetricComparison]:
   ]
 
 
-def _stop_comparisons(output: np.ndarray) -> list[MetricComparison]:
+def _stop_comparisons(output: np.ndarray, jerk_accel: np.ndarray, jerk_window: int) -> list[MetricComparison]:
   speed = output[:, COL_SPEED]
   accel = output[:, COL_ACCEL]
   d_rel = output[:, COL_D_REL]
@@ -246,7 +257,7 @@ def _stop_comparisons(output: np.ndarray) -> list[MetricComparison]:
     _comparison("Stopping", "stop_mean_decel", "stop mean accel", float(np.mean(decel_samples))),
     _comparison("Stopping", "stop_peak_decel", "stop peak decel", float(np.min(decel_samples))),
     _comparison("Stopping", "final_lead_gap", "final lead gap", final_gap),
-    _comparison("Stopping", "max_abs_jerk", "max jerk", _max_abs_jerk(output[:, COL_TIME], accel)),
+    _comparison("Stopping", "max_abs_jerk", "max jerk", _max_abs_jerk(output[:, COL_TIME], jerk_accel, jerk_window)),
   ]
 
 
@@ -270,11 +281,12 @@ def _first_time(t: np.ndarray, mask: np.ndarray, default: float) -> float:
   return float(t[int(matches[0])]) if matches.size else float(default)
 
 
-def _max_abs_jerk(t: np.ndarray, accel: np.ndarray) -> float:
-  if accel.size <= 1:
+def _max_abs_jerk(t: np.ndarray, accel: np.ndarray, window: int = 1) -> float:
+  window = max(1, int(window))
+  if accel.size <= window:
     return 0.0
-  dt = np.diff(t)
-  accel_delta = np.diff(accel)
+  dt = t[window:] - t[:-window]
+  accel_delta = accel[window:] - accel[:-window]
   valid = (dt > 1e-6) & np.isfinite(dt) & np.isfinite(accel_delta)
   if not np.any(valid):
     return 0.0

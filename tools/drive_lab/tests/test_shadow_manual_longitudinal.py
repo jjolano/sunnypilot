@@ -4,6 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from cereal import messaging
+from openpilot.common.params import Params
+from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.tools.drive_lab import shadow_manual_longitudinal as shadow_cli
 from openpilot.tools.drive_lab.shadow_manual_longitudinal import (
   DEFAULT_MIN_INFERRED_CRUISE_KPH,
@@ -11,6 +13,7 @@ from openpilot.tools.drive_lab.shadow_manual_longitudinal import (
   ShadowPlannerTargetSample,
   ShadowReplayError,
   ShadowReplayOptions,
+  configure_shadow_params,
   default_planner_factory,
   extract_shadow_samples,
   shape_shadow_payload,
@@ -140,6 +143,7 @@ def test_extract_shadow_samples_shapes_as_if_engaged_inputs(monkeypatch):
   assert not sm["controlsState"].forceDecel
   assert not sm["carState"].gasPressed
   assert not sm["carState"].brakePressed
+  assert sm.recv_time["modelV2"] > 0.0
   assert sm["carState"].vCruise == pytest.approx(DEFAULT_MIN_INFERRED_CRUISE_KPH)
   assert sm["carState"].vCruiseCluster == pytest.approx(DEFAULT_MIN_INFERRED_CRUISE_KPH)
 
@@ -151,6 +155,17 @@ def test_extract_shadow_samples_shapes_as_if_engaged_inputs(monkeypatch):
   assert sample.sp_stack == "customV2"
   assert sample.gas_pressed
   assert sample.brake_pressed
+
+
+@pytest.mark.parametrize(("stack", "enabled"), (("custom-2.0", True), ("sunnypilot-current", False)))
+def test_configure_shadow_params_materializes_defaults_and_stack_override(stack, enabled):
+  with OpenpilotPrefix():
+    configure_shadow_params(stack)
+    params = Params()
+
+    assert params.get_bool("CustomLongitudinalEnabled") is enabled
+    assert params.get("CustomLongitudinalMode") == "scc"
+    assert params.get("DynamicFollowGapMode") == "shadow"
 
 
 def test_preserve_driver_pedals_and_fixed_virtual_cruise(monkeypatch):

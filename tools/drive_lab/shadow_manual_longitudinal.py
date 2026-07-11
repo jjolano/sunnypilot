@@ -4,12 +4,14 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
 from cereal import messaging
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.tools.drive_lab.planner_target_analysis import (
   DEFAULT_EPISODE_CONTEXT_S,
@@ -131,7 +133,11 @@ class ShadowSubMaster(dict):
     self.alive = {service: True for service in payloads}
     self.freq_ok = {service: True for service in payloads}
     self.recv_frame = {service: 0 for service in payloads}
-    self.recv_time = {service: 0.0 for service in payloads}
+    # Planner updates are triggered by the current modelV2 frame, so every cached input
+    # here is fresh enough to replay. A zero timestamp makes the custom adapter treat the
+    # model as stale and silently bypass its stop/slowdown policy.
+    now = time.monotonic()
+    self.recv_time = {service: now for service in payloads}
     self.frame = 0
 
   def all_checks(self, service_list: list[str] | tuple[str, ...] | None = None) -> bool:
@@ -175,6 +181,7 @@ def main() -> None:
 
   try:
     with OpenpilotPrefix(prefix="drive-lab-shadow-longitudinal"):
+      configure_shadow_params(options.stack)
       samples_by_route = {
         route: extract_shadow_samples(route, read_mode, options)
         for route in args.routes
@@ -467,6 +474,9 @@ def default_planner_factory(CP: Any, CP_SP: Any, init_v: float, init_a: float) -
 
 
 def configure_shadow_stack(planner: Any, stack: str, CP: Any, CP_SP: Any) -> None:
+  # The restart retired stack multiplexing. Preserve the legacy fallback below for old
+  # checkouts, but make current planners report the stack selected by this replay.
+  planner.longitudinal_stack_actuated_stack = stack
   if not hasattr(planner, "longitudinal_stack_resolution"):
     return
   from openpilot.selfdrive.controls.lib.longitudinal_stacks.selector import resolve_longitudinal_stack
@@ -474,6 +484,15 @@ def configure_shadow_stack(planner: Any, stack: str, CP: Any, CP_SP: Any) -> Non
   planner.longitudinal_stack_resolution = resolve_longitudinal_stack(stack, CP, CP_SP)
   if hasattr(planner, "_make_custom_longitudinal_stack"):
     planner.custom_longitudinal_stack = planner._make_custom_longitudinal_stack(planner.longitudinal_stack_resolution.resolved_stack)
+
+
+def configure_shadow_params(stack: str) -> None:
+  """Materialize fresh-install defaults inside the isolated replay prefix."""
+  params = Params()
+  for key in params.all_keys():
+    if params.get(key) is None and (default := params.get_default_value(key)) is not None:
+      params.put(key, default, block=True)
+  params.put_bool("CustomLongitudinalEnabled", stack != "sunnypilot-current", block=True)
 
 
 def payload_copy(payload: Any) -> Any:
