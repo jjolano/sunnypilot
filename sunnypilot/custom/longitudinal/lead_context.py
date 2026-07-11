@@ -658,23 +658,27 @@ def _path_relative_y(y_rel: float, d_rel: float, model_msg: Any | None) -> float
   return y_rel
 
 
-A_LEAD_TAU_DEFAULT = 1.5  # s; lead-accel decay time constant (matches the MPC's aLeadTau use)
+A_LEAD_TAU_DEFAULT = 1.5  # Gaussian lead-accel decay rate, matching long_mpc
+MODEL_ONLY_PULLAWAY_PROB_MIN = 0.8
 
 
 def lead_prediction(d_rel: float, v_lead: float, a_lead: float, v_ego: float, valid: bool = True,
-                    a_lead_tau: float = A_LEAD_TAU_DEFAULT, v_rel: float | None = None) -> LeadTrajectoryPrediction:
+                    a_lead_tau: float = A_LEAD_TAU_DEFAULT, v_rel: float | None = None,
+                    a_ego: float = 0.0, accel_confidence: float = 1.0) -> LeadTrajectoryPrediction:
   """Short-horizon lead preview, delegated to the shared ``predict_lead_trajectory``.
 
-  One predictor for the whole stack (lead-math review, 2026-07-10): τ-decayed lead accel,
+  One predictor for the whole stack (lead-math review, 2026-07-10): MPC-decayed lead accel,
   measured ``vRel`` for the linear gap term when the caller has it (falls back to the derived
   ``v_lead − v_ego``), and a standstill clamp so a braking lead never "reverses" the gap.
-  Ego accel is not plumbed into the lead context, so the ego term stays zero here.
+  Ego acceleration is included so gap-opening authority uses the same measured ego transient
+  as the alignment predictor rather than assuming constant ego speed.
   """
   tau = max(finite_float(a_lead_tau, A_LEAD_TAU_DEFAULT), 0.1)
   v_rel = (v_lead - v_ego) if v_rel is None else v_rel
   pred = predict_lead_trajectory(
     d_rel=d_rel, v_rel=v_rel, v_lead=v_lead, a_lead=a_lead,
-    a_lead_tau=tau, v_ego=v_ego, horizon_t=LEAD_CONTEXT_PREVIEW_T,
+    a_lead_tau=tau, v_ego=v_ego, a_ego=finite_float(a_ego),
+    accel_confidence=finite_float(accel_confidence), horizon_t=LEAD_CONTEXT_PREVIEW_T,
   )
   return LeadTrajectoryPrediction(pred.gap, pred.v_lead, pred.a_lead, valid)
 
@@ -894,7 +898,8 @@ class LeadShadowTracker:
     v_lead = max(0.0, self._shadow.v_lead + self._shadow.a_lead * dt)
     v_rel = v_lead - v_ego
     d_rel = max(0.0, self._shadow.d_rel + v_rel * dt)
-    confidence = _clip(self._shadow.confidence * max(0.0, 1.0 - age / max(self._shadow.duration, 0.1)))
+    duration = max(self._shadow.duration, 0.1)
+    confidence = _clip(self._shadow.confidence * max(0.0, duration - age) / max(duration - self._shadow.age, 1e-9))
     active = bool(age <= self._shadow.duration and d_rel > 0.0)
     self._shadow = LeadShadowState(
       active=active,
@@ -1087,13 +1092,14 @@ class LeadContextTracker:
 
   def update(self, leads: tuple[Any, Any], confidence_states: tuple[LeadConfidenceState, LeadConfidenceState] | list[LeadConfidenceState],
               v_ego: float, dt: float, model_msg: Any | None = None, dominant_idx: int | None = None,
-              lead_dominant_idx: int | None = None, reset_state: bool = False) -> PrimaryLeadContext:
+              lead_dominant_idx: int | None = None, reset_state: bool = False,
+              a_ego: float = 0.0) -> PrimaryLeadContext:
     dt = max(0.0, finite_float(dt))
     v_ego = finite_float(v_ego)
 
     observations = self._observe(leads, model_msg, v_ego)
     shadows = self._update_shadows(leads, confidence_states, v_ego, dt, model_msg, observations, reset_state)
-    states = self._build_states(observations, shadows, confidence_states, v_ego, model_msg, dt)
+    states = self._build_states(observations, shadows, confidence_states, v_ego, a_ego, model_msg, dt)
 
     self._observation_stage.commit(states)
     self._false_positive_stage.commit(states)
@@ -1132,14 +1138,14 @@ class LeadContextTracker:
   def _build_states(self, observations: tuple[_LeadObservation, _LeadObservation],
                     shadows: tuple[LeadShadowState, LeadShadowState],
                     confidence_states: tuple[LeadConfidenceState, LeadConfidenceState] | list[LeadConfidenceState],
-                    v_ego: float, model_msg: Any | None, dt: float) -> list[LeadRelevanceState]:
+                    v_ego: float, a_ego: float, model_msg: Any | None, dt: float) -> list[LeadRelevanceState]:
     states: list[LeadRelevanceState] = []
     for idx, obs in enumerate(observations):
       confidence_state = confidence_states[idx] if idx < len(confidence_states) else LeadConfidenceState()
       if obs.status:
-        state = self._build_real_state(idx, obs, confidence_state, v_ego)
+        state = self._build_real_state(idx, obs, confidence_state, v_ego, a_ego)
       elif shadows[idx].active:
-        state = self._build_shadow_state(idx, shadows[idx], v_ego, model_msg)
+        state = self._build_shadow_state(idx, shadows[idx], v_ego, a_ego, model_msg)
       else:
         state = _empty_state(idx)
       had_signal = obs.status or shadows[idx].active
@@ -1148,11 +1154,17 @@ class LeadContextTracker:
     return states
 
   def _build_real_state(self, idx: int, observation: _LeadObservation,
-                        confidence_state: LeadConfidenceState, v_ego: float) -> LeadRelevanceState:
+                        confidence_state: LeadConfidenceState, v_ego: float, a_ego: float) -> LeadRelevanceState:
     kinematics = self._kinematics_stage.compute(True, observation, None, v_ego, confidence_state)
+    accel_confidence = 1.0
+    if observation.a_lead > 0.0 and not observation.radar:
+      accel_confidence = _clip(
+        (observation.model_prob - MODEL_ONLY_PULLAWAY_PROB_MIN) /
+        (1.0 - MODEL_ONLY_PULLAWAY_PROB_MIN),
+      )
     prediction = lead_prediction(
       observation.d_rel, observation.v_lead, observation.a_lead, v_ego, True, observation.a_lead_tau,
-      v_rel=observation.v_rel,
+      v_rel=observation.v_rel, a_ego=a_ego, accel_confidence=accel_confidence,
     )
     progress_model = self._progress_stage.compute_real(observation, v_ego, kinematics, confidence_state, prediction)
     release_timer = self._false_positive_stage.prev_timer(idx)
@@ -1188,7 +1200,7 @@ class LeadContextTracker:
       progress_model=progress_model,
     )
 
-  def _build_shadow_state(self, idx: int, shadow: LeadShadowState, v_ego: float,
+  def _build_shadow_state(self, idx: int, shadow: LeadShadowState, v_ego: float, a_ego: float,
                           model_msg: Any | None) -> LeadRelevanceState:
     # Shadow kinematics recompute path-relative y against the current model path so the
     # context reflects the latest lateral correspondence even while the lead is occluded.
@@ -1199,7 +1211,8 @@ class LeadContextTracker:
       model_prob=shadow.model_prob, radar=shadow.radar, track_id=shadow.track_id,
     )
     kinematics = self._kinematics_stage.compute(False, observation, shadow, v_ego, None)
-    prediction = lead_prediction(shadow.d_rel, shadow.v_lead, shadow.a_lead, v_ego, True, v_rel=shadow.v_rel)
+    prediction = lead_prediction(shadow.d_rel, shadow.v_lead, shadow.a_lead, v_ego, True,
+                                 v_rel=shadow.v_rel, a_ego=a_ego)
     progress_model = self._progress_stage.compute_shadow(shadow, v_ego, kinematics, prediction)
     return LeadRelevanceState(
       lead_idx=shadow.lead_idx,

@@ -1,16 +1,68 @@
 import math
 from typing import Any
 
+import numpy as np
 import pytest
 
 from openpilot.tools.drive_lab.compare_manual_lateral_timing import (
   EventDetectionParams,
   LateralTimingFrame,
+  _trapezoid_area,
   detect_lateral_events,
 )
 
 
 DEFAULT_PARAMS = EventDetectionParams()
+
+
+def test_trapezoid_area_interpolates_internal_missing_samples():
+  assert _trapezoid_area(
+    np.array([0.0, 0.1, 0.2]), np.array([1.0, float("nan"), 1.0]),
+  ) == pytest.approx(0.2)
+
+
+def test_trapezoid_area_excludes_missing_edges():
+  assert _trapezoid_area(
+    np.array([0.0, 0.1, 0.2, 0.3]), np.array([float("nan"), 1.0, 1.0, float("nan")]),
+  ) == pytest.approx(0.1)
+
+
+def test_neighboring_same_sign_event_does_not_supply_previous_peak():
+  frames = _frames(
+    0.0, 1.5, 0.1,
+    ref_func=lambda t: 0.5 if 0.2 <= t <= 0.6 or 0.9 <= t <= 1.3 else 0.05,
+    actual_func=lambda t: 0.4 if 0.2 <= t <= 0.6 else 1.0 if 0.9 <= t <= 1.3 else 0.0,
+  )
+  events = detect_lateral_events(frames, DEFAULT_PARAMS)
+
+  assert len(events) == 2
+  assert events[0].actual_peak == pytest.approx(0.4)
+  assert events[1].actual_peak == pytest.approx(1.0)
+
+
+def test_delayed_peak_after_reference_release_stays_in_response_window():
+  frames = _frames(
+    0.0, 1.2, 0.1,
+    ref_func=lambda t: 0.5 if 0.2 <= t <= 0.6 else 0.05,
+    actual_func=lambda t: 0.8 if abs(t - 0.8) < 0.01 else 0.2 if 0.2 <= t <= 0.6 else 0.0,
+  )
+
+  events = detect_lateral_events(frames, DEFAULT_PARAMS)
+
+  assert len(events) == 1
+  assert events[0].actual_peak == pytest.approx(0.8)
+  assert events[0].actual_peak_t == pytest.approx(0.8)
+
+
+def test_event_segmentation_never_crosses_route_boundary():
+  first = _frames(0.0, 1.0, 0.1, ref_func=lambda _t: 0.5, actual_func=lambda _t: 0.5)
+  second = _frames(0.0, 1.0, 0.1, ref_func=lambda _t: 0.5, actual_func=lambda _t: 0.5)
+  first = [LateralTimingFrame(**{**frame.__dict__, "route": "route-a"}) for frame in first]
+  second = [LateralTimingFrame(**{**frame.__dict__, "route": "route-b"}) for frame in second]
+
+  events = detect_lateral_events(first + second, DEFAULT_PARAMS)
+
+  assert [event.route for event in events] == ["route-a", "route-b"]
 
 
 def _frames(

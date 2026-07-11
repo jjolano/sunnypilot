@@ -149,6 +149,7 @@ def _model_stop_distance(model: Any) -> float | None:
 
 
 def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_target: float,
+                       t_follow: float = 1.5,
                        accel_limits: tuple[float, float], lead_one: Any, lead_two: Any,
                        scc_vision_active: bool, scc_vision_a_target: float,
                        scc_map_active: bool, scc_map_a_target: float,
@@ -207,7 +208,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     if d > 0.0:
       speed_limit_distance = d
   return LongitudinalStackInputs(
-    v_ego=v_ego, a_ego=float(a_ego), v_cruise=v_cruise, seed_a_target=seed_a_target,
+    v_ego=v_ego, a_ego=float(a_ego), t_follow=float(t_follow), v_cruise=v_cruise, seed_a_target=seed_a_target,
     accel_limits=accel_limits, accel_coast=float(accel_coast),
     leads=(lead_one, lead_two),
     # lead_should_stop is intentionally inert: MPC owns lead-follow stop physics and the base
@@ -363,7 +364,8 @@ class CustomLongitudinalAdapter:
     )
 
   def evaluate(self, sm: Any, v_ego: float, a_ego: float, v_cruise: float, seed_a_target: float,
-               scc: Any, sla: Any, dt: float = 0.05, *, collect_debug: bool = True) -> CustomLongitudinalOutput:
+               scc: Any, sla: Any, dt: float = 0.05, t_follow: float = 1.5,
+               *, collect_debug: bool = True) -> CustomLongitudinalOutput:
     if not self.enabled:
       return CustomLongitudinalOutput(
         a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
@@ -419,7 +421,7 @@ class CustomLongitudinalAdapter:
       accel_coast = _coast_accel(pitch, self._drag.coast_decel) if pitch is not None else 0.0
 
       inputs = build_stack_inputs(
-        v_ego=v_ego, a_ego=a_ego, v_cruise=v_cruise, seed_a_target=seed_a_target,
+        v_ego=v_ego, a_ego=a_ego, t_follow=t_follow, v_cruise=v_cruise, seed_a_target=seed_a_target,
         accel_limits=DEFAULT_ACCEL_LIMITS,
         lead_one=getattr(radar, "leadOne", None), lead_two=getattr(radar, "leadTwo", None),
         scc_vision_active=bool(getattr(scc.vision, "is_active", False)), scc_vision_a_target=float(getattr(scc.vision, "output_a_target", 0.0)),

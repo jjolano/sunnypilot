@@ -210,8 +210,6 @@ class LateralDemandAdapter:
     if params is not None:
       self.refresh_params()
     self._was_enabled = self.enabled
-    # ponytail: cache one disabled snapshot; recompute on the next enable/disable transition.
-    self._disabled_debug_valid = False
 
   def refresh_params(self) -> None:
     p = self._params
@@ -238,7 +236,6 @@ class LateralDemandAdapter:
   def clear(self) -> None:
     self.last_result = None
     self.last_debug = {}
-    self._disabled_debug_valid = False
 
   def reset(self) -> None:
     try:
@@ -296,19 +293,16 @@ class LateralDemandAdapter:
         self.reset()
       elif model_v2 is None and self.last_result is not None:
         self.reset()
-      if model_v2 is not None and not self._disabled_debug_valid:
+      if model_v2 is not None:
         self.last_debug = self._observe_sensor_confidence(
           lat_active, v_ego, raw_curvature, measured_curvature, model_v2,
           steering_pressed, model_age_s, yaw_rate, steering_rate_deg, steer_limited,
         )
-        self._disabled_debug_valid = True
       elif model_v2 is None:
         self.last_debug = {}
-        self._disabled_debug_valid = False
       self._was_enabled = enabled
       return raw_curvature
     self._was_enabled = enabled
-    self._disabled_debug_valid = False
     try:
       inputs = build_pipeline_inputs(
         lat_active=lat_active, v_ego=v_ego, roll=roll, raw_curvature=raw_curvature,
@@ -335,5 +329,5 @@ class LateralDemandAdapter:
       self.last_debug = dict(result.debug)
       return float(result.demand.processed_curvature)
     except Exception:
-      self.clear()
+      self.reset()
       return raw_curvature

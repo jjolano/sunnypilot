@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from openpilot.tools.drive_lab.route_analysis import build_route_messages, conditioned_desired_curvature, lateral_demand_schema
+from openpilot.tools.drive_lab.route_analysis import build_route_messages
 from openpilot.tools.drive_lab.timeline import format_enum, safe_get
 
 
@@ -208,7 +208,6 @@ def load_lateral_profile(path: str | Path) -> LateralOscillationProfile:
 def _extract_lateral_samples(msgs: list[Any]) -> list[_LateralSample]:
   if not msgs:
     return []
-  demand_schema = lateral_demand_schema(msgs)
   latest: dict[str, Any] = {}
   samples: list[_LateralSample] = []
   for route_msg in build_route_messages(msgs):
@@ -236,7 +235,7 @@ def _extract_lateral_samples(msgs: list[Any]) -> list[_LateralSample]:
       steering_angle_deg=_finite_float(safe_get(car_state, "steeringAngleDeg")),
       curvature=_finite_float(safe_get(payload, "curvature")),
       raw_desired_curvature=_finite_float(safe_get(model_path, "rawDesiredCurvature")),
-      processed_desired_curvature=_finite_float(conditioned_desired_curvature(model_path, demand_schema)),
+      processed_desired_curvature=_finite_float(safe_get(payload, "desiredCurvature")),
       desired_curvature=_finite_float(safe_get(payload, "desiredCurvature")),
       lat_output=_finite_float(safe_get(lateral_payload, "output")),
       requested_torque=_finite_float(safe_get(car_control, "actuators.torque")),

@@ -18,7 +18,6 @@ from openpilot.tools.drive_lab.fuzz_longitudinal import (
   generate_scenarios,
   generate_udacity_acc_scenarios,
   render_jerk_diagnosis,
-  render_maneuver_snippet,
   run_scenario,
   scenario_maneuver_kwargs,
   scenario_to_spec,
@@ -36,6 +35,36 @@ from openpilot.tools.drive_lab.commonroad_acc import generate_commonroad_acc_sce
 
 def test_generate_scenarios_is_seeded():
   assert generate_scenarios(seed=42, cases=5) == generate_scenarios(seed=42, cases=5)
+
+
+def test_shipped_config_uses_defaults_and_restores_local_overrides(monkeypatch):
+  class FakeParams:
+    values = {"CustomLongitudinalEnabled": False, "CutInBrakeAssistMode": "apply"}
+    defaults = dict.fromkeys(fuzz_longitudinal._SHIPPED_LONGITUDINAL_PARAM_KEYS)
+    defaults.update({"CustomLongitudinalEnabled": True, "CutInBrakeAssistMode": "off"})
+    writes = []
+
+    def get(self, key):
+      return self.values.get(key)
+
+    def get_default_value(self, key):
+      return self.defaults[key]
+
+    def put(self, key, value, *, block=False):
+      self.writes.append((key, block))
+      self.values[key] = value
+
+    def remove(self, key):
+      self.values.pop(key, None)
+
+  monkeypatch.setattr("openpilot.common.params.Params", FakeParams)
+
+  with shipped_longitudinal_config():
+    assert FakeParams.values == {"CustomLongitudinalEnabled": True, "CutInBrakeAssistMode": "off"}
+
+  assert FakeParams.values == {"CustomLongitudinalEnabled": False, "CutInBrakeAssistMode": "apply"}
+  assert FakeParams.writes
+  assert all(block for _, block in FakeParams.writes)
 
 
 def test_comfort_stopped_lead_decel_is_plausible():

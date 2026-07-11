@@ -20,8 +20,25 @@ def test_decayed_speed_below_constant_accel_projection():
   p = predict_lead_trajectory(d_rel=30.0, v_rel=0.0, v_lead=15.0, a_lead=2.0, a_lead_tau=1.0, v_ego=15.0)
   v_2s_constant = 15.0 + 2.0 * 2.0
   assert p.v_lead[-1] < v_2s_constant
-  # asymptote is v_lead + a*tau = 15 + 2*1 = 17
-  assert p.v_lead[-1] == pytest.approx(15.0 + 2.0 * 1.0 * (1 - math.exp(-2.0)), abs=1e-9)
+  rate = 1.5  # optimistic pullaway uses the same minimum decay rate as long_mpc
+  expected_delta = 2.0 * math.sqrt(math.pi / (2.0 * rate)) * math.erf(math.sqrt(rate / 2.0) * 2.0)
+  assert p.v_lead[-1] == pytest.approx(15.0 + expected_delta, abs=1e-9)
+
+
+def test_positive_lead_accel_uses_mpc_pullaway_cap():
+  capped = predict_lead_trajectory(40.0, 0.0, 15.0, 5.0, 1.5, 15.0)
+  reference = predict_lead_trajectory(40.0, 0.0, 15.0, 2.0, 1.5, 15.0)
+
+  assert capped == reference
+
+
+def test_a_lead_tau_is_the_mpc_gaussian_decay_rate():
+  sustained = predict_lead_trajectory(40.0, 0.0, 20.0, -2.0, 0.1, 20.0)
+  fast_decay = predict_lead_trajectory(40.0, 0.0, 20.0, -2.0, 1.5, 20.0)
+
+  assert sustained.a_lead[-1] < fast_decay.a_lead[-1]
+  assert sustained.v_lead[-1] < fast_decay.v_lead[-1]
+  assert sustained.gap[-1] < fast_decay.gap[-1]
 
 
 def test_ego_accel_closes_gap_more():
@@ -31,6 +48,15 @@ def test_ego_accel_closes_gap_more():
                                       v_ego=15.0, a_ego=1.0)
   # accelerating ego closes the gap faster than the constant-ego projection
   assert ego_accel.gap[-1] < base.gap[-1]
+
+
+def test_braking_ego_holds_at_standstill_instead_of_reversing():
+  p = predict_lead_trajectory(20.0, v_rel=-2.0, v_lead=0.0, a_lead=0.0, a_lead_tau=1.0,
+                              v_ego=2.0, a_ego=-2.0)
+
+  assert p.gap[1] == pytest.approx(19.0)
+  assert p.gap[2] == pytest.approx(p.gap[1])
+  assert p.gap[3] == pytest.approx(p.gap[1])
 
 
 def test_vrel_drives_linear_gap():
@@ -58,19 +84,14 @@ def test_gaps_non_negative_and_finite():
 
 def test_braking_lead_holds_at_standstill_and_gap_freezes():
   # Stationary ego (v_rel = +v_lead, opening): once the decaying decel brings the lead to
-  # rest (~1.05 s here), the gap must freeze. The old closed form kept integrating and
-  # "reversed" the lead, under-predicting the gap.
-  p = predict_lead_trajectory(20.0, v_rel=2.0, v_lead=2.0, a_lead=-2.0, a_lead_tau=10.0,
+  # rest, the gap must freeze instead of reversing the lead.
+  p = predict_lead_trajectory(20.0, v_rel=2.0, v_lead=2.0, a_lead=-4.0, a_lead_tau=0.1,
                               v_ego=0.0, a_ego=0.0)
-  t_stop = -10.0 * math.log(1.0 + 2.0 / (-2.0 * 10.0))
-  assert 1.0 < t_stop < 1.5
-  assert p.v_lead[2] == 0.0 and p.v_lead[3] == 0.0
-  assert p.a_lead[2] == 0.0 and p.a_lead[3] == 0.0
-  assert p.gap[3] == pytest.approx(p.gap[2])  # frozen after the stop
-  # Exact physics: final gap = d_rel + lead displacement up to t_stop.
-  s_lead = 2.0 * t_stop + (-2.0) * 10.0 * (t_stop - 10.0 * (1.0 - math.exp(-t_stop / 10.0)))
-  assert p.gap[3] == pytest.approx(20.0 + s_lead)
-  assert p.gap[1] < p.gap[2]  # still opening while the lead moves
+  assert p.v_lead[1:] == (0.0, 0.0, 0.0)
+  assert p.a_lead[1:] == (0.0, 0.0, 0.0)
+  assert p.gap[2] == pytest.approx(p.gap[1])
+  assert p.gap[3] == pytest.approx(p.gap[1])
+  assert p.gap[0] < p.gap[1]
 
 
 def test_already_stopped_braking_lead_never_reverses():

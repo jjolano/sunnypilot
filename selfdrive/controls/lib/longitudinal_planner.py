@@ -173,9 +173,23 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     )
     self.custom_long.research_actuation_allowed = research_allowed
 
+    long_active_for_follow_gap = sm['carControl'].longActive and not reset_state and not long_control_off
+    radar_state = sm['radarState']
+    # Compute the follow gap once so custom lead math and the downstream MPC use the same value.
+    t_follow = self.follow_gap.scheduled(
+      radar_state, v_ego, get_T_FOLLOW(sm['selfdriveState'].personality), self.dt,
+      long_active=long_active_for_follow_gap,
+      brake_pressed=sm['carState'].brakePressed,
+      gas_pressed=sm['carState'].gasPressed,
+      force_decel=force_slow_decel,
+      custom_long_enabled=custom_long_enabled,
+      research_actuation_allowed=research_allowed,
+    )
+
     # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist
     v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(
-      self, sm, self.v_desired_filter.x, self.a_desired, v_cruise, refresh_custom_long=False)
+      self, sm, self.v_desired_filter.x, self.a_desired, v_cruise,
+      refresh_custom_long=False, t_follow=t_follow)
 
     if force_slow_decel:
       v_cruise = 0.0
@@ -188,19 +202,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
-    long_active_for_follow_gap = sm['carControl'].longActive and not reset_state and not long_control_off
-    radar_state = sm['radarState']
-    # Dynamic follow-gap: bounded, research-gated T_FOLLOW compression during a low-risk
-    # approach (fail-closed to the personality baseline in off/shadow or on any fault).
-    t_follow = self.follow_gap.scheduled(
-      radar_state, v_ego, get_T_FOLLOW(sm['selfdriveState'].personality), self.dt,
-      long_active=long_active_for_follow_gap,
-      brake_pressed=sm['carState'].brakePressed,
-      gas_pressed=sm['carState'].gasPressed,
-      force_decel=force_slow_decel,
-      custom_long_enabled=custom_long_enabled,
-      research_actuation_allowed=research_allowed,
-    )
     # Cut-out lead release: MPC-input-only filter dropping a lead that has confidently
     # exited the path sideways (fail-closed to the raw radarState; research-gated apply).
     radar_state_for_mpc = self.cut_out_release.filtered(

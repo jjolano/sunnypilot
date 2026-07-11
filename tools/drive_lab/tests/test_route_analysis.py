@@ -3,17 +3,13 @@ from types import SimpleNamespace
 import pytest
 
 from openpilot.tools.drive_lab.route_analysis import (
-  LATERAL_DEMAND_SCHEMA_LEGACY,
-  LATERAL_DEMAND_SCHEMA_SPLIT,
   build_route_messages,
-  conditioned_desired_curvature,
   correlation,
   finite_list,
   finite_or_none,
   format_counts,
   format_optional,
   iter_route_messages,
-  lateral_demand_schema,
   route_duration,
   route_identity,
 )
@@ -81,21 +77,3 @@ def test_numeric_helpers_keep_drive_lab_empty_input_defaults():
   assert format_counts({"b": 1, "a": 2}) == "a=2, b=1"
   assert format_optional(None) == "n/a"
   assert format_optional(1.23456, precision=2, suffix="s") == "1.23s"
-
-
-def test_lateral_demand_schema_uses_commit_ancestry():
-  assert lateral_demand_schema([msg("initData", 0.0, gitCommit="4cf9f40540")]) == LATERAL_DEMAND_SCHEMA_LEGACY
-  assert lateral_demand_schema([msg("initData", 0.0, gitCommit="d9ee43ce0f")]) == LATERAL_DEMAND_SCHEMA_SPLIT
-  assert lateral_demand_schema([
-    msg("initData", 0.0, gitCommit="f" * 40, gitSrcCommit="d9ee43ce0f"),
-  ]) == LATERAL_DEMAND_SCHEMA_SPLIT
-  assert lateral_demand_schema([msg("initData", 0.0, gitCommit="f" * 40)]) == LATERAL_DEMAND_SCHEMA_LEGACY
-  assert lateral_demand_schema([]) == LATERAL_DEMAND_SCHEMA_LEGACY
-
-
-def test_conditioned_curvature_preserves_legacy_normalization():
-  split_state = SimpleNamespace(conditionedDesiredCurvature=0.0, processedDesiredCurvature=0.009)
-  legacy_state = SimpleNamespace(conditionedDesiredCurvature=0.0, processedDesiredCurvature=0.012)
-
-  assert conditioned_desired_curvature(split_state, LATERAL_DEMAND_SCHEMA_SPLIT) == 0.0
-  assert conditioned_desired_curvature(legacy_state, LATERAL_DEMAND_SCHEMA_LEGACY) == pytest.approx(0.012)

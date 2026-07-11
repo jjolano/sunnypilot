@@ -83,8 +83,8 @@ def lateral_msgs(commit: str) -> list[FakeMsg]:
   ]
 
 
-@pytest.mark.parametrize(("commit", "expected"), (("4cf9f40540", 0.009), ("d9ee43ce0f", 0.0)))
-def test_all_consumers_keep_legacy_processed_fields_but_use_commit_normalized_demand(commit: str, expected: float):
+@pytest.mark.parametrize("commit", ("4cf9f40540", "d9ee43ce0f"))
+def test_all_consumers_use_controller_facing_processed_demand(commit: str):
   msgs = lateral_msgs(commit)
   timing = build_lateral_timing_frames("route", msgs)
   gate = lateral_performance_gate._extract_gate_samples(msgs)
@@ -101,4 +101,6 @@ def test_all_consumers_keep_legacy_processed_fields_but_use_commit_normalized_de
     "baseline": baseline[0].processed_desired_curvature,
     "torque": torque[0].processed_desired_curvature,
   }
-  assert values == pytest.approx(dict.fromkeys(values, expected))
+  assert values == pytest.approx(dict.fromkeys(values, 0.009))
+  assert timing[0].t == pytest.approx(1.0)
+  assert baseline[0].t == pytest.approx(1.0)

@@ -59,7 +59,11 @@ def _is_high_risk_cut_in(track: Any, v_ego: float,
       a scalar or as ``callable(track) -> float | None``. When provided/returned, on-pathness
       is checked as ``abs(path_y_rel)``; otherwise the ego-frame ``abs(yRel)`` is used.
   """
-  if v_ego < _MIN_V_EGO:
+  try:
+    v_ego = float(v_ego)
+  except (TypeError, ValueError):
+    return False
+  if not math.isfinite(v_ego) or v_ego < _MIN_V_EGO:
     return False
   try:
     if int(getattr(track, "cnt", 0)) < _MIN_TRACK_CNT:
@@ -164,7 +168,11 @@ def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
   if not research_actuation_allowed:
     return lead_dict
 
-  if not tracks or v_ego < _MIN_V_EGO:
+  try:
+    v_ego = float(v_ego)
+  except (TypeError, ValueError):
+    return lead_dict
+  if not math.isfinite(v_ego) or not tracks or v_ego < _MIN_V_EGO:
     return lead_dict
 
   # Fail-closed as documented: any exception in the scan or the promotion (including a

@@ -1,24 +1,18 @@
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from functools import cache
 from math import isfinite
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from openpilot.common.basedir import BASEDIR
-from openpilot.tools.drive_lab.timeline import msg_payload, msg_time_s, msg_type, safe_get
+from openpilot.tools.drive_lab.timeline import msg_payload, msg_time_s, msg_type
 
 
 LOG_FILE_NAMES = frozenset(("qlog.zst", "rlog.zst", "qlog.bz2", "rlog.bz2"))
 LOG_FILE_SUFFIXES = (".qlog.zst", ".rlog.zst", ".qlog.bz2", ".rlog.bz2")
-LATERAL_DEMAND_SCHEMA_LEGACY = "legacy"
-LATERAL_DEMAND_SCHEMA_SPLIT = "split"
-_LATERAL_DEMAND_SPLIT_COMMIT = "c63e4b14d33b37b0dd01797b699b3b172dbd9c0f"
 
 
 @dataclass(frozen=True)
@@ -28,44 +22,6 @@ class RouteMessage:
   payload: Any
   t: float
   log_mono_time: int
-
-
-@cache
-def _commit_has_split_lateral_demand(commit: str) -> bool:
-  if not commit:
-    return False
-  try:
-    result = subprocess.run(
-      ["git", "merge-base", "--is-ancestor", _LATERAL_DEMAND_SPLIT_COMMIT, commit],
-      cwd=BASEDIR,
-      stdout=subprocess.DEVNULL,
-      stderr=subprocess.DEVNULL,
-      check=False,
-    )
-  except OSError:
-    return False
-  return result.returncode == 0
-
-
-def lateral_demand_schema(messages: Iterable[Any]) -> str:
-  """Classify the pre/post-c63 telemetry boundary from a route's source commit.
-
-  Descendant checks require full local Git history. Missing or unknown commits fall back
-  to legacy semantics so old logs never read a default-zero conditioned field.
-  """
-  for msg in messages:
-    if msg_type(msg) == "initData":
-      init_data = msg_payload(msg)
-      for field in ("gitCommit", "gitSrcCommit"):
-        commit = str(safe_get(init_data, field, "")).strip()
-        if _commit_has_split_lateral_demand(commit):
-          return LATERAL_DEMAND_SCHEMA_SPLIT
-  return LATERAL_DEMAND_SCHEMA_LEGACY
-
-
-def conditioned_desired_curvature(model_path_state: Any, schema: str) -> Any:
-  field = "conditionedDesiredCurvature" if schema == LATERAL_DEMAND_SCHEMA_SPLIT else "processedDesiredCurvature"
-  return safe_get(model_path_state, field)
 
 
 def route_identity(route: str) -> tuple[str, int | None]:

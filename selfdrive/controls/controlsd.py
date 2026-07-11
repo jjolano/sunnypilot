@@ -135,7 +135,7 @@ class Controls(ControlsExt):
     if not CC.longActive:
       self.LoC.reset()
 
-    lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+    lat_delay = self.lat_delay + LAT_SMOOTH_SECONDS
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
@@ -237,7 +237,7 @@ class Controls(ControlsExt):
       self.publish_lateral_telemetry(
         cs.modelPathState, self.sm, CS,
         getattr(self, 'raw_desired_curvature', self.desired_curvature), self.desired_curvature,
-        self.sm['liveDelay'].lateralDelay + LAT_SMOOTH_SECONDS)
+        self.lat_delay + LAT_SMOOTH_SECONDS)
 
     lat_tuning = self.CP.lateralTuning.which()
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:

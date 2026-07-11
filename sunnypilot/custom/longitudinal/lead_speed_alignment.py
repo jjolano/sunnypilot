@@ -119,7 +119,8 @@ def _predicted_required_decel(d_rel: float, v_rel: float, v_lead: float, a_lead:
   for t, gap_t, v_lead_t in zip(pred.t, pred.gap, pred.v_lead, strict=True):
     excess = gap_t - desired_gap
     v_ego_t = max(0.0, v_ego + a_ego * t)
-    closing = max(0.0, v_ego_t - v_lead_t)
+    v_rel_t = v_rel + (v_lead_t - v_lead) - (v_ego_t - v_ego)
+    closing = max(0.0, -v_rel_t)
     if excess > 0.1 and closing > 0.05:
       required = (closing * closing) / (2.0 * excess)
       if required > max_required:
@@ -190,7 +191,7 @@ def lead_speed_alignment(
   if lead_shadow_active or alternate_threat_active:
     return _result(AlignmentAction.IGNORE, 0.0, 0.0, follow_gap, 0.0, 0.0, "threat")
 
-  desired_gap = max(follow_gap, 1.5 * max(0.0, v_ego))
+  desired_gap = max(0.0, follow_gap)
   excess_gap = lead_d_rel - desired_gap
   closing = max(0.0, -lead_v_rel)
   if excess_gap > 0.1 and closing > 0.05:
@@ -208,7 +209,7 @@ def lead_speed_alignment(
                    excess_gap, closing, "ttc_hazard")
 
   # Slowdown side: we are closing on a slower lead.
-  ego_faster = v_ego > lead_v + 0.1
+  ego_faster = closing > 0.1
   if ego_faster and v_ego >= _ALIGN_MIN_V_EGO and lead_v >= _ALIGN_MIN_LEAD_V:
     if lead_stable and lead_confidence >= _ALIGN_MIN_CONFIDENCE and excess_gap >= _ALIGN_MIN_EXCESS_GAP:
       # Predictive early reaction: current kinematics look comfortable but a stable,

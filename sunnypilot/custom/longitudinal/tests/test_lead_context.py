@@ -89,9 +89,9 @@ def test_risk_score_bounded():
     assert 0.0 <= s <= 1.0
 
 
-def lead(d_rel=30.0, v_lead=12.0, a_lead=0.0, y_rel=0.0, status=True, track_id=3, model_prob=0.9):
+def lead(d_rel=30.0, v_lead=12.0, a_lead=0.0, y_rel=0.0, status=True, track_id=3, model_prob=0.9, radar=True):
   return SimpleNamespace(status=status, dRel=d_rel, vLead=v_lead, vLeadK=v_lead, aLeadK=a_lead,
-                         yRel=y_rel, radarTrackId=track_id, radar=True, modelProb=model_prob, aLeadTau=1.0)
+                         yRel=y_rel, radarTrackId=track_id, radar=radar, modelProb=model_prob, aLeadTau=1.0)
 
 
 def model_path(xs=(0.0, 30.0, 60.0), ys=(0.0, 1.5, 2.0)):
@@ -108,6 +108,16 @@ def test_tracker_update_returns_primary_context():
       v_ego=20.0, dt=0.05,
     )
   assert isinstance(ctx, lc.PrimaryLeadContext)
+
+
+def test_model_only_pullaway_accel_uses_mpc_probability_discount():
+  ctx = lc.LeadContextTracker().update(
+    leads=(lead(v_lead=15.0, a_lead=2.0, model_prob=0.8, radar=False), None),
+    confidence_states=(LeadConfidenceState(status=True, stable=True), LeadConfidenceState()),
+    v_ego=15.0, dt=0.05,
+  )
+
+  assert ctx.states[0].prediction.v == pytest.approx((15.0,) * len(lc.LEAD_CONTEXT_PREVIEW_T))
 
 
 def test_tracker_interpolates_model_path_for_path_relative_y_shadow_signal():
@@ -276,6 +286,27 @@ def test_shadow_tracker_benign_far_dropout_is_normal():
   assert shadow.duration == pytest.approx(lc.LEAD_CONTEXT_SHADOW_NORMAL_TIME)
   assert shadow.reason == "dropout"
   assert shadow.occlusion_risk == pytest.approx(0.0)
+
+
+def test_shadow_confidence_decay_depends_on_elapsed_time_not_update_rate():
+  def confidence_after(dt: float) -> float:
+    trk = lc.LeadShadowTracker(0)
+    stable = LeadConfidenceState(status=True, stable=True, age=1.0)
+    trk.update(lead(d_rel=60.0, v_lead=15.0), stable, v_ego=15.0, dt=dt)
+    shadow = None
+    for _ in range(round(0.2 / dt)):
+      shadow = trk.update(None, LeadConfidenceState(), v_ego=15.0, dt=dt)
+    assert shadow is not None
+    return shadow.confidence
+
+  assert confidence_after(0.05) == pytest.approx(confidence_after(0.1))
+
+
+def test_context_lead_prediction_includes_measured_ego_acceleration():
+  steady = lc.lead_prediction(40.0, 15.0, 0.0, 15.0, v_rel=0.0, a_ego=0.0)
+  accelerating = lc.lead_prediction(40.0, 15.0, 0.0, 15.0, v_rel=0.0, a_ego=1.0)
+
+  assert accelerating.x[-1] < steady.x[-1]
 
 
 def test_shadow_tracker_cutout_exit_is_risk_duration_and_occlusion():

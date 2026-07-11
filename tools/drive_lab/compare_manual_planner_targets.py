@@ -253,6 +253,7 @@ def extract_planner_target_samples(route: str, read_mode: ReadMode, max_plan_age
         time_headway_s=time_headway_s,
         model_desired_accel=state["model_desired_accel"],
         model_should_stop=bool(state["model_should_stop"]),
+        plan_time_s=float(plan_time_s),
       ))
   return samples
 

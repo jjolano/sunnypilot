@@ -8,12 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from openpilot.tools.drive_lab.route_analysis import (
-  LATERAL_DEMAND_SCHEMA_LEGACY,
-  conditioned_desired_curvature,
-  finite_or_none,
-  lateral_demand_schema,
-)
+from openpilot.tools.drive_lab.route_analysis import finite_or_none
 from openpilot.tools.drive_lab.route_io import output_report
 from openpilot.tools.drive_lab.timeline import format_enum, safe_get
 
@@ -46,6 +41,7 @@ class ManualLateralSample:
   model_path_quality: float | None = None
   model_path_gated: bool | None = None
   model_path_state: str | None = None
+  exclusion_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -92,7 +88,6 @@ class _LateralState:
 
 def build_manual_lateral_samples(route: str, msgs: list[Any], *, already_sorted: bool = False) -> list[ManualLateralSample]:
   ordered = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
-  demand_schema = lateral_demand_schema(ordered)
   state = _LateralState()
   samples: list[ManualLateralSample] = []
   last_t_by_mode: dict[str, float] = {}
@@ -111,23 +106,31 @@ def build_manual_lateral_samples(route: str, msgs: list[Any], *, already_sorted:
       state.model_v2 = payload
     elif typ == "controlsState":
       state.controls_state = payload
-      sample = _sample_from_state(route, msg.t, state, last_t_by_mode, last_current_lat_accel, last_sample_steering_angle, last_t, demand_schema)
+      sample = _sample_from_state(route, msg.t, state, last_t_by_mode, last_current_lat_accel, last_sample_steering_angle, last_t)
       if sample is not None:
         samples.append(sample)
-        last_t_by_mode[sample.mode] = sample.t
-        last_current_lat_accel[sample.mode] = sample.current_lat_accel
-        last_sample_steering_angle = sample.steering_angle_deg
-        last_t = sample.t
+        if sample.exclusion_reason is None:
+          last_t_by_mode[sample.mode] = sample.t
+          last_current_lat_accel[sample.mode] = sample.current_lat_accel
+          last_sample_steering_angle = sample.steering_angle_deg
+          last_t = sample.t
+        else:
+          # Do not differentiate across an excluded interval (lane change, standstill, or
+          # low speed); that span is outside the baseline and would dilute the next jerk/rate.
+          last_t_by_mode.clear()
+          last_current_lat_accel.clear()
+          last_sample_steering_angle = None
+          last_t = None
   return samples
 
 
 def summarize_manual_lateral_baseline(samples: list[ManualLateralSample], *, source: str = "unknown") -> ManualLateralBaselineSummary:
-  accepted = [sample for sample in samples if sample.mode in {"manual", "engaged"}]
+  accepted = [sample for sample in samples if sample.exclusion_reason is None]
   manual = [sample for sample in accepted if sample.mode == "manual"]
   engaged = [sample for sample in accepted if sample.mode == "engaged"]
   excluded = len(samples) - len(accepted)
-  low_speed_excluded = sum(1 for sample in samples if sample.v_ego < 3.0)
-  unknown_quality = sum(1 for sample in samples if sample.model_path_quality is None)
+  low_speed_excluded = sum(1 for sample in samples if sample.exclusion_reason == "low_speed")
+  unknown_quality = sum(1 for sample in accepted if sample.model_path_quality is None)
 
   return ManualLateralBaselineSummary(
     source=source,
@@ -138,15 +141,21 @@ def summarize_manual_lateral_baseline(samples: list[ManualLateralSample], *, sou
     low_speed_excluded_count=low_speed_excluded,
     unknown_model_path_quality_count=unknown_quality,
     speed_bins=[
-      _summarize_bucket(samples, f"{mode} {_speed_bin_label(low, high)} m/s", lambda s, mode=mode, lo=low, hi=high: s.mode == mode and lo <= s.v_ego < hi)
+      _summarize_bucket(
+        accepted, f"{mode} {_speed_bin_label(low, high)} m/s",
+        lambda s, mode=mode, lo=low, hi=high: s.mode == mode and lo <= s.v_ego < hi,
+      )
       for mode in ("manual", "engaged") for low, high in SPEED_BINS
     ],
     accel_bins=[
-      _summarize_bucket(samples, f"{mode} {_accel_bin_label(low, high)} m/s^2", lambda s, mode=mode, lo=low, hi=high: s.mode == mode and lo <= _bucket_lat_accel(s) < hi)
+      _summarize_bucket(
+        accepted, f"{mode} {_accel_bin_label(low, high)} m/s^2",
+        lambda s, mode=mode, lo=low, hi=high: s.mode == mode and lo <= _bucket_lat_accel(s) < hi,
+      )
       for mode in ("manual", "engaged") for low, high in LAT_ACCEL_BINS
     ],
     curve_side_means=_curve_side_means(accepted),
-    phase_counts=dict(Counter(sample.phase for sample in samples)),
+    phase_counts=dict(Counter(sample.phase for sample in accepted)),
     notes=["manual lateral is a descriptive envelope, not ground truth", "no live tuning conclusions should be drawn"],
   )
 
@@ -154,17 +163,25 @@ def summarize_manual_lateral_baseline(samples: list[ManualLateralSample], *, sou
 def render_manual_lateral_baseline(summary: ManualLateralBaselineSummary) -> str:
   lines = [
     f"Manual lateral baseline: {summary.source}",
-    f"accepted samples: {summary.sample_count} manual={summary.manual_sample_count} engaged={summary.engaged_sample_count}",
+    f"candidate samples: {summary.sample_count} accepted={summary.manual_sample_count + summary.engaged_sample_count} "
+    f"manual={summary.manual_sample_count} engaged={summary.engaged_sample_count} excluded={summary.excluded_sample_count}",
     f"low-speed excluded (<3 m/s): {summary.low_speed_excluded_count}",
     "speed bins:",
   ]
   for bucket in summary.speed_bins:
     err = "" if bucket.median_abs_lat_error is None else f" err_med={bucket.median_abs_lat_error:.3f} err_p95={bucket.p95_abs_lat_error:.3f}"
-    lines.append(f"  {bucket.label}: n={bucket.sample_count} act_med={bucket.median_abs_actual_lat_accel:.3f} act_p95={bucket.p95_abs_actual_lat_accel:.3f} jerk_p95={bucket.p95_abs_lat_jerk:.3f} steer_rate_p95={bucket.p95_abs_steering_rate:.3f}{err}")
+    lines.append(
+      f"  {bucket.label}: n={bucket.sample_count} act_med={bucket.median_abs_actual_lat_accel:.3f} "
+      f"act_p95={bucket.p95_abs_actual_lat_accel:.3f} jerk_p95={bucket.p95_abs_lat_jerk:.3f} "
+      f"steer_rate_p95={bucket.p95_abs_steering_rate:.3f}{err}"
+    )
   lines.append("accel bins:")
   for bucket in summary.accel_bins:
     err = "" if bucket.median_abs_lat_error is None else f" err_med={bucket.median_abs_lat_error:.3f} err_p95={bucket.p95_abs_lat_error:.3f}"
-    lines.append(f"  {bucket.label}: n={bucket.sample_count} act_med={bucket.median_abs_actual_lat_accel:.3f} act_p95={bucket.p95_abs_actual_lat_accel:.3f} jerk_p95={bucket.p95_abs_lat_jerk:.3f}{err}")
+    lines.append(
+      f"  {bucket.label}: n={bucket.sample_count} act_med={bucket.median_abs_actual_lat_accel:.3f} "
+      f"act_p95={bucket.p95_abs_actual_lat_accel:.3f} jerk_p95={bucket.p95_abs_lat_jerk:.3f}{err}"
+    )
   lines.append(f"curve side means: {summary.curve_side_means}")
   lines.append(f"phase counts: {summary.phase_counts}")
   lines.extend(f"note: {note}" for note in summary.notes)
@@ -184,7 +201,6 @@ def _sample_from_state(
   last_current_lat_accel: dict[str, float],
   last_steering_angle: float | None,
   last_t: float | None,
-  demand_schema: str = LATERAL_DEMAND_SCHEMA_LEGACY,
 ) -> ManualLateralSample | None:
   car_state = state.car_state
   controls_state = state.controls_state
@@ -193,7 +209,7 @@ def _sample_from_state(
     return None
   v_ego = finite_or_none(safe_get(car_state, "vEgo"))
   steering_angle = finite_or_none(safe_get(car_state, "steeringAngleDeg"))
-  if v_ego is None or steering_angle is None or not isfinite(v_ego) or v_ego < 3.0:
+  if v_ego is None or steering_angle is None or not isfinite(v_ego):
     return None
   blinker = bool(safe_get(car_state, "leftBlinker", False) or safe_get(car_state, "rightBlinker", False))
   lane_change_state = format_enum(safe_get(state.model_v2, "meta.laneChangeState", safe_get(controls_state, "laneChangeState", "")))
@@ -202,8 +218,12 @@ def _sample_from_state(
   lat_active = bool(safe_get(car_control, "latActive", safe_get(controls_state, "active", False)))
   lateral_state = _lateral_control_payload(controls_state)
   active_lat_state = bool(safe_get(lateral_state, "active", False))
-  if blinker or lane_change_state not in ("", "off", "unknown", "preLaneChange") or standstill:
-    return None
+  exclusion_reason = (
+    "low_speed" if v_ego < 3.0 else
+    "lane_change" if blinker or lane_change_state not in ("", "off", "unknown", "preLaneChange") else
+    "standstill" if standstill else
+    None
+  )
   mode = "engaged" if (lat_active and active_lat_state and not steering_pressed) else "manual"
 
   current_curvature = finite_or_none(safe_get(car_state, "curvature"))
@@ -211,7 +231,7 @@ def _sample_from_state(
     current_curvature = finite_or_none(safe_get(controls_state, "curvature")) or 0.0
   desired_curvature = finite_or_none(safe_get(controls_state, "desiredCurvature"))
   model_path = safe_get(controls_state, "modelPathState")
-  processed_desired = finite_or_none(conditioned_desired_curvature(model_path, demand_schema))
+  processed_desired = desired_curvature
   raw_desired = finite_or_none(safe_get(model_path, "rawDesiredCurvature"))
   model_quality = finite_or_none(safe_get(model_path, "quality", safe_get(state.model_v2, "path.prob")))
   model_gated = safe_get(model_path, "gated")
@@ -226,18 +246,29 @@ def _sample_from_state(
   )
   curvature_lat_accel = current_curvature * v_ego * v_ego
   current_lat_accel = actual_lat_accel_log if mode == "engaged" and actual_lat_accel_log is not None else curvature_lat_accel
-  desired_lat_accel = desired_lat_accel_log if mode == "engaged" and desired_lat_accel_log is not None else desired_source * v_ego * v_ego if desired_source is not None else None
+  desired_lat_accel = (
+    desired_lat_accel_log if mode == "engaged" and desired_lat_accel_log is not None else
+    desired_source * v_ego * v_ego if desired_source is not None else
+    None
+  )
   lat_error = (desired_lat_accel - current_lat_accel) if (desired_lat_accel is not None and mode == "engaged") else None
   prev_t = last_t_by_mode.get(mode)
   prev_a = last_current_lat_accel.get(mode)
   lat_jerk = (current_lat_accel - prev_a) / (t - prev_t) if prev_t is not None and prev_a is not None and t > prev_t else None
   steering_rate = (steering_angle - last_steering_angle) / (t - last_t) if last_t is not None and last_steering_angle is not None and t > last_t else None
   return ManualLateralSample(
-    route=route, t=t, mode=mode, v_ego=v_ego, steering_angle_deg=steering_angle, steering_torque=finite_or_none(safe_get(car_state, "steeringTorque")),
-    current_curvature=current_curvature, desired_curvature=desired_curvature, processed_desired_curvature=processed_desired, raw_desired_curvature=raw_desired,
-    current_lat_accel=current_lat_accel, desired_lat_accel=desired_lat_accel, lat_error=lat_error, lat_jerk=lat_jerk, steering_rate_deg_s=steering_rate,
-    curve_side=_curve_side(current_curvature), speed_bin=_speed_bin(v_ego), accel_bin=_accel_bin(_bucket_lat_accel_values(mode, current_lat_accel, desired_lat_accel)), phase=_phase(lat_jerk),
-    model_path_quality=model_quality, model_path_gated=bool(model_gated) if model_gated is not None else None, model_path_state=str(model_state) if model_state is not None else None,
+    route=route, t=t, mode=mode, v_ego=v_ego, steering_angle_deg=steering_angle,
+    steering_torque=finite_or_none(safe_get(car_state, "steeringTorque")),
+    current_curvature=current_curvature, desired_curvature=desired_curvature,
+    processed_desired_curvature=processed_desired, raw_desired_curvature=raw_desired,
+    current_lat_accel=current_lat_accel, desired_lat_accel=desired_lat_accel,
+    lat_error=lat_error, lat_jerk=lat_jerk, steering_rate_deg_s=steering_rate,
+    curve_side=_curve_side(current_curvature), speed_bin=_speed_bin(v_ego),
+    accel_bin=_accel_bin(_bucket_lat_accel_values(mode, current_lat_accel, desired_lat_accel)),
+    phase=_phase(current_lat_accel, lat_jerk), model_path_quality=model_quality,
+    model_path_gated=bool(model_gated) if model_gated is not None else None,
+    model_path_state=str(model_state) if model_state is not None else None,
+    exclusion_reason=exclusion_reason,
   )
 
 
@@ -281,12 +312,12 @@ def _accel_bin_label(low: float, high: float) -> str:
   return f">={low:.1f}" if high == float("inf") else f"{low:.1f}-{high:.1f}"
 
 
-def _phase(lat_jerk: float | None) -> str:
+def _phase(lat_accel: float, lat_jerk: float | None) -> str:
   if lat_jerk is None:
     return "steady"
   if abs(lat_jerk) < 0.15:
     return "steady"
-  return "entry" if lat_jerk > 0 else "exit"
+  return "entry" if lat_accel * lat_jerk > 0.0 else "exit"
 
 
 def _summarize_bucket(samples: list[ManualLateralSample], label: str, predicate) -> LateralBucketSummary:
@@ -294,7 +325,7 @@ def _summarize_bucket(samples: list[ManualLateralSample], label: str, predicate)
   return LateralBucketSummary(
     label=label,
     sample_count=len(bucket),
-    duration_s=_duration(bucket),
+    duration_s=_duration(samples, predicate),
     median_abs_actual_lat_accel=_stat(bucket, lambda s: abs(s.current_lat_accel)),
     p95_abs_actual_lat_accel=_stat(bucket, lambda s: abs(s.current_lat_accel), 95),
     median_abs_lat_jerk=_stat(bucket, lambda s: abs(s.lat_jerk) if s.lat_jerk is not None else None),
@@ -306,8 +337,13 @@ def _summarize_bucket(samples: list[ManualLateralSample], label: str, predicate)
   )
 
 
-def _duration(samples: list[ManualLateralSample]) -> float:
-  return max((s.t for s in samples), default=0.0) - min((s.t for s in samples), default=0.0)
+def _duration(samples: list[ManualLateralSample], predicate) -> float:
+  ordered = sorted(samples, key=lambda sample: (sample.route, sample.t))
+  return sum(
+    current.t - previous.t
+    for previous, current in zip(ordered, ordered[1:])
+    if current.route == previous.route and predicate(previous) and predicate(current) and current.t > previous.t
+  )
 
 
 def _stat(samples: list[ManualLateralSample], getter, pct: float | None = None) -> float:
@@ -335,7 +371,10 @@ def _curve_side_means(samples: list[ManualLateralSample]) -> dict[str, dict[str,
       side_samples = [s for s in samples if s.mode == mode and s.curve_side == side]
       out[f"{mode}:{side}"] = {
         "current_lat_accel": float(np.mean([s.current_lat_accel for s in side_samples])) if side_samples else None,
-        "lat_error": float(np.mean([s.lat_error for s in side_samples if s.lat_error is not None])) if any(s.lat_error is not None for s in side_samples) else None,
+        "lat_error": (
+          float(np.mean([s.lat_error for s in side_samples if s.lat_error is not None]))
+          if any(s.lat_error is not None for s in side_samples) else None
+        ),
       }
   return out
 
@@ -371,8 +410,15 @@ def main() -> None:
   read_mode = ReadMode.QLOG if args.qlog else ReadMode.AUTO
   log_roots = tuple(Path(p) for p in args.log_root) + DEFAULT_LOG_ROOTS
   identifiers = resolve_inputs(args.inputs, segment=None, read_mode=read_mode, log_roots=log_roots)
-  msgs = list(LogReader(identifiers, default_mode=read_mode, sort_by_time=True))
-  samples = build_manual_lateral_samples(", ".join(identifiers), msgs, already_sorted=True)
+  samples = [
+    sample
+    for identifier in identifiers
+    for sample in build_manual_lateral_samples(
+      identifier,
+      list(LogReader(identifier, default_mode=read_mode, sort_by_time=True)),
+      already_sorted=True,
+    )
+  ]
   summary = summarize_manual_lateral_baseline(samples, source=", ".join(identifiers))
   print(output_report(summary, json_output=args.json, renderer=render_manual_lateral_baseline))
 

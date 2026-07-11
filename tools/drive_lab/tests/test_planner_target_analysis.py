@@ -10,7 +10,7 @@ from openpilot.tools.drive_lab.planner_target_analysis import (
 
 
 def sample(t, plan_a, a_ego, route="route-a", segment=None, gas=False, brake=False,
-           source="cruise", lead=False, d_rel=None, v_rel=None, should_stop=False):
+           source="cruise", lead=False, d_rel=None, v_rel=None, should_stop=False, plan_t=None):
   return PlannerTargetSample(
     route=route,
     route_id=route,
@@ -38,6 +38,7 @@ def sample(t, plan_a, a_ego, route="route-a", segment=None, gas=False, brake=Fal
     lead_v_rel=v_rel,
     model_desired_accel=None,
     model_should_stop=False,
+    plan_time_s=plan_t,
   )
 
 
@@ -71,4 +72,19 @@ def test_suspicious_episodes_and_jerk_group_by_route_segment():
   assert episodes[0].lead_status_flips >= 2
   assert episodes[0].plan_source_flips >= 2
   assert episodes[0].plan_span == pytest.approx(1.7)
+  assert episodes[0].duration_s == pytest.approx(0.1)
   assert len(high_plan_jerk_pairs(samples, threshold=8.0)) >= 1
+
+
+def test_plan_jerk_uses_planner_publish_cadence_not_car_state_cadence():
+  samples = [
+    sample(0.001, 0.0, 0.0, plan_t=0.0),
+    sample(0.011, 0.0, 0.0, plan_t=0.0),
+    sample(0.051, 0.5, 0.0, plan_t=0.05),
+    sample(0.061, 0.5, 0.0, plan_t=0.05),
+  ]
+
+  pairs = high_plan_jerk_pairs(samples, threshold=8.0)
+
+  assert len(pairs) == 1
+  assert pairs[0][2] == pytest.approx(10.0)

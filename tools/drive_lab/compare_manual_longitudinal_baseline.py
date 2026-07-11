@@ -7,8 +7,6 @@ import io
 
 import numpy as np
 
-from openpilot.common.realtime import DT_MDL
-
 from openpilot.tools.drive_lab.fuzz_longitudinal import (
   capture_commanded_accel,
   scenario_maneuver_kwargs,
@@ -69,10 +67,8 @@ def evaluate_scenario(scenario) -> ScenarioComparison:
   with contextlib.redirect_stdout(io.StringIO()), capture_commanded_accel() as capture:
     valid, output = maneuver.evaluate()
   commanded_accel = np.asarray(capture.commanded) if len(capture.commanded) == len(output) else None
-  action_horizon = (capture.actuator_delay or 0.0) + DT_MDL
-  jerk_window = max(1, round(action_horizon / DT_MDL))
   comparisons = compare_scenario_output(
-    scenario.kind, output, commanded_accel=commanded_accel, jerk_window=jerk_window,
+    scenario.kind, output, commanded_accel=commanded_accel, jerk_window=1,
   )
   if scenario.oracle_profile == "safety" and not comparisons:
     return ScenarioComparison(scenario.title, scenario.kind, bool(valid), comparisons)

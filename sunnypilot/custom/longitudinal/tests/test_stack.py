@@ -75,6 +75,12 @@ def test_acc_cruises_when_clear():
   assert r.debug["has_lead"] is False
 
 
+def test_custom_gap_uses_the_mpc_scheduled_follow_time():
+  result = CustomLongitudinalStack().update(base(v_ego=20.0, t_follow=1.2), DT)
+  assert result.debug["t_follow"] == pytest.approx(1.2)
+  assert result.debug["follow_gap"] == pytest.approx(24.0)
+
+
 def test_standstill_release_fields_for_no_lead_launch():
   s = CustomLongitudinalStack()
   r = s.update(base(

@@ -111,13 +111,13 @@ def test_close_risky_lead_mid_speed_ttc_alone_stays_hazard():
   assert r.reason == "high_required_decel"
 
 
-def test_close_risky_lead_low_speed_ttc_alone_stays_hazard():
-  # Low-speed extrapolated case outside the highway analysis: TTC >= 8 is still
-  # not enough to replace MPC authority when required_decel is above MAX.
+def test_low_speed_scheduled_gap_drives_required_decel():
+  # The 1.25 s scheduled gap leaves 6 m of usable gap, so the advisory calculation
+  # matches the MPC instead of silently restoring the former fixed 1.5 s gap.
   r = align(v_ego=12.0, lead_v=9.5, lead_v_rel=-2.5, lead_d_rel=21.0, follow_gap=15.0)
-  assert r.action is AlignmentAction.IGNORE
-  assert r.required_decel > 0.80
-  assert r.reason == "high_required_decel"
+  assert r.action is AlignmentAction.GENTLE_BRAKE
+  assert r.required_decel == pytest.approx(2.5 ** 2 / (2.0 * 6.0))
+  assert r.reason == "capped_advisory_brake"
 
 
 def test_unstable_lead_does_not_pullaway():
@@ -294,6 +294,28 @@ def test_predicted_compression_emits_early_gentle_brake():
   assert r.action is AlignmentAction.GENTLE_BRAKE
   assert -0.35 <= r.a_target <= 0.0
   assert "predicted" in r.reason
+
+
+def test_measured_vrel_owns_closing_when_filtered_absolute_speeds_disagree():
+  closing = align(
+    v_ego=20.0, lead_v=21.0, lead_v_rel=-2.0, lead_a_k=-2.0,
+    lead_d_rel=50.0, follow_gap=30.0, lead_progress_allowed=False,
+    lead_stable=True, lead_confidence=0.9,
+  )
+  opening = align(
+    v_ego=20.0, lead_v=19.0, lead_v_rel=1.0, lead_a_k=-2.0,
+    lead_d_rel=50.0, follow_gap=30.0, lead_progress_allowed=False,
+    lead_stable=True, lead_confidence=0.9,
+  )
+
+  assert closing.action is AlignmentAction.GENTLE_BRAKE
+  assert opening.action is AlignmentAction.IGNORE
+
+
+def test_scheduled_follow_gap_is_not_raised_to_fixed_1_5_seconds():
+  result = align(v_ego=20.0, lead_v=18.0, lead_v_rel=-2.0, lead_d_rel=40.0, follow_gap=24.0)
+
+  assert result.desired_gap == pytest.approx(24.0)
 
 
 def test_no_false_advisory_when_prediction_does_not_compress():

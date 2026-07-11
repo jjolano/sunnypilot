@@ -1483,6 +1483,25 @@ def test_target_filtering_keeps_cruise_fallback():
   assert math.isclose(a, 0.0)
 
 
+def test_custom_policy_uses_measured_ego_state_not_planner_seed_state():
+  sp, sm, _ = _update_targets_planner()
+  sm["carState"].vEgo = 12.0
+  sm["carState"].aEgo = -0.3
+  captured = {}
+
+  def evaluate(_sm, v_ego, a_ego, *args, **kwargs):
+    captured.update(v_ego=v_ego, a_ego=a_ego, t_follow=kwargs["t_follow"])
+    return CustomLongitudinalOutput(
+      a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.ACC,
+      selected_intent=None, reason=None, debug={},
+    )
+
+  sp.custom_long.evaluate = evaluate
+  sp.update_targets(sm, 10.0, 0.1, 8.0, t_follow=1.2)  # type: ignore[arg-type]
+
+  assert captured == {"v_ego": 12.0, "a_ego": -0.3, "t_follow": 1.2}
+
+
 def _update_targets_planner(fault_class="", long_active=False):
   sp = object.__new__(LongitudinalPlannerSP)
   sp.__dict__['custom_long'] = SimpleNamespace(enabled=True, mode=LongitudinalMode.ACC, sources=SourceToggles(),

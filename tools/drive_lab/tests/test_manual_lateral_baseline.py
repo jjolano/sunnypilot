@@ -1,12 +1,23 @@
+import json
+import sys
 from types import SimpleNamespace
 
 import pytest
 
+from openpilot.tools.drive_lab import analyze_longitudinal_lateral_route, manual_lateral_baseline
 from openpilot.tools.drive_lab.manual_lateral_baseline import (
+  _phase,
   build_manual_lateral_samples,
   render_manual_lateral_baseline,
   summarize_manual_lateral_baseline,
 )
+
+
+def test_curve_phase_uses_magnitude_for_left_and_right_turns():
+  assert _phase(1.0, 0.2) == "entry"
+  assert _phase(-1.0, -0.2) == "entry"
+  assert _phase(1.0, -0.2) == "exit"
+  assert _phase(-1.0, 0.2) == "exit"
 
 
 class FakeMsg:
@@ -20,7 +31,10 @@ class FakeMsg:
 
 
 def cs(**kwargs):
-  defaults = dict(vEgo=10.0, steeringAngleDeg=1.0, steeringPressed=False, leftBlinker=False, rightBlinker=False, standstill=False, steeringTorque=0.0, curvature=0.01)
+  defaults = dict(
+    vEgo=10.0, steeringAngleDeg=1.0, steeringPressed=False, leftBlinker=False,
+    rightBlinker=False, standstill=False, steeringTorque=0.0, curvature=0.01,
+  )
   defaults.update(kwargs)
   return SimpleNamespace(**defaults)
 
@@ -62,10 +76,18 @@ def test_manual_vs_engaged_split_and_filters():
   ]
 
   samples = build_manual_lateral_samples("route-a", msgs)
-  assert len(samples) == 2
-  assert samples[0].mode == "manual"
-  assert samples[1].mode == "engaged"
-  assert samples[1].lat_error == pytest.approx((0.03 - 0.015) * 12.0 * 12.0)
+  assert len(samples) == 3
+  assert samples[0].exclusion_reason == "low_speed"
+  assert samples[1].mode == "manual"
+  assert samples[2].mode == "engaged"
+  assert samples[2].lat_error == pytest.approx((0.025 - 0.015) * 12.0 * 12.0)
+
+  summary = summarize_manual_lateral_baseline(samples)
+  assert summary.sample_count == 3
+  assert summary.excluded_sample_count == 1
+  assert summary.low_speed_excluded_count == 1
+  assert summary.manual_sample_count == 1
+  assert summary.engaged_sample_count == 1
 
 
 def test_summary_renders_conservative_caveat_and_bins():
@@ -103,3 +125,58 @@ def test_curve_side_means_track_left_and_right():
   summary = summarize_manual_lateral_baseline(build_manual_lateral_samples("route-a", msgs), source="route-a")
   assert summary.curve_side_means["manual:left"]["current_lat_accel"] == pytest.approx(1.0)
   assert summary.curve_side_means["engaged:right"]["current_lat_accel"] == pytest.approx(-2.0)
+
+
+def test_bucket_duration_counts_occupancy_not_first_to_last_span():
+  msgs = []
+  for t, speed in ((0.0, 10.0), (1.0, 10.0), (50.0, 20.0), (100.0, 10.0)):
+    msgs.extend([
+      FakeMsg("carState", cs(vEgo=speed), t),
+      FakeMsg("carControl", cc(False), t),
+      FakeMsg("controlsState", ctrl_state(latActive=False), t),
+    ])
+
+  summary = summarize_manual_lateral_baseline(build_manual_lateral_samples("route-a", msgs))
+  bucket = next(item for item in summary.speed_bins if item.label == "manual 8-12 m/s")
+  assert bucket.sample_count == 3
+  assert bucket.duration_s == pytest.approx(1.0)
+
+
+def test_excluded_interval_breaks_derivative_chain():
+  msgs = []
+  for t, speed, curvature in ((0.0, 10.0, 0.01), (1.0, 2.0, 0.02), (2.0, 10.0, 0.03)):
+    msgs.extend([
+      FakeMsg("carState", cs(vEgo=speed, curvature=curvature), t),
+      FakeMsg("carControl", cc(False), t),
+      FakeMsg("controlsState", ctrl_state(latActive=False), t),
+    ])
+
+  samples = build_manual_lateral_samples("route-a", msgs)
+
+  assert samples[1].exclusion_reason == "low_speed"
+  assert samples[2].lat_jerk is None
+  assert samples[2].steering_rate_deg_s is None
+
+
+def test_cli_keeps_independent_input_state_separate(monkeypatch, capsys):
+  route_msgs = {
+    "route-a": [FakeMsg("carState", cs(), 0.0)],
+    "route-b": [FakeMsg("controlsState", ctrl_state(), 0.0)],
+  }
+  calls = []
+
+  def fake_log_reader(route, **_kwargs):
+    calls.append(route)
+    if isinstance(route, list):
+      return [msg for name in route for msg in route_msgs[name]]
+    return route_msgs[route]
+
+  monkeypatch.setattr(analyze_longitudinal_lateral_route, "resolve_inputs", lambda *_args, **_kwargs: ["route-a", "route-b"])
+  monkeypatch.setattr("openpilot.tools.lib.logreader.LogReader", fake_log_reader)
+  monkeypatch.setattr(sys, "argv", ["manual_lateral_baseline.py", "route-a", "route-b", "--json"])
+
+  manual_lateral_baseline.main()
+
+  report = json.loads(capsys.readouterr().out)
+  assert calls == ["route-a", "route-b"]
+  assert report["sample_count"] == 0

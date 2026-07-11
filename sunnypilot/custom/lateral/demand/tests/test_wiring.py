@@ -148,7 +148,7 @@ def test_adapter_disabled_passthrough():
   assert a.last_debug["sensor_suppress_candidate"] is True
 
 
-def test_adapter_disabled_caches_sensor_confidence_until_reenabled():
+def test_adapter_disabled_updates_sensor_confidence_each_control_tick():
   a = LateralDemandAdapter(FakeParams(CustomLateralDemandEnabled=False))
   calls = 0
 
@@ -164,7 +164,7 @@ def test_adapter_disabled_caches_sensor_confidence_until_reenabled():
   a.process(True, 20.0, 0.0, 0.0123, 0.0123, fake_model(), steering_pressed=False,
             model_age_s=0.02, yaw_rate=0.0, steering_rate_deg=0.0)
 
-  assert calls == 1
+  assert calls == 2
 
 
 def test_default_params_disable_adapter_and_curve_memory():
@@ -460,6 +460,23 @@ def test_adapter_forwards_blinkers_and_curvature_limited():
   assert spy.inputs.left_blinker is True
   assert spy.inputs.right_blinker is False
   assert spy.inputs.curvature_limited is True
+
+
+def test_adapter_fault_resets_state_before_next_valid_frame():
+  params = FakeParams(CustomLateralDemandEnabled=True, LateralPreviewAssistMode="apply")
+  adapter = LateralDemandAdapter(params)
+  kwargs = dict(lat_active=True, v_ego=20.0, roll=0.0, raw_curvature=0.0,
+                measured_curvature=0.0, steering_pressed=False, lat_delay=0.4)
+  for _ in range(40):
+    adapter.process(model_v2=fake_model(0.001), **kwargs)
+
+  malformed = fake_model(0.001)
+  malformed.frameId = "bad"
+  assert adapter.process(model_v2=malformed, **kwargs) == 0.0
+
+  resumed = adapter.process(model_v2=fake_model(0.001), **kwargs)
+  fresh = LateralDemandAdapter(params).process(model_v2=fake_model(0.001), **kwargs)
+  assert resumed == pytest.approx(fresh)
 
 
 def test_build_pipeline_inputs_forwards_curvature_limited():

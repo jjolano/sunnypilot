@@ -152,6 +152,16 @@ def test_override_rejects_low_speed(monkeypatch):
   assert result is NO_LEAD
 
 
+def test_override_rejects_nonfinite_or_malformed_ego_speed(monkeypatch):
+  _stub_params(monkeypatch, return_value=True)
+  track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
+  for bad_v_ego in (float("nan"), float("inf"), None, "bad"):
+    assert _is_high_risk_cut_in(track, bad_v_ego) is False
+    assert apply_cut_in_override(
+      NO_LEAD, {1: track}, v_ego=bad_v_ego, research_actuation_allowed=True,
+    ) is NO_LEAD
+
+
 def test_override_picks_most_dangerous_track(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   # Two candidates: track 1 has TTC=5s, track 2 has TTC=3s

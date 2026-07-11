@@ -88,6 +88,7 @@ def test_extract_planner_target_samples_persists_preview_context(monkeypatch):
   assert samples[0].lead_d_rel == 7.0
   assert samples[0].gas_pressed
   assert not samples[0].long_active
+  assert samples[0].plan_time_s == pytest.approx(0.2)
   assert samples[0].ttc_s == pytest.approx(17.5)
   assert samples[0].required_decel_mps2 == pytest.approx(0.16 / 14.0)
   assert samples[0].time_headway_s == pytest.approx(7.0 / 7.5)

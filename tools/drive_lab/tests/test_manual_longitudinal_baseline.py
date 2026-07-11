@@ -1,10 +1,17 @@
 import numpy as np
 
 from openpilot.tools.drive_lab.manual_longitudinal_baseline import (
+  _comparison,
   compare_scenario_output,
   render_behavior_outline,
   render_comparison_table,
 )
+
+
+def test_comparison_does_not_round_an_out_of_range_value_into_a_pass():
+  result = _comparison("Launch", "max_abs_jerk", "max jerk", 8.0004)
+  assert result.current == 8.0
+  assert result.passed is False
 
 
 def test_lead_pullaway_comparison_reports_launch_delay_and_table():

@@ -215,7 +215,8 @@ def _sanitize_inputs_for_mode(inp: LongitudinalStackInputs) -> LongitudinalStack
 @dataclass(frozen=True)
 class LongitudinalStackInputs:
   v_ego: float
-  a_ego: float = 0.0                   # current ego accel (wired for future smoothing; Phase 1 unused)
+  a_ego: float = 0.0                   # measured ego accel used by short-horizon lead prediction
+  t_follow: float = FOLLOW_TIME_GAP_S  # same scheduled time gap used by the downstream MPC
   v_cruise: float = 0.0
   seed_a_target: float = 0.0           # MPC/planner baseline accel
   accel_limits: tuple[float, float] = (-4.0, 2.0)
@@ -324,7 +325,8 @@ class CustomLongitudinalStack:
     # Lead Evidence comes from the existing radarState fusion only. Raw modelV2 path
     # geometry must not alter lead risk, progress, or candidate authority in any mode
     # (ADR 2026-07-10-longitudinal-mode-engagement-cycle-latch).
-    lead_ctx = self._lead_context.update(act_inp.leads, confidence_states, act_inp.v_ego, dt)
+    lead_ctx = self._lead_context.update(act_inp.leads, confidence_states, act_inp.v_ego, dt,
+                                         a_ego=act_inp.a_ego)
 
     # Advisory classifiers run whenever an apply-tier mode is armed OR debug is collected;
     # their Actuation Verdicts must never depend on diagnostic collection. The shadow
@@ -352,7 +354,8 @@ class CustomLongitudinalStack:
     if evaluate_features:
       try:
         path_shadow_model_path_available = _model_path_available(inp.model_msg)
-        shadow_ctx = self._shadow_lead_context.update(inp.leads, confidence_states, inp.v_ego, dt, model_msg=inp.model_msg)
+        shadow_ctx = self._shadow_lead_context.update(inp.leads, confidence_states, inp.v_ego, dt,
+                                                      model_msg=inp.model_msg, a_ego=inp.a_ego)
         if collect_debug:
           shadow_debug = {f"path_shadow_{k}": v for k, v in shadow_ctx.debug_dict().items()}
       except Exception:
@@ -407,7 +410,10 @@ class CustomLongitudinalStack:
     lead_v_rel = selected_lead.v_rel if has_lead else 0.0
     lead_a_k = selected_lead.a_k if has_lead else 0.0
     lead_a_tau = _f(getattr(selected_lead.lead, "aLeadTau", 1.5), 1.5) if selected_lead.lead is not None else 1.5
-    follow_gap = max(FOLLOW_GAP_MIN_M, FOLLOW_TIME_GAP_S * max(0.0, inp.v_ego))
+    t_follow = _f(inp.t_follow, FOLLOW_TIME_GAP_S)
+    if t_follow <= 0.0:
+      t_follow = FOLLOW_TIME_GAP_S
+    follow_gap = max(FOLLOW_GAP_MIN_M, t_follow * max(0.0, inp.v_ego))
     alignment_state = selected_lead.state
     lead_confidence = float(getattr(alignment_state, "confidence", 0.0)) if selected_lead.lead is not None else 0.0
     lead_stable = bool(getattr(alignment_state, "stable", False)) if selected_lead.lead is not None else False
@@ -575,7 +581,7 @@ class CustomLongitudinalStack:
         lead_d_rel_for_floor = lead_d_rel if has_lead else None
         dynamic_safety_floor_result = compute_dynamic_safety_floor(
           v_ego=inp.v_ego,
-          t_follow=FOLLOW_TIME_GAP_S,
+          t_follow=t_follow,
           lead_d_rel=lead_d_rel_for_floor,
           a_lat=inp.current_lat_accel,
           pitch=inp.pitch,
@@ -619,6 +625,8 @@ class CustomLongitudinalStack:
         "lead_context_progress_allowed": lead_progress_allowed,
         "lead_gap_excess": policy_lead_gap_excess,
         "lead_context_gap_excess": lead_gap_excess,
+        "t_follow": t_follow,
+        "follow_gap": follow_gap,
         "lead_shadow_active": lead_shadow_active,
         "alternate_threat_active": alternate_threat_active,
         "lead_kinematics_source": selected_lead.source,

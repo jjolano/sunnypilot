@@ -15,13 +15,14 @@ from __future__ import annotations
 import argparse
 import math
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 
-from openpilot.tools.drive_lab.route_analysis import build_route_messages, conditioned_desired_curvature, finite_or_none, lateral_demand_schema
+from openpilot.tools.drive_lab.route_analysis import build_route_messages, finite_or_none
 from openpilot.tools.drive_lab.route_io import output_report
 from openpilot.tools.drive_lab.timeline import format_enum, safe_get
 
@@ -262,10 +263,11 @@ def _segment_frames(frames: Sequence[LateralTimingFrame], params: EventDetection
       prev = current[-1]
       prev_ref, _, _ = _reference_value_and_source(prev)
       gap = frame.t - last_t if last_t is not None else 0.0
+      route_changed = prev.route != frame.route
       mode_changed = prev.mode != frame.mode
       sign_changed = prev_ref is None or _sign(prev_ref) != frame_sign
       gap_too_big = gap > params.max_gap_s
-      if mode_changed or sign_changed or gap_too_big:
+      if route_changed or mode_changed or sign_changed or gap_too_big:
         segments.append(current)
         current = [frame]
       else:
@@ -312,13 +314,18 @@ def _detect_event_indices(segment: list[LateralTimingFrame], params: EventDetect
 def _trapezoid_area(ts: np.ndarray, ys: np.ndarray) -> float:
   if ts.size < 2 or ys.size < 2:
     return 0.0
-  finite = np.isfinite(ys)
-  if not finite.any():
+  finite = np.isfinite(ts) & np.isfinite(ys)
+  indices = np.flatnonzero(finite)
+  if indices.size < 2:
     return 0.0
-  # Fill non-finite with zero so the integral is conservative; gaps still counted by dt.
-  ys = np.where(finite, ys, 0.0)
+  finite_ts = ts[finite]
+  finite_ys = ys[finite]
+  first, last = int(indices[0]), int(indices[-1])
+  ts = ts[first:last + 1]
+  ys = np.interp(ts, finite_ts, finite_ys)
   dts = np.diff(ts)
-  return float(np.sum(dts * 0.5 * (ys[:-1] + ys[1:])))
+  valid_dt = np.isfinite(dts) & (dts > 0.0)
+  return float(np.sum(dts[valid_dt] * 0.5 * (ys[:-1][valid_dt] + ys[1:][valid_dt])))
 
 
 def _gate_event(event_frames: list[LateralTimingFrame], params: EventDetectionParams, missing_model: bool) -> tuple[bool, list[str]]:
@@ -506,8 +513,23 @@ def _build_event(
   # Build expanded window for actual response.
   t0 = max(segment[0].t, ref_onset_t - params.pre_window_s)
   t1 = min(segment[-1].t, ref_release_t + params.post_window_s)
-  window_frames = [f for f in segment if t0 <= f.t <= t1]
-  full_window_indices = [i for i, f in enumerate(segment) if t0 <= f.t <= t1]
+  response_start_idx = 0
+  for i in range(start_idx - 1, -1, -1):
+    ref, _, _ = _reference_value_and_source(segment[i])
+    if ref is not None and math.isfinite(ref) and abs(ref) >= params.onset_threshold:
+      response_start_idx = i + 1
+      break
+  response_end_idx = len(segment) - 1
+  for i in range(end_idx + 1, len(segment)):
+    ref, _, _ = _reference_value_and_source(segment[i])
+    if ref is not None and math.isfinite(ref) and abs(ref) >= params.onset_threshold:
+      response_end_idx = i - 1
+      break
+  window_frames = []
+  for i, frame in enumerate(segment):
+    if i < response_start_idx or i > response_end_idx or not t0 <= frame.t <= t1:
+      continue
+    window_frames.append(frame)
 
   actual_onset_t: float | None = None
   actual_release_t: float | None = None
@@ -664,11 +686,9 @@ def build_lateral_timing_frames(
   already_sorted: bool = False,
 ) -> list[LateralTimingFrame]:
   ordered = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
-  demand_schema = lateral_demand_schema(ordered)
   frames: list[LateralTimingFrame] = []
   latest: dict[str, Any] = {}
   latest_mono: dict[str, int] = {}
-  first_mono: int | None = None
 
   for msg in build_route_messages(ordered):
     if msg.typ in ("carState", "carControl", "modelV2", "liveParameters", "controlsState"):
@@ -691,9 +711,7 @@ def build_lateral_timing_frames(
     if v_ego is None:
       continue
 
-    if first_mono is None:
-      first_mono = int(getattr(msg.raw, "logMonoTime", 0))
-    t = (int(getattr(msg.raw, "logMonoTime", 0)) - first_mono) / 1e9
+    t = msg.t
 
     steering_angle = finite_or_none(safe_get(car_state, "steeringAngleDeg"))
     steering_rate = finite_or_none(safe_get(car_state, "steeringRateDeg"))
@@ -715,8 +733,7 @@ def build_lateral_timing_frames(
     curvature = finite_or_none(safe_get(controls_state, "curvature"))
     desired_curvature = finite_or_none(safe_get(controls_state, "desiredCurvature"))
     model_path = safe_get(controls_state, "modelPathState")
-    processed_curvature = finite_or_none(conditioned_desired_curvature(model_path, demand_schema))
-    raw_curvature = finite_or_none(safe_get(model_path, "rawDesiredCurvature"))
+    processed_curvature = desired_curvature
     path_quality = finite_or_none(safe_get(model_path, "quality"))
     path_gated = safe_get(model_path, "gated")
     path_reason = safe_get(model_path, "reason")
@@ -844,8 +861,17 @@ def analyze_lateral_timing(
   source: str = "unknown",
   params: EventDetectionParams | None = None,
 ) -> LateralTimingReport:
+  return analyze_lateral_timing_frames(
+    build_lateral_timing_frames(source, msgs, already_sorted=True), source=source, params=params,
+  )
+
+
+def analyze_lateral_timing_frames(
+  frames: list[LateralTimingFrame],
+  source: str = "unknown",
+  params: EventDetectionParams | None = None,
+) -> LateralTimingReport:
   p = params or EventDetectionParams()
-  frames = build_lateral_timing_frames(source, msgs, already_sorted=True)
   coverage = _coverage(frames)
   events = detect_lateral_events(frames, p)
 
@@ -921,7 +947,6 @@ def _resolve_inputs(inputs: list[str], read_mode: Any, log_roots: tuple[Path, ..
 def main() -> None:
   import sys
   from openpilot.tools.lib.logreader import LogReader, ReadMode
-  from openpilot.tools.drive_lab.analyze_longitudinal_lateral_route import DEFAULT_LOG_ROOTS
 
   parser = argparse.ArgumentParser(description="Compare manual-vs-model and engaged controller lateral timing.")
   parser.add_argument("inputs", nargs="+", help="Route ids, local dirs, files, or LogReader route strings")
@@ -960,8 +985,16 @@ def main() -> None:
     raise SystemExit(1)
 
   source_label = ", ".join(identifiers) if identifiers else ", ".join(args.inputs)
-  msgs = list(LogReader(identifiers, default_mode=read_mode, sort_by_time=True))
-  report = analyze_lateral_timing(msgs, source=source_label, params=params)
+  frames = [
+    frame
+    for identifier in identifiers
+    for frame in build_lateral_timing_frames(
+      identifier,
+      list(LogReader(identifier, default_mode=read_mode, sort_by_time=True)),
+      already_sorted=True,
+    )
+  ]
+  report = analyze_lateral_timing_frames(frames, source=source_label, params=params)
   print(output_report(report, json_output=args.json, renderer=render_report, output_path=args.output))
 
 

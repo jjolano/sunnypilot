@@ -7,7 +7,6 @@ from typing import Any
 
 import numpy as np
 
-from openpilot.tools.drive_lab.route_analysis import conditioned_desired_curvature, lateral_demand_schema
 from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type, safe_get
 
 
@@ -310,14 +309,15 @@ def build_lateral_torque_lag_report(
   cols = _columns(samples)
   base = _base_mask(cols)
   desired_rate = _derivative(cols["t"], cols["desired_lateral_accel"])
+  desired_magnitude_rate = np.sign(cols["desired_lateral_accel"]) * desired_rate
   processed_curvature = _finite_or_fallback(cols["processed_desired_curvature"], cols["desired_curvature"])
   desired_lateral_accel_residual = cols["desired_lateral_accel"] - np.square(cols["v_ego"]) * processed_curvature
   actual_lateral_accel_residual = cols["actual_lateral_accel"] - np.square(cols["v_ego"]) * cols["current_curvature"]
   curve = np.abs(cols["desired_lateral_accel"]) > 0.08
   masks = {
     "curve": base & curve,
-    "entry": base & curve & (desired_rate > 0.15),
-    "exit": base & curve & (desired_rate < -0.15),
+    "entry": base & curve & (desired_magnitude_rate > 0.15),
+    "exit": base & curve & (desired_magnitude_rate < -0.15),
     "cold": base & curve & (cols["learner_confidence"] < 0.3),
     "warm": base & curve & (cols["learner_confidence"] >= 0.6),
     "high_curvature": base & (np.abs(processed_curvature) >= 0.0015),
@@ -451,7 +451,6 @@ def render_lateral_torque_ab_report(report: LateralTorqueABReport) -> str:
 def _extract_torque_samples(msgs: list[Any]) -> list[_TorqueSample]:
   if not msgs:
     return []
-  demand_schema = lateral_demand_schema(msgs)
   base_mono_time = int(getattr(msgs[0], "logMonoTime", 0))
   latest: dict[str, Any] = {}
   samples: list[_TorqueSample] = []
@@ -503,7 +502,7 @@ def _extract_torque_samples(msgs: list[Any]) -> list[_TorqueSample]:
       current_curvature=_finite_float(safe_get(payload, "curvature"), float("nan")),
       desired_curvature=_finite_float(safe_get(payload, "desiredCurvature"), float("nan")),
       raw_desired_curvature=_finite_float(safe_get(model_path_state, "rawDesiredCurvature"), float("nan")),
-      processed_desired_curvature=_finite_float(conditioned_desired_curvature(model_path_state, demand_schema), float("nan")),
+      processed_desired_curvature=_finite_float(safe_get(payload, "desiredCurvature"), float("nan")),
       model_path_quality=_finite_float(safe_get(model_path_state, "quality"), float("nan")),
       model_path_gated=bool(safe_get(model_path_state, "gated", False)),
       model_path_reason=format_enum(safe_get(model_path_state, "reason")),

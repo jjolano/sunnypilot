@@ -40,6 +40,7 @@ from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   ModelPathProcessorResult,
 )
 from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
+  LANE_FIT_SOURCE_SLEW_LAT_JERK,
   LateralDemandPipeline,
   LateralDemandPipelineInputs,
 )
@@ -355,14 +356,21 @@ def test_preview_assist_off_is_disabled():
 
 
 def test_preview_assist_shadow_logs_candidate_without_changing_curvature():
-  off = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="off"))
-  result = LateralDemandPipeline(DT).update(preview_assist_inputs(lateral_preview_assist_mode="shadow"))
+  off_pipeline = LateralDemandPipeline(DT)
+  shadow_pipeline = LateralDemandPipeline(DT)
+  apply_pipeline = LateralDemandPipeline(DT)
+  for _ in range(40):
+    off = off_pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="off"))
+    result = shadow_pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="shadow"))
+    applied = apply_pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
 
   assert result.debug["lateral_preview_assist_mode"] == "shadow"
   assert result.debug["lateral_preview_assist_active"] is True
   assert result.debug["lateral_preview_assist_applied"] is False
   assert result.debug["lateral_preview_assist_reason"] == "ok"
   assert abs(float(result.debug["lateral_preview_assist_curvature_nudge"])) > 0.0
+  assert result.debug["lateral_preview_assist_curvature_nudge"] == pytest.approx(
+    applied.debug["lateral_preview_assist_curvature_nudge"])
   assert result.demand.processed_curvature == pytest.approx(off.demand.processed_curvature)
 
 
@@ -420,6 +428,13 @@ def test_preview_assist_soft_release_decays_instead_of_stepping():
   b_nudge = float(blocked.debug["lateral_preview_assist_curvature_nudge"])
   assert blocked.debug["lateral_preview_assist_applied"] is True
   assert blocked.debug["lateral_preview_assist_reason"] == "releasing_curvature_limited"
+  assert blocked.debug["lateral_preview_assist_preview_curvature"] == pytest.approx(
+    blocked.debug["lateral_preview_assist_base_curvature"] + b_nudge,
+  )
+  assert blocked.debug["lateral_preview_assist_ay_preview"] == pytest.approx(
+    blocked.debug["lateral_preview_assist_ay_base"] + blocked.debug["lateral_preview_assist_ay_delta"],
+  )
+  assert blocked.debug["lateral_preview_assist_ay_delta"] == pytest.approx(b_nudge * 20.0 ** 2)
   # One slew step at most (0.30 m/s^3 in ay space), never a one-frame drop to zero.
   assert 0.0 < abs(b_nudge) < abs(nudge)
   assert (abs(nudge) - abs(b_nudge)) * 20.0 ** 2 <= 0.30 * DT + 1e-9
@@ -438,6 +453,22 @@ def test_preview_assist_soft_release_decays_instead_of_stepping():
   dropped = pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply", steering_pressed=True))
   assert dropped.debug["lateral_preview_assist_curvature_nudge"] == 0.0
   assert dropped.debug["lateral_preview_assist_reason"] == "driver_override"
+
+
+def test_preview_assist_stale_fallback_does_not_double_count_prior_nudge():
+  pipeline = LateralDemandPipeline(DT)
+  result = None
+  for _ in range(40):
+    result = pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
+  assert result is not None
+
+  previous_ay = result.demand.processed_curvature * 20.0 ** 2
+  stale = pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply", model_age_s=0.3))
+  stale_ay = stale.demand.processed_curvature * 20.0 ** 2
+
+  assert 0.0 <= stale_ay <= previous_ay
+  assert stale.debug["lateral_preview_assist_applied"] is False
+  assert stale.debug["lateral_preview_assist_curvature_nudge"] == 0.0
 
 
 def test_preview_assist_blocks_sign_conflict():
@@ -666,6 +697,21 @@ def test_lane_fit_source_apply_moves_curvature_after_persistence():
   assert 0.0 < float(result.debug["lane_fit_source_applied_curvature"]) < float(result.debug["lane_fit_source_candidate_curvature"])
 
 
+def test_lane_fit_source_slew_uses_pipeline_timestep():
+  dt = 0.02
+  pipeline = LateralDemandPipeline(dt)
+  result = None
+  for _ in range(30):
+    result = pipeline.update(lane_fit_source_inputs(lane_fit_source_mode="apply"))
+    if result.debug["lane_fit_source_applied"]:
+      break
+
+  assert result is not None
+  assert result.debug["lane_fit_source_applied"] is True
+  applied_lat_accel = float(result.debug["lane_fit_source_applied_curvature"]) * 20.0 ** 2
+  assert applied_lat_accel == pytest.approx(LANE_FIT_SOURCE_SLEW_LAT_JERK * dt)
+
+
 @pytest.mark.parametrize("blocked_kwargs, expected_reason", [
   ({"lane_lines": ()}, "missing_lanes"),
   ({"lane_line_probs": [0.95, 0.4, 0.4, 0.95]}, "low_prob"),
@@ -679,9 +725,10 @@ def test_lane_fit_source_blocks_and_slews_release(blocked_kwargs, expected_reaso
   blocked = p.update(lane_fit_source_inputs(lane_fit_source_mode="apply", **blocked_kwargs))
 
   assert blocked.debug["lane_fit_source_active"] is False
-  assert blocked.debug["lane_fit_source_applied"] is False
-  assert blocked.debug["lane_fit_source_reason"] == expected_reason
+  assert blocked.debug["lane_fit_source_applied"] is True
+  assert blocked.debug["lane_fit_source_reason"] == f"releasing_{expected_reason}"
   assert blocked.debug["lane_fit_source_slew_limited"] is True
+  assert blocked.demand.demand_source == DEMAND_SOURCE_LANE_FIT
   assert 0.0 < float(blocked.demand.processed_curvature) < prev
 
 
@@ -698,9 +745,10 @@ def test_lane_fit_source_sign_conflict_blocks():
   ))
 
   assert blocked.debug["lane_fit_source_active"] is False
-  assert blocked.debug["lane_fit_source_applied"] is False
-  assert blocked.debug["lane_fit_source_reason"] == "sign_conflict"
+  assert blocked.debug["lane_fit_source_applied"] is True
+  assert blocked.debug["lane_fit_source_reason"] == "releasing_sign_conflict"
   assert blocked.debug["lane_fit_source_slew_limited"] is True
+  assert blocked.demand.demand_source == DEMAND_SOURCE_LANE_FIT
   assert float(blocked.demand.processed_curvature) > float(applied.demand.processed_curvature)
   assert float(blocked.demand.processed_curvature) < 0.00025
 
@@ -1733,6 +1781,24 @@ def test_lane_rate_damping_release_decays_instead_of_stepping():
   assert a.debug["lane_rate_damping_applied"] is False
   assert a.debug["lane_rate_damping_lat_accel"] == 0.0
   assert a.debug["lane_rate_damping_reason"] == "driver_override"
+
+
+def test_lane_rate_damping_quality_edge_releases_at_configured_rate():
+  pipeline = LateralDemandPipeline(DT)
+  result = None
+  for i in range(120):
+    result = pipeline.update(lane_rate_damping_inputs(i * 0.01, lane_rate_damping_mode="apply"))
+  assert result is not None
+  previous_ay = float(result.debug["lane_rate_damping_lat_accel"])
+
+  blocked = pipeline.update(lane_rate_damping_inputs(
+    1.21, lane_rate_damping_mode="apply", lane_line_probs=[0.0, 0.0, 0.0, 0.0],
+  ))
+  released_ay = float(blocked.debug["lane_rate_damping_lat_accel"])
+
+  assert blocked.debug["lane_rate_damping_reason"] == "releasing_low_lane_confidence"
+  assert 0.0 < released_ay < previous_ay
+  assert previous_ay - released_ay <= 0.30 * DT + 1e-9
 
 
 def test_model_step_blender_fades_20hz_steps_and_passes_urgent():

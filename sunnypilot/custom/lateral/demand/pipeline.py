@@ -458,7 +458,7 @@ class _LaneFitSourceTracker:
     prev = self._last_output_lat_accel
     if prev is None or not math.isfinite(prev):
       prev = baseline_lat_accel
-    max_step = LANE_FIT_SOURCE_SLEW_LAT_JERK * DT_CTRL
+    max_step = LANE_FIT_SOURCE_SLEW_LAT_JERK * self.dt
     if prev is not None and target_lat_accel == baseline_lat_accel:
       # ponytail: release a touch slower than entry so an immediate apply->block still backs off.
       max_step *= LANE_FIT_SOURCE_RELEASE_SLEW_SCALE
@@ -607,11 +607,12 @@ class _LaneFitSourceTracker:
         slew_limited=False,
       )
     applied_curvature, slew_limited = self._slew_output(baseline_lat_accel, baseline_lat_accel)
+    releasing = abs(applied_curvature - baseline_lat_accel) > 1e-9
     return LaneFitSourceResult(
       mode=mode,
       active=active,
-      applied=applied,
-      reason=reason,
+      applied=releasing,
+      reason=f"releasing_{reason}" if releasing else reason,
       candidate_curvature=0.0,
       applied_curvature=applied_curvature / speed_sq,
       lat_accel_delta=0.0,
@@ -769,7 +770,7 @@ class LateralDemandPipeline:
         hard_blocked = (
           lane_rate_damping_result.mode != "apply"
           or lane_rate_damping_result.reason in LANE_RATE_DAMPING_HARD_BLOCK_REASONS
-          or model_path_result.reason != "ok"
+          or model_path_result.gated
         )
         if hard_blocked:
           self._lane_rate_damping_slew.reset()

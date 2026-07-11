@@ -14,7 +14,6 @@ from openpilot.tools.drive_lab.lateral_torque_event_report import (
   build_lateral_low_speed_report,
   build_lateral_torque_event_report,
 )
-from openpilot.tools.drive_lab.route_analysis import conditioned_desired_curvature, lateral_demand_schema
 from openpilot.tools.drive_lab.timeline import format_enum, msg_payload, msg_time_s, msg_type, safe_get
 
 
@@ -283,7 +282,6 @@ def load_lateral_performance_gate(path: str | Path) -> LateralPerformanceGateRep
 def _extract_gate_samples(msgs: list[Any]) -> list[_GateSample]:
   if not msgs:
     return []
-  demand_schema = lateral_demand_schema(msgs)
   base_mono_time = int(getattr(msgs[0], "logMonoTime", 0))
   latest: dict[str, Any] = {}
   samples: list[_GateSample] = []
@@ -299,7 +297,8 @@ def _extract_gate_samples(msgs: list[Any]) -> list[_GateSample]:
     car_control = latest.get("carControl")
     model_v2 = latest.get("modelV2")
     lateral_state = safe_get(payload, "lateralControlState")
-    lateral_payload = safe_get(lateral_state, format_enum(lateral_state.which()) if lateral_state is not None and hasattr(lateral_state, "which") else "torqueState", lateral_state)
+    lateral_kind = format_enum(lateral_state.which()) if lateral_state is not None and hasattr(lateral_state, "which") else "torqueState"
+    lateral_payload = safe_get(lateral_state, lateral_kind, lateral_state)
     model_path = safe_get(payload, "modelPathState")
     samples.append(_GateSample(
       t=msg_time_s(msg, base_mono_time),
@@ -311,7 +310,7 @@ def _extract_gate_samples(msgs: list[Any]) -> list[_GateSample]:
       steering_angle_deg=_finite_float(safe_get(car_state, "steeringAngleDeg")),
       curvature=_finite_float(safe_get(payload, "curvature")),
       raw_desired_curvature=_finite_float(safe_get(model_path, "rawDesiredCurvature")),
-      processed_desired_curvature=_finite_float(conditioned_desired_curvature(model_path, demand_schema)),
+      processed_desired_curvature=_finite_float(safe_get(payload, "desiredCurvature")),
       desired_curvature=_finite_float(safe_get(payload, "desiredCurvature")),
       model_path_gated=bool(safe_get(model_path, "gated", False)),
       model_path_quality=_finite_float(safe_get(model_path, "quality")),
@@ -447,7 +446,10 @@ def _recenter_candidate(cols: dict[str, np.ndarray], idx: np.ndarray) -> Recente
     return None
   same_sign = np.sign(model_good) == np.sign(lane_good)
   strong_offset = (np.abs(model_good) > RECENTER_OFFSET_EPS) & (np.abs(lane_good) > RECENTER_OFFSET_EPS)
-  offset_agreement = _percent(same_sign & strong_offset)
+  strong_count = int(np.sum(strong_offset))
+  if strong_count == 0:
+    return None
+  offset_agreement = 100.0 * float(np.sum(same_sign & strong_offset)) / strong_count
   combined = np.where(same_sign, (model_good + lane_good) / 2.0, np.nan)
   combined_good = combined[np.isfinite(combined)]
   if combined_good.size < 20:
@@ -590,18 +592,21 @@ def _model_path_offset_y(model_v2: Any) -> float:
 
 def _lane_center_offset_y(model_v2: Any) -> float:
   lane_lines = safe_get(model_v2, "laneLines")
-  left = _lane_line_y0(lane_lines, 1)
-  right = _lane_line_y0(lane_lines, 2)
+  left = _lane_line_y(lane_lines, 1, 5)
+  right = _lane_line_y(lane_lines, 2, 5)
   if not isfinite(left) or not isfinite(right):
     return float("nan")
   return (left + right) / 2.0
 
 
-def _lane_line_y0(lane_lines: Any, idx: int) -> float:
+def _lane_line_y(lane_lines: Any, idx: int, horizon_idx: int) -> float:
   try:
     lane_line = lane_lines[idx]
     values = getattr(lane_line, "y")
-    return _finite_float(values[0])
+    value_idx = min(horizon_idx, len(values) - 1)
+    if value_idx < 0:
+      return float("nan")
+    return _finite_float(values[value_idx])
   except (TypeError, IndexError, AttributeError):
     return float("nan")
 

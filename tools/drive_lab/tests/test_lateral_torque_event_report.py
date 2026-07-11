@@ -303,6 +303,21 @@ def test_lateral_torque_lag_report_estimates_tracking_lag():
   assert curve.abs_error_p95 > 0.0
 
 
+def test_lateral_torque_lag_right_turn_growth_is_entry_not_exit():
+  msgs = []
+  for i in range(20):
+    desired = -0.02 * i
+    msgs.extend(sample_msgs(i * 0.1, output=-0.1, v_ego=10.0,
+                            desired_accel=desired, actual_accel=desired,
+                            desired_curvature=desired / 100.0))
+
+  report = build_lateral_torque_lag_report(msgs, already_sorted=True)
+  entry = next(metric for metric in report.metrics if metric.segment == "entry")
+  exit_ = next(metric for metric in report.metrics if metric.segment == "exit")
+  assert entry.sample_count > 0
+  assert exit_.sample_count == 0
+
+
 def test_lateral_torque_lag_report_adds_high_curvature_low_quality_and_physics_metrics():
   msgs = []
   for i in range(20):
@@ -433,7 +448,7 @@ def test_low_speed_lateral_report_buckets_path_and_torque_metrics():
   assert tier.abs_error_p95 > 0.0
   assert tier.output_reversals > 0
   assert tier.model_path_gated_percent == pytest.approx(50.0)
-  assert tier.raw_processed_curvature_delta_p95 == pytest.approx(0.001)
+  assert tier.raw_processed_curvature_delta_p95 == pytest.approx(0.0012)
   assert tier.model_path_reason_counts["highPathStd"] == 12
   assert tier.model_path_reason_counts["ok"] == 12
 

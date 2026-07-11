@@ -1,6 +1,7 @@
 import math
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from openpilot.tools.drive_lab.lateral_performance_gate import (
@@ -12,6 +13,8 @@ from openpilot.tools.drive_lab.lateral_performance_gate import (
   TORQUE_EVENT_DOMINANT,
   build_lateral_performance_gate,
   build_lateral_performance_gate_ab_report,
+  _lane_center_offset_y,
+  _recenter_candidate,
   load_lateral_performance_gate,
   render_lateral_performance_gate,
   render_lateral_performance_gate_ab_report,
@@ -211,6 +214,34 @@ def test_lateral_performance_gate_reports_recenter_overshoot_candidates():
   assert candidate.confidence == "high"
   assert candidate.offset_crossings >= 1
   assert candidate.correction_reversals >= 1
+
+
+def test_recenter_offset_agreement_excludes_subthreshold_samples_from_denominator():
+  alternating = np.tile([0.25, -0.25], 10)
+  offsets = np.concatenate([np.zeros(20), alternating])
+  cols = {
+    "t": np.arange(40, dtype=float) * 0.1,
+    "model_path_offset_y": offsets,
+    "lane_center_offset_y": offsets,
+    "processed_desired_curvature": np.tile([0.001, -0.001], 20),
+    "lane_state_unknown": np.zeros(40),
+  }
+
+  candidate = _recenter_candidate(cols, np.ones(40, dtype=bool))
+
+  assert candidate is not None
+  assert candidate.offset_agreement_percent == pytest.approx(100.0)
+
+
+def test_lane_center_offset_uses_same_horizon_as_model_path_offset():
+  model = SimpleNamespace(laneLines=[
+    SimpleNamespace(y=[-3.6] * 6),
+    SimpleNamespace(y=[-1.8, -1.6, -1.4, -1.2, -1.0, -0.8]),
+    SimpleNamespace(y=[1.8, 2.0, 2.2, 2.4, 2.6, 2.8]),
+    SimpleNamespace(y=[3.6] * 6),
+  ])
+
+  assert _lane_center_offset_y(model) == pytest.approx(1.0)
 
 
 def test_lateral_performance_gate_ab_report_renders_deltas():

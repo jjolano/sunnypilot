@@ -263,8 +263,8 @@ def _stop_comparisons(output: np.ndarray, jerk_accel: np.ndarray, jerk_window: i
 
 def _comparison(area: str, metric: str, label: str, current: float) -> MetricComparison:
   expected = EXPECTED_RANGES[metric]
-  current = _rounded(current)
-  return MetricComparison(area, metric, label, current, expected, expected.contains(current))
+  passed = expected.contains(current)
+  return MetricComparison(area, metric, label, _rounded(current), expected, passed)
 
 
 def _validated_output(output: np.ndarray) -> np.ndarray:

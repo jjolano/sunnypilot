@@ -120,18 +120,18 @@ class PreviewAssistTracker:
     dropping it in one frame (route 274: instant removal was the top lateral-jerk source).
     Keeps emitting the decaying nudge in apply mode; state clears itself on convergence."""
     output_ay_delta, slew_limited = self._slew_output(0.0)
-    if mode != "apply":
-      self._last_output_ay_delta = None
-      output_ay_delta = 0.0
     speed_sq = max(v_ego * v_ego, 1.0)
     curvature_nudge = output_ay_delta / speed_sq
+    preview_curvature = baseline_curvature + curvature_nudge
+    ay_base = baseline_curvature * speed_sq
+    ay_preview = preview_curvature * speed_sq
     applied = mode == "apply" and abs(curvature_nudge) > 0.0
     reason_out = f"releasing_{reason}" if applied else reason
     return PreviewAssistResult(
       mode=mode, active=False, applied=applied, reason=reason_out,
       confidence=0.0, t_preview=0.0, base_curvature=baseline_curvature,
-      preview_curvature=0.0, curvature_nudge=curvature_nudge,
-      ay_base=0.0, ay_preview=0.0, ay_delta=0.0, slew_limited=slew_limited,
+      preview_curvature=preview_curvature, curvature_nudge=curvature_nudge,
+      ay_base=ay_base, ay_preview=ay_preview, ay_delta=output_ay_delta, slew_limited=slew_limited,
     )
 
   def _slew_output(self, target_ay_delta: float) -> tuple[float, bool]:
@@ -208,7 +208,8 @@ class PreviewAssistTracker:
     # Transient blockers: decay via _soft_release instead of one-frame removal.
     model_age_s = _finite_float(getattr(inputs, "model_age_s", float("inf")))
     if model_age_s is None or model_age_s > LATERAL_PREVIEW_ASSIST_MAX_MODEL_AGE_S:
-      return self._soft_release(mode, "model_stale", baseline_curvature_f, v_ego)
+      self.reset()
+      return _preview_result(mode, "model_stale")
     if bool(getattr(inputs, "steer_limited", False)):
       self._steer_limited_frames += 1
     else:
@@ -219,11 +220,16 @@ class PreviewAssistTracker:
       return self._soft_release(mode, "curvature_limited", baseline_curvature_f, v_ego)
 
     if model_path_result is None:
-      return self._soft_release(mode, "invalid", baseline_curvature_f, v_ego)
+      self.reset()
+      return _preview_result(mode, "invalid")
     if bool(getattr(model_path_result, "gated", False)):
-      return self._soft_release(mode, str(getattr(model_path_result, "reason", "gated")), baseline_curvature_f, v_ego)
+      reason = str(getattr(model_path_result, "reason", "gated"))
+      self.reset()
+      return _preview_result(mode, reason)
     if str(getattr(model_path_result, "reason", "invalid")) != "ok":
-      return self._soft_release(mode, str(getattr(model_path_result, "reason", "invalid")), baseline_curvature_f, v_ego)
+      reason = str(getattr(model_path_result, "reason", "invalid"))
+      self.reset()
+      return _preview_result(mode, reason)
     if bool(getattr(model_path_result, "straight_path_stabilization_applied", False)):
       return self._soft_release(mode, "straight_path_stabilization", baseline_curvature_f, v_ego)
 
@@ -268,8 +274,6 @@ class PreviewAssistTracker:
       return self._soft_release(mode, "invalid", baseline_curvature_f, v_ego)
 
     output_ay_delta, slew_limited = self._slew_output(target_ay_delta)
-    if mode != "apply":
-      self._last_output_ay_delta = None
     curvature_nudge = output_ay_delta / speed_sq
     applied = mode == "apply" and abs(curvature_nudge) > 0.0
     return PreviewAssistResult(

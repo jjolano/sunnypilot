@@ -181,7 +181,7 @@ class LongitudinalPlannerSP:
       vision.output_a_target = self._SCC_VISION_UNCORROBORATED_A_MIN
 
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float,
-                     refresh_custom_long: bool = True) -> tuple[float, float]:
+                     refresh_custom_long: bool = True, t_follow: float = 1.5) -> tuple[float, float]:
     if refresh_custom_long:
       self.custom_long.maybe_refresh_params()
     self._sync_active_mode(sm)
@@ -222,8 +222,11 @@ class LongitudinalPlannerSP:
 
     # Opt-in: shape the baseline a_target with the custom-2.0 policy (fail-closed; returns the
     # unchanged target when disabled or on any fault, so default behavior is never affected).
+    measured_v_ego = float(getattr(CS, "vEgo", v_ego))
+    measured_a_ego = float(getattr(CS, "aEgo", a_ego))
     self.custom_long_output = self.custom_long.evaluate(
-      sm, v_ego, a_ego, v_cruise, self.output_a_target, self.scc, self.sla,
+      sm, measured_v_ego, measured_a_ego, v_cruise, self.output_a_target, self.scc, self.sla,
+      t_follow=t_follow,
       collect_debug=collect_custom_long_debug,
     )
     self.output_a_target = self.custom_long_output.a_target

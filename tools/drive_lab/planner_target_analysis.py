@@ -51,6 +51,7 @@ class PlannerTargetSample:
   ttc_s: float | None = None
   required_decel_mps2: float | None = None
   time_headway_s: float | None = None
+  plan_time_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -135,16 +136,21 @@ def build_suspicious_episodes(samples: list[PlannerTargetSample], large_error_th
   return sorted(episodes, key=lambda e: (e.strong_opposite_count, e.max_abs_error, e.sample_count), reverse=True)
 
 
-def high_plan_jerk_pairs(samples: list[PlannerTargetSample], threshold: float = DEFAULT_HIGH_JERK_THRESHOLD) -> list[tuple[PlannerTargetSample, PlannerTargetSample, float]]:
+def high_plan_jerk_pairs(
+  samples: list[PlannerTargetSample], threshold: float = DEFAULT_HIGH_JERK_THRESHOLD,
+) -> list[tuple[PlannerTargetSample, PlannerTargetSample, float]]:
   pairs: list[tuple[PlannerTargetSample, PlannerTargetSample, float]] = []
   samples_by_key: dict[tuple[str, int | None], list[PlannerTargetSample]] = defaultdict(list)
   for sample in samples:
     samples_by_key[(sample.route, sample.segment)].append(sample)
   for route_samples in samples_by_key.values():
-    ordered = sorted(route_samples, key=lambda s: s.t)
-    for prev, cur in zip(ordered, ordered[1:], strict=False):
-      dt = cur.t - prev.t
-      if 0.05 <= dt <= 0.3:
+    updates: dict[float, PlannerTargetSample] = {}
+    for sample in route_samples:
+      updates.setdefault(sample.plan_time_s if sample.plan_time_s is not None else sample.t, sample)
+    ordered = sorted(updates.items())
+    for (prev_t, prev), (cur_t, cur) in zip(ordered, ordered[1:], strict=False):
+      dt = cur_t - prev_t
+      if 0.0 < dt <= 0.3:
         jerk = (cur.plan_a_target - prev.plan_a_target) / dt
         if abs(jerk) >= threshold:
           pairs.append((prev, cur, jerk))
@@ -165,7 +171,7 @@ def _summarize_episode(episode: list[PlannerTargetSample], all_samples: list[Pla
     segment=episode[0].segment,
     start_time_s=start,
     end_time_s=end,
-    duration_s=end - start + 0.1,
+    duration_s=max(0.0, end - start),
     sample_count=len(episode),
     opposite_count=sum(1 for sample in episode if is_opposite_intent(sample)),
     strong_opposite_count=sum(1 for sample in episode if is_strong_opposite_intent(sample)),

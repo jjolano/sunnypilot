@@ -64,6 +64,7 @@ def test_cli_strict_exits_when_comparison_fails(monkeypatch):
 
 def test_evaluate_scenario_uses_bounded_lead_pullaway_start_oracle(monkeypatch):
   captured_kwargs = {}
+  comparison_kwargs = {}
 
   class FakeManeuver:
     def __init__(self, title, duration, **kwargs):
@@ -80,8 +81,12 @@ def test_evaluate_scenario_uses_bounded_lead_pullaway_start_oracle(monkeypatch):
     oracle_profile="comfort",
   )
   monkeypatch.setattr(maneuver_module, "Maneuver", FakeManeuver)
-  monkeypatch.setattr(baseline_cli, "compare_scenario_output", lambda kind, output, **kwargs: [])
+  monkeypatch.setattr(
+    baseline_cli, "compare_scenario_output",
+    lambda kind, output, **kwargs: comparison_kwargs.update(kwargs) or [],
+  )
 
   baseline_cli.evaluate_scenario(scenario)
 
   assert captured_kwargs["ensure_start"] is False
+  assert comparison_kwargs["jerk_window"] == 1

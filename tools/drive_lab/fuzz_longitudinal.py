@@ -11,7 +11,6 @@ from typing import Any
 
 import numpy as np
 
-from openpilot.common.realtime import DT_MDL
 from openpilot.tools.drive_lab.log_profile import load_profile
 from openpilot.tools.drive_lab.longitudinal_scenarios import (
   LAUNCH_START_ORACLE_KINDS,
@@ -63,6 +62,20 @@ LEAD_PULLAWAY_STARTED_ACCEL = 0.1
 COLLISION_GAP = 0.4
 BEST_EFFORT_BRAKE = 2.5
 BENIGN_IMPACT_SPEED = 3.0
+
+_SHIPPED_LONGITUDINAL_PARAM_KEYS = (
+  "CustomLongitudinalEnabled",
+  "CustomLongitudinalMode",
+  "LongitudinalPersonality",
+  "LongitudinalDebugTraceMode",
+  "CutInBrakeAssistMode",
+  "CurveSpeedConfidenceMode",
+  "CurveTrafficAdvisorMode",
+  "MapCoastMode",
+  "StandstillReleaseConfidenceMode",
+  "SmartCruiseControlVision",
+  "SmartCruiseControlMap",
+)
 
 
 @dataclass(frozen=True)
@@ -548,16 +561,21 @@ def shipped_longitudinal_config():
   from openpilot.common.params import Params
 
   params = Params()
-  key = "CustomLongitudinalEnabled"
-  previous = params.get(key)
-  params.put_bool(key, True)
+  previous = {key: params.get(key) for key in _SHIPPED_LONGITUDINAL_PARAM_KEYS}
+  for key in _SHIPPED_LONGITUDINAL_PARAM_KEYS:
+    default = params.get_default_value(key)
+    if default is None:
+      params.remove(key)
+    else:
+      params.put(key, default, block=True)
   try:
     yield
   finally:
-    if previous is None:
-      params.remove(key)
-    else:
-      params.put(key, previous)
+    for key, value in previous.items():
+      if value is None:
+        params.remove(key)
+      else:
+        params.put(key, value, block=True)
 
 
 def run_scenario(scenario: Scenario, max_normal_jerk: float = 8.0) -> ScenarioResult:
@@ -571,8 +589,7 @@ def run_scenario(scenario: Scenario, max_normal_jerk: float = 8.0) -> ScenarioRe
   with contextlib.redirect_stdout(io.StringIO()), capture_commanded_accel() as capture:
     valid, output = maneuver.evaluate()
   commanded_accel = np.array(capture.commanded) if len(capture.commanded) == len(output) else None
-  action_horizon = (capture.actuator_delay or 0.0) + DT_MDL
-  jerk_window = max(1, round(action_horizon / DT_MDL))
+  jerk_window = 1  # actuator delay shifts a command step in time; it does not smooth the step
   failures = evaluate_invariants(valid, output, max_normal_jerk, commanded_accel, jerk_window, profile=profile)
 
   if profile.use_launch_oracle and scenario.kind in LAUNCH_START_ORACLE_KINDS:
