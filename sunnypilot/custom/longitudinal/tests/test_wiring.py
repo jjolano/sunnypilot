@@ -13,6 +13,7 @@ from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, b
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.wiring import (
   DEFAULT_ACCEL_LIMITS,
+  MODEL_STOP_EARLY_MARGIN_M,
   CustomLongitudinalAdapter,
   build_stack_inputs,
   _model_stop_distance,
@@ -335,7 +336,9 @@ def test_build_stack_inputs_carries_model_stop_distance():
     mode=LongitudinalMode.E2E, personality=Personality.STANDARD, sources=SourceToggles(),
     model_stop_distance=38.0,
   )
-  assert inp.model_stop_distance == pytest.approx(38.0)
+  # The intake subtracts the early-stop margin so every consumer rests short of the
+  # model's declared stop point.
+  assert inp.model_stop_distance == pytest.approx(38.0 - MODEL_STOP_EARLY_MARGIN_M)
 
 
 def test_distance_aware_stop_approach_brakes_in_e2e():

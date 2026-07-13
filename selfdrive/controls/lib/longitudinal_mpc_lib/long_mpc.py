@@ -54,9 +54,11 @@ T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
-STOP_DISTANCE = 4.5      # g_stop: standstill gap behind a lead (the stop buffer). 6.0 -> 5.5 after
+STOP_DISTANCE = 5.0      # g_stop: standstill gap behind a lead (the stop buffer). 6.0 -> 5.5 after
                          # route 0000025a, -> 4.5 after route 00000261 (driver's manual stop median
-                         # is 1.6 m radar gap; engaged stops still read 5-9 m). Note: launch
+                         # is 1.6 m radar gap; engaged stops still read 5-9 m), -> 5.0 after route
+                         # 00000288 (lead stops bordered close-for-the-speed; stop 0.5 m earlier
+                         # and let the stop-hold crawl release close the rest). Note: launch
                          # reaction is roughly invariant to this value (the car stops closer by the
                          # same amount the release threshold moves) — release timing is governed by
                          # the finalizer stop-hold gates. NOTE: baked into the acados solver at

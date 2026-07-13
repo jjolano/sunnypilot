@@ -78,11 +78,13 @@ def test_acc_cruises_when_clear():
 def test_custom_gap_uses_the_mpc_scheduled_follow_time():
   result = CustomLongitudinalStack().update(base(v_ego=20.0, t_follow=1.2), DT)
   assert result.debug["t_follow"] == pytest.approx(1.2)
-  assert result.debug["follow_gap"] == pytest.approx(25.375)
+  assert result.debug["follow_gap"] == pytest.approx(24.0 + 1.25 + (5.0 - 1.25) / 26.0)
 
 
 def test_route_282_close_pullaway_survives_alternating_radar_ids():
-  """A normal ~4.5 m stop gap and radar ID churn must still yield one explicit launch verdict."""
+  """Radar ID churn must still yield one explicit launch verdict. With the 5.0 m stop gap
+  the verdict comes once the departing lead clears the follow gap (the speedup guard sees
+  no excess inside it; the finalizer's displacement crawl release covers that interim)."""
   stack = CustomLongitudinalStack()
   result = None
   sequence = [
@@ -102,9 +104,21 @@ def test_route_282_close_pullaway_survives_alternating_radar_ids():
         leads=(lead(d_rel=d_rel, v_lead=v_lead, v_rel=v_lead, track_id=track_id), None),
         mode=LongitudinalMode.SCC,
       ), DT)
-
   assert result is not None
-  assert result.debug["follow_gap"] == pytest.approx(4.5)
+  assert result.debug["follow_gap"] == pytest.approx(5.0)
+
+  # Departing lead clears the follow gap while ids keep alternating: verdict must appear.
+  for d_rel, v_lead, track_id in [
+    (4.80, 0.70, 697),
+    (5.05, 0.80, 713),
+    (5.30, 0.90, 697),
+    (5.60, 1.00, 713),
+  ]:
+    result = stack.update(base(
+      v_ego=0.0, v_cruise=12.0, seed_a_target=0.0, lead_a_target=0.0,
+      leads=(lead(d_rel=d_rel, v_lead=v_lead, v_rel=v_lead, track_id=track_id), None),
+      mode=LongitudinalMode.SCC,
+    ), DT)
   assert result.standstill_release_allowed is True
   assert result.standstill_release_source in ("lead_pullaway", "lead_standstill_launch")
 

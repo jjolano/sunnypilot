@@ -38,6 +38,12 @@ PARAMS_REFRESH_PERIOD = 50  # planner ticks (~20Hz -> ~2.5s)
 DEFAULT_ACCEL_LIMITS = (-4.0, 2.0)
 MODEL_STOP_SPEED = 0.3  # m/s; predicted speed at/below this marks the trajectory's rest point
 MODEL_STALE_AGE_S = 0.20
+# Rest 0.5 m short of the model's declared stop point: model stop distances aren't trusted
+# to land on target (route 00000288 driver feedback), and undershoot is recoverable — the
+# stop-hold crawl release closes remaining gap — while overshoot is not. Applied once here
+# at the scene intake so every consumer (stop_approach decel, softening clearance, runway
+# governor) sees the same margined distance.
+MODEL_STOP_EARLY_MARGIN_M = 0.5
 
 # Stable Fault Class (CONTEXT.md): the only fault detail that crosses the interface.
 # Raw exception text stays log-only.
@@ -221,7 +227,8 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     # should_stop is reserved for model-stop commitment under the active mode gate.
     lead_a_target=lead_a_target, lead_should_stop=False,
     model_should_stop=bool(model_should_stop),
-    model_stop_distance=(float(model_stop_distance) if model_stop_distance is not None else None),
+    model_stop_distance=(max(0.0, float(model_stop_distance) - MODEL_STOP_EARLY_MARGIN_M)
+                         if model_stop_distance is not None else None),
     # stop_threat is intentionally inert: every policy consumer (coast/launch/comfort-relax)
     # is already gated by has_lead, and the only lead-derived stop-threat signal is itself
     # lead-coupled, making it fully redundant with has_lead (zero observable effect).

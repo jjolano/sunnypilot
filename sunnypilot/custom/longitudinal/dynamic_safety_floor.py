@@ -14,7 +14,7 @@ from typing import Any
 # Current fork MPC distance constants (from long_mpc.py). These define the product
 # baseline distance model; Phase 2 only compares against them, never changes them.
 _COMFORT_BRAKE_NOMINAL = 2.5
-_STOP_DISTANCE = 4.5
+_STOP_DISTANCE = 5.0
 _MOVING_GAP = 1.25
 _GAP_FADE_V = 4.0
 
