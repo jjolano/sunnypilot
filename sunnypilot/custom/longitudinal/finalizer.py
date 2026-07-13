@@ -236,6 +236,7 @@ class _StopHoldLatchLifecycle:
       finalizer.lead_stop_hold_prev_v = float(lead_v)
       finalizer.lead_stop_hold_prev_y_rel = float(snapshot.lead_y_rel)
       finalizer.lead_stop_hold_gap_baseline_d_rel = min(float(lead_d_rel), finalizer._STOP_HOLD_MAX_BASELINE_D_REL)
+      finalizer.lead_stop_hold_arm_d_rel = float(lead_d_rel)
       finalizer.lead_stop_hold_lead_id = lead_id
       finalizer.lead_stop_hold_churn_ids = {lead_id} if lead_id is not None else set()
 
@@ -251,6 +252,7 @@ class _StopHoldLatchLifecycle:
           finalizer.lead_stop_hold_prev_v = float(lead_v)
           finalizer.lead_stop_hold_prev_y_rel = float(snapshot.lead_y_rel)
           finalizer.lead_stop_hold_gap_baseline_d_rel = min(float(lead_d_rel), finalizer._STOP_HOLD_MAX_BASELINE_D_REL)
+          finalizer.lead_stop_hold_arm_d_rel = float(lead_d_rel)
           finalizer.lead_stop_hold_missing_s = 0.0
           finalizer.lead_stop_hold_gap_increasing_s = 0.0
         else:
@@ -279,6 +281,7 @@ class _StopHoldLatchLifecycle:
       finalizer.lead_stop_hold_prev_v = float(lead_v) if has_lead else None
       finalizer.lead_stop_hold_prev_y_rel = float(snapshot.lead_y_rel) if has_lead else None
       finalizer.lead_stop_hold_gap_baseline_d_rel = min(float(lead_d_rel), finalizer._STOP_HOLD_MAX_BASELINE_D_REL) if has_lead else None
+      finalizer.lead_stop_hold_arm_d_rel = float(lead_d_rel) if has_lead else None
       finalizer.lead_stop_hold_missing_s = 0.0
 
     return finalizer.lead_stop_hold_active
@@ -359,10 +362,13 @@ class _ReleaseGate:
     lead_v = snapshot.lead_v
     lead_v_rel = snapshot.lead_v_rel
 
-    # Route 261: retain one bounded fallback for a still-stationary lead that creeps and
-    # opens the latched gap. A moving lead must now carry the stack's explicit release
-    # verdict; accepting it here too created a second, disagreeing launch authority.
-    if not math.isfinite(float(snapshot.lead_v)) or float(snapshot.lead_v) >= 0.30:
+    # Route 261: the fallback originally accepted only still-stationary creeping leads; a
+    # moving lead had to carry the stack's explicit release verdict (two authorities
+    # disagreed otherwise). Route 00000288: leads crawling at 0.3-0.6 m/s sit between the
+    # two authorities and stay held. A moving lead may now ride this fallback only on
+    # cumulative displacement evidence (checked below with the baseline opening); the crawl
+    # accel ramp keeps it the gentle authority either way.
+    if not math.isfinite(float(snapshot.lead_v)):
       return False
     if _ReleaseGate.standstill_release_gate_enabled(finalizer, custom_long):
       if not bool(getattr(custom_long_output, "research_actuation_allowed", False)):
@@ -402,6 +408,10 @@ class _ReleaseGate:
     if float(lead_v_rel) < 0.05:
       return False
     baseline_opening = float(lead_d_rel) - float(finalizer.lead_stop_hold_gap_baseline_d_rel)
+    arm_d_rel = finalizer.lead_stop_hold_arm_d_rel
+    displacement = float(lead_d_rel) - float(arm_d_rel) if arm_d_rel is not None else 0.0
+    if float(lead_v) >= 0.30 and displacement < finalizer._STOP_HOLD_MOVING_BASELINE_OPENING_M:
+      return False
     if float(lead_v) < 0.20 and baseline_opening < 0.6:
       return False
     return True
@@ -464,7 +474,14 @@ class _ReleaseGate:
         min_gap_increasing_s = finalizer._STOP_HOLD_SAME_ID_MIN_PULLAWAY_S
     else:
       min_gap_increasing_s = 0.15
-    if finalizer.lead_stop_hold_gap_increasing_s < min_gap_increasing_s:
+    # Sub-resolution crawl motion (~2 cm/frame) resets the strictly-increasing streak on
+    # flat/jitter frames; >=_STOP_HOLD_MOVING_BASELINE_OPENING_M of cumulative opening from
+    # the latched baseline outranks any streak (route 00000288).
+    baseline_opening_carries = bool(
+      same_id and finalizer.lead_stop_hold_arm_d_rel is not None and
+      float(lead_d_rel) - float(finalizer.lead_stop_hold_arm_d_rel) >= finalizer._STOP_HOLD_MOVING_BASELINE_OPENING_M
+    )
+    if not baseline_opening_carries and finalizer.lead_stop_hold_gap_increasing_s < min_gap_increasing_s:
       finalizer.last_release_block_reason = "gap_increasing_time"
       return False, float(lead_d_rel)
 
@@ -932,6 +949,17 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_NEW_ID_GAP_INCREASING_S = 0.30
   _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
   _STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S = 0.10
+  # Route 00000288 t=398/t=429: a lead crawling away at 0.3-0.6 m/s falls between the
+  # stationary-only crawl fallback (lead_v < 0.30) and the speed+confidence release verdict,
+  # whose 0.3/0.15 m/s gates flicker at crawl speeds — the hold pinned -0.5..-2.0 for 9-16 s
+  # while the gap opened 2+ m and the driver bailed out with gas. Cumulative opening from the
+  # latched baseline is displacement evidence velocity noise cannot fake: at/above this
+  # opening a moving lead may ride the crawl fallback, and the strictly-increasing gap streak
+  # (which sub-resolution crawl motion resets on flat/jitter frames) is no longer required.
+  # Measured from the unclamped arm-time dRel (lead_stop_hold_arm_d_rel), NOT the runway
+  # baseline, which is clamped to 5.0 m and would misread a >5 m latched gap as already
+  # opened. Kept above the 0.65 m opening the gate-mode guard tests pin as still-blocked.
+  _STOP_HOLD_MOVING_BASELINE_OPENING_M = 0.8
   # Breakout is only consulted while the stop-hold latch is active (ego <= ~0.7 m/s), where
   # v_rel ~= lead_v, so v_rel is the whole gate (a lead_v arm was subsumed and deleted).
   # Crawl-launch feel is tuned via _STOP_HOLD_CRAWL_GAP_TAU below, not here.
@@ -1004,6 +1032,7 @@ class CustomLongitudinalFinalizer:
   lead_stop_hold_prev_y_rel: float | None
   lead_stop_hold_churn_ids: set[int]
   lead_stop_hold_gap_baseline_d_rel: float | None
+  lead_stop_hold_arm_d_rel: float | None
   custom_long_output_telemetry: CustomLongitudinalOutput | None
   last_release_block_reason: str
   stop_hold_release_slew_a_target: float | None
@@ -1025,6 +1054,7 @@ class CustomLongitudinalFinalizer:
     self.lead_stop_hold_prev_y_rel = None
     self.lead_stop_hold_churn_ids = set()
     self.lead_stop_hold_gap_baseline_d_rel = None
+    self.lead_stop_hold_arm_d_rel = None
     self.custom_long_output_telemetry = None
     self.last_release_block_reason = ""
     self.stop_hold_release_slew_a_target = None
@@ -1091,6 +1121,7 @@ class CustomLongitudinalFinalizer:
     self.lead_stop_hold_prev_y_rel = None
     self.lead_stop_hold_churn_ids.clear()
     self.lead_stop_hold_gap_baseline_d_rel = None
+    self.lead_stop_hold_arm_d_rel = None
     self.stop_hold_release_slew_a_target = None
     self.stop_hold_release_prep_a_target = None
     self.stop_hold_release_prep_raw_prev = None
