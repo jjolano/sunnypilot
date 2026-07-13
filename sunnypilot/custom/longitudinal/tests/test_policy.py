@@ -578,6 +578,58 @@ def test_lead_softening_rejected_near_model_stop():
   assert "lead_follow_soft" not in sources_of(build_candidates(scene))
 
 
+# -----------------------------------------------------------------------------
+# Far-lead relevance cap tests (routes 0000027d/00000282 track-churn decel dips)
+# -----------------------------------------------------------------------------
+
+def test_far_lead_churn_spike_capped_to_coast():
+  # aLeadK churn spike deeper than the softening window (-0.8 < -0.7) on a far
+  # same-speed lead: the raw hazard is capped near coast, not commanded at -0.8.
+  scene = _soft_scene(lead_a_target=-0.8, seed_a_target=-0.8)
+  intents = sources_of(build_candidates(scene))
+  assert "lead_follow_soft" not in intents
+  assert intents["lead_follow"].a_target == pytest.approx(-0.1)
+
+
+def test_relevance_cap_scales_with_closing_speed():
+  # v_ego=25 -> desired gap 55 m; at 100 m, closing 3 m/s: excess 45 m,
+  # required = 9/90 = 0.1, cap = -(2.5*0.1 + 0.1) = -0.35.
+  scene = _soft_scene(lead_a_target=-0.8, seed_a_target=-0.8,
+                      lead_v=22.0, lead_v_rel=-3.0)
+  intents = sources_of(build_candidates(scene))
+  assert intents["lead_follow"].a_target == pytest.approx(-0.35)
+  # Harder closing at the same distance loosens the cap below the raw target:
+  # closing 6 -> required 0.4 -> cap -1.1 < -0.8, so the hazard passes unchanged.
+  scene = _soft_scene(lead_a_target=-0.8, seed_a_target=-0.8,
+                      lead_v=19.0, lead_v_rel=-6.0)
+  intents = sources_of(build_candidates(scene))
+  assert intents["lead_follow"].a_target == pytest.approx(-0.8)
+
+
+def test_relevance_cap_never_hardens():
+  # Mild target above the cap stays untouched (max() semantics).
+  scene = _soft_scene(lead_a_target=-0.72, seed_a_target=-0.72, lead_v_rel=-4.0,
+                      lead_d_rel=60.0, follow_gap=30.0)
+  # closing 4 over excess 5 -> required 1.6 -> cap -4.1; hazard keeps -0.72.
+  intents = sources_of(build_candidates(scene))
+  assert intents["lead_follow"].a_target == pytest.approx(-0.72)
+
+
+def test_close_lead_keeps_full_authority():
+  # Inside the trust floor (40 m < min distance 55 m at v_ego=25) the churn cap
+  # must not apply: the raw hazard passes through.
+  scene = _soft_scene(lead_a_target=-0.8, seed_a_target=-0.8, lead_d_rel=40.0)
+  intents = sources_of(build_candidates(scene))
+  assert intents["lead_follow"].a_target == pytest.approx(-0.8)
+
+
+def test_stop_committed_far_lead_keeps_full_authority():
+  scene = _soft_scene(lead_a_target=-1.2, seed_a_target=-1.2, lead_should_stop=True)
+  intents = sources_of(build_candidates(scene))
+  assert intents["lead_follow"].a_target == pytest.approx(-1.2)
+  assert intents["lead_follow"].is_stop is True
+
+
 def test_lead_softening_rejected_on_bad_kinematics():
   # non-finite lead_d_rel
   assert "lead_follow_soft" not in sources_of(build_candidates(_soft_scene(lead_d_rel=float("nan"))))

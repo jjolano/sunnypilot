@@ -128,6 +128,16 @@ _LEAD_SOFTEN_MAX_REQUIRED_DECEL = 0.25      # m/s^2; low-risk closing threshold
 _LEAD_SOFTEN_RAISE_DELTA = 0.4              # m/s^2; bounded raise over the lead target
 _LEAD_SOFTEN_CEILING = -0.05                # m/s^2; near-coast ceiling, never positive
 
+# Far-lead decel authority is bounded by a multiple of the decel the closing kinematics
+# actually require. Radar track churn beyond ~60 m flaps dRel/aLeadK (routes 0000027d,
+# 00000282: -0.5..-0.8 aLeadK spikes on same-speed/pulling-away leads leaked -0.15..-0.35
+# dips into finalA), and a noise spike carries no kinematic requirement. Continuous in
+# distance and closing speed — no on/off threshold for a churny track to flicker across.
+# The asymmetric "trust braking promptly" doctrine is untouched: this bounds how much
+# authority geometry grants, not whether the braking signal is believed.
+_LEAD_RELEVANCE_AUTHORITY_K = 2.5      # decel allowance as a multiple of required decel
+_LEAD_RELEVANCE_COAST_MARGIN = 0.1     # m/s^2; a gentle coast is always allowed
+
 # Inside-gap compression/recovery thresholds (Phase 3): controlled compression for
 # stable/confident same-lead braking when projected collision risk is low/moderate.
 # Strong/flickery/new-stop threats are left to the normal lead-follow physical hazard.
@@ -452,6 +462,31 @@ def _lead_softening_target(scene: LongitudinalScene) -> float | None:
   return float(max(scene.lead_a_target, min(soft, 0.0)))
 
 
+def _lead_relevance_cap(scene: LongitudinalScene) -> float | None:
+  """Decel authority bound for far leads, from kinematically required decel.
+
+  None means fully trusted: close leads (inside the softening trust floor), committed
+  stops, and invalid kinematics all keep normal hazard authority. Applied with max(),
+  so it can only soften a lead candidate, never harden it.
+  """
+  if not (scene.has_lead and scene.lead_kinematics_valid):
+    return None
+  if not _scene_fields_finite(scene):
+    return None
+  if scene.lead_should_stop or scene.model_should_stop or scene.stop_threat:
+    return None
+  min_distance = max(_LEAD_SOFTEN_MIN_DISTANCE_BASE_M, _LEAD_SOFTEN_FOLLOW_TIME_GAP_S * scene.v_ego)
+  if scene.lead_d_rel <= min_distance:
+    return None
+  desired_gap = max(scene.follow_gap, _LEAD_SOFTEN_FOLLOW_TIME_GAP_S * scene.v_ego)
+  usable_excess = scene.lead_d_rel - desired_gap
+  if usable_excess <= _LEAD_SOFTEN_USABLE_EXCESS_MARGIN_M:
+    return None
+  closing = max(0.0, -scene.lead_v_rel)
+  required = (closing * closing) / (2.0 * usable_excess)
+  return float(-(_LEAD_RELEVANCE_AUTHORITY_K * required + _LEAD_RELEVANCE_COAST_MARGIN))
+
+
 def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | None:
   """For low/moderate-risk inside-gap compression/recovery, return (target, is_hazard).
 
@@ -745,6 +780,14 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   if scene.force_slow_decel:
     cands.append(LongitudinalCandidate(min(float(scene.seed_a_target), SAFETY_FORCE_SLOW_DECEL),
                                        CandidateRole.PHYSICAL_HAZARD, EvidenceClass.CRUISE, "force_slow", is_stop=True))
+
+  # Far-lead relevance cap: every lead-evidence decel candidate (raw hazard, softened pair,
+  # cushion) is bounded by a multiple of the decel the closing kinematics require. One shared
+  # sweep so no lead path can out-brake the geometry on an uncorroborated far lead.
+  relevance_cap = _lead_relevance_cap(scene)
+  if relevance_cap is not None:
+    cands = [replace(c, a_target=relevance_cap) if c.source is EvidenceClass.LEAD and c.a_target < relevance_cap
+             else c for c in cands]
 
   return cands
 

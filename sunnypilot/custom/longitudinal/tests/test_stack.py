@@ -388,7 +388,10 @@ def test_closing_lead_decel_bypasses_smoothing():
     long_active=True,
   ), DT)
 
-  assert r.a_target == pytest.approx(-0.25)
+  # Cushion coast, relevance-capped for the barely-closing far lead:
+  # closing 0.6 over 36 m excess -> -(2.5 * 0.36/72 + 0.1) = -0.1125. Still applied
+  # immediately (downward passthrough), which is the mechanism under test.
+  assert r.a_target == pytest.approx(-0.1125)
   assert r.debug["target_smoothing_direction"] == "downward"
   assert r.debug["target_smoothing_applied"] is False
   assert r.debug["target_smoothing_reason"] == "downward_passthrough"
@@ -478,7 +481,9 @@ def test_decel_smoothing_never_raises_above_nonselected_hazard():
     v_cruise=22.0,
     seed_a_target=0.0,
     accel_coast=-1.0,
-    leads=(lead(d_rel=80.0, v_lead=4.0, v_rel=0.0), None),
+    # Inside the far-lead relevance-cap trust floor (45 m) so the hazard keeps
+    # full -0.25 authority for the smoothing-floor clamp under test.
+    leads=(lead(d_rel=40.0, v_lead=4.0, v_rel=0.0), None),
     lead_a_target=-0.25,
     speed_limit_active=True,
     speed_limit_v_target=10.0,

@@ -88,7 +88,9 @@ def test_downhill_overspeed_far_lead_with_real_braking_blocks_coast(extra):
   cands = build_candidates(scene)
   assert not [c for c in cands if c.intent == "dynamic_overspeed_coast_leeway"]
   if scene.lead_a_target < scene.seed_a_target:
-    assert decide(cands, LongitudinalMode.ACC, LIMITS).a_target == pytest.approx(scene.lead_a_target)
+    # The pulling-away far lead's -1.0 claim is kinematically uncorroborated, so its
+    # hazard is relevance-capped near coast; the seed binds instead. Coast stays blocked.
+    assert decide(cands, LongitudinalMode.ACC, LIMITS).a_target == pytest.approx(scene.seed_a_target)
 
 
 @pytest.mark.parametrize("flag", [
