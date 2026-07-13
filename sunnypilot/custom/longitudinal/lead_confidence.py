@@ -21,6 +21,9 @@ LEAD_FLICKER_CLOSE_COUNT_THRESHOLD = 2
 LEAD_FLICKER_CLOSE_GUARD_TIME = 1.5
 LEAD_FLICKER_CLOSE_D_REL = 15.0
 LEAD_FLICKER_CLOSE_V_LEAD = 5.0
+LEAD_ID_CHURN_MAX_D_REL_DELTA = 1.0
+LEAD_ID_CHURN_MAX_V_LEAD_DELTA = 2.0
+LEAD_ID_CHURN_MAX_ABS_Y_REL = 0.6
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,29 @@ def _lead_continuity(prev_d_rel, d_rel, prev_v_lead, v_lead, prev_y_rel, y_rel):
   )
 
 
+def close_stop_go_radar_id_churn_continuous(prev_track_id: int, track_id: int,
+                                            prev_d_rel: float, d_rel: float,
+                                            prev_v_lead: float, v_lead: float,
+                                            prev_y_rel: float, y_rel: float) -> bool:
+  """Recognize radar-fusion ID churn for one close, on-path, slow lead.
+
+  Route 282 alternated two radar IDs for the same physical lead every few frames. The
+  tight distance, speed, and lateral gates keep this exception local to stop-go traffic;
+  ordinary track changes still restart confidence.
+  """
+  return bool(
+    prev_track_id >= 0 and track_id >= 0 and prev_track_id != track_id and
+    0.0 < prev_d_rel <= LEAD_FLICKER_CLOSE_D_REL and
+    0.0 < d_rel <= LEAD_FLICKER_CLOSE_D_REL and
+    0.0 <= prev_v_lead <= LEAD_FLICKER_CLOSE_V_LEAD and
+    0.0 <= v_lead <= LEAD_FLICKER_CLOSE_V_LEAD and
+    abs(prev_d_rel - d_rel) <= LEAD_ID_CHURN_MAX_D_REL_DELTA and
+    abs(prev_v_lead - v_lead) <= LEAD_ID_CHURN_MAX_V_LEAD_DELTA and
+    abs(prev_y_rel) <= LEAD_ID_CHURN_MAX_ABS_Y_REL and
+    abs(y_rel) <= LEAD_ID_CHURN_MAX_ABS_Y_REL
+  )
+
+
 def _positive_accel_blend(age, hold_time=NEW_LEAD_POS_ACCEL_HOLD_TIME, stable_time=NEW_LEAD_STABLE_TIME):
   if age <= hold_time:
     return 0.0
@@ -111,8 +137,11 @@ class LeadConfidenceTracker:
       abs(y_rel) >= NEW_LEAD_LATERAL_CHURN_Y_REL_MIN and
       math.copysign(1.0, self.y_rel) == math.copysign(1.0, y_rel)
     )
+    close_stop_go_id_churn = close_stop_go_radar_id_churn_continuous(
+      self.track_id, track_id, self.d_rel, d_rel, self.v_lead, v_lead, self.y_rel, y_rel,
+    )
     motion_continuous = _lead_continuity(self.d_rel, d_rel, self.v_lead, v_lead, self.y_rel, y_rel)
-    return motion_continuous and (same_radar_track or radarless_or_unknown or lateral_exit_churn)
+    return motion_continuous and (same_radar_track or radarless_or_unknown or lateral_exit_churn or close_stop_go_id_churn)
 
   def _update_flicker(self, status, dt, close_stop_go_context=False):
     self._flicker_guard_timer = max(0.0, self._flicker_guard_timer - dt)

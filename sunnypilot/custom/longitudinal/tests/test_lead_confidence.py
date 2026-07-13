@@ -74,6 +74,32 @@ def test_continuity_breaks_on_large_jump():
   assert jumped.age == 0.0
 
 
+def test_close_stop_go_alternating_radar_ids_keep_confidence():
+  tracker = LeadConfidenceTracker()
+  state = None
+  for i in range(8):
+    state = tracker.update(lead(
+      d_rel=4.2 + 0.04 * i,
+      v_lead=0.08 * i,
+      y_rel=0.1,
+      track_id=697 if i % 2 == 0 else 713,
+    ), 0.05)
+
+  assert state is not None
+  assert state.new_lead is False
+  assert state.stable is True
+
+
+def test_different_on_path_radar_id_outside_stop_go_restarts_confidence():
+  tracker = LeadConfidenceTracker()
+  for _ in range(5):
+    tracker.update(lead(d_rel=30.0, v_lead=12.0, track_id=7), 0.1)
+
+  changed = tracker.update(lead(d_rel=30.2, v_lead=12.1, track_id=9), 0.1)
+  assert changed.new_lead is True
+  assert changed.age == 0.0
+
+
 def test_flicker_guard_triggers_on_repeated_toggling():
   t = LeadConfidenceTracker()
   s = None

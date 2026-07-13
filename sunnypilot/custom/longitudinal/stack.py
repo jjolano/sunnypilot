@@ -42,12 +42,12 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.dynamic_safety_floor import (
   compute_dynamic_safety_floor,
   debug_dict as dynamic_safety_floor_debug_dict,
+  follow_offset,
 )
 
 import math
 
 FOLLOW_TIME_GAP_S = 1.5   # steady-state follow time gap proxy
-FOLLOW_GAP_MIN_M = 6.0
 UPWARD_TARGET_SLEW_MAX_DT_S = 0.20
 UPWARD_TARGET_SLEW_MAX_LAG = 0.50
 DOWNWARD_TARGET_SLEW_JERK = -4.0  # faster comfort decel smoothing; never used for hazards
@@ -413,7 +413,11 @@ class CustomLongitudinalStack:
     t_follow = _f(inp.t_follow, FOLLOW_TIME_GAP_S)
     if t_follow <= 0.0:
       t_follow = FOLLOW_TIME_GAP_S
-    follow_gap = max(FOLLOW_GAP_MIN_M, t_follow * max(0.0, inp.v_ego))
+    # Match the downstream MPC's equilibrium distance exactly. For an equal-speed lead,
+    # the ego/lead stopping-distance terms cancel and leave time gap + the MPC's faded
+    # standstill offset. A fixed 6 m minimum used to suppress pullaway authorization at
+    # the normal ~4.5 m stopped gap.
+    follow_gap = t_follow * max(0.0, inp.v_ego) + follow_offset(inp.v_ego)
     alignment_state = selected_lead.state
     lead_confidence = float(getattr(alignment_state, "confidence", 0.0)) if selected_lead.lead is not None else 0.0
     lead_stable = bool(getattr(alignment_state, "stable", False)) if selected_lead.lead is not None else False

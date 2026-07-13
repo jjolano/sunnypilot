@@ -60,7 +60,9 @@ LEAD_PULLAWAY_MIN_OPENING = 0.15   # m/s; lead considered opening (mirror of the
 LEAD_CRAWL_MAX_V_EGO = 5.0
 LEAD_CRAWL_MAX_V_LEAD = 5.0
 LEAD_CRAWL_MAX_D_REL = 25.0
-LEAD_CRAWL_BREAKOUT_MIN_OPENING = 1.0
+# Route 282: the lead was clearly pulling away at 0.7-0.95 m/s opening while the old
+# 1.0 threshold kept launch in the accordion-damped crawl branch until driver override.
+LEAD_CRAWL_BREAKOUT_MIN_OPENING = 0.7
 LEAD_CRAWL_LAUNCH_TAU = 2.5
 # Route 261: 0.55 capped the first pull-away frames of an engaged launch while the driver
 # launches at ~1.0 immediately; the accordion case stays damped by the tau'd gentle branch.

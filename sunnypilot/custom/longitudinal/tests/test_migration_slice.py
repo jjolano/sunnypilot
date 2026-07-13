@@ -714,7 +714,7 @@ def test_same_id_pullaway_noise_without_release_permission_keeps_latch():
   assert sp._lead_stop_hold_active is True
 
 
-def test_same_id_pullaway_gate_mode_releases_with_research_actuation():
+def test_moving_pullaway_requires_explicit_stack_release_in_gate_mode():
   sp = fake_planner(LongitudinalMode.SCC, release=False, standstill_mode="gate")
   _arm_stop_hold(sp, d_rel=6.2)
   sp._lead_stop_hold_gap_increasing_s = 0.15
@@ -727,9 +727,9 @@ def test_same_id_pullaway_gate_mode_releases_with_research_actuation():
   )  # type: ignore[assignment]
   a, should_stop, _ = sp.final_longitudinal_output(
     _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
-  assert sp._lead_stop_hold_active is False
-  assert should_stop is False
-  assert math.isclose(a, RELEASE_FIRST_STEP)
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a <= -0.2
 
 
 def test_same_id_pullaway_gate_mode_blocked_without_research_actuation():
@@ -1266,7 +1266,7 @@ def test_latch_release_rejects_different_moving_lead():
 
 
 def test_latch_release_rejects_raw_model_stop_and_low_mpc_accel_and_driver_inputs():
-  sp = fake_planner(LongitudinalMode.ACC)
+  sp = fake_planner(LongitudinalMode.SCC)
   _arm_stop_hold(sp)
   sp.custom_long_output = CustomLongitudinalOutput(
     a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,

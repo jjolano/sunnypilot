@@ -287,7 +287,7 @@ def test_launch_tracks_lead_speed_gently_when_crawling():
 
 
 def test_close_crawl_pulse_is_damped_to_reduce_accordion():
-  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.8, lead_d_rel=7.0,
+  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.6, lead_d_rel=7.0,
                                             seed_a_target=0.0, lead_a_target=0.0)),
              LongitudinalMode.ACC, LIMITS)
   # 0.8 m/s crawl is now stronger than the old v/2.5=0.32 but still capped and guarded.
@@ -297,9 +297,9 @@ def test_close_crawl_pulse_is_damped_to_reduce_accordion():
 
 @pytest.mark.parametrize("lead_v", [0.6, 0.8, 1.0])
 def test_crawl_launch_is_stronger_than_old_damping_and_capped(lead_v):
-  # Use a fixed opening v_rel below the 1.0 m/s crawl breakout so all cases stay in the
+  # Use a fixed opening v_rel below the crawl breakout so all cases stay in the
   # crawl-launch regime and compare against the old v/2.5 damping.
-  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=lead_v, lead_v_rel=0.9, lead_d_rel=7.0,
+  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=lead_v, lead_v_rel=0.6, lead_d_rel=7.0,
                                             seed_a_target=0.0, lead_a_target=0.0)),
              LongitudinalMode.ACC, LIMITS)
   assert d.a_target > lead_v / 2.5
@@ -313,15 +313,22 @@ def test_clear_low_speed_breakout_uses_normal_launch_response():
   assert d.a_target == pytest.approx(launch_accel_max(Personality.STANDARD))
 
 
+def test_route_282_opening_rate_breaks_out_of_crawl_damping():
+  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.8, lead_d_rel=7.0,
+                                            seed_a_target=0.0, lead_a_target=0.0)),
+             LongitudinalMode.ACC, LIMITS)
+  assert d.a_target == pytest.approx(0.8)
+
+
 def test_crawl_launch_ramps_toward_launch_cap_as_lead_opens_gap():
   # Initial close gap stays on the old damped crawl curve.
-  close = _launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.8, lead_d_rel=7.0,
+  close = _launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.6, lead_d_rel=7.0,
                         follow_gap=6.0, seed_a_target=0.0, lead_a_target=0.0)
   close_d = decide(build_candidates(close), LongitudinalMode.ACC, LIMITS)
   assert close_d.a_target == pytest.approx(0.16 + (0.8 - 0.4) / 1.5)
 
   # Same opening lead after it creates usable gap: ramp reaches normal launch accel.
-  open_gap = _launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.8, lead_d_rel=10.0,
+  open_gap = _launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.6, lead_d_rel=10.0,
                            follow_gap=6.0, seed_a_target=0.0, lead_a_target=0.0)
   open_d = decide(build_candidates(open_gap), LongitudinalMode.ACC, LIMITS)
   assert open_d.a_target > close_d.a_target
