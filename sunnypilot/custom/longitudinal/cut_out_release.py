@@ -21,6 +21,8 @@ import math
 from types import SimpleNamespace
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.lead_context import _path_relative_y_or_none
+
 # A lead genuinely in our lane never sits this far off center (half lane ~1.6-1.85 m).
 CUT_OUT_MIN_Y_REL = 2.0
 # Beyond this it is unambiguously gone regardless of outward motion.
@@ -62,9 +64,10 @@ class CutOutLeadRelease:
 
   def filtered(self, radar_state: Any, v_ego: float, dt: float, *,
                long_active: bool, custom_long_enabled: bool,
-               research_actuation_allowed: bool) -> Any:
+               research_actuation_allowed: bool, mode: str = "off",
+               model_msg: Any | None = None) -> Any:
     try:
-      if not (long_active and custom_long_enabled and research_actuation_allowed):
+      if mode != "apply" or not (long_active and custom_long_enabled and research_actuation_allowed):
         self._reset("gates_off")
         return radar_state
       lead = getattr(radar_state, "leadOne", None)
@@ -75,8 +78,15 @@ class CutOutLeadRelease:
       d_rel = _f(getattr(lead, "dRel", 0.0))
       y_rel = _f(getattr(lead, "yRel", 0.0))
       v_rel = _f(getattr(lead, "vRel", 0.0))
-      abs_y = abs(y_rel)
       track_id = int(_f(getattr(lead, "radarTrackId", -1), -1.0))
+      if track_id < 0:
+        self._reset("track_unknown")
+        return radar_state
+      path_y_rel = _path_relative_y_or_none(y_rel, d_rel, model_msg)
+      if path_y_rel is None:
+        self._reset("path_unavailable")
+        return radar_state
+      abs_y = abs(path_y_rel)
 
       if track_id != self._track_id:
         self._track_id = track_id

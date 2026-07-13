@@ -5,12 +5,18 @@ The helper is stateful and only needs primitive inputs, so we instantiate the
 planner with ``object.__new__`` to skip the heavy __init__.
 """
 
-from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, GAS_OVERRIDE_COAST_EPS
+from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+  GAS_OVERRIDE_COAST_EPS,
+  GAS_OVERRIDE_COAST_MAX_S,
+  LongitudinalPlanner,
+)
 
 
 def _planner():
   planner = object.__new__(LongitudinalPlanner)
   planner._gas_override_coast_active = False
+  planner._gas_override_coast_elapsed_s = 0.0
+  planner.dt = 0.05
   return planner
 
 
@@ -37,6 +43,14 @@ class TestGasOverrideCoast:
     effective = _update(planner, gas_pressed=False, v_ego=34.0, v_cruise=30.0)
     assert planner._gas_override_coast_active
     assert effective == 34.0
+
+  def test_clears_after_bounded_coast_window_if_speed_never_recovers(self):
+    planner = _planner()
+    _update(planner, gas_pressed=True, v_ego=35.0, v_cruise=30.0)
+    for _ in range(int(GAS_OVERRIDE_COAST_MAX_S / planner.dt) + 1):
+      effective = _update(planner, v_ego=35.0, v_cruise=30.0)
+    assert not planner._gas_override_coast_active
+    assert effective == 30.0
 
   def test_clears_once_speed_returns_to_target(self):
     planner = _planner()

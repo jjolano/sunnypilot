@@ -24,6 +24,15 @@ class FinalizerResult:
   last_release_block_reason: str = ""
 
 
+def _valid_lead_id(lead: Any) -> int | None:
+  """Return only radar-confirmed track IDs; -1 is the vision-only sentinel."""
+  try:
+    lead_id = int(getattr(lead, 'radarTrackId', -1))
+  except (TypeError, ValueError):
+    return None
+  return lead_id if lead_id >= 0 else None
+
+
 # ---------------------------------------------------------------------------
 # Input snapshot
 # ---------------------------------------------------------------------------
@@ -71,7 +80,7 @@ class _InputSnapshot:
     lead_d_rel = float(getattr(selected_lead, 'dRel', 0.0) or 0.0) if selected_lead is not None else 0.0
     lead_v = float(getattr(selected_lead, 'vLead', 0.0) or 0.0) if selected_lead is not None else 0.0
     lead_v_rel = float(getattr(selected_lead, 'vRel', 0.0) or 0.0) if selected_lead is not None else 0.0
-    lead_id = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
+    lead_id = _valid_lead_id(selected_lead)
     gas_pressed = bool(getattr(car_state, 'gasPressed', False)) if car_state is not None else False
     brake_pressed = bool(getattr(car_state, 'brakePressed', False)) if car_state is not None else False
     v_ego = float(getattr(car_state, 'vEgo', 0.0) or 0.0) if car_state is not None else 0.0
@@ -390,7 +399,7 @@ class _ReleaseGate:
       return False
     if selected_lead is None or not same_id:
       return False
-    lead_id = getattr(selected_lead, 'radarTrackId', None)
+    lead_id = snapshot.lead_id
     if lead_id is None or finalizer.lead_stop_hold_lead_id is None or lead_id != finalizer.lead_stop_hold_lead_id:
       return False
     if finalizer.lead_stop_hold_gap_baseline_d_rel is None:
@@ -424,7 +433,7 @@ class _ReleaseGate:
       finalizer.last_release_block_reason = "no_lead"
       return False, float(lead_d_rel)
     release_source = str(getattr(custom_long_output, "standstill_release_source", ""))
-    lead_id = getattr(selected_lead, 'radarTrackId', None)
+    lead_id = snapshot.lead_id
     same_id = lead_id is not None and finalizer.lead_stop_hold_lead_id is not None and lead_id == finalizer.lead_stop_hold_lead_id
     source_valid = release_source in ("lead_pullaway", "lead_standstill_launch")
     if lead_id is not None and finalizer.lead_stop_hold_lead_id is not None and lead_id != finalizer.lead_stop_hold_lead_id:
@@ -609,7 +618,7 @@ class _HoldCommand:
     selected_lead = snapshot.selected_lead
     if selected_lead is None:
       return False
-    lead_id = getattr(selected_lead, 'radarTrackId', None)
+    lead_id = snapshot.lead_id
     if lead_id is None or finalizer.lead_stop_hold_lead_id is None or lead_id != finalizer.lead_stop_hold_lead_id:
       return False
 
@@ -681,7 +690,7 @@ class _HoldCommand:
     e2e_source = bool(snapshot.is_e2e and not snapshot.model_stale and raw_hold < hold_a_target)
 
     selected_lead = snapshot.selected_lead
-    lead_id_sp = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
+    lead_id_sp = snapshot.lead_id
     same_id_sp = lead_id_sp is not None and finalizer.lead_stop_hold_lead_id is not None and lead_id_sp == finalizer.lead_stop_hold_lead_id
     if (
       (snapshot.standstill or snapshot.v_ego <= finalizer._STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO) and
@@ -1139,7 +1148,7 @@ class CustomLongitudinalFinalizer:
     snapshot.lead_v = lead_v
     snapshot.lead_v_rel = lead_v_rel
     snapshot.gas_pressed = gas_pressed
-    snapshot.lead_id = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
+    snapshot.lead_id = _valid_lead_id(selected_lead)
     return _StopHoldLatchLifecycle.update(self, snapshot, reset_lead_stop_hold)
 
   def custom_longitudinal_should_stop(self, custom_long: Any, custom_long_output: Any,
@@ -1179,7 +1188,7 @@ class CustomLongitudinalFinalizer:
     snapshot.lead_d_rel = lead_d_rel
     snapshot.lead_v = lead_v
     snapshot.lead_v_rel = lead_v_rel
-    snapshot.lead_id = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
+    snapshot.lead_id = _valid_lead_id(selected_lead)
     return _HoldCommand.prep_applies(self, snapshot)
 
   def _apply_stop_hold_release_prep(self, sm: Any, dt: float, raw_hold: float, selected_lead: Any,
@@ -1198,7 +1207,7 @@ class CustomLongitudinalFinalizer:
     snapshot.lead_d_rel = lead_d_rel
     snapshot.lead_v = lead_v
     snapshot.lead_v_rel = lead_v_rel
-    snapshot.lead_id = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
+    snapshot.lead_id = _valid_lead_id(selected_lead)
     return _HoldCommand.apply_prep(self, snapshot, raw_hold)
 
   def _standstill_release_gate_enabled(self, custom_long: Any) -> bool:
@@ -1265,7 +1274,7 @@ class CustomLongitudinalFinalizer:
     snapshot.lead_d_rel = lead_d_rel
     snapshot.lead_v = lead_v
     snapshot.lead_v_rel = lead_v_rel
-    snapshot.lead_id = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
+    snapshot.lead_id = _valid_lead_id(selected_lead)
     return _ReleaseGate.standstill_release_planner_gate_valid(self, snapshot, same_id)
 
   def _stop_hold_release_accel_for_gap(self, requested_a: float, lead_d_rel: float,
@@ -1289,7 +1298,7 @@ class CustomLongitudinalFinalizer:
     snapshot.lead_d_rel = lead_d_rel
     snapshot.lead_v = lead_v
     snapshot.lead_v_rel = lead_v_rel
-    snapshot.lead_id = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
+    snapshot.lead_id = _valid_lead_id(selected_lead)
     return _ReleaseGate.crawl_fallback_applies(self, snapshot, same_id)
 
   def _lead_stop_hold_release_accepts(self, sm: Any, custom_long: Any, custom_long_output: Any,
@@ -1307,7 +1316,7 @@ class CustomLongitudinalFinalizer:
     snapshot.lead_d_rel = lead_d_rel
     snapshot.lead_v = lead_v
     snapshot.lead_v_rel = lead_v_rel
-    snapshot.lead_id = getattr(selected_lead, 'radarTrackId', None) if selected_lead is not None else None
+    snapshot.lead_id = _valid_lead_id(selected_lead)
     return _ReleaseGate.release_accepts(self, snapshot)
 
   @staticmethod
@@ -1346,6 +1355,9 @@ class CustomLongitudinalFinalizer:
     planner so that live instrumentation (e.g. ``tools/drive_lab`` monkeypatches against
     ``LongitudinalPlannerSP`` methods) remains in the loop.
     """
+    mpc_a_target = self._safe_float(mpc_a_target)
+    raw_model_a_target = self._safe_float(raw_model_a_target, mpc_a_target)
+
     if not bool(getattr(custom_long, "enabled", False)):
       reset_lead_stop_hold()
       self.custom_long_output_telemetry = None

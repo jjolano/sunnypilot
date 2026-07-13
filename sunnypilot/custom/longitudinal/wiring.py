@@ -98,6 +98,11 @@ def _cut_in_brake_assist_mode(value: Any) -> str:
   return "off"
 
 
+def _cut_out_lead_release_mode(value: Any) -> str:
+  text = str(value or "").strip().lower()
+  return text if text in ("off", "apply") else "off"
+
+
 def _curve_traffic_advisor_mode(value: Any) -> str:
   text = str(value or "").strip().lower()
   if text in (CURVE_TRAFFIC_MODE_OFF, CURVE_TRAFFIC_MODE_SHADOW, CURVE_TRAFFIC_MODE_APPLY_CONSERVATIVE):
@@ -269,6 +274,7 @@ class CustomLongitudinalAdapter:
     self.mode = LongitudinalMode.SCC
     self.debug_trace_mode = "off"
     self.cut_in_brake_assist_mode = "off"
+    self.cut_out_lead_release_mode = "off"
     self.curve_speed_confidence_mode = "off"
     self.curve_traffic_advisor_mode = CURVE_TRAFFIC_MODE_OFF
     self.standstill_release_confidence_mode = "off"
@@ -324,6 +330,12 @@ class CustomLongitudinalAdapter:
       self.map_coast_mode = _map_coast_mode(map_coast_value)
 
       try:
+        cut_out_value = _param_string(p, "CutOutLeadReleaseMode")
+      except Exception:
+        cut_out_value = None
+      self.cut_out_lead_release_mode = _cut_out_lead_release_mode(cut_out_value)
+
+      try:
         self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
         self.debug_trace_mode = _debug_trace_mode(_param_string(p, "LongitudinalDebugTraceMode"))
         self.cut_in_brake_assist_mode = _cut_in_brake_assist_mode(_param_string(p, "CutInBrakeAssistMode"))
@@ -352,13 +364,13 @@ class CustomLongitudinalAdapter:
   def _degraded_output(self, seed_a_target: float, reason: str) -> CustomLongitudinalOutput:
     """Degraded Evidence: withhold Custom Authority for this tick. Never a Fail-closed fault."""
     return CustomLongitudinalOutput(
-      a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
+      a_target=_f(seed_a_target), should_stop=False, enabled=False, mode=self.mode,
       selected_intent="degraded_evidence", reason=reason, debug={},
     )
 
   def _fault_output(self, seed_a_target: float) -> CustomLongitudinalOutput:
     return CustomLongitudinalOutput(
-      a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
+      a_target=_f(seed_a_target), should_stop=False, enabled=False, mode=self.mode,
       selected_intent="fault", reason=self.fault_class or "fault", fault_class=self.fault_class,
       debug={},
     )
@@ -368,13 +380,13 @@ class CustomLongitudinalAdapter:
                *, collect_debug: bool = True) -> CustomLongitudinalOutput:
     if not self.enabled:
       return CustomLongitudinalOutput(
-        a_target=seed_a_target, should_stop=False, enabled=False, mode=self.mode,
+        a_target=_f(seed_a_target), should_stop=False, enabled=False, mode=self.mode,
         selected_intent="disabled", reason="disabled",
         debug={"seed_a_target": seed_a_target} if collect_debug else {},
       )
     # Non-finite core evidence is Degraded Evidence, not a fault.
     if not all(math.isfinite(_f(v, default=math.nan)) for v in (v_ego, a_ego, v_cruise, seed_a_target)):
-      return self._degraded_output(seed_a_target, "non_finite_source")
+      return self._degraded_output(_f(seed_a_target), "non_finite_source")
     # --- Source extraction: failures here are Degraded Evidence (missing/stale/invalid
     # external sources) and only withhold Custom Authority.
     try:

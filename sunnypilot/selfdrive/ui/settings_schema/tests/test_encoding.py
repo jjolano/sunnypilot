@@ -98,6 +98,14 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert moving_lead_enum.values == ["off", "shadow", "apply"]
   assert moving_lead_enum.labels == ["Off", "Monitor only", "Apply"]
 
+  cut_out_enum = homogeneous_string_options(find_item(CRUISE, "CutOutLeadReleaseMode"))
+  assert cut_out_enum is not None
+  assert cut_out_enum.values == ["off", "apply"]
+  assert cut_out_enum.labels == ["Off", "Apply"]
+  assert string_option_index("", cut_out_enum, "CutOutLeadReleaseMode") == 0
+  assert string_option_index("bad", cut_out_enum, "CutOutLeadReleaseMode") == 0
+  assert string_option_index("apply", cut_out_enum, "CutOutLeadReleaseMode") == 1
+
   debug_enum = homogeneous_string_options(find_item(CRUISE, "LongitudinalDebugTraceMode"))
   assert debug_enum is not None
   assert debug_enum.values == ["off", "log"]

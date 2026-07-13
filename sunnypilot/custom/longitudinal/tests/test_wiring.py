@@ -218,6 +218,18 @@ def test_adapter_fail_closed_on_bad_sm():
   assert out == 0.33
 
 
+def test_adapter_nonfinite_seed_falls_back_to_finite_neutral_target():
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True))
+  out = a.apply(fake_sm(lead()), 20.0, 0.0, 22.0, float("nan"), fake_scc(), fake_sla())
+  assert out == 0.0
+
+
+@pytest.mark.parametrize(("value", "expected"), [("off", "off"), ("apply", "apply"), ("bad", "off")])
+def test_cut_out_lead_release_mode_sanitizes_fail_closed(value, expected):
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CutOutLeadReleaseMode=value))
+  assert a.cut_out_lead_release_mode == expected
+
+
 def test_adapter_acc_ignores_curve():
   a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
   out = a.apply(fake_sm(), 20.0, 0.0, 22.0, 0.4, fake_scc(vision_active=True, vision_a=-1.0), fake_sla())

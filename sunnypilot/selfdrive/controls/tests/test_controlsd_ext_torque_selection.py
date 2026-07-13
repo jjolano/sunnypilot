@@ -102,3 +102,21 @@ def test_read_torque_control_tune_missing_or_invalid_defaults_to_v0():
   assert controlsd_ext.read_torque_control_tune(P(None)) == 0.0
   assert controlsd_ext.read_torque_control_tune(P('bad')) == 0.0
   assert controlsd_ext.read_torque_control_tune(P('2.1')) == 2.1
+
+
+def test_live_lateral_delay_is_consumed_each_control_tick():
+  ext = SimpleNamespace(lat_delay=0.2, _live_lat_delay_enabled=True)
+  live_delay = SimpleNamespace(lateralDelay=0.12)
+
+  class FakeSm:
+    alive = {"liveDelay": True}
+    valid = {"liveDelay": True}
+
+    def __getitem__(self, key):
+      assert key == "liveDelay"
+      return live_delay
+
+  sm = FakeSm()
+  assert controlsd_ext.ControlsExt.current_lateral_delay(ext, sm) == pytest.approx(0.12)
+  live_delay.lateralDelay = 0.31
+  assert controlsd_ext.ControlsExt.current_lateral_delay(ext, sm) == pytest.approx(0.31)

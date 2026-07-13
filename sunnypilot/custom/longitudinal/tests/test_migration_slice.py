@@ -142,6 +142,13 @@ def test_final_output_selection_does_not_raw_or_model_stop_in_scc_or_acc():
   assert e2e_source is False
 
 
+def test_final_output_contains_nonfinite_mpc_and_model_targets():
+  sp = fake_planner(LongitudinalMode.E2E)
+  a, _, _ = sp.final_longitudinal_output(fake_sm(False), float("nan"), False, float("nan"), False)  # type: ignore[arg-type]
+  assert math.isfinite(a)
+  assert a == 0.0
+
+
 def test_custom_disabled_finalizer_bypasses_custom_stop_hold_and_clears_latch():
   sp = fake_planner(LongitudinalMode.SCC)
   sp.custom_long.enabled = False
@@ -998,14 +1005,14 @@ def test_stale_e2e_raw_model_accel_does_not_harden_stopped_lead_latch():
   assert stale_e2e_source is False
 
 
-def _arm_stop_hold(sp, d_rel=6.2):
+def _arm_stop_hold(sp, d_rel=6.2, radar_id=7):
   for _ in range(6):
     sm = FakeSubMaster({
       'carState': SimpleNamespace(vEgo=0.0, brakePressed=False, gasPressed=False, vCruise=12.0),
       'controlsState': SimpleNamespace(forceDecel=False),
       'selfdriveState': SimpleNamespace(experimentalMode=False),
       'radarState': SimpleNamespace(leadOne=SimpleNamespace(
-        status=True, dRel=d_rel, vLead=0.0, vRel=0.0, radarTrackId=7,
+        status=True, dRel=d_rel, vLead=0.0, vRel=0.0, radarTrackId=radar_id,
       )),
     })
     sp.final_longitudinal_output(sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
@@ -1036,6 +1043,20 @@ def _set_lead_pullaway_release(sp):
 # release up-jerk slew step; later frames ramp toward the release accel.
 RELEASE_FIRST_STEP = (CustomLongitudinalFinalizer._STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET
                       + CustomLongitudinalFinalizer._STOP_HOLD_RELEASE_MAX_UP_JERK * 0.05)
+
+
+def test_vision_only_sentinel_is_not_treated_as_stable_lead_identity():
+  sp = fake_planner(LongitudinalMode.ACC)
+  _arm_stop_hold(sp, radar_id=-1)
+  _set_lead_pullaway_release(sp)
+  sp._lead_stop_hold_gap_increasing_s = 0.15
+
+  a, should_stop, _ = sp.final_longitudinal_output(
+    _release_sm(d_rel=6.8, v_lead=0.5, v_rel=0.3, radar_id=-1), 0.2, True, 0.1, False)  # type: ignore[arg-type]
+
+  assert sp._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a <= -0.2
 
 
 def test_latch_release_same_lead_clears_earlier_with_bounded_accel():

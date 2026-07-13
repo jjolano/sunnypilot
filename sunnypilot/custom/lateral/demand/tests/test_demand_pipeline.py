@@ -316,6 +316,13 @@ def test_constructs_and_runs_bounded():
     assert r.demand.demand_source == DEMAND_SOURCE_MODEL_PATH
 
 
+def test_nonfinite_raw_curvature_falls_back_to_measured_curvature():
+  result = LateralDemandPipeline(DT).update(
+    valid_inputs(curvature=float("nan"), measured_curvature=0.012)
+  )
+  assert result.demand.processed_curvature == pytest.approx(0.012)
+
+
 def test_inactive_falls_back_to_measured():
   p = LateralDemandPipeline(DT)
   r = p.update(valid_inputs(lat_active=False, curvature=0.01))

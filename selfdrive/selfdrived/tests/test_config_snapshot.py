@@ -38,3 +38,33 @@ def test_selfdrive_config_snapshot_swaps_atomically():
   assert s.custom_longitudinal_mode is LongitudinalMode.E2E
   assert s.experimental_mode is True
   assert s.personality == 2
+
+
+def test_params_thread_refreshes_custom_longitudinal_enabled(monkeypatch):
+  class FakeParams:
+    def get_bool(self, key):
+      return {"CustomLongitudinalEnabled": False, "IsMetric": True,
+              "IsLdwEnabled": False, "DisengageOnAccelerator": True}.get(key, False)
+
+    def get(self, key, return_default=False):
+      return {"CustomLongitudinalMode": "acc", "LongitudinalPersonality": 1}.get(key)
+
+  class Once:
+    calls = 0
+
+    def is_set(self):
+      self.calls += 1
+      return self.calls > 1
+
+  s = SelfdriveD.__new__(SelfdriveD)
+  s.params = FakeParams()
+  s.CP = type("CP", (), {"openpilotLongitudinalControl": True})()
+  s.active_custom_longitudinal_mode = LongitudinalMode.SCC
+  s.mads = type("Mads", (), {"read_params": lambda self: None})()
+  s.config = SelfdriveConfigSnapshot(True, False, True, True, LongitudinalMode.SCC, False, 1)
+  monkeypatch.setattr("openpilot.selfdrive.selfdrived.selfdrived.time.sleep", lambda _: None)
+
+  s.params_thread(Once())
+
+  assert s.config.custom_longitudinal_enabled is False
+  assert s.config.custom_longitudinal_mode is LongitudinalMode.ACC

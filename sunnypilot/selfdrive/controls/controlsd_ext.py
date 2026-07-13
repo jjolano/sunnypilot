@@ -65,6 +65,7 @@ class ControlsExt(ModelStateBase):
     self.CP = CP
     self.params = params
     self._param_update_time: float = 0.0
+    self._live_lat_delay_enabled = self.params.get_bool("LagdToggle")
     self.blinker_pause_lateral = BlinkerPauseLateral()
     # Opt-in custom-2.0 lateral demand pipeline (default off -> stock model curvature).
     self.lateral_demand = LateralDemandAdapter(params)
@@ -87,9 +88,21 @@ class ControlsExt(ModelStateBase):
       self.blinker_pause_lateral.get_params()
       self.lateral_demand.refresh_params()
 
+      self._live_lat_delay_enabled = self.params.get_bool("LagdToggle")
       self.lat_delay = get_lat_delay(self.params, sm["liveDelay"].lateralDelay)
 
       self._param_update_time = time.monotonic()
+
+  def current_lateral_delay(self, sm: messaging.SubMaster) -> float:
+    """Consume valid live-delay estimates at control rate while the live mode is enabled."""
+    if self._live_lat_delay_enabled and sm.alive['liveDelay'] and sm.valid['liveDelay']:
+      try:
+        live_delay = float(sm['liveDelay'].lateralDelay)
+      except (TypeError, ValueError):
+        live_delay = math.nan
+      if math.isfinite(live_delay) and live_delay >= 0.0:
+        self.lat_delay = live_delay
+    return float(self.lat_delay)
 
   def _update_lateral_demand_lifecycle(self) -> bool:
     """Custom lateral lifecycle: reset the pipeline when the opt-in toggles off. Returns enabled."""

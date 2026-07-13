@@ -26,6 +26,7 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 GAS_OVERRIDE_COAST_EPS = 0.5  # m/s; hysteresis for coast-after-gas-override
+GAS_OVERRIDE_COAST_MAX_S = 10.0  # maximum post-release coast window
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -74,16 +75,25 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # Let speed coast back to the cruise target after driver gas override pushes ego above it,
     # instead of having the cruise virtual obstacle command active decel.
     self._gas_override_coast_active = False
+    self._gas_override_coast_elapsed_s = 0.0
 
   def _update_gas_override_coast(self, gas_pressed, brake_pressed, force_slow_decel,
                                   v_ego, v_cruise, v_cruise_initialized):
     if not v_cruise_initialized or v_cruise <= 0.0 or force_slow_decel or brake_pressed:
       self._gas_override_coast_active = False
+      self._gas_override_coast_elapsed_s = 0.0
       return
     if gas_pressed and v_ego > v_cruise:
       self._gas_override_coast_active = True
+      self._gas_override_coast_elapsed_s = 0.0
+    elif self._gas_override_coast_active:
+      self._gas_override_coast_elapsed_s += max(float(self.dt), 0.0)
+      if self._gas_override_coast_elapsed_s >= GAS_OVERRIDE_COAST_MAX_S:
+        self._gas_override_coast_active = False
     if self._gas_override_coast_active and v_ego <= v_cruise + GAS_OVERRIDE_COAST_EPS:
       self._gas_override_coast_active = False
+    if not self._gas_override_coast_active:
+      self._gas_override_coast_elapsed_s = 0.0
 
   def _effective_v_cruise(self, v_cruise, v_ego):
     return max(v_cruise, v_ego) if self._gas_override_coast_active else v_cruise
@@ -209,6 +219,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       long_active=long_active_for_follow_gap,
       custom_long_enabled=custom_long_enabled,
       research_actuation_allowed=research_allowed,
+      mode=self.custom_long.cut_out_lead_release_mode,
+      model_msg=sm['modelV2'],
     )
     # Moving-lead cruise cap: lower the MPC cruise obstacle before the solve on a mildly braking lead.
     v_cruise_for_mpc = self.moving_lead_cruise_cap.capped(

@@ -688,7 +688,9 @@ class SelfdriveD(CruiseHelper):
   def params_thread(self, evt):
     while not evt.is_set():
       config = self.config
-      if config.custom_longitudinal_enabled:
+      custom_longitudinal_enabled = self.params.get_bool("CustomLongitudinalEnabled")
+      custom_longitudinal_mode = LongitudinalMode.from_value(self.params.get("CustomLongitudinalMode") or "scc")
+      if custom_longitudinal_enabled:
         # Derive from the latched active mode so card's experimentalMode cannot flip mid-engagement.
         experimental_mode = bool(self.CP.openpilotLongitudinalControl and self.active_custom_longitudinal_mode is LongitudinalMode.E2E)
       else:
@@ -699,8 +701,9 @@ class SelfdriveD(CruiseHelper):
         is_metric=self.params.get_bool("IsMetric"),
         is_ldw_enabled=self.params.get_bool("IsLdwEnabled"),
         disengage_on_accelerator=self.params.get_bool("DisengageOnAccelerator"),
+        custom_longitudinal_enabled=custom_longitudinal_enabled,
         # Onroad writes are accepted here but only become active at the next engagement.
-        custom_longitudinal_mode=LongitudinalMode.from_value(self.params.get("CustomLongitudinalMode") or "scc"),
+        custom_longitudinal_mode=custom_longitudinal_mode,
         experimental_mode=experimental_mode,
         personality=self.params.get("LongitudinalPersonality", return_default=True),
       )

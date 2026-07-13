@@ -91,8 +91,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LateralManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LongitudinalManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LongitudinalPersonality", {PERSISTENT | BACKUP, INT, std::to_string(static_cast<int>(cereal::LongitudinalPersonality::STANDARD))}},
-    // Custom-2.0 longitudinal policy + lateral demand pipeline (default-on; fail-closed shapers
-    // bounded by the MPC / clip_curvature safety floors — they only shape feel, never relax safety)
+    // Custom-2.0 longitudinal policy + lateral demand pipeline. Baseline paths fail closed;
+    // research modes that alter MPC inputs require both an explicit mode and the actuation gate.
     {"CustomLongitudinalEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"CustomLongitudinalMode", {PERSISTENT | BACKUP, STRING, "scc"}},
     // Explicit default-off gate for non-baseline research longitudinal actuation (radar-only cut-in
@@ -107,6 +107,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Moving-lead cruise cap (bounded cruise-obstacle lowering behind a braking moving lead);
     // apply is explicit opt-in and runtime-gated by CustomLongitudinalEnabled + AllowLongitudinalResearchActuation.
     {"MovingLeadCruiseCapMode", {PERSISTENT | BACKUP, STRING, "shadow"}},
+    // Cut-out release drops only a stable, radar-confirmed lead after a model-path-relative exit;
+    // apply is explicit opt-in and runtime-gated by CustomLongitudinalEnabled + research actuation.
+    {"CutOutLeadReleaseMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CutInBrakeAssistMode", {PERSISTENT | BACKUP, STRING, "off"}},
 
     {"CurveSpeedConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},

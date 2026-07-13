@@ -961,6 +961,38 @@
               ]
             },
             {
+              "key": "CutOutLeadReleaseMode",
+              "widget": "multiple_button",
+              "requires_attestation": true,
+              "title": "Cut-out Lead Release",
+              "description": "Apply ignores a radar-confirmed lead only after its stable identity and model-path-relative lateral exit persist. It requires Custom Longitudinal plus the research actuation gate. Off leaves the MPC lead input unchanged.",
+              "options": [
+                {
+                  "value": "off",
+                  "label": "Off"
+                },
+                {
+                  "value": "apply",
+                  "label": "Apply"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                },
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "CustomLongitudinalEnabled",
+                  "equals": true
+                }
+              ]
+            },
+            {
               "key": "MapCoastMode",
               "widget": "multiple_button",
               "requires_attestation": true,

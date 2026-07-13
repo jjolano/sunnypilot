@@ -88,6 +88,7 @@ class Controls(ControlsExt):
 
     steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
     self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
+    live_lateral_delay = self.current_lateral_delay(self.sm)
 
     # Update Torque Params
     if self.CP.lateralTuning.which() == 'torque':
@@ -103,7 +104,7 @@ class Controls(ControlsExt):
 
       self.LaC.extension.update_model_v2(self.sm['modelV2'])
 
-      self.LaC.extension.update_lateral_lag(self.lat_delay)
+      self.LaC.extension.update_lateral_lag(live_lateral_delay)
 
     long_plan = self.sm['longitudinalPlan']
     model_v2 = self.sm['modelV2']
@@ -135,7 +136,7 @@ class Controls(ControlsExt):
     if not CC.longActive:
       self.LoC.reset()
 
-    lat_delay = self.lat_delay + LAT_SMOOTH_SECONDS
+    lat_delay = live_lateral_delay + LAT_SMOOTH_SECONDS
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)

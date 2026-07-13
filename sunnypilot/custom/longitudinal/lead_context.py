@@ -637,17 +637,17 @@ def _lead_track_id(lead: Any) -> int:
     return LEAD_CONFIDENCE_TRACK_UNKNOWN
 
 
-def _path_relative_y(y_rel: float, d_rel: float, model_msg: Any | None) -> float:
+def _path_relative_y_or_none(y_rel: float, d_rel: float, model_msg: Any | None) -> float | None:
   if model_msg is None:
-    return y_rel
+    return None
   positions = tuple(finite_float(x, math.nan) for x in getattr(getattr(model_msg, "position", None), "x", ()))
   path_y = tuple(finite_float(y, math.nan) for y in getattr(getattr(model_msg, "position", None), "y", ()))
   if len(positions) < 2 or len(positions) != len(path_y):
-    return y_rel
+    return None
   if any(not math.isfinite(value) for value in (*positions, *path_y, d_rel)):
-    return y_rel
+    return None
   if d_rel < positions[0] or d_rel > positions[-1]:
-    return y_rel
+    return None
   for idx in range(len(positions) - 1):
     x0, x1 = positions[idx], positions[idx + 1]
     if x0 <= d_rel <= x1:
@@ -655,7 +655,12 @@ def _path_relative_y(y_rel: float, d_rel: float, model_msg: Any | None) -> float
         return y_rel + path_y[idx + 1]
       ratio = (d_rel - x0) / (x1 - x0)
       return y_rel + (path_y[idx] + ratio * (path_y[idx + 1] - path_y[idx]))
-  return y_rel
+  return None
+
+
+def _path_relative_y(y_rel: float, d_rel: float, model_msg: Any | None) -> float:
+  path_relative = _path_relative_y_or_none(y_rel, d_rel, model_msg)
+  return y_rel if path_relative is None else path_relative
 
 
 A_LEAD_TAU_DEFAULT = 1.5  # Gaussian lead-accel decay rate, matching long_mpc

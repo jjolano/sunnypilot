@@ -654,7 +654,23 @@ class LateralDemandPipeline:
     self._last_extreme_processed_curvature = False
 
   def update(self, inputs: LateralDemandPipelineInputs) -> LateralDemandPipelineResult:
-    raw_curvature = float(inputs.desired_curvature)
+    raw_curvature_finite = _finite_float(inputs.desired_curvature)
+    if raw_curvature_finite is None:
+      fallback_curvature = _finite_float(inputs.measured_curvature)
+      if fallback_curvature is None:
+        fallback_curvature = _finite_float(self._previous_desired_curvature) or 0.0
+      cloudlog.warning(f"lateral_demand nonfinite raw curvature: {inputs.desired_curvature}; falling back to measured curvature {fallback_curvature}")
+      # A non-finite request cannot safely retain actuation authority. Treat this frame as
+      # inactive and hold the finite measured demand until the upstream source recovers.
+      inputs = replace(
+        inputs,
+        desired_curvature=fallback_curvature,
+        measured_curvature=fallback_curvature,
+        lat_active=False,
+      )
+      raw_curvature = fallback_curvature
+    else:
+      raw_curvature = raw_curvature_finite
     demand_source = DEMAND_SOURCE_MODEL_PATH
     lane_change_shaping_active = False
     lane_change_blend = 0.0
