@@ -726,7 +726,7 @@ def test_moving_pullaway_requires_explicit_stack_release_in_gate_mode():
     research_actuation_allowed=True,
   )  # type: ignore[assignment]
   a, should_stop, _ = sp.final_longitudinal_output(
-    _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
+    _release_sm(d_rel=6.60, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
   assert should_stop is True
   assert a <= -0.2
@@ -796,7 +796,7 @@ def test_same_id_pullaway_gate_mode_is_scc_only():
       standstill_release_reason="", debug={},
     )  # type: ignore[assignment]
     a, should_stop, _ = sp.final_longitudinal_output(
-      _release_sm(d_rel=6.85, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
+      _release_sm(d_rel=6.60, v_lead=0.55, v_rel=0.35), 0.20, True, 0.05, False)  # type: ignore[arg-type]
     assert sp._lead_stop_hold_active is True
     assert should_stop is True
     assert a <= -0.2  # prep-softened hold; latch proves no release in non-gate modes
@@ -878,21 +878,21 @@ def _crawl_sm(d_rel):
 
 def test_moving_crawl_lead_releases_on_cumulative_gap_opening():
   """Route 00000288 t=429: a lead crawling at 0.3-0.6 m/s (no stack release verdict, dRel
-  jitter resetting the gap-increasing streak) must release on >=0.8 m cumulative opening."""
+  jitter resetting the gap-increasing streak) must release on >=0.5 m cumulative opening."""
   sp = fake_planner(LongitudinalMode.ACC, release=False)
   _arm_stop_hold(sp, d_rel=6.2)
 
   # Jittery crawl: flat and decreasing frames keep the strictly-increasing streak near zero,
-  # while cumulative opening stays below the 0.8 m displacement threshold -> still latched.
-  for d_rel in (6.35, 6.42, 6.38, 6.50, 6.60, 6.55, 6.70, 6.80, 6.78, 6.92):
+  # while cumulative opening stays below the 0.5 m displacement threshold -> still latched.
+  for d_rel in (6.30, 6.38, 6.34, 6.42, 6.48, 6.44, 6.55, 6.60, 6.58, 6.66):
     a_target, should_stop, _ = sp.final_longitudinal_output(_crawl_sm(d_rel), 0.0, True, 0.0, False)  # type: ignore[arg-type]
     assert sp._lead_stop_hold_active is True, f"latch must hold at opening {d_rel - 6.2:.2f} m"
     assert should_stop is True
 
-  # Crossing 0.8 m cumulative opening releases; the release frame slews up from the -0.5
+  # Crossing 0.5 m cumulative opening releases; the release frame slews up from the -0.5
   # hold, so assert the latch dropped and accel climbs positive within a few frames.
   released = False
-  for d_rel in (7.02, 7.08):
+  for d_rel in (6.72, 6.78):
     a_target, should_stop, _ = sp.final_longitudinal_output(_crawl_sm(d_rel), 0.0, True, 0.0, False)  # type: ignore[arg-type]
     if not sp._lead_stop_hold_active:
       released = True
@@ -901,7 +901,7 @@ def test_moving_crawl_lead_releases_on_cumulative_gap_opening():
       break
   assert released is True
   # With positive MPC evidence the post-release accel climbs positive within a few frames.
-  for d_rel in (7.14, 7.20, 7.26):
+  for d_rel in (6.84, 6.90, 6.96):
     a_target, _, _ = sp.final_longitudinal_output(_crawl_sm(d_rel), 0.3, True, 0.0, False)  # type: ignore[arg-type]
   assert 0.0 < a_target <= sp.custom_long_finalizer._STOP_HOLD_RELEASE_A_MAX
 
@@ -910,7 +910,7 @@ def test_moving_crawl_lead_below_opening_threshold_stays_latched():
   """Below the displacement threshold a moving lead still needs the explicit release verdict."""
   sp = fake_planner(LongitudinalMode.ACC, release=False)
   _arm_stop_hold(sp, d_rel=6.2)
-  for d_rel in (6.40, 6.60, 6.80, 6.90, 6.95):
+  for d_rel in (6.30, 6.40, 6.50, 6.60, 6.65):
     _, should_stop, _ = sp.final_longitudinal_output(_crawl_sm(d_rel), 0.0, True, 0.0, False)  # type: ignore[arg-type]
     assert sp._lead_stop_hold_active is True
     assert should_stop is True
@@ -1197,11 +1197,11 @@ def test_latch_release_crawl_pullaway_waits_for_valid_gap_time():
   _arm_stop_hold(sp)
   _set_lead_pullaway_release(sp)
   # Valid-source same-lead release still requires gap-time evidence while cumulative
-  # displacement from the arm gap stays below _STOP_HOLD_MOVING_BASELINE_OPENING_M;
-  # starting the streak from zero must not release at 0.7 m of opening.
+  # displacement from the arm gap stays below _STOP_HOLD_CREEP_DISPLACEMENT_M;
+  # starting the streak from zero must not release at 0.4 m of opening.
   sp._lead_stop_hold_gap_increasing_s = 0.0
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
-  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.90, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=6.60, v_lead=0.55, v_rel=0.35), 0.0, True, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
   assert should_stop is True
   assert a <= -0.20  # still held; prep may be softening if above its own threshold
@@ -1290,7 +1290,9 @@ def test_latch_release_same_lead_rejects_too_negative_mpc_or_non_opening_or_belo
   assert sp._lead_stop_hold_active is True
   assert sp.final_longitudinal_output(_release_sm(d_rel=7.05, v_lead=0.29, v_rel=0.16), -0.08, True, 0.2, False)[1] is True  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
-  assert sp.final_longitudinal_output(_release_sm(d_rel=7.0, v_lead=0.32, v_rel=0.16), -0.08, True, 0.2, False)[1] is True  # type: ignore[arg-type]
+  # Below-distance probe: inside the valid-source min_d_rel (baseline+0.2) and below the
+  # 0.5 m creep displacement, so neither release path may fire.
+  assert sp.final_longitudinal_output(_release_sm(d_rel=6.35, v_lead=0.32, v_rel=0.16), -0.08, True, 0.2, False)[1] is True  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
 
 

@@ -407,12 +407,14 @@ class _ReleaseGate:
       return False
     if float(lead_v_rel) < 0.05:
       return False
-    baseline_opening = float(lead_d_rel) - float(finalizer.lead_stop_hold_gap_baseline_d_rel)
     arm_d_rel = finalizer.lead_stop_hold_arm_d_rel
     displacement = float(lead_d_rel) - float(arm_d_rel) if arm_d_rel is not None else 0.0
-    if float(lead_v) >= 0.30 and displacement < finalizer._STOP_HOLD_MOVING_BASELINE_OPENING_M:
-      return False
-    if float(lead_v) < 0.20 and baseline_opening < 0.6:
+    # One distance rule (route 28b t=344, 2026-07-14): the lead giving >=0.5 m of cumulative
+    # ground from the latched gap carries the creep at ANY lead speed — the gap ramp starts at
+    # ~0.13 m/s^2 there and is self-limiting (ego can only close what the lead gives), so the
+    # release gate needs only a noise floor, not a velocity ladder. Replaces the old 0.8 m
+    # moving threshold and the 0.6 m stationary-creep branch.
+    if displacement < finalizer._STOP_HOLD_CREEP_DISPLACEMENT_M:
       return False
     return True
 
@@ -475,11 +477,11 @@ class _ReleaseGate:
     else:
       min_gap_increasing_s = 0.15
     # Sub-resolution crawl motion (~2 cm/frame) resets the strictly-increasing streak on
-    # flat/jitter frames; >=_STOP_HOLD_MOVING_BASELINE_OPENING_M of cumulative opening from
-    # the latched baseline outranks any streak (route 00000288).
+    # flat/jitter frames; >=_STOP_HOLD_CREEP_DISPLACEMENT_M of cumulative opening from the
+    # latched arm gap outranks any streak (route 00000288).
     baseline_opening_carries = bool(
       same_id and finalizer.lead_stop_hold_arm_d_rel is not None and
-      float(lead_d_rel) - float(finalizer.lead_stop_hold_arm_d_rel) >= finalizer._STOP_HOLD_MOVING_BASELINE_OPENING_M
+      float(lead_d_rel) - float(finalizer.lead_stop_hold_arm_d_rel) >= finalizer._STOP_HOLD_CREEP_DISPLACEMENT_M
     )
     if not baseline_opening_carries and finalizer.lead_stop_hold_gap_increasing_s < min_gap_increasing_s:
       finalizer.last_release_block_reason = "gap_increasing_time"
@@ -949,17 +951,18 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_NEW_ID_GAP_INCREASING_S = 0.30
   _STOP_HOLD_SAME_ID_MIN_PULLAWAY_S = 0.30
   _STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S = 0.10
-  # Route 00000288 t=398/t=429: a lead crawling away at 0.3-0.6 m/s falls between the
-  # stationary-only crawl fallback (lead_v < 0.30) and the speed+confidence release verdict,
-  # whose 0.3/0.15 m/s gates flicker at crawl speeds — the hold pinned -0.5..-2.0 for 9-16 s
-  # while the gap opened 2+ m and the driver bailed out with gas. Cumulative opening from the
-  # latched baseline is displacement evidence velocity noise cannot fake: at/above this
-  # opening a moving lead may ride the crawl fallback, and the strictly-increasing gap streak
-  # (which sub-resolution crawl motion resets on flat/jitter frames) is no longer required.
-  # Measured from the unclamped arm-time dRel (lead_stop_hold_arm_d_rel), NOT the runway
-  # baseline, which is clamped to 5.0 m and would misread a >5 m latched gap as already
-  # opened. Kept above the 0.65 m opening the gate-mode guard tests pin as still-blocked.
-  _STOP_HOLD_MOVING_BASELINE_OPENING_M = 0.8
+  # Route 00000288 t=398/t=429: leads crawling away at 0.3-0.6 m/s fell in a dead zone between
+  # the stationary-only crawl fallback and the flickering 0.3/0.15 m/s release gates — holds
+  # pinned -0.5..-2.0 for 9-16 s while the gap opened 2+ m. Cumulative opening from the latched
+  # gap is displacement evidence velocity noise cannot fake: at/above this opening the crawl
+  # fallback releases at ANY lead speed and the strictly-increasing gap streak (which
+  # sub-resolution crawl motion resets on flat/jitter frames) is no longer required. Measured
+  # from the unclamped arm-time dRel (lead_stop_hold_arm_d_rel), NOT the 5.0 m-clamped runway
+  # baseline. 0.5 m sits just above the crawl ramp's own dead zone (deadband 0.35 + A_MIN*TAU
+  # ~= 0.41 m) and 2-5x radar dRel jitter; the ramp's gap proportionality bounds the commanded
+  # creep, so the gate needs only this noise floor (route 28b t=344: driver launched 1.5 s into
+  # a creep at 0.5 m opening that the old 0.8 m gate was still holding).
+  _STOP_HOLD_CREEP_DISPLACEMENT_M = 0.5
   # Breakout is only consulted while the stop-hold latch is active (ego <= ~0.7 m/s), where
   # v_rel ~= lead_v, so v_rel is the whole gate (a lead_v arm was subsumed and deleted).
   # Crawl-launch feel is tuned via _STOP_HOLD_CRAWL_GAP_TAU below, not here.

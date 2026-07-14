@@ -78,6 +78,7 @@ class LongitudinalPlannerSP:
     self._lead_stop_hold_lead_id = None
     self._lead_stop_hold_gap_prev_d_rel = None
     self._lead_stop_hold_gap_baseline_d_rel = None
+    self._lead_stop_hold_arm_d_rel = None
     self._custom_long_output_telemetry = None
     self._last_release_block_reason = ""
     self._stop_hold_release_slew_a_target = None
@@ -103,6 +104,7 @@ class LongitudinalPlannerSP:
   _lead_stop_hold_lead_id = _ProxyToFinalizer("lead_stop_hold_lead_id")
   _lead_stop_hold_gap_prev_d_rel = _ProxyToFinalizer("lead_stop_hold_gap_prev_d_rel")
   _lead_stop_hold_gap_baseline_d_rel = _ProxyToFinalizer("lead_stop_hold_gap_baseline_d_rel")
+  _lead_stop_hold_arm_d_rel = _ProxyToFinalizer("lead_stop_hold_arm_d_rel")
   _stop_hold_release_slew_a_target = _ProxyToFinalizer("stop_hold_release_slew_a_target")
   _stop_hold_release_prep_a_target = _ProxyToFinalizer("stop_hold_release_prep_a_target")
   _stop_hold_release_prep_raw_prev = _ProxyToFinalizer("stop_hold_release_prep_raw_prev")

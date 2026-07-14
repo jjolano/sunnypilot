@@ -575,6 +575,7 @@ def _arm_stop_hold(planner, d_rel: float = 6.2, lead_id: int = 1, gap_increasing
   planner._lead_stop_hold_active = True
   planner._lead_stop_hold_lead_id = lead_id
   planner._lead_stop_hold_gap_baseline_d_rel = d_rel
+  planner._lead_stop_hold_arm_d_rel = d_rel
   planner._lead_stop_hold_gap_prev_d_rel = d_rel
   planner._lead_stop_hold_gap_increasing_s = gap_increasing_s
 
@@ -646,8 +647,10 @@ def test_crawl_fallback_rejects_brief_gap_increase():
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(selected_intent="cruise"),
   )
+  # Brief evidence on both axes: streak 0.05 s and displacement 0.4 m (below the 0.5 m
+  # creep floor). Cumulative displacement >= 0.5 m now outranks the streak by design.
   _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.05)
-  lead = make_lead(d_rel=7.0, v_lead=0.1, v_rel=0.1, lead_id=1)
+  lead = make_lead(d_rel=6.6, v_lead=0.1, v_rel=0.1, lead_id=1)
   sm = make_sm(v_ego=0.0, lead_one=lead)
 
   a_target, should_stop, _ = planner.final_longitudinal_output(
