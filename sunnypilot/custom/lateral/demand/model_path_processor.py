@@ -57,6 +57,14 @@ SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA = 0.04  # m/s^2
 LOW_SPEED_UNTRUSTED_CURVATURE_STEP = 0.0025
 LOW_SPEED_CURVE_RETENTION_FRAMES = 12
 LOW_SPEED_CURVE_RETENTION_MIN_CURVATURE = 0.008
+# Soft-gate unwind floor: a gated frame may not freeze the car into a curve the raw path
+# is persistently exiting. Route 28b t=800.8 (IMU comfort survey felt-jerk max, -4.47
+# m/s^3): the retained-curve band held processed curvature mid-exit, then released as a
+# catch-down snap. While soft-gated at low speed, the output keeps unwinding toward the
+# raw demand at at least this rate; a 1-2 frame mid-curve "straight" flicker only moves
+# it ~1% of a real curve, so retention still protects. Value matches the route-24b SPS
+# release standard (SPS_RELEASE_RAMP_LAT_JERK).
+SOFT_GATE_UNWIND_LAT_JERK = 1.2  # m/s^3
 HARD_INVALID_RECOVERY_LAT_JERK = 2.0
 LOW_SPEED_CONFIRMED_TURN_MIN_LAT_ACCEL = 0.05
 LOW_SPEED_CONFIRMED_TURN_MAX_LAT_ACCEL_DELTA = 0.75
@@ -597,6 +605,13 @@ class ModelPathProcessor:
         desired_curvature,
         inputs.v_ego,
         SOFT_GATE_MAX_SAME_SIGN_RAW_LAT_ACCEL_DELTA,
+      )
+    if reason in SOFT_GATE_REASONS:
+      desired_curvature = self._apply_soft_gate_unwind_floor(
+        inputs.v_ego,
+        desired_curvature,
+        raw_base,
+        inputs.previous_desired_curvature,
       )
     if reason in ("low_lane_confidence", "frame_drop"):
       self._pause_straight_path_stabilization(desired_curvature, f"pause_{reason}")
@@ -1153,6 +1168,33 @@ class ModelPathProcessor:
     if abs(curvature_delta) <= LOW_SPEED_UNTRUSTED_CURVATURE_STEP:
       return desired_curvature
     return fallback_curvature + math.copysign(LOW_SPEED_UNTRUSTED_CURVATURE_STEP, curvature_delta)
+
+  @staticmethod
+  def _apply_soft_gate_unwind_floor(
+    v_ego: float,
+    desired_curvature: float,
+    raw_curvature: float,
+    previous_desired_curvature: float,
+  ) -> float:
+    """Guarantee minimum unwind progress while soft-gated at low speed.
+
+    Only ever moves the output toward less steering, and only when the raw path asks for
+    less steering than the previous output; faster unwind already allowed by the blend or
+    step clamps is kept. Never unwinds past the raw demand (or past zero on a sign flip).
+    """
+    if not math.isfinite(v_ego) or v_ego >= LOW_SPEED_SOFT_GATE_SPEED:
+      return desired_curvature
+    prev = previous_desired_curvature
+    if not (math.isfinite(prev) and math.isfinite(raw_curvature) and math.isfinite(desired_curvature)):
+      return desired_curvature
+    target = raw_curvature if prev * raw_curvature > 0.0 else 0.0
+    if abs(target) >= abs(prev):
+      return desired_curvature
+    step = SOFT_GATE_UNWIND_LAT_JERK * DT_CTRL / max(abs(v_ego), 1.0) ** 2
+    unwound = prev + math.copysign(min(step, abs(target - prev)), target - prev)
+    if abs(unwound) < abs(desired_curvature):
+      return unwound
+    return desired_curvature
 
   @staticmethod
   def _limit_same_sign_amplification(

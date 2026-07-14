@@ -11,6 +11,7 @@ from openpilot.sunnypilot.custom.lateral.demand.model_path_processor import (
   DAMPING_TAU_SPEED_BP,
   DAMPING_TAU_S,
   DT_CTRL,
+  LOW_SPEED_UNTRUSTED_CURVATURE_STEP,
   ModelPathProcessor,
   ModelPathProcessorInputs,
   SPS_ANCHOR_CLIP_LAT_ACCEL,
@@ -631,3 +632,60 @@ def test_core_path_slope_limit_stays_tight_at_speed():
   assert ModelPathProcessor._core_path_slope_limit(fast) == pytest.approx(1.0)
   assert ModelPathProcessor._core_path_slope_limit(slow_straight) == pytest.approx(1.0)
   assert ModelPathProcessor._core_path_slope_limit(slow_turning) == pytest.approx(2.0)
+
+
+def test_soft_gate_unwind_floor_prevents_exit_freeze():
+  # Route 28b t=800.8 shape: retained curve 0.06, previous output 0.055, raw path exiting
+  # toward 0.035. The retained band used to pin the output at retained-band (0.0575 —
+  # even ABOVE the previous output); the floor guarantees bounded unwind progress instead.
+  proc = ModelPathProcessor()
+  proc._retained_curve_curvature = 0.06
+  proc._retained_curve_frames = 12
+  v_ego = 6.8
+  step = 1.2 * DT_CTRL / v_ego ** 2  # SOFT_GATE_UNWIND_LAT_JERK budget per frame
+  prev = 0.055
+  raw = 0.048
+  outputs = []
+  for _ in range(20):
+    inp = _inputs(v_ego=v_ego, curvature=raw, previous_desired_curvature=prev)
+    result = proc._handle_low_quality(inp, raw, prev, 0.6, "low_lane_confidence", 2)
+    outputs.append(result.desired_curvature)
+    prev = result.desired_curvature
+    raw = max(0.01, raw - 0.001)  # ~4.6 m/s^3 raw unwind, like the logged exit
+  deltas = [a - b for a, b in zip(outputs, outputs[1:])]
+  assert all(d > 0.9 * step for d in deltas)   # never freezes: every frame unwinds >= floor
+  assert outputs[0] < 0.055                    # never pulled back up above previous output
+
+
+def test_soft_gate_unwind_floor_keeps_midcurve_flicker_protection():
+  # A 2-frame "straight" flicker mid-curve may only move the output by the tiny floor
+  # step — curve retention still holds the turn.
+  proc = ModelPathProcessor()
+  proc._retained_curve_curvature = 0.06
+  proc._retained_curve_frames = 12
+  v_ego = 7.0
+  step = 1.2 * DT_CTRL / v_ego ** 2
+  prev = 0.06
+  for _ in range(2):
+    inp = _inputs(v_ego=v_ego, curvature=0.0, previous_desired_curvature=prev)
+    result = proc._handle_low_quality(inp, 0.0, prev, 0.6, "low_lane_confidence", 2)
+    prev = result.desired_curvature
+  # The retained band already allowed one 0.0025 step pre-fix; the floor may add at most
+  # ~one tiny budget step per frame on top. The turn is still held (a real drop heads to ~0.007).
+  band_edge = 0.06 - LOW_SPEED_UNTRUSTED_CURVATURE_STEP
+  assert prev > band_edge - 1.5 * step
+  assert prev > 0.056
+
+
+def test_soft_gate_unwind_floor_inert_cases():
+  floor = ModelPathProcessor._apply_soft_gate_unwind_floor
+  # high speed: untouched
+  assert floor(15.0, 0.0575, 0.035, 0.055) == pytest.approx(0.0575)
+  # raw asks for MORE steering: untouched (amplification limits own that side)
+  assert floor(7.0, 0.0575, 0.07, 0.055) == pytest.approx(0.0575)
+  # clamp already unwinds faster than the floor: keep the faster value
+  assert floor(7.0, 0.040, 0.035, 0.055) == pytest.approx(0.040)
+  # sign-flipped raw unwinds toward zero, not toward the flipped demand
+  out = floor(7.0, 0.055, -0.02, 0.055)
+  assert 0.0 < out < 0.055
+  assert out == pytest.approx(0.055 - 1.2 * DT_CTRL / 49.0)
