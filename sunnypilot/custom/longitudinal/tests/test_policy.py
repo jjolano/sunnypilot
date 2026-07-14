@@ -37,6 +37,33 @@ def test_stopping_decel_kinematic():
   assert stopping_decel(0.0, 50.0) == 0.0
 
 
+def test_uncommitted_stop_floor_earns_depth_from_caution_ramp():
+  # Route 28c t=741: kinematic requirement beyond -1.5 with a CautionRamp-earned floor must
+  # follow the requirement (bounded by the earned depth) instead of pinning at the stop floor.
+  base = dict(v_ego=12.6, v_cruise=17.8, seed_a_target=0.0, model_should_stop=False,
+              model_stop_distance=36.0, model_desired_accel=-2.2)
+  earned = LongitudinalScene(**base, model_caution_floor=-2.0)
+  a, hard = stop_approach_accel(earned)
+  assert hard is False
+  assert a == pytest.approx(-2.0)  # required ~-2.2, earned floor -2.0 binds
+
+  # Unearned demand (fresh ramp at the gentle default) keeps the -1.5 anti-quirk floor.
+  fresh = LongitudinalScene(**base, model_caution_floor=GENTLE_CAUTION_DECEL)
+  a, hard = stop_approach_accel(fresh)
+  assert hard is False
+  assert a == pytest.approx(-1.5)
+
+
+def test_stop_landing_band_keeps_soft_floor_despite_earned_depth():
+  # Below the landing band the softened floor is untouched by earned depth.
+  scene = LongitudinalScene(v_ego=2.0, v_cruise=10.0, seed_a_target=0.0, model_should_stop=False,
+                            model_stop_distance=0.8, model_desired_accel=-2.0,
+                            model_caution_floor=-2.5)
+  a, hard = stop_approach_accel(scene)
+  assert hard is False
+  assert a == pytest.approx(-0.85 + (2.0 / 2.5) * (-1.5 + 0.85))
+
+
 def test_overspeed_leeway_scales_with_downhill_coast():
   flat = dynamic_cruise_overspeed_leeway(0.0)
   downhill = dynamic_cruise_overspeed_leeway(0.25)

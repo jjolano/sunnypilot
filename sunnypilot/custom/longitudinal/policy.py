@@ -380,7 +380,17 @@ def stop_approach_accel(scene: LongitudinalScene) -> tuple[float, bool]:
     a = min(a, scene.model_desired_accel)
   if hard:
     return a, True
-  return max(_stop_landing_decel_floor(scene.v_ego), a), False
+  floor = _stop_landing_decel_floor(scene.v_ego)
+  # Corroboration-earned depth for uncommitted stops: route 28c t=741, the floor pinned
+  # -1.50 for 1.2 s while the radar-corroborated model demand deepened to -2.5 (required
+  # ~-2.0 from the model's own stop point) and the driver overrode at -4. The CautionRamp
+  # already rate-limits how fast sustained demand may earn depth (0.45 m/s^2 per s, bounded
+  # -2.5), so one-frame quirks still land on the -1.5 floor while a persistent, corroborated
+  # deepening is allowed to follow the kinematic requirement. The final landing band
+  # (< 2.5 m/s) keeps its softened floor untouched.
+  if scene.v_ego >= STOP_LANDING_SOFTEN_MAX_V_EGO and math.isfinite(scene.model_caution_floor):
+    floor = min(floor, scene.model_caution_floor)
+  return max(floor, a), False
 
 
 def _stop_landing_decel_floor(v_ego: float) -> float:
