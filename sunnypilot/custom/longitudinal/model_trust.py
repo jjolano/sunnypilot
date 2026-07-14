@@ -30,6 +30,10 @@ CAUTION_RAMP_DEEPEN_RATE = 0.45   # m/s^2 per s of sustained model slowdown dema
 CAUTION_RAMP_RELEASE_RATE = 2.0   # m/s^2 per s back toward gentle once the demand lifts
 CAUTION_RAMP_FLOOR_MIN = -2.5
 
+# CorroborationHold: how long a closing radar echo keeps earned caution depth unlocked.
+# Covers the longest observed radar-flicker gap on a real stopped queue (1.6 s) with margin.
+CORROBORATION_HOLD_S = 2.5
+
 # StopTrustLearner: learn how much to trust the upstream model stop from driver disagreement.
 STOP_TRUST_INITIAL = 0.8
 STOP_TRUST_MIN = 0.2
@@ -111,6 +115,27 @@ class CautionRamp:
     else:
       self.floor = min(target, self.floor + CAUTION_RAMP_RELEASE_RATE * dt)
     return self.floor
+
+
+class CorroborationHold:
+  """Radar-corroboration latch for CautionRamp-earned stop depth.
+
+  Earned depth past the -1.5 uncommitted stop floor is only trustworthy when something
+  non-learned agrees a stop is real. A closing radar echo is that signal, but real stopped
+  queues hold radar lock only intermittently (route 28c: closing echoes on ~15% of frames,
+  gaps up to 1.6 s), so a per-frame gate would re-pin the floor mid-approach and oscillate.
+  Latch instead: any closing echo unlocks depth for CORROBORATION_HOLD_S. A vision-only
+  hallucination never gets an echo and stays capped at the stop floor."""
+
+  def __init__(self):
+    self.hold_s = 0.0
+
+  def update(self, closing_radar_lead: bool, dt: float) -> bool:
+    if closing_radar_lead:
+      self.hold_s = CORROBORATION_HOLD_S
+    else:
+      self.hold_s = max(0.0, self.hold_s - max(0.0, float(dt)))
+    return self.hold_s > 0.0
 
 
 class StopTrustLearner:

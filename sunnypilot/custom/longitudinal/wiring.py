@@ -29,9 +29,9 @@ from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
   MODE_SHADOW as CURVE_TRAFFIC_MODE_SHADOW,
 )
 from openpilot.common.swaglog import cloudlog
-from openpilot.sunnypilot.custom.longitudinal.model_trust import CautionRamp, StopTrustLearner
+from openpilot.sunnypilot.custom.longitudinal.model_trust import LEAD_CLOSING_MIN, CautionRamp, CorroborationHold, StopTrustLearner
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
-from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
+from openpilot.sunnypilot.custom.longitudinal.policy_tables import STOP_APPROACH_DECEL_MIN, Personality
 from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts, CustomLongitudinalStack, LongitudinalStackInputs
 
 PARAMS_REFRESH_PERIOD = 50  # planner ticks (~20Hz -> ~2.5s)
@@ -275,6 +275,7 @@ class CustomLongitudinalAdapter:
     self._stack = CustomLongitudinalStack()
     self._stop_trust = StopTrustLearner()
     self._caution_ramp = CautionRamp()
+    self._corroboration_hold = CorroborationHold()
     self._drag = DragEstimator()
     self._tick = 0
     self.enabled = False
@@ -433,6 +434,13 @@ class CustomLongitudinalAdapter:
     try:
       model_stop_prob = self._stop_trust.update(model_should_stop, driver_disagrees=gas_pressed, dt=dt)
       model_caution_floor = self._caution_ramp.update(model_desired_accel, dt)
+      lead_one_msg = getattr(radar, "leadOne", None)
+      closing_lead = (lead_one_msg is not None and bool(getattr(lead_one_msg, "status", False))
+                      and _f(getattr(lead_one_msg, "vRel", 0.0)) < -LEAD_CLOSING_MIN)
+      if not self._corroboration_hold.update(closing_lead, dt):
+        # Earned depth past the uncommitted stop floor needs a recent closing radar echo
+        # (CorroborationHold): vision-only sustained demand keeps the -1.5 cap.
+        model_caution_floor = max(model_caution_floor, STOP_APPROACH_DECEL_MIN)
       if pitch is not None:
         # Engaged frames count as on-throttle: system throttle/brake don't set the pedal
         # flags, so only manual off-pedal coasting gives an unbiased drag sample.

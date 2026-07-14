@@ -133,6 +133,22 @@ def test_caution_ramp_flicker_stays_gentle_and_releases_fast():
   assert floor == pytest.approx(GENTLE_CAUTION_DECEL)
 
 
+def test_corroboration_hold_latches_across_radar_flicker_and_expires():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import CORROBORATION_HOLD_S, CorroborationHold
+  hold = CorroborationHold()
+  assert hold.update(False, 0.05) is False
+  # One closing echo latches; the latch survives the longest observed 28c flicker gap (1.6 s).
+  assert hold.update(True, 0.05) is True
+  held = False
+  for _ in range(32):
+    held = hold.update(False, 0.05)
+  assert held is True
+  # Without a fresh echo it expires after the hold window.
+  for _ in range(int(CORROBORATION_HOLD_S / 0.05)):
+    held = hold.update(False, 0.05)
+  assert held is False
+
+
 def test_caution_ramp_never_deeper_than_clamp_or_shallower_than_gentle():
   from openpilot.sunnypilot.custom.longitudinal.model_trust import CAUTION_RAMP_FLOOR_MIN, CautionRamp
   ramp = CautionRamp()

@@ -386,7 +386,9 @@ def stop_approach_accel(scene: LongitudinalScene) -> tuple[float, bool]:
   # ~-2.0 from the model's own stop point) and the driver overrode at -4. The CautionRamp
   # already rate-limits how fast sustained demand may earn depth (0.45 m/s^2 per s, bounded
   # -2.5), so one-frame quirks still land on the -1.5 floor while a persistent, corroborated
-  # deepening is allowed to follow the kinematic requirement. The final landing band
+  # deepening is allowed to follow the kinematic requirement. Wiring (CorroborationHold)
+  # clamps the incoming floor back to STOP_APPROACH_DECEL_MIN unless a closing radar echo
+  # was seen recently, so vision-only demand cannot earn depth here. The final landing band
   # (< 2.5 m/s) keeps its softened floor untouched.
   if scene.v_ego >= STOP_LANDING_SOFTEN_MAX_V_EGO and math.isfinite(scene.model_caution_floor):
     floor = min(floor, scene.model_caution_floor)

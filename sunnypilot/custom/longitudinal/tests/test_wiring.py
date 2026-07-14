@@ -295,6 +295,30 @@ def test_driver_gas_disagreement_lowers_stop_trust():
   assert a._stop_trust.confidence < before  # repeated driver countermanding softens trust
 
 
+def test_uncommitted_stop_depth_needs_recent_radar_corroboration():
+  # Earned decel depth past the -1.5 uncommitted stop floor is radar-corroboration-gated in
+  # wiring (CorroborationHold): sustained vision-only demand (the hallucination shape) stays
+  # capped, while one closing echo unlocks depth and holds it across radar flicker (route 28c
+  # queues lose radar lock on most frames).
+  class TimestampedSm(dict):
+    pass
+
+  def run(echo_frames):
+    a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+    out = 0.0
+    for i in range(70):  # 3.5 s at dt=0.05: the CautionRamp earns ~-2.0 of the -2.2 demand
+      lead_one = lead(d_rel=35.0, v_lead=2.0, v_rel=-10.6) if i in echo_frames else None
+      sm = TimestampedSm(fake_sm(lead_one, model_accel=-2.2, model_x=STOP_TRAJ_X, model_v=STOP_TRAJ_V))
+      sm.recv_time = {'modelV2': time.monotonic()}  # fresh model: exercise the non-stale path
+      out = a.apply(sm, 12.6, 0.0, 17.8, 0.0, fake_scc(), fake_sla(), dt=0.05)
+    return out
+
+  vision_only = run(echo_frames=frozenset())
+  corroborated = run(echo_frames=frozenset(range(20, 24)))  # brief echo ~1 s in, radar drops after
+  assert vision_only == pytest.approx(-1.5, abs=0.1)   # capped at the uncommitted stop floor
+  assert corroborated < -1.8                           # depth persists ~2.3 s after the last echo
+
+
 def test_scc_curve_gated_by_smart_cruise_control_vision_toggle():
   scc = fake_scc(vision_active=True, vision_a=-0.7)
   on = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc",
