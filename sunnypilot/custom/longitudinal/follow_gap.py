@@ -41,9 +41,19 @@ RECOVER_RATE = 0.5          # s of t_follow per s; fast, safety-shaped recovery 
 # ego drops below apply speed) snapping t_follow back at RECOVER_RATE makes the MPC brake
 # to re-open the gap. Recover instead at the rate the lead physically opens it
 # (d(time_gap)/dt ~ v_rel/v_ego), floored so a stalled queue still trickles back. Any
-# safety-shaped ineligibility (braking/fast-closing/low-TTC/too-close lead, pedals,
-# force-decel, disengage, non-finite) keeps the fast rate.
+# safety-shaped ineligibility (fast-closing/low-TTC/too-close lead, pedals, force-decel,
+# disengage, non-finite) keeps the fast rate. A hard-braking lead with the floors passing
+# is deliberately NOT fast (corpus 2026-07-15, 5 near episodes: fast-recovering t_follow
+# mid-brake stacks gap-reopening decel on top of the lead's braking; peaks to -2.1 while
+# ~0.5 s x v of gap runway sat unused) — it recovers at the benign gap-opening pace, and
+# after HARD_BRAKE_PERSIST_S the runway branch below compresses instead.
 BENIGN_RECOVER_RATE_MIN = 0.02  # s of t_follow per s
+# Hard-braker runway: a persistently hard-braking lead (floors passing) makes the gap the
+# crumple runway — compress toward the floor so the MPC absorbs the transient in gap
+# instead of brake, and rebuild at the benign pace after. Persistence mirrors the corpus
+# arming gate (1.0 s of aLeadK < MIN_LEAD_A_K, 10% phantom rate; a phantom costs bounded
+# compression that the hard floors still bound).
+HARD_BRAKE_PERSIST_S = 1.0  # s of sustained leadOne aLeadK < MIN_LEAD_A_K before runway mode
 MIN_V_EGO_FOR_APPLY = 5.0   # m/s; route 00000274: 8.0 disabled the scheduler for most city
                             # stop-and-go (mean 37 km/h), so moving-lead compression never engaged.
                             # 5.0 (~18 km/h) lets it apply in city while the hard d_rel/time-gap
@@ -92,6 +102,7 @@ class FollowGapScheduler:
     self._params = params
     self._tick = 0
     self._t_follow: float | None = None
+    self._hard_brake_s = 0.0
     self.mode = MODE_OFF
     self.enabled = False
     self.last_result: dict[str, Any] | None = None
@@ -151,12 +162,23 @@ class FollowGapScheduler:
       if not long_active:
         # Never carry a compressed gap across a disengagement.
         self._t_follow = base
+      step = max(0.0, float(dt))
+      lead_one = getattr(radarstate, "leadOne", None)
+      a_lead_one = getattr(lead_one, "aLeadK", None) if lead_one is not None else None
+      hard_braking = (lead_one is not None and bool(getattr(lead_one, "status", False))
+                      and _is_finite(a_lead_one) and float(a_lead_one) < MIN_LEAD_A_K)
+      self._hard_brake_s = self._hard_brake_s + step if hard_braking else 0.0
       eligible, block_reason = self._eligibility(radarstate, v_ego, long_active,
                                                  brake_pressed, gas_pressed, force_decel)
+      hard_brake_runway = (not eligible and block_reason == "lead_braking"
+                           and self._hard_brake_s >= HARD_BRAKE_PERSIST_S)
+      if hard_brake_runway:
+        # Floors all passed ("lead_braking" is checked after them): use the gap as runway
+        # for the braking transient instead of holding the baseline reference against it.
+        eligible, block_reason = True, ""
       lo = min(T_FOLLOW_COMPRESSED, base)
       target = lo if eligible else base
       prev = self._t_follow if self._t_follow is not None else base
-      step = max(0.0, float(dt))
       if target < prev:
         nxt = max(prev - self._compress_rate(radarstate, v_ego, base) * step, target)
       else:
@@ -168,12 +190,14 @@ class FollowGapScheduler:
         "apply": bool(should_apply and nxt < base),
         "eligible": eligible,
         "block_reason": block_reason,
+        "hard_brake_runway": hard_brake_runway,
         "base_t_follow": base,
         "t_follow": nxt,
       }
       return nxt if should_apply else base
     except Exception:  # fail closed: never let the scheduler break the planner
       self._t_follow = None
+      self._hard_brake_s = 0.0
       self.last_result = None
       return base
 
@@ -196,7 +220,9 @@ class FollowGapScheduler:
 
   def _recovery_rate(self, radarstate: Any, v_ego: float, block_reason: str) -> float:
     """Fast recovery for safety-shaped ineligibility; gap-opening-paced recovery when the
-    approach merely ended, so the MPC never brakes just to re-open the desired gap."""
+    approach merely ended, so the MPC never brakes just to re-open the desired gap. A
+    hard-braking lead with the floors passing recovers at the benign pace too — re-opening
+    the desired gap mid-brake only stacks decel on top of the lead's braking."""
     if block_reason in ("long_inactive", "brake_pressed", "gas_pressed", "force_decel"):
       return RECOVER_RATE
     lead_one = getattr(radarstate, "leadOne", None)
@@ -208,7 +234,6 @@ class FollowGapScheduler:
         continue
       d_rel_raw = getattr(lead, "dRel", None)
       v_rel_raw = getattr(lead, "vRel", None)
-      a_lead_raw = getattr(lead, "aLeadK", None)
       if not (_is_finite(d_rel_raw) and _is_finite(v_rel_raw)):
         return RECOVER_RATE
       d_rel = float(d_rel_raw)
@@ -216,8 +241,6 @@ class FollowGapScheduler:
       if d_rel < max(MIN_D_REL_M, MIN_TIME_GAP_S * max(v, 0.0)) or closing > MAX_CLOSING:
         return RECOVER_RATE
       if closing > 0.0 and d_rel / closing < MIN_TTC_S:
-        return RECOVER_RATE
-      if _is_finite(a_lead_raw) and float(a_lead_raw) < MIN_LEAD_A_K:
         return RECOVER_RATE
     opening = max(0.0, float(getattr(lead_one, "vRel", 0.0)))
     return max(BENIGN_RECOVER_RATE_MIN, opening / max(v, 1.0))

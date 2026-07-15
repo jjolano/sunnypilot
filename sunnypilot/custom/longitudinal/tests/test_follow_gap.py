@@ -113,8 +113,8 @@ def test_hotter_approach_compresses_faster_capped():
 def test_recovery_is_faster_than_compression():
   fg = _apply_scheduler()
   _settled(fg, radar(lead()))
-  # lead starts braking hard -> ineligible -> recover at the fast rate
-  out = _call(fg, radar(lead(a_lead=-1.5)))
+  # lead starts closing fast -> safety-shaped ineligible -> recover at the fast rate
+  out = _call(fg, radar(lead(v_rel=-5.0)))
   assert out == pytest.approx(min(BASE, T_FOLLOW_COMPRESSED + RECOVER_RATE * DT))
   assert RECOVER_RATE > COMPRESS_RATE_MAX > COMPRESS_RATE
 
@@ -197,8 +197,7 @@ def test_benign_approach_end_recovers_at_gap_opening_pace():
 
 def test_safety_shaped_ineligibility_keeps_fast_recovery():
   # every safety reason recovers at RECOVER_RATE even though the approach also ended
-  for bad in (lead(a_lead=-1.5),            # lead braking
-              lead(v_rel=-5.0),             # fast closing
+  for bad in (lead(v_rel=-5.0),             # fast closing
               lead(d_rel=30.0, v_rel=-4.0), # low ttc
               lead(d_rel=10.0)):            # too close at 20 m/s
     fg = _apply_scheduler()
@@ -210,3 +209,42 @@ def test_safety_shaped_ineligibility_keeps_fast_recovery():
   _settled(fg, radar(lead()))
   out = _call(fg, radar(lead(v_rel=1.0)), brake_pressed=True)
   assert out == pytest.approx(min(BASE, T_FOLLOW_COMPRESSED + RECOVER_RATE * DT))
+
+
+def test_hard_braker_holds_compression_instead_of_fast_reopen():
+  from openpilot.sunnypilot.custom.longitudinal.follow_gap import BENIGN_RECOVER_RATE_MIN
+  fg = _apply_scheduler()
+  _settled(fg, radar(lead()))
+  # lead starts braking hard, floors all passing: no mid-brake gap reopen — recovery is
+  # benign-paced (closing lead -> opening 0 -> floor rate), not the RECOVER_RATE snap
+  out = _call(fg, radar(lead(a_lead=-1.5)))
+  assert out == pytest.approx(T_FOLLOW_COMPRESSED + BENIGN_RECOVER_RATE_MIN * DT)
+  assert fg.last_result["block_reason"] == "lead_braking"
+  # but a braking lead that also trips a hard floor still snaps back fast
+  fg2 = _apply_scheduler()
+  _settled(fg2, radar(lead()))
+  out2 = _call(fg2, radar(lead(a_lead=-1.5, v_rel=-5.0)))
+  assert out2 == pytest.approx(min(BASE, T_FOLLOW_COMPRESSED + RECOVER_RATE * DT))
+
+
+def test_hard_braker_runway_compresses_after_persistence():
+  from openpilot.sunnypilot.custom.longitudinal.follow_gap import HARD_BRAKE_PERSIST_S
+  fg = _apply_scheduler()
+  braking = radar(lead(a_lead=-1.5))
+  ticks_to_arm = int(HARD_BRAKE_PERSIST_S / DT)
+  out = BASE
+  for _ in range(ticks_to_arm - 1):
+    out = _call(fg, braking)
+  assert out == BASE                                   # pre-persistence: no compression
+  assert fg.last_result["hard_brake_runway"] is False
+  out = _call(fg, braking)                             # persistence reached: runway mode
+  assert fg.last_result["hard_brake_runway"] is True
+  assert out == pytest.approx(BASE - _compress_rate(40.0, -1.0) * DT)
+  settled = _settled(fg, braking)
+  assert settled == pytest.approx(T_FOLLOW_COMPRESSED)  # bounded by the same floor
+  # lead recovers (stops braking, no longer closing): counter resets and the reopen is
+  # benign-paced (gap-opening rate), not a fast snap
+  from openpilot.sunnypilot.custom.longitudinal.follow_gap import BENIGN_RECOVER_RATE_MIN
+  out = _call(fg, radar(lead(a_lead=0.0, v_rel=0.0)))
+  assert fg.last_result["hard_brake_runway"] is False
+  assert out == pytest.approx(T_FOLLOW_COMPRESSED + BENIGN_RECOVER_RATE_MIN * DT)
