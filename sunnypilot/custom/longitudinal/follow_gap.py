@@ -14,8 +14,8 @@ SAFETY — this reaches the MPC desired-gap parameter and can reduce headway. So
 - only applies with explicit planner safety context: long active, no driver override, no
   force-decel, enough ego speed, finite lead kinematics, a moving lead that is slower but not
   braking hard, no fast closing, no low TTC, and every status lead above hard distance floors;
-- slews slowly into compression and quickly back out (asymmetric rate limit), and snaps back
-  to baseline whenever long control is inactive;
+- slews into compression at a bounded, demand-scaled rate and quickly back out, and snaps
+  back to baseline whenever long control is inactive;
 - is opt-in via ``DynamicFollowGapMode=apply``, runtime-gated by ``CustomLongitudinalEnabled``
   and the default-off ``AllowLongitudinalResearchActuation`` switch; shadow mode computes the
   would-be value for telemetry only, and any fault returns the baseline unchanged.
@@ -29,7 +29,13 @@ import math
 from typing import Any
 
 T_FOLLOW_COMPRESSED = 1.2   # s; hard floor of the compressed follow gap
-COMPRESS_RATE = 0.05        # s of t_follow per s; slow slide into compression
+# Compression pace scales with the decel the approach would otherwise demand
+# (closing^2 / 2*excess). A fixed slow rate meant warm-but-eligible approaches ended before
+# compression arrived — exactly the ones where it would soften the peak — while long lazy
+# approaches got full compression they didn't need.
+COMPRESS_RATE = 0.05        # s of t_follow per s; slide rate at negligible approach demand
+COMPRESS_RATE_MAX = 0.25    # s of t_follow per s; slide rate at/above COMPRESS_DEMAND_FULL
+COMPRESS_DEMAND_FULL = 0.5  # m/s^2 required decel; comfort-band demand that earns the fast slide
 RECOVER_RATE = 0.5          # s of t_follow per s; fast, safety-shaped recovery to baseline
 # Route 290 stop-and-go ask: when the approach merely ends (lead stops closing / slows /
 # ego drops below apply speed) snapping t_follow back at RECOVER_RATE makes the MPC brake
@@ -152,7 +158,7 @@ class FollowGapScheduler:
       prev = self._t_follow if self._t_follow is not None else base
       step = max(0.0, float(dt))
       if target < prev:
-        nxt = max(prev - COMPRESS_RATE * step, target)
+        nxt = max(prev - self._compress_rate(radarstate, v_ego, base) * step, target)
       else:
         nxt = min(prev + self._recovery_rate(radarstate, v_ego, block_reason) * step, target)
       nxt = min(max(nxt, lo), base)
@@ -170,6 +176,23 @@ class FollowGapScheduler:
       self._t_follow = None
       self.last_result = None
       return base
+
+  def _compress_rate(self, radarstate: Any, v_ego: float, base: float) -> float:
+    """Demand-scaled compression pace. Only paces a slew already bounded to
+    [T_FOLLOW_COMPRESSED, base]; the eligibility gates rule first, so this never widens
+    where compression applies — only how soon an eligible approach reaches it."""
+    lead_one = getattr(radarstate, "leadOne", None)
+    d_rel_raw = getattr(lead_one, "dRel", None)
+    v_rel_raw = getattr(lead_one, "vRel", None)
+    if not (_is_finite(d_rel_raw) and _is_finite(v_rel_raw) and _is_finite(v_ego)):
+      return COMPRESS_RATE
+    closing = max(0.0, -float(v_rel_raw))
+    # ponytail: base*v_ego approximates the desired gap (skips the MPC offset terms);
+    # plenty for pacing a bounded slew.
+    excess = float(d_rel_raw) - base * max(0.0, float(v_ego))
+    required = COMPRESS_DEMAND_FULL if excess <= 0.1 else (closing * closing) / (2.0 * excess)
+    frac = min(max(required, 0.0) / COMPRESS_DEMAND_FULL, 1.0)
+    return COMPRESS_RATE + (COMPRESS_RATE_MAX - COMPRESS_RATE) * frac
 
   def _recovery_rate(self, radarstate: Any, v_ego: float, block_reason: str) -> float:
     """Fast recovery for safety-shaped ineligibility; gap-opening-paced recovery when the

@@ -8,7 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from openpilot.sunnypilot.custom.longitudinal.follow_gap import (
+  COMPRESS_DEMAND_FULL,
   COMPRESS_RATE,
+  COMPRESS_RATE_MAX,
   RECOVER_RATE,
   T_FOLLOW_COMPRESSED,
   FollowGapScheduler,
@@ -78,14 +80,34 @@ def test_apply_requires_research_gate_and_custom_long():
   assert _call(fg2, radar(lead())) == BASE
 
 
-def test_apply_compresses_slowly_and_bounded():
+def _compress_rate(d_rel, v_rel, v_ego=20.0, base=BASE):
+  required = (min(v_rel, 0.0) ** 2) / (2 * (d_rel - base * v_ego))
+  frac = min(required / COMPRESS_DEMAND_FULL, 1.0)
+  return COMPRESS_RATE + (COMPRESS_RATE_MAX - COMPRESS_RATE) * frac
+
+
+def test_apply_compresses_at_demand_scaled_rate_and_bounded():
   fg = _apply_scheduler()
   first = _call(fg, radar(lead()))
-  assert first == pytest.approx(BASE - COMPRESS_RATE * DT)
+  assert first == pytest.approx(BASE - _compress_rate(40.0, -1.0) * DT)
   settled = _settled(fg, radar(lead()))
   assert settled == pytest.approx(T_FOLLOW_COMPRESSED)
   # never below the floor, never above base
   assert T_FOLLOW_COMPRESSED <= settled <= BASE
+
+
+def test_hotter_approach_compresses_faster_capped():
+  mild = _apply_scheduler()
+  warm = _apply_scheduler()
+  # closing 3 m/s at 40 m: TTC 13.3 s, still eligible, but real approach demand
+  mild_first = _call(mild, radar(lead(v_rel=-1.0)))
+  warm_first = _call(warm, radar(lead(v_rel=-3.0)))
+  assert warm_first < mild_first
+  assert warm_first == pytest.approx(BASE - _compress_rate(40.0, -3.0) * DT)
+  # saturated demand: rate caps at COMPRESS_RATE_MAX (closing 3.9 at 40 m, TTC 10.3 s)
+  hot = _apply_scheduler()
+  hot_first = _call(hot, radar(lead(v_rel=-3.9)))
+  assert hot_first == pytest.approx(BASE - COMPRESS_RATE_MAX * DT)
 
 
 def test_recovery_is_faster_than_compression():
@@ -94,7 +116,7 @@ def test_recovery_is_faster_than_compression():
   # lead starts braking hard -> ineligible -> recover at the fast rate
   out = _call(fg, radar(lead(a_lead=-1.5)))
   assert out == pytest.approx(min(BASE, T_FOLLOW_COMPRESSED + RECOVER_RATE * DT))
-  assert RECOVER_RATE > COMPRESS_RATE
+  assert RECOVER_RATE > COMPRESS_RATE_MAX > COMPRESS_RATE
 
 
 @pytest.mark.parametrize("bad_lead,reason", [
