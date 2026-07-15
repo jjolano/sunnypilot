@@ -291,6 +291,9 @@ class CustomLongitudinalAdapter:
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     self.research_actuation_allowed = False
+    # Grade-aware natural coast decel from the last evaluate tick, for the finalizer's
+    # follow coast band. 0.0 (no pitch yet) collapses the band to passthrough.
+    self.last_accel_coast = 0.0
     # Fail-closed fault latch: set on an internal fault after Custom Authority begins,
     # cleared automatically at the next engagement.
     self.fault_class = ""
@@ -447,6 +450,7 @@ class CustomLongitudinalAdapter:
         # flags, so only manual off-pedal coasting gives an unbiased drag sample.
         self._drag.update(v_ego, a_ego, pitch, on_throttle=gas_pressed or long_active, on_brake=brake_pressed)
       accel_coast = _coast_accel(pitch, self._drag.coast_decel) if pitch is not None else 0.0
+      self.last_accel_coast = float(accel_coast)
 
       inputs = build_stack_inputs(
         v_ego=v_ego, a_ego=a_ego, t_follow=t_follow, v_cruise=v_cruise, seed_a_target=seed_a_target,
@@ -502,6 +506,7 @@ class CustomLongitudinalAdapter:
         standstill_release_a_target=float(result.standstill_release_a_target),
         standstill_release_reason=str(result.standstill_release_reason),
         research_actuation_allowed=self.research_actuation_allowed,
+        t_follow=float(t_follow), accel_coast=float(accel_coast),
         actuation=result.actuation,
         debug=debug,
       )
@@ -539,6 +544,10 @@ class CustomLongitudinalOutput:
   standstill_release_a_target: float = 0.0
   standstill_release_reason: str = ""
   research_actuation_allowed: bool = False
+  # Typed scene values consumed by post-MPC lead catch-up shaping. Debug collection is
+  # optional and must never change actuation.
+  t_follow: float = 1.5
+  accel_coast: float = 0.0
   # Stable Fault Class of a latched Fail-closed fault ("" when healthy).
   fault_class: str = ""
   # Typed Actuation Verdicts; independent of the optional debug dict below.

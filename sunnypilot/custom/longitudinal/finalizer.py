@@ -11,6 +11,11 @@ import math
 from dataclasses import dataclass, replace
 from typing import Any
 
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  get_safe_obstacle_distance,
+  get_stopped_equivalence_factor,
+)
+from openpilot.sunnypilot.custom.longitudinal.lead_cushion import lead_catchup_accel_cap
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import close_stop_go_radar_id_churn_continuous
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import LEAD_CRAWL_BREAKOUT_MIN_OPENING
@@ -617,9 +622,17 @@ class _HoldCommand:
       return False
     if finalizer.lead_stop_hold_gap_increasing_s < finalizer._STOP_HOLD_RELEASE_PREP_MIN_GAP_INCREASING_S:
       return False
+    if float(lead_d_rel) <= finalizer._STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR:
+      return False
 
     stopping_distance = snapshot.stopping_distance
-    if float(lead_d_rel) <= stopping_distance + finalizer._STOP_HOLD_RELEASE_PREP_MIN_D_REL_MARGIN:
+    absolute_distance_ready = float(lead_d_rel) > stopping_distance + finalizer._STOP_HOLD_RELEASE_PREP_MIN_D_REL_MARGIN
+    arm_d_rel = finalizer.lead_stop_hold_arm_d_rel
+    sustained_opening_ready = (
+      arm_d_rel is not None and math.isfinite(float(arm_d_rel)) and
+      float(lead_d_rel) - float(arm_d_rel) >= finalizer._STOP_HOLD_RELEASE_PREP_MIN_OPENING_M
+    )
+    if not (absolute_distance_ready or sustained_opening_ready):
       return False
 
     return True
@@ -729,6 +742,37 @@ class _FinalArbitration:
     if not math.isfinite(custom_a):
       return float(base_a_target)
     return float(min(float(base_a_target), custom_a))
+
+  @staticmethod
+  def lead_catchup_cap(finalizer: CustomLongitudinalFinalizer, base_a_target: float,
+                       snapshot: _InputSnapshot, should_stop: bool) -> float:
+    custom_long_output = snapshot.custom_long_output
+    if should_stop or float(base_a_target) <= 0.0 or custom_long_output is None:
+      return float(base_a_target)
+    if not bool(getattr(custom_long_output, "enabled", False)):
+      return float(base_a_target)
+    if snapshot.brake_pressed or snapshot.gas_pressed or snapshot.force_decel:
+      return float(base_a_target)
+    if snapshot.v_ego > finalizer._LEAD_CATCHUP_MAX_V_EGO:
+      return float(base_a_target)
+
+    lead = getattr(snapshot.radar_state, "leadOne", None)
+    if lead is None or not bool(getattr(lead, "status", False)):
+      return float(base_a_target)
+    d_rel = finalizer._finite_float_or_none(getattr(lead, "dRel", None))
+    v_lead = finalizer._finite_float_or_none(getattr(lead, "vLead", None))
+    a_lead = finalizer._finite_float_or_none(getattr(lead, "aLeadK", 0.0))
+    t_follow = finalizer._finite_float_or_none(getattr(custom_long_output, "t_follow", None))
+    accel_coast = finalizer._finite_float_or_none(getattr(custom_long_output, "accel_coast", None))
+    if None in (d_rel, v_lead, a_lead, t_follow, accel_coast) or d_rel <= 0.0 or t_follow <= 0.0:
+      return float(base_a_target)
+
+    follow_gap = max(0.0, float(
+      get_safe_obstacle_distance(snapshot.v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
+    ))
+    return float(lead_catchup_accel_cap(
+      snapshot.v_ego, v_lead, a_lead, d_rel, follow_gap, base_a_target, accel_coast,
+    ))
 
   @staticmethod
   def scc_curve_confidence_final_cap(finalizer: CustomLongitudinalFinalizer, base_a_target: float,
@@ -999,6 +1043,9 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_RELEASE_PREP_MIN_MPC_A_TARGET = -0.10
   _STOP_HOLD_RELEASE_PREP_MIN_GAP_INCREASING_S = 0.10
   _STOP_HOLD_RELEASE_PREP_MIN_D_REL_MARGIN = 0.10
+  # Prep is still a hold, not a release. Sustained same-lead motion can start unwinding
+  # the PCM before the absolute release distance once displacement clears radar jitter.
+  _STOP_HOLD_RELEASE_PREP_MIN_OPENING_M = 0.05
   _STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET = -0.50
   _STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO = 0.70
   # Approach damping: on route 0000025a the final aTarget limit-cycled +/-0.3 m/s^2 at ~2-3 Hz on
@@ -1009,12 +1056,25 @@ class CustomLongitudinalFinalizer:
   # through untouched so brake authority is never delayed.
   _APPROACH_DAMP_BAND = 0.55
   _APPROACH_DAMP_MAX_JERK = 3.0
+  # Follow coast band: routes 290/291 steady-follow finalA crossed zero 12-15x/min with a
+  # median dither depth of only -0.08 m/s^2 (63-81% of below-zero excursions never deeper
+  # than flat coast), and each crossing toggles the Toyota PCM between gas and brake
+  # regimes — the felt follow jerk. In HOLD regime, negative demands shallower than the
+  # grade-aware natural coast decel (floored at _FOLLOW_BAND_MAX_DEPTH) clamp to 0 like a
+  # human ignoring a tiny gap compression; a demand past the band floor switches to DECEL
+  # regime and passes through unchanged (braking is never reshaped, only its tiny
+  # precursors), returning to HOLD only once the demand is genuinely positive again.
+  _FOLLOW_BAND_MAX_DEPTH = -0.35   # m/s^2; deepest demand the band may ever clamp
+  _FOLLOW_BAND_MIN_DEPTH = -0.02   # m/s^2; shallower coast collapses the band (downhill)
+  _FOLLOW_BAND_EXIT_A = 0.02       # m/s^2; DECEL -> HOLD only past this (hysteresis)
+  _FOLLOW_BAND_MIN_V_EGO = 3.0     # m/s; stay out of the creep/stop regime
   # Launch dip damping: route 282 rlog (t=42244-42246) — radar/vision lead churn during
   # pullaway punched 1-2 frame mpcA dips (1.3 -> 0.2 m/s^2) through final arbitration.
   # Masked then by driver gas; unmasked it reads as launch surging. Bounded by the grace
   # window, a confirmed-departing radar lead, and positive-to-positive steps only.
   _LAUNCH_DIP_GRACE_S = 3.0
   _LAUNCH_DIP_MAX_V_EGO = 5.0
+  _LEAD_CATCHUP_MAX_V_EGO = 8.0
   _CURVE_CONFIDENCE_APPLY_MIN_V_EGO = 8.0
   _CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE = 0.70
   _CURVE_CONFIDENCE_APPLY_MIN_CAP = -0.85
@@ -1064,6 +1124,7 @@ class CustomLongitudinalFinalizer:
     self.stop_hold_release_prep_a_target = None
     self.stop_hold_release_prep_raw_prev = None
     self.approach_damp_a_prev = None
+    self.follow_band_regime = None
     self.launch_dip_grace_s = 0.0
     # Last commanded a_target across ALL finalize paths, including hold frames (which
     # never route through the release slew). Deliberately NOT cleared in
@@ -1252,6 +1313,36 @@ class CustomLongitudinalFinalizer:
     )
     return _ReleaseGate.standstill_release_request_valid(self, snapshot, min_mpc_a_target)
 
+  def _apply_follow_coast_band(self, a_target: float, snapshot: _InputSnapshot,
+                               should_stop: bool, release_mpc_stop: bool) -> float:
+    """Suppress accel<->decel sign chatter around the follow-gap equilibrium.
+
+    Only shapes shallow negative demands while following a moving lead: HOLD clamps
+    demands above the band floor to 0, DECEL passes everything through untouched. Any
+    stop, release, pedal, or force-decel context drops the state and passes through, so
+    real braking is never delayed by more than the band depth itself.
+    """
+    band_lo = max(min(float(getattr(snapshot.custom_long, "last_accel_coast", 0.0) or 0.0), 0.0),
+                  self._FOLLOW_BAND_MAX_DEPTH)
+    if (not math.isfinite(a_target) or not math.isfinite(band_lo)
+        or band_lo > self._FOLLOW_BAND_MIN_DEPTH
+        or should_stop or release_mpc_stop or self.stop_hold_release_slew_a_target is not None
+        or snapshot.gas_pressed or snapshot.brake_pressed or snapshot.force_decel
+        or not snapshot.has_lead or snapshot.v_ego < self._FOLLOW_BAND_MIN_V_EGO):
+      self.follow_band_regime = None
+      return float(a_target)
+    if self.follow_band_regime is None:
+      # Joining mid-decel stays honest: any negative demand starts in DECEL, not clamped.
+      self.follow_band_regime = "decel" if a_target < 0.0 else "hold"
+    if self.follow_band_regime == "decel":
+      if a_target < self._FOLLOW_BAND_EXIT_A:
+        return float(a_target)
+      self.follow_band_regime = "hold"
+    if a_target <= band_lo:
+      self.follow_band_regime = "decel"
+      return float(a_target)
+    return max(float(a_target), 0.0)
+
   def _apply_approach_damp(self, a_target: float, should_stop: bool, release_mpc_stop: bool, dt: float) -> float:
     """Jerk-limit aTarget inside the gentle authority band to kill the ACC-MPC approach-cusp limit cycle.
 
@@ -1383,6 +1474,7 @@ class CustomLongitudinalFinalizer:
       reset_lead_stop_hold()
       self.custom_long_output_telemetry = None
       self.last_release_block_reason = ""
+      self.follow_band_regime = None
       if is_e2e and not model_stale:
         a_target = min(raw_model_a_target, mpc_a_target)
         return _TelemetryAdapter.result(
@@ -1440,10 +1532,12 @@ class CustomLongitudinalFinalizer:
       return _TelemetryAdapter.result(a_target, True, e2e_source, telemetry, self.last_release_block_reason)
 
     if is_e2e and not model_stale:
+      self.follow_band_regime = None
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
       e2e_source = bool(a_target < mpc_a_target)
       a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, model_stop_blocks_release, should_stop)
       a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt)
+      a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
       return _TelemetryAdapter.result(
         a_target, should_stop, e2e_source, self.custom_long_output_telemetry, self.last_release_block_reason
       )
@@ -1463,7 +1557,12 @@ class CustomLongitudinalFinalizer:
     # min()s against the model and damping that would delay legitimate model braking.
     a_target = self._apply_launch_dip_damp(a_target, snapshot, should_stop, dt)
     a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, model_stop_blocks_release, should_stop)
+    # ponytail: SCC path only — E2E min()s against deliberate model decel styling; the
+    # measured chatter (routes 290/291) rides in on mpc_a_target. Approach damp runs after
+    # so regime-transition steps stay jerk-bounded.
+    a_target = self._apply_follow_coast_band(a_target, snapshot, should_stop, release_mpc_stop)
     a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt)
+    a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
     return _TelemetryAdapter.result(
       a_target, should_stop, False, self.custom_long_output_telemetry, self.last_release_block_reason
     )

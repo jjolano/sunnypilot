@@ -580,6 +580,28 @@ def _arm_stop_hold(planner, d_rel: float = 6.2, lead_id: int = 1, gap_increasing
   planner._lead_stop_hold_gap_increasing_s = gap_increasing_s
 
 
+def test_sustained_pullaway_prepares_hold_before_absolute_release_distance():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  _arm_stop_hold(planner, d_rel=4.829, lead_id=1, gap_increasing_s=0.15)
+  # The lead has moved 7 cm over a sustained opening streak, but is still well short of
+  # stoppingDistance + the actual release margin. Prep may unwind the PCM hold; it must
+  # not release the latch without the stack's explicit pullaway verdict.
+  lead = make_lead(d_rel=4.899, v_lead=0.719, v_rel=0.719, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.328, mpc_should_stop=False,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a_target == pytest.approx(-0.2)
+
+
 def test_crawl_fallback_releases_same_latched_lead_with_invalid_source():
   # The bounded fallback is reserved for a still-stationary lead that has crept the gap open.
   planner = make_planner(
@@ -1109,6 +1131,7 @@ def _release_then_ramp_to_plateau(planner, *, frames: int = 8, mpc_a: float = 1.
   assert planner._lead_stop_hold_active is False
   assert a_target > 0.0
   lead = make_lead(d_rel=9.0, v_lead=2.0, v_rel=1.5, lead_id=1)
+  lead.aLeadK = 1.0  # isolate launch-dip damping while the lead is actively pulling away
   sm = make_sm(v_ego=1.5, lead_one=lead)
   for _ in range(frames):
     a_target, _, _ = planner.final_longitudinal_output(
@@ -1152,3 +1175,61 @@ def test_launch_dip_damp_passes_through_real_braking():
   )
 
   assert a_target <= -1.0
+
+
+def test_lead_catchup_tapers_positive_mpc_accel_from_excess_gap():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(
+      selected_intent="cruise", t_follow=1.45, accel_coast=-0.25,
+    ),
+  )
+  lead = make_lead(d_rel=10.31, v_lead=2.81, v_rel=0.0)
+  lead.aLeadK = 0.0
+  sm = make_sm(v_ego=2.81, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.48, mpc_should_stop=False,
+    raw_model_a_target=0.48, raw_model_should_stop=False,
+  )
+
+  assert should_stop is False
+  assert 0.0 <= a_target < 0.15
+
+
+def test_lead_catchup_keeps_accel_while_lead_is_still_pulling_away():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(
+      selected_intent="lead_pullaway", t_follow=1.45, accel_coast=-0.25,
+    ),
+  )
+  lead = make_lead(d_rel=10.31, v_lead=2.81, v_rel=0.0)
+  lead.aLeadK = 1.0
+  sm = make_sm(v_ego=2.81, lead_one=lead)
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.48, mpc_should_stop=False,
+    raw_model_a_target=0.48, raw_model_should_stop=False,
+  )
+
+  assert a_target == pytest.approx(0.48)
+
+
+def test_lead_catchup_never_weakens_mpc_braking():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(
+      selected_intent="cruise", t_follow=1.45, accel_coast=-0.25,
+    ),
+  )
+  lead = make_lead(d_rel=10.31, v_lead=2.81, v_rel=0.0)
+  lead.aLeadK = 0.0
+  sm = make_sm(v_ego=3.0, lead_one=lead)
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.4, mpc_should_stop=False,
+    raw_model_a_target=-0.4, raw_model_should_stop=False,
+  )
+
+  assert a_target == pytest.approx(-0.4)
