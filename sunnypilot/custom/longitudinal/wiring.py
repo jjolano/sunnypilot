@@ -291,9 +291,6 @@ class CustomLongitudinalAdapter:
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     self.research_actuation_allowed = False
-    # Grade-aware natural coast decel from the last evaluate tick, for the finalizer's
-    # follow coast band. 0.0 (no pitch yet) collapses the band to passthrough.
-    self.last_accel_coast = 0.0
     # Fail-closed fault latch: set on an internal fault after Custom Authority begins,
     # cleared automatically at the next engagement.
     self.fault_class = ""
@@ -450,7 +447,6 @@ class CustomLongitudinalAdapter:
         # flags, so only manual off-pedal coasting gives an unbiased drag sample.
         self._drag.update(v_ego, a_ego, pitch, on_throttle=gas_pressed or long_active, on_brake=brake_pressed)
       accel_coast = _coast_accel(pitch, self._drag.coast_decel) if pitch is not None else 0.0
-      self.last_accel_coast = float(accel_coast)
 
       inputs = build_stack_inputs(
         v_ego=v_ego, a_ego=a_ego, t_follow=t_follow, v_cruise=v_cruise, seed_a_target=seed_a_target,

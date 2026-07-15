@@ -17,7 +17,7 @@ from openpilot.sunnypilot.custom.longitudinal.tests.test_finalizer_characterizat
 def make_snapshot(*, accel_coast: float = -0.25, has_lead: bool = True, v_ego: float = 15.0,
                   gas_pressed: bool = False, brake_pressed: bool = False, force_decel: bool = False):
   return SimpleNamespace(
-    custom_long=SimpleNamespace(last_accel_coast=accel_coast),
+    custom_long_output=SimpleNamespace(accel_coast=accel_coast),
     has_lead=has_lead, v_ego=v_ego,
     gas_pressed=gas_pressed, brake_pressed=brake_pressed, force_decel=force_decel,
   )

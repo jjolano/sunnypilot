@@ -1322,7 +1322,9 @@ class CustomLongitudinalFinalizer:
     stop, release, pedal, or force-decel context drops the state and passes through, so
     real braking is never delayed by more than the band depth itself.
     """
-    band_lo = max(min(float(getattr(snapshot.custom_long, "last_accel_coast", 0.0) or 0.0), 0.0),
+    # Same tick-fresh coast source as the catch-up cap: degraded/fault/disabled outputs
+    # leave accel_coast at 0.0, which collapses the band to passthrough (fail-closed).
+    band_lo = max(min(float(getattr(snapshot.custom_long_output, "accel_coast", 0.0) or 0.0), 0.0),
                   self._FOLLOW_BAND_MAX_DEPTH)
     if (not math.isfinite(a_target) or not math.isfinite(band_lo)
         or band_lo > self._FOLLOW_BAND_MIN_DEPTH
@@ -1536,8 +1538,8 @@ class CustomLongitudinalFinalizer:
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
       e2e_source = bool(a_target < mpc_a_target)
       a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, model_stop_blocks_release, should_stop)
-      a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt)
       a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
+      a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt)
       return _TelemetryAdapter.result(
         a_target, should_stop, e2e_source, self.custom_long_output_telemetry, self.last_release_block_reason
       )
@@ -1558,11 +1560,14 @@ class CustomLongitudinalFinalizer:
     a_target = self._apply_launch_dip_damp(a_target, snapshot, should_stop, dt)
     a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, model_stop_blocks_release, should_stop)
     # ponytail: SCC path only — E2E min()s against deliberate model decel styling; the
-    # measured chatter (routes 290/291) rides in on mpc_a_target. Approach damp runs after
-    # so regime-transition steps stay jerk-bounded.
+    # measured chatter (routes 290/291) rides in on mpc_a_target. Approach damp runs last
+    # and jerk-bounds shallow band regime transitions and catch-up cap engage/release
+    # edges (lead status flicker, aLeadK steps, the v_ego gate); a DECEL entry straight
+    # to a deep brake (|a| > damp band) passes unsmoothed on purpose — brake authority is
+    # never delayed.
     a_target = self._apply_follow_coast_band(a_target, snapshot, should_stop, release_mpc_stop)
-    a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt)
     a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
+    a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt)
     return _TelemetryAdapter.result(
       a_target, should_stop, False, self.custom_long_output_telemetry, self.last_release_block_reason
     )
