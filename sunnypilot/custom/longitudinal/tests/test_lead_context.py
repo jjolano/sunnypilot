@@ -544,3 +544,56 @@ def test_lead_prediction_uses_measured_v_rel_over_derived():
   measured = lc.lead_prediction(20.0, v_lead=9.0, a_lead=0.0, v_ego=10.0, v_rel=1.0)
   assert derived.x[-1] == pytest.approx(19.0)   # fallback: v_lead - v_ego = -1 m/s closing
   assert measured.x[-1] == pytest.approx(21.0)  # measured vRel says opening; it wins
+
+
+def _progress(v_rel, opening_carried, v_lead=0.6, d_rel=5.0, on_path=1.0, confidence=0.9,
+              stable=True):
+  cs = LeadConfidenceState(status=True, stable=stable, new_lead=False, radar=True, age=2.0)
+  req = lc._required_decel(d_rel, v_rel)
+  ttc = lc._ttc(d_rel, v_rel)
+  tg = lc._time_gap(d_rel, 0.0)
+  rm = lc._lead_risk_model(req, ttc, tg, d_rel, 0.0, v_lead, v_rel, 0.0, on_path, cs, 1.0, True, 0.1)
+  pred = lc.LeadTrajectoryPrediction(x=(), v=(), a=(), valid=False)
+  return lc._lead_progress_model(d_rel, 0.0, v_lead, v_rel, 0.0, on_path, confidence, cs, 0.1,
+                                 rm, pred, opening_carried=opening_carried)
+
+
+def test_carried_opening_holds_progress_through_vrel_dip():
+  # A close slow lead genuinely opening: a single noisy v_rel dip below 0.15 would drop the
+  # per-frame gate, but carried opening keeps the pullaway authorized.
+  assert _progress(v_rel=0.05, opening_carried=False).allowed is False   # dip, no carry -> drop
+  assert _progress(v_rel=0.05, opening_carried=True).allowed is True     # dip bridged by carry
+
+
+def test_carried_opening_cannot_authorize_a_closing_lead():
+  # Carried flag must never override a real closing threat.
+  assert _progress(v_rel=-1.0, opening_carried=True).allowed is False
+
+
+def test_carried_opening_tracker_confirms_only_sustained_growth_and_clears_on_closing():
+  co = lc._CarriedOpeningTracker()
+  dt = 0.05
+  # stationary radar jitter within ~0.1 m never confirms
+  for d in (5.00, 5.05, 4.98, 5.02, 5.00) * 4:
+    assert co.update(0, True, False, d, 0.0, dt) is False
+  # sustained opening past the min accumulates and confirms
+  co = lc._CarriedOpeningTracker()
+  d = 5.0
+  confirmed = False
+  for _ in range(20):
+    d += 0.02  # 0.4 m/s opening
+    confirmed = co.update(0, True, False, d, 0.4, dt)
+  assert confirmed is True
+  # the hold bridges a brief stall (no growth) ...
+  assert co.update(0, True, False, d, 0.0, dt) is True
+  # ... but a real closing frame clears it at once
+  assert co.update(0, True, False, d - 0.1, -0.5, dt) is False
+
+
+def test_carried_opening_tracker_resets_on_new_lead():
+  co = lc._CarriedOpeningTracker()
+  d = 5.0
+  for _ in range(20):
+    d += 0.02
+    co.update(0, True, False, d, 0.4, 0.05)
+  assert co.update(0, True, True, d, 0.4, 0.05) is False  # new_lead wipes the history/hold

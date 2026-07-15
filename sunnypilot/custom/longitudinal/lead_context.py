@@ -50,6 +50,17 @@ LEAD_CONTEXT_SHADOW_CUTOUT_STABLE_TIME = 0.35
 LEAD_CONTEXT_SHADOW_RECENT_CONSTRAIN_TIME = 1.0
 LEAD_CONTEXT_PREVIEW_T = (0.0, 0.2, 0.6, 1.0)
 LEAD_CONTEXT_DUPLICATE_D_REL_TOL = 0.15
+# Carried-opening pullaway persistence (route 296): radar v_rel dithers 0.05-0.45 frame to
+# frame at a stop-go launch, so the per-frame opening_speed<=0.15 stop-threat terms drop
+# pullaway authorization on single dips and the finalizer never gets a sustained valid
+# release source (release stayed blocked as invalid_release_source until the driver gassed).
+# Confirm opening from the physical gap actually growing over a short window instead:
+# phantom-proof (a stopped car cannot grow the gap), and consumed only while the lead is
+# moving so stationary radar jitter cannot trigger it.
+LEAD_CONTEXT_CARRIED_OPENING_LOOKBACK_S = 0.4
+LEAD_CONTEXT_CARRIED_OPENING_MIN_M = 0.15
+LEAD_CONTEXT_CARRIED_OPENING_HOLD_S = 0.5   # bridge brief v_rel dips once opening is confirmed
+LEAD_CONTEXT_CARRIED_OPENING_CLOSING_V_REL = -0.15  # any real closing clears the hold at once
 LEAD_CONTEXT_DUPLICATE_V_TOL = 0.05
 LEAD_CONTEXT_DUPLICATE_Y_TOL = 0.05
 LEAD_CONTEXT_SWITCH_MIN_DWELL_S = 0.30
@@ -424,11 +435,12 @@ class _ProgressStage:
   @staticmethod
   def compute_real(observation: _LeadObservation, v_ego: float, kinematics: _KinematicsResult,
                    confidence_state: LeadConfidenceState | None,
-                   prediction: LeadTrajectoryPrediction) -> LeadProgressModel:
+                   prediction: LeadTrajectoryPrediction,
+                   opening_carried: bool = False) -> LeadProgressModel:
     return _lead_progress_model(
       observation.d_rel, v_ego, observation.v_lead, observation.v_rel, observation.a_lead,
       kinematics.on_path_score, kinematics.confidence, confidence_state, kinematics.ghost_score,
-      kinematics.risk_model, prediction,
+      kinematics.risk_model, prediction, opening_carried=opening_carried,
     )
 
   @staticmethod
@@ -799,7 +811,8 @@ def _lead_risk_model(required_decel: float, ttc: float, time_gap: float, d_rel: 
 def _lead_progress_model(d_rel: float, v_ego: float, v_lead: float, v_rel: float, a_lead: float,
                          on_path: float, confidence: float, confidence_state: LeadConfidenceState | None,
                          ghost: float, risk_model: LeadRiskModel, prediction: LeadTrajectoryPrediction,
-                         shadow: bool = False, alternate_threat_absent: bool = True) -> LeadProgressModel:
+                         shadow: bool = False, alternate_threat_absent: bool = True,
+                         opening_carried: bool = False) -> LeadProgressModel:
   # Progress uses radar-fused Lead Evidence only; the raw model-path arc/progress shortcut
   # was removed so Model-Path Evidence cannot authorize lead progress (ADR 2026-07-10).
   opening_speed = max(0.0, v_rel)
@@ -814,8 +827,15 @@ def _lead_progress_model(d_rel: float, v_ego: float, v_lead: float, v_rel: float
     risk_model.ttc <= LEAD_CONTEXT_RISK_TTC or
     risk_model.closing_speed > 0.05
   )
-  close_gap_without_opening = progress_gap_shortage > 0.0 and opening_speed <= 0.15 and not predicted_gap_opening
-  stopped_without_pullaway = risk_model.stopped_or_crawling and opening_speed <= 0.15 and not predicted_gap_opening
+  # A lead whose gap has physically carried open (LEAD_CONTEXT_CARRIED_OPENING_*: displacement
+  # sustained over a window, held across dips, cleared at once on closing) is opening
+  # regardless of a single noisy v_rel/v_lead dip — hold the pullaway authorization across the
+  # dip instead of retracting it (route 296 stop-go launch flicker). The carried displacement
+  # is itself the motion evidence, so no separate (also-noisy) instantaneous v_lead gate.
+  carried_opening_confirmed = bool(opening_carried)
+  opening_now = opening_speed > 0.15 or predicted_gap_opening or carried_opening_confirmed
+  close_gap_without_opening = progress_gap_shortage > 0.0 and not opening_now
+  stopped_without_pullaway = risk_model.stopped_or_crawling and not opening_now
   stop_threat_absent = not closing_threat and not close_gap_without_opening and not stopped_without_pullaway
   stable = bool(confidence_state is not None and confidence_state.stable)
   new_or_flicker = bool(
@@ -824,7 +844,7 @@ def _lead_progress_model(d_rel: float, v_ego: float, v_lead: float, v_rel: float
     )
   )
   confidence_stability_sufficient = bool(stable and confidence >= 0.55 and not new_or_flicker and soft_on_path > 0.0 and ghost < 0.8)
-  opening_evidence = opening_speed > 0.15 or (lead_moving and opening_speed > 0.05) or (a_lead > 0.10 and predicted_gap_opening)
+  opening_evidence = opening_speed > 0.15 or (lead_moving and opening_speed > 0.05) or (a_lead > 0.10 and predicted_gap_opening) or carried_opening_confirmed
   gap_excess_evidence = gap_excess > 0.0 and lead_moving
   allowed = bool(
     confidence_stability_sufficient and stop_threat_absent and alternate_threat_absent and not shadow and
@@ -1081,9 +1101,48 @@ def _stopped_gap_creep_progress_allowed(d_rel: float, v_lead: float, v_rel: floa
   )
 
 
+class _CarriedOpeningTracker:
+  """Per-lead confirmation that the radar gap has physically grown over the lookback window,
+  latched for a short hold so per-frame v_rel noise cannot retract it, and cleared at once on
+  any real closing. Reset on lead discontinuity (new track / signal drop)."""
+
+  def __init__(self):
+    self._hist: tuple[list[list[float]], list[list[float]]] = ([], [])
+    self._hold = [0.0, 0.0]
+
+  def reset(self) -> None:
+    self._hist = ([], [])
+    self._hold = [0.0, 0.0]
+
+  def update(self, idx: int, status: bool, new_lead: bool, d_rel: float, v_rel: float, dt: float) -> bool:
+    hist = self._hist[idx]
+    if new_lead or not status:
+      hist.clear()
+      self._hold[idx] = 0.0
+    if not status or not (math.isfinite(float(d_rel)) and math.isfinite(float(v_rel))):
+      return False
+    if float(v_rel) < LEAD_CONTEXT_CARRIED_OPENING_CLOSING_V_REL:
+      self._hold[idx] = 0.0  # lead closing: never hold a stale opening
+    for sample in hist:
+      sample[0] += dt
+    while hist and hist[0][0] > LEAD_CONTEXT_CARRIED_OPENING_LOOKBACK_S:
+      hist.pop(0)
+    carried = bool(
+      hist and hist[0][0] >= LEAD_CONTEXT_CARRIED_OPENING_LOOKBACK_S * 0.5 and
+      float(d_rel) - hist[0][1] >= LEAD_CONTEXT_CARRIED_OPENING_MIN_M
+    )
+    hist.append([0.0, float(d_rel)])
+    if carried:
+      self._hold[idx] = LEAD_CONTEXT_CARRIED_OPENING_HOLD_S
+    else:
+      self._hold[idx] = max(0.0, self._hold[idx] - dt)
+    return self._hold[idx] > 0.0
+
+
 class LeadContextTracker:
   def __init__(self):
     self.shadow_trackers = (LeadShadowTracker(0), LeadShadowTracker(1))
+    self._carried_opening = _CarriedOpeningTracker()
     self._observation_stage = _ObservationStage()
     self._kinematics_stage = _KinematicsStage()
     self._progress_stage = _ProgressStage()
@@ -1098,6 +1157,7 @@ class LeadContextTracker:
     self._observation_stage.reset()
     self._false_positive_stage.reset()
     self._physical_memory.reset()
+    self._carried_opening.reset()
 
   def update(self, leads: tuple[Any, Any], confidence_states: tuple[LeadConfidenceState, LeadConfidenceState] | list[LeadConfidenceState],
               v_ego: float, dt: float, model_msg: Any | None = None, dominant_idx: int | None = None,
@@ -1151,8 +1211,10 @@ class LeadContextTracker:
     states: list[LeadRelevanceState] = []
     for idx, obs in enumerate(observations):
       confidence_state = confidence_states[idx] if idx < len(confidence_states) else LeadConfidenceState()
+      opening_carried = self._carried_opening.update(
+        idx, bool(obs.status), bool(confidence_state.new_lead), obs.d_rel, obs.v_rel, dt)
       if obs.status:
-        state = self._build_real_state(idx, obs, confidence_state, v_ego, a_ego)
+        state = self._build_real_state(idx, obs, confidence_state, v_ego, a_ego, opening_carried)
       elif shadows[idx].active:
         state = self._build_shadow_state(idx, shadows[idx], v_ego, a_ego, model_msg)
       else:
@@ -1163,7 +1225,8 @@ class LeadContextTracker:
     return states
 
   def _build_real_state(self, idx: int, observation: _LeadObservation,
-                        confidence_state: LeadConfidenceState, v_ego: float, a_ego: float) -> LeadRelevanceState:
+                        confidence_state: LeadConfidenceState, v_ego: float, a_ego: float,
+                        opening_carried: bool = False) -> LeadRelevanceState:
     kinematics = self._kinematics_stage.compute(True, observation, None, v_ego, confidence_state)
     accel_confidence = 1.0
     if observation.a_lead > 0.0 and not observation.radar:
@@ -1175,7 +1238,7 @@ class LeadContextTracker:
       observation.d_rel, observation.v_lead, observation.a_lead, v_ego, True, observation.a_lead_tau,
       v_rel=observation.v_rel, a_ego=a_ego, accel_confidence=accel_confidence,
     )
-    progress_model = self._progress_stage.compute_real(observation, v_ego, kinematics, confidence_state, prediction)
+    progress_model = self._progress_stage.compute_real(observation, v_ego, kinematics, confidence_state, prediction, opening_carried)
     release_timer = self._false_positive_stage.prev_timer(idx)
     authority, reason = self._authority_stage.evaluate_real(
       idx, observation, kinematics, progress_model, confidence_state, release_timer,
