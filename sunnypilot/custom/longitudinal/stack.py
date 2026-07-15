@@ -51,6 +51,21 @@ FOLLOW_TIME_GAP_S = 1.5   # steady-state follow time gap proxy
 UPWARD_TARGET_SLEW_MAX_DT_S = 0.20
 UPWARD_TARGET_SLEW_MAX_LAG = 0.50
 DOWNWARD_TARGET_SLEW_JERK = -4.0  # faster comfort decel smoothing; never used for hazards
+# Creep calm: route 290 engaged creep flips the intent owner 13-14x per 2 s
+# (cruise/lead_follow/lead_pullaway/stop_approach), reversing the command ~2.5x/s at
+# 1.77 m/s^2 p2p; the Toyota PCM's slow gas unwind amplifies it into a felt stutter.
+# Bound the final target's jerk in exactly this regime so owner churn becomes harmless;
+# anything proximity- or stop-shaped gets full authority instantly.
+CREEP_CALM_MIN_V_EGO = 0.05
+CREEP_CALM_MAX_V_EGO = 1.5   # m/s
+CREEP_CALM_MAX_D_REL = 12.0  # m; regime gate, matches the observed churn windows
+CREEP_CALM_MIN_D_REL = 3.5   # m; inside this, full authority (proximity floor)
+CREEP_CALM_MIN_TTC_S = 2.5
+# Symmetric on purpose: an asymmetric slew makes square-wave churn drift toward the
+# faster rail (down-faster = the creep stalls at the braking level). Symmetric tracks the
+# churn's duty-cycle mean, which is the smooth creep command.
+CREEP_CALM_UP_JERK = 0.9     # m/s^3
+CREEP_CALM_DOWN_JERK = 0.9   # m/s^3
 DOWNWARD_TARGET_SMOOTH_MAX_DELTA = 0.30
 DOWNWARD_TARGET_SMOOTH_MIN_RAW_A = -0.40
 DOWNWARD_TARGET_SMOOTH_CLOSING_V_REL = -0.50
@@ -307,12 +322,14 @@ class CustomLongitudinalStack:
     self._lead_context = LeadContextTracker()
     self._shadow_lead_context = LeadContextTracker()
     self._prev_smoothed_a_target: float | None = None
+    self._creep_calm_prev_a: float | None = None
 
   def reset(self) -> None:
     self._lead_confidence = (LeadConfidenceTracker(), LeadConfidenceTracker())
     self._lead_context = LeadContextTracker()
     self._shadow_lead_context = LeadContextTracker()
     self._prev_smoothed_a_target = None
+    self._creep_calm_prev_a = None
 
   def update(self, inp: LongitudinalStackInputs, dt: float, *, collect_debug: bool = True) -> LongitudinalStackResult:
     # Mode admission happens first: no stateful tracker or candidate construction sees
@@ -602,6 +619,7 @@ class CustomLongitudinalStack:
     target_smoothing_debug = self._apply_target_smoothing(raw_a_target, dt, act_inp, decision, acc_envelope_result,
                                                           strongest_admitted_hazard_a, selected_lead.lead)
     a_target = float(target_smoothing_debug["target_smoothing_a_target"])
+    a_target, creep_calm_debug = self._apply_creep_calm(a_target, dt, act_inp, decision, selected_lead.lead)
     debug: dict[str, Any] = {}
     map_coast_debug: dict[str, Any] = {}
     map_coast_fault = False
@@ -660,6 +678,7 @@ class CustomLongitudinalStack:
         **dynamic_safety_floor_debug,
         **acc_envelope_debug,
         **target_smoothing_debug,
+        **creep_calm_debug,
       }
     return LongitudinalStackResult(
       a_target=float(a_target),
@@ -678,6 +697,53 @@ class CustomLongitudinalStack:
       ),
       debug=debug,
     )
+
+  def _apply_creep_calm(self, a_target: float, dt: float, inp: LongitudinalStackInputs,
+                        decision: Decision, lead: Any | None) -> tuple[float, dict[str, Any]]:
+    """One smooth command through the creep regime (see CREEP_CALM_* constants).
+
+    Bounds the final target's jerk while creeping behind a close lead so per-frame intent
+    churn becomes harmless, instead of reforming arbitration. This implicitly allows a
+    temporary follow-gap compression during the creep: flickery gap-restore braking gets
+    slewed away while a sustained real demand still arrives within ~1 s, and anything
+    proximity- or stop-shaped (committed stop, lead inside the floor, low TTC) bypasses
+    with full authority and resets the state."""
+    debug: dict[str, Any] = {"creep_calm_active": False, "creep_calm_applied": False}
+    try:
+      v_ego = float(inp.v_ego)
+      lead_ok = lead is not None and bool(getattr(lead, "status", False))
+      d_rel = _f(getattr(lead, "dRel", float("inf")), default=float("inf")) if lead_ok else float("inf")
+      in_regime = (bool(inp.long_active) and not inp.brake_pressed and not inp.gas_pressed
+                   and not inp.force_slow_decel and math.isfinite(v_ego)
+                   and CREEP_CALM_MIN_V_EGO < v_ego < CREEP_CALM_MAX_V_EGO
+                   and lead_ok and math.isfinite(d_rel) and d_rel < CREEP_CALM_MAX_D_REL
+                   and math.isfinite(float(a_target))
+                   and math.isfinite(float(dt)) and 0.0 < float(dt) <= UPWARD_TARGET_SLEW_MAX_DT_S)
+      if not in_regime:
+        self._creep_calm_prev_a = None
+        return float(a_target), debug
+      debug["creep_calm_active"] = True
+      closing = max(0.0, -_f(getattr(lead, "vRel", 0.0)))
+      if (bool(decision.should_stop) or d_rel < CREEP_CALM_MIN_D_REL
+          or (closing > 0.0 and d_rel / closing < CREEP_CALM_MIN_TTC_S)):
+        self._creep_calm_prev_a = None
+        debug["creep_calm_reason"] = "hazard_full_authority"
+        return float(a_target), debug
+      prev = self._creep_calm_prev_a
+      if prev is None or not math.isfinite(prev):
+        self._creep_calm_prev_a = float(a_target)
+        debug["creep_calm_reason"] = "primed"
+        return float(a_target), debug
+      out = min(max(float(a_target), prev - CREEP_CALM_DOWN_JERK * float(dt)),
+                prev + CREEP_CALM_UP_JERK * float(dt))
+      self._creep_calm_prev_a = out
+      debug["creep_calm_applied"] = bool(abs(out - float(a_target)) > 1e-9)
+      debug["creep_calm_a_target"] = out
+      debug["creep_calm_reason"] = "slewed" if debug["creep_calm_applied"] else "passthrough"
+      return out, debug
+    except Exception:
+      self._creep_calm_prev_a = None
+      return float(a_target) if math.isfinite(float(a_target)) else 0.0, debug
 
   def _apply_target_smoothing(self, raw_a_target: float, dt: float, inp: LongitudinalStackInputs,
                               decision: Decision, acc_envelope_result: Any | None,
