@@ -40,6 +40,7 @@ __all__ = [
   "generate_udacity_acc_scenarios",
   "generate_openpilot_acc_scenarios",
   "evaluate_invariants",
+  "evaluate_accordion_response",
   "evaluate_lead_pullaway_start",
   "evaluate_collision_response",
   "scenario_maneuver_kwargs",
@@ -62,6 +63,19 @@ LEAD_PULLAWAY_STARTED_ACCEL = 0.1
 COLLISION_GAP = 0.4
 BEST_EFFORT_BRAKE = 2.5
 BENIGN_IMPACT_SPEED = 3.0
+
+# These start ego and lead at the same speed, so total speed variation measures whether
+# the follower absorbs the wave or amplifies it. Cached manual stop-to-stop cycles (routes
+# 288/28b/290/291/296) had median peak-speed gain 0.88 and p90 1.01; the deterministic
+# gate keeps the simpler invariant: ego variation must not exceed the lead's.
+ACCORDION_ORACLE_KINDS = frozenset({
+  "udacity_acc_oscillating_lead",
+  "udacity_acc_stop_and_go_10mph",
+  "iso15622_stop_and_go",
+  "iihs_stop_and_go_smooth",
+})
+MAX_ACCORDION_SPEED_VARIATION_GAIN = 1.0
+MIN_ACCORDION_LEAD_VARIATION = 1.0
 
 _SHIPPED_LONGITUDINAL_PARAM_KEYS = (
   "CustomLongitudinalEnabled",
@@ -336,6 +350,30 @@ def evaluate_invariants(
   return failures
 
 
+def evaluate_accordion_response(output: np.ndarray) -> list[ScenarioFailure]:
+  """Fail when ego reproduces more speed variation than the lead."""
+  if output.ndim != 2 or output.shape[1] < 5 or output.size == 0:
+    return []
+
+  v_ego = output[:, 3]
+  v_lead = output[:, 4]
+  if not (np.all(np.isfinite(v_ego)) and np.all(np.isfinite(v_lead))):
+    return []  # the generic finite-output oracle owns malformed trajectories
+
+  lead_variation = float(np.sum(np.abs(np.diff(v_lead))))
+  if lead_variation < MIN_ACCORDION_LEAD_VARIATION:
+    return []
+  ego_variation = float(np.sum(np.abs(np.diff(v_ego))))
+  gain = ego_variation / lead_variation
+  if gain <= MAX_ACCORDION_SPEED_VARIATION_GAIN + 1e-6:
+    return []
+  return [ScenarioFailure(
+    "accordion",
+    f"ego speed variation {ego_variation:.3f} m/s amplifies lead variation "
+    f"{lead_variation:.3f} m/s (gain {gain:.3f})",
+  )]
+
+
 @dataclass
 class CommandCapture:
   commanded: list[float] = field(default_factory=list)
@@ -591,6 +629,9 @@ def run_scenario(scenario: Scenario, max_normal_jerk: float = 8.0) -> ScenarioRe
   commanded_accel = np.array(capture.commanded) if len(capture.commanded) == len(output) else None
   jerk_window = 1  # actuator delay shifts a command step in time; it does not smooth the step
   failures = evaluate_invariants(valid, output, max_normal_jerk, commanded_accel, jerk_window, profile=profile)
+
+  if scenario.kind in ACCORDION_ORACLE_KINDS:
+    failures.extend(evaluate_accordion_response(output))
 
   if profile.use_launch_oracle and scenario.kind in LAUNCH_START_ORACLE_KINDS:
     failures.extend(evaluate_lead_pullaway_start(output))

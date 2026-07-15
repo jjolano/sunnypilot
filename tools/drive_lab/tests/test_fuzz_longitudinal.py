@@ -11,6 +11,7 @@ from openpilot.tools.drive_lab.fuzz_longitudinal import (
   aggregate_mpc_solution_status_counts,
   capture_commanded_accel,
   diagnose_max_jerk,
+  evaluate_accordion_response,
   evaluate_collision_response,
   evaluate_invariants,
   evaluate_lead_pullaway_start,
@@ -158,6 +159,21 @@ def test_udacity_approach_from_stop_passes_comfort_gate():
     result = run_scenario(scenario, max_normal_jerk=8.0)
 
   assert result.failures == []
+
+
+def test_udacity_accordion_cases_do_not_amplify_the_lead_wave():
+  scenarios = [
+    scenario for scenario in generate_udacity_acc_scenarios()
+    if scenario.kind in {"udacity_acc_oscillating_lead", "udacity_acc_stop_and_go_10mph"}
+  ]
+
+  with shipped_longitudinal_config():
+    results = [run_scenario(scenario, max_normal_jerk=8.0) for scenario in scenarios]
+
+  assert [(result.scenario.kind, result.failures) for result in results] == [
+    ("udacity_acc_oscillating_lead", []),
+    ("udacity_acc_stop_and_go_10mph", []),
+  ]
 
 
 def test_openpilot_acc_preset_count():
@@ -319,6 +335,26 @@ def test_evaluate_invariants_catches_collision_and_nan():
 def test_evaluate_invariants_reports_malformed_output_shape():
   failures = evaluate_invariants(True, np.zeros((2, 3)))
   assert any(f.check == "output" for f in failures)
+
+
+def test_accordion_oracle_rejects_speed_wave_amplification():
+  output = np.zeros((5, 7))
+  output[:, 3] = [5.0, 0.0, 7.0, 0.0, 5.0]  # ego speed
+  output[:, 4] = [5.0, 0.0, 5.0, 0.0, 5.0]  # lead speed
+
+  failures = evaluate_accordion_response(output)
+
+  assert len(failures) == 1
+  assert failures[0].check == "accordion"
+  assert "gain 1.200" in failures[0].detail
+
+
+def test_accordion_oracle_accepts_manual_style_attenuation():
+  output = np.zeros((5, 7))
+  output[:, 3] = [5.0, 0.5, 4.5, 0.5, 4.5]  # attenuated speed variation
+  output[:, 4] = [5.0, 0.0, 5.0, 0.0, 5.0]
+
+  assert evaluate_accordion_response(output) == []
 
 
 def test_evaluate_lead_pullaway_start_detects_no_launch():
