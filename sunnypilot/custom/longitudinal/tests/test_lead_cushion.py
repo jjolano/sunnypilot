@@ -5,6 +5,7 @@ import pytest
 
 from openpilot.sunnypilot.custom.longitudinal.coast_horizon import CoastAction
 from openpilot.sunnypilot.custom.longitudinal.lead_cushion import (
+  lead_catchup_accel_cap,
   lead_following_cushion,
   lead_speedup_guard,
 )
@@ -74,3 +75,19 @@ def test_speedup_guard_keeps_required_decel_comfortable():
   closing = max(0.0, v_next - 20.5)
   required = -(closing ** 2) / (2 * excess)
   assert required >= -1.2 - 1e-6
+
+
+def test_catchup_cap_uses_net_accel_not_natural_coast():
+  out = lead_catchup_accel_cap(
+    v_ego=0.6, v_lead=0.6, a_lead=0.0,
+    d_rel=7.0, follow_gap=5.8, proposed_accel=0.4,
+  )
+  assert out == pytest.approx(0.12)
+
+
+def test_catchup_cap_lets_lead_recover_inside_target_gap():
+  out = lead_catchup_accel_cap(
+    v_ego=0.6, v_lead=0.6, a_lead=0.5,
+    d_rel=4.0, follow_gap=5.0, proposed_accel=0.5,
+  )
+  assert out == pytest.approx(0.4)

@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from openpilot.sunnypilot.custom.longitudinal.coast_horizon import (
   CoastAction,
   CoastHorizonInputs,
-  MIN_COAST_DECEL,
   coast_horizon,
 )
 
@@ -31,7 +30,6 @@ CUSHION_MIN_CLOSING = 0.2  # m/s; below this the lead isn't meaningfully slower
 CATCHUP_CLOSURE_HORIZON_S = 10.0
 CATCHUP_MAX_CLOSING_SPEED = 2.0
 CATCHUP_RESPONSE_S = 1.0
-CATCHUP_COAST_BLEND_GAP_M = 1.0
 CATCHUP_MAX_LEAD_ACCEL = 2.0
 
 
@@ -96,16 +94,15 @@ def lead_speedup_guard(v_ego: float, v_lead: float, d_rel: float, follow_gap: fl
 
 
 def lead_catchup_accel_cap(v_ego: float, v_lead: float, a_lead: float,
-                           d_rel: float, follow_gap: float, proposed_accel: float,
-                           coast_decel: float) -> float:
-  """Taper positive catch-up accel toward a gap-derived closing speed.
+                           d_rel: float, follow_gap: float, proposed_accel: float) -> float:
+  """Taper positive catch-up accel toward a gap-derived relative speed.
 
   Positive lead acceleration remains feed-forward authority, so an active pullaway keeps
-  its launch response. Once that acceleration ends, excess gap is consumed over a bounded
-  horizon and the natural-coast estimate starts the lift early. The result is never below
-  zero and is only a cap, so it neither creates braking nor weakens an MPC brake.
+  its launch response. Signed gap error meters ego below the lead while inside the target
+  gap, then allows bounded closing once the gap recovers. The result is never below zero
+  and is only a cap, so it neither creates braking nor weakens an MPC brake.
   """
-  values = (v_ego, v_lead, a_lead, d_rel, follow_gap, proposed_accel, coast_decel)
+  values = (v_ego, v_lead, a_lead, d_rel, follow_gap, proposed_accel)
   if not all(math.isfinite(float(value)) for value in values):
     return float(proposed_accel)
 
@@ -115,10 +112,10 @@ def lead_catchup_accel_cap(v_ego: float, v_lead: float, a_lead: float,
 
   v_ego = max(0.0, float(v_ego))
   v_lead = max(0.0, float(v_lead))
-  excess_gap = max(0.0, float(d_rel) - float(follow_gap))
-  desired_closing = min(CATCHUP_MAX_CLOSING_SPEED, excess_gap / CATCHUP_CLOSURE_HORIZON_S)
+  desired_relative_speed = min(CATCHUP_MAX_CLOSING_SPEED, max(
+    -CATCHUP_MAX_CLOSING_SPEED,
+    (float(d_rel) - float(follow_gap)) / CATCHUP_CLOSURE_HORIZON_S,
+  ))
   lead_accel = min(CATCHUP_MAX_LEAD_ACCEL, max(0.0, float(a_lead)))
-  coast = min(0.0, max(MIN_COAST_DECEL, float(coast_decel)))
-  coast_weight = min(1.0, excess_gap / CATCHUP_COAST_BLEND_GAP_M)
-  accel_cap = lead_accel + (v_lead + desired_closing - v_ego) / CATCHUP_RESPONSE_S + coast_weight * coast
+  accel_cap = lead_accel + (v_lead + desired_relative_speed - v_ego) / CATCHUP_RESPONSE_S
   return min(proposed_accel, max(0.0, accel_cap))

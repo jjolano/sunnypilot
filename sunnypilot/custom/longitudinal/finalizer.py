@@ -221,8 +221,31 @@ class _StopHoldLatchLifecycle:
     arm_distance = finalizer._STOP_HOLD_ARM_GAP_M
     v_ego_stopping = snapshot.v_ego_stopping
 
+    # Hold owns a stopped state, not equal-speed crawl. During a release grace, a stale
+    # MPC stop bit cannot re-arm it; real braking or another admitted stop still can.
+    custom_stop = bool(getattr(snapshot.custom_long_output, "should_stop", False))
+    hard_stop_requested = bool(
+      snapshot.mpc_a_target < finalizer._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET or
+      _model_stop_blocks_release(snapshot) or
+      custom_stop
+    )
+    stop_requested = bool(snapshot.mpc_should_stop or hard_stop_requested)
+    stopped_pair = bool(snapshot.standstill and snapshot.lead_v_rel <= finalizer._STOP_HOLD_SETTLE_ARM_MAX_LEAD_V_REL)
+    settling_to_stop = bool(stop_requested and (
+      snapshot.v_ego <= v_ego_stopping or snapshot.lead_v < snapshot.v_ego
+    ))
+    release_grace_blocks_rearm = bool(
+      finalizer.launch_dip_grace_s > 0.0 and
+      not hard_stop_requested and
+      snapshot.lead_v_rel >= 0.0 and
+      not snapshot.brake_pressed and
+      not snapshot.force_decel
+    )
+    arm_evidence = bool((stopped_pair or settling_to_stop) and not release_grace_blocks_rearm)
+
     stop_hold_set = bool(
       not finalizer.lead_stop_hold_active and
+      arm_evidence and
       has_lead and
       v_ego < v_ego_stopping + 0.2 and
       lead_d_rel <= arm_distance and
@@ -231,6 +254,7 @@ class _StopHoldLatchLifecycle:
     )
     settle_hold_set = bool(
       not finalizer.lead_stop_hold_active and
+      arm_evidence and
       _StopHoldLatchLifecycle.settle_arm_applies(finalizer, snapshot)
     )
     if stop_hold_set or settle_hold_set:
@@ -763,15 +787,14 @@ class _FinalArbitration:
     v_lead = finalizer._finite_float_or_none(getattr(lead, "vLead", None))
     a_lead = finalizer._finite_float_or_none(getattr(lead, "aLeadK", 0.0))
     t_follow = finalizer._finite_float_or_none(getattr(custom_long_output, "t_follow", None))
-    accel_coast = finalizer._finite_float_or_none(getattr(custom_long_output, "accel_coast", None))
-    if None in (d_rel, v_lead, a_lead, t_follow, accel_coast) or d_rel <= 0.0 or t_follow <= 0.0:
+    if None in (d_rel, v_lead, a_lead, t_follow) or d_rel <= 0.0 or t_follow <= 0.0:
       return float(base_a_target)
 
     follow_gap = max(0.0, float(
       get_safe_obstacle_distance(snapshot.v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
     ))
     return float(lead_catchup_accel_cap(
-      snapshot.v_ego, v_lead, a_lead, d_rel, follow_gap, base_a_target, accel_coast,
+      snapshot.v_ego, v_lead, a_lead, d_rel, follow_gap, base_a_target,
     ))
 
   @staticmethod
@@ -1056,6 +1079,7 @@ class CustomLongitudinalFinalizer:
   # through untouched so brake authority is never delayed.
   _APPROACH_DAMP_BAND = 0.55
   _APPROACH_DAMP_MAX_JERK = 3.0
+  _APPROACH_DAMP_MIN_V_EGO = 1.5
   # Follow coast band: routes 290/291 steady-follow finalA crossed zero 12-15x/min with a
   # median dither depth of only -0.08 m/s^2 (63-81% of below-zero excursions never deeper
   # than flat coast), and each crossing toggles the Toyota PCM between gas and brake
@@ -1345,15 +1369,16 @@ class CustomLongitudinalFinalizer:
       return float(a_target)
     return max(float(a_target), 0.0)
 
-  def _apply_approach_damp(self, a_target: float, should_stop: bool, release_mpc_stop: bool, dt: float) -> float:
+  def _apply_approach_damp(self, a_target: float, should_stop: bool, release_mpc_stop: bool,
+                           dt: float, v_ego: float | None = None) -> float:
     """Jerk-limit aTarget inside the gentle authority band to kill the ACC-MPC approach-cusp limit cycle.
 
-    Only active when the command is small (|a| <= band), not stopping, not releasing a stop hold, and no
-    stop-hold release ramp is in progress, so a developing strong brake or accel (or any stop/launch)
-    leaves the band and passes straight through with no added lag. In particular the launch ramp off a
-    stop hold must never be damped. Outside those cases the filter state is dropped so it re-seeds cleanly.
+    Only active above crawl speed when the command is small (|a| <= band), not stopping,
+    not releasing a stop hold, and no stop-hold release ramp is in progress. Crawl uses
+    the gap governor directly so this state cannot carry an old owner's sign through it.
     """
-    if (not math.isfinite(a_target) or not math.isfinite(dt) or dt <= 0.0
+    crawl = v_ego is not None and (not math.isfinite(v_ego) or v_ego < self._APPROACH_DAMP_MIN_V_EGO)
+    if (not math.isfinite(a_target) or not math.isfinite(dt) or dt <= 0.0 or crawl
         or should_stop or release_mpc_stop or abs(a_target) > self._APPROACH_DAMP_BAND
         or self.stop_hold_release_slew_a_target is not None):
       self.approach_damp_a_prev = None
@@ -1539,7 +1564,7 @@ class CustomLongitudinalFinalizer:
       e2e_source = bool(a_target < mpc_a_target)
       a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, model_stop_blocks_release, should_stop)
       a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
-      a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt)
+      a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt, snapshot.v_ego)
       return _TelemetryAdapter.result(
         a_target, should_stop, e2e_source, self.custom_long_output_telemetry, self.last_release_block_reason
       )
@@ -1567,7 +1592,7 @@ class CustomLongitudinalFinalizer:
     # never delayed.
     a_target = self._apply_follow_coast_band(a_target, snapshot, should_stop, release_mpc_stop)
     a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
-    a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt)
+    a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt, snapshot.v_ego)
     return _TelemetryAdapter.result(
       a_target, should_stop, False, self.custom_long_output_telemetry, self.last_release_block_reason
     )

@@ -849,6 +849,62 @@ def test_valid_source_releases_before_large_crawl_deadband():
   assert planner._last_release_block_reason == ""
 
 
+def test_release_grace_prevents_false_crawl_rearm_but_not_real_stop():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(),
+  )
+  _arm_stop_hold(planner, d_rel=5.0, lead_id=1, gap_increasing_s=0.15)
+  lead = make_lead(d_rel=5.25, v_lead=0.31, v_rel=0.31, lead_id=1)
+
+  released_a, released_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, standstill=True, lead_one=lead),
+    mpc_a_target=0.25, mpc_should_stop=False,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+  assert released_a == pytest.approx(0.25)
+  assert released_stop is False
+  assert planner._lead_stop_hold_active is False
+
+  crawl = make_lead(d_rel=5.26, v_lead=0.05, v_rel=0.05, lead_id=1)
+  crawl_a, crawl_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, standstill=True, lead_one=crawl),
+    mpc_a_target=0.10, mpc_should_stop=True,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+  assert crawl_a >= 0.0
+  assert crawl_stop is False
+  assert planner._lead_stop_hold_active is False
+
+  stopped = make_lead(d_rel=4.4, v_lead=0.0, v_rel=0.0, lead_id=1)
+  stopped_a, stopped_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, standstill=True, lead_one=stopped),
+    mpc_a_target=-0.6, mpc_should_stop=True,
+    raw_model_a_target=-0.6, raw_model_should_stop=False,
+  )
+  assert stopped_a <= -0.5
+  assert stopped_stop is True
+  assert planner._lead_stop_hold_active is True
+
+
+def test_equal_speed_crawl_does_not_arm_stop_hold():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  lead = make_lead(d_rel=5.5, v_lead=0.3, v_rel=0.0, lead_id=1)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.3, lead_one=lead),
+    mpc_a_target=0.1, mpc_should_stop=False,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert a_target >= 0.0
+  assert should_stop is False
+  assert planner._lead_stop_hold_active is False
+
+
 def test_valid_source_blocked_by_driver_brake():
   planner = make_planner(
     mode=LongitudinalMode.SCC,
@@ -1194,7 +1250,7 @@ def test_lead_catchup_tapers_positive_mpc_accel_from_excess_gap():
   )
 
   assert should_stop is False
-  assert 0.0 <= a_target < 0.15
+  assert 0.15 < a_target < 0.30
 
 
 def test_lead_catchup_keeps_accel_while_lead_is_still_pulling_away():

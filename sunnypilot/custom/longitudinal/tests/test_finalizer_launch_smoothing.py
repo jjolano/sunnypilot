@@ -43,3 +43,12 @@ def test_approach_damp_never_damps_launch_release_ramp():
   fin.stop_hold_release_slew_a_target = 0.05
   assert fin._apply_approach_damp(0.35, should_stop=False, release_mpc_stop=False, dt=0.05) == 0.35
   assert fin.approach_damp_a_prev is None
+
+
+def test_approach_damp_does_not_carry_an_old_sign_through_crawl():
+  fin = CustomLongitudinalFinalizer(make_cp())
+  fin._apply_approach_damp(-0.3, should_stop=False, release_mpc_stop=False, dt=0.05)
+  assert fin._apply_approach_damp(
+    0.3, should_stop=False, release_mpc_stop=False, dt=0.05, v_ego=0.8,
+  ) == 0.3
+  assert fin.approach_damp_a_prev is None
