@@ -181,10 +181,16 @@ class TestCompiledShape:
       "MovingLeadCruiseCapMode": ["off", "shadow", "apply"],
       "CutOutLeadReleaseMode": ["off", "apply"],
       "StandstillReleaseConfidenceMode": ["off", "shadow", "gate"],
+      "UphillNetDemandCapMode": ["off", "shadow", "apply"],
     }
     for key, values in expected.items():
       item = next(i for i in cruise["sections"][0]["items"] if i["key"] == key)
       assert [opt["value"] for opt in item["options"]] == values
+
+  def test_uphill_net_demand_ceiling_is_fixed_point(self, compiled):
+    cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
+    item = next(i for i in cruise["sections"][0]["items"] if i["key"] == "UphillNetDemandCeiling")
+    assert (item["min"], item["max"], item["step"], item["unit"]) == (0.5, 2.0, 0.05, "m/s²")
 
   def test_vehicle_settings_consistent_shape(self, compiled):
     """Each brand in vehicle_settings must have {title, description, items}."""

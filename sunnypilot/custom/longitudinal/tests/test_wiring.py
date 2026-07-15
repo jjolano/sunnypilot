@@ -516,19 +516,27 @@ def test_new_shadow_modes_parse_and_refresh_on_slow_cadence():
   params = FakeParams(
     CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
     CutInBrakeAssistMode="shadow", CurveSpeedConfidenceMode="apply_conservative",
-    StandstillReleaseConfidenceMode="gate",
+    StandstillReleaseConfidenceMode="gate", UphillNetDemandCapMode="shadow",
+    UphillNetDemandCeiling="1.2",
   )
   a = CustomLongitudinalAdapter(params)
   assert a.cut_in_brake_assist_mode == "shadow"
   assert a.curve_speed_confidence_mode == "apply_conservative"
   assert a.standstill_release_confidence_mode == "gate"
+  assert a._uphill_grade.mode == "shadow"
+  assert a._uphill_grade.ceiling == pytest.approx(1.2)
 
   # A full/slow-cadence refresh applies the new (invalid -> off) values.
-  params._v.update(CutInBrakeAssistMode="bad", CurveSpeedConfidenceMode="bad", StandstillReleaseConfidenceMode="bad")
+  params._v.update(
+    CutInBrakeAssistMode="bad", CurveSpeedConfidenceMode="bad", StandstillReleaseConfidenceMode="bad",
+    UphillNetDemandCapMode="bad", UphillNetDemandCeiling="bad",
+  )
   a.refresh_params()
   assert a.cut_in_brake_assist_mode == "off"
   assert a.curve_speed_confidence_mode == "off"
   assert a.standstill_release_confidence_mode == "off"
+  assert a._uphill_grade.mode == "off"
+  assert a._uphill_grade.ceiling is None
   params._v["LongitudinalDebugTraceMode"] = "bad"
   a.refresh_params()
   assert a.debug_trace_mode == "off"

@@ -58,6 +58,12 @@ def test_integer_option_passes_through_unscaled():
   assert real_step(item) == 5
 
 
+def test_uphill_net_demand_ceiling_uses_fixed_point_encoding():
+  item = find_item(CRUISE, "UphillNetDemandCeiling")
+  enc = encode_numeric_option(item)
+  assert (enc.min_value, enc.max_value, enc.value_change_step, enc.use_float_scaling) == (50, 200, 5, True)
+
+
 def test_sequential_enum_yields_button_labels():
   item = find_item(STEERING, "MadsSteeringMode")  # values 0, 1, 2
   assert sequential_int_labels(item) == ["Remain Active", "Pause", "Disengage"]
@@ -151,6 +157,11 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert release_enum.values == ["off", "shadow", "gate"]
   assert release_enum.labels == ["Off", "Monitor only", "Release gate"]
 
+  uphill_enum = homogeneous_string_options(find_item(CRUISE, "UphillNetDemandCapMode"))
+  assert uphill_enum is not None
+  assert uphill_enum.values == ["off", "shadow", "apply"]
+  assert uphill_enum.labels == ["Off", "Monitor only", "Apply calibrated"]
+
 
 def test_custom_longitudinal_string_index_matches_planner_fallbacks():
   enum = homogeneous_string_options(find_item(CRUISE, "CustomLongitudinalMode"))
@@ -211,7 +222,8 @@ def test_lane_centering_one_line_string_index_defaults_to_off():
 
 
 def test_shadow_observability_string_indexes_default_to_off():
-  for key in ("CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "CurveTrafficAdvisorMode", "StandstillReleaseConfidenceMode"):
+  for key in ("CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "CurveTrafficAdvisorMode",
+              "StandstillReleaseConfidenceMode", "UphillNetDemandCapMode"):
     enum = homogeneous_string_options(find_item(CRUISE, key))
     assert enum is not None
     assert string_option_index("", enum, key) == 0
@@ -222,6 +234,7 @@ def test_shadow_observability_string_indexes_default_to_off():
   assert string_option_index("apply_conservative", homogeneous_string_options(find_item(CRUISE, "CurveSpeedConfidenceMode")), "CurveSpeedConfidenceMode") == 2
   assert string_option_index("apply_conservative", homogeneous_string_options(find_item(CRUISE, "CurveTrafficAdvisorMode")), "CurveTrafficAdvisorMode") == 2
   assert string_option_index("gate", homogeneous_string_options(find_item(CRUISE, "StandstillReleaseConfidenceMode")), "StandstillReleaseConfidenceMode") == 2
+  assert string_option_index("apply", homogeneous_string_options(find_item(CRUISE, "UphillNetDemandCapMode")), "UphillNetDemandCapMode") == 2
 
 
 def test_mixed_string_float_enum_remains_escape_hatch():

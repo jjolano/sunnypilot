@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
+from openpilot.sunnypilot.custom.longitudinal.net_demand_cap import NetDemandCapTrace
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
 
@@ -252,6 +253,43 @@ def test_debug_trace_sanitizes_non_finite_values_without_throwing():
   assert msg.accEnvelope.allowedATarget == pytest.approx(0.0)
   assert msg.accEnvelope.ttc == pytest.approx(0.0)
   assert msg.accEnvelope.requiredStoppingDecel == pytest.approx(0.0)
+
+
+def test_uphill_net_demand_trace_is_structured() -> None:
+  trace = NetDemandCapTrace(
+    mode="apply",
+    effective_mode="apply",
+    eligible=True,
+    would_cap=True,
+    applied=True,
+    regime="cap",
+    source_age_s=0.05,
+    car_pitch=0.10,
+    pitch_zero=0.04,
+    filtered_grade_percent=6.0,
+    profile_ready=True,
+    ceiling=1.2,
+    grade_accel=0.6,
+    a_target_before=0.8,
+    a_target_cap=0.6,
+    a_target_after=0.6,
+    requested_net_demand=1.4,
+    delta_a=-0.2,
+    research_actuation_allowed=True,
+  )
+  planner = make_planner("log", custom_output(uphill_net_demand_trace=trace))
+
+  msg = publish(planner).longitudinalDebug.uphillNetDemandCap
+
+  assert msg.mode == "apply"
+  assert msg.effectiveMode == "apply"
+  assert msg.applied is True
+  assert msg.regime == "cap"
+  assert msg.profileReady is True
+  assert msg.ceiling == pytest.approx(1.2)
+  assert msg.aTargetBefore == pytest.approx(0.8)
+  assert msg.aTargetAfter == pytest.approx(0.6)
+  assert msg.deltaA == pytest.approx(-0.2)
 
 
 def test_debug_trace_dynamic_safety_floor_serializes_fields():

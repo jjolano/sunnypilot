@@ -7,7 +7,7 @@ Usage (from repo root, after pulling rlogs per device-route-log-analysis):
     .agents/skills/route-drive-diagnosis/scripts/extract_route_npz.py \
     '/tmp/opencode/sunnypilot-route-logs/ROUTE--*/rlog.zst' /path/out/route
 
-Writes <out>.npz (arrays, prefixed cs_/cc_/rs_/lp_/sp_/mv_/ss_) and
+Writes <out>.npz (arrays, prefixed cs_/cc_/co_/rs_/lp_/sp_/pose_/calib_/mv_/ss_, plus can_) and
 <out>_events.json (onroadEvents tuples + intent/reason code tables).
 ~22 segments of rlogs fit in ~1.5 GB RAM; stream per-segment if larger.
 """
@@ -30,19 +30,31 @@ def main() -> None:
   print(f"{len(msgs)} msgs", flush=True)
 
   cs = {k: [] for k in "t vEgo aEgo gasPressed brakePressed standstill steeringPressed leftBlinker rightBlinker cruiseEnabled".split()}
-  cc = {k: [] for k in "t enabled longActive latActive accel".split()}
-  rs = {k: [] for k in "t status dRel vRel yRel vLead aLeadK".split()}
+  cc = {k: [] for k in "t enabled longActive latActive accel pitch".split()}
+  co = {k: [] for k in "t accel".split()}
+  rs = {k: [] for k in "t status trackId dRel vRel yRel vLead aLeadK".split()}
   lp = {k: [] for k in "t aTarget shouldStop hasLead".split()}
   sp = {k: [] for k in ("t vTarget aTarget decActive decState clMode clActive clShouldStop clIntent clReason "
                         "dbgCustomA dbgMpcA dbgModelA dbgMpcStop dbgModelStop dbgCustomStop dbgFinalA dbgFinalStop "
                         "dbgClipMin dbgClipMax dbgE2e "
+                        "upMode upEffectiveMode upEligible upWouldCap upApplied upBlockReason upRegime upSourceAge "
+                        "upCarPitch upLivePitch upPitchZero upRelativePitch upGradePercent upProfileReady "
+                        "upFitSlope upFitScore upFitSpan upFitMad upFitSamples upBandSpread upCeiling upGradeEnter "
+                        "upGradeExit upGradeAccel upBefore upCap upAfter upRequestedNet upDelta upGradeLoadExceeds "
+                        "upHeld upResearchAllowed upHasLead "
                         "sccVisState sccVisVTarget sccVisATarget sccVisCurLat sccVisMaxPredLat sccVisActive "
                         "sccMapState sccMapVTarget sccMapActive").split()}
+  pose = {k: [] for k in "t pitch pitchStd valid inputsOK sensorsOK posenetOK".split()}
+  calib = {k: [] for k in "t status roll pitch yaw".split()}
   mv = {k: [] for k in "t llInnerLeftY llInnerRightY llProbInnerLeft llProbInnerRight llOuterLeftY llOuterRightY roadEdgeLY roadEdgeRY pathY10 desCurv".split()}
   ss = {k: [] for k in "t enabled active state".split()}
+  can = {k: [] for k in "t src dat".split()}
   events = []
   intent_codes: dict[str, int] = {}
   reason_codes: dict[str, int] = {}
+  cap_mode_codes: dict[str, int] = {}
+  cap_reason_codes: dict[str, int] = {}
+  cap_regime_codes: dict[str, int] = {}
 
   def code(d: dict[str, int], s: str) -> int:
     if s not in d:
@@ -63,15 +75,20 @@ def main() -> None:
       x = m.carControl
       cc["t"].append(t); cc["enabled"].append(x.enabled); cc["longActive"].append(x.longActive)
       cc["latActive"].append(x.latActive); cc["accel"].append(x.actuators.accel)
+      cc["pitch"].append(x.orientationNED[1] if len(x.orientationNED) == 3 else np.nan)
+    elif w == "carOutput":
+      x = m.carOutput
+      co["t"].append(t); co["accel"].append(x.actuatorsOutput.accel)
     elif w == "radarState":
       x = m.radarState.leadOne
-      rs["t"].append(t); rs["status"].append(x.status); rs["dRel"].append(x.dRel)
+      rs["t"].append(t); rs["status"].append(x.status); rs["trackId"].append(x.radarTrackId); rs["dRel"].append(x.dRel)
       rs["vRel"].append(x.vRel); rs["yRel"].append(x.yRel); rs["vLead"].append(x.vLead); rs["aLeadK"].append(x.aLeadK)
     elif w == "longitudinalPlan":
       x = m.longitudinalPlan
       lp["t"].append(t); lp["aTarget"].append(x.aTarget); lp["shouldStop"].append(x.shouldStop); lp["hasLead"].append(x.hasLead)
     elif w == "longitudinalPlanSP":
       x = m.longitudinalPlanSP; d = x.longitudinalDebug; c = x.customLongitudinal
+      u = d.uphillNetDemandCap
       sp["t"].append(t); sp["vTarget"].append(x.vTarget); sp["aTarget"].append(x.aTarget)
       sp["decActive"].append(x.dec.active); sp["decState"].append(int(x.dec.state.raw))
       sp["clMode"].append(int(c.mode.raw)); sp["clActive"].append(c.active); sp["clShouldStop"].append(c.shouldStop)
@@ -80,11 +97,36 @@ def main() -> None:
       sp["dbgMpcStop"].append(d.mpcShouldStop); sp["dbgModelStop"].append(d.modelShouldStop); sp["dbgCustomStop"].append(d.customShouldStop)
       sp["dbgFinalA"].append(d.finalATargetClipped); sp["dbgFinalStop"].append(d.finalShouldStop)
       sp["dbgClipMin"].append(d.accelClipMin); sp["dbgClipMax"].append(d.accelClipMax); sp["dbgE2e"].append(d.e2eSource)
+      sp["upMode"].append(code(cap_mode_codes, str(u.mode))); sp["upEffectiveMode"].append(code(cap_mode_codes, str(u.effectiveMode)))
+      sp["upEligible"].append(u.eligible); sp["upWouldCap"].append(u.wouldCap); sp["upApplied"].append(u.applied)
+      sp["upBlockReason"].append(code(cap_reason_codes, str(u.blockReason))); sp["upRegime"].append(code(cap_regime_codes, str(u.regime)))
+      sp["upSourceAge"].append(u.sourceAgeS); sp["upCarPitch"].append(u.carPitch); sp["upLivePitch"].append(u.livePosePitch)
+      sp["upPitchZero"].append(u.pitchZero); sp["upRelativePitch"].append(u.relativePitch)
+      sp["upGradePercent"].append(u.filteredGradePercent); sp["upProfileReady"].append(u.profileReady)
+      sp["upFitSlope"].append(u.fitSlope); sp["upFitScore"].append(u.fitScore); sp["upFitSpan"].append(u.fitPitchSpan)
+      sp["upFitMad"].append(u.fitResidualMad); sp["upFitSamples"].append(u.fitSampleCount)
+      sp["upBandSpread"].append(u.fitSpeedBandSpread); sp["upCeiling"].append(u.ceiling)
+      sp["upGradeEnter"].append(u.gradeEnterPercent); sp["upGradeExit"].append(u.gradeExitPercent)
+      sp["upGradeAccel"].append(u.gradeAccel); sp["upBefore"].append(u.aTargetBefore); sp["upCap"].append(u.aTargetCap)
+      sp["upAfter"].append(u.aTargetAfter); sp["upRequestedNet"].append(u.requestedNetDemand); sp["upDelta"].append(u.deltaA)
+      sp["upGradeLoadExceeds"].append(u.gradeLoadExceedsCeiling); sp["upHeld"].append(u.gradeHeld)
+      sp["upResearchAllowed"].append(u.researchActuationAllowed); sp["upHasLead"].append(u.hasLead)
       scc = x.smartCruiseControl; sv = scc.vision; smap = scc.map
       sp["sccVisState"].append(int(sv.state.raw)); sp["sccVisVTarget"].append(sv.vTarget); sp["sccVisATarget"].append(sv.aTarget)
       sp["sccVisCurLat"].append(sv.currentLateralAccel); sp["sccVisMaxPredLat"].append(sv.maxPredictedLateralAccel)
       sp["sccVisActive"].append(sv.active)
       sp["sccMapState"].append(int(smap.state.raw)); sp["sccMapVTarget"].append(smap.vTarget); sp["sccMapActive"].append(smap.active)
+    elif w == "livePose":
+      x = m.livePose; orientation = x.orientationNED
+      pose["t"].append(t); pose["pitch"].append(orientation.y); pose["pitchStd"].append(orientation.yStd)
+      pose["valid"].append(orientation.valid); pose["inputsOK"].append(x.inputsOK)
+      pose["sensorsOK"].append(x.sensorsOK); pose["posenetOK"].append(x.posenetOK)
+    elif w == "liveCalibration":
+      x = m.liveCalibration; rpy = x.rpyCalib
+      calib["t"].append(t); calib["status"].append(int(x.calStatus.raw))
+      calib["roll"].append(rpy[0] if len(rpy) == 3 else np.nan)
+      calib["pitch"].append(rpy[1] if len(rpy) == 3 else np.nan)
+      calib["yaw"].append(rpy[2] if len(rpy) == 3 else np.nan)
     elif w == "modelV2":
       x = m.modelV2
       lls = x.laneLines; probs = x.laneLineProbs; re_ = x.roadEdges
@@ -101,19 +143,35 @@ def main() -> None:
     elif w == "selfdriveState":
       x = m.selfdriveState
       ss["t"].append(t); ss["enabled"].append(x.enabled); ss["active"].append(x.active); ss["state"].append(int(x.state.raw))
+    elif w == "can":
+      for frame in m.can:
+        if frame.address == 452:
+          payload = list(bytes(frame.dat)[:8])
+          can["t"].append(t); can["src"].append(frame.src); can["dat"].append(payload + [0] * (8 - len(payload)))
     elif w == "onroadEvents":
       for e in m.onroadEvents:
         events.append((t, str(e.name), bool(e.enable), bool(e.noEntry), bool(e.userDisable),
                        bool(e.softDisable), bool(e.immediateDisable), bool(e.overrideLongitudinal), bool(e.overrideLateral)))
 
   arrs = {}
-  for prefix, d in [("cs", cs), ("cc", cc), ("rs", rs), ("lp", lp), ("sp", sp), ("mv", mv), ("ss", ss)]:
+  for prefix, d in [("cs", cs), ("cc", cc), ("co", co), ("rs", rs), ("lp", lp), ("sp", sp),
+                    ("pose", pose), ("calib", calib), ("mv", mv), ("ss", ss)]:
     for k, v in d.items():
       arrs[f"{prefix}_{k}"] = np.asarray(v, dtype=np.float64 if k == "t" else np.float32)
+  arrs["can_t"] = np.asarray(can["t"], dtype=np.float64)
+  arrs["can_src"] = np.asarray(can["src"], dtype=np.int16)
+  arrs["can_dat"] = np.asarray(can["dat"], dtype=np.uint8).reshape((-1, 8))
   np.savez_compressed(f"{out_prefix}.npz", **arrs)
   with open(f"{out_prefix}_events.json", "w") as f:
-    json.dump({"events": events, "intent_codes": intent_codes, "reason_codes": reason_codes}, f)
-  print("extraction done:", {k: len(v["t"]) for k, v in [("cs", cs), ("rs", rs), ("lp", lp), ("sp", sp), ("mv", mv)]}, flush=True)
+    json.dump({
+      "events": events,
+      "intent_codes": intent_codes,
+      "reason_codes": reason_codes,
+      "cap_mode_codes": cap_mode_codes,
+      "cap_reason_codes": cap_reason_codes,
+      "cap_regime_codes": cap_regime_codes,
+    }, f)
+  print("extraction done:", {k: len(v["t"]) for k, v in [("cs", cs), ("co", co), ("rs", rs), ("lp", lp), ("sp", sp), ("pose", pose), ("mv", mv)]}, flush=True)
 
 
 if __name__ == "__main__":

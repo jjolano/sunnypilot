@@ -420,6 +420,10 @@ class LongitudinalPlannerSP:
       self._populate_acc_envelope_trace(msg.accEnvelope, debug)
       self._populate_dynamic_safety_floor_trace(msg.dynamicSafetyFloor, debug)
       self._populate_map_coast_trace(msg.mapCoast, debug)
+      self._populate_uphill_net_demand_cap_trace(
+        msg.uphillNetDemandCap,
+        getattr(custom_long_output, 'uphill_net_demand_trace', None),
+      )
     except Exception:
       msg.enabled = False
       msg.traceMode = 'off'
@@ -501,6 +505,42 @@ class LongitudinalPlannerSP:
     msg.applied = bool(debug.get(prefix + 'applied', False))
     msg.fault = bool(debug.get(prefix + 'fault', False))
     msg.coastDecel = self._safe_float(debug.get(prefix + 'accel_coast', 0.0))
+
+  def _populate_uphill_net_demand_cap_trace(self, msg, trace) -> None:
+    msg.mode = str(getattr(trace, 'mode', 'off') or 'off')
+    msg.effectiveMode = str(getattr(trace, 'effective_mode', 'off') or 'off')
+    msg.eligible = bool(getattr(trace, 'eligible', False))
+    msg.wouldCap = bool(getattr(trace, 'would_cap', False))
+    msg.applied = bool(getattr(trace, 'applied', False))
+    msg.blockReason = str(getattr(trace, 'block_reason', '') or '')
+    msg.regime = str(getattr(trace, 'regime', 'hold') or 'hold')
+    msg.source = str(getattr(trace, 'source', '') or '')
+    msg.sourceAgeS = self._safe_float(getattr(trace, 'source_age_s', 0.0))
+    msg.carPitch = self._safe_float(getattr(trace, 'car_pitch', 0.0))
+    msg.livePosePitch = self._safe_float(getattr(trace, 'live_pose_pitch', 0.0))
+    msg.pitchZero = self._safe_float(getattr(trace, 'pitch_zero', 0.0))
+    msg.relativePitch = self._safe_float(getattr(trace, 'relative_pitch', 0.0))
+    msg.filteredGradePercent = self._safe_float(getattr(trace, 'filtered_grade_percent', 0.0))
+    msg.profileReady = bool(getattr(trace, 'profile_ready', False))
+    msg.fitSlope = self._safe_float(getattr(trace, 'fit_slope', 0.0))
+    msg.fitScore = self._safe_float(getattr(trace, 'fit_score', 0.0))
+    msg.fitPitchSpan = self._safe_float(getattr(trace, 'fit_pitch_span', 0.0))
+    msg.fitResidualMad = self._safe_float(getattr(trace, 'fit_residual_mad', 0.0))
+    msg.fitSampleCount = max(0, int(getattr(trace, 'fit_sample_count', 0) or 0))
+    msg.ceiling = self._safe_float(getattr(trace, 'ceiling', 0.0))
+    msg.gradeEnterPercent = self._safe_float(getattr(trace, 'grade_enter_percent', 0.0))
+    msg.gradeExitPercent = self._safe_float(getattr(trace, 'grade_exit_percent', 0.0))
+    msg.gradeAccel = self._safe_float(getattr(trace, 'grade_accel', 0.0))
+    msg.aTargetBefore = self._safe_float(getattr(trace, 'a_target_before', 0.0))
+    msg.aTargetCap = self._safe_float(getattr(trace, 'a_target_cap', 0.0))
+    msg.aTargetAfter = self._safe_float(getattr(trace, 'a_target_after', 0.0))
+    msg.requestedNetDemand = self._safe_float(getattr(trace, 'requested_net_demand', 0.0))
+    msg.deltaA = self._safe_float(getattr(trace, 'delta_a', 0.0))
+    msg.gradeLoadExceedsCeiling = bool(getattr(trace, 'grade_load_exceeds_ceiling', False))
+    msg.fitSpeedBandSpread = self._safe_float(getattr(trace, 'fit_speed_band_spread', 0.0))
+    msg.gradeHeld = bool(getattr(trace, 'grade_held', False))
+    msg.researchActuationAllowed = bool(getattr(trace, 'research_actuation_allowed', False))
+    msg.hasLead = bool(getattr(trace, 'has_lead', False))
 
   @staticmethod
   def _finite_float_or_none(value) -> float | None:

@@ -374,6 +374,43 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       coastDecel @7 :Float32;
     }
     mapCoast @25 :MapCoastTrace;
+    struct UphillNetDemandCapTrace {
+      mode @0 :Text;
+      effectiveMode @1 :Text;
+      eligible @2 :Bool;
+      wouldCap @3 :Bool;
+      applied @4 :Bool;
+      blockReason @5 :Text;
+      regime @6 :Text;
+      source @7 :Text;
+      sourceAgeS @8 :Float32;
+      carPitch @9 :Float32;
+      livePosePitch @10 :Float32;
+      pitchZero @11 :Float32;
+      relativePitch @12 :Float32;
+      filteredGradePercent @13 :Float32;
+      profileReady @14 :Bool;
+      fitSlope @15 :Float32;
+      fitScore @16 :Float32;
+      fitPitchSpan @17 :Float32;
+      fitResidualMad @18 :Float32;
+      fitSampleCount @19 :UInt32;
+      ceiling @20 :Float32;
+      gradeEnterPercent @21 :Float32;
+      gradeExitPercent @22 :Float32;
+      gradeAccel @23 :Float32;
+      aTargetBefore @24 :Float32;
+      aTargetCap @25 :Float32;
+      aTargetAfter @26 :Float32;
+      requestedNetDemand @27 :Float32;
+      deltaA @28 :Float32;
+      gradeLoadExceedsCeiling @29 :Bool;
+      fitSpeedBandSpread @30 :Float32;
+      gradeHeld @31 :Bool;
+      researchActuationAllowed @32 :Bool;
+      hasLead @33 :Bool;
+    }
+    uphillNetDemandCap @26 :UphillNetDemandCapTrace;
   }
 
   struct SmartCruiseControl {

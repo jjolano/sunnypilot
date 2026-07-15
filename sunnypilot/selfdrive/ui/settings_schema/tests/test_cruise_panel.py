@@ -32,6 +32,8 @@ def test_cruise_top_level_controls_render_inline():
   assert CONTROLS.get("MovingLeadCruiseCapMode") == "multiple_button"
   assert CONTROLS.get("CutOutLeadReleaseMode") == "multiple_button"
   assert CONTROLS.get("LongitudinalDebugTraceMode") == "multiple_button"
+  assert CONTROLS.get("UphillNetDemandCapMode") == "multiple_button"
+  assert CONTROLS.get("UphillNetDemandCeiling") == "option"
   assert CONTROLS.get("CutInBrakeAssistMode") == "multiple_button"
   assert CONTROLS.get("CurveSpeedConfidenceMode") == "multiple_button"
   assert CONTROLS.get("CurveTrafficAdvisorMode") == "multiple_button"
@@ -77,6 +79,7 @@ def test_shadow_observability_modes_include_promoted_apply_options():
     "MovingLeadCruiseCapMode": (["off", "shadow", "apply"], ["Off", "Monitor only", "Apply"]),
     "CutOutLeadReleaseMode": (["off", "apply"], ["Off", "Apply"]),
     "StandstillReleaseConfidenceMode": (["off", "shadow", "gate"], ["Off", "Monitor only", "Release gate"]),
+    "UphillNetDemandCapMode": (["off", "shadow", "apply"], ["Off", "Monitor only", "Apply calibrated"]),
   }
   for key, (values, labels) in expected.items():
     item = find_item(CRUISE, key)

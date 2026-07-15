@@ -134,11 +134,52 @@ sections:
     - type: param
       key: CustomLongitudinalEnabled
       equals: true
+  - key: UphillNetDemandCapMode
+    widget: multiple_button
+    title: Uphill Net-Demand Cap
+    description: Monitor the acceleration cap that would defer discretionary speed gain on sustained climbs, or apply it with
+      a calibrated steep-climb profile. Apply requires the research actuation gate; without a valid profile it remains pass-through.
+      Confirmed leads bypass the cap. Monitor only makes no driving changes.
+    requires_attestation: true
+    options:
+    - value: 'off'
+      label: 'Off'
+    - value: 'shadow'
+      label: Monitor only
+    - value: 'apply'
+      label: Apply calibrated
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: capability
+      field: has_longitudinal_control
+      equals: true
+    - type: param
+      key: CustomLongitudinalEnabled
+      equals: true
+  - key: UphillNetDemandCeiling
+    widget: option
+    title: Uphill Net-Demand Ceiling
+    description: Net acceleration-demand ceiling used by the monitor and calibrated apply modes. The 1.2 m/s² default is a
+      provisional data reference, not a calibrated downshift threshold.
+    min: 0.5
+    max: 2.0
+    step: 0.05
+    unit: m/s²
+    requires_attestation: true
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: capability
+      field: has_longitudinal_control
+      equals: true
+    - type: param
+      key: CustomLongitudinalEnabled
+      equals: true
   - key: AllowLongitudinalResearchActuation
     widget: toggle
     title: Allow Longitudinal Research Actuation
     description: Enables apply/gate behavior for non-baseline longitudinal research features, such as radar-only cut-in promotion
-      and experimental lead, curve, cut-in, and standstill release gates. Off keeps those features monitor-only or inactive.
+      and experimental lead, curve, cut-in, uphill-demand, and standstill release gates. Off keeps those features monitor-only
+      or inactive.
     requires_attestation: true
     enablement:
     - $ref: '#/macros/offroad'

@@ -18,8 +18,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 from openpilot.sunnypilot.custom.longitudinal.lead_cushion import lead_catchup_accel_cap
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import close_stop_go_radar_id_churn_continuous
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
+from openpilot.sunnypilot.custom.longitudinal.net_demand_cap import NetDemandCapFinalStage, NetDemandCapTrace
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import LEAD_CRAWL_BREAKOUT_MIN_OPENING
-from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalOutput
+from openpilot.sunnypilot.custom.longitudinal.wiring import FAULT_CLASS_INTERNAL, CustomLongitudinalOutput
 
 
 @dataclass
@@ -1155,6 +1156,7 @@ class CustomLongitudinalFinalizer:
     # reset_lead_stop_hold: that runs on the release frame itself, and the release-slew
     # seed needs the prior hold command to bound the release step.
     self.final_a_prev = None
+    self.uphill_net_demand_cap = NetDemandCapFinalStage()
 
   @staticmethod
   def _sm_item(sm: Any, key: str) -> Any:
@@ -1474,13 +1476,41 @@ class CustomLongitudinalFinalizer:
       return default
     return v if math.isfinite(v) else default
 
-  def finalize(self, *args: Any, **kwargs: Any) -> FinalizerResult:
+  def finalize(self, sm: Any, custom_long: Any, custom_long_output: Any, is_e2e: bool,
+               model_stale: bool, dt: float, mpc_a_target: float, mpc_should_stop: bool,
+               raw_model_a_target: float, raw_model_should_stop: bool,
+               apply_stop_hold_release_slew: Any, reset_lead_stop_hold: Any) -> FinalizerResult:
     """Run ``_finalize_impl`` and record the commanded accel for the next frame.
 
     ``final_a_prev`` must see every commanded a_target — hold frames included —
     so the release-slew seed can bound the hold->release step.
     """
-    result = self._finalize_impl(*args, **kwargs)
+    result = self._finalize_impl(
+      sm, custom_long, custom_long_output, is_e2e, model_stale, dt,
+      mpc_a_target, mpc_should_stop, raw_model_a_target, raw_model_should_stop,
+      apply_stop_hold_release_slew, reset_lead_stop_hold,
+    )
+    evidence = getattr(custom_long_output, "uphill_net_demand", None)
+    trace = NetDemandCapTrace(a_target_before=result.a_target, a_target_cap=result.a_target, a_target_after=result.a_target)
+    if evidence is not None:
+      try:
+        capped_target, trace = self.uphill_net_demand_cap.apply(
+          result.a_target, evidence, should_stop=result.should_stop, dt=dt,
+        )
+        result.a_target = capped_target
+      except Exception:
+        if self.uphill_net_demand_cap.applied_last_tick:
+          custom_long.fault_class = FAULT_CLASS_INTERNAL
+        trace = replace(
+          trace,
+          mode=str(getattr(evidence, "mode", "off")),
+          effective_mode="shadow",
+          block_reason="internal_error",
+        )
+
+    telemetry = result.custom_long_output_telemetry or custom_long_output
+    if isinstance(telemetry, CustomLongitudinalOutput):
+      result.custom_long_output_telemetry = replace(telemetry, uphill_net_demand_trace=trace)
     self.final_a_prev = float(result.a_target) if math.isfinite(result.a_target) else None
     return result
 

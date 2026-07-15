@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from cereal import log
 from openpilot.sunnypilot.custom.longitudinal.coast_horizon import ACCELERATION_DUE_TO_GRAVITY, DEFAULT_COAST_DECEL, DragEstimator
 from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs
 from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
@@ -38,6 +39,7 @@ from openpilot.sunnypilot.custom.longitudinal.model_trust import (
   StopTrustLearner,
 )
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
+from openpilot.sunnypilot.custom.longitudinal.net_demand_cap import NetDemandCapTrace, NetDemandEvidence, UphillGradeEstimator
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import STOP_APPROACH_DECEL_MIN, Personality
 from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts, CustomLongitudinalStack, LongitudinalStackInputs
 
@@ -88,6 +90,21 @@ def _message_age_s(sm: Any, service: str) -> float:
   if not math.isfinite(received_at) or received_at <= 0.0:
     return float("inf")
   return max(0.0, time.monotonic() - received_at)
+
+
+def _service_healthy(sm: Any, service: str) -> bool:
+  try:
+    return bool(sm.valid[service] and sm.alive[service] and sm.freq_ok[service])
+  except (AttributeError, KeyError, TypeError):
+    return False
+
+
+def _optional_service(sm: Any, service: str) -> Any:
+  try:
+    return sm.get(service) if hasattr(sm, "get") else sm[service]
+  except Exception:
+    # Optional grade evidence must never take down baseline longitudinal control.
+    return None
 
 
 def _shadow_mode(value: Any, future_values: tuple[str, ...] = ()) -> str:
@@ -286,6 +303,7 @@ class CustomLongitudinalAdapter:
     self._corroboration_hold = CorroborationHold()
     self._cut_out_caution = CutOutCautionRecovery()
     self._drag = DragEstimator()
+    self._uphill_grade = UphillGradeEstimator()
     self._tick = 0
     self.enabled = False
     self.mode = LongitudinalMode.SCC
@@ -351,6 +369,13 @@ class CustomLongitudinalAdapter:
       except Exception:
         cut_out_value = None
       self.cut_out_lead_release_mode = _cut_out_lead_release_mode(cut_out_value)
+
+      # Isolated like every research feature: a missing/corrupt new Param must not
+      # block existing source-toggle refresh or baseline longitudinal behavior.
+      try:
+        self._uphill_grade.refresh_params(p, allow_profile_change=not self._long_active_prev)
+      except Exception:
+        pass
 
       try:
         self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
@@ -440,6 +465,44 @@ class CustomLongitudinalAdapter:
       # Never silently resume the Consumer-Local Baseline after a Fail-closed fault.
       return self._fault_output(seed_a_target)
 
+    live_pose = _optional_service(sm, 'livePose')
+    live_calibration = _optional_service(sm, 'liveCalibration')
+    orientation = getattr(live_pose, "orientationNED", None)
+    calibration_rpy = getattr(live_calibration, "rpyCalib", ()) if live_calibration is not None else ()
+    calibration_valid = getattr(live_calibration, "calStatus", None) == log.LiveCalibrationData.Status.calibrated
+    try:
+      uphill_evidence = self._uphill_grade.update(
+        car_pitch=pitch,
+        live_pose_pitch=getattr(orientation, "y", None),
+        pitch_std=getattr(orientation, "yStd", None),
+        source_age_s=_message_age_s(sm, 'livePose'),
+        source_valid=bool(
+          _service_healthy(sm, 'livePose') and _service_healthy(sm, 'liveCalibration')
+          and getattr(orientation, "valid", False) and getattr(live_pose, "inputsOK", False)
+          and getattr(live_pose, "sensorsOK", False) and getattr(live_pose, "posenetOK", False)
+        ),
+        calibration_valid=calibration_valid,
+        calibration_rpy=calibration_rpy,
+        v_ego=v_ego,
+        a_ego=a_ego,
+        long_active=long_active,
+        gas_pressed=gas_pressed,
+        brake_pressed=brake_pressed,
+        force_decel=bool(getattr(controls_state, "forceDecel", False)),
+        has_lead=any(
+          bool(getattr(lead, "status", False))
+          for lead in (getattr(radar, "leadOne", None), getattr(radar, "leadTwo", None))
+        ),
+        research_actuation_allowed=self.research_actuation_allowed,
+        dt=dt,
+      )
+    except Exception:
+      uphill_evidence = NetDemandEvidence(
+        mode=self._uphill_grade.mode,
+        ceiling=self._uphill_grade.ceiling,
+        block_reason="internal_error",
+      )
+
     try:
       model_stop_prob = self._stop_trust.update(model_should_stop, driver_disagrees=gas_pressed, dt=dt)
       model_caution_floor = self._caution_ramp.update(model_desired_accel, dt)
@@ -518,6 +581,7 @@ class CustomLongitudinalAdapter:
         research_actuation_allowed=self.research_actuation_allowed,
         t_follow=float(t_follow), accel_coast=float(accel_coast),
         actuation=result.actuation,
+        uphill_net_demand=uphill_evidence,
         debug=debug,
       )
     except Exception:
@@ -562,4 +626,6 @@ class CustomLongitudinalOutput:
   fault_class: str = ""
   # Typed Actuation Verdicts; independent of the optional debug dict below.
   actuation: ActuationVerdicts = field(default_factory=lambda: ActuationVerdicts())
+  uphill_net_demand: NetDemandEvidence = field(default_factory=NetDemandEvidence)
+  uphill_net_demand_trace: NetDemandCapTrace = field(default_factory=NetDemandCapTrace)
   debug: dict[str, Any] = field(default_factory=dict)

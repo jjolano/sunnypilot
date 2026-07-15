@@ -101,6 +101,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AllowLongitudinalResearchActuation", {PERSISTENT, BOOL, "0"}},
     // Route-log-only trace gate for validating custom longitudinal behavior; never affects actuation.
     {"LongitudinalDebugTraceMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    // Grade-conditioned requested-net-demand cap. Apply additionally requires a calibrated
+    // steep-climb profile and AllowLongitudinalResearchActuation; defaults remain inert.
+    {"UphillNetDemandCapMode", {PERSISTENT | BACKUP, STRING, "off"}},
+    {"UphillNetDemandCeiling", {PERSISTENT | BACKUP, FLOAT, "1.2"}},
+    {"UphillNetDemandGradeProfile", {PERSISTENT | DONT_LOG, STRING, ""}},
     // Dynamic follow-gap (bounded T_FOLLOW compression on approach); apply is explicit opt-in and
     // runtime-gated by CustomLongitudinalEnabled + AllowLongitudinalResearchActuation.
     {"DynamicFollowGapMode", {PERSISTENT | BACKUP, STRING, "shadow"}},
