@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from openpilot.sunnypilot.custom.longitudinal.coast_horizon import DEFAULT_COAST_DECEL, DragEstimator
+from openpilot.sunnypilot.custom.longitudinal.coast_horizon import ACCELERATION_DUE_TO_GRAVITY, DEFAULT_COAST_DECEL, DragEstimator
 from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs
 from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
   MODE_APPLY_CONSERVATIVE as CURVE_TRAFFIC_MODE_APPLY_CONSERVATIVE,
@@ -132,10 +132,11 @@ def _map_coast_mode(value: Any) -> str:
 
 
 def _coast_accel(pitch: float, rolling_coast_decel: float = DEFAULT_COAST_DECEL) -> float:
-  # Grade term inlined from longitudinal_planner.get_coast_accel (importing it would be
-  # circular); the flat-road rolling+aero term comes from the online DragEstimator instead
-  # of that helper's fixed -0.3 proxy.
-  return math.sin(_f(pitch)) * -5.65 + _f(rolling_coast_decel, default=DEFAULT_COAST_DECEL)
+  # Grade term must use the same gravity the DragEstimator removes when learning the
+  # rolling+aero term (9.81*sin), or the prediction understates grade by ~40% of the pitch
+  # term. Upstream's get_coast_accel 5.65 fudge only makes sense paired with its fixed
+  # -0.3 proxy, which the online DragEstimator replaces here.
+  return math.sin(_f(pitch)) * -ACCELERATION_DUE_TO_GRAVITY + _f(rolling_coast_decel, default=DEFAULT_COAST_DECEL)
 
 
 def _model_stop_distance(model: Any) -> float | None:

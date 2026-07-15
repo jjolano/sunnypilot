@@ -724,11 +724,14 @@ def test_curve_traffic_advisor_mode_is_non_actuating_and_wired():
 # --- DragEstimator wiring (learned flat-road coast decel) ---
 
 def test_coast_accel_uses_learned_rolling_term():
-  from openpilot.sunnypilot.custom.longitudinal.coast_horizon import DEFAULT_COAST_DECEL
+  from openpilot.sunnypilot.custom.longitudinal.coast_horizon import ACCELERATION_DUE_TO_GRAVITY, DEFAULT_COAST_DECEL
   from openpilot.sunnypilot.custom.longitudinal.wiring import _coast_accel
   assert _coast_accel(0.0, -0.5) == pytest.approx(-0.5)
   assert _coast_accel(0.0) == pytest.approx(DEFAULT_COAST_DECEL)
   assert _coast_accel(0.1, -0.3) < -0.3  # uphill adds deceleration
+  # predict-side grade uses the same gravity the DragEstimator removes when learning,
+  # so learn->predict round-trips exactly.
+  assert _coast_accel(0.05, -0.3) == pytest.approx(-0.3 - ACCELERATION_DUE_TO_GRAVITY * math.sin(0.05))
 
 
 def test_drag_estimator_learns_only_on_manual_coast_frames():
