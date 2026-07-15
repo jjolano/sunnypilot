@@ -17,6 +17,7 @@ from openpilot.sunnypilot.custom.lateral.output_governor import (
   OVER_RESPONSE_FULL_EXCESS,
   OVER_RESPONSE_MARGIN,
   OVER_RESPONSE_MIN_SCALE,
+  RELEASE_SLEW_SCALE,
   SAME_DIRECTION_LIMIT_CAP,
   SIGN_CHANGE_SLEW_RATE_BP,
   SIGN_CHANGE_SLEW_RATE_V,
@@ -433,14 +434,47 @@ def test_steering_rate_comfort_stacks_with_hard_high_rate_guard():
 
 
 def test_steering_rate_comfort_does_not_slow_unwind():
+  # Comfort/high-rate slew scalings must not apply to a same-sign decrease: the unwind
+  # runs at the full release rate, not the comfort-scaled build rate.
   gov = OutputGovernor(DT)
   for _ in range(300):
     gov.update(benign(nominal=MAX, v=20.0))
   assert gov.previous_output == pytest.approx(MAX, abs=1e-6)
   r = gov.update(benign(nominal=0.2, v=20.0, rate=80.0, desired=0.2, actual=0.2))
   assert r.reason & GovernorReason.STEERING_RATE_COMFORT
-  assert r.output_torque == pytest.approx(0.2, abs=1e-9)
-  assert not (r.reason & GovernorReason.SLEW_LIMITED)
+  release = float(np.interp(20.0, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V)) * RELEASE_SLEW_SCALE
+  assert r.output_torque == pytest.approx(MAX - release * DT, abs=1e-9)
+
+
+def test_release_slew_bounds_same_sign_decrease():
+  gov = OutputGovernor(DT)
+  v = 20.0
+  for _ in range(300):
+    gov.update(benign(nominal=MAX, v=v))
+  release = float(np.interp(v, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V)) * RELEASE_SLEW_SCALE
+  prev = gov.previous_output
+  for _ in range(200):
+    r = gov.update(benign(nominal=0.1, v=v))
+    assert abs(r.output_torque - prev) <= release * DT + 1e-9
+    prev = r.output_torque
+  assert prev == pytest.approx(0.1, abs=1e-6)  # eventually reaches the command
+
+
+def test_driver_release_bypasses_release_slew():
+  gov = OutputGovernor(DT)
+  for _ in range(300):
+    gov.update(benign(nominal=MAX, v=20.0))
+  r = gov.update(benign(nominal=0.1, v=20.0, release=True))
+  assert r.output_torque == pytest.approx(0.1, abs=1e-9)
+
+
+def test_safety_cut_bypasses_release_slew():
+  # Over-response attenuation must land in one frame, not ramp down through the backstop.
+  gov = OutputGovernor(DT)
+  gov.previous_output = 0.5
+  r = gov.update(benign(nominal=0.3, v=20.0, desired=1.0, actual=1.8))
+  assert r.reason & GovernorReason.OVER_RESPONSE
+  assert r.output_torque == pytest.approx(0.3 * OVER_RESPONSE_MIN_SCALE, abs=1e-9)
 
 
 def test_steady_state_passthrough():

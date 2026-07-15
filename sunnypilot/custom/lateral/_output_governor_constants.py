@@ -14,6 +14,12 @@ SIGN_CHANGE_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
 SIGN_CHANGE_SLEW_RATE_V = [0.90, 1.20, 1.62, 2.16, 2.70, 3.06]
 SAME_DIRECTION_LIMIT_RATE_BP = [0.0, 10.0, 20.0, 30.0, 40.0]
 SAME_DIRECTION_LIMIT_RATE_V = [1.30, 1.30, 2.10, 3.20, 3.60]
+# Same-sign decreases used to bypass the slew entirely, so any cap engagement or demand
+# collapse stepped torque down in one frame (IMU survey catch-down snaps). 1.5x the build
+# slew keeps faithful unwind untouched and only spreads step discontinuities over a few
+# frames; driver release and safety cuts (sign conflict / over-response / ISO) still drop
+# instantly.
+RELEASE_SLEW_SCALE = 1.5
 
 # --- RESTRICT: caps ---
 SAME_DIRECTION_LIMIT_CAP = 0.85

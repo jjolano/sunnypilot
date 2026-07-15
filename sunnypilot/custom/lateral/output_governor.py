@@ -10,7 +10,9 @@ one observation struct, structured as three operations with one reason bitfield:
               same-direction actuator limit, sign conflict, ISO lateral-accel, override
               release). cap is a fraction of max_output; the binding cap is the min.
   RATE-LIMIT  bound the rate of change (speed-scheduled slew, sign-change slew, high-rate
-              slew scaling), with AUGMENT permitted to relax the slew toward the command.
+              slew scaling, same-sign release backstop), with AUGMENT permitted to relax
+              the slew toward the command. Driver release and safety cuts (sign conflict /
+              over-response / ISO) bypass the release backstop and drop instantly.
 
 Application order per tick: floor (augment) -> cap+clip (restrict) -> slew (rate-limit),
 with the floor relaxing both the cap and the slew toward the unclipped command only for
@@ -412,7 +414,17 @@ class OutputGovernor:
 
     target_decreases_same_direction = (previous_sign != 0.0 and target_sign == previous_sign
                                        and abs(clipped) <= abs(self.previous_output))
-    limited = clipped if target_decreases_same_direction else h.approach(self.previous_output, clipped, slew_rate * self.dt)
+    if target_decreases_same_direction:
+      fast_release = inp.release_active or sign_conflict_active or over_scale < 1.0 or iso_cap < 1.0
+      if fast_release:
+        limited = clipped
+      else:
+        # release backstop: speed-scheduled only — comfort/high-rate slew scalings must
+        # never slow a yield toward zero
+        release_rate = h.interp(inp.v_ego, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V) * RELEASE_SLEW_SCALE
+        limited = h.approach(self.previous_output, clipped, release_rate * self.dt)
+    else:
+      limited = h.approach(self.previous_output, clipped, slew_rate * self.dt)
     output = limited + floor * (clipped - limited)
     if abs(output - clipped) > 1e-6:
       reason |= GovernorReason.SLEW_LIMITED
