@@ -117,6 +117,7 @@ class ResponseCoreResult:
   ff: float
   roll_compensation: float
   desired_lateral_jerk: float
+  measurement_rate: float
   raw_actual_lateral_jerk: float
   future_desired_lateral_accel: float
   gravity_adjusted_future_lateral_accel: float
@@ -291,6 +292,7 @@ class ResponseCore:
       ff=ff,
       roll_compensation=roll_compensation,
       desired_lateral_jerk=desired_lateral_jerk,
+      measurement_rate=measurement_rate,
       raw_actual_lateral_jerk=raw_actual_lateral_jerk,
       future_desired_lateral_accel=future_desired_lateral_accel,
       gravity_adjusted_future_lateral_accel=gravity_adjusted_future_lateral_accel,

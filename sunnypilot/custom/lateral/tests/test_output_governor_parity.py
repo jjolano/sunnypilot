@@ -158,6 +158,14 @@ class TestOutputGovernorParity:
     assert all(r.reason & (GovernorReason.UNDER_RESPONSE_GUARDED | GovernorReason.SAME_DIRECTION_LIMIT |
                            GovernorReason.OVERRIDE_RELEASE | GovernorReason.HIGH_STEERING_RATE) for r in py)
 
+  def test_target_arrival(self):
+    inputs = [make_input(nominal=0.6, desired=1.2, actual=1.0,
+                         lateral_accel_error_rate=-1.0, lat_delay=0.1,
+                         holding_torque=0.2)] * 20
+    py, cy = run_sequence(inputs)
+    assert_parity(py, cy)
+    assert any(r.reason & GovernorReason.TARGET_ARRIVAL for r in py)
+
   def test_random_fuzz(self):
     rng = np.random.default_rng(20260625)
     inputs = []

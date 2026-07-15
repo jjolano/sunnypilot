@@ -9,14 +9,13 @@ one observation struct, structured as three operations with one reason bitfield:
   RESTRICT    cap output for safety/comfort (over-response, high steering rate,
               same-direction actuator limit, sign conflict, ISO lateral-accel, override
               release). cap is a fraction of max_output; the binding cap is the min.
-  RATE-LIMIT  bound the rate of change (speed-scheduled slew, sign-change slew, high-rate
-              slew scaling, same-sign release backstop), with AUGMENT permitted to relax
-              the slew toward the command. Driver release and safety cuts (sign conflict /
-              over-response / ISO) bypass the release backstop and drop instantly.
+  RATE-LIMIT  bound the rate of change (actuator-aware build, sign-change unwind, high-rate
+              slew scaling, same-sign release backstop). Driver release and safety cuts
+              (sign conflict / over-response / ISO) bypass the release backstop and drop
+              instantly.
 
-Application order per tick: floor (augment) -> cap+clip (restrict) -> slew (rate-limit),
-with the floor relaxing both the cap and the slew toward the unclipped command only for
-clean same-sign lag cases.
+Application order per tick: floor (augment) -> cap+clip (restrict) -> target-arrival blend
+-> slew (rate-limit). The floor may relax caps but never the final actuator slew.
 
 SCOPE — this is a structural first cut. It carries v2.1's namesake refined-governor
 behaviors plus the principal hard caps (over-response from the attenuator/shaper, sign
@@ -228,6 +227,7 @@ class GovernorReason(IntFlag):
   INVALID = 1 << 10
   UNDER_RESPONSE_GUARDED = 1 << 11
   STEERING_RATE_COMFORT = 1 << 12
+  TARGET_ARRIVAL = 1 << 13
 
 
 @dataclass(frozen=True)
@@ -243,6 +243,9 @@ class OutputGovernorInputs:
   release_active: bool        # driver override / unwind release
   path_evidence_valid: bool = True
   controller_evidence_stable: bool = True
+  lateral_accel_error_rate: float = 0.0
+  lat_delay: float = 0.0
+  holding_torque: float | None = None
 
 
 @dataclass(frozen=True)
@@ -373,6 +376,30 @@ class OutputGovernor:
     if abs(clipped - inp.nominal_torque) > 1e-6:
       reason |= GovernorReason.CLIPPED
 
+    # Manual steering treats every current wheel angle as a local origin: it starts
+    # decisively, peaks near mid-stroke, then transfers into nonzero holding torque.
+    # Predicted time-to-target gives the same relative behavior without an angle-state
+    # machine, and the guards ensure this comfort blend can only reduce a clean command.
+    error = inp.desired_lateral_accel - inp.actual_lateral_accel
+    error_sign = h.sign(error)
+    arrival_inputs_valid = inp.holding_torque is not None and h.finite(
+      inp.lateral_accel_error_rate, inp.lat_delay, inp.holding_torque,
+    )
+    arrival_guarded = (floor > 0.0 or path_evidence_invalid or controller_unstable or release_guard or
+                       same_direction_guard or high_steering_rate_guard or sign_conflict_guard or
+                       over_response_guard or iso_accel_guard)
+    closing_rate = -error_sign * float(inp.lateral_accel_error_rate) if arrival_inputs_valid else 0.0
+    if arrival_inputs_valid and not arrival_guarded and error_sign != 0.0 and closing_rate > TARGET_ARRIVAL_MIN_CLOSING_RATE:
+      predicted_remaining = max(0.0, error_sign * (error + inp.lateral_accel_error_rate * max(inp.lat_delay, 0.0)))
+      time_to_target = predicted_remaining / closing_rate
+      blend_x = h.clip((TARGET_ARRIVAL_TAPER_START - time_to_target) /
+                       (TARGET_ARRIVAL_TAPER_START - TARGET_ARRIVAL_TAPER_FULL), 0.0, 1.0)
+      blend = blend_x * blend_x * (3.0 - 2.0 * blend_x)
+      holding = h.clip(float(inp.holding_torque), -abs(clipped), abs(clipped))
+      if blend > 0.0 and h.sign(holding) in (0.0, h.sign(clipped)) and abs(holding) < abs(clipped):
+        clipped += blend * (holding - clipped)
+        reason |= GovernorReason.TARGET_ARRIVAL
+
     cap_eff_without_sign_conflict = cap_without_sign_conflict + floor * (1.0 - cap_without_sign_conflict)
     abs_nominal = abs(inp.nominal_torque)
     floor_context = initial_floor > 0.0
@@ -412,7 +439,8 @@ class OutputGovernor:
     if inp.same_direction_limit:
       slew_rate = min(slew_rate, h.interp(inp.v_ego, SAME_DIRECTION_LIMIT_RATE_BP, SAME_DIRECTION_LIMIT_RATE_V))
 
-    target_decreases_same_direction = (previous_sign != 0.0 and target_sign == previous_sign
+    slew_target = 0.0 if sign_change else clipped
+    target_decreases_same_direction = (previous_sign != 0.0 and target_sign in (0.0, previous_sign)
                                        and abs(clipped) <= abs(self.previous_output))
     if target_decreases_same_direction:
       fast_release = inp.release_active or sign_conflict_active or over_scale < 1.0 or iso_cap < 1.0
@@ -424,8 +452,8 @@ class OutputGovernor:
         release_rate = h.interp(inp.v_ego, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V) * RELEASE_SLEW_SCALE
         limited = h.approach(self.previous_output, clipped, release_rate * self.dt)
     else:
-      limited = h.approach(self.previous_output, clipped, slew_rate * self.dt)
-    output = limited + floor * (clipped - limited)
+      limited = h.approach(self.previous_output, slew_target, slew_rate * self.dt)
+    output = limited
     if abs(output - clipped) > 1e-6:
       reason |= GovernorReason.SLEW_LIMITED
 

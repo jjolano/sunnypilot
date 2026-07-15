@@ -21,7 +21,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import UnderresponseSentinel, write_underresponse_debug
 from openpilot.sunnypilot.custom.lateral.near_zero_recenter_observer import NearZeroRecenterObserver
-from openpilot.sunnypilot.custom.lateral.output_governor import OutputGovernor, OutputGovernorInputs
+from openpilot.sunnypilot.custom.lateral.output_governor import GovernorReason, OutputGovernor, OutputGovernorInputs
 from openpilot.sunnypilot.custom.lateral.oscillation_observer import OscillationObserver
 from openpilot.sunnypilot.custom.lateral.response_core import ResponseCore, ResponseCoreInputs, ROLL_COMPENSATION_GAIN
 
@@ -187,6 +187,13 @@ class LatControlTorqueV21(LatControl):
     )
 
     nominal_output_torque = output_torque
+    holding_output_torque = (
+      self.response_core.pid.i + self.response_core.pid.f
+      if bool(getattr(self.extension, "_nnlc_enabled", False))
+      else self.response_core._torque_from_lateral_accel(
+        self.response_core.pid.i + self.response_core.pid.f, self.torque_params,
+      )
+    )
     same_direction_limit = self._same_direction_limit(
       bool(steer_limited_by_safety), nominal_output_torque, rc.setpoint, rc.measurement
     )
@@ -203,6 +210,9 @@ class LatControlTorqueV21(LatControl):
       release_active=bool(CS.steeringPressed),
       path_evidence_valid=self._under_response_path_evidence_valid,
       controller_evidence_stable=not (rc.same_sign_unwind or rc.measurement_reset),
+      lateral_accel_error_rate=rc.desired_lateral_jerk - rc.measurement_rate,
+      lat_delay=max(lat_delay, self.dt),
+      holding_torque=holding_output_torque,
     ))
     output_torque = governed.output_torque
     ur_debug = self.underresponse_sentinel.update(
@@ -248,8 +258,8 @@ class LatControlTorqueV21(LatControl):
     adaptive.oscillationClassification = int(osc_debug.classification)
     adaptive.releaseActive = bool(CS.steeringPressed)
     adaptive.nominalOutput = float(-nominal_output_torque_log)
-    adaptive.shapingActive = False
-    adaptive.shapingReason = 0
+    adaptive.shapingActive = bool(governed.reason & GovernorReason.TARGET_ARRIVAL)
+    adaptive.shapingReason = int(GovernorReason.TARGET_ARRIVAL) if adaptive.shapingActive else 0
     adaptive.unshapedOutput = float(-nominal_output_torque_log)
     adaptive.outputCap = float(governed.cap)
     adaptive.modelConfidence = float(getattr(rc, "model_confidence", 0.0) or 0.0)

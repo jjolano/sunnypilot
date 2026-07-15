@@ -5,21 +5,29 @@ module share the same values without public API changes.
 """
 
 # --- RATE-LIMIT: slew schedules (refined governor) ---
-# Route 00000274: lateral measured smooth (jerk p99 ~1.0 m/s^3), but the mid/high-speed slew
-# ceilings were trimmed ~10% to soften fast transitions and direction reversals without hurting
-# low-speed maneuvering responsiveness (0 and 5 m/s entries left unchanged). Revert if tracking lags.
+# Routes 00000296/297: Toyota's downstream 15-up/25-down raw limits bound ~20% of
+# hands-off frames and produce the notchy wheel-angle/jerk tail. Keep v2.1 just below
+# those limits: 0.8/s = 12 raw/frame build and 1.25/s = 18.75 raw/frame release at
+# STEER_MAX=1500. Driver and safety releases still bypass this comfort backstop.
 OUTPUT_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
-OUTPUT_SLEW_RATE_V = [1.40, 2.00, 2.70, 3.80, 4.50, 5.05]
+OUTPUT_SLEW_RATE_V = [0.80, 0.80, 0.80, 0.80, 0.80, 0.80]
 SIGN_CHANGE_SLEW_RATE_BP = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0]
-SIGN_CHANGE_SLEW_RATE_V = [0.90, 1.20, 1.62, 2.16, 2.70, 3.06]
+SIGN_CHANGE_SLEW_RATE_V = [1.25, 1.25, 1.25, 1.25, 1.25, 1.25]
 SAME_DIRECTION_LIMIT_RATE_BP = [0.0, 10.0, 20.0, 30.0, 40.0]
 SAME_DIRECTION_LIMIT_RATE_V = [1.30, 1.30, 2.10, 3.20, 3.60]
 # Same-sign decreases used to bypass the slew entirely, so any cap engagement or demand
-# collapse stepped torque down in one frame (IMU survey catch-down snaps). 1.5x the build
+# collapse stepped torque down in one frame (IMU survey catch-down snaps). 1.5625x the build
 # slew keeps faithful unwind untouched and only spreads step discontinuities over a few
 # frames; driver release and safety cuts (sign conflict / over-response / ISO) still drop
 # instantly.
-RELEASE_SLEW_SCALE = 1.5
+RELEASE_SLEW_SCALE = 1.5625
+
+# Manual steering reaches peak wheel rate near mid-stroke, then blends into holding
+# torque. Begin the blend one actuator delay plus 0.25 s before predicted arrival and
+# finish with 0.05 s remaining. The closing-rate floor rejects noisy near-static timing.
+TARGET_ARRIVAL_TAPER_START = 0.25
+TARGET_ARRIVAL_TAPER_FULL = 0.05
+TARGET_ARRIVAL_MIN_CLOSING_RATE = 0.05
 
 # --- RESTRICT: caps ---
 SAME_DIRECTION_LIMIT_CAP = 0.85

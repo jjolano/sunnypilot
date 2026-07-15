@@ -1,6 +1,6 @@
 """Invariant (property) tests for the unified output governor first cut.
 
-These gate the governor's INVARIANTS — safety bound, reset, floor-relaxes-only,
+These gate the governor's INVARIANTS — safety bound, reset, floor-relaxes-cap-only,
 cap monotonicity, slew bounding, sign-change rate, passthrough. They do NOT certify feel;
 that requires engaged-route replay against legacy v2.1 (see the ADR).
 """
@@ -33,14 +33,17 @@ MAX = 1.0
 
 
 def benign(nominal=0.0, v=20.0, rate=0.0, desired=0.0, actual=0.0,
-           same_dir=False, release=False, active=True, path_valid=True, controller_stable=True):
+           same_dir=False, release=False, active=True, path_valid=True, controller_stable=True,
+           error_rate=0.0, lat_delay=0.0, holding=None):
   """An input with no cap/floor triggers unless overridden."""
   return OutputGovernorInputs(active=active, v_ego=v, steering_rate_deg=rate,
                               nominal_torque=nominal, max_output=MAX,
                               desired_lateral_accel=desired, actual_lateral_accel=actual,
                               same_direction_limit=same_dir, release_active=release,
                               path_evidence_valid=path_valid,
-                              controller_evidence_stable=controller_stable)
+                              controller_evidence_stable=controller_stable,
+                              lateral_accel_error_rate=error_rate, lat_delay=lat_delay,
+                              holding_torque=holding)
 
 
 def test_output_never_exceeds_max_output():
@@ -106,6 +109,50 @@ def test_slew_bounds_rate_of_change():
     assert abs(r.output_torque - prev) <= slew * DT + 1e-9
     prev = r.output_torque
   assert prev == pytest.approx(MAX, abs=1e-6)  # eventually reaches the command
+
+
+def test_actuator_slew_matches_toyota_raw_limits():
+  build = float(np.interp(20.0, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V))
+  release = build * RELEASE_SLEW_SCALE
+
+  assert build * DT * 1500 == pytest.approx(12.0)
+  assert release * DT * 1500 == pytest.approx(18.75)
+
+
+def test_under_response_floor_cannot_bypass_final_slew():
+  r = OutputGovernor(DT).update(benign(nominal=0.89, v=8.0, desired=2.0, actual=0.5))
+  build = float(np.interp(8.0, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V))
+
+  assert r.floor == 1.0
+  assert r.output_torque == pytest.approx(build * DT)
+
+
+@pytest.mark.parametrize("direction", [1.0, -1.0])
+def test_target_arrival_blends_toward_holding_torque(direction):
+  arriving = OutputGovernor(DT)
+  arriving.previous_output = direction * 0.4
+  r_arriving = arriving.update(benign(nominal=direction * 0.6, desired=direction * 1.2, actual=direction,
+                                      error_rate=direction * -1.0, lat_delay=0.1, holding=direction * 0.2))
+
+  far = OutputGovernor(DT)
+  far.previous_output = direction * 0.4
+  r_far = far.update(benign(nominal=direction * 0.6, desired=direction * 1.5, actual=direction,
+                            error_rate=direction * -0.5, lat_delay=0.1, holding=direction * 0.2))
+
+  assert r_arriving.reason & GovernorReason.TARGET_ARRIVAL
+  assert abs(r_arriving.output_torque) < 0.4 < abs(r_far.output_torque)
+  assert not (r_far.reason & GovernorReason.TARGET_ARRIVAL)
+
+
+def test_sign_change_unwinds_to_zero_before_opposite_build():
+  gov = OutputGovernor(DT)
+  gov.previous_output = 0.01
+
+  zero = gov.update(benign(nominal=-0.5))
+  opposite = gov.update(benign(nominal=-0.5))
+
+  assert zero.output_torque == 0.0
+  assert opposite.output_torque == pytest.approx(-OUTPUT_SLEW_RATE_V[0] * DT)
 
 
 def test_floor_allows_clean_low_speed_catchup_and_fades_at_speed():
@@ -454,10 +501,10 @@ def test_release_slew_bounds_same_sign_decrease():
   release = float(np.interp(v, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V)) * RELEASE_SLEW_SCALE
   prev = gov.previous_output
   for _ in range(200):
-    r = gov.update(benign(nominal=0.1, v=v))
+    r = gov.update(benign(nominal=0.0, v=v))
     assert abs(r.output_torque - prev) <= release * DT + 1e-9
     prev = r.output_torque
-  assert prev == pytest.approx(0.1, abs=1e-6)  # eventually reaches the command
+  assert prev == pytest.approx(0.0, abs=1e-6)  # eventually reaches the command
 
 
 def test_driver_release_bypasses_release_slew():

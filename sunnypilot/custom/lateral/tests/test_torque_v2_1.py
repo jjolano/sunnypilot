@@ -248,6 +248,24 @@ def test_controller_passes_controller_evidence_to_governor():
   assert captured["inp"].controller_evidence_stable is True
 
 
+def test_controller_passes_relative_arrival_inputs_to_governor():
+  c = make_controller()
+  vm = FakeVM()
+  captured = {}
+  original_update = c.governor.update
+
+  def capture_update(inp):
+    captured["inp"] = inp
+    return original_update(inp)
+
+  c.governor.update = capture_update
+  c.update(True, make_cs(v_ego=12.0, angle=15.0), vm, make_params(), False, 0.05, make_pose(), False, 0.2)  # type: ignore[arg-type]
+
+  assert math.isfinite(captured["inp"].lateral_accel_error_rate)
+  assert captured["inp"].lat_delay == pytest.approx(0.2)
+  assert math.isfinite(captured["inp"].holding_torque)
+
+
 def test_controller_passes_path_evidence_to_governor():
   c = make_controller()
   vm = FakeVM()
