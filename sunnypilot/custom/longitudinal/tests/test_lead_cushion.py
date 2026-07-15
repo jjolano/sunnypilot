@@ -55,6 +55,12 @@ def test_speedup_guard_zero_when_no_excess_gap():
   assert lead_speedup_guard(v_ego=20.0, v_lead=20.0, d_rel=18.0, follow_gap=20.0, proposed_accel=1.0) == 0.0
 
 
+def test_speedup_guard_allows_inside_gap_launch_that_stays_slower_than_lead():
+  assert lead_speedup_guard(
+    v_ego=0.0, v_lead=0.44, d_rel=4.84, follow_gap=5.0, proposed_accel=0.18,
+  ) == pytest.approx(0.18)
+
+
 def test_speedup_guard_passes_through_non_positive():
   assert lead_speedup_guard(v_ego=20.0, v_lead=15.0, d_rel=30.0, follow_gap=20.0, proposed_accel=-0.5) == -0.5
 

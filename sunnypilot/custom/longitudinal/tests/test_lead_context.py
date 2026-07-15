@@ -276,6 +276,28 @@ def test_replacement_candidate_blocks_progress_suppress_only():
   assert debug["lead_replacement_candidate_idx"] == 1
 
 
+def test_close_stop_go_duplicate_radar_tracks_do_not_block_progress():
+  moving = _state(
+    0, lc.LEAD_AUTHORITY_PROGRESS_ALLOWED, track_id=2103,
+    d_rel=4.68, v_lead=0.61, v_rel=0.65, path_y_rel=-0.04,
+    risk=0.45, confidence=0.80,
+  )
+  duplicate = _state(
+    1, lc.LEAD_AUTHORITY_PHYSICAL, track_id=2113,
+    d_rel=4.84, v_lead=0.44, v_rel=0.58, path_y_rel=-0.04,
+    risk=0.45, confidence=0.95,
+  )
+
+  same_car = lc.select_primary_lead_context((moving, duplicate))
+  different_car = lc.select_primary_lead_context((moving, _state(
+    1, lc.LEAD_AUTHORITY_PHYSICAL, track_id=2113,
+    d_rel=9.0, v_lead=0.0, v_rel=0.0, path_y_rel=0.0,
+  )))
+
+  assert same_car.lead_progress_allowed is True
+  assert different_car.lead_progress_allowed is False
+
+
 def test_shadow_tracker_benign_far_dropout_is_normal():
   trk = lc.LeadShadowTracker(0)
   stable = LeadConfidenceState(status=True, stable=True, age=1.0)

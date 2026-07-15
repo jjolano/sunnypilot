@@ -1,6 +1,7 @@
 """Tests for the shadow-only curve-traffic advisor module and its stack/wiring integration."""
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 from types import SimpleNamespace
 
@@ -17,9 +18,11 @@ from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
   CurveTrafficAdvisorResult,
   predict_curve_traffic_advisor,
 )
-from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
+from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
+from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs
 from openpilot.sunnypilot.custom.longitudinal.stack import (
+  CURVE_TRAFFIC_CORROBORATION_S,
   CustomLongitudinalStack,
   LongitudinalStackInputs,
 )
@@ -279,6 +282,37 @@ def test_curve_traffic_advisor_mode_does_not_change_actuation():
   assert shadow.debug["curve_traffic_mode"] == MODE_SHADOW
   assert shadow.debug["curve_traffic_active"] is True
   assert shadow.debug["curve_traffic_advisor_fault"] is False
+
+
+def test_curve_traffic_apply_waits_for_persistent_vision_path_agreement():
+  inp = LongitudinalStackInputs(
+    v_ego=20.0, v_cruise=22.0, seed_a_target=0.4,
+    curve_traffic_advisor_mode=MODE_APPLY_CONSERVATIVE,
+    curve_confidence=CurveSpeedConfidenceInputs(vision_active=True, vision_a_target=-0.5),
+    model_msg=circular_arc_path(n=24, radius=100.0),
+    mode=LongitudinalMode.SCC, long_active=True,
+    sources=SourceToggles(scc_curve_vision_enabled=True),
+    research_actuation_allowed=True,
+  )
+  stack = CustomLongitudinalStack()
+  result = None
+  for _ in range(round(CURVE_TRAFFIC_CORROBORATION_S / DT) - 1):
+    result = stack.update(inp, DT)
+  assert result is not None
+  assert result.actuation.curve_traffic_advisor is not None
+  assert result.actuation.curve_traffic_advisor.eligible is False
+  assert "corroboration_pending" in result.actuation.curve_traffic_advisor.block_reason
+
+  result = stack.update(inp, DT)
+  assert result.actuation.curve_traffic_advisor is not None
+  assert result.actuation.curve_traffic_advisor.eligible is True
+
+  result = stack.update(
+    replace(inp, curve_confidence=CurveSpeedConfidenceInputs(vision_active=False, vision_a_target=-0.5)),
+    DT,
+  )
+  assert result.actuation.curve_traffic_advisor is not None
+  assert result.actuation.curve_traffic_advisor.eligible is False
 
 
 def test_curve_traffic_advisor_fault_does_not_leak():

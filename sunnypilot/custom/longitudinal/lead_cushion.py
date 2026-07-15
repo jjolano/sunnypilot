@@ -75,15 +75,15 @@ def lead_speedup_guard(v_ego: float, v_lead: float, d_rel: float, follow_gap: fl
     return proposed_accel
   v_ego = max(0.0, float(v_ego))
   v_lead = max(0.0, float(v_lead))
-  excess_gap = float(d_rel) - float(follow_gap)
-  if excess_gap <= 0.0:
-    return 0.0  # no room to speed up at all
 
   # Project ego speed if we apply proposed_accel for the lookahead; the lead holds v_lead.
   v_ego_next = v_ego + proposed_accel * float(dt_lookahead)
   closing_next = v_ego_next - v_lead
   if closing_next <= 0.0:
     return proposed_accel  # still not overtaking the lead's speed
+  excess_gap = float(d_rel) - float(follow_gap)
+  if excess_gap <= 0.0:
+    return 0.0  # inside the target gap, only a speed-matching launch is safe
   # Required decel to bleed that closing back to zero over the remaining excess gap.
   required = -(closing_next * closing_next) / (2.0 * max(excess_gap, 1e-3))
   if required >= max_required_decel:

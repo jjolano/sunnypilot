@@ -79,6 +79,10 @@ DOWNWARD_TARGET_SMOOTH_RISK_REASONS = frozenset((
   "invalid_data",
   "fault",
 ))
+# Route 296's cutout/model-lag curve artifact never sustained agreement between the
+# path advisor and active braking SCC vision for 1 s; route 297's real turn sustained
+# it for 5.75 s. Keep the apply verdict closed until both existing estimators agree.
+CURVE_TRAFFIC_CORROBORATION_S = 1.5
 
 
 def _f(value: object, default: float = 0.0) -> float:
@@ -323,6 +327,7 @@ class CustomLongitudinalStack:
     self._shadow_lead_context = LeadContextTracker()
     self._prev_smoothed_a_target: float | None = None
     self._creep_calm_prev_a: float | None = None
+    self._curve_traffic_corroboration_s = 0.0
 
   def reset(self) -> None:
     self._lead_confidence = (LeadConfidenceTracker(), LeadConfidenceTracker())
@@ -330,6 +335,7 @@ class CustomLongitudinalStack:
     self._shadow_lead_context = LeadContextTracker()
     self._prev_smoothed_a_target = None
     self._creep_calm_prev_a = None
+    self._curve_traffic_corroboration_s = 0.0
 
   def update(self, inp: LongitudinalStackInputs, dt: float, *, collect_debug: bool = True) -> LongitudinalStackResult:
     # Mode admission happens first: no stateful tracker or candidate construction sees
@@ -562,6 +568,24 @@ class CustomLongitudinalStack:
             force_slow_decel=act_inp.force_slow_decel,
           ),
         )
+        curve_traffic_corroborated = bool(
+          curve_traffic_advisor_result.eligible and
+          curve_traffic_advisor_result.a_curve_cap_proposed < 0.0 and
+          act_inp.curve_confidence.vision_active and
+          act_inp.curve_confidence.vision_a_target < 0.0
+        )
+        self._curve_traffic_corroboration_s = (
+          self._curve_traffic_corroboration_s + max(0.0, dt)
+          if curve_traffic_corroborated else 0.0
+        )
+        if (curve_traffic_advisor_result.eligible and
+            self._curve_traffic_corroboration_s + 1e-9 < CURVE_TRAFFIC_CORROBORATION_S):
+          block_reason = ",".join(filter(None, (
+            "corroboration_pending", curve_traffic_advisor_result.block_reason,
+          )))
+          curve_traffic_advisor_result = replace(
+            curve_traffic_advisor_result, eligible=False, block_reason=block_reason,
+          )
         curve_traffic_advisor_result = _downgrade_research_apply(
           curve_traffic_advisor_result, inp.research_actuation_allowed,
           apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
@@ -570,8 +594,11 @@ class CustomLongitudinalStack:
         if collect_debug:
           curve_traffic_advisor_debug = curve_traffic_advisor_result.debug_dict()
       except Exception:
+        self._curve_traffic_corroboration_s = 0.0
         curve_traffic_advisor_fault = True
         curve_traffic_advisor_result = None
+    else:
+      self._curve_traffic_corroboration_s = 0.0
     if collect_debug:
       try:
         standstill_release_confidence_result = predict_standstill_release_confidence(

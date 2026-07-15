@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 import math
 from typing import Any, cast
 
-from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LEAD_CONFIDENCE_TRACK_UNKNOWN, LeadConfidenceState
+from openpilot.sunnypilot.custom.longitudinal.lead_confidence import (
+  LEAD_CONFIDENCE_TRACK_UNKNOWN,
+  LeadConfidenceState,
+  close_stop_go_radar_id_churn_continuous,
+)
 from openpilot.sunnypilot.custom.longitudinal.lead_prediction import predict_lead_trajectory
 
 
@@ -1298,7 +1302,8 @@ def select_primary_lead_context(states: tuple[LeadRelevanceState, ...], dominant
   replacement = _replacement_candidate(states, physical, behavior)
   alternate_threat_active = bool(any(_alternate_threat(state, behavior) for state in states) or replacement.active)
   physical_conflicts_with_behavior = bool(
-    physical is not None and behavior is not None and physical.lead_idx != behavior.lead_idx and (
+    physical is not None and behavior is not None and physical.lead_idx != behavior.lead_idx and
+    not _same_lead_duplicate(physical, behavior) and (
       physical.shadow or physical.authority != LEAD_AUTHORITY_PROGRESS_ALLOWED or _is_close_or_closing(physical) or physical.v_lead <= 0.2
     )
   )
@@ -1397,6 +1402,8 @@ def _previous_physical_state(states: tuple[LeadRelevanceState, ...], previous_id
 
 
 def _same_physical_identity(a: LeadRelevanceState, b: LeadRelevanceState) -> bool:
+  if _same_lead_duplicate(a, b):
+    return True
   a_track_known = a.track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN
   b_track_known = b.track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN
   if a_track_known or b_track_known:
@@ -1485,7 +1492,17 @@ def _same_lead_duplicate(state: LeadRelevanceState, behavior: LeadRelevanceState
   state_track_known = state.track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN
   behavior_track_known = behavior.track_id != LEAD_CONFIDENCE_TRACK_UNKNOWN
   if state_track_known or behavior_track_known:
-    return bool(state_track_known and behavior_track_known and state.track_id == behavior.track_id)
+    return bool(
+      state_track_known and behavior_track_known and (
+        state.track_id == behavior.track_id or
+        close_stop_go_radar_id_churn_continuous(
+          state.track_id, behavior.track_id,
+          state.d_rel, behavior.d_rel,
+          state.v_lead, behavior.v_lead,
+          state.y_rel, behavior.y_rel,
+        )
+      )
+    )
   return bool(
     abs(state.d_rel - behavior.d_rel) <= LEAD_CONTEXT_DUPLICATE_D_REL_TOL and
     abs(state.v_lead - behavior.v_lead) <= LEAD_CONTEXT_DUPLICATE_V_TOL and
