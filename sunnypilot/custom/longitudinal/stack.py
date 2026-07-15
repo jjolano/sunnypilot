@@ -37,7 +37,12 @@ from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfide
 from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
 from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence import predict_standstill_release_confidence
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles, admitted_evidence
-from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates, map_coast_cap
+from openpilot.sunnypilot.custom.longitudinal.policy import (
+  LEAD_REST_POINT_HARD_BRAKE_A,
+  LongitudinalScene,
+  build_candidates,
+  map_coast_cap,
+)
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.dynamic_safety_floor import (
   compute_dynamic_safety_floor,
@@ -328,6 +333,7 @@ class CustomLongitudinalStack:
     self._prev_smoothed_a_target: float | None = None
     self._creep_calm_prev_a: float | None = None
     self._curve_traffic_corroboration_s = 0.0
+    self._lead_hard_brake_s = 0.0
 
   def reset(self) -> None:
     self._lead_confidence = (LeadConfidenceTracker(), LeadConfidenceTracker())
@@ -336,6 +342,7 @@ class CustomLongitudinalStack:
     self._prev_smoothed_a_target = None
     self._creep_calm_prev_a = None
     self._curve_traffic_corroboration_s = 0.0
+    self._lead_hard_brake_s = 0.0
 
   def update(self, inp: LongitudinalStackInputs, dt: float, *, collect_debug: bool = True) -> LongitudinalStackResult:
     # Mode admission happens first: no stateful tracker or candidate construction sees
@@ -433,6 +440,12 @@ class CustomLongitudinalStack:
     lead_v_rel = selected_lead.v_rel if has_lead else 0.0
     lead_a_k = selected_lead.a_k if has_lead else 0.0
     lead_a_tau = _f(getattr(selected_lead.lead, "aLeadTau", 1.5), 1.5) if selected_lead.lead is not None else 1.5
+    # Rest-point coast persistence: sustained hard braking on the selected lead (anti-churn
+    # gate for the lead_rest_point_coast advisory; see policy LEAD_REST_POINT_*).
+    if has_lead and lead_kinematics_valid and lead_a_k < LEAD_REST_POINT_HARD_BRAKE_A:
+      self._lead_hard_brake_s += max(0.0, float(dt))
+    else:
+      self._lead_hard_brake_s = 0.0
     t_follow = _f(inp.t_follow, FOLLOW_TIME_GAP_S)
     if t_follow <= 0.0:
       t_follow = FOLLOW_TIME_GAP_S
@@ -462,7 +475,8 @@ class CustomLongitudinalStack:
       has_lead=has_lead, lead_a_target=policy_lead_a_target, lead_should_stop=policy_lead_should_stop,
       lead_gap_excess=policy_lead_gap_excess, lead_progress_allowed=policy_lead_progress_allowed,
       lead_v=lead_v, lead_d_rel=lead_d_rel, lead_v_rel=lead_v_rel, lead_a_k=lead_a_k,
-      lead_a_tau=lead_a_tau, follow_gap=follow_gap, lead_kinematics_valid=lead_kinematics_valid,
+      lead_a_tau=lead_a_tau, lead_hard_brake_s=self._lead_hard_brake_s,
+      follow_gap=follow_gap, lead_kinematics_valid=lead_kinematics_valid,
       lead_confidence=lead_confidence, lead_stable=lead_stable,
       lead_shadow_active=lead_shadow_active, alternate_threat_active=alternate_threat_active,
       model_should_stop=act_inp.model_should_stop, model_stop_distance=act_inp.model_stop_distance,

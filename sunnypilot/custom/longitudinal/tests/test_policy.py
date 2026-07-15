@@ -1323,3 +1323,40 @@ def test_hard_trusted_stop_commit_bypasses_caution_floor():
   d = decide(build_candidates(scene), LongitudinalMode.SCC, LIMITS)
   assert d.a_target < -1.5
   assert d.should_stop
+
+
+def _hard_braker_scene(**over):
+  base = dict(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0,
+              has_lead=True, lead_a_target=-0.3, lead_v=10.0, lead_d_rel=45.0,
+              lead_v_rel=-5.0, lead_a_k=-1.5, lead_hard_brake_s=1.5)
+  base.update(over)
+  return LongitudinalScene(**base)
+
+
+def test_rest_point_coast_arms_on_persistent_hard_braker():
+  cands = [c for c in build_candidates(_hard_braker_scene()) if c.intent == "lead_rest_point_coast"]
+  assert len(cands) == 1
+  # inside the lift window with default flat coast: pure lift-off, clamped to natural coast
+  assert cands[0].a_target == pytest.approx(-0.25)
+  assert cands[0].role is CandidateRole.ADVISORY_CAP
+
+
+def test_rest_point_coast_requires_persistence():
+  cands = [c for c in build_candidates(_hard_braker_scene(lead_hard_brake_s=0.5))
+           if c.intent == "lead_rest_point_coast"]
+  assert cands == []
+
+
+def test_rest_point_coast_silent_when_rest_point_far():
+  # strong learned coast + distant rest point: coast horizon says CRUISE -> no candidate
+  scene = _hard_braker_scene(lead_d_rel=200.0, lead_a_k=-1.01, accel_coast=-1.0)
+  cands = [c for c in build_candidates(scene) if c.intent == "lead_rest_point_coast"]
+  assert cands == []
+
+
+def test_rest_point_coast_never_requests_braking_below_coast():
+  # short runway: horizon wants a real brake, but the advisory clamps to natural coast
+  scene = _hard_braker_scene(lead_d_rel=15.0, lead_v=3.5)
+  cands = [c for c in build_candidates(scene) if c.intent == "lead_rest_point_coast"]
+  assert len(cands) == 1
+  assert cands[0].a_target == pytest.approx(-0.25)

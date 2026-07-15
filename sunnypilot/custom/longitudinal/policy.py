@@ -138,6 +138,18 @@ _LEAD_SOFTEN_CEILING = -0.05                # m/s^2; near-coast ceiling, never p
 _LEAD_RELEVANCE_AUTHORITY_K = 2.5      # decel allowance as a multiple of required decel
 _LEAD_RELEVANCE_COAST_MARGIN = 0.1     # m/s^2; a gentle coast is always allowed
 
+# Hard-braker rest-point coast: a persistently hard-braking lead defines a future
+# constraint point — its constant-decel rest distance — so lift off per the coast horizon
+# now instead of waiting for closing speed to build. Corpus 2026-07-15 (11 far episodes,
+# 0 interventions): peaks ran ~0.4 m/s^2 beyond the constant-decel need and episodes
+# resolved with 2.6 s median time gap unused (MPC's Gaussian a_lead decay assumes the
+# braking fades; the relevance cap above is reactive by design). COAST authority only —
+# never below natural coast — so a phantom (10% of corpus armings) costs a brief lift;
+# braking depth stays owned by the MPC/lead physics floor, which advisory caps cannot relax.
+LEAD_REST_POINT_HARD_BRAKE_A = -1.0  # m/s^2; sustained lead decel that defines a rest point
+LEAD_REST_POINT_PERSIST_S = 1.0      # s; anti-churn persistence before the advisory arms
+LEAD_REST_POINT_MARGIN_M = 6.0       # m; arrive short of the projected rest point
+
 # Inside-gap compression/recovery thresholds (Phase 3): controlled compression for
 # stable/confident same-lead braking when projected collision risk is low/moderate.
 # Strong/flickery/new-stop threats are left to the normal lead-follow physical hazard.
@@ -181,6 +193,7 @@ class LongitudinalScene:
   lead_v_rel: float = 0.0
   lead_a_k: float = 0.0
   lead_a_tau: float = 1.5
+  lead_hard_brake_s: float = 0.0  # s of sustained leadOne aLeadK < LEAD_REST_POINT_HARD_BRAKE_A
   follow_gap: float = 0.0
   lead_kinematics_valid: bool = True
   # lead context (alignment gating)
@@ -722,6 +735,22 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
       if cushion.coast_first and cushion.a_target < 0.0:
         cands.append(LongitudinalCandidate(cushion.a_target, CandidateRole.ADVISORY_CAP,
                                            EvidenceClass.LEAD, "lead_cushion"))
+    # hard-braker rest-point coast (see LEAD_REST_POINT_* constants): treat a persistently
+    # hard-braking lead as a future constraint at its rest distance and lift off per the
+    # coast horizon. Emitted only inside the lift window (CRUISE = too far, stays silent);
+    # clamped to [natural coast, 0] so it can only request lift-off, never braking.
+    if (scene.lead_hard_brake_s >= LEAD_REST_POINT_PERSIST_S and scene.lead_v > 0.0
+        and scene.lead_d_rel > 0.0 and scene.lead_a_k < LEAD_REST_POINT_HARD_BRAKE_A):
+      rest_distance = scene.lead_d_rel + scene.lead_v ** 2 / (2.0 * abs(scene.lead_a_k)) - LEAD_REST_POINT_MARGIN_M
+      if rest_distance > 0.0:
+        coast = _usable_coast_decel(scene)
+        horizon = coast_horizon(CoastHorizonInputs(
+          v_ego=scene.v_ego, v_target=0.0, distance_to_constraint=rest_distance, accel_coast=coast,
+        ))
+        if horizon.action is not CoastAction.CRUISE:
+          cands.append(LongitudinalCandidate(min(0.0, max(horizon.recommended_accel, coast)),
+                                             CandidateRole.ADVISORY_CAP, EvidenceClass.LEAD,
+                                             "lead_rest_point_coast"))
 
   # model stop-approach hazard (E2E/SCC only via the mode gate), trust-gated: a low-confidence
   # or uncorroborated model stop is softened toward a gentle precautionary decel and is not
