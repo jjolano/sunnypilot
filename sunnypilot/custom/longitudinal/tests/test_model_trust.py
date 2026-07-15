@@ -60,7 +60,7 @@ def test_tiny_radar_closing_does_not_corroborate_stop():
 
 def test_trust_monotonic_in_stop_prob():
   accels = [gate_model_stop(True, -3.0, stop_prob=p).desired_accel for p in (0.0, 0.3, 0.6, 0.9)]
-  for a, b in zip(accels, accels[1:]):
+  for a, b in zip(accels, accels[1:], strict=False):
     assert b <= a + 1e-9  # higher confidence -> more (not less) braking
 
 
@@ -158,3 +158,50 @@ def test_caution_ramp_never_deeper_than_clamp_or_shallower_than_gentle():
   for _ in range(100):
     ramp.update(5.0, 0.05)
   assert ramp.floor == GENTLE_CAUTION_DECEL
+
+
+def _lead(d_rel: float, y_rel: float, v_rel: float, status: bool = True):
+  from types import SimpleNamespace
+  return SimpleNamespace(status=status, dRel=d_rel, yRel=y_rel, vRel=v_rel)
+
+
+def test_cut_out_recovery_arms_on_lateral_exit_of_closing_lead_and_expires():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import CUT_OUT_RECOVERY_S, CutOutCautionRecovery
+  rec = CutOutCautionRecovery()
+  # Route 296 shape: closing turner drifts out laterally over the last second, then vanishes.
+  for y in (0.2, 0.5, 0.9, 1.4, 1.8):
+    assert rec.update(_lead(62.0, y, -1.4), None, 0.05) is False
+  assert rec.update(None, None, 0.05) is True          # departure with exit evidence
+  ticks = 0
+  while rec.update(None, None, 0.05):
+    ticks += 1
+  assert ticks == pytest.approx(CUT_OUT_RECOVERY_S / 0.05, abs=2)
+
+
+def test_cut_out_recovery_ignores_straight_ahead_flicker():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import CutOutCautionRecovery
+  rec = CutOutCautionRecovery()
+  for _ in range(20):
+    rec.update(_lead(40.0, 0.2, -2.0), None, 0.05)
+  assert rec.update(None, None, 0.05) is False          # in-path flicker: hold caution
+
+
+def test_cut_out_recovery_requires_closing_context_and_distance():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import CutOutCautionRecovery
+  rec = CutOutCautionRecovery()
+  for _ in range(20):
+    rec.update(_lead(62.0, 1.8, +0.5), None, 0.05)      # opening lead
+  assert rec.update(None, None, 0.05) is False
+  rec = CutOutCautionRecovery()
+  for _ in range(20):
+    rec.update(_lead(8.0, 1.8, -1.0), None, 0.05)       # under the radar nose at a stop
+  assert rec.update(None, None, 0.05) is False
+
+
+def test_cut_out_recovery_cancelled_by_reappearing_closing_lead():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import CutOutCautionRecovery
+  rec = CutOutCautionRecovery()
+  for y in (0.9, 1.4, 1.8):
+    rec.update(_lead(62.0, y, -1.4), None, 0.05)
+  assert rec.update(None, None, 0.05) is True
+  assert rec.update(_lead(45.0, 0.0, -2.0), None, 0.05) is False  # new closing threat: caution back

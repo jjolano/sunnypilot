@@ -18,7 +18,12 @@ Principles (from the trajectory/trust review):
 """
 from __future__ import annotations
 
+import math
+from collections import deque
 from dataclasses import dataclass
+from typing import Any
+
+from openpilot.sunnypilot.custom.longitudinal.lead_context import _path_relative_y_or_none
 
 GENTLE_CAUTION_DECEL = -0.4     # precautionary decel for a low-confidence model slowdown
 TRUST_FULL_STOP = 0.7           # stop_prob/trust above which a hard should_stop is honored
@@ -33,6 +38,18 @@ CAUTION_RAMP_FLOOR_MIN = -2.5
 # CorroborationHold: how long a closing radar echo keeps earned caution depth unlocked.
 # Covers the longest observed radar-flicker gap on a real stopped queue (1.6 s) with margin.
 CORROBORATION_HOLD_S = 2.5
+
+# CutOutCautionRecovery: unwind earned caution fast when the corroborating lead cuts out.
+# Route 296 t=848: a braking turner (path-relative |y| to 1.8 m) left the lane; radar
+# dropped it and the road was clear, but the model's desired accel lagged ~2.4 s and the
+# earned caution floor kept commanding -1.1 until the driver gas-overrode. A genuine
+# lateral exit is the opposite of the radar flicker CorroborationHold protects against
+# (flickers keep |path y| small), so it cancels earned depth instead of extending it.
+CUT_OUT_RECOVERY_S = 2.5           # s; bounded window of gentle-capped caution after a cut-out
+CUT_OUT_EXIT_MIN_PATH_Y = 1.2      # m; lateral path offset marking a genuine exit, not flicker
+CUT_OUT_EXIT_LOOKBACK_S = 1.0      # s; window before disappearance searched for exit evidence
+CUT_OUT_MIN_CLOSING = 0.5          # m/s; the departed lead must have been a closing context
+CUT_OUT_MIN_D_REL = 15.0           # m; near leads vanish under the radar nose at stops — never those
 
 # StopTrustLearner: learn how much to trust the upstream model stop from driver disagreement.
 STOP_TRUST_INITIAL = 0.8
@@ -136,6 +153,58 @@ class CorroborationHold:
     else:
       self.hold_s = max(0.0, self.hold_s - max(0.0, float(dt)))
     return self.hold_s > 0.0
+
+
+class CutOutCautionRecovery:
+  """Bounded gentle-cap window on uncommitted model caution after the lead cuts out.
+
+  Watches leadOne; when a closing lead departs with lateral-exit evidence (path-relative
+  |y| beyond ``CUT_OUT_EXIT_MIN_PATH_Y`` within the last second — a genuine cut-out, not a
+  flicker), returns True for ``CUT_OUT_RECOVERY_S`` so the caller caps uncommitted caution
+  at ``GENTLE_CAUTION_DECEL`` while the model catches up to the cleared scene. Trusted stop
+  commits bypass the caution floor entirely and are unaffected. Any closing lead present
+  cancels the window immediately. Fail-closed: any fault returns False (no cap)."""
+
+  def __init__(self):
+    self._t = 0.0
+    self._recent: deque[tuple[float, float, bool, float]] = deque(maxlen=32)
+    self._had_lead = False
+    self._recovery_s = 0.0
+
+  def update(self, lead_one: Any, model_msg: Any, dt: float) -> bool:
+    try:
+      step = max(0.0, float(dt)) if math.isfinite(float(dt)) else 0.0
+      self._t += step
+      self._recovery_s = max(0.0, self._recovery_s - step)
+      if lead_one is not None and bool(getattr(lead_one, "status", False)):
+        d_rel = float(getattr(lead_one, "dRel", 0.0) or 0.0)
+        y_rel = float(getattr(lead_one, "yRel", 0.0) or 0.0)
+        v_rel = float(getattr(lead_one, "vRel", 0.0) or 0.0)
+        if not all(math.isfinite(v) for v in (d_rel, y_rel, v_rel)):
+          raise ValueError("non-finite lead")
+        path_y = _path_relative_y_or_none(y_rel, d_rel, model_msg)
+        abs_y = abs(path_y) if path_y is not None else abs(y_rel)
+        closing = -v_rel > CUT_OUT_MIN_CLOSING
+        self._recent.append((self._t, abs_y, closing, d_rel))
+        if closing:
+          self._recovery_s = 0.0  # a closing lead is live evidence; never cap caution for it
+        self._had_lead = True
+      else:
+        if self._had_lead:
+          recent = [s for s in self._recent if self._t - s[0] <= CUT_OUT_EXIT_LOOKBACK_S]
+          was_closing = any(c for _, _, c, _ in recent)
+          exit_y = max((y for _, y, _, _ in recent), default=0.0)
+          far = max((d for _, _, _, d in recent), default=0.0) >= CUT_OUT_MIN_D_REL
+          if was_closing and far and exit_y >= CUT_OUT_EXIT_MIN_PATH_Y:
+            self._recovery_s = CUT_OUT_RECOVERY_S
+        self._had_lead = False
+        self._recent.clear()
+      return self._recovery_s > 0.0
+    except Exception:
+      self._recent.clear()
+      self._had_lead = False
+      self._recovery_s = 0.0
+      return False
 
 
 class StopTrustLearner:

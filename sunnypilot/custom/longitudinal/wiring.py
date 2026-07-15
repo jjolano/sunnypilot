@@ -29,7 +29,14 @@ from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
   MODE_SHADOW as CURVE_TRAFFIC_MODE_SHADOW,
 )
 from openpilot.common.swaglog import cloudlog
-from openpilot.sunnypilot.custom.longitudinal.model_trust import LEAD_CLOSING_MIN, CautionRamp, CorroborationHold, StopTrustLearner
+from openpilot.sunnypilot.custom.longitudinal.model_trust import (
+  GENTLE_CAUTION_DECEL,
+  LEAD_CLOSING_MIN,
+  CautionRamp,
+  CorroborationHold,
+  CutOutCautionRecovery,
+  StopTrustLearner,
+)
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import STOP_APPROACH_DECEL_MIN, Personality
 from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts, CustomLongitudinalStack, LongitudinalStackInputs
@@ -277,6 +284,7 @@ class CustomLongitudinalAdapter:
     self._stop_trust = StopTrustLearner()
     self._caution_ramp = CautionRamp()
     self._corroboration_hold = CorroborationHold()
+    self._cut_out_caution = CutOutCautionRecovery()
     self._drag = DragEstimator()
     self._tick = 0
     self.enabled = False
@@ -442,6 +450,12 @@ class CustomLongitudinalAdapter:
         # Earned depth past the uncommitted stop floor needs a recent closing radar echo
         # (CorroborationHold): vision-only sustained demand keeps the -1.5 cap.
         model_caution_floor = max(model_caution_floor, STOP_APPROACH_DECEL_MIN)
+      if self._cut_out_caution.update(lead_one_msg, model, dt):
+        # Route 296 t=848: the braking turner that earned the caution left the lane, but the
+        # model's demand lagged the cleared scene ~2.4 s at -1.1. Uncommitted caution
+        # re-earns from gentle; trusted stop commits bypass the floor and are unaffected.
+        model_caution_floor = max(model_caution_floor, GENTLE_CAUTION_DECEL)
+        self._caution_ramp.floor = max(self._caution_ramp.floor, model_caution_floor)
       if pitch is not None:
         # Engaged frames count as on-throttle: system throttle/brake don't set the pedal
         # flags, so only manual off-pedal coasting gives an unbiased drag sample.
