@@ -30,7 +30,14 @@ from typing import Any
 
 T_FOLLOW_COMPRESSED = 1.2   # s; hard floor of the compressed follow gap
 COMPRESS_RATE = 0.05        # s of t_follow per s; slow slide into compression
-RECOVER_RATE = 0.5          # s of t_follow per s; fast recovery to baseline
+RECOVER_RATE = 0.5          # s of t_follow per s; fast, safety-shaped recovery to baseline
+# Route 290 stop-and-go ask: when the approach merely ends (lead stops closing / slows /
+# ego drops below apply speed) snapping t_follow back at RECOVER_RATE makes the MPC brake
+# to re-open the gap. Recover instead at the rate the lead physically opens it
+# (d(time_gap)/dt ~ v_rel/v_ego), floored so a stalled queue still trickles back. Any
+# safety-shaped ineligibility (braking/fast-closing/low-TTC/too-close lead, pedals,
+# force-decel, disengage, non-finite) keeps the fast rate.
+BENIGN_RECOVER_RATE_MIN = 0.02  # s of t_follow per s
 MIN_V_EGO_FOR_APPLY = 5.0   # m/s; route 00000274: 8.0 disabled the scheduler for most city
                             # stop-and-go (mean 37 km/h), so moving-lead compression never engaged.
                             # 5.0 (~18 km/h) lets it apply in city while the hard d_rel/time-gap
@@ -147,7 +154,7 @@ class FollowGapScheduler:
       if target < prev:
         nxt = max(prev - COMPRESS_RATE * step, target)
       else:
-        nxt = min(prev + RECOVER_RATE * step, target)
+        nxt = min(prev + self._recovery_rate(radarstate, v_ego, block_reason) * step, target)
       nxt = min(max(nxt, lo), base)
       self._t_follow = nxt
       self.last_result = {
@@ -163,6 +170,34 @@ class FollowGapScheduler:
       self._t_follow = None
       self.last_result = None
       return base
+
+  def _recovery_rate(self, radarstate: Any, v_ego: float, block_reason: str) -> float:
+    """Fast recovery for safety-shaped ineligibility; gap-opening-paced recovery when the
+    approach merely ended, so the MPC never brakes just to re-open the desired gap."""
+    if block_reason in ("long_inactive", "brake_pressed", "gas_pressed", "force_decel"):
+      return RECOVER_RATE
+    lead_one = getattr(radarstate, "leadOne", None)
+    if lead_one is None or not bool(getattr(lead_one, "status", False)):
+      return RECOVER_RATE  # no lead: t_follow is inert to the MPC, snap-back is free
+    v = float(v_ego) if _is_finite(v_ego) else 0.0
+    for lead in (lead_one, getattr(radarstate, "leadTwo", None)):
+      if lead is None or not bool(getattr(lead, "status", False)):
+        continue
+      d_rel_raw = getattr(lead, "dRel", None)
+      v_rel_raw = getattr(lead, "vRel", None)
+      a_lead_raw = getattr(lead, "aLeadK", None)
+      if not (_is_finite(d_rel_raw) and _is_finite(v_rel_raw)):
+        return RECOVER_RATE
+      d_rel = float(d_rel_raw)
+      closing = max(0.0, -float(v_rel_raw))
+      if d_rel < max(MIN_D_REL_M, MIN_TIME_GAP_S * max(v, 0.0)) or closing > MAX_CLOSING:
+        return RECOVER_RATE
+      if closing > 0.0 and d_rel / closing < MIN_TTC_S:
+        return RECOVER_RATE
+      if _is_finite(a_lead_raw) and float(a_lead_raw) < MIN_LEAD_A_K:
+        return RECOVER_RATE
+    opening = max(0.0, float(getattr(lead_one, "vRel", 0.0)))
+    return max(BENIGN_RECOVER_RATE_MIN, opening / max(v, 1.0))
 
   def _eligibility(self, radarstate: Any, v_ego: float, long_active: bool,
                    brake_pressed: bool, gas_pressed: bool, force_decel: bool) -> tuple[bool, str]:

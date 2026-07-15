@@ -155,3 +155,36 @@ def test_fault_returns_base():
   # non-finite base: no raise, passthrough, and no stale state left behind
   _call(fg, radar(lead()), base=float("nan"))
   assert fg.last_result is None
+
+
+def test_benign_approach_end_recovers_at_gap_opening_pace():
+  from openpilot.sunnypilot.custom.longitudinal.follow_gap import BENIGN_RECOVER_RATE_MIN
+  fg = _apply_scheduler()
+  _settled(fg, radar(lead()))
+  # approach ends: lead pulls away at 1 m/s (v_ego 20) -> recovery paced at ~v_rel/v_ego
+  out = _call(fg, radar(lead(v_rel=1.0)))
+  assert out == pytest.approx(T_FOLLOW_COMPRESSED + (1.0 / 20.0) * DT)
+  # stalled queue (not closing, not opening) still trickles back at the floor rate
+  fg2 = _apply_scheduler()
+  _settled(fg2, radar(lead()))
+  out2 = _call(fg2, radar(lead(v_rel=0.0)))
+  assert out2 == pytest.approx(T_FOLLOW_COMPRESSED + BENIGN_RECOVER_RATE_MIN * DT)
+  # both far slower than the safety snap-back
+  assert out < T_FOLLOW_COMPRESSED + RECOVER_RATE * DT
+
+
+def test_safety_shaped_ineligibility_keeps_fast_recovery():
+  # every safety reason recovers at RECOVER_RATE even though the approach also ended
+  for bad in (lead(a_lead=-1.5),            # lead braking
+              lead(v_rel=-5.0),             # fast closing
+              lead(d_rel=30.0, v_rel=-4.0), # low ttc
+              lead(d_rel=10.0)):            # too close at 20 m/s
+    fg = _apply_scheduler()
+    _settled(fg, radar(lead()))
+    out = _call(fg, radar(bad))
+    assert out == pytest.approx(min(BASE, T_FOLLOW_COMPRESSED + RECOVER_RATE * DT)), bad
+  # pedals snap back fast too
+  fg = _apply_scheduler()
+  _settled(fg, radar(lead()))
+  out = _call(fg, radar(lead(v_rel=1.0)), brake_pressed=True)
+  assert out == pytest.approx(min(BASE, T_FOLLOW_COMPRESSED + RECOVER_RATE * DT))
