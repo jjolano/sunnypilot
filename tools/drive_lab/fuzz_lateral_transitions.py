@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Synthetic transition structural fuzzer for LateralDemandPipeline + DisturbanceClassifier.
+"""Synthetic transition structural fuzzer for LateralDemandPipeline.
 
 This tool generates deterministic synthetic transition scenarios (lat_active toggles,
-driver override pulses, lane-change sessions, gating recovery, cooldown hysteresis,
-and explicit control-limit / demand-jitter pulses) and replays them through
-``LateralDemandPipeline`` and ``DisturbanceClassifier``. It is a structural fuzzer for
-demand/classifier behavior, not a proof of production lateral control. Each scenario
-stores its full frame sequence so replay needs no RNG.
+driver override pulses, lane-change sessions, gating recovery, and explicit
+control-limit / demand-jitter pulses) and replays them through
+``LateralDemandPipeline``. It is a structural fuzzer for demand behavior, not a
+proof of production lateral control. Each scenario stores its full frame sequence
+so replay needs no RNG.
 """
 from __future__ import annotations
 
@@ -30,12 +30,6 @@ from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
 from openpilot.sunnypilot.custom.lateral.demand.types import (
   DEMAND_SOURCE_FALLBACK_MEASURED,
 )
-from openpilot.sunnypilot.custom.lateral.disturbance_classifier import (
-  DisturbanceClassifier,
-  LateralSample,
-  decision_name,
-  reason_names,
-)
 from openpilot.tools.drive_lab.lateral_scenarios import (
   LATERAL_PRESETS,
   LateralPresetRequest,  # noqa: F401
@@ -53,7 +47,6 @@ DEFAULT_KINDS = (
   "driver_override_pulse",
   "lane_change_session",
   "gating_recovery",
-  "cooldown_hysteresis",
 )
 EXPLICIT_KINDS = (
   "control_limit_flag",
@@ -69,7 +62,7 @@ LANE_CHANGE_DIRECTION_RIGHT = int(log.LaneChangeDirection.right)
 
 @dataclass(frozen=True)
 class TransitionFrame:
-  """One synthetic transition frame with all inputs needed by pipeline + classifier."""
+  """One synthetic transition frame with all inputs needed by the pipeline."""
 
   t: float
   v_ego: float
@@ -175,7 +168,6 @@ class TransitionThresholds:
   path_quality_min: float = 0.0
   path_quality_max: float = 1.0
   max_lane_change_blend: float = 1.0
-  cooldown_s: float = 1.0
 
   def to_dict(self) -> dict[str, Any]:
     return {
@@ -185,7 +177,6 @@ class TransitionThresholds:
       "path_quality_min": self.path_quality_min,
       "path_quality_max": self.path_quality_max,
       "max_lane_change_blend": self.max_lane_change_blend,
-      "cooldown_s": self.cooldown_s,
     }
 
   @classmethod
@@ -211,7 +202,7 @@ class TransitionScenario:
 
 @dataclass(frozen=True)
 class TransitionFrameOutput:
-  """Per-frame combined pipeline + classifier output."""
+  """Per-frame pipeline output."""
 
   t: float
   v_ego: float
@@ -226,10 +217,6 @@ class TransitionFrameOutput:
   demand_source: str
   lane_change_shaping_active: bool
   lane_change_blend: float
-  decision: str
-  reasons: list[str]
-  confidence: float
-  cooldown_remaining: float
 
 
 @dataclass(frozen=True)
@@ -351,52 +338,6 @@ def _lateral_accel(v_ego: float, curvature: float) -> float:
   return (v_ego * v_ego) * curvature
 
 
-def _steering_rate_proxy(prev_processed: float, processed: float, dt: float) -> float:
-  # Deterministic, bounded proxy so clean samples avoid MISSING_CONTEXT.
-  delta = processed - prev_processed
-  rate = delta / max(dt, 1e-6) * (180.0 / math.pi) * 2.0
-  return float(np.clip(rate, -60.0, 60.0))
-
-
-def _output_proxy(desired_lateral_accel: float) -> float:
-  return float(np.clip(desired_lateral_accel * 0.01, -0.1, 0.1))
-
-
-def _sample_from_frame(
-  frame: TransitionFrame,
-  output: float,
-  prev_output: float | None,
-  steering_rate_deg: float,
-  processed_curvature: float,
-  path_quality: float,
-  gated: bool,
-) -> LateralSample:
-  desired_lateral_accel = _lateral_accel(frame.v_ego, processed_curvature)
-  actual_lateral_accel = _lateral_accel(frame.v_ego, frame.measured_curvature)
-  return LateralSample(
-    t=frame.t,
-    v_ego=frame.v_ego,
-    lat_active=frame.lat_active,
-    steering_pressed=frame.steering_pressed,
-    blinker_active=frame.left_blinker or frame.right_blinker,
-    lane_change_active=frame.lane_change_state != LANE_CHANGE_STATE_OFF,
-    steering_rate_deg=steering_rate_deg,
-    output=output,
-    unshaped_output=prev_output,
-    desired_lateral_accel=desired_lateral_accel,
-    actual_lateral_accel=actual_lateral_accel,
-    model_path_quality=path_quality,
-    model_path_gated=gated,
-    steer_limited=frame.curvature_limited,
-  )
-
-
-def _classifier_dt(frame: TransitionFrame, prev_frame: TransitionFrame | None) -> float:
-  if prev_frame is None:
-    return DT
-  return max(float(frame.t - prev_frame.t), DT)
-
-
 def _merge_windows(windows: list[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
   if not windows:
     return ()
@@ -413,20 +354,6 @@ def _merge_windows(windows: list[tuple[int, int]]) -> tuple[tuple[int, int], ...
 
 def _inside_any_window(idx: int, windows: tuple[tuple[int, int], ...]) -> bool:
   return any(start <= idx < end for start, end in windows)
-
-
-def _post_trigger_release(
-  outputs: tuple[TransitionFrameOutput, ...],
-  frames: tuple[TransitionFrame, ...],
-  triggered,
-) -> list[tuple[TransitionFrameOutput, TransitionFrame]]:
-  saw_trigger = False
-  for idx, frame in enumerate(frames):
-    if triggered(frame):
-      saw_trigger = True
-    elif saw_trigger:
-      return list(zip(outputs[idx:], frames[idx:]))
-  return []
 
 
 # ---------- scenario generators ----------
@@ -576,30 +503,6 @@ def _generate_gating_recovery(
   )
 
 
-def _generate_cooldown_hysteresis(
-  rng: random.Random,
-  duration_s: float,
-  v_ego: float,
-  curvature: float,
-  index: int,
-) -> TransitionScenario:
-  t = _time_array(duration_s)
-  n = len(t)
-  press_start = rng.randint(int(0.15 * n), int(0.25 * n))
-  press_end = rng.randint(int(0.30 * n), int(0.40 * n))
-  frames: list[TransitionFrame] = []
-  for i, ti in enumerate(t):
-    steering_pressed = press_start <= i < press_end
-    frames.append(_base_frame(float(ti), v_ego, curvature, steering_pressed=steering_pressed))
-  return TransitionScenario(
-    kind="cooldown_hysteresis",
-    title=f"cooldown hysteresis #{index}",
-    index=index,
-    frames=tuple(frames),
-    event_windows=_merge_windows([(max(0, press_start - 5), min(n, press_end + 5))]),
-  )
-
-
 def _generate_control_limit_flag(
   rng: random.Random,
   duration_s: float,
@@ -635,7 +538,7 @@ def _generate_model_demand_jitter_pulse(
   n = len(t)
   pulse_start = rng.randint(int(0.25 * n), int(0.40 * n))
   pulse_end = rng.randint(int(0.45 * n), int(0.60 * n))
-  # Curvature bump large enough for classifier jerk > 1.2 but mild enough to avoid path gating.
+  # Curvature bump mild enough to avoid path gating.
   # At v=20, delta_k=8e-5 -> jerk ~ 400 * 8e-5 / 0.01 = 3.2 m/s^3.
   delta_k = rng.uniform(7e-5, 1.3e-4) * (1.0 if curvature >= 0.0 else -1.0)
   if curvature == 0.0:
@@ -659,7 +562,6 @@ _GENERATORS = {
   "driver_override_pulse": _generate_driver_override_pulse,
   "lane_change_session": _generate_lane_change_session,
   "gating_recovery": _generate_gating_recovery,
-  "cooldown_hysteresis": _generate_cooldown_hysteresis,
   "control_limit_flag": _generate_control_limit_flag,
   "model_demand_jitter_pulse": _generate_model_demand_jitter_pulse,
 }
@@ -691,52 +593,26 @@ def generate_scenarios(config: TransitionFuzzerConfig) -> list[TransitionScenari
 
 def _run_scenario(scenario: TransitionScenario) -> tuple[TransitionFrameOutput, ...]:
   pipeline = LateralDemandPipeline(dt=DT)
-  classifier = DisturbanceClassifier(cooldown_s=scenario.metric_thresholds.cooldown_s)
   outputs: list[TransitionFrameOutput] = []
-  prev_frame: TransitionFrame | None = None
-  prev_sample: LateralSample | None = None
-  prev_output_value: float | None = None
-  prev_processed_curvature = 0.0
   for frame in scenario.frames:
     pipeline_result = pipeline.update(_frame_to_inputs(frame))
     demand = pipeline_result.demand
     processed_curvature = demand.processed_curvature
-    desired_lateral_accel = _lateral_accel(frame.v_ego, processed_curvature)
-    steering_rate_deg = _steering_rate_proxy(prev_processed_curvature, processed_curvature, DT)
-    output_value = _output_proxy(desired_lateral_accel)
-    sample = _sample_from_frame(
-      frame,
-      output=output_value,
-      prev_output=prev_output_value,
-      steering_rate_deg=steering_rate_deg,
-      processed_curvature=processed_curvature,
-      path_quality=demand.path_quality,
-      gated=pipeline_result.model_path_result.gated,
-    )
-    classification = classifier.classify(sample, prev_sample=prev_sample, dt=_classifier_dt(frame, prev_frame))
     outputs.append(TransitionFrameOutput(
       t=frame.t,
       v_ego=frame.v_ego,
       raw_curvature=demand.raw_curvature,
       processed_curvature=processed_curvature,
       measured_curvature=demand.measured_curvature,
-      desired_lateral_accel=desired_lateral_accel,
-      actual_lateral_accel=float(sample.actual_lateral_accel) if sample.actual_lateral_accel is not None else 0.0,
+      desired_lateral_accel=_lateral_accel(frame.v_ego, processed_curvature),
+      actual_lateral_accel=_lateral_accel(frame.v_ego, frame.measured_curvature),
       path_quality=demand.path_quality,
       path_reason=demand.path_reason,
       gated=pipeline_result.model_path_result.gated,
       demand_source=demand.demand_source,
       lane_change_shaping_active=demand.lane_change_shaping_active,
       lane_change_blend=demand.lane_change_blend,
-      decision=decision_name(classification.decision),
-      reasons=reason_names(classification.reasons),
-      confidence=float(classification.confidence),
-      cooldown_remaining=float(classification.cooldown_remaining),
     ))
-    prev_frame = frame
-    prev_sample = sample
-    prev_output_value = output_value
-    prev_processed_curvature = processed_curvature
   return tuple(outputs)
 
 
@@ -755,8 +631,6 @@ def _evaluate_structural(
   processed = np.array([o.processed_curvature for o in outputs], dtype=float)
   measured = np.array([o.measured_curvature for o in outputs], dtype=float)
   quality = np.array([o.path_quality for o in outputs], dtype=float)
-  confidence = np.array([o.confidence for o in outputs], dtype=float)
-  cooldown = np.array([o.cooldown_remaining for o in outputs], dtype=float)
   blend = np.array([o.lane_change_blend for o in outputs], dtype=float)
   desired_lat_accel = np.array([o.desired_lateral_accel for o in outputs], dtype=float)
   actual_lat_accel = np.array([o.actual_lateral_accel for o in outputs], dtype=float)
@@ -765,10 +639,6 @@ def _evaluate_structural(
     failures.append({"check": "finite_curvature", "detail": "non-finite raw/processed/measured curvature"})
   if not (np.all(np.isfinite(desired_lat_accel)) and np.all(np.isfinite(actual_lat_accel))):
     failures.append({"check": "finite_lat_accel", "detail": "non-finite desired/actual lateral accel"})
-  if not np.all(np.isfinite(confidence)):
-    failures.append({"check": "finite_confidence", "detail": "non-finite classifier confidence"})
-  if not np.all(np.isfinite(cooldown)):
-    failures.append({"check": "finite_cooldown", "detail": "non-finite classifier cooldown"})
 
   min_q = float(np.min(quality))
   max_q = float(np.max(quality))
@@ -813,13 +683,8 @@ def _evaluate_events(
 
   if kind == "clean_baseline":
     gated = [o.gated for o in outputs]
-    reasons = [set(o.reasons) for o in outputs]
     if any(gated):
       failures.append({"check": "unexpected_gating", "detail": f"clean baseline had {sum(gated)} gated frame(s)"})
-    if any("CLEAN" not in r for r in reasons):
-      failures.append({"check": "missing_clean_reason", "detail": "clean baseline produced non-clean classifier reason"})
-    if any(o.decision != "accept" for o in outputs):
-      failures.append({"check": "unexpected_reject", "detail": "clean baseline produced a non-accept classifier decision"})
 
   elif kind == "lat_active_toggle":
     inactive_outputs = [o for o, f in zip(outputs, frames) if not f.lat_active]
@@ -829,33 +694,16 @@ def _evaluate_events(
       failures.append({"check": "fallback_source", "detail": "not all inactive frames sourced fallback_measured"})
     elif not all(o.path_reason == "inactive" for o in inactive_outputs):
       failures.append({"check": "inactive_reason", "detail": "not all inactive frames reported path_reason=inactive"})
-    if inactive_outputs and not all(
-      o.decision == "reject_shadow" and "LAT_INACTIVE" in o.reasons for o in inactive_outputs
-    ):
-      failures.append({"check": "inactive_classifier", "detail": "inactive frames were not REJECT_SHADOW with LAT_INACTIVE"})
-    active_after = [o for o, f in zip(outputs, frames) if f.lat_active and f.t > 0.5]
-    if active_after and not any(o.decision == "accept" for o in active_after[-20:]):
-      failures.append({"check": "reengage_accept", "detail": "re-engaged frames did not return to ACCEPT"})
 
   elif kind == "driver_override_pulse":
     press_outputs = [o for o, f in zip(outputs, frames) if f.steering_pressed]
     if not press_outputs:
       failures.append({"check": "missing_override", "detail": "driver_override_pulse had no steering_pressed frames"})
-    elif not all(o.decision == "reject_shadow" and "DRIVER_OVERRIDE" in o.reasons for o in press_outputs):
-      failures.append({"check": "override_classifier", "detail": "steering_pressed frames were not REJECT_SHADOW with DRIVER_OVERRIDE"})
-    post_release = _post_trigger_release(outputs, frames, lambda frame: frame.steering_pressed)
-    if post_release:
-      # Look for at least one cooldown ACCEPT frame soon after release.
-      cooldown_frames = [o for o, f in post_release[: int(1.5 / DT)] if o.cooldown_remaining > 0.0 and o.decision == "accept"]
-      if not cooldown_frames:
-        failures.append({"check": "cooldown_accept", "detail": "post-release frames did not show ACCEPT + COOLDOWN_ACTIVE"})
 
   elif kind == "lane_change_session":
     lc_outputs = [o for o, f in zip(outputs, frames) if f.lane_change_state != LANE_CHANGE_STATE_OFF]
     if not lc_outputs:
       failures.append({"check": "missing_lane_change", "detail": "lane_change_session had no lane-change frames"})
-    elif not all(o.decision == "reject_shadow" and "LANE_CHANGE" in o.reasons for o in lc_outputs):
-      failures.append({"check": "lane_change_classifier", "detail": "lane-change frames were not REJECT_SHADOW with LANE_CHANGE"})
     if not any(o.lane_change_shaping_active for o in outputs):
       failures.append({"check": "shaping_active", "detail": "lane_change_session never activated lane_change_shaping_active"})
 
@@ -863,45 +711,22 @@ def _evaluate_events(
     gate_outputs = [o for o in outputs if o.gated]
     if not gate_outputs:
       failures.append({"check": "missing_gating", "detail": "gating_recovery had no gated frames"})
-    elif not all(o.decision == "quarantine" and "MODEL_PATH_LOW_QUALITY" in o.reasons for o in gate_outputs):
-      failures.append({"check": "gating_classifier", "detail": "gated frames were not QUARANTINE with MODEL_PATH_LOW_QUALITY"})
     post_recovery = outputs[-20:]
-    if post_recovery and not any(o.decision == "accept" for o in post_recovery):
-      failures.append({"check": "recovery_accept", "detail": "post-recovery frames did not return to ACCEPT"})
-
-  elif kind == "cooldown_hysteresis":
-    press_outputs = [o for o, f in zip(outputs, frames) if f.steering_pressed]
-    if not press_outputs:
-      failures.append({"check": "missing_trigger", "detail": "cooldown_hysteresis had no trigger frames"})
-    elif not all(o.decision == "reject_shadow" for o in press_outputs):
-      failures.append({"check": "trigger_reject", "detail": "trigger frames were not REJECT_SHADOW"})
-    post_trigger = _post_trigger_release(outputs, frames, lambda frame: frame.steering_pressed)
-    if post_trigger:
-      cooldown_frames = [o for o, f in post_trigger[: int(1.5 / DT)] if o.cooldown_remaining > 0.0 and o.decision == "accept"]
-      if not cooldown_frames:
-        failures.append({"check": "cooldown_hysteresis_accept", "detail": "post-trigger clean frames did not show ACCEPT + positive cooldown"})
+    if post_recovery and not any(not o.gated for o in post_recovery):
+      failures.append({"check": "recovery_ungated", "detail": "post-recovery frames did not return to ungated"})
 
   elif kind == "control_limit_flag":
     limited_outputs = [o for o, f in zip(outputs, frames) if f.curvature_limited]
     if not limited_outputs:
       failures.append({"check": "missing_limit", "detail": "control_limit_flag had no curvature_limited frames"})
-    elif not all(o.decision == "reject_shadow" and "CONTROL_LIMIT" in o.reasons for o in limited_outputs):
-      failures.append({"check": "limit_classifier", "detail": "curvature_limited frames were not REJECT_SHADOW with CONTROL_LIMIT"})
-    unlimited_late = [o for o, f in zip(outputs, frames) if not f.curvature_limited and f.t > 0.5]
-    if unlimited_late and not any(o.decision == "accept" for o in unlimited_late[-20:]):
-      failures.append({"check": "limit_recovery_accept", "detail": "post-limit frames did not return to ACCEPT"})
 
   elif kind == "model_demand_jitter_pulse":
     base_curvature = frames[0].raw_curvature if frames else 0.0
     pulse_outputs = [o for o, f in zip(outputs, frames) if abs(f.raw_curvature - base_curvature) > 1e-12]
     if not pulse_outputs:
       failures.append({"check": "missing_pulse", "detail": "model_demand_jitter_pulse had no perturbed-curvature frames"})
-    elif not any(o.decision == "quarantine" and "MODEL_DEMAND_JITTER" in o.reasons for o in pulse_outputs):
-      failures.append({"check": "jitter_classifier", "detail": "pulse frames did not produce QUARANTINE with MODEL_DEMAND_JITTER"})
-    if any(o.gated or "MODEL_PATH_LOW_QUALITY" in o.reasons for o in pulse_outputs):
-      failures.append({"check": "jitter_not_path_quality", "detail": "model_demand_jitter_pulse relied on path gating/low-quality instead of demand jitter"})
-    if outputs and not any(o.decision == "accept" for o in outputs[-20:]):
-      failures.append({"check": "jitter_recovery_accept", "detail": "final frames did not return to ACCEPT"})
+    if any(o.gated for o in pulse_outputs):
+      failures.append({"check": "jitter_not_path_quality", "detail": "model_demand_jitter_pulse tripped path gating instead of passing demand jitter through"})
 
   return failures
 
@@ -920,9 +745,7 @@ def evaluate_scenario(scenario: TransitionScenario) -> TransitionResult:
   structural_failures.extend(_evaluate_structural(outputs, scenario))
   if outputs:
     event_failures.extend(_evaluate_events(outputs, scenario))
-    decisions = [o.decision for o in outputs]
-    metrics["decision_counts"] = {d: decisions.count(d) for d in set(decisions)}
-    metrics["max_cooldown_remaining"] = float(max(o.cooldown_remaining for o in outputs))
+    metrics["gated_frames"] = int(sum(o.gated for o in outputs))
     metrics["max_lane_change_blend"] = float(max(o.lane_change_blend for o in outputs))
 
   return TransitionResult(
@@ -987,10 +810,6 @@ def artifact_to_dict(result: TransitionResult, seed: int | None, index: int | No
         "demand_source": o.demand_source,
         "lane_change_shaping_active": o.lane_change_shaping_active,
         "lane_change_blend": o.lane_change_blend,
-        "decision": o.decision,
-        "reasons": o.reasons,
-        "confidence": o.confidence,
-        "cooldown_remaining": o.cooldown_remaining,
       }
       for o in result.outputs
     ],
@@ -1024,7 +843,7 @@ def _render_scenario_snippet(scenario: TransitionScenario) -> str:
 
 
 def main() -> None:
-  parser = argparse.ArgumentParser(description="Synthetic transition structural fuzzer for LateralDemandPipeline + DisturbanceClassifier.")
+  parser = argparse.ArgumentParser(description="Synthetic transition structural fuzzer for LateralDemandPipeline.")
   parser.add_argument("--seed", type=int, default=1)
   parser.add_argument("--cases", type=int, default=100)
   parser.add_argument("--kind", choices=KINDS, help="Transition kind")

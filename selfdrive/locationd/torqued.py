@@ -11,7 +11,6 @@ from openpilot.common.realtime import config_realtime_process, DT_MDL
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.locationd.helpers import PointBuckets, ParameterEstimator, PoseCalibrator, Pose
-from openpilot.sunnypilot.custom.lateral.disturbance_classifier import LateralSample
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import TorqueEstimatorExt
 
@@ -247,7 +246,6 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         roll = device_pose.orientation.roll
         speed_shadow_mode = self.speed_adaptive_mode in ('shadow', 'apply')
         roll_comp_mode = self.roll_comp_mode in ('shadow', 'apply')
-        shadow_observability_mode = speed_shadow_mode or roll_comp_mode
         shadow_collection_mode = roll_comp_mode or (speed_shadow_mode and self.low_speed_shadow)
         # check lat active up to now (without lag compensation)
         lat_active = np.interp(np.arange(t - MIN_ENGAGE_BUFFER, t + self.lag, DT_MDL),
@@ -258,14 +256,12 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         steer = np.interp(t, self.raw_points['carOutput_t'], self.raw_points['steer_torque']).item()
         lateral_acc = (vego * yaw_rate) - (np.sin(roll) * ACCELERATION_DUE_TO_GRAVITY).item()
         if all(lat_active) and not any(steer_override):
-          steering_rate = None
-          if shadow_observability_mode or shadow_collection_mode:
-            # Phase 3/0b shadow learning only needs steering-rate interpolation when
+          if shadow_collection_mode:
+            # Phase 3 shadow learning only needs steering-rate interpolation when
             # one of the shadow/apply modes is active.
+            steering_rate = None
             if len(self.raw_points['steering_rate_deg']):
               steering_rate = np.interp(t, self.raw_points['carState_t'], self.raw_points['steering_rate_deg']).item()
-
-          if shadow_collection_mode:
             self.collect_shadow_learning_points(steer, lateral_acc, vego, roll, yaw_rate, steering_rate)
 
           if (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
@@ -276,20 +272,6 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
               self.eps_command_torque_latest = float(steer)
               if self.eps_shadow_stats_enabled:
                 self.update_eps_shadow_stats(t, steer)
-
-            if shadow_observability_mode:
-              # Phase 0b: shadow-only disturbance classification. Does not suppress
-              # learning points; only updates observability counters.
-              sample = LateralSample.from_torqued_inputs(
-                t=t,
-                v_ego=vego,
-                lat_active=True,
-                steering_pressed=any(steer_override),
-                lateral_acc=lateral_acc,
-                steer=steer,
-                steering_rate_deg=steering_rate,
-              )
-              self.shadow_classify_learning_point(sample)
 
             if self.track_all_points:
               self.all_torque_points.append([steer, lateral_acc])
@@ -343,12 +325,6 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.calPerc = self.filtered_points.get_valid_percent()
     liveTorqueParameters.decay = self.decay
     liveTorqueParameters.maxResets = self.resets
-
-    # Phase 0b shadow-only disturbance observability.
-    liveTorqueParameters.shadowAccepted = self.shadow_accepted
-    liveTorqueParameters.shadowQuarantined = self.shadow_quarantined
-    liveTorqueParameters.shadowRejected = self.shadow_rejected
-    liveTorqueParameters.shadowReasons = self.shadow_reasons
 
     # Phase 0b shadow-only EPS torque observability.
     liveTorqueParameters.epsObserved = self.eps_observed

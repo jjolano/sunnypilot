@@ -2448,12 +2448,10 @@ struct LiveTorqueParametersData {
   useParams @12 :Bool;
   calPerc @13 :Int8;
 
-  # Phase 0b shadow-only lateral disturbance classifier observability.
-  # These counters never suppress learning points in this phase.
-  shadowAccepted @14 :UInt32;
-  shadowQuarantined @15 :UInt32;
-  shadowRejected @16 :UInt32;
-  shadowReasons @17 :UInt32;
+  shadowAcceptedDEPRECATED @14 :UInt32;
+  shadowQuarantinedDEPRECATED @15 :UInt32;
+  shadowRejectedDEPRECATED @16 :UInt32;
+  shadowReasonsDEPRECATED @17 :UInt32;
 
   # Phase 0b shadow-only EPS torque observability. These metrics never affect
   # live parameter fitting, useParams, or control in this phase.

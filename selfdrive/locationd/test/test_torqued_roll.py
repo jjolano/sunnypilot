@@ -325,31 +325,26 @@ def test_roll_comp_telemetry_populated_after_valid_fit():
 
 def test_torqued_strict_collection_gate_unchanged():
   """The restructured gate must still require v_ego > MIN_VEL and abs(steer) > STEER_MIN_THRESHOLD
-  for the strict path that feeds filtered_points / shadow classification."""
+  for the strict path that feeds filtered_points."""
   est = _make_estimator("shadow")
 
   n = _warmup_samples()
   for i in range(n):
     _feed(est, i * DT_MDL, steer=0.3, lateral_accel=0.5, v_ego=MIN_VEL + 1.0)
 
-  bucket_points = len(est.filtered_points)
-  shadow_accepted = est.shadow_accepted
-  assert bucket_points > 0
-  assert shadow_accepted > 0
+  assert len(est.filtered_points) > 0
 
   est2 = _make_estimator("shadow")
   for i in range(n):
     # Below speed threshold -> strict path must not run.
     _feed(est2, i * DT_MDL, steer=0.3, lateral_accel=0.5, v_ego=MIN_VEL - 1.0)
   assert len(est2.filtered_points) == 0
-  assert est2.shadow_accepted == 0
 
   est3 = _make_estimator("shadow")
   for i in range(n):
     # Below steer threshold -> strict path must not run.
     _feed(est3, i * DT_MDL, steer=STEER_MIN_THRESHOLD / 2.0, lateral_accel=0.5, v_ego=MIN_VEL + 1.0)
   assert len(est3.filtered_points) == 0
-  assert est3.shadow_accepted == 0
 
 
 def _make_estimator_speed_aware(mode="shadow", low_speed_shadow=False):

@@ -90,7 +90,7 @@ uv run python tools/drive_lab/fuzz_lateral_controller.py --open-loop --cases 100
 
 ### Transition Fuzzer (`fuzz_lateral_transitions.py`)
 
-Lateral state-transition fuzzer with `LateralDemandPipeline` + `DisturbanceClassifier`.
+Lateral state-transition fuzzer for `LateralDemandPipeline`.
 
 ```bash
 uv run python tools/drive_lab/fuzz_lateral_transitions.py --preset fuzz --cases 50
@@ -149,7 +149,7 @@ Synthetic scenarios (lateral_scenarios.py)
     │
     ├──► fuzz_lateral_demand.py ──► LateralDemandPipeline ──► structural checks
     ├──► fuzz_lateral_closed_loop.py ──► pipeline + plant ──► 2-layer checks
-    ├──► fuzz_lateral_transitions.py ──► pipeline + classifier
+    ├──► fuzz_lateral_transitions.py ──► pipeline transition checks
     └──► fuzz_lateral_controller.py ──► LatControlTorqueV21 ──► torque checks
 
 Export ──► ScenarioSpec JSON ──► behavior_change_gate.py ──► ready/not-ready

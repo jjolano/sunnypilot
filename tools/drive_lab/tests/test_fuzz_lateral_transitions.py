@@ -44,96 +44,75 @@ def test_evaluate_scenario_is_deterministic():
 # ---------- clean baseline ----------
 
 
-def test_clean_baseline_passes_and_is_accept_clean():
+def test_clean_baseline_passes_ungated():
   config = TransitionFuzzerConfig(seed=1, cases=1, kind="clean_baseline")
   scenario = generate_scenarios(config)[0]
   result = evaluate_scenario(scenario)
   assert result.valid
-  assert all(o.decision == "accept" for o in result.outputs)
-  assert all("CLEAN" in o.reasons for o in result.outputs)
   assert all(not o.gated for o in result.outputs)
 
 
 # ---------- lat_active toggle ----------
 
 
-def test_lat_active_toggle_uses_fallback_measured_and_rejects_inactive():
+def test_lat_active_toggle_uses_fallback_measured():
   config = TransitionFuzzerConfig(seed=1, cases=1, kind="lat_active_toggle")
   scenario = generate_scenarios(config)[0]
   result = evaluate_scenario(scenario)
   inactive = [(o, f) for o, f in zip(result.outputs, scenario.frames) if not f.lat_active]
   assert inactive
   assert all(o.demand_source == DEMAND_SOURCE_FALLBACK_MEASURED and o.path_reason == "inactive" for o, _ in inactive)
-  assert all(o.decision == "reject_shadow" and "LAT_INACTIVE" in o.reasons for o, _ in inactive)
-  active_late = [o for o, f in zip(result.outputs, scenario.frames) if f.lat_active and f.t > 0.5]
-  assert any(o.decision == "accept" for o in active_late[-20:])
 
 
 # ---------- driver override pulse ----------
 
 
-def test_driver_override_pulse_rejects_and_cooldown_accepts():
+def test_driver_override_pulse_passes():
   config = TransitionFuzzerConfig(seed=1, cases=1, kind="driver_override_pulse")
   scenario = generate_scenarios(config)[0]
   result = evaluate_scenario(scenario)
+  assert result.valid
   press = [o for o, f in zip(result.outputs, scenario.frames) if f.steering_pressed]
   assert press
-  assert all(o.decision == "reject_shadow" and "DRIVER_OVERRIDE" in o.reasons for o in press)
-  post_release = [o for o, f in zip(result.outputs, scenario.frames) if not f.steering_pressed and f.t > 0.5]
-  assert any(o.decision == "accept" and o.cooldown_remaining > 0.0 for o in post_release[:150])
-
-
-def test_long_driver_override_pulse_anchors_cooldown_check_after_release():
-  scenario = generate_scenarios(TransitionFuzzerConfig(seed=19, cases=7, duration_s=5.0))[6]
-  assert scenario.kind == "driver_override_pulse"
-
-  result = evaluate_scenario(scenario)
-
-  assert result.valid
 
 
 # ---------- lane change session ----------
 
 
-def test_lane_change_session_rejects_and_activates_shaping():
+def test_lane_change_session_activates_shaping():
   config = TransitionFuzzerConfig(seed=1, cases=1, kind="lane_change_session")
   scenario = generate_scenarios(config)[0]
   result = evaluate_scenario(scenario)
   lc = [o for o, f in zip(result.outputs, scenario.frames) if f.lane_change_state != 0]
   assert lc
-  assert all(o.decision == "reject_shadow" and "LANE_CHANGE" in o.reasons for o in lc)
   assert any(o.lane_change_shaping_active for o in result.outputs)
 
 
 # ---------- gating recovery ----------
 
 
-def test_gating_recovery_quarantines_and_recovers():
+def test_gating_recovery_gates_and_recovers():
   config = TransitionFuzzerConfig(seed=1, cases=1, kind="gating_recovery")
   scenario = generate_scenarios(config)[0]
   result = evaluate_scenario(scenario)
   gated = [o for o in result.outputs if o.gated]
   assert gated
-  assert all(o.decision == "quarantine" and "MODEL_PATH_LOW_QUALITY" in o.reasons for o in gated)
-  assert any(o.decision == "accept" for o in result.outputs[-20:])
+  assert any(not o.gated for o in result.outputs[-20:])
 
 
 # ---------- explicit control/jitter follow-ups ----------
 
 
-def test_control_limit_flag_rejects_with_control_limit():
+def test_control_limit_flag_passes():
   config = TransitionFuzzerConfig(seed=1, cases=1, kind="control_limit_flag")
   scenario = generate_scenarios(config)[0]
   result = evaluate_scenario(scenario)
   assert result.valid
   limited = [o for o, f in zip(result.outputs, scenario.frames) if f.curvature_limited]
   assert limited
-  assert all(o.decision == "reject_shadow" and "CONTROL_LIMIT" in o.reasons for o in limited)
-  unlimited_late = [o for o, f in zip(result.outputs, scenario.frames) if not f.curvature_limited and f.t > 0.5]
-  assert any(o.decision == "accept" for o in unlimited_late[-20:])
 
 
-def test_model_demand_jitter_pulse_quarantines_and_recovers():
+def test_model_demand_jitter_pulse_passes_without_gating():
   config = TransitionFuzzerConfig(seed=1, cases=1, kind="model_demand_jitter_pulse")
   scenario = generate_scenarios(config)[0]
   result = evaluate_scenario(scenario)
@@ -141,9 +120,7 @@ def test_model_demand_jitter_pulse_quarantines_and_recovers():
   base_curvature = scenario.frames[0].raw_curvature
   pulse = [o for o, f in zip(result.outputs, scenario.frames) if abs(f.raw_curvature - base_curvature) > 1e-12]
   assert pulse
-  assert any(o.decision == "quarantine" and "MODEL_DEMAND_JITTER" in o.reasons for o in pulse)
-  assert all(not o.gated and "MODEL_PATH_LOW_QUALITY" not in o.reasons for o in pulse)
-  assert any(o.decision == "accept" for o in result.outputs[-20:])
+  assert all(not o.gated for o in pulse)
 
 
 def test_default_random_generation_excludes_explicit_only_kinds():
@@ -152,20 +129,6 @@ def test_default_random_generation_excludes_explicit_only_kinds():
   explicit_kinds = {"control_limit_flag", "model_demand_jitter_pulse"}
   generated_kinds = {s.kind for s in scenarios}
   assert not (generated_kinds & explicit_kinds)
-
-
-# ---------- cooldown hysteresis ----------
-
-
-def test_cooldown_hysteresis_trigger_then_accept_with_cooldown():
-  config = TransitionFuzzerConfig(seed=1, cases=1, kind="cooldown_hysteresis")
-  scenario = generate_scenarios(config)[0]
-  result = evaluate_scenario(scenario)
-  press = [o for o, f in zip(result.outputs, scenario.frames) if f.steering_pressed]
-  assert press
-  assert all(o.decision == "reject_shadow" for o in press)
-  post_trigger = [o for o, f in zip(result.outputs, scenario.frames) if not f.steering_pressed and f.t > 0.5]
-  assert any(o.decision == "accept" and o.cooldown_remaining > 0.0 for o in post_trigger[:150])
 
 
 # ---------- replay / artifact ----------
@@ -181,7 +144,7 @@ def test_scenario_round_trips_through_dict():
   assert len(restored.frames) == len(scenario.frames)
 
 
-def test_artifact_replay_reports_equivalent_classification():
+def test_artifact_replay_reports_equivalent_results():
   config = TransitionFuzzerConfig(seed=9, cases=1, kind="gating_recovery")
   scenario = generate_scenarios(config)[0]
   result = evaluate_scenario(scenario)
@@ -207,7 +170,7 @@ def test_artifact_contains_full_frames_and_is_strict_json_safe():
     assert "inf" not in raw.lower()
 
 
-def test_failure_artifact_writes_and_replays_equivalent_classification():
+def test_failure_artifact_writes_and_replays_equivalent_results():
   config = TransitionFuzzerConfig(seed=1, cases=1, kind="clean_baseline")
   scenario = generate_scenarios(config)[0]
   failed_scenario = TransitionScenario(

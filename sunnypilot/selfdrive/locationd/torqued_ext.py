@@ -12,9 +12,6 @@ from cereal import car
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
-from openpilot.sunnypilot.custom.lateral.disturbance_classifier import (
-  DisturbanceClassifier, LateralSample, LearningDecision,
-)
 from openpilot.sunnypilot.custom.lateral.roll_comp_learning import (
   RollCompBuckets, blend_roll_comp_profile, fit_roll_comp_profile, format_roll_comp_profile, parse_roll_comp_profile,
 )
@@ -73,15 +70,6 @@ class TorqueEstimatorExt:
     self._roll_comp_blend_base = None
     self.roll_comp_profile = {'gain': 0.0, 'points': 0, 'span': 0.0, 'valid': False}
     self._profile_blend_base_frozen = False
-
-    # Phase 0b shadow-only disturbance classifier observability. These counters
-    # never suppress learning points in this phase.
-    self.disturbance_classifier = DisturbanceClassifier()
-    self.shadow_accepted = 0
-    self.shadow_quarantined = 0
-    self.shadow_rejected = 0
-    self.shadow_reasons = 0
-    self._last_disturbance_sample: LateralSample | None = None
 
   def initialize_custom_params(self, decimated=False):
     self.update_use_params()
@@ -194,21 +182,6 @@ class TorqueEstimatorExt:
       }
     else:
       self.roll_comp_profile = {'gain': 0.0, 'points': 0, 'span': 0.0, 'valid': False}
-
-  def shadow_classify_learning_point(self, sample: LateralSample) -> LearningDecision:
-    """Shadow-only classification for observability. Does not suppress points."""
-    prev = self._last_disturbance_sample
-    dt = (sample.t - prev.t) if prev is not None else None
-    result = self.disturbance_classifier.classify(sample, prev_sample=prev, dt=dt)
-    self._last_disturbance_sample = sample
-    self.shadow_reasons |= int(result.reasons)
-    if result.decision == LearningDecision.ACCEPT:
-      self.shadow_accepted += 1
-    elif result.decision == LearningDecision.QUARANTINE:
-      self.shadow_quarantined += 1
-    elif result.decision == LearningDecision.REJECT_SHADOW:
-      self.shadow_rejected += 1
-    return result.decision
 
   def maybe_persist_speed_profile(self, cache_write=False):
     if not cache_write:
