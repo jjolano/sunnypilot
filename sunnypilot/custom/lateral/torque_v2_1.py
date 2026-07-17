@@ -153,7 +153,11 @@ class LatControlTorqueV21(LatControl):
     if self.extension.update_override_torque_params(self.torque_params, CS.vEgo):
       self.response_core.update_limits()
     # ponytail: learned roll gain is an extra exposed attr, never part of torque_params capture/restore.
-    self.response_core.roll_compensation_gain = getattr(self.extension, 'learned_roll_gain', None) or ROLL_COMPENSATION_GAIN
+    # Speed-resolved when the extension provides it; scalar attr kept as the fallback surface.
+    learned_at = getattr(self.extension, 'learned_roll_gain_at', None)
+    learned_gain = learned_at(CS.vEgo, ROLL_COMPENSATION_GAIN) if learned_at is not None \
+      else getattr(self.extension, 'learned_roll_gain', None)
+    self.response_core.roll_compensation_gain = learned_gain or ROLL_COMPENSATION_GAIN
     self.friction_floor.mode = getattr(self.extension, 'friction_breakaway_mode', 'off')
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()

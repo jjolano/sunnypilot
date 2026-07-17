@@ -348,6 +348,8 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.rollCompGainPoints = self.roll_comp_profile['points']
     liveTorqueParameters.rollCompGainSpan = self.roll_comp_profile['span']
     liveTorqueParameters.rollCompGainValid = self.roll_comp_profile['valid']
+    liveTorqueParameters.rollCompBandGains = self.roll_comp_profile['bandGains']
+    liveTorqueParameters.rollCompBandPoints = self.roll_comp_profile['bandPoints']
 
     # Shadow-only rack breakaway observer telemetry.
     breakaway = self.breakaway_telemetry()

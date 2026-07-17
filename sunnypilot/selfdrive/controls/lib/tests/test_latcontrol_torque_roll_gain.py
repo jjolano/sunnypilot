@@ -138,6 +138,52 @@ def test_roll_comp_profile_changes_deferred_while_refresh_disallowed():
   assert ext.learned_roll_gain == 0.8
 
 
+def banded_profile_payload(low_gain=0.4):
+  return json.dumps({
+    "version": 1,
+    "restoreKey": {"carFingerprint": "test", "lateralTuning": "torque", "latAccelFactor": 2.0, "friction": 0.2},
+    "bands": [{"vLo": 5.0, "vHi": 10.0, "gain": low_gain, "points": 4000, "span": 0.5, "confidence": 1.0}],
+  })
+
+
+def test_apply_mode_exposes_speed_resolved_gain():
+  ext = LatControlTorqueExtOverride(cp())
+  class P:
+    def get_bool(self, k): return k in ('EnforceTorqueControl',)
+    def get(self, k, return_default=True):
+      if k == 'RollCompGainMode':
+        return 'apply'
+      if k == 'RollCompGainParams':
+        return banded_profile_payload(low_gain=0.4)
+      return ''
+  ext.params = P()
+  ext.enforce_torque_control_toggle = True
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  ext.update_override_torque_params(tp, 25.0)
+  # city-only profile: no scalar mirror, but the speed-resolved gain applies at low
+  # speed and pins the unlearned highway band to the caller's base gain
+  assert ext.learned_roll_gain is None
+  assert ext.learned_roll_gain_at(7.5, 0.55) == pytest.approx(0.4)
+  assert ext.learned_roll_gain_at(25.0, 0.55) == pytest.approx(0.55)
+
+
+def test_off_mode_speed_resolved_gain_is_none():
+  ext = LatControlTorqueExtOverride(cp())
+  class P:
+    def get_bool(self, k): return k in ('EnforceTorqueControl',)
+    def get(self, k, return_default=True):
+      if k == 'RollCompGainMode':
+        return 'off'
+      if k == 'RollCompGainParams':
+        return banded_profile_payload()
+      return ''
+  ext.params = P()
+  ext.enforce_torque_control_toggle = True
+  tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
+  ext.update_override_torque_params(tp, 25.0)
+  assert ext.learned_roll_gain_at(7.5, 0.55) is None
+
+
 def test_parse_rejects_wrong_restore_key():
   payload = json.loads(PROFILE)
   bad_cp = SimpleNamespace(

@@ -26,7 +26,7 @@ from openpilot.common.params import Params
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.custom.lateral.model_view import ModelView
-from openpilot.sunnypilot.custom.lateral.roll_comp_learning import parse_roll_comp_profile
+from openpilot.sunnypilot.custom.lateral.roll_comp_learning import parse_roll_comp_profile, roll_gain_at
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   SpeedAwareTorqueRuntime,
   parse_speed_aware_torque_profile,
@@ -230,12 +230,25 @@ class TorqueParameterOverridePolicy:
     self._roll_comp_mode = validate_roll_comp_gain_mode(self.params.get("RollCompGainMode", return_default=True))
     self._roll_comp_profile_raw = self.params.get("RollCompGainParams", return_default=True) if self._roll_comp_mode == 'apply' else None
     self.learned_roll_gain = None
+    self._learned_roll_profile = None
     if self._roll_comp_profile_raw:
       try:
         parsed = parse_roll_comp_profile(self.CP, json.loads(self._roll_comp_profile_raw))
-        self.learned_roll_gain = parsed['gain'] if parsed is not None else None
+        self._learned_roll_profile = parsed
+        self.learned_roll_gain = parsed.get('gain') if parsed is not None else None
       except Exception:
+        self._learned_roll_profile = None
         self.learned_roll_gain = None
+
+  def learned_roll_gain_at(self, v_ego: float, base_gain: float) -> float | None:
+    """Speed-resolved learned roll-comp gain; None when no learned profile applies.
+
+    ``base_gain`` pins the highway anchor when only city bands are learned, so a
+    low-speed fit never flat-extends to highway speeds.
+    """
+    if self._learned_roll_profile is None:
+      return None
+    return roll_gain_at(self._learned_roll_profile, v_ego, base_gain)
 
   def _capture_base(self, torque_params: Any) -> float:
     cur = float(torque_params.latAccelFactor)

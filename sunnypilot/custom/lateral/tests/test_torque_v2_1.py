@@ -528,3 +528,29 @@ def test_valid_learned_roll_gain_copied_to_response_core():
   assert c.response_core.roll_compensation_gain == ROLL_COMPENSATION_GAIN
   c.update(True, make_cs(v_ego=20.0, angle=5.0), FakeVM(), make_params(roll=-0.04), False, 0.0, make_pose(), False, 0.2)  # type: ignore[arg-type]
   assert c.response_core.roll_compensation_gain == 0.62
+
+
+class SpeedResolvedRollGainExtension(NoOpExtension):
+  def __init__(self, gain):
+    self.gain = gain
+    self.learned_roll_gain = 0.99  # must be ignored when the speed-resolved hook exists
+    self.calls = []
+
+  def learned_roll_gain_at(self, v_ego, base_gain):
+    self.calls.append((v_ego, base_gain))
+    return self.gain
+
+
+def test_speed_resolved_roll_gain_preferred_over_scalar():
+  ext = SpeedResolvedRollGainExtension(0.44)
+  c = LatControlTorqueV21(make_cp(), SimpleNamespace(), make_ci(), DT, extension=ext)
+  c.update(True, make_cs(v_ego=12.0, angle=5.0), FakeVM(), make_params(roll=-0.04), False, 0.0, make_pose(), False, 0.2)  # type: ignore[arg-type]
+  assert c.response_core.roll_compensation_gain == 0.44
+  assert ext.calls[-1] == (12.0, ROLL_COMPENSATION_GAIN)
+
+
+def test_speed_resolved_roll_gain_none_falls_back_to_constant():
+  ext = SpeedResolvedRollGainExtension(None)
+  c = LatControlTorqueV21(make_cp(), SimpleNamespace(), make_ci(), DT, extension=ext)
+  c.update(True, make_cs(v_ego=12.0, angle=5.0), FakeVM(), make_params(roll=-0.04), False, 0.0, make_pose(), False, 0.2)  # type: ignore[arg-type]
+  assert c.response_core.roll_compensation_gain == ROLL_COMPENSATION_GAIN

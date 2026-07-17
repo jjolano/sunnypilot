@@ -20,6 +20,7 @@ from openpilot.sunnypilot.custom.lateral.roll_comp_learning import (
   MIN_POINTS,
   parse_roll_comp_profile,
 )
+from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import ROLL_COMP_LEARN_MIN_V_EGO
 
 
 @pytest.fixture(autouse=True)
@@ -176,7 +177,22 @@ def test_roll_comp_rejects_steering_override():
   assert len(est.roll_comp_buckets.get_points()) == 0
 
 
-def test_roll_comp_rejects_low_speed_frames():
+def test_roll_comp_rejects_frames_below_collection_floor():
+  est = _make_estimator("shadow")
+  _bootstrap_filtered_points(est)
+
+  n = _warmup_samples()
+  for i in range(n):
+    roll_rad = np.deg2rad(0.8)
+    lateral_accel = -np.sin(roll_rad) * 9.81
+    steer = lateral_accel / 2.0
+    _feed(est, i * DT_MDL, steer=steer, lateral_accel=lateral_accel, roll_rad=roll_rad,
+          v_ego=ROLL_COMP_LEARN_MIN_V_EGO - 1.0)
+
+  assert len(est.roll_comp_buckets.get_points()) == 0
+
+
+def test_roll_comp_low_speed_frames_route_to_low_bands():
   est = _make_estimator("shadow")
   _bootstrap_filtered_points(est)
 
@@ -187,7 +203,9 @@ def test_roll_comp_rejects_low_speed_frames():
     steer = lateral_accel / 2.0
     _feed(est, i * DT_MDL, steer=steer, lateral_accel=lateral_accel, roll_rad=roll_rad, v_ego=MIN_VEL - 1.0)
 
-  assert len(est.roll_comp_buckets.get_points()) == 0
+  assert len(est.roll_comp_buckets.band_points((10.0, 15.0))) > 0
+  assert len(est.roll_comp_buckets.band_points((5.0, 10.0))) == 0
+  assert len(est.roll_comp_buckets.band_points((15.0, 100.0))) == 0
 
 
 def test_roll_comp_rejects_high_steering_rate():
@@ -321,6 +339,13 @@ def test_roll_comp_telemetry_populated_after_valid_fit():
   assert msg.liveTorqueParameters.rollCompGainPoints >= 2000
   assert msg.liveTorqueParameters.rollCompGainSpan >= 0.25
   assert 0.3 <= msg.liveTorqueParameters.rollCompGainLearned <= 1.0
+  # all points were fed at 25 m/s: only the primary band is fitted, and it mirrors the scalars
+  band_gains = list(msg.liveTorqueParameters.rollCompBandGains)
+  band_points = list(msg.liveTorqueParameters.rollCompBandPoints)
+  assert band_gains[:2] == [0.0, 0.0]
+  assert band_points[:2] == [0, 0]
+  assert band_gains[2] == msg.liveTorqueParameters.rollCompGainLearned
+  assert band_points[2] == msg.liveTorqueParameters.rollCompGainPoints
 
 
 def test_torqued_strict_collection_gate_unchanged():

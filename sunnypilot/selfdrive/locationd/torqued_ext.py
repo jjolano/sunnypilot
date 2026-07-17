@@ -13,7 +13,8 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.custom.lateral.roll_comp_learning import (
-  RollCompBuckets, blend_roll_comp_profile, fit_roll_comp_profile, format_roll_comp_profile, parse_roll_comp_profile,
+  ROLL_COMP_SPEED_BANDS, RollCompBuckets, blend_roll_comp_profile, fit_roll_comp_profile, format_roll_comp_profile,
+  parse_roll_comp_profile,
 )
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   SpeedAwareTorqueBuckets, blend_speed_aware_torque_profile, fit_speed_aware_torque_profile,
@@ -30,6 +31,9 @@ from openpilot.sunnypilot.custom.lateral.torque_safety import (
 
 RELAXED_MIN_BUCKET_POINTS = np.array([1, 200, 300, 500, 500, 300, 200, 1])
 ROLL_COMP_MIN_V_EGO = 15.0  # Matches torqued.MIN_VEL without creating an import cycle.
+# Roll-comp collection floor for the speed-resolved bands: below 5 m/s the controller
+# freezes the integrator and the measurement smoother resets, so points there are junk.
+ROLL_COMP_LEARN_MIN_V_EGO = 5.0
 
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda']
 
@@ -79,7 +83,7 @@ class TorqueEstimatorExt:
     self.roll_comp_buckets = RollCompBuckets()
     self.roll_comp_profile_cache = None
     self._roll_comp_blend_base = None
-    self.roll_comp_profile = {'gain': 0.0, 'points': 0, 'span': 0.0, 'valid': False}
+    self.update_roll_comp_telemetry()  # seeds the full default dict incl. band fields
     self._profile_blend_base_frozen = False
 
     # Shadow-only rack breakaway observer. Never affects control.
@@ -180,7 +184,7 @@ class TorqueEstimatorExt:
       return
     if not self.filtered_points.is_valid():
       return
-    if v_ego <= ROLL_COMP_MIN_V_EGO:
+    if v_ego <= ROLL_COMP_LEARN_MIN_V_EGO:
       return
     if abs(v_ego * yaw_rate) >= 0.15:
       return
@@ -233,15 +237,22 @@ class TorqueEstimatorExt:
     }
 
   def update_roll_comp_telemetry(self):
-    if self.roll_comp_mode in ('shadow', 'apply') and self.roll_comp_profile_cache is not None:
+    cache = self.roll_comp_profile_cache
+    if self.roll_comp_mode in ('shadow', 'apply') and cache is not None:
+      band_map = {(b['vLo'], b['vHi']): b for b in cache.get('bands', [])}
+      # scalar fields keep their legacy meaning: the primary (>=15 m/s) band's fit
       self.roll_comp_profile = {
-        'gain': float(self.roll_comp_profile_cache['gain']),
-        'points': int(self.roll_comp_profile_cache['points']),
-        'span': float(self.roll_comp_profile_cache['span']),
-        'valid': True,
+        'gain': float(cache.get('gain', 0.0)),
+        'points': int(cache.get('points', 0)),
+        'span': float(cache.get('span', 0.0)),
+        'valid': 'gain' in cache,
+        'bandGains': [float(band_map[b]['gain']) if b in band_map else 0.0 for b in ROLL_COMP_SPEED_BANDS],
+        'bandPoints': [int(band_map[b]['points']) if b in band_map else 0 for b in ROLL_COMP_SPEED_BANDS],
       }
     else:
-      self.roll_comp_profile = {'gain': 0.0, 'points': 0, 'span': 0.0, 'valid': False}
+      self.roll_comp_profile = {'gain': 0.0, 'points': 0, 'span': 0.0, 'valid': False,
+                                'bandGains': [0.0] * len(ROLL_COMP_SPEED_BANDS),
+                                'bandPoints': [0] * len(ROLL_COMP_SPEED_BANDS)}
 
   def maybe_persist_speed_profile(self, cache_write=False):
     if not cache_write:

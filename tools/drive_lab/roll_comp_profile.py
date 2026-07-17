@@ -12,7 +12,7 @@ import numpy as np
 
 from openpilot.tools.drive_lab.route_io import load_route_msgs, output_report
 from openpilot.tools.drive_lab.timeline import msg_payload, msg_time_s, msg_type, safe_get
-from sunnypilot.custom.lateral.roll_comp_learning import _fit_slope_ols
+from sunnypilot.custom.lateral.roll_comp_learning import ROLL_COMP_SPEED_BANDS, _fit_slope_ols
 
 GRAVITY = 9.81
 MIN_V_EGO = 15.0
@@ -125,7 +125,8 @@ def _extract_frames(msgs: list[Any]) -> list[_Frame]:
   return frames
 
 
-def _select_straight_frames(frames: list[_Frame], strict_straight: bool = False) -> list[_Frame]:
+def _select_straight_frames(frames: list[_Frame], strict_straight: bool = False,
+                            v_lo: float = MIN_V_EGO, v_hi: float | None = None) -> list[_Frame]:
   selected: list[_Frame] = []
   previous_desired: float | None = None
   max_desired = MAX_DESIRED_LATERAL_ACCEL_DELTA if strict_straight else MAX_DESIRED_LATERAL_ACCEL
@@ -137,7 +138,9 @@ def _select_straight_frames(frames: list[_Frame], strict_straight: bool = False)
       continue
     if frame.steering_pressed:
       continue
-    if frame.v_ego <= MIN_V_EGO:
+    if frame.v_ego <= v_lo:
+      continue
+    if v_hi is not None and frame.v_ego >= v_hi:
       continue
     if abs(frame.desired_lateral_accel) > max_desired:
       continue
@@ -155,12 +158,14 @@ def build_roll_comp_profile(
   source: str = "unknown",
   already_sorted: bool = False,
   strict_straight: bool = False,
+  v_lo: float = MIN_V_EGO,
+  v_hi: float | None = None,
 ) -> RollCompProfileReport:
   if not already_sorted:
     msgs = sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
 
   frames = _extract_frames(msgs)
-  straight = _select_straight_frames(frames, strict_straight=strict_straight)
+  straight = _select_straight_frames(frames, strict_straight=strict_straight, v_lo=v_lo, v_hi=v_hi)
 
   if not straight:
     return RollCompProfileReport(
@@ -291,6 +296,23 @@ def load_roll_comp_profile(path: str | Path) -> RollCompProfileReport:
   )
 
 
+def build_roll_comp_band_reports(
+  msgs: list[Any],
+  source: str = "unknown",
+  already_sorted: bool = False,
+  strict_straight: bool = False,
+) -> list[RollCompProfileReport]:
+  """One report per device speed band — the shadow gate compares these against the
+  device learner's rollCompBandGains (agreement within +-0.1)."""
+  if not already_sorted:
+    msgs = sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
+  return [
+    build_roll_comp_profile(msgs, source=f"{source} [{v_lo:g}-{v_hi:g} m/s]", already_sorted=True,
+                            strict_straight=strict_straight, v_lo=v_lo, v_hi=v_hi)
+    for v_lo, v_hi in ROLL_COMP_SPEED_BANDS
+  ]
+
+
 def main() -> None:
   parser = argparse.ArgumentParser(description="Profile roll-compensation gain from route logs.")
   parser.add_argument("routes", nargs="+", help="Route, segment range, log file, or URLs accepted by LogReader")
@@ -298,7 +320,26 @@ def main() -> None:
   parser.add_argument("--json", action="store_true", help="Print JSON instead of a text summary")
   parser.add_argument("--qlog", action="store_true", help="Prefer qlogs instead of rlogs")
   parser.add_argument("--strict-straight", action="store_true", help="Use the tighter 0.05 m/s^2 straightness gate")
+  parser.add_argument("--speed-bands", action="store_true",
+                      help="Fit per device speed band (ROLL_COMP_SPEED_BANDS) instead of the single >15 m/s gate")
   args = parser.parse_args()
+
+  if args.speed_bands:
+    band_reports = [
+      report
+      for route in args.routes
+      for report in build_roll_comp_band_reports(
+        load_route_msgs(route, qlog=args.qlog), source=route, already_sorted=True, strict_straight=args.strict_straight,
+      )
+    ]
+    payload = [report.to_dict() for report in band_reports]
+    if args.output:
+      Path(args.output).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    if args.json:
+      print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+      print("\n\n".join(render_roll_comp_profile(report) for report in band_reports))
+    return
 
   route_reports = [
     build_roll_comp_profile(

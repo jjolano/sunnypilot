@@ -2477,6 +2477,12 @@ struct LiveTorqueParametersData {
   breakawayLeftMedian @28 :Float32;
   breakawayRightMedian @29 :Float32;
   breakawayEvents @30 :UInt32;
+
+  # Speed-resolved roll-comp gain learner: per-band fits aligned with
+  # ROLL_COMP_SPEED_BANDS (5-10, 10-15, 15+ m/s); 0 = band not fitted yet.
+  # The scalar rollCompGain* fields above keep reporting the 15+ band.
+  rollCompBandGains @31 :List(Float32);
+  rollCompBandPoints @32 :List(UInt32);
 }
 
 struct LiveDelayData {
