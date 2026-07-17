@@ -159,6 +159,13 @@ class TestCompiledShape:
     item = next(i for i in torque_section["sub_panels"][0]["items"] if i["key"] == "RollCompGainMode")
     assert [opt["value"] for opt in item["options"]] == ["off", "shadow", "apply"]
 
+  def test_friction_breakaway_mode_is_off_shadow_apply(self, compiled):
+    steering = next(p for p in compiled["panels"] if p["id"] == "steering")
+    torque_section = next(s for s in steering["sections"] if s["id"] == "torque")
+    item = next(i for i in torque_section["sub_panels"][0]["items"] if i["key"] == "LatFrictionBreakawayMode")
+    assert [opt["value"] for opt in item["options"]] == ["off", "shadow", "apply"]
+    assert "monitor only" in item["description"].lower()
+
   def test_low_speed_shadow_toggle_is_under_torque_settings(self, compiled):
     steering = next(p for p in compiled["panels"] if p["id"] == "steering")
     torque_section = next(s for s in steering["sections"] if s["id"] == "torque")

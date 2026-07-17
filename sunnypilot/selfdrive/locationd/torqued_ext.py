@@ -21,6 +21,7 @@ from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   SPEED_BUCKET_BP, LOW_SPEED_BUCKET_BP,
 )
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
+  validate_friction_breakaway_mode,
   validate_live_torque_speed_adaptive_mode,
   validate_roll_comp_gain_mode,
   validate_torque_override_friction,
@@ -31,6 +32,16 @@ RELAXED_MIN_BUCKET_POINTS = np.array([1, 200, 300, 500, 500, 300, 200, 1])
 ROLL_COMP_MIN_V_EGO = 15.0  # Matches torqued.MIN_VEL without creating an import cycle.
 
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda']
+
+# Rack breakaway observer thresholds — mirror the offline analysis of route
+# 000002a1 (analyze_stiction / stiction_lab): a dwell of >=0.3s followed by a
+# >=1.5 deg/s jump is a stick-slip breakout; the EPS torque held during the
+# dwell approximates the static breakaway for that direction.
+BREAKAWAY_DWELL_S = 0.3
+BREAKAWAY_STILL_DEG_S = 0.5
+BREAKAWAY_JUMP_DEG_S = 1.5
+BREAKAWAY_MIN_V_EGO = 8.0
+BREAKAWAY_WINDOW = 25  # rolling breakout samples per direction
 
 
 class TorqueEstimatorExt:
@@ -71,6 +82,14 @@ class TorqueEstimatorExt:
     self.roll_comp_profile = {'gain': 0.0, 'points': 0, 'span': 0.0, 'valid': False}
     self._profile_blend_base_frozen = False
 
+    # Shadow-only rack breakaway observer. Never affects control.
+    self.friction_breakaway_mode = 'off'
+    self._ba_last_t = None
+    self._ba_dwell = 0.0
+    self._ba_eps_hold = 0.0
+    self._ba_samples = {1: [], -1: []}
+    self.breakaway_events = 0
+
   def initialize_custom_params(self, decimated=False):
     self.update_use_params()
 
@@ -109,6 +128,7 @@ class TorqueEstimatorExt:
           self.speed_profile_cache = None
           self.speed_adaptive_runtime.profile = None
 
+      self.friction_breakaway_mode = validate_friction_breakaway_mode(self._params.get("LatFrictionBreakawayMode", return_default=True))
       self.roll_comp_mode = validate_roll_comp_gain_mode(self._params.get("RollCompGainMode", return_default=True))
       roll_payload = self._params.get("RollCompGainParams", return_default=True)
       if roll_payload:
@@ -171,6 +191,46 @@ class TorqueEstimatorExt:
     torque_lat_accel = (self.filtered_params['latAccelFactor'].x * steer +
                         self.filtered_params['latAccelOffset'].x)
     self.roll_comp_buckets.add_point(roll, torque_lat_accel, v_ego)
+
+  def update_breakaway_observer(self, t, steering_rate_deg, eps_norm, v_ego):
+    """Shadow-only dwell->jump breakout detector, fed per carState frame.
+
+    ``eps_norm`` is EPS torque normalized by the brand STEER_MAX (sign
+    convention irrelevant here — magnitudes are recorded per motion direction).
+    """
+    if self.friction_breakaway_mode == 'off' or eps_norm is None:
+      self._ba_last_t = None
+      self._ba_dwell = 0.0
+      return
+    dt = 0.0 if self._ba_last_t is None else min(max(t - self._ba_last_t, 0.0), 0.1)
+    self._ba_last_t = t
+
+    lat_active = bool(self.raw_points['lat_active'][-1]) if len(self.raw_points.get('lat_active', [])) else False
+    pressed = bool(self.raw_points['steer_override'][-1]) if len(self.raw_points.get('steer_override', [])) else True
+    if not lat_active or pressed or v_ego < BREAKAWAY_MIN_V_EGO or not np.isfinite(eps_norm):
+      self._ba_dwell = 0.0
+      return
+
+    rate = abs(steering_rate_deg)
+    if rate < BREAKAWAY_STILL_DEG_S:
+      self._ba_dwell += dt
+      self._ba_eps_hold = eps_norm
+    else:
+      if rate >= BREAKAWAY_JUMP_DEG_S and self._ba_dwell >= BREAKAWAY_DWELL_S:
+        direction = 1 if steering_rate_deg > 0 else -1
+        samples = self._ba_samples[direction]
+        samples.append(abs(self._ba_eps_hold))
+        del samples[:-BREAKAWAY_WINDOW]
+        self.breakaway_events += 1
+      self._ba_dwell = 0.0
+
+  def breakaway_telemetry(self):
+    left, right = self._ba_samples[1], self._ba_samples[-1]
+    return {
+      'left': float(np.median(left)) if left else 0.0,
+      'right': float(np.median(right)) if right else 0.0,
+      'events': int(self.breakaway_events),
+    }
 
   def update_roll_comp_telemetry(self):
     if self.roll_comp_mode in ('shadow', 'apply') and self.roll_comp_profile_cache is not None:

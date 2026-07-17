@@ -949,6 +949,10 @@ struct ControlsState @0x97ff69c53601abf1 {
       responseCoreSameSignUnwind @70 :Bool;      # low-speed unwind active this cycle
       responseCoreFreezeIntegrator @71 :Bool;    # integrator frozen this cycle
       responseCoreFf @72 :Float32;               # pre-extension feedforward lateral accel
+
+      # Friction breakaway floor (LatFrictionBreakawayMode; anti stick-slip)
+      frictionFloorActive @73 :Bool;             # floor boosting this cycle (would-be in shadow)
+      frictionFloorDelta @74 :Float32;           # m/s^2 friction boost (would-be in shadow)
     }
    }
 
@@ -2467,6 +2471,12 @@ struct LiveTorqueParametersData {
   rollCompGainPoints @25 :UInt32;
   rollCompGainSpan @26 :Float32;
   rollCompGainValid @27 :Bool;
+
+  # Shadow-only rack breakaway observer (LatFrictionBreakawayMode != off).
+  # EPS torque magnitude at dwell->motion onsets, normalized by brand STEER_MAX.
+  breakawayLeftMedian @28 :Float32;
+  breakawayRightMedian @29 :Float32;
+  breakawayEvents @30 :UInt32;
 }
 
 struct LiveDelayData {

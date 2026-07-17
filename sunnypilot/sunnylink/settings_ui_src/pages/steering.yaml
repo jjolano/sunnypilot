@@ -204,6 +204,22 @@ sections:
         label: Apply learned gain
       enablement:
       - $ref: '#/macros/offroad'
+    - key: LatFrictionBreakawayMode
+      widget: multiple_button
+      title: Friction Breakaway Floor
+      description: Counteract steering-rack stick-slip by boosting friction compensation for small persistent corrections.
+        Monitor only logs what the floor would add without changing steering; Apply can change steering response — expect
+        slightly quicker small corrections; turn Off to disable.
+      requires_attestation: true
+      options:
+      - value: 'off'
+        label: 'Off'
+      - value: shadow
+        label: Monitor only
+      - value: apply
+        label: Apply
+      enablement:
+      - $ref: '#/macros/offroad'
     - key: LiveTorqueParamsRelaxedToggle
       widget: toggle
       title: Less Restrict Settings for Self-Tune (Beta)

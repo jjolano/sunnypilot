@@ -195,6 +195,8 @@ class ResponseCore:
     self._v_ego_invalid_logged = False
     # ponytail: instance attr lets the controller inject a learned gain without mutating torque_params.
     self.roll_compensation_gain = ROLL_COMPENSATION_GAIN
+    # Optional friction-term shaping hook (friction_breakaway_floor). None = exact legacy math.
+    self.friction_shaper: Callable[[float, float, TorqueParams], float] | None = None
 
   def update_limits(self) -> None:
     self.pid.set_limits(self._lateral_accel_from_torque(self.steer_max, self.torque_params),
@@ -263,7 +265,10 @@ class ResponseCore:
     ff = setpoint if same_sign_unwind else gravity_adjusted_future_lateral_accel
     ff -= tp.latAccelOffset
     friction_scale = low_demand_friction_scale(setpoint, measurement)
-    ff += self._get_friction(error * friction_scale, lateral_accel_deadzone, FRICTION_THRESHOLD, tp) * friction_scale
+    friction_term = self._get_friction(error * friction_scale, lateral_accel_deadzone, FRICTION_THRESHOLD, tp) * friction_scale
+    if self.friction_shaper is not None:
+      friction_term = self.friction_shaper(friction_term, error, tp)
+    ff += friction_term
 
     output_torque = 0.0
     freeze_integrator = False

@@ -58,17 +58,20 @@ def test_eps_fields_update_with_valid_samples():
   est = TorqueEstimator(_car_params_with_eps())
   n = _warmup_samples()
   steer = 0.1
-  eps_torque = 0.12
+  # native Toyota units, carcontroller sign convention: -180/1500 -> 0.12 in
+  # torqued's normalized steer convention (steer = -actuatorsOutput.torque)
+  eps_torque_native = -180.0
+  eps_torque_normalized = 0.12
   for i in range(n):
-    _feed(est, i * DT_MDL, steer=steer, lateral_accel=0.2, steering_torque_eps=eps_torque)
+    _feed(est, i * DT_MDL, steer=steer, lateral_accel=0.2, steering_torque_eps=eps_torque_native)
 
   msg = est.get_msg()
   ltp = msg.liveTorqueParameters
   assert ltp.epsObserved is True
   assert ltp.epsSampleCount > 0
-  assert ltp.epsTorqueLatest == pytest.approx(eps_torque, abs=1e-6)
+  assert ltp.epsTorqueLatest == pytest.approx(eps_torque_normalized, abs=1e-6)
   assert ltp.epsCommandTorqueLatest == pytest.approx(steer, abs=1e-6)
-  expected_delta = abs(steer - eps_torque)
+  expected_delta = abs(steer - eps_torque_normalized)
   assert ltp.epsDeltaMean == pytest.approx(expected_delta, abs=1e-6)
   assert ltp.epsDeltaMax == pytest.approx(expected_delta, abs=1e-6)
 

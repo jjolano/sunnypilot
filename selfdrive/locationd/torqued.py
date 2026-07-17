@@ -38,6 +38,10 @@ MIN_ENGAGE_BUFFER = 2  # secs
 VERSION = 1  # bump this to invalidate old parameter caches
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda', 'volkswagen']
 EPS_TORQUE_CARS = ['chrysler', 'gm', 'hyundai', 'mazda', 'psa', 'subaru', 'toyota']
+# steeringTorqueEps is in brand-native units with the carcontroller's sign convention;
+# torqued's steer points are -actuatorsOutput.torque (normalized). Divide by the brand
+# STEER_MAX and negate to compare them. ponytail: toyota-only, add brands when observed
+EPS_TORQUE_STEER_MAX = {'toyota': 1500.0}
 
 
 def slope2rot(slope):
@@ -187,7 +191,9 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         eps_torque = float(np.interp(t, times, values))
 
     self.eps_command_torque_latest = float(steer)
-    if self.CP.brand in EPS_TORQUE_CARS and eps_torque is not None and np.isfinite(eps_torque):
+    eps_steer_max = EPS_TORQUE_STEER_MAX.get(self.CP.brand)
+    if eps_steer_max is not None and eps_torque is not None and np.isfinite(eps_torque):
+      eps_torque = -eps_torque / eps_steer_max
       delta = abs(float(steer) - eps_torque)
       self.eps_observed = True
       self.eps_torque_latest = eps_torque
@@ -229,6 +235,9 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
       self.raw_points["steer_override"].append(msg.steeringPressed)
       self.raw_points["steering_rate_deg"].append(msg.steeringRateDeg)
       self.raw_points["steering_torque_eps"].append(float(msg.steeringTorqueEps))
+      eps_steer_max = EPS_TORQUE_STEER_MAX.get(self.CP.brand)
+      if eps_steer_max is not None:
+        self.update_breakaway_observer(t, msg.steeringRateDeg, float(msg.steeringTorqueEps) / eps_steer_max, msg.vEgo)
     elif which == "liveCalibration":
       self.calibrator.feed_live_calib(msg)
     elif which == "liveDelay":
@@ -339,6 +348,12 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.rollCompGainPoints = self.roll_comp_profile['points']
     liveTorqueParameters.rollCompGainSpan = self.roll_comp_profile['span']
     liveTorqueParameters.rollCompGainValid = self.roll_comp_profile['valid']
+
+    # Shadow-only rack breakaway observer telemetry.
+    breakaway = self.breakaway_telemetry()
+    liveTorqueParameters.breakawayLeftMedian = breakaway['left']
+    liveTorqueParameters.breakawayRightMedian = breakaway['right']
+    liveTorqueParameters.breakawayEvents = breakaway['events']
     return msg
 
 

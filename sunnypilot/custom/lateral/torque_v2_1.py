@@ -20,6 +20,7 @@ from opendbc.car.lateral import get_friction
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import UnderresponseSentinel, write_underresponse_debug
+from openpilot.sunnypilot.custom.lateral.friction_breakaway_floor import FrictionBreakawayFloor
 from openpilot.sunnypilot.custom.lateral.near_zero_recenter_observer import NearZeroRecenterObserver
 from openpilot.sunnypilot.custom.lateral.output_governor import GovernorReason, OutputGovernor, OutputGovernorInputs
 from openpilot.sunnypilot.custom.lateral.oscillation_observer import OscillationObserver
@@ -62,6 +63,8 @@ class LatControlTorqueV21(LatControl):
     self.underresponse_sentinel = UnderresponseSentinel(dt)
     self.oscillation_observer = OscillationObserver(dt)
     self.near_zero_recenter_observer = NearZeroRecenterObserver(dt)
+    self.friction_floor = FrictionBreakawayFloor()
+    self.response_core.friction_shaper = self.friction_floor.shape
     self.extension = extension if extension is not None else LatControlTorqueExt(self, CP, CP_SP, CI)
     self._under_response_path_evidence_valid = True
     self._limited_requested_torque = None
@@ -73,6 +76,7 @@ class LatControlTorqueV21(LatControl):
     self.underresponse_sentinel.reset()
     self.oscillation_observer.reset()
     self.near_zero_recenter_observer.reset()
+    self.friction_floor.reset()
 
   def set_torque_override_refresh_allowed(self, allowed: bool) -> None:
     if hasattr(self.extension, 'set_torque_override_refresh_allowed'):
@@ -150,6 +154,7 @@ class LatControlTorqueV21(LatControl):
       self.response_core.update_limits()
     # ponytail: learned roll gain is an extra exposed attr, never part of torque_params capture/restore.
     self.response_core.roll_compensation_gain = getattr(self.extension, 'learned_roll_gain', None) or ROLL_COMPENSATION_GAIN
+    self.friction_floor.mode = getattr(self.extension, 'friction_breakaway_mode', 'off')
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION_V21
@@ -163,6 +168,7 @@ class LatControlTorqueV21(LatControl):
       write_underresponse_debug(pid_log, self.underresponse_sentinel.reset())
       self.oscillation_observer.reset()
       self.near_zero_recenter_observer.reset()
+      self.friction_floor.reset()
       pid_log.active = False
       return 0.0, 0.0, pid_log
 
@@ -175,6 +181,8 @@ class LatControlTorqueV21(LatControl):
     adaptive.responseCoreSameSignUnwind = bool(rc.same_sign_unwind)
     adaptive.responseCoreFreezeIntegrator = bool(rc.freeze_integrator)
     adaptive.responseCoreFf = float(rc.ff)
+    adaptive.frictionFloorActive = bool(self.friction_floor.debug.active)
+    adaptive.frictionFloorDelta = float(self.friction_floor.debug.delta)
 
     output_torque = rc.output_torque
 
