@@ -21,9 +21,9 @@ DT = 0.05
 LIMITS = (-4.0, 2.0)
 
 
-def lead(d_rel=30.0, v_lead=12.0, v_rel=0.0, y_rel=0.0, status=True, track_id=3):
+def lead(d_rel=30.0, v_lead=12.0, v_rel=0.0, y_rel=0.0, status=True, track_id=3, a_lead=0.0):
   return SimpleNamespace(status=status, dRel=d_rel, vLead=v_lead, vLeadK=v_lead, vRel=v_rel,
-                         aLeadK=0.0, yRel=y_rel, radarTrackId=track_id, radar=True,
+                         aLeadK=a_lead, yRel=y_rel, radarTrackId=track_id, radar=True,
                          modelProb=0.9, aLeadTau=1.0)
 
 
@@ -1007,6 +1007,77 @@ def test_non_compression_lead_hazard_still_hardened_by_inside_time_gap():
   assert r.a_target <= -1.5
 
 
+def test_lead_gap_compression_latch_rejects_radar_chatter():
+  s = CustomLongitudinalStack()
+
+  def step(v_rel, *, a_lead=0.0, lead_a_target=-0.3, long_active=True, lead_present=True):
+    return s.update(base(
+      v_ego=15.0, v_cruise=15.0, seed_a_target=-0.3,
+      leads=((lead(d_rel=22.0, v_lead=15.0 + v_rel, v_rel=v_rel, a_lead=a_lead)
+              if lead_present else None), None),
+      lead_a_target=lead_a_target, mode=LongitudinalMode.ACC, long_active=long_active,
+    ), DT)
+
+  for _ in range(10):
+    step(0.0)
+
+  armed = step(-0.12)
+  assert armed.decision.selected_intent == "lead_gap_compression"
+  assert armed.decision.a_target == pytest.approx(-0.15)
+  assert s._lead_gap_compression_active is True
+
+  for v_rel in (-0.08, -0.11, -0.06, -0.13, -0.04):
+    result = step(v_rel)
+    assert result.decision.selected_intent == "lead_gap_compression"
+    assert result.decision.a_target == pytest.approx(-0.15)
+
+  recovered = step(0.05)
+  assert recovered.decision.selected_intent.startswith("lead_gap_recovery")
+  assert recovered.decision.a_target == pytest.approx(0.0)
+  assert s._lead_gap_compression_active is False
+
+  recovered = step(-0.08)
+  assert recovered.decision.selected_intent.startswith("lead_gap_recovery")
+  assert recovered.decision.a_target == pytest.approx(0.0)
+
+  rearmed = step(-0.12)
+  assert rearmed.decision.selected_intent == "lead_gap_compression"
+  assert rearmed.decision.a_target == pytest.approx(-0.15)
+  assert s._lead_gap_compression_active is True
+
+  hard = step(-0.12, a_lead=-3.0, lead_a_target=-1.5)
+  assert hard.decision.selected_intent == "lead_follow"
+  assert hard.decision.a_target == pytest.approx(-1.5)
+  assert s._lead_gap_compression_active is False
+
+  rearmed = step(-0.12)
+  assert rearmed.decision.selected_intent == "lead_gap_compression"
+  assert s._lead_gap_compression_active is True
+
+  inactive = step(-0.12, long_active=False, lead_present=False)
+  assert not inactive.decision.selected_intent.startswith("lead_gap_")
+  assert s._lead_gap_compression_active is False
+
+  for _ in range(10):
+    step(0.0)
+  rearmed = step(-0.12)
+  assert rearmed.decision.selected_intent == "lead_gap_compression"
+  assert s._lead_gap_compression_active is True
+  s.reset()
+  assert s._lead_gap_compression_active is False
+  for _ in range(10):
+    step(0.0)
+  rearmed = step(-0.12)
+  assert rearmed.decision.selected_intent == "lead_gap_compression"
+  assert s._lead_gap_compression_active is True
+  lost = s.update(base(
+    v_ego=15.0, v_cruise=15.0, seed_a_target=-0.3, leads=(None, None),
+    lead_a_target=-0.3, mode=LongitudinalMode.ACC, long_active=True,
+  ), DT)
+  assert not lost.decision.selected_intent.startswith("lead_gap_")
+  assert s._lead_gap_compression_active is False
+
+
 def test_cutout_shadow_blocks_no_lead_launch_then_clears():
   """A stable lead that laterally exits near the lane edge creates a cutout shadow.
   The shadow must suppress no-lead launch/standstill release, then clear after expiry."""
@@ -1044,4 +1115,3 @@ def test_cutout_shadow_blocks_no_lead_launch_then_clears():
   assert final.debug["lead_shadow_active"] is False
   assert final.standstill_release_allowed is True
   assert final.standstill_release_source == "no_lead_launch"
-

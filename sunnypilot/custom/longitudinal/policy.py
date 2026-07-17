@@ -158,6 +158,8 @@ _LEAD_INSIDE_GAP_MIN_TTC_S = 5.0
 _LEAD_INSIDE_GAP_MAX_REQUIRED_DECEL = 0.45  # m/s^2; kinematic closing demand ceiling
 _LEAD_INSIDE_GAP_MAX_CLOSING_MPS = 2.0      # m/s; moderate closing only
 _LEAD_INSIDE_GAP_MIN_LEAD_A_K = -1.2        # m/s^2; reject compression if lead is braking harder
+_LEAD_INSIDE_GAP_COMPRESSION_ENTER_MPS = 0.10
+_LEAD_INSIDE_GAP_COMPRESSION_EXIT_MPS = 0.0
 
 # Routine-braking compression tier (Phase 3b): allows a stronger but still bounded
 # compression target when the desired-gap kinematic demand is higher, as long as the
@@ -512,7 +514,8 @@ def _lead_relevance_cap(scene: LongitudinalScene) -> float | None:
   return float(-(_LEAD_RELEVANCE_AUTHORITY_K * required + _LEAD_RELEVANCE_COAST_MARGIN))
 
 
-def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | None:
+def _lead_inside_gap_recovery(scene: LongitudinalScene,
+                              lead_gap_compression_active: bool = False) -> tuple[float, bool] | None:
   """For low/moderate-risk inside-gap compression/recovery, return (target, is_hazard).
 
   Returns:
@@ -552,6 +555,9 @@ def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | 
   required_decel = (closing * closing) / (2.0 * usable_gap)
   collision_gap = max(scene.lead_d_rel - 5.0, 0.1)
   collision_required_decel = (closing * closing) / (2.0 * collision_gap)
+  compression_threshold = (_LEAD_INSIDE_GAP_COMPRESSION_EXIT_MPS
+                           if lead_gap_compression_active else _LEAD_INSIDE_GAP_COMPRESSION_ENTER_MPS)
+  compression_allowed = closing > compression_threshold
 
   # Comfort tier: very low kinematic demand -> very mild compression target.
   comfort_ok = bool(
@@ -563,7 +569,7 @@ def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | 
   )
   if comfort_ok:
     # Stable/opening inside the gap: suppress the physical hazard and coast.
-    if closing <= 0.1:
+    if not compression_allowed:
       return (0.0, False)
     raw_magnitude = max(
       0.15,
@@ -581,7 +587,7 @@ def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | 
     math.isfinite(scene.lead_a_k) and scene.lead_a_k >= _LEAD_ROUTINE_GAP_MIN_LEAD_A_K
   )
   if routine_ok:
-    if closing <= 0.1:
+    if not compression_allowed:
       return (0.0, False)
     raw_magnitude = max(
       _LEAD_ROUTINE_GAP_TARGET_MIN,
@@ -592,7 +598,8 @@ def _lead_inside_gap_recovery(scene: LongitudinalScene) -> tuple[float, bool] | 
   return None
 
 
-def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
+def build_candidates(scene: LongitudinalScene,
+                     lead_gap_compression_active: bool = False) -> list[LongitudinalCandidate]:
   """Produce the custom-2.0 candidate set; the decision core arbitrates and the mode gate
   admits them. Personality is normalized to a known value."""
   personality = scene.personality if isinstance(scene.personality, Personality) else Personality.from_value(scene.personality)
@@ -694,7 +701,7 @@ def build_candidates(scene: LongitudinalScene) -> list[LongitudinalCandidate]:
   # low-risk soft case, it re-binds.)
   if (scene.has_lead and not coast_candidate_active
       and (scene.lead_a_target < 0.0 or not (opening_pullaway or alignment_pullaway))):
-    recovery = _lead_inside_gap_recovery(scene)
+    recovery = _lead_inside_gap_recovery(scene, lead_gap_compression_active)
     if recovery is not None:
       target, is_hazard = recovery
       if is_hazard:
