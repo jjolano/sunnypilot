@@ -22,6 +22,8 @@ from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   SPEED_BUCKET_BP, LOW_SPEED_BUCKET_BP,
 )
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
+  BREAKAWAY_PROFILE_MIN_EVENTS,
+  format_breakaway_profile,
   validate_friction_breakaway_mode,
   validate_live_torque_speed_adaptive_mode,
   validate_roll_comp_gain_mode,
@@ -275,3 +277,10 @@ class TorqueEstimatorExt:
         self.roll_comp_profile_cache = profile
         self.update_roll_comp_telemetry()
         self._params.put("RollCompGainParams", format_roll_comp_profile(profile), block=True)
+
+    if self.friction_breakaway_mode in ('shadow', 'apply'):
+      tele = self.breakaway_telemetry()
+      # min per-direction sample floor so one busy direction can't publish a skewed profile
+      if tele['events'] >= BREAKAWAY_PROFILE_MIN_EVENTS and min(len(self._ba_samples[1]), len(self._ba_samples[-1])) >= 5:
+        self._params.put("LatFrictionBreakawayParams",
+                         format_breakaway_profile(self.CP, tele['left'], tele['right'], tele['events']), block=True)

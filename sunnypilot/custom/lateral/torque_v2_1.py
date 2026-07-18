@@ -159,6 +159,7 @@ class LatControlTorqueV21(LatControl):
       else getattr(self.extension, 'learned_roll_gain', None)
     self.response_core.roll_compensation_gain = learned_gain or ROLL_COMPENSATION_GAIN
     self.friction_floor.mode = getattr(self.extension, 'friction_breakaway_mode', 'off')
+    self.friction_floor.apply_profile(getattr(self.extension, 'breakaway_profile', None))
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION_V21

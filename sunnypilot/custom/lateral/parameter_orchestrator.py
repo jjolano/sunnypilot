@@ -32,6 +32,7 @@ from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   parse_speed_aware_torque_profile,
 )
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
+  parse_breakaway_profile,
   validate_friction_breakaway_mode,
   validate_live_torque_speed_adaptive_mode,
   validate_manual_torque_override_against_base,
@@ -197,6 +198,7 @@ class TorqueParameterOverridePolicy:
     self._roll_comp_profile_raw: bytes | None = None
     self.learned_roll_gain: float | None = None
     self.friction_breakaway_mode = 'off'
+    self.breakaway_profile = None
     self._poll()
     self._torque_parameter_override_policy_initialized = True
 
@@ -227,6 +229,14 @@ class TorqueParameterOverridePolicy:
         self._speed_profile = None
 
     self.friction_breakaway_mode = validate_friction_breakaway_mode(self.params.get("LatFrictionBreakawayMode", return_default=True))
+    self.breakaway_profile = None
+    if self.friction_breakaway_mode != 'off':
+      ba_payload = self.params.get("LatFrictionBreakawayParams", return_default=True)
+      if ba_payload:
+        try:
+          self.breakaway_profile = parse_breakaway_profile(self.CP, json.loads(ba_payload))
+        except Exception:
+          self.breakaway_profile = None
     self._roll_comp_mode = validate_roll_comp_gain_mode(self.params.get("RollCompGainMode", return_default=True))
     self._roll_comp_profile_raw = self.params.get("RollCompGainParams", return_default=True) if self._roll_comp_mode == 'apply' else None
     self.learned_roll_gain = None

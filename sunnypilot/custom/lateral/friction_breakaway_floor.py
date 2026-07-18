@@ -32,6 +32,19 @@ ERROR_RAMP = 0.12       # m/s^2 of |error| above MIN_ERROR for full boost
 PERSIST_FRAMES = 15     # 150 ms of sustained error sign at 100 Hz
 SLEW_PER_FRAME = 0.015  # lat-accel units per frame (~1.5/s at 100 Hz)
 
+# Direction-aware scaling from the breakaway observer profile. Route 000002ac:
+# left breakaway median 0.299 vs right 0.206 normalized — the rack needs ~1.45x
+# more torque to break out leftward. Per-direction fracs scale FLOOR_FRAC by each
+# median over their mean, clamped so a skewed profile can't starve or saturate a
+# direction.
+DIRECTION_FRAC_MIN_SCALE = 0.5
+DIRECTION_FRAC_MAX_SCALE = 1.3
+# Sign mapping, derived from the response-core conventions (see torque_v2_1
+# measured_curvature = -calc_curvature(...)): positive error = rightward
+# correction = wheel about to move right = the observer's *right* median;
+# negative error = leftward = observer *left* median. The observer keys motion
+# direction by sign(steeringRateDeg), where positive rate = wheel moving left.
+
 
 @dataclass(frozen=True)
 class FrictionFloorDebug:
@@ -52,6 +65,8 @@ class FrictionBreakawayFloor:
     self._count = 0
     self._sign = 0
     self._boost = 0.0
+    # per-error-sign frac; symmetric until a valid breakaway profile arrives
+    self._frac = {1: self.floor_frac, -1: self.floor_frac}
     self.debug = FrictionFloorDebug(False, 0.0)
 
   def reset(self) -> None:
@@ -59,6 +74,24 @@ class FrictionBreakawayFloor:
     self._sign = 0
     self._boost = 0.0
     self.debug = FrictionFloorDebug(False, 0.0)
+
+  def apply_profile(self, profile) -> None:
+    """Scale per-direction fracs from a parsed breakaway profile; None = symmetric."""
+    if not profile:
+      self._frac = {1: self.floor_frac, -1: self.floor_frac}
+      return
+    left, right = profile['left'], profile['right']
+    mean = (left + right) / 2.0
+    if mean <= 0:
+      self._frac = {1: self.floor_frac, -1: self.floor_frac}
+      return
+
+    def scaled(median: float) -> float:
+      scale = min(max(median / mean, DIRECTION_FRAC_MIN_SCALE), DIRECTION_FRAC_MAX_SCALE)
+      return self.floor_frac * scale
+
+    # positive error = rightward correction -> right median; negative -> left
+    self._frac = {1: scaled(right), -1: scaled(left)}
 
   def shape(self, base_term: float, error: float, torque_params) -> float:
     """Return the friction term to use; records shadow/apply debug either way."""
@@ -77,7 +110,7 @@ class FrictionBreakawayFloor:
     if self._sign != 0 and self._count >= self.persist_frames:
       full = abs(torque_params.friction * torque_params.latAccelFactor)
       ramp = min(1.0, (abs(error) - self.min_error) / self.error_ramp)
-      target = self._sign * self.floor_frac * full * max(ramp, 0.0)
+      target = self._sign * self._frac[self._sign] * full * max(ramp, 0.0)
 
     # slew toward target so engagement/release never injects a torque step
     delta = target - self._boost

@@ -8,6 +8,8 @@ DT = 0.01
 def _make_estimator(mode="shadow"):
   cp = car.CarParams()
   cp.brand = 'toyota'
+  cp.carFingerprint = 'TOYOTA_RAV4_TSS2'
+  cp.lateralTuning.init('torque')
   est = TorqueEstimator(cp)
   est.friction_breakaway_mode = mode
   return est
@@ -90,3 +92,40 @@ def test_telemetry_published_in_message():
   assert ltp.breakawayEvents == 1
   assert abs(ltp.breakawayLeftMedian - 0.2) < 1e-6
   assert ltp.breakawayRightMedian == 0.0
+
+
+def test_profile_persisted_after_enough_events_both_directions():
+  import json
+  from openpilot.common.params import Params
+  from openpilot.sunnypilot.custom.lateral.torque_safety import parse_breakaway_profile
+  params = Params()
+  params.remove("LatFrictionBreakawayParams")
+
+  est = _make_estimator()
+  t = 0.0
+  for _ in range(20):
+    t = _dwell_then_jump(est, t, eps_native=300.0, jump_rate=3.0)
+    t = _dwell_then_jump(est, t, eps_native=-225.0, jump_rate=-3.0)
+
+  est.maybe_persist_speed_profile(cache_write=True)
+  payload = params.get("LatFrictionBreakawayParams")
+  assert payload
+  profile = parse_breakaway_profile(est.CP, json.loads(payload))
+  assert profile is not None
+  assert abs(profile['left'] - 0.2) < 1e-6
+  assert abs(profile['right'] - 0.15) < 1e-6
+  assert profile['events'] == 40
+  params.remove("LatFrictionBreakawayParams")
+
+
+def test_profile_not_persisted_below_event_floor():
+  from openpilot.common.params import Params
+  params = Params()
+  params.remove("LatFrictionBreakawayParams")
+
+  est = _make_estimator()
+  t = 0.0
+  for _ in range(5):
+    t = _dwell_then_jump(est, t, eps_native=300.0, jump_rate=3.0)
+  est.maybe_persist_speed_profile(cache_write=True)
+  assert not params.get("LatFrictionBreakawayParams")
