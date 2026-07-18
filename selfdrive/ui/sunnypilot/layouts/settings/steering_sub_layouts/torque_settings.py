@@ -234,6 +234,7 @@ class TorqueSettingsLayout(Widget):
       speed_mode = "off"
     self._low_speed_shadow_toggle.action_item.set_enabled(ui_state.is_offroad() and speed_mode != "off")
     self._roll_comp_gain_mode.action_item.set_enabled(ui_state.is_offroad())
+    self._friction_breakaway_mode.action_item.set_enabled(ui_state.is_offroad())
     self._custom_tune_toggle.action_item.set_enabled(ui_state.is_offroad())
     custom_tune_enabled = self._custom_tune_toggle.action_item.get_state()
     self._torque_prams_override_toggle.set_visible(custom_tune_enabled)
@@ -266,6 +267,7 @@ class TorqueSettingsLayout(Widget):
     self._torque_control_versions.action_item.set_enabled(ui_state.is_offroad())
     self._speed_adaptive_mode.action_item.set_value(self._get_current_speed_mode_label())
     self._roll_comp_gain_mode.action_item.set_value(self._get_current_roll_comp_mode_label())
+    self._friction_breakaway_mode.action_item.set_value(self._get_current_friction_breakaway_mode_label())
 
 
   def _render(self, rect):
