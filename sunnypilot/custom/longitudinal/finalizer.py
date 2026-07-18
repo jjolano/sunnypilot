@@ -222,6 +222,10 @@ class _StopHoldLatchLifecycle:
     arm_distance = finalizer._STOP_HOLD_ARM_GAP_M
     v_ego_stopping = snapshot.v_ego_stopping
 
+    if math.isfinite(dt) and dt > 0.0:
+      finalizer.lead_stop_hold_release_carry_s = max(0.0, finalizer.lead_stop_hold_release_carry_s - dt)
+    finalizer.mpc_stop_persist_frames = finalizer.mpc_stop_persist_frames + 1 if snapshot.mpc_should_stop else 0
+
     # Hold owns a stopped state, not equal-speed crawl. During a release grace, a stale
     # MPC stop bit cannot re-arm it; real braking or another admitted stop still can.
     custom_stop = bool(getattr(snapshot.custom_long_output, "should_stop", False))
@@ -242,7 +246,17 @@ class _StopHoldLatchLifecycle:
       not snapshot.brake_pressed and
       not snapshot.force_decel
     )
-    arm_evidence = bool((stopped_pair or settling_to_stop) and not release_grace_blocks_rearm)
+    # A sustained crawl release must not be re-latched by the very stop flags it outranks
+    # (route 000002ac: lead re-stops mid-creep with the gap still open); only an MPC stop
+    # demand or the driver may re-arm the hold while the sustain window is alive.
+    sustain_blocks_rearm = bool(
+      finalizer.stop_hold_release_sustain_s > 0.0 and
+      finalizer.mpc_stop_persist_frames < finalizer._STOP_HOLD_MPC_STOP_PERSIST_FRAMES and
+      snapshot.mpc_a_target >= finalizer._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET and
+      not snapshot.brake_pressed and
+      not snapshot.force_decel
+    )
+    arm_evidence = bool((stopped_pair or settling_to_stop) and not release_grace_blocks_rearm and not sustain_blocks_rearm)
 
     stop_hold_set = bool(
       not finalizer.lead_stop_hold_active and
@@ -260,6 +274,7 @@ class _StopHoldLatchLifecycle:
     )
     if stop_hold_set or settle_hold_set:
       finalizer.lead_stop_hold_active = True
+      finalizer.stop_hold_release_sustain_s = 0.0
       finalizer.lead_stop_hold_gap_increasing_s = 0.0
       finalizer.lead_stop_hold_missing_s = 0.0
       finalizer.lead_stop_hold_gap_prev_d_rel = float(lead_d_rel)
@@ -338,24 +353,31 @@ class _ReleaseGate:
 
   @staticmethod
   def standstill_release_request_valid(finalizer: CustomLongitudinalFinalizer, snapshot: _InputSnapshot,
-                                       min_mpc_a_target: float = -0.03) -> bool:
+                                       min_mpc_a_target: float = -0.03, carried: bool = False) -> bool:
     custom_long = snapshot.custom_long
     custom_long_output = snapshot.custom_long_output
     mpc_a_target = snapshot.mpc_a_target
     raw_model_a_target = snapshot.raw_model_a_target
 
-    if not custom_long.enabled or custom_long_output is None or not bool(getattr(custom_long_output, "standstill_release_allowed", False)):
+    if not custom_long.enabled or custom_long_output is None:
       finalizer.last_release_block_reason = "no_release_permission"
       return False
-    if str(getattr(custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch"):
-      finalizer.last_release_block_reason = "invalid_release_source"
-      return False
-    if bool(getattr(custom_long_output, "should_stop", False)):
-      finalizer.last_release_block_reason = "custom_should_stop"
-      return False
-    if _model_stop_blocks_release(snapshot):
-      finalizer.last_release_block_reason = "raw_model_stop"
-      return False
+    # Carried frames re-use a verdict granted moments ago on a model-stop-clear flicker
+    # (route 000002ac t=252/t=1243); the lapsed permission and the re-asserted stop flags
+    # are exactly what lapsed, so they are skipped — every live gate below still runs.
+    if not carried:
+      if not bool(getattr(custom_long_output, "standstill_release_allowed", False)):
+        finalizer.last_release_block_reason = "no_release_permission"
+        return False
+      if str(getattr(custom_long_output, "standstill_release_source", "")) not in ("lead_pullaway", "lead_standstill_launch", "no_lead_launch"):
+        finalizer.last_release_block_reason = "invalid_release_source"
+        return False
+      if bool(getattr(custom_long_output, "should_stop", False)):
+        finalizer.last_release_block_reason = "custom_should_stop"
+        return False
+      if _model_stop_blocks_release(snapshot):
+        finalizer.last_release_block_reason = "raw_model_stop"
+        return False
     for value in (mpc_a_target, raw_model_a_target):
       if not math.isfinite(float(value)):
         finalizer.last_release_block_reason = "non_finite_target"
@@ -407,9 +429,12 @@ class _ReleaseGate:
       return False
     if not bool(getattr(custom_long_output, "enabled", False)):
       return False
-    if bool(getattr(custom_long_output, "should_stop", False)):
-      return False
-    if _model_stop_blocks_release(snapshot):
+    # Route 000002ac: a stopped/crawling lead <10 m keeps the policy should_stop and the raw
+    # model stop asserted for the entire crawl, so as binary vetoes they made this fallback
+    # unreachable in its own target scenario. They now only cap the released accel
+    # (_STOP_HOLD_CRAWL_MODEL_STOP_A_MAX in release_accepts). E2E keeps the model veto: there
+    # the model is the sole longitudinal authority.
+    if custom_long.mode is LongitudinalMode.E2E and not snapshot.model_stale and snapshot.raw_model_should_stop:
       return False
     cs = finalizer._sm_item(snapshot.sm, 'carState')
     controls_state = finalizer._sm_item(snapshot.sm, 'controlsState')
@@ -465,15 +490,19 @@ class _ReleaseGate:
     lead_id = snapshot.lead_id
     same_id = _same_latched_lead(finalizer, snapshot)
     source_valid = release_source in ("lead_pullaway", "lead_standstill_launch")
+    if source_valid and same_id:
+      finalizer.lead_stop_hold_release_carry_s = finalizer._STOP_HOLD_RELEASE_CARRY_S
+      finalizer.lead_stop_hold_release_carry_a = float(getattr(custom_long_output, "standstill_release_a_target", 0.0))
+    carried = bool(not source_valid and same_id and finalizer.lead_stop_hold_release_carry_s > 0.0)
     if lead_id is not None and finalizer.lead_stop_hold_lead_id is not None and not same_id:
       finalizer.last_release_block_reason = "different_lead_id"
       return False, float(lead_d_rel)
 
     crawl_fallback = bool(
-      not source_valid and
+      not source_valid and not carried and
       _ReleaseGate.crawl_fallback_applies(finalizer, snapshot, same_id)
     )
-    if not source_valid and not crawl_fallback:
+    if not source_valid and not carried and not crawl_fallback:
       finalizer.last_release_block_reason = "invalid_release_source"
       return False, float(lead_d_rel)
 
@@ -490,15 +519,19 @@ class _ReleaseGate:
 
     min_d_rel = stopping_distance + finalizer._STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN if same_id else stopping_distance + 0.1
     if same_id and finalizer.lead_stop_hold_gap_baseline_d_rel is not None:
-      baseline_opening = finalizer._STOP_HOLD_SAME_ID_VALID_BASELINE_OPENING_M if source_valid else finalizer._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
+      baseline_opening = finalizer._STOP_HOLD_SAME_ID_VALID_BASELINE_OPENING_M if (source_valid or carried) else finalizer._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
       baseline_min_d_rel = float(finalizer.lead_stop_hold_gap_baseline_d_rel) + baseline_opening
-      min_d_rel = max(finalizer._STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR, min(min_d_rel, baseline_min_d_rel))
+      # Route 000002ac t=763/t=1243: stops routinely latch at 3.3-3.8 m; the absolute 4.5 m
+      # floor then demanded ~1 m of donated gap before even an authorized release could fire.
+      # The floor never asks for more than the latch geometry plus the required opening.
+      floor = min(finalizer._STOP_HOLD_SAME_ID_MIN_D_REL_FLOOR, baseline_min_d_rel)
+      min_d_rel = max(floor, min(min_d_rel, baseline_min_d_rel))
     if float(lead_d_rel) <= min_d_rel:
       finalizer.last_release_block_reason = "distance_gate"
       return False, float(lead_d_rel)
 
     if same_id:
-      if source_valid:
+      if source_valid or carried:
         min_gap_increasing_s = finalizer._STOP_HOLD_SAME_ID_VALID_GAP_INCREASING_S
       elif _ReleaseGate.routine_breakout(float(lead_v_rel)):
         min_gap_increasing_s = finalizer._STOP_HOLD_SAME_ID_ROUTINE_PULLAWAY_S
@@ -537,20 +570,26 @@ class _ReleaseGate:
       if release_a <= 0.0:
         finalizer.last_release_block_reason = "crawl_deadband"
         return False, float(lead_d_rel)
+      if _model_stop_blocks_release(snapshot) or bool(getattr(custom_long_output, "should_stop", False)):
+        release_a = min(release_a, finalizer._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX)
       return True, release_a
 
     min_mpc = finalizer._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET if same_id else -0.03
-    if not _ReleaseGate.standstill_release_request_valid(finalizer, snapshot, min_mpc):
+    if not _ReleaseGate.standstill_release_request_valid(finalizer, snapshot, min_mpc, carried=carried):
       return False, float(lead_d_rel)
 
     finalizer.last_release_block_reason = ""
     requested_release_a = float(getattr(custom_long_output, "standstill_release_a_target", 0.0)) if custom_long_output is not None else 0.0
+    if carried:
+      requested_release_a = max(requested_release_a, float(finalizer.lead_stop_hold_release_carry_a))
     release_a = _ReleaseAccel.accel_for_gap(
       finalizer, requested_release_a, lead_d_rel, lead_v, lead_v_rel, same_id, valid_source=True
     )
     if release_a <= 0.0:
       finalizer.last_release_block_reason = "crawl_deadband"
       return False, float(lead_d_rel)
+    if carried and (_model_stop_blocks_release(snapshot) or bool(getattr(custom_long_output, "should_stop", False))):
+      release_a = min(release_a, finalizer._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX)
     return True, release_a
 
 
@@ -750,7 +789,10 @@ class _FinalArbitration:
     return bool(mpc_should_stop or custom_long_output.should_stop)
 
   @staticmethod
-  def scc_custom_stop_cap(base_a_target: float, custom_long: Any, custom_long_output: Any) -> float:
+  def scc_custom_stop_cap(base_a_target: float, custom_long: Any, custom_long_output: Any,
+                          release_mpc_stop: bool = False) -> float:
+    if release_mpc_stop:
+      return float(base_a_target)
     if custom_long.mode is not LongitudinalMode.SCC or not custom_long.enabled or custom_long_output is None:
       return float(base_a_target)
     if not bool(getattr(custom_long_output, "enabled", False)):
@@ -924,7 +966,10 @@ class _FinalArbitration:
       (finalizer.stop_hold_release_slew_a_target is not None and not math.isfinite(finalizer.stop_hold_release_slew_a_target)) or
       bool(should_stop) or
       bool(mpc_stop) or
-      bool(raw_model_should_stop) or
+      # Crawl/sustained releases run with the raw model stop still asserted (route 000002ac);
+      # on a known release frame the flag must not defeat the up-jerk bound, or the
+      # hold -> release step (-2.0 -> +0.25) reaches the actuator unslewed.
+      bool(raw_model_should_stop and not release_mpc_stop) or
       brake_pressed or gas_pressed or force_decel or
       a_target <= 0.0
     )
@@ -969,6 +1014,47 @@ class _FinalArbitration:
       max(float(mpc_a_target), finalizer._STOP_HOLD_RELEASE_A_MIN, float(getattr(custom_long_output, "standstill_release_a_target", 0.0))),
       finalizer._STOP_HOLD_RELEASE_A_MAX,
     )
+    return True, release_a
+
+  @staticmethod
+  def stop_hold_release_sustain(finalizer: CustomLongitudinalFinalizer, snapshot: _InputSnapshot) -> tuple[bool, float]:
+    """Bridge a stop-hold release across frames whose per-frame stack verdict has lapsed.
+
+    Route 000002ac: after a crawl/carried release the stack keeps publishing should_stop
+    while the scene still shows a close slow lead, which re-pins longcontrol to stopping one
+    frame later. Sustain the release while the MPC stays comfortable; the MPC's own decel
+    demand is the exit and hands the stop back at the proper gap. SCC only — in E2E the
+    model is the sole authority and in ACC the stack verdict never pins.
+    """
+    mpc_a_target = float(snapshot.mpc_a_target)
+    if finalizer.stop_hold_release_sustain_s <= 0.0:
+      return False, mpc_a_target
+    dt = snapshot.dt if (math.isfinite(snapshot.dt) and snapshot.dt > 0.0) else 0.05
+    finalizer.stop_hold_release_sustain_s = max(0.0, finalizer.stop_hold_release_sustain_s - dt)
+    if snapshot.custom_long.mode is not LongitudinalMode.SCC:
+      finalizer.stop_hold_release_sustain_s = 0.0
+      return False, mpc_a_target
+    if snapshot.brake_pressed or snapshot.gas_pressed or snapshot.force_decel:
+      finalizer.stop_hold_release_sustain_s = 0.0
+      return False, mpc_a_target
+    mpc_stop_persistent = finalizer.mpc_stop_persist_frames >= finalizer._STOP_HOLD_MPC_STOP_PERSIST_FRAMES
+    if not math.isfinite(mpc_a_target) or mpc_stop_persistent or mpc_a_target < finalizer._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET:
+      finalizer.stop_hold_release_sustain_s = 0.0
+      return False, mpc_a_target
+    if not math.isfinite(snapshot.v_ego) or snapshot.v_ego > finalizer._STOP_HOLD_SUSTAIN_MAX_V_EGO:
+      finalizer.stop_hold_release_sustain_s = 0.0
+      return False, mpc_a_target
+    # Nothing to bridge unless the stack verdict would re-pin this frame; a healthy launch
+    # (verdict cleared) passes mpcA through untouched and the window just expires.
+    if not bool(getattr(snapshot.custom_long_output, "should_stop", False)):
+      return False, mpc_a_target
+    # Rolling window: lead presence refreshes it so radar flicker cannot abort a creep;
+    # true lead loss lets it expire within the window (bounded, gentle roll-out).
+    if snapshot.has_lead:
+      finalizer.stop_hold_release_sustain_s = finalizer._STOP_HOLD_RELEASE_SUSTAIN_S
+    release_a = min(max(mpc_a_target, finalizer._STOP_HOLD_RELEASE_A_MIN), finalizer._STOP_HOLD_CRAWL_RELEASE_A_MAX)
+    if _model_stop_blocks_release(snapshot) or bool(getattr(snapshot.custom_long_output, "should_stop", False)):
+      release_a = min(release_a, finalizer._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX)
     return True, release_a
 
 
@@ -1046,6 +1132,34 @@ class CustomLongitudinalFinalizer:
   # Raised with _STOP_HOLD_RELEASE_A_MAX (route 00000246, then 00000274): the close-crawl cap still
   # stays below the breakout cap, and the gap governor above continues to bound crawl accel.
   _STOP_HOLD_CRAWL_RELEASE_A_MAX = 0.50
+  # Route 000002ac (2026-07-18): the crawl fallback was structurally dead — a stopped/crawling
+  # lead <10 m ahead keeps raw model stop and the policy stop verdict asserted the whole time
+  # (modelStop 0.87-0.95 across every held stop), so the two binary vetoes blocked the
+  # displacement rule in exactly its target scenario (holds pinned -2.0 for 10-20 s while the
+  # lead opened 1.5-4.2 m; 2 of 4 stops ended in driver gas). The vetoes are now a cap: while
+  # either stop flag is still asserted the crawl/sustain command stays at this gentle ceiling;
+  # once the model clears, the normal crawl cap applies. The one modelStop-clear stop that
+  # night released in 0.66 s — the flags, not the evidence gates, were the whole difference.
+  _STOP_HOLD_CRAWL_MODEL_STOP_A_MAX = 0.25
+  # Route 000002ac t=252/t=1243: policy release verdicts (lead_pullaway/lead_standstill_launch)
+  # surfaced for 1-3 frames on model-stop-clear flickers and lapsed before the finalizer's own
+  # gates (lead-motion 0.30 m/s, distance floor) could pass. Carry the verdict for this window;
+  # driver/mpc/lead-motion gates still run live on carried frames.
+  _STOP_HOLD_RELEASE_CARRY_S = 2.0
+  # Post-release bridge: the stack keeps publishing should_stop while the scene still shows a
+  # close slow lead, which would re-pin longcontrol to stopping one frame after a crawl or
+  # carried release (longcontrol: stopping_condition = should_stop, unconditionally). Sustain
+  # the release while the MPC stays comfortable (no mpc stop, mpcA >= same-id min); the window
+  # refreshes while a lead is present so radar flicker cannot abort a creep, and true lead
+  # loss ends it within the window. MPC decel demand is the natural exit and hands the stop
+  # back at the proper gap.
+  _STOP_HOLD_RELEASE_SUSTAIN_S = 1.5
+  _STOP_HOLD_SUSTAIN_MAX_V_EGO = 2.0
+  # Route 000002ac t=1251: the MPC stop bit chatters 1<->0 frame-to-frame through launch
+  # transitions while mpcA sits at ~0.0 — a single flicker frame must not cancel the
+  # sustain or unblock re-arm. Only a persistently asserted bit counts as an MPC stop
+  # demand (mpcA < the same-id min remains the instant, non-flickery exit).
+  _STOP_HOLD_MPC_STOP_PERSIST_FRAMES = 3
   _STOP_HOLD_SETTLE_ARM_V_EGO_FLOOR = 0.7
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V = 0.5
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V_REL = 0.1
@@ -1121,6 +1235,10 @@ class CustomLongitudinalFinalizer:
   lead_stop_hold_churn_ids: set[int]
   lead_stop_hold_gap_baseline_d_rel: float | None
   lead_stop_hold_arm_d_rel: float | None
+  lead_stop_hold_release_carry_s: float
+  lead_stop_hold_release_carry_a: float
+  stop_hold_release_sustain_s: float
+  mpc_stop_persist_frames: int
   custom_long_output_telemetry: CustomLongitudinalOutput | None
   last_release_block_reason: str
   stop_hold_release_slew_a_target: float | None
@@ -1143,6 +1261,10 @@ class CustomLongitudinalFinalizer:
     self.lead_stop_hold_churn_ids = set()
     self.lead_stop_hold_gap_baseline_d_rel = None
     self.lead_stop_hold_arm_d_rel = None
+    self.lead_stop_hold_release_carry_s = 0.0
+    self.lead_stop_hold_release_carry_a = 0.0
+    self.stop_hold_release_sustain_s = 0.0
+    self.mpc_stop_persist_frames = 0
     self.custom_long_output_telemetry = None
     self.last_release_block_reason = ""
     self.stop_hold_release_slew_a_target = None
@@ -1212,6 +1334,8 @@ class CustomLongitudinalFinalizer:
     self.lead_stop_hold_churn_ids.clear()
     self.lead_stop_hold_gap_baseline_d_rel = None
     self.lead_stop_hold_arm_d_rel = None
+    self.lead_stop_hold_release_carry_s = 0.0
+    self.lead_stop_hold_release_carry_a = 0.0
     self.stop_hold_release_slew_a_target = None
     self.stop_hold_release_prep_a_target = None
     self.stop_hold_release_prep_raw_prev = None
@@ -1529,6 +1653,7 @@ class CustomLongitudinalFinalizer:
 
     if not bool(getattr(custom_long, "enabled", False)):
       reset_lead_stop_hold()
+      self.stop_hold_release_sustain_s = 0.0
       self.custom_long_output_telemetry = None
       self.last_release_block_reason = ""
       self.follow_band_regime = None
@@ -1560,6 +1685,7 @@ class CustomLongitudinalFinalizer:
         mpc_stop = False
         release_mpc_stop = True
         release_a_target = latch_release_a
+        self.stop_hold_release_sustain_s = self._STOP_HOLD_RELEASE_SUSTAIN_S
       else:
         mpc_stop = True
         release_mpc_stop = False
@@ -1570,11 +1696,18 @@ class CustomLongitudinalFinalizer:
       release_mpc_stop, release_a_target = _FinalArbitration.standstill_release_clears_mpc_stop(
         self, snapshot
       )
+      if not release_mpc_stop:
+        release_mpc_stop, release_a_target = _FinalArbitration.stop_hold_release_sustain(self, snapshot)
       mpc_stop = bool(mpc_should_stop and not release_mpc_stop)
 
     custom_should_stop = _FinalArbitration.custom_longitudinal_should_stop(
       custom_long, custom_long_output, mpc_stop, raw_model_should_stop, model_stale
     )
+    # A release/sustain frame must not be re-pinned by the stack's still-latched stop verdict
+    # (route 000002ac: longcontrol goes stopping on should_stop unconditionally, which made
+    # every crawl release one frame long).
+    if release_mpc_stop and custom_should_stop:
+      custom_should_stop = False
     should_stop = bool(custom_should_stop if custom_should_stop is not None else (mpc_stop or (raw_model_should_stop and is_e2e and not model_stale)))
 
     if release_mpc_stop:
@@ -1600,7 +1733,7 @@ class CustomLongitudinalFinalizer:
       )
 
     a_target = float(release_a_target if release_mpc_stop else mpc_a_target)
-    a_target = _FinalArbitration.scc_custom_stop_cap(a_target, custom_long, custom_long_output)
+    a_target = _FinalArbitration.scc_custom_stop_cap(a_target, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop)
     a_target = _FinalArbitration.scc_curve_confidence_final_cap(
       self, a_target, sm, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop
     )

@@ -916,7 +916,10 @@ def test_moving_crawl_lead_below_opening_threshold_stays_latched():
     assert should_stop is True
 
 
-def test_same_id_stale_release_permission_never_overrides_current_veto():
+def test_carried_release_permission_bridges_flag_veto_but_never_live_driver_veto():
+  # Route 000002ac t=252/t=1243: release verdicts surface for 1-3 frames on model-stop-clear
+  # flickers and lapse before the finalizer's own gates pass. A recent same-lead verdict is
+  # now carried across the re-asserted flag veto — but a live driver veto still wins.
   sp = fake_planner(LongitudinalMode.ACC, release=False)
   _arm_stop_hold(sp)
 
@@ -932,19 +935,27 @@ def test_same_id_stale_release_permission_never_overrides_current_veto():
   assert should_stop1 is True
   assert a1 <= -0.5
   assert sp._lead_stop_hold_active is True
+  assert sp.custom_long_finalizer.lead_stop_hold_release_carry_s > 0.0
 
-  # Current tick now explicitly vetoes release; stale permission must not leak through.
+  # Verdict lapses into a flag veto; the driver is braking -> carry must not release.
   sp.custom_long_output = CustomLongitudinalOutput(
     a_target=0.0, should_stop=True, enabled=True, mode=LongitudinalMode.SCC,
     selected_intent="lead_follow", reason="veto",
     standstill_release_allowed=False, standstill_release_source="", standstill_release_a_target=0.0,
     standstill_release_reason="", debug={},
   )  # type: ignore[assignment]
-  second_sm = _release_sm(d_rel=7.35, v_lead=0.8, v_rel=0.32)
-  a2, should_stop2, _ = sp.final_longitudinal_output(second_sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  braked_sm = _release_sm(d_rel=7.35, v_lead=0.8, v_rel=0.32, brake=True)
+  a2, should_stop2, _ = sp.final_longitudinal_output(braked_sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
   assert should_stop2 is True
   assert a2 <= -0.5
   assert sp._lead_stop_hold_active is True
+
+  # Same lapsed verdict, no driver input, lead clearly departing -> carried release fires.
+  second_sm = _release_sm(d_rel=7.35, v_lead=0.8, v_rel=0.32)
+  a3, should_stop3, _ = sp.final_longitudinal_output(second_sm, 0.0, True, 0.0, False)  # type: ignore[arg-type]
+  assert should_stop3 is False
+  assert sp._lead_stop_hold_active is False
+  assert math.isclose(a3, RELEASE_FIRST_STEP)
 
 
 def test_stop_hold_telemetry_shows_latch_intent():
@@ -1253,15 +1264,25 @@ def test_latch_release_same_lead_uses_baseline_aware_close_gap_gate():
   assert math.isclose(a, RELEASE_FIRST_STEP)
 
 
-def test_latch_release_same_lead_close_gap_keeps_absolute_floor():
+def test_latch_release_same_lead_close_gap_keeps_latch_relative_floor():
+  # Route 000002ac t=763/t=1243: stops routinely latch below the absolute 4.5 m floor, which
+  # then blocked authorized releases until the lead donated ~1 m. The floor is now bounded by
+  # the latch baseline plus the required opening: inside it still holds, past it releases.
   sp = fake_planner(LongitudinalMode.ACC)
   _arm_stop_hold(sp, d_rel=3.96)
   _set_lead_pullaway_release(sp)
   sp._lead_stop_hold_gap_increasing_s = 0.30
-  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=4.46, v_lead=0.70, v_rel=0.70), 0.0, False, 0.2, False)  # type: ignore[arg-type]
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=4.10, v_lead=0.70, v_rel=0.70), 0.0, False, 0.2, False)  # type: ignore[arg-type]
   assert sp._lead_stop_hold_active is True
   assert should_stop is True
   assert a <= -0.5
+  assert sp._last_release_block_reason == "distance_gate"
+
+  sp._lead_stop_hold_gap_increasing_s = 0.30
+  a, should_stop, _ = sp.final_longitudinal_output(_release_sm(d_rel=4.46, v_lead=0.70, v_rel=0.70), 0.0, False, 0.2, False)  # type: ignore[arg-type]
+  assert sp._lead_stop_hold_active is False
+  assert should_stop is False
+  assert math.isclose(a, RELEASE_FIRST_STEP)
 
 
 def test_latch_release_no_id_keeps_conservative_distance_gate():

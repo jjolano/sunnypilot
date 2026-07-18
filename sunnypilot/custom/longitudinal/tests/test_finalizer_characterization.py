@@ -1289,3 +1289,151 @@ def test_lead_catchup_never_weakens_mpc_braking():
   )
 
   assert a_target == pytest.approx(-0.4)
+
+
+# ---------------------------------------------------------------------------
+# Route 000002ac: slow-crawl lead release (stop-flag cap, carried verdict, sustain)
+# ---------------------------------------------------------------------------
+
+
+def test_crawl_fallback_releases_through_asserted_stop_flags_capped():
+  # Route 000002ac t=926: lead crawled 6.4 -> 8.1 m at 0.5 m/s with mpcA +0.68 while the raw
+  # model stop and the policy stop verdict stayed asserted; the binary vetoes held -2.0 for
+  # 20 s. The stop flags now only cap the released crawl accel.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  _arm_stop_hold(planner, d_rel=6.4, lead_id=1)
+  lead = make_lead(d_rel=8.1, v_lead=0.5, v_rel=0.5, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.68, mpc_should_stop=False,
+    raw_model_a_target=0.05, raw_model_should_stop=True,
+  )
+
+  fin = planner.custom_long_finalizer
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.0 < a_target <= fin._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX + 1e-6
+  assert fin.stop_hold_release_sustain_s > 0.0
+
+
+def test_crawl_fallback_still_blocked_by_negative_model_accel_and_driver_brake():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  _arm_stop_hold(planner, d_rel=6.4, lead_id=1)
+  lead = make_lead(d_rel=8.1, v_lead=0.5, v_rel=0.5, lead_id=1)
+
+  # Model actively demanding decel still blocks the fallback.
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.68, mpc_should_stop=False,
+    raw_model_a_target=-0.5, raw_model_should_stop=True,
+  )
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+
+  # Driver brake still blocks it.
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead, brake_pressed=True), mpc_a_target=0.68, mpc_should_stop=False,
+    raw_model_a_target=0.05, raw_model_should_stop=True,
+  )
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+
+
+def test_carried_release_verdict_survives_model_stop_flicker():
+  # Route 000002ac t=252: a lead_pullaway verdict surfaced for one frame (lead still below the
+  # 0.30 m/s motion gate), then lapsed when the model stop re-asserted. The carried verdict
+  # releases once the live lead-motion gates pass, capped while the flags are asserted.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(a_target=0.40),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.30)
+
+  # Frame 1: verdict live, lead barely moving -> blocked, verdict carried.
+  lead = make_lead(d_rel=6.5, v_lead=0.17, v_rel=0.17, lead_id=1)
+  planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.3, mpc_should_stop=False,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+  assert planner._lead_stop_hold_active is True
+  assert planner._last_release_block_reason == "lead_not_moving"
+  assert planner.custom_long_finalizer.lead_stop_hold_release_carry_s > 0.0
+
+  # Frame 2: verdict lapsed (stop flags re-asserted) but the lead is genuinely moving now.
+  # Neutralize the release-slew seed (frame 1's prep hold + ~0 wall-clock dt would clamp
+  # the released accel to the prep value; the slew is covered by its own tests).
+  planner.custom_long_finalizer.final_a_prev = None
+  planner.custom_long_output = make_custom_output(selected_intent="lead_stop_hold", should_stop=True)
+  lead = make_lead(d_rel=6.9, v_lead=0.35, v_rel=0.35, lead_id=1)
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.3, mpc_should_stop=False,
+    raw_model_a_target=0.1, raw_model_should_stop=True,
+  )
+  fin = planner.custom_long_finalizer
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.0 < a_target <= fin._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX + 1e-6
+
+
+def test_sustain_bridges_stack_stop_verdict_until_mpc_asks_to_stop():
+  # After a crawl release the stack keeps publishing should_stop for the still-close slow
+  # lead; the sustain keeps the release alive while the MPC is comfortable and hands the
+  # stop back the moment the MPC demands it.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  _arm_stop_hold(planner, d_rel=6.4, lead_id=1)
+  lead = make_lead(d_rel=8.1, v_lead=0.5, v_rel=0.5, lead_id=1)
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.68, mpc_should_stop=False,
+    raw_model_a_target=0.05, raw_model_should_stop=True,
+  )
+  assert planner._lead_stop_hold_active is False and should_stop is False
+
+  # Sustained frame: latch gone, stack verdict still pinned -> release survives, capped.
+  lead = make_lead(d_rel=8.3, v_lead=0.5, v_rel=0.4, lead_id=1)
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.2, lead_one=lead), mpc_a_target=0.65, mpc_should_stop=False,
+    raw_model_a_target=0.05, raw_model_should_stop=True,
+  )
+  fin = planner.custom_long_finalizer
+  assert should_stop is False
+  assert 0.0 < a_target <= fin._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX + 1e-6
+
+  # MPC demands the stop (gap closed) -> sustain ends, stop verdict passes through again.
+  lead = make_lead(d_rel=8.3, v_lead=0.5, v_rel=0.4, lead_id=1)
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.4, lead_one=lead), mpc_a_target=-0.3, mpc_should_stop=True,
+    raw_model_a_target=0.05, raw_model_should_stop=True,
+  )
+  assert should_stop is True
+  assert fin.stop_hold_release_sustain_s == 0.0
+
+
+def test_release_distance_floor_relaxes_for_sub_floor_latch():
+  # Route 000002ac t=1243: latched at 3.3 m; the absolute 4.5 m floor blocked an authorized
+  # lead_standstill_launch release at gap 3.6-4.0 m. The floor now never demands more than
+  # the latch geometry plus the required opening.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(a_target=0.49),
+  )
+  _arm_stop_hold(planner, d_rel=3.3, lead_id=1, gap_increasing_s=0.30)
+  lead = make_lead(d_rel=3.9, v_lead=0.55, v_rel=0.55, lead_id=1)
+  sm = make_sm(v_ego=0.0, lead_one=lead)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.5, mpc_should_stop=False,
+    raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert a_target > 0.0
