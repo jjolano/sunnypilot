@@ -1471,3 +1471,57 @@ def test_sustain_bridges_stop_approach_advisory_clamp():
   assert should_stop is False
   assert 0.0 < a_target <= fin._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX + 1e-6
   assert fin.stop_hold_release_sustain_s > 0.0
+
+
+def test_static_overshoot_release_closes_co_stop_frozen_gap():
+  # Route 000002b0 t=948: co-stop settle-freeze parked ego 6.6-7.0 m back with the MPC
+  # demanding +0.65 the whole park and the lead never moving. Both at rest + persistent
+  # MPC closure demand + gap well past the stop buffer releases into the capped crawl.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  _arm_stop_hold(planner, d_rel=7.0, lead_id=1)
+  planner._lead_stop_hold_gap_baseline_d_rel = 5.0  # real arm clamps to _STOP_HOLD_MAX_BASELINE_D_REL
+  fin = planner.custom_long_finalizer
+  lead = make_lead(d_rel=7.0, v_lead=0.0, v_rel=0.0, lead_id=1)
+
+  # MPC-demand persistence builds over frames; until it is reached the latch must hold.
+  for _ in range(fin._STOP_HOLD_MPC_GO_PERSIST_FRAMES - 1):
+    _, should_stop, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.65, mpc_should_stop=False,
+      raw_model_a_target=0.05, raw_model_should_stop=True,
+    )
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+
+  fin.final_a_prev = None  # neutralize the wall-clock release slew seed (covered elsewhere)
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.65, mpc_should_stop=False,
+    raw_model_a_target=0.05, raw_model_should_stop=True,
+  )
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.0 < a_target <= fin._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX + 1e-6
+  assert fin.stop_hold_release_sustain_s > 0.0
+
+
+def test_static_overshoot_release_hysteresis_keeps_closed_parks_latched():
+  # A park within the overshoot threshold of the stop buffer (the state the closure
+  # itself produces) must never re-fire.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  _arm_stop_hold(planner, d_rel=6.5, lead_id=1)
+  planner._lead_stop_hold_gap_baseline_d_rel = 5.0
+  fin = planner.custom_long_finalizer
+  lead = make_lead(d_rel=6.5, v_lead=0.0, v_rel=0.0, lead_id=1)  # overshoot 0.5 < 0.75
+
+  for _ in range(fin._STOP_HOLD_MPC_GO_PERSIST_FRAMES + 5):
+    _, should_stop, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.65, mpc_should_stop=False,
+      raw_model_a_target=0.05, raw_model_should_stop=True,
+    )
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True

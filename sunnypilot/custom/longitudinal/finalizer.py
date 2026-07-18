@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  STOP_DISTANCE,
   get_safe_obstacle_distance,
   get_stopped_equivalence_factor,
 )
@@ -97,7 +98,10 @@ class _InputSnapshot:
     standstill = bool(getattr(car_state, 'standstill', False)) if car_state is not None else False
     force_decel = bool(getattr(controls_state, 'forceDecel', False)) if controls_state is not None else False
 
-    stopping_distance = float(getattr(finalizer.CP, 'stoppingDistance', 6.0) or 6.0)
+    # CarParams has no stoppingDistance field — the old 6.0 fallback silently governed every
+    # distance rule while the MPC actually lands at STOP_DISTANCE (route 000002b0 co-stop
+    # diagnosis). The getattr stays as a test seam for fakes that set it explicitly.
+    stopping_distance = float(getattr(finalizer.CP, 'stoppingDistance', STOP_DISTANCE) or STOP_DISTANCE)
     v_ego_stopping = float(getattr(finalizer.CP, 'vEgoStopping', 0.0))
     stop_accel = getattr(finalizer.CP, 'stopAccel', None)
     stop_accel = -0.5 if stop_accel is None else float(stop_accel)
@@ -225,6 +229,9 @@ class _StopHoldLatchLifecycle:
     if math.isfinite(dt) and dt > 0.0:
       finalizer.lead_stop_hold_release_carry_s = max(0.0, finalizer.lead_stop_hold_release_carry_s - dt)
     finalizer.mpc_stop_persist_frames = finalizer.mpc_stop_persist_frames + 1 if snapshot.mpc_should_stop else 0
+    mpc_go = bool(math.isfinite(snapshot.mpc_a_target) and snapshot.mpc_a_target >= finalizer._STOP_HOLD_MPC_GO_MIN_A
+                  and not snapshot.mpc_should_stop)
+    finalizer.mpc_go_persist_frames = finalizer.mpc_go_persist_frames + 1 if mpc_go else 0
 
     # Hold owns a stopped state, not equal-speed crawl. During a release grace, a stale
     # MPC stop bit cannot re-arm it; real braking or another admitted stop still can.
@@ -403,6 +410,19 @@ class _ReleaseGate:
     return True
 
   @staticmethod
+  def static_gap_overshoot(finalizer: CustomLongitudinalFinalizer, snapshot: _InputSnapshot) -> bool:
+    """Both cars fully at rest, latched gap well past the MPC stop buffer, MPC persistently
+    demanding closure — the co-stop settle-freeze signature (route 000002b0 t=948)."""
+    if not (math.isfinite(float(snapshot.lead_v)) and math.isfinite(float(snapshot.lead_v_rel)) and
+            math.isfinite(float(snapshot.lead_d_rel))):
+      return False
+    if float(snapshot.lead_v) > 0.3 or abs(float(snapshot.lead_v_rel)) > 0.3:
+      return False
+    if finalizer.mpc_go_persist_frames < finalizer._STOP_HOLD_MPC_GO_PERSIST_FRAMES:
+      return False
+    return float(snapshot.lead_d_rel) - snapshot.stopping_distance >= finalizer._STOP_HOLD_STATIC_OVERSHOOT_MIN_M
+
+  @staticmethod
   def crawl_fallback_applies(finalizer: CustomLongitudinalFinalizer, snapshot: _InputSnapshot,
                              same_id: bool) -> bool:
     custom_long = snapshot.custom_long
@@ -460,6 +480,10 @@ class _ReleaseGate:
       return False
     if float(mpc_a_target) < finalizer._STOP_HOLD_SAME_ID_MIN_MPC_A_TARGET:
       return False
+    # Second evidence class: the lead never has to move to close a settle-frozen overshoot
+    # gap — both at rest + persistent MPC closure demand is the release evidence.
+    if _ReleaseGate.static_gap_overshoot(finalizer, snapshot):
+      return True
     if float(lead_v_rel) < 0.05:
       return False
     arm_d_rel = finalizer.lead_stop_hold_arm_d_rel
@@ -541,11 +565,14 @@ class _ReleaseGate:
       min_gap_increasing_s = 0.15
     # Sub-resolution crawl motion (~2 cm/frame) resets the strictly-increasing streak on
     # flat/jitter frames; >=_STOP_HOLD_CREEP_DISPLACEMENT_M of cumulative opening from the
-    # latched arm gap outranks any streak (route 00000288).
+    # latched arm gap outranks any streak (route 00000288). A static-overshoot release has
+    # no opening at all by definition — its evidence (rest + persistent MPC demand) carries.
     baseline_opening_carries = bool(
       same_id and finalizer.lead_stop_hold_arm_d_rel is not None and
       float(lead_d_rel) - float(finalizer.lead_stop_hold_arm_d_rel) >= finalizer._STOP_HOLD_CREEP_DISPLACEMENT_M
     )
+    if crawl_fallback and not baseline_opening_carries:
+      baseline_opening_carries = _ReleaseGate.static_gap_overshoot(finalizer, snapshot)
     if not baseline_opening_carries and finalizer.lead_stop_hold_gap_increasing_s < min_gap_increasing_s:
       finalizer.last_release_block_reason = "gap_increasing_time"
       return False, float(lead_d_rel)
@@ -1173,10 +1200,26 @@ class CustomLongitudinalFinalizer:
   # sustain or unblock re-arm. Only a persistently asserted bit counts as an MPC stop
   # demand (mpcA < the same-id min remains the instant, non-flickery exit).
   _STOP_HOLD_MPC_STOP_PERSIST_FRAMES = 3
+  # Static-overshoot release (route 000002b0 co-stop diagnosis): when the lead's rest
+  # catches ego mid-roll, the settle latch freezes the gap at 6.6-7.0 m — 1.5-2 m past the
+  # MPC's STOP_DISTANCE landing — and with the lead never moving again (red light) nothing
+  # closed it: the MPC demanded +0.65-0.67 the entire park. With both cars fully at rest,
+  # the latched gap well past the stop buffer, and the MPC persistently demanding closure,
+  # release into the capped crawl; the MPC folds its demand at its own buffer, which
+  # re-latches the hold at the proper gap. The 0.75 m threshold is the hysteresis that
+  # keeps the closed park (overshoot ~0-0.3) from re-firing.
+  _STOP_HOLD_STATIC_OVERSHOOT_MIN_M = 0.75
+  _STOP_HOLD_MPC_GO_MIN_A = 0.30
+  _STOP_HOLD_MPC_GO_PERSIST_FRAMES = 10
   _STOP_HOLD_SETTLE_ARM_V_EGO_FLOOR = 0.7
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V = 0.5
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V_REL = 0.1
-  _STOP_HOLD_SETTLE_ARM_DISTANCE_MARGIN = 0.5
+  # Raised 0.5 -> 1.5 with the stopping_distance correction (6.0 phantom -> STOP_DISTANCE
+  # 5.0) so the settle envelope stays ~7.5 m: co-stop parks rest at 6.6-7.0 m (route
+  # 000002b0) and MUST still latch — an un-latched far park loses the crawl/overshoot
+  # release machinery entirely. The frozen gap is closed by the static-overshoot release
+  # below, not by refusing to latch.
+  _STOP_HOLD_SETTLE_ARM_DISTANCE_MARGIN = 1.5
   _STOP_HOLD_SETTLE_ARM_BRAKE_DIST_DECEL = 2.0
   _STOP_HOLD_SETTLE_ARM_BRAKE_DIST_MAX = 1.0
   _STOP_HOLD_RELEASE_A_MIN = 0.15
@@ -1252,6 +1295,7 @@ class CustomLongitudinalFinalizer:
   lead_stop_hold_release_carry_a: float
   stop_hold_release_sustain_s: float
   mpc_stop_persist_frames: int
+  mpc_go_persist_frames: int
   custom_long_output_telemetry: CustomLongitudinalOutput | None
   last_release_block_reason: str
   stop_hold_release_slew_a_target: float | None
@@ -1278,6 +1322,7 @@ class CustomLongitudinalFinalizer:
     self.lead_stop_hold_release_carry_a = 0.0
     self.stop_hold_release_sustain_s = 0.0
     self.mpc_stop_persist_frames = 0
+    self.mpc_go_persist_frames = 0
     self.custom_long_output_telemetry = None
     self.last_release_block_reason = ""
     self.stop_hold_release_slew_a_target = None
