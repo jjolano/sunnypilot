@@ -1437,3 +1437,37 @@ def test_release_distance_floor_relaxes_for_sub_floor_latch():
   assert planner._lead_stop_hold_active is False
   assert should_stop is False
   assert a_target > 0.0
+
+
+def test_sustain_bridges_stop_approach_advisory_clamp():
+  # Route 000002b0 t=915/t=928: after a crawl release the policy sits in stop_approach
+  # (model-stop-driven, should_stop False) and scc_custom_stop_cap clamped the creep to its
+  # -0.38 approach decel — the car braked at standstill and re-latched. The sustain must
+  # bridge the advisory posture exactly like the pinned verdict.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  _arm_stop_hold(planner, d_rel=5.5, lead_id=1)
+  lead = make_lead(d_rel=6.2, v_lead=0.35, v_rel=0.35, lead_id=1)
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.65, mpc_should_stop=False,
+    raw_model_a_target=0.04, raw_model_should_stop=True,
+  )
+  assert planner._lead_stop_hold_active is False and should_stop is False
+
+  # Post-release frame in the measured stop_approach posture: must keep creeping, not
+  # clamp to the -0.38 approach decel.
+  planner.custom_long_output = make_custom_output(
+    selected_intent="stop_approach", should_stop=False, a_target=-0.38,
+  )
+  lead = make_lead(d_rel=6.5, v_lead=0.75, v_rel=0.65, lead_id=1)
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.1, lead_one=lead), mpc_a_target=0.72, mpc_should_stop=False,
+    raw_model_a_target=0.04, raw_model_should_stop=True,
+  )
+  fin = planner.custom_long_finalizer
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert 0.0 < a_target <= fin._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX + 1e-6
+  assert fin.stop_hold_release_sustain_s > 0.0

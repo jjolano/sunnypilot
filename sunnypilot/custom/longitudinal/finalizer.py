@@ -1044,9 +1044,18 @@ class _FinalArbitration:
     if not math.isfinite(snapshot.v_ego) or snapshot.v_ego > finalizer._STOP_HOLD_SUSTAIN_MAX_V_EGO:
       finalizer.stop_hold_release_sustain_s = 0.0
       return False, mpc_a_target
-    # Nothing to bridge unless the stack verdict would re-pin this frame; a healthy launch
-    # (verdict cleared) passes mpcA through untouched and the window just expires.
-    if not bool(getattr(snapshot.custom_long_output, "should_stop", False)):
+    # Nothing to bridge unless the stack posture would re-pin or re-clamp this frame; a
+    # healthy launch (posture cleared) passes mpcA through untouched and the window just
+    # expires. Route 000002b0 t=915/t=928: post-release the policy sits in stop_approach
+    # (model-stop-driven, should_stop False) and scc_custom_stop_cap clamped the creep to
+    # its -0.38 approach decel — the car braked at standstill and re-latched. That advisory
+    # posture needs the bridge exactly like the pinned verdict does.
+    output = snapshot.custom_long_output
+    stack_stop_posture = bool(
+      bool(getattr(output, "should_stop", False)) or
+      str(getattr(output, "selected_intent", "") or "") == "stop_approach"
+    )
+    if not stack_stop_posture:
       return False, mpc_a_target
     # Rolling window: lead presence refreshes it so radar flicker cannot abort a creep;
     # true lead loss lets it expire within the window (bounded, gentle roll-out).
@@ -1140,7 +1149,11 @@ class CustomLongitudinalFinalizer:
   # either stop flag is still asserted the crawl/sustain command stays at this gentle ceiling;
   # once the model clears, the normal crawl cap applies. The one modelStop-clear stop that
   # night released in 0.66 s — the flags, not the evidence gates, were the whole difference.
-  _STOP_HOLD_CRAWL_MODEL_STOP_A_MAX = 0.25
+  # Route 000002b0 (first on-road): 0.25 sat in the Toyota dead zone — carcontroller
+  # permit_braking only flips off above a 0.3 net request, and route 246 measured the PCM
+  # barely rolling below ~0.35 — the released creep never moved the car and the driver
+  # gassed. 0.40 clears the hysteresis with margin while staying under the 0.50 crawl cap.
+  _STOP_HOLD_CRAWL_MODEL_STOP_A_MAX = 0.40
   # Route 000002ac t=252/t=1243: policy release verdicts (lead_pullaway/lead_standstill_launch)
   # surfaced for 1-3 frames on model-stop-clear flickers and lapsed before the finalizer's own
   # gates (lead-motion 0.30 m/s, distance floor) could pass. Carry the verdict for this window;
