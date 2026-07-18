@@ -48,6 +48,10 @@ BREAKAWAY_STILL_DEG_S = 0.5
 BREAKAWAY_JUMP_DEG_S = 1.5
 BREAKAWAY_MIN_V_EGO = 8.0
 BREAKAWAY_WINDOW = 25  # rolling breakout samples per direction
+# steeringPressed only fires above ~100 driver-torque units; lighter hands-on input
+# still helps/opposes breakout and would bias the recorded EPS medians. Require the
+# driver channel quiet through the dwell and at the jump for an event to count.
+BREAKAWAY_DRIVER_QUIET_TORQUE = 25.0
 
 
 class TorqueEstimatorExt:
@@ -93,6 +97,7 @@ class TorqueEstimatorExt:
     self._ba_last_t = None
     self._ba_dwell = 0.0
     self._ba_eps_hold = 0.0
+    self._ba_drv_max = 0.0
     self._ba_samples = {1: [], -1: []}
     self.breakaway_events = 0
 
@@ -198,15 +203,18 @@ class TorqueEstimatorExt:
                         self.filtered_params['latAccelOffset'].x)
     self.roll_comp_buckets.add_point(roll, torque_lat_accel, v_ego)
 
-  def update_breakaway_observer(self, t, steering_rate_deg, eps_norm, v_ego):
+  def update_breakaway_observer(self, t, steering_rate_deg, eps_norm, v_ego, driver_torque=0.0):
     """Shadow-only dwell->jump breakout detector, fed per carState frame.
 
     ``eps_norm`` is EPS torque normalized by the brand STEER_MAX (sign
     convention irrelevant here — magnitudes are recorded per motion direction).
+    ``driver_torque`` is raw carState.steeringTorque; sub-steeringPressed hand
+    torque contaminates the EPS reading, so noisy-dwell events are discarded.
     """
     if self.friction_breakaway_mode == 'off' or eps_norm is None:
       self._ba_last_t = None
       self._ba_dwell = 0.0
+      self._ba_drv_max = 0.0
       return
     dt = 0.0 if self._ba_last_t is None else min(max(t - self._ba_last_t, 0.0), 0.1)
     self._ba_last_t = t
@@ -215,20 +223,24 @@ class TorqueEstimatorExt:
     pressed = bool(self.raw_points['steer_override'][-1]) if len(self.raw_points.get('steer_override', [])) else True
     if not lat_active or pressed or v_ego < BREAKAWAY_MIN_V_EGO or not np.isfinite(eps_norm):
       self._ba_dwell = 0.0
+      self._ba_drv_max = 0.0
       return
 
     rate = abs(steering_rate_deg)
     if rate < BREAKAWAY_STILL_DEG_S:
       self._ba_dwell += dt
       self._ba_eps_hold = eps_norm
+      self._ba_drv_max = max(self._ba_drv_max, abs(float(driver_torque)))
     else:
-      if rate >= BREAKAWAY_JUMP_DEG_S and self._ba_dwell >= BREAKAWAY_DWELL_S:
+      driver_quiet = max(self._ba_drv_max, abs(float(driver_torque))) <= BREAKAWAY_DRIVER_QUIET_TORQUE
+      if rate >= BREAKAWAY_JUMP_DEG_S and self._ba_dwell >= BREAKAWAY_DWELL_S and driver_quiet:
         direction = 1 if steering_rate_deg > 0 else -1
         samples = self._ba_samples[direction]
         samples.append(abs(self._ba_eps_hold))
         del samples[:-BREAKAWAY_WINDOW]
         self.breakaway_events += 1
       self._ba_dwell = 0.0
+      self._ba_drv_max = 0.0
 
   def breakaway_telemetry(self):
     left, right = self._ba_samples[1], self._ba_samples[-1]

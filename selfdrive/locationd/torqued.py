@@ -237,7 +237,8 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
       self.raw_points["steering_torque_eps"].append(float(msg.steeringTorqueEps))
       eps_steer_max = EPS_TORQUE_STEER_MAX.get(self.CP.brand)
       if eps_steer_max is not None:
-        self.update_breakaway_observer(t, msg.steeringRateDeg, float(msg.steeringTorqueEps) / eps_steer_max, msg.vEgo)
+        self.update_breakaway_observer(t, msg.steeringRateDeg, float(msg.steeringTorqueEps) / eps_steer_max,
+                                       msg.vEgo, msg.steeringTorque)
     elif which == "liveCalibration":
       self.calibrator.feed_live_calib(msg)
     elif which == "liveDelay":

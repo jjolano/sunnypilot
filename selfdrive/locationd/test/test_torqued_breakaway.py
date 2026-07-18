@@ -15,7 +15,7 @@ def _make_estimator(mode="shadow"):
   return est
 
 
-def _feed_car_state(est, t, rate_deg, eps_native, v_ego=20.0, lat_active=True, pressed=False):
+def _feed_car_state(est, t, rate_deg, eps_native, v_ego=20.0, lat_active=True, pressed=False, driver_torque=0.0):
   carControl = messaging.new_message('carControl').carControl
   carControl.latActive = lat_active
   est.handle_log(t, 'carControl', carControl)
@@ -24,16 +24,17 @@ def _feed_car_state(est, t, rate_deg, eps_native, v_ego=20.0, lat_active=True, p
   carState.steeringPressed = pressed
   carState.steeringRateDeg = float(rate_deg)
   carState.steeringTorqueEps = float(eps_native)
+  carState.steeringTorque = float(driver_torque)
   est.handle_log(t, 'carState', carState)
 
 
-def _dwell_then_jump(est, t0, eps_native, jump_rate=3.0, dwell_s=0.5):
+def _dwell_then_jump(est, t0, eps_native, jump_rate=3.0, dwell_s=0.5, driver_torque=0.0):
   t = t0
   for _ in range(int(dwell_s / DT)):
-    _feed_car_state(est, t, 0.0, eps_native)
+    _feed_car_state(est, t, 0.0, eps_native, driver_torque=driver_torque)
     t += DT
   for _ in range(10):
-    _feed_car_state(est, t, jump_rate, eps_native)
+    _feed_car_state(est, t, jump_rate, eps_native, driver_torque=driver_torque)
     t += DT
   return t
 
@@ -65,6 +66,35 @@ def test_gentle_motion_resets_dwell_without_recording():
     t += DT
   _feed_car_state(est, t, 1.0, 300.0)  # 0.5 <= rate < 1.5: reset, no record
   assert est.breakaway_telemetry()['events'] == 0
+
+
+def test_subthreshold_driver_torque_suppresses_recording():
+  # 60 units is below the steeringPressed threshold (~100) but contaminates EPS
+  est = _make_estimator()
+  _dwell_then_jump(est, 0.0, eps_native=300.0, driver_torque=60.0)
+  assert est.breakaway_telemetry()['events'] == 0
+
+
+def test_driver_noise_early_in_dwell_suppresses_recording():
+  # noisy hands early in the dwell, quiet at the jump: still discarded
+  est = _make_estimator()
+  t = 0.0
+  for _ in range(20):
+    _feed_car_state(est, t, 0.0, 300.0, driver_torque=60.0)
+    t += DT
+  for _ in range(40):
+    _feed_car_state(est, t, 0.0, 300.0, driver_torque=0.0)
+    t += DT
+  for _ in range(10):
+    _feed_car_state(est, t, 3.0, 300.0, driver_torque=0.0)
+    t += DT
+  assert est.breakaway_telemetry()['events'] == 0
+
+
+def test_quiet_driver_torque_still_records():
+  est = _make_estimator()
+  _dwell_then_jump(est, 0.0, eps_native=300.0, driver_torque=10.0)
+  assert est.breakaway_telemetry()['events'] == 1
 
 
 def test_off_mode_records_nothing():
