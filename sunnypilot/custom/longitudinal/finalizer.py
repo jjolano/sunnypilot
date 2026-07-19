@@ -67,6 +67,7 @@ class _InputSnapshot:
   lead_v: float
   lead_v_rel: float
   lead_y_rel: float
+  lead_a_k: float
   gas_pressed: bool
   brake_pressed: bool
   v_ego: float
@@ -91,6 +92,7 @@ class _InputSnapshot:
     lead_v = float(getattr(selected_lead, 'vLead', 0.0) or 0.0) if selected_lead is not None else 0.0
     lead_v_rel = float(getattr(selected_lead, 'vRel', 0.0) or 0.0) if selected_lead is not None else 0.0
     lead_y_rel = float(getattr(selected_lead, 'yRel', 0.0) or 0.0) if selected_lead is not None else 0.0
+    lead_a_k = float(getattr(selected_lead, 'aLeadK', 0.0) or 0.0) if selected_lead is not None else 0.0
     lead_id = _valid_lead_id(selected_lead)
     gas_pressed = bool(getattr(car_state, 'gasPressed', False)) if car_state is not None else False
     brake_pressed = bool(getattr(car_state, 'brakePressed', False)) if car_state is not None else False
@@ -126,6 +128,7 @@ class _InputSnapshot:
       lead_v=lead_v,
       lead_v_rel=lead_v_rel,
       lead_y_rel=lead_y_rel,
+      lead_a_k=lead_a_k,
       gas_pressed=gas_pressed,
       brake_pressed=brake_pressed,
       v_ego=v_ego,
@@ -238,6 +241,13 @@ class _StopHoldLatchLifecycle:
     mpc_go = bool(math.isfinite(snapshot.mpc_a_target) and snapshot.mpc_a_target >= finalizer._STOP_HOLD_MPC_GO_MIN_A
                   and not snapshot.mpc_should_stop)
     finalizer.mpc_go_persist_frames = finalizer.mpc_go_persist_frames + 1 if mpc_go else 0
+    lead_departing = bool(
+      snapshot.has_lead and
+      math.isfinite(snapshot.lead_a_k) and math.isfinite(snapshot.lead_v_rel) and
+      snapshot.lead_a_k >= finalizer._DEPARTING_LEAD_MIN_A_K and
+      snapshot.lead_v_rel >= finalizer._DEPARTING_LEAD_MIN_OPENING
+    )
+    finalizer.lead_accel_persist_frames = finalizer.lead_accel_persist_frames + 1 if lead_departing else 0
 
     # Hold owns a stopped state, not equal-speed crawl. During a release grace, a stale
     # MPC stop bit cannot re-arm it; real braking or another admitted stop still can.
@@ -1139,6 +1149,39 @@ class _FinalArbitration:
     # itself fades it out as ego catches the lead.
     return float(max(float(a_target), finalizer._STOP_HOLD_LAUNCH_FLOOR_A))
 
+  @staticmethod
+  def scc_departing_lead_coast(finalizer: CustomLongitudinalFinalizer, snapshot: _InputSnapshot,
+                               a_target: float, should_stop: bool) -> float:
+    """Green-light save: never brake into a gap the departing lead is re-opening.
+
+    Lift-off-only authority (see _DEPARTING_LEAD_* constants): clamps shallow braking to
+    coast while the lead is measurably accelerating away, sustained for a few frames.
+    Deep demand is real physics and passes through; a model/policy stop posture, driver
+    input, closing lead, or lead loss drops it instantly.
+    """
+    if should_stop or not math.isfinite(float(a_target)):
+      return float(a_target)
+    if float(a_target) >= 0.0 or float(a_target) < finalizer._DEPARTING_LEAD_MAX_CLAMP_DEPTH:
+      return float(a_target)
+    if snapshot.custom_long.mode is not LongitudinalMode.SCC:
+      return float(a_target)
+    if snapshot.brake_pressed or snapshot.gas_pressed or snapshot.force_decel:
+      return float(a_target)
+    if not snapshot.has_lead:
+      return float(a_target)
+    if _model_stop_blocks_release(snapshot) or bool(getattr(snapshot.custom_long_output, "should_stop", False)):
+      return float(a_target)
+    for value in (snapshot.lead_d_rel, snapshot.lead_v_rel, snapshot.v_ego):
+      if not math.isfinite(float(value)):
+        return float(a_target)
+    if snapshot.v_ego > finalizer._DEPARTING_LEAD_MAX_V_EGO:
+      return float(a_target)
+    if float(snapshot.lead_d_rel) < snapshot.stopping_distance:
+      return float(a_target)
+    if finalizer.lead_accel_persist_frames < finalizer._DEPARTING_LEAD_PERSIST_FRAMES:
+      return float(a_target)
+    return 0.0
+
 
 # ---------------------------------------------------------------------------
 # Telemetry adapter
@@ -1269,6 +1312,18 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_LAUNCH_FLOOR_A = 0.60
   # Same still-pulling-ahead margin as the lead-motion release gates.
   _STOP_HOLD_LAUNCH_FLOOR_MIN_OPENING = 0.15
+  # Green-light save (routes 2b5 t=1110, 2b0 t=338, 296 t=791): a lead that slows for a
+  # red and re-accelerates on the green leaves the MPC braking -0.6..-0.8 for 3-4.5 s to
+  # restore the inflated time gap — a gap the departing lead is already re-opening for
+  # free (hypermile: the runway rebuilds from the lead's side). With the lead measurably
+  # accelerating away, sustained for a few frames, clamp shallow braking to coast; deep
+  # demand (below the clamp depth) is real physics and is never reshaped, and a genuine
+  # model/policy stop posture always wins.
+  _DEPARTING_LEAD_MIN_A_K = 0.30
+  _DEPARTING_LEAD_MIN_OPENING = 0.15
+  _DEPARTING_LEAD_PERSIST_FRAMES = 4
+  _DEPARTING_LEAD_MAX_V_EGO = 8.0
+  _DEPARTING_LEAD_MAX_CLAMP_DEPTH = -1.0
   _STOP_HOLD_SETTLE_ARM_V_EGO_FLOOR = 0.7
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V = 0.5
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V_REL = 0.1
@@ -1354,6 +1409,7 @@ class CustomLongitudinalFinalizer:
   stop_hold_release_sustain_s: float
   mpc_stop_persist_frames: int
   mpc_go_persist_frames: int
+  lead_accel_persist_frames: int
   custom_long_output_telemetry: CustomLongitudinalOutput | None
   last_release_block_reason: str
   stop_hold_release_slew_a_target: float | None
@@ -1381,6 +1437,7 @@ class CustomLongitudinalFinalizer:
     self.stop_hold_release_sustain_s = 0.0
     self.mpc_stop_persist_frames = 0
     self.mpc_go_persist_frames = 0
+    self.lead_accel_persist_frames = 0
     self.custom_long_output_telemetry = None
     self.last_release_block_reason = ""
     self.stop_hold_release_slew_a_target = None
@@ -1850,6 +1907,7 @@ class CustomLongitudinalFinalizer:
 
     a_target = float(release_a_target if release_mpc_stop else mpc_a_target)
     a_target = _FinalArbitration.scc_launch_floor(self, snapshot, a_target, should_stop)
+    a_target = _FinalArbitration.scc_departing_lead_coast(self, snapshot, a_target, should_stop)
     a_target = _FinalArbitration.scc_custom_stop_cap(a_target, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop)
     a_target = _FinalArbitration.scc_curve_confidence_final_cap(
       self, a_target, sm, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop

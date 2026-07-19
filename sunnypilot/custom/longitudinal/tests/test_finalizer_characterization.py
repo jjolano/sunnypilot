@@ -1649,3 +1649,65 @@ def test_launch_floor_holds_through_the_chase():
     raw_model_a_target=0.3, raw_model_should_stop=False,
   )
   assert a_target <= 0.2 + 1e-6
+
+
+def _departing_lead(d_rel=8.0, v_lead=1.8, v_rel=0.8, a_lead_k=0.8, lead_id=1):
+  lead = make_lead(d_rel=d_rel, v_lead=v_lead, v_rel=v_rel, lead_id=lead_id)
+  lead.aLeadK = a_lead_k
+  return lead
+
+
+def test_departing_lead_coast_clamps_gap_restore_braking():
+  # Routes 2b5 t=1110 / 2b0 t=338: lead re-accelerates on the green while the MPC keeps
+  # braking -0.6..-0.8 for 3-4.5 s to restore the inflated time gap. With the departure
+  # sustained, shallow braking clamps to coast.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_follow", should_stop=False),
+  )
+  fin = planner.custom_long_finalizer
+  for _ in range(fin._DEPARTING_LEAD_PERSIST_FRAMES + 6):
+    a_target, should_stop, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=3.3, lead_one=_departing_lead()), mpc_a_target=-0.65, mpc_should_stop=False,
+      raw_model_a_target=-0.3, raw_model_should_stop=False,
+    )
+  assert should_stop is False
+  assert a_target > -0.05  # coast, jerk-limited stages settle at ~0
+
+
+def test_departing_lead_coast_never_reshapes_deep_braking_or_stop_posture():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_follow", should_stop=False),
+  )
+  fin = planner.custom_long_finalizer
+
+  # Deep demand passes through untouched.
+  for _ in range(fin._DEPARTING_LEAD_PERSIST_FRAMES + 3):
+    a_target, _, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=3.3, lead_one=_departing_lead()), mpc_a_target=-1.5, mpc_should_stop=False,
+      raw_model_a_target=-1.5, raw_model_should_stop=False,
+    )
+  assert a_target == pytest.approx(-1.5)
+
+  # Raw model stop asserted: braking is never clamped.
+  for _ in range(fin._DEPARTING_LEAD_PERSIST_FRAMES + 3):
+    a_target, _, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=3.3, lead_one=_departing_lead()), mpc_a_target=-0.65, mpc_should_stop=False,
+      raw_model_a_target=-0.3, raw_model_should_stop=True,
+    )
+  assert a_target <= -0.5
+
+
+def test_departing_lead_coast_requires_sustained_lead_acceleration():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_follow", should_stop=False),
+  )
+  # Lead opening but NOT accelerating (aLeadK ~ 0): the clamp must stay off.
+  for _ in range(10):
+    a_target, _, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=3.3, lead_one=_departing_lead(a_lead_k=0.0)), mpc_a_target=-0.65, mpc_should_stop=False,
+      raw_model_a_target=-0.3, raw_model_should_stop=False,
+    )
+  assert a_target == pytest.approx(-0.65)
