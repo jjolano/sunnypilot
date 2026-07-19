@@ -2489,6 +2489,12 @@ struct LiveTorqueParametersData {
   directionGainRatio @33 :Float32;
   directionGainPoints @34 :UInt32;
   directionGainValid @35 :Bool;
+
+  # Speed-binned breakaway observer telemetry (telemetry-only; the persisted
+  # profile stays pooled). Order: [lowLeft, lowRight, highLeft, highRight],
+  # bands split at 15 m/s. 0.0 median = no samples in that cell.
+  breakawayBandMedians @36 :List(Float32);
+  breakawayBandCounts @37 :List(UInt32);
 }
 
 struct LiveDelayData {

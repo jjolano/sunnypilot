@@ -358,6 +358,9 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.breakawayLeftMedian = breakaway['left']
     liveTorqueParameters.breakawayRightMedian = breakaway['right']
     liveTorqueParameters.breakawayEvents = breakaway['events']
+    band_medians, band_counts = self.breakaway_band_telemetry()
+    liveTorqueParameters.breakawayBandMedians = band_medians
+    liveTorqueParameters.breakawayBandCounts = band_counts
 
     # Direction-gain asymmetry learner telemetry.
     liveTorqueParameters.directionGainRatio = self.direction_gain_telemetry['ratio']

@@ -124,6 +124,33 @@ def test_telemetry_published_in_message():
   assert ltp.breakawayRightMedian == 0.0
 
 
+def test_speed_bands_split_at_15():
+  est = _make_estimator()
+  t = _dwell_then_jump_at_speed(est, 0.0, eps_native=300.0, v_ego=12.0)   # low band, left
+  _dwell_then_jump_at_speed(est, t, eps_native=-150.0, jump_rate=-3.0, v_ego=20.0)  # high band, right
+  medians, counts = est.breakaway_band_telemetry()
+  assert counts == [1, 0, 0, 1]                       # [lowLeft, lowRight, highLeft, highRight]
+  assert abs(medians[0] - 0.2) < 1e-6
+  assert abs(medians[3] - 0.1) < 1e-6
+  # pooled per-direction telemetry unchanged by the banding
+  tele = est.breakaway_telemetry()
+  assert abs(tele['left'] - 0.2) < 1e-6
+  assert abs(tele['right'] - 0.1) < 1e-6
+  ltp = est.get_msg().liveTorqueParameters
+  assert list(ltp.breakawayBandCounts) == [1, 0, 0, 1]
+
+
+def _dwell_then_jump_at_speed(est, t0, eps_native, v_ego, jump_rate=3.0, dwell_s=0.5):
+  t = t0
+  for _ in range(int(dwell_s / DT)):
+    _feed_car_state(est, t, 0.0, eps_native, v_ego=v_ego)
+    t += DT
+  for _ in range(10):
+    _feed_car_state(est, t, jump_rate, eps_native, v_ego=v_ego)
+    t += DT
+  return t
+
+
 def test_profile_persisted_after_enough_events_both_directions():
   import json
   from openpilot.common.params import Params

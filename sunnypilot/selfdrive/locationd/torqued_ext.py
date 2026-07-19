@@ -57,6 +57,9 @@ BREAKAWAY_WINDOW = 25  # rolling breakout samples per direction
 # still helps/opposes breakout and would bias the recorded EPS medians. Require the
 # driver channel quiet through the dwell and at the jump for an event to count.
 BREAKAWAY_DRIVER_QUIET_TORQUE = 25.0
+# Telemetry-only speed split: EPS assist is strongly speed-dependent, so effective
+# breakaway (in EPS units) may differ by band. Matches DIRECTION_GAIN_SPEED_BANDS.
+BREAKAWAY_SPEED_SPLIT = 15.0  # m/s; band 0 = [8, 15), band 1 = [15, inf)
 
 
 class TorqueEstimatorExt:
@@ -111,7 +114,8 @@ class TorqueEstimatorExt:
     self._ba_dwell = 0.0
     self._ba_eps_hold = 0.0
     self._ba_drv_max = 0.0
-    self._ba_samples = {1: [], -1: []}
+    # keyed by (speed band, direction); pooled across bands for the persisted profile
+    self._ba_samples = {(band, direction): [] for band in (0, 1) for direction in (1, -1)}
     self.breakaway_events = 0
 
   def initialize_custom_params(self, decimated=False):
@@ -266,20 +270,31 @@ class TorqueEstimatorExt:
       driver_quiet = max(self._ba_drv_max, abs(float(driver_torque))) <= BREAKAWAY_DRIVER_QUIET_TORQUE
       if rate >= BREAKAWAY_JUMP_DEG_S and self._ba_dwell >= BREAKAWAY_DWELL_S and driver_quiet:
         direction = 1 if steering_rate_deg > 0 else -1
-        samples = self._ba_samples[direction]
+        band = 1 if v_ego >= BREAKAWAY_SPEED_SPLIT else 0
+        samples = self._ba_samples[(band, direction)]
         samples.append(abs(self._ba_eps_hold))
         del samples[:-BREAKAWAY_WINDOW]
         self.breakaway_events += 1
       self._ba_dwell = 0.0
       self._ba_drv_max = 0.0
 
+  def _ba_direction_samples(self, direction):
+    return self._ba_samples[(0, direction)] + self._ba_samples[(1, direction)]
+
   def breakaway_telemetry(self):
-    left, right = self._ba_samples[1], self._ba_samples[-1]
+    left, right = self._ba_direction_samples(1), self._ba_direction_samples(-1)
     return {
       'left': float(np.median(left)) if left else 0.0,
       'right': float(np.median(right)) if right else 0.0,
       'events': int(self.breakaway_events),
     }
+
+  def breakaway_band_telemetry(self):
+    # [lowLeft, lowRight, highLeft, highRight]; 0.0 = no samples in that cell
+    cells = [(0, 1), (0, -1), (1, 1), (1, -1)]
+    medians = [float(np.median(self._ba_samples[c])) if self._ba_samples[c] else 0.0 for c in cells]
+    counts = [len(self._ba_samples[c]) for c in cells]
+    return medians, counts
 
   def update_direction_gain_telemetry(self):
     if self.direction_gain_mode in ('shadow', 'apply') and self.direction_gain_profile_cache is not None:
@@ -343,6 +358,6 @@ class TorqueEstimatorExt:
     if self.friction_breakaway_mode in ('shadow', 'apply'):
       tele = self.breakaway_telemetry()
       # min per-direction sample floor so one busy direction can't publish a skewed profile
-      if tele['events'] >= BREAKAWAY_PROFILE_MIN_EVENTS and min(len(self._ba_samples[1]), len(self._ba_samples[-1])) >= 5:
+      if tele['events'] >= BREAKAWAY_PROFILE_MIN_EVENTS and min(len(self._ba_direction_samples(1)), len(self._ba_direction_samples(-1))) >= 5:
         self._params.put("LatFrictionBreakawayParams",
                          format_breakaway_profile(self.CP, tele['left'], tele['right'], tele['events']), block=True)
