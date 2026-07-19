@@ -120,7 +120,9 @@ def fit_direction_gain_profile(CP: Any, buckets: DirectionGainBuckets):
     fitted = _fit_band_ratio(buckets, (v_lo, v_hi))
     if fitted is not None:
       bands.append({'vLo': float(v_lo), 'vHi': float(v_hi), **fitted})
-  if not bands:
+  # every configured band must fit: a single band bypasses the agreement check,
+  # which is the whole confound control (route 2b5 published highway-only at 0.814)
+  if len(bands) < len(buckets.speed_bands):
     return None
   ratios = [b['ratio'] for b in bands]
   if max(ratios) - min(ratios) > BAND_AGREEMENT_MAX:
@@ -186,7 +188,7 @@ def parse_direction_gain_profile(CP: Any, payload):
   if points < 2 * MIN_POINTS_PER_DIRECTION:
     return None
   raw_bands = payload.get('bands')
-  if not isinstance(raw_bands, list) or not raw_bands:
+  if not isinstance(raw_bands, list) or len(raw_bands) < len(DIRECTION_GAIN_SPEED_BANDS):
     return None
   bands = []
   for entry in raw_bands:

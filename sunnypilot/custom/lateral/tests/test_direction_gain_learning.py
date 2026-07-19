@@ -47,6 +47,21 @@ def test_fit_requires_min_points():
   assert profile is None
 
 
+def test_fit_requires_every_band():
+  # highway-only data (route 2b5 case): single band bypasses the agreement
+  # check, so nothing may publish until every configured band fits
+  profile = fit_direction_gain_profile(_cp(), _fill_buckets(speeds=(20.0,)))
+  assert profile is None
+
+
+def test_parser_rejects_single_band_payload():
+  cp = _cp()
+  full = fit_direction_gain_profile(cp, _fill_buckets())
+  payload = json.loads(format_direction_gain_profile(full))
+  single = {**payload, 'bands': payload['bands'][:1]}
+  assert parse_direction_gain_profile(cp, single) is None
+
+
 def test_fit_rejects_band_disagreement():
   rng = np.random.default_rng(1)
   buckets = DirectionGainBuckets()
