@@ -22,13 +22,17 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import La
 from openpilot.sunnypilot.selfdrive.controls.lib.underresponse_sentinel import UnderresponseSentinel, write_underresponse_debug
 from openpilot.sunnypilot.custom.lateral.friction_breakaway_floor import FrictionBreakawayFloor
 from openpilot.sunnypilot.custom.lateral.near_zero_recenter_observer import NearZeroRecenterObserver
-from openpilot.sunnypilot.custom.lateral.output_governor import GovernorReason, OutputGovernor, OutputGovernorInputs
+from openpilot.sunnypilot.custom.lateral.output_governor import GovernorReason, OutputGovernor, OutputGovernorInputs, SLEW_RATE_SCALE_STEP
 from openpilot.sunnypilot.custom.lateral.oscillation_observer import OscillationObserver
 from openpilot.sunnypilot.custom.lateral.response_core import ResponseCore, ResponseCoreInputs, ROLL_COMPENSATION_GAIN
 
 VERSION_V21 = 21
 SAME_DIRECTION_TORQUE_EPS = 1e-3
 SAME_DIRECTION_ERROR_EPS = 0.02
+
+# Slew-scale study cars: the 1.125x step was sized against Toyota's 15-up/25-down raw
+# per-frame limits at STEER_MAX=1500; other platforms fail closed to 'off'.
+SLEW_SCALE_CARS = ("TOYOTA_RAV4_TSS2",)
 
 
 def _sign(value: float, eps: float) -> int:
@@ -70,6 +74,11 @@ class LatControlTorqueV21(LatControl):
       get_friction=get_friction,
     )
     self.governor = OutputGovernor(dt)
+    # Slew-scale study (LateralSlewScaleMode): the shadow governor always runs the OTHER
+    # condition (scaled in shadow mode, baseline in apply), so every non-off route logs
+    # its counterfactual output for A/B analysis.
+    self._slew_scale_allowed = str(getattr(CP, 'carFingerprint', '')) in SLEW_SCALE_CARS
+    self.shadow_governor = OutputGovernor(dt)
     self.underresponse_sentinel = UnderresponseSentinel(dt)
     self.oscillation_observer = OscillationObserver(dt)
     self.near_zero_recenter_observer = NearZeroRecenterObserver(dt)
@@ -83,6 +92,7 @@ class LatControlTorqueV21(LatControl):
   def reset(self):
     super().reset()
     self.governor.reset()
+    self.shadow_governor.reset()
     self.underresponse_sentinel.reset()
     self.oscillation_observer.reset()
     self.near_zero_recenter_observer.reset()
@@ -174,6 +184,10 @@ class LatControlTorqueV21(LatControl):
     dg_scales = getattr(self.extension, 'direction_gain_scales', None)
     dg_apply = getattr(self.extension, 'direction_gain_mode', 'off') == 'apply'
     self._direction_gain_scales = dg_scales if (dg_apply and dg_scales) else {1: 1.0, -1: 1.0}
+    slew_mode = getattr(self.extension, 'slew_scale_mode', 'off') if self._slew_scale_allowed else 'off'
+    slew_apply = slew_mode == 'apply'
+    self.governor.slew_rate_scale = SLEW_RATE_SCALE_STEP if slew_apply else 1.0
+    self.shadow_governor.slew_rate_scale = 1.0 if slew_apply else SLEW_RATE_SCALE_STEP
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION_V21
@@ -184,6 +198,7 @@ class LatControlTorqueV21(LatControl):
 
     if not active:
       self.governor.reset()
+      self.shadow_governor.reset()
       write_underresponse_debug(pid_log, self.underresponse_sentinel.reset())
       self.oscillation_observer.reset()
       self.near_zero_recenter_observer.reset()
@@ -225,7 +240,7 @@ class LatControlTorqueV21(LatControl):
       bool(steer_limited_by_safety), nominal_output_torque, rc.setpoint, rc.measurement
     )
     nominal_output_torque_log = _safe_float(nominal_output_torque)
-    governed = self.governor.update(OutputGovernorInputs(
+    governor_inputs = OutputGovernorInputs(
       active=True,
       v_ego=CS.vEgo,
       steering_rate_deg=-CS.steeringRateDeg,
@@ -240,8 +255,14 @@ class LatControlTorqueV21(LatControl):
       lateral_accel_error_rate=rc.desired_lateral_jerk - rc.measurement_rate,
       lat_delay=max(lat_delay, self.dt),
       holding_torque=holding_output_torque,
-    ))
+    )
+    governed = self.governor.update(governor_inputs)
     output_torque = governed.output_torque
+    if slew_mode != 'off':
+      slew_shadow_output = float(-self.shadow_governor.update(governor_inputs).output_torque)
+    else:
+      self.shadow_governor.reset()
+      slew_shadow_output = 0.0
     ur_debug = self.underresponse_sentinel.update(
       active=True,
       v_ego=CS.vEgo,
@@ -293,7 +314,8 @@ class LatControlTorqueV21(LatControl):
     adaptive.steerLimitLimited = bool(steer_limited_by_safety)
     adaptive.steerLimitError = float(max(0.0, abs(nominal_output_torque_log) - (self.steer_max * governed.cap)))
     adaptive.steerLimitSameDirection = bool(same_direction_limit)
-    adaptive.governorReason = int(governed.reason)
+    adaptive.governorReason = int(governed.reason) | (int(GovernorReason.SLEW_SCALE_APPLIED) if slew_apply else 0)
+    adaptive.slewShadowOutput = slew_shadow_output
     adaptive.actualLateralJerk = float(rc.raw_actual_lateral_jerk)
     adaptive.governorFloor = float(governed.floor)
     adaptive.lowSpeedOutputMax = bool(CS.vEgo < self.sat_check_min_speed and abs(output_torque) >= self.steer_max * governed.cap - 1e-3)

@@ -20,6 +20,7 @@ LIVE_TORQUE_SPEED_ADAPTIVE_MODES = ("off", "shadow", "apply")
 ROLL_COMP_GAIN_MODES = ("off", "shadow", "apply")
 FRICTION_BREAKAWAY_MODES = ("off", "shadow", "apply")
 DIRECTION_GAIN_MODES = ("off", "shadow", "apply")
+SLEW_SCALE_MODES = ("off", "shadow", "apply")
 
 
 def finite_float(value) -> float | None:
@@ -84,6 +85,11 @@ def validate_friction_breakaway_mode(value) -> str:
 def validate_direction_gain_mode(value) -> str:
   value = value or "off"
   return value if value in DIRECTION_GAIN_MODES else "off"
+
+
+def validate_slew_scale_mode(value) -> str:
+  value = value or "off"
+  return value if value in SLEW_SCALE_MODES else "off"
 
 
 # Breakaway profile: per-direction rack breakaway medians learned by the shadow

@@ -39,6 +39,7 @@ from openpilot.sunnypilot.custom.lateral.torque_safety import (
   validate_live_torque_speed_adaptive_mode,
   validate_manual_torque_override_against_base,
   validate_roll_comp_gain_mode,
+  validate_slew_scale_mode,
   validate_torque_override_friction,
   validate_torque_override_lat_accel_factor,
 )
@@ -203,6 +204,7 @@ class TorqueParameterOverridePolicy:
     self.breakaway_profile = None
     self.direction_gain_mode = 'off'
     self.direction_gain_scales = {1: 1.0, -1: 1.0}
+    self.slew_scale_mode = 'off'
     self._poll()
     self._torque_parameter_override_policy_initialized = True
 
@@ -233,6 +235,7 @@ class TorqueParameterOverridePolicy:
         self._speed_profile = None
 
     self.friction_breakaway_mode = validate_friction_breakaway_mode(self.params.get("LatFrictionBreakawayMode", return_default=True))
+    self.slew_scale_mode = validate_slew_scale_mode(self.params.get("LateralSlewScaleMode", return_default=True))
     self.direction_gain_mode = validate_direction_gain_mode(self.params.get("LatDirectionGainMode", return_default=True))
     self.direction_gain_scales = {1: 1.0, -1: 1.0}
     if self.direction_gain_mode == 'apply':

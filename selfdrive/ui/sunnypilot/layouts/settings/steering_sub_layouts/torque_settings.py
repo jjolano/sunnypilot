@@ -32,6 +32,7 @@ from openpilot.sunnypilot.custom.lateral.torque_safety import (
   validate_roll_comp_gain_mode,
   validate_friction_breakaway_mode,
   validate_direction_gain_mode,
+  validate_slew_scale_mode,
 )
 
 TORQUE_VERSIONS_PATH = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "controls", "lib", "latcontrol_torque_versions.json")
@@ -47,6 +48,7 @@ class TorqueSettingsLayout(Widget):
     self._roll_comp_gain_mode_dialog: TreeOptionDialog | None = None
     self._friction_breakaway_mode_dialog: TreeOptionDialog | None = None
     self._direction_gain_mode_dialog: TreeOptionDialog | None = None
+    self._slew_scale_mode_dialog: TreeOptionDialog | None = None
     self.cached_torque_versions = {}
     self._load_versions()
     self._pending_lat_accel_factor = self._read_scaled_torque_value(
@@ -115,6 +117,14 @@ class TorqueSettingsLayout(Widget):
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_direction_gain_mode_dialog,
     )
+    self._slew_scale_mode = ListItemSP(
+      title=tr("Faster Torque Slew (Study)"),
+      description=tr("Raise the torque output governor's slew rates by 12.5%, still below the platform's steering rate " +
+                     "limits. Monitor only logs what the faster slew would output — no driving changes; Apply uses the " +
+                     "faster rates live and can make steering corrections slightly quicker; turn Off to disable."),
+      action_item=NoElideButtonAction(tr("SELECT")),
+      callback=self._show_slew_scale_mode_dialog,
+    )
     self._custom_tune_toggle = toggle_item_sp(
       param="CustomTorqueParams",
       title=lambda: tr("Enable Custom Tuning"),
@@ -178,6 +188,7 @@ class TorqueSettingsLayout(Widget):
       self._roll_comp_gain_mode,
       self._friction_breakaway_mode,
       self._direction_gain_mode,
+      self._slew_scale_mode,
       self._custom_tune_toggle,
       self._torque_prams_override_toggle,
       self._torque_lat_accel_factor,
@@ -247,6 +258,7 @@ class TorqueSettingsLayout(Widget):
     self._roll_comp_gain_mode.action_item.set_enabled(ui_state.is_offroad())
     self._friction_breakaway_mode.action_item.set_enabled(ui_state.is_offroad())
     self._direction_gain_mode.action_item.set_enabled(ui_state.is_offroad())
+    self._slew_scale_mode.action_item.set_enabled(ui_state.is_offroad())
     self._custom_tune_toggle.action_item.set_enabled(ui_state.is_offroad())
     custom_tune_enabled = self._custom_tune_toggle.action_item.get_state()
     self._torque_prams_override_toggle.set_visible(custom_tune_enabled)
@@ -281,6 +293,7 @@ class TorqueSettingsLayout(Widget):
     self._roll_comp_gain_mode.action_item.set_value(self._get_current_roll_comp_mode_label())
     self._friction_breakaway_mode.action_item.set_value(self._get_current_friction_breakaway_mode_label())
     self._direction_gain_mode.action_item.set_value(self._get_current_direction_gain_mode_label())
+    self._slew_scale_mode.action_item.set_value(self._get_current_slew_scale_mode_label())
 
 
   def _render(self, rect):
@@ -407,6 +420,47 @@ class TorqueSettingsLayout(Widget):
       on_exit=handle_selection,
     )
     gui_app.push_widget(self._friction_breakaway_mode_dialog)
+
+  def _get_current_slew_scale_mode_label(self):
+    mode = ui_state.params.get("LateralSlewScaleMode") or b"off"
+    try:
+      mode = mode.decode() if isinstance(mode, bytes) else str(mode)
+    except Exception:
+      mode = "off"
+    mode = validate_slew_scale_mode(mode)
+    return {"off": tr("Off"), "shadow": tr("Monitor only"), "apply": tr("Apply")}.get(mode, tr("Off"))
+
+  def _show_slew_scale_mode_dialog(self):
+    nodes = [TreeNode(tr("Off")), TreeNode(tr("Monitor only")), TreeNode(tr("Apply"))]
+    folders = [TreeFolder("", nodes)]
+    current_label = self._get_current_slew_scale_mode_label()
+
+    def handle_selection(result: int):
+      if ui_state.is_onroad() or ui_state.engaged:
+        self._slew_scale_mode_dialog = None
+        return
+      if result == DialogResult.CONFIRM and self._slew_scale_mode_dialog:
+        selected = self._slew_scale_mode_dialog.selection_ref
+        mapping = {tr("Off"): "off", tr("Monitor only"): "shadow", tr("Apply"): "apply"}
+        mode = mapping.get(selected, "off")
+        if mode == "off":
+          ui_state.params.remove("LateralSlewScaleMode")
+        else:
+          ui_state.params.put("LateralSlewScaleMode", mode)
+      self._slew_scale_mode_dialog = None
+
+    # Safety gate: slew-scale mode changes affect torque steering and are offroad-only.
+    if ui_state.is_onroad() or ui_state.engaged:
+      return
+
+    self._slew_scale_mode_dialog = TreeOptionDialog(
+      tr("Select Faster Torque Slew Mode"),
+      folders,
+      current_ref=current_label,
+      option_font_weight=FontWeight.UNIFONT,
+      on_exit=handle_selection,
+    )
+    gui_app.push_widget(self._slew_scale_mode_dialog)
 
   def _show_speed_adaptive_mode_dialog(self):
     nodes = [TreeNode(tr("Off")), TreeNode(tr("Learn only")), TreeNode(tr("Apply learned curve"))]

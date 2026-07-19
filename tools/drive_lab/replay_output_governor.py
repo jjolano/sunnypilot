@@ -2,7 +2,7 @@
 """Replay the torque v2.1 OutputGovernor over full rlogs.
 
 This is a fixed-trace diagnostic.  It replays the governor inputs that are logged in
-``controlsState`` and compares G0 with the logged governed output.  G1--G3 are
+``controlsState`` and compares G0 with the logged governed output.  G1--G3 and P1 are
 counterfactual governor variants; none of them changes production code or feeds a
 counterfactual torque back into the trace.
 
@@ -25,6 +25,7 @@ from openpilot.sunnypilot.custom.lateral.output_governor import (
   GovernorReason,
   OutputGovernor,
   OutputGovernorInputs,
+  SLEW_RATE_SCALE_STEP,
   _PythonHelperSet,
 )
 from openpilot.tools.drive_lab.analyze_longitudinal_lateral_route import (
@@ -224,7 +225,9 @@ def _extract_frames(messages: Iterable[Any]) -> list[GovernorFrame]:
       active=bool(_safe_get(torque_state, "active", False)),
       nominal_torque=-nominal_output,
       logged_output=_finite_float(_safe_get(torque_state, "output")),
-      logged_reason=int(_safe_get(adaptive, "governorReason", 0) or 0),
+      # SLEW_SCALE_APPLIED is a telemetry-only condition marker torque_v2_1 ORs into the
+      # logged reason; the replayed governor never sets it, so mask it from parity.
+      logged_reason=int(_safe_get(adaptive, "governorReason", 0) or 0) & ~int(GovernorReason.SLEW_SCALE_APPLIED),
       logged_cap=_finite_float(_safe_get(adaptive, "outputCap")),
       v_ego=v_ego,
       steering_rate_deg=steering_rate_deg,
@@ -248,6 +251,7 @@ def _replay(frames: list[GovernorFrame]) -> dict[str, list[ReplaySample]]:
     "G0": OutputGovernor(DT),
     "G1": OutputGovernor(DT),
     "G2": NoSlewGovernor(),
+    "P1": OutputGovernor(DT, slew_rate_scale=SLEW_RATE_SCALE_STEP),
   }
   samples = {name: [] for name in (*governors, "G3")}
   for frame in frames:
@@ -255,7 +259,8 @@ def _replay(frames: list[GovernorFrame]) -> dict[str, list[ReplaySample]]:
     result_g0 = governors["G0"].update(production_input)
     result_g1 = governors["G1"].update(_make_input(frame, same_direction_limit=False))
     result_g2 = governors["G2"].update(production_input)
-    results = {"G0": result_g0, "G1": result_g1, "G2": result_g2}
+    result_p1 = governors["P1"].update(production_input)
+    results = {"G0": result_g0, "G1": result_g1, "G2": result_g2, "P1": result_p1}
     for name, result in results.items():
       samples[name].append(ReplaySample(frame.t, frame.active, frame.nominal_torque, result.output_torque,
                                         frame.logged_output, result.reason, result.cap,
@@ -384,7 +389,7 @@ def _render_report(source: str, identifiers: list[str], frames: list[GovernorFra
   ]
   if start is not None or end is not None:
     lines.append(f"  window: {_format(start)}-{_format(end)}s from first loaded message")
-  for name in ("G0", "G1", "G2", "G3"):
+  for name in ("G0", "G1", "G2", "G3", "P1"):
     report = _variant_report(samples[name], start, end)
     reversal = report["old_direction_torque_time_s"]
     label = {
@@ -392,6 +397,7 @@ def _render_report(source: str, identifiers: list[str], frames: list[GovernorFra
       "G2": "slew bypass; production caps/arrival retained",
       "G3": "output=nominal",
       "G0": "production governor",
+      "P1": f"slew rates x{SLEW_RATE_SCALE_STEP} (LateralSlewScaleMode apply)",
     }[name]
     lines.extend([
       "",
@@ -429,7 +435,7 @@ def main() -> None:
       "window": {"start": args.start, "end": args.end},
       "g0": _g0_report(samples["G0"]),
       "window_variants": {name: _variant_report(samples[name], args.start, args.end)
-                          for name in ("G0", "G1", "G2", "G3")},
+                          for name in ("G0", "G1", "G2", "G3", "P1")},
       "caveats": [
         "path evidence is inferred from underResponseGuardPathEvidenceInvalid",
         "holding torque is unavailable and target-arrival blending is disabled",

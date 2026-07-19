@@ -53,6 +53,10 @@ V21_GOVERNOR_REASON_NAMES = {
   1 << 10: "INVALID",
   1 << 11: "UNDER_RESPONSE_GUARDED",
   1 << 12: "STEERING_RATE_COMFORT",
+  1 << 13: "TARGET_ARRIVAL",
+  # Telemetry-only condition marker (LateralSlewScaleMode apply); counted under its own
+  # name for per-route condition verification, never a governor limit event.
+  1 << 14: "SLEW_SCALE_APPLIED",
 }
 
 V3_GOVERNOR_REASON_NAMES = {

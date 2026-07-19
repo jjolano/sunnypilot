@@ -554,3 +554,55 @@ def test_speed_resolved_roll_gain_none_falls_back_to_constant():
   c = LatControlTorqueV21(make_cp(), SimpleNamespace(), make_ci(), DT, extension=ext)
   c.update(True, make_cs(v_ego=12.0, angle=5.0), FakeVM(), make_params(roll=-0.04), False, 0.0, make_pose(), False, 0.2)  # type: ignore[arg-type]
   assert c.response_core.roll_compensation_gain == ROLL_COMPENSATION_GAIN
+
+
+def make_slew_controller(mode: str, fingerprint: str = "TOYOTA_RAV4_TSS2"):
+  cp = make_cp()
+  cp.carFingerprint = fingerprint
+  ext = NoOpExtension()
+  ext.slew_scale_mode = mode
+  return LatControlTorqueV21(cp, SimpleNamespace(), make_ci(), DT, extension=ext)
+
+
+def _drive_step_demand(controller, frames=300):
+  """Alternating curvature steps that keep the governor slew-limited; returns (outputs, logs)."""
+  vm = FakeVM()
+  outputs, logs = [], []
+  for i in range(frames):
+    curvature = 0.03 if (i // 100) % 2 == 0 else -0.03
+    out, _, pid_log = controller.update(True, make_cs(v_ego=15.0, angle=10.0), vm, make_params(),
+                                        False, curvature, make_pose(), False, 0.2)  # type: ignore[arg-type]
+    outputs.append(out)
+    logs.append(pid_log)
+  return outputs, logs
+
+
+def test_slew_scale_shadow_is_non_actuating_and_logs_counterfactual():
+  base_outputs, _ = _drive_step_demand(make_controller())
+  shadow_outputs, shadow_logs = _drive_step_demand(make_slew_controller("shadow"))
+
+  assert shadow_outputs == base_outputs  # shadow mode: exactly non-actuating
+  assert all(not (l.adaptiveTorqueState.governorReason & GovernorReason.SLEW_SCALE_APPLIED) for l in shadow_logs)
+  # the counterfactual (faster slew) must diverge from the produced output somewhere
+  assert any(abs(l.adaptiveTorqueState.slewShadowOutput - l.output) > 1e-9 for l in shadow_logs)
+
+
+def test_slew_scale_apply_marks_frames_and_logs_baseline_counterfactual():
+  base_outputs, _ = _drive_step_demand(make_controller())
+  apply_outputs, apply_logs = _drive_step_demand(make_slew_controller("apply"))
+
+  assert all(l.adaptiveTorqueState.governorReason & GovernorReason.SLEW_SCALE_APPLIED for l in apply_logs)
+  assert apply_outputs != base_outputs  # faster slew actuates
+  # the apply-mode shadow runs the baseline condition: it must reproduce the G0 trace
+  # (slewShadowOutput is a capnp Float32 — compare at float32 precision)
+  assert all(abs(l.adaptiveTorqueState.slewShadowOutput - base_out) < 1e-6
+             for l, base_out in zip(apply_logs, base_outputs, strict=True))
+
+
+def test_slew_scale_gate_fails_closed_on_other_cars():
+  base_outputs, _ = _drive_step_demand(make_controller())
+  gated_outputs, gated_logs = _drive_step_demand(make_slew_controller("apply", fingerprint="HONDA_CIVIC_BOSCH"))
+
+  assert gated_outputs == base_outputs
+  assert all(not (l.adaptiveTorqueState.governorReason & GovernorReason.SLEW_SCALE_APPLIED) for l in gated_logs)
+  assert all(l.adaptiveTorqueState.slewShadowOutput == 0.0 for l in gated_logs)

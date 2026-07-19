@@ -89,6 +89,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LatDirectionGainParams", {PERSISTENT | DONT_LOG, STRING, ""}},
     {"LatFrictionBreakawayMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"LatFrictionBreakawayParams", {PERSISTENT | DONT_LOG, STRING, ""}},
+    {"LateralSlewScaleMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"RollCompGainMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"RollCompGainParams", {PERSISTENT | DONT_LOG, STRING, ""}},
     {"LocationFilterInitialState", {PERSISTENT, BYTES}},

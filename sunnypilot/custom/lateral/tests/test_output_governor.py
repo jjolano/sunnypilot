@@ -20,6 +20,7 @@ from openpilot.sunnypilot.custom.lateral.output_governor import (
   RELEASE_SLEW_SCALE,
   SIGN_CHANGE_SLEW_RATE_BP,
   SIGN_CHANGE_SLEW_RATE_V,
+  SLEW_RATE_SCALE_STEP,
   STEERING_RATE_COMFORT_MIN_CAP,
   STEERING_RATE_COMFORT_MIN_SLEW_SCALE,
   GovernorReason,
@@ -116,6 +117,65 @@ def test_actuator_slew_matches_toyota_raw_limits():
 
   assert build * DT * 1500 == pytest.approx(12.0)
   assert release * DT * 1500 == pytest.approx(18.75)
+
+
+def test_scaled_actuator_slew_stays_under_toyota_raw_limits():
+  build = OUTPUT_SLEW_RATE_V[0] * SLEW_RATE_SCALE_STEP
+  sign_change = SIGN_CHANGE_SLEW_RATE_V[0] * SLEW_RATE_SCALE_STEP
+  release = OUTPUT_SLEW_RATE_V[0] * RELEASE_SLEW_SCALE * SLEW_RATE_SCALE_STEP
+
+  assert build * DT * 1500 == pytest.approx(13.5)
+  assert build * DT * 1500 <= 15.0          # Toyota STEER_DELTA_UP
+  assert sign_change * DT * 1500 == pytest.approx(21.09375)
+  assert sign_change * DT * 1500 <= 25.0    # unwind toward zero: STEER_DELTA_DOWN
+  assert release * DT * 1500 == pytest.approx(21.09375)
+  assert release * DT * 1500 <= 25.0        # Toyota STEER_DELTA_DOWN
+
+
+def test_slew_scale_default_is_identity():
+  base = OutputGovernor(DT)
+  explicit = OutputGovernor(DT, slew_rate_scale=1.0)
+  rng = np.random.default_rng(20260719)
+  for _ in range(500):
+    inp = benign(nominal=float(rng.uniform(-1.5, 1.5)), v=float(rng.uniform(0.0, 40.0)),
+                 desired=float(rng.uniform(-3.0, 3.0)), actual=float(rng.uniform(-3.0, 3.0)))
+    assert base.update(inp).output_torque == explicit.update(inp).output_torque
+
+
+def test_slew_scale_step_scales_build_sign_and_release_rates():
+  build = OutputGovernor(DT, slew_rate_scale=SLEW_RATE_SCALE_STEP)
+  r_build = build.update(benign(nominal=MAX))
+  assert r_build.output_torque == pytest.approx(OUTPUT_SLEW_RATE_V[0] * SLEW_RATE_SCALE_STEP * DT)
+
+  sign = OutputGovernor(DT, slew_rate_scale=SLEW_RATE_SCALE_STEP)
+  sign.previous_output = 0.5
+  r_sign = sign.update(benign(nominal=-0.5))
+  assert r_sign.output_torque == pytest.approx(0.5 - SIGN_CHANGE_SLEW_RATE_V[0] * SLEW_RATE_SCALE_STEP * DT)
+
+  release = OutputGovernor(DT, slew_rate_scale=SLEW_RATE_SCALE_STEP)
+  release.previous_output = 0.5
+  r_release = release.update(benign(nominal=0.1))
+  assert r_release.output_torque == pytest.approx(0.5 - OUTPUT_SLEW_RATE_V[0] * RELEASE_SLEW_SCALE * SLEW_RATE_SCALE_STEP * DT)
+
+
+def test_governor_never_sets_slew_scale_marker():
+  gov = OutputGovernor(DT, slew_rate_scale=SLEW_RATE_SCALE_STEP)
+  rng = np.random.default_rng(20260719)
+  for _ in range(2000):
+    inp = OutputGovernorInputs(
+      active=bool(rng.random() > 0.05),
+      v_ego=float(rng.uniform(0.0, 40.0)),
+      steering_rate_deg=float(rng.uniform(-150.0, 150.0)),
+      nominal_torque=float(rng.uniform(-2.0, 2.0)),
+      max_output=MAX,
+      desired_lateral_accel=float(rng.uniform(-4.0, 4.0)),
+      actual_lateral_accel=float(rng.uniform(-4.0, 4.0)),
+      same_direction_limit=bool(rng.random() > 0.7),
+      release_active=bool(rng.random() > 0.8),
+    )
+    r = gov.update(inp)
+    assert not (r.reason & GovernorReason.SLEW_SCALE_APPLIED)
+    assert abs(r.output_torque) <= MAX + 1e-9
 
 
 def test_under_response_floor_cannot_bypass_final_slew():

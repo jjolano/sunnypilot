@@ -54,7 +54,9 @@ _DEFAULT_TORQUE_PARAMS = SimpleNamespace(
 
 def _make_fake_cp():
     torque = SimpleNamespace(as_builder=lambda: _DEFAULT_TORQUE_PARAMS)
-    return SimpleNamespace(steerLimitTimer=3.0, lateralTuning=SimpleNamespace(torque=torque))
+    # RAV4 fingerprint so the slew-scale study gate opens when --slew-scale-mode is set.
+    return SimpleNamespace(steerLimitTimer=3.0, lateralTuning=SimpleNamespace(torque=torque),
+                           carFingerprint="TOYOTA_RAV4_TSS2")
 
 
 def _make_fake_ci():
@@ -75,6 +77,8 @@ class _FakeVM:
 
 class _NoOpExtension:
     """Passes torque through unchanged — skips NNLC/override for pure controller testing."""
+    slew_scale_mode = "off"
+
     @staticmethod
     def update_override_torque_params(torque_params, v_ego=None) -> bool:
         return False
@@ -84,9 +88,11 @@ class _NoOpExtension:
         return pid_log, rest[-1]
 
 
-def _make_controller():
+def _make_controller(slew_scale_mode: str = "off"):
+    extension = _NoOpExtension()
+    extension.slew_scale_mode = slew_scale_mode
     return LatControlTorqueV21(_make_fake_cp(), SimpleNamespace(), _make_fake_ci(), DT,
-                                extension=_NoOpExtension())
+                                extension=extension)
 
 
 # ── threshold / scenario / result dataclasses ────────────────────────────────
@@ -445,13 +451,14 @@ class ControllerFuzzerConfig:
 
 
 def evaluate_scenario(scenario: ControllerScenario,
-                      closed_loop: bool = True) -> ControllerScenarioResult:
+                      closed_loop: bool = True,
+                      slew_scale_mode: str = "off") -> ControllerScenarioResult:
     thresholds = scenario.metric_thresholds
     failures: list[dict[str, Any]] = []
     metrics: dict[str, Any] = {}
     outputs: list[ControllerFrameOutput] = []
 
-    controller = _make_controller()
+    controller = _make_controller(slew_scale_mode)
     vm = _FakeVM()
     # Multi-plant robustness: read plant configuration from first frame.
     plant_config = {}
@@ -578,6 +585,8 @@ def main() -> None:
     parser.add_argument("--preset", choices=("fuzz",), help="Preset mode (fuzz: seeded random controller scenarios)")
     parser.add_argument("--duration", type=float, default=2.0, help="Scenario duration in seconds")
     parser.add_argument("--open-loop", action="store_true", help="Disable closed-loop steering plant (default: closed-loop)")
+    parser.add_argument("--slew-scale-mode", choices=("off", "shadow", "apply"), default="off",
+                        help="LateralSlewScaleMode condition for the controller under fuzz (default: off)")
     parser.add_argument("--endurance", type=int, default=0, help="Run N iterations with one controller instance (catches cumulative state bugs)")
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
     parser.add_argument("--fail-fast", action="store_true", help="Stop after the first failure")
@@ -596,7 +605,7 @@ def main() -> None:
 
     # ── endurance mode: one controller, many iterations ──────────────────────
     if args.endurance > 0:
-        controller = _make_controller()
+        controller = _make_controller(args.slew_scale_mode)
         vm = _FakeVM()
         plant = _SteeringPlant(DT) if closed_loop else None
         endurance_failures: list[str] = []
@@ -656,7 +665,7 @@ def main() -> None:
     scenarios = generate_scenarios(config)
     results: list[tuple[int, ControllerScenarioResult]] = []
     for idx, scenario in enumerate(scenarios):
-        result = evaluate_scenario(scenario, closed_loop=config.closed_loop)
+        result = evaluate_scenario(scenario, closed_loop=config.closed_loop, slew_scale_mode=args.slew_scale_mode)
         results.append((idx, result))
         if result.failures and args.fail_fast:
             break

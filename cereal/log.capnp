@@ -953,6 +953,11 @@ struct ControlsState @0x97ff69c53601abf1 {
       # Friction breakaway floor (LatFrictionBreakawayMode; anti stick-slip)
       frictionFloorActive @73 :Bool;             # floor boosting this cycle (would-be in shadow)
       frictionFloorDelta @74 :Float32;           # m/s^2 friction boost (would-be in shadow)
+
+      # Slew-scale study (LateralSlewScaleMode): counterfactual governor output at the
+      # OTHER condition's slew scale (actuator sign; scaled in shadow, baseline in apply).
+      # No output changes in shadow; 0.0 when the mode is off.
+      slewShadowOutput @75 :Float32;
     }
    }
 

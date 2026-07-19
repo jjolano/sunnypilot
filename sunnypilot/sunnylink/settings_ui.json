@@ -494,6 +494,32 @@
                   ]
                 },
                 {
+                  "key": "LateralSlewScaleMode",
+                  "widget": "multiple_button",
+                  "requires_attestation": true,
+                  "title": "Faster Torque Slew (Study)",
+                  "description": "Raise the torque output governor's slew rates by 12.5%, still below the platform's steering rate limits. Monitor only logs what the faster slew would output \u2014 no driving changes; Apply uses the faster rates live and can make steering corrections slightly quicker; turn Off to disable.",
+                  "options": [
+                    {
+                      "value": "off",
+                      "label": "Off"
+                    },
+                    {
+                      "value": "shadow",
+                      "label": "Monitor only"
+                    },
+                    {
+                      "value": "apply",
+                      "label": "Apply"
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
                   "key": "LiveTorqueParamsRelaxedToggle",
                   "widget": "toggle",
                   "requires_attestation": true,
