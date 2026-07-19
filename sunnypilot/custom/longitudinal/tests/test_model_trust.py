@@ -205,3 +205,64 @@ def test_cut_out_recovery_cancelled_by_reappearing_closing_lead():
     rec.update(_lead(62.0, y, -1.4), None, 0.05)
   assert rec.update(None, None, 0.05) is True
   assert rec.update(_lead(45.0, 0.0, -2.0), None, 0.05) is False  # new closing threat: caution back
+
+
+def test_model_stop_anchor_ratchets_conservative_and_advances_with_travel():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import ModelStopAnchor
+  a = ModelStopAnchor()
+  d = a.update(150.0, v_ego=15.0, dt=0.05)
+  assert d == pytest.approx(138.0)  # max(0.85*150, 150-12)
+  # model holds 150 while ego travels: the anchor holds its commitment, advancing with travel
+  d = a.update(150.0, v_ego=15.0, dt=0.05)
+  assert d == pytest.approx(138.0 - 0.75)
+  # model firms nearer within the jump guard: accepted immediately
+  d = a.update(145.0, v_ego=15.0, dt=0.05)
+  assert d == pytest.approx(145.0 - 12.0)
+
+
+def test_model_stop_anchor_jumps_need_corroboration_in_both_directions():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import (
+    ModelStopAnchor, STOP_ANCHOR_JUMP_CONFIRM_FRAMES, STOP_ANCHOR_MAX_DIVERGENCE_M)
+  a = ModelStopAnchor()
+  a.update(100.0, v_ego=10.0, dt=0.05)
+  base = a.remaining
+  # one bad frame claiming 30 m: ignored (advances with travel only)
+  d = a.update(30.0, v_ego=10.0, dt=0.05)
+  assert d == pytest.approx(base - 0.5)
+  # sustained near readings: accepted after the corroboration window
+  for _ in range(STOP_ANCHOR_JUMP_CONFIRM_FRAMES):
+    d = a.update(30.0, v_ego=10.0, dt=0.05)
+  assert d == pytest.approx(25.0)  # accepted at 25.5, then one frame of travel advance
+  # one far frame (90 m): held; sustained far readings re-open to the divergence bound
+  held = a.remaining
+  d = a.update(90.0, v_ego=0.0, dt=0.05)
+  assert d == pytest.approx(held)
+  for _ in range(STOP_ANCHOR_JUMP_CONFIRM_FRAMES):
+    d = a.update(90.0, v_ego=0.0, dt=0.05)
+  assert d == pytest.approx(max(0.85 * 90.0, 78.0) - STOP_ANCHOR_MAX_DIVERGENCE_M)
+
+
+def test_model_stop_anchor_bounds_divergence_on_receding_stop_point():
+  # Phantom shape: reported distance never shrinks while ego travels. The anchor must
+  # follow with bounded frontload, never invert the recession into an in-rushing stop.
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import (
+    ModelStopAnchor, STOP_ANCHOR_MAX_DIVERGENCE_M)
+  a = ModelStopAnchor()
+  target = max(0.85 * 40.0, 28.0)
+  for _ in range(100):  # 5 s at 12 m/s: 60 m of travel against a static 40 m claim
+    d = a.update(40.0, v_ego=12.0, dt=0.05)
+  assert d >= target - STOP_ANCHOR_MAX_DIVERGENCE_M - 1.0
+  assert d <= target
+
+
+def test_model_stop_anchor_releases_after_sustained_retraction_only():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import ModelStopAnchor
+  a = ModelStopAnchor()
+  a.update(80.0, v_ego=10.0, dt=0.05)
+  # brief dropout: commitment holds, advancing with travel
+  d = a.update(None, v_ego=10.0, dt=0.05)
+  assert d is not None
+  # sustained retraction (green light): released
+  for _ in range(25):
+    d = a.update(None, v_ego=10.0, dt=0.05)
+  assert d is None and a.remaining is None

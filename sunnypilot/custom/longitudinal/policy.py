@@ -53,6 +53,9 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   NO_LEAD_STOP_CLEAR_DISTANCE,
   PROGRESS_CRUISE_SPEED_MARGIN,
   STOP_APPROACH_DECEL_MIN,
+  STOP_COMMIT_ENTRY_DECEL,
+  STOP_COMMIT_MIN_V_EGO,
+  STOP_COMMIT_REQUIRED_TRIGGER,
   STOP_LANDING_DECEL_MIN,
   STOP_LANDING_SOFTEN_MAX_V_EGO,
   Personality,
@@ -387,6 +390,11 @@ def stop_approach_accel(scene: LongitudinalScene) -> tuple[float, bool]:
     required = stopping_decel(scene.v_ego, scene.model_stop_distance, min_distance=1.0)
     if required < comfort_decel:
       a = min(a, required)
+    # Entry commit (see STOP_COMMIT_* in policy_tables): once the anchored stop point
+    # already needs more than the trigger, brake at the commit depth immediately instead
+    # of riding the comfort table into a late catch-up. Skipped in the landing band.
+    if required <= STOP_COMMIT_REQUIRED_TRIGGER and scene.v_ego >= STOP_COMMIT_MIN_V_EGO:
+      a = min(a, STOP_COMMIT_ENTRY_DECEL)
     if scene.model_should_stop:
       a = min(a, scene.model_desired_accel, required)
     if scene.model_should_stop and required < STOP_APPROACH_DECEL_MIN:

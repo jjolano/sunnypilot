@@ -1360,3 +1360,19 @@ def test_rest_point_coast_never_requests_braking_below_coast():
   cands = [c for c in build_candidates(scene) if c.intent == "lead_rest_point_coast"]
   assert len(cands) == 1
   assert cands[0].a_target == pytest.approx(-0.25)
+
+
+def test_stop_approach_entry_commit_frontloads_committed_stops():
+  # Routes 2b5/2ac/2a9/2b0/296: entries rode the comfort table while true-required climbed.
+  # Once the stop point already needs more than the trigger, entry commits at -0.65.
+  scene = LongitudinalScene(v_ego=13.0, v_cruise=15.0, seed_a_target=0.0,
+                            model_should_stop=False, model_stop_distance=170.0, model_desired_accel=-0.2)
+  a, hard = stop_approach_accel(scene)  # required ~ -0.50: inside the commit band
+  assert hard is False
+  assert a == pytest.approx(-0.65)
+
+  # Below the landing-band speed gate the commit never applies.
+  slow = LongitudinalScene(v_ego=3.0, v_cruise=15.0, seed_a_target=0.0,
+                           model_should_stop=False, model_stop_distance=9.0, model_desired_accel=-0.2)
+  a_slow, _ = stop_approach_accel(slow)
+  assert a_slow > -0.65

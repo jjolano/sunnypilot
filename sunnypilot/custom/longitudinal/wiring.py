@@ -36,6 +36,7 @@ from openpilot.sunnypilot.custom.longitudinal.model_trust import (
   CautionRamp,
   CorroborationHold,
   CutOutCautionRecovery,
+  ModelStopAnchor,
   StopTrustLearner,
 )
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
@@ -301,6 +302,7 @@ class CustomLongitudinalAdapter:
     self._stop_trust = StopTrustLearner()
     self._caution_ramp = CautionRamp()
     self._corroboration_hold = CorroborationHold()
+    self._stop_anchor = ModelStopAnchor()
     self._cut_out_caution = CutOutCautionRecovery()
     self._drag = DragEstimator()
     self._uphill_grade = UphillGradeEstimator()
@@ -443,7 +445,7 @@ class CustomLongitudinalAdapter:
       action = getattr(model, "action", None)
       model_should_stop = bool(getattr(action, "shouldStop", False)) if action is not None else False
       model_desired_accel = _f(getattr(action, "desiredAcceleration", 0.0)) if action is not None else 0.0
-      model_stop_distance = _model_stop_distance(model)
+      model_stop_distance_raw = _model_stop_distance(model)
 
       cc = sm['carControl']
       brake_pressed = bool(getattr(cs, "brakePressed", False))
@@ -505,6 +507,10 @@ class CustomLongitudinalAdapter:
 
     try:
       model_stop_prob = self._stop_trust.update(model_should_stop, driver_disagrees=gas_pressed, dt=dt)
+      # Commit-and-ratchet the model's predicted rest point (ModelStopAnchor): the policy
+      # plans to a conservative, nearer-only stop distance instead of the model's
+      # optimistic, gradually-firming one.
+      model_stop_distance = self._stop_anchor.update(model_stop_distance_raw, v_ego, dt)
       model_caution_floor = self._caution_ramp.update(model_desired_accel, dt)
       lead_one_msg = getattr(radar, "leadOne", None)
       closing_lead = (lead_one_msg is not None and bool(getattr(lead_one_msg, "status", False))
@@ -568,6 +574,10 @@ class CustomLongitudinalAdapter:
       )
       result = self._stack.update(inputs, dt, collect_debug=collect_debug)
       debug = result.debug if collect_debug else {}
+      if collect_debug:
+        debug["model_stop_distance_raw"] = float(model_stop_distance_raw) if model_stop_distance_raw is not None else 0.0
+        debug["model_stop_distance_used"] = float(model_stop_distance) if model_stop_distance is not None else 0.0
+        debug["model_stop_committed"] = model_stop_distance is not None
       decision = result.decision
       if long_active:
         self._authority_began = True

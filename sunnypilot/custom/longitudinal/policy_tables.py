@@ -81,6 +81,16 @@ FLAT_COAST_BASELINE = -0.3
 GRADE_COMPENSATION_MAX_MS2 = 0.15
 GRADE_FLAT_BAND_HALF_WIDTH = 0.35
 STOP_APPROACH_DECEL_MIN = -1.5
+# Model-stop entry commit (routes 2b5/2ac/2a9/2b0/296): every engaged leadless model stop
+# under-braked 0.4-0.7 m/s^2 for its first 4-8 s (entry pinned at the comfort table while
+# true-required climbed to -1.3..-1.6), then repaid at -1.5..-2.0 — the felt "no
+# confidence it will stop". Once the (anchored) stop point already requires more than the
+# trigger, commit the entry at this depth so the approach starts with visible, honest
+# braking instead of a late slam. 0.65 sits between the comfort table and the measured
+# mid-approach catch-up depths.
+STOP_COMMIT_ENTRY_DECEL = -0.65
+STOP_COMMIT_REQUIRED_TRIGGER = -0.35
+STOP_COMMIT_MIN_V_EGO = 4.0
 # Final low-speed landing floor. The normal stop-approach floor remains available
 # above walking speed and for genuinely hard-stop kinematics; this only prevents a
 # trusted stop approach from carrying the full -1.5 m/s^2 floor into the last few

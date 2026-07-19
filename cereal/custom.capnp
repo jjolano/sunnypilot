@@ -411,6 +411,13 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       hasLead @33 :Bool;
     }
     uphillNetDemandCap @26 :UphillNetDemandCapTrace;
+
+    # Model-stop telemetry (red light / stop sign diagnosis): the model trajectory's raw
+    # predicted rest distance, the anchored/conservative distance the policy planned to
+    # (ModelStopAnchor), and whether a model stop is currently committed. 0.0 when none.
+    modelStopDistanceRaw @27 :Float32;
+    modelStopDistanceUsed @28 :Float32;
+    modelStopCommitted @29 :Bool;
   }
 
   struct SmartCruiseControl {

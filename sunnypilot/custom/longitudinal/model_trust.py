@@ -225,3 +225,76 @@ class StopTrustLearner:
       rate = -STOP_TRUST_DISAGREE_RATE if driver_disagrees else STOP_TRUST_AGREE_RATE
       self.confidence = _clip(self.confidence + rate * max(0.0, float(dt)), STOP_TRUST_MIN, STOP_TRUST_MAX)
     return self.confidence
+
+
+# Model-stop anchor: routes 2b5/2b2/2ac/2a9/2aa/2b0/296 (8 engaged leadless model stops)
+# all show the same signature — the model's predicted rest point starts optimistic and
+# firms nearer through the approach, so demand tracking it verbatim under-brakes by
+# 0.4-0.7 m/s^2 for the first 4-8 s and repays at -1.5..-2.0 late. The anchor converts
+# that optimism into early, visible decel and commits to the stop point once seen.
+STOP_ANCHOR_CONSERVATIVE_FRACTION = 0.85  # plan to this fraction of the model's distance...
+STOP_ANCHOR_MAX_SHRINK_M = 12.0           # ...but never more than this much nearer
+STOP_ANCHOR_JUMP_M = 15.0                 # a jump past this (either direction) needs...
+STOP_ANCHOR_JUMP_CONFIRM_FRAMES = 3       # ...this many consecutive frames (jitter guard)
+STOP_ANCHOR_MAX_DIVERGENCE_M = 15.0       # anchor never commits further below the live target
+STOP_ANCHOR_RELEASE_MISSING_S = 1.0       # sustained model retraction (green) releases
+
+
+class ModelStopAnchor:
+  """Commit-and-ratchet for the model's predicted stop point (red lights / stop signs).
+
+  ``update`` returns the anchored, conservative stop distance the policy should plan to,
+  or None when no stop is committed. The anchored point advances with ego travel every
+  frame and holds its commitment against small shallowing drift of the model's point; it
+  may never diverge more than ``STOP_ANCHOR_MAX_DIVERGENCE_M`` below the live
+  conservative target, so a genuinely receding stop point (the phantom shape: reported
+  distance not shrinking with travel) is followed with bounded frontload instead of being
+  inverted into an in-rushing one. Jumps beyond ``STOP_ANCHOR_JUMP_M`` in either
+  direction need ``STOP_ANCHOR_JUMP_CONFIRM_FRAMES`` of corroboration so one bad frame
+  can neither slam nor release the demand, and a sustained model retraction
+  (``STOP_ANCHOR_RELEASE_MISSING_S``, the green light) releases entirely so the
+  departing-lead reaccel behaviors stay responsive."""
+
+  def __init__(self):
+    self.remaining: float | None = None
+    self._missing_s = 0.0
+    self._jump_frames = 0
+
+  def reset(self) -> None:
+    self.remaining = None
+    self._missing_s = 0.0
+    self._jump_frames = 0
+
+  def update(self, model_stop_distance: float | None, v_ego: float, dt: float) -> float | None:
+    dt = max(0.0, float(dt))
+    travel = max(0.0, float(v_ego)) * dt
+    d = float(model_stop_distance) if model_stop_distance is not None else math.nan
+    if not math.isfinite(d) or d <= 0.0:
+      if self.remaining is None:
+        return None
+      self._missing_s += dt
+      if self._missing_s >= STOP_ANCHOR_RELEASE_MISSING_S:
+        self.reset()
+        return None
+      # brief dropout: hold the commitment, advancing with travel
+      self.remaining = max(self.remaining - travel, 0.0)
+      return self.remaining
+    self._missing_s = 0.0
+    target = max(d * STOP_ANCHOR_CONSERVATIVE_FRACTION, d - STOP_ANCHOR_MAX_SHRINK_M)
+    if self.remaining is None:
+      self.remaining = max(target, 0.0)
+      self._jump_frames = 0
+      return self.remaining
+    advanced = max(self.remaining - travel, 0.0)
+    if abs(target - advanced) > STOP_ANCHOR_JUMP_M:
+      self._jump_frames += 1
+      if self._jump_frames < STOP_ANCHOR_JUMP_CONFIRM_FRAMES:
+        self.remaining = advanced  # unconfirmed jump: hold the commitment
+        return self.remaining
+    else:
+      self._jump_frames = 0
+    if target <= advanced:
+      self.remaining = max(target, 0.0)
+    else:
+      self.remaining = max(advanced, target - STOP_ANCHOR_MAX_DIVERGENCE_M)
+    return self.remaining
