@@ -19,6 +19,7 @@ TORQUE_OVERRIDE_FRICTION_ABS_DELTA_MAX = 0.3
 LIVE_TORQUE_SPEED_ADAPTIVE_MODES = ("off", "shadow", "apply")
 ROLL_COMP_GAIN_MODES = ("off", "shadow", "apply")
 FRICTION_BREAKAWAY_MODES = ("off", "shadow", "apply")
+DIRECTION_GAIN_MODES = ("off", "shadow", "apply")
 
 
 def finite_float(value) -> float | None:
@@ -78,6 +79,11 @@ def validate_roll_comp_gain_mode(value) -> str:
 def validate_friction_breakaway_mode(value) -> str:
   value = value or "off"
   return value if value in FRICTION_BREAKAWAY_MODES else "off"
+
+
+def validate_direction_gain_mode(value) -> str:
+  value = value or "off"
+  return value if value in DIRECTION_GAIN_MODES else "off"
 
 
 # Breakaway profile: per-direction rack breakaway medians learned by the shadow

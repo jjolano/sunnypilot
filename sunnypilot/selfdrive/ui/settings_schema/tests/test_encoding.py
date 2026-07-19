@@ -132,6 +132,11 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert friction_floor_enum.values == ["off", "shadow", "apply"]
   assert friction_floor_enum.labels == ["Off", "Monitor only", "Apply"]
 
+  direction_gain_enum = homogeneous_string_options(find_item(STEERING, "LatDirectionGainMode"))
+  assert direction_gain_enum is not None
+  assert direction_gain_enum.values == ["off", "shadow", "apply"]
+  assert direction_gain_enum.labels == ["Off", "Monitor only", "Apply"]
+
   lane_fit_enum = homogeneous_string_options(find_item(STEERING, "LaneFitSourceMode"))
   assert lane_fit_enum is not None
   assert lane_fit_enum.values == ["off", "shadow", "apply"]
@@ -204,6 +209,16 @@ def test_friction_breakaway_string_index_defaults_to_off():
   assert string_option_index("shadow", enum, "LatFrictionBreakawayMode") == 1
   assert string_option_index("apply", enum, "LatFrictionBreakawayMode") == 2
   assert string_option_index("bad", enum, "LatFrictionBreakawayMode") == 0
+
+
+def test_direction_gain_string_index_defaults_to_off():
+  enum = homogeneous_string_options(find_item(STEERING, "LatDirectionGainMode"))
+  assert enum is not None
+  assert string_option_index("", enum, "LatDirectionGainMode") == 0
+  assert string_option_index("off", enum, "LatDirectionGainMode") == 0
+  assert string_option_index("shadow", enum, "LatDirectionGainMode") == 1
+  assert string_option_index("apply", enum, "LatDirectionGainMode") == 2
+  assert string_option_index("bad", enum, "LatDirectionGainMode") == 0
 
 
 def test_lane_rate_damping_string_index_defaults_to_off():

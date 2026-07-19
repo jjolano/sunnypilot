@@ -31,8 +31,10 @@ from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   SpeedAwareTorqueRuntime,
   parse_speed_aware_torque_profile,
 )
+from openpilot.sunnypilot.custom.lateral.direction_gain_learning import direction_scales, parse_direction_gain_profile
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
   parse_breakaway_profile,
+  validate_direction_gain_mode,
   validate_friction_breakaway_mode,
   validate_live_torque_speed_adaptive_mode,
   validate_manual_torque_override_against_base,
@@ -199,6 +201,8 @@ class TorqueParameterOverridePolicy:
     self.learned_roll_gain: float | None = None
     self.friction_breakaway_mode = 'off'
     self.breakaway_profile = None
+    self.direction_gain_mode = 'off'
+    self.direction_gain_scales = {1: 1.0, -1: 1.0}
     self._poll()
     self._torque_parameter_override_policy_initialized = True
 
@@ -229,6 +233,15 @@ class TorqueParameterOverridePolicy:
         self._speed_profile = None
 
     self.friction_breakaway_mode = validate_friction_breakaway_mode(self.params.get("LatFrictionBreakawayMode", return_default=True))
+    self.direction_gain_mode = validate_direction_gain_mode(self.params.get("LatDirectionGainMode", return_default=True))
+    self.direction_gain_scales = {1: 1.0, -1: 1.0}
+    if self.direction_gain_mode == 'apply':
+      dg_payload = self.params.get("LatDirectionGainParams", return_default=True)
+      if dg_payload:
+        try:
+          self.direction_gain_scales = direction_scales(parse_direction_gain_profile(self.CP, json.loads(dg_payload)))
+        except Exception:
+          self.direction_gain_scales = {1: 1.0, -1: 1.0}
     self.breakaway_profile = None
     if self.friction_breakaway_mode != 'off':
       ba_payload = self.params.get("LatFrictionBreakawayParams", return_default=True)

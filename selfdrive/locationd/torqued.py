@@ -256,7 +256,8 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         roll = device_pose.orientation.roll
         speed_shadow_mode = self.speed_adaptive_mode in ('shadow', 'apply')
         roll_comp_mode = self.roll_comp_mode in ('shadow', 'apply')
-        shadow_collection_mode = roll_comp_mode or (speed_shadow_mode and self.low_speed_shadow)
+        direction_gain_mode = self.direction_gain_mode in ('shadow', 'apply')
+        shadow_collection_mode = roll_comp_mode or direction_gain_mode or (speed_shadow_mode and self.low_speed_shadow)
         # check lat active up to now (without lag compensation)
         lat_active = np.interp(np.arange(t - MIN_ENGAGE_BUFFER, t + self.lag, DT_MDL),
                                self.raw_points['carControl_t'], self.raw_points['lat_active']).astype(bool)
@@ -357,6 +358,11 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.breakawayLeftMedian = breakaway['left']
     liveTorqueParameters.breakawayRightMedian = breakaway['right']
     liveTorqueParameters.breakawayEvents = breakaway['events']
+
+    # Direction-gain asymmetry learner telemetry.
+    liveTorqueParameters.directionGainRatio = self.direction_gain_telemetry['ratio']
+    liveTorqueParameters.directionGainPoints = self.direction_gain_telemetry['points']
+    liveTorqueParameters.directionGainValid = self.direction_gain_telemetry['valid']
     return msg
 
 

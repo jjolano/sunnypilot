@@ -31,6 +31,7 @@ from openpilot.sunnypilot.custom.lateral.torque_safety import (
   validate_torque_override_lat_accel_factor,
   validate_roll_comp_gain_mode,
   validate_friction_breakaway_mode,
+  validate_direction_gain_mode,
 )
 
 TORQUE_VERSIONS_PATH = os.path.join(BASEDIR, "sunnypilot", "selfdrive", "controls", "lib", "latcontrol_torque_versions.json")
@@ -45,6 +46,7 @@ class TorqueSettingsLayout(Widget):
     self._speed_adaptive_mode_dialog: TreeOptionDialog | None = None
     self._roll_comp_gain_mode_dialog: TreeOptionDialog | None = None
     self._friction_breakaway_mode_dialog: TreeOptionDialog | None = None
+    self._direction_gain_mode_dialog: TreeOptionDialog | None = None
     self.cached_torque_versions = {}
     self._load_versions()
     self._pending_lat_accel_factor = self._read_scaled_torque_value(
@@ -104,6 +106,14 @@ class TorqueSettingsLayout(Widget):
                      "response — expect slightly quicker small corrections; turn Off to disable."),
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_friction_breakaway_mode_dialog,
+    )
+    self._direction_gain_mode = ListItemSP(
+      title=tr("Direction Gain Asymmetry"),
+      description=tr("Learn whether steering responds more strongly per unit torque in one direction and balance it. " +
+                     "Monitor only learns without changing steering; Apply scales torque per direction from the learned " +
+                     "ratio; turn Off to disable."),
+      action_item=NoElideButtonAction(tr("SELECT")),
+      callback=self._show_direction_gain_mode_dialog,
     )
     self._custom_tune_toggle = toggle_item_sp(
       param="CustomTorqueParams",
@@ -167,6 +177,7 @@ class TorqueSettingsLayout(Widget):
       self._low_speed_shadow_toggle,
       self._roll_comp_gain_mode,
       self._friction_breakaway_mode,
+      self._direction_gain_mode,
       self._custom_tune_toggle,
       self._torque_prams_override_toggle,
       self._torque_lat_accel_factor,
@@ -235,6 +246,7 @@ class TorqueSettingsLayout(Widget):
     self._low_speed_shadow_toggle.action_item.set_enabled(ui_state.is_offroad() and speed_mode != "off")
     self._roll_comp_gain_mode.action_item.set_enabled(ui_state.is_offroad())
     self._friction_breakaway_mode.action_item.set_enabled(ui_state.is_offroad())
+    self._direction_gain_mode.action_item.set_enabled(ui_state.is_offroad())
     self._custom_tune_toggle.action_item.set_enabled(ui_state.is_offroad())
     custom_tune_enabled = self._custom_tune_toggle.action_item.get_state()
     self._torque_prams_override_toggle.set_visible(custom_tune_enabled)
@@ -268,6 +280,7 @@ class TorqueSettingsLayout(Widget):
     self._speed_adaptive_mode.action_item.set_value(self._get_current_speed_mode_label())
     self._roll_comp_gain_mode.action_item.set_value(self._get_current_roll_comp_mode_label())
     self._friction_breakaway_mode.action_item.set_value(self._get_current_friction_breakaway_mode_label())
+    self._direction_gain_mode.action_item.set_value(self._get_current_direction_gain_mode_label())
 
 
   def _render(self, rect):
@@ -312,6 +325,47 @@ class TorqueSettingsLayout(Widget):
       mode = "off"
     mode = validate_roll_comp_gain_mode(mode)
     return {"off": tr("Off"), "shadow": tr("Learn only"), "apply": tr("Apply learned gain")}.get(mode, tr("Off"))
+
+  def _get_current_direction_gain_mode_label(self):
+    mode = ui_state.params.get("LatDirectionGainMode") or b"off"
+    try:
+      mode = mode.decode() if isinstance(mode, bytes) else str(mode)
+    except Exception:
+      mode = "off"
+    mode = validate_direction_gain_mode(mode)
+    return {"off": tr("Off"), "shadow": tr("Monitor only"), "apply": tr("Apply")}.get(mode, tr("Off"))
+
+  def _show_direction_gain_mode_dialog(self):
+    nodes = [TreeNode(tr("Off")), TreeNode(tr("Monitor only")), TreeNode(tr("Apply"))]
+    folders = [TreeFolder("", nodes)]
+    current_label = self._get_current_direction_gain_mode_label()
+
+    def handle_selection(result: int):
+      if ui_state.is_onroad() or ui_state.engaged:
+        self._direction_gain_mode_dialog = None
+        return
+      if result == DialogResult.CONFIRM and self._direction_gain_mode_dialog:
+        selected = self._direction_gain_mode_dialog.selection_ref
+        mapping = {tr("Off"): "off", tr("Monitor only"): "shadow", tr("Apply"): "apply"}
+        mode = mapping.get(selected, "off")
+        if mode == "off":
+          ui_state.params.remove("LatDirectionGainMode")
+        else:
+          ui_state.params.put("LatDirectionGainMode", mode)
+      self._direction_gain_mode_dialog = None
+
+    # Safety gate: direction gain mode changes affect torque steering and are offroad-only.
+    if ui_state.is_onroad() or ui_state.engaged:
+      return
+
+    self._direction_gain_mode_dialog = TreeOptionDialog(
+      tr("Select Direction Gain Asymmetry Mode"),
+      folders,
+      current_ref=current_label,
+      option_font_weight=FontWeight.UNIFONT,
+      on_exit=handle_selection,
+    )
+    gui_app.push_widget(self._direction_gain_mode_dialog)
 
   def _get_current_friction_breakaway_mode_label(self):
     mode = ui_state.params.get("LatFrictionBreakawayMode") or b"off"

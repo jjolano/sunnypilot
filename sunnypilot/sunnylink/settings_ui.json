@@ -442,6 +442,32 @@
                   ]
                 },
                 {
+                  "key": "LatDirectionGainMode",
+                  "widget": "multiple_button",
+                  "requires_attestation": true,
+                  "title": "Direction Gain Asymmetry",
+                  "description": "Learn whether steering responds more strongly per unit torque in one direction and balance it. Monitor only learns without changing steering; Apply scales torque per direction from the learned ratio; turn Off to disable.",
+                  "options": [
+                    {
+                      "value": "off",
+                      "label": "Off"
+                    },
+                    {
+                      "value": "shadow",
+                      "label": "Monitor only"
+                    },
+                    {
+                      "value": "apply",
+                      "label": "Apply"
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
                   "key": "LatFrictionBreakawayMode",
                   "widget": "multiple_button",
                   "requires_attestation": true,

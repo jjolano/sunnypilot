@@ -52,10 +52,20 @@ class LatControlTorqueV21(LatControl):
     super().__init__(CP, CP_SP, CI, dt)
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self._vm = None
+    # Direction-gain asymmetry (LatDirectionGainMode apply): per-direction scale on the
+    # torque conversion, {1: rightward, -1: leftward} in internal sign, identity when off.
+    # Applied inside the conversion so the governor's caps/slews see the real command.
+    self._direction_gain_scales = {1: 1.0, -1: 1.0}
+    base_torque_from_lat_accel = CI.torque_from_lateral_accel()
+
+    def _direction_scaled_torque(lat_accel, torque_params):
+      torque = base_torque_from_lat_accel(lat_accel, torque_params)
+      return torque * self._direction_gain_scales[1 if torque > 0 else -1]
+
     self.response_core = ResponseCore(
       dt, self.steer_max, self.torque_params,
       calc_curvature=lambda angle_rad, v_ego, roll: self._vm.calc_curvature(angle_rad, v_ego, roll),
-      torque_from_lateral_accel=CI.torque_from_lateral_accel(),
+      torque_from_lateral_accel=_direction_scaled_torque,
       lateral_accel_from_torque=CI.lateral_accel_from_torque(),
       get_friction=get_friction,
     )
@@ -160,6 +170,10 @@ class LatControlTorqueV21(LatControl):
     self.response_core.roll_compensation_gain = learned_gain or ROLL_COMPENSATION_GAIN
     self.friction_floor.mode = getattr(self.extension, 'friction_breakaway_mode', 'off')
     self.friction_floor.apply_profile(getattr(self.extension, 'breakaway_profile', None))
+    # fail closed at this layer too: scales only ever leave identity in apply mode
+    dg_scales = getattr(self.extension, 'direction_gain_scales', None)
+    dg_apply = getattr(self.extension, 'direction_gain_mode', 'off') == 'apply'
+    self._direction_gain_scales = dg_scales if (dg_apply and dg_scales) else {1: 1.0, -1: 1.0}
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION_V21

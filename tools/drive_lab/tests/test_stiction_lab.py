@@ -61,3 +61,21 @@ def test_floor_wiring_shadow_is_exactly_non_actuating():
   assert not np.array_equal(off_trace.command_torque, apply_trace.command_torque)
   # shadow still records what it would have done
   assert shadow_ctrl.friction_floor.mode == "shadow"
+
+
+def _run_direction_gain_mode(mode: str):
+  cfg = StictionPlantConfig(breakaway_torque=0.13, kinetic_torque=0.065)
+  ctrl = _make_controller()
+  ctrl.extension.friction_breakaway_mode = "off"
+  ctrl.extension.direction_gain_mode = mode
+  ctrl.extension.direction_gain_scales = {1: 1.1, -1: 0.9}
+  return run_closed_loop(wander_demand(duration_s=30.0, amp=0.3), cfg, controller=ctrl)
+
+
+def test_direction_gain_shadow_is_exactly_non_actuating():
+  # scales exposed but mode != apply must be identity at the controller layer too
+  off = _run_direction_gain_mode("off")
+  shadow = _run_direction_gain_mode("shadow")
+  applied = _run_direction_gain_mode("apply")
+  np.testing.assert_array_equal(off.command_torque, shadow.command_torque)
+  assert not np.array_equal(off.command_torque, applied.command_torque)

@@ -2483,6 +2483,12 @@ struct LiveTorqueParametersData {
   # The scalar rollCompGain* fields above keep reporting the 15+ band.
   rollCompBandGains @31 :List(Float32);
   rollCompBandPoints @32 :List(UInt32);
+
+  # Direction-gain asymmetry learner (LatDirectionGainMode != off).
+  # ratio = left slope / right slope of torque->lat-accel, speed-band verified.
+  directionGainRatio @33 :Float32;
+  directionGainPoints @34 :UInt32;
+  directionGainValid @35 :Bool;
 }
 
 struct LiveDelayData {

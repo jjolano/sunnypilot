@@ -204,6 +204,22 @@ sections:
         label: Apply learned gain
       enablement:
       - $ref: '#/macros/offroad'
+    - key: LatDirectionGainMode
+      widget: multiple_button
+      title: Direction Gain Asymmetry
+      description: Learn whether steering responds more strongly per unit torque in one direction and balance it.
+        Monitor only learns without changing steering; Apply scales torque per direction from the learned ratio;
+        turn Off to disable.
+      requires_attestation: true
+      options:
+      - value: 'off'
+        label: 'Off'
+      - value: shadow
+        label: Monitor only
+      - value: apply
+        label: Apply
+      enablement:
+      - $ref: '#/macros/offroad'
     - key: LatFrictionBreakawayMode
       widget: multiple_button
       title: Friction Breakaway Floor

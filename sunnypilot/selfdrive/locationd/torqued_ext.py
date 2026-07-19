@@ -21,9 +21,14 @@ from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   format_speed_aware_torque_profile, parse_speed_aware_torque_profile, SpeedAwareTorqueRuntime,
   SPEED_BUCKET_BP, LOW_SPEED_BUCKET_BP,
 )
+from openpilot.sunnypilot.custom.lateral.direction_gain_learning import (
+  DirectionGainBuckets, blend_direction_gain_profile, fit_direction_gain_profile,
+  format_direction_gain_profile, parse_direction_gain_profile,
+)
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
   BREAKAWAY_PROFILE_MIN_EVENTS,
   format_breakaway_profile,
+  validate_direction_gain_mode,
   validate_friction_breakaway_mode,
   validate_live_torque_speed_adaptive_mode,
   validate_roll_comp_gain_mode,
@@ -92,6 +97,14 @@ class TorqueEstimatorExt:
     self.update_roll_comp_telemetry()  # seeds the full default dict incl. band fields
     self._profile_blend_base_frozen = False
 
+    # Direction-gain asymmetry learner (shadow collects/persists; apply is consumed
+    # by the torque v2.1 controller, never here).
+    self.direction_gain_mode = 'off'
+    self.direction_gain_buckets = DirectionGainBuckets()
+    self.direction_gain_profile_cache = None
+    self._direction_gain_blend_base = None
+    self.direction_gain_telemetry = {'ratio': 0.0, 'points': 0, 'valid': False}
+
     # Shadow-only rack breakaway observer. Never affects control.
     self.friction_breakaway_mode = 'off'
     self._ba_last_t = None
@@ -140,6 +153,18 @@ class TorqueEstimatorExt:
           self.speed_adaptive_runtime.profile = None
 
       self.friction_breakaway_mode = validate_friction_breakaway_mode(self._params.get("LatFrictionBreakawayMode", return_default=True))
+      self.direction_gain_mode = validate_direction_gain_mode(self._params.get("LatDirectionGainMode", return_default=True))
+      dg_payload = self._params.get("LatDirectionGainParams", return_default=True)
+      if dg_payload:
+        try:
+          self.direction_gain_profile_cache = parse_direction_gain_profile(self.CP, json.loads(dg_payload))
+          if not self._profile_blend_base_frozen and self.direction_gain_profile_cache is not None:
+            self._direction_gain_blend_base = self.direction_gain_profile_cache
+        except Exception:
+          self.direction_gain_profile_cache = None
+      else:
+        self.direction_gain_profile_cache = None
+      self.update_direction_gain_telemetry()
       self.roll_comp_mode = validate_roll_comp_gain_mode(self._params.get("RollCompGainMode", return_default=True))
       roll_payload = self._params.get("RollCompGainParams", return_default=True)
       if roll_payload:
@@ -186,6 +211,12 @@ class TorqueEstimatorExt:
     if self.speed_adaptive_mode in ('shadow', 'apply') and self.low_speed_shadow:
       if v_ego < ROLL_COMP_MIN_V_EGO and abs(steer) > 0.02 and abs(lateral_acc) <= 3.0:
         self.low_speed_buckets.add_point(steer, lateral_acc, v_ego)
+
+    # Direction-gain asymmetry: steady samples only, so the per-direction slope is
+    # not smeared by transient rate; the bucket bounds gate torque magnitude.
+    if self.direction_gain_mode in ('shadow', 'apply'):
+      if abs(lateral_acc) <= 3.0 and steering_rate_deg is not None and abs(steering_rate_deg) < 3.0:
+        self.direction_gain_buckets.add_point(steer, lateral_acc, v_ego)
 
     if self.roll_comp_mode not in ('shadow', 'apply'):
       return
@@ -250,6 +281,16 @@ class TorqueEstimatorExt:
       'events': int(self.breakaway_events),
     }
 
+  def update_direction_gain_telemetry(self):
+    if self.direction_gain_mode in ('shadow', 'apply') and self.direction_gain_profile_cache is not None:
+      self.direction_gain_telemetry = {
+        'ratio': float(self.direction_gain_profile_cache['ratio']),
+        'points': int(self.direction_gain_profile_cache['points']),
+        'valid': True,
+      }
+    else:
+      self.direction_gain_telemetry = {'ratio': 0.0, 'points': 0, 'valid': False}
+
   def update_roll_comp_telemetry(self):
     cache = self.roll_comp_profile_cache
     if self.roll_comp_mode in ('shadow', 'apply') and cache is not None:
@@ -289,6 +330,15 @@ class TorqueEstimatorExt:
         self.roll_comp_profile_cache = profile
         self.update_roll_comp_telemetry()
         self._params.put("RollCompGainParams", format_roll_comp_profile(profile), block=True)
+
+    if self.direction_gain_mode in ('shadow', 'apply'):
+      profile = fit_direction_gain_profile(self.CP, self.direction_gain_buckets)
+      if profile is not None:
+        if self._direction_gain_blend_base is not None:
+          profile = blend_direction_gain_profile(self._direction_gain_blend_base, profile)
+        self.direction_gain_profile_cache = profile
+        self.update_direction_gain_telemetry()
+        self._params.put("LatDirectionGainParams", format_direction_gain_profile(profile), block=True)
 
     if self.friction_breakaway_mode in ('shadow', 'apply'):
       tele = self.breakaway_telemetry()
