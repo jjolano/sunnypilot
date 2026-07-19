@@ -1123,7 +1123,14 @@ class _FinalArbitration:
         return float(a_target)
     if snapshot.v_ego > finalizer._LAUNCH_DIP_MAX_V_EGO:
       return float(a_target)
-    if float(snapshot.lead_v_rel) < LEAD_CRAWL_BREAKOUT_MIN_OPENING:
+    # Departure in progress = lead genuinely moving AND still pulling ahead. Route 000002b5
+    # t=1264: gating on lead_v_rel alone faded the floor mid-launch as ego accelerated to
+    # chase (vRel 0.7 -> 0.48 while the lead kept opening), sagging the command to 0.2 for
+    # 1.5 s — the drive's only gas press. At standstill lead_v == v_rel, so entry is
+    # unchanged; a crawling lead (< breakout speed) still never gets floored.
+    if float(snapshot.lead_v) < LEAD_CRAWL_BREAKOUT_MIN_OPENING:
+      return float(a_target)
+    if float(snapshot.lead_v_rel) < finalizer._STOP_HOLD_LAUNCH_FLOOR_MIN_OPENING:
       return float(a_target)
     if float(snapshot.mpc_a_target) < 0.0:
       return float(a_target)
@@ -1260,6 +1267,8 @@ class CustomLongitudinalFinalizer:
   # still run after the floor, so any curve/stop cap wins. 0.60 sits between the
   # route-282 lever (0.5-0.65) and the driver-demonstrated 1.0 first-second mean.
   _STOP_HOLD_LAUNCH_FLOOR_A = 0.60
+  # Same still-pulling-ahead margin as the lead-motion release gates.
+  _STOP_HOLD_LAUNCH_FLOOR_MIN_OPENING = 0.15
   _STOP_HOLD_SETTLE_ARM_V_EGO_FLOOR = 0.7
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V = 0.5
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V_REL = 0.1

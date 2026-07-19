@@ -1617,3 +1617,35 @@ def test_launch_floor_stays_off_below_breakout_and_without_grace():
     raw_model_a_target=0.2, raw_model_should_stop=False,
   )
   assert a_target == pytest.approx(0.12)
+
+
+def test_launch_floor_holds_through_the_chase():
+  # Route 000002b5 t=1264: ego accelerating after the lead dropped vRel below the breakout
+  # entry threshold while the lead was still clearly departing — the floor must hold.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  fin = _launch_release(planner)
+
+  planner.custom_long_output = make_custom_output(selected_intent="lead_follow", should_stop=False)
+  lead = make_lead(d_rel=6.0, v_lead=1.0, v_rel=0.45, lead_id=1)  # chasing: vRel below entry
+  # a few frames: the jerk-limited stages climb toward the floored value; the lead-catchup
+  # cushion legitimately trims the 0.60 proposal at this tight gap (caps run after the
+  # floor by design) — the point is the command holds well above the sagging 0.2 mpcA.
+  for _ in range(4):
+    a_target, _, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=0.55, lead_one=lead), mpc_a_target=0.2, mpc_should_stop=False,
+      raw_model_a_target=0.3, raw_model_should_stop=False,
+    )
+  assert 0.4 < a_target <= fin._STOP_HOLD_LAUNCH_FLOOR_A + 1e-6
+
+  # Ego has matched the lead's speed: floor off — the command drops back to the
+  # MPC/cushion-owned value instead of being raised.
+  fin.final_a_prev = None
+  lead = make_lead(d_rel=6.5, v_lead=1.0, v_rel=0.05, lead_id=1)
+  a_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.95, lead_one=lead), mpc_a_target=0.2, mpc_should_stop=False,
+    raw_model_a_target=0.3, raw_model_should_stop=False,
+  )
+  assert a_target <= 0.2 + 1e-6
