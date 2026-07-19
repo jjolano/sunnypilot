@@ -238,6 +238,7 @@ STOP_ANCHOR_JUMP_M = 15.0                 # a jump past this (either direction) 
 STOP_ANCHOR_JUMP_CONFIRM_FRAMES = 3       # ...this many consecutive frames (jitter guard)
 STOP_ANCHOR_MAX_DIVERGENCE_M = 15.0       # anchor never commits further below the live target
 STOP_ANCHOR_RELEASE_MISSING_S = 1.0       # sustained model retraction (green) releases
+STOP_ANCHOR_MIN_COMMIT_S = 0.25           # consumers ignore commitments younger than this (blip filter)
 
 
 class ModelStopAnchor:
@@ -257,17 +258,21 @@ class ModelStopAnchor:
 
   def __init__(self):
     self.remaining: float | None = None
+    self.committed_s = 0.0
     self._missing_s = 0.0
     self._jump_frames = 0
 
   def reset(self) -> None:
     self.remaining = None
+    self.committed_s = 0.0
     self._missing_s = 0.0
     self._jump_frames = 0
 
   def update(self, model_stop_distance: float | None, v_ego: float, dt: float) -> float | None:
     dt = max(0.0, float(dt))
     travel = max(0.0, float(v_ego)) * dt
+    if self.remaining is not None:
+      self.committed_s += dt
     d = float(model_stop_distance) if model_stop_distance is not None else math.nan
     if not math.isfinite(d) or d <= 0.0:
       if self.remaining is None:

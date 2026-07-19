@@ -369,11 +369,14 @@ def test_distance_aware_stop_approach_brakes_in_e2e():
   # No upstream shouldStop, but the model trajectory predicts a near stop -> the distance-aware
   # stop-approach path engages and brakes in E2E (and is excluded in ACC).
   a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
-  out_e2e = a.apply(fake_sm(model_x=STOP_TRAJ_X, model_v=STOP_TRAJ_V), 15.0, 0.0, 15.0, 0.0,
-                    fake_scc(), fake_sla())
   acc = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
-  out_acc = acc.apply(fake_sm(model_x=STOP_TRAJ_X, model_v=STOP_TRAJ_V), 15.0, 0.0, 15.0, 0.0,
-                      fake_scc(), fake_sla())
+  # a few frames: the ModelStopAnchor's blip-filter debounce must age past before the
+  # distance path is admitted to consumers
+  for _ in range(8):
+    out_e2e = a.apply(fake_sm(model_x=STOP_TRAJ_X, model_v=STOP_TRAJ_V), 15.0, 0.0, 15.0, 0.0,
+                      fake_scc(), fake_sla(), dt=0.05)
+    out_acc = acc.apply(fake_sm(model_x=STOP_TRAJ_X, model_v=STOP_TRAJ_V), 15.0, 0.0, 15.0, 0.0,
+                        fake_scc(), fake_sla(), dt=0.05)
   assert out_e2e < 0.0
   assert out_acc == pytest.approx(0.0)
 

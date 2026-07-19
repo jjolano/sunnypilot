@@ -37,6 +37,7 @@ from openpilot.sunnypilot.custom.longitudinal.model_trust import (
   CorroborationHold,
   CutOutCautionRecovery,
   ModelStopAnchor,
+  STOP_ANCHOR_MIN_COMMIT_S,
   StopTrustLearner,
 )
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
@@ -511,6 +512,10 @@ class CustomLongitudinalAdapter:
       # plans to a conservative, nearer-only stop distance instead of the model's
       # optimistic, gradually-firming one.
       model_stop_distance = self._stop_anchor.update(model_stop_distance_raw, v_ego, dt)
+      if model_stop_distance is not None and self._stop_anchor.committed_s < STOP_ANCHOR_MIN_COMMIT_S:
+        # False-positive blip filter: consumers see a commitment only once it has survived
+        # the debounce window; the anchor keeps aging internally so real stops lose nothing.
+        model_stop_distance = None
       model_caution_floor = self._caution_ramp.update(model_desired_accel, dt)
       lead_one_msg = getattr(radar, "leadOne", None)
       closing_lead = (lead_one_msg is not None and bool(getattr(lead_one_msg, "status", False))

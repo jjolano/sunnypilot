@@ -266,3 +266,15 @@ def test_model_stop_anchor_releases_after_sustained_retraction_only():
   for _ in range(25):
     d = a.update(None, v_ego=10.0, dt=0.05)
   assert d is None and a.remaining is None
+
+
+def test_model_stop_anchor_commit_age_accrues_for_blip_filtering():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import ModelStopAnchor, STOP_ANCHOR_MIN_COMMIT_S
+  a = ModelStopAnchor()
+  a.update(80.0, v_ego=10.0, dt=0.05)
+  assert a.committed_s < STOP_ANCHOR_MIN_COMMIT_S  # a single-frame phantom stays below the debounce
+  for _ in range(6):
+    a.update(80.0, v_ego=10.0, dt=0.05)
+  assert a.committed_s >= STOP_ANCHOR_MIN_COMMIT_S
+  a.reset()
+  assert a.committed_s == 0.0
