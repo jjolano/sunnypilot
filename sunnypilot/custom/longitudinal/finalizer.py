@@ -228,7 +228,13 @@ class _StopHoldLatchLifecycle:
 
     if math.isfinite(dt) and dt > 0.0:
       finalizer.lead_stop_hold_release_carry_s = max(0.0, finalizer.lead_stop_hold_release_carry_s - dt)
-    finalizer.mpc_stop_persist_frames = finalizer.mpc_stop_persist_frames + 1 if snapshot.mpc_should_stop else 0
+    # Route 000002b2 t=281: the stop bit ran 3 consecutive frames with mpcA still POSITIVE
+    # (+0.01..+0.08) mid-creep — launch-transition chatter, not a stop demand — and the
+    # persistence cancel interrupted an in-progress creep at 0.4 m/s with a -2.0 re-latch.
+    # A stop demand is the bit AND a non-positive accel request (non-finite fails closed).
+    mpc_stop_demand = bool(snapshot.mpc_should_stop and
+                           (not math.isfinite(snapshot.mpc_a_target) or snapshot.mpc_a_target <= 0.0))
+    finalizer.mpc_stop_persist_frames = finalizer.mpc_stop_persist_frames + 1 if mpc_stop_demand else 0
     mpc_go = bool(math.isfinite(snapshot.mpc_a_target) and snapshot.mpc_a_target >= finalizer._STOP_HOLD_MPC_GO_MIN_A
                   and not snapshot.mpc_should_stop)
     finalizer.mpc_go_persist_frames = finalizer.mpc_go_persist_frames + 1 if mpc_go else 0

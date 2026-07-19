@@ -1525,3 +1525,32 @@ def test_static_overshoot_release_hysteresis_keeps_closed_parks_latched():
     )
   assert planner._lead_stop_hold_active is True
   assert should_stop is True
+
+
+def test_sustain_rides_through_positive_mpc_stop_chatter():
+  # Route 000002b2 t=281: three consecutive stop-bit frames with mpcA still positive are
+  # launch-transition chatter and must neither cancel the sustain nor allow a re-latch
+  # that interrupts an in-progress creep.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  _arm_stop_hold(planner, d_rel=6.4, lead_id=1)
+  lead = make_lead(d_rel=8.1, v_lead=0.5, v_rel=0.5, lead_id=1)
+  _, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.68, mpc_should_stop=False,
+    raw_model_a_target=0.05, raw_model_should_stop=True,
+  )
+  assert planner._lead_stop_hold_active is False and should_stop is False
+
+  fin = planner.custom_long_finalizer
+  for _ in range(5):  # stop bit asserted with positive mpcA: chatter, not a demand
+    lead = make_lead(d_rel=8.2, v_lead=0.4, v_rel=0.2, lead_id=1)
+    a_target, should_stop, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=0.4, lead_one=lead), mpc_a_target=0.1, mpc_should_stop=True,
+      raw_model_a_target=0.05, raw_model_should_stop=True,
+    )
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert a_target > 0.0
+  assert fin.stop_hold_release_sustain_s > 0.0
