@@ -1554,3 +1554,66 @@ def test_sustain_rides_through_positive_mpc_stop_chatter():
   assert should_stop is False
   assert a_target > 0.0
   assert fin.stop_hold_release_sustain_s > 0.0
+
+
+def _launch_release(planner):
+  """Arm a hold and release it behind a departing lead; returns the finalizer."""
+  _arm_stop_hold(planner, d_rel=5.5, lead_id=1)
+  lead = make_lead(d_rel=6.2, v_lead=0.5, v_rel=0.5, lead_id=1)
+  _, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.6, mpc_should_stop=False,
+    raw_model_a_target=0.05, raw_model_should_stop=True,
+  )
+  assert planner._lead_stop_hold_active is False and should_stop is False
+  return planner.custom_long_finalizer
+
+
+def test_launch_floor_carries_confirmed_departure_through_weak_mpc():
+  # Route 000002b2 t=753: after release the policy intent flipped to lead_follow, the
+  # verdict lapsed, and the command collapsed to raw mpcA 0.07-0.3 while the lead was
+  # clearly going — both driver gas presses landed in that window.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  fin = _launch_release(planner)
+
+  # Post-release frame: posture cleared, lead departing fast, MPC still ramping.
+  planner.custom_long_output = make_custom_output(selected_intent="lead_follow", should_stop=False)
+  fin.final_a_prev = None
+  lead = make_lead(d_rel=6.8, v_lead=1.2, v_rel=1.1, lead_id=1)
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.1, lead_one=lead), mpc_a_target=0.12, mpc_should_stop=False,
+    raw_model_a_target=0.2, raw_model_should_stop=False,
+  )
+  assert should_stop is False
+  # downstream dampers may shave a frame's worth of jerk off the floored value
+  assert fin._STOP_HOLD_LAUNCH_FLOOR_A - 0.05 <= a_target <= fin._STOP_HOLD_LAUNCH_FLOOR_A + 1e-6
+
+
+def test_launch_floor_stays_off_below_breakout_and_without_grace():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  fin = _launch_release(planner)
+
+  # Lead only crawling (below the breakout opening): the gentle authorities own it.
+  planner.custom_long_output = make_custom_output(selected_intent="lead_follow", should_stop=False)
+  fin.final_a_prev = None
+  lead = make_lead(d_rel=6.6, v_lead=0.4, v_rel=0.4, lead_id=1)
+  a_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.1, lead_one=lead), mpc_a_target=0.12, mpc_should_stop=False,
+    raw_model_a_target=0.2, raw_model_should_stop=False,
+  )
+  assert a_target == pytest.approx(0.12)
+
+  # No recent release (grace expired): raw mpcA passes through even for a departing lead.
+  fin.launch_dip_grace_s = 0.0
+  fin.final_a_prev = None
+  lead = make_lead(d_rel=8.0, v_lead=1.5, v_rel=1.4, lead_id=1)
+  a_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.1, lead_one=lead), mpc_a_target=0.12, mpc_should_stop=False,
+    raw_model_a_target=0.2, raw_model_should_stop=False,
+  )
+  assert a_target == pytest.approx(0.12)

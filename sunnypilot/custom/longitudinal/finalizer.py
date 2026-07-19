@@ -1099,6 +1099,39 @@ class _FinalArbitration:
       release_a = min(release_a, finalizer._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX)
     return True, release_a
 
+  @staticmethod
+  def scc_launch_floor(finalizer: CustomLongitudinalFinalizer, snapshot: _InputSnapshot,
+                       a_target: float, should_stop: bool) -> float:
+    """Floor the weak first seconds of a confirmed launch (see _STOP_HOLD_LAUNCH_FLOOR_A).
+
+    Applies only inside the post-release launch grace, SCC mode, with a present departing
+    lead (routine-breakout opening), no stop posture on any layer, and a non-objecting
+    MPC. Runs before the cap chain so every cap still wins.
+    """
+    if should_stop or finalizer.launch_dip_grace_s <= 0.0:
+      return float(a_target)
+    if snapshot.custom_long.mode is not LongitudinalMode.SCC:
+      return float(a_target)
+    if snapshot.brake_pressed or snapshot.gas_pressed or snapshot.force_decel:
+      return float(a_target)
+    if not snapshot.has_lead:
+      return float(a_target)
+    if _model_stop_blocks_release(snapshot) or bool(getattr(snapshot.custom_long_output, "should_stop", False)):
+      return float(a_target)
+    for value in (a_target, snapshot.lead_v, snapshot.lead_v_rel, snapshot.mpc_a_target, snapshot.v_ego):
+      if not math.isfinite(float(value)):
+        return float(a_target)
+    if snapshot.v_ego > finalizer._LAUNCH_DIP_MAX_V_EGO:
+      return float(a_target)
+    if float(snapshot.lead_v_rel) < LEAD_CRAWL_BREAKOUT_MIN_OPENING:
+      return float(a_target)
+    if float(snapshot.mpc_a_target) < 0.0:
+      return float(a_target)
+    # ponytail: flat floor — the breakout gate above already guarantees a >=0.7 m/s speed
+    # deficit, so a deficit-scaled floor never scales below the constant before the gate
+    # itself fades it out as ego catches the lead.
+    return float(max(float(a_target), finalizer._STOP_HOLD_LAUNCH_FLOOR_A))
+
 
 # ---------------------------------------------------------------------------
 # Telemetry adapter
@@ -1217,6 +1250,16 @@ class CustomLongitudinalFinalizer:
   _STOP_HOLD_STATIC_OVERSHOOT_MIN_M = 0.75
   _STOP_HOLD_MPC_GO_MIN_A = 0.30
   _STOP_HOLD_MPC_GO_PERSIST_FRAMES = 10
+  # Launch floor (route 000002b2 t=753): after a good release the policy intent flips to
+  # lead_follow as the lead speeds up, the release verdict lapses, and the command
+  # collapses to raw mpcA — 1-2 s of 0.07-0.3 while the driver sustains ~1.0 from the
+  # first second (route 282 measurement; both route-2b2 gas presses landed in this
+  # window). During the post-release launch grace, with the departure confirmed by the
+  # routine-breakout opening and no stop posture, floor the command at this value — the
+  # breakout gate fades it out as ego catches the lead and the MPC ramp takes over. Caps
+  # still run after the floor, so any curve/stop cap wins. 0.60 sits between the
+  # route-282 lever (0.5-0.65) and the driver-demonstrated 1.0 first-second mean.
+  _STOP_HOLD_LAUNCH_FLOOR_A = 0.60
   _STOP_HOLD_SETTLE_ARM_V_EGO_FLOOR = 0.7
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V = 0.5
   _STOP_HOLD_SETTLE_ARM_MAX_LEAD_V_REL = 0.1
@@ -1797,6 +1840,7 @@ class CustomLongitudinalFinalizer:
       )
 
     a_target = float(release_a_target if release_mpc_stop else mpc_a_target)
+    a_target = _FinalArbitration.scc_launch_floor(self, snapshot, a_target, should_stop)
     a_target = _FinalArbitration.scc_custom_stop_cap(a_target, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop)
     a_target = _FinalArbitration.scc_curve_confidence_final_cap(
       self, a_target, sm, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop
