@@ -21,9 +21,11 @@ SAME_DIRECTION_LIMIT_RATE_V = [1.30, 1.30, 2.10, 3.20, 3.60]
 # frames; driver release and safety cuts (sign conflict / over-response / ISO) still drop
 # instantly.
 RELEASE_SLEW_SCALE = 1.5625
-# Slew-scale study (LateralSlewScaleMode): apply multiplies build/sign/release slew by
-# 1.125x — build 0.90/s = 13.5 raw/frame (< Toyota's 15 up), sign/release 1.40625/s =
-# 21.1 raw/frame (< 25 down). Half the expressible headroom before the raw limiter binds.
+# Slew-scale study (LateralSlewScaleMode): apply multiplies the BUILD slew only by
+# 1.125x — 0.90/s = 13.5 raw/frame (< Toyota's 15 up). Sign-change/release scaling was
+# rejected 2026-07-20 (routes 2ba vs 2bb/2bc): the release ceiling binds at the applied
+# torque-rate p95, so scaling it sharpened catch-down steps ("twitchy") and partially
+# undid the RELEASE_SLEW_SCALE smoothing above.
 SLEW_RATE_SCALE_STEP = 1.125
 
 # Manual steering reaches peak wheel rate near mid-stroke, then blends into holding

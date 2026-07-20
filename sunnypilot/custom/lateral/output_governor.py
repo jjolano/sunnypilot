@@ -283,8 +283,9 @@ class OutputGovernorResult:
 class OutputGovernor:
   def __init__(self, dt: float, slew_rate_scale: float = 1.0, _use_cython: bool = True):
     self.dt = max(float(dt), 1e-3)
-    # Scales build/sign-change/release slew only; caps, fast releases, and the
-    # same-direction steer-limited rate cap are deliberately unscaled.
+    # Scales the BUILD slew only. Sign-change, release, caps, fast releases, and the
+    # same-direction steer-limited rate cap are deliberately unscaled: scaling
+    # sign/release sharpened catch-down steps on-road (2026-07-20, routes 2ba/2bc).
     self.slew_rate_scale = float(slew_rate_scale)
     self.previous_output = 0.0
     self._use_cython = _use_cython and _CYTHON_AVAILABLE
@@ -435,7 +436,7 @@ class OutputGovernor:
     target_sign = h.sign(clipped)
     sign_change = previous_sign != 0.0 and target_sign != 0.0 and previous_sign != target_sign
     if sign_change:
-      slew_rate = h.interp(inp.v_ego, SIGN_CHANGE_SLEW_RATE_BP, SIGN_CHANGE_SLEW_RATE_V) * self.slew_rate_scale
+      slew_rate = h.interp(inp.v_ego, SIGN_CHANGE_SLEW_RATE_BP, SIGN_CHANGE_SLEW_RATE_V)
       reason |= GovernorReason.SIGN_CHANGE_LIMITED
     else:
       slew_rate = h.interp(inp.v_ego, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V) * self.slew_rate_scale
@@ -456,7 +457,7 @@ class OutputGovernor:
       else:
         # release backstop: speed-scheduled only — comfort/high-rate slew scalings must
         # never slow a yield toward zero
-        release_rate = h.interp(inp.v_ego, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V) * RELEASE_SLEW_SCALE * self.slew_rate_scale
+        release_rate = h.interp(inp.v_ego, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V) * RELEASE_SLEW_SCALE
         limited = h.approach(self.previous_output, clipped, release_rate * self.dt)
     else:
       limited = h.approach(self.previous_output, slew_target, slew_rate * self.dt)

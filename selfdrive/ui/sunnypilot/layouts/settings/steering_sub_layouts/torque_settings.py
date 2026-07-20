@@ -119,9 +119,10 @@ class TorqueSettingsLayout(Widget):
     )
     self._slew_scale_mode = ListItemSP(
       title=tr("Faster Torque Slew (Study)"),
-      description=tr("Raise the torque output governor's slew rates by 12.5%, still below the platform's steering rate " +
-                     "limits. Monitor only logs what the faster slew would output — no driving changes; Apply uses the " +
-                     "faster rates live and can make steering corrections slightly quicker; turn Off to disable."),
+      description=tr("Raise the torque output governor's build slew rate by 12.5%, still below the platform's steering " +
+                     "rate limits; unwind and release rates stay unchanged. Monitor only logs what the faster build would " +
+                     "output — no driving changes; Apply uses the faster build rate live and can make steering " +
+                     "corrections slightly quicker; turn Off to disable."),
       action_item=NoElideButtonAction(tr("SELECT")),
       callback=self._show_slew_scale_mode_dialog,
     )

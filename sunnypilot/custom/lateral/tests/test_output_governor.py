@@ -121,15 +121,9 @@ def test_actuator_slew_matches_toyota_raw_limits():
 
 def test_scaled_actuator_slew_stays_under_toyota_raw_limits():
   build = OUTPUT_SLEW_RATE_V[0] * SLEW_RATE_SCALE_STEP
-  sign_change = SIGN_CHANGE_SLEW_RATE_V[0] * SLEW_RATE_SCALE_STEP
-  release = OUTPUT_SLEW_RATE_V[0] * RELEASE_SLEW_SCALE * SLEW_RATE_SCALE_STEP
 
   assert build * DT * 1500 == pytest.approx(13.5)
   assert build * DT * 1500 <= 15.0          # Toyota STEER_DELTA_UP
-  assert sign_change * DT * 1500 == pytest.approx(21.09375)
-  assert sign_change * DT * 1500 <= 25.0    # unwind toward zero: STEER_DELTA_DOWN
-  assert release * DT * 1500 == pytest.approx(21.09375)
-  assert release * DT * 1500 <= 25.0        # Toyota STEER_DELTA_DOWN
 
 
 def test_slew_scale_default_is_identity():
@@ -142,20 +136,22 @@ def test_slew_scale_default_is_identity():
     assert base.update(inp).output_torque == explicit.update(inp).output_torque
 
 
-def test_slew_scale_step_scales_build_sign_and_release_rates():
+def test_slew_scale_step_scales_build_only():
   build = OutputGovernor(DT, slew_rate_scale=SLEW_RATE_SCALE_STEP)
   r_build = build.update(benign(nominal=MAX))
   assert r_build.output_torque == pytest.approx(OUTPUT_SLEW_RATE_V[0] * SLEW_RATE_SCALE_STEP * DT)
 
+  # sign-change and release stay at baseline rates: scaling them sharpened
+  # catch-down steps on-road (2026-07-20)
   sign = OutputGovernor(DT, slew_rate_scale=SLEW_RATE_SCALE_STEP)
   sign.previous_output = 0.5
   r_sign = sign.update(benign(nominal=-0.5))
-  assert r_sign.output_torque == pytest.approx(0.5 - SIGN_CHANGE_SLEW_RATE_V[0] * SLEW_RATE_SCALE_STEP * DT)
+  assert r_sign.output_torque == pytest.approx(0.5 - SIGN_CHANGE_SLEW_RATE_V[0] * DT)
 
   release = OutputGovernor(DT, slew_rate_scale=SLEW_RATE_SCALE_STEP)
   release.previous_output = 0.5
   r_release = release.update(benign(nominal=0.1))
-  assert r_release.output_torque == pytest.approx(0.5 - OUTPUT_SLEW_RATE_V[0] * RELEASE_SLEW_SCALE * SLEW_RATE_SCALE_STEP * DT)
+  assert r_release.output_torque == pytest.approx(0.5 - OUTPUT_SLEW_RATE_V[0] * RELEASE_SLEW_SCALE * DT)
 
 
 def test_governor_never_sets_slew_scale_marker():
