@@ -1305,14 +1305,25 @@ def test_early_model_slowdown_deepens_with_earned_caution_floor():
   assert d_earned.a_target == pytest.approx(-1.4)
 
 
-def test_stop_distance_flicker_no_longer_bangs_to_stop_floor():
-  # A stop distance that appears while the caution floor is still gentle must not jump
-  # the non-committed candidate straight to the -1.5 stop-approach floor.
+def test_committed_stop_distance_brakes_immediately_despite_fresh_caution_floor():
+  # A stop distance the policy sees has already survived the wiring debounce and anchor
+  # jump guards (the one-frame-flicker protection that used to live here), so it brakes on
+  # stop kinematics immediately instead of waiting for the 0.45/s CautionRamp to earn depth.
+  # Route 2bd t=570: the old clamp held a committed 47 m red-light approach at -0.68 while
+  # required passed -2 and the driver had to brake.
   scene = LongitudinalScene(v_ego=12.0, v_cruise=15.0, seed_a_target=-0.2,
                             model_should_stop=False, model_stop_distance=40.0,
                             model_desired_accel=-1.6, model_caution_floor=-0.45)
   d = decide(build_candidates(scene), LongitudinalMode.SCC, LIMITS)
-  assert d.a_target >= -0.45
+  assert d.a_target == pytest.approx(-1.5)  # required -1.8, bounded by the uncorroborated stop floor
+
+  # The standstill stop FLAG alone (no anchored distance) still may not outrun the floor.
+  flag_only = LongitudinalScene(v_ego=12.0, v_cruise=15.0, seed_a_target=-0.2,
+                                model_should_stop=True, model_stop_distance=None,
+                                model_desired_accel=-1.6, model_stop_prob=0.2,
+                                model_caution_floor=-0.45)
+  d_flag = decide(build_candidates(flag_only), LongitudinalMode.SCC, LIMITS)
+  assert d_flag.a_target >= -0.45
 
 
 def test_hard_trusted_stop_commit_bypasses_caution_floor():

@@ -785,10 +785,13 @@ def build_candidates(scene: LongitudinalScene,
       if trust.should_stop and not hard and scene.model_stop_distance is not None and scene.model_stop_distance > 0.0:
         stop_a = runway_comfort_governor(scene.v_ego, 0.0, scene.model_stop_distance, stop_a,
                                          _usable_coast_decel(scene))
-      # Non-committed stop decel may not outrun the earned caution floor: a stop distance
-      # that flickers in for one frame no longer bangs from gentle straight to the stop
-      # floor. Trusted committed stops keep full stop physics.
-      if not trust.should_stop:
+      # Non-committed stop decel may not outrun the earned caution floor — unless an
+      # anchored stop distance is present: by the time the policy sees one it has survived
+      # the wiring debounce and anchor jump guards, so it is not a one-frame flicker. The
+      # raw stop FLAG never asserts above ~3 m/s, so trust.should_stop is False on every
+      # moving approach; clamping those to the 0.45/s CautionRamp neutralized the entry
+      # commit (route 2bd t=570: command held -0.68 while required passed -2, driver braked).
+      if not trust.should_stop and scene.model_stop_distance is None:
         stop_a = max(stop_a, scene.model_caution_floor)
       cands.append(LongitudinalCandidate(stop_a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP,
                                          "stop_approach", is_stop=bool(trust.should_stop and hard)))
