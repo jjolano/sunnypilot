@@ -1,37 +1,48 @@
-"""Direction-gain asymmetry learner — per-direction torque->lat-accel slope ratio.
+"""Direction-gain asymmetry learner — excursion-based per-direction gain ratio.
 
-Route 2a1/2b0 offline fits showed the rack responding ~9% stronger per unit torque
-leftward than rightward (slope 1.645 vs 1.506), confounded by speed mix (the active
-latAccelFactor is speed-adaptive) and hysteresis-branch occupancy. This learner
-resolves the confounds by fitting the slope per direction *within* each speed band
-and requiring the bands to agree on the ratio before publishing.
+v1 fitted torque *levels* against lat-accel levels per direction. On crowned
+right-hand-traffic roads that is unidentifiable: the left bucket is dominated by
+a narrow crown-holding torque cluster, so regression dilution crushes the left
+slope at any sample size (route 2bc: apparent ratio 0.22-0.57 depending on gates,
+while the wide-range highway fit read a stable 0.80). v2 fits *excursions*:
+delta lat-accel against delta steer over ~1 s maneuver windows, with both window
+endpoints loaded on the same side of center. Differencing removes the crown/offset
+levels entirely, and symmetric attenuation (actuation + tire lag) cancels in the
+left/right ratio.
 
 Only the asymmetry ratio is learned; the symmetric magnitude stays owned by the
 base torqued learner. Apply mode scales the controller's torque conversion per
 direction, normalized so the mean scale is 1 (no net gain change).
 
 Sign convention: torqued's ``steer`` (= -actuatorsOutput.torque) positive means a
-rightward lateral-accel demand, so the positive-steer cell is the *right* slope.
+rightward lateral-accel demand, so positive-level windows measure the *right* gain.
 """
 from __future__ import annotations
 
 import json
+from collections import deque
 from typing import Any
 
 import numpy as np
 
-from openpilot.selfdrive.locationd.helpers import PointBuckets
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import _restore_key
 
-DIRECTION_GAIN_PARAMS_VERSION = 1
+DIRECTION_GAIN_PARAMS_VERSION = 2  # v1 (level-based) profiles are rejected wholesale
 DIRECTION_GAIN_SPEED_BANDS = ((8.0, 15.0), (15.0, 100.0))
-MIN_POINTS_PER_DIRECTION = 1500
-MIN_TORQUE_MAGNITUDE = 0.05   # below this hysteresis dominates the fit
-MIN_TORQUE_SPAN = 0.08        # p5-p95 |torque| spread needed for slope leverage
-RATIO_MIN = 0.8               # left/right slope ratio sanity bounds
-RATIO_MAX = 1.25
-BAND_AGREEMENT_MAX = 0.12     # fitted bands must agree on the ratio within this
-SCALE_CLAMP = 0.15            # applied per-direction scale stays within 1 +/- this
+
+EXCURSION_WINDOW_S = 1.0       # pair each sample against one ~this far back
+EXCURSION_WINDOW_TOL_S = 0.35
+EXCURSION_MIN_DELTA = 0.04     # |dsteer| below this is dither, not a maneuver
+EXCURSION_MAX_DY = 2.5         # m/s^2; larger jumps are events, not tracking
+LEVEL_MIN = 0.03               # both endpoints this far from center, same side
+MIN_PAIRS_PER_DIRECTION = 400
+MIN_DELTA_SPAN = 0.06          # p5-p95 |dsteer| spread needed for slope leverage
+PAIRS_PER_CELL = 4000
+
+RATIO_MIN = 0.7                # left/right gain ratio sanity bounds
+RATIO_MAX = 1.3
+BAND_AGREEMENT_MAX = 0.12      # fitted bands must agree on the ratio within this
+SCALE_CLAMP = 0.15             # applied per-direction scale stays within 1 +/- this
 
 
 def _fit_slope_ols(points: np.ndarray):
@@ -55,61 +66,77 @@ def _finite_float(value):
   return f if np.isfinite(f) else None
 
 
-class _DirectionPointBuckets(PointBuckets):
-  def add_point(self, x, y):
-    if not np.isfinite(x) or not np.isfinite(y):
-      return
-    for bound_min, bound_max in self.x_bounds:
-      if (x >= bound_min) and (x < bound_max):
-        self.buckets[(bound_min, bound_max)].append([x, 1.0, y])
-        break
-
-
 class DirectionGainBuckets:
-  """(steer torque, lat accel) points, split by torque sign within speed bands."""
+  """Excursion pairs (dsteer, dlat_accel), split by loaded side within speed bands."""
 
-  # x = steer torque, torqued convention (positive = rightward)
-  X_BOUNDS = [(-1.0, -MIN_TORQUE_MAGNITUDE), (MIN_TORQUE_MAGNITUDE, 1.0)]
-
-  def __init__(self, points_per_bucket=3000, speed_bands=None):
+  def __init__(self, pairs_per_cell=PAIRS_PER_CELL, speed_bands=None):
     self.speed_bands = tuple(speed_bands) if speed_bands is not None else DIRECTION_GAIN_SPEED_BANDS
-    self._bands = {band: _DirectionPointBuckets(x_bounds=self.X_BOUNDS, min_points=[1.0, 1.0], min_points_total=1,
-                                                points_per_bucket=points_per_bucket, rowsize=3)
-                   for band in self.speed_bands}
+    self._pairs = {(band, direction): [] for band in self.speed_bands for direction in (1, -1)}
+    self._pairs_per_cell = pairs_per_cell
+    self._history: deque = deque()  # (t, steer, lat_acc, v_ego)
 
-  def add_point(self, steer, lateral_acc, v_ego):
-    if not np.isfinite(steer) or not np.isfinite(lateral_acc) or not np.isfinite(v_ego):
+  def add_point(self, steer, lateral_acc, v_ego, t):
+    if not (np.isfinite(steer) and np.isfinite(lateral_acc) and np.isfinite(v_ego) and np.isfinite(t)):
       return
+    horizon = EXCURSION_WINDOW_S + EXCURSION_WINDOW_TOL_S
+    while self._history and t - self._history[0][0] > horizon:
+      self._history.popleft()
+
+    # pair against the oldest in-window sample; a gap in gated samples (override,
+    # inactive) empties the window naturally, so pairs never straddle an event
+    partner = None
+    for old in self._history:
+      if EXCURSION_WINDOW_S - EXCURSION_WINDOW_TOL_S <= t - old[0] <= horizon:
+        partner = old
+        break
+    self._history.append((t, steer, lateral_acc, v_ego))
+    if partner is None:
+      return
+
+    t0, x0, y0, v0 = partner
+    dx = steer - x0
+    dy = lateral_acc - y0
+    if abs(dx) < EXCURSION_MIN_DELTA or abs(dy) > EXCURSION_MAX_DY:
+      return
+    # both endpoints loaded on the same side of center
+    if abs(x0) < LEVEL_MIN or abs(steer) < LEVEL_MIN or (x0 > 0) != (steer > 0):
+      return
+    direction = 1 if steer > 0 else -1
+    v_mid = (v_ego + v0) / 2.0
     for v_lo, v_hi in self.speed_bands:
-      if v_lo <= v_ego < v_hi:
-        self._bands[(v_lo, v_hi)].add_point(steer, lateral_acc)
+      if v_lo <= v_mid < v_hi:
+        cell = self._pairs[((v_lo, v_hi), direction)]
+        cell.append((dx, dy))
+        del cell[:-self._pairs_per_cell]
         break
 
-  def direction_points(self, band, direction):
-    # direction: +1 = rightward (positive steer), -1 = leftward
-    bounds = self.X_BOUNDS[1] if direction > 0 else self.X_BOUNDS[0]
-    return self._bands[band].buckets[bounds].arr
+  def direction_pairs(self, band, direction) -> np.ndarray:
+    pairs = self._pairs[(band, direction)]
+    if not pairs:
+      return np.empty((0, 3))
+    arr = np.array(pairs, dtype=float)
+    return np.column_stack([arr[:, 0], np.ones(len(arr)), arr[:, 1]])
 
 
 def _fit_band_ratio(buckets: DirectionGainBuckets, band):
   slopes = {}
-  points = {}
+  counts = {}
   for direction in (1, -1):
-    pts = buckets.direction_points(band, direction)
-    if len(pts) < MIN_POINTS_PER_DIRECTION:
+    pts = buckets.direction_pairs(band, direction)
+    if len(pts) < MIN_PAIRS_PER_DIRECTION:
       return None
-    mags = np.abs(pts[:, 0].astype(float))
-    if float(np.percentile(mags, 95) - np.percentile(mags, 5)) < MIN_TORQUE_SPAN:
+    mags = np.abs(pts[:, 0])
+    if float(np.percentile(mags, 95) - np.percentile(mags, 5)) < MIN_DELTA_SPAN:
       return None
     slope = _fit_slope_ols(pts)
     if slope is None:
       return None
     slopes[direction] = slope
-    points[direction] = len(pts)
+    counts[direction] = len(pts)
   ratio = slopes[-1] / slopes[1]  # left over right
   if not (RATIO_MIN <= ratio <= RATIO_MAX):
     return None
-  return {'ratio': float(ratio), 'pointsLeft': int(points[-1]), 'pointsRight': int(points[1])}
+  return {'ratio': float(ratio), 'pointsLeft': int(counts[-1]), 'pointsRight': int(counts[1])}
 
 
 def fit_direction_gain_profile(CP: Any, buckets: DirectionGainBuckets):
@@ -121,7 +148,7 @@ def fit_direction_gain_profile(CP: Any, buckets: DirectionGainBuckets):
     if fitted is not None:
       bands.append({'vLo': float(v_lo), 'vHi': float(v_hi), **fitted})
   # every configured band must fit: a single band bypasses the agreement check,
-  # which is the whole confound control (route 2b5 published highway-only at 0.814)
+  # which is the whole confound control
   if len(bands) < len(buckets.speed_bands):
     return None
   ratios = [b['ratio'] for b in bands]
@@ -141,7 +168,7 @@ def fit_direction_gain_profile(CP: Any, buckets: DirectionGainBuckets):
 def direction_scales(profile) -> dict[int, float]:
   """Per-direction torque scale keyed by internal torque sign (+1 = rightward).
 
-  Higher left slope (ratio > 1) means less torque needed leftward, so leftward
+  Higher left gain (ratio > 1) means less torque needed leftward, so leftward
   torque scales down and rightward up; mean stays 1 (pure asymmetry).
   """
   if not profile:
@@ -156,13 +183,13 @@ def direction_scales(profile) -> dict[int, float]:
 def blend_direction_gain_profile(old_profile, new_profile):
   if old_profile is None:
     return new_profile
-  old_w = float(min(int(old_profile['points']), 4 * MIN_POINTS_PER_DIRECTION))
-  new_w = float(min(int(new_profile['points']), 4 * MIN_POINTS_PER_DIRECTION))
+  old_w = float(min(int(old_profile['points']), 8 * MIN_PAIRS_PER_DIRECTION))
+  new_w = float(min(int(new_profile['points']), 8 * MIN_PAIRS_PER_DIRECTION))
   if old_w + new_w <= 0:
     return new_profile
   blended = dict(new_profile)
   blended['ratio'] = float((old_w * float(old_profile['ratio']) + new_w * float(new_profile['ratio'])) / (old_w + new_w))
-  blended['points'] = int(min(int(old_profile['points']) + int(new_profile['points']), 8 * MIN_POINTS_PER_DIRECTION))
+  blended['points'] = int(min(int(old_profile['points']) + int(new_profile['points']), 16 * MIN_PAIRS_PER_DIRECTION))
   return blended
 
 
@@ -185,7 +212,7 @@ def parse_direction_gain_profile(CP: Any, payload):
     points = int(payload['points'])
   except (KeyError, TypeError, ValueError):
     return None
-  if points < 2 * MIN_POINTS_PER_DIRECTION:
+  if points < 2 * MIN_PAIRS_PER_DIRECTION:
     return None
   raw_bands = payload.get('bands')
   if not isinstance(raw_bands, list) or len(raw_bands) < len(DIRECTION_GAIN_SPEED_BANDS):
@@ -203,7 +230,7 @@ def parse_direction_gain_profile(CP: Any, payload):
       return None
     if v_lo is None or v_hi is None or v_lo >= v_hi or band_ratio is None:
       return None
-    if not (RATIO_MIN <= band_ratio <= RATIO_MAX) or pl < MIN_POINTS_PER_DIRECTION or pr < MIN_POINTS_PER_DIRECTION:
+    if not (RATIO_MIN <= band_ratio <= RATIO_MAX) or pl < MIN_PAIRS_PER_DIRECTION or pr < MIN_PAIRS_PER_DIRECTION:
       return None
     bands.append({'vLo': v_lo, 'vHi': v_hi, 'ratio': band_ratio, 'pointsLeft': pl, 'pointsRight': pr})
   if len({(b['vLo'], b['vHi']) for b in bands}) != len(bands):

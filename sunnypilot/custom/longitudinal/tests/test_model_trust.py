@@ -255,6 +255,72 @@ def test_model_stop_anchor_bounds_divergence_on_receding_stop_point():
   assert d <= target
 
 
+def test_model_stop_anchor_never_releases_by_burn_down_while_moving():
+  # Route 2ba t=1517/1623: the commitment burned to 0 with travel while the model still
+  # placed the stop ahead, dropping the whole stop posture at 4.5 m/s. While ego moves and
+  # the raw point is live, the anchored distance must stay positive — never "arrived".
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import (
+    ModelStopAnchor, STOP_ANCHOR_MIN_ACTIVE_M)
+  a = ModelStopAnchor()
+  a.update(45.0, v_ego=14.0, dt=0.05)
+  d = a.remaining
+  for raw in (40.0, 34.0, 28.0, 22.0, 16.0, 11.0, 8.0, 6.6, 6.6, 6.6, 6.6):
+    for _ in range(10):  # 0.5 s per raw reading, decelerating ego
+      d = a.update(raw, v_ego=8.0, dt=0.05)
+      assert d is not None and d >= STOP_ANCHOR_MIN_ACTIVE_M
+  # brief raw dropouts near the stop hold the same floor
+  for _ in range(10):
+    d = a.update(None, v_ego=4.0, dt=0.05)
+    assert d is not None and d >= STOP_ANCHOR_MIN_ACTIVE_M
+  # once ego is (nearly) stopped the floor no longer applies and retraction releases
+  for _ in range(25):
+    d = a.update(None, v_ego=0.0, dt=0.05)
+  assert d is None
+
+
+def test_model_stop_anchor_divergence_tightens_near_stop():
+  # Far out the divergence bound is the fixed 15 m; near the stop it is proportional, so
+  # the commitment can never sit at a tiny fraction of a live target a few meters ahead.
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import (
+    ModelStopAnchor, STOP_ANCHOR_DIVERGENCE_FRACTION, STOP_ANCHOR_CONSERVATIVE_FRACTION)
+  a = ModelStopAnchor()
+  a.update(12.0, v_ego=6.0, dt=0.05)
+  for _ in range(100):  # 30 m of travel against a static 12 m claim
+    d = a.update(12.0, v_ego=6.0, dt=0.05)
+  target = 12.0 * STOP_ANCHOR_CONSERVATIVE_FRACTION
+  assert d >= target * (1.0 - STOP_ANCHOR_DIVERGENCE_FRACTION) - 1e-6
+
+
+def test_model_stop_anchor_travel_consistency_corroboration():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import ModelStopAnchor
+  # real stop: raw distance shrinks with travel -> corroborated once enough travel is seen
+  a = ModelStopAnchor()
+  d = 60.0
+  for _ in range(30):  # 15 m of travel, raw tracking it 1:1
+    a.update(d, v_ego=10.0, dt=0.05)
+    d -= 0.5
+  assert a.corroborated is True
+  # phantom: raw distance static while ego travels -> never corroborated
+  p = ModelStopAnchor()
+  for _ in range(100):  # 50 m of travel against a static claim
+    p.update(40.0, v_ego=10.0, dt=0.05)
+  assert p.corroborated is False
+
+
+def test_model_stop_anchor_confirmed_jump_rebases_corroboration():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import (
+    ModelStopAnchor, STOP_ANCHOR_JUMP_CONFIRM_FRAMES)
+  a = ModelStopAnchor()
+  d = 60.0
+  for _ in range(30):
+    a.update(d, v_ego=10.0, dt=0.05)
+    d -= 0.5
+  assert a.corroborated is True
+  for _ in range(STOP_ANCHOR_JUMP_CONFIRM_FRAMES + 1):  # scene change: point jumps far
+    a.update(120.0, v_ego=10.0, dt=0.05)
+  assert a.corroborated is False  # consistency re-earns against the new point
+
+
 def test_model_stop_anchor_releases_after_sustained_retraction_only():
   from openpilot.sunnypilot.custom.longitudinal.model_trust import ModelStopAnchor
   a = ModelStopAnchor()

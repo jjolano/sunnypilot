@@ -520,9 +520,15 @@ class CustomLongitudinalAdapter:
       lead_one_msg = getattr(radar, "leadOne", None)
       closing_lead = (lead_one_msg is not None and bool(getattr(lead_one_msg, "status", False))
                       and _f(getattr(lead_one_msg, "vRel", 0.0)) < -LEAD_CLOSING_MIN)
-      if not self._corroboration_hold.update(closing_lead, dt):
-        # Earned depth past the uncommitted stop floor needs a recent closing radar echo
-        # (CorroborationHold): vision-only sustained demand keeps the -1.5 cap.
+      radar_corroborated = self._corroboration_hold.update(closing_lead, dt)
+      # Travel-consistent anchor commitment is physical corroboration too: a real stop
+      # line's distance shrinks ~1:1 with travel, a hallucination's does not (route 2ba
+      # t=1517/1623: leadless red lights pinned at -1.5 while required passed -2.9 and the
+      # driver had to brake). Depth stays CautionRamp-earned and -2.5 bounded.
+      anchor_corroborated = model_stop_distance is not None and self._stop_anchor.corroborated
+      if not (radar_corroborated or anchor_corroborated):
+        # Earned depth past the uncommitted stop floor needs corroboration:
+        # unearned vision-only sustained demand keeps the -1.5 cap.
         model_caution_floor = max(model_caution_floor, STOP_APPROACH_DECEL_MIN)
       if self._cut_out_caution.update(lead_one_msg, model, dt):
         # Route 296 t=848: the braking turner that earned the caution left the lane, but the

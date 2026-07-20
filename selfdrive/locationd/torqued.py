@@ -273,7 +273,7 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
             steering_rate = None
             if len(self.raw_points['steering_rate_deg']):
               steering_rate = np.interp(t, self.raw_points['carState_t'], self.raw_points['steering_rate_deg']).item()
-            self.collect_shadow_learning_points(steer, lateral_acc, vego, roll, yaw_rate, steering_rate)
+            self.collect_shadow_learning_points(steer, lateral_acc, vego, roll, yaw_rate, steering_rate, t)
 
           if (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
             if abs(lateral_acc) <= LAT_ACC_THRESHOLD:

@@ -236,9 +236,19 @@ STOP_ANCHOR_CONSERVATIVE_FRACTION = 0.85  # plan to this fraction of the model's
 STOP_ANCHOR_MAX_SHRINK_M = 12.0           # ...but never more than this much nearer
 STOP_ANCHOR_JUMP_M = 15.0                 # a jump past this (either direction) needs...
 STOP_ANCHOR_JUMP_CONFIRM_FRAMES = 3       # ...this many consecutive frames (jitter guard)
-STOP_ANCHOR_MAX_DIVERGENCE_M = 15.0       # anchor never commits further below the live target
+STOP_ANCHOR_MAX_DIVERGENCE_M = 15.0       # anchor never commits further below the live target...
+STOP_ANCHOR_DIVERGENCE_FRACTION = 0.5     # ...nor below this fraction of it (binds near the stop)
 STOP_ANCHOR_RELEASE_MISSING_S = 1.0       # sustained model retraction (green) releases
 STOP_ANCHOR_MIN_COMMIT_S = 0.25           # consumers ignore commitments younger than this (blip filter)
+# Route 2ba t=1517/1623: the committed distance burned to 0 with travel while the model still
+# placed the stop 6.6 m ahead, releasing the whole stop posture at 4.5 m/s (driver braked).
+# A committed stop may never report "arrived" while ego is still moving.
+STOP_ANCHOR_MIN_ACTIVE_M = 2.0
+STOP_ANCHOR_MIN_ACTIVE_V_EGO = 0.5
+# Travel-consistency corroboration: a real stop line's predicted distance shrinks ~1:1 with
+# ego travel; a hallucination's does not (the phantom signature is exactly that failure).
+STOP_ANCHOR_CORR_MIN_TRAVEL_M = 8.0       # earn after this much travel under commitment...
+STOP_ANCHOR_CORR_MIN_SHRINK_RATIO = 0.6   # ...with the raw point shrinking at least this share of it
 
 
 class ModelStopAnchor:
@@ -254,25 +264,43 @@ class ModelStopAnchor:
   direction need ``STOP_ANCHOR_JUMP_CONFIRM_FRAMES`` of corroboration so one bad frame
   can neither slam nor release the demand, and a sustained model retraction
   (``STOP_ANCHOR_RELEASE_MISSING_S``, the green light) releases entirely so the
-  departing-lead reaccel behaviors stay responsive."""
+  departing-lead reaccel behaviors stay responsive.
+
+  ``corroborated`` latches once the raw stop point has shrunk with ego travel
+  (``STOP_ANCHOR_CORR_*``): physical evidence the point is world-fixed, used by wiring to
+  unlock earned caution depth past the vision-only floor. A confirmed jump rebases it."""
 
   def __init__(self):
     self.remaining: float | None = None
     self.committed_s = 0.0
+    self.corroborated = False
     self._missing_s = 0.0
     self._jump_frames = 0
+    self._corr_d0: float | None = None
+    self._corr_travel = 0.0
 
   def reset(self) -> None:
     self.remaining = None
     self.committed_s = 0.0
+    self.corroborated = False
     self._missing_s = 0.0
     self._jump_frames = 0
+    self._corr_d0 = None
+    self._corr_travel = 0.0
+
+  def _floored(self, v_ego: float) -> float:
+    # A committed stop never reports "arrived" while still moving: burn-down past this floor
+    # would drop the whole stop posture mid-stop (route 2ba: release at 4.5 m/s, 6.6 m short).
+    if self.remaining is not None and float(v_ego) > STOP_ANCHOR_MIN_ACTIVE_V_EGO:
+      self.remaining = max(self.remaining, STOP_ANCHOR_MIN_ACTIVE_M)
+    return self.remaining
 
   def update(self, model_stop_distance: float | None, v_ego: float, dt: float) -> float | None:
     dt = max(0.0, float(dt))
     travel = max(0.0, float(v_ego)) * dt
     if self.remaining is not None:
       self.committed_s += dt
+      self._corr_travel += travel
     d = float(model_stop_distance) if model_stop_distance is not None else math.nan
     if not math.isfinite(d) or d <= 0.0:
       if self.remaining is None:
@@ -283,23 +311,36 @@ class ModelStopAnchor:
         return None
       # brief dropout: hold the commitment, advancing with travel
       self.remaining = max(self.remaining - travel, 0.0)
-      return self.remaining
+      return self._floored(v_ego)
     self._missing_s = 0.0
     target = max(d * STOP_ANCHOR_CONSERVATIVE_FRACTION, d - STOP_ANCHOR_MAX_SHRINK_M)
     if self.remaining is None:
       self.remaining = max(target, 0.0)
       self._jump_frames = 0
-      return self.remaining
+      self._corr_d0 = d
+      self._corr_travel = 0.0
+      return self._floored(v_ego)
+    if (not self.corroborated and self._corr_d0 is not None
+        and self._corr_travel >= STOP_ANCHOR_CORR_MIN_TRAVEL_M
+        and (self._corr_d0 - d) >= STOP_ANCHOR_CORR_MIN_SHRINK_RATIO * self._corr_travel):
+      self.corroborated = True
     advanced = max(self.remaining - travel, 0.0)
     if abs(target - advanced) > STOP_ANCHOR_JUMP_M:
       self._jump_frames += 1
       if self._jump_frames < STOP_ANCHOR_JUMP_CONFIRM_FRAMES:
         self.remaining = advanced  # unconfirmed jump: hold the commitment
-        return self.remaining
+        return self._floored(v_ego)
+      # confirmed jump: a genuinely different stop point; consistency re-earns from here
+      self.corroborated = False
+      self._corr_d0 = d
+      self._corr_travel = 0.0
     else:
       self._jump_frames = 0
     if target <= advanced:
       self.remaining = max(target, 0.0)
     else:
-      self.remaining = max(advanced, target - STOP_ANCHOR_MAX_DIVERGENCE_M)
-    return self.remaining
+      # binds at 15 m far out, proportionally tighter near the stop so the commitment can
+      # never burn to zero against a live target a few meters ahead
+      divergence = min(STOP_ANCHOR_MAX_DIVERGENCE_M, STOP_ANCHOR_DIVERGENCE_FRACTION * target)
+      self.remaining = max(advanced, target - divergence)
+    return self._floored(v_ego)

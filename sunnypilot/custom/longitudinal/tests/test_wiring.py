@@ -319,6 +319,28 @@ def test_uncommitted_stop_depth_needs_recent_radar_corroboration():
   assert corroborated < -1.8                           # depth persists ~2.3 s after the last echo
 
 
+def test_travel_consistent_anchor_unlocks_stop_depth_without_radar():
+  # Route 2ba t=1517/1623: leadless red lights pinned at the -1.5 vision-only floor while
+  # required decel passed -2.9 and the driver had to brake. A stop point whose raw distance
+  # shrinks with ego travel is world-fixed (a hallucination's does not — that run stays
+  # capped, see the static-trajectory vision_only case above), so it unlocks the same
+  # CautionRamp-earned, -2.5-bounded depth a radar echo does.
+  class TimestampedSm(dict):
+    pass
+
+  a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+  v_ego, dt = 12.6, 0.05
+  out = 0.0
+  for i in range(70):  # 3.5 s: raw rest point shrinks at 0.7x travel (consistent, stays ahead)
+    rest = 38.0 - 0.7 * v_ego * dt * i
+    scale = rest / 38.0
+    sm = TimestampedSm(fake_sm(None, model_accel=-2.2,
+                               model_x=[p * scale for p in STOP_TRAJ_X], model_v=STOP_TRAJ_V))
+    sm.recv_time = {'modelV2': time.monotonic()}
+    out = a.apply(sm, v_ego, 0.0, 17.8, 0.0, fake_scc(), fake_sla(), dt=dt)
+  assert out < -1.8  # earned depth unlocked with no radar echo at any frame
+
+
 def test_scc_curve_gated_by_smart_cruise_control_vision_toggle():
   scc = fake_scc(vision_active=True, vision_a=-0.7)
   on = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc",

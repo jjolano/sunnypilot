@@ -201,7 +201,7 @@ class TorqueEstimatorExt:
     if self.speed_adaptive_mode in ('shadow', 'apply'):
       self.speed_learning_buckets.add_point(steer, lateral_acc, v_ego)
 
-  def collect_shadow_learning_points(self, steer, lateral_acc, v_ego, roll, yaw_rate, steering_rate_deg):
+  def collect_shadow_learning_points(self, steer, lateral_acc, v_ego, roll, yaw_rate, steering_rate_deg, t=None):
     """Shadow-only learning hooks. No steering changes in these phases.
 
     - Phase 6 low-speed shadow buckets: collect city/low-speed cornering evidence
@@ -216,11 +216,11 @@ class TorqueEstimatorExt:
       if v_ego < ROLL_COMP_MIN_V_EGO and abs(steer) > 0.02 and abs(lateral_acc) <= 3.0:
         self.low_speed_buckets.add_point(steer, lateral_acc, v_ego)
 
-    # Direction-gain asymmetry: steady samples only, so the per-direction slope is
-    # not smeared by transient rate; the bucket bounds gate torque magnitude.
+    # Direction-gain asymmetry (v2 excursion pairing): maneuvers are the signal, so
+    # no steady-rate gate; the pairer's same-side + min-delta gates do the filtering.
     if self.direction_gain_mode in ('shadow', 'apply'):
-      if abs(lateral_acc) <= 3.0 and steering_rate_deg is not None and abs(steering_rate_deg) < 3.0:
-        self.direction_gain_buckets.add_point(steer, lateral_acc, v_ego)
+      if abs(lateral_acc) <= 3.0 and t is not None:
+        self.direction_gain_buckets.add_point(steer, lateral_acc, v_ego, t)
 
     if self.roll_comp_mode not in ('shadow', 'apply'):
       return
