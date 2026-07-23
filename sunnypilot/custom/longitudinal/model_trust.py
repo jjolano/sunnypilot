@@ -162,8 +162,9 @@ class CutOutCautionRecovery:
   |y| beyond ``CUT_OUT_EXIT_MIN_PATH_Y`` within the last second — a genuine cut-out, not a
   flicker), returns True for ``CUT_OUT_RECOVERY_S`` so the caller caps uncommitted caution
   at ``GENTLE_CAUTION_DECEL`` while the model catches up to the cleared scene. Trusted stop
-  commits bypass the caution floor entirely and are unaffected. Any closing lead present
-  cancels the window immediately. Fail-closed: any fault returns False (no cap)."""
+  commits and independently travel-corroborated stop anchors bypass the caution floor and
+  are unaffected. Any closing lead present cancels the window immediately. Fail-closed:
+  any fault returns False (no cap)."""
 
   def __init__(self):
     self._t = 0.0

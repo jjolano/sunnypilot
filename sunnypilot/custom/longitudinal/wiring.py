@@ -524,16 +524,24 @@ class CustomLongitudinalAdapter:
       # Travel-consistent anchor commitment is physical corroboration too: a real stop
       # line's distance shrinks ~1:1 with travel, a hallucination's does not (route 2ba
       # t=1517/1623: leadless red lights pinned at -1.5 while required passed -2.9 and the
-      # driver had to brake). Depth stays CautionRamp-earned and -2.5 bounded.
-      anchor_corroborated = model_stop_distance is not None and self._stop_anchor.corroborated
-      if not (radar_corroborated or anchor_corroborated):
+      # driver had to brake). Once earned, the existing stop-distance kinematics and accel
+      # envelope own the bound; the uncommitted CautionRamp no longer limits authority.
+      anchor_corroborated = bool(
+        model_stop_distance is not None and self._stop_anchor.corroborated and not model_stale
+      )
+      if anchor_corroborated:
+        # A world-fixed stop point has earned full bounded kinematic authority. Reuse the
+        # existing stop-distance calculation and accel envelope instead of imposing the
+        # uncommitted CautionRamp ceiling.
+        model_caution_floor = DEFAULT_ACCEL_LIMITS[0]
+      elif not radar_corroborated:
         # Earned depth past the uncommitted stop floor needs corroboration:
         # unearned vision-only sustained demand keeps the -1.5 cap.
         model_caution_floor = max(model_caution_floor, STOP_APPROACH_DECEL_MIN)
-      if self._cut_out_caution.update(lead_one_msg, model, dt):
+      if self._cut_out_caution.update(lead_one_msg, model, dt) and not anchor_corroborated:
         # Route 296 t=848: the braking turner that earned the caution left the lane, but the
         # model's demand lagged the cleared scene ~2.4 s at -1.1. Uncommitted caution
-        # re-earns from gentle; trusted stop commits bypass the floor and are unaffected.
+        # re-earns from gentle. An independently travel-corroborated stop is unaffected.
         model_caution_floor = max(model_caution_floor, GENTLE_CAUTION_DECEL)
         self._caution_ramp.floor = max(self._caution_ramp.floor, model_caution_floor)
       if pitch is not None:
@@ -595,6 +603,7 @@ class CustomLongitudinalAdapter:
       return CustomLongitudinalOutput(
         a_target=float(result.a_target), should_stop=bool(result.should_stop), enabled=True, mode=self.mode,
         selected_intent=decision.selected_intent, reason=decision.reason,
+        model_stop_corroborated=anchor_corroborated,
         standstill_release_allowed=bool(result.standstill_release_allowed),
         standstill_release_source=str(result.standstill_release_source),
         standstill_release_a_target=float(result.standstill_release_a_target),
@@ -634,6 +643,9 @@ class CustomLongitudinalOutput:
   mode: LongitudinalMode
   selected_intent: object | None
   reason: object | None
+  # Typed moving-stop posture consumed by post-MPC SCC finalization. This cannot live in
+  # optional debug telemetry: disabling trace collection must never change actuation.
+  model_stop_corroborated: bool = False
   standstill_release_allowed: bool = False
   standstill_release_source: str = ""
   standstill_release_a_target: float = 0.0

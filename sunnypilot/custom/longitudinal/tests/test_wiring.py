@@ -341,6 +341,40 @@ def test_travel_consistent_anchor_unlocks_stop_depth_without_radar():
   assert out < -1.8  # earned depth unlocked with no radar echo at any frame
 
 
+def test_corroborated_anchor_keeps_kinematic_authority_through_lateral_cutout():
+  # Route 2ca t=1219-1222: a world-fixed stop anchor was already travel-corroborated
+  # when a far off-path radar echo disappeared. Cut-out recovery must not relax that
+  # independent stop evidence, and the late approach must follow bounded kinematics
+  # instead of the -2.5 caution ceiling.
+  class TimestampedSm(dict):
+    pass
+
+  a = CustomLongitudinalAdapter(FakeParams(
+    CustomLongitudinalEnabled=True,
+    CustomLongitudinalMode="scc",
+  ))
+  v_ego, dt = 15.0, 0.05
+  out = None
+  for i in range(80):
+    rest = 105.0 - v_ego * dt * i
+    echo = lead(d_rel=75.0, v_lead=0.0, v_rel=-15.0) if 62 <= i < 69 else None
+    if echo is not None:
+      echo.yRel = -5.7
+    sm = TimestampedSm(fake_sm(
+      echo, model_accel=-3.0,
+      model_x=[0.0, rest], model_y=[0.0, 0.0], model_v=[v_ego, 0.0],
+      long_active=True,
+    ))
+    sm.recv_time = {'modelV2': time.monotonic()}
+    out = a.evaluate(sm, v_ego, 0.0, 20.0, 0.0, fake_scc(), fake_sla(), dt=dt)
+
+  assert out is not None
+  assert a._stop_anchor.corroborated is True
+  assert out.model_stop_corroborated is True
+  assert a._cut_out_caution._recovery_s > 0.0  # the competing cut-out signal really fired
+  assert out.a_target < -3.0
+
+
 def test_scc_curve_gated_by_smart_cruise_control_vision_toggle():
   scc = fake_scc(vision_active=True, vision_a=-0.7)
   on = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc",

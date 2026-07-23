@@ -840,7 +840,11 @@ class _FinalArbitration:
       return float(base_a_target)
     if not bool(getattr(custom_long_output, "enabled", False)):
       return float(base_a_target)
-    if str(getattr(custom_long_output, "selected_intent", "") or "") != "stop_approach":
+    stop_posture = (
+      str(getattr(custom_long_output, "selected_intent", "") or "") == "stop_approach"
+      or bool(getattr(custom_long_output, "model_stop_corroborated", False))
+    )
+    if not stop_posture:
       return float(base_a_target)
     raw_custom_a = getattr(custom_long_output, "a_target", None)
     if raw_custom_a is None:

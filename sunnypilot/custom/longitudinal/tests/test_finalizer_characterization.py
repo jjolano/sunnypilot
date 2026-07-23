@@ -365,6 +365,31 @@ def test_scc_custom_stop_cap_and_curve_confidence_final_cap_apply():
   assert a_target == pytest.approx(-0.85)
 
 
+def test_scc_corroborated_model_stop_cap_survives_nonbinding_intent():
+  # Route 2ca t=1220: the pre-MPC seed won arbitration as "cruise", then MPC
+  # relaxed it. The still-active corroborated stop posture must carry the custom
+  # restriction through finalization independently of the binding intent label.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(
+      selected_intent="cruise",
+      reason="cruise",
+      a_target=-2.18,
+      model_stop_corroborated=True,
+    ),
+  )
+  sm = make_sm(v_ego=10.0)
+
+  a_target, should_stop, e2e_source = planner.final_longitudinal_output(
+    sm, mpc_a_target=-0.73, mpc_should_stop=False,
+    raw_model_a_target=-2.11, raw_model_should_stop=False,
+  )
+
+  assert a_target == pytest.approx(-2.18)
+  assert should_stop is False
+  assert e2e_source is False
+
+
 def test_scc_cut_in_brake_assist_apply_cap():
   planner = make_planner(
     mode=LongitudinalMode.SCC,
