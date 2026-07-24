@@ -4,6 +4,7 @@ import json
 import random
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ from openpilot.tools.drive_lab import fuzz_lateral_route_replay
 from openpilot.tools.drive_lab.fuzz_lateral_route_replay import (
   DT,
   LateralRouteFrame,
+  RouteExtractionSummary,
   N_PATH_POINTS,
   PerturbationRecipe,
   RouteReplayFuzzerConfig,
@@ -24,13 +26,16 @@ from openpilot.tools.drive_lab.fuzz_lateral_route_replay import (
   _apply_recipe,
   _coherent_path,
   _frame_to_inputs,
+  _run_frames,
   _generate_recipe,
   evaluate_scenario,
+  analyze_lateral_demand_ab,
   extract_lateral_route_frames,
   extract_lateral_route_frames_with_summary,
   generate_scenarios,
   main,
   replay_artifact,
+  render_lateral_demand_ab,
   write_artifact,
 )
 
@@ -845,6 +850,67 @@ def test_perturbations_preserve_source_t():
     assert [frame.source_t for frame in perturbed] == [frame.source_t for frame in frames]
 
 
+def test_demand_ab_only_changes_demand_output_and_disabled_is_raw_passthrough():
+  frames = tuple(
+    replace(
+      _coherent_frame(i * DT, curvature=0.001 if (i // 5) % 2 == 0 else -0.001),
+      source_t=1187.0 + i * DT,
+    )
+    for i in range(100)
+  )
+  enabled = _run_frames(frames, demand_enabled=True, use_enabled_demand_config=True)
+  disabled = _run_frames(frames, demand_enabled=False, use_enabled_demand_config=True)
+
+  assert all(output.processed_curvature == pytest.approx(frame.raw_curvature) for output, frame in zip(disabled, frames, strict=True))
+  assert all(output.command_curvature == pytest.approx(frame.raw_curvature) for output, frame in zip(disabled, frames, strict=True))
+  assert any(abs(output.processed_curvature - frame.raw_curvature) > 1e-9 for output, frame in zip(enabled, frames, strict=True))
+  assert [output.source_t for output in enabled] == [output.source_t for output in disabled]
+  assert [output.raw_curvature for output in enabled] == pytest.approx([output.raw_curvature for output in disabled])
+  assert [output.measured_curvature for output in enabled] == pytest.approx([output.measured_curvature for output in disabled])
+  assert [output.path_quality for output in enabled] == pytest.approx([output.path_quality for output in disabled])
+  assert [output.path_reason for output in enabled] == [output.path_reason for output in disabled]
+  assert [output.gated for output in enabled] == [output.gated for output in disabled]
+
+
+def test_demand_ab_reports_correct_deltas_and_preserves_selected_source_window():
+  frames = tuple(
+    replace(_coherent_frame(i * DT, curvature=0.001 if (i // 5) % 2 == 0 else -0.001), source_t=1331.0 + i * DT)
+    for i in range(100)
+  )
+  metadata = RouteExtractionSummary(
+    route="selected.rlog",
+    qlog=False,
+    window_start_s=1331.0,
+    window_end_s=1391.0,
+    max_frames=None,
+    extracted_count=len(frames),
+    original_time_span_s=frames[-1].source_t - frames[0].source_t,
+    dt=DT,
+    selected_original_start_s=frames[0].source_t,
+    selected_original_end_s=frames[-1].source_t,
+  )
+  report = analyze_lateral_demand_ab(frames, source="selected.rlog", route_metadata=metadata)
+  enabled = report.variants["enabled"]
+  disabled = report.variants["disabled"]
+
+  assert report.route_metadata is metadata
+  assert enabled.source_start_s == pytest.approx(1331.0)
+  assert enabled.source_end_s == pytest.approx(1331.99)
+  assert enabled.normalized_start_s == pytest.approx(0.0)
+  assert enabled.normalized_end_s == pytest.approx(0.99)
+  assert enabled.source_timing_used is True
+  assert enabled.metrics["raw_curvature_oscillation_pp"] == pytest.approx(disabled.metrics["raw_curvature_oscillation_pp"])
+  processed_delta = enabled.metrics["processed_curvature_oscillation_pp"] - disabled.metrics["processed_curvature_oscillation_pp"]
+  assert report.deltas_enabled_minus_disabled["processed_curvature_oscillation_pp"] == pytest.approx(processed_delta)
+  assert report.deltas_enabled_minus_disabled["path_wander_evidence"] == pytest.approx(
+    enabled.metrics["path_wander_evidence"] - disabled.metrics["path_wander_evidence"]
+  )
+  assert "measurement-only" in render_lateral_demand_ab(report)
+  payload = report.to_dict()
+  assert payload["route_metadata"]["window_start_s"] == pytest.approx(1331.0)
+  assert payload["variants"]["enabled"]["source_start_s"] == pytest.approx(1331.0)
+
+
 # ---------- route-derived scenario tests ----------
 
 
@@ -934,6 +1000,34 @@ def test_main_list_only_outputs_extraction_summary(monkeypatch):
   payload = json.loads(stdout.getvalue())
   assert payload["route"] == "fake/route"
   assert payload["extracted_count"] == 5
+
+
+def test_main_demand_ab_accepts_explicit_route_window(monkeypatch):
+  baseline = [_car_state(0.0)] + _fake_route_messages(5, desired_curvature=0.0005, start_t=1187.0)
+  original_load_route_msgs = route_io_module.load_route_msgs
+  route_io_module.load_route_msgs = lambda route, qlog=False: baseline
+  previous_argv = sys.argv
+  stdout = io.StringIO()
+  try:
+    sys.argv = [
+      "fuzz_lateral_route_replay.py",
+      "--route", "selected.rlog",
+      "--window", "1187,1216",
+      "--demand-ab",
+      "--json",
+    ]
+    with contextlib.redirect_stdout(stdout):
+      main()
+  finally:
+    route_io_module.load_route_msgs = original_load_route_msgs
+    sys.argv = previous_argv
+
+  payload = json.loads(stdout.getvalue())
+  assert payload["source"] == "selected.rlog"
+  assert payload["route_metadata"]["window_start_s"] == pytest.approx(1187.0)
+  assert payload["route_metadata"]["window_end_s"] == pytest.approx(1216.0)
+  assert payload["variants"]["enabled"]["source_start_s"] == pytest.approx(1187.0)
+  assert payload["variants"]["disabled"]["frame_count"] == 5
 
 
 def test_main_route_and_preset_are_mutually_exclusive(monkeypatch):

@@ -240,6 +240,7 @@ STOP_ANCHOR_JUMP_CONFIRM_FRAMES = 3       # ...this many consecutive frames (jit
 STOP_ANCHOR_MAX_DIVERGENCE_M = 15.0       # anchor never commits further below the live target...
 STOP_ANCHOR_DIVERGENCE_FRACTION = 0.5     # ...nor below this fraction of it (binds near the stop)
 STOP_ANCHOR_RELEASE_MISSING_S = 1.0       # sustained model retraction (green) releases
+STOP_ANCHOR_CLEAR_CONFIRM_FRAMES = STOP_ANCHOR_JUMP_CONFIRM_FRAMES  # reuse the three-frame persistence gate
 STOP_ANCHOR_MIN_COMMIT_S = 0.25           # consumers ignore commitments younger than this (blip filter)
 # Route 2ba t=1517/1623: the committed distance burned to 0 with travel while the model still
 # placed the stop 6.6 m ahead, releasing the whole stop posture at 4.5 m/s (driver braked).
@@ -276,6 +277,8 @@ class ModelStopAnchor:
     self.committed_s = 0.0
     self.corroborated = False
     self._missing_s = 0.0
+    self._semantic_clear_frames = 0
+    self._semantic_clear_latched = False
     self._jump_frames = 0
     self._corr_d0: float | None = None
     self._corr_travel = 0.0
@@ -285,6 +288,8 @@ class ModelStopAnchor:
     self.committed_s = 0.0
     self.corroborated = False
     self._missing_s = 0.0
+    self._semantic_clear_frames = 0
+    self._semantic_clear_latched = False
     self._jump_frames = 0
     self._corr_d0 = None
     self._corr_travel = 0.0
@@ -296,9 +301,24 @@ class ModelStopAnchor:
       self.remaining = max(self.remaining, STOP_ANCHOR_MIN_ACTIVE_M)
     return self.remaining
 
-  def update(self, model_stop_distance: float | None, v_ego: float, dt: float) -> float | None:
+  def update(self, model_stop_distance: float | None, v_ego: float, dt: float,
+             semantic_clear: bool = False) -> float | None:
     dt = max(0.0, float(dt))
     travel = max(0.0, float(v_ego)) * dt
+    if semantic_clear:
+      if self._semantic_clear_latched:
+        return None
+      self._semantic_clear_frames += 1
+      if self._semantic_clear_frames >= STOP_ANCHOR_CLEAR_CONFIRM_FRAMES:
+        self.reset()
+        self._semantic_clear_latched = True
+        return None
+      # A clear frame cannot create a new commitment from a trailing zero-speed point.
+      if self.remaining is None:
+        return None
+    else:
+      self._semantic_clear_frames = 0
+      self._semantic_clear_latched = False
     if self.remaining is not None:
       self.committed_s += dt
       self._corr_travel += travel

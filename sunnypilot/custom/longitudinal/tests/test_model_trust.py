@@ -334,6 +334,28 @@ def test_model_stop_anchor_releases_after_sustained_retraction_only():
   assert d is None and a.remaining is None
 
 
+def test_model_stop_anchor_one_semantic_clear_frame_retains_commitment():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import ModelStopAnchor
+  a = ModelStopAnchor()
+  a.update(80.0, v_ego=10.0, dt=0.05)
+  d = a.update(80.0, v_ego=10.0, dt=0.05, semantic_clear=True)
+  assert d is not None
+  assert a.remaining is not None
+
+
+def test_model_stop_anchor_sustained_semantic_clear_releases_and_blocks_recommit():
+  from openpilot.sunnypilot.custom.longitudinal.model_trust import (
+    ModelStopAnchor, STOP_ANCHOR_CLEAR_CONFIRM_FRAMES)
+  a = ModelStopAnchor()
+  a.update(80.0, v_ego=10.0, dt=0.05)
+  for _ in range(STOP_ANCHOR_CLEAR_CONFIRM_FRAMES - 1):
+    assert a.update(80.0, v_ego=10.0, dt=0.05, semantic_clear=True) is not None
+  assert a.update(80.0, v_ego=10.0, dt=0.05, semantic_clear=True) is None
+  assert a.remaining is None
+  for _ in range(5):
+    assert a.update(80.0, v_ego=10.0, dt=0.05, semantic_clear=True) is None
+
+
 def test_model_stop_anchor_commit_age_accrues_for_blip_filtering():
   from openpilot.sunnypilot.custom.longitudinal.model_trust import ModelStopAnchor, STOP_ANCHOR_MIN_COMMIT_S
   a = ModelStopAnchor()

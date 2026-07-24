@@ -14,6 +14,7 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.wiring import (
   DEFAULT_ACCEL_LIMITS,
   MODEL_STOP_EARLY_MARGIN_M,
+  MODEL_STALE_AGE_S,
   CustomLongitudinalAdapter,
   build_stack_inputs,
   _model_stop_distance,
@@ -128,6 +129,18 @@ def test_build_stack_inputs_carries_model_stale_flag():
     model_should_stop=True, model_desired_accel=-2.0, model_stale=True,
   )
   assert inp.model_stale is True
+
+
+def test_build_stack_inputs_carries_standstill():
+  inp = build_stack_inputs(
+    v_ego=0.0, a_ego=0.0, v_cruise=15.0, seed_a_target=0.0, accel_limits=DEFAULT_ACCEL_LIMITS,
+    lead_one=None, lead_two=None,
+    scc_vision_active=False, scc_vision_a_target=0.0, scc_map_active=False, scc_map_a_target=0.0,
+    sla_active=False, sla_v_target=0.0, sla_a_target=0.0,
+    mode=LongitudinalMode.E2E, personality=Personality.STANDARD, sources=SourceToggles(),
+    standstill=True,
+  )
+  assert inp.standstill is True
 
 
 def test_build_stack_inputs_carries_dynamic_floor_inputs():
@@ -435,6 +448,74 @@ def test_distance_aware_stop_approach_brakes_in_e2e():
                         fake_scc(), fake_sla(), dt=0.05)
   assert out_e2e < 0.0
   assert out_acc == pytest.approx(0.0)
+
+
+def test_fresh_semantic_model_clear_releases_anchor_before_missing_timeout():
+  class TimestampedSm(dict):
+    pass
+
+  adapter = CustomLongitudinalAdapter(FakeParams(
+    CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+
+  def frame(model_should_stop, model_accel):
+    sm = TimestampedSm(fake_sm(
+      model_should_stop=model_should_stop, model_accel=model_accel,
+      model_x=STOP_TRAJ_X, model_v=STOP_TRAJ_V, long_active=True,
+    ))
+    sm.recv_time = {'modelV2': time.monotonic()}
+    return sm
+
+  for _ in range(8):
+    adapter.evaluate(frame(True, -2.0), 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  assert adapter._stop_anchor.remaining is not None
+
+  first_clear = adapter.evaluate(frame(False, 0.0), 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  assert adapter._stop_anchor.remaining is not None
+  assert first_clear.debug["model_stop_distance_used"] > 0.0
+
+  for _ in range(2):
+    cleared = adapter.evaluate(frame(False, 0.0), 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  assert adapter._stop_anchor.remaining is None
+  assert cleared.debug["model_stop_distance_used"] == 0.0
+
+  for _ in range(5):
+    still_clear = adapter.evaluate(frame(False, 0.0), 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+    assert still_clear.debug["model_stop_distance_used"] == 0.0
+  assert adapter._stop_anchor.remaining is None
+
+
+def test_stale_or_absent_model_evidence_cannot_semantically_clear_anchor():
+  class TimestampedSm(dict):
+    pass
+
+  adapter = CustomLongitudinalAdapter(FakeParams(
+    CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+
+  def frame(model_should_stop=True, model_accel=-2.0, *, fresh: bool | None = True, action=True):
+    sm = TimestampedSm(fake_sm(
+      model_should_stop=model_should_stop, model_accel=model_accel,
+      model_x=STOP_TRAJ_X, model_v=STOP_TRAJ_V, long_active=True,
+    ))
+    if action is False:
+      sm['modelV2'].action = None
+    if fresh is True:
+      sm.recv_time = {'modelV2': time.monotonic()}
+    elif fresh is False:
+      sm.recv_time = {'modelV2': time.monotonic() - MODEL_STALE_AGE_S - 0.1}
+    return sm
+
+  for _ in range(8):
+    adapter.evaluate(frame(), 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  assert adapter._stop_anchor.remaining is not None
+
+  for sm in (
+    frame(False, 0.0, fresh=False),
+    frame(False, 0.0, fresh=None),
+    frame(False, 0.0, action=False),
+    frame(False, -0.1),
+  ):
+    adapter.evaluate(sm, 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+    assert adapter._stop_anchor.remaining is not None
 
 
 def test_default_mode_is_scc_the_dec_replacement():

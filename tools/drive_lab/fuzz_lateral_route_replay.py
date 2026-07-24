@@ -33,7 +33,6 @@ from openpilot.sunnypilot.custom.lateral.demand.pipeline import (
   LateralDemandPipeline,
   LateralDemandPipelineInputs,
 )
-from openpilot.sunnypilot.custom.lateral.demand.types import DEMAND_SOURCE_MODEL_PATH
 
 
 ARTIFACT_SCHEMA = "drive-lab-lateral-route-replay-fuzzer-artifact"
@@ -358,14 +357,17 @@ class RouteFrameOutput:
   """Per-frame pipeline output."""
 
   t: float
+  source_t: float | None
   v_ego: float
   raw_curvature: float
   processed_curvature: float
+  command_curvature: float
   measured_curvature: float
   path_quality: float
   path_reason: str
   gated: bool
   demand_source: str
+  demand_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -381,6 +383,56 @@ class RouteReplayResult:
   @property
   def valid(self) -> bool:
     return not (self.baseline_failures or self.perturbation_failures or self.comparison_failures)
+
+
+@dataclass(frozen=True)
+class LateralDemandABVariant:
+  """Measurement for one demand-enabled/disabled replay stream."""
+
+  name: str
+  demand_enabled: bool
+  frame_count: int
+  normalized_start_s: float | None
+  normalized_end_s: float | None
+  source_start_s: float | None
+  source_end_s: float | None
+  source_timing_used: bool
+  metrics: dict[str, float | int | None]
+
+  def to_dict(self) -> dict[str, Any]:
+    return {
+      "name": self.name,
+      "demand_enabled": self.demand_enabled,
+      "frame_count": self.frame_count,
+      "normalized_start_s": self.normalized_start_s,
+      "normalized_end_s": self.normalized_end_s,
+      "source_start_s": self.source_start_s,
+      "source_end_s": self.source_end_s,
+      "source_timing_used": self.source_timing_used,
+      "metrics": _sanitize(self.metrics),
+    }
+
+
+@dataclass(frozen=True)
+class LateralDemandABReport:
+  """Measurement-only A/B report for one already-extracted route frame window."""
+
+  source: str
+  route_metadata: RouteExtractionSummary | None
+  variants: dict[str, LateralDemandABVariant]
+  deltas_enabled_minus_disabled: dict[str, float | None]
+  notes: list[str]
+
+  def to_dict(self) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+      "source": self.source,
+      "variants": {name: variant.to_dict() for name, variant in self.variants.items()},
+      "deltas_enabled_minus_disabled": _sanitize(self.deltas_enabled_minus_disabled),
+      "notes": list(self.notes),
+    }
+    if self.route_metadata is not None:
+      payload["route_metadata"] = self.route_metadata.to_dict()
+    return payload
 
 
 # ---------- helpers ----------
@@ -434,18 +486,22 @@ def _frame_to_inputs(frame: LateralRouteFrame) -> LateralDemandPipelineInputs:
   )
 
 
-def _output_from_result(frame: LateralRouteFrame, pipeline_result: Any) -> RouteFrameOutput:
+def _output_from_result(frame: LateralRouteFrame, pipeline_result: Any, *, demand_enabled: bool = True) -> RouteFrameOutput:
   d = pipeline_result.demand
+  processed_curvature = float(d.processed_curvature) if demand_enabled else float(frame.raw_curvature)
   return RouteFrameOutput(
     t=frame.t,
+    source_t=frame.source_t,
     v_ego=frame.v_ego,
     raw_curvature=d.raw_curvature,
-    processed_curvature=d.processed_curvature,
+    processed_curvature=processed_curvature,
+    command_curvature=processed_curvature,
     measured_curvature=d.measured_curvature,
     path_quality=d.path_quality,
     path_reason=pipeline_result.model_path_result.reason,
     gated=pipeline_result.model_path_result.gated,
-    demand_source=d.demand_source,
+    demand_source=d.demand_source if demand_enabled else "disabled_raw_passthrough",
+    demand_enabled=demand_enabled,
   )
 
 
@@ -1263,17 +1319,157 @@ def generate_scenarios(config: RouteReplayFuzzerConfig) -> list[RouteReplayScena
 # ---------- runner / evaluation ----------
 
 
-def _run_frames(frames: tuple[LateralRouteFrame, ...]) -> tuple[RouteFrameOutput, ...]:
+def _run_frames(
+  frames: tuple[LateralRouteFrame, ...], *, demand_enabled: bool = True, use_enabled_demand_config: bool = False,
+) -> tuple[RouteFrameOutput, ...]:
   pipeline = LateralDemandPipeline(dt=DT)
   outputs: list[RouteFrameOutput] = []
   for frame in frames:
-    result = pipeline.update(_frame_to_inputs(frame))
-    outputs.append(_output_from_result(frame, result))
+    inputs = _frame_to_inputs(frame)
+    if use_enabled_demand_config:
+      inputs = replace(inputs, smooth_model_path_curvature=True, demand_jerk_smoothing_enabled=True)
+    result = pipeline.update(inputs)
+    outputs.append(_output_from_result(frame, result, demand_enabled=demand_enabled))
   return tuple(outputs)
 
 
-def _lat_accel(v_ego: float, curvature: float) -> float:
+def _lat_accel(v_ego: float | np.ndarray, curvature: float | np.ndarray) -> float | np.ndarray:
   return (v_ego * v_ego) * curvature
+
+
+DEMAND_AB_CURVATURE_EPS = 1e-6
+
+
+def _metric_span(values: np.ndarray) -> float | None:
+  finite = values[np.isfinite(values)]
+  if finite.size < 2:
+    return None
+  return float(np.percentile(finite, 95.0) - np.percentile(finite, 5.0))
+
+
+def _metric_p95_abs(values: np.ndarray) -> float | None:
+  finite = np.abs(values[np.isfinite(values)])
+  return float(np.percentile(finite, 95.0)) if finite.size else None
+
+
+def _metric_jerk_p95(values: np.ndarray, times: np.ndarray) -> float | None:
+  if values.size < 2 or times.size != values.size:
+    return None
+  dt = np.diff(times)
+  dv = np.diff(values)
+  valid = (dt > 1e-6) & np.isfinite(dt) & np.isfinite(dv)
+  return _metric_p95_abs(dv[valid] / dt[valid]) if np.any(valid) else None
+
+
+def _metric_times(frames: tuple[LateralRouteFrame, ...]) -> tuple[np.ndarray, bool]:
+  source_times = [frame.source_t for frame in frames]
+  if len(source_times) == len(frames) and all(time is not None and math.isfinite(float(time)) for time in source_times):
+    times = np.asarray([float(time) for time in source_times if time is not None], dtype=float)
+    if len(times) < 2 or np.all(np.diff(times) > 0.0):
+      return times, True
+  return np.asarray([frame.t for frame in frames], dtype=float), False
+
+
+def _fmt(value: Any, ndigits: int = 6) -> str:
+  if value is None:
+    return "n/a"
+  try:
+    value_f = float(value)
+  except (TypeError, ValueError):
+    return "n/a"
+  return "n/a" if not math.isfinite(value_f) else f"{value_f:.{ndigits}f}"
+
+
+def _demand_ab_metrics(frames: tuple[LateralRouteFrame, ...], outputs: tuple[RouteFrameOutput, ...]) -> dict[str, float | int | None]:
+  raw = np.asarray([frame.raw_curvature for frame in frames], dtype=float)
+  processed = np.asarray([output.processed_curvature for output in outputs], dtype=float)
+  command = np.asarray([output.command_curvature for output in outputs], dtype=float)
+  measured = np.asarray([frame.measured_curvature for frame in frames], dtype=float)
+  v_ego = np.asarray([frame.v_ego for frame in frames], dtype=float)
+  times, _ = _metric_times(frames)
+  path_error = _lat_accel(v_ego, command - measured)
+  metrics: dict[str, float | int | None] = {}
+  for name, values in (("raw", raw), ("processed", processed), ("command", command)):
+    metrics[f"{name}_curvature_oscillation_pp"] = _metric_span(values)
+    metrics[f"{name}_curvature_reversals"] = _sign_flip_count(values, DEMAND_AB_CURVATURE_EPS)
+    metrics[f"{name}_curvature_jerk_p95"] = _metric_jerk_p95(values, times)
+  metrics["path_wander_evidence"] = _metric_p95_abs(path_error)
+  return metrics
+
+
+def _demand_ab_variant(
+  name: str, demand_enabled: bool, frames: tuple[LateralRouteFrame, ...], outputs: tuple[RouteFrameOutput, ...],
+) -> LateralDemandABVariant:
+  source_times = [frame.source_t for frame in frames if frame.source_t is not None]
+  _, source_timing_used = _metric_times(frames)
+  return LateralDemandABVariant(
+    name=name,
+    demand_enabled=demand_enabled,
+    frame_count=len(frames),
+    normalized_start_s=frames[0].t if frames else None,
+    normalized_end_s=frames[-1].t if frames else None,
+    source_start_s=float(source_times[0]) if source_times else None,
+    source_end_s=float(source_times[-1]) if source_times else None,
+    source_timing_used=source_timing_used,
+    metrics=_demand_ab_metrics(frames, outputs),
+  )
+
+
+def analyze_lateral_demand_ab(
+  frames: tuple[LateralRouteFrame, ...] | list[LateralRouteFrame],
+  *,
+  source: str = "unknown",
+  route_metadata: RouteExtractionSummary | None = None,
+) -> LateralDemandABReport:
+  """Replay one extracted frame window with demand processing enabled and disabled.
+
+  Both variants execute the same ``LateralDemandPipeline`` with identical inputs and the
+  production enabled smoothing flags. The disabled stream reports the adapter's raw
+  pass-through output; no pass/fail threshold or control tuning is applied.
+  """
+  selected = tuple(frames)
+  enabled_outputs = _run_frames(selected, demand_enabled=True, use_enabled_demand_config=True)
+  disabled_outputs = _run_frames(selected, demand_enabled=False, use_enabled_demand_config=True)
+  enabled = _demand_ab_variant("enabled", True, selected, enabled_outputs)
+  disabled = _demand_ab_variant("disabled", False, selected, disabled_outputs)
+  deltas: dict[str, float | None] = {}
+  for key in enabled.metrics:
+    enabled_value = enabled.metrics[key]
+    disabled_value = disabled.metrics[key]
+    if enabled_value is None or disabled_value is None:
+      deltas[key] = None
+    else:
+      deltas[key] = float(enabled_value) - float(disabled_value)
+  return LateralDemandABReport(
+    source=source,
+    route_metadata=route_metadata,
+    variants={"disabled": disabled, "enabled": enabled},
+    deltas_enabled_minus_disabled=deltas,
+    notes=[
+      "measurement-only: no pass/fail threshold or tuning change",
+      "command curvature is the replayed pre-clip processed demand output",
+      "path_wander_evidence is p95 absolute command-versus-measured lateral-acceleration error; vehicle dynamics are not re-simulated",
+      "both variants re-execute LateralDemandPipeline with identical inputs/config; only demand output enable/pass-through differs",
+    ],
+  )
+
+
+def render_lateral_demand_ab(report: LateralDemandABReport) -> str:
+  lines = [f"Lateral demand replay A/B: {report.source}"]
+  for name in ("disabled", "enabled"):
+    variant = report.variants[name]
+    lines.append(
+      f"  {name}: demand_enabled={variant.demand_enabled} frames={variant.frame_count} "
+      + f"source={variant.source_start_s}..{variant.source_end_s} normalized={variant.normalized_start_s}..{variant.normalized_end_s} "
+      + f"metric_timing={'source_t' if variant.source_timing_used else 'normalized_t'}"
+    )
+    for key, value in sorted(variant.metrics.items()):
+      lines.append(f"    {key}={_fmt(value)}")
+  lines.append("  deltas (enabled - disabled):")
+  for key, value in sorted(report.deltas_enabled_minus_disabled.items()):
+    lines.append(f"    {key}={_fmt(value)}")
+  lines.extend(f"  note: {note}" for note in report.notes)
+  return "\n".join(lines)
 
 
 def _validate_input_frames(frames: tuple[LateralRouteFrame, ...], label: str) -> list[dict[str, Any]]:
@@ -1506,9 +1702,9 @@ def evaluate_scenario(scenario: RouteReplayScenario) -> RouteReplayResult:
               "check": "expected_stale_age_bridge_toward_measured",
               "detail": (
                 f"stale-age delayed max processed lateral error {max_processed_lat_error:.3f} m/s^2 "
-                f"exceeds raw {max_raw_lat_error:.3f} m/s^2 + {_MODEL_AGE_DELAY_MAX_EXTRA_LAT_ACCEL_ERROR:.3f} "
-                f"and absolute cap {_MODEL_AGE_DELAY_MAX_PROCESSED_LAT_ACCEL_ERROR:.3f} m/s^2 "
-                f"({material_frames} material frames)"
+                + f"exceeds raw {max_raw_lat_error:.3f} m/s^2 + {_MODEL_AGE_DELAY_MAX_EXTRA_LAT_ACCEL_ERROR:.3f} "
+                + f"and absolute cap {_MODEL_AGE_DELAY_MAX_PROCESSED_LAT_ACCEL_ERROR:.3f} m/s^2 "
+                + f"({material_frames} material frames)"
               ),
             })
 
@@ -1630,7 +1826,10 @@ def replay_artifact(path: str | Path) -> RouteReplayResult:
 
 
 def _render_scenario_snippet(scenario: RouteReplayScenario) -> str:
-  return f"# preset: {scenario.preset} perturbation: {scenario.recipe.kind}\nRouteReplayScenario(title={scenario.title!r}, frames=[...{len(scenario.frames)} frames...])"
+  return (
+    f"# preset: {scenario.preset} perturbation: {scenario.recipe.kind}\n"
+    + f"RouteReplayScenario(title={scenario.title!r}, frames=[...{len(scenario.frames)} frames...])"
+  )
 
 
 def _parse_window(window: str | None) -> tuple[float | None, float | None]:
@@ -1659,10 +1858,11 @@ def main() -> None:
   parser.add_argument("--perturbation", choices=CLI_PERTURBATION_KINDS, help="Perturbation kind (default random)")
   parser.add_argument("--duration", type=float, default=2.0, help="Scenario duration in seconds")
   parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+  parser.add_argument("--output", type=str, default=None, help="Write demand A/B JSON to this path")
   parser.add_argument("--fail-fast", action="store_true", help="Stop after the first failure")
   parser.add_argument("--artifact-dir", type=str, default=None, help="Directory to write failure artifacts")
   parser.add_argument("--replay", type=str, default=None, help="Replay a route-replay artifact JSON file")
-  parser.add_argument("--route", type=str, default=None, help="Route identifier or log file to extract frames from")
+  parser.add_argument("--route", type=str, default=None, help="Route base/segment, local rlog file, or URL accepted by LogReader")
   parser.add_argument("--qlog", action="store_true", help="Use qlog when loading route")
   parser.add_argument("--window", type=str, default=None, help="Original-time window START,END in seconds")
   parser.add_argument("--max-frames", type=int, default=None, help="Maximum route frames to extract")
@@ -1671,6 +1871,7 @@ def main() -> None:
   parser.add_argument("--sample-window-count", type=int, default=1, help="Number of sampled windows")
   parser.add_argument("--sample-seed", type=int, default=None, help="Seed for random-window sampling (defaults to --seed)")
   parser.add_argument("--timing", choices=TIMING_MODES, default="fixed-dt", help="Timing mode for route replay (default fixed-dt)")
+  parser.add_argument("--demand-ab", action="store_true", help="Compare demand processing enabled vs raw pass-through on one route window")
   parser.add_argument("--list-only", action="store_true", help="Only extract and summarize route frames; skip fuzzing")
   args = parser.parse_args()
 
@@ -1699,7 +1900,35 @@ def main() -> None:
     parser.error("--sample-window-count must be > 0")
   if args.route and args.timing == "original":
     parser.error("--timing original is not yet supported; use fixed-dt")
+  if args.demand_ab and not args.route:
+    parser.error("--demand-ab requires --route")
+  if args.demand_ab and (args.replay or args.list_only):
+    parser.error("--demand-ab cannot be combined with --replay or --list-only")
+  if args.demand_ab and args.sample_mode != "prefix":
+    parser.error("--demand-ab uses the explicit --window; --sample-mode is not supported")
   sample_seed = args.sample_seed if args.sample_seed is not None else args.seed
+
+  if args.demand_ab:
+    assert args.route is not None
+    frames, metadata = _load_route_frames_with_summary(
+      args.route,
+      qlog=args.qlog,
+      start_s=window_start_s,
+      end_s=window_end_s,
+      max_frames=args.max_frames,
+      timing_mode=args.timing,
+      sampling_mode="prefix",
+    )
+    if not frames:
+      parser.error(f"no route frames extracted from {args.route}")
+    report = analyze_lateral_demand_ab(frames, source=args.route, route_metadata=metadata)
+    if args.output:
+      Path(args.output).write_text(json.dumps(_sanitize(report.to_dict()), indent=2, sort_keys=True, allow_nan=False) + "\n")
+    if args.json:
+      print(json.dumps(_sanitize(report.to_dict()), indent=2, sort_keys=True, allow_nan=False))
+    else:
+      print(render_lateral_demand_ab(report))
+    return
 
   if args.route and args.list_only:
     list_config = RouteReplayFuzzerConfig(
@@ -1766,7 +1995,11 @@ def main() -> None:
     if args.json:
       print(json.dumps(_sanitize(artifact_to_dict(result, seed=None, index=None)), indent=2, sort_keys=True, allow_nan=False))
     else:
-      print(f"Replayed {args.replay}: valid={result.valid} baseline_failures={len(result.baseline_failures)} perturbation_failures={len(result.perturbation_failures)} comparison_failures={len(result.comparison_failures)}")
+      print(
+        f"Replayed {args.replay}: valid={result.valid} baseline_failures={len(result.baseline_failures)} "
+        + f"perturbation_failures={len(result.perturbation_failures)} "
+        + f"comparison_failures={len(result.comparison_failures)}"
+      )
       for failure in result.baseline_failures:
         print(f"  baseline: {failure['check']}: {failure['detail']}")
       for failure in result.perturbation_failures:
@@ -1860,7 +2093,7 @@ def main() -> None:
       + f"preset={source} perturbation={args.perturbation or 'random'} "
       + f"{span_text} dt={DT}s failures={len(failures)}"
     )
-    for idx, result in failures[:10]:
+    for _idx, result in failures[:10]:
       print(f"\nFAILED: {result.scenario.title}")
       for failure in result.baseline_failures:
         print(f"  baseline: {failure['check']}: {failure['detail']}")

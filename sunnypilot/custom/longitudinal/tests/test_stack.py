@@ -281,6 +281,14 @@ def test_e2e_model_stop_brakes_acc_does_not():
   assert e2e.a_target < 0.0 and e2e.should_stop is True      # E2E brakes
 
 
+def test_standstill_is_threaded_into_trusted_model_stop_semantics():
+  result = CustomLongitudinalStack().update(base(
+    v_ego=0.0, v_cruise=15.0, seed_a_target=0.0, standstill=True, mode=LongitudinalMode.E2E,
+    model_should_stop=True, model_stop_distance=8.0, model_desired_accel=-1.0, model_stop_prob=1.0,
+  ), DT)
+  assert result.should_stop is True
+
+
 def test_lead_follow_decel_binds():
   s = CustomLongitudinalStack()
   r = None

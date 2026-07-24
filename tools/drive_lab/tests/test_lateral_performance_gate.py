@@ -1,3 +1,4 @@
+import json
 import math
 from types import SimpleNamespace
 
@@ -51,14 +52,18 @@ def lane_lines(offset: float):
 
 
 def sample_msgs(t_s: float, *, v_ego: float = 18.0, raw_curvature: float = 0.0,
-                processed_curvature: float | None = None, actual_curvature: float | None = None,
+                conditioned_curvature: float | None = None, processed_curvature: float | None = None,
+                command_curvature: float | None = None, actual_curvature: float | None = None,
                 steering_angle: float = 0.0, steering_rate: float = 0.0, output: float = 0.0,
                 unshaped_output: float | None = None, desired_accel: float | None = None,
                 actual_accel: float | None = None, shaping_active: bool = False, shaping_reason: int = 0,
                 steer_limited: bool = False, lane_change_state: str = "off", left_blinker: bool = False,
                 right_blinker: bool = False, path_quality: float = 1.0, path_gated: bool = False,
-                offset_y: float = 0.0, torque_version: int = 21):
+                offset_y: float = 0.0, torque_version: int = 21, steering_torque: float | None = 0.0,
+                car_state_age_s: float = 0.0, include_conditioned: bool = True):
+  conditioned = raw_curvature if conditioned_curvature is None else conditioned_curvature
   processed = raw_curvature if processed_curvature is None else processed_curvature
+  command = processed if command_curvature is None else command_curvature
   actual = raw_curvature * 0.95 if actual_curvature is None else actual_curvature
   desired_lat_accel = processed * v_ego ** 2 if desired_accel is None else desired_accel
   actual_lat_accel = actual * v_ego ** 2 if actual_accel is None else actual_accel
@@ -81,9 +86,17 @@ def sample_msgs(t_s: float, *, v_ego: float = 18.0, raw_curvature: float = 0.0,
     actualLateralAccel=actual_lat_accel,
     adaptiveTorqueState=adaptive,
   )
+  car_state = dict(
+    vEgo=v_ego, steeringPressed=False, leftBlinker=left_blinker, rightBlinker=right_blinker,
+    steeringAngleDeg=steering_angle, steeringRateDeg=steering_rate,
+  )
+  if steering_torque is not None:
+    car_state["steeringTorque"] = steering_torque
+  model_path = dict(rawDesiredCurvature=raw_curvature, processedDesiredCurvature=processed, gated=path_gated, quality=path_quality)
+  if include_conditioned:
+    model_path["conditionedDesiredCurvature"] = conditioned
   return [
-    msg("carState", t_s, vEgo=v_ego, steeringPressed=False, leftBlinker=left_blinker, rightBlinker=right_blinker,
-        steeringAngleDeg=steering_angle, steeringRateDeg=steering_rate),
+    msg("carState", t_s - car_state_age_s, **car_state),
     msg("carControl", t_s, latActive=True),
     msg("carOutput", t_s, actuatorsOutput=SimpleNamespace(torque=output * 0.8)),
     msg("modelV2", t_s,
@@ -92,18 +105,16 @@ def sample_msgs(t_s: float, *, v_ego: float = 18.0, raw_curvature: float = 0.0,
         laneLines=lane_lines(offset_y)),
     msg("controlsState", t_s,
         curvature=actual,
-        desiredCurvature=processed,
+        desiredCurvature=command,
         lateralControlState=FakeUnion(torqueState=torque_state),
-        modelPathState=SimpleNamespace(
-          rawDesiredCurvature=raw_curvature,
-          processedDesiredCurvature=processed,
-          gated=path_gated,
-          quality=path_quality,
-        )),
+        modelPathState=SimpleNamespace(**model_path)),
   ]
 
 
-def path_wander_msgs(*, lane_change_state: str = "off", offset: bool = False):
+def path_wander_msgs(
+  *, lane_change_state: str = "off", offset: bool = False, car_state_age_s: float = 0.0,
+  include_conditioned: bool = True, steering_torque: float | None = 0.0,
+):
   msgs = []
   previous_angle = 0.0
   for i in range(420):
@@ -123,6 +134,9 @@ def path_wander_msgs(*, lane_change_state: str = "off", offset: bool = False):
       output=raw * 120.0,
       lane_change_state=lane_change_state,
       offset_y=offset_y,
+      car_state_age_s=car_state_age_s,
+      include_conditioned=include_conditioned,
+      steering_torque=steering_torque,
     ))
   return msgs
 
@@ -134,11 +148,97 @@ def test_lateral_performance_gate_classifies_demand_driven_wander_and_round_trip
   loaded = load_lateral_performance_gate(path)
   rendered = render_lateral_performance_gate(loaded)
 
+  assert loaded.schema_version == 2
   assert loaded.dominant_failure_class == PATH_WANDER_DOMINANT
   assert loaded.branch_recommendation == "feat/lateral-control"
   assert loaded.wander_candidate_windows
   assert loaded.wander_candidate_windows[0].cause == DEMAND_DRIVEN_WANDER
   assert "dominant failure class" in rendered
+
+
+def test_wander_report_keeps_model_path_stages_and_driver_torque_distinct():
+  msgs = []
+  for i in range(320):
+    t = i * 0.1
+    raw = 0.0016 * math.sin(2.0 * math.pi * t / 22.0)
+    msgs.extend(sample_msgs(
+      t,
+      v_ego=20.0,
+      raw_curvature=raw,
+      conditioned_curvature=raw * 0.5,
+      processed_curvature=raw * 0.25,
+      command_curvature=raw * 2.0,
+      actual_curvature=raw * 0.94,
+      steering_angle=raw * 3800.0,
+      steering_torque=0.42,
+      output=raw * 120.0,
+    ))
+
+  report = build_lateral_performance_gate(msgs, source="attribution", window_s=20.0, step_s=5.0)
+  window = report.wander_candidate_windows[0]
+
+  assert window.raw_curvature_pp > 0.0
+  assert window.conditioned_curvature_pp == pytest.approx(window.raw_curvature_pp * 0.5)
+  assert window.processed_curvature_pp == pytest.approx(window.raw_curvature_pp * 0.25)
+  assert window.controls_command_curvature_pp == pytest.approx(window.raw_curvature_pp * 2.0)
+  assert window.controls_command_actual_corr == pytest.approx(1.0)
+  assert window.driver_torque_p95 == pytest.approx(0.42)
+  serialized = report.to_dict()["wander_candidate_windows"][0]
+  assert serialized["conditioned_curvature_pp"] == pytest.approx(window.conditioned_curvature_pp)
+  assert serialized["controls_command_curvature_pp"] == pytest.approx(window.controls_command_curvature_pp)
+  assert serialized["driver_torque_p95"] == pytest.approx(0.42)
+  assert "controls_command_pp" in render_lateral_performance_gate(report)
+  assert "driver_torque_p95" in render_lateral_performance_gate(report)
+
+
+def test_lateral_gate_rejects_unversioned_legacy_report(tmp_path):
+  report = build_lateral_performance_gate(path_wander_msgs(), source="legacy-check", window_s=20.0, step_s=5.0)
+  for name, version in (("unversioned", None), ("unsupported", 1)):
+    payload = report.to_dict()
+    if version is None:
+      payload.pop("schema_version")
+    else:
+      payload["schema_version"] = version
+    path = tmp_path / f"legacy-gate-{name}.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="schema version"):
+      load_lateral_performance_gate(path)
+
+
+def test_lateral_gate_rejects_wholly_stale_car_state_wander_windows():
+  msgs = [
+    message for message in path_wander_msgs()
+    if (message.which() != "carState" or message.logMonoTime == 0)
+    and not (message.which() == "controlsState" and message.logMonoTime <= int(0.5e9))
+  ]
+  report = build_lateral_performance_gate(
+    msgs, source="stale-car-state", window_s=20.0, step_s=5.0,
+  )
+
+  assert not report.wander_candidate_windows
+
+
+def test_lateral_gate_keeps_partial_torque_evidence_nullable():
+  report = build_lateral_performance_gate(
+    path_wander_msgs(steering_torque=None), source="missing-torque", window_s=20.0, step_s=5.0,
+  )
+
+  assert report.wander_candidate_windows
+  window = report.wander_candidate_windows[0]
+  assert window.driver_torque_p95 is None
+  assert report.to_dict()["wander_candidate_windows"][0]["driver_torque_p95"] is None
+  assert "driver_torque_p95=n/a" in render_lateral_performance_gate(report)
+
+
+def test_lateral_gate_keeps_missing_conditioned_evidence_nullable():
+  report = build_lateral_performance_gate(
+    path_wander_msgs(include_conditioned=False), source="missing-conditioned", window_s=20.0, step_s=5.0,
+  )
+
+  assert report.wander_candidate_windows
+  assert report.wander_candidate_windows[0].conditioned_curvature_pp is None
+  assert report.to_dict()["wander_candidate_windows"][0]["conditioned_curvature_pp"] is None
 
 
 def test_lateral_performance_gate_uses_qlog_safe_unknown_lane_policy():

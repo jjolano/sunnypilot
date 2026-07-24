@@ -25,6 +25,8 @@ INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 DEMAND_DRIVEN_WANDER = "demand_driven_straight_path_wander"
 ACTUATION_DRIVEN_WANDER = "actuation_driven_straight_path_wander"
 MIXED_WANDER = "mixed_straight_path_wander"
+LATERAL_PERFORMANCE_GATE_SCHEMA_VERSION = 2
+MAX_CAR_STATE_AGE_S = 0.5
 
 BRANCH_RECOMMENDATIONS = {
   TORQUE_EVENT_DOMINANT: "feat/lateral-control",
@@ -53,12 +55,18 @@ class WanderCandidateWindow:
   severity_score: float
   speed_mps_median: float
   steering_angle_pp: float
-  actual_curvature_pp: float
-  raw_curvature_pp: float
-  processed_curvature_pp: float
-  desired_curvature_pp: float
+  actual_curvature_pp: float | None
+  raw_curvature_pp: float | None
+  conditioned_curvature_pp: float | None
+  processed_curvature_pp: float | None
+  # controlsState.desiredCurvature is a command/consistency signal, not a
+  # substitute for any modelPathState curvature stage.
+  controls_command_curvature_pp: float | None
   raw_actual_corr: float | None
+  conditioned_actual_corr: float | None
   processed_actual_corr: float | None
+  controls_command_actual_corr: float | None
+  driver_torque_p95: float | None
   gated_percent: float
   quality_median: float
   lane_state_unknown_percent: float
@@ -82,6 +90,7 @@ class RecenterOvershootCandidate:
 
 @dataclass(frozen=True)
 class LateralPerformanceGateReport:
+  schema_version: int
   source: str
   sample_count: int
   duration_s: float
@@ -105,7 +114,14 @@ class LateralPerformanceGateReport:
 
   @classmethod
   def from_dict(cls, data: dict[str, Any]) -> LateralPerformanceGateReport:
+    schema_version = data.get("schema_version", data.get("schemaVersion"))
+    if schema_version != LATERAL_PERFORMANCE_GATE_SCHEMA_VERSION:
+      raise ValueError(
+        f"unsupported lateral performance gate schema version: {schema_version!r}; "
+        + f"expected {LATERAL_PERFORMANCE_GATE_SCHEMA_VERSION}"
+      )
     return cls(
+      schema_version=LATERAL_PERFORMANCE_GATE_SCHEMA_VERSION,
       source=str(data.get("source", "unknown")),
       sample_count=int(data.get("sample_count", data.get("sampleCount", 0))),
       duration_s=float(data.get("duration_s", data.get("durationS", 0.0))),
@@ -142,15 +158,18 @@ class LateralPerformanceGateABReport:
 class _GateSample:
   t: float
   v_ego: float
+  car_state_fresh: bool
   lat_active: bool
   steering_pressed: bool
   blinker_active: bool
   lane_change_state: str
   steering_angle_deg: float
+  steering_torque: float
   curvature: float
   raw_desired_curvature: float
+  conditioned_desired_curvature: float
   processed_desired_curvature: float
-  desired_curvature: float
+  controls_desired_curvature: float
   model_path_gated: bool
   model_path_quality: float
   model_path_offset_y: float
@@ -166,16 +185,32 @@ def build_lateral_performance_gate(
   step_s: float = 5.0,
   max_wander_windows: int = 8,
   max_recenter_candidates: int = 8,
+  max_car_state_age_s: float = MAX_CAR_STATE_AGE_S,
 ) -> LateralPerformanceGateReport:
   ordered_msgs = list(msgs) if already_sorted else sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
   torque_event_report = build_lateral_torque_event_report(ordered_msgs, source=source, already_sorted=True)
   low_speed_report = build_lateral_low_speed_report(ordered_msgs, source=source, already_sorted=True)
-  samples = _extract_gate_samples(ordered_msgs)
+  samples = _extract_gate_samples(ordered_msgs, max_car_state_age_s=max_car_state_age_s)
   if not samples:
     return LateralPerformanceGateReport(
-      source, 0, 0.0, 0.0, 0.0, qlog_safe_lane_policy, INSUFFICIENT_EVIDENCE,
-      BRANCH_RECOMMENDATIONS[INSUFFICIENT_EVIDENCE], "low", 0.0, 0.0, 0.0,
-      torque_event_report, low_speed_report, [], [], ["no controlsState samples found"],
+      schema_version=LATERAL_PERFORMANCE_GATE_SCHEMA_VERSION,
+      source=source,
+      sample_count=0,
+      duration_s=0.0,
+      active_percent=0.0,
+      lane_state_unknown_percent=0.0,
+      qlog_safe_lane_policy=qlog_safe_lane_policy,
+      dominant_failure_class=INSUFFICIENT_EVIDENCE,
+      branch_recommendation=BRANCH_RECOMMENDATIONS[INSUFFICIENT_EVIDENCE],
+      confidence="low",
+      torque_event_score=0.0,
+      path_wander_score=0.0,
+      low_speed_score=0.0,
+      torque_event_report=torque_event_report,
+      low_speed_report=low_speed_report,
+      wander_candidate_windows=[],
+      recenter_overshoot_candidates=[],
+      notes=["no controlsState samples found"],
     )
 
   cols = _columns(samples)
@@ -185,8 +220,9 @@ def build_lateral_performance_gate(
   wander_score = max((window.severity_score for window in wander_windows), default=0.0)
   low_speed_score = _low_speed_score(low_speed_report)
   dominant, confidence = _dominant_failure_class(torque_score, wander_score, low_speed_score, wander_windows)
-  notes = _notes(cols, qlog_safe_lane_policy, wander_windows, recenter_candidates)
+  notes = _notes(cols, qlog_safe_lane_policy, wander_windows, recenter_candidates, max_car_state_age_s)
   return LateralPerformanceGateReport(
+    schema_version=LATERAL_PERFORMANCE_GATE_SCHEMA_VERSION,
     source=source,
     sample_count=len(samples),
     duration_s=float(cols["t"][-1] - cols["t"][0]) if len(samples) > 1 else 0.0,
@@ -240,17 +276,22 @@ def render_lateral_performance_gate(report: LateralPerformanceGateReport) -> str
     for window in report.wander_candidate_windows:
       lines.append(
         f"  {window.start_s:.1f}-{window.end_s:.1f}s cause={window.cause} confidence={window.confidence} "
-        f"score={window.severity_score:.2f} steer_pp={window.steering_angle_pp:.3f}deg "
-        f"actual_pp={window.actual_curvature_pp:.6f} raw_pp={window.raw_curvature_pp:.6f} "
-        f"processed_pp={window.processed_curvature_pp:.6f} unknown_lane={window.lane_state_unknown_percent:.1f}%"
+        + f"score={window.severity_score:.2f} steer_pp={window.steering_angle_pp:.3f}deg "
+        + f"actual_pp={_render_float(window.actual_curvature_pp, 6)} raw_pp={_render_float(window.raw_curvature_pp, 6)} "
+        + f"conditioned_pp={_render_float(window.conditioned_curvature_pp, 6)} "
+        + f"processed_pp={_render_float(window.processed_curvature_pp, 6)} "
+        + f"controls_command_pp={_render_float(window.controls_command_curvature_pp, 6)} "
+        + f"controls_command_corr={_render_float(window.controls_command_actual_corr, 3)} "
+        + f"driver_torque_p95={_render_float(window.driver_torque_p95, 3)} "
+        + f"unknown_lane={window.lane_state_unknown_percent:.1f}%"
       )
   if report.recenter_overshoot_candidates:
     lines.append("Recenter overshoot candidates:")
     for candidate in report.recenter_overshoot_candidates:
       lines.append(
         f"  {candidate.start_s:.1f}-{candidate.end_s:.1f}s confidence={candidate.confidence} "
-        f"offset_crossings={candidate.offset_crossings} correction_reversals={candidate.correction_reversals} "
-        f"offset_agree={candidate.offset_agreement_percent:.1f}% combined_offset_pp={candidate.combined_offset_pp:.3f}"
+        + f"offset_crossings={candidate.offset_crossings} correction_reversals={candidate.correction_reversals} "
+        + f"offset_agree={candidate.offset_agreement_percent:.1f}% combined_offset_pp={candidate.combined_offset_pp:.3f}"
       )
   if report.notes:
     lines.append("Notes:")
@@ -279,17 +320,20 @@ def load_lateral_performance_gate(path: str | Path) -> LateralPerformanceGateRep
   return LateralPerformanceGateReport.from_dict(json.loads(Path(path).read_text()))
 
 
-def _extract_gate_samples(msgs: list[Any]) -> list[_GateSample]:
+def _extract_gate_samples(msgs: list[Any], *, max_car_state_age_s: float = MAX_CAR_STATE_AGE_S) -> list[_GateSample]:
   if not msgs:
     return []
   base_mono_time = int(getattr(msgs[0], "logMonoTime", 0))
   latest: dict[str, Any] = {}
+  latest_times: dict[str, float] = {}
   samples: list[_GateSample] = []
   for msg in msgs:
     typ = msg_type(msg)
     payload = msg_payload(msg)
+    t = msg_time_s(msg, base_mono_time)
     if typ in ("carState", "carControl", "modelV2"):
       latest[typ] = payload
+      latest_times[typ] = t
     if typ != "controlsState":
       continue
 
@@ -300,18 +344,23 @@ def _extract_gate_samples(msgs: list[Any]) -> list[_GateSample]:
     lateral_kind = format_enum(lateral_state.which()) if lateral_state is not None and hasattr(lateral_state, "which") else "torqueState"
     lateral_payload = safe_get(lateral_state, lateral_kind, lateral_state)
     model_path = safe_get(payload, "modelPathState")
+    car_state_time = latest_times.get("carState")
+    car_state_fresh = car_state_time is not None and t - car_state_time <= max_car_state_age_s
     samples.append(_GateSample(
-      t=msg_time_s(msg, base_mono_time),
+      t=t,
       v_ego=_finite_float(safe_get(car_state, "vEgo")),
+      car_state_fresh=car_state_fresh,
       lat_active=bool(safe_get(lateral_payload, "active", False)) and bool(safe_get(car_control, "latActive", False)),
       steering_pressed=bool(safe_get(car_state, "steeringPressed", False)),
       blinker_active=bool(safe_get(car_state, "leftBlinker", False)) or bool(safe_get(car_state, "rightBlinker", False)),
       lane_change_state=format_enum(safe_get(model_v2, "meta.laneChangeState")),
       steering_angle_deg=_finite_float(safe_get(car_state, "steeringAngleDeg")),
+      steering_torque=_finite_float(safe_get(car_state, "steeringTorque")) if car_state_fresh else float("nan"),
       curvature=_finite_float(safe_get(payload, "curvature")),
       raw_desired_curvature=_finite_float(safe_get(model_path, "rawDesiredCurvature")),
-      processed_desired_curvature=_finite_float(safe_get(payload, "desiredCurvature")),
-      desired_curvature=_finite_float(safe_get(payload, "desiredCurvature")),
+      conditioned_desired_curvature=_finite_float(safe_get(model_path, "conditionedDesiredCurvature")),
+      processed_desired_curvature=_finite_float(safe_get(model_path, "processedDesiredCurvature")),
+      controls_desired_curvature=_finite_float(safe_get(payload, "desiredCurvature")),
       model_path_gated=bool(safe_get(model_path, "gated", False)),
       model_path_quality=_finite_float(safe_get(model_path, "quality")),
       model_path_offset_y=_model_path_offset_y(model_v2),
@@ -324,16 +373,19 @@ def _columns(samples: list[_GateSample]) -> dict[str, np.ndarray]:
   return {
     "t": np.array([sample.t for sample in samples], dtype=float),
     "v_ego": np.array([sample.v_ego for sample in samples], dtype=float),
+    "car_state_fresh": np.array([float(sample.car_state_fresh) for sample in samples], dtype=float),
     "lat_active": np.array([float(sample.lat_active) for sample in samples], dtype=float),
     "steering_pressed": np.array([float(sample.steering_pressed) for sample in samples], dtype=float),
     "blinker_active": np.array([float(sample.blinker_active) for sample in samples], dtype=float),
     "lane_change_state": np.array([sample.lane_change_state for sample in samples], dtype=object),
     "lane_state_unknown": np.array([float(sample.lane_change_state == "unknown") for sample in samples], dtype=float),
     "steering_angle_deg": np.array([sample.steering_angle_deg for sample in samples], dtype=float),
+    "steering_torque": np.array([sample.steering_torque for sample in samples], dtype=float),
     "curvature": np.array([sample.curvature for sample in samples], dtype=float),
     "raw_desired_curvature": np.array([sample.raw_desired_curvature for sample in samples], dtype=float),
+    "conditioned_desired_curvature": np.array([sample.conditioned_desired_curvature for sample in samples], dtype=float),
     "processed_desired_curvature": np.array([sample.processed_desired_curvature for sample in samples], dtype=float),
-    "desired_curvature": np.array([sample.desired_curvature for sample in samples], dtype=float),
+    "controls_desired_curvature": np.array([sample.controls_desired_curvature for sample in samples], dtype=float),
     "model_path_gated": np.array([float(sample.model_path_gated) for sample in samples], dtype=float),
     "model_path_quality": np.array([sample.model_path_quality for sample in samples], dtype=float),
     "model_path_offset_y": np.array([sample.model_path_offset_y for sample in samples], dtype=float),
@@ -382,6 +434,8 @@ def _broad_straight_mask(cols: dict[str, np.ndarray], qlog_safe_lane_policy: boo
   if qlog_safe_lane_policy:
     lane_ok = lane_ok | (lane_state == "unknown")
   return (
+    (cols["car_state_fresh"] > 0.5)
+    &
     (cols["lat_active"] > 0.5)
     & (cols["v_ego"] >= BROAD_STRAIGHT_MIN_SPEED)
     & (cols["steering_pressed"] < 0.5)
@@ -398,14 +452,20 @@ def _wander_candidate(cols: dict[str, np.ndarray], idx: np.ndarray) -> WanderCan
   steering_pp = _percentile_span(cols["steering_angle_deg"][idx])
   actual_pp = _percentile_span(cols["curvature"][idx])
   raw_pp = _percentile_span(cols["raw_desired_curvature"][idx])
+  conditioned_pp = _optional_percentile_span(cols["conditioned_desired_curvature"][idx])
   processed_pp = _percentile_span(cols["processed_desired_curvature"][idx])
-  desired_pp = _percentile_span(cols["desired_curvature"][idx])
+  controls_command_pp = _optional_percentile_span(cols["controls_desired_curvature"][idx])
   raw_actual_corr = _correlation(cols["raw_desired_curvature"][idx], cols["curvature"][idx])
+  conditioned_actual_corr = _correlation(cols["conditioned_desired_curvature"][idx], cols["curvature"][idx])
   processed_actual_corr = _correlation(cols["processed_desired_curvature"][idx], cols["curvature"][idx])
+  controls_command_actual_corr = _correlation(cols["controls_desired_curvature"][idx], cols["curvature"][idx])
   severity = 0.0
   if steering_pp >= WANDER_MIN_STEERING_PP or actual_pp >= WANDER_MIN_ACTUAL_CURVATURE_PP:
     severity = steering_pp * 1.2 + actual_pp * 3500.0 + min(raw_pp, processed_pp) * 1200.0
-  cause = _wander_cause(raw_pp, processed_pp, actual_pp, raw_actual_corr, processed_actual_corr)
+  cause = _wander_cause(
+    raw_pp, conditioned_pp, processed_pp, actual_pp,
+    raw_actual_corr, conditioned_actual_corr, processed_actual_corr,
+  )
   unknown_percent = _percent(cols["lane_state_unknown"][idx] > 0.5)
   confidence = _wander_confidence(cause, severity, unknown_percent)
   return WanderCandidateWindow(
@@ -419,10 +479,14 @@ def _wander_candidate(cols: dict[str, np.ndarray], idx: np.ndarray) -> WanderCan
     steering_angle_pp=steering_pp,
     actual_curvature_pp=actual_pp,
     raw_curvature_pp=raw_pp,
+    conditioned_curvature_pp=conditioned_pp,
     processed_curvature_pp=processed_pp,
-    desired_curvature_pp=desired_pp,
+    controls_command_curvature_pp=controls_command_pp,
     raw_actual_corr=raw_actual_corr,
+    conditioned_actual_corr=conditioned_actual_corr,
     processed_actual_corr=processed_actual_corr,
+    controls_command_actual_corr=controls_command_actual_corr,
+    driver_torque_p95=_p95_abs(cols["steering_torque"][idx]),
     gated_percent=_percent(cols["model_path_gated"][idx] > 0.5),
     quality_median=_median(cols["model_path_quality"][idx]),
     lane_state_unknown_percent=unknown_percent,
@@ -481,12 +545,15 @@ def _recenter_candidate(cols: dict[str, np.ndarray], idx: np.ndarray) -> Recente
   )
 
 
-def _wander_cause(raw_pp: float, processed_pp: float, actual_pp: float, raw_actual_corr: float | None,
+def _wander_cause(raw_pp: float, conditioned_pp: float | None, processed_pp: float, actual_pp: float,
+                  raw_actual_corr: float | None, conditioned_actual_corr: float | None,
                   processed_actual_corr: float | None) -> str:
-  demand_moves = max(raw_pp, processed_pp) >= WANDER_MIN_DEMAND_CURVATURE_PP
+  demand_values = [value for value in (raw_pp, conditioned_pp, processed_pp) if value is not None]
+  demand_moves = bool(demand_values) and max(demand_values) >= WANDER_MIN_DEMAND_CURVATURE_PP
   actual_moves = actual_pp >= WANDER_MIN_ACTUAL_CURVATURE_PP
   demand_tracks_actual = (
     (raw_actual_corr is not None and raw_actual_corr >= WANDER_STRONG_CORR)
+    or (conditioned_actual_corr is not None and conditioned_actual_corr >= WANDER_STRONG_CORR)
     or (processed_actual_corr is not None and processed_actual_corr >= WANDER_STRONG_CORR)
   )
   if demand_moves and actual_moves and demand_tracks_actual:
@@ -543,8 +610,9 @@ def _dominant_failure_class(torque_score: float, wander_score: float, low_speed_
 
 
 def _notes(cols: dict[str, np.ndarray], qlog_safe_lane_policy: bool, wander_windows: list[WanderCandidateWindow],
-           recenter_candidates: list[RecenterOvershootCandidate]) -> list[str]:
+           recenter_candidates: list[RecenterOvershootCandidate], max_car_state_age_s: float) -> list[str]:
   notes: list[str] = []
+  notes.append(f"carState steering evidence is fresh only within {max_car_state_age_s:.2f} s of controlsState")
   unknown_percent = _percent(cols["lane_state_unknown"] > 0.5)
   if qlog_safe_lane_policy and unknown_percent > 20.0:
     notes.append("qlog-safe lane policy used; unknown lane-change samples require no steering override and no blinkers")
@@ -602,7 +670,7 @@ def _lane_center_offset_y(model_v2: Any) -> float:
 def _lane_line_y(lane_lines: Any, idx: int, horizon_idx: int) -> float:
   try:
     lane_line = lane_lines[idx]
-    values = getattr(lane_line, "y")
+    values = lane_line.y
     value_idx = min(horizon_idx, len(values) - 1)
     if value_idx < 0:
       return float("nan")
@@ -624,6 +692,22 @@ def _percentile_span(values: np.ndarray) -> float:
   if finite.size == 0:
     return 0.0
   return float(np.percentile(finite, 95.0) - np.percentile(finite, 5.0))
+
+
+def _optional_percentile_span(values: np.ndarray) -> float | None:
+  finite = values[np.isfinite(values)]
+  if finite.size < 2:
+    return None
+  return float(np.percentile(finite, 95.0) - np.percentile(finite, 5.0))
+
+
+def _p95_abs(values: np.ndarray) -> float | None:
+  finite = np.abs(values[np.isfinite(values)])
+  return float(np.percentile(finite, 95.0)) if finite.size >= 2 else None
+
+
+def _render_float(value: float | None, precision: int) -> str:
+  return "n/a" if value is None else f"{value:.{precision}f}"
 
 
 def _median(values: np.ndarray) -> float:
@@ -662,12 +746,16 @@ def _wander_window_from_dict(data: dict[str, Any]) -> WanderCandidateWindow:
     severity_score=float(data.get("severity_score", data.get("severityScore", 0.0))),
     speed_mps_median=float(data.get("speed_mps_median", data.get("speedMpsMedian", 0.0))),
     steering_angle_pp=float(data.get("steering_angle_pp", data.get("steeringAnglePp", 0.0))),
-    actual_curvature_pp=float(data.get("actual_curvature_pp", data.get("actualCurvaturePp", 0.0))),
-    raw_curvature_pp=float(data.get("raw_curvature_pp", data.get("rawCurvaturePp", 0.0))),
-    processed_curvature_pp=float(data.get("processed_curvature_pp", data.get("processedCurvaturePp", 0.0))),
-    desired_curvature_pp=float(data.get("desired_curvature_pp", data.get("desiredCurvaturePp", 0.0))),
+    actual_curvature_pp=_optional_float(data.get("actual_curvature_pp")),
+    raw_curvature_pp=_optional_float(data.get("raw_curvature_pp")),
+    conditioned_curvature_pp=_optional_float(data.get("conditioned_curvature_pp")),
+    processed_curvature_pp=_optional_float(data.get("processed_curvature_pp")),
+    controls_command_curvature_pp=_optional_float(data.get("controls_command_curvature_pp")),
     raw_actual_corr=_optional_float(data.get("raw_actual_corr", data.get("rawActualCorr"))),
+    conditioned_actual_corr=_optional_float(data.get("conditioned_actual_corr", data.get("conditionedActualCorr"))),
     processed_actual_corr=_optional_float(data.get("processed_actual_corr", data.get("processedActualCorr"))),
+    controls_command_actual_corr=_optional_float(data.get("controls_command_actual_corr")),
+    driver_torque_p95=_optional_float(data.get("driver_torque_p95")),
     gated_percent=float(data.get("gated_percent", data.get("gatedPercent", 0.0))),
     quality_median=float(data.get("quality_median", data.get("qualityMedian", 0.0))),
     lane_state_unknown_percent=float(data.get("lane_state_unknown_percent", data.get("laneStateUnknownPercent", 0.0))),

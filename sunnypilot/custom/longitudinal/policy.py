@@ -234,6 +234,7 @@ class LongitudinalScene:
   force_slow_decel: bool = False
   brake_pressed: bool = False
   gas_pressed: bool = False
+  standstill: bool = False
 
 
 def _clip(value: float, lo: float, hi: float) -> float:
@@ -790,7 +791,7 @@ def build_candidates(scene: LongitudinalScene,
       if not trust.should_stop and scene.model_stop_distance is None:
         stop_a = max(stop_a, scene.model_caution_floor)
       cands.append(LongitudinalCandidate(stop_a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP,
-                                         "stop_approach", is_stop=bool(trust.should_stop and hard)))
+                                         "stop_approach", is_stop=bool(trust.should_stop and (hard or scene.standstill))))
   # Early, non-committing model-slowdown caution from fresh model decel before shouldStop or
   # stop distance are available. Bounded to be no stronger than the existing precautionary
   # decel and never committed as a stop.

@@ -107,6 +107,26 @@ def test_stop_approach_hardens_when_runway_short():
   assert a < -1.5
 
 
+def test_trusted_model_stop_at_standstill_sets_should_stop_without_hard_kinematics():
+  scene = LongitudinalScene(v_ego=0.0, v_cruise=15.0, seed_a_target=0.0, standstill=True,
+                            model_should_stop=True, model_stop_distance=8.0,
+                            model_desired_accel=-1.0, model_stop_prob=1.0)
+  _, hard = stop_approach_accel(scene)
+  decision = decide(build_candidates(scene), LongitudinalMode.E2E, LIMITS)
+  assert hard is False
+  assert decision.should_stop is True
+
+
+def test_moving_nonhard_trusted_model_stop_does_not_set_should_stop():
+  scene = LongitudinalScene(v_ego=15.0, v_cruise=15.0, seed_a_target=0.0,
+                            model_should_stop=True, model_stop_distance=150.0,
+                            model_desired_accel=-0.2, model_stop_prob=1.0)
+  _, hard = stop_approach_accel(scene)
+  decision = decide(build_candidates(scene), LongitudinalMode.E2E, LIMITS)
+  assert hard is False
+  assert decision.should_stop is False
+
+
 def test_stop_approach_softens_final_low_speed_landing_floor():
   scene = LongitudinalScene(v_ego=1.5, v_cruise=15.0, seed_a_target=0.0,
                             model_should_stop=False, model_stop_distance=0.38, model_desired_accel=-0.2)

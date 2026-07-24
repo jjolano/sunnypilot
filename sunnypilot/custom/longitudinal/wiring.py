@@ -444,8 +444,16 @@ class CustomLongitudinalAdapter:
       model_age_s = _message_age_s(sm, 'modelV2')
       model_stale = model_age_s > MODEL_STALE_AGE_S
       action = getattr(model, "action", None)
-      model_should_stop = bool(getattr(action, "shouldStop", False)) if action is not None else False
-      model_desired_accel = _f(getattr(action, "desiredAcceleration", 0.0)) if action is not None else 0.0
+      model_should_stop_raw = getattr(action, "shouldStop", None) if action is not None else None
+      model_desired_accel_raw = getattr(action, "desiredAcceleration", None) if action is not None else None
+      model_should_stop = bool(model_should_stop_raw) if model_should_stop_raw is not None else False
+      model_desired_accel = _f(model_desired_accel_raw)
+      model_clear = bool(
+        action is not None and model_should_stop_raw is not None and model_desired_accel_raw is not None
+        and not model_stale and not model_should_stop
+        and math.isfinite(_f(model_desired_accel_raw, default=math.nan))
+        and model_desired_accel >= 0.0
+      )
       model_stop_distance_raw = _model_stop_distance(model)
 
       cc = sm['carControl']
@@ -511,7 +519,8 @@ class CustomLongitudinalAdapter:
       # Commit-and-ratchet the model's predicted rest point (ModelStopAnchor): the policy
       # plans to a conservative, nearer-only stop distance instead of the model's
       # optimistic, gradually-firming one.
-      model_stop_distance = self._stop_anchor.update(model_stop_distance_raw, v_ego, dt)
+      model_stop_distance = self._stop_anchor.update(model_stop_distance_raw, v_ego, dt,
+                                                      semantic_clear=model_clear)
       if model_stop_distance is not None and self._stop_anchor.committed_s < STOP_ANCHOR_MIN_COMMIT_S:
         # False-positive blip filter: consumers see a commitment only once it has survived
         # the debounce window; the anchor keeps aging internally so real stops lose nothing.
