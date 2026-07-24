@@ -11,17 +11,22 @@ invariants), `profile_lead_following.py` (lead behavior gates), and the
 `LongitudinalDebugTraceMode=log` route trace. The device was offline when this runbook was
 written; run the harvest after the next few shadow-collecting drives.
 
+**2026-07-24 harvest ran** — see [`../research/natural-feel-gap-analysis.md`](../research/natural-feel-gap-analysis.md)
+(101,741 trace frames, routes `2cd` + `2ce`). The "Default" column below records what the
+*code* defaults to; several features are set to a different mode **on the device** and have
+been collecting all along. Device-observed modes are noted inline.
+
 ## Verdict table
 
 | Feature (param) | Default | Evidence source | Decide by |
 |---|---|---|---|
-| Speed-aware torque (`LiveTorqueSpeedAdaptiveMode`) | off | `speed_adaptive_verdict` route replay + cross-route ratio spread | 2026-08-15 |
-| Scenario context (`ScenarioContextMode`) | shadow | `profile_shadow_heuristics` grade summary | 2026-07-20 |
-| Curve traffic advisor (`CurveTrafficAdvisorMode`) | off | debug trace `curveSpeedConfidence`/advisor fields vs SCC vision caps | 2026-07-20 |
-| Lead anticipation (`LeadAnticipationMode`) | shadow | `replay_lead_anticipation` (already run: 0 softenings) | 2026-07-20 |
-| Cut-in brake assist (`CutInBrakeAssistMode`) | off | debug trace cut-in fields on cut-in events | 2026-08-01 |
-| Curve speed confidence (`CurveSpeedConfidenceMode`) | off | debug trace + curve routes | 2026-08-01 |
-| Standstill release confidence (`StandstillReleaseConfidenceMode`) | off | stop-and-go routes, release block reasons | 2026-08-01 |
+| Speed-aware torque (`LiveTorqueSpeedAdaptiveMode`) | off (device: **apply**) | `speed_adaptive_verdict` route replay + cross-route ratio spread | 2026-08-15 |
+| Scenario context (`ScenarioContextMode`) | shadow (device: **param absent**) | `profile_shadow_heuristics` grade summary | 2026-07-20 |
+| Curve traffic advisor (`CurveTrafficAdvisorMode`) | off (device: **shadow**) | debug trace `curveSpeedConfidence`/advisor fields vs SCC vision caps | 2026-07-20 |
+| Lead anticipation (`LeadAnticipationMode`) | shadow (device: **param absent**) | `replay_lead_anticipation` (already run: 0 softenings) | 2026-07-20 |
+| Cut-in brake assist (`CutInBrakeAssistMode`) | off (device: **shadow** — it *has* been collecting) | debug trace cut-in fields on cut-in events | 2026-08-01 |
+| ~~Curve speed confidence (`CurveSpeedConfidenceMode`)~~ | **DELETED 2026-07-24** | 0.07% eligibility over 101,741 frames | resolved |
+| Standstill release confidence (`StandstillReleaseConfidenceMode`) | off (device: **gate**) | stop-and-go routes, release block reasons | 2026-08-01 |
 | Dynamic follow gap (`DynamicFollowGapMode`) | shadow | `profile_lead_following` A/B gate | new — collect first |
 | Roll-compensation gain (`RollCompGainMode`) | off | engaged-route replay: straight-cruise tracking, crown transitions, banked curves | 2026-08-15 |
 | Map coast (`MapCoastMode`) | off | debug trace `map_coast_*` fields vs manual lift-off points (`manual_longitudinal_profile`) | 2026-08-15 |
@@ -67,9 +72,24 @@ written; run the harvest after the next few shadow-collecting drives.
   of the compressed gap (it did not on the fixed gap).
 
 ### Cut-in brake assist / curve speed confidence / standstill release confidence
-- All default **off** — they are not even collecting. Either flip them to shadow on-device
-  for the collection window, or accept the delete-by-default deadline. A shadow feature that
-  nobody turns on answers its own question.
+- They default **off** in code, but the device has run all three in a collecting mode
+  (`shadow`/`shadow`/`gate`). The 2026-07-24 harvest over 101,741 frames gives:
+  - **Cut-in brake assist** — eligible on **84 frames (0.08%)**, and every one came from
+    route `2cd`; `2ce` contributed zero. When eligible the numbers are coherent (TTC median
+    4.12 s, required decel 0.70, proposed cap **−0.99 m/s²**, confidence 1.00) and the
+    proposed cap sits between the old OP cut-in peak (−2.0) and the human baseline (−0.47).
+    **Verdict: hold in shadow.** Directionally right, far too sparse to promote. Needs a
+    cut-in-rich engaged corpus; note OP produced 0 valid cut-in brake reactions in 29.4
+    engaged minutes, so the underlying harshness claim is itself untested on this build.
+  - **Curve speed confidence** — eligible on **75 frames (0.07%)**, active 0.14%.
+    **Verdict: deleted 2026-07-24.** Exactly the "rarely meets its thresholds" case. Removed:
+    the predictor, `CurveSpeedConfidenceMode` (param key, sunnylink YAML/JSON, UI schema), the
+    finalizer's `scc_curve_confidence_final_cap` and its three constants, and the planner trace
+    populate. Kept: `CurveSpeedConfidenceInputs` — it is the shared SCC curve-evidence carrier
+    that the curve traffic advisor reads — and the `curveSpeedConfidence` capnp ordinal @20,
+    marked retired so old logs still decode.
+  - **Standstill release confidence** — running as `gate`; eligible 0.74%, 95.6% blocked on
+    `no_release_permission`. Working as intended; no change.
 
 ### Dynamic follow gap (new)
 - Shadow first: confirm `eligible` fires on real approaches and the would-be `t_follow`
