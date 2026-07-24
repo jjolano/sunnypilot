@@ -24,10 +24,31 @@ from dataclasses import dataclass
 # Tuned in tools/drive_lab/stiction_lab.py against the route 000002a1 signature.
 # A hard floor dithers (post-breakout error flip re-engages the floor the other
 # way); instead the boost is a continuous steep ramp in |error|, slew-limited.
-# 0.9 is stable in sim (lag 0.16s) but the sim's breakaway conveniently matches the
-# learned friction; 0.7 keeps margin for real racks. Revisit from shadow data.
-FLOOR_FRAC = 0.7        # max boost target, fraction of full breakaway
-MIN_ERROR = 0.03        # m/s^2 — below this is noise, never boosted
+#
+# 0.7 was a margin choice: 0.9 was stable in sim, but the sim's breakaway
+# conveniently matched the learned friction, so the real rack was unknown. The
+# observer has since measured it (routes 2cd+2ce, 98 events): left 0.286 / right
+# 0.163 normalized, i.e. the real rack is *stiffer* than the 0.13 the lab assumed,
+# so the margin was being spent in the wrong direction. Re-swept the lab at both
+# measured breakaways across wander/curve x amplitude x road crown: 0.9 lowers
+# desired-vs-actual lag in every cell (e.g. 0.30 -> 0.18 s at amp 0.2 / breakaway
+# 0.286) with dwell-jump rate, rate_hf/lf and tracking RMSE flat or better.
+# Safe only together with DIRECTION_FRAC_MAX_TOTAL below - uncapped, the learned
+# left/right skew pushed the strong direction to 1.15x full breakaway and the
+# high-demand cell regressed (rate_hf/lf 1.06 -> 1.27).
+FLOOR_FRAC = 0.9        # max boost target, fraction of full breakaway
+# MIN_ERROR is the noise deadband, but PERSIST_FRAMES below is the real noise gate:
+# nothing is boosted until the error sign has held for 150 ms. Routes 2cd+2ce show
+# 0.03 was locking 38.5% of engaged driving out of the floor, and the band it
+# excluded is signal, not noise — errors in [0.015, 0.03) hold their sign for
+# >=150 ms 76.5% of the time, close to the already-admitted [0.03, 0.06) band
+# (91.8%) and far above the flickering [0.005, 0.015) band (57.7%). The 23.5% that
+# do flicker are still rejected by persistence, so this only removes a redundant
+# second gate. Lab (both measured breakaways, with and without road crown): lag
+# 0.24 -> 0.15 s at amp 0.12, dwell-jump rate and rate_hf/lf flat, RMSE slightly
+# better, steady bias unchanged (0.0038 -> 0.0040 at crown 0.06). 0.01 was a step
+# too far: it regressed lag 0.15 -> 0.22 s at the stiff breakaway under crown.
+MIN_ERROR = 0.015       # m/s^2 — below this is noise, never boosted
 ERROR_RAMP = 0.12       # m/s^2 of |error| above MIN_ERROR for full boost
 PERSIST_FRAMES = 15     # 150 ms of sustained error sign at 100 Hz
 SLEW_PER_FRAME = 0.015  # lat-accel units per frame (~1.5/s at 100 Hz)
@@ -39,6 +60,12 @@ SLEW_PER_FRAME = 0.015  # lat-accel units per frame (~1.5/s at 100 Hz)
 # direction.
 DIRECTION_FRAC_MIN_SCALE = 0.5
 DIRECTION_FRAC_MAX_SCALE = 1.3
+# Absolute ceiling on the scaled per-direction frac. The floor exists to reach
+# breakaway, never to exceed it: boosting past the full learned breakaway torque
+# buys no extra unsticking and starts to hunt. The measured left/right skew is
+# already 1.75x (scale 1.274), so without this ceiling FLOOR_FRAC 0.9 would ask
+# for 1.15x full breakaway leftward.
+DIRECTION_FRAC_MAX_TOTAL = 1.0
 # Sign mapping, derived from the response-core conventions (see torque_v2_1
 # measured_curvature = -calc_curvature(...)): positive error = rightward
 # correction = wheel about to move right = the observer's *right* median;
@@ -88,7 +115,7 @@ class FrictionBreakawayFloor:
 
     def scaled(median: float) -> float:
       scale = min(max(median / mean, DIRECTION_FRAC_MIN_SCALE), DIRECTION_FRAC_MAX_SCALE)
-      return self.floor_frac * scale
+      return min(self.floor_frac * scale, DIRECTION_FRAC_MAX_TOTAL)
 
     # positive error = rightward correction -> right median; negative -> left
     self._frac = {1: scaled(right), -1: scaled(left)}

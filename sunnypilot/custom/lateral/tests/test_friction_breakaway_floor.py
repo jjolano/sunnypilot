@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
+import pytest
+
 from openpilot.sunnypilot.custom.lateral.friction_breakaway_floor import (
-  DIRECTION_FRAC_MAX_SCALE, FrictionBreakawayFloor,
+  DIRECTION_FRAC_MAX_SCALE, DIRECTION_FRAC_MAX_TOTAL, FrictionBreakawayFloor,
 )
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
   BREAKAWAY_PROFILE_VERSION, parse_breakaway_profile, validate_friction_breakaway_mode,
@@ -51,8 +53,21 @@ def test_apply_boosts_persistent_small_error():
 def test_noise_level_error_never_boosted():
   floor = _engaged_floor()
   for _ in range(100):
-    out = floor.shape(0.001, 0.02, TP)  # |error| below MIN_ERROR
+    out = floor.shape(0.001, 0.01, TP)  # |error| below MIN_ERROR
   assert out == 0.001
+  assert not floor.debug.active
+
+
+def test_flickering_error_in_admitted_band_is_rejected_by_persistence():
+  # MIN_ERROR 0.015 admits a band that is 76.5% sign-persistent on route 2cd/2ce,
+  # but the remaining flicker must still be filtered — persistence, not the
+  # deadband, is the real noise gate. An error that alternates sign every few
+  # frames never reaches PERSIST_FRAMES, so it is never boosted.
+  floor = _engaged_floor()
+  err = 0.02  # inside the newly admitted band
+  for i in range(400):
+    out = floor.shape(0.0, err if (i // 3) % 2 == 0 else -err, TP)
+    assert out == 0.0
   assert not floor.debug.active
 
 
@@ -89,16 +104,29 @@ def _steady_boost(floor, error):
 
 
 def test_direction_profile_maps_left_median_to_negative_error():
-  # left breakaway (0.3) > right (0.2): leftward corrections (negative error)
-  # must get the bigger boost
+  # left breakaway > right: leftward corrections (negative error) must get the
+  # bigger boost, and the boost ratio tracks the profile ratio while the
+  # per-direction ceiling is not binding (see the clamp test below).
   sym = _engaged_floor()
   asym = _engaged_floor()
-  asym.apply_profile({'left': 0.3, 'right': 0.2, 'events': 100})
+  asym.apply_profile({'left': 0.26, 'right': 0.24, 'events': 100})
   left_boost = _steady_boost(asym, -0.2)
   right_boost = _steady_boost(asym, 0.2)
   sym_boost = _steady_boost(sym, 0.2)
   assert left_boost > sym_boost > right_boost
-  assert abs(left_boost / right_boost - 0.3 / 0.2) < 0.05
+  assert abs(left_boost / right_boost - 0.26 / 0.24) < 0.05
+
+
+def test_direction_frac_never_exceeds_full_breakaway():
+  # The floor exists to reach breakaway, never to exceed it. The measured rack
+  # skew (left 0.286 / right 0.163, routes 2cd+2ce) scales the strong direction
+  # by 1.274, which at FLOOR_FRAC 0.9 would ask for 1.15x full breakaway.
+  floor = _engaged_floor()
+  floor.apply_profile({'left': 0.2862, 'right': 0.1630, 'events': 98})
+  assert floor._frac[-1] == pytest.approx(DIRECTION_FRAC_MAX_TOTAL)
+  assert floor._frac[1] < floor.floor_frac
+  for frac in floor._frac.values():
+    assert frac <= DIRECTION_FRAC_MAX_TOTAL + 1e-9
 
 
 def test_direction_profile_clamped_and_reset():
