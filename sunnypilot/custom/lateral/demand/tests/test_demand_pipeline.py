@@ -446,6 +446,27 @@ def test_preview_assist_soft_release_decays_instead_of_stepping():
   assert 0.0 < abs(b_nudge) < abs(nudge)
   assert (abs(nudge) - abs(b_nudge)) * 20.0 ** 2 <= 0.30 * DT + 1e-9
 
+
+def test_preview_assist_model_path_gate_releases_instead_of_stepping():
+  # Routes 2cd/2ce: the model-path quality gate fires on 64.6% of corner jerk excursions
+  # (vs 0.9% baseline, mostly low_lane_confidence) and it used to reset() the nudge. The
+  # nudge sits pinned at its 0.05 m/s^2 cap, so every one of those 2427 drop-outs was a
+  # full-cap one-frame step. Gating is transient, so it must release like curvature_limited.
+  pipeline = LateralDemandPipeline(DT)
+  r = None
+  for _ in range(40):
+    r = pipeline.update(preview_assist_inputs(lateral_preview_assist_mode="apply"))
+  nudge = float(r.debug["lateral_preview_assist_curvature_nudge"])
+  assert abs(nudge) > 0.0
+
+  blocked = pipeline.update(preview_assist_inputs(
+    lateral_preview_assist_mode="apply", lane_line_probs=[0.0, 0.0, 0.0, 0.0],
+  ))
+  b_nudge = float(blocked.debug["lateral_preview_assist_curvature_nudge"])
+  assert str(blocked.debug["lateral_preview_assist_reason"]).startswith("releasing_")
+  assert 0.0 < abs(b_nudge) < abs(nudge)
+  assert (abs(nudge) - abs(b_nudge)) * 20.0 ** 2 <= 0.30 * DT + 1e-9
+
   # Sustained block decays all the way to zero and clears.
   final = None
   for _ in range(200):

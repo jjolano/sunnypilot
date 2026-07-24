@@ -222,14 +222,18 @@ class PreviewAssistTracker:
     if model_path_result is None:
       self.reset()
       return _preview_result(mode, "invalid")
+    # Model-path gating is a transient blocker, not driver intent: the quality gate flickers
+    # in corners (routes 2cd/2ce: gated on 64.6% of corner jerk excursions vs 0.9% baseline,
+    # mostly low_lane_confidence). Dropping here reset the nudge from its saturated cap to
+    # zero in one frame 2427 times over two routes — |ay_delta| at the drop-out frame was
+    # 0.05 m/s^2 at median, p99 and max, i.e. every drop-out was a full-cap step. Release it
+    # like the other transient blockers instead; _soft_release only ever decays toward zero.
     if bool(getattr(model_path_result, "gated", False)):
       reason = str(getattr(model_path_result, "reason", "gated"))
-      self.reset()
-      return _preview_result(mode, reason)
+      return self._soft_release(mode, reason, baseline_curvature_f, v_ego)
     if str(getattr(model_path_result, "reason", "invalid")) != "ok":
       reason = str(getattr(model_path_result, "reason", "invalid"))
-      self.reset()
-      return _preview_result(mode, reason)
+      return self._soft_release(mode, reason, baseline_curvature_f, v_ego)
     if bool(getattr(model_path_result, "straight_path_stabilization_applied", False)):
       return self._soft_release(mode, "straight_path_stabilization", baseline_curvature_f, v_ego)
 
