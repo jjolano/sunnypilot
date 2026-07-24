@@ -31,6 +31,22 @@ def test_ideal_rack_is_clean():
   assert m.desired_actual_corr > 0.99
 
 
+def test_presliding_keeps_sub_breakaway_band_measurable():
+  # With pure binary Coulomb stick the rack is frozen solid below breakaway, so a
+  # demand whose whole envelope sits under it produces zero motion and every metric
+  # degenerates — exactly the small-correction band this lab is used to study, and
+  # one the on-road logs show is *not* frozen. Pre-sliding compliance keeps it real.
+  demand = wander_demand(duration_s=60.0, amp=0.07)
+  frozen = StictionPlantConfig(breakaway_torque=0.286, kinetic_torque=0.143,
+                               presliding_compliance=0.0)
+  real = StictionPlantConfig(breakaway_torque=0.286, kinetic_torque=0.143)
+  frozen_trace = run_closed_loop(demand, frozen)
+  real_trace = run_closed_loop(demand, real)
+  assert np.ptp(frozen_trace.actual_lat_accel) < 1e-6          # literally frozen
+  assert np.ptp(real_trace.actual_lat_accel) > 0.02            # microslip tracks
+  assert compute_metrics(real_trace).desired_actual_corr > 0.5
+
+
 def test_deadband_lag_grows_as_amplitude_shrinks():
   small = _run(amp=0.15, breakaway=0.13)
   large = _run(amp=0.6, breakaway=0.13)

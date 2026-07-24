@@ -4,9 +4,16 @@
 Route 000002a1 (2026-07-17) showed the wheel moving in discrete 0.6-1.2 deg steps
 while the torque command stayed smooth: rack/EPS stick-slip. This lab closes the
 loop between the production ``LatControlTorqueV21`` and a torque-domain plant with
-static-breakaway + kinetic friction, so friction-compensation changes can be tuned
-offline against the same metrics used on the on-road rlogs (dwell->jump rate,
-step size, desired-vs-actual lag).
+static-breakaway + kinetic friction + pre-sliding compliance, so friction-compensation
+changes can be tuned offline against the same metrics used on the on-road rlogs
+(dwell->jump rate, step size, desired-vs-actual lag).
+
+The pre-sliding term matters more than it sounds: with pure binary Coulomb stick the
+rack is frozen solid below breakaway, so any demand whose whole envelope sits under
+the breakaway threshold produces literally zero motion and every metric degenerates.
+That is precisely the small, precise-correction band this lab is most often used to
+study, and on-road logs show it is *not* frozen. Tuning against the frozen plant
+overstates the benefit of friction changes and hides their dither cost.
 
 The plant works in lateral-acceleration space: ``rack_pos`` is the lat-accel the
 current rack position would produce at steady state; commanded torque must exceed
@@ -75,6 +82,21 @@ class StictionPlantConfig:
   crown_pull_torque: float = 0.0     # constant plant bias (road crown), cmd units
   roll: float = 0.0                  # roll reported to the controller (rad)
   lat_delay: float = 0.28            # what the controller compensates (liveDelay-like)
+  # Pre-sliding (microslip) compliance: (m/s^2) of rack displacement per unit net
+  # torque while still stuck. Pure Coulomb stick (0.0) freezes the rack completely
+  # below breakaway, so demands whose whole envelope sits under breakaway produce
+  # *zero* motion and every metric degenerates -- which is exactly the small,
+  # precise-correction band we care about. A real contact deforms elastically
+  # first: below breakaway it still moves a little, roughly proportional to force.
+  # Calibrated against routes 2cd/2ce, where the tiny band (<0.15 m/s^2 p2p) is not
+  # frozen at all -- it tracks with ~0.33 s lag over 152k engaged samples. At 0.15
+  # the lab reproduces that band at 0.32 s; at 0.0 it is frozen and unmeasurable.
+  # NOTE this calibrates the small-amplitude band only: the lab still does not
+  # reproduce the on-road amplitude->lag profile at larger amplitudes (on-road
+  # medium 0.4-1.0 p2p measures ~0.00 s, the lab does not). Treat absolute lag as
+  # comparative between variants, not as a prediction of on-road lag.
+  # 0.0 reproduces the legacy binary-Coulomb plant for comparison.
+  presliding_compliance: float = 0.15
 
   def to_dict(self) -> dict[str, Any]:
     return asdict(self)
@@ -112,6 +134,7 @@ def run_closed_loop(desired_lat_accel: np.ndarray, config: StictionPlantConfig,
   rack_rate = 0.0
   act = 0.0          # actual lat accel (tire lag on rack_pos)
   stuck = True
+  stick_anchor: float | None = 0.0   # rack position at zero net force while stuck
   angle = angle_deg_for(0.0)
 
   params = SimpleNamespace(roll=cfg.roll, angleOffsetDeg=0.0)
@@ -139,14 +162,22 @@ def run_closed_loop(desired_lat_accel: np.ndarray, config: StictionPlantConfig,
     if stuck:
       if abs(net) > cfg.breakaway_torque:
         stuck = False
+        stick_anchor = None
     if not stuck:
       rack_rate = cfg.mobility * (net - math.copysign(min(cfg.kinetic_torque, abs(net)), net))
       if abs(rack_rate) < cfg.restick_rate and abs(net) < cfg.breakaway_torque:
         stuck = True
         rack_rate = 0.0
+        # remember the zero-force rack position so pre-sliding is measured from it
+        stick_anchor = rack_pos - cfg.presliding_compliance * net
       rack_pos += rack_rate * DT
     else:
-      rack_rate = 0.0
+      # Pre-sliding: still stuck, but the contact deforms elastically with force.
+      prev_pos = rack_pos
+      if stick_anchor is None:
+        stick_anchor = rack_pos - cfg.presliding_compliance * net
+      rack_pos = stick_anchor + cfg.presliding_compliance * net
+      rack_rate = (rack_pos - prev_pos) / DT
 
     alpha = DT / (DT + cfg.tire_lag_s)
     act += alpha * (rack_pos - act)
