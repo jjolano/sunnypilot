@@ -35,7 +35,6 @@ def test_cruise_top_level_controls_render_inline():
   assert CONTROLS.get("UphillNetDemandCapMode") == "multiple_button"
   assert CONTROLS.get("UphillNetDemandCeiling") == "option"
   assert CONTROLS.get("CutInBrakeAssistMode") == "multiple_button"
-  assert CONTROLS.get("CurveSpeedConfidenceMode") == "multiple_button"
   assert CONTROLS.get("CurveTrafficAdvisorMode") == "multiple_button"
   assert CONTROLS.get("StandstillReleaseConfidenceMode") == "multiple_button"
 
@@ -74,7 +73,6 @@ def test_longitudinal_debug_trace_mode_is_string_multiple_button():
 def test_shadow_observability_modes_include_promoted_apply_options():
   expected = {
     "CutInBrakeAssistMode": (["off", "shadow", "apply"], ["Off", "Monitor only", "Apply gentle cap"]),
-    "CurveSpeedConfidenceMode": (["off", "shadow", "apply_conservative"], ["Off", "Monitor only", "Apply conservative"]),
     "CurveTrafficAdvisorMode": (["off", "shadow", "apply_conservative"], ["Off", "Monitor only", "Apply conservative"]),
     "MovingLeadCruiseCapMode": (["off", "shadow", "apply"], ["Off", "Monitor only", "Apply"]),
     "CutOutLeadReleaseMode": (["off", "apply"], ["Off", "Apply"]),

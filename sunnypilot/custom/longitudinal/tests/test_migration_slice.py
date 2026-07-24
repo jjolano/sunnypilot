@@ -6,7 +6,6 @@ import math
 import time
 
 from cereal import custom
-from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceResult
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts
@@ -41,11 +40,10 @@ def fake_cp():
 
 
 def fake_planner(mode=LongitudinalMode.SCC, should_stop=False, sources=SourceToggles(), release=False,
-                 curve_mode="off", standstill_mode="off", cut_in_mode="off", traffic_mode="off"):
+                 standstill_mode="off", cut_in_mode="off", traffic_mode="off"):
   sp = object.__new__(LongitudinalPlannerSP)
   sp.__dict__['CP'] = fake_cp()
   sp.__dict__['custom_long'] = SimpleNamespace(enabled=True, mode=mode, sources=sources,
-                                                  curve_speed_confidence_mode=curve_mode,
                                                   standstill_release_confidence_mode=standstill_mode,
                                                   cut_in_brake_assist_mode=cut_in_mode,
                                                   curve_traffic_advisor_mode=traffic_mode,
@@ -227,52 +225,6 @@ def test_scc_ignores_custom_stop_cap_when_not_stop_approach():
   assert e2e_source is False
 
 
-def test_scc_curve_confidence_apply_conservative_caps_final_accel():
-  sp = fake_planner(LongitudinalMode.SCC, curve_mode="apply_conservative")
-  sp.custom_long_output = CustomLongitudinalOutput(
-    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
-    selected_intent="cruise", reason="cruise",
-    research_actuation_allowed=True,
-    actuation=ActuationVerdicts(curve_speed_confidence=CurveSpeedConfidenceResult(
-      mode="apply_conservative", effective_mode="apply_conservative",
-      apply_supported=True, eligible=True, confidence=0.75, proposed_cap=-0.4,
-    )),
-    debug={},
-  )  # type: ignore[assignment]
-  sm = FakeSubMaster({
-    'selfdriveState': SimpleNamespace(experimentalMode=False),
-    'carState': SimpleNamespace(vEgo=15.0, brakePressed=False, gasPressed=False),
-    'controlsState': SimpleNamespace(forceDecel=False),
-  })
-  a, should_stop, e2e_source = sp.final_longitudinal_output(sm, 0.2, False, 0.0, False)  # type: ignore[arg-type]
-  assert a == -0.4
-  assert should_stop is False
-  assert e2e_source is False
-
-
-def test_scc_curve_confidence_apply_conservative_noops_without_research_actuation():
-  sp = fake_planner(LongitudinalMode.SCC, curve_mode="apply_conservative")
-  sp.custom_long_output = CustomLongitudinalOutput(
-    a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
-    selected_intent="cruise", reason="cruise",
-    research_actuation_allowed=False,
-    debug={
-      "curve_speed_confidence_apply_supported": True,
-      "curve_speed_confidence_eligible": True,
-      "curve_speed_confidence_confidence": 0.75,
-      "curve_speed_confidence_proposed_cap": -0.4,
-    },
-  )  # type: ignore[assignment]
-  sm = FakeSubMaster({
-    'selfdriveState': SimpleNamespace(experimentalMode=False),
-    'carState': SimpleNamespace(vEgo=15.0, brakePressed=False, gasPressed=False),
-    'controlsState': SimpleNamespace(forceDecel=False),
-  })
-  a, should_stop, _ = sp.final_longitudinal_output(sm, 0.2, False, 0.0, False)  # type: ignore[arg-type]
-  assert a == 0.2
-  assert should_stop is False
-
-
 def test_scc_cut_in_brake_assist_cap_noops_without_research_actuation():
   sp = fake_planner(LongitudinalMode.SCC, cut_in_mode="apply")
   sp.custom_long_output = CustomLongitudinalOutput(
@@ -321,74 +273,6 @@ def test_scc_curve_traffic_advisor_cap_noops_without_research_actuation():
   a, should_stop, _ = sp.final_longitudinal_output(sm, 0.2, False, 0.0, False)  # type: ignore[arg-type]
   assert a == 0.2
   assert should_stop is False
-
-
-def test_curve_confidence_shadow_and_low_speed_do_not_cap_final_accel():
-  for curve_mode, v_ego in (("shadow", 15.0), ("apply_conservative", 5.0)):
-    sp = fake_planner(LongitudinalMode.SCC, curve_mode=curve_mode)
-    sp.custom_long_output = CustomLongitudinalOutput(
-      a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
-      selected_intent="cruise", reason="cruise",
-      debug={
-        "curve_speed_confidence_apply_supported": curve_mode == "apply_conservative",
-        "curve_speed_confidence_eligible": True,
-        "curve_speed_confidence_confidence": 0.85,
-        "curve_speed_confidence_proposed_cap": -0.4,
-      },
-    )  # type: ignore[assignment]
-    sm = FakeSubMaster({
-      'selfdriveState': SimpleNamespace(experimentalMode=False),
-      'carState': SimpleNamespace(vEgo=v_ego, brakePressed=False, gasPressed=False),
-      'controlsState': SimpleNamespace(forceDecel=False),
-    })
-    a, should_stop, _ = sp.final_longitudinal_output(sm, 0.2, False, 0.3, False)  # type: ignore[arg-type]
-    assert a == 0.2
-    assert should_stop is False
-
-
-def test_curve_confidence_apply_conservative_requires_scc_and_healthy_output():
-  for mode, enabled in ((LongitudinalMode.ACC, True), (LongitudinalMode.E2E, True), (LongitudinalMode.SCC, False)):
-    sp = fake_planner(mode, curve_mode="apply_conservative")
-    sp.custom_long_output = CustomLongitudinalOutput(
-      a_target=0.0, should_stop=False, enabled=enabled, mode=mode,
-      selected_intent="cruise", reason="cruise",
-      debug={
-        "curve_speed_confidence_apply_supported": True,
-        "curve_speed_confidence_eligible": True,
-        "curve_speed_confidence_confidence": 0.85,
-        "curve_speed_confidence_proposed_cap": -0.4,
-      },
-    )  # type: ignore[assignment]
-    sm = FakeSubMaster({
-      'selfdriveState': SimpleNamespace(experimentalMode=False),
-      'carState': SimpleNamespace(vEgo=15.0, brakePressed=False, gasPressed=False),
-      'controlsState': SimpleNamespace(forceDecel=False),
-    })
-    a, should_stop, _ = sp.final_longitudinal_output(sm, 0.2, False, 0.3, False)  # type: ignore[arg-type]
-    assert a == 0.2
-    assert should_stop is False
-
-
-def test_curve_confidence_apply_conservative_rejects_nonfinite_and_clamps_floor():
-  for confidence, proposed, expected in ((float('nan'), -0.4, 0.2), (0.85, float('nan'), 0.2), (0.85, -2.0, -0.85)):
-    sp = fake_planner(LongitudinalMode.SCC, curve_mode="apply_conservative")
-    sp.custom_long_output = CustomLongitudinalOutput(
-      a_target=0.0, should_stop=False, enabled=True, mode=LongitudinalMode.SCC,
-      selected_intent="cruise", reason="cruise",
-      research_actuation_allowed=True,
-      actuation=ActuationVerdicts(curve_speed_confidence=CurveSpeedConfidenceResult(
-        apply_supported=True, eligible=True, confidence=confidence, proposed_cap=proposed,
-      )),
-      debug={},
-    )  # type: ignore[assignment]
-    sm = FakeSubMaster({
-      'selfdriveState': SimpleNamespace(experimentalMode=False),
-      'carState': SimpleNamespace(vEgo=15.0, brakePressed=False, gasPressed=False),
-      'controlsState': SimpleNamespace(forceDecel=False),
-    })
-    a, should_stop, _ = sp.final_longitudinal_output(sm, 0.2, False, 0.0, False)  # type: ignore[arg-type]
-    assert a == expected
-    assert should_stop is False
 
 
 def test_acc_ignores_custom_stop_cap():

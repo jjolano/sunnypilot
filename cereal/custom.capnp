@@ -284,6 +284,9 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       proposedCap @10 :Float32;
       confidence @11 :Float32;
     }
+    # Retired 2026-07-24: the feature was deleted after the shadow harvest measured it
+    # eligible on 0.07% of 101,741 engaged frames. The struct and its @20 ordinal are kept
+    # so existing logs still decode and later fields retain their ordinals; nothing writes it.
     struct CurveSpeedConfidenceTrace {
       mode @0 :Text;
       effectiveMode @1 :Text;

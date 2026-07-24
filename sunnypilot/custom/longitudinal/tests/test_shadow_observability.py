@@ -7,10 +7,6 @@ import pytest
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
 from openpilot.sunnypilot.custom.longitudinal.stack import CustomLongitudinalStack
-from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import (
-  CurveSpeedConfidenceInputs,
-  predict_curve_speed_confidence,
-)
 from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import (
   MODE_APPLY as CUT_IN_MODE_APPLY,
   predict_cut_in_brake_assist,
@@ -103,31 +99,6 @@ def test_cut_in_apply_blocks_nonfinite_path_y_rel():
   far_path = predict_cut_in_brake_assist(CUT_IN_MODE_APPLY, ctx(state(path_y_rel=2.5)), None, 15.0, long_active=True)
   assert far_path.eligible is False
   assert far_path.block_reason == "not_near_path"
-
-
-def test_curve_confidence_shadow_uses_negative_active_caps_only():
-  r = predict_curve_speed_confidence("shadow", CurveSpeedConfidenceInputs(
-    vision_active=True, vision_a_target=-0.5, vision_max_pred_lat_acc=1.4,
-  ))
-  assert r.eligible is True
-  assert r.apply_supported is False
-  assert r.proposed_cap == pytest.approx(-0.5)
-  assert r.confidence >= 0.7
-
-  inactive = predict_curve_speed_confidence("shadow", CurveSpeedConfidenceInputs())
-  assert inactive.eligible is False
-  assert inactive.block_reason == "inactive"
-
-
-def test_curve_confidence_apply_conservative_reports_apply_supported():
-  r = predict_curve_speed_confidence("apply_conservative", CurveSpeedConfidenceInputs(
-    vision_active=True, vision_a_target=-0.5, vision_max_pred_lat_acc=1.4,
-  ))
-  assert r.mode == "apply_conservative"
-  assert r.effective_mode == "apply_conservative"
-  assert r.apply_supported is True
-  assert r.eligible is True
-  assert r.proposed_cap == pytest.approx(-0.5)
 
 
 def test_standstill_release_confidence_scores_existing_release_only():

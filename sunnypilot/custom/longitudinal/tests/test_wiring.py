@@ -655,25 +655,23 @@ def test_refresh_params_never_rereads_mode():
 def test_new_shadow_modes_parse_and_refresh_on_slow_cadence():
   params = FakeParams(
     CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
-    CutInBrakeAssistMode="shadow", CurveSpeedConfidenceMode="apply_conservative",
+    CutInBrakeAssistMode="shadow",
     StandstillReleaseConfidenceMode="gate", UphillNetDemandCapMode="shadow",
     UphillNetDemandCeiling="1.2",
   )
   a = CustomLongitudinalAdapter(params)
   assert a.cut_in_brake_assist_mode == "shadow"
-  assert a.curve_speed_confidence_mode == "apply_conservative"
   assert a.standstill_release_confidence_mode == "gate"
   assert a._uphill_grade.mode == "shadow"
   assert a._uphill_grade.ceiling == pytest.approx(1.2)
 
   # A full/slow-cadence refresh applies the new (invalid -> off) values.
   params._v.update(
-    CutInBrakeAssistMode="bad", CurveSpeedConfidenceMode="bad", StandstillReleaseConfidenceMode="bad",
+    CutInBrakeAssistMode="bad", StandstillReleaseConfidenceMode="bad",
     UphillNetDemandCapMode="bad", UphillNetDemandCeiling="bad",
   )
   a.refresh_params()
   assert a.cut_in_brake_assist_mode == "off"
-  assert a.curve_speed_confidence_mode == "off"
   assert a.standstill_release_confidence_mode == "off"
   assert a._uphill_grade.mode == "off"
   assert a._uphill_grade.ceiling is None
@@ -686,25 +684,23 @@ def test_debug_and_shadow_modes_refresh_every_params_period():
   params = FakeParams(
     CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc",
     LongitudinalDebugTraceMode="off", CutInBrakeAssistMode="off",
-    CurveSpeedConfidenceMode="off", StandstillReleaseConfidenceMode="off",
+    StandstillReleaseConfidenceMode="off",
   )
   a = CustomLongitudinalAdapter(params)
   params._v.update(
     LongitudinalDebugTraceMode="log", CutInBrakeAssistMode="shadow",
-    CurveSpeedConfidenceMode="apply_conservative", StandstillReleaseConfidenceMode="gate",
+    StandstillReleaseConfidenceMode="gate",
   )
   # Advisory/shadow params do not change before the refresh period elapses.
   for _ in range(49):
     a.maybe_refresh_params()
   assert a.debug_trace_mode == "off"
   assert a.cut_in_brake_assist_mode == "off"
-  assert a.curve_speed_confidence_mode == "off"
   assert a.standstill_release_confidence_mode == "off"
   # They take effect on the tick that hits the refresh period.
   a.maybe_refresh_params()
   assert a.debug_trace_mode == "log"
   assert a.cut_in_brake_assist_mode == "shadow"
-  assert a.curve_speed_confidence_mode == "apply_conservative"
   assert a.standstill_release_confidence_mode == "gate"
 
 
@@ -721,7 +717,6 @@ def test_new_shadow_modes_are_exactly_non_actuating():
 
   for key, debug_prefix in (
     ("CutInBrakeAssistMode", "cut_in_brake_assist"),
-    ("CurveSpeedConfidenceMode", "curve_speed_confidence"),
     ("StandstillReleaseConfidenceMode", "standstill_release_confidence"),
     ("CurveTrafficAdvisorMode", "curve_traffic"),
   ):
@@ -789,7 +784,6 @@ def test_apply_values_preserved_but_non_actuating_in_acc():
   baseline = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(**scenario)
   for key, value, debug_prefix in (
     ("CutInBrakeAssistMode", "apply", "cut_in_brake_assist"),
-    ("CurveSpeedConfidenceMode", "apply_conservative", "curve_speed_confidence"),
     ("CurveTrafficAdvisorMode", "apply_conservative", "curve_traffic"),
     ("StandstillReleaseConfidenceMode", "gate", "standstill_release_confidence"),
   ):
@@ -821,7 +815,6 @@ def test_apply_modes_degrade_to_shadow_when_research_gate_false():
   baseline = CustomLongitudinalAdapter(FakeParams(**base_params)).evaluate(**scenario)
   for key, value, debug_prefix in (
     ("CutInBrakeAssistMode", "apply", "cut_in_brake_assist"),
-    ("CurveSpeedConfidenceMode", "apply_conservative", "curve_speed_confidence"),
     ("CurveTrafficAdvisorMode", "apply_conservative", "curve_traffic"),
     ("StandstillReleaseConfidenceMode", "gate", "standstill_release_confidence"),
   ):

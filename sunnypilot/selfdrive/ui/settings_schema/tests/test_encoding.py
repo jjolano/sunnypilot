@@ -157,11 +157,6 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert cut_in_enum.values == ["off", "shadow", "apply"]
   assert cut_in_enum.labels == ["Off", "Monitor only", "Apply gentle cap"]
 
-  curve_enum = homogeneous_string_options(find_item(CRUISE, "CurveSpeedConfidenceMode"))
-  assert curve_enum is not None
-  assert curve_enum.values == ["off", "shadow", "apply_conservative"]
-  assert curve_enum.labels == ["Off", "Monitor only", "Apply conservative"]
-
   curve_traffic_enum = homogeneous_string_options(find_item(CRUISE, "CurveTrafficAdvisorMode"))
   assert curve_traffic_enum is not None
   assert curve_traffic_enum.values == ["off", "shadow", "apply_conservative"]
@@ -267,7 +262,7 @@ def test_lane_centering_one_line_string_index_defaults_to_off():
 
 
 def test_shadow_observability_string_indexes_default_to_off():
-  for key in ("CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "CurveTrafficAdvisorMode",
+  for key in ("CutInBrakeAssistMode", "CurveTrafficAdvisorMode",
               "StandstillReleaseConfidenceMode", "UphillNetDemandCapMode"):
     enum = homogeneous_string_options(find_item(CRUISE, key))
     assert enum is not None
@@ -276,7 +271,6 @@ def test_shadow_observability_string_indexes_default_to_off():
     assert string_option_index("shadow", enum, key) == 1
     assert string_option_index("bad", enum, key) == 0
   assert string_option_index("apply", homogeneous_string_options(find_item(CRUISE, "CutInBrakeAssistMode")), "CutInBrakeAssistMode") == 2
-  assert string_option_index("apply_conservative", homogeneous_string_options(find_item(CRUISE, "CurveSpeedConfidenceMode")), "CurveSpeedConfidenceMode") == 2
   assert string_option_index("apply_conservative", homogeneous_string_options(find_item(CRUISE, "CurveTrafficAdvisorMode")), "CurveTrafficAdvisorMode") == 2
   assert string_option_index("gate", homogeneous_string_options(find_item(CRUISE, "StandstillReleaseConfidenceMode")), "StandstillReleaseConfidenceMode") == 2
   assert string_option_index("apply", homogeneous_string_options(find_item(CRUISE, "UphillNetDemandCapMode")), "UphillNetDemandCapMode") == 2

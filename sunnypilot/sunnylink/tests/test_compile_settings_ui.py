@@ -197,7 +197,6 @@ class TestCompiledShape:
     cruise = next(p for p in compiled["panels"] if p["id"] == "cruise")
     expected = {
       "CutInBrakeAssistMode": ["off", "shadow", "apply"],
-      "CurveSpeedConfidenceMode": ["off", "shadow", "apply_conservative"],
       "CurveTrafficAdvisorMode": ["off", "shadow", "apply_conservative"],
       "MovingLeadCruiseCapMode": ["off", "shadow", "apply"],
       "CutOutLeadReleaseMode": ["off", "apply"],

@@ -418,7 +418,6 @@ class LongitudinalPlannerSP:
       msg.modelStopDistanceUsed = self._safe_float(debug.get('model_stop_distance_used', 0.0))
       msg.modelStopCommitted = bool(debug.get('model_stop_committed', False))
       self._populate_cut_in_brake_assist_trace(msg.cutInBrakeAssist, debug)
-      self._populate_curve_speed_confidence_trace(msg.curveSpeedConfidence, debug)
       self._populate_standstill_release_confidence_trace(msg.standstillReleaseConfidence, debug)
       self._populate_acc_envelope_trace(msg.accEnvelope, debug)
       self._populate_dynamic_safety_floor_trace(msg.dynamicSafetyFloor, debug)
@@ -448,17 +447,6 @@ class LongitudinalPlannerSP:
     msg.requiredDecel = self._safe_float(debug.get(prefix + 'required_decel', 0.0))
     msg.proposedCap = self._safe_float(debug.get(prefix + 'proposed_cap', 0.0))
     msg.confidence = self._safe_float(debug.get(prefix + 'confidence', 0.0))
-
-  def _populate_curve_speed_confidence_trace(self, msg, debug: dict) -> None:
-    prefix = 'curve_speed_confidence_'
-    self._populate_feature_trace_common(msg, debug, prefix)
-    msg.confidence = self._safe_float(debug.get(prefix + 'confidence', 0.0))
-    msg.proposedCap = self._safe_float(debug.get(prefix + 'proposed_cap', 0.0))
-    msg.source = str(debug.get(prefix + 'source', '') or '')
-    msg.active = bool(debug.get(prefix + 'active', False))
-    msg.currentLatAccel = self._safe_float(debug.get(prefix + 'current_lat_acc', 0.0))
-    msg.maxPredLatAccel = self._safe_float(debug.get(prefix + 'max_pred_lat_acc', 0.0))
-    msg.preEntryActive = bool(debug.get(prefix + 'pre_entry_active', False))
 
   def _populate_standstill_release_confidence_trace(self, msg, debug: dict) -> None:
     prefix = 'standstill_release_confidence_'

@@ -35,7 +35,7 @@ def test_longitudinal_controls_present():
           "CustomAccIncrementsEnabled", "CustomLongitudinalEnabled", "CustomLongitudinalMode",
           "LongitudinalDebugTraceMode", "UphillNetDemandCapMode", "UphillNetDemandCeiling",
           "AllowLongitudinalResearchActuation",
-          "CutInBrakeAssistMode", "CurveSpeedConfidenceMode", "CurveTrafficAdvisorMode",
+          "CutInBrakeAssistMode", "CurveTrafficAdvisorMode",
           "MovingLeadCruiseCapMode", "CutOutLeadReleaseMode", "StandstillReleaseConfidenceMode",
           "SmartCruiseControlVision"} <= CONTROLS
 

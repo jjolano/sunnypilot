@@ -888,37 +888,6 @@ class _FinalArbitration:
     ))
 
   @staticmethod
-  def scc_curve_confidence_final_cap(finalizer: CustomLongitudinalFinalizer, base_a_target: float,
-                                     sm: Any, custom_long: Any, custom_long_output: Any,
-                                     release_mpc_stop: bool = False) -> float:
-    if release_mpc_stop:
-      return float(base_a_target)
-    if custom_long.mode is not LongitudinalMode.SCC or not custom_long.enabled or custom_long_output is None:
-      return float(base_a_target)
-    if not bool(getattr(custom_long_output, "enabled", False)):
-      return float(base_a_target)
-    if not bool(getattr(custom_long_output, "research_actuation_allowed", False)):
-      return float(base_a_target)
-    if str(getattr(custom_long, "curve_speed_confidence_mode", "off") or "off") != "apply_conservative":
-      return float(base_a_target)
-    # Typed Actuation Verdict; a missing verdict (off/fault) conservatively skips the cap.
-    verdict = getattr(getattr(custom_long_output, "actuation", None), "curve_speed_confidence", None)
-    if verdict is None or not bool(getattr(verdict, "eligible", False)) or not bool(getattr(verdict, "apply_supported", False)):
-      return float(base_a_target)
-    confidence = finalizer._finite_float_or_none(getattr(verdict, "confidence", 0.0))
-    if confidence is None or confidence < finalizer._CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE:
-      return float(base_a_target)
-    proposed_cap = finalizer._finite_float_or_none(getattr(verdict, "proposed_cap", 0.0))
-    if proposed_cap is None or proposed_cap >= float(base_a_target):
-      return float(base_a_target)
-    car_state = finalizer._sm_item(sm, 'carState')
-    v_ego = finalizer._safe_float(getattr(car_state, 'vEgo', 0.0) if car_state is not None else 0.0)
-    if v_ego < finalizer._CURVE_CONFIDENCE_APPLY_MIN_V_EGO:
-      return float(base_a_target)
-    conservative_cap = max(proposed_cap, finalizer._CURVE_CONFIDENCE_APPLY_MIN_CAP)
-    return float(min(float(base_a_target), conservative_cap))
-
-  @staticmethod
   def scc_cut_in_brake_assist_final_cap(finalizer: CustomLongitudinalFinalizer, base_a_target: float,
                                         sm: Any, custom_long: Any, custom_long_output: Any,
                                         release_mpc_stop: bool = False) -> float:
@@ -1387,9 +1356,6 @@ class CustomLongitudinalFinalizer:
   _LAUNCH_DIP_GRACE_S = 3.0
   _LAUNCH_DIP_MAX_V_EGO = 5.0
   _LEAD_CATCHUP_MAX_V_EGO = 8.0
-  _CURVE_CONFIDENCE_APPLY_MIN_V_EGO = 8.0
-  _CURVE_CONFIDENCE_APPLY_MIN_CONFIDENCE = 0.70
-  _CURVE_CONFIDENCE_APPLY_MIN_CAP = -0.85
 
   _CUT_IN_BRAKE_ASSIST_APPLY_MIN_CONFIDENCE = 0.60
   _CUT_IN_BRAKE_ASSIST_APPLY_MAX_DECEL = -0.60
@@ -1563,12 +1529,6 @@ class CustomLongitudinalFinalizer:
 
   def _scc_custom_stop_cap(self, base_a_target: float, custom_long: Any, custom_long_output: Any) -> float:
     return _FinalArbitration.scc_custom_stop_cap(base_a_target, custom_long, custom_long_output)
-
-  def _scc_curve_confidence_final_cap(self, base_a_target: float, sm: Any, custom_long: Any, custom_long_output: Any,
-                                      release_mpc_stop: bool = False) -> float:
-    return _FinalArbitration.scc_curve_confidence_final_cap(
-      self, base_a_target, sm, custom_long, custom_long_output, release_mpc_stop
-    )
 
   def _apply_stop_hold_release_slew(self, sm: Any, dt: float, a_target: float, release_mpc_stop: bool,
                                     mpc_stop: bool, raw_model_should_stop: bool, should_stop: bool) -> float:
@@ -1913,9 +1873,6 @@ class CustomLongitudinalFinalizer:
     a_target = _FinalArbitration.scc_launch_floor(self, snapshot, a_target, should_stop)
     a_target = _FinalArbitration.scc_departing_lead_coast(self, snapshot, a_target, should_stop)
     a_target = _FinalArbitration.scc_custom_stop_cap(a_target, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop)
-    a_target = _FinalArbitration.scc_curve_confidence_final_cap(
-      self, a_target, sm, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop
-    )
     a_target = _FinalArbitration.scc_cut_in_brake_assist_final_cap(
       self, a_target, sm, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop
     )

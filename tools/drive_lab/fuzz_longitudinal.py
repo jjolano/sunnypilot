@@ -83,7 +83,6 @@ _SHIPPED_LONGITUDINAL_PARAM_KEYS = (
   "LongitudinalPersonality",
   "LongitudinalDebugTraceMode",
   "CutInBrakeAssistMode",
-  "CurveSpeedConfidenceMode",
   "CurveTrafficAdvisorMode",
   "MapCoastMode",
   "StandstillReleaseConfidenceMode",

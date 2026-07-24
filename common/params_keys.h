@@ -122,7 +122,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CutOutLeadReleaseMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CutInBrakeAssistMode", {PERSISTENT | BACKUP, STRING, "off"}},
 
-    {"CurveSpeedConfidenceMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"CurveTrafficAdvisorMode", {PERSISTENT | BACKUP, STRING, "off"}},
     // SCC-Map coast tier (lift-off-only cap toward map slowdowns beyond vision range); apply is
     // explicit opt-in and runtime-gated by CustomLongitudinalEnabled + AllowLongitudinalResearchActuation.

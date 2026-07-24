@@ -107,18 +107,6 @@ def test_debug_trace_populates_whitelisted_fields():
     'cut_in_brake_assist_required_decel': 0.4,
     'cut_in_brake_assist_proposed_cap': -0.7,
     'cut_in_brake_assist_confidence': 0.8,
-    'curve_speed_confidence_mode': 'shadow',
-    'curve_speed_confidence_effective_mode': 'shadow',
-    'curve_speed_confidence_apply_supported': False,
-    'curve_speed_confidence_eligible': True,
-    'curve_speed_confidence_block_reason': '',
-    'curve_speed_confidence_confidence': 0.7,
-    'curve_speed_confidence_proposed_cap': -0.5,
-    'curve_speed_confidence_source': 'vision',
-    'curve_speed_confidence_active': True,
-    'curve_speed_confidence_current_lat_acc': 1.1,
-    'curve_speed_confidence_max_pred_lat_acc': 1.4,
-    'curve_speed_confidence_pre_entry_active': True,
     'standstill_release_confidence_mode': 'shadow',
     'standstill_release_confidence_effective_mode': 'shadow',
     'standstill_release_confidence_apply_supported': False,
@@ -180,12 +168,6 @@ def test_debug_trace_populates_whitelisted_fields():
   assert msg.cutInBrakeAssist.eligible is True
   assert msg.cutInBrakeAssist.proposedCap == pytest.approx(-0.7)
   assert msg.cutInBrakeAssist.ttc == pytest.approx(3.5)
-  assert msg.curveSpeedConfidence.mode == 'shadow'
-  assert msg.curveSpeedConfidence.source == 'vision'
-  assert msg.curveSpeedConfidence.proposedCap == pytest.approx(-0.5)
-  assert msg.curveSpeedConfidence.currentLatAccel == pytest.approx(1.1)
-  assert msg.curveSpeedConfidence.maxPredLatAccel == pytest.approx(1.4)
-  assert msg.curveSpeedConfidence.preEntryActive is True
   assert msg.standstillReleaseConfidence.mode == 'shadow'
   assert msg.standstillReleaseConfidence.releaseAllowed is True
   assert msg.standstillReleaseConfidence.releaseSource == 'lead_pullaway'
@@ -217,8 +199,6 @@ def test_debug_trace_sanitizes_non_finite_values_without_throwing():
     'cut_in_brake_assist_mode': 'shadow',
     'cut_in_brake_assist_lead_idx': math.nan,
     'cut_in_brake_assist_proposed_cap': math.nan,
-    'curve_speed_confidence_mode': 'shadow',
-    'curve_speed_confidence_proposed_cap': math.inf,
     'standstill_release_confidence_mode': 'shadow',
     'standstill_release_confidence_release_a_target': math.nan,
     'acc_envelope_active': True,
@@ -247,7 +227,6 @@ def test_debug_trace_sanitizes_non_finite_values_without_throwing():
   assert msg.accelClipMax == pytest.approx(0.0)
   assert msg.cutInBrakeAssist.leadIdx == -1
   assert msg.cutInBrakeAssist.proposedCap == pytest.approx(0.0)
-  assert msg.curveSpeedConfidence.proposedCap == pytest.approx(0.0)
   assert msg.standstillReleaseConfidence.releaseATarget == pytest.approx(0.0)
   assert msg.accEnvelope.active is True
   assert msg.accEnvelope.allowedATarget == pytest.approx(0.0)

@@ -43,6 +43,14 @@ def malformed_model_path():
   return SimpleNamespace(position=RaisesOnY())
 
 
+def circular_arc_path(n=16, step=6.0, radius=100.0, sign=1.0):
+  """Constant-curvature arc with curvature sign*1/radius."""
+  thetas = [i * step / radius for i in range(n)]
+  xs = [radius * math.sin(t) for t in thetas]
+  ys = [sign * radius * (1.0 - math.cos(t)) for t in thetas]
+  return model_path(xs, ys)
+
+
 def base(**kw):
   d = dict(v_ego=20.0, v_cruise=22.0, seed_a_target=0.4, accel_limits=LIMITS,
            research_actuation_allowed=True)
@@ -246,27 +254,25 @@ def test_apply_mode_actuation_verdicts_independent_of_debug():
   """Turning debug off removes diagnostics only; apply-mode Actuation Verdicts persist."""
   kwargs = dict(
     mode=LongitudinalMode.SCC,
-    curve_speed_confidence_mode="apply_conservative",
-    curve_confidence=CurveSpeedConfidenceInputs(
-      vision_active=True, vision_a_target=-1.2,
-      vision_current_lat_acc=1.0, vision_max_pred_lat_acc=2.4,
-    ),
+    curve_traffic_advisor_mode="apply_conservative",
+    curve_confidence=CurveSpeedConfidenceInputs(vision_active=True, vision_a_target=-0.5),
+    model_msg=circular_arc_path(n=24, radius=100.0),
+    long_active=True,
     sources=SourceToggles(scc_curve_vision_enabled=True),
+    research_actuation_allowed=True,
   )
   r_debug = CustomLongitudinalStack().update(base(**kwargs), DT, collect_debug=True)
   r_quiet = CustomLongitudinalStack().update(base(**kwargs), DT, collect_debug=False)
 
-  assert r_debug.actuation.curve_speed_confidence is not None
-  assert r_quiet.actuation.curve_speed_confidence == r_debug.actuation.curve_speed_confidence
-  assert r_quiet.actuation.cut_in_brake_assist == r_debug.actuation.cut_in_brake_assist
+  assert r_debug.actuation.curve_traffic_advisor is not None
   assert r_quiet.actuation.curve_traffic_advisor == r_debug.actuation.curve_traffic_advisor
+  assert r_quiet.actuation.cut_in_brake_assist == r_debug.actuation.cut_in_brake_assist
   assert r_quiet.debug == {}
   assert r_debug.debug
 
 
 def test_debug_off_without_apply_modes_skips_feature_verdicts():
   r = CustomLongitudinalStack().update(base(mode=LongitudinalMode.SCC), DT, collect_debug=False)
-  assert r.actuation.curve_speed_confidence is None
   assert r.actuation.cut_in_brake_assist is None
   assert r.actuation.curve_traffic_advisor is None
   assert r.debug == {}
@@ -857,88 +863,6 @@ def test_scc_source_gates_speed_limit_and_curve():
   ), DT)
   assert r_map_on.a_target == pytest.approx(-0.5)
   assert r_map_on.decision.reason == "advisory_capped"
-
-
-def test_scc_curve_confidence_respects_source_gates():
-  vision_confidence = CurveSpeedConfidenceInputs(
-    vision_active=True,
-    vision_a_target=-1.0,
-    vision_max_pred_lat_acc=1.5,
-    vision_pre_entry_active=True,
-  )
-  vision_off = CustomLongitudinalStack().update(base(
-    mode=LongitudinalMode.SCC,
-    curve_speed_confidence_mode="apply_conservative",
-    curve_confidence=vision_confidence,
-    sources=SourceToggles(scc_curve_vision_enabled=False),
-  ), DT)
-  assert vision_off.debug["curve_speed_confidence_eligible"] is False
-  assert vision_off.debug["curve_speed_confidence_block_reason"] == "inactive"
-
-  vision_on = CustomLongitudinalStack().update(base(
-    mode=LongitudinalMode.SCC,
-    curve_speed_confidence_mode="apply_conservative",
-    curve_confidence=vision_confidence,
-    sources=SourceToggles(scc_curve_vision_enabled=True),
-  ), DT)
-  assert vision_on.debug["curve_speed_confidence_eligible"] is True
-  assert vision_on.debug["curve_speed_confidence_proposed_cap"] == pytest.approx(-1.0)
-
-  map_confidence = CurveSpeedConfidenceInputs(
-    map_active=True,
-    map_a_target=-0.8,
-    map_target_lat=37.0,
-    map_target_lon=-122.0,
-  )
-  map_off = CustomLongitudinalStack().update(base(
-    mode=LongitudinalMode.SCC,
-    curve_speed_confidence_mode="apply_conservative",
-    curve_confidence=map_confidence,
-    sources=SourceToggles(scc_curve_map_enabled=False),
-  ), DT)
-  assert map_off.debug["curve_speed_confidence_eligible"] is False
-  assert map_off.debug["curve_speed_confidence_block_reason"] == "inactive"
-
-  map_on = CustomLongitudinalStack().update(base(
-    mode=LongitudinalMode.SCC,
-    curve_speed_confidence_mode="apply_conservative",
-    curve_confidence=map_confidence,
-    sources=SourceToggles(scc_curve_map_enabled=True),
-  ), DT)
-  assert map_on.debug["curve_speed_confidence_eligible"] is False
-  assert map_on.debug["curve_speed_confidence_block_reason"] == "no_negative_curve_cap"
-
-
-def test_research_apply_modes_degrade_to_shadow_when_gate_closed():
-  vision_confidence = CurveSpeedConfidenceInputs(
-    vision_active=True,
-    vision_a_target=-1.0,
-    vision_max_pred_lat_acc=1.5,
-    vision_pre_entry_active=True,
-  )
-  allowed = CustomLongitudinalStack().update(base(
-    mode=LongitudinalMode.SCC,
-    curve_speed_confidence_mode="apply_conservative",
-    curve_confidence=vision_confidence,
-    sources=SourceToggles(scc_curve_vision_enabled=True),
-    research_actuation_allowed=True,
-  ), DT)
-  gated = CustomLongitudinalStack().update(base(
-    mode=LongitudinalMode.SCC,
-    curve_speed_confidence_mode="apply_conservative",
-    curve_confidence=vision_confidence,
-    sources=SourceToggles(scc_curve_vision_enabled=True),
-    research_actuation_allowed=False,
-  ), DT)
-  assert allowed.debug["curve_speed_confidence_mode"] == "apply_conservative"
-  assert allowed.debug["curve_speed_confidence_effective_mode"] == "apply_conservative"
-  assert allowed.debug["curve_speed_confidence_apply_supported"] is True
-  assert allowed.debug["curve_speed_confidence_eligible"] is True
-
-  assert gated.debug["curve_speed_confidence_mode"] == "apply_conservative"
-  assert gated.debug["curve_speed_confidence_effective_mode"] == "shadow"
-  assert gated.debug["curve_speed_confidence_apply_supported"] is False
-  assert gated.debug["curve_speed_confidence_eligible"] is False
 
 
 def _stable_lead_compression_stack(seed_a: float, lead_d: float, v_lead: float, v_rel: float, n: int = 30):

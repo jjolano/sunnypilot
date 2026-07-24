@@ -118,11 +118,6 @@ def _shadow_mode(value: Any, future_values: tuple[str, ...] = ()) -> str:
   return "off"
 
 
-def _curve_speed_confidence_mode(value: Any) -> str:
-  text = str(value or "").strip().lower()
-  return text if text in ("off", "shadow", "apply_conservative") else "off"
-
-
 def _cut_in_brake_assist_mode(value: Any) -> str:
   text = str(value or "").strip().lower()
   if text in ("off", "shadow", "apply"):
@@ -200,7 +195,6 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        model_stale: bool = False,
                        accel_coast: float = 0.0, model_msg: Any | None = None,
                        cut_in_brake_assist_mode: str = "off",
-                       curve_speed_confidence_mode: str = "off",
                        curve_traffic_advisor_mode: str = CURVE_TRAFFIC_MODE_OFF,
                        standstill_release_confidence_mode: str = "off",
                        standstill: bool = False,
@@ -275,7 +269,6 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     brake_pressed=brake_pressed, gas_pressed=gas_pressed,
     mode=mode, sources=sources, personality=personality, model_msg=model_msg,
     cut_in_brake_assist_mode=cut_in_brake_assist_mode,
-    curve_speed_confidence_mode=curve_speed_confidence_mode,
     curve_traffic_advisor_mode=curve_traffic_advisor_mode,
     standstill_release_confidence_mode=standstill_release_confidence_mode,
     standstill=bool(standstill),
@@ -313,7 +306,6 @@ class CustomLongitudinalAdapter:
     self.debug_trace_mode = "off"
     self.cut_in_brake_assist_mode = "off"
     self.cut_out_lead_release_mode = "off"
-    self.curve_speed_confidence_mode = "off"
     self.curve_traffic_advisor_mode = CURVE_TRAFFIC_MODE_OFF
     self.standstill_release_confidence_mode = "off"
     self.map_coast_mode = "off"
@@ -384,7 +376,6 @@ class CustomLongitudinalAdapter:
         self.personality = Personality.from_value(p.get("LongitudinalPersonality"))
         self.debug_trace_mode = _debug_trace_mode(_param_string(p, "LongitudinalDebugTraceMode"))
         self.cut_in_brake_assist_mode = _cut_in_brake_assist_mode(_param_string(p, "CutInBrakeAssistMode"))
-        self.curve_speed_confidence_mode = _curve_speed_confidence_mode(_param_string(p, "CurveSpeedConfidenceMode"))
         self.standstill_release_confidence_mode = _standstill_release_confidence_mode(_param_string(p, "StandstillReleaseConfidenceMode"))
         # SCC curve sources are gated by the existing upstream SCC enable toggles.
         self.sources = SourceToggles(
@@ -577,7 +568,6 @@ class CustomLongitudinalAdapter:
         model_stale=model_stale, accel_coast=accel_coast,
         model_msg=model,
         cut_in_brake_assist_mode=self.cut_in_brake_assist_mode,
-        curve_speed_confidence_mode=self.curve_speed_confidence_mode,
         curve_traffic_advisor_mode=self.curve_traffic_advisor_mode,
         standstill_release_confidence_mode=self.standstill_release_confidence_mode,
         standstill=bool(getattr(cs, "standstill", False)),

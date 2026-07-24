@@ -22,11 +22,7 @@ from typing import Any
 
 from openpilot.sunnypilot.custom.longitudinal.acc_envelope import AccEnvelopeInputs, evaluate_acc_envelope
 from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import CutInBrakeAssistResult, predict_cut_in_brake_assist
-from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import (
-  CurveSpeedConfidenceInputs,
-  CurveSpeedConfidenceResult,
-  predict_curve_speed_confidence,
-)
+from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs
 from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
   CurveTrafficAdvisorInputs,
   CurveTrafficAdvisorResult,
@@ -244,7 +240,6 @@ class LongitudinalStackInputs:
   # shadow path-relative lead context (telemetry only; not used for actuation)
   model_msg: Any | None = None
   cut_in_brake_assist_mode: Any = "off"
-  curve_speed_confidence_mode: Any = "off"
   standstill_release_confidence_mode: Any = "off"
   curve_traffic_advisor_mode: Any = "off"
   standstill: bool = False
@@ -290,7 +285,6 @@ class ActuationVerdicts:
   restriction. ``None`` means the feature produced no verdict this tick (off or fault),
   which downstream conservatively treats as no restriction — the same direction as the
   old debug-dict behavior."""
-  curve_speed_confidence: CurveSpeedConfidenceResult | None = None
   cut_in_brake_assist: CutInBrakeAssistResult | None = None
   curve_traffic_advisor: CurveTrafficAdvisorResult | None = None
   model_path_available: bool = False  # cut-in: path-shadow Model-Path Evidence present
@@ -349,7 +343,6 @@ class CustomLongitudinalStack:
     try:
       apply_armed = (
         str(inp.cut_in_brake_assist_mode) == "apply" or
-        str(inp.curve_speed_confidence_mode) == "apply_conservative" or
         str(inp.curve_traffic_advisor_mode) == "apply_conservative"
       )
     except Exception:  # a broken mode value never faults the stack; it just yields no verdicts
@@ -363,9 +356,6 @@ class CustomLongitudinalStack:
     cut_in_brake_assist_result: CutInBrakeAssistResult | None = None
     cut_in_brake_assist_fault = False
     cut_in_brake_assist_debug: dict[str, Any] = {}
-    curve_speed_confidence_result: CurveSpeedConfidenceResult | None = None
-    curve_speed_confidence_fault = False
-    curve_speed_confidence_debug: dict[str, Any] = {}
     if evaluate_features:
       try:
         path_shadow_model_path_available = _model_path_available(inp.model_msg)
@@ -391,21 +381,6 @@ class CustomLongitudinalStack:
       except Exception:
         cut_in_brake_assist_fault = True
         cut_in_brake_assist_result = None
-
-      try:
-        curve_speed_confidence_result = predict_curve_speed_confidence(
-          inp.curve_speed_confidence_mode, act_inp.curve_confidence,
-        )
-        curve_speed_confidence_result = _downgrade_research_apply(
-          curve_speed_confidence_result, inp.research_actuation_allowed,
-          apply_value="apply_conservative", mode_key="mode", effective_mode_key="effective_mode",
-          apply_supported_key="apply_supported", eligible_key="eligible",
-        )
-        if collect_debug:
-          curve_speed_confidence_debug = curve_speed_confidence_result.debug_dict()
-      except Exception:
-        curve_speed_confidence_fault = True
-        curve_speed_confidence_result = None
 
     raw_lead_present = _any_status(inp.leads)
     lead_shadow_active = bool(getattr(lead_ctx, "shadow_active", False))
@@ -696,8 +671,6 @@ class CustomLongitudinalStack:
         **shadow_debug,
         "cut_in_brake_assist_fault": cut_in_brake_assist_fault,
         **cut_in_brake_assist_debug,
-        "curve_speed_confidence_fault": curve_speed_confidence_fault,
-        **curve_speed_confidence_debug,
         "standstill_release_confidence_fault": standstill_release_confidence_fault,
         **standstill_release_confidence_debug,
         "curve_traffic_advisor_fault": curve_traffic_advisor_fault,
@@ -718,7 +691,6 @@ class CustomLongitudinalStack:
       standstill_release_a_target=float(max(raw_a_target, 0.15)) if standstill_release_allowed else 0.0,
       standstill_release_reason=str(decision.reason if standstill_release_allowed else ""),
       actuation=ActuationVerdicts(
-        curve_speed_confidence=curve_speed_confidence_result,
         cut_in_brake_assist=cut_in_brake_assist_result,
         curve_traffic_advisor=curve_traffic_advisor_result,
         model_path_available=bool(path_shadow_model_path_available),

@@ -1263,41 +1263,6 @@
               ]
             },
             {
-              "key": "CurveSpeedConfidenceMode",
-              "widget": "multiple_button",
-              "title": "Curve Speed Confidence",
-              "description": "Monitor SCC curve evidence, or apply a conservative final accel cap when confidence is high.",
-              "options": [
-                {
-                  "value": "off",
-                  "label": "Off"
-                },
-                {
-                  "value": "shadow",
-                  "label": "Monitor only"
-                },
-                {
-                  "value": "apply_conservative",
-                  "label": "Apply conservative"
-                }
-              ],
-              "enablement": [
-                {
-                  "type": "offroad_only"
-                },
-                {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
-                },
-                {
-                  "type": "param",
-                  "key": "CustomLongitudinalEnabled",
-                  "equals": true
-                }
-              ]
-            },
-            {
               "key": "CurveTrafficAdvisorMode",
               "widget": "multiple_button",
               "requires_attestation": true,

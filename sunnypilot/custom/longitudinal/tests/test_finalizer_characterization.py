@@ -13,7 +13,6 @@ from typing import Any
 import pytest
 
 from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import CutInBrakeAssistResult
-from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceResult
 from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import CurveTrafficAdvisorResult
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
@@ -26,12 +25,6 @@ def cut_in_verdicts(model_path_available: bool = True, **overrides) -> Actuation
   fields: dict[str, Any] = dict(eligible=True, apply_supported=True, confidence=0.80, path_y_rel=0.3, proposed_cap=-2.0)
   fields.update(overrides)
   return ActuationVerdicts(cut_in_brake_assist=CutInBrakeAssistResult(**fields), model_path_available=model_path_available)
-
-
-def curve_confidence_verdicts(**overrides) -> ActuationVerdicts:
-  fields: dict[str, Any] = dict(eligible=True, apply_supported=True, confidence=0.80, proposed_cap=-1.0)
-  fields.update(overrides)
-  return ActuationVerdicts(curve_speed_confidence=CurveSpeedConfidenceResult(**fields))
 
 
 def curve_traffic_verdicts(model_stale: bool = False, **overrides) -> ActuationVerdicts:
@@ -65,7 +58,6 @@ def make_custom_long(mode: LongitudinalMode = LongitudinalMode.SCC, **overrides)
     enabled=True,
     mode=mode,
     standstill_release_confidence_mode="off",
-    curve_speed_confidence_mode="off",
   )
   defaults.update(overrides)
   return SimpleNamespace(**defaults)
@@ -342,16 +334,15 @@ def test_e2e_stale_model_falls_back_to_mpc_path():
   assert should_stop is False
 
 
-def test_scc_custom_stop_cap_and_curve_confidence_final_cap_apply():
+def test_scc_custom_stop_cap_applies():
   planner = make_planner(
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(
       selected_intent="stop_approach",
       a_target=-0.6,
-      actuation=curve_confidence_verdicts(),
+      actuation=ActuationVerdicts(),
     ),
   )
-  planner.custom_long.curve_speed_confidence_mode = "apply_conservative"
   sm = make_sm(v_ego=12.0)
 
   a_target, should_stop, e2e_source = planner.final_longitudinal_output(
@@ -361,8 +352,9 @@ def test_scc_custom_stop_cap_and_curve_confidence_final_cap_apply():
 
   assert should_stop is False
   assert e2e_source is False
-  # Custom stop cap pulls 0.0 down to -0.6; curve cap pulls it further to -0.85 floor.
-  assert a_target == pytest.approx(-0.85)
+  # Custom stop cap pulls 0.0 down to -0.6. The curve-confidence cap that used to pull this
+  # further to the -0.85 floor was deleted 2026-07-24 (0.07% eligibility over 101,741 frames).
+  assert a_target == pytest.approx(-0.6)
 
 
 def test_scc_corroborated_model_stop_cap_survives_nonbinding_intent():
