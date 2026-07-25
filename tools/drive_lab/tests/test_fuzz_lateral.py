@@ -116,6 +116,37 @@ def test_metric_catches_oscillation():
   assert any(f.check == "oscillation" for f in evaluation.failures)
 
 
+def test_metric_fails_inverted_sign_response():
+  # A wrong-way controller must invalidate the result, not merely record a metric.
+  # Build a trace by inverting the actual curvature of a healthy run.
+  from dataclasses import replace as _replace
+  # Sustained demand: a zero-mean sine has no net direction to invert, and the check
+  # deliberately skips those (the demand floor).
+  config = LateralPlantConfig(duration_s=6.0)
+  t = np.arange(0.0, 6.0, config.dt_s)
+  desired = 0.002 * (1.0 - np.exp(-t))
+  result = run_lateral_plant(desired, config=config)
+  assert not any(f.check == "sign" for f in evaluate_lateral_trace("ok", result.trace, config).failures)
+
+  inverted = _replace(result.trace, actual_curvature=tuple(-np.array(result.trace.actual_curvature)))
+  failures = evaluate_lateral_trace("inverted", inverted, config).failures
+  assert any(f.check == "sign" for f in failures), [f.check for f in failures]
+
+
+def test_metric_checks_sign_on_negative_only_demand():
+  # Demand entirely negative was never sign-checked at all before.
+  from dataclasses import replace as _replace
+  config = LateralPlantConfig(duration_s=6.0)
+  t = np.arange(0.0, 6.0, config.dt_s)
+  desired = -0.002 * (1.0 - np.exp(-t))
+  result = run_lateral_plant(desired, config=config)
+  assert not any(f.check == "sign" for f in evaluate_lateral_trace("neg_ok", result.trace, config).failures)
+
+  inverted = _replace(result.trace, actual_curvature=tuple(-np.array(result.trace.actual_curvature)))
+  failures = evaluate_lateral_trace("neg_inverted", inverted, config).failures
+  assert any(f.check == "sign" for f in failures), [f.check for f in failures]
+
+
 def test_metric_catches_steering_rate_and_jerk():
   # Very tight rate limit and high desired curvature drive the command to saturate
   # and produce high actuator rate / lateral jerk at the step.

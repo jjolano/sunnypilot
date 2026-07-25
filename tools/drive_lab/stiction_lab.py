@@ -99,6 +99,20 @@ class StictionPlantConfig:
   presliding_compliance: float = 0.15
 
   def __post_init__(self) -> None:
+    if self.breakaway_torque < 0.0 or self.kinetic_torque < 0.0:
+      raise ValueError("breakaway_torque and kinetic_torque must be >= 0")
+    # Kinetic friction above static breakaway is unphysical and produces a rack that
+    # is "unstuck" yet cannot move: net torque clears breakaway, then the kinetic term
+    # cancels it and rack_rate is ~0 forever, which reads as a controller failure.
+    if self.kinetic_torque > self.breakaway_torque:
+      raise ValueError(
+        f"kinetic_torque {self.kinetic_torque} must not exceed breakaway_torque {self.breakaway_torque}")
+    if self.mobility <= 0.0:
+      raise ValueError("mobility must be > 0")
+    if self.tire_lag_s < 0.0 or self.actuator_delay_s < 0.0:
+      raise ValueError("tire_lag_s and actuator_delay_s must be >= 0")
+    if self.v_ego <= 0.0:
+      raise ValueError("v_ego must be > 0")
     # The implicit pre-sliding solve is stable for every non-negative compliance,
     # so there is no upper bound to police — but a negative one is unphysical
     # (the contact would deflect *against* the applied force) and silently
@@ -136,7 +150,9 @@ def run_closed_loop(desired_lat_accel: np.ndarray, config: StictionPlantConfig,
     return math.degrees(curv * denom + 0.02 * cfg.roll * denom)
 
   lat_accel_factor = RAV4ISH_TORQUE_PARAMS["latAccelFactor"]
-  delay_frames = max(1, int(round(cfg.actuator_delay_s / DT)))
+  # max(1, ...) meant actuator_delay_s=0.0 and 0.01 behaved identically, so the
+  # zero-delay reference case was never actually zero-delay.
+  delay_frames = max(0, int(round(cfg.actuator_delay_s / DT)))
   cmd_hist = [0.0] * delay_frames
 
   rack_pos = 0.0     # lat-accel-equivalent rack position
@@ -223,14 +239,32 @@ def _bandpass(x: np.ndarray, fs: float, lo: float, hi: float) -> np.ndarray:
 
 
 def _xcorr_lag(a: np.ndarray, b: np.ndarray, fs: float, max_lag_s: float = 5.0) -> tuple[float, float]:
-  # positive lag => a leads b
-  a = a - a.mean()
-  b = b - b.mean()
-  n = len(a)
-  lags = np.arange(-int(max_lag_s * fs), int(max_lag_s * fs) + 1)
-  norm = np.sqrt(np.dot(a, a) * np.dot(b, b)) + 1e-12
-  c = np.array([np.dot(a[max(0, -l):n - max(0, l)], b[max(0, l):n - max(0, -l)]) / norm for l in lags])
-  i = int(np.argmax(c))
+  """Best-correlation lag; positive lag => a leads b.
+
+  Returns (nan, nan) when the lag is undefined rather than a plausible-looking number.
+  A constant trace used to fall out as exactly -max_lag_s with correlation 0.0: the
+  mean-removed signals are all zero, every lag scores 0.0, and argmax picks the first
+  (most negative) one. That reads like a real measurement and is not. The lag range is
+  also clamped to the data, since a trace shorter than max_lag_s*fs samples otherwise
+  builds mismatched slices and raises a shape error inside np.dot.
+  """
+  n = min(len(a), len(b))
+  if n < 2:
+    return float("nan"), float("nan")
+  a = a[:n] - a[:n].mean()
+  b = b[:n] - b[:n].mean()
+  # need at least 2 overlapping samples at the widest lag
+  max_lag = int(min(max_lag_s * fs, n - 2))
+  if max_lag < 0:
+    return float("nan"), float("nan")
+  denom = math.sqrt(float(np.dot(a, a)) * float(np.dot(b, b)))
+  if not math.isfinite(denom) or denom <= 1e-12:
+    return float("nan"), float("nan")   # one side is constant: lag is undefined
+  lags = np.arange(-max_lag, max_lag + 1)
+  c = np.array([np.dot(a[max(0, -l):n - max(0, l)], b[max(0, l):n - max(0, -l)]) / denom for l in lags])
+  if not c.size or not np.any(np.isfinite(c)):
+    return float("nan"), float("nan")
+  i = int(np.nanargmax(c))
   return lags[i] / fs, float(c[i])
 
 

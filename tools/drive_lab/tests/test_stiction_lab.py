@@ -1,10 +1,15 @@
+import math
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
 from openpilot.tools.drive_lab.stiction_lab import (
   StictionPlantConfig,
+  _xcorr_lag,
   _make_controller,
   compute_metrics,
+  DT,
   run_closed_loop,
   wander_demand,
 )
@@ -80,6 +85,47 @@ def test_presliding_does_not_grow_with_run_length():
 def test_negative_presliding_compliance_is_rejected():
   with pytest.raises(ValueError, match="presliding_compliance"):
     StictionPlantConfig(presliding_compliance=-0.1)
+
+
+def test_xcorr_lag_is_nan_for_constant_and_short_traces():
+  # A constant trace used to fall out as exactly -max_lag_s with correlation 0.0 —
+  # every lag scores zero and argmax picks the most negative one — which reads like a
+  # real -5 s measurement. Short traces raised a shape error inside np.dot instead.
+  const = np.ones(500)
+  lag, corr = _xcorr_lag(const, const, fs=100.0)
+  assert math.isnan(lag) and math.isnan(corr)
+
+  ramp = np.linspace(0.0, 1.0, 500)
+  lag, corr = _xcorr_lag(ramp, const, fs=100.0)
+  assert math.isnan(lag)
+
+  short = np.array([0.0, 1.0, 0.5, 0.2])   # far shorter than max_lag_s * fs
+  lag, corr = _xcorr_lag(short, short, fs=100.0)
+  assert math.isfinite(lag) and abs(lag) <= len(short) / 100.0
+
+  for n in (0, 1, 2, 3):
+    _xcorr_lag(np.zeros(n), np.zeros(n), fs=100.0)   # must not raise
+
+
+def test_zero_actuator_delay_differs_from_one_frame():
+  # max(1, ...) made 0.0 s and 0.01 s identical, so the zero-delay reference was fiction.
+  demand = wander_demand(duration_s=20.0, amp=0.3)
+  base = StictionPlantConfig(breakaway_torque=0.13, kinetic_torque=0.065)
+  zero = run_closed_loop(demand, replace(base, actuator_delay_s=0.0))
+  one = run_closed_loop(demand, replace(base, actuator_delay_s=DT))
+  assert not np.array_equal(zero.actual_lat_accel, one.actual_lat_accel)
+
+
+def test_plant_config_rejects_unphysical_parameters():
+  # kinetic > breakaway leaves the rack "unstuck" but unable to move.
+  with pytest.raises(ValueError, match="kinetic_torque"):
+    StictionPlantConfig(breakaway_torque=0.1, kinetic_torque=0.5)
+  with pytest.raises(ValueError, match="mobility"):
+    StictionPlantConfig(mobility=0.0)
+  with pytest.raises(ValueError, match="v_ego"):
+    StictionPlantConfig(v_ego=0.0)
+  with pytest.raises(ValueError):
+    StictionPlantConfig(actuator_delay_s=-0.1)
 
 
 def test_deadband_lag_grows_as_amplitude_shrinks():

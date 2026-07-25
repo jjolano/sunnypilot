@@ -21,6 +21,14 @@ from openpilot.tools.drive_lab.metrics import EvaluationMetric, EvaluationResult
 OSCILLATION_THRESHOLD_WINDOW_S = 5.0
 
 
+# Sign is only meaningful when the demand actually goes somewhere. Straight-line
+# disturbance traces average |mean desired| <= 7.8e-5 1/m, where the sign of the mean is
+# noise; real directional scenarios are an order of magnitude above this.
+SIGN_MIN_MEAN_DEMAND_CURVATURE = 2e-4
+# ...and only when the response commits to the wrong side. A mean response near zero is
+# under-response, not inversion, and the tracking-error checks own that.
+SIGN_COMMITTED_RESPONSE_FRAC = 0.25
+
 @dataclass(frozen=True)
 class LateralMetricThresholds:
   """Thresholds for lateral structural checks.
@@ -138,15 +146,32 @@ def evaluate_lateral_trace(
   if has_nonfinite:
     failures.append(ScenarioFailure("finite", "output contains NaN or infinite values"))
 
-  # Sign response: record whether positive desired curvature yields positive
-  # mean actual curvature. This is reported as a metric but not raised as a
-  # hard failure; sign inversions are tested explicitly on stable inputs in
-  # the fuzzer's test suite.
-  if np.any(desired > 1e-6):
-    response_region = desired > 1e-6
-    mean_actual = float(np.mean(actual[response_region]))
-    sign_ok = mean_actual > 0.0
-    metrics.append(EvaluationMetric("mean_actual_curvature", mean_actual, "1/m", sign_ok))
+  # Sign response: a controller that steers the wrong way is a structural failure, not
+  # a note. This previously recorded sign_ok on the metric and returned a passing result
+  # anyway, and only examined desired > 0 — so a trace whose demand was entirely negative
+  # was never sign-checked at all.
+  #
+  # Compare mean directions over the whole trace. A per-sample desired>0 mask cannot
+  # tell inversion from lag — in an alternating maneuver (ISO 3888) the plant is still
+  # unwinding the previous direction when demand flips, and in a noisy trace with a
+  # dominant direction the brief opposite blips never move the plant. Correlation is no
+  # better here: these traces are lag-dominated and only weakly correlated (median 0.04
+  # over 180 seeded scenarios), so inverting one stays well above any usable threshold.
+  #
+  # Mean direction is robust to both, and is polarity-symmetric so negative-only demand
+  # is covered. Two floors keep it honest: the demand must actually go somewhere, and
+  # the response must be committed to the wrong side rather than merely sitting near
+  # zero (which is under-response, caught by the tracking-error checks instead).
+  if t.size >= 5 and not has_nonfinite:
+    mean_desired = float(np.mean(desired))
+    mean_actual = float(np.mean(actual))
+    if abs(mean_desired) >= SIGN_MIN_MEAN_DEMAND_CURVATURE:
+      committed = abs(mean_actual) >= SIGN_COMMITTED_RESPONSE_FRAC * abs(mean_desired)
+      inverted = committed and (mean_desired * mean_actual) < 0.0
+      metrics.append(EvaluationMetric("mean_actual_curvature", mean_actual, "1/m", not inverted))
+      if inverted:
+        failures.append(ScenarioFailure(
+          "sign", f"mean desired {mean_desired:.6f} 1/m produced mean actual {mean_actual:.6f} 1/m"))
 
   # Zero-input drift: when desired curvature is near zero for the whole trace,
   # actual curvature must stay near zero.

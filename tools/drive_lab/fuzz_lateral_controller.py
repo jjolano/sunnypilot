@@ -101,9 +101,15 @@ def _make_controller(slew_scale_mode: str = "off"):
 class ControllerFuzzThresholds:
     max_abs_output_torque: float = 1.05
     max_oscillation_reversals: int = 120  # step response produces transient sign flips in closed-loop
-    max_saturation_fraction: float = 1.0
-    max_abs_tracking_error: float = float("inf")  # closed-loop tracking is valid but not enforced
-    max_pid_i_abs: float = 3.0
+    # 1.0 was unreachable (a fraction can never exceed 1.0), so saturation never gated.
+    # Measured over 300 seeded scenarios the fraction is 0.000 in both closed and open
+    # loop, so 0.5 catches genuinely pinned output with a wide margin.
+    max_saturation_fraction: float = 0.5
+    # Not a tracking-quality gate: open-loop scenarios have no feedback and legitimately
+    # reach 24.5 m/s^2 (closed-loop max 11.1 over the same 300 scenarios). This is a
+    # divergence guard — inf meant a runaway controller scored as a pass.
+    max_abs_tracking_error: float = 50.0
+    max_pid_i_abs: float = 3.0  # observed max 1.95 closed / 0.31 open loop
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -329,18 +335,27 @@ def _generate_stress_grid(rng: random.Random, idx: int, duration_s: float) -> Co
     k = k_abs * sign
     roll = rng.choice(_STRESS_ROLLS_K)
     active = rng.choice(_STRESS_ACTIVE_K)
+    # Half the engaged cells disengage mid-scenario and re-engage, so the controller's
+    # engage/disengage handling (PID reset, state carry) is actually exercised. The
+    # runner used to sample active once from frame 0, which made any such transition
+    # invisible.
+    n = len(t_arr)
+    drop_start, drop_end = (int(n * 0.4), int(n * 0.6)) if (active and rng.random() < 0.5) else (n, n)
     # Ramp curvature and roll in over first 20 frames.
     ramp = 20
-    for i in range(len(t_arr)):
+    for i in range(n):
         r = min(1.0, i / ramp)
         k_ramped = k * r
         roll_ramped = roll * r
         angle = _curvature_to_steering_deg(k_ramped, v, roll_ramped)
         frames.append(_base_frame(
             t=float(i * DT), v_ego=v, steering_angle_deg=angle,
-            desired_curvature=k_ramped, roll=roll_ramped, active=active,
+            desired_curvature=k_ramped, roll=roll_ramped,
+            active=active and not (drop_start <= i < drop_end),
         ))
-    return ControllerScenario(kind="stress_grid", title=f"ctrl stress v={v:.0f} k={k:.4f} roll={roll:.2f} act={active} #{idx}",
+    toggled = drop_start < n
+    title = f"ctrl stress v={v:.0f} k={k:.4f} roll={roll:.2f} act={active}{' toggled' if toggled else ''} #{idx}"
+    return ControllerScenario(kind="stress_grid", title=title,
                               duration_s=duration_s, frames=tuple(frames))
 
 
@@ -355,6 +370,7 @@ def _generate_plant_robustness(rng: random.Random, idx: int, duration_s: float) 
     """Generate a scenario that carries plant configuration for robustness testing."""
     gain = rng.choice(_PLANT_GAINS)
     rate = rng.choice(_PLANT_RATES)
+    delay = rng.choice(_PLANT_DELAYS)
     # Use a moderate curvature ramp scenario as the base.
     t_arr = _time_array(duration_s)
     v = rng.uniform(15.0, 25.0)
@@ -367,11 +383,11 @@ def _generate_plant_robustness(rng: random.Random, idx: int, duration_s: float) 
         frames.append(_base_frame(
             t=float(i * DT), v_ego=v, steering_angle_deg=angle,
             desired_curvature=k * r,
-            plant_gain=gain, plant_rate=rate,
+            plant_gain=gain, plant_rate=rate, plant_delay=delay,
         ))
     return ControllerScenario(
         kind="plant_robustness",
-        title=f"plant-robust g={gain:.1f} rate={rate:.0f} #{idx}",
+        title=f"plant-robust g={gain:.1f} rate={rate:.0f} delay={delay:.2f} #{idx}",
         duration_s=duration_s, frames=tuple(frames),
     )
 
@@ -422,17 +438,28 @@ class _SteeringPlant:
     """
 
     def __init__(self, dt: float = DT, max_angle_deg: float = 360.0,
-                 max_rate_deg_s: float = 180.0):
+                 max_rate_deg_s: float = 180.0, delay_s: float = 0.0):
         self.dt = dt
         self.max_angle = max_angle_deg
         self.max_rate = max_rate_deg_s
         self.angle_deg = 0.0
         self.rate_deg = 0.0
+        # Actuator transport delay. _PLANT_DELAYS was declared but never reached the
+        # plant, so every "robustness" scenario ran against a zero-delay actuator.
+        self.delay_frames = max(0, int(round(delay_s / dt)))
+        self._cmd_queue: list[float] = [0.0] * self.delay_frames
 
     def update(self, torque: float):
-        self.rate_deg = torque * self.max_rate
-        self.angle_deg += self.rate_deg * self.dt
-        self.angle_deg = max(-self.max_angle, min(self.max_angle, self.angle_deg))
+        if self.delay_frames:
+            self._cmd_queue.append(torque)
+            torque = self._cmd_queue.pop(0)
+        commanded_rate = torque * self.max_rate
+        prev_angle = self.angle_deg
+        self.angle_deg = max(-self.max_angle,
+                             min(self.max_angle, prev_angle + commanded_rate * self.dt))
+        # Report the rate the wheel actually moved. Reporting the commanded rate meant
+        # that at the hard stop the plant fed the controller motion that never happened.
+        self.rate_deg = (self.angle_deg - prev_angle) / self.dt
 
     @property
     def angle_rad(self) -> float:
@@ -466,12 +493,16 @@ def evaluate_scenario(scenario: ControllerScenario,
         first = scenario.frames[0]
         plant_config["gain"] = first.get("plant_gain", 1.0)
         plant_config["rate"] = first.get("plant_rate", 180.0)
-    plant = _SteeringPlant(DT, max_rate_deg_s=plant_config.get("rate", 180.0)) if closed_loop else None
+        plant_config["delay"] = first.get("plant_delay", 0.0)
+    plant = _SteeringPlant(DT, max_rate_deg_s=plant_config.get("rate", 180.0),
+                           delay_s=plant_config.get("delay", 0.0)) if closed_loop else None
     plant_gain = plant_config.get("gain", 1.0)
-    active = scenario.frames[0].get("active", True) if scenario.frames else True
 
     for idx, frame in enumerate(scenario.frames):
         try:
+            # per-frame: sampling this once from frame 0 meant engage/disengage
+            # transitions inside a scenario were never exercised
+            active = frame.get("active", True)
             cs = _frame_to_cs(frame)
             if plant is not None:
                 # Closed-loop: override steering from plant feedback.
@@ -545,6 +576,15 @@ def evaluate_scenario(scenario: ControllerScenario,
     metrics["saturation_fraction"] = sat_frac
     if sat_frac > thresholds.max_saturation_fraction:
         failures.append({"check": "saturation", "detail": f"saturation fraction {sat_frac:.2f} > {thresholds.max_saturation_fraction}"})
+
+    # PID integrator windup. The threshold existed but was never checked, so a wound-up
+    # integrator could not fail a scenario.
+    if pid_i_arr.size and np.all(np.isfinite(pid_i_arr)):
+        max_pid_i = float(np.max(np.abs(pid_i_arr)))
+        metrics["max_abs_pid_i"] = max_pid_i
+        if max_pid_i > thresholds.max_pid_i_abs:
+            failures.append({"check": "pid_i_windup",
+                             "detail": f"max |pid_i|={max_pid_i:.3f} exceeds {thresholds.max_pid_i_abs}"})
 
     # Oscillation (sign flips in output torque).
     if len(torque) > 1:
