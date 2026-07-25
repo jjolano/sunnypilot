@@ -367,14 +367,36 @@ def test_evaluate_lead_pullaway_start_detects_no_launch():
   assert failures and failures[0].check == "launch"
 
 
-def test_evaluate_collision_response_accepts_best_effort_brake():
-  output = np.array([
-    [0.0, 0.0, 0.0, 8.0, 0.0, -3.0, 10.0],
-    [0.1, 1.0, 1.0, 4.0, 0.0, -3.0, 0.3],
-  ])
-  commanded = np.array([-3.0, -3.0])
-  prob_lead = np.array([1.0, 1.0])
+def _closing_trace(n: int) -> np.ndarray:
+  # n frames closing from 10 m to contact, ego 8 -> 4 m/s against a stopped lead
+  d_rel = np.linspace(10.0, 0.3, n)
+  v_ego = np.linspace(8.0, 4.0, n)
+  out = np.zeros((n, 7))
+  out[:, 0] = np.arange(n) * 0.05
+  out[:, 3] = v_ego
+  out[:, 4] = 0.0
+  out[:, 5] = -3.0
+  out[:, 6] = d_rel
+  return out
+
+
+def test_evaluate_collision_response_accepts_sustained_best_effort_brake():
+  n = 20  # 1.0 s at DT_MDL, comfortably over BEST_EFFORT_MIN_S
+  output = _closing_trace(n)
+  commanded = np.full(n, -3.0)
+  prob_lead = np.ones(n)
   assert not evaluate_collision_response(output, commanded, prob_lead)
+
+
+def test_evaluate_collision_response_rejects_single_frame_brake_dip():
+  # One frame at the brake threshold is not a best effort: a hard collision must
+  # not be excused by a momentary dip.
+  n = 20
+  output = _closing_trace(n)
+  commanded = np.full(n, -0.2)
+  commanded[5] = -3.0
+  failures = evaluate_collision_response(output, commanded, np.ones(n))
+  assert failures and failures[0].check == "collision"
 
 
 def test_evaluate_collision_response_safety_profile_fails_high_impact():

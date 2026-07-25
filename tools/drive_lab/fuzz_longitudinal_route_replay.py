@@ -21,6 +21,7 @@ from openpilot.tools.drive_lab.fuzz_longitudinal import (
   scenario_to_dict,
   shipped_longitudinal_config,
 )
+from openpilot.tools.drive_lab.metrics import ScenarioFailure
 from openpilot.tools.drive_lab.longitudinal_route_extract import (
   DT,
   ROUTE_EXTRACTED_PRESET,
@@ -60,6 +61,11 @@ class RouteReplayScenario:
     if not self.perturbed_frames:
       return 0.0
     return self.perturbed_frames[-1].t + DT
+
+
+# A replay that has wandered this far from the recorded d_rel is no longer
+# reproducing the route, so its oracle verdict is not evidence about it.
+MAX_D_REL_DRIFT_M = 15.0
 
 
 @dataclass(frozen=True)
@@ -208,7 +214,8 @@ def route_replay_to_scenario(replay: RouteReplayScenario, mode: str) -> Scenario
   )
 
 
-def run_route_replay_scenario(replay: RouteReplayScenario, mode: str, max_normal_jerk: float) -> RouteReplayResult:
+def run_route_replay_scenario(replay: RouteReplayScenario, mode: str, max_normal_jerk: float,
+                              max_d_rel_drift: float = MAX_D_REL_DRIFT_M) -> RouteReplayResult:
   scenario = route_replay_to_scenario(replay, mode)
   result = run_scenario(scenario, max_normal_jerk)
   from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
@@ -217,7 +224,18 @@ def run_route_replay_scenario(replay: RouteReplayScenario, mode: str, max_normal
   maneuver = Maneuver(scenario.title, scenario.duration, **scenario_maneuver_kwargs(scenario))
   _, output = maneuver.evaluate()
   drift = max_d_rel_error(replay.perturbed_frames, output)
-  return RouteReplayResult(replay, result.valid, result.failures, drift)
+  # Drift was reported but never gated, so a replay that had wandered far from the
+  # recorded geometry still scored its oracle checks as if it were the real route.
+  # Past this bound the replay is no longer the route it claims to replay.
+  failures = list(result.failures)
+  valid = result.valid
+  if drift is not None and drift > max_d_rel_drift:
+    failures.append(ScenarioFailure(
+      check="route_replay_drift",
+      detail=f"max |d_rel - recorded| {drift:.1f} m exceeds {max_d_rel_drift:.1f} m; replay left the recorded geometry",
+    ))
+    valid = False
+  return RouteReplayResult(replay, valid, failures, drift)
 
 
 def main() -> None:

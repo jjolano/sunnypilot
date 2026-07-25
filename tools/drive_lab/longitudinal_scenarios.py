@@ -535,7 +535,7 @@ def generate_iso15622_acc_scenarios(mode: str = "comfort") -> list[Scenario]:
             "prob_lead_values": [1.0, 1.0, 1.0, 1.0],
             "cruise_values": [80 * KPH_TO_MS] * 4,
             "breakpoints": [0.0, 5.0, 10.0, 30.0],  # ~4.44 m/s² decel (80 km/h -> 0 in 5 s)
-        }),
+        }, oracle_profile="iso"),
         Scenario(mode, "iso15622_steady_following", "ISO 15622 steady following", 20.0, {
             "initial_speed": 100 * KPH_TO_MS,
             "lead_relevancy": True,
@@ -544,7 +544,7 @@ def generate_iso15622_acc_scenarios(mode: str = "comfort") -> list[Scenario]:
             "prob_lead_values": [1.0] * 2,
             "cruise_values": [100 * KPH_TO_MS] * 2,
             "breakpoints": [0.0, 20.0],
-        }),
+        }, oracle_profile="iso"),
         Scenario(mode, "iso15622_approaching_convoy", "ISO 15622 approaching slower convoy", 25.0, {
             "initial_speed": 120 * KPH_TO_MS,
             "lead_relevancy": True,
@@ -553,7 +553,7 @@ def generate_iso15622_acc_scenarios(mode: str = "comfort") -> list[Scenario]:
             "prob_lead_values": [1.0] * 2,
             "cruise_values": [120 * KPH_TO_MS] * 2,
             "breakpoints": [0.0, 25.0],
-        }),
+        }, oracle_profile="iso"),
         Scenario(mode, "iso15622_stop_and_go", "ISO 15622 stop and go", 70.0, {
             "initial_speed": 60 * KPH_TO_MS,
             "lead_relevancy": True,
@@ -562,7 +562,7 @@ def generate_iso15622_acc_scenarios(mode: str = "comfort") -> list[Scenario]:
             "prob_lead_values": [1.0] * 6,
             "cruise_values": [60 * KPH_TO_MS] * 6,
             "breakpoints": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
-        }),
+        }, oracle_profile="iso"),
         Scenario(mode, "iso15622_overtaking", "ISO 15622 overtaking after approach", 25.0, {
             "initial_speed": 100 * KPH_TO_MS,
             "lead_relevancy": True,
@@ -571,7 +571,7 @@ def generate_iso15622_acc_scenarios(mode: str = "comfort") -> list[Scenario]:
             "prob_lead_values": [1.0, 1.0, 0.0],  # lead disappears
             "cruise_values": [100 * KPH_TO_MS] * 3,
             "breakpoints": [0.0, 10.0, 10.1],
-        }),
+        }, oracle_profile="iso"),
         Scenario(mode, "iso15622_cornering_follow", "ISO 15622 cornering follow R≥500m", 20.0, {
             "initial_speed": 80 * KPH_TO_MS,
             "lead_relevancy": True,
@@ -582,7 +582,7 @@ def generate_iso15622_acc_scenarios(mode: str = "comfort") -> list[Scenario]:
             # Lat accel ≤ 2.0 m/s² at R=500m → v ≤ sqrt(2*500) = 31.6 m/s ≈ 114 km/h
             "pitch_values": [0.0] * 2,
             "breakpoints": [0.0, 20.0],
-        }),
+        }, oracle_profile="iso"),
     ]
 
 

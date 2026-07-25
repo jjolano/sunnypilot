@@ -240,8 +240,15 @@ def frames_to_maneuver_kwargs(frames: tuple[LongitudinalRouteFrame, ...]) -> dic
     "pitch_values": pitch_values,
     "prob_throttle_values": prob_throttle_values,
   }
-  if lead_active and first.d_rel is not None:
-    kwargs["initial_distance_lead"] = float(first.d_rel)
+  # lead_active is any() over the route, so a route whose lead only appears later
+  # (a cut-in) has no d_rel on frame zero. Falling through here left Maneuver's
+  # 200 m default in place, so the cut-in replayed from 200 m away instead of from
+  # where it actually appeared. Seed from the first frame that really has a lead.
+  first_lead = next(
+    (frame for frame in frames if frame.lead_active and frame.d_rel is not None), None
+  )
+  if lead_active and first_lead is not None:
+    kwargs["initial_distance_lead"] = float(first_lead.d_rel)
   return kwargs
 
 

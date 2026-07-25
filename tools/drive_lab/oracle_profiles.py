@@ -23,6 +23,18 @@ ORACLE_PROFILES: dict[str, OracleProfile] = {
     respect_plant_ensure_flags=False,
     use_best_effort_collision=True,
   ),
+  # ISO 15622 is a performance standard: contact is a failure, full stop. It still
+  # wants the comfort checks (speed, jerk, launch), so it cannot just reuse
+  # "regression" (which drops them) or "safety" (which tolerates a 5 km/h impact and
+  # disables the jerk bound). Previously these scenarios fell through to "comfort",
+  # where best-effort braking could excuse a collision outright.
+  "iso": OracleProfile(
+    name="iso",
+    checks=("valid", "finite", "speed", "collision", "jerk", "launch"),
+    use_launch_oracle=True,
+    respect_plant_ensure_flags=False,
+    use_best_effort_collision=False,
+  ),
   "safety": OracleProfile(
     name="safety",
     checks=("valid", "finite", "collision", "jerk"),

@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from openpilot.common.realtime import DT_MDL
 from openpilot.tools.drive_lab.log_profile import load_profile
 from openpilot.tools.drive_lab.longitudinal_scenarios import (
   LAUNCH_START_ORACLE_KINDS,
@@ -62,6 +63,8 @@ LEAD_PULLAWAY_STARTED_SPEED = 0.2
 LEAD_PULLAWAY_STARTED_ACCEL = 0.1
 COLLISION_GAP = 0.4
 BEST_EFFORT_BRAKE = 2.5
+# a single frame at the brake threshold is not a best effort; require it held
+BEST_EFFORT_MIN_S = 0.5
 BENIGN_IMPACT_SPEED = 3.0
 
 # These start ego and lead at the same speed, so total speed variation measures whether
@@ -581,11 +584,20 @@ def evaluate_collision_response(
   detected = np.flatnonzero(np.asarray(prob_lead) > 0.5) if prob_lead is not None else np.empty(0, dtype=int)
   d0 = min(int(detected[0]) if detected.size else 0, impact)
 
-  best_effort = (
-    commanded_accel is not None
-    and len(commanded_accel) == len(output)
-    and float(np.min(commanded_accel[d0:impact + 1])) <= -BEST_EFFORT_BRAKE
-  )
+  # "Best effort" must mean the planner actually committed to braking, not that a
+  # single frame dipped below the threshold. One -2.5 m/s^2 sample anywhere in the
+  # approach used to excuse an arbitrarily hard collision; require the brake to be
+  # held for BEST_EFFORT_MIN_S instead.
+  best_effort = False
+  if commanded_accel is not None and len(commanded_accel) == len(output):
+    braking = np.asarray(commanded_accel[d0:impact + 1]) <= -BEST_EFFORT_BRAKE
+    if braking.any():
+      # longest consecutive run of committed braking
+      edges = np.diff(np.concatenate(([0], braking.view(np.int8), [0])))
+      starts = np.flatnonzero(edges == 1)
+      ends = np.flatnonzero(edges == -1)
+      longest = int((ends - starts).max()) if starts.size else 0
+      best_effort = longest * DT_MDL >= BEST_EFFORT_MIN_S
   if best_effort or impact_speed <= BENIGN_IMPACT_SPEED:
     return []
   return [

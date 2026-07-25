@@ -26,7 +26,10 @@ class Plant:
       Plant.plan = messaging.sub_sock('longitudinalPlan')
       Plant.messaging_initialized = True
 
-    self.v_lead_prev = 0.0
+    # None until the first step: seeding this at 0.0 made the first frame report
+    # a_lead = v_lead/ts, i.e. 400 m/s^2 for a 20 m/s lead, which is fabricated
+    # evidence the planner reacts to before any real acceleration exists.
+    self.v_lead_prev: float | None = None
 
     self.distance = 0.
     self.speed = speed
@@ -68,11 +71,12 @@ class Plant:
     car_state = messaging.new_message('carState')
     lp = messaging.new_message('liveParameters')
     car_control = messaging.new_message('carControl')
+    ss_sp = messaging.new_message('selfdriveStateSP')
     model = messaging.new_message('modelV2')
     car_state_sp = messaging.new_message('carStateSP')
     live_map_data_sp = messaging.new_message('liveMapDataSP')
     gps_data = messaging.new_message('gpsLocation')
-    a_lead = (v_lead - self.v_lead_prev)/self.ts
+    a_lead = 0.0 if self.v_lead_prev is None else (v_lead - self.v_lead_prev)/self.ts
     self.v_lead_prev = v_lead
 
     if self.lead_relevancy:
@@ -126,6 +130,18 @@ class Plant:
     control.controlsState.longControlState = LongCtrlState.pid if self.enabled else LongCtrlState.off
     ss.selfdriveState.experimentalMode = self.e2e
     ss.selfdriveState.personality = self.personality
+    # Engagement state. Without these the planner reads carControl.enabled/longActive
+    # and selfdriveState.enabled as False, so every maneuver was scored against a
+    # planner that believed it was disengaged.
+    ss.selfdriveState.enabled = self.enabled
+    ss.selfdriveState.active = self.enabled
+    car_control.carControl.enabled = self.enabled
+    car_control.carControl.longActive = self.enabled
+    # Engagement-Cycle Latch: plannerd takes the active Longitudinal Mode from
+    # selfdriveStateSP, never the Param. Without it the adapter keeps its boot
+    # default (scc) and is_e2e() ignores experimentalMode entirely whenever the
+    # custom stack is enabled — so --e2e silently scored SCC.
+    ss_sp.selfdriveStateSP.activeLongitudinalMode = 'e2e' if self.e2e else 'scc'
     control.controlsState.forceDecel = self.force_decel
     car_state.carState.vEgo = float(self.speed)
     car_state.carState.standstill = bool(self.speed < 0.01)
@@ -138,26 +154,37 @@ class Plant:
           'carControl': car_control.carControl,
           'controlsState': control.controlsState,
           'selfdriveState': ss.selfdriveState,
+          'selfdriveStateSP': ss_sp.selfdriveStateSP,
           'liveParameters': lp.liveParameters,
           'modelV2': model.modelV2,
           'carStateSP': car_state_sp.carStateSP,
           'liveMapDataSP': live_map_data_sp.liveMapDataSP,
           'gpsLocation': gps_data.gpsLocation}
     self.planner.update(sm)
+    # Fail loudly rather than silently scoring the wrong stack: --e2e is meaningless
+    # if the planner is still running SCC.
+    if self.enabled:
+      resolved = self.planner.is_e2e(sm)
+      assert resolved == self.e2e, \
+        f"requested e2e={self.e2e} but planner resolved is_e2e={resolved} (mode={self.planner.custom_long.mode})"
     self.acceleration = self.planner.output_a_target
     if self.planner.output_should_stop:
       self.acceleration = min(-0.5, self.acceleration)
-    self.speed = self.speed + self.acceleration * self.ts
     self.should_stop = self.planner.output_should_stop
     fcw = self.planner.fcw
-    self.distance_lead = self.distance_lead + v_lead * self.ts
 
     # ******** run the car ********
-    #print(self.distance, speed)
+    # Integrate ego and lead the same way (trapezoidal over the step) so d_rel does
+    # not accumulate a spurious -a*ts^2 per frame. Previously ego advanced with its
+    # post-update speed while the lead advanced with its pre-update speed.
+    speed_prev = self.speed
+    self.speed = self.speed + self.acceleration * self.ts
     if self.speed <= 0:
       self.speed = 0
       self.acceleration = 0
-    self.distance = self.distance + self.speed * self.ts
+    self.distance = self.distance + 0.5 * (speed_prev + self.speed) * self.ts
+    v_lead_prev_step = v_lead - a_lead * self.ts
+    self.distance_lead = self.distance_lead + 0.5 * (v_lead_prev_step + v_lead) * self.ts
 
     # *** radar model ***
     if self.lead_relevancy:
