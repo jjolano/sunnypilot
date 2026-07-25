@@ -294,6 +294,10 @@ class ActuationVerdicts:
 @dataclass(frozen=True)
 class LongitudinalStackResult:
   a_target: float
+  # The same target before comfort smoothing. a_target is the actuator *command*;
+  # this is the *plan*, and it is what the planner must carry into a_desired — see
+  # LongitudinalPlannerSP.update_targets.
+  a_target_unsmoothed: float
   should_stop: bool
   decision: Decision
   debug: dict[str, Any] = field(default_factory=dict)
@@ -684,6 +688,7 @@ class CustomLongitudinalStack:
       }
     return LongitudinalStackResult(
       a_target=float(a_target),
+      a_target_unsmoothed=float(raw_a_target) if math.isfinite(raw_a_target) else float(a_target),
       should_stop=bool(decision.should_stop),
       decision=decision,
       standstill_release_allowed=standstill_release_allowed,
@@ -794,7 +799,13 @@ class CustomLongitudinalStack:
       if not math.isfinite(float(jerk_limited)):
         jerk_limited = raw
       smoothed = min(raw, max(prev_f, float(jerk_limited)))
-      if prev_f <= -0.5 and raw >= 0.0:
+      # Releasing real braking is lag-capped wherever it lands. The old `and raw >= 0.0`
+      # left releases that end at a shallower-but-still-negative target uncapped, so the
+      # envelope's 1 m/s^3 upward jerk unwound a -3.5 approach open-loop: on
+      # openpilot_lead_decel_3ms2 the command sat 1.4 m/s^2 below the raw target for ~1.5 s
+      # and dragged the MPC's own state with it. The prev_f gate stays — plain acceleration
+      # from a non-braking command is ordinary jerk shaping, not a release.
+      if prev_f <= -0.5:
         smoothed = max(smoothed, raw - UPWARD_TARGET_SLEW_MAX_LAG)
       smoothed = min(max(smoothed, a_min), a_max)
       self._prev_smoothed_a_target = smoothed

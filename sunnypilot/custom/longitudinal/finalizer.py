@@ -1349,6 +1349,14 @@ class CustomLongitudinalFinalizer:
   _FOLLOW_BAND_MIN_DEPTH = -0.02   # m/s^2; shallower coast collapses the band (downhill)
   _FOLLOW_BAND_EXIT_A = 0.02       # m/s^2; DECEL -> HOLD only past this (hysteresis)
   _FOLLOW_BAND_MIN_V_EGO = 3.0     # m/s; stay out of the creep/stop regime
+  # Giveaway budget. HOLD clamps a real (if shallow) closing demand to 0, so every held
+  # frame hands back gap at the closing rate. Ignoring a *tiny* compression is the whole
+  # premise; ignoring an unbounded number of them is not. Without this the band held for
+  # 10 s of steady 20 m/s following in openpilot_lead_decel_3ms2 while d_rel ratcheted
+  # 32.5 -> 26.2 m, and the lead's stop then had 2.3 m less runway than upstream — enough
+  # to turn a 1.11 m clearance into contact. Budgeted in headway so city gaps are not held
+  # open on a highway-sized allowance; the band's own v_ego floor keeps it non-degenerate.
+  _FOLLOW_BAND_MAX_GIVEN_S = 0.10  # s of headway the band may give away per HOLD episode
   # Launch dip damping: route 282 rlog (t=42244-42246) — radar/vision lead churn during
   # pullaway punched 1-2 frame mpcA dips (1.3 -> 0.2 m/s^2) through final arbitration.
   # Masked then by driver gas; unmasked it reads as launch surging. Bounded by the grace
@@ -1415,6 +1423,7 @@ class CustomLongitudinalFinalizer:
     self.stop_hold_release_prep_raw_prev = None
     self.approach_damp_a_prev = None
     self.follow_band_regime = None
+    self.follow_band_given_m = 0.0
     self.launch_dip_grace_s = 0.0
     # Last commanded a_target across ALL finalize paths, including hold frames (which
     # never route through the release slew). Deliberately NOT cleared in
@@ -1618,19 +1627,35 @@ class CustomLongitudinalFinalizer:
         or should_stop or release_mpc_stop or self.stop_hold_release_slew_a_target is not None
         or snapshot.gas_pressed or snapshot.brake_pressed or snapshot.force_decel
         or not snapshot.has_lead or snapshot.v_ego < self._FOLLOW_BAND_MIN_V_EGO):
-      self.follow_band_regime = None
+      self._set_follow_band_regime(None)
       return float(a_target)
     if self.follow_band_regime is None:
       # Joining mid-decel stays honest: any negative demand starts in DECEL, not clamped.
-      self.follow_band_regime = "decel" if a_target < 0.0 else "hold"
+      self._set_follow_band_regime("decel" if a_target < 0.0 else "hold")
     if self.follow_band_regime == "decel":
       if a_target < self._FOLLOW_BAND_EXIT_A:
         return float(a_target)
-      self.follow_band_regime = "hold"
+      self._set_follow_band_regime("hold")
     if a_target <= band_lo:
-      self.follow_band_regime = "decel"
+      self._set_follow_band_regime("decel")
       return float(a_target)
+    if a_target < 0.0:
+      # Only clamped frames spend budget: a positive demand is not being suppressed.
+      dt = float(getattr(snapshot, "dt", 0.0) or 0.0)
+      v_rel = float(getattr(snapshot, "lead_v_rel", 0.0) or 0.0)
+      if math.isfinite(dt) and dt > 0.0 and math.isfinite(v_rel):
+        self.follow_band_given_m = max(0.0, self.follow_band_given_m - v_rel * dt)
+      if self.follow_band_given_m > self._FOLLOW_BAND_MAX_GIVEN_S * snapshot.v_ego:
+        # The gap is not recovering on its own; the demand is honest evidence, not dither.
+        self._set_follow_band_regime("decel")
+        return float(a_target)
     return max(float(a_target), 0.0)
+
+  def _set_follow_band_regime(self, regime: str | None) -> None:
+    """Set the band regime, resetting the giveaway budget on every regime change."""
+    if regime != self.follow_band_regime:
+      self.follow_band_given_m = 0.0
+    self.follow_band_regime = regime
 
   def _apply_approach_damp(self, a_target: float, should_stop: bool, release_mpc_stop: bool,
                            dt: float, v_ego: float | None = None) -> float:
@@ -1793,7 +1818,7 @@ class CustomLongitudinalFinalizer:
       self.stop_hold_release_sustain_s = 0.0
       self.custom_long_output_telemetry = None
       self.last_release_block_reason = ""
-      self.follow_band_regime = None
+      self._set_follow_band_regime(None)
       if is_e2e and not model_stale:
         a_target = min(raw_model_a_target, mpc_a_target)
         return _TelemetryAdapter.result(
@@ -1859,7 +1884,7 @@ class CustomLongitudinalFinalizer:
       return _TelemetryAdapter.result(a_target, True, e2e_source, telemetry, self.last_release_block_reason)
 
     if is_e2e and not model_stale:
-      self.follow_band_regime = None
+      self._set_follow_band_regime(None)
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
       e2e_source = bool(a_target < mpc_a_target)
       a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, model_stop_blocks_release, should_stop)

@@ -600,7 +600,8 @@ class CustomLongitudinalAdapter:
       if long_active:
         self._authority_began = True
       return CustomLongitudinalOutput(
-        a_target=float(result.a_target), should_stop=bool(result.should_stop), enabled=True, mode=self.mode,
+        a_target=float(result.a_target), a_target_unsmoothed=float(result.a_target_unsmoothed),
+        should_stop=bool(result.should_stop), enabled=True, mode=self.mode,
         selected_intent=decision.selected_intent, reason=decision.reason,
         model_stop_corroborated=anchor_corroborated,
         standstill_release_allowed=bool(result.standstill_release_allowed),
@@ -642,6 +643,10 @@ class CustomLongitudinalOutput:
   mode: LongitudinalMode
   selected_intent: object | None
   reason: object | None
+  # Pre-smoothing plan target; see LongitudinalStackResult.a_target_unsmoothed. NaN means
+  # "no separate plan" and every reader falls back to a_target, so the degraded/fault
+  # constructions below stay faithful passthroughs without restating the value.
+  a_target_unsmoothed: float = float("nan")
   # Typed moving-stop posture consumed by post-MPC SCC finalization. This cannot live in
   # optional debug telemetry: disabling trace collection must never change actuation.
   model_stop_corroborated: bool = False

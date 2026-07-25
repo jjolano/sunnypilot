@@ -15,11 +15,13 @@ from openpilot.sunnypilot.custom.longitudinal.tests.test_finalizer_characterizat
 
 
 def make_snapshot(*, accel_coast: float = -0.25, has_lead: bool = True, v_ego: float = 15.0,
-                  gas_pressed: bool = False, brake_pressed: bool = False, force_decel: bool = False):
+                  gas_pressed: bool = False, brake_pressed: bool = False, force_decel: bool = False,
+                  lead_v_rel: float = 0.0, dt: float = 0.05):
   return SimpleNamespace(
     custom_long_output=SimpleNamespace(accel_coast=accel_coast),
     has_lead=has_lead, v_ego=v_ego,
     gas_pressed=gas_pressed, brake_pressed=brake_pressed, force_decel=force_decel,
+    lead_v_rel=lead_v_rel, dt=dt,
   )
 
 
@@ -77,6 +79,45 @@ def test_release_slew_in_progress_is_passthrough():
   fin.stop_hold_release_slew_a_target = 0.1
   assert band(fin, -0.08, make_snapshot()) == -0.08
   assert fin.follow_band_regime is None
+
+
+def test_sustained_closing_exhausts_the_giveaway_budget():
+  # Regression, openpilot_lead_decel_3ms2: HOLD clamped a shallow-but-real closing demand
+  # to 0 for 10 s of steady following, ratcheting d_rel 32.5 -> 26.2 m. The lead's stop
+  # then had 2.3 m less runway than upstream and the maneuver ended in contact.
+  fin = CustomLongitudinalFinalizer(make_cp())
+  snap = make_snapshot(v_ego=20.0, lead_v_rel=-0.69)   # closing 0.69 m/s, budget = 2.0 m
+  assert band(fin, 0.05, snap) == 0.05                 # seed HOLD
+  held = 0
+  for _ in range(400):                                 # 20 s at 20 Hz
+    if band(fin, -0.08, snap) == -0.08:
+      break
+    held += 1
+  assert fin.follow_band_regime == "decel"
+  given = (held + 1) * 0.69 * 0.05   # the crossing frame is the one that passes through
+  assert 2.0 < given <= 2.1, f"released after giving away {given:.2f} m"
+
+
+def test_equilibrium_dither_never_exhausts_the_budget():
+  # The chatter case this band exists for: v_rel oscillates about zero, so the net gap
+  # given away stays ~0 and HOLD must survive indefinitely.
+  fin = CustomLongitudinalFinalizer(make_cp())
+  assert band(fin, 0.05, make_snapshot(v_ego=20.0)) == 0.05
+  for i in range(2000):
+    snap = make_snapshot(v_ego=20.0, lead_v_rel=0.15 if i % 2 else -0.15)
+    assert band(fin, -0.08, snap) == 0.0
+  assert fin.follow_band_regime == "hold"
+
+
+def test_regime_change_resets_the_budget():
+  fin = CustomLongitudinalFinalizer(make_cp())
+  snap = make_snapshot(v_ego=20.0, lead_v_rel=-0.69)
+  band(fin, 0.05, snap)
+  for _ in range(20):
+    band(fin, -0.08, snap)
+  assert fin.follow_band_given_m > 0.0
+  band(fin, -0.5, snap)                                # past band floor -> DECEL
+  assert fin.follow_band_given_m == 0.0
 
 
 def test_band_floor_is_capped_uphill():

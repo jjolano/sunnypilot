@@ -78,7 +78,7 @@ def test_adapter_evaluate_and_apply_keep_float_api():
     'carControl': SimpleNamespace(orientationNED=[0.0, 0.0, 0.0]),
     'controlsState': SimpleNamespace(forceDecel=False),
   }
-  a._stack.update = lambda *args, **kwargs: SimpleNamespace(a_target=-1.5, should_stop=True, standstill_release_allowed=False, standstill_release_source='', standstill_release_a_target=0.0, standstill_release_reason='', debug={'intent': 'e2e', 'reason': 'trusted'}, decision=SimpleNamespace(selected_intent='e2e', reason='trusted'), actuation=ActuationVerdicts())  # type: ignore[assignment]
+  a._stack.update = lambda *args, **kwargs: SimpleNamespace(a_target=-1.5, a_target_unsmoothed=-1.5, should_stop=True, standstill_release_allowed=False, standstill_release_source='', standstill_release_a_target=0.0, standstill_release_reason='', debug={'intent': 'e2e', 'reason': 'trusted'}, decision=SimpleNamespace(selected_intent='e2e', reason='trusted'), actuation=ActuationVerdicts())  # type: ignore[assignment]
   out = None
   for _ in range(20):
     out = a.evaluate(sm, 10.0, 0.0, 12.0, 0.3, SimpleNamespace(vision=SimpleNamespace(is_active=False, output_a_target=0.0), map=SimpleNamespace(is_active=False, output_a_target=0.0)), SimpleNamespace(is_active=False, output_v_target=0.0, output_a_target=0.0))

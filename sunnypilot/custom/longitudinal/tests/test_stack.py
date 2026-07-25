@@ -540,6 +540,32 @@ def test_target_smoothing_reset_clears_stale_previous():
   assert after_reset.debug["target_smoothing_reason"] == "primed"
 
 
+def test_brake_release_lag_is_capped_even_when_the_target_stays_negative():
+  # Regression, openpilot_lead_decel_3ms2: the lag cap used to require raw >= 0.0, so a
+  # release ending at a shallower-but-still-negative target unwound at the envelope's
+  # 1 m/s^3 alone — one frame off -3.0 reached only -2.95 and the command stayed ~1.4 m/s^2
+  # below the plan for ~1.5 s. That output is the planner's a_desired, so the MPC's own
+  # state followed the lag down.
+  s = CustomLongitudinalStack()
+  primed = s.update(base(v_ego=20.0, v_cruise=10.0, seed_a_target=-3.0,
+                         mode=LongitudinalMode.ACC, long_active=True), DT)
+  assert primed.a_target == pytest.approx(-3.0)
+  r = s.update(base(v_ego=20.0, v_cruise=10.0, seed_a_target=-0.5,
+                    mode=LongitudinalMode.ACC, long_active=True), DT)
+  assert r.a_target == pytest.approx(-1.0)          # raw - UPWARD_TARGET_SLEW_MAX_LAG
+  assert r.a_target_unsmoothed == pytest.approx(-0.5)  # the plan is never lagged
+
+
+def test_unsmoothed_target_is_the_plan_not_the_smoothed_command():
+  s = CustomLongitudinalStack()
+  s.update(base(v_ego=20.0, v_cruise=10.0, seed_a_target=-1.0,
+                mode=LongitudinalMode.ACC, long_active=True), DT)
+  r = s.update(base(v_ego=20.0, v_cruise=10.0, seed_a_target=-0.2,
+                    mode=LongitudinalMode.ACC, long_active=True), DT)
+  assert r.a_target < r.a_target_unsmoothed          # command lags, plan does not
+  assert r.a_target_unsmoothed == pytest.approx(-0.2)
+
+
 def test_target_smoothing_does_not_block_standstill_release_authorization():
   s = CustomLongitudinalStack()
   primed = s.update(base(v_ego=20.0, v_cruise=10.0, seed_a_target=-1.0, mode=LongitudinalMode.ACC, long_active=True), DT)

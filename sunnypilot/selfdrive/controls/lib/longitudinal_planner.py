@@ -231,7 +231,15 @@ class LongitudinalPlannerSP:
       t_follow=t_follow,
       collect_debug=collect_custom_long_debug,
     )
-    self.output_a_target = self.custom_long_output.a_target
+    # The planner assigns this return to self.a_desired, which is the MPC's *initial
+    # acceleration state* (set_cur_state) and the integrand of v_desired_filter — not an
+    # actuator command. Handing it the comfort-smoothed target made every bit of smoothing
+    # lag accumulate as MPC state error: on openpilot_lead_decel_3ms2 v_desired drifted
+    # 1.2 m/s below v_ego, so the MPC believed it was nearly stopped 2.3 m behind a stopped
+    # lead and commanded +2.5 m/s^2. The plan goes here; the smoothed command reaches
+    # actuation through custom_long_output in the finalizer.
+    plan_a_target = float(getattr(self.custom_long_output, "a_target_unsmoothed", float("nan")))
+    self.output_a_target = plan_a_target if math.isfinite(plan_a_target) else self.custom_long_output.a_target
     # Fail-closed fault: request the existing immediateDisable path via the SP event stream
     # while the engagement is still active; the latch resets at the next engagement.
     if self.custom_long.fault_class and bool(getattr(sm['carControl'], 'longActive', False)):
