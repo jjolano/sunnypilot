@@ -98,6 +98,14 @@ class StictionPlantConfig:
   # 0.0 reproduces the legacy binary-Coulomb plant for comparison.
   presliding_compliance: float = 0.15
 
+  def __post_init__(self) -> None:
+    # The implicit pre-sliding solve is stable for every non-negative compliance,
+    # so there is no upper bound to police — but a negative one is unphysical
+    # (the contact would deflect *against* the applied force) and silently
+    # produces a plausible-looking trace, so reject it here.
+    if not (self.presliding_compliance >= 0.0):
+      raise ValueError(f"presliding_compliance must be >= 0, got {self.presliding_compliance}")
+
   def to_dict(self) -> dict[str, Any]:
     return asdict(self)
 
@@ -127,6 +135,7 @@ def run_closed_loop(desired_lat_accel: np.ndarray, config: StictionPlantConfig,
     curv = -a / (v * v)
     return math.degrees(curv * denom + 0.02 * cfg.roll * denom)
 
+  lat_accel_factor = RAV4ISH_TORQUE_PARAMS["latAccelFactor"]
   delay_frames = max(1, int(round(cfg.actuator_delay_s / DT)))
   cmd_hist = [0.0] * delay_frames
 
@@ -156,7 +165,7 @@ def run_closed_loop(desired_lat_accel: np.ndarray, config: StictionPlantConfig,
     forced = cmd_hist.pop(0)
 
     # net torque on the rack: command + crown pull - self-centering holding torque
-    holding = rack_pos / RAV4ISH_TORQUE_PARAMS["latAccelFactor"]
+    holding = rack_pos / lat_accel_factor
     net = forced + cfg.crown_pull_torque - holding
 
     if stuck:
@@ -173,10 +182,20 @@ def run_closed_loop(desired_lat_accel: np.ndarray, config: StictionPlantConfig,
       rack_pos += rack_rate * DT
     else:
       # Pre-sliding: still stuck, but the contact deforms elastically with force.
+      # Solve the static relation implicitly. The naive explicit form
+      #   x_next = anchor + c * (F - x_prev / latAccelFactor)
+      # is a fixed-point iteration with pole -c/latAccelFactor, so it rings at
+      # c == latAccelFactor and diverges above it (c=2.0 reached 56 m/s^2 against
+      # 0.013 at the default). Substituting net = F - x/latAccelFactor and solving
+      # for x has no such pole and is stable for every c >= 0:
+      #   x = anchor + c*(F - x/L)  ->  x = (anchor + c*F) / (1 + c/L)
+      # Limits check out: c=0 pins x to the anchor, c->inf drives net to zero.
       prev_pos = rack_pos
+      force = forced + cfg.crown_pull_torque
       if stick_anchor is None:
         stick_anchor = rack_pos - cfg.presliding_compliance * net
-      rack_pos = stick_anchor + cfg.presliding_compliance * net
+      rack_pos = ((stick_anchor + cfg.presliding_compliance * force)
+                  / (1.0 + cfg.presliding_compliance / lat_accel_factor))
       rack_rate = (rack_pos - prev_pos) / DT
 
     alpha = DT / (DT + cfg.tire_lag_s)

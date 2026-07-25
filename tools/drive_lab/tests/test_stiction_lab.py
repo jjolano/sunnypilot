@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from openpilot.tools.drive_lab.stiction_lab import (
   StictionPlantConfig,
@@ -45,6 +46,40 @@ def test_presliding_keeps_sub_breakaway_band_measurable():
   assert np.ptp(frozen_trace.actual_lat_accel) < 1e-6          # literally frozen
   assert np.ptp(real_trace.actual_lat_accel) > 0.02            # microslip tracks
   assert compute_metrics(real_trace).desired_actual_corr > 0.5
+
+
+def test_presliding_is_stable_across_compliance_including_past_the_naive_pole():
+  # The naive explicit pre-sliding update x_next = anchor + c*(F - x_prev/L) is a
+  # fixed-point iteration with pole -c/L, so it rings at c == L (1.94) and diverges
+  # above it — c=2.0 once reached 56 m/s^2 against 0.013 at the default, and c=1.94
+  # grew linearly with run length. The implicit solve has no such pole.
+  demand = wander_demand(duration_s=30.0, amp=0.07)
+  peaks = []
+  for c in (0.0, 0.15, 1.0, 1.93, 1.94, 2.0, 10.0, 1000.0):
+    cfg = StictionPlantConfig(breakaway_torque=5.0, kinetic_torque=2.5,
+                              presliding_compliance=c)
+    trace = run_closed_loop(demand, cfg)
+    peak = float(np.abs(trace.actual_lat_accel).max())
+    assert np.all(np.isfinite(trace.actual_lat_accel)), f"non-finite at c={c}"
+    assert peak < 1.0, f"pre-sliding diverged at c={c}: peak {peak:.4f} m/s^2"
+    peaks.append(peak)
+  # monotone non-decreasing in compliance, and saturating rather than exploding
+  assert all(b >= a - 1e-9 for a, b in zip(peaks, peaks[1:], strict=False)), peaks
+
+
+def test_presliding_does_not_grow_with_run_length():
+  # c == latAccelFactor was marginally stable: amplitude accumulated linearly with
+  # duration (0.52 -> 1.05 -> 2.10 s as the run doubled). It must now be duration-invariant.
+  cfg = StictionPlantConfig(breakaway_torque=50.0, kinetic_torque=25.0,
+                            presliding_compliance=1.94)
+  peaks = [float(np.abs(run_closed_loop(wander_demand(duration_s=d, amp=0.07), cfg)
+                        .actual_lat_accel).max()) for d in (30.0, 60.0, 120.0)]
+  assert max(peaks) - min(peaks) < 1e-6, f"amplitude grew with duration: {peaks}"
+
+
+def test_negative_presliding_compliance_is_rejected():
+  with pytest.raises(ValueError, match="presliding_compliance"):
+    StictionPlantConfig(presliding_compliance=-0.1)
 
 
 def test_deadband_lag_grows_as_amplitude_shrinks():
