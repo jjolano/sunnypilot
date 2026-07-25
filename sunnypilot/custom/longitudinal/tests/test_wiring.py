@@ -22,9 +22,9 @@ from openpilot.sunnypilot.custom.longitudinal.wiring import (
 )
 
 
-def lead(d_rel=30.0, v_lead=12.0, v_rel=None, status=True):
+def lead(d_rel=30.0, v_lead=12.0, v_rel=None, status=True, radar=True, model_prob=0.9):
   ld = SimpleNamespace(status=status, dRel=d_rel, vLead=v_lead, vLeadK=v_lead, aLeadK=0.0,
-                       yRel=0.0, radarTrackId=3, radar=True, modelProb=0.9, aLeadTau=1.0)
+                       yRel=0.0, radarTrackId=3, radar=radar, modelProb=model_prob, aLeadTau=1.0)
   if v_rel is not None:
     ld.vRel = v_rel
   return ld
@@ -432,6 +432,174 @@ def test_build_stack_inputs_carries_model_stop_distance():
   # The intake subtracts the early-stop margin so every consumer rests short of the
   # model's declared stop point.
   assert inp.model_stop_distance == pytest.approx(38.0 - MODEL_STOP_EARLY_MARGIN_M)
+
+
+class TimestampedRadarSm(dict):
+  def __init__(self, lead_one, *, radar_ok=True, model_age=0.0):
+    super().__init__(fake_sm(lead_one, model_x=STOP_TRAJ_X, model_v=STOP_TRAJ_V, long_active=True))
+    now = time.monotonic()
+    self.recv_time = {'modelV2': now - model_age, 'radarState': now}
+    self.valid = {'radarState': radar_ok}
+    self.alive = {'radarState': radar_ok}
+    self.freq_ok = {'radarState': radar_ok}
+
+
+def _anchor_output(lead_one=None, *, frames=8, radar_ok=True, model_age=0.0, model_x=STOP_TRAJ_X,
+                   model_v=STOP_TRAJ_V, v_ego=15.0, model_should_stop=True,
+                   model_accel=-2.0, clear_frames=0):
+  adapter = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+  out = None
+  for frame in range(frames + clear_frames):
+    clearing = frame >= frames
+    sm = TimestampedRadarSm(lead_one, radar_ok=radar_ok, model_age=model_age)
+    sm['modelV2'].position.x = model_x
+    sm['modelV2'].velocity.x = model_v
+    sm['modelV2'].action.shouldStop = model_should_stop and not clearing
+    sm['modelV2'].action.desiredAcceleration = 0.0 if clearing else model_accel
+    out = adapter.evaluate(sm, v_ego, 0.0, v_ego, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  return adapter, out
+
+
+def test_stationary_lead_correlated_anchor_uses_fresh_raw_stop_distance():
+  adapter, out = _anchor_output(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0))
+  assert adapter._stop_anchor_lead_corr_frames >= 3
+  assert out.debug["model_stop_distance_raw"] == pytest.approx(38.0)
+  assert out.debug["model_stop_distance_used"] > 33.8
+  assert out.debug["model_stop_distance_used"] <= 38.0
+
+
+def test_stationary_lead_correlation_needs_persistent_frames():
+  for frames in (1, 2):
+    adapter, out = _anchor_output(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0), frames=frames)
+    assert adapter._stop_anchor_lead_corr_frames == frames
+    assert out.debug["model_stop_distance_used"] <= 33.8
+
+
+@pytest.mark.parametrize("lead_one,radar_ok,model_x,model_v", [
+  (None, True, STOP_TRAJ_X, STOP_TRAJ_V),
+  (lead(d_rel=43.0, v_lead=1.0, v_rel=1.0), True, STOP_TRAJ_X, STOP_TRAJ_V),
+  (lead(d_rel=43.0, v_lead=0.0, v_rel=0.0, radar=False), True, STOP_TRAJ_X, STOP_TRAJ_V),
+  (lead(d_rel=43.0, v_lead=0.0, v_rel=0.0, model_prob=0.4), True, STOP_TRAJ_X, STOP_TRAJ_V),
+  (lead(d_rel=43.0, v_lead=0.0, v_rel=0.0), False, STOP_TRAJ_X, STOP_TRAJ_V),
+  (lead(d_rel=58.0, v_lead=0.0, v_rel=0.0), True, STOP_TRAJ_X, STOP_TRAJ_V),
+  (lead(d_rel=float("nan"), v_lead=0.0, v_rel=0.0), True, STOP_TRAJ_X, STOP_TRAJ_V),
+  (lead(d_rel=43.0, v_lead=0.0, v_rel=0.0), True, CRUISE_TRAJ_X, CRUISE_TRAJ_V),
+])
+def test_noncorrelated_stops_preserve_existing_anchor_output(lead_one, radar_ok, model_x, model_v):
+  adapter, out = _anchor_output(lead_one, radar_ok=radar_ok, model_x=model_x, model_v=model_v)
+  assert adapter._stop_anchor_lead_corr_frames == 0
+  if model_x is STOP_TRAJ_X:
+    assert out.debug["model_stop_distance_used"] <= 33.8
+  else:
+    assert out.debug["model_stop_distance_used"] == 0.0
+
+
+def test_stationary_lead_correlation_never_uses_stale_or_missing_raw_geometry():
+  adapter, _ = _anchor_output(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0), frames=8)
+  assert adapter._stop_anchor_lead_corr_frames >= 3
+  cruise_sm = TimestampedRadarSm(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0))
+  cruise_sm['modelV2'].position.x = CRUISE_TRAJ_X
+  cruise_sm['modelV2'].velocity.x = CRUISE_TRAJ_V
+  cruise_sm['modelV2'].action.shouldStop = True
+  cruise_sm['modelV2'].action.desiredAcceleration = -2.0
+  adapter.evaluate(cruise_sm, 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  assert adapter._stop_anchor_lead_corr_frames == 0
+
+
+def test_stale_model_never_admits_stationary_lead_correlation():
+  adapter, out = _anchor_output(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0),
+                                model_age=MODEL_STALE_AGE_S + 0.1)
+  assert adapter._stop_anchor_lead_corr_frames == 0
+  assert out.debug["model_stop_distance_used"] <= 33.8
+
+
+def test_degraded_frame_breaks_correlation_persistence():
+  adapter = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+  sm = TimestampedRadarSm(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0))
+  sm['modelV2'].action.shouldStop = True
+  sm['modelV2'].action.desiredAcceleration = -2.0
+  for _ in range(2):
+    adapter.evaluate(sm, 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  assert adapter._stop_anchor_lead_corr_frames == 2
+  degraded = adapter.evaluate(sm, float("nan"), 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  assert degraded.selected_intent == "degraded_evidence"
+  assert adapter._stop_anchor_lead_corr_frames == 0
+  adapter.evaluate(sm, 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  assert adapter._stop_anchor_lead_corr_frames == 1
+
+
+def test_bound_clamps_to_lead_safe_target_when_raw_stop_implies_smaller_buffer():
+  adapter, out = _anchor_output(lead(d_rel=41.0, v_lead=0.0, v_rel=0.0))
+  assert adapter._stop_anchor_lead_corr_frames >= 3
+  # floor = min(raw 38, dRel 41 - STOP_DISTANCE 5) = 36; the anchor alone sits nearer.
+  assert out.debug["model_stop_distance_used"] == pytest.approx(36.0)
+
+
+def test_bound_feeds_policy_distance_after_exactly_one_early_margin(monkeypatch):
+  captured = {}
+  import openpilot.sunnypilot.custom.longitudinal.wiring as wiring_mod
+  real_build = wiring_mod.build_stack_inputs
+
+  def spy(**kwargs):
+    assert kwargs["model_stop_distance"] == pytest.approx(36.0)  # pre-margin bound
+    inp = real_build(**kwargs)
+    captured["model_stop_distance"] = inp.model_stop_distance
+    return inp
+
+  monkeypatch.setattr(wiring_mod, "build_stack_inputs", spy)
+  _anchor_output(lead(d_rel=41.0, v_lead=0.0, v_rel=0.0))
+  assert captured["model_stop_distance"] == pytest.approx(36.0 - MODEL_STOP_EARLY_MARGIN_M)
+
+
+def test_correlated_relaxation_respects_blip_filter_ordering():
+  # Anchor commits frame 1; correlation admits at frame 3, but consumers see nothing
+  # until STOP_ANCHOR_MIN_COMMIT_S (0.25 s) has elapsed at frame 6.
+  _, early = _anchor_output(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0), frames=5)
+  assert early.debug["model_stop_distance_used"] == 0.0
+  adapter, later = _anchor_output(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0), frames=6)
+  assert adapter._stop_anchor_lead_corr_frames >= 3
+  assert later.debug["model_stop_distance_used"] > 33.8
+
+
+def test_stationary_lead_correlation_does_not_override_semantic_clear():
+  adapter = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+  lead_one = lead(d_rel=43.0, v_lead=0.0, v_rel=0.0)
+  for _ in range(8):
+    sm = TimestampedRadarSm(lead_one)
+    sm['modelV2'].action.shouldStop = True
+    sm['modelV2'].action.desiredAcceleration = -2.0
+    adapter.evaluate(sm, 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  assert adapter._stop_anchor_lead_corr_frames >= 3
+
+  first_clear = adapter.evaluate(TimestampedRadarSm(lead_one), 15.0, 0.0, 15.0, 0.0,
+                                 fake_scc(), fake_sla(), dt=0.05)
+  # The first clear frame immediately drops the relaxation (counter resets) even though
+  # the anchor commitment itself is still retained by the clear-persistence gate.
+  assert adapter._stop_anchor_lead_corr_frames == 0
+  assert 0.0 < first_clear.debug["model_stop_distance_used"] <= 33.8
+
+  cleared = None
+  for _ in range(2):
+    cleared = adapter.evaluate(TimestampedRadarSm(lead_one), 15.0, 0.0, 15.0, 0.0,
+                               fake_scc(), fake_sla(), dt=0.05)
+  assert adapter._stop_anchor.remaining is None
+  assert cleared.debug["model_stop_distance_used"] == 0.0
+
+
+def test_alternating_track_ids_do_not_break_continuous_stationary_geometry():
+  adapter = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+  out = None
+  adapter.evaluate(TimestampedRadarSm(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0)), 15.0, 0.0, 15.0, 0.0,
+                   fake_scc(), fake_sla(), dt=0.05)
+  for idx in range(8):
+    ld = lead(d_rel=43.0, v_lead=0.0, v_rel=0.0)
+    ld.radarTrackId = 533 if idx % 2 == 0 else 556
+    sm = TimestampedRadarSm(ld)
+    sm['modelV2'].action.shouldStop = True
+    sm['modelV2'].action.desiredAcceleration = -2.0
+    out = adapter.evaluate(sm, 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  assert adapter._stop_anchor_lead_corr_frames >= 3
+  assert out.debug["model_stop_distance_used"] > 33.8
 
 
 def test_distance_aware_stop_approach_brakes_in_e2e():

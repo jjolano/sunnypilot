@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from cereal import log
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
 from openpilot.sunnypilot.custom.longitudinal.coast_horizon import ACCELERATION_DUE_TO_GRAVITY, DEFAULT_COAST_DECEL, DragEstimator
 from openpilot.sunnypilot.custom.longitudinal.curve_speed_confidence import CurveSpeedConfidenceInputs
 from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
@@ -37,6 +38,8 @@ from openpilot.sunnypilot.custom.longitudinal.model_trust import (
   CorroborationHold,
   CutOutCautionRecovery,
   ModelStopAnchor,
+  STOP_ANCHOR_JUMP_CONFIRM_FRAMES,
+  STOP_ANCHOR_MAX_SHRINK_M,
   STOP_ANCHOR_MIN_COMMIT_S,
   StopTrustLearner,
 )
@@ -317,6 +320,7 @@ class CustomLongitudinalAdapter:
     self.fault_class = ""
     self._authority_began = False
     self._long_active_prev = False
+    self._stop_anchor_lead_corr_frames = 0
     if params is not None:
       self.refresh_params(initial=True)
 
@@ -399,6 +403,7 @@ class CustomLongitudinalAdapter:
 
   def _degraded_output(self, seed_a_target: float, reason: str) -> CustomLongitudinalOutput:
     """Degraded Evidence: withhold Custom Authority for this tick. Never a Fail-closed fault."""
+    self._stop_anchor_lead_corr_frames = 0
     return CustomLongitudinalOutput(
       a_target=_f(seed_a_target), should_stop=False, enabled=False, mode=self.mode,
       selected_intent="degraded_evidence", reason=reason, debug={},
@@ -415,6 +420,7 @@ class CustomLongitudinalAdapter:
                scc: Any, sla: Any, dt: float = 0.05, t_follow: float = 1.5,
                *, collect_debug: bool = True) -> CustomLongitudinalOutput:
     if not self.enabled:
+      self._stop_anchor_lead_corr_frames = 0
       return CustomLongitudinalOutput(
         a_target=_f(seed_a_target), should_stop=False, enabled=False, mode=self.mode,
         selected_intent="disabled", reason="disabled",
@@ -460,9 +466,11 @@ class CustomLongitudinalAdapter:
     if long_active and not self._long_active_prev:
       self.fault_class = ""
       self._authority_began = False
+      self._stop_anchor_lead_corr_frames = 0
     self._long_active_prev = long_active
     if not long_active:
       self._authority_began = False
+      self._stop_anchor_lead_corr_frames = 0
     if self.fault_class:
       # Never silently resume the Consumer-Local Baseline after a Fail-closed fault.
       return self._fault_output(seed_a_target)
@@ -511,13 +519,32 @@ class CustomLongitudinalAdapter:
       # plans to a conservative, nearer-only stop distance instead of the model's
       # optimistic, gradually-firming one.
       model_stop_distance = self._stop_anchor.update(model_stop_distance_raw, v_ego, dt,
-                                                      semantic_clear=model_clear)
+                                                       semantic_clear=model_clear)
+      lead_one_msg = getattr(radar, "leadOne", None)
+      correlated_floor = math.nan
+      if long_active and not model_stale and not model_clear and model_stop_distance_raw is not None and _service_healthy(sm, 'radarState'):
+        raw_stop = _f(model_stop_distance_raw, default=math.nan)
+        lead_d_rel = _f(getattr(lead_one_msg, "dRel", math.nan), default=math.nan)
+        lead_v = _f(getattr(lead_one_msg, "vLeadK", math.nan), default=math.nan)
+        lead_prob = _f(getattr(lead_one_msg, "modelProb", math.nan), default=math.nan)
+        gap = lead_d_rel - raw_stop
+        if (math.isfinite(raw_stop) and raw_stop > 0.0
+            and lead_one_msg is not None and bool(getattr(lead_one_msg, "status", False))
+            and bool(getattr(lead_one_msg, "radar", False))
+            and math.isfinite(lead_d_rel) and math.isfinite(lead_v) and math.isfinite(lead_prob)
+            and lead_prob >= 0.5 and abs(lead_v) <= 0.5 and lead_d_rel > STOP_DISTANCE
+            and 0.0 < gap <= STOP_ANCHOR_MAX_SHRINK_M):
+          # A stationary radar lead matching the model stop may relax only an existing
+          # commitment: use the fresh raw stop, never beyond the MPC standstill buffer.
+          correlated_floor = min(raw_stop, lead_d_rel - STOP_DISTANCE)
+      self._stop_anchor_lead_corr_frames = self._stop_anchor_lead_corr_frames + 1 if math.isfinite(correlated_floor) else 0
       if model_stop_distance is not None and self._stop_anchor.committed_s < STOP_ANCHOR_MIN_COMMIT_S:
         # False-positive blip filter: consumers see a commitment only once it has survived
         # the debounce window; the anchor keeps aging internally so real stops lose nothing.
         model_stop_distance = None
+      elif model_stop_distance is not None and self._stop_anchor_lead_corr_frames >= STOP_ANCHOR_JUMP_CONFIRM_FRAMES:
+        model_stop_distance = max(model_stop_distance, correlated_floor)
       model_caution_floor = self._caution_ramp.update(model_desired_accel, dt)
-      lead_one_msg = getattr(radar, "leadOne", None)
       closing_lead = (lead_one_msg is not None and bool(getattr(lead_one_msg, "status", False))
                       and _f(getattr(lead_one_msg, "vRel", 0.0)) < -LEAD_CLOSING_MIN)
       radar_corroborated = self._corroboration_hold.update(closing_lead, dt)
