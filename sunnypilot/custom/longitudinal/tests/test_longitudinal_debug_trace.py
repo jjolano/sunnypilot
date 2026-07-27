@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
+from openpilot.sunnypilot.custom.longitudinal.departure_prediction import DeparturePredictionTrace
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.custom.longitudinal.net_demand_cap import NetDemandCapTrace
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
@@ -320,3 +321,35 @@ def test_debug_trace_dynamic_safety_floor_defaults_safely():
   assert msg.latencyS == pytest.approx(0.0)
   assert msg.latAccel == pytest.approx(0.0)
   assert msg.pitch == pytest.approx(0.0)
+
+
+def test_debug_trace_serializes_departure_prediction_trace():
+  planner = make_planner("log", custom_output(
+    departure_prediction_trace=DeparturePredictionTrace(
+      mode="apply", effective_mode="shadow", apply_supported=False,
+      phase="predicted", eligible=False, block_reason="mpc_brake_or_stop",
+      track_id=17, evidence_s=0.2, age_s=0.35, predicted_gap_delta=0.8,
+      would_coast=False, applied=False, a_target_before=-0.1,
+      a_target_proposed=-0.1, a_target_after=-0.1, delta_a=0.0,
+      research_actuation_allowed=False,
+    ),
+  ))
+
+  trace = publish(planner).longitudinalDebug.departurePrediction
+  assert trace.mode == "apply"
+  assert trace.effectiveMode == "shadow"
+  assert trace.applySupported is False
+  assert trace.phase == "predicted"
+  assert trace.eligible is False
+  assert trace.blockReason == "mpc_brake_or_stop"
+  assert trace.trackId == 17
+  assert trace.evidenceS == pytest.approx(0.2)
+  assert trace.ageS == pytest.approx(0.35)
+  assert trace.predictedGapDelta == pytest.approx(0.8)
+  assert trace.wouldCoast is False
+  assert trace.applied is False
+  assert trace.aTargetBefore == pytest.approx(-0.1)
+  assert trace.aTargetProposed == pytest.approx(-0.1)
+  assert trace.aTargetAfter == pytest.approx(-0.1)
+  assert trace.deltaA == pytest.approx(0.0)
+  assert trace.researchActuationAllowed is False

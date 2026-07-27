@@ -1022,6 +1022,9 @@ def test_curve_traffic_advisor_mode_is_non_actuating_and_wired():
   assert shadow.should_stop == off.should_stop
   assert shadow.selected_intent == off.selected_intent
   assert shadow.reason == off.reason
+  assert shadow.standstill_release_allowed == off.standstill_release_allowed
+  assert shadow.standstill_release_source == off.standstill_release_source
+  assert shadow.standstill_release_a_target == pytest.approx(off.standstill_release_a_target)
   assert off.debug["curve_traffic_mode"] == "off"
   assert off.debug["curve_traffic_active"] is False
   assert shadow.debug["curve_traffic_mode"] == "shadow"
@@ -1128,3 +1131,80 @@ def test_map_coast_apply_gated_by_research_actuation():
   assert out_apply.a_target < out_off.a_target        # coast cap binds
   assert out_apply.a_target >= -0.3                   # never harder than natural coast
   assert out_apply.debug.get("map_coast_applied") is True
+
+
+def test_departure_prediction_mode_is_wired_and_off_shadow_are_parity():
+  kwargs = dict(
+    v_ego=0.0, a_ego=0.0, v_cruise=12.0, seed_a_target=0.0,
+    accel_limits=DEFAULT_ACCEL_LIMITS, lead_one=lead(d_rel=6.5, v_lead=0.8, v_rel=0.5), lead_two=None,
+    scc_vision_active=False, scc_vision_a_target=0.0, scc_map_active=False, scc_map_a_target=0.0,
+    sla_active=False, sla_v_target=0.0, sla_a_target=0.0,
+    mode=LongitudinalMode.SCC, personality=Personality.STANDARD, sources=SourceToggles(),
+    departure_prediction_mode="shadow",
+  )
+  assert build_stack_inputs(**kwargs).departure_prediction_mode == "shadow"
+
+  scenario = dict(
+    sm=fake_sm(lead(d_rel=6.5, v_lead=0.8, v_rel=0.5), long_active=True),
+    v_ego=0.0, a_ego=0.0, v_cruise=12.0, seed_a_target=0.0,
+    scc=fake_scc(), sla=fake_sla(), dt=0.05,
+  )
+  off = CustomLongitudinalAdapter(FakeParams(
+    CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc", DeparturePredictionMode="off",
+  )).evaluate(**scenario)
+  shadow = CustomLongitudinalAdapter(FakeParams(
+    CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc", DeparturePredictionMode="shadow",
+  )).evaluate(**scenario)
+
+  assert shadow.a_target == pytest.approx(off.a_target)
+  assert shadow.should_stop == off.should_stop
+  assert shadow.selected_intent == off.selected_intent
+  assert shadow.reason == off.reason
+  assert off.debug["departure_prediction_mode"] == "off"
+  assert shadow.debug["departure_prediction_mode"] == "shadow"
+  assert shadow.debug["departure_prediction_effective_mode"] == "shadow"
+  assert shadow.debug["departure_prediction_apply_supported"] is False
+
+
+def test_departure_prediction_invalid_mode_is_off_and_apply_downgrades_without_research_gate():
+  scenario = dict(
+    sm=fake_sm(lead(d_rel=6.5, v_lead=0.8, v_rel=0.5), long_active=True),
+    v_ego=0.0, a_ego=0.0, v_cruise=12.0, seed_a_target=0.0,
+    scc=fake_scc(), sla=fake_sla(), dt=0.05,
+  )
+  invalid = CustomLongitudinalAdapter(FakeParams(
+    CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc", DeparturePredictionMode="bogus",
+  ))
+  assert invalid.departure_prediction_mode == "off"
+
+  apply = CustomLongitudinalAdapter(FakeParams(
+    CustomLongitudinalEnabled=True, CustomLongitudinalMode="scc", DeparturePredictionMode="apply",
+  ))
+  apply.research_actuation_allowed = False
+  out = apply.evaluate(**scenario)
+  assert out.debug["departure_prediction_mode"] == "apply"
+  assert out.debug["departure_prediction_effective_mode"] == "shadow"
+  assert out.debug["departure_prediction_apply_supported"] is False
+  assert out.a_target == pytest.approx(0.0)
+
+
+def test_adapter_refresh_cannot_enable_the_cp_aware_research_gate():
+  params = FakeParams(
+    CustomLongitudinalEnabled=True,
+    CustomLongitudinalMode="scc",
+    DeparturePredictionMode="apply",
+    AllowLongitudinalResearchActuation=True,
+  )
+  adapter = CustomLongitudinalAdapter(params)
+
+  assert adapter.research_actuation_allowed is False
+  for _ in range(50):
+    adapter.maybe_refresh_params()
+  assert adapter.research_actuation_allowed is False
+
+  out = adapter.evaluate(
+    fake_sm(lead(d_rel=6.5, v_lead=0.8, v_rel=0.5), long_active=True),
+    0.0, 0.0, 12.0, 0.0, fake_scc(), fake_sla(), dt=0.05,
+  )
+  assert out.debug["departure_prediction_effective_mode"] == "shadow"
+  assert out.debug["departure_prediction_apply_supported"] is False

@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 
-from openpilot.common.params import Params, ParamKeyFlag, UnknownKeyName
+from openpilot.common.params import Params, ParamKeyFlag, ParamKeyType, UnknownKeyName
 
 class TestParams:
   def setup_method(self):
@@ -108,6 +108,17 @@ class TestParams:
     assert len(keys) > 20
     assert len(keys) == len(set(keys))
     assert b"CarParams" in keys
+
+  def test_departure_prediction_mode_is_persistent_backup_string_with_off_default(self):
+    key = "DeparturePredictionMode"
+    self.params.remove(key)
+
+    assert key.encode() in self.params.all_keys(ParamKeyFlag.PERSISTENT)
+    assert key.encode() in self.params.all_keys(ParamKeyFlag.BACKUP)
+    assert self.params.get_type(key) == ParamKeyType.STRING
+    assert self.params.get(key) is None
+    assert self.params.get(key, return_default=True) == "off"
+    assert self.params.get_default_value(key) == "off"
 
   def test_params_default_value(self):
     self.params.remove("LanguageSetting")

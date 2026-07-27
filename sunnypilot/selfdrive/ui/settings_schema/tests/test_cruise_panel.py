@@ -37,6 +37,7 @@ def test_cruise_top_level_controls_render_inline():
   assert CONTROLS.get("CutInBrakeAssistMode") == "multiple_button"
   assert CONTROLS.get("CurveTrafficAdvisorMode") == "multiple_button"
   assert CONTROLS.get("StandstillReleaseConfidenceMode") == "multiple_button"
+  assert CONTROLS.get("DeparturePredictionMode") == "multiple_button"
 
 
 def test_custom_acc_increments_inlined_as_subitems():
@@ -68,6 +69,14 @@ def test_longitudinal_debug_trace_mode_is_string_multiple_button():
   assert item["widget"] == "multiple_button"
   assert [opt["value"] for opt in item["options"]] == ["off", "log"]
   assert [opt["label"] for opt in item["options"]] == ["Off", "Log"]
+
+
+def test_departure_prediction_mode_is_string_multiple_button():
+  item = find_item(CRUISE, "DeparturePredictionMode")
+  assert item is not None
+  assert item["widget"] == "multiple_button"
+  assert [opt["value"] for opt in item["options"]] == ["off", "shadow", "apply"]
+  assert [opt["label"] for opt in item["options"]] == ["Off", "Monitor only", "Apply coast-only"]
 
 
 def test_shadow_observability_modes_include_promoted_apply_options():

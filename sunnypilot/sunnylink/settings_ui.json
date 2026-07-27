@@ -1334,6 +1334,42 @@
               ]
             },
             {
+              "key": "DeparturePredictionMode",
+              "widget": "multiple_button",
+              "requires_attestation": true,
+              "title": "Departure Prediction",
+              "description": "Monitor only predicts lead departures and changes no driving behavior. Apply only removes a shallow brake residue after an independently confirmed lead departure and never initiates launch. Apply requires Custom Longitudinal plus the research actuation gate.",
+              "options": [
+                {
+                  "value": "off",
+                  "label": "Off"
+                },
+                {
+                  "value": "shadow",
+                  "label": "Monitor only"
+                },
+                {
+                  "value": "apply",
+                  "label": "Apply coast-only"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                },
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "CustomLongitudinalEnabled",
+                  "equals": true
+                }
+              ]
+            },
+            {
               "key": "DisengageOnAccelerator",
               "widget": "toggle",
               "title": "Disengage Cruise on Accelerator Pedal",

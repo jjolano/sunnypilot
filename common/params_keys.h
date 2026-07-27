@@ -100,6 +100,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // research modes that alter MPC inputs require both an explicit mode and the actuation gate.
     {"CustomLongitudinalEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"CustomLongitudinalMode", {PERSISTENT | BACKUP, STRING, "scc"}},
+    // Coast-only lead-departure prediction; apply is explicit opt-in and research-gated.
+    {"DeparturePredictionMode", {PERSISTENT | BACKUP, STRING, "off"}},
     // Explicit default-off gate for non-baseline research longitudinal actuation (radar-only cut-in
     // promotion, lead anticipation apply, cut-in/curve/standstill research apply modes). Shadow
     // telemetry is unaffected.

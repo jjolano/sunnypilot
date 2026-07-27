@@ -8,7 +8,7 @@ public API and behavior remain unchanged from the original Phase-5B extraction.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
@@ -21,6 +21,15 @@ from openpilot.sunnypilot.custom.longitudinal.lead_confidence import close_stop_
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.custom.longitudinal.net_demand_cap import NetDemandCapFinalStage, NetDemandCapTrace
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import LEAD_CRAWL_BREAKOUT_MIN_OPENING
+from openpilot.sunnypilot.custom.longitudinal.departure_prediction import (
+  DeparturePredictionEvidence,
+  DeparturePredictionTrace,
+  PHASE_ARMING,
+  PHASE_INACTIVE,
+  PHASE_PREDICTED,
+  PERSISTENCE_S,
+  TIMEOUT_S,
+)
 from openpilot.sunnypilot.custom.longitudinal.wiring import FAULT_CLASS_INTERNAL, CustomLongitudinalOutput
 
 
@@ -31,6 +40,8 @@ class FinalizerResult:
   e2e_source: bool
   custom_long_output_telemetry: CustomLongitudinalOutput | None = None
   last_release_block_reason: str = ""
+  departure_prediction_evidence: DeparturePredictionEvidence = field(default_factory=DeparturePredictionEvidence)
+  departure_prediction_trace: DeparturePredictionTrace = field(default_factory=DeparturePredictionTrace)
 
 
 def _valid_lead_id(lead: Any) -> int | None:
@@ -77,14 +88,21 @@ class _InputSnapshot:
   stopping_distance: float
   v_ego_stopping: float
   stop_accel: float
+  mpc_a_target_valid: bool = True
+  raw_model_a_target_valid: bool = True
+  long_active: bool = False
 
   @classmethod
   def build(cls, finalizer: CustomLongitudinalFinalizer, sm: Any,
             custom_long: Any, custom_long_output: Any, is_e2e: bool,
             model_stale: bool, dt: float, mpc_a_target: float, mpc_should_stop: bool,
-            raw_model_a_target: float, raw_model_should_stop: bool) -> _InputSnapshot:
+            raw_model_a_target: float, raw_model_should_stop: bool,
+            mpc_a_target_valid: bool | None = None,
+            raw_model_a_target_valid: bool | None = None,
+            long_active: bool | None = None) -> _InputSnapshot:
     car_state = finalizer._sm_item(sm, 'carState')
     controls_state = finalizer._sm_item(sm, 'controlsState')
+    car_control = finalizer._sm_item(sm, 'carControl')
     radar_state = finalizer._sm_item(sm, 'radarState')
     selected_lead = finalizer._select_stop_hold_lead(radar_state, finalizer.lead_stop_hold_lead_id) if radar_state is not None else None
     has_lead = selected_lead is not None
@@ -107,6 +125,19 @@ class _InputSnapshot:
     v_ego_stopping = float(getattr(finalizer.CP, 'vEgoStopping', 0.0))
     stop_accel = getattr(finalizer.CP, 'stopAccel', None)
     stop_accel = -0.5 if stop_accel is None else float(stop_accel)
+
+    if mpc_a_target_valid is None:
+      try:
+        mpc_a_target_valid = math.isfinite(float(mpc_a_target))
+      except (TypeError, ValueError):
+        mpc_a_target_valid = False
+    if raw_model_a_target_valid is None:
+      try:
+        raw_model_a_target_valid = math.isfinite(float(raw_model_a_target))
+      except (TypeError, ValueError):
+        raw_model_a_target_valid = False
+    if long_active is None:
+      long_active = bool(getattr(car_control, 'longActive', False)) if car_control is not None else False
 
     return cls(
       sm=sm,
@@ -138,6 +169,9 @@ class _InputSnapshot:
       stopping_distance=stopping_distance,
       v_ego_stopping=v_ego_stopping,
       stop_accel=stop_accel,
+      mpc_a_target_valid=bool(mpc_a_target_valid),
+      raw_model_a_target_valid=bool(raw_model_a_target_valid),
+      long_active=bool(long_active),
     )
 
 
@@ -559,7 +593,10 @@ class _ReleaseGate:
 
     min_d_rel = stopping_distance + finalizer._STOP_HOLD_SAME_ID_MIN_D_REL_MARGIN if same_id else stopping_distance + 0.1
     if same_id and finalizer.lead_stop_hold_gap_baseline_d_rel is not None:
-      baseline_opening = finalizer._STOP_HOLD_SAME_ID_VALID_BASELINE_OPENING_M if (source_valid or carried) else finalizer._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
+      baseline_opening = (
+        finalizer._STOP_HOLD_SAME_ID_VALID_BASELINE_OPENING_M if (source_valid or carried)
+        else finalizer._STOP_HOLD_SAME_ID_MIN_D_REL_BASELINE_OPENING
+      )
       baseline_min_d_rel = float(finalizer.lead_stop_hold_gap_baseline_d_rel) + baseline_opening
       # Route 000002ac t=763/t=1243: stops routinely latch at 3.3-3.8 m; the absolute 4.5 m
       # floor then demanded ~1 m of donated gap before even an authorized release could fire.
@@ -1396,6 +1433,14 @@ class CustomLongitudinalFinalizer:
   approach_damp_a_prev: float | None
   launch_dip_grace_s: float
   final_a_prev: float | None
+  departure_prediction_phase: str
+  departure_prediction_phase_s: float
+  departure_prediction_track_id: int
+  departure_prediction_lockout_track_id: int
+  departure_prediction_frame_start_ready: bool
+  departure_prediction_applied: bool
+  departure_prediction_applied_track_id: int
+  departure_prediction_trace: DeparturePredictionTrace
 
   def __init__(self, CP: Any):
     self.CP = CP
@@ -1430,6 +1475,14 @@ class CustomLongitudinalFinalizer:
     # reset_lead_stop_hold: that runs on the release frame itself, and the release-slew
     # seed needs the prior hold command to bound the release step.
     self.final_a_prev = None
+    self.departure_prediction_phase = PHASE_INACTIVE
+    self.departure_prediction_phase_s = 0.0
+    self.departure_prediction_track_id = -1
+    self.departure_prediction_lockout_track_id = -1
+    self.departure_prediction_frame_start_ready = False
+    self.departure_prediction_applied = False
+    self.departure_prediction_applied_track_id = -1
+    self.departure_prediction_trace = DeparturePredictionTrace()
     self.uphill_net_demand_cap = NetDemandCapFinalStage()
 
   @staticmethod
@@ -1762,6 +1815,378 @@ class CustomLongitudinalFinalizer:
       return default
     return v if math.isfinite(v) else default
 
+  def _departure_prediction_evidence(self, custom_long_output: Any) -> DeparturePredictionEvidence:
+    evidence = getattr(custom_long_output, "departure_prediction_evidence", None)
+    return evidence if isinstance(evidence, DeparturePredictionEvidence) else DeparturePredictionEvidence()
+
+  def _clear_departure_prediction_phase(self, *, clear_lockout: bool = False) -> None:
+    self.departure_prediction_phase = PHASE_INACTIVE
+    self.departure_prediction_phase_s = 0.0
+    self.departure_prediction_track_id = -1
+    self.departure_prediction_frame_start_ready = False
+    if clear_lockout:
+      self.departure_prediction_lockout_track_id = -1
+
+  def _reset_departure_prediction_phase(self, *, clear_lockout: bool = True) -> None:
+    self._clear_departure_prediction_phase(clear_lockout=clear_lockout)
+    self.departure_prediction_trace = DeparturePredictionTrace()
+
+  @staticmethod
+  def _departure_prediction_int(value: Any, default: int = -1) -> int:
+    try:
+      return int(value)
+    except (TypeError, ValueError):
+      return default
+
+  def _departure_prediction_trace_from_evidence(self, evidence: DeparturePredictionEvidence) -> DeparturePredictionTrace:
+    return DeparturePredictionTrace(
+      mode=str(getattr(evidence, "mode", "off") or "off"),
+      effective_mode=str(getattr(evidence, "effective_mode", "off") or "off"),
+      apply_supported=bool(getattr(evidence, "apply_supported", False)),
+      lead_idx=self._departure_prediction_int(getattr(evidence, "lead_idx", -1)),
+      track_id=self._departure_prediction_int(getattr(evidence, "track_id", -1)),
+      predicted_gap_delta=self._safe_float(getattr(evidence, "predicted_gap_growth_1s", 0.0)),
+      research_actuation_allowed=bool(getattr(evidence, "research_actuation_allowed", False)),
+      block_reason=str(getattr(evidence, "block_reason", "") or ""),
+      fault=bool(getattr(evidence, "fault", False)),
+    )
+
+  def _departure_prediction_exact_track(self, snapshot: _InputSnapshot, evidence: Any,
+                                        latched_id: Any = None) -> bool:
+    selected_id = snapshot.lead_id
+    latched_id = self.lead_stop_hold_lead_id if latched_id is None else latched_id
+    evidence_id = self._departure_prediction_int(getattr(evidence, "track_id", -1))
+    selected = snapshot.selected_lead
+    if (
+      selected is None or not bool(getattr(selected, "status", False)) or
+      selected_id is None or latched_id is None or evidence_id < 0
+    ):
+      return False
+    if not bool(getattr(evidence, "radar", False)):
+      return False
+    try:
+      return int(selected_id) == int(latched_id) == evidence_id
+    except (TypeError, ValueError):
+      return False
+
+  def _departure_prediction_phase_gate(self, snapshot: _InputSnapshot, evidence: Any,
+                                      pre_hold_active: bool, dt_s: float) -> tuple[bool, str]:
+    custom_long = snapshot.custom_long
+    if custom_long is None or not bool(getattr(custom_long, "enabled", False)):
+      return False, "custom_long_disabled"
+    if snapshot.custom_long_output is None or not bool(getattr(snapshot.custom_long_output, "enabled", False)):
+      return False, "custom_long_disabled"
+    if bool(getattr(custom_long, "fault_class", "")) or bool(getattr(snapshot.custom_long_output, "fault_class", "")):
+      return False, "evidence_fault"
+    if getattr(custom_long, "mode", None) is not LongitudinalMode.SCC:
+      return False, "mode_not_scc"
+    if not snapshot.long_active:
+      return False, "long_inactive"
+    if not bool(getattr(self.CP, "openpilotLongitudinalControl", False)):
+      return False, "openpilot_longitudinal_disabled"
+    if not pre_hold_active:
+      return False, "no_stop_hold"
+    if not math.isfinite(dt_s) or dt_s <= 0.0:
+      return False, "invalid_dt"
+    if snapshot.brake_pressed or snapshot.gas_pressed:
+      return False, "driver_override"
+    if snapshot.force_decel:
+      return False, "force_decel"
+    if bool(getattr(evidence, "fault", False)):
+      return False, "evidence_fault"
+    if not bool(getattr(evidence, "eligible", False)):
+      return False, str(getattr(evidence, "block_reason", "ineligible") or "ineligible")
+    if not self._departure_prediction_exact_track(snapshot, evidence):
+      return False, "different_lead_id"
+    if bool(snapshot.raw_model_should_stop) or self._departure_prediction_threat_active(snapshot, evidence):
+      return False, "threat_active"
+    return True, ""
+
+  def _update_departure_prediction_phase(self, snapshot: _InputSnapshot,
+                                         pre_hold_active: bool) -> DeparturePredictionEvidence:
+    evidence = self._departure_prediction_evidence(snapshot.custom_long_output)
+    trace = self._departure_prediction_trace_from_evidence(evidence)
+    self.departure_prediction_trace = trace
+    self.departure_prediction_frame_start_ready = False
+
+    try:
+      dt_f = float(snapshot.dt)
+    except (TypeError, ValueError):
+      dt_f = 0.0
+    dt_s = dt_f if math.isfinite(dt_f) and dt_f > 0.0 else 0.0
+    track_id = self._departure_prediction_int(getattr(evidence, "track_id", -1))
+    raw_eligible = bool(getattr(evidence, "eligible", False)) and track_id >= 0
+
+    if trace.effective_mode == "off" or trace.fault:
+      self._reset_departure_prediction_phase()
+      self.departure_prediction_trace = replace(trace, phase=PHASE_INACTIVE, phase_s=0.0)
+      return evidence
+    if not raw_eligible:
+      # A real predictor-evidence drop is the event that releases a timeout lockout.
+      self._clear_departure_prediction_phase(clear_lockout=True)
+      self.departure_prediction_trace = replace(trace, phase=PHASE_INACTIVE, phase_s=0.0)
+      return evidence
+
+    if track_id != self.departure_prediction_track_id:
+      self._clear_departure_prediction_phase(clear_lockout=False)
+      self.departure_prediction_track_id = track_id
+      if self.departure_prediction_lockout_track_id != track_id:
+        self.departure_prediction_lockout_track_id = -1
+
+    phase_ok, phase_reason = self._departure_prediction_phase_gate(snapshot, evidence, pre_hold_active, dt_s)
+    if not phase_ok:
+      # Pedals, force decel, and a threat clear readiness immediately. A timeout lockout is
+      # deliberately retained while the same predictor track remains continuously eligible.
+      self._clear_departure_prediction_phase(clear_lockout=False)
+      self.departure_prediction_trace = replace(
+        trace, phase=PHASE_INACTIVE, phase_s=0.0, block_reason=phase_reason,
+      )
+      return evidence
+
+    if self.departure_prediction_lockout_track_id == track_id:
+      self._clear_departure_prediction_phase(clear_lockout=False)
+      self.departure_prediction_track_id = track_id
+      self.departure_prediction_trace = replace(
+        trace, phase=PHASE_INACTIVE, phase_s=0.0, block_reason="prediction_timeout",
+      )
+      return evidence
+
+    frame_start_predicted = bool(
+      self.departure_prediction_phase == PHASE_PREDICTED and
+      self.departure_prediction_track_id == track_id
+    )
+    if self.departure_prediction_phase == PHASE_PREDICTED:
+      self.departure_prediction_phase_s += dt_s
+      if self.departure_prediction_phase_s >= TIMEOUT_S:
+        self.departure_prediction_phase = PHASE_INACTIVE
+        self.departure_prediction_phase_s = 0.0
+        self.departure_prediction_lockout_track_id = track_id
+        frame_start_predicted = False
+        phase_reason = "prediction_timeout"
+    elif self.departure_prediction_phase == PHASE_INACTIVE:
+      self.departure_prediction_phase = PHASE_ARMING
+      self.departure_prediction_phase_s = dt_s
+      if self.departure_prediction_phase_s >= PERSISTENCE_S:
+        self.departure_prediction_phase = PHASE_PREDICTED
+        self.departure_prediction_phase_s = 0.0
+    elif self.departure_prediction_phase == PHASE_ARMING:
+      self.departure_prediction_phase_s += dt_s
+      if self.departure_prediction_phase_s >= PERSISTENCE_S:
+        self.departure_prediction_phase = PHASE_PREDICTED
+        self.departure_prediction_phase_s = 0.0
+
+    self.departure_prediction_frame_start_ready = frame_start_predicted
+    self.departure_prediction_trace = replace(
+      trace,
+      phase=self.departure_prediction_phase,
+      phase_s=float(self.departure_prediction_phase_s),
+      evidence_s=(PERSISTENCE_S if self.departure_prediction_phase == PHASE_PREDICTED else
+                  float(self.departure_prediction_phase_s) if self.departure_prediction_phase == PHASE_ARMING else 0.0),
+      age_s=(float(self.departure_prediction_phase_s) if self.departure_prediction_phase == PHASE_PREDICTED else 0.0),
+      block_reason=phase_reason,
+    )
+    return evidence
+
+  @staticmethod
+  def _departure_prediction_threat_active(snapshot: _InputSnapshot, evidence: Any) -> bool:
+    if bool(getattr(evidence, "alternate_threat_active", False)):
+      return True
+    if bool(snapshot.raw_model_should_stop) or _model_stop_blocks_release(snapshot):
+      return True
+    output = snapshot.custom_long_output
+    if (bool(getattr(output, "should_stop", False)) or
+        bool(getattr(output, "model_stop_corroborated", False)) or
+        str(getattr(output, "selected_intent", "") or "") == "stop_approach"):
+      return True
+    actuation = getattr(output, "actuation", None)
+    if actuation is None:
+      return False
+    cut_in = getattr(actuation, "cut_in_brake_assist", None)
+    if cut_in is not None:
+      proposed = CustomLongitudinalFinalizer._finite_float_or_none(getattr(cut_in, "proposed_cap", None))
+      if bool(getattr(cut_in, "eligible", False)) or (proposed is not None and proposed < 0.0):
+        return True
+    curve = getattr(actuation, "curve_traffic_advisor", None)
+    if curve is not None:
+      proposed = CustomLongitudinalFinalizer._finite_float_or_none(getattr(curve, "a_curve_cap_proposed", None))
+      if (bool(getattr(curve, "eligible", False)) or bool(getattr(curve, "active", False)) or
+          bool(getattr(curve, "suppress_accel", False)) or (proposed is not None and proposed < 0.0)):
+        return True
+    return False
+
+  def _record_departure_prediction_context(self, snapshot: _InputSnapshot, a_target: float,
+                                           should_stop: bool, release_mpc_stop: bool,
+                                           pre_hold_active: bool, post_hold_active: bool,
+                                           release_slew_provenance: bool,
+                                           pre_hold_lead_id: Any, block_reason: str) -> float:
+    before = self._safe_float(a_target)
+    evidence = self._departure_prediction_evidence(snapshot.custom_long_output)
+    if block_reason == "stop_hold_active" and self.departure_prediction_trace.block_reason:
+      block_reason = self.departure_prediction_trace.block_reason
+    same_track = bool(
+      pre_hold_active and not post_hold_active and
+      self._departure_prediction_exact_track(snapshot, evidence, pre_hold_lead_id) and
+      self._departure_prediction_int(pre_hold_lead_id) == snapshot.lead_id
+    )
+    self.departure_prediction_trace = replace(
+      self.departure_prediction_trace,
+      pre_hold_active=bool(pre_hold_active),
+      post_hold_active=bool(post_hold_active),
+      same_track=same_track,
+      release_source=str(getattr(snapshot.custom_long_output, "standstill_release_source", "") or ""),
+      release_permission=bool(getattr(snapshot.custom_long_output, "standstill_release_allowed", False)),
+      release_mpc_stop=bool(release_mpc_stop),
+      release_slew_provenance=bool(release_slew_provenance),
+      a_target_before=before,
+      a_target_proposed=before,
+      a_target_after=before,
+      block_reason=block_reason,
+    )
+    return a_target
+
+  def _apply_departure_prediction(self, snapshot: _InputSnapshot, a_target: float,
+                                  should_stop: bool, release_mpc_stop: bool,
+                                  pre_hold_active: bool, post_hold_active: bool,
+                                  release_slew_provenance: bool = False,
+                                  pre_hold_lead_id: Any = None,
+                                  frame_start_predicted: bool = False,
+                                  pre_slew_state: Any = None,
+                                  pre_slew_input: Any = None,
+                                  post_slew_state: Any = None,
+                                  post_slew_target: Any = None) -> float:
+    """Apply only the approved shallow-brake-to-coast transformation."""
+    try:
+      before = float(a_target)
+      evidence = self._departure_prediction_evidence(snapshot.custom_long_output)
+      input_target = self._finite_float_or_none(pre_slew_input)
+      post_target = self._finite_float_or_none(post_slew_target)
+      post_state = self._finite_float_or_none(post_slew_state)
+      release_slew_provenance = bool(
+        release_mpc_stop and pre_hold_active and not post_hold_active and
+        pre_slew_state is None and input_target is not None and input_target >= 0.0 and
+        post_target is not None and post_slew_state is not None and post_state is not None and
+        post_state == post_target and post_target < input_target
+      )
+      evidence_track_id = self._departure_prediction_int(getattr(evidence, "track_id", -1))
+      same_track = bool(
+        pre_hold_active and not post_hold_active and snapshot.lead_id is not None and
+        pre_hold_lead_id is not None and self._departure_prediction_exact_track(snapshot, evidence, pre_hold_lead_id) and
+        self._departure_prediction_int(pre_hold_lead_id) == int(snapshot.lead_id) and
+        evidence_track_id == int(snapshot.lead_id)
+      )
+      self.departure_prediction_trace = replace(
+        self.departure_prediction_trace,
+        pre_hold_active=bool(pre_hold_active),
+        post_hold_active=bool(post_hold_active),
+        same_track=same_track,
+        release_source=str(getattr(snapshot.custom_long_output, "standstill_release_source", "") or ""),
+        release_permission=bool(getattr(snapshot.custom_long_output, "standstill_release_allowed", False)),
+        release_mpc_stop=bool(release_mpc_stop),
+        release_slew_provenance=release_slew_provenance,
+        a_target_before=before if math.isfinite(before) else 0.0,
+        a_target_proposed=before if math.isfinite(before) else 0.0,
+        a_target_after=before if math.isfinite(before) else 0.0,
+      )
+
+      def blocked(reason: str, *, fault: bool = False) -> float:
+        self.departure_prediction_trace = replace(
+          self.departure_prediction_trace, block_reason=reason, fault=fault,
+        )
+        return a_target
+
+      if not math.isfinite(before):
+        return blocked("nonfinite_target", fault=True)
+      if self.departure_prediction_trace.effective_mode == "off":
+        return blocked("non_actuating_mode")
+      if bool(getattr(evidence, "fault", False)):
+        return blocked("evidence_fault", fault=True)
+      evidence_values = (
+        getattr(evidence, "d_rel", 0.0), getattr(evidence, "v_lead", 0.0),
+        getattr(evidence, "v_rel", 0.0), getattr(evidence, "a_lead_k", 0.0),
+        getattr(evidence, "predicted_gap_1s", 0.0),
+        getattr(evidence, "predicted_gap_growth_1s", 0.0),
+      )
+      if any(not math.isfinite(float(value)) for value in evidence_values):
+        return blocked("nonfinite_evidence", fault=True)
+      if not bool(getattr(evidence, "eligible", False)):
+        return blocked(str(getattr(evidence, "block_reason", "ineligible") or "ineligible"))
+      if snapshot.custom_long is None or getattr(snapshot.custom_long, "mode", None) is not LongitudinalMode.SCC:
+        return blocked("mode_not_scc")
+      if not bool(getattr(snapshot.custom_long, "enabled", False)) or not bool(getattr(snapshot.custom_long_output, "enabled", False)):
+        return blocked("custom_long_disabled")
+      if bool(getattr(snapshot.custom_long, "fault_class", "")) or bool(getattr(snapshot.custom_long_output, "fault_class", "")):
+        return blocked("evidence_fault", fault=True)
+      if not snapshot.long_active:
+        return blocked("long_inactive")
+      if not bool(getattr(self.CP, "openpilotLongitudinalControl", False)):
+        return blocked("openpilot_longitudinal_disabled")
+      if not frame_start_predicted:
+        return blocked("prediction_not_persistent")
+      if self.departure_prediction_applied:
+        return blocked("already_applied")
+      if not pre_hold_active or post_hold_active or not release_mpc_stop:
+        return blocked("not_first_release_frame")
+      if not release_slew_provenance:
+        return blocked("release_slew_provenance")
+      if not bool(getattr(snapshot.custom_long_output, "standstill_release_allowed", False)):
+        return blocked("no_release_permission")
+      if self.departure_prediction_trace.release_source not in ("lead_pullaway", "lead_standstill_launch"):
+        return blocked("invalid_release_source")
+      if should_stop:
+        return blocked("should_stop")
+      if snapshot.brake_pressed or snapshot.gas_pressed or snapshot.force_decel:
+        return blocked("driver_or_force_block")
+      if self._departure_prediction_threat_active(snapshot, evidence):
+        return blocked("threat_active")
+      if snapshot.model_stale or snapshot.mpc_should_stop or snapshot.raw_model_should_stop:
+        return blocked("mpc_or_model_stop")
+      if not snapshot.mpc_a_target_valid or not snapshot.raw_model_a_target_valid:
+        return blocked("invalid_raw_target")
+      if (not math.isfinite(float(snapshot.mpc_a_target)) or snapshot.mpc_a_target < 0.0 or
+          not math.isfinite(float(snapshot.raw_model_a_target)) or snapshot.raw_model_a_target < 0.0):
+        return blocked("mpc_brake_or_stop")
+      if not same_track:
+        return blocked("different_lead_id")
+      measured_departure = bool(
+        math.isfinite(float(snapshot.lead_v)) and math.isfinite(float(snapshot.lead_v_rel)) and
+        math.isfinite(float(snapshot.lead_d_rel)) and math.isfinite(float(snapshot.stopping_distance)) and
+        snapshot.lead_v >= 0.30 and snapshot.lead_v_rel >= 0.15 and
+        snapshot.lead_d_rel >= snapshot.stopping_distance + 0.20
+      )
+      self.departure_prediction_trace = replace(self.departure_prediction_trace, measured_departure=measured_departure, threat_free=True)
+      if not measured_departure:
+        return blocked("measured_departure_not_confirmed")
+      if not -0.20 <= before < 0.0:
+        return blocked("target_outside_coast_band")
+
+      self.departure_prediction_trace = replace(
+        self.departure_prediction_trace,
+        eligible=True,
+        would_coast=True,
+        a_target_proposed=0.0,
+        delta_a=0.0,
+      )
+      research_allowed = bool(getattr(evidence, "research_actuation_allowed", False))
+      if self.departure_prediction_trace.effective_mode == "apply" and not research_allowed:
+        return blocked("research_actuation_gate")
+      if (str(getattr(evidence, "mode", "") or "") != "apply" or
+          self.departure_prediction_trace.effective_mode != "apply" or
+          not self.departure_prediction_trace.apply_supported):
+        return blocked("non_actuating_mode")
+      self.departure_prediction_applied = True
+      self.departure_prediction_applied_track_id = evidence_track_id
+      self.departure_prediction_trace = replace(
+        self.departure_prediction_trace,
+        applied=True,
+        a_target_after=0.0,
+        delta_a=-before,
+        block_reason="",
+      )
+      return 0.0
+    except Exception:
+      self.departure_prediction_trace = replace(self.departure_prediction_trace, block_reason="internal_error", fault=True)
+      return a_target
+
   def finalize(self, sm: Any, custom_long: Any, custom_long_output: Any, is_e2e: bool,
                model_stale: bool, dt: float, mpc_a_target: float, mpc_should_stop: bool,
                raw_model_a_target: float, raw_model_should_stop: bool,
@@ -1776,6 +2201,7 @@ class CustomLongitudinalFinalizer:
       mpc_a_target, mpc_should_stop, raw_model_a_target, raw_model_should_stop,
       apply_stop_hold_release_slew, reset_lead_stop_hold,
     )
+    result.departure_prediction_evidence = self._departure_prediction_evidence(custom_long_output)
     evidence = getattr(custom_long_output, "uphill_net_demand", None)
     trace = NetDemandCapTrace(a_target_before=result.a_target, a_target_cap=result.a_target, a_target_after=result.a_target)
     if evidence is not None:
@@ -1795,8 +2221,23 @@ class CustomLongitudinalFinalizer:
         )
 
     telemetry = result.custom_long_output_telemetry or custom_long_output
+    final_target = float(result.a_target) if math.isfinite(float(result.a_target)) else 0.0
+    final_before = self.departure_prediction_trace.a_target_before
+    departure_trace = replace(
+      self.departure_prediction_trace,
+      a_target_after=final_target if self.departure_prediction_trace.applied else self.departure_prediction_trace.a_target_after,
+      a_target_final=final_target,
+      delta_a=(final_target - final_before if self.departure_prediction_trace.applied else self.departure_prediction_trace.delta_a),
+    )
+    self.departure_prediction_trace = departure_trace
+    result.departure_prediction_trace = departure_trace
     if isinstance(telemetry, CustomLongitudinalOutput):
-      result.custom_long_output_telemetry = replace(telemetry, uphill_net_demand_trace=trace)
+      result.custom_long_output_telemetry = replace(
+        telemetry,
+        departure_prediction_evidence=result.departure_prediction_evidence,
+        departure_prediction_trace=departure_trace,
+        uphill_net_demand_trace=trace,
+      )
     self.final_a_prev = float(result.a_target) if math.isfinite(result.a_target) else None
     return result
 
@@ -1810,6 +2251,15 @@ class CustomLongitudinalFinalizer:
     planner so that live instrumentation (e.g. ``tools/drive_lab`` monkeypatches against
     ``LongitudinalPlannerSP`` methods) remains in the loop.
     """
+    # Preserve source validity before the baseline-compatible finite fallbacks below.
+    try:
+      mpc_a_target_valid = math.isfinite(float(mpc_a_target))
+    except (TypeError, ValueError):
+      mpc_a_target_valid = False
+    try:
+      raw_model_a_target_valid = math.isfinite(float(raw_model_a_target))
+    except (TypeError, ValueError):
+      raw_model_a_target_valid = False
     mpc_a_target = self._safe_float(mpc_a_target)
     raw_model_a_target = self._safe_float(raw_model_a_target, mpc_a_target)
 
@@ -1819,6 +2269,9 @@ class CustomLongitudinalFinalizer:
       self.custom_long_output_telemetry = None
       self.last_release_block_reason = ""
       self._set_follow_band_regime(None)
+      self._reset_departure_prediction_phase(clear_lockout=False)
+      self.departure_prediction_applied = False
+      self.departure_prediction_applied_track_id = -1
       if is_e2e and not model_stale:
         a_target = min(raw_model_a_target, mpc_a_target)
         return _TelemetryAdapter.result(
@@ -1831,10 +2284,21 @@ class CustomLongitudinalFinalizer:
     snapshot = _InputSnapshot.build(
       self, sm, custom_long, custom_long_output, is_e2e, model_stale, dt,
       mpc_a_target, mpc_should_stop, raw_model_a_target, raw_model_should_stop,
+      mpc_a_target_valid=mpc_a_target_valid,
+      raw_model_a_target_valid=raw_model_a_target_valid,
     )
+    pre_hold_active = bool(self.lead_stop_hold_active)
+    pre_hold_lead_id = self.lead_stop_hold_lead_id
+    self._update_departure_prediction_phase(snapshot, pre_hold_active)
+    frame_start_predicted = bool(self.departure_prediction_frame_start_ready)
     model_stop_blocks_release = _model_stop_blocks_release(snapshot)
 
     lead_stop_hold_active = _StopHoldLatchLifecycle.update(self, snapshot, reset_lead_stop_hold)
+    post_hold_active = bool(lead_stop_hold_active)
+    if not pre_hold_active and post_hold_active:
+      # A newly armed hold starts a new measured-motion release episode.
+      self.departure_prediction_applied = False
+      self.departure_prediction_applied_track_id = -1
     release_mpc_stop = False
     release_a_target = float(mpc_a_target)
     mpc_stop = bool(mpc_should_stop)
@@ -1844,6 +2308,7 @@ class CustomLongitudinalFinalizer:
       if latch_release_ok:
         reset_lead_stop_hold()
         lead_stop_hold_active = False
+        post_hold_active = False
         mpc_stop = False
         release_mpc_stop = True
         release_a_target = latch_release_a
@@ -1862,6 +2327,11 @@ class CustomLongitudinalFinalizer:
         release_mpc_stop, release_a_target = _FinalArbitration.stop_hold_release_sustain(self, snapshot)
       mpc_stop = bool(mpc_should_stop and not release_mpc_stop)
 
+    if pre_hold_active and not post_hold_active:
+      # Keep the frame-start verdict in the local variable for this release frame, but do not
+      # carry predictor readiness into the next stop-hold episode.
+      self._clear_departure_prediction_phase(clear_lockout=False)
+
     custom_should_stop = _FinalArbitration.custom_longitudinal_should_stop(
       custom_long, custom_long_output, mpc_stop, raw_model_should_stop, model_stale
     )
@@ -1879,6 +2349,10 @@ class CustomLongitudinalFinalizer:
 
     if lead_stop_hold_active:
       a_target, e2e_source = _HoldCommand.compute(self, snapshot)
+      self._record_departure_prediction_context(
+        snapshot, a_target, True, release_mpc_stop, pre_hold_active, post_hold_active,
+        False, pre_hold_lead_id, "stop_hold_active",
+      )
       telemetry = _TelemetryAdapter.build_hold_telemetry(self, custom_long_output)
       self.custom_long_output_telemetry = telemetry
       return _TelemetryAdapter.result(a_target, True, e2e_source, telemetry, self.last_release_block_reason)
@@ -1888,6 +2362,10 @@ class CustomLongitudinalFinalizer:
       a_target = min(raw_model_a_target, release_a_target if release_mpc_stop else mpc_a_target)
       e2e_source = bool(a_target < mpc_a_target)
       a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, model_stop_blocks_release, should_stop)
+      self._record_departure_prediction_context(
+        snapshot, a_target, should_stop, release_mpc_stop, pre_hold_active, post_hold_active,
+        False, pre_hold_lead_id, "mode_not_scc",
+      )
       a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
       a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt, snapshot.v_ego)
       return _TelemetryAdapter.result(
@@ -1907,7 +2385,25 @@ class CustomLongitudinalFinalizer:
     # ponytail: SCC path only — the observed dips ride in on mpc_a_target; E2E arbitration
     # min()s against the model and damping that would delay legitimate model braking.
     a_target = self._apply_launch_dip_damp(a_target, snapshot, should_stop, dt)
+    pre_slew_state = self.stop_hold_release_slew_a_target
+    pre_slew_input = a_target
     a_target = apply_stop_hold_release_slew(sm, a_target, release_mpc_stop, mpc_stop, model_stop_blocks_release, should_stop)
+    post_slew_state = self.stop_hold_release_slew_a_target
+    if custom_long.mode is LongitudinalMode.SCC:
+      a_target = self._apply_departure_prediction(
+        snapshot, a_target, should_stop, release_mpc_stop, pre_hold_active, post_hold_active,
+        release_slew_provenance=False, pre_hold_lead_id=pre_hold_lead_id,
+        frame_start_predicted=frame_start_predicted,
+        pre_slew_state=pre_slew_state,
+        pre_slew_input=pre_slew_input,
+        post_slew_state=post_slew_state,
+        post_slew_target=a_target,
+      )
+    else:
+      a_target = self._record_departure_prediction_context(
+        snapshot, a_target, should_stop, release_mpc_stop, pre_hold_active, post_hold_active,
+        False, pre_hold_lead_id, "mode_not_scc",
+      )
     # ponytail: SCC path only — E2E min()s against deliberate model decel styling; the
     # measured chatter (routes 290/291) rides in on mpc_a_target. Approach damp runs last
     # and jerk-bounds shallow band regime transitions and catch-up cap engage/release

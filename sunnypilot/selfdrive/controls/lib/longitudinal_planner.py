@@ -434,6 +434,10 @@ class LongitudinalPlannerSP:
         msg.uphillNetDemandCap,
         getattr(custom_long_output, 'uphill_net_demand_trace', None),
       )
+      self._populate_departure_prediction_trace(
+        msg.departurePrediction,
+        getattr(custom_long_output, 'departure_prediction_trace', None),
+      )
     except Exception:
       msg.enabled = False
       msg.traceMode = 'off'
@@ -540,6 +544,25 @@ class LongitudinalPlannerSP:
     msg.gradeHeld = bool(getattr(trace, 'grade_held', False))
     msg.researchActuationAllowed = bool(getattr(trace, 'research_actuation_allowed', False))
     msg.hasLead = bool(getattr(trace, 'has_lead', False))
+
+  def _populate_departure_prediction_trace(self, msg, trace) -> None:
+    msg.mode = str(getattr(trace, 'mode', 'off') or 'off')
+    msg.effectiveMode = str(getattr(trace, 'effective_mode', msg.mode) or msg.mode)
+    msg.applySupported = bool(getattr(trace, 'apply_supported', False))
+    msg.phase = str(getattr(trace, 'phase', '') or '')
+    msg.eligible = bool(getattr(trace, 'eligible', False))
+    msg.blockReason = str(getattr(trace, 'block_reason', '') or '')
+    msg.trackId = int(self._safe_float(getattr(trace, 'track_id', -1), -1.0))
+    msg.evidenceS = self._safe_float(getattr(trace, 'evidence_s', 0.0))
+    msg.ageS = self._safe_float(getattr(trace, 'age_s', 0.0))
+    msg.predictedGapDelta = self._safe_float(getattr(trace, 'predicted_gap_delta', 0.0))
+    msg.wouldCoast = bool(getattr(trace, 'would_coast', False))
+    msg.applied = bool(getattr(trace, 'applied', False))
+    msg.aTargetBefore = self._safe_float(getattr(trace, 'a_target_before', 0.0))
+    msg.aTargetProposed = self._safe_float(getattr(trace, 'a_target_proposed', 0.0))
+    msg.aTargetAfter = self._safe_float(getattr(trace, 'a_target_after', 0.0))
+    msg.deltaA = self._safe_float(getattr(trace, 'delta_a', 0.0))
+    msg.researchActuationAllowed = bool(getattr(trace, 'research_actuation_allowed', False))
 
   @staticmethod
   def _finite_float_or_none(value) -> float | None:

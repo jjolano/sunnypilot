@@ -37,13 +37,21 @@ def test_longitudinal_controls_present():
           "AllowLongitudinalResearchActuation",
           "CutInBrakeAssistMode", "CurveTrafficAdvisorMode",
           "MovingLeadCruiseCapMode", "CutOutLeadReleaseMode", "StandstillReleaseConfidenceMode",
-          "SmartCruiseControlVision"} <= CONTROLS
+          "SmartCruiseControlVision", "DeparturePredictionMode"} <= CONTROLS
 
 
 def test_custom_longitudinal_mode_is_multiple_button():
   item = next(e["item"] for e in PLAN if e["kind"] == "control" and e["item"].get("key") == "CustomLongitudinalMode")
   assert item["widget"] == "multiple_button"
   assert [opt["value"] for opt in item["options"]] == ["acc", "e2e", "scc"]
+
+
+def test_departure_prediction_mode_is_multiple_button():
+  item = next(e["item"] for e in PLAN
+              if e["kind"] == "control" and e["item"].get("key") == "DeparturePredictionMode")
+  assert item["widget"] == "multiple_button"
+  assert [opt["value"] for opt in item["options"]] == ["off", "shadow", "apply"]
+  assert [opt["label"] for opt in item["options"]] == ["Off", "Monitor only", "Apply coast-only"]
 
 
 def test_subpanels_preserved():

@@ -30,6 +30,11 @@ from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
   MODE_OFF as CURVE_TRAFFIC_MODE_OFF,
   MODE_SHADOW as CURVE_TRAFFIC_MODE_SHADOW,
 )
+from openpilot.sunnypilot.custom.longitudinal.departure_prediction import (
+  DeparturePredictionEvidence,
+  DeparturePredictionTrace,
+  sanitize_mode as _departure_prediction_mode,
+)
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.custom.longitudinal.model_trust import (
   GENTLE_CAUTION_DECEL,
@@ -218,7 +223,8 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        sla_distance: float | None = None,
                        research_actuation_allowed: bool = False,
                        current_lat_accel: float | None = None,
-                       pitch: float | None = None) -> LongitudinalStackInputs:
+                       pitch: float | None = None,
+                       departure_prediction_mode: str = "off") -> LongitudinalStackInputs:
   has_lead = lead_one is not None and bool(getattr(lead_one, "status", False))
   # Pre-MPC lead-present seed: carry the currently selected planner a_target into the custom
   # policy. Final lead-follow physics remains owned by the downstream MPC solve.
@@ -274,6 +280,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
     cut_in_brake_assist_mode=cut_in_brake_assist_mode,
     curve_traffic_advisor_mode=curve_traffic_advisor_mode,
     standstill_release_confidence_mode=standstill_release_confidence_mode,
+    departure_prediction_mode=departure_prediction_mode,
     standstill=bool(standstill),
     steering_angle_deg=_f(steering_angle_deg),
     steering_torque=_f(steering_torque),
@@ -312,6 +319,7 @@ class CustomLongitudinalAdapter:
     self.curve_traffic_advisor_mode = CURVE_TRAFFIC_MODE_OFF
     self.standstill_release_confidence_mode = "off"
     self.map_coast_mode = "off"
+    self.departure_prediction_mode = "off"
     self.personality = Personality.STANDARD
     self.sources = SourceToggles()
     self.research_actuation_allowed = False
@@ -362,6 +370,12 @@ class CustomLongitudinalAdapter:
       except Exception:
         map_coast_value = None
       self.map_coast_mode = _map_coast_mode(map_coast_value)
+
+      try:
+        departure_prediction_value = _param_string(p, "DeparturePredictionMode")
+      except Exception:
+        departure_prediction_value = None
+      self.departure_prediction_mode = _departure_prediction_mode(departure_prediction_value)
 
       try:
         cut_out_value = _param_string(p, "CutOutLeadReleaseMode")
@@ -597,6 +611,7 @@ class CustomLongitudinalAdapter:
         cut_in_brake_assist_mode=self.cut_in_brake_assist_mode,
         curve_traffic_advisor_mode=self.curve_traffic_advisor_mode,
         standstill_release_confidence_mode=self.standstill_release_confidence_mode,
+        departure_prediction_mode=self.departure_prediction_mode,
         standstill=bool(getattr(cs, "standstill", False)),
         steering_angle_deg=_f(getattr(cs, "steeringAngleDeg", 0.0)),
         steering_torque=_f(getattr(cs, "steeringTorque", 0.0)),
@@ -638,6 +653,7 @@ class CustomLongitudinalAdapter:
         research_actuation_allowed=self.research_actuation_allowed,
         t_follow=float(t_follow), accel_coast=float(accel_coast),
         actuation=result.actuation,
+        departure_prediction_evidence=getattr(result, "departure_prediction_evidence", DeparturePredictionEvidence()),
         uphill_net_demand=uphill_evidence,
         debug=debug,
       )
@@ -693,3 +709,9 @@ class CustomLongitudinalOutput:
   uphill_net_demand: NetDemandEvidence = field(default_factory=NetDemandEvidence)
   uphill_net_demand_trace: NetDemandCapTrace = field(default_factory=NetDemandCapTrace)
   debug: dict[str, Any] = field(default_factory=dict)
+  departure_prediction_evidence: DeparturePredictionEvidence = field(default_factory=DeparturePredictionEvidence)
+  departure_prediction_trace: DeparturePredictionTrace = field(default_factory=DeparturePredictionTrace)
+
+  @property
+  def departure_prediction(self) -> DeparturePredictionEvidence:
+    return self.departure_prediction_evidence

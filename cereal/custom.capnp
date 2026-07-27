@@ -421,6 +421,27 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     modelStopDistanceRaw @27 :Float32;
     modelStopDistanceUsed @28 :Float32;
     modelStopCommitted @29 :Bool;
+
+    struct DeparturePredictionTrace {
+      mode @0 :Text;
+      effectiveMode @1 :Text;
+      applySupported @2 :Bool;
+      phase @3 :Text;
+      eligible @4 :Bool;
+      blockReason @5 :Text;
+      trackId @6 :Int32;
+      evidenceS @7 :Float32;
+      ageS @8 :Float32;
+      predictedGapDelta @9 :Float32;
+      wouldCoast @10 :Bool;
+      applied @11 :Bool;
+      aTargetBefore @12 :Float32;
+      aTargetProposed @13 :Float32;
+      aTargetAfter @14 :Float32;
+      deltaA @15 :Float32;
+      researchActuationAllowed @16 :Bool;
+    }
+    departurePrediction @30 :DeparturePredictionTrace;
   }
 
   struct SmartCruiseControl {

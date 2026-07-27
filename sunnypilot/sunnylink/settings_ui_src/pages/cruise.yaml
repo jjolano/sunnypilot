@@ -251,6 +251,28 @@ sections:
     - type: param
       key: CustomLongitudinalEnabled
       equals: true
+  - key: DeparturePredictionMode
+    widget: multiple_button
+    title: Departure Prediction
+    description: Monitor only predicts lead departures and changes no driving behavior. Apply only removes a shallow brake residue
+      after an independently confirmed lead departure and never initiates launch. Apply requires Custom Longitudinal plus the
+      research actuation gate.
+    requires_attestation: true
+    options:
+    - value: 'off'
+      label: 'Off'
+    - value: 'shadow'
+      label: Monitor only
+    - value: 'apply'
+      label: Apply coast-only
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: capability
+      field: has_longitudinal_control
+      equals: true
+    - type: param
+      key: CustomLongitudinalEnabled
+      equals: true
   - key: DisengageOnAccelerator
     widget: toggle
     title: Disengage Cruise on Accelerator Pedal

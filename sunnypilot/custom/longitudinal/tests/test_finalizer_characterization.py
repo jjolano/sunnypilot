@@ -6,6 +6,7 @@ Only test code is allowed to change in Phase 5A.
 """
 from __future__ import annotations
 
+import math
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +15,14 @@ import pytest
 
 from openpilot.sunnypilot.custom.longitudinal.cut_in_brake_assist import CutInBrakeAssistResult
 from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import CurveTrafficAdvisorResult
+from openpilot.sunnypilot.custom.longitudinal.departure_prediction import (
+  DeparturePredictionEvidence,
+  PHASE_ARMING,
+  PHASE_INACTIVE,
+  PHASE_PREDICTED,
+  PERSISTENCE_S,
+  TIMEOUT_S,
+)
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts
@@ -132,7 +141,7 @@ def make_lead(d_rel: float, v_lead: float, v_rel: float, lead_id: int = 1,
 
 def make_sm(*, v_ego: float = 0.0, standstill: bool = False, brake_pressed: bool = False,
             gas_pressed: bool = False, force_decel: bool = False, experimental_mode: bool = False,
-            model_fresh: bool = True, lead_one=None, lead_two=None) -> FakeSM:
+            model_fresh: bool = True, lead_one=None, lead_two=None, long_active: bool = False) -> FakeSM:
   recv_time = {}
   if model_fresh:
     recv_time["modelV2"] = time.monotonic()
@@ -149,7 +158,7 @@ def make_sm(*, v_ego: float = 0.0, standstill: bool = False, brake_pressed: bool
     controlsState=SimpleNamespace(forceDecel=force_decel),
     selfdriveState=SimpleNamespace(experimentalMode=experimental_mode),
     radarState=SimpleNamespace(leadOne=lead_one, leadTwo=lead_two),
-    carControl=SimpleNamespace(enabled=True, cruiseControl=SimpleNamespace(override=False)),
+    carControl=SimpleNamespace(enabled=True, longActive=long_active, cruiseControl=SimpleNamespace(override=False)),
     modelV2=SimpleNamespace(),
   )
 
@@ -1728,3 +1737,470 @@ def test_departing_lead_coast_requires_sustained_lead_acceleration():
       raw_model_a_target=-0.3, raw_model_should_stop=False,
     )
   assert a_target == pytest.approx(-0.65)
+
+
+def _departure_evidence(*, track_id: int = 1, eligible: bool = True, effective_mode: str = "apply",
+                        apply_supported: bool = True, research: bool = True, **overrides):
+  fields: dict[str, Any] = dict(
+    mode="apply", effective_mode=effective_mode, apply_supported=apply_supported,
+    research_actuation_allowed=research, eligible=eligible,
+    block_reason="" if eligible else "insufficient_predicted_growth",
+    lead_idx=0, track_id=track_id, stable=True, radar=True,
+    progress_authorized=True, prediction_valid=True,
+    d_rel=6.5, v_lead=0.8, v_rel=0.5, a_lead_k=0.5,
+    predicted_gap_1s=7.0, predicted_gap_growth_1s=0.5,
+  )
+  fields.update(overrides)
+  return DeparturePredictionEvidence(**fields)
+
+
+def _departure_phase_snapshot(planner, output, *, track_id: int = 1, dt: float = 0.05,
+                              long_active: bool = True):
+  return SimpleNamespace(
+    custom_long=planner.custom_long,
+    custom_long_output=output,
+    long_active=long_active, model_stale=False,
+    dt=dt,
+    brake_pressed=False,
+    gas_pressed=False,
+    force_decel=False,
+    raw_model_should_stop=False,
+    selected_lead=make_lead(d_rel=6.5, v_lead=0.8, v_rel=0.5, lead_id=track_id),
+    lead_id=track_id,
+  )
+
+
+def test_departure_prediction_persists_before_the_first_release_frame():
+  planner = make_planner(custom_long_output=make_custom_output())
+  fin = planner.custom_long_finalizer
+  fin.CP.openpilotLongitudinalControl = True
+  fin.lead_stop_hold_lead_id = 1
+  output = make_custom_output(departure_prediction_evidence=_departure_evidence())
+  snapshot = _departure_phase_snapshot(planner, output)
+
+  for _ in range(3):
+    fin._update_departure_prediction_phase(snapshot, pre_hold_active=True)
+  assert fin.departure_prediction_phase == PHASE_ARMING
+  assert fin.departure_prediction_phase_s == pytest.approx(0.15)
+  assert fin.departure_prediction_frame_start_ready is False
+
+  fin._update_departure_prediction_phase(snapshot, pre_hold_active=True)
+  assert fin.departure_prediction_phase == PHASE_PREDICTED
+  assert fin.departure_prediction_frame_start_ready is False
+  not_ready_fin, not_ready_result = _run_departure_apply(frame_start_predicted=False)
+  assert not_ready_result == pytest.approx(-0.1)
+  assert not_ready_fin.departure_prediction_trace.block_reason == "prediction_not_persistent"
+
+  fin._update_departure_prediction_phase(snapshot, pre_hold_active=True)
+  assert fin.departure_prediction_phase == PHASE_PREDICTED
+  assert fin.departure_prediction_frame_start_ready is True
+  assert fin.departure_prediction_trace.evidence_s == pytest.approx(PERSISTENCE_S)
+
+
+def test_departure_prediction_timeout_locks_one_track_until_evidence_drops_or_track_changes():
+  planner = make_planner(custom_long_output=make_custom_output())
+  fin = planner.custom_long_finalizer
+  fin.CP.openpilotLongitudinalControl = True
+  fin.lead_stop_hold_lead_id = 1
+  output = make_custom_output(departure_prediction_evidence=_departure_evidence())
+  snapshot = _departure_phase_snapshot(planner, output)
+
+  for _ in range(4 + int(TIMEOUT_S / 0.05)):
+    fin._update_departure_prediction_phase(snapshot, pre_hold_active=True)
+  assert fin.departure_prediction_phase == PHASE_INACTIVE
+  assert fin.departure_prediction_lockout_track_id == 1
+  assert fin.departure_prediction_trace.block_reason == "prediction_timeout"
+
+  fin._update_departure_prediction_phase(snapshot, pre_hold_active=True)
+  assert fin.departure_prediction_lockout_track_id == 1
+  assert fin.departure_prediction_trace.block_reason == "prediction_timeout"
+
+  dropped = make_custom_output(departure_prediction_evidence=_departure_evidence(eligible=False))
+  fin._update_departure_prediction_phase(_departure_phase_snapshot(planner, dropped), pre_hold_active=True)
+  assert fin.departure_prediction_lockout_track_id == -1
+  assert fin.departure_prediction_phase == PHASE_INACTIVE
+
+  fin.departure_prediction_lockout_track_id = 1
+  fin.departure_prediction_track_id = 1
+  fin.lead_stop_hold_lead_id = 2
+  changed = make_custom_output(departure_prediction_evidence=_departure_evidence(track_id=2))
+  fin._update_departure_prediction_phase(_departure_phase_snapshot(planner, changed, track_id=2), pre_hold_active=True)
+  assert fin.departure_prediction_lockout_track_id == -1
+  assert fin.departure_prediction_phase == PHASE_ARMING
+
+
+def test_departure_prediction_timeout_lockout_survives_context_loss_and_public_hold_exit():
+  planner = make_planner(custom_long_output=make_custom_output())
+  fin = planner.custom_long_finalizer
+  fin.CP.openpilotLongitudinalControl = True
+  fin.lead_stop_hold_lead_id = 1
+  output = make_custom_output(departure_prediction_evidence=_departure_evidence())
+  snapshot = _departure_phase_snapshot(planner, output)
+
+  for _ in range(4 + int(TIMEOUT_S / 0.05)):
+    fin._update_departure_prediction_phase(snapshot, pre_hold_active=True)
+  assert fin.departure_prediction_lockout_track_id == 1
+
+  # Losing the hold, a bad dt, and an inactive longitudinal context are not evidence drops.
+  for lost_snapshot, pre_hold, reason in (
+    (_departure_phase_snapshot(planner, output, long_active=True), False, "no_stop_hold"),
+    (_departure_phase_snapshot(planner, output, dt=0.0), True, "invalid_dt"),
+    (_departure_phase_snapshot(planner, output, long_active=False), True, "long_inactive"),
+  ):
+    fin._update_departure_prediction_phase(lost_snapshot, pre_hold_active=pre_hold)
+    assert fin.departure_prediction_lockout_track_id == 1
+    assert fin.departure_prediction_trace.block_reason == reason
+
+  # The real public release path must not clear the same-track timeout lockout either.
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.15)
+  planner.custom_long_output = make_custom_output(
+    standstill_release_allowed=True,
+    standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.25,
+    departure_prediction_evidence=_departure_evidence(),
+  )
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=make_lead(d_rel=6.7, v_lead=0.8, v_rel=0.5), long_active=True),
+    mpc_a_target=0.1, mpc_should_stop=False, raw_model_a_target=0.1, raw_model_should_stop=False,
+  )
+  assert a_target > 0.0
+  assert should_stop is False
+  assert fin.lead_stop_hold_active is False
+  assert fin.departure_prediction_lockout_track_id == 1
+
+  # Only an actual evidence drop permits a same-track rearm.
+  dropped = make_custom_output(departure_prediction_evidence=_departure_evidence(eligible=False))
+  fin._update_departure_prediction_phase(_departure_phase_snapshot(planner, dropped), pre_hold_active=True)
+  assert fin.departure_prediction_lockout_track_id == -1
+  fin.lead_stop_hold_lead_id = 1
+  fin._update_departure_prediction_phase(snapshot, pre_hold_active=True)
+  assert fin.departure_prediction_phase == PHASE_ARMING
+
+
+@pytest.mark.parametrize("reason", ["prediction_timeout", "insufficient_predicted_growth"])
+def test_departure_prediction_context_preserves_existing_block_reason(reason):
+  planner = make_planner(custom_long_output=make_custom_output())
+  fin = planner.custom_long_finalizer
+  fin.CP.openpilotLongitudinalControl = True
+  fin.lead_stop_hold_lead_id = 1
+  evidence = _departure_evidence(
+    eligible=reason == "prediction_timeout",
+    block_reason="" if reason == "prediction_timeout" else reason,
+  )
+  snapshot = _departure_phase_snapshot(
+    planner, make_custom_output(departure_prediction_evidence=evidence),
+  )
+  if reason == "prediction_timeout":
+    for _ in range(4 + int(TIMEOUT_S / 0.05)):
+      fin._update_departure_prediction_phase(snapshot, pre_hold_active=True)
+  else:
+    fin._update_departure_prediction_phase(snapshot, pre_hold_active=True)
+  assert fin.departure_prediction_trace.block_reason == reason
+
+  fin._record_departure_prediction_context(
+    snapshot, -0.5, True, False, True, True, False, 1, "stop_hold_active",
+  )
+
+  assert fin.departure_prediction_trace.block_reason == reason
+
+
+def _departure_apply_snapshot(*, mode=LongitudinalMode.SCC, track_id: int = 1, mpc_a_target: float = 0.1,
+                              raw_model_a_target: float = 0.1, mpc_should_stop: bool = False,
+                              raw_model_should_stop: bool = False, model_stale: bool = False,
+                              brake_pressed: bool = False, gas_pressed: bool = False,
+                              force_decel: bool = False, long_active: bool = True,
+                              lead_d_rel: float = 6.5, lead_v: float = 0.8, lead_v_rel: float = 0.5,
+                              evidence=None, output=None):
+  lead = make_lead(d_rel=lead_d_rel, v_lead=lead_v, v_rel=lead_v_rel, lead_id=track_id)
+  return SimpleNamespace(
+    custom_long=SimpleNamespace(enabled=True, mode=mode, fault_class=""),
+    custom_long_output=output or make_custom_output(
+      standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+      standstill_release_a_target=0.25,
+      departure_prediction_evidence=evidence or _departure_evidence(track_id=track_id),
+    ),
+    long_active=long_active, model_stale=model_stale, brake_pressed=brake_pressed,
+    gas_pressed=gas_pressed, force_decel=force_decel,
+    raw_model_should_stop=raw_model_should_stop, mpc_should_stop=mpc_should_stop,
+    mpc_a_target_valid=math.isfinite(mpc_a_target),
+    raw_model_a_target_valid=math.isfinite(raw_model_a_target),
+    mpc_a_target=mpc_a_target, raw_model_a_target=raw_model_a_target,
+    selected_lead=lead, lead_id=track_id, lead_d_rel=lead_d_rel, lead_v=lead_v, lead_v_rel=lead_v_rel,
+    stopping_distance=6.0,
+  )
+
+
+def _run_departure_apply(*, target: float = -0.1, should_stop: bool = False, pre_slew_state=None, post_slew_state=None,
+                         post_slew_target=None, snapshot=None, release_mpc_stop=True,
+                         pre_hold_active=True, post_hold_active=False, frame_start_predicted=True,
+                         openpilot_longitudinal_control: bool = True):
+  fin = CustomLongitudinalFinalizer(make_cp())
+  fin.CP.openpilotLongitudinalControl = openpilot_longitudinal_control
+  fin.lead_stop_hold_lead_id = 1
+  snapshot = snapshot or _departure_apply_snapshot()
+  post_slew_state = target if post_slew_state is None else post_slew_state
+  post_slew_target = target if post_slew_target is None else post_slew_target
+  evidence = snapshot.custom_long_output.departure_prediction_evidence
+  fin.departure_prediction_trace = fin._departure_prediction_trace_from_evidence(evidence)
+  result = fin._apply_departure_prediction(
+    snapshot, target, should_stop, release_mpc_stop, pre_hold_active, post_hold_active,
+    pre_hold_lead_id=1, frame_start_predicted=frame_start_predicted,
+    pre_slew_state=pre_slew_state, pre_slew_input=0.10,
+    post_slew_state=post_slew_state, post_slew_target=post_slew_target,
+  )
+  return fin, result
+
+
+def _run_public_departure_release(*, raw_model_a_target: float = 0.1, final_evidence=None):
+  """Exercise the actual hold-exit, release-slew, and departure-prediction call chain."""
+  planner = make_planner()
+  fin = planner.custom_long_finalizer
+  fin.CP.openpilotLongitudinalControl = True
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.15)
+
+  def finalize(output, lead):
+    return fin.finalize(
+      make_sm(v_ego=0.0, lead_one=lead, long_active=True), planner.custom_long, output,
+      is_e2e=False, model_stale=False, dt=0.05,
+      mpc_a_target=0.1, mpc_should_stop=False,
+      raw_model_a_target=raw_model_a_target, raw_model_should_stop=False,
+      apply_stop_hold_release_slew=lambda sm, target, release, mpc_stop, model_stop, should_stop:
+        fin._apply_stop_hold_release_slew(sm, 0.05, target, release, mpc_stop, model_stop, should_stop),
+      reset_lead_stop_hold=fin.reset_lead_stop_hold,
+    )
+
+  # The predictor is eligible before the lead has crossed the measured-departure gate. Keeping
+  # the release permission off holds the car at the real -0.5 command while persistence ages.
+  pre_output = make_custom_output(
+    standstill_release_allowed=False,
+    departure_prediction_evidence=_departure_evidence(v_lead=0.2, v_rel=0.05),
+  )
+  for _ in range(4):
+    finalize(pre_output, make_lead(d_rel=6.5, v_lead=0.2, v_rel=0.05))
+
+  output = make_custom_output(
+    standstill_release_allowed=True,
+    standstill_release_source="lead_pullaway",
+    standstill_release_a_target=0.25,
+    departure_prediction_evidence=final_evidence or _departure_evidence(),
+  )
+  result = finalize(output, make_lead(d_rel=6.7, v_lead=0.8, v_rel=0.5))
+  return fin, result
+
+
+def test_departure_prediction_public_finalize_uses_real_first_slew_provenance():
+  fin, result = _run_public_departure_release()
+  trace = result.departure_prediction_trace
+
+  assert result.a_target == pytest.approx(0.0)
+  assert trace.release_mpc_stop is True
+  assert trace.release_slew_provenance is True
+  assert fin.stop_hold_release_slew_a_target == pytest.approx(-0.20)
+  assert trace.a_target_before == pytest.approx(-0.20)
+  assert trace.a_target_proposed == pytest.approx(0.0)
+  assert trace.a_target_after == pytest.approx(0.0)
+  assert trace.delta_a == pytest.approx(0.20)
+  assert trace.measured_departure is True
+  assert trace.applied is True
+
+
+def test_departure_prediction_public_finalize_rejects_invalid_raw_target():
+  fin, result = _run_public_departure_release(raw_model_a_target=float("nan"))
+  trace = result.departure_prediction_trace
+
+  assert result.a_target == pytest.approx(-0.20)
+  assert trace.release_mpc_stop is True
+  assert trace.release_slew_provenance is True
+  assert trace.applied is False
+  assert trace.block_reason == "invalid_raw_target"
+
+
+def test_departure_prediction_shadow_reports_only_a_fully_qualifying_coast_candidate():
+  fin, result = _run_departure_apply(
+    snapshot=_departure_apply_snapshot(
+      evidence=_departure_evidence(effective_mode="shadow", apply_supported=False, research=False),
+    ),
+  )
+  _, off_result = _run_departure_apply(
+    snapshot=_departure_apply_snapshot(evidence=DeparturePredictionEvidence()),
+  )
+
+  assert result == pytest.approx(off_result)
+  assert fin.departure_prediction_trace.eligible is True
+  assert fin.departure_prediction_trace.would_coast is True
+  assert fin.departure_prediction_trace.applied is False
+  assert fin.departure_prediction_trace.block_reason == "non_actuating_mode"
+
+
+@pytest.mark.parametrize(
+  ("target", "expected", "applied"),
+  [(-0.20, 0.0, True), (-0.01, 0.0, True), (-0.21, -0.21, False), (0.0, 0.0, False), (0.2, 0.2, False)],
+)
+def test_departure_prediction_apply_only_replaces_the_shallow_negative_band(target, expected, applied):
+  fin, result = _run_departure_apply(target=target)
+  assert result == pytest.approx(expected)
+  assert fin.departure_prediction_trace.applied is applied
+  assert fin.departure_prediction_trace.a_target_before == pytest.approx(target)
+
+
+def test_departure_prediction_never_overrides_stop_posture_or_positive_accel():
+  fin, result = _run_departure_apply(target=-0.1, should_stop=True)
+  assert result == pytest.approx(-0.1)
+  assert fin.departure_prediction_trace.applied is False
+  assert fin.departure_prediction_trace.block_reason == "should_stop"
+
+  fin, result = _run_departure_apply(target=0.1)
+  assert result == pytest.approx(0.1)
+  assert fin.departure_prediction_trace.applied is False
+
+
+@pytest.mark.parametrize(
+  "case",
+  [
+    "negative_mpc", "nonfinite_mpc", "negative_model", "nonfinite_model", "stale_model",
+    "mpc_stop", "model_stop", "brake", "gas", "force_decel", "alternate_threat",
+    "wrong_track", "acc", "e2e", "not_first_release",
+  ],
+)
+def test_departure_prediction_blockers_leave_the_baseline_target_unchanged(case):
+  kwargs: dict[str, Any] = {}
+  if case == "negative_mpc":
+    kwargs["mpc_a_target"] = -0.1
+  elif case == "nonfinite_mpc":
+    kwargs["mpc_a_target"] = float("nan")
+  elif case == "negative_model":
+    kwargs["raw_model_a_target"] = -0.1
+  elif case == "nonfinite_model":
+    kwargs["raw_model_a_target"] = float("nan")
+  elif case == "stale_model":
+    kwargs["model_stale"] = True
+  elif case == "mpc_stop":
+    kwargs["mpc_should_stop"] = True
+  elif case == "model_stop":
+    kwargs["raw_model_should_stop"] = True
+  elif case == "brake":
+    kwargs["brake_pressed"] = True
+  elif case == "gas":
+    kwargs["gas_pressed"] = True
+  elif case == "force_decel":
+    kwargs["force_decel"] = True
+  elif case == "alternate_threat":
+    kwargs["output"] = make_custom_output(
+      standstill_release_allowed=True, standstill_release_source="lead_pullaway",
+      departure_prediction_evidence=_departure_evidence(alternate_threat_active=True),
+    )
+  elif case == "wrong_track":
+    kwargs["track_id"] = 2
+  elif case == "acc":
+    kwargs["mode"] = LongitudinalMode.ACC
+  elif case == "e2e":
+    kwargs["mode"] = LongitudinalMode.E2E
+  elif case == "not_first_release":
+    kwargs["release_mpc_stop"] = False
+  release_mpc_stop = kwargs.pop("release_mpc_stop", True)
+  snapshot = _departure_apply_snapshot(**kwargs)
+  fin, result = _run_departure_apply(snapshot=snapshot, release_mpc_stop=release_mpc_stop)
+  assert result == pytest.approx(-0.1)
+  assert fin.departure_prediction_trace.applied is False
+
+
+@pytest.mark.parametrize(
+  ("case", "expected_reason"),
+  [
+    ("long_inactive", "long_inactive"),
+    ("openpilot_longitudinal_disabled", "openpilot_longitudinal_disabled"),
+    ("effective_shadow", "non_actuating_mode"),
+    ("research_disabled", "research_actuation_gate"),
+    ("no_release_permission", "no_release_permission"),
+    ("invalid_release_source", "invalid_release_source"),
+    ("measured_departure", "measured_departure_not_confirmed"),
+  ],
+)
+def test_departure_prediction_apply_gates_block_with_specific_reason(case, expected_reason):
+  kwargs: dict[str, Any] = {}
+  if case == "long_inactive":
+    kwargs["long_active"] = False
+  elif case == "openpilot_longitudinal_disabled":
+    kwargs["openpilot_longitudinal_control"] = False
+  elif case == "effective_shadow":
+    kwargs["evidence"] = _departure_evidence(effective_mode="shadow", apply_supported=False, research=False)
+  elif case == "research_disabled":
+    kwargs["evidence"] = _departure_evidence(research=False)
+  elif case == "no_release_permission":
+    kwargs["output"] = make_custom_output(
+      standstill_release_allowed=False,
+      standstill_release_source="lead_pullaway",
+      departure_prediction_evidence=_departure_evidence(),
+    )
+  elif case == "invalid_release_source":
+    kwargs["output"] = make_custom_output(
+      standstill_release_allowed=True,
+      standstill_release_source="unknown",
+      departure_prediction_evidence=_departure_evidence(),
+    )
+  elif case == "measured_departure":
+    kwargs.update(lead_v=0.2, lead_v_rel=0.05)
+
+  openpilot_longitudinal_control = kwargs.pop("openpilot_longitudinal_control", True)
+  fin, result = _run_departure_apply(
+    snapshot=_departure_apply_snapshot(**kwargs),
+    openpilot_longitudinal_control=openpilot_longitudinal_control,
+  )
+  assert result == pytest.approx(-0.1)
+  assert fin.departure_prediction_trace.applied is False
+  assert fin.departure_prediction_trace.block_reason == expected_reason
+
+
+@pytest.mark.parametrize("static_release", [False, True])
+def test_departure_prediction_is_inert_for_crawl_and_static_release(static_release):
+  def run(evidence=None):
+    output_kwargs: dict[str, Any] = dict(selected_intent="lead_stop_hold", should_stop=True)
+    if evidence is not None:
+      output_kwargs["departure_prediction_evidence"] = evidence
+    planner = make_planner(custom_long_output=make_custom_output(**output_kwargs))
+    planner.CP.openpilotLongitudinalControl = True
+    planner.custom_long_finalizer.CP = planner.CP
+    fin = planner.custom_long_finalizer
+    _arm_stop_hold(planner, d_rel=7.0 if static_release else 6.4, lead_id=1)
+    lead = make_lead(
+      d_rel=7.0 if static_release else 8.1,
+      v_lead=0.0 if static_release else 0.5,
+      v_rel=0.0 if static_release else 0.5,
+      lead_id=1,
+    )
+    if static_release:
+      planner._lead_stop_hold_gap_baseline_d_rel = 5.0
+      for _ in range(fin._STOP_HOLD_MPC_GO_PERSIST_FRAMES - 1):
+        planner.final_longitudinal_output(
+          make_sm(v_ego=0.0, lead_one=lead, long_active=True),
+          mpc_a_target=0.65, mpc_should_stop=False,
+          raw_model_a_target=0.05, raw_model_should_stop=True,
+        )
+      fin.final_a_prev = None
+    result = planner.final_longitudinal_output(
+      make_sm(v_ego=0.0, lead_one=lead, long_active=True),
+      mpc_a_target=0.65 if static_release else 0.68,
+      mpc_should_stop=False, raw_model_a_target=0.05, raw_model_should_stop=True,
+    )
+    return result, fin.departure_prediction_trace
+
+  baseline, _ = run()
+  observed, trace = run(_departure_evidence())
+  assert observed == pytest.approx(baseline)
+  assert trace.applied is False
+
+
+def test_blocked_departure_trace_retains_release_context():
+  snapshot = _departure_apply_snapshot(mpc_a_target=-0.1)
+  fin, result = _run_departure_apply(snapshot=snapshot)
+  trace = fin.departure_prediction_trace
+  assert result == pytest.approx(-0.1)
+  assert trace.track_id == 1
+  assert trace.predicted_gap_delta == pytest.approx(0.5)
+  assert trace.release_source == "lead_pullaway"
+  assert trace.release_permission is True
+  assert trace.same_track is True
+  assert trace.eligible is False
+  assert trace.would_coast is False
+  assert trace.a_target_before == pytest.approx(-0.1)
+  assert trace.block_reason == "mpc_brake_or_stop"

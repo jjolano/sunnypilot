@@ -45,6 +45,10 @@ from openpilot.sunnypilot.custom.longitudinal.dynamic_safety_floor import (
   debug_dict as dynamic_safety_floor_debug_dict,
   follow_offset,
 )
+from openpilot.sunnypilot.custom.longitudinal.departure_prediction import (
+  DeparturePredictionEvidence,
+  build_departure_prediction_evidence,
+)
 
 import math
 
@@ -274,6 +278,7 @@ class LongitudinalStackInputs:
   # dynamic safety-floor shadow telemetry inputs (no actuation)
   current_lat_accel: float | None = None
   pitch: float | None = None
+  departure_prediction_mode: Any = "off"
 
 
 @dataclass(frozen=True)
@@ -306,6 +311,11 @@ class LongitudinalStackResult:
   standstill_release_a_target: float = 0.0
   standstill_release_reason: str = ""
   actuation: ActuationVerdicts = field(default_factory=ActuationVerdicts)
+  departure_prediction_evidence: DeparturePredictionEvidence = field(default_factory=DeparturePredictionEvidence)
+
+  @property
+  def departure_prediction(self) -> DeparturePredictionEvidence:
+    return self.departure_prediction_evidence
 
 
 class CustomLongitudinalStack:
@@ -347,7 +357,8 @@ class CustomLongitudinalStack:
     try:
       apply_armed = (
         str(inp.cut_in_brake_assist_mode) == "apply" or
-        str(inp.curve_traffic_advisor_mode) == "apply_conservative"
+        str(inp.curve_traffic_advisor_mode) == "apply_conservative" or
+        str(inp.departure_prediction_mode) == "apply"
       )
     except Exception:  # a broken mode value never faults the stack; it just yields no verdicts
       apply_armed = False
@@ -398,6 +409,24 @@ class CustomLongitudinalStack:
     # Use the selected real physical/behavior lead instead of blindly using lead0; shadows still
     # suppress progress, but never provide fake physical kinematics.
     selected_lead = _select_lead_kinematics(lead_ctx, inp.leads, inp.v_ego)
+    try:
+      departure_prediction_evidence = build_departure_prediction_evidence(
+        mode=inp.departure_prediction_mode,
+        research_actuation_allowed=inp.research_actuation_allowed,
+        physical_state=getattr(lead_ctx, "physical", None),
+        physical_lead=lead_ctx.physical_lead_data(inp.leads),
+        lead_context=lead_ctx,
+      )
+    except Exception:
+      # Typed evidence is advisory; a malformed new feature input must not fault the
+      # baseline stack or turn debug collection into an actuation dependency.
+      mode_s = str(inp.departure_prediction_mode or "").strip().lower()
+      departure_prediction_evidence = DeparturePredictionEvidence(
+        mode=mode_s if mode_s in ("off", "shadow", "apply") else "off",
+        effective_mode="shadow" if mode_s == "apply" else "off",
+        block_reason="internal_error",
+        fault=True,
+      )
     lead_kinematics_valid = selected_lead.valid if selected_lead.lead is not None else True
     lead_v = selected_lead.v if has_lead else 0.0
     lead_d_rel = selected_lead.d_rel if has_lead else 0.0
@@ -685,6 +714,7 @@ class CustomLongitudinalStack:
         **dynamic_safety_floor_debug,
         **acc_envelope_debug,
         **target_smoothing_debug,
+        **departure_prediction_evidence.debug_dict(),
       }
     return LongitudinalStackResult(
       a_target=float(a_target),
@@ -701,6 +731,7 @@ class CustomLongitudinalStack:
         model_path_available=bool(path_shadow_model_path_available),
         model_stale=bool(inp.model_stale),
       ),
+      departure_prediction_evidence=departure_prediction_evidence,
       debug=debug,
     )
 

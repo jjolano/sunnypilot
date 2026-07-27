@@ -172,6 +172,11 @@ def test_homogeneous_string_enum_yields_mapped_button_row():
   assert uphill_enum.values == ["off", "shadow", "apply"]
   assert uphill_enum.labels == ["Off", "Monitor only", "Apply calibrated"]
 
+  departure_enum = homogeneous_string_options(find_item(CRUISE, "DeparturePredictionMode"))
+  assert departure_enum is not None
+  assert departure_enum.values == ["off", "shadow", "apply"]
+  assert departure_enum.labels == ["Off", "Monitor only", "Apply coast-only"]
+
 
 def test_custom_longitudinal_string_index_matches_planner_fallbacks():
   enum = homogeneous_string_options(find_item(CRUISE, "CustomLongitudinalMode"))
@@ -274,6 +279,18 @@ def test_shadow_observability_string_indexes_default_to_off():
   assert string_option_index("apply_conservative", homogeneous_string_options(find_item(CRUISE, "CurveTrafficAdvisorMode")), "CurveTrafficAdvisorMode") == 2
   assert string_option_index("gate", homogeneous_string_options(find_item(CRUISE, "StandstillReleaseConfidenceMode")), "StandstillReleaseConfidenceMode") == 2
   assert string_option_index("apply", homogeneous_string_options(find_item(CRUISE, "UphillNetDemandCapMode")), "UphillNetDemandCapMode") == 2
+
+
+def test_departure_prediction_string_index_defaults_to_off():
+  key = "DeparturePredictionMode"
+  enum = homogeneous_string_options(find_item(CRUISE, key))
+  assert enum is not None
+  assert string_option_index(None, enum, key) == 0
+  assert string_option_index("", enum, key) == 0
+  assert string_option_index("off", enum, key) == 0
+  assert string_option_index("shadow", enum, key) == 1
+  assert string_option_index("apply", enum, key) == 2
+  assert string_option_index("bad", enum, key) == 0
 
 
 def test_mixed_string_float_enum_remains_escape_hatch():
