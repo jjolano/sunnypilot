@@ -442,6 +442,10 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       researchActuationAllowed @16 :Bool;
     }
     departurePrediction @30 :DeparturePredictionTrace;
+    # The pre-smoothing plan target. Since the a_desired plan/command split this — not
+    # customATarget — is what reaches the MPC's initial acceleration state, so policy churn
+    # propagating into the solver is invisible without it.
+    customATargetPlan @31 :Float32;
   }
 
   struct SmartCruiseControl {

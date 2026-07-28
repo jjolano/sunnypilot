@@ -151,6 +151,7 @@ def test_debug_trace_populates_whitelisted_fields():
   assert msg.vEgo == pytest.approx(12.3)
   assert msg.vCruise == pytest.approx(15.2)
   assert msg.customATarget == pytest.approx(0.25)
+  assert msg.customATargetPlan == pytest.approx(0.25)   # no separate plan -> mirrors command
   assert msg.customShouldStop is True
   assert msg.customIntent == "intent"
   assert msg.customReason == "reason"
@@ -353,3 +354,23 @@ def test_debug_trace_serializes_departure_prediction_trace():
   assert trace.aTargetAfter == pytest.approx(-0.1)
   assert trace.deltaA == pytest.approx(0.0)
   assert trace.researchActuationAllowed is False
+
+
+def test_plan_target_is_logged_separately_from_the_smoothed_command():
+  # Since the a_desired plan/command split it is a_target_unsmoothed, not a_target, that
+  # reaches the MPC's initial acceleration state. Logging only the smoothed value made the
+  # solver's actual input invisible (route 000002dc jerk investigation).
+  planner = make_planner("log", custom_output(a_target=-0.80, a_target_unsmoothed=-0.30))
+  planner._last_longitudinal_debug = {'v_cruise': 15.2}
+  msg = publish(planner).longitudinalDebug
+  assert msg.customATarget == pytest.approx(-0.80)
+  assert msg.customATargetPlan == pytest.approx(-0.30)
+
+
+def test_plan_target_falls_back_to_the_command_when_absent():
+  # NaN is the "no separate plan" sentinel and _safe_float would log it as a real 0.0.
+  # The trace must show what actually reached a_desired.
+  planner = make_planner("log", custom_output(a_target=-0.80, a_target_unsmoothed=float("nan")))
+  planner._last_longitudinal_debug = {'v_cruise': 15.2}
+  msg = publish(planner).longitudinalDebug
+  assert msg.customATargetPlan == pytest.approx(-0.80)

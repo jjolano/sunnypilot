@@ -409,6 +409,13 @@ class LongitudinalPlannerSP:
       msg.vEgo = self._safe_float(getattr(car_state, 'vEgo', 0.0) if car_state is not None else 0.0)
       msg.vCruise = self._safe_float(trace.get('v_cruise', 0.0))
       msg.customATarget = self._safe_float(getattr(custom_long_output, 'a_target', 0.0))
+      # Mirror the a_desired fallback exactly: NaN means "no separate plan", and _safe_float
+      # would log that as a real 0.0. Logging what actually reached the MPC keeps the two
+      # readable against each other.
+      _plan = self._safe_float(getattr(custom_long_output, 'a_target_unsmoothed', float('nan')),
+                               default=float('nan'))
+      msg.customATargetPlan = (_plan if math.isfinite(_plan)
+                               else self._safe_float(getattr(custom_long_output, 'a_target', 0.0)))
       msg.customShouldStop = bool(getattr(custom_long_output, 'should_stop', False))
       msg.customIntent = str(getattr(custom_long_output, 'selected_intent', '') or '')
       msg.customReason = str(getattr(custom_long_output, 'reason', '') or '')
