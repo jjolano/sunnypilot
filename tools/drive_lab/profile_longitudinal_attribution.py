@@ -107,6 +107,24 @@ def _current_state(latest: dict[str, Any], rec: Any) -> dict[str, Any]:
   }
 
 
+def _churn(intents: list[str], duration_s: float) -> dict[str, Any]:
+  """Intent transition rate. Occupancy counts hide churn: an owner that holds for 60 s and
+  one that flips 60 times both show up as 'present'. Route 2dc ran 94 changes/min with each
+  handoff worth 0.4-0.6 m/s^2 of commanded step, which is what the jerk p95 was made of."""
+  seq = [v for v in intents if v]
+  transitions: dict[str, int] = {}
+  for prev, cur in zip(seq, seq[1:], strict=False):
+    if prev != cur:
+      transitions[f"{prev} -> {cur}"] = transitions.get(f"{prev} -> {cur}", 0) + 1
+  changes = sum(transitions.values())
+  top = dict(sorted(transitions.items(), key=lambda kv: -kv[1])[:6])
+  return {
+    "changes": changes,
+    "changes_per_min": _round(changes / (duration_s / 60.0), 1) if duration_s > 0 else None,
+    "top_transitions": top,
+  }
+
+
 def analyze_route(msgs: list[Any], source: str = "unknown") -> dict[str, Any]:
   records = build_route_messages(msgs)
   duration_s = records[-1].t - records[0].t if records else 0.0
@@ -171,6 +189,7 @@ def analyze_route(msgs: list[Any], source: str = "unknown") -> dict[str, Any]:
     "plan_source_counts": _counts(plan_sources),
     "sp_plan_source_counts": _counts(sp_sources),
     "custom_intent_counts": _counts([v for v in custom_intents if v]),
+    "custom_intent_churn": _churn(custom_intents, duration_s),
     "custom_reason_counts": _counts([v for v in custom_reasons if v]),
     "a_target": {"longitudinalPlan": _stats(plan_a), "longitudinalPlanSP": _stats(sp_a)},
     "strong_decel_episodes": episodes,
@@ -196,6 +215,8 @@ def render_report(report: dict[str, Any]) -> str:
   lines.append(f"  plan sources: {report.get('plan_source_counts', {})}")
   lines.append(f"  SP sources: {report.get('sp_plan_source_counts', {})}")
   lines.append(f"  custom intents: {report.get('custom_intent_counts', {})}")
+  churn = report.get("custom_intent_churn", {})
+  lines.append(f"  intent churn: {churn.get('changes_per_min')}/min ({churn.get('changes')} changes) top: {churn.get('top_transitions', {})}")
   lines.append(f"  custom reasons: {report.get('custom_reason_counts', {})}")
   lines.append(f"  aTarget: {report.get('a_target', {})}")
   for idx, ep in enumerate(report.get("strong_decel_episodes", []), start=1):
