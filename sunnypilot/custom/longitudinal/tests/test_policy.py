@@ -163,12 +163,21 @@ def test_scc_curve_cap_follows_toggle():
   assert on.a_target == pytest.approx(-0.5)
 
 
-def test_lead_follow_hazard_binds():
-  scene = LongitudinalScene(v_ego=20.0, v_cruise=25.0, seed_a_target=0.5, has_lead=True,
-                            lead_a_target=-1.2, lead_should_stop=False)
-  d = decide(build_candidates(scene), LongitudinalMode.ACC, LIMITS)
+def test_close_high_risk_lead_hazard_binds_over_cruise_and_progress():
+  scene = LongitudinalScene(
+    v_ego=20.0, v_cruise=25.0, seed_a_target=0.5,
+    has_lead=True, lead_a_target=-1.2, lead_should_stop=False,
+    lead_progress_allowed=True, lead_gap_excess=1.0,
+    lead_v=20.0, lead_d_rel=8.0, lead_v_rel=0.0, follow_gap=6.0,
+  )
+  cands = build_candidates(scene)
+  intents = sources_of(cands)
+  assert "lead_follow" in intents
+  assert "lead_pullaway" in intents
+  d = decide(cands, LongitudinalMode.ACC, LIMITS)
   assert d.a_target == pytest.approx(-1.2)
   assert d.reason == "physical_hazard"
+  assert d.selected_intent == "lead_follow"
 
 
 def test_model_stop_trust_gated_in_policy():

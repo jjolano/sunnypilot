@@ -17,7 +17,7 @@ class Personality(Enum):
   AGGRESSIVE = "aggressive"
 
   @classmethod
-  def from_value(cls, value: object, default: "Personality" = None) -> "Personality":
+  def from_value(cls, value: object, default: Personality | None = None) -> Personality:
     default = default if default is not None else cls.STANDARD
     if isinstance(value, cls):
       return value
@@ -27,8 +27,8 @@ class Personality(Enum):
     for p in cls:
       if text in (p.value, p.name.lower()):
         return p
-    # legacy cereal int encoding: relaxed=0, standard=1, aggressive=2
-    return {"0": cls.RELAXED, "1": cls.STANDARD, "2": cls.AGGRESSIVE}.get(text, default)
+    # Canonical cereal/UI ordinal encoding: aggressive=0, standard=1, relaxed=2.
+    return {"0": cls.AGGRESSIVE, "1": cls.STANDARD, "2": cls.RELAXED}.get(text, default)
 
 
 # Progress / comfort scale with personality (never safety caps).

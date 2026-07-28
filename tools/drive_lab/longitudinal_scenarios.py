@@ -5,6 +5,8 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
+from cereal import log
+
 from openpilot.tools.drive_lab.log_profile import LongitudinalProfile
 
 MPH_TO_MS = 1.609 / 3.6
@@ -330,6 +332,7 @@ def generate_preset_scenarios(request: PresetRequest) -> list[Scenario]:
 
 def scenario_maneuver_kwargs(scenario: Scenario) -> dict[str, Any]:
   kwargs = dict(scenario.kwargs)
+  kwargs["personality"] = log.LongitudinalPersonality.standard
   if scenario.oracle_profile == "regression":
     return kwargs
   if scenario.kind in LAUNCH_START_ORACLE_KINDS:

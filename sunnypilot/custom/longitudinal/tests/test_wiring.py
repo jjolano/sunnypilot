@@ -6,11 +6,16 @@ import math
 import time
 
 import pytest
+from cereal import log
 
 from openpilot.sunnypilot.custom.longitudinal.decision import decide
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
-from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
+from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
+  Personality,
+  launch_accel_max,
+  stop_approach_comfort_decel,
+)
 from openpilot.sunnypilot.custom.longitudinal.wiring import (
   DEFAULT_ACCEL_LIMITS,
   MODEL_STOP_EARLY_MARGIN_M,
@@ -727,9 +732,30 @@ def test_personality_and_toggles_refresh_every_params_period():
   assert a.sources.scc_curve_map_enabled is False
   # They take effect on the tick that hits the refresh period.
   a.maybe_refresh_params()
-  assert a.personality is Personality.AGGRESSIVE
+  assert a.personality is Personality.RELAXED
   assert a.sources.scc_curve_vision_enabled is False
   assert a.sources.scc_curve_map_enabled is True
+
+
+PERSONALITY_POLICY_VALUES = {
+  "aggressive": (1.55, -0.45),
+  "standard": (1.35, -0.38),
+  "relaxed": (1.10, -0.30),
+}
+
+
+@pytest.mark.parametrize("name, ordinal", log.LongitudinalPersonality.schema.enumerants.items())
+def test_personality_param_ordinals_select_policy_tables(name, ordinal):
+  expected = Personality[name.upper()]
+  expected_launch, expected_stop = PERSONALITY_POLICY_VALUES[name]
+  adapter = CustomLongitudinalAdapter(FakeParams(
+    CustomLongitudinalEnabled=True,
+    LongitudinalPersonality=ordinal,
+  ))
+
+  assert adapter.personality is expected
+  assert launch_accel_max(adapter.personality) == pytest.approx(expected_launch)
+  assert stop_approach_comfort_decel(adapter.personality) == pytest.approx(expected_stop)
 
 
 def test_stack_reset_on_mode_change_and_re_enable():

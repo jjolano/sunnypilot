@@ -334,6 +334,7 @@ class _StopHoldLatchLifecycle:
       _StopHoldLatchLifecycle.settle_arm_applies(finalizer, snapshot)
     )
     if stop_hold_set or settle_hold_set:
+      finalizer._clear_launch_floor_fade_state(clear_approach=True)
       finalizer.lead_stop_hold_active = True
       finalizer.stop_hold_release_sustain_s = 0.0
       finalizer.lead_stop_hold_gap_increasing_s = 0.0
@@ -1606,6 +1607,7 @@ class CustomLongitudinalFinalizer:
   approach_damp_a_prev: float | None
   low_speed_gap_closure_applied: bool
   launch_dip_grace_s: float
+  launch_floor_fade_pending: bool
   final_a_prev: float | None
   departure_prediction_phase: str
   departure_prediction_phase_s: float
@@ -1645,6 +1647,7 @@ class CustomLongitudinalFinalizer:
     self.follow_band_regime = None
     self.follow_band_given_m = 0.0
     self.launch_dip_grace_s = 0.0
+    self.launch_floor_fade_pending = False
     # Last commanded a_target across ALL finalize paths, including hold frames (which
     # never route through the release slew). Deliberately NOT cleared in
     # reset_lead_stop_hold: that runs on the release frame itself, and the release-slew
@@ -1719,8 +1722,25 @@ class CustomLongitudinalFinalizer:
     self.stop_hold_release_slew_a_target = None
     self.stop_hold_release_prep_a_target = None
     self.stop_hold_release_prep_raw_prev = None
-    self.approach_damp_a_prev = None
+    self._clear_launch_floor_fade_state(clear_approach=True)
     self.low_speed_gap_closure_applied = False
+
+  @staticmethod
+  def _launch_floor_fade_hard_bypass(snapshot: _InputSnapshot) -> bool:
+    output = snapshot.custom_long_output
+    return bool(
+      output is not None and (
+        not bool(getattr(output, "enabled", False)) or
+        bool(getattr(snapshot.custom_long, "fault_class", "")) or
+        bool(getattr(output, "fault_class", ""))
+      )
+    )
+
+  def _clear_launch_floor_fade_state(self, *, clear_approach: bool = False) -> None:
+    self.launch_dip_grace_s = 0.0
+    self.launch_floor_fade_pending = False
+    if clear_approach:
+      self.approach_damp_a_prev = None
 
   def _settle_stop_hold_arm_applies(self, v_ego: float, v_ego_stopping: float,
                                     lead_v: float, lead_v_rel: float,
@@ -1932,6 +1952,80 @@ class CustomLongitudinalFinalizer:
         or snapshot.v_ego >= self._LAUNCH_DIP_MAX_V_EGO):
       return float(a_target)
     return float(max(a_target, prev - self._APPROACH_DAMP_MAX_JERK * dt))
+
+  def _apply_launch_floor_fade(self, a_target: float, snapshot: _InputSnapshot,
+                               should_stop: bool, release_mpc_stop: bool, dt: float) -> float:
+    """Taper a bound launch floor into the first positive post-grace MPC target."""
+    try:
+      target = float(a_target)
+    except (TypeError, ValueError):
+      self._clear_launch_floor_fade_state(clear_approach=True)
+      return a_target
+
+    custom_long = snapshot.custom_long
+    output = snapshot.custom_long_output
+    lifecycle_active = bool(
+      not snapshot.is_e2e and snapshot.long_active and
+      custom_long is not None and getattr(custom_long, "mode", None) is LongitudinalMode.SCC and
+      bool(getattr(custom_long, "enabled", False)) and
+      output is not None and bool(getattr(output, "enabled", False)) and
+      not bool(getattr(custom_long, "fault_class", "")) and
+      not bool(getattr(output, "fault_class", ""))
+    )
+    if not lifecycle_active:
+      self._clear_launch_floor_fade_state(clear_approach=self._launch_floor_fade_hard_bypass(snapshot))
+      return target
+    if not self.launch_floor_fade_pending:
+      return target
+    if self.launch_dip_grace_s > 0.0:
+      return target
+
+    custom_stop = bool(
+      getattr(output, "should_stop", False) or
+      getattr(output, "model_stop_corroborated", False) or
+      str(getattr(output, "selected_intent", "") or "") == "stop_approach"
+    )
+    try:
+      previous = float(self.final_a_prev)
+      dt_f = float(dt)
+      mpc_a = float(snapshot.mpc_a_target)
+      raw_model_a = float(snapshot.raw_model_a_target)
+      lead_d_rel = float(snapshot.lead_d_rel)
+      lead_v = float(snapshot.lead_v)
+      lead_v_rel = float(snapshot.lead_v_rel)
+      v_ego = float(snapshot.v_ego)
+      stopping_distance = float(snapshot.stopping_distance)
+    except (TypeError, ValueError):
+      self._clear_launch_floor_fade_state(clear_approach=True)
+      return target
+
+    if (
+      not math.isfinite(target) or not math.isfinite(previous) or
+      not math.isfinite(dt_f) or dt_f <= 0.0 or
+      not snapshot.mpc_a_target_valid or not snapshot.raw_model_a_target_valid or
+      not math.isfinite(mpc_a) or not math.isfinite(raw_model_a) or
+      snapshot.model_stale or should_stop or release_mpc_stop or
+      snapshot.mpc_should_stop or snapshot.raw_model_should_stop or custom_stop or
+      mpc_a < 0.0 or raw_model_a < 0.0 or
+      snapshot.brake_pressed or snapshot.gas_pressed or snapshot.force_decel or
+      not snapshot.has_lead or not math.isfinite(lead_d_rel) or
+      not math.isfinite(lead_v) or not math.isfinite(lead_v_rel) or
+      not math.isfinite(v_ego) or not math.isfinite(stopping_distance) or
+      lead_v < LEAD_CRAWL_BREAKOUT_MIN_OPENING or
+      lead_v_rel < self._STOP_HOLD_LAUNCH_FLOOR_MIN_OPENING or
+      lead_d_rel < stopping_distance or v_ego < 0.0 or
+      v_ego > self._LAUNCH_DIP_MAX_V_EGO or target <= 0.0 or
+      previous <= 0.0 or target >= previous
+    ):
+      self._clear_launch_floor_fade_state(clear_approach=True)
+      return target
+
+    faded_target = max(target, previous - self._APPROACH_DAMP_MAX_JERK * dt_f)
+    if not math.isfinite(faded_target) or faded_target <= target:
+      self._clear_launch_floor_fade_state(clear_approach=True)
+      return target
+    self.approach_damp_a_prev = None
+    return float(faded_target)
 
   def _stop_hold_release_accel_for_gap(self, requested_a: float, lead_d_rel: float,
                                        lead_v: float, lead_v_rel: float, same_id: bool,
@@ -2396,6 +2490,10 @@ class CustomLongitudinalFinalizer:
           block_reason="internal_error",
         )
 
+    if (bool(getattr(custom_long, "fault_class", "")) or
+        bool(getattr(custom_long_output, "fault_class", ""))):
+      self._clear_launch_floor_fade_state(clear_approach=True)
+
     telemetry = result.custom_long_output_telemetry or custom_long_output
     final_target = float(result.a_target) if math.isfinite(float(result.a_target)) else 0.0
     final_before = self.departure_prediction_trace.a_target_before
@@ -2440,6 +2538,7 @@ class CustomLongitudinalFinalizer:
     raw_model_a_target = self._safe_float(raw_model_a_target, mpc_a_target)
 
     if not bool(getattr(custom_long, "enabled", False)):
+      self._clear_launch_floor_fade_state(clear_approach=True)
       reset_lead_stop_hold()
       self.stop_hold_release_sustain_s = 0.0
       self.custom_long_output_telemetry = None
@@ -2463,6 +2562,18 @@ class CustomLongitudinalFinalizer:
       mpc_a_target_valid=mpc_a_target_valid,
       raw_model_a_target_valid=raw_model_a_target_valid,
     )
+    fade_lifecycle_active = bool(
+      not snapshot.is_e2e and snapshot.long_active and
+      getattr(snapshot.custom_long, "mode", None) is LongitudinalMode.SCC and
+      bool(getattr(snapshot.custom_long, "enabled", False)) and
+      snapshot.custom_long_output is not None and
+      bool(getattr(snapshot.custom_long_output, "enabled", False)) and
+      not bool(getattr(snapshot.custom_long, "fault_class", "")) and
+      not bool(getattr(snapshot.custom_long_output, "fault_class", ""))
+    )
+    fade_hard_bypass = self._launch_floor_fade_hard_bypass(snapshot)
+    if not fade_lifecycle_active:
+      self._clear_launch_floor_fade_state(clear_approach=fade_hard_bypass)
     pre_hold_active = bool(self.lead_stop_hold_active)
     pre_hold_lead_id = self.lead_stop_hold_lead_id
     self._update_departure_prediction_phase(snapshot, pre_hold_active)
@@ -2471,6 +2582,8 @@ class CustomLongitudinalFinalizer:
 
     lead_stop_hold_active = _StopHoldLatchLifecycle.update(self, snapshot, reset_lead_stop_hold)
     post_hold_active = bool(lead_stop_hold_active)
+    if post_hold_active:
+      self._clear_launch_floor_fade_state(clear_approach=True)
     if not pre_hold_active and post_hold_active:
       # A newly armed hold starts a new measured-motion release episode.
       self.departure_prediction_applied = False
@@ -2544,12 +2657,18 @@ class CustomLongitudinalFinalizer:
       )
       a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
       a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt, snapshot.v_ego)
+      if not fade_lifecycle_active:
+        self._clear_launch_floor_fade_state(clear_approach=fade_hard_bypass)
       return _TelemetryAdapter.result(
         a_target, should_stop, e2e_source, self.custom_long_output_telemetry, self.last_release_block_reason
       )
 
     a_target = float(release_a_target if release_mpc_stop else mpc_a_target)
-    a_target = _FinalArbitration.scc_launch_floor(self, snapshot, a_target, should_stop)
+    pre_floor_target = a_target
+    if fade_lifecycle_active:
+      a_target = _FinalArbitration.scc_launch_floor(self, snapshot, a_target, should_stop)
+    if self.launch_dip_grace_s > 0.0:
+      self.launch_floor_fade_pending = bool(fade_lifecycle_active and a_target > pre_floor_target)
     a_target = _FinalArbitration.scc_departing_lead_coast(self, snapshot, a_target, should_stop)
     a_target = _FinalArbitration.scc_custom_stop_cap(a_target, custom_long, custom_long_output, release_mpc_stop=release_mpc_stop)
     a_target = _FinalArbitration.scc_cut_in_brake_assist_final_cap(
@@ -2580,6 +2699,7 @@ class CustomLongitudinalFinalizer:
         snapshot, a_target, should_stop, release_mpc_stop, pre_hold_active, post_hold_active,
         False, pre_hold_lead_id, "mode_not_scc",
       )
+    a_target = self._apply_launch_floor_fade(a_target, snapshot, should_stop, release_mpc_stop, dt)
     # ponytail: SCC path only — E2E min()s against deliberate model decel styling; the
     # measured chatter (routes 290/291) rides in on mpc_a_target. Approach damp runs last
     # and jerk-bounds shallow band regime transitions and catch-up cap engage/release
@@ -2596,6 +2716,8 @@ class CustomLongitudinalFinalizer:
       # above-crawl approach dam turn a stale positive correction into a release slew.
       self.approach_damp_a_prev = None
     a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt, snapshot.v_ego)
+    if not fade_lifecycle_active:
+      self._clear_launch_floor_fade_state(clear_approach=fade_hard_bypass)
     return _TelemetryAdapter.result(
       a_target, should_stop, False, self.custom_long_output_telemetry, self.last_release_block_reason
     )

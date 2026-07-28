@@ -1,9 +1,11 @@
 import contextlib
 import io
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from cereal import log
 
 from openpilot.tools.drive_lab import fuzz_longitudinal
 from openpilot.tools.drive_lab.fuzz_longitudinal import (
@@ -66,6 +68,21 @@ def test_shipped_config_uses_defaults_and_restores_local_overrides(monkeypatch):
   assert FakeParams.values == {"CustomLongitudinalEnabled": False, "CutInBrakeAssistMode": "apply"}
   assert FakeParams.writes
   assert all(block for _, block in FakeParams.writes)
+
+
+def test_plant_inputs_publish_successive_fresh_model_timestamps(monkeypatch):
+  from openpilot.selfdrive.test.longitudinal_maneuvers import plant as plant_module
+
+  timestamps = iter((101.0, 102.0))
+  monkeypatch.setattr(plant_module.time, "monotonic", lambda: next(timestamps))
+
+  first = plant_module._PlantSubMaster({"modelV2": object()})
+  second = plant_module._PlantSubMaster({"modelV2": object()})
+
+  assert isinstance(first, dict)
+  assert first.recv_time == {"modelV2": 101.0}
+  assert second.recv_time == {"modelV2": 102.0}
+  assert second.recv_time["modelV2"] > first.recv_time["modelV2"]
 
 
 def test_comfort_stopped_lead_decel_is_plausible():
@@ -154,6 +171,15 @@ def test_udacity_lead_decel_stop_regression_oracle_passes_comfort_gate():
 
 def test_udacity_approach_from_stop_passes_comfort_gate():
   scenario = next(s for s in generate_udacity_acc_scenarios() if s.kind == "udacity_acc_approach_from_stop")
+
+  with shipped_longitudinal_config():
+    result = run_scenario(scenario, max_normal_jerk=8.0)
+
+  assert result.failures == []
+
+
+def test_standard_udacity_acc_stop_and_go_passes_comfort_gate():
+  scenario = next(s for s in generate_udacity_acc_scenarios() if s.kind == "udacity_acc_stop_and_go")
 
   with shipped_longitudinal_config():
     result = run_scenario(scenario, max_normal_jerk=8.0)
@@ -414,6 +440,18 @@ def test_scenario_maneuver_kwargs_disables_ensure_start_for_launch_oracle():
   assert kwargs["ensure_start"] is False
 
 
+def test_scenario_maneuver_kwargs_sets_standard_for_generated_scenario():
+  scenario = generate_scenarios(seed=1, cases=1)[0]
+  assert "personality" not in scenario.kwargs
+  assert scenario_maneuver_kwargs(scenario)["personality"] == log.LongitudinalPersonality.standard
+
+
+def test_scenario_maneuver_kwargs_overrides_legacy_regression_personality():
+  scenario = next(s for s in generate_openpilot_acc_scenarios() if s.oracle_profile == "regression")
+  assert scenario.kwargs["personality"] == 0
+  assert scenario_maneuver_kwargs(scenario)["personality"] == log.LongitudinalPersonality.standard
+
+
 def test_scenario_to_spec_includes_oracle_profile_in_tags():
   scenario = generate_udacity_acc_scenarios()[0]
   spec = scenario_to_spec(scenario, source="udacity-acc")
@@ -662,6 +700,35 @@ def test_frame_release_gate_context_computes_release_and_prep_min():
   assert ctx["prep_applies"] is False
   assert ctx["prep_gate_would_apply"] is True
   assert ctx["prep_block_reason"] == "not_hold_branch"
+
+
+def test_capture_uses_shared_stop_distance_when_cp_field_is_missing(monkeypatch):
+  from openpilot.selfdrive.test.longitudinal_maneuvers import plant as plant_module
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
+
+  class FakePlant:
+    def __init__(self):
+      self.planner = SimpleNamespace(
+        output_a_target=0.0,
+        output_should_stop=False,
+        CP=SimpleNamespace(longitudinalActuatorDelay=0.2),
+      )
+      self.lead_relevancy = False
+      self.acceleration = 0.0
+      self.speed = 0.0
+      self.distance = 0.0
+      self.distance_lead = 0.0
+      self.force_decel = False
+      self.current_time = 0.0
+
+    def step(self, *args, **kwargs):
+      return None
+
+  monkeypatch.setattr(plant_module, "Plant", FakePlant)
+  with capture_commanded_accel() as capture:
+    FakePlant().step()
+
+  assert capture.frames[0].custom["prep_min_d_rel"] == pytest.approx(STOP_DISTANCE + 0.2)
 
 
 def test_render_jerk_diagnosis_shows_gate_context():

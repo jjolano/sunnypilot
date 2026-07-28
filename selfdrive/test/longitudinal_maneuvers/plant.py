@@ -11,6 +11,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPl
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 
 
+class _PlantSubMaster(dict):
+  def __init__(self, payloads: dict[str, object]):
+    super().__init__(payloads)
+    self.recv_time = {'modelV2': time.monotonic()}
+
+
 class Plant:
   messaging_initialized = False
 
@@ -149,17 +155,17 @@ class Plant:
     car_control.carControl.orientationNED = [0., float(pitch), 0.]
 
     # ******** get controlsState messages for plotting ***
-    sm = {'radarState': radar.radarState,
-          'carState': car_state.carState,
-          'carControl': car_control.carControl,
-          'controlsState': control.controlsState,
-          'selfdriveState': ss.selfdriveState,
-          'selfdriveStateSP': ss_sp.selfdriveStateSP,
-          'liveParameters': lp.liveParameters,
-          'modelV2': model.modelV2,
-          'carStateSP': car_state_sp.carStateSP,
-          'liveMapDataSP': live_map_data_sp.liveMapDataSP,
-          'gpsLocation': gps_data.gpsLocation}
+    sm = _PlantSubMaster({'radarState': radar.radarState,
+                          'carState': car_state.carState,
+                          'carControl': car_control.carControl,
+                          'controlsState': control.controlsState,
+                          'selfdriveState': ss.selfdriveState,
+                          'selfdriveStateSP': ss_sp.selfdriveStateSP,
+                          'liveParameters': lp.liveParameters,
+                          'modelV2': model.modelV2,
+                          'carStateSP': car_state_sp.carStateSP,
+                          'liveMapDataSP': live_map_data_sp.liveMapDataSP,
+                          'gpsLocation': gps_data.gpsLocation})
     self.planner.update(sm)
     # Fail loudly rather than silently scoring the wrong stack: --e2e is meaningless
     # if the planner is still running SCC.

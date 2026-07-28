@@ -213,7 +213,11 @@ def diagnose_max_jerk(frames: list[CommandFrame], jerk_window: int,
 
 
 def _frame_release_gate_context(frame: CommandFrame, prev_frame: CommandFrame | None,
-                                stopping_distance: float = 6.0) -> dict[str, Any]:
+                                stopping_distance: float | None = None) -> dict[str, Any]:
+  if stopping_distance is None:
+    from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
+    stopping_distance = STOP_DISTANCE
+
   custom = frame.custom
   debug = frame.debug
   d_rel = frame.d_rel
@@ -391,7 +395,7 @@ class CommandCapture:
 @contextlib.contextmanager
 def capture_commanded_accel():
   from openpilot.selfdrive.test.longitudinal_maneuvers import plant as plant_module
-  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, STOP_DISTANCE
   Plant = plant_module.Plant
 
   capture = CommandCapture()
@@ -468,7 +472,7 @@ def capture_commanded_accel():
       custom=custom,
     )
     prev_frame = capture.frames[-1] if capture.frames else None
-    stopping_distance = float(getattr(self.planner.CP, 'stoppingDistance', 6.0) or 6.0)
+    stopping_distance = float(getattr(self.planner.CP, 'stoppingDistance', STOP_DISTANCE) or STOP_DISTANCE)
     frame.custom.update(_frame_release_gate_context(frame, prev_frame, stopping_distance))
     capture.frames.append(frame)
     return result

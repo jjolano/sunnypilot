@@ -23,7 +23,11 @@ from openpilot.sunnypilot.custom.longitudinal.departure_prediction import (
   PERSISTENCE_S,
   TIMEOUT_S,
 )
-from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
+from openpilot.sunnypilot.custom.longitudinal.finalizer import (
+  CustomLongitudinalFinalizer,
+  _FinalArbitration,
+  _InputSnapshot,
+)
 from openpilot.sunnypilot.custom.longitudinal.lead_cushion import LowSpeedGapClosureRequest
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts
@@ -169,6 +173,8 @@ def test_stopped_close_lead_latches_hold_and_forces_stop():
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(selected_intent="cruise"),
   )
+  planner.custom_long_finalizer.launch_floor_fade_pending = True
+  planner.custom_long_finalizer.approach_damp_a_prev = 0.4
   lead = make_lead(d_rel=5.0, v_lead=0.0, v_rel=0.0)
   sm = make_sm(v_ego=0.0, lead_one=lead)
 
@@ -178,6 +184,8 @@ def test_stopped_close_lead_latches_hold_and_forces_stop():
   )
 
   assert planner._lead_stop_hold_active is True
+  assert planner.custom_long_finalizer.launch_floor_fade_pending is False
+  assert planner.custom_long_finalizer.approach_damp_a_prev is None
   assert should_stop is True
   assert e2e_source is False
   assert a_target <= -0.4
@@ -257,6 +265,8 @@ def test_reset_lead_stop_hold_clears_latch_slew_and_prep_state():
   planner._stop_hold_release_slew_a_target = 0.1
   planner._stop_hold_release_prep_a_target = -0.2
   planner._stop_hold_release_prep_raw_prev = -0.3
+  planner.custom_long_finalizer.launch_floor_fade_pending = True
+  planner.custom_long_finalizer.approach_damp_a_prev = 0.4
 
   planner._reset_lead_stop_hold()
 
@@ -272,6 +282,8 @@ def test_reset_lead_stop_hold_clears_latch_slew_and_prep_state():
   assert planner._stop_hold_release_slew_a_target is None
   assert planner._stop_hold_release_prep_a_target is None
   assert planner._stop_hold_release_prep_raw_prev is None
+  assert planner.custom_long_finalizer.launch_floor_fade_pending is False
+  assert planner.custom_long_finalizer.approach_damp_a_prev is None
 
 
 def test_internal_stop_hold_reset_uses_planner_monkeypatch_seam():
@@ -344,6 +356,27 @@ def test_e2e_stale_model_falls_back_to_mpc_path():
   assert should_stop is False
 
 
+@pytest.mark.parametrize("mode", [LongitudinalMode.ACC, LongitudinalMode.E2E])
+def test_non_scc_fade_cleanup_preserves_approach_damping(mode):
+  planner = make_planner(
+    mode=mode,
+    custom_long_output=make_custom_output(mode=mode),
+  )
+  fin = planner.custom_long_finalizer
+  fin.launch_floor_fade_pending = True
+  fin.approach_damp_a_prev = 0.40
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=2.5, long_active=True, model_fresh=True),
+    mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert fin.launch_floor_fade_pending is False
+  assert a_target == pytest.approx(0.25)
+  assert fin.approach_damp_a_prev == pytest.approx(0.25)
+
+
 def test_scc_custom_stop_cap_applies():
   planner = make_planner(
     mode=LongitudinalMode.SCC,
@@ -365,6 +398,28 @@ def test_scc_custom_stop_cap_applies():
   # Custom stop cap pulls 0.0 down to -0.6. The curve-confidence cap that used to pull this
   # further to the -0.85 floor was deleted 2026-07-24 (0.07% eligibility over 101,741 frames).
   assert a_target == pytest.approx(-0.6)
+
+
+@pytest.mark.parametrize("mpc_a_target", (-1.0, -1.5))
+def test_moving_deep_mpc_stop_demand_passes_through_with_stop_posture(mpc_a_target):
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  fin = planner.custom_long_finalizer
+
+  a_target, should_stop, e2e_source = planner.final_longitudinal_output(
+    make_sm(v_ego=15.0), mpc_a_target=mpc_a_target, mpc_should_stop=True,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is False
+  assert fin.stop_hold_release_sustain_s == 0.0
+  assert fin.stop_hold_release_slew_a_target is None
+  assert fin.approach_damp_a_prev is None
+  assert a_target == pytest.approx(mpc_a_target)
+  assert should_stop is True
+  assert e2e_source is False
 
 
 def test_scc_corroborated_model_stop_cap_survives_nonbinding_intent():
@@ -1206,7 +1261,7 @@ def _release_then_ramp_to_plateau(planner, *, frames: int = 8, mpc_a: float = 1.
   # Release via valid source, then ramp mpc frames until the up-jerk slew reaches plateau.
   _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.15)
   lead = make_lead(d_rel=6.45, v_lead=0.8, v_rel=0.5, lead_id=1)
-  sm = make_sm(v_ego=0.0, lead_one=lead)
+  sm = make_sm(v_ego=0.0, lead_one=lead, long_active=True)
   a_target, _, _ = planner.final_longitudinal_output(
     sm, mpc_a_target=0.1, mpc_should_stop=True,
     raw_model_a_target=0.1, raw_model_should_stop=False,
@@ -1215,7 +1270,7 @@ def _release_then_ramp_to_plateau(planner, *, frames: int = 8, mpc_a: float = 1.
   assert a_target > 0.0
   lead = make_lead(d_rel=9.0, v_lead=2.0, v_rel=1.5, lead_id=1)
   lead.aLeadK = 1.0  # isolate launch-dip damping while the lead is actively pulling away
-  sm = make_sm(v_ego=1.5, lead_one=lead)
+  sm = make_sm(v_ego=1.5, lead_one=lead, long_active=True)
   for _ in range(frames):
     a_target, _, _ = planner.final_longitudinal_output(
       sm, mpc_a_target=mpc_a, mpc_should_stop=False,
@@ -1344,6 +1399,48 @@ def _finalize_gap_closure(*, v_ego: float = 1.0, v_lead: float = 1.2, d_rel: flo
     sm, mpc_a_target=mpc_a, mpc_should_stop=mpc_stop,
     raw_model_a_target=model_a, raw_model_should_stop=model_stop,
   )
+
+
+def _gap_closure_floor(*, base_a_target: float = 0.0, mpc_a: float = 0.0, model_a: float = 0.0,
+                       mpc_stop: bool = False, model_stop: bool = False, **sm_overrides):
+  planner = make_planner(custom_long_output=_make_gap_closure_output())
+  lead = make_lead(d_rel=10.3, v_lead=1.2, v_rel=0.2, lead_id=1)
+  lead.radar = True
+  lead.aLeadK = 0.0
+  sm = make_sm(v_ego=1.0, lead_one=lead, long_active=True, **sm_overrides)
+  fin = planner.custom_long_finalizer
+  snapshot = _InputSnapshot.build(
+    fin, sm, planner.custom_long, planner.custom_long_output,
+    is_e2e=False, model_stale=False, dt=0.05,
+    mpc_a_target=mpc_a, mpc_should_stop=mpc_stop,
+    raw_model_a_target=model_a, raw_model_should_stop=model_stop,
+  )
+  return _FinalArbitration.scc_low_speed_gap_closure_floor(
+    fin, base_a_target, snapshot, should_stop=False, release_mpc_stop=False,
+  )
+
+
+@pytest.mark.parametrize(
+  "kwargs, applies",
+  [
+    ({"base_a_target": -0.100001}, False),
+    ({"base_a_target": -0.10}, True),
+    ({"base_a_target": -0.099999}, True),
+    ({"mpc_a": -0.100001}, False),
+    ({"mpc_a": -0.10}, False),
+    ({"mpc_a": -0.099999}, True),
+    ({"model_a": -0.100001}, False),
+    ({"model_a": -0.10}, False),
+    ({"model_a": -0.099999}, True),
+  ],
+)
+def test_scc_low_speed_gap_closure_uses_exact_negative_thresholds(kwargs, applies):
+  base_a_target = kwargs.get("base_a_target", 0.0)
+  a_target = _gap_closure_floor(**kwargs)
+  if applies:
+    assert a_target > 0.0
+  else:
+    assert a_target == pytest.approx(base_a_target)
 
 
 @pytest.mark.parametrize("mpc_a,model_a", [(0.0, 0.0), (-0.05, -0.05)])
@@ -1776,16 +1873,247 @@ def test_sustain_rides_through_positive_mpc_stop_chatter():
   assert fin.stop_hold_release_sustain_s > 0.0
 
 
-def _launch_release(planner):
+def _launch_release(planner, *, long_active: bool = False):
   """Arm a hold and release it behind a departing lead; returns the finalizer."""
   _arm_stop_hold(planner, d_rel=5.5, lead_id=1)
   lead = make_lead(d_rel=6.2, v_lead=0.5, v_rel=0.5, lead_id=1)
   _, should_stop, _ = planner.final_longitudinal_output(
-    make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.6, mpc_should_stop=False,
+    make_sm(v_ego=0.0, lead_one=lead, long_active=long_active), mpc_a_target=0.6, mpc_should_stop=False,
     raw_model_a_target=0.05, raw_model_should_stop=True,
   )
   assert planner._lead_stop_hold_active is False and should_stop is False
   return planner.custom_long_finalizer
+
+
+def _seed_launch_floor_fade():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  fin = _launch_release(planner, long_active=True)
+  planner.custom_long_output = make_custom_output(selected_intent="lead_follow", should_stop=False)
+  lead = make_lead(d_rel=30.0, v_lead=8.0, v_rel=1.5, lead_id=1)
+  fin.final_a_prev = None
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=2.5, lead_one=lead, long_active=True), mpc_a_target=0.12, mpc_should_stop=False,
+    raw_model_a_target=0.12, raw_model_should_stop=False,
+  )
+  assert should_stop is False
+  assert a_target > 0.12
+  assert fin.launch_floor_fade_pending is True
+  fin.launch_dip_grace_s = 0.0
+  fin.stop_hold_release_sustain_s = 0.0
+  fin.stop_hold_release_slew_a_target = None
+  fin.approach_damp_a_prev = 0.4
+  return planner, fin, lead
+
+
+def _seed_active_launch_floor_grace():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_follow", should_stop=False),
+  )
+  fin = planner.custom_long_finalizer
+  fin.launch_dip_grace_s = 0.20
+  lead = make_lead(d_rel=30.0, v_lead=8.0, v_rel=1.5, lead_id=1)
+  return planner, fin, lead
+
+
+@pytest.mark.parametrize("case", ["disabled", "output_disabled", "output_fault", "faulted", "inactive"])
+def test_launch_floor_requires_active_lifecycle_during_grace(case):
+  planner, fin, lead = _seed_active_launch_floor_grace()
+  sm_kwargs = {"long_active": True}
+  if case == "disabled":
+    planner.dec = SimpleNamespace(active=lambda: True)
+    planner.custom_long.enabled = False
+  elif case == "output_disabled":
+    planner.custom_long_output = make_custom_output(selected_intent="lead_follow", enabled=False)
+  elif case == "output_fault":
+    planner.custom_long_output = make_custom_output(selected_intent="lead_follow", fault_class="test_fault")
+  elif case == "faulted":
+    planner.custom_long.fault_class = "test_fault"
+  elif case == "inactive":
+    sm_kwargs["long_active"] = False
+
+  assert fin.launch_dip_grace_s > 0.0
+  a_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=2.5, lead_one=lead, **sm_kwargs),
+    mpc_a_target=0.2, mpc_should_stop=False,
+    raw_model_a_target=0.2, raw_model_should_stop=False,
+  )
+
+  assert a_target == pytest.approx(0.2)
+  assert fin.launch_dip_grace_s == pytest.approx(0.0)
+  assert fin.launch_floor_fade_pending is False
+
+
+def test_launch_floor_grace_does_not_reappear_after_custom_reenable():
+  planner, fin, lead = _seed_active_launch_floor_grace()
+  planner.dec = SimpleNamespace(active=lambda: True)
+  planner.custom_long.enabled = False
+
+  disabled_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=2.5, lead_one=lead, long_active=True),
+    mpc_a_target=0.2, mpc_should_stop=False,
+    raw_model_a_target=0.2, raw_model_should_stop=False,
+  )
+  assert disabled_target == pytest.approx(0.2)
+  assert fin.launch_dip_grace_s == pytest.approx(0.0)
+  assert fin.launch_floor_fade_pending is False
+
+  planner.custom_long.enabled = True
+  reenabled_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=2.5, lead_one=lead, long_active=True),
+    mpc_a_target=0.2, mpc_should_stop=False,
+    raw_model_a_target=0.2, raw_model_should_stop=False,
+  )
+
+  assert reenabled_target == pytest.approx(0.2)
+  assert fin.launch_dip_grace_s == pytest.approx(0.0)
+  assert fin.launch_floor_fade_pending is False
+
+
+def test_launch_floor_fade_converges_at_bounded_positive_jerk_after_grace():
+  planner, fin, lead = _seed_launch_floor_fade()
+  fin.launch_dip_grace_s = 0.05
+  previous = fin.final_a_prev
+  outputs = []
+  for _ in range(4):
+    output, should_stop, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=2.5, lead_one=lead, long_active=True), mpc_a_target=0.12, mpc_should_stop=False,
+      raw_model_a_target=0.12, raw_model_should_stop=False,
+    )
+    outputs.append(output)
+    assert should_stop is False
+
+  assert previous is not None
+  assert outputs[-1] == pytest.approx(0.12)
+  assert all(abs(current - prior) <= fin._APPROACH_DAMP_MAX_JERK * 0.05 + 1e-6
+             for prior, current in zip((previous, *outputs[:-1]), outputs, strict=True))
+  assert fin.launch_floor_fade_pending is False
+
+
+def test_launch_floor_fade_clears_on_eligible_nonbinding_grace_frame():
+  planner, fin, lead = _seed_launch_floor_fade()
+  fin.launch_dip_grace_s = 1.0
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=2.5, lead_one=lead, long_active=True), mpc_a_target=0.7, mpc_should_stop=False,
+    raw_model_a_target=0.7, raw_model_should_stop=False,
+  )
+
+  assert should_stop is False
+  assert a_target == pytest.approx(0.7)
+  assert fin.launch_floor_fade_pending is False
+
+
+def test_launch_floor_fade_runs_before_lead_catchup_cap():
+  planner, fin, _ = _seed_launch_floor_fade()
+  fin.launch_dip_grace_s = 0.05
+  planner.custom_long_output = make_custom_output(
+    selected_intent="cruise", t_follow=1.45, accel_coast=-0.25,
+  )
+  lead = make_lead(d_rel=10.31, v_lead=2.81, v_rel=0.2, lead_id=1)
+  previous = fin.final_a_prev
+  assert previous is not None
+  fade_proposal = max(0.2, previous - fin._APPROACH_DAMP_MAX_JERK * 0.05)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=2.81, lead_one=lead, long_active=True), mpc_a_target=0.2, mpc_should_stop=False,
+    raw_model_a_target=0.2, raw_model_should_stop=False,
+  )
+
+  assert should_stop is False
+  assert 0.0 < a_target < fade_proposal
+  assert fin.launch_floor_fade_pending is True
+
+
+@pytest.mark.parametrize("case", [
+  "nonfinite_mpc", "nonfinite_raw", "no_prior", "nonpositive", "no_downward",
+  "negative_mpc", "mpc_stop", "raw_model_stop", "custom_stop",
+  "lead_loss", "below_breakout", "lead_closure", "brake", "gas", "force_decel",
+  "out_of_regime", "inactive", "non_scc", "disabled", "faulted", "output_disabled",
+  "output_fault", "model_stop_corroborated", "stop_approach",
+])
+def test_launch_floor_fade_cancellation_adds_no_authority_and_clears_pending(case):
+  planner, fin, lead = _seed_launch_floor_fade()
+  mpc_a_target = 0.2
+  raw_model_a_target = 0.2
+  mpc_should_stop = False
+  raw_model_should_stop = False
+  sm_kwargs: dict[str, Any] = {"long_active": True}
+  expected = 0.2
+
+  if case == "nonfinite_mpc":
+    mpc_a_target = float("nan")
+    expected = 0.0
+  elif case == "nonfinite_raw":
+    raw_model_a_target = float("nan")
+  elif case == "no_prior":
+    fin.final_a_prev = None
+  elif case == "nonpositive":
+    mpc_a_target = 0.0
+    expected = 0.0
+  elif case == "no_downward":
+    mpc_a_target = 0.7
+    expected = 0.7
+  elif case == "negative_mpc":
+    mpc_a_target = -0.05
+    raw_model_a_target = -0.05
+    expected = -0.05
+  elif case == "mpc_stop":
+    mpc_should_stop = True
+  elif case == "raw_model_stop":
+    raw_model_should_stop = True
+  elif case == "custom_stop":
+    planner.custom_long_output = make_custom_output(selected_intent="lead_follow", should_stop=True)
+  elif case == "lead_loss":
+    lead = None
+  elif case == "below_breakout":
+    lead = make_lead(d_rel=15.0, v_lead=0.4, v_rel=0.4, lead_id=1)
+    expected = 0.0
+  elif case == "lead_closure":
+    lead = make_lead(d_rel=4.0, v_lead=2.0, v_rel=1.5, lead_id=1)
+    expected = 0.0
+  elif case == "brake":
+    sm_kwargs["brake_pressed"] = True
+  elif case == "gas":
+    sm_kwargs["gas_pressed"] = True
+  elif case == "force_decel":
+    sm_kwargs["force_decel"] = True
+  elif case == "out_of_regime":
+    sm_kwargs["v_ego"] = 5.1
+    lead = make_lead(d_rel=30.0, v_lead=8.0, v_rel=1.5, lead_id=1)
+  elif case == "inactive":
+    sm_kwargs["long_active"] = False
+    expected = 0.25
+  elif case == "non_scc":
+    planner.custom_long.mode = LongitudinalMode.ACC
+    expected = 0.25
+  elif case == "disabled":
+    planner.dec = SimpleNamespace(active=lambda: False)
+    planner.custom_long.enabled = False
+  elif case == "faulted":
+    planner.custom_long.fault_class = "test_fault"
+  elif case == "output_disabled":
+    planner.custom_long_output = make_custom_output(a_target=0.2, selected_intent="lead_follow", enabled=False)
+  elif case == "output_fault":
+    planner.custom_long_output = make_custom_output(a_target=0.2, selected_intent="lead_follow", fault_class="test_fault")
+  elif case == "model_stop_corroborated":
+    planner.custom_long_output = make_custom_output(
+      a_target=0.2, selected_intent="lead_follow", model_stop_corroborated=True,
+    )
+  elif case == "stop_approach":
+    planner.custom_long_output = make_custom_output(a_target=0.2, selected_intent="stop_approach")
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=sm_kwargs.pop("v_ego", 2.5), lead_one=lead, **sm_kwargs),
+    mpc_a_target=mpc_a_target, mpc_should_stop=mpc_should_stop,
+    raw_model_a_target=raw_model_a_target, raw_model_should_stop=raw_model_should_stop,
+  )
+
+  assert a_target == pytest.approx(expected)
+  assert fin.launch_floor_fade_pending is False
 
 
 def test_launch_floor_carries_confirmed_departure_through_weak_mpc():
@@ -1796,14 +2124,14 @@ def test_launch_floor_carries_confirmed_departure_through_weak_mpc():
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
   )
-  fin = _launch_release(planner)
+  fin = _launch_release(planner, long_active=True)
 
   # Post-release frame: posture cleared, lead departing fast, MPC still ramping.
   planner.custom_long_output = make_custom_output(selected_intent="lead_follow", should_stop=False)
   fin.final_a_prev = None
   lead = make_lead(d_rel=6.8, v_lead=1.2, v_rel=1.1, lead_id=1)
   a_target, should_stop, _ = planner.final_longitudinal_output(
-    make_sm(v_ego=0.1, lead_one=lead), mpc_a_target=0.12, mpc_should_stop=False,
+    make_sm(v_ego=0.1, lead_one=lead, long_active=True), mpc_a_target=0.12, mpc_should_stop=False,
     raw_model_a_target=0.2, raw_model_should_stop=False,
   )
   assert should_stop is False
@@ -1811,19 +2139,48 @@ def test_launch_floor_carries_confirmed_departure_through_weak_mpc():
   assert fin._STOP_HOLD_LAUNCH_FLOOR_A - 0.05 <= a_target <= fin._STOP_HOLD_LAUNCH_FLOOR_A + 1e-6
 
 
+@pytest.mark.parametrize(
+  "mpc_a_target, stop_posture",
+  [(0.12, False), (-0.01, False), (0.12, True)],
+)
+def test_launch_floor_requires_positive_mpc_and_clear_stop_posture(mpc_a_target, stop_posture):
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  fin = _launch_release(planner, long_active=True)
+  planner.custom_long_output = make_custom_output(selected_intent="lead_follow", should_stop=stop_posture)
+  if stop_posture:
+    fin.stop_hold_release_sustain_s = 0.0
+  fin.final_a_prev = None
+  lead = make_lead(d_rel=6.8, v_lead=1.2, v_rel=1.1, lead_id=1)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.1, lead_one=lead, long_active=True), mpc_a_target=mpc_a_target, mpc_should_stop=False,
+    raw_model_a_target=0.2, raw_model_should_stop=False,
+  )
+
+  if stop_posture or mpc_a_target < 0.0:
+    assert a_target == pytest.approx(mpc_a_target)
+  else:
+    assert a_target > mpc_a_target
+    assert a_target >= fin._STOP_HOLD_LAUNCH_FLOOR_A - 0.05
+  assert should_stop is stop_posture
+
+
 def test_launch_floor_stays_off_below_breakout_and_without_grace():
   planner = make_planner(
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
   )
-  fin = _launch_release(planner)
+  fin = _launch_release(planner, long_active=True)
 
   # Lead only crawling (below the breakout opening): the gentle authorities own it.
   planner.custom_long_output = make_custom_output(selected_intent="lead_follow", should_stop=False)
   fin.final_a_prev = None
   lead = make_lead(d_rel=6.6, v_lead=0.4, v_rel=0.4, lead_id=1)
   a_target, _, _ = planner.final_longitudinal_output(
-    make_sm(v_ego=0.1, lead_one=lead), mpc_a_target=0.12, mpc_should_stop=False,
+    make_sm(v_ego=0.1, lead_one=lead, long_active=True), mpc_a_target=0.12, mpc_should_stop=False,
     raw_model_a_target=0.2, raw_model_should_stop=False,
   )
   assert a_target == pytest.approx(0.12)
@@ -1833,7 +2190,7 @@ def test_launch_floor_stays_off_below_breakout_and_without_grace():
   fin.final_a_prev = None
   lead = make_lead(d_rel=8.0, v_lead=1.5, v_rel=1.4, lead_id=1)
   a_target, _, _ = planner.final_longitudinal_output(
-    make_sm(v_ego=0.1, lead_one=lead), mpc_a_target=0.12, mpc_should_stop=False,
+    make_sm(v_ego=0.1, lead_one=lead, long_active=True), mpc_a_target=0.12, mpc_should_stop=False,
     raw_model_a_target=0.2, raw_model_should_stop=False,
   )
   assert a_target == pytest.approx(0.12)
@@ -1846,7 +2203,7 @@ def test_launch_floor_holds_through_the_chase():
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
   )
-  fin = _launch_release(planner)
+  fin = _launch_release(planner, long_active=True)
 
   planner.custom_long_output = make_custom_output(selected_intent="lead_follow", should_stop=False)
   lead = make_lead(d_rel=6.0, v_lead=1.0, v_rel=0.45, lead_id=1)  # chasing: vRel below entry
@@ -1855,7 +2212,7 @@ def test_launch_floor_holds_through_the_chase():
   # floor by design) — the point is the command holds well above the sagging 0.2 mpcA.
   for _ in range(4):
     a_target, _, _ = planner.final_longitudinal_output(
-      make_sm(v_ego=0.55, lead_one=lead), mpc_a_target=0.2, mpc_should_stop=False,
+      make_sm(v_ego=0.55, lead_one=lead, long_active=True), mpc_a_target=0.2, mpc_should_stop=False,
       raw_model_a_target=0.3, raw_model_should_stop=False,
     )
   assert 0.4 < a_target <= fin._STOP_HOLD_LAUNCH_FLOOR_A + 1e-6
@@ -1865,7 +2222,7 @@ def test_launch_floor_holds_through_the_chase():
   fin.final_a_prev = None
   lead = make_lead(d_rel=6.5, v_lead=1.0, v_rel=0.05, lead_id=1)
   a_target, _, _ = planner.final_longitudinal_output(
-    make_sm(v_ego=0.95, lead_one=lead), mpc_a_target=0.2, mpc_should_stop=False,
+    make_sm(v_ego=0.95, lead_one=lead, long_active=True), mpc_a_target=0.2, mpc_should_stop=False,
     raw_model_a_target=0.3, raw_model_should_stop=False,
   )
   assert a_target <= 0.2 + 1e-6
@@ -1875,6 +2232,23 @@ def _departing_lead(d_rel=8.0, v_lead=1.8, v_rel=0.8, a_lead_k=0.8, lead_id=1):
   lead = make_lead(d_rel=d_rel, v_lead=v_lead, v_rel=v_rel, lead_id=lead_id)
   lead.aLeadK = a_lead_k
   return lead
+
+
+@pytest.mark.parametrize("mpc_a_target, expected", [(-1.0, 0.0), (-1.01, -1.01)])
+def test_departing_lead_coast_uses_inclusive_depth_boundary(mpc_a_target, expected):
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_follow", should_stop=False),
+  )
+  fin = planner.custom_long_finalizer
+  for _ in range(fin._DEPARTING_LEAD_PERSIST_FRAMES + 3):
+    a_target, should_stop, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=3.3, lead_one=_departing_lead()), mpc_a_target=mpc_a_target, mpc_should_stop=False,
+      raw_model_a_target=mpc_a_target, raw_model_should_stop=False,
+    )
+
+  assert should_stop is False
+  assert a_target == pytest.approx(expected)
 
 
 def test_departing_lead_coast_clamps_gap_restore_braking():
@@ -1895,20 +2269,12 @@ def test_departing_lead_coast_clamps_gap_restore_braking():
   assert a_target > -0.05  # coast, jerk-limited stages settle at ~0
 
 
-def test_departing_lead_coast_never_reshapes_deep_braking_or_stop_posture():
+def test_departing_lead_coast_never_reshapes_stop_posture():
   planner = make_planner(
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(selected_intent="lead_follow", should_stop=False),
   )
   fin = planner.custom_long_finalizer
-
-  # Deep demand passes through untouched.
-  for _ in range(fin._DEPARTING_LEAD_PERSIST_FRAMES + 3):
-    a_target, _, _ = planner.final_longitudinal_output(
-      make_sm(v_ego=3.3, lead_one=_departing_lead()), mpc_a_target=-1.5, mpc_should_stop=False,
-      raw_model_a_target=-1.5, raw_model_should_stop=False,
-    )
-  assert a_target == pytest.approx(-1.5)
 
   # Raw model stop asserted: braking is never clamped.
   for _ in range(fin._DEPARTING_LEAD_PERSIST_FRAMES + 3):
