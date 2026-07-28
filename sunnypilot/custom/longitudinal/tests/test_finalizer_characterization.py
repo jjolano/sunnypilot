@@ -24,6 +24,7 @@ from openpilot.sunnypilot.custom.longitudinal.departure_prediction import (
   TIMEOUT_S,
 )
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
+from openpilot.sunnypilot.custom.longitudinal.lead_cushion import LowSpeedGapClosureRequest
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalOutput
@@ -1315,6 +1316,199 @@ def test_lead_catchup_never_weakens_mpc_braking():
   )
 
   assert a_target == pytest.approx(-0.4)
+
+
+def _make_gap_closure_output(requested_accel: float = 0.25, lead_id: int = 1, lead_idx: int = 0,
+                             lead_d_rel: float = 10.3, lead_v_lead: float = 1.2,
+                             lead_v_rel: float = 0.2, lead_y_rel: float = 0.0, **overrides):
+  request = LowSpeedGapClosureRequest(
+    requested_accel=requested_accel, desired_closing_speed=1.0, follow_gap=6.28,
+    lead_track_id=lead_id, lead_idx=lead_idx, lead_confidence=1.0,
+    lead_stable=True, lead_radar=True,
+    lead_d_rel=lead_d_rel, lead_v_lead=lead_v_lead, lead_v_rel=lead_v_rel, lead_y_rel=lead_y_rel,
+  )
+  return make_custom_output(low_speed_gap_closure=request, t_follow=1.5, **overrides)
+
+
+def _finalize_gap_closure(*, v_ego: float = 1.0, v_lead: float = 1.2, d_rel: float = 10.3,
+                          a_lead: float = 0.0, mpc_a: float = 0.0, model_a: float = 0.0,
+                          mpc_stop: bool = False, model_stop: bool = False,
+                          mode: LongitudinalMode = LongitudinalMode.SCC,
+                          **sm_overrides):
+  planner = make_planner(mode=mode, custom_long_output=_make_gap_closure_output(mode=mode))
+  lead = make_lead(d_rel=d_rel, v_lead=v_lead, v_rel=v_lead - v_ego, lead_id=1)
+  lead.radar = True
+  lead.aLeadK = a_lead
+  sm = make_sm(v_ego=v_ego, lead_one=lead, long_active=True, **sm_overrides)
+  return planner, planner.final_longitudinal_output(
+    sm, mpc_a_target=mpc_a, mpc_should_stop=mpc_stop,
+    raw_model_a_target=model_a, raw_model_should_stop=model_stop,
+  )
+
+
+@pytest.mark.parametrize("mpc_a,model_a", [(0.0, 0.0), (-0.05, -0.05)])
+def test_scc_low_speed_gap_closure_applies_bounded_route_like_authority(mpc_a, model_a):
+  _, (a_target, should_stop, e2e_source) = _finalize_gap_closure(mpc_a=mpc_a, model_a=model_a)
+
+  assert should_stop is False
+  assert e2e_source is False
+  assert 0.0 < a_target <= 0.25
+
+
+@pytest.mark.parametrize(
+  "kwargs",
+  [
+    {"v_ego": 2.0, "v_lead": 0.9},
+    {"v_lead": 0.1},
+    {"d_rel": 6.0},
+    {"a_lead": -1.01},
+    {"v_ego": 2.1},
+  ],
+)
+def test_scc_low_speed_gap_closure_local_kinematics_remove_request(kwargs):
+  _, (a_target, should_stop, e2e_source) = _finalize_gap_closure(**kwargs)
+
+  assert (a_target, should_stop, e2e_source) == (0.0, False, False)
+
+
+@pytest.mark.parametrize(
+  "kwargs",
+  [
+    {"mpc_stop": True},
+    {"model_stop": True},
+    {"mpc_a": -0.10},
+    {"model_a": -0.10},
+    {"gas_pressed": True},
+    {"brake_pressed": True},
+  ],
+)
+def test_scc_low_speed_gap_closure_safety_gates_leave_base_unchanged(kwargs):
+  _, (a_target, _, e2e_source) = _finalize_gap_closure(**kwargs)
+
+  assert a_target == pytest.approx(kwargs.get("mpc_a", 0.0))
+  assert e2e_source is False
+
+
+def test_scc_low_speed_gap_closure_blocks_a_close_alternate_lead():
+  alternate = make_lead(d_rel=8.0, v_lead=0.5, v_rel=-0.5, lead_id=2)
+  alternate.radar = True
+  alternate.aLeadK = 0.0
+  _, (a_target, _, _) = _finalize_gap_closure(lead_two=alternate)
+
+  assert a_target == pytest.approx(0.0)
+
+
+def test_scc_low_speed_gap_closure_follows_requested_slot_through_track_id_churn():
+  planner = make_planner(mode=LongitudinalMode.SCC, custom_long_output=_make_gap_closure_output())
+  lead = make_lead(d_rel=10.31, v_lead=1.21, v_rel=0.21, lead_id=2)
+  lead.radar = True
+  lead.aLeadK = 0.0
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=1.0, lead_one=lead, long_active=True),
+    mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert 0.0 < a_target <= 0.25
+
+
+def test_scc_low_speed_gap_closure_treats_equivalent_duplicate_slots_as_one_lead():
+  planner = make_planner(mode=LongitudinalMode.SCC, custom_long_output=_make_gap_closure_output())
+  requested = make_lead(d_rel=10.3, v_lead=1.2, v_rel=0.2, lead_id=1)
+  duplicate = make_lead(d_rel=10.35, v_lead=1.18, v_rel=0.18, lead_id=2)
+  for lead in (requested, duplicate):
+    lead.radar = True
+    lead.aLeadK = 0.0
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=1.0, lead_one=requested, lead_two=duplicate, long_active=True),
+    mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert 0.0 < a_target <= 0.25
+
+
+def test_scc_low_speed_gap_closure_rejects_non_requested_lead_identity():
+  planner = make_planner(mode=LongitudinalMode.SCC, custom_long_output=_make_gap_closure_output())
+  lead = make_lead(d_rel=8.0, v_lead=0.5, v_rel=-0.5, lead_id=9)
+  lead.radar = True
+  lead.aLeadK = 0.0
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=1.0, lead_one=lead, long_active=True),
+    mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert a_target == pytest.approx(0.0)
+
+
+def test_scc_low_speed_gap_closure_removal_is_immediate_after_a_gate_drop():
+  planner, _ = _finalize_gap_closure()
+  lead = make_lead(d_rel=10.3, v_lead=1.2, v_rel=0.2, lead_id=1)
+  lead.radar = True
+  lead.aLeadK = 0.0
+  blocked_sm = make_sm(v_ego=1.0, gas_pressed=True, lead_one=lead, long_active=True)
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    blocked_sm, mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert a_target == pytest.approx(0.0)
+
+
+def test_nonbinding_gap_closure_request_preserves_baseline_approach_damping():
+  def run(output):
+    planner = make_planner(mode=LongitudinalMode.SCC, custom_long_output=output)
+    lead = make_lead(d_rel=10.3, v_lead=2.1, v_rel=0.0, lead_id=1)
+    lead.radar = True
+    lead.aLeadK = 0.0
+    sm = make_sm(v_ego=2.1, lead_one=lead, long_active=True)
+    planner.final_longitudinal_output(
+      sm, mpc_a_target=0.0, mpc_should_stop=False,
+      raw_model_a_target=0.0, raw_model_should_stop=False,
+    )
+    return planner.final_longitudinal_output(
+      sm, mpc_a_target=0.2, mpc_should_stop=False,
+      raw_model_a_target=0.2, raw_model_should_stop=False,
+    )[0]
+
+  baseline = run(make_custom_output())
+  nonbinding = run(_make_gap_closure_output())
+
+  assert baseline == pytest.approx(0.15)
+  assert nonbinding == pytest.approx(baseline)
+
+
+@pytest.mark.parametrize("mode", [LongitudinalMode.ACC, LongitudinalMode.E2E])
+def test_scc_low_speed_gap_closure_never_applies_outside_scc(mode):
+  _, (a_target, _, e2e_source) = _finalize_gap_closure(mode=mode)
+
+  assert a_target == pytest.approx(0.0)
+  assert e2e_source is False
+
+
+def test_scc_low_speed_gap_closure_upward_slew_uses_prior_final_target():
+  planner = make_planner(mode=LongitudinalMode.SCC, custom_long_output=make_custom_output())
+  lead = make_lead(d_rel=10.3, v_lead=1.2, v_rel=0.2, lead_id=1)
+  lead.radar = True
+  lead.aLeadK = 0.0
+  sm = make_sm(v_ego=1.0, lead_one=lead, long_active=True)
+  planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+  planner.custom_long_output = _make_gap_closure_output()
+
+  a_target, _, _ = planner.final_longitudinal_output(
+    sm, mpc_a_target=0.0, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert a_target == pytest.approx(0.8 * planner.dt)
 
 
 # ---------------------------------------------------------------------------

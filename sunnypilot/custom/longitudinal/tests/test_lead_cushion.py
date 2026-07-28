@@ -7,6 +7,7 @@ from openpilot.sunnypilot.custom.longitudinal.coast_horizon import CoastAction
 from openpilot.sunnypilot.custom.longitudinal.lead_cushion import (
   lead_catchup_accel_cap,
   lead_following_cushion,
+  low_speed_gap_closure_accel,
   lead_speedup_guard,
 )
 
@@ -91,3 +92,27 @@ def test_catchup_cap_lets_lead_recover_inside_target_gap():
     d_rel=4.0, follow_gap=5.0, proposed_accel=0.5,
   )
   assert out == pytest.approx(0.4)
+
+
+def test_low_speed_gap_closure_route_like_request_is_bounded():
+  out = low_speed_gap_closure_accel(
+    v_ego=1.0, v_lead=1.2, a_lead_k=0.0, d_rel=10.3, follow_gap=6.28,
+  )
+  assert out == pytest.approx(0.25)
+  assert low_speed_gap_closure_accel(1.0, 1.2, 0.5, 10.3, 6.28) == pytest.approx(out)
+
+
+@pytest.mark.parametrize(
+  "kwargs",
+  [
+    {"v_ego": 2.0, "v_lead": 0.9},       # actual closing already exceeds the 1 m/s cap
+    {"v_ego": 1.0, "v_lead": 0.1},       # stopped/crawling lead
+    {"v_ego": 1.0, "v_lead": 1.2, "d_rel": 6.28},  # inside the exact target gap
+    {"v_ego": 1.0, "v_lead": 1.2, "a_lead_k": -1.01},  # hard-braking lead
+    {"v_ego": 2.01, "v_lead": 1.2},      # outside the crawl band
+  ],
+)
+def test_low_speed_gap_closure_safety_gates_return_zero(kwargs):
+  values = dict(v_ego=1.0, v_lead=1.2, a_lead_k=0.0, d_rel=10.3, follow_gap=6.28)
+  values.update(kwargs)
+  assert low_speed_gap_closure_accel(**values) == 0.0

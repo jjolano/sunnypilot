@@ -16,7 +16,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_safe_obstacle_distance,
   get_stopped_equivalence_factor,
 )
-from openpilot.sunnypilot.custom.longitudinal.lead_cushion import lead_catchup_accel_cap
+from openpilot.sunnypilot.custom.longitudinal.lead_cushion import (
+  LOW_SPEED_GAP_CLOSURE_MAX_ACCEL,
+  lead_catchup_accel_cap,
+  low_speed_gap_closure_accel,
+)
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import close_stop_go_radar_id_churn_continuous
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.custom.longitudinal.net_demand_cap import NetDemandCapFinalStage, NetDemandCapTrace
@@ -925,6 +929,175 @@ class _FinalArbitration:
     ))
 
   @staticmethod
+  def _resolve_gap_closure_lead(finalizer: CustomLongitudinalFinalizer,
+                                snapshot: _InputSnapshot, request: Any) -> Any | None:
+    """Resolve the requested radar slot, allowing only known close-track continuity."""
+    slots = (
+      getattr(snapshot.radar_state, "leadOne", None),
+      getattr(snapshot.radar_state, "leadTwo", None),
+    )
+    try:
+      request_idx = int(getattr(request, "lead_idx", -1))
+      request_track_id = int(getattr(request, "lead_track_id", -1))
+    except (TypeError, ValueError):
+      return None
+    if request_idx not in (0, 1) or request_track_id < 0:
+      return None
+
+    request_d_rel = finalizer._finite_float_or_none(getattr(request, "lead_d_rel", None))
+    request_v_lead = finalizer._finite_float_or_none(getattr(request, "lead_v_lead", None))
+    request_v_rel = finalizer._finite_float_or_none(getattr(request, "lead_v_rel", None))
+    request_y_rel = finalizer._finite_float_or_none(getattr(request, "lead_y_rel", None))
+
+    def values(lead: Any) -> tuple[float, float, float, float] | None:
+      if lead is None or not bool(getattr(lead, "status", False)):
+        return None
+      current = tuple(
+        finalizer._finite_float_or_none(getattr(lead, name, None))
+        for name in ("dRel", "vLead", "vRel", "yRel")
+      )
+      if any(value is None for value in current):
+        return None
+      return (
+        float(current[0]) if current[0] is not None else 0.0,
+        float(current[1]) if current[1] is not None else 0.0,
+        float(current[2]) if current[2] is not None else 0.0,
+        float(current[3]) if current[3] is not None else 0.0,
+      )
+
+    def matches_requested(lead: Any) -> bool:
+      current_values = values(lead)
+      current_track_id = _valid_lead_id(lead)
+      if current_values is None or current_track_id is None:
+        return False
+      if current_track_id == request_track_id:
+        return True
+      if any(value is None for value in (request_d_rel, request_v_lead, request_v_rel, request_y_rel)):
+        return False
+      return close_stop_go_radar_id_churn_continuous(
+        request_track_id, current_track_id,
+        float(request_d_rel or 0.0), current_values[0],
+        float(request_v_lead or 0.0), current_values[1],
+        float(request_y_rel or 0.0), current_values[3],
+      )
+
+    active = tuple(
+      (idx, lead) for idx, lead in enumerate(slots)
+      if lead is not None and bool(getattr(lead, "status", False))
+    )
+    matching = tuple((idx, lead) for idx, lead in active if matches_requested(lead))
+    requested = next((lead for idx, lead in matching if idx == request_idx), None)
+    if requested is None and matching:
+      requested = matching[0][1]
+    if requested is None:
+      return None
+
+    # A second slot is harmless only when it is the same requested physical lead. Any
+    # distinct close/closing lead is an alternate threat and vetoes the correction.
+    for _, alternate in active:
+      if alternate is requested or matches_requested(alternate):
+        continue
+      alternate_values = values(alternate)
+      if alternate_values is None or alternate_values[0] <= 15.0 or alternate_values[2] < -0.05:
+        return None
+    return requested
+
+  @staticmethod
+  def scc_low_speed_gap_closure_floor(finalizer: CustomLongitudinalFinalizer, base_a_target: float,
+                                      snapshot: _InputSnapshot, should_stop: bool,
+                                      release_mpc_stop: bool) -> float:
+    """Apply the one-tick, locally rechecked SCC crawl gap-closure floor."""
+    finalizer.low_speed_gap_closure_applied = False
+    output = snapshot.custom_long_output
+    request = getattr(output, "low_speed_gap_closure", None) if output is not None else None
+    if request is None:
+      return float(base_a_target)
+    if (snapshot.custom_long is None or snapshot.custom_long.mode is not LongitudinalMode.SCC or
+        snapshot.is_e2e or not bool(getattr(snapshot.custom_long, "enabled", False)) or
+        output is None or not bool(getattr(output, "enabled", False)) or
+        bool(getattr(snapshot.custom_long, "fault_class", "")) or
+        bool(getattr(output, "fault_class", ""))):
+      return float(base_a_target)
+    if (finalizer.lead_stop_hold_active or finalizer.stop_hold_release_slew_a_target is not None or
+        should_stop or release_mpc_stop or snapshot.mpc_should_stop or snapshot.raw_model_should_stop or
+        snapshot.model_stale or snapshot.standstill or not snapshot.long_active or
+        snapshot.brake_pressed or snapshot.gas_pressed or snapshot.force_decel or
+        bool(getattr(output, "should_stop", False)) or
+        bool(getattr(output, "model_stop_corroborated", False)) or
+        str(getattr(output, "selected_intent", "") or "") in ("stop_approach", "lead_stop_hold") or
+        bool(getattr(output, "standstill_release_allowed", False)) or
+        bool(str(getattr(output, "standstill_release_source", "") or ""))):
+      return float(base_a_target)
+    if not math.isfinite(float(base_a_target)) or float(base_a_target) < -0.10:
+      return float(base_a_target)
+    if (not snapshot.mpc_a_target_valid or not snapshot.raw_model_a_target_valid or
+        not math.isfinite(snapshot.mpc_a_target) or not math.isfinite(snapshot.raw_model_a_target) or
+        snapshot.mpc_a_target <= -0.10 or snapshot.raw_model_a_target <= -0.10):
+      return float(base_a_target)
+    if snapshot.v_ego <= 0.0:
+      return float(base_a_target)
+    lead = _FinalArbitration._resolve_gap_closure_lead(finalizer, snapshot, request)
+    if lead is None:
+      return float(base_a_target)
+    if str(getattr(output, "reason", "") or "") == "advisory_capped":
+      return float(base_a_target)
+    actuation = getattr(output, "actuation", None)
+    for verdict, cap_name in (
+      (getattr(actuation, "cut_in_brake_assist", None), "proposed_cap"),
+      (getattr(actuation, "curve_traffic_advisor", None), "a_curve_cap_proposed"),
+    ):
+      cap = finalizer._finite_float_or_none(getattr(verdict, cap_name, 0.0))
+      if (verdict is not None and bool(getattr(verdict, "eligible", False)) and
+          bool(getattr(verdict, "apply_supported", False)) and cap is not None and cap < 0.0):
+        return float(base_a_target)
+
+    request_accel = finalizer._finite_float_or_none(getattr(request, "requested_accel", None))
+    confidence = finalizer._finite_float_or_none(getattr(request, "lead_confidence", None))
+    try:
+      request_track_id = int(getattr(request, "lead_track_id", -1))
+    except (TypeError, ValueError):
+      request_track_id = -1
+    if (request_accel is None or not 0.0 < request_accel <= LOW_SPEED_GAP_CLOSURE_MAX_ACCEL + 1e-9 or
+        not bool(getattr(request, "lead_stable", False)) or not bool(getattr(request, "lead_radar", False)) or
+        confidence is None or confidence < 0.55 or request_track_id < 0 or
+        not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False))):
+      return float(base_a_target)
+
+    t_follow = finalizer._finite_float_or_none(getattr(output, "t_follow", None))
+    if t_follow is None or t_follow <= 0.0:
+      return float(base_a_target)
+    d_rel = finalizer._finite_float_or_none(getattr(lead, "dRel", None))
+    v_lead = finalizer._finite_float_or_none(getattr(lead, "vLead", None))
+    v_rel = finalizer._finite_float_or_none(getattr(lead, "vRel", None))
+    a_lead = finalizer._finite_float_or_none(getattr(lead, "aLeadK", None))
+    if any(value is None for value in (d_rel, v_lead, v_rel, a_lead)):
+      return float(base_a_target)
+    d_rel_f = float(d_rel) if d_rel is not None else 0.0
+    v_lead_f = float(v_lead) if v_lead is not None else 0.0
+    v_rel_f = float(v_rel) if v_rel is not None else 0.0
+    a_lead_f = float(a_lead) if a_lead is not None else 0.0
+    follow_gap = max(0.0, float(
+      get_safe_obstacle_distance(snapshot.v_ego, t_follow) - get_stopped_equivalence_factor(v_lead_f)
+    ))
+    local_request = low_speed_gap_closure_accel(
+      snapshot.v_ego, v_lead_f, a_lead_f, d_rel_f, follow_gap, v_rel_f,
+    )
+    if local_request <= 0.0 or not math.isfinite(local_request):
+      return float(base_a_target)
+
+    floor = min(request_accel, local_request)
+    raised = max(float(base_a_target), floor)
+    if raised <= float(base_a_target):
+      return float(base_a_target)
+    if not math.isfinite(snapshot.dt) or snapshot.dt <= 0.0:
+      return float(base_a_target)
+    previous = finalizer.final_a_prev
+    if previous is not None and math.isfinite(float(previous)):
+      raised = max(float(base_a_target), min(raised, float(previous) + 0.8 * snapshot.dt))
+    finalizer.low_speed_gap_closure_applied = raised > float(base_a_target)
+    return float(raised)
+
+  @staticmethod
   def scc_cut_in_brake_assist_final_cap(finalizer: CustomLongitudinalFinalizer, base_a_target: float,
                                         sm: Any, custom_long: Any, custom_long_output: Any,
                                         release_mpc_stop: bool = False) -> float:
@@ -1431,6 +1604,7 @@ class CustomLongitudinalFinalizer:
   stop_hold_release_prep_a_target: float | None
   stop_hold_release_prep_raw_prev: float | None
   approach_damp_a_prev: float | None
+  low_speed_gap_closure_applied: bool
   launch_dip_grace_s: float
   final_a_prev: float | None
   departure_prediction_phase: str
@@ -1467,6 +1641,7 @@ class CustomLongitudinalFinalizer:
     self.stop_hold_release_prep_a_target = None
     self.stop_hold_release_prep_raw_prev = None
     self.approach_damp_a_prev = None
+    self.low_speed_gap_closure_applied = False
     self.follow_band_regime = None
     self.follow_band_given_m = 0.0
     self.launch_dip_grace_s = 0.0
@@ -1545,6 +1720,7 @@ class CustomLongitudinalFinalizer:
     self.stop_hold_release_prep_a_target = None
     self.stop_hold_release_prep_raw_prev = None
     self.approach_damp_a_prev = None
+    self.low_speed_gap_closure_applied = False
 
   def _settle_stop_hold_arm_applies(self, v_ego: float, v_ego_stopping: float,
                                     lead_v: float, lead_v_rel: float,
@@ -2410,8 +2586,15 @@ class CustomLongitudinalFinalizer:
     # edges (lead status flicker, aLeadK steps, the v_ego gate); a DECEL entry straight
     # to a deep brake (|a| > damp band) passes unsmoothed on purpose — brake authority is
     # never delayed.
-    a_target = self._apply_follow_coast_band(a_target, snapshot, should_stop, release_mpc_stop)
     a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
+    closure_was_applied = self.low_speed_gap_closure_applied
+    a_target = _FinalArbitration.scc_low_speed_gap_closure_floor(
+      self, a_target, snapshot, should_stop, release_mpc_stop,
+    )
+    if closure_was_applied and not self.low_speed_gap_closure_applied:
+      # A failed gate must remove this feature's authority immediately; do not let the generic
+      # above-crawl approach dam turn a stale positive correction into a release slew.
+      self.approach_damp_a_prev = None
     a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt, snapshot.v_ego)
     return _TelemetryAdapter.result(
       a_target, should_stop, False, self.custom_long_output_telemetry, self.last_release_block_reason

@@ -32,6 +32,33 @@ CATCHUP_MAX_CLOSING_SPEED = 2.0
 CATCHUP_RESPONSE_S = 1.0
 CATCHUP_MAX_LEAD_ACCEL = 2.0
 
+# Low-speed moving-lead gap closure is deliberately separate from the normal-speed catch-up
+# cap. It is a small crawl authority, not lead-accel feed-forward or a change to MPC geometry.
+LOW_SPEED_GAP_CLOSURE_MAX_ACCEL = 0.25
+LOW_SPEED_GAP_CLOSURE_HORIZON_S = 4.0
+LOW_SPEED_GAP_CLOSURE_MAX_CLOSING_SPEED = 1.0
+LOW_SPEED_GAP_CLOSURE_MAX_V_EGO = 2.0
+LOW_SPEED_GAP_CLOSURE_MAX_D_REL = 15.0
+LOW_SPEED_GAP_CLOSURE_MIN_LEAD_SPEED = 0.2
+LOW_SPEED_GAP_CLOSURE_MIN_LEAD_ACCEL = -1.0
+
+
+@dataclass(frozen=True)
+class LowSpeedGapClosureRequest:
+  """Typed, one-tick request for the bounded SCC crawl correction."""
+  requested_accel: float = 0.0
+  desired_closing_speed: float = 0.0
+  follow_gap: float = 0.0
+  lead_track_id: int = -1
+  lead_idx: int = -1
+  lead_confidence: float = 0.0
+  lead_stable: bool = False
+  lead_radar: bool = False
+  lead_d_rel: float = 0.0
+  lead_v_lead: float = 0.0
+  lead_v_rel: float = 0.0
+  lead_y_rel: float = 0.0
+
 
 @dataclass(frozen=True)
 class CushionResult:
@@ -91,6 +118,48 @@ def lead_speedup_guard(v_ego: float, v_lead: float, d_rel: float, follow_gap: fl
   allowed_v_ego_next = v_lead + max_closing
   allowed_accel = max(0.0, (allowed_v_ego_next - v_ego) / float(dt_lookahead))
   return min(proposed_accel, allowed_accel)
+
+
+def low_speed_gap_closure_accel(v_ego: float, v_lead: float, a_lead_k: float,
+                                d_rel: float, follow_gap: float, v_rel: float | None = None) -> float:
+  """Return bounded positive authority to close an excess gap behind a moving lead.
+
+  The gap error is converted to a desired relative closing speed over four seconds. The
+  current relative speed then supplies the request; when radar ``v_rel`` is available it is
+  included conservatively. Lead acceleration is only an eligibility guard, never feed-forward.
+  A zero result means the request is ineligible or already met.
+  """
+  values = (v_ego, v_lead, a_lead_k, d_rel, follow_gap)
+  try:
+    v_ego, v_lead, a_lead_k, d_rel, follow_gap = (float(value) for value in values)
+  except (TypeError, ValueError):
+    return 0.0
+  if not all(math.isfinite(value) for value in (v_ego, v_lead, a_lead_k, d_rel, follow_gap)):
+    return 0.0
+  if v_rel is not None:
+    try:
+      v_rel = float(v_rel)
+    except (TypeError, ValueError):
+      return 0.0
+    if not math.isfinite(v_rel):
+      return 0.0
+  if not (0.0 < v_ego <= LOW_SPEED_GAP_CLOSURE_MAX_V_EGO):
+    return 0.0
+  if not (0.0 < d_rel <= LOW_SPEED_GAP_CLOSURE_MAX_D_REL):
+    return 0.0
+  if v_lead < LOW_SPEED_GAP_CLOSURE_MIN_LEAD_SPEED:
+    return 0.0
+  if a_lead_k < LOW_SPEED_GAP_CLOSURE_MIN_LEAD_ACCEL or d_rel <= follow_gap:
+    return 0.0
+
+  desired_closing = min(
+    LOW_SPEED_GAP_CLOSURE_MAX_CLOSING_SPEED,
+    (d_rel - follow_gap) / LOW_SPEED_GAP_CLOSURE_HORIZON_S,
+  )
+  actual_closing = max(0.0, v_ego - v_lead, -v_rel if v_rel is not None else 0.0)
+  if actual_closing >= desired_closing:
+    return 0.0
+  return min(LOW_SPEED_GAP_CLOSURE_MAX_ACCEL, max(0.0, desired_closing - actual_closing))
 
 
 def lead_catchup_accel_cap(v_ego: float, v_lead: float, a_lead: float,

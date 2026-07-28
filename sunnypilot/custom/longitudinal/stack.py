@@ -39,7 +39,7 @@ from openpilot.sunnypilot.custom.longitudinal.policy import (
   build_candidates,
   map_coast_cap,
 )
-from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality
+from openpilot.sunnypilot.custom.longitudinal.policy_tables import Personality, PROGRESS_CRUISE_SPEED_MARGIN
 from openpilot.sunnypilot.custom.longitudinal.dynamic_safety_floor import (
   compute_dynamic_safety_floor,
   debug_dict as dynamic_safety_floor_debug_dict,
@@ -48,6 +48,12 @@ from openpilot.sunnypilot.custom.longitudinal.dynamic_safety_floor import (
 from openpilot.sunnypilot.custom.longitudinal.departure_prediction import (
   DeparturePredictionEvidence,
   build_departure_prediction_evidence,
+)
+from openpilot.sunnypilot.custom.longitudinal.lead_cushion import (
+  LOW_SPEED_GAP_CLOSURE_HORIZON_S,
+  LOW_SPEED_GAP_CLOSURE_MAX_CLOSING_SPEED,
+  LowSpeedGapClosureRequest,
+  low_speed_gap_closure_accel,
 )
 
 import math
@@ -73,6 +79,7 @@ DOWNWARD_TARGET_SMOOTH_RISK_REASONS = frozenset((
 # path advisor and active braking SCC vision for 1 s; route 297's real turn sustained
 # it for 5.75 s. Keep the apply verdict closed until both existing estimators agree.
 CURVE_TRAFFIC_CORROBORATION_S = 1.5
+LOW_SPEED_GAP_CLOSURE_MIN_CONFIDENCE = 0.55
 
 
 def _f(value: object, default: float = 0.0) -> float:
@@ -156,6 +163,71 @@ def _select_lead_kinematics(lead_ctx: Any, leads: tuple[Any, Any], v_ego: float)
       source="lead0_fallback", valid=valid, v=v, d_rel=d_rel, v_rel=v_rel, a_k=a_k,
     )
   return SelectedLeadKinematics()
+
+
+def _low_speed_gap_closure_request(inp: Any, act_inp: Any, selected_lead: SelectedLeadKinematics,
+                                   follow_gap: float, decision: Decision, scene: Any,
+                                   cut_in_result: Any, curve_result: Any,
+                                   standstill_release_allowed: bool) -> LowSpeedGapClosureRequest | None:
+  """Build the narrow SCC crawl request without using the generic progress authorization."""
+  if inp.mode is not LongitudinalMode.SCC or not inp.long_active:
+    return None
+  if not math.isfinite(float(inp.v_cruise)) or inp.v_cruise <= inp.v_ego + PROGRESS_CRUISE_SPEED_MARGIN:
+    return None
+  if not math.isfinite(float(inp.seed_a_target)) or inp.seed_a_target < -0.10:
+    return None
+  if (act_inp.standstill or act_inp.brake_pressed or act_inp.gas_pressed or act_inp.force_slow_decel or
+      act_inp.model_should_stop or act_inp.model_stale or act_inp.stop_threat or
+      act_inp.model_stop_distance is not None or act_inp.model_desired_accel <= -0.10 or
+      act_inp.lead_should_stop or decision.should_stop or decision.selected_intent == "stop_approach" or
+      standstill_release_allowed):
+    return None
+  if (bool(getattr(scene, "lead_shadow_active", False)) or
+      bool(getattr(scene, "alternate_threat_active", False)) or
+      bool(getattr(scene, "map_coast_active", False))):
+    return None
+  # Any active non-lead advisory cap owns the frame. The decision reason also catches typed
+  # advisory caps that are not represented by one of the scene booleans below.
+  if (decision.reason == "advisory_capped" or act_inp.speed_limit_active or act_inp.curve_active):
+    return None
+  for verdict, cap_name in (
+    (cut_in_result, "proposed_cap"),
+    (curve_result, "a_curve_cap_proposed"),
+  ):
+    cap = _f(getattr(verdict, cap_name, 0.0), default=0.0)
+    if (verdict is not None and bool(getattr(verdict, "eligible", False)) and
+        bool(getattr(verdict, "apply_supported", False)) and cap < 0.0):
+      return None
+
+  lead = selected_lead.lead
+  state = selected_lead.state
+  confidence = float(getattr(state, "confidence", 0.0)) if state is not None else 0.0
+  if (lead is None or state is None or not selected_lead.valid or selected_lead.idx < 0 or
+      not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False)) or
+      not bool(getattr(state, "radar", False)) or not bool(getattr(state, "stable", False)) or
+      not math.isfinite(confidence) or confidence < LOW_SPEED_GAP_CLOSURE_MIN_CONFIDENCE or
+      selected_lead.track_id < 0):
+    return None
+
+  requested_accel = low_speed_gap_closure_accel(
+    act_inp.v_ego, selected_lead.v, selected_lead.a_k, selected_lead.d_rel, follow_gap,
+    selected_lead.v_rel,
+  )
+  if requested_accel <= 0.0 or not math.isfinite(requested_accel):
+    return None
+  desired_closing = min(
+    LOW_SPEED_GAP_CLOSURE_MAX_CLOSING_SPEED,
+    max(0.0, (selected_lead.d_rel - follow_gap) / LOW_SPEED_GAP_CLOSURE_HORIZON_S),
+  )
+  return LowSpeedGapClosureRequest(
+    requested_accel=float(requested_accel), desired_closing_speed=float(desired_closing),
+    follow_gap=float(follow_gap), lead_track_id=int(selected_lead.track_id),
+    lead_idx=int(selected_lead.idx), lead_confidence=confidence,
+    lead_stable=True, lead_radar=True,
+    lead_d_rel=float(selected_lead.d_rel), lead_v_lead=float(selected_lead.v),
+    lead_v_rel=float(selected_lead.v_rel),
+    lead_y_rel=_f(getattr(lead, "yRel", 0.0)),
+  )
 
 
 def _sanitize_inputs_for_mode(inp: LongitudinalStackInputs) -> LongitudinalStackInputs:
@@ -312,10 +384,15 @@ class LongitudinalStackResult:
   standstill_release_reason: str = ""
   actuation: ActuationVerdicts = field(default_factory=ActuationVerdicts)
   departure_prediction_evidence: DeparturePredictionEvidence = field(default_factory=DeparturePredictionEvidence)
+  low_speed_gap_closure: LowSpeedGapClosureRequest | None = None
 
   @property
   def departure_prediction(self) -> DeparturePredictionEvidence:
     return self.departure_prediction_evidence
+
+  @property
+  def lead_gap_closure_request(self) -> LowSpeedGapClosureRequest | None:
+    return self.low_speed_gap_closure
 
 
 class CustomLongitudinalStack:
@@ -658,6 +735,10 @@ class CustomLongitudinalStack:
     target_smoothing_debug = self._apply_target_smoothing(raw_a_target, dt, act_inp, decision, acc_envelope_result,
                                                           strongest_admitted_hazard_a, selected_lead.lead)
     a_target = float(target_smoothing_debug["target_smoothing_a_target"])
+    low_speed_gap_closure = _low_speed_gap_closure_request(
+      inp, act_inp, selected_lead, follow_gap, decision, scene,
+      cut_in_brake_assist_result, curve_traffic_advisor_result, standstill_release_allowed,
+    )
     debug: dict[str, Any] = {}
     map_coast_debug: dict[str, Any] = {}
     map_coast_fault = False
@@ -685,6 +766,10 @@ class CustomLongitudinalStack:
         "lead_context_progress_allowed": lead_progress_allowed,
         "lead_gap_excess": policy_lead_gap_excess,
         "lead_context_gap_excess": lead_gap_excess,
+        "low_speed_gap_closure_eligible": low_speed_gap_closure is not None,
+        "low_speed_gap_closure_request": (
+          float(low_speed_gap_closure.requested_accel) if low_speed_gap_closure is not None else 0.0
+        ),
         "t_follow": t_follow,
         "follow_gap": follow_gap,
         "lead_shadow_active": lead_shadow_active,
@@ -732,6 +817,7 @@ class CustomLongitudinalStack:
         model_stale=bool(inp.model_stale),
       ),
       departure_prediction_evidence=departure_prediction_evidence,
+      low_speed_gap_closure=low_speed_gap_closure,
       debug=debug,
     )
 

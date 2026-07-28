@@ -48,6 +48,7 @@ from openpilot.sunnypilot.custom.longitudinal.model_trust import (
   STOP_ANCHOR_MIN_COMMIT_S,
   StopTrustLearner,
 )
+from openpilot.sunnypilot.custom.longitudinal.lead_cushion import LowSpeedGapClosureRequest
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.net_demand_cap import NetDemandCapTrace, NetDemandEvidence, UphillGradeEstimator
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import STOP_APPROACH_DECEL_MIN, Personality
@@ -653,6 +654,7 @@ class CustomLongitudinalAdapter:
         research_actuation_allowed=self.research_actuation_allowed,
         t_follow=float(t_follow), accel_coast=float(accel_coast),
         actuation=result.actuation,
+        low_speed_gap_closure=getattr(result, "low_speed_gap_closure", None),
         departure_prediction_evidence=getattr(result, "departure_prediction_evidence", DeparturePredictionEvidence()),
         uphill_net_demand=uphill_evidence,
         debug=debug,
@@ -711,7 +713,12 @@ class CustomLongitudinalOutput:
   debug: dict[str, Any] = field(default_factory=dict)
   departure_prediction_evidence: DeparturePredictionEvidence = field(default_factory=DeparturePredictionEvidence)
   departure_prediction_trace: DeparturePredictionTrace = field(default_factory=DeparturePredictionTrace)
+  low_speed_gap_closure: LowSpeedGapClosureRequest | None = None
 
   @property
   def departure_prediction(self) -> DeparturePredictionEvidence:
     return self.departure_prediction_evidence
+
+  @property
+  def lead_gap_closure_request(self) -> LowSpeedGapClosureRequest | None:
+    return self.low_speed_gap_closure

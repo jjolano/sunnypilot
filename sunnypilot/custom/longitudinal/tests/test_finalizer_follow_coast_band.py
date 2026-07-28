@@ -11,7 +11,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
-from openpilot.sunnypilot.custom.longitudinal.tests.test_finalizer_characterization import make_cp
+from openpilot.sunnypilot.custom.longitudinal.tests.test_finalizer_characterization import (
+  make_cp,
+  make_custom_long,
+  make_custom_output,
+  make_lead,
+  make_sm,
+)
 
 
 def make_snapshot(*, accel_coast: float = -0.25, has_lead: bool = True, v_ego: float = 15.0,
@@ -47,6 +53,29 @@ def test_real_decel_passes_from_first_frame_and_hysteresis_exit():
   assert band(fin, 0.01, snap) == 0.01          # below exit hysteresis: still DECEL
   assert band(fin, 0.05, snap) == 0.05          # past exit: back to HOLD
   assert band(fin, -0.08, snap) == 0.0          # shallow dither clamps again
+
+
+def test_public_finalizer_chain_passes_shallow_mpc_decel_immediately():
+  fin = CustomLongitudinalFinalizer(make_cp())
+  custom_long = make_custom_long()
+  custom_output = make_custom_output(accel_coast=-0.25)
+  sm = make_sm(
+    v_ego=15.0,
+    lead_one=make_lead(d_rel=30.0, v_lead=13.5, v_rel=-1.5),
+    long_active=True,
+  )
+
+  def finalize(mpc_a_target: float) -> float:
+    return fin.finalize(
+      sm, custom_long, custom_output, False, False, 0.05,
+      mpc_a_target, False, 0.0, False,
+      lambda _sm, a_target, *_args: a_target, lambda: None,
+    ).a_target
+
+  assert finalize(0.05) == 0.05  # seed the old band's HOLD regime
+  outputs = [finalize(-0.08) for _ in range(25)]
+  assert outputs[0] == -0.08
+  assert all(a_target < 0.0 for a_target in outputs)
 
 
 def test_joining_mid_decel_is_not_clamped():

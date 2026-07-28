@@ -608,6 +608,51 @@ def test_stack_cushion_active_with_slower_lead():
   assert r.a_target < 0.3
 
 
+def test_low_speed_gap_closure_does_not_require_generic_lead_progress_gate():
+  stack = CustomLongitudinalStack()
+  ld = lead(d_rel=10.3, v_lead=1.2, v_rel=0.0, a_lead=0.0)
+  result = None
+  for _ in range(8):
+    result = stack.update(base(
+      v_ego=1.0, v_cruise=12.0, seed_a_target=0.0, lead_a_target=0.0,
+      leads=(ld, None), mode=LongitudinalMode.SCC, long_active=True,
+    ), DT)
+
+  assert result is not None
+  assert result.debug["lead_context_progress_allowed"] is False
+  assert result.low_speed_gap_closure is not None
+  assert result.low_speed_gap_closure.requested_accel == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+  "overrides",
+  [
+    {"model_should_stop": True},
+    {"curve_active": True, "curve_a_target": -0.2},
+    {"gas_pressed": True},
+    {"force_slow_decel": True},
+    {"seed_a_target": -0.11},
+    {"standstill": True},
+  ],
+)
+def test_low_speed_gap_closure_upstream_verdict_is_fail_closed(overrides):
+  stack = CustomLongitudinalStack()
+  ld = lead(d_rel=10.3, v_lead=1.2, v_rel=0.0, a_lead=0.0)
+  result = None
+  for _ in range(8):
+    values = dict(
+      v_ego=1.0, v_cruise=12.0, seed_a_target=0.0, lead_a_target=0.0,
+      leads=(ld, None), mode=LongitudinalMode.SCC, long_active=True,
+    )
+    values.update(overrides)
+    if values.get("curve_active"):
+      values["sources"] = SourceToggles(scc_curve_vision_enabled=True)
+    result = stack.update(base(**values), DT)
+
+  assert result is not None
+  assert result.low_speed_gap_closure is None
+
+
 def test_reset_clears_trackers():
   s = CustomLongitudinalStack()
   for _ in range(10):
