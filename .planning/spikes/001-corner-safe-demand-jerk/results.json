@@ -1,0 +1,750 @@
+{
+  "coverage": {
+    "clean_corner_frames": 22838,
+    "frames": 509379,
+    "routes": 2,
+    "segments": 86
+  },
+  "variants": {
+    "post_lag08": {
+      "baseline": {
+        "all": {
+          "excursions_gt_3": 30,
+          "max": 14.381,
+          "n": 22838,
+          "p95": 1.02,
+          "p99": 1.687
+        },
+        "turn_in": {
+          "excursions_gt_3": 12,
+          "max": 14.381,
+          "n": 2587,
+          "p95": 1.392,
+          "p99": 2.234
+        },
+        "unwind": {
+          "excursions_gt_3": 18,
+          "max": 10.591,
+          "n": 2381,
+          "p95": 1.839,
+          "p99": 2.913
+        }
+      },
+      "candidate": {
+        "all": {
+          "excursions_gt_3": 20,
+          "max": 6.465,
+          "n": 22838,
+          "p95": 1.026,
+          "p99": 1.502
+        },
+        "turn_in": {
+          "excursions_gt_3": 4,
+          "max": 6.465,
+          "n": 2587,
+          "p95": 1.339,
+          "p99": 1.779
+        },
+        "unwind": {
+          "excursions_gt_3": 16,
+          "max": 5.951,
+          "n": 2381,
+          "p95": 1.643,
+          "p99": 2.82
+        }
+      },
+      "changed_frames": 691,
+      "lag_cap": 0.08,
+      "max_equivalent_delay_s": 0.0784,
+      "max_lag": 0.0844,
+      "metric_frames": 22838,
+      "new_excursions": 0,
+      "p95_lag": 0.0,
+      "placement": "post_gate",
+      "preliminary_safety_gate": false,
+      "reduction": {
+        "all_excursions": 0.3333,
+        "turn_in_p99": 0.2037,
+        "unwind_p99": 0.0319
+      },
+      "sign_mismatches": 0,
+      "worst_events": [
+        {
+          "baseline_jerk": -10.591,
+          "candidate_jerk": -1.711,
+          "lag": 0.08,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1409.389
+        },
+        {
+          "baseline_jerk": -14.381,
+          "candidate_jerk": -6.465,
+          "lag": 0.08,
+          "phase": "turn_in",
+          "reason": "low_lane_confidence",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1130.299
+        },
+        {
+          "baseline_jerk": 5.503,
+          "candidate_jerk": 1.026,
+          "lag": 0.046,
+          "phase": "turn_in",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 3,
+          "t": 195.633
+        },
+        {
+          "baseline_jerk": 5.175,
+          "candidate_jerk": 1.267,
+          "lag": 0.034,
+          "phase": "turn_in",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1405.229
+        },
+        {
+          "baseline_jerk": 4.924,
+          "candidate_jerk": 1.206,
+          "lag": 0.07,
+          "phase": "turn_in",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1405.239
+        },
+        {
+          "baseline_jerk": 3.59,
+          "candidate_jerk": -0.904,
+          "lag": 0.02,
+          "phase": "turn_in",
+          "reason": "ok",
+          "route": "000002cd--528f8f8262",
+          "segment": 26,
+          "t": 1577.193
+        },
+        {
+          "baseline_jerk": -3.392,
+          "candidate_jerk": -1.104,
+          "lag": 0.024,
+          "phase": "turn_in",
+          "reason": "low_lane_confidence",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1130.399
+        },
+        {
+          "baseline_jerk": 3.205,
+          "candidate_jerk": 1.32,
+          "lag": 0.015,
+          "phase": "turn_in",
+          "reason": "ok",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1124.849
+        },
+        {
+          "baseline_jerk": -3.279,
+          "candidate_jerk": -1.807,
+          "lag": 0.049,
+          "phase": "unwind",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1405.199
+        },
+        {
+          "baseline_jerk": -3.194,
+          "candidate_jerk": -1.752,
+          "lag": 0.001,
+          "phase": "turn_in",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1134.168
+        },
+        {
+          "baseline_jerk": -3.069,
+          "candidate_jerk": -1.904,
+          "lag": 0.03,
+          "phase": "turn_in",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1134.098
+        },
+        {
+          "baseline_jerk": 4.869,
+          "candidate_jerk": 3.801,
+          "lag": 0.08,
+          "phase": "turn_in",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1405.249
+        }
+      ]
+    },
+    "post_lag20": {
+      "baseline": {
+        "all": {
+          "excursions_gt_3": 30,
+          "max": 14.381,
+          "n": 22838,
+          "p95": 1.02,
+          "p99": 1.687
+        },
+        "turn_in": {
+          "excursions_gt_3": 12,
+          "max": 14.381,
+          "n": 2587,
+          "p95": 1.392,
+          "p99": 2.234
+        },
+        "unwind": {
+          "excursions_gt_3": 18,
+          "max": 10.591,
+          "n": 2381,
+          "p95": 1.839,
+          "p99": 2.913
+        }
+      },
+      "candidate": {
+        "all": {
+          "excursions_gt_3": 17,
+          "max": 5.951,
+          "n": 22838,
+          "p95": 1.026,
+          "p99": 1.474
+        },
+        "turn_in": {
+          "excursions_gt_3": 1,
+          "max": 3.154,
+          "n": 2587,
+          "p95": 1.321,
+          "p99": 1.568
+        },
+        "unwind": {
+          "excursions_gt_3": 16,
+          "max": 5.951,
+          "n": 2381,
+          "p95": 1.618,
+          "p99": 2.82
+        }
+      },
+      "changed_frames": 722,
+      "lag_cap": 0.2,
+      "max_equivalent_delay_s": 0.1906,
+      "max_lag": 0.2111,
+      "metric_frames": 22838,
+      "new_excursions": 0,
+      "p95_lag": 0.0,
+      "placement": "post_gate",
+      "preliminary_safety_gate": false,
+      "reduction": {
+        "all_excursions": 0.4333,
+        "turn_in_p99": 0.2981,
+        "unwind_p99": 0.0319
+      },
+      "sign_mismatches": 0,
+      "worst_events": [
+        {
+          "baseline_jerk": -14.381,
+          "candidate_jerk": -0.994,
+          "lag": 0.135,
+          "phase": "turn_in",
+          "reason": "low_lane_confidence",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1130.299
+        },
+        {
+          "baseline_jerk": -10.591,
+          "candidate_jerk": -1.074,
+          "lag": 0.086,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1409.389
+        },
+        {
+          "baseline_jerk": 5.503,
+          "candidate_jerk": 1.026,
+          "lag": 0.046,
+          "phase": "turn_in",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 3,
+          "t": 195.633
+        },
+        {
+          "baseline_jerk": 5.175,
+          "candidate_jerk": 1.267,
+          "lag": 0.034,
+          "phase": "turn_in",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1405.229
+        },
+        {
+          "baseline_jerk": 4.924,
+          "candidate_jerk": 1.206,
+          "lag": 0.07,
+          "phase": "turn_in",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1405.239
+        },
+        {
+          "baseline_jerk": 4.869,
+          "candidate_jerk": 1.192,
+          "lag": 0.105,
+          "phase": "turn_in",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1405.249
+        },
+        {
+          "baseline_jerk": 4.204,
+          "candidate_jerk": 0.796,
+          "lag": 0.141,
+          "phase": "turn_in",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1405.259
+        },
+        {
+          "baseline_jerk": 3.59,
+          "candidate_jerk": -0.89,
+          "lag": 0.083,
+          "phase": "turn_in",
+          "reason": "ok",
+          "route": "000002cd--528f8f8262",
+          "segment": 26,
+          "t": 1577.193
+        },
+        {
+          "baseline_jerk": -3.392,
+          "candidate_jerk": -1.104,
+          "lag": 0.081,
+          "phase": "turn_in",
+          "reason": "low_lane_confidence",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1130.399
+        },
+        {
+          "baseline_jerk": 3.205,
+          "candidate_jerk": 1.32,
+          "lag": 0.015,
+          "phase": "turn_in",
+          "reason": "ok",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1124.849
+        },
+        {
+          "baseline_jerk": -3.279,
+          "candidate_jerk": -1.807,
+          "lag": 0.049,
+          "phase": "unwind",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1405.199
+        },
+        {
+          "baseline_jerk": -3.194,
+          "candidate_jerk": -1.752,
+          "lag": 0.001,
+          "phase": "turn_in",
+          "reason": "high_path_std",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1134.168
+        }
+      ]
+    },
+    "pre_lag08": {
+      "baseline": {
+        "all": {
+          "excursions_gt_3": 30,
+          "max": 14.381,
+          "n": 22838,
+          "p95": 1.02,
+          "p99": 1.687
+        },
+        "turn_in": {
+          "excursions_gt_3": 12,
+          "max": 14.381,
+          "n": 2587,
+          "p95": 1.392,
+          "p99": 2.234
+        },
+        "unwind": {
+          "excursions_gt_3": 18,
+          "max": 10.591,
+          "n": 2381,
+          "p95": 1.839,
+          "p99": 2.913
+        }
+      },
+      "candidate": {
+        "all": {
+          "excursions_gt_3": 30,
+          "max": 14.381,
+          "n": 22838,
+          "p95": 1.03,
+          "p99": 1.575
+        },
+        "turn_in": {
+          "excursions_gt_3": 12,
+          "max": 14.381,
+          "n": 2587,
+          "p95": 1.373,
+          "p99": 2.073
+        },
+        "unwind": {
+          "excursions_gt_3": 18,
+          "max": 10.591,
+          "n": 2381,
+          "p95": 1.748,
+          "p99": 2.913
+        }
+      },
+      "changed_frames": 415,
+      "lag_cap": 0.08,
+      "max_equivalent_delay_s": 0.0687,
+      "max_lag": 0.08,
+      "metric_frames": 22838,
+      "new_excursions": 0,
+      "p95_lag": 0.0,
+      "placement": "pre_gate",
+      "preliminary_safety_gate": true,
+      "reduction": {
+        "all_excursions": 0.0,
+        "turn_in_p99": 0.0721,
+        "unwind_p99": 0.0
+      },
+      "sign_mismatches": 0,
+      "worst_events": [
+        {
+          "baseline_jerk": 3.225,
+          "candidate_jerk": 3.225,
+          "lag": 0.08,
+          "phase": "unwind",
+          "reason": "ok",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1396.599
+        },
+        {
+          "baseline_jerk": 3.036,
+          "candidate_jerk": 3.036,
+          "lag": 0.08,
+          "phase": "unwind",
+          "reason": "ok",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1396.559
+        },
+        {
+          "baseline_jerk": 5.503,
+          "candidate_jerk": 5.503,
+          "lag": 0.0,
+          "phase": "turn_in",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 3,
+          "t": 195.633
+        },
+        {
+          "baseline_jerk": -4.234,
+          "candidate_jerk": -4.234,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 5,
+          "t": 316.863
+        },
+        {
+          "baseline_jerk": -4.036,
+          "candidate_jerk": -4.036,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 5,
+          "t": 316.873
+        },
+        {
+          "baseline_jerk": -4.147,
+          "candidate_jerk": -4.147,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 5,
+          "t": 316.883
+        },
+        {
+          "baseline_jerk": 3.59,
+          "candidate_jerk": 3.59,
+          "lag": 0.0,
+          "phase": "turn_in",
+          "reason": "ok",
+          "route": "000002cd--528f8f8262",
+          "segment": 26,
+          "t": 1577.193
+        },
+        {
+          "baseline_jerk": 4.994,
+          "candidate_jerk": 4.994,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 30,
+          "t": 1853.202
+        },
+        {
+          "baseline_jerk": 5.951,
+          "candidate_jerk": 5.951,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 30,
+          "t": 1853.212
+        },
+        {
+          "baseline_jerk": 4.799,
+          "candidate_jerk": 4.799,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 30,
+          "t": 1853.225
+        },
+        {
+          "baseline_jerk": 3.205,
+          "candidate_jerk": 3.205,
+          "lag": 0.0,
+          "phase": "turn_in",
+          "reason": "ok",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1124.849
+        },
+        {
+          "baseline_jerk": -14.381,
+          "candidate_jerk": -14.381,
+          "lag": 0.0,
+          "phase": "turn_in",
+          "reason": "low_lane_confidence",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1130.299
+        }
+      ]
+    },
+    "pre_lag20": {
+      "baseline": {
+        "all": {
+          "excursions_gt_3": 30,
+          "max": 14.381,
+          "n": 22838,
+          "p95": 1.02,
+          "p99": 1.687
+        },
+        "turn_in": {
+          "excursions_gt_3": 12,
+          "max": 14.381,
+          "n": 2587,
+          "p95": 1.392,
+          "p99": 2.234
+        },
+        "unwind": {
+          "excursions_gt_3": 18,
+          "max": 10.591,
+          "n": 2381,
+          "p95": 1.839,
+          "p99": 2.913
+        }
+      },
+      "candidate": {
+        "all": {
+          "excursions_gt_3": 30,
+          "max": 14.381,
+          "n": 22838,
+          "p95": 1.03,
+          "p99": 1.553
+        },
+        "turn_in": {
+          "excursions_gt_3": 12,
+          "max": 14.381,
+          "n": 2587,
+          "p95": 1.35,
+          "p99": 1.908
+        },
+        "unwind": {
+          "excursions_gt_3": 18,
+          "max": 10.591,
+          "n": 2381,
+          "p95": 1.731,
+          "p99": 2.913
+        }
+      },
+      "changed_frames": 427,
+      "lag_cap": 0.2,
+      "max_equivalent_delay_s": 0.1633,
+      "max_lag": 0.2,
+      "metric_frames": 22838,
+      "new_excursions": 0,
+      "p95_lag": 0.0,
+      "placement": "pre_gate",
+      "preliminary_safety_gate": true,
+      "reduction": {
+        "all_excursions": 0.0,
+        "turn_in_p99": 0.1459,
+        "unwind_p99": 0.0
+      },
+      "sign_mismatches": 0,
+      "worst_events": [
+        {
+          "baseline_jerk": 3.455,
+          "candidate_jerk": 3.455,
+          "lag": 0.2,
+          "phase": "unwind",
+          "reason": "ok",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1396.549
+        },
+        {
+          "baseline_jerk": 3.148,
+          "candidate_jerk": 3.148,
+          "lag": 0.2,
+          "phase": "unwind",
+          "reason": "ok",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1396.53
+        },
+        {
+          "baseline_jerk": 3.275,
+          "candidate_jerk": 3.275,
+          "lag": 0.2,
+          "phase": "unwind",
+          "reason": "ok",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 23,
+          "t": 1396.569
+        },
+        {
+          "baseline_jerk": 5.503,
+          "candidate_jerk": 5.503,
+          "lag": 0.0,
+          "phase": "turn_in",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 3,
+          "t": 195.633
+        },
+        {
+          "baseline_jerk": -4.234,
+          "candidate_jerk": -4.234,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 5,
+          "t": 316.863
+        },
+        {
+          "baseline_jerk": -4.036,
+          "candidate_jerk": -4.036,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 5,
+          "t": 316.873
+        },
+        {
+          "baseline_jerk": -4.147,
+          "candidate_jerk": -4.147,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 5,
+          "t": 316.883
+        },
+        {
+          "baseline_jerk": 3.59,
+          "candidate_jerk": 3.59,
+          "lag": 0.0,
+          "phase": "turn_in",
+          "reason": "ok",
+          "route": "000002cd--528f8f8262",
+          "segment": 26,
+          "t": 1577.193
+        },
+        {
+          "baseline_jerk": 4.994,
+          "candidate_jerk": 4.994,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 30,
+          "t": 1853.202
+        },
+        {
+          "baseline_jerk": 5.951,
+          "candidate_jerk": 5.951,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 30,
+          "t": 1853.212
+        },
+        {
+          "baseline_jerk": 4.799,
+          "candidate_jerk": 4.799,
+          "lag": 0.0,
+          "phase": "unwind",
+          "reason": "low_lane_confidence",
+          "route": "000002cd--528f8f8262",
+          "segment": 30,
+          "t": 1853.225
+        },
+        {
+          "baseline_jerk": 3.205,
+          "candidate_jerk": 3.205,
+          "lag": 0.0,
+          "phase": "turn_in",
+          "reason": "ok",
+          "route": "000002ce--7be8aa5a07",
+          "segment": 18,
+          "t": 1124.849
+        }
+      ]
+    }
+  }
+}
