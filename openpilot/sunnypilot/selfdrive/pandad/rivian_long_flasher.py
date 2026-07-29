@@ -8,7 +8,8 @@ See the LICENSE.md file in the root directory for more details.
 import os
 from itertools import accumulate
 
-from openpilot.cereal import car, messaging
+from openpilot.cereal import messaging
+from opendbc.car.structs import car
 from panda import Panda
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog

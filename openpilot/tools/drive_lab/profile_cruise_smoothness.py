@@ -11,7 +11,7 @@ Signals used when present:
 * ``carControl.{longActive,actuators.accel}``
 * ``carOutput.actuatorsOutput.accel``
 * ``longitudinalPlan.aTarget`` and ``longitudinalPlanSP.aTarget``
-* ``radarState.leadOne.{status,dRel}``
+* ``radarState.leadOne.{present,dRel}``
 
 Run with::
 
@@ -396,7 +396,7 @@ def _close_lead(
   lead = safe_get(radar_state, "leadOne")
   if lead is None:
     return None
-  if not bool(safe_get(lead, "status", False)):
+  if not bool(safe_get(lead, "present", False)):
     return False
   d_rel = _finite_or_none(safe_get(lead, "dRel"))
   return None if d_rel is None else d_rel <= max_d_rel_m
@@ -670,7 +670,7 @@ def _notes(p: CruiseSmoothnessParams, samples: list[_CruiseSample]) -> list[str]
     f"steady windows require vEgo >= {p.min_speed_mps:.1f} m/s, speed stddev <= {p.max_speed_stddev_mps:.2f} m/s, and "
     + f"speed peak-to-peak <= {p.max_speed_peak_to_peak_mps:.2f} m/s; these are corpus assumptions, not universal limits",
     f"pedal, set-speed, engagement, and speed transitions are excluded for {p.transition_exclusion_s:.1f} s; "
-    + f"close lead-following means leadOne.status with dRel <= {p.close_lead_d_rel_m:.1f} m",
+    + f"close lead-following means leadOne.present with dRel <= {p.close_lead_d_rel_m:.1f} m",
     "manual gas-held samples remain eligible after transition exclusion; braking and engaged gas override samples remain excluded",
     f"discontinuous samples are segmented at gaps > {p.max_sample_gap_s:.2f} s; jerk uses finite adjacent samples within that gap",
     f"engaged acceleration channels are zero-order-held only while their source timestamp age is <= {p.max_channel_age_s:.2f} s",

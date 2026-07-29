@@ -3,12 +3,12 @@ import pytest
 import signal
 import time
 
-from openpilot.cereal import car
+from opendbc.car.structs import car
 from openpilot.common.params import Params
 import openpilot.system.manager.manager as manager
 from openpilot.system.manager.process import ensure_running
 from openpilot.system.manager.process_config import managed_processes, procs
-from openpilot.system.hardware import HARDWARE
+from openpilot.common.hardware import HARDWARE
 
 os.environ['FAKEUPLOAD'] = "1"
 
@@ -26,10 +26,6 @@ class TestManager:
 
   def teardown_method(self):
     manager.manager_cleanup()
-
-  def test_manager_prepare(self):
-    os.environ['PREPAREONLY'] = '1'
-    manager.main()
 
   def test_duplicate_procs(self):
     assert len(procs) == len(managed_processes), "Duplicate process names"

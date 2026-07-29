@@ -1,5 +1,6 @@
 #include "tools/cabana/tools/findsignal.h"
 
+#include <set>
 #include <thread>
 
 #include <QFormLayout>
@@ -98,9 +99,9 @@ FindSignalDlg::FindSignalDlg(QWidget *parent) : QDialog(parent, Qt::WindowFlags(
   message_group = new QGroupBox(tr("Messages"), this);
   QFormLayout *message_layout = new QFormLayout(message_group);
   message_layout->addRow(tr("Bus"), bus_edit = new QLineEdit());
-  bus_edit->setPlaceholderText(tr("comma-seperated values. Leave blank for all"));
+  bus_edit->setPlaceholderText(tr("comma-separated values. Leave blank for all"));
   message_layout->addRow(tr("Address"), address_edit = new QLineEdit());
-  address_edit->setPlaceholderText(tr("comma-seperated hex values. Leave blank for all"));
+  address_edit->setPlaceholderText(tr("comma-separated hex values. Leave blank for all"));
   QHBoxLayout *hlayout = new QHBoxLayout();
   hlayout->addWidget(first_time_edit = new QLineEdit("0"));
   hlayout->addWidget(new QLabel("-"));
@@ -210,13 +211,13 @@ void FindSignalDlg::search() {
 }
 
 void FindSignalDlg::setInitialSignals() {
-  QSet<ushort> buses;
+  std::set<ushort> buses;
   for (auto bus : bus_edit->text().trimmed().split(",")) {
     bus = bus.trimmed();
     if (!bus.isEmpty()) buses.insert(bus.toUShort());
   }
 
-  QSet<uint32_t> addresses;
+  std::set<uint32_t> addresses;
   for (auto addr : address_edit->text().trimmed().split(",")) {
     addr = addr.trimmed();
     if (!addr.isEmpty()) addresses.insert(addr.toULong(nullptr, 16));
@@ -239,7 +240,7 @@ void FindSignalDlg::setInitialSignals() {
   model->initial_signals.clear();
 
   for (const auto &[id, m] : can->lastMessages()) {
-    if ((buses.isEmpty() || buses.contains(id.source)) && (addresses.isEmpty() || addresses.contains(id.address))) {
+    if ((buses.empty() || buses.count(id.source)) && (addresses.empty() || addresses.count(id.address))) {
       const auto &events = can->events(id);
       auto e = std::lower_bound(events.cbegin(), events.cend(), first_time, CompareCanEvent());
       if (e != events.cend()) {
@@ -276,7 +277,7 @@ void FindSignalDlg::customMenuRequested(const QPoint &pos) {
     menu.addAction(tr("Create Signal"));
     if (menu.exec(view->mapToGlobal(pos))) {
       auto &s = model->filtered_signals[index.row()];
-      UndoStack::push(new AddSigCommand(s.id, s.sig));
+      UndoStack::instance()->push(new AddSigCommand(s.id, s.sig));
       emit openMessage(s.id);
     }
   }

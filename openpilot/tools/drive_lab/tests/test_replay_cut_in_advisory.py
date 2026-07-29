@@ -14,7 +14,7 @@ def msg(kind, t_s, **payload):
 
 def _lead(status=True, dRel=15.0, yRel=0.0, vRel=-3.0, vLead=8.0, vLeadK=8.0,
           aLeadK=0.0, radarTrackId=42, modelProb=0.9, radar=True):
-  return SimpleNamespace(status=status, dRel=dRel, yRel=yRel, vRel=vRel, vLead=vLead,
+  return SimpleNamespace(present=status, dRel=dRel, yRel=yRel, vRel=vRel, vLead=vLead,
                          vLeadK=vLeadK, aLeadK=aLeadK, radarTrackId=radarTrackId,
                          modelProb=modelProb, radar=radar)
 

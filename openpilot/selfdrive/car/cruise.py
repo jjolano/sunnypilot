@@ -1,7 +1,7 @@
 import math
 import numpy as np
 
-from openpilot.cereal import car
+from opendbc.car.structs import car
 from openpilot.common.constants import CV
 from openpilot.sunnypilot.selfdrive.car.cruise_ext import VCruiseHelperSP
 

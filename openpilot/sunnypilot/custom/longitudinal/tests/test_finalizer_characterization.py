@@ -662,6 +662,32 @@ def _arm_stop_hold(planner, d_rel: float = 6.2, lead_id: int = 1, gap_increasing
   planner._lead_stop_hold_gap_increasing_s = gap_increasing_s
 
 
+@pytest.mark.parametrize("v_ego, expected", [(0.44, True), (0.46, False)])
+def test_release_prep_uses_fork_stop_threshold(v_ego, expected):
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=_make_valid_release_custom_output(),
+  )
+  planner.CP = make_cp(v_ego_stopping=0.5)
+  planner.custom_long_finalizer.CP = planner.CP
+  _arm_stop_hold(planner, d_rel=6.0, lead_id=1, gap_increasing_s=0.15)
+  lead = make_lead(d_rel=6.2, v_lead=0.8, v_rel=0.5, lead_id=1)
+  sm = make_sm(v_ego=v_ego, lead_one=lead)
+  snapshot = _InputSnapshot.build(
+    planner.custom_long_finalizer, sm, planner.custom_long, planner.custom_long_output,
+    is_e2e=False, model_stale=False, dt=0.0,
+    mpc_a_target=-0.05, mpc_should_stop=False,
+    raw_model_a_target=0.0, raw_model_should_stop=False,
+  )
+
+  assert snapshot.v_ego_stopping == pytest.approx(0.25)
+  assert planner.custom_long_finalizer._stop_hold_release_prep_applies(
+    sm, lead, planner.custom_long, planner.custom_long_output,
+    lead_d_rel=6.2, lead_v=0.8, lead_v_rel=0.5,
+    mpc_a_target=-0.05, raw_model_a_target=0.0, raw_model_should_stop=False,
+  ) is expected
+
+
 def test_sustained_pullaway_prepares_hold_before_absolute_release_distance():
   planner = make_planner(
     mode=LongitudinalMode.SCC,

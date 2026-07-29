@@ -78,7 +78,7 @@ def build_longitudinal_profile(msgs: list[Any], source: str = "unknown", already
         cruise_speeds.append(float(v_cruise_kph) / 3.6)
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne")
-      if not bool(safe_get(lead, "status", False)):
+      if not bool(safe_get(lead, "present", False)):
         prev_lead_time = None
         prev_lead_speed = None
         continue

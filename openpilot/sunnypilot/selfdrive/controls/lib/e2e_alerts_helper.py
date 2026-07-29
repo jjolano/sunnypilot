@@ -61,7 +61,7 @@ class E2EAlertsHelper:
 
     model_x = sm['modelV2'].position.x
     max_idx = len(model_x) - 1
-    self.has_lead = sm['radarState'].leadOne.status
+    self.has_lead = sm['radarState'].leadOne.present
     lead_dRel = sm['radarState'].leadOne.dRel
 
     standstill = CS.standstill

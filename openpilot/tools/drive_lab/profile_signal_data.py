@@ -288,7 +288,7 @@ def census_segment(seg_dir: Path, route_id: str, segment: int | None, prefer_qlo
     elif typ == "radarState":
       has_radar = True
       lead = safe_get(payload, "leadOne", {})
-      state["lead_status"] = bool(safe_get(lead, "status", False))
+      state["lead_status"] = bool(safe_get(lead, "present", False))
     elif typ == "carState":
       v_ego = safe_get(payload, "vEgo")
       a_ego = safe_get(payload, "aEgo")

@@ -3,8 +3,8 @@ import os
 import requests
 import unicodedata
 from datetime import datetime, timedelta, UTC
-from openpilot.system.hardware.hw import Paths
-from openpilot.system.version import get_version
+from openpilot.common.hardware.hw import Paths
+from openpilot.common.version import get_version
 
 # name: jwt signature algorithm
 KEYS = {"id_rsa": "RS256",
@@ -38,6 +38,7 @@ class BaseApi:
     }
     if payload_extra is not None:
       payload.update(payload_extra)
+    assert self.private_key is not None
     token = jwt.encode(payload, self.private_key, algorithm=self.jwt_algorithm)
     if isinstance(token, bytes):
       token = token.decode('utf8')

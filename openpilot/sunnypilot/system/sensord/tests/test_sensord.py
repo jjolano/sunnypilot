@@ -1,4 +1,5 @@
 import os
+import subprocess
 import pytest
 import time
 import numpy as np
@@ -9,7 +10,7 @@ from openpilot.cereal import log
 from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.gpio import get_irqs_for_action
 from openpilot.common.timeout import Timeout
-from openpilot.system.hardware import HARDWARE
+from openpilot.common.hardware import HARDWARE
 from openpilot.system.manager.process_config import managed_processes
 
 BMX = {
@@ -70,7 +71,7 @@ ALL_SENSORS = {
 }
 
 
-def get_irq_count(irq: int):
+def get_irq_count(irq: str):
   with open(f"/sys/kernel/irq/{irq}/per_cpu_count") as f:
     per_cpu = map(int, f.read().split(","))
     return sum(per_cpu)
@@ -110,7 +111,7 @@ class TestSensord:
     os.environ["LSM_SELF_TEST"] = "1"
 
     # read initial sensor values every test case can use
-    os.system("pkill -f \\\\./sensord")
+    subprocess.run(["pkill", "-f", r"\\./sensord"], check=False)
     try:
       managed_processes["sensord"].start()
       cls.sample_secs = int(os.getenv("SAMPLE_SECS", "10"))
@@ -180,7 +181,7 @@ class TestSensord:
   def test_logmonottime_timestamp_diff(self):
     # ensure diff between the message logMonotime and sample timestamp is small
 
-    tdiffs = list()
+    tdiffs = []
     for etype in self.events:
       for measurement in self.events[etype]:
         m = getattr(measurement, measurement.which())
@@ -202,7 +203,7 @@ class TestSensord:
     assert avg_diff < 4, f"Avg packet diff: {avg_diff:.1f}ms"
 
   def test_sensor_values(self):
-    sensor_values = dict()
+    sensor_values = {}
     for etype in self.events:
       for measurement in self.events[etype]:
         m = getattr(measurement, measurement.which())

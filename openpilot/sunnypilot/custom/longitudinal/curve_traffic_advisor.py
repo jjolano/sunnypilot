@@ -14,6 +14,8 @@ from dataclasses import dataclass, replace
 import math
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.lead_context import lead_present
+
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
 MODE_APPLY_CONSERVATIVE = "apply_conservative"
@@ -317,7 +319,7 @@ def _evaluate_traffic(data: CurveTrafficAdvisorInputs) -> tuple[bool, str]:
     reasons.append("alternate_threat")
 
   for lead in data.leads:
-    if lead is None or not bool(getattr(lead, "status", False)):
+    if not lead_present(lead):
       continue
     d_rel = _f(getattr(lead, "dRel", math.inf), math.inf)
     v_rel = _f(getattr(lead, "vRel", 0.0))

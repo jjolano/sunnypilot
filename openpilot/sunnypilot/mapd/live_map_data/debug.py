@@ -16,8 +16,8 @@ from openpilot.cereal import messaging
 from openpilot.common.gps import get_gps_location_service
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit_controller.common import Policy
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit_controller.speed_limit_resolver import SpeedLimitResolver
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
 from openpilot.sunnypilot.mapd.live_map_data import get_debug
 
 

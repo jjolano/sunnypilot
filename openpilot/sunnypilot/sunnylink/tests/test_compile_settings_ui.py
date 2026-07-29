@@ -328,7 +328,6 @@ class TestNavigationValidation:
     with pytest.raises(CompileError, match=match):
       _canon_navigation(nav_doc, self.PANELS)
 
-
 class TestSourceTreeIntegrity:
   def test_macros_yaml_well_formed(self):
     with open(os.path.join(DEFAULT_SRC, "_macros.yaml")) as f:

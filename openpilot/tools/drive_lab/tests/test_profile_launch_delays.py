@@ -25,7 +25,7 @@ def build_stream(*, engaged=True, lead=False, long_active=None, gas_pressed=Fals
     msgs.append(msg("selfdriveState", t + 0.001, enabled=engaged))
     msgs.append(msg("carControl", t + 0.0015, longActive=long_active))
     d_rel = 8.0 if lead else 250.0
-    msgs.append(msg("radarState", t + 0.002, leadOne=SimpleNamespace(dRel=d_rel, vLead=v, status=lead)))
+    msgs.append(msg("radarState", t + 0.002, leadOne=SimpleNamespace(dRel=d_rel, vLead=v, present=lead)))
     msgs.append(msg("longitudinalPlanSP", t + 0.003, aTarget=a_target, customLongitudinal=SimpleNamespace(shouldStop=should_stop)))
     clock[0] += 0.1
 
@@ -46,7 +46,7 @@ def build_following_launch(*, lead_moves: bool):
     t = clock[0]
     msgs.append(msg("carState", t, vEgo=v, aEgo=a))
     msgs.append(msg("selfdriveState", t + 0.001, enabled=True))
-    msgs.append(msg("radarState", t + 0.002, leadOne=SimpleNamespace(dRel=8.0, vLead=lead_v, status=lead_status)))
+    msgs.append(msg("radarState", t + 0.002, leadOne=SimpleNamespace(dRel=8.0, vLead=lead_v, present=lead_status)))
     msgs.append(msg("longitudinalPlanSP", t + 0.003, aTarget=a_target, customLongitudinal=SimpleNamespace(shouldStop=should_stop)))
     clock[0] += 0.1
 

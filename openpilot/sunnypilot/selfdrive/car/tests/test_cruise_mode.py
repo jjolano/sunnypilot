@@ -1,4 +1,4 @@
-from openpilot.cereal import car
+from opendbc.car.structs import car
 from openpilot.common.parameterized import parameterized_class
 from openpilot.selfdrive.selfdrived.events import Events
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper, DISTANCE_LONG_PRESS

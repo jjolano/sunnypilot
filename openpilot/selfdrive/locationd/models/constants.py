@@ -24,6 +24,7 @@ def require_generated_ekf(generated_dir: str, name: str) -> None:
       f"(Without this check rednose would dlopen the missing file and abort the process.)"
     )
 
+
 class ObservationKind:
   UNKNOWN = 0
   NO_OBSERVATION = 1

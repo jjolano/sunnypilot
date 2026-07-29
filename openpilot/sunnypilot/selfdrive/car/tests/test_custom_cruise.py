@@ -1,6 +1,6 @@
 import pytest
 
-from openpilot.cereal import car
+from opendbc.car.structs import car
 from openpilot.common.constants import CV
 from openpilot.common.parameterized import parameterized_class
 from openpilot.common.params import Params

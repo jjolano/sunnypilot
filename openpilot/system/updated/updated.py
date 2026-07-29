@@ -3,7 +3,6 @@ import os
 import re
 import datetime
 import subprocess
-import psutil
 import shutil
 import signal
 import fcntl
@@ -17,8 +16,8 @@ from openpilot.common.time_helpers import system_time_valid
 from openpilot.common.markdown import parse_markdown
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
-from openpilot.system.hardware import AGNOS, HARDWARE
-from openpilot.system.version import get_build_metadata, SP_BRANCH_MIGRATIONS
+from openpilot.common.hardware import AGNOS, HARDWARE
+from openpilot.common.version import get_build_metadata, SP_BRANCH_MIGRATIONS
 
 LOCK_FILE = os.getenv("UPDATER_LOCK_FILE", "/tmp/safe_staging_overlay.lock")
 STAGING_ROOT = os.getenv("UPDATER_STAGING_ROOT", "/data/safe_staging")
@@ -194,7 +193,7 @@ def finalize_update() -> None:
 
 
 def handle_agnos_update() -> None:
-  from openpilot.system.hardware.tici.agnos import flash_agnos_update, get_target_slot_number
+  from openpilot.common.hardware.tici.agnos import flash_agnos_update, get_target_slot_number
 
   cur_version = HARDWARE.get_os_version()
   updated_version = run(["bash", "-c", r"unset AGNOS_VERSION && source launch_env.sh && \
@@ -210,7 +209,7 @@ def handle_agnos_update() -> None:
   cloudlog.info(f"Beginning background installation for AGNOS {updated_version}")
   set_offroad_alert("Offroad_NeosUpdate", True)
 
-  manifest_path = os.path.join(OVERLAY_MERGED, "system/hardware/tici/agnos.json")
+  manifest_path = os.path.join(OVERLAY_MERGED, "openpilot/system/hardware/tici/agnos.json")
   target_slot_number = get_target_slot_number()
   flash_agnos_update(manifest_path, target_slot_number, cloudlog)
   set_offroad_alert("Offroad_NeosUpdate", False)
@@ -294,7 +293,7 @@ class Updater:
       try:
         branch = self.get_branch(basedir)
         commit = self.get_commit_hash(basedir)[:7]
-        with open(os.path.join(basedir, "sunnypilot", "common", "version.h")) as f:
+        with open(os.path.join(basedir, "openpilot", "sunnypilot", "common", "version.h")) as f:
           version = f.read().split('"')[1]
 
         commit_unix_ts = run(["git", "show", "-s", "--format=%ct", "HEAD"], basedir).rstrip()
@@ -343,7 +342,7 @@ class Updater:
     setup_git_options(OVERLAY_MERGED)
     output = run(["git", "ls-remote", "--heads"], OVERLAY_MERGED)
 
-    self.branches = defaultdict(lambda: None)
+    self.branches.clear()
     for line in output.split('\n'):
       ls_remotes_re = r'(?P<commit_sha>\b[0-9a-f]{5,40}\b)(\s+)(refs\/heads\/)(?P<branch_name>.*$)'
       x = re.fullmatch(ls_remotes_re, line.strip())
@@ -411,11 +410,6 @@ def main() -> None:
       fcntl.flock(ov_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as e:
       raise RuntimeError("couldn't get overlay lock; is another instance running?") from e
-
-    # Set low io priority
-    proc = psutil.Process()
-    if psutil.LINUX:
-      proc.ionice(psutil.IOPRIO_CLASS_BE, value=7)
 
     # Check if we just performed an update
     if Path(os.path.join(STAGING_ROOT, "old_openpilot")).is_dir():

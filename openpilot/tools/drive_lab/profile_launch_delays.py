@@ -10,7 +10,7 @@ following (a longitudinal-policy question), independent of the lateral corner-am
 Ported from a device-side script (scripts/analyze_launch_delays.py); reworked onto the drive_lab
 conventions with time-based (rate-independent) windows.
 
-Signals: carState.vEgo / aEgo, selfdriveState.enabled, radarState.leadOne.{dRel,vLead,status}.
+Signals: carState.vEgo / aEgo, selfdriveState.enabled, radarState.leadOne.{dRel,vLead,present}.
 
 Run:
   uv run python -m openpilot.tools.drive_lab.profile_launch_delays ROUTE
@@ -188,7 +188,7 @@ def _collect(msgs: list[Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list,
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne")
       if lead is not None:
-        radar.append((t, (_f(safe_get(lead, "dRel")), _f(safe_get(lead, "vLead")), _f(safe_get(lead, "vRel")), bool(safe_get(lead, "status", False)))))
+        radar.append((t, (_f(safe_get(lead, "dRel")), _f(safe_get(lead, "vLead")), _f(safe_get(lead, "vRel")), bool(safe_get(lead, "present", False)))))
     elif typ == "selfdriveState":
       enabled.append((t, bool(safe_get(payload, "enabled", False))))
     elif typ == "longitudinalPlanSP":

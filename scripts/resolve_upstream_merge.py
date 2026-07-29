@@ -166,7 +166,7 @@ def main() -> int:
   untouched = []
   for p in staged("AA") + staged("UU"):
     old = p[len("openpilot/"):] if p.startswith("openpilot/") else p
-    log = git("log", "--oneline", f"{base}..HEAD^", "--", p, old).splitlines()
+    log = git("log", "--oneline", f"{base}..HEAD", "--", p, old).splitlines()
     real = [c for c in log if "migrate the fork" not in c and "layout" not in c.lower()]
     if not real:
       untouched.append(p)

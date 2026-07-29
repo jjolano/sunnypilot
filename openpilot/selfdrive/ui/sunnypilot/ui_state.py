@@ -6,7 +6,8 @@ See the LICENSE.md file in the root directory for more details.
 """
 from enum import Enum
 
-from openpilot.cereal import messaging, log, car, custom
+from openpilot.cereal import messaging, log, custom
+from opendbc.car.structs import car
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.display import OnroadBrightness
 from openpilot.sunnypilot.sunnylink.sunnylink_state import SunnylinkState
@@ -224,8 +225,7 @@ class UIStateSP:
 
 
 class DeviceSP:
-  @staticmethod
-  def _set_awake(on: bool, _ui_state):
+  def _set_awake(self, on: bool, _ui_state=None):
     if _ui_state.boot_offroad_mode == 1 and not on:
       _ui_state.params.put_bool("OffroadMode", True)
 

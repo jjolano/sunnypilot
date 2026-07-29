@@ -10,6 +10,8 @@ import pytest
 from pytest_mock import MockerFixture
 from types import SimpleNamespace
 
+pytestmark = pytest.mark.xdist_group("speed_limit_params")
+
 from openpilot.cereal import custom
 from openpilot.common.constants import CV
 from openpilot.common.params import Params

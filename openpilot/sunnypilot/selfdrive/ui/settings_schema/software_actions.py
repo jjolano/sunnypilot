@@ -155,7 +155,7 @@ def _branch_factory(item: dict) -> ListItemSP:
 
     top_level_branches = [current_git_branch, "release-mici", "release-tizi", "staging", "dev", "master"]
 
-    from openpilot.system.hardware import HARDWARE
+    from openpilot.common.hardware import HARDWARE
     if HARDWARE.get_device_type() == "tici":
       top_level_branches = ["release-tici", "staging-tici"]
       branches = [b for b in branches if b.endswith("-tici")]

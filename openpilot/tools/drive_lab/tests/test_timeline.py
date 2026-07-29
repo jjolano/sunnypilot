@@ -32,9 +32,9 @@ def test_select_event_time_handles_unsorted_bookmarks():
 def test_summarize_window_tracks_planner_and_lead_changes():
   msgs = [
     msg("carState", 0.0, vEgo=10.0, vCruise=50.0, brakePressed=False, gasPressed=False, standstill=False),
-    msg("radarState", 1.0, leadOne=SimpleNamespace(status=False, dRel=200.0, vRel=0.0)),
+    msg("radarState", 1.0, leadOne=SimpleNamespace(present=False, dRel=200.0, vRel=0.0)),
     msg("userBookmark", 2.0),
-    msg("radarState", 2.5, leadOne=SimpleNamespace(status=True, dRel=25.0, vRel=-3.0)),
+    msg("radarState", 2.5, leadOne=SimpleNamespace(present=True, dRel=25.0, vRel=-3.0)),
     msg("longitudinalPlan", 3.0, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-0.8),
   ]
 
@@ -42,7 +42,7 @@ def test_summarize_window_tracks_planner_and_lead_changes():
   rendered = render_summary(summary)
 
   assert "user bookmark" in rendered
-  assert "leadOne status: True" in rendered
+  assert "leadOne present: True" in rendered
   assert "plan source: lead0" in rendered
   assert "aTarget" in rendered
 
@@ -50,7 +50,7 @@ def test_summarize_window_tracks_planner_and_lead_changes():
 def test_summarize_window_attributes_lead_braking():
   msgs = [
     msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
-    msg("radarState", 1.0, leadOne=SimpleNamespace(status=True, dRel=24.8, vRel=-2.0)),
+    msg("radarState", 1.0, leadOne=SimpleNamespace(present=True, dRel=24.8, vRel=-2.0)),
     msg("longitudinalPlan", 1.5, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-0.8),
   ]
 
@@ -66,7 +66,7 @@ def test_summarize_window_attributes_lead_braking():
 def test_summarize_window_attributes_active_radar_lead_braking():
   msgs = [
     msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
-    msg("radarState", 0.8, leadOne=SimpleNamespace(status=True, dRel=18.4, vRel=-1.0)),
+    msg("radarState", 0.8, leadOne=SimpleNamespace(present=True, dRel=18.4, vRel=-1.0)),
     msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=-0.4),
   ]
 
@@ -81,7 +81,7 @@ def test_summarize_window_attributes_active_radar_lead_braking():
 def test_summarize_window_attributes_driver_override_before_planner_sources():
   msgs = [
     msg("carState", 1.0, vEgo=12.0, brakePressed=True, gasPressed=False),
-    msg("radarState", 0.5, leadOne=SimpleNamespace(status=True, dRel=20.0, vRel=-3.0)),
+    msg("radarState", 0.5, leadOne=SimpleNamespace(present=True, dRel=20.0, vRel=-3.0)),
     msg("longitudinalPlan", 1.0, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-1.0),
   ]
 
@@ -95,7 +95,7 @@ def test_summarize_window_attributes_driver_override_before_planner_sources():
 def test_summarize_window_ignores_stale_driver_brake_before_event_local_car_state():
   msgs = [
     msg("carState", 0.1, vEgo=12.0, brakePressed=True, gasPressed=False),
-    msg("radarState", 0.5, leadOne=SimpleNamespace(status=True, dRel=20.0, vRel=-3.0)),
+    msg("radarState", 0.5, leadOne=SimpleNamespace(present=True, dRel=20.0, vRel=-3.0)),
     msg("carState", 1.0, vEgo=12.0, brakePressed=False, gasPressed=False),
     msg("longitudinalPlan", 1.0, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-1.0),
   ]
@@ -125,7 +125,7 @@ def test_summarize_window_ignores_post_event_driver_brake_when_prior_car_state_i
 def test_summarize_window_ignores_future_driver_brake_without_prior_car_state():
   msgs = [
     msg("userBookmark", 0.0),
-    msg("radarState", 0.5, leadOne=SimpleNamespace(status=True, dRel=20.0, vRel=-3.0)),
+    msg("radarState", 0.5, leadOne=SimpleNamespace(present=True, dRel=20.0, vRel=-3.0)),
     msg("longitudinalPlan", 1.0, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-1.0),
     msg("carState", 1.1, vEgo=12.0, brakePressed=True, gasPressed=False),
   ]
@@ -140,7 +140,7 @@ def test_summarize_window_ignores_future_driver_brake_without_prior_car_state():
 def test_summarize_window_attributes_planner_source_with_lead_but_no_braking():
   msgs = [
     msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
-    msg("radarState", 0.8, leadOne=SimpleNamespace(status=True, dRel=18.4, vRel=-1.0)),
+    msg("radarState", 0.8, leadOne=SimpleNamespace(present=True, dRel=18.4, vRel=-1.0)),
     msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
   ]
 
@@ -400,7 +400,7 @@ def test_summarize_window_attributes_same_time_radar_lead_braking_after_plan():
   msgs = [
     msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
     msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=-0.4),
-    msg("radarState", 1.0, leadOne=SimpleNamespace(status=True, dRel=18.4, vRel=-1.0)),
+    msg("radarState", 1.0, leadOne=SimpleNamespace(present=True, dRel=18.4, vRel=-1.0)),
   ]
 
   rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))
@@ -414,8 +414,8 @@ def test_summarize_window_attributes_same_time_radar_lead_braking_after_plan():
 def test_summarize_window_does_not_attribute_stale_lead_to_later_braking():
   msgs = [
     msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
-    msg("radarState", 0.2, leadOne=SimpleNamespace(status=True, dRel=18.4, vRel=-1.0)),
-    msg("radarState", 0.8, leadOne=SimpleNamespace(status=False, dRel=200.0, vRel=0.0)),
+    msg("radarState", 0.2, leadOne=SimpleNamespace(present=True, dRel=18.4, vRel=-1.0)),
+    msg("radarState", 0.8, leadOne=SimpleNamespace(present=False, dRel=200.0, vRel=0.0)),
     msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=-0.4),
   ]
 
@@ -430,7 +430,7 @@ def test_summarize_window_uses_event_time_plan_source_over_stale_lead_source():
   msgs = [
     msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
     msg("longitudinalPlan", 0.4, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-0.8),
-    msg("radarState", 0.8, leadOne=SimpleNamespace(status=False, dRel=200.0, vRel=0.0)),
+    msg("radarState", 0.8, leadOne=SimpleNamespace(present=False, dRel=200.0, vRel=0.0)),
     msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
   ]
 
@@ -458,7 +458,7 @@ def test_summarize_window_uses_event_time_plan_source_over_future_lead_source():
 def test_summarize_window_uses_event_time_plan_braking_over_future_lead_braking():
   msgs = [
     msg("carState", 0.0, vEgo=12.0, brakePressed=False, gasPressed=False),
-    msg("radarState", 0.8, leadOne=SimpleNamespace(status=True, dRel=18.4, vRel=-1.0)),
+    msg("radarState", 0.8, leadOne=SimpleNamespace(present=True, dRel=18.4, vRel=-1.0)),
     msg("longitudinalPlan", 1.0, longitudinalPlanSource="cruise", shouldStop=False, fcw=False, aTarget=0.0),
     msg("longitudinalPlan", 1.2, longitudinalPlanSource="lead0", shouldStop=False, fcw=False, aTarget=-0.8),
   ]
@@ -562,7 +562,7 @@ def test_summarize_window_attributes_unknown_when_no_longitudinal_signals():
 def test_summarize_window_unknown_keeps_available_lead_evidence():
   msgs = [
     msg("carState", 0.0, vEgo=8.0, brakePressed=False, gasPressed=False),
-    msg("radarState", 1.0, leadOne=SimpleNamespace(status=True, dRel=31.2, vRel=-0.5)),
+    msg("radarState", 1.0, leadOne=SimpleNamespace(present=True, dRel=31.2, vRel=-0.5)),
   ]
 
   rendered = render_summary(summarize_window(msgs, 1.0, 1.0, 1.0))

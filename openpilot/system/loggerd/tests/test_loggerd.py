@@ -5,6 +5,7 @@ import random
 import string
 import subprocess
 import time
+from collections.abc import Collection
 from collections import defaultdict
 from pathlib import Path
 import pytest
@@ -15,12 +16,12 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
 from openpilot.common.timeout import Timeout
-from openpilot.system.hardware.hw import Paths
-from openpilot.system.hardware import TICI
+from openpilot.common.hardware.hw import Paths
+from openpilot.common.hardware import TICI
 from openpilot.system.loggerd.xattr_cache import getxattr
 from openpilot.system.loggerd.deleter import PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE
 from openpilot.system.manager.process_config import managed_processes
-from openpilot.system.version import get_version
+from openpilot.common.version import get_version
 from openpilot.tools.lib.helpers import RE
 from openpilot.tools.lib.logreader import LogReader
 from msgq.visionipc import VisionIpcServer, VisionStreamType
@@ -74,8 +75,8 @@ class TestLoggerd:
     end_type = SentinelType.endOfRoute if route else SentinelType.endOfSegment
     assert msgs[-1].sentinel.type == end_type
 
-  def _publish_random_messages(self, services: list[str]) -> dict[str, list]:
-    pm = messaging.PubMaster(services)
+  def _publish_random_messages(self, services: Collection[str]) -> dict[str, list]:
+    pm = messaging.PubMaster(list(services))
 
     managed_processes["loggerd"].start()
     for s in services:
@@ -277,7 +278,9 @@ class TestLoggerd:
         assert recv_cnt == 0, f"got {recv_cnt} {s} msgs in qlog"
       else:
         # check logged message count matches decimation
-        expected_cnt = (len(msgs) - 1) // SERVICE_LIST[s].decimation + 1
+        decimation = SERVICE_LIST[s].decimation
+        assert decimation is not None
+        expected_cnt = (len(msgs) - 1) // decimation + 1
         assert recv_cnt == expected_cnt, f"expected {expected_cnt} msgs for {s}, got {recv_cnt}"
 
   def test_rlog(self):

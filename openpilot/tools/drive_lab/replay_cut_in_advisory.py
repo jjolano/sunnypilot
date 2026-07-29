@@ -276,7 +276,7 @@ def _collect(msgs: list[Any]) -> tuple[list[_RadarLead], list[_EgoState], float,
         lead = safe_get(rec.payload, lead_name)
         if lead is None:
           continue
-        status = bool(safe_get(lead, "status", False))
+        status = bool(safe_get(lead, "present", False))
         d_rel = _f(safe_get(lead, "dRel"))
         y_rel = _f(safe_get(lead, "yRel"))
         v_rel = _f(safe_get(lead, "vRel"))

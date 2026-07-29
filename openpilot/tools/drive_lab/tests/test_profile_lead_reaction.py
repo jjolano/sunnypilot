@@ -13,7 +13,7 @@ def msg(kind, t_s, **payload):
 
 
 def _lead(status=True, dRel=10.0, vLead=5.0, vRel=0.0, aLeadK=0.0, radarTrackId=7, modelProb=0.9):
-  return SimpleNamespace(status=status, dRel=dRel, vLead=vLead, vLeadK=vLead, vRel=vRel, aLeadK=aLeadK, radarTrackId=radarTrackId, modelProb=modelProb)
+  return SimpleNamespace(present=status, dRel=dRel, vLead=vLead, vLeadK=vLead, vRel=vRel, aLeadK=aLeadK, radarTrackId=radarTrackId, modelProb=modelProb)
 
 
 def build_lead_decel_reaction(*, op_engaged: bool, reaction_delay_s: float):

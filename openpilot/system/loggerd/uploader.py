@@ -15,7 +15,7 @@ from openpilot.common.api import Api
 from openpilot.common.utils import get_upload_stream
 from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity
-from openpilot.system.hardware.hw import Paths
+from openpilot.common.hardware.hw import Paths
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
 from openpilot.common.swaglog import cloudlog
 
@@ -46,9 +46,7 @@ class FakeResponse:
 
 
 def get_directory_sort(d: str) -> list[str]:
-  # ensure old format is sorted sooner
-  o = ["0", ] if d.startswith("2024-") else ["1", ]
-  return o + [s.rjust(10, '0') for s in d.rsplit('--', 1)]
+  return [s.rjust(10, '0') for s in d.rsplit('--', 1)]
 
 def listdir_by_creation(d: str) -> list[str]:
   if not os.path.isdir(d):

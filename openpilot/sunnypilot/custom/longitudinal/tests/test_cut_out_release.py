@@ -11,9 +11,9 @@ from openpilot.sunnypilot.custom.longitudinal.cut_out_release import (
 DT = 0.05
 
 
-def _rs(status=True, d_rel=35.0, y_rel=0.0, v_rel=0.0, track_id=7):
-  lead = SimpleNamespace(status=status, dRel=d_rel, yRel=y_rel, vRel=v_rel, radarTrackId=track_id)
-  return SimpleNamespace(leadOne=lead, leadTwo=SimpleNamespace(status=False))
+def _rs(present=True, d_rel=35.0, y_rel=0.0, v_rel=0.0, track_id=7):
+  lead = SimpleNamespace(present=present, dRel=d_rel, yRel=y_rel, vRel=v_rel, radarTrackId=track_id)
+  return SimpleNamespace(leadOne=lead, leadTwo=SimpleNamespace(present=False))
 
 
 def _model_path(y_at_lead=0.0):
@@ -38,7 +38,7 @@ def _run(filt, rs, n, v_ego=13.0, **gates):
 def test_on_path_lead_never_suppressed():
   filt = CutOutLeadRelease()
   out = _run(filt, _rs(y_rel=0.3), 100)
-  assert out.leadOne.status
+  assert out.leadOne.present
   assert not filt.suppressing
 
 
@@ -48,7 +48,7 @@ def test_sustained_lateral_exit_suppresses_after_persistence():
   steps = int(CUT_OUT_PERSIST_S / DT) + 2
   out = _run(filt, rs, steps)
   assert filt.suppressing
-  assert not out.leadOne.status
+  assert not out.leadOne.present
   # leadTwo passes through untouched
   assert out.leadTwo is rs.leadTwo
 
@@ -56,7 +56,7 @@ def test_sustained_lateral_exit_suppresses_after_persistence():
 def test_brief_flicker_below_persistence_keeps_lead():
   filt = CutOutLeadRelease()
   out = _run(filt, _rs(y_rel=2.6), 4)
-  assert out.leadOne.status
+  assert out.leadOne.present
 
 
 def test_cut_in_moving_inward_is_never_suppressed():
@@ -66,7 +66,7 @@ def test_cut_in_moving_inward_is_never_suppressed():
     out = filt.filtered(_rs(y_rel=y), 13.0, DT, long_active=True,
                         custom_long_enabled=True, research_actuation_allowed=True,
                         mode="apply", model_msg=_model_path())
-  assert out.leadOne.status
+  assert out.leadOne.present
   assert not filt.suppressing
 
 
@@ -74,7 +74,7 @@ def test_threatening_lead_is_never_suppressed():
   filt = CutOutLeadRelease()
   # Off to the side but close and closing fast -> TTC/distance guards hold the lead.
   out = _run(filt, _rs(y_rel=2.6, d_rel=12.0, v_rel=-4.0), 100)
-  assert out.leadOne.status
+  assert out.leadOne.present
   assert filt.block_reason == "threat"
 
 
@@ -83,7 +83,7 @@ def test_gates_off_pass_through_and_reset():
   _run(filt, _rs(y_rel=3.5), 100)
   assert filt.suppressing
   out = _run(filt, _rs(y_rel=3.5), 1, research_actuation_allowed=False)
-  assert out.leadOne.status
+  assert out.leadOne.present
   assert not filt.suppressing
 
 
@@ -91,13 +91,13 @@ def test_track_id_change_resets_persistence():
   filt = CutOutLeadRelease()
   _run(filt, _rs(y_rel=2.6, track_id=7), 6)
   out = _run(filt, _rs(y_rel=2.6, track_id=8), 4)
-  assert out.leadOne.status
+  assert out.leadOne.present
 
 
 def test_vision_only_unknown_track_id_never_accumulates_suppression_state():
   filt = CutOutLeadRelease()
   out = _run(filt, _rs(y_rel=3.0, track_id=-1), 100)
-  assert out.leadOne.status
+  assert out.leadOne.present
   assert not filt.suppressing
   assert filt.block_reason == "track_unknown"
 
@@ -106,18 +106,18 @@ def test_curved_road_lead_uses_path_relative_lateral_position():
   filt = CutOutLeadRelease()
   rs = _rs(y_rel=2.6, d_rel=35.0)
   out = _run(filt, rs, 100, model_msg=_model_path(y_at_lead=-2.6))
-  assert out.leadOne.status
+  assert out.leadOne.present
   assert not filt.suppressing
 
 
 def test_off_mode_never_suppresses_even_with_global_research_gate():
   filt = CutOutLeadRelease()
   out = _run(filt, _rs(y_rel=3.0), 100, mode="off")
-  assert out.leadOne.status
+  assert out.leadOne.present
   assert not filt.suppressing
 
 
 def test_low_speed_stop_and_go_untouched():
   filt = CutOutLeadRelease()
   out = _run(filt, _rs(y_rel=3.0, d_rel=20.0), 100, v_ego=1.5)
-  assert out.leadOne.status
+  assert out.leadOne.present

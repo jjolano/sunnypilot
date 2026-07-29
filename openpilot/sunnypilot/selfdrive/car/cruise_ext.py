@@ -6,7 +6,8 @@ See the LICENSE.md file in the root directory for more details.
 """
 import numpy as np
 
-from openpilot.cereal import car, custom
+from openpilot.cereal import custom
+from opendbc.car.structs import car
 from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.common.params import Params

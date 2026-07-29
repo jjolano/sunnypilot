@@ -36,7 +36,7 @@ def stream(rows):
       msg(
         "radarState",
         t + 0.0015,
-        leadOne=SimpleNamespace(status=lead_status, dRel=d_rel, vRel=v_rel, modelProb=model_prob, yRel=y_rel),
+        leadOne=SimpleNamespace(present=lead_status, dRel=d_rel, vRel=v_rel, modelProb=model_prob, yRel=y_rel),
       )
     )
   return msgs

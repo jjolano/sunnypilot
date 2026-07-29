@@ -25,6 +25,7 @@ from openpilot.sunnypilot.custom.longitudinal.curve_evidence.map_controller impo
   TARGET_ACCEL,
   TARGET_OFFSET,
   MAX_ROUTE_TARGET_DISTANCE,
+  MAX_COAST_LOOKAHEAD,
   MAX_SHORT_DROP_DISTANCE,
   MAX_SHORT_DROP_DELTA_V,
   SHORT_DROP_CONFIRM_POINTS,
@@ -33,6 +34,7 @@ from openpilot.sunnypilot.custom.longitudinal.curve_evidence.map_controller impo
   MIN_MODEL_PRED_LAT_ACCEL_CORROBORATION,
   _ROUTE_POINT_EPS,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
 __all__ = [
   "SmartCruiseControlMap",
@@ -55,6 +57,7 @@ __all__ = [
   "TARGET_ACCEL",
   "TARGET_OFFSET",
   "MAX_ROUTE_TARGET_DISTANCE",
+  "MAX_COAST_LOOKAHEAD",
   "MAX_SHORT_DROP_DISTANCE",
   "MAX_SHORT_DROP_DELTA_V",
   "SHORT_DROP_CONFIRM_POINTS",
@@ -62,4 +65,5 @@ __all__ = [
   "MIN_CURRENT_LAT_ACCEL_CORROBORATION",
   "MIN_MODEL_PRED_LAT_ACCEL_CORROBORATION",
   "_ROUTE_POINT_EPS",
+  "MIN_V",
 ]

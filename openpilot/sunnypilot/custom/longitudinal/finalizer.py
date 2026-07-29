@@ -22,6 +22,7 @@ from openpilot.sunnypilot.custom.longitudinal.lead_cushion import (
   low_speed_gap_closure_accel,
 )
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import close_stop_go_radar_id_churn_continuous
+from openpilot.sunnypilot.custom.longitudinal.lead_context import lead_present
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
 from openpilot.sunnypilot.custom.longitudinal.net_demand_cap import NetDemandCapFinalStage, NetDemandCapTrace
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import LEAD_CRAWL_BREAKOUT_MIN_OPENING
@@ -126,7 +127,7 @@ class _InputSnapshot:
     # distance rule while the MPC actually lands at STOP_DISTANCE (route 000002b0 co-stop
     # diagnosis). The getattr stays as a test seam for fakes that set it explicitly.
     stopping_distance = float(getattr(finalizer.CP, 'stoppingDistance', STOP_DISTANCE) or STOP_DISTANCE)
-    v_ego_stopping = float(getattr(finalizer.CP, 'vEgoStopping', 0.0))
+    v_ego_stopping = finalizer._STOP_HOLD_V_EGO_STOPPING
     stop_accel = getattr(finalizer.CP, 'stopAccel', None)
     stop_accel = -0.5 if stop_accel is None else float(stop_accel)
 
@@ -741,17 +742,13 @@ class _HoldCommand:
     if _model_stop_blocks_release(snapshot):
       return False
 
-    car_state = finalizer._sm_item(snapshot.sm, 'carState')
-    controls_state = finalizer._sm_item(snapshot.sm, 'controlsState')
-    if car_state is None or controls_state is None:
+    if snapshot.brake_pressed or snapshot.gas_pressed:
       return False
-    if bool(getattr(car_state, "brakePressed", False)) or bool(getattr(car_state, "gasPressed", False)):
-      return False
-    if bool(getattr(controls_state, "forceDecel", False)):
+    if snapshot.force_decel:
       return False
 
-    v_ego = float(getattr(car_state, 'vEgo', 0.0))
-    v_ego_stopping = float(getattr(finalizer.CP, 'vEgoStopping', 0.5))
+    v_ego = snapshot.v_ego
+    v_ego_stopping = snapshot.v_ego_stopping
     if v_ego >= v_ego_stopping + 0.2:
       return False
 
@@ -913,7 +910,7 @@ class _FinalArbitration:
       return float(base_a_target)
 
     lead = getattr(snapshot.radar_state, "leadOne", None)
-    if lead is None or not bool(getattr(lead, "status", False)):
+    if not lead_present(lead):
       return float(base_a_target)
     d_rel = finalizer._finite_float_or_none(getattr(lead, "dRel", None))
     v_lead = finalizer._finite_float_or_none(getattr(lead, "vLead", None))
@@ -951,7 +948,7 @@ class _FinalArbitration:
     request_y_rel = finalizer._finite_float_or_none(getattr(request, "lead_y_rel", None))
 
     def values(lead: Any) -> tuple[float, float, float, float] | None:
-      if lead is None or not bool(getattr(lead, "status", False)):
+      if not lead_present(lead):
         return None
       current = tuple(
         finalizer._finite_float_or_none(getattr(lead, name, None))
@@ -984,7 +981,7 @@ class _FinalArbitration:
 
     active = tuple(
       (idx, lead) for idx, lead in enumerate(slots)
-      if lead is not None and bool(getattr(lead, "status", False))
+      if lead_present(lead)
     )
     matching = tuple((idx, lead) for idx, lead in active if matches_requested(lead))
     requested = next((lead for idx, lead in matching if idx == request_idx), None)
@@ -1061,7 +1058,7 @@ class _FinalArbitration:
     if (request_accel is None or not 0.0 < request_accel <= LOW_SPEED_GAP_CLOSURE_MAX_ACCEL + 1e-9 or
         not bool(getattr(request, "lead_stable", False)) or not bool(getattr(request, "lead_radar", False)) or
         confidence is None or confidence < 0.55 or request_track_id < 0 or
-        not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False))):
+        not lead_present(lead) or not bool(getattr(lead, "radar", False))):
       return float(base_a_target)
 
     t_follow = finalizer._finite_float_or_none(getattr(output, "t_follow", None))
@@ -1399,6 +1396,7 @@ class _TelemetryAdapter:
 # ---------------------------------------------------------------------------
 
 class CustomLongitudinalFinalizer:
+  _STOP_HOLD_V_EGO_STOPPING = 0.25
   # mirrors long_mpc STOP_DISTANCE (4.5) + 0.5 settle slack; the crawl-release governor
   # closes any latched gap back toward this baseline
   _STOP_HOLD_MAX_BASELINE_D_REL = 5.0
@@ -1676,7 +1674,7 @@ class CustomLongitudinalFinalizer:
   def _select_stop_hold_lead(radar_state: Any, latched_id: Any = None) -> Any:
     candidates = []
     for lead in (getattr(radar_state, 'leadOne', None), getattr(radar_state, 'leadTwo', None)):
-      if lead is None or not getattr(lead, 'status', False):
+      if not lead_present(lead):
         continue
       try:
         d_rel = float(getattr(lead, 'dRel', 0.0))
@@ -2128,7 +2126,7 @@ class CustomLongitudinalFinalizer:
     evidence_id = self._departure_prediction_int(getattr(evidence, "track_id", -1))
     selected = snapshot.selected_lead
     if (
-      selected is None or not bool(getattr(selected, "status", False)) or
+      selected is None or not lead_present(selected) or
       selected_id is None or latched_id is None or evidence_id < 0
     ):
       return False

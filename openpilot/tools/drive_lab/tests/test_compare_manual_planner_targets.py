@@ -70,7 +70,7 @@ def test_extract_planner_target_samples_persists_preview_context(monkeypatch):
     msg("selfdriveState", 0.0, enabled=False, active=False),
     msg("carControl", 0.0, longActive=False),
     msg("controlsState", 0.0, longControlState="off"),
-    msg("radarState", 0.1, leadOne=SimpleNamespace(status=True, dRel=7.0, vRel=-0.4)),
+    msg("radarState", 0.1, leadOne=SimpleNamespace(present=True, dRel=7.0, vRel=-0.4)),
     msg("longitudinalPlan", 0.2, aTarget=-1.2, longitudinalPlanSource="lead0", shouldStop=False, fcw=False),
     msg("longitudinalPlanSP", 0.2, aTarget=0.0, longitudinalPlanSource="cruise",
         stack=SimpleNamespace(actuatedStack="sunnypilotCurrent")),

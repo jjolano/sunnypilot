@@ -71,7 +71,7 @@ class CutOutLeadRelease:
         self._reset("gates_off")
         return radar_state
       lead = getattr(radar_state, "leadOne", None)
-      if lead is None or not bool(getattr(lead, "status", False)):
+      if lead is None or not bool(getattr(lead, "present", False)):
         self._reset("no_lead")
         return radar_state
 
@@ -112,8 +112,8 @@ class CutOutLeadRelease:
       self.block_reason = "" if self.suppressing else ("threat" if threat else "not_exiting")
       if not self.suppressing:
         return radar_state
-      return SimpleNamespace(leadOne=SimpleNamespace(status=False),
-                             leadTwo=getattr(radar_state, "leadTwo", SimpleNamespace(status=False)))
+      return SimpleNamespace(leadOne=SimpleNamespace(present=False),
+                             leadTwo=getattr(radar_state, "leadTwo", SimpleNamespace(present=False)))
     except Exception:
       self._reset("fault")
       return radar_state

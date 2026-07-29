@@ -9,7 +9,8 @@ from multiprocessing import Process
 
 from setproctitle import setproctitle
 
-from openpilot.cereal import car, log
+from openpilot.cereal import log
+from opendbc.car.structs import car
 import openpilot.cereal.messaging as messaging
 import openpilot.system.sentry as sentry
 from openpilot.common.basedir import BASEDIR
@@ -68,10 +69,6 @@ class ManagerProcess(ABC):
   name = ""
   shutting_down = False
   restart_if_crash = False
-
-  @abstractmethod
-  def prepare(self) -> None:
-    pass
 
   @abstractmethod
   def start(self) -> None:
@@ -149,9 +146,6 @@ class NativeProcess(ManagerProcess):
     self.sigkill = sigkill
     self.launcher = nativelauncher
 
-  def prepare(self) -> None:
-    pass
-
   def start(self) -> None:
     # In case we only tried a non blocking stop we need to stop it before restarting
     if self.shutting_down:
@@ -176,11 +170,6 @@ class PythonProcess(ManagerProcess):
     self.sigkill = sigkill
     self.launcher = launcher
     self.restart_if_crash = restart_if_crash
-
-  def prepare(self) -> None:
-    if self.enabled:
-      cloudlog.info(f"preimporting {self.module}")
-      importlib.import_module(self.module)
 
   def start(self) -> None:
     # In case we only tried a non blocking stop we need to stop it before restarting
@@ -209,9 +198,6 @@ class DaemonProcess(ManagerProcess):
   @staticmethod
   def should_run(started, params, CP):
     return True
-
-  def prepare(self) -> None:
-    pass
 
   def start(self) -> None:
     if self.params is None:

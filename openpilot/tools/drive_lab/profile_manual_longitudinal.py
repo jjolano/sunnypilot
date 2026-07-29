@@ -66,7 +66,7 @@ def extract_manual_samples(route: str, read_mode: ReadMode) -> list[ManualSample
       active = bool(safe_get(payload, "active", False))
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne")
-      lead_status = bool(safe_get(lead, "status", False))
+      lead_status = bool(safe_get(lead, "present", False))
       lead_d_rel = finite_or_none(safe_get(lead, "dRel"))
       lead_v_rel = finite_or_none(safe_get(lead, "vRel"))
       lead_v_lead = finite_or_none(safe_get(lead, "vLeadK"))

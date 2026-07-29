@@ -2,9 +2,9 @@ import time
 import threading
 
 from openpilot.common.params import Params
-from openpilot.system.hardware import HARDWARE
+from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.statsd import statlog
+from openpilot.sunnypilot.system.statsd import statlog
 
 CAR_VOLTAGE_LOW_PASS_K = 0.011 # LPF gain for 45s tau (dt/tau / (dt/tau + 1))
 
@@ -35,7 +35,7 @@ class PowerMonitoring:
     self.car_battery_capacity_uWh = max((CAR_BATTERY_CAPACITY_uWh / 10), car_battery_capacity_uWh)
 
   # Calculation tick
-  def calculate(self, voltage: int | None, ignition: bool):
+  def calculate(self, voltage: float | None, ignition: bool):
     try:
       now = time.monotonic()
 

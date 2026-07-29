@@ -277,7 +277,7 @@ def _frame_from_state(t: float, latest: dict[str, Any], *, source_t: float) -> L
   v_cruise = v_cruise_kph / 3.6 if v_cruise_kph < 255.0 else v_ego
   pitch = float(safe_get(live_params, "pitch", 0.0))
 
-  lead_status = bool(safe_get(lead, "status", False))
+  lead_status = bool(safe_get(lead, "present", False))
   d_rel = safe_get(lead, "dRel")
   v_lead = safe_get(lead, "vLead")
   model_prob = safe_get(lead, "modelProb", 0.0)

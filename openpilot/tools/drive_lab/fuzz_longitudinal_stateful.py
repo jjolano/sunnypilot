@@ -152,7 +152,7 @@ def _simple_namespace(d: dict[str, Any] | None) -> SimpleNamespace | None:
 
 def _random_lead_dict(rng: random.Random, tid: int | None = None, **overrides: Any) -> dict[str, Any]:
   d = {
-    "status": True,
+    "present": True,
     "dRel": rng.uniform(10.0, 60.0),
     "vLeadK": rng.uniform(0.0, 30.0),
     "yRel": rng.uniform(-2.0, 2.0),
@@ -323,7 +323,7 @@ def _evaluate_lead_confidence_sequence(case: StatefulCase) -> tuple[list[dict[st
         "detail": f"frame {frame_idx}: stable=True but accel_blend={state.accel_blend}",
       })
 
-    lead_status = lead is not None and bool(getattr(lead, "status", False))
+    lead_status = lead is not None and bool(getattr(lead, "present", False))
     if not lead_status and state.status:
       failures.append({"check": "no_lead_status_false", "detail": f"frame {frame_idx}: no lead but state.status=True"})
 

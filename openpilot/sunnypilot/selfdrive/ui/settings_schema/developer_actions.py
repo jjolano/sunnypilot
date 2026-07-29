@@ -17,8 +17,8 @@ import os
 from pathlib import Path
 
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.system.hardware import PC
-from openpilot.system.hardware.hw import Paths
+from openpilot.common.hardware import PC
+from openpilot.common.hardware.hw import Paths
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, button_item_sp, toggle_item_sp

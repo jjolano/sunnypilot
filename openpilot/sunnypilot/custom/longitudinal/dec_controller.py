@@ -218,7 +218,7 @@ class DynamicExperimentalController:
       self._standstill_count = max(0, self._standstill_count - 1)
 
     # Lead detection
-    self._lead_filter.add_data(float(lead_one.status))
+    self._lead_filter.add_data(float(lead_one.present))
     lead_value = self._lead_filter.get_value() or 0.0
     self._has_lead_filtered = lead_value > WMACConstants.LEAD_PROB
 

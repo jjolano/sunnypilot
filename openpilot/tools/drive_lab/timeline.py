@@ -177,9 +177,9 @@ def summarize_window(msgs: list[Any], event_time_s: float, before_s: float, afte
           add_change(t, f"selfdriveState.{field}", value, "selfdrive", f"{field}: {format_enum(value)}")
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne")
-      lead_status = bool(safe_get(lead, "status", False))
+      lead_status = bool(safe_get(lead, "present", False))
       lead_active = lead_status
-      add_change(t, "radarState.leadOne.status", lead_status, "lead", f"leadOne status: {lead_status}")
+      add_change(t, "radarState.leadOne.present", lead_status, "lead", f"leadOne present: {lead_status}")
       d_rel = safe_get(lead, "dRel")
       v_rel = safe_get(lead, "vRel")
       if lead_status:

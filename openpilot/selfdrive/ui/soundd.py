@@ -4,7 +4,7 @@ import time
 import wave
 
 
-from openpilot.cereal import car, messaging, custom
+from openpilot.cereal import log, messaging, custom
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import Ratekeeper
@@ -12,7 +12,7 @@ from openpilot.common.utils import retry
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.system import micd
-from openpilot.system.hardware import HARDWARE
+from openpilot.common.hardware import HARDWARE
 
 from openpilot.sunnypilot.selfdrive.ui.quiet_mode import QuietMode
 
@@ -24,7 +24,7 @@ ALERT_RAMP_TIME = 4 # seconds to ramp to max volume for warningImmediate
 SELFDRIVE_STATE_TIMEOUT = 5 # 5 seconds
 FILTER_DT = 1. / (micd.SAMPLE_RATE / micd.FFT_SAMPLES)
 
-AMBIENT_DB = 24 # DB where MIN_VOLUME is applied
+AMBIENT_DB = 26 # DB where MIN_VOLUME is applied
 DB_SCALE = 30 # AMBIENT_DB + DB_SCALE is where MAX_VOLUME is applied
 
 VOLUME_BASE = 20
@@ -32,7 +32,7 @@ if HARDWARE.get_device_type() == "tizi":
   AMBIENT_DB = 30
   VOLUME_BASE = 10
 
-AudibleAlert = car.CarControl.HUDControl.AudibleAlert
+AudibleAlert = log.SelfdriveState.AudibleAlert
 AudibleAlertSP = custom.SelfdriveStateSP.AudibleAlert
 
 
@@ -48,12 +48,15 @@ sound_list: dict[int, tuple[str, int | None, float]] = {
   AudibleAlert.disengage: ("disengage.wav", 1, MAX_VOLUME),
   AudibleAlert.refuse: ("refuse.wav", 1, MAX_VOLUME),
 
-  AudibleAlert.prompt: ("prompt.wav", 1, MAX_VOLUME),
-  AudibleAlert.promptRepeat: ("prompt.wav", None, MAX_VOLUME),
-  AudibleAlert.promptDistracted: ("prompt_distracted.wav", None, MAX_VOLUME),
+  AudibleAlert.prompt: ("warning.wav", 1, MAX_VOLUME),
+  AudibleAlert.promptRepeat: ("warning.wav", None, MAX_VOLUME),
+  AudibleAlert.promptDistracted: ("dm_warning.wav", None, MAX_VOLUME),
 
-  AudibleAlert.warningSoft: ("warning_soft.wav", None, MAX_VOLUME),
-  AudibleAlert.warningImmediate: ("warning_immediate.wav", None, MAX_VOLUME),
+  AudibleAlert.preAlert: ("pre_alert.wav", 1, MAX_VOLUME),
+  AudibleAlert.complete: ("complete.wav", 1, MAX_VOLUME),
+
+  AudibleAlert.warningSoft: ("critical.wav", None, MAX_VOLUME),
+  AudibleAlert.warningImmediate: ("dm_critical.wav", None, MAX_VOLUME),
 
   **sound_list_sp,
 }
@@ -87,6 +90,7 @@ class Soundd(QuietMode):
     self.ramp_start_time = 0.
 
     self.selfdrive_timeout_alert = False
+    self.pending_stop = False
 
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
 
@@ -97,7 +101,7 @@ class Soundd(QuietMode):
     for sound in sound_list:
       filename, play_count, volume = sound_list[sound]
 
-      with wave.open(BASEDIR + "/selfdrive/assets/sounds/" + filename, 'r') as wavefile:
+      with wave.open(BASEDIR + "/openpilot/selfdrive/assets/sounds/" + filename, 'r') as wavefile:
         assert wavefile.getnchannels() == 1
         assert wavefile.getsampwidth() == 2
         assert wavefile.getframerate() == SAMPLE_RATE
@@ -123,6 +127,12 @@ class Soundd(QuietMode):
         ret[written_frames:written_frames+frames_to_write] = sound_data[current_sound_frame:current_sound_frame+frames_to_write]
         written_frames += frames_to_write
         self.current_sound_frame += frames_to_write
+        current_sound_frame = self.current_sound_frame % len(sound_data)
+        loops = self.current_sound_frame // len(sound_data)
+        if self.pending_stop and current_sound_frame == 0:
+          self.current_alert = AudibleAlert.none
+          self.pending_stop = False
+          break
 
     return ret * self.current_volume
 
@@ -132,7 +142,16 @@ class Soundd(QuietMode):
     data_out[:frames, 0] = self.get_sound_data(frames)
 
   def update_alert(self, new_alert):
-    current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame > len(self.loaded_sounds[self.current_alert])
+    current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame >= len(self.loaded_sounds[self.current_alert])
+    # let looping sounds finish the current loop instead of cutting off mid tone
+    if new_alert == AudibleAlert.none and self.current_alert != AudibleAlert.none and sound_list[self.current_alert][1] is None:
+      if current_alert_played_once:
+        self.pending_stop = True
+      else:
+        self.current_alert = AudibleAlert.none
+        self.current_sound_frame = 0
+      return
+    self.pending_stop = False
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
       if new_alert == AudibleAlert.warningImmediate:
         self.ramp_start_volume = self.current_volume
@@ -177,10 +196,11 @@ class Soundd(QuietMode):
 
         self.load_param()
 
-        # Always update volume, even when alert is playing
+        # freeze volume during alerts to avoid mic feedback increasing volume
         if sm.updated['soundPressure']:
           self.spl_filter_weighted.update(sm["soundPressure"].soundPressureWeightedDb)
-          self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
+          if self.current_alert == AudibleAlert.none:
+            self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
 
         self.get_audible_alert(sm)
 

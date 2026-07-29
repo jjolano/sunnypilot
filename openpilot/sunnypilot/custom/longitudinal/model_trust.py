@@ -23,7 +23,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
-from openpilot.sunnypilot.custom.longitudinal.lead_context import _path_relative_y_or_none
+from openpilot.sunnypilot.custom.longitudinal.lead_context import _path_relative_y_or_none, lead_present
 
 GENTLE_CAUTION_DECEL = -0.4     # precautionary decel for a low-confidence model slowdown
 TRUST_FULL_STOP = 0.7           # stop_prob/trust above which a hard should_stop is honored
@@ -177,7 +177,7 @@ class CutOutCautionRecovery:
       step = max(0.0, float(dt)) if math.isfinite(float(dt)) else 0.0
       self._t += step
       self._recovery_s = max(0.0, self._recovery_s - step)
-      if lead_one is not None and bool(getattr(lead_one, "status", False)):
+      if lead_present(lead_one):
         d_rel = float(getattr(lead_one, "dRel", 0.0) or 0.0)
         y_rel = float(getattr(lead_one, "yRel", 0.0) or 0.0)
         v_rel = float(getattr(lead_one, "vRel", 0.0) or 0.0)

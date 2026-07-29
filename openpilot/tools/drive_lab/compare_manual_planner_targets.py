@@ -191,7 +191,7 @@ def extract_planner_target_samples(route: str, read_mode: ReadMode, max_plan_age
       state["long_control_state"] = format_enum(safe_get(payload, "longControlState", "unknown"))
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne")
-      state["lead_status"] = bool(safe_get(lead, "status", False))
+      state["lead_status"] = bool(safe_get(lead, "present", False))
       state["lead_d_rel"] = _finite_or_none(safe_get(lead, "dRel"))
       state["lead_v_rel"] = _finite_or_none(safe_get(lead, "vRel"))
     elif typ == "modelV2":

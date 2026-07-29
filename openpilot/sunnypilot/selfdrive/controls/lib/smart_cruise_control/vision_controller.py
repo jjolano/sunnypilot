@@ -27,6 +27,7 @@ from openpilot.sunnypilot.custom.longitudinal.curve_evidence.vision_controller i
   _LEAVING_ACC,
   _EPS,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
 __all__ = [
   "SmartCruiseControlVision",
@@ -50,4 +51,5 @@ __all__ = [
   "_TURNING_ACC_BP",
   "_LEAVING_ACC",
   "_EPS",
+  "MIN_V",
 ]

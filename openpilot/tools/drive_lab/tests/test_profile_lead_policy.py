@@ -112,7 +112,7 @@ def test_extract_lead_policy_samples_via_monkeypatched_logreader(monkeypatch):
   msgs = [
     msg("selfdriveState", 0.0, enabled=True, active=True),
     msg("carControl", 0.0, longActive=True),
-    msg("radarState", 0.1, leadOne=SimpleNamespace(status=True, dRel=50.0, vRel=-4.0)),
+    msg("radarState", 0.1, leadOne=SimpleNamespace(present=True, dRel=50.0, vRel=-4.0)),
     msg("longitudinalPlan", 0.2, aTarget=-0.6, longitudinalPlanSource="lead0", shouldStop=False, fcw=False),
     msg("longitudinalPlanSP", 0.2, aTarget=-0.5, longitudinalPlanSource="cruise", stack=SimpleNamespace(actuatedStack="stackA")),
     msg("carState", 0.3, vEgo=12.0, aEgo=-0.2, gasPressed=False, brakePressed=False, standstill=False, vCruise=80.0),

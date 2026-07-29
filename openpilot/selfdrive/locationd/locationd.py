@@ -66,7 +66,7 @@ class LocationEstimator:
     self.observations = {kind: np.zeros(3, dtype=np.float32) for kind in obs_kinds}
     self.observation_errors = {kind: np.zeros(3, dtype=np.float32) for kind in obs_kinds}
 
-  def reset(self, t: float, x_initial: np.ndarray = PoseKalman.initial_x, P_initial: np.ndarray = PoseKalman.initial_P):
+  def reset(self, t: float | None, x_initial: np.ndarray = PoseKalman.initial_x, P_initial: np.ndarray = PoseKalman.initial_P):
     self.kf.init_state(x_initial, covs=P_initial, filter_time=t)
 
   def _validate_sensor_source(self, source: log.SensorEventData.SensorSource):
@@ -206,9 +206,11 @@ class LocationEstimator:
       self._finite_check(t, new_x, new_P)
     return HandleLogResult.SUCCESS
 
-  def get_msg(self, sensors_valid: bool, inputs_valid: bool, filter_valid: bool):
+  def get_msg(self, sensors_valid: bool, inputs_valid: bool, filter_initialized: bool):
     state, cov = self.kf.x, self.kf.P
     std = np.sqrt(np.diag(cov))
+    filter_time_valid = bool(np.isfinite(self.kf.t))
+    filter_valid = filter_initialized and filter_time_valid
 
     orientation_ned, orientation_ned_std = state[States.NED_ORIENTATION], std[States.NED_ORIENTATION]
     velocity_device, velocity_device_std = state[States.DEVICE_VELOCITY], std[States.DEVICE_VELOCITY]

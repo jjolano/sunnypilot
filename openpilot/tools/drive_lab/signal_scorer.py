@@ -297,7 +297,7 @@ def qlog_samples_to_signal_samples(route: str, read_mode: ReadMode) -> list[Sign
           state["model_stop_distance"] = None
     elif typ == "radarState":
       lead = safe_get(payload, "leadOne", {})
-      state["lead_status"] = bool(safe_get(lead, "status", False))
+      state["lead_status"] = bool(safe_get(lead, "present", False))
       state["lead_d_rel"] = safe_get(lead, "dRel")
       state["lead_v_rel"] = safe_get(lead, "vRel")
     elif typ == "carState":

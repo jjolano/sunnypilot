@@ -53,6 +53,7 @@ from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, Longit
 from openpilot.sunnypilot.custom.longitudinal.net_demand_cap import NetDemandCapTrace, NetDemandEvidence, UphillGradeEstimator
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import STOP_APPROACH_DECEL_MIN, Personality
 from openpilot.sunnypilot.custom.longitudinal.stack import ActuationVerdicts, CustomLongitudinalStack, LongitudinalStackInputs
+from openpilot.sunnypilot.custom.longitudinal.lead_context import lead_present
 
 PARAMS_REFRESH_PERIOD = 50  # planner ticks (~20Hz -> ~2.5s)
 DEFAULT_ACCEL_LIMITS = (-4.0, 2.0)
@@ -226,7 +227,7 @@ def build_stack_inputs(*, v_ego: float, a_ego: float, v_cruise: float, seed_a_ta
                        current_lat_accel: float | None = None,
                        pitch: float | None = None,
                        departure_prediction_mode: str = "off") -> LongitudinalStackInputs:
-  has_lead = lead_one is not None and bool(getattr(lead_one, "status", False))
+  has_lead = lead_present(lead_one)
   # Pre-MPC lead-present seed: carry the currently selected planner a_target into the custom
   # policy. Final lead-follow physics remains owned by the downstream MPC solve.
   lead_a_target = float(seed_a_target) if has_lead else 0.0
@@ -517,7 +518,7 @@ class CustomLongitudinalAdapter:
         brake_pressed=brake_pressed,
         force_decel=bool(getattr(controls_state, "forceDecel", False)),
         has_lead=any(
-          bool(getattr(lead, "status", False))
+          lead_present(lead)
           for lead in (getattr(radar, "leadOne", None), getattr(radar, "leadTwo", None))
         ),
         research_actuation_allowed=self.research_actuation_allowed,
@@ -546,7 +547,7 @@ class CustomLongitudinalAdapter:
         lead_prob = _f(getattr(lead_one_msg, "modelProb", math.nan), default=math.nan)
         gap = lead_d_rel - raw_stop
         if (math.isfinite(raw_stop) and raw_stop > 0.0
-            and lead_one_msg is not None and bool(getattr(lead_one_msg, "status", False))
+            and lead_present(lead_one_msg)
             and bool(getattr(lead_one_msg, "radar", False))
             and math.isfinite(lead_d_rel) and math.isfinite(lead_v) and math.isfinite(lead_prob)
             and lead_prob >= 0.5 and abs(lead_v) <= 0.5 and lead_d_rel > STOP_DISTANCE
@@ -565,7 +566,7 @@ class CustomLongitudinalAdapter:
         model_stop_distance = max(model_stop_distance, correlated_floor)
         stationary_radar_correlation_applied = model_stop_distance > previous_stop_distance
       model_caution_floor = self._caution_ramp.update(model_desired_accel, dt)
-      closing_lead = (lead_one_msg is not None and bool(getattr(lead_one_msg, "status", False))
+      closing_lead = (lead_present(lead_one_msg)
                       and _f(getattr(lead_one_msg, "vRel", 0.0)) < -LEAD_CLOSING_MIN)
       radar_corroborated = self._corroboration_hold.update(closing_lead, dt)
       corroboration_refresh_source = (

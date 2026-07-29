@@ -5,7 +5,8 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
-from openpilot.cereal import custom, car
+from openpilot.cereal import custom
+from opendbc.car.structs import car
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.sunnypilot.custom.longitudinal.speed_limit.types import Mode as SpeedLimitMode

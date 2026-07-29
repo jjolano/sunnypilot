@@ -98,6 +98,7 @@ struct LoadedRouteArtifacts {
   std::vector<CanMessageData> can_messages;
   std::vector<LogEntry> logs;
   std::vector<TimelineEntry> timeline;
+  std::vector<ThumbnailFrame> thumbnails;
   std::unordered_map<std::string, EnumInfo> enum_info;
 };
 
@@ -385,8 +386,8 @@ std::string detect_dbc_for_fingerprint(std::string_view car_fingerprint) {
 std::vector<std::string> available_dbc_names_impl() {
   std::set<std::string> names;
   for (const fs::path &dbc_dir : {
-         repo_root() / "opendbc" / "dbc",
-         repo_root() / "tools" / "jotpluggler" / "generated_dbcs",
+         repo_root() / "opendbc_repo" / "opendbc" / "dbc",
+         repo_root() / "openpilot" / "tools" / "jotpluggler" / "generated_dbcs",
        }) {
     if (fs::exists(dbc_dir) && fs::is_directory(dbc_dir)) {
       for (const auto &entry : fs::directory_iterator(dbc_dir)) {
@@ -407,8 +408,8 @@ std::vector<std::string> available_dbc_names_impl() {
 
 fs::path resolve_dbc_path(const std::string &dbc_name) {
   for (const fs::path &candidate : {
-         repo_root() / "opendbc" / "dbc" / (dbc_name + ".dbc"),
-         repo_root() / "tools" / "jotpluggler" / "generated_dbcs" / (dbc_name + ".dbc"),
+         repo_root() / "opendbc_repo" / "opendbc" / "dbc" / (dbc_name + ".dbc"),
+         repo_root() / "openpilot" / "tools" / "jotpluggler" / "generated_dbcs" / (dbc_name + ".dbc"),
        }) {
     if (fs::exists(candidate)) return candidate;
   }
@@ -432,7 +433,7 @@ std::array<uint8_t, 3> parse_color(std::string_view color) {
   return out;
 }
 
-uint8_t android_priority_to_level(uint8_t priority) {
+uint8_t operating_system_priority_to_level(uint8_t priority) {
   switch (priority) {
     case 2:
     case 3:
@@ -491,7 +492,7 @@ void append_timeline_entry(std::vector<TimelineEntry> *timeline, double mono_tim
   });
 }
 
-double android_wall_time_seconds(uint64_t timestamp) {
+double operating_system_wall_time_seconds(uint64_t timestamp) {
   if (timestamp == 0) return 0.0;
   if (timestamp > 1000000000000ULL) return static_cast<double>(timestamp) / 1.0e9;
   if (timestamp > 1000000000ULL) return static_cast<double>(timestamp) / 1.0e6;
@@ -609,13 +610,13 @@ void append_log_event(cereal::Event::Which which,
       logs->push_back(std::move(entry));
       break;
     }
-    case cereal::Event::Which::ANDROID_LOG: {
-      const auto android = event.getAndroidLog();
-      auto entry = make_entry(LogOrigin::Android, android_priority_to_level(android.getPriority()));
-      entry.wall_time = android_wall_time_seconds(android.getTs());
-      entry.source = android.hasTag() ? android.getTag().cStr() : "android";
-      entry.message = android.hasMessage() ? android.getMessage().cStr() : std::string();
-      entry.context = "pid=" + std::to_string(android.getPid()) + ", tid=" + std::to_string(android.getTid());
+    case cereal::Event::Which::OPERATING_SYSTEM_LOG: {
+      const auto operating_system_log = event.getOperatingSystemLog();
+      auto entry = make_entry(LogOrigin::OperatingSystem, operating_system_priority_to_level(operating_system_log.getPriority()));
+      entry.wall_time = operating_system_wall_time_seconds(operating_system_log.getTs());
+      entry.source = operating_system_log.hasTag() ? operating_system_log.getTag().cStr() : "operating_system";
+      entry.message = operating_system_log.hasMessage() ? operating_system_log.getMessage().cStr() : std::string();
+      entry.context = "pid=" + std::to_string(operating_system_log.getPid()) + ", tid=" + std::to_string(operating_system_log.getTid());
       if (!entry.message.empty()) {
         std::string err;
         if (const auto p = json11::Json::parse(entry.message, err); err.empty() && p.is_object()) {
@@ -623,10 +624,10 @@ void append_log_event(cereal::Event::Which which,
           if (p["SYSLOG_IDENTIFIER"].is_string() && !p["SYSLOG_IDENTIFIER"].string_value().empty())
             entry.source = p["SYSLOG_IDENTIFIER"].string_value();
           if (auto pri = json_int_value(p["PRIORITY"]); pri.has_value())
-            entry.level = android_priority_to_level(*pri);
+            entry.level = operating_system_priority_to_level(*pri);
           if (auto ts = json_u64_value(p["__REALTIME_TIMESTAMP"]); ts.has_value())
-            entry.wall_time = android_wall_time_seconds(*ts);
-          entry.context = format_journal_context(p, android.getPid(), android.getTid());
+            entry.wall_time = operating_system_wall_time_seconds(*ts);
+          entry.context = format_journal_context(p, operating_system_log.getPid(), operating_system_log.getTid());
         }
       }
       logs->push_back(std::move(entry));
@@ -682,6 +683,25 @@ std::vector<LogEntry> extract_segment_logs(const std::vector<Event> &events) {
   }
 
   return logs;
+}
+
+std::vector<ThumbnailFrame> extract_segment_thumbnails(const std::vector<Event> &events, int segment) {
+  std::vector<ThumbnailFrame> thumbnails;
+  for (const Event &event_record : events) {
+    if (event_record.which != cereal::Event::Which::THUMBNAIL) continue;
+    with_parseable_event(event_record.data, [&](const cereal::Event::Reader &event) {
+      const auto thumbnail = event.getThumbnail();
+      const auto jpeg = thumbnail.getThumbnail();
+      if (jpeg.size() == 0) return;
+      const uint64_t timestamp = thumbnail.getTimestampEof();
+      ThumbnailFrame frame;
+      frame.timestamp = static_cast<double>(timestamp != 0 ? timestamp : event.getLogMonoTime()) / 1.0e9;
+      frame.segment = segment;
+      frame.jpeg.assign(jpeg.begin(), jpeg.end());
+      thumbnails.push_back(std::move(frame));
+    });
+  }
+  return thumbnails;
 }
 
 RouteMetadata extract_segment_metadata(const std::vector<Event> &events) {
@@ -796,6 +816,8 @@ Pane parse_dock_area(const json11::Json &dock_area_node) {
   const std::string kind = dock_area_node["kind"].string_value();
   if (kind == "map") {
     pane.kind = PaneKind::Map;
+  } else if (kind == "thumbnail") {
+    pane.kind = PaneKind::Thumbnail;
   } else if (kind == "camera") {
     pane.kind = PaneKind::Camera;
     const std::string camera_view = dock_area_node["camera_view"].string_value();
@@ -1167,6 +1189,7 @@ RouteData build_route_data(std::vector<RouteSeries> &&series_list,
                            std::vector<CanMessageData> &&can_messages,
                            std::vector<LogEntry> &&logs,
                            std::vector<TimelineEntry> &&timeline,
+                           std::vector<ThumbnailFrame> &&thumbnails,
                            std::unordered_map<std::string, EnumInfo> &&enum_info,
                            std::string car_fingerprint,
                            std::string dbc_name) {
@@ -1233,6 +1256,14 @@ RouteData build_route_data(std::vector<RouteSeries> &&series_list,
     route_data.x_min = timeline.front().start_time;
     route_data.x_max = timeline.back().end_time;
   }
+  std::sort(thumbnails.begin(), thumbnails.end(), [](const ThumbnailFrame &a, const ThumbnailFrame &b) {
+    return a.timestamp < b.timestamp;
+  });
+  if (!route_data.has_time_range && !thumbnails.empty()) {
+    route_data.has_time_range = true;
+    route_data.x_min = thumbnails.front().timestamp;
+    route_data.x_max = thumbnails.back().timestamp;
+  }
 
   if (route_data.has_time_range) {
     const double time_offset = route_data.x_min;
@@ -1254,6 +1285,9 @@ RouteData build_route_data(std::vector<RouteSeries> &&series_list,
       entry.start_time -= time_offset;
       entry.end_time -= time_offset;
     }
+    for (ThumbnailFrame &thumbnail : thumbnails) {
+      thumbnail.timestamp -= time_offset;
+    }
     route_data.x_max -= time_offset;
     route_data.x_min = 0.0;
   }
@@ -1271,6 +1305,7 @@ RouteData build_route_data(std::vector<RouteSeries> &&series_list,
     merged_timeline.push_back(std::move(entry));
   }
   route_data.timeline = std::move(merged_timeline);
+  route_data.thumbnails = std::move(thumbnails);
   std::sort(can_messages.begin(), can_messages.end(), [](const CanMessageData &a, const CanMessageData &b) {
     return std::make_tuple(a.id.service, a.id.bus, a.id.address)
          < std::make_tuple(b.id.service, b.id.bus, b.id.address);
@@ -1524,6 +1559,7 @@ LoadedRouteArtifacts load_route_series_parallel(
     SeriesAccumulator series;
     std::vector<LogEntry> logs;
     std::vector<TimelineEntry> timeline;
+    std::vector<ThumbnailFrame> thumbnails;
   };
 
   const std::vector<std::pair<int, SegmentLogs>> segment_list(segments.begin(), segments.end());
@@ -1586,6 +1622,7 @@ LoadedRouteArtifacts load_route_series_parallel(
       results[index].series = extract_segment_series(reader.events, schema, can_dbc, skip_raw_can, worker_budget, segment_workers);
       results[index].logs = extract_segment_logs(reader.events);
       results[index].timeline = extract_segment_timeline(reader.events);
+      results[index].thumbnails = extract_segment_thumbnails(reader.events, segment_number);
       segment_stats.extract_seconds = std::chrono::duration<double>(LoadStats::Clock::now() - extract_start).count();
       segment_stats.event_count = reader.events.size();
       segment_stats.series_count = populated_series_count(results[index].series);
@@ -1612,6 +1649,7 @@ LoadedRouteArtifacts load_route_series_parallel(
   }
   std::vector<LogEntry> logs;
   std::vector<TimelineEntry> timeline;
+  std::vector<ThumbnailFrame> thumbnails;
   for (SegmentResult &result : results) {
     if (!result.logs.empty()) {
       logs.insert(logs.end(),
@@ -1623,12 +1661,18 @@ LoadedRouteArtifacts load_route_series_parallel(
                       std::make_move_iterator(result.timeline.begin()),
                       std::make_move_iterator(result.timeline.end()));
     }
+    if (!result.thumbnails.empty()) {
+      thumbnails.insert(thumbnails.end(),
+                        std::make_move_iterator(result.thumbnails.begin()),
+                        std::make_move_iterator(result.thumbnails.end()));
+    }
   }
   LoadedRouteArtifacts artifacts;
   artifacts.series = collect_series(std::move(merged));
   artifacts.can_messages = std::move(merged.can_messages);
   artifacts.logs = std::move(logs);
   artifacts.timeline = std::move(timeline);
+  artifacts.thumbnails = std::move(thumbnails);
   artifacts.enum_info = std::move(merged.enum_info);
   stats->merge_end = LoadStats::Clock::now();
   return artifacts;
@@ -1834,6 +1878,7 @@ RouteData load_route_data(const std::string &route_name,
                                           std::move(artifacts.can_messages),
                                           std::move(artifacts.logs),
                                           std::move(artifacts.timeline),
+                                          std::move(artifacts.thumbnails),
                                           std::move(artifacts.enum_info),
                                           metadata.car_fingerprint,
                                           resolved_dbc);

@@ -64,7 +64,7 @@ def required_shadow_msgs(v_cruise=255.0, gas_pressed=True, brake_pressed=True, m
     msg("carControl", 0.02, enabled=False, longActive=False, cruiseControl=ns(override=True), orientationNED=[]),
     msg("controlsState", 0.03, longControlState="off", forceDecel=True),
     msg("liveParameters", 0.04, angleOffsetDeg=0.0, stiffnessFactor=1.0, steerRatio=15.0, roll=0.0),
-    msg("radarState", 0.05, leadOne=ns(status=True, dRel=12.0, vRel=-0.2, yRel=0.0)),
+    msg("radarState", 0.05, leadOne=ns(present=True, dRel=12.0, vRel=-0.2, yRel=0.0)),
     msg("carStateSP", 0.06),
     msg("liveMapDataSP", 0.07),
     msg("gpsLocation", 0.08),

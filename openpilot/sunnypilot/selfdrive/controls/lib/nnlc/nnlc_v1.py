@@ -91,7 +91,7 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
                                                                           self.torque_params, gravity_adjusted=False)
     torque_from_measurement = self.torque_from_lateral_accel_in_torque_space(LatControlInputs(self._measurement, self._roll_compensation, CS.vEgo, CS.aEgo),
                                                                              self.torque_params, gravity_adjusted=False)
-    self._pid_log.error = float(torque_from_setpoint - torque_from_measurement)
+    self._pid_log.error = float(torque_from_setpoint - torque_from_measurement)  # ty: ignore[invalid-assignment]
     self._ff = self.torque_from_lateral_accel_in_torque_space(LatControlInputs(self._gravity_adjusted_lateral_accel, self._roll_compensation,
                                                                                CS.vEgo, CS.aEgo), self.torque_params, gravity_adjusted=True)
     self._ff += get_friction_in_torque_space(self._desired_lateral_accel - self._actual_lateral_accel, self._lateral_accel_deadzone,
@@ -145,7 +145,7 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
                              + past_rolls + future_rolls
     torque_from_setpoint = self.model.evaluate(nnff_setpoint_input)
     torque_from_measurement = self.model.evaluate(nnff_measurement_input)
-    self._pid_log.error = torque_from_setpoint - torque_from_measurement
+    self._pid_log.error = torque_from_setpoint - torque_from_measurement  # ty: ignore[invalid-assignment]
 
     # The "pure" NNLC error response can be too weak for cars whose models were trained
     # with a lack of high-magnitude lateral acceleration data, for which the NNLC model

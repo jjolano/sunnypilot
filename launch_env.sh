@@ -17,7 +17,7 @@ export QCOM_PRIORITY=12
 export ENABLE_VSYNC="${ENABLE_VSYNC:-1}"
 
 if [ -z "$AGNOS_VERSION" ]; then
-  export AGNOS_VERSION="18.4"
+  export AGNOS_VERSION="18.5"
 fi
 
 export STAGING_ROOT="/data/safe_staging"

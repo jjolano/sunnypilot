@@ -16,7 +16,7 @@ def msg(kind, t_s, **payload):
 
 
 def test_counts_and_render_json_basic():
-  lead = SimpleNamespace(status=True, dRel=30.0, vRel=-1.0, vLeadK=18.0, vLead=18.0,
+  lead = SimpleNamespace(present=True, dRel=30.0, vRel=-1.0, vLeadK=18.0, vLead=18.0,
                          aLeadK=-0.8, radarTrackId=3, radar=True, modelProb=0.9,
                          yRel=0.0, aLeadTau=1.5)
   msgs = [

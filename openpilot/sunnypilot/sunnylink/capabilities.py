@@ -6,13 +6,14 @@ See the LICENSE.md file in the root directory for more details.
 """
 import json
 
-from openpilot.cereal import car, custom, messaging
+from openpilot.cereal import custom, messaging
+from opendbc.car.structs import car
 from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR, UNSUPPORTED_LONGITUDINAL_CAR
 from opendbc.car.subaru.values import CAR as SUBARU_CAR, SubaruFlags
 from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.hardware import HARDWARE
+from openpilot.common.hardware import HARDWARE
 
 
 # Wire-protocol version for the capabilities payload. Bump on breaking changes

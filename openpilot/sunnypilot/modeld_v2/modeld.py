@@ -7,7 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import os
-from openpilot.system.hardware import TICI
+from openpilot.common.hardware import TICI
 os.environ['DEV'] = 'QCOM' if TICI else 'CPU'
 USBGPU = "USBGPU" in os.environ
 if USBGPU:
@@ -17,7 +17,8 @@ import pickle
 import time
 import numpy as np
 import openpilot.cereal.messaging as messaging
-from openpilot.cereal import car, log
+from openpilot.cereal import log
+from opendbc.car.structs import car
 from setproctitle import setproctitle
 from openpilot.cereal.messaging import PubMaster, SubMaster
 from msgq.visionipc import VisionIpcClient, VisionStreamType, VisionBuf
@@ -40,7 +41,7 @@ from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 
-PROCESS_NAME = "selfdrive.modeld.modeld_tinygrad"
+PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
 
 
 def _pkl_exists(path):
@@ -53,7 +54,7 @@ def _find_driving_pkl(bundle):
     return override
   if bundle is None or not bundle.models:
     return None
-  from openpilot.system.hardware.hw import Paths
+  from openpilot.common.hardware.hw import Paths
   model_root = Paths.model_root()
 
   pkl_name = bundle.models[0].artifact.fileName
@@ -102,10 +103,10 @@ class ModelState(ModelStateBase):
     from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, make_split_input_queues
     from tinygrad.device import Device
 
-    from openpilot.common.file_chunker import read_file_chunked
+    from openpilot.common.file_chunker import open_file_chunked
 
     cloudlog.warning(f"loading combined pkl: {pkl_path}")
-    jits = pickle.loads(read_file_chunked(pkl_path))
+    jits = pickle.load(open_file_chunked(pkl_path))
 
     self.DEV = Device.DEFAULT
 

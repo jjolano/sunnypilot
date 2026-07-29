@@ -42,7 +42,7 @@ class LeadInfoElement:
   @staticmethod
   def get_lead_status(sm):
     lead_one = sm['radarState'].leadOne
-    return lead_one.status, lead_one.dRel, lead_one.vRel
+    return lead_one.present, lead_one.dRel, lead_one.vRel
 
   @staticmethod
   def get_lead_color(lead_d_rel: float, lead_v_rel: float = 0.0, use_v_rel: bool = False) -> rl.Color:

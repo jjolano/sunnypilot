@@ -10,6 +10,8 @@ from dataclasses import dataclass
 import math
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.lead_context import lead_present
+
 
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
@@ -284,7 +286,7 @@ def build_departure_prediction_evidence(*, mode: Any, research_actuation_allowed
     predicted_gap_growth_1s=predicted_gap_growth_1s if _finite(predicted_gap_growth_1s) else 0.0,
   )
 
-  if state is None or lead is None or not bool(getattr(lead, "status", False)):
+  if state is None or not lead_present(lead):
     return DeparturePredictionEvidence(**common, block_reason="no_physical_lead")
   if not stable:
     return DeparturePredictionEvidence(**common, block_reason="unstable_lead")

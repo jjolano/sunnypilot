@@ -81,7 +81,7 @@ def cruise_stream(
         "radarState",
         t_s + 0.004,
         leadOne=SimpleNamespace(
-          status=index in close_lead_indices,
+          present=index in close_lead_indices,
           dRel=10.0 if index in close_lead_indices else 60.0,
         ),
       ))

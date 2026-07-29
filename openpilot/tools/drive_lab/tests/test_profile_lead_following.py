@@ -27,7 +27,7 @@ def stream(rows):
     msgs.append(msg("carState", t, vEgo=vego, aEgo=aego))
     msgs.append(msg("carControl", t + 0.0005, longActive=la))
     msgs.append(msg("radarState", t + 0.001,
-                    leadOne=SimpleNamespace(status=ls, dRel=d_rel, vRel=v_rel, vLead=v_lead,
+                    leadOne=SimpleNamespace(present=ls, dRel=d_rel, vRel=v_rel, vLead=v_lead,
                                             aLeadK=a_lead, modelProb=0.9)))
   return msgs
 
@@ -40,7 +40,7 @@ def _series(*samples: _FollowSample) -> list[SimpleNamespace]:
     msgs.append(msg("carState", t, vEgo=s.v, aEgo=s.a))
     msgs.append(msg("carControl", t + 0.0005, longActive=True))
     msgs.append(msg("radarState", t + 0.001,
-                    leadOne=SimpleNamespace(status=True, dRel=s.d_rel, vRel=s.v_rel,
+                    leadOne=SimpleNamespace(present=True, dRel=s.d_rel, vRel=s.v_rel,
                                             vLead=s.v_lead, aLeadK=s.a_lead, modelProb=0.9)))
   return msgs
 

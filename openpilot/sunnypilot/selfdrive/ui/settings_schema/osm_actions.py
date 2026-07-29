@@ -26,7 +26,7 @@ import pyray as rl
 import requests
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.ui_state import ui_state, device
-from openpilot.system.hardware.hw import Paths
+from openpilot.common.hardware.hw import Paths
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.lib.utils import NoElideButtonAction

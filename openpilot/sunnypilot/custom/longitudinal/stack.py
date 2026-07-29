@@ -36,6 +36,7 @@ from openpilot.sunnypilot.custom.longitudinal.lead_context import (
   LEAD_AUTHORITY_PROGRESS_ALLOWED,
   LEAD_AUTHORITY_SUPPRESS_ONLY,
   LeadContextTracker,
+  lead_present,
 )
 from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence import predict_standstill_release_confidence
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles, admitted_evidence
@@ -123,7 +124,7 @@ class SelectedLeadKinematics:
 
 
 def _lead_kinematics(lead: Any | None, v_ego: float) -> tuple[bool, float, float, float, float]:
-  if lead is None or not bool(getattr(lead, "status", False)):
+  if not lead_present(lead):
     return False, 0.0, 0.0, 0.0, 0.0
   valid = _raw_lead_kinematics_valid(lead)
   v = _f(getattr(lead, "vLeadK", getattr(lead, "vLead", 0.0)))
@@ -160,7 +161,7 @@ def _select_lead_kinematics(lead_ctx: Any, leads: tuple[Any, Any], v_ego: float)
         source=source, valid=valid, v=v, d_rel=d_rel, v_rel=v_rel, a_k=a_k,
       )
   lead0 = leads[0] if leads else None
-  if lead0 is not None and bool(getattr(lead0, "status", False)):
+  if lead_present(lead0):
     states = tuple(getattr(lead_ctx, "states", ()) or ())
     state = states[0] if states else None
     valid, v, d_rel, v_rel, a_k = _lead_kinematics(lead0, v_ego)
@@ -209,7 +210,7 @@ def _low_speed_gap_closure_request(inp: Any, act_inp: Any, selected_lead: Select
   state = selected_lead.state
   confidence = float(getattr(state, "confidence", 0.0)) if state is not None else 0.0
   if (lead is None or state is None or not selected_lead.valid or selected_lead.idx < 0 or
-      not bool(getattr(lead, "status", False)) or not bool(getattr(lead, "radar", False)) or
+      not lead_present(lead) or not bool(getattr(lead, "radar", False)) or
       not bool(getattr(state, "radar", False)) or not bool(getattr(state, "stable", False)) or
       not math.isfinite(confidence) or confidence < LOW_SPEED_GAP_CLOSURE_MIN_CONFIDENCE or
       selected_lead.track_id < 0):
@@ -980,7 +981,7 @@ class CustomLongitudinalStack:
     if reasons & DOWNWARD_TARGET_SMOOTH_RISK_REASONS:
       return False
     lead = selected_lead if selected_lead is not None else (inp.leads[0] if inp.leads else None)
-    if lead is not None and bool(getattr(lead, "status", False)):
+    if lead_present(lead):
       lead_v_rel = _f(getattr(lead, "vRel", 0.0))
       lead_a_k = _f(getattr(lead, "aLeadK", 0.0))
       if lead_v_rel < DOWNWARD_TARGET_SMOOTH_CLOSING_V_REL or lead_a_k < DOWNWARD_TARGET_SMOOTH_LEAD_A_K:
@@ -989,7 +990,7 @@ class CustomLongitudinalStack:
 
 
 def _any_status(leads: tuple[Any, Any]) -> bool:
-  return any(lead is not None and bool(getattr(lead, "status", False)) for lead in leads)
+  return any(lead_present(lead) for lead in leads)
 
 
 def _downgrade_research_apply(result: Any, research_actuation_allowed: bool,

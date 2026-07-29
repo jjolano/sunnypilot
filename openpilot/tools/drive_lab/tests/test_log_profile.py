@@ -19,7 +19,7 @@ def test_build_longitudinal_profile_extracts_route_ranges(tmp_path):
     t = float(i)
     standstill = i < 3
     msgs.append(msg("carState", t, vEgo=0.0 if standstill else 12.0 + i, vCruise=72.0, standstill=standstill))
-    msgs.append(msg("radarState", t + 0.1, leadOne=SimpleNamespace(status=True, dRel=6.0 + i * 4.0, vRel=-1.0 - i * 0.1, vLead=max(0.0, 3.0 - i * 0.2))))
+    msgs.append(msg("radarState", t + 0.1, leadOne=SimpleNamespace(present=True, dRel=6.0 + i * 4.0, vRel=-1.0 - i * 0.1, vLead=max(0.0, 3.0 - i * 0.2))))
 
   profile = build_longitudinal_profile(msgs, source="test-route")
   path = tmp_path / "profile.json"
@@ -47,7 +47,7 @@ def test_nearest_car_state_uses_indexed_lookup(monkeypatch):
 def test_build_longitudinal_profile_can_skip_sort_for_ordered_messages(monkeypatch):
   msgs = [
     msg("carState", 0.0, vEgo=0.0, vCruise=72.0, standstill=True),
-    msg("radarState", 0.1, leadOne=SimpleNamespace(status=True, dRel=8.0, vRel=-1.0, vLead=0.0)),
+    msg("radarState", 0.1, leadOne=SimpleNamespace(present=True, dRel=8.0, vRel=-1.0, vLead=0.0)),
   ]
 
   def fail_if_sorted(*args, **kwargs):

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-from openpilot.cereal import car, custom
+from openpilot.cereal import custom
+from opendbc.car.structs import car
 from openpilot.common.gps import get_gps_location_service
 from openpilot.common.params import Params
 from openpilot.common.realtime import Priority, config_realtime_process
@@ -94,13 +95,15 @@ def main():
   cloudlog.info("plannerd got CarParamsSP")
 
   gps_location_service = get_gps_location_service(params)
+  ignore_services = ["liveMapDataSP", gps_location_service]
 
   ldw = LaneDepartureWarning()
   longitudinal_planner = LongitudinalPlanner(CP, CP_SP)
   pm = messaging.PubMaster(['longitudinalPlan', 'driverAssistance', 'longitudinalPlanSP'])
   sm = messaging.SubMaster(['carControl', 'carState', 'controlsState', 'liveParameters', 'livePose', 'liveCalibration',
                             'radarState', 'modelV2', 'selfdriveState', 'liveMapDataSP', 'carStateSP', 'selfdriveStateSP', gps_location_service],
-                           poll='carState')
+                           poll='carState', ignore_alive=ignore_services, ignore_avg_freq=ignore_services,
+                           ignore_valid=ignore_services)
   last_validity_signature = None
   last_validity_failed = False
 

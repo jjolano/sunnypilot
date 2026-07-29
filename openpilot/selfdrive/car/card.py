@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 import openpilot.cereal.messaging as messaging
 
-from openpilot.cereal import car, log, custom
+from openpilot.cereal import log, custom
+from opendbc.car.structs import car
 
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper

@@ -4,15 +4,16 @@ from abc import abstractmethod
 from collections.abc import Callable
 from typing import cast
 
-from openpilot.cereal import log, car
+from openpilot.cereal import log
+from opendbc.car.structs import car
 import openpilot.cereal.messaging as messaging
 from openpilot.common.realtime import DT_CTRL
-from openpilot.system.hardware import HARDWARE
+from openpilot.common.hardware import HARDWARE
 
 AlertSize = log.SelfdriveState.AlertSize
 AlertStatus = log.SelfdriveState.AlertStatus
 VisualAlert = car.CarControl.HUDControl.VisualAlert
-AudibleAlert = car.CarControl.HUDControl.AudibleAlert
+AudibleAlert = log.SelfdriveState.AudibleAlert
 
 
 # Alert priorities
@@ -47,7 +48,7 @@ class Alert:
                alert_size: log.SelfdriveState.AlertSize,
                priority: Priority,
                visual_alert: car.CarControl.HUDControl.VisualAlert,
-               audible_alert: car.CarControl.HUDControl.AudibleAlert,
+               audible_alert: log.SelfdriveState.AudibleAlert,
                duration: float,
                creation_delay: float = 0.):
 
@@ -78,7 +79,7 @@ class AlertBase(Alert):
   def __init__(self, alert_text_1: str, alert_text_2: str, alert_status: log.SelfdriveState.AlertStatus,
                alert_size: log.SelfdriveState.AlertSize, priority: Priority,
                visual_alert: car.CarControl.HUDControl.VisualAlert,
-               audible_alert: car.CarControl.HUDControl.AudibleAlert, duration: float):
+               audible_alert: log.SelfdriveState.AudibleAlert, duration: float):
     super().__init__(alert_text_1, alert_text_2, alert_status, alert_size, priority, visual_alert, audible_alert, duration)
 
 
@@ -232,11 +233,12 @@ EmptyAlert = Alert("" , "", AlertStatus.normal, AlertSize.none, Priority.LOWEST,
 class NoEntryAlert(Alert):
   def __init__(self, alert_text_2: str,
                alert_text_1: str = "openpilot Unavailable",
-               visual_alert: car.CarControl.HUDControl.VisualAlert=VisualAlert.none):
+               visual_alert: car.CarControl.HUDControl.VisualAlert=VisualAlert.none,
+               priority: Priority = Priority.LOW):
     if HARDWARE.get_device_type() == 'mici':
       alert_text_1, alert_text_2 = alert_text_2, alert_text_1
     super().__init__(alert_text_1, alert_text_2, AlertStatus.normal,
-                     AlertSize.mid, Priority.LOW, visual_alert,
+                     AlertSize.mid, priority, visual_alert,
                      AudibleAlert.refuse, 3.)
 
 
@@ -264,7 +266,7 @@ class ImmediateDisableAlert(Alert):
 
 
 class EngagementAlert(Alert):
-  def __init__(self, audible_alert: car.CarControl.HUDControl.AudibleAlert):
+  def __init__(self, audible_alert: log.SelfdriveState.AudibleAlert):
     super().__init__("", "",
                      AlertStatus.normal, AlertSize.none,
                      Priority.MID, VisualAlert.none,

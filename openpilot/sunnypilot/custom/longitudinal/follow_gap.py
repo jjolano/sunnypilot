@@ -28,6 +28,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.lead_context import lead_present
+
 T_FOLLOW_COMPRESSED = 1.2   # s; hard floor of the compressed follow gap
 # Compression pace scales with the decel the approach would otherwise demand
 # (closing^2 / 2*excess). A fixed slow rate meant warm-but-eligible approaches ended before
@@ -165,7 +167,7 @@ class FollowGapScheduler:
       step = max(0.0, float(dt))
       lead_one = getattr(radarstate, "leadOne", None)
       a_lead_one = getattr(lead_one, "aLeadK", None) if lead_one is not None else None
-      hard_braking = (lead_one is not None and bool(getattr(lead_one, "status", False))
+      hard_braking = (lead_present(lead_one)
                       and _is_finite(a_lead_one) and float(a_lead_one) < MIN_LEAD_A_K)
       self._hard_brake_s = self._hard_brake_s + step if hard_braking else 0.0
       eligible, block_reason = self._eligibility(radarstate, v_ego, long_active,
@@ -226,11 +228,11 @@ class FollowGapScheduler:
     if block_reason in ("long_inactive", "brake_pressed", "gas_pressed", "force_decel"):
       return RECOVER_RATE
     lead_one = getattr(radarstate, "leadOne", None)
-    if lead_one is None or not bool(getattr(lead_one, "status", False)):
+    if not lead_present(lead_one):
       return RECOVER_RATE  # no lead: t_follow is inert to the MPC, snap-back is free
     v = float(v_ego) if _is_finite(v_ego) else 0.0
     for lead in (lead_one, getattr(radarstate, "leadTwo", None)):
-      if lead is None or not bool(getattr(lead, "status", False)):
+      if not lead_present(lead):
         continue
       d_rel_raw = getattr(lead, "dRel", None)
       v_rel_raw = getattr(lead, "vRel", None)
@@ -260,13 +262,13 @@ class FollowGapScheduler:
     v_ego = float(v_ego)
 
     lead_one = getattr(radarstate, "leadOne", None)
-    if lead_one is None or not bool(getattr(lead_one, "status", False)):
+    if not lead_present(lead_one):
       return False, "no_lead"
 
     # Hard floors for every status lead: t_follow is one MPC parameter shared by both lead
     # obstacles, so no status lead may sit close/fast enough to make compression a hazard.
     for idx, lead in enumerate((lead_one, getattr(radarstate, "leadTwo", None))):
-      if lead is None or not bool(getattr(lead, "status", False)):
+      if not lead_present(lead):
         continue
       d_rel_raw = getattr(lead, "dRel", None)
       v_rel_raw = getattr(lead, "vRel", None)

@@ -10,9 +10,9 @@ import glob
 from typing import NoReturn
 
 import openpilot.system.sentry as sentry
-from openpilot.system.hardware.hw import Paths
+from openpilot.common.hardware.hw import Paths
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.version import get_build_metadata
+from openpilot.common.version import get_build_metadata
 
 MAX_SIZE = 1_000_000 * 100  # allow up to 100M
 MAX_TOMBSTONE_FN_LEN = 62  # 85 - 23 ("<dongle id>/crash/")
@@ -104,7 +104,7 @@ def report_tombstone_apport(fn):
 
     # Try to find first entry in openpilot, fall back to first line
     for line in stacktrace_s:
-      if "at selfdrive/" in line:
+      if "at openpilot/selfdrive/" in line or "at selfdrive/" in line:
         crash_function = line
         found = True
         break

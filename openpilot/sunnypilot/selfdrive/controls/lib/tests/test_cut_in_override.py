@@ -36,7 +36,7 @@ class FakeTrack:
       "vLeadK": float(self.vLeadK),
       "aLeadK": float(self.aLeadK),
       "aLeadTau": float(self.aLeadTau.x),
-      "status": True,
+      "present": True,
       "fcw": False,
       "modelProb": float(model_prob),
       "radar": True,
@@ -44,8 +44,8 @@ class FakeTrack:
     }
 
 
-NO_LEAD = {"status": False}
-CONFIRMED_LEAD = {"status": True, "dRel": 10.0, "vRel": 0.0, "vLead": 10.0,
+NO_LEAD = {"present": False}
+CONFIRMED_LEAD = {"present": True, "dRel": 10.0, "vRel": 0.0, "vLead": 10.0,
                   "vLeadK": 10.0, "aLeadK": 0.0, "aLeadTau": 1.5,
                   "modelProb": 0.9, "radar": True, "radarTrackId": 7,
                   "yRel": 0.0, "fcw": False}
@@ -81,7 +81,7 @@ def test_override_promotes_high_risk_cut_in(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
-  assert result["status"] is True
+  assert result["present"] is True
   assert result["dRel"] == 15.0
   assert result["vRel"] == -3.0
   assert result["modelProb"] == 0.0
@@ -168,7 +168,7 @@ def test_override_picks_most_dangerous_track(monkeypatch):
   t1 = FakeTrack(identifier=1, dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   t2 = FakeTrack(identifier=2, dRel=9.0, yRel=0.3, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: t1, 2: t2}, v_ego=12.0, research_actuation_allowed=True)
-  assert result["status"] is True
+  assert result["present"] is True
   assert result["radarTrackId"] == 2  # lower TTC
 
 
@@ -185,7 +185,7 @@ def test_override_true_skips_params_and_promotes(monkeypatch):
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True,
                                  research_actuation_allowed=True)
   assert len(calls) == 0
-  assert result["status"] is True
+  assert result["present"] is True
   assert result["radarTrackId"] == 1
 
 
@@ -244,7 +244,7 @@ def test_override_path_relative_accepts_track_aligned_with_path(monkeypatch):
   track = FakeTrack(dRel=15.0, yRel=1.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, custom_longitudinal_enabled=True,
                                  research_actuation_allowed=True, path_y_rel=0.0)
-  assert result["status"] is True
+  assert result["present"] is True
   assert result["radarTrackId"] == 1
 
 
@@ -258,7 +258,7 @@ def test_override_path_relative_fn_per_track(monkeypatch):
     research_actuation_allowed=True,
     path_y_rel=lambda track: -1.5 if track.identifier == 1 else 0.0,
   )
-  assert result["status"] is True
+  assert result["present"] is True
   assert result["radarTrackId"] == 2
 
 
@@ -292,7 +292,7 @@ def test_override_allowed_with_research_actuation(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   track = FakeTrack(dRel=15.0, yRel=0.5, vRel=-3.0, vLead=8.0, cnt=3)
   result = apply_cut_in_override(NO_LEAD, {1: track}, v_ego=12.0, research_actuation_allowed=True)
-  assert result["status"] is True
+  assert result["present"] is True
   assert result["radarTrackId"] == 1
 
 
@@ -300,7 +300,7 @@ def test_malformed_track_fields_skip_that_track_only(monkeypatch):
   _stub_params(monkeypatch, return_value=True)
   tracks = {1: FakeTrack(identifier=1, cnt="bogus"), 2: FakeTrack(identifier=2)}
   result = apply_cut_in_override(NO_LEAD, tracks, v_ego=12.0, research_actuation_allowed=True)
-  assert result["status"] is True
+  assert result["present"] is True
   assert result["radarTrackId"] == 2
 
 

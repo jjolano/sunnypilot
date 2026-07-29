@@ -17,7 +17,7 @@ def test_extract_manual_samples_persists_radar_lead_fields(monkeypatch):
   msgs = [
     msg("selfdriveState", 0.0, active=False),
     msg("radarState", 0.1, leadOne=SimpleNamespace(
-      status=True,
+      present=True,
       dRel=7.0,
       vRel=-0.2,
       vLeadK=0.1,

@@ -16,7 +16,7 @@ from openpilot.common.git import get_branch
 from openpilot.common.params import Params, ParamKeyFlag
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.version import get_version
+from openpilot.common.version import get_version
 
 from openpilot.cereal import messaging, custom
 from openpilot.sunnypilot.sunnylink.api import SunnylinkApi

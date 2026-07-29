@@ -6,7 +6,7 @@ from pathlib import Path
 import openpilot.system.loggerd.deleter as deleter
 import openpilot.system.loggerd.uploader as uploader
 from openpilot.common.params import Params
-from openpilot.system.hardware.hw import Paths
+from openpilot.common.hardware.hw import Paths
 from openpilot.system.loggerd.xattr_cache import setxattr
 
 
@@ -63,10 +63,10 @@ class UploaderTestCase:
   seg_dir: str
 
   def set_ignore(self):
-    uploader.Api = MockApiIgnore
+    uploader.Api = MockApiIgnore  # ty: ignore[invalid-assignment]  # test double
 
   def setup_method(self):
-    uploader.Api = MockApi
+    uploader.Api = MockApi  # ty: ignore[invalid-assignment]  # test double
     uploader.fake_upload = True
     uploader.force_wifi = True
     uploader.allow_sleep = False

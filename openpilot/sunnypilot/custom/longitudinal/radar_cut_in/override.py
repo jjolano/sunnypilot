@@ -10,7 +10,7 @@ Because the override only runs when no lead was found and custom longitudinal is
 is purely a radar-only, custom-long action.
 
 Safety gates (all must pass):
-  - No existing leadOne (status=False) — never override a confirmed lead
+  - No existing leadOne (present=False) — never override a confirmed lead
   - Track persistence (cnt >= 2) — not a one-frame ghost
   - On-path (abs(yRel) <= 1.2 m in ego frame, or path-relative if provided) — not an
     adjacent-lane target
@@ -123,7 +123,7 @@ def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
                           path_y_rel: float | Callable[[Any], float | None] | None = None) -> dict[str, Any]:
   """Promote a high-risk on-path radar track to leadOne when vision hasn't confirmed.
 
-  Called after ``get_lead()`` returns. If the result has ``status=False`` (no lead found),
+  Called after ``get_lead()`` returns. If the result has ``present=False`` (no lead found),
   scans radar tracks for a high-risk cut-in candidate. If found, returns that track's
   RadarState with a low modelProb (vision hasn't confirmed it).
 
@@ -151,7 +151,7 @@ def apply_cut_in_override(lead_dict: dict[str, Any], tracks: dict[int, Any],
     high-risk track promoted.
   """
   # Fail-closed: never override an existing confirmed lead
-  if lead_dict.get("status", False):
+  if lead_dict.get("present", False):
     return lead_dict
 
   # Only active when custom longitudinal is enabled

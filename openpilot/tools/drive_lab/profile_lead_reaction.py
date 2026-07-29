@@ -18,7 +18,7 @@ Refined methodology vs prior baseline tools:
 4. **Lead exits**: tracked lead (``radarTrackId``) disappears for > ``dropout_s``.
    Measures time-to-accelerate after the lead is gone.
 
-5. **Cut-ins**: new ``radarTrackId`` appears with ``status=True`` inside ``cut_in_d_rel_max``.
+5. **Cut-ins**: new ``radarTrackId`` appears with ``present=True`` inside ``cut_in_d_rel_max``.
    Measures time-to-brake and peak decel.
 
 Run:
@@ -77,11 +77,11 @@ class LeadReactionParams:
   cut_in_already_braking_threshold: float = -0.2  # m/s^2; ego already braking when cut-in appears
   cut_in_min_v_rel: float = -0.5  # m/s; require lead closing at least this fast (more negative = faster)
   cut_in_max_ttc_s: float = 8.0  # s; plausible time-to-collision when closing
-  cut_in_min_stable_s: float = 0.15  # s; lead ID/status must not churn immediately after detection
+  cut_in_min_stable_s: float = 0.15  # s; lead ID/presence must not churn immediately after detection
   cut_in_min_model_prob: float = 0.5  # minimum radar modelProb; rejects detector noise
 
   # Lead tracking
-  min_model_prob: float = 0.0  # minimum modelProb (0 = accept all status=True leads)
+  min_model_prob: float = 0.0  # minimum modelProb (0 = accept all present=True leads)
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +387,7 @@ def _collect(msgs: list[Any], p: LeadReactionParams) -> tuple[list[_RadarSample]
       lead = safe_get(rec.payload, "leadOne")
       if lead is None:
         continue
-      status = bool(safe_get(lead, "status", False))
+      status = bool(safe_get(lead, "present", False))
       d_rel = _f(safe_get(lead, "dRel"))
       v_lead = _f(safe_get(lead, "vLeadK", safe_get(lead, "vLead")))
       v_rel = _f(safe_get(lead, "vRel"))

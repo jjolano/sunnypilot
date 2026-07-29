@@ -880,7 +880,7 @@ def _episode_kind(v_end: float, stop_speed: float, lead_ratio: float) -> str:
 def _nearest_lead(*leads: Any) -> tuple[bool, float | None, float | None]:
   valid_leads = []
   for lead in leads:
-    if not bool(safe_get(lead, "status", False)):
+    if not bool(safe_get(lead, "present", False)):
       continue
     d_rel = _finite_or_none(safe_get(lead, "dRel"))
     v_rel = _finite_or_none(safe_get(lead, "vRel"))

@@ -13,7 +13,7 @@ the regression gate those longitudinal-policy changes must beat. Three views, al
 Reference (fork `T_FOLLOW`): ~1.20 s aggressive / ~1.45 s normal / ~1.75 s relaxed.
 
 Ported from a `/btw` analysis script onto drive_lab conventions.
-Signals: carState.vEgo/aEgo, carControl.longActive, radarState.leadOne.{dRel,vRel,vLead,aLeadK,status,modelProb}.
+Signals: carState.vEgo/aEgo, carControl.longActive, radarState.leadOne.{dRel,vRel,vLead,aLeadK,present,modelProb}.
 
 Run:
   uv run python -m openpilot.tools.drive_lab.profile_lead_following ROUTE
@@ -141,7 +141,7 @@ def _collect(msgs: list[Any], p: LeadFollowParams) -> list[_FollowSample]:
     if not (math.isfinite(v) and v >= p.v_min):
       continue
     lead = safe_get(payload, "leadOne")
-    if lead is None or not bool(safe_get(lead, "status", False)) or _f(safe_get(lead, "modelProb")) < p.lead_model_prob:
+    if lead is None or not bool(safe_get(lead, "present", False)) or _f(safe_get(lead, "modelProb")) < p.lead_model_prob:
       continue
     d_rel = _f(safe_get(lead, "dRel"))
     if not (math.isfinite(d_rel) and d_rel > 0.5):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os
+import subprocess
 import sys
 import threading
 import time
@@ -7,7 +7,7 @@ from enum import IntEnum
 
 import pyray as rl
 
-from openpilot.system.hardware import PC
+from openpilot.common.hardware import PC
 from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.button import Button, ButtonStyle
@@ -37,19 +37,23 @@ class Reset(Widget):
     self._reset_state = ResetState.NONE
     self._cancel_button = Button("Cancel", gui_app.request_close)
     self._confirm_button = Button("Confirm", self._confirm, button_style=ButtonStyle.PRIMARY)
-    self._reboot_button = Button("Reboot", lambda: os.system("sudo reboot"))
+    self._reboot_button = Button("Reboot", self._reboot)
+
+  @staticmethod
+  def _reboot() -> None:
+    subprocess.run("sudo reboot", shell=True)
 
   def _do_erase(self):
     if PC:
       return
 
     # Removing data and formatting
-    rm = os.system("sudo rm -rf /data/*")
-    os.system(f"sudo umount {USERDATA}")
-    fmt = os.system(f"yes | sudo mkfs.ext4 {USERDATA}")
+    rm = subprocess.run("sudo rm -rf /data/*", shell=True).returncode
+    subprocess.run(f"sudo umount {USERDATA}", shell=True)
+    fmt = subprocess.run(f"yes | sudo mkfs.ext4 {USERDATA}", shell=True).returncode
 
     if rm == 0 or fmt == 0:
-      os.system("sudo reboot")
+      subprocess.run("sudo reboot", shell=True)
     else:
       self._reset_state = ResetState.FAILED
 

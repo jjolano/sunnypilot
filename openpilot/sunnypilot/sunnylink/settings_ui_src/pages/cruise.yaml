@@ -353,7 +353,15 @@ sections:
       - type: capability
         field: has_icbm
         equals: true
-    sub_items:
+  sub_panels:
+  - id: custom_acc_intervals
+    label: Custom ACC Speed Intervals Settings
+    trigger_key: CustomAccIncrementsEnabled
+    trigger_condition:
+      type: param
+      key: CustomAccIncrementsEnabled
+      equals: true
+    items:
     - key: CustomAccShortPressIncrement
       widget: option
       title: Short Press Increment

@@ -36,7 +36,7 @@ class TestFindDrivingPkl:
 
   def test_finds_pkl_by_artifact_name(self, tmp_path, monkeypatch):
     (tmp_path / 'driving_fof_tinygrad.pkl').write_bytes(b'fake')
-    from openpilot.system.hardware import hw
+    from openpilot.common.hardware import hw
     monkeypatch.setattr(hw.Paths, 'model_root', staticmethod(lambda: str(tmp_path)))
 
     bundle = DummyBundle(models=[
@@ -68,12 +68,19 @@ class TestStockEquivalence:
     state = model_state_factory(ARCHETYPES['vision_policy_split'])
 
     frame_skip = derive_frame_skip(SPLIT_VISION_INPUT_SHAPES, SPLIT_POLICY_INPUT_SHAPES)
-    stock_queues, stock_npy = make_input_queues(SPLIT_VISION_INPUT_SHAPES, SPLIT_POLICY_INPUT_SHAPES, frame_skip,
-                                                device='NPY')
+    stock_shapes = {**SPLIT_VISION_INPUT_SHAPES, **SPLIT_POLICY_INPUT_SHAPES, 'action_t': (1, 2)}
+    stock_queues, stock_npy = make_input_queues(stock_shapes, frame_skip, device='NPY')
 
-    assert set(state.input_queues.keys()) == set(stock_queues.keys()), \
-      f"Queue keys differ: v2={set(state.input_queues.keys())}, stock={set(stock_queues.keys())}"
-    assert set(state.numpy_inputs.keys()) == set(stock_npy.keys()), \
+    # prev_feat is a stock QCOM corruption workaround handled inside the SP loader's JIT path
+    skip_keys = {'prev_feat'}
+    # stock packs the per-key policy inputs into packed_npy_inputs; the npy views carry the individual keys
+    stock_queue_keys = set(stock_queues.keys())
+    if 'packed_npy_inputs' in stock_queue_keys:
+      stock_queue_keys.remove('packed_npy_inputs')
+      stock_queue_keys |= set(stock_npy.keys())
+    assert set(state.input_queues.keys()) == stock_queue_keys - skip_keys, \
+      f"Queue keys differ: v2={set(state.input_queues.keys())}, stock={stock_queue_keys}"
+    assert set(state.numpy_inputs.keys()) == set(stock_npy.keys()) - skip_keys, \
       f"Npy keys differ: v2={set(state.numpy_inputs.keys())}, stock={set(stock_npy.keys())}"
 
   def test_action_t_runtime_input_is_copied(self, model_state_factory):
@@ -241,7 +248,7 @@ class TestMlsimProperty:
     assert state.mlsim is False
 
   def test_mlsim_true_for_gen11(self, tmp_path, monkeypatch, patch_modeld):
-    from openpilot.system.hardware import hw
+    from openpilot.common.hardware import hw
     from openpilot.sunnypilot.modeld_v2.tests.conftest import write_pkl, ARCHETYPES as A
 
     arch = A['supercombo_non20hz']
@@ -256,7 +263,7 @@ class TestMlsimProperty:
 
 class TestCrossArchetypeMismatch:
   def test_wrong_is_20hz_changes_constants(self, tmp_path, monkeypatch, patch_modeld):
-    from openpilot.system.hardware import hw
+    from openpilot.common.hardware import hw
     from openpilot.sunnypilot.modeld_v2.tests.conftest import write_pkl
     from openpilot.sunnypilot.modeld_v2.constants import ModelConstants
 

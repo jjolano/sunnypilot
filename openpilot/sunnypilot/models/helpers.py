@@ -15,7 +15,7 @@ from openpilot.cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.models.constants import Meta, MetaSimPose, MetaTombRaider
-from openpilot.system.hardware.hw import Paths
+from openpilot.common.hardware.hw import Paths
 
 # SET ME TO THE EXACT JSON VERSION WE SET IN SUNNYPILOT_MODELS REPO
 REQUIRED_JSON_VERSION = 15
@@ -27,9 +27,10 @@ _LAST_VALIDATED_RAW = None
 
 
 def _compute_hash(file_path: str) -> str | None:
-  from openpilot.common.file_chunker import read_file_chunked
+  from openpilot.common.file_chunker import open_file_chunked
   try:
-    return hashlib.sha256(read_file_chunked(file_path)).hexdigest().lower()
+    with open_file_chunked(file_path) as file:
+      return hashlib.file_digest(file, "sha256").hexdigest().lower()
   except FileNotFoundError:
     return None
 
@@ -125,7 +126,7 @@ def get_active_bundle(params: Params | None = None, raw_bundle_dict: dict | byte
   params = params or Params()
   try:
     active_bundle_dict = raw_bundle_dict if raw_bundle_dict is not None else (params.get("ModelManager_ActiveBundle") or {})
-    if active_bundle_dict and is_bundle_version_compatible(active_bundle_dict):
+    if isinstance(active_bundle_dict, dict) and active_bundle_dict and is_bundle_version_compatible(active_bundle_dict):
       return custom.ModelManagerSP.ModelBundle(**active_bundle_dict)
   except Exception:
     pass

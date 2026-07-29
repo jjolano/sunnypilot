@@ -11,7 +11,7 @@ from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.button import Button, ButtonStyle
 from openpilot.system.ui.widgets.label import Label
-from openpilot.system.version import sunnylink_consent_version, sunnylink_consent_declined
+from openpilot.common.version import sunnylink_consent_version, sunnylink_consent_declined
 
 
 class SunnylinkConsentPage(Widget):

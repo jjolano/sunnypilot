@@ -1,17 +1,17 @@
-import pyray as rl
 import numpy as np
 import time
 import threading
 from collections.abc import Callable
 from enum import Enum
-from openpilot.cereal import messaging, car, log
+from openpilot.cereal import messaging, log
+from opendbc.car.structs import car
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.realtime import drop_realtime
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.lib.prime_state import PrimeState
 from openpilot.system.ui.lib.application import gui_app
-from openpilot.system.hardware import HARDWARE, PC
+from openpilot.common.hardware import HARDWARE, PC
 
 from openpilot.selfdrive.ui.sunnypilot.ui_state import UIStateSP, DeviceSP
 
@@ -148,7 +148,7 @@ class UIState(UIStateSP):
         # Check ignition status across all pandas
         if self.panda_type != log.PandaState.PandaType.unknown:
           self.ignition = any(state.ignitionLine or state.ignitionCan for state in panda_states)
-    elif self.sm.frame - self.sm.recv_frame["pandaStates"] > 5 * rl.get_fps():
+    elif not self.sm.alive["pandaStates"]:
       self.panda_type = log.PandaState.PandaType.unknown
 
     # Handle wide road camera state updates
@@ -318,9 +318,9 @@ class Device(DeviceSP):
       brightness = 0
 
     if brightness != self._last_brightness:
-      self._brightness_target = brightness
+      self._brightness_target = int(brightness)
       self._brightness_event.set()
-      self._last_brightness = brightness
+      self._last_brightness = int(brightness)
 
   def _update_wakefulness(self):
     # Handle interactive timeout
@@ -342,9 +342,9 @@ class Device(DeviceSP):
     self._set_awake(ui_state.ignition or not interaction_timeout or PC)
     gui_app.set_fps_idle(interaction_timeout)
 
-  def _set_awake(self, on: bool):
+  def _set_awake(self, on: bool, _ui_state=None):
     if on != self._awake:
-      DeviceSP._set_awake(on, ui_state)
+      super()._set_awake(on, _ui_state or ui_state)
       self._awake = on
       cloudlog.debug(f"setting display power {int(on)}")
       HARDWARE.set_display_power(on)

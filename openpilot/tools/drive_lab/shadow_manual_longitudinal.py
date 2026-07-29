@@ -397,7 +397,7 @@ def build_shadow_sample(route: str, route_id: str, segment: int | None, t: float
     sp_a_target=float(getattr(planner, "output_a_target", 0.0)),
     sp_source=sp_source,
     sp_stack=stack,
-    lead_status=bool(safe_get(lead, "status", False)),
+    lead_status=bool(safe_get(lead, "present", False)),
     lead_d_rel=_finite_or_none(safe_get(lead, "dRel")),
     lead_v_rel=_finite_or_none(safe_get(lead, "vRel")),
     model_desired_accel=_finite_or_none(safe_get(latest_shadow["modelV2"], "action.desiredAcceleration")),

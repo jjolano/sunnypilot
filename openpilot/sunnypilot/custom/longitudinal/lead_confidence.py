@@ -156,7 +156,9 @@ class LeadConfidenceTracker:
       self._flicker_guard_timer = max(self._flicker_guard_timer, LEAD_FLICKER_CLOSE_GUARD_TIME)
 
   def _close_stop_go_context(self, lead):
-    if lead is not None and bool(getattr(lead, "status", False)):
+    from openpilot.sunnypilot.custom.longitudinal.lead_context import lead_present
+
+    if lead_present(lead):
       _track_id, d_rel, v_lead, _y_rel, _radar, _model_prob = _lead_values(lead)
     else:
       d_rel = self.d_rel
@@ -164,10 +166,12 @@ class LeadConfidenceTracker:
     return 0.0 < d_rel <= LEAD_FLICKER_CLOSE_D_REL and 0.0 <= v_lead <= LEAD_FLICKER_CLOSE_V_LEAD
 
   def update(self, lead, dt):
+    from openpilot.sunnypilot.custom.longitudinal.lead_context import lead_present
+
     dt = max(_finite_float(dt), 0.0)
     self.guard_timer = max(0.0, self.guard_timer - dt)
 
-    current_status = lead is not None and bool(getattr(lead, "status", False))
+    current_status = lead_present(lead)
     close_stop_go_context = self._close_stop_go_context(lead)
     self._update_flicker(current_status, dt, close_stop_go_context)
 

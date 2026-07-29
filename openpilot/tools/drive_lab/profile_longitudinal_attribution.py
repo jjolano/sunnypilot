@@ -229,7 +229,7 @@ def analyze_route(msgs: list[Any], source: str = "unknown") -> dict[str, Any]:
           measured_accel.append((rec.t, a_ego))
         if (a_cmd := _finite(safe_get(cc, "actuators.accel"))) is not None:
           commanded_accel.append((rec.t, a_cmd))
-      if long_active and lead and bool(safe_get(lead, "status", False)):
+      if long_active and lead and bool(safe_get(lead, "present", False)):
         a_ego = _finite(safe_get(cs, "aEgo"))
         if a_ego is not None and a_ego < -0.5:
           decel_samples.append(_current_state(latest, rec))

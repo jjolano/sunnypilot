@@ -7,8 +7,8 @@ from openpilot.cereal import log
 from openpilot.common.gpio import gpio_set, gpio_init
 from panda import Panda, PandaDFU
 from openpilot.system.manager.process_config import managed_processes
-from openpilot.system.hardware import HARDWARE
-from openpilot.system.hardware.tici.pins import GPIO
+from openpilot.common.hardware import HARDWARE
+from openpilot.common.hardware.tici.pins import GPIO
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 
@@ -60,7 +60,7 @@ class TestPandad:
 
   def test_in_reset(self):
     gpio_init(GPIO.STM_RST_N, True)
-    gpio_set(GPIO.STM_RST_N, 1)
+    gpio_set(GPIO.STM_RST_N, True)
     assert not Panda.list()
     self._run_test()
 

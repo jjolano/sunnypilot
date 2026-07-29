@@ -104,7 +104,7 @@ def test_extract_samples_persists_model_map_and_planner_context(monkeypatch):
   msgs = [
     msg("selfdriveState", 0.0, active=False),
     msg("carControl", 0.0, longActive=False),
-    msg("radarState", 0.1, leadOne=SimpleNamespace(status=False), leadTwo=SimpleNamespace(status=False)),
+    msg("radarState", 0.1, leadOne=SimpleNamespace(present=False), leadTwo=SimpleNamespace(present=False)),
     msg("modelV2", 0.2,
         action=SimpleNamespace(desiredAcceleration=-1.2, shouldStop=False),
         position=SimpleNamespace(x=[0.0, 10.0, 30.0]),

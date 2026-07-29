@@ -37,7 +37,7 @@ def _sm(*, v_ego: float = 10.0, v_cruise: float = 20.0, standstill: bool = False
         lead_status: float = 0.0, experimental: bool = True, model=None):
   return {
     'carState': SimpleNamespace(vEgo=v_ego, vCruise=v_cruise, standstill=standstill),
-    'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=lead_status)),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(present=lead_status)),
     'modelV2': model if model is not None else _model(),
     'selfdriveState': SimpleNamespace(experimentalMode=experimental),
   }

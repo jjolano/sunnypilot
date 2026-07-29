@@ -8,7 +8,7 @@ purely an offline diagnostic to answer "can we improve comfort braking?" safely.
 Signals:
 - carState.{vEgo,aEgo}
 - carControl.longActive
-- radarState.leadOne.{status,dRel,vRel}
+- radarState.leadOne.{present,dRel,vRel}
 - longitudinalPlanSP.aTarget
 
 Run:
@@ -204,7 +204,7 @@ def _collect(msgs: list[Any], p: ComfortBrakingParams) -> list[_ClosingSample]:
     if not (math.isfinite(v_ego) and v_ego >= p.v_ego_min):
       continue
     lead = safe_get(payload, "leadOne")
-    if lead is None or not bool(safe_get(lead, "status", False)):
+    if lead is None or not bool(safe_get(lead, "present", False)):
       continue
     if _f(safe_get(lead, "modelProb")) < p.lead_model_prob_min:
       continue

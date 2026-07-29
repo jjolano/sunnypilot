@@ -4,6 +4,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from openpilot.sunnypilot.custom.longitudinal.lead_context import lead_present
+
 CAP_ALLOWANCE_M_S = 0.5
 MIN_V_EGO_FOR_APPLY = 8.0
 MIN_V_LEAD = 3.0
@@ -154,7 +156,7 @@ class MovingLeadCruiseCap:
       return False, "low_speed", base_v_cruise
 
     lead_one = getattr(radarstate, "leadOne", None)
-    if lead_one is None or not bool(getattr(lead_one, "status", False)):
+    if not lead_present(lead_one):
       return False, "no_lead", base_v_cruise
 
     d_rel = _finite_float(getattr(lead_one, "dRel", None))

@@ -98,10 +98,10 @@ def test_extract_longitudinal_route_frames_from_fake_messages():
   messages = [
     _route_msg("carState", 0.0, SimpleNamespace(vEgo=10.0, vCruise=50.0)),
     _route_msg("liveParameters", 0.0, SimpleNamespace(pitch=0.01)),
-    _route_msg("radarState", 0.0, SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=30.0, vLead=9.0, modelProb=0.9))),
+    _route_msg("radarState", 0.0, SimpleNamespace(leadOne=SimpleNamespace(present=True, dRel=30.0, vLead=9.0, modelProb=0.9))),
     _route_msg("controlsState", 0.0, SimpleNamespace()),
     _route_msg("carState", DT, SimpleNamespace(vEgo=10.1, vCruise=50.0)),
-    _route_msg("radarState", DT, SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=29.5, vLead=9.0, modelProb=0.9))),
+    _route_msg("radarState", DT, SimpleNamespace(leadOne=SimpleNamespace(present=True, dRel=29.5, vLead=9.0, modelProb=0.9))),
     _route_msg("controlsState", DT, SimpleNamespace()),
   ]
   frames = extract_longitudinal_route_frames(messages)

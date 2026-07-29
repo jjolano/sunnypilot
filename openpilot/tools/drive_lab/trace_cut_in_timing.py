@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Trace the MPC cut-in timing chain to find where the delay occurs.
 
-For each cut-in event (new radarTrackId appearing in radarState with status=True),
+For each cut-in event (new radarTrackId appearing in radarState with present=True),
 measures the timing from:
 
-1. t_lead_first_seen: radarTrackId first appears in leadOne/leadTwo with status=True
+1. t_lead_first_seen: radarTrackId first appears in leadOne/leadTwo with present=True
 2. t_source_switch: longitudinalPlanSource switches from cruise to lead0/lead1
 3. t_mpc_brake: longitudinalPlan.aTarget goes below -0.1 m/s²
 4. t_sp_brake: longitudinalPlanSP.aTarget goes below -0.1 m/s²
@@ -63,7 +63,7 @@ class TimingChainParams:
 
 @dataclass
 class CutInTimingEvent:
-  t_lead_first_seen: float            # when radarTrackId first appears with status=True
+  t_lead_first_seen: float            # when radarTrackId first appears with present=True
   lead_id: int
   d_rel: float
   v_rel: float
@@ -262,8 +262,8 @@ def _collect_frames(msgs: list[Any], p: TimingChainParams) -> tuple[list[_Frame]
         return default
       return _f(safe_get(lead, field, default))
 
-    l1 = lead_one if lead_one is not None else type('X', (), {'status': False, 'dRel': 0, 'vRel': 0, 'yRel': 0, 'vLead': 0, 'modelProb': 0, 'radarTrackId': -1})()
-    l2 = lead_two if lead_two is not None else type('X', (), {'status': False, 'radarTrackId': -1})()
+    l1 = lead_one if lead_one is not None else type('X', (), {'present': False, 'dRel': 0, 'vRel': 0, 'yRel': 0, 'vLead': 0, 'modelProb': 0, 'radarTrackId': -1})()
+    l2 = lead_two if lead_two is not None else type('X', (), {'present': False, 'radarTrackId': -1})()
 
     raw_source = safe_get(lp, "longitudinalPlanSource", "unknown")
     if hasattr(raw_source, 'name'):
@@ -276,14 +276,14 @@ def _collect_frames(msgs: list[Any], p: TimingChainParams) -> tuple[list[_Frame]
     frames.append(_Frame(
       t=rec.t, v_ego=v_ego, a_ego=a_ego, long_active=long_active,
       lead_one_id=int(_lead_field(l1, "radarTrackId", -1)),
-      lead_one_status=bool(safe_get(l1, "status", False)),
+      lead_one_status=bool(safe_get(l1, "present", False)),
       lead_one_d_rel=_lead_field(l1, "dRel"),
       lead_one_v_rel=_lead_field(l1, "vRel"),
       lead_one_y_rel=_lead_field(l1, "yRel"),
       lead_one_v_lead=_lead_field(l1, "vLead"),
       lead_one_model_prob=_lead_field(l1, "modelProb"),
       lead_two_id=int(_lead_field(l2, "radarTrackId", -1)),
-      lead_two_status=bool(safe_get(l2, "status", False)),
+      lead_two_status=bool(safe_get(l2, "present", False)),
       plan_source=plan_source,
       plan_a_target=plan_a,
       sp_a_target=sp_a if math.isfinite(sp_a) else None,

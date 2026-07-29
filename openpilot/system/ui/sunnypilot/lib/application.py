@@ -9,7 +9,7 @@ import time
 
 import pyray as rl
 
-from openpilot.system.hardware import HARDWARE
+from openpilot.common.hardware import HARDWARE
 
 SHOW_MOUSE_COORDS = os.getenv("SHOW_MOUSE_COORDS") == "1"
 SUNNYPILOT_UI = os.getenv("SUNNYPILOT_UI", "1") == "1"

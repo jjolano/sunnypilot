@@ -12,7 +12,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 
 def _fake_lead(d_rel, v_lead, a_lead, a_lead_tau=_LEAD_ACCEL_TAU):
   """Return a minimal lead-like object that process_lead can consume."""
-  return SimpleNamespace(status=True, dRel=d_rel, vLead=v_lead, aLeadK=a_lead, aLeadTau=a_lead_tau)
+  return SimpleNamespace(present=True, dRel=d_rel, vLead=v_lead, aLeadK=a_lead, aLeadTau=a_lead_tau)
 
 
 class _FakeLongitudinalMpc:
@@ -66,7 +66,7 @@ class TestLongitudinalLeadExtrapolation:
   @pytest.mark.parametrize("model_prob", [0.0, 0.7, np.nan])
   def test_low_confidence_model_pullaway_is_not_extrapolated(self, model_prob):
     mpc = _FakeLongitudinalMpc(v_ego=15.0)
-    model_only_lead = SimpleNamespace(status=True, dRel=40.0, vLead=15.0, aLeadK=4.0,
+    model_only_lead = SimpleNamespace(present=True, dRel=40.0, vLead=15.0, aLeadK=4.0,
                                       aLeadTau=_LEAD_ACCEL_TAU, radar=False, modelProb=model_prob)
 
     lead_xv = mpc.process_lead(model_only_lead)

@@ -418,7 +418,7 @@ def update_state(state: dict[str, Any], typ: str, payload: Any) -> None:
 
 
 def _update_lead(state: dict[str, Any], prefix: str, lead: Any) -> None:
-  status = bool(_safe_get(lead, "status", False))
+  status = bool(_safe_get(lead, "present", False))
   _set(state, f"{prefix}_status", status)
   if not status:
     for suffix in ("d_rel", "v_rel", "v_lead", "v_lead_k", "a_lead_k", "y_rel", "model_prob", "radar_track_id"):

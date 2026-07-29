@@ -6,14 +6,14 @@ from multiprocessing import Process
 from openpilot.common.params import Params
 from openpilot.system.manager.process import launcher
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.hardware import HARDWARE
-from openpilot.system.version import get_build_metadata
+from openpilot.common.hardware import HARDWARE
+from openpilot.common.version import get_build_metadata
 
 ATHENA_MGR_PID_PARAM = "AthenadPid"
 
 
 def main():
-  manage_athenad("DongleId", ATHENA_MGR_PID_PARAM, 'athenad', 'system.athena.athenad')
+  manage_athenad("DongleId", ATHENA_MGR_PID_PARAM, 'athenad', 'openpilot.system.athena.athenad')
 
 
 def manage_athenad(dongle_id_param, pid_param, process_name, target):

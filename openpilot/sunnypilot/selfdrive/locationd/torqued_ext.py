@@ -4,10 +4,10 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-import numpy as np
 import json
+import numpy as np
 
-from openpilot.cereal import car
+from opendbc.car.structs import car
 
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
@@ -73,7 +73,7 @@ class TorqueEstimatorExt:
     self.use_live_torque_params = self._params.get_bool("LiveTorqueParamsToggle")
     self.custom_torque_params = self._params.get_bool("CustomTorqueParams")
     self.torque_override_enabled = self._params.get_bool("TorqueParamsOverrideEnabled")
-    self.min_bucket_points = RELAXED_MIN_BUCKET_POINTS
+    self.min_bucket_points = RELAXED_MIN_BUCKET_POINTS.tolist()
     self.factor_sanity = 0.0
     self.friction_sanity = 0.0
     self.offline_latAccelFactor = 0.0
@@ -123,7 +123,7 @@ class TorqueEstimatorExt:
 
     if self.enforce_torque_control_toggle:
       if self._params.get_bool("LiveTorqueParamsRelaxedToggle"):
-        self.min_bucket_points = RELAXED_MIN_BUCKET_POINTS / (10 if decimated else 1)
+        self.min_bucket_points = (RELAXED_MIN_BUCKET_POINTS / (10 if decimated else 1)).tolist()
         self.factor_sanity = 0.5 if decimated else 1.0
         self.friction_sanity = 0.8 if decimated else 1.0
 

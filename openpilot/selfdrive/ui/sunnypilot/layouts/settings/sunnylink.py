@@ -20,7 +20,7 @@ from openpilot.system.ui.widgets.confirm_dialog import alert_dialog, ConfirmDial
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets.list_view import dual_button_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller, LineSeparator
-from openpilot.system.version import sunnylink_consent_version
+from openpilot.common.version import sunnylink_consent_version
 
 
 class SunnylinkHeader(Widget):

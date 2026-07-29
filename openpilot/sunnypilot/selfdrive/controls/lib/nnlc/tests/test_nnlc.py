@@ -1,6 +1,7 @@
 import numpy as np
 
-from openpilot.cereal import car, log, messaging
+from openpilot.cereal import log, messaging
+from opendbc.car.structs import car
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.gm.values import CAR as GM
 from opendbc.car.honda.values import CAR as HONDA

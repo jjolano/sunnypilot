@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, ec
 
 from openpilot.common.api.base import KEYS
 from openpilot.sunnypilot.sunnylink.backups.AESCipher import AESCipher
-from openpilot.system.hardware.hw import Paths
+from openpilot.common.hardware.hw import Paths
 
 
 class KeyDerivation:
@@ -183,6 +183,6 @@ def transform_dict(obj):
 
 
 class SnakeCaseEncoder(json.JSONEncoder):
-  def encode(self, obj):
-    transformed_obj = transform_dict(obj)
+  def encode(self, o):
+    transformed_obj = transform_dict(o)
     return super().encode(transformed_obj)

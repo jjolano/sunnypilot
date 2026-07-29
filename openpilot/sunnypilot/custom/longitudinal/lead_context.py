@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import math
 from typing import Any, cast
@@ -75,6 +75,15 @@ LEAD_CONTEXT_REPLACEMENT_MODEL_PROB_MIN = 0.5
 LEAD_CONTEXT_REPLACEMENT_TTC = 5.0
 LEAD_CONTEXT_REPLACEMENT_REQUIRED_DECEL = 0.20
 LEAD_CONTEXT_REPLACEMENT_DISTANCE = 45.0
+
+
+def lead_present(lead: Any) -> bool:
+  if lead is None:
+    return False
+  if isinstance(lead, Mapping):
+    return bool(lead.get("present", lead.get("status", False)))
+  present = getattr(lead, "present", None)
+  return bool(present if present is not None else getattr(lead, "status", False))
 
 
 @dataclass(frozen=True)
@@ -319,7 +328,7 @@ class _ObservationStage:
     self._prev_path_y_rel = [0.0, 0.0]
 
   def observe(self, lead_idx: int, lead: Any, model_msg: Any | None, v_ego: float) -> _LeadObservation:
-    status = bool(getattr(lead, "status", False)) if lead is not None else False
+    status = lead_present(lead)
     if not status:
       return _LeadObservation(status=False, path_y_rel=self._prev_path_y_rel[lead_idx])
     d_rel = finite_float(getattr(lead, "dRel", 0.0))
@@ -343,7 +352,7 @@ class _ObservationStage:
 
   def observe_for_tracker(self, lead_idx: int, lead: Any, model_msg: Any | None) -> float:
     """Returns the path_y_rel value the shadow tracker needs for this lead slot."""
-    status = bool(getattr(lead, "status", False)) if lead is not None else False
+    status = lead_present(lead)
     if status:
       return _path_relative_y(
         finite_float(getattr(lead, "yRel", 0.0)),
@@ -631,7 +640,7 @@ def _lead_data_for_state(state: LeadRelevanceState | None, leads: tuple[Any, Any
   if state is None or state.shadow or state.lead_idx < 0 or state.lead_idx >= len(leads):
     return None
   lead = leads[state.lead_idx]
-  return lead if bool(getattr(lead, "status", False)) else None
+  return lead if lead_present(lead) else None
 
 
 def finite_float(value: Any, default: float = 0.0) -> float:
@@ -904,7 +913,7 @@ class LeadShadowTracker:
   def update(self, lead: Any, confidence_state: LeadConfidenceState | None, v_ego: float, dt: float,
              path_y_rel: float = 0.0, reset_state: bool = False) -> LeadShadowState:
     dt = max(0.0, finite_float(dt))
-    status = bool(getattr(lead, "status", False)) if lead is not None else False
+    status = lead_present(lead)
     if reset_state:
       return self.reset()
 
