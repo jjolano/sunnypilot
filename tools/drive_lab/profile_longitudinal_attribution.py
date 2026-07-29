@@ -53,6 +53,39 @@ def _stats(values: list[float]) -> dict[str, float | None]:
   }
 
 
+def _abs_jerk(samples: list[tuple[float, float]]) -> dict[str, Any]:
+  """|da/dt| stats over a (t, accel) series. Gaps > 0.5 s are treated as breaks, not steps."""
+  jerks: list[float] = []
+  for (t0, a0), (t1, a1) in zip(samples, samples[1:], strict=False):
+    dt = t1 - t0
+    if 1e-6 < dt <= 0.5 and math.isfinite(a0) and math.isfinite(a1):
+      jerks.append(abs(a1 - a0) / dt)
+  return {
+    "samples": len(jerks),
+    "median": _round(_percentile(jerks, 50.0)),
+    "p95": _round(_percentile(jerks, 95.0)),
+    "max": _round(max(jerks)) if jerks else None,
+  }
+
+
+def _jerk_block(commanded: list[tuple[float, float]],
+                measured: list[tuple[float, float]]) -> dict[str, Any]:
+  """Commanded vs measured jerk, engaged only.
+
+  The powertrain absorbs most of a commanded step — on route 000002dc the worst episode
+  ran commanded |jerk| p95 15.13 m/s^3 against measured aEgo 2.95 (~80% absorbed by the
+  Toyota PCM). Tuning against the commanded number therefore chases roughness the driver
+  never feels, so both are reported side by side and `absorption` names the gap. Measured
+  aEgo is the comfort figure; commanded is only for attributing which stage made a step.
+  """
+  cmd = _abs_jerk(commanded)
+  meas = _abs_jerk(measured)
+  absorption = None
+  if cmd["p95"] and meas["p95"] is not None and cmd["p95"] > 1e-6:
+    absorption = _round(1.0 - (meas["p95"] / cmd["p95"]), 3)
+  return {"commanded": cmd, "measured_aEgo": meas, "absorption_p95": absorption}
+
+
 def _flag_duration(samples: list[tuple[float, bool]]) -> float:
   if len(samples) < 2:
     return 0.0
@@ -139,6 +172,8 @@ def analyze_route(msgs: list[Any], source: str = "unknown") -> dict[str, Any]:
   custom_active_samples: list[tuple[float, bool]] = []
   latest: dict[str, Any] = {}
   decel_samples: list[dict[str, Any]] = []
+  commanded_accel: list[tuple[float, float]] = []
+  measured_accel: list[tuple[float, float]] = []
   for rec in records:
     latest[rec.typ] = rec.payload
     if rec.typ == "selfdriveState":
@@ -149,7 +184,14 @@ def analyze_route(msgs: list[Any], source: str = "unknown") -> dict[str, Any]:
       cs = rec.payload
       cc = latest.get("carControl")
       lead = safe_get(latest.get("radarState"), "leadOne")
-      if bool(safe_get(cc, "longActive", False)) and lead and bool(safe_get(lead, "status", False)):
+      long_active = bool(safe_get(cc, "longActive", False))
+      # Comfort jerk is only meaningful while we are actually driving the car.
+      if long_active:
+        if (a_ego := _finite(safe_get(cs, "aEgo"))) is not None:
+          measured_accel.append((rec.t, a_ego))
+        if (a_cmd := _finite(safe_get(cc, "actuators.accel"))) is not None:
+          commanded_accel.append((rec.t, a_cmd))
+      if long_active and lead and bool(safe_get(lead, "status", False)):
         a_ego = _finite(safe_get(cs, "aEgo"))
         if a_ego is not None and a_ego < -0.5:
           decel_samples.append(_current_state(latest, rec))
@@ -192,6 +234,7 @@ def analyze_route(msgs: list[Any], source: str = "unknown") -> dict[str, Any]:
     "custom_intent_churn": _churn(custom_intents, duration_s),
     "custom_reason_counts": _counts([v for v in custom_reasons if v]),
     "a_target": {"longitudinalPlan": _stats(plan_a), "longitudinalPlanSP": _stats(sp_a)},
+    "jerk": _jerk_block(commanded_accel, measured_accel),
     "strong_decel_episodes": episodes,
   }
   return report
@@ -219,6 +262,12 @@ def render_report(report: dict[str, Any]) -> str:
   lines.append(f"  intent churn: {churn.get('changes_per_min')}/min ({churn.get('changes')} changes) top: {churn.get('top_transitions', {})}")
   lines.append(f"  custom reasons: {report.get('custom_reason_counts', {})}")
   lines.append(f"  aTarget: {report.get('a_target', {})}")
+  jerk = report.get("jerk", {})
+  cmd, meas = jerk.get("commanded", {}), jerk.get("measured_aEgo", {})
+  absorbed = jerk.get("absorption_p95")
+  lines.append(f"  |jerk| p95 (engaged): commanded {cmd.get('p95')} -> measured aEgo {meas.get('p95')}"
+               f"{'' if absorbed is None else f' ({absorbed:.0%} absorbed)'}  [comfort = measured]")
+  lines.append(f"    commanded {cmd} / measured {meas}")
   for idx, ep in enumerate(report.get("strong_decel_episodes", []), start=1):
     lines.append(f"  episode {idx}: {ep['start_s']}s->{ep['end_s']}s ({ep['sample_count']} samples)")
   return "\n".join(lines)
