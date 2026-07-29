@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
-from openpilot.selfdrive.locationd.models.constants import ObservationKind
+from openpilot.selfdrive.locationd.models.constants import ObservationKind, require_generated_ekf
 from openpilot.common.swaglog import cloudlog
 
 from rednose.helpers.kalmanfilter import KalmanFilter
@@ -162,6 +162,7 @@ class CarKalman(KalmanFilter):
     gen_code(generated_dir, name, f_sym, dt, state_sym, obs_eqs, dim_state, dim_state, global_vars=global_vars)
 
   def __init__(self, generated_dir):
+    require_generated_ekf(generated_dir, CarKalman.name)
     dim_state, dim_state_err = CarKalman.initial_x.shape[0], CarKalman.P_initial.shape[0]
     self.filter = EKF_sym_pyx(generated_dir, CarKalman.name, CarKalman.Q, CarKalman.initial_x, CarKalman.P_initial,
                               dim_state, dim_state_err, global_vars=CarKalman.global_vars, logger=cloudlog)

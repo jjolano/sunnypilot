@@ -2,6 +2,28 @@ import os
 
 GENERATED_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), 'generated'))
 
+
+def require_generated_ekf(generated_dir: str, name: str) -> None:
+  """Fail loudly if a generated EKF model library is missing, before rednose dlopens it.
+
+  rednose's ekf_load.cc does `assert(handle)` on the dlopen result, so an unbuilt model
+  library takes the whole process down with SIGABRT rather than raising. Under test that
+  means a ~126 MB core dump per crash and a parent left waiting on a handshake that will
+  never arrive — 30 of 37 cores found in this tree on 2026-07-29 carried exactly that
+  assert. `generated/` is gitignored build output, so a fresh checkout or worktree hits
+  this every time until scons has run.
+
+  A missing build artifact is a setup problem, and it should read like one.
+  """
+  path = os.path.join(generated_dir, f"lib{name}.so")
+  if not os.path.exists(path):
+    raise FileNotFoundError(
+      f"generated EKF model library missing: {path}\n"
+      f"This is a build/setup problem, not a runtime fault. Build it with:\n"
+      f"    scons selfdrive/locationd\n"
+      f"(Without this check rednose would dlopen the missing file and abort the process.)"
+    )
+
 class ObservationKind:
   UNKNOWN = 0
   NO_OBSERVATION = 1
