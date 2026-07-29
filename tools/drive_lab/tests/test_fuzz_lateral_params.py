@@ -124,9 +124,9 @@ def test_toggle_matrix_covers_all_combos_and_passthrough_when_disabled():
   result = evaluate_scenario(scenario)
   assert result.valid
   desired_combos = {tuple(sorted(f.desired_params.items())) for f in scenario.frames}
-  assert len(desired_combos) == 8
-  observed_combos = {(o.enabled, o.lane_centering_assist_enabled, o.curve_memory_enabled) for o in result.outputs}
-  assert len(observed_combos) == 8
+  assert len(desired_combos) == 4
+  observed_combos = {(o.enabled, o.lane_centering_assist_enabled) for o in result.outputs}
+  assert len(observed_combos) == 4
   observed_disabled = [i for i, o in enumerate(result.outputs) if not o.enabled]
   assert observed_disabled
   assert all(math.isclose(result.outputs[i].output_curvature, result.outputs[i].raw_curvature, abs_tol=1e-9) for i in observed_disabled)

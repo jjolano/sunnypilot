@@ -494,13 +494,3 @@ sections:
       - type: param
         key: CustomLateralDemandEnabled
         equals: true
-    - key: CurveMemoryEnabled
-      widget: toggle
-      title: Corner Curve Memory
-      description: Remember a corner's curvature seen at speed and hold it through low-speed stops so the car resumes the
-        turn instead of forgetting it. Supplement-only and vetoed by confident vision; requires Custom Lateral Demand. Turn
-        it off if stop-and-go turns feel over-predicted.
-      enablement:
-      - type: param
-        key: CustomLateralDemandEnabled
-        equals: true

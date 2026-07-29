@@ -121,16 +121,14 @@ def run_migration(_params):
     except Exception as e:
       cloudlog.exception(f"Error migrating OnroadScreenOffTimer: {e}")
 
-  # Curve memory / custom lateral demand were briefly shipped default-on. Defaults only apply
-  # to missing params, so explicitly reset existing default-on values once for safe opt-in.
+  # Custom lateral demand was briefly shipped default-on. Defaults only apply to missing
+  # params, so explicitly reset an existing default-on value once for safe opt-in.
   if _params.get("CustomLateralDemandDefaultOffMigrated") != LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION:
     try:
       if _params.get_bool("CustomLateralDemandEnabled"):
         _params.put_bool("CustomLateralDemandEnabled", False, block=True)
-      if _params.get_bool("CurveMemoryEnabled"):
-        _params.put_bool("CurveMemoryEnabled", False, block=True)
       _params.put("CustomLateralDemandDefaultOffMigrated", LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION, block=True)
-      cloudlog.info("params_migration: CustomLateralDemandEnabled/CurveMemoryEnabled reset default-off for opt-in")
+      cloudlog.info("params_migration: CustomLateralDemandEnabled reset default-off for opt-in")
     except Exception as e:
       cloudlog.exception(f"Error migrating lateral demand default-off params: {e}")
 

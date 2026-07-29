@@ -84,7 +84,6 @@ SAFETY_CRITICAL_REMOTE_GATED_PARAMS = {
   "NeuralNetworkLateralControl",
   "CustomLateralDemandEnabled",
   "LateralPreviewAssistMode",
-  "CurveMemoryEnabled",
   "LaneCenteringAssistEnabled",
 }
 

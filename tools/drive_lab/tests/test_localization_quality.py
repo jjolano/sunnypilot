@@ -27,7 +27,7 @@ def test_flags_stds_and_frequency_extraction():
     msg("livePose", 0.5, inputsOK=True, posenetOK=False, sensorsOK=True, orientationNED=_meas(std=(0.2, 0.3, 0.4), z=0.2), velocityDevice=_meas(std=(0.5, 0.6, 0.7)), angularVelocityDevice=_meas(std=(0.8, 0.9, 1.0), z=0.03), accelerationDevice=_meas(std=(1.3, 1.4, 1.5))),
   ]
 
-  report = _extract_report(msgs, source="route-a", include_curve_memory=False)
+  report = _extract_report(msgs, source="route-a")
 
   assert report.cameraOdometry_frequency.samples == 2
   assert report.livePose_frequency.samples == 2
@@ -38,7 +38,7 @@ def test_flags_stds_and_frequency_extraction():
   assert report.livePose_measurement_std["orientationNED"].max == pytest.approx(0.4)
 
 
-def test_consistency_and_serialization_and_skip_curve_memory():
+def test_consistency_and_serialization():
   msgs = [
     msg("cameraOdometry", 0.0, transStd=[1.0, 1.0, 1.0], rotStd=[0.1, 0.1, 0.1], rot=[0.0, 0.0, 0.10]),
     msg("livePose", 0.05, inputsOK=True, posenetOK=True, sensorsOK=True, orientationNED=_meas(valid=True, z=0.09), velocityDevice=_meas(), angularVelocityDevice=_meas(valid=True, z=0.11), accelerationDevice=_meas()),
@@ -50,7 +50,7 @@ def test_consistency_and_serialization_and_skip_curve_memory():
     msg("gpsLocation", 0.26, hasFix=True, speed=5.5, bearingAccuracyDeg=4.0, bearingDeg=7.5),
   ]
 
-  report = _extract_report(msgs, source="route-b", include_curve_memory=False)
+  report = _extract_report(msgs, source="route-b")
   data = report.to_dict()
 
   assert report.consistency["cameraOdometry_yaw_rate_z_vs_livePose_angularVelocityDevice.z"].pair_count >= 2
@@ -58,7 +58,6 @@ def test_consistency_and_serialization_and_skip_curve_memory():
   assert report.consistency["gps_bearing_vs_livePose_orientationNED.z"].p95_abs_error is not None
   assert report.health.ok is True
   assert report.health.degraded_reasons == []
-  assert data["curve_memory"] is None
   assert data["health"]["ok"] is True
   assert "Localization quality" in render_report(report)
   assert data["source"] == "route-b"
@@ -70,7 +69,7 @@ def test_degraded_health_reports_missing_gps_pairs_as_note_when_unavailable():
     msg("livePose", 0.0, inputsOK=True, posenetOK=True, sensorsOK=True, orientationNED=_meas(valid=True, z=0.0), velocityDevice=_meas(), angularVelocityDevice=_meas(valid=True, z=0.0), accelerationDevice=_meas()),
   ]
 
-  report = _extract_report(msgs, source="route-c", include_curve_memory=False)
+  report = _extract_report(msgs, source="route-c")
 
   assert report.health.ok is False
   assert any("cameraOdometry" in reason for reason in report.health.degraded_reasons)

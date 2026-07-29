@@ -39,8 +39,7 @@ def test_plan_order_matches_device_top_level():
     ("control", "LaneRateDampingMode"),
     ("control", "LaneFitSourceMode"),
     ("control", "LaneCenteringOneLineMode"),
-    ("control", "LateralPreviewAssistMode"),
-    ("control", "CurveMemoryEnabled"),       # sub_items, inlined after their parent toggle
+    ("control", "LateralPreviewAssistMode"),  # sub_items, inlined after their parent toggle
   ]
 
 

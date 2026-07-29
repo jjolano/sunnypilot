@@ -144,8 +144,6 @@ def fill_model_path_state_disabled_defaults(model_path_state, raw_curvature_for_
   model_path_state.laneCenteringRelaxAge = 0.0
   model_path_state.laneCenteringRelaxNudgeFlipScore = 0.0
   model_path_state.laneCenteringRelaxErrorCrossScore = 0.0
-  model_path_state.curveMemoryActive = False
-  model_path_state.curveMemoryRemembered = float('nan')
   model_path_state.laneChangeBlend = 0.0
   model_path_state.laneChangeShapingActive = False
   model_path_state.demandSource = "disabled"
@@ -254,8 +252,6 @@ def publish_model_path_state(model_path_state, sm, lateral_demand, v_ego: float,
       model_path_state.laneCenteringRelaxAge = float(d.lane_centering_relax_age)
       model_path_state.laneCenteringRelaxNudgeFlipScore = float(d.lane_centering_relax_nudge_flip_score)
       model_path_state.laneCenteringRelaxErrorCrossScore = float(d.lane_centering_relax_error_cross_score)
-      model_path_state.curveMemoryActive = bool(debug.get('curve_memory_active', False))
-      model_path_state.curveMemoryRemembered = float(debug.get('curve_memory_remembered', float('nan')))
       model_path_state.laneChangeBlend = float(debug.get('lane_change_blend', 0.0))
       model_path_state.laneChangeShapingActive = bool(debug.get('lane_change_shaping_active', False))
       model_path_state.demandSource = str(debug.get('demand_source', 'model_path'))

@@ -89,7 +89,6 @@ def _init_data() -> SimpleNamespace:
   return SimpleNamespace(
     params=SimpleNamespace(entries=[
       SimpleNamespace(key="LaneCenteringAssistEnabled", value=b"0"),
-      SimpleNamespace(key="CurveMemoryEnabled", value=b"0"),
       # This route-start value must not override runtime modelPathState telemetry.
       SimpleNamespace(key="StraightPathStabilizationMode", value=b"shadow"),
     ]),
@@ -655,7 +654,6 @@ def test_replay_uses_runtime_sps_schedule_not_route_start_param(monkeypatch: pyt
 
   assert report.context["initData_params"] == {
     "LaneCenteringAssistEnabled": False,
-    "CurveMemoryEnabled": False,
   }
   assert len(rows) == 100
   assert report.context["scored_frames_replayed"] == 100

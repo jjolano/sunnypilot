@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import math
 from dataclasses import dataclass
 from typing import Any
@@ -70,28 +69,6 @@ class ConsistencySummary:
 
 
 @dataclass(frozen=True)
-class CurveMemoryAuditSummary:
-  corner_stops: int | None = None
-  amnesia_off: int | None = None
-  amnesia_on: int | None = None
-  resumed: int | None = None
-  oversteer_events: int | None = None
-  median_lift: float | None = None
-  notes: list[str] | None = None
-
-  def to_dict(self) -> dict[str, Any]:
-    return {
-      "corner_stops": self.corner_stops,
-      "amnesia_off": self.amnesia_off,
-      "amnesia_on": self.amnesia_on,
-      "resumed": self.resumed,
-      "oversteer_events": self.oversteer_events,
-      "median_lift": _opt_round(self.median_lift, 6),
-      "notes": list(self.notes or []),
-    }
-
-
-@dataclass(frozen=True)
 class LocalizationQualityReport:
   source: str
   sample_count: int
@@ -105,7 +82,6 @@ class LocalizationQualityReport:
   livePose_measurement_std: dict[str, StdSummary]
   consistency: dict[str, ConsistencySummary]
   health: LocalizationHealthSummary
-  curve_memory: CurveMemoryAuditSummary | None
   notes: list[str]
 
   def to_dict(self) -> dict[str, Any]:
@@ -122,7 +98,6 @@ class LocalizationQualityReport:
       "livePose_measurement_std": {k: v.to_dict() for k, v in self.livePose_measurement_std.items()},
       "consistency": {k: v.to_dict() for k, v in self.consistency.items()},
       "health": self.health.to_dict(),
-      "curve_memory": None if self.curve_memory is None else self.curve_memory.to_dict(),
       "notes": list(self.notes),
     }
 
@@ -156,7 +131,7 @@ def _gps_message_fields(payload: Any) -> tuple[bool, float | None, float | None,
   return fix, speed, accuracy, bearing
 
 
-def _extract_report(msgs: list[Any], source: str, include_curve_memory: bool = True) -> LocalizationQualityReport:
+def _extract_report(msgs: list[Any], source: str) -> LocalizationQualityReport:
   ordered_msgs = sorted(msgs, key=lambda m: int(getattr(m, "logMonoTime", 0)))
   records = build_route_messages(ordered_msgs)
   sample_count = len(records)
@@ -239,18 +214,6 @@ def _extract_report(msgs: list[Any], source: str, include_curve_memory: bool = T
   if gps_messages_present and not gps_errors:
     notes.append("GPS messages present but no valid heading pairs")
 
-  curve_memory = None
-  if include_curve_memory:
-    try:
-      module = importlib.import_module("openpilot.tools.drive_lab.replay_curve_memory")
-      cm = module.analyze_route(msgs, source=source)
-      curve_memory = CurveMemoryAuditSummary(
-        corner_stops=getattr(cm, "corner_stops", None), amnesia_off=getattr(cm, "amnesia_off", None), amnesia_on=getattr(cm, "amnesia_on", None),
-        resumed=getattr(cm, "resumed", None), oversteer_events=getattr(cm, "oversteer_events", None), median_lift=getattr(cm, "median_lift", None), notes=list(getattr(cm, "notes", []) or []),
-      )
-    except Exception as e:  # noqa: BLE001
-      curve_memory = CurveMemoryAuditSummary(notes=[f"curve_memory audit unavailable: {e.__class__.__name__}: {e}"])
-
   return LocalizationQualityReport(
     source=source, sample_count=sample_count, duration_s=(records[-1].t - records[0].t) if records else 0.0,
     cameraOdometry_frequency=freshness_summary(cam_t, thresholds=THRESHOLDS), livePose_frequency=freshness_summary(live_t, thresholds=THRESHOLDS),
@@ -265,7 +228,7 @@ def _extract_report(msgs: list[Any], source: str, include_curve_memory: bool = T
       "gps_bearing_vs_livePose_orientationNED.z": ConsistencySummary(len(gps_errors), std_summary(gps_errors).p95 if len(gps_errors) >= 3 else None, max(gps_errors) if gps_errors else None),
     },
     health=health,
-    curve_memory=curve_memory, notes=notes,
+    notes=notes,
   )
 
 
@@ -283,11 +246,6 @@ def render_report(report: LocalizationQualityReport) -> str:
     lines.append(f"  livePose {name} std: p95={_fmt(summary.p95)} max={_fmt(summary.max)}")
   for name, summary in report.consistency.items():
     lines.append(f"  {name}: pairs={summary.pair_count} p95_abs={_fmt(summary.p95_abs_error)} max_abs={_fmt(summary.max_abs_error)}")
-  if report.curve_memory is not None:
-    cm = report.curve_memory
-    lines.append(f"  curve_memory: corner_stops={cm.corner_stops} resumed={cm.resumed} oversteer={cm.oversteer_events} median_lift={_fmt(cm.median_lift)}")
-    for note in cm.notes or []:
-      lines.append(f"    note: {note}")
   for note in report.notes:
     lines.append(f"  note: {note}")
   return "\n".join(lines)
@@ -303,11 +261,10 @@ def main() -> None:
   parser.add_argument("--qlog", action="store_true", help="Prefer qlogs instead of rlogs")
   parser.add_argument("--json", action="store_true", help="Print JSON instead of the text summary")
   parser.add_argument("--output", help="Write the report JSON to this path")
-  parser.add_argument("--no-curve-memory", action="store_true", help="Skip the CurveMemory replay audit")
   args = parser.parse_args()
   for route in args.routes:
     msgs = load_route_msgs(route, qlog=args.qlog)
-    report = _extract_report(msgs, source=route, include_curve_memory=not args.no_curve_memory)
+    report = _extract_report(msgs, source=route)
     print(output_report(report, json_output=args.json, renderer=render_report, output_path=args.output))
 
 

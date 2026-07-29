@@ -87,7 +87,6 @@ class TransitionFrame:
   lateral_maneuver_curvature: float | None = None
   smooth_model_path_curvature: bool = False
   lane_centering_assist_enabled: bool = False
-  curve_memory_enabled: bool = False
   curvature_limited: bool = False
   turn_direction: int = 0
   model_data_v2_sp_valid: bool = True
@@ -117,7 +116,6 @@ class TransitionFrame:
       "lateral_maneuver_curvature": self.lateral_maneuver_curvature,
       "smooth_model_path_curvature": self.smooth_model_path_curvature,
       "lane_centering_assist_enabled": self.lane_centering_assist_enabled,
-      "curve_memory_enabled": self.curve_memory_enabled,
       "curvature_limited": self.curvature_limited,
       "turn_direction": self.turn_direction,
       "model_data_v2_sp_valid": self.model_data_v2_sp_valid,
@@ -151,7 +149,6 @@ class TransitionFrame:
       lateral_maneuver_curvature=float(data["lateral_maneuver_curvature"]) if data.get("lateral_maneuver_curvature") is not None else None,
       smooth_model_path_curvature=bool(data.get("smooth_model_path_curvature", False)),
       lane_centering_assist_enabled=bool(data.get("lane_centering_assist_enabled", False)),
-      curve_memory_enabled=bool(data.get("curve_memory_enabled", False)),
       curvature_limited=bool(data.get("curvature_limited", False)),
       turn_direction=int(data.get("turn_direction", 0)),
       model_data_v2_sp_valid=bool(data.get("model_data_v2_sp_valid", True)),
@@ -327,7 +324,6 @@ def _frame_to_inputs(frame: TransitionFrame) -> LateralDemandPipelineInputs:
     lateral_maneuver_curvature=frame.lateral_maneuver_curvature,
     smooth_model_path_curvature=frame.smooth_model_path_curvature,
     lane_centering_assist_enabled=frame.lane_centering_assist_enabled,
-    curve_memory_enabled=frame.curve_memory_enabled,
     curvature_limited=frame.curvature_limited,
     turn_direction=frame.turn_direction,
     model_data_v2_sp_valid=frame.model_data_v2_sp_valid,

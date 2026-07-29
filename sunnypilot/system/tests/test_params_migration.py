@@ -25,22 +25,20 @@ class FakeParams:
 
 
 def test_lateral_demand_default_off_migration_resets_existing_default_on_values():
-  params = FakeParams(CustomLateralDemandEnabled=True, CurveMemoryEnabled=True, CustomLateralDemandDefaultOffMigrated=None)
+  params = FakeParams(CustomLateralDemandEnabled=True, CustomLateralDemandDefaultOffMigrated=None)
 
   run_migration(params)
 
   assert params.values["CustomLateralDemandEnabled"] is False
-  assert params.values["CurveMemoryEnabled"] is False
   assert params.values["CustomLateralDemandDefaultOffMigrated"] == LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION
 
 
 def test_lateral_demand_default_off_migration_is_one_shot():
-  params = FakeParams(CustomLateralDemandEnabled=True, CurveMemoryEnabled=True, CustomLateralDemandDefaultOffMigrated=LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION)
+  params = FakeParams(CustomLateralDemandEnabled=True, CustomLateralDemandDefaultOffMigrated=LATERAL_DEMAND_DEFAULT_OFF_MIGRATION_VERSION)
 
   run_migration(params)
 
   assert params.values["CustomLateralDemandEnabled"] is True
-  assert params.values["CurveMemoryEnabled"] is True
 
 
 def test_longitudinal_mode_migration_from_legacy_int_acc():

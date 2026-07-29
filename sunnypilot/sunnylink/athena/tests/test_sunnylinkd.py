@@ -254,7 +254,6 @@ class TestSunnylinkdMethods:
     sunnylinkd.params.put_bool("IsOffroad", False)
     params = {
       "CustomLateralDemandEnabled": _b64(b"1"),
-      "CurveMemoryEnabled": _b64(b"1"),
       "LaneCenteringAssistEnabled": _b64(b"1"),
     }
 
@@ -265,7 +264,6 @@ class TestSunnylinkdMethods:
   def test_saveParams_lateral_demand_settings_allowed_offroad(self):
     params = {
       "CustomLateralDemandEnabled": _b64(b"1"),
-      "CurveMemoryEnabled": _b64(b"1"),
       "LaneCenteringAssistEnabled": _b64(b"1"),
     }
 

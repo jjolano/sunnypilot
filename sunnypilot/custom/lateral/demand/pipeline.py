@@ -45,10 +45,6 @@ from openpilot.sunnypilot.custom.lateral.demand.lane_change_path_shaper import (
   LaneChangePathShaper,
   LaneChangePathShaperInputs,
 )
-from openpilot.sunnypilot.custom.lateral.demand.curve_memory import (
-  CurveMemory,
-  CurveMemoryInputs,
-)
 from openpilot.sunnypilot.custom.lateral.demand.lane_geometry import (
   LANE_GEOMETRY_SAMPLE_XS,
   evaluate_lane_geometry,
@@ -224,7 +220,6 @@ class LateralDemandPipelineInputs:
   smooth_model_path_curvature: bool = False
   demand_jerk_smoothing_enabled: bool = False
   lane_centering_assist_enabled: bool = False
-  curve_memory_enabled: bool = False
   lat_delay: float = 0.0
   lateral_preview_assist_mode: str = "off"
   # passed through (downstream clip result)
@@ -625,7 +620,6 @@ class LateralDemandPipeline:
   def __init__(self, dt: float = DT_CTRL) -> None:
     self.dt = float(dt)
     self._model_path_processor = ModelPathProcessor()
-    self._curve_memory = CurveMemory()
     self._lane_change_path_shaper = LaneChangePathShaper(dt)
     self._lane_centering_assist = LaneCenteringAssistTracker()
     self._lane_rate_damping = _LaneRateDampingTracker(dt)
@@ -642,7 +636,6 @@ class LateralDemandPipeline:
 
   def reset(self) -> None:
     self._model_path_processor.reset()
-    self._curve_memory.reset()
     self._lane_change_path_shaper.reset()
     self._lane_centering_assist.reset()
     self._lane_rate_damping.reset()
@@ -678,11 +671,9 @@ class LateralDemandPipeline:
     lane_rate_damping_result = LaneRateDampingResult("off", False, False, "disabled", 0.0, 0.0, 0.0, 0.0, LANE_RATE_DAMPING_CAP_LAT_ACCEL)
     lane_fit_source_result = LaneFitSourceResult("off", False, False, "disabled", 0.0, 0.0, 0.0, 0.0, False)
     preview_result = inactive_preview_assist_result()
-    curve_memory_result = None
 
     if inputs.lateral_maneuver_curvature is not None:
       self._model_path_processor.reset()
-      self._curve_memory.reset()
       self._lane_change_path_shaper.reset()
       self._lane_centering_assist.reset()
       self._lane_fit_source.reset()
@@ -747,20 +738,7 @@ class LateralDemandPipeline:
         ),
         lane_change_active=inputs.lane_change_state != LANE_CHANGE_STATE_OFF,
       ))
-      # Pose-anchored CurveMemory stage: remember road curvature seen ahead with good vision and
-      # recall it through the low-speed traverse where vision degrades (runs every frame to track
-      # arc length + capture; only ever raises an under-curved vision, vetoed by confident vision).
-      curve_memory_result = self._curve_memory.update(CurveMemoryInputs(
-        enabled=inputs.curve_memory_enabled, lat_active=inputs.lat_active, v_ego=inputs.v_ego,
-        desired_curvature=model_path_result.desired_curvature, path_quality=model_path_result.quality,
-        path_gated=model_path_result.gated, path_reason=model_path_result.reason,
-        steering_pressed=inputs.steering_pressed if inputs.steering_pressed is not None else None,
-        lane_change_active=(inputs.lane_change_state != LANE_CHANGE_STATE_OFF) if inputs.lane_change_state_valid else True,
-        position_x=tuple(inputs.position_x), position_y=tuple(inputs.position_y),
-        orientation_z=tuple(inputs.orientation_z),
-        valid_path=ModelPathProcessor._valid_core_path(inputs.position_x, inputs.position_y),
-      ), self.dt)
-      model_desired_curvature = curve_memory_result.desired_curvature if inputs.lat_active else inputs.measured_curvature
+      model_desired_curvature = model_path_result.desired_curvature if inputs.lat_active else inputs.measured_curvature
       if not inputs.lat_active:
         demand_source = DEMAND_SOURCE_FALLBACK_MEASURED
 
@@ -952,10 +930,6 @@ class LateralDemandPipeline:
         "lane_centering_active": bool(lane_centering_result.active),
         "lane_centering_nudge": float(lane_centering_result.curvature_nudge),
         **lane_centering_result.debug,
-        "curve_memory_active": bool(curve_memory_result.active) if curve_memory_result is not None else False,
-        "curve_memory_remembered": float(curve_memory_result.remembered) if curve_memory_result is not None else float("nan"),
-        "curve_memory_source": curve_memory_result.source if curve_memory_result is not None else "disabled",
-        "curve_memory_samples": int(curve_memory_result.samples) if curve_memory_result is not None else 0,
         **preview_result.debug_dict(),
         "processed_curvature": processed_curvature,
         "demand_source": demand_source,

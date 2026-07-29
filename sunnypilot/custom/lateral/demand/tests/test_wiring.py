@@ -167,10 +167,9 @@ def test_adapter_disabled_updates_sensor_confidence_each_control_tick():
   assert calls == 2
 
 
-def test_default_params_disable_adapter_and_curve_memory():
+def test_default_params_disable_adapter():
   a = LateralDemandAdapter(FakeParams())
   assert a.enabled is False
-  assert a.curve_memory_enabled is False
   assert a.lane_rate_damping_mode == "off"
   out = a.process(True, 20.0, 0.0, 0.0123, 0.0123, fake_model(), steering_pressed=False,
                   model_age_s=0.01, yaw_rate=0.246, steering_rate_deg=0.0)

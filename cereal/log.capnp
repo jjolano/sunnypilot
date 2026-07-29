@@ -984,8 +984,8 @@ struct ControlsState @0x97ff69c53601abf1 {
     laneCenteringPredictedError @11 :Float32;
     laneCenteringCurvatureNudge @12 :Float32;
     laneCenteringConfidence @13 :Float32;
-    curveMemoryActive @14 :Bool;
-    curveMemoryRemembered @15 :Float32;
+    curveMemoryActiveDEPRECATED @14 :Bool;      # retired 2026-07-29 (CurveMemory deleted)
+    curveMemoryRememberedDEPRECATED @15 :Float32;  # retired 2026-07-29 (CurveMemory deleted)
     laneChangeBlend @16 :Float32;
     laneChangeShapingActive @17 :Bool;
     demandSource @18 :Text;

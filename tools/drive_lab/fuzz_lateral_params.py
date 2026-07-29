@@ -41,7 +41,6 @@ DEFAULT_KINDS = (
 PARAM_KEYS = (
   "CustomLateralDemandEnabled",
   "LaneCenteringAssistEnabled",
-  "CurveMemoryEnabled",
 )
 
 
@@ -158,7 +157,6 @@ class ParamFrameOutput:
   desired_params: dict[str, bool]
   enabled: bool
   lane_centering_assist_enabled: bool
-  curve_memory_enabled: bool
   refresh_frame: bool
   params_fault: bool
 
@@ -344,7 +342,6 @@ def _generate_params_refresh_cadence(
     desired = {
       "CustomLateralDemandEnabled": True,
       "LaneCenteringAssistEnabled": i >= first_refresh // 2,
-      "CurveMemoryEnabled": False,
     }
     frames.append(_base_frame(float(ti), v_ego, curvature, desired, model_data=model_data))
   return ParamScenario(
@@ -418,19 +415,17 @@ def _generate_toggle_matrix(
   curvature: float,
   index: int,
 ) -> ParamScenario:
-  # Ensure enough frames for all 8 combos and at least one refresh per combo.
-  min_frames = 8 * PARAMS_REFRESH_PERIOD + 10
+  # Ensure enough frames for all 4 combos and at least one refresh per combo.
+  min_frames = 4 * PARAMS_REFRESH_PERIOD + 10
   t = _time_array(max(duration_s, min_frames * DT))
   n = len(t)
   combos: list[dict[str, bool]] = []
   for a in (False, True):
     for b in (False, True):
-      for c in (False, True):
-        combos.append({
-          "CustomLateralDemandEnabled": a,
-          "LaneCenteringAssistEnabled": b,
-          "CurveMemoryEnabled": c,
-        })
+      combos.append({
+        "CustomLateralDemandEnabled": a,
+        "LaneCenteringAssistEnabled": b,
+      })
   rng.shuffle(combos)
   segment = n // len(combos)
   frames: list[ParamFrame] = []
@@ -511,7 +506,6 @@ def _run_scenario(scenario: ParamScenario) -> tuple[ParamFrameOutput, ...]:
       desired_params=dict(frame.desired_params),
       enabled=bool(adapter.enabled),
       lane_centering_assist_enabled=bool(adapter.lane_centering_assist_enabled),
-      curve_memory_enabled=bool(adapter.curve_memory_enabled),
       refresh_frame=refresh_frame,
       params_fault=frame.fault_on_refresh,
     ))
@@ -623,13 +617,13 @@ def _evaluate_events(
         failures.append({"check": "missing_model_passthrough", "detail": "model_data=None frames did not pass through raw curvature"})
 
   elif kind == "toggle_matrix":
-    # All 8 desired combos should appear.
+    # All 4 desired combos should appear.
     desired_combos = {tuple(sorted(f.desired_params.items())) for f in frames}
-    if len(desired_combos) < 8:
-      failures.append({"check": "combo_coverage", "detail": f"toggle_matrix covered only {len(desired_combos)}/8 desired combos"})
-    observed_combos = {(o.enabled, o.lane_centering_assist_enabled, o.curve_memory_enabled) for o in outputs}
-    if len(observed_combos) < 8:
-      failures.append({"check": "observed_combo_coverage", "detail": f"toggle_matrix observed only {len(observed_combos)}/8 adapter combos"})
+    if len(desired_combos) < 4:
+      failures.append({"check": "combo_coverage", "detail": f"toggle_matrix covered only {len(desired_combos)}/4 desired combos"})
+    observed_combos = {(o.enabled, o.lane_centering_assist_enabled) for o in outputs}
+    if len(observed_combos) < 4:
+      failures.append({"check": "observed_combo_coverage", "detail": f"toggle_matrix observed only {len(observed_combos)}/4 adapter combos"})
     # When adapter observes master disabled, output should be raw passthrough.
     observed_disabled_frames = [i for i, o in enumerate(outputs) if not o.enabled]
     if observed_disabled_frames:
@@ -659,7 +653,7 @@ def evaluate_scenario(scenario: ParamScenario) -> ParamResult:
     metrics["enabled_frames"] = sum(observed_enabled)
     metrics["disabled_frames"] = len(observed_enabled) - sum(observed_enabled)
     metrics["refresh_frames"] = sum(1 for o in outputs if o.refresh_frame)
-    metrics["observed_param_combos"] = len({(o.enabled, o.lane_centering_assist_enabled, o.curve_memory_enabled) for o in outputs})
+    metrics["observed_param_combos"] = len({(o.enabled, o.lane_centering_assist_enabled) for o in outputs})
 
   return ParamResult(
     scenario=scenario,
@@ -718,7 +712,6 @@ def artifact_to_dict(result: ParamResult, seed: int | None, index: int | None) -
         "desired_params": o.desired_params,
         "enabled": o.enabled,
         "lane_centering_assist_enabled": o.lane_centering_assist_enabled,
-        "curve_memory_enabled": o.curve_memory_enabled,
         "refresh_frame": o.refresh_frame,
         "params_fault": o.params_fault,
       }

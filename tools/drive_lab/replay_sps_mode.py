@@ -92,7 +92,7 @@ REQUIRED_CONTEXT_FIELDS = (
   "carState.vEgo", "carState.steeringPressed", "carState.steeringRateDeg",
   "carState.leftBlinker", "carState.rightBlinker", "liveParameters.roll", "modelV2",
   "controlsState.lateralPlanMonoTime", "carControl", "model_age_s", "adaptiveTorqueState.steerLimitLimited",
-  "initData.params.LaneCenteringAssistEnabled", "initData.params.CurveMemoryEnabled",
+  "initData.params.LaneCenteringAssistEnabled",
   "initData.params.LagdToggle", "initData.params.LagdValueCache", "telemetry modes",
 )
 
@@ -283,7 +283,7 @@ def _init_params(init_data: Any) -> dict[str, bool | float | None]:
   values: dict[str, Any] = {}
   if params is _MISSING:
     return {
-      "LaneCenteringAssistEnabled": None, "CurveMemoryEnabled": None,
+      "LaneCenteringAssistEnabled": None,
       "LagdToggle": None, "LagdValueCache": None,
     }
   entries = _get(params, "entries")
@@ -296,7 +296,6 @@ def _init_params(init_data: Any) -> dict[str, bool | float | None]:
     values.update(params)
   return {
     "LaneCenteringAssistEnabled": _decode_param_bool(values.get("LaneCenteringAssistEnabled", _MISSING)),
-    "CurveMemoryEnabled": _decode_param_bool(values.get("CurveMemoryEnabled", _MISSING)),
     "LagdToggle": _decode_param_bool(values.get("LagdToggle", _MISSING)),
     "LagdValueCache": _decode_param_float(values.get("LagdValueCache", _MISSING)),
   }
@@ -349,8 +348,6 @@ def _context_for_frame(record: Any, latest: dict[str, tuple[Any, float]],
       missing.append(name)
   if params["LaneCenteringAssistEnabled"] is None:
     missing.append("initData.params.LaneCenteringAssistEnabled")
-  if params["CurveMemoryEnabled"] is None:
-    missing.append("initData.params.CurveMemoryEnabled")
   if params["LagdToggle"] is None:
     missing.append("initData.params.LagdToggle")
   if params["LagdValueCache"] is None:
@@ -413,7 +410,6 @@ def _configure_adapter(adapter: LateralDemandAdapter, model_path: Any, params: d
   # Deliberately no Params object: all mode inputs are route evidence.
   adapter.enabled = bool(_get(model_path, "active", False))
   adapter.lane_centering_assist_enabled = bool(params["LaneCenteringAssistEnabled"])
-  adapter.curve_memory_enabled = bool(params["CurveMemoryEnabled"])
   adapter.straight_path_stabilization_mode = sps_mode
   adapter.lateral_preview_assist_mode = _text(_get(model_path, "previewAssistMode"))
   adapter.lane_rate_damping_mode = _text(_get(model_path, "laneRateDampingMode"))
@@ -462,8 +458,6 @@ def _replay_telemetry(adapter: LateralDemandAdapter, raw: float, conditioned: fl
     "laneCenteringPredictedError": demand.lane_centering_predicted_error,
     "laneCenteringCurvatureNudge": demand.lane_centering_curvature_nudge,
     "laneCenteringConfidence": demand.lane_centering_confidence,
-    "curveMemoryActive": debug.get("curve_memory_active", False),
-    "curveMemoryRemembered": debug.get("curve_memory_remembered", math.nan),
     "laneChangeBlend": debug.get("lane_change_blend", 0.0),
     "laneChangeShapingActive": debug.get("lane_change_shaping_active", False),
     "demandSource": debug.get("demand_source", "model_path"),
@@ -572,7 +566,7 @@ def _param_snapshot(records: list[Any]) -> dict[str, bool | float | None]:
     if record.typ == "initData":
       return _init_params(record.payload)
   return {
-    "LaneCenteringAssistEnabled": None, "CurveMemoryEnabled": None,
+    "LaneCenteringAssistEnabled": None,
     "LagdToggle": None, "LagdValueCache": None,
   }
 
@@ -613,7 +607,6 @@ def _legacy_fixture_route(records: list[Any], params: dict[str, bool | float | N
     and _get(_lateral_state(controls_state), "active") is _MISSING
     for controls_state in controls
   ) and params["LaneCenteringAssistEnabled"] is not None \
-    and params["CurveMemoryEnabled"] is not None \
     and params["LagdToggle"] is None and params["LagdValueCache"] is None
 
 
@@ -941,7 +934,7 @@ def analyze_route(messages: Any, *, window_start_s: float, window_end_s: float) 
     "issues": context_issues,
     "warm_replay_context_complete": not context_issues,
     "initData_params": {
-      key: params[key] for key in ("LaneCenteringAssistEnabled", "CurveMemoryEnabled")
+      key: params[key] for key in ("LaneCenteringAssistEnabled",)
     },
     "initData_latency_params": {
       key: params[key] for key in ("LagdToggle", "LagdValueCache")

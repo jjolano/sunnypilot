@@ -166,7 +166,6 @@ def _base_frame(
     "lateral_maneuver_curvature": None,
     "smooth_model_path_curvature": False,
     "lane_centering_assist_enabled": False,
-    "curve_memory_enabled": False,
     "curvature_limited": False,
   }
   frame.update(path)
