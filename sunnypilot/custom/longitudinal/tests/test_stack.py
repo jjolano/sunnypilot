@@ -189,7 +189,7 @@ def test_lead_release_allows_small_positive_evidence(monkeypatch):
   ld = lead(d_rel=8.0, v_lead=0.5, v_rel=0.5)
   _warm_lead_progress_allowed(s, ld)
 
-  def fake_decide(candidates, mode, accel_limits, sources=None):
+  def fake_decide(candidates, mode, accel_limits, sources=None, previous_intent=""):
     return Decision(a_target=0.08, should_stop=False, selected_intent="lead_pullaway", reason="cruise")
   monkeypatch.setattr("openpilot.sunnypilot.custom.longitudinal.stack.decide", fake_decide)
 
@@ -200,7 +200,7 @@ def test_lead_release_allows_small_positive_evidence(monkeypatch):
 
 
 def test_no_lead_release_keeps_stronger_evidence_threshold(monkeypatch):
-  def fake_decide(candidates, mode, accel_limits, sources=None):
+  def fake_decide(candidates, mode, accel_limits, sources=None, previous_intent=""):
     return Decision(a_target=0.08, should_stop=False, selected_intent="no_lead_launch", reason="cruise")
   monkeypatch.setattr("openpilot.sunnypilot.custom.longitudinal.stack.decide", fake_decide)
 
@@ -216,7 +216,7 @@ def test_lead_release_rejects_tiny_positive_evidence(monkeypatch):
   ld = lead(d_rel=8.0, v_lead=0.5, v_rel=0.5)
   _warm_lead_progress_allowed(s, ld)
 
-  def fake_decide(candidates, mode, accel_limits, sources=None):
+  def fake_decide(candidates, mode, accel_limits, sources=None, previous_intent=""):
     return Decision(a_target=0.04, should_stop=False, selected_intent="lead_pullaway", reason="cruise")
   monkeypatch.setattr("openpilot.sunnypilot.custom.longitudinal.stack.decide", fake_decide)
 

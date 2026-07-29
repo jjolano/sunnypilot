@@ -410,6 +410,7 @@ class CustomLongitudinalStack:
     self._curve_traffic_corroboration_s = 0.0
     self._lead_hard_brake_s = 0.0
     self._lead_gap_compression_active = False
+    self._prev_intent = ""
 
   def reset(self) -> None:
     self._lead_confidence = (LeadConfidenceTracker(), LeadConfidenceTracker())
@@ -419,6 +420,7 @@ class CustomLongitudinalStack:
     self._curve_traffic_corroboration_s = 0.0
     self._lead_hard_brake_s = 0.0
     self._lead_gap_compression_active = False
+    self._prev_intent = ""
 
   def update(self, inp: LongitudinalStackInputs, dt: float, *, collect_debug: bool = True) -> LongitudinalStackResult:
     # Mode admission happens first: no stateful tracker or candidate construction sees
@@ -575,7 +577,8 @@ class CustomLongitudinalStack:
       force_slow_decel=act_inp.force_slow_decel, brake_pressed=act_inp.brake_pressed, gas_pressed=act_inp.gas_pressed,
     )
     candidates = build_candidates(scene, lead_gap_compression_active=self._lead_gap_compression_active)
-    decision = decide(candidates, inp.mode, inp.accel_limits, inp.sources)
+    decision = decide(candidates, inp.mode, inp.accel_limits, inp.sources, previous_intent=self._prev_intent)
+    self._prev_intent = str(decision.selected_intent) if inp.long_active else ""
     if not inp.long_active:
       self._lead_gap_compression_active = False
     else:

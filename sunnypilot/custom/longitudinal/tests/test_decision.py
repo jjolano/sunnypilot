@@ -180,3 +180,52 @@ def test_unrelated_scc_caps_still_bind_with_lead_soft_pair():
   d = decide(cands, LongitudinalMode.SCC, LIMITS, SourceToggles(scc_curve_vision_enabled=True))
   assert d.a_target == pytest.approx(-0.35)
   assert d.reason == "advisory_capped"
+
+
+# ---------- intent hold (INTENT_HOLD_MARGIN) ----------
+# The hold suppresses label flapping between candidates sitting within noise of each other.
+# It must never change a_target/should_stop, and must never delay a real transition.
+
+def _lead_hazard(a, is_stop=False):
+  return C(a, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.LEAD, "lead_follow", is_stop=is_stop)
+
+
+def test_intent_hold_suppresses_noise_crossing_flip():
+  # Hazard and cruise straddle each other by less than the margin: without a previous intent
+  # the label follows the winner; with it, the incumbent is held.
+  cands = [cruise(-0.30), _lead_hazard(-0.32)]
+  assert decide(cands, LongitudinalMode.ACC, LIMITS).selected_intent == "lead_follow"
+  held = decide(cands, LongitudinalMode.ACC, LIMITS, previous_intent="cruise")
+  assert held.selected_intent == "cruise"
+  # ...but only the label moved.
+  assert held.a_target == pytest.approx(-0.32)
+  assert held.reason == "physical_hazard"
+
+
+def test_intent_hold_never_changes_target_or_stop():
+  cands = [cruise(0.5), _lead_hazard(-2.0, is_stop=True)]
+  free = decide(cands, LongitudinalMode.ACC, LIMITS)
+  held = decide(cands, LongitudinalMode.ACC, LIMITS, previous_intent="cruise")
+  assert held.a_target == free.a_target == pytest.approx(-2.0)
+  assert held.should_stop is free.should_stop is True
+
+
+def test_intent_hold_releases_when_incumbent_diverges():
+  # A real transition: the hazard now demands far more than the incumbent wants. No delay.
+  cands = [cruise(0.5), _lead_hazard(-2.0)]
+  d = decide(cands, LongitudinalMode.ACC, LIMITS, previous_intent="cruise")
+  assert d.selected_intent == "lead_follow"
+
+
+def test_intent_hold_releases_when_incumbent_disappears():
+  # Lead dropped entirely: the stale label cannot survive its candidate.
+  d = decide([cruise(0.5)], LongitudinalMode.ACC, LIMITS, previous_intent="lead_follow")
+  assert d.selected_intent == "cruise"
+
+
+def test_intent_hold_cannot_resurrect_mode_excluded_evidence():
+  # A MODEL_STOP incumbent is not admitted in ACC, so it is not eligible to be held.
+  cands = [cruise(-0.30), C(-0.32, CandidateRole.PHYSICAL_HAZARD, EvidenceClass.MODEL_STOP, "stop_approach")]
+  d = decide(cands, LongitudinalMode.ACC, LIMITS, previous_intent="stop_approach")
+  assert d.selected_intent == "cruise"
+  assert d.a_target == pytest.approx(-0.30)
